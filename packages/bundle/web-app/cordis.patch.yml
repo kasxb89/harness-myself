@@ -1,3 +1,11 @@
+# 官方痕迹（产品级）：模型源与账号面板都停用——产品自己的登录/钱包在「额度」里，
+# 模型一律来自本机 new-api。只做 id 级停用，不新增/改名任何 provider 路由。
+- id: llm-deepseek
+  disabled: true
+- id: llm-deepseek-account
+  disabled: true
+- id: ui-settings-account
+  disabled: true
 # The dsh-web-app bundle patch: the browser surface over the dsh-base layer.
 # Applied after dsh-base's insert; rows here override base rows by id, with
 # the profile's own cordis.patch.yml and any --patch overlays still to come.

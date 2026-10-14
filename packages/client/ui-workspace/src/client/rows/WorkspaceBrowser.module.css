@@ -39,7 +39,7 @@
 }
 
 .iconButton:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
+  background: var(--dsw-specific-sidebar-nav-item-hover);
 }
 
 /* View-options dropdown card: labels are short, so a content-sized card reads
@@ -76,6 +76,9 @@
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
   line-height: 20px;
   opacity: 1;
   visibility: visible;

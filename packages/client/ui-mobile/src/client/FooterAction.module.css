@@ -4,10 +4,12 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  box-sizing: border-box;
   width: 100%;
+  min-height: 32px;
   padding: 6px 8px;
   border: 0;
-  border-radius: var(--dsw-radius-m, 8px);
+  border-radius: var(--dsw-radius-md);
   background: transparent;
   color: var(--dsw-alias-label-secondary);
   font-size: 13px;
@@ -16,7 +18,7 @@
 }
 
 .row:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
+  background: var(--dsw-specific-sidebar-nav-item-hover);
   color: var(--dsw-alias-label-primary);
 }
 

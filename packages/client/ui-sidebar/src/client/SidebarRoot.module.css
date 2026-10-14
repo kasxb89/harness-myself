@@ -483,8 +483,8 @@
   flex: none;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  margin-bottom: 8px;
+  gap: 2px;
+  margin-bottom: 12px;
 }
 
 /* Panel entries share the New Session bar's 12px radius and 2px inset, the
@@ -508,12 +508,16 @@
 }
 
 .panelRow:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
+  background: var(--dsw-specific-sidebar-nav-item-hover);
 }
 
+/* Selected reads as a tinted row, not as another hover: the theme's sidebar
+   nav tokens separate the two, and the label gains the weight that marks a
+   current destination. */
 .panelRow.panelActive {
-  background: var(--dsw-alias-interactive-bg-hover);
+  background: var(--dsw-specific-sidebar-nav-item-active-accent);
   color: var(--dsw-alias-label-primary);
+  font-weight: 500;
 }
 
 .panelRow:focus-visible {
@@ -575,6 +579,10 @@
   flex: none;
   display: flex;
   flex-direction: column;
+  gap: 2px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 0.5px solid var(--dsw-alias-border-l2);
 }
 
 .settingsArea,
@@ -586,6 +594,8 @@
 
 .footerActions {
   display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .collapsed .footArea {

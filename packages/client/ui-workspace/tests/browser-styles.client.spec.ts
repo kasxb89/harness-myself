@@ -109,8 +109,12 @@ describe('WorkspaceBrowser.module.css list', () => {
     expect(rowDeclarations('.slot')?.get('height')).toBe('20px')
     expect(rowDeclarations('.sessionRow .title')?.get('margin')).toBe('0 6px 0 4px')
     expect(rowDeclarations('.searchResultRow')?.get('min-height')).toBe('48px')
+    // Hover and selection are separate states: the open session takes the
+    // theme's sidebar active-accent tint, the pointer keeps the plain hover.
     expect(rowDeclarations('.sessionRow.selected')?.get('background'))
-      .toBe('var(--dsw-alias-interactive-bg-hover)')
+      .toBe('var(--dsw-specific-sidebar-nav-item-active-accent)')
+    expect(rowDeclarations('.sessionRow:hover')?.get('background'))
+      .toBe('var(--dsw-specific-sidebar-nav-item-hover)')
   })
 
   it('marquees a clipped session title on row hover', () => {

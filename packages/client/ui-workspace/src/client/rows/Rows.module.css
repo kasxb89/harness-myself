@@ -13,11 +13,14 @@
 
 .projectRow:hover,
 .sessionRow:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
+  background: var(--dsw-specific-sidebar-nav-item-hover);
 }
 
+/* The open session keeps the sidebar's active-accent tint so it stays distinct
+   from the row the pointer happens to be over. */
 .sessionRow.selected {
-  background: var(--dsw-alias-interactive-bg-hover);
+  background: var(--dsw-specific-sidebar-nav-item-active-accent);
+  font-weight: 500;
 }
 
 .searchResultRow {
@@ -37,11 +40,11 @@
 }
 
 .searchResultRow:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
+  background: var(--dsw-specific-sidebar-nav-item-hover);
 }
 
 .searchResultRow.selected {
-  background: var(--dsw-alias-interactive-bg-hover);
+  background: var(--dsw-specific-sidebar-nav-item-active-accent);
 }
 
 .searchResultHeading {
@@ -221,8 +224,9 @@
 
 .time {
   flex: none;
-  font-size: 10px;
+  font-size: 11px;
   line-height: 16px;
+  font-variant-numeric: tabular-nums;
   color: var(--dsw-alias-label-tertiary);
 }
 
