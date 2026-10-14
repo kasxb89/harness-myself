@@ -1,0 +1,271 @@
+/* Credits column: the balance card, the sign-in form, and the WeChat Native top-up flow. */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  height: 100%;
+  min-height: 0;
+  padding: 20px 24px 32px;
+  overflow: auto;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: 880px;
+}
+
+.title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+}
+
+.headerAction {
+  margin-left: auto;
+}
+
+/* One material for every block on the page: the shared settings-card fill and
+ * hairline stroke, so the panel matches the account surface beside it. */
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  box-sizing: border-box;
+  max-width: 880px;
+  padding: 16px 18px;
+  border: 0.5px solid var(--dsw-alias-settings-card-stroke);
+  border-radius: var(--dsw-radius-xl);
+  background: var(--dsw-alias-settings-card-fill);
+}
+
+.cardIntro {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cardTitle {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+}
+
+/* The credit count is the page's subject, so it takes the display size while
+ * the account facts stay at control size under the same card's divider. */
+.balance {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.balanceValue {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.balanceLabel {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.fieldLabel,
+.metaLabel {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.balanceNumber {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0;
+}
+
+.amount {
+  font-size: 40px;
+  font-weight: 600;
+  line-height: 46px;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+  color: var(--dsw-alias-label-primary);
+}
+
+.amountUnit {
+  font-size: 13px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.balanceSub {
+  margin: 0;
+  font-size: 14px;
+  line-height: 22px;
+  font-variant-numeric: tabular-nums;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.divider {
+  border-top: 0.5px solid var(--dsw-alias-border-l2);
+}
+
+.metaRow {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.metaValue {
+  font-size: 14px;
+  line-height: 22px;
+  font-variant-numeric: tabular-nums;
+  color: var(--dsw-alias-label-primary);
+}
+
+.rate {
+  margin-left: auto;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.form,
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.form {
+  gap: 12px;
+  max-width: 560px;
+}
+
+.fieldRow {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+/* Six digits do not need the phone field's width. */
+.codeField {
+  flex: 0 0 180px;
+}
+
+.input {
+  width: 100%;
+}
+
+.amountRow {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.amountInput {
+  width: 140px;
+}
+
+.quick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  flex-wrap: wrap;
+}
+
+.preview {
+  align-self: center;
+  font-size: 13px;
+  line-height: 20px;
+  font-variant-numeric: tabular-nums;
+  color: var(--dsw-alias-label-secondary);
+}
+
+/* The submit action closes the row it belongs to, away from the presets. */
+.submit {
+  margin-left: auto;
+}
+
+.order {
+  display: flex;
+  align-items: flex-start;
+  gap: 20px;
+  flex-wrap: wrap;
+  padding-top: 2px;
+}
+
+/* WeChat renders the code itself, so the plate stays white in both themes. */
+.qr {
+  box-sizing: border-box;
+  width: 200px;
+  height: 200px;
+  padding: 8px;
+  border-radius: var(--dsw-radius-md);
+  background: #fff;
+}
+
+.orderMeta {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+}
+
+.orderLine {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.code {
+  font-family: var(--ds-font-family-code);
+  font-size: 12px;
+  line-height: 18px;
+  word-break: break-all;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.hint {
+  margin: 0;
+  max-width: 620px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* Failure and success share one banner; only the text color carries the tone. */
+.banner {
+  box-sizing: border-box;
+  max-width: 880px;
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-interactive-bg-hover);
+  font-size: 12px;
+  line-height: 18px;
+  word-break: break-word;
+}
+
+.banner[data-tone='error'] {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.banner[data-tone='success'] {
+  color: var(--dsw-alias-state-success-primary);
+}

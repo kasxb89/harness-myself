@@ -1,0 +1,123 @@
+/**
+ * Immersive backdrop layers.
+ *
+ * The plugin paints behind the application frame; the frame itself is made
+ * transparent through inline custom properties written by `client/index.ts`,
+ * which keeps portals, menus, and the boot page on their own theme fills.
+ * Everything here hangs off `html[data-dsh-backdrop]`, so disposal restores the
+ * stock appearance with no residue.
+ */
+
+html[data-dsh-backdrop] {
+  --dsh-backdrop-accent-1: #7c9cff;
+  --dsh-backdrop-accent-2: #b78cff;
+  --dsh-backdrop-accent-3: #4fd8c8;
+  --dsh-backdrop-intensity: 0.72;
+  --dsh-backdrop-grain: 0.42;
+  --dsh-backdrop-drift: 46s;
+  --dsh-backdrop-glass: color-mix(in srgb, var(--dsw-static-neutral-bluish-00) 74%, transparent);
+}
+
+html[data-dsh-backdrop='obsidian'] {
+  --dsh-backdrop-accent-1: #3f6fff;
+  --dsh-backdrop-accent-2: #7b4dff;
+  --dsh-backdrop-accent-3: #0f8f9e;
+  --dsh-backdrop-grain: 0.5;
+  --dsh-backdrop-drift: 62s;
+}
+
+html[data-dsh-backdrop='pearl'] {
+  --dsh-backdrop-accent-1: #ffd9a8;
+  --dsh-backdrop-accent-2: #ffb3c8;
+  --dsh-backdrop-accent-3: #a8d8ff;
+  --dsh-backdrop-intensity: 0.58;
+  --dsh-backdrop-grain: 0.3;
+  --dsh-backdrop-drift: 54s;
+}
+
+/* Dark surfaces read deeper without extra saturation; the wash and the drift
+   layer already carry the hue, so the glass fill flips to the dark neutral. */
+html[data-dsh-backdrop] body[data-ds-dark-theme] {
+  --dsh-backdrop-intensity: 0.6;
+  --dsh-backdrop-grain: 0.34;
+  --dsh-backdrop-glass: color-mix(in srgb, var(--dsw-static-neutral-bluish-950) 70%, transparent);
+}
+
+html[data-dsh-backdrop] body[data-ds-dark-theme][data-dsh-backdrop-glass='off'] {
+  --dsh-backdrop-glass: var(--dsw-static-neutral-bluish-950);
+}
+
+/* The page wash: three wide radial pools plus a vignette that keeps the shell
+   edges dark enough for the hairlines and elevation shadows to keep reading. */
+html[data-dsh-backdrop]:not([data-dsh-backdrop='off']) body {
+  background-image:
+    radial-gradient(115% 78% at 10% 4%,
+      color-mix(in srgb, var(--dsh-backdrop-accent-1) calc(var(--dsh-backdrop-intensity) * 58%), transparent) 0%,
+      transparent 62%),
+    radial-gradient(95% 70% at 92% 2%,
+      color-mix(in srgb, var(--dsh-backdrop-accent-2) calc(var(--dsh-backdrop-intensity) * 48%), transparent) 0%,
+      transparent 60%),
+    radial-gradient(130% 120% at 48% 118%,
+      color-mix(in srgb, var(--dsh-backdrop-accent-3) calc(var(--dsh-backdrop-intensity) * 40%), transparent) 0%,
+      transparent 64%),
+    radial-gradient(140% 105% at 50% 46%, transparent 52%, rgb(0 0 0 / 0.26) 100%);
+  background-attachment: fixed;
+  background-repeat: no-repeat;
+}
+
+/* The drift layer: two large blurred pools that slowly trade places. */
+html[data-dsh-backdrop]:not([data-dsh-backdrop='off']) body::before {
+  position: fixed;
+  inset: -28vmax;
+  z-index: -1;
+  content: '';
+  pointer-events: none;
+  background-image:
+    radial-gradient(34vmax 34vmax at 32% 34%,
+      color-mix(in srgb, var(--dsh-backdrop-accent-1) calc(var(--dsh-backdrop-intensity) * 72%), transparent) 0%,
+      transparent 70%),
+    radial-gradient(30vmax 30vmax at 68% 62%,
+      color-mix(in srgb, var(--dsh-backdrop-accent-2) calc(var(--dsh-backdrop-intensity) * 60%), transparent) 0%,
+      transparent 72%),
+    radial-gradient(26vmax 26vmax at 50% 88%,
+      color-mix(in srgb, var(--dsh-backdrop-accent-3) calc(var(--dsh-backdrop-intensity) * 52%), transparent) 0%,
+      transparent 74%);
+  filter: blur(46px) saturate(132%);
+  animation: dsh-backdrop-drift var(--dsh-backdrop-drift) ease-in-out infinite alternate;
+  will-change: transform;
+}
+
+/* The grain layer sits above the wash so the gradients never band on wide
+   displays; soft-light keeps it from washing out text contrast. */
+html[data-dsh-backdrop] body[data-dsh-backdrop-grain='on']::after,
+html[data-dsh-backdrop][data-dsh-backdrop-grain='on'] body::after {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  content: '';
+  pointer-events: none;
+  opacity: var(--dsh-backdrop-grain);
+  mix-blend-mode: soft-light;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+@keyframes dsh-backdrop-drift {
+  0% {
+    transform: translate3d(-3%, -2%, 0) scale(1.03);
+  }
+
+  50% {
+    transform: translate3d(2%, 3%, 0) scale(1.09);
+  }
+
+  100% {
+    transform: translate3d(5%, -1%, 0) scale(1.05);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-dsh-backdrop] body::before {
+    animation: none;
+    transform: none;
+  }
+}
