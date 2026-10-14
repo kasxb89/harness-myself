@@ -223,7 +223,7 @@ export function VideoPage(props: PropsRuntime<'main'> & VideogenInjected): React
     setDurationIndex(current => current < params.durations.length ? current : 0)
     setResolution(current => params.resolutions.includes(current) ? current : params.resolutions[0] ?? '')
     setMode(current => params.modes.includes(current) ? current : '')
-    setRatio(current => {
+    setRatio((current) => {
       if (params.ratios.includes(current) && current !== 'adaptive') return current
       return params.ratios.find(item => item !== 'adaptive') ?? params.ratios[0] ?? ''
     })
@@ -390,7 +390,7 @@ export function VideoPage(props: PropsRuntime<'main'> & VideogenInjected): React
             <div className={css.modelRow}>
               <label className={css.field}>
                 <span className={css.label}>{t('model')}</span>
-                <select className={css.select} value={model?.id ?? ''} onChange={event => { setModelId(event.target.value) }}>
+                <select className={css.select} value={model?.id ?? ''} onChange={(event) => { setModelId(event.target.value) }}>
                   {models.map(entry => <option key={entry.id} value={entry.id}>{entry.displayName}</option>)}
                 </select>
               </label>
@@ -416,7 +416,7 @@ export function VideoPage(props: PropsRuntime<'main'> & VideogenInjected): React
                 rows={4}
                 value={prompt}
                 placeholder={t('promptPlaceholder')}
-                onChange={event => { setPrompt(event.target.value) }}
+                onChange={(event) => { setPrompt(event.target.value) }}
               />
             </label>
             <div className={css.presets}>
@@ -445,7 +445,7 @@ export function VideoPage(props: PropsRuntime<'main'> & VideogenInjected): React
                       max={durations.length - 1}
                       step={1}
                       value={Math.min(durationIndex, durations.length - 1)}
-                      onChange={event => { setDurationIndex(Number(event.target.value)) }}
+                      onChange={(event) => { setDurationIndex(Number(event.target.value)) }}
                     />
                   )}
                 {durations.length > 1 && (
@@ -526,7 +526,7 @@ export function VideoPage(props: PropsRuntime<'main'> & VideogenInjected): React
                       inputMode="numeric"
                       placeholder={t('seedHint')}
                       value={seed}
-                      onChange={event => { setSeed(event.target.value.replace(/[^0-9]/g, '')) }}
+                      onChange={(event) => { setSeed(event.target.value.replace(/[^0-9]/g, '')) }}
                     />
                   </label>
                 )}
@@ -563,7 +563,7 @@ export function VideoPage(props: PropsRuntime<'main'> & VideogenInjected): React
                       type="file"
                       accept={SLOT_TYPES.image.accept}
                       hidden
-                      onChange={event => { void pickFrame('first', event.target.files); event.target.value = '' }}
+                      onChange={(event) => { void pickFrame('first', event.target.files); event.target.value = '' }}
                     />
                     {firstFrame === null
                       ? <span>{uploading === 'first' ? t('uploading') : t('frameHint')}</span>
@@ -581,7 +581,7 @@ export function VideoPage(props: PropsRuntime<'main'> & VideogenInjected): React
                         type="file"
                         accept={SLOT_TYPES.image.accept}
                         hidden
-                        onChange={event => { void pickFrame('last', event.target.files); event.target.value = '' }}
+                        onChange={(event) => { void pickFrame('last', event.target.files); event.target.value = '' }}
                       />
                       {lastFrame === null
                         ? <span>{uploading === 'last' ? t('uploading') : t('frameHint')}</span>
@@ -604,7 +604,7 @@ export function VideoPage(props: PropsRuntime<'main'> & VideogenInjected): React
                     accept={SLOT_TYPES.image.accept}
                     multiple
                     hidden
-                    onChange={event => { void pick('image', event.target.files); event.target.value = '' }}
+                    onChange={(event) => { void pick('image', event.target.files); event.target.value = '' }}
                   />
                   <span>{uploading === 'image' ? t('uploading') : t('dropImages')}</span>
                 </label>
@@ -621,7 +621,7 @@ export function VideoPage(props: PropsRuntime<'main'> & VideogenInjected): React
                     accept={SLOT_TYPES.video.accept}
                     multiple
                     hidden
-                    onChange={event => { void pick('video', event.target.files); event.target.value = '' }}
+                    onChange={(event) => { void pick('video', event.target.files); event.target.value = '' }}
                   />
                   <span>{uploading === 'video' ? t('uploading') : t('dropVideos')}</span>
                 </label>
@@ -638,7 +638,7 @@ export function VideoPage(props: PropsRuntime<'main'> & VideogenInjected): React
                     accept={SLOT_TYPES.audio.accept}
                     multiple
                     hidden
-                    onChange={event => { void pick('audio', event.target.files); event.target.value = '' }}
+                    onChange={(event) => { void pick('audio', event.target.files); event.target.value = '' }}
                   />
                   <span>{uploading === 'audio' ? t('uploading') : t('dropAudios')}</span>
                 </label>

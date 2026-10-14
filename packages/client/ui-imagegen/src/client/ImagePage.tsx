@@ -339,7 +339,7 @@ export function ImagePage(props: PropsRuntime<'main'> & ImagegenInjected): React
             <div className={css.modelRow}>
               <label className={css.field}>
                 <span className={css.label}>{t('model')}</span>
-                <select className={css.select} value={model?.id ?? ''} onChange={event => { setModelId(event.target.value) }}>
+                <select className={css.select} value={model?.id ?? ''} onChange={(event) => { setModelId(event.target.value) }}>
                   {models.map(entry => <option key={entry.id} value={entry.id}>{entry.displayName}</option>)}
                 </select>
               </label>
@@ -363,7 +363,7 @@ export function ImagePage(props: PropsRuntime<'main'> & ImagegenInjected): React
                 rows={4}
                 value={prompt}
                 placeholder={t('promptPlaceholder')}
-                onChange={event => { setPrompt(event.target.value) }}
+                onChange={(event) => { setPrompt(event.target.value) }}
               />
             </label>
             <div className={css.presets}>
@@ -383,7 +383,7 @@ export function ImagePage(props: PropsRuntime<'main'> & ImagegenInjected): React
               <div className={css.field}>
                 <span className={css.label}>{t('ratio')}</span>
                 <div className={css.ratios}>
-                  {sizes.map(option => {
+                  {sizes.map((option) => {
                     const ratio = ratioOf(option)
                     return (
                       <button
@@ -430,7 +430,7 @@ export function ImagePage(props: PropsRuntime<'main'> & ImagegenInjected): React
               {maxCount > 1 && (
                 <label className={css.field}>
                   <span className={css.label}>{t('count')}</span>
-                  <select className={css.select} value={String(count)} onChange={event => { setCount(Number(event.target.value)) }}>
+                  <select className={css.select} value={String(count)} onChange={(event) => { setCount(Number(event.target.value)) }}>
                     {Array.from({ length: maxCount }, (_, index) => index + 1)
                       .map(item => <option key={item} value={String(item)}>{String(item)}</option>)}
                   </select>
@@ -501,7 +501,7 @@ export function ImagePage(props: PropsRuntime<'main'> & ImagegenInjected): React
                           min={0}
                           max={100}
                           value={compression}
-                          onChange={event => { setCompression(Number(event.target.value)) }}
+                          onChange={(event) => { setCompression(Number(event.target.value)) }}
                         />
                       </label>
                     )}
@@ -513,7 +513,7 @@ export function ImagePage(props: PropsRuntime<'main'> & ImagegenInjected): React
                           inputMode="numeric"
                           placeholder={t('seedHint')}
                           value={seed}
-                          onChange={event => { setSeed(event.target.value.replace(/[^0-9]/g, '')) }}
+                          onChange={(event) => { setSeed(event.target.value.replace(/[^0-9]/g, '')) }}
                         />
                       </label>
                     )}
@@ -555,7 +555,7 @@ export function ImagePage(props: PropsRuntime<'main'> & ImagegenInjected): React
                     accept="image/png,image/jpeg,image/webp"
                     multiple
                     hidden
-                    onChange={event => {
+                    onChange={(event) => {
                       void pickReferences(event.target.files)
                       event.target.value = ''
                     }}

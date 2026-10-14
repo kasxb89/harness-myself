@@ -467,7 +467,7 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsInjected): Reac
                 inputMode="tel"
                 autoComplete="tel"
                 placeholder="+8613800138000"
-                onChange={event => { setPhone(event.target.value.trim()); challengeKey.current = null }}
+                onChange={(event) => { setPhone(event.target.value.trim()); challengeKey.current = null }}
               />
             </label>
             <div className={css.fieldRow}>
@@ -479,7 +479,7 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsInjected): Reac
                   inputMode="numeric"
                   maxLength={6}
                   placeholder={t('codePlaceholder')}
-                  onChange={event => { setCode(event.target.value.replace(/\D/g, '').slice(0, 6)); verifyKey.current = null }}
+                  onChange={(event) => { setCode(event.target.value.replace(/\D/g, '').slice(0, 6)); verifyKey.current = null }}
                 />
               </label>
               <Button
@@ -552,7 +552,7 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsInjected): Reac
                   className={cx(css.input, css.amountInput)}
                   value={amountYuan}
                   inputMode="decimal"
-                  onChange={event => { setAmountYuan(event.target.value.replace(/[^\d.]/g, '')) }}
+                  onChange={(event) => { setAmountYuan(event.target.value.replace(/[^\d.]/g, '')) }}
                 />
               </label>
               {pointsPreview !== null && (

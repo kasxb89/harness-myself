@@ -59,6 +59,9 @@ const TEXT_KINDS: ReadonlySet<ArtifactKind> = new Set<ArtifactKind>(['text', 'co
  */
 const TEXT_PREVIEW_MAX_BYTES = 256 * 1024
 
+/** Largest image the list decodes for a row thumbnail, in bytes. */
+const THUMBNAIL_MAX_BYTES = 8 * 1024 * 1024
+
 /** Raw URL for one artifact. */
 function rawUrl(path: string): string {
   return `/artifacts/api/raw?path=${encodeURIComponent(path)}`
@@ -106,11 +109,11 @@ function TextPreview({ url, name, t }: { url: string; name: string; t: Artifacts
     setText(null)
     setFailed(false)
     void fetch(url, { signal: controller.signal })
-      .then(async response => {
+      .then(async (response) => {
         if (!response.ok) throw new Error(`HTTP ${String(response.status)}`)
         return await response.text()
       })
-      .then(body => { setText(body) })
+      .then((body) => { setText(body) })
       .catch(() => { if (!controller.signal.aborted) setFailed(true) })
     return () => { controller.abort() }
   }, [url])
@@ -157,11 +160,11 @@ export function ArtifactsPage(props: PropsRuntime<'main'> & ArtifactsInjected): 
   const load = useCallback(() => {
     setListing({ status: 'loading' })
     void fetch('/artifacts/api/list', { headers: { accept: 'application/json' } })
-      .then(async response => {
+      .then(async (response) => {
         if (!response.ok) throw new Error(`HTTP ${String(response.status)}`)
         return await response.json() as { items: ArtifactEntry[]; truncated?: boolean; roots?: string[] }
       })
-      .then(payload => {
+      .then((payload) => {
         setListing({ status: 'ready', items: payload.items ?? [], truncated: payload.truncated === true, roots: payload.roots ?? [] })
       })
       .catch((error: unknown) => {
@@ -209,7 +212,7 @@ export function ArtifactsPage(props: PropsRuntime<'main'> & ArtifactsInjected): 
 
       {listing.status !== 'error' && (
         <nav className={css.filters} aria-label={t('title')}>
-          {FILTERS.map(kind => {
+          {FILTERS.map((kind) => {
             const count = counts.get(kind) ?? 0
             if (kind !== 'all' && count === 0) return null
             return (
@@ -248,7 +251,7 @@ export function ArtifactsPage(props: PropsRuntime<'main'> & ArtifactsInjected): 
                     title={entry.path}
                   >
                     <span className={css.thumb}>
-                      {entry.kind === 'image'
+                      {entry.kind === 'image' && entry.size <= THUMBNAIL_MAX_BYTES
                         ? <img className={css.thumbImage} src={rawUrl(entry.path)} alt="" loading="lazy" />
                         : <FileTypeIcon path={entry.name} size={18} />}
                     </span>

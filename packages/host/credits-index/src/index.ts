@@ -278,7 +278,7 @@ function platformCall(
       method: options.method,
       headers,
       timeout: options.timeoutMs,
-    }, response => {
+    }, (response) => {
       const chunks: Buffer[] = []
       response.on('data', chunk => chunks.push(chunk as Buffer))
       response.on('end', () => {
@@ -471,7 +471,7 @@ function platformUpload(
         'idempotency-key': options.idempotencyKey,
       },
       timeout: options.timeoutMs,
-    }, response => {
+    }, (response) => {
       const chunks: Buffer[] = []
       response.on('data', chunk => chunks.push(chunk as Buffer))
       response.on('end', () => {
@@ -597,7 +597,7 @@ async function downloadToFile(
       method: 'GET',
       headers: { authorization: `Bearer ${token}`, accept: '*/*', host: url.host },
       timeout: timeoutMs,
-    }, response => {
+    }, (response) => {
       if (response.statusCode !== 200) {
         const chunks: Buffer[] = []
         response.on('data', chunk => chunks.push(chunk as Buffer))
@@ -622,14 +622,14 @@ async function downloadToFile(
         await mkdir(directory, { recursive: true })
         const sink = createWriteStream(target)
         let bytes = 0
-        response.on('data', chunk => { bytes += (chunk as Buffer).length })
+        response.on('data', (chunk) => { bytes += (chunk as Buffer).length })
         response.pipe(sink)
         sink.on('finish', () => { resolve({ ok: true, path: target, bytes, mediaType }) })
-        sink.on('error', error => { resolve({ ok: false, code: 'WRITE_FAILED', message: error.message }) })
+        sink.on('error', (error) => { resolve({ ok: false, code: 'WRITE_FAILED', message: error.message }) })
       })().catch(reject)
     })
     request.on('timeout', () => { request.destroy(new Error('artifact download timed out')) })
-    request.on('error', error => { resolve({ ok: false, code: 'TRANSPORT', message: error.message }) })
+    request.on('error', (error) => { resolve({ ok: false, code: 'TRANSPORT', message: error.message }) })
     request.end()
   })
 }
@@ -1604,7 +1604,7 @@ export function apply(ctx: Context, config: Config): void {
        * few seconds.
        */
       lastRenewalAttempt = Date.now()
-      void refreshSession(session.upstream.refresh).then(renewed => {
+      void refreshSession(session.upstream.refresh).then((renewed) => {
         if (renewed !== null) {
           renewalReported = false
           return
@@ -1702,33 +1702,33 @@ export function apply(ctx: Context, config: Config): void {
         json(response, 403, { ok: false, code: 'FORBIDDEN_ORIGIN' })
         return
       }
-          /**
+      /**
            * Anything that would leave the machine is refused before it is built:
            * the deployment runs against the local stack, and a production origin
            * must never be reachable from this plugin again.
            */
-          if (!isLoopbackOrigin(resolved.baseUrl)) {
-            json(response, 200, {
-              ok: false,
-              code: 'PLATFORM_DISABLED',
-              message: '远程平台未启用：本部署只连接本机服务（baseUrl 必须是 127.0.0.1/localhost）。',
-            })
-            return
-          }
-          /**
+      if (!isLoopbackOrigin(resolved.baseUrl)) {
+        json(response, 200, {
+          ok: false,
+          code: 'PLATFORM_DISABLED',
+          message: '远程平台未启用：本部署只连接本机服务（baseUrl 必须是 127.0.0.1/localhost）。',
+        })
+        return
+      }
+      /**
            * One address, and it is this machine's. The product ships with a
            * single relay baked in; a configuration that points somewhere else
            * is refused here rather than quietly sending a customer's prompts to
            * a host nobody chose.
            */
-          if (!isLoopbackOrigin(resolved.newApiBaseUrl)) {
-            json(response, 200, {
-              ok: false,
-              code: 'RELAY_DISABLED',
-              message: '本产品只允许连接内置的中转地址（本机 new-api），不能改成其他请求地址。',
-            })
-            return
-          }
+      if (!isLoopbackOrigin(resolved.newApiBaseUrl)) {
+        json(response, 200, {
+          ok: false,
+          code: 'RELAY_DISABLED',
+          message: '本产品只允许连接内置的中转地址（本机 new-api），不能改成其他请求地址。',
+        })
+        return
+      }
       const url = new URL(request.url ?? '/', 'http://127.0.0.1')
       const route = url.pathname.slice(ROUTE_PREFIX.length)
       const method = request.method ?? 'GET'
@@ -2091,7 +2091,7 @@ export function apply(ctx: Context, config: Config): void {
           })
           const payload = catalog.body !== null && typeof catalog.body === 'object' ? catalog.body as Record<string, unknown> : null
           const models = Array.isArray(payload?.models)
-            ? (payload.models as unknown[]).flatMap(entry => {
+            ? (payload.models as unknown[]).flatMap((entry) => {
               if (entry === null || typeof entry !== 'object') return []
               const item = entry as Record<string, unknown>
               const id = readString(item, 'id')
