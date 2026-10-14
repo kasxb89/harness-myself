@@ -420,23 +420,17 @@
   background: var(--dsw-alias-button-floating-hover);
 }
 
-/* macOS: the themed elevated fill reads as a foreign slab on the vibrancy
-   sidebar; a white wash sits in the glass like native macOS sidebar
-   controls. Dark keeps the same white ink at lower alpha. */
+/* macOS: the sidebar is a vibrancy surface whose colour comes from the palette
+   and, under a skin, from the wallpaper behind it. A fixed white wash reads as
+   a foreign slab on any sidebar that is not white, so the bar tints with the
+   sidebar's own ink: the wash composites with whatever the column shows, and
+   the control stays a raised surface in either palette. */
 :global([data-platform='darwin']) .newSession {
-  background: rgb(255 255 255 / 0.55);
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 10%, transparent);
 }
 
 :global([data-platform='darwin']) .newSession:hover {
-  background: rgb(255 255 255 / 0.3);
-}
-
-:global([data-platform='darwin']) :global([data-ds-dark-theme]) .newSession {
-  background: rgb(255 255 255 / 0.15);
-}
-
-:global([data-platform='darwin']) :global([data-ds-dark-theme]) .newSession:hover {
-  background: rgb(255 255 255 / 0.2);
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 16%, transparent);
 }
 
 .collapsed .newSession {
