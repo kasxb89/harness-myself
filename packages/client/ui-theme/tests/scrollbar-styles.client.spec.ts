@@ -148,6 +148,18 @@ const SURFACE_PROPERTIES = ['background', 'background-color']
 const SURFACE_TOKEN_PATTERN = /^--dsw-(?:alias-bg-|specific-)/
 /** Translucent elevated surfaces whose colors do not resolve to a palette rung. */
 const TRANSLUCENT_ELEVATED_SURFACES = new Set(['--dsw-specific-menu'])
+/**
+ * Surface-family tokens that paint a control's own state — a sidebar row, chip,
+ * or badge in hover/active — rather than a surface a scroll area is drawn
+ * against. They resolve to an elevated rung, but no scrollbar is rendered
+ * against a control fill, which is the same shape as the `.toBottom` pill and
+ * the CodeBlock banner the pattern above already keeps out of scope.
+ */
+const CONTROL_STATE_SURFACES = new Set([
+  '--dsw-specific-sidebar-nav-item-hover',
+  '--dsw-specific-sidebar-nav-item-active',
+  '--dsw-specific-sidebar-nav-item-active-accent',
+])
 
 /**
  * The palette's own dark elevation ladder, resolved from `design-platform.css`:
@@ -179,7 +191,7 @@ function elevatedRungs(): Set<string> {
   const rungs = new Set([resolve('--dsw-alias-bg-layer-2'), resolve('--dsw-alias-bg-layer-3')])
   const tokens = new Set<string>()
   for (const name of definitions.keys()) {
-    if (SURFACE_TOKEN_PATTERN.test(name) && rungs.has(resolve(name))) tokens.add(name)
+    if (SURFACE_TOKEN_PATTERN.test(name) && !CONTROL_STATE_SURFACES.has(name) && rungs.has(resolve(name))) tokens.add(name)
   }
   return tokens
 }
