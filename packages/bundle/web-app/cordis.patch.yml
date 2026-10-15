@@ -1,3 +1,12 @@
+# 市场插件（产品源码里一并固化，避免重装/重建后丢失）：
+#   xmanrui-dsh-im   微信机器人绑定（侧栏「手机」）
+#   univer           Office：表格/文档/幻灯片/画布（dsh-univer-office）
+- insert:
+    - id: xmanrui-dsh-im
+      name: '@xmanrui/dsh-im'
+- insert:
+    - id: univer
+      name: 'dsh-univer-office'
 # 官方痕迹（产品级）：模型源与账号面板都停用——产品自己的登录/钱包在「额度」里，
 # 模型一律来自本机 new-api。只做 id 级停用，不新增/改名任何 provider 路由。
 - id: llm-deepseek
