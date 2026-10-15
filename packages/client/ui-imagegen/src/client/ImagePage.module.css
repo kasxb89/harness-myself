@@ -59,13 +59,6 @@
   color: var(--dsw-alias-label-primary);
 }
 
-.modelRow {
-  display: flex;
-  align-items: flex-end;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
 .badges {
   display: flex;
   flex-wrap: wrap;
@@ -78,7 +71,7 @@
 .badge {
   padding: 2px 8px;
   border-radius: var(--dsw-radius-lg);
-  background: var(--dsw-alias-bg-layer-1, var(--dsw-alias-interactive-bg-hover));
+  background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-tertiary);
   font-size: 11px;
   white-space: nowrap;
@@ -113,7 +106,7 @@
   padding: 8px 10px;
   border: 0;
   border-radius: var(--dsw-radius-sm);
-  background: var(--dsw-alias-bg-layer-1, var(--dsw-alias-interactive-bg-hover));
+  background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-primary);
   font-size: 13px;
   font-family: inherit;
@@ -123,6 +116,158 @@
   min-height: 96px;
   resize: vertical;
   line-height: 1.6;
+}
+
+/* The composer's field: the card's own ground under the words — no nested
+   input chrome — with the character count in its bottom-right corner. */
+.promptField {
+  position: relative;
+  display: block;
+}
+
+.promptField .textarea {
+  min-height: 132px;
+  padding: 2px 2px 24px;
+  border-radius: 0;
+  background: transparent;
+  font-size: 15px;
+  line-height: 1.7;
+}
+
+.promptField .count {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+}
+
+/* The composer bar: the model chip, the mode caption and the capability
+   badges share one line, and the round send control closes its right edge. */
+.composerBar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 2px;
+  padding-top: 14px;
+  border-top: 0.5px solid var(--dsw-alias-border-l1);
+}
+
+.modelInline {
+  display: inline-flex;
+  min-width: 0;
+}
+
+.modelInline .select {
+  width: auto;
+  max-width: 260px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  corner-shape: round;
+  background: var(--dsw-alias-interactive-bg-hover);
+  font-size: 12px;
+}
+
+.send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  corner-shape: round;
+  background: var(--dsw-alias-button-primary-fill);
+  color: var(--dsw-alias-label-primary-foreground);
+  cursor: pointer;
+}
+
+.send:hover:not(:disabled) {
+  background: var(--dsw-alias-button-primary-hover);
+}
+
+.send:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.send:focus-visible {
+  outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: 2px;
+}
+
+/* "你想做什么?": starter cards under the composer, one tap from a working
+   brief. Same card language as the page's other surfaces, one size smaller. */
+.templates {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 960px;
+}
+
+.templatesHead {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.templatesTitle {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+}
+
+.templatesHint {
+  font-size: 11px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.templateGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.templateCard {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 14px 14px 12px;
+  border: 0.5px solid var(--dsw-alias-settings-card-stroke);
+  border-radius: var(--dsw-radius-lg);
+  background: var(--dsw-alias-settings-card-fill);
+  color: var(--dsw-alias-label-primary);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.templateCard:hover {
+  border-color: var(--dsw-alias-border-l3);
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.templateGlyph {
+  display: inline-flex;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.templateName {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.templateHint {
+  font-size: 11px;
+  color: var(--dsw-alias-label-tertiary);
 }
 
 /* Preset intents read as the reference's start cards: a label on its own
@@ -143,7 +288,7 @@
   border: 1px solid transparent;
   border-radius: 999px;
   corner-shape: round;
-  background: var(--dsw-alias-bg-layer-1, var(--dsw-alias-interactive-bg-hover));
+  background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-secondary);
   font-size: 11px;
   cursor: pointer;
@@ -168,7 +313,7 @@
   padding: 8px 6px;
   border: 1px solid transparent;
   border-radius: var(--dsw-radius-sm);
-  background: var(--dsw-alias-bg-layer-1, var(--dsw-alias-interactive-bg-hover));
+  background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-secondary);
   font-size: 11px;
   cursor: pointer;
@@ -210,7 +355,7 @@
   gap: 2px;
   padding: 2px;
   border-radius: var(--dsw-radius-sm);
-  background: var(--dsw-alias-bg-layer-1, var(--dsw-alias-interactive-bg-hover));
+  background: var(--dsw-alias-interactive-bg-hover);
 }
 
 .segment {
@@ -224,7 +369,7 @@
 }
 
 .segmentActive {
-  background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-interactive-bg-hover));
+  background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-primary);
   font-weight: 600;
 }
@@ -295,28 +440,6 @@
   cursor: pointer;
 }
 
-.actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.primary {
-  padding: 9px 22px;
-  border: 0;
-  border-radius: var(--dsw-radius-sm);
-  background: var(--dsw-alias-label-primary);
-  color: var(--dsw-alias-bg-base);
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.primary:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
 .mode {
   margin: 0;
   font-size: 12px;
@@ -336,7 +459,7 @@
   overflow: hidden;
   border-radius: 999px;
   corner-shape: round;
-  background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-interactive-bg-hover));
+  background: var(--dsw-alias-interactive-bg-hover);
 }
 
 .bar::after {
@@ -371,7 +494,7 @@
 .figureImg {
   width: 100%;
   border-radius: var(--dsw-radius-sm);
-  background: var(--dsw-alias-bg-layer-1, var(--dsw-alias-interactive-bg-hover));
+  background: var(--dsw-alias-interactive-bg-hover);
 }
 
 .figureMeta {

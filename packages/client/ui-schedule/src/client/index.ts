@@ -56,7 +56,6 @@ import { createSessionScheduleSource, type SessionScheduleSourceFactory } from '
 import { TaskTabBindings } from './task-tab-bindings.ts'
 import { TaskManagerPage, type TaskManagerInjected } from './TaskManagerPage.tsx'
 import type { TaskDetailInjected } from './TaskDetail.tsx'
-import { TaskManagerIcon } from './TaskManagerIcon.tsx'
 import { sessionLinkState } from './session-link.ts'
 import { en, NS, zh, type ScheduleCatalogKey } from './locales.ts'
 import { en as managerEn, zh as managerZh, type TaskManagerKey } from './task-manager-locales.ts'
@@ -175,13 +174,6 @@ export function apply(ctx: ClientContext): void {
       onNewTask: () => { ctx.uiWorkspace.startSession() },
     }),
   }, TaskManagerPage))
-  ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
-    name: 'sidebar.panellist',
-    id: PANEL_ID,
-    order: 60,
-    locale: MANAGER_NS,
-    label: () => t('panel'),
-  }, TaskManagerIcon))
   // The created task is a Turn-level element, not a Tool-group row: the Turn
   // Definition publishes the settled result and this tail list entry renders
   // the card beneath the closing prose.

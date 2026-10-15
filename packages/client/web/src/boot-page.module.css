@@ -32,7 +32,9 @@
   font-size: 16px;
   line-height: 24px;
   font-weight: 600;
-  letter-spacing: 0.08em;
+  /* The wordmark is the Chinese brand name now; its own spacing reads better
+     than the Latin tracking the English wordmark wanted. */
+  letter-spacing: 0.02em;
   color: var(--dsw-alias-label-primary, var(--dsh-boot-label-primary));
 }
 

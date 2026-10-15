@@ -58,13 +58,6 @@
   color: var(--dsw-alias-label-primary);
 }
 
-.modelRow {
-  display: flex;
-  align-items: flex-end;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
 .badges {
   display: flex;
   flex-wrap: wrap;
@@ -77,7 +70,7 @@
 .badge {
   padding: 2px 8px;
   border-radius: var(--dsw-radius-lg);
-  background: var(--dsw-alias-bg-layer-1, var(--dsw-alias-interactive-bg-hover));
+  background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-tertiary);
   font-size: 11px;
   white-space: nowrap;
@@ -112,7 +105,7 @@
   padding: 8px 10px;
   border: 0;
   border-radius: var(--dsw-radius-sm);
-  background: var(--dsw-alias-bg-layer-1, var(--dsw-alias-interactive-bg-hover));
+  background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-primary);
   font-size: 13px;
   font-family: inherit;
@@ -121,6 +114,86 @@
 .textarea {
   resize: vertical;
   line-height: 1.6;
+}
+
+/* The composer's field: the card's own ground under the words — no nested
+   input chrome — with the character count in its bottom-right corner. */
+.promptField {
+  position: relative;
+  display: block;
+}
+
+.promptField .textarea {
+  min-height: 132px;
+  padding: 2px 2px 24px;
+  border-radius: 0;
+  background: transparent;
+  font-size: 15px;
+  line-height: 1.7;
+}
+
+.promptField .count {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+}
+
+/* The composer bar: the model chip, the cost caption and the capability
+   badges share one line, and the round send control closes its right edge. */
+.composerBar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 2px;
+  padding-top: 14px;
+  border-top: 0.5px solid var(--dsw-alias-border-l1);
+}
+
+.modelInline {
+  display: inline-flex;
+  min-width: 0;
+}
+
+.modelInline .select {
+  width: auto;
+  max-width: 260px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  corner-shape: round;
+  background: var(--dsw-alias-interactive-bg-hover);
+  font-size: 12px;
+}
+
+.send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  corner-shape: round;
+  background: var(--dsw-alias-button-primary-fill);
+  color: var(--dsw-alias-label-primary-foreground);
+  cursor: pointer;
+}
+
+.send:hover:not(:disabled) {
+  background: var(--dsw-alias-button-primary-hover);
+}
+
+.send:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.send:focus-visible {
+  outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: 2px;
 }
 
 .presets {
@@ -139,7 +212,7 @@
   border: 0;
   border-radius: 999px;
   corner-shape: round;
-  background: var(--dsw-alias-bg-layer-1, var(--dsw-alias-interactive-bg-hover));
+  background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-secondary);
   font-size: 11px;
   cursor: pointer;
@@ -178,7 +251,7 @@
   gap: 2px;
   padding: 2px;
   border-radius: var(--dsw-radius-sm);
-  background: var(--dsw-alias-bg-layer-1, var(--dsw-alias-interactive-bg-hover));
+  background: var(--dsw-alias-interactive-bg-hover);
 }
 
 .segment {
@@ -192,7 +265,7 @@
 }
 
 .segmentActive {
-  background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-interactive-bg-hover));
+  background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-primary);
   font-weight: 600;
 }
@@ -212,7 +285,7 @@
   padding: 8px 6px;
   border: 1px solid transparent;
   border-radius: var(--dsw-radius-sm);
-  background: var(--dsw-alias-bg-layer-1, var(--dsw-alias-interactive-bg-hover));
+  background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-secondary);
   font-size: 11px;
   cursor: pointer;
@@ -290,7 +363,7 @@
   width: 28px;
   height: 28px;
   border-radius: 4px;
-  background: var(--dsw-alias-bg-layer-1, var(--dsw-alias-interactive-bg-hover));
+  background: var(--dsw-alias-interactive-bg-hover);
   font-size: 12px;
 }
 
@@ -300,29 +373,6 @@
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-}
-
-.actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.primary {
-  padding: 9px 22px;
-  border: 0;
-  border-radius: var(--dsw-radius-sm);
-  background: var(--dsw-alias-label-primary);
-  color: var(--dsw-alias-bg-base);
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.primary:disabled {
-  opacity: 0.5;
-  cursor: default;
 }
 
 .mode {
@@ -343,7 +393,7 @@
   overflow: hidden;
   border-radius: 999px;
   corner-shape: round;
-  background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-interactive-bg-hover));
+  background: var(--dsw-alias-interactive-bg-hover);
 }
 
 .bar::after {

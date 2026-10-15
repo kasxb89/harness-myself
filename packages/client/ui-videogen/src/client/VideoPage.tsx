@@ -114,14 +114,27 @@ const SLOT_TYPES: Record<Slot, { readonly accept: string; readonly types: readon
   audio: { accept: 'audio/mpeg,audio/wav,audio/mp4,audio/x-wav', types: ['audio/mpeg', 'audio/wav', 'audio/mp4', 'audio/x-wav'] },
 }
 
-const PRESETS: readonly { readonly label: string; readonly text: string }[] = [
-  { label: 'push', text: '，镜头缓慢推近，主体居中' },
-  { label: 'orbit', text: '，镜头环绕主体半圈，稳定运镜' },
-  { label: 'track', text: '，横向跟拍，运动模糊' },
-  { label: 'aerial', text: '，航拍俯视，广角' },
-  { label: 'sunset', text: '，黄昏暖光，柔和逆光' },
-  { label: 'neon', text: '，霓虹夜景，湿润地面反光' },
-]
+/**
+ * Camera intents: the row only carries the keys — the visible label and the
+ * suffix each one appends to the prompt live in the dictionaries
+ * (`preset_<key>` / `preset_text_<key>`).
+ */
+const PRESETS: readonly string[] = ['push', 'orbit', 'track', 'aerial', 'sunset', 'neon']
+
+/** The send control's glyph: an arrow while idle, a ring while working. */
+function SendGlyph({ running }: { running: boolean }): ReactNode {
+  return running
+    ? (
+      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+        <circle cx="8" cy="8" r="5.2" fill="none" stroke="currentColor" strokeWidth="1.6" strokeDasharray="22 11" strokeLinecap="round" />
+      </svg>
+    )
+    : (
+      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M8 12.6V3.8M4.2 7.4 8 3.6l3.8 3.8" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    )
+}
 
 async function get<T>(path: string): Promise<Envelope<T>> {
   const response = await fetch(path, { headers: { accept: 'application/json' } })
@@ -163,6 +176,8 @@ export function VideoPage(props: PropsRuntime<'main'> & VideogenInjected): React
   const [result, setResult] = useState<{ path: string } | null>(null)
   const [history, setHistory] = useState<readonly ArtifactItem[]>([])
   const startedAt = useRef<number>(0)
+  /** The composer's field: the row's own ground under the words. */
+  const promptField = useRef<HTMLTextAreaElement | null>(null)
 
   const model = useMemo(() => models.find(entry => entry.id === modelId) ?? models[0] ?? null, [modelId, models])
   const params = model?.params ?? null
@@ -265,7 +280,7 @@ export function VideoPage(props: PropsRuntime<'main'> & VideogenInjected): React
   const upload = useCallback(async (slot: Slot, file: File): Promise<Reference | null> => {
     const spec = SLOT_TYPES[slot]
     if (!spec.types.includes(file.type)) {
-      setFailure(t('uploadFailed', { message: file.type === '' ? 'unknown type' : file.type }))
+      setFailure(t('uploadFailed', { message: file.type === '' ? t('unknownType') : file.type }))
       return null
     }
     const key = `dsh-asset-${globalThis.crypto?.randomUUID?.() ?? String(Date.now())}`.replace(/[^\x21-\x7e]/g, '')
@@ -289,7 +304,7 @@ export function VideoPage(props: PropsRuntime<'main'> & VideogenInjected): React
     if (answer.sessionInvalid === true) { setSignedIn(false); setFailure(t('noAuth')); return null }
     const assetId = answer.asset?.assetId
     if (!answer.ok || assetId === null || assetId === undefined) {
-      setFailure(t('uploadFailed', { message: answer.message ?? answer.code ?? 'unknown' }))
+      setFailure(t('uploadFailed', { message: answer.message ?? answer.code ?? t('unknown') }))
       return null
     }
     return { assetId, name: file.name, url: URL.createObjectURL(file) }
@@ -360,7 +375,7 @@ export function VideoPage(props: PropsRuntime<'main'> & VideogenInjected): React
       setPhase('idle')
       if (answer.code === 'INSUFFICIENT_POINTS') setFailure(t('insufficient'))
       else if (answer.code === 'TIMEOUT') setMessage(t('timeout'))
-      else setFailure(t('failed', { message: answer.message ?? answer.code ?? 'unknown' }))
+      else setFailure(t('failed', { message: answer.message ?? answer.code ?? t('unknown') }))
       return
     }
     setPhase('saving')
@@ -415,47 +430,36 @@ export function VideoPage(props: PropsRuntime<'main'> & VideogenInjected): React
       {signedIn === true && (
         <>
           <section className={css.card}>
-            <div className={css.modelRow}>
-              <label className={css.field}>
-                <span className={css.label}>{t('model')}</span>
-                <select className={css.select} value={model?.id ?? ''} onChange={(event) => { setModelId(event.target.value) }}>
-                  {models.map(entry => <option key={entry.id} value={entry.id}>{entry.displayName}</option>)}
-                </select>
-              </label>
-              {params !== null && (
-                <ul className={css.badges}>
-                  <li className={css.badge}>{t('badgeDuration', { range: params.durations.length === 1 ? String(params.durations[0]) : `${String(params.minDuration)}–${String(params.maxDuration)}` })}</li>
-                  {resolutions.length > 0 && <li className={css.badge}>{t('badgeResolution', { list: resolutions.join(' / ') })}</li>}
-                  {params.frameSlots > 0 && <li className={css.badge}>{t('badgeFrames', { n: String(params.frameSlots) })}</li>}
-                  {params.maxReferenceImages > 0 && <li className={css.badge}>{t('badgeRefImages', { n: String(params.maxReferenceImages) })}</li>}
-                  {params.maxReferenceVideos > 0 && <li className={css.badge}>{t('badgeRefVideos', { n: String(params.maxReferenceVideos) })}</li>}
-                  {params.maxReferenceAudios > 0 && <li className={css.badge}>{t('badgeRefAudios', { n: String(params.maxReferenceAudios) })}</li>}
-                  {params.audio && <li className={css.badge}>{t('badgeAudio')}</li>}
-                </ul>
-              )}
-            </div>
             {modelsError !== null && <p className={css.error}>{t('modelsFailed', { message: modelsError })}</p>}
             {models.length === 0 && modelsError === null && <p className={css.hint}>{t('noModel')}</p>}
 
-            <label className={css.field}>
-              <span className={css.label}>{t('prompt')}<span className={css.count}>{prompt.length}</span></span>
+            {/* The composer: the words own the top of the card, the controls
+                share one bar at its foot, and the send control is the round
+                primary action on that bar's right edge. */}
+            <label className={css.promptField}>
               <textarea
+                ref={promptField}
                 className={css.textarea}
-                rows={4}
+                rows={5}
                 value={prompt}
+                aria-label={t('prompt')}
                 placeholder={t('promptPlaceholder')}
                 onChange={(event) => { setPrompt(event.target.value) }}
               />
+              <span className={css.count} aria-hidden="true">{prompt.length}</span>
             </label>
             <div className={css.presets}>
               {PRESETS.map(preset => (
                 <button
-                  key={preset.label}
+                  key={preset}
                   type="button"
                   className={css.chip}
-                  onClick={() => { setPrompt(current => current.includes(preset.text) ? current : `${current}${preset.text}`) }}
+                  onClick={() => {
+                    const suffix = t(`preset_text_${preset}`)
+                    setPrompt(current => current.includes(suffix) ? current : `${current}${suffix}`)
+                  }}
                 >
-                  {t(`preset_${preset.label}`)}
+                  {t(`preset_${preset}`)}
                 </button>
               ))}
             </div>
@@ -676,16 +680,39 @@ export function VideoPage(props: PropsRuntime<'main'> & VideogenInjected): React
 
             {mixed && <p className={css.error}>{t('mixForbidden')}</p>}
 
-            <div className={css.actions}>
+            <div className={css.composerBar}>
+              <label className={css.modelInline}>
+                <select
+                  className={css.select}
+                  value={model?.id ?? ''}
+                  aria-label={t('model')}
+                  onChange={(event) => { setModelId(event.target.value) }}
+                >
+                  {models.map(entry => <option key={entry.id} value={entry.id}>{entry.displayName}</option>)}
+                </select>
+              </label>
+              <span className={css.mode}>{t('costHint')}</span>
+              {params !== null && (
+                <ul className={css.badges}>
+                  <li className={css.badge}>{t('badgeDuration', { range: params.durations.length === 1 ? String(params.durations[0]) : `${String(params.minDuration)}–${String(params.maxDuration)}` })}</li>
+                  {resolutions.length > 0 && <li className={css.badge}>{t('badgeResolution', { list: resolutions.join(' / ') })}</li>}
+                  {params.frameSlots > 0 && <li className={css.badge}>{t('badgeFrames', { n: String(params.frameSlots) })}</li>}
+                  {params.maxReferenceImages > 0 && <li className={css.badge}>{t('badgeRefImages', { n: String(params.maxReferenceImages) })}</li>}
+                  {params.maxReferenceVideos > 0 && <li className={css.badge}>{t('badgeRefVideos', { n: String(params.maxReferenceVideos) })}</li>}
+                  {params.maxReferenceAudios > 0 && <li className={css.badge}>{t('badgeRefAudios', { n: String(params.maxReferenceAudios) })}</li>}
+                  {params.audio && <li className={css.badge}>{t('badgeAudio')}</li>}
+                </ul>
+              )}
               <button
                 type="button"
-                className={css.primary}
+                className={css.send}
+                aria-label={phase === 'running' ? t('runningShort') : t('submit')}
+                title={phase === 'running' ? t('runningShort') : t('submit')}
                 onClick={() => { void generate() }}
                 disabled={phase === 'running' || phase === 'saving' || model === null || mixed}
               >
-                {phase === 'running' ? t('runningShort') : t('submit')}
+                <SendGlyph running={phase === 'running'} />
               </button>
-              <span className={css.mode}>{t('costHint')}</span>
             </div>
             {model !== null && (
               <p className={css.hint}>

@@ -98,10 +98,10 @@ describe('chrome content', () => {
     expect(screen.getByText('Settings')).toBeTruthy()
   })
 
-  it('TriggerContent drops the label in the rail state', () => {
+  it('TriggerContent labels the rail state too (the icon column names its rows)', () => {
     const { container } = render(<TriggerContent {...kit} wide={false} t={t} />)
     expect(container.querySelector('svg')).toBeTruthy()
-    expect(screen.queryByText('Settings')).toBeNull()
+    expect(screen.getByText('Settings')).toBeTruthy()
   })
 
   it('HeaderContent and CloseLabel render their translated text', () => {

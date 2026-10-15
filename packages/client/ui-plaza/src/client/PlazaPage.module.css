@@ -1,0 +1,17 @@
+/* The Plaza column: the market's own panel fills the main column; the frame
+   only gives it the space and the missing-plugin hint. */
+.page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+}
+
+.missing {
+  margin: 28px 32px;
+  max-width: 520px;
+  font-size: 13px;
+  line-height: 22px;
+  color: var(--dsw-alias-label-tertiary);
+}

@@ -10,7 +10,6 @@ import type { WorkspaceSnapshot } from '@deepseek-ai/dsh-api-workspace-controlle
 import type { ScheduleCatalogEntry, ScheduleDeleteResult, ScheduleId, ScheduleUpdateResult } from '@deepseek-ai/dsh-schedule/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { TaskManagerPage, type TaskManagerPageProps } from '../src/client/TaskManagerPage.tsx'
-import { TaskManagerIcon } from '../src/client/TaskManagerIcon.tsx'
 import { createCatalogSource, type CatalogSnapshot } from '../src/client/catalog-source.ts'
 import {
   FALLBACK_ZONES, formatScheduleAbsolute, formatScheduleFrequency, formatScheduleNextRun,
@@ -1579,43 +1578,6 @@ describe('Task manager details', () => {
     expect(nextRunTime(detail)?.textContent).toBe(device)
     // The rule keeps stating its own zone where the zone belongs.
     expect(zoneButton().textContent).toContain(displayedZone('America/New_York'))
-  })
-
-  /**
-   * Render the sidebar glyph with the sidebar's owner share and nothing else:
-   * every runtime hook throws, because the glyph must read no application state.
-   * @param size - the edge the sidebar requests for this row.
-   * @returns the render result of the clock occupant.
-   */
-  function renderSidebarGlyph(size: number) {
-    const unread = (): never => { throw new Error('The sidebar icon must not read application state') }
-    return render(<TaskManagerIcon
-      size={size}
-      active={false}
-      usePanelInfo={unread}
-      useSessions={unread}
-      useWorkspaces={unread}
-      useResource={unread}
-      useSessionStatus={unread}
-      useSessionRetainInfo={unread}
-    />)
-  }
-
-  it('renders the requested sidebar glyph edge on the row icon itself', () => {
-    // The sidebar centres the row's direct icon child; an inline wrapper makes
-    // the clock a line-box baseline and lifts it above the label beside it.
-    const glyph = renderSidebarGlyph(18).container.firstElementChild
-    expect(glyph?.tagName.toLowerCase()).toBe('svg')
-    expect(glyph?.getAttribute('width')).toBe('18')
-    expect(glyph?.getAttribute('height')).toBe('18')
-  })
-
-  it('renders only a decorative sidebar glyph', () => {
-    const view = renderSidebarGlyph(16)
-    expect(view.container.querySelector('svg')).not.toBeNull()
-    expect(view.container.querySelector('svg')?.getAttribute('aria-hidden')).toBe('true')
-    expect(screen.queryByRole('button')).toBeNull()
-    expect(view.container.textContent).toBe('')
   })
 })
 

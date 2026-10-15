@@ -72,6 +72,14 @@ export const zh = {
   'preset_aerial': '航拍',
   'preset_sunset': '黄昏光',
   'preset_neon': '霓虹夜',
+  'preset_text_push': '，镜头缓慢推近，主体居中',
+  'preset_text_orbit': '，镜头环绕主体半圈，稳定运镜',
+  'preset_text_track': '，横向跟拍，运动模糊',
+  'preset_text_aerial': '，航拍俯视，广角',
+  'preset_text_sunset': '，黄昏暖光，柔和逆光',
+  'preset_text_neon': '，霓虹夜景，湿润地面反光',
+  'unknown': '未知错误',
+  'unknownType': '未知格式',
 } as const
 
 export const en: Record<keyof typeof zh, string> = {
@@ -143,6 +151,14 @@ export const en: Record<keyof typeof zh, string> = {
   'preset_aerial': 'Aerial',
   'preset_sunset': 'Sunset',
   'preset_neon': 'Neon night',
+  'preset_text_push': ', slow push-in, centered subject',
+  'preset_text_orbit': ', orbit half a turn around the subject, steady movement',
+  'preset_text_track': ', lateral tracking shot, motion blur',
+  'preset_text_aerial': ', aerial top-down, wide angle',
+  'preset_text_sunset': ', warm sunset light, soft backlight',
+  'preset_text_neon': ', neon night, wet reflective ground',
+  'unknown': 'unknown error',
+  'unknownType': 'unknown format',
 }
 
 export type VideogenKey = keyof typeof zh

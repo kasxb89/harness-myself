@@ -364,10 +364,6 @@
     - id: ui-chat
       name: '@deepseek-ai/dsh-client-ui-chat'
 
-    # Official occupants for the generic sidebar and conversation brand slots.
-    - id: ui-brand-official
-      name: '@deepseek-ai/dsh-client-ui-brand-official'
-
     - id: ui-attachment
       name: '@deepseek-ai/dsh-client-ui-attachment'
 
@@ -431,6 +427,11 @@
     # Sidebar Office column: the panel-list place for the office workspace's own view.
     - id: ui-office
       name: '@deepseek-ai/dsh-client-ui-office'
+
+    # Sidebar Plaza column: the panel-list place for the plugin market's own
+    # panel (the market hands it out through its `ctx.market` client face).
+    - id: ui-plaza
+      name: '@deepseek-ai/dsh-client-ui-plaza'
 
     # Turn tail: the changed-files card and delivery cards under each closing
     # assistant message. Remove this entry to turn the surface off; the tail

@@ -100,14 +100,59 @@ interface Reference {
   readonly url: string
 }
 
-const PRESETS: readonly { readonly label: string; readonly text: string }[] = [
-  { label: 'photo', text: '，35mm 胶片质感，自然光，浅景深，细节丰富' },
-  { label: 'illustration', text: '，扁平插画风格，干净的色块，柔和阴影' },
-  { label: '3d', text: '，3D 渲染，柔和的全局光照，光滑材质' },
-  { label: 'cinematic', text: '，电影感构图，戏剧性打光，低饱和' },
-  { label: 'minimal', text: '，极简构图，留白，单一主体' },
-  { label: 'poster', text: '，海报版式，主体居中，上方留出标题空间' },
+/**
+ * Style intents: the row only carries the keys — the visible label and the
+ * suffix each one appends to the prompt live in the dictionaries
+ * (`preset_<key>` / `preset_text_<key>`).
+ */
+const PRESETS: readonly string[] = ['photo', 'illustration', '3d', 'cinematic', 'minimal', 'poster']
+
+/**
+ * "你想做什么?" starters: one tap fills the composer with a working brief, so
+ * a first image does not require knowing how to phrase one. The copy lives in
+ * the dictionaries (name / hint / prompt per key) — these rows carry only the
+ * key and the glyph.
+ */
+const TEMPLATES: readonly { readonly key: string }[] = [
+  { key: 'product' },
+  { key: 'poster' },
+  { key: 'portrait' },
+  { key: 'scene' },
+  { key: 'illustration' },
+  { key: 'render3d' },
 ]
+
+/** The send control's glyph: an arrow while idle, a ring while working. */
+function SendGlyph({ running }: { running: boolean }): ReactNode {
+  return running
+    ? (
+      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+        <circle cx="8" cy="8" r="5.2" fill="none" stroke="currentColor" strokeWidth="1.6" strokeDasharray="22 11" strokeLinecap="round" />
+      </svg>
+    )
+    : (
+      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M8 12.6V3.8M4.2 7.4 8 3.6l3.8 3.8" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    )
+}
+
+/** One template card's glyph, drawn from the same 20px frame for all six. */
+function TemplateGlyph({ name }: { name: string }): ReactNode {
+  const paths: Record<string, ReactNode> = {
+    product: <path d="M4.6 7.4 10 4.6l5.4 2.8v5.2L10 15.4l-5.4-2.8V7.4Zm0 0L10 10.2l5.4-2.8M10 10.2v5.2" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />,
+    poster: <><rect x="4.2" y="3.6" width="11.6" height="12.8" rx="1.6" fill="none" stroke="currentColor" strokeWidth="1.3" /><path d="M7 7.2h6M7 10h6M7 12.8h3.6" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" /></>,
+    portrait: <><circle cx="10" cy="8.2" r="2.6" fill="none" stroke="currentColor" strokeWidth="1.3" /><path d="M5.2 15.4c.7-2.4 2.5-3.6 4.8-3.6s4.1 1.2 4.8 3.6" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" /></>,
+    scene: <><path d="M4.2 13.6 8 9.4l2.6 2.8 2-2 3.2 3.4" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" /><circle cx="7.4" cy="6.6" r="1.4" fill="none" stroke="currentColor" strokeWidth="1.3" /><rect x="3.6" y="4.2" width="12.8" height="11.6" rx="1.6" fill="none" stroke="currentColor" strokeWidth="1.3" /></>,
+    illustration: <path d="M10 3.4c3.4 0 6.4 2.4 6.4 5.6 0 2-1.6 3.2-3.4 3.2h-1.2c-.8 0-1.4.6-1.4 1.4 0 .4.2.8.4 1.2.2.3.4.7.4 1.1 0 .8-.7 1.5-1.6 1.5-3.4 0-6.6-2.9-6.6-6.6s3.6-7.4 7-7.4Zm-2.8 6.2a1.3 1.3 0 1 0 0-2.6 1.3 1.3 0 0 0 0 2.6Z" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />,
+    render3d: <path d="M10 3.6 16 7v6l-6 3.4L4 13V7l6-3.4Zm0 0V10m6-3L10 10 4 7" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />,
+  }
+  return (
+    <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true">
+      {paths[name] ?? paths.product}
+    </svg>
+  )
+}
 
 /** The widest common ratio for one pixel size, or null for `auto`. */
 function ratioOf(size: string): string | null {
@@ -165,6 +210,8 @@ export function ImagePage(props: PropsRuntime<'main'> & ImagegenInjected): React
   const [uploading, setUploading] = useState(false)
   const [history, setHistory] = useState<readonly ArtifactItem[]>([])
   const startedAt = useRef<number>(0)
+  /** The composer's field: a template's brief lands here, under the cursor. */
+  const promptField = useRef<HTMLTextAreaElement | null>(null)
 
   const model = useMemo(() => models.find(entry => entry.id === modelId) ?? models[0] ?? null, [modelId, models])
   const params = model?.params ?? null
@@ -264,7 +311,7 @@ export function ImagePage(props: PropsRuntime<'main'> & ImagegenInjected): React
   /** Upload one reference image as raw bytes; the host keeps it on this machine. */
   const uploadReference = useCallback(async (file: File): Promise<void> => {
     if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
-      setFailure(t('uploadFailed', { message: 'unsupported type' }))
+      setFailure(t('uploadFailed', { message: t('unsupportedType') }))
       return
     }
     const key = `dsh-asset-${globalThis.crypto?.randomUUID?.() ?? String(Date.now())}`.replace(/[^\x21-\x7e]/g, '')
@@ -288,7 +335,7 @@ export function ImagePage(props: PropsRuntime<'main'> & ImagegenInjected): React
     if (answer.sessionInvalid === true) { setSignedIn(false); setFailure(t('noAuth')); return }
     const assetId = answer.asset?.assetId
     if (!answer.ok || assetId === null || assetId === undefined) {
-      setFailure(t('uploadFailed', { message: answer.message ?? answer.code ?? 'unknown' }))
+      setFailure(t('uploadFailed', { message: answer.message ?? answer.code ?? t('unknown') }))
       return
     }
     setReferences(current => [...current, { assetId, name: file.name, url: URL.createObjectURL(file) }])
@@ -333,7 +380,7 @@ export function ImagePage(props: PropsRuntime<'main'> & ImagegenInjected): React
     if (!answer.ok || answer.payload === undefined) {
       setPhase('idle')
       if (answer.code === 'INSUFFICIENT_POINTS') setFailure(t('insufficient'))
-      else setFailure(t('failed', { message: answer.message ?? answer.code ?? 'unknown' }))
+      else setFailure(t('failed', { message: answer.message ?? answer.code ?? t('unknown') }))
       return
     }
     setPhase('saving')
@@ -347,6 +394,12 @@ export function ImagePage(props: PropsRuntime<'main'> & ImagegenInjected): React
   ])
 
   const rawUrl = (path: string): string => `/artifacts/api/raw?path=${encodeURIComponent(path)}`
+
+  /** Fill the composer from a starter, then leave the cursor in the words. */
+  const applyTemplate = useCallback((key: string): void => {
+    setPrompt(t(`tpl_${key}_prompt`))
+    promptField.current?.focus()
+  }, [t])
 
   return (
     <div className={css.page}>
@@ -365,45 +418,35 @@ export function ImagePage(props: PropsRuntime<'main'> & ImagegenInjected): React
       {signedIn === true && (
         <>
           <section className={css.card}>
-            <div className={css.modelRow}>
-              <label className={css.field}>
-                <span className={css.label}>{t('model')}</span>
-                <select className={css.select} value={model?.id ?? ''} onChange={(event) => { setModelId(event.target.value) }}>
-                  {models.map(entry => <option key={entry.id} value={entry.id}>{entry.displayName}</option>)}
-                </select>
-              </label>
-              {params !== null && (
-                <ul className={css.badges}>
-                  {sizes.length > 0 && <li className={css.badge}>{t('badgeSizes', { n: String(sizes.length) })}</li>}
-                  {maxCount > 1 && <li className={css.badge}>{t('badgeCount', { n: String(maxCount) })}</li>}
-                  <li className={css.badge}>
-                    {maxEdits > 0 ? t('badgeEdits', { n: String(maxEdits) }) : t('badgeNoEdits')}
-                  </li>
-                  {qualities.length > 0 && <li className={css.badge}>{t('badgeQuality')}</li>}
-                </ul>
-              )}
-            </div>
             {modelsError !== null && <p className={css.error}>{t('modelsFailed', { message: modelsError })}</p>}
 
-            <label className={css.field}>
-              <span className={css.label}>{t('prompt')}<span className={css.count}>{prompt.length}</span></span>
+            {/* The composer: the words own the top of the card, the controls
+                share one bar at its foot, and the send control is the round
+                primary action on that bar's right edge. */}
+            <label className={css.promptField}>
               <textarea
+                ref={promptField}
                 className={css.textarea}
-                rows={4}
+                rows={5}
                 value={prompt}
+                aria-label={t('prompt')}
                 placeholder={t('promptPlaceholder')}
                 onChange={(event) => { setPrompt(event.target.value) }}
               />
+              <span className={css.count} aria-hidden="true">{prompt.length}</span>
             </label>
             <div className={css.presets}>
               {PRESETS.map(preset => (
                 <button
-                  key={preset.label}
+                  key={preset}
                   type="button"
                   className={css.chip}
-                  onClick={() => { setPrompt(current => current.includes(preset.text) ? current : `${current}${preset.text}`) }}
+                  onClick={() => {
+                    const suffix = t(`preset_text_${preset}`)
+                    setPrompt(current => current.includes(suffix) ? current : `${current}${suffix}`)
+                  }}
                 >
-                  {t(`preset_${preset.label}`)}
+                  {t(`preset_${preset}`)}
                 </button>
               ))}
             </div>
@@ -610,18 +653,40 @@ export function ImagePage(props: PropsRuntime<'main'> & ImagegenInjected): React
               </div>
             )}
 
-            <div className={css.actions}>
-              <button
-                type="button"
-                className={css.primary}
-                onClick={() => { void generate() }}
-                disabled={phase === 'running' || phase === 'saving' || model === null}
-              >
-                {phase === 'running' ? t('runningShort') : t('submit')}
-              </button>
+            <div className={css.composerBar}>
+              <label className={css.modelInline}>
+                <select
+                  className={css.select}
+                  value={model?.id ?? ''}
+                  aria-label={t('model')}
+                  onChange={(event) => { setModelId(event.target.value) }}
+                >
+                  {models.map(entry => <option key={entry.id} value={entry.id}>{entry.displayName}</option>)}
+                </select>
+              </label>
               <span className={css.mode}>
                 {references.length === 0 ? t('modeGenerate') : t('modeEdit', { count: String(references.length) })}
               </span>
+              {params !== null && (
+                <ul className={css.badges}>
+                  {sizes.length > 0 && <li className={css.badge}>{t('badgeSizes', { n: String(sizes.length) })}</li>}
+                  {maxCount > 1 && <li className={css.badge}>{t('badgeCount', { n: String(maxCount) })}</li>}
+                  <li className={css.badge}>
+                    {maxEdits > 0 ? t('badgeEdits', { n: String(maxEdits) }) : t('badgeNoEdits')}
+                  </li>
+                  {qualities.length > 0 && <li className={css.badge}>{t('badgeQuality')}</li>}
+                </ul>
+              )}
+              <button
+                type="button"
+                className={css.send}
+                aria-label={phase === 'running' ? t('runningShort') : t('submit')}
+                title={phase === 'running' ? t('runningShort') : t('submit')}
+                onClick={() => { void generate() }}
+                disabled={phase === 'running' || phase === 'saving' || model === null}
+              >
+                <SendGlyph running={phase === 'running'} />
+              </button>
             </div>
             {model !== null && (
               <p className={css.hint}>
@@ -629,6 +694,28 @@ export function ImagePage(props: PropsRuntime<'main'> & ImagegenInjected): React
                 {!model.verified && ` · ${t('unverified')}`}
               </p>
             )}
+          </section>
+
+          <section className={css.templates}>
+            <header className={css.templatesHead}>
+              <h2 className={css.templatesTitle}>{t('templatesTitle')}</h2>
+              <span className={css.templatesHint}>{t('templatesHint')}</span>
+            </header>
+            <ul className={css.templateGrid}>
+              {TEMPLATES.map(template => (
+                <li key={template.key}>
+                  <button
+                    type="button"
+                    className={css.templateCard}
+                    onClick={() => { applyTemplate(template.key) }}
+                  >
+                    <span className={css.templateGlyph}><TemplateGlyph name={template.key} /></span>
+                    <span className={css.templateName}>{t(`tpl_${template.key}`)}</span>
+                    <span className={css.templateHint}>{t(`tpl_${template.key}_hint`)}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
           </section>
 
           {phase === 'running' && (

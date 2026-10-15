@@ -186,30 +186,22 @@
   overflow: hidden;
 }
 
-.runningWhaleAnimated {
-  display: none;
-  position: absolute;
-  inset: 0;
+/* The arc spins on the compositor; the still frame is the same artwork, so a
+   reduced-motion session loses the rotation and nothing else. */
+.runningArc {
+  display: block;
+  will-change: transform;
 }
 
-.runningWhaleStill {
-  display: initial;
+@media (prefers-reduced-motion: no-preference) {
+  .runningArc {
+    animation: chat-running-spin 900ms linear infinite;
+  }
 }
 
-@supports (mask-mode: alpha) and (mask-image: url('')) {
-  @media (prefers-reduced-motion: no-preference) and (forced-colors: none) {
-    .runningWhaleAnimated {
-      display: block;
-      background: currentColor;
-      mask: url('./running-whale@2x.png') center / 100% 100% no-repeat;
-      mask-mode: alpha;
-      /* Keep animated-mask repaints on an icon-sized composited layer. */
-      will-change: transform;
-    }
-
-    .runningWhaleStill {
-      display: none;
-    }
+@keyframes chat-running-spin {
+  to {
+    transform: rotate(360deg);
   }
 }
 

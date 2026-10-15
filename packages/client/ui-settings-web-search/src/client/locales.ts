@@ -13,11 +13,11 @@ export type WebSearchSettingsLocaleKey =
 /** English copy. */
 export const en: Record<WebSearchSettingsLocaleKey, string> = {
   title: 'Web search',
-  description: 'Set up the DeepSeek search provider.',
+  description: 'Set up the search provider.',
   apiKey: 'API key',
   apiKeyHint: 'Stored outside the settings file. Leave blank to keep the current key.',
   apiKeySet: 'A key is configured.',
-  apiKeyUnset: 'No key is configured; only conversations using a DeepSeek Account model can search, through the default endpoint.',
+  apiKeyUnset: 'No key is configured; only conversations using an official account model can search, through the default endpoint.',
   baseUrl: 'Endpoint',
   baseUrlHint: 'Leave blank to use the provider default.',
   maxUses: 'Max searches per request',
@@ -35,11 +35,11 @@ export const en: Record<WebSearchSettingsLocaleKey, string> = {
 /** Simplified Chinese copy. */
 export const zh: Record<WebSearchSettingsLocaleKey, string> = {
   title: '网页搜索',
-  description: '设置 DeepSeek 的搜索提供方。',
+  description: '设置联网搜索的提供方。',
   apiKey: 'API Key',
   apiKeyHint: '不写入设置文件。留空表示保持当前密钥。',
   apiKeySet: '已配置密钥。',
-  apiKeyUnset: '未配置密钥；仅使用 DeepSeek 账号模型的对话可以通过默认接口地址搜索。',
+  apiKeyUnset: '未配置密钥；仅使用官方账号模型的对话可以通过默认接口地址搜索。',
   baseUrl: '接口地址',
   baseUrlHint: '留空则使用提供方默认地址。',
   maxUses: '单次请求最多搜索次数',

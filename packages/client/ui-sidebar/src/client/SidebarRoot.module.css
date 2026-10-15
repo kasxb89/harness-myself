@@ -51,45 +51,15 @@
     'railfoot';
 }
 
-
-/* The rail's own rows are 36px glyph boxes in both states: the open sidebar
-   draws them in the rail column, and the label stays in the tree for
-   assistive technology while the tooltip names the row on hover. */
-.panelRow {
-  width: 36px;
-  height: 36px;
-  justify-content: center;
-  margin: 0;
-  padding: 0;
-  width: 36px;
-  height: 36px;
-  justify-content: center;
-  margin: 0;
-  padding: 0;
-}
-
-.panelTitle,
-.panelTitleHidden {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  margin: -1px;
-  padding: 0;
-  border: 0;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
-}
-
 /* macOS desktop: the AppFrame column owns the translucent sidebar tint; an
    opaque fill here would sit on top of it and block the window vibrancy. */
 :global([data-platform='darwin']) .root {
   background: transparent;
 }
 
-/* Rail geometry (figma rail spec): 36x36 control boxes centered in the 56px
-   rail (10px side padding), 12px vertical rhythm, 18px from the rail top to
-   the whale's box (24px to the 24-wide whale glyph itself). */
+/* Rail geometry: the destination rows span the rail's 64px column with their
+   glyphs and labels centered; the two rail controls (the collapse toggle and
+   the New Session capsule) keep their 36x36 boxes, centered in that column. */
 
 /* The brand stays in the sidebar; fixed caption controls survive zero-width collapse. */
 :global([data-windows-titlebar]) .root .logoRow {
@@ -403,6 +373,7 @@
 .collapsed .iconButton {
   width: 36px;
   height: 36px;
+  align-self: center;
   /* Rail hovers share the panel rows' and New Session's 12px rounding. */
   border-radius: var(--dsw-radius-md);
 }
@@ -495,6 +466,7 @@
 
 .collapsed .newSession {
   align-self: flex-start;
+  justify-self: center;
   width: 36px;
   height: 36px;
   padding: 0;
