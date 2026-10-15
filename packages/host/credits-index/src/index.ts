@@ -674,8 +674,35 @@ export function apply(ctx: Context, config: Config): void {
    * a sign-in.
    */
   const releaseAccountCredential = async (): Promise<void> => {
-    // The shared credential document is not this plugin's to edit; releasing
-    // the account means only that this product stops holding its key.
+    const credentials = ctx.get('credentials') as {
+      deleteRecord?: (ref: string) => Promise<void>
+      delete?: (ref: string) => Promise<void>
+    } | undefined
+    try {
+      if (credentials?.deleteRecord !== undefined) await credentials.deleteRecord(resolved.relayTokenEnv)
+      else if (credentials?.delete !== undefined) await credentials.delete(resolved.relayTokenEnv)
+    } catch {
+      // Nothing stored, or the store refuses removals; a sign-out is still a
+      // sign-out locally, and the model route fails loud once the key is gone.
+    }
+  }
+
+  /**
+   * Hold the signed-in account's relay credential under the ref the model route
+   * reads, so a chat request is billed to the person who signed in rather than to
+   * whoever owns the deployment key.
+   *
+   * The route resolves that ref on every request, so a sign-in (or a sign-out)
+   * takes effect without a restart.
+   */
+  const holdAccountCredential = async (key: string): Promise<void> => {
+    const credentials = ctx.get('credentials') as { set?: (ref: string, value: string) => Promise<void> } | undefined
+    if (credentials?.set === undefined) return
+    try {
+      await credentials.set(resolved.relayTokenEnv, key)
+    } catch (error: unknown) {
+      ctx.logger.warn(`credits-index: the account's relay credential could not be stored: ${String(error)}`)
+    }
   }
 
   /**
@@ -1956,6 +1983,9 @@ export function apply(ctx: Context, config: Config): void {
               },
               ...relayKey === undefined ? {} : { relay: { key: relayKey, ...relayId === undefined ? {} : { id: relayId } } },
             })
+            // The chat path authenticates with this key on every request, so the
+            // account that just signed in is the account that gets billed.
+            if (relayKey !== undefined) await holdAccountCredential(relayKey)
             /**
              * Deliberately not written into the shared credential document: that
              * file also carries the desktop shell's own browser session, and a

@@ -61,7 +61,7 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected): 
 
   const creditsPerYuan = session?.creditsPerYuan ?? 1000
   const signedIn = session?.signedIn === true
-  const accountPhone = session.account?.phone.replace(/^(\+86)(1\d{2})(\d{4})(\d{4})$/, '$1 $2 $3 $4') ?? '—'
+  const accountPhone = session?.account?.phone.replace(/^(\+86)(1\d{2})(\d{4})(\d{4})$/, '$1 $2 $3 $4') ?? '—'
 
   useEffect(() => {
     if (resendIn <= 0) return undefined
