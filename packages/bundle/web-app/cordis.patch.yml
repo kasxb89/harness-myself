@@ -1,3 +1,13 @@
+# 插件市场（已装的成熟市场插件，固化进源码）：市场 / 皮肤市场 / 找插件。
+- insert:
+    - id: dsh-market
+      name: 'dshmarket'
+- insert:
+    - id: dsh-skin-market
+      name: dsh-skin-market
+- insert:
+    - id: find-dsh-plugin
+      name: 'dsh-find-plugin'
 # 市场插件（产品源码里一并固化，避免重装/重建后丢失）：
 #   xmanrui-dsh-im   微信机器人绑定（侧栏「手机」）
 #   univer           Office：表格/文档/幻灯片/画布（dsh-univer-office）
