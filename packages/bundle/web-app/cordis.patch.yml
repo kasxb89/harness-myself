@@ -662,3 +662,7 @@
       name: '@deepseek-ai/dsh-agent-preset-registry'
       config:
         default: standard
+# 视频工作室（deepseek-ivideo，市场安装；装在 profile 里，这里固化 loader 行）
+- insert:
+    - id: ipollowork-video-studio
+      name: 'deepseek-ivideo'
