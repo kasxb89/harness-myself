@@ -9,8 +9,9 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
-import { CreditsPage, type CreditsInjected } from './CreditsPage.tsx'
+import { CreditsPage, type CreditsPageInjected } from './CreditsPage.tsx'
 import { FooterAction, type FooterInjected } from './FooterAction.tsx'
+import { RechargePage, type RechargePageInjected } from './RechargePage.tsx'
 import { en, NS, zh, type CreditsKey } from './locales.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -23,6 +24,9 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 /** The panel id this plugin owns, shared by its sidebar row and its page. */
 export const PANEL_ID = 'credits' as MainPanelId
 
+/** The top-up page's own panel: the sidebar's top-up entry lands here directly. */
+export const RECHARGE_PANEL_ID = 'recharge' as MainPanelId
+
 /** Required services: the slot registries, the dictionary registry, and the
  * layout service the footer row uses to open its page. */
 export const inject = ['slots', 'locale', 'layout']
@@ -34,15 +38,23 @@ export const inject = ['slots', 'locale', 'layout']
 export function apply(ctx: ClientContext): void {
   const t = ctx.locale.bind(NS)
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-credits: dictionaries')
-  const face: CreditsInjected = {
+  const face: CreditsPageInjected & RechargePageInjected = {
     t: (key, values) => t(key as Parameters<typeof t>[0], values as never),
+    openRecharge: () => { ctx.layout.selectPanel(RECHARGE_PANEL_ID) },
+    openBalance: () => { ctx.layout.selectPanel(PANEL_ID) },
   }
   ctx.slots.inject('main', () => ctx.slots.register({
     name: 'main',
     key: PANEL_ID,
     locale: NS,
-    inject: (): CreditsInjected => face,
+    inject: (): CreditsPageInjected => face,
   }, CreditsPage))
+  ctx.slots.inject('main', () => ctx.slots.register({
+    name: 'main',
+    key: RECHARGE_PANEL_ID,
+    locale: NS,
+    inject: (): RechargePageInjected => face,
+  }, RechargePage))
   ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
     name: 'sidebar.footer.action',
     id: PANEL_ID,
@@ -51,7 +63,10 @@ export function apply(ctx: ClientContext): void {
     locale: NS,
     inject: (): FooterInjected => ({
       label: t('panel'),
+      rechargeLabel: t('rechargeTitle'),
+      customLabel: t('custom'),
       open: () => { ctx.layout.selectPanel(PANEL_ID) },
+      openRecharge: () => { ctx.layout.selectPanel(RECHARGE_PANEL_ID) },
     }),
   }, FooterAction))
 }

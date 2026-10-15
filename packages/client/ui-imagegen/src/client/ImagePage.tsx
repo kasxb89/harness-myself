@@ -9,13 +9,38 @@
  * from a fixed list, and nothing is shown that the gateway would refuse.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { SegmentedTabs } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import css from './ImagePage.module.css'
+
+/** The merged module's mode switch: one rail entry, these two modes behind it. */
+function ModeTabs({ mode, t, onOther }: {
+  mode: 'image' | 'video'
+  t: (key: string) => string
+  /** Open the mode this page is not: the module's other panel. */
+  onOther: () => void
+}): ReactNode {
+  return (
+    <SegmentedTabs
+      className={css.modeTabs}
+      items={[
+        { value: 'image', label: t('tab.image'), id: 'gen-mode-image', panelId: 'imagegen' },
+        { value: 'video', label: t('tab.video'), id: 'gen-mode-video', panelId: 'videogen' },
+      ]}
+      value={mode}
+      onChange={(next) => { if (next !== mode) onOther() }}
+      label={t('mode.label')}
+    />
+  )
+}
+
 
 /** What the plugin injects into the page. */
 export interface ImagegenInjected {
   /** Translate one key of this plugin's namespace. */
   readonly t: (key: string, values?: Record<string, string>) => string
+  /** Open this module's video mode, which is the sibling package's panel. */
+  readonly openVideo: () => void
 }
 
 interface Envelope<T> {
@@ -114,7 +139,7 @@ async function post<T>(path: string, body: Record<string, unknown>): Promise<Env
 }
 
 export function ImagePage(props: PropsRuntime<'main'> & ImagegenInjected): ReactNode {
-  const { t } = props
+  const { t, openVideo } = props
   const [signedIn, setSignedIn] = useState<boolean | null>(null)
   const [creditsPerYuan, setCreditsPerYuan] = useState(1000)
   const [balance, setBalance] = useState<number | null>(null)
@@ -316,7 +341,10 @@ export function ImagePage(props: PropsRuntime<'main'> & ImagegenInjected): React
     setPhase('done')
     setMessage(t('done'))
     await Promise.all([loadBalance(), loadHistory()])
-  }, [prompt, model, size, quality, background, format, moderation, compressible, compression, count, references, loadBalance, loadHistory, t])
+  }, [
+    prompt, model, size, quality, background, format, moderation, compressible, compression,
+    count, references, loadBalance, loadHistory, t,
+  ])
 
   const rawUrl = (path: string): string => `/artifacts/api/raw?path=${encodeURIComponent(path)}`
 
@@ -324,6 +352,7 @@ export function ImagePage(props: PropsRuntime<'main'> & ImagegenInjected): React
     <div className={css.page}>
       <header className={css.header}>
         <h1 className={css.title}>{t('title')}</h1>
+        <ModeTabs mode='image' t={t} onOther={openVideo} />
         {signedIn === true && balance !== null && (
           <span className={css.balance}>
             {t('balance', { points: balance.toLocaleString('zh-CN'), yuan: (balance / creditsPerYuan).toFixed(2) })}

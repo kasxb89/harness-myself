@@ -23,8 +23,11 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 /** The panel id this plugin owns, shared by its sidebar row and its page. */
 export const PANEL_ID = 'imagegen' as MainPanelId
 
+/** The same module's video mode, owned by its own plugin package. */
+export const VIDEO_PANEL_ID = 'videogen' as MainPanelId
+
 /** Required services: the slot registries and the dictionary registry. */
-export const inject = ['slots', 'locale']
+export const inject = ['slots', 'locale', 'layout']
 
 /**
  * Client plugin body: register the dictionaries, the sidebar entry, and the page.
@@ -35,6 +38,7 @@ export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-imagegen: dictionaries')
   const face: ImagegenInjected = {
     t: (key, values) => t(key as Parameters<typeof t>[0], values as never),
+    openVideo: () => { ctx.layout.selectPanel(VIDEO_PANEL_ID) },
   }
   ctx.slots.inject('main', () => ctx.slots.register({
     name: 'main',
@@ -45,7 +49,7 @@ export function apply(ctx: ClientContext): void {
   ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
     name: 'sidebar.panellist',
     id: PANEL_ID,
-    order: 50,
+    order: 30,
     label: () => t('panel'),
     locale: NS,
   }, ImagePanelIcon))

@@ -1,4 +1,5 @@
-/* Sidebar footer row: icon plus label while wide, icon alone in the 56px rail. */
+/* Sidebar footer row: icon plus label while wide, and the rail's stacked
+   icon-over-label in the icon column. */
 
 .row {
   display: flex;
@@ -23,12 +24,23 @@
 }
 
 .rail {
+  flex-direction: column;
+  gap: 4px;
   justify-content: center;
-  padding: 6px 0;
+  padding: 6px 2px;
 }
 
 .label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.railLabel {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 16px;
 }

@@ -698,7 +698,14 @@ export function apply(ctx: Context, config: Config): void {
    * each one declares. This is the live source the model pickers follow, so a
    * channel added on the new-api side shows up here without any config edit.
    */
-  const readNewApiModels = async (): Promise<{ ok: boolean; code?: string; message?: string; chat: string[]; image: string[]; video: string[] }> => {
+  const readNewApiModels = async (): Promise<{
+    ok: boolean
+    code?: string
+    message?: string
+    chat: string[]
+    image: string[]
+    video: string[]
+  }> => {
     const key = await deploymentKey()
     if (key === null) return { ok: false, code: 'NO_KEY', message: 'new-api key 未配置', chat: [], image: [], video: [] }
     try {
@@ -750,7 +757,13 @@ export function apply(ctx: Context, config: Config): void {
    * channel on the new-api side and its image and video models, with their real
    * parameter menus, appear in the panels.
    */
-  const readMediaCatalog = async (): Promise<{ ok: boolean; code?: string; message?: string; group: string | null; models: ModelCapability[] }> => {
+  const readMediaCatalog = async (): Promise<{
+    ok: boolean
+    code?: string
+    message?: string
+    group: string | null
+    models: ModelCapability[]
+  }> => {
     const group = await readUserGroup()
     try {
       const response = await fetch(`${resolved.newApiBaseUrl}/api/pricing`, {
@@ -1354,6 +1367,25 @@ export function apply(ctx: Context, config: Config): void {
   }
 
   /**
+   * The `Origin` to declare on new-api's session-cookie endpoints.
+   *
+   * `auth/refresh` and `auth/logout` sit behind new-api's session-cookie origin
+   * guard, which rejects a request carrying neither `Origin` nor `Referer` once
+   * the deployment sets `SESSION_COOKIE_SECURE` for HTTPS. Declaring the origin
+   * of the endpoint being called satisfies the guard's same-origin rule, so the
+   * renewal survives that switch with no second address to configure here.
+   */
+  const declaredOrigin: Record<string, string> = (() => {
+    try {
+      return { origin: new URL(resolved.newApiBaseUrl).origin }
+    } catch {
+      // A base URL the URL parser rejects fails every call anyway; send none
+      // rather than declare an origin that does not name this deployment.
+      return {}
+    }
+  })()
+
+  /**
    * The user-level balance on the local new-api, converted to points.
    *
    * The token must have `allow_user_quota_query` on for `user_quota` to appear;
@@ -1528,6 +1560,7 @@ export function apply(ctx: Context, config: Config): void {
         method: 'POST',
         headers: {
           cookie: `new_api_refresh=${refresh}`,
+          ...declaredOrigin,
           'content-type': 'application/json',
           accept: 'application/json',
         },
@@ -1947,9 +1980,9 @@ export function apply(ctx: Context, config: Config): void {
           const session = await liveSession()
           let result: PlatformResult = { status: 204, code: null, message: null, retryAfterSeconds: null, body: null }
           if (session?.token !== undefined) {
-            const response_ = await fetch(`${resolved.newApiBaseUrl}/api/user/logout`, {
+            const response_ = await fetch(`${resolved.newApiBaseUrl}/api/user/auth/logout`, {
               method: 'POST',
-              headers: { authorization: `Bearer ${(session.upstream?.token ?? '')}`, 'content-type': 'application/json', accept: 'application/json' },
+              headers: { authorization: `Bearer ${(session.upstream?.token ?? '')}`, ...declaredOrigin, 'content-type': 'application/json', accept: 'application/json' },
               body: '{}',
               signal: AbortSignal.timeout(resolved.timeoutMs),
             }).catch(() => null)

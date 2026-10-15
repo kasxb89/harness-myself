@@ -3,11 +3,21 @@
 .page {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 16px;
+  max-width: 1040px;
   height: 100%;
   min-height: 0;
-  padding: 18px 20px 28px;
+  padding: 22px 28px 32px;
   overflow: auto;
+}
+
+/* This sheet both scrolls (.page, .history) and paints elevated surfaces, so
+ * those surfaces rebind the thumb pair: the base l1 thumb is invisible against
+ * an elevated rung in the dark palette, where the scrollbar split encodes it. */
+.segmentActive,
+.bar {
+  --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
+  --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
 }
 
 .header {
@@ -18,8 +28,9 @@
 
 .title {
   margin: 0;
-  font-size: 17px;
-  font-weight: 600;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
   color: var(--dsw-alias-label-primary);
 }
 
@@ -33,10 +44,11 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
-  max-width: 880px;
-  padding: 16px 18px;
-  border-radius: var(--dsw-radius-l, 12px);
-  background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-interactive-bg-hover));
+  max-width: 960px;
+  padding: 20px 22px;
+  border: 0.5px solid var(--dsw-alias-settings-card-stroke);
+  border-radius: var(--dsw-radius-panel);
+  background: var(--dsw-alias-settings-card-fill);
 }
 
 .cardTitle {
@@ -64,7 +76,7 @@
 
 .badge {
   padding: 2px 8px;
-  border-radius: 999px;
+  border-radius: var(--dsw-radius-lg);
   background: var(--dsw-alias-bg-layer-1, var(--dsw-alias-interactive-bg-hover));
   color: var(--dsw-alias-label-tertiary);
   font-size: 11px;
@@ -99,7 +111,7 @@
   box-sizing: border-box;
   padding: 8px 10px;
   border: 0;
-  border-radius: var(--dsw-radius-m, 8px);
+  border-radius: var(--dsw-radius-sm);
   background: var(--dsw-alias-bg-layer-1, var(--dsw-alias-interactive-bg-hover));
   color: var(--dsw-alias-label-primary);
   font-size: 13px;
@@ -112,15 +124,21 @@
 }
 
 .presets {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
 }
 
 .chip {
-  padding: 4px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 64px;
+  padding: 10px 12px;
+  font-size: 13px;
   border: 0;
   border-radius: 999px;
+  corner-shape: round;
   background: var(--dsw-alias-bg-layer-1, var(--dsw-alias-interactive-bg-hover));
   color: var(--dsw-alias-label-secondary);
   font-size: 11px;
@@ -159,14 +177,14 @@
   flex-wrap: wrap;
   gap: 2px;
   padding: 2px;
-  border-radius: var(--dsw-radius-m, 8px);
+  border-radius: var(--dsw-radius-sm);
   background: var(--dsw-alias-bg-layer-1, var(--dsw-alias-interactive-bg-hover));
 }
 
 .segment {
   padding: 5px 12px;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--dsw-radius-xs);
   background: transparent;
   color: var(--dsw-alias-label-secondary);
   font-size: 12px;
@@ -193,7 +211,7 @@
   width: 82px;
   padding: 8px 6px;
   border: 1px solid transparent;
-  border-radius: var(--dsw-radius-m, 8px);
+  border-radius: var(--dsw-radius-sm);
   background: var(--dsw-alias-bg-layer-1, var(--dsw-alias-interactive-bg-hover));
   color: var(--dsw-alias-label-secondary);
   font-size: 11px;
@@ -227,7 +245,7 @@
   min-height: 64px;
   padding: 12px;
   border: 1px dashed var(--dsw-alias-border-subtle, var(--dsw-alias-label-tertiary));
-  border-radius: var(--dsw-radius-m, 8px);
+  border-radius: var(--dsw-radius-sm);
   color: var(--dsw-alias-label-tertiary);
   font-size: 12px;
   cursor: pointer;
@@ -238,7 +256,7 @@
   width: 100%;
   max-height: 120px;
   object-fit: contain;
-  border-radius: var(--dsw-radius-s, 6px);
+  border-radius: var(--dsw-radius-sm);
 }
 
 .files {
@@ -294,7 +312,7 @@
 .primary {
   padding: 9px 22px;
   border: 0;
-  border-radius: var(--dsw-radius-m, 8px);
+  border-radius: var(--dsw-radius-sm);
   background: var(--dsw-alias-label-primary);
   color: var(--dsw-alias-bg-base);
   font-size: 13px;
@@ -324,6 +342,7 @@
   height: 4px;
   overflow: hidden;
   border-radius: 999px;
+  corner-shape: round;
   background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-interactive-bg-hover));
 }
 
@@ -333,6 +352,7 @@
   inset: 0 auto 0 0;
   width: 40%;
   border-radius: 999px;
+  corner-shape: round;
   background: var(--dsw-alias-label-primary);
   animation: slide 1.4s ease-in-out infinite;
 }
@@ -345,7 +365,7 @@
 .video {
   width: 100%;
   max-height: 460px;
-  border-radius: var(--dsw-radius-m, 8px);
+  border-radius: var(--dsw-radius-sm);
   background: #000;
 }
 
@@ -378,8 +398,9 @@
 }
 
 .history {
-  display: flex;
-  gap: 8px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -405,7 +426,7 @@
   width: 120px;
   height: 68px;
   object-fit: cover;
-  border-radius: var(--dsw-radius-m, 8px);
+  border-radius: var(--dsw-radius-sm);
   background: #000;
 }
 
@@ -436,4 +457,12 @@
   font-size: 11px;
   line-height: 1.6;
   color: var(--dsw-alias-label-tertiary);
+}
+
+/* ---- Merged module shell (reference language) -------------------------- */
+
+/* The mode switch belongs to the header, not to a control row. */
+.modeTabs {
+  align-self: flex-start;
+  min-width: 200px;
 }

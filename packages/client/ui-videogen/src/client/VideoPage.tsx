@@ -9,13 +9,38 @@
  * failing upstream. Duration, resolution and ratio are the model's own menus.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { SegmentedTabs } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import css from './VideoPage.module.css'
+
+/** The merged module's mode switch: one rail entry, these two modes behind it. */
+function ModeTabs({ mode, t, onOther }: {
+  mode: 'image' | 'video'
+  t: (key: string) => string
+  /** Open the mode this page is not: the module's other panel. */
+  onOther: () => void
+}): ReactNode {
+  return (
+    <SegmentedTabs
+      className={css.modeTabs}
+      items={[
+        { value: 'image', label: t('tab.image'), id: 'gen-mode-image', panelId: 'imagegen' },
+        { value: 'video', label: t('tab.video'), id: 'gen-mode-video', panelId: 'videogen' },
+      ]}
+      value={mode}
+      onChange={(next) => { if (next !== mode) onOther() }}
+      label={t('mode.label')}
+    />
+  )
+}
+
 
 /** What the plugin injects into the page. */
 export interface VideogenInjected {
   /** Translate one key of this plugin's namespace. */
   readonly t: (key: string, values?: Record<string, string>) => string
+  /** Open this module's image mode, which is the sibling package's panel. */
+  readonly openImage: () => void
 }
 
 interface Envelope<T> {
@@ -113,7 +138,7 @@ async function post<T>(path: string, body: Record<string, unknown>): Promise<Env
 }
 
 export function VideoPage(props: PropsRuntime<'main'> & VideogenInjected): ReactNode {
-  const { t } = props
+  const { t, openImage } = props
   const [signedIn, setSignedIn] = useState<boolean | null>(null)
   const [creditsPerYuan, setCreditsPerYuan] = useState(1000)
   const [balance, setBalance] = useState<number | null>(null)
@@ -361,7 +386,9 @@ export function VideoPage(props: PropsRuntime<'main'> & VideogenInjected): React
             <button
               type="button"
               className={css.link}
-              onClick={() => { setSlots(current => ({ ...current, [slot]: current[slot].filter(entry => entry.assetId !== item.assetId) })) }}
+              onClick={() => {
+                setSlots(current => ({ ...current, [slot]: current[slot].filter(entry => entry.assetId !== item.assetId) }))
+              }}
             >
               {t('remove')}
             </button>
@@ -375,6 +402,7 @@ export function VideoPage(props: PropsRuntime<'main'> & VideogenInjected): React
     <div className={css.page}>
       <header className={css.header}>
         <h1 className={css.title}>{t('title')}</h1>
+        <ModeTabs mode='video' t={t} onOther={openImage} />
         {signedIn === true && balance !== null && (
           <span className={css.balance}>
             {t('balance', { points: balance.toLocaleString('zh-CN'), yuan: (balance / creditsPerYuan).toFixed(2) })}

@@ -189,9 +189,11 @@ describe('SidebarRoot shell', () => {
   it('hands the region its wide flag and clamps expandSidebar to the collapsed state', () => {
     const b = mountShell()
     expect(b.regionOwner().wide).toBe(true)
-    // The settings seat rides the same wide flag (ui-settings renders the row).
-    expect(b.settingsOwner().wide).toBe(true)
-    expect(b.footerActionOwner().wide).toBe(true)
+    // The rail foot seats ride the icon column in every state, so they are
+    // never handed the wide flag (ui-settings / ui-credits render their rail
+    // rows there).
+    expect(b.settingsOwner().wide).toBe(false)
+    expect(b.footerActionOwner().wide).toBe(false)
     // Expanded: the request is a no-op (no accidental collapse).
     b.regionOwner().expandSidebar()
     expect(b.toggleSidebar).not.toHaveBeenCalled()

@@ -28,6 +28,234 @@
   margin-left: auto;
 }
 
+/* The top-up page keeps the current balance in its header, on the same line as
+ * the title: the decision to top up and the number behind it belong together. */
+.balanceLine {
+  margin-left: auto;
+  font-size: 12px;
+  line-height: 18px;
+  font-variant-numeric: tabular-nums;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* Top-up page: the commercial layout — a display title, the balance it spends
+ * from, a grid of amount cards, the payment summary, one filled confirm. */
+.rechargeTitle {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 34px;
+  letter-spacing: -0.01em;
+  color: var(--dsw-alias-label-primary);
+}
+
+.balanceRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.balanceRowLabel {
+  font-size: 13px;
+}
+
+.balanceRowValue {
+  font-size: 20px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--dsw-alias-label-primary);
+}
+
+.balanceRowUnit {
+  font-size: 13px;
+  padding-right: 2px;
+}
+
+.sectionTitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+}
+
+/* Amount cards: four per row, the selected card ringing itself instead of
+ * resizing, and the free amount sharing their box. */
+.amountGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  max-width: 720px;
+}
+
+.amountCard {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  height: 56px;
+  border: 0.5px solid var(--dsw-alias-settings-card-stroke);
+  border-radius: var(--dsw-radius-lg);
+  background: var(--dsw-alias-settings-card-fill);
+  color: var(--dsw-alias-label-primary);
+  font-size: 16px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.amountCard:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.amountCardActive {
+  border-color: var(--dsw-alias-label-primary);
+  box-shadow: inset 0 0 0 1px var(--dsw-alias-label-primary);
+}
+
+.amountCustom {
+  padding: 0 10px;
+}
+
+.customInput {
+  width: 100%;
+  height: 32px;
+  border-color: transparent;
+  background: transparent;
+  justify-content: center;
+}
+
+.payRow {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.payAmount {
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.payGain {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--dsw-alias-state-success-primary);
+}
+
+.payGainValue {
+  font-size: 24px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.payButton {
+  align-self: stretch;
+  height: 52px;
+  max-width: 720px;
+  font-size: 15px;
+}
+
+/* Top-up page body: the payment column, then the platform's own advertisement
+ * beside it. The promo column keeps its width and the payment column flexes, so
+ * a narrow panel stacks them instead of squeezing both. */
+.rechargeLayout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
+  align-items: start;
+  gap: 16px;
+  max-width: 1200px;
+}
+
+@media (max-width: 900px) {
+  .rechargeLayout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.promo {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  box-sizing: border-box;
+  padding: 18px;
+  border: 0.5px solid var(--dsw-alias-settings-card-stroke);
+  border-radius: var(--dsw-radius-xl);
+  background: var(--dsw-alias-settings-card-fill);
+}
+
+.promoTag {
+  align-self: flex-start;
+  padding: 3px 10px;
+  border-radius: var(--dsw-radius-sm);
+  background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 12%, transparent);
+  color: var(--dsw-alias-state-success-primary);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.promoTitle {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 28px;
+  color: var(--dsw-alias-label-primary);
+}
+
+.promoGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.promoModel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  box-sizing: border-box;
+  min-height: 56px;
+  padding: 8px 12px;
+  border: 0.5px solid var(--dsw-alias-border-l1);
+  border-radius: var(--dsw-radius-lg);
+  background: var(--dsw-alias-bg-layer-1);
+}
+
+.promoName {
+  overflow: hidden;
+  font-size: 14px;
+  color: var(--dsw-alias-label-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.promoPill {
+  flex: none;
+  padding: 3px 10px;
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-state-success-primary);
+  color: var(--dsw-alias-label-primary-foreground);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.promoNote {
+  margin: 0;
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
 /* One material for every block on the page: the shared settings-card fill and
  * hairline stroke, so the panel matches the account surface beside it. */
 .card {

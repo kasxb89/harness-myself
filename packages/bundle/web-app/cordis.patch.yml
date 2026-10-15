@@ -428,6 +428,10 @@
     - id: ui-videogen
       name: '@deepseek-ai/dsh-client-ui-videogen'
 
+    # Sidebar Office column: the panel-list place for the office workspace's own view.
+    - id: ui-office
+      name: '@deepseek-ai/dsh-client-ui-office'
+
     # Turn tail: the changed-files card and delivery cards under each closing
     # assistant message. Remove this entry to turn the surface off; the tail
     # hole renders empty.
@@ -666,3 +670,10 @@
 - insert:
     - id: ipollowork-video-studio
       name: 'deepseek-ivideo'
+# 计算机操作：模型可观察并操作本机桌面。服务与 provider 必须同时挂载，
+# 且全局只接受一个 provider 注册——第二行换成 MCP provider 时须删掉 native 这行。
+- insert:
+    - id: computer-use
+      name: '@deepseek-ai/dsh-computer-use'
+    - id: computer-use-cua-driver-native
+      name: '@deepseek-ai/dsh-experimental-computer-use-cua-driver-native'

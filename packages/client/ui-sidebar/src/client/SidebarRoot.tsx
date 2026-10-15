@@ -23,12 +23,15 @@ import {
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { InjectFace, PropsRenderSlots, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {
-  SidebarPanelMetadata, SidebarRootComponentProps, SidebarRootInjected, SidebarSectionOwnerProps,
+  SidebarPanelMetadata, SidebarRootComponentProps, SidebarRootInjected,
 } from './contract/slots.ts'
 import css from './SidebarRoot.module.css'
 
 /** Wide-content unmount delay; matches the 150ms wide-content fade-out. */
 const COLLAPSE_SETTLE_MS = 150
+
+/** Glyph size every destination row draws, rail and expanded alike. */
+const PANEL_GLYPH_SIZE = 20
 
 /**
  * How long the column's scrollbars stay drawn after the pointer leaves it.
@@ -50,33 +53,55 @@ function localBuildVersion(): string | undefined {
 
 type PanelRowProps =
   Pick<SidebarPanelMetadata, 'id' | 'label'>
-  & Pick<SidebarSectionOwnerProps, 'wide'>
   & Pick<PropsRuntime<'sidebar'>, 'usePanelInfo'>
   & Pick<InjectFace<SidebarRootInjected>, 'selectPanel'>
   & PropsRenderSlots<'sidebar.panellist'>
 
 /** Each panel row subscribes only to its own selection state. */
-function PanelRow({ id, label, wide, usePanelInfo, selectPanel, renderSlot }: PanelRowProps) {
+function PanelRow({ id, label, usePanelInfo, selectPanel, renderSlot }: PanelRowProps) {
   const active = usePanelInfo(info => info.activePanelId === id)
   return (
-    <Tooltip label={label} delayMs={500} disabled={wide}>
-      <button
-        type="button"
-        className={clsx(css.panelRow, active && css.panelActive)}
-        aria-label={label}
-        aria-current={active ? 'page' : undefined}
-        onClick={() => { selectPanel(id) }}
-      >
-        <span className={css.panelGlyph} aria-hidden="true">
-          {renderSlot('sidebar.panellist', { size: wide ? 16 : 18, active }, { only: id })}
-        </span>
-        {wide && (
-          <span className={clsx(css.panelTitle, css.wide)}>
-            {label}
-          </span>
-        )}
-      </button>
-    </Tooltip>
+    <button
+      type="button"
+      className={clsx(css.panelRow, active && css.panelActive)}
+      aria-label={label}
+      aria-current={active ? 'page' : undefined}
+      onClick={() => { selectPanel(id) }}
+    >
+      <span className={css.panelGlyph} aria-hidden="true">
+        {renderSlot('sidebar.panellist', { size: PANEL_GLYPH_SIZE, active }, { only: id })}
+      </span>
+      {/* The label rides the glyph in both states: the icon column is the
+          product's destination bar, and a glyph alone does not name a
+          destination. */}
+      <span className={css.panelLabel}>{label}</span>
+    </button>
+  )
+}
+
+/**
+ * The conversation row: the main column's default view, which no plugin panel
+ * owns. Selected exactly while no panel is.
+ */
+function ChatRow({ label, usePanelInfo, selectPanel }: {
+  label: string
+  usePanelInfo: PropsRuntime<'sidebar'>['usePanelInfo']
+  selectPanel: InjectFace<SidebarRootInjected>['selectPanel']
+}) {
+  const active = usePanelInfo(info => info.activePanelId === null)
+  return (
+    <button
+      type="button"
+      className={clsx(css.panelRow, active && css.panelActive)}
+      aria-label={label}
+      aria-current={active ? 'page' : undefined}
+      onClick={() => { selectPanel(null) }}
+    >
+      <span className={css.panelGlyph} aria-hidden="true">
+        <IconNewChatOutlineRegular size={PANEL_GLYPH_SIZE} />
+      </span>
+      <span className={css.panelLabel}>{label}</span>
+    </button>
   )
 }
 
@@ -98,6 +123,7 @@ export function SidebarRoot({
   renderSlot,
 }: SidebarRootComponentProps) {
   const panels = usePanels(snapshot => snapshot)
+  const panelActive = usePanelInfo(info => info.activePanelId !== null)
   const shortcut = useShortcuts(rows => rows.find(row => row.id === 'sidebar.left.toggle'))
   const newShortcut = useShortcuts(rows => rows.find(row => row.id === 'session.new'))
   const toggleLabel = collapsed ? t('toggle.open') : t('toggle.collapse')
@@ -172,6 +198,43 @@ export function SidebarRoot({
   const buildVersion = localBuildVersion()
 
   const darwinDesktop = isDarwinDesktop()
+  /* Rendered in exactly one seat: the rail's icon column while the content is
+     hidden, the content column's body while it is shown. */
+  const newSessionButton = (
+    <Tooltip label={t('session.new.label')} shortcutKeys={newShortcut?.keys} delayMs={500} side={captionTooltipSide} disabled={wide}>
+      <button
+        type="button"
+        className={css.newSession}
+        aria-label={t('session.new.label')}
+        aria-keyshortcuts={newShortcut?.aria}
+        onClick={() => { startSession() }}
+      >
+        <span className={css.newSessionLabelMask}><span className={css.newSessionContent}>
+          {wide
+            ? <IconNewChatOutlineMedium size={14} />
+            : <IconNewChatOutlineRegular size={windowsTitlebar ? 16 : 18} />}
+          {wide && <span className={clsx(css.newSessionLabel, css.wide)}>{t('session.new')}</span>}
+        </span></span>
+        {wide && newShortcut !== undefined && newShortcut.keys.length > 0 && <span className={css.newSessionShortcut} aria-hidden="true">
+          <ShortcutKeys keys={newShortcut.keys} />
+        </span>}
+      </button>
+    </Tooltip>
+  )
+  // The foot is the rail's own bottom group: the wallet and settings seats ride
+  // the icon column in every sidebar state, so the destinations they hold stay
+  // one click away from a panel too. Each seat renders its rail row (the
+  // content column keeps no foot of its own).
+  const railFoot = (
+    <div className={css.railFootArea}>
+      <div className={css.footerActions}>
+        {renderSlot('sidebar.footer.action', { wide: false })}
+      </div>
+      <div className={css.settingsArea}>
+        {renderSlot('sidebar.settings', { wide: false })}
+      </div>
+    </div>
+  )
   // Rail resting state is the whale mark; hovering swaps in the panel icon
   // (the expand affordance, figma sidebar-hover flow). Expanded it is a plain
   // panel icon.
@@ -210,80 +273,71 @@ export function SidebarRoot({
       }}
       onPointerLeave={() => { armLinger() }}
     >
-      {/* macOS hiddenInset titlebar: the strip shares the row with the
-          traffic lights and keeps the toggle at the sidebar's top-right. */}
-      {darwinDesktop && <div className={css.topStrip} data-window-drag>{toggle}</div>}
-      <div className={css.logoRow} data-window-drag>
-        {/* Expanded, the brand doubles as a New Session shortcut — except on
+      {/* macOS hiddenInset titlebar: the strip is the traffic lights' clearance,
+          kept empty so the header below owns every control on one line. */}
+      {darwinDesktop && <div className={css.topStrip} data-window-drag />}
+      {!panelActive && (
+        <div className={css.logoRow} data-window-drag>
+          {/* Expanded, the brand doubles as a New Session shortcut — except on
             macOS, where it stays part of the logo row's window-drag surface
             (a button would subtract itself through the global no-drag rule);
             the collapsed rail's logo is the expand toggle below instead. */}
-        {wide && (() => {
-          const identity = (
-            <span className={css.brandIdentity} aria-hidden="true">
-              <span className={css.brandMark}>
-                {renderSlot('sidebar.brand.mark', { size: 24 }, { fallback: <FishLogo size={24} /> })}
+          {wide && (() => {
+            const identity = (
+              <span className={css.brandIdentity} aria-hidden="true">
+                <span className={css.brandMark}>
+                  {renderSlot('sidebar.brand.mark', { size: 24 }, { fallback: <FishLogo size={24} /> })}
+                </span>
+                <span className={css.brandName}>
+                  {renderSlot('sidebar.brand.name', {}, {
+                    fallback: buildVersion === undefined
+                      ? <span className={css.fallbackBrandName}>{t('brand.localBuild')}</span>
+                      : (
+                        <span className={css.localBuildBrand}>
+                          <span className={css.localBuildTitle}>{t('brand.localBuild')}</span>
+                          <span className={css.buildVersion}>{buildVersion}</span>
+                        </span>
+                      ),
+                  })}
+                </span>
               </span>
-              <span className={css.brandName}>
-                {renderSlot('sidebar.brand.name', {}, {
-                  fallback: buildVersion === undefined
-                    ? <span className={css.fallbackBrandName}>{t('brand.localBuild')}</span>
-                    : (
-                      <span className={css.localBuildBrand}>
-                        <span className={css.localBuildTitle}>{t('brand.localBuild')}</span>
-                        <span className={css.buildVersion}>{buildVersion}</span>
-                      </span>
-                    ),
-                })}
-              </span>
-            </span>
-          )
-          return darwinDesktop
-            ? <span className={clsx(css.brand, css.wide)}>{identity}</span>
-            : (
-              <button
-                type="button"
-                className={clsx(css.brand, css.wide)}
-                aria-label={t('session.new.label')}
-                aria-keyshortcuts={newShortcut?.aria}
-                onClick={() => { startSession() }}
-              >
-                {identity}
-              </button>
             )
-        })()}
-        {!darwinDesktop && toggle}
-      </div>
-
-      {/* The label fades before the hover/focus shortcut, including on translucent backgrounds. */}
-      <Tooltip label={t('session.new.label')} shortcutKeys={newShortcut?.keys} delayMs={500} side={captionTooltipSide} disabled={wide}>
-        <button
-          type="button"
-          className={css.newSession}
-          aria-label={t('session.new.label')}
-          aria-keyshortcuts={newShortcut?.aria}
-          onClick={() => { startSession() }}
-        >
-          <span className={css.newSessionLabelMask}><span className={css.newSessionContent}>
-            {wide
-              ? <IconNewChatOutlineMedium size={14} />
-              : <IconNewChatOutlineRegular size={windowsTitlebar ? 16 : 18} />}
-            {wide && <span className={clsx(css.newSessionLabel, css.wide)}>{t('session.new')}</span>}
-          </span></span>
-          {wide && newShortcut !== undefined && newShortcut.keys.length > 0 && <span className={css.newSessionShortcut} aria-hidden="true">
-            <ShortcutKeys keys={newShortcut.keys} />
-          </span>}
-        </button>
-      </Tooltip>
-
+            return darwinDesktop
+              ? <span className={clsx(css.brand, css.wide)}>{identity}</span>
+              : (
+                <button
+                  type="button"
+                  className={clsx(css.brand, css.wide)}
+                  aria-label={t('session.new.label')}
+                  aria-keyshortcuts={newShortcut?.aria}
+                  onClick={() => { startSession() }}
+                >
+                  {identity}
+                </button>
+              )
+          })()}
+          {toggle}
+        </div>
+      )}
+      {!panelActive && newSessionButton}
       {panels.length > 0 && (
         <nav className={css.panelList} aria-label={t('panels.label')}>
+          {/* A panel-owning column shows nothing else, so the collapse control
+              rides the rail's own top while it is in that state. */}
+          {panelActive && toggle}
+          {/* The conversation is the shell's own destination — it is what the
+              main column shows when no panel claims it — so it leads the panel
+              rows instead of being registered as one. */}
+          <ChatRow
+            label={t('panels.chat')}
+            usePanelInfo={usePanelInfo}
+            selectPanel={selectPanel}
+          />
           {panels.map(({ id, label }) => (
             <PanelRow
               key={id}
               id={id}
               label={label}
-              wide={wide}
               usePanelInfo={usePanelInfo}
               selectPanel={selectPanel}
               renderSlot={renderSlot}
@@ -291,25 +345,18 @@ export function SidebarRoot({
           ))}
         </nav>
       )}
-
       {/* The browsing region fills the column between the controls and the
-          foot in both states; its rail icon column rides the same slot. */}
-      <div className={css.regionArea}>
+          foot in both states; its rail icon column rides the same slot. It stays
+          mounted while a panel owns the main column — the tree and its search
+          keep their state — and hides, because browsing sessions belongs to the
+          conversation rather than to whichever panel is open. */}
+      <div className={panelActive ? clsx(css.regionArea, css.regionHidden) : css.regionArea}>
         {renderSlot('sidebar.workspaces', {
           wide,
           expandSidebar: () => { if (collapsed) toggleSidebar() },
         })}
       </div>
-
-      {/* Footer actions stack above Settings in both sidebar widths. */}
-      <div className={css.footArea}>
-        <div className={css.footerActions}>
-          {renderSlot('sidebar.footer.action', { wide })}
-        </div>
-        <div className={css.settingsArea}>
-          {renderSlot('sidebar.settings', { wide })}
-        </div>
-      </div>
+      {railFoot}
     </div>
   )
 }

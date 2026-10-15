@@ -9,14 +9,19 @@ export interface Columns { sidebar: number; center: number; rightbar: number }
 
 /** Center width protected while the normal right column is open. */
 export const CENTER_MIN = 400
-/** Sidebar drag clamp floor. */
-export const SIDEBAR_MIN = 264
+/** Sidebar drag clamp floor: the rail column plus a workable content column. */
+export const SIDEBAR_MIN = 300
 /** Sidebar drag clamp ceiling. */
 export const SIDEBAR_MAX = 420
 /** Sidebar width before any user drag. */
-export const SIDEBAR_DEFAULT = 280
-/** Closed-sidebar rail: a 24px icon column between 16px horizontal paddings. */
-export const SIDEBAR_COLLAPSED = 56
+export const SIDEBAR_DEFAULT = 320
+/**
+ * Closed-sidebar rail: the labeled destination column the shell keeps when the
+ * content column is out of the picture (the user's own collapse, or a global
+ * panel owning the main column). One 64px item column with 10px of air per
+ * side — wide enough for the longest destination label.
+ */
+export const SIDEBAR_COLLAPSED = 84
 /** Viewport width below which the sidebar auto-collapses to the rail (deepsuite
  * LG breakpoint); a manual toggle below it re-expands over the squeezed center
  * (stores.ts narrowExpanded). */

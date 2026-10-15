@@ -8,8 +8,23 @@
 
 .root {
   --dsh-sidebar-inline-padding: 12px;
-  display: flex;
-  flex-direction: column;
+  /* One grid, two templates: the open sidebar puts the destination rail in its
+     own 64px column beside the content, and the collapsed sidebar collapses the
+     same areas onto one column (the layout's closed width, 84, is this column
+     plus the rail's 10px side air). Nothing is conditionally rendered — the
+     browsing region only changes which column its area names, so a collapse
+     never unmounts the tree or its rail entry paths. */
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  grid-template-rows: auto auto auto auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    'top      top'
+    'nav      brand'
+    'nav      action'
+    'nav      region'
+    'nav      region'
+    'railfoot region';
+  column-gap: 8px;
   height: 100%;
   padding: 6px var(--dsh-sidebar-inline-padding);
   box-sizing: border-box;
@@ -22,6 +37,50 @@
   --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
 }
 
+.root.collapsed {
+  /* Rail geometry: the 64px destination column sits centered in the 84px track
+     (10px per side); the wide column's 12px inset would push it off center. */
+  --dsh-sidebar-inline-padding: 10px;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas:
+    'top'
+    'brand'
+    'action'
+    'nav'
+    'region'
+    'railfoot';
+}
+
+
+/* The rail's own rows are 36px glyph boxes in both states: the open sidebar
+   draws them in the rail column, and the label stays in the tree for
+   assistive technology while the tooltip names the row on hover. */
+.panelRow {
+  width: 36px;
+  height: 36px;
+  justify-content: center;
+  margin: 0;
+  padding: 0;
+  width: 36px;
+  height: 36px;
+  justify-content: center;
+  margin: 0;
+  padding: 0;
+}
+
+.panelTitle,
+.panelTitleHidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 /* macOS desktop: the AppFrame column owns the translucent sidebar tint; an
    opaque fill here would sit on top of it and block the window vibrancy. */
 :global([data-platform='darwin']) .root {
@@ -31,9 +90,6 @@
 /* Rail geometry (figma rail spec): 36x36 control boxes centered in the 56px
    rail (10px side padding), 12px vertical rhythm, 18px from the rail top to
    the whale's box (24px to the 24-wide whale glyph itself). */
-.root.collapsed {
-  padding: 18px 10px 6px;
-}
 
 /* The brand stays in the sidebar; fixed caption controls survive zero-width collapse. */
 :global([data-windows-titlebar]) .root .logoRow {
@@ -155,6 +211,7 @@
 .railIn .newSession,
 .railIn .panelList,
 .railIn .regionArea {
+
   animation: rail-in 150ms var(--ds-ease-in-out) backwards;
 }
 
@@ -179,6 +236,7 @@
    its own run is the column's draggable geometry and no frame band has to match
    the strip's height; the toggle inside subtracts via the base.css rule. */
 .topStrip {
+  grid-area: top;
   flex: none;
   display: flex;
   align-items: center;
@@ -217,6 +275,7 @@
    source: it precedes the sidebar's overlay slots in document order, so their
    no-drag still wins. */
 .logoRow {
+  grid-area: brand;
   flex: none;
   display: flex;
   align-items: center;
@@ -394,6 +453,7 @@
 /* New Session: 38px bar, 12px radius (figma 133:7634 geometry, squared-off
    corners); collapsed it renders as the rail's plain icon control. */
 .newSession {
+  grid-area: action;
   container-type: inline-size;
   position: relative;
   flex: none;
@@ -474,30 +534,39 @@
 .newSession:is(:hover, :focus-visible) .newSessionShortcut { opacity: 1; }
 
 .panelList {
+  grid-area: nav;
   flex: none;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 6px;
   margin-bottom: 12px;
+  min-height: 0;
+  /* The destination bar owns this column in every state; a short frame scrolls
+     the destinations rather than clipping them. */
+  overflow-y: auto;
 }
 
-/* Panel entries share the New Session bar's 12px radius and 2px inset, the
-   session rows' hover/selected surface, and the primary ink. */
+/* One destination: the glyph rides its name the way the product's own rail
+   reads — icon above, label below — so the column names what it opens instead
+   of leaving a wall of bare glyphs. Selected reads as a tinted item, not as
+   another hover (the theme's sidebar nav tokens separate the two). */
 .panelRow {
+  position: relative;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 8px;
-  margin: 0 2px;
-  min-height: 36px;
-  padding: 7px 8px;
+  justify-content: center;
+  gap: 4px;
+  width: 100%;
+  margin: 0;
+  padding: 6px 2px;
   box-sizing: border-box;
   border: none;
   border-radius: var(--dsw-radius-md);
   background: transparent;
   color: var(--dsw-alias-label-primary);
   font: inherit;
-  line-height: 22px;
-  text-align: left;
+  text-align: center;
   cursor: pointer;
 }
 
@@ -526,24 +595,18 @@
   justify-content: center;
 }
 
-.panelTitle {
+.panelLabel {
+  max-width: 100%;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-secondary);
 }
 
-.collapsed .panelList {
-  gap: 12px;
-  margin-bottom: 12px;
-}
-
-.collapsed .panelRow {
-  width: 36px;
-  height: 36px;
-  justify-content: center;
-  margin: 0;
-  padding: 0;
+.panelRow.panelActive .panelLabel {
   color: var(--dsw-alias-label-primary);
 }
 
@@ -551,6 +614,7 @@
    cancels the wide shell inset so the nested scrollbar can sit at the sidebar
    edge; the browser restores that inset inside its own rows. */
 .regionArea {
+  grid-area: region;
   flex: 1;
   min-height: 0;
   display: flex;
@@ -561,19 +625,28 @@
   overflow: hidden;
 }
 
+/* Session browsing belongs to the conversation: while a panel owns the main
+   column the tree is hidden, not unmounted, so its expansion and search survive
+   the round trip. */
+.regionArea.regionHidden {
+  display: none;
+}
+
 .collapsed .regionArea {
   margin-left: 0;
   margin-right: 0;
   padding-left: 0;
 }
 
-/* Footer seats: additive actions stack above Settings. Each occupant owns its
-   button geometry and hover chrome. */
-.footArea {
+/* Rail foot: the wallet destinations and Settings, pinned under the icon
+   column. The hairline separates them from the scrollable list above, and the
+   seats ride the same 64px column every destination row uses. */
+.railFootArea {
+  grid-area: railfoot;
   flex: none;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 6px;
   margin-top: 6px;
   padding-top: 6px;
   border-top: 0.5px solid var(--dsw-alias-border-l2);
@@ -589,18 +662,7 @@
 .footerActions {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-}
-
-.collapsed .footArea {
-  align-items: center;
-}
-
-.collapsed .settingsArea,
-.collapsed .footerActions {
-  display: flex;
-  justify-content: center;
-  width: auto;
+  gap: 6px;
 }
 
 @media (prefers-reduced-motion: reduce) {

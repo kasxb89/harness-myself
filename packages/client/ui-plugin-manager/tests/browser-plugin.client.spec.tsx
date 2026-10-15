@@ -149,7 +149,8 @@ describe('ui-plugin-manager browser plugin', () => {
       usePanelInfo={unread} useSessions={unread} useSessionStatus={unread} useSessionRetainInfo={unread}
       useWorkspaces={unread} useResource={unread} />)
     expect(glyph.container.querySelector('svg')?.getAttribute('width')).toBe('18')
-    expect(icon.options).toMatchObject({ id: PANEL_ID, order: 0 })
+    // The conversation row leads the panel list, so the plugin row sorts after it.
+    expect(icon.options).toMatchObject({ id: PANEL_ID, order: 50 })
     expect(icon.locale).toBe(NS)
     expect(resolveSlotLabel(icon.options.label)).toBe('插件')
     // The page declares the slots a plugin's configuration arrives through, and binds their projection beside its state.

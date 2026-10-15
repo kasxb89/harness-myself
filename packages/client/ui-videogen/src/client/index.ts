@@ -10,7 +10,6 @@ import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import { VideoPage, type VideogenInjected } from './VideoPage.tsx'
-import { VideoPanelIcon } from './VideoPanelIcon.tsx'
 import { en, NS, zh, type VideogenKey } from './locales.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -23,8 +22,11 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 /** The panel id this plugin owns, shared by its sidebar row and its page. */
 export const PANEL_ID = 'videogen' as MainPanelId
 
+/** The same module's image mode, owned by its own plugin package. */
+export const IMAGE_PANEL_ID = 'imagegen' as MainPanelId
+
 /** Required services: the slot registries and the dictionary registry. */
-export const inject = ['slots', 'locale']
+export const inject = ['slots', 'locale', 'layout']
 
 /**
  * Client plugin body: register the dictionaries, the sidebar entry, and the page.
@@ -35,6 +37,7 @@ export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-videogen: dictionaries')
   const face: VideogenInjected = {
     t: (key, values) => t(key as Parameters<typeof t>[0], values as never),
+    openImage: () => { ctx.layout.selectPanel(IMAGE_PANEL_ID) },
   }
   ctx.slots.inject('main', () => ctx.slots.register({
     name: 'main',
@@ -42,11 +45,4 @@ export function apply(ctx: ClientContext): void {
     locale: NS,
     inject: (): VideogenInjected => face,
   }, VideoPage))
-  ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
-    name: 'sidebar.panellist',
-    id: PANEL_ID,
-    order: 60,
-    label: () => t('panel'),
-    locale: NS,
-  }, VideoPanelIcon))
 }

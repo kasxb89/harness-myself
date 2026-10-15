@@ -22,8 +22,8 @@ export function FooterAction(props: PropsRuntime<'sidebar.footer.action'> & Foot
       aria-label={label}
       onClick={open}
     >
-      <MobilePanelIcon size={16} active={false} />
-      {wide && <span className={css.label}>{label}</span>}
+      <MobilePanelIcon size={wide ? 16 : 20} active={false} />
+      <span className={wide ? css.label : css.railLabel}>{label}</span>
     </button>
   )
 }

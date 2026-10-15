@@ -178,7 +178,7 @@ export function apply(ctx: ClientContext): void {
   ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
     name: 'sidebar.panellist',
     id: PANEL_ID,
-    order: 10,
+    order: 60,
     locale: MANAGER_NS,
     label: () => t('panel'),
   }, TaskManagerIcon))

@@ -127,6 +127,10 @@ export function AppFrame({
   t,
 }: AppFrameProps) {
   const layoutInfo = useStore(state => state.layoutInfo)
+  // Rail-only below keys off the main column's occupant: AppFrame already
+  // re-renders with the frame solve, and the panel switch is exactly a frame
+  // change (the sidebar track gives the room back).
+  const panelActive = usePanelInfo(info => info.activePanelId !== null)
   const frameRef = useRef<HTMLDivElement | null>(null)
   const viewport = layoutInfo.viewportWidth
 
@@ -159,15 +163,25 @@ export function AppFrame({
 
   const narrow = viewport < SIDEBAR_AUTO_COLLAPSE
   const sidebarCollapsed = narrow ? !layoutInfo.narrowExpanded : layoutInfo.sidebar === 0
-  const sidebarPreference = sidebarCollapsed
+  // A global panel in the main column keeps the sidebar's icon rail and nothing
+  // else: the column's own content (brand row, New Session, the browsing tree,
+  // the foot) belongs to the conversation, so every other destination hands the
+  // room back to the panel. The stored preference is untouched — returning to
+  // the conversation restores the width the user left the column at.
+  const railOnly = panelActive && !sidebarCollapsed
+  const sidebarPreference = sidebarCollapsed || railOnly
     ? 0
     : layoutInfo.sidebar === 0 ? SIDEBAR_DEFAULT : layoutInfo.sidebar
   const rightbarPreference = layoutInfo.rightbar ?? viewport * RIGHTBAR_DEFAULT_RATIO
   // Desktop reopen controls occupy the frame's shell.leading seat (macOS) or
-  // the Windows caption row; neither platform keeps an icon rail.
+  // the Windows caption row; neither platform keeps an icon rail — except the
+  // rail-only panel state, whose whole presentation IS the rail, so no reopen
+  // seat exists there and the platform's zero width does not apply.
   const darwin = document.documentElement.dataset.platform === 'darwin'
-  const collapsedWidth = darwin
-    || document.documentElement.hasAttribute('data-windows-titlebar') ? 0 : SIDEBAR_COLLAPSED
+  const windowsTitlebar = document.documentElement.hasAttribute('data-windows-titlebar')
+  const collapsedWidth = (railOnly && !windowsTitlebar) || !(darwin || windowsTitlebar)
+    ? SIDEBAR_COLLAPSED
+    : 0
   // Opening on a narrow frame collapses the left sidebar. Eligibility must
   // include that space before the occupant's first shown report arrives.
   const normal = computeColumns(viewport, !layoutInfo.rightbarShown && narrow ? 0 : sidebarPreference, rightbarPreference, collapsedWidth)
@@ -194,7 +208,11 @@ export function AppFrame({
   // chase the live window edge. The counter restarts the settle window when a
   // re-toggle interrupts a running transition.
   const [animating, setAnimating] = useState(0)
-  const trackToggle = `${sidebarCollapsed}:${layoutInfo.rightbarTrack}`
+  // The shell renders the rail layout in both closed states: the user's own
+  // collapse, and the panel-driven rail-only strip (whose column content the
+  // shell hides behind its own panel rule).
+  const shellCollapsed = sidebarCollapsed || railOnly
+  const trackToggle = `${shellCollapsed}:${layoutInfo.rightbarTrack}`
   const previousToggle = useRef(trackToggle)
   const previousViewport = useRef(viewport)
   useLayoutEffect(() => {
@@ -240,9 +258,9 @@ export function AppFrame({
   // the discrete decisions (track present, collapse state) and the drag base.
   const rightbarMax = cols.rightbar === 0 ? 0 : clampWidth(rightbarPreference, RIGHTBAR_MIN, viewport * RIGHTBAR_MAX_RATIO)
   const sidebar = useMemo(() => renderSlot('sidebar', {
-    collapsed: sidebarCollapsed,
+    collapsed: shellCollapsed,
     width: cols.sidebar,
-  }), [renderSlot, sidebarCollapsed, cols.sidebar])
+  }), [renderSlot, shellCollapsed, cols.sidebar])
   const main = useMemo(() => (
     <MainPanel usePanelInfo={usePanelInfo} renderSlot={renderSlot} />
   ), [usePanelInfo, renderSlot])
@@ -298,7 +316,7 @@ export function AppFrame({
         </div>
       )}
       {/* The collapsed rail is fixed-width: no resize handle while closed. */}
-      {!sidebarCollapsed && <DragHandle side="sidebar" left={cols.sidebar} onStart={onSidebarStart} onDrag={onSidebarDrag} onEnd={onDragEnd} />}
+      {!sidebarCollapsed && !railOnly && <DragHandle side="sidebar" left={cols.sidebar} onStart={onSidebarStart} onDrag={onSidebarDrag} onEnd={onDragEnd} />}
       {layoutInfo.rightbarShown && !layoutInfo.rightbarFullscreen && normal.rightbar > 0 && (
         <DragHandle side="rightbar" left={viewport - normal.rightbar} onStart={onRightbarStart} onDrag={onRightbarDrag} onEnd={onDragEnd} />
       )}

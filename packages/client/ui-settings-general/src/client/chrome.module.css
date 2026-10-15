@@ -5,3 +5,15 @@
   overflow: hidden;
   white-space: nowrap;
 }
+
+/* Rail label: the stacked icon-column row's own name, at the 12px secondary
+ * ink every destination row in that column carries. */
+.railLabel {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-secondary);
+}

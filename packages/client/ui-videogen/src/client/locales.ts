@@ -4,8 +4,11 @@
 export const NS = 'videogen'
 
 export const zh = {
-  'panel': '视频',
-  'title': '视频',
+  'panel': 'AI 生视频',
+  'tab.image': '图片',
+  'mode.label': '创作模式',
+  'tab.video': '视频',
+  'title': 'AI 创作',
   'signedOut': '先在「额度」里用手机号登录，这里就能生成视频了。',
   'balance': '余额 {points} 积分（约 ¥{yuan}）',
   'prompt': '画面描述',
@@ -72,8 +75,11 @@ export const zh = {
 } as const
 
 export const en: Record<keyof typeof zh, string> = {
-  'panel': 'Video',
-  'title': 'Video',
+  'panel': 'AI video',
+  'tab.image': 'Images',
+  'mode.label': 'Creation mode',
+  'tab.video': 'Videos',
+  'title': 'Create',
   'signedOut': 'Sign in with your phone in Credits first; video generation unlocks here.',
   'balance': 'Balance {points} credits (about ¥{yuan})',
   'prompt': 'Prompt',

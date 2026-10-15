@@ -123,8 +123,11 @@ export type SidebarRootInjected = {
   startSession: (workspaceId?: WorkspaceId) => void
   /** Toggle the sidebar column through the layout service. */
   toggleSidebar: () => void
-  /** Select the global panel addressed by a sidebar row. */
-  selectPanel: (id: MainPanelId) => void
+  /**
+   * Select the global panel addressed by a sidebar row; null returns to the
+   * conversation, which is the main column's view when no panel owns it.
+   */
+  selectPanel: (id: MainPanelId | null) => void
   /** Private reactive sources bound to framework selector hooks. */
   hooks: { panels: ObservableSnapshot<readonly SidebarPanelMetadata[]>; shortcuts: ObservableSnapshot<readonly ShortcutCatalogEntry[]> }
 }

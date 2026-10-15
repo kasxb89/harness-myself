@@ -15,15 +15,17 @@ export type TriggerContentProps = PropsRuntime<'settings.trigger'> & PropsLocale
 export type HeaderContentProps = PropsRuntime<'settings.header'> & PropsLocale<'settings'>
 
 /**
- * Render the trigger row content (icon; label only in the wide column).
+ * Render the trigger row content. The sidebar's icon column stacks the label
+ * under the glyph like every other destination row; the wide column (kept for
+ * hosts that lay the row out horizontally) puts it beside.
  * @param props - composed slot props.
  * @returns the trigger content fragment.
  */
 export function TriggerContent({ wide, t }: TriggerContentProps) {
   return (
     <>
-      <IconSettingsOutlineMedium size={wide ? 16 : 18} />
-      {wide && <span className={css.triggerLabel}>{t('trigger')}</span>}
+      <IconSettingsOutlineMedium size={wide ? 16 : 20} />
+      <span className={wide ? css.triggerLabel : css.railLabel}>{t('trigger')}</span>
     </>
   )
 }

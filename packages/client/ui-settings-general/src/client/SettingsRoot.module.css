@@ -9,8 +9,8 @@
 }
 
 .triggerRow.railRow {
-  width: 36px;
-  margin: 8px 0 10px;
+  width: 100%;
+  margin: 0;
 }
 
 .trigger {
@@ -39,16 +39,17 @@
   background: var(--dsw-alias-interactive-bg-hover);
 }
 
-/* Rail trigger: the same 36x36 box and 12px rounding as the other rail
-   controls. */
+/* Rail trigger: the icon column's own stacked row — glyph over its name, the
+   same geometry the destination rows use. */
 .trigger.rail {
   flex: none;
-  width: 36px;
-  height: 36px;
+  flex-direction: column;
+  width: 100%;
+  height: auto;
   margin: 0;
   justify-content: center;
-  gap: 0;
-  padding: 0;
+  gap: 4px;
+  padding: 6px 2px;
 }
 
 .triggerLabel {

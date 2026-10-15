@@ -4,8 +4,11 @@
 export const NS = 'imagegen'
 
 export const zh = {
-  'panel': 'AI 生图',
-  'title': 'AI 生图',
+  'panel': 'AI 创作',
+  'tab.image': '图片',
+  'mode.label': '创作模式',
+  'tab.video': '视频',
+  'title': 'AI 创作',
   'signedOut': '先在「额度」里用手机号登录，这里就能生成图片了。',
   'balance': '余额 {points} 积分（约 ¥{yuan}）',
   'prompt': '画面描述',
@@ -66,8 +69,11 @@ export const zh = {
 } as const
 
 export const en: Record<keyof typeof zh, string> = {
-  'panel': 'AI image',
-  'title': 'AI image',
+  'panel': 'Create',
+  'tab.image': 'Images',
+  'mode.label': 'Creation mode',
+  'tab.video': 'Videos',
+  'title': 'Create',
   'signedOut': 'Sign in with your phone in Credits first; generation unlocks here.',
   'balance': 'Balance {points} credits (about ¥{yuan})',
   'prompt': 'Prompt',
