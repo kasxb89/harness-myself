@@ -51,31 +51,6 @@ interface OrderStatus {
   readonly failure_code: string | null
 }
 
-/** One discounted model the platform advertises on the top-up page. */
-interface PromoModel {
-  readonly id: string
-  readonly name: string
-  readonly label: string
-}
-
-/**
- * PLACEHOLDER CONTENT — design sample only, not a price.
- *
- * The real rows arrive from `GET /credits/api/promo` (`{ models: [{ id, name,
- * label }] }`); whatever that endpoint returns replaces this list entirely. The
- * models named here are the deployment's own, but the discount labels are the
- * reference design's sample values and must not ship as real pricing.
- * Delete this constant once the endpoint answers.
- */
-const PROMO_PLACEHOLDER: readonly PromoModel[] = [
-  { id: 'glm-5.1', name: 'GLM-5.1', label: '8.5折' },
-  { id: 'glm-5.2', name: 'GLM-5.2', label: '8.5折' },
-  { id: 'kimi-k2.6', name: 'Kimi-K2.6', label: '8.5折' },
-  { id: 'kimi-k2.7-code', name: 'Kimi-K2.7', label: '8.5折' },
-  { id: 'qwen3.7-max', name: 'Qwen3.7-Max', label: '8折' },
-  { id: 'qwen3.7-plus', name: 'Qwen3.7-Plus', label: '8折' },
-]
-
 /**
  * Top-up bounds the platform's `recharge/wechat` route enforces, in yuan. The
  * page states the same range in its own hint instead of asking the platform for
@@ -106,7 +81,6 @@ export function RechargePage(props: PropsRuntime<'main'> & RechargePageInjected)
   const [orderState, setOrderState] = useState<OrderStatus | null>(null)
   const [polling, setPolling] = useState(false)
   const [copied, setCopied] = useState(false)
-  const [promo, setPromo] = useState<readonly PromoModel[]>([])
   const amountInput = useRef<HTMLInputElement>(null)
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -128,21 +102,6 @@ export function RechargePage(props: PropsRuntime<'main'> & RechargePageInjected)
     if (pollTimer.current !== null) clearTimeout(pollTimer.current)
     if (copiedTimer.current !== null) clearTimeout(copiedTimer.current)
   }, [])
-
-  /**
-   * The promo list is deployment data: the host reads new-api's own group
-   * ratios, so a channel that goes live with a discount shows up here with the
-   * platform's own label. A deployment without one answers with an empty list,
-   * and the card says so rather than inventing a number.
-   */
-  useEffect(() => {
-    if (!signedIn) return
-    let active = true
-    void get<{ models?: readonly PromoModel[] }>('/credits/api/promo')
-      .then((answer) => { if (active) setPromo(answer.payload?.models ?? []) })
-      .catch(() => { /* An advertisement that cannot be read simply omits itself. */ })
-    return () => { active = false }
-  }, [signedIn])
 
   /** Poll one order once, then schedule the next read at the platform's cadence. */
   const pollOrder = useCallback(async (orderNo: string, attempt: number) => {
@@ -388,21 +347,6 @@ export function RechargePage(props: PropsRuntime<'main'> & RechargePageInjected)
               </div>
             )}
           </section>
-          {/* The advertisement beside the payment column: what a top-up buys.
-              Its rows come from the platform's own discount data. */}
-          <aside className={css.promo}>
-            <span className={css.promoTag}>{t('promoTag')}</span>
-            <h2 className={css.promoTitle}>{t('promoTitle')}</h2>
-            <ul className={css.promoGrid}>
-              {(promo.length > 0 ? promo : PROMO_PLACEHOLDER).map(model => (
-                <li key={model.id} className={css.promoModel}>
-                  <span className={css.promoName} title={model.name}>{model.name}</span>
-                  <span className={css.promoPill}>{model.label}</span>
-                </li>
-              ))}
-            </ul>
-            <p className={css.promoNote}>{t('promoNote')}</p>
-          </aside>
         </div>
       )}
     </div>

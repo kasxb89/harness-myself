@@ -7,7 +7,9 @@
  * shared store, so the two pages cannot disagree about either.
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { Button, IconRefreshOutlineRegular, Input } from '@deepseek-ai/dsh-client-ui-primitives'
+import {
+  Button, IconChevronRightOutlineRegular, IconPlusOutlineRegular, IconRefreshOutlineRegular, IconUserOutlineRegular, Input,
+} from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { grouped, newKey, post } from './api.ts'
 import { CreditsPanelIcon } from './CreditsPanelIcon.tsx'
@@ -59,6 +61,7 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected): 
 
   const creditsPerYuan = session?.creditsPerYuan ?? 1000
   const signedIn = session?.signedIn === true
+  const accountPhone = session.account?.phone.replace(/^(\+86)(1\d{2})(\d{4})(\d{4})$/, '$1 $2 $3 $4') ?? '—'
 
   useEffect(() => {
     if (resendIn <= 0) return undefined
@@ -227,13 +230,25 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected): 
 
       {signedIn && (
         <>
-          <section className={cx(css.card, css.walletCard)}>
-            <div className={css.balance}>
+          <section className={css.walletCard} aria-label={t('balance')}>
+            <div className={css.walletHeader}>
+              <div className={css.walletHeading}>
+                <span className={css.walletIcon}><CreditsPanelIcon size={20} /></span>
+                <span className={css.balanceLabel}>{t('balance')}</span>
+              </div>
+              <Button
+                className={css.walletRefresh}
+                size="sm"
+                variant="ghost"
+                icon={<IconRefreshOutlineRegular />}
+                onClick={() => { void refreshBalance() }}
+                disabled={busy}
+              >
+                {t('refresh')}
+              </Button>
+            </div>
+            <div className={css.walletBody}>
               <div className={css.balanceValue}>
-                <span className={css.balanceLabel}>
-                  <CreditsPanelIcon size={14} />
-                  {t('balance')}
-                </span>
                 <p className={css.balanceNumber}>
                   <span className={css.amount}>{balance === null ? '—' : grouped(balance.balance_points)}</span>
                   <span className={css.amountUnit}>{t('points')}</span>
@@ -244,27 +259,24 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected): 
                     : t('yuanInline', { amount: grouped(balance.balance_points / creditsPerYuan) })}
                 </p>
               </div>
-              <Button
-                size="sm"
-                variant="ghost"
-                icon={<IconRefreshOutlineRegular />}
-                onClick={() => { void refreshBalance() }}
-                disabled={busy}
-              >
-                {t('refresh')}
-              </Button>
-            </div>
-            <div className={css.divider} />
-            <div className={css.metaRow}>
-              <span className={css.metaLabel}>{t('account')}</span>
-              <span className={css.metaValue}>{session.account?.phone ?? '—'}</span>
-              <Button
-                className={css.submit}
-                variant="primary"
-                onClick={openRecharge}
-              >
-                {t('goRecharge')}
-              </Button>
+              <div className={css.walletActions}>
+                <div className={css.walletAccount}>
+                  <span className={css.walletAccountIcon} aria-hidden="true"><IconUserOutlineRegular /></span>
+                  <div className={css.walletAccountText}>
+                    <span className={css.metaLabel}>{t('account')}</span>
+                    <span className={css.walletAccountValue}>{accountPhone}</span>
+                  </div>
+                </div>
+                <Button
+                  className={css.walletRecharge}
+                  variant="primary"
+                  icon={<IconPlusOutlineRegular />}
+                  onClick={openRecharge}
+                >
+                  {t('goRecharge')}
+                  <span className={css.walletRechargeArrow} aria-hidden="true"><IconChevronRightOutlineRegular /></span>
+                </Button>
+              </div>
             </div>
           </section>
           <UsageOverview key={session.account?.id ?? session.account?.phone ?? 'current'} t={t} creditsPerYuan={creditsPerYuan} />
