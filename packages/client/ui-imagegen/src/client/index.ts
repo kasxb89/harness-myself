@@ -12,6 +12,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import { ImagePage, type ImagegenInjected } from './ImagePage.tsx'
 import { ImagePanelIcon } from './ImagePanelIcon.tsx'
 import { en, NS, zh, type ImagegenKey } from './locales.ts'
+import { createImageDraftStore } from './draft-store.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
@@ -36,16 +37,32 @@ export const inject = ['slots', 'locale', 'layout']
 export function apply(ctx: ClientContext): void {
   const t = ctx.locale.bind(NS)
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-imagegen: dictionaries')
-  const face: ImagegenInjected = {
-    t: (key, values) => t(key as Parameters<typeof t>[0], values as never),
+  const previewUrls = new Set<string>()
+  ctx.effect(() => () => { for (const url of previewUrls) URL.revokeObjectURL(url) })
+  const face: Omit<ImagegenInjected, 'readDraft'> = {
+    t: (key, values) => t(key as Parameters<typeof t>[0], values),
     openVideo: () => { ctx.layout.selectPanel(VIDEO_PANEL_ID) },
+    createReferencePreview: (file) => {
+      const url = URL.createObjectURL(file)
+      previewUrls.add(url)
+      return url
+    },
+    releaseReferencePreview: (url) => {
+      URL.revokeObjectURL(url)
+      previewUrls.delete(url)
+    },
   }
-  ctx.slots.inject('main', () => ctx.slots.register({
-    name: 'main',
-    key: PANEL_ID,
-    locale: NS,
-    inject: (): ImagegenInjected => face,
-  }, ImagePage))
+  ctx.slots.inject('main', () => {
+    const handle = createImageDraftStore(), instance = handle.create()
+    const store: typeof handle = { ...handle, create: () => instance }
+    return ctx.slots.register({
+      name: 'main',
+      key: PANEL_ID,
+      locale: NS,
+      store,
+      inject: (): ImagegenInjected => ({ ...face, readDraft: () => instance.getSnapshot() }),
+    }, ImagePage)
+  })
   ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
     name: 'sidebar.panellist',
     id: PANEL_ID,

@@ -230,6 +230,29 @@ describe('sidebar global panels', () => {
     expect(runtime.slots.entries('sidebar.panellist')).toBe(entries)
   })
 
+  it('keeps the shared AI creation destination selected in video mode', async () => {
+    const { runtime, view } = await bench()
+    const image = 'imagegen' as MainPanelId
+    const video = 'videogen' as MainPanelId
+    await mountPanel(runtime, { id: image, heading: 'Image creation', label: 'AI creation' })
+    await runtime.mount({
+      inject: ['slots'],
+      apply(ctx: Context) {
+        ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: video }, () => <h1>Video creation</h1>))
+      },
+    })
+    const creation = await view.findByRole('button', { name: 'AI creation' })
+    fireEvent.click(creation)
+    expect(creation.getAttribute('aria-current')).toBe('page')
+    act(() => { runtime.panelInfo.set({ activePanelId: video }) })
+    expect(view.getByRole('heading', { name: 'Video creation' })).toBeTruthy()
+    expect(creation.getAttribute('aria-current')).toBe('page')
+    expect(within(creation).getByTestId(`${image}-icon`).getAttribute('data-active')).toBe('true')
+    expect(view.getAllByRole('button', { name: 'AI creation' })).toHaveLength(1)
+    fireEvent.click(view.getByRole('button', { name: 'Chat' }))
+    expect(creation.getAttribute('aria-current')).toBeNull()
+  })
+
   it('uses an omitted label and order as the panel id and order zero', async () => {
     const { runtime, view } = await bench()
     await mountPanel(runtime, { id: ALPHA, heading: 'Alpha content', label: 'Alpha panel', order: 20 })

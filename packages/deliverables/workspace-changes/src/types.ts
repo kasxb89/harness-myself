@@ -21,7 +21,10 @@ export interface WorkspaceChangedFile {
   oversized?: true
 }
 
-/** Files changed during one top-level turn, kept on the Host until its Session is disposed. */
+/**
+ * Files changed during one top-level turn: kept while its Session is observed,
+ * and stored when the composition mounts storage so the card outlives it.
+ */
 export interface WorkspaceChangesSummary {
   /** The turn whose file changes this summary describes. */
   turn: number
@@ -75,13 +78,16 @@ export type WorkspaceFileDiff =
   /** A side larger than the plugin's `maxFileBytes`; no lines are served. */
   | { kind: 'oversized'; path: string; display: string }
 
-/** Serves the summaries and file comparisons the recorder keeps for live Sessions. */
+/**
+ * Serves the summaries the recorder keeps for live Sessions and the ones it
+ * recorded earlier from storage, plus the comparisons of live Sessions.
+ */
 export interface WorkspaceChanges {
   /**
    * The summary announced by one `workspace/changes` event.
    * @param sessionId - the Session that appended the event.
    * @param seq - the event's sequence number.
-   * @returns the summary, or undefined once its Session was disposed or when this Host never recorded it.
+   * @returns the summary, or undefined when this Host never recorded the event and nothing is stored for it.
    */
   summary(sessionId: SessionId, seq: number): WorkspaceChangesSummary | undefined
   /**
@@ -100,8 +106,9 @@ declare module '@deepseek-ai/dsh-session/types' {
   interface SessionEventMap {
     /**
      * A completed top-level turn's changed files were summarized; the summary itself stays on the
-     * Host and is served by `workspaceChanges.summary` for the event's sequence while the Session
-     * lives. The latest event for one turn replaces earlier ones.
+     * Host — in the recorder while the Session is observed, then in the `workspace_changes` domain
+     * when the composition mounts storage — and is served by `workspaceChanges.summary` for the
+     * event's sequence. The latest event for one turn replaces earlier ones.
      */
     'workspace/changes': { turn: number }
   }

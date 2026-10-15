@@ -1,9 +1,8 @@
 /**
- * The Balance page: phone sign-in and the platform's credit balance.
+ * The Balance page: phone sign-in, the credit balance and account usage analysis.
  *
- * Spending lives on its own page (`RechargePage`); this one answers "how much
- * is left, and whose account is it", and hands the operator to the top-up page
- * from a single filled action. Every platform call goes through
+ * Top-ups live on their own page (`RechargePage`). This page shows the account's
+ * remaining credits and reported consumption, with one top-up action. Calls go through
  * `@deepseek-ai/dsh-credits-index`; the session and the balance come from the
  * shared store, so the two pages cannot disagree about either.
  */
@@ -12,6 +11,7 @@ import { Button, IconRefreshOutlineRegular, Input } from '@deepseek-ai/dsh-clien
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { grouped, newKey, post } from './api.ts'
 import { CreditsPanelIcon } from './CreditsPanelIcon.tsx'
+import { UsageOverview } from './UsageOverview.tsx'
 import { cx } from './class-names.ts'
 import { refreshBalance, refreshCredits, signOutCredits, useCreditsSnapshot } from './session-store.ts'
 import css from './CreditsPage.module.css'
@@ -119,7 +119,7 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected): 
       })
       if (answer.ok && answer.payload !== undefined) {
         const bonus = answer.payload.registration_bonus
-        setNotice(bonus?.status === 'credited'
+        setNotice(bonus.status === 'credited'
           ? t('signedInBonus', { points: grouped(bonus.points) })
           : t('signedIn'))
         setCode('')
@@ -156,7 +156,7 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected): 
   }, [t])
 
   return (
-    <div className={css.page}>
+    <div className={cx(css.page, css.balancePage)}>
       <header className={css.header}>
         <h1 className={css.title}>{t('title')}</h1>
         {signedIn && (
@@ -227,7 +227,7 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected): 
 
       {signedIn && (
         <>
-          <section className={css.card}>
+          <section className={cx(css.card, css.walletCard)}>
             <div className={css.balance}>
               <div className={css.balanceValue}>
                 <span className={css.balanceLabel}>
@@ -267,6 +267,7 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected): 
               </Button>
             </div>
           </section>
+          <UsageOverview key={session.account?.id ?? session.account?.phone ?? 'current'} t={t} creditsPerYuan={creditsPerYuan} />
         </>
       )}
     </div>

@@ -23,6 +23,8 @@ export interface RecorderEnvironment {
   maxFileBytes: number
   /** Milliseconds a line comparison may run before it degrades to whole-file replacement. */
   diffTimeoutMs: number
+  /** Durable copy of one recorded summary, keyed by the event that announced it. */
+  persist: (seq: number, summary: WorkspaceChangesSummary) => void
   /** Failure reporter; a failed turn records nothing and the next turn retries. */
   warn: (message: string) => void
 }
@@ -350,18 +352,18 @@ export class TurnRecorder {
     if (sorted.length === 0 && state.recordedAfterSeq < 0) return
     const event = this.session.append('workspace/changes', { turn: state.turn })
     const kept = sorted.slice(0, this.env.maxFiles)
-    this.records.set(event.seq, {
-      summary: {
-        turn: state.turn,
-        cwd: this.cwd,
-        files: kept.map(entry => entry.file),
-        total: sorted.length,
-        added: sorted.reduce((sum, entry) => sum + entry.file.added, 0),
-        deleted: sorted.reduce((sum, entry) => sum + entry.file.deleted, 0),
-        ...snapshot === undefined ? {} : { snapshot },
-      },
-      sources: kept.map(entry => entry.sources),
-    })
+    const summary: WorkspaceChangesSummary = {
+      turn: state.turn,
+      cwd: this.cwd,
+      files: kept.map(entry => entry.file),
+      total: sorted.length,
+      added: sorted.reduce((sum, entry) => sum + entry.file.added, 0),
+      deleted: sorted.reduce((sum, entry) => sum + entry.file.deleted, 0),
+      ...snapshot === undefined ? {} : { snapshot },
+    }
+    this.records.set(event.seq, { summary, sources: kept.map(entry => entry.sources) })
+    // The durable copy is what answers after this Session stops being observed.
+    this.env.persist(event.seq, summary)
     state.recordedAfterSeq = event.seq
   }
 

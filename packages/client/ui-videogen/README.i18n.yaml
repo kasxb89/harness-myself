@@ -1,0 +1,13 @@
+# Bilingual-pair consistency record for README.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write packages/client/ui-videogen/README.md
+/video-creation:
+  en: 77c67c329f0eca0d
+  zh: 56b8aefaf966a476
+/video-creation/model-experience:
+  en: 921c022722f4a10b
+  zh: 59caf30e1ef38eb0
+/video-creation/known-limitations-and-deferred-work:
+  en: 86f232f37be9459a
+  zh: 601b46ed1308961c

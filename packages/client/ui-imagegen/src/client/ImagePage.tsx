@@ -1,46 +1,21 @@
-/**
- * The AI image page: text-to-image and editing through the local new-api relay,
- * sharing the product's sign-in and balance.
- *
- * Every control here comes from the selected model's own capability: sizes,
- * count, quality, background, format, moderation and the reference limit are
- * whatever the deployment declared for that model. Pick a model that offers no
- * background choice and the control is simply not there — nothing is guessed
- * from a fixed list, and nothing is shown that the gateway would refuse.
- */
+/** Image creation workspace driven by the deployment's existing media catalog. */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { SegmentedTabs } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import {
+  IconCloseOutlineRegular, IconCopyOutlineRegular, IconEditOutlineRegular,
+  IconPlusOutlineRegular, IconSearchOutlineRegular, IconSendOutlineRegular,
+  IconSettingsOutlineRegular, IconSparkleRegular, ImageLightbox, SegmentedTabs, Tooltip,
+} from '@deepseek-ai/dsh-client-ui-primitives'
+import type { PropsRuntime, PropsStore } from '@deepseek-ai/dsh-client-ui-slots'
+import type { createImageDraftStore, ImageDraft } from './draft-store.ts'
 import css from './ImagePage.module.css'
 
-/** The merged module's mode switch: one rail entry, these two modes behind it. */
-function ModeTabs({ mode, t, onOther }: {
-  mode: 'image' | 'video'
-  t: (key: string) => string
-  /** Open the mode this page is not: the module's other panel. */
-  onOther: () => void
-}): ReactNode {
-  return (
-    <SegmentedTabs
-      className={css.modeTabs}
-      items={[
-        { value: 'image', label: t('tab.image'), id: 'gen-mode-image', panelId: 'imagegen' },
-        { value: 'video', label: t('tab.video'), id: 'gen-mode-video', panelId: 'videogen' },
-      ]}
-      value={mode}
-      onChange={(next) => { if (next !== mode) onOther() }}
-      label={t('mode.label')}
-    />
-  )
-}
-
-
-/** What the plugin injects into the page. */
+/** Plain callbacks injected by this plugin's registration. */
 export interface ImagegenInjected {
-  /** Translate one key of this plugin's namespace. */
   readonly t: (key: string, values?: Record<string, string>) => string
-  /** Open this module's video mode, which is the sibling package's panel. */
   readonly openVideo: () => void
+  readonly readDraft: () => ImageDraft
+  readonly createReferencePreview: (file: File) => string
+  readonly releaseReferencePreview: (url: string) => void
 }
 
 interface Envelope<T> {
@@ -48,26 +23,14 @@ interface Envelope<T> {
   readonly code?: string | null
   readonly message?: string | null
   readonly sessionInvalid?: boolean
-  readonly retryAfterSeconds?: number | null
   readonly payload?: T
 }
 
-interface SessionInfo {
-  readonly signedIn: boolean
-  readonly creditsPerYuan: number
-}
-
-interface Balance {
-  readonly balance_points: number
-}
-
-/** One image model's parameter menu, as the deployment declares it. */
+interface SessionInfo { readonly signedIn: boolean; readonly creditsPerYuan: number }
+interface Balance { readonly balance_points: number }
 interface ImageModel {
   readonly id: string
   readonly displayName: string
-  readonly groups: readonly string[]
-  readonly verified: boolean
-  readonly route: string
   readonly params: {
     readonly sizes: readonly string[]
     readonly maxCount: number
@@ -78,15 +41,8 @@ interface ImageModel {
     readonly moderations: readonly string[]
     readonly seed: boolean
   }
-  readonly source: string
 }
-
-interface Catalog {
-  readonly group: string | null
-  readonly image: readonly ImageModel[]
-}
-
-/** One entry of the artifacts index, used for the recent-work strip. */
+interface Catalog { readonly image: readonly ImageModel[] }
 interface ArtifactItem {
   readonly path: string
   readonly name: string
@@ -94,688 +50,440 @@ interface ArtifactItem {
   readonly mtimeMs?: number
 }
 
-interface Reference {
-  readonly assetId: string
-  readonly name: string
-  readonly url: string
-}
+type ImagePageProps = PropsRuntime<'main'> & PropsStore<ReturnType<typeof createImageDraftStore>> & ImagegenInjected
 
-/**
- * Style intents: the row only carries the keys — the visible label and the
- * suffix each one appends to the prompt live in the dictionaries
- * (`preset_<key>` / `preset_text_<key>`).
- */
-const PRESETS: readonly string[] = ['photo', 'illustration', '3d', 'cinematic', 'minimal', 'poster']
-
-/**
- * "你想做什么?" starters: one tap fills the composer with a working brief, so
- * a first image does not require knowing how to phrase one. The copy lives in
- * the dictionaries (name / hint / prompt per key) — these rows carry only the
- * key and the glyph.
- */
-const TEMPLATES: readonly { readonly key: string }[] = [
-  { key: 'product' },
-  { key: 'poster' },
-  { key: 'portrait' },
-  { key: 'scene' },
-  { key: 'illustration' },
-  { key: 'render3d' },
-]
-
-/** The send control's glyph: an arrow while idle, a ring while working. */
-function SendGlyph({ running }: { running: boolean }): ReactNode {
-  return running
-    ? (
-      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-        <circle cx="8" cy="8" r="5.2" fill="none" stroke="currentColor" strokeWidth="1.6" strokeDasharray="22 11" strokeLinecap="round" />
-      </svg>
-    )
-    : (
-      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-        <path d="M8 12.6V3.8M4.2 7.4 8 3.6l3.8 3.8" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-    )
-}
-
-/** One template card's glyph, drawn from the same 20px frame for all six. */
-function TemplateGlyph({ name }: { name: string }): ReactNode {
-  const paths: Record<string, ReactNode> = {
-    product: <path d="M4.6 7.4 10 4.6l5.4 2.8v5.2L10 15.4l-5.4-2.8V7.4Zm0 0L10 10.2l5.4-2.8M10 10.2v5.2" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />,
-    poster: <><rect x="4.2" y="3.6" width="11.6" height="12.8" rx="1.6" fill="none" stroke="currentColor" strokeWidth="1.3" /><path d="M7 7.2h6M7 10h6M7 12.8h3.6" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" /></>,
-    portrait: <><circle cx="10" cy="8.2" r="2.6" fill="none" stroke="currentColor" strokeWidth="1.3" /><path d="M5.2 15.4c.7-2.4 2.5-3.6 4.8-3.6s4.1 1.2 4.8 3.6" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" /></>,
-    scene: <><path d="M4.2 13.6 8 9.4l2.6 2.8 2-2 3.2 3.4" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" /><circle cx="7.4" cy="6.6" r="1.4" fill="none" stroke="currentColor" strokeWidth="1.3" /><rect x="3.6" y="4.2" width="12.8" height="11.6" rx="1.6" fill="none" stroke="currentColor" strokeWidth="1.3" /></>,
-    illustration: <path d="M10 3.4c3.4 0 6.4 2.4 6.4 5.6 0 2-1.6 3.2-3.4 3.2h-1.2c-.8 0-1.4.6-1.4 1.4 0 .4.2.8.4 1.2.2.3.4.7.4 1.1 0 .8-.7 1.5-1.6 1.5-3.4 0-6.6-2.9-6.6-6.6s3.6-7.4 7-7.4Zm-2.8 6.2a1.3 1.3 0 1 0 0-2.6 1.3 1.3 0 0 0 0 2.6Z" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />,
-    render3d: <path d="M10 3.6 16 7v6l-6 3.4L4 13V7l6-3.4Zm0 0V10m6-3L10 10 4 7" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />,
-  }
-  return (
-    <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true">
-      {paths[name] ?? paths.product}
-    </svg>
-  )
-}
-
-/** The widest common ratio for one pixel size, or null for `auto`. */
-function ratioOf(size: string): string | null {
-  const match = /^(\d+)\s*[x×]\s*(\d+)$/.exec(size.trim())
-  if (match === null) return null
-  const width = Number(match[1])
-  const height = Number(match[2])
-  const gcd = (a: number, b: number): number => b === 0 ? a : gcd(b, a % b)
-  const divisor = gcd(width, height)
-  const left = Math.round(width / divisor)
-  const right = Math.round(height / divisor)
-  // Only真 ratios read as ratios; 1536x1024 reduces to 3:2, 1024x1024 to 1:1.
-  if (left > 40 || right > 40) return null
-  return `${String(left)}:${String(right)}`
-}
+const PRESETS = ['photo', 'illustration', '3d', 'cinematic', 'minimal', 'poster'] as const
+const CATEGORIES = ['all', 'commerce', 'design', 'lifestyle'] as const
+const TEMPLATES = [
+  { key: 'recreate', category: 'commerce', glyph: 'copy' },
+  { key: 'details', category: 'commerce', glyph: 'edit' },
+  { key: 'campaign', category: 'commerce', glyph: 'sparkle' },
+  { key: 'product', category: 'commerce', glyph: 'sparkle' },
+  { key: 'poster', category: 'design', glyph: 'edit' },
+  { key: 'portrait', category: 'lifestyle', glyph: 'copy' },
+  { key: 'scene', category: 'lifestyle', glyph: 'sparkle' },
+  { key: 'illustration', category: 'design', glyph: 'edit' },
+  { key: 'render3d', category: 'design', glyph: 'copy' },
+] as const
 
 async function get<T>(path: string): Promise<Envelope<T>> {
   const response = await fetch(path, { headers: { accept: 'application/json' } })
+  if (!response.ok) throw new Error(`HTTP_${String(response.status)}`)
   return await response.json() as Envelope<T>
 }
 
 async function post<T>(path: string, body: Record<string, unknown>): Promise<Envelope<T>> {
   const response = await fetch(path, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', accept: 'application/json' },
+    method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' },
     body: JSON.stringify(body),
   })
+  if (!response.ok) throw new Error(`HTTP_${String(response.status)}`)
   return await response.json() as Envelope<T>
 }
 
-export function ImagePage(props: PropsRuntime<'main'> & ImagegenInjected): ReactNode {
-  const { t, openVideo } = props
+function rawUrl(path: string): string {
+  return `/artifacts/api/raw?path=${encodeURIComponent(path)}`
+}
+
+/**
+ * Render the image mode and retain its draft when the video mode is selected.
+ * @param props - framework runtime/store shares and localized plugin callbacks.
+ * @returns the image creation workspace.
+ */
+export function ImagePage(props: ImagePageProps): ReactNode {
+  const { t, openVideo, createReferencePreview, releaseReferencePreview, readDraft, actions } = props
+  const draft = props.useStore(state => state)
+  const {
+    prompt, modelId, size, quality, background, format, compression, moderation, seed, count,
+    references, uploading, generationStartedAt, sessionInvalid, message, failure, resultPaths: result,
+  } = draft
+  const running = generationStartedAt !== null
   const [signedIn, setSignedIn] = useState<boolean | null>(null)
   const [creditsPerYuan, setCreditsPerYuan] = useState(1000)
   const [balance, setBalance] = useState<number | null>(null)
   const [models, setModels] = useState<readonly ImageModel[]>([])
   const [modelsError, setModelsError] = useState<string | null>(null)
-  const [modelId, setModelId] = useState('')
-  const [prompt, setPrompt] = useState('')
-  const [size, setSize] = useState('')
-  const [quality, setQuality] = useState('')
-  const [background, setBackground] = useState('')
-  const [format, setFormat] = useState('')
-  const [compression, setCompression] = useState(90)
-  const [moderation, setModeration] = useState('')
-  const [seed, setSeed] = useState('')
-  const [count, setCount] = useState(1)
+  const [stateError, setStateError] = useState(false)
   const [advanced, setAdvanced] = useState(false)
-  const [phase, setPhase] = useState<'idle' | 'running' | 'saving' | 'done'>('idle')
   const [elapsed, setElapsed] = useState(0)
-  const [message, setMessage] = useState<string | null>(null)
-  const [failure, setFailure] = useState<string | null>(null)
-  const [result, setResult] = useState<{ paths: readonly string[] } | null>(null)
-  const [references, setReferences] = useState<Reference[]>([])
-  const [uploading, setUploading] = useState(false)
+  const setMessage = useCallback((message: string | null): void => { actions.patch({ message }) }, [actions])
+  const setFailure = useCallback((failure: string | null): void => { actions.patch({ failure }) }, [actions])
+  const [dragging, setDragging] = useState(false)
   const [history, setHistory] = useState<readonly ArtifactItem[]>([])
-  const startedAt = useRef<number>(0)
-  /** The composer's field: a template's brief lands here, under the cursor. */
+  const [historyError, setHistoryError] = useState(false)
+  const [preview, setPreview] = useState<{ path: string; name: string } | null>(null)
+  const [category, setCategory] = useState<string>('all')
+  const [search, setSearch] = useState('')
   const promptField = useRef<HTMLTextAreaElement | null>(null)
+  const fileField = useRef<HTMLInputElement | null>(null)
 
   const model = useMemo(() => models.find(entry => entry.id === modelId) ?? models[0] ?? null, [modelId, models])
   const params = model?.params ?? null
-  const sizes = params?.sizes ?? []
-  const qualities = params?.qualities ?? []
-  const backgrounds = params?.backgrounds ?? []
-  const formats = params?.formats ?? []
-  const moderations = params?.moderations ?? []
   const maxEdits = params?.maxEdits ?? 0
-  const maxCount = params?.maxCount ?? 1
-  const compressible = formats.some(item => item === 'jpeg' || item === 'webp') && format !== '' && format !== 'png'
+  const isSignedIn = signedIn === true && !sessionInvalid
+  const canUpload = isSignedIn && maxEdits > references.length && !uploading && !running
+  const visibleTemplates = TEMPLATES.filter((template) => {
+    const words = `${t(`tpl_${template.key}`)} ${t(`tpl_${template.key}_hint`)}`.toLocaleLowerCase()
+    return (category === 'all' || template.category === category) && words.includes(search.trim().toLocaleLowerCase())
+  })
+  const works = useMemo(() => {
+    const recent = new Map<string, { path: string; name: string }>()
+    for (const path of result) recent.set(path, { path, name: path.split('/').pop() ?? path })
+    for (const item of history) if (!recent.has(item.path)) recent.set(item.path, item)
+    return [...recent.values()]
+  }, [history, result])
 
-  /** Follow the deployment's image menu; keep the current pick when it survives. */
   const loadModels = useCallback(async (): Promise<void> => {
-    const answer = await get<Catalog>('/credits/api/media/catalog')
-    const catalog = answer.payload
-    if (catalog === undefined) {
-      setModelsError(answer.message ?? answer.code ?? 'unavailable')
-      return
+    try {
+      const answer = await get<Catalog>('/credits/api/media/catalog')
+      if (!answer.ok || answer.payload === undefined) {
+        setModelsError(answer.message ?? answer.code ?? t('unknown'))
+        return
+      }
+      const items = answer.payload.image
+      setModels(items)
+      setModelsError(items.length === 0 ? t('noModels') : null)
+    } catch (_error) {
+      // Catalog errors leave the last readable model choices visible.
+      setModelsError(t('connectionFailure'))
     }
-    setModelsError(null)
-    setModels(catalog.image)
-    setModelId(current => current !== '' && catalog.image.some(entry => entry.id === current)
-      ? current
-      : catalog.image[0]?.id ?? '')
-  }, [])
+  }, [t])
 
-  const loadBalance = useCallback(async () => {
-    const answer = await get<Balance>('/credits/api/summary')
-    if (answer.sessionInvalid === true) { setSignedIn(false); setBalance(null); return }
-    const points = answer.payload?.balance_points
-    if (typeof points === 'number') setBalance(points)
-    else setBalance(null)
-  }, [])
+  const loadBalance = useCallback(async (): Promise<void> => {
+    try {
+      const answer = await get<Balance>('/credits/api/summary')
+      if (answer.sessionInvalid === true) { actions.patch({ sessionInvalid: true }); setBalance(null); return }
+      setBalance(answer.payload?.balance_points ?? null)
+    } catch (_error) {
+      // A balance read must not turn a successfully saved image into a failure.
+      setBalance(null)
+    }
+  }, [actions])
 
-  /** The newest generated images, for the strip under the form. */
   const loadHistory = useCallback(async (): Promise<void> => {
-    // The artifacts index answers bare (`{ roots, items }`) while the credits
-    // routes answer wrapped; accept either so a change on one side cannot
-    // leave the strip silently empty.
-    const answer = await fetch('/artifacts/api/list', { headers: { accept: 'application/json' } })
-      .then(async response => await response.json())
-      .catch(() => null) as { items?: readonly ArtifactItem[]; payload?: { items?: readonly ArtifactItem[] } } | null
-    const items = answer?.items ?? answer?.payload?.items ?? []
-    const images = items
-      .filter(item => item.kind === 'image' && item.path.includes('/credits/media/'))
-      .sort((left, right) => (right.mtimeMs ?? 0) - (left.mtimeMs ?? 0))
-      .slice(0, 12)
-    setHistory(images)
+    try {
+      const response = await fetch('/artifacts/api/list', { headers: { accept: 'application/json' } })
+      if (!response.ok) throw new Error(`HTTP_${String(response.status)}`)
+      const answer = await response.json() as { items?: readonly ArtifactItem[]; payload?: { items?: readonly ArtifactItem[] } }
+      const items = answer.items ?? answer.payload?.items
+      if (items === undefined) throw new Error('INVALID_ARTIFACT_LIST')
+      setHistory(items.filter(item => item.kind === 'image' && item.path.includes('/credits/media/'))
+        .sort((left, right) => (right.mtimeMs ?? 0) - (left.mtimeMs ?? 0)).slice(0, 24))
+      setHistoryError(false)
+    } catch (_error) {
+      // Retain the visible works while the index is temporarily unavailable.
+      setHistoryError(true)
+    }
   }, [])
 
-  /** Re-read the product sign-in and everything that depends on it. */
   const refreshState = useCallback(async (): Promise<void> => {
-    const session = await get<SessionInfo>('/credits/api/session')
-    const info = session.payload
-    setCreditsPerYuan(info?.creditsPerYuan ?? 1000)
-    setSignedIn(info?.signedIn === true)
-    if (info?.signedIn === true) await Promise.all([loadBalance(), loadModels(), loadHistory()])
-    else setBalance(null)
-  }, [loadBalance, loadHistory, loadModels])
+    const startedWithInvalidSession = readDraft().sessionInvalid
+    try {
+      const answer = await get<SessionInfo>('/credits/api/session')
+      if (!answer.ok || answer.payload === undefined) throw new Error('SESSION_UNAVAILABLE')
+      const info = answer.payload
+      setCreditsPerYuan(info.creditsPerYuan)
+      setSignedIn(info.signedIn)
+      if (!info.signedIn) actions.patch({ sessionInvalid: true })
+      else if (startedWithInvalidSession) actions.patch({ sessionInvalid: false })
+      setStateError(false)
+      if (info.signedIn) await Promise.all([loadBalance(), loadModels()])
+      else setBalance(null)
+    } catch (_error) {
+      setStateError(true)
+    }
+  }, [actions, loadBalance, loadModels, readDraft])
 
-  useEffect(() => { void refreshState() }, [refreshState])
-
-  /**
-   * The sign-in belongs to the product, not to this page, so the page follows
-   * it while it is open: signing in from the Credits column unlocks generation
-   * here without reopening the panel, and a sign-out takes the balance away.
-   */
+  useEffect(() => { void refreshState(); void loadHistory() }, [refreshState, loadHistory])
   useEffect(() => {
     const revisit = (): void => { void refreshState() }
     const timer = setInterval(revisit, 30_000)
     window.addEventListener('focus', revisit)
-    return () => {
-      clearInterval(timer)
-      window.removeEventListener('focus', revisit)
-    }
+    return () => { clearInterval(timer); window.removeEventListener('focus', revisit) }
   }, [refreshState])
 
-  /** Snap every pick to the selected model's menu. */
   useEffect(() => {
-    if (params === null) return
-    setSize(current => params.sizes.includes(current) ? current : params.sizes[0] ?? '')
-    setQuality(current => params.qualities.includes(current) ? current : '')
-    setBackground(current => params.backgrounds.includes(current) ? current : '')
-    setFormat(current => params.formats.includes(current) ? current : '')
-    setModeration(current => params.moderations.includes(current) ? current : '')
-    setCount(current => current > params.maxCount ? params.maxCount : current)
-    setReferences(current => current.slice(0, params.maxEdits))
-  }, [params])
-
-  useEffect(() => {
-    if (phase !== 'running') return undefined
-    const timer = setInterval(() => { setElapsed(Math.floor((Date.now() - startedAt.current) / 1000)) }, 1000)
-    return () => { clearInterval(timer) }
-  }, [phase])
-
-  /** Upload one reference image as raw bytes; the host keeps it on this machine. */
-  const uploadReference = useCallback(async (file: File): Promise<void> => {
-    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
-      setFailure(t('uploadFailed', { message: t('unsupportedType') }))
-      return
-    }
-    const key = `dsh-asset-${globalThis.crypto?.randomUUID?.() ?? String(Date.now())}`.replace(/[^\x21-\x7e]/g, '')
-    const response = await fetch('/credits/api/assets', {
-      method: 'POST',
-      headers: {
-        'content-type': file.type,
-        'x-file-name': file.name,
-        'x-idempotency-key': key.slice(0, 128),
-        accept: 'application/json',
-      },
-      body: file,
+    if (params === null || model === null) return
+    const current = readDraft()
+    const kept = current.references.slice(0, params.maxEdits)
+    for (const item of current.references.slice(params.maxEdits)) releaseReferencePreview(item.url)
+    if (kept.length !== current.references.length) setMessage(t('referencesAdjusted', { n: String(params.maxEdits) }))
+    actions.patch({
+      modelId: model.id, referenceLimit: params.maxEdits,
+      size: params.sizes.includes(current.size) ? current.size : params.sizes[0] ?? '',
+      quality: params.qualities.includes(current.quality) ? current.quality : '',
+      background: params.backgrounds.includes(current.background) ? current.background : '',
+      format: params.formats.includes(current.format) ? current.format : '',
+      moderation: params.moderations.includes(current.moderation) ? current.moderation : '',
+      count: Math.max(1, Math.min(current.count, params.maxCount)),
+      seed: params.seed ? current.seed : '', references: kept,
     })
-    const answer = await response.json() as {
-      ok: boolean
-      code?: string | null
-      message?: string | null
-      sessionInvalid?: boolean
-      asset?: { assetId: string | null } | null
-    }
-    if (answer.sessionInvalid === true) { setSignedIn(false); setFailure(t('noAuth')); return }
-    const assetId = answer.asset?.assetId
-    if (!answer.ok || assetId === null || assetId === undefined) {
-      setFailure(t('uploadFailed', { message: answer.message ?? answer.code ?? t('unknown') }))
-      return
-    }
-    setReferences(current => [...current, { assetId, name: file.name, url: URL.createObjectURL(file) }])
-  }, [t])
+  }, [params, model, actions, releaseReferencePreview, readDraft, setMessage, t])
 
-  const pickReferences = useCallback(async (files: FileList | null): Promise<void> => {
-    if (files === null || files.length === 0) return
-    setFailure(null)
-    setUploading(true)
+  useEffect(() => {
+    if (generationStartedAt === null) { void loadHistory(); return undefined }
+    const tick = (): void => { setElapsed(Math.floor((Date.now() - generationStartedAt) / 1000)) }
+    tick()
+    const timer = setInterval(tick, 1000)
+    return () => { clearInterval(timer) }
+  }, [generationStartedAt, loadHistory])
+
+  const removeReference = useCallback((assetId: string): void => {
+    const current = readDraft()
+    if (current.uploading || current.generationStartedAt !== null) return
+    const removed = current.references.find(item => item.assetId === assetId)
+    if (removed !== undefined) releaseReferencePreview(removed.url)
+    actions.removeReference(assetId)
+  }, [actions, readDraft, releaseReferencePreview])
+
+  const clearReferences = useCallback((): void => {
+    const current = readDraft()
+    if (current.uploading || current.generationStartedAt !== null) return
+    for (const item of current.references) releaseReferencePreview(item.url)
+    actions.patch({ references: [] })
+  }, [actions, readDraft, releaseReferencePreview])
+
+  const addReferences = useCallback(async (source: readonly File[] | { readonly path: string }): Promise<void> => {
+    const current = readDraft()
+    if (current.uploading || current.generationStartedAt !== null || current.sessionInvalid || signedIn !== true) return
+    const selected = models.find(entry => entry.id === current.modelId)
+    const limit = Math.min(selected?.params.maxEdits ?? 0, current.referenceLimit)
+    const slots = Math.max(0, limit - current.references.length)
+    if (slots === 0 || selected === undefined) { setFailure(t('referenceLimit', { n: String(limit) })); return }
+    actions.patch({ uploading: true, failure: null })
     try {
-      for (const file of [...files].slice(0, Math.max(0, maxEdits - references.length))) await uploadReference(file)
+      let files: readonly File[]
+      if ('path' in source) {
+        const response = await fetch(rawUrl(source.path))
+        if (!response.ok) throw new Error(`HTTP_${String(response.status)}`)
+        const blob = await response.blob()
+        files = [new File([blob], source.path.split('/').pop() ?? 'image.png', { type: blob.type || 'image/png' })]
+      } else files = source
+      if (files.length > slots) setMessage(t('referenceLimit', { n: String(limit) }))
+      for (const file of files.slice(0, slots)) {
+        if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
+          setFailure(t('uploadFailed', { message: t('unsupportedType') })); continue
+        }
+        if (file.size === 0 || file.size > 32 * 1024 * 1024) {
+          setFailure(t('uploadFailed', { message: t('fileSizeLimit') })); continue
+        }
+        const beforeUpload = readDraft()
+        if (beforeUpload.modelId !== selected.id || beforeUpload.references.length >= beforeUpload.referenceLimit) break
+        const response = await fetch('/credits/api/assets', {
+          method: 'POST',
+          headers: {
+            'content-type': file.type, 'x-file-name': encodeURIComponent(file.name),
+            'x-idempotency-key': `dsh-asset-${globalThis.crypto.randomUUID()}`, accept: 'application/json',
+          },
+          body: file,
+        })
+        if (!response.ok) throw new Error(`HTTP_${String(response.status)}`)
+        const answer = await response.json() as Envelope<never> & { asset?: { assetId: string | null } | null }
+        if (answer.sessionInvalid === true) { actions.patch({ sessionInvalid: true, failure: t('noAuth') }); break }
+        const assetId = answer.asset?.assetId
+        if (!answer.ok || assetId === null || assetId === undefined) {
+          setFailure(t('uploadFailed', { message: answer.message ?? answer.code ?? t('unknown') })); continue
+        }
+        const latest = readDraft()
+        if (latest.modelId !== selected.id || latest.references.length >= Math.min(limit, latest.referenceLimit)) break
+        actions.appendReference({ assetId, name: file.name, url: createReferencePreview(file) }, selected.id, limit)
+      }
+    } catch (_error) {
+      setFailure(t('uploadFailed', { message: t('connectionFailure') }))
     } finally {
-      setUploading(false)
+      actions.patch({ uploading: false })
     }
-  }, [maxEdits, references.length, uploadReference])
+  }, [actions, createReferencePreview, models, readDraft, setFailure, setMessage, signedIn, t])
 
-  const generate = useCallback(async () => {
-    setFailure(null)
-    setMessage(null)
-    setResult(null)
-    if (prompt.trim() === '') { setFailure(t('promptPlaceholder')); return }
-    setPhase('running')
-    startedAt.current = Date.now()
+  const generate = useCallback(async (): Promise<void> => {
+    const current = readDraft()
+    if (current.uploading || current.generationStartedAt !== null || current.sessionInvalid || signedIn !== true) return
+    const selected = models.find(entry => entry.id === current.modelId)
+    if (selected === undefined) return
+    const accepted = selected.params
+    if (current.prompt.trim() === '') { setFailure(t('promptRequired')); promptField.current?.focus(); return }
+    if (accepted.seed && current.seed.trim() !== '' && !Number.isSafeInteger(Number(current.seed))) {
+      setFailure(t('seedInvalid')); return
+    }
+    actions.patch({ generationStartedAt: Date.now(), failure: null, message: null })
     setElapsed(0)
-    const answer = await post<{ path: string; paths?: readonly string[]; model?: string }>(
-      '/credits/api/image/generate',
-      {
-        prompt: prompt.trim(),
-        model: model?.id ?? '',
-        ...size === '' ? {} : { size },
-        ...quality === '' ? {} : { quality },
-        ...background === '' ? {} : { background },
-        ...format === '' ? {} : { format },
-        ...moderation === '' ? {} : { moderation },
-        ...compressible ? { compression } : {},
-        ...seed.trim() === '' || !Number.isInteger(Number(seed)) ? {} : { seed: Number(seed) },
-        count,
-        references: references.map(item => item.assetId),
-      },
-    )
-    if (answer.sessionInvalid === true) { setSignedIn(false); setPhase('idle'); setFailure(t('noAuth')); return }
-    if (!answer.ok || answer.payload === undefined) {
-      setPhase('idle')
-      if (answer.code === 'INSUFFICIENT_POINTS') setFailure(t('insufficient'))
-      else setFailure(t('failed', { message: answer.message ?? answer.code ?? t('unknown') }))
-      return
+    try {
+      const answer = await post<{ path: string; paths?: readonly string[] }>('/credits/api/image/generate', {
+        prompt: current.prompt.trim(), model: selected.id, count: Math.max(1, Math.min(current.count, accepted.maxCount)),
+        ...accepted.sizes.includes(current.size) ? { size: current.size } : {},
+        ...accepted.qualities.includes(current.quality) ? { quality: current.quality } : {},
+        ...accepted.backgrounds.includes(current.background) ? { background: current.background } : {},
+        ...accepted.formats.includes(current.format) ? { format: current.format } : {},
+        ...accepted.moderations.includes(current.moderation) ? { moderation: current.moderation } : {},
+        ...accepted.formats.includes(current.format) && (current.format === 'jpeg' || current.format === 'webp') ? { compression: current.compression } : {},
+        ...accepted.seed && current.seed.trim() !== '' ? { seed: Number(current.seed) } : {},
+        references: current.references.slice(0, accepted.maxEdits).map(item => item.assetId),
+      })
+      if (answer.sessionInvalid === true) { actions.patch({ sessionInvalid: true, failure: t('noAuth') }); return }
+      if (!answer.ok || answer.payload === undefined) {
+        setFailure(answer.code === 'INSUFFICIENT_POINTS' ? t('insufficient') : t('failed', { message: answer.message ?? answer.code ?? t('unknown') }))
+        return
+      }
+      actions.patch({ resultPaths: answer.payload.paths ?? [answer.payload.path], message: t('done') })
+      await Promise.all([loadBalance(), loadHistory()])
+    } catch (_error) {
+      // A disconnected request may have completed upstream; never retry it automatically.
+      setFailure(t('generationConnectionLost'))
+      void loadHistory()
+    } finally {
+      actions.patch({ generationStartedAt: null })
     }
-    setPhase('saving')
-    setResult({ paths: answer.payload.paths ?? [answer.payload.path] })
-    setPhase('done')
-    setMessage(t('done'))
-    await Promise.all([loadBalance(), loadHistory()])
-  }, [
-    prompt, model, size, quality, background, format, moderation, compressible, compression,
-    count, references, loadBalance, loadHistory, t,
-  ])
+  }, [actions, loadBalance, loadHistory, models, readDraft, setFailure, signedIn, t])
 
-  const rawUrl = (path: string): string => `/artifacts/api/raw?path=${encodeURIComponent(path)}`
-
-  /** Fill the composer from a starter, then leave the cursor in the words. */
   const applyTemplate = useCallback((key: string): void => {
-    setPrompt(t(`tpl_${key}_prompt`))
+    actions.patch({ prompt: t(`tpl_${key}_prompt`) })
+    setMessage(t('templateApplied'))
     promptField.current?.focus()
-  }, [t])
+  }, [actions, setMessage, t])
 
   return (
-    <div className={css.page}>
-      <header className={css.header}>
-        <h1 className={css.title}>{t('title')}</h1>
-        <ModeTabs mode='image' t={t} onOther={openVideo} />
-        {signedIn === true && balance !== null && (
-          <span className={css.balance}>
-            {t('balance', { points: balance.toLocaleString('zh-CN'), yuan: (balance / creditsPerYuan).toFixed(2) })}
-          </span>
-        )}
-      </header>
+    <div className={css.page} id="imagegen" role="tabpanel" aria-labelledby="gen-mode-image">
+      <div className={css.content}>
+        <header className={css.header}>
+          <h1 className={css.title}>{t('title')}</h1>
+          <SegmentedTabs
+            className={css.modeTabs}
+            items={[
+              { value: 'image', label: t('tab.image'), id: 'gen-mode-image', panelId: 'imagegen' },
+              { value: 'video', label: t('tab.video'), id: 'gen-mode-video', panelId: 'videogen' },
+            ]}
+            value="image" onChange={(next) => { if (next === 'video') openVideo() }} label={t('mode.label')}
+          />
+          {isSignedIn && balance !== null && <span className={css.balance}>{t('balance', { points: balance.toLocaleString(), yuan: (balance / creditsPerYuan).toFixed(2) })}</span>}
+        </header>
 
-      {signedIn === false && <p className={css.hint}>{t('signedOut')}</p>}
-
-      {signedIn === true && (
-        <>
-          <section className={css.card}>
-            {modelsError !== null && <p className={css.error}>{t('modelsFailed', { message: modelsError })}</p>}
-
-            {/* The composer: the words own the top of the card, the controls
-                share one bar at its foot, and the send control is the round
-                primary action on that bar's right edge. */}
+        <section className={`${css.composer} ${dragging ? css.dragging : ''}`}
+          aria-label={t('composer')}
+          onDragOver={(event) => { if (canUpload) { event.preventDefault(); setDragging(true) } }}
+          onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false) }}
+          onDrop={(event) => { event.preventDefault(); setDragging(false); void addReferences([...event.dataTransfer.files]) }}
+        >
+          <div className={css.composerBody}>
+            <div className={css.referenceColumn}>
+              <Tooltip label={maxEdits === 0 ? t('badgeNoEdits') : t('dropHint')} side="bottom" portal>
+                <button type="button" className={css.addReference} aria-label={t('addReference')} disabled={!canUpload}
+                  onClick={() => { fileField.current?.click() }}>
+                  <IconPlusOutlineRegular size={22} />
+                  <span>{uploading ? t('uploadingShort') : t('reference')}</span>
+                </button>
+              </Tooltip>
+              <input ref={fileField} type="file" aria-label={t('addReference')} accept="image/png,image/jpeg,image/webp" multiple hidden
+                disabled={!canUpload} onChange={(event) => { void addReferences([...event.target.files ?? []]); event.target.value = '' }} />
+            </div>
             <label className={css.promptField}>
-              <textarea
-                ref={promptField}
-                className={css.textarea}
-                rows={5}
-                value={prompt}
-                aria-label={t('prompt')}
-                placeholder={t('promptPlaceholder')}
-                onChange={(event) => { setPrompt(event.target.value) }}
-              />
-              <span className={css.count} aria-hidden="true">{prompt.length}</span>
+              <textarea ref={promptField} className={css.textarea} rows={4} value={prompt} aria-label={t('prompt')}
+                placeholder={t('promptPlaceholder')} onChange={(event) => { actions.patch({ prompt: event.target.value }) }} />
+              <span className={css.characterCount} aria-hidden="true">{prompt.length}</span>
             </label>
-            <div className={css.presets}>
-              {PRESETS.map(preset => (
-                <button
-                  key={preset}
-                  type="button"
-                  className={css.chip}
-                  onClick={() => {
-                    const suffix = t(`preset_text_${preset}`)
-                    setPrompt(current => current.includes(suffix) ? current : `${current}${suffix}`)
-                  }}
-                >
-                  {t(`preset_${preset}`)}
-                </button>
-              ))}
-            </div>
-
-            {sizes.length > 0 && (
-              <div className={css.field}>
-                <span className={css.label}>{t('ratio')}</span>
-                <div className={css.ratios}>
-                  {sizes.map((option) => {
-                    const ratio = ratioOf(option)
-                    return (
-                      <button
-                        key={option}
-                        type="button"
-                        className={option === size ? `${css.ratio} ${css.ratioActive}` : css.ratio}
-                        onClick={() => { setSize(option) }}
-                      >
-                        <span className={css.ratioShape} style={ratio === null ? undefined : { aspectRatio: ratio.replace(':', ' / ') }} />
-                        <span className={css.ratioText}>{ratio ?? t('sizeAuto')}</span>
-                        <span className={css.ratioPixels}>{option === 'auto' ? t('sizeFollowPrompt') : option}</span>
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
-            )}
-
-            <div className={css.grid}>
-              {qualities.length > 0 && (
-                <div className={css.field}>
-                  <span className={css.label}>{t('quality')}</span>
-                  <div className={css.segmented}>
-                    <button
-                      type="button"
-                      className={quality === '' ? `${css.segment} ${css.segmentActive}` : css.segment}
-                      onClick={() => { setQuality('') }}
-                    >
-                      {t('inherit')}
-                    </button>
-                    {qualities.map(option => (
-                      <button
-                        key={option}
-                        type="button"
-                        className={quality === option ? `${css.segment} ${css.segmentActive}` : css.segment}
-                        onClick={() => { setQuality(option) }}
-                      >
-                        {option}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {maxCount > 1 && (
-                <label className={css.field}>
-                  <span className={css.label}>{t('count')}</span>
-                  <select className={css.select} value={String(count)} onChange={(event) => { setCount(Number(event.target.value)) }}>
-                    {Array.from({ length: maxCount }, (_, index) => index + 1)
-                      .map(item => <option key={item} value={String(item)}>{String(item)}</option>)}
-                  </select>
-                </label>
-              )}
-            </div>
-
-            {(backgrounds.length > 0 || formats.length > 0 || moderations.length > 0 || params?.seed === true) && (
-              <div className={css.advancedWrap}>
-                <button type="button" className={css.ghost} onClick={() => { setAdvanced(current => !current) }}>
-                  {advanced ? t('advancedHide') : t('advancedShow')}
-                </button>
-                {advanced && (
-                  <div className={css.grid}>
-                    {backgrounds.length > 0 && (
-                      <div className={css.field}>
-                        <span className={css.label}>{t('background')}</span>
-                        <div className={css.segmented}>
-                          <button
-                            type="button"
-                            className={background === '' ? `${css.segment} ${css.segmentActive}` : css.segment}
-                            onClick={() => { setBackground('') }}
-                          >
-                            {t('inherit')}
-                          </button>
-                          {backgrounds.map(option => (
-                            <button
-                              key={option}
-                              type="button"
-                              className={background === option ? `${css.segment} ${css.segmentActive}` : css.segment}
-                              onClick={() => { setBackground(option) }}
-                            >
-                              {t(`bg_${option}`)}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    {formats.length > 0 && (
-                      <div className={css.field}>
-                        <span className={css.label}>{t('format')}</span>
-                        <div className={css.segmented}>
-                          <button
-                            type="button"
-                            className={format === '' ? `${css.segment} ${css.segmentActive}` : css.segment}
-                            onClick={() => { setFormat('') }}
-                          >
-                            {t('inherit')}
-                          </button>
-                          {formats.map(option => (
-                            <button
-                              key={option}
-                              type="button"
-                              className={format === option ? `${css.segment} ${css.segmentActive}` : css.segment}
-                              onClick={() => { setFormat(option) }}
-                            >
-                              {option}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    {compressible && (
-                      <label className={css.field}>
-                        <span className={css.label}>{t('compression', { n: String(compression) })}</span>
-                        <input
-                          type="range"
-                          min={0}
-                          max={100}
-                          value={compression}
-                          onChange={(event) => { setCompression(Number(event.target.value)) }}
-                        />
-                      </label>
-                    )}
-                    {params?.seed === true && (
-                      <label className={css.field}>
-                        <span className={css.label}>{t('seed')}</span>
-                        <input
-                          className={css.select}
-                          inputMode="numeric"
-                          placeholder={t('seedHint')}
-                          value={seed}
-                          onChange={(event) => { setSeed(event.target.value.replace(/[^0-9]/g, '')) }}
-                        />
-                      </label>
-                    )}
-                    {moderations.length > 0 && (
-                      <div className={css.field}>
-                        <span className={css.label}>{t('moderation')}</span>
-                        <div className={css.segmented}>
-                          <button
-                            type="button"
-                            className={moderation === '' ? `${css.segment} ${css.segmentActive}` : css.segment}
-                            onClick={() => { setModeration('') }}
-                          >
-                            {t('inherit')}
-                          </button>
-                          {moderations.map(option => (
-                            <button
-                              key={option}
-                              type="button"
-                              className={moderation === option ? `${css.segment} ${css.segmentActive}` : css.segment}
-                              onClick={() => { setModeration(option) }}
-                            >
-                              {option}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {maxEdits > 0 && (
-              <div className={css.field}>
-                <span className={css.label}>{t('reference')}<span className={css.count}>{references.length}/{maxEdits}</span></span>
-                <label className={css.dropzone}>
-                  <input
-                    type="file"
-                    accept="image/png,image/jpeg,image/webp"
-                    multiple
-                    hidden
-                    onChange={(event) => {
-                      void pickReferences(event.target.files)
-                      event.target.value = ''
-                    }}
-                  />
-                  <span>{uploading ? t('uploading') : t('dropHint')}</span>
-                </label>
-                {references.length > 0 && (
-                  <ul className={css.thumbs}>
-                    {references.map(item => (
-                      <li key={item.assetId} className={css.thumb}>
-                        <img src={item.url} alt={item.name} />
-                        <button
-                          type="button"
-                          className={css.remove}
-                          onClick={() => { setReferences(current => current.filter(entry => entry.assetId !== item.assetId)) }}
-                        >
-                          ×
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            )}
-
-            <div className={css.composerBar}>
-              <label className={css.modelInline}>
-                <select
-                  className={css.select}
-                  value={model?.id ?? ''}
-                  aria-label={t('model')}
-                  onChange={(event) => { setModelId(event.target.value) }}
-                >
-                  {models.map(entry => <option key={entry.id} value={entry.id}>{entry.displayName}</option>)}
-                </select>
-              </label>
-              <span className={css.mode}>
-                {references.length === 0 ? t('modeGenerate') : t('modeEdit', { count: String(references.length) })}
-              </span>
-              {params !== null && (
-                <ul className={css.badges}>
-                  {sizes.length > 0 && <li className={css.badge}>{t('badgeSizes', { n: String(sizes.length) })}</li>}
-                  {maxCount > 1 && <li className={css.badge}>{t('badgeCount', { n: String(maxCount) })}</li>}
-                  <li className={css.badge}>
-                    {maxEdits > 0 ? t('badgeEdits', { n: String(maxEdits) }) : t('badgeNoEdits')}
-                  </li>
-                  {qualities.length > 0 && <li className={css.badge}>{t('badgeQuality')}</li>}
-                </ul>
-              )}
-              <button
-                type="button"
-                className={css.send}
-                aria-label={phase === 'running' ? t('runningShort') : t('submit')}
-                title={phase === 'running' ? t('runningShort') : t('submit')}
-                onClick={() => { void generate() }}
-                disabled={phase === 'running' || phase === 'saving' || model === null}
-              >
-                <SendGlyph running={phase === 'running'} />
-              </button>
-            </div>
-            {model !== null && (
-              <p className={css.hint}>
-                {model.source === 'fallback' ? t('sourceUnknown') : t('sourceLine', { source: model.source })}
-                {!model.verified && ` · ${t('unverified')}`}
-              </p>
-            )}
-          </section>
-
-          <section className={css.templates}>
-            <header className={css.templatesHead}>
-              <h2 className={css.templatesTitle}>{t('templatesTitle')}</h2>
-              <span className={css.templatesHint}>{t('templatesHint')}</span>
-            </header>
-            <ul className={css.templateGrid}>
-              {TEMPLATES.map(template => (
-                <li key={template.key}>
-                  <button
-                    type="button"
-                    className={css.templateCard}
-                    onClick={() => { applyTemplate(template.key) }}
-                  >
-                    <span className={css.templateGlyph}><TemplateGlyph name={template.key} /></span>
-                    <span className={css.templateName}>{t(`tpl_${template.key}`)}</span>
-                    <span className={css.templateHint}>{t(`tpl_${template.key}_hint`)}</span>
-                  </button>
-                </li>
-              ))}
+          </div>
+          {references.length > 0 && <div className={css.referenceTray}>
+            <ul className={css.thumbs} aria-label={t('reference')}>
+              {references.map(item => <li key={item.assetId} className={css.thumb}>
+                <img src={item.url} alt={item.name} />
+                <Tooltip label={t('removeReference', { name: item.name })} side="top" portal>
+                  <button type="button" className={css.remove} aria-label={t('removeReference', { name: item.name })} disabled={uploading || running}
+                    onClick={() => { removeReference(item.assetId) }}><IconCloseOutlineRegular size={12} /></button>
+                </Tooltip>
+              </li>)}
             </ul>
-          </section>
-
-          {phase === 'running' && (
-            <div className={css.progress}>
-              <div className={css.bar} />
-              <span className={css.notice}>{t('running', { seconds: String(elapsed) })}</span>
-            </div>
-          )}
-          {phase === 'saving' && <p className={css.notice}>{t('saving')}</p>}
+            <span className={css.hint}>{references.length}/{maxEdits}</span>
+            <button type="button" className={css.textAction} onClick={clearReferences} disabled={uploading || running}>{t('clearReferences')}</button>
+          </div>}
+          <div className={css.composerBar}>
+            <label className={css.modelInline}>
+              <select className={css.select} value={model?.id ?? ''} aria-label={t('model')} disabled={running || uploading || models.length === 0}
+                onChange={(event) => { actions.patch({ modelId: event.target.value }) }}>
+                {models.length === 0 && <option value="">{t('noModelsShort')}</option>}
+                {models.map(entry => <option key={entry.id} value={entry.id}>{entry.displayName}</option>)}
+              </select>
+            </label>
+            {params !== null && <button type="button" className={css.parameterButton} aria-expanded={advanced} aria-controls="image-parameters"
+              onClick={() => { setAdvanced(current => !current) }}><IconSettingsOutlineRegular size={14} /><span>{size || t('parameters')}{count > 1 ? ` · ${String(count)}` : ''}</span></button>}
+            <span className={css.mode}>{references.length === 0 ? t('modeGenerate') : t('modeEdit', { count: String(references.length) })}</span>
+            <Tooltip label={running ? t('runningShort') : t('submit')} side="top" portal>
+              <button type="button" className={css.send} aria-label={running ? t('runningShort') : t('submit')}
+                disabled={running || uploading || model === null || !isSignedIn || prompt.trim() === ''}
+                onClick={() => { void generate() }}>
+                {running ? <span className={css.spinner} /> : <IconSendOutlineRegular size={19} />}
+              </button>
+            </Tooltip>
+          </div>
+          {advanced && params !== null && <div className={css.parameters} id="image-parameters">
+            {params.sizes.length > 0 && <label className={css.field}><span>{t('ratio')}</span><select className={css.select} value={size} disabled={running}
+              onChange={(event) => { actions.patch({ size: event.target.value }) }}>{params.sizes.map(value => <option key={value} value={value}>{value === 'auto' ? t('sizeAuto') : value}</option>)}</select></label>}
+            {params.maxCount > 1 && <label className={css.field}><span>{t('count')}</span><select className={css.select} value={count} disabled={running}
+              onChange={(event) => { actions.patch({ count: Number(event.target.value) }) }}>
+              {Array.from({ length: params.maxCount }, (_, i) => i + 1).map(value => <option key={value} value={value}>{value}</option>)}
+            </select></label>}
+            {([
+              { key: 'quality', values: params.qualities, value: quality },
+              { key: 'background', values: params.backgrounds, value: background },
+              { key: 'format', values: params.formats, value: format },
+              { key: 'moderation', values: params.moderations, value: moderation },
+            ] as const).filter(field => field.values.length > 0).map(field => <label className={css.field} key={field.key}>
+              <span>{t(field.key)}</span><select className={css.select} value={field.value} disabled={running}
+                onChange={(event) => { actions.patch({ [field.key]: event.target.value }) }}><option value="">{t('inherit')}</option>
+                {field.values.map(value => <option key={value} value={value}>{field.key === 'background' && ['auto', 'transparent', 'opaque'].includes(value) ? t(`bg_${value}`) : value}</option>)}
+              </select></label>)}
+            {(format === 'jpeg' || format === 'webp') && <label className={css.field}><span>{t('compression', { n: String(compression) })}</span>
+              <input type="range" min={0} max={100} value={compression} disabled={running} onChange={(event) => { actions.patch({ compression: Number(event.target.value) }) }} /></label>}
+            {params.seed && <label className={css.field}><span>{t('seed')}</span><input className={css.select} inputMode="numeric" value={seed} placeholder={t('seedHint')} disabled={running}
+              onChange={(event) => { actions.patch({ seed: event.target.value.replace(/[^0-9]/g, '') }) }} /></label>}
+            <p className={css.parameterHint}>{maxEdits > 0 ? t('referenceHelp', { n: String(maxEdits) }) : t('badgeNoEdits')}</p>
+          </div>}
+        </section>
+        <div className={css.feedback} aria-live="polite">
+          {stateError && <p className={css.error}>{t('stateFailed')} <button type="button" className={css.textAction} onClick={() => { void refreshState() }}>{t('retry')}</button></p>}
+          {(signedIn === false || sessionInvalid) && <p className={css.hint}>{t('signedOut')}</p>}
+          {modelsError !== null && <p className={css.error}>{t('modelsFailed', { message: modelsError })} <button type="button" className={css.textAction} onClick={() => { void loadModels() }}>{t('retry')}</button></p>}
+          {running && <p className={css.notice}><span className={css.statusDot} />{t('running', { seconds: String(elapsed) })}</p>}
+          {failure !== null && <p className={css.error} role="alert">{failure}</p>}
           {message !== null && <p className={css.notice}>{message}</p>}
-          {failure !== null && <p className={css.error}>{failure}</p>}
+        </div>
 
-          {result !== null && (
-            <section className={css.card}>
-              <h2 className={css.cardTitle}>{t('preview')}</h2>
-              <div className={css.gallery}>
-                {result.paths.map(path => (
-                  <figure key={path} className={css.figure}>
-                    <img className={css.figureImg} src={rawUrl(path)} alt={t('preview')} />
-                    <figcaption className={css.figureMeta}>
-                      <a className={css.link} href={rawUrl(path)} target="_blank" rel="noreferrer">{t('open')}</a>
-                      <a className={css.link} href={rawUrl(path)} download={path.split('/').pop() ?? 'image.png'}>{t('download')}</a>
-                      {maxEdits > 0 && (
-                        <button
-                          type="button"
-                          className={css.link}
-                          onClick={() => {
-                            void (async () => {
-                              const blob = await (await fetch(rawUrl(path))).blob()
-                              await uploadReference(new File([blob], path.split('/').pop() ?? 'image.png', { type: blob.type || 'image/png' }))
-                            })()
-                          }}
-                        >
-                          {t('useAsReference')}
-                        </button>
-                      )}
-                    </figcaption>
-                  </figure>
-                ))}
-              </div>
-            </section>
-          )}
+        <section className={css.templates} aria-label={t('templatesTitle')}>
+          <header className={css.sectionHead}><h2>{t('templatesTitle')}</h2><span className={css.hint}>{t('templatesHint')}</span></header>
+          <div className={css.templateToolbar}>
+            <div className={css.categories} role="group" aria-label={t('categories')}>
+              {CATEGORIES.map(value => <button key={value} type="button" aria-pressed={category === value} className={`${css.category} ${category === value ? css.categoryActive : ''}`}
+                onClick={() => { setCategory(value) }}>{t(`category_${value}`)}</button>)}
+            </div>
+            <label className={css.search}><IconSearchOutlineRegular size={14} /><input type="search" aria-label={t('searchTemplates')} placeholder={t('searchTemplates')}
+              value={search} onChange={(event) => { setSearch(event.target.value) }} /></label>
+          </div>
+          <ul className={css.templateGrid}>
+            {visibleTemplates.map(template => <li key={template.key}><button type="button" className={css.templateCard} onClick={() => { applyTemplate(template.key) }}>
+              <span className={css.templateCopy}><span className={css.templateGlyph}>{template.glyph === 'copy' ? <IconCopyOutlineRegular size={18} /> : template.glyph === 'edit' ? <IconEditOutlineRegular size={18} /> : <IconSparkleRegular size={18} />}</span>
+                <span className={css.templateName}>{t(`tpl_${template.key}`)}</span><span className={css.templateHint}>{t(`tpl_${template.key}_hint`)}</span></span>
+              <span className={`${css.templateVisual} ${css[`visual_${template.key}`]}`} aria-hidden="true"><i /><i /><i /><b /></span>
+            </button></li>)}
+          </ul>
+          {visibleTemplates.length === 0 && <p className={css.empty}>{t('noTemplates')} <button type="button" className={css.textAction} onClick={() => { setSearch(''); setCategory('all') }}>{t('resetFilters')}</button></p>}
+          <div className={css.styles} role="group" aria-label={t('styles')}><span className={css.hint}>{t('styles')}</span>{PRESETS.map(preset => <button key={preset} type="button" className={css.styleChip}
+            onClick={() => { const suffix = t(`preset_text_${preset}`); actions.patch({ prompt: prompt.includes(suffix) ? prompt : `${prompt}${suffix}` }); promptField.current?.focus() }}>{t(`preset_${preset}`)}</button>)}</div>
+        </section>
 
-          <section className={css.card}>
-            <h2 className={css.cardTitle}>{t('history')}</h2>
-            {history.length === 0
-              ? <p className={css.hint}>{t('historyEmpty')}</p>
-              : (
-                <ul className={css.history}>
-                  {history.map(item => (
-                    <li key={item.path} className={css.historyItem}>
-                      <img src={rawUrl(item.path)} alt={item.name} />
-                      <span className={css.historyName}>{item.name}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-          </section>
-        </>
-      )}
+        <section className={css.works} aria-label={t('history')}>
+          <header className={css.sectionHead}><h2>{t('history')}</h2><button type="button" className={css.textAction} onClick={() => { void loadHistory() }}>{t('refreshWorks')}</button></header>
+          {historyError && <p className={css.error}>{t('historyFailed')}</p>}
+          {works.length === 0 ? <div className={css.emptyWorks}><IconSparkleRegular size={24} /><p>{t('historyEmpty')}</p><span>{t('historyEmptyHint')}</span></div> :
+            <ul className={css.worksGrid}>{works.map(item => <li key={item.path} className={css.workCard}>
+              <button type="button" className={css.workImage} aria-label={t('previewNamed', { name: item.name })} onClick={() => { setPreview(item) }}>
+                <img src={rawUrl(item.path)} alt={item.name} loading="lazy" />
+              </button>
+              <div className={css.workMeta}><span className={css.workName}>{item.name}</span><div className={css.workActions}>
+                <a className={css.textAction} href={rawUrl(item.path)} download={item.name}>{t('download')}</a>
+                {maxEdits > 0 && <button type="button" className={css.textAction} disabled={!canUpload} onClick={() => { void addReferences({ path: item.path }) }}>{t('useAsReference')}</button>}
+              </div></div>
+            </li>)}</ul>}
+        </section>
+      </div>
+      {preview !== null && <ImageLightbox src={rawUrl(preview.path)} alt={preview.name} labels={{ dialog: t('preview'), close: t('closePreview') }} onClose={() => { setPreview(null) }} />}
     </div>
   )
 }

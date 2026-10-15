@@ -200,6 +200,7 @@ describe('TurnRecorder', () => {
     const { ctx, git: runnerGit } = await runner()
     const env = {
       git: Promise.resolve(runnerGit), tempRoot, maxFiles: 10, maxFileBytes: 1024, diffTimeoutMs: 100,
+      persist: () => {},
       warn: (m: string) => { throw new Error(m) },
     }
     const plain = new TurnRecorder(ctx.sessions.create(SessionId('plain'), { meta: { cwd: tempRoot } }), tempRoot, env)
@@ -229,6 +230,7 @@ describe('TurnRecorder', () => {
     const session = ctx.sessions.create(SessionId('tmp-in-tree'), { meta: { cwd } })
     const env = {
       git: Promise.resolve(runnerGit), tempRoot, maxFiles: 10, maxFileBytes: 1024, diffTimeoutMs: 100,
+      persist: () => {},
       warn: (m: string) => { throw new Error(m) },
     }
     const recorder = new TurnRecorder(session, cwd, env)

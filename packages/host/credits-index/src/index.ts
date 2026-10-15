@@ -29,6 +29,7 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import z from '@deepseek-ai/schemastery'
 import QRCode from 'qrcode'
+import { parseUsageWindow, readAccountUsage } from './usage.ts'
 import {
   catalogFromPricing,
   mediaModelIds,
@@ -1997,6 +1998,29 @@ export function apply(ctx: Context, config: Config): void {
           await store.clear()
           await releaseAccountCredential()
           reply(response, result)
+          return
+        }
+
+        if (route === '/api/usage' && method === 'GET') {
+          const parsed = parseUsageWindow(url.searchParams)
+          if (!parsed.ok) { json(response, 200, parsed); return }
+          const live = await liveSession()
+          if (live?.token === undefined) {
+            json(response, 200, { ok: false, code: 'SESSION_REQUIRED', message: '请先登录后查看使用量分析。' })
+            return
+          }
+          const outcome = await readAccountUsage({
+            ...parsed.window,
+            baseUrl: resolved.newApiBaseUrl,
+            timeoutMs: resolved.timeoutMs,
+            creditsPerYuan: resolved.creditsPerYuan,
+            adminTokenFile: resolved.newApiAdminTokenFile !== ''
+              ? resolved.newApiAdminTokenFile
+              : join(stateDir, '..', 'credentials', 'newapi-admin-read-token'),
+            account: live.account,
+            upstreamToken: live.upstream?.token,
+          })
+          json(response, 200, outcome)
           return
         }
 

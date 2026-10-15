@@ -424,10 +424,6 @@
     - id: ui-videogen
       name: '@deepseek-ai/dsh-client-ui-videogen'
 
-    # Sidebar Office column: the panel-list place for the office workspace's own view.
-    - id: ui-office
-      name: '@deepseek-ai/dsh-client-ui-office'
-
     # Sidebar Plaza column: the panel-list place for the plugin market's own
     # panel (the market hands it out through its `ctx.market` client face).
     - id: ui-plaza
@@ -678,3 +674,8 @@
       name: '@deepseek-ai/dsh-computer-use'
     - id: computer-use-cua-driver-native
       name: '@deepseek-ai/dsh-experimental-computer-use-cua-driver-native'
+# 皮肤 dream-skin（市场安装；装在 profile 里，这里固化 loader 行）。
+# 只装不挂时它浏览器半边会一直 POST /dream-skin/api 吃 405——路由在宿主半边注册。
+- insert:
+    - id: dream-skin
+      name: 'dsh-dream-skin'

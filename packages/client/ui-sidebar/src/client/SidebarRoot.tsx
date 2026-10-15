@@ -59,7 +59,9 @@ type PanelRowProps =
 
 /** Each panel row subscribes only to its own selection state. */
 function PanelRow({ id, label, usePanelInfo, selectPanel, renderSlot }: PanelRowProps) {
-  const active = usePanelInfo(info => info.activePanelId === id)
+  // Image and video share the AI creation destination in the product rail.
+  const active = usePanelInfo(info => info.activePanelId === id
+    || (id === 'imagegen' && info.activePanelId === 'videogen'))
   return (
     <button
       type="button"

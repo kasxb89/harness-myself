@@ -10,6 +10,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import { VideoPage, type VideogenInjected } from './VideoPage.tsx'
+import { createVideoDraftStore } from './draft-store.ts'
 import { en, NS, zh, type VideogenKey } from './locales.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -35,14 +36,20 @@ export const inject = ['slots', 'locale', 'layout']
 export function apply(ctx: ClientContext): void {
   const t = ctx.locale.bind(NS)
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-videogen: dictionaries')
+  const store = createVideoDraftStore()
+  const previews = new Set<string>()
+  ctx.effect(() => () => { for (const url of previews) URL.revokeObjectURL(url); previews.clear() }, 'ui-videogen: previews')
   const face: VideogenInjected = {
     t: (key, values) => t(key as Parameters<typeof t>[0], values as never),
     openImage: () => { ctx.layout.selectPanel(IMAGE_PANEL_ID) },
+    createPreview: (file) => { const url = URL.createObjectURL(file); previews.add(url); return url },
+    releasePreview: (url) => { URL.revokeObjectURL(url); previews.delete(url) },
   }
   ctx.slots.inject('main', () => ctx.slots.register({
     name: 'main',
     key: PANEL_ID,
     locale: NS,
+    store,
     inject: (): VideogenInjected => face,
   }, VideoPage))
 }

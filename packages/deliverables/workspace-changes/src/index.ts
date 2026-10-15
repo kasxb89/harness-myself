@@ -7,6 +7,12 @@
  * number; summaries and comparisons are served through the `workspaceChanges`
  * service until the Session is disposed. Outside a git repository, or without
  * git, the summary lists file-tool edits only.
+ *
+ * Each recorded summary is also stored in the `workspace_changes` domain when
+ * the composition mounts storage, so the changed-files card on a closing turn
+ * survives the Session being disposed and the Host restarting. Comparisons stay
+ * with the recorder: they read captures under the Session's temporary
+ * directory, which no longer exist once it is gone.
  */
 import { homedir, tmpdir } from 'node:os'
 import type { Context } from '@deepseek-ai/cordis'
@@ -18,6 +24,7 @@ import type {} from '@deepseek-ai/dsh-tools'
 import type { FsTarget } from '@deepseek-ai/dsh-fs'
 import { GitRunner } from './git.ts'
 import { TurnRecorder } from './recorder.ts'
+import { openSummaryStore } from './store.ts'
 import type { WorkspaceChanges } from './types.ts'
 
 export type {
@@ -103,6 +110,10 @@ export function apply(ctx: Context, config: Config): void {
   const recorders = new Map<Session, TurnRecorder>()
   const mutations = new WeakMap<object, TurnRecorder>()
   const byId = new Map<SessionId, TurnRecorder>()
+  // Durable summaries outlive the recorder that produced them, so the card on a
+  // Session's closing turn survives the Session being disposed or the Host being
+  // restarted. A composition without storage keeps the in-memory-only behavior.
+  const summaries = openSummaryStore(ctx)
   const forget = (session: Session): Promise<void> => {
     const recorder = recorders.get(session)
     recorders.delete(session)
@@ -114,7 +125,7 @@ export function apply(ctx: Context, config: Config): void {
     await Promise.all([...recorders.keys()].map(forget))
   })
   const service: WorkspaceChanges = {
-    summary: (sessionId, seq) => byId.get(sessionId)?.summary(seq),
+    summary: (sessionId, seq) => byId.get(sessionId)?.summary(seq) ?? summaries.get(sessionId, seq),
     diff: (sessionId, seq, index, signal) => byId.get(sessionId)?.diff(seq, index, signal) ?? Promise.resolve(undefined),
   }
   ctx.provide('workspaceChanges', service)
@@ -135,6 +146,7 @@ export function apply(ctx: Context, config: Config): void {
       recorder = new TurnRecorder(session, cwd, {
         git: gitRunner(), tempRoot: tmpdir(), maxFiles: config.maxFiles,
         maxFileBytes: config.maxFileBytes, diffTimeoutMs: config.diffTimeoutMs,
+        persist: (seq, summary) => { summaries.put(session.id, seq, summary) },
         warn: (message) => { ctx.logger.warn(message) },
       })
       recorders.set(session, recorder)

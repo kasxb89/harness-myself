@@ -1,0 +1,3 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`video composer > previews a camera script, filters categories and appends it without generating 1`] = `"电影感环绕这是一份可编辑的文字脚本。填入后可补充主体与素材，再手动生成视频电影感单镜头。主体：[填写人物或物件]；环境：[填写场景]。开场：主体位于画面中心，前景形成自然层次。主体镜头：相机以稳定速度沿主体环绕小半圈，维持主体大小与焦点，背景产生自然视差，柔和侧光描绘轮廓。收尾：减速停在有表现力的角度。运动连贯，不改变主体形态。填入创作框"`;
