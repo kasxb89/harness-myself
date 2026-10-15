@@ -175,7 +175,11 @@ describe('TurnRecorder', () => {
     let release!: (runner: GitRunner | null) => void
     const gate = new Promise<GitRunner | null>((resolve) => { release = resolve })
     const tempRoot = await scratchDir('dsh-git-store-', cleanups)
-    const env = { git: gate, tempRoot, maxFiles: 10, maxFileBytes: 1024, diffTimeoutMs: 100, warn: (m: string) => { warnings.push(m) } }
+    const env = {
+      git: gate, tempRoot, maxFiles: 10, maxFileBytes: 1024, diffTimeoutMs: 100,
+      persist: () => {},
+      warn: (m: string) => { warnings.push(m) },
+    }
     const disposed = new TurnRecorder(session, cwd, env)
     disposed.start(1)
     await new Promise(resolve => setTimeout(resolve, 5))
