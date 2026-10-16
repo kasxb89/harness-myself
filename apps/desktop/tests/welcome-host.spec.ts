@@ -9,7 +9,9 @@ function transport(preference?: string) {
     { ns: 'llm-pi-ai', value: { profiles: { example: { apiKeyEnv: 'EXAMPLE_API_KEY' } } } },
     { ns: 'locale', value: preference === undefined ? {} : { preference } },
   ]
-  const send = vi.fn<Parameters<typeof connectDesktopWelcome>[1]>(async (_input, init) => {
+  const productSession = { ok: true, signedIn: false }
+  const send = vi.fn<Parameters<typeof connectDesktopWelcome>[1]>(async (input, init) => {
+    if (new URL(input).pathname === '/credits/api/session') return Response.json(productSession)
     if (init?.method !== 'POST') return new Response('index')
     const { rpcId, method, payload } = JSON.parse(init.body as string) as {
       rpcId: string
@@ -26,7 +28,7 @@ function transport(preference?: string) {
     else value = Object.fromEntries(payload.args.refs.map(ref => [ref, { configured: keys.has(ref), writable: true }]))
     return Response.json({ type: 'server-response', rpcId, result: { ok: true, value } })
   })
-  return { send, keys, namespaces }
+  return { send, keys, namespaces, productSession }
 }
 
 const url = 'http://127.0.0.1:19387/?token=fixture'
@@ -39,18 +41,20 @@ describe('desktop welcome Web operations', () => {
     expect(await backend.analyticsEnabled()).toBe(true)
     expect(await backend.save('sk-example')).toEqual({ ok: true })
     expect(host.keys.get('CUSTOM_DEEPSEEK_KEY')).toBe('sk-example')
-    expect(await backend.read()).toEqual({ loggedIn: false, hasApiKey: true, writable: true, localePreference: null })
+    expect(await backend.read()).toEqual({ loggedIn: false, hasApiKey: false, writable: false, localePreference: null })
     for (const [input, init] of host.send.mock.calls.slice(1)) {
-      expect(input).toMatch(/^http:\/\/127\.0\.0\.1:19387\/api\//u)
+      expect(input).toMatch(/^http:\/\/127\.0\.0\.1:19387\/(api|credits\/api)\//u)
       expect(init).toMatchObject({ credentials: 'include', redirect: 'error' })
     }
   })
 
-  it('reads the explicit language preference and recognizes another provider key', async () => {
+  it('reads the explicit language preference and product login independently of provider keys', async () => {
     const host = transport('zh')
     host.keys.set('EXAMPLE_API_KEY', 'sk-other')
     const backend = await connectDesktopWelcome(url, host.send)
-    expect(await backend.read()).toMatchObject({ localePreference: 'zh', hasApiKey: true })
+    expect(await backend.read()).toMatchObject({ localePreference: 'zh', hasApiKey: false, loggedIn: false })
+    host.productSession.signedIn = true
+    expect(await backend.read()).toMatchObject({ loggedIn: true })
     host.keys.clear()
     expect(await backend.read()).toMatchObject({ hasApiKey: false })
     expect(host.send.mock.calls.every(([, init]) => !(init?.body as string | undefined)?.includes('credentials/set'))).toBe(true)
@@ -65,13 +69,14 @@ describe('desktop welcome Web operations', () => {
     expect(host.send.mock.calls[0]![0]).toContain('/api/settings/describe')
   })
 
-  it('allows profiles without the official provider and retains custom key detection', async () => {
+  it('uses product login in profiles without an official provider', async () => {
     const host = transport()
     host.namespaces.splice(0, 1)
     const backend = await connectDesktopWelcome(url, host.send)
     expect(await backend.read()).toMatchObject({ hasApiKey: false, writable: false })
     host.keys.set('EXAMPLE_API_KEY', 'custom-key')
-    expect(await backend.read()).toMatchObject({ hasApiKey: true, writable: false })
+    host.productSession.signedIn = true
+    expect(await backend.read()).toMatchObject({ loggedIn: true, hasApiKey: false, writable: false })
     expect(await backend.save('official-key')).toEqual({ ok: false })
     expect(host.keys.has('undefined')).toBe(false)
   })
@@ -104,6 +109,16 @@ describe('desktop welcome Web operations', () => {
     expect(init?.credentials).toBe('include')
     expect(init?.signal).toBeInstanceOf(AbortSignal)
     expect(JSON.parse(init!.body as string)).toMatchObject({ payload: { args: { event } } })
+  })
+
+  it.each([new Response(null, { status: 401 }), Response.json({ ok: true, signedIn: 'yes' }), Response.json({ ok: false, signedIn: true })])('rejects unavailable or invalid product login facts', async (response) => {
+    const host = transport()
+    const backend = await connectDesktopWelcome(url, host.send)
+    host.send.mockImplementationOnce(async (_input, init) => {
+      const { rpcId } = JSON.parse(init!.body as string) as { rpcId: string }
+      return Response.json({ type: 'server-response', rpcId, result: { ok: true, value: { namespaces: host.namespaces } } })
+    }).mockResolvedValueOnce(response)
+    await expect(backend.read()).rejects.toThrow(/product session/)
   })
 
   it('refuses an unauthenticated Web launch', async () => {

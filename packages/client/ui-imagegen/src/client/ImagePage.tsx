@@ -1,11 +1,14 @@
 /** Image creation workspace driven by the deployment's existing media catalog. */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
-  IconCloseOutlineRegular, IconCopyOutlineRegular, IconEditOutlineRegular,
+  IconCloseOutlineRegular,
   IconPlusOutlineRegular, IconSearchOutlineRegular, IconSendOutlineRegular,
   IconSettingsOutlineRegular, IconSparkleRegular, ImageLightbox, SegmentedTabs, Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { PropsRuntime, PropsStore } from '@deepseek-ai/dsh-client-ui-slots'
+import type { InjectFace, PropsRenderFactories, PropsRuntime, PropsStore } from '@deepseek-ai/dsh-client-ui-slots'
+import type {} from '@deepseek-ai/dsh-client-ui-prompt-assist/client'
+import type { Context } from '@deepseek-ai/cordis'
+import type { LocalizedText } from '@deepseek-ai/dsh-client-creation-content/client'
 import type { createImageDraftStore, ImageDraft } from './draft-store.ts'
 import css from './ImagePage.module.css'
 
@@ -16,6 +19,8 @@ export interface ImagegenInjected {
   readonly readDraft: () => ImageDraft
   readonly createReferencePreview: (file: File) => string
   readonly releaseReferencePreview: (url: string) => void
+  readonly refreshContent: () => void
+  readonly hooks: { readonly creationContent: Context['creationContent']; readonly locale: Context['locale'] }
 }
 
 interface Envelope<T> {
@@ -26,7 +31,11 @@ interface Envelope<T> {
   readonly payload?: T
 }
 
-interface SessionInfo { readonly signedIn: boolean; readonly creditsPerYuan: number }
+interface SessionInfo {
+  readonly signedIn: boolean
+  readonly creditsPerYuan: number
+  readonly account?: { readonly id?: string | number } | null
+}
 interface Balance { readonly balance_points: number }
 interface ImageModel {
   readonly id: string
@@ -50,21 +59,7 @@ interface ArtifactItem {
   readonly mtimeMs?: number
 }
 
-type ImagePageProps = PropsRuntime<'main'> & PropsStore<ReturnType<typeof createImageDraftStore>> & ImagegenInjected
-
-const PRESETS = ['photo', 'illustration', '3d', 'cinematic', 'minimal', 'poster'] as const
-const CATEGORIES = ['all', 'commerce', 'design', 'lifestyle'] as const
-const TEMPLATES = [
-  { key: 'recreate', category: 'commerce', glyph: 'copy' },
-  { key: 'details', category: 'commerce', glyph: 'edit' },
-  { key: 'campaign', category: 'commerce', glyph: 'sparkle' },
-  { key: 'product', category: 'commerce', glyph: 'sparkle' },
-  { key: 'poster', category: 'design', glyph: 'edit' },
-  { key: 'portrait', category: 'lifestyle', glyph: 'copy' },
-  { key: 'scene', category: 'lifestyle', glyph: 'sparkle' },
-  { key: 'illustration', category: 'design', glyph: 'edit' },
-  { key: 'render3d', category: 'design', glyph: 'copy' },
-] as const
+type ImagePageProps = PropsRuntime<'main'> & PropsRenderFactories & PropsStore<ReturnType<typeof createImageDraftStore>> & InjectFace<ImagegenInjected>
 
 async function get<T>(path: string): Promise<Envelope<T>> {
   const response = await fetch(path, { headers: { accept: 'application/json' } })
@@ -98,7 +93,18 @@ export function ImagePage(props: ImagePageProps): ReactNode {
     references, uploading, generationStartedAt, sessionInvalid, message, failure, resultPaths: result,
   } = draft
   const running = generationStartedAt !== null
+  const locked = running || uploading || draft.promptAssisting
+  const publication = props.useCreationContent(state => state)
+  const language = props.useLocale(state => state.active)
+  const text = (value: LocalizedText | undefined): string => value === undefined ? '' : language === 'en' ? value.en || value.zh : value.zh
+  const content = publication.content?.image
+  const contentCategories = [...content?.categories ?? []].filter(item => item.enabled).sort((a, b) => a.sortOrder - b.sortOrder)
+  const contentTemplates = [...content?.templates ?? []].filter(item => item.status === 'published'
+    && (item.categoryId === null || contentCategories.some(category => category.id === item.categoryId)))
+    .sort((a, b) => a.sortOrder - b.sortOrder)
+  const contentPresets = [...content?.presets ?? []].filter(item => item.status === 'published').sort((a, b) => a.sortOrder - b.sortOrder)
   const [signedIn, setSignedIn] = useState<boolean | null>(null)
+  const [accountIdentity, setAccountIdentity] = useState<string | null>(null)
   const [creditsPerYuan, setCreditsPerYuan] = useState(1000)
   const [balance, setBalance] = useState<number | null>(null)
   const [models, setModels] = useState<readonly ImageModel[]>([])
@@ -116,15 +122,37 @@ export function ImagePage(props: ImagePageProps): ReactNode {
   const [search, setSearch] = useState('')
   const promptField = useRef<HTMLTextAreaElement | null>(null)
   const fileField = useRef<HTMLInputElement | null>(null)
+  const sessionSequence = useRef(0)
+  useEffect(() => () => { sessionSequence.current += 1 }, [])
+
+  const acceptAccount = useCallback((info: Pick<SessionInfo, 'signedIn' | 'account'>): string | null => {
+    const id = info.account?.id
+    const accountId = info.signedIn && (typeof id === 'string' || typeof id === 'number') && String(id) !== '' ? String(id) : null
+    const current = readDraft()
+    if (current.referenceAccountId !== accountId) {
+      actions.setReferenceAccount(accountId)
+      for (const reference of current.references) releaseReferencePreview(reference.url)
+    }
+    setSignedIn(info.signedIn)
+    setAccountIdentity(accountId)
+    return accountId
+  }, [actions, readDraft, releaseReferencePreview])
 
   const model = useMemo(() => models.find(entry => entry.id === modelId) ?? models[0] ?? null, [modelId, models])
   const params = model?.params ?? null
   const maxEdits = params?.maxEdits ?? 0
   const isSignedIn = signedIn === true && !sessionInvalid
-  const canUpload = isSignedIn && maxEdits > references.length && !uploading && !running
-  const visibleTemplates = TEMPLATES.filter((template) => {
-    const words = `${t(`tpl_${template.key}`)} ${t(`tpl_${template.key}_hint`)}`.toLocaleLowerCase()
-    return (category === 'all' || template.category === category) && words.includes(search.trim().toLocaleLowerCase())
+  const ownsReferences = isSignedIn && accountIdentity !== null && draft.referenceAccountId === accountIdentity
+  const canUpload = ownsReferences && references.length < 6 && !locked
+  const assistReferences = useMemo(() => ownsReferences ? references.map(item => item.assetId) : [],
+    [references, ownsReferences])
+  const assistGeneration = useMemo(() => ({
+    model: model?.id ?? '', size, quality, background, count: String(count),
+  }), [model, size, quality, background, count])
+  const selectedCategory = contentCategories.some(item => item.id === category) ? category : 'all'
+  const visibleTemplates = contentTemplates.filter((template) => {
+    const words = `${text(template.title)} ${text(template.description)}`.toLocaleLowerCase()
+    return (selectedCategory === 'all' || template.categoryId === selectedCategory) && words.includes(search.trim().toLocaleLowerCase())
   })
   const works = useMemo(() => {
     const recent = new Map<string, { path: string; name: string }>()
@@ -152,13 +180,15 @@ export function ImagePage(props: ImagePageProps): ReactNode {
   const loadBalance = useCallback(async (): Promise<void> => {
     try {
       const answer = await get<Balance>('/credits/api/summary')
-      if (answer.sessionInvalid === true) { actions.patch({ sessionInvalid: true }); setBalance(null); return }
+      if (answer.sessionInvalid === true) {
+        acceptAccount({ signedIn: false }); actions.patch({ sessionInvalid: true }); setBalance(null); return
+      }
       setBalance(answer.payload?.balance_points ?? null)
     } catch (_error) {
       // A balance read must not turn a successfully saved image into a failure.
       setBalance(null)
     }
-  }, [actions])
+  }, [acceptAccount, actions])
 
   const loadHistory = useCallback(async (): Promise<void> => {
     try {
@@ -177,22 +207,24 @@ export function ImagePage(props: ImagePageProps): ReactNode {
   }, [])
 
   const refreshState = useCallback(async (): Promise<void> => {
+    const sequence = ++sessionSequence.current
     const startedWithInvalidSession = readDraft().sessionInvalid
     try {
       const answer = await get<SessionInfo>('/credits/api/session')
+      if (sequence !== sessionSequence.current) return
       if (!answer.ok || answer.payload === undefined) throw new Error('SESSION_UNAVAILABLE')
       const info = answer.payload
       setCreditsPerYuan(info.creditsPerYuan)
-      setSignedIn(info.signedIn)
+      acceptAccount(info)
       if (!info.signedIn) actions.patch({ sessionInvalid: true })
       else if (startedWithInvalidSession) actions.patch({ sessionInvalid: false })
       setStateError(false)
       if (info.signedIn) await Promise.all([loadBalance(), loadModels()])
       else setBalance(null)
     } catch (_error) {
-      setStateError(true)
+      if (sequence === sessionSequence.current) setStateError(true)
     }
-  }, [actions, loadBalance, loadModels, readDraft])
+  }, [acceptAccount, actions, loadBalance, loadModels, readDraft])
 
   useEffect(() => { void refreshState(); void loadHistory() }, [refreshState, loadHistory])
   useEffect(() => {
@@ -205,18 +237,15 @@ export function ImagePage(props: ImagePageProps): ReactNode {
   useEffect(() => {
     if (params === null || model === null) return
     const current = readDraft()
-    const kept = current.references.slice(0, params.maxEdits)
-    for (const item of current.references.slice(params.maxEdits)) releaseReferencePreview(item.url)
-    if (kept.length !== current.references.length) setMessage(t('referencesAdjusted', { n: String(params.maxEdits) }))
     actions.patch({
-      modelId: model.id, referenceLimit: params.maxEdits,
+      modelId: model.id,
       size: params.sizes.includes(current.size) ? current.size : params.sizes[0] ?? '',
       quality: params.qualities.includes(current.quality) ? current.quality : '',
       background: params.backgrounds.includes(current.background) ? current.background : '',
       format: params.formats.includes(current.format) ? current.format : '',
       moderation: params.moderations.includes(current.moderation) ? current.moderation : '',
       count: Math.max(1, Math.min(current.count, params.maxCount)),
-      seed: params.seed ? current.seed : '', references: kept,
+      seed: params.seed ? current.seed : '',
     })
   }, [params, model, actions, releaseReferencePreview, readDraft, setMessage, t])
 
@@ -230,7 +259,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
 
   const removeReference = useCallback((assetId: string): void => {
     const current = readDraft()
-    if (current.uploading || current.generationStartedAt !== null) return
+    if (current.uploading || current.generationStartedAt !== null || current.promptAssisting) return
     const removed = current.references.find(item => item.assetId === assetId)
     if (removed !== undefined) releaseReferencePreview(removed.url)
     actions.removeReference(assetId)
@@ -238,37 +267,49 @@ export function ImagePage(props: ImagePageProps): ReactNode {
 
   const clearReferences = useCallback((): void => {
     const current = readDraft()
-    if (current.uploading || current.generationStartedAt !== null) return
+    if (current.uploading || current.generationStartedAt !== null || current.promptAssisting) return
     for (const item of current.references) releaseReferencePreview(item.url)
     actions.patch({ references: [] })
   }, [actions, readDraft, releaseReferencePreview])
 
   const addReferences = useCallback(async (source: readonly File[] | { readonly path: string }): Promise<void> => {
     const current = readDraft()
-    if (current.uploading || current.generationStartedAt !== null || current.sessionInvalid || signedIn !== true) return
-    const selected = models.find(entry => entry.id === current.modelId)
-    const limit = Math.min(selected?.params.maxEdits ?? 0, current.referenceLimit)
+    if (current.uploading || current.generationStartedAt !== null || current.promptAssisting || current.sessionInvalid || signedIn !== true
+      || accountIdentity === null || current.referenceAccountId !== accountIdentity) return
+    const owner = current.referenceAccountId
+    const epoch = current.referenceEpoch
+    const isCurrent = (): boolean => {
+      const latest = readDraft()
+      return latest.referenceAccountId === owner && latest.referenceEpoch === epoch
+    }
+    const limit = 6
     const slots = Math.max(0, limit - current.references.length)
-    if (slots === 0 || selected === undefined) { setFailure(t('referenceLimit', { n: String(limit) })); return }
+    if (slots === 0) { setFailure(t('referenceLimit', { n: String(limit) })); return }
     actions.patch({ uploading: true, failure: null })
     try {
       let files: readonly File[]
       if ('path' in source) {
         const response = await fetch(rawUrl(source.path))
+        if (!isCurrent()) return
         if (!response.ok) throw new Error(`HTTP_${String(response.status)}`)
         const blob = await response.blob()
+        if (!isCurrent()) return
         files = [new File([blob], source.path.split('/').pop() ?? 'image.png', { type: blob.type || 'image/png' })]
       } else files = source
       if (files.length > slots) setMessage(t('referenceLimit', { n: String(limit) }))
       for (const file of files.slice(0, slots)) {
+        if (!isCurrent()) return
         if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
           setFailure(t('uploadFailed', { message: t('unsupportedType') })); continue
         }
-        if (file.size === 0 || file.size > 32 * 1024 * 1024) {
+        if (file.size === 0 || file.size > 6 * 1024 * 1024) {
           setFailure(t('uploadFailed', { message: t('fileSizeLimit') })); continue
         }
         const beforeUpload = readDraft()
-        if (beforeUpload.modelId !== selected.id || beforeUpload.references.length >= beforeUpload.referenceLimit) break
+        if (beforeUpload.references.length >= limit) break
+        if (beforeUpload.references.reduce((sum, item) => sum + item.bytes, 0) + file.size > 12 * 1024 * 1024) {
+          setFailure(t('referenceTotalLimit')); break
+        }
         const response = await fetch('/credits/api/assets', {
           method: 'POST',
           headers: {
@@ -277,27 +318,30 @@ export function ImagePage(props: ImagePageProps): ReactNode {
           },
           body: file,
         })
+        if (!isCurrent()) return
         if (!response.ok) throw new Error(`HTTP_${String(response.status)}`)
         const answer = await response.json() as Envelope<never> & { asset?: { assetId: string | null } | null }
-        if (answer.sessionInvalid === true) { actions.patch({ sessionInvalid: true, failure: t('noAuth') }); break }
+        if (!isCurrent()) return
+        if (answer.sessionInvalid === true) { acceptAccount({ signedIn: false }); actions.patch({ sessionInvalid: true, failure: t('noAuth') }); break }
         const assetId = answer.asset?.assetId
         if (!answer.ok || assetId === null || assetId === undefined) {
           setFailure(t('uploadFailed', { message: answer.message ?? answer.code ?? t('unknown') })); continue
         }
         const latest = readDraft()
-        if (latest.modelId !== selected.id || latest.references.length >= Math.min(limit, latest.referenceLimit)) break
-        actions.appendReference({ assetId, name: file.name, url: createReferencePreview(file) }, selected.id, limit)
+        if (latest.references.length >= limit) break
+        actions.appendReference({ assetId, name: file.name, url: createReferencePreview(file), bytes: file.size })
       }
     } catch (_error) {
-      setFailure(t('uploadFailed', { message: t('connectionFailure') }))
+      if (isCurrent()) setFailure(t('uploadFailed', { message: t('connectionFailure') }))
     } finally {
-      actions.patch({ uploading: false })
+      if (isCurrent()) actions.patch({ uploading: false })
     }
-  }, [actions, createReferencePreview, models, readDraft, setFailure, setMessage, signedIn, t])
+  }, [acceptAccount, accountIdentity, actions, createReferencePreview, models, readDraft, setFailure, setMessage, signedIn, t])
 
   const generate = useCallback(async (): Promise<void> => {
     const current = readDraft()
-    if (current.uploading || current.generationStartedAt !== null || current.sessionInvalid || signedIn !== true) return
+    if (current.uploading || current.generationStartedAt !== null || current.promptAssisting || current.sessionInvalid || signedIn !== true
+      || accountIdentity === null || current.referenceAccountId !== accountIdentity) return
     const selected = models.find(entry => entry.id === current.modelId)
     if (selected === undefined) return
     const accepted = selected.params
@@ -308,6 +352,24 @@ export function ImagePage(props: ImagePageProps): ReactNode {
     actions.patch({ generationStartedAt: Date.now(), failure: null, message: null })
     setElapsed(0)
     try {
+      if (current.references.length > 0) {
+        const sequence = ++sessionSequence.current
+        let session: Envelope<SessionInfo>
+        try {
+          session = await get<SessionInfo>('/credits/api/session')
+        } catch (_error) {
+          if (sequence === sessionSequence.current) setFailure(t('stateFailed'))
+          return
+        }
+        if (sequence !== sessionSequence.current) return
+        if (!session.ok || session.payload === undefined) { setFailure(t('stateFailed')); return }
+        const confirmed = acceptAccount(session.payload)
+        if (confirmed !== current.referenceAccountId || readDraft().referenceEpoch !== current.referenceEpoch) {
+          if (!session.payload.signedIn) actions.patch({ sessionInvalid: true })
+          setFailure(t('referenceAccountChanged'))
+          return
+        }
+      }
       const answer = await post<{ path: string; paths?: readonly string[] }>('/credits/api/image/generate', {
         prompt: current.prompt.trim(), model: selected.id, count: Math.max(1, Math.min(current.count, accepted.maxCount)),
         ...accepted.sizes.includes(current.size) ? { size: current.size } : {},
@@ -319,7 +381,8 @@ export function ImagePage(props: ImagePageProps): ReactNode {
         ...accepted.seed && current.seed.trim() !== '' ? { seed: Number(current.seed) } : {},
         references: current.references.slice(0, accepted.maxEdits).map(item => item.assetId),
       })
-      if (answer.sessionInvalid === true) { actions.patch({ sessionInvalid: true, failure: t('noAuth') }); return }
+      if (readDraft().referenceEpoch !== current.referenceEpoch) return
+      if (answer.sessionInvalid === true) { acceptAccount({ signedIn: false }); actions.patch({ sessionInvalid: true, failure: t('noAuth') }); return }
       if (!answer.ok || answer.payload === undefined) {
         setFailure(answer.code === 'INSUFFICIENT_POINTS' ? t('insufficient') : t('failed', { message: answer.message ?? answer.code ?? t('unknown') }))
         return
@@ -328,18 +391,19 @@ export function ImagePage(props: ImagePageProps): ReactNode {
       await Promise.all([loadBalance(), loadHistory()])
     } catch (_error) {
       // A disconnected request may have completed upstream; never retry it automatically.
-      setFailure(t('generationConnectionLost'))
+      if (readDraft().referenceEpoch === current.referenceEpoch) setFailure(t('generationConnectionLost'))
       void loadHistory()
     } finally {
       actions.patch({ generationStartedAt: null })
     }
-  }, [actions, loadBalance, loadHistory, models, readDraft, setFailure, signedIn, t])
+  }, [acceptAccount, accountIdentity, actions, loadBalance, loadHistory, models, readDraft, setFailure, signedIn, t])
 
-  const applyTemplate = useCallback((key: string): void => {
-    actions.patch({ prompt: t(`tpl_${key}_prompt`) })
+  const applyTemplate = (value: string): void => {
+    if (locked) return
+    actions.patch({ prompt: value })
     setMessage(t('templateApplied'))
     promptField.current?.focus()
-  }, [actions, setMessage, t])
+  }
 
   return (
     <div className={css.page} id="imagegen" role="tabpanel" aria-labelledby="gen-mode-image">
@@ -365,11 +429,11 @@ export function ImagePage(props: ImagePageProps): ReactNode {
         >
           <div className={css.composerBody}>
             <div className={css.referenceColumn}>
-              <Tooltip label={maxEdits === 0 ? t('badgeNoEdits') : t('dropHint')} side="bottom" portal>
+              <Tooltip label={t('dropHint')} side="bottom" portal>
                 <button type="button" className={css.addReference} aria-label={t('addReference')} disabled={!canUpload}
                   onClick={() => { fileField.current?.click() }}>
                   <IconPlusOutlineRegular size={22} />
-                  <span>{uploading ? t('uploadingShort') : t('reference')}</span>
+                  <span>{uploading ? t('uploadingShort') : t('addReference')}</span>
                 </button>
               </Tooltip>
               <input ref={fileField} type="file" aria-label={t('addReference')} accept="image/png,image/jpeg,image/webp" multiple hidden
@@ -377,46 +441,71 @@ export function ImagePage(props: ImagePageProps): ReactNode {
             </div>
             <label className={css.promptField}>
               <textarea ref={promptField} className={css.textarea} rows={4} value={prompt} aria-label={t('prompt')}
-                placeholder={t('promptPlaceholder')} onChange={(event) => { actions.patch({ prompt: event.target.value }) }} />
+                placeholder={text(content?.promptPlaceholder) || t('promptPlaceholder')} onChange={(event) => { actions.patch({ prompt: event.target.value }) }} />
               <span className={css.characterCount} aria-hidden="true">{prompt.length}</span>
             </label>
           </div>
+          <p className={css.parameterHint}>{t('materialHelp')} {maxEdits === 0 ? t('generationTextOnly') : t('generationReferences', { n: String(maxEdits) })}</p>
           {references.length > 0 && <div className={css.referenceTray}>
             <ul className={css.thumbs} aria-label={t('reference')}>
               {references.map(item => <li key={item.assetId} className={css.thumb}>
                 <img src={item.url} alt={item.name} />
                 <Tooltip label={t('removeReference', { name: item.name })} side="top" portal>
-                  <button type="button" className={css.remove} aria-label={t('removeReference', { name: item.name })} disabled={uploading || running}
+                  <button type="button" className={css.remove} aria-label={t('removeReference', { name: item.name })} disabled={locked}
                     onClick={() => { removeReference(item.assetId) }}><IconCloseOutlineRegular size={12} /></button>
                 </Tooltip>
               </li>)}
             </ul>
-            <span className={css.hint}>{references.length}/{maxEdits}</span>
-            <button type="button" className={css.textAction} onClick={clearReferences} disabled={uploading || running}>{t('clearReferences')}</button>
+            <span className={css.hint}>{references.length}/6</span>
+            <button type="button" className={css.textAction} onClick={clearReferences} disabled={locked}>{t('clearReferences')}</button>
           </div>}
+          {props.renderFactorySlot('creation.prompt.assist', {
+            kind: 'image', prompt, references: assistReferences, generation: assistGeneration,
+            disabled: uploading || running, signedIn: isSignedIn, accountIdentity,
+            onBusyChange: (value) => {
+              const current = readDraft()
+              if (current.referenceAccountId === accountIdentity && current.referenceEpoch === draft.referenceEpoch) {
+                actions.patch({ promptAssisting: value })
+              }
+            },
+            onPromptChange: (value, expectedPrompt) => {
+              const current = readDraft()
+              if (!isSignedIn || accountIdentity === null || current.referenceAccountId !== accountIdentity
+                || current.referenceEpoch !== draft.referenceEpoch || current.sessionInvalid || current.uploading
+                || current.generationStartedAt !== null || current.prompt !== expectedPrompt
+                || JSON.stringify([current.references, current.modelId, current.size, current.quality, current.background,
+                  current.format, current.compression, current.moderation, current.seed, current.count])
+                  !== JSON.stringify([references, modelId, size, quality, background, format, compression, moderation, seed, count])) {
+                return false
+              }
+              actions.patch({ prompt: value, failure: null, message: null })
+              promptField.current?.focus()
+              return true
+            },
+          })}
           <div className={css.composerBar}>
             <label className={css.modelInline}>
-              <select className={css.select} value={model?.id ?? ''} aria-label={t('model')} disabled={running || uploading || models.length === 0}
+              <select className={css.select} value={model?.id ?? ''} aria-label={t('model')} disabled={locked || models.length === 0}
                 onChange={(event) => { actions.patch({ modelId: event.target.value }) }}>
                 {models.length === 0 && <option value="">{t('noModelsShort')}</option>}
                 {models.map(entry => <option key={entry.id} value={entry.id}>{entry.displayName}</option>)}
               </select>
             </label>
-            {params !== null && <button type="button" className={css.parameterButton} aria-expanded={advanced} aria-controls="image-parameters"
+            {params !== null && <button type="button" disabled={locked} className={css.parameterButton} aria-expanded={advanced} aria-controls="image-parameters"
               onClick={() => { setAdvanced(current => !current) }}><IconSettingsOutlineRegular size={14} /><span>{size || t('parameters')}{count > 1 ? ` · ${String(count)}` : ''}</span></button>}
-            <span className={css.mode}>{references.length === 0 ? t('modeGenerate') : t('modeEdit', { count: String(references.length) })}</span>
+            <span className={css.mode}>{maxEdits === 0 || references.length === 0 ? t('modeGenerate') : t('modeEdit', { count: String(Math.min(references.length, maxEdits)) })}</span>
             <Tooltip label={running ? t('runningShort') : t('submit')} side="top" portal>
               <button type="button" className={css.send} aria-label={running ? t('runningShort') : t('submit')}
-                disabled={running || uploading || model === null || !isSignedIn || prompt.trim() === ''}
+                disabled={locked || model === null || !isSignedIn || prompt.trim() === ''}
                 onClick={() => { void generate() }}>
                 {running ? <span className={css.spinner} /> : <IconSendOutlineRegular size={19} />}
               </button>
             </Tooltip>
           </div>
           {advanced && params !== null && <div className={css.parameters} id="image-parameters">
-            {params.sizes.length > 0 && <label className={css.field}><span>{t('ratio')}</span><select className={css.select} value={size} disabled={running}
+            {params.sizes.length > 0 && <label className={css.field}><span>{t('ratio')}</span><select className={css.select} value={size} disabled={locked}
               onChange={(event) => { actions.patch({ size: event.target.value }) }}>{params.sizes.map(value => <option key={value} value={value}>{value === 'auto' ? t('sizeAuto') : value}</option>)}</select></label>}
-            {params.maxCount > 1 && <label className={css.field}><span>{t('count')}</span><select className={css.select} value={count} disabled={running}
+            {params.maxCount > 1 && <label className={css.field}><span>{t('count')}</span><select className={css.select} value={count} disabled={locked}
               onChange={(event) => { actions.patch({ count: Number(event.target.value) }) }}>
               {Array.from({ length: params.maxCount }, (_, i) => i + 1).map(value => <option key={value} value={value}>{value}</option>)}
             </select></label>}
@@ -426,13 +515,13 @@ export function ImagePage(props: ImagePageProps): ReactNode {
               { key: 'format', values: params.formats, value: format },
               { key: 'moderation', values: params.moderations, value: moderation },
             ] as const).filter(field => field.values.length > 0).map(field => <label className={css.field} key={field.key}>
-              <span>{t(field.key)}</span><select className={css.select} value={field.value} disabled={running}
+              <span>{t(field.key)}</span><select className={css.select} value={field.value} disabled={locked}
                 onChange={(event) => { actions.patch({ [field.key]: event.target.value }) }}><option value="">{t('inherit')}</option>
                 {field.values.map(value => <option key={value} value={value}>{field.key === 'background' && ['auto', 'transparent', 'opaque'].includes(value) ? t(`bg_${value}`) : value}</option>)}
               </select></label>)}
             {(format === 'jpeg' || format === 'webp') && <label className={css.field}><span>{t('compression', { n: String(compression) })}</span>
-              <input type="range" min={0} max={100} value={compression} disabled={running} onChange={(event) => { actions.patch({ compression: Number(event.target.value) }) }} /></label>}
-            {params.seed && <label className={css.field}><span>{t('seed')}</span><input className={css.select} inputMode="numeric" value={seed} placeholder={t('seedHint')} disabled={running}
+              <input type="range" min={0} max={100} value={compression} disabled={locked} onChange={(event) => { actions.patch({ compression: Number(event.target.value) }) }} /></label>}
+            {params.seed && <label className={css.field}><span>{t('seed')}</span><input className={css.select} inputMode="numeric" value={seed} placeholder={t('seedHint')} disabled={locked}
               onChange={(event) => { actions.patch({ seed: event.target.value.replace(/[^0-9]/g, '') }) }} /></label>}
             <p className={css.parameterHint}>{maxEdits > 0 ? t('referenceHelp', { n: String(maxEdits) }) : t('badgeNoEdits')}</p>
           </div>}
@@ -447,25 +536,30 @@ export function ImagePage(props: ImagePageProps): ReactNode {
         </div>
 
         <section className={css.templates} aria-label={t('templatesTitle')}>
-          <header className={css.sectionHead}><h2>{t('templatesTitle')}</h2><span className={css.hint}>{t('templatesHint')}</span></header>
+          <header className={css.sectionHead}><h2>{text(content?.title) || t('templatesTitle')}</h2><span className={css.hint}>{text(content?.description) || t('templatesHint')}</span></header>
+          {publication.status === 'loading' && <p role="status" className={css.hint}>{t('contentLoading')}</p>}
+          {publication.status === 'error' && <p role="alert" className={css.error}>{t('contentFailed')} <button type="button" className={css.textAction} onClick={props.refreshContent}>{t('retry')}</button></p>}
           <div className={css.templateToolbar}>
             <div className={css.categories} role="group" aria-label={t('categories')}>
-              {CATEGORIES.map(value => <button key={value} type="button" aria-pressed={category === value} className={`${css.category} ${category === value ? css.categoryActive : ''}`}
-                onClick={() => { setCategory(value) }}>{t(`category_${value}`)}</button>)}
+              <button type="button" aria-pressed={selectedCategory === 'all'} className={css.category} onClick={() => { setCategory('all') }}>{t('category_all')}</button>
+              {contentCategories.map(item => <button key={item.id} type="button" aria-pressed={selectedCategory === item.id} className={css.category}
+                onClick={() => { setCategory(item.id) }}>{text(item.label)}</button>)}
             </div>
             <label className={css.search}><IconSearchOutlineRegular size={14} /><input type="search" aria-label={t('searchTemplates')} placeholder={t('searchTemplates')}
               value={search} onChange={(event) => { setSearch(event.target.value) }} /></label>
           </div>
           <ul className={css.templateGrid}>
-            {visibleTemplates.map(template => <li key={template.key}><button type="button" className={css.templateCard} onClick={() => { applyTemplate(template.key) }}>
-              <span className={css.templateCopy}><span className={css.templateGlyph}>{template.glyph === 'copy' ? <IconCopyOutlineRegular size={18} /> : template.glyph === 'edit' ? <IconEditOutlineRegular size={18} /> : <IconSparkleRegular size={18} />}</span>
-                <span className={css.templateName}>{t(`tpl_${template.key}`)}</span><span className={css.templateHint}>{t(`tpl_${template.key}_hint`)}</span></span>
-              <span className={`${css.templateVisual} ${css[`visual_${template.key}`]}`} aria-hidden="true"><i /><i /><i /><b /></span>
+            {visibleTemplates.map(template => <li key={template.id}><button type="button" className={css.templateCard} disabled={locked} onClick={() => { applyTemplate(text(template.prompt)) }}>
+              {template.coverAssetId !== null && <img className={css.templateCover} src={`/credits/api/creation/assets/${encodeURIComponent(template.coverAssetId)}`} alt="" loading="lazy" />}
+              <span className={css.templateCopy}><span className={css.templateName}>{text(template.title)}</span>
+                <span className={css.templateHint}>{text(template.description)}</span></span>
             </button></li>)}
           </ul>
-          {visibleTemplates.length === 0 && <p className={css.empty}>{t('noTemplates')} <button type="button" className={css.textAction} onClick={() => { setSearch(''); setCategory('all') }}>{t('resetFilters')}</button></p>}
-          <div className={css.styles} role="group" aria-label={t('styles')}><span className={css.hint}>{t('styles')}</span>{PRESETS.map(preset => <button key={preset} type="button" className={css.styleChip}
-            onClick={() => { const suffix = t(`preset_text_${preset}`); actions.patch({ prompt: prompt.includes(suffix) ? prompt : `${prompt}${suffix}` }); promptField.current?.focus() }}>{t(`preset_${preset}`)}</button>)}</div>
+          {publication.status === 'ready' && contentTemplates.length === 0 && <p className={css.empty}>{t('contentEmpty')}</p>}
+          {publication.status === 'ready' && contentTemplates.length > 0 && visibleTemplates.length === 0 && <p className={css.empty}>
+            {t('noTemplates')} <button type="button" className={css.textAction} onClick={() => { setSearch(''); setCategory('all') }}>{t('resetFilters')}</button></p>}
+          {contentPresets.length > 0 && <div className={css.styles} role="group" aria-label={t('styles')}><span className={css.hint}>{t('styles')}</span>{contentPresets.map(preset => <button key={preset.id} type="button" disabled={locked} className={css.styleChip}
+            onClick={() => { const suffix = text(preset.promptSuffix); actions.patch({ prompt: prompt.includes(suffix) ? prompt : `${prompt}${suffix}` }); promptField.current?.focus() }}>{text(preset.label)}</button>)}</div>}
         </section>
 
         <section className={css.works} aria-label={t('history')}>
@@ -478,7 +572,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
               </button>
               <div className={css.workMeta}><span className={css.workName}>{item.name}</span><div className={css.workActions}>
                 <a className={css.textAction} href={rawUrl(item.path)} download={item.name}>{t('download')}</a>
-                {maxEdits > 0 && <button type="button" className={css.textAction} disabled={!canUpload} onClick={() => { void addReferences({ path: item.path }) }}>{t('useAsReference')}</button>}
+                <button type="button" className={css.textAction} disabled={!canUpload} onClick={() => { void addReferences({ path: item.path }) }}>{t('useAsReference')}</button>
               </div></div>
             </li>)}</ul>}
         </section>

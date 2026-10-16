@@ -40,9 +40,13 @@ dsh --profile web --no-open --port 8080
 
 启动后你会看到 `dsh web:` 行，其根 URL 携带新的进程 token。除非 `--no-open` 或 SSH 会话抑制，否则默认浏览器会打开该 URL、取得签名 cookie，再重定向到不含认证参数的同一目录。页面加载且你可以与 agent 对话，就说明成功了。两种可预期的失败：前端未构建时，启动会以构建提示停止（checkout 中运行 `pnpm run build`）；浏览器无法打开时，stderr 会打印不含凭据的诊断，但服务器会继续运行——请自行打开已打印的启动 URL。
 
-**设置 → 模型**显示 **DeepSeek**，使用 `DEEPSEEK_API_KEY`。默认模型为 `deepseek-official` / `deepseek-flash`（DeepSeek-V4.1-Flash）。[DeepSeek 插件](../../llm/llm-deepseek/README.zh.md#endpoint-and-wire-format)使用 Messages API。
+产品通过**余额**面板进行手机号登录。本 bundle 停用 DeepSeek 官方账号面板、官方模型适配器和自动 API Key 引导；模型连接使用部署的 new-api 配置。
 
-已保存的模型选择覆盖组合默认值。设置卡接受兼容 Messages 的 API 地址与凭据引用。
+产品聊天区域通过 [Conversation 的 `hiddenViews` 配置](../../client/ui-conversation/README.zh.md#shell-and-standard-props)隐藏 Trajectory 和市场 Video 视图。独立的 AI 创作视频页面及视频插件的 Host 能力仍然可用。
+
+收到宽泛的创作需求时，agent 会先通过[提问卡片](../../client/ui-user-questions/README.zh.md)了解缺失的偏好。例如「做个网站」可以询问用途、风格和主要内容；「做个 40 秒视频」保留已说明的时长，只询问缺失的主题、风格或画面比例。一组简短问题提供选项与自定义回答，收到答案后继续完成用户要求范围内的工作。仅审阅引导或暂缓创作的要求在回答后仍然有效。需求明确或用户委托 agent 决定时，直接执行。这套引导适用于 standard、PTC 和 Cordis 预设；minimal 等完整自定义 persona 会有意替换它，且不提供提问工具。
+
+**设置 → 模型**保留提供方配置和凭据引用。已保存的模型选择覆盖组合默认值，已有凭据继续保存在本地。
 
 ### 配置
 
@@ -150,9 +154,11 @@ URL 行与浏览器交接都是就绪信号：监督方一观察到该行就发�
 
 当 `surfaceContext` 为 true 时，`harness:source` 段落标明磁盘上的 Harness 实现，但不会声称它就是工作目录；全局段落 `app:web-surface`（first-party 顺序 10100，位于可复用指令之后）则向模型说明 GUI：公告应用 URL（定义见上文「监听、信任与公开部署」）、「this page」指代什么、更新约定（重载接收端始终开启；无刷新重载还需要 `pnpm run dev:web` watcher），以及不要启动替代服务器的指令。`DSH_WEB_URL` 还会连同描述出现在受管 bash 环境中，每次调用时从运行中的服务器解析。当它为 false 时，这两个段落和该变量都不会注册。
 
+同一 Web 段落还指示 agent 使用 `ask_user_question` 简短询问缺失的创作偏好，省略已知要求，接受用户委托其决定，并在收到回答后继续执行。呈现生成或剪辑的视频前，必须读取真实任务进度并取得已保存的成片路径。随附的创作 preset 提供提问工具；[提问 UI](../../client/ui-user-questions/README.zh.md)负责渲染与提交回答。
+
 #### Token 影响
 
-每个会话一行源码说明和一段提示词，外加两行受管环境变量；每个进程内保持恒定。
+每个会话一行源码说明和两段提示词，外加两行受管环境变量；每个进程内保持恒定。问题参数和提交的答案进入普通工具调用历史；等待回答不增加 token。
 
 #### KV Cache 影响
 

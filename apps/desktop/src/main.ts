@@ -34,6 +34,7 @@ import { readDeviceInfo } from './device-info.ts'
 import { desktopUpdateReadyConfirmation, formatDesktopMessage, resolveDesktopLocale, resolveDesktopStartupLocale } from './locale.ts'
 import { claimDesktopSingleInstance } from './single-instance.ts'
 import { DesktopUpdateCoordinator } from './update-coordinator.ts'
+import { DesktopUpdateSourceError, resolveDesktopUpdateConfigOrigin, resolveDesktopUpdateSource } from './update-source.ts'
 import { DesktopCommandManager } from './command-management.ts'
 import { serveWebDocument, authenticateWebHost, forwardWebRequest } from './web-document.ts'
 import { DesktopFatalRecovery } from './fatal-recovery.ts'
@@ -44,7 +45,7 @@ import { connectDesktopWelcome, type DesktopWelcomeBackend } from './welcome-bac
 import { DesktopUpdateJournal } from './update-journal.ts'
 import { DesktopUpdatePreparationError } from './update-error.ts'
 import { DesktopUpdateSchedule, resolveDesktopUpdateScheduleConfig } from './update-schedule.ts'
-import { desktopUpdateErrorSummary, presentDesktopUpdate } from './update-presentation.ts'
+import { presentDesktopUpdate } from './update-presentation.ts'
 import { desktopErrorState } from './startup-error.ts'
 import { readDesktopLoginShellEnvironment, resolveDesktopLoginShellConfig } from './login-shell-environment.ts'
 import { DesktopMandatoryUpdatePolicy, resolveDesktopPolicyConfig, type DesktopPolicyState } from './mandatory-update-policy.ts'
@@ -52,7 +53,7 @@ import { desktopClientMetadata, desktopClientVersion } from './client-metadata.t
 import { DesktopMandatoryUpdateWindow } from './mandatory-update-window.ts'
 import { DesktopPolicyTestAuth } from './policy-test-auth.ts'
 import { readDesktopSettings } from './settings.ts'
-import { DesktopUpdateDialog, type UpdateDialogOptions } from './update-dialog.ts'
+import { canRetryDesktopUpdateDownload, DesktopUpdateDialog, desktopUpdateFailureOptions, desktopUpdateProgressOptions, retryDesktopUpdateDownload, type UpdateDialogOptions } from './update-dialog.ts'
 import { readDesktopRuntime } from './runtime-tree.ts'
 import { DesktopBrowserGuests } from './browser-guests.ts'
 import { installDesktopShortcuts } from './keyboard.ts'
@@ -314,6 +315,11 @@ function createWindow(preload: string, show = false, primary = false): BrowserWi
 }
 
 async function main(): Promise<void> {
+  const existingUserData = app.getPath('userData')
+  const existingLogs = app.getPath('logs')
+  app.setName('智澍科技')
+  app.setPath('userData', existingUserData)
+  app.setPath('logs', existingLogs)
   const desktopSettings = readDesktopSettings(app.getPath('userData'))
   void pruneCrashReports(app.getPath('logs'))
   const journalDirectory = process.env.DSH_DESKTOP_UPDATE_JOURNAL_DIR
@@ -371,6 +377,21 @@ async function main(): Promise<void> {
   const updateOverlays = new DesktopUpdateOverlays()
   const updateDialog = new DesktopUpdateDialog(fileURLToPath(new URL('./preload-update-dialog.cjs', import.meta.url)), () => locale, updateOverlays)
   const isMandatory = (): boolean => mandatoryPolicy?.state.blocking === true
+  let downloadProgress: AbortController | undefined
+  const showDownloadProgress = (state: DesktopUpdateState): void => {
+    if (isMandatory()) return
+    if (updateDialog.updateProgress(state)) { updateDialog.focus(); return }
+    const options = desktopUpdateProgressOptions(state, locale)
+    const parent = currentDialogWindow()
+    if (options === undefined || parent === undefined) return
+    const controller = new AbortController()
+    downloadProgress = controller
+    ordinaryDialogs.add(controller)
+    void updateDialog.show(parent, { ...options, signal: controller.signal }).finally(() => {
+      ordinaryDialogs.delete(controller)
+      if (downloadProgress === controller) downloadProgress = undefined
+    })
+  }
   const ordinaryMessageBox = async (options: UpdateDialogOptions): Promise<Electron.MessageBoxReturnValue> => {
     const controller = new AbortController()
     ordinaryDialogs.add(controller)
@@ -413,8 +434,6 @@ async function main(): Promise<void> {
     } catch (_error) { /* Analytics cannot interrupt native actions. */ }
   }
   let stopAccount: (() => void) | undefined
-  let openedAttempt: string | undefined
-  let returnedAttempt: string | undefined
   let pendingWelcomeNotice: WelcomeNotice | undefined
   let previousAccountStatus: string | undefined
   const assertProductSender = (event: IpcMainInvokeEvent): void => {
@@ -462,16 +481,6 @@ async function main(): Promise<void> {
         stopAccount = accountBackend.watch((state) => {
           if (quitting) return
           if (welcomeWindow !== undefined && !welcomeWindow.isDestroyed()) welcomeWindow.webContents.send(WELCOME_IPC.state, state)
-          const attempt = state.attempt
-          if (attempt?.phase === 'waiting-browser' && attempt.authorizeUrl !== undefined && openedAttempt !== attempt.id) {
-            openedAttempt = attempt.id
-            void shell.openExternal(platformLoginUrl(attempt.authorizeUrl)).catch(() => undefined)
-          }
-          if ((attempt?.phase === 'failed' || attempt?.phase === 'expired') && returnedAttempt !== attempt.id) {
-            returnedAttempt = attempt.id
-            focusPrimaryWindow()
-          }
-          if (state.status === 'credential-stored' && attempt?.phase === 'succeeded' && welcomeWindow !== undefined) void enterWorkspace({ activate: false }).catch(() => undefined)
           if (previousAccountStatus === 'credential-stored' && state.status === 'signed-out') {
             void readWelcomeState().then(async (value) => {
               if (needsWelcome(value) && !quitting) {
@@ -520,9 +529,13 @@ async function main(): Promise<void> {
     if (isMandatory()) { mandatoryUI?.sync(); return Promise.resolve() }
     let shown = updateErrors.get(state)
     if (shown === undefined) {
-      shown = ordinaryMessageBox({ type: 'error', title: locale.messages.updateFailedTitle,
-        message: desktopUpdateErrorSummary(state, locale.messages),
-        technicalDetails: state.technicalDetails ?? state.message ?? '' }).then(() => {})
+      shown = ordinaryMessageBox(desktopUpdateFailureOptions(state, updates.state, locale)).then((result) => {
+        if (result.response !== 0 || !canRetryDesktopUpdateDownload(state, updates.state) || isMandatory() || quitting) return
+        // The failed attempt must settle before a user-approved retry obtains the prompt owner.
+        void retryDesktopUpdateDownload(state, promptOperation,
+          () => ({ state: updates.state, allowed: !isMandatory() && !quitting }), () => openUpdatePrompt())
+          .catch((error: unknown) => { console.error(error) })
+      })
       updateErrors.set(state, shown)
     }
     return shown
@@ -530,6 +543,8 @@ async function main(): Promise<void> {
   const publishUpdate = (state: DesktopUpdateState): DesktopUpdateState => {
     updateJournal?.state(state)
     updateState = state
+    if (state.phase === 'downloading' || state.phase === 'verifying') updateDialog.updateProgress(state)
+    else { downloadProgress?.abort(); downloadProgress = undefined }
     mandatoryUI?.sync()
     for (const window of BrowserWindow.getAllWindows()) {
       window.webContents.send(DESKTOP_IPC.updatesPresentation, presentDesktopUpdate(state))
@@ -636,6 +651,13 @@ async function main(): Promise<void> {
     },
     undefined, undefined, undefined,
     (success, reason) => { void track('desktop_upgrade_download_result', { is_success: success, ...reason === undefined ? {} : { error_reason: reason } }) },
+    async () => {
+      let manifest: unknown
+      try { manifest = JSON.parse(await readFile(join(app.getAppPath(), 'package.json'), 'utf8')) }
+      catch (cause) { throw new DesktopUpdateSourceError('source-invalid', { cause }) }
+      return resolveDesktopUpdateSource({ origin: resolveDesktopUpdateConfigOrigin(app.isPackaged, manifest, process.env),
+        platform: process.platform, arch: process.arch, allowLoopbackHttp: !app.isPackaged })
+    },
 
   )
 
@@ -797,6 +819,10 @@ async function main(): Promise<void> {
   let promptOperation: Promise<void> | undefined
   let policyAuthenticationQueued = false
   const openUpdatePrompt = (manual = false): Promise<void> => {
+    if (!isMandatory() && (updates.state.phase === 'downloading' || updates.state.phase === 'verifying')) {
+      showDownloadProgress(updates.state)
+      return Promise.resolve()
+    }
     if (authenticationOperation !== undefined) {
       policyAuth?.focus(); updateDialog.focus()
     }
@@ -851,6 +877,7 @@ async function main(): Promise<void> {
         if (!isMandatory() && state.version !== undefined) {
           controller?.abort()
           failedOperation = 'download'
+          showDownloadProgress({ phase: 'downloading', version: state.version, percent: 0 })
           await showUpdateFailure(await downloadUpdate(state.version))
         }
       } finally {
@@ -929,7 +956,7 @@ async function main(): Promise<void> {
   const applicationIconPath = development ? join(app.getAppPath(), 'resources', 'icon-windows.png')
     : join(process.resourcesPath, 'icon.png')
   app.setAboutPanelOptions({
-    applicationName: 'DeepSeek Harness',
+    applicationName: '智澍科技',
     applicationVersion: app.getVersion(),
     // The release has no separate build number; omit Electron's bundle version.
     version: '',
@@ -938,7 +965,7 @@ async function main(): Promise<void> {
   })
   // A custom application menu replaces Electron's default menu, so macOS needs
   // its standard menus and application hide commands declared explicitly.
-  // Keep app.name stable: Electron derives its default userData directory from it.
+  // Data and log paths were fixed before applying the display name.
   const darwin = process.platform === 'darwin'
   const platformMenus = (): MenuItemConstructorOptions[] => darwin
     ? [shortcuts.fileMenu(currentDesktopLocale().messages), { role: 'editMenu' }, { role: 'windowMenu' }]
@@ -1114,10 +1141,12 @@ async function main(): Promise<void> {
     })
     return window
   }
-  const enterWorkspace = async ({ activate = true }: { activate?: boolean } = {}): Promise<void> => {
+  const enterWorkspace = async ({ activate = true, panel }: { activate?: boolean; panel?: 'credits' } = {}): Promise<void> => {
     if (quitting) return
     const window = mainWindow ?? createMainWindow()
-    await navigateMain(applicationUrl)
+    const target = new URL(applicationUrl)
+    if (panel !== undefined) target.searchParams.set('panel', panel)
+    await navigateMain(target.href)
     if (isQuitting() || recovery.active || window.isDestroyed()) return
     if (activate) window.show()
     else window.showInactive()
@@ -1176,7 +1205,7 @@ async function main(): Promise<void> {
           await enterWorkspace()
           return { ok: true }
         },
-        skip: enterWorkspace,
+        skip: () => enterWorkspace({ panel: 'credits' }),
       })
       const window = welcomeWindow
       window.once('closed', () => {

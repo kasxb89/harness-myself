@@ -177,6 +177,12 @@ interface ComboArtifact {
  */
 type BatchArtifact = ComboArtifact & { descriptor: WebBootBatch }
 
+/** One active package's current and immediately preceding single-resource artifacts. */
+interface EntryArtifacts {
+  current: ComboArtifact
+  previous?: ComboArtifact
+}
+
 /** Versioned code is immutable; mismatched revisions are rejected instead of serving newer bytes. */
 const IMMUTABLE_CACHE = 'public, max-age=31536000, immutable'
 /** Generated request URLs stay below conservative browser and intermediary request-target limits. */
@@ -608,6 +614,8 @@ export class ClientModuleRegistry extends Service {
   private batchResponses = new Map<string, LazyResponse>()
   /** One prior graph generation covers a request racing the HMR recomposition that replaced its URL. */
   private previousBatchResponses = new Map<string, LazyResponse>()
+  /** Unrelated package rebuilds do not expire a package's preceding single-resource revision. */
+  private entryArtifacts = new Map<string, EntryArtifacts>()
   private flushQueued = false
   private composed: WebBootGraph
 
@@ -787,22 +795,34 @@ export class ClientModuleRegistry extends Service {
       })
     }
     const responses = new Map(batchResponses)
+    const entryArtifacts = new Map<string, EntryArtifacts>()
     for (const record of this.table.values()) {
-      const artifact = buildCombo([record], this.readSourceMap, record.entry.rev)
-      responses.set(artifact.url, responses.get(artifact.url) ?? this.responses.get(artifact.url) ?? {
-        body: artifact.scriptBody,
-        contentType: 'text/javascript; charset=utf-8',
+      const existing = this.entryArtifacts.get(record.entry.id)
+      const current = existing?.current.rev === record.entry.rev
+        ? existing.current
+        : buildCombo([record], this.readSourceMap, record.entry.rev)
+      const previous = current === existing?.current ? existing.previous : existing?.current
+      entryArtifacts.set(record.entry.id, {
+        current,
+        ...(previous === undefined ? {} : { previous }),
       })
-      responses.set(artifact.sourceMapUrl, responses.get(artifact.sourceMapUrl) ?? this.responses.get(artifact.sourceMapUrl) ?? {
-        body: artifact.sourceMapBody,
-        contentType: 'application/json; charset=utf-8',
-      })
+      for (const artifact of previous === undefined ? [current] : [current, previous]) {
+        responses.set(artifact.url, responses.get(artifact.url) ?? {
+          body: artifact.scriptBody,
+          contentType: 'text/javascript; charset=utf-8',
+        })
+        responses.set(artifact.sourceMapUrl, responses.get(artifact.sourceMapUrl) ?? {
+          body: artifact.sourceMapBody,
+          contentType: 'application/json; charset=utf-8',
+        })
+      }
     }
     for (const [resourceUrl, response] of this.responses) {
       if (this.chunkRequest(new URL(resourceUrl, 'http://x')) !== undefined) responses.set(resourceUrl, response)
     }
     this.previousBatchResponses = this.batchResponses
     this.batchResponses = batchResponses
+    this.entryArtifacts = entryArtifacts
     this.responses = responses
     const batches = artifacts.map(artifact => artifact.descriptor)
     return { rev: shortHash(JSON.stringify({ entries, batches })), entries, batches }

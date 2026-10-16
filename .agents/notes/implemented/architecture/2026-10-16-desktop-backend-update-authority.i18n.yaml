@@ -1,0 +1,19 @@
+# Bilingual-pair consistency record for 2026-10-16-desktop-backend-update-authority.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-10-16-desktop-backend-update-authority.md
+/agent-note-bind-desktop-update-discovery-to-a-packaged-backend-authority:
+  en: f20f03238eab6243
+  zh: 57a684e711f721b7
+/agent-note-bind-desktop-update-discovery-to-a-packaged-backend-authority/problem:
+  en: 90829d9fb38fde9a
+  zh: 2cd7aa644fcee90f
+/agent-note-bind-desktop-update-discovery-to-a-packaged-backend-authority/decision:
+  en: e22f37ab94d68ae5
+  zh: 96db2be88d2e8390
+/agent-note-bind-desktop-update-discovery-to-a-packaged-backend-authority/alternatives-considered:
+  en: 908bda1a7b9d8164
+  zh: 1230ba3dd27dacdf
+/agent-note-bind-desktop-update-discovery-to-a-packaged-backend-authority/consequences:
+  en: d57ddbd70bc7c155
+  zh: aaf8d64b13bccbff

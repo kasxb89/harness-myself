@@ -23,10 +23,12 @@ function fixture(jitter = 0, random = () => 0.5) {
     events.emit('update-downloaded', { version: '1.1.0-nightly.1' })
     return ['verified']
   })
-  const updater = Object.assign(events, { checkForUpdates, downloadUpdate, quitAndInstall: vi.fn() }) as unknown as AppUpdater
+  const updater = Object.assign(events, {
+    checkForUpdates, downloadUpdate, quitAndInstall: vi.fn(), setFeedURL: vi.fn(),
+  }) as unknown as AppUpdater
   const states: DesktopUpdateState[] = []
   const coordinator = new DesktopUpdateCoordinator((state) => { states.push(state); return state }, async () => true,
-    updater, () => true, () => '1.0.0')
+    updater, () => true, () => '1.0.0', undefined, async () => ({ url: 'https://updates.example.com/', channel: 'nightly' }))
   const schedule = new DesktopUpdateSchedule(coordinator, { intervalMs: 10_000, maxBackoffMs: 40_000, jitter }, random)
   cleanup.push(() => { schedule.dispose(); coordinator.dispose() })
   return { schedule, coordinator, states, checkForUpdates, downloadUpdate }

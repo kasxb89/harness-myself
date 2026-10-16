@@ -1,0 +1,50 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`keeps source-development actionable with localized guidance 1`] = `
+{
+  "chinese": "开发版本不支持自动更新，请使用正式安装包",
+  "english": "Development builds do not support automatic updates. Use a release installer.",
+}
+`;
+
+exports[`keeps source-disabled actionable with localized guidance 1`] = `
+{
+  "chinese": "管理员尚未开启客户端更新",
+  "english": "Your administrator has not enabled client updates.",
+}
+`;
+
+exports[`keeps source-invalid actionable with localized guidance 1`] = `
+{
+  "chinese": "更新配置无效，请联系管理员检查后台设置",
+  "english": "Update settings are invalid. Ask your administrator to check the backend settings.",
+}
+`;
+
+exports[`keeps source-target-missing actionable with localized guidance 1`] = `
+{
+  "chinese": "尚未配置此设备的更新源，请联系管理员",
+  "english": "No update source is configured for this device. Contact your administrator.",
+}
+`;
+
+exports[`keeps source-unavailable actionable with localized guidance 1`] = `
+{
+  "chinese": "无法读取更新配置，请检查网络后重试",
+  "english": "Could not read update settings. Check your connection and try again.",
+}
+`;
+
+exports[`keeps source-unbound actionable with localized guidance 1`] = `
+{
+  "chinese": "此版本未连接更新服务，请联系管理员获取新版安装包",
+  "english": "This version has no update service. Contact your administrator for a newer installer.",
+}
+`;
+
+exports[`keeps source-unsupported-target actionable with localized guidance 1`] = `
+{
+  "chinese": "此设备暂不支持自动更新，请联系管理员获取安装包",
+  "english": "Automatic updates are unavailable on this device. Contact your administrator for an installer.",
+}
+`;

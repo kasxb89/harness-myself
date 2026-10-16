@@ -7,8 +7,9 @@ import { desktopAccountBackend, type DesktopAccountBackend } from './account-bac
 /** Metadata needed before the native entry or workspace becomes visible. */
 export interface WelcomeState {
   readonly loggedIn: boolean
-  readonly hasApiKey: boolean
-  readonly writable: boolean
+  /** Legacy onboarding fields; manual provider-key entry is disabled in the product. */
+  readonly hasApiKey: false
+  readonly writable: false
   readonly localePreference: string | null
 }
 
@@ -19,7 +20,7 @@ export interface DesktopWelcomeBackend {
   readonly account: DesktopAccountBackend
   /** @param event - desktop-owned fields. @returns after local Host intake. */
   report(event: ProductEvent): Promise<void>
-  /** @returns Configured-key presence and the shared language preference, without credential values. */
+  /** @returns Product phone-session status and the shared language preference, without credential values. */
   read(): Promise<WelcomeState>
   /** @returns The saved UI language without account or provider requests. */
   readLocalePreference(): Promise<string | null>
@@ -88,36 +89,21 @@ export async function connectDesktopWelcome(
     return locale.value.preference ?? null
   }
   const read = async (): Promise<WelcomeState> => {
-    const { settings, ref } = await settingsAndReference()
-    const providers = await invoke({ namespace: 'llm', method: 'listConfigurableProviders', args: {} })
-    if (!Array.isArray(providers)) throw new Error('desktop welcome: invalid provider directory')
-    const namespaces = settings.namespaces
-    const refs = providers.flatMap((provider: unknown) => {
-      if (!record(provider) || typeof provider.settingsNs !== 'string' || !Array.isArray(provider.settingsPath)) {
-        throw new Error('desktop welcome: invalid provider settings address')
-      }
-      const namespace: unknown = namespaces.find((item: unknown) => record(item) && item.ns === provider.settingsNs)
-      let value: unknown = record(namespace) ? namespace.value : undefined
-      for (const key of provider.settingsPath as unknown[]) {
-        if (typeof key !== 'string') throw new Error('desktop welcome: invalid provider settings path')
-        value = record(value) ? value[key] : undefined
-      }
-      return record(value) && typeof value.apiKeyEnv === 'string' ? [value.apiKeyEnv] : []
+    const settings = await invoke({ namespace: 'settings', method: 'describe', args: {} })
+    if (!record(settings) || !Array.isArray(settings.namespaces)) throw new Error('desktop welcome: missing settings namespaces')
+    const response = await send(new URL('/credits/api/session', origin).href, {
+      credentials: 'include', redirect: 'error',
     })
-    const unique = [...new Set([...(ref === undefined ? [] : [ref]), ...refs])]
-    const states: Record<string, unknown> = {}
-    // credentials.describe accepts at most 64 references per request.
-    for (let offset = 0; offset < unique.length; offset += 64) {
-      const batch = await invoke({ namespace: 'credentials', method: 'describe', args: { refs: unique.slice(offset, offset + 64) } })
-      if (!record(batch)) throw new Error('desktop welcome: invalid credential metadata')
-      Object.assign(states, batch)
+    if (!response.ok) throw new Error('desktop welcome: product session request failed')
+    const session: unknown = await response.json()
+    if (!record(session) || session.ok !== true || typeof session.signedIn !== 'boolean') {
+      throw new Error('desktop welcome: invalid product session')
     }
-    if (ref !== undefined && !record(states[ref])) throw new Error('desktop welcome: missing credential metadata')
     return {
-      loggedIn: (await account.state()).status === 'credential-stored',
-      hasApiKey: Object.values(states).some(value => record(value) && value.configured === true),
-      writable: ref !== undefined && record(states[ref]) && states[ref].writable === true,
-      localePreference: localePreference(namespaces),
+      loggedIn: session.signedIn,
+      hasApiKey: false,
+      writable: false,
+      localePreference: localePreference(settings.namespaces),
     }
   }
   return {

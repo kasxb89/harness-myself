@@ -131,13 +131,14 @@ describe('desktop host process', () => {
 
   it('passes external dependencies and package-manager paths to the Host', async () => {
     const runtime = projectWithHost(HTTP_HOST.replace('runtime: process.argv[2]',
-      'pnpm: process.argv[5], nodeBin: process.argv[6], primaryRuntime: process.argv[4], runtime: process.argv[2]'))
+      'videoRuntime: process.env.DSH_VIDEO_RUNTIME_ROOT, pnpm: process.argv[5], nodeBin: process.argv[6], primaryRuntime: process.argv[4], runtime: process.argv[2]'))
     const primaryRuntime = join(runtime, 'external-primary-runtime')
-    const host = new DesktopHostProcess(process.execPath, runtime, runtime, undefined, process.env,
+    const host = new DesktopHostProcess(process.execPath, runtime, runtime, undefined, { ...process.env, DSH_VIDEO_RUNTIME_ROOT: '/untrusted-parent-directory' },
       undefined, primaryRuntime, { pnpm: join(runtime, 'pnpm.mjs'), nodeBin: join(runtime, 'bin') })
     hosts.push(host)
     const { url } = await host.start()
-    expect(await (await fetch(url)).json()).toMatchObject({ primaryRuntime, pnpm: join(runtime, 'pnpm.mjs'), nodeBin: join(runtime, 'bin') })
+    expect(await (await fetch(url)).json()).toMatchObject({ primaryRuntime, pnpm: join(runtime, 'pnpm.mjs'), nodeBin: join(runtime, 'bin'),
+      videoRuntime: join(primaryRuntime, 'dependencies', 'ffmpeg') })
   })
 
   it('reports a fatal event after readiness once', async () => {

@@ -11,6 +11,13 @@ export type DesktopUpdateFailureKind =
   | 'stop-failed'
   | 'tasks-changed'
   | 'tasks-unavailable'
+  | 'source-unbound'
+  | 'source-unavailable'
+  | 'source-invalid'
+  | 'source-disabled'
+  | 'source-target-missing'
+  | 'source-unsupported-target'
+  | 'source-development'
 
 /** Public semantic preload fields consumed by the settings row. */
 export interface DesktopUpdatePresentation {

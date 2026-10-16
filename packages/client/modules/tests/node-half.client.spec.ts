@@ -680,6 +680,60 @@ describe('client bundle activation', () => {
     expect((await routeRequest(route, third)).status).toBe(200)
   })
 
+  it('retains a package\'s preceding single revision through unrelated rebuilds and expires it on its next rebuild', async () => {
+    const packageName = '@fixture/single-rebuild-race'
+    const neighborName = '@fixture/single-rebuild-neighbor'
+    const clientPath = writePackage(packageName)
+    const neighborPath = writePackage(neighborName)
+    for (const path of [clientPath, neighborPath]) {
+      mkdirSync(dirname(path), { recursive: true })
+      writeFileSync(path, 'module.exports = { generation: 1 }\n')
+    }
+    const entries = [packageName, neighborName]
+    const { context, service, route } = constructWithRoute(entries)
+    const first = service.graph().entries.find(entry => entry.id === packageName)!
+
+    writeFileSync(clientPath, 'module.exports = { generation: 200 }\n')
+    service.rebuilt(packageName)
+    const second = service.graph().entries.find(entry => entry.id === packageName)!
+    for (const generation of [20, 300, 4000]) {
+      writeFileSync(neighborPath, `module.exports = { generation: ${String(generation)} }\n`)
+      service.rebuilt(neighborName)
+    }
+
+    const head = await routeRequest(route, first.url, 'HEAD')
+    expect(head.status).toBe(200)
+    expect(head.headers?.['cache-control']).toBe('public, max-age=31536000, immutable')
+    expect(head.body).toHaveLength(0)
+    const prior = await routeRequest(route, first.url)
+    expect(prior.status).toBe(200)
+    expect(prior.body.toString('utf8')).toContain('generation: 1')
+    expect(prior.body.toString('utf8')).not.toContain('generation: 200')
+    const shellPrior = await service.fetchBundle(new Request(`dsh-app://app/${first.url}`))
+    expect(shellPrior.status).toBe(200)
+    expect(await shellPrior.text()).toBe(prior.body.toString('utf8'))
+    const priorMap = await routeRequest(route, mapUrl(first.url))
+    expect(priorMap.status).toBe(200)
+    expect(JSON.parse(priorMap.body.toString('utf8'))).toMatchObject({
+      sections: [{ map: { sourcesContent: [expect.stringContaining('generation: 1')] } }],
+    })
+    expect((await routeRequest(route, first.url.replace(`rev=${first.rev}`, 'rev=unknown'))).status).toBe(404)
+
+    writeFileSync(clientPath, 'module.exports = { generation: 30000 }\n')
+    service.rebuilt(packageName)
+    const third = service.graph().entries.find(entry => entry.id === packageName)!
+    expect((await routeRequest(route, first.url)).status).toBe(404)
+    expect((await routeRequest(route, mapUrl(first.url))).status).toBe(404)
+    expect((await routeRequest(route, second.url)).body.toString('utf8')).toContain('generation: 200')
+    expect((await routeRequest(route, third.url)).body.toString('utf8')).toContain('generation: 30000')
+
+    entries.splice(entries.indexOf(packageName), 1)
+    emitLoaderEntryChange(context, packageName)
+    await expect.poll(() => service.graph().entries.map(entry => entry.id)).toEqual([neighborName])
+    expect((await routeRequest(route, second.url)).status).toBe(404)
+    expect((await routeRequest(route, third.url)).status).toBe(404)
+  })
+
   it('preserves artifact revisions across registry restarts and scan order changes', () => {
     const firstName = '@fixture/startup-revision-first'
     const secondName = '@fixture/startup-revision-second'

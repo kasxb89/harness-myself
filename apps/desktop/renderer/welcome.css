@@ -86,20 +86,21 @@ body {
   padding: 24px 48px 76px;
 }
 
-.welcome > .tagline,
-.welcome > .key-form,
-.welcome > #auth-page {
+.welcome > .tagline {
   grid-row: 2;
   grid-column: 1;
 }
 
 .brand {
-  display: block;
-  flex: none;
-  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   height: 40px;
-  user-select: none;
-  -webkit-user-drag: none;
+  color: var(--dsw-alias-label-primary);
+  font-family: var(--dsw-font-family);
+  font-size: 32px;
+  font-weight: 500;
+  letter-spacing: 0.03em;
 }
 
 .tagline {
@@ -146,6 +147,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
+  gap: 8px;
   height: 44px;
   padding: 8px 16px;
   border: 1px solid transparent;
@@ -183,161 +185,17 @@ body {
   background: var(--dsw-alias-button-primary-hover);
 }
 
-.actions .secondary {
-  border-color: var(--dsw-alias-border-l2);
-  background: var(--dsw-alias-button-elevated-fill);
-  color: var(--dsw-alias-label-primary);
-}
-
-.actions .back {
-  position: absolute;
-  top: calc(100% + 16px);
-  left: 50%;
-  transform: translateX(-50%);
-  white-space: nowrap;
-  min-width: 58px;
-  height: 28px;
-  padding: 4px 10px;
-  border: 0;
-  border-radius: 24px;
-  corner-shape: round;
-  background: transparent;
-  color: var(--dsw-alias-label-secondary);
-  font-family: var(--dsw-font-family-brand);
-  font-weight: 300;
-  font-size: 14px;
-  line-height: 20px;
-}
-
-/* Platform text actions use color-only hover, preserving the native backdrop. */
-.actions .back:hover:not(:disabled) {
-  color: var(--dsw-alias-brand-primary);
-}
-
-.actions .back:disabled {
-  color: var(--dsw-alias-label-caption);
-  opacity: 1;
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .actions button {
-    transition: none;
-  }
+  .actions button { transition: none; }
 }
 
-.actions .secondary:hover:not(:disabled) {
-  background: var(--dsw-alias-button-floating-hover);
-}
-
-.key-form {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 40px;
-  width: 440px;
-}
-
-.key-heading {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
+.actions .welcome-loading { color: inherit; }
+.login-feedback {
+  min-height: 44px;
+  margin: 0;
+  color: var(--dsw-alias-label-secondary);
+  font-family: var(--dsw-font-family);
+  font-size: 13px;
+  line-height: 22px;
   text-align: center;
 }
-
-.key-heading h1 {
-  margin: 0;
-  font-size: 20px;
-  font-weight: 400;
-  line-height: 32px;
-  letter-spacing: 0.01em;
-}
-
-.key-heading p {
-  margin: 0;
-  color: var(--dsw-alias-label-secondary);
-  font-size: 16px;
-  font-weight: 300;
-  line-height: 22px;
-  letter-spacing: 0.02em;
-}
-
-.key-field {
-  position: relative;
-  width: 100%;
-}
-
-/* Text inputs match :focus-visible after pointer focus too; their border carries focus. */
-.key-field input {
-  display: block;
-  width: 100%;
-  height: 48px;
-  padding: 7px 14px;
-  border: 1px solid var(--dsw-alias-border-l4);
-  border-radius: 12px;
-  outline: none;
-  background: transparent;
-  color: var(--dsw-alias-label-primary);
-  font-family: inherit;
-  font-weight: inherit;
-  font-size: 14px;
-  line-height: 24px;
-  user-select: text;
-}
-
-.key-field input:focus {
-  border-color: var(--dsw-alias-brand-primary);
-}
-
-.key-field input::placeholder {
-  color: var(--dsw-alias-label-caption);
-  opacity: 1;
-}
-
-.key-error {
-  position: absolute;
-  top: 100%;
-  width: 100%;
-  margin: 8px 0 0;
-  color: var(--dsw-alias-label-primary);
-  font-size: 14px;
-  line-height: 22px;
-}
-
-.visually-hidden {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
-}
-
-.auth-expired { gap: 12px; padding-top: 28px; }
-#auth-status { font-size: 20px; line-height: 24px; font-weight: 400; letter-spacing: normal; }
-.auth-expired p { line-height: 16px; letter-spacing: normal; }
-
-
-.auth-waiting { gap: 12px; padding-top: 28px; }
-.auth-waiting p { line-height: 16px; letter-spacing: normal; }
-.auth-waiting .copy-link {
-  margin-top: 20px;
-  padding: 0;
-  width: 240px;
-  min-height: 17px;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  color: var(--dsw-alias-label-secondary);
-  font-family: inherit;
-  font-weight: inherit;
-  font-size: 14px;
-  line-height: 20px;
-  cursor: pointer;
-  app-region: no-drag;
-  text-decoration: underline;
-}
-#auth-loading:disabled { opacity: 1; }
-.actions .welcome-loading { color: inherit; }
-
-.auth-waiting .copy-link:disabled { cursor: default; }

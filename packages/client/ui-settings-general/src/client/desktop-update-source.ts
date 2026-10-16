@@ -24,12 +24,17 @@ export class DesktopUpdateSource {
     })
   }
 
-  /** Invoke one user action; subsequent clicks join the shell-owned operation. */
+  /** Coalesce confirmation actions while allowing the shell's download progress window to reopen. */
   open(): void {
     if (!this.live || this.bridge === undefined) return
     const state = this.store.getSnapshot()
-    if (state.opening || (state.presentation !== undefined
-      && ['checking', 'downloading', 'verifying', 'installing'].includes(state.presentation.phase))) return
+    if (state.presentation?.phase === 'downloading' || state.presentation?.phase === 'verifying') {
+      void this.bridge.open().catch(() => {
+        if (this.live) this.store.set({ ...this.store.getSnapshot(), failed: true })
+      })
+      return
+    }
+    if (state.opening || state.presentation?.phase === 'checking' || state.presentation?.phase === 'installing') return
     this.store.set({ ...state, opening: true })
     void this.bridge.open().catch(() => {
       if (this.live) this.store.set({ ...this.store.getSnapshot(), failed: true })

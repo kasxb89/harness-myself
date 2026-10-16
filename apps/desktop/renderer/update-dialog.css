@@ -1,31 +1,65 @@
 :root {
-  color-scheme: light;
+  color-scheme: light dark;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
-  color: #0f1115;
+  --update-ink: #0f1115;
+  --update-muted: #61666b;
+  --update-card: #fff;
+  --update-elevated: #f1f3f5;
+  --update-border: #0000001a;
+  --update-inverse: #fff;
+  --update-focus: #4d6bfe;
+  --update-error: #b3261e;
+  color: var(--update-ink);
   background: transparent;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --update-ink: #f9fafb;
+    --update-muted: #cfd3d6;
+    --update-card: #292a2d;
+    --update-elevated: #353638;
+    --update-border: #ffffff1f;
+    --update-inverse: #353638;
+    --update-focus: #99aaff;
+    --update-error: #ffb4ab;
+  }
 }
 * { box-sizing: border-box; }
 body { margin: 0; height: 100vh; display: grid; place-items: center; isolation: isolate; }
-body::before { content: ""; position: fixed; inset: 0; z-index: -1; background: rgb(0 0 0 / 24%); }
-main { width: min(380px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto; padding: 22px 24px 24px; border-radius: 24px; background: #fff; box-shadow: 0 0 1px rgb(0 0 0 / 20%), 0 0 4px rgb(0 0 0 / 2%), 0 12px 32px rgb(0 0 0 / 8%); }
-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
+body::before { content: ""; position: fixed; inset: 0; z-index: -1; background: rgb(0 0 0 / 32%); }
+main { width: min(420px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto; padding: 24px; border: 1px solid var(--update-border); border-radius: 24px; background: var(--update-card); box-shadow: 0 12px 32px rgb(0 0 0 / 12%); scrollbar-gutter: stable; }
+header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 20px; min-height: 28px; }
+.brand { color: var(--update-muted); font-size: 13px; font-weight: 500; line-height: 20px; }
 main:focus { outline: none; }
-h1 { margin: 0; min-height: 28px; font-size: 16px; font-weight: 500; line-height: 24px; overflow-wrap: anywhere; }
-p { margin: 0; font-size: 14px; line-height: 22px; white-space: pre-wrap; overflow-wrap: anywhere; }
-#actions { display: flex; flex-direction: column; gap: 8px; margin-top: 20px; position: sticky; bottom: 0; background: #fff; }
+h1 { margin: 0 0 12px; font-size: 20px; font-weight: 500; line-height: 28px; overflow-wrap: anywhere; }
+p { margin: 0; color: var(--update-muted); font-size: 14px; line-height: 22px; white-space: pre-wrap; overflow-wrap: anywhere; }
+[data-tone='error'] h1 { color: var(--update-error); }
+#actions { display: flex; flex-direction: row-reverse; gap: 8px; margin-top: 24px; position: sticky; bottom: 0; padding-top: 4px; background: var(--update-card); }
+#actions > button { flex: 1; }
 button { min-height: 44px; padding: 9px 16px; border: 0; border-radius: 12px; font-family: inherit; font-size: 14px; font-weight: 500; line-height: 22px; cursor: pointer; }
-.primary { background: #0f1115; color: #fff; }
-.secondary { background: #f5f5f5; color: inherit; }
-.close { display: grid; place-items: center; flex: none; width: 28px; min-height: 28px; padding: 7px; border-radius: 50%; background: transparent; }
+.primary { background: var(--update-ink); color: var(--update-inverse); }
+.secondary { background: var(--update-elevated); color: var(--update-ink); }
+.close { display: grid; place-items: center; flex: none; width: 28px; min-height: 28px; padding: 7px; border-radius: 50%; background: var(--update-elevated); }
 .close img { width: 14px; height: 14px; }
+@media (prefers-color-scheme: dark) { .close img { filter: invert(1); } }
 button:hover { filter: brightness(0.95); }
-button:focus-visible, summary:focus-visible, pre:focus-visible { outline: 2px solid #4d6bfe; outline-offset: 3px; }
-details { margin-top: 12px; font-size: 13px; line-height: 20px; }
-summary { cursor: pointer; color: #5b6472; }
-pre { margin: 8px 0 0; padding: 10px; max-height: min(180px, 30vh); overflow: auto; border-radius: 8px; background: #f5f5f5; font: 12px/18px monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+button:focus-visible, summary:focus-visible, pre:focus-visible { outline: 2px solid var(--update-focus); outline-offset: 3px; }
+details { margin-top: 16px; font-size: 13px; line-height: 20px; }
+summary { cursor: pointer; color: var(--update-muted); }
+pre { margin: 8px 0 0; padding: 12px; max-height: min(180px, 30vh); overflow: auto; border-radius: 8px; background: var(--update-elevated); font: 12px/18px monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+#download-progress { margin-top: 24px; }
+.progress-caption { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 10px; color: var(--update-muted); font-size: 13px; line-height: 20px; font-variant-numeric: tabular-nums; }
+progress { display: block; width: 100%; height: 6px; border: 0; border-radius: 100px; appearance: none; -webkit-appearance: none; overflow: hidden; background: var(--update-elevated); accent-color: var(--update-ink); }
+progress::-webkit-progress-bar { background: var(--update-elevated); border-radius: 100px; }
+progress::-webkit-progress-value { background: var(--update-ink); border-radius: 100px; transition: width 150ms ease; }
+progress::-moz-progress-bar { background: var(--update-ink); border-radius: 100px; }
+progress:indeterminate { background: linear-gradient(90deg, var(--update-elevated) 25%, var(--update-ink) 50%, var(--update-elevated) 75%); background-size: 200% 100%; animation: update-progress 1.5s linear infinite; }
+progress:indeterminate::-webkit-progress-bar { background: transparent; }
+@keyframes update-progress { from { background-position: 100% 0; } to { background-position: -100% 0; } }
 button:disabled { opacity: 0.5; cursor: default; }
 [hidden] { display: none !important; }
 body.update-dialog { opacity: 0; transition: opacity 150ms ease; }
 body.update-dialog.visible { opacity: 1; }
 @starting-style { body.update-dialog.visible { opacity: 0; } }
-@media (prefers-reduced-motion: reduce) { body.update-dialog { transition: none; } }
+@media (max-width: 360px) { main { padding: 20px; } #actions { flex-direction: column; } }
+@media (prefers-reduced-motion: reduce) { body.update-dialog, progress::-webkit-progress-value { transition: none; } progress:indeterminate { animation: none; } }

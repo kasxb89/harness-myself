@@ -29,7 +29,7 @@ This package is infrastructure: the web shell and the boot kernel are its only d
 
 ### What mounting does
 
-`mount(container)` installs the slot renderer, hydrates the existing boot DOM when present, renders the assembled application into the container before the next paint, and returns a disposer that unmounts the React root. The renderer performs the sole context-level `renderSlot('root')` call; the registered root occupant owns product layout and document metadata.
+`mount(container)` requires an initial root registration, hydrates the existing boot DOM when present, and renders the assembled application into the container before the next paint. A root unload synchronously unmounts the React tree; a replacement root remounts after its registration and child declarations finish. The returned disposer cancels later remounts and unmounts the current tree. The renderer performs the sole context-level `renderSlot('root')` call; the registered root occupant owns product layout and document metadata.
 
 ### For business plugins
 

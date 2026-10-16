@@ -1,7 +1,7 @@
 /** macOS development bundle that loads the current workspace through Electron. */
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
 /** Workspace and runtime settings captured for Launch Services cold starts. */
@@ -11,13 +11,25 @@ export interface DevelopmentAppOptions {
   readonly directory: string
   readonly home: string
   readonly userData: string
+  readonly primaryRuntimeDirectory: string
   readonly mainPort: number
   readonly rendererPort: number
   readonly hostPort: number
   readonly openDevtools: string
+  readonly updateConfigOrigin?: string
 }
 
 function quote(value: string): string { return `'${value.replaceAll("'", "'\\''")}'` }
+
+function missingLegacyRegistration(error: unknown, bundle: string): boolean {
+  if (!(error instanceof Error) || !('status' in error) || error.status !== 1) return false
+  const output = (value: unknown): string => Buffer.isBuffer(value) ? value.toString('utf8') : typeof value === 'string' ? value : ''
+  const diagnostics = [output('stdout' in error ? error.stdout : undefined), output('stderr' in error ? error.stderr : undefined)]
+    .map(value => value.trim()).filter(value => value !== '')
+  const prefix = `failed to scan ${bundle}:`
+  return diagnostics.length > 0 && diagnostics.every(value => value.startsWith(prefix)
+    && /^-10814\s+from spotlight$/u.test(value.slice(prefix.length).trim()))
+}
 
 /**
  * Prepare and register a disposable .app without changing the installed Electron package.
@@ -26,22 +38,27 @@ function quote(value: string): string { return `'${value.replaceAll("'", "'\\''"
  */
 export function prepareDevelopmentApp(options: DevelopmentAppOptions): string {
   const source = dirname(dirname(dirname(options.electron)))
-  const bundle = join(options.directory, 'Harness Dev.app')
+  const bundle = join(options.directory, '智澍科技.app')
   const executable = join(bundle, 'Contents', 'MacOS', 'HarnessDev')
   const stamp = join(bundle, 'Contents', 'Resources', 'dsh-development.json')
   const launcher = developmentLauncher(options, bundle)
-  const identity = JSON.stringify({ ...options, launcher, plist: readFileSync(join(source, 'Contents', 'Info.plist'), 'utf8') })
+  const icon = join(options.appRoot, 'resources', 'icon-macos.icns')
+  const brand = { name: '智澍科技', icon: createHash('sha256').update(readFileSync(icon)).digest('hex') }
+  const identity = JSON.stringify({ ...options, launcher, brand,
+    plist: readFileSync(join(source, 'Contents', 'Info.plist'), 'utf8') })
   if (!existsSync(stamp) || readFileSync(stamp, 'utf8') !== identity) {
     rmSync(bundle, { recursive: true, force: true })
     execFileSync('/usr/bin/ditto', [source, bundle])
     const plist = join(bundle, 'Contents', 'Info.plist')
     const values = {
       CFBundleIdentifier: `com.deepseek.harness.dev.${createHash('sha256').update(options.appRoot).digest('hex').slice(0, 12)}`,
-      CFBundleName: 'Harness Dev',
-      CFBundleDisplayName: 'Harness Dev',
+      CFBundleName: brand.name,
+      CFBundleDisplayName: brand.name,
       CFBundleExecutable: 'HarnessDev',
-      CFBundleURLTypes: [{ CFBundleURLName: 'DeepSeek Harness', CFBundleURLSchemes: ['dsh'], CFBundleTypeRole: 'Viewer' }],
+      CFBundleIconFile: 'Zhishu.icns',
+      CFBundleURLTypes: [{ CFBundleURLName: brand.name, CFBundleURLSchemes: ['dsh'], CFBundleTypeRole: 'Viewer' }],
     }
+    copyFileSync(icon, join(bundle, 'Contents', 'Resources', 'Zhishu.icns'))
     for (const [key, value] of Object.entries(values)) {
       execFileSync('/usr/bin/plutil', ['-replace', key, '-json', JSON.stringify(value), plist])
     }
@@ -50,6 +67,15 @@ export function prepareDevelopmentApp(options: DevelopmentAppOptions): string {
     execFileSync('/usr/bin/codesign', ['--force', '--deep', '--sign', '-', bundle], { stdio: 'pipe' })
   }
   execFileSync('/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister', ['-f', bundle])
+  const previous = join(options.directory, 'Harness Dev.app')
+  if (existsSync(join(previous, 'Contents', 'Resources', 'dsh-development.json'))) {
+    try {
+      execFileSync('/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister', ['-u', previous])
+    } catch (error) {
+      // Launch Services -10814 means the obsolete bundle has no valid registration to remove.
+      if (!missingLegacyRegistration(error, previous)) throw error
+    }
+  }
   return executable
 }
 
@@ -62,7 +88,9 @@ export function prepareDevelopmentApp(options: DevelopmentAppOptions): string {
 export function developmentLauncher(options: DevelopmentAppOptions, bundle: string): string {
   const environment = {
     DSH_HOME: options.home,
+    DSH_DESKTOP_PRIMARY_RUNTIME_DIR: options.primaryRuntimeDirectory,
     DSH_DESKTOP_DEV_APP: '1',
+    DSH_DESKTOP_UPDATE_CONFIG_ORIGIN: options.updateConfigOrigin ?? 'http://127.0.0.1:3000',
     DSH_DESKTOP_HOST_INSPECT_PORT: String(options.hostPort),
     DSH_DESKTOP_OPEN_DEVTOOLS: options.openDevtools,
     ELECTRON_ENABLE_LOGGING: '1',

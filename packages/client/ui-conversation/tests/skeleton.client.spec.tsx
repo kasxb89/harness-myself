@@ -140,6 +140,8 @@ function mount(
     composerBlock?: { reason: string }
     /** Mutable view ledger used by registration-order regressions. */
     viewTabs?: ViewTab[]
+    /** Explicit embedded View request, constrained to the available ledger. */
+    viewOverride?: string
   } = {},
 ) {
   const sessionId = 'sessionId' in options ? options.sessionId : SID
@@ -238,6 +240,7 @@ function mount(
     if (key === 'conversation.session') {
       return (
         <ConversationSession
+          view={options.viewOverride}
           sessionId={SID}
           SessionProvider={({ children }) => children}
           useSession={useSession}
@@ -657,6 +660,19 @@ describe('ConversationRoot resident composer', () => {
     // The browser drag lane anchors its header tab-strip probe on this marker.
     expect(b.view.getByRole('tablist').hasAttribute('data-conversation-tabs')).toBe(true)
   })
+
+  it.each(['trajectory', 'ipollowork-video-studio'])(
+    'renders Chat without tabs when a saved or embedded View is hidden (%s)',
+    (hiddenView) => {
+      const b = mount(sessionSnapshotOf(), undefined, undefined, {
+        viewTabs: [{ id: 'chat', label: 'Chat' }], viewOverride: hiddenView,
+      })
+      act(() => { b.store.actions.setView(hiddenView) })
+      expect(b.view.getByTestId('view-chat')).toBeTruthy()
+      expect(b.view.queryByTestId(`view-${hiddenView}`)).toBeNull()
+      expect(b.view.queryByRole('tablist')).toBeNull()
+    },
+  )
 
   it('rolls the pending workspace label back when switching fails', async () => {
     const selectWorkspace = vi.fn(async () => { throw new Error('connect failed') })

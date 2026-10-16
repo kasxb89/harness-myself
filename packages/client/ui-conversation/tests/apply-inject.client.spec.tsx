@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 import { render, cleanup } from '@testing-library/react'
+import { writeFileSync } from 'node:fs'
+import { Context } from '@deepseek-ai/cordis'
 import { $getRoot, $isTextNode, PASTE_COMMAND } from 'lexical'
 import { projectUserText } from '@deepseek-ai/dsh-client-ui-primitives'
 import { registerComposerKeymap } from '../src/client/input/editor/keymap.ts'
@@ -14,7 +16,7 @@ import {
 } from '@deepseek-ai/dsh-client-test-runtime'
 import type { SessionBehaviorOverrides } from '@deepseek-ai/dsh-client-test-runtime'
 import {
-  apply, inject, type ComposerBarInjected, type ConversationInjected,
+  apply, Config, inject, type ConversationConfig, type ComposerBarInjected, type ConversationInjected,
   type ConversationSessionHeaderInjected, type ConversationSessionInjected, type ViewTab,
 } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
@@ -22,6 +24,13 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace/types'
 import { createConversationStore } from '../src/client/stores.ts'
 import type { SessionInputShell } from '../src/client/input/facade.ts'
 import { RemoteError } from '@deepseek-ai/dsh-client-test-runtime'
+import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
+import * as HostPlugin from '../src/index.ts'
+import type { ConversationSettings } from '../src/submission-settings.ts'
+import { configurationFixture } from '../../../settings/settings/tests/configuration-fixture.ts'
+import { ConfigFormController } from '../../ui-settings/src/client/config-form.ts'
+import { SettingsDescribeMirror, type SettingsDescribeView } from '../../ui-settings/src/client/settings-mirror.ts'
+import { SettingsSchemaService } from '../../ui-settings/src/client/schema.ts'
 
 usePinnedBrowserLanguages('zh-CN')
 
@@ -38,7 +47,7 @@ function sessionFakeFor() {
   } satisfies SessionBehaviorOverrides
 }
 
-async function bench() {
+async function bench(config: ConversationConfig = Config({}), projectedSettings?: ConfigForm<ConversationSettings>) {
   const runtime = await SlotTestRuntime.create()
   const rootUpload = vi.fn(() => Promise.resolve({
     ok: true as const,
@@ -54,12 +63,13 @@ async function bench() {
     return upload(...args)
   }
   const developerTools = createSnapshotStore(true)
+  const conversationSettings = stubConfigForm<ConversationSettings>()
   runtime.ctx.provide('configForms', {
     developerTools: {
       enabled: developerTools,
       setEnabled: async (enabled: boolean) => { developerTools.set(enabled) },
     },
-    get: () => stubConfigForm().scope,
+    get: () => projectedSettings ?? conversationSettings.scope,
   } as never)
   const connectWorkspace = vi.fn(async () => ROOT)
   const references = new Map<SessionId, SessionReference>()
@@ -100,7 +110,7 @@ async function bench() {
     'main': { kind: 'keyed', scope: 'root' },
   }, (_props: { renderSlot?: unknown }) => null)
 
-  const feature = await runtime.mount({ inject: [...inject], apply })
+  const feature = await runtime.mount({ inject: [...inject], apply: (ctx) => { apply(ctx, config) } })
   runtime.renderRoot()
   const entryOf = (key: 'main.conversation' | 'conversation.session' | 'conversation.session.header' | 'conversation.composer.bar') =>
     runtime.slots.entries(key)[0]!
@@ -141,6 +151,7 @@ async function bench() {
   return {
     runtime, feature, slots: runtime.slots, entryOf, conversationApi, headerApi, residentApi, composerApi,
     inputApi, viewSource, sessionFake, connectWorkspace, rootUpload, uploads, rootReference, references, opened,
+    conversationSettings,
   }
 }
 
@@ -197,6 +208,167 @@ describe('Conversation inject API', () => {
     expect(b.viewSource(ROOT).getSnapshot()).toEqual([])
     await b.runtime.dispose()
   })
+
+  it('excludes configured Views from selection, focus, and tool-call inspection', async () => {
+    const b = await bench(Config({ hiddenViews: ['trajectory', 'ipollowork-video-studio'] }))
+    onTestFinished(() => b.runtime.dispose())
+    for (const [id, label] of [
+      ['chat', 'Chat'], ['trajectory', 'Trajectory'], ['ipollowork-video-studio', 'Video'],
+      ['custom', 'Custom'],
+    ]) {
+      b.slots.register({ name: 'conversation.view', id, label }, (() => null) as never)
+    }
+    b.runtime.ctx.uiConversation.views.register({
+      target: 'trajectory',
+      toolCallFocus: callId => `tool:${callId}`,
+      create: () => ({ empty: null, replace: () => null, apply: () => null }),
+    })
+    await b.runtime.flush()
+    const body = b.conversationApi(ROOT)
+    const header = b.headerApi(ROOT)
+    const activate = vi.spyOn(b.runtime.ctx.uiConversation.binding(ROOT), 'activate')
+    expect(b.viewSource(ROOT).getSnapshot()).toMatchInlineSnapshot(`
+      [
+        {
+          "id": "chat",
+          "label": "Chat",
+        },
+        {
+          "id": "custom",
+          "label": "Custom",
+        },
+      ]
+    `)
+    expect(body.injected.hooks.inspectCall.getSnapshot()).toBeUndefined()
+    header.injected.selectView('chat')
+    activate.mockClear()
+    for (const id of ['trajectory', 'ipollowork-video-studio']) {
+      body.injected.openView(id, 'hidden-focus')
+      header.injected.selectView(id)
+    }
+    expect(activate).not.toHaveBeenCalled()
+    expect(body.instance.store.getSnapshot()).toMatchObject({ view: 'chat', viewRequest: null })
+
+    await b.runtime.ctx.configForms.developerTools.setEnabled(false)
+    await b.runtime.ctx.configForms.developerTools.setEnabled(true)
+    expect(b.viewSource(ROOT).getSnapshot().map(view => view.id)).toEqual(['chat', 'custom'])
+    header.injected.selectView('custom')
+    expect(activate).toHaveBeenLastCalledWith('custom')
+    expect(header.instance.store.getSnapshot().view).toBe('custom')
+  })
+
+  it('projects the actual Host hidden-View configuration through the settings wire and refreshes browser navigation', async () => {
+    const fixture = await configurationFixture({ schema: HostPlugin.Config, apply: HostPlugin.apply, hmr: false })
+    await fixture.ctx.fiber.dispose()
+    writeFileSync(fixture.profile.patchPath, JSON.stringify([{ insert: [
+      { id: 'config-editor', name: 'cordis:editor' },
+      { id: 'settings', name: 'cordis:settings' },
+      { id: 'ui-conversation', name: 'cordis:probe', config: { hiddenViews: ['trajectory', 'ipollowork-video-studio'] } },
+    ] }]))
+    const host = await fixture.start()
+    await host.loader.await()
+    const describe = vi.fn(async () => ({
+      ok: true as const,
+      // Serialize the real redacted Host projection as the settings transport does.
+      value: JSON.parse(JSON.stringify({
+        writable: true, hasDocument: true, namespaces: host.settings.describe({ redactSecrets: true }),
+      })) as SettingsDescribeView,
+    }))
+    const remote = { remote: { settings: { describe } } } as never
+    const mirror = new SettingsDescribeMirror(remote)
+    const schemaContext = new Context()
+    onTestFinished(() => schemaContext.fiber.dispose())
+    const schemas = new SettingsSchemaService(schemaContext)
+    const form = new ConfigFormController<ConversationSettings>(
+      remote, { namespace: 'ui-conversation' }, mirror, 'host', schemas,
+    )
+    onTestFinished(() => form.dispose())
+    const b = await bench(Config({ hiddenViews: ['custom'] }), form)
+    onTestFinished(() => b.runtime.dispose())
+    for (const id of ['chat', 'trajectory', 'ipollowork-video-studio', 'custom']) {
+      b.slots.register({ name: 'conversation.view', id, label: id }, (() => null) as never)
+    }
+    b.runtime.ctx.uiConversation.views.register({
+      target: 'trajectory', toolCallFocus: callId => `tool:${callId}`,
+      create: () => ({ empty: null, replace: () => null, apply: () => null }),
+    })
+    await b.runtime.flush()
+    const body = b.conversationApi(ROOT)
+    const header = b.headerApi(ROOT)
+    expect(b.viewSource(ROOT).getSnapshot().map(view => view.id)).toEqual(['chat', 'trajectory', 'ipollowork-video-studio'])
+    header.injected.selectView('trajectory')
+    b.runtime.ctx.uiSession.adapter.bindingSource(b.rootReference).getSnapshot()
+    const activate = vi.spyOn(b.runtime.ctx.uiConversation.binding(ROOT), 'activate')
+    await mirror.load()
+    expect(mirror.getSnapshot().error).toBeNull()
+    const projection = mirror.namespace('ui-conversation')!
+    expect(schemas.validate(schemas.rehydrate(projection.schema), projection.value)).toBeUndefined()
+    expect(form.getSnapshot().status).toBe('ready')
+    expect(b.viewSource(ROOT).getSnapshot()).toMatchInlineSnapshot(`
+      [
+        {
+          "id": "chat",
+          "label": "chat",
+        },
+        {
+          "id": "custom",
+          "label": "custom",
+        },
+      ]
+    `)
+    expect(activate).toHaveBeenLastCalledWith('chat')
+    expect(body.injected.hooks.inspectCall.getSnapshot()).toBeUndefined()
+    activate.mockClear()
+    for (const id of ['trajectory', 'ipollowork-video-studio']) {
+      header.injected.selectView(id)
+      body.injected.openView(id, 'hidden-focus')
+    }
+    expect(activate).not.toHaveBeenCalled()
+
+    describe.mockRejectedValueOnce(new Error('temporarily unavailable'))
+    await mirror.load()
+    expect(b.viewSource(ROOT).getSnapshot().map(view => view.id)).toEqual(['chat', 'custom'])
+    await host.settings.update('ui-conversation', { hiddenViews: [] })
+    await mirror.load()
+    expect(b.viewSource(ROOT).getSnapshot().map(view => view.id)).toEqual(['chat', 'trajectory', 'ipollowork-video-studio', 'custom'])
+    expect(body.injected.hooks.inspectCall.getSnapshot()).toBeTypeOf('function')
+  }, 20_000)
+
+  it('adopts an already accepted Host roster and retains it when the form becomes unavailable', async () => {
+    const host = stubConfigForm<ConversationSettings>()
+    host.publish({ status: 'ready', value: { busyEnter: 'queue', hiddenViews: ['trajectory', 'ipollowork-video-studio'] } })
+    const b = await bench(Config({}), host.scope)
+    onTestFinished(() => b.runtime.dispose())
+    for (const id of ['chat', 'trajectory', 'ipollowork-video-studio']) {
+      b.slots.register({ name: 'conversation.view', id }, (() => null) as never)
+    }
+    await b.runtime.flush()
+    expect(b.viewSource(ROOT).getSnapshot().map(view => view.id)).toEqual(['chat'])
+    host.publish({ status: 'unavailable', value: undefined })
+    expect(b.viewSource(ROOT).getSnapshot().map(view => view.id)).toEqual(['chat'])
+    await b.feature.dispose()
+    expect(host.listenerCount()).toBe(0)
+  })
+
+  it.each(['trajectory', 'ipollowork-video-studio'])(
+    'activates Chat for a saved hidden View preference (%s)',
+    async (hiddenView) => {
+      const b = await bench(Config({ hiddenViews: ['trajectory', 'ipollowork-video-studio'] }))
+      onTestFinished(() => b.runtime.dispose())
+      for (const id of ['chat', 'trajectory', 'ipollowork-video-studio']) {
+        b.slots.register({ name: 'conversation.view', id }, (() => null) as never)
+      }
+      await b.runtime.flush()
+      localStorage.setItem(`dsh.conversation.${ROOT}`, JSON.stringify({
+        draft: '', view: hiddenView, viewRequest: { view: hiddenView, focus: 'old-focus' },
+      }))
+      onTestFinished(() => { localStorage.removeItem(`dsh.conversation.${ROOT}`) })
+      const activate = vi.spyOn(b.runtime.ctx.uiConversation.binding(ROOT), 'activate')
+      b.runtime.ctx.uiSession.adapter.bindingSource(b.rootReference).getSnapshot()
+      expect(activate).toHaveBeenCalledExactlyOnceWith('chat')
+      expect(b.viewSource(ROOT).getSnapshot().map(view => view.id)).toEqual(['chat'])
+    },
+  )
 
   it('offers Inspect only while a registered tool-call inspector is visible', async () => {
     const b = await bench()
@@ -333,6 +505,41 @@ describe('Conversation inject API', () => {
       removeChat()
       await b.runtime.dispose()
     }
+  })
+
+  it.each([false, true])('ignores a withdrawn binding during locale refresh (replacement: %s)', async (replace) => {
+    const b = await bench()
+    onTestFinished(() => b.runtime.dispose())
+    const owner = b.rootReference.binding
+    const conversation = b.runtime.ctx.uiConversation.binding(owner)
+    const activate = vi.spyOn(conversation, 'activate')
+    const removeChat = b.slots.register(
+      { name: 'conversation.view', id: 'chat', order: 0 },
+      (() => null) as never,
+    )
+    onTestFinished(removeChat)
+    b.runtime.ctx.uiSession.adapter.bindingSource(b.rootReference).getSnapshot()
+    const removeDictionary = b.runtime.ctx.locale.register('view-refresh-race', 'zh', { test: 'test' })
+    activate.mockClear()
+
+    // Release withdraws the lookup before the binding's asynchronous scope cleanup.
+    b.rootReference.release()
+    expect(b.runtime.sessions.binding(ROOT)).toBeUndefined()
+    expect(() => b.runtime.ctx.uiConversation.binding(owner)).toThrow(/inactive session/)
+    let currentConversation = conversation
+    if (replace) {
+      const replacement = b.runtime.sessions.retain(ROOT)
+      onTestFinished(() => { replacement.release() })
+      b.runtime.ctx.uiSession.adapter.bindingSource(replacement).getSnapshot()
+      currentConversation = b.runtime.ctx.uiConversation.binding(replacement.binding)
+    }
+    const activateReplacement = replace ? vi.spyOn(currentConversation, 'activate') : undefined
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    onTestFinished(() => { errors.mockRestore() })
+    removeDictionary()
+    expect(errors).not.toHaveBeenCalled()
+    expect(activate).not.toHaveBeenCalled()
+    if (replace) expect(activateReplacement).toHaveBeenCalledExactlyOnceWith('chat')
   })
 
   it('submits through the provided input machine and mirrors accepted draft edits', async () => {

@@ -60,7 +60,7 @@ async function main() {
     let restart = async () => true
     updater.quitAndInstall = (...args) => { installations.push(args) }
     const coordinator = new DesktopUpdateCoordinator(state => { states.push(state); return state },
-      () => restart(), updater, () => true, () => '1.0.0')
+      () => restart(), updater, () => true, () => '1.0.0', undefined, async () => ({ url: server.url, channel: 'nightly' }))
     const result = { updater, coordinator, installations, states, directory, restart: handler => { restart = handler } }
     fixtures.push(result)
     return result

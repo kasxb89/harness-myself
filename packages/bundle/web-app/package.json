@@ -67,6 +67,8 @@
     "@deepseek-ai/dsh-credits-index": "workspace:*",
     "@deepseek-ai/dsh-client-ui-credits": "workspace:*",
     "@deepseek-ai/dsh-client-ui-mobile": "workspace:*",
+    "@deepseek-ai/dsh-client-creation-content": "workspace:*",
+    "@deepseek-ai/dsh-client-ui-prompt-assist": "workspace:*",
     "@deepseek-ai/dsh-client-ui-imagegen": "workspace:*",
     "@deepseek-ai/dsh-client-ui-videogen": "workspace:*",
     "@deepseek-ai/dsh-app-boot": "workspace:*",

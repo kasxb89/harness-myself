@@ -43,3 +43,13 @@ it('keeps raw diagnostics out of error tooltips in both locales', () => {
       technicalDetails: 'private diagnostic' }, messages)).toBe(messages.updateInstallFailed)
   }
 })
+
+
+it('localizes backend discovery failures without treating them as an up-to-date result', async () => {
+  const kinds = ['source-unbound', 'source-unavailable', 'source-invalid', 'source-disabled', 'source-target-missing', 'source-unsupported-target', 'source-development'] as const
+  const output = kinds.map((sourceFailure) => {
+    const state: DesktopUpdateState = { phase: 'error', failedOperation: 'check', sourceFailure, message: 'private remote data' }
+    return { presentation: presentDesktopUpdate(state), en: desktopUpdateErrorSummary(state, en), zh: desktopUpdateErrorSummary(state, zh) }
+  })
+  await expect(JSON.stringify(output, null, 2) + '\n').toMatchFileSnapshot('./expected/update-source-failures.json')
+})

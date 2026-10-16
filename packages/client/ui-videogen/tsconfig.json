@@ -18,6 +18,9 @@
       "path": "../ui-layout"
     },
     {
+      "path": "../ui-prompt-assist"
+    },
+    {
       "path": "../ui-renderer"
     },
     {
@@ -28,6 +31,9 @@
     },
     {
       "path": "../store"
+    },
+    {
+      "path": "../creation-content/tsconfig.client.json"
     }
   ]
 }

@@ -1,6 +1,6 @@
 {
   "name": "@deepseek-ai/dsh-client-ui-credits",
-  "description": "Sidebar Credits entry and page: the relay platform balance in credits and yuan, with the top-up entry",
+  "description": "Product account balance, top-up and usage panels, with account-scoped workspace guidance",
   "version": "0.2.1-alpha.2",
   "private": true,
   "type": "module",
@@ -42,6 +42,8 @@
   "devDependencies": {
     "@deepseek-ai/cordis": "workspace:~",
     "@deepseek-ai/dsh-client-locale": "workspace:*",
+    "@deepseek-ai/dsh-client-store": "workspace:*",
+    "@deepseek-ai/dsh-client-ui-conversation": "workspace:*",
     "@deepseek-ai/dsh-client-ui-layout": "workspace:*",
     "@deepseek-ai/dsh-client-ui-primitives": "workspace:*",
     "@deepseek-ai/dsh-client-ui-renderer": "workspace:*",

@@ -1,0 +1,16 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`durable account-bound video projects > preflights and validates every request before billing, then verifies and saves the final 40 seconds 1`] = `
+{
+  "clip_paths": [
+    "<clip1>",
+    "<clip2>",
+    "<clip3>",
+  ],
+  "duration_seconds": 40,
+  "final_path": "<workspace>/final.mp4",
+  "message": "视频已实际保存。请调用 present 展示 final_path，并在回复中提供可点击的产物链接。",
+  "project_id": "<project>",
+  "status": "succeeded",
+}
+`;

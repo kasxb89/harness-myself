@@ -146,6 +146,23 @@ it('gives Python-only payloads a distinct identity', () => {
   expect(primaryRuntimePayloadDigest('linux-x64', lock, undefined)).not.toBe(primaryRuntimePayloadDigest('linux-x64', lock, '11.7.0'))
 })
 
+it.each(Object.entries(lock.videoTools.targets))('pins both media tools and distribution notices for %s', (_target, artifact) => {
+  expect(lock.videoTools.source).toMatch(/^https:\/\/github\.com\/eugeneware\/ffmpeg-static\/tree\/[a-f0-9]{40}$/u)
+  for (const entry of Object.values(artifact)) {
+    expect(entry.sha256).toMatch(/^[a-f0-9]{64}$/u)
+    expect(entry.url).toMatch(/^https:\/\/github\.com\/eugeneware\/ffmpeg-static\/releases\/download\/b6\.1\.1\//u)
+  }
+  expect(Object.keys(artifact).sort()).toEqual(['ffmpeg', 'ffprobe', 'license', 'readme'])
+})
+
+it('invalidates the selected media payload and notices without invalidating Python-only or other targets', () => {
+  const changed = structuredClone(lock)
+  changed.videoTools.targets['mac-arm64'].license.sha256 = 'a'.repeat(64)
+  expect(primaryRuntimePayloadDigest('mac-arm64', changed, '11.7.0')).not.toBe(primaryRuntimePayloadDigest('mac-arm64', lock, '11.7.0'))
+  expect(primaryRuntimePayloadDigest('mac-x64', changed, '11.7.0')).toBe(primaryRuntimePayloadDigest('mac-x64', lock, '11.7.0'))
+  expect(primaryRuntimePayloadDigest('mac-arm64', changed, undefined)).toBe(primaryRuntimePayloadDigest('mac-arm64', lock, undefined))
+})
+
 it('keeps carrier pnpm versions aligned with the shared payload build', () => {
   const root = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as {
     packageManager: string

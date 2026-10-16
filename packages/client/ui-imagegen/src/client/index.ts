@@ -27,8 +27,8 @@ export const PANEL_ID = 'imagegen' as MainPanelId
 /** The same module's video mode, owned by its own plugin package. */
 export const VIDEO_PANEL_ID = 'videogen' as MainPanelId
 
-/** Required services: the slot registries and the dictionary registry. */
-export const inject = ['slots', 'locale', 'layout']
+/** Required services: slots, dictionaries, layout and the creation publication. */
+export const inject = ['slots', 'locale', 'layout', 'creationContent']
 
 /**
  * Client plugin body: register the dictionaries, the sidebar entry, and the page.
@@ -40,6 +40,8 @@ export function apply(ctx: ClientContext): void {
   const previewUrls = new Set<string>()
   ctx.effect(() => () => { for (const url of previewUrls) URL.revokeObjectURL(url) })
   const face: Omit<ImagegenInjected, 'readDraft'> = {
+    hooks: { creationContent: ctx.creationContent, locale: ctx.locale },
+    refreshContent: () => { void ctx.creationContent.refresh() },
     t: (key, values) => t(key as Parameters<typeof t>[0], values),
     openVideo: () => { ctx.layout.selectPanel(VIDEO_PANEL_ID) },
     createReferencePreview: (file) => {

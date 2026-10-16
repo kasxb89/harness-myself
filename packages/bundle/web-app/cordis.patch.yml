@@ -23,8 +23,6 @@
   disabled: true
 - id: llm-deepseek-account
   disabled: true
-- id: ui-settings-account
-  disabled: true
 # The dsh-web-app bundle patch: the browser surface over the dsh-base layer.
 # Applied after dsh-base's insert; rows here override base rows by id, with
 # the profile's own cordis.patch.yml and any --patch overlays still to come.
@@ -180,6 +178,7 @@
     # page is not offered as a second place to sign in.
     - id: ui-settings-account
       name: '@deepseek-ai/dsh-client-ui-settings-account'
+      disabled: true
 
     - id: account-controller
       name: '@deepseek-ai/dsh-api-account-controller'
@@ -343,6 +342,8 @@
 
     - id: ui-settings-models
       name: '@deepseek-ai/dsh-client-ui-settings-models'
+      config:
+        credentialOnboarding: false
 
     # Plugin management: the sidebar Plugins page installs, enables, disables,
     # and removes the profile's bundles through the `pluginManager` Remote.
@@ -357,6 +358,8 @@
 
     - id: ui-conversation
       name: '@deepseek-ai/dsh-client-ui-conversation'
+      config:
+        hiddenViews: [trajectory, ipollowork-video-studio]
 
     - id: ui-approval
       name: '@deepseek-ai/dsh-client-ui-approval'
@@ -413,6 +416,14 @@
     # the binding QR is one click from the sidebar.
     - id: ui-mobile
       name: '@deepseek-ai/dsh-client-ui-mobile'
+
+    # Shared content published from the local administration sidebar.
+    - id: creation-content
+      name: '@deepseek-ai/dsh-client-creation-content'
+
+    # Shared prompt assistant for the image and video creation composers.
+    - id: ui-prompt-assist
+      name: '@deepseek-ai/dsh-client-ui-prompt-assist'
 
     # Sidebar AI image column: quotes and submits through the platform's media
     # API, sharing the Credits sign-in and balance.

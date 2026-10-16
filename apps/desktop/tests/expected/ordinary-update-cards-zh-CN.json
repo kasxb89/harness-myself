@@ -1,0 +1,59 @@
+[
+  {
+    "brand": "智澍科技",
+    "title": "正在下载新版本",
+    "detail": "下载期间可继续使用，安装前会再次请你确认重启",
+    "buttons": [
+      "后台下载"
+    ],
+    "close": "后台下载",
+    "progressVisible": true,
+    "progressValue": "58",
+    "percent": "58%",
+    "technicalDetailsVisible": false,
+    "technicalDetailsExpanded": false
+  },
+  {
+    "brand": "智澍科技",
+    "title": "正在校验更新文件…",
+    "detail": "正在检查下载文件的完整性与安全性，请保持应用开启",
+    "buttons": [
+      "后台下载"
+    ],
+    "close": "后台下载",
+    "progressVisible": true,
+    "progressValue": null,
+    "percent": "",
+    "technicalDetailsVisible": false,
+    "technicalDetailsExpanded": false
+  },
+  {
+    "brand": "智澍科技",
+    "title": "下载更新失败，请检查网络连接后重试。",
+    "detail": "",
+    "buttons": [
+      "重试下载",
+      "关闭"
+    ],
+    "close": "关闭",
+    "progressVisible": false,
+    "progressValue": null,
+    "percent": "",
+    "technicalDetailsVisible": true,
+    "technicalDetailsExpanded": false
+  },
+  {
+    "brand": "智澍科技",
+    "title": "新版本 0.2.2-nightly.1 已准备就绪",
+    "detail": "更新期间应用将暂时关闭，完成后会自动打开。\n\n更新可能需要一些时间，请耐心等待，期间请勿重复启动应用。",
+    "buttons": [
+      "安装并重启"
+    ],
+    "close": "关闭",
+    "progressVisible": false,
+    "progressValue": null,
+    "percent": "",
+    "technicalDetailsVisible": false,
+    "technicalDetailsExpanded": false
+  }
+]

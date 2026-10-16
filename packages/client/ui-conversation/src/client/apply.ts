@@ -61,11 +61,14 @@ export const inject = [
 export interface Config {
   /** Maximum generic-file uploads allowed to run concurrently in browser Workers. */
   maxConcurrentFileUploads?: number
+  /** Local hidden View ids used before a Host settings projection is accepted. */
+  hiddenViews?: string[]
 }
 
 /** Validated Conversation runtime configuration. */
 export const Config: z<Config> = z.object({
   maxConcurrentFileUploads: z.natural().min(1).default(2),
+  hiddenViews: z.array(z.string()).default([]),
 })
 
 // Stable no-session sources keep the renderer's observable-hook cache and
@@ -154,15 +157,15 @@ export function apply(ctx: Context, config: Config = Config({})): void {
   const slots = ctx.slots
   // Schemastery's field default is materialized before Cordis calls apply.
   const maxConcurrentFileUploads = config.maxConcurrentFileUploads as number
+  let hiddenViews = new Set(config.hiddenViews)
   const workspaceNavigation = ctx.get('uiWorkspace') as unknown as WorkspaceNavigation
   const uiConversation = new UiConversation(ctx, sessions)
 
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-conversation: dictionaries')
   const t = ctx.locale.bind(NS)
   const conversationStore = createConversationStore()
-  const submissionPolicy = new ComposerSubmissionPolicy(
-    ctx.configForms.get<ConversationSettings>(CONVERSATION_SETTINGS_NAMESPACE),
-  )
+  const conversationSettings = ctx.configForms.get<ConversationSettings>(CONVERSATION_SETTINGS_NAMESPACE)
+  const submissionPolicy = new ComposerSubmissionPolicy(conversationSettings)
 
   ctx.effect(() => () => { submissionPolicy.dispose() })
 
@@ -182,6 +185,7 @@ export function apply(ctx: Context, config: Config = Config({})): void {
     for (const entry of slots.entries('conversation.view')) {
       /* v8 ignore next -- list registration validates id at load. */
       if (entry.options.id === undefined) continue
+      if (hiddenViews.has(entry.options.id)) continue
       if (!ctx.configForms.developerTools.enabled.getSnapshot() && entry.options.id === TRAJECTORY_VIEW_ID) continue
       tabs.push({
         id: entry.options.id,
@@ -215,13 +219,28 @@ export function apply(ctx: Context, config: Config = Config({})): void {
         return candidate !== undefined && tab.id === candidate.id && tab.label === candidate.label
       })
     if (!unchanged) conversationViews.set(next)
-    for (const binding of bindings) restoreView(binding.sessionId)
+    for (const binding of bindings) {
+      // Released generations leave the lookup before scope cleanup removes the tracked binding.
+      if (sessions.binding(binding.sessionId) !== binding) continue
+      restoreView(binding.sessionId)
+    }
   }
   ctx.effect(() => {
     const disposeViews = slots.subscribe('conversation.view', refreshViews)
     const disposeLocale = ctx.locale.subscribe(refreshViews)
     const disposeDeveloperTools = ctx.configForms.developerTools.enabled.subscribe(refreshViews)
+    const adoptHiddenViews = (): void => {
+      const snapshot = conversationSettings.getSnapshot()
+      if (snapshot.status !== 'ready' || snapshot.value === undefined) return
+      const next = new Set(snapshot.value.hiddenViews)
+      if (next.size === hiddenViews.size && [...next].every(id => hiddenViews.has(id))) return
+      hiddenViews = next
+      refreshViews()
+    }
+    const disposeSettings = conversationSettings.subscribe(adoptHiddenViews)
+    adoptHiddenViews()
     return () => {
+      disposeSettings()
       disposeDeveloperTools()
       disposeLocale()
       disposeViews()
@@ -411,6 +430,7 @@ export function apply(ctx: Context, config: Config = Config({})): void {
       hooks: { conversationViews },
       open: (id) => { workspaceNavigation.openSession(id) },
       selectView: (view) => {
+        if (!viewTabs().some(tab => tab.id === view)) return
         activateView(sessionId, view)
         actions.setView(view)
       },

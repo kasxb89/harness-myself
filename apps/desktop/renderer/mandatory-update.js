@@ -53,12 +53,14 @@ function render(view) {
   const technicalDetails = failed ? update.technicalDetails ?? update.message ?? '' : ''
   document.documentElement.lang = id
   document.title = messages.mandatoryTitle
+  element('brand').textContent = messages.aboutProduct
   element('title').textContent = title
   element('detail').textContent = detail
   element('status').textContent = status
   element('version').textContent = update.version === undefined ? '' : format(messages.mandatoryVersion, { version: update.version })
-  element('progress').hidden = update.phase !== 'downloading'
-  element('progress').value = update.percent ?? 0
+  element('progress').hidden = update.phase !== 'downloading' && update.phase !== 'verifying'
+  if (update.phase === 'downloading' && update.percent !== undefined) element('progress').value = update.percent
+  else element('progress').removeAttribute('value')
   element('progress').setAttribute('aria-label', status)
   element('error').textContent = error ?? ''
   element('error').hidden = error === undefined || confirming

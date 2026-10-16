@@ -26,8 +26,8 @@ export const PANEL_ID = 'videogen' as MainPanelId
 /** The same module's image mode, owned by its own plugin package. */
 export const IMAGE_PANEL_ID = 'imagegen' as MainPanelId
 
-/** Required services: the slot registries and the dictionary registry. */
-export const inject = ['slots', 'locale', 'layout']
+/** Required services: slots, dictionaries, layout and the creation publication. */
+export const inject = ['slots', 'locale', 'layout', 'creationContent']
 
 /**
  * Client plugin body: register the dictionaries, the sidebar entry, and the page.
@@ -36,14 +36,18 @@ export const inject = ['slots', 'locale', 'layout']
 export function apply(ctx: ClientContext): void {
   const t = ctx.locale.bind(NS)
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-videogen: dictionaries')
-  const store = createVideoDraftStore()
+  const handle = createVideoDraftStore(), instance = handle.create()
+  const store: typeof handle = { ...handle, create: () => instance }
   const previews = new Set<string>()
   ctx.effect(() => () => { for (const url of previews) URL.revokeObjectURL(url); previews.clear() }, 'ui-videogen: previews')
   const face: VideogenInjected = {
-    t: (key, values) => t(key as Parameters<typeof t>[0], values as never),
+    hooks: { creationContent: ctx.creationContent, locale: ctx.locale },
+    refreshContent: () => { void ctx.creationContent.refresh() },
+    t: (key, values) => t(key, values),
     openImage: () => { ctx.layout.selectPanel(IMAGE_PANEL_ID) },
     createPreview: (file) => { const url = URL.createObjectURL(file); previews.add(url); return url },
     releasePreview: (url) => { URL.revokeObjectURL(url); previews.delete(url) },
+    readDraft: () => instance.getSnapshot(),
   }
   ctx.slots.inject('main', () => ctx.slots.register({
     name: 'main',

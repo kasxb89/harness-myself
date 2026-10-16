@@ -1,0 +1,127 @@
+// @vitest-environment jsdom
+/** Product-panel launch navigation across slot declaration and plugin lifetimes. */
+import { Context, type Fiber } from '@deepseek-ai/cordis'
+import { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client'
+import { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { LayoutController, type MainPanelId } from '../../ui-layout/src/client/service.ts'
+import { createLayoutStore } from '../../ui-layout/src/client/stores.ts'
+import { apply, inject } from '../src/client/index.ts'
+
+const roots: Context[] = []
+const existingPanel = 'existing-panel' as MainPanelId
+
+afterEach(async () => {
+  for (const root of roots.splice(0)) await root.fiber.dispose()
+  window.history.replaceState(null, '', '/')
+  vi.restoreAllMocks()
+})
+
+async function bench(search: string) {
+  window.history.replaceState(null, '', `/${search}`)
+  const ctx = new Context()
+  roots.push(ctx)
+  await ctx.plugin(SlotRegistry).await()
+  const slots = ctx.get('slots')!
+  const state = createLayoutStore().create()
+  const layout = new LayoutController(state.actions, id =>
+    slots.entries('main').some(entry => entry.options.key === id), {
+    getSnapshot: () => state.getSnapshot().panelInfo,
+    subscribe: listener => state.subscribe(listener),
+  })
+  ctx.provide('layout', layout)
+  ctx.provide('locale', new LocaleRuntime(ctx))
+  const select = vi.spyOn(layout, 'selectPanel')
+  const start = async (): Promise<Fiber> => {
+    const fiber = ctx.plugin({ inject: [...inject], apply })
+    await fiber.await()
+    return fiber
+  }
+  const declare = async (): Promise<Fiber> => {
+    const frame = ctx.plugin({
+      inject: ['slots'],
+      apply(owned: Context) {
+        owned.slots.register({
+          name: 'root',
+          children: {
+            main: { kind: 'keyed', scope: 'root' },
+            'sidebar.panellist': { kind: 'list', scope: 'root' },
+            'sidebar.footer.action': { kind: 'list', scope: 'root' },
+            'shell.overlay': { kind: 'list', scope: 'root' },
+            'conversation.input.dock': { kind: 'list', scope: 'session' },
+          },
+        }, () => null)
+      },
+    })
+    await frame.await()
+    return frame
+  }
+  return { ctx, slots, layout, select, start, declare }
+}
+
+describe('Credits launch entry', () => {
+  it('waits for the main declaration before opening the registered product panel', async () => {
+    const b = await bench('?panel=credits')
+    await b.start()
+    expect(b.select).not.toHaveBeenCalled()
+    expect(b.slots.entries('main')).toEqual([])
+    expect(b.layout.panelInfo.getSnapshot().activePanelId).toBeNull()
+
+    await b.declare()
+
+    expect(b.slots.entries('main').map(entry => entry.options.key)).toEqual(['credits', 'recharge'])
+    expect(b.select).toHaveBeenCalledExactlyOnceWith('credits')
+    expect(b.layout.panelInfo.getSnapshot().activePanelId).toBe('credits')
+  })
+
+  it.each(['', '?panel=unknown', '?panel=recharge'])('preserves navigation without a Credits launch request (%s)', async (search) => {
+    const b = await bench(search)
+    await b.declare()
+    b.slots.register({ name: 'main', key: existingPanel }, () => null)
+    b.layout.selectPanel(existingPanel)
+    b.select.mockClear()
+
+    await b.start()
+
+    expect(b.select).not.toHaveBeenCalled()
+    expect(b.layout.panelInfo.getSnapshot().activePanelId).toBe(existingPanel)
+    expect(b.slots.entries('main').map(entry => entry.options.key)).toContain('credits')
+  })
+
+  it('removes entries and pending launch effects when the plugin is released', async () => {
+    const b = await bench('?panel=credits')
+    const credits = await b.start()
+    const frame = await b.declare()
+    expect(b.slots.entries('sidebar.footer.action')).toHaveLength(1)
+    expect(b.slots.entries('conversation.input.dock').map(entry => entry.options.id)).toEqual(['workspace-guide'])
+    expect(b.slots.entries('shell.overlay').map(entry => entry.options.id)).toEqual(['workspace-guide-notice'])
+    expect(b.ctx.locale.bind('credits')('panel')).not.toBe('panel')
+
+    await credits.dispose()
+
+    expect(b.slots.entries('main')).toEqual([])
+    expect(b.slots.entries('sidebar.footer.action')).toEqual([])
+    expect(b.slots.entries('conversation.input.dock')).toEqual([])
+    expect(b.slots.entries('shell.overlay')).toEqual([])
+    expect(b.ctx.locale.bind('credits')('panel')).toBe('panel')
+    b.select.mockClear()
+    await frame.dispose()
+    await b.declare()
+    expect(b.slots.entries('main')).toEqual([])
+    expect(b.slots.entries('sidebar.footer.action')).toEqual([])
+    expect(b.select).not.toHaveBeenCalled()
+  })
+
+  it('cancels a launch that is still waiting for the main declaration', async () => {
+    const b = await bench('?panel=credits')
+    const credits = await b.start()
+    await credits.dispose()
+
+    await b.declare()
+
+    expect(b.slots.entries('main')).toEqual([])
+    expect(b.slots.entries('sidebar.footer.action')).toEqual([])
+    expect(b.select).not.toHaveBeenCalled()
+    expect(b.layout.panelInfo.getSnapshot().activePanelId).toBeNull()
+  })
+})

@@ -37,6 +37,13 @@ function updateCopy(state: DesktopUpdatePresentation, t: SettingsTranslate): { l
       'stop-failed': t('desktop.update.stopFailed'),
       'tasks-changed': t('desktop.update.tasksChanged'),
       'tasks-unavailable': t('desktop.update.tasksUnavailable'),
+      'source-unbound': t('desktop.update.sourceUnbound'),
+      'source-unavailable': t('desktop.update.sourceUnavailable'),
+      'source-invalid': t('desktop.update.sourceInvalid'),
+      'source-disabled': t('desktop.update.sourceDisabled'),
+      'source-target-missing': t('desktop.update.sourceTargetMissing'),
+      'source-unsupported-target': t('desktop.update.sourceUnsupportedTarget'),
+      'source-development': t('desktop.update.sourceDevelopment'),
     }
     return { label, detail: failures[state.failure ?? 'install'] }
   }
@@ -67,9 +74,11 @@ export function DesktopUpdateIndicator({ wide, hidden, t, view, onOpen }: {
   const label = failed ? retryLabel : copy.label
   const error = failed || state?.phase === 'error'
   const busy = opening || (state !== undefined && BUSY_PHASES.has(state.phase))
+  const canReopenProgress = state?.phase === 'downloading' || state?.phase === 'verifying'
+  const disabled = busy && !canReopenProgress
   return <Tooltip label={failed ? retryLabel : copy.detail} side="top">
     <button type="button" className={css.indicator}
-      aria-label={label} aria-disabled={busy} onClick={() => { if (!busy) onOpen() }}>
+      aria-label={label} aria-disabled={disabled} onClick={() => { if (!disabled) onOpen() }}>
       <span className={css.icon} aria-hidden="true">
         {error ? <span className={css.errorDot} />
           : busy ? <IconLoadingOutlineRegular className={css.spinner} size={14} /> : <IconDownloadOutlineRegular size={14} />}

@@ -36,6 +36,10 @@ export const DESKTOP_IPC = {
 /** Desktop release update state rendered by desktop-owned UI. */
 export type DesktopUpdatePreparationFailureKind = 'stop-failed' | 'tasks-changed' | 'tasks-unavailable'
 
+/** Main-owned discovery causes shared by native and product-localized update presentation. */
+export type DesktopUpdateSourceFailureKind = 'source-unbound' | 'source-unavailable' | 'source-invalid' | 'source-disabled'
+  | 'source-target-missing' | 'source-unsupported-target' | 'source-development'
+
 export interface DesktopUpdateState {
   readonly phase: 'idle' | 'checking' | 'available' | 'downloading' | 'verifying' | 'installing' | 'ready' | 'error'
   readonly version?: string
@@ -46,10 +50,13 @@ export interface DesktopUpdateState {
   readonly failedOperation?: 'check' | 'download' | 'install'
   /** Main-owned preparation cause; UI wording is selected by the active locale. */
   readonly preparationFailure?: DesktopUpdatePreparationFailureKind
+  /** Discovery failure invalidates any previously available target. */
+  readonly sourceFailure?: DesktopUpdateSourceFailureKind
 }
 
 /** Classified failure copy selected by the Web locale without exposing raw updater diagnostics. */
 export type DesktopUpdateFailureKind =
+  | DesktopUpdateSourceFailureKind
   | 'check'
   | 'check-network'
   | 'download'

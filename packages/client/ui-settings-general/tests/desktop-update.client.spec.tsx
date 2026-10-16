@@ -72,7 +72,8 @@ it('keeps the newest event, hides for connection priority, and invokes only the 
     await f.emit({ phase: 'downloading', version: available.version, percent: 58 })
     f.view.rerender(<f.Indicator />)
     fireEvent.click(screen.getByRole('button', { name: '58%' }))
-    expect(f.open).toHaveBeenCalledOnce()
+    await act(async () => {})
+    expect(f.open).toHaveBeenCalledTimes(2)
     await f.emit({ phase: 'error', version: available.version, failure: 'download' })
     const retry = screen.getByRole('button', { name: '重试更新' })
     fireEvent.focus(retry)
@@ -102,7 +103,7 @@ it('accepts initial status, coalesces actions, and ignores late events and actio
   try {
     await act(async () => { f.status.resolve(available) })
     expect(screen.getByRole('button', { name: '新版本' })).toBeTruthy()
-    await f.emit({ phase: 'verifying', version: available.version })
+    await f.emit({ phase: 'checking', version: available.version })
     f.source.open()
     expect(f.open).not.toHaveBeenCalled()
     await f.emit(available)
@@ -116,6 +117,51 @@ it('accepts initial status, coalesces actions, and ignores late events and actio
     await act(async () => { pending.reject(new Error('late IPC failure')) })
     expect(f.source.store.getSnapshot()).toBe(state)
   } finally { pending.resolve(undefined); f.status.resolve(available) }
+})
+
+it('reopens download and verification progress while the original shell action is pending', async () => {
+  const f = fixture()
+  const pending = Promise.withResolvers<undefined>()
+  try {
+    await act(async () => { f.status.resolve(available) })
+    f.open.mockImplementationOnce(() => pending.promise)
+    fireEvent.click(screen.getByRole('button', { name: '新版本' }))
+    expect(f.source.store.getSnapshot().opening).toBe(true)
+    await f.emit({ phase: 'downloading', version: available.version, percent: 42 })
+    const download = screen.getByRole('button', { name: '42%' })
+    expect(download.getAttribute('aria-disabled')).toBe('false')
+    fireEvent.click(download)
+    await act(async () => {})
+    expect(f.open).toHaveBeenCalledTimes(2)
+    expect(f.source.store.getSnapshot().opening).toBe(true)
+    await f.emit({ phase: 'verifying', version: available.version })
+    const verification = screen.getByRole('button', { name: '正在校验更新文件…' })
+    expect(verification.getAttribute('aria-disabled')).toBe('false')
+    fireEvent.click(verification)
+    await act(async () => {})
+    expect(f.open).toHaveBeenCalledTimes(3)
+    await f.emit({ phase: 'installing', version: available.version })
+    fireEvent.click(screen.getByRole('button', { name: '正在准备重启…' }))
+    expect(f.open).toHaveBeenCalledTimes(3)
+    await act(async () => { pending.resolve(undefined) })
+    expect(f.source.store.getSnapshot().opening).toBe(false)
+  } finally { f.view.unmount(); pending.resolve(undefined); f.status.resolve(available) }
+})
+
+it('keeps a failed progress-window reopen retryable without replacing the download state', async () => {
+  const f = fixture()
+  try {
+    await f.emit({ phase: 'downloading', version: available.version, percent: 42 })
+    f.open.mockRejectedValueOnce(new Error('IPC unavailable'))
+    fireEvent.click(screen.getByRole('button', { name: '42%' }))
+    await act(async () => {})
+    expect(f.source.store.getSnapshot().presentation?.phase).toBe('downloading')
+    const retry = screen.getByRole('button', { name: '重试更新' })
+    expect(retry.getAttribute('aria-disabled')).toBe('false')
+    fireEvent.click(retry)
+    await act(async () => {})
+    expect(f.open).toHaveBeenCalledTimes(2)
+  } finally { f.view.unmount(); f.status.resolve(available) }
 })
 
 it('keeps an event newer than an initial-status failure', async () => {
@@ -135,6 +181,28 @@ it('renders the same semantic update in the active Web locale', async () => {
     f.view.rerender(<f.Indicator dictionary={en} />)
     expect(screen.getByRole('button', { name: 'Update' })).toBeTruthy()
   } finally { f.view.unmount(); f.status.resolve(available) }
+})
+
+it.each([
+  'source-unbound', 'source-unavailable', 'source-invalid', 'source-disabled',
+  'source-target-missing', 'source-unsupported-target', 'source-development',
+] as const)('keeps %s actionable with localized guidance', async (failure) => {
+  const f = fixture()
+  try {
+    await f.emit({ phase: 'error', failure })
+    const retry = screen.getByRole('button', { name: '重试更新' })
+    fireEvent.focus(retry)
+    const chinese = (await screen.findByRole('tooltip')).textContent
+    expect(retry.getAttribute('aria-disabled')).toBe('false')
+    f.view.rerender(<f.Indicator dictionary={en} />)
+    const englishRetry = screen.getByRole('button', { name: 'Retry update' })
+    fireEvent.focus(englishRetry)
+    const english = (await screen.findByRole('tooltip')).textContent
+    expect({ chinese, english }).toMatchSnapshot()
+    fireEvent.click(englishRetry)
+    await act(async () => {})
+    expect(f.open).toHaveBeenCalledOnce()
+  } finally { f.view.unmount(); f.status.resolve({ phase: 'idle' }) }
 })
 
 it('shows fallback progress and error details when the shell omits optional fields', async () => {

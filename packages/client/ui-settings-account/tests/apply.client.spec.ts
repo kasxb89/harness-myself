@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
-/** Desktop account operations and ordinary-browser isolation in the shipped client composition. */
+/** Official account operations in an explicitly enabled product client composition. */
 import { afterEach, beforeEach, expect, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
 import { ok } from '@deepseek-ai/dsh-remote-mock'
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
-import { createClientTest, type TestClient, webApp } from '@deepseek-ai/dsh-client-test-runtime/src/assembly/index.ts'
+import { ClientRoster, createClientTest, type TestClient, webApp } from '@deepseek-ai/dsh-client-test-runtime/src/assembly/index.ts'
 import type {
   AccountBonusBatch, AccountBonusOrderId, AccountDetails, AccountUserId, AccountView, SignInAttemptId,
 } from '@deepseek-ai/dsh-deepseek-account/types'
@@ -22,8 +23,16 @@ import type { AccountPlatformHostInjected } from '../src/client/AccountPlatformH
 import { AccountQuotaNotice } from '../src/client/AccountQuotaNotice.tsx'
 import type { AccountQuotaNoticeInjected } from '../src/client/AccountQuotaNotice.tsx'
 
-const it = createClientTest({ roster: webApp })
 const SELF = '@deepseek-ai/dsh-client-ui-settings-account'
+const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
+  dsh: { client: { inject: string[]; immediately?: boolean } }
+}
+const declaration = manifest.dsh.client
+// The product disables the official account; these feature tests explicitly opt into its real browser module.
+const it = createClientTest({ roster: ClientRoster.of([...webApp.rows, {
+  name: SELF, inject: declaration.inject, immediately: declaration.immediately === true,
+}]) })
+const productIt = createClientTest({ roster: webApp })
 const view: AccountView = {
   status: 'signed-out', attempt: null,
   links: { usageUrl: 'https://platform.deepseek.com/usage', topUpUrl: 'https://platform.deepseek.com/top_up' },
@@ -63,6 +72,16 @@ beforeEach(() => {
   vi.stubGlobal('devicePixelRatio', 2)
 })
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.restoreAllMocks() })
+
+productIt('keeps the official account login and menu out of the default product', async ({ start, mock }) => {
+  vi.stubGlobal('dshDesktop', {})
+  const c = await start()
+  expect(c.ctx.slots.entries('settings.launcher')).toHaveLength(0)
+  expect(c.ctx.slots.entries('settings.models.sign-in')).toHaveLength(0)
+  expect(c.ctx.slots.entries('settings.section').some(entry => entry.options.id === 'account')).toBe(false)
+  expect(mock.log.calls().filter(call => call.endpoint.startsWith('account/'))).toEqual([])
+  expect(mock.log.streams().filter(stream => stream.endpoint.startsWith('account/'))).toEqual([])
+}, 60_000)
 
 it('keeps account UI and account RPC inactive in a plain browser, including after reload', async ({ start, mock }) => {
   const c = await start()

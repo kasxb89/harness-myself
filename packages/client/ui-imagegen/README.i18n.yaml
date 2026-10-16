@@ -1,0 +1,25 @@
+# Bilingual-pair consistency record for README.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write packages/client/ui-imagegen/README.md
+/image-creation-workspace:
+  en: 5b67923bc1769edf
+  zh: 2df5e8210a81f638
+/image-creation-workspace/model-experience:
+  en: 215e7ba838619b7b
+  zh: 215e7ba838619b7b
+/image-creation-workspace/model-experience/image-submission:
+  en: c93a889de1040005
+  zh: 5369399319e789c1
+/image-creation-workspace/model-experience/image-submission/what-the-model-sees:
+  en: a51769411bb10bc4
+  zh: daf13e05a6ec53ad
+/image-creation-workspace/model-experience/image-submission/token-budget:
+  en: d52d69c579876651
+  zh: 261cb847d235004f
+/image-creation-workspace/model-experience/image-submission/kv-cache-effect:
+  en: c27c7b0d3060c108
+  zh: 430b294e7e2cea10
+/image-creation-workspace/known-limitations-and-deferred-work:
+  en: 0d8ece878b2bc8cc
+  zh: c08d4709fa7b1b4d

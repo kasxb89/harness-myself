@@ -8,6 +8,7 @@ import { gt, valid } from 'semver'
 import type { DesktopUpdateState } from './ipc.ts'
 import { DesktopUpdateHttpExecutor } from './update-http-executor.ts'
 import { DesktopUpdatePreparationError } from './update-error.ts'
+import { DesktopUpdateSourceError, type DesktopUpdateSource } from './update-source.ts'
 
 const { autoUpdater } = electronUpdater
 
@@ -46,6 +47,7 @@ export class DesktopUpdateCoordinator {
    * @param enabled - Whether this process has a packaged update source.
    * @param currentVersion - Actual installed application version.
    * @param downloadResult - Once per completed download attempt, including platform preparation failures.
+   * @param resolveSource - Re-reads the trusted backend before every check; failure invalidates an old available target.
    */
   constructor(
     private readonly publish: (state: DesktopUpdateState) => DesktopUpdateState,
@@ -54,6 +56,7 @@ export class DesktopUpdateCoordinator {
     private readonly enabled: () => boolean = () => app.isPackaged && existsSync(join(process.resourcesPath, 'app-update.yml')),
     private readonly currentVersion: () => string = () => app.getVersion(),
     private readonly downloadResult?: (success: boolean, reason?: string) => void,
+    private readonly resolveSource: () => Promise<DesktopUpdateSource> = () => { throw new DesktopUpdateSourceError('source-unbound') },
   ) {
     if (updater === autoUpdater) {
       // electron-updater omits this internal transport property from its public declarations.
@@ -169,6 +172,7 @@ export class DesktopUpdateCoordinator {
   private failure(error: unknown, failedOperation: 'check' | 'download' | 'install'): DesktopUpdateState {
     return { phase: 'error', ...this.target(), failedOperation,
       message: error instanceof Error ? error.message : String(error),
+      ...(error instanceof DesktopUpdateSourceError ? { sourceFailure: error.kind } : {}),
       ...(error instanceof DesktopUpdatePreparationError ? {
         preparationFailure: error.kind,
         ...(error.technicalDetails === undefined ? {} : { technicalDetails: error.technicalDetails }),
@@ -182,7 +186,12 @@ export class DesktopUpdateCoordinator {
   private async doCheck(): Promise<DesktopUpdateState> {
     try {
       this.assertLive()
-      if (!this.enabled()) throw new Error('desktop update: this application has no packaged update source')
+      this.candidate = undefined
+      const source = await this.resolveSource()
+      this.assertLive()
+      if (!this.enabled()) throw new DesktopUpdateSourceError('source-development')
+      this.updater.setFeedURL({ provider: 'generic', ...source })
+      this.updater.allowDowngrade = false
       const result = await this.updater.checkForUpdates()
       if (result === null) throw new Error('desktop update: no check result was returned')
       const version = result.updateInfo.version
@@ -190,7 +199,8 @@ export class DesktopUpdateCoordinator {
       this.candidate = result.isUpdateAvailable && gt(version, this.currentVersion()) ? version : undefined
       return this.setState(this.candidate === undefined ? { phase: 'idle' } : { phase: 'available', version })
     } catch (error) {
-      return this.failure(error, 'check')
+      const failure = this.failure(error, 'check')
+      return error instanceof DesktopUpdateSourceError || this.current.phase === 'available' ? this.setState(failure) : failure
     }
   }
 }

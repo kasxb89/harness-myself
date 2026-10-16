@@ -56,7 +56,7 @@ async function main() {
     updater.quitAndInstall = () => { installed++ }
     let authorized = false
     const coordinator = new DesktopUpdateCoordinator(state => { states.push(state); return state },
-      async () => authorized, updater, () => true, () => '1.0.0')
+      async () => authorized, updater, () => true, () => '1.0.0', undefined, async () => ({ url: server.url, channel: 'nightly', useMultipleRangeRequest: multipleRanges }))
     const f = { coordinator, updater, logs, errors, states, directory, authorize: () => { authorized = true } }
     fixtures.push(f)
     return f

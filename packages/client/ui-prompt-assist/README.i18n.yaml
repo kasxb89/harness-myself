@@ -1,0 +1,28 @@
+# Bilingual-pair consistency record for README.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write packages/client/ui-prompt-assist/README.md
+/ai-prompt-writing:
+  en: 3355d9fb3ab65da8
+  zh: 1d6cf61124a85f55
+/ai-prompt-writing/summary:
+  en: 5c018cd4100f3ff7
+  zh: 7ba3426c7cf0fe58
+/ai-prompt-writing/behavior:
+  en: c45d2ad6db9649a3
+  zh: 49270231712a5fb4
+/ai-prompt-writing/model-experience:
+  en: 215e7ba838619b7b
+  zh: 215e7ba838619b7b
+/ai-prompt-writing/model-experience/what-the-model-sees:
+  en: 3e58a2a7e6ddb626
+  zh: 0a486a0607b54ac5
+/ai-prompt-writing/model-experience/token-budget:
+  en: 7d8c88197ffc422a
+  zh: c8c21080964563fe
+/ai-prompt-writing/model-experience/kv-cache-effect:
+  en: 2b73f8f462a5fbfc
+  zh: aeba0d73e65a1028
+/ai-prompt-writing/known-limitations-and-deferred-work:
+  en: f6ca5c243b9396d8
+  zh: 0ad9c8e6cbd9d9be

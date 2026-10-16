@@ -2,12 +2,13 @@
 
 import { execFileSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { cp } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
+import { gunzipSync } from 'node:zlib'
 import extractZip from 'extract-zip'
 import { x as extractTar } from 'tar'
 import { parsePrimaryRuntime, workspaceDependencyPaths, type PrimaryRuntimeManifest } from '@deepseek-ai/dsh-tool-workspace-dependencies'
@@ -125,9 +126,51 @@ export function primaryRuntimePayloadDigest(
   // Identity preserves key order within the selected target, wheel records and distribution map, plus wheel-entry order.
   // Bump format when extraction or assembly changes payload bytes without changing locked inputs.
   return createHash('sha256').update(JSON.stringify({
-    format: 6, target, pythonVersion, pythonRelease, nodeVersion: pnpmVersion === undefined ? undefined : nodeVersion,
+    format: 7, target, pythonVersion, pythonRelease, nodeVersion: pnpmVersion === undefined ? undefined : nodeVersion,
     artifact: runtimeLock.targets[target], wheels, pythonPackages, pnpm: pnpmVersion,
+    videoTools: pnpmVersion === undefined ? undefined : {
+      release: runtimeLock.videoTools.release, source: runtimeLock.videoTools.source,
+      artifact: runtimeLock.videoTools.targets[target],
+    },
   })).digest('hex')
+}
+
+/**
+ * Materialize pinned standalone media tools, retaining their separate distribution terms.
+ * @param target - Binary platform matching the rest of the payload.
+ * @param destination - Directory receiving bin/, runtime.json, LICENSE and README.
+ * @param cache - Verified SHA-256 archive cache.
+ * @returns Resolves after all locked assets have been verified and copied.
+ */
+export async function prepareVideoTools(target: PrimaryRuntimeTarget, destination: string, cache: string): Promise<void> {
+  const artifact = lock.videoTools.targets[target]
+  mkdirSync(join(destination, 'bin'), { recursive: true })
+  for (const name of ['ffmpeg', 'ffprobe'] as const) {
+    const archive = await downloadPrimaryRuntimeAsset(artifact[name].url, artifact[name].sha256, cache)
+    const executable = join(destination, 'bin', target === 'win-x64' ? `${name}.exe` : name)
+    writeFileSync(executable, gunzipSync(readFileSync(archive)), { mode: 0o755 })
+    chmodSync(executable, 0o755)
+  }
+  for (const [name, filename] of [['license', 'LICENSE'], ['readme', 'README']] as const) {
+    const archive = await downloadPrimaryRuntimeAsset(artifact[name].url, artifact[name].sha256, cache)
+    cpSync(archive, join(destination, filename))
+  }
+  writeFileSync(join(destination, 'runtime.json'), `${JSON.stringify({
+    release: lock.videoTools.release, target, source: lock.videoTools.source, assets: artifact,
+  }, undefined, 2)}\n`)
+}
+
+/**
+ * Execute both native media tools before publishing a prepared runtime.
+ * @param root - Pinned media-tool directory.
+ * @param environment - Scrubbed child environment owned by the carrier.
+ */
+export function smokeVideoTools(root: string, environment: NodeJS.ProcessEnv): void {
+  for (const name of ['ffmpeg', 'ffprobe'] as const) {
+    const executable = join(root, 'bin', process.platform === 'win32' ? `${name}.exe` : name)
+    const version = execFileSync(executable, ['-version'], { env: environment, timeout: 30_000, encoding: 'utf8' })
+    if (!version.startsWith(`${name} version `)) throw new Error(`primary runtime: invalid ${name} version output`)
+  }
 }
 
 /**
@@ -199,6 +242,7 @@ export async function preparePrimaryRuntime(options: PreparePrimaryRuntimeOption
     if (!options.pythonOnly) {
       const node = join(dependencies, 'node')
       await downloadNodeRuntime(target, node, paths.downloads)
+      await prepareVideoTools(target, join(dependencies, 'ffmpeg'), paths.downloads)
       mkdirSync(join(node, 'node_modules'))
       writeFileSync(join(node, 'node_modules', 'README.txt'), 'Reserved for bundled Node packages. pnpm uses its default installation directories.\n')
       if (options.pnpmArchive !== undefined) {
@@ -256,6 +300,7 @@ export function smokePrimaryRuntime(root: string, environment: NodeJS.ProcessEnv
   execFileSync(entries.python, ['-I', '-B', '-m', 'pip', 'check'], options)
   if (entries.node !== undefined) execFileSync(entries.node, ['-e', `if (process.versions.node !== ${JSON.stringify(manifest.node)}) process.exit(1)`], options)
   if (entries.pnpm !== undefined && entries.node !== undefined) execFileSync(entries.node, [entries.pnpm, '--version'], options)
+  if (entries.node !== undefined) smokeVideoTools(join(root, 'dependencies', 'ffmpeg'), environment)
 }
 
 if (import.meta.main) {

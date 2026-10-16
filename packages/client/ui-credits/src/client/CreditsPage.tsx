@@ -8,7 +8,8 @@
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import {
-  Button, IconChevronRightOutlineRegular, IconPlusOutlineRegular, IconRefreshOutlineRegular, IconUserOutlineRegular, Input,
+  Button, IconChecklistOutlineRegular, IconChevronRightOutlineRegular, IconPlusOutlineRegular,
+  IconRefreshOutlineRegular, IconShieldOutlineRegular, IconUserOutlineRegular, Input,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { grouped, newKey, post } from './api.ts'
@@ -33,10 +34,7 @@ interface ChallengeResponse {
 }
 
 interface SessionResponse {
-  readonly status: string
-  readonly session_token: string
-  readonly expires_at: string
-  readonly registration_bonus: { readonly status: string; readonly points: number }
+  readonly registration_bonus?: { readonly status: string; readonly points: number }
 }
 
 /** Seconds past which a resend is allowed again. */
@@ -52,16 +50,18 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected): 
   const [busy, setBusy] = useState(false)
 
   // Login flow
-  const [phone, setPhone] = useState('+861')
+  const [phone, setPhone] = useState('+86')
   const [code, setCode] = useState('')
   const [challenge, setChallenge] = useState<ChallengeResponse | null>(null)
   const [resendIn, setResendIn] = useState(0)
+  const [loginAction, setLoginAction] = useState<'send' | 'verify' | null>(null)
   const challengeKey = useRef<string | null>(null)
   const verifyKey = useRef<string | null>(null)
 
   const creditsPerYuan = session?.creditsPerYuan ?? 1000
   const signedIn = session?.signedIn === true
   const accountPhone = session?.account?.phone.replace(/^(\+86)(1\d{2})(\d{4})(\d{4})$/, '$1 $2 $3 $4') ?? '—'
+  const validPhone = /^\+861[3-9]\d{9}$/.test(phone)
 
   useEffect(() => {
     if (resendIn <= 0) return undefined
@@ -79,6 +79,7 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected): 
     }
     challengeKey.current ??= newKey('sms-challenge')
     setBusy(true)
+    setLoginAction('send')
     try {
       const answer = await post<ChallengeResponse>('/credits/api/session/challenge', {
         phone,
@@ -93,11 +94,12 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected): 
         setFailure(answer.message ?? answer.code ?? t('errGeneric'))
         challengeKey.current = null
       }
-    } catch (error) {
-      setFailure(error instanceof Error ? error.message : String(error))
+    } catch {
+      setFailure(t('loginSendFailed'))
       challengeKey.current = null
     } finally {
       setBusy(false)
+      setLoginAction(null)
     }
   }, [phone, t])
 
@@ -113,6 +115,7 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected): 
     }
     verifyKey.current ??= newKey('sms-session')
     setBusy(true)
+    setLoginAction('verify')
     setFailure(null)
     try {
       const answer = await post<SessionResponse>('/credits/api/session/verify', {
@@ -122,7 +125,7 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected): 
       })
       if (answer.ok && answer.payload !== undefined) {
         const bonus = answer.payload.registration_bonus
-        setNotice(bonus.status === 'credited'
+        setNotice(bonus?.status === 'credited'
           ? t('signedInBonus', { points: grouped(bonus.points) })
           : t('signedIn'))
         setCode('')
@@ -139,11 +142,12 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected): 
         }
         verifyKey.current = null
       }
-    } catch (error) {
-      setFailure(error instanceof Error ? error.message : String(error))
+    } catch {
+      setFailure(t('loginVerifyFailed'))
       verifyKey.current = null
     } finally {
       setBusy(false)
+      setLoginAction(null)
     }
   }, [challenge, code, t])
 
@@ -175,55 +179,80 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected): 
         )}
       </header>
 
-      {failure !== null && <p className={css.banner} data-tone="error" role="alert">{failure}</p>}
-      {notice !== null && <p className={css.banner} data-tone="success" role="status">{notice}</p>}
+      {signedIn && failure !== null && <p className={css.banner} data-tone="error" role="alert">{failure}</p>}
+      {signedIn && notice !== null && <p className={css.banner} data-tone="success" role="status">{notice}</p>}
       {!loaded && <p className={css.hint}>{t('loading')}</p>}
 
       {loaded && !signedIn && (
-        <section className={css.card}>
-          <div className={css.cardIntro}>
-            <h2 className={css.cardTitle}>{t('loginTitle')}</h2>
-            <p className={css.hint}>{t('loginHint')}</p>
-          </div>
-          <div className={css.form}>
-            <label className={css.field}>
-              <span className={css.fieldLabel}>{t('phone')}</span>
-              <Input
-                className={cx(css.input)}
-                value={phone}
-                inputMode="tel"
-                autoComplete="tel"
-                placeholder="+8613800138000"
-                onChange={(event) => { setPhone(event.target.value.trim()); challengeKey.current = null }}
-              />
-            </label>
-            <div className={css.fieldRow}>
-              <label className={cx(css.field, css.codeField)}>
-                <span className={css.fieldLabel}>{t('code')}</span>
-                <Input
-                  className={cx(css.input)}
-                  value={code}
-                  inputMode="numeric"
-                  maxLength={6}
-                  placeholder={t('codePlaceholder')}
-                  onChange={(event) => { setCode(event.target.value.replace(/\D/g, '').slice(0, 6)); verifyKey.current = null }}
-                />
-              </label>
-              <Button
-                variant="outline"
-                onClick={() => { void sendCode() }}
-                disabled={busy || resendIn > 0}
-              >
-                {resendIn > 0 ? t('resendIn', { seconds: String(resendIn) }) : t('sendCode')}
-              </Button>
-              <Button
-                variant="primary"
-                onClick={() => { void verifyCode() }}
-                disabled={busy}
-              >
-                {t('signIn')}
-              </Button>
+        <section className={css.signInCard} aria-label={t('loginTitle')}>
+          <div className={css.signInLayout}>
+            <div className={css.signInIntro}>
+              <span className={css.signInIcon}><CreditsPanelIcon size={24} /></span>
+              <h2 className={css.signInTitle}>{t('loginIntroTitle')}</h2>
+              <p className={css.signInDescription}>{t('loginIntroHint')}</p>
+              <div className={css.signInFeatures}>
+                <div className={css.signInFeature}>
+                  <span className={css.signInFeatureIcon}><CreditsPanelIcon size={18} /></span>
+                  <div><p>{t('loginBalanceTitle')}</p><span>{t('loginBalanceHint')}</span></div>
+                </div>
+                <div className={css.signInFeature}>
+                  <span className={css.signInFeatureIcon}><IconChecklistOutlineRegular size={18} /></span>
+                  <div><p>{t('loginUsageTitle')}</p><span>{t('loginUsageHint')}</span></div>
+                </div>
+              </div>
             </div>
+            <form className={css.signInForm} onSubmit={(event) => { event.preventDefault(); if (!busy) void verifyCode() }}>
+              <div className={css.signInFormHeading}>
+                <h3>{t('loginTitle')}</h3>
+                <p>{t('loginSubtitle')}</p>
+              </div>
+              <label className={css.signInField}>
+                <span className={css.signInFieldLabel}>{t('phone')}</span>
+                <span className={css.phoneControl}>
+                  <span className={css.phonePrefix} aria-hidden="true">+86</span>
+                  <Input className={cx(css.phoneInput)} aria-label={t('phone')}
+                    value={phone.slice(3)} type="tel" inputMode="tel" autoComplete="tel-national"
+                    maxLength={18} disabled={busy} placeholder={t('loginPhonePlaceholder')}
+                    onChange={(event) => {
+                      const input = event.target.value.trim()
+                      setChallenge(null); setCode(''); setFailure(null); setNotice(null)
+                      challengeKey.current = null; verifyKey.current = null
+                      if (input.startsWith('+') && !input.startsWith('+86')) {
+                        setPhone('+86'); setFailure(t('errPhone')); return
+                      }
+                      const digits = (input.startsWith('+86') ? input.slice(3) : input).replace(/\D/g, '')
+                      const national = digits.length === 13 && digits.startsWith('86') ? digits.slice(2) : digits
+                      setPhone(`+86${national.slice(0, 11)}`)
+                    }} />
+                </span>
+              </label>
+              <div className={css.signInField}>
+                <span className={css.signInFieldLabel}>{t('code')}</span>
+                <div className={css.signInCodeRow}>
+                  <Input className={cx(css.signInInput)} aria-label={t('code')}
+                    value={code} inputMode="numeric" autoComplete="one-time-code" maxLength={6}
+                    disabled={busy} placeholder={t('codePlaceholder')}
+                    onChange={(event) => { setCode(event.target.value.replace(/\D/g, '').slice(0, 6)); verifyKey.current = null }} />
+                  <Button className={css.signInSend} variant="outline"
+                    onClick={() => { void sendCode() }} disabled={busy || resendIn > 0 || !validPhone}>
+                    {loginAction === 'send' ? t('loginSending') : resendIn > 0
+                      ? t('resendIn', { seconds: String(resendIn) }) : t('sendCode')}
+                  </Button>
+                </div>
+              </div>
+              <div className={css.signInFeedback} aria-live="polite">
+                {failure !== null ? <p role="alert" className={css.signInFailure}>{failure}</p>
+                  : <p role={notice === null ? undefined : 'status'}>{notice ?? t('loginCodeHint')}</p>}
+              </div>
+              <Button
+                className={css.signInSubmit} type="submit" variant="primary"
+                icon={loginAction === 'verify' ? <IconRefreshOutlineRegular className={css.signInSpinner} /> : undefined}
+                disabled={busy || code.length !== 6}
+              >
+                {loginAction === 'verify' ? t('loginVerifying') : t('signIn')}
+              </Button>
+              <p className={css.signInNote}><IconShieldOutlineRegular /><span>{t('loginHint')}</span></p>
+            </form>
           </div>
         </section>
       )}

@@ -1,6 +1,8 @@
-/** Main-owned update confirmations; closing or replacing a dialog never grants installation permission. */
+/** Main-owned update progress and confirmations; dismissal never cancels a download or grants installation permission. */
 import { ipcMain, type BrowserWindow, type IpcMainInvokeEvent, type MessageBoxOptions, type MessageBoxReturnValue } from 'electron'
 import type { DesktopLocale } from './locale.ts'
+import type { DesktopUpdateState } from './ipc.ts'
+import { desktopUpdateErrorSummary } from './update-presentation.ts'
 import type { DesktopUpdateOverlays } from './update-overlay.ts'
 
 /** Channels available only to the isolated update-dialog document. */
@@ -19,11 +21,74 @@ export interface UpdateDialogView {
   readonly closeLabel: string
   readonly technicalDetails: string
   readonly technicalDetailsLabel: string
+  readonly brand?: string
+  readonly tone?: 'info' | 'error'
+  readonly progress?: { readonly phase: 'downloading' | 'verifying'; readonly percent?: number; readonly version?: string }
 }
 
 /** Electron message options with separately expandable, main-owned diagnostics. */
 export interface UpdateDialogOptions extends MessageBoxOptions {
   readonly technicalDetails?: string
+  readonly progress?: UpdateDialogView['progress']
+}
+
+/**
+ * Project real download state into a dismissible progress dialog without granting installation.
+ * @param state - Current coordinator state, never a renderer-supplied percentage.
+ * @param locale - Current shell language.
+ * @returns Main-owned progress copy, or no progress view for a settled operation.
+ */
+export function desktopUpdateProgressOptions(state: DesktopUpdateState, locale: DesktopLocale):
+  (UpdateDialogOptions & { readonly progress: NonNullable<UpdateDialogView['progress']> }) | undefined {
+  if (state.phase !== 'downloading' && state.phase !== 'verifying') return undefined
+  const percent = state.percent === undefined ? undefined : Math.floor(Math.min(100, Math.max(0, state.percent)))
+  return { title: locale.messages.updateTitle,
+    message: state.phase === 'verifying' ? locale.messages.updateVerifying : locale.messages.updateDownloadTitle,
+    detail: state.phase === 'verifying' ? locale.messages.updateVerifyingDetail : locale.messages.updateDownloadingDetail,
+    buttons: [locale.messages.updateBackground], cancelId: 0,
+    progress: { phase: state.phase, ...(percent === undefined ? {} : { percent }),
+      ...(state.version === undefined ? {} : { version: state.version }) },
+  }
+}
+
+/**
+ * Expose retry only for the coordinator's current failed download and retained target.
+ * @param state - Failure displayed by the shell, possibly synthetic or obsolete.
+ * @param current - Current coordinator-owned state.
+ * @returns Whether repeating this download has a current version-bound owner.
+ */
+export function canRetryDesktopUpdateDownload(state: DesktopUpdateState, current: DesktopUpdateState): boolean {
+  return state === current && state.phase === 'error' && state.failedOperation === 'download' && state.version !== undefined
+}
+
+/**
+ * @param state - Failure to explain without granting stale download authorization.
+ * @param current - Current coordinator-owned state.
+ * @param locale - Current shell language.
+ * @returns Localized failure choices with explicit cancellation and folded diagnostics.
+ */
+export function desktopUpdateFailureOptions(state: DesktopUpdateState, current: DesktopUpdateState,
+  locale: DesktopLocale): UpdateDialogOptions {
+  const retry = canRetryDesktopUpdateDownload(state, current)
+  return { type: 'error', title: locale.messages.updateFailedTitle, message: desktopUpdateErrorSummary(state, locale.messages),
+    technicalDetails: state.technicalDetails ?? state.message ?? '',
+    buttons: retry ? [locale.messages.updateRetryDownload, locale.messages.updateClose] : [locale.messages.updateClose],
+    cancelId: retry ? 1 : 0 }
+}
+
+/**
+ * Wait outside the active prompt before repeating an explicitly approved, still-current download.
+ * @param failure - Exact coordinator failure displayed in the retry prompt.
+ * @param pending - Prompt owner that must release its operation before another prompt can start.
+ * @param current - Re-read the coordinator and policy after the pending prompt settles.
+ * @param retry - Starts the normal user-authorized download path; never an installer action.
+ * @returns Completion of the retry, or no action if policy or target ownership changed.
+ */
+export async function retryDesktopUpdateDownload(failure: DesktopUpdateState, pending: Promise<void> | undefined,
+  current: () => { state: DesktopUpdateState; allowed: boolean }, retry: () => Promise<void>): Promise<void> {
+  await pending
+  const next = current()
+  if (next.allowed && canRetryDesktopUpdateDownload(failure, next.state)) await retry()
 }
 
 /** The document can select only a displayed response index. */
@@ -50,6 +115,23 @@ export class DesktopUpdateDialog {
 
   /** Whether a shell prompt is awaiting a response. */
   get isOpen(): boolean { return this.active !== undefined }
+
+  /**
+   * Update an already-visible download without changing choices, focus, or response revision.
+   * @param state - Latest coordinator state.
+   * @returns Whether this dialog currently owns a progress presentation.
+   */
+  updateProgress(state: DesktopUpdateState): boolean {
+    const active = this.active
+    if (active?.view.progress === undefined) return false
+    const locale = typeof this.locale === 'function' ? this.locale() : this.locale
+    const options = desktopUpdateProgressOptions(state, locale)
+    if (options === undefined) return false
+    active.view = { ...active.view, locale: locale.id, message: options.message, detail: options.detail ?? '', progress: options.progress,
+      buttons: options.buttons ?? active.view.buttons, brand: locale.messages.aboutProduct, closeLabel: locale.messages.updateBackground }
+    active.window.webContents.send(UPDATE_DIALOG_IPC.changed, active.view)
+    return true
+  }
 
   /**
    * @param preload - Bundled isolated preload.
@@ -92,12 +174,15 @@ export class DesktopUpdateDialog {
     this.window = window
     this.parent = parent
     const view: UpdateDialogView = { revision: ++this.revision, locale: locale.id, title: options.title ?? '', message: options.message,
-      detail: options.detail ?? '', buttons, cancelId, closeLabel: locale.messages.updateClose,
-      technicalDetails: options.technicalDetails ?? '', technicalDetailsLabel: locale.messages.updateTechnicalDetails }
+      detail: options.detail ?? '', buttons, cancelId,
+      closeLabel: options.progress === undefined ? locale.messages.updateClose : locale.messages.updateBackground,
+      technicalDetails: options.technicalDetails ?? '', technicalDetailsLabel: locale.messages.updateTechnicalDetails,
+      brand: locale.messages.aboutProduct, tone: options.type === 'error' ? 'error' : 'info',
+      ...(options.progress === undefined ? {} : { progress: options.progress }) }
     return new Promise((resolve) => {
       const abort = (): void => { finish(cancelId) }
       const finish = (response: number, retain = false): void => {
-        if (this.active?.view !== view) return
+        if (this.active?.finish !== finish) return
         this.active = undefined
         options.signal?.removeEventListener('abort', abort)
         if (!retain && !window.isDestroyed()) {

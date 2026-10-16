@@ -3,11 +3,11 @@
 # After editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write packages/client/ui-videogen/README.md
 /video-creation:
-  en: 77c67c329f0eca0d
-  zh: 56b8aefaf966a476
+  en: 4847895f0c791a0a
+  zh: 3edc092f8e65ef6e
 /video-creation/model-experience:
-  en: 921c022722f4a10b
-  zh: 59caf30e1ef38eb0
+  en: 2f88c80b718f423e
+  zh: 1830a663da5d281e
 /video-creation/known-limitations-and-deferred-work:
-  en: 86f232f37be9459a
-  zh: 601b46ed1308961c
+  en: efc7a0fcd2ca1591
+  zh: 310f110254089213

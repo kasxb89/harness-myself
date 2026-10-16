@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { loadDesktopPackageEnvironment, localMacOSPackageEnvironment, validateDesktopPackageEnvironment } from '../scripts/desktop-package-environment.mjs'
+import { resolvePackagedDesktopUpdateConfigOrigin } from '../scripts/desktop-update-config-origin.mjs'
 import { resolveWindowsPackageSettings } from '../scripts/windows-package-settings.mjs'
 
 const WINDOWS = { platform: 'win32', arch: 'x64' } as const
@@ -228,4 +229,21 @@ it('owns macOS tuning in the local file and validates it before signing credenti
     expect(() =>{  validateDesktopPackageEnvironment({ ...RELEASE, DSH_DESKTOP_MACOS_PACK_CONCURRENCY: '' }, MACOS) }).toThrow('PACK_CONCURRENCY')
     expect(() =>{  validateDesktopPackageEnvironment({ ...RELEASE, DSH_DESKTOP_MACOS_NOTARIZATION_PROXY: 'socks5://localhost:8080' }, MACOS) }).toThrow('NOTARIZATION_PROXY')
   })
+})
+
+
+it('isolates the packaged backend authority from ambient and unsigned build environments', async () => {
+  const ambient = { DSH_DESKTOP_UPDATE_CONFIG_ORIGIN: 'https://ambient.example.com' }
+  expect(localMacOSPackageEnvironment(ambient)).not.toHaveProperty('DSH_DESKTOP_UPDATE_CONFIG_ORIGIN')
+  await withDirectory(async (directory) => {
+    await writeFile(join(directory, '.env.windows'), 'DSH_DESKTOP_UPDATE_CONFIG_ORIGIN=https://api.example.com\n')
+    const selected = loadDesktopPackageEnvironment('win32', ambient, directory)
+    expect(resolvePackagedDesktopUpdateConfigOrigin(selected)).toBe('https://api.example.com')
+    expect(ambient.DSH_DESKTOP_UPDATE_CONFIG_ORIGIN).toBe('https://ambient.example.com')
+  })
+  expect(resolvePackagedDesktopUpdateConfigOrigin({})).toBeUndefined()
+  for (const value of ['http://127.0.0.1:3000', 'https://api.example.com/path', 'https://api.example.com/?', 'https://api.example.com/#', 'https:api.example.com',
+    'https://user:pass@api.example.com', 'https://api.example.com/?token=x', 'https://api.example.com\\evil']) {
+    expect(() => resolvePackagedDesktopUpdateConfigOrigin({ DSH_DESKTOP_UPDATE_CONFIG_ORIGIN: value })).toThrow(/HTTPS origin/u)
+  }
 })

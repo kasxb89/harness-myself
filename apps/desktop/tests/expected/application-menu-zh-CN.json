@@ -7,7 +7,7 @@
   },
   {
     "role": "hide",
-    "label": "隐藏 DeepSeek Harness"
+    "label": "隐藏 智澍科技"
   },
   {
     "role": "hideOthers",
@@ -19,6 +19,6 @@
   },
   {
     "role": "quit",
-    "label": "退出 DeepSeek Harness"
+    "label": "退出 智澍科技"
   }
 ]

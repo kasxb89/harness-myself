@@ -23,9 +23,12 @@ export type {
 /** Mount operation exposed to the framework-free boot kernel. */
 export interface UiRendererService {
   /**
-   * Mount the assembled application into the supplied element.
+   * Mount the assembled application into the supplied element. A missing
+   * initial root registration throws; later root unloads suspend the React
+   * tree until a replacement registers.
    * @param container - Application mount point.
-   * @returns Disposer that unmounts the React root.
+   * @returns Disposer that stops remounting and unmounts the React root.
+   * @throws When no root entry has registered before the initial mount.
    */
   mount: (container: HTMLElement) => () => void
 }
@@ -91,8 +94,40 @@ export function apply(ctx: Context): void {
   slots.install(createSlotRenderer())
   ctx.reflect.provide('uiRenderer', {
     mount: (container: HTMLElement): (() => void) => {
-      const root = mountApp(container, buildRenderApp({ ctx }))
-      return () => { root.unmount() }
+      const app = buildRenderApp({ ctx })
+      const initialApp = app()
+      let root: Root | undefined
+      let active = true
+      const unsubscribe = ctx.on('slots/changed', (key) => {
+        if (key !== 'root') return
+        if (slots.entries('root').length === 0) {
+          const previous = root
+          root = undefined
+          previous?.unmount()
+          return
+        }
+        // A root registration notifies before committing its child declarations.
+        // Resume after that transaction, while unloading stays synchronous so
+        // the old outlet cannot render the temporary absence as a boot failure.
+        queueMicrotask(() => {
+          if (!active || root !== undefined || slots.entries('root').length === 0) return
+          root = mountApp(container, app)
+        })
+      })
+      try {
+        root = mountApp(container, () => initialApp)
+      } catch (error) {
+        active = false
+        unsubscribe()
+        throw error
+      }
+      return () => {
+        active = false
+        unsubscribe()
+        const previous = root
+        root = undefined
+        previous?.unmount()
+      }
     },
   })
 }

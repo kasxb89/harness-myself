@@ -1,0 +1,43 @@
+[
+  {
+    "title": "智澍科技 更新",
+    "message": "正在下载新版本",
+    "detail": "下载期间可继续使用，安装前会再次请你确认重启",
+    "buttons": [
+      "后台下载"
+    ],
+    "cancelId": 0,
+    "progress": {
+      "phase": "downloading",
+      "percent": 58,
+      "version": "1.2.0-nightly.1"
+    }
+  },
+  {
+    "title": "智澍科技 更新",
+    "message": "正在下载新版本",
+    "detail": "下载期间可继续使用，安装前会再次请你确认重启",
+    "buttons": [
+      "后台下载"
+    ],
+    "cancelId": 0,
+    "progress": {
+      "phase": "downloading",
+      "version": "1.2.0-nightly.1"
+    }
+  },
+  {
+    "title": "智澍科技 更新",
+    "message": "正在校验更新文件…",
+    "detail": "正在检查下载文件的完整性与安全性，请保持应用开启",
+    "buttons": [
+      "后台下载"
+    ],
+    "cancelId": 0,
+    "progress": {
+      "phase": "verifying",
+      "percent": 100,
+      "version": "1.2.0-nightly.1"
+    }
+  }
+]

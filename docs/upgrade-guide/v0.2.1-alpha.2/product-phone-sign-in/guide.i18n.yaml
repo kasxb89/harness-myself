@@ -1,0 +1,16 @@
+# Bilingual-pair consistency record for guide.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write docs/upgrade-guide/v0.2.1-alpha.2/product-phone-sign-in/guide.md
+/:
+  en: 51cdcd8d8b3fdda9
+  zh: b5a7a16631d0ce65
+/product-phone-sign-in-replaces-official-account-onboarding:
+  en: 709beb81f1648785
+  zh: d04127adad67c060
+/product-phone-sign-in-replaces-official-account-onboarding/change:
+  en: 6067cd35cb1d1c1d
+  zh: 365be27e2b40d0b2
+/product-phone-sign-in-replaces-official-account-onboarding/migration:
+  en: b20d28954e155c71
+  zh: f3ea105b2f156125

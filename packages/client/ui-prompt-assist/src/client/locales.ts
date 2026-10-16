@@ -1,0 +1,71 @@
+/** Typed locale namespace for the shared prompt-writing factory. */
+export const NS = 'prompt-assist'
+
+/** Chinese prompt-assistance copy. */
+export const zh = {
+  title: 'AI 帮写',
+  referenceCount: '将读取 {count} 张素材图片',
+  feedback: '修改建议',
+  feedbackPlaceholder: '例如：保留主体，让背景更简洁，增加柔和自然光',
+  revise: '按建议修改',
+  working: '正在优化提示词…',
+  checkingAccount: '正在核验当前账号…',
+  filled: '已填入提示词，可继续直接编辑',
+  stop: '停止',
+  stopped: '已停止等待，内容已保留。已发送的模型请求仍可能计费',
+  stoppedLocal: '已停止，原有内容已保留',
+  empty: '添加素材或写下想法，即可 AI 帮写',
+  signIn: '登录后可使用 AI 帮写',
+  busy: '请等素材上传或作品生成完成',
+  changed: '原稿已变化，未覆盖你的内容，请重新点击 AI 帮写',
+  requestHint: 'AI 帮写使用当前账号额度，仅修改提示词',
+  error: 'AI 暂时无法完成，请稍后重试，内容已保留',
+  expired: '登录已过期，请重新登录，内容已保留',
+  balance: '积分不足，请充值后再试，内容已保留',
+  unavailable: '暂时没有可用的 AI 帮写模型，请稍后再试',
+  invalid: '描述最多 7000 字，修改建议最多 2000 字，请精简后重试',
+  referenceInvalid: '素材图片无法读取，请重新上传 PNG、JPEG 或 WebP 图片',
+  referenceLimit: 'AI 帮写最多读取 6 张图片，单张不超过 6 MB，总计不超过 12 MB',
+  storage: '记录无法保存，内容已保留，请检查本机存储后重试',
+  resultStorage: '帮写结果暂未保存，模型请求可能已计费。原稿已保留，请检查本机存储后重试',
+  resultUnknown: '本次帮写结果未知，模型请求可能已计费。原稿已保留，请先查看用量，再决定是否重试',
+  invalidResponse: '模型返回的提示词不可用，本次请求可能已计费。原稿已保留，请检查用量后决定是否重试',
+  accountChanged: '账号已变化，内容已保留，请刷新当前页面后重试',
+  accountCheckFailed: '暂时无法核验账号，内容已保留，请刷新后重试',
+} as const
+
+/** English prompt-assistance copy. */
+export const en: Record<keyof typeof zh, string> = {
+  title: 'AI writing',
+  referenceCount: 'Using {count} material images',
+  feedback: 'Revision feedback',
+  feedbackPlaceholder: 'For example: keep the subject, simplify the background and add soft daylight',
+  revise: 'Revise with feedback',
+  working: 'Refining your prompt…',
+  checkingAccount: 'Checking the current account…',
+  filled: 'Prompt updated. Continue editing it directly.',
+  stop: 'Stop',
+  stopped: 'Stopped waiting. Your text is retained. A model request already sent may still be charged.',
+  stoppedLocal: 'Stopped. Your existing content is retained.',
+  empty: 'Add materials or describe your idea to use AI writing',
+  signIn: 'Sign in to use AI writing',
+  busy: 'Wait for material uploads or generation to finish',
+  changed: 'Your draft changed and was not overwritten. Click AI writing again.',
+  requestHint: 'AI writing uses your account’s credits and updates the prompt only',
+  error: 'AI writing is unavailable. Try again shortly. Your text is retained.',
+  expired: 'Your session expired. Sign in again. Your text is retained.',
+  balance: 'Not enough credits. Top up and try again. Your text is retained.',
+  unavailable: 'No AI writing model is available. Try again shortly.',
+  invalid: 'Use up to 7,000 characters for the prompt and 2,000 for feedback, then try again.',
+  referenceInvalid: 'A material image is unavailable. Upload a PNG, JPEG or WebP image again.',
+  referenceLimit: 'AI writing reads up to 6 images, 6 MB each and 12 MB in total.',
+  storage: 'The record could not be saved. Your text is retained. Check local storage and try again.',
+  resultStorage: 'The result could not be saved and the model request may have been charged. Your draft is retained. Check local storage before retrying.',
+  resultUnknown: 'The writing result is unknown and the model request may have been charged. Your draft is retained. Check usage before deciding to retry.',
+  invalidResponse: 'The model returned an unusable prompt and this request may have been charged. Your draft is retained. Check usage before deciding to retry.',
+  accountChanged: 'The account changed. Your text is retained. Refresh this page before trying again.',
+  accountCheckFailed: 'The account could not be verified. Your text is retained. Refresh and try again.',
+}
+
+/** Keys accepted by the prompt-assistance locale namespace. */
+export type PromptAssistKey = keyof typeof zh

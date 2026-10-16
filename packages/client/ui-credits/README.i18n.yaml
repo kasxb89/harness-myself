@@ -3,14 +3,17 @@
 # After editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write packages/client/ui-credits/README.md
 /balance-and-usage:
-  en: 3540f7a57ca3e870
-  zh: 2ea59c2fcd15a89f
+  en: 6a70aff56625653a
+  zh: 9e7d8635f70603b2
 /balance-and-usage/usage-analytics:
   en: 9ed85d5988b7d12d
   zh: fe6edd3394bb1f84
 /balance-and-usage/model-experience:
-  en: b6703373328f4dd0
-  zh: c83586a589be525a
+  en: f70a2888760b1726
+  zh: d47719bb8741acd1
+/balance-and-usage/workspace-guide:
+  en: 4eff420dee598ac7
+  zh: 6cb86a5d69bcef73
 /balance-and-usage/known-limitations-and-deferred-work:
   en: 75cb530c5fbf027d
   zh: 22fba65fa261cc4f

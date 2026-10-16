@@ -1,0 +1,19 @@
+# Bilingual-pair consistency record for 2026-10-16-owned-video-projects.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-10-16-owned-video-projects.md
+/agent-note-retain-paid-video-submissions-as-owned-projects:
+  en: aa191cddbcba83ea
+  zh: 697b7dd1a956b736
+/agent-note-retain-paid-video-submissions-as-owned-projects/problem:
+  en: dd5839a5104e52cf
+  zh: ec7e23d7ed8ff44f
+/agent-note-retain-paid-video-submissions-as-owned-projects/decision:
+  en: 433346dec0cb4fa0
+  zh: df93fc5eff088eea
+/agent-note-retain-paid-video-submissions-as-owned-projects/alternatives-considered:
+  en: e0265d2a070fa336
+  zh: 0ae93eee1dcba576
+/agent-note-retain-paid-video-submissions-as-owned-projects/consequences:
+  en: 26b02b74a3ece9cc
+  zh: 79e1da8a2e79dd76

@@ -20,7 +20,8 @@ import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { createWriteStream } from 'node:fs'
 import { createHash, randomBytes } from 'node:crypto'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
+import { addAbortSignal } from 'node:stream'
 import { request as httpsRequest } from 'node:https'
 import { request as httpRequest } from 'node:http'
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -30,6 +31,14 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import z from '@deepseek-ai/schemastery'
 import QRCode from 'qrcode'
 import { parseUsageWindow, readAccountUsage } from './usage.ts'
+import { assistPrompt, parsePromptAssist, promptAssistFailure } from './prompt-assist.ts'
+import { relayCreationContent } from './creation-content.ts'
+import { createVideoEditor } from './video-edit.ts'
+import { registerVideoProjectTools } from './video-project-tools.ts'
+import { VideoProjectError } from './video-project.ts'
+import { createVideoProjectRelay } from './video-project-provider.ts'
+import { bindVideoAccount } from './video-project-account.ts'
+import type { VideoProjectRequest, VideoRequestValue } from './video-project-types.ts'
 import {
   catalogFromPricing,
   mediaModelIds,
@@ -71,6 +80,32 @@ export interface Config {
   chatProviderRoute?: string
   /** Settings namespace holding that provider profile. */
   chatSettingsNamespace?: string
+  /** Explicit text-chat model used for prompt assistance; empty disables text-only assistance. */
+  promptAssistantModel?: string
+  /** Explicit vision-chat model used when references are attached; no capability is inferred from its name. */
+  promptAssistantVisionModel?: string
+  /** Deadline for one prompt-assistance operation, independent of account and media timeouts. */
+  promptAssistantTimeoutMs?: number
+  /** Maximum final length accepted by natural-language video projects. */
+  videoProjectMaxSeconds?: number
+  /** Maximum separately billable clips in one video project. */
+  videoProjectMaxSegments?: number
+  /** Delay between read-only provider task status requests. */
+  videoProjectPollIntervalMs?: number
+  /** Complete deadline for one generated clip, including saving it. */
+  videoProjectTaskTimeoutMs?: number
+  /** Maximum bytes saved for each generated clip. */
+  videoProjectDownloadMaxBytes?: number
+  /** Maximum bytes of a workspace reference copied into one provider request. */
+  videoProjectReferenceMaxBytes?: number
+  /** Workspace-relative directory for completed video files. */
+  videoProjectOutputDirectory?: string
+  /** Configured local edit deadline, including subprocess cleanup. */
+  videoEditTimeoutMs?: number
+  /** Common frame rate used when joining clips. */
+  videoEditFps?: number
+  /** Explicit bundled video runtime; empty uses the Desktop-provided runtime root. */
+  videoRuntimeRoot?: string
 }
 
 export const Config: z<Config> = z.object({
@@ -89,6 +124,19 @@ export const Config: z<Config> = z.object({
   newApiAdminTokenFile: z.string().default(''),
   chatProviderRoute: z.string().default('yunshu-local'),
   chatSettingsNamespace: z.string().default('llm-pi-ai'),
+  promptAssistantModel: z.string().max(256).pattern(/^(?!.*[\u0000-\u001f\u007f])\S*$/u).default(''),
+  promptAssistantVisionModel: z.string().max(256).pattern(/^(?!.*[\u0000-\u001f\u007f])\S*$/u).default(''),
+  promptAssistantTimeoutMs: z.number().step(1).min(1).max(120_000).default(60_000),
+  videoProjectMaxSeconds: z.natural().min(1).default(300),
+  videoProjectMaxSegments: z.natural().min(1).max(32).default(32),
+  videoProjectPollIntervalMs: z.natural().min(1).default(6000),
+  videoProjectTaskTimeoutMs: z.natural().min(1).default(900_000),
+  videoProjectDownloadMaxBytes: z.natural().min(12).default(536_870_912),
+  videoProjectReferenceMaxBytes: z.natural().min(12).max(67_108_864).default(20_971_520),
+  videoProjectOutputDirectory: z.string().default('artifacts/videos'),
+  videoEditTimeoutMs: z.natural().min(1).default(300_000),
+  videoEditFps: z.natural().min(1).max(120).default(30),
+  videoRuntimeRoot: z.string().default(''),
 })
 
 /** Resolved configuration: schemastery already filled every defaulted field. */
@@ -149,8 +197,8 @@ interface StoredSession {
    * sign-in and owned by that account. Everything the product sends — chat,
    * images, video — uses this, so the usage is billed to whoever is signed in
    * and the balance on screen is the balance being spent. Absent only when the
-   * deployment has no per-account credential, in which case the product falls
-   * back to its own relay key.
+   * deployment has no per-account credential, in which case generation is
+   * refused until the user signs in again.
    */
   readonly relay?: { readonly key?: string | undefined; readonly id?: number | undefined } | undefined
   readonly expiresAt: string
@@ -650,8 +698,8 @@ export function apply(ctx: Context, config: Config): void {
    * balance shows. There is deliberately no fallback — a fallback would mean a
    * request billed to the operator while the panel displays someone else.
    */
-  const accountKey = async (): Promise<{ key: string } | { reason: 'signed-out' | 'no-credential' }> => {
-    const session = await store.read()
+  const accountKey = async (live?: StoredSession): Promise<{ key: string } | { reason: 'signed-out' | 'no-credential' }> => {
+    const session = live ?? await store.read()
     if (session?.token === undefined) return { reason: 'signed-out' }
     const key = session.relay?.key
     if (key === undefined || key === '') return { reason: 'no-credential' }
@@ -785,7 +833,7 @@ export function apply(ctx: Context, config: Config): void {
    * channel on the new-api side and its image and video models, with their real
    * parameter menus, appear in the panels.
    */
-  const readMediaCatalog = async (): Promise<{
+  const readMediaCatalog = async (signal?: AbortSignal): Promise<{
     ok: boolean
     code?: string
     message?: string
@@ -796,7 +844,8 @@ export function apply(ctx: Context, config: Config): void {
     try {
       const response = await fetch(`${resolved.newApiBaseUrl}/api/pricing`, {
         headers: { accept: 'application/json' },
-        signal: AbortSignal.timeout(resolved.timeoutMs),
+        signal: signal === undefined ? AbortSignal.timeout(resolved.timeoutMs)
+          : AbortSignal.any([signal, AbortSignal.timeout(resolved.timeoutMs)]),
       })
       if (!response.ok) {
         return { ok: false, code: `HTTP_${String(response.status)}`, message: 'new-api 定价表不可用', group, models: [] }
@@ -1608,14 +1657,15 @@ export function apply(ctx: Context, config: Config): void {
       const token = typeof payload.data?.access_token === 'string' ? payload.data.access_token : null
       if (payload.success !== true || token === null) return null
       const previous = await store.read()
-      const account = previous?.account ?? {
-        id: String(payload.data?.user?.id ?? ''),
-        phone: String(payload.data?.user?.phone_e164 ?? ''),
-      }
+      const refreshedId = payload.data?.user?.id
+      const confirmedId = typeof refreshedId === 'number' && Number.isSafeInteger(refreshedId) && refreshedId > 0
+        ? String(refreshedId)
+        : typeof refreshedId === 'string' && /^[1-9]\d*$/.test(refreshedId) ? refreshedId : null
+      if (previous?.token === undefined || confirmedId === null || confirmedId !== previous.account.id) return null
+      const account = previous.account
       const expiresAtSeconds = typeof payload.data?.access_expires_at === 'number' ? payload.data.access_expires_at : null
       const expiresAt = expiresAtSeconds === null ? '' : new Date(expiresAtSeconds * 1000).toISOString()
       const rotated = refreshFromSetCookie(answered) ?? refresh
-      if (previous?.token === undefined) return null
       // Only the backend credential is renewed here; the product's own session
       // token and its expiry are untouched by anything the backend says.
       const upstream = { token, refresh: rotated, expiresAt }
@@ -1624,8 +1674,9 @@ export function apply(ctx: Context, config: Config): void {
         expiresAt: previous.expiresAt,
         account,
         upstream,
+        ...previous.relay === undefined ? {} : { relay: previous.relay },
       })
-      return { token: previous.token, expiresAt: previous.expiresAt, account, upstream }
+      return { token: previous.token, expiresAt: previous.expiresAt, account, upstream, relay: previous.relay }
     } catch {
       return null
     }
@@ -1755,6 +1806,20 @@ export function apply(ctx: Context, config: Config): void {
     json(response, 200, { ok: false, code: 'SESSION_INVALID', message: 'session expired', sessionInvalid: true })
   }
 
+  const promptAssistantLife = new AbortController()
+  const promptAssistantRequests = new Set<Promise<unknown>>()
+  ctx.effect(() => async () => {
+    promptAssistantLife.abort()
+    await Promise.allSettled([...promptAssistantRequests])
+  }, 'credits-index: prompt assistance')
+
+  const contentLife = new AbortController()
+  const contentRequests = new Set<Promise<void>>()
+  ctx.effect(() => async () => {
+    contentLife.abort()
+    await Promise.allSettled([...contentRequests])
+  }, 'credits-index: creation publication transfers')
+
   ctx.effect(() => ctx.webServer.register({
     kind: 'prefix',
     path: ROUTE_PREFIX,
@@ -1795,6 +1860,73 @@ export function apply(ctx: Context, config: Config): void {
       const method = request.method ?? 'GET'
 
       try {
+        if ((route === '/api/creation/content' && method === 'GET')
+          || (route.startsWith('/api/creation/assets/') && (method === 'GET' || method === 'HEAD'))) {
+          const operation = relayCreationContent(request, response, route, resolved.newApiBaseUrl, resolved.timeoutMs, contentLife.signal)
+          contentRequests.add(operation)
+          try { await operation } finally { contentRequests.delete(operation) }
+          return
+        }
+        if (route === '/api/prompt/assist' && method === 'POST') {
+          const peer = new AbortController()
+          const deadline = AbortSignal.timeout(resolved.promptAssistantTimeoutMs)
+          const signal = AbortSignal.any([peer.signal, promptAssistantLife.signal, deadline])
+          const disconnected = (): void => { if (!response.writableEnded) peer.abort() }
+          response.once('close', disconnected)
+          const operation = (async (): Promise<void> => {
+            try {
+              const live = await liveSession()
+              if (live?.token === undefined) {
+                json(response, 200, { ok: false, code: 'SESSION_REQUIRED', sessionInvalid: true, message: '请先用手机号登录后再使用 AI 帮写。' })
+                return
+              }
+              let value: unknown
+              try {
+                addAbortSignal(signal, request)
+                value = JSON.parse((await readRaw(request, 32 * 1024)).toString('utf8')) as unknown
+              } catch (error) {
+                // Invalid JSON and excessive input have the same safe, localized handling identity.
+                void error
+                if (!response.destroyed) json(response, 200, promptAssistFailure(signal.aborted
+                  ? deadline.aborted ? 'PROMPT_ASSIST_TIMEOUT' : 'PROMPT_ASSIST_CANCELLED'
+                  : 'INVALID_REQUEST'))
+                return
+              }
+              const parsed = parsePromptAssist(value)
+              if (!parsed.ok) { json(response, 200, parsed); return }
+              const current = await liveSession()
+              if (current?.token === undefined) {
+                json(response, 200, { ok: false, code: 'SESSION_REQUIRED', sessionInvalid: true, message: '请先用手机号登录后再使用 AI 帮写。' })
+                return
+              }
+              if (current.account.id === '' || parsed.expectedAccountId !== current.account.id) {
+                json(response, 200, { ok: false, code: 'ACCOUNT_CHANGED', message: '登录账号已变更，请确认当前账号后重新操作。' })
+                return
+              }
+              const owned = await accountKey(current)
+              if ('reason' in owned) { json(response, 200, { ok: false, ...noCredential(owned.reason) }); return }
+              const outcome = await assistPrompt({
+                input: parsed.input, key: owned.key, accountId: current.account.id,
+                baseUrl: resolved.newApiBaseUrl, model: resolved.promptAssistantModel,
+                visionModel: resolved.promptAssistantVisionModel,
+                stateDir, timeoutMs: resolved.promptAssistantTimeoutMs,
+                signal, readReference,
+              })
+              if (!response.destroyed) json(response, 200, outcome)
+            } catch (error) {
+              // Route containment never forwards session, storage, or provider exception text.
+              void error
+              if (!response.destroyed) json(response, 200, promptAssistFailure('PROMPT_ASSIST_UNAVAILABLE'))
+            }
+          })()
+          promptAssistantRequests.add(operation)
+          try { await operation } finally {
+            promptAssistantRequests.delete(operation)
+            response.off('close', disconnected)
+          }
+          return
+        }
+
         if (route === '/api/session' && method === 'GET') {
           const session = await liveSession()
           if (session === null) {
@@ -2955,6 +3087,129 @@ export function apply(ctx: Context, config: Config): void {
     return { key: owned.key }
   }
 
+  // Keep registration visible in custom deployments; missing local capabilities fail before generation.
+  {
+    const videoContext = ctx
+    const projectState = join(stateDir, 'video-projects')
+    registerVideoProjectTools(videoContext, {
+      stateDirectory: projectState,
+      outputDirectory: resolved.videoProjectOutputDirectory,
+      maxTotalSeconds: resolved.videoProjectMaxSeconds,
+      maxSegments: resolved.videoProjectMaxSegments,
+      pollIntervalMs: resolved.videoProjectPollIntervalMs,
+      taskTimeoutMs: resolved.videoProjectTaskTimeoutMs,
+      editor: (workspaceRoot, session, ownedMediaRoots) => {
+        for (const name of ['jobs', 'fs', 'subprocess', 'sandboxPolicy', 'sandbox'] as const) {
+          if (videoContext.get(name) === undefined) throw new VideoProjectError('VIDEO_EDIT_SERVICE_UNAVAILABLE', '当前工作区的视频处理服务未准备好，请联系管理员')
+        }
+        return createVideoEditor(videoContext, {
+          workspaceRoot, session, fps: resolved.videoEditFps, timeoutMs: resolved.videoEditTimeoutMs,
+          ...(resolved.videoRuntimeRoot === '' ? {} : { runtimeRoot: resolved.videoRuntimeRoot }),
+          ...(ownedMediaRoots === undefined ? {} : { ownedMediaRoots }),
+        })
+      },
+      acquireProvider: async (workspaceRoot, _session) => {
+        const fileSystem = videoContext.get('fs')
+        if (fileSystem === undefined) throw new VideoProjectError('VIDEO_EDIT_SERVICE_UNAVAILABLE', '当前工作区的文件服务未准备好，请联系管理员')
+        const binding = await bindVideoAccount(async () => {
+          const current = await liveSession()
+          if (current?.token === undefined) return undefined
+          const owned = await accountKey(current)
+          return 'reason' in owned ? undefined : { accountId: current.account.id, token: current.token, key: owned.key }
+        })
+        const relay = createVideoProjectRelay({
+          origin: resolved.newApiBaseUrl, timeoutMs: resolved.timeoutMs,
+          maxDownloadBytes: resolved.videoProjectDownloadMaxBytes, cacheRoot: projectState, key: () => binding.key(),
+        })
+        const models = new Map<string, ModelCapability>()
+        const references = new Map<string, string>()
+        let preparedBytes = 0
+        /** Snapshot a workspace upload through the current filesystem's read authority. */
+        const reference = async (value: string, kind: 'image' | 'video', signal: AbortSignal): Promise<string> => {
+          if (/^ma_[A-Za-z0-9]{1,64}$/u.test(value)) {
+            const stored = await readReference(value)
+            signal.throwIfAborted()
+            if (stored === null || !stored.mediaType.startsWith(`${kind}/`) || stored.bytes.length > resolved.videoProjectReferenceMaxBytes) {
+              throw new VideoProjectError('VIDEO_REFERENCE_INVALID', '参考素材不存在、类型不匹配或超过大小限制，请重新添加对应素材')
+            }
+            return value
+          }
+          const cacheKey = `${kind}:${value}`
+          const cached = references.get(cacheKey)
+          if (cached !== undefined) return cached
+          const root = await fileSystem.resolve(workspaceRoot, { signal })
+          const target = await fileSystem.resolve(value, { cwd: workspaceRoot, signal })
+          const entry = await fileSystem.lstat(value, { cwd: workspaceRoot }, signal)
+          if (entry?.type !== 'file' || !fileSystem.contains(root, target)) {
+            throw new VideoProjectError('VIDEO_REFERENCE_INVALID', '参考素材必须是当前工作区内可读取的普通文件')
+          }
+          const bytes = Buffer.from(await fileSystem.readBytes(target, signal, resolved.videoProjectReferenceMaxBytes))
+          const mediaType = bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) ? 'image/png'
+            : bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255 ? 'image/jpeg'
+              : bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP' ? 'image/webp'
+                : bytes.toString('ascii', 4, 8) === 'ftyp' ? 'video/mp4' : undefined
+          if (mediaType === undefined) throw new VideoProjectError('VIDEO_REFERENCE_INVALID', '参考素材仅支持 PNG、JPEG、WebP 或 MP4/MOV 视频')
+          if (!mediaType.startsWith(`${kind}/`)) throw new VideoProjectError('VIDEO_REFERENCE_INVALID', '请在图片或视频参考参数中提供对应类型的素材')
+          const id = 'ma_' + randomBytes(16).toString('hex')
+          signal.throwIfAborted()
+          await storeReference(id, bytes, mediaType, basename(fileSystem.processPath(target)))
+          references.set(cacheKey, id)
+          return id
+        }
+        /** Materialize only serializable provider fields, preserving exact reference bytes without credentials. */
+        const requestValue = (value: unknown): VideoRequestValue => {
+          if (value === null || typeof value === 'string' || typeof value === 'boolean') return value
+          if (typeof value === 'number' && Number.isFinite(value)) return value
+          if (Array.isArray(value)) return value.map(requestValue)
+          if (typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, requestValue(item)]))
+          throw new VideoProjectError('VIDEO_REQUEST_INVALID', '视频请求包含无法保存的参数，尚未提交生成')
+        }
+        return {
+          identity: binding.identity,
+          assertCurrent: async () => { await binding.key() },
+          model: async (id, signal) => {
+            const allowed = new Set(await relay.modelIds(signal))
+            const catalog = await readMediaCatalog(signal)
+            signal.throwIfAborted()
+            if (!catalog.ok) throw new VideoProjectError('VIDEO_MODELS_UNAVAILABLE', '无法读取视频模型参数，请稍后重试')
+            const selected = pickModel(catalog.models.filter(model => allowed.has(model.id)), 'video', id ?? null)
+            if (selected === null) throw new VideoProjectError('VIDEO_MODEL_UNAVAILABLE', '当前登录账户没有可用的所选视频模型，请检查后台模型配置')
+            models.set(selected.id, selected)
+            const params = selected.params as VideoParams
+            return { id: selected.id, durations: params.durations }
+          },
+          build: async (input, model, prompt, durationSeconds, signal): Promise<VideoProjectRequest> => {
+            await binding.key()
+            const capability = models.get(model)
+            if (capability === undefined) throw new VideoProjectError('VIDEO_MODEL_UNAVAILABLE', '请先确认当前账户的视频模型参数')
+            const normalize = async (values: readonly string[] | undefined, kind: 'image' | 'video'): Promise<string[]> => {
+              const result: string[] = []
+              for (const value of values ?? []) result.push(await reference(value, kind, signal))
+              return result
+            }
+            const built = await buildVideoRequest(capability, {
+              prompt, durationSeconds,
+              ...input.resolution === undefined ? {} : { resolution: input.resolution },
+              ...input.ratio === undefined ? {} : { ratio: input.ratio },
+              frameImages: await normalize(input.frameImages, 'image'), referenceImages: await normalize(input.referenceImages, 'image'),
+              referenceVideos: await normalize(input.referenceVideos, 'video'),
+            })
+            signal.throwIfAborted()
+            if (!built.ok) throw new VideoProjectError(built.code, built.message)
+            const value = requestValue(built.request)
+            if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new VideoProjectError('VIDEO_REQUEST_INVALID', '视频请求无法保存，尚未提交生成')
+            preparedBytes += Buffer.byteLength(JSON.stringify(value))
+            if (preparedBytes > 67_108_864) throw new VideoProjectError('VIDEO_PROJECT_INPUT_LIMIT', '项目素材过大，请减少参考素材或分镜数量后重试；尚未提交生成')
+            return value
+          },
+          submit: (request, signal) => relay.submit(request, signal),
+          check: (taskId, _request, signal) => relay.check(taskId, signal),
+          download: (taskId, _request, destination, signal) => relay.download(taskId, destination, signal),
+        }
+      },
+    })
+  }
+
   ctx.tools.register(defineTool({
     name: 'generate_image',
     description: 'Generate images from a text prompt through the local new-api relay, save every result into the artifacts directory, and return the paths. Which image models exist, and what each one accepts, is the deployment’s own answer: ask for a model only when the user names one.',
@@ -3007,7 +3262,7 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.tools.register(defineTool({
     name: 'generate_video',
-    description: 'Generate one video through the local new-api relay, wait for it, save it into the artifacts directory, and return its path. The chosen model decides which parameters exist: duration, resolution, ratio, first/last frames and reference media are validated against what that model actually accepts.',
+    description: 'Generate one short video clip through the account relay. For a complete video such as 40 seconds, multiple shots, or automatic assembly, use generate_video_project instead. Edit existing clips with edit_video. This single-clip tool accepts only the chosen model’s declared duration, resolution, ratio, frames and references.',
     parameters: {
       prompt: { type: 'string', required: true, description: 'What the video should show.' },
       model: { type: 'string', description: 'Optional video model id such as MiniMax-H3. Defaults to the first video model the deployment serves for this account.' },

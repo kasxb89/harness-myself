@@ -9,14 +9,15 @@ import {
 
 
 describe('ui-conversation host', () => {
-  it('registers, validates, and disposes the durable busy-Enter preference', async () => {
+  it('registers, validates, and disposes the durable conversation preferences', async () => {
     const ctx = new Context()
     const configuration = await liveConfig(ctx, { Config, apply })
     const { fiber } = configuration
-    expect(plainConfig(configuration.fiber.config)).toEqual({ busyEnter: DEFAULT_BUSY_ENTER_BEHAVIOR })
-    await configuration.update({ busyEnter: 'steer' })
-    expect(plainConfig(configuration.fiber.config)).toEqual({ busyEnter: 'steer' })
+    expect(plainConfig(configuration.fiber.config)).toEqual({ busyEnter: DEFAULT_BUSY_ENTER_BEHAVIOR, hiddenViews: [] })
+    await configuration.update({ busyEnter: 'steer', hiddenViews: ['trajectory', 'ipollowork-video-studio'] })
+    expect(plainConfig(configuration.fiber.config)).toEqual({ busyEnter: 'steer', hiddenViews: ['trajectory', 'ipollowork-video-studio'] })
     await expect(configuration.update({ busyEnter: 'invalid' })).rejects.toThrow()
+    await expect(configuration.update({ hiddenViews: [17] })).rejects.toThrow()
     await fiber.dispose()
   })
 })

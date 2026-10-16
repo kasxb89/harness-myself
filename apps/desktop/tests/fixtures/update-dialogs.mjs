@@ -63,7 +63,7 @@ export async function qualifyUpdateDialogs(root, fixture) {
         focused: document.activeElement.id, isolated: typeof window.require === 'undefined',
       })`)
       assert.deepEqual(view, { title: options.message, detail: options.detail, buttons: options.buttons,
-        width: 380, radius: '24px', primary: 'rgb(15, 17, 21)', focused: 'dialog', isolated: true })
+        width: 420, radius: '24px', primary: 'rgb(15, 17, 21)', focused: 'dialog', isolated: true })
       assert.equal(await parent.webContents.executeJavaScript('getComputedStyle(document.body).filter'), 'none')
       assert.equal(f.installations.length, 0)
       assert.equal(await window.webContents.executeJavaScript(`

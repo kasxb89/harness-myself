@@ -6,6 +6,7 @@ import { parseDesktopRelease } from '../src/release.ts'
 import type { DesktopUpdateState } from '../src/ipc.ts'
 import { DesktopUpdatePreparationError } from '../src/update-error.ts'
 import { zh } from '../src/locale.ts'
+import { DesktopUpdateSourceError } from '../src/update-source.ts'
 
 vi.mock('electron', () => ({ app: { isPackaged: false } }))
 vi.mock('electron-updater', () => ({
@@ -63,13 +64,16 @@ function fixture() {
   const beforeRestart = vi.fn(async () => true)
   const downloadResult = vi.fn()
   const states: DesktopUpdateState[] = []
-  const updater = Object.assign(events, { checkForUpdates, downloadUpdate, quitAndInstall }) as unknown as AppUpdater
+  const setFeedURL = vi.fn()
+  const resolveSource = vi.fn(async () => ({ url: 'https://updates.example.com/mac-arm64/', channel: 'nightly' as const }))
+  const updater = Object.assign(events, { checkForUpdates, downloadUpdate, quitAndInstall, setFeedURL }) as unknown as AppUpdater
   const coordinator = new DesktopUpdateCoordinator(
     (state) => { states.push(state); return state },
-    beforeRestart, updater, () => true, () => '1.1.0-alpha.1', downloadResult,
+    beforeRestart, updater, () => true, () => '1.1.0-alpha.1', downloadResult, resolveSource,
   )
   coordinators.push(coordinator)
-  return { coordinator, updater, events, states, checkForUpdates, downloadUpdate, quitAndInstall, beforeRestart, downloadResult }
+  return { coordinator, updater, resolveSource, setFeedURL, events, states, checkForUpdates, downloadUpdate, quitAndInstall,
+    beforeRestart, downloadResult }
 }
 
 describe('desktop update coordinator', () => {
@@ -120,7 +124,7 @@ describe('desktop update coordinator', () => {
     const checked = Promise.withResolvers<{ isUpdateAvailable: boolean; updateInfo: { version: string } }>()
     f.checkForUpdates.mockImplementation(() => checked.promise)
     const pending = f.coordinator.check()
-    await Promise.resolve()
+    await vi.waitFor(() => { expect(f.checkForUpdates).toHaveBeenCalledOnce() })
     f.coordinator.dispose()
     expect(() => f.events.emit('error', new Error('late network failure'))).not.toThrow()
     checked.reject(new Error('offline'))
@@ -241,4 +245,52 @@ it.each([new DesktopUpdatePreparationError('stop-failed', 'private diagnostic'),
   await f.coordinator.download('1.1.0-rc.2')
   expect(f.downloadResult).toHaveBeenCalledExactlyOnceWith(false, error instanceof DesktopUpdatePreparationError ? 'stop-failed' : 'download_failed')
   expect(JSON.stringify(f.downloadResult.mock.calls)).not.toContain('private')
+})
+
+
+it('resolves the current backend source before every check and retains the downloaded source', async () => {
+  const f = fixture()
+  await f.coordinator.check()
+  expect(f.setFeedURL).toHaveBeenLastCalledWith({ provider: 'generic', url: 'https://updates.example.com/mac-arm64/', channel: 'nightly' })
+  f.resolveSource.mockResolvedValueOnce({ url: 'https://new.example.com/mac-arm64/', channel: 'nightly' })
+  await f.coordinator.check()
+  expect(f.setFeedURL).toHaveBeenLastCalledWith({ provider: 'generic', url: 'https://new.example.com/mac-arm64/', channel: 'nightly' })
+  await f.coordinator.download('1.1.0-rc.2')
+  await f.coordinator.check(true)
+  expect(f.resolveSource).toHaveBeenCalledTimes(2)
+  expect(f.updater.allowDowngrade).toBe(false)
+})
+
+it('invalidates an old available target when the backend disables updates', async () => {
+  const f = fixture()
+  await f.coordinator.check()
+  f.resolveSource.mockRejectedValueOnce(new DesktopUpdateSourceError('source-disabled'))
+  expect(await f.coordinator.check()).toMatchObject({ phase: 'error', sourceFailure: 'source-disabled' })
+  expect(f.coordinator.state).toMatchObject({ phase: 'error', sourceFailure: 'source-disabled' })
+  await expect(f.coordinator.download('1.1.0-rc.2')).rejects.toThrow(/no checked update/u)
+  expect(f.setFeedURL).toHaveBeenCalledTimes(1)
+  expect(f.downloadUpdate).not.toHaveBeenCalled()
+})
+
+it('disposal during source resolution cannot mutate the provider or check metadata', async () => {
+  const f = fixture()
+  const source = Promise.withResolvers<{ url: string; channel: 'nightly' }>()
+  f.resolveSource.mockImplementationOnce(() => source.promise)
+  const checking = f.coordinator.check()
+  await Promise.resolve()
+  f.coordinator.dispose()
+  source.resolve({ url: 'https://updates.example.com/', channel: 'nightly' })
+  await checking
+  expect(f.setFeedURL).not.toHaveBeenCalled()
+  expect(f.checkForUpdates).not.toHaveBeenCalled()
+})
+
+
+it('retires a visible available target when a later metadata check fails', async () => {
+  const f = fixture()
+  await f.coordinator.check()
+  f.checkForUpdates.mockRejectedValueOnce(new Error('offline'))
+  expect(await f.coordinator.check()).toMatchObject({ phase: 'error', failedOperation: 'check' })
+  expect(f.coordinator.state.phase).toBe('error')
+  await expect(f.coordinator.download('1.1.0-rc.2')).rejects.toThrow(/no checked update/u)
 })

@@ -6,6 +6,7 @@ export interface Reference {
   assetId: string
   name: string
   url: string
+  bytes: number
 }
 
 /** Supported composer input arrangements; these are not model API parameters. */
@@ -13,7 +14,7 @@ export type Workflow = 'text' | 'image' | 'frames' | 'reference'
 /** Reference media kinds accepted by the existing asset route. */
 export type Slot = 'image' | 'video'
 /** Local camera-script category filter. */
-export type Category = 'all' | 'commerce' | 'story' | 'cinematic'
+export type Category = string
 
 /** Viewing state only; catalog and artifact records remain query-owned. */
 export interface VideoDraft {
@@ -29,8 +30,11 @@ export interface VideoDraft {
   firstFrame: Reference | null
   lastFrame: Reference | null
   slots: Record<Slot, Reference[]>
+  referenceAccountId: string | null
+  referenceEpoch: number
   category: Category
   uploading: string | null
+  promptAssisting: boolean
   phase: 'idle' | 'running' | 'done'
   startedAt: number
   message: string | null
@@ -48,9 +52,20 @@ export function createVideoDraftStore() {
       modelId: '', prompt: '', duration: 0, resolution: '', ratio: '', mode: '', seed: '', audio: true,
       workflow: 'text', firstFrame: null, lastFrame: null, slots: { image: [], video: [] },
       category: 'all', uploading: null, phase: 'idle', startedAt: 0, message: null, failure: null, result: null,
+      referenceAccountId: null, referenceEpoch: 0, promptAssisting: false,
     }),
     actions: {
       patch: (draft, values: Partial<VideoDraft>) => { Object.assign(draft, values) },
+      setReferenceAccount: (draft, accountId: string | null) => {
+        if (draft.referenceAccountId === accountId) return
+        draft.referenceAccountId = accountId
+        draft.referenceEpoch += 1
+        draft.promptAssisting = false
+        draft.firstFrame = null
+        draft.lastFrame = null
+        draft.slots = { image: [], video: [] }
+        draft.uploading = null
+      },
       appendPrompt: (draft, suffix: string) => {
         if (!draft.prompt.includes(suffix)) draft.prompt += suffix
       },

@@ -37,6 +37,13 @@ describe('installer preparation preserves application dependencies', () => {
     try {
       const { createElectronBuilderConfig } = await import('../electron-builder.config.mjs')
       const config = createElectronBuilderConfig(env, platform, 'x64')
+      expect(config.productName).toBe('智澍科技')
+      expect(config.win.executableName).toBe('Zhishu Technology')
+      expect(config.protocols).toEqual([{ name: '智澍科技', schemes: ['dsh'] }])
+      expect(config.extraMetadata).not.toHaveProperty('name')
+      expect(config.extraMetadata).not.toHaveProperty('productName')
+      expect(config.mac.icon).toMatch(/icon-macos\.png$/u)
+      expect(config.win.icon).toMatch(/icon-windows\.png$/u)
       const aboutIcon = config.extraResources.find(resource => resource.to === 'icon.png')
       expect(aboutIcon).toBeDefined()
       expect(readFileSync(aboutIcon!.from)).toEqual(readFileSync(new URL('../resources/icon-windows.png', import.meta.url)))
@@ -99,4 +106,20 @@ describe('installer preparation preserves application dependencies', () => {
     const packaged = new Set(config.files.filter((entry): entry is string => typeof entry === 'string'))
     for (const name of referenced) expect(packaged.has(`lib/${name}`)).toBe(true)
   })
+})
+
+
+it('embeds only an explicitly configured release backend authority and omits it from unsigned packages', async () => {
+  const { createElectronBuilderConfig } = await import('../scripts/electron-builder-config.mjs')
+  const env = {
+    DSH_DESKTOP_APP_ID: 'com.example.installer', DSH_DESKTOP_AUTO_UPDATE_ENV: 'production',
+    DSH_DESKTOP_MANDATORY_UPDATE_PROD_ORIGIN: 'https://policy.example.com',
+    DSH_DESKTOP_MACOS_SIGNING_IDENTITY: 'Example Company (TEAMID1234)', DSH_DESKTOP_MACOS_TEAM_ID: 'TEAMID1234',
+    APPLE_KEYCHAIN_PROFILE: 'installer-test', DSH_DESKTOP_UPDATE_CONFIG_ORIGIN: 'https://api.example.com/',
+  }
+  expect(createElectronBuilderConfig(env, 'darwin', 'arm64').extraMetadata).toMatchObject({ dshDesktopUpdateConfigOrigin: 'https://api.example.com' })
+  expect(createElectronBuilderConfig({ ...env, DSH_DESKTOP_UPDATE_CONFIG_ORIGIN: '' }, 'darwin', 'arm64').extraMetadata)
+    .not.toHaveProperty('dshDesktopUpdateConfigOrigin')
+  expect(createElectronBuilderConfig({ ...env, DSH_DESKTOP_UNSIGNED: '1' }, 'darwin', 'arm64').extraMetadata)
+    .not.toHaveProperty('dshDesktopUpdateConfigOrigin')
 })

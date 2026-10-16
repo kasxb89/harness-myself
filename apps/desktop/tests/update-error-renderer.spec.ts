@@ -127,6 +127,70 @@ it('keeps mandatory diagnostics expandable without clearing the block or authori
   expect(unsubscribe).toHaveBeenCalledOnce()
 })
 
+it('preserves progress focus and buttons, marks verification indeterminate, and treats Escape only as background dismissal', async () => {
+  const p = page('update-dialog')
+  const locale = resolveDesktopLocale('zh-CN')
+  const state: UpdateDialogView = { revision: 1, locale: locale.id, brand: locale.messages.aboutProduct,
+    title: locale.messages.updateTitle, message: locale.messages.updateDownloadTitle,
+    detail: locale.messages.updateDownloadingDetail, buttons: [locale.messages.updateBackground], cancelId: 0,
+    closeLabel: locale.messages.updateClose, technicalDetailsLabel: locale.messages.updateTechnicalDetails, technicalDetails: '',
+    progress: { phase: 'downloading', percent: 12, version: '1.2.0' } }
+  const respond = vi.fn(async () => {})
+  let publish!: (view: UpdateDialogView | null) => void
+  Object.defineProperty(p.dom.window, 'dshUpdateDialog', { value: {
+    status: async () => state, respond, subscribe: (listener: typeof publish) => { publish = listener; return () => {} },
+  } satisfies UpdateDialogApi })
+  p.run()
+  await expect.poll(() => p.element('dialog').hidden).toBe(false)
+  const button = p.document.querySelector('#actions button') as HTMLButtonElement
+  button.focus()
+  publish({ ...state, progress: { ...state.progress!, percent: 67 } })
+  expect(p.document.querySelector('#actions button')).toBe(button)
+  expect(p.document.activeElement).toBe(button)
+  expect(p.element('progress-percent').textContent).toBe('67%')
+  expect((p.element('progress') as HTMLProgressElement).value).toBe(67)
+  publish({ ...state, message: locale.messages.updateVerifying,
+    progress: { phase: 'verifying', version: '1.2.0', percent: 100 } })
+  expect(p.element('progress').hasAttribute('value')).toBe(false)
+  expect(p.element('progress-percent').textContent).toBe('')
+  expect(p.document.activeElement).toBe(button)
+  p.document.dispatchEvent(new p.dom.window.KeyboardEvent('keydown', { key: 'Escape', cancelable: true }))
+  expect(respond).toHaveBeenCalledExactlyOnceWith(1, 0)
+})
+
+it.each(['en', 'zh-CN'])('records ordinary update cards across download, verification, failure, and restart confirmation: %s', async (language) => {
+  const p = page('update-dialog')
+  const locale = resolveDesktopLocale(language)
+  const m = locale.messages
+  const base: UpdateDialogView = { revision: 1, locale: locale.id, brand: m.aboutProduct, title: m.updateTitle,
+    message: m.updateDownloadTitle, detail: m.updateDownloadingDetail, buttons: [m.updateBackground], cancelId: 0,
+    closeLabel: m.updateBackground, technicalDetailsLabel: m.updateTechnicalDetails, technicalDetails: '' }
+  const initial: UpdateDialogView = { ...base, progress: { phase: 'downloading', percent: 58, version: '0.2.2-nightly.1' } }
+  let publish!: (view: UpdateDialogView | null) => void
+  Object.defineProperty(p.dom.window, 'dshUpdateDialog', { value: {
+    status: async () => initial, respond: async () => {}, subscribe: (listener: typeof publish) => { publish = listener; return () => {} },
+  } satisfies UpdateDialogApi })
+  p.run()
+  await expect.poll(() => p.element('dialog').hidden).toBe(false)
+  const states: UpdateDialogView[] = [initial,
+    { ...base, message: m.updateVerifying, detail: m.updateVerifyingDetail, progress: { phase: 'verifying' } },
+    { ...base, revision: 2, tone: 'error', message: m.updateDownloadNetworkFailed, detail: '',
+      buttons: [m.updateRetryDownload, m.updateClose], closeLabel: m.updateClose, cancelId: 1, technicalDetails: 'ERR_CONNECTION_RESET' },
+    { ...base, revision: 3, message: m.updateDownloadedTitle.replace('{version}', '0.2.2-nightly.1'),
+      detail: m.updateDownloadedDetailWindows, buttons: [m.installAndRestart], closeLabel: m.updateClose, cancelId: 1 },
+  ]
+  const cards = states.map((state) => {
+    publish(state)
+    return { brand: p.element('brand').textContent, title: p.element('title').textContent, detail: p.element('detail').textContent,
+      buttons: [...p.document.querySelectorAll('#actions button')].map(button => button.textContent),
+      close: p.element('close').getAttribute('aria-label'), progressVisible: !p.element('download-progress').hidden,
+      progressValue: p.element('progress').getAttribute('value'), percent: p.element('progress-percent').textContent,
+      technicalDetailsVisible: !p.element('technical-details').hidden,
+      technicalDetailsExpanded: (p.element('technical-details') as HTMLDetailsElement).open }
+  })
+  await expect(JSON.stringify(cards, null, 2) + '\n').toMatchFileSnapshot(`./expected/ordinary-update-cards-${language}.json`)
+})
+
 function mandatoryPage(update: MandatoryUpdateView['update']) {
   const p = page('mandatory-update')
   const initial: MandatoryUpdateView = { locale: resolveDesktopLocale('zh'), deferred: false,

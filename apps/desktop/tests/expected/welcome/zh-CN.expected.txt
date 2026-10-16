@@ -1,6 +1,6 @@
-DeepSeek Harness
-DeepSeek Harness
-欢迎使用 DeepSeek Harness
+智澍科技
+智澍科技
+欢迎使用 智澍科技
 组装无限可能，共探智能上限
-登录
-添加 API Key
+手机号登录
+登录后即可使用 AI 创作、查看余额与用量

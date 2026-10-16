@@ -180,10 +180,10 @@ describe('desktop welcome window', () => {
     expect(electron.handlers.size).toBe(0)
   })
 
-  it('shows the entry after logout only without a separately configured API key', () => {
+  it('requires product sign-in regardless of a separately configured API key', () => {
     expect(needsWelcome({ loggedIn: true, hasApiKey: false })).toBe(false)
     expect(needsWelcome({ loggedIn: false, hasApiKey: false })).toBe(true)
-    expect(needsWelcome({ loggedIn: false, hasApiKey: true })).toBe(false)
+    expect(needsWelcome({ loggedIn: false, hasApiKey: true })).toBe(true)
     expect(needsWelcome({ loggedIn: true, hasApiKey: true })).toBe(false)
   })
 })

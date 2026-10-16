@@ -1,7 +1,11 @@
 import { afterEach, expect, it, vi } from 'vitest'
+import { EventEmitter } from 'node:events'
 import type { BrowserWindow } from 'electron'
-import { DesktopUpdateDialog, UPDATE_DIALOG_IPC } from '../src/update-dialog.ts'
+import type { AppUpdater } from 'electron-updater'
+import { DesktopUpdateDialog, desktopUpdateFailureOptions, desktopUpdateProgressOptions, retryDesktopUpdateDownload, UPDATE_DIALOG_IPC } from '../src/update-dialog.ts'
 import { DesktopUpdateOverlays } from '../src/update-overlay.ts'
+import { DesktopUpdateCoordinator } from '../src/update-coordinator.ts'
+import type { DesktopUpdateState } from '../src/ipc.ts'
 import { resolveDesktopLocale, type DesktopLocale } from '../src/locale.ts'
 
 const fixture = await vi.hoisted(async () => {
@@ -30,13 +34,16 @@ const fixture = await vi.hoisted(async () => {
   }
   return { handlers, windows, FakeWindow }
 })
-vi.mock('electron', () => ({ BrowserWindow: fixture.FakeWindow, ipcMain: {
+vi.mock('electron', () => ({ app: { isPackaged: false }, BrowserWindow: fixture.FakeWindow, ipcMain: {
   handle: (name: string, fn: (...args: unknown[]) => unknown) => fixture.handlers.set(name, fn),
   removeHandler: (name: string) => fixture.handlers.delete(name),
 } }))
+vi.mock('electron-updater', () => ({ default: { autoUpdater: {} } }))
 
 let dialogs: DesktopUpdateDialog | undefined
+const coordinators: DesktopUpdateCoordinator[] = []
 afterEach(() => {
+  for (const coordinator of coordinators.splice(0)) coordinator.dispose()
   vi.useRealTimers()
   dialogs?.dispose()
   dialogs = undefined
@@ -213,4 +220,132 @@ it('reads the current locale for each presentation', async () => {
     dialogs!.cancel()
     await pending
   }
+})
+
+it('updates true download progress without replacing choices or invalidating the displayed close response', async () => {
+  const f = setup()
+  const locale = resolveDesktopLocale('zh-CN')
+  const options = desktopUpdateProgressOptions({ phase: 'downloading', version: '1.2.0', percent: 12 }, locale)!
+  const pending = dialogs!.show(f.parent as BrowserWindow, options)
+  const initial = f.invoke(UPDATE_DIALOG_IPC.status) as { revision: number }
+  const focused = fixture.windows.at(-1)!.focus.mock.calls.length
+  expect(dialogs!.updateProgress({ phase: 'downloading', version: '1.2.0', percent: 48.7 })).toBe(true)
+  expect(f.invoke(UPDATE_DIALOG_IPC.status)).toMatchObject({ revision: initial.revision,
+    buttons: ['后台下载'], progress: { phase: 'downloading', percent: 48, version: '1.2.0' } })
+  expect(dialogs!.updateProgress({ phase: 'verifying', version: '1.2.0' })).toBe(true)
+  expect(f.invoke(UPDATE_DIALOG_IPC.status)).toMatchObject({ revision: initial.revision,
+    message: '正在校验更新文件…', progress: { phase: 'verifying' } })
+  expect(fixture.windows.at(-1)!.focus).toHaveBeenCalledTimes(focused)
+  f.invoke(UPDATE_DIALOG_IPC.respond, 0)
+  expect((await pending).response).toBe(0)
+  expect(dialogs!.updateProgress({ phase: 'downloading', percent: 70 })).toBe(false)
+  const ready = f.show()
+  expect(dialogs!.updateProgress({ phase: 'downloading', percent: 70 })).toBe(false)
+  dialogs!.cancel()
+  await ready
+})
+
+it.each(['en', 'zh-CN'])('records localized download and verification guidance: %s', async (language) => {
+  const locale = resolveDesktopLocale(language)
+  const states = [
+    { phase: 'downloading' as const, version: '1.2.0-nightly.1', percent: 58.4 },
+    { phase: 'downloading' as const, version: '1.2.0-nightly.1' },
+    { phase: 'verifying' as const, version: '1.2.0-nightly.1', percent: 100 },
+  ]
+  const views = states.map(state => desktopUpdateProgressOptions(state, locale))
+  expect(desktopUpdateProgressOptions({ phase: 'ready' }, locale)).toBeUndefined()
+  await expect(JSON.stringify(views, null, 2) + '\n').toMatchFileSnapshot(`./expected/update-download-${language}.json`)
+})
+
+function downloadFixture(publish: (state: DesktopUpdateState) => DesktopUpdateState) {
+  const events = new EventEmitter()
+  const transfer = Promise.withResolvers<string[]>()
+  const downloadUpdate = vi.fn(() => transfer.promise)
+  const quitAndInstall = vi.fn()
+  const updater = Object.assign({} as AppUpdater, {
+    on: events.on.bind(events), off: events.off.bind(events),
+    checkForUpdates: vi.fn(async () => ({ isUpdateAvailable: true, updateInfo: { version: '1.2.0' } })),
+    downloadUpdate, quitAndInstall, setFeedURL: vi.fn(),
+  })
+  const coordinator = new DesktopUpdateCoordinator(publish, async () => false, updater, () => true, () => '1.1.0', undefined,
+    async () => ({ url: 'https://updates.example.invalid/win-x64/', channel: 'nightly' }))
+  coordinators.push(coordinator)
+  return { coordinator, events, transfer, downloadUpdate, quitAndInstall }
+}
+
+it('keeps an inert download running after background dismissal, then reopens progress and settles at readiness', async () => {
+  const f = setup()
+  const locale = resolveDesktopLocale('zh-CN')
+  const visible = new AbortController()
+  const download = downloadFixture((state) => {
+    if (state.phase === 'downloading' || state.phase === 'verifying') dialogs!.updateProgress(state)
+    else if (state.phase === 'ready') visible.abort()
+    return state
+  })
+  await download.coordinator.check()
+  const first = dialogs!.show(f.parent as BrowserWindow,
+    desktopUpdateProgressOptions({ phase: 'downloading', version: '1.2.0', percent: 0 }, locale)!)
+  const pending = download.coordinator.download('1.2.0')
+  await expect.poll(() => download.coordinator.state.phase).toBe('downloading')
+  download.events.emit('download-progress', { percent: 38 })
+  expect(f.invoke(UPDATE_DIALOG_IPC.status)).toMatchObject({ progress: { percent: 38 } })
+  f.invoke(UPDATE_DIALOG_IPC.respond, 0)
+  await first
+  download.events.emit('download-progress', { percent: 61 })
+  expect(dialogs!.isOpen).toBe(false)
+  expect(download.coordinator.state).toMatchObject({ phase: 'downloading', percent: 61 })
+  const second = dialogs!.show(f.parent as BrowserWindow,
+    { ...desktopUpdateProgressOptions(download.coordinator.state, locale)!, signal: visible.signal })
+  expect(f.invoke(UPDATE_DIALOG_IPC.status)).toMatchObject({ progress: { percent: 61 } })
+  download.events.emit('download-progress', { percent: 100 })
+  expect(f.invoke(UPDATE_DIALOG_IPC.status)).toMatchObject({ progress: { phase: 'verifying' } })
+  download.events.emit('update-downloaded', { version: '1.2.0' })
+  download.transfer.resolve(['inert-package'])
+  expect(await pending).toEqual({ phase: 'ready', version: '1.2.0' })
+  await second
+  expect(download.downloadUpdate).toHaveBeenCalledOnce()
+  expect(download.quitAndInstall).not.toHaveBeenCalled()
+})
+
+it('waits for prompt release before retrying only a current version-bound download', async () => {
+  const f = setup()
+  const locale = resolveDesktopLocale('zh-CN')
+  const download = downloadFixture(state => state)
+  download.downloadUpdate.mockRejectedValueOnce(new Error('ERR_CONNECTION_RESET'))
+  await download.coordinator.check()
+  const failure = await download.coordinator.download('1.2.0')
+  expect(desktopUpdateFailureOptions(failure, download.coordinator.state, locale).buttons).toEqual(['重试下载', '关闭'])
+  expect(desktopUpdateFailureOptions({ ...failure }, download.coordinator.state, locale).buttons).toEqual(['关闭'])
+  const withoutTarget: DesktopUpdateState = { phase: 'error', failedOperation: 'download' }
+  expect(desktopUpdateFailureOptions(withoutTarget, withoutTarget, locale).buttons).toEqual(['关闭'])
+  const options = desktopUpdateFailureOptions(failure, download.coordinator.state, locale)
+  const prompt = dialogs!.show(f.parent as BrowserWindow, options)
+  f.invoke(UPDATE_DIALOG_IPC.respond, 0)
+  expect((await prompt).response).toBe(0)
+  const released = Promise.withResolvers<undefined>()
+  const retry = vi.fn(async () => { await download.coordinator.download('1.2.0') })
+  const queued = retryDesktopUpdateDownload(failure, released.promise,
+    () => ({ state: download.coordinator.state, allowed: true }), retry)
+  await Promise.resolve()
+  expect(download.downloadUpdate).toHaveBeenCalledOnce()
+  released.resolve(undefined)
+  await expect.poll(() => download.downloadUpdate.mock.calls.length).toBe(2)
+  download.events.emit('update-downloaded', { version: '1.2.0' })
+  download.transfer.resolve(['inert-package'])
+  await queued
+  expect(download.coordinator.state).toEqual({ phase: 'ready', version: '1.2.0' })
+  expect(retry).toHaveBeenCalledOnce()
+  expect(download.quitAndInstall).not.toHaveBeenCalled()
+})
+
+it.each(['policy', 'target'])('discards an approved retry if %s changes before the prompt owner settles', async (change) => {
+  const failure: DesktopUpdateState = { phase: 'error', failedOperation: 'download', version: '1.2.0' }
+  const released = Promise.withResolvers<undefined>()
+  let current = { state: failure, allowed: true }
+  const retry = vi.fn(async () => {})
+  const queued = retryDesktopUpdateDownload(failure, released.promise, () => current, retry)
+  current = change === 'policy' ? { state: failure, allowed: false } : { state: { ...failure }, allowed: true }
+  released.resolve(undefined)
+  await queued
+  expect(retry).not.toHaveBeenCalled()
 })

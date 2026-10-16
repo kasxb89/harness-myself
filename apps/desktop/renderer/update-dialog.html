@@ -9,8 +9,13 @@
   </head>
   <body class="update-dialog">
     <main id="dialog" role="dialog" tabindex="-1" aria-modal="true" aria-labelledby="title" aria-describedby="detail" hidden>
-      <header><h1 id="title"></h1><button id="close" class="close" type="button"><img src="update-close.svg" alt=""></button></header>
+      <header><span class="brand" id="brand"></span><button id="close" class="close" type="button"><img src="update-close.svg" alt=""></button></header>
+      <h1 id="title" aria-live="polite"></h1>
       <p id="detail"></p>
+      <div id="download-progress" hidden>
+        <div class="progress-caption"><span id="progress-label"></span><span id="progress-percent"></span></div>
+        <progress id="progress" max="100"></progress>
+      </div>
       <details id="technical-details" hidden>
         <summary id="technical-details-label"></summary>
         <pre id="technical-details-content" tabindex="0"></pre>

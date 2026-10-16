@@ -7,6 +7,12 @@ import type { SlotScopeAdapter, StandardSourceBinding } from '../src/client/inde
 import { apply as nodeApply } from '@deepseek-ai/dsh-client-ui-renderer'
 import * as UiRenderer from '../src/client/index.ts'
 
+declare module '@deepseek-ai/dsh-client-ui-slots' {
+  interface SlotMap {
+    'renderer.mount.child': { kind: 'single'; scope: 'root' }
+  }
+}
+
 const mounted: (() => void)[] = []
 
 afterEach(() => {
@@ -92,6 +98,68 @@ describe('UI renderer plugin', () => {
     act(() => { unmount = ctx.get('uiRenderer')!.mount(el) })
     act(() => { unmount() })
     expect(el.querySelector('[data-testid="root-probe"]')).toBeNull()
+  })
+
+  it('rejects a missing initial root without retaining the container', async () => {
+    const { ctx, slots } = await bench()
+    const el = container()
+    expect(() => ctx.get('uiRenderer')!.mount(el)).toThrow("'root' has no registration")
+    slots.register({ name: 'root' }, () => <div data-testid="root-probe" />)
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    act(() => { mounted.push(ctx.get('uiRenderer')!.mount(el)) })
+    expect(el.querySelector('[data-testid="root-probe"]')).toBeTruthy()
+    expect(error).not.toHaveBeenCalled()
+  })
+
+  it('suspends across root unloads and mounts the replacement after its children register', async () => {
+    const { ctx, slots } = await bench()
+    const children = { 'renderer.mount.child': { kind: 'single', scope: 'root' } } as const
+    slots.inject('renderer.mount.child', () => slots.register(
+      { name: 'renderer.mount.child' }, () => <span data-testid="child-probe" />,
+    ))
+    const register = async (label: string) => {
+      const frame = ctx.plugin({
+        inject: ['slots'],
+        apply: (scope) => {
+          scope.slots.register({ name: 'root', children }, ({ renderSlot }) => (
+            <main aria-label={label}>{renderSlot('renderer.mount.child', {})}</main>
+          ))
+        },
+      })
+      await frame.await()
+      return frame
+    }
+    const original = await register('original frame')
+    const el = container()
+    act(() => { mounted.push(ctx.get('uiRenderer')!.mount(el)) })
+    expect(el.querySelector('main')?.getAttribute('aria-label')).toBe('original frame')
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    await stabilize(async () => {
+      await original.dispose()
+      await Promise.resolve()
+      expect(el.childElementCount).toBe(0)
+    })
+    await stabilize(async () => { await register('replacement frame') })
+
+    expect(el.querySelector('main')?.getAttribute('aria-label')).toBe('replacement frame')
+    expect(el.querySelector('[data-testid="child-probe"]')).toBeTruthy()
+    expect(error).not.toHaveBeenCalled()
+  })
+
+  it('does not remount a suspended application after its mount is disposed', async () => {
+    const { ctx, slots } = await bench()
+    const remove = slots.register({ name: 'root' }, () => <div data-testid="root-probe" />)
+    const el = container()
+    let unmount: () => void = () => {}
+    act(() => { unmount = ctx.get('uiRenderer')!.mount(el) })
+    await stabilize(() => {
+      remove()
+      slots.register({ name: 'root' }, () => <div data-testid="replacement" />)
+      unmount()
+      unmount()
+    })
+    expect(el.childElementCount).toBe(0)
   })
 
   it('retracts the service and renderer with its fiber', async () => {

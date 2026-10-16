@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="164" height="314" viewBox="0 0 164 314">
+  <rect width="164" height="314" fill="#fff"/>
+  <svg x="40" y="62" width="84" height="84" viewBox="0 0 1024 1024" fill="none">
+    <g transform="translate(-70 -70) scale(48.5)">
+      <path d="M8 2h8a6 6 0 0 1 6 6v8a6 6 0 0 1-6 6H8a6 6 0 0 1-6-6V8a6 6 0 0 1 6-6Z" fill="#fff"/>
+      <path d="M8 2h8a6 6 0 0 1 6 6v8a6 6 0 0 1-6 6H8a6 6 0 0 1-6-6V8a6 6 0 0 1 6-6ZM12 6.1C9.2 9.6 7.7 12 7.7 14a4.3 4.3 0 0 0 8.6 0c0-2-1.5-4.4-4.3-7.9Z" fill="#172126" fill-rule="evenodd" clip-rule="evenodd"/>
+    </g>
+  </svg>
+  <text x="83" y="190" text-anchor="middle" font-family="PingFang SC, Microsoft YaHei UI, Noto Sans CJK SC, sans-serif" font-size="23" font-weight="500" letter-spacing="2" fill="#172126">智澍科技</text>
+</svg>

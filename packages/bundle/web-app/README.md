@@ -40,9 +40,13 @@ dsh --profile web --no-open --port 8080
 
 After startup you see a `dsh web:` line whose root URL carries a fresh process token. Unless `--no-open` or an SSH session suppresses it, the default browser opens that URL, receives a signed cookie, and redirects to the same directory without the token. You know it worked when the page loads and you can chat with the agent. Two failures to expect: if the frontend is not built, startup stops with a build hint (`pnpm run build` in a checkout); if the browser cannot be opened, a credential-free diagnostic prints to stderr while the server keeps running — open the printed startup URL yourself.
 
-**Settings → Models** displays **DeepSeek**, using `DEEPSEEK_API_KEY`. The default is `deepseek-official` / `deepseek-flash` (DeepSeek-V4.1-Flash). The [DeepSeek plugin](../../llm/llm-deepseek/README.md#endpoint-and-wire-format) uses the Messages API.
+The product uses phone sign-in in the **Balance** panel. Its bundle disables the official DeepSeek account panel, official model adapters, and automatic API-key onboarding; model connections use the deployment's new-api configuration.
 
-Saved model selections override the composition default. The settings card accepts a Messages-compatible API address and a credential reference.
+The product's Chat area hides the Trajectory and marketplace Video Views through [Conversation's `hiddenViews` configuration](../../client/ui-conversation/README.md#shell-and-standard-props). The separate AI Creation video page and the video plugin's Host capabilities remain available.
+
+For a broad creation request, the agent uses the [question card](../../client/ui-user-questions/README.md) to clarify missing preferences before creating the result. For example, “make a website” can ask about purpose, style, and main content; “make a 40-second video” keeps the stated duration and asks only about missing subject, style, or aspect ratio. One short batch offers choices and custom answers, then the agent continues within the requested scope. Asking only to review the guidance or postponing creation still applies after answering. Specific requests and delegated choices proceed directly. This guidance applies to the standard, PTC, and Cordis presets; a complete custom persona such as minimal intentionally replaces it and does not provide the question tool.
+
+**Settings → Models** retains provider configuration and credential references. Saved model selections override the composition default, and existing credentials remain stored.
 
 ### Configuration
 
@@ -150,9 +154,11 @@ Read these pages when you want to go deeper into the shared core, the browser re
 
 When `surfaceContext` is true, the `harness:source` section identifies the on-disk Harness implementation without claiming it is the working directory, and the `app:web-surface` global section (first-party order 10100, after reusable instructions) orients the model to the GUI: the advertised application URL (defined under Listening, trust, and public deployments above), the "this page" referent, the update contract (the reload receiver is always on; no-refresh reloads additionally need the `pnpm run dev:web` watcher), and the instruction not to start replacement servers. `DSH_WEB_URL` additionally appears in the managed bash environment with its description, resolved per invocation from the live server. When it is false, neither section nor the variable is registered.
 
+The same Web section tells the agent to use `ask_user_question` for a short batch of missing creation preferences, omit known requirements, accept delegated choices, and continue after the answer. It also requires real job progress and a saved final path before presenting generated or edited videos. The shipped creation-capable presets provide the question tool; the [question UI](../../client/ui-user-questions/README.md) owns rendering and answer submission.
+
 #### Token effect
 
-One source line and one prompt paragraph per session plus two managed-environment variable lines; constant per process.
+One source line and two prompt paragraphs per session plus two managed-environment variable lines; constant per process. Question arguments and submitted answers add ordinary tool-call history; waiting for an answer adds no tokens.
 
 #### KV Cache effect
 

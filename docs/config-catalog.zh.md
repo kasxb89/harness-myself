@@ -345,6 +345,27 @@ export interface Config {
 ```
 <!-- END GENERATED config-catalog:@deepseek-ai/dsh-api-workspace-files -->
 
+<!-- BEGIN GENERATED config-catalog:@deepseek-ai/dsh-artifacts-index -->
+<a id="deepseek-aidsh-artifacts-index"></a>
+
+## `@deepseek-ai/dsh-artifacts-index`
+
+- `inject`: `webServer`
+- `source`: [`packages/deliverables/artifacts-index/src/index.ts:28`](../packages/deliverables/artifacts-index/src/index.ts)
+
+```ts config-catalog
+/** Plugin config: which directories the panel browses and how far it walks. */
+export interface Config {
+  /** Absolute directories shown in the panel. An empty list serves nothing. */
+  roots?: string[]
+  /** Maximum files returned by one listing. */
+  maxEntries?: number
+  /** Maximum directory depth walked below each root. */
+  maxDepth?: number
+}
+```
+<!-- END GENERATED config-catalog:@deepseek-ai/dsh-artifacts-index -->
+
 <!-- BEGIN GENERATED config-catalog:@deepseek-ai/dsh-attachment-local -->
 <a id="deepseek-aidsh-attachment-local"></a>
 
@@ -475,6 +496,24 @@ export interface ConnectionRecoveryConfig {
 }
 ```
 <!-- END GENERATED config-catalog:@deepseek-ai/dsh-client-connection -->
+
+<!-- BEGIN GENERATED config-catalog:@deepseek-ai/dsh-client-creation-content -->
+<a id="deepseek-aidsh-client-creation-content"></a>
+
+## `@deepseek-ai/dsh-client-creation-content`
+
+- `source`: [`packages/client/creation-content/src/index.ts:6`](../packages/client/creation-content/src/index.ts)
+
+```ts config-catalog
+/** Polling settings shared by the Host and Client registrations. */
+export interface Config {
+  /** Interval between publication reads while the application is visible. */
+  refreshIntervalMs: number
+  /** Deadline for one publication read. */
+  timeoutMs: number
+}
+```
+<!-- END GENERATED config-catalog:@deepseek-ai/dsh-client-creation-content -->
 
 <!-- BEGIN GENERATED config-catalog:@deepseek-ai/dsh-client-hmr -->
 <a id="deepseek-aidsh-client-hmr"></a>
@@ -791,6 +830,71 @@ export interface Config {
 }
 ```
 <!-- END GENERATED config-catalog:@deepseek-ai/dsh-credentials-local -->
+
+<!-- BEGIN GENERATED config-catalog:@deepseek-ai/dsh-credits-index -->
+<a id="deepseek-aidsh-credits-index"></a>
+
+## `@deepseek-ai/dsh-credits-index`
+
+- `inject`: `webServer` · `tools`
+- `source`: [`packages/host/credits-index/src/index.ts:58`](../packages/host/credits-index/src/index.ts)
+
+```ts config-catalog
+/** Plugin config: platform origin, display rate, and where the session file lives. */
+export interface Config {
+  /** Platform origin, without a trailing slash. */
+  baseUrl?: string
+  /** Credit units per yuan, for the panel's conversion line. */
+  creditsPerYuan?: number
+  /** Directory holding `session.json`; empty uses the harness home. */
+  stateDir?: string
+  /** Deadline for one platform call, in milliseconds. */
+  timeoutMs?: number
+  /** Loopback port of the model relay; 0 disables it. */
+  relayPort?: number
+  /** Credential reference the relay's bearer token lives under. */
+  relayTokenEnv?: string
+  /** Local new-api origin, without a trailing slash. */
+  newApiBaseUrl?: string
+  /** Credential reference holding the new-api key. */
+  newApiKeyEnv?: string
+  /** Local Bridge origin serving the SMS login contract. */
+  bridgeBaseUrl?: string
+  /** File holding the read-only new-api admin token used to find a user by phone. */
+  newApiAdminTokenFile?: string
+  /** LLM provider route whose model list follows this deployment's new-api. */
+  chatProviderRoute?: string
+  /** Settings namespace holding that provider profile. */
+  chatSettingsNamespace?: string
+  /** Explicit text-chat model used for prompt assistance; empty disables text-only assistance. */
+  promptAssistantModel?: string
+  /** Explicit vision-chat model used when references are attached; no capability is inferred from its name. */
+  promptAssistantVisionModel?: string
+  /** Deadline for one prompt-assistance operation, independent of account and media timeouts. */
+  promptAssistantTimeoutMs?: number
+  /** Maximum final length accepted by natural-language video projects. */
+  videoProjectMaxSeconds?: number
+  /** Maximum separately billable clips in one video project. */
+  videoProjectMaxSegments?: number
+  /** Delay between read-only provider task status requests. */
+  videoProjectPollIntervalMs?: number
+  /** Complete deadline for one generated clip, including saving it. */
+  videoProjectTaskTimeoutMs?: number
+  /** Maximum bytes saved for each generated clip. */
+  videoProjectDownloadMaxBytes?: number
+  /** Maximum bytes of a workspace reference copied into one provider request. */
+  videoProjectReferenceMaxBytes?: number
+  /** Workspace-relative directory for completed video files. */
+  videoProjectOutputDirectory?: string
+  /** Configured local edit deadline, including subprocess cleanup. */
+  videoEditTimeoutMs?: number
+  /** Common frame rate used when joining clips. */
+  videoEditFps?: number
+  /** Explicit bundled video runtime; empty uses the Desktop-provided runtime root. */
+  videoRuntimeRoot?: string
+}
+```
+<!-- END GENERATED config-catalog:@deepseek-ai/dsh-credits-index -->
 
 <!-- BEGIN GENERATED config-catalog:@deepseek-ai/dsh-deepseek-account-platform -->
 <a id="deepseek-aidsh-deepseek-account-platform"></a>
@@ -4470,7 +4574,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-workspace-changes`
 
 - `inject`: `subprocess` · `fs`
-- `source`: [`packages/deliverables/workspace-changes/src/index.ts:34`](../packages/deliverables/workspace-changes/src/index.ts)
+- `source`: [`packages/deliverables/workspace-changes/src/index.ts:41`](../packages/deliverables/workspace-changes/src/index.ts)
 
 ```ts config-catalog
 /** Snapshot, capture, and comparison bounds. Invalid values fail plugin load. */
@@ -4511,24 +4615,31 @@ export interface Config {
 | `@deepseek-ai/dsh-client-resources` | — | [`packages/client/resources/src/index.ts`](../packages/client/resources/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-agent-preset` | — | [`packages/client/ui-agent-preset/src/index.ts`](../packages/client/ui-agent-preset/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-approval` | — | [`packages/client/ui-approval/src/index.ts`](../packages/client/ui-approval/src/index.ts) |
+| `@deepseek-ai/dsh-client-ui-artifacts` | — | [`packages/client/ui-artifacts/src/index.ts`](../packages/client/ui-artifacts/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-attachment` | — | [`packages/client/ui-attachment/src/index.ts`](../packages/client/ui-attachment/src/index.ts) |
+| `@deepseek-ai/dsh-client-ui-background` | — | [`packages/client/ui-background/src/index.ts`](../packages/client/ui-background/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-brand-official` | — | [`packages/client/ui-brand-official/src/index.ts`](../packages/client/ui-brand-official/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-chat` | — | [`packages/client/ui-chat/src/index.ts`](../packages/client/ui-chat/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-commands` | — | [`packages/client/ui-commands/src/index.ts`](../packages/client/ui-commands/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-conversation` | — | [`packages/client/ui-conversation/src/index.ts`](../packages/client/ui-conversation/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-cordis` | — | [`packages/extensions/ui-cordis/src/index.ts`](../packages/extensions/ui-cordis/src/index.ts) |
+| `@deepseek-ai/dsh-client-ui-credits` | — | [`packages/client/ui-credits/src/index.ts`](../packages/client/ui-credits/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-deliverables` | `systemPrompt` · `connection` · `sessionQuery` · `sessionController` · `workspaceFiles` · `fs` · `sandboxPolicy` · `workspaceChanges` | [`packages/client/ui-deliverables/src/index.ts`](../packages/client/ui-deliverables/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-directory-picker-browse` | — | [`packages/client/ui-directory-picker-browse/src/index.ts`](../packages/client/ui-directory-picker-browse/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-directory-picker-native` | — | [`packages/client/ui-directory-picker-native/src/index.ts`](../packages/client/ui-directory-picker-native/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-goal` | — | [`packages/client/ui-goal/src/index.ts`](../packages/client/ui-goal/src/index.ts) |
+| `@deepseek-ai/dsh-client-ui-imagegen` | — | [`packages/client/ui-imagegen/src/index.ts`](../packages/client/ui-imagegen/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-input-trigger` | — | [`packages/client/ui-input-trigger/src/index.ts`](../packages/client/ui-input-trigger/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-jobs` | — | [`packages/client/ui-jobs/src/index.ts`](../packages/client/ui-jobs/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-layout` | — | [`packages/client/ui-layout/src/index.ts`](../packages/client/ui-layout/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-message-feedback` | — | [`packages/client/ui-message-feedback/src/index.ts`](../packages/client/ui-message-feedback/src/index.ts) |
+| `@deepseek-ai/dsh-client-ui-mobile` | — | [`packages/client/ui-mobile/src/index.ts`](../packages/client/ui-mobile/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-model-selection` | — | [`packages/client/ui-model-selection/src/index.ts`](../packages/client/ui-model-selection/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-open-in-app` | — | [`packages/client/ui-open-in-app/src/index.ts`](../packages/client/ui-open-in-app/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-permission-presets` | — | [`packages/client/ui-permission-presets/src/index.ts`](../packages/client/ui-permission-presets/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-plan` | — | [`packages/client/ui-plan/src/index.ts`](../packages/client/ui-plan/src/index.ts) |
+| `@deepseek-ai/dsh-client-ui-plaza` | — | [`packages/client/ui-plaza/src/index.ts`](../packages/client/ui-plaza/src/index.ts) |
+| `@deepseek-ai/dsh-client-ui-prompt-assist` | — | [`packages/client/ui-prompt-assist/src/index.ts`](../packages/client/ui-prompt-assist/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-reference` | — | [`packages/client/ui-reference/src/index.ts`](../packages/client/ui-reference/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-renderer` | — | [`packages/client/ui-renderer/src/index.ts`](../packages/client/ui-renderer/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-schedule` | — | [`packages/client/ui-schedule/src/index.ts`](../packages/client/ui-schedule/src/index.ts) |
@@ -4553,6 +4664,7 @@ export interface Config {
 | `@deepseek-ai/dsh-client-ui-tool` | — | [`packages/client/ui-tool/src/index.ts`](../packages/client/ui-tool/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-trajectory` | — | [`packages/client/ui-trajectory/src/index.ts`](../packages/client/ui-trajectory/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-user-questions` | — | [`packages/client/ui-user-questions/src/index.ts`](../packages/client/ui-user-questions/src/index.ts) |
+| `@deepseek-ai/dsh-client-ui-videogen` | — | [`packages/client/ui-videogen/src/index.ts`](../packages/client/ui-videogen/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-workflow-run` | — | [`packages/client/ui-workflow-run/src/index.ts`](../packages/client/ui-workflow-run/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-workspace` | — | [`packages/client/ui-workspace/src/index.ts`](../packages/client/ui-workspace/src/index.ts) |
 | `@deepseek-ai/dsh-command-compact` | `commands` · `compaction` | [`packages/compaction/command-compact/src/index.ts`](../packages/compaction/command-compact/src/index.ts) |

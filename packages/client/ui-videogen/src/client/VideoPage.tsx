@@ -1,9 +1,12 @@
 /** Video composer, camera-script templates and real generated clips. */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Button, IconPlayOutlineRegular, IconPlusOutlineRegular, Menu, Modal, SegmentedTabs, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, IconChevronDownOutlineRegular, IconPlayOutlineRegular, IconPlusOutlineRegular, IconSettingsOutlineRegular, Menu, Modal, SegmentedTabs, Switch, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsStore } from '@deepseek-ai/dsh-client-store'
-import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import type { createVideoDraftStore, Category, Reference, Slot, Workflow } from './draft-store.ts'
+import type { InjectFace, PropsRenderFactories, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import type {} from '@deepseek-ai/dsh-client-ui-prompt-assist/client'
+import type { Context } from '@deepseek-ai/cordis'
+import type { LocalizedText } from '@deepseek-ai/dsh-client-creation-content/client'
+import type { createVideoDraftStore, Reference, Slot, VideoDraft, Workflow } from './draft-store.ts'
 import type { VideogenKey } from './locales.ts'
 import { requestJson } from './transport.ts'
 import css from './VideoPage.module.css'
@@ -14,6 +17,9 @@ export interface VideogenInjected {
   readonly openImage: () => void
   readonly createPreview: (file: File) => string
   readonly releasePreview: (url: string) => void
+  readonly readDraft: () => VideoDraft
+  readonly refreshContent: () => void
+  readonly hooks: { readonly creationContent: Context['creationContent']; readonly locale: Context['locale'] }
 }
 
 /** Parameter menus supplied by the existing media catalog. */
@@ -36,16 +42,13 @@ interface VideoModel {
   }
 }
 interface Catalog { readonly video: readonly VideoModel[] }
+interface SessionInfo {
+  readonly signedIn: boolean
+  readonly creditsPerYuan: number
+  readonly account?: { readonly id?: string | number } | null
+}
 interface ArtifactItem { readonly path: string; readonly name: string; readonly kind: string; readonly mtimeMs?: number }
 
-type TemplateId = 'product' | 'detail' | 'story' | 'travel' | 'orbit' | 'city'
-const TEMPLATES: readonly { id: TemplateId; category: Category }[] = [
-  { id: 'product', category: 'commerce' }, { id: 'detail', category: 'commerce' },
-  { id: 'story', category: 'story' }, { id: 'travel', category: 'story' },
-  { id: 'orbit', category: 'cinematic' }, { id: 'city', category: 'cinematic' },
-]
-const CATEGORIES: readonly Category[] = ['all', 'commerce', 'story', 'cinematic']
-const PRESETS = ['push', 'orbit', 'track', 'aerial', 'sunset', 'neon'] as const
 const SLOT_TYPES: Record<Slot, { readonly accept: string; readonly types: readonly string[] }> = {
   image: { accept: 'image/png,image/jpeg,image/webp', types: ['image/png', 'image/jpeg', 'image/webp'] },
   video: { accept: 'video/mp4,video/quicktime', types: ['video/mp4', 'video/quicktime'] },
@@ -61,12 +64,13 @@ const rawUrl = (path: string): string => `/artifacts/api/raw?path=${encodeURICom
  * @param props - renderer-owned runtime/store seats and package callbacks.
  * @returns the video creation page.
  */
-export function VideoPage(props: PropsRuntime<'main'> & PropsStore<ReturnType<typeof createVideoDraftStore>> & VideogenInjected): ReactNode {
-  const { t, openImage, actions, createPreview, releasePreview } = props
+export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & PropsStore<ReturnType<typeof createVideoDraftStore>> & InjectFace<VideogenInjected>): ReactNode {
+  const { t, openImage, actions, createPreview, releasePreview, readDraft } = props
   const draft = props.useStore(state => state)
   const { prompt, modelId, resolution, ratio, mode, seed, audio, firstFrame, lastFrame, slots,
     phase, uploading, failure, message, result } = draft
   const [signedIn, setSignedIn] = useState<boolean | null>(null)
+  const [accountIdentity, setAccountIdentity] = useState<string | null>(null)
   const [creditsPerYuan, setCreditsPerYuan] = useState(1000)
   const [balance, setBalance] = useState<number | null>(null)
   const [models, setModels] = useState<readonly VideoModel[]>([])
@@ -76,13 +80,43 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsStore<ReturnType<ty
   const [historyError, setHistoryError] = useState(false)
   const [elapsed, setElapsed] = useState(0)
   const [modelMenu, setModelMenu] = useState(false)
-  const [preview, setPreview] = useState<TemplateId | null>(null)
+  const [preview, setPreview] = useState<string | null>(null)
   const operation = useRef(false)
   const refreshing = useRef(false)
+  const sessionSequence = useRef(0)
+  useEffect(() => () => { sessionSequence.current += 1 }, [])
+  const acceptAccount = useCallback((info: Pick<SessionInfo, 'signedIn' | 'account'>): string | null => {
+    const id = info.account?.id
+    const accountId = info.signedIn && (typeof id === 'string' || typeof id === 'number') && String(id) !== '' ? String(id) : null
+    const current = readDraft()
+    if (current.referenceAccountId !== accountId) {
+      if (current.uploading !== null) operation.current = false
+      actions.setReferenceAccount(accountId)
+      for (const reference of [current.firstFrame, current.lastFrame, ...current.slots.image, ...current.slots.video]) {
+        if (reference !== null) releasePreview(reference.url)
+      }
+    }
+    setSignedIn(info.signedIn)
+    setAccountIdentity(accountId)
+    return accountId
+  }, [actions, readDraft, releasePreview])
   const promptField = useRef<HTMLTextAreaElement | null>(null)
   const model = useMemo(() => models.find(entry => entry.id === modelId) ?? models[0] ?? null, [modelId, models])
   const params = model?.params ?? null
   const busy = phase === 'running' || uploading !== null
+  const locked = busy || draft.promptAssisting
+  const publication = props.useCreationContent(state => state)
+  const language = props.useLocale(state => state.active)
+  const text = (value: LocalizedText | undefined): string => value === undefined ? '' : language === 'en' ? value.en || value.zh : value.zh
+  const content = publication.content?.video
+  const contentCategories = [...content?.categories ?? []].filter(item => item.enabled).sort((a, b) => a.sortOrder - b.sortOrder)
+  const contentTemplates = [...content?.templates ?? []].filter(item => item.status === 'published'
+    && (item.categoryId === null || contentCategories.some(category => category.id === item.categoryId)))
+    .sort((a, b) => a.sortOrder - b.sortOrder)
+  const contentPresets = [...content?.presets ?? []].filter(item => item.status === 'published').sort((a, b) => a.sortOrder - b.sortOrder)
+  const selectedCategory = contentCategories.some(item => item.id === draft.category) ? draft.category : 'all'
+  const previewTemplate = contentTemplates.find(item => item.id === preview) ?? null
+  const visibleTemplates = contentTemplates.filter(template => selectedCategory === 'all' || template.categoryId === selectedCategory)
   const supportsImage = params !== null && (params.frameSlots > 0 || params.maxReferenceImages > 0)
   const workflows: Workflow[] = ['text']
   if (supportsImage) workflows.push('image')
@@ -92,8 +126,19 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsStore<ReturnType<ty
   const duration = params?.durations.includes(draft.duration) === true ? draft.duration : params?.durations[0] ?? 0
   const selectedResolution = params?.resolutions.includes(resolution) === true ? resolution : params?.resolutions[0] ?? ''
   const selectedRatio = params?.ratios.includes(ratio) === true ? ratio : params?.ratios.find(item => item !== 'adaptive') ?? params?.ratios[0] ?? ''
+  const ratioLabel = selectedRatio === 'adaptive' ? t('ratioAdaptive') : selectedRatio
+  const settingsValues = { ratio: ratioLabel, resolution: selectedResolution, duration: String(duration) }
   const hasReferences = (params !== null && params.maxReferenceImages > 0 && slots.image.length > 0)
     || (params !== null && params.maxReferenceVideos > 0 && slots.video.length > 0)
+  const assistReferences = useMemo(() => {
+    if (accountIdentity === null || draft.referenceAccountId !== accountIdentity || signedIn !== true) return []
+    return [...new Set([firstFrame, lastFrame, ...slots.image]
+      .filter((item): item is Reference => item !== null).map(item => item.assetId))]
+  }, [accountIdentity, draft.referenceAccountId, signedIn, firstFrame, lastFrame, slots.image])
+  const assistGeneration = useMemo(() => ({
+    model: model?.id ?? '', workflow, duration: String(duration), resolution: selectedResolution,
+    ratio: selectedRatio, mode,
+  }), [model, workflow, duration, selectedResolution, selectedRatio, mode])
 
   const loadModels = useCallback(async (): Promise<void> => {
     const answer = await requestJson<Catalog>('/credits/api/media/catalog')
@@ -107,9 +152,9 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsStore<ReturnType<ty
 
   const loadBalance = useCallback(async (): Promise<void> => {
     const answer = await requestJson<{ balance_points: number }>('/credits/api/summary')
-    if (answer.sessionInvalid === true) { setSignedIn(false); setBalance(null); return }
+    if (answer.sessionInvalid === true) { acceptAccount({ signedIn: false }); setBalance(null); return }
     setBalance(answer.ok ? answer.payload?.balance_points ?? null : null)
-  }, [])
+  }, [acceptAccount])
 
   const loadHistory = useCallback(async (): Promise<void> => {
     try {
@@ -130,16 +175,18 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsStore<ReturnType<ty
   const refreshState = useCallback(async (): Promise<void> => {
     if (refreshing.current) return
     refreshing.current = true
+    const sequence = ++sessionSequence.current
     try {
-      const answer = await requestJson<{ signedIn: boolean; creditsPerYuan: number }>('/credits/api/session')
+      const answer = await requestJson<SessionInfo>('/credits/api/session')
+      if (sequence !== sessionSequence.current) return
       if (!answer.ok || answer.payload === undefined) { setStateError(true); return }
       setStateError(false)
-      setSignedIn(answer.payload.signedIn)
+      acceptAccount(answer.payload)
       setCreditsPerYuan(answer.payload.creditsPerYuan)
       if (answer.payload.signedIn) await Promise.all([loadBalance(), loadModels(), loadHistory()])
       else setBalance(null)
     } finally { refreshing.current = false }
-  }, [loadBalance, loadModels, loadHistory])
+  }, [acceptAccount, loadBalance, loadModels, loadHistory])
 
   useEffect(() => {
     void refreshState()
@@ -157,31 +204,28 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsStore<ReturnType<ty
     return () => { clearInterval(timer) }
   }, [phase, draft.startedAt])
 
-  useEffect(() => {
-    if (params === null || busy) return
-    const nextSlots = {
-      image: slots.image.slice(0, params.maxReferenceImages),
-      video: slots.video.slice(0, params.maxReferenceVideos),
-    }
-    const nextFirst = params.frameSlots > 0 ? firstFrame : null
-    const nextLast = params.frameSlots > 1 ? lastFrame : null
-    const removed = [
-      ...slots.image.slice(params.maxReferenceImages),
-      ...slots.video.slice(params.maxReferenceVideos),
-      ...(firstFrame !== null && nextFirst === null ? [firstFrame] : []),
-      ...(lastFrame !== null && nextLast === null ? [lastFrame] : []),
-    ]
-    if (removed.length === 0) return
-    actions.patch({ slots: nextSlots, firstFrame: nextFirst, lastFrame: nextLast, message: t('modelMediaAdjusted') })
-    for (const reference of removed) releasePreview(reference.url)
-  }, [params, busy, slots, firstFrame, lastFrame, actions, releasePreview, t])
+  const isReferenceCurrent = useCallback((context: VideoDraft): boolean => {
+    const current = readDraft()
+    return current.referenceAccountId === context.referenceAccountId && current.referenceEpoch === context.referenceEpoch
+  }, [readDraft])
 
-  const upload = useCallback(async (slot: Slot, file: File): Promise<Reference | null> => {
+  const upload = useCallback(async (
+    slot: Slot, file: File, context: VideoDraft, replacing: Reference | null = null,
+  ): Promise<Reference | null> => {
     if (!SLOT_TYPES[slot].types.includes(file.type)) {
       actions.patch({ failure: t('uploadFailed', { message: file.type || t('unknownType') }) })
       return null
     }
-    if (file.size === 0 || file.size > 32 * 1024 * 1024) { actions.patch({ failure: t('uploadSize') }); return null }
+    if (file.size === 0 || file.size > (slot === 'image' ? 6 : 32) * 1024 * 1024) {
+      actions.patch({ failure: t(slot === 'image' ? 'materialLimit' : 'uploadSize') }); return null
+    }
+    if (slot === 'image') {
+      const images = [...new Map([context.firstFrame, context.lastFrame, ...context.slots.image]
+        .filter((item): item is Reference => item !== null && item !== replacing).map(item => [item.assetId, item])).values()]
+      if (images.length >= 6 || images.reduce((sum, item) => sum + item.bytes, 0) + file.size > 12 * 1024 * 1024) {
+        actions.patch({ failure: t('materialLimit') }); return null
+      }
+    }
     try {
       const response = await fetch('/credits/api/assets', {
         method: 'POST', headers: {
@@ -189,6 +233,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsStore<ReturnType<ty
           'x-idempotency-key': `dsh-asset-${globalThis.crypto.randomUUID()}`, accept: 'application/json',
         }, body: file,
       })
+      if (!isReferenceCurrent(context)) return null
       if (!response.ok) { actions.patch({ failure: t('uploadNetwork') }); return null }
       const answer = await response.json() as {
         ok: boolean
@@ -197,52 +242,63 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsStore<ReturnType<ty
         sessionInvalid?: boolean
         asset?: { assetId?: string }
       }
-      if (answer.sessionInvalid === true) { setSignedIn(false); actions.patch({ failure: t('noAuth') }); return null }
+      if (!isReferenceCurrent(context)) return null
+      if (answer.sessionInvalid === true) { acceptAccount({ signedIn: false }); actions.patch({ failure: t('noAuth') }); return null }
       const assetId = answer.asset?.assetId
       if (!answer.ok || typeof assetId !== 'string') {
         actions.patch({ failure: t('uploadFailed', { message: answer.message ?? answer.code ?? t('unknown') }) })
         return null
       }
-      return { assetId, name: file.name, url: createPreview(file) }
+      return { assetId, name: file.name, url: createPreview(file), bytes: file.size }
     } catch (_error) {
-      actions.patch({ failure: t('uploadNetwork') })
+      if (isReferenceCurrent(context)) actions.patch({ failure: t('uploadNetwork') })
       return null
     }
-  }, [actions, createPreview, t])
+  }, [acceptAccount, actions, createPreview, isReferenceCurrent, t])
 
   const pick = useCallback(async (slot: Slot, files: FileList | null): Promise<void> => {
-    if (busy || operation.current || files === null || files.length === 0 || params === null) return
-    const limit = slot === 'image' ? params.maxReferenceImages : params.maxReferenceVideos
+    if (busy || readDraft().promptAssisting || operation.current || files === null || files.length === 0) return
+    const context = readDraft()
+    if (signedIn !== true || accountIdentity === null || context.referenceAccountId !== accountIdentity) return
+    const limit = slot === 'image' ? 6 : params?.maxReferenceVideos ?? 0
     const available = Math.max(0, limit - slots[slot].length)
     if (available === 0) return
     operation.current = true
     actions.patch({ failure: null, uploading: slot })
     try {
       for (const file of Array.from(files).slice(0, available)) {
-        const reference = await upload(slot, file)
+        if (!isReferenceCurrent(context)) return
+        const reference = await upload(slot, file, readDraft())
         if (reference === null) break
+        if (!isReferenceCurrent(context)) { releasePreview(reference.url); return }
         actions.addReferences(slot, [reference], limit)
       }
-    } finally { operation.current = false; actions.patch({ uploading: null }) }
-  }, [busy, params, slots, upload, actions])
+    } finally { if (isReferenceCurrent(context)) { operation.current = false; actions.patch({ uploading: null }) } }
+  }, [accountIdentity, busy, isReferenceCurrent, params, readDraft, releasePreview, signedIn, slots, upload, actions])
 
   const pickFrame = useCallback(async (which: 'first' | 'last', files: FileList | null): Promise<void> => {
     const file = files?.[0]
-    if (busy || operation.current || file === undefined) return
+    if (busy || readDraft().promptAssisting || operation.current || file === undefined) return
+    const context = readDraft()
+    if (signedIn !== true || accountIdentity === null || context.referenceAccountId !== accountIdentity) return
     operation.current = true
     actions.patch({ failure: null, uploading: which })
     try {
-      const reference = await upload('image', file)
+      const reference = await upload('image', file, context, which === 'first' ? context.firstFrame : context.lastFrame)
       if (reference !== null) {
-        const previous = which === 'first' ? firstFrame : lastFrame
+        if (!isReferenceCurrent(context)) { releasePreview(reference.url); return }
+        const current = readDraft()
+        const previous = which === 'first' ? current.firstFrame : current.lastFrame
         actions.patch(which === 'first' ? { firstFrame: reference } : { lastFrame: reference })
         if (previous !== null) releasePreview(previous.url)
       }
-    } finally { operation.current = false; actions.patch({ uploading: null }) }
-  }, [busy, upload, actions, firstFrame, lastFrame, releasePreview])
+    } finally { if (isReferenceCurrent(context)) { operation.current = false; actions.patch({ uploading: null }) } }
+  }, [accountIdentity, busy, isReferenceCurrent, readDraft, signedIn, upload, actions, releasePreview])
 
   const generate = useCallback(async (): Promise<void> => {
-    if (busy || operation.current || signedIn !== true) return
+    if (busy || readDraft().promptAssisting || operation.current || signedIn !== true) return
+    const context = readDraft()
+    if (accountIdentity === null || context.referenceAccountId !== accountIdentity) return
     actions.patch({ failure: null, message: null })
     if (prompt.trim() === '') { actions.patch({ failure: t('promptRequired') }); promptField.current?.focus(); return }
     if (model === null || params === null) { actions.patch({ failure: t('noModel') }); return }
@@ -256,6 +312,16 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsStore<ReturnType<ty
     actions.patch({ phase: 'running', startedAt: Date.now() })
     const frames = workflow === 'frames' ? [firstFrame, lastFrame] : workflow === 'image' && params.frameSlots > 0 ? [firstFrame] : []
     try {
+      if (frames.some(reference => reference !== null) || hasReferences) {
+        const sequence = ++sessionSequence.current
+        const session = await requestJson<SessionInfo>('/credits/api/session')
+        if (sequence !== sessionSequence.current) return
+        if (!session.ok || session.payload === undefined) { actions.patch({ failure: t('stateFailed') }); return }
+        if (acceptAccount(session.payload) !== context.referenceAccountId || !isReferenceCurrent(context)) {
+          actions.patch({ failure: t('referenceAccountChanged') })
+          return
+        }
+      }
       const answer = await requestJson<{ path: string }>('/credits/api/video/tasks?source=newapi-generate', {
         method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' },
         body: JSON.stringify({
@@ -272,8 +338,9 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsStore<ReturnType<ty
           referenceAudios: [],
         }),
       })
+      if (!isReferenceCurrent(context)) return
       if (answer.sessionInvalid === true) {
-        setSignedIn(false); actions.patch({ failure: t('noAuth') }); return
+        acceptAccount({ signedIn: false }); actions.patch({ failure: t('noAuth') }); return
       }
       if (!answer.ok || typeof answer.payload?.path !== 'string' || answer.payload.path === '') {
         if (answer.code === 'INSUFFICIENT_POINTS') actions.patch({ failure: t('insufficient') })
@@ -287,7 +354,8 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsStore<ReturnType<ty
       actions.patch({ result: { path: answer.payload.path }, message: t('done') })
       await Promise.all([loadBalance(), loadHistory()])
     } finally { operation.current = false; actions.patch({ phase: 'idle' }) }
-  }, [busy, signedIn, actions, prompt, model, params, workflow, firstFrame, lastFrame, slots, hasReferences,
+  }, [acceptAccount, accountIdentity, busy, signedIn, actions, prompt, model, params, workflow, firstFrame, lastFrame, slots,
+    hasReferences, isReferenceCurrent, readDraft,
     duration, selectedResolution, selectedRatio, mode, seed, audio, t, loadBalance, loadHistory])
 
   const frameField = (which: 'first' | 'last'): ReactNode => {
@@ -296,18 +364,19 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsStore<ReturnType<ty
       <span className={css.label}>{t(which === 'first' ? 'firstFrame' : 'lastFrame')}</span>
       <label className={css.dropzone}>
         <input type="file" aria-label={t(which === 'first' ? 'firstFrame' : 'lastFrame')} accept={SLOT_TYPES.image.accept}
+          disabled={locked}
           onChange={(event) => { void pickFrame(which, event.target.files); event.target.value = '' }} />
         {reference === null ? <><IconPlusOutlineRegular /><span>{uploading === which ? t('uploading') : t('frameHint')}</span></>
           : <img className={css.frame} src={reference.url} alt={reference.name} />}
       </label>
-      {reference !== null && <button type="button" className={css.link} onClick={() => {
+      {reference !== null && <button type="button" disabled={locked} className={css.link} onClick={() => {
         actions.patch(which === 'first' ? { firstFrame: null } : { lastFrame: null }); releasePreview(reference.url)
       }}>{t('remove')}</button>}
     </div>
   }
 
   const referenceField = (slot: Slot): ReactNode => {
-    const limit = slot === 'image' ? params?.maxReferenceImages ?? 0
+    const limit = slot === 'image' ? 6
       : params?.maxReferenceVideos ?? 0
     if (limit === 0) return null
     const full = slots[slot].length >= limit
@@ -316,22 +385,25 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsStore<ReturnType<ty
         <span className={css.count}>{slots[slot].length}/{limit}</span>
       </span>
       <label className={css.dropzone} aria-disabled={full}>
-        <input type="file" aria-label={t(SLOT_LABELS[slot])} accept={SLOT_TYPES[slot].accept} multiple disabled={full}
+        <input type="file" aria-label={t(SLOT_LABELS[slot])} accept={SLOT_TYPES[slot].accept} multiple disabled={full || locked}
           onChange={(event) => { void pick(slot, event.target.files); event.target.value = '' }} />
         <IconPlusOutlineRegular /><span>{uploading === slot ? t('uploading') : full ? t('referenceFull') : t(SLOT_HINTS[slot])}</span>
       </label>
       <ul className={css.files}>{slots[slot].map(item => <li key={item.assetId} className={css.fileRow}>
         {slot === 'image' ? <img className={css.fileThumb} src={item.url} alt={item.name} /> : <IconPlayOutlineRegular />}
         <span className={css.fileName}>{item.name}</span>
-        <button type="button" className={css.link} aria-label={t('removeNamed', { name: item.name })} onClick={() => {
+        <button type="button" disabled={locked} className={css.link} aria-label={t('removeNamed', { name: item.name })} onClick={() => {
           actions.removeReference(slot, item.assetId); releasePreview(item.url)
         }}>{t('remove')}</button>
       </li>)}</ul>
     </div>
   }
 
-  const applyTemplate = (id: TemplateId): void => {
-    const script = t(`template_${id}_prompt`)
+  const applyTemplate = (id: string): void => {
+    if (locked) return
+    const template = contentTemplates.find(item => item.id === id)
+    if (template === undefined) return
+    const script = text(template.prompt)
     actions.patch({ prompt: prompt.trim() === '' ? script : `${prompt}\n\n${script}`, failure: null })
     setPreview(null)
     promptField.current?.focus()
@@ -348,59 +420,108 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsStore<ReturnType<ty
     </header>
 
     <section className={css.composer} aria-label={t('composer')} aria-busy={busy}>
-      <fieldset className={css.composerFields} disabled={busy || signedIn !== true}>
-        <div className={css.workflowBar}>{workflows.map(entry => <button key={entry} type="button" aria-pressed={workflow === entry}
+      <fieldset className={css.composerFields} disabled={signedIn !== true}>
+        <div className={css.workflowBar}>{workflows.map(entry => <button key={entry} type="button" disabled={locked} aria-pressed={workflow === entry}
           className={workflow === entry ? `${css.workflow} ${css.workflowActive}` : css.workflow}
           onClick={() => { actions.patch({ workflow: entry, failure: null }) }}>{t(WORKFLOW_LABELS[entry])}</button>)}</div>
         <div className={css.promptRow}>
-          {workflows.length > 1 && <button type="button" className={css.addMedia} onClick={() => {
-            actions.patch({ workflow: supportsImage ? 'image' : 'reference' })
-          }}><IconPlusOutlineRegular size={24} /><span>{t('addMedia')}</span></button>}
+          <label className={css.addMedia}><IconPlusOutlineRegular size={24} /><span>{t('addMedia')}</span>
+            <input type="file" aria-label={t('addMedia')} accept={SLOT_TYPES.image.accept} multiple disabled={locked}
+              onChange={(event) => { void pick('image', event.target.files); event.target.value = '' }} />
+          </label>
           <label className={css.promptField}>
             <textarea ref={promptField} className={css.textarea} rows={4} value={prompt} aria-label={t('prompt')}
-              placeholder={t('promptPlaceholder')} onChange={(event) => { actions.patch({ prompt: event.target.value }) }} />
+              placeholder={text(content?.promptPlaceholder) || t('promptPlaceholder')} onChange={(event) => { actions.patch({ prompt: event.target.value }) }} />
             <span className={css.count} aria-hidden="true">{prompt.length}</span>
           </label>
         </div>
+        {props.renderFactorySlot('creation.prompt.assist', {
+          kind: 'video', prompt,
+          references: assistReferences, generation: assistGeneration,
+          disabled: busy, signedIn: signedIn === true, accountIdentity,
+          onBusyChange: (value) => {
+            const current = readDraft()
+            if (current.referenceAccountId === accountIdentity && current.referenceEpoch === draft.referenceEpoch) {
+              actions.patch({ promptAssisting: value })
+              if (value) setModelMenu(false)
+            }
+          },
+          onPromptChange: (value, expectedPrompt) => {
+            const current = readDraft()
+            if (signedIn !== true || accountIdentity === null || current.referenceAccountId !== accountIdentity
+              || current.referenceEpoch !== draft.referenceEpoch || current.uploading !== null || current.phase === 'running'
+              || current.prompt !== expectedPrompt || JSON.stringify([current.modelId, current.workflow, current.duration,
+              current.resolution, current.ratio, current.mode, current.seed, current.audio, current.firstFrame,
+              current.lastFrame, current.slots]) !== JSON.stringify([modelId, draft.workflow, draft.duration,
+              resolution, ratio, mode, seed, audio, firstFrame, lastFrame, slots])) return false
+            actions.patch({ prompt: value, failure: null, message: null })
+            promptField.current?.focus()
+            return true
+          },
+        })}
+        <p className={css.hint}>{t('materialHelp')}</p>
+        <div className={css.mediaGrid}>{referenceField('image')}</div>
         <p className={css.hint}>{t(WORKFLOW_HINTS[workflow])}</p>
         {(firstFrame !== null || lastFrame !== null || hasReferences) && <p className={css.hint}>{t('inactiveMediaHint')}</p>}
         {workflow !== 'text' && params !== null && <div className={css.mediaGrid}>
-          {workflow === 'image' && (params.frameSlots > 0 ? frameField('first') : referenceField('image'))}
+          {workflow === 'image' && params.frameSlots > 0 && frameField('first')}
           {workflow === 'frames' && <>{frameField('first')}{frameField('last')}</>}
-          {workflow === 'reference' && <>{referenceField('image')}{referenceField('video')}</>}
+          {workflow === 'reference' && referenceField('video')}
         </div>}
-        <div className={css.presets} aria-label={t('cameraIntents')}>{PRESETS.map(preset => <button key={preset} type="button" className={css.chip}
-          onClick={() => { actions.appendPrompt(t(`preset_text_${preset}`)) }}>{t(`preset_${preset}`)}</button>)}</div>
+        {contentPresets.length > 0 && <div className={css.presets} aria-label={t('cameraIntents')}>{contentPresets.map(preset => <button key={preset.id} type="button" disabled={locked} className={css.chip}
+          onClick={() => { actions.appendPrompt(text(preset.promptSuffix)) }}>{text(preset.label)}</button>)}</div>}
         <div className={css.composerBar}>
           <Menu open={modelMenu} portal selectedId={model?.id} items={models.map(entry => ({ id: entry.id, label: entry.displayName }))}
             onSelect={(id) => { actions.patch({ modelId: id }); setModelMenu(false) }} onClose={() => { setModelMenu(false) }}
             anchor={<button type="button" className={css.modelButton} aria-label={t('model')} aria-expanded={modelMenu}
-              disabled={busy || models.length === 0} onClick={() => { setModelMenu(!modelMenu) }}>{model?.displayName ?? t('model')}<span aria-hidden="true">⌄</span></button>} />
+              disabled={locked || models.length === 0} onClick={() => { setModelMenu(!modelMenu) }}>{model?.displayName ?? t('model')}<span aria-hidden="true">⌄</span></button>} />
           <details className={css.settings}>
-            <summary>{t('settingsSummary', { duration: String(duration), resolution: selectedResolution, ratio: selectedRatio === 'adaptive' ? t('ratioAdaptive') : selectedRatio })}</summary>
-            <div className={css.settingsBody}>
-              {params !== null && params.durations.length > 0 && <div className={css.field}><span className={css.label}>{t('duration')}</span>
-                <div className={css.segmented}>{params.durations.map(value => <button key={value} type="button" aria-pressed={duration === value}
-                  className={duration === value ? `${css.segment} ${css.segmentActive}` : css.segment} onClick={() => { actions.patch({ duration: value }) }}>{t('seconds', { n: String(value) })}</button>)}</div></div>}
-              {params !== null && params.resolutions.length > 0 && <div className={css.field}><span className={css.label}>{t('resolution')}</span>
-                <div className={css.segmented}>{params.resolutions.map(value => <button key={value} type="button" aria-pressed={selectedResolution === value}
-                  className={selectedResolution === value ? `${css.segment} ${css.segmentActive}` : css.segment} onClick={() => { actions.patch({ resolution: value }) }}>{value}</button>)}</div></div>}
-              {params !== null && params.ratios.length > 0 && <div className={css.field}><span className={css.label}>{t('ratio')}</span>
-                <div className={css.segmented}>{params.ratios.map(value => <button key={value} type="button" aria-pressed={selectedRatio === value}
-                  className={selectedRatio === value ? `${css.segment} ${css.segmentActive}` : css.segment} onClick={() => { actions.patch({ ratio: value }) }}>{value === 'adaptive' ? t('ratioAdaptive') : value}</button>)}</div></div>}
-              {params !== null && params.modes.length > 0 && <div className={css.field}><span className={css.label}>{t('mode')}</span>
-                <div className={css.segmented}>{params.modes.map(value => <button key={value} type="button" aria-pressed={mode === value}
-                  className={mode === value ? `${css.segment} ${css.segmentActive}` : css.segment} onClick={() => { actions.patch({ mode: value }) }}>{value}</button>)}</div></div>}
-              {params?.seed === true && <label className={css.field}><span className={css.label}>{t('seed')}</span><input className={css.seed} inputMode="numeric" value={seed}
-                placeholder={t('seedHint')} onChange={(event) => { actions.patch({ seed: event.target.value.replace(/[^0-9]/g, '') }) }} /></label>}
-              {params?.audioToggle === true && <label className={css.audioToggle}><input type="checkbox" checked={audio} onChange={(event) => { actions.patch({ audio: event.target.checked }) }} />{t('audio')}</label>}
-              {params?.audio === true && !params.audioToggle && <p className={css.hint}>{t('badgeAudio')}</p>}
+            <summary className={css.settingsTrigger} aria-label={params === null ? t('settingsUnavailable') : t('settingsTrigger', settingsValues)} aria-disabled={locked || params === null}
+              onClick={(event) => { if (locked || params === null) event.preventDefault() }}>
+              <span className={css.settingsTitle}><IconSettingsOutlineRegular size={16} /><span>{t('settings')}</span></span>
+              <span className={css.settingsValues} aria-hidden="true">{params === null ? t('settingsUnavailable') : <><span>{ratioLabel}</span><span>{selectedResolution}</span><span>{t('secondsCompact', { n: String(duration) })}</span></>}</span>
+              <IconChevronDownOutlineRegular className={css.settingsChevron} size={14} />
+            </summary>
+            <div className={css.settingsPanel}>
+              <div className={css.settingsHeading}><div><h3>{t('settings')}</h3><p>{t('settingsHint')}</p></div><span className={css.settingsOverview}>{t('settingsSummary', settingsValues)}</span></div>
+              <fieldset className={css.settingsBody} aria-label={t('settings')} disabled={locked}>
+                {params !== null && params.ratios.length > 0 && <fieldset className={css.settingsGroup}><legend>{t('ratio')}</legend>
+                  <div className={css.ratioGrid}>{params.ratios.map((value) => {
+                    const [width = 1, height = 1] = value === 'adaptive' ? [4, 3] : value.split(':').map(Number)
+                    const scale = Math.min(30 / width, 24 / height)
+                    const category = width === height ? 'ratioSquare' : width > height ? 'ratioLandscape' : 'ratioPortrait'
+                    return <button key={value} type="button" aria-pressed={selectedRatio === value}
+                      aria-label={t('ratioOption', { ratio: value === 'adaptive' ? t('ratioAdaptive') : value })}
+                      className={css.ratioCard} onClick={() => { actions.patch({ ratio: value }) }}>
+                      <span className={css.ratioVisual} aria-hidden="true"><span className={css.ratioShape} data-adaptive={value === 'adaptive'}
+                        style={{ width: width * scale, height: height * scale }} /></span>
+                      <span className={css.ratioValue}>{value === 'adaptive' ? t('ratioAdaptive') : value}</span><span className={css.ratioCaption}>{t(value === 'adaptive' ? 'ratioAdaptiveCaption' : category)}</span>
+                    </button>
+                  })}</div></fieldset>}
+                {params !== null && params.resolutions.length > 0 && <fieldset className={css.settingsGroup}><legend>{t('resolution')}</legend>
+                  <div className={css.optionGrid}>{params.resolutions.map(value => <button key={value} type="button" aria-pressed={selectedResolution === value}
+                    className={css.parameterOption} onClick={() => { actions.patch({ resolution: value }) }}>{value}</button>,
+                  )}</div></fieldset>}
+                {params !== null && params.durations.length > 0 && <fieldset className={css.settingsGroup}><legend>{t('duration')}</legend>
+                  <div className={css.durationGrid}>{params.durations.map(value => <button key={value} type="button" aria-pressed={duration === value}
+                    className={css.parameterOption} onClick={() => { actions.patch({ duration: value }) }}>{t('seconds', { n: String(value) })}</button>)}</div></fieldset>}
+                {params !== null && <div className={css.audioRow}><div><span className={css.audioTitle}>{t('audio')}</span>
+                  <p>{t(params.audioToggle ? 'audioHint' : params.audio ? 'audioFixedOn' : 'audioFixedOff')}</p></div>
+                <div className={css.audioState}><span aria-hidden={params.audioToggle}>{t((params.audioToggle ? audio : params.audio) ? 'on' : 'off')}</span>
+                  {params.audioToggle && <Switch checked={audio} onChange={(value) => { actions.patch({ audio: value }) }} label={t('audio')} disabled={locked} className={css.audioSwitch} />}
+                </div></div>}
+                {params !== null && params.modes.length > 0 && <fieldset className={css.settingsGroup}><legend>{t('mode')}</legend>
+                  <div className={css.optionGrid}>{params.modes.map(value => <button key={value} type="button" aria-pressed={mode === value}
+                    className={css.parameterOption} onClick={() => { actions.patch({ mode: value }) }}>{value}</button>)}</div></fieldset>}
+                {params?.seed === true && <label className={css.field}><span className={css.label}>{t('seed')}</span><input className={css.seed} inputMode="numeric" value={seed}
+                  placeholder={t('seedHint')} onChange={(event) => { actions.patch({ seed: event.target.value.replace(/[^0-9]/g, '') }) }} /></label>}
+              </fieldset>
             </div>
           </details>
           <span className={css.cost}>{t('costShort')}</span>
           <Tooltip label={phase === 'running' ? t('runningShort') : t('submit')} portal side="top">
             <button type="button" className={css.send} aria-label={phase === 'running' ? t('runningShort') : t('submit')}
-              onClick={() => { void generate() }} disabled={busy || model === null || prompt.trim() === ''}>
+              onClick={() => { void generate() }} disabled={locked || model === null || prompt.trim() === ''}>
               <span className={phase === 'running' ? css.spinner : css.sendArrow} aria-hidden="true">{phase === 'running' ? '' : '↑'}</span>
             </button>
           </Tooltip>
@@ -420,15 +541,22 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsStore<ReturnType<ty
     {model !== null && <details className={css.capabilityNote}><summary>{t('modelInfo')}</summary><p className={css.hint}>{t('capabilityHint')}</p></details>}
 
     <section className={css.templates} aria-label={t('templates')}>
-      <div className={css.sectionHeading}><div><h2 className={css.sectionTitle}>{t('templates')}</h2><p className={css.hint}>{t('templatesHint')}</p></div>
-        <div className={css.categories} aria-label={t('categories')}>{CATEGORIES.map(category => <button key={category} type="button" aria-pressed={draft.category === category}
-          className={draft.category === category ? `${css.category} ${css.categoryActive}` : css.category} onClick={() => { actions.patch({ category }) }}>{t(`category_${category}`)}</button>)}</div>
+      <div className={css.sectionHeading}><div><h2 className={css.sectionTitle}>{text(content?.title) || t('templates')}</h2><p className={css.hint}>{text(content?.description) || t('templatesHint')}</p></div>
+        <div className={css.categories} aria-label={t('categories')}>
+          <button type="button" className={css.category} aria-pressed={selectedCategory === 'all'} onClick={() => { actions.patch({ category: 'all' }) }}>{t('category_all')}</button>
+          {contentCategories.map(category => <button key={category.id} type="button" aria-pressed={selectedCategory === category.id} className={css.category}
+            onClick={() => { actions.patch({ category: category.id }) }}>{text(category.label)}</button>)}</div>
       </div>
-      <div className={css.templateGrid}>{TEMPLATES.filter(template => draft.category === 'all' || template.category === draft.category).map(template => <button type="button" key={template.id}
-        className={css.templateCard} onClick={() => { setPreview(template.id) }} aria-label={t('previewNamed', { name: t(`template_${template.id}`) })}>
-        <div className={css.storyboard} data-scene={template.id} aria-hidden="true"><span>01</span><span>02</span><span>03</span><i><IconPlayOutlineRegular size={20} /></i></div>
-        <div className={css.templateBody}><span className={css.templateBadge}>{t('scriptTemplate')}</span><h3>{t(`template_${template.id}`)}</h3><p>{t(`template_${template.id}_description`)}</p><span className={css.templateLink}>{t('viewScript')}<span aria-hidden="true">↗</span></span></div>
+      {publication.status === 'loading' && <p role="status" className={css.hint}>{t('contentLoading')}</p>}
+      {publication.status === 'error' && <p role="alert" className={css.error}>{t('contentFailed')} <Button size="sm" onClick={props.refreshContent}>{t('retry')}</Button></p>}
+      <div className={css.templateGrid}>{visibleTemplates.map(template => <button type="button" key={template.id}
+        className={css.templateCard} disabled={locked} onClick={() => { setPreview(template.id) }} aria-label={t('previewNamed', { name: text(template.title) })}>
+        {template.coverAssetId !== null && <img className={css.templateCover} src={`/credits/api/creation/assets/${encodeURIComponent(template.coverAssetId)}`} alt="" loading="lazy" />}
+        <div className={css.templateBody}><span className={css.templateBadge}>{t('scriptTemplate')}</span><h3>{text(template.title)}</h3><p>{text(template.description)}</p><span className={css.templateLink}>{t('viewScript')}<span aria-hidden="true">↗</span></span></div>
       </button>)}</div>
+      {publication.status === 'ready' && contentTemplates.length === 0 && <p className={css.hint}>{t('contentEmpty')}</p>}
+      {publication.status === 'ready' && contentTemplates.length > 0 && visibleTemplates.length === 0 && <p className={css.hint}>
+        {t('noTemplates')} <button type="button" className={css.link} onClick={() => { actions.patch({ category: 'all' }) }}>{t('resetFilters')}</button></p>}
     </section>
 
     {result !== null && <section className={css.result} aria-label={t('result')}>
@@ -444,9 +572,11 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsStore<ReturnType<ty
         : <ul className={css.history}>{history.map(item => <li key={item.path}><button type="button" className={css.historyButton} aria-label={t('previewNamed', { name: item.name })}
           onClick={() => { actions.patch({ result: { path: item.path } }) }}><div className={css.historyVisual}><video src={rawUrl(item.path)} muted preload="metadata" /><span className={css.play}><IconPlayOutlineRegular size={24} /></span></div><span className={css.historyName}>{item.name}</span></button></li>)}</ul>}
     </section>
-    <Modal open={preview !== null} title={preview === null ? t('scriptTemplate') : t(`template_${preview}`)} closeLabel={t('closePreview')} onClose={() => { setPreview(null) }}
-      footer={<Button variant="primary" disabled={busy} onClick={() => { if (preview !== null) applyTemplate(preview) }}>{t('useScript')}</Button>}>
-      <p className={css.hint}>{t('scriptPreviewHint')}</p><p className={css.scriptPreview}>{preview === null ? '' : t(`template_${preview}_prompt`)}</p>
+    <Modal open={previewTemplate !== null} title={previewTemplate === null ? t('scriptTemplate') : text(previewTemplate.title)} closeLabel={t('closePreview')} onClose={() => { setPreview(null) }}
+      footer={<Button variant="primary" disabled={locked} onClick={() => { if (preview !== null) applyTemplate(preview) }}>{t('useScript')}</Button>}>
+      {previewTemplate?.demoVideoAssetId !== null && previewTemplate?.demoVideoAssetId !== undefined && <video controls preload="metadata" className={css.video}
+        src={`/credits/api/creation/assets/${encodeURIComponent(previewTemplate.demoVideoAssetId)}`} />}
+      <p className={css.hint}>{t('scriptPreviewHint')}</p><p className={css.scriptPreview}>{previewTemplate === null ? '' : text(previewTemplate.prompt)}</p>
     </Modal>
   </div>
 }

@@ -24,15 +24,30 @@ function render(state) {
     document.body.classList.remove('visible')
     return
   }
-  if (view !== undefined && state.revision <= view.revision) return
+  const progressRefresh = view?.progress !== undefined && state.progress !== undefined && state.revision === view.revision
+  if (view !== undefined && state.revision <= view.revision && !progressRefresh) return
   responding = false
   view = state
   document.documentElement.lang = state.locale
   document.title = state.title
+  document.getElementById('brand').textContent = state.brand ?? ''
+  document.getElementById('dialog').dataset.tone = state.tone ?? 'info'
   document.getElementById('title').textContent = state.message
   document.getElementById('detail').textContent = state.detail
   document.getElementById('detail').hidden = state.detail === ''
   document.getElementById('close').setAttribute('aria-label', state.closeLabel)
+  document.getElementById('download-progress').hidden = state.progress === undefined
+  const progress = document.getElementById('progress')
+  if (state.progress?.phase === 'downloading' && state.progress.percent !== undefined) progress.value = state.progress.percent
+  else progress.removeAttribute('value')
+  progress.setAttribute('aria-label', state.message)
+  document.getElementById('progress-label').textContent = state.progress?.version ?? ''
+  document.getElementById('progress-percent').textContent = state.progress?.phase === 'downloading' && state.progress.percent !== undefined
+    ? new Intl.NumberFormat(state.locale, { style: 'percent', maximumFractionDigits: 0 }).format(state.progress.percent / 100) : ''
+  if (progressRefresh) {
+    for (const [index, button] of [...document.querySelectorAll('#actions button')].entries()) button.textContent = state.buttons[index]
+    return
+  }
   document.getElementById('technical-details').hidden = state.technicalDetails === ''
   document.getElementById('technical-details-label').textContent = state.technicalDetailsLabel
   document.getElementById('technical-details-content').textContent = state.technicalDetails

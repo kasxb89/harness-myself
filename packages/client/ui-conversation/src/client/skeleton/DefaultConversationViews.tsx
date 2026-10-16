@@ -17,7 +17,7 @@ export function DefaultConversationViews({
   const tabs = useConversationViews(value => value)
   const inspectCall = useInspectCall(value => value)
   const selectedId = useStore(s => s.view)
-  const active = resolveActiveView(tabs, selectedId)
+  const active = resolveActiveView(tabs, view ?? selectedId)
   const session = useSession(s => s)
   const conversation = useConversation(s => s)
   const viewRequest = useStore(s => s.viewRequest ?? null)
@@ -30,7 +30,7 @@ export function DefaultConversationViews({
   }, [inputActions])
 
   if (session.blank && conversationPhase(session, conversation) === 'blank') return null
-  const viewId = view ?? active?.id
+  const viewId = active?.id
   return (
     <div className={css.viewArea}>
       {viewId !== undefined && renderSlot('conversation.view', {

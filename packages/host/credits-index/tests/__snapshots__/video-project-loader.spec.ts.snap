@@ -1,0 +1,147 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`video tools through Loader, real tool registry and jobs runtime > registers the same production tool schemas from the shipped credits apply path 1`] = `
+[
+  {
+    "description": "Create a finished video longer than one model clip from a natural-language brief. For requests such as a 40-second video, plan the fewest supported clips (for a 15-second limit: 15+15+10, or three 15-second clips trimmed to 40), generate them in order using the signed-in account, then automatically normalize, trim, and join them locally. All local tools and every request are checked before billing. Returns a background job_id and durable project_id; read job_output for progress and call present on the completed final_path. Never claim completion before the job reports a saved final_path. Already submitted provider tasks may continue billing after local cancellation. If a current user-supplied chat attachment is outside the workspace, first copy that read-authorized attachment into this workspace with the existing file tools, then pass the copied path; do not copy unrelated files.",
+    "name": "generate_video_project",
+    "parameters": {
+      "properties": {
+        "frame_images": {
+          "description": "Existing uploaded ma_ first/last frame ids or workspace image paths. For a user-supplied chat attachment outside the workspace, first copy the read-authorized attachment into the workspace with existing file tools and pass its copied path.",
+          "items": {
+            "type": "string",
+          },
+          "type": "array",
+        },
+        "model": {
+          "description": "Only specify a model when requested; otherwise use an available account model.",
+          "type": "string",
+        },
+        "prompt": {
+          "description": "The complete video brief, visual continuity, story, and desired editing.",
+          "type": "string",
+        },
+        "ratio": {
+          "type": "string",
+        },
+        "reference_images": {
+          "description": "Existing uploaded ma_ subject/style image ids or workspace image paths. For a user-supplied chat attachment outside the workspace, first copy the read-authorized attachment into the workspace with existing file tools and pass its copied path.",
+          "items": {
+            "type": "string",
+          },
+          "type": "array",
+        },
+        "reference_videos": {
+          "description": "Existing uploaded ma_ video reference ids or workspace video paths. For a user-supplied chat attachment outside the workspace, first copy the read-authorized attachment into the workspace with existing file tools and pass its copied path.",
+          "items": {
+            "type": "string",
+          },
+          "type": "array",
+        },
+        "resolution": {
+          "type": "string",
+        },
+        "shot_prompts": {
+          "description": "Optional exact shot briefs, one per planned clip; omit to use the main brief with ordered continuity instructions.",
+          "items": {
+            "type": "string",
+          },
+          "type": "array",
+        },
+        "total_duration_seconds": {
+          "description": "Desired final length in whole seconds; this may exceed the model single-clip limit.",
+          "type": "number",
+        },
+      },
+      "required": [
+        "prompt",
+        "total_duration_seconds",
+      ],
+      "type": "object",
+    },
+  },
+  {
+    "description": "Read a durable video project owned by this account, workspace, and chat. This does not restart generation or spend credits. After an app restart, an interrupted project is a saved record, not a live job. Inspect clip_paths and task_ids before explicitly resuming.",
+    "name": "video_project_status",
+    "parameters": {
+      "properties": {
+        "project_id": {
+          "type": "string",
+        },
+      },
+      "required": [
+        "project_id",
+      ],
+      "type": "object",
+    },
+  },
+  {
+    "description": "Explicitly continue a retained project for the same account, workspace, and chat. Reuse saved clips and query already known provider task ids before submitting any remaining never-submitted clips. Refuse unknown submissions, failed provider tasks, and a second live run; never automatically resubmit a charge whose outcome is unknown. Local cancellation cannot cancel already accepted upstream billing.",
+    "name": "resume_video_project",
+    "parameters": {
+      "properties": {
+        "project_id": {
+          "type": "string",
+        },
+      },
+      "required": [
+        "project_id",
+      ],
+      "type": "object",
+    },
+  },
+  {
+    "description": "Edit existing local videos without generating new media or spending model credits. Order clips as supplied, optionally trim each start/end in seconds, normalize and concatenate them, and optionally trim the final length. Input files must be readable inside this workspace or an owned generated-video project. Returns a background job_id; wait for the real final_path, then call present and include the artifact link. This performs ordered cuts and joins; it does not synthesize unseen footage, music, subtitles, or effects. If current user-supplied chat attachments are outside the workspace, first copy only those read-authorized attachments into this workspace with existing file tools, then edit the copied paths.",
+    "name": "edit_video",
+    "parameters": {
+      "properties": {
+        "clips": {
+          "description": "Local clip paths in final playback order, with optional per-clip trim positions. Copy current user-supplied, read-authorized chat attachments from outside the workspace into the workspace with existing file tools before passing their copied paths.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "end_seconds": {
+                "type": "number",
+              },
+              "path": {
+                "type": "string",
+              },
+              "start_seconds": {
+                "type": "number",
+              },
+            },
+            "required": [
+              "path",
+            ],
+            "type": "object",
+          },
+          "type": "array",
+        },
+        "total_duration_seconds": {
+          "description": "Optional final duration after assembling clips; cannot exceed the available trimmed footage.",
+          "type": "number",
+        },
+      },
+      "required": [
+        "clips",
+      ],
+      "type": "object",
+    },
+  },
+]
+`;
+
+exports[`video tools through Loader, real tool registry and jobs runtime > starts three clips, consumes completion through existing job_output, and exposes pure replayable presenters 1`] = `
+{
+  "card": "generic",
+  "content": [
+    {
+      "text": "40 秒 · 制作一个茶杯广告",
+      "type": "text",
+    },
+  ],
+  "kind": "edit",
+  "title": "生成并剪辑视频",
+}
+`;

@@ -58,7 +58,7 @@ target package 通过 declaration merge 扩展 snapshot 与 Location data map，
 
 上下文占用按钮在输入卡片下方、会话统计右侧显示圆环和百分比。点击按钮可在视口内的面板查看 token 构成，没有统计项时面板也不会越界；上下文用量和容量尚不可用时，按钮保持隐藏。
 
-关闭代码工作工具时，外壳仅隐藏 Trajectory；其他插件贡献的 View 仍然可用。可用 View 少于两个时隐藏 View 标签栏。在 Trajectory 激活时关闭代码工作工具会返回 Chat；已保存的 View 偏好和 Session 记录保持不变。开启后，Trajectory 恢复可用。View 所有者接收可用列表，使导航操作跟随相同的可见性。
+Host 的 `ui-conversation.hiddenViews` 列表默认为空，与 `busyEnter` 一起通过现有配置表单显式投影。浏览器在首次接受 Host 值之前使用本地 `hiddenViews` 作为备用值，之后跟随 Host 的实时更新；读取不可用时保留已接受的列表。其中指定的 View id 不参与渲染、选择、焦点导航和工具调用检查，当前 View 被隐藏时立即回退到 Chat。已保存或嵌入式选择指向不可用 View 时也回退到 Chat。关闭代码工作工具还会隐藏 Trajectory；重新开启也不会恢复 `hiddenViews` 排除的 View。可用 View 少于两个时隐藏 View 标签栏。View 所有者接收相同的可用列表。已保存的 View 偏好、Session 记录和贡献插件的其他能力保持不变。Host Loader 配置不会通过客户端模块图透传。
 
 输入框注册「文件」命令动作，负责其标题、可用性和原生文件选择器回调。菜单可用性与实际调用都读取已挂载输入框当前的附件接收策略。输入框卸载或锁定后该动作不可用，插件 dispose（资源释放）时移除注册。回调绑定留在输入模块内部。
 
@@ -76,7 +76,7 @@ blank Session 保留 header 的 leading 与 corner 控件，包括右侧栏展�
 
 View 选择规则固定：有效且已注册的持久化选择优先，其次是已注册的 `chat`，否则不渲染 View；绝不选择第一个已注册 View。Shell phase 只组合 Session lifecycle 与 active-target set，不读取任何 target-specific 快照。
 
-Session 首次绑定或缓存的 Session 成为 current 时，shell 会在渲染前读取持久化 View 偏好，激活已注册的偏好 View 或 Chat fallback，并在后续 tab 或 focus 选择写入 store 前先激活对应 target。blank Session 仍不渲染 `conversation.view` slot；未选中的 target 不会激活。
+Session 首次绑定或缓存的 Session 成为 current 时，shell 会在渲染前读取持久化 View 偏好，激活已注册的偏好 View 或 Chat fallback，并在后续 tab 或 focus 选择写入 store 前先激活对应 target。View 列表和语言刷新只为当前 Session binding 恢复选择；已释放的 generation 即使仍在等待异步清理，也不参与刷新。blank Session 仍不渲染 `conversation.view` slot；未选中的 target 不会激活。
 
 主 occurrence 的活跃 transcript 只在未被内容覆盖的两侧沟槽中提供正文宽度拖拽条；嵌入式 occurrence 省略这些拖拽条。View 如果绘制进沟槽，只将具体的可见元素提到拖拽条上方；透明的全宽包装层保持在下方，不会占用空白沟槽。该规则要求此元素与 Conversation body 之间不能引入中间堆叠上下文；浏览器场景固定了交付 Chromium 的行为。Chat 将该规则用于表格元素，其限定在阅读列内的工具卡片无需提高层级。指针位于拖拽条上时，滚轮仍会滚动 transcript，Ctrl+滚轮则保留为浏览器缩放手势。粘滞 composer 刻意拥有完整的底部区带，该区域不是宽度调整目标；已捕获的拖拽会将指示线提高到松开为止（[拖动手柄样式](src/client/skeleton/ConversationRoot.module.css)）。
 

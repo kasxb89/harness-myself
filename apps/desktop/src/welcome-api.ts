@@ -47,7 +47,7 @@ export interface WelcomeOperations {
    */
   saveApiKey(value: string): Promise<WelcomeSaveResult>
   /**
-   * Enter the workspace without writing an onboarding-completion setting.
+   * Open the product account panel for phone sign-in without writing a completion setting.
    * @returns completion after the workspace opens.
    */
   skip(): Promise<void>
@@ -67,9 +67,9 @@ export interface WelcomeAuthentication {
 
 /**
  * Decide whether a startup or sign-out requires the welcome entry.
- * @param authentication - current account and independently stored API-key facts.
- * @returns true only when neither authentication route is configured.
+ * @param authentication - current product phone-session status; provider keys do not sign in the product.
+ * @returns true when the product has no active phone session.
  */
 export function needsWelcome(authentication: WelcomeAuthentication): boolean {
-  return !authentication.loggedIn && !authentication.hasApiKey
+  return !authentication.loggedIn
 }

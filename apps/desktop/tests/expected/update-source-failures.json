@@ -1,0 +1,58 @@
+[
+  {
+    "presentation": {
+      "phase": "error",
+      "failure": "source-unbound"
+    },
+    "en": "This version has no update service. Contact your administrator for a newer installer.",
+    "zh": "此版本未连接更新服务，请联系管理员获取新版安装包"
+  },
+  {
+    "presentation": {
+      "phase": "error",
+      "failure": "source-unavailable"
+    },
+    "en": "Could not read update settings. Check your connection and try again.",
+    "zh": "无法读取更新配置，请检查网络后重试"
+  },
+  {
+    "presentation": {
+      "phase": "error",
+      "failure": "source-invalid"
+    },
+    "en": "Update settings are invalid. Ask your administrator to check the backend settings.",
+    "zh": "更新配置无效，请联系管理员检查后台设置"
+  },
+  {
+    "presentation": {
+      "phase": "error",
+      "failure": "source-disabled"
+    },
+    "en": "Your administrator has not enabled client updates.",
+    "zh": "管理员尚未开启客户端更新"
+  },
+  {
+    "presentation": {
+      "phase": "error",
+      "failure": "source-target-missing"
+    },
+    "en": "No update source is configured for this device. Contact your administrator.",
+    "zh": "尚未配置此设备的更新源，请联系管理员"
+  },
+  {
+    "presentation": {
+      "phase": "error",
+      "failure": "source-unsupported-target"
+    },
+    "en": "Automatic updates are unavailable on this device. Contact your administrator for an installer.",
+    "zh": "此设备暂不支持自动更新，请联系管理员获取安装包"
+  },
+  {
+    "presentation": {
+      "phase": "error",
+      "failure": "source-development"
+    },
+    "en": "Development builds do not support automatic updates. Use a release installer.",
+    "zh": "开发版本不支持自动更新，请使用正式安装包"
+  }
+]

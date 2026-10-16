@@ -3,9 +3,12 @@
 import { useSyncExternalStore } from 'react'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { RenderFactorySlot } from '@deepseek-ai/dsh-client-ui-slots'
+import type { PromptAssistOwner } from '@deepseek-ai/dsh-client-ui-prompt-assist/client'
 import { ImagePage } from '../src/client/ImagePage.tsx'
 import { createImageDraftStore } from '../src/client/draft-store.ts'
 import { zh } from '../src/client/locales.ts'
+import { contentFixture } from './content-fixture.ts'
 
 const models = [
   { id: 'edit-model', displayName: 'Edit model', params: { sizes: ['1024x1024', '1536x1024'], maxCount: 2, maxEdits: 2, qualities: ['high'], backgrounds: ['transparent'], formats: ['png', 'jpeg'], moderations: [], seed: true } },
@@ -19,6 +22,7 @@ const t: Parameters<typeof ImagePage>[0]['t'] = (key, values) => {
 }
 
 let assets = 0
+let sessionAccountId: string | null = 'account-a'
 const fetchMock = vi.fn<typeof fetch>()
 
 function json(body: object): Response {
@@ -37,18 +41,22 @@ function requestBody(call: Parameters<typeof fetch> | undefined): Record<string,
 
 function makeProps() {
   const store = createImageDraftStore().create()
+  store.actions.setReferenceAccount('account-a')
   const getSnapshot = () => store.getSnapshot()
   const subscribe = (listener: () => void) => store.subscribe(listener)
+  const fixture = contentFixture()
   const props = {
+    useCreationContent: fixture.useCreationContent, useLocale: fixture.useLocale, refreshContent: vi.fn(),
     t,
+    renderFactorySlot: vi.fn<RenderFactorySlot>(() => null),
     openVideo: vi.fn(),
     readDraft: getSnapshot,
     createReferencePreview: vi.fn((file: File) => `blob:${file.name}`),
     releaseReferencePreview: vi.fn(),
     actions: store.actions,
     useStore: select => select(useSyncExternalStore(subscribe, getSnapshot)),
-  } satisfies Pick<Parameters<typeof ImagePage>[0], 't' | 'openVideo' | 'readDraft' | 'createReferencePreview' | 'releaseReferencePreview' | 'actions' | 'useStore'>
-  return { store, props: props as Parameters<typeof ImagePage>[0] }
+  } satisfies Pick<Parameters<typeof ImagePage>[0], 'useCreationContent' | 'useLocale' | 'refreshContent' | 't' | 'renderFactorySlot' | 'openVideo' | 'readDraft' | 'createReferencePreview' | 'releaseReferencePreview' | 'actions' | 'useStore'>
+  return { store, fixture, props: props as Parameters<typeof ImagePage>[0] }
 }
 
 async function ready() {
@@ -57,10 +65,11 @@ async function ready() {
 
 beforeEach(() => {
   assets = 0
+  sessionAccountId = 'account-a'
   fetchMock.mockReset()
   fetchMock.mockImplementation(async (input) => {
     const url = requestUrl(input)
-    if (url === '/credits/api/session') return json({ ok: true, payload: { signedIn: true, creditsPerYuan: 1000 } })
+    if (url === '/credits/api/session') return json({ ok: true, payload: { signedIn: sessionAccountId !== null, creditsPerYuan: 1000, account: sessionAccountId === null ? null : { id: sessionAccountId } } })
     if (url === '/credits/api/summary') return json({ ok: true, payload: { balance_points: 1200 } })
     if (url === '/credits/api/media/catalog') return json({ ok: true, payload: { image: models } })
     if (url === '/artifacts/api/list') return json({ items: [{ path, name: 'saved-image.png', kind: 'image', mtimeMs: 5 }] })
@@ -75,6 +84,238 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 describe('image creation workspace', () => {
+  it.each(['account-b', null])('clears account-owned references after the live account becomes %s', async (nextAccount) => {
+    const { props, store } = makeProps()
+    store.actions.patch({ references: [{ assetId: 'ma_private', name: 'private.png', url: 'blob:private', bytes: 1 }] })
+    render(<ImagePage {...props} />)
+    expect((vi.mocked(props.renderFactorySlot).mock.calls.at(-1)?.[1] as PromptAssistOwner).references).toEqual([])
+    await ready()
+    sessionAccountId = nextAccount
+    fireEvent.focus(window)
+    await waitFor(() => { expect(store.getSnapshot().referenceAccountId).toBe(nextAccount) })
+    expect(store.getSnapshot().references).toEqual([])
+    expect(props.releaseReferencePreview).toHaveBeenCalledWith('blob:private')
+    expect((vi.mocked(props.renderFactorySlot).mock.calls.at(-1)?.[1] as PromptAssistOwner).references).toEqual([])
+  })
+
+  it.each(['account-a', 'account-b'])('keeps references across remounts only for their original account: %s', async (nextAccount) => {
+    const { props, store } = makeProps()
+    store.actions.patch({ references: [{ assetId: 'ma_private', name: 'private.png', url: 'blob:private', bytes: 1 }] })
+    const first = render(<ImagePage {...props} />)
+    await ready()
+    first.unmount()
+    sessionAccountId = nextAccount
+    render(<ImagePage {...props} />)
+    expect((vi.mocked(props.renderFactorySlot).mock.calls.at(-1)?.[1] as PromptAssistOwner).references).toEqual([])
+    await ready()
+    expect(store.getSnapshot().references.map(item => item.assetId)).toEqual(nextAccount === 'account-a' ? ['ma_private'] : [])
+    expect(props.releaseReferencePreview).toHaveBeenCalledTimes(nextAccount === 'account-a' ? 0 : 1)
+  })
+
+  it.each([[false, false], [true, false], [false, true], [true, true]])(
+    'ignores an old account upload without releasing the new upload lock (failure: %s, switch back: %s)', async (fails, switchBack) => {
+      let resolveOld!: (response: Response) => void
+      let rejectOld!: (error: Error) => void
+      let resolveNew!: (response: Response) => void
+      const oldUpload = new Promise<Response>((resolve, reject) => { resolveOld = resolve; rejectOld = reject })
+      const newUpload = new Promise<Response>((resolve) => { resolveNew = resolve })
+      const original = fetchMock.getMockImplementation()!
+      let uploadCalls = 0
+      fetchMock.mockImplementation(async (input, init) => requestUrl(input) === '/credits/api/assets'
+        ? await (++uploadCalls === 1 ? oldUpload : newUpload) : await original(input, init))
+      const { props, store } = makeProps()
+      render(<ImagePage {...props} />)
+      await ready()
+      const drop = (name: string) => { fireEvent.drop(screen.getByRole('region', { name: '图片创作工作台' }), { dataTransfer: { files: [new File(['image'], name, { type: 'image/png' })] } }) }
+      drop('old.png')
+      sessionAccountId = 'account-b'
+      fireEvent.focus(window)
+      await waitFor(() => { expect(store.getSnapshot().referenceAccountId).toBe('account-b') })
+      if (switchBack) {
+        sessionAccountId = 'account-a'
+        fireEvent.focus(window)
+        await waitFor(() => { expect(store.getSnapshot().referenceAccountId).toBe('account-a') })
+      }
+      drop('new.png')
+      act(() => { store.actions.patch({ failure: 'new account feedback' }) })
+      await act(async () => { if (fails) rejectOld(new Error('old upload failed')); else resolveOld(json({ ok: true, asset: { assetId: 'ma_old' } })) })
+      expect(store.getSnapshot()).toMatchObject({ uploading: true, failure: 'new account feedback', references: [] })
+      expect(props.createReferencePreview).not.toHaveBeenCalled()
+      await act(async () => { resolveNew(json({ ok: true, asset: { assetId: 'ma_new' } })) })
+      expect(store.getSnapshot().references.map(item => item.assetId)).toEqual(['ma_new'])
+      expect(store.getSnapshot().uploading).toBe(false)
+    })
+
+  it('rechecks the reference owner before sending a paid image request', async () => {
+    const { props, store } = makeProps()
+    store.actions.patch({ prompt: 'Private product', references: [{ assetId: 'ma_private', name: 'private.png', url: 'blob:private', bytes: 1 }] })
+    render(<ImagePage {...props} />)
+    await ready()
+    sessionAccountId = 'account-b'
+    fireEvent.click(screen.getByRole('button', { name: '生成图片' }))
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', zh.referenceAccountChanged)
+    expect(store.getSnapshot()).toMatchObject({ referenceAccountId: 'account-b', references: [], generationStartedAt: null })
+    expect(fetchMock.mock.calls.some(([input]) => requestUrl(input) === '/credits/api/image/generate')).toBe(false)
+  })
+
+  it('gives AI help all materials and writes its result without generating an image', async () => {
+    const { props, store } = makeProps()
+    store.actions.patch({ prompt: '原始产品描述', references: [{ assetId: 'ma_product', name: 'product.png', url: 'blob:product', bytes: 1 }] })
+    render(<ImagePage {...props} />)
+    await ready()
+    const calls = vi.mocked(props.renderFactorySlot).mock.calls
+    const call = calls.at(-1)
+    expect(call?.[0]).toBe('creation.prompt.assist')
+    const assistant = call?.[1] as PromptAssistOwner
+    expect(assistant).toMatchObject({ kind: 'image', prompt: '原始产品描述', references: ['ma_product'], signedIn: true, accountIdentity: 'account-a', disabled: false })
+    act(() => { assistant.onPromptChange('用户确认后的产品提示词', '原始产品描述') })
+    expect(store.getSnapshot().prompt).toBe('用户确认后的产品提示词')
+    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: '画面描述' }))
+    expect(fetchMock.mock.calls.some(([url]) => url === '/credits/api/image/generate')).toBe(false)
+  })
+
+  it('keeps the prompt when AI help tries to apply during generation or after session expiry', async () => {
+    const { props, store } = makeProps()
+    store.actions.patch({ prompt: '保留原稿' })
+    render(<ImagePage {...props} />)
+    await ready()
+    act(() => { store.actions.patch({ generationStartedAt: Date.now() }) })
+    let assistant = vi.mocked(props.renderFactorySlot).mock.calls.at(-1)?.[1] as PromptAssistOwner
+    expect(assistant.disabled).toBe(true)
+    act(() => { assistant.onPromptChange('不能覆盖', '保留原稿') })
+    expect(store.getSnapshot().prompt).toBe('保留原稿')
+    act(() => { store.actions.patch({ generationStartedAt: null, sessionInvalid: true }) })
+    assistant = vi.mocked(props.renderFactorySlot).mock.calls.at(-1)?.[1] as PromptAssistOwner
+    expect(assistant.signedIn).toBe(false)
+    act(() => { assistant.onPromptChange('不能覆盖', '保留原稿') })
+    expect(store.getSnapshot().prompt).toBe('保留原稿')
+  })
+
+  it.each(['prompt', 'material', 'settings', 'account'])('rejects late AI writing after a %s change', async (change) => {
+    const { props, store } = makeProps()
+    store.actions.patch({ prompt: 'Original brief' })
+    render(<ImagePage {...props} />)
+    await ready()
+    const assistant = vi.mocked(props.renderFactorySlot).mock.calls.at(-1)?.[1] as PromptAssistOwner
+    act(() => {
+      if (change === 'prompt') store.actions.patch({ prompt: 'Manually edited brief' })
+      if (change === 'material') store.actions.patch({ references: [{ assetId: 'ma_new', name: 'new.png', url: 'blob:new', bytes: 1 }] })
+      if (change === 'settings') store.actions.patch({ format: 'jpeg' })
+      if (change === 'account') store.actions.setReferenceAccount('account-b')
+    })
+    let accepted = true
+    act(() => { accepted = assistant.onPromptChange('Late result', 'Original brief') })
+    expect(accepted).toBe(false)
+    expect(store.getSnapshot().prompt).toBe(change === 'prompt' ? 'Manually edited brief' : 'Original brief')
+  })
+
+  it('locks material and generation controls during AI writing while the main prompt stays editable', async () => {
+    const { props, store } = makeProps()
+    store.actions.patch({ prompt: 'Original brief' })
+    render(<ImagePage {...props} />)
+    await ready()
+    const assistant = vi.mocked(props.renderFactorySlot).mock.calls.at(-1)?.[1] as PromptAssistOwner
+    act(() => { assistant.onBusyChange(true) })
+    expect(store.getSnapshot().promptAssisting).toBe(true)
+    expect((vi.mocked(props.renderFactorySlot).mock.calls.at(-1)?.[1] as PromptAssistOwner).disabled).toBe(false)
+    expect(screen.getByRole('button', { name: '添加素材' })).toHaveProperty('disabled', true)
+    expect(screen.getByRole('combobox', { name: '模型' })).toHaveProperty('disabled', true)
+    expect(screen.getByRole('button', { name: '生成图片' })).toHaveProperty('disabled', true)
+    fireEvent.drop(screen.getByRole('region', { name: '图片创作工作台' }), { dataTransfer: { files: [new File(['image'], 'locked.png', { type: 'image/png' })] } })
+    expect(assets).toBe(0)
+    fireEvent.change(screen.getByRole('textbox', { name: '画面描述' }), { target: { value: 'My correction' } })
+    expect(store.getSnapshot().prompt).toBe('My correction')
+    act(() => { assistant.onBusyChange(false) })
+    expect(screen.getByRole('button', { name: '添加素材' })).toHaveProperty('disabled', false)
+  })
+
+  it('accepts six materials on a text-only model and limits image generation to the selected model inputs', async () => {
+    const { props, store } = makeProps()
+    render(<ImagePage {...props} />)
+    await ready()
+    fireEvent.change(screen.getByRole('combobox', { name: '模型' }), { target: { value: 'text-model' } })
+    expect(screen.getByRole('button', { name: '添加素材' })).toHaveProperty('disabled', false)
+    fireEvent.drop(screen.getByRole('region', { name: '图片创作工作台' }), { dataTransfer: {
+      files: Array.from({ length: 7 }, (_, index) => new File(['image'], `${index}.png`, { type: 'image/png' })),
+    } })
+    await waitFor(() => { expect(store.getSnapshot().uploading).toBe(false); expect(assets).toBe(6) })
+    expect(store.getSnapshot().references).toHaveLength(6)
+    expect((vi.mocked(props.renderFactorySlot).mock.calls.at(-1)?.[1] as PromptAssistOwner).references).toEqual(['ma_1', 'ma_2', 'ma_3', 'ma_4', 'ma_5', 'ma_6'])
+    fireEvent.change(screen.getByRole('combobox', { name: '模型' }), { target: { value: 'edit-model' } })
+    act(() => { store.actions.patch({ prompt: 'Product' }) })
+    fireEvent.click(screen.getByRole('button', { name: '生成图片' }))
+    await screen.findByText(zh.done)
+    expect(requestBody(fetchMock.mock.calls.find(([url]) => url === '/credits/api/image/generate')).references).toEqual(['ma_1', 'ma_2'])
+    expect(store.getSnapshot().references).toHaveLength(6)
+  })
+
+  it('enforces 6 MiB per image and 12 MiB across materials before transport', async () => {
+    const { props, store } = makeProps()
+    render(<ImagePage {...props} />)
+    await ready()
+    const drop = (files: File[]) => { fireEvent.drop(screen.getByRole('region', { name: '图片创作工作台' }), { dataTransfer: { files } }) }
+    drop([new File([new Uint8Array(6 * 1024 * 1024 + 1)], 'oversized.png', { type: 'image/png' })])
+    await waitFor(() => { expect(store.getSnapshot().uploading).toBe(false) })
+    expect(assets).toBe(0)
+    drop([new File([new Uint8Array(6 * 1024 * 1024)], 'first.png', { type: 'image/png' }), new File([new Uint8Array(6 * 1024 * 1024)], 'second.png', { type: 'image/png' }), new File(['x'], 'excess.png', { type: 'image/png' })])
+    await waitFor(() => { expect(store.getSnapshot().uploading).toBe(false); expect(assets).toBe(2) })
+    expect(store.getSnapshot().references).toHaveLength(2)
+    expect(screen.getByRole('alert').textContent).toBe(zh.referenceTotalLimit)
+  })
+
+  it('renders live published content, real covers and locale fallback without bundled templates', async () => {
+    const { props, fixture } = makeProps()
+    const template = fixture.content.image.templates[0]!
+    const content = { ...fixture.content, image: { ...fixture.content.image,
+      title: { zh: '后台图库', en: 'Studio library' }, promptPlaceholder: { zh: '后台输入提示', en: 'Server brief' },
+      categories: [{ id: 'remote-category', label: { zh: '后台分类' }, sortOrder: 2, enabled: true }, { id: 'hidden-category', label: { zh: '隐藏分类' }, sortOrder: 0, enabled: false }],
+      templates: [{ ...template, id: 'later', categoryId: 'remote-category', sortOrder: 9, title: { zh: '后项' }, coverAssetId: 'cover/real' },
+        { ...template, id: 'first', categoryId: null, sortOrder: 1, title: { zh: '首项', en: 'First remote' } },
+        { ...template, id: 'draft', categoryId: null, status: 'draft' as const, title: { zh: '未发布' } },
+        { ...template, id: 'disabled', categoryId: 'hidden-category', title: { zh: '隐藏模板' } }],
+    } }
+    fixture.publication.set({ status: 'ready', content })
+    const view = render(<ImagePage {...props} />)
+    await ready()
+    expect(screen.getByRole('heading', { name: '后台图库' })).toBeTruthy()
+    expect(screen.getByRole('textbox', { name: '画面描述' })).toHaveProperty('placeholder', '后台输入提示')
+    expect(screen.queryByText('深度复刻')).toBeNull()
+    expect(screen.queryByText('未发布')).toBeNull()
+    expect(screen.queryByText('隐藏模板')).toBeNull()
+    expect(screen.queryByText('隐藏分类')).toBeNull()
+    const cards = [...view.container.querySelectorAll(`section[aria-label="${zh.templatesTitle}"] ul button`)]
+    expect(cards.map(card => card.textContent)).toEqual(['首项后台参考模板', '后项后台参考模板'])
+    expect(view.container.querySelector('img[src*="creation/assets"]')).toHaveProperty('src', expect.stringContaining('/credits/api/creation/assets/cover%2Freal'))
+    act(() => { fixture.locale.set({ ...fixture.locale.getSnapshot(), active: 'en' }) })
+    expect(screen.getByRole('heading', { name: 'Studio library' })).toBeTruthy()
+    expect(screen.getByText('First remote')).toBeTruthy()
+    expect(screen.getByText('后项')).toBeTruthy()
+    expect(screen.getByRole('textbox', { name: '画面描述' })).toHaveProperty('placeholder', 'Server brief')
+    act(() => { fixture.publication.set({ status: 'error', content: null }) })
+    expect(screen.getByRole('alert').textContent).toContain(zh.contentFailed)
+    expect(screen.queryByText('First remote')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: zh.retry }))
+    expect(props.refreshContent).toHaveBeenCalledOnce()
+    act(() => { fixture.publication.set({ status: 'ready', content: { ...content, image: { ...content.image, templates: [], presets: [] } } }) })
+    expect(screen.getByText(zh.contentEmpty)).toBeTruthy()
+  })
+
+  it('distinguishes an unpublished empty catalog from a filter with no matching templates', async () => {
+    const { props, fixture } = makeProps()
+    fixture.publication.set({ status: 'ready', content: { ...fixture.content, image: { ...fixture.content.image, templates: [], presets: [] } } })
+    render(<ImagePage {...props} />)
+    await ready()
+    expect(screen.getByText('暂无已发布模板')).toBeTruthy()
+    expect(screen.queryByText(zh.noTemplates)).toBeNull()
+    expect(screen.queryByRole('button', { name: zh.resetFilters })).toBeNull()
+    act(() => { fixture.publication.set({ status: 'ready', content: fixture.content }) })
+    fireEvent.change(screen.getByRole('searchbox', { name: zh.searchTemplates }), { target: { value: 'no match' } })
+    expect(screen.getByText(zh.noTemplates, { exact: false })).toBeTruthy()
+    expect(screen.queryByText(zh.contentEmpty)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: zh.resetFilters }))
+    expect(screen.getByText('深度复刻')).toBeTruthy()
+  })
+
   it('filters real prompt templates and fills an editable brief without submitting', async () => {
     const { props } = makeProps()
     render(<ImagePage {...props} />)
@@ -86,7 +327,7 @@ describe('image creation workspace', () => {
     expect(screen.getByText('没有找到相关模板')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: '清除筛选' }))
     fireEvent.click(screen.getByText('深度复刻'))
-    expect(screen.getByRole('textbox', { name: '画面描述' })).toHaveProperty('value', zh.tpl_recreate_prompt)
+    expect(screen.getByRole('textbox', { name: '画面描述' })).toHaveProperty('value', '后台复刻提示词')
     expect(document.activeElement).toBe(screen.getByRole('textbox', { name: '画面描述' }))
     expect(fetchMock.mock.calls.some(([url]) => url === '/credits/api/image/generate')).toBe(false)
   })
@@ -109,20 +350,20 @@ describe('image creation workspace', () => {
     expect(createImageDraftStore().create().getSnapshot().prompt).toBe('')
   })
 
-  it('limits reference uploads, then drops references and unsupported seed when models change', async () => {
+  it('retains materials across model changes and sends no images to a text-only model', async () => {
     const { props, store } = makeProps()
     const view = render(<ImagePage {...props} />)
     await ready()
     const files = ['one.png', 'two.png', 'three.png'].map(name => new File(['bytes'], name, { type: 'image/png' }))
     fireEvent.drop(screen.getByRole('region', { name: '图片创作工作台' }), { dataTransfer: { files } })
-    await waitFor(() => { expect(store.getSnapshot().references).toHaveLength(2) })
-    expect(assets).toBe(2)
-    expect(screen.getByText('当前模型最多支持 2 张参考图')).toBeTruthy()
+    await waitFor(() => { expect(store.getSnapshot().references).toHaveLength(3) })
+    expect(assets).toBe(3)
+    expect(screen.getByText(zh.generationReferences.replace('{n}', '2'), { exact: false })).toBeTruthy()
     act(() => { store.actions.patch({ seed: '123', count: 2, prompt: 'Product photo' }) })
     fireEvent.change(screen.getByRole('combobox', { name: '模型' }), { target: { value: 'text-model' } })
-    await waitFor(() => { expect(store.getSnapshot().references).toHaveLength(0) })
-    expect(props.releaseReferencePreview).toHaveBeenCalledWith('blob:one.png')
-    expect(props.releaseReferencePreview).toHaveBeenCalledWith('blob:two.png')
+    await waitFor(() => { expect(store.getSnapshot().size).toBe('768x768') })
+    expect(store.getSnapshot().references).toHaveLength(3)
+    expect(props.releaseReferencePreview).not.toHaveBeenCalled()
     expect(store.getSnapshot()).toMatchObject({ seed: '', count: 1, size: '768x768' })
     fireEvent.click(screen.getByRole('button', { name: '生成图片' }))
     await screen.findByText(zh.done)
@@ -143,7 +384,7 @@ describe('image creation workspace', () => {
     fireEvent.click(screen.getByRole('button', { name: '清空参考图' }))
     expect(store.getSnapshot().references).toHaveLength(0)
     expect(props.releaseReferencePreview).toHaveBeenCalledWith('blob:产品.png')
-    expect(screen.getByRole('button', { name: '添加参考图' })).toHaveProperty('disabled', false)
+    expect(screen.getByRole('button', { name: '添加素材' })).toHaveProperty('disabled', false)
   })
 
   it('keeps the prompt and releases the running state after a connection failure without retrying', async () => {
@@ -180,7 +421,7 @@ describe('image creation workspace', () => {
     expect(fetchMock.mock.calls.some(([url]) => url === '/credits/api/assets')).toBe(false)
     fireEvent.change(input, { target: { files: [new File(['png'], 'good.png', { type: 'image/png' })] } })
     await screen.findByText('参考图上传失败：连接中断，请稍后重试')
-    expect(screen.getByRole('button', { name: '添加参考图' })).toHaveProperty('disabled', false)
+    expect(screen.getByRole('button', { name: '添加素材' })).toHaveProperty('disabled', false)
     expect(store.getSnapshot().references).toHaveLength(0)
   })
 
@@ -213,11 +454,11 @@ describe('image creation workspace', () => {
     first.unmount()
     render(<ImagePage {...props} />)
     await ready()
-    expect(screen.getByRole('button', { name: '添加参考图' })).toHaveProperty('disabled', true)
+    expect(screen.getByRole('button', { name: '添加素材' })).toHaveProperty('disabled', true)
     expect(screen.getByRole('button', { name: '生成图片' })).toHaveProperty('disabled', true)
     fireEvent.drop(screen.getByRole('region', { name: '图片创作工作台' }), { dataTransfer: { files: [new File(['two'], 'two.png', { type: 'image/png' })] } })
     expect(fetchMock.mock.calls.filter(([url]) => url === '/credits/api/assets')).toHaveLength(1)
-    act(() => { store.actions.appendReference({ assetId: 'ma_existing', name: 'existing.png', url: 'blob:existing' }, 'edit-model', 2) })
+    act(() => { store.actions.appendReference({ assetId: 'ma_existing', name: 'existing.png', url: 'blob:existing', bytes: 1 }) })
     await act(async () => { resolveUpload(json({ ok: true, asset: { assetId: 'ma_late' } })) })
     await waitFor(() => { expect(store.getSnapshot().uploading).toBe(false) })
     expect(store.getSnapshot().references.map(item => item.assetId)).toEqual(['ma_existing', 'ma_late'])

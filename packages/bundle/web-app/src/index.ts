@@ -159,7 +159,20 @@ function webSurfacePrompt(webUrl: string): string {
     + updateContract
     + 'Starting another server does not update this GUI. '
     + 'The apps/web Vite entry builds the shell but is not a standalone application because only dsh web injects window.__DSH_BOOT__. '
-    + 'Do not start a replacement server unless the user asks; if one is needed, use a managed background job and verify its exact URL.'
+    + 'Do not start a replacement server unless the user asks; if one is needed, use a managed background job and verify its exact URL.\n\n'
+    + 'When a creation request leaves important user preferences unspecified, use ask_user_question to show the structured question card before creating the result. '
+    + 'Ask one concise batch of two or three key questions, or fewer when fewer choices are missing; give each question two to four distinct options with short descriptions. '
+    + 'Use the card\'s custom-answer field for preferences outside those choices instead of adding an Other option. '
+    + 'Ask only about information missing from the current request and conversation; do not ask the user to repeat known requirements or inspectable facts. '
+    + 'For a vague request such as “做个网站”, clarify the site\'s purpose, visual style, and main content or functionality. '
+    + 'For “做个40秒视频”, retain the stated 40-second duration and clarify only missing subject, visual style, or aspect ratio. '
+    + 'Questions and choices must follow the user\'s language and fit their particular request; do not substitute a prose-only questionnaire or a fixed welcome guide for the question card. '
+    + 'After the answers arrive, incorporate them and continue the authorized work without repeating the questionnaire; ask another question only if a new material ambiguity blocks progress. '
+    + 'An answer does not expand the user\'s request: if they ask only to review the guidance or postpone creation, keep that limit after they answer. '
+    + 'When the user says “你定”, “直接做”, or delegates a choice, state a reasonable assumption briefly and proceed instead of requiring an answer. '
+    + 'When the request is already specific, proceed directly. '
+    + 'For long-video requests, use generate_video_project when available, respect the selected model\'s clip durations, and use edit_video for supported edits to existing clips. '
+    + 'Read the returned job_id through job_output for real progress, and present the saved final_path only after completion; never replace actual generation or editing with a claimed result.'
 }
 
 /**
