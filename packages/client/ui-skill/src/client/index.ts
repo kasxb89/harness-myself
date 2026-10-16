@@ -19,7 +19,7 @@
  * snapshot locally, so one session costs one RPC. The scope-birth warm hook
  * prewarms the session's key; a preset switch drops that one key (the
  * catalog is the preset's, and a blank session may switch after the warm);
- * connection/reset clears everything — the host
+ * connection/reset and skills/catalog-invalidated clear everything — the host
  * catalog may differ across generations. A shared in-flight fetch
  * deliberately outlives any single menu interaction: closing the menu must
  * not kill the prewarm other consumers will hit, so it carries its own
@@ -46,6 +46,17 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import { SkillRow } from './SkillRow.tsx'
 import { en, NS, zh, type SkillKey } from './locales.ts'
+
+declare module '@deepseek-ai/cordis' {
+  interface Events {
+    /**
+     * Client skill installation changed the available catalog. Consumers discard
+     * cached catalogs and pending reads, then refetch for their own Sessions.
+     * @mode emit
+     */
+    'skills/catalog-invalidated'(): void
+  }
+}
 
 declare module '@deepseek-ai/dsh-api-session-controller/client' {
   interface SessionReferenceSourceMap {
@@ -229,6 +240,7 @@ export function apply(ctx: ClientContext): void {
   // session's cached catalog belongs to the composition it no longer runs.
   ctx.remote.$on('agent-preset/selected', invalidate)
   ctx.on('connection/reset', clearAll)
+  ctx.on('skills/catalog-invalidated', clearAll)
   ctx.effect(() => {
     const unregister = inputTriggers.registerSource(source)
     return () => {

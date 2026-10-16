@@ -930,12 +930,13 @@ export function apply(ctx: Context, config: Config): void {
    */
   const runVideoTask = async (
     key: string,
+    route: string,
     request: Record<string, unknown>,
     signal?: AbortSignal,
   ): Promise<MediaOutcome> => {
     const headers = { authorization: `Bearer ${key}`, 'content-type': 'application/json', accept: 'application/json' }
     try {
-      const created = await apiFetch('/v1/videos', {
+      const created = await apiFetch(route, {
         method: 'POST',
         headers,
         body: JSON.stringify(request),
@@ -960,7 +961,7 @@ export function apply(ctx: Context, config: Config): void {
       for (let attempt = 0; attempt < 150; attempt += 1) {
         if (signal?.aborted === true) return { ok: false, code: 'ABORTED', message: '任务已取消', taskId }
         await new Promise(resolve => setTimeout(resolve, attempt === 0 ? 4000 : 6000))
-        const read = await apiFetch(`/v1/videos/${encodeURIComponent(taskId)}`, {
+        const read = await apiFetch(`${route}/${encodeURIComponent(taskId)}`, {
           headers, signal: AbortSignal.timeout(resolved.timeoutMs),
         })
         const readText = await read.text()
@@ -969,8 +970,8 @@ export function apply(ctx: Context, config: Config): void {
         const readNested = readBody?.data !== null && typeof readBody?.data === 'object'
           ? readBody.data as Record<string, unknown>
           : null
-        const status = readString(readBody, 'task_status') ?? readString(readBody, 'status')
-          ?? readString(readNested, 'task_status') ?? readString(readNested, 'status')
+        const status = (readString(readBody, 'task_status') ?? readString(readBody, 'status')
+          ?? readString(readNested, 'task_status') ?? readString(readNested, 'status'))?.toLowerCase()
         const result = readNested?.task_result ?? readBody?.task_result
         const videos = result !== null && typeof result === 'object' ? (result as Record<string, unknown>).videos : null
         const first = Array.isArray(videos) ? videos[0] as Record<string, unknown> | undefined : undefined
@@ -993,7 +994,7 @@ export function apply(ctx: Context, config: Config): void {
           await writeFile(file, Buffer.from(await response_.arrayBuffer()), { mode: 0o600 })
           return { ok: true, taskId, path: file }
         }
-        if (status === 'failed' || status === 'fail' || status === 'error' || status === 'cancelled' || status === 'canceled') {
+        if (status === 'failed' || status === 'failure' || status === 'fail' || status === 'error' || status === 'cancelled' || status === 'canceled') {
           return { ok: false, code: 'TASK_FAILED', message: readText.slice(0, 400), taskId }
         }
       }
@@ -2488,7 +2489,7 @@ export function apply(ctx: Context, config: Config): void {
               json(response, 200, { ok: false, code: built.code, message: built.message })
               return
             }
-            const outcome = await runVideoTask(key, built.request)
+            const outcome = await runVideoTask(key, capability.model.route, built.request)
             json(response, 200, {
               ok: outcome.ok,
               source: 'newapi',
@@ -2517,7 +2518,7 @@ export function apply(ctx: Context, config: Config): void {
               json(response, 200, { ok: false, code: built.code, message: built.message })
               return
             }
-            const created = await apiFetch('/v1/videos', {
+            const created = await apiFetch(capability.model.route, {
               method: 'POST',
               headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json', accept: 'application/json' },
               body: JSON.stringify(built.request),
@@ -2773,6 +2774,16 @@ export function apply(ctx: Context, config: Config): void {
           maxDownloadBytes: resolved.videoProjectDownloadMaxBytes, cacheRoot: projectState, key: () => binding.key(),
         })
         const models = new Map<string, ModelCapability>()
+        /** Resolve the saved model again when resuming a project with a fresh provider. */
+        const requestRoute = async (request: VideoProjectRequest): Promise<string> => {
+          if (typeof request.model !== 'string') throw new VideoProjectError('VIDEO_REQUEST_INVALID', '视频请求缺少原始模型，已停止操作')
+          const cached = models.get(request.model)
+          if (cached !== undefined) return cached.route
+          const capability = await capabilityFor('video', request.model)
+          if (!capability.ok) throw new VideoProjectError(capability.code, capability.message)
+          models.set(request.model, capability.model)
+          return capability.model.route
+        }
         const references = new Map<string, string>()
         let preparedBytes = 0
         /** Snapshot a workspace upload through the current filesystem's read authority. */
@@ -2853,8 +2864,8 @@ export function apply(ctx: Context, config: Config): void {
             if (preparedBytes > 67_108_864) throw new VideoProjectError('VIDEO_PROJECT_INPUT_LIMIT', '项目素材过大，请减少参考素材或分镜数量后重试；尚未提交生成')
             return value
           },
-          submit: (request, signal) => relay.submit(request, signal),
-          check: (taskId, _request, signal) => relay.check(taskId, signal),
+          submit: async (request, signal) => relay.submit(request, await requestRoute(request), signal),
+          check: async (taskId, request, signal) => relay.check(taskId, await requestRoute(request), signal),
           download: (taskId, _request, destination, signal) => relay.download(taskId, destination, signal),
         }
       },
@@ -2955,7 +2966,7 @@ export function apply(ctx: Context, config: Config): void {
         ...args.reference_videos === undefined ? {} : { referenceVideos: args.reference_videos },
       })
       if (!built.ok) return { status: 'failed', model: capability.model.id, message: built.message }
-      const outcome = await runVideoTask(relay.key, built.request, exec.signal)
+      const outcome = await runVideoTask(relay.key, capability.model.route, built.request, exec.signal)
       if (!outcome.ok) {
         return {
           status: outcome.code === 'TIMEOUT' ? 'running' : 'failed',

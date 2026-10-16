@@ -686,6 +686,43 @@ export interface Config {
 ```
 <!-- END GENERATED config-catalog:@deepseek-ai/dsh-client-ui-sidebar-documentpreview -->
 
+<!-- BEGIN GENERATED config-catalog:@deepseek-ai/dsh-client-ui-skillhub -->
+<a id="deepseek-aidsh-client-ui-skillhub"></a>
+
+## `@deepseek-ai/dsh-client-ui-skillhub`
+
+- `inject`: `connection` · `subprocess`
+- `source`: [`packages/client/ui-skillhub/src/index.ts:15`](../packages/client/ui-skillhub/src/index.ts)
+
+```ts config-catalog
+/** Product-private official CLI execution settings. */
+export interface Config extends SkillHubExecutionConfig {
+  /** Absolute directory receiving product-managed user skills; supplied by the product bundle. */
+  readonly skillsDirectory: string
+  /** Absolute product-private directory for the official CLI and its state; supplied by the product bundle. */
+  readonly cacheDirectory: string
+}
+
+/** Execution budgets resolved once at plugin activation. */
+export interface SkillHubExecutionConfig {
+  /** Python executable; Desktop supplies its verified bundled interpreter. @default python3 */
+  readonly pythonExecutable: string
+  /** Complete request deadline in milliseconds. @default 120000 */
+  readonly timeoutMs: number
+  /** Managed subprocess termination grace in milliseconds. @default 1000 */
+  readonly terminationGraceMs: number
+  /** Maximum retained stdout and stderr bytes per stream. @default 1048576 */
+  readonly maxOutputBytes: number
+  /** Maximum official CLI archive bytes accepted for download. @default 1048576 */
+  readonly maxDownloadBytes: number
+  /** Maximum community skills requested per search. @default 20 */
+  readonly searchLimit: number
+  /** Official community search network deadline in milliseconds. @default 15000 */
+  readonly searchTimeoutMs: number
+}
+```
+<!-- END GENERATED config-catalog:@deepseek-ai/dsh-client-ui-skillhub -->
+
 <!-- BEGIN GENERATED config-catalog:@deepseek-ai/dsh-client-ui-theme -->
 <a id="deepseek-aidsh-client-ui-theme"></a>
 
@@ -3120,7 +3157,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-skill-filesystem`
 
 - `inject`: `skills`
-- `source`: [`packages/skill/skill-filesystem/src/index.ts:48`](../packages/skill/skill-filesystem/src/index.ts)
+- `source`: [`packages/skill/skill-filesystem/src/index.ts:59`](../packages/skill/skill-filesystem/src/index.ts)
 
 ```ts config-catalog
 /** Local filesystem skill provider configuration. */

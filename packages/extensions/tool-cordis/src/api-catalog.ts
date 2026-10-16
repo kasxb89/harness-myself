@@ -4370,6 +4370,14 @@ export const EVENT_API: readonly EventApiEntry[] = [
     parameters: [{ name: 'ns', description: 'Profile entry id.' }, { name: 'revision', description: 'The entry\'s new revision.' }],
   },
   {
+    name: 'skill-filesystem/changed',
+    mode: 'emit',
+    signature: '\'skill-filesystem/changed\'(path: string): void',
+    summary: 'Refresh discovery after a Host feature commits a local skill mutation.',
+    description: 'Refresh discovery after a Host feature commits a local skill mutation.',
+    parameters: [{ name: 'path', description: 'Absolute Host path of the committed skill file or directory.' }],
+  },
+  {
     name: 'skills/change',
     mode: 'emit',
     signature: '\'skills/change\'(): void',

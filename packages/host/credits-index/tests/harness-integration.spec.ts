@@ -12,7 +12,7 @@ import { LocalCredentialProvider } from '@deepseek-ai/dsh-credentials-local'
 import WebServer from '@deepseek-ai/dsh-host-webserver'
 import Tools from '@deepseek-ai/dsh-tools'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
-import LlmRuntime, { type FinishReason } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { ToolCallId, type FinishReason } from '@deepseek-ai/dsh-llm'
 import * as LlmPiAi from '@deepseek-ai/dsh-llm-pi-ai'
 import * as Credits from '../src/index.ts'
 import { profileComposition } from '../../../settings/settings/tests/profile-composition.ts'
@@ -31,6 +31,8 @@ let access = 'access-user'
 let refreshes = 0
 let creations = 0
 let pricingRows: unknown[] = []
+let videoTaskStatus: string | undefined
+const generatedVideo = Buffer.from([0, 0, 0, 24, 102, 116, 121, 112, 105, 115, 111, 109])
 const initialRelayModels = () => [
   { id: 'deepseek-v4-flash', object: 'model', supported_endpoint_types: ['openai'] },
   { id: 'gpt-image-2', object: 'model', supported_endpoint_types: ['image-generation', 'openai'] },
@@ -66,6 +68,7 @@ afterEach(async () => {
   refreshes = 0
   creations = 0
   pricingRows = []
+  videoTaskStatus = undefined
   relayModels = initialRelayModels()
   modelsStatus = 200
   modelsBarrier = undefined
@@ -121,9 +124,17 @@ async function boot(): Promise<{ base: string; api: string; stateDir: string }> 
       }
       if (url.pathname === '/harness/api/user/auth/logout') { answer(null); return }
       if (url.pathname === '/harness/api/pricing') { answer(pricingRows); return }
-      if (url.pathname === '/harness/v1/videos') {
+      if (url.pathname === '/harness/v1/video/generations') {
         if (request.headers.authorization !== 'Bearer sk-owned-relay') { response.writeHead(403); response.end('{}'); return }
-        response.end('{}'); return
+        response.end(JSON.stringify(videoTaskStatus === undefined ? {} : { code: 'success', data: { task_id: 'fixture-video-task' } })); return
+      }
+      if (url.pathname === '/harness/v1/video/generations/fixture-video-task') {
+        if (request.headers.authorization !== 'Bearer sk-owned-relay') { response.writeHead(403); response.end('{}'); return }
+        response.end(JSON.stringify({ code: 'success', data: { status: videoTaskStatus, result_url: 'https://ignored.invalid/content.mp4' } })); return
+      }
+      if (url.pathname === '/harness/v1/videos/fixture-video-task/content') {
+        if (request.headers.authorization !== 'Bearer sk-owned-relay') { response.writeHead(403); response.end('{}'); return }
+        response.setHeader('content-type', 'video/mp4'); response.end(generatedVideo); return
       }
       if (url.pathname === '/harness/v1/models') {
         if (request.headers.authorization !== 'Bearer sk-owned-relay') { response.writeHead(403); response.end('{}'); return }
@@ -226,6 +237,36 @@ async function chat(): Promise<FinishReason> {
 }
 
 describe('deployed Harness API through the real product Loader', () => {
+  it.each(['panel', 'chat'] as const)('submits H3 through the %s entry and saves uppercase generic task success', async (entry) => {
+    const { base } = await boot()
+    await signIn(base)
+    pricingRows = [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'], enable_groups: ['default'] }]
+    videoTaskStatus = 'SUCCESS'
+    const outcome = entry === 'panel'
+      ? await post(base, '/api/video/tasks?source=newapi-generate', { prompt: 'A synthetic clip', model: 'MiniMax-H3', durationSeconds: 4 })
+      : object((await context!.tools.execute({ callId: ToolCallId('h3-chat-route'), name: 'generate_video',
+        arguments: { prompt: 'A synthetic clip', model: 'MiniMax-H3', duration_seconds: 4 }, signal: new AbortController().signal })).value)
+    const path = entry === 'panel' ? object(outcome.payload).path : outcome.path
+    expect(outcome).toMatchObject(entry === 'panel' ? { ok: true, taskId: 'fixture-video-task' } : { status: 'succeeded', task_id: 'fixture-video-task' })
+    if (typeof path !== 'string') throw new Error('Expected the saved video path')
+    expect(await readFile(path)).toEqual(generatedVideo)
+    const videoCalls = calls.filter(call => call.path.startsWith('/harness/v1/video'))
+    expect(videoCalls.map(call => call.path)).toEqual([
+      '/harness/v1/video/generations', '/harness/v1/video/generations/fixture-video-task', '/harness/v1/videos/fixture-video-task/content',
+    ])
+    expect(videoCalls.every(call => call.authorization === 'Bearer sk-owned-relay')).toBe(true)
+    expect(calls.some(call => call.path === '/harness/v1/videos' || call.path.startsWith('/v1/'))).toBe(false)
+  })
+
+  it('uses the selected H3 route for an asynchronous panel submission', async () => {
+    const { base } = await boot()
+    await signIn(base)
+    pricingRows = [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'], route: '/v1/video/generations' }]
+    videoTaskStatus = 'NOT_START'
+    expect(await post(base, '/api/video/tasks?source=newapi', { prompt: 'A synthetic clip', model: 'MiniMax-H3', durationSeconds: 4 })).toMatchObject({ ok: true })
+    expect(calls.filter(call => call.path.startsWith('/harness/v1/video')).map(call => call.path)).toEqual(['/harness/v1/video/generations'])
+  })
+
   it('refreshes the actual account list on each read without waiting for the periodic sync', async () => {
     const { base } = await boot()
     await signIn(base)
@@ -303,7 +344,7 @@ describe('deployed Harness API through the real product Loader', () => {
     }
     expect(await generate({ durationSeconds: 30, resolution: '2K' })).toMatchObject({ ok: false, code: 'DURATION_NOT_SUPPORTED' })
     expect(await generate({ durationSeconds: 30 })).toMatchObject({ ok: false, code: 'DURATION_NOT_SUPPORTED' })
-    expect(calls.filter(call => call.path === '/harness/v1/videos')).toHaveLength(0)
+    expect(calls.filter(call => call.path === '/harness/v1/video/generations')).toHaveLength(0)
 
     const upload = async (type: string, name: string, bytes: Buffer): Promise<string> => {
       const response = await fetch(base + '/api/assets', { method: 'POST', headers: {
@@ -320,11 +361,11 @@ describe('deployed Harness API through the real product Loader', () => {
     expect(await generate({ durationSeconds: 30, resolution: '768P', referenceImages: [audio] })).toMatchObject({ ok: false, code: 'REFERENCE_MISSING' })
     expect(await generate({ durationSeconds: 30, resolution: '768P', referenceAudios: ['https://invalid.example/audio.wav'] })).toMatchObject({ ok: false, code: 'REFERENCE_MISSING' })
     expect(await generate({ durationSeconds: 30, resolution: '768P', ratio: 'adaptive' })).toMatchObject({ ok: false, code: 'RATIO_NOT_SUPPORTED' })
-    expect(calls.filter(call => call.path === '/harness/v1/videos')).toHaveLength(0)
+    expect(calls.filter(call => call.path === '/harness/v1/video/generations')).toHaveLength(0)
     expect(await generate({ durationSeconds: 30, resolution: '768P', ratio: '16:9',
       referenceImages: [image], referenceVideos: [video], referenceAudios: [audio],
     })).toMatchObject({ ok: false, code: 'NO_TASK_ID' })
-    const submitted = calls.filter(call => call.path === '/harness/v1/videos')
+    const submitted = calls.filter(call => call.path === '/harness/v1/video/generations')
     expect(submitted).toHaveLength(1)
     expect(submitted[0]).toMatchObject({ authorization: 'Bearer sk-owned-relay', body: { duration: 30, resolution: '768P' } })
     const content = object(object(submitted[0]?.body).metadata).content

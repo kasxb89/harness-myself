@@ -17,6 +17,7 @@ import {
   checkExperimentalManifest,
   checkExperimentalNameExceptions,
   expectedDshPackageFiles,
+  PRIVATE_PRODUCT_PACKAGES,
   readWorkspaceManifests,
   type WorkspaceManifest,
 } from './check-workspace-constraints.ts'
@@ -28,6 +29,68 @@ const experimental = {
     publishConfig: { access: 'public' },
   },
 } satisfies WorkspaceManifest
+
+describe('private product package constraints', () => {
+  it('classifies only the thirteen product-owned runtime directories', () => {
+    expect(Object.keys(PRIVATE_PRODUCT_PACKAGES)).toEqual([
+      'packages/bundle/web-app',
+      'packages/client/creation-content', 'packages/client/ui-artifacts', 'packages/client/ui-background',
+      'packages/client/ui-credits', 'packages/client/ui-imagegen', 'packages/client/ui-mobile',
+      'packages/client/ui-plaza', 'packages/client/ui-prompt-assist', 'packages/client/ui-skillhub',
+      'packages/client/ui-videogen', 'packages/deliverables/artifacts-index', 'packages/host/credits-index',
+    ])
+  })
+
+  describe.each(Object.entries(PRIVATE_PRODUCT_PACKAGES))('%s', (dir, name) => {
+    const manifest = JSON.parse(readFileSync(new URL(`../${dir}/package.json`, import.meta.url), 'utf8')) as WorkspaceManifest['manifest']
+
+    it('accepts the private product manifest without upstream publication metadata', () => {
+      expect(manifest.name).toBe(name)
+      expect(checkWorkspaceManifest({ dir, manifest })).toEqual([])
+    })
+
+    it.each([undefined, false])('requires private:true instead of %s', (privateValue) => {
+      const changed = { ...manifest }
+      if (privateValue === undefined) delete changed.private
+      else changed.private = privateValue
+      expect(checkWorkspaceManifest({ dir, manifest: changed })).toEqual([
+        expect.stringContaining('private product package must set "private": true'),
+      ])
+    })
+
+    it.each(['public', 'restricted'])('rejects a %s publication configuration', (access) => {
+      expect(checkWorkspaceManifest({ dir, manifest: { ...manifest, publishConfig: { access } } })).toEqual([
+        expect.stringContaining('private product package must omit publishConfig'),
+      ])
+    })
+
+    it('rejects a renamed or moved classification', () => {
+      expect(checkWorkspaceManifest({ dir, manifest: { ...manifest, name: '@deepseek-ai/dsh-renamed-product' } }))
+        .toContainEqual(expect.stringContaining(`private product directory must retain package name ${name}`))
+      expect(checkWorkspaceManifest({ dir: 'packages/client/moved-product', manifest }))
+        .toContainEqual(expect.stringContaining(`private product package must remain at ${dir}`))
+    })
+
+    it('retains common version, export, payload and peer dependency requirements', () => {
+      for (const changed of [
+        { ...manifest, version: '0.0.0' }, { ...manifest, exports: {} }, { ...manifest, files: [] },
+        { ...manifest, peerDependencies: {} },
+      ]) expect(checkWorkspaceManifest({ dir, manifest: changed }).length).toBeGreaterThan(0)
+    })
+  })
+
+  it('continues requiring upstream public release metadata for an unclassified private package', () => {
+    const dir = 'packages/host/credits-index'
+    const manifest = JSON.parse(readFileSync(new URL(`../${dir}/package.json`, import.meta.url), 'utf8')) as WorkspaceManifest['manifest']
+    expect(checkWorkspaceManifest({ dir: 'packages/host/unclassified-product', manifest: {
+      ...manifest, name: '@deepseek-ai/dsh-unclassified-product',
+    } })).toEqual([
+      expect.stringContaining('release member must not set "private": true'),
+      expect.stringContaining('release member must set publishConfig.access to "public"'),
+      expect.stringContaining('release member repository must use'),
+    ])
+  })
+})
 
 describe('workspace dependency ranges', () => {
   const dependency = { dir: 'packages/core/runtime', manifest: { name: '@deepseek-ai/dsh-runtime' } }
@@ -117,6 +180,30 @@ describe('workspace manifest discovery', () => {
 })
 
 describe('experimental workspace constraints', () => {
+  it.each(['dependencies', 'optionalDependencies', 'peerDependencies'] as const)(
+    'permits explicitly selected %s only in the private product composition', (section) => {
+      const manifest: WorkspaceManifest['manifest'] = {
+        name: '@deepseek-ai/dsh-web-app', private: true,
+        [section]: { '@deepseek-ai/dsh-experimental-computer-use-cua-driver-native': 'workspace:*' },
+      }
+      const missingPrivate = { ...manifest }
+      delete missingPrivate.private
+      expect(checkExperimentalDependencyIsolation([{ dir: 'packages/bundle/web-app', manifest }])).toEqual([])
+      for (const entry of [
+        { dir: 'packages/bundle/web-app', manifest: { ...manifest, private: false } },
+        { dir: 'packages/bundle/web-app', manifest: missingPrivate },
+        { dir: 'packages/bundle/web-app', manifest: { ...manifest, publishConfig: { access: 'public' } } },
+        { dir: 'packages/bundle/web-app', manifest: { ...manifest, publishConfig: { access: 'restricted' } } },
+        { dir: 'packages/bundle/web-app', manifest: { ...manifest, name: '@deepseek-ai/dsh-other-web-app' } },
+        { dir: 'packages/bundle/other-web-app', manifest },
+        { dir: 'packages/host/credits-index', manifest: { ...manifest, name: '@deepseek-ai/dsh-credits-index' } },
+        { dir: 'packages/core/other-runtime', manifest: { ...manifest, name: '@deepseek-ai/dsh-other-runtime' } },
+      ]) expect(checkExperimentalDependencyIsolation([entry])).toEqual([
+        expect.stringContaining(`${section}.@deepseek-ai/dsh-experimental-computer-use-cua-driver-native must not reference an experimental package`),
+      ])
+    },
+  )
+
   it('requires the experimental package-name prefix', () => {
     expect(checkExperimentalManifest({
       ...experimental,

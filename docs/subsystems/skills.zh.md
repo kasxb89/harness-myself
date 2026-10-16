@@ -327,6 +327,27 @@ async get(name: string, options: SkillViewOptions = {}): Promise<SkillDefinition
 
 Source: [`packages/skill/skill/src/index.ts`](../../packages/skill/skill/src/index.ts)
 
+<a id="skill-filesystem-events"></a>
+
+### `skill-filesystem/*` events
+
+<a id="skill-filesystemchanged--emit"></a>
+
+#### `skill-filesystem/changed` — emit
+
+Refresh discovery after a Host feature commits a local skill mutation.
+
+```ts cordis-catalog
+/**
+ * Refresh discovery after a Host feature commits a local skill mutation.
+ * @param path - Absolute Host path of the committed skill file or directory.
+ * @mode emit
+ */
+'skill-filesystem/changed'(path: string): void
+```
+
+Source: [`packages/skill/skill-filesystem/src/index.ts`](../../packages/skill/skill-filesystem/src/index.ts)
+
 <a id="skills-events"></a>
 
 ### `skills/*` events

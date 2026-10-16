@@ -1,0 +1,5 @@
+已安装的技能
+代码审查
+版本 1.2.0
+来源：SkillHub
+@community/review

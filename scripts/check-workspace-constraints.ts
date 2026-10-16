@@ -1,6 +1,7 @@
 /**
  * Workspace package invariant checks for package-manager-independent quality
- * gates.
+ * gates. Yunshu-only packages remain private and retain shared version,
+ * dependency, export, and payload requirements.
  *
  * Run: `tsx scripts/check-workspace-constraints.ts`.
  */
@@ -59,8 +60,26 @@ const publishedRepositoryUrl = 'git+https://github.com/deepseek-ai/deepseek-harn
 const experimentalPackageDirectory = /^packages\/experimental\/[^/]+$/
 /** Ordinary directories whose packages this repository publishes: one release member each. */
 const standardReleaseMemberDirectory = /^(?:packages\/(?!experimental\/)[^/]+\/[^/]+|apps\/(?!desktop(?:-host)?$)[^/]+|vendor\/[^/]+)$/
+/** Product-owned runtime packages bundled into Yunshu without publication to the upstream npm scope. */
+export const PRIVATE_PRODUCT_PACKAGES: Readonly<Record<string, string>> = {
+  'packages/bundle/web-app': '@deepseek-ai/dsh-web-app',
+  'packages/client/creation-content': '@deepseek-ai/dsh-client-creation-content',
+  'packages/client/ui-artifacts': '@deepseek-ai/dsh-client-ui-artifacts',
+  'packages/client/ui-background': '@deepseek-ai/dsh-client-ui-background',
+  'packages/client/ui-credits': '@deepseek-ai/dsh-client-ui-credits',
+  'packages/client/ui-imagegen': '@deepseek-ai/dsh-client-ui-imagegen',
+  'packages/client/ui-mobile': '@deepseek-ai/dsh-client-ui-mobile',
+  'packages/client/ui-plaza': '@deepseek-ai/dsh-client-ui-plaza',
+  'packages/client/ui-prompt-assist': '@deepseek-ai/dsh-client-ui-prompt-assist',
+  'packages/client/ui-skillhub': '@deepseek-ai/dsh-client-ui-skillhub',
+  'packages/client/ui-videogen': '@deepseek-ai/dsh-client-ui-videogen',
+  'packages/deliverables/artifacts-index': '@deepseek-ai/dsh-artifacts-index',
+  'packages/host/credits-index': '@deepseek-ai/dsh-credits-index',
+}
 /** Installable application assembled by electron-builder rather than published to npm. */
 const desktopApplicationDirectory = 'apps/desktop'
+/** Yunshu's private application composition owns its explicitly selected experimental integrations. */
+const privateProductBundleDirectory = 'packages/bundle/web-app'
 const localArtifactDirs = new Set(['node_modules'])
 const appPackageFiles: Readonly<Record<string, readonly string[]>> = {
   '@deepseek-ai/dsh': ['lib/*.js', 'lib/types/*.d.ts'],
@@ -419,8 +438,19 @@ export function checkWorkspaceManifest({ dir, manifest }: WorkspaceManifest): st
   const isPublicNativePackage = isNativePackageDir
     && manifest.name !== undefined
     && publicNativePackages.has(manifest.name)
+  const privateProductName = PRIVATE_PRODUCT_PACKAGES[dir]
+  const privateProductDirectory = Object.entries(PRIVATE_PRODUCT_PACKAGES).find(([, name]) => name === manifest.name)?.[0]
 
-  if (isPublicNativePackage) {
+  if (privateProductName !== undefined || privateProductDirectory !== undefined) {
+    if (privateProductName !== undefined && manifest.name !== privateProductName) {
+      errors.push(`${label}: private product directory must retain package name ${privateProductName}`)
+    }
+    if (privateProductDirectory !== undefined && privateProductDirectory !== dir) {
+      errors.push(`${label}: private product package must remain at ${privateProductDirectory}`)
+    }
+    if (manifest.private !== true) errors.push(`${label}: private product package must set "private": true`)
+    if (manifest.publishConfig !== undefined) errors.push(`${label}: private product package must omit publishConfig`)
+  } else if (isPublicNativePackage) {
     if (manifest.private === true) {
       errors.push(`${label}: published Landlock package must not set "private": true`)
     }
@@ -562,7 +592,9 @@ const dependencySections = ['dependencies', 'devDependencies', 'peerDependencies
 const runtimeDependencySections = ['dependencies', 'optionalDependencies', 'peerDependencies'] as const
 
 /**
- * Prevent an official runtime from requiring an experimental package. The dsh installation's `dependencies`
+ * Prevent a public runtime from requiring an experimental package. The private Yunshu bundle may select
+ * experimental integrations only with its declared package identity and no publication configuration.
+ * The dsh installation's `dependencies`
  * may hold the bundles the launcher's `OPTIONAL_BUNDLES` names: shipped switched off, they are not a requirement
  * ([rationale](../.agents/notes/implemented/process/2026-09-15-shipped-optional-bundles.md)).
  * @param manifests - release, private experimental, and deployment-root manifests.
@@ -579,6 +611,8 @@ export function checkExperimentalDependencyIsolation(
   const errors: string[] = []
   for (const { dir, manifest } of manifests) {
     if (!standardReleaseMemberDirectory.test(dir) && dir !== 'python/sdk-runtime') continue
+    if (dir === privateProductBundleDirectory && manifest.name === PRIVATE_PRODUCT_PACKAGES[dir]
+      && manifest.private === true && manifest.publishConfig === undefined) continue
     const offered = manifest.name === '@deepseek-ai/dsh' ? new Set(optionalBundles) : new Set<string>()
     for (const section of runtimeDependencySections) {
       for (const [name, range] of Object.entries(manifest[section] ?? {})) {

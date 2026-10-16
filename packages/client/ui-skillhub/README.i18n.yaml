@@ -1,0 +1,46 @@
+# Bilingual-pair consistency record for README.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write packages/client/ui-skillhub/README.md
+/:
+  en: 425834cec90ba326
+  zh: 0d88524c739adc77
+/deepseek-ai-dsh-client-ui-skillhub:
+  en: 7cd5055c923a55e9
+  zh: 4f6ef5f727cab438
+/deepseek-ai-dsh-client-ui-skillhub/summary:
+  en: 4a3fbffdd83a30fa
+  zh: 038164d2610188b8
+/deepseek-ai-dsh-client-ui-skillhub/table-of-contents:
+  en: 23386452a66b2fbd
+  zh: e03e371e1cee5189
+/deepseek-ai-dsh-client-ui-skillhub/use-this-package:
+  en: 4a4c93fb43bf2ee8
+  zh: 3bb776bd16b55621
+/deepseek-ai-dsh-client-ui-skillhub/understand-the-implementation:
+  en: c76bdb259e4c4750
+  zh: 39f9604a38e6b58c
+/deepseek-ai-dsh-client-ui-skillhub/further-exploration:
+  en: d4878bbf240e222b
+  zh: 4288c54d08c02f62
+/deepseek-ai-dsh-client-ui-skillhub/model-experience:
+  en: 215e7ba838619b7b
+  zh: a311da3843709f90
+/deepseek-ai-dsh-client-ui-skillhub/model-experience/skill-availability:
+  en: 8cff415429c1d9f6
+  zh: ff4cecbaa6bb1437
+/deepseek-ai-dsh-client-ui-skillhub/model-experience/skill-availability/what-the-model-sees:
+  en: ca11deedfa5f0c20
+  zh: 466f3c07401d6545
+/deepseek-ai-dsh-client-ui-skillhub/model-experience/skill-availability/token-effect:
+  en: 728cd4c29ca63550
+  zh: cca60e481a7cec54
+/deepseek-ai-dsh-client-ui-skillhub/model-experience/skill-availability/kv-cache-effect:
+  en: 70f2f2cfa71f6cc4
+  zh: 00365f76c71c7e47
+/deepseek-ai-dsh-client-ui-skillhub/known-limitations-and-deferred-work:
+  en: 4e8da29e743d3134
+  zh: eba1199f0b6c5246
+/deepseek-ai-dsh-client-ui-skillhub/known-limitations-and-deferred-work/dev-note:
+  en: e67f633dc6fe7773
+  zh: e88aeb617ffb74ea

@@ -8,6 +8,7 @@ import type {} from '@deepseek-ai/dsh-client-connection'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-deepseek-account'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
+import { resolvePrimaryRuntime } from '@deepseek-ai/dsh-tool-workspace-dependencies'
 import * as desktopOffice from './office.ts'
 
 import { installDesktopUpdateTaskControl } from './update-tasks.ts'
@@ -18,6 +19,8 @@ import { installOfficeEngineResolution } from './office-engine.ts'
 async function main(): Promise<void> {
   const runtimeDir = process.argv[2] as string
   const projectDir = process.argv[3] as string
+  const primaryRuntimeSource = process.argv[4] ?? join(runtimeDir, '..', 'runtime', 'primary-runtime')
+  process.env.DSH_BUNDLED_PYTHON_EXECUTABLE = (await resolvePrimaryRuntime(primaryRuntimeSource)).python
   installOfficeEngineResolution(runtimeDir)
   const installAnchor = join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh', 'package.json')
   const profile = loadProfileDirectory('dsh', projectDir, installAnchor)
@@ -94,7 +97,7 @@ async function main(): Promise<void> {
   control.quitInspection = installDesktopQuitInspection(ctx)
   await ctx.plugin(desktopOffice, {
     runtimeDir,
-    source: process.argv[4] ?? join(runtimeDir, '..', 'runtime', 'primary-runtime'),
+    source: primaryRuntimeSource,
     root: join(resolveDshHome(), 'dsh-runtimes', 'dsh-primary-runtime'),
   })
   installPlatformSessionPublisher(ctx, (session) => {

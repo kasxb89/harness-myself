@@ -37,11 +37,12 @@ const CHILD_SPECS = {
 const CHILD_NAMES = Object.keys(CHILD_SPECS) as Array<keyof typeof CHILD_SPECS>
 
 /**
- * Section ids the web-app roster registers, in nav order: this package, then
- * ui-settings-models, ui-settings-plugins, and ui-agent-preset. A plugin
- * adding a section changes this list.
+ * Section ids registered by the product roster, including its enabled skin,
+ * messaging, and market plugins, in navigation order.
  */
-const PRODUCT_SECTIONS: readonly string[] = ['general', 'models', 'plugins', 'agent-presets']
+const PRODUCT_SECTIONS: readonly string[] = [
+  'general', 'models', 'dream-skin', 'plugins', 'agent-presets', 'xmanrui-dsh-im', 'market', 'skin-market',
+]
 /** Onboarding steps the web-app roster registers, in coordinator order; both come from ui-settings-models. */
 const PRODUCT_ONBOARDING: readonly { id: string; order: number }[] = [
   { id: 'welcome-notice', order: -100 },
@@ -109,21 +110,18 @@ describe('ui-settings-general shell', () => {
     off()
   })
 
-  it('shows Account first in Desktop while signed in and removes it on sign-out', async ({ start }) => {
+  it('keeps the stock account unsubscribed in Desktop and exposes the product Credits entry', async ({ start }) => {
     vi.stubGlobal('dshDesktop', {})
     onTestFinished(() => { vi.unstubAllGlobals() })
     const c = await start()
     const { sections } = injectedOf(c).hooks
-    await c.mock.streams.opened('account/watch', 1)
+    await c.flush()
     expect(sections.getSnapshot().map(row => row.id)).toEqual(PRODUCT_SECTIONS)
-    c.mock.streams.push('account/watch', { status: 'credential-stored', attempt: null })
-    await vi.waitFor(() => {
-      expect(sections.getSnapshot().map(row => row.id)).toEqual(['account', ...PRODUCT_SECTIONS])
-    })
-    c.mock.streams.push('account/watch', { status: 'credential-stored', attempt: null })
-    await vi.waitFor(() => { expect(sections.getSnapshot().filter(row => row.id === 'account')).toHaveLength(1) })
-    c.mock.streams.push('account/watch', { status: 'signed-out', attempt: null })
-    await vi.waitFor(() => { expect(sections.getSnapshot().map(row => row.id)).toEqual(PRODUCT_SECTIONS) })
+    expect(c.mock.log.streams('account/watch')).toHaveLength(0)
+    expect(c.ctx.slots.entries('settings.section').some(entry => entry.options.id === 'account')).toBe(false)
+    expect(c.ctx.slots.entries('settings.models.sign-in')).toHaveLength(0)
+    expect(c.ctx.slots.entries('main').map(entry => entry.options.key)).toEqual(expect.arrayContaining(['credits', 'recharge']))
+    expect(c.ctx.slots.entries('sidebar.footer.action').find(entry => entry.options.id === 'credits')).toMatchObject({ locale: 'credits' })
   })
 
   it('projects the roster Connection control without copying its state; reconnect opens a new $events generation', async ({ start }) => {

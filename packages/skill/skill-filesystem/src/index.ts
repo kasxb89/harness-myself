@@ -32,6 +32,17 @@ import {
   type SkillSource,
 } from '@deepseek-ai/dsh-skill'
 
+declare module '@deepseek-ai/cordis' {
+  interface Events {
+    /**
+     * Refresh discovery after a Host feature commits a local skill mutation.
+     * @param path - Absolute Host path of the committed skill file or directory.
+     * @mode emit
+     */
+    'skill-filesystem/changed'(path: string): void
+  }
+}
+
 const PROJECT_DSH_RANK = 100
 const PROJECT_AGENTS_RANK = 200
 const CUSTOM_RANK = 300
@@ -139,6 +150,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   ctx.effect(function* () {
     yield async () => { await provider.dispose() }
   }, 'skill-filesystem watcher')
+  ctx.on('skill-filesystem/changed', (path) => { provider.observeHostMutation(path) })
   ctx.on('fs/observed', (target, _observation, actor) => {
     if (mutationToolName(actor) === undefined) return
     provider.observeHostMutation(target.displayPath)

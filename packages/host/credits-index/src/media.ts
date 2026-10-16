@@ -93,7 +93,8 @@ export interface ModelCapability {
   readonly groups: readonly string[]
   /**
    * The path a generation request goes to. The OpenAI shapes live at
-   * `/v1/images/generations` and `/v1/videos`; a model served by a task plugin
+   * `/v1/images/generations` and `/v1/videos`; MiniMax-H3 uses
+   * `/v1/video/generations`. A model served by a task plugin
    * on the gateway answers on that plugin's own path instead (for example
    * `/toapis/v1/images/generations`), which is also the path used to read the
    * task back at `<route>/<task_id>`.
@@ -413,6 +414,7 @@ export function catalogFromPricing(rows: readonly unknown[], userGroup: string |
     const declaredRoute = typeof record.route === 'string' && record.route.startsWith('/') ? record.route : null
     const route = declaredRoute
       ?? (kind === 'image' ? IMAGE_ROUTES[id] : undefined)
+      ?? (kind === 'video' && id === 'MiniMax-H3' ? '/v1/video/generations' : undefined)
       ?? (kind === 'image' ? '/v1/images/generations' : '/v1/videos')
     catalog.push({
       id,

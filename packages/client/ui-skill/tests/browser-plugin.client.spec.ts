@@ -163,8 +163,10 @@ describe('apply', () => {
     await ctx.plugin(InputTriggerService).await()
     new TestRemote(ctx, { skills: { list: listOk(CATALOG) } })
     const presentation = providePresentation(ctx)
+    expect(ctx.events.dispatch('emit', ['skills/catalog-invalidated'])).toHaveLength(0)
     const fiber = ctx.plugin({ inject: [...inject], apply })
     await fiber.await()
+    expect(ctx.events.dispatch('emit', ['skills/catalog-invalidated'])).toHaveLength(1)
     const inputTriggers = ctx.get('inputTriggers') as InputTriggerService
     const rival = {
       trigger: '/' as const,
@@ -176,6 +178,7 @@ describe('apply', () => {
     expect(() => inputTriggers.registerSource(rival)).toThrow(/already registered/)
     // …and fiber teardown releases it.
     await fiber.dispose()
+    expect(ctx.events.dispatch('emit', ['skills/catalog-invalidated'])).toHaveLength(0)
     expect(() => inputTriggers.registerSource(rival)).not.toThrow()
     expect(presentation.slots.entries('tool.call.toolview')).toHaveLength(0)
     expect(presentation.localeDisposed).toBe(true)
@@ -365,6 +368,74 @@ describe('catalog cache', () => {
     await source.candidates(proj('s2'), req(''))
     expect(payloads).toHaveLength(4)
   })
+
+  it('skills/catalog-invalidated refreshes every settled Session and notifies its lexicon subscribers', async () => {
+    const installed = [...CATALOG, { name: 'installed-skill', description: 'Installed skill', modelInvocable: true }]
+    const list = vi.fn<ListFn>().mockImplementation(listOk(CATALOG))
+    const { ctx, source } = await bench(list)
+    const first = vi.fn()
+    const second = vi.fn()
+    source.subscribeLexicon!(proj('s1'), first)
+    source.subscribeLexicon!(proj('s2'), second)
+    await source.candidates(proj('s1'), req(''))
+    await source.candidates(proj('s2'), req(''))
+    expect(first).toHaveBeenCalledTimes(1)
+    expect(second).toHaveBeenCalledTimes(1)
+    list.mockImplementation(listOk(installed))
+
+    ctx.emit('skills/catalog-invalidated')
+
+    expect(source.lexicon!(proj('s1'))).toBeUndefined()
+    expect(source.lexicon!(proj('s2'))).toBeUndefined()
+    expect(first).toHaveBeenCalledTimes(2)
+    expect(second).toHaveBeenCalledTimes(2)
+    const refreshed = await Promise.all([
+      source.candidates(proj('s1'), req('installed')),
+      source.candidates(proj('s2'), req('installed')),
+    ])
+    expect(refreshed).toEqual([
+      [{ name: 'installed-skill', description: 'Installed skill' }],
+      [{ name: 'installed-skill', description: 'Installed skill' }],
+    ])
+    expect(list.mock.calls.map(([payload]) => payload)).toEqual([
+      { sessionId: 's1' }, { sessionId: 's2' }, { sessionId: 's1' }, { sessionId: 's2' },
+    ])
+    expect(first).toHaveBeenCalledTimes(3)
+    expect(second).toHaveBeenCalledTimes(3)
+  })
+
+  it('skills/catalog-invalidated aborts an in-flight read and prevents its late result from replacing the refreshed lexicon', async () => {
+    const stale = Promise.withResolvers<ListResult>()
+    const installed: SkillRow[] = [{ name: 'installed-skill', description: 'Installed skill', modelInvocable: true }]
+    const list = vi.fn<ListFn>().mockReturnValueOnce(stale.promise).mockImplementation(listOk(installed))
+    const { ctx, source } = await bench(list)
+    const listener = vi.fn()
+    source.subscribeLexicon!(proj('s1'), listener)
+    const pending = source.candidates(proj('s1'), req(''))
+    const rejected = expect(pending).rejects.toThrow()
+    try {
+      await vi.waitFor(() => { expect(list).toHaveBeenCalledTimes(1) })
+      const signal = list.mock.calls[0]?.[1]
+      expect(signal?.aborted).toBe(false)
+
+      ctx.emit('skills/catalog-invalidated')
+
+      expect(signal?.aborted).toBe(true)
+      expect(listener).toHaveBeenCalledTimes(1)
+      await expect(source.candidates(proj('s1'), req(''))).resolves.toEqual([
+        { name: 'installed-skill', description: 'Installed skill' },
+      ])
+      expect(listener).toHaveBeenCalledTimes(2)
+      stale.resolve({ ok: true, value: { skills: CATALOG } })
+      await rejected
+      expect(source.lexicon!(proj('s1'))).toEqual(['installed-skill'])
+      expect(listener).toHaveBeenCalledTimes(2)
+      expect(list).toHaveBeenCalledTimes(2)
+    } finally {
+      stale.resolve({ ok: true, value: { skills: CATALOG } })
+      await Promise.allSettled([pending, rejected])
+    }
+  })
 })
 
 describe('lexicon', () => {
@@ -501,7 +572,7 @@ describe('reference preview', () => {
     expect(list.mock.calls.map(([payload]) => payload)).toEqual([{ sessionId: 'first' }, { sessionId: 'second' }])
   })
 
-  it.each(['reset', 'preset', 'dispose'] as const)('cancels a pending preview on %s even if the RPC completes late', async (reason) => {
+  it.each(['reset', 'preset', 'catalog', 'dispose'] as const)('cancels a pending preview on %s even if the RPC completes late', async (reason) => {
     const gate = Promise.withResolvers<ListResult>()
     const { ctx, source, remote, fiber, openResource } = await bench(() => gate.promise)
     const session = proj('preview')
@@ -511,6 +582,7 @@ describe('reference preview', () => {
     const completion = expect(source.candidates(session, req(''))).rejects.toThrow()
     if (reason === 'reset') ctx.emit('connection/reset')
     else if (reason === 'preset') remote.emit('agent-preset/selected', [session.sessionId, 'minimal'])
+    else if (reason === 'catalog') ctx.emit('skills/catalog-invalidated')
     else await fiber.dispose()
     expect(listener).toHaveBeenCalledTimes(1)
     gate.resolve({ ok: true, value: { skills: rows } })

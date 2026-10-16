@@ -69,6 +69,8 @@ Host 先使用 `/api/user/self` 核对产品会话中的账号，再通过 `/api
 
 ### 视频能力与参考素材
 
+视频提交和状态查询使用所选能力的 `route`；公开定价明确指定的路由优先。MiniMax-H3 使用 `POST /v1/video/generations` 和 `GET /v1/video/generations/:id`，其他视频模型保留原有协议。`data` 内的通用任务响应支持大写 `NOT_START`、`SUBMITTED`、`QUEUED`、`IN_PROGRESS`、`SUCCESS` 和 `FAILURE`。成片通过 `/v1/videos/:id/content` 读取，保留配置中的 `/harness` 前缀，并使用当前账号的中转 key。渠道的聊天测试不能验证视频生成。
+
 视频菜单优先读取公开定价 `parameters`（字段映射或 JSON Schema 的 `properties`）中明确的 `seconds` 或 `duration` 声明，其次读取 `billing_usage_schema`。数值枚举或有限的 `minimum`/`maximum` 范围选出 1 至 3600 秒内的整数，并覆盖模型表；排他边界和 `multipleOf` 进一步缩小时长菜单。缺失、格式错误或无上限的声明保留已知模型限制；计费样例不授予时长或额外参考槽位。分辨率枚举和常量使用相同的实时优先级。当前 H3 响应只声明未限定范围的数值秒数字段，因此保留已知的 4–15 秒菜单。公开定价列出某个模型，不代表特定账号已可用它生成。
 
 明确的 `oneOf` 将 `properties.resolution.const` 或 `.enum` 与有限的 `properties.seconds` 或 `.duration` 配对。得到的 `durationByResolution` 菜单同时约束面板请求和项目规划；未列出的分辨率不可用，并且必须选择分辨率。例如，生产方可以明确发布 480P/768P 为 4–30 秒、2K 为 4–15 秒的两个分支。这说明解析器支持的格式，不表示当前 API 或尚未明确的上游支持这些组合。Host 在模型提交前拒绝不支持的组合、小数或非数值时长。

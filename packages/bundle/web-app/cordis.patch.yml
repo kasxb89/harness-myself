@@ -452,6 +452,13 @@
     - id: ui-plaza
       name: '@deepseek-ai/dsh-client-ui-plaza'
 
+    - id: ui-skillhub
+      name: '@deepseek-ai/dsh-client-ui-skillhub'
+      config:
+        skillsDirectory: !!js dshHomePath('skills')
+        cacheDirectory: !!js dshHomePath('cache', 'skillhub')
+        pythonExecutable: !!js process.env.DSH_BUNDLED_PYTHON_EXECUTABLE ?? 'python3'
+
     # Turn tail: the changed-files card and delivery cards under each closing
     # assistant message. Remove this entry to turn the surface off; the tail
     # hole renders empty.

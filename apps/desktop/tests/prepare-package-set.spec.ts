@@ -177,7 +177,7 @@ describe('desktop package-set selection', () => {
     expect(() => { assertDesktopHostPackageFiles(files.slice(0, 1)) }).toThrow(/lib\/cli\.js/u)
   })
 
-  it('selects the eleven private packages required by the real web-app graph without building source packages', () => {
+  it('selects the thirteen private packages required by the real web-app graph without building source packages', () => {
     const publicMembers = releaseFamily('dsh').members(REPOSITORY_ROOT)
     const available = new Map(publicMembers.map(member => [member.name, {
       tarball: join(REPOSITORY_ROOT, tarballName(member)), manifest: member.manifest,
@@ -203,8 +203,10 @@ describe('desktop package-set selection', () => {
       '@deepseek-ai/dsh-client-ui-mobile',
       '@deepseek-ai/dsh-client-ui-plaza',
       '@deepseek-ai/dsh-client-ui-prompt-assist',
+      '@deepseek-ai/dsh-client-ui-skillhub',
       '@deepseek-ai/dsh-client-ui-videogen',
       '@deepseek-ai/dsh-credits-index',
+      '@deepseek-ai/dsh-web-app',
     ])
     expect(selected.every(member => member.manifest.private === true)).toBe(true)
     expect(publicMembers.some(member => selected.some(privateMember => privateMember.name === member.name))).toBe(false)

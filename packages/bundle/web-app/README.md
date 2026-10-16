@@ -46,6 +46,10 @@ The product's Chat area hides the Trajectory and marketplace Video Views through
 
 The Artifacts page indexes generated images and videos under the active Harness home's `plugin-data/credits/media` directory.
 
+The sidebar [Skill store](../../client/ui-skillhub/README.md) searches SkillHub community skills and installs selected skills into the product. Installed skills become available to existing conversations without changing another application's skill directories.
+
+This Yunshu product composition is private and is included in the Desktop runtime through local workspace tarballs. It is not part of the upstream public npm release family; its explicitly configured native computer driver remains an experimental integration.
+
 For a broad creation request, the agent uses the [question card](../../client/ui-user-questions/README.md) to clarify missing preferences before creating the result. For example, “make a website” can ask about purpose, style, and main content; “make a 40-second video” keeps the stated duration and asks only about missing subject, style, or aspect ratio. One short batch offers choices and custom answers, then the agent continues within the requested scope. Asking only to review the guidance or postponing creation still applies after answering. Specific requests and delegated choices proceed directly. This guidance applies to the standard, PTC, and Cordis presets; a complete custom persona such as minimal intentionally replaces it and does not provide the question tool.
 
 **Settings → Models** retains provider configuration and credential references. Saved model selections override the composition default, and existing credentials remain stored.

@@ -11,6 +11,7 @@ import { readPrimaryRuntime, workspaceDependencyPaths } from '../../../packages/
 import { DesktopHostProcess } from '../src/host-process.ts'
 import { createPluginProfile } from '../src/project-manager.ts'
 import type { DesktopRuntimeDescriptor } from '../src/runtime-tree.ts'
+import { smokeGeneratedArtifacts } from './smoke-generated-artifacts.ts'
 
 /**
  * Check CLI package operations, Host startup, its frontend, external plugins and real Office-to-PDF conversion.
@@ -155,6 +156,8 @@ export function apply(ctx) {
     if (response.status !== 200 || !(await response.text()).includes('<html')) {
       throw new Error('desktop runtime: packaged frontend smoke failed')
     }
+    await smokeGeneratedArtifacts(home, path => fetch(new URL(path, ready.url), { headers: { cookie } }))
+    console.log('desktop runtime: generated image listing and preview passed')
     const pluginResponse = await fetch(new URL('/desktop-smoke', ready.url), { headers: { cookie } })
     if (await pluginResponse.text() !== 'plugin route ready') throw new Error('desktop runtime: plugin HTTP route failed')
     const installation = await fetch(new URL('/desktop-smoke-install', ready.url), {

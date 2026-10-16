@@ -276,6 +276,8 @@
       "@deepseek-ai/dsh-client-ui-mobile/client": ["./packages/client/ui-mobile/src/client/index.ts"],
       "@deepseek-ai/dsh-client-ui-plaza": ["./packages/client/ui-plaza/src"],
       "@deepseek-ai/dsh-client-ui-plaza/client": ["./packages/client/ui-plaza/src/client/index.ts"],
+      "@deepseek-ai/dsh-client-ui-skillhub": ["./packages/client/ui-skillhub/src"],
+      "@deepseek-ai/dsh-client-ui-skillhub/client": ["./packages/client/ui-skillhub/src/client/index.ts"],
       "@deepseek-ai/dsh-client-ui-videogen": ["./packages/client/ui-videogen/src"],
       "@deepseek-ai/dsh-client-ui-videogen/client": ["./packages/client/ui-videogen/src/client/index.ts"],
       "@deepseek-ai/dsh-client-ui-brand-official": ["./packages/client/ui-brand-official/src"],

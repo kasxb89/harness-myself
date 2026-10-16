@@ -98,11 +98,11 @@ it.skipIf(!available)('generates 15 + 15 + 10 seconds with the signed-in key and
       calls.push({ path, method: request.method ?? 'GET', authorization: request.headers.authorization, body })
       response.setHeader('content-type', 'application/json')
       if (path === '/v1/models') {
-        response.end(JSON.stringify({ data: [{ id: 'fixture-video', supported_endpoint_types: ['video-generation'] }] }))
+        response.end(JSON.stringify({ data: [{ id: 'MiniMax-H3', supported_endpoint_types: ['video-generation'] }] }))
       } else if (path === '/api/pricing') {
-        response.end(JSON.stringify({ data: [{ model_name: 'fixture-video', supported_endpoint_types: ['video-generation'],
+        response.end(JSON.stringify({ data: [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['video-generation'],
           billing_usage_schema: { seconds: { type: 'number' } }, billing_usage_examples: [5, 10, 15].map(seconds => ({ facts: { seconds } })) }] }))
-      } else if (path === '/v1/videos' && request.method === 'POST') {
+      } else if (path === '/v1/video/generations' && request.method === 'POST') {
         const index = calls.filter(call => call.method === 'POST').length - 1
         const media = sources[index]
         if (media === undefined || body?.duration !== media.duration || body.seconds !== media.duration) {
@@ -112,16 +112,16 @@ it.skipIf(!available)('generates 15 + 15 + 10 seconds with the signed-in key and
         }
         const taskId = `fixture-task-${String(index + 1)}`
         taskSources.set(taskId, media)
-        response.end(JSON.stringify({ id: taskId, status: 'queued' }))
+        response.end(JSON.stringify({ code: 'success', data: { task_id: taskId, status: 'NOT_START' } }))
       } else {
-        const match = /^\/v1\/videos\/(fixture-task-\d+)(\/content)?$/u.exec(path)
+        const match = /^\/v1\/(?:video\/generations|videos)\/(fixture-task-\d+)(\/content)?$/u.exec(path)
         const media = match?.[1] === undefined ? undefined : taskSources.get(match[1])
         if (media === undefined) { response.writeHead(404); response.end(); return }
         if (match?.[2] === '/content') {
           response.setHeader('content-type', 'video/mp4')
           response.setHeader('content-length', media.bytes.byteLength)
           response.end(media.bytes)
-        } else response.end(JSON.stringify({ id: match?.[1], status: 'completed' }))
+        } else response.end(JSON.stringify({ code: 'success', data: { task_id: match?.[1], status: 'SUCCESS' } }))
       }
     })().catch((error: unknown) => { response.destroy(error instanceof Error ? error : undefined) })
   })
@@ -208,7 +208,12 @@ it.skipIf(!available)('generates 15 + 15 + 10 seconds with the signed-in key and
   expect(metadata.streams).toEqual(expect.arrayContaining([{ codec_type: 'video', width: 160, height: 120 }, { codec_type: 'audio' }]))
   const postCalls = calls.filter(call => call.method === 'POST')
   expect(postCalls.map(call => [call.path, call.body?.duration, call.body?.seconds])).toEqual([
-    ['/v1/videos', 15, 15], ['/v1/videos', 15, 15], ['/v1/videos', 10, 10],
+    ['/v1/video/generations', 15, 15], ['/v1/video/generations', 15, 15], ['/v1/video/generations', 10, 10],
+  ])
+  expect(calls.filter(call => call.method === 'GET' && call.path.includes('fixture-task-')).map(call => call.path)).toEqual([
+    '/v1/video/generations/fixture-task-1', '/v1/videos/fixture-task-1/content',
+    '/v1/video/generations/fixture-task-2', '/v1/videos/fixture-task-2/content',
+    '/v1/video/generations/fixture-task-3', '/v1/videos/fixture-task-3/content',
   ])
   expect(calls.filter(call => call.path.startsWith('/v1/')).every(call => call.authorization === 'Bearer fixture-signed-in-account-key')).toBe(true)
   const manifestPath = join(stateDir, 'video-projects', string(started.project_id), 'manifest.json')

@@ -17,7 +17,9 @@ export interface ProductPackagePolicy {
  */
 export const PRODUCT_PACKAGE_POLICY: Readonly<Record<string, ProductPackagePolicy>> = {
   'packages/browser-use/browser-use': { category: 'optional', reason: 'Service definition used by explicitly selected browser providers.' },
-  'packages/computer-use/computer-use': { category: 'optional', reason: 'Service definition used by explicitly selected computer providers.' },
+  'packages/client/ui-background': { category: 'optional', reason: 'Optional background presentation; Yunshu uses its own background plugin.' },
+  'packages/client/ui-brand-official': { category: 'optional', reason: 'Upstream branding retained for explicitly composed profiles; Yunshu supplies its own identity.' },
+  'packages/client/ui-settings-account': { category: 'optional', reason: 'Upstream account settings retained for explicit profiles; Yunshu signs in through its Credits panel.' },
   'packages/lsp/lsp': { category: 'optional', reason: 'Service definition for deployment-configured language servers.' },
   'packages/lsp/lsp-stdio': { category: 'optional', reason: 'Requires an explicit server list and language-server executables.' },
   'packages/lsp/tool-lsp': { category: 'optional', reason: 'Model tools selected together with a configured LSP provider.' },

@@ -96,17 +96,17 @@ describe('account-bound video relay requests', () => {
   it('retains /harness for catalog, submission, status and content requests', async () => {
     const f = await fixture((_request, response, recorded) => {
       if (recorded.path === '/harness/v1/models') json(response, { data: [{ id: 'video-a' }] })
-      else if (recorded.path === '/harness/v1/videos') json(response, { id: 'task-one' })
-      else if (recorded.path === '/harness/v1/videos/task-one') json(response, { status: 'succeeded' })
+      else if (recorded.path === '/harness/v1/video/generations') json(response, { code: 'success', data: { task_id: 'task-one' } })
+      else if (recorded.path === '/harness/v1/video/generations/task-one') json(response, { code: 'success', data: { status: 'SUCCESS', result_url: 'https://ignored.invalid/content.mp4' } })
       else if (recorded.path === '/harness/v1/videos/task-one/content') response.end(media)
       else { response.writeHead(404); response.end() }
     }, {}, '/harness')
     expect(await f.relay.modelIds(signal())).toEqual(['video-a'])
-    await f.relay.submit({ model: 'video-a' }, signal())
-    expect(await f.relay.check('task-one', signal())).toEqual({ status: 'succeeded' })
+    await f.relay.submit({ model: 'MiniMax-H3' }, '/v1/video/generations', signal())
+    expect(await f.relay.check('task-one', '/v1/video/generations', signal())).toEqual({ status: 'succeeded' })
     await f.relay.download('task-one', f.destination, signal())
     expect(f.calls.map(call => call.path)).toEqual([
-      '/harness/v1/models', '/harness/v1/videos', '/harness/v1/videos/task-one', '/harness/v1/videos/task-one/content',
+      '/harness/v1/models', '/harness/v1/video/generations', '/harness/v1/video/generations/task-one', '/harness/v1/videos/task-one/content',
     ])
   })
 
@@ -126,8 +126,8 @@ describe('account-bound video relay requests', () => {
       else json(response, { data: { status: 'completed' } })
     })
     expect(await f.relay.modelIds(signal())).toEqual(['video-a', 'video-b'])
-    expect(await f.relay.submit({ model: 'video-a', prompt: 'A cup', duration: 15 }, signal())).toEqual({ taskId: 'task:first' })
-    expect(await f.relay.check('task:first', signal())).toEqual({ status: 'succeeded' })
+    expect(await f.relay.submit({ model: 'video-a', prompt: 'A cup', duration: 15 }, '/v1/videos', signal())).toEqual({ taskId: 'task:first' })
+    expect(await f.relay.check('task:first', '/v1/videos', signal())).toEqual({ status: 'succeeded' })
     await f.relay.download('task:first', f.destination, signal())
     expect(f.calls.map(call => [call.method, call.path])).toEqual([
       ['GET', '/v1/models'], ['POST', '/v1/videos'], ['GET', '/v1/videos/task%3Afirst'], ['GET', '/v1/videos/task%3Afirst/content'],
@@ -140,17 +140,18 @@ describe('account-bound video relay requests', () => {
   })
 
   it.each([
+    ['NOT_START', 'running'], ['SUBMITTED', 'running'], ['QUEUED', 'running'], ['IN_PROGRESS', 'running'], ['SUCCESS', 'succeeded'], ['FAILURE', 'failed'],
     ['queued', 'running'], ['processing', 'running'], ['succeeded', 'succeeded'], ['completed', 'succeeded'], ['failed', 'failed'], ['cancelled', 'failed'],
   ] as const)('projects %s as %s without returning upstream messages', async (upstreamStatus, expected) => {
     const f = await fixture((_request, response) => { json(response, { task_status: upstreamStatus, message: 'secret-upstream-body' }) })
-    const result = await f.relay.check('task-one', signal())
+    const result = await f.relay.check('task-one', '/v1/videos', signal())
     expect(result.status).toBe(expected)
     expect(JSON.stringify(result)).not.toContain('secret-upstream-body')
   })
 
   it('refuses an unknown task state rather than treating it as successful or starting another submission', async () => {
     const f = await fixture((_request, response) => { json(response, { status: 'unexpected', message: 'secret-upstream-body' }) })
-    const error = await rejection(f.relay.check('task-one', signal()))
+    const error = await rejection(f.relay.check('task-one', '/v1/videos', signal()))
     expect(error).toMatchObject({ code: 'VIDEO_STATUS_INVALID' })
     expect(error.message).not.toContain('secret-upstream-body')
     expect(f.calls.map(call => call.method)).toEqual(['GET'])
@@ -159,7 +160,7 @@ describe('account-bound video relay requests', () => {
   it.each([{ data: {} }, { id: '' }, { task_id: '../escape' }, { id: '..' }, { data: { task_id: '.' } }])(
     'keeps a successful POST with no usable task id uncertain and never retries (%j)', async (body) => {
       const f = await fixture((_request, response) => { json(response, body) })
-      await expect(f.relay.submit({ model: 'video-a', prompt: 'A cup' }, signal())).rejects.toMatchObject({ code: 'VIDEO_SUBMIT_UNKNOWN' })
+      await expect(f.relay.submit({ model: 'video-a', prompt: 'A cup' }, '/v1/videos', signal())).rejects.toMatchObject({ code: 'VIDEO_SUBMIT_UNKNOWN' })
       expect(f.calls).toHaveLength(1)
       expect(f.calls[0]?.method).toBe('POST')
     },
@@ -167,7 +168,7 @@ describe('account-bound video relay requests', () => {
 
   it('does not automatically repeat a paid POST after a connection drops', async () => {
     const f = await fixture((_request, response) => { response.destroy() })
-    const error = await rejection(f.relay.submit({ model: 'video-a', prompt: 'A cup' }, signal()))
+    const error = await rejection(f.relay.submit({ model: 'video-a', prompt: 'A cup' }, '/v1/videos', signal()))
     expect(error).toMatchObject({ code: 'VIDEO_SUBMIT_UNKNOWN' })
     expect(error.message).toContain('可能已计费')
     expect(f.calls.map(call => call.method)).toEqual(['POST'])
@@ -181,8 +182,8 @@ describe('account-bound video relay requests', () => {
       response.end()
     })
     const operation = method === 'modelIds' ? f.relay.modelIds(signal())
-      : method === 'submit' ? f.relay.submit({ model: 'video-a' }, signal())
-        : method === 'check' ? f.relay.check('task-one', signal()) : f.relay.download('task-one', f.destination, signal())
+      : method === 'submit' ? f.relay.submit({ model: 'video-a' }, '/v1/videos', signal())
+        : method === 'check' ? f.relay.check('task-one', '/v1/videos', signal()) : f.relay.download('task-one', f.destination, signal())
     await expect(operation).rejects.toBeInstanceOf(VideoRelayError)
     expect(f.calls).toHaveLength(1)
     expect(sink.calls).toEqual([])
@@ -195,7 +196,7 @@ describe('account-bound video relay requests', () => {
       if (recorded.path.endsWith('/content')) response.end(media)
       else json(response, { status: 'completed', url: sink.origin + '/leak', data: { video_url: sink.origin + '/another-leak' } })
     })
-    expect(await f.relay.check('task-one', signal())).toEqual({ status: 'succeeded' })
+    expect(await f.relay.check('task-one', '/v1/videos', signal())).toEqual({ status: 'succeeded' })
     await f.relay.download('task-one', f.destination, signal())
     expect(f.calls.map(call => call.path)).toEqual(['/v1/videos/task-one', '/v1/videos/task-one/content'])
     expect(sink.calls).toEqual([])
@@ -205,8 +206,8 @@ describe('account-bound video relay requests', () => {
   it.each([403, 500])('contains an upstream HTTP %s without exposing its body, credentials or URL', async (status) => {
     const f = await fixture((_request, response) => { response.writeHead(status); response.end('secret-account-key remote-stack https://private.invalid/path') })
     for (const operation of [
-      () => f.relay.modelIds(signal()), () => f.relay.submit({ prompt: 'A cup' }, signal()),
-      () => f.relay.check('task-one', signal()), () => f.relay.download('task-one', f.destination, signal()),
+      () => f.relay.modelIds(signal()), () => f.relay.submit({ prompt: 'A cup' }, '/v1/videos', signal()),
+      () => f.relay.check('task-one', '/v1/videos', signal()), () => f.relay.download('task-one', f.destination, signal()),
     ]) {
       const error = await rejection(operation())
       expect(error).toBeInstanceOf(VideoRelayError)
@@ -220,7 +221,7 @@ describe('account-bound video relay requests', () => {
     const accountChanged = new Error('Account changed')
     const key = vi.fn(async (): Promise<string> => { throw accountChanged })
     const f = await fixture((_request, response) => { json(response, {}) }, { key })
-    await expect(f.relay.submit({ prompt: 'A cup' }, signal())).rejects.toBe(accountChanged)
+    await expect(f.relay.submit({ prompt: 'A cup' }, '/v1/videos', signal())).rejects.toBe(accountChanged)
     expect(key).toHaveBeenCalledTimes(1)
     expect(f.calls).toEqual([])
   })
@@ -321,7 +322,7 @@ describe('relay cancellation and deadlines', () => {
       response.write(method === 'download' ? media : '{"data":')
     }, { timeoutMs: 200 })
     const operation = method === 'modelIds' ? f.relay.modelIds(signal())
-      : method === 'submit' ? f.relay.submit({ prompt: 'A cup' }, signal()) : f.relay.download('task-one', f.destination, signal())
+      : method === 'submit' ? f.relay.submit({ prompt: 'A cup' }, '/v1/videos', signal()) : f.relay.download('task-one', f.destination, signal())
     await expect(operation).rejects.toThrow()
     await vi.waitFor(() => { expect(closed).toBe(true) })
     expect(f.calls).toHaveLength(1)
@@ -353,7 +354,7 @@ describe('relay cancellation and deadlines', () => {
     const stopped = new Error('Already stopped')
     controller.abort(stopped)
     await expect(f.relay.modelIds(controller.signal)).rejects.toBe(stopped)
-    await expect(f.relay.submit({ prompt: 'A cup' }, controller.signal)).rejects.toBe(stopped)
+    await expect(f.relay.submit({ prompt: 'A cup' }, '/v1/videos', controller.signal)).rejects.toBe(stopped)
     expect(f.calls).toEqual([])
     expect(f.key).not.toHaveBeenCalled()
   })

@@ -10,6 +10,15 @@ function video(fields: Record<string, unknown> = {}): VideoParams {
 }
 
 describe('explicit live video parameters', () => {
+  it('selects the H3 task API while retaining explicit routes and other video protocols', () => {
+    const catalog = catalogFromPricing([
+      { model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] },
+      { model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'], route: '/plugin/video/tasks' },
+      { model_name: 'fixture-video', supported_endpoint_types: ['openai-video'] },
+    ], null)
+    expect(catalog.map(model => model.route)).toEqual(['/v1/video/generations', '/plugin/video/tasks', '/v1/videos'])
+  })
+
   it('retains known limits when the old pricing response declares no bounded duration', () => {
     const params = video({
       billing_usage_schema: { seconds: { type: 'number' }, resolution: { enum: ['768P', '2K'] } },

@@ -27,10 +27,20 @@ export interface VideoRelayOptions {
 export interface VideoProjectRelay {
   /** @param signal - Cancels the catalog read. @returns Account-visible model identifiers. */
   modelIds(signal: AbortSignal): Promise<readonly string[]>
-  /** @param body - Exact saved generation request. @param signal - Cancels dispatch. @returns Accepted upstream task identifier. */
-  submit(body: VideoProjectRequest, signal: AbortSignal): Promise<{ taskId: string }>
-  /** @param taskId - Previously accepted task. @param signal - Cancels polling. @returns Normalized upstream status. */
-  check(taskId: string, signal: AbortSignal): Promise<{ status: 'running' | 'succeeded' | 'failed'; message?: string }>
+  /**
+   * @param body - Exact saved generation request.
+   * @param route - Selected model's generation path.
+   * @param signal - Cancels dispatch.
+   * @returns Accepted upstream task identifier.
+   */
+  submit(body: VideoProjectRequest, route: string, signal: AbortSignal): Promise<{ taskId: string }>
+  /**
+   * @param taskId - Previously accepted task.
+   * @param route - Original model's generation path.
+   * @param signal - Cancels polling.
+   * @returns Normalized upstream status.
+   */
+  check(taskId: string, route: string, signal: AbortSignal): Promise<{ status: 'running' | 'succeeded' | 'failed'; message?: string }>
   /** @param taskId - Completed task. @param destination - New private clip path. @param signal - Cancels transfer. */
   download(taskId: string, destination: string, signal: AbortSignal): Promise<void>
 }
@@ -127,8 +137,8 @@ export function createVideoProjectRelay(options: VideoRelayOptions): VideoProjec
         return id === undefined || id.length === 0 || id.length > 256 ? [] : [id]
       })
     },
-    async submit(body: VideoProjectRequest, signal: AbortSignal): Promise<{ taskId: string }> {
-      const value = await jsonBody(await request('/v1/videos', signal, body))
+    async submit(body: VideoProjectRequest, route: string, signal: AbortSignal): Promise<{ taskId: string }> {
+      const value = await jsonBody(await request(route, signal, body))
       const nested = record(value.data)
       const taskId = text(value, 'task_id') ?? text(value, 'id') ?? text(nested, 'task_id') ?? text(nested, 'id')
       if (taskId === undefined || !isTaskId(taskId)) {
@@ -136,13 +146,13 @@ export function createVideoProjectRelay(options: VideoRelayOptions): VideoProjec
       }
       return { taskId }
     },
-    async check(taskId: string, signal: AbortSignal): Promise<{ status: 'running' | 'succeeded' | 'failed'; message?: string }> {
-      const value = await jsonBody(await request('/v1/videos/' + validTask(taskId), signal))
+    async check(taskId: string, route: string, signal: AbortSignal): Promise<{ status: 'running' | 'succeeded' | 'failed'; message?: string }> {
+      const value = await jsonBody(await request(route + '/' + validTask(taskId), signal))
       const nested = record(value.data)
       const status = (text(value, 'task_status') ?? text(value, 'status') ?? text(nested, 'task_status') ?? text(nested, 'status'))?.toLowerCase()
       if (['succeed', 'succeeded', 'success', 'completed'].includes(status ?? '')) return { status: 'succeeded' }
-      if (['failed', 'fail', 'error', 'cancelled', 'canceled'].includes(status ?? '')) return { status: 'failed', message: '上游视频任务未完成，已保留项目和已生成片段' }
-      if (['pending', 'queued', 'running', 'processing', 'in_progress', 'in_queue', 'created', 'submitted', 'generating'].includes(status ?? '')) return { status: 'running' }
+      if (['failed', 'failure', 'fail', 'error', 'cancelled', 'canceled'].includes(status ?? '')) return { status: 'failed', message: '上游视频任务未完成，已保留项目和已生成片段' }
+      if (['not_start', 'pending', 'queued', 'running', 'processing', 'in_progress', 'in_queue', 'created', 'submitted', 'generating'].includes(status ?? '')) return { status: 'running' }
       throw new VideoRelayError('VIDEO_STATUS_INVALID', '视频任务状态无法确认，已保留任务标识，请稍后继续查询')
     },
     async download(taskId: string, destination: string, signal: AbortSignal): Promise<void> {
