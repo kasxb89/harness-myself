@@ -523,13 +523,18 @@ export const FALLBACK_IMAGE: ImageSpec = {
   seed: false, source: 'fallback',
 }
 
+/** Conservative video parameters used when neither an exact id nor a family matches. */
 export const FALLBACK_VIDEO: VideoSpec = {
   durations: range(4, 15), resolutions: [], ratios: [], frames: 1,
   referenceImages: 0, referenceVideos: 0, referenceAudios: 0,
   audio: false, audioToggle: false, modes: [], seed: false, source: 'fallback',
 }
 
-/** Look up one image model: exact id first, then the family rules. */
+/**
+ * Look up one image model: exact id first, then the family rules.
+ * @param id - Gateway model id.
+ * @returns Exact, family, or fallback image parameters.
+ */
 export function imageSpec(id: string): ImageSpec {
   const exact = IMAGE_MODELS[id]
   if (exact !== undefined) return exact
@@ -537,7 +542,11 @@ export function imageSpec(id: string): ImageSpec {
   return FALLBACK_IMAGE
 }
 
-/** Look up one video model: exact id first, then the family rules. */
+/**
+ * Look up one video model: exact id first, then the family rules.
+ * @param id - Gateway model id.
+ * @returns Exact, family, or fallback video parameters.
+ */
 export function videoSpec(id: string): VideoSpec {
   const exact = VIDEO_MODELS[id]
   if (exact !== undefined) return exact
@@ -545,7 +554,10 @@ export function videoSpec(id: string): VideoSpec {
   return FALLBACK_VIDEO
 }
 
-/** Every id this table describes, for the coverage report. */
+/**
+ * Every id this table describes, for the coverage report.
+ * @returns Explicit image and video model ids; family patterns are excluded.
+ */
 export function describedModels(): { readonly image: readonly string[]; readonly video: readonly string[] } {
   return { image: Object.keys(IMAGE_MODELS), video: Object.keys(VIDEO_MODELS) }
 }

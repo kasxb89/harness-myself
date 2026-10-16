@@ -60,6 +60,7 @@ import type {} from '@deepseek-ai/cordis-plugin-loader'
 
 import type { Context } from '@deepseek-ai/cordis'
 import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
+import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { assertUsableApiKey, LlmError, resolveImageAttachmentAccess } from '@deepseek-ai/dsh-llm'
 import type { AdapterRegistrationHandle, DirectoryRegistrationHandle, LlmConfigurableProvider } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-fs'
@@ -72,9 +73,11 @@ import type { ResolvedPiAiProviderProfile } from './config.ts'
 import { discoverModels } from './discovery.ts'
 import type { StoredModelDiscoveryProfile } from './discovery.ts'
 import { registerPiAiFlows } from './login.ts'
+import type {} from './harness-account.ts'
 
 export { PiAiAdapter } from './adapter.ts'
 export type { PiAiAdapterOptions } from './adapter.ts'
+export type { HarnessAccount } from './harness-account.ts'
 export { Config } from './config.ts'
 export type {
   Options,
@@ -180,10 +183,22 @@ export function apply(ctx: Context, config: Config): void {
     return raw
   })
 
+  const requiresProductAccount = (provider: string | undefined, baseURL: string | undefined): boolean => {
+    const target = baseURL !== undefined && URL.canParse(baseURL) ? new URL(baseURL) : undefined
+    return provider === 'yunshu-local' || (provider !== undefined && ctx.get('harnessAccount')?.provider === provider)
+      || target?.hostname === '8.133.202.230'
+  }
+  const resolveProductKey = async (baseURL: string | undefined): Promise<string> => {
+    const account = ctx.get('harnessAccount')
+    const key = baseURL === undefined ? undefined : await account?.resolveRelayKey(baseURL)
+    if (key !== undefined) return assertUsableApiKey(key, 'llm-pi-ai', credentialRef('YUNSHU_RELAY_TOKEN'))
+    throw new LlmError('Sign in to the product account before using its model relay', 'MISSING_CREDENTIAL')
+  }
   const resolveApiKey = async (
     provider: string,
     profile: ResolvedPiAiProviderProfile,
   ): Promise<string | undefined> => {
+    if (requiresProductAccount(provider, profile.baseURL)) return await resolveProductKey(profile.baseURL)
     const ref = profile.apiKeyEnv
     // Only a profile that names no credential at all defers to pi-ai's
     // provider-native discovery. Once one is named, a miss must fail loud:
@@ -272,10 +287,13 @@ export function apply(ctx: Context, config: Config): void {
   // except the stored credential and deployment-owned headers: the curated UI
   // accepts neither, so an already-configured route supplies both inside the
   // Host rather than widening the discovery request.
-  ctx.llm.registerModelDiscovery(settingsNs, (request, signal) => discoverModels(
-    { ...request, ...signal === undefined ? {} : { signal } },
-    () => storedDiscoveryProfile(request.provider),
-  ))
+  ctx.llm.registerModelDiscovery(settingsNs, async (request, signal) => {
+    const apiKey = requiresProductAccount(request.provider, request.baseURL) ? await resolveProductKey(request.baseURL) : request.apiKey
+    return await discoverModels(
+      { ...request, ...apiKey === undefined ? {} : { apiKey }, ...signal === undefined ? {} : { signal } },
+      () => storedDiscoveryProfile(request.provider),
+    )
+  })
   // Route effects bind to this apply fiber via the stable `ctx` reference,
   // even when a swap runs inside the scoped settings callback below. A bare
   // mount (zero routes) is the dormant posture: nothing registers until a

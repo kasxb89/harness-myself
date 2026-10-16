@@ -16,7 +16,8 @@ import { mountClient } from '@deepseek-ai/dsh-client-web/src/mount.ts'
 import type { RemoteMock } from '@deepseek-ai/dsh-remote-mock'
 import { act } from '@testing-library/react'
 import { createInProcessModules, loadPluginModules } from './modules.ts'
-import { assertPlan, graphFromRoster, type AssemblyPlan } from './roster.ts'
+import { createPublishedStyleLease } from './published-styles.ts'
+import { assertPlan, graphFromRoster, type AssemblyPlan, type ClientPluginModule } from './roster.ts'
 import { REMOTES_PACKAGE, remoteNamespacesOf, remoteProxiesPlugin } from './remote-proxies.ts'
 
 /** Carrier options. */
@@ -208,14 +209,17 @@ export class TestClient {
       : { hostname: location.hostname }
     let mountPoint: MountPoint = { element: undefined, owned: false }
     let release: (() => void) | undefined
+    const publishedStyles = createPublishedStyleLease()
     const restore = (): void => {
       if (mountPoint.owned) mountPoint.element?.remove()
       release?.()
+      publishedStyles.release()
     }
     try {
-      const modules = new Map(await loadPluginModules({ ...plan, roster }))
+      const modules = new Map(await loadPluginModules({ ...plan, roster }, publishedStyles))
       const connection = modules.get(CONNECTION_PACKAGE)
       if (connection !== undefined && plan.provide?.[CONNECTION_PACKAGE] === undefined) {
+        if ('factory' in connection) throw new Error('client-test-runtime: the Connection adapter requires its source module')
         modules.set(CONNECTION_PACKAGE, {
           ...connection,
           apply: (connectionCtx) => {
@@ -228,8 +232,12 @@ export class TestClient {
       }
       mountPoint = resolveMountPoint(options.mount)
       release = sharedJsdomShims.acquire()
-      const system = createInProcessModules(graphFromRoster(roster.rows), modules)
-      ctx.plugin(remoteProxiesPlugin(remoteNamespacesOf(modules.values(), mock), mock) as Plugin)
+      const system = createInProcessModules(graphFromRoster(roster.rows), modules, publishedStyles)
+      const materialized: ClientPluginModule[] = []
+      for (const name of modules.keys()) {
+        materialized.push(await system.import(name, '', {}) as ClientPluginModule)
+      }
+      ctx.plugin(remoteProxiesPlugin(remoteNamespacesOf(materialized, mock), mock) as Plugin)
       await bootClient({ ctx, modules: system, manifest: system.manifest })
       if (mountPoint.element !== undefined) {
         if (ctx.get('uiRenderer') === undefined) {

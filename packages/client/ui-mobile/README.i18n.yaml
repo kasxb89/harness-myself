@@ -1,0 +1,46 @@
+# Bilingual-pair consistency record for README.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write packages/client/ui-mobile/README.md
+/:
+  en: 33b3d2715e273a70
+  zh: 9984d1144f4360e4
+/deepseek-ai-dsh-client-ui-mobile:
+  en: f074fe0e137c88f2
+  zh: 9e902ed844836e49
+/deepseek-ai-dsh-client-ui-mobile/summary:
+  en: b9e2c65525a380f3
+  zh: c8d218ebc8ebebc1
+/deepseek-ai-dsh-client-ui-mobile/table-of-contents:
+  en: d152484eb41ac6b4
+  zh: 09388d293f9be9cb
+/deepseek-ai-dsh-client-ui-mobile/use-this-package:
+  en: 26829022518d556b
+  zh: 30cc2069507dd357
+/deepseek-ai-dsh-client-ui-mobile/understand-the-implementation:
+  en: 58706324a8a3618b
+  zh: 3cf47b86fd9b7e42
+/deepseek-ai-dsh-client-ui-mobile/further-exploration:
+  en: b415d3ecc3a0e555
+  zh: c5457c71e63306c8
+/deepseek-ai-dsh-client-ui-mobile/model-experience:
+  en: 215e7ba838619b7b
+  zh: a311da3843709f90
+/deepseek-ai-dsh-client-ui-mobile/model-experience/browser-presentation:
+  en: 9fa2160b0b1043b8
+  zh: f83217c0c504a5c5
+/deepseek-ai-dsh-client-ui-mobile/model-experience/browser-presentation/what-the-model-sees:
+  en: 42f1377510fc0777
+  zh: 018d5ceb6a7bd670
+/deepseek-ai-dsh-client-ui-mobile/model-experience/browser-presentation/token-effect:
+  en: acda275f3e00c9b2
+  zh: 23527987e479934d
+/deepseek-ai-dsh-client-ui-mobile/model-experience/browser-presentation/kv-cache-effect:
+  en: 52acdf25a8407565
+  zh: 3be0aed05921cceb
+/deepseek-ai-dsh-client-ui-mobile/known-limitations-and-deferred-work:
+  en: 90c0a24b9ac827f0
+  zh: f39a19eba0cb4d8d
+/deepseek-ai-dsh-client-ui-mobile/known-limitations-and-deferred-work/dev-note:
+  en: e67f633dc6fe7773
+  zh: e88aeb617ffb74ea

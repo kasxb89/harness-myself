@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest'
 import primaryRuntimeLock from './primary-runtime/lock.json' with { type: 'json' }
 import {
   CLAUDE_AGENT_SDK_PACKAGE,
+  IVIDEO_OWNER_AUTHORIZATION,
   assertRuntimeLicenses,
   claudeDistributionFromManifest,
   collectPythonDependencies,
@@ -38,6 +39,11 @@ describe('THIRD_PARTY_NOTICES.md', () => {
     expect(generated).toContain('Recipients must have access to those corresponding sources and notices.')
     expect(generated.split('## Development-only npm dependencies')[0]).toContain('| [`chrome-devtools-frontend`]')
     expect(generated).toContain('third-party license and notice files supplied by the npm source')
+    expect(generated).toContain('## Video Studio release with owner authorization')
+    expect(generated).toContain('On 2026-10-16, the project owner confirmed holding written commercial and branding authorization')
+    expect(generated).toContain(IVIDEO_OWNER_AUTHORIZATION.sourceCommit)
+    expect(generated).toContain('| [`deepseek-ivideo`](https://github.com/Devin-AXIS/iPolloWork) | SEE LICENSE IN LICENSE |')
+    expect(generated).toContain('copyright 2026 Different AI, Inc.')
     expect(readFileSync(resolve(root, 'THIRD_PARTY_NOTICES.md'), 'utf8'), 'stale notices — run `pnpm run gen-third-party-notices`').toBe(generated)
   })
 })
@@ -455,6 +461,32 @@ describe('official Claude distribution authorization', () => {
         '@anthropic-ai/unrelated': '1.0.0',
       },
     })).toThrow('outside its authorized platform-payload identity')
+  })
+})
+
+describe('reviewed Video Studio release authorization', () => {
+  const approved = IVIDEO_OWNER_AUTHORIZATION
+  const dependency = { name: approved.name, license: approved.license, version: approved.version, sourceCommit: approved.sourceCommit }
+
+  it('accepts the exact authorized release without reclassifying the upstream terms', () => {
+    expect(isOwnerAuthorizedRuntime(approved.name, dependency)).toBe(true)
+    expect(() => { assertRuntimeLicenses([dependency]) }).not.toThrow()
+    expect(isOwnerAuthorizedRuntime(approved.name)).toBe(false)
+    expect(isPermissive(approved.license)).toBe(false)
+  })
+
+  it.each([
+    { ...dependency, name: 'unrelated-video-plugin' },
+    { ...dependency, name: 'deepseek-ivideo-unreviewed' },
+    { ...dependency, version: '0.5.1' },
+    { name: approved.name, license: approved.license, sourceCommit: approved.sourceCommit },
+    { ...dependency, sourceCommit: 'a'.repeat(40) },
+    { name: approved.name, license: approved.license, version: approved.version },
+    { ...dependency, license: 'GPL-3.0-only' },
+    { ...dependency, license: 'UNKNOWN' },
+  ])('keeps an unreviewed identity, version, source or license rejected: %j', (unreviewed) => {
+    expect(isOwnerAuthorizedRuntime(unreviewed.name, unreviewed)).toBe(false)
+    expect(() => { assertRuntimeLicenses([unreviewed]) }).toThrow(`${unreviewed.name} (${unreviewed.license})`)
   })
 })
 

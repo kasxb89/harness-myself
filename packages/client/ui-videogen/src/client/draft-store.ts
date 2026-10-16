@@ -1,5 +1,5 @@
 /** Video composer drafts survive image/video mode changes within one window. */
-import { defineStore } from '@deepseek-ai/dsh-client-store'
+import { defineStore, type EngineStoreHandle } from '@deepseek-ai/dsh-client-store'
 
 /** One uploaded reference and its window-owned preview URL. */
 export interface Reference {
@@ -42,11 +42,19 @@ export interface VideoDraft {
   result: { path: string } | null
 }
 
+type DraftActions = {
+  patch: (draft: VideoDraft, values: Partial<VideoDraft>) => void
+  setReferenceAccount: (draft: VideoDraft, accountId: string | null) => void
+  appendPrompt: (draft: VideoDraft, suffix: string) => void
+  addReferences: (draft: VideoDraft, slot: Slot, references: Reference[], limit: number) => void
+  removeReference: (draft: VideoDraft, slot: Slot, assetId: string) => void
+}
+
 /**
  * Declare one root-scoped composer store without disk persistence.
- * @returns draft fields and operation presentation retained across panel remounts.
+ * @returns a store handle retaining draft fields and operation feedback across panel remounts.
  */
-export function createVideoDraftStore() {
+export function createVideoDraftStore(): EngineStoreHandle<VideoDraft, DraftActions> {
   return defineStore({
     init: (): VideoDraft => ({
       modelId: '', prompt: '', duration: 0, resolution: '', ratio: '', mode: '', seed: '', audio: true,

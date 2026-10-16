@@ -1,0 +1,21 @@
+diff --git a/package.json b/package.json
+--- a/package.json
++++ b/package.json
+@@ -34,7 +34,7 @@
+     "prepack": "npm run check"
+   },
+   "peerDependencies": {
+-    "@deepseek-ai/cordis": "^4.0.1"
++    "@deepseek-ai/cordis": "4.0.5-alpha.1"
+   },
+   "dsh": {
+     "bundle": {
+@@ -42,7 +42,7 @@
+     },
+     "client": {
+       "inject": [
+-        "@deepseek-ai/dsh-client-runtime",
++        "@deepseek-ai/dsh-client-modules",
+         "@deepseek-ai/dsh-client-locale",
+         "@deepseek-ai/dsh-client-ui-settings"
+       ],

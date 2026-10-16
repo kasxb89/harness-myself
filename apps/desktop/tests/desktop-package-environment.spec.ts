@@ -236,14 +236,18 @@ it('isolates the packaged backend authority from ambient and unsigned build envi
   const ambient = { DSH_DESKTOP_UPDATE_CONFIG_ORIGIN: 'https://ambient.example.com' }
   expect(localMacOSPackageEnvironment(ambient)).not.toHaveProperty('DSH_DESKTOP_UPDATE_CONFIG_ORIGIN')
   await withDirectory(async (directory) => {
-    await writeFile(join(directory, '.env.windows'), 'DSH_DESKTOP_UPDATE_CONFIG_ORIGIN=https://api.example.com\n')
+    await writeFile(join(directory, '.env.windows'), 'DSH_DESKTOP_UPDATE_CONFIG_ORIGIN=https://8.133.202.230/harness/\n')
     const selected = loadDesktopPackageEnvironment('win32', ambient, directory)
-    expect(resolvePackagedDesktopUpdateConfigOrigin(selected)).toBe('https://api.example.com')
+    expect(resolvePackagedDesktopUpdateConfigOrigin(selected)).toBe('https://8.133.202.230/harness')
     expect(ambient.DSH_DESKTOP_UPDATE_CONFIG_ORIGIN).toBe('https://ambient.example.com')
   })
   expect(resolvePackagedDesktopUpdateConfigOrigin({})).toBeUndefined()
+  expect(resolvePackagedDesktopUpdateConfigOrigin({ DSH_DESKTOP_UPDATE_CONFIG_ORIGIN: 'https://api.example.com/' }))
+    .toBe('https://api.example.com')
   for (const value of ['http://127.0.0.1:3000', 'https://api.example.com/path', 'https://api.example.com/?', 'https://api.example.com/#', 'https:api.example.com',
-    'https://user:pass@api.example.com', 'https://api.example.com/?token=x', 'https://api.example.com\\evil']) {
-    expect(() => resolvePackagedDesktopUpdateConfigOrigin({ DSH_DESKTOP_UPDATE_CONFIG_ORIGIN: value })).toThrow(/HTTPS origin/u)
+    'https://user:pass@api.example.com', 'https://api.example.com/?token=x', 'https://api.example.com\\evil',
+    'https://8.133.202.230', 'https://8.133.202.230/', 'https://8.133.202.230/api', 'https://8.133.202.230/v1',
+    'https://8.133.202.230/other/../harness', 'https://8.133.202.230/%68arness', 'https://8.133.202.230/harness/%2e%2e']) {
+    expect(() => resolvePackagedDesktopUpdateConfigOrigin({ DSH_DESKTOP_UPDATE_CONFIG_ORIGIN: value })).toThrow(/HTTPS backend base/u)
   }
 })

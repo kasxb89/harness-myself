@@ -1,28 +1,45 @@
-# 插件市场（已装的成熟市场插件，固化进源码）：市场 / 皮肤市场 / 找插件。
+# Marketplace Hosts import only after the Web command accepts its arguments.
+# Group children retain their existing ids in the containing Loader tree.
 - insert:
-    - id: dsh-market
-      name: 'dshmarket'
-- insert:
-    - id: dsh-skin-market
-      name: dsh-skin-market
-- insert:
-    - id: find-dsh-plugin
-      name: 'dsh-find-plugin'
-# 市场插件（产品源码里一并固化，避免重装/重建后丢失）：
-#   xmanrui-dsh-im   微信机器人绑定（侧栏「手机」）
-#   univer           Office：表格/文档/幻灯片/画布（dsh-univer-office）
-- insert:
-    - id: xmanrui-dsh-im
-      name: '@xmanrui/dsh-im'
-- insert:
-    - id: univer
-      name: 'dsh-univer-office'
+    - id: product-extensions
+      name: cordis:group
+      group: true
+      inject: [webStartup]
+      config:
+        - id: dsh-market
+          name: 'dshmarket'
+        - id: dsh-skin-market
+          name: dsh-skin-market
+        - id: find-dsh-plugin
+          name: 'dsh-find-plugin'
+        - id: xmanrui-dsh-im
+          name: '@xmanrui/dsh-im'
+        - id: univer
+          name: 'dsh-univer-office'
+        - id: ipollowork-video-studio
+          name: 'deepseek-ivideo'
+        - id: dream-skin
+          name: 'dsh-dream-skin'
 # 官方痕迹（产品级）：模型源与账号面板都停用——产品自己的登录/钱包在「额度」里，
-# 模型一律来自本机 new-api。只做 id 级停用，不新增/改名任何 provider 路由。
+# 模型使用已部署的 harness-api，通过登录取得的中转 key 鉴权。
 - id: llm-deepseek
   disabled: true
 - id: llm-deepseek-account
   disabled: true
+- id: llm-pi-ai
+  config:
+    providers:
+      yunshu-local:
+        displayName: 云枢
+        api: openai-completions
+        baseURL: https://8.133.202.230/harness/v1
+        apiKeyEnv: YUNSHU_RELAY_TOKEN
+        models:
+          - id: deepseek-v4-flash
+- id: agent-default-model
+  config:
+    provider: yunshu-local
+    model: deepseek-v4-flash
 # The dsh-web-app bundle patch: the browser surface over the dsh-base layer.
 # Applied after dsh-base's insert; rows here override base rows by id, with
 # the profile's own cordis.patch.yml and any --patch overlays still to come.
@@ -394,18 +411,15 @@
     - id: ui-artifacts
       name: '@deepseek-ai/dsh-client-ui-artifacts'
 
-    # Sidebar Credits column: the relay platform's balance reader, then the
-    # entry and page. `creditsPerYuan` is the platform's own rate.
+    # The phone login, wallet, public creation content, and relay share this API.
     - id: credits-index
       name: '@deepseek-ai/dsh-credits-index'
       inject:
         - webServer
       config:
-        # Local stack only: the login contract is served by the local Bridge and
-        # every account/balance/model read comes from the local new-api.
         baseUrl: ''
-        bridgeBaseUrl: http://127.0.0.1:4310
-        newApiBaseUrl: http://127.0.0.1:3000
+        bridgeBaseUrl: ''
+        newApiBaseUrl: https://8.133.202.230/harness
         creditsPerYuan: 1000
         stateDir: ''
 
@@ -674,10 +688,6 @@
       name: '@deepseek-ai/dsh-agent-preset-registry'
       config:
         default: standard
-# 视频工作室（deepseek-ivideo，市场安装；装在 profile 里，这里固化 loader 行）
-- insert:
-    - id: ipollowork-video-studio
-      name: 'deepseek-ivideo'
 # 计算机操作：模型可观察并操作本机桌面。服务与 provider 必须同时挂载，
 # 且全局只接受一个 provider 注册——第二行换成 MCP provider 时须删掉 native 这行。
 - insert:
@@ -685,8 +695,3 @@
       name: '@deepseek-ai/dsh-computer-use'
     - id: computer-use-cua-driver-native
       name: '@deepseek-ai/dsh-experimental-computer-use-cua-driver-native'
-# 皮肤 dream-skin（市场安装；装在 profile 里，这里固化 loader 行）。
-# 只装不挂时它浏览器半边会一直 POST /dream-skin/api 吃 405——路由在宿主半边注册。
-- insert:
-    - id: dream-skin
-      name: 'dsh-dream-skin'

@@ -7,7 +7,7 @@
   },
   {
     "role": "hide",
-    "label": "隐藏 智澍科技"
+    "label": "隐藏 云枢"
   },
   {
     "role": "hideOthers",
@@ -19,6 +19,6 @@
   },
   {
     "role": "quit",
-    "label": "退出 智澍科技"
+    "label": "退出 云枢"
   }
 ]

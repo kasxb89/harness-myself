@@ -2,11 +2,12 @@
 /** Workspace examples use the real composer insertion API without sending a turn. */
 import { useSyncExternalStore } from 'react'
 import { Context } from '@deepseek-ai/cordis'
+import { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client'
 import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { SessionInputShell } from '../../ui-conversation/src/client/input/facade.ts'
 import { WorkspaceGuide, WorkspaceGuideToast } from '../src/client/WorkspaceGuide.tsx'
-import { en, zh, type CreditsKey } from '../src/client/locales.ts'
+import { en, NS, zh } from '../src/client/locales.ts'
 import type { CreditsSnapshot } from '../src/client/session-store.ts'
 import { createWorkspaceGuide } from '../src/client/workspace-guide-store.ts'
 
@@ -34,8 +35,10 @@ function fixture(locale: 'zh' | 'en' = 'zh', controller: Controller = createWork
   const getInput = () => input.state.getSnapshot()
   const useWorkspaceGuide: GuideProps['useWorkspaceGuide'] = selector =>
     selector(useSyncExternalStore(subscribeGuide, getGuide))
-  const dictionary = locale === 'zh' ? zh : en
-  const t: GuideProps['t'] = (key: CreditsKey) => dictionary[key]
+  const dictionary = new LocaleRuntime(ctx)
+  ctx.effect(() => dictionary.register(NS, { zh, en }))
+  dictionary.setLocale(locale)
+  const t = dictionary.bind(NS)
   function Composer({ running = false }: { running?: boolean }) {
     const state = useSyncExternalStore(subscribeInput, getInput)
     return <WorkspaceGuide

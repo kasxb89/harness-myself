@@ -67,6 +67,7 @@ External packages installed for runtime use or distributed inside the prebuilt b
 | [`@tanstack/react-virtual`](https://github.com/TanStack/virtual) | MIT |
 | [`@trycua/cua-driver`](https://github.com/trycua/cua) | MIT |
 | [`@vscode/ripgrep`](https://github.com/microsoft/vscode-ripgrep) | MIT |
+| [`@xmanrui/dsh-im`](https://github.com/xmanrui/dsh-im) | MIT |
 | [`@xterm/addon-fit`](https://github.com/xtermjs/xterm.js/tree/master/addons/addon-fit) | MIT |
 | [`@xterm/addon-serialize`](https://github.com/xtermjs/xterm.js/tree/master/addons/addon-serialize) | MIT |
 | [`@xterm/headless`](https://github.com/xtermjs/xterm.js) | MIT |
@@ -83,8 +84,14 @@ External packages installed for runtime use or distributed inside the prebuilt b
 | [`clsx`](https://github.com/lukeed/clsx) | MIT |
 | [`commander`](https://github.com/tj/commander.js) | MIT |
 | [`compression`](https://github.com/expressjs/compression) | MIT |
+| [`deepseek-ivideo`](https://github.com/Devin-AXIS/iPolloWork) | SEE LICENSE IN LICENSE |
 | [`diff`](https://github.com/kpdecker/jsdiff) | BSD-3-Clause |
 | [`dompurify`](https://github.com/cure53/DOMPurify) | (MPL-2.0 OR Apache-2.0) |
+| [`dsh-dream-skin`](https://github.com/RevolutionLA/dsh-dream-skin) | MIT |
+| [`dsh-find-plugin`](https://github.com/awesome-dsh-plugin/dsh-find-plugin) | MIT |
+| [`dsh-skin-market`](https://github.com/kingOfSoySauce/dsh-skin-market) | MIT |
+| [`dsh-univer-office`](https://github.com/dream-num/dsh-univer-office) | Apache-2.0 |
+| [`dshmarket`](https://github.com/dsh-market/dsh-market) | MIT |
 | [`electron-updater`](https://github.com/electron-userland/electron-builder) | MIT |
 | [`eventsource-parser`](https://github.com/rexxars/eventsource-parser) | MIT |
 | [`exceljs`](https://github.com/exceljs/exceljs) | MIT |
@@ -149,6 +156,13 @@ pnpm applies local patches to the following packages at install time, so shipped
 - `@yao-pkg/pkg@6.21.0` — [`patches/@yao-pkg__pkg@6.21.0.patch`](patches/@yao-pkg__pkg@6.21.0.patch)
 - `exceljs@4.4.0` — [`patches/exceljs@4.4.0.patch`](patches/exceljs@4.4.0.patch)
 - `node-pty@1.2.0-beta.15` — [`patches/node-pty@1.2.0-beta.15.patch`](patches/node-pty@1.2.0-beta.15.patch)
+- `dsh-skin-market@0.1.57` — [`patches/dsh-skin-market@0.1.57.patch`](patches/dsh-skin-market@0.1.57.patch)
+- `@xmanrui/dsh-im@4.38.2` — [`patches/xmanrui__dsh-im@4.38.2.patch`](patches/xmanrui__dsh-im@4.38.2.patch)
+- `deepseek-ivideo@0.5.0` — [`patches/deepseek-ivideo@0.5.0.patch`](patches/deepseek-ivideo@0.5.0.patch)
+- `dsh-dream-skin@10.14.3` — [`patches/dsh-dream-skin@10.14.3.patch`](patches/dsh-dream-skin@10.14.3.patch)
+- `dshmarket@1.66.20` — [`patches/dshmarket@1.66.20.patch`](patches/dshmarket@1.66.20.patch)
+- `dsh-find-plugin@0.4.0` — [`patches/dsh-find-plugin@0.4.0.patch`](patches/dsh-find-plugin@0.4.0.patch)
+- `dsh-univer-office@0.3.7` — [`patches/dsh-univer-office@0.3.7.patch`](patches/dsh-univer-office@0.3.7.patch)
 
 ## Chrome DevTools frontend
 
@@ -171,6 +185,13 @@ The installed SDK 0.3.263 declares the following optional platform packages. Eac
 | [`@anthropic-ai/claude-agent-sdk-linux-x64-musl`](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk-linux-x64-musl) | 0.3.263 | SEE LICENSE IN LICENSE.md |
 | [`@anthropic-ai/claude-agent-sdk-win32-arm64`](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk-win32-arm64) | 0.3.263 | SEE LICENSE IN LICENSE.md |
 | [`@anthropic-ai/claude-agent-sdk-win32-x64`](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk-win32-x64) | 0.3.263 | SEE LICENSE IN LICENSE.md |
+
+
+## Video Studio release with owner authorization
+
+On 2026-10-16, the project owner confirmed holding written commercial and branding authorization for `deepseek-ivideo` 0.5.0, from source commit [`62ee529e84423ba63e823b23860293a43b6eb03b`](https://github.com/Devin-AXIS/deepseek-design/tree/62ee529e84423ba63e823b23860293a43b6eb03b/packages/deepseek-ivideo). This record covers only that release and source pin; it neither changes the upstream license nor authorizes another package or release.
+
+The package retains its declared `SEE LICENSE IN LICENSE` terms: [iPolloWork Source Available License, Version 1.0](vendor-plugins/deepseek-ivideo.LICENSE), copyright 2026 Different AI, Inc. The original license, copyright, attribution and third-party notices remain with the release mirror. The distributed copy carries [local package metadata compatibility changes](patches/deepseek-ivideo@0.5.0.patch). The [release record](vendor-plugins/README.md) documents the verified mirror and authorization scope.
 
 
 ## LibreOffice conversion kit

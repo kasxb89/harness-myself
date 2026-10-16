@@ -162,7 +162,7 @@ export function ArtifactsPage(props: PropsRuntime<'main'> & ArtifactsInjected): 
     void fetch('/artifacts/api/list', { headers: { accept: 'application/json' } })
       .then(async (response) => {
         if (!response.ok) throw new Error(`HTTP ${String(response.status)}`)
-        return await response.json() as { items: ArtifactEntry[]; truncated?: boolean; roots?: string[] }
+        return await response.json() as { items?: ArtifactEntry[] | null; truncated?: boolean; roots?: string[] }
       })
       .then((payload) => {
         setListing({ status: 'ready', items: payload.items ?? [], truncated: payload.truncated === true, roots: payload.roots ?? [] })

@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
-import type { BrowserWindow } from 'electron'
+import { BrowserWindow } from 'electron'
 import type { AppUpdater } from 'electron-updater'
 import { DesktopUpdateDialog, desktopUpdateFailureOptions, desktopUpdateProgressOptions, retryDesktopUpdateDownload, UPDATE_DIALOG_IPC } from '../src/update-dialog.ts'
 import { DesktopUpdateOverlays } from '../src/update-overlay.ts'
@@ -53,9 +53,9 @@ afterEach(() => {
 })
 
 function setup(locale: DesktopLocale | (() => DesktopLocale) = resolveDesktopLocale('zh-CN')) {
-  const parent = new fixture.FakeWindow({})
+  const parent = new BrowserWindow({})
   dialogs = new DesktopUpdateDialog('preload-update-dialog.cjs', locale, new DesktopUpdateOverlays())
-  const show = (signal?: AbortSignal) => dialogs!.show(parent as unknown as BrowserWindow, {
+  const show = (signal?: AbortSignal) => dialogs!.show(parent, {
     message: '下载完成', buttons: ['安装并重启'], cancelId: 1, ...(signal === undefined ? {} : { signal }),
   })
   const invoke = (channel: string, ...args: unknown[]) => {
@@ -102,8 +102,8 @@ it('follows the parent geometry and removes listeners when closed or replaced', 
   expect((await next).response).toBe(1)
   expect(f.parent.listenerCount('resize')).toBe(0)
   expect(f.parent.listenerCount('move')).toBe(0)
-  expect(f.parent.webContents.insertCSS).not.toHaveBeenCalled()
-  expect(f.parent.webContents.removeInsertedCSS).not.toHaveBeenCalled()
+  expect(fixture.windows[0]?.webContents.insertCSS).not.toHaveBeenCalled()
+  expect(fixture.windows[0]?.webContents.removeInsertedCSS).not.toHaveBeenCalled()
 })
 
 it('cancels on abort, renderer failure, disposal, or an already-closed parent', async () => {
@@ -142,7 +142,7 @@ it('denies navigation away from the owned document', async () => {
 
 it('supplies localized disclosure copy without putting diagnostics in the ordinary detail', async () => {
   const f = setup()
-  const pending = dialogs!.show(f.parent as unknown as BrowserWindow, {
+  const pending = dialogs!.show(f.parent, {
     message: '未能安全停止任务', technicalDetails: 'exit 0; shutdown acknowledged false',
   })
   expect(f.invoke(UPDATE_DIALOG_IPC.status)).toMatchObject({ detail: '',
@@ -162,7 +162,7 @@ it('replaces content without releasing the backdrop and rejects a response from 
   expect(fixture.windows).toHaveLength(2)
   expect(window.loadURL).toHaveBeenCalledOnce()
   expect(window.webContents.send.mock.calls).toEqual([[UPDATE_DIALOG_IPC.changed, f.invoke(UPDATE_DIALOG_IPC.status)]])
-  expect(f.parent.webContents.removeInsertedCSS).not.toHaveBeenCalled()
+  expect(fixture.windows[0]?.webContents.removeInsertedCSS).not.toHaveBeenCalled()
   abort.abort()
   expect(() => fixture.handlers.get(UPDATE_DIALOG_IPC.respond)!({
     sender: window.webContents, senderFrame: window.webContents.mainFrame,
@@ -226,7 +226,7 @@ it('updates true download progress without replacing choices or invalidating the
   const f = setup()
   const locale = resolveDesktopLocale('zh-CN')
   const options = desktopUpdateProgressOptions({ phase: 'downloading', version: '1.2.0', percent: 12 }, locale)!
-  const pending = dialogs!.show(f.parent as BrowserWindow, options)
+  const pending = dialogs!.show(f.parent, options)
   const initial = f.invoke(UPDATE_DIALOG_IPC.status) as { revision: number }
   const focused = fixture.windows.at(-1)!.focus.mock.calls.length
   expect(dialogs!.updateProgress({ phase: 'downloading', version: '1.2.0', percent: 48.7 })).toBe(true)
@@ -283,7 +283,7 @@ it('keeps an inert download running after background dismissal, then reopens pro
     return state
   })
   await download.coordinator.check()
-  const first = dialogs!.show(f.parent as BrowserWindow,
+  const first = dialogs!.show(f.parent,
     desktopUpdateProgressOptions({ phase: 'downloading', version: '1.2.0', percent: 0 }, locale)!)
   const pending = download.coordinator.download('1.2.0')
   await expect.poll(() => download.coordinator.state.phase).toBe('downloading')
@@ -294,7 +294,7 @@ it('keeps an inert download running after background dismissal, then reopens pro
   download.events.emit('download-progress', { percent: 61 })
   expect(dialogs!.isOpen).toBe(false)
   expect(download.coordinator.state).toMatchObject({ phase: 'downloading', percent: 61 })
-  const second = dialogs!.show(f.parent as BrowserWindow,
+  const second = dialogs!.show(f.parent,
     { ...desktopUpdateProgressOptions(download.coordinator.state, locale)!, signal: visible.signal })
   expect(f.invoke(UPDATE_DIALOG_IPC.status)).toMatchObject({ progress: { percent: 61 } })
   download.events.emit('download-progress', { percent: 100 })
@@ -319,7 +319,7 @@ it('waits for prompt release before retrying only a current version-bound downlo
   const withoutTarget: DesktopUpdateState = { phase: 'error', failedOperation: 'download' }
   expect(desktopUpdateFailureOptions(withoutTarget, withoutTarget, locale).buttons).toEqual(['关闭'])
   const options = desktopUpdateFailureOptions(failure, download.coordinator.state, locale)
-  const prompt = dialogs!.show(f.parent as BrowserWindow, options)
+  const prompt = dialogs!.show(f.parent, options)
   f.invoke(UPDATE_DIALOG_IPC.respond, 0)
   expect((await prompt).response).toBe(0)
   const released = Promise.withResolvers<undefined>()

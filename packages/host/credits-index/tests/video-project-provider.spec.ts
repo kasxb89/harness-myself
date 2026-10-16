@@ -54,7 +54,7 @@ async function upstream(handler: Handler) {
   return { origin: `http://127.0.0.1:${String(address.port)}`, calls }
 }
 
-async function fixture(handler: Handler, overrides: Partial<Omit<VideoRelayOptions, 'origin' | 'cacheRoot'>> = {}) {
+async function fixture(handler: Handler, overrides: Partial<Omit<VideoRelayOptions, 'origin' | 'cacheRoot'>> = {}, prefix = '') {
   const source = await upstream(handler)
   const root = await mkdtemp(join(tmpdir(), 'dsh-video-relay-'))
   directories.push(root)
@@ -62,7 +62,7 @@ async function fixture(handler: Handler, overrides: Partial<Omit<VideoRelayOptio
   await mkdir(cacheRoot, { mode: 0o700 })
   const key = vi.fn(async () => `account-key-${String(key.mock.calls.length)}`)
   const relay = createVideoProjectRelay({
-    origin: source.origin, timeoutMs: 1000, maxDownloadBytes: 1024,
+    origin: source.origin + prefix, timeoutMs: 1000, maxDownloadBytes: 1024,
     cacheRoot, key, ...overrides,
   })
   return { ...source, root, cacheRoot, key, relay, destination: join(cacheRoot, 'clip.mp4') }
@@ -83,7 +83,7 @@ async function rejection(operation: Promise<unknown>): Promise<Error> {
 
 describe('account-bound video relay requests', () => {
   it.each([
-    'http://relay.example', 'https://user:secret@relay.example', 'https://relay.example/private',
+    'http://relay.example', 'https://user:secret@relay.example', 'https://8.133.202.230',
     'https://relay.example?credential=secret', 'https://relay.example#private', 'ftp://relay.example',
   ])('rejects an untrusted or non-origin relay configuration (%s)', (origin) => {
     const key = vi.fn(async () => 'unused-key')
@@ -91,6 +91,31 @@ describe('account-bound video relay requests', () => {
       origin, timeoutMs: 1000, maxDownloadBytes: 1024, cacheRoot: '/unused', key,
     })).toThrow(VideoRelayError)
     expect(key).not.toHaveBeenCalled()
+  })
+
+  it('retains /harness for catalog, submission, status and content requests', async () => {
+    const f = await fixture((_request, response, recorded) => {
+      if (recorded.path === '/harness/v1/models') json(response, { data: [{ id: 'video-a' }] })
+      else if (recorded.path === '/harness/v1/videos') json(response, { id: 'task-one' })
+      else if (recorded.path === '/harness/v1/videos/task-one') json(response, { status: 'succeeded' })
+      else if (recorded.path === '/harness/v1/videos/task-one/content') response.end(media)
+      else { response.writeHead(404); response.end() }
+    }, {}, '/harness')
+    expect(await f.relay.modelIds(signal())).toEqual(['video-a'])
+    await f.relay.submit({ model: 'video-a' }, signal())
+    expect(await f.relay.check('task-one', signal())).toEqual({ status: 'succeeded' })
+    await f.relay.download('task-one', f.destination, signal())
+    expect(f.calls.map(call => call.path)).toEqual([
+      '/harness/v1/models', '/harness/v1/videos', '/harness/v1/videos/task-one', '/harness/v1/videos/task-one/content',
+    ])
+  })
+
+  it('rejects a same-origin redirect from /harness to the adjacent root API', async () => {
+    const f = await fixture((_request, response) => {
+      response.writeHead(307, { location: '/v1/models' }); response.end()
+    }, {}, '/harness')
+    await expect(f.relay.modelIds(signal())).rejects.toBeInstanceOf(VideoRelayError)
+    expect(f.calls.map(call => call.path)).toEqual(['/harness/v1/models'])
   })
 
   it('resolves a fresh account key for each request and uses only the fixed model/task/content endpoints', async () => {

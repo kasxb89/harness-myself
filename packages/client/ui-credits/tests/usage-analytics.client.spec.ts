@@ -24,7 +24,7 @@ function row(overrides: Partial<UsageRow> = {}): UsageRow {
 }
 
 function payload(rows: readonly UsageRow[] = []): UsagePayload {
-  return { rows, start, end, asOf: '2026-10-15T04:00:00.000Z', delayMinutes: 5 }
+  return { rows, start, end, asOf: '2026-10-15T04:00:00.000Z', delayMinutes: 0 }
 }
 
 afterEach(() => vi.useRealTimers())
@@ -68,6 +68,10 @@ describe('parseUsagePayload', () => {
     expect(parsed.rows[0]).not.toBe(wire.rows[0])
   })
 
+  it.each([0, 1, 5])('accepts a nonnegative reported delay of %s minutes without imposing a batch cadence', (delayMinutes) => {
+    expect(parseUsagePayload({ ...payload(), delayMinutes }).delayMinutes).toBe(delayMinutes)
+  })
+
   it('accepts valid ISO dates with explicit offsets', () => {
     expect(parseUsagePayload({ ...payload(), asOf: '2024-02-29T12:00:00+08:00' }).asOf)
       .toBe('2024-02-29T12:00:00+08:00')
@@ -89,7 +93,10 @@ describe('parseUsagePayload', () => {
     { ...payload(), asOf: '2026-10-15' },
     { ...payload(), asOf: '2026-02-30T12:00:00Z' },
     { ...payload(), asOf: '2026-13-01T12:00:00Z' },
-    { ...payload(), delayMinutes: 0 },
+    { ...payload(), delayMinutes: -1 },
+    { ...payload(), delayMinutes: 0.5 },
+    { ...payload(), delayMinutes: Infinity },
+    { ...payload(), delayMinutes: '0' },
   ])('rejects invalid query metadata %#', (value) => {
     expect(() => parseUsagePayload(value)).toThrow('Invalid usage response metadata')
   })

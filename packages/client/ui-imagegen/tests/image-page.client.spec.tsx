@@ -8,7 +8,7 @@ import type { PromptAssistOwner } from '@deepseek-ai/dsh-client-ui-prompt-assist
 import { ImagePage } from '../src/client/ImagePage.tsx'
 import { createImageDraftStore } from '../src/client/draft-store.ts'
 import { zh } from '../src/client/locales.ts'
-import { contentFixture } from './content-fixture.ts'
+import { contentFixture } from './content-fixture.client.ts'
 
 const models = [
   { id: 'edit-model', displayName: 'Edit model', params: { sizes: ['1024x1024', '1536x1024'], maxCount: 2, maxEdits: 2, qualities: ['high'], backgrounds: ['transparent'], formats: ['png', 'jpeg'], moderations: [], seed: true } },

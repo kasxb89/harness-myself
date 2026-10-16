@@ -1,43 +1,38 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+/** Account usage reads only signed-in logs and converts with the live instance settings. */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { parseUsageWindow, readAccountUsage, type UsageReadOptions } from '../src/usage.ts'
 
-let root: string | undefined
-
-afterEach(async () => {
-  vi.unstubAllGlobals()
-  if (root !== undefined) await rm(root, { recursive: true, force: true })
-  root = undefined
-})
+afterEach(() => { vi.unstubAllGlobals() })
 
 const start = 1_792_000_800
 const end = start + 86_399
-const usage = { user_id: 7, username: 'alice', created_at: start, model_name: 'image-model', count: 2, quota: 1, token_used: 15 }
-
-async function options(upstreamToken: string | undefined = 'user-token'): Promise<UsageReadOptions> {
-  root = await mkdtemp(join(tmpdir(), 'dsh-account-usage-'))
-  const adminTokenFile = join(root, 'admin-token')
-  await writeFile(adminTokenFile, 'read-only-test-token', { mode: 0o600 })
-  return {
-    start, end, baseUrl: 'http://127.0.0.1:3000', timeoutMs: 500,
-    creditsPerYuan: 1000, adminTokenFile, account: { id: '7', phone: '+8613800000000' }, upstreamToken,
-  }
+const usage = {
+  id: 1, user_id: 7, type: 2, created_at: start, model_name: 'image-model', quota: 1,
+  prompt_tokens: 5, completion_tokens: 10, other: '{"billing_mode":"token"}', request_id: 'request-one',
 }
+const options = (upstreamToken: string | undefined = 'user-token'): UsageReadOptions => ({
+  start, end, baseUrl: 'https://8.133.202.230/harness', timeoutMs: 500,
+  account: { id: '7', phone: '+8613800000000' }, upstreamToken,
+})
 
-function mockSource(overrides: Record<string, unknown> = {}) {
-  const calls: { path: string; token: string | null }[] = []
+function mockSource(overrides: Record<string, unknown> = {}, logs = [usage], logPage?: (page: number) => unknown) {
+  const calls: { path: string; token: string | null; redirect: RequestRedirect | undefined }[] = []
   const fetcher = vi.fn(async (input: string, init?: RequestInit) => {
     const url = new URL(input)
-    calls.push({ path: `${url.pathname}${url.search}`, token: new Headers(init?.headers).get('authorization') })
+    expect(url.origin).toBe('https://8.133.202.230')
+    expect(url.pathname.startsWith('/harness/')).toBe(true)
+    calls.push({ path: `${url.pathname}${url.search}`, token: new Headers(init?.headers).get('authorization'), redirect: init?.redirect })
+    const path = url.pathname.slice('/harness'.length)
     let body: unknown
-    if (url.pathname === '/api/user/self') body = { success: true, data: { id: 7 } }
-    else if (url.pathname === '/api/data/self' || url.pathname === '/api/data/') body = { success: true, data: [usage] }
-    else if (url.pathname === '/api/user/search') body = { success: true, data: { items: [{ id: 8, username: 'other' }, { id: 7, username: 'alice' }] } }
-    else if (url.pathname === '/api/status') body = { success: true, data: { enable_data_export: true, quota_per_unit: 500_000, usd_exchange_rate: 7.3 } }
+    if (path === '/api/user/self') body = { success: true, data: { id: 7 } }
+    else if (path === '/api/log/self') {
+      const page = Number(url.searchParams.get('p'))
+      body = logPage?.(page) ?? {
+        success: true, data: { page, page_size: 100, total: logs.length, items: logs.slice((page - 1) * 100, page * 100) },
+      }
+    } else if (path === '/api/status') body = { success: true, data: { quota_per_unit: 500_000, usd_exchange_rate: 7.3 } }
     else throw new Error('unexpected path')
-    if (url.pathname in overrides) body = overrides[url.pathname]
+    if (path in overrides) body = overrides[path]
     if (body instanceof Error) throw body
     if (body instanceof Response) return body
     return new Response(JSON.stringify(body), { status: 200 })
@@ -63,177 +58,103 @@ describe('usage window validation', () => {
 })
 
 describe('readAccountUsage', () => {
-  it('reads the verified user and converts every row with one live rate without rounding', async () => {
+  it('reads the verified user logs and converts quota without rounding or admin fallback', async () => {
     const { calls } = mockSource()
-    const result = await readAccountUsage(await options())
-    expect(result).toMatchObject({
+    expect(await readAccountUsage(options())).toMatchObject({
       ok: true,
-      payload: { start, end, delayMinutes: 5, rows: [{ timestamp: start, model: 'image-model', billingRecords: 2, consumedPoints: 0.0146, totalTokens: 15 }] },
+      payload: { start, end, delayMinutes: 0, rows: [{ timestamp: start, model: 'image-model', billingRecords: 1, consumedPoints: 0.0146, totalTokens: 15 }] },
     })
-    expect(calls.map(call => call.path.split('?')[0])).toEqual(['/api/user/self', '/api/data/self', '/api/status'])
-    expect(calls[1]?.token).toBe('Bearer user-token')
+    expect(calls.map(call => call.path.split('?')[0])).toEqual(['/harness/api/user/self', '/harness/api/status', '/harness/api/log/self'])
+    const query = new URLSearchParams(calls[2]?.path.split('?')[1])
+    expect(Object.fromEntries(query)).toEqual({ type: '2', p: '1', page_size: '100', start_timestamp: String(start), end_timestamp: String(end) })
+    expect(calls[2]?.token).toBe('Bearer user-token')
+    expect(calls[1]?.token).toBeNull()
+    expect(calls.every(call => call.redirect === 'error')).toBe(true)
   })
 
-  it.each([undefined, 'expired-user-token'])('falls back through the exact account when upstream is %s', async (token) => {
-    const { calls } = mockSource({ '/api/user/self': { success: false } })
-    expect(await readAccountUsage({ ...await options(), upstreamToken: token })).toMatchObject({ ok: true })
-    const adminRead = calls.find(call => call.path.startsWith('/api/data/?'))
-    expect(adminRead?.path).toContain('username=alice')
-    expect(adminRead?.token).toBe('Bearer read-only-test-token')
-    expect(calls.some(call => call.path.startsWith('/api/data/self'))).toBe(false)
+  it('loads every complete page and aggregates the same hour and model', async () => {
+    const logs = Array.from({ length: 101 }, (_, index) => ({ ...usage, id: index + 1, request_id: `request-${String(index)}` }))
+    const { calls } = mockSource({}, logs)
+    expect(await readAccountUsage(options())).toMatchObject({
+      ok: true, payload: { rows: [{ billingRecords: 101, consumedPoints: 101 * 0.0146, totalTokens: 1515 }] },
+    })
+    expect(calls.filter(call => call.path.includes('/api/log/self?')).map(call => new URLSearchParams(call.path.split('?')[1]).get('p'))).toEqual(['1', '2'])
+  })
+
+  it('returns an actual empty dataset when the authenticated log source succeeds', async () => {
+    mockSource({}, [])
+    expect(await readAccountUsage(options())).toMatchObject({ ok: true, payload: { rows: [] } })
+  })
+
+  it('keeps empty model names and parses empty metadata without inventing a model', async () => {
+    mockSource({}, [{ ...usage, model_name: '', other: '' }])
+    expect(await readAccountUsage(options())).toMatchObject({ ok: true, payload: { rows: [{ model: '', billingRecords: 1 }] } })
+  })
+
+  it.each([undefined, ''])('does not send any request without a user access token: %s', async (token) => {
+    const { calls } = mockSource()
+    expect(await readAccountUsage({ ...options(), upstreamToken: token })).toMatchObject({ ok: false, code: 'USAGE_UNAVAILABLE' })
+    expect(calls).toEqual([])
+  })
+
+  it.each(['legacy-phone-session', '0'])('does not resolve legacy or invalid account %s through an admin token', async (id) => {
+    const { calls } = mockSource()
+    expect(await readAccountUsage({ ...options(), account: { ...options().account, id } })).toMatchObject({ ok: false, code: 'USAGE_UNAVAILABLE' })
+    expect(calls).toEqual([])
   })
 
   it('rejects a self token belonging to another account', async () => {
     const { calls } = mockSource({ '/api/user/self': { success: true, data: { id: 8 } } })
-    expect(await readAccountUsage(await options())).toMatchObject({ ok: false, code: 'USAGE_IDENTITY_MISMATCH' })
+    expect(await readAccountUsage(options())).toMatchObject({ ok: false, code: 'USAGE_IDENTITY_MISMATCH' })
     expect(calls).toHaveLength(1)
   })
 
-  it('does not use the first fuzzy account search result or the admin own usage', async () => {
-    const { calls } = mockSource({
-      '/api/user/self': { success: false },
-      '/api/user/search': { success: true, data: { items: [{ id: 8, username: 'other' }] } },
-    })
-    expect(await readAccountUsage(await options())).toMatchObject({ ok: false, code: 'USAGE_UNAVAILABLE' })
-    expect(calls.some(call => call.path.startsWith('/api/data/'))).toBe(false)
-  })
-
-  it('reports a denied admin usage read without exposing the upstream permission message', async () => {
-    mockSource({
-      '/api/user/self': { success: false },
-      '/api/data/': new Response(JSON.stringify({ message: 'The access token lacks the required permission: log:read' }), { status: 403 }),
-    })
-    const result = await readAccountUsage(await options())
+  it.each(['/api/user/self', '/api/log/self', '/api/status'])('preserves denied reads at %s without disclosing upstream messages', async (path) => {
+    mockSource({ [path]: new Response('{"message":"log:read secret"}', { status: 403 }) })
+    const result = await readAccountUsage(options())
     expect(result).toMatchObject({ ok: false, code: 'USAGE_ACCESS_DENIED' })
-    expect(JSON.stringify(result)).not.toContain('log:read')
-    expect(JSON.stringify(result)).not.toContain('read-only-test-token')
+    expect(JSON.stringify(result)).not.toMatch(/log:read|secret/u)
     expect(result).not.toHaveProperty('payload')
   })
 
-  it('keeps permission denial visible if the self endpoint is denied and no admin credential exists', async () => {
-    mockSource({ '/api/user/self': new Response('{}', { status: 403 }) })
-    const config = await options()
-    await rm(config.adminTokenFile)
-    expect(await readAccountUsage(config)).toMatchObject({ ok: false, code: 'USAGE_ACCESS_DENIED' })
-  })
-
-  it('permits an authorized same-account fallback after a denied self read', async () => {
-    const { calls } = mockSource({ '/api/data/self': new Response('{}', { status: 403 }) })
-    expect(await readAccountUsage(await options())).toMatchObject({ ok: true })
-    expect(calls.find(call => call.path.startsWith('/api/data/?'))?.path).toContain('username=alice')
-  })
-
-  it('reports permission denial during account lookup', async () => {
-    mockSource({
-      '/api/user/self': { success: false },
-      '/api/user/search': new Response('{}', { status: 403 }),
-    })
-    expect(await readAccountUsage(await options())).toMatchObject({ ok: false, code: 'USAGE_ACCESS_DENIED' })
-  })
-
-  it('resolves a legacy nonnumeric ID only from one exact canonical phone match', async () => {
-    const { calls } = mockSource({
-      '/api/user/search': { success: true, data: { items: [
-        { id: 8, username: 'other', phone_e164: '+8613800000001' },
-        { id: 7, username: 'alice', phone_e164: '+8613800000000' },
-      ] } },
-    })
-    const config = await options()
-    const account = { id: 'legacy-phone-session', phone: config.account.phone }
-    expect(await readAccountUsage({ ...config, account, upstreamToken: undefined })).toMatchObject({ ok: true })
-    expect(account.id).toBe('legacy-phone-session')
-    expect(calls.find(call => call.path.startsWith('/api/data/?'))?.path).toContain('username=alice')
-    expect(calls.filter(call => call.path.startsWith('/api/user/search'))).toHaveLength(1)
-  })
-
-  it('verifies the upstream token against the canonical legacy account before reading self usage', async () => {
-    const { calls } = mockSource({
-      '/api/user/search': { success: true, data: { items: [{ id: 7, username: 'alice', phone_e164: '+8613800000000' }] } },
-      '/api/user/self': { success: true, data: { id: 7, phone_e164: '+8613800000000' } },
-    })
-    const config = await options()
-    expect(await readAccountUsage({ ...config, account: { ...config.account, id: 'legacy-id' } })).toMatchObject({ ok: true })
-    expect(calls.find(call => call.path.startsWith('/api/data/self'))?.token).toBe('Bearer user-token')
-    expect(calls.some(call => call.path.startsWith('/api/data/?'))).toBe(false)
-  })
-
   it.each([
-    { items: [{ id: 7, username: 'alice', phone_e164: '+8613800000001' }] },
-    { items: [{ id: 7, username: 'alice' }] },
-    { items: [{ id: 7, username: 'alice', phone_e164: '+8613800000000' }, { id: 8, username: 'other', phone_e164: '+8613800000000' }] },
-  ])('rejects missing, fuzzy, or ambiguous legacy phone identity: %j', async ({ items }) => {
-    const { calls } = mockSource({ '/api/user/search': { success: true, data: { items } } })
-    const config = await options()
-    expect(await readAccountUsage({ ...config, account: { ...config.account, id: 'legacy-id' } }))
-      .toMatchObject({ ok: false, code: 'USAGE_UNAVAILABLE' })
-    expect(calls.some(call => call.path.startsWith('/api/data/'))).toBe(false)
-  })
-
-  it('rejects a foreign upstream token after a legacy identity is canonicalized', async () => {
-    const { calls } = mockSource({
-      '/api/user/search': { success: true, data: { items: [{ id: 7, username: 'alice', phone_e164: '+8613800000000' }] } },
-      '/api/user/self': { success: true, data: { id: 8, phone_e164: '+8613800000001' } },
-    })
-    const config = await options()
-    expect(await readAccountUsage({ ...config, account: { ...config.account, id: 'legacy-id' } }))
-      .toMatchObject({ ok: false, code: 'USAGE_IDENTITY_MISMATCH' })
-    expect(calls.some(call => call.path.startsWith('/api/data/'))).toBe(false)
-  })
-
-  it('does not replace a valid stored ID with a different exact-phone account', async () => {
-    const { calls } = mockSource({
-      '/api/user/self': { success: false },
-      '/api/user/search': { success: true, data: { items: [{ id: 8, username: 'other', phone_e164: '+8613800000000' }] } },
-    })
-    expect(await readAccountUsage(await options())).toMatchObject({ ok: false, code: 'USAGE_UNAVAILABLE' })
-    expect(calls.some(call => call.path.startsWith('/api/data/'))).toBe(false)
-  })
-
-  it('returns a real empty dataset only when the enabled source succeeds', async () => {
-    mockSource({ '/api/data/self': { success: true, data: [] } })
-    expect(await readAccountUsage(await options())).toMatchObject({ ok: true, payload: { rows: [] } })
-  })
-
-  it('preserves empty model names for the client unlabelled-model group', async () => {
-    mockSource({ '/api/data/self': { success: true, data: [{ ...usage, model_name: '' }] } })
-    expect(await readAccountUsage(await options())).toMatchObject({
-      ok: true, payload: { rows: [{ model: '', billingRecords: 2, consumedPoints: 0.0146, totalTokens: 15 }] },
-    })
-  })
-
-  it('reports disabled collection without claiming zero usage', async () => {
-    mockSource({ '/api/status': { success: true, data: { enable_data_export: false } } })
-    expect(await readAccountUsage(await options())).toMatchObject({ ok: false, code: 'USAGE_UNAVAILABLE' })
-  })
-
-  it('keeps permission denial distinguishable from missing conversion settings', async () => {
-    mockSource({ '/api/status': new Response('{}', { status: 403 }) })
-    expect(await readAccountUsage(await options())).toMatchObject({ ok: false, code: 'USAGE_ACCESS_DENIED' })
-  })
-
-  it.each([
-    { success: true, data: { enable_data_export: true, quota_per_unit: 0, usd_exchange_rate: 7.3 } },
-    { success: true, data: { enable_data_export: true, quota_per_unit: 500_000 } },
-    new Error('unreachable'),
-  ])('does not guess a conversion when status is unavailable: %j', async (status) => {
+    { success: true, data: { quota_per_unit: 0, usd_exchange_rate: 7.3 } },
+    { success: true, data: { quota_per_unit: 500_000 } }, new Error('unreachable'),
+  ])('does not guess conversion settings when status is unavailable: %j', async (status) => {
     mockSource({ '/api/status': status })
-    expect(await readAccountUsage(await options())).toMatchObject({ ok: false, code: 'USAGE_CONVERSION_UNAVAILABLE' })
+    expect(await readAccountUsage(options())).toMatchObject({ ok: false, code: 'USAGE_CONVERSION_UNAVAILABLE' })
+  })
+
+  it('uses changed status parameters immediately and does not require aggregate data export', async () => {
+    mockSource({ '/api/status': { success: true, data: { enable_data_export: false, quota_per_unit: 2000, usd_exchange_rate: 8 } } })
+    expect(await readAccountUsage(options())).toMatchObject({ ok: true, payload: { rows: [{ consumedPoints: 4 }] } })
   })
 
   it.each([
-    { ...usage, created_at: end + 1 }, { ...usage, count: -1 }, { ...usage, token_used: 0.5 },
-    { ...usage, quota: null }, { ...usage, model_name: null }, { ...usage, user_id: 8 },
-  ])('rejects incomplete, foreign, or out-of-window source rows: %j', async (row) => {
-    mockSource({ '/api/data/self': { success: true, data: [usage, row] } })
-    const result = await readAccountUsage(await options())
+    { ...usage, created_at: end + 1 }, { ...usage, type: 6 }, { ...usage, prompt_tokens: -1 },
+    { ...usage, completion_tokens: 0.5 }, { ...usage, quota: null }, { ...usage, model_name: null },
+    { ...usage, user_id: 8 }, { ...usage, other: '{broken' }, { ...usage, other: '[]' },
+    { ...usage, other: {} }, { ...usage, id: 2 },
+  ])('rejects incomplete, foreign, or malformed log rows: %j', async (row) => {
+    mockSource({ '/api/log/self': { success: true, data: { page: 1, page_size: 100, total: 1, items: [row] } } })
+    const result = await readAccountUsage(options())
     expect(result).toMatchObject({ ok: false, code: 'USAGE_INVALID_DATA' })
     expect(result).not.toHaveProperty('payload')
   })
 
-  it('keeps an unconfigured read-only credential unavailable', async () => {
-    mockSource({ '/api/user/self': new Error('credential expired') })
-    const config = await options()
-    await rm(config.adminTokenFile)
-    expect(await readAccountUsage(config)).toMatchObject({ ok: false, code: 'USAGE_UNAVAILABLE' })
+  it.each(['repeated-page', 'missing-row', 'changing-total', 'duplicate-request', 'failed-second-page'])('refuses partial or unstable pagination: %s', async (mode) => {
+    const first = Array.from({ length: 100 }, (_, index) => ({ ...usage, id: index + 1, request_id: `request-${String(index)}` }))
+    mockSource({}, [], (page) => {
+      if (page === 1) return { success: true, data: { page, page_size: 100, total: 101, items: first } }
+      if (mode === 'failed-second-page') return { success: false }
+      return { success: true, data: {
+        page: mode === 'repeated-page' ? 1 : page, page_size: 100,
+        total: mode === 'changing-total' ? 102 : 101,
+        items: mode === 'missing-row' ? [] : [{ ...usage, id: 101, request_id: mode === 'duplicate-request' ? 'request-0' : 'last-request' }],
+      } }
+    })
+    const result = await readAccountUsage(options())
+    expect(result).toMatchObject({ ok: false, code: mode === 'failed-second-page' ? 'USAGE_UNAVAILABLE' : 'USAGE_INVALID_DATA' })
+    expect(result).not.toHaveProperty('payload')
   })
 })

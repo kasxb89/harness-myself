@@ -49,6 +49,15 @@ interface SessionInfo {
 }
 interface ArtifactItem { readonly path: string; readonly name: string; readonly kind: string; readonly mtimeMs?: number }
 
+/** Admit the artifact fields consumed by clip history from the JSON listing. */
+function isArtifactItem(value: unknown): value is ArtifactItem {
+  return value !== null && typeof value === 'object'
+    && 'path' in value && typeof value.path === 'string'
+    && 'name' in value && typeof value.name === 'string'
+    && 'kind' in value && typeof value.kind === 'string'
+    && (!('mtimeMs' in value) || typeof value.mtimeMs === 'number')
+}
+
 const SLOT_TYPES: Record<Slot, { readonly accept: string; readonly types: readonly string[] }> = {
   image: { accept: 'image/png,image/jpeg,image/webp', types: ['image/png', 'image/jpeg', 'image/webp'] },
   video: { accept: 'video/mp4,video/quicktime', types: ['video/mp4', 'video/quicktime'] },
@@ -160,10 +169,15 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
     try {
       const response = await fetch('/artifacts/api/list', { headers: { accept: 'application/json' } })
       if (!response.ok) { setHistoryError(true); return }
-      const answer = await response.json() as { items?: readonly ArtifactItem[]; payload?: { items?: readonly ArtifactItem[] } }
-      const items = answer.items ?? answer.payload?.items
+      const answer: unknown = await response.json()
+      if (answer === null || typeof answer !== 'object') { setHistoryError(true); return }
+      const payload = 'payload' in answer ? answer.payload : undefined
+      const nestedItems = payload !== null && typeof payload === 'object' && 'items' in payload ? payload.items : undefined
+      const items: unknown = ('items' in answer ? answer.items : undefined) ?? nestedItems
       if (!Array.isArray(items)) { setHistoryError(true); return }
-      setHistory(items.filter(item => item.kind === 'video' && item.path.includes('/credits/media/'))
+      const entries: readonly unknown[] = items
+      if (!entries.every(isArtifactItem)) { setHistoryError(true); return }
+      setHistory(entries.filter(item => item.kind === 'video' && item.path.includes('/credits/media/'))
         .sort((left, right) => (right.mtimeMs ?? 0) - (left.mtimeMs ?? 0)).slice(0, 12))
       setHistoryError(false)
     } catch (_error) {

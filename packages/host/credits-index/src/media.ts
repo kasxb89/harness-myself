@@ -252,7 +252,9 @@ function mediaKind(id: string, endpoints: readonly string[], fields: readonly st
   if (fields.includes('image_count')) image += 1
   if (videoSpec(id).source !== 'fallback') video += 4
   if (imageSpec(id).source !== 'fallback') image += 4
-  if (/video|hailuo|kling|jimeng|sora|veo|vidu|wan[0-9.]*[-_]|minimax|runway|luma|pika|seedance|pixverse|ltx|mochi|cogvideo/i.test(id)) video += 2
+  if (/video|hailuo|kling|jimeng|sora|veo|vidu|wan[0-9.]*[-_]|minimax|runway|luma|pika|seedance|pixverse|ltx|mochi|cogvideo/i.test(id)) {
+    video += 2
+  }
   if (/image|dall-?e|flux|seedream|banana|imagen|kolors|cogview|ideogram|recraft|^sd|sdxl/i.test(id)) image += 2
   if (video === 0 && image === 0) return null
   if (video === image) return endpoints.some(endpoint => endpoint.includes('video')) ? 'video' : 'image'
@@ -266,6 +268,9 @@ function mediaKind(id: string, endpoints: readonly string[], fields: readonly st
  * callable when the user's group is among its `enable_groups`. A null group is
  * "not signed in", and then nothing is filtered out — the panel shows what the
  * deployment serves and lets the login form explain the rest.
+ * @param rows - Untrusted pricing rows returned by the gateway.
+ * @param userGroup - Signed-in billing group, or null before login.
+ * @returns Recognized media models and their supported generation parameters.
  */
 export function catalogFromPricing(rows: readonly unknown[], userGroup: string | null): ModelCapability[] {
   const catalog: ModelCapability[] = []
@@ -314,7 +319,12 @@ const IMAGE_ROUTES: Record<string, string> = {
   'yunshu-internal-gpt-image-2': '/toapis/v1/images/generations',
 }
 
-/** Every model of one kind in a catalog. */
+/**
+ * Every model of one kind in a catalog.
+ * @param catalog - Parsed media capabilities.
+ * @param kind - Image or video generation.
+ * @returns Matching models in their original order.
+ */
 export function modelsOfKind(catalog: readonly ModelCapability[], kind: MediaKind): ModelCapability[] {
   return catalog.filter(model => model.kind === kind)
 }
@@ -327,6 +337,8 @@ export function modelsOfKind(catalog: readonly ModelCapability[], kind: MediaKin
  * endpoint types too, so the endpoint list alone cannot tell them apart. This
  * is the same classifier the media panels use, exposed so a caller can subtract
  * the generators from a model list.
+ * @param rows - Untrusted pricing rows returned by the gateway.
+ * @returns Recognized media generator ids in pricing order.
  */
 export function mediaModelIds(rows: readonly unknown[]): string[] {
   const ids: string[] = []
@@ -340,7 +352,13 @@ export function mediaModelIds(rows: readonly unknown[]): string[] {
   return ids
 }
 
-/** The model a request names, or the first of its kind when it names none. */
+/**
+ * The model a request names, or the first of its kind when it names none.
+ * @param catalog - Parsed media capabilities.
+ * @param kind - Required generation kind.
+ * @param id - Explicit model id, or null to select the first matching model.
+ * @returns The matching model, or null when no candidate exists.
+ */
 export function pickModel(catalog: readonly ModelCapability[], kind: MediaKind, id: string | null): ModelCapability | null {
   const candidates = modelsOfKind(catalog, kind)
   if (id === null) return candidates[0] ?? null

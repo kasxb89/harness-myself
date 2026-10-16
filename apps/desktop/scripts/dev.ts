@@ -9,7 +9,7 @@ import { DESKTOP_HOST_PROTOCOL_VERSION } from '../src/host-protocol.ts'
 import type { DesktopRelease } from '../src/release.ts'
 import { developmentRuntimeDirectory, resolveDesktopBuildTarget } from './desktop-build-paths.mjs'
 import { prepareDevelopmentProject } from './development-project.ts'
-import { prepareDevelopmentApp } from './development-app.ts'
+import { DEFAULT_DESKTOP_UPDATE_CONFIG_ORIGIN, prepareDevelopmentApp } from './development-app.ts'
 import { preparePrimaryRuntime } from './prepare-primary-runtime.ts'
 
 const APP_ROOT = resolve(import.meta.dirname, '..')
@@ -65,23 +65,23 @@ async function launchElectron(): Promise<void> {
   const hostPort = debugPort('DSH_DESKTOP_HOST_INSPECT_PORT', 9230)
   const home = resolve(process.env.DSH_HOME ?? join(DEVELOPMENT_ROOT, 'home'))
   const userData = resolve(process.env.DSH_DESKTOP_USER_DATA_DIR ?? join(DEVELOPMENT_ROOT, 'electron-user-data'))
-  const environment: NodeJS.ProcessEnv = {
+  const environment = {
     ...process.env,
     DSH_HOME: home,
-    DSH_DESKTOP_UPDATE_CONFIG_ORIGIN: process.env.DSH_DESKTOP_UPDATE_CONFIG_ORIGIN ?? 'http://127.0.0.1:3000',
+    DSH_DESKTOP_UPDATE_CONFIG_ORIGIN: process.env.DSH_DESKTOP_UPDATE_CONFIG_ORIGIN ?? DEFAULT_DESKTOP_UPDATE_CONFIG_ORIGIN,
     DSH_DESKTOP_PRIMARY_RUNTIME_DIR: process.env.DSH_DESKTOP_PRIMARY_RUNTIME_DIR ?? developmentRuntimeDirectory(),
     DSH_DESKTOP_HOST_INSPECT_PORT: String(hostPort),
     DSH_DESKTOP_OPEN_DEVTOOLS: process.env.DSH_DESKTOP_OPEN_DEVTOOLS ?? '1',
     ELECTRON_ENABLE_LOGGING: process.env.ELECTRON_ENABLE_LOGGING ?? '1',
-  }
+  } satisfies NodeJS.ProcessEnv
   console.log(`desktop development: DSH_HOME=${home}`)
   console.log(`desktop development: userData=${userData}`)
   console.log(`desktop development: inspectors main=${String(mainPort)}, renderer=${String(rendererPort)}, host=${String(hostPort)}`)
   if (process.platform === 'darwin') {
     const executable = prepareDevelopmentApp({ electron, appRoot: APP_ROOT, directory: DEVELOPMENT_ROOT, home, userData,
-      primaryRuntimeDirectory: environment.DSH_DESKTOP_PRIMARY_RUNTIME_DIR!,
+      primaryRuntimeDirectory: environment.DSH_DESKTOP_PRIMARY_RUNTIME_DIR,
       mainPort, rendererPort, hostPort, updateConfigOrigin: environment.DSH_DESKTOP_UPDATE_CONFIG_ORIGIN,
-      openDevtools: environment.DSH_DESKTOP_OPEN_DEVTOOLS! })
+      openDevtools: environment.DSH_DESKTOP_OPEN_DEVTOOLS })
     await run(executable, [], APP_ROOT, environment)
     return
   }

@@ -1,19 +1,31 @@
 ---
-description: "Web 外壳的沉浸式背景插件：极光、曜石、珍珠三套预设，跟随明暗主题并尊重减弱动效。"
+description: "CSS backdrop presets for the Web shell, with configurable strength, grain and sidebar translucency."
 kind: "package-reference"
 ---
 
 # @deepseek-ai/dsh-client-ui-background
 
-## 概述
+English | [中文](README.zh.md)
 
-本包只贡献浏览器呈现：它把一个固定的背景层画在 Web 外壳的应用框架之后，让侧栏、卡片与对话面板像浮在极光之上。宿主半侧是空 `apply`，存在的意义是给 Loader 一个可启停的行。
+## Summary
 
-背景不与主题包争夺所有权。它只在自己激活期间，把 `--dsw-alias-bg-base` 与 `--dsw-specific-sidebar-fill` 重新绑定在**应用框架元素**（`#root` 的第一个子元素）的内联样式上，因此 `document.body` 上的浮层、菜单与启动页仍使用主题原值。停用或卸载时这些内联值会被移除，界面回到官方外观。
+Choose an aurora, obsidian or pearl backdrop behind the application frame. Configure its strength, film grain and sidebar translucency, or select `off` to retain the theme’s normal fills. The animated layer respects reduced-motion preferences; menus and dialogs retain their theme fills.
 
-## 使用本包
+## Table of Contents
 
-把本插件作为一个行加入 profile：
+- [Use this package](#use-this-package)
+- [Understand the implementation](#understand-the-implementation)
+- [Further Exploration](#further-exploration)
+- [Model Experience](#model-experience)
+- [Known Limitations and Deferred Work](#known-limitations-and-deferred-work)
+- [Dev Note](#dev-note)
+
+-----
+
+<a id="use-this-package"></a>
+## Use this package
+
+Mount this plugin as a browser-enabled profile entry:
 
 ```yaml
 - id: ui-background
@@ -22,12 +34,76 @@ kind: "package-reference"
     preset: aurora
     intensity: 0.72
     grain: true
+    glassSidebar: true
 ```
 
-`preset` 取 `aurora`（默认）、`obsidian`、`pearl` 或 `off`。`intensity` 是 0–1 的强度，`grain` 控制胶片颗粒层。配置为可选项，缺省时使用上述默认值。
+| Field | Default | Meaning |
+|---|---|---|
+| `preset` | `aurora` | `aurora`, `obsidian`, `pearl`, or `off`. |
+| `intensity` | `0.72` | Background strength from 0 through 1. |
+| `grain` | `true` | Enable the film-grain layer. |
+| `glassSidebar` | `true` | Use the theme-aware translucent sidebar fill. |
 
-## 已知限制与延期工作
+Grain is independent of the preset. Disable it explicitly with `grain: false` when selecting `off` to remove that layer too.
 
-- 背景层是纯 CSS（渐变、模糊、关键帧），不读取工作区或品牌资源；换成位图或视频背景需要新增资源服务，本包不承担。
-- 面板填充的半透明只通过侧栏令牌展宽；对话区仍使用主题原色，若要让整块面板玻璃化，应在 `ui-theme` 增加语义令牌，而不是在本包继续覆盖。
-- 与用户自带的自定义样式表可能互相覆盖：本包的选择器都挂在 `html[data-dsh-backdrop]` 之下，卸载即失效。
+-----
+
+<a id="understand-the-implementation"></a>
+## Understand the implementation
+
+<details>
+<summary>Implementation internals — click to expand</summary>
+
+The browser half inserts a stylesheet and marks the root element with the selected preset. It overrides `--dsw-alias-bg-base` and, when requested, `--dsw-specific-sidebar-fill` only on the application frames under `#root`. A mutation observer tracks replaced frames; disposal restores each frame’s previous inline values and removes the stylesheet and root markers. The Host half contributes no behavior. See [`src/client/index.ts`](src/client/index.ts) and [`backdrop.css`](src/client/backdrop.css).
+
+</details>
+
+-----
+
+<a id="further-exploration"></a>
+## Further Exploration
+
+These pages describe the adjacent responsibilities and composition.
+
+- [ui-theme](../ui-theme/README.md) — theme fills and color tokens.
+- [ui-sidebar](../ui-sidebar/README.md) — sidebar presentation.
+- [Web styling](../../../docs/web-styling.md) — shared styling rules.
+
+-----
+
+<a id="model-experience"></a>
+## Model Experience
+
+### Browser presentation
+
+#### What the model sees
+
+The `ui-background` entry changes browser styles only and registers no model-facing content.
+
+#### Token effect
+
+This package adds no text or files to model requests.
+
+#### KV Cache effect
+
+This package neither assembles provider requests nor changes model context.
+
+## Known Limitations and Deferred Work
+
+<a id="known-limitations-and-deferred-work"></a>
+
+These limits describe the package’s current behavior and dependencies.
+
+- The backdrop uses CSS gradients, blur and keyframes; it does not load Workspace or brand media.
+- Only the frame base and optional sidebar fill become translucent; conversation panels retain their theme fills.
+- Custom styles can override the backdrop selectors or the same inline properties.
+
+<a id="dev-note"></a>
+### Dev Note
+
+<details>
+<summary>Working context for maintainers — click to expand</summary>
+
+None.
+
+</details>

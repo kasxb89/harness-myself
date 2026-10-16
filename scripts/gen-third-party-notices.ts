@@ -9,6 +9,7 @@
  */
 
 import { existsSync, globSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { dirname, resolve } from 'node:path'
 import * as yaml from 'js-yaml'
 import { parse as parseToml, type TomlTableWithoutBigInt, type TomlValueWithoutBigInt } from 'smol-toml'
@@ -54,6 +55,16 @@ const FIRST_PARTY = new Set([
 export const CLAUDE_AGENT_SDK_PACKAGE = '@anthropic-ai/claude-agent-sdk'
 const CLAUDE_PLATFORM_PACKAGE_PREFIX = `${CLAUDE_AGENT_SDK_PACKAGE}-`
 const CLAUDE_PLATFORM_DECLARED_LICENSE = 'SEE LICENSE IN LICENSE.md'
+/** Exact Video Studio release covered by the owner's 2026-10-16 confirmation of written commercial and branding authorization. */
+export const IVIDEO_OWNER_AUTHORIZATION = Object.freeze({
+  name: 'deepseek-ivideo',
+  version: '0.5.0',
+  license: 'SEE LICENSE IN LICENSE',
+  sourceCommit: '62ee529e84423ba63e823b23860293a43b6eb03b',
+  confirmedOn: '2026-10-16',
+  tarball: 'deepseek-ivideo-0.5.0-62ee529e.tgz',
+  tarballIntegrity: 'sha512-jU2YO0svWTm1KcNREQW3vDTupNtYBTen9OZBa1ycKcGknGChXY0jhF+Cr6BHHNZEfQiwfJWggrKSfnZ6vUVXDw==',
+})
 const LIBREOFFICE_KIT_PACKAGE = '@deepseek-ai/libreoffice-kit'
 const LIBREOFFICE_PACKAGES = new Set([
   LIBREOFFICE_KIT_PACKAGE,
@@ -68,10 +79,17 @@ const LIBREOFFICE_PACKAGES = new Set([
  * Whether a non-permissive runtime declaration has an identity-scoped owner
  * authorization. This does not reclassify its terms as permissive.
  * @param name - exact npm package identity.
- * @returns true only for the official Claude Agent SDK package.
+ * @param release - declared license and reviewed release identity, required for Video Studio.
+ * @returns true for the official Claude Agent SDK identity or the exact authorized Video Studio release.
  */
-export function isOwnerAuthorizedRuntime(name: string): boolean {
-  return name === CLAUDE_AGENT_SDK_PACKAGE
+export function isOwnerAuthorizedRuntime(
+  name: string,
+  release?: { license: string; version?: string; sourceCommit?: string },
+): boolean {
+  return name === CLAUDE_AGENT_SDK_PACKAGE || (name === IVIDEO_OWNER_AUTHORIZATION.name
+    && release?.license === IVIDEO_OWNER_AUTHORIZATION.license
+    && release.version === IVIDEO_OWNER_AUTHORIZATION.version
+    && release.sourceCommit === IVIDEO_OWNER_AUTHORIZATION.sourceCommit)
 }
 
 /**
@@ -133,6 +151,8 @@ export interface Manifest {
 interface ExternalDep {
   name: string
   license: string
+  version?: string
+  sourceCommit?: string
   repo: string
   /** True when some shipped workspace consumer reaches it through runtime dependency edges. */
   runtime: boolean
@@ -338,8 +358,40 @@ function installedManifest(name: string, manifests: Map<string, Manifest>, expec
   return manifest
 }
 
-/** License and repository URL for an installed external package, from the pnpm store. */
-function installedMetadata(name: string, manifests: Map<string, Manifest>): { license: string; repo: string } {
+/** Verify the reviewed source pin and release mirror before admitting the written Video Studio authorization. */
+function authorizedVideoSource(manifest: VirtualManifest, manifests: Map<string, Manifest>): string {
+  const approved = IVIDEO_OWNER_AUTHORIZATION
+  const inventory = JSON.parse(readFileSync(resolve(root, 'vendor-plugins/deepseek-ivideo-0.5.0.files.json'), 'utf8')) as {
+    name?: unknown
+    version?: unknown
+    sourceCommit?: unknown
+    tarball?: unknown
+  }
+  const web = manifests.get('packages/bundle/web-app/package.json')
+  const source = `github:Devin-AXIS/deepseek-design#${approved.sourceCommit}&path:/packages/deepseek-ivideo`
+  const declarations = [...manifests.values()].flatMap(row =>
+    ALL_KINDS.flatMap(kind => row[kind]?.[approved.name] === undefined ? [] : [row[kind][approved.name]]))
+  const workspace = yaml.load(readFileSync(resolve(root, 'pnpm-workspace.yaml'), 'utf8')) as { overrides?: Record<string, unknown> }
+  const mirror = workspace.overrides?.[`${web?.name ?? ''}@${web?.version ?? ''}>${approved.name}`]
+  const integrity = 'sha512-' + createHash('sha512')
+    .update(readFileSync(resolve(root, 'vendor-plugins', approved.tarball))).digest('base64')
+  if (manifest.name !== approved.name || manifest.version !== approved.version || manifest.license !== approved.license
+    || inventory.name !== approved.name || inventory.version !== approved.version || inventory.sourceCommit !== approved.sourceCommit
+    || inventory.tarball !== approved.tarball || web?.dependencies?.[approved.name] !== source
+    || declarations.some(spec => spec !== source)
+    || mirror !== `file:./vendor-plugins/${approved.tarball}` || integrity !== approved.tarballIntegrity) {
+    throw new Error(`gen-third-party-notices: ${approved.name} does not match its owner-authorized version, license, source pin, and release mirror.`)
+  }
+  return approved.sourceCommit
+}
+
+/** License, release identity and repository URL for an installed external package, from the pnpm store. */
+function installedMetadata(name: string, manifests: Map<string, Manifest>): {
+  license: string
+  repo: string
+  version?: string
+  sourceCommit?: string
+} {
   const override = OVERRIDES[name]
   const manifest = installedManifest(name, manifests)
   const license = override?.license ?? manifest?.license
@@ -348,7 +400,10 @@ function installedMetadata(name: string, manifests: Map<string, Manifest>): { li
   if (license === undefined || repo === undefined) {
     throw new Error(`gen-third-party-notices: cannot resolve ${license === undefined ? 'license' : 'repository'} for ${name}; run \`pnpm install\`, or add an OVERRIDES entry.`)
   }
-  return { license, repo }
+  const sourceCommit = name === IVIDEO_OWNER_AUTHORIZATION.name && manifest !== undefined
+    ? authorizedVideoSource(manifest, manifests) : undefined
+  return { license, repo, ...manifest?.version === undefined ? {} : { version: manifest.version },
+    ...sourceCommit === undefined ? {} : { sourceCommit } }
 }
 
 function collectClaudeDistribution(manifests: Map<string, Manifest>): ClaudeDistribution {
@@ -689,9 +744,11 @@ export function isPermissive(license: string): boolean {
  * @param dependencies - Disclosed runtime package identities and declared licenses.
  * @throws When a runtime package has no permissive license or exact owner authorization.
  */
-export function assertRuntimeLicenses(dependencies: readonly { name: string; license: string }[]): void {
+export function assertRuntimeLicenses(
+  dependencies: readonly { name: string; license: string; version?: string; sourceCommit?: string }[],
+): void {
   const rejected = dependencies.filter(dep => !isPermissive(dep.license)
-    && !isOwnerAuthorizedRuntime(dep.name)
+    && !isOwnerAuthorizedRuntime(dep.name, dep)
     && !(LIBREOFFICE_PACKAGES.has(dep.name) && dep.license === 'MPL-2.0'))
   if (rejected.length > 0) {
     throw new Error(`gen-third-party-notices: runtime ${rejected.map(dep => `${dep.name} (${dep.license})`).join(', ')} is not a permissive license; review the distribution terms and record the decision before regenerating.`)
@@ -735,6 +792,18 @@ The installed SDK ${distribution.sdkVersion} declares the following optional pla
 | Optional platform package | Version | Declared license |
 | --- | --- | --- |
 ${rows.join('\n')}
+`
+}
+
+function renderVideoAuthorization(runtime: readonly ExternalDep[]): string {
+  if (!runtime.some(dep => dep.name === IVIDEO_OWNER_AUTHORIZATION.name)) return ''
+  const approved = IVIDEO_OWNER_AUTHORIZATION
+  return `
+## Video Studio release with owner authorization
+
+On ${approved.confirmedOn}, the project owner confirmed holding written commercial and branding authorization for \`${approved.name}\` ${approved.version}, from source commit [\`${approved.sourceCommit}\`](https://github.com/Devin-AXIS/deepseek-design/tree/${approved.sourceCommit}/packages/deepseek-ivideo). This record covers only that release and source pin; it neither changes the upstream license nor authorizes another package or release.
+
+The package retains its declared \`${approved.license}\` terms: [iPolloWork Source Available License, Version 1.0](vendor-plugins/deepseek-ivideo.LICENSE), copyright 2026 Different AI, Inc. The original license, copyright, attribution and third-party notices remain with the release mirror. The distributed copy carries [local package metadata compatibility changes](patches/deepseek-ivideo@0.5.0.patch). The [release record](vendor-plugins/README.md) documents the verified mirror and authorization scope.
 `
 }
 
@@ -802,6 +871,7 @@ ${patchedLines.join('\n')}
 The optional experimental Inspector distributes a locally compiled copy of [chrome-devtools-frontend ${DEVTOOLS_NPM_VERSION}](https://www.npmjs.com/package/chrome-devtools-frontend/v/${DEVTOOLS_NPM_VERSION}), from upstream revision [${DEVTOOLS_SOURCE_REVISION}](https://chromium.googlesource.com/devtools/devtools-frontend/+/${DEVTOOLS_SOURCE_REVISION}). The build includes the Chromium [BSD-3-Clause license](packages/experimental/inspector/assets/devtools/LICENSE) and the third-party license and notice files supplied by the npm source. The Chromium root license does not replace those dependencies' licenses.
 
 ${renderClaudeDistribution(claudeDistribution)}
+${renderVideoAuthorization(runtimeDeps)}
 ${kitRuntime ? `
 ## LibreOffice conversion kit
 

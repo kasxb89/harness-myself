@@ -2,18 +2,39 @@
 # section, a hash of its English and Chinese blocks outside code blocks and generated regions.
 # After editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write packages/client/creation-content/README.md
+/:
+  en: ab03452f353c1c56
+  zh: bcf11fdc4f97327c
 /creation-publications:
   en: ca6b2bdd2a3da8ee
   zh: 898a80d6868e1875
 /creation-publications/summary:
   en: 8449f17eca501288
-  zh: ccedeb65b533f002
-/creation-publications/publication-reads:
-  en: 0047096225a8fdf7
-  zh: 6c69d35710a063ce
+  zh: b4da28ed8b865b5f
+/creation-publications/table-of-contents:
+  en: 2e89ddb1e73218cb
+  zh: 4d182c78e0cf42f5
+/creation-publications/use-this-package:
+  en: 4997859f8d54e43c
+  zh: 18ec4fdfcc20b348
 /creation-publications/model-experience:
-  en: 6ab25f211d074462
-  zh: 4f5fbac487dfe284
+  en: 215e7ba838619b7b
+  zh: a311da3843709f90
+/creation-publications/model-experience/published-creation-briefs:
+  en: 68e686dfe3c1c6fe
+  zh: 6986748374cd6028
+/creation-publications/model-experience/published-creation-briefs/what-the-model-sees:
+  en: 10f7b36e0f06dc1d
+  zh: 0b33050d58009df6
+/creation-publications/model-experience/published-creation-briefs/token-effect:
+  en: 8d0174594fbdd708
+  zh: c747d7074c8e13aa
+/creation-publications/model-experience/published-creation-briefs/kv-cache-effect:
+  en: 867a30bfd411b428
+  zh: 5cb77d03b9a5ab90
 /creation-publications/known-limitations-and-deferred-work:
-  en: 1de3c30cb9c9c016
-  zh: 3501468f48157e1a
+  en: a36f7f56224b1059
+  zh: 60cecffaddc3d258
+/creation-publications/known-limitations-and-deferred-work/dev-note:
+  en: e67f633dc6fe7773
+  zh: 8ec3e73528ddb1a6

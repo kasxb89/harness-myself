@@ -3,6 +3,7 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { apiUrl } from './api-url.ts'
 
 /** Browser-owned draft and revision feedback; model routing remains host-owned. */
 export interface PromptAssistInput {
@@ -139,7 +140,8 @@ async function boundedJson(response: Response): Promise<unknown> {
       chunks.push(next.value)
     }
     try {
-      return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown
+      const value: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+      return value
     } catch (error) {
       // Malformed provider JSON is invalid data, never a diagnostic returned to the browser.
       void error
@@ -225,7 +227,7 @@ export async function assistPrompt(options: PromptAssistOptions): Promise<Prompt
   try {
     signal.throwIfAborted()
     const headers = { authorization: `Bearer ${options.key}`, accept: 'application/json' }
-    const catalog = await fetch(`${options.baseUrl}/v1/models`, { headers, signal })
+    const catalog = await fetch(apiUrl(options.baseUrl, '/v1/models'), { headers, signal, redirect: 'error' })
     if (!catalog.ok) {
       await catalog.body?.cancel()
       outcome = promptAssistFailure('PROMPT_ASSIST_MODEL_UNAVAILABLE')
@@ -239,8 +241,8 @@ export async function assistPrompt(options: PromptAssistOptions): Promise<Prompt
       } else {
         signal.throwIfAborted()
         completionDispatched = true
-        const completion = await fetch(`${options.baseUrl}/v1/chat/completions`, {
-          method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, signal,
+        const completion = await fetch(apiUrl(options.baseUrl, '/v1/chat/completions'), {
+          method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, signal, redirect: 'error',
           body: JSON.stringify({ model, messages, stream: false, max_tokens: 2048 }),
         })
         if (!completion.ok) {

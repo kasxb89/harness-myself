@@ -3,6 +3,7 @@
 /** Locale namespace owned by this plugin. */
 export const NS = 'videogen'
 
+/** Simplified Chinese copy for the video composer. */
 export const zh = {
   'panel': 'AI 生视频',
   'tab.image': '图片',
@@ -67,7 +68,7 @@ export const zh = {
   'referenceAccountChanged': '账号已变化，已清除之前的参考素材，请确认后重新生成',
   'failed': '生成失败：{message}',
   'timeout': '等待超时 —— 任务可能仍在服务端运行，稍后到「产物」里看看。',
-  'eyebrow': '智澍科技 · 视频工作室',
+  'eyebrow': '云枢 · 视频工作室',
   'composer': '视频创作输入',
   'workflow.text': '文生视频',
   'workflow.image': '图生视频',
@@ -132,6 +133,7 @@ export const zh = {
   'unknownType': '未知格式',
 } as const
 
+/** English copy for every video composer translation key. */
 export const en: Record<keyof typeof zh, string> = {
   'panel': 'AI video',
   'tab.image': 'Images',
@@ -196,7 +198,7 @@ export const en: Record<keyof typeof zh, string> = {
   'referenceAccountChanged': 'The account changed and previous references were cleared. Review the current account before generating again.',
   'failed': 'Generation failed: {message}',
   'timeout': 'Timed out — the task may still be running; check Artifacts shortly.',
-  'eyebrow': 'Zhishu · Video studio',
+  'eyebrow': 'Yunshu · Video studio',
   'composer': 'Video composer',
   'workflow.text': 'Text to video',
   'workflow.image': 'Image to video',
@@ -261,4 +263,5 @@ export const en: Record<keyof typeof zh, string> = {
   'unknownType': 'unknown format',
 }
 
+/** Translation keys owned by the video composer. */
 export type VideogenKey = keyof typeof zh

@@ -4,7 +4,7 @@ import type { IconProps } from './icons/props.ts'
 export const BRAND_MARK_VIEWBOX = { width: 24, height: 24 }
 
 /**
- * The product's brand mark (智澍科技): a droplet cut out of a rounded tile.
+ * The product's brand mark (云枢): a droplet cut out of a rounded tile.
  *
  * One path for both, drawn even-odd so the droplet is negative space — the
  * mark paints in a single `currentColor` and stays legible on the sidebar's

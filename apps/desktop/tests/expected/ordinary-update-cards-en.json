@@ -1,6 +1,6 @@
 [
   {
-    "brand": "Zhishu Technology",
+    "brand": "Yunshu",
     "title": "Downloading the new version",
     "detail": "You can keep working while the download continues. We’ll ask before restarting.",
     "buttons": [
@@ -14,7 +14,7 @@
     "technicalDetailsExpanded": false
   },
   {
-    "brand": "Zhishu Technology",
+    "brand": "Yunshu",
     "title": "Verifying update files…",
     "detail": "Checking the downloaded files before installation. Please keep the app open.",
     "buttons": [
@@ -28,7 +28,7 @@
     "technicalDetailsExpanded": false
   },
   {
-    "brand": "Zhishu Technology",
+    "brand": "Yunshu",
     "title": "Could not download the update. Check your connection and try again.",
     "detail": "",
     "buttons": [
@@ -43,7 +43,7 @@
     "technicalDetailsExpanded": false
   },
   {
-    "brand": "Zhishu Technology",
+    "brand": "Yunshu",
     "title": "Version 0.2.2-nightly.1 is ready to install",
     "detail": "The app will close temporarily during the update and reopen automatically when it is complete.\n\nThe update may take some time. Please wait and do not launch the app again during installation.",
     "buttons": [

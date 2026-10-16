@@ -413,6 +413,15 @@ const SERVICE_ROLES: ServiceRole[] = [
     note: 'Configuration carries references to secrets; providers own the values. Consumers resolve per operation, so a rotated credential reaches the very next request; the settings controller exposes value-free views and write-only storage.',
   },
   {
+    key: 'harnessAccount',
+    pkg: 'llm-pi-ai',
+    title: 'Product account relay credential',
+    mode: 'seam',
+    implementations: ['credits-index'],
+    consumers: ['llm-pi-ai'],
+    note: 'The credits Host resolves only the signed-in account relay key for its configured backend; model requests stop when that account is unavailable.',
+  },
+  {
     key: 'deepseekAccount',
     pkg: 'deepseek-account',
     title: 'DeepSeek account',

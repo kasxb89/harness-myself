@@ -38,7 +38,7 @@ export function resolveDesktopUpdateConfigOrigin(packaged: boolean, manifest: un
   return manifest.dshDesktopUpdateConfigOrigin
 }
 
-function trustedUrl(value: string, allowLoopbackHttp: boolean, originOnly: boolean): URL {
+function trustedUrl(value: string, allowLoopbackHttp: boolean, backendBase: boolean): URL {
   if (!/^https?:\/\//iu.test(value) || /[\u0000-\u0020\u007f\\?#]/u.test(value)
     || /%(?:0[0-9a-f]|1[0-9a-f]|7f|5c|2f)/iu.test(value)) {
     throw new DesktopUpdateSourceError('source-invalid')
@@ -46,10 +46,14 @@ function trustedUrl(value: string, allowLoopbackHttp: boolean, originOnly: boole
   let parsed: URL
   try { parsed = new URL(value) } catch (cause) { throw new DesktopUpdateSourceError('source-invalid', { cause }) }
   const loopback = ['127.0.0.1', '[::1]', 'localhost'].includes(parsed.hostname)
+  const rawPath = /^https?:\/\/[^/]+(\/.*)?$/iu.exec(value)?.[1] ?? '/'
+  const harnessPath = parsed.pathname === '/harness' || parsed.pathname.startsWith('/harness/')
   if ((parsed.protocol !== 'https:' && !(allowLoopbackHttp && loopback && parsed.protocol === 'http:'))
     || parsed.username !== '' || parsed.password !== '' || parsed.search !== '' || parsed.hash !== ''
-    || (originOnly ? parsed.pathname !== '/' : /\.(?:ya?ml|exe|zip|dmg|blockmap|json)\/?$/iu.test(parsed.pathname))) throw new DesktopUpdateSourceError('source-invalid')
-  if (!originOnly && !parsed.pathname.endsWith('/')) parsed.pathname += '/'
+    || (backendBase ? !['/', '/harness', '/harness/'].includes(rawPath)
+      : /\.(?:ya?ml|exe|zip|dmg|blockmap|json)\/?$/iu.test(parsed.pathname))
+    || (parsed.hostname === '8.133.202.230' && !harnessPath)) throw new DesktopUpdateSourceError('source-invalid')
+  if (!backendBase && !parsed.pathname.endsWith('/')) parsed.pathname += '/'
   return parsed
 }
 
@@ -58,7 +62,7 @@ function record(value: unknown): value is Record<string, unknown> { return typeo
 /**
  * Read public status anonymously, with an eight-second total deadline and a 512 KiB response cap.
  * Discovery owns request cleanup. A failure yields no reusable source and never selects a previous feed.
- * @param config - Fixed authority and application target; HTTP is restricted to explicit loopback development.
+ * @param config - Fixed backend base and application target; HTTP is restricted to explicit loopback development.
  * @param fetcher - Fetch transport, replaceable at the HTTP test boundary.
  * @returns Validated current-target generic feed directory.
  * @throws DesktopUpdateSourceError for unavailable, disabled, missing, or malformed configuration.
@@ -68,7 +72,7 @@ export async function resolveDesktopUpdateSource(
   fetcher: typeof fetch = fetch,
 ): Promise<DesktopUpdateSource> {
   if (config.origin === undefined || config.origin === '') throw new DesktopUpdateSourceError('source-unbound')
-  const origin = trustedUrl(config.origin, config.allowLoopbackHttp, true).origin
+  const base = trustedUrl(config.origin, config.allowLoopbackHttp, true).href.replace(/\/$/u, '')
   const os = config.platform === 'darwin' ? 'mac' : config.platform === 'win32' ? 'win' : config.platform
   const target = `${os}-${config.arch}`
   if (!['mac-arm64', 'mac-x64', 'win-x64'].includes(target)) throw new DesktopUpdateSourceError('source-unsupported-target')
@@ -76,7 +80,7 @@ export async function resolveDesktopUpdateSource(
   const timer = setTimeout(() => { controller.abort() }, 8_000)
   timer.unref()
   try {
-    const response = await fetcher(`${origin}/api/status`, { redirect: 'error', credentials: 'omit', cache: 'no-store', headers: { accept: 'application/json' }, signal: controller.signal })
+    const response = await fetcher(`${base}/api/status`, { redirect: 'error', credentials: 'omit', cache: 'no-store', headers: { accept: 'application/json' }, signal: controller.signal })
     if (!response.ok || response.redirected) throw new DesktopUpdateSourceError('source-unavailable')
     const maximum = 512 * 1024
     if (Number(response.headers.get('content-length')) > maximum || response.body === null) throw new DesktopUpdateSourceError('source-invalid')

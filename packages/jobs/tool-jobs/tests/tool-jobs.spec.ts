@@ -14,9 +14,10 @@ import type { JobAppendOptions, JobHandle, JobHooks, JobOutcome, JobOutputSource
 import * as ToolJobs from '@deepseek-ai/dsh-tool-jobs'
 import { publicJob, renderModelDelta, statusLine } from '../src/render.ts'
 
-declare module '@deepseek-ai/dsh-jobs' {
+declare module '@deepseek-ai/dsh-jobs/view' {
   interface JobKindMap {
     'test-task': 'test-task'
+    'pty-send': 'pty-send'
   }
 }
 

@@ -37,7 +37,7 @@ Boot runs in two stages: the module stage adopts the parser-loaded bootstrap bat
 
 ### The boot page
 
-The product shell uses the 智澍科技 name and droplet mark. The initial document title, install metadata, and light/dark favicons live in [`apps/web`](../../../apps/web); `DSH_CLIENT_TITLE` can override the build-time document title.
+The product shell uses the 云枢 name and droplet mark. The initial document title, install metadata, and light/dark favicons live in [`apps/web`](../../../apps/web); `DSH_CLIENT_TITLE` can override the build-time document title.
 
 The boot page uses plain DOM and local CSS, so bundle and plugin-activation failures remain visible: it shows one spinner node whose CSS arc grows as entries activate, and reports per-entry status. The spinner and its animation phase persist until the full UI replaces the boot page. A plugin that fails import or activation is reported by name with the reason (missing service, import failure, or state) instead of a blank page. The console contains the original import error.
 

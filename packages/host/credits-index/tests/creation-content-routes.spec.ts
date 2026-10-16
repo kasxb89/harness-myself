@@ -41,7 +41,7 @@ describe('published creation HTTP routes through the real Loader', () => {
       if (mode === 'redirect') { response.writeHead(302, { location: 'https://untrusted.example' }); response.end(); return }
       if (mode === 'error') { response.writeHead(500); response.end('private upstream diagnostic'); return }
       if (mode === 'range-error') { response.writeHead(416, { 'content-range': 'bytes */12' }); response.end(); return }
-      if (request.url === '/api/creation/content') {
+      if (request.url === '/harness/api/creation/content') {
         response.setHeader('content-type', 'application/json')
         response.end(JSON.stringify({ success: true, data: {
           schemaVersion: 1, revision: 'publication-one', image: { templates: mode === 'large-content'
@@ -53,7 +53,7 @@ describe('published creation HTTP routes through the real Loader', () => {
         } }))
         return
       }
-      if (request.url === '/api/creation/assets/' + assetId) {
+      if (request.url === '/harness/api/creation/assets/' + assetId) {
         response.writeHead(request.headers.range === undefined ? 200 : 206, {
           'content-type': 'video/mp4', 'content-length': '4', 'accept-ranges': 'bytes',
           ...(request.headers.range === undefined ? {} : { 'content-range': 'bytes 0-3/12' }),
@@ -72,7 +72,7 @@ describe('published creation HTTP routes through the real Loader', () => {
     await writeFile(configPath, [
       "- name: '@deepseek-ai/dsh-host-webserver'", '  config:', "    host: '127.0.0.1'", '    port: 0',
       "- name: '@deepseek-ai/dsh-system-prompt'", "- name: '@deepseek-ai/dsh-tools'", "- name: '@deepseek-ai/dsh-credits-index'",
-      '  config:', `    stateDir: '${stateDir}'`, `    newApiBaseUrl: 'http://127.0.0.1:${String(address.port)}'`, '    timeoutMs: 1000', '',
+      '  config:', `    stateDir: '${stateDir}'`, `    newApiBaseUrl: 'http://127.0.0.1:${String(address.port)}/harness'`, '    timeoutMs: 1000', '',
     ].join('\n'))
     context = new Context()
     context.baseUrl = pathToFileURL(root).href + '/'
@@ -106,6 +106,7 @@ describe('published creation HTTP routes through the real Loader', () => {
     expect(head.headers.get('content-length')).toBe('4')
     expect(await head.text()).toBe('')
     expect(calls.every(call => call.authorization === undefined)).toBe(true)
+    expect(calls.every(call => call.path.startsWith('/harness/'))).toBe(true)
     expect(calls[1]?.range).toBe('bytes=0-3')
     mode = 'large-content'
     const largePublication = await fetch(route)

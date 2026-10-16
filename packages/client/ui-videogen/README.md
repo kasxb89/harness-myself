@@ -1,8 +1,29 @@
+---
+description: "Prepare video prompts and model-supported references, use published scripts or AI writing, and generate, play or download saved clips."
+kind: "package-reference"
+---
+
 # Video creation
 
 English | [中文](README.zh.md)
 
-This browser plugin provides the video mode of the shared AI creation entry in the desktop renderer. The image/video tabs select the existing keyed panels; the declared window-scoped store retains the video prompt, parameter picks, reference previews, result and busy state across panel remounts. It does not persist drafts to disk.
+## Summary
+
+Create video clips from an editable brief and the selected model's supported image or video references. Published scripts and optional AI writing help prepare the brief before generation. Play and download saved clips while retaining drafts across mode switches. Generation uses the current account, and a failed connection can leave its outcome unknown.
+
+## Table of Contents
+
+- [Use this package](#use-this-package)
+- [Understand the implementation](#understand-the-implementation)
+- [Further Exploration](#further-exploration)
+- [Model Experience](#model-experience)
+- [Known Limitations and Deferred Work](#known-limitations-and-deferred-work)
+- [Dev Note](#dev-note)
+
+<a id="use-this-package"></a>
+## Use this package
+
+Use the video mode of the shared desktop AI creation entry to prepare a clip and explicitly submit generation.
 
 The composer offers text, image, first/last-frame and reference workflows only where the existing media catalog declares support. Hidden workflow media stays in the draft and is excluded from generation requests. First/last-frame mode requires both images. Changing models or workflows retains materials; generation sends only the inputs accepted by the active workflow and model. The injected creation-content catalog supplies published script cards, category labels, preset instructions, headings and prompt placeholders from the administration backend. Categories and scripts follow their configured order; draft scripts and disabled categories stay hidden. English content falls back to its Chinese text. Covers and optional demo videos use real creation assets, with no invented image or storyboard when absent. Loading, empty and failed catalogs show their actual state; failures offer retry without bundled business-content fallback. Script cards have category filters and a preview; applying a script appends editable text and does not submit a request. My clips lists real saved video artifacts, with playback and download.
 
@@ -14,10 +35,53 @@ The window draft retains the reference account and upload epoch across panel rem
 
 The video settings control shows the current aspect ratio, resolution and duration together. Its inline panel groups supported ratio cards, resolution choices, duration choices and audio state; models with fixed audio explain that constraint instead of offering a toggle. Selecting a different model displays its supported values before generation.
 
+<a id="understand-the-implementation"></a>
+## Understand the implementation
+
+<details>
+<summary>Implementation internals — click to expand</summary>
+
+The [client entry](src/client/index.ts) provides the video mode in the desktop renderer. The image/video tabs select the existing keyed panels; the declared window-scoped [draft store](src/client/draft-store.ts) retains the video prompt, parameter picks, reference previews, result and busy state across panel remounts. It does not persist drafts to disk.
+
+</details>
+
+<a id="further-exploration"></a>
+## Further Exploration
+
+- [Creation content](../creation-content/README.md): published script cards and presets.
+- [AI prompt writing](../ui-prompt-assist/README.md): writing and revision behavior.
+- [Credits host](../../host/credits-index/README.md): media requests and local editing.
+- [Web Client](../../../docs/subsystems/web-client.md): client composition.
+
+<a id="model-experience"></a>
 ## Model Experience
 
-This plugin adds no tool or Session event. Explicit video generation submits the visible prompt, selected model settings and active workflow references to the media endpoint. AI prompt assistance is a separate explicit text/vision request using the current draft and all retained images; its accounting is documented by the shared assistant. Script previews and category filters use no model tokens or KV cache.
+### Video submission and prompt assistance
+
+#### What the model sees
+
+This plugin adds no tool or Session event. Explicit video generation submits the visible `prompt`, selected model settings and active workflow references to the media endpoint. AI prompt assistance is a separate explicit text/vision request using the current draft and all retained images.
+
+#### Token effect
+
+Generation follows the selected media model's accounting. The [shared assistant](../ui-prompt-assist/README.md) documents prompt-assistance accounting. Script previews and category filters use no model tokens.
+
+#### KV Cache effect
+
+The client owns no provider cache or model conversation. Script previews and category filters do not affect KV cache; explicit generation and prompt assistance use their respective provider-owned requests.
 
 ## Known Limitations and Deferred Work
 
-The host generation endpoint waits for a final artifact path; there is no client task queue, cancellation, publication or editable timeline. Audio reference uploads are omitted because the current asset route does not accept audio. Output audio switches appear only for models that declare toggle support. The artifact list does not include original prompts or generation settings, so clips cannot restore them. Drafts survive mode changes within a window, but a reload resets them.
+<a id="known-limitations-and-deferred-work"></a>
+
+- The host generation endpoint waits for a final artifact path; there is no client task queue, cancellation, publication or editable timeline. Audio reference uploads are omitted because the current asset route does not accept audio. Output audio switches appear only for models that declare toggle support. The artifact list does not include original prompts or generation settings, so clips cannot restore them. Drafts survive mode changes within a window, but a reload resets them.
+
+<a id="dev-note"></a>
+### Dev Note
+
+<details>
+<summary>Working context for maintainers — click to expand</summary>
+
+None.
+
+</details>

@@ -22,14 +22,25 @@ it('fetches anonymously without redirects and selects only the current target fr
     .resolves.toMatchObject({ url: feeds['win-x64'] })
 })
 
+it.each(['https://8.133.202.230/harness', 'https://8.133.202.230/harness/'])
+('preserves the deployed backend prefix in status discovery: %s', async (origin) => {
+  const fetcher = vi.fn(async () => response(enabled))
+  await expect(resolveDesktopUpdateSource({ ...options, origin }, fetcher)).resolves.toMatchObject({ channel: 'nightly' })
+  expect(fetcher).toHaveBeenCalledWith('https://8.133.202.230/harness/api/status', expect.any(Object))
+})
+
 describe('untrusted source configuration', () => {
   it.each(['http://updates.example.com/', 'https://user:pass@example.com/', 'https://example.com/?token=secret',
     'https://example.com/#a', 'https://example.com/?', 'https://example.com/#', 'https:example.com/', 'https://example.com/path\\dir/', 'https://example.com/a\nb/', 'https://example.com/nightly.yml',
-    'https://example.com/%0a/', 'file:///tmp/'])('rejects unsafe feed %s', async (url) => {
+    'https://example.com/%0a/', 'file:///tmp/', 'https://8.133.202.230/', 'https://8.133.202.230/api/feed/',
+    'https://8.133.202.230/v1/', 'https://8.133.202.230/harness-other/', 'https://8.133.202.230/harness/../api/'])
+  ('rejects unsafe feed %s', async (url) => {
     await expect(resolveDesktopUpdateSource(options, async () => response({ ...enabled, feeds: { ...feeds, 'mac-arm64': url } })))
       .rejects.toMatchObject({ kind: 'source-invalid' })
   })
-  it.each(['http://api.example.com', 'https://api.example.com/path', 'https://u:p@api.example.com', 'https://api.example.com/?secret=1', 'https://api.example.com\\evil'])
+  it.each(['http://api.example.com', 'https://api.example.com/path', 'https://u:p@api.example.com', 'https://api.example.com/?secret=1', 'https://api.example.com\\evil',
+    'https://8.133.202.230', 'https://8.133.202.230/', 'https://8.133.202.230/api', 'https://8.133.202.230/v1',
+    'https://8.133.202.230/other/../harness', 'https://8.133.202.230/%68arness', 'https://8.133.202.230/harness/%2e%2e'])
   ('rejects unsafe authority %s before any request', async (origin) => {
     const fetcher = vi.fn()
     await expect(resolveDesktopUpdateSource({ ...options, origin }, fetcher)).rejects.toMatchObject({ kind: 'source-invalid' })
@@ -41,6 +52,11 @@ describe('untrusted source configuration', () => {
     await expect(resolveDesktopUpdateSource(local, async () => response(config))).resolves.toMatchObject({ url: config.feeds['mac-arm64'] })
     await expect(resolveDesktopUpdateSource({ ...local, allowLoopbackHttp: false }, vi.fn())).rejects.toMatchObject({ kind: 'source-invalid' })
     await expect(resolveDesktopUpdateSource({ ...local, origin: 'http://192.168.1.5' }, vi.fn())).rejects.toMatchObject({ kind: 'source-invalid' })
+  })
+  it('permits a deployment-host feed only inside its harness prefix', async () => {
+    const url = 'https://8.133.202.230/harness/desktop/mac-arm64'
+    await expect(resolveDesktopUpdateSource(options, async () => response({ ...enabled, feeds: { ...feeds, 'mac-arm64': url } })))
+      .resolves.toMatchObject({ url: `${url}/` })
   })
   it('distinguishes unbound, disabled, missing target, unsupported target, malformed and offline states', async () => {
     await expect(resolveDesktopUpdateSource({ ...options, origin: undefined }, vi.fn())).rejects.toMatchObject({ kind: 'source-unbound' })

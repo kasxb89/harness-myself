@@ -7,7 +7,7 @@
   },
   {
     "role": "hide",
-    "label": "Hide Zhishu Technology"
+    "label": "Hide Yunshu"
   },
   {
     "role": "hideOthers",
@@ -19,6 +19,6 @@
   },
   {
     "role": "quit",
-    "label": "Quit Zhishu Technology"
+    "label": "Quit Yunshu"
   }
 ]

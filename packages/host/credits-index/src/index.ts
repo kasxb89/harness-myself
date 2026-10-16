@@ -1,18 +1,9 @@
 /**
- * Host half of the sidebar Credits panel: the client of the relay platform's
- * production API (phone login, balance, WeChat Native top-up).
- *
- * The browser never talks to the platform itself — its JSON entry points are an
- * origin-checked local relay surface, not a CORS API — so every call is proxied
- * here, over HTTPS with normal certificate verification.
- *
- * The session token is kept in the harness credential store when one is
- * mounted, and otherwise in a `0600` file beside the masked account and expiry,
- * so the panel restores a session through `auth/startup` rather than asking for
- * a new code. Idempotency keys arrive from the panel: they belong to the
- * operation the operator is watching, and a retry must reuse the original key
- * with the original parameters.
- *
+ * Account and creation routes for the sidebar Credits panel.
+ * Backend requests retain the configured deployment prefix. Access tokens and
+ * rotating refresh cookies stay in the Host; model requests use the signed-in
+ * account's relay key. Private session files restore the same backend-bound
+ * account, while live status parameters convert its current quota to points.
  * @module @deepseek-ai/dsh-credits-index
  */
 
@@ -30,6 +21,9 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import z from '@deepseek-ai/schemastery'
 import QRCode from 'qrcode'
+import { credentialRef } from '@deepseek-ai/dsh-credentials'
+import type { HarnessAccount } from '@deepseek-ai/dsh-llm-pi-ai'
+import { apiUrl, normalizeApiBaseUrl } from './api-url.ts'
 import { parseUsageWindow, readAccountUsage } from './usage.ts'
 import { assistPrompt, parsePromptAssist, promptAssistFailure } from './prompt-assist.ts'
 import { relayCreationContent } from './creation-content.ts'
@@ -68,13 +62,13 @@ export interface Config {
   relayPort?: number
   /** Credential reference the relay's bearer token lives under. */
   relayTokenEnv?: string
-  /** Local new-api origin, without a trailing slash. */
+  /** HTTPS API base including the deployment prefix; HTTP is restricted to loopback. */
   newApiBaseUrl?: string
-  /** Credential reference holding the new-api key. */
+  /** Legacy deployment-key setting; account requests never resolve it. */
   newApiKeyEnv?: string
   /** Local Bridge origin serving the SMS login contract. */
   bridgeBaseUrl?: string
-  /** File holding the read-only new-api admin token used to find a user by phone. */
+  /** Legacy admin-token setting; product account reads use only the signed-in user's access token. */
   newApiAdminTokenFile?: string
   /** LLM provider route whose model list follows this deployment's new-api. */
   chatProviderRoute?: string
@@ -109,16 +103,14 @@ export interface Config {
 }
 
 export const Config: z<Config> = z.object({
-  // Empty by default: the harness talks to the local stack only. A non-loopback
-  // origin is refused at request time, so no configuration can quietly point
-  // this plugin at a production deployment again.
+  // The former account platform is separate from the model and account API.
   baseUrl: z.string().default(''),
   creditsPerYuan: z.number().min(1).default(1000),
   stateDir: z.string().default(''),
   timeoutMs: z.number().step(1).min(1).default(15_000),
   relayPort: z.number().step(1).min(1).default(8791),
   relayTokenEnv: z.string().default('YUNSHU_RELAY_TOKEN'),
-  newApiBaseUrl: z.string().default('http://127.0.0.1:3000'),
+  newApiBaseUrl: z.string().default('https://8.133.202.230/harness'),
   newApiKeyEnv: z.string().default('YUNSHU_NEWAPI_KEY'),
   bridgeBaseUrl: z.string().default('http://127.0.0.1:4310'),
   newApiAdminTokenFile: z.string().default(''),
@@ -151,7 +143,7 @@ const ROUTE_PREFIX = '/credits'
  * a slash belongs to the record key space and makes the whole document
  * unreadable at the next boot.
  */
-const TOKEN_REF = 'YUNSHU_SESSION_TOKEN'
+const TOKEN_REF = credentialRef('YUNSHU_SESSION_TOKEN')
 
 /** Masked account facts the panel shows while signed in. */
 interface StoredAccount {
@@ -170,23 +162,11 @@ interface PlatformResult {
 
 /** Persisted sign-in facts; the token lives in the credential store when mounted. */
 interface StoredSession {
-  /**
-   * The product's own session token.
-   *
-   * This product signs its users in itself: the value below is minted here,
-   * never sent to the backend, and expires on the product's own schedule. The
-   * backend is the account system of record — it is asked who someone is and
-   * what they can spend — but it is not what keeps a client signed in, so a
-   * backend token's fifteen minutes have no say in how long this session lasts.
-   */
+  /** Product-local sign-in token; upstream access and refresh credentials stay Host-side. */
   readonly token?: string | undefined
-  /**
-   * The backend credential for this account, when the backend handed one out.
-   * It is a service credential: used to read that account's own record on the
-   * backend, renewed quietly, and never treated as the product's login state —
-   * if it lapses the operator stays signed in here and only the backend reads
-   * fall back to the read-only lookup.
-   */
+  /** Backend base that authenticated this session; credentials never migrate to another base. */
+  readonly backendBaseUrl?: string | undefined
+  /** Short-lived access token and rotating refresh cookie for this same account. */
   readonly upstream?: {
     readonly token?: string | undefined
     readonly refresh?: string | undefined
@@ -372,7 +352,10 @@ class SessionStore {
   async read(): Promise<StoredSession | null> {
     if (this.cached !== undefined) return this.cached
     try {
-      const parsed = JSON.parse(await readFile(this.file, 'utf8')) as Partial<StoredSession>
+      const parsed = JSON.parse(await readFile(this.file, 'utf8')) as Omit<Partial<StoredSession>, 'upstream' | 'relay'> & {
+        upstream?: StoredSession['upstream'] | null
+        relay?: StoredSession['relay'] | null
+      }
       const token = typeof parsed.token === 'string' && parsed.token !== '' ? parsed.token : await this.readCredential()
       const account = readAccount(parsed.account)
       const expiresAt = typeof parsed.expiresAt === 'string' ? parsed.expiresAt : null
@@ -386,6 +369,7 @@ class SessionStore {
         token,
         expiresAt,
         account,
+        ...typeof parsed.backendBaseUrl === 'string' ? { backendBaseUrl: parsed.backendBaseUrl } : {},
         ...upstream === undefined ? {} : { upstream },
         ...relay === undefined ? {} : { relay },
       }
@@ -401,6 +385,7 @@ class SessionStore {
     token: string
     expiresAt: string
     account: StoredAccount
+    backendBaseUrl?: string | undefined
     upstream?: StoredSession['upstream']
     relay?: StoredSession['relay']
   }): Promise<void> {
@@ -411,6 +396,7 @@ class SessionStore {
     await mkdir(dirname(this.file), { recursive: true })
     await writeFile(this.file, `${JSON.stringify({
       token: session.token,
+      ...session.backendBaseUrl === undefined ? {} : { backendBaseUrl: session.backendBaseUrl },
       ...session.upstream === undefined ? {} : { upstream: session.upstream },
       ...session.relay === undefined ? {} : { relay: session.relay },
       expiresAt: session.expiresAt,
@@ -423,12 +409,8 @@ class SessionStore {
   async clear(): Promise<void> {
     this.cached = null
     await this.deleteCredential()
-    try {
-      await mkdir(dirname(this.file), { recursive: true })
-      await writeFile(this.file, '{}\n', { mode: 0o600 })
-    } catch {
-      // A file that cannot be written is already the signed-out state.
-    }
+    await mkdir(dirname(this.file), { recursive: true })
+    await writeFile(this.file, '{}\n', { mode: 0o600 })
   }
 
   /**
@@ -444,24 +426,19 @@ class SessionStore {
     this.cached = undefined
   }
 
-  /** The credential half, or null when no store is mounted or nothing is stored. */
+  /** The stored session reference, or null while no credential provider is mounted. */
   private async readCredential(): Promise<string | null> {
-    const credentials = this.ctx.get('credentials') as { resolve?: (ref: string) => Promise<unknown> } | undefined
-    if (credentials?.resolve === undefined) return null
     try {
-      const record = await credentials.resolve(TOKEN_REF)
-      if (typeof record === 'string') return record
-      const key = (record as { key?: unknown } | null)?.key
-      return typeof key === 'string' && key !== '' ? key : null
+      return (await this.ctx.get('credentials')?.resolve(TOKEN_REF))?.value ?? null
     } catch {
       return null
     }
   }
 
-  /** Write the credential half; false means the token lives in the file instead. */
+  /** Store the session reference; the private session file also retains it. */
   private async writeCredential(token: string): Promise<boolean> {
-    const credentials = this.ctx.get('credentials') as { set?: (ref: string, value: string) => Promise<void> } | undefined
-    if (credentials?.set === undefined) return false
+    const credentials = this.ctx.get('credentials')
+    if (credentials === undefined) return false
     try {
       await credentials.set(TOKEN_REF, token)
       return true
@@ -470,19 +447,15 @@ class SessionStore {
     }
   }
 
-  /** Remove the credential half, tolerating an absent store. */
+  /** Remove the reference key, independently of the credential record key space. */
   private async deleteCredential(): Promise<void> {
-    const credentials = this.ctx.get('credentials') as {
-      deleteRecord?: (ref: string) => Promise<void>
-      delete?: (ref: string) => Promise<void>
-    } | undefined
     try {
-      if (credentials?.deleteRecord !== undefined) await credentials.deleteRecord(TOKEN_REF)
-      else if (credentials?.delete !== undefined) await credentials.delete(TOKEN_REF)
+      await this.ctx.get('credentials')?.unset(TOKEN_REF)
     } catch {
-      // Nothing stored, or the store refuses removals; the file half is cleared regardless.
+      // The private session file is cleared even when the credential provider is unavailable.
     }
   }
+
 }
 
 /**
@@ -552,9 +525,8 @@ function platformUpload(
 const ALLOWED_ASSET_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
 
 /**
- * Reference video types the local stack accepts. A video-to-video model takes a
- * clip as a reference the same way an image model takes a picture, and the
- * bytes never leave this machine.
+ * Reference video types accepted by the account relay. Clips remain in local
+ * storage until a generation request sends their bytes to the configured API.
  */
 const ALLOWED_REFERENCE_VIDEO_TYPES = new Set(['video/mp4', 'video/quicktime'])
 
@@ -663,7 +635,7 @@ async function downloadToFile(
         })
         return
       }
-      const mediaType = String(response.headers['content-type'] ?? 'application/octet-stream')
+      const mediaType = response.headers['content-type'] ?? 'application/octet-stream'
       const stamp = new Date().toISOString().replace(/[:.]/g, '-')
       const filename = `gen-${stamp}-${randomBytes(3).toString('hex')}${extensionFor(mediaType)}`
       const target = join(directory, filename)
@@ -685,10 +657,36 @@ async function downloadToFile(
 
 export function apply(ctx: Context, config: Config): void {
   const resolved = config as ResolvedConfig
+  const apiBaseUrl = normalizeApiBaseUrl(resolved.newApiBaseUrl)
   const stateDir = resolved.stateDir === ''
     ? join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'plugin-data', 'credits')
     : resolved.stateDir
   const store = new SessionStore(ctx, join(stateDir, 'session.json'))
+  const relayRef = credentialRef(resolved.relayTokenEnv)
+  let identityVersion = 0
+  let sessionMutations = Promise.resolve()
+  /** Serialize session and credential writes so logout cannot be overwritten by an older exchange. */
+  const mutateSession = async <T>(run: () => Promise<T>): Promise<T> => {
+    const operation = sessionMutations.then(run)
+    sessionMutations = operation.then(() => undefined, (_failure: unknown) => undefined)
+    return await operation
+  }
+
+  /** Backend requests preserve the validated deployment path and never follow redirects. */
+  const apiFetch = async (route: string, init: RequestInit = {}): Promise<Response> =>
+    await fetch(apiUrl(apiBaseUrl, route), { ...init, redirect: 'error' })
+
+  /** Remote artifact redirects cannot move a request onto another service. */
+  const mediaFetch = async (url: string, init: RequestInit): Promise<Response> => {
+    const target = new URL(url)
+    if (target.hostname === '8.133.202.230') {
+      if (target.origin !== 'https://8.133.202.230' || !target.pathname.startsWith('/harness/')) {
+        throw new Error('artifact URL leaves the harness deployment')
+      }
+      apiUrl('https://8.133.202.230/harness', target.pathname.slice('/harness'.length) + target.search)
+    }
+    return await fetch(target, { ...init, redirect: 'error' })
+  }
 
   /**
    * The signed-in account's own relay credential, or null when nobody is.
@@ -699,7 +697,7 @@ export function apply(ctx: Context, config: Config): void {
    * request billed to the operator while the panel displays someone else.
    */
   const accountKey = async (live?: StoredSession): Promise<{ key: string } | { reason: 'signed-out' | 'no-credential' }> => {
-    const session = live ?? await store.read()
+    const session = live ?? await liveSession()
     if (session?.token === undefined) return { reason: 'signed-out' }
     const key = session.relay?.key
     if (key === undefined || key === '') return { reason: 'no-credential' }
@@ -714,63 +712,22 @@ export function apply(ctx: Context, config: Config): void {
       ? { code: 'RELAY_MISSING', message: '这个登录还没有中转凭据，请到「额度」里登出后重新登录一次。' }
       : { code: 'SESSION_REQUIRED', message: '请先在「额度」里用手机号登录，登录后才能生成。' }
 
-  /**
-   * Drop the account's relay credential from the credential store.
-   *
-   * Nothing else has to be told: an unset entry means the chat path simply has
-   * no key to send with, which is exactly the rule — using the product requires
-   * a sign-in.
-   */
+  /** Remove the model-route reference when the account signs out. */
   const releaseAccountCredential = async (): Promise<void> => {
-    const credentials = ctx.get('credentials') as {
-      deleteRecord?: (ref: string) => Promise<void>
-      delete?: (ref: string) => Promise<void>
-    } | undefined
-    try {
-      if (credentials?.deleteRecord !== undefined) await credentials.deleteRecord(resolved.relayTokenEnv)
-      else if (credentials?.delete !== undefined) await credentials.delete(resolved.relayTokenEnv)
-    } catch {
-      // Nothing stored, or the store refuses removals; a sign-out is still a
-      // sign-out locally, and the model route fails loud once the key is gone.
+    try { await ctx.get('credentials')?.unset(relayRef) } catch (_unwritableCredentialReference: unknown) {
+      // A read-only environment reference cannot authorize this session-owned model route.
     }
   }
 
-  /**
-   * Hold the signed-in account's relay credential under the ref the model route
-   * reads, so a chat request is billed to the person who signed in rather than to
-   * whoever owns the deployment key.
-   *
-   * The route resolves that ref on every request, so a sign-in (or a sign-out)
-   * takes effect without a restart.
-   */
+  /** Publish only this signed-in account's relay key to the model route. */
   const holdAccountCredential = async (key: string): Promise<void> => {
-    const credentials = ctx.get('credentials') as { set?: (ref: string, value: string) => Promise<void> } | undefined
-    if (credentials?.set === undefined) return
-    try {
-      await credentials.set(resolved.relayTokenEnv, key)
-    } catch (error: unknown) {
-      ctx.logger.warn(`credits-index: the account's relay credential could not be stored: ${String(error)}`)
+    try { await ctx.get('credentials')?.set(relayRef, key) } catch (_unwritableCredentialReference: unknown) {
+      // Live session resolution remains authoritative when the optional reference cache is unwritable.
     }
   }
 
   /**
-   * The deployment's own key, read from the file the operator installed.
-   *
-   * Catalogue reads only — model lists and pricing — never a generation. Its
-   * group defines what the product sells, so the picker shows the same set
-   * whether or not anyone is signed in.
-   */
-  const deploymentKey = async (): Promise<string | null> => {
-    try {
-      const file = (await readFile(join(stateDir, 'newapi-key'), 'utf8')).trim()
-      return file === '' ? null : file
-    } catch {
-      return null
-    }
-  }
-
-  /**
-   * Ask the local new-api which models it serves, split by the endpoint types
+   * Ask the configured API which models it serves, split by the endpoint types
    * each one declares. This is the live source the model pickers follow, so a
    * channel added on the new-api side shows up here without any config edit.
    */
@@ -782,16 +739,17 @@ export function apply(ctx: Context, config: Config): void {
     image: string[]
     video: string[]
   }> => {
-    const key = await deploymentKey()
-    if (key === null) return { ok: false, code: 'NO_KEY', message: 'new-api key 未配置', chat: [], image: [], video: [] }
+    const owned = await accountKey()
+    if ('reason' in owned) return { ok: false, ...noCredential(owned.reason), chat: [], image: [], video: [] }
+    const key = owned.key
     try {
-      const response = await fetch(`${resolved.newApiBaseUrl}/v1/models`, {
+      const response = await apiFetch('/v1/models', {
         headers: { authorization: `Bearer ${key}`, accept: 'application/json' },
         signal: AbortSignal.timeout(resolved.timeoutMs),
       })
       if (!response.ok) return { ok: false, code: `HTTP_${String(response.status)}`, message: 'new-api 模型列表不可用', chat: [], image: [], video: [] }
       const payload: unknown = await response.json()
-      const data = (payload as { data?: unknown })?.data
+      const data = payload !== null && typeof payload === 'object' && 'data' in payload ? payload.data : undefined
       const chat: string[] = []
       const image: string[] = []
       const video: string[] = []
@@ -813,18 +771,11 @@ export function apply(ctx: Context, config: Config): void {
     }
   }
 
-  /**
-   * The signed-in user's new-api group, which decides the models the panel may
-   * offer. The value was written next to the session at sign-in; a record that
-   * is missing or stale simply leaves the catalog unfiltered.
-   */
+  /** The current account's live model group; another account's cached group is never reused. */
   const readUserGroup = async (): Promise<string | null> => {
-    try {
-      const stored = JSON.parse(await readFile(join(stateDir, 'newapi-user.json'), 'utf8')) as { group?: unknown }
-      return typeof stored.group === 'string' && stored.group !== '' ? stored.group : null
-    } catch {
-      return null
-    }
+    const session = await liveSession()
+    if (session === null) return null
+    return (await readSelf(session))?.group ?? null
   }
 
   /**
@@ -842,7 +793,7 @@ export function apply(ctx: Context, config: Config): void {
   }> => {
     const group = await readUserGroup()
     try {
-      const response = await fetch(`${resolved.newApiBaseUrl}/api/pricing`, {
+      const response = await apiFetch('/api/pricing', {
         headers: { accept: 'application/json' },
         signal: signal === undefined ? AbortSignal.timeout(resolved.timeoutMs)
           : AbortSignal.any([signal, AbortSignal.timeout(resolved.timeoutMs)]),
@@ -970,7 +921,7 @@ export function apply(ctx: Context, config: Config): void {
   ): Promise<MediaOutcome> => {
     const headers = { authorization: `Bearer ${key}`, 'content-type': 'application/json', accept: 'application/json' }
     try {
-      const created = await fetch(`${resolved.newApiBaseUrl}/v1/videos`, {
+      const created = await apiFetch('/v1/videos', {
         method: 'POST',
         headers,
         body: JSON.stringify(request),
@@ -995,7 +946,7 @@ export function apply(ctx: Context, config: Config): void {
       for (let attempt = 0; attempt < 150; attempt += 1) {
         if (signal?.aborted === true) return { ok: false, code: 'ABORTED', message: '任务已取消', taskId }
         await new Promise(resolve => setTimeout(resolve, attempt === 0 ? 4000 : 6000))
-        const read = await fetch(`${resolved.newApiBaseUrl}/v1/videos/${encodeURIComponent(taskId)}`, {
+        const read = await apiFetch(`/v1/videos/${encodeURIComponent(taskId)}`, {
           headers, signal: AbortSignal.timeout(resolved.timeoutMs),
         })
         const readText = await read.text()
@@ -1018,10 +969,10 @@ export function apply(ctx: Context, config: Config): void {
           await mkdir(directory, { recursive: true })
           const file = join(directory, `vid-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomBytes(3).toString('hex')}.mp4`)
           const response_ = remote === null
-            ? await fetch(`${resolved.newApiBaseUrl}/v1/videos/${encodeURIComponent(taskId)}/content`, {
+            ? await apiFetch(`/v1/videos/${encodeURIComponent(taskId)}/content`, {
               headers, signal: AbortSignal.timeout(300_000),
             })
-            : await fetch(remote, { signal: AbortSignal.timeout(300_000) })
+            : await mediaFetch(remote, { signal: AbortSignal.timeout(300_000) })
           if (!response_.ok) {
             return { ok: false, code: 'CONTENT_FAILED', message: `取回视频失败（HTTP ${String(response_.status)}）`, taskId }
           }
@@ -1245,7 +1196,7 @@ export function apply(ctx: Context, config: Config): void {
       // A plugin-served model answers on its own path and hands back a task;
       // the OpenAI host protocol answers inline on `/v1/images/generations`.
       if (capability.model.route !== '/v1/images/generations') {
-        const submitted = await fetch(`${resolved.newApiBaseUrl}${capability.model.route}`, {
+        const submitted = await apiFetch(capability.model.route, {
           method: 'POST',
           headers,
           body: JSON.stringify({
@@ -1268,8 +1219,8 @@ export function apply(ctx: Context, config: Config): void {
         }
         for (let attempt = 0; attempt < 120; attempt += 1) {
           if (attempt > 0) await new Promise(resolve => setTimeout(resolve, attempt < 5 ? 2000 : 4000))
-          const read = await fetch(
-            `${resolved.newApiBaseUrl}${capability.model.route}/${encodeURIComponent(taskId)}`,
+          const read = await apiFetch(
+            `${capability.model.route}/${encodeURIComponent(taskId)}`,
             { headers: { authorization: `Bearer ${key}`, accept: 'application/json' }, signal: AbortSignal.timeout(resolved.timeoutMs) },
           )
           const readText = await read.text()
@@ -1293,7 +1244,7 @@ export function apply(ctx: Context, config: Config): void {
             let bytes: Buffer | null = null
             if (b64 !== null) bytes = Buffer.from(b64, 'base64')
             else if (remote !== null) {
-              const image = await fetch(remote, { signal: AbortSignal.timeout(120_000) })
+              const image = await mediaFetch(remote, { signal: AbortSignal.timeout(120_000) })
               if (image.ok) bytes = Buffer.from(await image.arrayBuffer())
             }
             if (bytes === null) continue
@@ -1310,7 +1261,7 @@ export function apply(ctx: Context, config: Config): void {
         return { ok: false, model, code: 'TIMEOUT', message: '任务仍在运行，稍后可重试。' }
       }
       const upstream = references.length === 0
-        ? await fetch(`${resolved.newApiBaseUrl}/v1/images/generations`, {
+        ? await apiFetch('/v1/images/generations', {
           method: 'POST',
           headers,
           body: JSON.stringify({
@@ -1333,7 +1284,7 @@ export function apply(ctx: Context, config: Config): void {
             if (file === null) throw new Error(`参考图 ${assetId} 已失效，请重新上传`)
             form.append('image[]', new Blob([new Uint8Array(file.bytes)], { type: file.mediaType }), file.filename)
           }
-          return await fetch(`${resolved.newApiBaseUrl}/v1/images/edits`, {
+          return await apiFetch('/v1/images/edits', {
             method: 'POST',
             headers: { authorization: `Bearer ${key}`, accept: 'application/json' },
             body: form,
@@ -1361,7 +1312,7 @@ export function apply(ctx: Context, config: Config): void {
           let bytes: Buffer | null = null
           if (b64 !== null) bytes = Buffer.from(b64, 'base64')
           else if (remote !== null) {
-            const image = await fetch(remote, { signal: AbortSignal.timeout(120_000) })
+            const image = await mediaFetch(remote, { signal: AbortSignal.timeout(120_000) })
             if (!image.ok) continue
             bytes = Buffer.from(await image.arrayBuffer())
           }
@@ -1390,7 +1341,7 @@ export function apply(ctx: Context, config: Config): void {
         if (record !== null && taskId !== null && (record.object === 'generation.task' || status !== null)) {
           for (let attempt = 0; attempt < 45; attempt += 1) {
             if (attempt > 0) await new Promise(resolve => setTimeout(resolve, attempt < 5 ? 2000 : 4000))
-            const read = await fetch(`${capability.model.route}/${encodeURIComponent(taskId)}`, {
+            const read = await apiFetch(`${capability.model.route}/${encodeURIComponent(taskId)}`, {
               headers: { authorization: `Bearer ${key}`, accept: 'application/json' },
               signal: AbortSignal.timeout(resolved.timeoutMs),
             })
@@ -1400,7 +1351,7 @@ export function apply(ctx: Context, config: Config): void {
                 ok: false,
                 model,
                 code: 'ASYNC_TASK_NOT_READABLE',
-                message: `上游把生图做成了异步任务（task ${taskId}），而本机 new-api 没有回读路由（${capability.model.route}/${'{id}'} 返回 HTTP ${String(read.status)}）。`
+                message: `上游把生图做成了异步任务（task ${taskId}），而本机 new-api 没有回读路由（${capability.model.route}/{id} 返回 HTTP ${String(read.status)}）。`
                   + `请让 new-api 支持该渠道的任务回读，或改用能直接出图的模型。原始响应：${body.slice(0, 200)}`,
               }
             }
@@ -1414,11 +1365,9 @@ export function apply(ctx: Context, config: Config): void {
             }
             const result = task?.result !== null && typeof task?.result === 'object' ? task.result as Record<string, unknown> : null
             const list = Array.isArray(result?.data) ? result.data : []
-            await saveImages(list)
-            if (saved.length > 0) break
-          }
-          if (saved.length > 0) {
-            return { ok: true, model, path: saved[0], paths: saved, mode: 'generate' }
+            if (await saveImages(list) > 0) {
+              return { ok: true, model, path: saved[0], paths: saved, mode: 'generate' }
+            }
           }
           return {
             ok: false,
@@ -1443,124 +1392,28 @@ export function apply(ctx: Context, config: Config): void {
     }
   }
 
-  /**
-   * The `Origin` to declare on new-api's session-cookie endpoints.
-   *
-   * `auth/refresh` and `auth/logout` sit behind new-api's session-cookie origin
-   * guard, which rejects a request carrying neither `Origin` nor `Referer` once
-   * the deployment sets `SESSION_COOKIE_SECURE` for HTTPS. Declaring the origin
-   * of the endpoint being called satisfies the guard's same-origin rule, so the
-   * renewal survives that switch with no second address to configure here.
-   */
-  const declaredOrigin: Record<string, string> = (() => {
-    try {
-      return { origin: new URL(resolved.newApiBaseUrl).origin }
-    } catch {
-      // A base URL the URL parser rejects fails every call anyway; send none
-      // rather than declare an origin that does not name this deployment.
-      return {}
-    }
-  })()
+  /** Cookie rotation and logout declare the backend origin, without its deployment path. */
+  const declaredOrigin = { origin: new URL(apiBaseUrl).origin }
 
-  /**
-   * The user-level balance on the local new-api, converted to points.
-   *
-   * The token must have `allow_user_quota_query` on for `user_quota` to appear;
-   * the outer `total_available` is the token's own allowance and reads 0 on an
-   * unlimited token, so it is never used here. The unit conversion mirrors the
-   * new-api console itself: quota → USD by `quota_per_unit`, USD → CNY by
-   * `usd_exchange_rate`, CNY → points at the deployment's 1000 points per yuan.
-   */
-  /** Convert one new-api quota figure into points, using the platform's own parameters. */
-  const convertQuota = async (quota: number): Promise<{ points: number; yuan: number }> => {
-    let quotaPerUnit = 500_000
-    let rate = 7.3
-    try {
-      const status = await fetch(`${resolved.newApiBaseUrl}/api/status`, { signal: AbortSignal.timeout(resolved.timeoutMs) })
-      if (status.ok) {
-        const body = await status.json() as { data?: { quota_per_unit?: unknown; usd_exchange_rate?: unknown } }
-        if (typeof body.data?.quota_per_unit === 'number' && body.data.quota_per_unit > 0) quotaPerUnit = body.data.quota_per_unit
-        if (typeof body.data?.usd_exchange_rate === 'number' && body.data.usd_exchange_rate > 0) rate = body.data.usd_exchange_rate
-      }
-    } catch {
-      // Unreachable status keeps the documented defaults rather than failing the read.
+  /** Live quota conversion parameters; unavailable status never supplies a guessed rate. */
+  const readQuotaRate = async (): Promise<{ quotaPerUnit: number; usdExchangeRate: number }> => {
+    const status = await apiFetch('/api/status', { signal: AbortSignal.timeout(resolved.timeoutMs) })
+    const body = await status.json() as { success?: unknown; data?: { quota_per_unit?: unknown; usd_exchange_rate?: unknown } } | null
+    const quotaPerUnit = body?.data?.quota_per_unit
+    const usdExchangeRate = body?.data?.usd_exchange_rate
+    if (!status.ok || body?.success !== true || typeof quotaPerUnit !== 'number' || !Number.isFinite(quotaPerUnit) || quotaPerUnit <= 0
+      || typeof usdExchangeRate !== 'number' || !Number.isFinite(usdExchangeRate) || usdExchangeRate <= 0) {
+      throw new Error('BALANCE_UNAVAILABLE')
     }
-    const yuan = quota / quotaPerUnit * rate
+    return { quotaPerUnit, usdExchangeRate }
+  }
+
+  /** Convert quota using the current backend parameters and the configured product units. */
+  const convertQuota = (quota: number, rate: { quotaPerUnit: number; usdExchangeRate: number }): { points: number; yuan: number } => {
+    if (!Number.isFinite(quota) || quota < 0) throw new Error('BALANCE_UNAVAILABLE')
+    const yuan = quota / rate.quotaPerUnit * rate.usdExchangeRate
+    if (!Number.isFinite(yuan)) throw new Error('BALANCE_UNAVAILABLE')
     return { yuan, points: Math.round(yuan * resolved.creditsPerYuan) }
-  }
-
-  const readNewApiBalance = async (): Promise<{ ok: boolean; points?: number; yuan?: number; message?: string }> => {
-    // Reserved for the no-session fallback; the signed-in path reads the user below.
-    const key = await deploymentKey()
-    if (key === null) return { ok: false, message: 'new-api key 未配置' }
-    try {
-      const [usage, status] = await Promise.all([
-        fetch(`${resolved.newApiBaseUrl}/api/usage/token/`, {
-          headers: { authorization: `Bearer ${key}`, accept: 'application/json' },
-          signal: AbortSignal.timeout(resolved.timeoutMs),
-        }),
-        fetch(`${resolved.newApiBaseUrl}/api/status`, {
-          headers: { authorization: `Bearer ${key}`, accept: 'application/json' },
-          signal: AbortSignal.timeout(resolved.timeoutMs),
-        }),
-      ])
-      if (!usage.ok) return { ok: false, message: `usage HTTP ${String(usage.status)}` }
-      const usageBody = await usage.json() as { data?: { user_quota?: { total_available?: unknown } } }
-      const available = usageBody?.data?.user_quota?.total_available
-      if (typeof available !== 'number' || !Number.isFinite(available)) {
-        return { ok: false, message: '令牌未开启「允许查询用户额度」，user_quota 缺失' }
-      }
-      let quotaPerUnit = 500_000
-      let usdExchangeRate = 7.3
-      if (status.ok) {
-        const statusBody = await status.json() as { data?: { quota_per_unit?: unknown; usd_exchange_rate?: unknown } }
-        if (typeof statusBody?.data?.quota_per_unit === 'number' && statusBody.data.quota_per_unit > 0) {
-          quotaPerUnit = statusBody.data.quota_per_unit
-        }
-        if (typeof statusBody?.data?.usd_exchange_rate === 'number' && statusBody.data.usd_exchange_rate > 0) {
-          usdExchangeRate = statusBody.data.usd_exchange_rate
-        }
-      }
-      const yuan = available / quotaPerUnit * usdExchangeRate
-      return { ok: true, yuan, points: Math.round(yuan * resolved.creditsPerYuan) }
-    } catch (error) {
-      return { ok: false, message: error instanceof Error ? error.message : String(error) }
-    }
-  }
-
-  /**
-   * The model grant (G) is minted from the session (S) and cached until shortly
-   * before it expires; only metadata ever leaves this process, never the key.
-   */
-  let grant: { baseUrl: string; apiKey: string; expiresAt: string; models: string[]; defaultModelId: string } | null = null
-
-  const ensureGrant = async (force: boolean): Promise<{ ok: boolean; code?: string; message?: string; sessionInvalid?: boolean }> => {
-    if (!force && grant !== null && Date.parse(grant.expiresAt) - Date.now() > 60_000) return { ok: true }
-    const session = await liveSession()
-    if (session?.token === undefined) return { ok: false, code: 'SESSION_INVALID', message: 'not signed in', sessionInvalid: true }
-    const result = await platformCall(resolved.baseUrl, '/api/v2/auth/model-grant', {
-      method: 'POST', token: (session.upstream?.token ?? ''), body: {}, timeoutMs: resolved.timeoutMs,
-    })
-    if (result.status === 401 && result.code === 'SESSION_INVALID') {
-      await store.clear()
-      grant = null
-      return { ok: false, code: 'SESSION_INVALID', message: 'session expired', sessionInvalid: true }
-    }
-    const payload = result.body !== null && typeof result.body === 'object' ? result.body as Record<string, unknown> : null
-    const gateway = payload?.model_gateway !== null && typeof payload?.model_gateway === 'object'
-      ? payload.model_gateway as Record<string, unknown>
-      : null
-    const baseUrl = readString(gateway, 'base_url')
-    const apiKey = readString(gateway, 'api_key')
-    const expiresAt = readString(gateway, 'expires_at')
-    if (result.status !== 200 || baseUrl === null || apiKey === null || expiresAt === null) {
-      return { ok: false, code: result.code ?? 'GRANT_FAILED', message: result.message ?? 'model grant unavailable' }
-    }
-    const models = Array.isArray(gateway?.models)
-      ? gateway.models.filter((item): item is string => typeof item === 'string')
-      : []
-    grant = { baseUrl, apiKey, expiresAt, models, defaultModelId: readString(gateway, 'default_model_id') ?? models[0] ?? '' }
-    return { ok: true }
   }
 
   /**
@@ -1600,195 +1453,138 @@ export function apply(ctx: Context, config: Config): void {
     return null
   }
 
-  /**
-   * Trade the stored refresh cookie for a fresh access token.
-   *
-   * new-api issues a short-lived access token and a long-lived refresh cookie
-   * at sign-in. Without this exchange the operator is sent back to the code
-   * form every few minutes; with it, a sign-in lasts as long as the session
-   * does. The cookie rotates, so whatever comes back replaces what was stored.
-   */
-  /**
-   * One renewal at a time, and that is not an optimisation: the deployment
-   * rotates the refresh token on every exchange, so two renewals racing each
-   * other leave one of them holding a token that has just been invalidated —
-   * which reads as "your session was revoked" and signs the operator out. The
-   * panels poll two endpoints, so the race is the normal case, not the rare
-   * one.
-   */
-  let renewal: Promise<StoredSession | null> | null = null
-  let lastRenewalAttempt = 0
-  let renewalReported = false
+  /** Only one refresh exchange may rotate a given account's cookie at a time. */
+  let renewal: { token: string; promise: Promise<StoredSession | null> } | null = null
 
-  const refreshSession = async (refresh: string): Promise<StoredSession | null> => {
-    if (renewal !== null) return await renewal
-    const attempt = exchangeRefreshToken(refresh)
-    renewal = attempt
+  const refreshSession = async (previous: StoredSession): Promise<StoredSession | null> => {
+    const owner = previous.token
+    const refresh = previous.upstream?.refresh
+    const current = await store.read()
+    if (owner === undefined || refresh === undefined || current?.token !== owner) return null
+    if (current.upstream?.token !== previous.upstream?.token) return current
+    const version = identityVersion
+    if (renewal !== null) {
+      if (renewal.token !== owner) { await renewal.promise; return null }
+      const result = await renewal.promise
+      return version === identityVersion ? result : null
+    }
+    const attempt = exchangeRefreshToken(previous, version)
+    renewal = { token: owner, promise: attempt }
     try {
-      return await attempt
+      const result = await attempt
+      return version === identityVersion ? result : null
     } finally {
       renewal = null
     }
   }
 
-  const exchangeRefreshToken = async (refresh: string): Promise<StoredSession | null> => {
+  const exchangeRefreshToken = async (previous: StoredSession, version: number): Promise<StoredSession | null> => {
     try {
-      const answered = await fetch(`${resolved.newApiBaseUrl}/api/user/auth/refresh`, {
-        method: 'POST',
-        headers: {
-          cookie: `new_api_refresh=${refresh}`,
-          ...declaredOrigin,
-          'content-type': 'application/json',
-          accept: 'application/json',
-        },
-        body: '{}',
-        signal: AbortSignal.timeout(resolved.timeoutMs),
+      const answered = await apiFetch('/api/user/auth/refresh', {
+        method: 'POST', headers: { cookie: `new_api_refresh=${previous.upstream?.refresh ?? ''}`,
+          ...declaredOrigin, 'content-type': 'application/json', accept: 'application/json' },
+        body: '{}', signal: AbortSignal.timeout(resolved.timeoutMs),
       })
-      const text = await answered.text()
-      let payload: {
-        success?: boolean
-        data?: { access_token?: unknown; access_expires_at?: unknown; user?: { id?: unknown; phone_e164?: unknown } }
-      } = {}
-      try {
-        if (text !== '') payload = JSON.parse(text) as typeof payload
-      } catch {
-        payload = {}
-      }
-      const token = typeof payload.data?.access_token === 'string' ? payload.data.access_token : null
-      if (payload.success !== true || token === null) return null
-      const previous = await store.read()
-      const refreshedId = payload.data?.user?.id
-      const confirmedId = typeof refreshedId === 'number' && Number.isSafeInteger(refreshedId) && refreshedId > 0
-        ? String(refreshedId)
-        : typeof refreshedId === 'string' && /^[1-9]\d*$/.test(refreshedId) ? refreshedId : null
-      if (previous?.token === undefined || confirmedId === null || confirmedId !== previous.account.id) return null
-      const account = previous.account
-      const expiresAtSeconds = typeof payload.data?.access_expires_at === 'number' ? payload.data.access_expires_at : null
-      const expiresAt = expiresAtSeconds === null ? '' : new Date(expiresAtSeconds * 1000).toISOString()
-      const rotated = refreshFromSetCookie(answered) ?? refresh
-      // Only the backend credential is renewed here; the product's own session
-      // token and its expiry are untouched by anything the backend says.
-      const upstream = { token, refresh: rotated, expiresAt }
-      await store.write({
-        token: previous.token,
-        expiresAt: previous.expiresAt,
-        account,
-        upstream,
-        ...previous.relay === undefined ? {} : { relay: previous.relay },
+      const payload = await answered.json() as {
+        success?: unknown
+        data?: { access_token?: unknown; access_expires_at?: unknown; user?: { id?: unknown } }
+      } | null
+      const token = payload?.data?.access_token
+      const expiry = payload?.data?.access_expires_at
+      const id = payload?.data?.user?.id
+      if (!answered.ok || payload?.success !== true || typeof token !== 'string' || token.trim() === ''
+        || typeof expiry !== 'number' || !Number.isFinite(expiry) || expiry * 1000 <= Date.now()
+        || !Number.isFinite(new Date(expiry * 1000).getTime()) || String(id) !== previous.account.id) return null
+      const rotated = refreshFromSetCookie(answered) ?? previous.upstream?.refresh
+      const candidate: StoredSession = { ...previous, backendBaseUrl: apiBaseUrl,
+        upstream: { token, refresh: rotated, expiresAt: new Date(expiry * 1000).toISOString() } }
+      await mutateSession(async () => {
+        const current = await store.read()
+        if (version === identityVersion && current?.token === previous.token && candidate.token !== undefined) {
+          await store.write({ ...candidate, token: candidate.token })
+        }
       })
-      return { token: previous.token, expiresAt: previous.expiresAt, account, upstream, relay: previous.relay }
+      return candidate
     } catch {
       return null
     }
   }
 
-  /**
-   * The stored session, renewed first when its access token is at or near its
-   * end. A renewal that fails leaves the stale session in place: the caller's
-   * own read is what decides whether the sign-in is really over.
-   */
+  /** A stored login belongs to one backend, and awaits renewal before protected calls. */
   const liveSession = async (): Promise<StoredSession | null> => {
     const session = await store.read()
-    if (session?.token === undefined) return session
-    const expiresAt = Date.parse(session.expiresAt)
-    // The product's session ends when the product says so, not when a backend
-    // token lapses.
-    if (!Number.isNaN(expiresAt) && expiresAt - Date.now() <= 0) {
-      await store.clear()
-      await releaseAccountCredential()
+    if (session?.token === undefined) return null
+    const bound = session.backendBaseUrl ?? (isLoopbackOrigin(apiBaseUrl) ? apiBaseUrl : undefined)
+    const expiry = Date.parse(session.upstream?.expiresAt ?? '')
+    if (bound !== apiBaseUrl || !Number.isFinite(Date.parse(session.expiresAt)) || Date.parse(session.expiresAt) <= Date.now()
+      || (!Number.isFinite(expiry) && !isLoopbackOrigin(apiBaseUrl))) {
+      await mutateSession(async () => {
+        if ((await store.read())?.token !== session.token) return
+        identityVersion += 1
+        await store.clear()
+        await releaseAccountCredential()
+      })
       return null
     }
-    /**
-     * The backend credential is renewed quietly in the background. It is not
-     * part of the sign-in: if it lapses, this session stands and the backend is
-     * still readable through the read-only account lookup.
-     */
-    const upstreamExpiry = session.upstream?.expiresAt === undefined
-      ? Number.NaN
-      : Date.parse(session.upstream.expiresAt)
-    if (!Number.isNaN(upstreamExpiry) && upstreamExpiry - Date.now() < 5 * 60_000
-      && session.upstream?.refresh !== undefined
-      && Date.now() - lastRenewalAttempt > 5 * 60_000) {
-      /**
-       * Backed off on purpose. The panels poll, so a renewal that keeps being
-       * refused would otherwise be retried (and logged) on every poll — a dead
-       * credential is a fact to report once, not a fault to shout about every
-       * few seconds.
-       */
-      lastRenewalAttempt = Date.now()
-      void refreshSession(session.upstream.refresh).then((renewed) => {
-        if (renewed !== null) {
-          renewalReported = false
-          return
-        }
-        if (!renewalReported) {
-          renewalReported = true
-          console.log(
-            '[credits-index] the backend credential lapsed; the balance is read through the'
-            + ' read-only account lookup instead, and the sign-in stands.',
-          )
-        }
-      })
+    if (Number.isFinite(expiry) && expiry - Date.now() < 60_000) {
+      const renewed = await refreshSession(session)
+      return renewed
     }
     return session
   }
 
-  /** The signed-in user's own record on new-api, or null when it is not readable. */
-  const readSelf = async (token: string): Promise<{ id: number; username: string; group: string; quota: number; phone: string } | null> => {
-    const answered = await fetch(`${resolved.newApiBaseUrl}/api/user/self`, {
-      headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
-      signal: AbortSignal.timeout(resolved.timeoutMs),
-    }).catch(() => null)
-    if (answered === null || !answered.ok) return null
-    const body = await answered.json().catch(() => null) as {
-      success?: boolean
-      data?: { id?: unknown; username?: unknown; group?: unknown; quota?: unknown; phone_e164?: unknown }
-    } | null
-    if (body?.success !== true) return null
-    const quota = typeof body.data?.quota === 'number' ? body.data.quota : null
-    if (quota === null) return null
-    return {
-      id: typeof body.data?.id === 'number' ? body.data.id : 0,
-      username: typeof body.data?.username === 'string' ? body.data.username : '',
-      group: typeof body.data?.group === 'string' ? body.data.group : '',
-      quota,
-      phone: typeof body.data?.phone_e164 === 'string' ? body.data.phone_e164 : '',
-    }
+  /** Replay only an explicitly rejected access request, once, after serialized renewal. */
+  const accountFetch = async (session: StoredSession, route: string, init: RequestInit = {}): Promise<Response> => {
+    const send = async (current: StoredSession): Promise<Response> => await apiFetch(route, { ...init,
+      headers: { ...Object.fromEntries(new Headers(init.headers)), authorization: `Bearer ${current.upstream?.token ?? ''}` },
+      signal: init.signal ?? AbortSignal.timeout(resolved.timeoutMs) })
+    const answered = await send(session)
+    if (answered.status !== 401) return answered
+    const renewed = await refreshSession(session)
+    if (renewed === null || (await store.read())?.token !== session.token) return answered
+    return await send(renewed)
   }
 
-  /** The phone's new-api user, found with the read-only admin token. */
-  const lookupNewApiUser = async (phone: string): Promise<{ id: number; username: string; group: string; quota: number } | null> => {
-    const file = resolved.newApiAdminTokenFile !== ''
-      ? resolved.newApiAdminTokenFile
-      : join(stateDir, '..', 'credentials', 'newapi-admin-read-token')
-    let token: string
+  const harnessAccount: HarnessAccount = {
+    provider: resolved.chatProviderRoute,
+    async resolveRelayKey(baseURL) {
+      if (baseURL.replace(/\/+$/u, '') !== apiUrl(apiBaseUrl, '/v1')) return undefined
+      await sessionMutations
+      const version = identityVersion
+      const session = await liveSession()
+      await sessionMutations
+      const current = await store.read()
+      if (version !== identityVersion || session?.token === undefined || current?.token !== session.token) return undefined
+      const key = session.relay?.key
+      return typeof key === 'string' && /^sk-\S+$/u.test(key) ? key : undefined
+    },
+  }
+  ctx.provide('harnessAccount', harnessAccount)
+
+  /** Read the same signed-in account's live quota; no admin search or cached balance is accepted. */
+  const readSelf = async (session: StoredSession): Promise<{
+    id: number
+    username: string
+    group: string
+    quota: number
+    phone: string
+  } | null> => {
     try {
-      token = (await readFile(file, 'utf8')).trim()
+      const answered = await accountFetch(session, '/api/user/self', { headers: { accept: 'application/json' } })
+      const body = await answered.json() as {
+        success?: unknown
+        data?: { id?: unknown; username?: unknown; group?: unknown; quota?: unknown; phone_e164?: unknown }
+      } | null
+      const data = body?.data
+      if (!answered.ok || body?.success !== true || typeof data?.id !== 'number' || !Number.isSafeInteger(data.id)
+        || data.id <= 0 || String(data.id) !== session.account.id || typeof data.quota !== 'number'
+        || !Number.isFinite(data.quota) || data.quota < 0) return null
+      return { id: data.id, username: typeof data.username === 'string' ? data.username : '',
+        group: typeof data.group === 'string' ? data.group : '', quota: data.quota,
+        phone: typeof data.phone_e164 === 'string' ? data.phone_e164 : session.account.phone }
     } catch {
       return null
     }
-    if (token === '') return null
-    const keyword = phone.replace(/[^0-9]/g, '')
-    const response = await fetch(`${resolved.newApiBaseUrl}/api/user/search?keyword=${keyword}&p=1&page_size=20`, {
-      headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
-      signal: AbortSignal.timeout(resolved.timeoutMs),
-    })
-    if (!response.ok) return null
-    const body = await response.json() as { data?: { items?: unknown[] } }
-    const items = Array.isArray(body?.data?.items) ? body.data.items : []
-    const first = items[0] as Record<string, unknown> | undefined
-    if (first === undefined) return null
-    const id = typeof first.id === 'number' ? first.id : null
-    const username = typeof first.username === 'string' ? first.username : null
-    const group = typeof first.group === 'string' ? first.group : null
-    if (id === null || username === null || group === null) return null
-    return { id, username, group, quota: typeof first.quota === 'number' ? first.quota : 0 }
-  }
-
-  /** Persist the resolved user beside the session so the panels can show their points. */
-  const writeNewApiUser = async (phone: string, user: { id: number; username: string; group: string; quota: number }): Promise<void> => {
-    await mkdir(stateDir, { recursive: true })
-    await writeFile(join(stateDir, 'newapi-user.json'), `${JSON.stringify({ phone, ...user }, null, 2)}\n`, { mode: 0o600 })
   }
 
   const reply = (response: ServerResponse, result: PlatformResult): void => {
@@ -1828,41 +1624,30 @@ export function apply(ctx: Context, config: Config): void {
         json(response, 403, { ok: false, code: 'FORBIDDEN_ORIGIN' })
         return
       }
-      /**
-           * Anything that would leave the machine is refused before it is built:
-           * the deployment runs against the local stack, and a production origin
-           * must never be reachable from this plugin again.
-           */
+      /** Only the separate legacy account platform is limited to loopback. */
       if (!isLoopbackOrigin(resolved.baseUrl)) {
         json(response, 200, {
           ok: false,
           code: 'PLATFORM_DISABLED',
-          message: '远程平台未启用：本部署只连接本机服务（baseUrl 必须是 127.0.0.1/localhost）。',
-        })
-        return
-      }
-      /**
-           * One address, and it is this machine's. The product ships with a
-           * single relay baked in; a configuration that points somewhere else
-           * is refused here rather than quietly sending a customer's prompts to
-           * a host nobody chose.
-           */
-      if (!isLoopbackOrigin(resolved.newApiBaseUrl)) {
-        json(response, 200, {
-          ok: false,
-          code: 'RELAY_DISABLED',
-          message: '本产品只允许连接内置的中转地址（本机 new-api），不能改成其他请求地址。',
+          message: '旧账户平台 baseUrl 仅支持本机地址；harness-api 请通过 newApiBaseUrl 配置。',
         })
         return
       }
       const url = new URL(request.url ?? '/', 'http://127.0.0.1')
       const route = url.pathname.slice(ROUTE_PREFIX.length)
       const method = request.method ?? 'GET'
+      if (resolved.baseUrl === '' && (route === '/api/grant' || route === '/api/recharge/options'
+        || route.startsWith('/api/recharge/orders') || route.startsWith('/api/video/tasks/')
+        || route.startsWith('/api/video/operations/') || route === '/api/media/save')) {
+        json(response, 200, { ok: false, code: 'UNSUPPORTED', message: '当前账户服务不提供旧版平台接口。' })
+        return
+      }
+
 
       try {
         if ((route === '/api/creation/content' && method === 'GET')
           || (route.startsWith('/api/creation/assets/') && (method === 'GET' || method === 'HEAD'))) {
-          const operation = relayCreationContent(request, response, route, resolved.newApiBaseUrl, resolved.timeoutMs, contentLife.signal)
+          const operation = relayCreationContent(request, response, route, apiBaseUrl, resolved.timeoutMs, contentLife.signal)
           contentRequests.add(operation)
           try { await operation } finally { contentRequests.delete(operation) }
           return
@@ -1883,7 +1668,7 @@ export function apply(ctx: Context, config: Config): void {
               let value: unknown
               try {
                 addAbortSignal(signal, request)
-                value = JSON.parse((await readRaw(request, 32 * 1024)).toString('utf8')) as unknown
+                value = JSON.parse((await readRaw(request, 32 * 1024)).toString('utf8'))
               } catch (error) {
                 // Invalid JSON and excessive input have the same safe, localized handling identity.
                 void error
@@ -1907,7 +1692,7 @@ export function apply(ctx: Context, config: Config): void {
               if ('reason' in owned) { json(response, 200, { ok: false, ...noCredential(owned.reason) }); return }
               const outcome = await assistPrompt({
                 input: parsed.input, key: owned.key, accountId: current.account.id,
-                baseUrl: resolved.newApiBaseUrl, model: resolved.promptAssistantModel,
+                baseUrl: apiBaseUrl, model: resolved.promptAssistantModel,
                 visionModel: resolved.promptAssistantVisionModel,
                 stateDir, timeoutMs: resolved.promptAssistantTimeoutMs,
                 signal, readReference,
@@ -1930,6 +1715,12 @@ export function apply(ctx: Context, config: Config): void {
         if (route === '/api/session' && method === 'GET') {
           const session = await liveSession()
           if (session === null) {
+            const stored = await store.read()
+            if (stored?.token !== undefined) {
+              json(response, 200, { ok: false, code: 'ACCOUNT_UNAVAILABLE', signedIn: true, liveness: 'unknown',
+                message: '账户凭据暂时无法续期，请重试或重新登录。',
+                payload: { signedIn: true, liveness: 'unknown', account: stored.account, expiresAt: stored.expiresAt } }); return
+            }
             json(response, 200, {
               ok: true,
               signedIn: false,
@@ -1940,24 +1731,12 @@ export function apply(ctx: Context, config: Config): void {
             })
             return
           }
-          /**
-           * The product decides whether this client is signed in; the backend is
-           * consulted only so the account facts stay honest. A backend that is
-           * briefly unreachable — or a service credential that lapsed — leaves
-           * the sign-in standing and reports `unknown`, because the alternative
-           * is throwing an operator out of their own product over a hiccup in
-           * the service that merely holds their balance.
-           */
-          const backend = await lookupNewApiUser(session.account.phone).catch(() => null)
-          const self = backend === null && session.upstream?.token !== undefined
-            ? await readSelf(session.upstream.token)
-            : null
-          const account = backend === null
-            ? session.account
-            : { id: String(backend.id), phone: session.account.phone }
-          const liveness = backend !== null || self !== null ? 'verified' : 'unknown'
+          const self = await readSelf(session)
+          const account = session.account
+          const liveness = self === null ? 'unknown' : 'verified'
           json(response, 200, {
-            ok: true,
+            ok: self !== null,
+            code: self === null ? 'ACCOUNT_UNAVAILABLE' : null,
             signedIn: true,
             liveness,
             creditsPerYuan: resolved.creditsPerYuan,
@@ -1981,13 +1760,13 @@ export function apply(ctx: Context, config: Config): void {
           const body = await readJson(request)
           const phone = readString(body, 'phone')
           const key = readString(body, 'idempotencyKey')
-          if (phone === null || key === null) {
+          if (phone === null || !/^\+[1-9]\d{7,14}$/u.test(phone) || key === null) {
             json(response, 200, { ok: false, code: 'INVALID_REQUEST', message: 'phone 与 idempotencyKey 必填' })
             return
           }
           challengePhone = phone
           // Phone sign-in now lives in new-api itself; the Bridge is out of the picture.
-          const challenge = await fetch(`${resolved.newApiBaseUrl}/api/user/phone/challenge`, {
+          const challenge = await apiFetch('/api/user/phone/challenge', {
             method: 'POST',
             headers: { 'content-type': 'application/json', accept: 'application/json' },
             body: JSON.stringify({ phone_e164: phone }),
@@ -2006,13 +1785,14 @@ export function apply(ctx: Context, config: Config): void {
           } catch {
             challengeBody = {}
           }
-          if (challengeBody.success === true) {
+          if (challenge.ok && challengeBody.success === true) {
             json(response, 200, {
               ok: true,
               payload: {
                 challenge_id: typeof challengeBody.data?.challenge_id === 'string' ? challengeBody.data.challenge_id : phone,
                 phone,
                 resend_after_seconds: typeof challengeBody.data?.resend_after_seconds === 'number' ? challengeBody.data.resend_after_seconds : 60,
+                expires_in_minutes: typeof challengeBody.data?.expires_in_minutes === 'number' ? challengeBody.data.expires_in_minutes : null,
                 dev_code: typeof challengeBody.data?.dev_code === 'string' ? challengeBody.data.dev_code : null,
               },
             })
@@ -2022,7 +1802,7 @@ export function apply(ctx: Context, config: Config): void {
               code: challenge.status === 429 ? 'PHONE_RATE_LIMITED' : 'PHONE_CHALLENGE_FAILED',
               message: challengeBody.message
                 ?? (challenge.status === 429
-                  ? '发码过于频繁（每 IP 20 次/20 分钟，每个号码 60 秒冷却），请稍后再试。'
+                  ? '发码过于频繁，请等待重发冷却结束后再试。'
                   : `发码失败（HTTP ${String(challenge.status)}）`),
             })
           }
@@ -2038,8 +1818,12 @@ export function apply(ctx: Context, config: Config): void {
             json(response, 200, { ok: false, code: 'INVALID_REQUEST', message: 'challengeId、code 与 idempotencyKey 必填' })
             return
           }
-          const phoneForLogin = challengePhone ?? challengeId
-          const login = await fetch(`${resolved.newApiBaseUrl}/api/user/phone/login`, {
+          const phoneForLogin = challengePhone === challengeId ? challengePhone : challengeId
+          if (!/^\+[1-9]\d{7,14}$/u.test(phoneForLogin)) {
+            json(response, 200, { ok: false, code: 'INVALID_REQUEST', message: '手机号需使用 E.164 格式。' }); return
+          }
+          const version = ++identityVersion
+          const login = await apiFetch('/api/user/phone/login', {
             method: 'POST',
             headers: { 'content-type': 'application/json', accept: 'application/json' },
             body: JSON.stringify({ phone_e164: phoneForLogin, code }),
@@ -2072,63 +1856,41 @@ export function apply(ctx: Context, config: Config): void {
             json(response, 200, {
               ok: false,
               code: 'PHONE_RATE_LIMITED',
-              message: '验证码请求过于频繁（每 IP 20 次/20 分钟、每个号码 60 秒冷却），请稍后再试。',
+              message: '验证码请求过于频繁，请稍后再试。',
             })
             return
           }
           const payload = loginBody.data ?? null
-          const token = typeof payload?.access_token === 'string' ? payload.access_token : null
+          const token = payload?.access_token
           const rawPhone = typeof payload?.user?.phone_e164 === 'string' ? payload.user.phone_e164 : phoneForLogin
-          const account = { id: String(payload?.user?.id ?? ''), phone: rawPhone }
-          const expiresAtSeconds = typeof payload?.access_expires_at === 'number' ? payload.access_expires_at : null
-          const expiresAt = expiresAtSeconds === null ? '' : new Date(expiresAtSeconds * 1000).toISOString()
-          if (loginBody.success === true && token !== null && account.id !== '') {
-            /**
-             * The phone exchange authenticates; it does not become the session.
-             * What is stored is this product's own token with its own thirty-day
-             * life, beside the backend credential the exchange produced — the
-             * one is the login, the other is how the account's balance is read.
-             * Conflating them is what made a fifteen-minute backend token end a
-             * desktop session.
-             */
+          const accountId = payload?.user?.id
+          const id = typeof accountId === 'number' && Number.isSafeInteger(accountId) && accountId > 0 ? String(accountId)
+            : typeof accountId === 'string' && /^[1-9]\d*$/u.test(accountId) && Number.isSafeInteger(Number(accountId)) ? accountId : null
+          const expiry = payload?.access_expires_at
+          const relayKey = payload?.relay_key
+          if (login.ok && loginBody.success === true && typeof token === 'string' && token.trim() !== '' && id !== null
+            && typeof expiry === 'number' && Number.isFinite(expiry) && expiry * 1000 > Date.now()
+            && Number.isFinite(new Date(expiry * 1000).getTime()) && typeof relayKey === 'string' && /^sk-\S+$/u.test(relayKey)) {
+            if (version !== identityVersion) {
+              json(response, 200, { ok: false, code: 'ACCOUNT_CHANGED', message: '登录状态已变更，请重新操作。' }); return
+            }
+            const account = { id, phone: rawPhone }
             const sessionToken = randomBytes(32).toString('hex')
             const sessionExpiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
             const refresh = refreshFromSetCookie(login) ?? undefined
-            /**
-             * The account's own relay credential, when the backend mints one.
-             * It is what makes "signed in" and "being billed" the same person:
-             * the product sends every request with it, so usage lands on this
-             * account and the balance on screen is the balance being spent.
-             */
-            const relayKey = typeof payload?.relay_key === 'string' && payload.relay_key !== ''
-              ? payload.relay_key
-              : undefined
-            const relayId = typeof payload?.relay_key_id === 'number' ? payload.relay_key_id : undefined
-            await store.write({
-              token: sessionToken,
-              expiresAt: sessionExpiresAt,
-              account,
-              upstream: {
-                token,
-                ...refresh === undefined ? {} : { refresh },
-                ...expiresAt === '' ? {} : { expiresAt },
-              },
-              ...relayKey === undefined ? {} : { relay: { key: relayKey, ...relayId === undefined ? {} : { id: relayId } } },
+            const relayId = typeof payload?.relay_key_id === 'number' && Number.isSafeInteger(payload.relay_key_id) && payload.relay_key_id > 0
+              ? payload.relay_key_id : undefined
+            await mutateSession(async () => {
+              if (version !== identityVersion) return
+              await releaseAccountCredential()
+              await store.write({ token: sessionToken, expiresAt: sessionExpiresAt, account, backendBaseUrl: apiBaseUrl,
+                upstream: { token, refresh, expiresAt: new Date(expiry * 1000).toISOString() },
+                relay: { key: relayKey, ...relayId === undefined ? {} : { id: relayId } } })
+              await holdAccountCredential(relayKey)
             })
-            // The chat path authenticates with this key on every request, so the
-            // account that just signed in is the account that gets billed.
-            if (relayKey !== undefined) await holdAccountCredential(relayKey)
-            /**
-             * Deliberately not written into the shared credential document: that
-             * file also carries the desktop shell's own browser session, and a
-             * plugin rewriting it can drop entries it does not know about. The
-             * account's key lives in this product's own session file, which is
-             * the one place that describes who is signed in.
-             */
-            // Resolve the phone to its new-api user now, so the panels can show
-            // that person's quota and model group from the first render.
-            const user = await lookupNewApiUser(rawPhone).catch(() => null)
-            if (user !== null) await writeNewApiUser(rawPhone, user)
+            if (version !== identityVersion) {
+              json(response, 200, { ok: false, code: 'ACCOUNT_CHANGED', message: '登录状态已变更，请重新操作。' }); return
+            }
             json(response, 200, { ok: true, payload: { status: 'authorized', expiresAt: sessionExpiresAt, account } })
           } else {
             json(response, 200, { ok: false, code: 'PHONE_LOGIN_FAILED', message: loginBody.message ?? '验证码错误或已过期' })
@@ -2137,28 +1899,24 @@ export function apply(ctx: Context, config: Config): void {
         }
 
         if (route === '/api/session/logout' && method === 'POST') {
-          // Sign-out happens on new-api like everything else; the local sign-in
-          // is cleared regardless of what the server answers, because a failed
-          // revoke must not leave the operator stuck signed in.
-          const session = await liveSession()
+          const previous = await store.read()
+          identityVersion += 1
+          const pending = renewal !== null && renewal.token === previous?.token ? renewal.promise : null
+          await mutateSession(async () => { await store.clear(); await releaseAccountCredential() })
+          const renewed = pending === null ? null : await pending
+          const session = renewed ?? previous
           let result: PlatformResult = { status: 204, code: null, message: null, retryAfterSeconds: null, body: null }
-          if (session?.token !== undefined) {
-            const response_ = await fetch(`${resolved.newApiBaseUrl}/api/user/auth/logout`, {
-              method: 'POST',
-              headers: { authorization: `Bearer ${(session.upstream?.token ?? '')}`, ...declaredOrigin, 'content-type': 'application/json', accept: 'application/json' },
-              body: '{}',
-              signal: AbortSignal.timeout(resolved.timeoutMs),
+          const bound = session?.backendBaseUrl ?? (isLoopbackOrigin(apiBaseUrl) ? apiBaseUrl : undefined)
+          if (session?.token !== undefined && bound === apiBaseUrl) {
+            const response_ = await apiFetch('/api/user/auth/logout', {
+              method: 'POST', headers: { authorization: `Bearer ${session.upstream?.token ?? ''}`,
+                ...session.upstream?.refresh === undefined ? {} : { cookie: `new_api_refresh=${session.upstream.refresh}` },
+                ...declaredOrigin, 'content-type': 'application/json', accept: 'application/json' },
+              body: '{}', signal: AbortSignal.timeout(resolved.timeoutMs),
             }).catch(() => null)
-            result = {
-              status: response_?.status ?? 503,
-              code: null,
-              message: null,
-              retryAfterSeconds: null,
-              body: null,
-            }
+            result = { status: response_?.status ?? 503, code: response_ === null ? 'LOGOUT_UNCONFIRMED' : null,
+              message: response_ === null ? '本地已退出，服务端会话撤销结果未确认。' : null, retryAfterSeconds: null, body: null }
           }
-          await store.clear()
-          await releaseAccountCredential()
           reply(response, result)
           return
         }
@@ -2173,12 +1931,8 @@ export function apply(ctx: Context, config: Config): void {
           }
           const outcome = await readAccountUsage({
             ...parsed.window,
-            baseUrl: resolved.newApiBaseUrl,
+            baseUrl: apiBaseUrl,
             timeoutMs: resolved.timeoutMs,
-            creditsPerYuan: resolved.creditsPerYuan,
-            adminTokenFile: resolved.newApiAdminTokenFile !== ''
-              ? resolved.newApiAdminTokenFile
-              : join(stateDir, '..', 'credentials', 'newapi-admin-read-token'),
             account: live.account,
             upstreamToken: live.upstream?.token,
           })
@@ -2187,121 +1941,37 @@ export function apply(ctx: Context, config: Config): void {
         }
 
         if (route === '/api/summary' && method === 'GET') {
-          // The signed-in user's own quota is the balance of record: one ledger,
-          // read straight from new-api, never recomputed from usage here.
-          //
-          // It is read live rather than from the sign-in snapshot, because the
-          // panels poll this while a generation runs: a frozen number would keep
-          // showing the balance someone had before they spent anything.
           const live = await liveSession()
-          /**
-           * No sign-in, no balance. The panel's state and its number come from
-           * the same place, so a signed-out surface can never show a leftover
-           * figure from whoever was signed in before.
-           */
-          if (live?.token === undefined) {
-            json(response, 200, {
-              ok: true,
-              source: 'signed-out',
-              signedIn: false,
-              creditsPerYuan: resolved.creditsPerYuan,
-              account: null,
-              balance: null,
-              payload: { signedIn: false, balance_points: null, yuan: null, source: 'signed-out' },
-            })
-            return
-          }
-          {
-            /**
-             * The backend is asked about *this account*, by the identity the
-             * product signed in — not by a client session it happens to hold.
-             * The read-only account lookup is the primary path (it needs no
-             * per-user credential to stay alive), with this account's own
-             * backend session as the fallback.
-             */
-            const account = await lookupNewApiUser(live.account.phone).catch(() => null)
-            const self = account ?? (live.upstream?.token === undefined ? null : await readSelf(live.upstream.token))
-            if (self !== null) {
-              const converted = await convertQuota(self.quota)
-              await writeNewApiUser(live.account.phone, {
-                id: self.id,
-                username: self.username,
-                group: self.group,
-                quota: self.quota,
-              }).catch(() => undefined)
-              const group = account === null ? (self as { group?: string }).group ?? '' : account.group
-              json(response, 200, {
-                ok: true,
-                source: 'newapi-account',
-                creditsPerYuan: resolved.creditsPerYuan,
-                account: { phone: live.account.phone, group },
-                balance: { credits: converted.points, yuan: converted.yuan },
-                payload: { balance_points: converted.points, yuan: converted.yuan, source: 'newapi-account' },
-              })
-              return
+          if (live === null) {
+            if ((await store.read())?.token !== undefined) {
+              json(response, 200, { ok: false, code: 'BALANCE_UNAVAILABLE',
+                message: '无法续期账户凭据，当前余额不可用。', balance: null, payload: null }); return
             }
+            json(response, 200, { ok: true, source: 'signed-out', signedIn: false,
+              creditsPerYuan: resolved.creditsPerYuan, account: null, balance: null,
+              payload: { signedIn: false, balance_points: null, yuan: null, source: 'signed-out' } })
+            return
           }
           try {
-            const stored = JSON.parse(await readFile(join(stateDir, 'newapi-user.json'), 'utf8')) as {
-              phone?: unknown
-              username?: unknown
-              group?: unknown
-              quota?: unknown
-            }
-            if (typeof stored.quota === 'number') {
-              const converted = await convertQuota(stored.quota)
-              json(response, 200, {
-                ok: true,
-                source: 'newapi-user',
-                creditsPerYuan: resolved.creditsPerYuan,
-                account: { phone: typeof stored.phone === 'string' ? stored.phone : '', group: typeof stored.group === 'string' ? stored.group : '' },
-                balance: { credits: converted.points, yuan: converted.yuan },
-                payload: { balance_points: converted.points, yuan: converted.yuan, source: 'newapi-user' },
-              })
-              return
-            }
+            const [self, rate] = await Promise.all([readSelf(live), readQuotaRate()])
+            if (self === null) throw new Error('BALANCE_UNAVAILABLE')
+            const converted = convertQuota(self.quota, rate)
+            json(response, 200, { ok: true, source: 'newapi-account', signedIn: true,
+              creditsPerYuan: resolved.creditsPerYuan, account: { ...live.account, group: self.group },
+              balance: { credits: converted.points, yuan: converted.yuan },
+              payload: { balance_points: converted.points, yuan: converted.yuan, source: 'newapi-account' } })
           } catch {
-            // No resolved user yet: fall through to the token-scoped read.
+            json(response, 200, { ok: false, code: 'BALANCE_UNAVAILABLE', message: '无法读取当前账号余额，请稍后重试。', balance: null, payload: null })
           }
-          // The deployment's balance of record is the local new-api user quota;
-          // the platform balance stays available as a secondary reading.
-          const local = await readNewApiBalance()
-          if (local.ok && local.points !== undefined && local.yuan !== undefined) {
-            json(response, 200, {
-              ok: true,
-              source: 'newapi',
-              creditsPerYuan: resolved.creditsPerYuan,
-              balance: { credits: local.points, yuan: local.yuan },
-              payload: { balance_points: local.points, yuan: local.yuan, source: 'newapi' },
-            })
-            return
-          }
-          const { result, sessionInvalid } = await withToken(token => platformCall(resolved.baseUrl, '/api/v1/account/balance', {
-            method: 'GET', token, timeoutMs: resolved.timeoutMs,
-          }))
-          if (sessionInvalid) { sessionExpired(response); return }
-          const payload = result.body !== null && typeof result.body === 'object' ? result.body as Record<string, unknown> : null
-          const points = typeof payload?.balance_points === 'number' ? payload.balance_points : null
-          json(response, 200, {
-            ok: result.status === 200,
-            code: result.code,
-            message: result.message,
-            creditsPerYuan: resolved.creditsPerYuan,
-            source: 'platform',
-            localError: local.message ?? null,
-            balance: points === null ? null : { credits: points, yuan: points / resolved.creditsPerYuan },
-            payload: points === null ? null : { balance_points: points, yuan: points / resolved.creditsPerYuan, source: 'platform' },
-            asOf: readString(payload, 'as_of'),
-          })
           return
         }
 
         if (route === '/api/models' && method === 'GET') {
           // The live channel list wins over the platform catalog: the local
           // new-api is the deployment's own model source.
-          if (url.searchParams.get('source') === 'newapi') {
+          if (url.searchParams.get('source') === 'newapi' || resolved.baseUrl === '') {
             const live = await readNewApiModels()
-            json(response, 200, { ...live, baseUrl: resolved.newApiBaseUrl })
+            json(response, 200, { ...live, baseUrl: apiBaseUrl })
             return
           }
           // The public catalog needs no session; it is the picker's model list.
@@ -2338,90 +2008,54 @@ export function apply(ctx: Context, config: Config): void {
         }
 
         if (route === '/api/grant' && method === 'POST') {
-          const body = await readJson(request)
-          const outcome = await ensureGrant(body.refresh === true)
-          if (!outcome.ok) {
-            json(response, 200, {
-              ok: false,
-              code: outcome.code ?? 'GRANT_FAILED',
-              message: outcome.message ?? 'model grant unavailable',
-              sessionInvalid: outcome.sessionInvalid === true,
-            })
-            return
-          }
-          // The gateway key stays host-side; only its shape and lifetime surface.
-          json(response, 200, {
-            ok: true,
-            expiresAt: grant?.expiresAt ?? null,
-            defaultModelId: grant?.defaultModelId ?? null,
-            models: grant?.models ?? [],
-            gatewayHost: grant === null ? null : new URL(grant.baseUrl).host,
-          })
+          json(response, 200, { ok: false, code: 'UNSUPPORTED', message: '当前账户服务直接使用登录返回的中转凭据。' })
           return
-        }
-
-        if (route === '/api/recharge/options' && method === 'GET') {
-          // WeChat Native now lives in new-api; the platform's option/order flow
-          // stays out of the product path entirely.
         }
 
         if (route === '/api/recharge/wechat' && method === 'POST') {
           const session = await liveSession()
           if (session?.upstream?.token === undefined) { sessionExpired(response); return }
           const body = await readJson(request)
-          const amount = typeof body.amount === 'number' ? Math.round(body.amount) : Number.NaN
-          if (!Number.isInteger(amount) || amount < 1 || amount > 100_000) {
-            json(response, 200, { ok: false, code: 'INVALID_REQUEST', message: '金额需为 1–100000 的整数（元）' })
-            return
+          const amount = body.amount
+          if (typeof amount !== 'number' || !Number.isInteger(amount) || amount < 1 || amount > 100_000) {
+            json(response, 200, { ok: false, code: 'INVALID_REQUEST', message: '金额需为 1–100000 的整数（元）' }); return
           }
-          const created = await fetch(`${resolved.newApiBaseUrl}/api/user/wechat/native`, {
-            method: 'POST',
-            headers: {
-              authorization: `Bearer ${(session.upstream?.token ?? '')}`,
-              'content-type': 'application/json',
-              accept: 'application/json',
-            },
-            body: JSON.stringify({ amount }),
-            signal: AbortSignal.timeout(resolved.timeoutMs),
-          })
-          const text = await created.text()
-          let payload: {
-            success?: boolean
-            message?: string
-            data?: { out_trade_no?: unknown; code_url?: unknown; expires_at?: unknown; quota?: unknown; amount?: unknown }
-          } = {}
+          let rate: { quotaPerUnit: number; usdExchangeRate: number }
+          try { rate = await readQuotaRate() } catch {
+            json(response, 200, { ok: false, code: 'BALANCE_UNAVAILABLE', message: '无法读取积分换算参数，尚未创建订单。' }); return
+          }
+          let created: Response
           try {
-            if (text !== '') payload = JSON.parse(text) as typeof payload
+            created = await accountFetch(session, '/api/user/wechat/native', { method: 'POST',
+              headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify({ amount }) })
           } catch {
-            payload = {}
+            json(response, 200, { ok: false, code: 'RECHARGE_OUTCOME_UNKNOWN',
+              message: '订单提交结果无法确认，请先核对订单状态，勿重复下单。' }); return
           }
-          if (payload.success !== true) {
-            json(response, 200, {
-              ok: false,
-              code: created.status === 429 ? 'RECHARGE_RATE_LIMITED' : 'RECHARGE_FAILED',
-              message: payload.message ?? `下单失败（HTTP ${String(created.status)}）`,
-            })
-            return
+          const payload = await created.json().catch(() => null) as {
+            success?: unknown
+            message?: unknown
+            data?: { out_trade_no?: unknown; code_url?: unknown; expires_at?: unknown; quota?: unknown; amount?: unknown }
+          } | null
+          if (!created.ok || payload?.success !== true) {
+            json(response, 200, { ok: false, code: created.status === 429 ? 'RECHARGE_RATE_LIMITED' : created.status >= 500 || payload === null
+              ? 'RECHARGE_OUTCOME_UNKNOWN' : 'RECHARGE_FAILED',
+            message: typeof payload?.message === 'string' ? payload.message : '下单结果未确认，请先核对订单，勿重复提交。' }); return
           }
-          const codeUrl = typeof payload.data?.code_url === 'string' ? payload.data.code_url : null
-          let qr: string | null = null
-          if (codeUrl !== null) {
-            try {
-              qr = await QRCode.toDataURL(codeUrl, { margin: 1, width: 320 })
-            } catch {
-              qr = null
-            }
+          const order = payload.data
+          if (typeof order?.out_trade_no !== 'string' || order.out_trade_no.trim() === ''
+            || typeof order.code_url !== 'string' || !/^(?:weixin|https):\/\/\S+$/u.test(order.code_url)
+            || typeof order.expires_at !== 'number' || !Number.isFinite(order.expires_at) || order.expires_at * 1000 <= Date.now()
+            || typeof order.quota !== 'number' || !Number.isFinite(order.quota) || order.quota <= 0 || order.amount !== amount) {
+            json(response, 200, { ok: false, code: 'RECHARGE_OUTCOME_UNKNOWN', message: '订单响应不完整，请先核对订单状态，勿重复下单。' }); return
           }
-          json(response, 200, {
-            ok: true,
-            payload: {
-              outTradeNo: typeof payload.data?.out_trade_no === 'string' ? payload.data.out_trade_no : null,
-              amount: typeof payload.data?.amount === 'number' ? payload.data.amount : amount,
-              quota: typeof payload.data?.quota === 'number' ? payload.data.quota : null,
-              expiresAt: typeof payload.data?.expires_at === 'number' ? payload.data.expires_at : null,
-              qrCodeDataUrl: qr,
-            },
-          })
+          let qrCodeDataUrl: string
+          try { qrCodeDataUrl = await QRCode.toDataURL(order.code_url, { margin: 1, width: 320 }) } catch {
+            json(response, 200, { ok: false, code: 'RECHARGE_QR_UNAVAILABLE', message: '二维码生成失败，请核对已有订单，勿重复下单。',
+              payload: { outTradeNo: order.out_trade_no } }); return
+          }
+          json(response, 200, { ok: true, payload: { outTradeNo: order.out_trade_no, amount: order.amount,
+            points: convertQuota(order.quota, rate).points, expiresAt: order.expires_at, qrCodeDataUrl } })
           return
         }
 
@@ -2430,40 +2064,30 @@ export function apply(ctx: Context, config: Config): void {
           if (session?.upstream?.token === undefined) { sessionExpired(response); return }
           const orderNo = url.searchParams.get('outTradeNo')
           if (orderNo === null || orderNo === '') {
-            json(response, 200, { ok: false, code: 'INVALID_REQUEST', message: 'outTradeNo 必填' })
-            return
+            json(response, 200, { ok: false, code: 'INVALID_REQUEST', message: 'outTradeNo 必填' }); return
           }
-          const polled = await fetch(
-            `${resolved.newApiBaseUrl}/api/user/wechat/order?out_trade_no=${encodeURIComponent(orderNo)}`,
-            { headers: { authorization: `Bearer ${(session.upstream?.token ?? '')}`, accept: 'application/json' }, signal: AbortSignal.timeout(resolved.timeoutMs) },
-          )
-          const text = await polled.text()
-          let payload: { success?: boolean; message?: string; data?: Record<string, unknown> } = {}
           try {
-            if (text !== '') payload = JSON.parse(text) as typeof payload
+            const [polled, rate] = await Promise.all([
+              accountFetch(session, `/api/user/wechat/order?out_trade_no=${encodeURIComponent(orderNo)}`, { headers: { accept: 'application/json' } }),
+              readQuotaRate(),
+            ])
+            const payload = await polled.json() as { success?: unknown; message?: unknown; data?: Record<string, unknown> } | null
+            const order = payload?.data
+            if (!polled.ok || payload?.success !== true || order?.out_trade_no !== orderNo || typeof order.status !== 'string'
+              || typeof order.amount !== 'number' || !Number.isFinite(order.amount) || order.amount <= 0
+              || typeof order.quota !== 'number' || !Number.isFinite(order.quota) || order.quota < 0) {
+              json(response, 200, { ok: false, code: 'ORDER_QUERY_FAILED', message: '无法读取订单状态，请稍后重试。' }); return
+            }
+            json(response, 200, { ok: true, payload: { ...order, status: order.status, amount: order.amount,
+              points: convertQuota(order.quota, rate).points } })
           } catch {
-            payload = {}
+            json(response, 200, { ok: false, code: 'ORDER_QUERY_FAILED', message: '无法读取订单状态，请稍后重试。' })
           }
-          json(response, 200, {
-            ok: payload.success === true,
-            code: payload.success === true ? null : 'ORDER_QUERY_FAILED',
-            message: payload.message ?? null,
-            payload: payload.success === true ? payload.data ?? null : null,
-          })
-          return
-        }
-
-        if (route === '/api/recharge/options' && method === 'GET') {
-          const { result, sessionInvalid } = await withToken(token => platformCall(resolved.baseUrl, '/api/v2/account/recharge-options', {
-            method: 'GET', token, timeoutMs: resolved.timeoutMs,
-          }))
-          if (sessionInvalid) { sessionExpired(response); return }
-          reply(response, result)
           return
         }
 
         if (route === '/api/assets' && method === 'POST') {
-          const mediaType = String(request.headers['content-type'] ?? '').split(';')[0]?.trim().toLowerCase() ?? ''
+          const mediaType = (request.headers['content-type'] ?? '').split(';')[0]?.trim().toLowerCase() ?? ''
           const filename = String(request.headers['x-file-name'] ?? '')
           const idempotencyKey = String(request.headers['x-idempotency-key'] ?? '')
           const allowedTypes = resolved.baseUrl === ''
@@ -2515,7 +2139,7 @@ export function apply(ctx: Context, config: Config): void {
             return
           }
           const result = await platformUpload(resolved.baseUrl, '/v1/media/assets', {
-            token: (session.upstream?.token ?? ''),
+            token: session.upstream.token,
             idempotencyKey,
             mediaType,
             filename,
@@ -2556,7 +2180,7 @@ export function apply(ctx: Context, config: Config): void {
             code: catalog.code ?? null,
             message: catalog.message ?? null,
             source: 'newapi-pricing',
-            baseUrl: resolved.newApiBaseUrl,
+            baseUrl: apiBaseUrl,
             group: catalog.group,
             payload: {
               group: catalog.group,
@@ -2570,15 +2194,13 @@ export function apply(ctx: Context, config: Config): void {
         if (route === '/api/image/pricing' && method === 'GET') {
           // The local new-api channel is the deployment's own image source; ask
           // it first so the panel stops depending on the platform quote flow.
-          if (url.searchParams.get('source') === 'newapi') {
-            const key = await deploymentKey()
-            if (key === null) { json(response, 200, { ok: false, code: 'NO_KEY', message: 'new-api key 未配置' }); return }
+          if (url.searchParams.get('source') === 'newapi' || resolved.baseUrl === '') {
             const live = await readNewApiModels()
             const model = live.image[0] ?? null
             json(response, 200, {
               ok: live.ok && model !== null,
               source: 'newapi',
-              baseUrl: resolved.newApiBaseUrl,
+              baseUrl: apiBaseUrl,
               model,
               imageModels: live.image,
             })
@@ -2737,7 +2359,7 @@ export function apply(ctx: Context, config: Config): void {
             })
             return
           }
-          if (url.searchParams.get('source') === 'newapi') {
+          if (url.searchParams.get('source') === 'newapi' || resolved.baseUrl === '') {
             const owned = await accountKey()
             if ('reason' in owned) { json(response, 200, { ok: false, ...noCredential(owned.reason) }); return }
             const key = owned.key
@@ -2754,7 +2376,7 @@ export function apply(ctx: Context, config: Config): void {
               json(response, 200, { ok: false, code: built.code, message: built.message })
               return
             }
-            const created = await fetch(`${resolved.newApiBaseUrl}/v1/videos`, {
+            const created = await apiFetch('/v1/videos', {
               method: 'POST',
               headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json', accept: 'application/json' },
               body: JSON.stringify(built.request),
@@ -2939,133 +2561,71 @@ export function apply(ctx: Context, config: Config): void {
       } catch (error) {
         json(response, 200, {
           ok: false,
-          code: 'TRANSPORT',
-          message: error instanceof Error ? error.message : String(error),
+          code: error instanceof Error && error.message === 'ACCOUNT_UNAVAILABLE' ? 'ACCOUNT_UNAVAILABLE' : 'TRANSPORT',
+          message: error instanceof Error && error.message === 'ACCOUNT_UNAVAILABLE' ? '账户凭据暂时无法续期，请重试或重新登录。'
+            : error instanceof Error ? error.message : String(error),
         })
       }
     },
   }), 'credits-index: routes')
 
-  /**
-   * The chat model list belongs to the deployment, not to a config file.
-   *
-   * The LLM adapter can be asked what an endpoint serves, and it reads its
-   * routes from the settings document. Once at boot and then once a minute, the
-   * list configured for this provider is replaced by the list new-api actually
-   * publishes — so a channel or model added on the new-api side appears in the
-   * picker with nobody editing anything.
-   *
-   * Both services are optional. Without them the sync simply does not run and
-   * the configured list stands, which is also what happens while the gateway is
-   * unreachable.
-   */
+  /** Keep only the configured product route bound to this backend and account credential reference. */
   ctx.effect(() => {
     const namespace = resolved.chatSettingsNamespace
     const route = resolved.chatProviderRoute
-
     const sync = async (): Promise<void> => {
-      // Resolved per tick: this plugin may be applied before the settings and
-      // LLM services finish mounting, and a one-shot read at boot would then
-      // give up for the life of the process.
       const settings = ctx.get('settings') as {
         describe?: (options?: { redactSecrets?: boolean }) => { ns: string; value?: unknown; revision?: number }[]
         replace?: (ns: string, section: object, expectedRevision?: number) => Promise<void>
       } | undefined
       const llm = ctx.get('llm') as {
         discoverModels?: (
-          ns: string,
-          request: { provider?: string; baseURL?: string; api?: string; apiKey?: string },
-          signal?: AbortSignal,
+          ns: string, request: { provider?: string; baseURL?: string; api?: string; apiKey?: string }, signal?: AbortSignal,
         ) => Promise<{ id: string }[]>
       } | undefined
-      if (settings?.describe === undefined || settings.replace === undefined || llm?.discoverModels === undefined) return
+      if (settings?.describe === undefined || settings.replace === undefined) return
       try {
-        // Called through the service object: these methods are bound to the
-        // provider that owns them, and a detached reference loses its `this`.
         const descriptor = settings.describe({ redactSecrets: true }).find(row => row.ns === namespace)
         const value = descriptor?.value as { providers?: Record<string, Record<string, unknown>> } | undefined
         const providers = value?.providers
         const current = providers?.[route]
         if (providers === undefined || current === undefined) return
-        // The route is this deployment's own, so the adapter has no built-in
-        // catalogue to answer from: hand it the endpoint, the protocol and a
-        // one-shot credential, which is exactly what the Models page's "fetch
-        // available models" action does.
-        const baseURL = typeof current.baseURL === 'string' && current.baseURL !== ''
-          ? current.baseURL
-          : `${resolved.newApiBaseUrl}/v1`
-        const api = typeof current.api === 'string' ? current.api : 'openai-completions'
-        const key = await deploymentKey()
+        const baseURL = apiUrl(apiBaseUrl, '/v1')
+        const api = 'openai-completions'
+        const migrated = { ...current, baseURL, api, apiKeyEnv: resolved.relayTokenEnv }
+        const changed = current.baseURL !== baseURL || current.api !== api || current.apiKeyEnv !== resolved.relayTokenEnv
+        if (changed) await settings.replace(namespace, { providers: { ...providers, [route]: migrated } }, descriptor?.revision)
+        const owned = await accountKey()
+        if ('reason' in owned || llm?.discoverModels === undefined) return
         const discovered = await llm.discoverModels(
-          namespace,
-          {
-            provider: route,
-            baseURL,
-            api,
-            ...key === null ? {} : { apiKey: key },
-          },
-          AbortSignal.timeout(resolved.timeoutMs),
+          namespace, { provider: route, baseURL, api, apiKey: owned.key }, AbortSignal.timeout(resolved.timeoutMs),
         )
-        /**
-         * Chat only. new-api answers `/v1/models` with everything it serves,
-         * and an image model carries `openai` in its endpoint types too, so the
-         * generators are subtracted by asking the pricing table which ids the
-         * media classifier recognises — the same judgement the image and video
-         * panels make. An unreachable pricing table subtracts nothing rather
-         * than emptying the picker.
-         */
         const media = new Set<string>()
         try {
-          const pricing = await fetch(`${resolved.newApiBaseUrl}/api/pricing`, {
-            headers: { accept: 'application/json' },
-            signal: AbortSignal.timeout(resolved.timeoutMs),
-          })
+          const pricing = await apiFetch('/api/pricing', { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(resolved.timeoutMs) })
           if (pricing.ok) {
             const body = await pricing.json() as { data?: unknown }
             for (const id of mediaModelIds(Array.isArray(body.data) ? body.data : [])) media.add(id)
           }
         } catch {
-          // Keep every model rather than hiding the ones that might be chat.
+          // Failed public pricing leaves discovered account-authorized models visible.
         }
-        const ids = discovered
-          .map(model => model.id)
-          .filter(id => id !== '' && !media.has(id))
+        const ids = discovered.map(model => model.id).filter(id => id !== '' && !media.has(id))
         if (ids.length === 0) return
-        const idsOf = (profile: Record<string, unknown>): string[] => Array.isArray(profile.models)
-          ? (profile.models as unknown[])
-            .map(model => model !== null && typeof model === 'object' ? (model as { id?: unknown }).id : null)
-            .filter((id): id is string => typeof id === 'string')
-          : []
-        /**
-         * Every profile that points at this deployment's new-api follows the
-         * same list. A profile whose endpoint differs is left exactly as it is:
-         * this sync owns the deployment's relay, not the operator's other
-         * routes.
-         */
-        const endpoint = baseURL.replace(/\/+$/, '')
-        const next = { ...providers }
-        let updated = 0
-        let previous = 0
-        for (const [name, profile] of Object.entries(providers)) {
-          if (typeof profile?.baseURL !== 'string' || profile.baseURL.replace(/\/+$/, '') !== endpoint) continue
-          const configured = idsOf(profile)
-          if (configured.length === ids.length && configured.every((id, index) => id === ids[index])) continue
-          next[name] = { ...profile, models: ids.map(id => ({ id })) }
-          updated += 1
-          previous += configured.length
-        }
-        if (updated === 0) return
-        await settings.replace(namespace, { providers: next }, descriptor?.revision)
-        console.log(
-          `[credits-index] chat models synced from new-api: ${String(ids.length)} chat into ${String(updated)} route(s)`
-          + ` (skipped ${String(media.size)} media, was ${String(previous)})`,
-        )
+        const latest = settings.describe({ redactSecrets: true }).find(row => row.ns === namespace)
+        const latestValue = latest?.value as { providers?: Record<string, Record<string, unknown>> } | undefined
+        const latestProviders = latestValue?.providers
+        const profile = latestProviders?.[route]
+        if (profile === undefined || latestProviders === undefined) return
+        const configured: readonly unknown[] = Array.isArray(profile.models) ? profile.models : []
+        const previousIds = configured.map(model => model !== null && typeof model === 'object' && 'id' in model ? model.id : null)
+        if (previousIds.length === ids.length && previousIds.every((id, index) => id === ids[index])) return
+        await settings.replace(namespace, { providers: { ...latestProviders,
+          [route]: { ...profile, baseURL, api, apiKeyEnv: resolved.relayTokenEnv, models: ids.map(id => ({ id })) } } }, latest?.revision)
       } catch (error) {
-        // Discovery is a convenience: an unreachable gateway keeps the last list.
-        console.log(`[credits-index] chat model sync failed: ${error instanceof Error ? error.message : String(error)}`)
+        ctx.logger.warn(`credits-index: model sync unavailable: ${error instanceof Error ? error.message : String(error)}`)
       }
     }
-
     const timer = setInterval(() => { void sync() }, 60_000)
     void sync()
     return () => { clearInterval(timer) }
@@ -3073,7 +2633,7 @@ export function apply(ctx: Context, config: Config): void {
 
   /** The signed-in token, or null with a message the model can relay. */
   const requireToken = async (): Promise<{ token: string } | { error: string }> => {
-    const session = await store.read()
+    const session = await liveSession()
     if (session?.token === undefined) {
       return { error: '未登录：请让用户在「额度」面板用手机号登录后再生成。' }
     }
@@ -3118,7 +2678,7 @@ export function apply(ctx: Context, config: Config): void {
           return 'reason' in owned ? undefined : { accountId: current.account.id, token: current.token, key: owned.key }
         })
         const relay = createVideoProjectRelay({
-          origin: resolved.newApiBaseUrl, timeoutMs: resolved.timeoutMs,
+          origin: apiBaseUrl, timeoutMs: resolved.timeoutMs,
           maxDownloadBytes: resolved.videoProjectDownloadMaxBytes, cacheRoot: projectState, key: () => binding.key(),
         })
         const models = new Map<string, ModelCapability>()

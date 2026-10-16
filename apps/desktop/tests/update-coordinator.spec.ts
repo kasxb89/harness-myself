@@ -1,6 +1,5 @@
-import { EventEmitter } from 'node:events'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { AppUpdater } from 'electron-updater'
+import { NsisUpdater, type ProgressInfo, type UpdateDownloadedEvent } from 'electron-updater'
 import { DESKTOP_HOST_PROTOCOL_VERSION } from '../src/host-protocol.ts'
 import { parseDesktopRelease } from '../src/release.ts'
 import type { DesktopUpdateState } from '../src/ipc.ts'
@@ -9,9 +8,11 @@ import { zh } from '../src/locale.ts'
 import { DesktopUpdateSourceError } from '../src/update-source.ts'
 
 vi.mock('electron', () => ({ app: { isPackaged: false } }))
-vi.mock('electron-updater', () => ({
-  default: { autoUpdater: { autoDownload: true, autoInstallOnAppQuit: true } },
-}))
+vi.mock('electron-updater', async () => {
+  const { EventEmitter } = await import('node:events')
+  return { NsisUpdater: class extends EventEmitter {},
+    default: { autoUpdater: { autoDownload: true, autoInstallOnAppQuit: true } } }
+})
 
 const { DesktopUpdateCoordinator } = await import('../src/update-coordinator.ts')
 
@@ -48,16 +49,28 @@ describe('desktop release metadata', () => {
 const coordinators: InstanceType<typeof DesktopUpdateCoordinator>[] = []
 afterEach(() => { for (const item of coordinators.splice(0)) item.dispose() })
 
+function progress(percent: number, delta = percent): ProgressInfo {
+  return { percent, total: 100, transferred: percent, delta, bytesPerSecond: 100 }
+}
+
+function downloadedEvent(): UpdateDownloadedEvent {
+  const sha512 = Buffer.alloc(64).toString('base64')
+  return { version: '1.1.0-rc.2', downloadedFile: 'verified-package',
+    files: [{ url: 'verified-package', sha512 }], releaseDate: '2026-10-16T00:00:00.000Z',
+    // oxlint-disable-next-line typescript/no-deprecated -- electron-updater requires both legacy fields on UpdateDownloadedEvent.
+    path: 'verified-package', sha512 }
+}
+
 function fixture() {
-  const events = new EventEmitter()
+  const events = new NsisUpdater()
   const checkForUpdates = vi.fn(async () => ({
     isUpdateAvailable: true,
     updateInfo: { version: '1.1.0-rc.2' },
   }))
   const downloadUpdate = vi.fn(async () => {
-    events.emit('download-progress', { percent: 58 })
-    events.emit('download-progress', { percent: 100 })
-    events.emit('update-downloaded', { version: '1.1.0-rc.2' })
+    events.emit('download-progress', progress(58))
+    events.emit('download-progress', progress(100, 42))
+    events.emit('update-downloaded', downloadedEvent())
     return ['verified-package']
   })
   const quitAndInstall = vi.fn()
@@ -66,7 +79,7 @@ function fixture() {
   const states: DesktopUpdateState[] = []
   const setFeedURL = vi.fn()
   const resolveSource = vi.fn(async () => ({ url: 'https://updates.example.com/mac-arm64/', channel: 'nightly' as const }))
-  const updater = Object.assign(events, { checkForUpdates, downloadUpdate, quitAndInstall, setFeedURL }) as unknown as AppUpdater
+  const updater = Object.assign(events, { checkForUpdates, downloadUpdate, quitAndInstall, setFeedURL })
   const coordinator = new DesktopUpdateCoordinator(
     (state) => { states.push(state); return state },
     beforeRestart, updater, () => true, () => '1.1.0-alpha.1', downloadResult, resolveSource,
@@ -104,7 +117,7 @@ describe('desktop update coordinator', () => {
     const f = fixture()
     const prepared = Promise.withResolvers<string[]>()
     f.downloadUpdate.mockImplementationOnce(async () => {
-      f.events.emit('update-downloaded', { version: '1.1.0-rc.2' })
+      f.events.emit('update-downloaded', downloadedEvent())
       return prepared.promise
     })
     await f.coordinator.check()
@@ -192,7 +205,7 @@ describe('desktop update coordinator', () => {
   it('retains retry state after download failure and never equates 100 percent with readiness', async () => {
     const f = fixture()
     f.downloadUpdate.mockImplementationOnce(async () => {
-      f.events.emit('download-progress', { percent: 100 })
+      f.events.emit('download-progress', progress(100))
       throw new Error('signature rejected')
     })
     await f.coordinator.check()

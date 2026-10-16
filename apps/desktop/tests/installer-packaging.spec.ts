@@ -37,9 +37,9 @@ describe('installer preparation preserves application dependencies', () => {
     try {
       const { createElectronBuilderConfig } = await import('../electron-builder.config.mjs')
       const config = createElectronBuilderConfig(env, platform, 'x64')
-      expect(config.productName).toBe('智澍科技')
-      expect(config.win.executableName).toBe('Zhishu Technology')
-      expect(config.protocols).toEqual([{ name: '智澍科技', schemes: ['dsh'] }])
+      expect(config.productName).toBe('云枢')
+      expect(config.win.executableName).toBe('Yunshu')
+      expect(config.protocols).toEqual([{ name: '云枢', schemes: ['dsh'] }])
       expect(config.extraMetadata).not.toHaveProperty('name')
       expect(config.extraMetadata).not.toHaveProperty('productName')
       expect(config.mac.icon).toMatch(/icon-macos\.png$/u)
@@ -115,9 +115,10 @@ it('embeds only an explicitly configured release backend authority and omits it 
     DSH_DESKTOP_APP_ID: 'com.example.installer', DSH_DESKTOP_AUTO_UPDATE_ENV: 'production',
     DSH_DESKTOP_MANDATORY_UPDATE_PROD_ORIGIN: 'https://policy.example.com',
     DSH_DESKTOP_MACOS_SIGNING_IDENTITY: 'Example Company (TEAMID1234)', DSH_DESKTOP_MACOS_TEAM_ID: 'TEAMID1234',
-    APPLE_KEYCHAIN_PROFILE: 'installer-test', DSH_DESKTOP_UPDATE_CONFIG_ORIGIN: 'https://api.example.com/',
+    APPLE_KEYCHAIN_PROFILE: 'installer-test', DSH_DESKTOP_UPDATE_CONFIG_ORIGIN: 'https://8.133.202.230/harness/',
   }
-  expect(createElectronBuilderConfig(env, 'darwin', 'arm64').extraMetadata).toMatchObject({ dshDesktopUpdateConfigOrigin: 'https://api.example.com' })
+  expect(createElectronBuilderConfig(env, 'darwin', 'arm64').extraMetadata)
+    .toMatchObject({ dshDesktopUpdateConfigOrigin: 'https://8.133.202.230/harness' })
   expect(createElectronBuilderConfig({ ...env, DSH_DESKTOP_UPDATE_CONFIG_ORIGIN: '' }, 'darwin', 'arm64').extraMetadata)
     .not.toHaveProperty('dshDesktopUpdateConfigOrigin')
   expect(createElectronBuilderConfig({ ...env, DSH_DESKTOP_UNSIGNED: '1' }, 'darwin', 'arm64').extraMetadata)

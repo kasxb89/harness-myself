@@ -282,11 +282,6 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected): 
                   <span className={css.amount}>{balance === null ? '—' : grouped(balance.balance_points)}</span>
                   <span className={css.amountUnit}>{t('points')}</span>
                 </p>
-                <p className={css.balanceSub}>
-                  {balance === null
-                    ? t('loading')
-                    : t('yuanInline', { amount: grouped(balance.balance_points / creditsPerYuan) })}
-                </p>
               </div>
               <div className={css.walletActions}>
                 <div className={css.walletAccount}>

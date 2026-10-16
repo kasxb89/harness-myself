@@ -3,6 +3,7 @@
 import { Context, type Fiber } from '@deepseek-ai/cordis'
 import { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client'
 import { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
+import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { LayoutController, type MainPanelId } from '../../ui-layout/src/client/service.ts'
 import { createLayoutStore } from '../../ui-layout/src/client/stores.ts'
@@ -50,7 +51,7 @@ async function bench(search: string) {
             'shell.overlay': { kind: 'list', scope: 'root' },
             'conversation.input.dock': { kind: 'list', scope: 'session' },
           },
-        }, () => null)
+        }, ({ renderSlot }: PropsRenderSlots<'shell.overlay'>) => renderSlot('shell.overlay', {}))
       },
     })
     await frame.await()

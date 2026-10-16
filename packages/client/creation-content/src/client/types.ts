@@ -57,10 +57,20 @@ export interface CreationContentSnapshot {
 
 /** React-free published content source, shared by image and video workspaces. */
 export interface CreationContentCatalog {
-  /** Read the stable snapshot until its state changes. @returns Current catalog state. */
+  /**
+   * Read the stable snapshot until its state changes.
+   * @returns Current catalog state.
+   */
   getSnapshot(): CreationContentSnapshot
-  /** Observe state changes. @param listener Change callback. @returns Subscription disposer. */
+  /**
+   * Observe state changes.
+   * @param listener Change callback.
+   * @returns Subscription disposer.
+   */
   subscribe(listener: () => void): () => void
-  /** Fetch the latest publication, coalescing concurrent readers. @returns Resolves after the read settles. */
+  /**
+   * Fetch the latest publication, coalescing concurrent readers.
+   * @returns Resolves after the read settles.
+   */
   refresh(): Promise<void>
 }

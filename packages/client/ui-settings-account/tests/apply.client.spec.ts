@@ -2,6 +2,8 @@
 /** Official account operations in an explicitly enabled product client composition. */
 import { afterEach, beforeEach, expect, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { FiberState } from '@deepseek-ai/cordis'
 import { ok } from '@deepseek-ai/dsh-remote-mock'
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
 import { ClientRoster, createClientTest, type TestClient, webApp } from '@deepseek-ai/dsh-client-test-runtime/src/assembly/index.ts'
@@ -24,7 +26,7 @@ import { AccountQuotaNotice } from '../src/client/AccountQuotaNotice.tsx'
 import type { AccountQuotaNoticeInjected } from '../src/client/AccountQuotaNotice.tsx'
 
 const SELF = '@deepseek-ai/dsh-client-ui-settings-account'
-const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
+const manifest = JSON.parse(readFileSync(createRequire(import.meta.url).resolve(`${SELF}/package.json`), 'utf8')) as {
   dsh: { client: { inject: string[]; immediately?: boolean } }
 }
 const declaration = manifest.dsh.client
@@ -76,6 +78,10 @@ afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.restoreAllMocks(
 productIt('keeps the official account login and menu out of the default product', async ({ start, mock }) => {
   vi.stubGlobal('dshDesktop', {})
   const c = await start()
+  const entries = [...c.ctx.loader.entries()]
+  for (const name of ['dshmarket', 'dsh-skin-market', '@xmanrui/dsh-im', 'dsh-univer-office', 'deepseek-ivideo', 'dsh-dream-skin']) {
+    expect(entries.find(entry => entry.options.name === name)?.fiber?.state, name).toBe(FiberState.ACTIVE)
+  }
   expect(c.ctx.slots.entries('settings.launcher')).toHaveLength(0)
   expect(c.ctx.slots.entries('settings.models.sign-in')).toHaveLength(0)
   expect(c.ctx.slots.entries('settings.section').some(entry => entry.options.id === 'account')).toBe(false)
@@ -120,6 +126,7 @@ it('shares account actions across seats, publishes dialog ownership, and opens c
   expect(c.ctx.slots.entries('settings.models.sign-in')[0]!.inject!()).toBe(actions)
   // The account UI follows the live theme service through the framework hook channel.
   const theme = c.ctx.get('theme') as ThemeRuntime
+  const initialThemes = theme.getTheme().themes.map(candidate => candidate.id)
   const onTheme = vi.fn()
   const offTheme = actions.hooks.theme.subscribe(onTheme)
   expect(actions.hooks.theme.getSnapshot()).toBe(theme.getTheme())
@@ -127,7 +134,7 @@ it('shares account actions across seats, publishes dialog ownership, and opens c
   expect(onTheme).toHaveBeenCalledOnce()
   probe()
   offTheme()
-  expect(theme.getTheme().themes.map(candidate => candidate.id)).toEqual(['light', 'dark'])
+  expect(theme.getTheme().themes.map(candidate => candidate.id)).toEqual(initialThemes)
   await actions.refreshAccount()
   expect(c.mock.remote.account.getProfile).not.toHaveBeenCalled()
   const listener = vi.fn()

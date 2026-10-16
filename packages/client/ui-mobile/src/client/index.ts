@@ -38,15 +38,22 @@ interface ImBridgeClient {
   readonly render?: (props: { readonly preferredSectionId?: string }) => unknown
 }
 
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    /** Optional channel panel published by the separately composed IM bridge. */
+    dshImClient?: ImBridgeClient
+  }
+}
+
 /**
  * Read the bridge's client service without declaring a dependency on its
  * package: it may be absent, and the page has a hint for exactly that case.
  */
 function readImBridge(ctx: ClientContext): ImBridgeClient | undefined {
   try {
-    const service = (ctx as unknown as { get?: (name: string) => unknown }).get?.('dshImClient')
-    return service !== null && typeof service === 'object' ? service as ImBridgeClient : undefined
-  } catch {
+    return ctx.get('dshImClient')
+  } catch (_error) {
+    // An unavailable bridge leaves the page's existing hint visible.
     return undefined
   }
 }
@@ -59,7 +66,7 @@ export function apply(ctx: ClientContext): void {
   const t = ctx.locale.bind(NS)
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-mobile: dictionaries')
   const face: MobileInjected = {
-    t: (key, values) => t(key as Parameters<typeof t>[0], values as never),
+    t: (key, values) => t(key as Parameters<typeof t>[0], values),
     renderChannelPanel: () => {
       const bridge = readImBridge(ctx)
       if (bridge?.render === undefined) return null

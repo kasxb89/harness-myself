@@ -42,7 +42,10 @@ export function clearRechargeRequest(): void {
   for (const listener of listeners) listener()
 }
 
-/** @returns the pending top-up request, if the sidebar asked for one. */
+/**
+ * Subscribe to the sidebar's pending top-up request.
+ * @returns the pending top-up request, if the sidebar asked for one.
+ */
 export function useRechargeRequest(): RechargeRequest | null {
   return useSyncExternalStore(subscribe, snapshot)
 }

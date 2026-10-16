@@ -176,7 +176,8 @@ it.skipIf(!native)('keeps the first generated clip’s portrait canvas and reads
   for (const [path, size] of [[first, '160x240'], [second, '320x180']]) {
     execFileSync(binary, ['-v', 'error', '-f', 'lavfi', '-i', `color=c=blue:s=${size!}:r=10:d=0.7`, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', path!], { timeout: 30_000 })
   }
-  const editor = createVideoEditor(ctx, { ...options, width: undefined, height: undefined, ownedMediaRoots: [owned] })
+  const { width: _width, height: _height, ...sourceCanvasOptions } = options
+  const editor = createVideoEditor(ctx, { ...sourceCanvasOptions, ownedMediaRoots: [owned] })
   const output = join(workspace, 'portrait-output.mp4')
   await editor.compose({ clips: [{ path: first }, { path: second }], outputPath: output,
     totalDurationSeconds: 1, signal: new AbortController().signal })

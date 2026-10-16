@@ -2,90 +2,90 @@
 # section, a hash of its English and Chinese blocks outside code blocks and generated regions.
 # After editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write apps/desktop/README.md
-/zhishu-technology-desktop:
-  en: 05f7f507dab2a6ce
-  zh: 6abaa9b560555dc1
-/zhishu-technology-desktop/terminal-command:
+/yunshu-desktop:
+  en: e64d3b1869e90947
+  zh: 92914a5e0894a442
+/yunshu-desktop/terminal-command:
   en: bef92953c237363f
   zh: d21d6effd21b8c00
-/zhishu-technology-desktop/closing-the-window-and-quitting:
-  en: 0118e913271657c9
-  zh: 64031d59f448c195
-/zhishu-technology-desktop/key-technical-decisions:
+/yunshu-desktop/closing-the-window-and-quitting:
+  en: fd3d6b6eebb27018
+  zh: 0b863c4e271b43c2
+/yunshu-desktop/key-technical-decisions:
   en: 069fdfd72d2ea26a
   zh: 76ae549d43c99bb4
-/zhishu-technology-desktop/key-technical-decisions/bundled-workspace-dependencies:
+/yunshu-desktop/key-technical-decisions/bundled-workspace-dependencies:
   en: 6bad1ddc552c7355
   zh: abf4ba8903aa8859
-/zhishu-technology-desktop/bundled-command-runtime:
+/yunshu-desktop/bundled-command-runtime:
   en: 09f0b75af9f0ed14
   zh: 60bbc2e67d5e87a8
-/zhishu-technology-desktop/installation-ownership:
+/yunshu-desktop/installation-ownership:
   en: 22153a298a6662e1
   zh: 3600803c8c9d0274
-/zhishu-technology-desktop/installation-ownership/runtime-and-plugin-activation:
+/yunshu-desktop/installation-ownership/runtime-and-plugin-activation:
   en: a1a47b09f4a72ba4
   zh: 7b1cf27f0b72cf31
-/zhishu-technology-desktop/installation-ownership/host-environment:
+/yunshu-desktop/installation-ownership/host-environment:
   en: 84a9cc7ca9455aa8
   zh: 4091b8aa8231b74a
-/zhishu-technology-desktop/develop:
+/yunshu-desktop/develop:
   en: fe6d23e6a3d3bc66
   zh: d60c8d3a55747916
-/zhishu-technology-desktop/develop/startup-onboarding:
-  en: fa906eb16033581e
-  zh: 0f4c1373bff343d7
-/zhishu-technology-desktop/develop/welcome-window-appearance:
+/yunshu-desktop/develop/startup-onboarding:
+  en: d8799ccca1557c33
+  zh: d7e81f57e78f7c97
+/yunshu-desktop/develop/welcome-window-appearance:
   en: d7bb7992d9375194
   zh: b0401a74326f8e4c
-/zhishu-technology-desktop/package:
+/yunshu-desktop/package:
   en: 4cd8a8da6977928d
   zh: 9f624855a2edac37
-/zhishu-technology-desktop/package/release-versions:
+/yunshu-desktop/package/release-versions:
   en: d938302f92fc3a1a
   zh: 29df50bc8791baa7
-/zhishu-technology-desktop/package/local-macos-dmg-without-release-signing:
+/yunshu-desktop/package/local-macos-dmg-without-release-signing:
   en: 57869a5e3885f843
   zh: 7cfc01b2dcbebd78
-/zhishu-technology-desktop/package/local-official-bundles-from-a-loopback-registry:
+/yunshu-desktop/package/local-official-bundles-from-a-loopback-registry:
   en: 5f05072ec82cc62d
   zh: a3d63b58d1ef2db7
-/zhishu-technology-desktop/package/runtime-file-selection:
+/yunshu-desktop/package/runtime-file-selection:
   en: e7c1eb8e78fe46e3
   zh: b7ea497dd75be524
-/zhishu-technology-desktop/package/upload-updates:
+/yunshu-desktop/package/upload-updates:
   en: bddd492c48f5d686
   zh: feb5cecbd8c440f0
-/zhishu-technology-desktop/package/unsigned-windows-test-installer:
+/yunshu-desktop/package/unsigned-windows-test-installer:
   en: fb6de542360dbae7
   zh: 0e17d7765fb10c48
-/zhishu-technology-desktop/package/windows-installer-interface:
-  en: a1a825813477a83d
-  zh: 3a032a24c2e1ca08
-/zhishu-technology-desktop/package/windows-ev-signing:
+/yunshu-desktop/package/windows-installer-interface:
+  en: 66519f434687dbfd
+  zh: a2770d5dda0aaf2c
+/yunshu-desktop/package/windows-ev-signing:
   en: 64836513eb7eda6e
   zh: 6ebb9184a7aa51de
-/zhishu-technology-desktop/package/desktop-runtime-preparation:
-  en: e5016fbb5836f59b
-  zh: 6fb36d96fc4005be
-/zhishu-technology-desktop/updates:
-  en: f3a44259928fa2a5
-  zh: b967ee83e3508534
-/zhishu-technology-desktop/updates/local-desktop-settings:
+/yunshu-desktop/package/desktop-runtime-preparation:
+  en: c8eb16387f7c584c
+  zh: 993d0680619ed5cc
+/yunshu-desktop/updates:
+  en: 9378dee324908849
+  zh: 7726a0e36ebc6a6f
+/yunshu-desktop/updates/local-desktop-settings:
   en: 2e57457c44c85b5f
   zh: 5b8510a3dc4c6c9d
-/zhishu-technology-desktop/updates/mandatory-update-policy:
+/yunshu-desktop/updates/mandatory-update-policy:
   en: 54596bef0706d305
   zh: 48737302dcf3c939
-/zhishu-technology-desktop/updates/local-updater-qualification:
+/yunshu-desktop/updates/local-updater-qualification:
   en: bc50fd8a4d96c227
   zh: fb0a6ce80c31cda6
-/zhishu-technology-desktop/low-level-development-overrides:
+/yunshu-desktop/low-level-development-overrides:
   en: 0b225f914142ef0b
   zh: 9ffd07768d37824e
-/zhishu-technology-desktop/known-limitations:
-  en: e74e4c11d72532cb
-  zh: 1874b727a0eaea0c
-/zhishu-technology-desktop/dev-note:
+/yunshu-desktop/known-limitations:
+  en: dc18137a0dd29538
+  zh: c50d4b5c46e77e2d
+/yunshu-desktop/dev-note:
   en: 8e26b460ba31f21b
   zh: fbcd0307b3867125

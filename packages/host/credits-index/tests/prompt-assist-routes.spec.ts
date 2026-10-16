@@ -42,10 +42,12 @@ async function boot(options: {
   configured?: boolean
   timeoutMs?: number
   renew?: boolean
+  prefix?: string
 } = {}): Promise<{ base: string; stateDir: string }> {
   source = createServer((request, response) => {
     void (async () => {
       const url = new URL(request.url ?? '/', 'http://127.0.0.1')
+      const path = url.pathname.slice((options.prefix ?? '').length)
       const chunks: Buffer[] = []
       for await (const chunk of request) {
         if (Buffer.isBuffer(chunk)) chunks.push(chunk)
@@ -53,14 +55,17 @@ async function boot(options: {
       const body = chunks.length === 0 ? null : object(JSON.parse(Buffer.concat(chunks).toString('utf8')))
       calls.push({ path: url.pathname, authorization: request.headers.authorization, body })
       response.setHeader('content-type', 'application/json')
-      if (url.pathname === '/api/user/auth/refresh') {
+      if (path === '/api/user/auth/refresh') {
         response.end(JSON.stringify({ success: true, data: {
           access_token: 'renewed-user-token', access_expires_at: 253_402_300_799,
           user: { id: mode === 'refresh-account-mismatch' ? 8 : 7, phone_e164: '+8613800000000' },
         } }))
         return
       }
-      if (url.pathname === '/v1/models') {
+      if ((mode === 'catalog-redirect' && path === '/v1/models') || (mode === 'completion-redirect' && path === '/v1/chat/completions')) {
+        response.writeHead(307, { location: path }); response.end(); return
+      }
+      if (path === '/v1/models') {
         if (mode === 'catalog-timeout') return
         if (mode === 'catalog-disconnect') { response.destroy(); return }
         if (mode === 'catalog-denied') { response.writeHead(403); response.end('provider account-key secret'); return }
@@ -70,7 +75,7 @@ async function boot(options: {
         ] }))
         return
       }
-      if (url.pathname !== '/v1/chat/completions') { response.writeHead(404); response.end(); return }
+      if (path !== '/v1/chat/completions') { response.writeHead(404); response.end(); return }
       if (mode === 'timeout') return
       if (mode === 'completion-disconnect') { response.destroy(); return }
       if (mode === 'storage-result-fail' && root !== undefined) {
@@ -105,7 +110,7 @@ async function boot(options: {
   await writeFile(configPath, [
     "- name: '@deepseek-ai/dsh-host-webserver'", '  config:', "    host: '127.0.0.1'", '    port: 0',
     "- name: '@deepseek-ai/dsh-system-prompt'", "- name: '@deepseek-ai/dsh-tools'", "- name: '@deepseek-ai/dsh-credits-index'",
-    '  config:', `    stateDir: '${stateDir}'`, `    newApiBaseUrl: 'http://127.0.0.1:${String(address.port)}'`,
+    '  config:', `    stateDir: '${stateDir}'`, `    newApiBaseUrl: 'http://127.0.0.1:${String(address.port)}${options.prefix ?? ''}'`,
     `    timeoutMs: ${String(options.timeoutMs ?? 1000)}`,
     `    promptAssistantTimeoutMs: ${String(options.timeoutMs ?? 1000)}`,
     ...options.configured === false ? [] : ["    promptAssistantModel: 'text-assistant'", "    promptAssistantVisionModel: 'vision-assistant'"], '',
@@ -143,6 +148,20 @@ async function post(
 }
 
 describe('prompt assistance through the real Loader and account-owned HTTP route', () => {
+  it('keeps the deployed prefix for both account-billed model requests', async () => {
+    const { base } = await boot({ prefix: '/harness' })
+    expect(await post(base, input())).toMatchObject({ ok: true })
+    expect(calls.map(call => call.path)).toEqual(['/harness/v1/models', '/harness/v1/chat/completions'])
+  })
+
+  it.each(['catalog-redirect', 'completion-redirect'])('does not follow %s to the adjacent root API', async (redirectMode) => {
+    const { base } = await boot({ prefix: '/harness' })
+    mode = redirectMode
+    expect(await post(base, input())).toMatchObject({ ok: false })
+    expect(calls.length).toBe(redirectMode === 'catalog-redirect' ? 1 : 2)
+    expect(calls.every(call => call.path.startsWith('/harness/'))).toBe(true)
+  })
+
   it('generates text, sees uploaded image bytes, and rewrites the current edited candidate with feedback', async () => {
     const { base, stateDir } = await boot()
     const first = await post(base, input())
@@ -334,14 +353,15 @@ describe('prompt assistance through the real Loader and account-owned HTTP route
   it.each([false, true])('retains account relay credentials only after a same-account refresh (mismatch: %s)', async (mismatch) => {
     const { base, stateDir } = await boot({ renew: true })
     mode = mismatch ? 'refresh-account-mismatch' : 'success'
-    expect(await post(base, input())).toMatchObject({ ok: true })
+    expect(await post(base, input())).toMatchObject(mismatch ? { ok: false, code: 'SESSION_REQUIRED' } : { ok: true })
     await expect.poll(() => calls.some(call => call.path === '/api/user/auth/refresh')).toBe(true)
     const sessionFile = join(stateDir, 'session.json')
     if (!mismatch) await expect.poll(async () => object(object(JSON.parse(await readFile(sessionFile, 'utf8')))?.upstream)?.token)
       .toBe('renewed-user-token')
-    expect(await post(base, input())).toMatchObject({ ok: true })
+    expect(await post(base, input())).toMatchObject(mismatch ? { ok: false, code: 'SESSION_REQUIRED' } : { ok: true })
     const stored = object(JSON.parse(await readFile(sessionFile, 'utf8')))
     expect(stored).toMatchObject({ account: { id: '7' }, relay: { key: 'account-key' }, upstream: { token: mismatch ? 'user-token' : 'renewed-user-token' } })
     expect(calls.filter(call => call.path === '/v1/chat/completions').every(call => call.authorization === 'Bearer account-key')).toBe(true)
+    if (mismatch) expect(calls.some(call => call.path === '/v1/chat/completions')).toBe(false)
   })
 })

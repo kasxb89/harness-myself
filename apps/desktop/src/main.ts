@@ -317,7 +317,7 @@ function createWindow(preload: string, show = false, primary = false): BrowserWi
 async function main(): Promise<void> {
   const existingUserData = app.getPath('userData')
   const existingLogs = app.getPath('logs')
-  app.setName('智澍科技')
+  app.setName('云枢')
   app.setPath('userData', existingUserData)
   app.setPath('logs', existingLogs)
   const desktopSettings = readDesktopSettings(app.getPath('userData'))
@@ -956,7 +956,7 @@ async function main(): Promise<void> {
   const applicationIconPath = development ? join(app.getAppPath(), 'resources', 'icon-windows.png')
     : join(process.resourcesPath, 'icon.png')
   app.setAboutPanelOptions({
-    applicationName: '智澍科技',
+    applicationName: '云枢',
     applicationVersion: app.getVersion(),
     // The release has no separate build number; omit Electron's bundle version.
     version: '',

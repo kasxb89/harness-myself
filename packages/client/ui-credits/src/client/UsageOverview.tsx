@@ -149,7 +149,8 @@ export function UsageOverview({ t, creditsPerYuan }: { t: Translate; creditsPerY
           </div>
           <div className={css.freshness}>
             <span>{t('usage.updatedAt', { time: timeFormat.format(new Date(payload.asOf)) })}</span>
-            <span>{t('usage.delay', { minutes: String(payload.delayMinutes) })}</span>
+            <span>{payload.delayMinutes === 0 ? t('usage.billingFreshness')
+              : t('usage.delay', { minutes: String(payload.delayMinutes) })}</span>
           </div>
           {analysis.models.length === 0 ? (
             <div className={css.empty}><h3>{t('usage.emptyTitle')}</h3><p>{t('usage.emptyHint')}</p></div>

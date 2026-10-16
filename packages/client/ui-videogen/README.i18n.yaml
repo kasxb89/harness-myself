@@ -2,12 +2,45 @@
 # section, a hash of its English and Chinese blocks outside code blocks and generated regions.
 # After editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write packages/client/ui-videogen/README.md
+/:
+  en: 50f4eca73ecb8400
+  zh: c4a588ab0d40389b
 /video-creation:
-  en: 4847895f0c791a0a
-  zh: 3edc092f8e65ef6e
+  en: 07e985c0d1994b8a
+  zh: 0a93776ec108c5e1
+/video-creation/summary:
+  en: fca5cdc39f0fbd50
+  zh: 0adea9d424e79aff
+/video-creation/table-of-contents:
+  en: 23386452a66b2fbd
+  zh: 953f40a7ed67e2e3
+/video-creation/use-this-package:
+  en: 0aac25db1b4fb491
+  zh: 5eb6e26bd054555c
+/video-creation/understand-the-implementation:
+  en: 5eb2063c15fe42b6
+  zh: 701b4b55fe151ef8
+/video-creation/further-exploration:
+  en: a9cb5154907fefbf
+  zh: fd914fe0fcae8da2
 /video-creation/model-experience:
-  en: 2f88c80b718f423e
-  zh: 1830a663da5d281e
+  en: 215e7ba838619b7b
+  zh: a311da3843709f90
+/video-creation/model-experience/video-submission-and-prompt-assistance:
+  en: 06c951d4099c3b11
+  zh: 5f3686e106213766
+/video-creation/model-experience/video-submission-and-prompt-assistance/what-the-model-sees:
+  en: 1e274af9305f6c17
+  zh: 13fd66ee0c5bb377
+/video-creation/model-experience/video-submission-and-prompt-assistance/token-effect:
+  en: 8874230430cab98a
+  zh: 8a952e481e03ff20
+/video-creation/model-experience/video-submission-and-prompt-assistance/kv-cache-effect:
+  en: f6b29633efd71514
+  zh: 0b6a92fb37fb7035
 /video-creation/known-limitations-and-deferred-work:
-  en: efc7a0fcd2ca1591
-  zh: 310f110254089213
+  en: 0ee5914c819ba96d
+  zh: 0da8f0b4086e129f
+/video-creation/known-limitations-and-deferred-work/dev-note:
+  en: e67f633dc6fe7773
+  zh: 8ec3e73528ddb1a6

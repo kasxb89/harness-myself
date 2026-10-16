@@ -477,8 +477,8 @@ describe('desktop main startup', () => {
     const userData = harness.app.getPath('userData')
     const logs = harness.app.getPath('logs')
     await readyForUpdate()
-    expect(harness.app.setName).toHaveBeenCalledWith('智澍科技')
-    expect(harness.app.name).toBe('智澍科技')
+    expect(harness.app.setName).toHaveBeenCalledWith('云枢')
+    expect(harness.app.name).toBe('云枢')
     expect(harness.app.setPath).toHaveBeenCalledWith('userData', userData)
     expect(harness.app.setPath).toHaveBeenCalledWith('logs', logs)
   })
@@ -595,7 +595,7 @@ describe('desktop main startup', () => {
     await vi.advanceTimersByTimeAsync(0)
     const zh = locale === 'zh-CN'
     expect(harness.dialog.showMessageBox).toHaveBeenLastCalledWith(expect.objectContaining({
-      type: 'info', title: zh ? '关于 智澍科技' : 'About Zhishu Technology', message: zh ? '智澍科技' : 'Zhishu Technology',
+      type: 'info', title: zh ? '关于 云枢' : 'About Yunshu', message: zh ? '云枢' : 'Yunshu',
       detail: zh ? '版本 V1.0.0' : 'Version V1.0.0', buttons: [zh ? '确定' : 'OK'], cancelId: 0,
     }))
     // A dialog that cannot open is logged, not surfaced as an unhandled rejection.
@@ -1013,7 +1013,7 @@ describe('desktop main startup', () => {
     expect(() => handler(event, 'application', NaN, 34)).toThrow('invalid popup request')
     const application = handler(event, 'application', 48, 34)
     expect(harness.menu.buildFromTemplate.mock.lastCall![0].map(item => item.label ?? item.type)).toEqual([
-      '关于 智澍科技', 'separator', '检查更新…', '管理 dsh 命令…', 'separator', '退出',
+      '关于 云枢', 'separator', '检查更新…', '管理 dsh 命令…', 'separator', '退出',
     ])
     expect(harness.popup.mock.lastCall![0]).toMatchObject({ window, x: 48, y: 34 })
     expect(harness.popup.mock.lastCall![0].callback).toBeTypeOf('function')
@@ -1046,7 +1046,7 @@ describe('desktop main startup', () => {
       .find(items => items.some(item => item.role === 'editMenu'))
     if (template === undefined) throw new Error('application menu missing')
     expect(template.map(describeItem)).toEqual(platform === 'darwin'
-      ? ['智澍科技', en.fileMenu, 'editMenu', 'windowMenu']
+      ? ['云枢', en.fileMenu, 'editMenu', 'windowMenu']
       : ['Application', 'editMenu'])
     const application = template[0]!.submenu as MenuItemConstructorOptions[]
     expect(application.filter(item => item.visible !== false).map(describeItem)).toEqual(platform === 'darwin'
@@ -1070,7 +1070,7 @@ describe('desktop main startup', () => {
         || item.label === en.cliCommandMenu || item.label === zh.cliCommandMenu)
       await expect(JSON.stringify(commands, null, 2) + '\n')
         .toMatchFileSnapshot(`./expected/application-menu-${locale}.json`)
-      expect(harness.app.name).toBe('智澍科技')
+      expect(harness.app.name).toBe('云枢')
     } finally { harness.app.name = originalName }
   })
 
@@ -2272,7 +2272,7 @@ describe('desktop main startup', () => {
     expect(report.error).toBeInstanceOf(Error)
     expect((report.error as Error).message).toContain('fatal uncaught exception: ENOENT')
     expect(report.rendererConsole).toEqual(['dsh-app://app/assets/entry.js:12 client-modules: bundle script plugins/??a/client.js&rev=1 failed to load'])
-    expect(report.app).toMatchObject({ name: '智澍科技', version: '1.0.0', platform: process.platform, locale: 'en' })
+    expect(report.app).toMatchObject({ name: '云枢', version: '1.0.0', platform: process.platform, locale: 'en' })
     expect(report.time).toBeInstanceOf(Date)
     host.exited.resolve()
     await harness.quitCompleted.promise

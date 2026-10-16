@@ -2,24 +2,45 @@
 # section, a hash of its English and Chinese blocks outside code blocks and generated regions.
 # After editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write packages/client/ui-imagegen/README.md
+/:
+  en: 8c6593023d10af7f
+  zh: 1d7fc6bc9cc97622
 /image-creation-workspace:
-  en: 5b67923bc1769edf
-  zh: 2df5e8210a81f638
+  en: 3b3a4d672610f493
+  zh: 6853e0ee58af00ce
+/image-creation-workspace/summary:
+  en: c6cd2e13e8e12fc3
+  zh: 523cf4599b878126
+/image-creation-workspace/table-of-contents:
+  en: 23386452a66b2fbd
+  zh: 953f40a7ed67e2e3
+/image-creation-workspace/use-this-package:
+  en: cb14f9666935182d
+  zh: b8057e196fccce37
+/image-creation-workspace/understand-the-implementation:
+  en: f8d0c4a7e18a3aee
+  zh: fc2c98c1df4abe37
+/image-creation-workspace/further-exploration:
+  en: 723180eeb32fad41
+  zh: 397ff431f17fa391
 /image-creation-workspace/model-experience:
   en: 215e7ba838619b7b
-  zh: 215e7ba838619b7b
+  zh: a311da3843709f90
 /image-creation-workspace/model-experience/image-submission:
   en: c93a889de1040005
   zh: 5369399319e789c1
 /image-creation-workspace/model-experience/image-submission/what-the-model-sees:
-  en: a51769411bb10bc4
-  zh: daf13e05a6ec53ad
-/image-creation-workspace/model-experience/image-submission/token-budget:
-  en: d52d69c579876651
-  zh: 261cb847d235004f
+  en: 80f54e7c0ba94306
+  zh: 42f1415ace170c52
+/image-creation-workspace/model-experience/image-submission/token-effect:
+  en: d36cca46b5f90519
+  zh: 997941ccafd143af
 /image-creation-workspace/model-experience/image-submission/kv-cache-effect:
   en: c27c7b0d3060c108
   zh: 430b294e7e2cea10
 /image-creation-workspace/known-limitations-and-deferred-work:
-  en: 0d8ece878b2bc8cc
-  zh: c08d4709fa7b1b4d
+  en: 9ac68e28a0c737c6
+  zh: f336514b6ad47f9e
+/image-creation-workspace/known-limitations-and-deferred-work/dev-note:
+  en: e67f633dc6fe7773
+  zh: 8ec3e73528ddb1a6

@@ -1,0 +1,15 @@
+# Product plugin release artifacts
+
+English | [中文](README.zh.md)
+
+`deepseek-ivideo-0.5.0-62ee529e.tgz` contains the complete 649-file Video Studio release already installed by the product. Its upstream source is [`Devin-AXIS/deepseek-design`, commit `62ee529e84423ba63e823b23860293a43b6eb03b`](https://github.com/Devin-AXIS/deepseek-design/tree/62ee529e84423ba63e823b23860293a43b6eb03b/packages/deepseek-ivideo). The repository carries this artifact because version 0.5.0 is unavailable from npm and fetching the whole upstream repository is unnecessary for installation.
+
+The web-app publication manifest declares the immutable remote dependency `github:Devin-AXIS/deepseek-design#62ee529e84423ba63e823b23860293a43b6eb03b&path:/packages/deepseek-ivideo`. The root `pnpm-workspace.yaml` overrides only `@deepseek-ai/dsh-web-app@0.2.1-alpha.2>deepseek-ivideo` with `file:./vendor-plugins/deepseek-ivideo-0.5.0-62ee529e.tgz`. This repository therefore installs the verified release mirror while the published manifest retains its resolvable upstream source. The override changes neither release files nor the existing metadata patch.
+
+The original desktop profile lock records the source archive's SHA-512 integrity in `deepseek-ivideo-0.5.0.files.json`. Every release file was recovered from pnpm's built-package cache for that exact commit and independently verified against its cached SHA-512 digest. The file inventory records each digest, size, and executable mode. The package's original `LICENSE` remains inside the tarball and is also available as [deepseek-ivideo.LICENSE](deepseek-ivideo.LICENSE).
+
+On 2026-10-16, the project owner confirmed holding written commercial and branding authorization for `deepseek-ivideo` 0.5.0 at source commit `62ee529e84423ba63e823b23860293a43b6eb03b`. The notices check accepts only this package identity, version, declared `SEE LICENSE IN LICENSE` terms, source pin and verified release mirror. This confirmation does not relicense the package or cover other releases. The original iPolloWork license, Different AI copyright, attribution and third-party notices remain preserved; local package metadata compatibility changes are disclosed in [the patch](../patches/deepseek-ivideo@0.5.0.patch) and [generated notices](../THIRD_PARTY_NOTICES.md#video-studio-release-with-owner-authorization).
+
+To reproduce the artifact from an unpacked copy of the same release, run `python3 vendor-plugins/repack.py /path/to/package`. The script verifies every listed file, keeps their bytes and executable modes, and fixes tar ownership, timestamps, and gzip metadata. It executes no package code. The root lockfile records the resulting tarball integrity; dependency installation verifies it normally. The package metadata compatibility adjustments remain explicit pnpm patches under `patches/`.
+
+For an update, choose an immutable upstream revision, review the release and its license, replace the file inventory, reproduce the tarball, and update the bundle dependency, mirror override, and root lockfile together.

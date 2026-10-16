@@ -39,7 +39,7 @@ export function apply(ctx: ClientContext): void {
   const t = ctx.locale.bind(NS)
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-artifacts: dictionaries')
   const face: ArtifactsInjected = {
-    t: (key, values) => t(key as Parameters<typeof t>[0], values as never),
+    t: (key, values) => t(key as Parameters<typeof t>[0], values),
   }
   ctx.slots.inject('main', () => ctx.slots.register({
     name: 'main',

@@ -45,7 +45,10 @@ interface WorkspaceChangedFile {
 ## `WorkspaceChangesSummary` — one turn's change summary
 
 ```ts type-equiv
-/** Files changed during one top-level turn, kept on the Host until its Session is disposed. */
+/**
+ * Files changed during one top-level turn: kept while its Session is observed,
+ * and stored when the composition mounts storage so the card outlives it.
+ */
 interface WorkspaceChangesSummary {
   /** The turn whose file changes this summary describes. */
   turn: number
@@ -111,13 +114,16 @@ type WorkspaceFileDiff =
 ## `WorkspaceChanges` — the Host service serving summaries and comparisons
 
 ```ts type-equiv
-/** Serves the summaries and file comparisons the recorder keeps for live Sessions. */
+/**
+ * Serves the summaries the recorder keeps for live Sessions and the ones it
+ * recorded earlier from storage, plus the comparisons of live Sessions.
+ */
 interface WorkspaceChanges {
   /**
    * The summary announced by one `workspace/changes` event.
    * @param sessionId - the Session that appended the event.
    * @param seq - the event's sequence number.
-   * @returns the summary, or undefined once its Session was disposed or when this Host never recorded it.
+   * @returns the summary, or undefined when this Host never recorded the event and nothing is stored for it.
    */
   summary(sessionId: SessionId, seq: number): WorkspaceChangesSummary | undefined
   /**
@@ -135,7 +141,7 @@ interface WorkspaceChanges {
 
 ## Durable events and the served summary
 
-`tool-present` declaration-merges `deliverables/presented: { turn; callId; files: PresentedFile[] }` into `SessionEventMap`, appended once per successful final `present` result. `workspace-changes` merges `workspace/changes: { turn }`, appended when a top-level turn stops; the summary that event announced is not in the log but is returned by `workspaceChanges.summary(sessionId, seq)` for the event's sequence until the Session is disposed, so a conversation reopened after a Host restart has no changed-files card for its earlier turns. `workspaceChanges.diff(sessionId, seq, index, signal)` compares one listed file on the same terms. A later event for the same turn replaces the earlier one, so a client keeps only the latest. The generated [persistence catalog](../persistence-catalog.md#deliverablespresented--log-only) records both declaration sites. Neither event reaches the model.
+`tool-present` declaration-merges `deliverables/presented: { turn; callId; files: PresentedFile[] }` into `SessionEventMap`, appended once per successful final `present` result. `workspace-changes` merges `workspace/changes: { turn }`, appended when a top-level turn stops. The summary is not in the log: the recorder keeps it while its Session is observed and also writes it to the `workspace_changes` domain when the composition mounts storage. `workspaceChanges.summary(sessionId, seq)` serves live or stored summaries for the event's sequence, so stored changed-files cards can outlive Session disposal and Host restarts. `workspaceChanges.diff(sessionId, seq, index, signal)` compares listed files only for live Sessions. A later event for the same turn replaces the earlier one, so a client keeps only the latest. The generated [persistence catalog](../persistence-catalog.md#deliverablespresented--log-only) records both declaration sites. Neither event reaches the model.
 
 <!-- BEGIN GENERATED cordis-surface (gen-cordis-catalog.ts) — do not edit between markers -->
 
@@ -149,14 +155,14 @@ Generated from source by `scripts/gen-cordis-catalog.ts` (verified fresh by `pnp
 
 ### `ctx.workspaceChanges` — `WorkspaceChanges`
 
-Serves the summaries and file comparisons the recorder keeps for live Sessions.
+Serves the summaries the recorder keeps for live Sessions and the ones it recorded earlier from storage, plus the comparisons of live Sessions.
 
 ```ts cordis-catalog
 /**
  * The summary announced by one `workspace/changes` event.
  * @param sessionId - the Session that appended the event.
  * @param seq - the event's sequence number.
- * @returns the summary, or undefined once its Session was disposed or when this Host never recorded it.
+ * @returns the summary, or undefined when this Host never recorded the event and nothing is stored for it.
  */
 summary(sessionId: SessionId, seq: number): WorkspaceChangesSummary | undefined
 

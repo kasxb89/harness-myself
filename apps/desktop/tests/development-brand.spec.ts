@@ -6,7 +6,7 @@ import { beforeEach, expect, it, onTestFinished, vi } from 'vitest'
 import { prepareDevelopmentApp } from '../scripts/development-app.ts'
 
 const commands = vi.hoisted((): { unregisterError?: Error; registerError?: Error } => ({}))
-beforeEach(() => { commands.unregisterError = undefined; commands.registerError = undefined; vi.clearAllMocks() })
+beforeEach(() => { delete commands.unregisterError; delete commands.registerError; vi.clearAllMocks() })
 
 vi.mock('node:child_process', async (original) => {
   const module = await original<typeof import('node:child_process')>()
@@ -20,7 +20,7 @@ vi.mock('node:child_process', async (original) => {
 })
 
 function fixture() {
-  const root = mkdtempSync(join(tmpdir(), 'zhishu-development-brand-'))
+  const root = mkdtempSync(join(tmpdir(), 'yunshu-development-brand-'))
   onTestFinished(() => { rmSync(root, { recursive: true, force: true }) })
   const electron = join(root, 'Electron.app', 'Contents', 'MacOS', 'Electron')
   mkdirSync(join(root, 'Electron.app', 'Contents', 'MacOS'), { recursive: true })
@@ -39,11 +39,16 @@ function fixture() {
 
 it('brands the development bundle, preserves old data and refreshes when the icon or runtime changes', () => {
   const { root, previous, options } = fixture()
+  const legacy = join(root, '智澍科技.app')
+  mkdirSync(join(legacy, 'Contents', 'Resources'), { recursive: true })
+  writeFileSync(join(legacy, 'Contents', 'Resources', 'dsh-development.json'), 'legacy brand')
   const executable = prepareDevelopmentApp(options)
-  expect(executable).toBe(join(root, '智澍科技.app', 'Contents', 'MacOS', 'HarnessDev'))
-  expect(readFileSync(join(root, '智澍科技.app', 'Contents', 'Resources', 'Zhishu.icns'), 'utf8')).toBe('first icon')
-  expect(execFileSync).toHaveBeenCalledWith('/usr/bin/plutil', expect.arrayContaining(['CFBundleDisplayName', '"智澍科技"']))
-  expect(execFileSync).toHaveBeenCalledWith('/usr/bin/plutil', expect.arrayContaining(['CFBundleIconFile', '"Zhishu.icns"']))
+  expect(readFileSync(join(legacy, 'Contents', 'Resources', 'dsh-development.json'), 'utf8')).toBe('legacy brand')
+  expect(execFileSync).toHaveBeenCalledWith(expect.stringContaining('lsregister'), ['-u', legacy])
+  expect(executable).toBe(join(root, '云枢.app', 'Contents', 'MacOS', 'HarnessDev'))
+  expect(readFileSync(join(root, '云枢.app', 'Contents', 'Resources', 'Yunshu.icns'), 'utf8')).toBe('first icon')
+  expect(execFileSync).toHaveBeenCalledWith('/usr/bin/plutil', expect.arrayContaining(['CFBundleDisplayName', '"云枢"']))
+  expect(execFileSync).toHaveBeenCalledWith('/usr/bin/plutil', expect.arrayContaining(['CFBundleIconFile', '"Yunshu.icns"']))
   const copies = () => vi.mocked(execFileSync).mock.calls.filter(call => call[0] === '/usr/bin/ditto').length
   expect(copies()).toBe(1)
   prepareDevelopmentApp(options)
@@ -51,7 +56,7 @@ it('brands the development bundle, preserves old data and refreshes when the ico
   writeFileSync(join(root, 'resources', 'icon-macos.icns'), 'new icon')
   prepareDevelopmentApp(options)
   expect(copies()).toBe(2)
-  expect(readFileSync(join(root, '智澍科技.app', 'Contents', 'Resources', 'Zhishu.icns'), 'utf8')).toBe('new icon')
+  expect(readFileSync(join(root, '云枢.app', 'Contents', 'Resources', 'Yunshu.icns'), 'utf8')).toBe('new icon')
   prepareDevelopmentApp({ ...options, primaryRuntimeDirectory: join(root, 'another-runtime', 'primary-runtime') })
   expect(copies()).toBe(3)
   expect(readFileSync(executable, 'utf8')).toContain('another-runtime')
@@ -68,7 +73,7 @@ it.each(['stdout', 'stderr'] as const)('launches the new bundle when obsolete re
   })
   const executable = prepareDevelopmentApp(options)
   expect(readFileSync(executable, 'utf8')).toContain('DSH_DESKTOP_DEV_APP')
-  expect(execFileSync).toHaveBeenCalledWith(expect.stringContaining('lsregister'), ['-f', join(root, '智澍科技.app')])
+  expect(execFileSync).toHaveBeenCalledWith(expect.stringContaining('lsregister'), ['-f', join(root, '云枢.app')])
   expect(readFileSync(join(previous, 'Contents', 'Resources', 'dsh-development.json'), 'utf8')).toBe('{}')
 })
 
@@ -89,7 +94,7 @@ it.each([
 it('still rejects a missing registration error when registering the current bundle', () => {
   const { root, options } = fixture()
   const failure = Object.assign(new Error('lsregister failed'), { status: 1,
-    stdout: Buffer.from(`failed to scan ${join(root, '智澍科技.app')}: -10814\n from spotlight\n`), stderr: Buffer.alloc(0) })
+    stdout: Buffer.from(`failed to scan ${join(root, '云枢.app')}: -10814\n from spotlight\n`), stderr: Buffer.alloc(0) })
   commands.registerError = failure
   expect(() => prepareDevelopmentApp(options)).toThrow(failure)
   expect(execFileSync).not.toHaveBeenCalledWith(expect.stringContaining('lsregister'), ['-u', join(root, 'Harness Dev.app')])

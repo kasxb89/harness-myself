@@ -3,6 +3,7 @@
 /** Locale namespace owned by this plugin. */
 export const NS = 'mobile'
 
+/** Simplified Chinese copy for the mobile binding panel. */
 export const zh = {
   'panel': '手机',
   'title': '手机',
@@ -10,6 +11,7 @@ export const zh = {
   'missing': '还没有检测到 IM 桥接插件。安装并启用「IM 机器人 (dsh-im)」后，这里会显示微信绑定二维码。',
 } as const
 
+/** English copy for every mobile binding panel translation key. */
 export const en: Record<keyof typeof zh, string> = {
   'panel': 'Mobile',
   'title': 'Mobile',
@@ -17,4 +19,5 @@ export const en: Record<keyof typeof zh, string> = {
   'missing': 'No IM bridge plugin was detected. Install and enable “IM 机器人 (dsh-im)” and the WeChat binding QR appears here.',
 }
 
+/** Translation keys owned by the mobile binding panel. */
 export type MobileKey = keyof typeof zh

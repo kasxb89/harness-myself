@@ -2,10 +2,10 @@ import type { AfterPackContext, BeforePackContext } from 'app-builder-lib'
 
 /** Electron-builder fields asserted by the Desktop release tests. */
 export interface DesktopElectronBuilderConfig {
-  readonly productName: '智澍科技'
+  readonly productName: '云枢'
   readonly appId: string
   readonly artifactName: string
-  readonly protocols: readonly [{ readonly name: '智澍科技'; readonly schemes: readonly ['dsh'] }]
+  readonly protocols: readonly [{ readonly name: '云枢'; readonly schemes: readonly ['dsh'] }]
   readonly directories: {
     readonly output: string
   }
@@ -39,7 +39,7 @@ export interface DesktopElectronBuilderConfig {
     readonly writeUpdateInfo: boolean
   }
   readonly win: {
-    readonly executableName: 'Zhishu Technology'
+    readonly executableName: 'Yunshu'
     readonly icon: string
     readonly forceCodeSigning: boolean
     readonly signtoolOptions: {

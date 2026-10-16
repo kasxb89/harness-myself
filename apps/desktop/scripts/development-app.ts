@@ -4,6 +4,9 @@ import { createHash } from 'node:crypto'
 import { copyFileSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
+/** Product backend base used when the development launcher has no explicit override. */
+export const DEFAULT_DESKTOP_UPDATE_CONFIG_ORIGIN = 'https://8.133.202.230/harness'
+
 /** Workspace and runtime settings captured for Launch Services cold starts. */
 export interface DevelopmentAppOptions {
   readonly electron: string
@@ -38,12 +41,12 @@ function missingLegacyRegistration(error: unknown, bundle: string): boolean {
  */
 export function prepareDevelopmentApp(options: DevelopmentAppOptions): string {
   const source = dirname(dirname(dirname(options.electron)))
-  const bundle = join(options.directory, '智澍科技.app')
+  const bundle = join(options.directory, '云枢.app')
   const executable = join(bundle, 'Contents', 'MacOS', 'HarnessDev')
   const stamp = join(bundle, 'Contents', 'Resources', 'dsh-development.json')
   const launcher = developmentLauncher(options, bundle)
   const icon = join(options.appRoot, 'resources', 'icon-macos.icns')
-  const brand = { name: '智澍科技', icon: createHash('sha256').update(readFileSync(icon)).digest('hex') }
+  const brand = { name: '云枢', icon: createHash('sha256').update(readFileSync(icon)).digest('hex') }
   const identity = JSON.stringify({ ...options, launcher, brand,
     plist: readFileSync(join(source, 'Contents', 'Info.plist'), 'utf8') })
   if (!existsSync(stamp) || readFileSync(stamp, 'utf8') !== identity) {
@@ -55,10 +58,10 @@ export function prepareDevelopmentApp(options: DevelopmentAppOptions): string {
       CFBundleName: brand.name,
       CFBundleDisplayName: brand.name,
       CFBundleExecutable: 'HarnessDev',
-      CFBundleIconFile: 'Zhishu.icns',
+      CFBundleIconFile: 'Yunshu.icns',
       CFBundleURLTypes: [{ CFBundleURLName: brand.name, CFBundleURLSchemes: ['dsh'], CFBundleTypeRole: 'Viewer' }],
     }
-    copyFileSync(icon, join(bundle, 'Contents', 'Resources', 'Zhishu.icns'))
+    copyFileSync(icon, join(bundle, 'Contents', 'Resources', 'Yunshu.icns'))
     for (const [key, value] of Object.entries(values)) {
       execFileSync('/usr/bin/plutil', ['-replace', key, '-json', JSON.stringify(value), plist])
     }
@@ -67,13 +70,15 @@ export function prepareDevelopmentApp(options: DevelopmentAppOptions): string {
     execFileSync('/usr/bin/codesign', ['--force', '--deep', '--sign', '-', bundle], { stdio: 'pipe' })
   }
   execFileSync('/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister', ['-f', bundle])
-  const previous = join(options.directory, 'Harness Dev.app')
-  if (existsSync(join(previous, 'Contents', 'Resources', 'dsh-development.json'))) {
-    try {
-      execFileSync('/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister', ['-u', previous])
-    } catch (error) {
-      // Launch Services -10814 means the obsolete bundle has no valid registration to remove.
-      if (!missingLegacyRegistration(error, previous)) throw error
+  for (const previousName of ['Harness Dev.app', '智澍科技.app']) {
+    const previous = join(options.directory, previousName)
+    if (existsSync(join(previous, 'Contents', 'Resources', 'dsh-development.json'))) {
+      try {
+        execFileSync('/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister', ['-u', previous])
+      } catch (error) {
+        // Launch Services -10814 means the obsolete bundle has no valid registration to remove.
+        if (!missingLegacyRegistration(error, previous)) throw error
+      }
     }
   }
   return executable
@@ -90,7 +95,7 @@ export function developmentLauncher(options: DevelopmentAppOptions, bundle: stri
     DSH_HOME: options.home,
     DSH_DESKTOP_PRIMARY_RUNTIME_DIR: options.primaryRuntimeDirectory,
     DSH_DESKTOP_DEV_APP: '1',
-    DSH_DESKTOP_UPDATE_CONFIG_ORIGIN: options.updateConfigOrigin ?? 'http://127.0.0.1:3000',
+    DSH_DESKTOP_UPDATE_CONFIG_ORIGIN: options.updateConfigOrigin ?? DEFAULT_DESKTOP_UPDATE_CONFIG_ORIGIN,
     DSH_DESKTOP_HOST_INSPECT_PORT: String(options.hostPort),
     DSH_DESKTOP_OPEN_DEVTOOLS: options.openDevtools,
     ELECTRON_ENABLE_LOGGING: '1',

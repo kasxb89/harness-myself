@@ -1,6 +1,7 @@
 /** Bounded, credential-free relay of the local administration publication. */
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { once } from 'node:events'
+import { apiUrl } from './api-url.ts'
 
 const ASSET_ID = /^cc_[a-f0-9]{64}$/
 const MEDIA_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'video/mp4', 'video/webm'])
@@ -20,7 +21,7 @@ function failure(response: ServerResponse, status: number, contentRange?: string
  * @param request Browser request.
  * @param response Browser response.
  * @param route Credits-relative path.
- * @param baseUrl Validated loopback service origin.
+ * @param baseUrl Validated API root including its reverse-proxy prefix.
  * @param timeoutMs Request deadline.
  * @param life Plugin lifetime cancellation.
  * @returns Resolves after transfer or a contained failure.
@@ -41,8 +42,8 @@ export async function relayCreationContent(
       if (!/^bytes=(?:\d+-\d*|-\d+)$/.test(request.headers.range)) { failure(response, 400); return }
       headers.range = request.headers.range
     }
-    const upstream = await fetch(`${baseUrl}${isContent ? '/api/creation/content' : `/api/creation/assets/${assetId}`}`, {
-      method: request.method === 'HEAD' ? 'HEAD' : 'GET', headers, redirect: 'manual', signal,
+    const upstream = await fetch(apiUrl(baseUrl, isContent ? '/api/creation/content' : `/api/creation/assets/${assetId}`), {
+      method: request.method === 'HEAD' ? 'HEAD' : 'GET', headers, redirect: 'error', signal,
     })
     if (!upstream.ok) {
       await upstream.body?.cancel()

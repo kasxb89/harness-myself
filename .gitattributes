@@ -6,6 +6,9 @@
 * text=auto eol=lf
 *.cmd text eol=crlf
 
+# Unified diff context prefixes may precede upstream tab indentation.
+patches/*.patch whitespace=-space-before-tab
+
 *.pdf binary
 
 # The persistence catalog is the readable projection of these generated schemas.

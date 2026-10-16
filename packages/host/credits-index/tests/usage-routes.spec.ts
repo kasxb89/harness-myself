@@ -40,12 +40,15 @@ describe('usage HTTP routes through the real Loader', () => {
       const url = new URL(request.url ?? '/', 'http://127.0.0.1')
       upstreamCalls.push(url.pathname)
       let body: unknown
-      if (url.pathname === '/api/user/self') body = { success: true, data: { id: 7 } }
-      else if (url.pathname === '/api/data/self') body = {
+      if (url.pathname === '/harness/api/user/self') body = { success: true, data: { id: 7 } }
+      else if (url.pathname === '/harness/api/log/self') body = {
         success: true,
-        data: [{ user_id: 7, created_at: start, model_name: 'chat-model', count: 3, quota: 10, token_used: 125 }],
+        data: { page: 1, page_size: 100, total: 1, items: [{
+          id: 1, type: 2, user_id: 7, created_at: start, model_name: 'chat-model',
+          quota: 10, prompt_tokens: 100, completion_tokens: 25, other: '{}',
+        }] },
       }
-      else if (url.pathname === '/api/status') body = { success: true, data: { enable_data_export: true, quota_per_unit: 500_000, usd_exchange_rate: 7.3 } }
+      else if (url.pathname === '/harness/api/status') body = { success: true, data: { quota_per_unit: 500_000, usd_exchange_rate: 7.3 } }
       else { response.writeHead(404); response.end(); return }
       response.setHeader('content-type', 'application/json')
       response.end(JSON.stringify(body))
@@ -68,7 +71,7 @@ describe('usage HTTP routes through the real Loader', () => {
       "- name: '@deepseek-ai/dsh-tools'",
       "- name: '@deepseek-ai/dsh-credits-index'",
       '  config:', `    stateDir: '${stateDir}'`,
-      `    newApiBaseUrl: 'http://127.0.0.1:${String(address.port)}'`,
+      `    newApiBaseUrl: 'http://127.0.0.1:${String(address.port)}/harness'`,
       '    timeoutMs: 1000', '',
     ].join('\n'))
     context = new Context()
@@ -95,9 +98,9 @@ describe('usage HTTP routes through the real Loader', () => {
     expect(result.headers.get('cache-control')).toBe('no-store')
     expect(await result.json()).toMatchObject({
       ok: true,
-      payload: { start, end, delayMinutes: 5, rows: [{ timestamp: start, model: 'chat-model', billingRecords: 3, consumedPoints: 0.146, totalTokens: 125 }] },
+      payload: { start, end, delayMinutes: 0, rows: [{ timestamp: start, model: 'chat-model', billingRecords: 1, consumedPoints: 0.146, totalTokens: 125 }] },
     })
-    expect(upstreamCalls).toEqual(['/api/user/self', '/api/data/self', '/api/status'])
+    expect(upstreamCalls).toEqual(['/harness/api/user/self', '/harness/api/status', '/harness/api/log/self'])
     expect(await (await fetch(`${route}&userId=8`)).json()).toMatchObject({ ok: false, code: 'INVALID_REQUEST' })
     expect((await fetch(route, { headers: { origin: 'https://untrusted.example' } })).status).toBe(403)
     const fiber = [...context.loader.entries()].find(entry => entry.options.name === '@deepseek-ai/dsh-credits-index')?.fiber

@@ -114,7 +114,10 @@ function releaseHeartbeat(): void {
   heartbeatCleanup = null
 }
 
-/** @returns the shared signed-in state, keeping the heartbeat alive while mounted. */
+/**
+ * Subscribe to Credits session and balance changes while retaining the heartbeat.
+ * @returns the shared signed-in state and latest balance read.
+ */
 export function useCreditsSnapshot(): CreditsSnapshot {
   useEffect(() => {
     retainHeartbeat()

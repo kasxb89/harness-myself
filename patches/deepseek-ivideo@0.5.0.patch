@@ -1,0 +1,44 @@
+diff --git a/package.json b/package.json
+--- a/package.json
++++ b/package.json
+@@ -24,7 +24,6 @@
+     "client": {
+       "platform": "web",
+       "inject": [
+-        "@deepseek-ai/dsh-client-runtime",
+         "@deepseek-ai/dsh-client-ui-conversation"
+       ]
+     }
+@@ -70,19 +69,15 @@
+     "sharp": "^0.34.5"
+   },
+   "peerDependencies": {
+-    "@deepseek-ai/cordis": "^4.0.1",
+-    "@deepseek-ai/dsh-client-runtime": ">=0.0.1-rc.1 <0.2.0-0",
+-    "@deepseek-ai/dsh-client-ui-conversation": ">=0.0.1-rc.1 <0.2.0-0",
+-    "@deepseek-ai/dsh-host-webserver": ">=0.0.1-rc.1 <0.2.0-0",
+-    "@deepseek-ai/dsh-tools": ">=0.0.1-rc.1 <0.2.0-0",
+-    "@deepseek-ai/dsh-workspace": ">=0.0.1-rc.1 <0.2.0-0",
++    "@deepseek-ai/cordis": "4.0.5-alpha.1",
++    "@deepseek-ai/dsh-client-ui-conversation": "0.2.1-alpha.2",
++    "@deepseek-ai/dsh-host-webserver": "0.2.1-alpha.2",
++    "@deepseek-ai/dsh-tools": "0.2.1-alpha.2",
++    "@deepseek-ai/dsh-workspace": "0.2.1-alpha.2",
+     "react": "^18.2.0"
+   },
+   "peerDependenciesMeta": {
+     "@deepseek-ai/cordis": {
+-      "optional": true
+-    },
+-    "@deepseek-ai/dsh-client-runtime": {
+       "optional": true
+     },
+     "@deepseek-ai/dsh-client-ui-conversation": {
+@@ -103,7 +98,6 @@
+   },
+   "devDependencies": {
+     "@deepseek-ai/cordis": "4.0.1",
+-    "@deepseek-ai/dsh-client-runtime": "0.1.0-rc.6",
+     "@deepseek-ai/dsh-client-ui-conversation": "0.1.0-rc.6",
+     "@deepseek-ai/dsh-host-webserver": "0.1.0-rc.6",
+     "@deepseek-ai/dsh-tools": "0.1.0-rc.6",

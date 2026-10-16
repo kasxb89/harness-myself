@@ -1292,13 +1292,14 @@ Source: [`packages/session/working-directory/src/index.ts:36`](../packages/sessi
 ```ts persistence-catalog
 /**
  * A completed top-level turn's changed files were summarized; the summary itself stays on the
- * Host and is served by `workspaceChanges.summary` for the event's sequence while the Session
- * lives. The latest event for one turn replaces earlier ones.
+ * Host — in the recorder while the Session is observed, then in the `workspace_changes` domain
+ * when the composition mounts storage — and is served by `workspaceChanges.summary` for the
+ * event's sequence. The latest event for one turn replaces earlier ones.
  */
 'workspace/changes': { turn: number }
 ```
 
-Source: [`packages/deliverables/workspace-changes/src/types.ts:106`](../packages/deliverables/workspace-changes/src/types.ts)
+Source: [`packages/deliverables/workspace-changes/src/types.ts:113`](../packages/deliverables/workspace-changes/src/types.ts)
 
 ## Resolved persistence types
 
@@ -7706,7 +7707,7 @@ Sources: [`packages/todo/tool-todo/src/types.ts:31`](../packages/todo/tool-todo/
 
 SHA-256: `f90eb4ab2d3897bc20c521a038e3119d581f791ec974b1a0004f63a8ab9e232d`
 
-Sources: [`packages/core/session/src/types.ts:288`](../packages/core/session/src/types.ts) · [`packages/deliverables/workspace-changes/src/types.ts:106`](../packages/deliverables/workspace-changes/src/types.ts)
+Sources: [`packages/core/session/src/types.ts:288`](../packages/core/session/src/types.ts) · [`packages/deliverables/workspace-changes/src/types.ts:113`](../packages/deliverables/workspace-changes/src/types.ts)
 
 | Property | Presence | Type |
 |---|---|---|

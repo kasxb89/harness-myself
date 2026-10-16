@@ -22,13 +22,13 @@ function requestUrl(input: RequestInfo | URL | undefined): string {
   return typeof input === 'string' ? input : input instanceof URL ? input.href : input?.url ?? ''
 }
 
-function reply(input: RequestInfo | URL, data: readonly UsageRow[] = rows): Response {
+function reply(input: RequestInfo | URL, data: readonly UsageRow[] = rows, delayMinutes = 0): Response {
   const query = new URL(requestUrl(input), 'http://localhost').searchParams
   const start = Number(query.get('start'))
   const end = Number(query.get('end'))
   return Response.json({ ok: true, payload: {
     rows: data.filter(row => row.timestamp >= start && row.timestamp <= end),
-    start, end, asOf: new Date(now).toISOString(), delayMinutes: 5,
+    start, end, asOf: new Date(now).toISOString(), delayMinutes,
   } })
 }
 
@@ -52,8 +52,16 @@ describe('balance usage overview', () => {
     expect(within(consumed).getByText('600.5')).toBeTruthy()
     expect(within(view.getByRole('article', { name: '计费记录' })).getByText('2')).toBeTruthy()
     expect(fetchMock).toHaveBeenCalledTimes(1)
-    expect(view.getByText('汇总通常延迟约 5 分钟')).toBeTruthy()
+    expect(view.getByText(zh['usage.billingFreshness'])).toBeTruthy()
+    expect(view.queryByText(/延迟约 (?:0|5) 分钟/)).toBeNull()
     expect(view.container.textContent).toMatchSnapshot()
+  })
+
+  it('shows a reported positive delay without implying immediate billing availability', async () => {
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>(async input => reply(input, rows, 2)))
+    const view = render(<UsageOverview t={t} creditsPerYuan={1000} />)
+    expect(await view.findByText(t('usage.delay', { minutes: '2' }))).toBeTruthy()
+    expect(view.queryByText(zh['usage.billingFreshness'])).toBeNull()
   })
 
   it('keeps unavailable statistics separate from zero and retries a read without touching account mutations', async () => {
@@ -108,7 +116,7 @@ describe('balance usage overview', () => {
     expect(await view.findByText('所选范围暂无计费记录')).toBeTruthy()
     expect(within(view.getByRole('article', { name: '消费积分' })).getByText('0')).toBeTruthy()
     expect(view.queryByRole('img')).toBeNull()
-    expect(view.getByText('新产生的用量可能尚未汇总，可稍后刷新，或切换其他周期与模型')).toBeTruthy()
+    expect(view.getByText(zh['usage.emptyHint'])).toBeTruthy()
   })
 
   it.each([0.0000001, 1e300])('keeps extreme finite consumption readable without displaying zero: %s', async (consumedPoints) => {

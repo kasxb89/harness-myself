@@ -948,6 +948,23 @@ async prepare(request: DeepSeekLlmApiExtensionRequest): Promise<PreparedDeepSeek
 
 Source: [`packages/llm/deepseek-llm-api-extensions/src/index.ts`](../../packages/llm/deepseek-llm-api-extensions/src/index.ts)
 
+<a id="ctxharnessaccount--harnessaccount"></a>
+
+### `ctx.harnessAccount` — `HarnessAccount`
+
+Session-owned relay credentials never fall back to environment layers.
+
+```ts cordis-catalog
+/**
+ * Resolve the current signed-in account after checking its backend and expiry.
+ * @param baseURL - Exact model API root being requested.
+ * @returns The current relay key, or undefined when no live session authorizes the request.
+ */
+resolveRelayKey(baseURL: string): Promise<string | undefined>
+```
+
+Source: [`packages/llm/llm-pi-ai/src/harness-account.ts`](../../packages/llm/llm-pi-ai/src/harness-account.ts)
+
 <a id="ctxllm--llmruntime"></a>
 
 ### `ctx.llm` — `LlmRuntime`

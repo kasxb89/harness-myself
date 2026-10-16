@@ -1262,6 +1262,24 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     ],
   },
   {
+    key: 'harnessAccount',
+    summary: 'Session-owned relay credentials never fall back to environment layers.',
+    description: 'Session-owned relay credentials never fall back to environment layers.',
+    methods: [
+      {
+        signature: 'readonly provider: string',
+        description: 'Product provider route owned by this account controller.',
+        parameters: [],
+      },
+      {
+        signature: 'resolveRelayKey(baseURL: string): Promise<string | undefined>',
+        description: 'Resolve the current signed-in account after checking its backend and expiry.',
+        parameters: [{ name: 'baseURL', description: 'Exact model API root being requested.' }],
+        returns: 'The current relay key, or undefined when no live session authorizes the request.',
+      },
+    ],
+  },
+  {
     key: 'hmr',
     summary: 'Hot reload service with Cordis-compatible module configuration and events.',
     description: 'Hot reload service with Cordis-compatible module configuration and events.',
@@ -3662,14 +3680,14 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
   },
   {
     key: 'workspaceChanges',
-    summary: 'Serves the summaries and file comparisons the recorder keeps for live Sessions.',
-    description: 'Serves the summaries and file comparisons the recorder keeps for live Sessions.',
+    summary: 'Serves the summaries the recorder keeps for live Sessions and the ones it recorded earlier from storage, plus the comparisons of live Sessions.',
+    description: 'Serves the summaries the recorder keeps for live Sessions and the ones it recorded earlier from storage, plus the comparisons of live Sessions.',
     methods: [
       {
         signature: 'summary(sessionId: SessionId, seq: number): WorkspaceChangesSummary | undefined',
         description: 'The summary announced by one `workspace/changes` event.',
         parameters: [{ name: 'sessionId', description: 'the Session that appended the event.' }, { name: 'seq', description: 'the event\'s sequence number.' }],
-        returns: 'the summary, or undefined once its Session was disposed or when this Host never recorded it.',
+        returns: 'the summary, or undefined when this Host never recorded the event and nothing is stored for it.',
       },
       {
         signature: 'diff(sessionId: SessionId, seq: number, index: number, signal: AbortSignal): Promise<WorkspaceFileDiff | undefined>',

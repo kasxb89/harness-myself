@@ -837,7 +837,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-credits-index`
 
 - `inject`: `webServer` · `tools`
-- `source`: [`packages/host/credits-index/src/index.ts:58`](../packages/host/credits-index/src/index.ts)
+- `source`: [`packages/host/credits-index/src/index.ts:52`](../packages/host/credits-index/src/index.ts)
 
 ```ts config-catalog
 /** Plugin config: platform origin, display rate, and where the session file lives. */
@@ -854,13 +854,13 @@ export interface Config {
   relayPort?: number
   /** Credential reference the relay's bearer token lives under. */
   relayTokenEnv?: string
-  /** Local new-api origin, without a trailing slash. */
+  /** HTTPS API base including the deployment prefix; HTTP is restricted to loopback. */
   newApiBaseUrl?: string
-  /** Credential reference holding the new-api key. */
+  /** Legacy deployment-key setting; account requests never resolve it. */
   newApiKeyEnv?: string
   /** Local Bridge origin serving the SMS login contract. */
   bridgeBaseUrl?: string
-  /** File holding the read-only new-api admin token used to find a user by phone. */
+  /** Legacy admin-token setting; product account reads use only the signed-in user's access token. */
   newApiAdminTokenFile?: string
   /** LLM provider route whose model list follows this deployment's new-api. */
   chatProviderRoute?: string

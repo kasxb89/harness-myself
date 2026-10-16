@@ -1,11 +1,13 @@
-import { EventEmitter } from 'node:events'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AppUpdater } from 'electron-updater'
+import { NsisUpdater, type UpdateDownloadedEvent } from 'electron-updater'
 import type { DesktopUpdateState } from '../src/ipc.ts'
 import { DesktopUpdateSchedule, resolveDesktopUpdateScheduleConfig } from '../src/update-schedule.ts'
 
 vi.mock('electron', () => ({ app: { isPackaged: false } }))
-vi.mock('electron-updater', () => ({ default: { autoUpdater: {} } }))
+vi.mock('electron-updater', async () => {
+  const { EventEmitter } = await import('node:events')
+  return { NsisUpdater: class extends EventEmitter {}, default: { autoUpdater: {} } }
+})
 const { DesktopUpdateCoordinator } = await import('../src/update-coordinator.ts')
 
 const cleanup: (() => void)[] = []
@@ -18,14 +20,19 @@ afterEach(() => {
 
 function fixture(jitter = 0, random = () => 0.5) {
   const checkForUpdates = vi.fn(async () => ({ isUpdateAvailable: false, updateInfo: { version: '1.0.0' } }))
-  const events = new EventEmitter()
+  const events = new NsisUpdater()
+  const sha512 = Buffer.alloc(64).toString('base64')
+  const downloaded: UpdateDownloadedEvent = { version: '1.1.0-nightly.1', downloadedFile: 'verified',
+    files: [{ url: 'verified', sha512 }], releaseDate: '2026-10-16T00:00:00.000Z',
+    // oxlint-disable-next-line typescript/no-deprecated -- electron-updater requires both legacy fields on UpdateDownloadedEvent.
+    path: 'verified', sha512 }
   const downloadUpdate = vi.fn(async () => {
-    events.emit('update-downloaded', { version: '1.1.0-nightly.1' })
+    events.emit('update-downloaded', downloaded)
     return ['verified']
   })
   const updater = Object.assign(events, {
     checkForUpdates, downloadUpdate, quitAndInstall: vi.fn(), setFeedURL: vi.fn(),
-  }) as unknown as AppUpdater
+  })
   const states: DesktopUpdateState[] = []
   const coordinator = new DesktopUpdateCoordinator((state) => { states.push(state); return state }, async () => true,
     updater, () => true, () => '1.0.0', undefined, async () => ({ url: 'https://updates.example.com/', channel: 'nightly' }))

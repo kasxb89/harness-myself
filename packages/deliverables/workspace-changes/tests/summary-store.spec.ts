@@ -28,7 +28,7 @@ afterEach(async () => {
 
 /** A stub facility whose open resolves or rejects on demand, over one in-memory table. */
 function standIn(options: {
-  reject?: unknown
+  reject?: Error
   records?: Map<string, SummaryRecord>
   put?: (key: string, value: SummaryRecord) => Promise<void>
 } = {}) {
@@ -198,6 +198,6 @@ describe('a stored summary outlives its Session', () => {
 
     // The recorder is gone; the stored summary is what still answers.
     expect(ctx.workspaceChanges.summary(session.id, announced.seq)).toEqual(recorded)
-    expect(ctx.workspaceChanges.diff(session.id, announced.seq, 0, new AbortController().signal)).resolves.toBeUndefined()
+    await expect(ctx.workspaceChanges.diff(session.id, announced.seq, 0, new AbortController().signal)).resolves.toBeUndefined()
   })
 })

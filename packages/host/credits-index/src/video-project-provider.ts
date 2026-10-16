@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto'
 import { link, lstat, open, realpath, unlink } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, sep } from 'node:path'
 import type { VideoProjectRequest } from './video-project-types.ts'
+import { apiUrl, normalizeApiBaseUrl } from './api-url.ts'
 
 /** Stable relay failure safe for project records and model-visible reports. */
 export class VideoRelayError extends Error {
@@ -12,6 +13,7 @@ export class VideoRelayError extends Error {
 
 /** Host-owned limits and a fresh credential resolver; no key enters durable project data. */
 export interface VideoRelayOptions {
+  /** API root including the deployment's reverse-proxy prefix. */
   origin: string
   timeoutMs: number
   maxDownloadBytes: number
@@ -21,7 +23,7 @@ export interface VideoRelayOptions {
   key(): Promise<string>
 }
 
-/** Account-authorized operations against one configured video relay origin. */
+/** Account-authorized operations against one configured video relay API root. */
 export interface VideoProjectRelay {
   /** @param signal - Cancels the catalog read. @returns Account-visible model identifiers. */
   modelIds(signal: AbortSignal): Promise<readonly string[]>
@@ -46,14 +48,10 @@ function text(value: Record<string, unknown> | undefined, key: string): string |
   return typeof value?.[key] === 'string' ? value[key] : undefined
 }
 
-function originOf(raw: string): string {
-  const url = new URL(raw)
-  const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
-  if ((url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback))
-    || url.username !== '' || url.password !== '' || url.search !== '' || url.hash !== '' || url.pathname !== '/') {
+function baseOf(raw: string): string {
+  try { return normalizeApiBaseUrl(raw) } catch (_invalidBaseUrl: unknown) {
     throw new VideoRelayError('VIDEO_RELAY_CONFIG', '视频服务地址无效，请联系管理员')
   }
-  return url.origin
 }
 
 function validTask(taskId: string): string {
@@ -88,19 +86,19 @@ async function jsonBody(response: Response): Promise<Record<string, unknown>> {
 }
 
 /**
- * Create task submission, status, and bounded content operations for one trusted relay origin.
- * @param options - Configured origin, byte/deadline limits, and account-owned credential resolver.
+ * Create task submission, status, and bounded content operations for one trusted API root.
+ * @param options - Configured API root, byte/deadline limits, and account-owned credential resolver.
  * @returns Operations which never repeat a POST or forward credentials across origins.
  */
 export function createVideoProjectRelay(options: VideoRelayOptions): VideoProjectRelay {
-  const origin = originOf(options.origin)
+  const baseUrl = baseOf(options.origin)
   async function request(path: string, signal: AbortSignal, body?: VideoProjectRequest): Promise<Response> {
     signal.throwIfAborted()
     const key = await options.key()
     signal.throwIfAborted()
     let response: Response
     try {
-      response = await fetch(origin + path, {
+      response = await fetch(apiUrl(baseUrl, path), {
         method: body === undefined ? 'GET' : 'POST',
         headers: { authorization: 'Bearer ' + key, accept: body === undefined && path.endsWith('/content') ? 'video/mp4' : 'application/json',
           ...(body === undefined ? {} : { 'content-type': 'application/json' }) },

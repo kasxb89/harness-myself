@@ -3,6 +3,7 @@
 /** Locale namespace owned by this plugin. */
 export const NS = 'artifacts'
 
+/** Simplified Chinese copy for the artifacts panel. */
 export const zh = {
   'panel': '产物',
   'title': '产物',
@@ -29,6 +30,7 @@ export const zh = {
   'kind.other': '其他',
 } as const
 
+/** English copy for every artifacts panel translation key. */
 export const en: Record<keyof typeof zh, string> = {
   'panel': 'Artifacts',
   'title': 'Artifacts',
@@ -55,4 +57,5 @@ export const en: Record<keyof typeof zh, string> = {
   'kind.other': 'Other',
 }
 
+/** Translation keys owned by the artifacts panel. */
 export type ArtifactsKey = keyof typeof zh

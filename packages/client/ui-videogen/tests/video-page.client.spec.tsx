@@ -7,7 +7,7 @@ import { bindSnapshotSelector } from '../../ui-renderer/src/client/bind.ts'
 import { createVideoDraftStore } from '../src/client/draft-store.ts'
 import { VideoPage } from '../src/client/VideoPage.tsx'
 import { zh } from '../src/client/locales.ts'
-import { contentFixture } from '../../ui-imagegen/tests/content-fixture.ts'
+import { contentFixture } from '../../ui-imagegen/tests/content-fixture.client.ts'
 
 const params = {
   durations: [5, 10], resolutions: ['720p', '1080p'], ratios: ['16:9', '9:16'], frameSlots: 2,
@@ -19,11 +19,18 @@ const t: Parameters<typeof VideoPage>[0]['t'] = (key, values) => zh[key].replace
 let fetcher = vi.fn<typeof fetch>()
 let sessionAccountId: string | null = 'account-a'
 
+function requestBody(init: RequestInit | undefined): Record<string, unknown> {
+  if (typeof init?.body !== 'string') throw new Error('Expected a JSON request body')
+  const value: unknown = JSON.parse(init.body)
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error('Expected a JSON object')
+  return value as Record<string, unknown>
+}
+
 function setup(overrides: Partial<typeof params> = {}) {
   const task = vi.fn(async (_init?: RequestInit): Promise<Response> => json({ ok: true, payload: { path: '/credits/media/new.mp4' } }))
   const asset = vi.fn(async (): Promise<Response> => json({ ok: true, asset: { assetId: 'ma_image' } }))
   fetcher = vi.fn(async (input, init) => {
-    const path = String(input)
+    const path = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
     if (path === '/credits/api/session') return json({ ok: true, payload: { signedIn: sessionAccountId !== null, creditsPerYuan: 1000, account: sessionAccountId === null ? null : { id: sessionAccountId } } })
     if (path === '/credits/api/summary') return json({ ok: true, payload: { balance_points: 2000 } })
     if (path === '/credits/api/media/catalog') return json({ ok: true, payload: { video: [
@@ -55,6 +62,31 @@ beforeEach(() => { vi.useRealTimers(); sessionAccountId = 'account-a' })
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 describe('video composer', () => {
+  it.each(['direct', 'enveloped'] as const)('retains saved clips after malformed artifact records in a %s refresh', async (format) => {
+    const { mount } = setup()
+    const baseFetch = fetcher.getMockImplementation()!
+    let items: unknown[] = [
+      { path: '/credits/media/older.mp4', name: 'older.mp4', kind: 'video', mtimeMs: 1 },
+      { path: '/credits/media/newer.mp4', name: 'newer.mp4', kind: 'video', mtimeMs: 2 },
+    ]
+    fetcher.mockImplementation(async (input, init) => {
+      const path = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+      return path === '/artifacts/api/list'
+        ? json(format === 'direct' ? { items } : { payload: { items } })
+        : await baseFetch(input, init)
+    })
+    mount()
+    await ready()
+    const history = screen.getByRole('region', { name: zh.history })
+    await waitFor(() => {
+      expect(within(history).getAllByRole('listitem').map(item => item.textContent)).toEqual(['newer.mp4', 'older.mp4'])
+    })
+    items = [null]
+    fireEvent.click(within(history).getByRole('button', { name: zh.refresh }))
+    await waitFor(() => { expect(within(history).getByRole('alert').textContent).toBe(zh.historyFailed) })
+    expect(within(history).getAllByRole('listitem').map(item => item.textContent)).toEqual(['newer.mp4', 'older.mp4'])
+  })
+
   it('opens the parameter panel and updates the compact summary from supported choices', async () => {
     const { store, mount, task } = setup({ durations: Array.from({ length: 12 }, (_, index) => index + 1) })
     store.actions.patch({ duration: 5 })
@@ -404,12 +436,12 @@ describe('video composer', () => {
     fireEvent.click(submit)
     fireEvent.click(submit)
     await waitFor(() => { expect(task).toHaveBeenCalledTimes(1) })
-    expect(JSON.parse(String(task.mock.calls[0]?.[0]?.body))).toMatchObject({ mode: 'pro', seed: 73, audio: false, frameImages: [], referenceAudios: [] })
+    expect(requestBody(task.mock.calls[0]?.[0])).toMatchObject({ mode: 'pro', seed: 73, audio: false, frameImages: [], referenceAudios: [] })
     first.unmount()
     mount()
     await ready()
-    expect((screen.getByRole('textbox', { name: zh.prompt }) as HTMLTextAreaElement).value).toBe('A continuous tracking shot')
-    expect((screen.getByRole('button', { name: zh.runningShort }) as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getByRole('textbox', { name: zh.prompt })).toHaveProperty('value', 'A continuous tracking shot')
+    expect(screen.getByRole('button', { name: zh.runningShort })).toHaveProperty('disabled', true)
     await act(async () => { complete?.(json({ ok: true, payload: { path: '/credits/media/new.mp4' } })) })
     await waitFor(() => { expect(store.getSnapshot().phase).toBe('idle') })
     expect(store.getSnapshot().result?.path).toBe('/credits/media/new.mp4')
@@ -427,7 +459,7 @@ describe('video composer', () => {
     await waitFor(() => { expect(screen.getByRole('alert').textContent).toBe(zh.outcomeUnknown) })
     expect(store.getSnapshot()).toMatchObject({ phase: 'idle', prompt: 'A continuous tracking shot', result: { path: '/credits/media/previous.mp4' } })
     expect(task).toHaveBeenCalledTimes(1)
-    expect((screen.getByRole('button', { name: zh.submit }) as HTMLButtonElement).disabled).toBe(false)
+    expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', false)
   })
 
   it('keeps successful earlier uploads when the next file fails and releases the busy state', async () => {
@@ -441,7 +473,7 @@ describe('video composer', () => {
     await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull(); expect(asset).toHaveBeenCalledTimes(2) })
     expect(store.getSnapshot().slots.image.map(item => item.assetId)).toEqual(['ma_first'])
     expect(screen.getByRole('alert').textContent).toBe(zh.uploadNetwork)
-    expect((screen.getByRole('button', { name: zh.submit }) as HTMLButtonElement).disabled).toBe(false)
+    expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', false)
   })
 
   it('retains all reference material and sends only the selected model limit', async () => {
@@ -459,7 +491,7 @@ describe('video composer', () => {
     expect(view.container.querySelectorAll('img')).toHaveLength(4)
     fireEvent.click(screen.getByRole('button', { name: zh.submit }))
     await waitFor(() => { expect(task).toHaveBeenCalledTimes(1) })
-    expect(JSON.parse(String(task.mock.calls[0]?.[0]?.body)).referenceImages).toEqual(['ma_0', 'ma_1', 'ma_2'])
+    expect(requestBody(task.mock.calls[0]?.[0]).referenceImages).toEqual(['ma_0', 'ma_1', 'ma_2'])
   })
 
   it('requires both endpoint frames and sends no hidden frame references in text mode', async () => {
@@ -475,7 +507,7 @@ describe('video composer', () => {
     fireEvent.click(screen.getByRole('button', { name: zh['workflow.text'] }))
     fireEvent.click(screen.getByRole('button', { name: zh.submit }))
     await waitFor(() => { expect(task).toHaveBeenCalledTimes(1) })
-    expect(JSON.parse(String(task.mock.calls[0]?.[0]?.body)).frameImages).toEqual([])
+    expect(requestBody(task.mock.calls[0]?.[0]).frameImages).toEqual([])
     expect(store.getSnapshot().lastFrame?.assetId).toBe('ma_last')
   })
 

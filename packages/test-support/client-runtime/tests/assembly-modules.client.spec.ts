@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * In-process module arrival: dynamic `/client` imports resolve through the
  * repository path aliases, provided rows replace them, the bootstrap row is the
@@ -12,8 +13,8 @@ import type { WebBootGraph } from '@deepseek-ai/dsh-client-modules/client'
 import * as uiRenderer from '@deepseek-ai/dsh-client-ui-renderer/client'
 import * as typertRegistry from '@deepseek-ai/dsh-typert-registry/client'
 import { describe, expect, it, onTestFinished } from 'vitest'
-import { ClientRoster } from '../src/assembly/index.ts'
-import { MODULES_PACKAGE, createInProcessModules, loadPluginModules } from '../src/assembly/modules.ts'
+import { ClientRoster } from '../src/assembly/roster.ts'
+import { MODULES_PACKAGE, createInProcessModules, loadPluginModules, readBundleRegistration } from '../src/assembly/modules.ts'
 
 const RENDERER = '@deepseek-ai/dsh-client-ui-renderer'
 const TYPERT = '@deepseek-ai/dsh-typert-registry'
@@ -105,5 +106,75 @@ describe('createInProcessModules', () => {
     expect(ctx.get('slots')).toBeDefined()
     expect(ctx.get('modules')).toBe(system)
     expect([...ctx.loader.entries()].every(entry => entry.fiber !== undefined)).toBe(true)
+  })
+})
+
+describe('published client bundles', () => {
+  const filename = '/published/client.js'
+
+  it('restores the page facade and materializes a real registration with the platform seed', async () => {
+    const previous = Object.getOwnPropertyDescriptor(window, '__ModuleLoader__')
+    const registration = readBundleRegistration('published', `
+      window.__ModuleLoader__.load({
+        id: 'published',
+        factory: require => ({ apply(ctx) { ctx.provide('publishedReact', require('react')) } }),
+      })
+    `, filename)
+    expect(Object.getOwnPropertyDescriptor(window, '__ModuleLoader__')).toEqual(previous)
+    const system = createInProcessModules(graph(['published']), new Map([['published', registration]]))
+    expect(system.loadCache.has('published')).toBe(false)
+    const ctx = new Context()
+    onTestFinished(() => ctx.fiber.dispose())
+    await ctx.plugin(Loader)
+    ctx.loader.internal = system as never
+    await ctx.loader.create({ name: 'published' })
+    await ctx.loader.await()
+    expect(ctx.get('publishedReact')).toBeDefined()
+  })
+
+  it.each([
+    "throw new Error('script failed')",
+    "window.__ModuleLoader__.load({ id: 'different', factory: () => ({}) })",
+    "window.__ModuleLoader__.load({ id: 'published', chunk: 'extra.js', factory: () => ({}) })",
+    'window.__ModuleLoader__.create({})',
+    `window.__ModuleLoader__.load({ id: 'published', factory: () => ({}) });
+     window.__ModuleLoader__.load({ id: 'published', factory: () => ({}) })`,
+  ])('restores an existing facade after an invalid bundle: %s', (source) => {
+    const previous = Object.getOwnPropertyDescriptor(window, '__ModuleLoader__')
+    const marker = Object.freeze({ marker: true })
+    Object.defineProperty(window, '__ModuleLoader__', { configurable: true, value: marker })
+    try {
+      expect(() => readBundleRegistration('published', source, filename)).toThrow()
+      expect(Object.getOwnPropertyDescriptor(window, '__ModuleLoader__')?.value).toBe(marker)
+    } finally {
+      if (previous === undefined) Reflect.deleteProperty(window, '__ModuleLoader__')
+      else Object.defineProperty(window, '__ModuleLoader__', previous)
+    }
+  })
+
+  it('isolates repeated classic-script declarations from the global scope', async () => {
+    const source = `
+      const publishedBundleLexicalProbe = 'local'
+      var publishedBundleVariableProbe = 'local'
+      window.__ModuleLoader__.load({
+        id: 'published',
+        factory: () => ({ value: publishedBundleLexicalProbe + publishedBundleVariableProbe }),
+      })
+    `
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const registration = readBundleRegistration('published', source, filename)
+      const system = createInProcessModules(graph(['published']), new Map([['published', registration]]))
+      await expect(system.import('published', '', {})).resolves.toEqual({ value: 'locallocal' })
+      expect(Object.hasOwn(globalThis, 'publishedBundleVariableProbe')).toBe(false)
+      expect(Object.hasOwn(window, 'publishedBundleVariableProbe')).toBe(false)
+    }
+  })
+
+  it('propagates missing platform modules through the production factory loader', async () => {
+    const registration = readBundleRegistration('published', `
+      window.__ModuleLoader__.load({ id: 'published', factory: require => require('missing-platform-module') })
+    `, filename)
+    const system = createInProcessModules(graph(['published']), new Map([['published', registration]]))
+    await expect(system.import('published', '', {})).rejects.toThrow('missed the module table')
   })
 })

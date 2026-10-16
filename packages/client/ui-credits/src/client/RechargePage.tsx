@@ -1,15 +1,4 @@
-/**
- * The Top-up page: amount → WeChat Native QR → order polling.
- *
- * It is its own surface because paying is a different task from reading a
- * balance: the sidebar's top-up entry lands here directly, with the amount the
- * operator asked for already in the field, and the current balance stays in the
- * header so a top-up decision can be made without leaving the page.
- *
- * Idempotency keys are minted once per operation and reused by that operation's
- * retries, and the order poller keeps the platform's `poll_after_ms` cadence —
- * never a tight loop.
- */
+/** Top-up amounts, WeChat Native QR presentation, and lifecycle-owned order reads. */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   Button,
@@ -46,30 +35,35 @@ interface OrderCreated {
 }
 
 interface OrderStatus {
-  readonly status: 'pending' | 'processing' | 'succeeded' | 'failed' | 'closed' | 'review_required'
+  readonly status: 'pending' | 'succeeded' | 'failed' | 'expired' | 'unknown'
   readonly points: number
   readonly failure_code: string | null
 }
 
-/**
- * Top-up bounds the platform's `recharge/wechat` route enforces, in yuan. The
- * page states the same range in its own hint instead of asking the platform for
- * a second opinion, so the two can only disagree by editing this constant.
- */
+/** Product top-up bounds, in whole yuan. */
 const MIN_AMOUNT_YUAN = 1
 const MAX_AMOUNT_YUAN = 100_000
+
+interface PaymentOperation {
+  readonly controller: AbortController
+  timer: ReturnType<typeof setTimeout> | null
+}
+
+function isActive(active: PaymentOperation): boolean {
+  return !active.controller.signal.aborted
+}
 
 /** The tag palette matching one order's terminal or in-flight state. */
 function statusTone(status: OrderStatus['status']): TagTone {
   if (status === 'succeeded') return 'success'
   if (status === 'failed') return 'danger'
-  if (status === 'review_required') return 'warning'
+  if (status === 'unknown') return 'warning'
   return 'neutral'
 }
 
 export function RechargePage(props: PropsRuntime<'main'> & RechargePageInjected): ReactNode {
   const { t, openBalance } = props
-  const { session, balance, loaded } = useCreditsSnapshot()
+  const { session, balance, loaded, failure: balanceFailure } = useCreditsSnapshot()
   const [notice, setNotice] = useState<string | null>(null)
   const [failure, setFailure] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -82,7 +76,7 @@ export function RechargePage(props: PropsRuntime<'main'> & RechargePageInjected)
   const [polling, setPolling] = useState(false)
   const [copied, setCopied] = useState(false)
   const amountInput = useRef<HTMLInputElement>(null)
-  const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const operation = useRef<PaymentOperation | null>(null)
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const recharge = useRechargeRequest()
 
@@ -98,95 +92,169 @@ export function RechargePage(props: PropsRuntime<'main'> & RechargePageInjected)
     amountInput.current?.select()
   }, [recharge])
 
+  const cancelOperation = useCallback(() => {
+    const previous = operation.current
+    if (previous === null) return
+    previous.controller.abort()
+    if (previous.timer !== null) clearTimeout(previous.timer)
+    operation.current = null
+  }, [])
+
+  const startOperation = useCallback((): PaymentOperation => {
+    cancelOperation()
+    const next = { controller: new AbortController(), timer: null }
+    operation.current = next
+    return next
+  }, [cancelOperation])
+
+  const accountId = session?.account?.id
+  useEffect(() => {
+    setOrder(null)
+    setOrderState(null)
+    setPolling(false)
+    setBusy(false)
+    setFailure(null)
+    setNotice(null)
+    return cancelOperation
+  }, [accountId, signedIn, cancelOperation])
+
   useEffect(() => () => {
-    if (pollTimer.current !== null) clearTimeout(pollTimer.current)
     if (copiedTimer.current !== null) clearTimeout(copiedTimer.current)
   }, [])
 
-  /** Poll one order once, then schedule the next read at the platform's cadence. */
-  const pollOrder = useCallback(async (orderNo: string, attempt: number) => {
-    const answer = await get<{ status?: string; quota?: number }>(
-      `/credits/api/recharge/wechat/order?outTradeNo=${encodeURIComponent(orderNo)}`,
-    )
-    if (answer.sessionInvalid === true) {
-      await refreshCredits()
+  /** Late reads belong only to their active operation, never a replacement order. */
+  const pollOrder = useCallback(async (orderNo: string, attempt: number, active: PaymentOperation): Promise<void> => {
+    try {
+      const answer = await get<{ status: string; points: number }>(
+        `/credits/api/recharge/wechat/order?outTradeNo=${encodeURIComponent(orderNo)}`,
+        active.controller.signal,
+      )
+      if (!isActive(active)) return
+      if (answer.sessionInvalid === true) {
+        setFailure(t('rechargeSessionExpired'))
+        setPolling(false)
+        cancelOperation()
+        await refreshCredits()
+        return
+      }
+      const remote = answer.payload
+      if (!answer.ok || remote === undefined) {
+        setFailure(t('rechargePollFailed'))
+        setPolling(false)
+        return
+      }
+      const status: OrderStatus = {
+        status: remote.status === 'success' ? 'succeeded'
+          : remote.status === 'failed' ? 'failed'
+            : remote.status === 'expired' ? 'expired'
+              : remote.status === 'pending' ? 'pending' : 'unknown',
+        points: remote.points,
+        failure_code: null,
+      }
+      setOrderState(status)
+      if (status.status === 'succeeded') {
+        setPolling(false)
+        setNotice(t('rechargeSucceeded', { points: grouped(status.points) }))
+        try {
+          await refreshBalance()
+        } catch (error) {
+          if (isActive(active)) setFailure(t('rechargeBalanceFailed'))
+          // The confirmed payment remains successful when its balance read fails.
+          void error
+        }
+        return
+      }
+      if (status.status === 'unknown') {
+        setPolling(false)
+        setFailure(t('rechargeStatusUnknown', { status: remote.status }))
+        return
+      }
+      if (status.status === 'failed' || status.status === 'expired') {
+        setPolling(false)
+        setFailure(t('rechargeTerminal', {
+          status: t(`status.${status.status}`), code: status.failure_code ?? '—',
+        }))
+        return
+      }
+      const retryAfter = (answer.retryAfterSeconds ?? 0) * 1000
+      const backoff = attempt > 4 ? Math.min(30_000, 1000 * 2 ** (attempt - 4)) : 0
+      const delay = Math.max(2500, retryAfter, backoff)
+      active.timer = setTimeout(() => {
+        active.timer = null
+        void pollOrder(orderNo, attempt + 1, active)
+      }, delay)
+    } catch (error) {
+      if (!isActive(active)) return
       setPolling(false)
-      return
+      setFailure(t('rechargePollFailed'))
+      // The failed read does not establish whether payment completed.
+      void error
     }
-    const remote = answer.payload ?? null
-    if (remote === null) {
-      setFailure(answer.message ?? answer.code ?? t('errGeneric'))
-      setPolling(false)
-      return
-    }
-    const status: OrderStatus = {
-      status: remote.status === 'success' ? 'succeeded' : remote.status === 'failed' ? 'failed' : 'pending',
-      points: remote.quota ?? 0,
-      failure_code: null,
-    }
-    setOrderState(status)
-    if (status.status === 'succeeded') {
-      setPolling(false)
-      setNotice(t('rechargeSucceeded', { points: grouped(status.points) }))
-      setOrder(null)
-      await refreshBalance()
-      return
-    }
-    if (status.status === 'failed' || status.status === 'closed' || status.status === 'review_required') {
-      setPolling(false)
-      setFailure(t('rechargeTerminal', { status: status.status, code: status.failure_code ?? '—' }))
-      return
-    }
-    const retryAfter = (answer.retryAfterSeconds ?? 0) * 1000
-    const backoff = attempt > 4 ? Math.min(30_000, 1000 * 2 ** (attempt - 4)) : 0
-    const delay = Math.max(2500, retryAfter, backoff)
-    pollTimer.current = setTimeout(() => { void pollOrder(orderNo, attempt + 1) }, delay)
-  }, [refreshBalance, t])
+  }, [cancelOperation, t])
 
-  /** Create one order; the amount is frozen for this attempt. */
+  const stopPolling = useCallback(() => {
+    cancelOperation()
+    setPolling(false)
+    setNotice(t('rechargePollingStopped'))
+  }, [cancelOperation, t])
+
+  const resumePolling = useCallback(() => {
+    if (order === null) return
+    setFailure(null)
+    setNotice(null)
+    setPolling(true)
+    void pollOrder(order.merchant_order_no, 0, startOperation())
+  }, [order, pollOrder, startOperation])
+
+  /** A create failure is never retried automatically because its outcome may be unknown. */
   const createOrder = useCallback(async () => {
     setFailure(null)
     setNotice(null)
-    const yuan = Number(amountYuan)
-    if (!Number.isFinite(yuan) || yuan <= 0) {
+    const amount = Number(amountYuan)
+    if (!Number.isSafeInteger(amount) || amount <= 0) {
       setFailure(t('errAmount'))
       return
     }
-    const amount = Math.round(yuan)
     if (amount < MIN_AMOUNT_YUAN || amount > MAX_AMOUNT_YUAN) {
       setFailure(t('errAmountRange', { min: String(MIN_AMOUNT_YUAN), max: String(MAX_AMOUNT_YUAN) }))
       return
     }
+    const active = startOperation()
+    setPolling(false)
     setBusy(true)
     try {
-      // new-api owns WeChat Native pay: one call returns the QR to scan.
       const answer = await post<{
         outTradeNo: string | null
         amount: number
-        quota: number | null
+        points: number
         expiresAt: number | null
         qrCodeDataUrl: string | null
-      }>('/credits/api/recharge/wechat', { amount })
+      }>('/credits/api/recharge/wechat', { amount }, active.controller.signal)
+      if (!isActive(active)) return
       if (answer.ok && answer.payload !== undefined && answer.payload.outTradeNo !== null) {
         setOrder({
           merchant_order_no: answer.payload.outTradeNo,
           amount_cents: answer.payload.amount * 100,
-          points: answer.payload.quota ?? 0,
+          points: answer.payload.points,
           expires_at: answer.payload.expiresAt === null ? '' : new Date(answer.payload.expiresAt * 1000).toISOString(),
           qrCodeDataUrl: answer.payload.qrCodeDataUrl,
         })
         setOrderState(null)
         setPolling(true)
-        void pollOrder(answer.payload.outTradeNo, 0)
+        setCopied(false)
+        void pollOrder(answer.payload.outTradeNo, 0, active)
       } else {
-        setFailure(answer.message ?? answer.code ?? t('errGeneric'))
+        setFailure(t('rechargeCreateFailed'))
       }
     } catch (error) {
-      setFailure(error instanceof Error ? error.message : String(error))
+      if (!isActive(active)) return
+      setFailure(t('rechargeCreateFailed'))
+      // No second create is safe until the user checks the existing order.
+      void error
     } finally {
-      setBusy(false)
+      if (isActive(active)) setBusy(false)
     }
-  }, [amountYuan, pollOrder, t])
+  }, [amountYuan, pollOrder, startOperation, t])
 
   /** Copy the order number the platform's support flow asks for. */
   const copyOrderNo = useCallback((orderNo: string) => {
@@ -199,8 +267,10 @@ export function RechargePage(props: PropsRuntime<'main'> & RechargePageInjected)
   }, [])
 
   const amount = Number(amountYuan)
-  const pointsPreview = Number.isFinite(amount) && amount > 0 ? Math.round(amount * creditsPerYuan) : null
+  const pointsPreview = Number.isSafeInteger(amount) && amount > 0 ? amount * creditsPerYuan : null
   const orderExpiry = order === null ? 0 : secondsUntil(order.expires_at)
+  const failureMessage = failure
+    ?? (orderState?.status === 'succeeded' && balanceFailure !== null ? t('rechargeBalanceFailed') : null)
 
   return (
     <div className={css.page}>
@@ -208,7 +278,7 @@ export function RechargePage(props: PropsRuntime<'main'> & RechargePageInjected)
         <h1 className={css.rechargeTitle}>{t('rechargePageTitle')}</h1>
       </header>
 
-      {failure !== null && <p className={css.banner} data-tone="error" role="alert">{failure}</p>}
+      {failureMessage !== null && <p className={css.banner} data-tone="error" role="alert">{failureMessage}</p>}
       {notice !== null && <p className={css.banner} data-tone="success" role="status">{notice}</p>}
       {!loaded && <p className={css.hint}>{t('loading')}</p>}
 
@@ -259,7 +329,7 @@ export function RechargePage(props: PropsRuntime<'main'> & RechargePageInjected)
                   aria-pressed={amountYuan === String(value)}
                   onClick={() => { setAmountYuan(String(value)) }}
                 >
-                  {`${grouped(value)} 元`}
+                  {t('amountOption', { amount: grouped(value) })}
                 </button>
               ))}
               <label className={cx(
@@ -275,9 +345,10 @@ export function RechargePage(props: PropsRuntime<'main'> & RechargePageInjected)
                   /* A preset already names its own card, so the free-amount field
                    only carries what the operator typed itself. */
                   value={QUICK_AMOUNTS_YUAN.some(value => String(value) === amountYuan) ? '' : amountYuan}
-                  inputMode="decimal"
+                  inputMode="numeric"
+                  aria-label={t('customAmount')}
                   placeholder={t('custom')}
-                  onChange={(event) => { setAmountYuan(event.target.value.replace(/[^\d.]/g, '')) }}
+                  onChange={(event) => { setAmountYuan(event.target.value) }}
                 />
               </label>
             </div>
@@ -343,6 +414,11 @@ export function RechargePage(props: PropsRuntime<'main'> & RechargePageInjected)
                     )}
                   </div>
                   {polling && <p className={css.hint}>{t('polling')}</p>}
+                  {(orderState === null || orderState.status === 'pending' || orderState.status === 'unknown') && (
+                    <Button size="sm" variant="ghost" disabled={busy} onClick={polling ? stopPolling : resumePolling}>
+                      {polling ? t('stopPolling') : t('checkPayment')}
+                    </Button>
+                  )}
                 </div>
               </div>
             )}

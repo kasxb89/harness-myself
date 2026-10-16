@@ -25568,7 +25568,7 @@
       "names": [],
       "sources": [
         "packages/core/session/src/types.ts:288",
-        "packages/deliverables/workspace-changes/src/types.ts:106"
+        "packages/deliverables/workspace-changes/src/types.ts:113"
       ]
     },
     {

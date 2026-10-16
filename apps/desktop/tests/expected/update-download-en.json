@@ -1,6 +1,6 @@
 [
   {
-    "title": "Zhishu Technology Update",
+    "title": "Yunshu Update",
     "message": "Downloading the new version",
     "detail": "You can keep working while the download continues. We’ll ask before restarting.",
     "buttons": [
@@ -14,7 +14,7 @@
     }
   },
   {
-    "title": "Zhishu Technology Update",
+    "title": "Yunshu Update",
     "message": "Downloading the new version",
     "detail": "You can keep working while the download continues. We’ll ask before restarting.",
     "buttons": [
@@ -27,7 +27,7 @@
     }
   },
   {
-    "title": "Zhishu Technology Update",
+    "title": "Yunshu Update",
     "message": "Verifying update files…",
     "detail": "Checking the downloaded files before installation. Please keep the app open.",
     "buttons": [

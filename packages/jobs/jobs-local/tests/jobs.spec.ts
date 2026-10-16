@@ -12,7 +12,7 @@ import type {
 import LocalJobRegistry, { type Config as JobsConfig } from '@deepseek-ai/dsh-jobs-local'
 import { unsupportedInbox } from '@deepseek-ai/dsh-agent-loop-testkit'
 
-declare module '@deepseek-ai/dsh-jobs' {
+declare module '@deepseek-ai/dsh-jobs/view' {
   interface JobKindMap {
     'test-task': 'test-task'
     workflow: 'workflow'

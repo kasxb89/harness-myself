@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
 import { render, cleanup } from '@testing-library/react'
-import { writeFileSync } from 'node:fs'
 import { Context } from '@deepseek-ai/cordis'
 import { $getRoot, $isTextNode, PASTE_COMMAND } from 'lexical'
 import { projectUserText } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -25,9 +24,7 @@ import { createConversationStore } from '../src/client/stores.ts'
 import type { SessionInputShell } from '../src/client/input/facade.ts'
 import { RemoteError } from '@deepseek-ai/dsh-client-test-runtime'
 import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
-import * as HostPlugin from '../src/index.ts'
-import type { ConversationSettings } from '../src/submission-settings.ts'
-import { configurationFixture } from '../../../settings/settings/tests/configuration-fixture.ts'
+import { ConversationSettingsSchema, type ConversationSettings } from '../src/submission-settings.ts'
 import { ConfigFormController } from '../../ui-settings/src/client/config-form.ts'
 import { SettingsDescribeMirror, type SettingsDescribeView } from '../../ui-settings/src/client/settings-mirror.ts'
 import { SettingsSchemaService } from '../../ui-settings/src/client/schema.ts'
@@ -215,7 +212,7 @@ describe('Conversation inject API', () => {
     for (const [id, label] of [
       ['chat', 'Chat'], ['trajectory', 'Trajectory'], ['ipollowork-video-studio', 'Video'],
       ['custom', 'Custom'],
-    ]) {
+    ] as const) {
       b.slots.register({ name: 'conversation.view', id, label }, (() => null) as never)
     }
     b.runtime.ctx.uiConversation.views.register({
@@ -257,21 +254,19 @@ describe('Conversation inject API', () => {
     expect(header.instance.store.getSnapshot().view).toBe('custom')
   })
 
-  it('projects the actual Host hidden-View configuration through the settings wire and refreshes browser navigation', async () => {
-    const fixture = await configurationFixture({ schema: HostPlugin.Config, apply: HostPlugin.apply, hmr: false })
-    await fixture.ctx.fiber.dispose()
-    writeFileSync(fixture.profile.patchPath, JSON.stringify([{ insert: [
-      { id: 'config-editor', name: 'cordis:editor' },
-      { id: 'settings', name: 'cordis:settings' },
-      { id: 'ui-conversation', name: 'cordis:probe', config: { hiddenViews: ['trajectory', 'ipollowork-video-studio'] } },
-    ] }]))
-    const host = await fixture.start()
-    await host.loader.await()
+  it('applies the Host hidden-View wire projection and refreshes browser navigation', async () => {
+    let hiddenViews = ['trajectory', 'ipollowork-video-studio']
+    let revision = 0
     const describe = vi.fn(async () => ({
       ok: true as const,
-      // Serialize the real redacted Host projection as the settings transport does.
+      // The Host spec pins the live profile projection; this program owns its browser consumer.
       value: JSON.parse(JSON.stringify({
-        writable: true, hasDocument: true, namespaces: host.settings.describe({ redactSecrets: true }),
+        writable: true, hasDocument: true,
+        namespaces: [{
+          ns: 'ui-conversation', autoGenerate: false, applies: 'live', revision,
+          schema: ConversationSettingsSchema.toJSON(),
+          value: { busyEnter: 'queue', hiddenViews },
+        }],
       })) as SettingsDescribeView,
     }))
     const remote = { remote: { settings: { describe } } } as never
@@ -328,7 +323,8 @@ describe('Conversation inject API', () => {
     describe.mockRejectedValueOnce(new Error('temporarily unavailable'))
     await mirror.load()
     expect(b.viewSource(ROOT).getSnapshot().map(view => view.id)).toEqual(['chat', 'custom'])
-    await host.settings.update('ui-conversation', { hiddenViews: [] })
+    hiddenViews = []
+    revision += 1
     await mirror.load()
     expect(b.viewSource(ROOT).getSnapshot().map(view => view.id)).toEqual(['chat', 'trajectory', 'ipollowork-video-studio', 'custom'])
     expect(body.injected.hooks.inspectCall.getSnapshot()).toBeTypeOf('function')

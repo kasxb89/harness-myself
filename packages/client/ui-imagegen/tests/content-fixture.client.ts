@@ -13,7 +13,10 @@ function observable<T>(initial: T) {
   }
 }
 
-/** Administrator-authored fixtures, independent of product dictionaries. */
+/**
+ * Administrator-authored fixtures, independent of product dictionaries.
+ * @returns Mutable catalog and locale sources with their selector hooks.
+ */
 export function contentFixture() {
   const empty: ModeContent = { title: { zh: '' }, description: { zh: '' }, promptPlaceholder: { zh: '' }, categories: [], templates: [], presets: [] }
   const template = (id: string, categoryId: string, title: string, description: string, prompt: string) => ({

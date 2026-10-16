@@ -20,6 +20,13 @@ it.skipIf(process.platform === 'win32')('passes literal workspace paths and cold
     primaryRuntimeDirectory,
     home, userData: join(root, 'browser data'), mainPort: 9229, rendererPort: 9222, hostPort: 9230, openDevtools: '0' }, bundle))
   const result = execFileSync('/bin/sh', [launcher, '--test-launch-argument'], { encoding: 'utf8' })
-  expect(result.trimEnd().split('\n')).toEqual([home, '1', '0', primaryRuntimeDirectory, 'http://127.0.0.1:3000', '--inspect=127.0.0.1:9229',
+  expect(result.trimEnd().split('\n')).toEqual([home, '1', '0', primaryRuntimeDirectory, 'https://8.133.202.230/harness', '--inspect=127.0.0.1:9229',
     '--remote-debugging-port=9222', `--user-data-dir=${join(root, 'browser data')}`, root, '--test-launch-argument'])
+})
+
+it('retains an explicit backend prefix in the cold-start launcher', () => {
+  const launcher = developmentLauncher({ electron: '/Electron', appRoot: '/app', directory: '/development', home: '/home',
+    userData: '/data', primaryRuntimeDirectory: '/runtime', mainPort: 9229, rendererPort: 9222, hostPort: 9230,
+    openDevtools: '0', updateConfigOrigin: 'https://api.example.com/harness' }, '/development/Harness.app')
+  expect(launcher).toContain("export DSH_DESKTOP_UPDATE_CONFIG_ORIGIN='https://api.example.com/harness'")
 })

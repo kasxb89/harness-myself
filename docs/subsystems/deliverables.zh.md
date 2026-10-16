@@ -45,7 +45,10 @@ interface WorkspaceChangedFile {
 ## `WorkspaceChangesSummary`：一轮的改动摘要
 
 ```ts type-equiv
-/** Files changed during one top-level turn, kept on the Host until its Session is disposed. */
+/**
+ * Files changed during one top-level turn: kept while its Session is observed,
+ * and stored when the composition mounts storage so the card outlives it.
+ */
 interface WorkspaceChangesSummary {
   /** The turn whose file changes this summary describes. */
   turn: number
@@ -111,13 +114,16 @@ type WorkspaceFileDiff =
 ## `WorkspaceChanges`：提供摘要与对比的 Host 服务
 
 ```ts type-equiv
-/** Serves the summaries and file comparisons the recorder keeps for live Sessions. */
+/**
+ * Serves the summaries the recorder keeps for live Sessions and the ones it
+ * recorded earlier from storage, plus the comparisons of live Sessions.
+ */
 interface WorkspaceChanges {
   /**
    * The summary announced by one `workspace/changes` event.
    * @param sessionId - the Session that appended the event.
    * @param seq - the event's sequence number.
-   * @returns the summary, or undefined once its Session was disposed or when this Host never recorded it.
+   * @returns the summary, or undefined when this Host never recorded the event and nothing is stored for it.
    */
   summary(sessionId: SessionId, seq: number): WorkspaceChangesSummary | undefined
   /**
@@ -135,7 +141,7 @@ interface WorkspaceChanges {
 
 ## 持久事件与提供的摘要
 
-`tool-present` 通过声明合并把 `deliverables/presented: { turn; callId; files: PresentedFile[] }` 加入 `SessionEventMap`，每次 `present` 的最终结果成功时追加一条。`workspace-changes` 合并 `workspace/changes: { turn }`，在顶层轮停止时追加；该事件宣告的摘要不在日志里，而是由 `workspaceChanges.summary(sessionId, seq)` 按事件序号返回，直到 Session 释放，因此 Host 重启后重新打开的对话，先前轮次没有改动文件卡片。`workspaceChanges.diff(sessionId, seq, index, signal)` 按同样的条件对比一个所列文件。同一轮后来的事件替代先前的，客户端只保留最新一条。生成的[持久化目录](../persistence-catalog.zh.md#deliverablespresented--log-only)记录了两处声明位置。两个事件都不会进入模型请求。
+`tool-present` 通过声明合并把 `deliverables/presented: { turn; callId; files: PresentedFile[] }` 加入 `SessionEventMap`，每次 `present` 的最终结果成功时追加一条。`workspace-changes` 合并 `workspace/changes: { turn }`，在顶层轮停止时追加。摘要本身不在日志里：Session 被观察时由记录器保留，组合装配存储时还写入 `workspace_changes` 域。`workspaceChanges.summary(sessionId, seq)` 按事件序号读取实时或已存储的摘要，因此有存储时，改动文件卡片可以在 Session 释放或 Host 重启后保留。`workspaceChanges.diff(sessionId, seq, index, signal)` 只为实时 Session 对比所列文件。同一轮后来的事件替代先前的，客户端只保留最新一条。生成的[持久化目录](../persistence-catalog.zh.md#deliverablespresented--log-only)记录了两处声明位置。两个事件都不会进入模型请求。
 
 <!-- BEGIN GENERATED cordis-surface (gen-cordis-catalog.ts) — do not edit between markers -->
 
@@ -149,14 +155,14 @@ Generated from source by `scripts/gen-cordis-catalog.ts` (verified fresh by `pnp
 
 ### `ctx.workspaceChanges` — `WorkspaceChanges`
 
-Serves the summaries and file comparisons the recorder keeps for live Sessions.
+Serves the summaries the recorder keeps for live Sessions and the ones it recorded earlier from storage, plus the comparisons of live Sessions.
 
 ```ts cordis-catalog
 /**
  * The summary announced by one `workspace/changes` event.
  * @param sessionId - the Session that appended the event.
  * @param seq - the event's sequence number.
- * @returns the summary, or undefined once its Session was disposed or when this Host never recorded it.
+ * @returns the summary, or undefined when this Host never recorded the event and nothing is stored for it.
  */
 summary(sessionId: SessionId, seq: number): WorkspaceChangesSummary | undefined
 

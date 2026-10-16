@@ -1,5 +1,5 @@
-Zhishu Technology is unavailable
+Yunshu is unavailable
 The application could not start or stopped unexpectedly.
-Another Zhishu instance (such as the web or desktop app) is running. They cannot start at the same time. Quit the other running instance, then restart.
+Another Yunshu instance (such as the web or desktop app) is running. They cannot start at the same time. Quit the other running instance, then restart.
 Exit
 Restart

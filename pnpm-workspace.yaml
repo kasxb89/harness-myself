@@ -19,6 +19,39 @@ overrides:
   '@deepseek-ai/cosmokit': 'link:vendor/cosmokit'
   '@deepseek-ai/schemastery': 'link:vendor/schemastery'
 
+  # Keep the published bundle's immutable upstream spec; mirror only this workspace edge.
+  '@deepseek-ai/dsh-web-app@0.2.1-alpha.2>deepseek-ivideo': 'file:./vendor-plugins/deepseek-ivideo-0.5.0-62ee529e.tgz'
+
+  # Product market plugins use this release's shared Harness services.
+  'dshmarket@1.66.20>@deepseek-ai/cordis': '4.0.5-alpha.1'
+  'dshmarket@1.66.20>@deepseek-ai/dsh-settings': '0.2.1-alpha.2'
+  'dshmarket@1.66.20>@deepseek-ai/schemastery': '3.18.5-alpha.1'
+  'dsh-skin-market@0.1.57>@deepseek-ai/cordis': '4.0.5-alpha.1'
+  'dsh-find-plugin@0.4.0>@deepseek-ai/cordis': '4.0.5-alpha.1'
+  'dsh-find-plugin@0.4.0>@deepseek-ai/dsh-tools': '0.2.1-alpha.2'
+  'dsh-univer-office@0.3.7>@deepseek-ai/cordis': '4.0.5-alpha.1'
+  'dsh-univer-office@0.3.7>@deepseek-ai/dsh-attachment': '0.2.1-alpha.2'
+  'dsh-univer-office@0.3.7>@deepseek-ai/dsh-host-webserver': '0.2.1-alpha.2'
+  'dsh-univer-office@0.3.7>@deepseek-ai/dsh-llm': '0.2.1-alpha.2'
+  'dsh-univer-office@0.3.7>@deepseek-ai/dsh-session': '0.2.1-alpha.2'
+  'dsh-univer-office@0.3.7>@deepseek-ai/dsh-settings': '0.2.1-alpha.2'
+  'dsh-univer-office@0.3.7>@deepseek-ai/dsh-skill': '0.2.1-alpha.2'
+  'dsh-univer-office@0.3.7>@deepseek-ai/dsh-tools': '0.2.1-alpha.2'
+  'dsh-univer-office@0.3.7>@deepseek-ai/schemastery': '3.18.5-alpha.1'
+  'deepseek-ivideo@0.5.0>@deepseek-ai/cordis': '4.0.5-alpha.1'
+  'deepseek-ivideo@0.5.0>@deepseek-ai/dsh-client-runtime': '-'
+  'deepseek-ivideo@0.5.0>@deepseek-ai/dsh-client-ui-conversation': '0.2.1-alpha.2'
+  'deepseek-ivideo@0.5.0>@deepseek-ai/dsh-host-webserver': '0.2.1-alpha.2'
+  'deepseek-ivideo@0.5.0>@deepseek-ai/dsh-tools': '0.2.1-alpha.2'
+  'deepseek-ivideo@0.5.0>@deepseek-ai/dsh-workspace': '0.2.1-alpha.2'
+  'dsh-dream-skin@10.14.3>@deepseek-ai/cordis': '4.0.5-alpha.1'
+  'dsh-dream-skin@10.14.3>@deepseek-ai/dsh-client-locale': '0.2.1-alpha.2'
+  'dsh-dream-skin@10.14.3>@deepseek-ai/dsh-client-runtime': '-'
+  'dsh-dream-skin@10.14.3>@deepseek-ai/dsh-client-store': '0.2.1-alpha.2'
+  'dsh-dream-skin@10.14.3>@deepseek-ai/dsh-client-ui-settings': '0.2.1-alpha.2'
+  'dsh-dream-skin@10.14.3>@deepseek-ai/dsh-client-ui-settings-general': '0.2.1-alpha.2'
+  'dsh-dream-skin@10.14.3>@deepseek-ai/dsh-client-ui-theme': '0.2.1-alpha.2'
+
 peerDependencyRules:
   allowedVersions:
     typescript: '>=5 <7'
@@ -33,6 +66,10 @@ allowBuilds:
   lefthook: true
   # Cross-platform boundary for the persistent PTY backend, including ConPTY on Windows.
   node-pty: true
+  # ONNX Runtime ships CPU binaries; its script only downloads optional Linux CUDA providers.
+  onnxruntime-node@1.23.2: false
+  # Sharp ships @img platform binaries; optional global-libvips source builds are excluded.
+  sharp@0.34.5: false
   # Pulled in by @earendil-works/pi-ai (optional LLM API backend). pnpm lists
   # them only because they ship lifecycle scripts, but those are no-ops we don't
   # need, so we deny them — install still succeeds.
@@ -113,3 +150,10 @@ patchedDependencies:
   '@yao-pkg/pkg@6.21.0': patches/@yao-pkg__pkg@6.21.0.patch
   exceljs@4.4.0: patches/exceljs@4.4.0.patch
   node-pty@1.2.0-beta.15: patches/node-pty@1.2.0-beta.15.patch
+  'dsh-skin-market@0.1.57': patches/dsh-skin-market@0.1.57.patch
+  '@xmanrui/dsh-im@4.38.2': patches/xmanrui__dsh-im@4.38.2.patch
+  'deepseek-ivideo@0.5.0': patches/deepseek-ivideo@0.5.0.patch
+  'dsh-dream-skin@10.14.3': patches/dsh-dream-skin@10.14.3.patch
+  'dshmarket@1.66.20': patches/dshmarket@1.66.20.patch
+  'dsh-find-plugin@0.4.0': patches/dsh-find-plugin@0.4.0.patch
+  'dsh-univer-office@0.3.7': patches/dsh-univer-office@0.3.7.patch

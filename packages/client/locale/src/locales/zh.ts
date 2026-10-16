@@ -31,7 +31,7 @@ export const zh = {
   'collapse': '收起',
   'expand': '展开',
   'back': '返回',
-  'brand.localBuild': '智澍科技',
+  'brand.localBuild': '云枢',
   'workspace.defaultName': '默认工作区',
   'unknown': '未知',
   'none': '无',

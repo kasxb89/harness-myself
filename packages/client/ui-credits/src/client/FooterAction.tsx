@@ -38,7 +38,7 @@ export function FooterAction(props: PropsRuntime<'sidebar.footer.action'> & Foot
 
   const load = useCallback(() => {
     void fetch('/credits/api/summary', { headers: { accept: 'application/json' } })
-      .then(async response => await response.json() as { payload?: { balance_points?: number } })
+      .then(async response => await response.json() as { payload?: { balance_points?: number } } | null)
       .then((answer) => {
         const value = answer?.payload?.balance_points
         setPoints(typeof value === 'number' ? value : null)

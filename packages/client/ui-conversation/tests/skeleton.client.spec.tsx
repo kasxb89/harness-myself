@@ -240,7 +240,7 @@ function mount(
     if (key === 'conversation.session') {
       return (
         <ConversationSession
-          view={options.viewOverride}
+          {...options.viewOverride === undefined ? {} : { view: options.viewOverride }}
           sessionId={SID}
           SessionProvider={({ children }) => children}
           useSession={useSession}

@@ -43,7 +43,7 @@ describe('DesktopQuitConfirmation', () => {
     const f = setup('darwin', async () => ({ activeTasks: true, scheduledTasks: true }))
     expect(await f.confirmation.confirm()).toBe(true)
     expect(f.shown).toEqual([{
-      type: 'warning', title: '智澍科技', message: '退出 智澍科技？',
+      type: 'warning', title: '云枢', message: '退出 云枢？',
       detail: '当前正在运行的任务将会中断，且应用关闭期间，定时任务不会运行',
       buttons: ['退出', '取消'], defaultId: 0, cancelId: 1, noLink: true,
     }])
@@ -54,7 +54,7 @@ describe('DesktopQuitConfirmation', () => {
     f.answer(1)
     expect(await f.confirmation.confirm()).toBe(false)
     expect(f.shown).toEqual([{
-      type: 'none', icon: f.icon, title: 'Zhishu Technology', message: 'Quit Zhishu Technology?',
+      type: 'none', icon: f.icon, title: 'Yunshu', message: 'Quit Yunshu?',
       detail: 'Scheduled tasks will not run while the app is closed.',
       buttons: ['Quit', 'Cancel'], defaultId: 0, cancelId: 1, noLink: true,
     }])

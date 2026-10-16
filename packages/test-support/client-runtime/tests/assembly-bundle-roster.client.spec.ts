@@ -74,6 +74,13 @@ describe('bundleRoster on a scratch installation', () => {
   const scratch = new Scratch()
   afterAll(() => { rmSync(scratch.root, { recursive: true, force: true }) })
 
+  it('resolves a bundle self-reference from its own manifest', () => {
+    scratch.pkg('@t/self', { dsh: { bundle: { patch: './cordis.patch.yml' }, client: { platform: 'web' } } }, {
+      'cordis.patch.yml': "- insert:\n    - id: self\n      name: '@t/self'\n",
+    })
+    expect(scratch.roster(['@t/self'])).toEqual(['@t/self'])
+  })
+
   it('resolves a linked bundle dependency before an unrelated ancestor package', () => {
     const linked = new Scratch()
     onTestFinished(() => { rmSync(linked.root, { recursive: true, force: true }) })

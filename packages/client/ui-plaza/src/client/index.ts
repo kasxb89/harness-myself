@@ -48,7 +48,7 @@ export const inject = ['slots', 'locale']
 export function apply(ctx: ClientContext): void {
   const t = ctx.locale.bind(NS)
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-plaza: dictionaries')
-  const face: PlazaInjected = { t: (key, values) => t(key as Parameters<typeof t>[0], values as never) }
+  const face: PlazaInjected = { t: (key, values) => t(key as Parameters<typeof t>[0], values) }
   ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: PANEL_ID, locale: NS, inject: (): PlazaInjected => face }, PlazaPage))
   ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({ name: 'sidebar.panellist', id: PANEL_ID, order: 40, label: () => t('panel'), locale: NS }, PlazaPanelIcon))
   // The market's own apply may land before or after this one; the page reads

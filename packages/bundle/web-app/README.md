@@ -40,7 +40,7 @@ dsh --profile web --no-open --port 8080
 
 After startup you see a `dsh web:` line whose root URL carries a fresh process token. Unless `--no-open` or an SSH session suppresses it, the default browser opens that URL, receives a signed cookie, and redirects to the same directory without the token. You know it worked when the page loads and you can chat with the agent. Two failures to expect: if the frontend is not built, startup stops with a build hint (`pnpm run build` in a checkout); if the browser cannot be opened, a credential-free diagnostic prints to stderr while the server keeps running — open the printed startup URL yourself.
 
-The product uses phone sign-in in the **Balance** panel. Its bundle disables the official DeepSeek account panel, official model adapters, and automatic API-key onboarding; model connections use the deployment's new-api configuration.
+The product uses phone sign-in in the **Balance** panel and connects to `https://8.133.202.230/harness`. Its bundle disables the official DeepSeek account panel, official model adapters, and automatic API-key onboarding. The `yunshu-local` OpenAI-compatible provider uses `https://8.133.202.230/harness/v1`, selects `deepseek-v4-flash` by default, and names `YUNSHU_RELAY_TOKEN` in its profile. Its model requests obtain the relay key from the current backend-bound phone session; a stored or environment key cannot substitute for product sign-in. The legacy account-platform and Bridge roots remain unset.
 
 The product's Chat area hides the Trajectory and marketplace Video Views through [Conversation's `hiddenViews` configuration](../../client/ui-conversation/README.md#shell-and-standard-props). The separate AI Creation video page and the video plugin's Host capabilities remain available.
 
@@ -104,6 +104,8 @@ The bundle is one patch layer of five files plus one runtime glue plugin: `cordi
 
 ### Patch semantics
 
+The bundled marketplace Hosts import only after `webStartup` accepts the Web arguments; help and usage errors leave their group pending, while accepted invocations activate the same child ids.
+
 A patch replaces the targeted row's whole `config`, so each web row restates every key it owns: the persona prefix template, the `DSH_TOOLS_MODE` PTC mode opt-in, and the `session-query-sqlite` values on the base rows, then `insert` adds the web host rows, transport, and browser roster. The `webserver`, `web-runtime`, and `connection` rows inject the `webStartup` provider and read their invocation values directly; Connection composes its accepted authorities from `ctx.webStartup.trustedHosts`, and the Host/Origin fence accepts the listener's bind IP independently of that list. The per-agent tool rows the base mounts process-wide are disabled here and the preset roster takes over; the reasoning for each host-plane versus preset-plane decision is inline in the patch.
 
 ### Advertised application URL
@@ -152,9 +154,7 @@ Read these pages when you want to go deeper into the shared core, the browser re
 
 #### What the model sees
 
-When `surfaceContext` is true, the `harness:source` section identifies the on-disk Harness implementation without claiming it is the working directory, and the `app:web-surface` global section (first-party order 10100, after reusable instructions) orients the model to the GUI: the advertised application URL (defined under Listening, trust, and public deployments above), the "this page" referent, the update contract (the reload receiver is always on; no-refresh reloads additionally need the `pnpm run dev:web` watcher), and the instruction not to start replacement servers. `DSH_WEB_URL` additionally appears in the managed bash environment with its description, resolved per invocation from the live server. When it is false, neither section nor the variable is registered.
-
-The same Web section tells the agent to use `ask_user_question` for a short batch of missing creation preferences, omit known requirements, accept delegated choices, and continue after the answer. It also requires real job progress and a saved final path before presenting generated or edited videos. The shipped creation-capable presets provide the question tool; the [question UI](../../client/ui-user-questions/README.md) owns rendering and answer submission.
+When `surfaceContext` is true, the `harness:source` section identifies the on-disk Harness implementation without claiming it is the working directory, and the `app:web-surface` global section (first-party order 10100, after reusable instructions) orients the model to the GUI: the advertised application URL (defined under Listening, trust, and public deployments above), the "this page" referent, the update contract (the reload receiver is always on; no-refresh reloads additionally need the `pnpm run dev:web` watcher), and the instruction not to start replacement servers. `DSH_WEB_URL` additionally appears in the managed bash environment with its description, resolved per invocation from the live server. When it is false, neither section nor the variable is registered. The same Web section tells the agent to use `ask_user_question` for a short batch of missing creation preferences, omit known requirements, accept delegated choices, and continue after the answer. It also requires real job progress and a saved final path before presenting generated or edited videos. The shipped creation-capable presets provide the question tool; the [question UI](../../client/ui-user-questions/README.md) owns rendering and answer submission.
 
 #### Token effect
 

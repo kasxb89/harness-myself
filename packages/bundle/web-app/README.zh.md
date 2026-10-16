@@ -40,7 +40,7 @@ dsh --profile web --no-open --port 8080
 
 启动后你会看到 `dsh web:` 行，其根 URL 携带新的进程 token。除非 `--no-open` 或 SSH 会话抑制，否则默认浏览器会打开该 URL、取得签名 cookie，再重定向到不含认证参数的同一目录。页面加载且你可以与 agent 对话，就说明成功了。两种可预期的失败：前端未构建时，启动会以构建提示停止（checkout 中运行 `pnpm run build`）；浏览器无法打开时，stderr 会打印不含凭据的诊断，但服务器会继续运行——请自行打开已打印的启动 URL。
 
-产品通过**余额**面板进行手机号登录。本 bundle 停用 DeepSeek 官方账号面板、官方模型适配器和自动 API Key 引导；模型连接使用部署的 new-api 配置。
+产品通过**余额**面板进行手机号登录，连接 `https://8.133.202.230/harness`。本 bundle 停用 DeepSeek 官方账号面板、官方模型适配器和自动 API Key 引导。`yunshu-local` OpenAI 兼容提供方使用 `https://8.133.202.230/harness/v1`，默认选择 `deepseek-v4-flash`，并在 profile 中引用 `YUNSHU_RELAY_TOKEN`。模型请求从当前绑定后端的手机登录会话取得中转 key；已存密钥或环境变量不能替代产品登录。旧账户平台与 Bridge 地址保持未设置。
 
 产品聊天区域通过 [Conversation 的 `hiddenViews` 配置](../../client/ui-conversation/README.zh.md#shell-and-standard-props)隐藏 Trajectory 和市场 Video 视图。独立的 AI 创作视频页面及视频插件的 Host 能力仍然可用。
 
@@ -104,6 +104,8 @@ dsh --profile web --no-open --host "$(hostname -i | awk '{print $1}')" --public-
 
 ### patch 语义
 
+随 bundle 交付的市场宿主插件只在 `webStartup` 接受 Web 参数后导入；帮助和参数错误会让该分组保持等待，接受参数的调用则激活原有子条目 id。
+
 patch 会替换目标行的整个 `config`，因此每个 Web 行都重述自己拥有的每个键：基础行上的 persona 前缀模板、`DSH_TOOLS_MODE` PTC mode 开关与 `session-query-sqlite` 值，随后 `insert` 添加 Web 宿主行、传输层与浏览器名录。`webserver`、`web-runtime` 与 `connection` 行都注入 `webStartup` 提供方并直接读取本次调用的取值；Connection 的被接受 authority 全部来自 `ctx.webStartup.trustedHosts`，Host/Origin 栅栏则独立于该列表接受监听器的绑定 IP。base 以进程级挂载的按 agent 工具行在这里被禁用，由 preset 名录接管；每项宿主层与 preset 层归属决策的理由以行内注释写在 patch 里。
 
 ### 公告应用 URL
@@ -152,9 +154,7 @@ URL 行与浏览器交接都是就绪信号：监督方一观察到该行就发�
 
 #### 模型看到什么
 
-当 `surfaceContext` 为 true 时，`harness:source` 段落标明磁盘上的 Harness 实现，但不会声称它就是工作目录；全局段落 `app:web-surface`（first-party 顺序 10100，位于可复用指令之后）则向模型说明 GUI：公告应用 URL（定义见上文「监听、信任与公开部署」）、「this page」指代什么、更新约定（重载接收端始终开启；无刷新重载还需要 `pnpm run dev:web` watcher），以及不要启动替代服务器的指令。`DSH_WEB_URL` 还会连同描述出现在受管 bash 环境中，每次调用时从运行中的服务器解析。当它为 false 时，这两个段落和该变量都不会注册。
-
-同一 Web 段落还指示 agent 使用 `ask_user_question` 简短询问缺失的创作偏好，省略已知要求，接受用户委托其决定，并在收到回答后继续执行。呈现生成或剪辑的视频前，必须读取真实任务进度并取得已保存的成片路径。随附的创作 preset 提供提问工具；[提问 UI](../../client/ui-user-questions/README.zh.md)负责渲染与提交回答。
+当 `surfaceContext` 为 true 时，`harness:source` 段落标明磁盘上的 Harness 实现，但不会声称它就是工作目录；全局段落 `app:web-surface`（first-party 顺序 10100，位于可复用指令之后）则向模型说明 GUI：公告应用 URL（定义见上文「监听、信任与公开部署」）、「this page」指代什么、更新约定（重载接收端始终开启；无刷新重载还需要 `pnpm run dev:web` watcher），以及不要启动替代服务器的指令。`DSH_WEB_URL` 还会连同描述出现在受管 bash 环境中，每次调用时从运行中的服务器解析。当它为 false 时，这两个段落和该变量都不会注册。同一 Web 段落还指示 agent 使用 `ask_user_question` 简短询问缺失的创作偏好，省略已知要求，接受用户委托其决定，并在收到回答后继续执行。呈现生成或剪辑的视频前，必须读取真实任务进度并取得已保存的成片路径。随附的创作 preset 提供提问工具；[提问 UI](../../client/ui-user-questions/README.zh.md)负责渲染与提交回答。
 
 #### Token 影响
 

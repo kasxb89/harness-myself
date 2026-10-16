@@ -3,7 +3,7 @@
 /** The account page's supported calendar-day query presets. */
 export type UsageRange = 'today' | '7d' | '30d'
 
-/** One model's billed usage at a Unix-second timestamp, including adjustment records. */
+/** One model's recorded consumption at a Unix-second timestamp. */
 export interface UsageRow {
   readonly timestamp: number
   readonly model: string
@@ -18,6 +18,7 @@ export interface UsagePayload {
   readonly asOf: string
   readonly start: number
   readonly end: number
+  /** Reported delay estimate; zero does not promise immediate billing visibility. */
   readonly delayMinutes: number
 }
 
@@ -106,7 +107,7 @@ export function parseUsagePayload(value: unknown): UsagePayload {
     || !isCount(value.start) || value.start === 0
     || !isCount(value.end) || value.end > latestUnixSecond
     || value.end < value.start || value.end - value.start >= 31 * secondsPerDay
-    || !isIsoDate(value.asOf) || value.delayMinutes !== 5
+    || !isIsoDate(value.asOf) || !isCount(value.delayMinutes)
     || !Array.isArray(value.rows)) {
     throw new Error('Invalid usage response metadata')
   }

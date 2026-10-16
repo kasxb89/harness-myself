@@ -42,11 +42,30 @@ it('classifies the current workspace and shares only runtime patch bytes', () =>
   const repository = resolve(import.meta.dirname, '../../..')
   const before = readFileSync(join(repository, 'pnpm-lock.yaml'))
   const plan = prepareRuntimePatches(project, repository)
-  expect(plan.patches.map(entry => entry.spec)).toEqual(['@earendil-works/pi-ai@1.0.2', 'node-pty@1.2.0-beta.15'])
-  expect(plan.workspaceOnly).toHaveLength(5)
+  expect(plan.patches.map(entry => entry.spec)).toEqual([
+    '@earendil-works/pi-ai@1.0.2', 'node-pty@1.2.0-beta.15', 'dsh-skin-market@0.1.57', '@xmanrui/dsh-im@4.38.2',
+    'deepseek-ivideo@0.5.0', 'dsh-dream-skin@10.14.3', 'dshmarket@1.66.20', 'dsh-find-plugin@0.4.0', 'dsh-univer-office@0.3.7',
+  ])
+  expect(plan.workspaceOnly).toEqual(['@electron/osx-sign', '@fortune-sheet/core', '@fortune-sheet/react', '@yao-pkg/pkg', 'exceljs'])
+  const source = yaml.load(readFileSync(join(repository, 'pnpm-workspace.yaml'), 'utf8')) as { patchedDependencies: Record<string, string> }
+  const lock = yaml.load(before.toString('utf8')) as {
+    patchedDependencies: Record<string, string>
+    packages: Record<string, { version?: string }>
+  }
+  for (const entry of plan.patches) {
+    expect(readFileSync(join(project, entry.path))).toEqual(readFileSync(join(repository, source.patchedDependencies[entry.spec]!)))
+  }
+  writeFileSync(join(project, 'pnpm-lock.yaml'), yaml.dump({
+    patchedDependencies: Object.fromEntries(plan.patches.map(entry => [entry.spec, lock.patchedDependencies[entry.spec]])),
+    packages: Object.fromEntries(Object.entries(lock.packages).filter(([spec]) => (
+      plan.patches.some(entry => spec.startsWith(`${entry.name}@`))
+    ))),
+  }))
+  expect(() => { verifyRuntimePatches(project, plan) }).not.toThrow()
   const settings = yaml.load(readFileSync(join(project, 'pnpm-workspace.yaml'), 'utf8')) as { overrides: Record<string, string> }
   expect(settings.overrides['@earendil-works/pi-ai']).toBeUndefined()
   expect(settings.overrides['@earendil-works/pi-ai@^1.0.2']).toBe('1.0.2')
+  expect(settings.overrides).toEqual({ internal: 'file:./internal.tgz', '@earendil-works/pi-ai@^1.0.2': '1.0.2' })
   expect(readFileSync(join(repository, 'pnpm-lock.yaml'))).toEqual(before)
 })
 
