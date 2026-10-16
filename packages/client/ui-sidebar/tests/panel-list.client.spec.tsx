@@ -121,6 +121,25 @@ async function mountPanels(runtime: SlotTestRuntime, locale: LocaleRuntime, beta
 }
 
 describe('sidebar global panels', () => {
+  it('keeps Windows panel navigation in its visible rail and can return to the conversation', async () => {
+    document.documentElement.setAttribute('data-windows-titlebar', '')
+    try {
+      const { runtime, locale, layout, view } = await bench(true)
+      await mountPanels(runtime, locale)
+      await act(async () => { await runtime.flush() })
+      fireEvent.click(view.getByRole('button', { name: 'Beta panel' }))
+      await waitFor(() => { expect(view.getByRole('heading', { name: 'Beta content' })).toBeTruthy() })
+      const navigation = view.getByRole('navigation', { name: 'Global panels' })
+      expect(navigation.closest('[data-panel-active="true"]')).not.toBeNull()
+      fireEvent.click(within(navigation).getByRole('button', { name: 'Chat' }))
+      await waitFor(() => { expect(view.getByText('Conversation content')).toBeTruthy() })
+      expect(layout.selectPanel).toHaveBeenLastCalledWith(null)
+      expect(navigation.closest('[data-panel-active]')).toBeNull()
+    } finally {
+      document.documentElement.removeAttribute('data-windows-titlebar')
+    }
+  })
+
   it('adds late registrations, removes each plugin contribution, and leaves no empty panel-list DOM', async () => {
     const { runtime, locale, view } = await bench()
     expect(runtime.slots.entries('sidebar.panellist')).toEqual([])

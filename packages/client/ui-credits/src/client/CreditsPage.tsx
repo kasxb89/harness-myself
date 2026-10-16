@@ -25,6 +25,8 @@ export interface CreditsPageInjected {
   readonly t: (key: string, values?: Record<string, string>) => string
   /** Open the top-up page in the main column. */
   readonly openRecharge: () => void
+  /** Return to the current Conversation after this form completes phone sign-in. */
+  readonly completeSignIn: () => void
 }
 
 interface ChallengeResponse {
@@ -43,7 +45,7 @@ function nextResend(seconds: number): number {
 }
 
 export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected): ReactNode {
-  const { t, openRecharge } = props
+  const { t, openRecharge, completeSignIn } = props
   const { session, balance, loaded } = useCreditsSnapshot()
   const [notice, setNotice] = useState<string | null>(null)
   const [failure, setFailure] = useState<string | null>(null)
@@ -134,6 +136,7 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected): 
         challengeKey.current = null
         verifyKey.current = null
         await refreshCredits()
+        completeSignIn()
       } else {
         setFailure(answer.message ?? answer.code ?? t('errGeneric'))
         if (answer.code === 'SMS_CHALLENGE_EXPIRED' || answer.code === 'SMS_CHALLENGE_CONSUMED' || answer.code === '410') {
@@ -149,7 +152,7 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected): 
       setBusy(false)
       setLoginAction(null)
     }
-  }, [challenge, code, t])
+  }, [challenge, code, completeSignIn, t])
 
   /** Sign out: revoke on the platform, clear locally, return to the form. */
   const signOut = useCallback(async () => {

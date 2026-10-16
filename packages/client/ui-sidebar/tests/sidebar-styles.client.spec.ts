@@ -26,6 +26,14 @@ function declarations(selector: string): Map<string, string> | undefined {
 }
 
 describe('SidebarRoot.module.css', () => {
+  it('keeps Windows global panel navigation outside the fully hidden sidebar rule', () => {
+    for (const region of ['panelList', 'regionArea', 'railFootArea']) {
+      expect(declarations(`:global([data-windows-titlebar]) .root.collapsed:not([data-panel-active]) .${region}`)?.get('display')).toBe('none')
+      expect(declarations(`:global([data-windows-titlebar]) .collapsed .${region}`)?.get('display')).not.toBe('none')
+    }
+    expect(declarations(':global([data-windows-titlebar]) .root.collapsed')?.get('padding')).not.toBe('0')
+  })
+
   it('shares and cancels the wide shell trailing padding structurally', () => {
     const root = declarations('.root')
     expect(root?.get('--dsh-sidebar-inline-padding')).toBe('12px')

@@ -242,6 +242,34 @@ describe('AppFrame', () => {
     }
   })
 
+  it.each([
+    { width: 1920, closed: false },
+    { width: 1920, closed: true },
+    { width: 800, closed: false },
+  ])('keeps Windows panel navigation reachable at width $width with closed=$closed', ({ width, closed }) => {
+    document.documentElement.setAttribute('data-windows-titlebar', '')
+    try {
+      frameWidth = width
+      const { frame, instance, sidebarOwner } = mountFrame()
+      if (closed) act(() => { instance.actions.toggleSidebar() })
+      const conversationWidth = tracks(frame)[0]
+      const layout = instance.getSnapshot().layoutInfo
+      const session = selectedSession
+      for (const panel of ['credits', 'recharge', 'skillhub']) {
+        act(() => { instance.actions.selectPanel(panel as MainPanelId) })
+        expect(tracks(frame)[0]).toBe(84)
+        expect(sidebarOwner()).toEqual({ collapsed: true, width: 84 })
+        expect(frame.querySelector('[data-side="sidebar"]')).toBeNull()
+      }
+      act(() => { instance.actions.selectPanel(null) })
+      expect(tracks(frame)[0]).toBe(conversationWidth)
+      expect(instance.getSnapshot().layoutInfo).toBe(layout)
+      expect(selectedSession).toBe(session)
+    } finally {
+      document.documentElement.removeAttribute('data-windows-titlebar')
+    }
+  })
+
   it('keeps the closed sidebar mounted at its 84px rail without a handle', () => {
     const { frame, instance, sidebarOwner, getByTestId, queryByTestId } = mountFrame()
     act(() => { instance.actions.toggleSidebar() })

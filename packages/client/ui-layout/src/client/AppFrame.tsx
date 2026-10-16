@@ -173,13 +173,12 @@ export function AppFrame({
     ? 0
     : layoutInfo.sidebar === 0 ? SIDEBAR_DEFAULT : layoutInfo.sidebar
   const rightbarPreference = layoutInfo.rightbar ?? viewport * RIGHTBAR_DEFAULT_RATIO
-  // Desktop reopen controls occupy the frame's shell.leading seat (macOS) or
-  // the Windows caption row; neither platform keeps an icon rail — except the
-  // rail-only panel state, whose whole presentation IS the rail, so no reopen
-  // seat exists there and the platform's zero width does not apply.
+  // Windows global panels retain navigation even when the conversation sidebar
+  // was closed or the viewport is narrow. Conversation collapse keeps caption
+  // controls, while macOS retains its separate shell.leading behavior.
   const darwin = document.documentElement.dataset.platform === 'darwin'
   const windowsTitlebar = document.documentElement.hasAttribute('data-windows-titlebar')
-  const collapsedWidth = (railOnly && !windowsTitlebar) || !(darwin || windowsTitlebar)
+  const collapsedWidth = (panelActive && windowsTitlebar) || railOnly || !(darwin || windowsTitlebar)
     ? SIDEBAR_COLLAPSED
     : 0
   // Opening on a narrow frame collapses the left sidebar. Eligibility must

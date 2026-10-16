@@ -1,16 +1,16 @@
 // @vitest-environment jsdom
 /** Signed-out balance form behavior using real controls and intercepted HTTP. */
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, within } from '@testing-library/react'
 import { CreditsPage } from '../src/client/CreditsPage.tsx'
 import { zh, type CreditsKey } from '../src/client/locales.ts'
-import { refreshCredits } from '../src/client/session-store.ts'
+import { refreshCredits, useCreditsSnapshot } from '../src/client/session-store.ts'
 
 vi.mock('../src/client/session-store.ts', () => ({
-  useCreditsSnapshot: () => ({
+  useCreditsSnapshot: vi.fn(() => ({
     loaded: true, failure: null, balance: null,
     session: { signedIn: false, creditsPerYuan: 1000 },
-  }),
+  })),
   refreshCredits: vi.fn(),
   refreshBalance: vi.fn(),
   signOutCredits: vi.fn(),
@@ -28,10 +28,11 @@ const challenge = {
   payload: { challenge_id: 'challenge-for-138', expires_at: '2026-10-15T12:05:00Z', resend_after_seconds: 60 },
 }
 
-function renderSignIn() {
+function renderSignIn(completeSignIn = vi.fn()) {
   // The form does not read any of the renderer's global standard seats.
-  const props = { t, openRecharge: vi.fn() } as Parameters<typeof CreditsPage>[0]
-  return render(<CreditsPage {...props} />)
+  const props = { t, openRecharge: vi.fn(), completeSignIn } as Parameters<typeof CreditsPage>[0]
+  const view = render(<CreditsPage {...props} />)
+  return { ...view, rerenderPage: () => { view.rerender(<CreditsPage {...props} />) } }
 }
 
 function requestBody(init: RequestInit | undefined): Record<string, unknown> {
@@ -40,6 +41,14 @@ function requestBody(init: RequestInit | undefined): Record<string, unknown> {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) throw new Error('Expected a JSON object')
   return body as Record<string, unknown>
 }
+
+beforeEach(() => {
+  vi.mocked(useCreditsSnapshot).mockReturnValue({
+    loaded: true, failure: null, balance: null,
+    session: { signedIn: false, creditsPerYuan: 1000 },
+  })
+  vi.mocked(refreshCredits).mockResolvedValue(undefined)
+})
 
 afterEach(() => {
   cleanup()
@@ -110,11 +119,14 @@ describe('balance phone sign-in', () => {
     { label: 'with a credited reward', bonus: { status: 'credited', points: 1000 } },
   ])('completes a successful sign-in $label', async ({ bonus }) => {
     let finish: ((response: Response) => void) | undefined
+    let finishRefresh: (() => void) | undefined
+    vi.mocked(refreshCredits).mockImplementationOnce(() => new Promise<void>((resolve) => { finishRefresh = resolve }))
+    const completeSignIn = vi.fn()
     const fetchMock = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(Response.json(challenge))
       .mockImplementationOnce(() => new Promise<Response>((resolve) => { finish = resolve }))
     vi.stubGlobal('fetch', fetchMock)
-    const view = renderSignIn()
+    const view = renderSignIn(completeSignIn)
     fireEvent.change(view.getByRole('textbox', { name: '手机号' }), { target: { value: '+86 138 0013 8000' } })
     fireEvent.click(view.getByRole('button', { name: '发送验证码' }))
     await view.findByRole('status')
@@ -142,11 +154,34 @@ describe('balance phone sign-in', () => {
       } }))
     })
     expect(refreshCredits).toHaveBeenCalledTimes(1)
+    expect(completeSignIn).not.toHaveBeenCalled()
+    await act(async () => { finishRefresh?.() })
+    expect(completeSignIn).toHaveBeenCalledTimes(1)
     expect(view.queryByRole('alert')).toBeNull()
     expect(view.getByRole('status').textContent).toBe(bonus?.status === 'credited'
       ? t('signedInBonus', { points: '1,000' }) : t('signedIn'))
     expect(view.getByRole('textbox', { name: '验证码' }).getAttribute('value')).toBe('')
     expect(view.getByRole('button', { name: '登录' }).hasAttribute('disabled')).toBe(true)
+  })
+
+  it('keeps the balance page open when an existing session or its balance refreshes', () => {
+    const completeSignIn = vi.fn()
+    const signedInSnapshot = {
+      loaded: true, failure: null, balance: null,
+      session: { signedIn: true, creditsPerYuan: 1000, account: { id: 'fixture-account', phone: '+8613800138000' } },
+    }
+    vi.mocked(useCreditsSnapshot).mockReturnValue(signedInSnapshot)
+    const view = renderSignIn(completeSignIn)
+    expect(view.queryByRole('textbox', { name: '验证码' })).toBeNull()
+    vi.mocked(useCreditsSnapshot).mockReturnValue({
+      ...signedInSnapshot,
+      balance: { balance_points: 1000, as_of: '2026-10-16T12:00:00Z' },
+    })
+
+    view.rerenderPage()
+
+    expect(completeSignIn).not.toHaveBeenCalled()
+    expect(view.getByRole('button', { name: t('signOut') })).toBeTruthy()
   })
 
   it('clears the previous challenge and code when the phone changes before form submission', async () => {
@@ -172,11 +207,12 @@ describe('balance phone sign-in', () => {
   })
 
   it('keeps entered values and shows a verification failure inside the form', async () => {
+    const completeSignIn = vi.fn()
     const fetchMock = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(Response.json(challenge))
       .mockResolvedValueOnce(Response.json({ ok: false, code: 'SMS_CODE_MISMATCH', message: '验证码不匹配，请重试' }))
     vi.stubGlobal('fetch', fetchMock)
-    const view = renderSignIn()
+    const view = renderSignIn(completeSignIn)
     fireEvent.change(view.getByRole('textbox', { name: '手机号' }), { target: { value: '13800138000' } })
     fireEvent.click(view.getByRole('button', { name: '发送验证码' }))
     await view.findByRole('status')
@@ -190,5 +226,6 @@ describe('balance phone sign-in', () => {
     expect(view.getByRole('textbox', { name: '手机号' }).getAttribute('value')).toBe('13800138000')
     expect(view.getByRole('button', { name: '登录' }).hasAttribute('disabled')).toBe(false)
     expect(refreshCredits).not.toHaveBeenCalled()
+    expect(completeSignIn).not.toHaveBeenCalled()
   })
 })

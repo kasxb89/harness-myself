@@ -53,6 +53,9 @@ export function apply(ctx: ClientContext): void {
     t: (key, values) => t(key as Parameters<typeof t>[0], values),
     openRecharge: () => { ctx.layout.selectPanel(RECHARGE_PANEL_ID) },
     openBalance: () => { ctx.layout.selectPanel(PANEL_ID) },
+    completeSignIn: () => {
+      if (ctx.layout.panelInfo.getSnapshot().activePanelId === PANEL_ID) ctx.layout.selectPanel(null)
+    },
   }
   ctx.slots.inject('main', () => {
     const unregister = ctx.slots.register({
@@ -61,9 +64,12 @@ export function apply(ctx: ClientContext): void {
       locale: NS,
       inject: (): CreditsPageInjected => face,
     }, CreditsPage)
-    // The native welcome hands phone sign-in to this registered product page.
-    if (new URLSearchParams(window.location.search).get('panel') === PANEL_ID) {
+    // Consume the native welcome's launch request once, after its page exists.
+    const url = new URL(window.location.href)
+    if (url.searchParams.get('panel') === PANEL_ID) {
       ctx.layout.selectPanel(PANEL_ID)
+      url.searchParams.delete('panel')
+      window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`)
     }
     return unregister
   })

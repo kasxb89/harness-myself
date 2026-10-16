@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { LayoutController, type MainPanelId } from '../../ui-layout/src/client/service.ts'
 import { createLayoutStore } from '../../ui-layout/src/client/stores.ts'
 import { apply, inject } from '../src/client/index.ts'
+import type { CreditsPageInjected } from '../src/client/CreditsPage.tsx'
 
 const roots: Context[] = []
 const existingPanel = 'existing-panel' as MainPanelId
@@ -62,7 +63,8 @@ async function bench(search: string) {
 
 describe('Credits launch entry', () => {
   it('waits for the main declaration before opening the registered product panel', async () => {
-    const b = await bench('?panel=credits')
+    const b = await bench('?panel=credits&workspace=kept#conversation')
+    window.history.replaceState({ entry: 'welcome' }, '', window.location.href)
     await b.start()
     expect(b.select).not.toHaveBeenCalled()
     expect(b.slots.entries('main')).toEqual([])
@@ -73,6 +75,45 @@ describe('Credits launch entry', () => {
     expect(b.slots.entries('main').map(entry => entry.options.key)).toEqual(['credits', 'recharge'])
     expect(b.select).toHaveBeenCalledExactlyOnceWith('credits')
     expect(b.layout.panelInfo.getSnapshot().activePanelId).toBe('credits')
+    expect(window.location.search).toBe('?workspace=kept')
+    expect(window.location.hash).toBe('#conversation')
+    expect(window.history.state).toEqual({ entry: 'welcome' })
+  })
+
+  it('returns a completed phone sign-in to the Conversation and preserves later panel choices', async () => {
+    const b = await bench('?panel=credits')
+    await b.start()
+    const frame = await b.declare()
+    const page = b.slots.entries('main').find(entry => entry.options.key === 'credits')
+    const completeSignIn = page!.inject!()['completeSignIn'] as CreditsPageInjected['completeSignIn']
+
+    completeSignIn()
+
+    expect(b.select).toHaveBeenLastCalledWith(null)
+    expect(b.layout.panelInfo.getSnapshot().activePanelId).toBeNull()
+    b.layout.selectPanel('credits' as MainPanelId)
+    expect(b.layout.panelInfo.getSnapshot().activePanelId).toBe('credits')
+    b.layout.selectPanel('recharge' as MainPanelId)
+    b.select.mockClear()
+    await frame.dispose()
+    await b.declare()
+    expect(b.select).not.toHaveBeenCalled()
+    expect(b.layout.panelInfo.getSnapshot().activePanelId).toBe('recharge')
+  })
+
+  it('does not take navigation away from a different panel when sign-in finishes late', async () => {
+    const b = await bench('?panel=credits')
+    await b.start()
+    await b.declare()
+    const page = b.slots.entries('main').find(entry => entry.options.key === 'credits')
+    const completeSignIn = page!.inject!()['completeSignIn'] as CreditsPageInjected['completeSignIn']
+    b.layout.selectPanel('recharge' as MainPanelId)
+    b.select.mockClear()
+
+    completeSignIn()
+
+    expect(b.select).not.toHaveBeenCalled()
+    expect(b.layout.panelInfo.getSnapshot().activePanelId).toBe('recharge')
   })
 
   it.each(['', '?panel=unknown', '?panel=recharge'])('preserves navigation without a Credits launch request (%s)', async (search) => {

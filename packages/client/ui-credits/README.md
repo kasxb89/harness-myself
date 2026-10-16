@@ -25,7 +25,7 @@ View the current account's credits, sign in by phone, and inspect usage by day a
 
 The balance panel displays the current account's credits, phone sign-in, and usage analytics. The separate top-up panel owns payment. Both panels share the existing session and balance store; usage queries use the signed-in account selected by the Credits host (`host/credits-index`).
 
-The desktop welcome opens `?panel=credits` to select the same balance panel and phone sign-in form. This navigation does not create an account session or configure an API key. Successful phone sign-in refreshes the account session even when the response has no registration reward.
+The desktop welcome opens `?panel=credits` to select the balance panel and phone sign-in form. The client consumes this entry request once, removing only `panel` while preserving other query parameters and the hash. Opening the page does not create an account session or configure an API key. Successful SMS verification refreshes the account session and returns to the existing conversation workspace without creating or clearing its Session, even when no registration reward is returned. Later balance and top-up selections, account refreshes and balance refreshes preserve the chosen panel.
 
 ### Top-ups
 
