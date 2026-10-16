@@ -4,9 +4,9 @@
  *
  * Two sources are merged, in this order:
  *
- *   1. `/api/pricing` on the local new-api — the models that actually exist for
- *      this account, the groups allowed to call them, and, for plugin-backed
- *      generators, the parameter menus and pricing examples the plugin itself
+ *   1. `/api/pricing` on the configured API — published models, declared groups,
+ *      and, for plugin-backed
+ *      generators, the parameter menus the plugin itself
  *      declares. This is what makes a channel added on the new-api side appear
  *      here without an edit.
  *   2. `model-parameters.ts` — the market's parameter surface per model id,
@@ -16,6 +16,8 @@
  *
  * A live declaration always beats the table: if the deployment says a model's
  * resolutions are `768P, 2K`, that is the menu, whatever the table believes.
+ * Pricing does not establish account authorization or billing availability;
+ * the server validates both when a generation is submitted.
  *
  * @module @deepseek-ai/dsh-credits-index/media
  */
@@ -49,6 +51,8 @@ export interface ImageParams {
 export interface VideoParams {
   /** Duration values the model allows, in seconds. */
   readonly durations: readonly number[]
+  /** Resolution-specific duration menus; an absent key is unavailable. */
+  readonly durationByResolution?: Readonly<Record<string, readonly number[]>>
   readonly minDuration: number
   readonly maxDuration: number
   /** Output resolutions, e.g. `768P`, `2K`. */
@@ -80,7 +84,7 @@ export interface VideoParams {
   readonly mixFramesAndReferences: boolean
 }
 
-/** One callable model, as the panels need it. */
+/** One model and its published parameters, as the panels need them. */
 export interface ModelCapability {
   readonly id: string
   readonly kind: MediaKind
@@ -122,6 +126,110 @@ function schemaEnum(schema: unknown, field: string): string[] {
 /** The parameter fields a deployment declares, or an empty list. */
 function schemaFields(schema: unknown): string[] {
   return Object.keys(objectRecord(schema) ?? {})
+}
+
+/** Explicit parameters may be JSON Schema properties or the pricing field map. */
+function parameterFields(schema: unknown): Record<string, unknown> | null {
+  const record = objectRecord(schema)
+  return objectRecord(record?.properties) ?? record
+}
+
+/** Only finite, whole-second menus bounded by the gateway's safety ceiling are capabilities. */
+function durationMenu(value: unknown): number[] | null {
+  const field = objectRecord(value)
+  if (field === null) return null
+  const constraints = ['minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf'] as const
+  for (const key of constraints) {
+    const constraint = field[key]
+    if (constraint !== undefined && (typeof constraint !== 'number' || !Number.isFinite(constraint))) return null
+  }
+  const minimum = typeof field.minimum === 'number' ? field.minimum : -Infinity
+  const maximum = typeof field.maximum === 'number' ? field.maximum : Infinity
+  const exclusiveMinimum = typeof field.exclusiveMinimum === 'number' ? field.exclusiveMinimum : -Infinity
+  const exclusiveMaximum = typeof field.exclusiveMaximum === 'number' ? field.exclusiveMaximum : Infinity
+  const multiple = typeof field.multipleOf === 'number' ? field.multipleOf : 1
+  if (multiple <= 0) return null
+  if (field.enum !== undefined && !Array.isArray(field.enum)) return null
+  let menu: number[]
+  if (Array.isArray(field.enum)) {
+    if (field.enum.length === 0 || field.enum.length > 3600
+      || field.enum.some(item => typeof item !== 'number' || !Number.isSafeInteger(item) || item < 1 || item > 3600)) return null
+    menu = [...new Set(field.enum as number[])].sort((left, right) => left - right)
+  } else {
+    const lower = Math.max(minimum, exclusiveMinimum)
+    const upper = Math.min(maximum, exclusiveMaximum)
+    if (!Number.isFinite(lower) || !Number.isFinite(upper) || lower < 1 || upper > 3600) return null
+    const first = Math.max(Math.ceil(minimum), Math.floor(exclusiveMinimum) + 1)
+    const last = Math.min(Math.floor(maximum), Math.ceil(exclusiveMaximum) - 1)
+    menu = range(first, last)
+  }
+  return menu.filter((seconds) => {
+    const quotient = seconds / multiple
+    return seconds >= minimum && seconds <= maximum && seconds > exclusiveMinimum && seconds < exclusiveMaximum
+      && Number.isFinite(quotient) && Math.abs(quotient - Math.round(quotient)) <= Number.EPSILON * Math.abs(quotient) * 4
+  })
+}
+
+/** Read the canonical seconds field or its duration alias without inferring examples. */
+function declaredDurations(schema: unknown): number[] | null {
+  const fields = parameterFields(schema)
+  return durationMenu(fields?.seconds) ?? durationMenu(fields?.duration)
+}
+
+/** A partial parent constraint can restrict a known finite menu without granting new seconds. */
+function restrictDurations(menu: readonly number[], schema: unknown): readonly number[] {
+  const fields = parameterFields(schema)
+  const constraint = objectRecord(fields?.seconds) ?? objectRecord(fields?.duration)
+  if (constraint === null || menu.length === 0) return menu
+  const allowed = durationMenu({ ...constraint, enum: constraint.enum ?? menu })
+  return allowed === null ? menu : menu.filter(value => allowed.includes(value))
+}
+
+/** Resolution const and enum constrain one another when both are declared. */
+function declaredResolutionMenu(schema: unknown): string[] | null {
+  const field = objectRecord(parameterFields(schema)?.resolution)
+  if (field === null) return null
+  if (field.const !== undefined && (typeof field.const !== 'string' || field.const === ''
+    || field.const.length > 64 || field.const.trim() !== field.const)) return null
+  const constant = typeof field.const === 'string' && field.const !== '' ? field.const : null
+  if (field.enum !== undefined) {
+    if (!Array.isArray(field.enum) || field.enum.length > 64
+      || field.enum.some(value => typeof value !== 'string' || value === '' || value.length > 64 || value.trim() !== value)) return null
+    const menu = stringList(field.enum)
+    return constant === null ? menu : menu.filter(value => value === constant)
+  }
+  return constant === null ? null : [constant]
+}
+
+/** Standard oneOf branches pair explicit resolutions with bounded duration menus. */
+function resolutionDurations(schema: unknown): Record<string, readonly number[]> | null {
+  const branches = objectRecord(schema)?.oneOf
+  if (!Array.isArray(branches) || branches.length === 0 || branches.length > 64) return null
+  const menus = new Map<string, Map<number, number>>()
+  for (const branch of branches) {
+    const resolutions = declaredResolutionMenu(branch)
+    const durations = declaredDurations(branch)
+    if (resolutions === null || durations === null) return null
+    for (const value of resolutions) {
+      const menu = menus.get(value) ?? new Map<number, number>()
+      for (const duration of durations) menu.set(duration, (menu.get(duration) ?? 0) + 1)
+      menus.set(value, menu)
+      if (menus.size > 64) return null
+    }
+  }
+  return Object.fromEntries([...menus].map(([resolution, values]) => [resolution, [...values]
+    .filter(([, matches]) => matches === 1).map(([duration]) => duration).sort((left, right) => left - right)]))
+}
+
+/**
+ * Select the allowed seconds for an explicit output resolution.
+ * @param params - Parsed model capability.
+ * @param resolution - Requested resolution, or null when not selected.
+ * @returns The resolution menu, or no values when a declared combination is unavailable.
+ */
+export function videoDurations(params: VideoParams, resolution: string | null): readonly number[] {
+  if (params.durationByResolution === undefined) return params.durations
+  return resolution === null || !Object.hasOwn(params.durationByResolution, resolution) ? [] : params.durationByResolution[resolution] ?? []
 }
 
 /** The largest number seen for one key across the deployment's examples. */
@@ -184,41 +292,53 @@ function imageParams(spec: ImageSpec, schema: unknown, examples: readonly unknow
   }
 }
 
-/** The video menu: resolutions may be overridden live; durations rarely are. */
-function videoParams(spec: VideoSpec, schema: unknown, examples: readonly unknown[]): {
+/** Explicit live parameter declarations take precedence over the model table. */
+function videoParams(spec: VideoSpec, schema: unknown, parameters: unknown): {
   params: VideoParams
   verified: boolean
   source: string
   notes: string[]
 } {
   const notes: string[] = []
-  const declaredResolutions = schemaEnum(schema, 'resolution')
-  const resolutions = declaredResolutions.length > 0 ? declaredResolutions : spec.resolutions
-  if (declaredResolutions.length > 0) notes.push('resolutions')
-  // A model whose duration menu the table does not know can still be bounded by
-  // the examples the deployment prices, which is better than an open slider.
-  let durations = spec.durations
-  if (durations.length === 0) {
-    const fromExamples = examples
-      .map(example => objectRecord(objectRecord(example)?.facts)?.seconds)
-      .filter((value): value is number => typeof value === 'number' && Number.isInteger(value))
-    const distinct = [...new Set(fromExamples)].sort((left, right) => left - right)
-    if (distinct.length > 0) {
-      durations = distinct.length <= 12 ? distinct : range(distinct[0] ?? 1, distinct[distinct.length - 1] ?? 15)
-      notes.push('durations')
-    }
+  const parameterResolutions = declaredResolutionMenu(parameters)
+  const parameterDurations = declaredDurations(parameters)
+  const parameterCombinations = resolutionDurations(parameters)
+  const hasParameterDurations = parameterDurations !== null || parameterCombinations !== null
+  const declaredResolutions = parameterResolutions
+    ?? (parameterCombinations === null ? declaredResolutionMenu(schema) : Object.keys(parameterCombinations))
+  let resolutions = declaredResolutions ?? spec.resolutions
+  if (declaredResolutions !== null) notes.push('resolutions')
+  const declared = hasParameterDurations ? parameterDurations : declaredDurations(schema)
+  const combinations = hasParameterDurations ? parameterCombinations : resolutionDurations(schema)
+  const parameterDurationFields = parameterFields(parameters)
+  const constraints = hasParameterDurations || objectRecord(parameterDurationFields?.seconds) !== null
+    || objectRecord(parameterDurationFields?.duration) !== null ? parameters : schema
+  let durationByResolution: Record<string, readonly number[]> | undefined
+  let durations: readonly number[] = restrictDurations(declared ?? spec.durations, constraints)
+  if (declared !== null) notes.push('durations')
+  if (combinations !== null) {
+    const menus = Object.fromEntries(Object.entries(combinations)
+      .filter(([resolution]) => declaredResolutions === null || declaredResolutions.includes(resolution))
+      .map(([resolution, menu]) => {
+        const bounded = declared === null ? menu : menu.filter(value => declared.includes(value))
+        return [resolution, restrictDurations(bounded, constraints)]
+      }))
+    durationByResolution = menus
+    resolutions = Object.keys(menus).filter(resolution => (menus[resolution]?.length ?? 0) > 0)
+    durations = [...new Set(Object.values(menus).flat())].sort((left, right) => left - right)
+    notes.push('durationByResolution')
   }
-  const billedImages = maxExampleValue(examples, 'input_images') ?? 0
-  const billedVideos = maxExampleValue(examples, 'input_video_seconds') ?? 0
+  if (declaredResolutions?.length === 0) durations = []
   const params: VideoParams = {
-    durations: durations.length > 0 ? durations : range(1, 15),
-    minDuration: durations[0] ?? 1,
-    maxDuration: durations[durations.length - 1] ?? 15,
+    durations,
+    ...durationByResolution === undefined ? {} : { durationByResolution },
+    minDuration: durations[0] ?? 0,
+    maxDuration: durations[durations.length - 1] ?? 0,
     resolutions,
     ratios: spec.ratios,
     maxFrameImages: spec.frames,
-    maxReferenceImages: Math.max(spec.referenceImages, billedImages),
-    maxReferenceVideos: Math.max(spec.referenceVideos, billedVideos > 0 ? 1 : 0),
+    maxReferenceImages: spec.referenceImages,
+    maxReferenceVideos: spec.referenceVideos,
     maxReferenceAudios: spec.referenceAudios,
     frameSlots: spec.frames,
     audio: spec.audio,
@@ -264,8 +384,8 @@ function mediaKind(id: string, endpoints: readonly string[], fields: readonly st
 /**
  * Build the media catalog from `/api/pricing`.
  *
- * `userGroup` filters the list the way the gateway itself would: a model is
- * callable when the user's group is among its `enable_groups`. A null group is
+ * `userGroup` filters declared groups; authorization and billing availability
+ * are still validated on submission. A null group is
  * "not signed in", and then nothing is filtered out — the panel shows what the
  * deployment serves and lets the login form explain the rest.
  * @param rows - Untrusted pricing rows returned by the gateway.
@@ -286,7 +406,7 @@ export function catalogFromPricing(rows: readonly unknown[], userGroup: string |
     if (userGroup !== null && groups.length > 0 && !groups.includes(userGroup)) continue
     const examples = Array.isArray(record.billing_usage_examples) ? record.billing_usage_examples : []
     const built = kind === 'video'
-      ? videoParams(videoSpec(id), record.billing_usage_schema, examples)
+      ? videoParams(videoSpec(id), record.billing_usage_schema, record.parameters)
       : imageParams(imageSpec(id), record.billing_usage_schema, examples)
     // A row that names its own route wins; otherwise the built-in table for
     // plugin-served models, and the host protocol path for everything else.

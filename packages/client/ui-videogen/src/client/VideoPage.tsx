@@ -30,11 +30,13 @@ interface VideoModel {
   readonly source: string
   readonly params: {
     readonly durations: readonly number[]
+    readonly durationByResolution?: Readonly<Record<string, readonly number[]>>
     readonly resolutions: readonly string[]
     readonly ratios: readonly string[]
     readonly frameSlots: number
     readonly maxReferenceImages: number
     readonly maxReferenceVideos: number
+    readonly maxReferenceAudios: number
     readonly audio: boolean
     readonly audioToggle: boolean
     readonly modes: readonly string[]
@@ -61,9 +63,10 @@ function isArtifactItem(value: unknown): value is ArtifactItem {
 const SLOT_TYPES: Record<Slot, { readonly accept: string; readonly types: readonly string[] }> = {
   image: { accept: 'image/png,image/jpeg,image/webp', types: ['image/png', 'image/jpeg', 'image/webp'] },
   video: { accept: 'video/mp4,video/quicktime', types: ['video/mp4', 'video/quicktime'] },
+  audio: { accept: 'audio/mpeg,audio/wav', types: ['audio/mpeg', 'audio/wav'] },
 }
-const SLOT_LABELS = { image: 'referenceImages', video: 'referenceVideos' } as const
-const SLOT_HINTS = { image: 'dropImages', video: 'dropVideos' } as const
+const SLOT_LABELS = { image: 'referenceImages', video: 'referenceVideos', audio: 'referenceAudios' } as const
+const SLOT_HINTS = { image: 'dropImages', video: 'dropVideos', audio: 'dropAudios' } as const
 const WORKFLOW_LABELS = { text: 'workflow.text', image: 'workflow.image', frames: 'workflow.frames', reference: 'workflow.reference' } as const
 const WORKFLOW_HINTS = { text: 'workflow.text.hint', image: 'workflow.image.hint', frames: 'workflow.frames.hint', reference: 'workflow.reference.hint' } as const
 const rawUrl = (path: string): string => `/artifacts/api/raw?path=${encodeURIComponent(path)}`
@@ -101,7 +104,8 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
     if (current.referenceAccountId !== accountId) {
       if (current.uploading !== null) operation.current = false
       actions.setReferenceAccount(accountId)
-      for (const reference of [current.firstFrame, current.lastFrame, ...current.slots.image, ...current.slots.video]) {
+      const references = [current.firstFrame, current.lastFrame, ...current.slots.image, ...current.slots.video, ...current.slots.audio]
+      for (const reference of references) {
         if (reference !== null) releasePreview(reference.url)
       }
     }
@@ -130,20 +134,59 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
   const workflows: Workflow[] = ['text']
   if (supportsImage) workflows.push('image')
   if (params !== null && params.frameSlots > 1) workflows.push('frames')
-  if (params !== null && params.maxReferenceImages + params.maxReferenceVideos > 0) workflows.push('reference')
+  if (params !== null && params.maxReferenceImages + params.maxReferenceVideos + params.maxReferenceAudios > 0) workflows.push('reference')
   const workflow = workflows.includes(draft.workflow) ? draft.workflow : 'text'
-  const duration = params?.durations.includes(draft.duration) === true ? draft.duration : params?.durations[0] ?? 0
   const selectedResolution = params?.resolutions.includes(resolution) === true ? resolution : params?.resolutions[0] ?? ''
-  const selectedRatio = params?.ratios.includes(ratio) === true ? ratio : params?.ratios.find(item => item !== 'adaptive') ?? params?.ratios[0] ?? ''
+  const durations = params?.durationByResolution === undefined ? params?.durations ?? []
+    : Object.hasOwn(params.durationByResolution, selectedResolution) ? params.durationByResolution[selectedResolution] ?? [] : []
+  const duration = durations.includes(draft.duration) ? draft.duration : durations[0] ?? 0
+  const frameImages = workflow === 'frames' ? [firstFrame, lastFrame]
+    : workflow === 'image' && (params?.frameSlots ?? 0) > 0 ? [firstFrame] : []
+  const referenceImages = workflow === 'reference' || workflow === 'image' && params?.frameSlots === 0 ? slots.image : []
+  const referenceVideos = workflow === 'reference' ? slots.video : []
+  const referenceAudios = workflow === 'reference' ? slots.audio : []
+  const hasVisualMedia = frameImages.some(item => item !== null)
+    || ((params?.maxReferenceImages ?? 0) > 0 && referenceImages.length > 0)
+    || ((params?.maxReferenceVideos ?? 0) > 0 && referenceVideos.length > 0)
+  const hasReferences = hasVisualMedia || ((params?.maxReferenceAudios ?? 0) > 0 && referenceAudios.length > 0)
+  const allowedRatios = params?.ratios.filter(value => value !== 'adaptive' || hasVisualMedia) ?? []
+  const selectedRatio = allowedRatios.includes(ratio) ? ratio : allowedRatios[0] ?? ''
   const ratioLabel = selectedRatio === 'adaptive' ? t('ratioAdaptive') : selectedRatio
   const settingsValues = { ratio: ratioLabel, resolution: selectedResolution, duration: String(duration) }
-  const hasReferences = (params !== null && params.maxReferenceImages > 0 && slots.image.length > 0)
-    || (params !== null && params.maxReferenceVideos > 0 && slots.video.length > 0)
+  const modelImageLimit = Math.max(params?.maxReferenceImages ?? 0, params?.frameSlots ?? 0)
+  const imageLimit = modelImageLimit > 0 ? modelImageLimit : 6
+  const referenceLimit = (slot: Slot): number => slot === 'image' ? imageLimit
+    : slot === 'video' ? params?.maxReferenceVideos ?? 0 : params?.maxReferenceAudios ?? 0
+  const overReferenceLimit = referenceImages.length > (params?.maxReferenceImages ?? 0)
+    || referenceVideos.length > (params?.maxReferenceVideos ?? 0)
+    || referenceAudios.length > (params?.maxReferenceAudios ?? 0)
+  const settingsInvalid = params !== null && (durations.length === 0 || params.ratios.length > 0 && selectedRatio === '')
+  const requestReferenceBytes = [...new Map([...frameImages, ...referenceImages, ...referenceVideos, ...referenceAudios]
+    .filter((item): item is Reference => item !== null).map(item => [item.assetId, item])).values()]
+    .reduce((total, item) => total + item.bytes, 0)
+  const referenceBytesExceeded = requestReferenceBytes > 48 * 1024 * 1024
+
+  useEffect(() => {
+    if (params === null || locked) return
+    const current = readDraft()
+    const updates: Partial<VideoDraft> = {}
+    if (current.duration !== duration) updates.duration = duration
+    if (current.resolution !== selectedResolution) updates.resolution = selectedResolution
+    if (current.ratio !== selectedRatio) updates.ratio = selectedRatio
+    if (Object.keys(updates).length === 0) return
+    const changedSelection = current.duration !== 0 || current.resolution !== '' || current.ratio !== ''
+    actions.patch({ ...updates, ...(changedSelection && !settingsInvalid ? { message: t('settingsAdjusted', {
+      ratio: selectedRatio === 'adaptive' ? t('ratioAdaptive') : selectedRatio,
+      resolution: selectedResolution, duration: String(duration),
+    }) } : settingsInvalid ? { message: null } : {}) })
+  }, [actions, duration, locked, params, readDraft, selectedRatio, selectedResolution, settingsInvalid, t])
+
   const assistReferences = useMemo(() => {
     if (accountIdentity === null || draft.referenceAccountId !== accountIdentity || signedIn !== true) return []
     return [...new Set([firstFrame, lastFrame, ...slots.image]
       .filter((item): item is Reference => item !== null).map(item => item.assetId))]
   }, [accountIdentity, draft.referenceAccountId, signedIn, firstFrame, lastFrame, slots.image])
+  const assistReferenceLimitExceeded = assistReferences.length > 6
   const assistGeneration = useMemo(() => ({
     model: model?.id ?? '', workflow, duration: String(duration), resolution: selectedResolution,
     ratio: selectedRatio, mode,
@@ -230,14 +273,14 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
       actions.patch({ failure: t('uploadFailed', { message: file.type || t('unknownType') }) })
       return null
     }
-    if (file.size === 0 || file.size > (slot === 'image' ? 6 : 32) * 1024 * 1024) {
-      actions.patch({ failure: t(slot === 'image' ? 'materialLimit' : 'uploadSize') }); return null
+    if (file.size === 0 || file.size > (slot === 'image' ? 6 : slot === 'audio' ? 15 : 32) * 1024 * 1024) {
+      actions.patch({ failure: t(slot === 'image' ? 'materialLimit' : slot === 'audio' ? 'audioUploadSize' : 'uploadSize', { n: String(imageLimit) }) }); return null
     }
     if (slot === 'image') {
       const images = [...new Map([context.firstFrame, context.lastFrame, ...context.slots.image]
         .filter((item): item is Reference => item !== null && item !== replacing).map(item => [item.assetId, item])).values()]
-      if (images.length >= 6 || images.reduce((sum, item) => sum + item.bytes, 0) + file.size > 12 * 1024 * 1024) {
-        actions.patch({ failure: t('materialLimit') }); return null
+      if (images.length >= imageLimit || images.reduce((sum, item) => sum + item.bytes, 0) + file.size > 12 * 1024 * 1024) {
+        actions.patch({ failure: t('materialLimit', { n: String(imageLimit) }) }); return null
       }
     }
     try {
@@ -268,13 +311,14 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
       if (isReferenceCurrent(context)) actions.patch({ failure: t('uploadNetwork') })
       return null
     }
-  }, [acceptAccount, actions, createPreview, isReferenceCurrent, t])
+  }, [acceptAccount, actions, createPreview, imageLimit, isReferenceCurrent, t])
 
   const pick = useCallback(async (slot: Slot, files: FileList | null): Promise<void> => {
     if (busy || readDraft().promptAssisting || operation.current || files === null || files.length === 0) return
     const context = readDraft()
     if (signedIn !== true || accountIdentity === null || context.referenceAccountId !== accountIdentity) return
-    const limit = slot === 'image' ? 6 : params?.maxReferenceVideos ?? 0
+    const limit = slot === 'image' ? imageLimit
+      : slot === 'video' ? params?.maxReferenceVideos ?? 0 : params?.maxReferenceAudios ?? 0
     const available = Math.max(0, limit - slots[slot].length)
     if (available === 0) return
     operation.current = true
@@ -288,7 +332,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
         actions.addReferences(slot, [reference], limit)
       }
     } finally { if (isReferenceCurrent(context)) { operation.current = false; actions.patch({ uploading: null }) } }
-  }, [accountIdentity, busy, isReferenceCurrent, params, readDraft, releasePreview, signedIn, slots, upload, actions])
+  }, [accountIdentity, busy, imageLimit, isReferenceCurrent, params, readDraft, releasePreview, signedIn, slots, upload, actions])
 
   const pickFrame = useCallback(async (which: 'first' | 'last', files: FileList | null): Promise<void> => {
     const file = files?.[0]
@@ -321,6 +365,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
       || (workflow === 'reference' && !hasReferences)) {
       actions.patch({ failure: t('mediaRequired') }); return
     }
+    if (settingsInvalid || overReferenceLimit || referenceBytesExceeded) return
     operation.current = true
     setModelMenu(false)
     actions.patch({ phase: 'running', startedAt: Date.now() })
@@ -346,10 +391,9 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
           ...(params.seed && seed.trim() !== '' && Number.isSafeInteger(Number(seed)) ? { seed: Number(seed) } : {}),
           ...(params.audioToggle ? { audio } : {}),
           frameImages: frames.filter((item): item is Reference => item !== null).map(item => item.assetId),
-          referenceImages: workflow === 'reference' || (workflow === 'image' && params.frameSlots === 0)
-            ? slots.image.slice(0, params.maxReferenceImages).map(item => item.assetId) : [],
-          referenceVideos: workflow === 'reference' ? slots.video.slice(0, params.maxReferenceVideos).map(item => item.assetId) : [],
-          referenceAudios: [],
+          referenceImages: referenceImages.map(item => item.assetId),
+          referenceVideos: referenceVideos.map(item => item.assetId),
+          referenceAudios: referenceAudios.map(item => item.assetId),
         }),
       })
       if (!isReferenceCurrent(context)) return
@@ -370,7 +414,9 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
     } finally { operation.current = false; actions.patch({ phase: 'idle' }) }
   }, [acceptAccount, accountIdentity, busy, signedIn, actions, prompt, model, params, workflow, firstFrame, lastFrame, slots,
     hasReferences, isReferenceCurrent, readDraft,
-    duration, selectedResolution, selectedRatio, mode, seed, audio, t, loadBalance, loadHistory])
+    duration, settingsInvalid, overReferenceLimit, referenceBytesExceeded,
+    referenceImages, referenceVideos, referenceAudios,
+    selectedResolution, selectedRatio, mode, seed, audio, t, loadBalance, loadHistory])
 
   const frameField = (which: 'first' | 'last'): ReactNode => {
     const reference = which === 'first' ? firstFrame : lastFrame
@@ -390,25 +436,26 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
   }
 
   const referenceField = (slot: Slot): ReactNode => {
-    const limit = slot === 'image' ? 6
-      : params?.maxReferenceVideos ?? 0
-    if (limit === 0) return null
+    const limit = referenceLimit(slot)
+    if (limit === 0 && slots[slot].length === 0) return null
     const full = slots[slot].length >= limit
     return <div className={css.field} key={slot}>
       <span className={css.label}>{t(SLOT_LABELS[slot])}
         <span className={css.count}>{slots[slot].length}/{limit}</span>
       </span>
-      <label className={css.dropzone} aria-disabled={full}>
+      {limit > 0 ? <label className={css.dropzone} aria-disabled={full}>
         <input type="file" aria-label={t(SLOT_LABELS[slot])} accept={SLOT_TYPES[slot].accept} multiple disabled={full || locked}
           onChange={(event) => { void pick(slot, event.target.files); event.target.value = '' }} />
         <IconPlusOutlineRegular /><span>{uploading === slot ? t('uploading') : full ? t('referenceFull') : t(SLOT_HINTS[slot])}</span>
-      </label>
-      <ul className={css.files}>{slots[slot].map(item => <li key={item.assetId} className={css.fileRow}>
+      </label> : <p className={css.hint}>{t('unsupportedReferencesRetained')}</p>}
+      <ul className={css.files}>{slots[slot].map(item => <li key={item.assetId} className={slot === 'audio' ? `${css.fileRow} ${css.audioReference}` : css.fileRow}>
         {slot === 'image' ? <img className={css.fileThumb} src={item.url} alt={item.name} /> : <IconPlayOutlineRegular />}
         <span className={css.fileName}>{item.name}</span>
         <button type="button" disabled={locked} className={css.link} aria-label={t('removeNamed', { name: item.name })} onClick={() => {
           actions.removeReference(slot, item.assetId); releasePreview(item.url)
         }}>{t('remove')}</button>
+        {slot === 'audio' && <audio className={css.audioPreview} controls preload="metadata" src={item.url}
+          aria-label={t('audioPreview', { name: item.name })} />}
       </li>)}</ul>
     </div>
   }
@@ -437,7 +484,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
       <fieldset className={css.composerFields} disabled={signedIn !== true}>
         <div className={css.workflowBar}>{workflows.map(entry => <button key={entry} type="button" disabled={locked} aria-pressed={workflow === entry}
           className={workflow === entry ? `${css.workflow} ${css.workflowActive}` : css.workflow}
-          onClick={() => { actions.patch({ workflow: entry, failure: null }) }}>{t(WORKFLOW_LABELS[entry])}</button>)}</div>
+          onClick={() => { actions.patch({ workflow: entry, failure: null, message: null }) }}>{t(WORKFLOW_LABELS[entry])}</button>)}</div>
         <div className={css.promptRow}>
           <label className={css.addMedia}><IconPlusOutlineRegular size={24} /><span>{t('addMedia')}</span>
             <input type="file" aria-label={t('addMedia')} accept={SLOT_TYPES.image.accept} multiple disabled={locked}
@@ -452,7 +499,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
         {props.renderFactorySlot('creation.prompt.assist', {
           kind: 'video', prompt,
           references: assistReferences, generation: assistGeneration,
-          disabled: busy, signedIn: signedIn === true, accountIdentity,
+          disabled: busy || assistReferenceLimitExceeded, signedIn: signedIn === true, accountIdentity,
           onBusyChange: (value) => {
             const current = readDraft()
             if (current.referenceAccountId === accountIdentity && current.referenceEpoch === draft.referenceEpoch) {
@@ -473,31 +520,33 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
             return true
           },
         })}
-        <p className={css.hint}>{t('materialHelp')}</p>
+        {assistReferenceLimitExceeded && <p className={css.hint} role="status">{t('assistReferenceLimit')}</p>}
+        <p className={css.hint}>{t('materialHelp', { n: String(imageLimit) })}</p>
         <div className={css.mediaGrid}>{referenceField('image')}</div>
         <p className={css.hint}>{t(WORKFLOW_HINTS[workflow])}</p>
         {(firstFrame !== null || lastFrame !== null || hasReferences) && <p className={css.hint}>{t('inactiveMediaHint')}</p>}
         {workflow !== 'text' && params !== null && <div className={css.mediaGrid}>
           {workflow === 'image' && params.frameSlots > 0 && frameField('first')}
           {workflow === 'frames' && <>{frameField('first')}{frameField('last')}</>}
-          {workflow === 'reference' && referenceField('video')}
+          {workflow === 'reference' && <>{referenceField('video')}{referenceField('audio')}</>}
         </div>}
         {contentPresets.length > 0 && <div className={css.presets} aria-label={t('cameraIntents')}>{contentPresets.map(preset => <button key={preset.id} type="button" disabled={locked} className={css.chip}
           onClick={() => { actions.appendPrompt(text(preset.promptSuffix)) }}>{text(preset.label)}</button>)}</div>}
         <div className={css.composerBar}>
           <Menu open={modelMenu} portal selectedId={model?.id} items={models.map(entry => ({ id: entry.id, label: entry.displayName }))}
-            onSelect={(id) => { actions.patch({ modelId: id }); setModelMenu(false) }} onClose={() => { setModelMenu(false) }}
+            onSelect={(id) => { actions.patch({ modelId: id, message: null }); setModelMenu(false) }}
+            onClose={() => { setModelMenu(false) }}
             anchor={<button type="button" className={css.modelButton} aria-label={t('model')} aria-expanded={modelMenu}
               disabled={locked || models.length === 0} onClick={() => { setModelMenu(!modelMenu) }}>{model?.displayName ?? t('model')}<span aria-hidden="true">⌄</span></button>} />
           <details className={css.settings}>
-            <summary className={css.settingsTrigger} aria-label={params === null ? t('settingsUnavailable') : t('settingsTrigger', settingsValues)} aria-disabled={locked || params === null}
+            <summary className={css.settingsTrigger} aria-label={params === null || settingsInvalid ? t('settingsUnavailable') : t('settingsTrigger', settingsValues)} aria-disabled={locked || params === null}
               onClick={(event) => { if (locked || params === null) event.preventDefault() }}>
               <span className={css.settingsTitle}><IconSettingsOutlineRegular size={16} /><span>{t('settings')}</span></span>
-              <span className={css.settingsValues} aria-hidden="true">{params === null ? t('settingsUnavailable') : <><span>{ratioLabel}</span><span>{selectedResolution}</span><span>{t('secondsCompact', { n: String(duration) })}</span></>}</span>
+              <span className={css.settingsValues} aria-hidden="true">{params === null || settingsInvalid ? t('settingsUnavailable') : <><span>{ratioLabel}</span><span>{selectedResolution}</span><span>{t('secondsCompact', { n: String(duration) })}</span></>}</span>
               <IconChevronDownOutlineRegular className={css.settingsChevron} size={14} />
             </summary>
             <div className={css.settingsPanel}>
-              <div className={css.settingsHeading}><div><h3>{t('settings')}</h3><p>{t('settingsHint')}</p></div><span className={css.settingsOverview}>{t('settingsSummary', settingsValues)}</span></div>
+              <div className={css.settingsHeading}><div><h3>{t('settings')}</h3><p>{t('settingsHint')}</p></div><span className={css.settingsOverview}>{settingsInvalid ? t('settingsUnavailable') : t('settingsSummary', settingsValues)}</span></div>
               <fieldset className={css.settingsBody} aria-label={t('settings')} disabled={locked}>
                 {params !== null && params.ratios.length > 0 && <fieldset className={css.settingsGroup}><legend>{t('ratio')}</legend>
                   <div className={css.ratioGrid}>{params.ratios.map((value) => {
@@ -506,19 +555,23 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
                     const category = width === height ? 'ratioSquare' : width > height ? 'ratioLandscape' : 'ratioPortrait'
                     return <button key={value} type="button" aria-pressed={selectedRatio === value}
                       aria-label={t('ratioOption', { ratio: value === 'adaptive' ? t('ratioAdaptive') : value })}
-                      className={css.ratioCard} onClick={() => { actions.patch({ ratio: value }) }}>
+                      className={css.ratioCard} disabled={value === 'adaptive' && !hasVisualMedia}
+                      onClick={() => { actions.patch({ ratio: value, message: null }) }}>
                       <span className={css.ratioVisual} aria-hidden="true"><span className={css.ratioShape} data-adaptive={value === 'adaptive'}
                         style={{ width: width * scale, height: height * scale }} /></span>
                       <span className={css.ratioValue}>{value === 'adaptive' ? t('ratioAdaptive') : value}</span><span className={css.ratioCaption}>{t(value === 'adaptive' ? 'ratioAdaptiveCaption' : category)}</span>
                     </button>
                   })}</div></fieldset>}
+                {params?.ratios.includes('adaptive') === true && !hasVisualMedia
+                  && <p className={css.hint}>{t('adaptiveNeedsVisual')}</p>}
                 {params !== null && params.resolutions.length > 0 && <fieldset className={css.settingsGroup}><legend>{t('resolution')}</legend>
                   <div className={css.optionGrid}>{params.resolutions.map(value => <button key={value} type="button" aria-pressed={selectedResolution === value}
-                    className={css.parameterOption} onClick={() => { actions.patch({ resolution: value }) }}>{value}</button>,
+                    className={css.parameterOption} onClick={() => { actions.patch({ resolution: value, message: null }) }}>
+                    {value}</button>,
                   )}</div></fieldset>}
-                {params !== null && params.durations.length > 0 && <fieldset className={css.settingsGroup}><legend>{t('duration')}</legend>
-                  <div className={css.durationGrid}>{params.durations.map(value => <button key={value} type="button" aria-pressed={duration === value}
-                    className={css.parameterOption} onClick={() => { actions.patch({ duration: value }) }}>{t('seconds', { n: String(value) })}</button>)}</div></fieldset>}
+                {params !== null && durations.length > 0 && <fieldset className={css.settingsGroup}><legend>{t('duration')}</legend>
+                  <div className={css.durationGrid}>{durations.map(value => <button key={value} type="button" aria-pressed={duration === value}
+                    className={css.parameterOption} onClick={() => { actions.patch({ duration: value, message: null }) }}>{t('seconds', { n: String(value) })}</button>)}</div></fieldset>}
                 {params !== null && <div className={css.audioRow}><div><span className={css.audioTitle}>{t('audio')}</span>
                   <p>{t(params.audioToggle ? 'audioHint' : params.audio ? 'audioFixedOn' : 'audioFixedOff')}</p></div>
                 <div className={css.audioState}><span aria-hidden={params.audioToggle}>{t((params.audioToggle ? audio : params.audio) ? 'on' : 'off')}</span>
@@ -535,7 +588,8 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
           <span className={css.cost}>{t('costShort')}</span>
           <Tooltip label={phase === 'running' ? t('runningShort') : t('submit')} portal side="top">
             <button type="button" className={css.send} aria-label={phase === 'running' ? t('runningShort') : t('submit')}
-              onClick={() => { void generate() }} disabled={locked || model === null || prompt.trim() === ''}>
+              onClick={() => { void generate() }} disabled={locked || model === null || prompt.trim() === '' || settingsInvalid
+                || overReferenceLimit || referenceBytesExceeded}>
               <span className={phase === 'running' ? css.spinner : css.sendArrow} aria-hidden="true">{phase === 'running' ? '' : '↑'}</span>
             </button>
           </Tooltip>
@@ -544,6 +598,9 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
       <div className={css.feedback} aria-live="polite">
         {phase === 'running' && <p className={css.notice}>{t('running', { seconds: String(elapsed) })}</p>}
         {uploading !== null && <p className={css.notice}>{t('uploading')}</p>}
+        {overReferenceLimit && <p className={css.error} role="alert">{t('referenceOverLimit')}</p>}
+        {settingsInvalid && <p className={css.error} role="alert">{t('settingsUnavailableForModel')}</p>}
+        {referenceBytesExceeded && <p className={css.error} role="alert">{t('referenceBytesExceeded')}</p>}
         {failure !== null && <p className={css.error} role="alert">{failure}</p>}
         {message !== null && <p className={css.notice}>{message}</p>}
         {signedIn === false && <p className={css.hint}>{t('signedOut')}</p>}

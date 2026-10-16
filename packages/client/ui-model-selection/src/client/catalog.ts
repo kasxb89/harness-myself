@@ -11,7 +11,7 @@ export interface ModelCatalogState {
   error: string | null
 }
 
-/** Loads at most one model catalog for the current Host generation. */
+/** Shares cached and explicitly refreshed model catalogs within one Host generation. */
 export class ModelCatalogDirectory {
   /** Current shared catalog value and load lifecycle. */
   readonly store: SnapshotStore<ModelCatalogState> = createSnapshotStore({
@@ -79,6 +79,17 @@ export class ModelCatalogDirectory {
     })
     this.inflight = operation
     return operation
+  }
+
+  /**
+   * Fetch the available catalog again, sharing any request already in flight.
+   * Failures reject the promise, retain the last catalog, and publish the error.
+   * @returns the refreshed catalog, or the current in-flight request.
+   */
+  reload(): Promise<ModelCatalog> {
+    if (this.inflight !== undefined) return this.inflight
+    this.invalidate()
+    return this.load()
   }
 
   /**

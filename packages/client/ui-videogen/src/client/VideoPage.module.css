@@ -124,3 +124,6 @@
 .addMedia { position: relative; }
 .addMedia > input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
 fieldset.settingsBody { border: 0; padding: 0; min-width: 0; }
+
+.audioReference { flex-wrap: wrap; }
+.audioPreview { width: 100%; min-width: 0; }

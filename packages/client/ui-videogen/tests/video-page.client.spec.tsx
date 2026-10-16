@@ -10,6 +10,7 @@ import { zh } from '../src/client/locales.ts'
 import { contentFixture } from '../../ui-imagegen/tests/content-fixture.client.ts'
 
 const params = {
+  durationByResolution: undefined as Readonly<Record<string, readonly number[]>> | undefined,
   durations: [5, 10], resolutions: ['720p', '1080p'], ratios: ['16:9', '9:16'], frameSlots: 2,
   maxReferenceImages: 3, maxReferenceVideos: 1, maxReferenceAudios: 1,
   audio: true, audioToggle: true, modes: ['normal', 'pro'], seed: true,
@@ -62,6 +63,222 @@ beforeEach(() => { vi.useRealTimers(); sessionAccountId = 'account-a' })
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 describe('video composer', () => {
+  it('uses resolution-specific duration menus and visibly corrects a previously selected duration', async () => {
+    const { mount, store, task } = setup({
+      durations: [5, 15, 30], resolutions: ['480p', '768p', '1080p', '2K'],
+      durationByResolution: { '480p': [5, 15, 30], '768p': [5, 15, 30], '1080p': [5, 15], '2K': [5, 10] },
+    })
+    store.actions.patch({ duration: 30, resolution: '768p', ratio: '16:9' })
+    mount()
+    await ready()
+    fireEvent.click(screen.getByLabelText(t('settingsTrigger', { ratio: '16:9', resolution: '768p', duration: '30' })))
+    const panel = screen.getByRole('group', { name: zh.settings })
+    expect(within(panel).getByRole('button', { name: '30 秒' })).toBeTruthy()
+    fireEvent.click(within(panel).getByRole('button', { name: '1080p' }))
+    expect(within(panel).queryByRole('button', { name: '30 秒' })).toBeNull()
+    expect(store.getSnapshot().duration).toBe(5)
+    expect(screen.getByText(t('settingsAdjusted', { resolution: '1080p', duration: '5', ratio: '16:9' }))).toBeTruthy()
+    fireEvent.click(within(panel).getByRole('button', { name: '15 秒' }))
+    writePrompt()
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    await waitFor(() => { expect(task).toHaveBeenCalledOnce() })
+    expect(requestBody(task.mock.calls[0]?.[0])).toMatchObject({ resolution: '1080p', durationSeconds: 15 })
+    expect(panel.textContent).toMatchSnapshot()
+  })
+
+  it.each(['480p', '768p', '1080p', '2K'])(
+    'does not invent a 30-second option when %s is currently declared only through 15 seconds', async (resolution) => {
+      setup({ durations: [5, 10, 15], resolutions: [resolution], durationByResolution: { [resolution]: [5, 10, 15] } }).mount()
+      await ready()
+      fireEvent.click(screen.getByLabelText(t('settingsTrigger', { ratio: '16:9', resolution, duration: '5' })))
+      const panel = screen.getByRole('group', { name: zh.settings })
+      expect(within(panel).getByRole('button', { name: '15 秒' })).toBeTruthy()
+      expect(within(panel).queryByRole('button', { name: '30 秒' })).toBeNull()
+    },
+  )
+
+  it.each(['2K', 'constructor'])(
+    'refuses a missing resolution map entry %s without falling back to global durations or prototype properties', async (resolution) => {
+      const { mount, task } = setup({ durations: [5, 30], resolutions: [resolution], durationByResolution: { '480p': [5, 30] } })
+      mount()
+      await ready()
+      writePrompt()
+      expect(screen.getByRole('alert').textContent).toBe(zh.settingsUnavailableForModel)
+      expect(screen.getByLabelText(zh.settingsUnavailable).textContent).not.toContain('0s')
+      const submit = screen.getByRole('button', { name: zh.submit })
+      expect(submit).toHaveProperty('disabled', true)
+      fireEvent.click(submit)
+      expect(task).not.toHaveBeenCalled()
+    },
+  )
+
+  it('allows adaptive ratio only for visual references sent in the active workflow', async () => {
+    const { mount, store, task } = setup({ ratios: ['16:9', 'adaptive'] })
+    store.actions.patch({ ratio: 'adaptive', slots: { audio: [], video: [], image: [
+      { assetId: 'ma_visual', name: 'visual.png', url: 'blob:visual', bytes: 1 },
+    ] } })
+    mount()
+    await ready()
+    expect(store.getSnapshot().ratio).toBe('16:9')
+    fireEvent.click(screen.getByLabelText(t('settingsTrigger', { ratio: '16:9', resolution: '720p', duration: '5' })))
+    const adaptive = screen.getByRole('button', { name: t('ratioOption', { ratio: zh.ratioAdaptive }) })
+    expect(adaptive).toHaveProperty('disabled', true)
+    expect(screen.getByText(zh.adaptiveNeedsVisual)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: zh['workflow.reference'] }))
+    expect(adaptive).toHaveProperty('disabled', false)
+    fireEvent.click(adaptive)
+    writePrompt()
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    await waitFor(() => { expect(task).toHaveBeenCalledOnce() })
+    expect(requestBody(task.mock.calls[0]?.[0])).toMatchObject({ ratio: 'adaptive', referenceImages: ['ma_visual'] })
+    await waitFor(() => { expect(store.getSnapshot().phase).toBe('idle') })
+    fireEvent.click(screen.getByRole('button', { name: zh['workflow.text'] }))
+    expect(store.getSnapshot().ratio).toBe('16:9')
+    expect(screen.getByText(t('settingsAdjusted', { resolution: '720p', duration: '5', ratio: '16:9' }))).toBeTruthy()
+  })
+
+  it('keeps nine model-declared reference images while disabling AI writing above its separate six-image limit', async () => {
+    const { mount, props, store, task, asset } = setup({ maxReferenceImages: 9, frameSlots: 0 })
+    let id = 0
+    asset.mockImplementation(async () => json({ ok: true, asset: { assetId: `ma_${++id}` } }))
+    mount()
+    await ready()
+    fireEvent.click(screen.getByRole('button', { name: zh['workflow.reference'] }))
+    fireEvent.change(screen.getByLabelText(zh.referenceImages), { target: { files: Array.from({ length: 9 }, (_, index) =>
+      new File(['image'], `${index}.png`, { type: 'image/png' })) } })
+    await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull(); expect(asset).toHaveBeenCalledTimes(9) })
+    expect(store.getSnapshot().slots.image).toHaveLength(9)
+    expect(screen.getByLabelText(zh.referenceImages)).toHaveProperty('disabled', true)
+    const assistant = vi.mocked(props.renderFactorySlot).mock.calls.at(-1)?.[1] as PromptAssistOwner
+    expect(assistant.disabled).toBe(true)
+    expect(assistant.references).toHaveLength(9)
+    expect(screen.getByText(zh.assistReferenceLimit)).toBeTruthy()
+    writePrompt()
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    await waitFor(() => { expect(task).toHaveBeenCalledOnce() })
+    expect(requestBody(task.mock.calls[0]?.[0]).referenceImages).toEqual(Array.from({ length: 9 }, (_, index) => `ma_${index + 1}`))
+  })
+
+  it('uploads, previews, removes and submits only active model-supported audio references', async () => {
+    const { mount, props, store, task, asset } = setup({ maxReferenceAudios: 2 })
+    store.actions.patch({ workflow: 'reference', slots: { audio: [], video: [], image: [
+      { assetId: 'ma_visual', name: 'visual.png', url: 'blob:visual', bytes: 1 },
+    ] } })
+    let id = 0
+    asset.mockImplementation(async () => json({ ok: true, asset: { assetId: `ma_audio_${++id}` } }))
+    mount()
+    await ready()
+    const input = screen.getByLabelText(zh.referenceAudios)
+    expect(input.getAttribute('accept')).toBe('audio/mpeg,audio/wav')
+    fireEvent.change(input, { target: { files: [new File(['ID3'], 'one.mp3', { type: 'audio/mpeg' }),
+      new File(['RIFFWAVE'], 'two.wav', { type: 'audio/wav' })] } })
+    await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull(); expect(asset).toHaveBeenCalledTimes(2) })
+    expect(screen.getByLabelText(t('audioPreview', { name: 'one.mp3' })).tagName).toBe('AUDIO')
+    expect(screen.getByLabelText(t('audioPreview', { name: 'two.wav' })).getAttribute('src')).toBe('blob:two.wav')
+    expect(input).toHaveProperty('disabled', true)
+    const uploadHeaders = fetcher.mock.calls.filter(([path]) => path === '/credits/api/assets')
+      .map(([, init]) => init?.headers)
+    expect(uploadHeaders).toMatchObject([{ 'content-type': 'audio/mpeg' }, { 'content-type': 'audio/wav' }])
+    fireEvent.click(screen.getByRole('button', { name: t('removeNamed', { name: 'one.mp3' }) }))
+    expect(props.releasePreview).toHaveBeenCalledWith('blob:one.mp3')
+    expect(input).toHaveProperty('disabled', false)
+    expect(screen.queryByLabelText(t('audioPreview', { name: 'one.mp3' }))).toBeNull()
+    writePrompt()
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    await waitFor(() => { expect(task).toHaveBeenCalledOnce() })
+    expect(requestBody(task.mock.calls[0]?.[0])).toMatchObject({ referenceImages: ['ma_visual'], referenceAudios: ['ma_audio_2'] })
+    await waitFor(() => { expect(store.getSnapshot().phase).toBe('idle') })
+    fireEvent.click(screen.getByRole('button', { name: zh['workflow.text'] }))
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    await waitFor(() => { expect(task).toHaveBeenCalledTimes(2) })
+    expect(requestBody(task.mock.calls[1]?.[0]).referenceAudios).toEqual([])
+    expect(store.getSnapshot().slots.audio.map(item => item.assetId)).toEqual(['ma_audio_2'])
+  })
+
+  it('accepts declared audio references alone while keeping adaptive ratio unavailable without visual media', async () => {
+    const { mount, store, task } = setup({ ratios: ['16:9', 'adaptive'] })
+    store.actions.patch({ workflow: 'reference', slots: { image: [], video: [], audio: [
+      { assetId: 'ma_audio', name: 'voice.mp3', url: 'blob:voice', bytes: 1 },
+    ] } })
+    mount()
+    await ready()
+    writePrompt()
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', false)
+    fireEvent.click(screen.getByLabelText(t('settingsTrigger', { ratio: '16:9', resolution: '720p', duration: '5' })))
+    expect(screen.getByRole('button', { name: t('ratioOption', { ratio: zh.ratioAdaptive }) })).toHaveProperty('disabled', true)
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    await waitFor(() => { expect(task).toHaveBeenCalledOnce() })
+    expect(requestBody(task.mock.calls[0]?.[0])).toMatchObject({ referenceAudios: ['ma_audio'], referenceVideos: [], ratio: '16:9' })
+  })
+
+  it('keeps unsupported audio removable after switching models while hiding its upload input', async () => {
+    const { mount, store, task } = setup()
+    const baseFetch = fetcher.getMockImplementation()!
+    fetcher.mockImplementation(async (input, init) => input === '/credits/api/media/catalog'
+      ? json({ ok: true, payload: { video: [
+        { id: 'video-real', displayName: 'Real video model', source: 'live', verified: true, params },
+        { id: 'no-audio', displayName: 'No audio model', source: 'live', verified: true, params: { ...params, maxReferenceAudios: 0 } },
+      ] } }) : await baseFetch(input, init))
+    store.actions.patch({ workflow: 'reference', slots: { image: [], video: [], audio: [
+      { assetId: 'ma_audio', name: 'voice.mp3', url: 'blob:voice', bytes: 1 },
+    ] } })
+    mount()
+    await ready()
+    writePrompt()
+    fireEvent.click(screen.getByRole('button', { name: zh.model }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'No audio model' }))
+    expect(screen.queryByLabelText(zh.referenceAudios)).toBeNull()
+    expect(screen.getByLabelText(t('audioPreview', { name: 'voice.mp3' }))).toBeTruthy()
+    expect(screen.getByText(zh.unsupportedReferencesRetained)).toBeTruthy()
+    expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', true)
+    fireEvent.click(screen.getByRole('button', { name: t('removeNamed', { name: 'voice.mp3' }) }))
+    expect(store.getSnapshot().slots.audio).toEqual([])
+    expect(screen.queryByText(zh.unsupportedReferencesRetained)).toBeNull()
+    expect(task).not.toHaveBeenCalled()
+  })
+
+  it('keeps audio previews account-owned and rejects a request whose active references exceed the byte budget', async () => {
+    const { mount, props, store, task } = setup({ maxReferenceAudios: 3, maxReferenceVideos: 1 })
+    store.actions.patch({ workflow: 'reference', slots: { image: [],
+      audio: [{ assetId: 'ma_audio', name: 'voice.wav', url: 'blob:voice', bytes: 15 * 1024 * 1024 }],
+      video: [{ assetId: 'ma_video', name: 'clip.mp4', url: 'blob:clip', bytes: 34 * 1024 * 1024 }],
+    } })
+    mount()
+    await ready()
+    writePrompt()
+    expect(screen.getByRole('alert').textContent).toBe(zh.referenceBytesExceeded)
+    expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', true)
+    expect(task).not.toHaveBeenCalled()
+    sessionAccountId = 'account-b'
+    fireEvent.focus(window)
+    await waitFor(() => { expect(store.getSnapshot().referenceAccountId).toBe('account-b') })
+    expect(store.getSnapshot().slots.audio).toEqual([])
+    expect(props.releasePreview).toHaveBeenCalledWith('blob:voice')
+    expect(screen.queryByLabelText(t('audioPreview', { name: 'voice.wav' }))).toBeNull()
+  })
+
+  it.each(['empty', 'oversize', 'unsupported', 'network'] as const)(
+    'shows an audio %s upload failure and restores the controls without discarding earlier audio', async (failure) => {
+      const { mount, store, asset } = setup({ maxReferenceAudios: 2 })
+      store.actions.patch({ workflow: 'reference', slots: { image: [], video: [], audio: [
+        { assetId: 'ma_retained', name: 'retained.mp3', url: 'blob:retained', bytes: 1 },
+      ] } })
+      if (failure === 'network') asset.mockRejectedValueOnce(new Error('fixture audio connection lost'))
+      mount()
+      await ready()
+      const file = failure === 'empty' ? new File([], 'empty.wav', { type: 'audio/wav' })
+        : failure === 'oversize' ? new File([new Uint8Array(15 * 1024 * 1024 + 1)], 'large.mp3', { type: 'audio/mpeg' })
+          : failure === 'unsupported' ? new File(['audio'], 'track.m4a', { type: 'audio/mp4' })
+            : new File(['audio'], 'new.mp3', { type: 'audio/mpeg' })
+      fireEvent.change(screen.getByLabelText(zh.referenceAudios), { target: { files: [file] } })
+      await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull(); expect(screen.getByRole('alert')).toBeTruthy() })
+      expect(store.getSnapshot().slots.audio.map(item => item.assetId)).toEqual(['ma_retained'])
+      expect(screen.getByLabelText(zh.referenceAudios)).toHaveProperty('disabled', false)
+      expect(asset).toHaveBeenCalledTimes(failure === 'network' ? 1 : 0)
+    },
+  )
+
   it.each(['direct', 'enveloped'] as const)('retains saved clips after malformed artifact records in a %s refresh', async (format) => {
     const { mount } = setup()
     const baseFetch = fetcher.getMockImplementation()!
@@ -169,14 +386,14 @@ describe('video composer', () => {
     const { props, store, mount } = setup()
     store.actions.patch({ workflow: 'frames', firstFrame: { assetId: 'ma_first', name: 'first.png', url: 'blob:first', bytes: 1 },
       lastFrame: { assetId: 'ma_last', name: 'last.png', url: 'blob:last', bytes: 1 },
-      slots: { image: [{ assetId: 'ma_image', name: 'image.png', url: 'blob:image', bytes: 1 }], video: [{ assetId: 'ma_video', name: 'video.mp4', url: 'blob:video', bytes: 1 }] } })
+      slots: { audio: [], image: [{ assetId: 'ma_image', name: 'image.png', url: 'blob:image', bytes: 1 }], video: [{ assetId: 'ma_video', name: 'video.mp4', url: 'blob:video', bytes: 1 }] } })
     mount()
     expect((vi.mocked(props.renderFactorySlot).mock.calls.at(-1)?.[1] as PromptAssistOwner).references).toEqual([])
     await ready()
     sessionAccountId = nextAccount
     fireEvent.focus(window)
     await waitFor(() => { expect(store.getSnapshot().referenceAccountId).toBe(nextAccount) })
-    expect(store.getSnapshot()).toMatchObject({ firstFrame: null, lastFrame: null, slots: { image: [], video: [] } })
+    expect(store.getSnapshot()).toMatchObject({ firstFrame: null, lastFrame: null, slots: { audio: [], image: [], video: [] } })
     for (const url of ['blob:first', 'blob:last', 'blob:image', 'blob:video']) expect(props.releasePreview).toHaveBeenCalledWith(url)
     expect((vi.mocked(props.renderFactorySlot).mock.calls.at(-1)?.[1] as PromptAssistOwner).references).toEqual([])
   })
@@ -220,7 +437,7 @@ describe('video composer', () => {
       pick('new.png')
       act(() => { store.actions.patch({ failure: 'new account feedback' }) })
       await act(async () => { if (fails) rejectOld(new Error('old upload failed')); else resolveOld(json({ ok: true, asset: { assetId: 'ma_old' } })) })
-      expect(store.getSnapshot()).toMatchObject({ uploading: 'image', failure: 'new account feedback', slots: { image: [], video: [] } })
+      expect(store.getSnapshot()).toMatchObject({ uploading: 'image', failure: 'new account feedback', slots: { audio: [], image: [], video: [] } })
       expect(props.createPreview).not.toHaveBeenCalled()
       await act(async () => { resolveNew(json({ ok: true, asset: { assetId: 'ma_new' } })) })
       expect(store.getSnapshot().slots.image.map(item => item.assetId)).toEqual(['ma_new'])
@@ -266,7 +483,7 @@ describe('video composer', () => {
     const { props, store, mount, task } = setup()
     store.actions.patch({ prompt: '原始镜头描述', firstFrame: { assetId: 'ma_first', name: 'first.png', url: 'blob:first', bytes: 1 },
       lastFrame: { assetId: 'ma_last', name: 'last.png', url: 'blob:last', bytes: 1 },
-      slots: { image: [{ assetId: 'ma_reference', name: 'reference.png', url: 'blob:reference', bytes: 1 }],
+      slots: { audio: [], image: [{ assetId: 'ma_reference', name: 'reference.png', url: 'blob:reference', bytes: 1 }],
         video: [{ assetId: 'ma_video', name: 'clip.mp4', url: 'blob:clip', bytes: 1 }] } })
     mount()
     await ready()
@@ -338,10 +555,10 @@ describe('video composer', () => {
   })
 
   it('uploads materials even for text-only models and deduplicates retained frame images for AI writing', async () => {
-    const { props, store, mount, asset } = setup({ frameSlots: 0, maxReferenceImages: 0, maxReferenceVideos: 0 })
+    const { props, store, mount, asset } = setup({ frameSlots: 0, maxReferenceImages: 0, maxReferenceVideos: 0, maxReferenceAudios: 0 })
     store.actions.patch({ firstFrame: { assetId: 'ma_same', name: 'frame.png', url: 'blob:frame', bytes: 1 },
       lastFrame: { assetId: 'ma_same', name: 'frame.png', url: 'blob:frame', bytes: 1 },
-      slots: { image: [{ assetId: 'ma_same', name: 'frame.png', url: 'blob:frame', bytes: 1 }], video: [{ assetId: 'ma_video', name: 'clip.mp4', url: 'blob:clip', bytes: 1 }] } })
+      slots: { audio: [], image: [{ assetId: 'ma_same', name: 'frame.png', url: 'blob:frame', bytes: 1 }], video: [{ assetId: 'ma_video', name: 'clip.mp4', url: 'blob:clip', bytes: 1 }] } })
     mount()
     await ready()
     expect(screen.getByLabelText(zh.addMedia)).toHaveProperty('disabled', false)
@@ -351,18 +568,18 @@ describe('video composer', () => {
     expect(store.getSnapshot().slots.video).toHaveLength(1)
   })
 
-  it('shares the six-image and twelve-MiB budget between frames and material images', async () => {
+  it('shares the model image count and twelve-MiB budget between frames and material images', async () => {
     const { store, mount, asset } = setup()
     store.actions.patch({ firstFrame: { assetId: 'ma_first', name: 'frame.png', url: 'blob:frame', bytes: 6 * 1024 * 1024 },
-      slots: { image: [{ assetId: 'ma_second', name: 'second.png', url: 'blob:second', bytes: 6 * 1024 * 1024 }], video: [] } })
+      slots: { audio: [], image: [{ assetId: 'ma_second', name: 'second.png', url: 'blob:second', bytes: 6 * 1024 * 1024 }], video: [] } })
     mount()
     await ready()
     const input = screen.getByLabelText(zh.addMedia)
     fireEvent.change(input, { target: { files: [new File(['x'], 'excess.png', { type: 'image/png' })] } })
     await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull() })
     expect(asset).not.toHaveBeenCalled()
-    expect(screen.getByRole('alert').textContent).toBe(zh.materialLimit)
-    act(() => { store.actions.patch({ firstFrame: null, slots: { image: Array.from({ length: 6 }, (_, index) => ({ assetId: `ma_${index}`, name: 'material.png', url: `blob:${index}`, bytes: 1 })), video: [] } }) })
+    expect(screen.getByRole('alert').textContent).toBe(t('materialLimit', { n: '3' }))
+    act(() => { store.actions.patch({ firstFrame: null, slots: { audio: [], image: Array.from({ length: 6 }, (_, index) => ({ assetId: `ma_${index}`, name: 'material.png', url: `blob:${index}`, bytes: 1 })), video: [] } }) })
     fireEvent.click(screen.getByRole('button', { name: zh['workflow.image'] }))
     fireEvent.change(screen.getByLabelText(zh.firstFrame), { target: { files: [new File(['image'], 'seventh.png', { type: 'image/png' })] } })
     await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull() })
@@ -411,8 +628,8 @@ describe('video composer', () => {
     expect(screen.queryByRole('button', { name: zh.resetFilters })).toBeNull()
   })
 
-  it('shows only supported media arrangements and omits audio references the upload route cannot accept', async () => {
-    const view = setup({ frameSlots: 0, maxReferenceImages: 0, maxReferenceVideos: 0 }).mount()
+  it('shows only media arrangements declared by the selected model', async () => {
+    const view = setup({ frameSlots: 0, maxReferenceImages: 0, maxReferenceVideos: 0, maxReferenceAudios: 0 }).mount()
     await ready()
     expect(screen.queryByRole('button', { name: zh['workflow.image'] })).toBeNull()
     expect(screen.queryByRole('button', { name: zh['workflow.frames'] })).toBeNull()
@@ -476,9 +693,9 @@ describe('video composer', () => {
     expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', false)
   })
 
-  it('retains all reference material and sends only the selected model limit', async () => {
+  it('retains excess material after a model switch and requires review before generation', async () => {
     const { mount, store, props, task } = setup({ maxReferenceImages: 4 })
-    store.actions.patch({ workflow: 'reference', slots: {
+    store.actions.patch({ workflow: 'reference', slots: { audio: [],
       image: Array.from({ length: 4 }, (_, index) => ({ assetId: `ma_${index}`, name: `image-${index}.png`, url: `blob:${index}`, bytes: 1 })), video: [],
     } })
     const view = mount()
@@ -489,7 +706,13 @@ describe('video composer', () => {
     await waitFor(() => { expect(store.getSnapshot().slots.image).toHaveLength(4) })
     expect(props.releasePreview).not.toHaveBeenCalled()
     expect(view.container.querySelectorAll('img')).toHaveLength(4)
-    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    expect(screen.getByRole('alert').textContent).toBe(zh.referenceOverLimit)
+    const generate = screen.getByRole('button', { name: zh.submit })
+    expect(generate).toHaveProperty('disabled', true)
+    fireEvent.click(generate)
+    expect(task).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: t('removeNamed', { name: 'image-3.png' }) }))
+    fireEvent.click(generate)
     await waitFor(() => { expect(task).toHaveBeenCalledTimes(1) })
     expect(requestBody(task.mock.calls[0]?.[0]).referenceImages).toEqual(['ma_0', 'ma_1', 'ma_2'])
   })

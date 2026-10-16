@@ -51,9 +51,10 @@ export interface VideoProjectProvider {
    * Resolve the account-visible model and its actual positive integer duration menu.
    * @param model - Explicit user-selected model, or undefined for account selection.
    * @param signal - Cancels model lookup.
+   * @param resolution - Explicit output resolution whose duration menu governs planning.
    * @returns Model id and supported whole-second durations.
    */
-  model(model: string | undefined, signal: AbortSignal): Promise<{ id: string; durations: readonly number[] }>
+  model(model: string | undefined, signal: AbortSignal, resolution?: string): Promise<{ id: string; durations: readonly number[] }>
   /**
    * Validate and materialize one request without making a paid submission.
    * @param input - Original project brief, references, and parameters.

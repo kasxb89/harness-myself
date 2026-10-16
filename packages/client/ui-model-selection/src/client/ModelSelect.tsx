@@ -487,6 +487,18 @@ export function ModelSelect(
           aria-label={t('menu.aria')}
           aria-busy={state.status === 'loading' || busy}
         >
+          {state.error !== null && lastActionRef.current === 'load' && (
+            <div className={css.error}>
+              <span>{t('error.action', { message: state.error })}</span>
+              <button type="button" className={css.retry} onClick={reload}>{t(pane === 'effort' ? 'action.reload' : 'retry')}</button>
+            </div>
+          )}
+          {state.failures.map(failure => (
+            <div className={css.warning} key={failure.id}>
+              <span>{t('warning.groupLoad', { name: failure.id === 'deepseek-account' ? t('provider.account') : failure.name, message: failure.message })}</span>
+              <button type="button" className={css.retry} onClick={reload}>{t('retry')}</button>
+            </div>
+          ))}
           {pane === 'root' && (
             <>
               <button ref={itemRef()} type="button" role="menuitem" className={css.cell} onClick={() => { drill('model') }}>
@@ -538,18 +550,6 @@ export function ModelSelect(
               {state.status === 'loading' && (
                 <div className={css.status}>{t('status.loading')}</div>
               )}
-              {state.error !== null && lastActionRef.current === 'load' && (
-                <div className={css.error}>
-                  <span>{t('error.action', { message: state.error })}</span>
-                  <button type="button" className={css.retry} onClick={reload}>{t('retry')}</button>
-                </div>
-              )}
-              {state.failures.map(failure => (
-                <div className={css.warning} key={failure.id}>
-                  <span>{t('warning.groupLoad', { name: failure.id === 'deepseek-account' ? t('provider.account') : failure.name, message: failure.message })}</span>
-                  <button type="button" className={css.retry} onClick={reload}>{t('retry')}</button>
-                </div>
-              ))}
               <div
                 ref={groupsRef}
                 id={`${id}-models`}
@@ -609,12 +609,6 @@ export function ModelSelect(
 
           {pane === 'effort' && (
             <>
-              {state.error !== null && lastActionRef.current === 'load' && (
-                <div className={css.error}>
-                  <span>{t('error.action', { message: state.error })}</span>
-                  <button type="button" className={css.retry} onClick={reload}>{t('action.reload')}</button>
-                </div>
-              )}
               {effortChoices.length === 0
                 ? <div className={css.empty}>{t('empty.efforts')}</div>
                 : effortChoices.map(level => (

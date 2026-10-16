@@ -15,7 +15,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client'
 import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import { RemoteError, TestRemote } from '@deepseek-ai/dsh-client-test-runtime'
-import type { ModelSelection, ModelSelectionProjection } from '@deepseek-ai/dsh-api-session-controller/types'
+import type { ModelProviderGroup, ModelSelection, ModelSelectionProjection } from '@deepseek-ai/dsh-api-session-controller/types'
 import type { CommandContribution, PopupSelectSpec, SelectOption } from '@deepseek-ai/dsh-client-ui-commands/client'
 import type { ModelSelectInjected } from '../src/client/slots.ts'
 import { apply, inject } from '../src/client/index.ts'
@@ -74,7 +74,7 @@ async function bench(locale: 'zh' | 'en' = 'zh') {
   // Whether the Host advertises available models for the current route.
   let routable = true
   let catalogFailure = false
-  let groups = GROUPS
+  let groups: readonly ModelProviderGroup[] = GROUPS
   let selectionFailure: RemoteError<'session/writer-held'> | undefined
   const sessionRemote = {
     modelCatalog: () => {
@@ -194,7 +194,7 @@ async function bench(locale: 'zh' | 'en' = 'zh') {
     setHostCurrent: (selection: ModelSelection) => { defaultSelection = selection },
     setProjected: (id: SessionId, value: ModelSelectionProjection) => { projections.get(id)?.set(value) },
     address: (id: SessionId) => { addressed.add(id) },
-    setGroups: (next: typeof GROUPS) => { groups = next },
+    setGroups: (next: readonly ModelProviderGroup[]) => { groups = next },
     setCatalogFailure: (next: boolean) => { catalogFailure = next },
     setRoutable: (next: boolean) => { routable = next },
     blockOf: (key: string) => blocks.get(sid(key)),
@@ -204,6 +204,37 @@ async function bench(locale: 'zh' | 'en' = 'zh') {
 const projection = (id: string) => ({ sessionId: sid(id) })
 
 describe('ui-model-selection dual entry', () => {
+  it.each(['composer', 'command'] as const)('refreshes newly available models through %s without a Host event', async (entry) => {
+    const b = await bench()
+    try {
+      b.mint('s1')
+      const initial = [{ id: 'yunshu', name: 'Yunshu', models: [{ id: 'ys-1.0', name: 'ys-1.0' }] }]
+      b.setGroups(initial)
+      b.remote.emit('llm/adapters-updated', [])
+      const directory = b.ctx.modelDirectories.directoryFor(sid('s1'))
+      await directory.load()
+      const face = b.seat().inject!(sid('s1'))
+      const read = async () => {
+        if (entry === 'command') {
+          return (await b.popup().options(projection('s1'), new AbortController().signal)).map(option => option.label)
+        }
+        face.load()
+        await vi.waitFor(() => { expect(face.directory.getSnapshot().status).toBe('ready') })
+        return face.directory.getSnapshot().groups.flatMap(group => group.models.map(model => model.name))
+      }
+      expect(await read()).toEqual(['ys-1.0'])
+      b.setGroups([{ ...initial[0]!, models: [
+        ...initial[0]!.models,
+        { id: 'deepseek-v4-flash', name: 'DeepSeek-V4-Flash' },
+      ] }])
+
+      expect(await read()).toEqual(['ys-1.0', 'DeepSeek-V4-Flash'])
+      expect(b.calls.models).toBe(4)
+    } finally {
+      await b.ctx.fiber.dispose()
+    }
+  })
+
   it('carries writer contention to the model seat and localizes the command failure', async () => {
     const b = await bench()
     b.mint('owned')
@@ -343,11 +374,14 @@ describe('ui-model-selection dual entry', () => {
     expect(faceA.directory).not.toBe(faceB.directory)
     // The service face resolves the same instance the seat inject handed out.
     expect(b.ctx.modelDirectories.directoryFor(sid('a')).store).toBe(faceA.directory)
+    await b.ctx.modelDirectories.directoryFor(sid('a')).load()
+    faceA.load()
+    faceB.load()
     await Promise.all([
       b.popup().options(projection('a'), new AbortController().signal),
       b.popup().options(projection('b'), new AbortController().signal),
     ])
-    expect(b.calls.models).toBe(1)
+    expect(b.calls.models).toBe(2)
   })
 
   it('drops a pending selection on connection reset and ignores its late settlement', async () => {
@@ -476,14 +510,14 @@ describe('ui-model-selection dual entry', () => {
     await Promise.resolve()
     await Promise.resolve()
     expect(b.blockOf('s1')).toBeUndefined()
-    expect(b.calls.models).toBe(1)
+    expect(b.calls.models).toBe(2)
 
     b.setRoutable(false)
     b.remote.emit('settings/document-updated', ['llm-deepseek', 1])
     await Promise.resolve()
     await Promise.resolve()
     expect(b.blockOf('s1')).toBeUndefined()
-    expect(b.calls.models).toBe(2)
+    expect(b.calls.models).toBe(3)
 
     // Recovering clears it without a reload of the surface.
     b.setRoutable(true)
@@ -491,7 +525,7 @@ describe('ui-model-selection dual entry', () => {
     await Promise.resolve()
     await Promise.resolve()
     expect(b.blockOf('s1')).toBeUndefined()
-    expect(b.calls.models).toBe(3)
+    expect(b.calls.models).toBe(4)
   })
 
   it('retains an unavailable durable selection without replacing or rewriting it', async () => {
@@ -527,6 +561,8 @@ describe('ui-model-selection dual entry', () => {
     face.load()
     await expect(face.select({ provider: 'deepseek', model: 'deepseek-v4-pro' })).resolves.toBeUndefined()
     await expect(b.ctx.modelDirectories.directoryFor(sid('child')).load())
+      .rejects.toThrow(/unavailable for addressed subagent/)
+    await expect(b.ctx.modelDirectories.directoryFor(sid('child')).reload())
       .rejects.toThrow(/unavailable for addressed subagent/)
     await expect(b.ctx.modelDirectories.directoryFor(sid('child')).select({
       provider: 'deepseek',

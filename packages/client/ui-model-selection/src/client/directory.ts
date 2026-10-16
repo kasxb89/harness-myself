@@ -82,6 +82,18 @@ export class ModelDirectory {
   }
 
   /**
+   * Refresh the available catalog for an explicit model-menu read.
+   * @returns the refreshed directory; failures reject while retaining the last catalog and publishing an error.
+   * @throws when this Session cannot select a model.
+   */
+  async reload(): Promise<ModelDirectoryState> {
+    this.assertAvailable()
+    await this.catalog.reload()
+    this.syncInputs()
+    return this.store.getSnapshot()
+  }
+
+  /**
    * Select the complete provider/model/reasoning selection. The durable
    * projection frame updates the shared current; failures surface on the store
    * and return with the operation so each entry can present its own failure.

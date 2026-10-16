@@ -97,6 +97,19 @@ describe('portable workspace output containment', () => {
 })
 
 describe('durable account-bound video projects', () => {
+  it('plans from the selected resolution menu rather than another resolution maximum', async () => {
+    const fixture = await setup()
+    const model = vi.spyOn(fixture.provider, 'model').mockImplementation(async (_id, _signal, resolution) => ({
+      id: 'example-video', durations: resolution === '2K' ? [5, 10, 15] : [15, 30],
+    }))
+    const manifest = await prepareVideoProject(fixture.options,
+      { prompt: 'A synthetic clip', totalDurationSeconds: 30, resolution: '2K' },
+      'chat-one', fixture.workspace, fixture.provider, fixture.editor, fixture.signal)
+    expect(model).toHaveBeenCalledWith(undefined, fixture.signal, '2K')
+    expect(manifest.segments.map(segment => segment.durationSeconds)).toEqual([15, 15])
+    expect(fixture.submitted).toBe(0)
+  })
+
   it('preflights and validates every request before billing, then verifies and saves the final 40 seconds', async () => {
     const fixture = await setup()
     const manifest = await fixture.prepare()

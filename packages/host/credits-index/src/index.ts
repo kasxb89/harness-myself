@@ -37,6 +37,7 @@ import {
   catalogFromPricing,
   mediaModelIds,
   pickModel,
+  videoDurations,
   type ImageParams,
   type ModelCapability,
   type VideoParams,
@@ -530,6 +531,28 @@ const ALLOWED_ASSET_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
  */
 const ALLOWED_REFERENCE_VIDEO_TYPES = new Set(['video/mp4', 'video/quicktime'])
 
+/** Audio references remain private local uploads, with bounded MP3/WAV inputs. */
+const ALLOWED_REFERENCE_AUDIO_TYPES = new Set(['audio/mpeg', 'audio/wav'])
+
+/** Check the declared media family before including stored bytes in a paid request. */
+function referenceSignature(bytes: Buffer, mediaType: string): boolean {
+  if (mediaType === 'image/png') return bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+  if (mediaType === 'image/jpeg') return bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255
+  if (mediaType === 'image/webp') return bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP'
+  if (ALLOWED_REFERENCE_VIDEO_TYPES.has(mediaType)) return bytes.length >= 12 && bytes.toString('ascii', 4, 8) === 'ftyp'
+  if (mediaType === 'audio/wav') return bytes.length >= 12 && bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WAVE'
+  if (mediaType === 'audio/mpeg') {
+    if (bytes.length >= 10 && bytes.toString('ascii', 0, 3) === 'ID3') {
+      return (bytes[3] === 2 || bytes[3] === 3 || bytes[3] === 4) && bytes.subarray(6, 10).every(value => value < 128)
+    }
+    const second = bytes[1] ?? 0
+    const third = bytes[2] ?? 0
+    return bytes.length >= 4 && bytes[0] === 255 && (second & 0xe0) === 0xe0
+      && (second & 0x18) !== 0x08 && (second & 0x06) !== 0 && (third & 0xf0) !== 0 && (third & 0xf0) !== 0xf0 && (third & 0x0c) !== 0x0c
+  }
+  return false
+}
+
 /** One reference image on a video manifest. */
 interface VideoAssetRef {
   readonly kind: 'reference_image'
@@ -731,7 +754,7 @@ export function apply(ctx: Context, config: Config): void {
    * each one declares. This is the live source the model pickers follow, so a
    * channel added on the new-api side shows up here without any config edit.
    */
-  const readNewApiModels = async (): Promise<{
+  const readNewApiModels = async (session?: StoredSession, signal?: AbortSignal): Promise<{
     ok: boolean
     code?: string
     message?: string
@@ -739,17 +762,18 @@ export function apply(ctx: Context, config: Config): void {
     image: string[]
     video: string[]
   }> => {
-    const owned = await accountKey()
+    const owned = await accountKey(session)
     if ('reason' in owned) return { ok: false, ...noCredential(owned.reason), chat: [], image: [], video: [] }
     const key = owned.key
     try {
       const response = await apiFetch('/v1/models', {
         headers: { authorization: `Bearer ${key}`, accept: 'application/json' },
-        signal: AbortSignal.timeout(resolved.timeoutMs),
+        signal: signal ?? AbortSignal.timeout(resolved.timeoutMs),
       })
       if (!response.ok) return { ok: false, code: `HTTP_${String(response.status)}`, message: 'new-api 模型列表不可用', chat: [], image: [], video: [] }
       const payload: unknown = await response.json()
       const data = payload !== null && typeof payload === 'object' && 'data' in payload ? payload.data : undefined
+      if (!Array.isArray(data)) return { ok: false, code: 'MODEL_CATALOG_INVALID', message: '模型列表格式无效', chat: [], image: [], video: [] }
       const chat: string[] = []
       const image: string[] = []
       const video: string[] = []
@@ -762,7 +786,7 @@ export function apply(ctx: Context, config: Config): void {
           ? record.supported_endpoint_types.filter((value): value is string => typeof value === 'string')
           : []
         if (endpoints.includes('image') || endpoints.includes('image-generation')) image.push(id)
-        else if (endpoints.includes('video') || endpoints.includes('video-generation')) video.push(id)
+        else if (endpoints.some(endpoint => ['video', 'video-generation', 'openai-video'].includes(endpoint))) video.push(id)
         else chat.push(id)
       }
       return { ok: true, chat, image, video }
@@ -781,8 +805,8 @@ export function apply(ctx: Context, config: Config): void {
   /**
    * The deployment's own media catalog: `/api/pricing` is public on new-api, so
    * this read needs no credential and follows the running gateway — add a
-   * channel on the new-api side and its image and video models, with their real
-   * parameter menus, appear in the panels.
+   * channel on the new-api side and its declared image and video models appear
+   * in the panels. Submission still validates account access and billing.
    */
   const readMediaCatalog = async (signal?: AbortSignal): Promise<{
     ok: boolean
@@ -829,6 +853,8 @@ export function apply(ctx: Context, config: Config): void {
     webp: 'image/webp',
     mp4: 'video/mp4',
     mov: 'video/quicktime',
+    mp3: 'audio/mpeg',
+    wav: 'audio/wav',
   }
 
   /** Persist one uploaded reference and report where it landed. */
@@ -867,13 +893,7 @@ export function apply(ctx: Context, config: Config): void {
     }
   }
 
-  /** A stored reference as the inline string a generation request carries. */
-  const referenceDataUrl = async (assetId: string): Promise<{ dataUrl: string; bytes: number } | null> => {
-    const file = await readReference(assetId)
-    return file === null ? null : { dataUrl: `data:${file.mediaType};base64,${file.bytes.toString('base64')}`, bytes: file.bytes.length }
-  }
-
-  /** One media model's capability, or a readable reason it is not callable. */
+  /** One published media capability, or a readable catalog lookup failure. */
   const capabilityFor = async (
     kind: 'image' | 'video',
     id: string | null,
@@ -905,14 +925,8 @@ export function apply(ctx: Context, config: Config): void {
   }
 
   /**
-   * Submit one video job to the local new-api and wait for its file.
-   *
-   * The body is the superset the gateway's own video plugins decode: `duration`
-   * and `resolution` for every family, `metadata.ratio` for the ones that
-   * require an explicit ratio, `images` for first/last frames, and
-   * `metadata.content` / `metadata.reference_video` for multimodal references.
-   * A plugin reads the fields it knows and ignores the rest, which is what lets
-   * one call site serve models whose parameters differ.
+   * Submit one prepared video job to the configured API and wait for its file.
+   * The server's task plugin maps the prepared fields to its selected upstream.
    */
   const runVideoTask = async (
     key: string,
@@ -1005,15 +1019,14 @@ export function apply(ctx: Context, config: Config): void {
   ): Promise<{ ok: true; request: Record<string, unknown> } | { ok: false; code: string; message: string }> => {
     const params = model.params as VideoParams
     const prompt = readString(body, 'prompt') ?? ''
-    const duration = typeof body.durationSeconds === 'number'
-      ? Math.round(body.durationSeconds)
-      : params.durations[0] ?? params.minDuration
-    if (params.durations.length > 0 && !params.durations.includes(duration)) {
-      return { ok: false, code: 'DURATION_NOT_SUPPORTED', message: `${model.id} 的时长可选：${params.durations.join('、')} 秒` }
-    }
     const resolution = readString(body, 'resolution')
     if (resolution !== null && params.resolutions.length > 0 && !params.resolutions.includes(resolution)) {
       return { ok: false, code: 'RESOLUTION_NOT_SUPPORTED', message: `${model.id} 的分辨率可选：${params.resolutions.join('、')}` }
+    }
+    const durations = videoDurations(params, resolution)
+    const duration = body.durationSeconds === undefined ? durations[0] : body.durationSeconds
+    if (typeof duration !== 'number' || !Number.isSafeInteger(duration) || !durations.includes(duration)) {
+      return { ok: false, code: 'DURATION_NOT_SUPPORTED', message: `${model.id} 当前分辨率的时长可选：${durations.join('、') || '无'} 秒，请选择受支持的分辨率和时长` }
     }
     const ratio = readString(body, 'ratio')
     if (ratio !== null && params.ratios.length > 0 && !params.ratios.includes(ratio)) {
@@ -1033,6 +1046,13 @@ export function apply(ctx: Context, config: Config): void {
     const audio = typeof body.audio === 'boolean' ? body.audio : null
     if (audio !== null && !params.audioToggle) {
       return { ok: false, code: 'AUDIO_NOT_SUPPORTED', message: `${model.id} 没有音轨开关` }
+    }
+    for (const field of ['frameImages', 'referenceImages', 'referenceVideos', 'referenceAudios']) {
+      const ids = body[field]
+      if (ids !== undefined && (!Array.isArray(ids)
+        || ids.some(id => typeof id !== 'string' || !/^ma_[A-Za-z0-9]{1,64}$/u.test(id)))) {
+        return { ok: false, code: 'REFERENCE_MISSING', message: '参考素材编号无效，请重新添加对应素材' }
+      }
     }
     const frames = referenceIds(body.frameImages)
     const referenceImages = referenceIds(body.referenceImages)
@@ -1057,23 +1077,32 @@ export function apply(ctx: Context, config: Config): void {
       && referenceImages.length + referenceVideos.length + referenceAudios.length > 0) {
       return { ok: false, code: 'MIX_NOT_SUPPORTED', message: `${model.id} 不能同时使用首尾帧和参考素材，请只留一种` }
     }
+    if (ratio === 'adaptive' && frames.length + referenceImages.length + referenceVideos.length === 0) {
+      return { ok: false, code: 'RATIO_NOT_SUPPORTED', message: '自适应比例需要实际提交图片或视频参考' }
+    }
 
-    /** Inline one stored reference; a missing file is a stale panel state. */
-    const inline = async (ids: readonly string[]): Promise<string[] | null> => {
+    let referenceBytes = 0
+    let imageBytes = 0
+    /** Validate the stored kind, signature and complete byte budget before billing. */
+    const inline = async (ids: readonly string[], kind: 'image' | 'video' | 'audio'): Promise<string[] | null> => {
       const values: string[] = []
       for (const id of ids) {
-        const value = await referenceDataUrl(id)
-        if (value === null) return null
-        values.push(value.dataUrl)
+        const value = await readReference(id)
+        if (value === null || !value.mediaType.startsWith(`${kind}/`) || !referenceSignature(value.bytes, value.mediaType)) return null
+        const limit = (kind === 'image' ? 6 : kind === 'audio' ? 15 : 32) * 1024 * 1024
+        referenceBytes += value.bytes.length
+        if (kind === 'image') imageBytes += value.bytes.length
+        if (value.bytes.length > limit || referenceBytes > 48 * 1024 * 1024 || imageBytes > 12 * 1024 * 1024) return null
+        values.push(`data:${value.mediaType};base64,${value.bytes.toString('base64')}`)
       }
       return values
     }
-    const frameUrls = await inline(frames)
-    const imageUrls = await inline(referenceImages)
-    const videoUrls = await inline(referenceVideos)
-    const audioUrls = await inline(referenceAudios)
+    const frameUrls = await inline(frames, 'image')
+    const imageUrls = await inline(referenceImages, 'image')
+    const videoUrls = await inline(referenceVideos, 'video')
+    const audioUrls = await inline(referenceAudios, 'audio')
     if (frameUrls === null || imageUrls === null || videoUrls === null || audioUrls === null) {
-      return { ok: false, code: 'REFERENCE_MISSING', message: '有参考素材已失效，请重新上传' }
+      return { ok: false, code: 'REFERENCE_MISSING', message: '参考素材已失效、类型不匹配或超过大小限制，请重新添加对应素材' }
     }
 
     const metadata: Record<string, unknown> = {}
@@ -1084,17 +1113,21 @@ export function apply(ctx: Context, config: Config): void {
     // told to make rather than whichever one happened to be first.
     if (frameUrls[0] !== undefined) metadata.first_frame_image = frameUrls[0]
     if (frameUrls[1] !== undefined) metadata.last_frame_image = frameUrls[1]
-    if (imageUrls.length > 0) {
-      // H3 and its siblings take multimodal references as a content array; the
-      // text item is prepended so the same call works whether or not the caller
-      // spelled the prompt inside `content`.
+    if (model.id === 'MiniMax-H3' && imageUrls.length + videoUrls.length + audioUrls.length > 0) {
+      // H3 treats content as the complete reference list and ignores the flat fields once it exists.
       metadata.content = [
         { type: 'text', text: prompt },
         ...imageUrls.map(url => ({ type: 'image_url', role: 'reference_image', image_url: { url } })),
+        ...videoUrls.map(url => ({ type: 'video_url', role: 'reference_video', video_url: { url } })),
+        ...audioUrls.map(url => ({ type: 'audio_url', role: 'reference_audio', audio_url: { url } })),
       ]
+    } else if (imageUrls.length > 0) {
+      metadata.content = [{ type: 'text', text: prompt }, ...imageUrls.map(url => ({ type: 'image_url', role: 'reference_image', image_url: { url } }))]
     }
-    if (videoUrls.length > 0) metadata.reference_video = videoUrls
-    if (audioUrls.length > 0) metadata.reference_audio = audioUrls
+    if (model.id !== 'MiniMax-H3') {
+      if (videoUrls.length > 0) metadata.reference_video = videoUrls
+      if (audioUrls.length > 0) metadata.reference_audio = audioUrls
+    }
 
     const request: Record<string, unknown> = {
       model: model.id,
@@ -1110,6 +1143,9 @@ export function apply(ctx: Context, config: Config): void {
       ...audio === null || !params.audioToggle ? {} : { generate_audio: audio },
       ...Object.keys(metadata).length === 0 ? {} : { metadata },
       ...frameUrls.length === 0 ? {} : { images: frameUrls },
+    }
+    if (Buffer.byteLength(JSON.stringify(request)) > 64 * 1024 * 1024) {
+      return { ok: false, code: 'REFERENCE_REQUEST_TOO_LARGE', message: '参考素材编码后超过请求大小限制，请减少素材后重试；尚未提交生成' }
     }
     return { ok: true, request }
   }
@@ -1545,8 +1581,105 @@ export function apply(ctx: Context, config: Config): void {
     return await send(renewed)
   }
 
+  let modelCatalogClosed = false
+  let modelCatalogFlight: { version: number; token: string; controller: AbortController; promise: Promise<readonly string[]> } | null = null
+  const modelCatalogOperations = new Set<Promise<readonly string[]>>()
+
+  const reportModelRefreshFailure = (error: unknown): void => {
+    if (!modelCatalogClosed) {
+      ctx.logger.warn(`credits-index: model sync unavailable: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  /** Cancel discovery when its owning login is invalidated; late results still require an identity check. */
+  const invalidateModelCatalog = (): void => {
+    modelCatalogFlight?.controller.abort(new Error('product account changed'))
+    modelCatalogFlight = null
+  }
+
+  /** Normalize this product route and persist nonempty discoveries; empty live catalogs mask old configuration. */
+  const writeProductModels = async (ids: readonly string[] | undefined): Promise<void> => {
+    const settings = ctx.get('settings') as {
+      describe?: (options?: { redactSecrets?: boolean }) => { ns: string; value?: unknown; revision?: number }[]
+      replace?: (ns: string, section: object, expectedRevision?: number) => Promise<void>
+    } | undefined
+    if (settings?.describe === undefined || settings.replace === undefined) throw new Error('模型配置服务尚未就绪，请重试。')
+    const descriptor = settings.describe({ redactSecrets: true }).find(row => row.ns === resolved.chatSettingsNamespace)
+    const value = descriptor?.value as { providers?: Record<string, Record<string, unknown>> } | undefined
+    const providers = value?.providers
+    const route = resolved.chatProviderRoute
+    const current = providers?.[route]
+    if (providers === undefined || current === undefined) throw new Error('产品模型路由尚未配置，请联系管理员。')
+    const baseURL = apiUrl(apiBaseUrl, '/v1')
+    const api = 'openai-completions'
+    const configured: readonly unknown[] = Array.isArray(current.models) ? current.models : []
+    const previousIds = configured.map(model => model !== null && typeof model === 'object' && 'id' in model ? model.id : null)
+    const sameModels = ids === undefined || ids.length === 0
+      || (previousIds.length === ids.length && previousIds.every((id, index) => id === ids[index]))
+    if (sameModels && current.baseURL === baseURL && current.api === api && current.apiKeyEnv === resolved.relayTokenEnv) return
+    await settings.replace(resolved.chatSettingsNamespace, { providers: { ...providers,
+      [route]: { ...current, baseURL, api, apiKeyEnv: resolved.relayTokenEnv,
+        ...ids === undefined || ids.length === 0 ? {} : { models: ids.map(id => ({ id })) } },
+    } }, descriptor?.revision)
+  }
+
+  /** A fresh catalog is committed only for the login that requested it. */
+  const refreshProductModels = async (baseURL = apiUrl(apiBaseUrl, '/v1')): Promise<readonly string[]> => {
+    if (modelCatalogClosed || baseURL.replace(/\/+$/u, '') !== apiUrl(apiBaseUrl, '/v1')) {
+      throw new Error('产品模型地址或生命周期已变化，请重新读取模型列表。')
+    }
+    await sessionMutations
+    const version = identityVersion
+    const session = await liveSession()
+    await sessionMutations
+    if (version !== identityVersion) throw new Error('登录账号已变化，请重新读取模型列表。')
+    if (session?.token === undefined) {
+      await mutateSession(async () => {
+        if (modelCatalogClosed || version !== identityVersion || (await store.read())?.token !== undefined) return
+        await writeProductModels([])
+      })
+      throw new Error('请先登录产品账号，再读取可用模型。')
+    }
+    const ownerToken = session.token
+    if (modelCatalogFlight?.version === version && modelCatalogFlight.token === ownerToken) return await modelCatalogFlight.promise
+    invalidateModelCatalog()
+    const controller = new AbortController()
+    const promise = (async (): Promise<readonly string[]> => {
+      const currentIdentity = async (): Promise<void> => {
+        const current = await store.read()
+        const bound = current?.backendBaseUrl ?? (isLoopbackOrigin(apiBaseUrl) ? apiBaseUrl : undefined)
+        if (current === null || modelCatalogClosed || controller.signal.aborted || version !== identityVersion
+          || current.token !== ownerToken || bound !== apiBaseUrl
+          || !Number.isFinite(Date.parse(current.expiresAt))
+          || Date.parse(current.expiresAt) <= Date.now()) throw new Error('登录账号已变化，请重新读取模型列表。')
+      }
+      await mutateSession(async () => { await currentIdentity(); await writeProductModels(undefined) })
+      const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(resolved.timeoutMs)])
+      const discovered = await readNewApiModels(session, signal)
+      if (!discovered.ok) throw new Error('无法读取当前账号模型列表，请稍后重试。')
+      const media = new Set<string>()
+      const pricing = await apiFetch('/api/pricing', { headers: { accept: 'application/json' }, signal })
+      if (!pricing.ok) throw new Error('无法核对聊天模型类型，请稍后重试。')
+      const body = await pricing.json() as { data?: unknown }
+      if (!Array.isArray(body.data)) throw new Error('模型类型列表无效，请稍后重试。')
+      for (const id of mediaModelIds(body.data)) media.add(id)
+      const ids = discovered.chat.filter(id => id !== '' && !media.has(id))
+      await mutateSession(async () => { await currentIdentity(); await writeProductModels(ids); await currentIdentity() })
+      return ids
+    })()
+    const flight = { version, token: ownerToken, controller, promise }
+    modelCatalogFlight = flight
+    modelCatalogOperations.add(promise)
+    try { return await promise }
+    finally {
+      modelCatalogOperations.delete(promise)
+      if (modelCatalogFlight === flight) modelCatalogFlight = null
+    }
+  }
+
   const harnessAccount: HarnessAccount = {
     provider: resolved.chatProviderRoute,
+    refreshModels: baseURL => refreshProductModels(baseURL),
     async resolveRelayKey(baseURL) {
       if (baseURL.replace(/\/+$/u, '') !== apiUrl(apiBaseUrl, '/v1')) return undefined
       await sessionMutations
@@ -1887,6 +2020,8 @@ export function apply(ctx: Context, config: Config): void {
                 upstream: { token, refresh, expiresAt: new Date(expiry * 1000).toISOString() },
                 relay: { key: relayKey, ...relayId === undefined ? {} : { id: relayId } } })
               await holdAccountCredential(relayKey)
+              invalidateModelCatalog()
+              await writeProductModels([]).catch(reportModelRefreshFailure)
             })
             if (version !== identityVersion) {
               json(response, 200, { ok: false, code: 'ACCOUNT_CHANGED', message: '登录状态已变更，请重新操作。' }); return
@@ -1901,8 +2036,13 @@ export function apply(ctx: Context, config: Config): void {
         if (route === '/api/session/logout' && method === 'POST') {
           const previous = await store.read()
           identityVersion += 1
+          invalidateModelCatalog()
           const pending = renewal !== null && renewal.token === previous?.token ? renewal.promise : null
-          await mutateSession(async () => { await store.clear(); await releaseAccountCredential() })
+          await mutateSession(async () => {
+            await store.clear()
+            await releaseAccountCredential()
+            await writeProductModels([]).catch(reportModelRefreshFailure)
+          })
           const renewed = pending === null ? null : await pending
           const session = renewed ?? previous
           let result: PlatformResult = { status: 204, code: null, message: null, retryAfterSeconds: null, body: null }
@@ -2091,13 +2231,13 @@ export function apply(ctx: Context, config: Config): void {
           const filename = String(request.headers['x-file-name'] ?? '')
           const idempotencyKey = String(request.headers['x-idempotency-key'] ?? '')
           const allowedTypes = resolved.baseUrl === ''
-            ? new Set([...ALLOWED_ASSET_TYPES, ...ALLOWED_REFERENCE_VIDEO_TYPES])
+            ? new Set([...ALLOWED_ASSET_TYPES, ...ALLOWED_REFERENCE_VIDEO_TYPES, ...ALLOWED_REFERENCE_AUDIO_TYPES])
             : ALLOWED_ASSET_TYPES
           if (!allowedTypes.has(mediaType) || filename === '' || idempotencyKey === '') {
             json(response, 200, {
               ok: false,
               code: 'MEDIA_ASSET_REQUEST_INVALID',
-              message: '需要 Content-Type（png/jpeg/webp/mp4/mov）、x-file-name 与 x-idempotency-key',
+              message: '需要受支持的 Content-Type（png/jpeg/webp/mp4/mov/mp3/wav）、x-file-name 与 x-idempotency-key',
             })
             return
           }
@@ -2110,8 +2250,9 @@ export function apply(ctx: Context, config: Config): void {
             const session = await liveSession()
             if (session?.upstream?.token === undefined) { sessionExpired(response); return }
             const bytes = await readRaw(request, 32 * 1024 * 1024)
-            if (bytes.length === 0) {
-              json(response, 200, { ok: false, code: 'MEDIA_ASSET_REQUEST_INVALID', message: '上传内容为空' })
+            const limit = (ALLOWED_ASSET_TYPES.has(mediaType) ? 6 : ALLOWED_REFERENCE_AUDIO_TYPES.has(mediaType) ? 15 : 32) * 1024 * 1024
+            if (bytes.length === 0 || bytes.length > limit || !referenceSignature(bytes, mediaType)) {
+              json(response, 200, { ok: false, code: 'MEDIA_ASSET_REQUEST_INVALID', message: '上传内容为空、文件类型不匹配或超过大小限制' })
               return
             }
             const assetId = `ma_${idempotencyKey.replace(/[^A-Za-z0-9]/g, '').slice(0, 40)}`
@@ -2121,7 +2262,7 @@ export function apply(ctx: Context, config: Config): void {
               status: 201,
               asset: {
                 assetId,
-                kind: 'reference_image',
+                kind: mediaType.startsWith('audio/') ? 'reference_audio' : mediaType.startsWith('video/') ? 'reference_video' : 'reference_image',
                 contentType: mediaType,
                 sizeBytes: bytes.length,
                 sha256: createHash('sha256').update(bytes).digest('hex'),
@@ -2172,8 +2313,8 @@ export function apply(ctx: Context, config: Config): void {
 
         if (route === '/api/media/catalog' && method === 'GET') {
           // The panels render one dropdown per kind from this answer, so it
-          // ships the parameter menus too: what a model accepts is the model's
-          // own business, and the deployment is asked each time.
+          // ships the declared parameter menus too; account access and billing
+          // remain the server's responsibility when generation is submitted.
           const catalog = await readMediaCatalog()
           json(response, 200, {
             ok: catalog.ok,
@@ -2569,66 +2710,16 @@ export function apply(ctx: Context, config: Config): void {
     },
   }), 'credits-index: routes')
 
-  /** Keep only the configured product route bound to this backend and account credential reference. */
   ctx.effect(() => {
-    const namespace = resolved.chatSettingsNamespace
-    const route = resolved.chatProviderRoute
-    const sync = async (): Promise<void> => {
-      const settings = ctx.get('settings') as {
-        describe?: (options?: { redactSecrets?: boolean }) => { ns: string; value?: unknown; revision?: number }[]
-        replace?: (ns: string, section: object, expectedRevision?: number) => Promise<void>
-      } | undefined
-      const llm = ctx.get('llm') as {
-        discoverModels?: (
-          ns: string, request: { provider?: string; baseURL?: string; api?: string; apiKey?: string }, signal?: AbortSignal,
-        ) => Promise<{ id: string }[]>
-      } | undefined
-      if (settings?.describe === undefined || settings.replace === undefined) return
-      try {
-        const descriptor = settings.describe({ redactSecrets: true }).find(row => row.ns === namespace)
-        const value = descriptor?.value as { providers?: Record<string, Record<string, unknown>> } | undefined
-        const providers = value?.providers
-        const current = providers?.[route]
-        if (providers === undefined || current === undefined) return
-        const baseURL = apiUrl(apiBaseUrl, '/v1')
-        const api = 'openai-completions'
-        const migrated = { ...current, baseURL, api, apiKeyEnv: resolved.relayTokenEnv }
-        const changed = current.baseURL !== baseURL || current.api !== api || current.apiKeyEnv !== resolved.relayTokenEnv
-        if (changed) await settings.replace(namespace, { providers: { ...providers, [route]: migrated } }, descriptor?.revision)
-        const owned = await accountKey()
-        if ('reason' in owned || llm?.discoverModels === undefined) return
-        const discovered = await llm.discoverModels(
-          namespace, { provider: route, baseURL, api, apiKey: owned.key }, AbortSignal.timeout(resolved.timeoutMs),
-        )
-        const media = new Set<string>()
-        try {
-          const pricing = await apiFetch('/api/pricing', { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(resolved.timeoutMs) })
-          if (pricing.ok) {
-            const body = await pricing.json() as { data?: unknown }
-            for (const id of mediaModelIds(Array.isArray(body.data) ? body.data : [])) media.add(id)
-          }
-        } catch {
-          // Failed public pricing leaves discovered account-authorized models visible.
-        }
-        const ids = discovered.map(model => model.id).filter(id => id !== '' && !media.has(id))
-        if (ids.length === 0) return
-        const latest = settings.describe({ redactSecrets: true }).find(row => row.ns === namespace)
-        const latestValue = latest?.value as { providers?: Record<string, Record<string, unknown>> } | undefined
-        const latestProviders = latestValue?.providers
-        const profile = latestProviders?.[route]
-        if (profile === undefined || latestProviders === undefined) return
-        const configured: readonly unknown[] = Array.isArray(profile.models) ? profile.models : []
-        const previousIds = configured.map(model => model !== null && typeof model === 'object' && 'id' in model ? model.id : null)
-        if (previousIds.length === ids.length && previousIds.every((id, index) => id === ids[index])) return
-        await settings.replace(namespace, { providers: { ...latestProviders,
-          [route]: { ...profile, baseURL, api, apiKeyEnv: resolved.relayTokenEnv, models: ids.map(id => ({ id })) } } }, latest?.revision)
-      } catch (error) {
-        ctx.logger.warn(`credits-index: model sync unavailable: ${error instanceof Error ? error.message : String(error)}`)
-      }
+    const timer = setInterval(() => { void refreshProductModels().catch(reportModelRefreshFailure) }, 60_000)
+    void refreshProductModels().catch(reportModelRefreshFailure)
+    return async () => {
+      modelCatalogClosed = true
+      clearInterval(timer)
+      const pending = modelCatalogFlight
+      pending?.controller.abort(new Error('model catalog owner disposed'))
+      await Promise.allSettled([...modelCatalogOperations])
     }
-    const timer = setInterval(() => { void sync() }, 60_000)
-    void sync()
-    return () => { clearInterval(timer) }
   }, 'credits-index: model sync')
 
   /** The signed-in token, or null with a message the model can relay. */
@@ -2727,7 +2818,7 @@ export function apply(ctx: Context, config: Config): void {
         return {
           identity: binding.identity,
           assertCurrent: async () => { await binding.key() },
-          model: async (id, signal) => {
+          model: async (id, signal, resolution) => {
             const allowed = new Set(await relay.modelIds(signal))
             const catalog = await readMediaCatalog(signal)
             signal.throwIfAborted()
@@ -2736,7 +2827,7 @@ export function apply(ctx: Context, config: Config): void {
             if (selected === null) throw new VideoProjectError('VIDEO_MODEL_UNAVAILABLE', '当前登录账户没有可用的所选视频模型，请检查后台模型配置')
             models.set(selected.id, selected)
             const params = selected.params as VideoParams
-            return { id: selected.id, durations: params.durations }
+            return { id: selected.id, durations: videoDurations(params, resolution ?? null) }
           },
           build: async (input, model, prompt, durationSeconds, signal): Promise<VideoProjectRequest> => {
             await binding.key()

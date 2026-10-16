@@ -3,10 +3,12 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { RemoteError } from '@deepseek-ai/dsh-client-test-runtime'
 import { SessionId } from '@deepseek-ai/dsh-session/types'
-import type { ModelSelection } from '@deepseek-ai/dsh-api-remotes/client'
+import type { ModelCatalog, ModelSelection } from '@deepseek-ai/dsh-api-remotes/client'
+import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { ComponentProps } from 'react'
-import type { ModelDirectoryState } from '../src/client/directory.ts'
+import { ModelDirectory, type ModelDirectoryState } from '../src/client/directory.ts'
+import { ModelCatalogDirectory } from '../src/client/catalog.ts'
 import { ModelSelect } from '../src/client/ModelSelect.tsx'
 import { en, zh } from '../src/client/locales.ts'
 import { zh as commonZh } from '@deepseek-ai/dsh-client-locale/src/locales/zh.ts'
@@ -75,6 +77,94 @@ beforeEach(() => {
 })
 
 afterEach(cleanup)
+
+function accountCatalog(modelIds: readonly string[]): ModelCatalog {
+  return {
+    default: { provider: 'yunshu', model: 'ys-1.0' },
+    routableProviders: ['yunshu'],
+    groups: [{ id: 'yunshu', name: 'Yunshu', models: modelIds.map(id => ({ id, name: id })) }],
+    failures: [],
+  }
+}
+
+function liveDirectory(models: () => Promise<RemoteResult<ModelCatalog>>) {
+  const catalog = new ModelCatalogDirectory({ remote: { session: { modelCatalog: models } } } as never)
+  const directory = new ModelDirectory(
+    { selectModel: async request => ({ ok: true, value: { selected: {
+      provider: request.provider,
+      model: request.model,
+      ...request.reasoningEffort === undefined ? {} : { reasoningEffort: request.reasoningEffort },
+    } } }) },
+    SessionId('live-models'),
+    () => true,
+    catalog,
+    createSnapshotStore({ lastUsed: null, next: null }),
+    () => true,
+  )
+  onTestFinished(() => { directory.dispose() })
+  return {
+    directory,
+    load: () => { void directory.reload().catch(() => { /* displayed by the directory store */ }) },
+  }
+}
+
+describe('ModelSelect live catalog', () => {
+  it('shows newly available models when the menu reopens without a Host event', async () => {
+    const initial = accountCatalog(['ys-1.0'])
+    const models = vi.fn(async () => ({ ok: true as const, value: initial }))
+    const { directory, load } = liveDirectory(models)
+    await directory.load()
+    render(<ModelSelect locked={false} available directory={directory.store} load={load} select={vi.fn()} t={t} />)
+    const trigger = screen.getByRole('button', { name: '选择模型，当前 ys-1.0' })
+    fireEvent.click(trigger)
+    fireEvent.click(screen.getByRole('menuitem', { name: /模型/ }))
+    await waitFor(() => { expect(directory.store.getSnapshot().status).toBe('ready') })
+    const first = screen.getAllByRole('menuitemradio').map(row => row.textContent).join('\n')
+    expect(first).toBe('ys-1.0')
+    fireEvent.click(trigger)
+    models.mockResolvedValue({ ok: true, value: accountCatalog(['ys-1.0', 'deepseek-v4-flash']) })
+
+    fireEvent.click(trigger)
+    fireEvent.click(screen.getByRole('menuitem', { name: /模型/ }))
+    await screen.findByRole('menuitemradio', { name: 'deepseek-v4-flash' })
+    const reopened = screen.getAllByRole('menuitemradio').map(row => row.textContent).join('\n')
+    expect(models).toHaveBeenCalledTimes(3)
+    expect(directory.store.getSnapshot().current).toEqual({ provider: 'yunshu', model: 'ys-1.0' })
+    await expect(`first open:\n${first}\n\nreopen:\n${reopened}\n`).toMatchFileSnapshot('./expected/catalog-reopen.txt')
+  })
+
+  it('keeps the last models visible after refresh failure and retries on demand', async () => {
+    const models = vi.fn(async () => ({ ok: true as const, value: accountCatalog(['ys-1.0']) }))
+    const { directory, load } = liveDirectory(models)
+    await directory.load()
+    models.mockRejectedValueOnce(new Error('catalog offline'))
+    render(<ModelSelect locked={false} available directory={directory.store} load={load} select={vi.fn()} t={t} />)
+    fireEvent.click(screen.getByRole('button', { name: '选择模型，当前 ys-1.0' }))
+    const retry = await screen.findByRole('button', { name: '重试' })
+    expect(screen.getByText('模型操作失败：catalog offline')).toBeTruthy()
+    fireEvent.click(screen.getByRole('menuitem', { name: /模型/ }))
+    expect(screen.getByRole('menuitemradio', { name: 'ys-1.0' })).toBeTruthy()
+    models.mockResolvedValue({ ok: true, value: accountCatalog(['ys-1.0', 'deepseek-v4-flash']) })
+
+    fireEvent.click(retry)
+    await screen.findByRole('menuitemradio', { name: 'deepseek-v4-flash' })
+    expect(screen.queryByRole('button', { name: '重试' })).toBeNull()
+    expect(screen.queryByText('模型操作失败：catalog offline')).toBeNull()
+    expect(models).toHaveBeenCalledTimes(3)
+  })
+
+  it('shows a provider refresh failure and retry before drilling into model choices', () => {
+    const directory = createSnapshotStore(state({ failures: [
+      { id: 'yunshu', name: 'Yunshu', message: 'catalog offline' },
+    ] }))
+    const load = vi.fn()
+    render(<ModelSelect locked={false} available directory={directory} load={load} select={vi.fn()} t={t} />)
+    fireEvent.click(screen.getByRole('button', { name: /选择模型/ }))
+    expect(screen.getByText(/Yunshu.*catalog offline/)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '重试' }))
+    expect(load).toHaveBeenCalledTimes(2)
+  })
+})
 
 describe('ModelSelect reasoning effort', () => {
   it('renders effort names without descriptions and submits the effort as part of the session selection', async () => {

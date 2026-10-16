@@ -1,0 +1,6 @@
+first open:
+ys-1.0
+
+reopen:
+ys-1.0
+deepseek-v4-flash

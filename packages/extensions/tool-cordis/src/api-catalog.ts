@@ -1272,6 +1272,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         parameters: [],
       },
       {
+        signature: 'refreshModels(baseURL: string): Promise<readonly string[]>',
+        description: 'Refresh the current account\'s model configuration before listing it.',
+        parameters: [{ name: 'baseURL', description: 'Exact model API root whose catalog is requested.' }],
+        returns: 'Current model IDs after configuration is synchronized; empty hides every old model. Unavailable or changed accounts reject.',
+      },
+      {
         signature: 'resolveRelayKey(baseURL: string): Promise<string | undefined>',
         description: 'Resolve the current signed-in account after checking its backend and expiry.',
         parameters: [{ name: 'baseURL', description: 'Exact model API root being requested.' }],

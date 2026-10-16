@@ -29,6 +29,12 @@ kind: "package-reference"
 
 手机验证码与登录使用配置根地址下的 `/api/user/phone/challenge` 和 `/api/user/phone/login`。登录返回短期管理凭据 `access_token`、轮换的 refresh cookie 和账号专属 `relay_key`，模型请求仅使用该 relay key。Host 私密保存这些凭据，将会话绑定至后端根地址，并在管理凭据临近过期时等待同一次共享续期完成。续期和退出声明后端 Origin。Host 通过实时 `harnessAccount` 为产品模型路由授权；已存凭据或环境变量引用不能替代有效会话。退出会立即移除这项授权；并发的旧续期不能恢复它。将已存会话切换到另一后端时，需要重新手机登录。
 
+### 聊天模型刷新
+
+每次列出产品路由模型前，先等待当前账号的 `harnessAccount.refreshModels` 结果。Host 使用该账号的 relay key 读取 `/v1/models`，排除已声明的媒体生成模型，并在适配器读取配置前同步非空聊天结果。并发读取共享同一次操作。成功返回空列表时不展示任何聊天模型，即使旧 profile 仍保留配置；读取不可用时返回目录失败，不把旧模型显示为当前可用。其他提供方路由保留原有的列表行为。
+
+启动和每 60 秒的定时器复用同一刷新操作。登录变化和退出会取消旧发现；提交前检查登录代次、已存会话身份、后端和有效期。卸载会取消并等待未结束的发现操作。界面可以请求新目录，无需等待定时器。公开定价仍用于描述媒体参数，账号模型端点决定其聊天列表；已声明或已选择的模型仍可能被上游的权限或计费校验拒绝。
+
 ### 充值
 
 `POST /credits/api/recharge/wechat` 接受以元为单位的整数 `amount`，使用当前账号的 access token 创建一笔 Native 订单。响应提供 `outTradeNo`、`amount`、换算后的 `points`、`expiresAt` 和 `qrCodeDataUrl`；原始 quota 不是积分。提交订单前必须取得当前状态参数进行换算。下单结果未知时会明确报告，不自动再创建一笔订单。
@@ -60,6 +66,14 @@ Host 先使用 `/api/user/self` 核对产品会话中的账号，再通过 `/api
 ### 创作内容发布
 
 `GET /credits/api/creation/content` 将部署后台的公开文档转发为 `{ ok: true, payload }`。`GET` 与 `HEAD /credits/api/creation/assets/:id` 转发不可变的 `cc_` 内容哈希图片和视频，支持单个字节范围读取。这些读取校验来源，使用 `newApiBaseUrl` 与 `timeoutMs`，不发送账号或部署凭据，拒绝上游重定向及不符合预期的 MIME 类型，文档上限为 5 MiB，媒体上限为 100 MiB。连接断开或插件卸载会停止传输，卸载等待操作结束。错误仅公开 `CREATION_CONTENT_UNAVAILABLE`，绝不返回上游正文。[创作内容读取器](../../client/creation-content/README.zh.md) 负责文档校验、刷新及使用方状态。
+
+### 视频能力与参考素材
+
+视频菜单优先读取公开定价 `parameters`（字段映射或 JSON Schema 的 `properties`）中明确的 `seconds` 或 `duration` 声明，其次读取 `billing_usage_schema`。数值枚举或有限的 `minimum`/`maximum` 范围选出 1 至 3600 秒内的整数，并覆盖模型表；排他边界和 `multipleOf` 进一步缩小时长菜单。缺失、格式错误或无上限的声明保留已知模型限制；计费样例不授予时长或额外参考槽位。分辨率枚举和常量使用相同的实时优先级。当前 H3 响应只声明未限定范围的数值秒数字段，因此保留已知的 4–15 秒菜单。公开定价列出某个模型，不代表特定账号已可用它生成。
+
+明确的 `oneOf` 将 `properties.resolution.const` 或 `.enum` 与有限的 `properties.seconds` 或 `.duration` 配对。得到的 `durationByResolution` 菜单同时约束面板请求和项目规划；未列出的分辨率不可用，并且必须选择分辨率。例如，生产方可以明确发布 480P/768P 为 4–30 秒、2K 为 4–15 秒的两个分支。这说明解析器支持的格式，不表示当前 API 或尚未明确的上游支持这些组合。Host 在模型提交前拒绝不支持的组合、小数或非数值时长。
+
+本机 `/credits/api/assets` 接受 MIME 与文件签名相符的 PNG/JPEG/WebP 图片、MP4/MOV 视频和 MP3/WAV 音频。单文件上限分别为图片 6 MiB、视频 32 MiB、音频 15 MiB；一次生成中的全部图片总计不超过 12 MiB，全部参考素材原始字节总计不超过 48 MiB，编码后的完整生成请求不超过 64 MiB。只有所选模型声明了音频参考槽位时才展示音频。H3 的所有参考素材放入同一个完整的 `metadata.content` 数组。H3 首尾帧不能与通用参考素材混用。自适应比例要求实际图片或视频输入。这些校验不会完整解码媒体，也不证明上游生成能力。
 
 ### 本地视频剪辑
 

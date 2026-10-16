@@ -1,10 +1,10 @@
 /**
- * What every image and video model on the market accepts.
+ * Known image and video parameter defaults for the configured relay.
  *
  * The gateway this product talks to speaks one protocol per vendor family, and
  * each family declares — in its own plugin — which fields it reads and which
  * values it validates. This table is that declaration, collected per model id,
- * so the panels can show exactly the controls the selected model will honour:
+ * so the panels can offer controls from the available declarations:
  * a model with no reference-video input never gets that picker, and a model
  * whose duration menu is `6` gets a label instead of a slider.
  *
@@ -16,8 +16,8 @@
  *   3. family behaviour for ids that arrive through a plain OpenAI-compatible
  *      channel — marked `family`, deliberately conservative.
  *
- * A model nobody has described yet falls through to `fallbackImage` /
- * `fallbackVideo`, which offer only what every route accepts.
+ * Live explicit capabilities override these defaults. An unknown model uses
+ * conservative fallback menus; submission still validates upstream support.
  */
 
 /** One image model's menu. */

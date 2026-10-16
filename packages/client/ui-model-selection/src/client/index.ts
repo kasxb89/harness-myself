@@ -144,7 +144,7 @@ export function apply(ctx: ClientContext): void {
           if (sessions.subagentAddress(session.sessionId) !== undefined) {
             throw new Error('model selection is unavailable for addressed subagent sessions')
           }
-          return optionsOf(await models.directoryFor(session.sessionId).load(), t)
+          return optionsOf(await models.directoryFor(session.sessionId).reload(), t)
         },
         onSelect: async (option, session) => {
           if (sessions.subagentAddress(session.sessionId) !== undefined) {
@@ -179,7 +179,7 @@ export function apply(ctx: ClientContext): void {
           available,
           directory: directory.store,
           load: () => {
-            if (available) directory.load().catch(() => { /* surfaced on the store */ })
+            if (available) directory.reload().catch(() => { /* surfaced on the store */ })
           },
           select: (selection: ModelSelection) => available
             ? directory.select(selection)

@@ -86,6 +86,8 @@ interface PiAiSnapshot {
 export interface PiAiAdapterOptions {
   /** Current validated profiles by provider route; called once per operation. */
   profiles: () => ReadonlyMap<string, ResolvedPiAiProviderProfile>
+  /** Await an owned catalog; returned IDs restrict the current profile, while undefined leaves other routes unchanged. */
+  beforeListModels?: (provider: string) => Promise<readonly string[] | undefined>
   /**
    * Resolve the credential for one already-resolved profile; called once per
    * stream call and frozen for that call. `undefined` defers to the route's own
@@ -285,11 +287,12 @@ export class PiAiAdapter extends LlmAdapter {
     return this.current().profiles.get(provider)?.retryPolicy
   }
 
-  override listModels(provider: string): Promise<readonly LlmModelInfo[]> {
-    return Promise.resolve().then(() => {
+  override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
+    const allowed = await this.config.beforeListModels?.(provider)
+    return await Promise.resolve().then(() => {
       const snapshot = this.current()
       this.profileOf(snapshot, provider)
-      return snapshot.models.getModels(provider).map(model => ({
+      return snapshot.models.getModels(provider).filter(model => allowed === undefined || allowed.includes(model.id)).map(model => ({
         provider,
         id: model.id,
         name: model.name,

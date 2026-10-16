@@ -226,6 +226,15 @@ export function apply(ctx: Context, config: Config): void {
   const auth = { credentials: credentialStoreFrom(ctx), authContext: authContextFrom(ctx) }
   const adapter = new PiAiAdapter({
     profiles,
+    beforeListModels: async (provider) => {
+      const account = ctx.get('harnessAccount')
+      if (provider !== 'yunshu-local' && account?.provider !== provider) return
+      const profile = profiles().get(provider)
+      if (profile?.baseURL === undefined || account === undefined || account.provider !== provider) {
+        throw new LlmError('Sign in to the product account before reading its model catalog', 'MISSING_CREDENTIAL')
+      }
+      return await account.refreshModels(profile.baseURL)
+    },
     resolveApiKey,
     auth,
     resolveAttachments: () => ctx.get('attachments'),

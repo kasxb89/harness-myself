@@ -11,7 +11,7 @@ kind: "package-reference"
 
 ## 概述
 
-Web GUI 允许用户通过 `/model` 弹窗或 composer 模型控件切换既有会话使用的模型与推理（reasoning）强度。两个界面呈现同一组按提供方分组的选择；所选模型决定可用的推理强度名称与默认值。完整选择从下一次请求开始生效；运行中的步骤保留其启动时的模型与推理强度。所选模型不可用时，composer 保持停用，直到用户选择可用模型或同一模型恢复可用。
+Web GUI 允许用户通过 `/model` 弹窗或 composer 模型控件切换既有会话使用的模型与推理（reasoning）强度。两个界面呈现同一组按提供方分组的选择；所选模型决定可用的推理强度名称与默认值。完整选择从下一次请求开始生效；运行中的步骤保留其启动时的模型与推理强度。不可用的选择仍会保存；请求执行负责报告凭据缺失或模型不可用。
 
 ## 目录
 
@@ -30,6 +30,8 @@ Web GUI 允许用户通过 `/model` 弹窗或 composer 模型控件切换既有�
 DeepSeek 账号和 API Key 路由显示为独立提供方分组，各自展示相同的已配置模型目录。
 
 未选择模型或已保存的选择不在目录中时，composer 以常规字重显示“请选择模型”，并隐藏推理强度文案。点击后直接打开模型列表，Escape 和 Shift+Tab 关闭列表。目录为空时显示“暂无可用模型”
+
+打开任一选择器都会向 Host 刷新可用模型，因此提供方新开放的模型无需重启产品即可显示。并发打开共用同一次请求。刷新失败时保留上次目录，并显示错误与重试操作；重新打开也会重试。刷新期间选择器不会替换已保存的选择。
 
 与 `ui-conversation` 及命令包一起挂载本插件；composer 随即在待处理指示器旁显示模型位，`/model` 则以弹窗打开同一份目录。模型位菜单打开期间，`↑`／`↓` 在根菜单和推理等级行间移动焦点，或在模型列表中移动高亮并让焦点保留在搜索框。Enter 和 Tab 选定高亮模型或聚焦行；Escape 与 `Shift+Tab` 先退出已下钻的面板，否则关闭并回到触发器。下钻时若显示模型搜索框则聚焦搜索框，否则聚焦当前模型或推理强度行，返回则落在打开该面板的格子上。所选模型可用时，composer 显示目录中的模型名称。模型或提供方被删除时（包括账号退登），保留已保存的提供方、模型和推理强度，但不展示其 ID。目录条目恢复后重新显示名称和推理强度。
 
@@ -65,7 +67,7 @@ composer 菜单中的模型名称和推理等级均使用 400（regular）字重
 
 composer 的 `ModelSelect` 与 `/model` 选项构建器共用[提供方排序](src/client/provider-order.ts)，两个搜索框均在每个提供方内使用 `rankByName`。命令通过 [popupSelect API](../ui-commands/README.zh.md#use-this-package) 提供可选分组与 `searchMode: 'fuzzy-label'`；两个入口均使用 `MenuGroup`，并在渲染分组变化时重建其吸顶观察器。命令弹窗撑满 composer 浮层，按钮则保留紧凑菜单。
 
-两个入口共用一份由 `ModelDirectoryResolver`（`ctx.modelDirectories`）持有的会话级目录：`/model` popupSelect 贡献项（经 `ctx.commandUi` 注册）与 composer 的具名 `conversation.input.model` 位都经 `session.models` 加载会话的可用目录、经 `session.selectModel` 通过同一个 `ModelDirectory` 实例提交，因此任一入口所做的切换正是另一个入口接下来显示的。目录加载与选择共享一个代次计数器，旧响应不会覆盖新结果。目录把最近一次提交的选择发布为 `pending`，直到它完成或被连接重置作废；连接重置丢弃所有常驻投影，并在显示前重新拉取 Host 恢复的选择。目录按会话惰性解析，随会话作用域一并 dispose（资源释放）；已寻址 subagent 会话不公开任一入口。每份常驻目录都会直接在转发的 `llm/adapters-updated`、`settings/document-updated` 与凭据更新事件上重拉。
+`ModelDirectoryResolver`（`ctx.modelDirectories`）在所有会话目录之间共用一份 Host 目录。两个选择器入口都通过 `session.modelCatalog` 刷新目录，并通过 `session.selectModel` 提交选择；会话目录把该目录与各自会话的持久选择投影合并。初始化复用缓存目录，显式菜单读取则共用一次进行中的刷新。目录与选择的代次检查防止过期响应覆盖当前状态。连接重置会清空目录，转发的适配器、设置或凭据变化会使其失效并重拉。会话目录按需创建，随所属作用域一并 dispose（资源释放）；已寻址 subagent 会话不公开任一入口。
 
 </details>
 

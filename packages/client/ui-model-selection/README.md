@@ -11,7 +11,7 @@ Desktop product events use the optional [product analytics service](../product-a
 
 ## Summary
 
-The Web GUI lets users switch the model and reasoning effort for an existing session through either the `/model` popup or the composer's model control. Both surfaces present the same provider-grouped choices, and the selected model determines the available effort names and default. A complete selection applies to the next request; a running step keeps the model and effort it started with. If the selected model is unavailable, the composer stays disabled until the user selects an available model or that exact model becomes available again.
+The Web GUI lets users switch the model and reasoning effort for an existing session through either the `/model` popup or the composer's model control. Both surfaces present the same provider-grouped choices, and the selected model determines the available effort names and default. A complete selection applies to the next request; a running step keeps the model and effort it started with. An unavailable selection remains saved; request execution reports missing credentials or an unavailable model.
 
 ## Table of Contents
 
@@ -30,6 +30,8 @@ The Web GUI lets users switch the model and reasoning effort for an existing ses
 DeepSeek account and API-key routes appear as separate provider groups, each exposing the same configured model catalog.
 
 When no model is selected or the saved selection is absent from the catalog, the composer shows “Select model” in regular weight and hides the reasoning effort caption. Clicking it opens the model list directly; Escape and Shift+Tab close it. An empty catalog displays “No models available.”
+
+Opening either picker refreshes the available models from the Host, so models enabled by the provider can appear without restarting the product. Concurrent openings share the same request. A failed refresh keeps the last catalog visible with an error and a retry action; reopening also retries. The picker never replaces the saved selection during a refresh.
 
 Mount this plugin alongside `ui-conversation` and the commands package; the composer then shows the model seat next to the pending indicator, and `/model` opens the same directory as a popup. While the seat's menu is open, `↑`/`↓` move focus through root and effort rows, or move the model-list highlight without leaving search. Enter and Tab settle the highlighted model or focused row; Escape and `Shift+Tab` leave a drilled pane first and otherwise close back to the trigger. Drilling focuses model search when shown, otherwise the current model or effort row, and going back lands on the cell that opened the pane left. The composer shows the catalog name while the selected model is available. Removing a model or provider, including account sign-out, preserves the stored provider, model, and reasoning effort without displaying their IDs. Restoring the catalog entry restores its name and effort caption.
 
@@ -65,7 +67,7 @@ Menus use the shared `MenuSurface` material, including the macOS backing for bac
 
 The composer `ModelSelect` and `/model` option builder share [provider ordering](src/client/provider-order.ts), while both searches use `rankByName` within each provider. The command supplies optional groups and `searchMode: 'fuzzy-label'` through the [popupSelect API](../ui-commands/README.md#use-this-package); both entries use `MenuGroup` and rebuild its sticky observer when the rendered groups change. The command popup fills the composer overlay, while the button retains its compact menu.
 
-Two entries over ONE per-session directory owned by `ModelDirectoryResolver` (`ctx.modelDirectories`): the `/model` popupSelect contribution (registered through `ctx.commandUi`) and the composer's named `conversation.input.model` seat both load the session's available directory through `session.models` and submit through `session.selectModel` via the same `ModelDirectory` instance, so a switch made in either entry is what the other shows next. Directory loads and selections share a generation counter so an older response never overwrites a newer one. The directory publishes the latest submitted selection as `pending` until it settles or a connection reset invalidates it; a connection reset drops every resident projection and repulls the Host-restored selection before display. Directories are per-session, resolved lazily, and disposed with the session scope; addressed subagent sessions expose neither entry. Every resident directory refetches directly on forwarded `llm/adapters-updated`, `settings/document-updated`, and credential update events.
+`ModelDirectoryResolver` (`ctx.modelDirectories`) shares one Host catalog across all Session directories. Both picker entries refresh it through `session.modelCatalog` and submit selections through `session.selectModel`; the directories combine that catalog with each Session's durable selection projection. Initialization reuses the cached catalog, while explicit menu reads share one in-flight refresh. Catalog and selection generations prevent outdated responses from replacing current state. Connection resets clear the catalog, and forwarded adapter, settings, or credential changes invalidate and reload it. Session directories are resolved lazily and disposed with their scope; addressed subagent sessions expose neither entry.
 
 </details>
 

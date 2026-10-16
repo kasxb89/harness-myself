@@ -12,7 +12,7 @@ export interface Reference {
 /** Supported composer input arrangements; these are not model API parameters. */
 export type Workflow = 'text' | 'image' | 'frames' | 'reference'
 /** Reference media kinds accepted by the existing asset route. */
-export type Slot = 'image' | 'video'
+export type Slot = 'image' | 'video' | 'audio'
 /** Local camera-script category filter. */
 export type Category = string
 
@@ -58,7 +58,7 @@ export function createVideoDraftStore(): EngineStoreHandle<VideoDraft, DraftActi
   return defineStore({
     init: (): VideoDraft => ({
       modelId: '', prompt: '', duration: 0, resolution: '', ratio: '', mode: '', seed: '', audio: true,
-      workflow: 'text', firstFrame: null, lastFrame: null, slots: { image: [], video: [] },
+      workflow: 'text', firstFrame: null, lastFrame: null, slots: { image: [], video: [], audio: [] },
       category: 'all', uploading: null, phase: 'idle', startedAt: 0, message: null, failure: null, result: null,
       referenceAccountId: null, referenceEpoch: 0, promptAssisting: false,
     }),
@@ -71,7 +71,7 @@ export function createVideoDraftStore(): EngineStoreHandle<VideoDraft, DraftActi
         draft.promptAssisting = false
         draft.firstFrame = null
         draft.lastFrame = null
-        draft.slots = { image: [], video: [] }
+        draft.slots = { image: [], video: [], audio: [] }
         draft.uploading = null
       },
       appendPrompt: (draft, suffix: string) => {

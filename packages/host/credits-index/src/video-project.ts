@@ -305,7 +305,7 @@ export async function prepareVideoProject(
   const outputDirectory = join(resolveVideoOutputDirectory(workspaceRoot, options.outputDirectory), id)
   await editor.preflight(signal, outputDirectory)
   await provider.assertCurrent()
-  const model = await provider.model(input.model, signal)
+  const model = await provider.model(input.model, signal, input.resolution)
   const durations = planVideoDurations(input.totalDurationSeconds, model.durations, options.maxSegments)
   if (input.shotPrompts !== undefined && input.shotPrompts.length !== durations.length) throw new VideoProjectError('SHOT_COUNT_MISMATCH', `该时长需要 ${String(durations.length)} 个分镜，请提供相同数量的分镜说明。`)
   const segments: VideoProjectSegment[] = []

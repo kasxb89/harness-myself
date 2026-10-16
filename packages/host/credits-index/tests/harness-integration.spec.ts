@@ -15,6 +15,7 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import LlmRuntime, { type FinishReason } from '@deepseek-ai/dsh-llm'
 import * as LlmPiAi from '@deepseek-ai/dsh-llm-pi-ai'
 import * as Credits from '../src/index.ts'
+import { profileComposition } from '../../../settings/settings/tests/profile-composition.ts'
 
 const relayRef = credentialRef('HARNESS_INTEGRATION_RELAY')
 let context: Context | undefined
@@ -29,11 +30,23 @@ let selfId = 7
 let access = 'access-user'
 let refreshes = 0
 let creations = 0
+let pricingRows: unknown[] = []
+const initialRelayModels = () => [
+  { id: 'deepseek-v4-flash', object: 'model', supported_endpoint_types: ['openai'] },
+  { id: 'gpt-image-2', object: 'model', supported_endpoint_types: ['image-generation', 'openai'] },
+  { id: 'MiniMax-H3', object: 'model', supported_endpoint_types: ['openai-video'] },
+]
+let relayModels = initialRelayModels()
+let modelsStatus = 200
+let modelsBarrier: Promise<void> | undefined
+let modelReadStarted: (() => void) | undefined
+let releaseModels: (() => void) | undefined
 let releaseRefresh: (() => void) | undefined
 let refreshBarrier: Promise<void> | undefined
 
 afterEach(async () => {
   releaseRefresh?.()
+  releaseModels?.()
   await context?.fiber.dispose()
   context = undefined
   if (upstream !== undefined) await new Promise<void>((resolve, reject) => {
@@ -52,6 +65,12 @@ afterEach(async () => {
   access = 'access-user'
   refreshes = 0
   creations = 0
+  pricingRows = []
+  relayModels = initialRelayModels()
+  modelsStatus = 200
+  modelsBarrier = undefined
+  modelReadStarted = undefined
+  releaseModels = undefined
   releaseRefresh = undefined
   refreshBarrier = undefined
   vi.useRealTimers()
@@ -91,7 +110,7 @@ async function boot(): Promise<{ base: string; api: string; stateDir: string }> 
         response.setHeader('set-cookie', 'new_api_refresh=refresh-one; HttpOnly; Path=/harness/api/user/auth')
         answer({ access_token: access, access_expires_at: Math.floor(Date.now() / 1000) + 900,
           relay_key: 'sk-owned-relay', relay_key_id: 9, session: { sid: 'session-one', current: true },
-          user: { id: 7, username: 'test-user', quota: balanceQuota } }); return
+          user: { id: selfId, username: 'test-user', quota: balanceQuota } }); return
       }
       if (url.pathname === '/harness/api/user/auth/refresh') {
         refreshes += 1
@@ -101,9 +120,18 @@ async function boot(): Promise<{ base: string; api: string; stateDir: string }> 
         answer({ access_token: access, access_expires_at: Math.floor(Date.now() / 1000) + 900, user: { id: 7 } }); return
       }
       if (url.pathname === '/harness/api/user/auth/logout') { answer(null); return }
+      if (url.pathname === '/harness/api/pricing') { answer(pricingRows); return }
+      if (url.pathname === '/harness/v1/videos') {
+        if (request.headers.authorization !== 'Bearer sk-owned-relay') { response.writeHead(403); response.end('{}'); return }
+        response.end('{}'); return
+      }
       if (url.pathname === '/harness/v1/models') {
         if (request.headers.authorization !== 'Bearer sk-owned-relay') { response.writeHead(403); response.end('{}'); return }
-        response.end(JSON.stringify({ data: [{ id: 'deepseek-v4-flash', object: 'model' }] })); return
+        const rows = structuredClone(relayModels)
+        modelReadStarted?.()
+        await modelsBarrier
+        response.writeHead(modelsStatus)
+        response.end(JSON.stringify({ data: rows })); return
       }
       if (url.pathname === '/harness/v1/chat/completions') {
         if (request.headers.authorization !== 'Bearer sk-owned-relay') { response.writeHead(403); response.end('{}'); return }
@@ -148,6 +176,7 @@ async function boot(): Promise<{ base: string; api: string; stateDir: string }> 
   context.loader.builtins.include = Include
   context.loader.internal = {
     version: 'v2',
+    loadCache: new Map(),
     async import(...[specifier]: Parameters<ModuleLoaderV2['import']>) {
       if (!modules.has(specifier)) throw new Error(`Unexpected module: ${specifier}`)
       return modules.get(specifier)
@@ -160,13 +189,13 @@ async function boot(): Promise<{ base: string; api: string; stateDir: string }> 
     { name: '@deepseek-ai/dsh-llm' },
     { name: '@deepseek-ai/dsh-llm-pi-ai', config: { providers: {
       'yunshu-local': { api: 'openai-completions', baseURL: api + '/v1', apiKeyEnv: relayRef, models: [{ id: 'deepseek-v4-flash' }] },
+      'other-provider': { api: 'openai-completions', baseURL: 'https://synthetic.invalid/v1', models: [{ id: 'other-chat' }] },
     } } },
-    { name: '@deepseek-ai/dsh-credits-index', config: { stateDir, newApiBaseUrl: api, relayTokenEnv: relayRef, timeoutMs: 1000 } },
+    { name: '@deepseek-ai/dsh-credits-index', config: { stateDir, newApiBaseUrl: api, relayTokenEnv: relayRef } },
   ]
   const configuration = join(directory, 'cordis.yml')
   await writeFile(configuration, JSON.stringify(entries))
-  await context.loader.create({ name: 'cordis:include', config: { path: pathToFileURL(configuration).href } })
-  await context.loader.await()
+  await profileComposition(context, directory, configuration)
   expect([...context.loader.entries()].filter(entry => entry.fiber === undefined && !entry.disabled)).toEqual([])
   return { base: `http://127.0.0.1:${String(context.webServer.port)}/credits`, api, stateDir }
 }
@@ -197,6 +226,137 @@ async function chat(): Promise<FinishReason> {
 }
 
 describe('deployed Harness API through the real product Loader', () => {
+  it('refreshes the actual account list on each read without waiting for the periodic sync', async () => {
+    const { base } = await boot()
+    await signIn(base)
+    relayModels = [{ id: 'ys-1.0', object: 'model', supported_endpoint_types: ['openai'] }]
+    expect((await context!.llm.listModels('yunshu-local')).map(model => model.id)).toEqual(['ys-1.0'])
+    relayModels = [...relayModels, { id: 'deepseek-v4-flash', object: 'model', supported_endpoint_types: ['openai'] }]
+    expect((await context!.llm.listModels('yunshu-local')).map(model => model.id)).toEqual(['ys-1.0', 'deepseek-v4-flash'])
+    expect((await context!.llm.listModels('other-provider')).map(model => model.id)).toEqual(['other-chat'])
+    expect(calls.filter(call => call.path === '/harness/v1/models')).toHaveLength(2)
+  })
+
+  it('hides old model names for a successful empty list and rejects failed fresh reads', async () => {
+    const { base } = await boot()
+    await signIn(base)
+    expect((await context!.llm.listModels('yunshu-local')).map(model => model.id)).toEqual(['deepseek-v4-flash'])
+    modelsStatus = 503
+    await expect(context!.llm.listModels('yunshu-local')).rejects.toThrow('无法读取当前账号模型列表')
+    expect((await context!.llm.listModels('other-provider')).map(model => model.id)).toEqual(['other-chat'])
+    modelsStatus = 200
+    relayModels = []
+    expect(await context!.llm.listModels('yunshu-local')).toEqual([])
+    await post(base, '/api/session/logout', {})
+    await expect(context!.llm.listModels('yunshu-local')).rejects.toThrow('请先登录产品账号')
+  })
+
+  it('shares one in-flight model read for concurrent catalog consumers', async () => {
+    const { base } = await boot()
+    await signIn(base)
+    const started = new Promise<void>((resolve) => { modelReadStarted = resolve })
+    modelsBarrier = new Promise<void>((resolve) => { releaseModels = resolve })
+    const first = context!.llm.listModels('yunshu-local')
+    const second = context!.llm.listModels('yunshu-local')
+    await started
+    expect(calls.filter(call => call.path === '/harness/v1/models')).toHaveLength(1)
+    releaseModels?.()
+    expect((await first).map(model => model.id)).toEqual(['deepseek-v4-flash'])
+    expect((await second).map(model => model.id)).toEqual(['deepseek-v4-flash'])
+    expect(calls.filter(call => call.path === '/harness/v1/models')).toHaveLength(1)
+  })
+
+  it('rejects a delayed old-account listing after logout and another phone sign-in', async () => {
+    const { base } = await boot()
+    await signIn(base)
+    relayModels = [{ id: 'account-A-model', object: 'model', supported_endpoint_types: ['openai'] }]
+    const started = new Promise<void>((resolve) => { modelReadStarted = resolve })
+    modelsBarrier = new Promise<void>((resolve) => { releaseModels = resolve })
+    const pending = context!.llm.listModels('yunshu-local').then(
+      models => ({ models }), (error: unknown) => ({ error }),
+    )
+    await started
+    await post(base, '/api/session/logout', {})
+    selfId = 8
+    relayModels = [{ id: 'account-B-model', object: 'model', supported_endpoint_types: ['openai'] }]
+    await signIn(base)
+    releaseModels?.()
+    expect(await pending).toHaveProperty('error')
+    modelsBarrier = undefined
+    expect((await context!.llm.listModels('yunshu-local')).map(model => model.id)).toEqual(['account-B-model'])
+    expect(JSON.stringify(context!.settings.describe({ redactSecrets: true }))).not.toContain('account-A-model')
+  })
+
+  it('enforces published duration combinations before model submission and forwards complete H3 references', async () => {
+    const { base } = await boot()
+    await signIn(base)
+    const row = { model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'], enable_groups: ['default'] }
+    pricingRows = [{ ...row, billing_usage_schema: { seconds: { type: 'number' }, resolution: { enum: ['768P', '2K'] } } }]
+    const generate = (body: object): Promise<Record<string, unknown>> => post(base, '/api/video/tasks?source=newapi-generate', { prompt: 'A synthetic clip', model: 'MiniMax-H3', ...body })
+    expect(await generate({ durationSeconds: 30, resolution: '768P' })).toMatchObject({ ok: false, code: 'DURATION_NOT_SUPPORTED' })
+    pricingRows = [{ ...row, parameters: { oneOf: [
+      { properties: { resolution: { enum: ['480P', '768P'] }, seconds: { minimum: 4, maximum: 30 } } },
+      { properties: { resolution: { const: '2K' }, seconds: { enum: [5, 10, 15] } } },
+    ] } }]
+    for (const durationSeconds of [0, 3, 4.2, 31, '30', null]) {
+      expect(await generate({ durationSeconds, resolution: '768P' })).toMatchObject({ ok: false, code: 'DURATION_NOT_SUPPORTED' })
+    }
+    expect(await generate({ durationSeconds: 30, resolution: '2K' })).toMatchObject({ ok: false, code: 'DURATION_NOT_SUPPORTED' })
+    expect(await generate({ durationSeconds: 30 })).toMatchObject({ ok: false, code: 'DURATION_NOT_SUPPORTED' })
+    expect(calls.filter(call => call.path === '/harness/v1/videos')).toHaveLength(0)
+
+    const upload = async (type: string, name: string, bytes: Buffer): Promise<string> => {
+      const response = await fetch(base + '/api/assets', { method: 'POST', headers: {
+        'content-type': type, 'x-file-name': name, 'x-idempotency-key': name,
+      }, body: new Uint8Array(bytes) })
+      const result = object(await response.json())
+      expect(result.ok).toBe(true)
+      return String(object(result.asset).assetId)
+    }
+    const image = await upload('image/png', 'image.png', Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]))
+    const video = await upload('video/mp4', 'clip.mp4', Buffer.from([0, 0, 0, 16, 102, 116, 121, 112, 105, 115, 111, 109]))
+    const audio = await upload('audio/wav', 'voice.wav', Buffer.from('RIFF0000WAVEdata', 'ascii'))
+    expect(await generate({ durationSeconds: 30, resolution: '768P', ratio: 'adaptive', referenceAudios: [audio] })).toMatchObject({ ok: false, code: 'RATIO_NOT_SUPPORTED' })
+    expect(await generate({ durationSeconds: 30, resolution: '768P', referenceImages: [audio] })).toMatchObject({ ok: false, code: 'REFERENCE_MISSING' })
+    expect(await generate({ durationSeconds: 30, resolution: '768P', referenceAudios: ['https://invalid.example/audio.wav'] })).toMatchObject({ ok: false, code: 'REFERENCE_MISSING' })
+    expect(await generate({ durationSeconds: 30, resolution: '768P', ratio: 'adaptive' })).toMatchObject({ ok: false, code: 'RATIO_NOT_SUPPORTED' })
+    expect(calls.filter(call => call.path === '/harness/v1/videos')).toHaveLength(0)
+    expect(await generate({ durationSeconds: 30, resolution: '768P', ratio: '16:9',
+      referenceImages: [image], referenceVideos: [video], referenceAudios: [audio],
+    })).toMatchObject({ ok: false, code: 'NO_TASK_ID' })
+    const submitted = calls.filter(call => call.path === '/harness/v1/videos')
+    expect(submitted).toHaveLength(1)
+    expect(submitted[0]).toMatchObject({ authorization: 'Bearer sk-owned-relay', body: { duration: 30, resolution: '768P' } })
+    const content = object(object(submitted[0]?.body).metadata).content
+    if (!Array.isArray(content)) throw new Error('Expected complete multimodal content')
+    expect(content.map(item => ({ type: object(item).type, role: object(item).role }))).toEqual([
+      { type: 'text', role: undefined }, { type: 'image_url', role: 'reference_image' },
+      { type: 'video_url', role: 'reference_video' }, { type: 'audio_url', role: 'reference_audio' },
+    ])
+    expect(object(content[0]).text).toBe('A synthetic clip')
+    expect(object(object(content[1]).image_url).url).toMatch(/^data:image\/png;base64,/)
+    expect(object(object(content[2]).video_url).url).toMatch(/^data:video\/mp4;base64,/)
+    expect(object(object(content[3]).audio_url).url).toMatch(/^data:audio\/wav;base64,/)
+    expect(object(object(submitted[0]?.body).metadata)).not.toHaveProperty('reference_video')
+    expect(object(object(submitted[0]?.body).metadata)).not.toHaveProperty('reference_audio')
+  })
+
+  it('rejects audio MIME mismatches, unsupported formats and oversized files before storing them', async () => {
+    const { base, stateDir } = await boot()
+    await signIn(base)
+    for (const [type, bytes] of [
+      ['audio/wav', Buffer.from('not a wave')], ['audio/mpeg', Buffer.from('not an mp3')],
+      ['audio/ogg', Buffer.from('OggS')], ['audio/mpeg', Buffer.alloc(15 * 1024 * 1024 + 1)],
+    ] as const) {
+      const response = await fetch(base + '/api/assets', { method: 'POST', headers: {
+        'content-type': type, 'x-file-name': 'invalid', 'x-idempotency-key': 'invalid',
+      }, body: new Uint8Array(bytes) })
+      expect(await response.json()).toMatchObject({ ok: false, code: 'MEDIA_ASSET_REQUEST_INVALID' })
+    }
+    expect(await readFile(join(stateDir, 'refs', 'ma_invalid.mp3')).catch(() => null)).toBeNull()
+    expect(calls.some(call => call.path.endsWith('/videos'))).toBe(false)
+  })
+
   it('uses only the live account relay key even when an inherited environment token cannot be removed', async () => {
     vi.stubEnv(relayRef, 'sk-old-environment-token')
     const { base } = await boot()
@@ -235,7 +395,9 @@ describe('deployed Harness API through the real product Loader', () => {
     expect(challenge?.body).toEqual({ phone_e164: '+8613800000000' })
     expect(login?.body).toEqual({ phone_e164: '+8613800000000', code: '123456' })
     expect(calls.find(call => call.path.endsWith('/user/self'))?.authorization).toBe('Bearer access-user')
-    expect(await (await fetch(base + '/api/models?source=newapi')).json()).toMatchObject({ ok: true })
+    expect(await (await fetch(base + '/api/models?source=newapi')).json()).toMatchObject({
+      ok: true, chat: ['deepseek-v4-flash'], image: ['gpt-image-2'], video: ['MiniMax-H3'],
+    })
     expect(calls.find(call => call.path.endsWith('/v1/models'))?.authorization).toBe('Bearer sk-owned-relay')
     await post(base, '/api/session/logout', {})
     expect(await context?.credentials.resolve(relayRef)).toBeUndefined()

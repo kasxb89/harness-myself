@@ -29,6 +29,12 @@ The credits host relays account, balance, recharge and media operations through 
 
 Phone challenge and login use `/api/user/phone/challenge` and `/api/user/phone/login` beneath the configured root. Login provides the short-lived management `access_token`, rotating refresh cookie and account-owned `relay_key`. Only that relay key authorizes model requests. The host stores these credentials privately, binds the session to its backend root, and waits for one shared renewal before using an expiring management token. Refresh and logout declare the backend's Origin. The host provides live `harnessAccount` authorization to the product model route; stored or environment credential references cannot replace a valid session. Logout removes this authorization immediately; a concurrent old refresh cannot restore it. Moving a stored session to another backend requires phone sign-in again.
 
+### Chat model refresh
+
+Each product-route model listing first awaits the current account's `harnessAccount.refreshModels` result. The Host reads `/v1/models` with that account's relay key, excludes declared media generators, and synchronizes nonempty chat results before the adapter reads its configuration. Concurrent reads share one operation. An empty successful result exposes no chat models even if an older profile remains configured; unavailable reads become catalog failures instead of showing old models as currently available. Other provider routes keep their existing listing behavior.
+
+Startup and the 60-second timer use the same refresh operation. Login changes and logout cancel older discovery; commit checks the login generation, stored session identity, backend and expiry. Disposal cancels and awaits outstanding discovery. The UI can request a fresh catalog without waiting for the timer. Published pricing still describes media parameters, while the account's model endpoint determines its chat list; a declared or selected model can still fail upstream authorization or billing validation.
+
 ### Recharge
 
 `POST /credits/api/recharge/wechat` accepts an integer `amount` in yuan and creates one Native order with the account's access token. The response exposes `outTradeNo`, `amount`, converted `points`, `expiresAt` and `qrCodeDataUrl`; raw quota is not a points amount. Conversion requires current status parameters before order submission. Unknown submission outcomes are reported without an automatic second order.
@@ -60,6 +66,14 @@ Before a model call, the host saves `stateDir/prompt-assists/<random-request-id>
 ### Published creation content
 
 `GET /credits/api/creation/content` relays the deployed administration document as `{ ok: true, payload }`. `GET` and `HEAD /credits/api/creation/assets/:id` relay immutable `cc_` content-hash images and video, including single byte-range reads. These origin-checked reads use `newApiBaseUrl` and `timeoutMs`, send no account or deployment credential, reject upstream redirects and unexpected MIME types, and cap documents at 5 MiB and media at 100 MiB. Transfers stop on peer disconnect or plugin disposal; disposal awaits settlement. Errors expose only `CREATION_CONTENT_UNAVAILABLE`, never an upstream body. The [creation content reader](../../client/creation-content/README.md) owns document validation, refresh and consumer state.
+
+### Video capabilities and references
+
+Video menus read explicit `seconds` or `duration` declarations from public pricing `parameters` (a field map or JSON Schema `properties`), then `billing_usage_schema`. Numeric enums or finite `minimum`/`maximum` ranges select whole seconds from 1 to 3600 and override the model table; exclusive bounds and `multipleOf` further restrict the menu. Missing, malformed or unbounded declarations retain the known model limits; billing examples never grant durations or additional reference slots. Resolution enums and constants follow the same live priority. The current H3 response only declares a numeric seconds field without bounds, so its known 4–15-second menu remains. A model appearing in public pricing does not establish that a particular account can generate with it.
+
+A declared `oneOf` pairs `properties.resolution.const` or `.enum` with bounded `properties.seconds` or `.duration`. The resulting `durationByResolution` menus govern both panel requests and project planning; missing resolution keys are unavailable, and a resolution must be selected. For example, a producer may explicitly publish one branch for 480P/768P at 4–30 seconds and another for 2K at 4–15 seconds. This describes supported parsing, not a declaration that the running API or an unspecified upstream supports those combinations. The Host rejects unsupported combinations and fractional or nonnumeric durations before model submission.
+
+Local `/credits/api/assets` accepts PNG/JPEG/WebP images, MP4/MOV video and MP3/WAV audio with matching MIME and file signatures. Per-file limits are 6 MiB for images, 32 MiB for video and 15 MiB for audio; all images in one generation total at most 12 MiB and all reference bytes total at most 48 MiB, with the complete encoded generation request capped at 64 MiB. Audio is exposed only where the selected model declares audio-reference slots. H3 sends every reference in one complete `metadata.content` array. Frame references cannot mix with H3 general references. Adaptive ratio requires an actual image or video input. These checks do not decode the complete media or establish upstream generation capability.
 
 ### Local video editing
 

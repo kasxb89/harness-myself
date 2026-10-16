@@ -950,6 +950,13 @@ Session-owned relay credentials never fall back to environment layers.
 
 ```ts cordis-catalog
 /**
+ * Refresh the current account's model configuration before listing it.
+ * @param baseURL - Exact model API root whose catalog is requested.
+ * @returns Current model IDs after configuration is synchronized; empty hides every old model. Unavailable or changed accounts reject.
+ */
+refreshModels(baseURL: string): Promise<readonly string[]>
+
+/**
  * Resolve the current signed-in account after checking its backend and expiry.
  * @param baseURL - Exact model API root being requested.
  * @returns The current relay key, or undefined when no live session authorizes the request.
