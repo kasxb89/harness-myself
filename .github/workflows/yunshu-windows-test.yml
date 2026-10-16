@@ -1,0 +1,85 @@
+name: Yunshu Windows test installer
+run-name: '云枢 Windows x64 测试包 #${{ github.run_number }}'
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_version:
+        description: 'Build version: auto generates a version; otherwise enter a full version'
+        type: string
+        default: auto
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: yunshu-windows-test-package
+  cancel-in-progress: false
+
+jobs:
+  package:
+    runs-on: windows-2025
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      DSH_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v7.0.1
+        id: checkout
+        with:
+          persist-credentials: false
+          clean: true
+      - uses: pnpm/action-setup@v5.0.0
+        with:
+          dest: ${{ runner.temp }}/setup-pnpm-${{ github.run_id }}-${{ github.run_attempt }}
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: '24'
+      - name: Install locked dependencies
+        run: |
+          pnpm install --frozen-lockfile
+          exit $LASTEXITCODE
+      - name: Prepare unsigned test package settings
+        id: settings
+        env:
+          PACKAGE_BUILD_VERSION: ${{ inputs.build_version }}
+        run: node apps/desktop/scripts/prepare-windows-ci.mjs
+      - name: Check Windows packaging tools
+        env:
+          PACKAGE_VERSION: ${{ steps.settings.outputs.version }}
+        run: |
+          pnpm run package:desktop:win:x64:unsigned --check --build-version "$env:PACKAGE_VERSION"
+          exit $LASTEXITCODE
+      - name: Build installer and verify packaged runtime
+        env:
+          PACKAGE_VERSION: ${{ steps.settings.outputs.version }}
+        run: |
+          pnpm run package:desktop:win:x64:unsigned --build-version "$env:PACKAGE_VERSION"
+          exit $LASTEXITCODE
+      - name: Retain packaging diagnostics
+        if: always() && steps.checkout.outcome == 'success'
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: yunshu-windows-package-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          include-hidden-files: true
+          path: apps/desktop/.desktop-build/packaging-runs/
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Retain verified Windows installer
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: yunshu-windows-x64-${{ steps.settings.outputs.version }}-${{ github.run_id }}-${{ github.run_attempt }}
+          include-hidden-files: true
+          path: apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts/*.exe
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14
+      - name: Remove generated package settings
+        if: always() && steps.checkout.outcome == 'success'
+        run: |
+          if (Test-Path -LiteralPath apps/desktop/.env.windows) {
+            Remove-Item -LiteralPath apps/desktop/.env.windows
+          }

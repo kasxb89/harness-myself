@@ -29,7 +29,8 @@ it('requires explicit manual dispatch on the dedicated Windows runner', () => {
   expect(job['runs-on']).toBe('dsh-win-package-trial')
   expect(workflow.concurrency).toEqual({ group: 'windows-desktop-package', 'cancel-in-progress': false })
   expect(workflow.permissions).toEqual({ contents: 'read' })
-  expect(workflow.on.workflow_dispatch!.inputs.policy_origin!.required).toBe(true)
+  expect(Object.keys(workflow.on.workflow_dispatch!.inputs)).toEqual(['build_version'])
+  expect(workflow.on.workflow_dispatch!.inputs.build_version!.required).toBe(true)
   const checkout = job.steps.find(step => step.id === 'checkout')!
   expect(checkout.with).toMatchObject({ clean: true, 'persist-credentials': false })
   expect(job.steps.find(step => step.uses?.startsWith('pnpm/action-setup@'))?.with?.dest)
@@ -39,8 +40,7 @@ it('requires explicit manual dispatch on the dedicated Windows runner', () => {
 it('passes user input through environment variables and shares the validated version', () => {
   const settings = job.steps.find(step => step.id === 'settings')!
   expect(settings.env).toEqual({
-    PACKAGE_BUILD_VERSION: '${{ inputs.build_version }}', PACKAGE_DEPLOYMENT: '${{ inputs.deployment }}',
-    PACKAGE_POLICY_ORIGIN: '${{ inputs.policy_origin }}', PACKAGE_LOGIN_ORIGINS: '${{ inputs.login_origins }}',
+    PACKAGE_BUILD_VERSION: '${{ inputs.build_version }}',
   })
   const commands = job.steps.filter(step => step.run?.includes('pnpm run package:desktop:win:x64:unsigned'))
   expect(commands).toHaveLength(2)

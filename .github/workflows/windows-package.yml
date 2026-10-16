@@ -8,20 +8,6 @@ on:
         type: string
         default: auto
         required: true
-      deployment:
-        description: Update policy deployment
-        type: choice
-        options: [test, production]
-        default: test
-        required: true
-      policy_origin:
-        description: 'Required update policy HTTPS origin (no path)'
-        type: string
-        required: true
-      login_origins:
-        description: 'Required for test: comma-separated allowed login HTTPS origins'
-        type: string
-        required: false
 
 permissions:
   contents: read
@@ -59,9 +45,6 @@ jobs:
         id: settings
         env:
           PACKAGE_BUILD_VERSION: ${{ inputs.build_version }}
-          PACKAGE_DEPLOYMENT: ${{ inputs.deployment }}
-          PACKAGE_POLICY_ORIGIN: ${{ inputs.policy_origin }}
-          PACKAGE_LOGIN_ORIGINS: ${{ inputs.login_origins }}
         run: node apps/desktop/scripts/prepare-windows-ci.mjs
       - name: Check packaging configuration and toolchain
         env:

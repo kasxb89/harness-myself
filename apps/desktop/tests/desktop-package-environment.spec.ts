@@ -167,6 +167,19 @@ describe('Desktop local packaging configuration', () => {
     expect(() => { validateDesktopPackageEnvironment(RELEASE, MACOS) }).toThrow('DSH_DESKTOP_MACOS_SIGNING_IDENTITY')
   })
 
+  it('accepts unsigned Windows configuration without update policy while preserving signed and preparation validation', () => {
+    const local = { DSH_DESKTOP_APP_ID: 'com.example.local' }
+    expect(() => { validateDesktopPackageEnvironment(local, WINDOWS, { unsigned: true }) }).not.toThrow()
+    expect(() => { validateDesktopPackageEnvironment({ ...local,
+      DSH_DESKTOP_AUTO_UPDATE_ENV: 'invalid', DSH_DESKTOP_MANDATORY_UPDATE_CONFIG: 'invalid-json',
+      DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN: 'not-an-origin',
+    }, WINDOWS, { unsigned: true }) }).not.toThrow()
+    expect(() => { validateDesktopPackageEnvironment(local, WINDOWS) })
+      .toThrow('DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN')
+    expect(() => { validateDesktopPackageEnvironment(local, WINDOWS, { prepareOnly: true }) })
+      .toThrow('DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN')
+  })
+
   it('accepts one local npm registry mirror and rejects other registry forms', () => {
     const release = { ...POLICY, DSH_DESKTOP_APP_ID: RELEASE.DSH_DESKTOP_APP_ID }
     expect(() => {

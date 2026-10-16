@@ -402,9 +402,7 @@
       inject:
         - webServer
       config:
-        roots:
-          - /Users/kasxbls/Documents/deepseek-harness/default-workspace
-          - /Users/kasxbls/Desktop/新科技/deepseek-harness/apps/desktop/.desktop-build/development/home/plugin-data
+        roots: !!js "[dshHomePath('plugin-data', 'credits', 'media')]"
         maxEntries: 2000
         maxDepth: 5
 

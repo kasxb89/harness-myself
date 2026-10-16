@@ -44,6 +44,8 @@ dsh --profile web --no-open --port 8080
 
 产品聊天区域通过 [Conversation 的 `hiddenViews` 配置](../../client/ui-conversation/README.zh.md#shell-and-standard-props)隐藏 Trajectory 和市场 Video 视图。独立的 AI 创作视频页面及视频插件的 Host 能力仍然可用。
 
+产物页面索引当前 Harness 主目录下 `plugin-data/credits/media` 中生成的图片与视频。
+
 收到宽泛的创作需求时，agent 会先通过[提问卡片](../../client/ui-user-questions/README.zh.md)了解缺失的偏好。例如「做个网站」可以询问用途、风格和主要内容；「做个 40 秒视频」保留已说明的时长，只询问缺失的主题、风格或画面比例。一组简短问题提供选项与自定义回答，收到答案后继续完成用户要求范围内的工作。仅审阅引导或暂缓创作的要求在回答后仍然有效。需求明确或用户委托 agent 决定时，直接执行。这套引导适用于 standard、PTC 和 Cordis 预设；minimal 等完整自定义 persona 会有意替换它，且不提供提问工具。
 
 **设置 → 模型**保留提供方配置和凭据引用。已保存的模型选择覆盖组合默认值，已有凭据继续保存在本地。

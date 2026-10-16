@@ -12,6 +12,21 @@ vi.mock('node:child_process', async (importOriginal) => {
 })
 
 describe('installer preparation preserves application dependencies', () => {
+  it.each(['win32', 'darwin'] as const)('omits all update policy and feed metadata from unsigned %s packages', async (platform) => {
+    const { createElectronBuilderConfig } = await import('../scripts/electron-builder-config.mjs')
+    const config = createElectronBuilderConfig({
+      DSH_DESKTOP_APP_ID: 'com.example.installer', DSH_DESKTOP_UNSIGNED: '1',
+      DSH_DESKTOP_AUTO_UPDATE_ENV: 'invalid',
+      DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN: 'not-an-origin',
+      DSH_DESKTOP_MANDATORY_UPDATE_CONFIG: 'invalid-json',
+      DSH_DESKTOP_UPDATE_CONFIG_ORIGIN: 'not-an-origin',
+    }, platform, 'x64')
+    expect(config.extraMetadata).not.toHaveProperty('dshMandatoryUpdatePolicy')
+    expect(config.extraMetadata).not.toHaveProperty('dshDesktopUpdateConfigOrigin')
+    expect(config.publish).toBeNull()
+    expect(config.win.forceCodeSigning).toBe(false)
+  })
+
   it.each(['win32', 'darwin'] as const)('rejects a missing production policy before signing on %s', async (platform) => {
     const { createElectronBuilderConfig } = await import('../scripts/electron-builder-config.mjs')
     expect(() => createElectronBuilderConfig({ DSH_DESKTOP_APP_ID: 'com.example.installer',
