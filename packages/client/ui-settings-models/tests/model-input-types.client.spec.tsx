@@ -19,6 +19,17 @@ describe.each(['inputModalities', 'input'] as const)('%s input types', (field) =
     expect(onChange).toHaveBeenCalledWith({ id: 'vision', [field]: ['image'] })
   })
 
+  it('keeps an explicit text-only selection above inherited image capability', () => {
+    const onChange = vi.fn()
+    render(<ModelInputTypes
+      model={{ id: 'vision', [field]: ['text'] }} field={field} position={1}
+      fallback={['text', 'image']} disabled={false} t={key => en[key]} onChange={onChange}
+    />)
+    expect(screen.getByRole<HTMLInputElement>('checkbox', { name: en.modelInputText }).checked).toBe(true)
+    expect(screen.getByRole<HTMLInputElement>('checkbox', { name: en.modelInputImage }).checked).toBe(false)
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
   it.each([
     [undefined, true, false],
     [[], true, false],

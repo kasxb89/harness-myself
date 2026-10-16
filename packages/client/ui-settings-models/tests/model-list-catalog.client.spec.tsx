@@ -18,6 +18,59 @@ function operations(discoverModels: ModelsOperations['discoverModels']): ModelsO
   }
 }
 
+it('displays the product model image capability without a catalog read or a draft write', () => {
+  const discover = vi.fn<ModelsOperations['discoverModels']>()
+  const onChange = vi.fn()
+  const model = { id: 'gpt-4o', input: ['text', 'image'] }
+  const props = {
+    models: [model], onChange, operations: operations(discover),
+    probe: { settingsNs: 'llm-pi-ai', provider: 'yunshu-local' },
+    disabled: false, t: (key: keyof typeof en) => en[key], onBusyChange: () => {},
+  }
+  const { rerender } = render(<ModelListEditor {...props} />)
+  fireEvent.click(screen.getByRole('button', { name: `${en.modelAdvanced} 1` }))
+  const image = screen.getByRole<HTMLInputElement>('checkbox', { name: en.modelInputImage })
+  expect(image.checked).toBe(true)
+  expect(image.disabled).toBe(false)
+
+  rerender(<ModelListEditor {...props} models={[{ ...model, name: 'Updated display name' }]} />)
+
+  expect(image.checked).toBe(true)
+  expect(screen.getByLabelText<HTMLInputElement>(`${en.modelName} 1`).value).toBe('Updated display name')
+  expect(discover).not.toHaveBeenCalled()
+  expect(onChange).not.toHaveBeenCalled()
+})
+
+it.each([
+  { input: ['text'], refreshed: ['text', 'image'] as const, image: false },
+  { input: ['text', 'image'], refreshed: ['text'] as const, image: true },
+])('preserves the explicit $input selection when the catalog is refreshed', async ({ input, refreshed, image: expectedImage }) => {
+  const discover = vi.fn<ModelsOperations['discoverModels']>()
+    .mockResolvedValueOnce({ kind: 'found', models: [{ id: 'vision', inputModalities: ['text', 'image'] }] })
+    .mockResolvedValueOnce({ kind: 'found', models: [{ id: 'vision', inputModalities: refreshed }] })
+  const onChange = vi.fn()
+  const model = { id: 'vision', name: 'User display name', input }
+  render(<ModelListEditor
+    models={[model]} onChange={onChange} catalogProvider="openai"
+    probe={{ settingsNs: 'llm-pi-ai', provider: 'openai' }} disabled={false} t={key => en[key]} onBusyChange={() => {}}
+    operations={operations(discover)}
+  />)
+  fireEvent.click(screen.getByRole('button', { name: `${en.modelAdvanced} 1` }))
+  const image = screen.getByRole<HTMLInputElement>('checkbox', { name: en.modelInputImage })
+  await waitFor(() => { expect(image.disabled).toBe(false) })
+  expect(image.checked).toBe(expectedImage)
+
+  fireEvent.click(screen.getByRole('button', { name: en.fetchModels }))
+  const picker = await screen.findByRole('dialog', { name: en.fetchTitle })
+  fireEvent.click(within(picker).getByRole('button', { name: en.cancel }))
+
+  expect(image.checked).toBe(expectedImage)
+  expect(screen.getByLabelText<HTMLInputElement>(`${en.modelName} 1`).value).toBe('User display name')
+  expect(discover).toHaveBeenCalledTimes(2)
+  expect(onChange).not.toHaveBeenCalled()
+  expect(model.input).toEqual(input)
+})
+
 it('ignores a late catalog response after the provider changes', async () => {
   const oldCatalog = Promise.withResolvers<ModelDiscoveryOutcome>()
   const newCatalog = Promise.withResolvers<ModelDiscoveryOutcome>()

@@ -85,7 +85,9 @@ function object(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>
 }
 
-async function boot(): Promise<{ base: string; api: string; stateDir: string }> {
+async function boot(
+  models: readonly Record<string, unknown>[] = [{ id: 'deepseek-v4-flash' }],
+): Promise<{ base: string; api: string; stateDir: string }> {
   directory = await mkdtemp(join(tmpdir(), 'harness-product-integration-'))
   const stateDir = join(directory, 'credits')
   await mkdir(stateDir)
@@ -199,7 +201,7 @@ async function boot(): Promise<{ base: string; api: string; stateDir: string }> 
     { name: '@deepseek-ai/dsh-credentials-local', config: { path: join(directory, 'credentials.yaml'), dshHome: directory, watch: false } },
     { name: '@deepseek-ai/dsh-llm' },
     { name: '@deepseek-ai/dsh-llm-pi-ai', config: { providers: {
-      'yunshu-local': { api: 'openai-completions', baseURL: api + '/v1', apiKeyEnv: relayRef, models: [{ id: 'deepseek-v4-flash' }] },
+      'yunshu-local': { api: 'openai-completions', baseURL: api + '/v1', apiKeyEnv: relayRef, models },
       'other-provider': { api: 'openai-completions', baseURL: 'https://synthetic.invalid/v1', models: [{ id: 'other-chat' }] },
     } } },
     { name: '@deepseek-ai/dsh-credits-index', config: { stateDir, newApiBaseUrl: api, relayTokenEnv: relayRef } },
@@ -237,6 +239,123 @@ async function chat(): Promise<FinishReason> {
 }
 
 describe('deployed Harness API through the real product Loader', () => {
+  it('fills image inputs from the exact installed catalog even when existing model IDs have not changed', async () => {
+    const ids = ['deepseek-flash', 'kimi-k2.6', 'kimi-k2.7-code', 'qwen3.6-plus', 'qwen3.7-plus', 'qwen3.6-flash', 'qwen3.8-max']
+    relayModels = ids.map(id => ({ id, object: 'model', supported_endpoint_types: ['openai'] }))
+    const { base } = await boot(ids.map(id => ({ id, input: [] })))
+    await signIn(base)
+    const listed = await context!.llm.listModels('yunshu-local')
+    const capabilities = listed.map(model => ({ id: model.id, input: model.inputModalities }))
+    expect(capabilities).toEqual(ids.map(id => ({ id, input: ['text', 'image'] })))
+    expect(capabilities).toMatchInlineSnapshot(`
+      [
+        {
+          "id": "deepseek-flash",
+          "input": [
+            "text",
+            "image",
+          ],
+        },
+        {
+          "id": "kimi-k2.6",
+          "input": [
+            "text",
+            "image",
+          ],
+        },
+        {
+          "id": "kimi-k2.7-code",
+          "input": [
+            "text",
+            "image",
+          ],
+        },
+        {
+          "id": "qwen3.6-plus",
+          "input": [
+            "text",
+            "image",
+          ],
+        },
+        {
+          "id": "qwen3.7-plus",
+          "input": [
+            "text",
+            "image",
+          ],
+        },
+        {
+          "id": "qwen3.6-flash",
+          "input": [
+            "text",
+            "image",
+          ],
+        },
+        {
+          "id": "qwen3.8-max",
+          "input": [
+            "text",
+            "image",
+          ],
+        },
+      ]
+    `)
+    const descriptor = context!.settings.describe({ redactSecrets: true }).find(row => row.ns === 'llm-pi-ai')
+    const configured = object(object(object(descriptor?.value).providers)['yunshu-local']).models
+    expect(Array.isArray(configured) && configured.every(model => object(model).input !== undefined)).toBe(true)
+    expect(calls.some(call => call.path.includes('chat/completions'))).toBe(false)
+    expect(calls.every(call => call.path.startsWith('/harness/'))).toBe(true)
+  })
+
+  it('does not infer image input when installed catalogs disagree about the exact model', async () => {
+    relayModels = [{ id: 'deepseek-flash', object: 'model', supported_endpoint_types: ['openai'] }]
+    const { base } = await boot([{ id: 'deepseek-flash' }])
+    const llm = context!.llm
+    const original = llm.discoverModels.bind(llm)
+    const provider = llm.listConfigurableProviders().find(entry => entry.settingsNs === 'llm-pi-ai' && entry.declared === false)?.provider
+    if (provider === undefined) throw new Error('Expected an installed provider catalog')
+    const discovery = vi.spyOn(llm, 'discoverModels').mockImplementation(async (ns, request, signal) => {
+      const models = await original(ns, request, signal)
+      return request.provider === provider
+        ? [...models.filter(model => model.id !== 'deepseek-flash'), { id: 'deepseek-flash', inputModalities: ['text'] }]
+        : models
+    })
+    try {
+      await signIn(base)
+      expect((await llm.listModels('yunshu-local')).map(model => ({ id: model.id, input: model.inputModalities })))
+        .toEqual([{ id: 'deepseek-flash', input: ['text'] }])
+      expect(calls.some(call => call.path.includes('chat/completions'))).toBe(false)
+    } finally {
+      discovery.mockRestore()
+    }
+  })
+
+  it('keeps unknown and catalog text-only models textual without guessing aliases', async () => {
+    const ids = ['gp-5.5', 'ys-1.0', 'claode-5', 'alias-kimi-k2.6', 'deepseek-v4-flash', 'qwen3.7-max']
+    relayModels = ids.map(id => ({ id, object: 'model', supported_endpoint_types: ['openai'] }))
+    const { base } = await boot()
+    await signIn(base)
+    expect((await context!.llm.listModels('yunshu-local')).map(model => ({ id: model.id, input: model.inputModalities })))
+      .toEqual(ids.map(id => ({ id, input: ['text'] })))
+    expect(calls.some(call => call.path.includes('chat/completions'))).toBe(false)
+  })
+
+  it('preserves explicit inputs and other model overrides when the account adds a model', async () => {
+    relayModels = [{ id: 'deepseek-flash', object: 'model', supported_endpoint_types: ['openai'] }]
+    const { base } = await boot([{ id: 'deepseek-flash', input: ['text'], name: 'My model', contextWindow: 65_536, maxTokens: 2048 }])
+    await signIn(base)
+    expect((await context!.llm.listModels('yunshu-local'))[0]).toMatchObject({ id: 'deepseek-flash', inputModalities: ['text'] })
+    relayModels.push({ id: 'qwen3.6-plus', object: 'model', supported_endpoint_types: ['openai'] })
+    expect((await context!.llm.listModels('yunshu-local')).map(model => ({ id: model.id, input: model.inputModalities })))
+      .toEqual([{ id: 'deepseek-flash', input: ['text'] }, { id: 'qwen3.6-plus', input: ['text', 'image'] }])
+    const descriptor = context!.settings.describe({ redactSecrets: true }).find(row => row.ns === 'llm-pi-ai')
+    const configured = object(object(object(descriptor?.value).providers)['yunshu-local']).models
+    expect(configured).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'deepseek-flash', input: ['text'], name: 'My model', contextWindow: 65_536, maxTokens: 2048 }),
+    ]))
+    expect(calls.some(call => call.path.includes('chat/completions'))).toBe(false)
+  })
+
   it.each(['panel', 'chat'] as const)('submits H3 through the %s entry and saves uppercase generic task success', async (entry) => {
     const { base } = await boot()
     await signIn(base)

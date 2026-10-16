@@ -33,6 +33,8 @@ Phone challenge and login use `/api/user/phone/challenge` and `/api/user/phone/l
 
 Each product-route model listing first awaits the current account's `harnessAccount.refreshModels` result. The Host reads `/v1/models` with that account's relay key, excludes declared media generators, and synchronizes nonempty chat results before the adapter reads its configuration. Concurrent reads share one operation. An empty successful result exposes no chat models even if an older profile remains configured; unavailable reads become catalog failures instead of showing old models as currently available. Other provider routes keep their existing listing behavior.
 
+Missing or empty model `input` declarations inherit the installed adapter catalogs only when the exact model ID has consistent nonempty input declarations across those catalogs. Discovery reads only installed providers in the same settings namespace, without contacting their endpoints. Explicit nonempty inputs and other model settings survive refresh and changes to the account's model list. Unknown or conflicting IDs receive no inferred image capability; an inherited image declaration describes the catalog, not a verified gateway request.
+
 Startup and the 60-second timer use the same refresh operation. Login changes and logout cancel older discovery; commit checks the login generation, stored session identity, backend and expiry. Disposal cancels and awaits outstanding discovery. The UI can request a fresh catalog without waiting for the timer. Published pricing still describes media parameters, while the account's model endpoint determines its chat list; a declared or selected model can still fail upstream authorization or billing validation.
 
 ### Recharge

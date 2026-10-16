@@ -1598,8 +1598,34 @@ export function apply(ctx: Context, config: Config): void {
     modelCatalogFlight = null
   }
 
-  /** Normalize this product route and persist nonempty discoveries; empty live catalogs mask old configuration. */
-  const writeProductModels = async (ids: readonly string[] | undefined): Promise<void> => {
+  /** Read exact model input declarations from installed catalogs without querying provider endpoints. */
+  const installedModelInputs = async (ids: readonly string[], signal: AbortSignal): Promise<ReadonlyMap<string, readonly string[]>> => {
+    const llm = ctx.get('llm')
+    if (llm === undefined) return new Map()
+    const wanted = new Set(ids)
+    const inputs = new Map<string, readonly string[] | null>()
+    for (const entry of llm.listConfigurableProviders()) {
+      if (entry.settingsNs !== resolved.chatSettingsNamespace || entry.declared !== false) continue
+      signal.throwIfAborted()
+      const catalog = await llm.discoverModels(entry.settingsNs, { provider: entry.provider }, signal)
+      for (const model of catalog) {
+        if (!wanted.has(model.id) || model.inputModalities === undefined || model.inputModalities.length === 0) continue
+        const input = [...new Set(model.inputModalities)].sort((left, right) => left === right ? 0 : left === 'text' ? -1 : 1)
+        const previous = inputs.get(model.id)
+        if (previous === undefined) inputs.set(model.id, input)
+        else if (previous !== null && (previous.length !== input.length || previous.some((value, index) => value !== input[index]))) {
+          inputs.set(model.id, null)
+        }
+      }
+    }
+    return new Map([...inputs].flatMap(([id, input]) => input === null ? [] : [[id, input] as const]))
+  }
+
+  /** Preserve model overrides while filling missing inputs; empty live catalogs mask old configuration. */
+  const writeProductModels = async (
+    ids: readonly string[] | undefined,
+    defaults: ReadonlyMap<string, readonly string[]> = new Map(),
+  ): Promise<void> => {
     const settings = ctx.get('settings') as {
       describe?: (options?: { redactSecrets?: boolean }) => { ns: string; value?: unknown; revision?: number }[]
       replace?: (ns: string, section: object, expectedRevision?: number) => Promise<void>
@@ -1614,13 +1640,24 @@ export function apply(ctx: Context, config: Config): void {
     const baseURL = apiUrl(apiBaseUrl, '/v1')
     const api = 'openai-completions'
     const configured: readonly unknown[] = Array.isArray(current.models) ? current.models : []
-    const previousIds = configured.map(model => model !== null && typeof model === 'object' && 'id' in model ? model.id : null)
-    const sameModels = ids === undefined || ids.length === 0
-      || (previousIds.length === ids.length && previousIds.every((id, index) => id === ids[index]))
+    const previous = new Map<string, Record<string, unknown>>()
+    for (const model of configured) {
+      if (model !== null && typeof model === 'object' && 'id' in model && typeof model.id === 'string') {
+        previous.set(model.id, model)
+      }
+    }
+    const models = ids === undefined || ids.length === 0 ? configured : ids.map((id) => {
+      const currentModel = previous.get(id) ?? { id }
+      const input = defaults.get(id)
+      return Array.isArray(currentModel.input) && currentModel.input.length > 0 || input === undefined
+        ? currentModel
+        : { ...currentModel, input: [...input] }
+    })
+    const sameModels = JSON.stringify(configured) === JSON.stringify(models)
     if (sameModels && current.baseURL === baseURL && current.api === api && current.apiKeyEnv === resolved.relayTokenEnv) return
     await settings.replace(resolved.chatSettingsNamespace, { providers: { ...providers,
       [route]: { ...current, baseURL, api, apiKeyEnv: resolved.relayTokenEnv,
-        ...ids === undefined || ids.length === 0 ? {} : { models: ids.map(id => ({ id })) } },
+        ...ids === undefined || ids.length === 0 ? {} : { models } },
     } }, descriptor?.revision)
   }
 
@@ -1665,7 +1702,8 @@ export function apply(ctx: Context, config: Config): void {
       if (!Array.isArray(body.data)) throw new Error('模型类型列表无效，请稍后重试。')
       for (const id of mediaModelIds(body.data)) media.add(id)
       const ids = discovered.chat.filter(id => id !== '' && !media.has(id))
-      await mutateSession(async () => { await currentIdentity(); await writeProductModels(ids); await currentIdentity() })
+      const defaults = await installedModelInputs(ids, signal)
+      await mutateSession(async () => { await currentIdentity(); await writeProductModels(ids, defaults); await currentIdentity() })
       return ids
     })()
     const flight = { version, token: ownerToken, controller, promise }
