@@ -18,6 +18,7 @@ import { request as httpRequest } from 'node:http'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
+import type {} from '@deepseek-ai/dsh-artifacts-index'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import z from '@deepseek-ai/schemastery'
 import QRCode from 'qrcode'
@@ -32,6 +33,7 @@ import { registerVideoProjectTools } from './video-project-tools.ts'
 import { VideoProjectError } from './video-project.ts'
 import { createVideoProjectRelay } from './video-project-provider.ts'
 import { bindVideoAccount } from './video-project-account.ts'
+import { captureMediaOutput } from './media-output.ts'
 import type { VideoProjectRequest, VideoRequestValue } from './video-project-types.ts'
 import {
   catalogFromPricing,
@@ -975,15 +977,16 @@ export function apply(ctx: Context, config: Config): void {
     key: string,
     route: string,
     request: Record<string, unknown>,
-    signal?: AbortSignal,
+    signal = new AbortController().signal,
   ): Promise<MediaOutcome> => {
     const headers = { authorization: `Bearer ${key}`, 'content-type': 'application/json', accept: 'application/json' }
     try {
+      const output = await captureMediaOutput(ctx.get('artifactStorage'), join(stateDir, 'media'), signal)
       const created = await apiFetch(route, {
         method: 'POST',
         headers,
         body: JSON.stringify(request),
-        signal: signal ?? AbortSignal.timeout(Math.max(resolved.timeoutMs, 120_000)),
+        signal: AbortSignal.any([signal, AbortSignal.timeout(Math.max(resolved.timeoutMs, 120_000))]),
       })
       const createdText = await created.text()
       if (!created.ok) {
@@ -1002,7 +1005,7 @@ export function apply(ctx: Context, config: Config): void {
       // Poll until the task settles. Every read is a plain GET, so a slow
       // provider costs time and nothing else.
       for (let attempt = 0; attempt < 150; attempt += 1) {
-        if (signal?.aborted === true) return { ok: false, code: 'ABORTED', message: '任务已取消', taskId }
+        if (signal.aborted) return { ok: false, code: 'ABORTED', message: '任务已取消', taskId }
         await new Promise(resolve => setTimeout(resolve, attempt === 0 ? 4000 : 6000))
         const read = await apiFetch(`${route}/${encodeURIComponent(taskId)}`, {
           headers, signal: AbortSignal.timeout(resolved.timeoutMs),
@@ -1023,9 +1026,7 @@ export function apply(ctx: Context, config: Config): void {
         // `succeeded` / `success`; all three mean the file is ready, and a
         // body that already carries a URL is ready whatever it calls itself.
         if (status === 'succeed' || status === 'succeeded' || status === 'success' || status === 'completed' || remote !== null) {
-          const directory = join(stateDir, 'media')
-          await mkdir(directory, { recursive: true })
-          const file = join(directory, `vid-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomBytes(3).toString('hex')}.mp4`)
+          const filename = `vid-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomBytes(3).toString('hex')}.mp4`
           const response_ = remote === null
             ? await apiFetch(`/v1/videos/${encodeURIComponent(taskId)}/content`, {
               headers, signal: AbortSignal.timeout(300_000),
@@ -1034,8 +1035,8 @@ export function apply(ctx: Context, config: Config): void {
           if (!response_.ok) {
             return { ok: false, code: 'CONTENT_FAILED', message: `取回视频失败（HTTP ${String(response_.status)}）`, taskId }
           }
-          await writeFile(file, Buffer.from(await response_.arrayBuffer()), { mode: 0o600 })
-          return { ok: true, taskId, path: file }
+          const saved = await output.write(filename, Buffer.from(await response_.arrayBuffer()))
+          return { ok: true, taskId, path: saved.path }
         }
         if (status === 'failed' || status === 'failure' || status === 'fail' || status === 'error' || status === 'cancelled' || status === 'canceled') {
           return { ok: false, code: 'TASK_FAILED', message: readText.slice(0, 400), taskId }
@@ -1043,7 +1044,7 @@ export function apply(ctx: Context, config: Config): void {
       }
       return { ok: false, code: 'TIMEOUT', message: '任务仍在运行，稍后可在「产物」面板查看。', taskId }
     } catch (error) {
-      return { ok: false, code: 'TRANSPORT', message: error instanceof Error ? error.message : String(error) }
+      return { ok: false, code: error instanceof VideoProjectError ? error.code : 'TRANSPORT', message: error instanceof Error ? error.message : String(error) }
     }
   }
 
@@ -1203,6 +1204,7 @@ export function apply(ctx: Context, config: Config): void {
   const runImageGeneration = async (
     key: string,
     body: Record<string, unknown>,
+    signal = new AbortController().signal,
   ): Promise<MediaOutcome & { paths?: readonly string[]; mode?: string }> => {
     const prompt = readString(body, 'prompt')
     if (prompt === null) return { ok: false, code: 'INVALID_REQUEST', message: 'prompt 必填' }
@@ -1273,6 +1275,7 @@ export function apply(ctx: Context, config: Config): void {
       ...seed === null ? {} : { seed },
     }
     try {
+      const output = await captureMediaOutput(ctx.get('artifactStorage'), join(stateDir, 'media'), signal)
       // A plugin-served model answers on its own path and hands back a task;
       // the OpenAI host protocol answers inline on `/v1/images/generations`.
       if (capability.model.route !== '/v1/images/generations') {
@@ -1315,7 +1318,6 @@ export function apply(ctx: Context, config: Config): void {
           const result = task.result !== null && typeof task.result === 'object' ? task.result as Record<string, unknown> : null
           const items = Array.isArray(result?.data) ? result.data : []
           const saved: string[] = []
-          const directory = join(stateDir, 'media')
           for (const [index, item] of items.entries()) {
             if (item === null || typeof item !== 'object') continue
             const entry = item as Record<string, unknown>
@@ -1328,11 +1330,9 @@ export function apply(ctx: Context, config: Config): void {
               if (image.ok) bytes = Buffer.from(await image.arrayBuffer())
             }
             if (bytes === null) continue
-            await mkdir(directory, { recursive: true })
             const suffix = format === 'jpeg' ? 'jpg' : format === 'webp' ? 'webp' : 'png'
-            const file = join(directory, `gen-${new Date().toISOString().replace(/[:.]/g, '-')}-${String(index)}-${randomBytes(3).toString('hex')}.${suffix}`)
-            await writeFile(file, bytes, { mode: 0o600 })
-            saved.push(file)
+            const filename = `gen-${new Date().toISOString().replace(/[:.]/g, '-')}-${String(index)}-${randomBytes(3).toString('hex')}.${suffix}`
+            saved.push((await output.write(filename, bytes)).path)
           }
           if (saved.length > 0) {
             return { ok: true, model, path: saved[0], paths: saved, mode: 'generate' }
@@ -1377,8 +1377,6 @@ export function apply(ctx: Context, config: Config): void {
       }
       let payload: unknown = null
       try { payload = JSON.parse(text) } catch { payload = null }
-      const directory = join(stateDir, 'media')
-      await mkdir(directory, { recursive: true })
       const stamp = new Date().toISOString().replace(/[:.]/g, '-')
       const extension = format === 'jpeg' ? 'jpg' : format === 'webp' ? 'webp' : 'png'
       const saved: string[] = []
@@ -1397,9 +1395,8 @@ export function apply(ctx: Context, config: Config): void {
             bytes = Buffer.from(await image.arrayBuffer())
           }
           if (bytes === null) continue
-          const file = join(directory, `gen-${stamp}-${String(saved.length)}-${randomBytes(3).toString('hex')}.${extension}`)
-          await writeFile(file, bytes, { mode: 0o600 })
-          saved.push(file)
+          const filename = `gen-${stamp}-${String(saved.length)}-${randomBytes(3).toString('hex')}.${extension}`
+          saved.push((await output.write(filename, bytes)).path)
           written += 1
         }
         return written
@@ -1468,7 +1465,7 @@ export function apply(ctx: Context, config: Config): void {
         mode: references.length === 0 ? 'generate' : 'edit',
       }
     } catch (error) {
-      return { ok: false, code: 'TRANSPORT', message: error instanceof Error ? error.message : String(error) }
+      return { ok: false, code: error instanceof VideoProjectError ? error.code : 'TRANSPORT', message: error instanceof Error ? error.message : String(error) }
     }
   }
 
@@ -2724,7 +2721,12 @@ export function apply(ctx: Context, config: Config): void {
           const session = await liveSession()
           if (session?.token === undefined) { sessionExpired(response); return }
           const target = new URL(downloadPath, resolved.baseUrl)
-          const saved = await downloadToFile(target, resolved.baseUrl, session.token, join(stateDir, 'media'), resolved.timeoutMs)
+          const signal = new AbortController().signal
+          const storage = ctx.get('artifactStorage')
+          const output = await captureMediaOutput(storage, join(stateDir, 'media'), signal)
+          const directory = join(stateDir, storage === undefined ? 'media' : 'downloads')
+          let saved = await downloadToFile(target, resolved.baseUrl, session.token, directory, resolved.timeoutMs)
+          if (saved.ok) saved = { ...saved, path: (await output.publish(saved.path, basename(saved.path))).path }
           json(response, 200, saved.ok
             ? { ok: true, path: saved.path, bytes: saved.bytes, mediaType: saved.mediaType }
             : { ok: false, code: saved.code, message: saved.message })
@@ -2835,6 +2837,7 @@ export function apply(ctx: Context, config: Config): void {
     registerVideoProjectTools(videoContext, {
       stateDirectory: projectState,
       outputDirectory: resolved.videoProjectOutputDirectory,
+      get publication() { return videoContext.get('artifactStorage') },
       maxTotalSeconds: resolved.videoProjectMaxSeconds,
       maxSegments: resolved.videoProjectMaxSegments,
       pollIntervalMs: resolved.videoProjectPollIntervalMs,
@@ -2950,7 +2953,7 @@ export function apply(ctx: Context, config: Config): void {
       },
       render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
     },
-    async execute(args) {
+    async execute(args, exec) {
       const session = await requireToken()
       if ('error' in session) return { status: 'unauthorized', message: session.error }
       const relay = await requireRelayKey()
@@ -2961,7 +2964,7 @@ export function apply(ctx: Context, config: Config): void {
         ...args.size === undefined ? {} : { size: args.size },
         ...args.count === undefined ? {} : { count: args.count },
         ...args.reference_images === undefined ? {} : { references: args.reference_images },
-      })
+      }, exec.signal)
       if (!outcome.ok) {
         return { status: 'failed', model: outcome.model ?? '', message: outcome.message ?? outcome.code ?? '生成失败' }
       }

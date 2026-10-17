@@ -328,6 +328,14 @@ const SERVICE_ROLES: ServiceRole[] = [
     note: 'Serves stat, paged text, byte windows, directory listings, and the change feed for files inside a Session\'s workspace root, confined by lstat, containment, and a stat re-check.',
   },
   {
+    key: 'artifactStorage',
+    pkg: 'artifacts-index',
+    title: 'Managed artifact output',
+    mode: 'core',
+    consumers: ['credits-index'],
+    note: 'Captures writable destinations for trusted Host media producers and exclusively publishes output without changing the conversation workspace.',
+  },
+  {
     key: 'workspaceChanges',
     pkg: 'workspace-changes',
     title: 'Host per-turn changed-file summaries',

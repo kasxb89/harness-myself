@@ -1,5 +1,5 @@
 ---
-description: "Host filesystem listing and raw-file routes for the Artifacts page, configured by root directories and traversal limits."
+description: "Host artifact storage preferences, reversible file management, and bounded filesystem previews."
 kind: "package-reference"
 ---
 
@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-List files under selected directories and read them for browser preview. The index groups files by extension and returns collected entries in descending modification-time order. Empty roots expose an empty listing; the package does not create artifacts or track their Session of origin.
+Browse artifacts from configured and retained output directories, change the destination for future media, and rename, recycle or restore selected files. The index groups files by extension and sorts collected entries by modification time. It does not infer which Session created a file.
 
 ## Table of Contents
 
@@ -25,7 +25,7 @@ List files under selected directories and read them for browser preview. The ind
 <a id="use-this-package"></a>
 ## Use this package
 
-Mount the plugin with the Host `webServer` service; pair it with [ui-artifacts](../../client/ui-artifacts/README.md) for the browser page. The minimal entry lists no directories:
+Mount the plugin with the Host `webServer` service; file management also requires authenticated `connection`. Pair it with [ui-artifacts](../../client/ui-artifacts/README.md) for the browser page. The minimal entry lists no directories:
 
 ```yaml
 - id: artifacts-index
@@ -36,11 +36,17 @@ Mount the plugin with the Host `webServer` service; pair it with [ui-artifacts](
 
 | Field | Default | Meaning |
 |---|---|---|
+| `defaultOutputDirectory` | `""` | Default media output directory, created on initialization. Set together with `stateDirectory` to enable managed storage. |
+| `stateDirectory` | `""` | Separate private directory for output preferences and recovery records; never a browsing root. |
 | `roots` | `[]` | Absolute directories to browse; relative entries are ignored and duplicates removed. |
 | `maxEntries` | `2000` | Positive integer bounding the total files collected. |
 | `maxDepth` | `5` | Positive integer bounding directory traversal below each root. |
 
-`/artifacts/api/list` returns roots, file metadata and a truncation flag. `/artifacts/api/raw?path=...` reads an absolute path lexically contained in a configured root and supports a single byte range. Other methods or paths receive an error response. Origins outside loopback HTTP(S) and `dsh-app://app` are rejected; absent and `null` origins are accepted.
+`GET /artifacts/api/list` returns roots, file metadata and a truncation flag. `GET` and `HEAD /artifacts/api/raw?path=...` preview a regular file under a canonical root, with single byte-range support. Symlink paths and redirected retained roots are excluded. When Connection is mounted, all artifact reads and management requests use its authentication and Host/Origin checks. Managed storage without Connection refuses browser access; legacy roots-only configurations without it retain their read-only origin fence. HTML and SVG responses use a sandboxed content policy.
+
+`GET /artifacts/api/storage` reads the current directory, default directory, revision and retained roots. `POST` to that path accepts `directory` and `expectedRevision`; the directory must already exist and be writable. Changing it affects future output only: existing files stay in place, previous roots remain listed, and in-flight producers retain their captured destination. Both storage configuration fields are required; roots-only configurations remain read-only.
+
+`POST /artifacts/api/rename` accepts `path`, `name` and `expected: { size, mtimeMs }`. `POST /artifacts/api/trash` accepts the selected path and version; `GET` returns recoverable entries. `POST /artifacts/api/restore` accepts a recovery `id`. File management requires Connection authentication and its Host/Origin checks. Conflicts, changed files and unsupported safe moves fail without replacing existing files. Errors expose stable `ARTIFACT_…` codes. Deletion retains the bytes in a hidden same-volume recovery directory and a private persistent record; restore returns them to the original path and refuses to overwrite another file. No automatic purge or permanent-delete operation is provided.
 
 -----
 
@@ -50,7 +56,7 @@ Mount the plugin with the Host `webServer` service; pair it with [ui-artifacts](
 <details>
 <summary>Implementation internals — click to expand</summary>
 
-The plugin registers one `/artifacts` prefix through `ctx.webServer`. Each listing walks the configured roots breadth-first, skips dot-prefixed entries and unreadable paths, stops at the configured limits, then sorts collected files. Raw reads use filesystem streams. The registration belongs to the plugin effect and is removed on disposal. See [`src/index.ts`](src/index.ts).
+The plugin registers one `/artifacts` prefix through `ctx.webServer`. Each bounded listing walks current and retained canonical roots breadth-first and skips hidden, linked and unreadable entries. [`ArtifactStore`](src/storage.ts) owns persistent preferences, serialized file mutations and recovery records. Its trusted Host-only `artifactStorage` service captures a validated destination before paid work and exclusively writes bytes or copies a completed file there. These methods are not model tools and never change the conversation workspace. Raw previews use owned filesystem streams. See [`src/index.ts`](src/index.ts) and the [service contracts](src/types.ts).
 
 </details>
 
@@ -90,10 +96,10 @@ This package neither assembles provider requests nor changes model context.
 
 These limits describe the package’s current behavior and dependencies.
 
-- Root checks normalize paths without resolving symlink targets. Configure trusted directories; these routes are not a filesystem sandbox.
+- Renaming and recycling require filesystem support for exclusive same-volume hard links. Unsupported filesystems return a visible failure; no overwrite-capable fallback is attempted.
 - The listing is bounded before sorting, so a truncated response is not a globally newest-files query.
 - Hidden and unreadable entries are omitted; files can change between listing and reading.
-- The index has no filesystem watcher, write operation, Session attribution or user authentication.
+- The index has no filesystem watcher or Session attribution. Renaming or recycling changes the filesystem path; earlier chat links are not rewritten. Recovery data remains on disk until restored or removed outside this page.
 
 <a id="dev-note"></a>
 ### Dev Note

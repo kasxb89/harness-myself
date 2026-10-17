@@ -283,8 +283,9 @@ describe('video composer', () => {
     const { mount } = setup()
     const baseFetch = fetcher.getMockImplementation()!
     let items: unknown[] = [
-      { path: '/credits/media/older.mp4', name: 'older.mp4', kind: 'video', mtimeMs: 1 },
-      { path: '/credits/media/newer.mp4', name: 'newer.mp4', kind: 'video', mtimeMs: 2 },
+      { path: '/Users/user/chosen-videos/older.mp4', name: 'older.mp4', kind: 'video', mtimeMs: 1 },
+      { path: 'D:\\云枢产物\\newer.mp4', name: 'newer.mp4', kind: 'video', mtimeMs: 2 },
+      { path: 'D:\\云枢产物\\image.png', name: 'image.png', kind: 'image', mtimeMs: 3 },
     ]
     fetcher.mockImplementation(async (input, init) => {
       const path = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url

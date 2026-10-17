@@ -33,6 +33,8 @@ Reference ownership stays in the window draft across panel remounts. The assista
 
 The existing Credits media catalog supplies every model and its accepted parameters. Model changes retain materials and clear unsupported parameter choices. Materials accept up to six PNG, JPEG or WebP images, each at most 6 MiB and together at most 12 MiB, including on text-only models. AI writing receives all materials. Image generation uses only the first images accepted by the selected model, or no image inputs for a text-only model; the page explains that distinction. Reading a saved work and uploading it share one upload lock, which blocks generation across mode switches. Appends use the current material count and byte budget. Generation and upload failures preserve the draft and release busy controls. A disconnected generation has an unknown outcome: the page asks the user to refresh works before submitting again and performs no automatic generation retry.
 
+Saved works come from the artifact index across current and retained output roots, including custom directories and Windows paths. Manage their directory, names and recoverable deletion in the [Artifacts page](../ui-artifacts/README.md); the creation grid does not rewrite previous chat links.
+
 <a id="understand-the-implementation"></a>
 ## Understand the implementation
 
@@ -74,7 +76,7 @@ Submitting a prompt starts an independent provider-owned image request. This pac
 
 - Work artifacts have no saved prompt metadata, so a work can be used as a reference but cannot restore its original prompt or model settings.
 - Templates provide prompt text; output count and supported generation inputs remain limited by the selected model.
-- There are no work deletion, favorite, publication or generation-cancellation actions because the existing host exposes none.
+- The creation grid has no favorite, publication or generation-cancellation actions. File management belongs to the Artifacts page.
 - Drafts survive mode switches during the current plugin lifetime only. Reloading the app clears them, and an interrupted request may continue upstream.
 
 <a id="dev-note"></a>

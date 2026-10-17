@@ -35,6 +35,8 @@ The window draft retains the reference account and upload epoch across panel rem
 
 The video settings control shows the current aspect ratio, resolution and duration together. Its inline panel groups supported ratio cards, resolution choices, duration choices and declared audio state; models with fixed audio explain that constraint instead of offering a toggle. Duration choices use the selected resolution's declared menu when supplied; an absent entry cannot fall back to global durations. A 30-second option appears only after the model declares it. Switching models, resolutions or workflows visibly corrects incompatible selections before generation. Adaptive aspect ratio requires an image or video actually sent by the active workflow; retained hidden media and audio alone do not enable it. Excess references remain in the draft and block generation with a removal instruction rather than being silently truncated.
 
+Saved works come from the artifact index across current and retained output roots, including custom directories and Windows paths. Manage their directory, names and recoverable deletion in the [Artifacts page](../ui-artifacts/README.md); the creation grid does not rewrite previous chat links.
+
 <a id="understand-the-implementation"></a>
 ## Understand the implementation
 

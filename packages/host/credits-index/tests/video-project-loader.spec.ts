@@ -16,6 +16,7 @@ import { JobId } from '@deepseek-ai/dsh-jobs'
 import LocalJobs from '@deepseek-ai/dsh-jobs-local'
 import * as JobTools from '@deepseek-ai/dsh-tool-jobs'
 import WebServer from '@deepseek-ai/dsh-host-webserver'
+import * as Artifacts from '@deepseek-ai/dsh-artifacts-index'
 import * as Credits from '../src/index.ts'
 import { registerVideoProjectTools } from '../src/video-project-tools.ts'
 import type { VideoProjectInput, VideoProjectOptions, VideoProjectProvider } from '../src/video-project-types.ts'
@@ -31,12 +32,13 @@ afterEach(async () => {
   directory = undefined
 })
 
-async function boot(production = false, workspaceIncludesState = false) {
+async function boot(production = false, workspaceIncludesState = false, managedOutput = false) {
   directory = await mkdtemp(join(tmpdir(), 'dsh-video-tools-loader-'))
   const workspace = workspaceIncludesState ? directory : join(directory, 'workspace')
   await mkdir(workspace, { recursive: true })
   const requests: number[] = []
   const inputs: VideoProjectInput[] = []
+  const composedPaths: string[] = []
   let pending = false
   const provider: VideoProjectProvider = {
     identity: { accountId: '7', sessionFingerprint: 'login-hash' }, assertCurrent: async () => {},
@@ -52,6 +54,7 @@ async function boot(production = false, workspaceIncludesState = false) {
   const editor: VideoEditor = {
     preflight: async () => {}, probe: async path => ({ durationSeconds: Number(await readFile(path, 'utf8')) }),
     compose: async (request) => {
+      composedPaths.push(request.outputPath)
       const lengths = await Promise.all(request.clips.map(async clip => (clip.endSeconds ?? Number(await readFile(clip.path, 'utf8'))) - (clip.startSeconds ?? 0)))
       const durationSeconds = request.totalDurationSeconds ?? lengths.reduce((sum, value) => sum + value, 0)
       await mkdir(dirname(request.outputPath), { recursive: true })
@@ -62,16 +65,19 @@ async function boot(production = false, workspaceIncludesState = false) {
   const options: VideoProjectOptions = {
     stateDirectory: join(directory, 'state'), outputDirectory: 'artifacts/videos', maxTotalSeconds: 300, maxSegments: 32,
     pollIntervalMs: 1, taskTimeoutMs: 5000, acquireProvider: async () => provider, editor: () => editor,
+    get publication() { return managedOutput ? context?.get('artifactStorage') : undefined },
   }
   const VideoFixture = { name: 'video-fixture', inject: ['tools'], apply: (ctx: Context) =>{  registerVideoProjectTools(ctx, options) } }
   const modules = new Map<string, unknown>([
     ['system-prompt', SystemPrompt], ['tools', Tools], ['agents', AgentRegistry], ['jobs', LocalJobs], ['job-tools', JobTools],
-    ['video-fixture', VideoFixture], ['credits', Credits], ['webserver', WebServer],
+    ['video-fixture', VideoFixture], ['credits', Credits], ['webserver', WebServer], ['artifacts', Artifacts],
   ])
   const path = join(directory, 'cordis.yml')
   await writeFile(path, [
     '- name: system-prompt', '- name: tools', '- name: agents', '- name: jobs', '- name: job-tools',
-    ...production ? ['- name: webserver', '  config:', "    host: '127.0.0.1'", '    port: 0', '- name: credits', '  config:', `    stateDir: '${join(directory, 'credits')}'`] : ['- name: video-fixture'], '',
+    ...production || managedOutput ? ['- name: webserver', '  config:', "    host: '127.0.0.1'", '    port: 0'] : [],
+    ...managedOutput ? ['- name: artifacts', '  config:', `    defaultOutputDirectory: '${join(directory, 'selected-output')}'`, `    stateDirectory: '${join(directory, 'artifact-settings')}'`] : [],
+    ...production ? ['- name: credits', '  config:', `    stateDir: '${join(directory, 'credits')}'`] : ['- name: video-fixture'], '',
   ].join('\n'))
   context = new Context()
   context.baseUrl = pathToFileURL(directory).href + '/'
@@ -105,7 +111,7 @@ async function boot(production = false, workspaceIncludesState = false) {
   let callIndex = 0
   const call = (name: string, args: unknown, signal = new AbortController().signal) => ctx.tools.execute({ callId: ToolCallId(`video-${String(++callIndex)}`), name, arguments: args, agent, signal })
   return {
-    ctx, agent, call, requests, inputs, workspace, stateDirectory: options.stateDirectory,
+    ctx, agent, call, requests, inputs, composedPaths, workspace, stateDirectory: options.stateDirectory,
     setPending: (value: boolean) => { pending = value },
   }
 }
@@ -117,6 +123,31 @@ function json(value: unknown): Record<string, unknown> {
 }
 
 describe('video tools through Loader, real tool registry and jobs runtime', () => {
+  it('publishes managed long-video and local-edit results while every composition stays inside the workspace', async () => {
+    const fixture = await boot(false, false, true)
+    const destination = await fixture.ctx.get('artifactStorage')!.capture(new AbortController().signal)
+    const started = json((await fixture.call('generate_video_project', { prompt: 'A white cup', total_duration_seconds: 40 })).value)
+    const projectJob = JobId(String(started.job_id))
+    await vi.waitFor(() => { expect(fixture.ctx.jobs.get(projectJob, fixture.agent.id).status).toBe('completed') })
+    const project = json((await fixture.call('video_project_status', { project_id: started.project_id })).value)
+    const projectOutput = json(JSON.parse(fixture.ctx.jobs.read(projectJob, fixture.agent.id).result ?? '{}'))
+    expect(projectOutput.final_path).toBe(project.final_path)
+    expect(String(project.final_path).startsWith(destination.directory)).toBe(true)
+    expect(await readFile(String(project.final_path), 'utf8')).toBe('40')
+    const original = join(fixture.workspace, 'existing.mp4')
+    await writeFile(original, '9')
+    const edited = json((await fixture.call('edit_video', { clips: [{ path: original, start_seconds: 1, end_seconds: 7 }] })).value)
+    const editJob = JobId(String(edited.job_id))
+    await vi.waitFor(() => { expect(fixture.ctx.jobs.get(editJob, fixture.agent.id).status).toBe('completed') })
+    const editOutput = json(JSON.parse(fixture.ctx.jobs.read(editJob, fixture.agent.id).result ?? '{}'))
+    expect(String(editOutput.final_path).startsWith(destination.directory)).toBe(true)
+    expect(await readFile(String(editOutput.final_path), 'utf8')).toBe('6')
+    expect(await readFile(original, 'utf8')).toBe('9')
+    expect(fixture.composedPaths).toHaveLength(2)
+    expect(fixture.composedPaths.every(path => path.startsWith(fixture.workspace))).toBe(true)
+    expect(fixture.requests).toEqual([15, 15, 10])
+  })
+
   it('keeps model-facing audio references and requested native audio in the saved project input', async () => {
     const fixture = await boot()
     const result = await fixture.call('generate_video_project', {

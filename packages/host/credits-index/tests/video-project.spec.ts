@@ -1,4 +1,5 @@
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { copyFile, mkdtemp, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, win32 } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -97,6 +98,124 @@ describe('portable workspace output containment', () => {
 })
 
 describe('durable account-bound video projects', () => {
+  it('captures the selected output once and retries a failed publication without regenerating or recomposing', async () => {
+    const fixture = await setup()
+    const original = join(dirname(fixture.workspace), 'selected-output')
+    let selected = original
+    let publicationFails = true
+    await mkdir(original)
+    const capture = vi.fn(async () => ({ directory: selected }))
+    const validate = vi.fn(async (destination: { directory: string }) => { expect(destination.directory).toBe(original) })
+    const publish = vi.fn(async (request: { destination: { directory: string }; sourcePath: string; filename: string }) => {
+      expect(request.destination.directory).toBe(original)
+      if (publicationFails) throw new Error('disk unavailable')
+      const path = join(request.destination.directory, request.filename)
+      await copyFile(request.sourcePath, path)
+      return { path }
+    })
+    fixture.options.publication = { capture, validate, publish }
+    const manifest = await fixture.prepare()
+    expect(manifest.publicationDirectory).toBe(original)
+    expect(manifest.composedPath).toBeUndefined()
+    selected = join(dirname(fixture.workspace), 'next-output')
+    const failed = await runVideoProject(fixture.options, manifest, fixture.provider, fixture.editor, fixture.job, fixture.signal)
+    expect(failed).toMatchObject({ status: 'failed', detail: 'ARTIFACT_PUBLISH_FAILED' })
+    expect(fixture.submitted).toBe(3)
+    expect(fixture.events.filter(event => event === 'compose')).toHaveLength(1)
+    expect(validate).toHaveBeenCalledTimes(3)
+    expect(capture).toHaveBeenCalledTimes(1)
+    const resumed = await readVideoProject(fixture.options, manifest.id, 'chat-one', fixture.workspace, fixture.provider.identity)
+    expect(resumed.composedPath?.startsWith(fixture.workspace)).toBe(true)
+    expect(await readFile(resumed.composedPath!, 'utf8')).toBe('40')
+    publicationFails = false
+    const succeeded = await runVideoProject(fixture.options, resumed, fixture.provider, fixture.editor, fixture.job, fixture.signal)
+    expect(succeeded.status).toBe('completed')
+    expect(JSON.parse(succeeded.result ?? '{}')).toMatchObject({ final_path: resumed.finalPath })
+    expect(resumed.finalPath?.startsWith(original)).toBe(true)
+    expect(await readFile(resumed.finalPath!, 'utf8')).toBe('40')
+    expect(await readFile(resumed.composedPath!, 'utf8')).toBe('40')
+    expect(fixture.submitted).toBe(3)
+    expect(fixture.events.filter(event => event === 'compose')).toHaveLength(1)
+    expect(capture).toHaveBeenCalledTimes(1)
+    expect(publish).toHaveBeenCalledTimes(2)
+  })
+
+  it('validates the retained destination before billing and never redirects a resumed project', async () => {
+    const fixture = await setup()
+    const retained = join(dirname(fixture.workspace), 'retained')
+    const capture = vi.fn(async () => ({ directory: retained }))
+    const validate = vi.fn(async () => { throw new Error('destination is no longer writable') })
+    const publish = vi.fn(async () => ({ path: 'unused' }))
+    fixture.options.publication = { capture, validate, publish }
+    const manifest = await fixture.prepare()
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const outcome = await runVideoProject(fixture.options, manifest, fixture.provider, fixture.editor, fixture.job, fixture.signal)
+      expect(outcome).toMatchObject({ status: 'failed', detail: 'ARTIFACT_DESTINATION_UNAVAILABLE' })
+    }
+    expect(capture).toHaveBeenCalledTimes(1)
+    expect(validate).toHaveBeenNthCalledWith(1, { directory: retained }, expect.any(AbortSignal))
+    expect(fixture.submitted).toBe(0)
+    expect(publish).not.toHaveBeenCalled()
+  })
+
+  it('recovers when publication succeeds but recording completion fails without overwriting the first copy', async () => {
+    const fixture = await setup()
+    const destination = join(dirname(fixture.workspace), 'selected-output')
+    await mkdir(destination)
+    const published: string[] = []
+    let recordDirectory = ''
+    fixture.options.publication = {
+      capture: async () => ({ directory: destination }), validate: async () => {},
+      publish: async (request) => {
+        const path = join(request.destination.directory, request.filename)
+        await copyFile(request.sourcePath, path, constants.COPYFILE_EXCL)
+        published.push(path)
+        if (published.length === 1) await rename(recordDirectory, recordDirectory + '-unavailable')
+        return { path }
+      },
+    }
+    const manifest = await fixture.prepare()
+    recordDirectory = join(fixture.options.stateDirectory, manifest.id)
+    expect(await runVideoProject(fixture.options, manifest, fixture.provider, fixture.editor, fixture.job, fixture.signal))
+      .toMatchObject({ status: 'failed', detail: 'PROJECT_STORAGE_FAILED' })
+    await rename(recordDirectory + '-unavailable', recordDirectory)
+    const resumed = await readVideoProject(fixture.options, manifest.id, 'chat-one', fixture.workspace, fixture.provider.identity)
+    expect(resumed.finalPath).toBeUndefined()
+    expect(resumed.composedPath).toBeDefined()
+    expect((await runVideoProject(fixture.options, resumed, fixture.provider, fixture.editor, fixture.job, fixture.signal)).status).toBe('completed')
+    expect(published).toHaveLength(2)
+    expect(published[0]).not.toBe(published[1])
+    expect(await Promise.all(published.map(path => readFile(path, 'utf8')))).toEqual(['40', '40'])
+    expect(fixture.submitted).toBe(3)
+    expect(fixture.events.filter(event => event === 'compose')).toHaveLength(1)
+  })
+
+  it('keeps older manifests in their original workspace when managed storage becomes available', async () => {
+    const fixture = await setup()
+    const manifest = await fixture.prepare()
+    const restored = await readVideoProject(fixture.options, manifest.id, 'chat-one', fixture.workspace, fixture.provider.identity)
+    const capture = vi.fn(async () => { throw new Error('must not capture a different destination') })
+    const validate = vi.fn(async () => {})
+    const publish = vi.fn(async () => ({ path: 'unused' }))
+    fixture.options.publication = { capture, validate, publish }
+    expect((await runVideoProject(fixture.options, restored, fixture.provider, fixture.editor, fixture.job, fixture.signal)).status).toBe('completed')
+    expect(restored.finalPath?.startsWith(fixture.workspace)).toBe(true)
+    expect(capture).not.toHaveBeenCalled()
+    expect(validate).not.toHaveBeenCalled()
+    expect(publish).not.toHaveBeenCalled()
+  })
+
+  it('refuses an unwritable selected output before preparing paid requests', async () => {
+    const fixture = await setup()
+    const build = vi.spyOn(fixture.provider, 'build')
+    fixture.options.publication = {
+      capture: async () => { throw new Error('read-only disk') }, validate: async () => {}, publish: async () => ({ path: 'unused' }),
+    }
+    await expect(fixture.prepare()).rejects.toMatchObject({ code: 'ARTIFACT_DESTINATION_UNAVAILABLE' })
+    expect(build).not.toHaveBeenCalled()
+    expect(fixture.submitted).toBe(0)
+  })
+
   it('retains the complete verbatim brief while limiting each planned request to its assigned shot', async () => {
     const fixture = await setup()
     const build = vi.spyOn(fixture.provider, 'build')
@@ -372,6 +491,23 @@ describe('durable account-bound video projects', () => {
       await writeFile(path, JSON.stringify({ ...manifest, ...completion }))
       await expect(readVideoProject(fixture.options, manifest.id, 'chat-one', fixture.workspace, fixture.provider.identity))
         .rejects.toMatchObject({ code: 'INVALID_RECORD' })
+    }
+  })
+
+  it('rejects damaged publication destinations and incomplete retained composition records', async () => {
+    const fixture = await setup()
+    const manifest = await fixture.prepare()
+    const path = join(fixture.options.stateDirectory, manifest.id, 'manifest.json')
+    const composedPath = join(fixture.workspace, 'composed.mp4')
+    for (const damaged of [
+      { publicationDirectory: 'relative' }, { publicationDirectory: 5 }, { publicationDirectory: `${fixture.workspace}\nother` },
+      { publicationDirectory: fixture.workspace, composedPath },
+      { publicationDirectory: fixture.workspace, composedDurationSeconds: 40 },
+      { publicationDirectory: fixture.workspace, composedPath: 'relative', composedDurationSeconds: 40 },
+      { publicationDirectory: fixture.workspace, composedPath, composedDurationSeconds: 40 },
+    ]) {
+      await writeFile(path, JSON.stringify({ ...manifest, ...damaged }))
+      await expect(readVideoProject(fixture.options, manifest.id, 'chat-one', fixture.workspace, fixture.provider.identity)).rejects.toMatchObject({ code: 'INVALID_RECORD' })
     }
   })
 

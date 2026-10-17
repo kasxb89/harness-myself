@@ -416,6 +416,37 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     ],
   },
   {
+    key: 'artifactStorage',
+    summary: 'Optional shared output capability consumed by account media generators.',
+    description: 'Optional shared output capability consumed by account media generators.',
+    methods: [
+      {
+        signature: 'capture(signal: AbortSignal): Promise<ArtifactDestination>',
+        description: 'Validate writability and retain this exact directory for an in-flight operation.',
+        parameters: [{ name: 'signal', description: 'Caller lifetime while checking local output availability.' }],
+        returns: 'The currently selected canonical output directory.',
+      },
+      {
+        signature: 'validate(destination: ArtifactDestination, signal: AbortSignal): Promise<void>',
+        description: 'Check a retained destination again before resuming any further paid work.',
+        parameters: [{ name: 'destination', description: 'Original approved directory from the durable operation.' }, { name: 'signal', description: 'Caller lifetime while checking local output availability.' }],
+        returns: 'Resolves only when the original directory remains approved and writable.',
+      },
+      {
+        signature: 'write(request: ArtifactWriteRequest): Promise<ArtifactWriteResult>',
+        description: 'Create an exclusive output; never replace an existing user file.',
+        parameters: [{ name: 'request', description: 'Captured destination, portable filename, bytes and caller lifetime.' }],
+        returns: 'The complete exclusively published output path.',
+      },
+      {
+        signature: 'publish(request: ArtifactPublishRequest): Promise<ArtifactWriteResult>',
+        description: 'Copy a finished file without replacing a destination or removing its source.',
+        parameters: [{ name: 'request', description: 'Captured destination, finished source, portable filename and caller lifetime.' }],
+        returns: 'The complete exclusively published copy path.',
+      },
+    ],
+  },
+  {
     key: 'attachments',
     summary: 'Immutable binary attachment service.',
     description: 'Immutable binary attachment service. Implementations validate bytes before publishing a reference.',
@@ -4720,6 +4751,22 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'ArchiveSessionOptions',
     declaration: 'export interface ArchiveSessionOptions {\n    readonly stopActivity?: boolean;\n}',
+  },
+  {
+    name: 'ArtifactDestination',
+    declaration: 'export interface ArtifactDestination {\n    readonly directory: string;\n}',
+  },
+  {
+    name: 'ArtifactPublishRequest',
+    declaration: 'export interface ArtifactPublishRequest {\n    readonly destination: ArtifactDestination;\n    readonly sourcePath: string;\n    readonly filename: string;\n    readonly signal: AbortSignal;\n}',
+  },
+  {
+    name: 'ArtifactWriteRequest',
+    declaration: 'export interface ArtifactWriteRequest {\n    readonly destination: ArtifactDestination;\n    readonly filename: string;\n    readonly bytes: Uint8Array;\n    readonly signal: AbortSignal;\n}',
+  },
+  {
+    name: 'ArtifactWriteResult',
+    declaration: 'export interface ArtifactWriteResult {\n    readonly path: string;\n}',
   },
   {
     name: 'AskOptions',

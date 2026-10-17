@@ -92,6 +92,9 @@ flowchart LR
   svc_settingsController["ctx.settingsController<br/>Host settings-surface Remote controller"]
   pkg_api_workspace_files["api-workspace-files"]
   svc_workspaceFiles["ctx.workspaceFiles<br/>Host workspace file Remote service"]
+  pkg_artifacts_index["artifacts-index"]
+  svc_artifactStorage["ctx.artifactStorage<br/>Managed artifact output"]
+  pkg_credits_index["credits-index"]
   pkg_workspace_changes["workspace-changes"]
   svc_workspaceChanges["ctx.workspaceChanges<br/>Host per-turn changed-file summaries"]
   pkg_api_terminal_controller["api-terminal-controller"]
@@ -118,7 +121,6 @@ flowchart LR
   svc_credentials["ctx.credentials<br/>Credential seam"]
   pkg_credentials_local["credentials-local"]
   svc_harnessAccount["ctx.harnessAccount<br/>Product account relay credential"]
-  pkg_credits_index["credits-index"]
   pkg_deepseek_account["deepseek-account"]
   svc_deepseekAccount["ctx.deepseekAccount<br/>DeepSeek account"]
   pkg_deepseek_account_platform["deepseek-account-platform"]
@@ -305,6 +307,7 @@ flowchart LR
   pkg_api_workspace_controller --> svc_workspaceController
   pkg_api_workspace_files --> svc_workspaceFiles
   pkg_app_boot --> svc_profileContext
+  pkg_artifacts_index --> svc_artifactStorage
   pkg_attachment --> svc_attachments
   pkg_attachment_local --> svc_attachments
   pkg_authorization --> svc_authorization
@@ -455,6 +458,7 @@ flowchart LR
   svc_approval --> pkg_acp
   svc_approval --> pkg_tool_bash
   svc_approval --> pkg_tools
+  svc_artifactStorage --> pkg_credits_index
   svc_attachments --> pkg_api_session_controller
   svc_attachments --> pkg_llm_deepseek
   svc_attachments --> pkg_llm_pi_ai
@@ -627,6 +631,7 @@ flowchart LR
 | `ctx.credentialsController` | `core` | [`api-settings-controller`](../packages/api/settings-controller) | - | - | - | 把凭据引用 seam 投影到生成的 Remote namespace：批量扇出、视图投影与拒绝映射都在这里，而不在 seam Definition 上。 |
 | `ctx.settingsController` | `core` | [`api-settings-controller`](../packages/api/settings-controller) | - | - | - | 把用户设置 seam 投影到生成的 Remote namespace：读取一律脱敏，所有拒绝在这里分类，而不在 seam Definition 上。 |
 | `ctx.workspaceFiles` | `core` | [`api-workspace-files`](../packages/api/workspace-files) | - | - | - | 为会话工作区根内的文件提供 stat、分页文本、字节窗口、目录列举与变更流，经 lstat、包含关系与 stat 重检限定。 |
+| `ctx.artifactStorage` | `core` | [`artifacts-index`](../packages/deliverables/artifacts-index) | - | [`credits-index`](../packages/host/credits-index) | - | 为可信 Host 的媒体生成方捕获可写目标，以独占方式发布输出，不改变会话工作区。 |
 | `ctx.workspaceChanges` | `core` | [`workspace-changes`](../packages/deliverables/workspace-changes) | - | - | - | Serves the summary each workspace/changes event announced and each listed file's turn-start and turn-end comparison, by Session and event sequence, until that Session is disposed; the log carries only the turn. |
 | `ctx.terminalController` | `core` | [`api-terminal-controller`](../packages/api/terminal-controller) | - | - | - | 通过子进程提供方与类型化 Remote 传输管理用户终端进程、解析默认 shell，并恢复有界终端屏幕。 |
 | `ctx.workspaceController` | `core` | [`api-workspace-controller`](../packages/api/workspace-controller) | - | - | - | 通过生成的 Remote namespace 负责 Workspace 命令和可在重连后收敛的 Workspace 状态投递。 |

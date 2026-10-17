@@ -139,6 +139,10 @@ interface WorkspaceChanges {
 }
 ```
 
+## 产物输出管理
+
+可选的 `ctx.artifactStorage` 服务是由 [artifacts-index](../../packages/deliverables/artifacts-index/README.zh.md) 声明、仅供可信 Host 使用的能力。[`ArtifactDestination`、`ArtifactWriteRequest`、`ArtifactPublishRequest`、`ArtifactWriteResult` 与 `ArtifactStorageInfo`](../../packages/deliverables/artifacts-index/src/types.ts) 契约描述已捕获的目标、独占输出与持久浏览根目录。生成方在计费前捕获可写目标，随后写入字节或复制成片，不替换已有文件。该服务不改变会话工作区、不添加模型工具，也不追加 Session 事件。文件管理与恢复由同包经过认证的浏览器路由负责。
+
 ## 持久事件与提供的摘要
 
 `tool-present` 通过声明合并把 `deliverables/presented: { turn; callId; files: PresentedFile[] }` 加入 `SessionEventMap`，每次 `present` 的最终结果成功时追加一条。`workspace-changes` 合并 `workspace/changes: { turn }`，在顶层轮停止时追加。摘要本身不在日志里：Session 被观察时由记录器保留，组合装配存储时还写入 `workspace_changes` 域。`workspaceChanges.summary(sessionId, seq)` 按事件序号读取实时或已存储的摘要，因此有存储时，改动文件卡片可以在 Session 释放或 Host 重启后保留。`workspaceChanges.diff(sessionId, seq, index, signal)` 只为实时 Session 对比所列文件。同一轮后来的事件替代先前的，客户端只保留最新一条。生成的[持久化目录](../persistence-catalog.zh.md#deliverablespresented--log-only)记录了两处声明位置。两个事件都不会进入模型请求。
@@ -150,6 +154,45 @@ interface WorkspaceChanges {
 ## Cordis API
 
 Generated from source by `scripts/gen-cordis-catalog.ts` (verified fresh by `pnpm run verify-cordis-catalog` in doc-sync; regenerate with `pnpm run gen-cordis-catalog`) — the language sides differ only in locale-specific paired document paths. Signature blocks use a `ts cordis-catalog` fence and keep the original source JSDoc; dispatch modes are defined in the [primer](../cordis-primer.zh.md#dispatch-modes), and the framework-inherited `ctx` API lives in [cordis-api/inherited.md](../cordis-api/inherited.md).
+
+<a id="ctxartifactstorage--artifactstorageservice"></a>
+
+### `ctx.artifactStorage` — `ArtifactStorageService`
+
+Optional shared output capability consumed by account media generators.
+
+```ts cordis-catalog
+/**
+ * Validate writability and retain this exact directory for an in-flight operation.
+ * @param signal - Caller lifetime while checking local output availability.
+ * @returns The currently selected canonical output directory.
+ */
+capture(signal: AbortSignal): Promise<ArtifactDestination>
+
+/**
+ * Check a retained destination again before resuming any further paid work.
+ * @param destination - Original approved directory from the durable operation.
+ * @param signal - Caller lifetime while checking local output availability.
+ * @returns Resolves only when the original directory remains approved and writable.
+ */
+validate(destination: ArtifactDestination, signal: AbortSignal): Promise<void>
+
+/**
+ * Create an exclusive output; never replace an existing user file.
+ * @param request - Captured destination, portable filename, bytes and caller lifetime.
+ * @returns The complete exclusively published output path.
+ */
+write(request: ArtifactWriteRequest): Promise<ArtifactWriteResult>
+
+/**
+ * Copy a finished file without replacing a destination or removing its source.
+ * @param request - Captured destination, finished source, portable filename and caller lifetime.
+ * @returns The complete exclusively published copy path.
+ */
+publish(request: ArtifactPublishRequest): Promise<ArtifactWriteResult>
+```
+
+Source: [`packages/deliverables/artifacts-index/src/types.ts`](../../packages/deliverables/artifacts-index/src/types.ts)
 
 <a id="ctxworkspacechanges--workspacechanges"></a>
 

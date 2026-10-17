@@ -59,7 +59,7 @@ Definitions are session-scoped and process-local: other sessions read them as ab
 
 ### Trust stance
 
-The sandbox isolates globals but is not a security boundary: Node globals are absent or redirect to Cordis services (`ctx.fs`, `ctx.web`, `ctx.bash`, the timer helpers), and a host half receives a façade without framework internals, yet the services it declares reach the live runtime. Treat a dynamic package like bash access — see the [self-referential toolset reference](README.md).
+The sandbox isolates globals but is not a security boundary: Node globals are absent or redirect to Cordis services (`ctx.fs`, `ctx.web`, `ctx.bash`, the timer helpers), and a host half receives a façade without framework internals, yet the services it declares reach the live runtime. Treat a dynamic package like bash access — see the [self-referential toolset reference](README.md). The trusted Host artifact-output service is withheld from dynamic packages on both declared access and optional lookup; model-created code uses the regular file tools.
 
 -----
 

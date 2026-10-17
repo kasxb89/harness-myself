@@ -1,6 +1,7 @@
 /** Private video-project records and provider callbacks; no credential is persisted. @module */
 
 import type { Session } from '@deepseek-ai/dsh-session'
+import type { ArtifactStorageService } from '@deepseek-ai/dsh-artifacts-index'
 import type { VideoEditor } from './video-edit.ts'
 
 /** JSON request data reconstructed exactly when a known task is resumed. */
@@ -101,6 +102,8 @@ export interface VideoProjectOptions {
   stateDirectory: string
   /** Workspace-relative artifact directory; resolved against each calling agent's cwd. */
   outputDirectory: string
+  /** Optional trusted publication service; composition remains confined to the workspace. */
+  publication?: Pick<ArtifactStorageService, 'capture' | 'validate' | 'publish'> | undefined
   /** Maximum accepted final seconds. */
   maxTotalSeconds: number
   /** Maximum billable requests per project. */

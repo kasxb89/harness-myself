@@ -52,6 +52,9 @@
     },
     {
       "path": "../../llm/llm-pi-ai"
+    },
+    {
+      "path": "../../deliverables/artifacts-index"
     }
   ]
 }

@@ -197,7 +197,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
       const answer = await response.json() as { items?: readonly ArtifactItem[]; payload?: { items?: readonly ArtifactItem[] } }
       const items = answer.items ?? answer.payload?.items
       if (items === undefined) throw new Error('INVALID_ARTIFACT_LIST')
-      setHistory(items.filter(item => item.kind === 'image' && item.path.includes('/credits/media/'))
+      setHistory(items.filter(item => item.kind === 'image')
         .sort((left, right) => (right.mtimeMs ?? 0) - (left.mtimeMs ?? 0)).slice(0, 24))
       setHistoryError(false)
     } catch (_error) {

@@ -44,7 +44,7 @@ The product uses phone sign-in in the **Balance** panel and connects to `https:/
 
 The product's Chat area hides the Trajectory and marketplace Video Views through [Conversation's `hiddenViews` configuration](../../client/ui-conversation/README.md#shell-and-standard-props). The separate AI Creation video page and the video plugin's Host capabilities remain available.
 
-The Artifacts page indexes generated images and videos under the active Harness home's `plugin-data/credits/media` directory.
+The [Artifacts page](../../client/ui-artifacts/README.md) manages the save directory, search, renaming and recoverable deletion. New media defaults to the active Harness home's `plugin-data/credits/media` directory; changing the directory preserves earlier files and roots. The trusted [artifact storage service](../../deliverables/artifacts-index/README.md) publishes new output without changing the conversation workspace.
 
 The sidebar [Skill store](../../client/ui-skillhub/README.md) searches SkillHub community skills and installs selected skills into the product. Installed skills become available to existing conversations without changing another application's skill directories.
 

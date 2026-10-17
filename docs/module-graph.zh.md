@@ -473,7 +473,6 @@ flowchart TD
   pkg_credentials_local --> pkg_credentials
   pkg_credentials_local --> pkg_home_paths
   pkg_credentials_local --> pkg_launch_environment
-  pkg_artifacts_index --> pkg_host_webserver
   pkg_anonymous_user_id --> pkg_brand
   pkg_anonymous_user_id --> pkg_home_paths
   pkg_lsp --> pkg_brand
@@ -502,6 +501,8 @@ flowchart TD
   pkg_app_boot --> pkg_home_paths
   pkg_app_boot --> pkg_launch_environment
   pkg_app_boot --> pkg_system_prompt
+  pkg_artifacts_index --> pkg_client_connection
+  pkg_artifacts_index --> pkg_host_webserver
   pkg_experimental_computer_use_cua_driver_mcp --> pkg_computer_use
   pkg_experimental_inspector --> pkg_client_connection
   pkg_experimental_inspector --> pkg_client_modules
@@ -959,10 +960,12 @@ flowchart TD
   pkg_tool_call_timeout_policy --> pkg_llm
   pkg_tool_call_timeout_policy --> pkg_timeout
   pkg_tool_call_timeout_policy --> pkg_tools
+  pkg_credits_index --> pkg_artifacts_index
   pkg_credits_index --> pkg_credentials
   pkg_credits_index --> pkg_fs
   pkg_credits_index --> pkg_host_webserver
   pkg_credits_index --> pkg_jobs
+  pkg_credits_index --> pkg_llm
   pkg_credits_index --> pkg_sandbox
   pkg_credits_index --> pkg_sandbox_policy
   pkg_credits_index --> pkg_session
@@ -1602,7 +1605,6 @@ flowchart TD
 | [`computer-use`](../packages/computer-use/computer-use) | `computer-use` | [`brand`](../packages/util/brand) |
 | [`authorization`](../packages/credentials/authorization) | `credentials` | [`credentials`](../packages/credentials/credentials), [`llm`](../packages/llm/llm) |
 | [`credentials-local`](../packages/credentials/credentials-local) | `credentials` | [`atomic-write`](../packages/util/atomic-write), [`credentials`](../packages/credentials/credentials), [`home-paths`](../packages/util/home-paths), [`launch-environment`](../packages/util/launch-environment) |
-| [`artifacts-index`](../packages/deliverables/artifacts-index) | `deliverables` | [`host-webserver`](../packages/host/webserver) |
 | [`anonymous-user-id`](../packages/identity/anonymous-user-id) | `identity` | [`brand`](../packages/util/brand), [`home-paths`](../packages/util/home-paths) |
 | [`lsp`](../packages/lsp/lsp) | `lsp` | [`brand`](../packages/util/brand), [`llm`](../packages/llm/llm) |
 | [`storage-domain`](../packages/storage/storage-domain) | `storage` | [`storage`](../packages/storage/storage) |
@@ -1620,6 +1622,7 @@ flowchart TD
 | [`api-terminal-controller`](../packages/api/terminal-controller) | `api` | [`subprocess`](../packages/subprocess/subprocess) |
 | [`attachment-local`](../packages/attachment/attachment-local) | `attachment` | [`attachment`](../packages/attachment/attachment), [`home-paths`](../packages/util/home-paths) |
 | [`app-boot`](../packages/boot/app-boot) | `boot` | [`home-paths`](../packages/util/home-paths), [`launch-environment`](../packages/util/launch-environment), [`system-prompt`](../packages/core/system-prompt) |
+| [`artifacts-index`](../packages/deliverables/artifacts-index) | `deliverables` | [`client-connection`](../packages/client/connection), [`host-webserver`](../packages/host/webserver) |
 | [`experimental-computer-use-cua-driver-mcp`](../packages/experimental/computer-use-cua-driver-mcp) | `experimental` | [`computer-use`](../packages/computer-use/computer-use) |
 | [`experimental-inspector`](../packages/experimental/inspector) | `experimental` | [`client-connection`](../packages/client/connection), [`client-modules`](../packages/client/modules), [`host-webserver`](../packages/host/webserver) |
 | [`experimental-webworker-runtime`](../packages/experimental/webworker-runtime) | `experimental` | [`client-connection`](../packages/client/connection), [`client-modules`](../packages/client/modules), [`host-webserver`](../packages/host/webserver) |
@@ -1733,7 +1736,7 @@ flowchart TD
 | [`message-feedback`](../packages/feedback/message-feedback) | `feedback` | [`brand`](../packages/util/brand), [`command-feedback`](../packages/feedback/command-feedback), [`llm`](../packages/llm/llm), [`session`](../packages/core/session), [`session-persistence`](../packages/session/session-persistence), [`typert-protocol`](../packages/typert/protocol) |
 | [`repeat-tool-reminder`](../packages/guard/repeat-tool-reminder) | `guard` | [`agent`](../packages/core/agent), [`tools`](../packages/core/tools) |
 | [`tool-call-timeout-policy`](../packages/guard/timeout-policy) | `guard` | [`llm`](../packages/llm/llm), [`timeout`](../packages/util/timeout), [`tools`](../packages/core/tools) |
-| [`credits-index`](../packages/host/credits-index) | `host` | [`credentials`](../packages/credentials/credentials), [`fs`](../packages/fs/fs), [`host-webserver`](../packages/host/webserver), [`jobs`](../packages/jobs/jobs), [`sandbox`](../packages/sandbox/sandbox), [`sandbox-policy`](../packages/sandbox/sandbox-policy), [`session`](../packages/core/session), [`subprocess`](../packages/subprocess/subprocess), [`system-prompt`](../packages/core/system-prompt), [`tools`](../packages/core/tools), [`working-directory`](../packages/session/working-directory) |
+| [`credits-index`](../packages/host/credits-index) | `host` | [`artifacts-index`](../packages/deliverables/artifacts-index), [`credentials`](../packages/credentials/credentials), [`fs`](../packages/fs/fs), [`host-webserver`](../packages/host/webserver), [`jobs`](../packages/jobs/jobs), [`llm`](../packages/llm/llm), [`sandbox`](../packages/sandbox/sandbox), [`sandbox-policy`](../packages/sandbox/sandbox-policy), [`session`](../packages/core/session), [`subprocess`](../packages/subprocess/subprocess), [`system-prompt`](../packages/core/system-prompt), [`tools`](../packages/core/tools), [`working-directory`](../packages/session/working-directory) |
 | [`tool-ask-user`](../packages/interaction/tool-ask-user) | `interaction` | [`agent`](../packages/core/agent), [`tools`](../packages/core/tools), [`user-questions`](../packages/interaction/user-questions) |
 | [`tool-jobs`](../packages/jobs/tool-jobs) | `jobs` | [`agent`](../packages/core/agent), [`jobs`](../packages/jobs/jobs), [`llm`](../packages/llm/llm), [`output-retention`](../packages/util/output-retention), [`system-prompt`](../packages/core/system-prompt), [`tools`](../packages/core/tools) |
 | [`tool-lsp`](../packages/lsp/tool-lsp) | `lsp` | [`llm`](../packages/llm/llm), [`lsp`](../packages/lsp/lsp), [`system-prompt`](../packages/core/system-prompt), [`timeout`](../packages/util/timeout), [`tools`](../packages/core/tools), [`working-directory`](../packages/session/working-directory) |

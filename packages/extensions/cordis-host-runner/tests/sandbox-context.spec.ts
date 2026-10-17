@@ -151,6 +151,29 @@ describe('sandbox context façade — inject gate on services', () => {
     expect(message).toContain('inject: [\'systemPrompt\', …]')
   })
 
+  it.each([
+    ['optional lookup', "ctx.get('artifactStorage').write({})", [], 'artifactStorage is reserved for trusted Host producers'],
+    ['declared property', 'ctx.artifactStorage.trash({})', ['artifactStorage'], 'artifactStorage is reserved for trusted Host producers'],
+    ['coerced optional lookup', "ctx.get({ toString() { return 'artifactStorage' } }).write({})", [], 'service lookup requires a string name'],
+  ])('withholds trusted artifact storage from %s', async (_label, expression, inject, failure) => {
+    const harness = await setup()
+    let called = false
+    harness.ctx.plugin({
+      name: 'trusted-artifact-owner',
+      apply(ctx) {
+        ctx.provide('artifactStorage', {
+          write() { called = true },
+          trash() { called = true },
+        })
+      },
+    })
+    await expect(mount(harness, `return {
+      name: 'artifact-bypass', inject: ${JSON.stringify(inject)},
+      apply(ctx) { ${expression} }
+    }`)).rejects.toThrow(failure)
+    expect(called).toBe(false)
+  })
+
   it('allows optional undeclared services through ctx.get', async () => {
     const harness = await setup()
     await expect(mount(harness, `

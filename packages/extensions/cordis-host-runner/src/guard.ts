@@ -736,6 +736,11 @@ function sandboxContext(ctx: Context, reportFailure: (error: Error) => void): Co
   // `get` is optional lookup; property access requires a declaration. `tools`
   // is the façade's own API on either path.
   const readService = (name: string, requireDeclaration: boolean): unknown => {
+    if (typeof name !== 'string') return rejectGuard(reportFailure, 'service lookup requires a string name')
+    // Output publication bypasses workspace writes and belongs only to trusted Host producers.
+    if (name === 'artifactStorage') {
+      return rejectGuard(reportFailure, 'artifactStorage is reserved for trusted Host producers; use the regular file tools.')
+    }
     if (name === 'tools') return tools
     if (requireDeclaration && !declared.has(name)) return denyRead(name)
     const service = denyContext(ctx.get(name), name, reportFailure)

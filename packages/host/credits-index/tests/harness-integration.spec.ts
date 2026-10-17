@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, readFile, readdir, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, readFile, readdir, rename, writeFile } from 'node:fs/promises'
 import { createServer, type Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -17,6 +17,7 @@ import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
 import { Session, SessionId, SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
 import LlmRuntime, { ToolCallId, type FinishReason } from '@deepseek-ai/dsh-llm'
 import * as LlmPiAi from '@deepseek-ai/dsh-llm-pi-ai'
+import * as Artifacts from '@deepseek-ai/dsh-artifacts-index'
 import * as Credits from '../src/index.ts'
 import * as VideoProjectTools from '../src/video-project-tools.ts'
 import type { VideoProjectOptions } from '../src/video-project-types.ts'
@@ -37,6 +38,7 @@ let refreshes = 0
 let creations = 0
 let pricingRows: unknown[] = []
 let videoTaskStatus: string | undefined
+let imageResponse: unknown
 const generatedVideo = Buffer.from([0, 0, 0, 24, 102, 116, 121, 112, 105, 115, 111, 109])
 const initialRelayModels = () => [
   { id: 'deepseek-v4-flash', object: 'model', supported_endpoint_types: ['openai'] },
@@ -74,6 +76,7 @@ afterEach(async () => {
   creations = 0
   pricingRows = []
   videoTaskStatus = undefined
+  imageResponse = undefined
   relayModels = initialRelayModels()
   modelsStatus = 200
   modelsBarrier = undefined
@@ -93,6 +96,7 @@ function object(value: unknown): Record<string, unknown> {
 
 async function boot(
   models: readonly Record<string, unknown>[] = [{ id: 'deepseek-v4-flash' }],
+  managedOutput = false,
 ): Promise<{ base: string; api: string; stateDir: string }> {
   directory = await mkdtemp(join(tmpdir(), 'harness-product-integration-'))
   const stateDir = join(directory, 'credits')
@@ -132,6 +136,10 @@ async function boot(
       }
       if (url.pathname === '/harness/api/user/auth/logout') { answer(null); return }
       if (url.pathname === '/harness/api/pricing') { answer(pricingRows); return }
+      if (url.pathname === '/harness/v1/images/generations' && imageResponse !== undefined) {
+        if (request.headers.authorization !== 'Bearer sk-owned-relay') { response.writeHead(403); response.end('{}'); return }
+        response.end(JSON.stringify(imageResponse)); return
+      }
       if (url.pathname === '/harness/v1/video/generations') {
         if (request.headers.authorization !== 'Bearer sk-owned-relay') { response.writeHead(403); response.end('{}'); return }
         response.end(JSON.stringify(videoTaskStatus === undefined ? {} : { code: 'success', data: { task_id: 'fixture-video-task' } })); return
@@ -189,6 +197,7 @@ async function boot(
     ['@deepseek-ai/dsh-credentials-local', LocalCredentialProvider],
     ['@deepseek-ai/dsh-llm', LlmRuntime], ['@deepseek-ai/dsh-llm-pi-ai', LlmPiAi],
     ['@deepseek-ai/dsh-fs-local', LocalFileSystem],
+    ['@deepseek-ai/dsh-artifacts-index', Artifacts],
   ])
   context = new Context()
   context.baseUrl = pathToFileURL(directory).href + '/'
@@ -212,6 +221,9 @@ async function boot(
       'yunshu-local': { api: 'openai-completions', baseURL: api + '/v1', apiKeyEnv: relayRef, models },
       'other-provider': { api: 'openai-completions', baseURL: 'https://synthetic.invalid/v1', models: [{ id: 'other-chat' }] },
     } } },
+    ...managedOutput ? [{ name: '@deepseek-ai/dsh-artifacts-index', config: {
+      defaultOutputDirectory: join(directory, 'selected-output'), stateDirectory: join(directory, 'artifact-settings'), roots: [join(stateDir, 'media')],
+    } }] : [],
     { name: '@deepseek-ai/dsh-credits-index', config: { stateDir, newApiBaseUrl: api, relayTokenEnv: relayRef } },
   ]
   const configuration = join(directory, 'cordis.yml')
@@ -265,6 +277,53 @@ function videoAgent(workspace: string): Agent {
 }
 
 describe('deployed Harness API through the real product Loader', () => {
+  it('uses the real managed Host destination for chat images, creation images and video after asynchronous Loader startup', async () => {
+    let projectOptions: VideoProjectOptions | undefined
+    const register = VideoProjectTools.registerVideoProjectTools
+    vi.spyOn(VideoProjectTools, 'registerVideoProjectTools').mockImplementation((ctx, options) => {
+      projectOptions = options
+      register(ctx, options)
+    })
+    const { base, stateDir } = await boot(undefined, true)
+    await signIn(base)
+    pricingRows = [
+      { model_name: 'gpt-image-2', supported_endpoint_types: ['image-generation'] },
+      { model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] },
+    ]
+    imageResponse = { data: [{ b64_json: Buffer.from('managed image bytes').toString('base64') }] }
+    const storage = context!.get('artifactStorage')
+    expect(storage).toBeDefined()
+    const destination = await storage!.capture(new AbortController().signal)
+    expect(await projectOptions?.publication?.capture(new AbortController().signal)).toEqual(destination)
+    expect(destination.directory).not.toBe(join(stateDir, 'media'))
+    const image = await context!.tools.execute({
+      callId: ToolCallId('managed-image'), name: 'generate_image', arguments: { prompt: 'A white cup', model: 'gpt-image-2' }, signal: new AbortController().signal,
+    })
+    const chatImage = object(image.value)
+    expect(chatImage, JSON.stringify(chatImage)).toMatchObject({ status: 'succeeded' })
+    expect(String(chatImage.path).startsWith(destination.directory)).toBe(true)
+    expect(await readFile(String(chatImage.path), 'utf8')).toBe('managed image bytes')
+    const created = await post(base, '/api/image/generate', { prompt: 'A white cup', model: 'gpt-image-2' })
+    expect(created.ok).toBe(true)
+    expect(String(object(created.payload).path).startsWith(destination.directory)).toBe(true)
+    expect(await readFile(String(object(created.payload).path), 'utf8')).toBe('managed image bytes')
+    videoTaskStatus = 'completed'
+    const video = await context!.tools.execute({
+      callId: ToolCallId('managed-video'), name: 'generate_video', arguments: { prompt: 'A cup in sunlight', model: 'MiniMax-H3', duration_seconds: 4 }, signal: new AbortController().signal,
+    })
+    const chatVideo = object(video.value)
+    expect(chatVideo.status).toBe('succeeded')
+    expect(String(chatVideo.path).startsWith(destination.directory)).toBe(true)
+    expect(await readFile(String(chatVideo.path))).toEqual(generatedVideo)
+    const submissions = calls.filter(call => call.path === '/harness/v1/images/generations').length
+    await rename(destination.directory, destination.directory + '-retained')
+    await writeFile(destination.directory, 'directory unavailable')
+    const refused = await post(base, '/api/image/generate', { prompt: 'A white cup', model: 'gpt-image-2' })
+    expect(refused.ok).toBe(false)
+    expect(refused.code).toBe('ARTIFACT_DESTINATION_UNAVAILABLE')
+    expect(calls.filter(call => call.path === '/harness/v1/images/generations')).toHaveLength(submissions)
+  }, 15_000)
+
   it('carries chat and project WAV/MP3 references through H3 native content without inventing audio switches', async () => {
     let options: VideoProjectOptions | undefined
     const register = VideoProjectTools.registerVideoProjectTools

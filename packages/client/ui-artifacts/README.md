@@ -1,5 +1,5 @@
 ---
-description: "Artifacts sidebar page for filtering a configured filesystem listing and previewing supported media or text."
+description: "Artifacts page for output-directory settings, search, previews, renaming and recoverable deletion."
 kind: "package-reference"
 ---
 
@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-Browse files from configured directories in one Artifacts page, filter them by kind and select supported files for preview. Refresh the listing after files change. The page uses the host’s filesystem index; it does not infer which Session created a file.
+Manage files in one Artifacts page: view or change the save directory, search names and paths, filter by kind, preview, rename, recycle and restore. The page uses the host’s filesystem index; it does not infer which Session created a file.
 
 ## Table of Contents
 
@@ -27,7 +27,11 @@ Browse files from configured directories in one Artifacts page, filter them by k
 
 Mount `@deepseek-ai/dsh-client-ui-artifacts` in the browser roster with the slot and locale services. Pair it with [artifacts-index](../../deliverables/artifacts-index/README.md), whose roots determine the files shown. This package has no configuration fields.
 
-The page reads `/artifacts/api/list` on mount and on Refresh. Images, video and audio use browser media elements; text, code and spreadsheet kinds use a text preview where supported. A failed listing displays the failure and keeps Refresh available.
+The page reads `/artifacts/api/list`, `/artifacts/api/storage` and `/artifacts/api/trash`. The directory dialog accepts an existing absolute path and offers the native folder picker when available. Saving a directory affects future generation, keeps older files visible, and does not move them. Search matches names and paths together with the current type filter.
+
+Select a file to preview, rename or move it to the recovery area. File changes use the selected size and modification time; a changed or conflicting file requires review instead of overwriting. Restore entries from the recovery area, including after reopening the app. Destructive actions require confirmation; uncertain mutation outcomes require refreshing before trying again.
+
+Images, video and audio use browser media elements; supported text, code and spreadsheet kinds use a text preview. Embedded raw previews are sandboxed. Read failures retain previous data with a visible retry. Refresh reconciles the selected file with the current listing and ignores obsolete responses.
 
 -----
 
@@ -37,7 +41,7 @@ The page reads `/artifacts/api/list` on mount and on Refresh. Images, video and 
 <details>
 <summary>Implementation internals — click to expand</summary>
 
-The browser plugin contributes the `artifacts` main panel and its sidebar entry through declaration-aware slot registrations. [`ArtifactsPage.tsx`](src/client/ArtifactsPage.tsx) owns transient filters, selection and HTTP reads. Its injected dictionary supplies the page copy; the Host half is empty.
+The browser plugin contributes the `artifacts` main panel and its sidebar entry through declaration-aware slot registrations. [`ArtifactsPage.tsx`](src/client/ArtifactsPage.tsx) owns transient search, filters, selection and management dialogs. Injected callbacks own HTTP operations and optional native directory selection. Its injected dictionary supplies the page copy; the Host half is empty.
 
 </details>
 
@@ -80,7 +84,8 @@ These limits describe the package’s current behavior and dependencies.
 - Listings refresh on mount or user request; the page has no filesystem subscription.
 - Document, slide, archive and other unsupported kinds show file information rather than a converted preview.
 - Text previews above 256 KiB, or failed text reads, fall back to the raw URL in a frame; format rendering depends on the browser.
-- Filtering and selection belong to the mounted page and are not persisted.
+- Search, filtering and selection belong to the mounted page and are not persisted. Directory preferences and recovery records belong to the Host.
+- Renaming or recycling does not rewrite old chat links. Recovery retains file bytes and does not free their disk space. Unsupported filesystems cannot safely rename or recycle files.
 
 <a id="dev-note"></a>
 ### Dev Note

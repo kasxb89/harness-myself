@@ -349,11 +349,15 @@ export interface Config {
 ## `@deepseek-ai/dsh-artifacts-index`
 
 - `inject`: `webServer`
-- `source`: [`packages/deliverables/artifacts-index/src/index.ts:28`](../packages/deliverables/artifacts-index/src/index.ts)
+- `source`: [`packages/deliverables/artifacts-index/src/index.ts:39`](../packages/deliverables/artifacts-index/src/index.ts)
 
 ```ts config-catalog
 /** Plugin config: which directories the panel browses and how far it walks. */
 export interface Config {
+  /** Default generated output directory, created on first initialization when configured. */
+  defaultOutputDirectory?: string
+  /** Private preferences and recovery records; never a browsing root. */
+  stateDirectory?: string
   /** Absolute directories shown in the panel. An empty list serves nothing. */
   roots?: string[]
   /** Maximum files returned by one listing. */
@@ -872,7 +876,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-credits-index`
 
 - `inject`: `webServer` · `tools`
-- `source`: [`packages/host/credits-index/src/index.ts:53`](../packages/host/credits-index/src/index.ts)
+- `source`: [`packages/host/credits-index/src/index.ts:55`](../packages/host/credits-index/src/index.ts)
 
 ```ts config-catalog
 /** Plugin config: platform origin, display rate, and where the session file lives. */

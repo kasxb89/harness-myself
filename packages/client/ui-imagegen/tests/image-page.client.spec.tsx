@@ -84,6 +84,22 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 describe('image creation workspace', () => {
+  it.each(['/Users/user/chosen-images/image.png', 'D:\\云枢产物\\image.png'])(
+    'shows saved image history from the configured directory: %s', async (savedPath) => {
+      const original = fetchMock.getMockImplementation()!
+      fetchMock.mockImplementation(async (input, init) => requestUrl(input) === '/artifacts/api/list'
+        ? json({ items: [{ path: savedPath, name: 'custom-image.png', kind: 'image', mtimeMs: 8 }, { path: '/custom/movie.mp4', name: 'movie.mp4', kind: 'video', mtimeMs: 9 }] })
+        : await original(input, init))
+      const { props } = makeProps()
+      render(<ImagePage {...props} />)
+      await ready()
+      fireEvent.click(await screen.findByRole('button', { name: '预览：custom-image.png' }))
+      const dialog = screen.getByRole('dialog', { name: '结果' })
+      expect(dialog.querySelector('img')?.getAttribute('src')).toBe(`/artifacts/api/raw?path=${encodeURIComponent(savedPath)}`)
+      expect(screen.queryByText('movie.mp4')).toBeNull()
+    },
+  )
+
   it.each(['account-b', null])('clears account-owned references after the live account becomes %s', async (nextAccount) => {
     const { props, store } = makeProps()
     store.actions.patch({ references: [{ assetId: 'ma_private', name: 'private.png', url: 'blob:private', bytes: 1 }] })

@@ -220,7 +220,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
       if (!Array.isArray(items)) { setHistoryError(true); return }
       const entries: readonly unknown[] = items
       if (!entries.every(isArtifactItem)) { setHistoryError(true); return }
-      setHistory(entries.filter(item => item.kind === 'video' && item.path.includes('/credits/media/'))
+      setHistory(entries.filter(item => item.kind === 'video')
         .sort((left, right) => (right.mtimeMs ?? 0) - (left.mtimeMs ?? 0)).slice(0, 12))
       setHistoryError(false)
     } catch (_error) {

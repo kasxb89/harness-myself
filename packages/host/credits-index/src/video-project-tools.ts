@@ -7,7 +7,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import type { JobHandle, JobOutcome } from '@deepseek-ai/dsh-jobs'
 import type { Session } from '@deepseek-ai/dsh-session'
-import { prepareVideoProject, readVideoProject, resolveVideoOutputDirectory, runVideoProject, videoProjectFailure, VideoProjectError } from './video-project.ts'
+import { prepareVideoProject, publishVideoOutput, readVideoProject, resolveVideoOutputDirectory, runVideoProject, videoProjectFailure, VideoProjectError } from './video-project.ts'
 import type { VideoProjectManifest } from './video-project.ts'
 import type { VideoProjectInput, VideoProjectOptions } from './video-project-types.ts'
 
@@ -244,11 +244,13 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
           ...clip.end_seconds === undefined ? {} : { endSeconds: clip.end_seconds },
         }))
         for (const clip of clips) await editor.probe(clip.path, signal)
+        const publicationDirectory = (await options.publication?.capture(signal))?.directory
         const outputPath = join(root, `edit-${randomUUID()}`, 'final.mp4')
         const jobId = start(exec, 'video-edit', `剪辑 ${String(clips.length)} 个视频片段`, async (job, signal) => {
           try {
             const result = await editor.compose({ clips, outputPath, ...args.total_duration_seconds === undefined ? {} : { totalDurationSeconds: args.total_duration_seconds }, signal, onProgress: (progress) =>{  job.updateProgress(`剪辑 ${String(progress.completedClips)}/${String(progress.totalClips)}`) } })
-            const value: VideoToolResult = { status: 'succeeded', final_path: result.path, duration_seconds: result.durationSeconds, message: '剪辑视频已实际保存。请调用 present 展示 final_path，并在回复中提供产物链接。' }
+            const finalPath = await publishVideoOutput(options, result.path, publicationDirectory, signal)
+            const value: VideoToolResult = { status: 'succeeded', final_path: finalPath, duration_seconds: result.durationSeconds, message: '剪辑视频已实际保存。请调用 present 展示 final_path，并在回复中提供产物链接。' }
             return { status: 'completed', result: JSON.stringify(value) }
           } catch (error) {
             return { status: signal.aborted ? 'killed' : 'failed', result: JSON.stringify(failure(error)) }

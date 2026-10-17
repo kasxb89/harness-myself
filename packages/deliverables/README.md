@@ -26,6 +26,7 @@ The deliverables family records what a turn hands to the user as durable Session
 |---|---|---|
 | [`tool-present`](tool-present/README.md) | Declares existing files as final deliverables through the `present` tool | registers on `ctx.tools` |
 | [`workspace-changes`](workspace-changes/README.md) | Summarizes each top-level turn's changed files from git working-tree snapshots and whole-file captures, and serves their comparisons | provides `ctx.workspaceChanges`; listens to `session/event`, appends `workspace/changes` |
+| [`artifacts-index`](artifacts-index/README.md) | Browses managed output directories and owns exclusive output, renaming and recoverable deletion | provides optional `ctx.artifactStorage` |
 
 -----
 

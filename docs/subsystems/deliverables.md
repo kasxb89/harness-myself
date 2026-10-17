@@ -139,6 +139,10 @@ interface WorkspaceChanges {
 }
 ```
 
+## Managed artifact output
+
+The optional `ctx.artifactStorage` service is a trusted Host capability declared by [artifacts-index](../../packages/deliverables/artifacts-index/README.md). Its [`ArtifactDestination`, `ArtifactWriteRequest`, `ArtifactPublishRequest`, `ArtifactWriteResult` and `ArtifactStorageInfo`](../../packages/deliverables/artifacts-index/src/types.ts) contracts describe captured destinations, exclusive output and persistent browsing roots. Producers capture a writable destination before paid work, then write bytes or copy a finished file without replacing existing files. The service does not change the conversation workspace, add model tools or append Session events. File management and recovery use authenticated browser routes owned by the same package.
+
 ## Durable events and the served summary
 
 `tool-present` declaration-merges `deliverables/presented: { turn; callId; files: PresentedFile[] }` into `SessionEventMap`, appended once per successful final `present` result. `workspace-changes` merges `workspace/changes: { turn }`, appended when a top-level turn stops. The summary is not in the log: the recorder keeps it while its Session is observed and also writes it to the `workspace_changes` domain when the composition mounts storage. `workspaceChanges.summary(sessionId, seq)` serves live or stored summaries for the event's sequence, so stored changed-files cards can outlive Session disposal and Host restarts. `workspaceChanges.diff(sessionId, seq, index, signal)` compares listed files only for live Sessions. A later event for the same turn replaces the earlier one, so a client keeps only the latest. The generated [persistence catalog](../persistence-catalog.md#deliverablespresented--log-only) records both declaration sites. Neither event reaches the model.
@@ -150,6 +154,45 @@ interface WorkspaceChanges {
 ## Cordis API
 
 Generated from source by `scripts/gen-cordis-catalog.ts` (verified fresh by `pnpm run verify-cordis-catalog` in doc-sync; regenerate with `pnpm run gen-cordis-catalog`) — the language sides differ only in locale-specific paired document paths. Signature blocks use a `ts cordis-catalog` fence and keep the original source JSDoc; dispatch modes are defined in the [primer](../cordis-primer.md#dispatch-modes), and the framework-inherited `ctx` API lives in [cordis-api/inherited.md](../cordis-api/inherited.md).
+
+<a id="ctxartifactstorage--artifactstorageservice"></a>
+
+### `ctx.artifactStorage` — `ArtifactStorageService`
+
+Optional shared output capability consumed by account media generators.
+
+```ts cordis-catalog
+/**
+ * Validate writability and retain this exact directory for an in-flight operation.
+ * @param signal - Caller lifetime while checking local output availability.
+ * @returns The currently selected canonical output directory.
+ */
+capture(signal: AbortSignal): Promise<ArtifactDestination>
+
+/**
+ * Check a retained destination again before resuming any further paid work.
+ * @param destination - Original approved directory from the durable operation.
+ * @param signal - Caller lifetime while checking local output availability.
+ * @returns Resolves only when the original directory remains approved and writable.
+ */
+validate(destination: ArtifactDestination, signal: AbortSignal): Promise<void>
+
+/**
+ * Create an exclusive output; never replace an existing user file.
+ * @param request - Captured destination, portable filename, bytes and caller lifetime.
+ * @returns The complete exclusively published output path.
+ */
+write(request: ArtifactWriteRequest): Promise<ArtifactWriteResult>
+
+/**
+ * Copy a finished file without replacing a destination or removing its source.
+ * @param request - Captured destination, finished source, portable filename and caller lifetime.
+ * @returns The complete exclusively published copy path.
+ */
+publish(request: ArtifactPublishRequest): Promise<ArtifactWriteResult>
+```
+
+Source: [`packages/deliverables/artifacts-index/src/types.ts`](../../packages/deliverables/artifacts-index/src/types.ts)
 
 <a id="ctxworkspacechanges--workspacechanges"></a>
 
