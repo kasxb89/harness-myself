@@ -252,13 +252,6 @@
   color: var(--dsw-alias-label-tertiary);
 }
 
-.unsupportedPath {
-  font-family: var(--ds-font-family-code);
-  font-size: 11px;
-  line-height: 18px;
-  word-break: break-all;
-}
-
 .placeholder {
   display: flex;
   flex-direction: column;
@@ -321,6 +314,21 @@
   font-size: 12px;
   line-height: 18px;
   overflow-wrap: anywhere;
+}
+
+.fileLocation {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.fileLocation > summary {
+  cursor: pointer;
+}
+
+.fileLocation > code {
+  display: block;
+  margin-top: 4px;
 }
 
 .fileActions,

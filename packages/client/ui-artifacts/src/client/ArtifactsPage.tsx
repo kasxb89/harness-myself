@@ -174,7 +174,6 @@ function Preview({ entry, t }: { entry: ArtifactEntry; t: ArtifactsInjected['t']
     <div className={css.unsupported}>
       <FileTypeIcon path={entry.name} size={40} />
       <p className={css.placeholderText}>{t('unsupported')}</p>
-      <code className={css.unsupportedPath}>{entry.path}</code>
     </div>
   )
 }
@@ -589,7 +588,10 @@ export function ArtifactsPage(props: ArtifactsPageProps): ReactNode {
             <header className={css.previewBar}>
               <div className={css.previewHeading}>
                 <span className={css.previewName}>{selected.name}</span><span className={css.previewMeta}>{metaLine(selected, t)}</span>
-                <code className={css.storagePath}>{selected.path}</code>
+                <details key={`${scope}:${selected.path}`} className={css.fileLocation}>
+                  <summary>{t('preview.location')}</summary>
+                  <code className={css.storagePath}>{selected.path}</code>
+                </details>
               </div>
               <div className={css.fileActions}>
                 {canReveal && <Button size="sm" disabled={pending || opening} onClick={() => { void reveal(selected) }}>{t('workspace.reveal')}</Button>}
