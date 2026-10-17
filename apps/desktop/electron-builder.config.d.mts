@@ -17,7 +17,11 @@ export interface DesktopElectronBuilderConfig {
     { readonly from: string, readonly to: 'dsh', readonly filter: readonly ['**/*'] },
     { readonly from: string, readonly to: 'dsh/node_modules', readonly filter: readonly ['**/*'] },
   ]
-  readonly extraMetadata: { readonly dshDesktopAppId: string }
+  readonly extraMetadata: {
+    readonly dshDesktopAppId: string
+    readonly dshDesktopUnsigned?: true
+    readonly dshDesktopUpdateConfigOrigin?: string
+  }
   readonly asarUnpack: readonly string[]
   readonly extraResources: readonly [
     { readonly from: string, readonly to: 'runtime' },
@@ -42,6 +46,7 @@ export interface DesktopElectronBuilderConfig {
     readonly executableName: 'Yunshu'
     readonly icon: string
     readonly forceCodeSigning: boolean
+    readonly verifyUpdateCodeSignature?: false
     readonly signtoolOptions: {
       readonly publisherName: string | undefined
       readonly sign: ((configuration: { path: string, hash: string, isNest: boolean }) => Promise<void>) | undefined

@@ -1,12 +1,19 @@
 import { expect, it } from 'vitest'
 import { desktopUpdateErrorSummary, presentDesktopUpdate } from '../src/update-presentation.ts'
-import { en, zh } from '../src/locale.ts'
+import { desktopUpdateReadyConfirmation, en, zh } from '../src/locale.ts'
 import type { DesktopUpdateState, DshDesktopProductApi } from '../src/ipc.ts'
 import type { DesktopUpdateBridge } from '@deepseek-ai/dsh-client-ui-settings-general/types'
 
 it('keeps the Electron preload assignable to the product consumer', () => {
   const assign = (bridge: DshDesktopProductApi['updates']): DesktopUpdateBridge => bridge
   expect(assign).toBeTypeOf('function')
+})
+
+it('records unsigned Mac installer guidance without promising automatic replacement or restart', async () => {
+  const presentation = presentDesktopUpdate({ phase: 'ready', version: '1.1.0', installationMode: 'manual' })
+  const locales = [en, zh].map(messages => ({ ...desktopUpdateReadyConfirmation(messages, '1.1.0', 'darwin', 'manual'),
+    action: messages.updateOpenInstaller, progress: messages.updateDownloadingDetailManual }))
+  await expect(JSON.stringify({ presentation, locales }, null, 2) + '\n').toMatchFileSnapshot('./expected/unsigned-mac-update.json')
 })
 
 it('records visible ordinary-update states without authorizing downloads or installation', async () => {

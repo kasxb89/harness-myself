@@ -60,10 +60,11 @@ it('retains failure diagnostics and only uploads successful installers from the 
   expect(logs.with).toMatchObject({ path: 'apps/desktop/.desktop-build/packaging-runs/', 'include-hidden-files': true })
   const installer = uploads.find(step => step !== logs)!
   expect(installer.if).toBeUndefined()
-  expect(installer.with).toMatchObject({
-    path: `${relative(root, desktopTargetBuildPaths('win-x64').unsignedArtifacts).replaceAll('\\', '/')}/*.exe`,
-    'include-hidden-files': true, 'if-no-files-found': 'error',
-  })
+  const directory = relative(root, desktopTargetBuildPaths('win-x64').unsignedArtifacts).replaceAll('\\', '/')
+  expect(String(installer.with?.path).trim().split('\n')).toEqual([
+    `${directory}/*.exe`, `${directory}/*.exe.blockmap`, `${directory}/nightly.yml`, `${directory}/win-x64-release.json`,
+  ])
+  expect(installer.with).toMatchObject({ 'include-hidden-files': true, 'if-no-files-found': 'error' })
   const cleanup = job.steps.find(step => step.run?.includes('Remove-Item -LiteralPath apps/desktop/.env.windows'))!
   expect(cleanup.if).toBe("always() && steps.checkout.outcome == 'success'")
   expect(cleanup.run).toContain('Test-Path -LiteralPath apps/desktop/.env.windows')

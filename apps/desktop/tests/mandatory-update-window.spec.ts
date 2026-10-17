@@ -60,6 +60,18 @@ it('releases IPC after the Windows main window has already been destroyed', () =
   expect(() => { ui!.dispose() }).not.toThrow()
 })
 
+it('explains manual replacement for unsigned Mac updates without offering a restart', () => {
+  const f = setup()
+  f.update({ phase: 'ready', version: '1.0.1-nightly.1', installationMode: 'manual' })
+  const messages = f.view().locale.messages
+  expect(messages.installAndRestart).toBe('打开安装包')
+  expect(messages.mandatoryReadyDetail).toContain('退出云枢')
+  expect(messages.mandatoryReadyDetail).toContain('打开安装包不会停止任务或关闭当前应用')
+  expect(messages.mandatoryInspecting).toBe('正在打开安装包…')
+  expect(f.view().confirmation).toBeUndefined()
+  expect(native.quit).not.toHaveBeenCalled()
+})
+
 it('waits for a version-bound second click in the same modal and rejects obsolete or hidden responses', async () => {
   const f = setup()
   const pending = ui!.confirm('1.0.1-nightly.1', false)

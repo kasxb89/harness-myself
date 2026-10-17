@@ -1,11 +1,12 @@
 /** Select local test defaults or platform release settings without changing the caller's environment. */
 
 /**
- * Select local macOS test defaults without reading dotenv files or inheriting release settings.
+ * Select unsigned macOS settings without inheriting release identities or credentials.
  * @param environment Parent environment, retained for build tools and networking.
- * @returns Unsigned build environment with the standard application identifier and no update policy.
+ * @param appRoot Optional application directory whose .env.macos supplies only the application identifier and update authority.
+ * @returns Unsigned build environment without signing credentials or mandatory-update policy.
  */
-export function localMacOSPackageEnvironment(environment?: NodeJS.ProcessEnv): NodeJS.ProcessEnv
+export function localMacOSPackageEnvironment(environment?: NodeJS.ProcessEnv, appRoot?: string): NodeJS.ProcessEnv
 
 /**
  * Read the target's required UTF-8 dotenv file; release settings never fall back to ambient values.

@@ -1,4 +1,6 @@
-/** Validate the fixed backend authority embedded in signed Desktop releases. */
+/** Validate the fixed backend authority embedded in Desktop packages. */
+
+import { resolveDesktopAutoUpdateTarget } from './desktop-auto-update-environment.mjs'
 
 /**
  * Read an explicit release input without supplying a production deployment default.
@@ -21,4 +23,20 @@ export function resolvePackagedDesktopUpdateConfigOrigin(environment) {
     throw new Error('desktop package: DSH_DESKTOP_UPDATE_CONFIG_ORIGIN requires an HTTPS backend base without credentials, query, or fragment; this instance requires /harness')
   }
   return parsed.href.replace(/\/$/u, '')
+}
+
+/**
+ * Resolve backend discovery for an explicitly unsigned product package.
+ * @param {NodeJS.ProcessEnv} environment - File-owned packaging settings.
+ * @param {NodeJS.Platform} platform - Target Node.js platform.
+ * @param {string} arch - Target Node.js architecture.
+ * @returns {{ authority: string, publicUrl: string }} Validated backend and inert generic bootstrap directory; runtime replaces the feed from backend status before checking.
+ */
+export function resolveUnsignedDesktopUpdateConfig(environment, platform, arch) {
+  const authority = resolvePackagedDesktopUpdateConfigOrigin({
+    ...environment,
+    DSH_DESKTOP_UPDATE_CONFIG_ORIGIN: environment.DSH_DESKTOP_UPDATE_CONFIG_ORIGIN || 'https://8.133.202.230/harness',
+  })
+  const target = resolveDesktopAutoUpdateTarget(platform, arch)
+  return { authority, publicUrl: `${authority}/desktop-updates/${target}/` }
 }

@@ -34,6 +34,7 @@ import { readDeviceInfo } from './device-info.ts'
 import { desktopUpdateReadyConfirmation, formatDesktopMessage, resolveDesktopLocale, resolveDesktopStartupLocale } from './locale.ts'
 import { claimDesktopSingleInstance } from './single-instance.ts'
 import { DesktopUpdateCoordinator } from './update-coordinator.ts'
+import { UnsignedMacUpdater, usesUnsignedMacUpdates } from './unsigned-mac-updater.ts'
 import { DesktopUpdateSourceError, resolveDesktopUpdateConfigOrigin, resolveDesktopUpdateSource } from './update-source.ts'
 import { DesktopCommandManager } from './command-management.ts'
 import { serveWebDocument, authenticateWebHost, forwardWebRequest } from './web-document.ts'
@@ -598,6 +599,11 @@ async function main(): Promise<void> {
     return startup
   }
 
+  let updateManifest: unknown
+  let updateManifestFailure: DesktopUpdateSourceError | undefined
+  try { updateManifest = JSON.parse(await readFile(join(app.getAppPath(), 'package.json'), 'utf8')) }
+  catch (cause) { updateManifestFailure = new DesktopUpdateSourceError('source-invalid', { cause }) }
+  const unsignedMacUpdater = usesUnsignedMacUpdates(updateManifest, app.isPackaged, process.platform) ? new UnsignedMacUpdater() : undefined
   const updates = new DesktopUpdateCoordinator(
     publishUpdate,
     async () => {
@@ -649,16 +655,24 @@ async function main(): Promise<void> {
       }
       return true
     },
-    undefined, undefined, undefined,
+    unsignedMacUpdater, undefined, undefined,
     (success, reason) => { void track('desktop_upgrade_download_result', { is_success: success, ...reason === undefined ? {} : { error_reason: reason } }) },
     async () => {
-      let manifest: unknown
-      try { manifest = JSON.parse(await readFile(join(app.getAppPath(), 'package.json'), 'utf8')) }
-      catch (cause) { throw new DesktopUpdateSourceError('source-invalid', { cause }) }
-      return resolveDesktopUpdateSource({ origin: resolveDesktopUpdateConfigOrigin(app.isPackaged, manifest, process.env),
+      if (updateManifestFailure !== undefined) throw updateManifestFailure
+      return resolveDesktopUpdateSource({ origin: resolveDesktopUpdateConfigOrigin(app.isPackaged, updateManifest, process.env),
         platform: process.platform, arch: process.arch, allowLoopbackHttp: !app.isPackaged })
     },
-
+    unsignedMacUpdater === undefined ? undefined : async (version) => {
+      const parent = currentDialogWindow()
+      if (parent === undefined) return false
+      const ready = desktopUpdateReadyConfirmation(locale.messages, version, process.platform, 'manual')
+      const result = await updateDialog.show(parent, { type: 'info', title: locale.messages.updateTitle,
+        message: ready.message, detail: ready.detail,
+        buttons: [locale.messages.updateOpenInstaller, locale.messages.updateLater], defaultId: 0, cancelId: 1 })
+      if (result.response !== 0 || quitting) return false
+      await unsignedMacUpdater.openDownloadedInstaller(version)
+      return true
+    },
   )
 
   const updateSchedule = new DesktopUpdateSchedule(updates, resolveDesktopUpdateScheduleConfig(process.env))
@@ -874,14 +888,15 @@ async function main(): Promise<void> {
         if (manual) {
           const result = await ordinaryMessageBox({ title: locale.messages.updateCheckTitle,
             message: formatDesktopMessage(locale.messages.updateAvailable, { version: state.version ?? '' }),
-            detail: locale.messages.updateDetail,
+            detail: unsignedMacUpdater === undefined ? locale.messages.updateDetail : locale.messages.updateDetailManual,
             buttons: [locale.messages.updateDownload], cancelId: 1 })
           if (result.response !== 0) return
         }
         if (!isMandatory() && state.version !== undefined) {
           controller?.abort()
           failedOperation = 'download'
-          showDownloadProgress({ phase: 'downloading', version: state.version, percent: 0 })
+          showDownloadProgress({ phase: 'downloading', version: state.version, percent: 0,
+            ...(unsignedMacUpdater === undefined ? {} : { installationMode: 'manual' }) })
           await showUpdateFailure(await downloadUpdate(state.version))
         }
       } finally {

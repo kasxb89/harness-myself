@@ -238,6 +238,26 @@ it('renders the same semantic update in the active Web locale', async () => {
   } finally { f.view.unmount(); f.status.resolve(available) }
 })
 
+it('offers a manual installer in both locales and keeps the existing shell action', async () => {
+  const f = fixture()
+  const output: Array<{ label: string | null; detail: string | null }> = []
+  try {
+    await f.emit({ phase: 'ready', version: '1.1.0', installationMode: 'manual' })
+    for (const dictionary of [zh, en]) {
+      f.view.rerender(<f.Indicator dictionary={dictionary} />)
+      const button = screen.getByRole('button', { name: dictionary['desktop.update.openInstaller'] })
+      fireEvent.focus(button)
+      output.push({ label: button.textContent, detail: (await screen.findByRole('tooltip')).textContent })
+    }
+    expect(output).toMatchSnapshot()
+    fireEvent.click(screen.getByRole('button', { name: 'Open installer' }))
+    await act(async () => {})
+    expect(f.open).toHaveBeenCalledOnce()
+    await f.emit({ phase: 'installing', version: '1.1.0', installationMode: 'manual' })
+    expect(screen.getByRole('button', { name: 'Opening installer…' }).getAttribute('aria-disabled')).toBe('true')
+  } finally { f.view.unmount(); f.status.resolve({ phase: 'idle' }) }
+})
+
 it.each([
   'source-unbound', 'source-unavailable', 'source-invalid', 'source-disabled',
   'source-target-missing', 'source-unsupported-target', 'source-development',

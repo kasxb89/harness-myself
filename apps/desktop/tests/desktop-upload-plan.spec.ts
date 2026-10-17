@@ -113,6 +113,56 @@ afterEach(async () => {
 })
 
 describe('desktop upload plan', () => {
+  it.each(['mac-arm64', 'mac-x64', 'win-x64'] as const)('publishes explicitly selected unsigned %s with verified target bytes', async (target) => {
+    const paths = await fixture(target, '1.2.3', 'production')
+    Object.assign(paths.environment, {
+      DSH_DESKTOP_UPLOAD_PROVIDER: 'oss', DOWNLOAD_PROD_ORIGIN: 'https://alioss.denuoxuankeji.com',
+      DSH_DESKTOP_UPDATE_PREFIX: 'yunshu-harnes', OSS_BUCKET: 'yunshu666', OSS_REGION: 'cn-beijing',
+      OSSUTIL_BIN: '/tools/ossutil', OSSUTIL_CONFIG_FILE: '/private/ossutil.ini',
+      DSH_DESKTOP_UPDATE_CONFIG_ORIGIN: 'https://8.133.202.230/harness',
+    })
+    const recordPath = join(paths.artifactsRoot, `${target}-release.json`)
+    const record = { schemaVersion: 1, target, version: '1.2.3', unsigned: true,
+      updateConfigOrigin: 'https://8.133.202.230/harness' }
+    await writeFile(recordPath, JSON.stringify(record))
+    const platform = target === 'win-x64' ? 'win32' : 'darwin'
+    const filename = `yunshu-1.2.3-${target}-unsigned.${platform === 'darwin' ? 'dmg' : 'exe'}`
+    const bytes = Buffer.from(`unsigned ${target} installer`)
+    const path = join(paths.artifactsRoot, filename)
+    await writeFile(path, bytes)
+    if (platform === 'win32') await writeFile(`${path}.blockmap`, 'NSIS blockmap fixture')
+    await writeFile(join(paths.artifactsRoot, desktopUpdateMetadataFilename('1.2.3', platform)), JSON.stringify({
+      version: '1.2.3', path: filename,
+      files: [{ url: filename, size: bytes.length, sha512: createHash('sha512').update(bytes).digest('base64') }],
+    }))
+    const plan = await createDesktopUploadPlan(target, { ...paths, unsigned: true })
+    expect(plan.unsigned).toBe(true)
+    expect(plan.artifacts.filter(artifact => !artifact.channelMetadata).map(artifact => artifact.filename))
+      .toEqual(platform === 'darwin' ? [filename] : [filename, `${filename}.blockmap`])
+    const channel = plan.artifacts.find(artifact => artifact.channelMetadata)!
+    expect(channel.filename).toBe(platform === 'darwin' ? 'nightly-mac.yml' : 'nightly.yml')
+    expect(load(channel.contents!)).toMatchObject({ files: [{ url:
+      `https://alioss.denuoxuankeji.com/yunshu-harnes/bin/${target}/${filename}` }] })
+    await expect(createDesktopUploadPlan(target, paths)).rejects.toThrow('signing mode')
+    await expect(createDesktopUploadPlan(target, { ...paths, unsigned: true, latest: true })).rejects.toThrow('--unsigned cannot use --latest')
+    await writeFile(recordPath, JSON.stringify({ ...record, updateConfigOrigin: 'https://different.example.com' }))
+    await expect(createDesktopUploadPlan(target, { ...paths, unsigned: true })).rejects.toThrow('configured update backend')
+    await writeFile(recordPath, JSON.stringify(record))
+    await writeFile(path, Buffer.alloc(bytes.length))
+    await expect(createDesktopUploadPlan(target, { ...paths, unsigned: true })).rejects.toThrow('SHA-512')
+  })
+
+  it('refuses to publish a signed completion record through the unsigned option', async () => {
+    const paths = await fixture('win-x64')
+    await expect(createDesktopUploadPlan('win-x64', { ...paths, unsigned: true })).rejects.toThrow('signing mode')
+  })
+
+  it.each(['production', ' production '])('refuses the implicit official origin for unsigned %s publication', async (deployment) => {
+    const paths = await fixture('win-x64', '1.2.3', 'production')
+    paths.environment.DSH_DESKTOP_AUTO_UPDATE_ENV = deployment
+    await expect(createDesktopUploadPlan('win-x64', { ...paths, unsigned: true })).rejects.toThrow('explicit DOWNLOAD_PROD_ORIGIN')
+  })
+
   it.each(['mac-arm64', 'mac-x64', 'win-x64'] as const)('keeps OSS %s artifacts and metadata URLs under the namespace and refuses fixed-install replacement', async (target) => {
     const paths = await fixture(target, '1.2.3', 'production')
     Object.assign(paths.environment, {

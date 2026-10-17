@@ -67,6 +67,7 @@ export function resolveCredentialUploadEnvironment(
 export async function uploadDesktopTarget(args: string[]): Promise<void> {
   const { positionals, values } = parseArgs({ args, allowPositionals: true, options: {
     latest: { type: 'boolean' },
+    unsigned: { type: 'boolean' },
     'credential-launcher': { type: 'boolean' }, environment: { type: 'string' }, bucket: { type: 'string' },
   } })
   const target = positionals[0]
@@ -86,7 +87,8 @@ export async function uploadDesktopTarget(args: string[]): Promise<void> {
   const environment = launcher
     ? resolveCredentialUploadEnvironment(fileEnvironment, process.env, values.environment as 'test' | 'production', values.bucket!, name)
     : fileEnvironment
-  const plan = await createDesktopUploadPlan(name, { environment, latest: values.latest === true })
+  const plan = await createDesktopUploadPlan(name, { environment, latest: values.latest === true,
+    ...(values.unsigned === true ? { unsigned: true } : {}) })
   process.stdout.write(`desktop upload: ${plan.target} ${plan.version} -> ${plan.publicUrl}\n`)
   const recordsRoot = resolve(import.meta.dirname, '../.desktop-build/upload-records')
   if (plan.provider === 'oss') {
@@ -100,7 +102,7 @@ export async function uploadDesktopTarget(args: string[]): Promise<void> {
     })
     await uploadDesktopRelease(plan, cos, recordsRoot)
   }
-  if (plan.environment === 'production' && !values.latest) recordProductionRelease(plan)
+  if (plan.environment === 'production' && !values.latest && !plan.unsigned) recordProductionRelease(plan)
 }
 
 /**

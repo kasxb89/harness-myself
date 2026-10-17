@@ -23,6 +23,23 @@ afterEach(() => {
 })
 
 describe('desktop upload command', () => {
+  it('requires explicit unsigned selection and never tags an unsigned production upload', async () => {
+    vi.spyOn(process.stdout, 'write').mockReturnValue(true)
+    const settings = { executable: '/tools/ossutil', configFile: '/private/ossutil.ini', region: 'cn-beijing', namespace: 'yunshu-harnes' }
+    const plan: DesktopUploadPlan = {
+      unsigned: true, provider: 'oss', oss: settings, environment: 'production', target: 'win-x64', version: '1.2.3', bucket: 'yunshu666',
+      publicUrl: 'https://alioss.denuoxuankeji.com/yunshu-harnes/feeds/win-x64/', secretIdEnvName: '', secretKeyEnvName: '', artifacts: [],
+      commit: '0'.repeat(40), dirty: false,
+    }
+    const environment = { DSH_DESKTOP_UPLOAD_PROVIDER: 'oss' }
+    vi.mocked(loadDesktopPackageEnvironment).mockReturnValue(environment)
+    vi.mocked(createDesktopUploadPlan).mockResolvedValue(plan)
+    await uploadDesktopTarget(['win-x64', '--unsigned'])
+    expect(createDesktopUploadPlan).toHaveBeenCalledWith('win-x64', { environment, latest: false, unsigned: true })
+    expect(uploadDesktopOssRelease).toHaveBeenCalledOnce()
+    expect(tagDesktopRelease).not.toHaveBeenCalled()
+  })
+
   it('selects the OSS publisher without looking up COS credentials', async () => {
     vi.spyOn(process.stdout, 'write').mockReturnValue(true)
     const settings = { executable: '/tools/ossutil', configFile: '/private/ossutil.ini', region: 'cn-beijing', namespace: 'yunshu-harnes' }

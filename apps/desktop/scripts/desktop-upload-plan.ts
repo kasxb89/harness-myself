@@ -10,12 +10,14 @@ import type { DesktopPackageTargetName } from './package-target.ts'
 import {
   desktopBuildRecordFilename,
   desktopUpdateMetadataFilename,
+  resolveDesktopAutoUpdateEnvironment,
   resolveDesktopOssUploadConfig,
   resolveDesktopUploadConfig,
   resolveDesktopUploadProvider,
 } from './desktop-auto-update-environment.mjs'
 import { desktopTargetBuildPaths } from './desktop-build-paths.mjs'
 import { validateDesktopBuildVersion } from './desktop-build-version.mjs'
+import { resolveUnsignedDesktopUpdateConfig } from './desktop-update-config-origin.mjs'
 
 const APP_ROOT = resolve(import.meta.dirname, '..')
 const REPOSITORY_ROOT = resolve(APP_ROOT, '..', '..')
@@ -42,6 +44,8 @@ export interface DesktopUploadArtifact {
 
 /** A validated installer or update upload, with any channel metadata ordered last. */
 export interface DesktopUploadPlan {
+  /** Explicit unsigned publication, never eligible for a signed release tag. */
+  readonly unsigned?: true
   /** Absent on legacy COS plans; OSS uses an explicit local credential-file transport. */
   readonly provider?: 'oss'
   /** Local OSS command settings, excluded from retained upload plans. */
@@ -68,6 +72,8 @@ export interface DesktopUploadPlan {
 
 /** Filesystem and environment inputs used to validate one upload. */
 export interface DesktopUploadPlanOptions {
+  /** Select only completed unsigned artifacts; cannot publish a fixed latest installer. */
+  readonly unsigned?: boolean
   /** Publish only the installer at its fixed download URL, replacing the previous object. */
   readonly latest?: boolean
   readonly environment?: NodeJS.ProcessEnv
@@ -198,7 +204,10 @@ export async function createDesktopUploadPlan(
   const environment = options.environment ?? process.env
   const repositoryRoot = options.repositoryRoot ?? REPOSITORY_ROOT
   const appRoot = options.appRoot ?? APP_ROOT
-  const artifactsRoot = options.artifactsRoot ?? desktopTargetBuildPaths(targetName).artifacts
+  const unsigned = options.unsigned === true
+  if (unsigned && options.latest) throw new Error('desktop upload: --unsigned cannot use --latest')
+  const paths = desktopTargetBuildPaths(targetName)
+  const artifactsRoot = options.artifactsRoot ?? (unsigned ? paths.unsignedArtifacts : paths.artifacts)
   const dshVersion = await manifestVersion(join(repositoryRoot, 'package.json'), 'dsh package')
   const desktopVersion = await manifestVersion(join(appRoot, 'package.json'), 'desktop package')
   if (dshVersion !== desktopVersion) {
@@ -206,6 +215,9 @@ export async function createDesktopUploadPlan(
   }
 
   const provider = resolveDesktopUploadProvider(environment)
+  if (unsigned && resolveDesktopAutoUpdateEnvironment(environment) === 'production' && !environment.DOWNLOAD_PROD_ORIGIN?.trim()) {
+    throw new Error('desktop upload: unsigned production publication requires an explicit DOWNLOAD_PROD_ORIGIN')
+  }
   const oss = provider === 'oss' ? resolveDesktopOssUploadConfig(environment, target.platform, target.arch) : undefined
   if (oss !== undefined && options.latest === true) {
     throw new Error('desktop upload: OSS does not support --latest; publish versioned packages and update feeds instead')
@@ -225,10 +237,16 @@ export async function createDesktopUploadPlan(
     throw new Error(`desktop upload: ${targetName} package completion record holds ${recordedVersion}, which is not a build of dsh ${dshVersion}: ${
       error instanceof Error ? error.message : String(error)}`)
   }
-  if (buildRecord.schemaVersion !== 1
-    || buildRecord.target !== targetName
-    || buildRecord.environment !== update.environment
-    || buildRecord.publicUrl !== update.publicUrl) {
+  if (buildRecord.schemaVersion !== 1 || buildRecord.target !== targetName
+    || (unsigned ? buildRecord.unsigned !== true : buildRecord.unsigned === true)) {
+    throw new Error(`desktop upload: ${targetName} package completion record does not match the selected signing mode`)
+  }
+  if (unsigned) {
+    const { authority } = resolveUnsignedDesktopUpdateConfig(environment, target.platform, target.arch)
+    if (buildRecord.updateConfigOrigin !== authority) {
+      throw new Error('desktop upload: unsigned package completion record does not match the configured update backend')
+    }
+  } else if (buildRecord.environment !== update.environment || buildRecord.publicUrl !== update.publicUrl) {
     throw new Error(`desktop upload: ${targetName} package completion record for ${buildVersion} does not match the ${update.environment} update destination`)
   }
 
@@ -250,15 +268,19 @@ export async function createDesktopUploadPlan(
     throw new Error(`desktop upload: ${metadataFilename}.files must contain exactly one target update file`)
   }
 
-  const base = `yunshu-${buildVersion}-${target.os}-${target.arch}`
-  const updaterExtension = target.platform === 'darwin' ? 'zip' : 'exe'
+  const base = `yunshu-${buildVersion}-${target.os}-${target.arch}${unsigned ? '-unsigned' : ''}`
+  const updaterExtension = target.platform === 'darwin' ? unsigned ? 'dmg' : 'zip' : 'exe'
   const updaterInfo = updateFileInfo(metadata.files[0], `${metadataFilename}.files[0]`, `${base}.${updaterExtension}`)
   const updaterPath = await verifyChecksummedArtifact(artifactsRoot, updaterInfo)
   const artifacts: DesktopUploadArtifact[] = []
   const binaryPrefix = update.binaryKeyPrefix
   let installerArtifact: DesktopUploadArtifact
 
-  if (target.platform === 'darwin') {
+  if (target.platform === 'darwin' && unsigned) {
+    installerArtifact = uploadArtifact(updaterPath, binaryPrefix, 'application/x-apple-diskimage')
+    artifacts.push(installerArtifact)
+  }
+  else if (target.platform === 'darwin') {
     const dmgPath = await requireArtifact(artifactsRoot, `${base}.dmg`)
     const blockmapPath = await requireArtifact(artifactsRoot, `${base}.zip.blockmap`)
     installerArtifact = uploadArtifact(dmgPath, binaryPrefix, 'application/x-apple-diskimage')
@@ -297,6 +319,7 @@ export async function createDesktopUploadPlan(
   const latestFilename = `dsh-latest-${target.platform === 'darwin' ? 'macos' : 'windows'}-${target.arch}.${target.platform === 'darwin' ? 'dmg' : 'exe'}`
   const latestKey = `desktop/${latestFilename}`
   return {
+    ...(unsigned ? { unsigned: true as const } : {}),
     ...(oss === undefined ? {} : { provider: 'oss' as const, oss: {
       region: oss.region, executable: oss.ossutilBin, configFile: oss.ossutilConfigFile, namespace: oss.namespace,
     } }),

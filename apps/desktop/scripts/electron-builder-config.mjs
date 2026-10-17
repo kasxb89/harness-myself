@@ -19,7 +19,7 @@ import {
   resolveWindowsUpdatePublisher,
   scrubWindowsSigningEnvironment,
 } from './windows-sign.mjs'
-import { resolvePackagedDesktopUpdateConfigOrigin } from './desktop-update-config-origin.mjs'
+import { resolvePackagedDesktopUpdateConfigOrigin, resolveUnsignedDesktopUpdateConfig } from './desktop-update-config-origin.mjs'
 import { resolveDesktopAutoUpdateConfig, resolveDesktopUploadProvider } from './desktop-auto-update-environment.mjs'
 import { resolveDesktopBuildCommit } from './desktop-build-commit.mjs'
 import { resolveDesktopBuildVersion } from './desktop-build-version.mjs'
@@ -61,7 +61,8 @@ export function createElectronBuilderConfig(
   const unsigned = env.DSH_DESKTOP_UNSIGNED === '1'
   const packagesMacOS = targetPlatform === 'darwin' || (targetPlatform === undefined && hostPlatform === 'darwin')
   const packagesWindows = resolvedPlatform === 'win32'
-  const updateConfigOrigin = unsigned ? undefined : resolvePackagedDesktopUpdateConfigOrigin(env)
+  const unsignedUpdate = unsigned ? resolveUnsignedDesktopUpdateConfig(env, resolvedPlatform, resolvedArch) : undefined
+  const updateConfigOrigin = unsignedUpdate?.authority ?? resolvePackagedDesktopUpdateConfigOrigin(env)
   if (!unsigned && resolveDesktopUploadProvider(env) === 'oss' && updateConfigOrigin === undefined) {
     throw new Error('desktop package: OSS releases require DSH_DESKTOP_UPDATE_CONFIG_ORIGIN for backend update discovery')
   }
@@ -94,7 +95,7 @@ export function createElectronBuilderConfig(
   if (windowsSigner !== undefined) {
     installWindowsNsisBootstrapSigner({ sign: windowsSigner })
   }
-  const update = unsigned ? undefined : resolveDesktopAutoUpdateConfig(env, resolvedPlatform, resolvedArch)
+  const update = unsignedUpdate ?? resolveDesktopAutoUpdateConfig(env, resolvedPlatform, resolvedArch)
   if (preparedRuntime !== undefined) buildPaths.dsh = preparedRuntime
   // electron-builder merges extraMetadata into the packaged manifest, so a build version here reaches
   // the artifact names, the update feed, and the installed app.getVersion() the updater compares against.
@@ -106,6 +107,7 @@ export function createElectronBuilderConfig(
     protocols: [{ name: '云枢', schemes: ['dsh'] }],
     extraMetadata: {
       dshDesktopAppId: appId,
+      ...(unsigned ? { dshDesktopUnsigned: true } : {}),
       ...(updateConfigOrigin === undefined ? {} : { dshDesktopUpdateConfigOrigin: updateConfigOrigin }),
       ...(policy === undefined ? {} : { dshMandatoryUpdatePolicy: policy }),
       ...buildVersion === productVersion ? {} : { version: buildVersion },
@@ -171,7 +173,7 @@ export function createElectronBuilderConfig(
     },
     dmg: {
       sign: !unsigned,
-      writeUpdateInfo: false,
+      writeUpdateInfo: unsigned,
     },
     beforePack: async context => {
       const office = await officePackageDirectories(buildPaths.dsh, { platform: resolvedPlatform, arch: resolvedArch })
@@ -230,6 +232,7 @@ export function createElectronBuilderConfig(
       executableName: 'Yunshu',
       icon: fileURLToPath(new URL('../resources/icon-windows.png', import.meta.url)),
       forceCodeSigning: !unsigned,
+      ...(unsigned ? { verifyUpdateCodeSignature: false } : {}),
       signtoolOptions: {
         sign: windowsSigner,
         publisherName: windowsSigner === undefined ? undefined : resolveWindowsUpdatePublisher(env.DSH_DESKTOP_WINDOWS_CER_FILE),
@@ -254,6 +257,6 @@ export function createElectronBuilderConfig(
       differentialPackage: true,
     },
     detectUpdateChannel: false,
-    publish: update === undefined ? null : [{ provider: 'generic', url: update.publicUrl, channel: 'nightly' }],
+    publish: [{ provider: 'generic', url: update.publicUrl, channel: 'nightly' }],
   }
 }

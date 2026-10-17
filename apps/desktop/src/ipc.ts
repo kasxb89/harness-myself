@@ -42,6 +42,8 @@ export type DesktopUpdateSourceFailureKind = 'source-unbound' | 'source-unavaila
   | 'source-target-missing' | 'source-unsupported-target' | 'source-development'
 
 export interface DesktopUpdateState {
+  /** Unsigned Mac releases open a verified installer for user-managed replacement. */
+  readonly installationMode?: 'manual'
   readonly phase: 'idle' | 'checking' | 'available' | 'downloading' | 'verifying' | 'installing' | 'ready' | 'error'
   readonly version?: string
   readonly message?: string
@@ -70,6 +72,7 @@ export type DesktopUpdateFailureKind =
 
 /** Semantic status content; actions open main-process confirmation dialogs only. */
 export interface DesktopUpdatePresentation {
+  readonly installationMode?: 'manual'
   readonly phase: DesktopUpdateState['phase']
   readonly version?: string
   readonly percent?: number

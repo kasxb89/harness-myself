@@ -14,18 +14,19 @@ vi.mock('node:child_process', async (importOriginal) => {
 })
 
 describe('installer preparation preserves application dependencies', () => {
-  it.each(['win32', 'darwin'] as const)('omits all update policy and feed metadata from unsigned %s packages', async (platform) => {
+  it.each(['win32', 'darwin'] as const)('retains unsigned %s backend updates while omitting mandatory policy and release destinations', async (platform) => {
     const { createElectronBuilderConfig } = await import('../scripts/electron-builder-config.mjs')
     const config = createElectronBuilderConfig({
       DSH_DESKTOP_APP_ID: 'com.example.installer', DSH_DESKTOP_UNSIGNED: '1',
       DSH_DESKTOP_AUTO_UPDATE_ENV: 'invalid',
       DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN: 'not-an-origin',
       DSH_DESKTOP_MANDATORY_UPDATE_CONFIG: 'invalid-json',
-      DSH_DESKTOP_UPDATE_CONFIG_ORIGIN: 'not-an-origin',
+      DSH_DESKTOP_UPDATE_CONFIG_ORIGIN: 'https://yunshu.example.com/harness/',
     }, platform, 'x64')
     expect(config.extraMetadata).not.toHaveProperty('dshMandatoryUpdatePolicy')
-    expect(config.extraMetadata).not.toHaveProperty('dshDesktopUpdateConfigOrigin')
-    expect(config.publish).toBeNull()
+    expect(config.extraMetadata).toMatchObject({ dshDesktopUpdateConfigOrigin: 'https://yunshu.example.com/harness', dshDesktopUnsigned: true })
+    expect(config.publish).toEqual([{ provider: 'generic', channel: 'nightly',
+      url: `https://yunshu.example.com/harness/desktop-updates/${platform === 'win32' ? 'win' : 'mac'}-x64/` }])
     expect(config.win.forceCodeSigning).toBe(false)
   })
 
@@ -161,7 +162,7 @@ describe('installer preparation preserves application dependencies', () => {
 })
 
 
-it('embeds only an explicitly configured release backend authority and omits it from unsigned packages', async () => {
+it('embeds explicitly configured backend authorities in signed and unsigned packages', async () => {
   const { createElectronBuilderConfig } = await import('../scripts/electron-builder-config.mjs')
   const env = {
     DSH_DESKTOP_APP_ID: 'com.example.installer', DSH_DESKTOP_AUTO_UPDATE_ENV: 'production',
@@ -174,7 +175,17 @@ it('embeds only an explicitly configured release backend authority and omits it 
   expect(createElectronBuilderConfig({ ...env, DSH_DESKTOP_UPDATE_CONFIG_ORIGIN: '' }, 'darwin', 'arm64').extraMetadata)
     .not.toHaveProperty('dshDesktopUpdateConfigOrigin')
   expect(createElectronBuilderConfig({ ...env, DSH_DESKTOP_UNSIGNED: '1' }, 'darwin', 'arm64').extraMetadata)
-    .not.toHaveProperty('dshDesktopUpdateConfigOrigin')
+    .toMatchObject({ dshDesktopUpdateConfigOrigin: 'https://8.133.202.230/harness', dshDesktopUnsigned: true })
+  expect(createElectronBuilderConfig(env, 'darwin', 'arm64').extraMetadata).not.toHaveProperty('dshDesktopUnsigned')
+  expect(createElectronBuilderConfig(env, 'darwin', 'arm64').win).not.toHaveProperty('verifyUpdateCodeSignature')
+})
+
+it.each(['win32', 'darwin'] as const)('rejects malformed unsigned %s update authorities', async (platform) => {
+  const { createElectronBuilderConfig } = await import('../scripts/electron-builder-config.mjs')
+  for (const authority of ['not-an-origin', 'https://8.133.202.230', 'https://user:secret@yunshu.example.com', 'https://yunshu.example.com?token=secret']) {
+    expect(() => createElectronBuilderConfig({ DSH_DESKTOP_APP_ID: 'com.example.installer', DSH_DESKTOP_UNSIGNED: '1',
+      DSH_DESKTOP_UPDATE_CONFIG_ORIGIN: authority }, platform, 'x64')).toThrow(/HTTPS backend base/u)
+  }
 })
 
 it('keeps signed OSS ordinary updates when the separate mandatory service is explicitly disabled', async () => {

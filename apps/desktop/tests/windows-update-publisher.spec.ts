@@ -53,6 +53,7 @@ describe('Windows update publisher', () => {
     vi.stubEnv('DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN', 'https://policy.example.com')
     vi.stubEnv('DSH_DESKTOP_MANDATORY_UPDATE_CONFIG', JSON.stringify({ allowedAuthOrigins: ['https://login.example.com'] }))
     vi.stubEnv('DSH_DESKTOP_TARGET_PLATFORM', 'win32')
+    vi.stubEnv('DSH_DESKTOP_TARGET_ARCH', 'x64')
     vi.stubEnv('DSH_DESKTOP_UNSIGNED', '1')
   })
   afterAll(() => vi.unstubAllEnvs())
@@ -90,6 +91,8 @@ describe('Windows update publisher', () => {
         DSH_DESKTOP_AUTO_UPDATE_ENV: 'production',
       }, 'win32', 'x64')
       expect(config.win.forceCodeSigning).toBe(true)
+      expect(config.win).not.toHaveProperty('verifyUpdateCodeSignature')
+      expect(config.extraMetadata).not.toHaveProperty('dshDesktopUnsigned')
       expect(config.artifactName).toBe('yunshu-${version}-${os}-${arch}.${ext}')
       expect(typeof config.win.signtoolOptions.sign).toBe('function')
       const manager = new WindowsSignToolManager({ platformSpecificBuildOptions: config.win, getCscLink: () => undefined })

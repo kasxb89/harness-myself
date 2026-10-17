@@ -98,6 +98,7 @@ export async function uploadDesktopRelease(plan: DesktopUploadPlan, cos: COS, re
     }
     await writeFile(join(directory, 'plan.json'), `${JSON.stringify({ schemaVersion: 1,
       environment: plan.environment, target: plan.target, version: plan.version, bucket: plan.bucket,
+      ...(plan.unsigned ? { unsigned: true } : {}),
       publicUrl: plan.publicUrl, maxAttempts: 1, sourceSha256, artifacts }, null, 2)}\n`, { flag: 'wx', mode: 0o600, flush: true })
     for (const artifact of artifacts) {
       key = artifact.key
@@ -191,6 +192,7 @@ export async function uploadDesktopOssRelease(plan: DesktopUploadPlan, oss: Desk
     }
     await writeFile(join(directory, 'plan.json'), `${JSON.stringify({ schemaVersion: 1, provider: 'oss',
       environment: plan.environment, target: plan.target, version: plan.version, bucket: plan.bucket,
+      ...(plan.unsigned ? { unsigned: true } : {}),
       publicUrl: plan.publicUrl, maxAttempts: 1, sourceSha256, artifacts }, null, 2)}\n`, { flag: 'wx', mode: 0o600, flush: true })
     stage = 'bucket-preflight'
     await oss.assertUnversioned(plan.bucket)

@@ -24,6 +24,7 @@ import { suggestDesktopBuildVersion } from './desktop-build-version-discovery.ts
 import { desktopBuildCommitEnvironment, readDesktopBuildCommit, resolveDesktopBuildCommit } from './desktop-build-commit.mjs'
 import { requireDesktopToolchain } from './desktop-toolchain-preflight.ts'
 import { withMacOSNotarizationProxy } from './macos-notarization-proxy.ts'
+import { resolveUnsignedDesktopUpdateConfig } from './desktop-update-config-origin.mjs'
 
 const APP_ROOT = resolve(import.meta.dirname, '..')
 const REPOSITORY_ROOT = resolve(APP_ROOT, '..', '..')
@@ -137,6 +138,7 @@ function writeReleaseRecord(
   target: DesktopPackageTarget,
   environment: NodeJS.ProcessEnv,
   artifactsRoot: string,
+  unsigned = false,
 ): void {
   const desktopVersion = packageVersion(join(APP_ROOT, 'package.json'), 'desktop package')
   const dshVersion = packageVersion(join(REPOSITORY_ROOT, 'package.json'), 'dsh package')
@@ -145,15 +147,17 @@ function writeReleaseRecord(
   }
   const buildVersion = resolveDesktopBuildVersion(environment, dshVersion)
   const packaged = resolveDesktopBuildCommit(environment)
-  const update = resolveDesktopAutoUpdateConfig(environment, target.platform, target.arch)
+  const update = unsigned ? undefined : resolveDesktopAutoUpdateConfig(environment, target.platform, target.arch)
+  const destination = update === undefined
+    ? { unsigned: true, updateConfigOrigin: resolveUnsignedDesktopUpdateConfig(environment, target.platform, target.arch).authority }
+    : { environment: update.environment, publicUrl: update.publicUrl }
   const recordPath = join(artifactsRoot, desktopBuildRecordFilename(target.name))
   const temporaryPath = `${recordPath}.tmp`
   writeFileSync(temporaryPath, `${JSON.stringify({
     schemaVersion: 1,
     target: target.name,
     version: buildVersion,
-    environment: update.environment,
-    publicUrl: update.publicUrl,
+    ...destination,
     // Upload reads this to tag the commit a production release was packaged from.
     ...packaged === undefined ? {} : { commit: packaged.commit, dirty: packaged.dirty },
   }, null, 2)}\n`)
@@ -332,7 +336,7 @@ async function main(): Promise<void> {
   const invocation = parseDesktopPackageInvocation(process.argv.slice(2))
   const { target } = invocation
   const environment = target.platform === 'darwin' && invocation.unsigned
-    ? localMacOSPackageEnvironment()
+    ? localMacOSPackageEnvironment(process.env, APP_ROOT)
     : loadDesktopPackageEnvironment(target.platform)
   const productVersion = packageVersion(join(APP_ROOT, 'package.json'), 'desktop package')
   // Release settings come from the target dotenv file alone, so the version this run publishes is an
@@ -391,11 +395,11 @@ async function main(): Promise<void> {
 }
 
 /**
- * Prepare one release only after its signing preflight, without publishing from the builder.
+ * Prepare one package after its mode-specific preflight, without publishing from the builder.
  * @param invocation Validated host, target and packaging mode.
  * @param environment File-owned release configuration.
  * @param run Persistent stage supervisor; required for signed Windows packaging and enabled for all release commands.
- * @returns Resolves after preparation or complete packaging; any failed stage prevents a release record.
+ * @returns Resolves after preparation or complete packaging; any failed stage prevents a completion record.
  */
 export async function packageTarget(
   invocation: DesktopPackageInvocation,
@@ -409,8 +413,9 @@ export async function packageTarget(
   const mac = target.platform === 'darwin' ? resolveMacOSPackageSettings(environment) : undefined
   const packArguments = mac === undefined ? [] : ['--concurrency', String(mac.packConcurrency)]
   const buildPaths = desktopTargetBuildPaths(target.name)
-  const releaseRecordPath = join(buildPaths.artifacts, desktopBuildRecordFilename(target.name))
-  if (!invocation.prepareOnly && !invocation.unsigned) {
+  const artifactsRoot = invocation.unsigned ? buildPaths.unsignedArtifacts : buildPaths.artifacts
+  const releaseRecordPath = join(artifactsRoot, desktopBuildRecordFilename(target.name))
+  if (!invocation.prepareOnly && (!invocation.unsigned || !invocation.directory)) {
     rmSync(releaseRecordPath, { force: true })
     rmSync(`${releaseRecordPath}.tmp`, { force: true })
   }
@@ -504,7 +509,7 @@ export async function packageTarget(
     await signedStage('artifacts', () => execute(desktopElectronBuilderArguments(target, invocation.directory), electronBuilderEnv))
     await execute(['exec', 'tsx', 'scripts/smoke-packaged-runtime.ts', ...(invocation.unsigned ? ['--unsigned'] : [])], targetEnv)
   }
-  if (!invocation.directory && !invocation.unsigned) writeReleaseRecord(target, electronBuilderEnv, buildPaths.artifacts)
+  if (!invocation.directory) writeReleaseRecord(target, electronBuilderEnv, artifactsRoot, invocation.unsigned)
   if (journal) recordPackagingEvent(journal, { type: 'artifacts', directory: invocation.unsigned ? buildPaths.unsignedArtifacts : buildPaths.artifacts })
 }
 

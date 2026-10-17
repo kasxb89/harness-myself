@@ -67,12 +67,16 @@ jobs:
           path: apps/desktop/.desktop-build/packaging-runs/
           if-no-files-found: warn
           retention-days: 14
-      - name: Retain verified installer
+      - name: Retain verified installer and update metadata
         uses: actions/upload-artifact@v7.0.1
         with:
           name: windows-x64-unsigned-${{ steps.settings.outputs.version }}-${{ github.run_id }}-${{ github.run_attempt }}
           include-hidden-files: true
-          path: apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts/*.exe
+          path: |
+            apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts/*.exe
+            apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts/*.exe.blockmap
+            apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts/nightly.yml
+            apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts/win-x64-release.json
           if-no-files-found: error
           retention-days: 14
       - name: Remove generated package settings

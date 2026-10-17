@@ -21,6 +21,8 @@ export type DesktopUpdateFailureKind =
 
 /** Public semantic preload fields consumed by the settings row. */
 export interface DesktopUpdatePresentation {
+  /** Unsigned Mac releases open a verified installer for manual app replacement. */
+  readonly installationMode?: 'manual'
   readonly phase: 'idle' | 'checking' | 'available' | 'downloading' | 'verifying' | 'installing' | 'ready' | 'error'
   readonly version?: string
   readonly percent?: number

@@ -7,10 +7,8 @@ import electronUpdater, { type AppUpdater, type ProgressInfo, type UpdateInfo } 
 import { gt, valid } from 'semver'
 import type { DesktopUpdateState } from './ipc.ts'
 import { DesktopUpdateHttpExecutor } from './update-http-executor.ts'
-import { DesktopUpdatePreparationError } from './update-error.ts'
+import { DesktopUpdateInstallerIntegrityError, DesktopUpdatePreparationError } from './update-error.ts'
 import { DesktopUpdateSourceError, type DesktopUpdateSource } from './update-source.ts'
-
-const { autoUpdater } = electronUpdater
 
 /** Owns one updater target until its download and installation settle. */
 export class DesktopUpdateCoordinator {
@@ -21,6 +19,7 @@ export class DesktopUpdateCoordinator {
   private checkOperation: Promise<DesktopUpdateState> | undefined
   private downloadOperation: Promise<DesktopUpdateState> | undefined
   private installOperation: Promise<DesktopUpdateState> | undefined
+  private readonly updater: AppUpdater
 
   private readonly onProgress = (progress: ProgressInfo): void => {
     if (this.downloadOperation === undefined || this.downloaded) return
@@ -48,23 +47,27 @@ export class DesktopUpdateCoordinator {
    * @param currentVersion - Actual installed application version.
    * @param downloadResult - Once per completed download attempt, including platform preparation failures.
    * @param resolveSource - Re-reads the trusted backend before every check; failure invalidates an old available target.
+   * @param manualInstaller - Confirms and opens a verified installer without stopping the Host or quitting.
    */
   constructor(
     private readonly publish: (state: DesktopUpdateState) => DesktopUpdateState,
     private readonly beforeRestart: () => Promise<boolean>,
-    private readonly updater: AppUpdater = autoUpdater,
+    updater?: AppUpdater,
     private readonly enabled: () => boolean = () => app.isPackaged && existsSync(join(process.resourcesPath, 'app-update.yml')),
     private readonly currentVersion: () => string = () => app.getVersion(),
     private readonly downloadResult?: (success: boolean, reason?: string) => void,
     private readonly resolveSource: () => Promise<DesktopUpdateSource> = () => { throw new DesktopUpdateSourceError('source-unbound') },
+    private readonly manualInstaller?: (version: string) => Promise<boolean>,
   ) {
-    if (updater === autoUpdater) {
+    this.updater = updater ?? electronUpdater.autoUpdater
+    if (manualInstaller !== undefined) this.current = { phase: 'idle', installationMode: 'manual' }
+    if (updater === undefined) {
       // electron-updater omits this internal transport property from its public declarations.
       // Real-Electron qualification exercises the pinned dependency integration.
-      const transportOwner = updater as AppUpdater & { httpExecutor: DesktopUpdateHttpExecutor }
+      const transportOwner = this.updater as AppUpdater & { httpExecutor: DesktopUpdateHttpExecutor }
       transportOwner.httpExecutor = new DesktopUpdateHttpExecutor(
         Number(process.env.DSH_DESKTOP_UPDATE_HTTP_IDLE_TIMEOUT_MS ?? 60_000),
-        (authInfo, callback) => { updater.emit('login', authInfo, callback) },
+        (authInfo, callback) => { this.updater.emit('login', authInfo, callback) },
       )
     }
     this.updater.autoDownload = false
@@ -135,11 +138,20 @@ export class DesktopUpdateCoordinator {
     this.installOperation ??= Promise.resolve().then(async () => {
       this.setState({ phase: 'installing', version })
       try {
+        if (this.manualInstaller !== undefined) {
+          await this.manualInstaller(version)
+          this.assertLive()
+          return this.setState({ phase: 'ready', version })
+        }
         if (!await this.beforeRestart()) return this.setState({ phase: 'ready', version })
         this.assertLive()
         this.updater.quitAndInstall(true, true)
         return this.current
       } catch (error) {
+        if (error instanceof DesktopUpdateInstallerIntegrityError) {
+          this.downloaded = false
+          return this.setState(this.failure(error, 'download'))
+        }
         if (this.current.phase === 'error' && this.current.failedOperation === 'install') return this.current
         return this.setState(this.failure(error, 'install'))
       }
@@ -163,6 +175,7 @@ export class DesktopUpdateCoordinator {
 
   private setState(state: DesktopUpdateState): DesktopUpdateState {
     if (!this.disposed) {
+      state = this.manualInstaller === undefined ? state : { ...state, installationMode: 'manual' }
       this.current = state
       this.publish(state)
     }
@@ -171,6 +184,7 @@ export class DesktopUpdateCoordinator {
 
   private failure(error: unknown, failedOperation: 'check' | 'download' | 'install'): DesktopUpdateState {
     return { phase: 'error', ...this.target(), failedOperation,
+      ...(this.manualInstaller === undefined ? {} : { installationMode: 'manual' }),
       message: error instanceof Error ? error.message : String(error),
       ...(error instanceof DesktopUpdateSourceError ? { sourceFailure: error.kind } : {}),
       ...(error instanceof DesktopUpdatePreparationError ? {

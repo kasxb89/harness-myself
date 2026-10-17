@@ -61,7 +61,7 @@ function downloadedEvent(): UpdateDownloadedEvent {
     path: 'verified-package', sha512 }
 }
 
-function fixture() {
+function fixture(manualInstaller?: (version: string) => Promise<boolean>) {
   const events = new NsisUpdater()
   const checkForUpdates = vi.fn(async () => ({
     isUpdateAvailable: true,
@@ -82,7 +82,7 @@ function fixture() {
   const updater = Object.assign(events, { checkForUpdates, downloadUpdate, quitAndInstall, setFeedURL })
   const coordinator = new DesktopUpdateCoordinator(
     (state) => { states.push(state); return state },
-    beforeRestart, updater, () => true, () => '1.1.0-alpha.1', downloadResult, resolveSource,
+    beforeRestart, updater, () => true, () => '1.1.0-alpha.1', downloadResult, resolveSource, manualInstaller,
   )
   coordinators.push(coordinator)
   return { coordinator, updater, resolveSource, setFeedURL, events, states, checkForUpdates, downloadUpdate, quitAndInstall,
@@ -90,6 +90,22 @@ function fixture() {
 }
 
 describe('desktop update coordinator', () => {
+  it('retains manual installer semantics on silent automatic discovery failures', async () => {
+    const f = fixture(async () => false)
+    f.resolveSource.mockRejectedValueOnce(new Error('network unavailable'))
+    expect(await f.coordinator.check()).toMatchObject({ phase: 'error', failedOperation: 'check', installationMode: 'manual' })
+    expect(f.coordinator.state).toEqual({ phase: 'idle', installationMode: 'manual' })
+  })
+  it('keeps a manually confirmed installer ready when the user cancels without authorizing task shutdown', async () => {
+    const manualInstaller = vi.fn(async () => false)
+    const f = fixture(manualInstaller)
+    await f.coordinator.check()
+    await f.coordinator.download('1.1.0-rc.2')
+    expect(await f.coordinator.install('1.1.0-rc.2')).toEqual({ phase: 'ready', version: '1.1.0-rc.2', installationMode: 'manual' })
+    expect(manualInstaller).toHaveBeenCalledExactlyOnceWith('1.1.0-rc.2')
+    expect(f.beforeRestart).not.toHaveBeenCalled()
+    expect(f.quitAndInstall).not.toHaveBeenCalled()
+  })
   it('keeps safe preparation diagnostics separate and clears them on an explicit retry', async () => {
     const f = fixture()
     await f.coordinator.check()

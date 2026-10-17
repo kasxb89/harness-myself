@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { loadDesktopPackageEnvironment, localMacOSPackageEnvironment, validateDesktopPackageEnvironment } from '../scripts/desktop-package-environment.mjs'
-import { resolvePackagedDesktopUpdateConfigOrigin } from '../scripts/desktop-update-config-origin.mjs'
+import { resolvePackagedDesktopUpdateConfigOrigin, resolveUnsignedDesktopUpdateConfig } from '../scripts/desktop-update-config-origin.mjs'
 import { resolveWindowsPackageSettings } from '../scripts/windows-package-settings.mjs'
 
 const WINDOWS = { platform: 'win32', arch: 'x64' } as const
@@ -53,6 +53,29 @@ describe('Desktop local packaging configuration', () => {
       expect(resolveWindowsPackageSettings(loadDesktopPackageEnvironment('win32', parent, directory)).signatureCacheConcurrency).toBe(4)
       await writeFile(join(directory, '.env.windows'), 'DSH_DESKTOP_WINDOWS_SIGNATURE_CACHE_CONCURRENCY=2\n')
       expect(resolveWindowsPackageSettings(loadDesktopPackageEnvironment('win32', parent, directory)).signatureCacheConcurrency).toBe(2)
+    })
+  })
+
+  it('reads only app identity and backend authority from an optional unsigned macOS file', async () => {
+    await withDirectory(async (directory) => {
+      const ambient = { PATH: 'toolchain', DSH_DESKTOP_UPDATE_CONFIG_ORIGIN: 'https://ambient.example.com' }
+      const missing = localMacOSPackageEnvironment(ambient, directory)
+      expect(resolveUnsignedDesktopUpdateConfig(missing, 'darwin', 'arm64').authority).toBe('https://8.133.202.230/harness')
+      await writeFile(join(directory, '.env.macos'), [
+        'DSH_DESKTOP_APP_ID=com.example.yunshu', 'DSH_DESKTOP_UPDATE_CONFIG_ORIGIN=https://yunshu.example.com/harness/',
+        'CSC_LINK=keys/private.p12', 'CSC_KEY_PASSWORD=unused-secret', 'APPLE_API_KEY=keys/private.p8',
+        'DSH_DESKTOP_MANDATORY_UPDATE_CONFIG=invalid-json', 'DOWNLOAD_PROD_COS_SECRET_KEY=upload-secret',
+      ].join('\n'))
+      const selected = localMacOSPackageEnvironment(ambient, directory)
+      expect(selected).toEqual({ PATH: 'toolchain', DSH_DESKTOP_APP_ID: 'com.example.yunshu', DSH_DESKTOP_UNSIGNED: '1',
+        DSH_DESKTOP_UPDATE_CONFIG_ORIGIN: 'https://yunshu.example.com/harness/' })
+      expect(resolveUnsignedDesktopUpdateConfig(selected, 'darwin', 'x64')).toEqual({
+        authority: 'https://yunshu.example.com/harness', publicUrl: 'https://yunshu.example.com/harness/desktop-updates/mac-x64/',
+      })
+      expect(ambient.DSH_DESKTOP_UPDATE_CONFIG_ORIGIN).toBe('https://ambient.example.com')
+      await writeFile(join(directory, '.env.macos'), 'DSH_DESKTOP_UPDATE_CONFIG_ORIGIN=https://8.133.202.230\n')
+      expect(() => { validateDesktopPackageEnvironment(localMacOSPackageEnvironment(ambient, directory), MACOS, { unsigned: true }) })
+        .toThrow(/HTTPS backend base/u)
     })
   })
 
@@ -252,7 +275,7 @@ it('owns OSS destinations and tool paths in the platform file without retaining 
   })
 })
 
-it('requires a backend authority for signed OSS packages and preserves unsigned opt-out', () => {
+it('requires a configured backend authority for signed OSS packages and supplies the unsigned product authority', () => {
   const environment = { ...RELEASE, DSH_DESKTOP_UPLOAD_PROVIDER: 'oss', DSH_DESKTOP_AUTO_UPDATE_ENV: 'production',
     DSH_DESKTOP_UPDATE_PREFIX: 'yunshu-harnes', DOWNLOAD_PROD_ORIGIN: 'https://alioss.denuoxuankeji.com',
     DSH_DESKTOP_MANDATORY_UPDATE_ENABLED: 'false' }
@@ -275,7 +298,7 @@ it('owns macOS tuning in the local file and validates it before signing credenti
 })
 
 
-it('isolates the packaged backend authority from ambient and unsigned build environments', async () => {
+it('isolates the packaged backend authority from ambient build environments', async () => {
   const ambient = { DSH_DESKTOP_UPDATE_CONFIG_ORIGIN: 'https://ambient.example.com' }
   expect(localMacOSPackageEnvironment(ambient)).not.toHaveProperty('DSH_DESKTOP_UPDATE_CONFIG_ORIGIN')
   await withDirectory(async (directory) => {
@@ -293,4 +316,17 @@ it('isolates the packaged backend authority from ambient and unsigned build envi
     'https://8.133.202.230/other/../harness', 'https://8.133.202.230/%68arness', 'https://8.133.202.230/harness/%2e%2e']) {
     expect(() => resolvePackagedDesktopUpdateConfigOrigin({ DSH_DESKTOP_UPDATE_CONFIG_ORIGIN: value })).toThrow(/HTTPS backend base/u)
   }
+})
+
+it.each([
+  ['darwin', 'arm64', 'mac-arm64'], ['darwin', 'x64', 'mac-x64'], ['win32', 'x64', 'win-x64'],
+] as const)('resolves unsigned %s %s discovery without an official download fallback', (platform, arch, target) => {
+  expect(resolveUnsignedDesktopUpdateConfig({ DSH_DESKTOP_AUTO_UPDATE_ENV: 'production' }, platform, arch))
+    .toEqual({ authority: 'https://8.133.202.230/harness', publicUrl: `https://8.133.202.230/harness/desktop-updates/${target}/` })
+  expect(resolvePackagedDesktopUpdateConfigOrigin({})).toBeUndefined()
+  expect(() => resolveUnsignedDesktopUpdateConfig({ DSH_DESKTOP_UPDATE_CONFIG_ORIGIN: 'https://8.133.202.230' }, platform, arch))
+    .toThrow(/HTTPS backend base/u)
+  expect(() => { validateDesktopPackageEnvironment({ DSH_DESKTOP_APP_ID: 'com.example.yunshu',
+    DSH_DESKTOP_UPDATE_CONFIG_ORIGIN: 'https://8.133.202.230' }, { platform, arch }, { unsigned: true }) })
+    .toThrow(/HTTPS backend base/u)
 })

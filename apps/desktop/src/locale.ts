@@ -123,12 +123,17 @@ export const en = {
   updateDownload: 'Download update',
   updateDownloadTitle: 'Downloading the new version',
   updateDownloadingDetail: 'You can keep working while the download continues. We’ll ask before restarting.',
+  updateDownloadingDetailManual: 'You can keep working while the installer downloads. We’ll ask before opening it.',
   updateVerifyingDetail: 'Checking the downloaded files before installation. Please keep the app open.',
   updateBackground: 'Download in background',
   updateRetryDownload: 'Retry download',
   updateDownloadedTitle: 'Version {version} is ready to install',
   updateDownloadedDetail: 'The app will close during the update and reopen automatically when it is complete.',
   updateDownloadedDetailWindows: 'The app will close temporarily during the update and reopen automatically when it is complete.\n\nThe update may take some time. Please wait and do not launch the app again during installation.',
+  updateDownloadedDetailManual: 'Open the downloaded disk image, finish your tasks and quit Yunshu, then drag the new Yunshu app into Applications to replace the existing app. Launch it again after replacement. Opening the installer does not stop your tasks or close the app.',
+  updateOpenInstaller: 'Open installer',
+  updateOpeningInstaller: 'Opening installer…',
+  updateDetailManual: 'Download and verify the installer, then open it to replace the app manually.',
   updateClose: 'Close',
   updateAcknowledge: 'OK',
   updateLater: 'Update later',
@@ -307,12 +312,17 @@ export const zh = {
   updateDownload: '下载更新',
   updateDownloadTitle: '正在下载新版本',
   updateDownloadingDetail: '下载期间可继续使用，安装前会再次请你确认重启',
+  updateDownloadingDetailManual: '下载安装包期间可继续使用，打开安装包前会再次请你确认',
   updateVerifyingDetail: '正在检查下载文件的完整性与安全性，请保持应用开启',
   updateBackground: '后台下载',
   updateRetryDownload: '重试下载',
   updateDownloadedTitle: '新版本 {version} 已准备就绪',
   updateDownloadedDetail: '更新期间应用将暂时关闭，完成后会自动打开。',
   updateDownloadedDetailWindows: '更新期间应用将暂时关闭，完成后会自动打开。\n\n更新可能需要一些时间，请耐心等待，期间请勿重复启动应用。',
+  updateDownloadedDetailManual: '打开下载的磁盘映像后，请先完成任务并退出云枢，再把新版云枢拖入「应用程序」替换原应用，替换完成后重新打开。打开安装包不会停止任务或关闭当前应用。',
+  updateOpenInstaller: '打开安装包',
+  updateOpeningInstaller: '正在打开安装包…',
+  updateDetailManual: '下载安装包并校验后，打开安装包手动替换应用。',
   updateClose: '关闭',
   updateAcknowledge: '确定',
   updateLater: '稍后更新',
@@ -407,15 +417,18 @@ export function formatDesktopMessage(
  * @param messages - Selected Desktop dictionary.
  * @param version - Prepared update version, including any prerelease suffix.
  * @param platform - Operating system presenting the confirmation.
+ * @param installationMode - Unsigned Mac builds hand off an installer for manual replacement.
  * @returns The versioned title and installation guidance.
  */
 export function desktopUpdateReadyConfirmation(
   messages: DesktopMessages,
   version: string,
   platform: string,
+  installationMode?: 'manual',
 ): { message: string; detail: string } {
   return {
     message: formatDesktopMessage(messages.updateDownloadedTitle, { version }),
-    detail: platform === 'win32' ? messages.updateDownloadedDetailWindows : messages.updateDownloadedDetail,
+    detail: installationMode === 'manual' ? messages.updateDownloadedDetailManual
+      : platform === 'win32' ? messages.updateDownloadedDetailWindows : messages.updateDownloadedDetail,
   }
 }

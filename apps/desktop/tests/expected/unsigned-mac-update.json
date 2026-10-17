@@ -1,0 +1,21 @@
+{
+  "presentation": {
+    "phase": "ready",
+    "installationMode": "manual",
+    "version": "1.1.0"
+  },
+  "locales": [
+    {
+      "message": "Version 1.1.0 is ready to install",
+      "detail": "Open the downloaded disk image, finish your tasks and quit Yunshu, then drag the new Yunshu app into Applications to replace the existing app. Launch it again after replacement. Opening the installer does not stop your tasks or close the app.",
+      "action": "Open installer",
+      "progress": "You can keep working while the installer downloads. We’ll ask before opening it."
+    },
+    {
+      "message": "新版本 1.1.0 已准备就绪",
+      "detail": "打开下载的磁盘映像后，请先完成任务并退出云枢，再把新版云枢拖入「应用程序」替换原应用，替换完成后重新打开。打开安装包不会停止任务或关闭当前应用。",
+      "action": "打开安装包",
+      "progress": "下载安装包期间可继续使用，打开安装包前会再次请你确认"
+    }
+  ]
+}

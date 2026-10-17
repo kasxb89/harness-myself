@@ -217,13 +217,13 @@ pnpm --dir apps/desktop run package:win:x64 --build-version 0.1.6-alpha.1.202609
 
 `--build-version auto` 会给出当天的下一个序号：读取目标 bucket 中已发布的对象，未配置 bucket 或列举未能在期限内完成时回退到本目标的本地输出目录。版本发现将 `yunshu-` 与早期 `deepseek-harness-` 产物纳入同一编号序列。上传前请确认它打印的版本号；run script 会自行透传 `--`，打包入口两种写法都接受。
 
-production 发布通常使用产品版本本身，不传 `--build-version`；OSS 发布可以显式指定经确认、基于相同产品基线的更高构建版本。其上传成功后会把打包所用 commit 打成 `desktop-v<版本>` 标签；来自有改动工作区的构建不打标签，打标签失败也只打印手工命令，不会让已完成的上传变成失败。test 与本地构建有意不留标签，而所有产物的清单都记录 `dshBuildCommit` 与 `dshBuildDirty`，直接分发的构建同样可溯源。
+production 发布通常使用产品版本本身，不传 `--build-version`；OSS 发布可以显式指定经确认、基于相同产品基线的更高构建版本。签名生产构建上传成功后会把打包所用 commit 打成 `desktop-v<版本>` 标签；来自有改动工作区的构建不打标签，打标签失败也只打印手工命令，不会让已完成的上传变成失败。test、本地与未签名构建不留标签，而所有产物的清单都记录 `dshBuildCommit` 与 `dshBuildDirty`，直接分发的构建同样可溯源。
 
 版本派生不改变固定更新通道，也不改变 `nightly.yml` / `nightly-mac.yml` 文件名。SemVer 排序为 `0.1.6-alpha.1 < 0.1.6-alpha.1.20260916.1 < 0.1.6-alpha.2`，稳定基础版本的测试版低于该稳定版。客户端只接受更高版本：替换 feed 无法让已安装的较高版本更新到较低的纠正版。这类客户端需要手动安装；保持自动降级关闭。[已归档的版本决策](../../.agents/notes/archived/process/2026-09-16-desktop-release-version-derivation.md)解释为什么不能用通道名替换预发布标识。
 
-除本地 macOS 未签名构建外，打包、上传以及手动 macOS 签名检查使用 `apps/desktop/.env.windows` 或 `.env.macos`，由目标平台选择。复制对应的 [Windows 模板](.env.windows.example) 或 [macOS 模板](.env.macos.example)，填写本机配置；Git 忽略这两个本地文件，安装产物也不包含它们。发布字段只从目标文件读取，不回退到系统或 shell 中的同名变量；`PATH`、代理和构建工具环境仍保留。发布版本是命令参数而非发布字段，上传从打包写下的完成记录中读取它。文件使用 UTF-8，支持 BOM；相对证书、SignTool、Apple API Key 和钥匙串路径以 `apps/desktop` 为基准，变量值不做 shell 展开，包含 `#` 或空格的密码需要引号。CI 同样在运行前生成目标文件。
+打包、上传以及手动 macOS 签名检查使用 `apps/desktop/.env.windows` 或 `.env.macos`，由目标平台选择；本地 macOS 未签名打包只从可选的 `.env.macos` 读取应用 ID 和后台更新配置来源。复制对应的 [Windows 模板](.env.windows.example) 或 [macOS 模板](.env.macos.example)，填写本机配置；Git 忽略这两个本地文件，安装产物也不包含它们。发布字段只从目标文件读取，不回退到系统或 shell 中的同名变量；`PATH`、代理和构建工具环境仍保留。发布版本是命令参数而非发布字段，上传从打包写下的完成记录中读取它。文件使用 UTF-8，支持 BOM；相对证书、SignTool、Apple API Key 和钥匙串路径以 `apps/desktop` 为基准，变量值不做 shell 展开，包含 `#` 或空格的密码需要引号。CI 同样在运行前生成目标文件。
 
-每条打包命令在构建与下载前检查应用 ID 以及该模式需要的更新与签名配置，随后探测本次运行要用的外部工具：归档读取工具，以及 Windows 目标的安装器编译器。macOS 检查身份、Team ID、一套完整公证凭据、`CSC_LINK` 指定的可读本地 p12 文件、显式配置的 `CSC_KEY_PASSWORD`，以及引用的 API Key 和钥匙串文件；Windows 检查公开代码签名证书、SignTool 文件、容器名称和 PIN 格式。仅准备 Windows 资源以及两个平台上的显式未签名打包均不要求签名凭据。配置检查不验证 PIN 是否正确、Token 是否登录、钥匙串是否解锁或 Apple 是否接受凭据；实际签名与公证负责这些检查。`--build-version auto` 会访问目标 bucket，`--check` 下同样如此。单独运行相同检查：
+每条打包命令在构建与下载前检查应用 ID 以及该模式需要的更新与签名配置，随后探测本次运行要用的外部工具：归档读取工具，以及 Windows 目标的安装器编译器。macOS 签名打包检查身份、Team ID、一套完整公证凭据、`CSC_LINK` 指定的可读本地 p12 文件、显式配置的 `CSC_KEY_PASSWORD`，以及引用的 API Key 和钥匙串文件；Windows 检查公开代码签名证书、SignTool 文件、容器名称和 PIN 格式。仅准备 Windows 资源以及两个平台上的显式未签名打包均不要求签名凭据。配置检查不验证 PIN 是否正确、Token 是否登录、钥匙串是否解锁或 Apple 是否接受凭据；实际签名与公证负责这些检查。`--build-version auto` 会访问目标 bucket，`--check` 下同样如此。单独运行相同检查：
 
 ```sh
 pnpm --dir apps/desktop run check:package
@@ -258,7 +258,7 @@ pnpm run package:desktop:mac:x64:unsigned
 
 添加 `--check` 仅验证本地配置和工具而不构建，或添加 `--dir` 只生成解包应用。DMG 路径为 `apps/desktop/.desktop-build/targets/<target>/unsigned-artifacts/yunshu-<version>-mac-<arch>-unsigned.dmg`。所有检查通过后，命令打印 `DMG:` 及其绝对路径。打开后将应用复制到本地测试目录。
 
-这些命令忽略 `.env.macos` 和继承的发布配置，使用 `com.deepseek.harness` 作为应用 ID，并省略自动更新和强制更新配置。构建工具、标准网络代理与 `DSH_DESKTOP_NPM_REGISTRY` 仍可从 shell 提供。它们跳过 Developer ID 签名、Apple 公证、临时签名钥匙串和公证代理修改。Electron 使用无需证书的本地 ad-hoc 签名，以便修改后的可执行文件能够运行；DMG 不签名。准备阶段和组装后的应用仍执行运行时完整性与冒烟检查。本地构建不生成更新源、ZIP 或发布完成记录，上传命令无法发布这些产物。macOS 可能要求在“系统设置 → 隐私与安全性”中批准打开未经公证的应用。
+这些命令只从可选的 `.env.macos` 读取 `DSH_DESKTOP_APP_ID` 和 `DSH_DESKTOP_UPDATE_CONFIG_ORIGIN`，默认分别为 `com.deepseek.harness` 和 `https://8.133.202.230/harness`。它们忽略继承的发布设置，并省略强制更新策略。构建工具、标准网络代理与 `DSH_DESKTOP_NPM_REGISTRY` 仍可从 shell 提供。它们跳过 Developer ID 签名、Apple 公证、临时签名钥匙串和公证代理修改。Electron 使用无需证书的本地 ad-hoc 签名，以便修改后的可执行文件能够运行；DMG 不签名。运行时完整性与冒烟检查仍会执行。安装包构建完成后，会在 `unsigned-artifacts/` 的 DMG 旁写入 `nightly-mac.yml` 和 `<target>-release.json`；目录构建不写完成记录。不生成 ZIP。[显式未签名上传](#upload-updates)发布已检查的 DMG，用户通过[更新](#updates)一节说明的手动流程安装。macOS 可能要求在“系统设置 → 隐私与安全性”中批准打开未经公证的应用。
 
 ### 用回环 registry 安装本地 Official 包
 
@@ -300,7 +300,7 @@ Windows 安装器在启动时和选定目标目录后检查应用是否正在运
 
 ### 上传更新
 
-`DSH_DESKTOP_UPLOAD_PROVIDER` 选择 `cos`（默认）或 `oss`；打包和上传都使用同一份被 Git 忽略的 `.env.macos` 或 `.env.windows`。智澍科技通过阿里云 OSS 发布生产版本时，填写以下设置，以及常规应用 ID、后台更新配置来源和平台签名设置：
+`DSH_DESKTOP_UPLOAD_PROVIDER` 选择 `cos`（默认）或 `oss`；上传读取目标平台被 Git 忽略的 `.env.macos` 或 `.env.windows`。智澍科技通过阿里云 OSS 发布生产版本时，填写以下设置，以及应用 ID 和后台更新配置来源；签名打包还需要平台签名设置：
 
 ```dotenv
 DSH_DESKTOP_AUTO_UPDATE_ENV=production
@@ -330,7 +330,7 @@ pnpm --dir apps/desktop run package:win:x64 --build-version 0.2.1-alpha.2.202610
 pnpm run upload:win:x64
 ```
 
-未签名测试安装包不包含自动更新配置。使用这些构建的用户需要先安装一个已嵌入后台配置来源的签名版本。验证首个安装包、公网安装文件和已发布清单后，再在 harnes-api 开启 `desktop_update`。后续版本沿用相同更新目录，版本号必须严格递增；用户选择“检查更新”、下载，再确认重启安装。
+未签名安装包同样支持从后台发现更新。完成记录是 `unsigned-artifacts/` 中的 `<target>-release.json`，记录 `unsigned: true` 和内嵌的 `updateConfigOrigin`，不指定上传部署或公网 URL。使用 `pnpm --dir apps/desktop run upload:mac:arm64 --unsigned`、`upload:mac:x64 --unsigned` 或 `upload:win:x64 --unsigned` 显式选择对应的产物目录；目标 dotenv 提供 OSS 或 COS 目的地。上传在发布前检查完成记录、目标、版本、文件名、大小、完整 SHA-512 和内嵌来源，并沿用所选上传方的审计与公网回读规则。未签名上传从不创建发布 tag，并拒绝 `--latest`。验证公网安装包和 `nightly.yml` 或 `nightly-mac.yml` 后，再在 harnes-api 开启 `desktop_update`。后续版本沿用相同更新目录，版本号必须严格递增。Windows 经确认后通过 NSIS 安装；未签名 macOS 打开已校验的 DMG，由用户自行替换应用。
 
 COS 固定安装包下载在仓库根目录使用 `pnpm run upload:latest:mac:arm64`、`pnpm run upload:latest:mac:x64` 或 `pnpm run upload:latest:win:x64`。它们把已完成目标的 DMG 或 EXE 上传到 `desktop/dsh-latest-macos-arm64.dmg`、`desktop/dsh-latest-macos-x64.dmg` 或 `desktop/dsh-latest-windows-x64.exe`。生产 URL 以 `https://download.deepseek.com/` 开头；测试 URL 使用 `DOWNLOAD_TEST_ORIGIN`。两个部署环境均复用目标 dotenv 中的部署、bucket 和凭据、全部常规发布校验以及下述上传审计。每个命令覆盖一个固定对象，不发布更新清单、blockmap 或发布标签。测试固定下载在测试 bucket 中跨发布 ID 共享；包内更新 URL 仍要求原有发布 ID。发布由操作人员显式执行，也允许预发布版本。部署基础设施必须配置重新验证，或在覆盖后清除固定下载的缓存。本地回环测试覆盖上传行为；真实 COS 和 CDN 验收由发布操作人员负责。
 
@@ -364,7 +364,7 @@ pnpm run upload:mac:arm64
 
 内测打包在目标 `.env` 中显式设置 `DSH_DESKTOP_AUTO_UPDATE_ENV=test` 和 `DOWNLOAD_TEST_ORIGIN=https://download-test.deepseek.com`；上传使用 `DOWNLOAD_TEST_COS_BUCKET=bj-toc-download-test-1320056602` 及独立测试凭据。test 和 production 都使用固定 Nightly 通道，部署选择不提供通道切换。
 
-前期内测包使用 `test` 部署。只有正式发布才显式选择 `production`；更换上传凭据不会配置运行时发现；该选择由后台管理。打包不需要 COS 凭据，会禁用 electron-builder 发布、移除子进程的 COS 凭据，并且仅在签名与公证成功后记录完成状态。上传在读取凭据前验证该记录、部署、目标、共同版本号、文件名、大小与 SHA-512。安装包和 blockmap 先于 YAML 上传；历史对象继续保留。每个版本发布 `nightly.yml` 或 `nightly-mac.yml`；稳定版本还发布指向相同产物的 `latest.yml` 或 `latest-mac.yml`。发布的 YAML 使用安装包绝对 URL。COS 上传器不设置 Cache-Control，包括 COS SDK 否则会添加的空头部：缓存策略由部署基础设施负责，清单不缓存，安装包缓存单独配置。同一目标应串行发布，并在发布验收前验证公网产物与清单内容。
+前期内测包使用 `test` 部署。只有正式发布才显式选择 `production`；更换上传凭据不会配置运行时发现；该选择由后台管理。打包不需要 COS 凭据，会禁用 electron-builder 发布、移除子进程的 COS 凭据，并在所选模式的全部检查成功后记录完成状态；签名构建还要求签名与公证成功。上传在读取凭据前验证该记录、部署、目标、共同版本号、文件名、大小与 SHA-512。安装包和 blockmap 先于 YAML 上传；历史对象继续保留。每个版本发布 `nightly.yml` 或 `nightly-mac.yml`；稳定版本还发布指向相同产物的 `latest.yml` 或 `latest-mac.yml`。发布的 YAML 使用安装包绝对 URL。COS 上传器不设置 Cache-Control，包括 COS SDK 否则会添加的空头部：缓存策略由部署基础设施负责，清单不缓存，安装包缓存单独配置。同一目标应串行发布，并在发布验收前验证公网产物与清单内容。
 
 macOS 签名配置使用必填发布环境，不会接受钥匙串中最先发现的证书。空值、格式错误的 Team ID、包含 electron-builder 不支持的 `Developer ID Application:` 前缀的签名身份，以及不完整的公证凭据都会被拒绝。macOS 签名打包要求已配置的身份及其私钥可用。运行时准备会把该身份、安全时间戳与 hardened runtime 应用到每个内嵌 Mach-O 文件；应用签名完成后，深度严格检查会拒绝其他叶证书 Authority 或 Team ID，验证通过才生成发布产物。macOS 签名固定目标安装包命令为已签名应用创建独立副本，并发执行两条产物流。一路先公证 App 并钉票，再生成 ZIP 及其更新元数据。另一路把已签名 App 副本封装进签名 DMG，再公证 DMG、钉票并验证；其中的 App 不单独附加票据。只有两路均成功结束，产物才会移入最终目录并写入发布完成记录。签名的仅目录命令同样需要公证凭据，并等待 Apple 公证和 App 钉票完成。[并行公证决策](../../.agents/notes/implemented/process/2026-09-09-parallel-macos-notarization.zh.md)负责副本隔离与容器票据语义。`CSC_LINK` 必须指向包含 Developer ID Application 证书及私钥的本地 p12，不支持 URL 或 Base64 输入。`CSC_KEY_PASSWORD` 是其导出密码，不是 Apple 账号或登录密码；未加密的 p12 可显式填写空值。构建前，打包流程自动创建并解锁私有临时钥匙串、导入 p12、授权签名并签署小型探针。运行时与 App 签名显式使用该钥匙串，无需预先配置或手动解锁登录钥匙串。子进程只接收钥匙串路径，不接收 p12 密码。成功或普通失败后删除临时钥匙串；强制终止后由 CI 清理临时凭据。CI 从密钥存储生成证书文件和 `.env.macos`，限制文件访问权限，并在作业结束后删除二者。环境中的 `CSC_NAME` 与证书发现顺序都不能选择发布所有者。公证凭据也可以使用 electron-builder 支持的完整 Apple ID 或钥匙串 profile 方式。手动执行 `pnpm --dir apps/desktop run verify:mac-signature -- <path-to-app>` 重复应用检查时，也必须提供两个 macOS 身份变量。
 
@@ -396,13 +396,13 @@ Apple 工具使用 macOS 当前活动网络服务的 HTTP/HTTPS 代理。配置�
 pnpm run package:desktop:win:x64:unsigned
 ```
 
-该命令读取 `.env.windows`，要求设置 `DSH_DESKTOP_APP_ID`。未签名测试安装包同时省略普通更新和强制更新配置。本机验收和 CI 使用 Node 24；其他工具为根 `packageManager` 固定版本的 pnpm、Git、PowerShell、tar、Python、Visual C++ Build Tools 和 Windows SDK。Python 不在 `PATH` 中时设置 `PYTHON`。命令将安装包写入 `.desktop-build/targets/win-x64/unsigned-artifacts/`，省略普通自动更新配置，清除签名凭据，且不生成发布完成记录。无需 EV 或上传凭据。签名打包和上传仍遵循正式发布要求。
+该命令读取 `.env.windows`，要求设置 `DSH_DESKTOP_APP_ID`。未签名安装包保留普通更新，后台配置来源默认为 `https://8.133.202.230/harness`，并省略强制更新策略。本机验收和 CI 使用 Node 24；其他工具为根 `packageManager` 固定版本的 pnpm、Git、PowerShell、tar、Python、Visual C++ Build Tools 和 Windows SDK。Python 不在 `PATH` 中时设置 `PYTHON`。命令将安装包、blockmap、`nightly.yml` 和 `win-x64-release.json` 写入 `.desktop-build/targets/win-x64/unsigned-artifacts/`，并清除签名凭据。打包不需要 EV 或上传凭据。[未签名上传](#upload-updates)需要显式选择模式并配置目的地；签名打包保留签名要求。真实 Windows 已安装应用升级仍由发布操作人员验收。
 
 先运行 `pnpm install --frozen-lockfile`，再运行 `pnpm run package:desktop:win:x64:unsigned --check` 校验配置和工具，最后执行上面的完整命令。打包自行执行完整构建和隔离的运行时 smoke，不调用在线模型。阶段日志保留在 `.desktop-build/packaging-runs/`；仅构建成功不代表安装包验证通过。依赖安装和运行时准备需要访问 npm、GitHub release 资源和 nodejs.org；网络需要时使用现有 registry 和代理配置。缓存与工具位置属于构建机器配置，不在跟踪文件中固定个人路径。
 
 [Windows 手动工作流](../../.github/workflows/windows-package.yml) 选择带有专用标签 `dsh-win-package-trial` 的自托管 Windows x64 runner。[云枢测试工作流](../../.github/workflows/yunshu-windows-test.yml) 使用 GitHub 托管的 `windows-2025` runner。两者调用同一个未签名命令，并生成仅包含应用 ID 的临时 `.env.windows`，不包含更新、签名或上传凭据。自托管 runner 需预先准备 PowerShell 7 和上述工具。`build_version` 默认为 `auto`，使用[发布版本](#release-versions)中说明的 CI 标识。显式版本复用现有产品版本校验器。解析后的版本在打包前显示于运行摘要，manifest 保持不变。
 
-工作流进入默认分支后，在 Actions 中选择它，选择源码分支、填写输入并点击 Run workflow。它不监听 push 或 PR，不改变现有自动 CI。打包日志和成功生成的 EXE 产物保留 14 天；安装、签名和发布是独立操作。依赖 Actions 打包前，先从默认分支运行一次，并检查保留的日志和安装包。Checkout 会清理 runner 专用源码目录，包括被忽略的文件；不得指向日常开发目录。运行共享一个并发组，不取消正在进行的构建；最多保留一个待运行任务，新的手动触发会替换该待运行任务。仅在成功完成干净检出后上传诊断日志；即使配置准备在写入后失败，也会清理生成的配置。
+工作流进入默认分支后，在 Actions 中选择它，选择源码分支、填写输入并点击 Run workflow。它不监听 push 或 PR，不改变现有自动 CI。打包日志和成功生成的 EXE 产物保留 14 天；自托管工作流还保留安装包 blockmap、`nightly.yml` 和 `win-x64-release.json`，供未签名发布使用。安装、签名和发布是独立操作。依赖 Actions 打包前，先从默认分支运行一次，并检查保留的日志和安装包。Checkout 会清理 runner 专用源码目录，包括被忽略的文件；不得指向日常开发目录。运行共享一个并发组，不取消正在进行的构建；最多保留一个待运行任务，新的手动触发会替换该待运行任务。仅在成功完成干净检出后上传诊断日志；即使配置准备在写入后失败，也会清理生成的配置。
 
 <a id="windows-uninstall-rules"></a>
 
@@ -432,11 +432,11 @@ Windows 卸载程序会随应用一起删除 Electron 用户数据目录（`%APP
 
 使用 `pnpm --dir apps/desktop run cache:windows-signatures --usage` 查看结构完整的缓存项字节数和数量，或用 `--from <absolute-old-cache>` 导入显式指定、属于同账户的旧缓存。迁移不修改源目录，跳过暂存名称，拒绝损坏项，并保留已有有效项，即使它们的时间戳字节不同。`--clear` 在阶段锁保护下显式删除完整缓存项；不执行自动容量淘汰。`--directory <absolute-cache>` 指定维护目标目录，无需加载发布凭据。不完整暂存项保持原状并单独计数；仅在所有构建停止后检查它们。这些命令绝不清除硬件失败证据。默认存储位于 AppData 之外，避免 MSIX 启动器虚拟化将账户缓存拆开；被重定向的覆盖目录会明确失败。
 
-Windows 签名构建在编译或准备依赖前执行受监督的签名预检。静态配置、证书有效期、审计存储、编译器可用性及遗留签名锁的检查不访问 Token。本地 .NET Framework C# 编译器生成一个专用小探针，由正式签名器仅签名一次，随后必须验出配置的证书和时间戳才能继续构建。探针绝不执行。预检的整体 60 秒期限包含时间戳尝试；超时、硬件签名报错或验签失败都会停止本轮流程，不再次调用硬件。成功只证明当前签名路径可用，不证明 PIN 已独立认证：SafeNet 可能复用登录状态。不要为了验证 PIN 而注销或重复认证。`--check`、仅准备和 `--unsigned` 模式不执行此硬件预检；未签名产物仍不能发布上传。自动回归测试使用假签名器，真实硬件由发布操作人员单独验收。
+Windows 签名构建在编译或准备依赖前执行受监督的签名预检。静态配置、证书有效期、审计存储、编译器可用性及遗留签名锁的检查不访问 Token。本地 .NET Framework C# 编译器生成一个专用小探针，由正式签名器仅签名一次，随后必须验出配置的证书和时间戳才能继续构建。探针绝不执行。预检的整体 60 秒期限包含时间戳尝试；超时、硬件签名报错或验签失败都会停止本轮流程，不再次调用硬件。成功只证明当前签名路径可用，不证明 PIN 已独立认证：SafeNet 可能复用登录状态。不要为了验证 PIN 而注销或重复认证。`--check`、仅准备和 `--unsigned` 模式不执行此硬件预检；未签名发布需要显式运行 `upload:* --unsigned`。自动回归测试使用假签名器，真实硬件由发布操作人员单独验收。
 
 Windows NSIS 上传要求安装包旁存在生成的非空 `.exe.blockmap`。blockmap 先于通道 YAML 上传；NSIS 安装包元数据不要求另一种 web-installer 格式使用的内嵌 `blockMapSize`。文件清单测试使用固定版本构建器的 blockmap 生成器，而不是手工编造内嵌映射字段。
 
-签名 Windows 配置从同一份公开证书的 `CN`、`O` 和 `C` 属性生成 updater 的 `publisherName`。每个属性都必须存在、非空且只有一个值。这些身份属性允许证书续期，无需固定叶证书指纹。已安装应用的 `app-update.yml` 保存预期发布者，下载的清单不能选择该身份。未签名测试构建省略 updater 配置。真实文件验证及其限制见[签名验收记录](tests/README.zh.md)。
+签名 Windows 配置从同一份公开证书的 `CN`、`O` 和 `C` 属性生成 updater 的 `publisherName`。每个属性都必须存在、非空且只有一个值。这些身份属性允许证书续期，无需固定叶证书指纹。已安装应用的 `app-update.yml` 保存预期发布者，下载的清单不能选择该身份。显式未签名构建保留 updater 配置，但不指定发布者身份；HTTPS 和下载 SHA-512 校验仍会执行。签名安装仍会拒绝未签名或发布者错误的安装包。真实文件验证及其限制见[签名验收记录](tests/README.zh.md)。
 
 本项目使用的 SafeNet Token 出现 `SignTool Error: No private key is available.` 时，说明 PIN（密码）错误。立即停止所有签名尝试，等待用户处理 PIN 后再继续。PIN 输错达到五次会锁定 Token。遇到该错误后，不得重试打包或签名探针。签名器串行执行 Token 操作，首次失败后拒绝所有排队任务。
 
@@ -495,17 +495,19 @@ macOS 签名打包在组装 App 时、代码签名前写入 `Contents/Resources/
 
 Windows 下载完成后的更新确认说明应用会在安装期间关闭、完成后自动打开，并提示期间不要重复启动。安装器携带 `--updated` 重启应用并直接打开工作区时，壳会将主窗口前置并聚焦一次，不启用永久置顶。启动进入欢迎页时会清除此请求，使后续登录保留正常的激活行为。普通启动和其他平台不执行此前置步骤。
 
+未签名 macOS 更新使用独立安装流程，不经过 Squirrel.Mac：“检查更新”读取 `nightly-mac.yml`，下载按 SHA-512 校验 DMG，确认弹窗提供 **打开安装包**。打开已校验的 DMG，完全退出云枢，再拖动其中的应用覆盖已有副本并重新打开。打开安装包不会替换正在运行的应用，也不会宣称自动重启。macOS 仍可能要求安全性批准。签名 macOS 更新继续使用 ZIP 和原生签名更新器。
+
 原生更新浮层在文档就绪且父窗口可见时显示，并在父窗口再次显示时恢复。关闭浮层会释放输入拦截和父窗口监听。[本地窗口验证](tests/README.zh.md#verification-overlay)无需启动工作区即可检查这些切换。
 
-Desktop 每次检查版本清单前都从 harnes-api 后台发现固定 Nightly 更新目录。签名发布打包从目标平台 dotenv 读取 `DSH_DESKTOP_UPDATE_CONFIG_ORIGIN`，将其写入应用 manifest 的 `dshDesktopUpdateConfigOrigin`；正式包运行时忽略环境覆盖。更新服务地址不会从发布 URL 推断。缺少地址时应用仍可启动，但更新检查会被拒绝。开发启动器默认使用 `https://8.133.202.230/harness`，并将显式覆盖值记录在 macOS 冷启动脚本；后台基址保留 `/harness` 前缀。开发版与未签名构建不会强制启用自动安装。
+Desktop 每次检查版本清单前都从 harnes-api 后台发现固定 Nightly 更新目录。打包将经过校验的 `DSH_DESKTOP_UPDATE_CONFIG_ORIGIN` 写入应用 manifest 的 `dshDesktopUpdateConfigOrigin`；打包应用运行时忽略环境覆盖。显式未签名构建还写入 `dshDesktopUnsigned: true`，缺少来源时默认使用 `https://8.133.202.230/harness`。包内的 `app-update.yml` 包含不直接使用的初始化目录；协调器每次检查清单前均将其替换为当前后台状态给出的目录。更新服务地址不会从发布 URL 推断。未配置来源的签名包仍可启动，但更新检查会被拒绝。开发启动器使用相同默认值，并将显式覆盖值记录在 macOS 冷启动脚本。后台基址保留 `/harness`；未签名构建省略强制更新策略，从不强制安装。
 
-公开的 `GET <backend-base>/api/status` 响应通过 `data.desktop_update` 提供 `enabled`、`channel: "nightly"`，以及 `feeds` 中 `mac-arm64`、`mac-x64`、`win-x64` 三个目标目录。主进程匿名读取，拒绝重定向与缓存，总期限为八秒，响应体上限为 512 KiB。后台基址接受 HTTPS origin 或其 `/harness` 部署前缀；更新源必须是 HTTPS 目录，不得携带凭据、查询、片段、控制字符或反斜杠。`8.133.202.230` 上的每个 URL 都必须位于 `/harness` 内；其根路径 `/api` 与 `/v1` 属于另一套系统。目录缺少结尾斜杠时会规范补齐。只有显式开发或测试配置允许回环 HTTP。禁用、未配置、无效与无法连接分别报告失败，并撤销旧的可用更新目标，不会报告“已是最新”或使用旧源。已在下载或准备完成的版本保留选定来源。`setFeedURL` 只变更 provider；签名包内的 `app-update.yml`、发布者校验、仅接受更高版本、手动下载与独立安装确认继续生效。[后台更新权限决策](../../.agents/notes/implemented/architecture/2026-10-16-desktop-backend-update-authority.zh.md)说明远程管理为何不能变更受信服务地址。
+公开的 `GET <backend-base>/api/status` 响应通过 `data.desktop_update` 提供 `enabled`、`channel: "nightly"`，以及 `feeds` 中 `mac-arm64`、`mac-x64`、`win-x64` 三个目标目录。主进程匿名读取，拒绝重定向与缓存，总期限为八秒，响应体上限为 512 KiB。后台基址接受 HTTPS origin 或其 `/harness` 部署前缀；更新源必须是 HTTPS 目录，不得携带凭据、查询、片段、控制字符或反斜杠。`8.133.202.230` 上的每个 URL 都必须位于 `/harness` 内；其根路径 `/api` 与 `/v1` 属于另一套系统。目录缺少结尾斜杠时会规范补齐。只有显式开发或测试配置允许回环 HTTP。禁用、未配置、无效与无法连接分别报告失败，并撤销旧的可用更新目标，不会报告“已是最新”或使用旧源。已在下载或准备完成的版本保留选定来源。`setFeedURL` 只变更 provider；包内 updater 配置、Windows 签名包的发布者校验、仅接受更高版本、手动下载与独立安装确认继续生效。[后台更新权限决策](../../.agents/notes/implemented/architecture/2026-10-16-desktop-backend-update-authority.zh.md)说明远程管理为何不能变更受信服务地址。
 
 打包应用在启动后异步检查更新。常规轮询以十分钟为基础间隔，每次独立采样 ±20% 的随机抖动。每次检查失败将基础延迟翻倍，上限为一小时；成功后重置。随机延迟不超过该上限，并从全部复用调用结算后开始计时。本地化的“检查更新…”菜单项及产品内常驻检查按钮立即执行，并复用正在进行的检查。Windows 也可从顶栏的“应用”菜单进入。产品按钮沿用同一手动检查流程，发现可用版本后先询问是否下载。回到前台和系统恢复时遵守相同的单调时钟截止时间。新收到的强更策略也会立即请求检查更新清单。自动检查从不弹窗或下载安装包。手动检查显示正在检查、失败或包含已安装版本号的无更新反馈。常规更新弹窗原位渐入渐出；连续弹窗替换卡片内容并重置其滚动位置，保留黑色半透明蒙层，不模糊父页面。
 
 `DSH_DESKTOP_UPDATE_CHECK_INTERVAL_MS` 配置常规基础间隔，`DSH_DESKTOP_UPDATE_CHECK_MAX_BACKOFF_MS` 配置上限；两者均接受 1000 至 2147483647 的整数毫秒数，且上限不能小于间隔。省略上限时取一小时与间隔中的较大值。`DSH_DESKTOP_UPDATE_CHECK_JITTER` 配置 0 至 1 的抖动比例，默认 `0.2`；最终延迟至少一秒，且不超过上限。这些配置不改变强更策略轮询，也不授权下载重试。
 
-左下角账户行显示本地化的更新可用状态、加载图标与下载百分比、验证、就绪状态，或带可访问提示的持久红色重试操作。嵌入 Web 界面的文案跟随应用内当前语言；原生弹窗使用 Desktop 壳语言。侧栏收起时，顶部展开按钮显示圆点。连接状态优先展示。选择可用版本后显示带品牌的下载弹窗，提供真实下载进度及单独的不定进度校验阶段。“后台下载”及 Esc 仅关闭弹窗，传输继续，账户行的进度入口可重新打开弹窗。进度刷新保留焦点与当前选择。下载失败提供明确的重试或关闭操作，诊断默认折叠。深浅配色跟随操作系统。准备成功后自动打开壳拥有的重启确认；关闭后保留就绪状态，不重复弹窗。选择就绪入口可再次打开确认。运行中的 agent、排队输入，以及运行中或停止中的后台任务都会在该确认中触发中断警告。仅有 API 请求不会触发警告。用户批准后，Host 锁定新请求，等待已接收的请求结束，再检查任务，包括已接收写操作创建的工作。等待超过控制请求截止时间时，拒绝安装并解除准入锁。任务状态未知、未获中断授权的新任务，或未成功完成正常收尾，都会阻止安装。常规退出先按"关闭窗口与退出"一节所述询问可中断的工作，再在停止 Host 前隐藏产品窗口，在收尾期间忽略新的聚焦请求，且从不安装更新。下次启动通过已有的启动与恢复流程校准版本绑定的运行时。
+左下角账户行显示本地化的更新可用状态、加载图标与下载百分比、验证、就绪状态，或带可访问提示的持久红色重试操作。嵌入 Web 界面的文案跟随应用内当前语言；原生弹窗使用 Desktop 壳语言。侧栏收起时，顶部展开按钮显示圆点。连接状态优先展示。选择可用版本后显示带品牌的下载弹窗，提供真实下载进度及单独的不定进度校验阶段。“后台下载”及 Esc 仅关闭弹窗，传输继续，账户行的进度入口可重新打开弹窗。进度刷新保留焦点与当前选择。下载失败提供明确的重试或关闭操作，诊断默认折叠。深浅配色跟随操作系统。准备成功后自动打开壳拥有的安装确认；未签名 macOS 使用上文的手动安装操作，其他构建询问是否重启。关闭后保留就绪状态，不重复弹窗。选择就绪入口可再次打开确认。重启安装时，运行中的 agent、排队输入，以及运行中或停止中的后台任务都会在该确认中触发中断警告。仅有 API 请求不会触发警告。用户批准重启后，Host 锁定新请求，等待已接收的请求结束，再检查任务，包括已接收写操作创建的工作。等待超过控制请求截止时间时，拒绝安装并解除准入锁。任务状态未知、未获中断授权的新任务，或未成功完成正常收尾，都会阻止安装。常规退出先按"关闭窗口与退出"一节所述询问可中断的工作，再在停止 Host 前隐藏产品窗口，在收尾期间忽略新的聚焦请求，且从不安装更新。下次启动通过已有的启动与恢复流程校准版本绑定的运行时。
 
 若任务收尾失败但已确认 Host 退出，安装会被拒绝，壳会在允许再次确认重启前恢复当前版本的 Host。Host 正常停止后的安装器启动失败使用同一恢复路径。替代 Host 启动并完成认证后，壳重新加载原有应用地址，让 Web 页面获取当前端口、Cookie 和启动注入数据；页面加载失败时打开原生致命故障恢复弹窗。未确认进程退出时，绝不允许启动替代 Host。已下载目标保留以供重试。已知强更策略在恢复过程中继续阻塞；Host 恢复失败打开原生致命故障恢复弹窗。
 
@@ -535,7 +537,7 @@ Electron 主进程在启动时读取一次 `app.getPath('userData')/desktop/sett
 
 ### 强制更新策略
 
-打包读取 `.env.windows` 或 `.env.macos`：`DSH_DESKTOP_AUTO_UPDATE_ENV=test`（默认值）选择 `DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN`；`production` 选择 `DSH_DESKTOP_MANDATORY_UPDATE_PROD_ORIGIN`。模板将两个源站留空；在 Git 忽略的目标 dotenv 文件中填写所选部署的源站。未签名构建省略此策略；本地 macOS 未签名构建不读取这两个文件。签名构建和仅准备构建在准备产物或签名前必须配置所选源站；未选环境的源站可不填。这些配置不会回退到父进程环境或另一部署环境。打包将选定策略与应用 ID 写入元数据；打包应用忽略运行时覆盖。
+打包读取 `.env.windows` 或 `.env.macos`：`DSH_DESKTOP_AUTO_UPDATE_ENV=test`（默认值）选择 `DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN`；`production` 选择 `DSH_DESKTOP_MANDATORY_UPDATE_PROD_ORIGIN`。模板将两个源站留空；在 Git 忽略的目标 dotenv 文件中填写所选部署的源站。未签名构建省略此策略；本地 macOS 未签名打包仅读取上文说明的可选文件设置。签名构建和仅准备构建在准备产物或签名前必须配置所选源站；未选环境的源站可不填。这些配置不会回退到父进程环境或另一部署环境。打包将选定策略与应用 ID 写入元数据；打包应用忽略运行时覆盖。
 
 `DSH_DESKTOP_MANDATORY_UPDATE_CONFIG` JSON 提供测试登录源站，以及可选的轮询和下载页面选项；打包拒绝其中的 `origin` 和 `authentication`。页面白名单默认只包含所选服务源站；需要其他已批准下载页面源站时应显式配置。测试包选择 `feishu-test`，且必须在 `DSH_DESKTOP_MANDATORY_UPDATE_CONFIG` 中配置 `allowedAuthOrigins`；正式包选择 `anonymous`，并拒绝该字段。每个登录源站必须是没有凭据、路径、查询或片段的 HTTPS origin。登录窗口仅允许文档导航到所选策略源站和这些已配置源站。策略请求拒绝重定向；仅测试鉴权携带网关 Cookie。未打包开发模式则从此变量读取完整策略 JSON，并要求 `DSH_DESKTOP_APP_ID`；缺少 JSON 会禁用开发模式策略查询，仅匿名开发允许 HTTP `127.0.0.1`。用户发起常规检查时会并发触发策略检查，但不会等待或展示策略失败。只有已确认的强更决定可以关闭常规弹窗。测试环境鉴权会等待当前常规弹窗结束，取消或失败不会丢弃 updater 结果。
 

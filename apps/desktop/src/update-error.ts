@@ -1,6 +1,9 @@
 /** Localized update preparation failures with separately displayed diagnostics. */
 import type { DesktopUpdatePreparationFailureKind } from './ipc.ts'
 
+/** A downloaded installer changed or disappeared; retry must download and verify it again. */
+export class DesktopUpdateInstallerIntegrityError extends Error {}
+
 /** Only explicitly safe main-process facts may be exposed as technical details. */
 export class DesktopUpdatePreparationError extends Error {
   /**
