@@ -402,6 +402,8 @@
       inject:
         - webServer
         - connection
+        - workspaceRegistry
+        - fs
       config:
         defaultOutputDirectory: !!js "dshHomePath('plugin-data', 'credits', 'media')"
         stateDirectory: !!js "dshHomePath('plugin-data', 'artifacts')"

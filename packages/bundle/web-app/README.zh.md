@@ -44,7 +44,7 @@ dsh --profile web --no-open --port 8080
 
 产品聊天区域通过 [Conversation 的 `hiddenViews` 配置](../../client/ui-conversation/README.zh.md#shell-and-standard-props)隐藏 Trajectory 和市场 Video 视图。独立的 AI 创作视频页面及视频插件的 Host 能力仍然可用。
 
-[产物页面](../../client/ui-artifacts/README.zh.md) 管理保存目录、搜索、重命名与可恢复删除。新媒体默认保存在当前 Harness home 的 `plugin-data/credits/media` 目录；更改目录保留旧文件及历史根目录。可信的[产物保存服务](../../deliverables/artifacts-index/README.zh.md) 发布新输出，不改变会话工作区。
+[产物页面](../../client/ui-artifacts/README.zh.md) 区分产物库与工作区文件。产物库管理保存目录与保留的输出根目录。新媒体默认保存在当前 Harness home 的 `plugin-data/credits/media` 目录；更改目录保留旧文件及历史根目录。可信的[产物保存服务](../../deliverables/artifacts-index/README.zh.md) 发布新输出，不改变会话工作区。工作区文件逐层浏览已注册工作区，优先选择与当前 Session 匹配的工作区，显示实际路径，不把原有源文件标成新生成产物。两种范围都支持预览、重命名与可恢复删除。选择工作区不改变输出偏好；注销工作区会撤销其浏览访问。原生文件操作可用时，在提供服务的 Host 上执行。
 
 侧边栏的[技能商店](../../client/ui-skillhub/README.zh.md)搜索 SkillHub 社区技能，并将选定技能安装到产品。已安装技能可用于现有会话，不修改其他应用的技能目录。
 

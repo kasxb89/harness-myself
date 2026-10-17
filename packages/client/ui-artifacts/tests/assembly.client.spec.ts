@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { apply } from '../src/client/index.ts'
 import type { ArtifactsInjected } from '../src/client/ArtifactsPage.tsx'
+import type { ArtifactsMainInjected } from '../src/client/ArtifactsMain.tsx'
 import type { ArtifactNoticeInjected } from '../src/client/OperationToast.tsx'
 import { zh } from '../src/client/locales.ts'
 
@@ -11,7 +12,12 @@ afterEach(() => { vi.unstubAllGlobals() })
 function assemble() {
   const registrations: { name: string; inject?: () => unknown }[] = []
   const cleanup: (() => void)[] = []
+  const current = { getSnapshot: () => ({ key: 'session-one' }), subscribe: () => () => {} }
+  const canOpen = vi.fn(async () => ({ ok: true, value: true }))
+  const open = vi.fn(async () => ({ ok: true, value: null }))
   apply({
+    uiSession: { adapter: { current } },
+    remote: { session: { canOpenWorkspacePath: canOpen, openWorkspacePath: open } },
     locale: {
       bind: () => (key: keyof typeof zh) => zh[key],
       register: () => () => {},
@@ -27,10 +33,25 @@ function assemble() {
   } as never)
   const page = registrations.find(row => row.name === 'main')!.inject!() as ArtifactsInjected
   const toast = registrations.find(row => row.name === 'shell.overlay')!.inject!() as ArtifactNoticeInjected
-  return { page, toast, registrations, dispose: () => { for (const close of cleanup.reverse()) close() } }
+  return { page, toast, registrations, current, canOpen, open, dispose: () => { for (const close of cleanup.reverse()) close() } }
 }
 
 describe('artifact operation ownership', () => {
+  it('injects the retained current-session source and reports native reveal through the shell notice', async () => {
+    const runtime = assemble()
+    try {
+      const injected = runtime.registrations.find(row => row.name === 'main')!.inject!() as ArtifactsMainInjected
+      expect(injected.hooks.artifactSession).toBe(runtime.current)
+      expect(await runtime.page.readDesktop()).toBe(true)
+      expect(await runtime.page.reveal('/project/new.png')).toEqual({ ok: true, value: null })
+      expect(runtime.open).toHaveBeenCalledWith({ path: '/project/new.png', action: 'reveal' }, expect.any(AbortSignal))
+      expect(runtime.toast.hooks.notice.getSnapshot()).toEqual({ seq: 1, text: zh['notice.revealed'], success: true })
+      runtime.open.mockRejectedValueOnce(new Error('private Host opener error'))
+      expect(await runtime.page.reveal('/project/new.png')).toEqual({ ok: false, code: 'ARTIFACT_OPEN_FAILED' })
+      expect(runtime.toast.hooks.notice.getSnapshot()).toEqual({ seq: 2, text: zh['error.ARTIFACT_OPEN_FAILED'], success: false })
+    } finally { runtime.dispose() }
+  })
+
   it('retains the same operation lock and shell notice outside a page occurrence', async () => {
     let settle!: (value: Response) => void
     const fetch = vi.fn<typeof globalThis.fetch>(() => new Promise((resolve) => { settle = resolve }))

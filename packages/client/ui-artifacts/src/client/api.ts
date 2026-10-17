@@ -8,6 +8,7 @@ export const ERROR_CODES = [
   'ARTIFACT_STORAGE_INVALID', 'ARTIFACT_STORAGE_UNWRITABLE', 'ARTIFACT_STORAGE_UNAVAILABLE',
   'ARTIFACT_OUTPUT_INVALID', 'ARTIFACT_NAME_INVALID', 'ARTIFACT_TRASH_INVALID',
   'ARTIFACT_REQUEST_INVALID', 'ARTIFACT_AUTH_REQUIRED', 'ARTIFACT_METHOD_INVALID', 'ARTIFACT_OPERATION_FAILED',
+  'ARTIFACT_WORKSPACE_UNAVAILABLE', 'ARTIFACT_DIRECTORY_INVALID', 'ARTIFACT_WORKSPACE_REMOTE_UNSUPPORTED', 'ARTIFACT_OPEN_FAILED',
 ] as const
 
 /** Localizable failure code; raw Host exception text never reaches the page. */
@@ -30,6 +31,21 @@ export interface TrashedArtifact {
   name: string
   originalPath: string
   deletedAt: string
+  workspaceRoot?: string
+}
+
+/** One currently registered local workspace, as the Host authorizes it. */
+export interface ArtifactWorkspace { id: string; title: string; path: string }
+
+/** One lazily read workspace directory; relative navigation always uses POSIX separators. */
+export interface WorkspaceListing {
+  workspace: ArtifactWorkspace
+  directory: string
+  absoluteDirectory: string
+  parentDirectory: string | null
+  directories: readonly { name: string; directory: string }[]
+  items: readonly ArtifactEntry[]
+  truncated: boolean
 }
 
 /** Complete current filesystem listing. */
@@ -97,6 +113,27 @@ export function readArtifacts(signal: AbortSignal): Promise<ArtifactResult<Artif
 }
 
 /**
+ * Read one registered workspace directory without recursively scanning its source tree.
+ * @param workspaceId - Explicit registered workspace selected by the user or current conversation.
+ * @param directory - Host-provided POSIX relative directory; the empty string names its root.
+ * @param signal - Page-owned cancellation for a changed workspace or directory.
+ * @returns Validated directory metadata and workspace-bound files, or a localizable error code.
+ */
+export async function readWorkspace(workspaceId: string, directory: string,
+  signal: AbortSignal): Promise<ArtifactResult<WorkspaceListing>> {
+  const query = new URLSearchParams({ workspaceId, directory })
+  const result = await request(`workspace?${query.toString()}`, (value): value is WorkspaceListing => record(value)
+    && record(value.workspace) && value.workspace.id === workspaceId && typeof value.workspace.title === 'string'
+    && typeof value.workspace.path === 'string' && value.directory === directory && typeof value.absoluteDirectory === 'string'
+    && (value.parentDirectory === null || typeof value.parentDirectory === 'string')
+    && Array.isArray(value.directories) && value.directories.every(item => record(item)
+      && typeof item.name === 'string' && typeof item.directory === 'string')
+    && Array.isArray(value.items) && value.items.every(entry) && typeof value.truncated === 'boolean', signal)
+  return result.ok ? { ok: true, value: { ...result.value,
+    items: result.value.items.map(item => ({ ...item, workspaceId: result.value.workspace.id })) } } : result
+}
+
+/**
  * Read the current future-output directory and its optimistic revision.
  * @param signal - Page-owned cancellation for an unmounted or superseded read.
  * @returns The committed storage preference and revision, or a localizable error code.
@@ -122,12 +159,14 @@ export function saveStorage(directory: string, expectedRevision: number, signal:
  * @param name - User-confirmed filename within the file's current directory.
  * @param expected - Selected file size and modification time used to reject stale mutations.
  * @param signal - Plugin lifetime; an interrupted receipt leaves the operation result unconfirmed.
+ * @param workspaceId - Registered workspace scope for a source file; absent for managed generated output.
  * @returns The renamed file entry, or a localizable failure without retrying the mutation.
  */
 export async function renameArtifact(path: string, name: string, expected: ArtifactExpected,
-  signal: AbortSignal): Promise<ArtifactResult<ArtifactEntry>> {
-  const result = await request('rename', (value): value is { item: ArtifactEntry } => record(value) && entry(value.item), signal, { path, name, expected })
-  return result.ok ? { ok: true, value: result.value.item } : result
+  signal: AbortSignal, workspaceId?: string): Promise<ArtifactResult<ArtifactEntry>> {
+  const result = await request('rename', (value): value is { item: ArtifactEntry } => record(value) && entry(value.item), signal,
+    { path, name, expected, ...workspaceId === undefined ? {} : { workspaceId } })
+  return result.ok ? { ok: true, value: { ...result.value.item, ...workspaceId === undefined ? {} : { workspaceId } } } : result
 }
 
 /**
@@ -135,11 +174,13 @@ export async function renameArtifact(path: string, name: string, expected: Artif
  * @param path - Complete path of the selected listed file.
  * @param expected - Selected file size and modification time used to reject stale mutations.
  * @param signal - Plugin lifetime; an interrupted receipt leaves the operation result unconfirmed.
+ * @param workspaceId - Registered workspace scope for a source file; absent for managed generated output.
  * @returns The durable recovery identifier, or a localizable failure without retrying the deletion.
  */
-export async function trashArtifact(path: string, expected: ArtifactExpected, signal: AbortSignal): Promise<ArtifactResult<string>> {
+export async function trashArtifact(path: string, expected: ArtifactExpected,
+  signal: AbortSignal, workspaceId?: string): Promise<ArtifactResult<string>> {
   const result = await request('trash', (value): value is { trashId: string } => record(value)
-    && typeof value.trashId === 'string' && value.trashId !== '', signal, { path, expected })
+    && typeof value.trashId === 'string' && value.trashId !== '', signal, { path, expected, ...workspaceId === undefined ? {} : { workspaceId } })
   return result.ok ? { ok: true, value: result.value.trashId } : result
 }
 
@@ -151,7 +192,8 @@ export async function trashArtifact(path: string, expected: ArtifactExpected, si
 export async function readTrash(signal: AbortSignal): Promise<ArtifactResult<readonly TrashedArtifact[]>> {
   const result = await request('trash', (value): value is { items: TrashedArtifact[] } => record(value)
     && Array.isArray(value.items) && value.items.every(item => record(item) && typeof item.id === 'string'
-      && typeof item.name === 'string' && typeof item.originalPath === 'string' && typeof item.deletedAt === 'string'), signal)
+      && typeof item.name === 'string' && typeof item.originalPath === 'string' && typeof item.deletedAt === 'string'
+      && (item.workspaceRoot === undefined || typeof item.workspaceRoot === 'string')), signal)
   return result.ok ? { ok: true, value: result.value.items } : result
 }
 

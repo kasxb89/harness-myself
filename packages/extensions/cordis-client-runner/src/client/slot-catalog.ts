@@ -1847,7 +1847,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
     slotInject: '',
     declaredBy: 'an entry in \'root\' (client-ui-layout), so it exists while that entry is mounted',
     occupants: [
-      'client-ui-artifacts ArtifactsPage',
+      'client-ui-artifacts ArtifactsMain',
       'client-ui-conversation ConversationPanel key \'conversation\'',
       'client-ui-credits CreditsPage',
       'client-ui-credits RechargePage',

@@ -351,7 +351,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-artifacts-index`
 
 - `inject`: `webServer`
-- `source`: [`packages/deliverables/artifacts-index/src/index.ts:39`](../packages/deliverables/artifacts-index/src/index.ts)
+- `source`: [`packages/deliverables/artifacts-index/src/index.ts:40`](../packages/deliverables/artifacts-index/src/index.ts)
 
 ```ts config-catalog
 /** Plugin config: which directories the panel browses and how far it walks. */

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  ERROR_CODES, readArtifacts, readStorage, readTrash, renameArtifact, restoreArtifact, saveStorage, trashArtifact,
+  ERROR_CODES, readArtifacts, readStorage, readTrash, readWorkspace, renameArtifact, restoreArtifact, saveStorage, trashArtifact,
 } from '../src/client/api.ts'
 import { en, zh } from '../src/client/locales.ts'
 
@@ -18,6 +18,38 @@ function respond(value: unknown, status = 200) {
 }
 
 describe('artifact management HTTP boundary', () => {
+  it('reads exactly the requested workspace directory and binds files to its registered scope', async () => {
+    const listing = { workspace: { id: 'workspace-one', title: '项目', path: 'D:\\项目' }, directory: '输出/子目录',
+      absoluteDirectory: 'D:\\项目\\输出\\子目录', parentDirectory: '输出', directories: [{ name: 'assets', directory: '输出/子目录/assets' }],
+      items: [item], truncated: false }
+    const fetch = respond(listing)
+    const signal = new AbortController().signal
+    expect(await readWorkspace('workspace-one', '输出/子目录', signal)).toEqual({ ok: true,
+      value: { ...listing, items: [{ ...item, workspaceId: 'workspace-one' }] } })
+    const request = new URL(fetch.mock.calls[0]![0] as string, 'http://localhost')
+    expect(request.pathname).toBe('/artifacts/api/workspace')
+    expect(request.searchParams.get('workspaceId')).toBe('workspace-one')
+    expect(request.searchParams.get('directory')).toBe('输出/子目录')
+    fetch.mockResolvedValueOnce(Response.json({ ...listing, workspace: { ...listing.workspace, id: 'other' } }))
+    expect(await readWorkspace('workspace-one', '输出/子目录', signal)).toEqual({ ok: false, code: 'ARTIFACT_OPERATION_FAILED' })
+    fetch.mockResolvedValueOnce(Response.json({ ...listing, directory: 'other' }))
+    expect(await readWorkspace('workspace-one', '输出/子目录', signal)).toEqual({ ok: false, code: 'ARTIFACT_OPERATION_FAILED' })
+  })
+
+  it('carries workspace authorization through file mutations and durable recovery inventory', async () => {
+    const fetch = respond({ item })
+    const signal = new AbortController().signal
+    expect(await renameArtifact(item.path, 'new.png', item, signal, 'workspace-one'))
+      .toEqual({ ok: true, value: { ...item, workspaceId: 'workspace-one' } })
+    expect(JSON.parse(fetch.mock.calls[0]![1]!.body as string)).toMatchObject({ workspaceId: 'workspace-one' })
+    fetch.mockResolvedValueOnce(Response.json({ trashId: 'trash-one' }))
+    await trashArtifact(item.path, item, signal, 'workspace-one')
+    expect(JSON.parse(fetch.mock.calls[1]![1]!.body as string)).toMatchObject({ workspaceId: 'workspace-one' })
+    const recovery = { id: 'trash-one', name: item.name, originalPath: item.path, deletedAt: '2026-10-17T04:00:00Z', workspaceRoot: '/project' }
+    fetch.mockResolvedValueOnce(Response.json({ items: [recovery] }))
+    expect(await readTrash(signal)).toEqual({ ok: true, value: [recovery] })
+  })
+
   it('reads listing, storage preference, and persistent recovery inventory with cancellation and no cache', async () => {
     const fetch = respond({ items: [item], roots: ['/产物'], truncated: false })
     const controller = new AbortController()

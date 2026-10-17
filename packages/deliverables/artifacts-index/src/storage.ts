@@ -5,6 +5,7 @@ import { constants } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep, win32 } from 'node:path'
 import type { ArtifactDestination, ArtifactPublishRequest, ArtifactStorageInfo, ArtifactStorageService, ArtifactWriteRequest } from './types.ts'
+import type { ArtifactWorkspaceScope, WorkspaceAccess } from './workspace.ts'
 
 /** Safe business failure exposed by the artifact HTTP owner. */
 export class ArtifactError extends Error {
@@ -56,6 +57,7 @@ interface TrashRecord {
   originalPath: string
   storedPath: string
   deletedAt: string
+  workspaceRoot?: string
 }
 type FileInfo = Awaited<ReturnType<typeof lstat>>
 function record(value: unknown): value is Record<string, unknown> {
@@ -123,6 +125,7 @@ export class ArtifactStore extends Service implements ArtifactStorageService {
   private closed = false
   private constructor(
     ctx: Context, readonly defaultDirectory: string, private readonly stateDirectory: string, private prefs: Preferences,
+    private readonly workspaces?: WorkspaceAccess,
   ) {
     super(ctx, 'artifactStorage')
     ctx.effect(() => async () => {
@@ -137,9 +140,12 @@ export class ArtifactStore extends Service implements ArtifactStorageService {
    * @param defaultPath - Fully qualified default output directory, created if needed and canonicalized once.
    * @param statePath - Separate fully qualified private directory for preferences and recovery records.
    * @param legacyRoots - Existing configured browsing directories to retain after canonicalization and state-boundary checks.
+   * @param workspaces - Optional trusted current-Workspace resolver, kept separate from retained output preferences.
    * @returns The registered storage service with validated persisted preferences, or rejects without exposing private state.
    */
-  static async create(ctx: Context, defaultPath: string, statePath: string, legacyRoots: readonly string[]): Promise<ArtifactStore> {
+  static async create(
+    ctx: Context, defaultPath: string, statePath: string, legacyRoots: readonly string[], workspaces?: WorkspaceAccess,
+  ): Promise<ArtifactStore> {
     if (!qualified(defaultPath) || !qualified(statePath)) throw new ArtifactError('ARTIFACT_STORAGE_INVALID', 400, 'Storage directories must be fully qualified')
     await mkdir(defaultPath, { recursive: true })
     await mkdir(statePath, { recursive: true, mode: 0o700 })
@@ -172,7 +178,7 @@ export class ArtifactStore extends Service implements ArtifactStorageService {
     if (prefs.roots.some(root => contained(root, stateDirectory) || contained(stateDirectory, root))) {
       throw new Error('Private state cannot be an artifact browsing root')
     }
-    return new ArtifactStore(ctx, directory, stateDirectory, prefs)
+    return new ArtifactStore(ctx, directory, stateDirectory, prefs, workspaces)
   }
   /**
    * Snapshot committed preferences without exposing mutable internal history.
@@ -301,19 +307,33 @@ export class ArtifactStore extends Service implements ArtifactStorageService {
       if (!sameFile(source, await lstat(request.sourcePath))) throw new ArtifactError('ARTIFACT_STALE', 409, 'Publication source changed')
     })
   }
+  private async source(path: string, scope?: ArtifactWorkspaceScope): Promise<{
+    path: string
+    info: FileInfo
+    workspaceRoot?: string
+  }> {
+    if (scope === undefined) return authorizedFile(path, this.prefs.roots)
+    if (this.workspaces === undefined) throw new ArtifactError('ARTIFACT_WORKSPACE_UNAVAILABLE', 404, 'Workspace files are unavailable')
+    const workspace = await this.workspaces.resolve(scope.workspaceId, scope.signal)
+    return { ...await this.workspaces.file(workspace, path, scope.signal), workspaceRoot: workspace.path }
+  }
   /**
    * Rename only the version the user selected, using an exclusive same-volume operation.
    * @param path - Existing regular file within a retained canonical artifact root.
    * @param name - Portable visible replacement name in the same directory, without path components.
    * @param expected - Listed size and modification time that must still match before the move.
+   * @param scope - Optional authenticated Workspace coordinates; omitted addresses managed output roots only.
    * @returns The canonical renamed path; stale, occupied, or unsupported moves reject without overwriting another file.
    */
-  rename(path: string, name: string, expected: ExpectedArtifact): Promise<string> {
+  rename(path: string, name: string, expected: ExpectedArtifact, scope?: ArtifactWorkspaceScope): Promise<string> {
     return this.serialize(async () => {
       if (!validName(name)) throw new ArtifactError('ARTIFACT_NAME_INVALID', 400, 'Invalid file name')
-      const source = await authorizedFile(path, this.prefs.roots)
+      const source = await this.source(path, scope)
       expectedVersion(source.info, expected)
       const target = join(dirname(source.path), name)
+      if (source.workspaceRoot !== undefined && this.workspaces !== undefined) {
+        this.workspaces.visible({ path: source.workspaceRoot }, target)
+      }
       if (target === source.path) return target
       await exclusiveMove(source.path, target, source.info)
       return target
@@ -323,11 +343,12 @@ export class ArtifactStore extends Service implements ArtifactStorageService {
    * Move into an exclusively created hidden same-volume container, retaining a durable recovery record.
    * @param path - Existing regular artifact to remove from its visible original location.
    * @param expected - Listed size and modification time that must still match before the move.
+   * @param scope - Optional authenticated Workspace coordinates; omitted addresses managed output roots only.
    * @returns A durable recovery identifier after the move succeeds; the payload is retained rather than permanently deleted.
    */
-  trash(path: string, expected: ExpectedArtifact): Promise<string> {
+  trash(path: string, expected: ExpectedArtifact, scope?: ArtifactWorkspaceScope): Promise<string> {
     return this.serialize(async () => {
-      const source = await authorizedFile(path, this.prefs.roots)
+      const source = await this.source(path, scope)
       expectedVersion(source.info, expected)
       const id = randomUUID()
       const container = join(dirname(source.path), '.yunshu-trash-' + id)
@@ -335,6 +356,7 @@ export class ArtifactStore extends Service implements ArtifactStorageService {
       const value: TrashRecord = {
         version: 1, id, name: basename(source.path), originalPath: source.path,
         storedPath: join(container, 'payload'), deletedAt: new Date().toISOString(),
+        ...source.workspaceRoot === undefined ? {} : { workspaceRoot: source.workspaceRoot },
       }
       await atomicJson(join(this.stateDirectory, 'trash', id + '.json'), value)
       await exclusiveMove(source.path, value.storedPath, source.info)
@@ -351,7 +373,9 @@ export class ArtifactStore extends Service implements ArtifactStorageService {
       throw new ArtifactError('ARTIFACT_OPERATION_FAILED', 500, 'Recovery record could not be read')
     }
     if (!record(value) || value.version !== 1 || value.id !== id || typeof value.originalPath !== 'string' || !qualified(value.originalPath)
-      || typeof value.name !== 'string' || !this.prefs.roots.some(root => contained(root, String(value.originalPath)))
+      || value.workspaceRoot !== undefined && (typeof value.workspaceRoot !== 'string' || !qualified(value.workspaceRoot))
+      || typeof value.name !== 'string' || !(typeof value.workspaceRoot === 'string'
+      ? contained(value.workspaceRoot, value.originalPath) : this.prefs.roots.some(root => contained(root, String(value.originalPath))))
       || value.storedPath !== join(dirname(value.originalPath), '.yunshu-trash-' + id, 'payload') || value.name !== basename(value.originalPath)
       || typeof value.deletedAt !== 'string' || !Number.isFinite(Date.parse(value.deletedAt))) {
       throw new ArtifactError('ARTIFACT_TRASH_INVALID', 409, 'Invalid recovery record')
@@ -359,22 +383,41 @@ export class ArtifactStore extends Service implements ArtifactStorageService {
     return {
       version: 1, id, name: value.name, originalPath: value.originalPath,
       storedPath: value.storedPath, deletedAt: value.deletedAt,
+      ...typeof value.workspaceRoot === 'string' ? { workspaceRoot: value.workspaceRoot } : {},
     }
+  }
+  private async recoveryRoots(value: TrashRecord, signal: AbortSignal): Promise<readonly string[]> {
+    if (value.workspaceRoot === undefined) return this.prefs.roots
+    if (this.workspaces === undefined) throw new ArtifactError('ARTIFACT_WORKSPACE_UNAVAILABLE', 404, 'Register the original Workspace to restore its file')
+    const workspace = await this.workspaces.byRoot(value.workspaceRoot, signal)
+    this.workspaces.visible(workspace, value.originalPath)
+    return [workspace.path]
   }
   /**
    * List only recoverable payloads; failed or completed moves expose no phantom deletion.
+   * @param signal - Cancellation while reading recovery records and authorizing their current Workspace roots.
    * @returns Recovery identifiers and original display metadata, newest first; damaged records reject visibly.
    */
-  trashed(): Promise<{ id: string; name: string; originalPath: string; deletedAt: string }[]> {
+  trashed(
+    signal: AbortSignal = new AbortController().signal,
+  ): Promise<{ id: string; name: string; originalPath: string; deletedAt: string }[]> {
     return this.track(async () => {
       const items: { id: string; name: string; originalPath: string; deletedAt: string }[] = []
       for (const filename of await readdir(join(this.stateDirectory, 'trash'))) {
+        signal.throwIfAborted()
         if (!filename.endsWith('.json')) continue
         const value = await this.trashRecord(filename.slice(0, -5))
         try {
-          await authorizedFile(value.storedPath, this.prefs.roots)
+          const roots = await this.recoveryRoots(value, signal)
+          await authorizedFile(value.storedPath, roots)
           items.push({ id: value.id, name: value.name, originalPath: value.originalPath, deletedAt: value.deletedAt })
         } catch (error) {
+          // Detached Workspace records stay visible so re-registering the original root can recover them.
+          if (error instanceof ArtifactError && (error.code === 'ARTIFACT_WORKSPACE_UNAVAILABLE'
+            || error.code === 'ARTIFACT_WORKSPACE_REMOTE_UNSUPPORTED')) {
+            items.push({ id: value.id, name: value.name, originalPath: value.originalPath, deletedAt: value.deletedAt })
+            continue
+          }
           // An absent payload belongs to a failed delete or an already completed restore.
           if (!(error instanceof ArtifactError) || error.code !== 'ARTIFACT_NOT_FOUND') throw error
         }
@@ -385,13 +428,15 @@ export class ArtifactStore extends Service implements ArtifactStorageService {
   /**
    * Restore the recorded original location without replacing a new file at that path.
    * @param id - Durable recovery identifier returned by a successful reversible deletion.
+   * @param signal - Cancellation during authorization, before the admitted restoration begins moving files.
    * @returns The restored canonical path; an occupied or redirected original directory rejects while retaining the payload.
    */
-  restore(id: string): Promise<string> {
+  restore(id: string, signal: AbortSignal = new AbortController().signal): Promise<string> {
     return this.serialize(async () => {
       const value = await this.trashRecord(id)
-      const source = await authorizedFile(value.storedPath, this.prefs.roots)
+      const source = await authorizedFile(value.storedPath, await this.recoveryRoots(value, signal))
       if (await realpath(dirname(value.originalPath)) !== dirname(value.originalPath)) throw new ArtifactError('ARTIFACT_PATH_FORBIDDEN', 403, 'Original directory changed')
+      signal.throwIfAborted()
       await exclusiveMove(source.path, value.originalPath, source.info)
       // The payload is now absent, so a failed record cleanup never repeats the restore.
       await unlink(join(this.stateDirectory, 'trash', id + '.json')).catch(() => {})

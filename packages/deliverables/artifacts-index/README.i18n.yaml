@@ -3,23 +3,23 @@
 # After editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write packages/deliverables/artifacts-index/README.md
 /:
-  en: dac3fd372ccc236b
-  zh: 7634d51360061d8a
+  en: 09cdca01e0ac0d7c
+  zh: b1d653c2fe0a6152
 /deepseek-ai-dsh-artifacts-index:
   en: 367833c9cd54cc7a
   zh: 0a6fdf2da9c6d342
 /deepseek-ai-dsh-artifacts-index/summary:
-  en: ac7bd188bb305d3b
-  zh: 6a03a99f9121db88
+  en: 7fb515a7a0bd35a3
+  zh: 2774eb5fa4b1b87f
 /deepseek-ai-dsh-artifacts-index/table-of-contents:
   en: d152484eb41ac6b4
   zh: 09388d293f9be9cb
 /deepseek-ai-dsh-artifacts-index/use-this-package:
-  en: 90aa86a972347ce2
-  zh: 4aa4cbff0967c5bc
+  en: 9b2b18c5b16f87f1
+  zh: beb8d7c5cf268755
 /deepseek-ai-dsh-artifacts-index/understand-the-implementation:
-  en: f8a7d712a7d2e07e
-  zh: 447e938877d7e184
+  en: 262f2c97c2eb3ff4
+  zh: d35909d7cfc50516
 /deepseek-ai-dsh-artifacts-index/further-exploration:
   en: 2b9cf93b1db1514a
   zh: 6d47c18cedb929e4
@@ -39,8 +39,8 @@
   en: 52acdf25a8407565
   zh: 3be0aed05921cceb
 /deepseek-ai-dsh-artifacts-index/known-limitations-and-deferred-work:
-  en: 4f83478bfc3e4a73
-  zh: 8c256e8a0285adcd
+  en: f404c3a7524e0c7e
+  zh: 12e9abffae017e8f
 /deepseek-ai-dsh-artifacts-index/known-limitations-and-deferred-work/dev-note:
   en: e67f633dc6fe7773
   zh: e88aeb617ffb74ea

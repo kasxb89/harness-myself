@@ -143,6 +143,8 @@ interface WorkspaceChanges {
 
 可选的 `ctx.artifactStorage` 服务是由 [artifacts-index](../../packages/deliverables/artifacts-index/README.zh.md) 声明、仅供可信 Host 使用的能力。[`ArtifactDestination`、`ArtifactWriteRequest`、`ArtifactPublishRequest`、`ArtifactWriteResult` 与 `ArtifactStorageInfo`](../../packages/deliverables/artifacts-index/src/types.ts) 契约描述已捕获的目标、独占输出与持久浏览根目录。生成方在计费前捕获可写目标，随后写入字节或复制成片，不替换已有文件。该服务不改变会话工作区、不添加模型工具，也不追加 Session 事件。文件管理与恢复由同包经过认证的浏览器路由负责。
 
+浏览器区分已保存输出的产物库与已注册工作区文件。工作区访问按实时注册表校验，不向输出偏好添加根目录；目录列表描述当前文件，不判断由哪个 Session 生成。导航、授权与可恢复文件操作由 [artifacts-index 契约](../../packages/deliverables/artifacts-index/README.zh.md)定义。
+
 ## 持久事件与提供的摘要
 
 `tool-present` 通过声明合并把 `deliverables/presented: { turn; callId; files: PresentedFile[] }` 加入 `SessionEventMap`，每次 `present` 的最终结果成功时追加一条。`workspace-changes` 合并 `workspace/changes: { turn }`，在顶层轮停止时追加。摘要本身不在日志里：Session 被观察时由记录器保留，组合装配存储时还写入 `workspace_changes` 域。`workspaceChanges.summary(sessionId, seq)` 按事件序号读取实时或已存储的摘要，因此有存储时，改动文件卡片可以在 Session 释放或 Host 重启后保留。`workspaceChanges.diff(sessionId, seq, index, signal)` 只为实时 Session 对比所列文件。同一轮后来的事件替代先前的，客户端只保留最新一条。生成的[持久化目录](../persistence-catalog.zh.md#deliverablespresented--log-only)记录了两处声明位置。两个事件都不会进入模型请求。

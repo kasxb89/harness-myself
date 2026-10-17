@@ -19,6 +19,12 @@
     },
     {
       "path": "../../client/connection/tsconfig.host.json"
+    },
+    {
+      "path": "../../workspace/workspace"
+    },
+    {
+      "path": "../../fs/fs"
     }
   ]
 }

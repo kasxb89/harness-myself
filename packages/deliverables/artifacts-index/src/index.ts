@@ -19,6 +19,7 @@ import type {} from '@deepseek-ai/dsh-client-connection'
 import z from '@deepseek-ai/schemastery'
 import type { ArtifactStorageService } from './types.ts'
 import { ArtifactError, ArtifactStore, authorizedFile, qualified } from './storage.ts'
+import { WorkspaceAccess } from './workspace.ts'
 
 export type { ArtifactDestination, ArtifactWriteResult, ArtifactWriteRequest, ArtifactPublishRequest, ArtifactStorageService, ArtifactStorageInfo } from './types.ts'
 
@@ -95,6 +96,8 @@ export interface ArtifactEntry {
   readonly kind: ArtifactKind
   readonly size: number
   readonly mtimeMs: number
+  /** Present for a file addressed through a currently registered local Workspace. */
+  readonly workspaceId?: string
 }
 
 /** Media type per extension used when streaming a preview back. */
@@ -272,8 +275,11 @@ async function serveFile(
 export async function apply(ctx: Context, config: Config): Promise<void> {
   const resolved = config as ResolvedConfig
   const configuredRoots = resolveRoots(resolved)
+  let privateState: string | undefined
+  const workspaces = new WorkspaceAccess(ctx, () => privateState)
   const store = resolved.defaultOutputDirectory === '' || resolved.stateDirectory === '' ? undefined
-    : await ArtifactStore.create(ctx, resolved.defaultOutputDirectory, resolved.stateDirectory, configuredRoots)
+    : await ArtifactStore.create(ctx, resolved.defaultOutputDirectory, resolved.stateDirectory, configuredRoots, workspaces)
+  if (store !== undefined) privateState = await realpath(resolved.stateDirectory)
   const lifetime = new AbortController()
   const requests = new Set<Promise<void>>()
   const rootsNow = async (): Promise<readonly string[]> => {
@@ -320,6 +326,11 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       kind: 'prefix',
       path: ROUTE_PREFIX,
       handler: async (request, response) => {
+        const disconnected = new AbortController()
+        const stop = (): void => { disconnected.abort() }
+        request.once('aborted', stop)
+        response.once('close', stop)
+        const signal = AbortSignal.any([lifetime.signal, disconnected.signal])
         const operation = (async () => {
           try {
             if (!originAllowed(request)) {
@@ -329,7 +340,8 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
             const url = new URL(request.url ?? '/', 'http://127.0.0.1')
             const route = url.pathname.slice(ROUTE_PREFIX.length)
             const connection = ctx.get('connection')
-            if (route.startsWith('/api/') && (connection !== undefined || store !== undefined)) {
+            if (route.startsWith('/api/') && (connection !== undefined || store !== undefined
+              || route === '/api/workspace' || route === '/api/raw' && url.searchParams.has('workspaceId'))) {
               const rejection = connection === undefined ? 403 : connection.requestRejection(request)
               if (rejection !== undefined) { json(response, rejection, { code: 'ARTIFACT_AUTH_REQUIRED' }); return }
             }
@@ -337,7 +349,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
               if (connection === undefined) { json(response, 403, { code: 'ARTIFACT_AUTH_REQUIRED' }); return }
               if (store === undefined) throw new ArtifactError('ARTIFACT_STORAGE_UNAVAILABLE', 503, 'Artifact storage is not configured')
               if (route === '/api/storage' && request.method === 'GET') { json(response, 200, store.info()); return }
-              if (route === '/api/trash' && request.method === 'GET') { json(response, 200, { items: await store.trashed() }); return }
+              if (route === '/api/trash' && request.method === 'GET') { json(response, 200, { items: await store.trashed(signal) }); return }
               if (request.method !== 'POST') throw new ArtifactError('ARTIFACT_METHOD_INVALID', 405, 'POST required')
               const value = await body(request)
               if (route === '/api/storage') {
@@ -346,7 +358,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
               }
               if (route === '/api/restore') {
                 if (typeof value.id !== 'string') throw new ArtifactError('ARTIFACT_REQUEST_INVALID', 400, 'Recovery id required')
-                json(response, 200, { item: await item(await store.restore(value.id)) }); return
+                json(response, 200, { item: await item(await store.restore(value.id, signal)) }); return
               }
               const expected = value.expected
               if (typeof value.path !== 'string' || expected === null || typeof expected !== 'object' || Array.isArray(expected)
@@ -354,14 +366,30 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
                 throw new ArtifactError('ARTIFACT_REQUEST_INVALID', 400, 'Path and selected file version required')
               }
               const selectedVersion = { size: expected.size, mtimeMs: expected.mtimeMs }
+              if (value.workspaceId !== undefined && typeof value.workspaceId !== 'string') {
+                throw new ArtifactError('ARTIFACT_REQUEST_INVALID', 400, 'Workspace identity must be a string')
+              }
+              const scope = typeof value.workspaceId === 'string' ? { workspaceId: value.workspaceId, signal } : undefined
               if (route === '/api/rename') {
                 if (typeof value.name !== 'string') throw new ArtifactError('ARTIFACT_REQUEST_INVALID', 400, 'File name required')
-                json(response, 200, { item: await item(await store.rename(value.path, value.name, selectedVersion)) }); return
+                json(response, 200, { item: {
+                  ...await item(await store.rename(value.path, value.name, selectedVersion, scope)),
+                  ...scope === undefined ? {} : { workspaceId: scope.workspaceId },
+                } }); return
               }
-              json(response, 200, { trashId: await store.trash(value.path, selectedVersion) }); return
+              json(response, 200, { trashId: await store.trash(value.path, selectedVersion, scope) }); return
             }
             if (request.method !== 'GET' && request.method !== 'HEAD') {
               json(response, 405, { error: 'method not allowed' })
+              return
+            }
+            if (route === '/api/workspace') {
+              const workspaceId = url.searchParams.get('workspaceId')
+              if (workspaceId === null) throw new ArtifactError('ARTIFACT_WORKSPACE_UNAVAILABLE', 404, 'Select a registered Workspace')
+              const page = await workspaces.list(workspaceId, url.searchParams.get('directory') ?? '', resolved.maxEntries, signal)
+              json(response, 200, {
+                ...page, items: page.items.map(entry => ({ ...entry, kind: kindOf(entry.name), workspaceId: page.workspace.id })),
+              })
               return
             }
             if (route === '/api/list') {
@@ -381,16 +409,23 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
             }
             if (route === '/api/raw') {
               const target = url.searchParams.get('path')
-              const roots = await rootsNow()
               if (target === null || !qualified(target)) {
                 json(response, 403, { error: 'path outside the configured roots' })
                 return
               }
-              await serveFile(response, request, resolve(target), roots, lifetime.signal, store !== undefined)
+              const workspaceId = url.searchParams.get('workspaceId')
+              if (workspaceId !== null) {
+                const workspace = await workspaces.resolve(workspaceId, signal)
+                const file = await workspaces.file(workspace, target, signal)
+                await serveFile(response, request, file.path, [workspace.path], signal, true)
+              } else {
+                await serveFile(response, request, resolve(target), await rootsNow(), signal, store !== undefined)
+              }
               return
             }
             json(response, 404, { error: 'not found' })
           } catch (error) {
+            if (signal.aborted) { response.destroy(); return }
             if (response.headersSent) { response.destroy(); return }
             const permission = error instanceof Error && 'code' in error && (error.code === 'EACCES' || error.code === 'EPERM')
             json(response, error instanceof ArtifactError ? error.status : permission ? 403 : 500, {
@@ -399,7 +434,11 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
           }
         })()
         requests.add(operation)
-        try { await operation } finally { requests.delete(operation) }
+        try { await operation } finally {
+          requests.delete(operation)
+          request.off('aborted', stop)
+          response.off('close', stop)
+        }
       },
     })
     return async () => {
