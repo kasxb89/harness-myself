@@ -392,16 +392,6 @@
   gap: 4px;
 }
 
-.rowPath {
-  overflow: hidden;
-  color: var(--dsw-alias-label-secondary);
-  font-family: var(--ds-font-family-code);
-  font-size: 11px;
-  line-height: 16px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .emptyPane {
   display: flex;
   flex-direction: column;

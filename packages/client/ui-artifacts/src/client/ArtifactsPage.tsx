@@ -566,20 +566,18 @@ export function ArtifactsPage(props: ArtifactsPageProps): ReactNode {
               <button type="button" className={css.row} disabled={pending} onClick={() => { setDirectory(folder.directory) }}
                 aria-label={t('workspace.openDirectory', { name: folder.name })}>
                 <span className={css.thumb}><IconFolderOpenRegular size={18} /></span>
-                <span className={css.rowText}><span className={css.rowName}>{folder.name}</span>
-                  <span className={css.rowPath}>{folder.directory}</span></span>
+                <span className={css.rowText}><span className={css.rowName}>{folder.name}</span></span>
               </button>
             </li>)}
             {items.map(entry => <li key={entry.path}>
               <button type="button" className={entry.path === selected?.path ? css.rowActive : css.row}
-                onClick={() => { setSelection({ scope, path: entry.path }) }} title={entry.path}>
+                onClick={() => { setSelection({ scope, path: entry.path }) }}>
                 <span className={css.thumb}>
                   {entry.kind === 'image' && !/\.svg$/iu.test(entry.name) && entry.size <= THUMBNAIL_MAX_BYTES
                     ? <img className={css.thumbImage} src={rawUrl(entry.path, entry.workspaceId)} alt="" loading="lazy" /> : <FileTypeIcon path={entry.name} size={18} />}
                 </span>
                 <span className={css.rowText}>
                   <span className={css.rowName}>{entry.name}</span><span className={css.rowMeta}>{metaLine(entry, t)}</span>
-                  <span className={css.rowPath}>{view === 'workspace' ? `${directory ? directory + '/' : ''}${entry.name}` : entry.path}</span>
                 </span>
               </button>
             </li>)}

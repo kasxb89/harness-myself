@@ -83,6 +83,8 @@ describe('Artifacts page file management', () => {
   it('shows retained files and keeps the save path inside its on-demand dialog', async () => {
     render(<ArtifactsPage {...props({ readTrash: async () => ({ ok: true, value: [deleted] }) })} />)
     await readyStorageButton()
+    expect(screen.queryByText(image.path)).toBeNull()
+    expect(screen.getByRole('button', { name: /^动漫\.png/u }).getAttribute('title')).toBeNull()
     const snapshot = [screen.getByRole('heading').textContent, screen.getByRole('button', { name: '保存目录' }).textContent,
       screen.getByRole('searchbox').getAttribute('placeholder'), screen.getByRole('navigation').textContent,
       ...screen.getAllByRole('listitem').map(node => node.textContent)].join('\n') + '\n'
@@ -90,6 +92,7 @@ describe('Artifacts page file management', () => {
     expect(screen.getByText('回收区（1 项）')).toBeTruthy()
     expect(screen.queryByRole('button', { name: /永久/u })).toBeNull()
     expect(screen.queryByText(destination.directory)).toBeNull()
+    expect(within(await selectImage()).getByText(image.path)).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: '保存目录' }))
     const dialog = screen.getByRole('dialog', { name: '保存目录' })
     expect(within(dialog).getByRole<HTMLInputElement>('textbox', { name: '完整目录路径' }).value).toBe(destination.directory)
@@ -417,8 +420,9 @@ describe('workspace file scopes', () => {
     await act(async () => { old.resolve({ ok: true, value: workspaceListing() }) })
     expect(screen.getByText(zh.previewHint)).toBeTruthy()
     expect(screen.queryByRole('dialog')).toBeNull()
-    expect(screen.getByRole('button', { name: /^动漫\.png/u }).getAttribute('title')).toBe(`${workspaceTwo.path}/${image.name}`)
-    fireEvent.click(within(await selectImage()).getByRole('button', { name: '重命名' }))
+    const preview = await selectImage()
+    expect(within(preview).getByText(`${workspaceTwo.path}/${image.name}`)).toBeTruthy()
+    fireEvent.click(within(preview).getByRole('button', { name: '重命名' }))
     fireEvent.click(screen.getByRole('tab', { name: '产物库' }))
     expect(screen.queryByRole('dialog')).toBeNull()
     expect(face.rename).not.toHaveBeenCalled()
