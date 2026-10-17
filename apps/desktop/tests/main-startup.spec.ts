@@ -16,7 +16,7 @@ import { DesktopUpdatePreparationError } from '../src/update-error.ts'
 import { writeCrashReport } from '../src/crash-report.ts'
 import type { UpdateDialogOptions } from '../src/update-dialog.ts'
 
-type InvokeEvent = { sender?: unknown; senderFrame: { url: string } }
+type InvokeEvent = { sender?: unknown; senderFrame: { url: string } | null }
 type InvokeHandler = (event: InvokeEvent, ...args: unknown[]) => unknown
 
 vi.mock('../src/web-document.ts', () => ({ authenticateWebHost: async () => 'test-cookie', serveWebDocument: vi.fn(), forwardWebRequest: vi.fn() }))
@@ -861,6 +861,23 @@ describe('desktop main startup', () => {
     }
   })
 
+  it.each([DESKTOP_IPC.updatesCheck, DESKTOP_IPC.updatesOpen])('rejects unowned update actions on %s', async (channel) => {
+    await readyForUpdate()
+    const sender = harness.windows[0]!.webContents
+    for (const event of [
+      { sender: {}, senderFrame: sender.mainFrame },
+      { sender, senderFrame: { url: sender.mainFrame.url } },
+      { sender, senderFrame: { url: 'https://untrusted.example.com/' } },
+    ]) await expect(harness.handlers.get(channel)!(event)).rejects.toThrow('unowned renderer')
+    await expect(harness.handlers.get(channel)!({ sender, senderFrame: null })).rejects.toThrow('without a sender frame')
+    const original = sender.mainFrame.url
+    sender.mainFrame.url = 'http://127.0.0.1:40000/'
+    await expect(harness.handlers.get(channel)!({ sender, senderFrame: sender.mainFrame })).rejects.toThrow('unowned renderer')
+    sender.mainFrame.url = original
+    expect(harness.updateDownload).not.toHaveBeenCalled()
+    expect(harness.updateInstall).not.toHaveBeenCalled()
+  })
+
   it.each(['darwin', 'win32', 'linux'] as const)('limits native titlebar styling to macOS on %s', async (platform) => {
     vi.spyOn(process, 'platform', 'get').mockReturnValue(platform)
     await import('../src/main.ts')
@@ -1653,6 +1670,29 @@ describe('desktop main startup', () => {
     expect(harness.dialog.showMessageBox).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'error',
       message: 'Could not check for updates. Please try again later.', technicalDetails: 'Feed unavailable' }))
     expect(harness.updateDownload).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['win32', false], ['darwin', false], ['win32', true], ['darwin', true],
+  ] as const)('checks fresh from the product button and requires download approval on %s (approve=%s)', async (platform, approve) => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue(platform)
+    await readyForUpdate()
+    await vi.advanceTimersByTimeAsync(0)
+    harness.updateCheck.mockClear()
+    harness.dialog.showMessageBox.mockClear()
+    const available: DesktopUpdateState = { phase: 'available', version: '1.0.1-nightly.1' }
+    harness.updateState = available
+    harness.updateCheck.mockResolvedValueOnce(available)
+    harness.dialog.showMessageBox.mockResolvedValueOnce({ response: 0 }).mockResolvedValueOnce({ response: approve ? 0 : 1 })
+    await invoke(DESKTOP_IPC.updatesCheck, 'app')
+    expect(harness.updateCheck).toHaveBeenCalledExactlyOnceWith(true)
+    expect(harness.dialog.showMessageBox.mock.calls[1]![0]).toMatchObject({
+      message: en.updateAvailable.replace('{version}', available.version!),
+      buttons: [en.updateDownload], cancelId: 1,
+    })
+    if (approve) expect(harness.updateDownload).toHaveBeenCalledExactlyOnceWith(available.version)
+    else expect(harness.updateDownload).not.toHaveBeenCalled()
+    expect(harness.updateInstall).not.toHaveBeenCalled()
   })
 
   it('reports a stale download confirmation as a download failure', async () => {

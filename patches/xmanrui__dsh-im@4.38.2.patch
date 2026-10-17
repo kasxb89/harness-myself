@@ -1,6 +1,141 @@
+diff --git a/lib/client.js b/lib/client.js
+index 6c2c0be0abb0d52f5f32952acadcd324dfb94e39..87dc84645889414cf6e0931867749a5a53ddcb7f 100755
+--- a/lib/client.js
++++ b/lib/client.js
+@@ -597,7 +597,7 @@ var package_default = {
+   name: "@xmanrui/dsh-im",
+   version: "4.38.2",
+   icon: "./assets/logo-plugin-message-link-gradient.webp",
+-  description: "\u628A\u5FAE\u4FE1\u3001\u98DE\u4E66\u3001\u4F01\u5FAE\u3001\u9489\u9489\u3001QQ\u3001Telegram\u3001WhatsApp\u3001Slack\u3001Discord\u3001Matrix\u63A5\u5165DSH\u3002 Connect Telegram, WhatsApp, Slack, Discord, Matrix, WeChat, Feishu, WeCom, DingTalk, and QQ to DSH.",
++  description: "\u628A\u5FAE\u4FE1\u3001\u98DE\u4E66\u3001\u4F01\u5FAE\u3001\u9489\u9489\u3001QQ\u3001Telegram\u3001WhatsApp\u3001Slack\u3001Discord\u3001Matrix\u63A5\u5165\u4E91\u67A2\u3002 Connect Telegram, WhatsApp, Slack, Discord, Matrix, WeChat, Feishu, WeCom, DingTalk, and QQ to Yunshu.",
+   keywords: [
+     "deepseek-harness",
+     "dsh",
+@@ -674,7 +674,7 @@ var package_default = {
+     client: {
+       inject: [
+         "@deepseek-ai/dsh-client-connection",
+-        "@deepseek-ai/dsh-client-runtime",
++        "@deepseek-ai/dsh-api-workspace-controller",
+         "@deepseek-ai/dsh-client-ui-settings",
+         "@deepseek-ai/dsh-client-ui-slots",
+         "@deepseek-ai/dsh-client-locale"
+@@ -1178,11 +1178,16 @@ var connection_error_en_default = {
+ // plugin-src/client/i18n.js
+ var React2 = __toESM(require("react"), 1);
+ var IM_LOCALE_NAMESPACE = "dsh-im";
+-var EN = Object.freeze({
++function productCopy(value, language) {
++  const name2 = language === "en" ? "Yunshu" : "\u4E91\u67A2";
++  return value.replaceAll("DSH-IM", `${name2} IM`).replaceAll("DeepSeek Harness", name2).replace(/\bHarness\b/g, name2).replace(/(?<!🤖 )\bDSH\b(?![_-])/g, name2);
++}
++var UPSTREAM_EN = {
+   ...connection_error_en_default,
+   ...diagnostics_default,
+   ...image_input_default,
+   "$locale": "en",
++  "DSH-IM": "DSH-IM",
+   "\u4FEE\u6539\u522B\u540D": "Edit alias",
+   "\u5173\u95ED\u4FEE\u6539\u522B\u540D": "Close alias editor",
+   "\u539F\u540D\u79F0": "Original name",
+@@ -2339,10 +2344,13 @@ var EN = Object.freeze({
+   "\u5237\u65B0\u4F1A\u8BDD\u5217\u8868": "Refresh the session list",
+   "\u817E\u8BAF Agent \u90AE\u7BB1\u9700\u8981\u5FAE\u4FE1\u626B\u7801\u6388\u6743\u3002\u70B9\u4E0B\u9762\u7684\u6309\u94AE\u751F\u6210\u6388\u6743\u94FE\u63A5\uFF0C\u5728\u6253\u5F00\u7684\u9875\u9762\u91CC\u7528\u5FAE\u4FE1\u626B\u7801\u767B\u5F55\u5E76\u786E\u8BA4\u3002": "The Tencent Agent mailbox authorizes with a WeChat QR code. Generate an authorization link, then scan it with WeChat on the page that opens and confirm.",
+   "\u8BF7\u6C42\u5931\u8D25": "The request failed"
+-});
++};
++var EN = Object.freeze(Object.fromEntries(
++  Object.entries(UPSTREAM_EN).map(([key, value]) => [key, productCopy(value, "en")])
++));
+ var en = EN;
+ var zh = Object.freeze(Object.fromEntries(
+-  Object.keys(EN).map((key) => [key, key === "$locale" ? "zh" : key])
++  Object.keys(EN).map((key) => [key, key === "$locale" ? "zh" : productCopy(key, "zh")])
+ ));
+ var translate = (key) => key;
+ function setImTranslator(next) {
+@@ -2384,9 +2392,9 @@ function translateDynamic(text8) {
+   match = /^(.+) 设置$/.exec(text8);
+   if (match) return `${channelName(match[1])} settings`;
+   match = /^从 DeepSeek Harness 移除“(.+)”？$/.exec(text8);
+-  if (match) return `Remove \u201C${match[1]}\u201D from DeepSeek Harness?`;
++  if (match) return `Remove \u201C${match[1]}\u201D from Yunshu?`;
+   match = /^从 DeepSeek Harness 移除(.+)$/.exec(text8);
+-  if (match) return `Remove ${match[1]} from DeepSeek Harness`;
++  if (match) return `Remove ${match[1]} from Yunshu`;
+   match = /^(.+)的飞书授权流程$/.exec(text8);
+   if (match) return `Feishu authorization flow for ${match[1]}`;
+   match = /^用于为(.+)补全权限与回调的一次性授权二维码$/.exec(text8);
+@@ -2437,7 +2445,7 @@ function translateDynamic(text8) {
+   if (match) return `Removal failed: ${match[1]}`;
+   const phrases = [
+     ["\u4F01\u4E1A\u5FAE\u4FE1", "WeCom"],
+-    ["DeepSeek Harness", "DeepSeek Harness"],
++    ["DeepSeek Harness", "Yunshu"],
+     ["WhatsApp", "WhatsApp"],
+     ["iMessage", "iMessage"],
+     ["macOS Messages", "macOS Messages"],
+@@ -2479,7 +2487,20 @@ function translateDynamic(text8) {
+ function localizeText(value) {
+   if (typeof value !== "string") return value;
+   const exact = translate(value);
+-  if (exact !== value || !isEnglish()) return exact;
++  if (exact !== value) return exact;
++  if (!isEnglish()) {
++    if (/^微信配置格式错误：(config\.json|workspaces\.json)。请查看诊断详情，修复后重启 DSH。$/.test(value)) {
++      return value.replace("\u4FEE\u590D\u540E\u91CD\u542F DSH\u3002", "\u4FEE\u590D\u540E\u91CD\u542F\u4E91\u67A2\u3002");
++    }
++    if (/^(.*?)请检查微信渠道数据目录中的 (config\.json|workspaces\.json)，修复后重启 DSH；“重新读取”不会重新加载配置。\s*(字段位置中的序号从 0 开始，按文件中的条目顺序计数，不包含真实账号标识。)?$/.test(value)) {
++      return value.replace("\u4FEE\u590D\u540E\u91CD\u542F DSH\uFF1B", "\u4FEE\u590D\u540E\u91CD\u542F\u4E91\u67A2\uFF1B");
++    }
++    if (/^从 DeepSeek Harness 移除/.test(value)) return value.replace("\u4ECE DeepSeek Harness \u79FB\u9664", "\u4ECE\u4E91\u67A2\u79FB\u9664");
++    if (/已从此 DeepSeek Harness 移除；飞书开放平台中的应用未被删除。$/.test(value)) {
++      return value.replace("\u5DF2\u4ECE\u6B64 DeepSeek Harness \u79FB\u9664", "\u5DF2\u4ECE\u6B64\u4E91\u67A2\u79FB\u9664");
++    }
++    return exact;
++  }
+   return translateDynamic(value);
+ }
+ var LOCALIZED_PROPS = Object.freeze([
+diff --git a/locale/en.json b/locale/en.json
+index 879377d99ab684de19dadbc6ba53f42092a967f2..945833fb4053691a17e5cc1361734700e904d13d 100644
+--- a/locale/en.json
++++ b/locale/en.json
+@@ -1,6 +1,6 @@
+ {
+   "meta": {
+-    "title": "IM bots (dsh-im)",
+-    "description": "Connect Telegram, WhatsApp, Slack, Discord, Matrix, WeChat, Feishu, WeCom, DingTalk, and QQ to DSH."
++    "title": "Yunshu IM bots",
++    "description": "Connect Telegram, WhatsApp, Slack, Discord, Matrix, WeChat, Feishu, WeCom, DingTalk, and QQ to Yunshu."
+   }
+ }
+diff --git a/locale/zh.json b/locale/zh.json
+index 0c687b43ebf2050571d2d828c55b5b0e1ab9e274..5738bc66aca42e79d57722315649d7cf0a1c2b8f 100644
+--- a/locale/zh.json
++++ b/locale/zh.json
+@@ -1,6 +1,6 @@
+ {
+   "meta": {
+-    "title": "IM 机器人 (dsh-im)",
+-    "description": "把微信、飞书、企微、钉钉、QQ、Telegram、WhatsApp、Slack、Discord、Matrix接入DSH。"
++    "title": "云枢 IM 机器人",
++    "description": "把微信、飞书、企微、钉钉、QQ、Telegram、WhatsApp、Slack、Discord、Matrix接入云枢。"
+   }
+ }
 diff --git a/package.json b/package.json
+index 967eb36f27c0947c59ab052a7d9597b724f57a55..e6e37247cf960c566cfa3a2b21d9b88681ab0df5 100644
 --- a/package.json
 +++ b/package.json
+@@ -2,7 +2,7 @@
+   "name": "@xmanrui/dsh-im",
+   "version": "4.38.2",
+   "icon": "./assets/logo-plugin-message-link-gradient.webp",
+-  "description": "把微信、飞书、企微、钉钉、QQ、Telegram、WhatsApp、Slack、Discord、Matrix接入DSH。 Connect Telegram, WhatsApp, Slack, Discord, Matrix, WeChat, Feishu, WeCom, DingTalk, and QQ to DSH.",
++  "description": "把微信、飞书、企微、钉钉、QQ、Telegram、WhatsApp、Slack、Discord、Matrix接入云枢。 Connect Telegram, WhatsApp, Slack, Discord, Matrix, WeChat, Feishu, WeCom, DingTalk, and QQ to Yunshu.",
+   "keywords": [
+     "deepseek-harness",
+     "dsh",
 @@ -79,7 +79,7 @@
      "client": {
        "inject": [
@@ -10,3 +145,92 @@ diff --git a/package.json b/package.json
          "@deepseek-ai/dsh-client-ui-settings",
          "@deepseek-ai/dsh-client-ui-slots",
          "@deepseek-ai/dsh-client-locale"
+diff --git a/plugin-src/client/i18n.js b/plugin-src/client/i18n.js
+index 10f810b4bbc8106279f7e0179545833335429cab..1db49a2146a73791cc69dfd43927eb4398bbb0a1 100644
+--- a/plugin-src/client/i18n.js
++++ b/plugin-src/client/i18n.js
+@@ -5,11 +5,22 @@ import * as React from 'react';
+
+ export const IM_LOCALE_NAMESPACE = 'dsh-im';
+
+-const EN = Object.freeze({
++// Product names are display values; upstream lookup keys and protocol names stay stable.
++function productCopy(value, language) {
++  const name = language === 'en' ? 'Yunshu' : '云枢';
++  return value
++    .replaceAll('DSH-IM', `${name} IM`)
++    .replaceAll('DeepSeek Harness', name)
++    .replace(/\bHarness\b/g, name)
++    .replace(/(?<!🤖 )\bDSH\b(?![_-])/g, name);
++}
++
++const UPSTREAM_EN = {
+   ...weixinDiagnostics,
+   ...diagnostics,
+   ...imageInput,
+   '$locale': 'en',
++  'DSH-IM': 'DSH-IM',
+   '修改别名': 'Edit alias',
+   '关闭修改别名': 'Close alias editor',
+   '原名称': 'Original name',
+@@ -1171,11 +1182,15 @@ const EN = Object.freeze({
+   '刷新会话列表': 'Refresh the session list',
+   '腾讯 Agent 邮箱需要微信扫码授权。点下面的按钮生成授权链接，在打开的页面里用微信扫码登录并确认。': 'The Tencent Agent mailbox authorizes with a WeChat QR code. Generate an authorization link, then scan it with WeChat on the page that opens and confirm.',
+   '请求失败': 'The request failed',
+-});
++};
++
++const EN = Object.freeze(Object.fromEntries(
++  Object.entries(UPSTREAM_EN).map(([key, value]) => [key, productCopy(value, 'en')]),
++));
+
+ export const en = EN;
+ export const zh = Object.freeze(Object.fromEntries(
+-  Object.keys(EN).map((key) => [key, key === '$locale' ? 'zh' : key]),
++  Object.keys(EN).map((key) => [key, key === '$locale' ? 'zh' : productCopy(key, 'zh')]),
+ ));
+
+ let translate = (key) => key;
+@@ -1222,9 +1237,9 @@ function translateDynamic(text) {
+   match = /^(.+) 设置$/.exec(text);
+   if (match) return `${channelName(match[1])} settings`;
+   match = /^从 DeepSeek Harness 移除“(.+)”？$/.exec(text);
+-  if (match) return `Remove “${match[1]}” from DeepSeek Harness?`;
++  if (match) return `Remove “${match[1]}” from Yunshu?`;
+   match = /^从 DeepSeek Harness 移除(.+)$/.exec(text);
+-  if (match) return `Remove ${match[1]} from DeepSeek Harness`;
++  if (match) return `Remove ${match[1]} from Yunshu`;
+   match = /^(.+)的飞书授权流程$/.exec(text);
+   if (match) return `Feishu authorization flow for ${match[1]}`;
+   match = /^用于为(.+)补全权限与回调的一次性授权二维码$/.exec(text);
+@@ -1275,7 +1290,7 @@ function translateDynamic(text) {
+   if (match) return `Removal failed: ${match[1]}`;
+
+   const phrases = [
+-    ['企业微信', 'WeCom'], ['DeepSeek Harness', 'DeepSeek Harness'],
++    ['企业微信', 'WeCom'], ['DeepSeek Harness', 'Yunshu'],
+     ['WhatsApp', 'WhatsApp'], ['iMessage', 'iMessage'], ['macOS Messages', 'macOS Messages'],
+     ['Telegram', 'Telegram'], ['Discord', 'Discord'],
+     ['Slack', 'Slack'], ['飞书', 'Feishu'], ['钉钉', 'DingTalk'], ['微信', 'WeChat'],
+@@ -1302,6 +1317,20 @@ function translateDynamic(text) {
+ export function localizeText(value) {
+   if (typeof value !== 'string') return value;
+   const exact = translate(value);
+-  if (exact !== value || !isEnglish()) return exact;
++  if (exact !== value) return exact;
++  if (!isEnglish()) {
++    // These are the panel's dynamic templates, not arbitrary account names.
++    if (/^微信配置格式错误：(config\.json|workspaces\.json)。请查看诊断详情，修复后重启 DSH。$/.test(value)) {
++      return value.replace('修复后重启 DSH。', '修复后重启云枢。');
++    }
++    if (/^(.*?)请检查微信渠道数据目录中的 (config\.json|workspaces\.json)，修复后重启 DSH；“重新读取”不会重新加载配置。\s*(字段位置中的序号从 0 开始，按文件中的条目顺序计数，不包含真实账号标识。)?$/.test(value)) {
++      return value.replace('修复后重启 DSH；', '修复后重启云枢；');
++    }
++    if (/^从 DeepSeek Harness 移除/.test(value)) return value.replace('从 DeepSeek Harness 移除', '从云枢移除');
++    if (/已从此 DeepSeek Harness 移除；飞书开放平台中的应用未被删除。$/.test(value)) {
++      return value.replace('已从此 DeepSeek Harness 移除', '已从此云枢移除');
++    }
++    return exact;
++  }
+   return translateDynamic(value);
+ }

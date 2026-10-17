@@ -11,7 +11,13 @@ const BUSY_PHASES: ReadonlySet<DesktopUpdatePresentation['phase']> = new Set([
   'checking', 'downloading', 'verifying', 'installing',
 ])
 
-function updateCopy(state: DesktopUpdatePresentation, t: SettingsTranslate): { label: string; detail: string } {
+/**
+ * Describe a semantic update state without displaying shell diagnostics.
+ * @param state - Main-process update presentation.
+ * @param t - Active settings dictionary.
+ * @returns Localized status label and its complete detail.
+ */
+export function updateCopy(state: DesktopUpdatePresentation, t: SettingsTranslate): { label: string; detail: string } {
   const labels: Readonly<Record<DesktopUpdatePresentation['phase'], string>> = {
     idle: '',
     checking: t('desktop.update.checking'),

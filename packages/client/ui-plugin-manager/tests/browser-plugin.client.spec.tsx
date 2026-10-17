@@ -15,6 +15,8 @@ import { PluginManagerPage } from '../src/client/PluginManagerPage.tsx'
 import { PluginRefreshToast, type PluginRefreshToastFace } from '../src/client/PluginRefreshToast.tsx'
 import { PluginsPanelIcon } from '../src/client/PluginsPanelIcon.tsx'
 import type { PluginManagerFace } from '../src/client/manager-store.ts'
+import type { BundleInfo } from '@deepseek-ai/dsh-api-remotes/client'
+import { VoiceInputLauncher, type VoiceInputLauncherFace } from '../src/client/VoiceInputLauncher.tsx'
 
 usePinnedBrowserLanguages('zh-CN')
 beforeEach(() => { localStorage.clear() })
@@ -33,12 +35,16 @@ async function bench() {
   }
   new LocaleHolder(ctx)
   const list = vi.fn(() => Promise.resolve({ ok: true as const, value: { entries: [], managementAvailable: true } }))
+  const listBundles = vi.fn<() => Promise<{ ok: true; value: BundleInfo[] }>>(async () => ({ ok: true, value: [] }))
+  const setBundleEnabled = vi.fn(async () => ({ ok: true as const, value: {
+    changed: true, application: 'applied' as const, stage: 'enable' as const, target: '@deepseek-ai/dsh-experimental-voice-input-bundle',
+  } }))
   const remote = new TestRemote(ctx, {
     settings: { describe: vi.fn(async () => ({ ok: true as const, value: { writable: true, hasDocument: true, namespaces: [] } })) },
     pluginInventory: { list },
     pluginRegistryProbe: { fastest: vi.fn(async () => ({ ok: true as const, value: null })) },
     pluginManager: {
-      listBundles: vi.fn(() => Promise.resolve({ ok: true as const, value: [] })),
+      listBundles, setBundleEnabled,
       listPlugins: vi.fn(() => Promise.resolve({ ok: true as const, value: [] })),
       registries: vi.fn(() => Promise.resolve({ ok: true as const, value: { registry: null, fallbackRegistries: [], resolved: null } })),
     },
@@ -48,7 +54,7 @@ async function bench() {
   ctx.provide('layout', { panelInfo, selectPanel, beginNavigation: () => new AbortController().signal,
     toggleSidebar: vi.fn(), openRightbar: vi.fn(), closeRightbar: vi.fn() })
   await ctx.plugin(settings).await()
-  return { ctx, slots: ctx.get('slots') as SlotRegistry, locale, list, remote, selectPanel, panelInfo }
+  return { ctx, slots: ctx.get('slots') as SlotRegistry, locale, list, listBundles, setBundleEnabled, remote, selectPanel, panelInfo }
 }
 
 function declare(slots: SlotRegistry): () => void {
@@ -58,11 +64,95 @@ function declare(slots: SlotRegistry): () => void {
       'main': { kind: 'keyed', scope: 'root' },
       'shell.overlay': { kind: 'list', scope: 'root' },
       'sidebar.panellist': { kind: 'list', scope: 'root' },
+      'conversation.input.activity': { kind: 'single', scope: 'session' },
     },
   } as never, () => null)
 }
 
+function voiceBundle(overrides: Partial<BundleInfo> = {}): BundleInfo {
+  return { name: '@deepseek-ai/dsh-experimental-voice-input-bundle', official: true, availability: 'installation',
+    enabled: false, installed: false, optional: true, removable: false, rows: [], overrides: [], ...overrides }
+}
+
+function voiceFace(slots: SlotRegistry): VoiceInputLauncherFace {
+  const face: object = slots.entries('conversation.input.activity')[0]!.inject!()
+  return face as VoiceInputLauncherFace
+}
+
 describe('ui-plugin-manager browser plugin', () => {
+  it('keeps the composer launcher as a lifecycle-owned fallback while the optional voice control replaces it', async () => {
+    const b = await bench()
+    const fiber = b.ctx.plugin({ inject: [...inject], apply })
+    await fiber.await()
+    expect(b.slots.entries('conversation.input.activity')).toHaveLength(0)
+    const removeRoot = declare(b.slots)
+    expect(b.slots.entriesOfSlot('conversation.input.activity').map(entry => entry.component)).toEqual([VoiceInputLauncher])
+    expect(b.slots.entriesOfSlot('conversation.input.activity')[0]!.options).toMatchObject({ priority: 100 })
+    const OptionalVoice = () => null
+    const voice = b.ctx.plugin({ inject: ['slots'], apply: (ctx: Context) => {
+      ctx.slots.inject('conversation.input.activity', () => ctx.slots.register({ name: 'conversation.input.activity' }, OptionalVoice))
+    } })
+    await voice.await()
+    expect(b.slots.entries('conversation.input.activity')).toHaveLength(2)
+    expect(b.slots.entriesOfSlot('conversation.input.activity').map(entry => entry.component)).toEqual([OptionalVoice])
+    await voice.dispose()
+    expect(b.slots.entriesOfSlot('conversation.input.activity').map(entry => entry.component)).toEqual([VoiceInputLauncher])
+    removeRoot()
+    expect(b.slots.entries('conversation.input.activity')).toHaveLength(0)
+    declare(b.slots)
+    expect(b.slots.entriesOfSlot('conversation.input.activity').map(entry => entry.component)).toEqual([VoiceInputLauncher])
+    await fiber.dispose()
+    expect(b.slots.entries('conversation.input.activity')).toHaveLength(0)
+  })
+
+  it('loads inventory before the manager page opens and enables only the available voice bundle', async () => {
+    const b = await bench()
+    declare(b.slots)
+    b.listBundles.mockResolvedValue({ ok: true, value: [voiceBundle()] })
+    await b.ctx.plugin({ inject: [...inject], apply }).await()
+    const launcher = voiceFace(b.slots)
+    expect(b.list).not.toHaveBeenCalled()
+    expect(await launcher.openVoiceSetup(new AbortController().signal)).toBe('opened')
+    expect(b.setBundleEnabled.mock.calls).toEqual([['@deepseek-ai/dsh-experimental-voice-input-bundle', true]])
+    expect(b.panelInfo.getSnapshot().activePanelId).toBe(PANEL_ID)
+    const entry = b.slots.entries('main')[0]!
+    assert(entry.store && 'create' in entry.store)
+    expect(entry.store.create().getSnapshot()).toEqual({ view: { kind: 'package', name: '@deepseek-ai/dsh-experimental-voice-input-bundle' } })
+  })
+
+  it('leaves missing catalog packages to the existing installation surface and does not re-enable an enabled bundle', async () => {
+    const b = await bench()
+    declare(b.slots)
+    await b.ctx.plugin({ inject: [...inject], apply }).await()
+    b.listBundles.mockResolvedValue({ ok: true, value: [voiceBundle({ availability: 'missing', installTarget: {
+      spec: '@deepseek-ai/dsh-experimental-voice-input-bundle@0.2.1-alpha.2', version: '0.2.1-alpha.2',
+    } })] })
+    expect(await voiceFace(b.slots).openVoiceSetup(new AbortController().signal)).toBe('opened')
+    expect(b.setBundleEnabled).not.toHaveBeenCalled()
+    b.listBundles.mockResolvedValue({ ok: true, value: [voiceBundle({ enabled: true })] })
+    expect(await voiceFace(b.slots).openVoiceSetup(new AbortController().signal)).toBe('opened')
+    expect(b.setBundleEnabled).not.toHaveBeenCalled()
+  })
+
+  it('makes failed and unavailable inventory retryable and cancels activation after dialog close or plugin disposal', async () => {
+    const b = await bench()
+    declare(b.slots)
+    const fiber = b.ctx.plugin({ inject: [...inject], apply })
+    await fiber.await()
+    const launcher = voiceFace(b.slots)
+    b.listBundles.mockRejectedValueOnce(new Error('offline'))
+    expect(await launcher.openVoiceSetup(new AbortController().signal)).toBe('failed')
+    expect(await launcher.openVoiceSetup(new AbortController().signal)).toBe('unavailable')
+    b.listBundles.mockResolvedValue({ ok: true, value: [voiceBundle()] })
+    const closed = new AbortController(); closed.abort()
+    expect(await launcher.openVoiceSetup(closed.signal)).toBe('cancelled')
+    const pending = launcher.openVoiceSetup(new AbortController().signal)
+    await fiber.dispose()
+    expect(await pending).toBe('cancelled')
+    expect(b.setBundleEnabled).not.toHaveBeenCalled()
+    expect(b.selectPanel).not.toHaveBeenCalled()
+  })
+
   it('resets bundle selection when leaving Plugins and releases its panel observer with the registration', async () => {
     const b = await bench()
     const removeRoot = declare(b.slots)

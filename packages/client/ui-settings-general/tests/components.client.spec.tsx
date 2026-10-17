@@ -25,13 +25,17 @@ function derivedDocumentStore(remote: object) {
 import { en, zh } from '../src/client/locales.ts'
 import { CurrentVersionRow } from '../src/client/CurrentVersionRow.tsx'
 import { DesktopUpdateBadge } from '../src/client/DesktopUpdateIndicator.tsx'
+import { DesktopUpdateCheck, DesktopUpdateCheckFooter } from '../src/client/DesktopUpdateCheck.tsx'
+import type { DesktopUpdateCheckProps } from '../src/client/DesktopUpdateCheck.tsx'
 import type { DesktopUpdateView } from '../src/types.ts'
 
 afterEach(() => { cleanup(); vi.unstubAllEnvs() })
 
 // The seat's key domain is settings ∪ common; the stub answers from the
 // package dictionary and falls back to the key like the real chain.
-const t: TriggerContentProps['t'] = key => (en as Record<string, string>)[key] ?? key
+const t: TriggerContentProps['t'] = (key, params) => Object.entries(params ?? {}).reduce(
+  (text, [name, value]) => text.replaceAll(`{${name}}`, String(value)), (en as Record<string, string>)[key] ?? key,
+)
 
 // Global standard kit stubs: none of these components consume the hooks.
 const unusedHook = (() => { throw new Error('unused by settings-general components') }) as never
@@ -41,6 +45,12 @@ const useSessionStatus: TriggerContentProps['useSessionStatus'] = selector => se
 const kit = {
   useSessions: unusedHook, useSessionStatus,
   usePanelInfo, useSessionRetainInfo: () => undefined, useResource, useWorkspaces: unusedHook,
+}
+
+const webUpdateProps = {
+  desktopUpdateAvailable: false,
+  checkDesktopUpdate: () => {},
+  useDesktopUpdate: (select => select({ failed: false, opening: false })) as DesktopUpdateCheckProps['useDesktopUpdate'],
 }
 
 describe('Desktop collapsed update badge', () => {
@@ -235,14 +245,67 @@ describe('current version', () => {
       for (const [name, value] of Object.entries(params ?? {})) text = text.replace(`{${name}}`, String(value))
       return text
     }
-    render(<CurrentVersionRow {...kit} t={translate} />)
+    render(<CurrentVersionRow {...kit} {...webUpdateProps} t={translate} />)
     expect(screen.getByText(expected)).toBeTruthy()
     expect(screen.queryByRole('button')).toBeNull()
   })
 
   it('omits the row when a partial build has no version metadata', () => {
     vi.stubEnv('DSH_CLIENT_VERSION', undefined)
-    const view = render(<CurrentVersionRow {...kit} t={t} />)
+    const view = render(<CurrentVersionRow {...kit} {...webUpdateProps} t={t} />)
     expect(view.container.textContent).toBe('')
+  })
+})
+
+describe('permanent Desktop update checks', () => {
+  it('shows a manual check beside the current version and in both sidebar geometries', () => {
+    vi.stubEnv('DSH_CLIENT_VERSION', '1.2.3')
+    const checkDesktopUpdate = vi.fn()
+    const props = { ...kit, ...webUpdateProps, desktopUpdateAvailable: true, checkDesktopUpdate, t }
+    const view = render(<CurrentVersionRow {...props} />)
+    expect(screen.getByText('Current version: 1.2.3')).toBeTruthy()
+    expect({ version: screen.getByText('Current version: 1.2.3').textContent,
+      update: screen.getByRole('button', { name: 'Check for updates' }).textContent }).toMatchSnapshot()
+    fireEvent.click(screen.getByRole('button', { name: 'Check for updates' }))
+    expect(checkDesktopUpdate).toHaveBeenCalledOnce()
+    view.rerender(<DesktopUpdateCheckFooter {...props} wide={false} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Check for updates' }))
+    view.rerender(<DesktopUpdateCheckFooter {...props} wide />)
+    fireEvent.click(screen.getByRole('button', { name: 'Check for updates' }))
+    expect(checkDesktopUpdate).toHaveBeenCalledTimes(3)
+    expect(screen.getByText('Check for updates')).toBeTruthy()
+  })
+
+  it('keeps the check visible in a Desktop partial build but absent in ordinary Web', () => {
+    vi.stubEnv('DSH_CLIENT_VERSION', undefined)
+    const props = { ...kit, ...webUpdateProps, t }
+    const view = render(<CurrentVersionRow {...props} desktopUpdateAvailable />)
+    expect(screen.getByRole('button', { name: 'Check for updates' })).toBeTruthy()
+    view.rerender(<DesktopUpdateCheckFooter {...props} wide={false} />)
+    expect(screen.queryByRole('button')).toBeNull()
+  })
+
+  it.each([
+    ['checking', true], ['installing', true], ['idle', false], ['available', false],
+    ['downloading', false], ['verifying', false], ['ready', false], ['error', false],
+  ] as const)('keeps %s discoverable and guards only busy actions', (phase, disabled) => {
+    const checkDesktopUpdate = vi.fn()
+    const state: DesktopUpdateView = { failed: false, opening: phase === 'downloading', presentation: { phase, failure: 'source-development' } }
+    render(<DesktopUpdateCheck {...webUpdateProps} desktopUpdateAvailable t={t} checkDesktopUpdate={checkDesktopUpdate}
+      useDesktopUpdate={select => select(state)} />)
+    const action = screen.getByRole('button', { name: 'Check for updates' })
+    expect(action.getAttribute('aria-disabled')).toBe(String(disabled))
+    fireEvent.click(action)
+    expect(checkDesktopUpdate).toHaveBeenCalledTimes(disabled ? 0 : 1)
+  })
+
+  it.each([
+    [{ failed: false, opening: false }, en['desktop.update.loading']],
+    [{ failed: true, opening: false }, en['desktop.update.checkFailed']],
+    [{ failed: false, opening: false, presentation: { phase: 'error', failure: 'source-development' } }, en['desktop.update.sourceDevelopment']],
+  ] satisfies Array<[DesktopUpdateView, string]>)('explains loading, bridge failure, and unsupported development builds', async (state, detail) => {
+    render(<DesktopUpdateCheck {...webUpdateProps} desktopUpdateAvailable t={t} useDesktopUpdate={select => select(state)} />)
+    fireEvent.focus(screen.getByRole('button', { name: 'Check for updates' }))
+    expect((await screen.findByRole('tooltip')).textContent).toBe(detail)
   })
 })

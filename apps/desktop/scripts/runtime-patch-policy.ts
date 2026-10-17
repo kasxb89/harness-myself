@@ -16,7 +16,7 @@ export const DESKTOP_RUNTIME_PATCHES: Readonly<Record<string, DesktopRuntimePatc
   'exceljs@4.4.0': { scope: 'workspace-only', reason: 'The patched parser is embedded in the client bundle and worker.' },
   'node-pty@1.2.0-beta.15': { scope: 'shared', reason: 'Runtime terminals need helper resolution and Windows worker cleanup.' },
   'dsh-skin-market@0.1.57': { scope: 'shared', reason: 'Runtime skin registration needs current client injections and the matching Cordis peer.' },
-  '@xmanrui/dsh-im@4.38.2': { scope: 'shared', reason: 'Runtime IM activation needs the Workspace Controller client injection.' },
+  '@xmanrui/dsh-im@4.38.2': { scope: 'shared', reason: 'Runtime IM activation needs the Workspace Controller client injection and Yunshu display names.' },
   'deepseek-ivideo@0.5.0': { scope: 'shared', reason: 'Runtime video editing needs current client injections and matching Harness peers.' },
   'dshmarket@1.66.20': { scope: 'shared', reason: 'Runtime market activation needs matching Cordis, settings and schema peers.' },
   'dsh-find-plugin@0.4.0': { scope: 'shared', reason: 'Runtime plugin discovery needs matching Cordis and tools peers.' },

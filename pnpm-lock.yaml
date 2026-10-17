@@ -36,7 +36,7 @@ patchedDependencies:
   '@electron/osx-sign@1.3.3': 280e7b2816caf01423097d24e79107a66afeb563a348630ce9928ae8499a5861
   '@fortune-sheet/core@1.0.4': 8791a230763dbf853fd65d627c68c31de37209992851377855e16cf08ea70532
   '@fortune-sheet/react@1.0.4': 2932e52e79afcd4ced08cfa123b5eded786c85043da32f622f3e80af6fc96c37
-  '@xmanrui/dsh-im@4.38.2': 33067c06f85c7f2971d1a2736a04d5e5a0ae429efe2f387992991c1a1cd91dae
+  '@xmanrui/dsh-im@4.38.2': 4c74071c3daf693c5e4270746b964c750e01da2c85cdfc0146ac37dec11af738
   '@yao-pkg/pkg@6.21.0': 75891fc22b277c145cafeab83e41baf4a70f5b8fe6dc0801c6a0b922d7ee88c7
   deepseek-ivideo@0.5.0: 2c8077e6bd282bca4144510792e3f881d86e4a1ddf72a536a866da0516ef0be7
   dsh-find-plugin@0.4.0: 062d1dee81d7b8393559bee05e107249c5bf1363b1eda9d675f5f30de0e5e03b
@@ -2972,7 +2972,7 @@ importers:
         version: link:../../../vendor/schemastery
       '@xmanrui/dsh-im':
         specifier: 4.38.2
-        version: 4.38.2(patch_hash=33067c06f85c7f2971d1a2736a04d5e5a0ae429efe2f387992991c1a1cd91dae)(@types/node@22.20.1)(debug@4.4.3(supports-color@9.4.0))(supports-color@9.4.0)
+        version: 4.38.2(patch_hash=4c74071c3daf693c5e4270746b964c750e01da2c85cdfc0146ac37dec11af738)(@types/node@22.20.1)(debug@4.4.3(supports-color@9.4.0))(supports-color@9.4.0)
       commander:
         specifier: ^15.0.0
         version: 15.0.0
@@ -4812,6 +4812,9 @@ importers:
       '@deepseek-ai/dsh-client-test-runtime':
         specifier: workspace:*
         version: link:../../test-support/client-runtime
+      '@deepseek-ai/dsh-client-ui-conversation':
+        specifier: workspace:*
+        version: link:../ui-conversation
       '@deepseek-ai/dsh-client-ui-layout':
         specifier: workspace:*
         version: link:../ui-layout
@@ -27802,7 +27805,7 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@xmanrui/dsh-im@4.38.2(patch_hash=33067c06f85c7f2971d1a2736a04d5e5a0ae429efe2f387992991c1a1cd91dae)(@types/node@22.20.1)(debug@4.4.3(supports-color@9.4.0))(supports-color@9.4.0)':
+  '@xmanrui/dsh-im@4.38.2(patch_hash=4c74071c3daf693c5e4270746b964c750e01da2c85cdfc0146ac37dec11af738)(@types/node@22.20.1)(debug@4.4.3(supports-color@9.4.0))(supports-color@9.4.0)':
     dependencies:
       '@matrix-org/olm': 3.2.15
       '@tencent-connect/qqbot-connector': 1.2.0

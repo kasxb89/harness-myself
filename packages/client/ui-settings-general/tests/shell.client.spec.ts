@@ -12,6 +12,7 @@ import { inject } from '../src/client/index.ts'
 import type { SettingsRootInjected } from '../src/client/shell-contract.ts'
 import { SettingsRoot } from '../src/client/SettingsRoot.tsx'
 import type { DesktopUpdatePresentation } from '../src/types.ts'
+import type { DesktopUpdateCheckInjected } from '../src/client/DesktopUpdateCheck.tsx'
 
 const SELF = '@deepseek-ai/dsh-client-ui-settings-general'
 const SIDEBAR = '@deepseek-ai/dsh-client-ui-sidebar'
@@ -22,6 +23,28 @@ const COLD_BOOT_TIMEOUT_MS = 60_000
 function injectedOf(c: TestClient): SettingsRootInjected {
   const entry = c.ctx.slots.entries('sidebar.settings')[0]!
   return (entry.inject as () => SettingsRootInjected)()
+}
+
+function assertUpdateCheckInjected(value: Record<string, unknown> | undefined):
+  asserts value is Record<string, unknown> & DesktopUpdateCheckInjected {
+  if (value === undefined || typeof value.desktopUpdateAvailable !== 'boolean' || typeof value.checkDesktopUpdate !== 'function') {
+    throw new Error('The update-check entry must expose availability and a check callback')
+  }
+  const hooks = value.hooks
+  if (typeof hooks !== 'object' || hooks === null || !('desktopUpdate' in hooks)) {
+    throw new Error('The update-check entry must expose its observed state')
+  }
+  const source = hooks.desktopUpdate
+  if (typeof source !== 'object' || source === null || !('getSnapshot' in source) || typeof source.getSnapshot !== 'function'
+    || !('subscribe' in source) || typeof source.subscribe !== 'function') {
+    throw new Error('The update-check state must be an observable source')
+  }
+}
+
+function updateCheckInjectedOf(injectFactory: ((...args: never[]) => Record<string, unknown>) | undefined): DesktopUpdateCheckInjected {
+  const value = injectFactory?.()
+  assertUpdateCheckInjected(value)
+  return value
 }
 
 /** The shell's child declarations (chrome, actions, sections, and onboarding overlays). */
@@ -50,18 +73,27 @@ const PRODUCT_ONBOARDING: readonly { id: string; order: number }[] = [
 ]
 
 describe('ui-settings-general shell', () => {
-  it('shares one carrier subscription between both update locations and releases it on unload', async ({ start }) => {
+  it('shares one carrier subscription across update controls and checks manually above Mobile', async ({ start }) => {
     const initial = Promise.withResolvers<DesktopUpdatePresentation>()
     let publish: ((state: DesktopUpdatePresentation) => void) | undefined
     const off = vi.fn()
     const subscribe = vi.fn((listener: typeof publish) => { publish = listener; return off })
     const open = vi.fn(async () => {})
-    vi.stubGlobal('dshDesktop', { protocolVersion: 1, updates: { status: () => initial.promise, subscribe, open } })
+    const check = vi.fn(async () => {})
+    vi.stubGlobal('dshDesktop', { protocolVersion: 1, updates: { status: () => initial.promise, subscribe, open, check } })
     onTestFinished(() => { vi.unstubAllGlobals(); initial.resolve({ phase: 'idle' }) })
     const c = await start()
     const row = injectedOf(c)
     const badge = (c.ctx.slots.entries('sidebar.toggle.badge')[0]!.inject as () => Pick<SettingsRootInjected, 'hooks'>)()
+    const footerEntry = c.ctx.slots.entries('sidebar.footer.action').find(entry => entry.options.id === 'desktop-update-check')!
+    const footer = updateCheckInjectedOf(footerEntry.inject)
+    const versionEntry = c.ctx.slots.entries('settings.general.item').find(entry => entry.options.id === 'current-version')!
+    const version = updateCheckInjectedOf(versionEntry.inject)
+    expect(footerEntry.options.order).toBeLessThan(c.ctx.slots.entries('sidebar.footer.action').find(entry => entry.options.id === 'mobile')!.options.order!)
     expect(badge.hooks.desktopUpdate).toBe(row.hooks.desktopUpdate)
+    expect(footer.hooks.desktopUpdate).toBe(row.hooks.desktopUpdate)
+    expect(version.hooks.desktopUpdate).toBe(row.hooks.desktopUpdate)
+    expect(footer.desktopUpdateAvailable).toBe(true)
     expect(subscribe).toHaveBeenCalledOnce()
     const status = { phase: 'available' as const, version: '1.0.1' }
     publish!(status)
@@ -69,10 +101,21 @@ describe('ui-settings-general shell', () => {
     row.openDesktopUpdate()
     await c.flush()
     expect(open).toHaveBeenCalledOnce()
+    footer.checkDesktopUpdate()
+    await c.flush()
+    version.checkDesktopUpdate()
+    await c.flush()
+    expect(check).toHaveBeenCalledTimes(2)
+    expect(open).toHaveBeenCalledOnce()
+    await c.reload(SIDEBAR)
+    await c.flush()
+    expect(c.ctx.slots.entries('sidebar.footer.action').filter(entry => entry.options.id === 'desktop-update-check')).toHaveLength(1)
+    expect(subscribe).toHaveBeenCalledOnce()
     await c.unload(SELF)
     await c.flush()
     expect(off).toHaveBeenCalledOnce()
     expect(c.ctx.slots.entries('sidebar.toggle.badge')).toHaveLength(0)
+    expect(c.ctx.slots.entries('sidebar.footer.action').some(entry => entry.options.id === 'desktop-update-check')).toBe(false)
     publish!({ phase: 'error', version: status.version, failure: 'install' })
     expect(row.hooks.desktopUpdate.getSnapshot().presentation).toEqual(status)
   }, COLD_BOOT_TIMEOUT_MS)
@@ -81,10 +124,32 @@ describe('ui-settings-general shell', () => {
     expect(inject).toEqual(['slots', 'locale', 'connection', 'remote', 'remote.settings', 'configForms', 'shortcuts'])
   })
 
+  it('does not offer permanent manual checks with a legacy v1 preload', async ({ start }) => {
+    const open = vi.fn(async () => {})
+    vi.stubGlobal('dshDesktop', { protocolVersion: 1, updates: {
+      status: async () => ({ phase: 'available', version: '1.0.1' }),
+      subscribe: () => () => {}, open,
+    } })
+    onTestFinished(() => { vi.unstubAllGlobals() })
+    const c = await start()
+    expect(c.ctx.slots.entries('sidebar.footer.action').some(entry => entry.options.id === 'desktop-update-check')).toBe(false)
+    const versionEntry = c.ctx.slots.entries('settings.general.item').find(entry => entry.options.id === 'current-version')!
+    const version = updateCheckInjectedOf(versionEntry.inject)
+    expect(version.desktopUpdateAvailable).toBe(false)
+    expect(() => { version.checkDesktopUpdate() }).not.toThrow()
+    expect(open).not.toHaveBeenCalled()
+    injectedOf(c).openDesktopUpdate()
+    await c.flush()
+    expect(open).toHaveBeenCalledOnce()
+  })
+
   it('occupies sidebar.settings, declared by ui-sidebar, and declares every child slot', async ({ start }) => {
     const c = await start()
     expect(c.ctx.slots.entries('sidebar.settings').map(entry => entry.component)).toEqual([SettingsRoot])
     for (const name of CHILD_NAMES) expect(c.ctx.slots.spec(name)).toEqual(CHILD_SPECS[name])
+    expect(c.ctx.slots.entries('sidebar.footer.action').some(entry => entry.options.id === 'desktop-update-check')).toBe(false)
+    const versionEntry = c.ctx.slots.entries('settings.general.item').find(entry => entry.options.id === 'current-version')!
+    expect(updateCheckInjectedOf(versionEntry.inject).desktopUpdateAvailable).toBe(false)
   }, COLD_BOOT_TIMEOUT_MS)
 
   it('projects the section ledger: product sections in order, defaults for bare rows, stable snapshots', async ({ start }) => {

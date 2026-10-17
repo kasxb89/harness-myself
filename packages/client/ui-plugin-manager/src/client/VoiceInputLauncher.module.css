@@ -1,0 +1,3 @@
+.anchor { display: inline-flex; flex: none; }
+.trigger { width: 28px; padding: 0; flex: none; }
+.error { margin: 0; color: var(--dsw-alias-state-error-primary); font-size: 13px; }

@@ -8,6 +8,13 @@ export const INSTALL_PATH_EXAMPLE = '/Users/name/my-plugin'
 /** Simplified Chinese dictionary and key source of truth. */
 export const zh = {
   panel: '插件',
+  'voiceLauncher.trigger': '语音输入',
+  'voiceLauncher.title': '启用语音输入',
+  'voiceLauncher.description': '首次使用需准备约 241 MB 的本地识别模型，下一步会打开语音设置，由你确认准备。准备完成后，点击麦克风录音，停止后转成文字，可以修改再发送',
+  'voiceLauncher.enable': '启用并设置',
+  'voiceLauncher.opening': '正在打开…',
+  'voiceLauncher.failed': '无法读取语音插件，请检查连接后重试',
+  'voiceLauncher.unavailable': '语音输入暂不可用，请稍后重试或在插件页检查语音组件',
   title: '插件',
   intro: '安装、启用和配置插件',
   infoLabel: '插件说明',
@@ -224,6 +231,13 @@ export type PluginManagerLocaleKey = keyof typeof zh
 /** English dictionary checked against the Chinese key set. */
 export const en = {
   panel: 'Plugins',
+  'voiceLauncher.trigger': 'Voice input',
+  'voiceLauncher.title': 'Enable voice input',
+  'voiceLauncher.description': 'First use requires about 241 MB of local recognition models. Next, voice settings will open so you can confirm preparation. Once ready, click the microphone to record and stop to turn speech into text. You can edit it before sending.',
+  'voiceLauncher.enable': 'Enable and set up',
+  'voiceLauncher.opening': 'Opening…',
+  'voiceLauncher.failed': 'Could not read the voice plugin. Check the connection and retry.',
+  'voiceLauncher.unavailable': 'Voice input is unavailable. Retry or check the voice component in Plugins.',
   title: 'Plugins',
   intro: 'Install, enable, and configure plugins',
   infoLabel: 'About plugins',

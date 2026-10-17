@@ -1,0 +1,8 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`permanent Desktop update checks > shows a manual check beside the current version and in both sidebar geometries 1`] = `
+{
+  "update": "Check for updates",
+  "version": "Current version: 1.2.3",
+}
+`;

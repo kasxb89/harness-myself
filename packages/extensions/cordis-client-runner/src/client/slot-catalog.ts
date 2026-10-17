@@ -858,6 +858,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
     slotInject: '',
     declaredBy: 'an entry in \'conversation.composer.bar\' (client-ui-conversation), so it exists while that entry is mounted',
     occupants: [
+      'client-ui-plugin-manager VoiceInputLauncher',
       'experimental-client-ui-voice-input VoiceInput',
     ],
     replaceRisk: 'shadows-shipped-ui',
@@ -3248,6 +3249,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
     occupants: [
       'client-ui-credits FooterAction',
       'client-ui-mobile FooterAction',
+      'client-ui-settings-general DesktopUpdateCheckFooter id \'desktop-update-check\'',
       'client-ui-cordis CordisPanel id \'cordis-panel\'',
     ],
     replaceRisk: 'none',

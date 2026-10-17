@@ -24,9 +24,11 @@ function fixture() {
   const status = Promise.withResolvers<DesktopUpdatePresentation>()
   const unsubscribe = vi.fn()
   const open = vi.fn(async () => {})
+  const check = vi.fn(async () => {})
   const bridge: DesktopUpdateBridge = {
     status: () => status.promise,
     open,
+    check,
     subscribe: (next) => { listener = next; return unsubscribe },
   }
   const source = new DesktopUpdateSource(bridge)
@@ -43,7 +45,7 @@ function fixture() {
   const view = render(<Indicator />)
   const unmount = view.unmount
   view.unmount = () => { source.dispose(); unmount() }
-  return { open, status, unsubscribe, view, Indicator, source, emit: async (state: DesktopUpdatePresentation) => {
+  return { open, check, status, unsubscribe, view, Indicator, source, emit: async (state: DesktopUpdatePresentation) => {
     await act(async () => { listener?.(state) })
   } }
 }
@@ -55,8 +57,61 @@ it('renders nothing outside the Desktop carrier', () => {
   const view = render(<DesktopUpdateIndicator wide hidden={false} t={translate(zh)}
     view={source.store.getSnapshot()} onOpen={() => { source.open() }} />)
   source.open()
+  source.check()
   source.dispose()
   expect(view.container.innerHTML).toBe('')
+})
+
+it('runs a manual check separately from accepting an available update and coalesces duplicate checks', async () => {
+  const f = fixture()
+  const pending = Promise.withResolvers<undefined>()
+  try {
+    await f.emit(available)
+    f.check.mockImplementationOnce(() => pending.promise)
+    await act(async () => { f.source.check(); f.source.check(); f.source.open() })
+    expect(f.check).toHaveBeenCalledOnce()
+    expect(f.open).not.toHaveBeenCalled()
+    await f.emit({ phase: 'checking' })
+    f.source.check()
+    expect(f.check).toHaveBeenCalledOnce()
+    await f.emit({ phase: 'downloading', version: '1.0.1', percent: 42 })
+    await act(async () => { f.source.check() })
+    expect(f.check).toHaveBeenCalledTimes(2)
+    await act(async () => { pending.resolve(undefined) })
+    f.view.unmount()
+    f.source.check()
+    expect(f.check).toHaveBeenCalledTimes(2)
+  } finally { f.view.unmount(); pending.resolve(undefined); f.status.resolve(available) }
+})
+
+it('keeps legacy v1 status actions while a missing manual-check capability is inert', async () => {
+  const open = vi.fn(async () => {})
+  const source = new DesktopUpdateSource({
+    status: async () => available,
+    open,
+    subscribe: () => () => {},
+  })
+  await Promise.resolve()
+  expect(() => { source.check() }).not.toThrow()
+  expect(source.store.getSnapshot().opening).toBe(false)
+  expect(source.store.getSnapshot().failed).toBe(false)
+  source.open()
+  await Promise.resolve()
+  expect(open).toHaveBeenCalledOnce()
+  source.dispose()
+})
+
+it('contains synchronous bridge failures and releases the pending check for retry', async () => {
+  const f = fixture()
+  try {
+    await f.emit(available)
+    f.check.mockImplementationOnce(() => { throw new Error('old preload failure') })
+    await act(async () => { expect(() => { f.source.check() }).not.toThrow() })
+    expect(f.source.store.getSnapshot()).toMatchObject({ failed: true, opening: false })
+    await act(async () => { f.source.check() })
+    expect(f.check).toHaveBeenCalledTimes(2)
+    expect(f.source.store.getSnapshot().opening).toBe(false)
+  } finally { f.view.unmount(); f.status.resolve(available) }
 })
 
 it('keeps the newest event, hides for connection priority, and invokes only the shell action', async () => {
@@ -108,7 +163,7 @@ it('accepts initial status, coalesces actions, and ignores late events and actio
     expect(f.open).not.toHaveBeenCalled()
     await f.emit(available)
     f.open.mockImplementationOnce(() => pending.promise)
-    act(() => { f.source.open(); f.source.open() })
+    await act(async () => { f.source.open(); f.source.open() })
     expect(f.open).toHaveBeenCalledOnce()
     const state = f.source.store.getSnapshot()
     f.view.unmount()

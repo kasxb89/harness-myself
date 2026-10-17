@@ -2,7 +2,7 @@
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { DesktopUpdateBridge, DesktopUpdateView } from '../types.ts'
 
-/** Owns one preload subscription across both sidebar locations. */
+/** Owns one preload subscription across settings and sidebar controls. */
 export class DesktopUpdateSource {
   /** Framework-observed carrier status shared by both sidebar controls. */
   readonly store = createSnapshotStore<DesktopUpdateView>({ failed: false, opening: false })
@@ -24,19 +24,32 @@ export class DesktopUpdateSource {
     })
   }
 
-  /** Coalesce confirmation actions while allowing the shell's download progress window to reopen. */
+  /** Open the current update action, including an already discovered release. */
   open(): void {
-    if (!this.live || this.bridge === undefined) return
+    const bridge = this.bridge
+    if (!this.live || bridge === undefined) return
+    this.run(() => bridge.open())
+  }
+
+  /** Run a manual check without implicitly accepting an available download. */
+  check(): void {
+    const bridge = this.bridge
+    if (!this.live || typeof bridge?.check !== 'function') return
+    this.run(bridge.check.bind(bridge))
+  }
+
+  /** Coalesce actions while allowing the shell's download progress window to reopen. */
+  private run(action: () => Promise<void>): void {
     const state = this.store.getSnapshot()
     if (state.presentation?.phase === 'downloading' || state.presentation?.phase === 'verifying') {
-      void this.bridge.open().catch(() => {
+      void Promise.resolve().then(() => { if (this.live) return action() }).catch(() => {
         if (this.live) this.store.set({ ...this.store.getSnapshot(), failed: true })
       })
       return
     }
     if (state.opening || state.presentation?.phase === 'checking' || state.presentation?.phase === 'installing') return
     this.store.set({ ...state, opening: true })
-    void this.bridge.open().catch(() => {
+    void Promise.resolve().then(() => { if (this.live) return action() }).catch(() => {
       if (this.live) this.store.set({ ...this.store.getSnapshot(), failed: true })
     }).finally(() => {
       if (this.live) this.store.set({ ...this.store.getSnapshot(), opening: false })

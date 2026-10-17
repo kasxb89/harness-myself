@@ -1,4 +1,8 @@
 .row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
   padding: 16px 0;
   color: var(--dsw-alias-label-primary);
   font-size: 14px;

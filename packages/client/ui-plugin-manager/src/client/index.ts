@@ -15,6 +15,7 @@ import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type { MainPanelId } from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
+import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 // Type-only: the ctx.remote Context merge and the forwarded-event key face.
 import type {} from '@deepseek-ai/dsh-api-remotes/client'
 // Type-only: the forwarded events' own declaration (`$on`'s key face resolves
@@ -23,6 +24,7 @@ import type {} from '@deepseek-ai/dsh-plugin-manager/types'
 import { PluginManagerPage } from './PluginManagerPage.tsx'
 import { PluginRefreshToast, type PluginRefreshToastFace } from './PluginRefreshToast.tsx'
 import { PluginsPanelIcon } from './PluginsPanelIcon.tsx'
+import { VoiceInputLauncher, type VoiceInputLauncherFace } from './VoiceInputLauncher.tsx'
 import { configLedgerSource } from './config-ledger.ts'
 import { PluginManagerController } from './manager-store.ts'
 import { en, zh, type PluginManagerLocaleKey } from './locales.ts'
@@ -77,7 +79,8 @@ export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-plugin-manager: dictionaries')
   const t = ctx.locale.bind(NS)
   const controller = new PluginManagerController(ctx)
-  ctx.effect(() => () => { controller.dispose() }, 'ui-plugin-manager: controller')
+  let live = true
+  ctx.effect(() => () => { live = false; controller.dispose() }, 'ui-plugin-manager: controller')
   // The Host says when what is installed, enabled, or composed changed — from
   // this page, the CLI, or another browser — and streams install output.
   ctx.effect(() => {
@@ -100,6 +103,26 @@ export function apply(ctx: ClientContext): void {
   // page declares here, so the page never names a configurable plugin.
   const configLedger = configLedgerSource(ctx)
   const face = controller.inject(configLedger, text => ctx.locale.resolveText(text))
+  const voiceLauncher: VoiceInputLauncherFace = {
+    openVoiceSetup: async (signal) => {
+      try { await controller.load() } catch (_error) { return 'failed' }
+      if (!live || signal.aborted) return 'cancelled'
+      const state = controller.getSnapshot()
+      if (state.status === 'error') return 'failed'
+      if (state.status !== 'ready') return 'unavailable'
+      const packageName = '@deepseek-ai/dsh-experimental-voice-input-bundle'
+      const bundle = state.packages.find(item => item.name === packageName)
+      const navigation = ctx.get('pluginNavigation')
+      if (!bundle || !navigation || bundle.error || (bundle.availability === 'missing' && !bundle.installTarget)) return 'unavailable'
+      // Missing packages use the manager's existing install action and its confirmation surface.
+      if (bundle.availability !== 'missing' && !bundle.enabled && !state.busy.includes(packageName)) face.setEnabled(packageName, true)
+      navigation.openBundle(packageName)
+      return 'opened'
+    },
+  }
+  ctx.slots.inject('conversation.input.activity', () => ctx.slots.register({
+    name: 'conversation.input.activity', priority: 100, locale: NS, inject: () => voiceLauncher,
+  }, VoiceInputLauncher))
   ctx.slots.inject('shell.overlay', () => ctx.slots.register({
     name: 'shell.overlay', id: 'plugin-manager.refresh-toast', locale: NS,
     inject: (): PluginRefreshToastFace => ({

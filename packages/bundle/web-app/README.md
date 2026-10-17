@@ -46,6 +46,8 @@ The product's Chat area hides the Trajectory and marketplace Video Views through
 
 The product manages skins through **Settings → Skin Market**. Dream Skin is not distributed with the product. The core [theme service](../../client/ui-theme/README.md) retains basic color and font settings.
 
+The **IM bots** panel uses Yunshu product names in both interface languages. Its npm identity, commands, configuration names, and third-party attribution retain their upstream values.
+
 The [Artifacts page](../../client/ui-artifacts/README.md) separates the Artifacts library from Workspace files. The library manages the save directory and retained output roots. New media defaults to the active Harness home's `plugin-data/credits/media` directory; changing the directory preserves earlier files and roots. The trusted [artifact storage service](../../deliverables/artifacts-index/README.md) publishes new output without changing the conversation workspace. Workspace files browses a registered workspace one directory at a time, selects the current Session's matching workspace when available, and shows actual paths; existing source files are not labelled newly generated artifacts. Both ranges support previews, renaming and recoverable deletion. Workspace selection does not change the output preference; unregistering it revokes its browser access. Native file actions, when available, run on the serving Host.
 
 The sidebar [Skill store](../../client/ui-skillhub/README.md) searches SkillHub community skills and installs selected skills into the product. Installed skills become available to existing conversations without changing another application's skill directories.
