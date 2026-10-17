@@ -19,6 +19,7 @@
 .header {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
 }
 
@@ -35,7 +36,10 @@
   color: var(--dsw-alias-label-tertiary);
 }
 
-.refresh {
+.headerActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
   margin-left: auto;
 }
 
@@ -280,6 +284,7 @@
 
 .hint {
   margin: 0;
+  overflow-wrap: anywhere;
   font-size: 12px;
   line-height: 18px;
   color: var(--dsw-alias-label-tertiary);
@@ -300,17 +305,6 @@
   color: var(--dsw-alias-state-error-primary);
 }
 
-.storage {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 12px;
-  padding: 12px 14px;
-  border: 0.5px solid var(--dsw-alias-border-l2);
-  border-radius: var(--dsw-radius-lg);
-  background: var(--dsw-alias-bg-layer-1);
-}
-
 .storageInfo,
 .previewHeading {
   display: flex;
@@ -318,12 +312,6 @@
   flex-direction: column;
   min-width: 0;
   gap: 4px;
-}
-
-.storageLabel {
-  color: var(--dsw-alias-label-primary);
-  font-size: 13px;
-  font-weight: 500;
 }
 
 .storagePath,
@@ -356,6 +344,7 @@
 }
 
 .scopeLabel {
+  margin: 0;
   color: var(--dsw-alias-label-tertiary);
   font-size: 12px;
   font-weight: 400;

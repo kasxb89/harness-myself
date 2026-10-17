@@ -72,21 +72,36 @@ async function selectImage() {
   return screen.getByRole('region', { name: '预览' })
 }
 
+/** Wait for the save preference to load without exposing its path in the page. */
+async function readyStorageButton() {
+  const button = await screen.findByRole('button', { name: '保存目录' })
+  await waitFor(() => { expect(button.hasAttribute('disabled')).toBe(false) })
+  return button
+}
+
 describe('Artifacts page file management', () => {
-  it('shows the actual future-save directory, retained files, and recoverable deletions', async () => {
+  it('shows retained files and keeps the save path inside its on-demand dialog', async () => {
     render(<ArtifactsPage {...props({ readTrash: async () => ({ ok: true, value: [deleted] }) })} />)
-    await screen.findByText(destination.directory)
-    const snapshot = [screen.getByRole('heading').textContent, screen.getByRole('region', { name: '保存目录' }).textContent,
+    await readyStorageButton()
+    const snapshot = [screen.getByRole('heading').textContent, screen.getByRole('button', { name: '保存目录' }).textContent,
       screen.getByRole('searchbox').getAttribute('placeholder'), screen.getByRole('navigation').textContent,
       ...screen.getAllByRole('listitem').map(node => node.textContent)].join('\n') + '\n'
     await expect(snapshot).toMatchFileSnapshot('./expected/artifacts-page.txt')
     expect(screen.getByText('回收区（1 项）')).toBeTruthy()
     expect(screen.queryByRole('button', { name: /永久/u })).toBeNull()
+    expect(screen.queryByText(destination.directory)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '保存目录' }))
+    const dialog = screen.getByRole('dialog', { name: '保存目录' })
+    expect(within(dialog).getByRole<HTMLInputElement>('textbox', { name: '完整目录路径' }).value).toBe(destination.directory)
+    expect(within(dialog).getByText(zh['storage.global'])).toBeTruthy()
+    fireEvent.click(within(dialog).getByRole('button', { name: '取消' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.queryByText(destination.directory)).toBeNull()
   })
 
   it('combines case-insensitive name or path search with the selected file type and has a no-match state', async () => {
     render(<ArtifactsPage {...props()} />)
-    await screen.findByText(destination.directory)
+    await readyStorageButton()
     const search = screen.getByRole('searchbox', { name: '搜索名称或路径' })
     fireEvent.change(search, { target: { value: ' STORY ' } })
     expect(screen.queryByRole('button', { name: /^动漫\.png/u })).toBeNull()
@@ -124,8 +139,8 @@ describe('Artifacts page file management', () => {
   it('allows a browser user to enter a full save directory and submits the current revision only after Save', async () => {
     const face = props()
     render(<ArtifactsPage {...face} />)
-    fireEvent.click(await screen.findByRole('button', { name: '更改目录' }))
-    const dialog = screen.getByRole('dialog', { name: '更改目录' })
+    fireEvent.click(await screen.findByRole('button', { name: '保存目录' }))
+    const dialog = screen.getByRole('dialog', { name: '保存目录' })
     expect(within(dialog).queryByRole('button', { name: '选择文件夹' })).toBeNull()
     fireEvent.change(within(dialog).getByRole('textbox'), { target: { value: 'D:\\云枢产物' } })
     expect(face.saveStorage).not.toHaveBeenCalled()
@@ -140,7 +155,7 @@ describe('Artifacts page file management', () => {
     const pickDirectory = vi.fn(async () => null)
     const face = props({ pickDirectory })
     render(<ArtifactsPage {...face} />)
-    fireEvent.click(await screen.findByRole('button', { name: '更改目录' }))
+    fireEvent.click(await screen.findByRole('button', { name: '保存目录' }))
     const dialog = screen.getByRole('dialog')
     const field = within(dialog).getByRole<HTMLInputElement>('textbox')
     fireEvent.change(field, { target: { value: '/typed' } })
@@ -155,7 +170,7 @@ describe('Artifacts page file management', () => {
 
   it('uses the native choice as an editable draft and allows resetting to the initial directory', async () => {
     render(<ArtifactsPage {...props({ pickDirectory: async () => 'C:\\Users\\云枢' })} />)
-    fireEvent.click(await screen.findByRole('button', { name: '更改目录' }))
+    fireEvent.click(await screen.findByRole('button', { name: '保存目录' }))
     const dialog = screen.getByRole('dialog')
     fireEvent.click(within(dialog).getByRole('button', { name: '选择文件夹' }))
     await waitFor(() => { expect(within(dialog).getByRole<HTMLInputElement>('textbox').value).toBe('C:\\Users\\云枢') })
@@ -169,7 +184,7 @@ describe('Artifacts page file management', () => {
       .mockResolvedValueOnce({ ok: true, value: destination })
       .mockResolvedValue({ ok: true, value: { ...destination, revision: 9 } })
     render(<ArtifactsPage {...props({ saveStorage, readStorage })} />)
-    fireEvent.click(await screen.findByRole('button', { name: '更改目录' }))
+    fireEvent.click(await screen.findByRole('button', { name: '保存目录' }))
     const dialog = screen.getByRole('dialog')
     fireEvent.change(within(dialog).getByRole('textbox'), { target: { value: '/draft' } })
     fireEvent.click(within(dialog).getByRole('button', { name: '保存' }))
@@ -286,7 +301,7 @@ describe('Artifacts page file management', () => {
     old.unmount()
     expect(signal.aborted).toBe(true)
     render(<ArtifactsPage {...props()} />)
-    await screen.findByText(destination.directory)
+    await readyStorageButton()
     await act(async () => { oldRead.resolve({ ok: true, value: { items: [], roots: [], truncated: false } }) })
     expect(screen.getByRole('button', { name: /^动漫\.png/u })).toBeTruthy()
   })
@@ -342,7 +357,7 @@ describe('workspace file scopes', () => {
     await screen.findByRole('button', { name: /^动漫\.png/u })
     expect(screen.getByRole<HTMLSelectElement>('combobox', { name: '工作区' }).value).toBe(workspaceOne.id)
     expect(screen.getAllByText(workspaceOne.path).length).toBeGreaterThan(0)
-    expect(screen.getByText(destination.directory)).toBeTruthy()
+    expect(screen.queryByText(destination.directory)).toBeNull()
     expect(face.readWorkspace).toHaveBeenCalledWith(workspaceOne.id, '', expect.any(AbortSignal))
     const snapshot = [screen.getByRole('tab', { selected: true }).textContent,
       screen.getByRole('region', { name: '工作区浏览范围' }).textContent,
@@ -354,7 +369,7 @@ describe('workspace file scopes', () => {
     const face = workspaceProps({ workspaces: { items: [workspaceOne, workspaceTwo], currentWorkspaceId: null,
       currentSessionKey: null, ready: true } })
     render(<ArtifactsPage {...face} />)
-    await screen.findByText(destination.directory)
+    await readyStorageButton()
     fireEvent.click(screen.getByRole('tab', { name: '工作区文件' }))
     await screen.findByText(zh['workspace.selectFirst'])
     expect(screen.getByRole<HTMLSelectElement>('combobox').value).toBe('')
@@ -367,7 +382,7 @@ describe('workspace file scopes', () => {
   it('loads only the opened directory, navigates portable breadcrumbs, and searches the current directory', async () => {
     const face = workspaceProps()
     render(<ArtifactsPage {...face} />)
-    await screen.findByText(destination.directory)
+    await readyStorageButton()
     fireEvent.click(screen.getByRole('tab', { name: '工作区文件' }))
     fireEvent.click(await screen.findByRole('button', { name: '打开文件夹 输出' }))
     await waitFor(() => { expect(face.readWorkspace).toHaveBeenLastCalledWith(workspaceOne.id, '输出', expect.any(AbortSignal)) })
@@ -390,7 +405,7 @@ describe('workspace file scopes', () => {
       .mockResolvedValue({ ok: true, value: workspaceListing(workspaceTwo.id) })
     const face = workspaceProps({ readWorkspace })
     render(<ArtifactsPage {...face} />)
-    await screen.findByText(destination.directory)
+    await readyStorageButton()
     fireEvent.click(screen.getByRole('tab', { name: '工作区文件' }))
     fireEvent.click(within(await selectImage()).getByRole('button', { name: '重命名' }))
     expect(screen.getByRole('dialog')).toBeTruthy()
@@ -412,7 +427,7 @@ describe('workspace file scopes', () => {
   it('binds preview, rename, and deletion to the selected workspace file', async () => {
     const face = workspaceProps({ rename: vi.fn(async () => ({ ok: false as const, code: 'ARTIFACT_CONFLICT' as const })) })
     render(<ArtifactsPage {...face} />)
-    await screen.findByText(destination.directory)
+    await readyStorageButton()
     fireEvent.click(screen.getByRole('tab', { name: '工作区文件' }))
     const preview = await selectImage()
     expect(within(preview).getByRole('img').getAttribute('src')).toContain('&workspaceId=workspace-one')
@@ -430,7 +445,7 @@ describe('workspace file scopes', () => {
   it('follows a newly current conversation and clears a removed manual workspace instead of guessing', async () => {
     const face = workspaceProps()
     const page = render(<ArtifactsPage {...face} />)
-    await screen.findByText(destination.directory)
+    await readyStorageButton()
     fireEvent.click(screen.getByRole('tab', { name: '工作区文件' }))
     await screen.findByRole('button', { name: /^动漫\.png/u })
     fireEvent.change(screen.getByRole('combobox'), { target: { value: workspaceTwo.id } })
@@ -447,7 +462,7 @@ describe('workspace file scopes', () => {
     const receipt = deferred<ArtifactResult<string>>()
     const face = workspaceProps({ trash: vi.fn(() => receipt.promise) })
     const page = render(<ArtifactsPage {...face} />)
-    await screen.findByText(destination.directory)
+    await readyStorageButton()
     fireEvent.click(screen.getByRole('tab', { name: '工作区文件' }))
     fireEvent.click(within(await selectImage()).getByRole('button', { name: '删除' }))
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '删除' }))
@@ -456,9 +471,9 @@ describe('workspace file scopes', () => {
     await act(async () => { receipt.resolve({ ok: false, code: 'ARTIFACT_OPERATION_UNKNOWN' }) })
     fireEvent.click(await screen.findByRole('button', { name: '查看待确认位置' }))
     await waitFor(() => { expect(face.readWorkspace).toHaveBeenLastCalledWith(replacement.id, '', expect.any(AbortSignal)) })
-    await waitFor(() => { expect(screen.getByRole('button', { name: '更改目录' }).hasAttribute('disabled')).toBe(true) })
+    await waitFor(() => { expect(screen.getByRole('button', { name: '保存目录' }).hasAttribute('disabled')).toBe(true) })
     fireEvent.click(screen.getByRole('button', { name: '刷新' }))
-    await waitFor(() => { expect(screen.getByRole('button', { name: '更改目录' }).hasAttribute('disabled')).toBe(false) })
+    await waitFor(() => { expect(screen.getByRole('button', { name: '保存目录' }).hasAttribute('disabled')).toBe(false) })
     expect(face.trash).toHaveBeenCalledOnce()
   })
 
@@ -492,7 +507,7 @@ describe('workspace file scopes', () => {
     const readWorkspace = vi.fn<ArtifactsInjected['readWorkspace']>(async (id, directory) => ({ ok: true, value: workspaceListing(id, directory) }))
     render(<ArtifactsMain {...face} readWorkspace={readWorkspace}
       useArtifactSession={bindSnapshotSelector(binding)} useWorkspaces={bindSnapshotSelector(workspaces)} />)
-    await screen.findByText(destination.directory)
+    await readyStorageButton()
     fireEvent.click(screen.getByRole('tab', { name: '工作区文件' }))
     await waitFor(() => { expect(readWorkspace).toHaveBeenLastCalledWith(workspaceOne.id, '', expect.any(AbortSignal)) })
     act(() => { binding.set({ ...binding.getSnapshot(), key: 'session-two' }) })

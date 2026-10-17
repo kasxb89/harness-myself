@@ -223,7 +223,7 @@ function ArtifactDialog({ request, storage, pending, uncertain, pickDirectory, s
       if (alive.current) setPicking(false)
     })
   }
-  const title = t(request.kind === 'storage' ? 'storage.change' : request.kind === 'rename' ? 'rename.title' : 'trash.title')
+  const title = t(request.kind === 'storage' ? 'storage.title' : request.kind === 'rename' ? 'rename.title' : 'trash.title')
   return (
     <Modal open title={title} closeLabel={t('close')} onClose={() => { if (!busy && !submitting.current) close() }}
       {...request.kind === 'storage' ? { description: t('storage.hint') }
@@ -240,6 +240,7 @@ function ArtifactDialog({ request, storage, pending, uncertain, pickDirectory, s
       )}>
       {request.kind !== 'trash' && (
         <div className={css.form}>
+          {request.kind === 'storage' && <p className={css.scopeLabel}>{t('storage.global')}</p>}
           <Input value={draft} aria-label={t(request.kind === 'storage' ? 'storage.path' : 'rename.name')}
             data-modal-autofocus disabled={busy} onFocus={(event) => { event.target.select() }}
             onChange={(event) => { setDraft(event.currentTarget.value); setError(null) }}
@@ -497,23 +498,19 @@ export function ArtifactsPage(props: ArtifactsPageProps): ReactNode {
         {loaded && <span className={css.count}>{t(view === 'library' ? 'count' : 'workspace.count', {
           count: String(visibleFiles.length), folders: String(visibleDirectories.length),
         })}</span>}
-        <Button className={css.refresh} size="sm" variant="ghost" icon={<IconRefreshOutlineRegular />}
-          onClick={() => { void refresh(true) }} disabled={loading || pending}>{t('refresh')}</Button>
+        <div className={css.headerActions}>
+          <Button size="sm" variant="ghost" icon={<IconFolderOpenRegular />} disabled={pending || uncertain || storage === null}
+            aria-haspopup="dialog" aria-expanded={dialog?.kind === 'storage'}
+            onClick={() => { setDialog({ kind: 'storage', scope }) }}>{t('storage.title')}</Button>
+          <Button size="sm" variant="ghost" icon={<IconRefreshOutlineRegular />}
+            onClick={() => { void refresh(true) }} disabled={loading || pending}>{t('refresh')}</Button>
+        </div>
       </header>
       <SegmentedTabs value={view} label={t('scope.title')}
         items={[{ value: 'library', label: t('scope.library'), id: `${tabId}-library`, panelId: `${tabId}-library-panel` },
           { value: 'workspace', label: t('scope.workspace'), id: `${tabId}-workspace`, panelId: `${tabId}-workspace-panel` }]}
         onChange={setView} />
       <p className={css.locationHint}>{t('scope.hint')}</p>
-      <section className={css.storage} aria-label={t('storage.title')}>
-        <div className={css.storageInfo}>
-          <span className={css.storageLabel}>{t('storage.title')} <span className={css.scopeLabel}>{t('storage.global')}</span></span>
-          <code className={css.storagePath}>{storage?.directory ?? t(loading ? 'loading' : 'storage.unavailable')}</code>
-          <span className={css.hint}>{t('storage.hint')}</span>
-        </div>
-        <Button variant="outline" size="sm" icon={<IconFolderOpenRegular />} disabled={pending || uncertain || storage === null}
-          onClick={() => { setDialog({ kind: 'storage', scope }) }}>{t('storage.change')}</Button>
-      </section>
       {view === 'workspace' && <section className={css.workspaceScope} aria-label={t('workspace.scope')}>
         <label className={css.workspaceSelect}>
           <span>{t('workspace.choose')}</span>
