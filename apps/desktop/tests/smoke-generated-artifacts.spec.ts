@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -27,7 +27,7 @@ async function fixture(roots: (directory: string) => string[]) {
     '- name: cordis:webserver',
     '  config: {host: "127.0.0.1", port: 0}',
     '- name: cordis:artifacts',
-    `  config: {roots: ${JSON.stringify(roots(directory))}}`,
+    `  config: {roots: ${JSON.stringify(roots(await realpath(directory)))}}`,
     '',
   ].join('\n'))
   context.baseUrl = pathToFileURL(directory).href + '/'
@@ -45,7 +45,7 @@ async function fixture(roots: (directory: string) => string[]) {
 
 const media = (directory: string) => [join(directory, 'plugin-data', 'credits', 'media')]
 
-it('finds and previews a saved image through real Loader artifact routes using the current platform paths', async () => {
+it('finds and previews a saved image when artifact routes return canonical platform paths', async () => {
   const { directory, request } = await fixture(media)
   await expect(smokeGeneratedArtifacts(directory, request)).resolves.toBeUndefined()
 })
