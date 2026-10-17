@@ -24,12 +24,11 @@ export function updateCopy(state: DesktopUpdatePresentation, t: SettingsTranslat
     available: t('desktop.update.available'),
     downloading: t('desktop.update.progress', { percent: state.percent ?? 0 }),
     verifying: t('desktop.update.verifying'),
-    installing: t(state.installationMode === 'manual' ? 'desktop.update.openingInstaller' : 'desktop.update.installing'),
-    ready: t(state.installationMode === 'manual' ? 'desktop.update.openInstaller' : 'desktop.update.ready'),
+    installing: t('desktop.update.installing'),
+    ready: t('desktop.update.ready'),
     error: t('desktop.update.retry'),
   }
   const label = labels[state.phase]
-  if (state.phase === 'ready' && state.installationMode === 'manual') return { label, detail: t('desktop.update.manualDetail') }
   if (state.phase === 'checking' || state.phase === 'verifying' || state.phase === 'installing') {
     return { label, detail: state.version ?? label }
   }

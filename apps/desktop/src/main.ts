@@ -35,6 +35,7 @@ import { desktopUpdateReadyConfirmation, formatDesktopMessage, resolveDesktopLoc
 import { claimDesktopSingleInstance } from './single-instance.ts'
 import { DesktopUpdateCoordinator } from './update-coordinator.ts'
 import { UnsignedMacUpdater, usesUnsignedMacUpdates } from './unsigned-mac-updater.ts'
+import { acknowledgeUnsignedMacInstall, type UnsignedMacInstallReceipt } from './unsigned-mac-install.ts'
 import { DesktopUpdateSourceError, resolveDesktopUpdateConfigOrigin, resolveDesktopUpdateSource } from './update-source.ts'
 import { DesktopCommandManager } from './command-management.ts'
 import { serveWebDocument, authenticateWebHost, forwardWebRequest } from './web-document.ts'
@@ -46,7 +47,7 @@ import { connectDesktopWelcome, type DesktopWelcomeBackend } from './welcome-bac
 import { DesktopUpdateJournal } from './update-journal.ts'
 import { DesktopUpdatePreparationError } from './update-error.ts'
 import { DesktopUpdateSchedule, resolveDesktopUpdateScheduleConfig } from './update-schedule.ts'
-import { presentDesktopUpdate } from './update-presentation.ts'
+import { desktopUnsignedInstallRecoveryOptions, presentDesktopUpdate } from './update-presentation.ts'
 import { desktopErrorState } from './startup-error.ts'
 import { readDesktopLoginShellEnvironment, resolveDesktopLoginShellConfig } from './login-shell-environment.ts'
 import { DesktopMandatoryUpdatePolicy, resolveDesktopPolicyConfig, type DesktopPolicyState } from './mandatory-update-policy.ts'
@@ -662,17 +663,7 @@ async function main(): Promise<void> {
       return resolveDesktopUpdateSource({ origin: resolveDesktopUpdateConfigOrigin(app.isPackaged, updateManifest, process.env),
         platform: process.platform, arch: process.arch, allowLoopbackHttp: !app.isPackaged })
     },
-    unsignedMacUpdater === undefined ? undefined : async (version) => {
-      const parent = currentDialogWindow()
-      if (parent === undefined) return false
-      const ready = desktopUpdateReadyConfirmation(locale.messages, version, process.platform, 'manual')
-      const result = await updateDialog.show(parent, { type: 'info', title: locale.messages.updateTitle,
-        message: ready.message, detail: ready.detail,
-        buttons: [locale.messages.updateOpenInstaller, locale.messages.updateLater], defaultId: 0, cancelId: 1 })
-      if (result.response !== 0 || quitting) return false
-      await unsignedMacUpdater.openDownloadedInstaller(version)
-      return true
-    },
+    unsignedMacUpdater === undefined ? undefined : version => unsignedMacUpdater.installPreparedUpdate(version),
   )
 
   const updateSchedule = new DesktopUpdateSchedule(updates, resolveDesktopUpdateScheduleConfig(process.env))
@@ -858,7 +849,8 @@ async function main(): Promise<void> {
       let progress: Promise<unknown> | undefined
       try {
         let state = updates.state
-        if (manual || state.phase === 'idle' || (state.phase === 'error' && state.failedOperation === 'check')) {
+        if (manual || state.phase === 'idle' || (state.phase === 'error' && (state.failedOperation === 'check'
+          || (state.failedOperation === 'install' && !updates.hasPreparedUpdate)))) {
           controller = new AbortController()
           ordinaryDialogs.add(controller)
           const parent = currentDialogWindow()
@@ -888,15 +880,14 @@ async function main(): Promise<void> {
         if (manual) {
           const result = await ordinaryMessageBox({ title: locale.messages.updateCheckTitle,
             message: formatDesktopMessage(locale.messages.updateAvailable, { version: state.version ?? '' }),
-            detail: unsignedMacUpdater === undefined ? locale.messages.updateDetail : locale.messages.updateDetailManual,
+            detail: locale.messages.updateDetail,
             buttons: [locale.messages.updateDownload], cancelId: 1 })
           if (result.response !== 0) return
         }
         if (!isMandatory() && state.version !== undefined) {
           controller?.abort()
           failedOperation = 'download'
-          showDownloadProgress({ phase: 'downloading', version: state.version, percent: 0,
-            ...(unsignedMacUpdater === undefined ? {} : { installationMode: 'manual' }) })
+          showDownloadProgress({ phase: 'downloading', version: state.version, percent: 0 })
           await showUpdateFailure(await downloadUpdate(state.version))
         }
       } finally {
@@ -1304,6 +1295,7 @@ async function main(): Promise<void> {
     updateDialog.dispose()
     mandatoryUI?.dispose()
     void Promise.all([Promise.resolve(mandatoryPolicy?.dispose()).then(() => policyAuth?.dispose()), backend.close(),
+      unsignedMacUpdater?.disposePreparedUpdate(),
       // A Platform cleanup failure is logged without cutting the remaining Host shutdown short.
       platformView.dispose().catch((error: unknown) => { console.error(error) })])
       .catch((error: unknown) => { console.error(error) }).finally(() => { app.quit() })
@@ -1376,6 +1368,24 @@ async function main(): Promise<void> {
   }
   automaticCheck()
   await reconcileBackend().catch(() => undefined)
+  if (unsignedMacUpdater !== undefined && backend.state.phase === 'ready' && !recovery.active && !isQuitting()) {
+    let receipt: UnsignedMacInstallReceipt | undefined
+    let unreadable = false
+    try {
+      receipt = await acknowledgeUnsignedMacInstall({ stateDirectory: join(app.getPath('userData'), 'unsigned-mac-updates'),
+        executablePath: process.execPath, version: app.getVersion() })
+    } catch (error) {
+      console.error('desktop update: installer receipt unavailable', error)
+      unreadable = true
+    }
+    const warning = unreadable ? desktopUnsignedInstallRecoveryOptions('unreadable', locale.messages)
+      : receipt === undefined ? undefined : desktopUnsignedInstallRecoveryOptions(receipt.status, locale.messages)
+    if (warning !== undefined && !isQuitting()) {
+      console.warn('desktop update: retained installer outcome', receipt?.status ?? 'unreadable', receipt?.logPath)
+      const result = await ordinaryMessageBox(warning).catch((error: unknown) => { console.error(error); return undefined })
+      if (result?.response === 1 && receipt !== undefined) shell.showItemInFolder(receipt.logPath)
+    }
+  }
   // Window lifecycle callbacks run while backend startup is pending.
   if (isQuitting()) return
   const window = currentMainWindow()

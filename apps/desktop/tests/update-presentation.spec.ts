@@ -9,11 +9,12 @@ it('keeps the Electron preload assignable to the product consumer', () => {
   expect(assign).toBeTypeOf('function')
 })
 
-it('records unsigned Mac installer guidance without promising automatic replacement or restart', async () => {
-  const presentation = presentDesktopUpdate({ phase: 'ready', version: '1.1.0', installationMode: 'manual' })
-  const locales = [en, zh].map(messages => ({ ...desktopUpdateReadyConfirmation(messages, '1.1.0', 'darwin', 'manual'),
-    action: messages.updateOpenInstaller, progress: messages.updateDownloadingDetailManual }))
-  await expect(JSON.stringify({ presentation, locales }, null, 2) + '\n').toMatchFileSnapshot('./expected/unsigned-mac-update.json')
+it('records version-bound automatic installation guidance for Mac and Windows in both locales', async () => {
+  const presentation = presentDesktopUpdate({ phase: 'ready', version: '1.1.0' })
+  const locales = [en, zh].map(messages => ({ action: messages.installAndRestart,
+    mac: desktopUpdateReadyConfirmation(messages, '1.1.0', 'darwin'),
+    windows: desktopUpdateReadyConfirmation(messages, '1.1.0', 'win32'), progress: messages.updateDownloadingDetail }))
+  await expect(JSON.stringify({ presentation, locales }, null, 2) + '\n').toMatchFileSnapshot('./expected/automatic-update-confirmation.json')
 })
 
 it('records visible ordinary-update states without authorizing downloads or installation', async () => {

@@ -44,8 +44,7 @@ export function desktopUpdateProgressOptions(state: DesktopUpdateState, locale: 
   const percent = state.percent === undefined ? undefined : Math.floor(Math.min(100, Math.max(0, state.percent)))
   return { title: locale.messages.updateTitle,
     message: state.phase === 'verifying' ? locale.messages.updateVerifying : locale.messages.updateDownloadTitle,
-    detail: state.phase === 'verifying' ? locale.messages.updateVerifyingDetail
-      : state.installationMode === 'manual' ? locale.messages.updateDownloadingDetailManual : locale.messages.updateDownloadingDetail,
+    detail: state.phase === 'verifying' ? locale.messages.updateVerifyingDetail : locale.messages.updateDownloadingDetail,
     buttons: [locale.messages.updateBackground], cancelId: 0,
     progress: { phase: state.phase, ...(percent === undefined ? {} : { percent }),
       ...(state.version === undefined ? {} : { version: state.version }) },

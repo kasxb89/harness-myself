@@ -115,6 +115,15 @@ export const en = {
   updateCheckNetworkFailed: 'Could not check for updates. Check your connection and try again.',
   updateDownloadNetworkFailed: 'Could not download the update. Check your connection and try again.',
   updateInstallNetworkFailed: 'Could not install the update. Check your connection and try again.',
+  updateRollbackTitle: 'Previous version restored',
+  updateRollbackDetail: 'The automatic update failed and the previous version has been restored. You can keep using this version. Review the update details, then choose Check for Updates when you are ready to try again. The app will not retry installation automatically.',
+  updateUnconfirmedTitle: 'Update startup not confirmed',
+  updateUnconfirmedDetail: 'The new version’s startup has not been confirmed. The previous app is retained in its backup directory. Keep this app running and inspect the update details before retrying. The app will not retry installation automatically.',
+  updateReceiptReadFailedTitle: 'Could not read the update result',
+  updateReceiptReadFailedDetail: 'The local update record could not be read, so the app cannot confirm that the update completed. You can continue using the app. Inspect the update details before trying another update.',
+  updateIncompleteTitle: 'Automatic update not completed',
+  updateIncompleteDetail: 'The automatic update did not complete. You can continue using the current app. Review the local update log before retrying. The app will not retry installation automatically.',
+  updateShowRecoveryFiles: 'Show update records',
   unknownError: 'Unknown error',
   updateCheckTitle: 'Check for Updates',
   updateCurrentDetail: 'Current version: {version}',
@@ -123,17 +132,12 @@ export const en = {
   updateDownload: 'Download update',
   updateDownloadTitle: 'Downloading the new version',
   updateDownloadingDetail: 'You can keep working while the download continues. We’ll ask before restarting.',
-  updateDownloadingDetailManual: 'You can keep working while the installer downloads. We’ll ask before opening it.',
   updateVerifyingDetail: 'Checking the downloaded files before installation. Please keep the app open.',
   updateBackground: 'Download in background',
   updateRetryDownload: 'Retry download',
   updateDownloadedTitle: 'Version {version} is ready to install',
   updateDownloadedDetail: 'The app will close during the update and reopen automatically when it is complete.',
   updateDownloadedDetailWindows: 'The app will close temporarily during the update and reopen automatically when it is complete.\n\nThe update may take some time. Please wait and do not launch the app again during installation.',
-  updateDownloadedDetailManual: 'Open the downloaded disk image, finish your tasks and quit Yunshu, then drag the new Yunshu app into Applications to replace the existing app. Launch it again after replacement. Opening the installer does not stop your tasks or close the app.',
-  updateOpenInstaller: 'Open installer',
-  updateOpeningInstaller: 'Opening installer…',
-  updateDetailManual: 'Download and verify the installer, then open it to replace the app manually.',
   updateClose: 'Close',
   updateAcknowledge: 'OK',
   updateLater: 'Update later',
@@ -304,6 +308,15 @@ export const zh = {
   updateCheckNetworkFailed: '检查更新失败，请检查网络连接后重试。',
   updateDownloadNetworkFailed: '下载更新失败，请检查网络连接后重试。',
   updateInstallNetworkFailed: '安装更新失败，请检查网络连接后重试。',
+  updateRollbackTitle: '已恢复原版本',
+  updateRollbackDetail: '自动更新失败，已恢复原版本，你可以继续使用。请先查看更新详情，准备好后点击「检查更新」重试，应用不会自动重试安装。',
+  updateUnconfirmedTitle: '尚未确认新版启动',
+  updateUnconfirmedDetail: '尚未确认新版是否成功启动，原应用仍保留在备份目录中。请保持当前应用运行，查看更新详情后再决定是否重试，应用不会自动重试安装。',
+  updateReceiptReadFailedTitle: '无法读取更新结果',
+  updateReceiptReadFailedDetail: '无法读取本地更新记录，因此不能确认更新是否完成。你可以继续使用应用，请先查看更新详情，再决定是否再次更新。',
+  updateIncompleteTitle: '自动更新未完成',
+  updateIncompleteDetail: '自动更新未完成，你可以继续使用当前应用。请先查看本地更新日志，再决定是否重试，应用不会自动重试安装。',
+  updateShowRecoveryFiles: '查看更新记录',
   unknownError: '未知错误',
   updateCheckTitle: '检查更新',
   updateCurrentDetail: '当前版本：{version}',
@@ -312,17 +325,12 @@ export const zh = {
   updateDownload: '下载更新',
   updateDownloadTitle: '正在下载新版本',
   updateDownloadingDetail: '下载期间可继续使用，安装前会再次请你确认重启',
-  updateDownloadingDetailManual: '下载安装包期间可继续使用，打开安装包前会再次请你确认',
   updateVerifyingDetail: '正在检查下载文件的完整性与安全性，请保持应用开启',
   updateBackground: '后台下载',
   updateRetryDownload: '重试下载',
   updateDownloadedTitle: '新版本 {version} 已准备就绪',
   updateDownloadedDetail: '更新期间应用将暂时关闭，完成后会自动打开。',
   updateDownloadedDetailWindows: '更新期间应用将暂时关闭，完成后会自动打开。\n\n更新可能需要一些时间，请耐心等待，期间请勿重复启动应用。',
-  updateDownloadedDetailManual: '打开下载的磁盘映像后，请先完成任务并退出云枢，再把新版云枢拖入「应用程序」替换原应用，替换完成后重新打开。打开安装包不会停止任务或关闭当前应用。',
-  updateOpenInstaller: '打开安装包',
-  updateOpeningInstaller: '正在打开安装包…',
-  updateDetailManual: '下载安装包并校验后，打开安装包手动替换应用。',
   updateClose: '关闭',
   updateAcknowledge: '确定',
   updateLater: '稍后更新',
@@ -417,18 +425,15 @@ export function formatDesktopMessage(
  * @param messages - Selected Desktop dictionary.
  * @param version - Prepared update version, including any prerelease suffix.
  * @param platform - Operating system presenting the confirmation.
- * @param installationMode - Unsigned Mac builds hand off an installer for manual replacement.
  * @returns The versioned title and installation guidance.
  */
 export function desktopUpdateReadyConfirmation(
   messages: DesktopMessages,
   version: string,
   platform: string,
-  installationMode?: 'manual',
 ): { message: string; detail: string } {
   return {
     message: formatDesktopMessage(messages.updateDownloadedTitle, { version }),
-    detail: installationMode === 'manual' ? messages.updateDownloadedDetailManual
-      : platform === 'win32' ? messages.updateDownloadedDetailWindows : messages.updateDownloadedDetail,
+    detail: platform === 'win32' ? messages.updateDownloadedDetailWindows : messages.updateDownloadedDetail,
   }
 }

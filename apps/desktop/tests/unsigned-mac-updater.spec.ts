@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { createServer, request, type RequestOptions } from 'node:http'
-import { mkdtemp, mkdir, readFile, rm, symlink, unlink, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -8,6 +8,7 @@ import type { AppAdapter } from 'electron-updater/out/AppAdapter.js'
 import { UnsignedMacUpdater, usesUnsignedMacUpdates } from '../src/unsigned-mac-updater.ts'
 import { DesktopUpdateHttpExecutor } from '../src/update-http-executor.ts'
 import { DesktopUpdateCoordinator } from '../src/update-coordinator.ts'
+import type { prepareUnsignedMacInstall, UnsignedMacInstallRequest } from '../src/unsigned-mac-install.ts'
 
 /** Only Electron networking is replaced: actual updater provider, metadata, cache, digest and events run. */
 class NodeQualificationExecutor extends DesktopUpdateHttpExecutor {
@@ -24,7 +25,9 @@ class NodeQualificationExecutor extends DesktopUpdateHttpExecutor {
 const cleanups: Array<() => Promise<void>> = []
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup() })
 
-async function fixture(options: { corruptDownload?: boolean; missingDmg?: boolean; duplicateDmg?: boolean; missingDigest?: boolean } = {}) {
+async function fixture(options: { corruptDownload?: boolean; missingDmg?: boolean; duplicateDmg?: boolean; missingDigest?: boolean } = {},
+  createUpdater: (adapter: AppAdapter, prepare: typeof prepareUnsignedMacInstall) => UnsignedMacUpdater =
+    (adapter, prepare) => new UnsignedMacUpdater(adapter, prepare)) {
   const root = await mkdtemp(join(tmpdir(), 'yunshu-unsigned-update-'))
   cleanups.push(() => rm(root, { recursive: true, force: true }))
   const bytes = Buffer.from('unsigned macOS DMG qualification fixture')
@@ -57,8 +60,10 @@ async function fixture(options: { corruptDownload?: boolean; missingDmg?: boolea
   const adapter: AppAdapter = { version: '1.0.0', name: 'Yunshu', isPackaged: false,
     appUpdateConfigPath: configPath, userDataPath: join(root, 'user-data'), baseCachePath: root,
     whenReady: async () => {}, relaunch: vi.fn(), quit, onQuit: vi.fn() }
-  const openInstaller = vi.fn(async (_path: string) => '')
-  const updater = new UnsignedMacUpdater(adapter, openInstaller)
+  const launch = vi.fn(async () => {})
+  const dispose = vi.fn(async () => {})
+  const prepareInstaller = vi.fn(async (_request: UnsignedMacInstallRequest) => ({ launch, dispose }))
+  const updater = createUpdater(adapter, prepareInstaller)
   updater.logger = null
   updater.forceDevUpdateConfig = true
   updater.updateConfigPath = configPath
@@ -67,15 +72,15 @@ async function fixture(options: { corruptDownload?: boolean; missingDmg?: boolea
   updater.allowDowngrade = false
   updater.setFeedURL({ provider: 'generic', url })
   const beforeRestart = vi.fn(async () => true)
-  const manualInstaller = vi.fn(async (version: string) => { await updater.openDownloadedInstaller(version); return true })
+  const installUpdate = vi.fn(async (version: string) => { await updater.installPreparedUpdate(version) })
   const coordinator = new DesktopUpdateCoordinator(state => state, beforeRestart, updater, () => true, () => adapter.version,
-    undefined, async () => ({ url, channel: 'nightly' }), manualInstaller)
-  cleanups.push(async () => { coordinator.dispose() })
-  return { updater, coordinator, quit, adapter, bytes, beforeRestart, manualInstaller, openInstaller,
+    undefined, async () => ({ url, channel: 'nightly' }), installUpdate)
+  cleanups.push(async () => { coordinator.dispose(); await updater.disposePreparedUpdate() })
+  return { updater, coordinator, quit, adapter, bytes, beforeRestart, installUpdate, prepareInstaller, launch, dispose,
     installerRequests: () => installerRequests }
 }
 
-it('selects manual Mac updates only for an explicit installed unsigned manifest', () => {
+it('selects automatic Mac updates only for an explicit installed unsigned manifest', () => {
   expect(usesUnsignedMacUpdates({ dshDesktopUnsigned: true }, true, 'darwin')).toBe(true)
   for (const manifest of [{}, null, { dshDesktopUnsigned: false }, { dshDesktopUnsigned: 'true' }]) {
     expect(usesUnsignedMacUpdates(manifest, true, 'darwin')).toBe(false)
@@ -84,28 +89,30 @@ it('selects manual Mac updates only for an explicit installed unsigned manifest'
   expect(usesUnsignedMacUpdates({ dshDesktopUnsigned: true }, true, 'win32')).toBe(false)
 })
 
-it('checks a real generic feed, verifies and opens the downloaded DMG without stopping or quitting the app', async () => {
+it('stages the real generic download before readiness and launches only after authorized task shutdown', async () => {
   const f = await fixture()
-  expect(await f.coordinator.check()).toEqual({ phase: 'available', version: '1.1.0-rc.2', installationMode: 'manual' })
-  expect(f.openInstaller).not.toHaveBeenCalled()
-  expect(await f.coordinator.download('1.1.0-rc.2')).toEqual({ phase: 'ready', version: '1.1.0-rc.2', installationMode: 'manual' })
-  expect(f.openInstaller).not.toHaveBeenCalled()
-  expect(await f.coordinator.install('1.1.0-rc.2')).toEqual({ phase: 'ready', version: '1.1.0-rc.2', installationMode: 'manual' })
-  const path = f.openInstaller.mock.calls[0]![0]
-  expect(path.endsWith('.dmg')).toBe(true)
-  expect(await readFile(path)).toEqual(f.bytes)
+  expect(await f.coordinator.check()).toEqual({ phase: 'available', version: '1.1.0-rc.2' })
+  expect(f.prepareInstaller).not.toHaveBeenCalled()
+  expect(await f.coordinator.download('1.1.0-rc.2')).toEqual({ phase: 'ready', version: '1.1.0-rc.2' })
+  const request = f.prepareInstaller.mock.calls[0]![0]
+  expect(await readFile(request.dmgPath)).toEqual(f.bytes)
+  expect(request.version).toBe('1.1.0-rc.2')
+  expect(request.currentVersion).toBe('1.0.0')
+  expect(f.launch).not.toHaveBeenCalled()
   expect(f.beforeRestart).not.toHaveBeenCalled()
-  expect(f.quit).not.toHaveBeenCalled()
-  await f.coordinator.install('1.1.0-rc.2')
-  expect(f.openInstaller).toHaveBeenCalledTimes(2)
-  expect(() => { f.updater.quitAndInstall() }).toThrow('require opening the installer')
+  expect(await f.coordinator.install('1.1.0-rc.2')).toEqual({ phase: 'installing', version: '1.1.0-rc.2' })
+  expect(f.launch).toHaveBeenCalledOnce()
+  expect(f.quit).toHaveBeenCalledOnce()
+  expect(f.beforeRestart.mock.invocationCallOrder[0]).toBeLessThan(f.launch.mock.invocationCallOrder[0]!)
+  expect(f.launch.mock.invocationCallOrder[0]).toBeLessThan(f.quit.mock.invocationCallOrder[0]!)
+  expect(() => { f.updater.quitAndInstall() }).toThrow('controlled restart handoff')
 })
 
 it('rejects download corruption through the pinned electron-updater SHA512 verifier', async () => {
   const f = await fixture({ corruptDownload: true })
   await f.coordinator.check()
   expect(await f.coordinator.download('1.1.0-rc.2')).toMatchObject({ phase: 'error', failedOperation: 'download' })
-  expect(f.openInstaller).not.toHaveBeenCalled()
+  expect(f.prepareInstaller).not.toHaveBeenCalled()
   expect(f.beforeRestart).not.toHaveBeenCalled()
 })
 
@@ -115,15 +122,15 @@ it('rejects an HTTP installer URL in an installed build before requesting its by
   Object.assign(f.adapter, { isPackaged: true })
   expect(await f.coordinator.download('1.1.0-rc.2')).toMatchObject({ phase: 'error', failedOperation: 'download' })
   expect(f.installerRequests()).toBe(0)
-  expect(f.openInstaller).not.toHaveBeenCalled()
+  expect(f.prepareInstaller).not.toHaveBeenCalled()
 })
 
-it('reuses the verified download cache across updater instances without downloading bytes twice', async () => {
+it('reuses verified download bytes while preparing each independent updater instance', async () => {
   const f = await fixture()
   await f.coordinator.check()
   await f.coordinator.download('1.1.0-rc.2')
-  expect(f.installerRequests()).toBe(1)
-  const next = new UnsignedMacUpdater(f.adapter, f.openInstaller)
+  const next = new UnsignedMacUpdater(f.adapter, f.prepareInstaller)
+  cleanups.push(() => next.disposePreparedUpdate())
   next.logger = null
   next.forceDevUpdateConfig = true
   next.updateConfigPath = f.adapter.appUpdateConfigPath
@@ -132,55 +139,87 @@ it('reuses the verified download cache across updater instances without download
   next.setFeedURL({ provider: 'generic', url: configuration.url })
   await next.checkForUpdates()
   await next.downloadUpdate()
-  await next.openDownloadedInstaller('1.1.0-rc.2')
   expect(f.installerRequests()).toBe(1)
-  expect(f.openInstaller).toHaveBeenCalledOnce()
+  expect(f.prepareInstaller).toHaveBeenCalledTimes(2)
+  expect(f.launch).not.toHaveBeenCalled()
 })
 
 it.each([{ missingDmg: true }, { duplicateDmg: true }, { missingDigest: true }])('rejects an incomplete or ambiguous DMG feed: %j', async (options) => {
   const f = await fixture(options)
   await f.coordinator.check()
   expect(await f.coordinator.download('1.1.0-rc.2')).toMatchObject({ phase: 'error', failedOperation: 'download' })
-  expect(f.openInstaller).not.toHaveBeenCalled()
+  expect(f.prepareInstaller).not.toHaveBeenCalled()
 })
 
-it('rechecks retained bytes before opening and allows an explicit safe re-download after tampering', async () => {
+it('refuses a wrong version before any helper handoff', async () => {
   const f = await fixture()
   await f.coordinator.check()
   await f.coordinator.download('1.1.0-rc.2')
-  await f.coordinator.install('1.1.0-rc.2')
-  const path = f.openInstaller.mock.calls[0]![0]
-  f.openInstaller.mockClear()
-  await writeFile(path, 'tampered installer')
-  expect(await f.coordinator.install('1.1.0-rc.2')).toMatchObject({ phase: 'error', failedOperation: 'download' })
-  expect(f.openInstaller).not.toHaveBeenCalled()
-  expect(await f.coordinator.download('1.1.0-rc.2')).toMatchObject({ phase: 'ready' })
-  await f.coordinator.install('1.1.0-rc.2')
-  expect(await readFile(path)).toEqual(f.bytes)
-  expect(f.openInstaller).toHaveBeenCalledOnce()
-  expect(f.beforeRestart).not.toHaveBeenCalled()
+  await expect(f.updater.installPreparedUpdate('9.9.9')).rejects.toThrow('not ready')
+  expect(f.launch).not.toHaveBeenCalled()
+  expect(f.quit).not.toHaveBeenCalled()
 })
 
-it('rejects replaced symlinks and a different confirmed version before any native handoff', async () => {
-  const f = await fixture()
-  await f.coordinator.check()
-  const files = await f.updater.downloadUpdate()
-  await expect(f.updater.openDownloadedInstaller('9.9.9')).rejects.toThrow('not ready')
-  const path = files[0]!
-  await writeFile(`${path}.real`, f.bytes)
-  await unlink(path)
-  await symlink(`${path}.real`, path)
-  await expect(f.updater.openDownloadedInstaller('1.1.0-rc.2')).rejects.toThrow('verification failed')
-  expect(f.openInstaller).not.toHaveBeenCalled()
-})
-
-it('keeps a failed native opener retryable without stopping the Host', async () => {
+it('keeps the current app alive when helper launch fails after the restart guard', async () => {
   const f = await fixture()
   await f.coordinator.check()
   await f.coordinator.download('1.1.0-rc.2')
-  f.openInstaller.mockResolvedValueOnce('Could not open disk image')
+  f.launch.mockRejectedValueOnce(new Error('helper could not start'))
   expect(await f.coordinator.install('1.1.0-rc.2')).toMatchObject({ phase: 'error', failedOperation: 'install' })
-  expect(await f.coordinator.install('1.1.0-rc.2')).toMatchObject({ phase: 'ready' })
-  expect(f.beforeRestart).not.toHaveBeenCalled()
+  expect(f.beforeRestart).toHaveBeenCalledOnce()
+  expect(f.coordinator.hasPreparedUpdate).toBe(false)
+  expect(f.dispose).toHaveBeenCalledOnce()
+  expect(f.quit).not.toHaveBeenCalled()
+})
+
+it('joins verification on quit and never starts staging after that quit', async () => {
+  const entered = Promise.withResolvers<undefined>()
+  const release = Promise.withResolvers<undefined>()
+  class VerificationGateUpdater extends UnsignedMacUpdater {
+    protected override async verifyDownloadedInstaller(version: string): Promise<void> {
+      entered.resolve(undefined)
+      await release.promise
+      await super.verifyDownloadedInstaller(version)
+    }
+  }
+  const f = await fixture({}, (adapter, prepare) => new VerificationGateUpdater(adapter, prepare))
+  await f.coordinator.check()
+  const downloading = f.coordinator.download('1.1.0-rc.2')
+  await entered.promise
+  let stopped = false
+  const disposing = f.updater.disposePreparedUpdate().then(() => { stopped = true })
+  try {
+    await Promise.resolve()
+    expect(stopped).toBe(false)
+  } finally { release.resolve(undefined) }
+  expect(await downloading).toMatchObject({ phase: 'error', failedOperation: 'download' })
+  await disposing
+  expect(f.prepareInstaller).not.toHaveBeenCalled()
+  expect(f.launch).not.toHaveBeenCalled()
+})
+
+it('joins and disposes in-flight staging before ordinary quit completes', async () => {
+  const f = await fixture()
+  const entered = Promise.withResolvers<undefined>()
+  const release = Promise.withResolvers<undefined>()
+  f.prepareInstaller.mockImplementationOnce(async () => {
+    entered.resolve(undefined)
+    await release.promise
+    return { launch: f.launch, dispose: f.dispose }
+  })
+  await f.coordinator.check()
+  const downloading = f.coordinator.download('1.1.0-rc.2')
+  await entered.promise
+  let stopped = false
+  const disposing = f.updater.disposePreparedUpdate().then(() => { stopped = true })
+  try {
+    await Promise.resolve()
+    expect(stopped).toBe(false)
+    expect(f.prepareInstaller.mock.calls[0]?.[0].signal?.aborted).toBe(true)
+  } finally { release.resolve(undefined) }
+  expect(await downloading).toMatchObject({ phase: 'error', failedOperation: 'download' })
+  await disposing
+  expect(f.dispose).toHaveBeenCalled()
+  expect(f.launch).not.toHaveBeenCalled()
   expect(f.quit).not.toHaveBeenCalled()
 })

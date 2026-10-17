@@ -258,7 +258,7 @@ pnpm run package:desktop:mac:x64:unsigned
 
 添加 `--check` 仅验证本地配置和工具而不构建，或添加 `--dir` 只生成解包应用。DMG 路径为 `apps/desktop/.desktop-build/targets/<target>/unsigned-artifacts/yunshu-<version>-mac-<arch>-unsigned.dmg`。所有检查通过后，命令打印 `DMG:` 及其绝对路径。打开后将应用复制到本地测试目录。
 
-这些命令只从可选的 `.env.macos` 读取 `DSH_DESKTOP_APP_ID` 和 `DSH_DESKTOP_UPDATE_CONFIG_ORIGIN`，默认分别为 `com.deepseek.harness` 和 `https://8.133.202.230/harness`。它们忽略继承的发布设置，并省略强制更新策略。构建工具、标准网络代理与 `DSH_DESKTOP_NPM_REGISTRY` 仍可从 shell 提供。它们跳过 Developer ID 签名、Apple 公证、临时签名钥匙串和公证代理修改。Electron 使用无需证书的本地 ad-hoc 签名，以便修改后的可执行文件能够运行；DMG 不签名。运行时完整性与冒烟检查仍会执行。安装包构建完成后，会在 `unsigned-artifacts/` 的 DMG 旁写入 `nightly-mac.yml` 和 `<target>-release.json`；目录构建不写完成记录。不生成 ZIP。[显式未签名上传](#upload-updates)发布已检查的 DMG，用户通过[更新](#updates)一节说明的手动流程安装。macOS 可能要求在“系统设置 → 隐私与安全性”中批准打开未经公证的应用。
+这些命令只从可选的 `.env.macos` 读取 `DSH_DESKTOP_APP_ID` 和 `DSH_DESKTOP_UPDATE_CONFIG_ORIGIN`，默认分别为 `com.deepseek.harness` 和 `https://8.133.202.230/harness`。它们忽略继承的发布设置，并省略强制更新策略。构建工具、标准网络代理与 `DSH_DESKTOP_NPM_REGISTRY` 仍可从 shell 提供。它们跳过 Developer ID 签名、Apple 公证、临时签名钥匙串和公证代理修改。未签名 macOS 的 `afterPack` 编译捆绑的[原生交换辅助程序](resources/unsigned-mac-swap.c)，并为它添加 ad-hoc 签名；构建机器需要 Xcode Command Line Tools（`xcrun clang`），最终用户无需编译器。Electron 使用无需证书的本地 ad-hoc 签名，以便修改后的可执行文件能够运行；DMG 不签名。运行时完整性与冒烟检查仍会执行。安装包构建完成后，会在 `unsigned-artifacts/` 的 DMG 旁写入 `nightly-mac.yml` 和 `<target>-release.json`；目录构建不写完成记录。不生成 ZIP。[显式未签名上传](#upload-updates)发布已检查的 DMG，供[更新](#updates)一节说明的自动安装流程使用。macOS 可能要求在“系统设置 → 隐私与安全性”中批准打开未经公证的应用。
 
 ### 用回环 registry 安装本地 Official 包
 
@@ -330,7 +330,7 @@ pnpm --dir apps/desktop run package:win:x64 --build-version 0.2.1-alpha.2.202610
 pnpm run upload:win:x64
 ```
 
-未签名安装包同样支持从后台发现更新。完成记录是 `unsigned-artifacts/` 中的 `<target>-release.json`，记录 `unsigned: true` 和内嵌的 `updateConfigOrigin`，不指定上传部署或公网 URL。使用 `pnpm --dir apps/desktop run upload:mac:arm64 --unsigned`、`upload:mac:x64 --unsigned` 或 `upload:win:x64 --unsigned` 显式选择对应的产物目录；目标 dotenv 提供 OSS 或 COS 目的地。上传在发布前检查完成记录、目标、版本、文件名、大小、完整 SHA-512 和内嵌来源，并沿用所选上传方的审计与公网回读规则。未签名上传从不创建发布 tag，并拒绝 `--latest`。验证公网安装包和 `nightly.yml` 或 `nightly-mac.yml` 后，再在 harnes-api 开启 `desktop_update`。后续版本沿用相同更新目录，版本号必须严格递增。Windows 经确认后通过 NSIS 安装；未签名 macOS 打开已校验的 DMG，由用户自行替换应用。
+未签名安装包同样支持从后台发现更新。完成记录是 `unsigned-artifacts/` 中的 `<target>-release.json`，记录 `unsigned: true` 和内嵌的 `updateConfigOrigin`，不指定上传部署或公网 URL。使用 `pnpm --dir apps/desktop run upload:mac:arm64 --unsigned`、`upload:mac:x64 --unsigned` 或 `upload:win:x64 --unsigned` 显式选择对应的产物目录；目标 dotenv 提供 OSS 或 COS 目的地。上传在发布前检查完成记录、目标、版本、文件名、大小、完整 SHA-512 和内嵌来源，并沿用所选上传方的审计与公网回读规则。未签名上传从不创建发布 tag，并拒绝 `--latest`。验证公网安装包和 `nightly.yml` 或 `nightly-mac.yml` 后，再在 harnes-api 开启 `desktop_update`。后续版本沿用相同更新目录，版本号必须严格递增。Windows 经确认后通过 NSIS 安装；未签名 macOS 使用已校验的 DMG 自动替换并重启，详见[更新](#updates)。
 
 COS 固定安装包下载在仓库根目录使用 `pnpm run upload:latest:mac:arm64`、`pnpm run upload:latest:mac:x64` 或 `pnpm run upload:latest:win:x64`。它们把已完成目标的 DMG 或 EXE 上传到 `desktop/dsh-latest-macos-arm64.dmg`、`desktop/dsh-latest-macos-x64.dmg` 或 `desktop/dsh-latest-windows-x64.exe`。生产 URL 以 `https://download.deepseek.com/` 开头；测试 URL 使用 `DOWNLOAD_TEST_ORIGIN`。两个部署环境均复用目标 dotenv 中的部署、bucket 和凭据、全部常规发布校验以及下述上传审计。每个命令覆盖一个固定对象，不发布更新清单、blockmap 或发布标签。测试固定下载在测试 bucket 中跨发布 ID 共享；包内更新 URL 仍要求原有发布 ID。发布由操作人员显式执行，也允许预发布版本。部署基础设施必须配置重新验证，或在覆盖后清除固定下载的缓存。本地回环测试覆盖上传行为；真实 COS 和 CDN 验收由发布操作人员负责。
 
@@ -495,7 +495,9 @@ macOS 签名打包在组装 App 时、代码签名前写入 `Contents/Resources/
 
 Windows 下载完成后的更新确认说明应用会在安装期间关闭、完成后自动打开，并提示期间不要重复启动。安装器携带 `--updated` 重启应用并直接打开工作区时，壳会将主窗口前置并聚焦一次，不启用永久置顶。启动进入欢迎页时会清除此请求，使后续登录保留正常的激活行为。普通启动和其他平台不执行此前置步骤。
 
-未签名 macOS 更新使用独立安装流程，不经过 Squirrel.Mac：“检查更新”读取 `nightly-mac.yml`，下载按 SHA-512 校验 DMG，确认弹窗提供 **打开安装包**。打开已校验的 DMG，完全退出云枢，再拖动其中的应用覆盖已有副本并重新打开。打开安装包不会替换正在运行的应用，也不会宣称自动重启。macOS 仍可能要求安全性批准。签名 macOS 更新继续使用 ZIP 和原生签名更新器。
+未签名 macOS 更新使用 DMG 和独立安装辅助进程，不经过 Squirrel.Mac。**检查更新**读取 `nightly-mac.yml`；下载器在准备替换前校验 SHA-512。安装器以只读方式挂载 DMG，核对应用名称、bundle ID、可执行文件、更高的版本号、架构和完整的 ad-hoc 签名，再把应用暂存到已安装应用所在的卷。已安装应用及其父目录都必须可写。准备失败时，已安装应用和 Host 保持运行。签名 macOS 更新继续使用 ZIP 和原生签名更新器。
+
+**安装并重启**沿用共享的任务中断确认和 Host 正常关闭流程。辅助进程等待本次应用进程退出，通过 `renameatx_np(RENAME_SWAP)` 原子交换已安装应用与同卷暂存应用的目录，再启动新版。即使辅助进程中断，安装路径也始终包含原版或新版应用；原应用保留为备份。替换或即时启动失败时尝试恢复原应用；启动后未收到启动确认时保留备份，并报告结果尚未确认。启动时读取本地安装记录，按实际状态提示已恢复原版本、尚未确认新版启动或记录不可读，不会自动重试安装。备份与安装日志保留以供恢复。安装器不会提升权限或关闭 macOS 安全检查；未经公证的应用仍可能需要系统安全性批准。真实用户已安装应用的升级仍由发布操作人员验收。
 
 原生更新浮层在文档就绪且父窗口可见时显示，并在父窗口再次显示时恢复。关闭浮层会释放输入拦截和父窗口监听。[本地窗口验证](tests/README.zh.md#verification-overlay)无需启动工作区即可检查这些切换。
 
@@ -507,7 +509,7 @@ Desktop 每次检查版本清单前都从 harnes-api 后台发现固定 Nightly 
 
 `DSH_DESKTOP_UPDATE_CHECK_INTERVAL_MS` 配置常规基础间隔，`DSH_DESKTOP_UPDATE_CHECK_MAX_BACKOFF_MS` 配置上限；两者均接受 1000 至 2147483647 的整数毫秒数，且上限不能小于间隔。省略上限时取一小时与间隔中的较大值。`DSH_DESKTOP_UPDATE_CHECK_JITTER` 配置 0 至 1 的抖动比例，默认 `0.2`；最终延迟至少一秒，且不超过上限。这些配置不改变强更策略轮询，也不授权下载重试。
 
-左下角账户行显示本地化的更新可用状态、加载图标与下载百分比、验证、就绪状态，或带可访问提示的持久红色重试操作。嵌入 Web 界面的文案跟随应用内当前语言；原生弹窗使用 Desktop 壳语言。侧栏收起时，顶部展开按钮显示圆点。连接状态优先展示。选择可用版本后显示带品牌的下载弹窗，提供真实下载进度及单独的不定进度校验阶段。“后台下载”及 Esc 仅关闭弹窗，传输继续，账户行的进度入口可重新打开弹窗。进度刷新保留焦点与当前选择。下载失败提供明确的重试或关闭操作，诊断默认折叠。深浅配色跟随操作系统。准备成功后自动打开壳拥有的安装确认；未签名 macOS 使用上文的手动安装操作，其他构建询问是否重启。关闭后保留就绪状态，不重复弹窗。选择就绪入口可再次打开确认。重启安装时，运行中的 agent、排队输入，以及运行中或停止中的后台任务都会在该确认中触发中断警告。仅有 API 请求不会触发警告。用户批准重启后，Host 锁定新请求，等待已接收的请求结束，再检查任务，包括已接收写操作创建的工作。等待超过控制请求截止时间时，拒绝安装并解除准入锁。任务状态未知、未获中断授权的新任务，或未成功完成正常收尾，都会阻止安装。常规退出先按"关闭窗口与退出"一节所述询问可中断的工作，再在停止 Host 前隐藏产品窗口，在收尾期间忽略新的聚焦请求，且从不安装更新。下次启动通过已有的启动与恢复流程校准版本绑定的运行时。
+左下角账户行显示本地化的更新可用状态、加载图标与下载百分比、验证、就绪状态，或带可访问提示的持久红色重试操作。嵌入 Web 界面的文案跟随应用内当前语言；原生弹窗使用 Desktop 壳语言。侧栏收起时，顶部展开按钮显示圆点。连接状态优先展示。选择可用版本后显示带品牌的下载弹窗，提供真实下载进度及单独的不定进度校验阶段。“后台下载”及 Esc 仅关闭弹窗，传输继续，账户行的进度入口可重新打开弹窗。进度刷新保留焦点与当前选择。下载失败提供明确的重试或关闭操作，诊断默认折叠。深浅配色跟随操作系统。准备成功后自动打开由壳层拥有的安装并重启确认。关闭后保留就绪状态，不重复弹窗。选择就绪入口可再次打开确认。重启安装时，运行中的 agent、排队输入，以及运行中或停止中的后台任务都会在该确认中触发中断警告。仅有 API 请求不会触发警告。用户批准重启后，Host 锁定新请求，等待已接收的请求结束，再检查任务，包括已接收写操作创建的工作。等待超过控制请求截止时间时，拒绝安装并解除准入锁。任务状态未知、未获中断授权的新任务，或未成功完成正常收尾，都会阻止安装。常规退出先按"关闭窗口与退出"一节所述询问可中断的工作，再在停止 Host 前隐藏产品窗口，在收尾期间忽略新的聚焦请求，且从不安装更新。下次启动通过已有的启动与恢复流程校准版本绑定的运行时。
 
 若任务收尾失败但已确认 Host 退出，安装会被拒绝，壳会在允许再次确认重启前恢复当前版本的 Host。Host 正常停止后的安装器启动失败使用同一恢复路径。替代 Host 启动并完成认证后，壳重新加载原有应用地址，让 Web 页面获取当前端口、Cookie 和启动注入数据；页面加载失败时打开原生致命故障恢复弹窗。未确认进程退出时，绝不允许启动替代 Host。已下载目标保留以供重试。已知强更策略在恢复过程中继续阻塞；Host 恢复失败打开原生致命故障恢复弹窗。
 

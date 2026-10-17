@@ -49,15 +49,15 @@ exports[`keeps source-unsupported-target actionable with localized guidance 1`] 
 }
 `;
 
-exports[`offers a manual installer in both locales and keeps the existing shell action 1`] = `
+exports[`offers installation and restart in both locales through the existing shell action 1`] = `
 [
   {
-    "detail": "打开安装包后，请先完成任务并退出云枢，再将新版拖入「应用程序」替换原应用。",
-    "label": "打开安装包",
+    "detail": "安装并重启：1.1.0",
+    "label": "安装并重启",
   },
   {
-    "detail": "Open the installer, finish your tasks and quit Yunshu, then drag the new app into Applications to replace the existing app.",
-    "label": "Open installer",
+    "detail": "Install and Restart: 1.1.0",
+    "label": "Install and Restart",
   },
 ]
 `;

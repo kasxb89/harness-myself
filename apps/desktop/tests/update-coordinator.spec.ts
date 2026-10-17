@@ -61,7 +61,7 @@ function downloadedEvent(): UpdateDownloadedEvent {
     path: 'verified-package', sha512 }
 }
 
-function fixture(manualInstaller?: (version: string) => Promise<boolean>) {
+function fixture(installUpdate?: (version: string) => Promise<void>) {
   const events = new NsisUpdater()
   const checkForUpdates = vi.fn(async () => ({
     isUpdateAvailable: true,
@@ -82,7 +82,7 @@ function fixture(manualInstaller?: (version: string) => Promise<boolean>) {
   const updater = Object.assign(events, { checkForUpdates, downloadUpdate, quitAndInstall, setFeedURL })
   const coordinator = new DesktopUpdateCoordinator(
     (state) => { states.push(state); return state },
-    beforeRestart, updater, () => true, () => '1.1.0-alpha.1', downloadResult, resolveSource, manualInstaller,
+    beforeRestart, updater, () => true, () => '1.1.0-alpha.1', downloadResult, resolveSource, installUpdate,
   )
   coordinators.push(coordinator)
   return { coordinator, updater, resolveSource, setFeedURL, events, states, checkForUpdates, downloadUpdate, quitAndInstall,
@@ -90,20 +90,38 @@ function fixture(manualInstaller?: (version: string) => Promise<boolean>) {
 }
 
 describe('desktop update coordinator', () => {
-  it('retains manual installer semantics on silent automatic discovery failures', async () => {
-    const f = fixture(async () => false)
-    f.resolveSource.mockRejectedValueOnce(new Error('network unavailable'))
-    expect(await f.coordinator.check()).toMatchObject({ phase: 'error', failedOperation: 'check', installationMode: 'manual' })
-    expect(f.coordinator.state).toEqual({ phase: 'idle', installationMode: 'manual' })
-  })
-  it('keeps a manually confirmed installer ready when the user cancels without authorizing task shutdown', async () => {
-    const manualInstaller = vi.fn(async () => false)
-    const f = fixture(manualInstaller)
+  it('awaits shared task shutdown before handing off an independent platform installer', async () => {
+    const installUpdate = vi.fn(async (_version: string) => {})
+    const f = fixture(installUpdate)
+    const shutdown = Promise.withResolvers<boolean>()
+    f.beforeRestart.mockImplementationOnce(() => shutdown.promise)
     await f.coordinator.check()
     await f.coordinator.download('1.1.0-rc.2')
-    expect(await f.coordinator.install('1.1.0-rc.2')).toEqual({ phase: 'ready', version: '1.1.0-rc.2', installationMode: 'manual' })
-    expect(manualInstaller).toHaveBeenCalledExactlyOnceWith('1.1.0-rc.2')
-    expect(f.beforeRestart).not.toHaveBeenCalled()
+    const installing = f.coordinator.install('1.1.0-rc.2')
+    await vi.waitFor(() => { expect(f.beforeRestart).toHaveBeenCalledOnce() })
+    expect(installUpdate).not.toHaveBeenCalled()
+    shutdown.resolve(true)
+    expect(await installing).toEqual({ phase: 'installing', version: '1.1.0-rc.2' })
+    expect(installUpdate).toHaveBeenCalledExactlyOnceWith('1.1.0-rc.2')
+    expect(f.quitAndInstall).not.toHaveBeenCalled()
+  })
+  it('keeps the staged platform installer ready when restart is cancelled', async () => {
+    const installUpdate = vi.fn(async (_version: string) => {})
+    const f = fixture(installUpdate)
+    f.beforeRestart.mockResolvedValueOnce(false)
+    await f.coordinator.check()
+    await f.coordinator.download('1.1.0-rc.2')
+    expect(await f.coordinator.install('1.1.0-rc.2')).toEqual({ phase: 'ready', version: '1.1.0-rc.2' })
+    expect(installUpdate).not.toHaveBeenCalled()
+    expect(f.quitAndInstall).not.toHaveBeenCalled()
+  })
+  it('reports helper handoff failure as installation failure after task shutdown', async () => {
+    const installUpdate = vi.fn(async (_version: string) => { throw new Error('helper readiness unavailable') })
+    const f = fixture(installUpdate)
+    await f.coordinator.check()
+    await f.coordinator.download('1.1.0-rc.2')
+    expect(await f.coordinator.install('1.1.0-rc.2')).toMatchObject({ phase: 'error', failedOperation: 'install' })
+    expect(f.beforeRestart).toHaveBeenCalledOnce()
     expect(f.quitAndInstall).not.toHaveBeenCalled()
   })
   it('keeps safe preparation diagnostics separate and clears them on an explicit retry', async () => {

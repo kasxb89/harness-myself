@@ -1,0 +1,124 @@
+[
+  [
+    {
+      "status": "rolled-back",
+      "options": {
+        "type": "warning",
+        "title": "Yunshu Update",
+        "message": "Previous version restored",
+        "detail": "The automatic update failed and the previous version has been restored. You can keep using this version. Review the update details, then choose Check for Updates when you are ready to try again. The app will not retry installation automatically.",
+        "defaultId": 0,
+        "cancelId": 0,
+        "buttons": [
+          "OK",
+          "Show update records"
+        ]
+      }
+    },
+    {
+      "status": "launch-unconfirmed",
+      "options": {
+        "type": "warning",
+        "title": "Yunshu Update",
+        "message": "Update startup not confirmed",
+        "detail": "The new version’s startup has not been confirmed. The previous app is retained in its backup directory. Keep this app running and inspect the update details before retrying. The app will not retry installation automatically.",
+        "defaultId": 0,
+        "cancelId": 0,
+        "buttons": [
+          "OK",
+          "Show update records"
+        ]
+      }
+    },
+    {
+      "status": "backup-failed",
+      "options": {
+        "type": "warning",
+        "title": "Yunshu Update",
+        "message": "Automatic update not completed",
+        "detail": "The automatic update did not complete. You can continue using the current app. Review the local update log before retrying. The app will not retry installation automatically.",
+        "defaultId": 0,
+        "cancelId": 0,
+        "buttons": [
+          "OK",
+          "Show update records"
+        ]
+      }
+    },
+    {
+      "status": "unreadable",
+      "options": {
+        "type": "warning",
+        "title": "Yunshu Update",
+        "message": "Could not read the update result",
+        "detail": "The local update record could not be read, so the app cannot confirm that the update completed. You can continue using the app. Inspect the update details before trying another update.",
+        "defaultId": 0,
+        "cancelId": 0,
+        "buttons": [
+          "OK"
+        ]
+      }
+    }
+  ],
+  [
+    {
+      "status": "rolled-back",
+      "options": {
+        "type": "warning",
+        "title": "云枢 更新",
+        "message": "已恢复原版本",
+        "detail": "自动更新失败，已恢复原版本，你可以继续使用。请先查看更新详情，准备好后点击「检查更新」重试，应用不会自动重试安装。",
+        "defaultId": 0,
+        "cancelId": 0,
+        "buttons": [
+          "确定",
+          "查看更新记录"
+        ]
+      }
+    },
+    {
+      "status": "launch-unconfirmed",
+      "options": {
+        "type": "warning",
+        "title": "云枢 更新",
+        "message": "尚未确认新版启动",
+        "detail": "尚未确认新版是否成功启动，原应用仍保留在备份目录中。请保持当前应用运行，查看更新详情后再决定是否重试，应用不会自动重试安装。",
+        "defaultId": 0,
+        "cancelId": 0,
+        "buttons": [
+          "确定",
+          "查看更新记录"
+        ]
+      }
+    },
+    {
+      "status": "backup-failed",
+      "options": {
+        "type": "warning",
+        "title": "云枢 更新",
+        "message": "自动更新未完成",
+        "detail": "自动更新未完成，你可以继续使用当前应用。请先查看本地更新日志，再决定是否重试，应用不会自动重试安装。",
+        "defaultId": 0,
+        "cancelId": 0,
+        "buttons": [
+          "确定",
+          "查看更新记录"
+        ]
+      }
+    },
+    {
+      "status": "unreadable",
+      "options": {
+        "type": "warning",
+        "title": "云枢 更新",
+        "message": "无法读取更新结果",
+        "detail": "无法读取本地更新记录，因此不能确认更新是否完成。你可以继续使用应用，请先查看更新详情，再决定是否再次更新。",
+        "defaultId": 0,
+        "cancelId": 0,
+        "buttons": [
+          "确定"
+        ]
+      }
+    }
+  ]
+]

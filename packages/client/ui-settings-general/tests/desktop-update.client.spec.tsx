@@ -238,23 +238,23 @@ it('renders the same semantic update in the active Web locale', async () => {
   } finally { f.view.unmount(); f.status.resolve(available) }
 })
 
-it('offers a manual installer in both locales and keeps the existing shell action', async () => {
+it('offers installation and restart in both locales through the existing shell action', async () => {
   const f = fixture()
   const output: Array<{ label: string | null; detail: string | null }> = []
   try {
-    await f.emit({ phase: 'ready', version: '1.1.0', installationMode: 'manual' })
+    await f.emit({ phase: 'ready', version: '1.1.0' })
     for (const dictionary of [zh, en]) {
       f.view.rerender(<f.Indicator dictionary={dictionary} />)
-      const button = screen.getByRole('button', { name: dictionary['desktop.update.openInstaller'] })
+      const button = screen.getByRole('button', { name: dictionary['desktop.update.ready'] })
       fireEvent.focus(button)
       output.push({ label: button.textContent, detail: (await screen.findByRole('tooltip')).textContent })
     }
     expect(output).toMatchSnapshot()
-    fireEvent.click(screen.getByRole('button', { name: 'Open installer' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Install and Restart' }))
     await act(async () => {})
     expect(f.open).toHaveBeenCalledOnce()
-    await f.emit({ phase: 'installing', version: '1.1.0', installationMode: 'manual' })
-    expect(screen.getByRole('button', { name: 'Opening installer…' }).getAttribute('aria-disabled')).toBe('true')
+    await f.emit({ phase: 'installing', version: '1.1.0' })
+    expect(screen.getByRole('button', { name: 'Preparing to restart…' }).getAttribute('aria-disabled')).toBe('true')
   } finally { f.view.unmount(); f.status.resolve({ phase: 'idle' }) }
 })
 

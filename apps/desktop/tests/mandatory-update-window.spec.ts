@@ -60,14 +60,13 @@ it('releases IPC after the Windows main window has already been destroyed', () =
   expect(() => { ui!.dispose() }).not.toThrow()
 })
 
-it('explains manual replacement for unsigned Mac updates without offering a restart', () => {
+it('retains installation and restart guidance for a prepared Mac update before authorization', () => {
   const f = setup()
-  f.update({ phase: 'ready', version: '1.0.1-nightly.1', installationMode: 'manual' })
+  f.update({ phase: 'ready', version: '1.0.1-nightly.1' })
   const messages = f.view().locale.messages
-  expect(messages.installAndRestart).toBe('打开安装包')
-  expect(messages.mandatoryReadyDetail).toContain('退出云枢')
-  expect(messages.mandatoryReadyDetail).toContain('打开安装包不会停止任务或关闭当前应用')
-  expect(messages.mandatoryInspecting).toBe('正在打开安装包…')
+  expect(messages.installAndRestart).toBe('安装并重启')
+  expect(messages.mandatoryReadyDetail).toBe('更新期间应用将暂时关闭，完成后会自动打开。')
+  expect(messages.mandatoryInspecting).toBe('正在检查任务状态…')
   expect(f.view().confirmation).toBeUndefined()
   expect(native.quit).not.toHaveBeenCalled()
 })

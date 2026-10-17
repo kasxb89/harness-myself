@@ -4,6 +4,9 @@ import type { DesktopUpdatePreparationFailureKind } from './ipc.ts'
 /** A downloaded installer changed or disappeared; retry must download and verify it again. */
 export class DesktopUpdateInstallerIntegrityError extends Error {}
 
+/** Helper handoff failed; task recovery must finish before preparing another installation. */
+export class DesktopUpdateInstallerHandoffError extends Error {}
+
 /** Only explicitly safe main-process facts may be exposed as technical details. */
 export class DesktopUpdatePreparationError extends Error {
   /**
