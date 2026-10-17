@@ -198,7 +198,6 @@
     "@xmanrui/dsh-im": "4.38.2",
     "dsh-univer-office": "0.3.7",
     "deepseek-ivideo": "github:Devin-AXIS/deepseek-design#62ee529e84423ba63e823b23860293a43b6eb03b&path:/packages/deepseek-ivideo",
-    "dsh-dream-skin": "10.14.3",
     "@deepseek-ai/dsh-attachment": "workspace:*",
     "@deepseek-ai/dsh-llm": "workspace:*",
     "@deepseek-ai/dsh-settings": "workspace:*",

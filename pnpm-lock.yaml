@@ -30,13 +30,6 @@ overrides:
   deepseek-ivideo@0.5.0>@deepseek-ai/dsh-host-webserver: 0.2.1-alpha.2
   deepseek-ivideo@0.5.0>@deepseek-ai/dsh-tools: 0.2.1-alpha.2
   deepseek-ivideo@0.5.0>@deepseek-ai/dsh-workspace: 0.2.1-alpha.2
-  dsh-dream-skin@10.14.3>@deepseek-ai/cordis: 4.0.5-alpha.1
-  dsh-dream-skin@10.14.3>@deepseek-ai/dsh-client-locale: 0.2.1-alpha.2
-  dsh-dream-skin@10.14.3>@deepseek-ai/dsh-client-runtime: '-'
-  dsh-dream-skin@10.14.3>@deepseek-ai/dsh-client-store: 0.2.1-alpha.2
-  dsh-dream-skin@10.14.3>@deepseek-ai/dsh-client-ui-settings: 0.2.1-alpha.2
-  dsh-dream-skin@10.14.3>@deepseek-ai/dsh-client-ui-settings-general: 0.2.1-alpha.2
-  dsh-dream-skin@10.14.3>@deepseek-ai/dsh-client-ui-theme: 0.2.1-alpha.2
 
 patchedDependencies:
   '@earendil-works/pi-ai@1.0.2': 1cc211bc358d30cb58bd975f39c03e296f8a277c3de845514d12f9ae77ebab5f
@@ -46,7 +39,6 @@ patchedDependencies:
   '@xmanrui/dsh-im@4.38.2': 33067c06f85c7f2971d1a2736a04d5e5a0ae429efe2f387992991c1a1cd91dae
   '@yao-pkg/pkg@6.21.0': 75891fc22b277c145cafeab83e41baf4a70f5b8fe6dc0801c6a0b922d7ee88c7
   deepseek-ivideo@0.5.0: 2c8077e6bd282bca4144510792e3f881d86e4a1ddf72a536a866da0516ef0be7
-  dsh-dream-skin@10.14.3: d9fe4d68c91b9994921192683d9cd45ecd81fba3121111389557a1ad8ab54a7e
   dsh-find-plugin@0.4.0: 062d1dee81d7b8393559bee05e107249c5bf1363b1eda9d675f5f30de0e5e03b
   dsh-skin-market@0.1.57: e8970629443e5cbc9104fd991624ed35dad914503df2f07c5f7eda5294d6f197
   dsh-univer-office@0.3.7: 9ab9121dd06608a991db35b48ab63aa595b8bb417cfa866eb31f8df2e4efa511
@@ -2987,9 +2979,6 @@ importers:
       deepseek-ivideo:
         specifier: file:../../../vendor-plugins/deepseek-ivideo-0.5.0-62ee529e.tgz
         version: file:vendor-plugins/deepseek-ivideo-0.5.0-62ee529e.tgz(patch_hash=2c8077e6bd282bca4144510792e3f881d86e4a1ddf72a536a866da0516ef0be7)(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-client-ui-conversation@packages+client+ui-conversation)(@deepseek-ai/dsh-host-webserver@packages+host+webserver)(@deepseek-ai/dsh-tools@packages+core+tools)(@deepseek-ai/dsh-workspace@packages+workspace+workspace)(react@18.3.1)(yauzl@3.4.0)
-      dsh-dream-skin:
-        specifier: 10.14.3
-        version: 10.14.3(patch_hash=d9fe4d68c91b9994921192683d9cd45ecd81fba3121111389557a1ad8ab54a7e)(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-client-locale@packages+client+locale)(@deepseek-ai/dsh-client-store@packages+client+store)(@deepseek-ai/dsh-client-ui-settings-general@packages+client+ui-settings-general)(@deepseek-ai/dsh-client-ui-settings@packages+client+ui-settings)(@deepseek-ai/dsh-client-ui-theme@packages+client+ui-theme)(react@18.3.1)
       dsh-find-plugin:
         specifier: 0.4.0
         version: 0.4.0(patch_hash=062d1dee81d7b8393559bee05e107249c5bf1363b1eda9d675f5f30de0e5e03b)(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-tools@packages+core+tools)
@@ -20941,33 +20930,6 @@ packages:
     resolution: {integrity: sha512-uBq4egWHTcTt33a72vpSG0z3HnPuIl6NqYcTrKEg2azoEyl2hpW0zqlxysq2pK9HlDIHyHyakeYaYnSAwd8bow==}
     engines: {node: '>=12'}
 
-  dsh-dream-skin@10.14.3:
-    resolution: {integrity: sha512-oR3t966oVpgzTRiqnzkvP8ry0kofLdPWTORzdoGR5Bf4muvXba88o6qqrUqYNk/ZP2lvpnFdx54uQUIKT14lsQ==}
-    engines: {node: '>=18'}
-    peerDependencies:
-      '@deepseek-ai/cordis': 4.0.5-alpha.1
-      '@deepseek-ai/dsh-client-locale': 0.2.1-alpha.2
-      '@deepseek-ai/dsh-client-store': 0.2.1-alpha.2
-      '@deepseek-ai/dsh-client-ui-settings': 0.2.1-alpha.2
-      '@deepseek-ai/dsh-client-ui-settings-general': 0.2.1-alpha.2
-      '@deepseek-ai/dsh-client-ui-theme': 0.2.1-alpha.2
-      react: ^18.2.0
-    peerDependenciesMeta:
-      '@deepseek-ai/cordis':
-        optional: true
-      '@deepseek-ai/dsh-client-locale':
-        optional: true
-      '@deepseek-ai/dsh-client-store':
-        optional: true
-      '@deepseek-ai/dsh-client-ui-settings':
-        optional: true
-      '@deepseek-ai/dsh-client-ui-settings-general':
-        optional: true
-      '@deepseek-ai/dsh-client-ui-theme':
-        optional: true
-      react:
-        optional: true
-
   dsh-find-plugin@0.4.0:
     resolution: {integrity: sha512-XO0zQb3iHxK7IGGygfiGDxI3t4HUEBNLK4knqYmh8KuT2cbCWzmH+4PViaIgVPsiytC7mXN5p94u5fJc3VNsBw==}
     peerDependencies:
@@ -28986,16 +28948,6 @@ snapshots:
       dotenv: 16.6.1
 
   dotenv@16.6.1: {}
-
-  dsh-dream-skin@10.14.3(patch_hash=d9fe4d68c91b9994921192683d9cd45ecd81fba3121111389557a1ad8ab54a7e)(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-client-locale@packages+client+locale)(@deepseek-ai/dsh-client-store@packages+client+store)(@deepseek-ai/dsh-client-ui-settings-general@packages+client+ui-settings-general)(@deepseek-ai/dsh-client-ui-settings@packages+client+ui-settings)(@deepseek-ai/dsh-client-ui-theme@packages+client+ui-theme)(react@18.3.1):
-    optionalDependencies:
-      '@deepseek-ai/cordis': link:vendor/cordis
-      '@deepseek-ai/dsh-client-locale': link:packages/client/locale
-      '@deepseek-ai/dsh-client-store': link:packages/client/store
-      '@deepseek-ai/dsh-client-ui-settings': link:packages/client/ui-settings
-      '@deepseek-ai/dsh-client-ui-settings-general': link:packages/client/ui-settings-general
-      '@deepseek-ai/dsh-client-ui-theme': link:packages/client/ui-theme
-      react: 18.3.1
 
   dsh-find-plugin@0.4.0(patch_hash=062d1dee81d7b8393559bee05e107249c5bf1363b1eda9d675f5f30de0e5e03b)(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-tools@packages+core+tools):
     dependencies:

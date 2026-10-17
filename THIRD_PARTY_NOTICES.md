@@ -87,7 +87,6 @@ External packages installed for runtime use or distributed inside the prebuilt b
 | [`deepseek-ivideo`](https://github.com/Devin-AXIS/iPolloWork) | SEE LICENSE IN LICENSE |
 | [`diff`](https://github.com/kpdecker/jsdiff) | BSD-3-Clause |
 | [`dompurify`](https://github.com/cure53/DOMPurify) | (MPL-2.0 OR Apache-2.0) |
-| [`dsh-dream-skin`](https://github.com/RevolutionLA/dsh-dream-skin) | MIT |
 | [`dsh-find-plugin`](https://github.com/awesome-dsh-plugin/dsh-find-plugin) | MIT |
 | [`dsh-skin-market`](https://github.com/kingOfSoySauce/dsh-skin-market) | MIT |
 | [`dsh-univer-office`](https://github.com/dream-num/dsh-univer-office) | Apache-2.0 |
@@ -160,7 +159,6 @@ pnpm applies local patches to the following packages at install time, so shipped
 - `dsh-skin-market@0.1.57` — [`patches/dsh-skin-market@0.1.57.patch`](patches/dsh-skin-market@0.1.57.patch)
 - `@xmanrui/dsh-im@4.38.2` — [`patches/xmanrui__dsh-im@4.38.2.patch`](patches/xmanrui__dsh-im@4.38.2.patch)
 - `deepseek-ivideo@0.5.0` — [`patches/deepseek-ivideo@0.5.0.patch`](patches/deepseek-ivideo@0.5.0.patch)
-- `dsh-dream-skin@10.14.3` — [`patches/dsh-dream-skin@10.14.3.patch`](patches/dsh-dream-skin@10.14.3.patch)
 - `dshmarket@1.66.20` — [`patches/dshmarket@1.66.20.patch`](patches/dshmarket@1.66.20.patch)
 - `dsh-find-plugin@0.4.0` — [`patches/dsh-find-plugin@0.4.0.patch`](patches/dsh-find-plugin@0.4.0.patch)
 - `dsh-univer-office@0.3.7` — [`patches/dsh-univer-office@0.3.7.patch`](patches/dsh-univer-office@0.3.7.patch)

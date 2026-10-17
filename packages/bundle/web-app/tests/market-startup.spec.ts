@@ -1,5 +1,5 @@
 /** Marketplace Host import and effect lifecycle through the shipped Web group. */
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -23,6 +23,12 @@ afterEach(() => {
 
 /** Mount the shipped group with observable substitutes for external plugin implementations. */
 async function bootExtensions(args: string[]) {
+  const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
+    dependencies: Record<string, string>
+  }
+  expect(manifest.dependencies['dsh-skin-market']).toBe('0.1.57')
+  expect(manifest.dependencies['@deepseek-ai/dsh-client-ui-theme']).toBe('workspace:*')
+  expect(manifest.dependencies).not.toHaveProperty('dsh-dream-skin')
   const dir = mkdtempSync(join(tmpdir(), 'dsh-market-startup-'))
   const ctx = new Context()
   onTestFinished(async () => {

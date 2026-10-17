@@ -1,0 +1,16 @@
+# Bilingual-pair consistency record for guide.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write docs/upgrade-guide/v0.2.1-alpha.2/dream-skin-removal/guide.md
+/:
+  en: 96a97fda1e6b0e4d
+  zh: 0207c900f2c899ff
+/remove-an-independently-installed-dream-skin:
+  en: e2e1dec9c08f12ac
+  zh: 19d68293d5a58c88
+/remove-an-independently-installed-dream-skin/change:
+  en: 6c797fcdb5d4d303
+  zh: efdca70e91be8c8f
+/remove-an-independently-installed-dream-skin/migration:
+  en: 6b070ec769d66685
+  zh: 3883626f7649b5b0
