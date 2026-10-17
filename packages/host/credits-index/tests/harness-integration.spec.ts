@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, readFile, readdir, writeFile } from 'node:fs/promises'
 import { createServer, type Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -12,9 +12,14 @@ import { LocalCredentialProvider } from '@deepseek-ai/dsh-credentials-local'
 import WebServer from '@deepseek-ai/dsh-host-webserver'
 import Tools from '@deepseek-ai/dsh-tools'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
+import type { Agent } from '@deepseek-ai/dsh-agent'
+import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
+import { Session, SessionId, SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
 import LlmRuntime, { ToolCallId, type FinishReason } from '@deepseek-ai/dsh-llm'
 import * as LlmPiAi from '@deepseek-ai/dsh-llm-pi-ai'
 import * as Credits from '../src/index.ts'
+import * as VideoProjectTools from '../src/video-project-tools.ts'
+import type { VideoProjectOptions } from '../src/video-project-types.ts'
 import { profileComposition } from '../../../settings/settings/tests/profile-composition.ts'
 
 const relayRef = credentialRef('HARNESS_INTEGRATION_RELAY')
@@ -78,6 +83,7 @@ afterEach(async () => {
   refreshBarrier = undefined
   vi.useRealTimers()
   vi.unstubAllEnvs()
+  vi.restoreAllMocks()
 })
 
 function object(value: unknown): Record<string, unknown> {
@@ -182,6 +188,7 @@ async function boot(
     ['@deepseek-ai/dsh-system-prompt', SystemPrompt], ['@deepseek-ai/dsh-credits-index', Credits],
     ['@deepseek-ai/dsh-credentials-local', LocalCredentialProvider],
     ['@deepseek-ai/dsh-llm', LlmRuntime], ['@deepseek-ai/dsh-llm-pi-ai', LlmPiAi],
+    ['@deepseek-ai/dsh-fs-local', LocalFileSystem],
   ])
   context = new Context()
   context.baseUrl = pathToFileURL(directory).href + '/'
@@ -198,6 +205,7 @@ async function boot(
   const entries = [
     { name: '@deepseek-ai/dsh-host-webserver', config: { host: '127.0.0.1', port: 0 } },
     { name: '@deepseek-ai/dsh-tools' }, { name: '@deepseek-ai/dsh-system-prompt' },
+    { name: '@deepseek-ai/dsh-fs-local', config: { cwd: directory } },
     { name: '@deepseek-ai/dsh-credentials-local', config: { path: join(directory, 'credentials.yaml'), dshHome: directory, watch: false } },
     { name: '@deepseek-ai/dsh-llm' },
     { name: '@deepseek-ai/dsh-llm-pi-ai', config: { providers: {
@@ -238,7 +246,142 @@ async function chat(): Promise<FinishReason> {
   return finish
 }
 
+/** Give file-reference tools a real workspace identity without starting an LLM turn. */
+function videoAgent(workspace: string): Agent {
+  const ctx = context
+  if (ctx === undefined) throw new Error('Expected a running product fixture')
+  const id = SessionId('reference-audio-chat')
+  const session = Session.create(id, [], { version: SESSION_FORMAT_VERSION, id, createdAt: 0, isSeeded: false, cwd: workspace })
+  const unsupported = (): never => { throw new Error('Fixture inbox is not mutable') }
+  return {
+    id, session, ctx, options: {}, status: 'running',
+    inbox: {
+      nextTurn: [], nextStep: [], clear: unsupported, append: unsupported, prepend: unsupported,
+      replace: unsupported, remove: unsupported, splice: unsupported,
+    },
+    send: () => {}, followup: () => {}, steer: () => {}, inject: () => {}, cancel: () => {},
+    whenIdle: async () => {}, runMaintenance: task => task(new AbortController().signal),
+  }
+}
+
 describe('deployed Harness API through the real product Loader', () => {
+  it('carries chat and project WAV/MP3 references through H3 native content without inventing audio switches', async () => {
+    let options: VideoProjectOptions | undefined
+    const register = VideoProjectTools.registerVideoProjectTools
+    vi.spyOn(VideoProjectTools, 'registerVideoProjectTools').mockImplementation((ctx, value) => {
+      options = value
+      register(ctx, value)
+    })
+    const { base, stateDir } = await boot()
+    await signIn(base)
+    pricingRows = [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }]
+    const workspace = join(stateDir, 'workspace')
+    await mkdir(workspace)
+    const wav = Buffer.from('RIFF0000WAVEdata', 'ascii')
+    const mp3 = Buffer.from([73, 68, 51, 4, 0, 0, 0, 0, 0, 0])
+    await writeFile(join(workspace, 'voice.wav'), wav)
+    await writeFile(join(workspace, 'voice.mp3'), mp3)
+    const agent = videoAgent(workspace)
+    const execute = (args: Record<string, unknown>) => context!.tools.execute({
+      callId: ToolCallId('reference-audio'), name: 'generate_video',
+      arguments: { prompt: 'A says “你好” in Mandarin; synchronized lips; no subtitles.', model: 'MiniMax-H3', duration_seconds: 4, ...args },
+      agent, signal: new AbortController().signal,
+    })
+    const disabled = object((await execute({ audio: false })).value)
+    expect(disabled.status).toBe('failed')
+    expect(disabled.message).toContain('不能关闭')
+    expect(calls.filter(call => call.path === '/harness/v1/video/generations')).toEqual([])
+    await execute({ audio: true, reference_audios: ['voice.wav'] })
+    const first = object(calls.find(call => call.path === '/harness/v1/video/generations')?.body)
+    expect(first).not.toHaveProperty('generate_audio')
+    expect(first).not.toHaveProperty('native_audio')
+    expect(object(first.metadata).content).toEqual([
+      { type: 'text', text: 'A says “你好” in Mandarin; synchronized lips; no subtitles.' },
+      { type: 'audio_url', role: 'reference_audio', audio_url: { url: `data:audio/wav;base64,${wav.toString('base64')}` } },
+    ])
+    const refs = await readdir(join(stateDir, 'refs'))
+    const assetId = refs.find(name => name.endsWith('.wav'))?.slice(0, -4)
+    if (assetId === undefined || options === undefined) throw new Error('Missing prepared reference or project bridge')
+    await execute({ audio: true, reference_audios: [assetId] })
+    const provider = await options.acquireProvider(workspace, agent.session)
+    const model = await provider.model('MiniMax-H3', new AbortController().signal)
+    const request = await provider.build({ prompt: 'A talks', totalDurationSeconds: 4, audio: true, referenceAudios: [assetId, 'voice.mp3'] }, model.id, 'A talks', 4, new AbortController().signal)
+    expect(request).not.toHaveProperty('generate_audio')
+    expect(request).not.toHaveProperty('native_audio')
+    expect(object(request.metadata).content).toEqual([
+      { type: 'text', text: 'A talks' },
+      { type: 'audio_url', role: 'reference_audio', audio_url: { url: `data:audio/wav;base64,${wav.toString('base64')}` } },
+      { type: 'audio_url', role: 'reference_audio', audio_url: { url: `data:audio/mpeg;base64,${mp3.toString('base64')}` } },
+    ])
+    await expect(provider.submit(request, new AbortController().signal)).rejects.toMatchObject({ code: 'VIDEO_SUBMIT_UNKNOWN' })
+    expect(calls.filter(call => call.path === '/harness/v1/video/generations').at(-1)?.body).toEqual(request)
+    expect(calls.filter(call => call.path.startsWith('/harness/v1/video')).map(call => call.path)).toEqual(Array<string>(3).fill('/harness/v1/video/generations'))
+  })
+
+  it('rejects unsafe, invalid and oversized chat audio references before any model submission', async () => {
+    const { base, stateDir } = await boot()
+    await signIn(base)
+    pricingRows = [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }]
+    const workspace = join(stateDir, 'workspace')
+    await mkdir(workspace)
+    await writeFile(join(stateDir, 'outside.wav'), Buffer.from('RIFF0000WAVEdata'))
+    await writeFile(join(workspace, 'invalid.wav'), 'not a wave')
+    await writeFile(join(workspace, 'oversized.wav'), Buffer.alloc(15 * 1024 * 1024 + 1))
+    const agent = videoAgent(workspace)
+    for (const references of [['../outside.wav'], ['invalid.wav'], ['oversized.wav'], ['ma_missing'], Array<string>(4).fill('ma_missing')]) {
+      const result = await context!.tools.execute({ callId: ToolCallId('bad-audio'), name: 'generate_video', arguments: {
+        prompt: 'A talks', model: 'MiniMax-H3', duration_seconds: 4, reference_audios: references,
+      }, agent, signal: new AbortController().signal })
+      expect(object(result.value)).toMatchObject({ status: 'failed' })
+    }
+    expect(calls.some(call => call.path === '/harness/v1/video/generations')).toBe(false)
+  })
+
+  it('forwards the declared audio switch only for models that expose it', async () => {
+    const { base } = await boot()
+    await signIn(base)
+    pricingRows = [{ model_name: 'grok-imagine-video', supported_endpoint_types: ['openai-video'], route: '/v1/video/generations' }]
+    for (const audio of [true, false]) {
+      await context!.tools.execute({ callId: ToolCallId(`audio-${String(audio)}`), name: 'generate_video', arguments: {
+        prompt: 'A synthetic clip', model: 'grok-imagine-video', duration_seconds: 4, audio,
+      }, signal: new AbortController().signal })
+    }
+    expect(calls.filter(call => call.path === '/harness/v1/video/generations').map(call => object(call.body).generate_audio)).toEqual([true, false])
+    expect(calls.filter(call => call.path === '/harness/v1/video/generations').every(call => !('native_audio' in object(call.body)))).toBe(true)
+  })
+
+  it('refuses single-clip billing after the account changes while reading a workspace audio reference', async () => {
+    const { base, stateDir } = await boot()
+    await signIn(base)
+    pricingRows = [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }]
+    const workspace = join(stateDir, 'workspace')
+    await mkdir(workspace)
+    await writeFile(join(workspace, 'voice.wav'), Buffer.from('RIFF0000WAVEdata'))
+    let started: (() => void) | undefined
+    let release: (() => void) | undefined
+    const reading = new Promise<void>((resolve) => { started = resolve })
+    const barrier = new Promise<void>((resolve) => { release = resolve })
+    const read = context!.fs.readBytes.bind(context!.fs)
+    vi.spyOn(context!.fs, 'readBytes').mockImplementation(async (...args) => {
+      started?.()
+      await barrier
+      return read(...args)
+    })
+    const pending = context!.tools.execute({ callId: ToolCallId('account-changing-audio'), name: 'generate_video', arguments: {
+      prompt: 'A talks', model: 'MiniMax-H3', duration_seconds: 4, reference_audios: ['voice.wav'],
+    }, agent: videoAgent(workspace), signal: new AbortController().signal })
+    try {
+      await reading
+      await post(base, '/api/session/logout', {})
+      selfId = 8
+      await signIn(base)
+    } finally { release?.() }
+    const stopped = object((await pending).value)
+    expect(stopped.status).toBe('failed')
+    expect(stopped.message).toContain('登录状态已变化')
+    expect(calls.some(call => call.path === '/harness/v1/video/generations')).toBe(false)
+  })
+
   it('fills image inputs from the exact installed catalog even when existing model IDs have not changed', async () => {
     const ids = ['deepseek-flash', 'kimi-k2.6', 'kimi-k2.7-code', 'qwen3.6-plus', 'qwen3.7-plus', 'qwen3.6-flash', 'qwen3.8-max']
     relayModels = ids.map(id => ({ id, object: 'model', supported_endpoint_types: ['openai'] }))

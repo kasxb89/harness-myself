@@ -11,7 +11,7 @@ import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { createWriteStream } from 'node:fs'
 import { createHash, randomBytes } from 'node:crypto'
 import { homedir } from 'node:os'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, isAbsolute, join } from 'node:path'
 import { addAbortSignal } from 'node:stream'
 import { request as httpsRequest } from 'node:https'
 import { request as httpRequest } from 'node:http'
@@ -893,6 +893,49 @@ export function apply(ctx: Context, config: Config): void {
     }
   }
 
+  /** Snapshot only an authorized workspace file, sharing upload signatures and byte limits. */
+  const normalizeVideoReference = async (
+    value: string,
+    kind: 'image' | 'video' | 'audio',
+    workspaceRoot: string | undefined,
+    references: Map<string, string>,
+    signal: AbortSignal,
+  ): Promise<string> => {
+    const maxBytes = Math.min(resolved.videoProjectReferenceMaxBytes, (kind === 'image' ? 6 : kind === 'audio' ? 15 : 32) * 1024 * 1024)
+    if (/^ma_[A-Za-z0-9]{1,64}$/u.test(value)) {
+      const stored = await readReference(value)
+      signal.throwIfAborted()
+      if (stored === null || !stored.mediaType.startsWith(`${kind}/`) || !referenceSignature(stored.bytes, stored.mediaType) || stored.bytes.length > maxBytes) {
+        throw new VideoProjectError('VIDEO_REFERENCE_INVALID', '参考素材不存在、类型不匹配或超过大小限制，请重新添加对应素材')
+      }
+      return value
+    }
+    if (workspaceRoot === undefined || !isAbsolute(workspaceRoot)) throw new VideoProjectError('WORKSPACE_REQUIRED', '请先选择工作区文件夹，再使用参考素材路径')
+    const fileSystem = ctx.get('fs')
+    if (fileSystem === undefined) throw new VideoProjectError('VIDEO_EDIT_SERVICE_UNAVAILABLE', '当前工作区的文件服务未准备好，请联系管理员')
+    const cacheKey = `${kind}:${value}`
+    const cached = references.get(cacheKey)
+    if (cached !== undefined) return cached
+    const root = await fileSystem.resolve(workspaceRoot, { signal })
+    const target = await fileSystem.resolve(value, { cwd: workspaceRoot, signal })
+    const entry = await fileSystem.lstat(value, { cwd: workspaceRoot }, signal)
+    if (entry?.type !== 'file' || !fileSystem.contains(root, target)) {
+      throw new VideoProjectError('VIDEO_REFERENCE_INVALID', '参考素材必须是当前工作区内可读取的普通文件')
+    }
+    if (entry.size !== undefined && entry.size > maxBytes) throw new VideoProjectError('VIDEO_REFERENCE_INVALID', '参考素材超过大小限制，请缩小后重试')
+    const bytes = Buffer.from(await fileSystem.readBytes(target, signal, maxBytes))
+    const mediaType = [...ALLOWED_ASSET_TYPES, ...ALLOWED_REFERENCE_VIDEO_TYPES, ...ALLOWED_REFERENCE_AUDIO_TYPES]
+      .find(type => referenceSignature(bytes, type))
+    if (mediaType === undefined || !mediaType.startsWith(`${kind}/`)) {
+      throw new VideoProjectError('VIDEO_REFERENCE_INVALID', '请提供对应类型的 PNG、JPEG、WebP 图片、MP4/MOV 视频或 WAV/MP3 音频')
+    }
+    const id = 'ma_' + randomBytes(16).toString('hex')
+    signal.throwIfAborted()
+    await storeReference(id, bytes, mediaType, basename(fileSystem.processPath(target)))
+    references.set(cacheKey, id)
+    return id
+  }
+
   /** One published media capability, or a readable catalog lookup failure. */
   const capabilityFor = async (
     kind: 'image' | 'video',
@@ -1045,8 +1088,8 @@ export function apply(ctx: Context, config: Config): void {
       return { ok: false, code: 'SEED_NOT_SUPPORTED', message: `${model.id} 不支持随机种子` }
     }
     const audio = typeof body.audio === 'boolean' ? body.audio : null
-    if (audio !== null && !params.audioToggle) {
-      return { ok: false, code: 'AUDIO_NOT_SUPPORTED', message: `${model.id} 没有音轨开关` }
+    if (audio !== null && !params.audioToggle && audio !== params.audio) {
+      return { ok: false, code: 'AUDIO_NOT_SUPPORTED', message: params.audio ? `${model.id} 原生生成音频，不能关闭音轨` : `${model.id} 不支持生成音频` }
     }
     for (const field of ['frameImages', 'referenceImages', 'referenceVideos', 'referenceAudios']) {
       const ids = body[field]
@@ -2777,6 +2820,14 @@ export function apply(ctx: Context, config: Config): void {
     return { key: owned.key }
   }
 
+  /** Keep reference preparation and subsequent billing bound to the initiating login. */
+  const bindCurrentVideoAccount = () => bindVideoAccount(async () => {
+    const current = await liveSession()
+    if (current?.token === undefined) return undefined
+    const owned = await accountKey(current)
+    return 'reason' in owned ? undefined : { accountId: current.account.id, token: current.token, key: owned.key }
+  })
+
   // Keep registration visible in custom deployments; missing local capabilities fail before generation.
   {
     const videoContext = ctx
@@ -2801,12 +2852,7 @@ export function apply(ctx: Context, config: Config): void {
       acquireProvider: async (workspaceRoot, _session) => {
         const fileSystem = videoContext.get('fs')
         if (fileSystem === undefined) throw new VideoProjectError('VIDEO_EDIT_SERVICE_UNAVAILABLE', '当前工作区的文件服务未准备好，请联系管理员')
-        const binding = await bindVideoAccount(async () => {
-          const current = await liveSession()
-          if (current?.token === undefined) return undefined
-          const owned = await accountKey(current)
-          return 'reason' in owned ? undefined : { accountId: current.account.id, token: current.token, key: owned.key }
-        })
+        const binding = await bindCurrentVideoAccount()
         const relay = createVideoProjectRelay({
           origin: apiBaseUrl, timeoutMs: resolved.timeoutMs,
           maxDownloadBytes: resolved.videoProjectDownloadMaxBytes, cacheRoot: projectState, key: () => binding.key(),
@@ -2824,38 +2870,6 @@ export function apply(ctx: Context, config: Config): void {
         }
         const references = new Map<string, string>()
         let preparedBytes = 0
-        /** Snapshot a workspace upload through the current filesystem's read authority. */
-        const reference = async (value: string, kind: 'image' | 'video', signal: AbortSignal): Promise<string> => {
-          if (/^ma_[A-Za-z0-9]{1,64}$/u.test(value)) {
-            const stored = await readReference(value)
-            signal.throwIfAborted()
-            if (stored === null || !stored.mediaType.startsWith(`${kind}/`) || stored.bytes.length > resolved.videoProjectReferenceMaxBytes) {
-              throw new VideoProjectError('VIDEO_REFERENCE_INVALID', '参考素材不存在、类型不匹配或超过大小限制，请重新添加对应素材')
-            }
-            return value
-          }
-          const cacheKey = `${kind}:${value}`
-          const cached = references.get(cacheKey)
-          if (cached !== undefined) return cached
-          const root = await fileSystem.resolve(workspaceRoot, { signal })
-          const target = await fileSystem.resolve(value, { cwd: workspaceRoot, signal })
-          const entry = await fileSystem.lstat(value, { cwd: workspaceRoot }, signal)
-          if (entry?.type !== 'file' || !fileSystem.contains(root, target)) {
-            throw new VideoProjectError('VIDEO_REFERENCE_INVALID', '参考素材必须是当前工作区内可读取的普通文件')
-          }
-          const bytes = Buffer.from(await fileSystem.readBytes(target, signal, resolved.videoProjectReferenceMaxBytes))
-          const mediaType = bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) ? 'image/png'
-            : bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255 ? 'image/jpeg'
-              : bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP' ? 'image/webp'
-                : bytes.toString('ascii', 4, 8) === 'ftyp' ? 'video/mp4' : undefined
-          if (mediaType === undefined) throw new VideoProjectError('VIDEO_REFERENCE_INVALID', '参考素材仅支持 PNG、JPEG、WebP 或 MP4/MOV 视频')
-          if (!mediaType.startsWith(`${kind}/`)) throw new VideoProjectError('VIDEO_REFERENCE_INVALID', '请在图片或视频参考参数中提供对应类型的素材')
-          const id = 'ma_' + randomBytes(16).toString('hex')
-          signal.throwIfAborted()
-          await storeReference(id, bytes, mediaType, basename(fileSystem.processPath(target)))
-          references.set(cacheKey, id)
-          return id
-        }
         /** Materialize only serializable provider fields, preserving exact reference bytes without credentials. */
         const requestValue = (value: unknown): VideoRequestValue => {
           if (value === null || typeof value === 'string' || typeof value === 'boolean') return value
@@ -2882,17 +2896,19 @@ export function apply(ctx: Context, config: Config): void {
             await binding.key()
             const capability = models.get(model)
             if (capability === undefined) throw new VideoProjectError('VIDEO_MODEL_UNAVAILABLE', '请先确认当前账户的视频模型参数')
-            const normalize = async (values: readonly string[] | undefined, kind: 'image' | 'video'): Promise<string[]> => {
+            const normalize = async (values: readonly string[] | undefined, kind: 'image' | 'video' | 'audio'): Promise<string[]> => {
               const result: string[] = []
-              for (const value of values ?? []) result.push(await reference(value, kind, signal))
+              for (const value of values ?? []) result.push(await normalizeVideoReference(value, kind, workspaceRoot, references, signal))
               return result
             }
             const built = await buildVideoRequest(capability, {
               prompt, durationSeconds,
               ...input.resolution === undefined ? {} : { resolution: input.resolution },
               ...input.ratio === undefined ? {} : { ratio: input.ratio },
+              ...input.audio === undefined ? {} : { audio: input.audio },
               frameImages: await normalize(input.frameImages, 'image'), referenceImages: await normalize(input.referenceImages, 'image'),
               referenceVideos: await normalize(input.referenceVideos, 'video'),
+              referenceAudios: await normalize(input.referenceAudios, 'audio'),
             })
             signal.throwIfAborted()
             if (!built.ok) throw new VideoProjectError(built.code, built.message)
@@ -2964,14 +2980,16 @@ export function apply(ctx: Context, config: Config): void {
     name: 'generate_video',
     description: 'Generate one short video clip through the account relay. For a complete video such as 40 seconds, multiple shots, or automatic assembly, use generate_video_project instead. Edit existing clips with edit_video. This single-clip tool accepts only the chosen model’s declared duration, resolution, ratio, frames and references.',
     parameters: {
-      prompt: { type: 'string', required: true, description: 'What the video should show.' },
+      prompt: { type: 'string', required: true, description: 'What the video should show. Before calling, script user-delegated narrative or dialogue scenes with stable character ids, language, brief exact lines and their timing, identifying on-screen speakers versus narration; preserve user-supplied wording. Do not reduce a story requiring voices to a music montage. Respect silent/no-dialogue requests and do not add dialogue or subtitles to unrelated nonverbal videos. Include requested lip-sync and subtitle requirements. These request native model generation, not separate speech, lip-sync or subtitle processing; verify the rendered result before claiming they are met.' },
       model: { type: 'string', description: 'Optional video model id such as MiniMax-H3. Defaults to the first video model the deployment serves for this account.' },
       duration_seconds: { type: 'number', description: 'Clip length in seconds; only values the chosen model declares are accepted.' },
       resolution: { type: 'string', description: 'Output resolution such as 768P or 2K, when the model offers choices.' },
       ratio: { type: 'string', description: 'Aspect ratio such as 16:9 or 9:16; adaptive inherits it from the reference media.' },
+      audio: { type: 'boolean', description: 'Optional requested audio state. Sent as a switch only when the chosen model declares one; fixed native audio accepts only its declared state. An audio stream does not verify dialogue, lip-sync or subtitles.' },
       frame_images: { type: 'array', items: { type: 'string' }, description: 'Optional stored ids (ma_…) used as first/last frame.' },
       reference_images: { type: 'array', items: { type: 'string' }, description: 'Optional stored ids (ma_…) used as multimodal subject/style references, when the model supports them.' },
       reference_videos: { type: 'array', items: { type: 'string' }, description: 'Optional stored ids (ma_…) used as a reference video, when the model supports video-to-video.' },
+      reference_audios: { type: 'array', items: { type: 'string' }, description: 'Optional uploaded ma_ audio ids or workspace WAV/MP3 paths, when the model supports audio references. First copy a user-supplied, read-authorized chat attachment outside the workspace into the workspace using existing file tools; do not copy unrelated files. References do not guarantee copied speech, matching mouth movements or subtitles.' },
     },
     output: {
       schema: {
@@ -2992,33 +3010,47 @@ export function apply(ctx: Context, config: Config): void {
       if ('error' in session) return { status: 'unauthorized', message: session.error }
       const relay = await requireRelayKey()
       if ('error' in relay) return { status: 'failed', message: relay.error }
-      const capability = await capabilityFor('video', args.model ?? null)
-      if (!capability.ok) return { status: 'failed', message: capability.message }
-      const built = await buildVideoRequest(capability.model, {
-        prompt: args.prompt,
-        ...args.duration_seconds === undefined ? {} : { durationSeconds: args.duration_seconds },
-        ...args.resolution === undefined ? {} : { resolution: args.resolution },
-        ...args.ratio === undefined ? {} : { ratio: args.ratio },
-        ...args.frame_images === undefined ? {} : { frameImages: args.frame_images },
-        ...args.reference_images === undefined ? {} : { referenceImages: args.reference_images },
-        ...args.reference_videos === undefined ? {} : { referenceVideos: args.reference_videos },
-      })
-      if (!built.ok) return { status: 'failed', model: capability.model.id, message: built.message }
-      const outcome = await runVideoTask(relay.key, capability.model.route, built.request, exec.signal)
-      if (!outcome.ok) {
+      try {
+        const binding = await bindCurrentVideoAccount()
+        const capability = await capabilityFor('video', args.model ?? null)
+        if (!capability.ok) return { status: 'failed', message: capability.message }
+        const referenceAudios: string[] = []
+        const references = new Map<string, string>()
+        for (const value of args.reference_audios ?? []) {
+          referenceAudios.push(await normalizeVideoReference(value, 'audio', exec.agent?.session.header.cwd, references, exec.signal))
+        }
+        const built = await buildVideoRequest(capability.model, {
+          prompt: args.prompt,
+          ...args.duration_seconds === undefined ? {} : { durationSeconds: args.duration_seconds },
+          ...args.resolution === undefined ? {} : { resolution: args.resolution },
+          ...args.ratio === undefined ? {} : { ratio: args.ratio },
+          ...args.audio === undefined ? {} : { audio: args.audio },
+          ...args.frame_images === undefined ? {} : { frameImages: args.frame_images },
+          ...args.reference_images === undefined ? {} : { referenceImages: args.reference_images },
+          ...args.reference_videos === undefined ? {} : { referenceVideos: args.reference_videos },
+          referenceAudios,
+        })
+        if (!built.ok) return { status: 'failed', model: capability.model.id, message: built.message }
+        exec.signal.throwIfAborted()
+        const outcome = await runVideoTask(await binding.key(), capability.model.route, built.request, exec.signal)
+        if (!outcome.ok) {
+          return {
+            status: outcome.code === 'TIMEOUT' ? 'running' : 'failed',
+            model: capability.model.id,
+            task_id: outcome.taskId ?? '',
+            message: outcome.message ?? outcome.code ?? '生成失败',
+          }
+        }
         return {
-          status: outcome.code === 'TIMEOUT' ? 'running' : 'failed',
+          status: 'succeeded',
+          path: outcome.path ?? '',
           model: capability.model.id,
           task_id: outcome.taskId ?? '',
-          message: outcome.message ?? outcome.code ?? '生成失败',
+          message: '视频已保存到产物目录。',
         }
-      }
-      return {
-        status: 'succeeded',
-        path: outcome.path ?? '',
-        model: capability.model.id,
-        task_id: outcome.taskId ?? '',
-        message: '视频已保存到产物目录。',
+      } catch (error) {
+        if (error instanceof VideoProjectError) return { status: 'failed', message: error.message }
+        throw error
       }
     },
   }))

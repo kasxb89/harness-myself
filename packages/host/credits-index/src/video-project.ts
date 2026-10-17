@@ -13,6 +13,7 @@ import type { VideoProjectIdentity, VideoProjectInput, VideoProjectOptions, Vide
 
 /** Complete private-record parser limit, including prompt and per-clip metadata. */
 const MAX_MANIFEST_BYTES = 64 * 1024 * 1024
+const MAX_PROMPT_LENGTH = 7000
 
 /** An opaque project identifier, validated before selecting its private record. */
 export type VideoProjectId = Branded<'VideoProjectId'>
@@ -168,11 +169,34 @@ export function resolveVideoOutputDirectory(
 
 /** Restrict retained prompt and reference input before persisting provider requests. */
 function validateInput(input: VideoProjectInput, maxTotalSeconds: number): void {
-  if (input.prompt.trim() === '' || input.prompt.length > 7000) throw new VideoProjectError('INVALID_PROMPT', '请提供 1 至 7000 字符的视频说明。')
+  if (input.prompt.trim() === '' || input.prompt.length > MAX_PROMPT_LENGTH) throw new VideoProjectError('INVALID_PROMPT', '请提供 1 至 7000 字符的视频说明。')
   if (!Number.isSafeInteger(input.totalDurationSeconds) || input.totalDurationSeconds < 1 || input.totalDurationSeconds > maxTotalSeconds) {
     throw new VideoProjectError('INVALID_DURATION', `视频总时长须为 1 至 ${String(maxTotalSeconds)} 秒的整数。`)
   }
-  if (input.shotPrompts?.some(prompt => prompt.trim() === '' || prompt.length > 7000)) throw new VideoProjectError('INVALID_SHOTS', '每个分镜说明须为 1 至 7000 字符。')
+  if (input.shotPrompts?.some(prompt => prompt.trim() === '' || prompt.length > MAX_PROMPT_LENGTH)) throw new VideoProjectError('INVALID_SHOTS', '每个分镜说明须为 1 至 7000 字符。')
+}
+
+/** Retain the complete brief while limiting this clip's actions and speech to its own shot. */
+function segmentPrompt(input: VideoProjectInput, model: string, index: number, count: number, durationSeconds: number): string {
+  const parts = [
+    `全局剧情与约束（保留原文，仅作全片上下文）：\n${input.prompt}`,
+    `当前分镜 ${String(index + 1)}/${String(count)}，本片时长 ${String(durationSeconds)} 秒：\n${input.shotPrompts?.[index]
+      ?? '按主说明有序推进当前片段，承接前镜并自然过渡到后镜，不从头重复全片剧情。'}`,
+    '仅执行当前分镜的剧情、动作与分配台词；其他分镜只作上下文，不要在每段复述整篇或重复其他镜头的对白。',
+    '保持主体、风格、色彩与前后分镜连贯。',
+    '仅当主说明或当前分镜明确要求对白、演唱或旁白时才生成人声；尊重静音、无对白、无旁白和关闭音轨的要求，不强行配音。',
+    '同一发声角色跨分镜固定使用同一个说话人标识（S1、S2），保持身份、音色与语言一致；不为从未发声的角色添加说话人标识。',
+    '只朗读本镜分配的台词，逐字保留用户原文、标点和语言，不改写、不翻译、不补造台词。',
+    '镜内人物发声时，其嘴部开合跟随对应语音；其他未说话角色不跟口型。画外旁白发声时，对应画内角色嘴唇保持闭合，不作说话口型。',
+    '对白、环境声与背景配乐分别安排；仅执行用户要求的声音，音乐不能替代或盖过用户要求的对白。',
+    '仅在主说明或当前分镜明确要求字幕时显示本镜对应字幕，并按发声时序同步；逐字保留原文和标点，不擅自添加或翻译字幕。',
+  ]
+  if (model === 'MiniMax-H3') {
+    parts.push('MiniMax-H3 原生音画表达：integrated_multimodal_description 描述本镜画面、动作和对白；overall_soundscape 只描述环境与非语言声音；non_diegetic_music 只描述背景配乐。')
+    parts.push('仅对本镜明确要求发声的原句使用 <d>[原语言]原句</d>，中文台词使用 <d>[Chinese]原句</d>；原句与标点逐字保留，已有标签不重复包裹。说话人标识、动作和语气放在 <d> 外。')
+    parts.push('画外旁白使用 says in an off-screen voiceover，并在对应 <d> 后明确画内角色嘴唇保持闭合；需要显示的字幕用英文双引号括起原文，不翻译。')
+  }
+  return parts.join('\n\n')
 }
 
 /** Atomically replace an owner-only record before exposing its new state. */
@@ -234,6 +258,7 @@ function parseManifest(value: unknown): VideoProjectManifest {
   if (status === 'completed' && (source.finalPath === undefined || source.finalDurationSeconds === undefined)) {
     throw new VideoProjectError('INVALID_RECORD', '已完成的视频项目缺少真实成片信息，无法作为成功结果交付。')
   }
+  if (input.audio !== undefined && typeof input.audio !== 'boolean') throw new VideoProjectError('INVALID_RECORD', '视频项目音轨设置损坏，已停止操作。')
   const optionalInput = Object.fromEntries(['model', 'resolution', 'ratio'].flatMap(key => input[key] === undefined ? [] : [[key, text(input, key)]]))
   const parsedInput: VideoProjectInput = {
     prompt: text(input, 'prompt'), totalDurationSeconds: positive(input, 'totalDurationSeconds'), ...optionalInput,
@@ -241,6 +266,8 @@ function parseManifest(value: unknown): VideoProjectManifest {
     ...input.frameImages === undefined ? {} : { frameImages: strings(input, 'frameImages') },
     ...input.referenceImages === undefined ? {} : { referenceImages: strings(input, 'referenceImages') },
     ...input.referenceVideos === undefined ? {} : { referenceVideos: strings(input, 'referenceVideos') },
+    ...input.referenceAudios === undefined ? {} : { referenceAudios: strings(input, 'referenceAudios') },
+    ...input.audio === undefined ? {} : { audio: input.audio },
   }
   const segments: VideoProjectSegment[] = source.segments.map((value) => {
     const segment = record(value)
@@ -308,10 +335,16 @@ export async function prepareVideoProject(
   const model = await provider.model(input.model, signal, input.resolution)
   const durations = planVideoDurations(input.totalDurationSeconds, model.durations, options.maxSegments)
   if (input.shotPrompts !== undefined && input.shotPrompts.length !== durations.length) throw new VideoProjectError('SHOT_COUNT_MISMATCH', `该时长需要 ${String(durations.length)} 个分镜，请提供相同数量的分镜说明。`)
+  const planned = durations.map((durationSeconds, index) => {
+    const prompt = segmentPrompt(input, model.id, index, durations.length, durationSeconds)
+    if (prompt.length > MAX_PROMPT_LENGTH) {
+      throw new VideoProjectError('INVALID_PROMPT', '完整分镜提示词超过 7000 字符，尚未提交生成；请精简主说明或分镜，原文未截断。')
+    }
+    return { durationSeconds, prompt }
+  })
   const segments: VideoProjectSegment[] = []
-  for (const [index, durationSeconds] of durations.entries()) {
+  for (const [index, { durationSeconds, prompt }] of planned.entries()) {
     signal.throwIfAborted()
-    const prompt = input.shotPrompts?.[index] ?? `${input.prompt}\n分镜 ${String(index + 1)}/${String(durations.length)}：保持主体、风格、色彩与前后分镜连贯。`
     const request = await provider.build(input, model.id, prompt, durationSeconds, signal)
     segments.push({ index: index + 1, durationSeconds, prompt, request, status: 'pending' })
   }

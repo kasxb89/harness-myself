@@ -1,5 +1,72 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
+exports[`video tools through Loader, real tool registry and jobs runtime > registers the same production tool schemas from the shipped credits apply path > single-clip audio and dialogue contract 1`] = `
+{
+  "description": "Generate one short video clip through the account relay. For a complete video such as 40 seconds, multiple shots, or automatic assembly, use generate_video_project instead. Edit existing clips with edit_video. This single-clip tool accepts only the chosen model’s declared duration, resolution, ratio, frames and references.",
+  "name": "generate_video",
+  "parameters": {
+    "properties": {
+      "audio": {
+        "description": "Optional requested audio state. Sent as a switch only when the chosen model declares one; fixed native audio accepts only its declared state. An audio stream does not verify dialogue, lip-sync or subtitles.",
+        "type": "boolean",
+      },
+      "duration_seconds": {
+        "description": "Clip length in seconds; only values the chosen model declares are accepted.",
+        "type": "number",
+      },
+      "frame_images": {
+        "description": "Optional stored ids (ma_…) used as first/last frame.",
+        "items": {
+          "type": "string",
+        },
+        "type": "array",
+      },
+      "model": {
+        "description": "Optional video model id such as MiniMax-H3. Defaults to the first video model the deployment serves for this account.",
+        "type": "string",
+      },
+      "prompt": {
+        "description": "What the video should show. Before calling, script user-delegated narrative or dialogue scenes with stable character ids, language, brief exact lines and their timing, identifying on-screen speakers versus narration; preserve user-supplied wording. Do not reduce a story requiring voices to a music montage. Respect silent/no-dialogue requests and do not add dialogue or subtitles to unrelated nonverbal videos. Include requested lip-sync and subtitle requirements. These request native model generation, not separate speech, lip-sync or subtitle processing; verify the rendered result before claiming they are met.",
+        "type": "string",
+      },
+      "ratio": {
+        "description": "Aspect ratio such as 16:9 or 9:16; adaptive inherits it from the reference media.",
+        "type": "string",
+      },
+      "reference_audios": {
+        "description": "Optional uploaded ma_ audio ids or workspace WAV/MP3 paths, when the model supports audio references. First copy a user-supplied, read-authorized chat attachment outside the workspace into the workspace using existing file tools; do not copy unrelated files. References do not guarantee copied speech, matching mouth movements or subtitles.",
+        "items": {
+          "type": "string",
+        },
+        "type": "array",
+      },
+      "reference_images": {
+        "description": "Optional stored ids (ma_…) used as multimodal subject/style references, when the model supports them.",
+        "items": {
+          "type": "string",
+        },
+        "type": "array",
+      },
+      "reference_videos": {
+        "description": "Optional stored ids (ma_…) used as a reference video, when the model supports video-to-video.",
+        "items": {
+          "type": "string",
+        },
+        "type": "array",
+      },
+      "resolution": {
+        "description": "Output resolution such as 768P or 2K, when the model offers choices.",
+        "type": "string",
+      },
+    },
+    "required": [
+      "prompt",
+    ],
+    "type": "object",
+  },
+}
+`;
+
 exports[`video tools through Loader, real tool registry and jobs runtime > registers the same production tool schemas from the shipped credits apply path 1`] = `
 [
   {
@@ -7,6 +74,10 @@ exports[`video tools through Loader, real tool registry and jobs runtime > regis
     "name": "generate_video_project",
     "parameters": {
       "properties": {
+        "audio": {
+          "description": "Optional requested audio state. Sent as a switch only when the chosen model declares one; fixed native audio accepts only its declared state. Audio presence alone does not verify speech, lip-sync or subtitles.",
+          "type": "boolean",
+        },
         "frame_images": {
           "description": "Existing uploaded ma_ first/last frame ids or workspace image paths. For a user-supplied chat attachment outside the workspace, first copy the read-authorized attachment into the workspace with existing file tools and pass its copied path.",
           "items": {
@@ -19,11 +90,18 @@ exports[`video tools through Loader, real tool registry and jobs runtime > regis
           "type": "string",
         },
         "prompt": {
-          "description": "The complete video brief, visual continuity, story, and desired editing.",
+          "description": "The complete video brief, visual continuity, story, and desired editing. Before calling, script user-delegated narrative or dialogue scenes with stable character ids, language and brief exact lines, identifying on-screen speakers versus narration; preserve user-supplied wording. Assign each line and its timing to a shot in shot_prompts. Do not reduce a story requiring voices to a music montage. Respect silent/no-dialogue requests and do not add dialogue or subtitles to unrelated nonverbal videos. Include requested lip-sync and subtitle requirements. These request native model generation, not separate speech, lip-sync or subtitle processing; verify the rendered result before claiming they are met.",
           "type": "string",
         },
         "ratio": {
           "type": "string",
+        },
+        "reference_audios": {
+          "description": "Existing uploaded ma_ audio reference ids or workspace WAV/MP3 paths, only when the chosen model supports audio references. For a user-supplied chat attachment outside the workspace, first copy the read-authorized attachment into the workspace with existing file tools and pass its copied path. A reference does not guarantee copied speech, matching mouth movements or subtitles.",
+          "items": {
+            "type": "string",
+          },
+          "type": "array",
         },
         "reference_images": {
           "description": "Existing uploaded ma_ subject/style image ids or workspace image paths. For a user-supplied chat attachment outside the workspace, first copy the read-authorized attachment into the workspace with existing file tools and pass its copied path.",
@@ -43,7 +121,7 @@ exports[`video tools through Loader, real tool registry and jobs runtime > regis
           "type": "string",
         },
         "shot_prompts": {
-          "description": "Optional exact shot briefs, one per planned clip; omit to use the main brief with ordered continuity instructions.",
+          "description": "Exact shot briefs, one per planned clip. For delegated narrative or dialogue, first write a short script and allocate each shot its character ids, language, exact lines and timing, distinguishing on-screen speech from narration; preserve user-provided wording. Keep each shot focused on its assigned lines rather than repeating the whole story. Respect silent/no-dialogue requests. Omit for briefs that do not require shot-specific scripting.",
           "items": {
             "type": "string",
           },

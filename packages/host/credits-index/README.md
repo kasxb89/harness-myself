@@ -79,6 +79,8 @@ A declared `oneOf` pairs `properties.resolution.const` or `.enum` with bounded `
 
 Local `/credits/api/assets` accepts PNG/JPEG/WebP images, MP4/MOV video and MP3/WAV audio with matching MIME and file signatures. Per-file limits are 6 MiB for images, 32 MiB for video and 15 MiB for audio; all images in one generation total at most 12 MiB and all reference bytes total at most 48 MiB, with the complete encoded generation request capped at 64 MiB. Audio is exposed only where the selected model declares audio-reference slots. H3 sends every reference in one complete `metadata.content` array. Frame references cannot mix with H3 general references. Adaptive ratio requires an actual image or video input. These checks do not decode the complete media or establish upstream generation capability.
 
+Chat tools accept `reference_audios` as uploaded asset ids or readable workspace WAV/MP3 paths. Video projects retain these references for recovery. The optional `audio` request uses a provider switch only when the selected model declares that switch. H3 has fixed native audio: `audio: true` is accepted without adding an unsupported request field, while `audio: false` is rejected before submission.
+
 ### Local video editing
 
 The project editor uses the Desktop-owned `DSH_VIDEO_RUNTIME_ROOT` directory and never searches PATH. It verifies both executables and an actual H.264/AAC encode in the selected output directory before paid generation, and refuses a read-only or escaping output tree. Every process runs through the current session’s subprocess provider and resolved sandbox policy, without shell interpolation. Inputs must be regular files inside the workspace or exact private clip directories already authorized by the project owner; private clip paths reject symbolic links. For current chat attachments stored outside the workspace, the model first copies the read-authorized attachments into the workspace through existing file tools. Protocol access is restricted to local files and pipes.
@@ -89,6 +91,10 @@ Editing preserves original clips, applies explicit start/end trims, fits each fr
 ### Video projects
 
 Workspace chat can create a finished video longer than the selected model's single-clip limit through `generate_video_project`. The planner first minimizes billable clip count, then surplus seconds: a 40-second request uses `15 + 15 + 10` when those values exist, or three fixed 15-second clips trimmed to 40 seconds. It validates every shot request and the local editor before the first paid submission. Optional shot prompts must match the planned clip count; uploaded reference ids and readable workspace media are checked through the current session. Generation uses only the signed-in account's relay credential and checks the captured account and login before each submission. Sign-out, expiry, or login change stops further charges.
+
+Each clip request retains the complete main brief as shared context and identifies only the current shot, its duration, and its allocated lines for generation. A shot prompt adds local direction instead of replacing the main brief. Combined prompts that exceed the provider limit fail before any paid submission; user text is never truncated. Existing saved projects resume their exact prepared requests.
+
+For requested dialogue, the instructions distinguish stable speakers, exact spoken words and language, visible speech, off-screen narration, ambience, and background music. They preserve explicit silence and request subtitles only when the brief asks for them. H3-specific guidance follows its native dialogue format. These are generation requirements: the editor does not synthesize speech, align lips, or create subtitle tracks, and file verification does not establish that the requested dialogue or timing appeared in the rendered video.
 
 Projects run as ordinary owned background jobs. The tool returns canonical `job_id`, `project_id`, and `plan_seconds`; existing job tools report progress and cancellation. Final success contains only independently verified, saved `final_path` and clip paths. The agent presents the final file through the existing `present` tool and a clickable artifact link. A local cancellation stops subsequent submissions and local work; an already accepted upstream task may continue running and billing because the relay exposes no cancellation operation.
 
@@ -149,7 +155,7 @@ Each explicit request supplies its own current draft and feedback without an imp
 
 #### What the model sees
 
-The video tools, including `generate_video_project`, add planning, local editing, durable status, and explicit recovery instructions to the model context. Shot prompts come from the logged tool input and the saved ordered brief. Existing job tools expose progress and final paths through their normal logged results. The video project records retain exact generation requests without changing the Session format or agent loop.
+The video tools, including `generate_video_project`, add planning, local editing, durable status, and explicit recovery instructions to the model context. Tool descriptions ask the agent to include exact dialogue, language, speaker and subtitle requirements. Per-clip provider prompts retain the main brief with current-shot scope and conditional audiovisual instructions. The agent must inspect the rendered result before claiming that speech, lip movements, or subtitles are present and synchronized. Shot prompts come from the logged tool input and the saved ordered brief. Existing job tools expose progress and final paths through their normal logged results. The video project records retain exact generation requests without changing the Session format or agent loop.
 
 #### Token effect
 
@@ -164,6 +170,7 @@ Tool declarations and logged results follow ordinary Session request handling. V
 <a id="known-limitations-and-deferred-work"></a>
 
 - The source groups records by hour and normally flushes them every five minutes. These aggregates cannot provide exact request timestamps, refund-adjusted net spending, per-token direction, or a live balance ledger. Usage responses are capped at 100,000 source rows; exceeding the cap is a visible failure.
+- Video completion verifies saved files and duration, not speech content, lip synchronization, or subtitle accuracy. Local editing preserves the first audio stream of each clip; it does not merge separate voice and music tracks or preserve soft subtitle tracks.
 
 <a id="dev-note"></a>
 ### Dev Note

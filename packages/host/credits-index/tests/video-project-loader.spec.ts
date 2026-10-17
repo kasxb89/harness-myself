@@ -18,7 +18,7 @@ import * as JobTools from '@deepseek-ai/dsh-tool-jobs'
 import WebServer from '@deepseek-ai/dsh-host-webserver'
 import * as Credits from '../src/index.ts'
 import { registerVideoProjectTools } from '../src/video-project-tools.ts'
-import type { VideoProjectOptions, VideoProjectProvider } from '../src/video-project-types.ts'
+import type { VideoProjectInput, VideoProjectOptions, VideoProjectProvider } from '../src/video-project-types.ts'
 import type { VideoEditor } from '../src/video-edit.ts'
 
 let context: Context | undefined
@@ -36,11 +36,12 @@ async function boot(production = false, workspaceIncludesState = false) {
   const workspace = workspaceIncludesState ? directory : join(directory, 'workspace')
   await mkdir(workspace, { recursive: true })
   const requests: number[] = []
+  const inputs: VideoProjectInput[] = []
   let pending = false
   const provider: VideoProjectProvider = {
     identity: { accountId: '7', sessionFingerprint: 'login-hash' }, assertCurrent: async () => {},
     model: async () => ({ id: 'fixture-video', durations: [5, 10, 15] }),
-    build: async (_input, model, prompt, durationSeconds) => ({ model, prompt, durationSeconds }),
+    build: async (input, model, prompt, durationSeconds) => { inputs.push(input); return { model, prompt, durationSeconds } },
     submit: async (request) => { requests.push(Number(request.durationSeconds)); return { taskId: `task-${String(requests.length)}` } },
     check: async () => ({ status: pending ? 'running' : 'succeeded' }),
     download: async (taskId, _request, destination) => {
@@ -104,7 +105,7 @@ async function boot(production = false, workspaceIncludesState = false) {
   let callIndex = 0
   const call = (name: string, args: unknown, signal = new AbortController().signal) => ctx.tools.execute({ callId: ToolCallId(`video-${String(++callIndex)}`), name, arguments: args, agent, signal })
   return {
-    ctx, agent, call, requests, workspace, stateDirectory: options.stateDirectory,
+    ctx, agent, call, requests, inputs, workspace, stateDirectory: options.stateDirectory,
     setPending: (value: boolean) => { pending = value },
   }
 }
@@ -116,6 +117,22 @@ function json(value: unknown): Record<string, unknown> {
 }
 
 describe('video tools through Loader, real tool registry and jobs runtime', () => {
+  it('keeps model-facing audio references and requested native audio in the saved project input', async () => {
+    const fixture = await boot()
+    const result = await fixture.call('generate_video_project', {
+      prompt: 'A speaks Mandarin', total_duration_seconds: 5, audio: true, reference_audios: ['voice.wav', 'ma_voice'],
+    })
+    const value = json(result.value)
+    expect(value.status).toBe('background')
+    const job = JobId(String(value.job_id))
+    await vi.waitFor(() => { expect(fixture.ctx.jobs.get(job, fixture.agent.id).status).toBe('completed') })
+    expect(fixture.inputs).toEqual([{ prompt: 'A speaks Mandarin', totalDurationSeconds: 5, audio: true, referenceAudios: ['voice.wav', 'ma_voice'] }])
+    const manifest = json(JSON.parse(await readFile(join(fixture.stateDirectory, String(value.project_id), 'manifest.json'), 'utf8')))
+    expect(manifest.input).toMatchObject({ audio: true, referenceAudios: ['voice.wav', 'ma_voice'] })
+    const status = await fixture.call('video_project_status', { project_id: value.project_id })
+    expect(json(status.value).status).toBe('completed')
+  })
+
   it('starts three clips, consumes completion through existing job_output, and exposes pure replayable presenters', async () => {
     const fixture = await boot()
     const result = await fixture.call('generate_video_project', { prompt: '制作一个茶杯广告', total_duration_seconds: 40 })
@@ -220,6 +237,7 @@ describe('video tools through Loader, real tool registry and jobs runtime', () =
     const fixture = await boot(true)
     for (const name of ['generate_video', 'generate_video_project', 'video_project_status', 'resume_video_project', 'edit_video']) expect(fixture.ctx.tools.get(name)).toBeDefined()
     expect(fixture.ctx.tools.get('generate_video_project')?.description).toContain('40-second')
+    expect(fixture.ctx.tools.schemas().find(schema => schema.name === 'generate_video')).toMatchSnapshot('single-clip audio and dialogue contract')
     expect(fixture.ctx.tools.schemas().filter(schema => ['generate_video_project', 'video_project_status', 'resume_video_project', 'edit_video'].includes(schema.name))).toMatchSnapshot()
     const denied = await fixture.call('generate_video_project', { prompt: '茶杯', total_duration_seconds: 40 })
     expect(json(denied.value)).toMatchObject({ status: 'failed' })

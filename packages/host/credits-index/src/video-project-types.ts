@@ -30,12 +30,16 @@ export interface VideoProjectInput {
   resolution?: string
   /** Validated by the selected provider model. */
   ratio?: string
+  /** Requested audio state; fixed native audio is accepted without inventing a provider switch. */
+  audio?: boolean
   /** Existing uploaded first/last-frame ids or workspace image paths. */
   frameImages?: readonly string[]
   /** Existing uploaded subject/style ids or workspace image paths. */
   referenceImages?: readonly string[]
   /** Existing uploaded video ids or workspace video paths. */
   referenceVideos?: readonly string[]
+  /** Existing uploaded audio ids or workspace WAV/MP3 paths. */
+  referenceAudios?: readonly string[]
 }
 
 /** One live account-bound relay adapter, captured without storing its key. */
