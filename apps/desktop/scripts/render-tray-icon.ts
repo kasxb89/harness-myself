@@ -1,5 +1,5 @@
 /**
- * Render the Windows tray icon with the product droplet from `resources/icon-windows.svg`.
+ * Render the Windows tray icon with the Yunshu cloud-ring mark from `resources/icon-windows.svg`.
  *
  * The tray shows the icon at 16 logical pixels, so Windows picks one of the
  * bundled bitmaps by display scale. Each size is rasterized from the vector

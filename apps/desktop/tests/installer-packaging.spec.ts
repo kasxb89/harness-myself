@@ -1,5 +1,7 @@
 import { tmpdir } from 'node:os'
 import { readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { AppInfo } from 'app-builder-lib/out/appInfo.js'
 import { Arch, Platform } from 'electron-builder'
 import { Packager } from 'app-builder-lib'
 import { describe, expect, it, vi } from 'vitest'
@@ -53,12 +55,15 @@ describe('installer preparation preserves application dependencies', () => {
       const { createElectronBuilderConfig } = await import('../electron-builder.config.mjs')
       const config = createElectronBuilderConfig(env, platform, 'x64')
       expect(config.productName).toBe('云枢')
+      expect(config.appId).toBe('com.example.installer')
+      expect(config.artifactName).toBe(`yunshu-\${version}-\${os}-\${arch}${platform === 'win32' ? '-unsigned' : ''}.\${ext}`)
       expect(config.win.executableName).toBe('Yunshu')
       expect(config.protocols).toEqual([{ name: '云枢', schemes: ['dsh'] }])
       expect(config.extraMetadata).not.toHaveProperty('name')
       expect(config.extraMetadata).not.toHaveProperty('productName')
       expect(config.mac.icon).toMatch(/icon-macos\.png$/u)
       expect(config.win.icon).toMatch(/icon-windows\.png$/u)
+      expect(config.linux.icon).toMatch(/resources[/\\]icon\.png$/u)
       const aboutIcon = config.extraResources.find(resource => resource.to === 'icon.png')
       expect(aboutIcon).toBeDefined()
       expect(readFileSync(aboutIcon!.from)).toEqual(readFileSync(new URL('../resources/icon-windows.png', import.meta.url)))
@@ -86,6 +91,38 @@ describe('installer preparation preserves application dependencies', () => {
     }
   })
 
+  it('uses Yunshu in actual builder version fields while retaining the internal package identity', async () => {
+    const { createElectronBuilderConfig } = await import('../scripts/electron-builder-config.mjs')
+    const config = createElectronBuilderConfig({ DSH_DESKTOP_APP_ID: 'com.example.installer', DSH_DESKTOP_UNSIGNED: '1' }, 'win32', 'x64')
+    const metadata = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
+      name: string
+      version: string
+      description: string
+    }
+    const packager = new Packager({ projectDir: tmpdir() })
+    Object.defineProperties(packager, {
+      config: { value: config }, metadata: { value: metadata }, devMetadata: { value: metadata },
+    })
+    const appInfo = new AppInfo(packager, null, { executableName: config.win.executableName })
+    expect(appInfo.name).toBe('@deepseek-ai/dsh-desktop')
+    expect(appInfo.id).toBe('com.example.installer')
+    expect(appInfo.productFilename).toBe('Yunshu')
+    expect(appInfo.productName).toBe('云枢')
+    expect(appInfo.companyName).toBeNull()
+    expect(appInfo.copyright).toMatch(/^Copyright © \d{4} 云枢$/u)
+    const { NsisTarget } = createRequire(import.meta.url)('app-builder-lib/out/targets/nsis/NsisTarget.js') as {
+      NsisTarget: { prototype: { computeVersionKey: (this: {
+        options: { language?: string }
+        packager: { appInfo: AppInfo; platformSpecificBuildOptions: { legalTrademarks?: string } }
+      }) => string[] } }
+    }
+    const versionFields = NsisTarget.prototype.computeVersionKey.call({ options: {},
+      packager: { appInfo, platformSpecificBuildOptions: {} } })
+    expect(versionFields).toContain('/LANG=1033 ProductName "云枢"')
+    expect(versionFields).toContain('/LANG=1033 FileDescription "云枢智能工作台"')
+    expect(versionFields.some(field => /deepseek|electron desktop shell/iu.test(field))).toBe(false)
+  })
+
   it('names unsigned Windows artifacts so they cannot pass for release builds', async () => {
     const { createElectronBuilderConfig } = await import('../scripts/electron-builder-config.mjs')
     const config = createElectronBuilderConfig({
@@ -96,7 +133,7 @@ describe('installer preparation preserves application dependencies', () => {
       DSH_DESKTOP_TARGET_ARCH: 'x64',
       DSH_DESKTOP_UNSIGNED: '1',
     }, 'win32', 'x64')
-    expect(config.artifactName).toBe('deepseek-harness-${version}-${os}-${arch}-unsigned.${ext}')
+    expect(config.artifactName).toBe('yunshu-${version}-${os}-${arch}-unsigned.${ext}')
   })
 
   it('packages every preload entry point the shell loads', async () => {

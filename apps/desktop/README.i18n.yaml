@@ -9,11 +9,11 @@
   en: bef92953c237363f
   zh: d21d6effd21b8c00
 /yunshu-desktop/closing-the-window-and-quitting:
-  en: fd3d6b6eebb27018
-  zh: 0b863c4e271b43c2
+  en: 229bdd7516a7a032
+  zh: efcbffc9971beb2a
 /yunshu-desktop/key-technical-decisions:
-  en: 069fdfd72d2ea26a
-  zh: 76ae549d43c99bb4
+  en: c9ee828918437abc
+  zh: 1f362f81f33186b6
 /yunshu-desktop/key-technical-decisions/bundled-workspace-dependencies:
   en: 6bad1ddc552c7355
   zh: abf4ba8903aa8859
@@ -42,17 +42,17 @@
   en: 4cd8a8da6977928d
   zh: 9f624855a2edac37
 /yunshu-desktop/package/release-versions:
-  en: 193bacf1f8f6f2a7
-  zh: f21f674850f6a2b4
+  en: 5b0edefead193ef3
+  zh: 114209e87d0fde19
 /yunshu-desktop/package/local-macos-dmg-without-release-signing:
-  en: 57869a5e3885f843
-  zh: 7cfc01b2dcbebd78
+  en: 9f65c50579e4afd1
+  zh: fefa7097ae8b2816
 /yunshu-desktop/package/local-official-bundles-from-a-loopback-registry:
   en: 5f05072ec82cc62d
   zh: a3d63b58d1ef2db7
 /yunshu-desktop/package/runtime-file-selection:
-  en: 4dff0c068f6d825b
-  zh: c6eb583c1ca94a46
+  en: 0ad1784d385cdb5c
+  zh: 876972d595401cda
 /yunshu-desktop/package/upload-updates:
   en: 645d822d23639fa2
   zh: 626bec7efa518cf2

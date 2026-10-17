@@ -1,10 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="600" height="196" viewBox="0 0 600 196">
-  <rect x="249.75" y="11.75" width="100.5" height="100.5" rx="30.5" fill="#39454b"/>
-  <svg x="248" y="10" width="104" height="104" viewBox="0 0 1024 1024" fill="none">
-    <g transform="translate(-70 -70) scale(48.5)">
-      <path d="M8 2h8a6 6 0 0 1 6 6v8a6 6 0 0 1-6 6H8a6 6 0 0 1-6-6V8a6 6 0 0 1 6-6Z" fill="#fff"/>
-      <path d="M8 2h8a6 6 0 0 1 6 6v8a6 6 0 0 1-6 6H8a6 6 0 0 1-6-6V8a6 6 0 0 1 6-6ZM12 6.1C9.2 9.6 7.7 12 7.7 14a4.3 4.3 0 0 0 8.6 0c0-2-1.5-4.4-4.3-7.9Z" fill="#172126" fill-rule="evenodd" clip-rule="evenodd"/>
-    </g>
-  </svg>
-  <text x="302" y="164" text-anchor="middle" font-family="PingFang SC, Microsoft YaHei UI, Noto Sans CJK SC, sans-serif" font-size="32" font-weight="500" letter-spacing="4" fill="#f3f5f6">云枢</text>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="196" viewBox="0 0 600 196"><svg x="248" y="10" width="104" height="104" viewBox="0 0 1024 1024"><defs><linearGradient id="tile" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#174FDB"/><stop offset="1" stop-color="#11123E"/></linearGradient><linearGradient id="ribbon" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#FFFFFF"/><stop offset=".5" stop-color="#C7F1FF"/><stop offset="1" stop-color="#6796FF"/></linearGradient></defs><rect x="16" y="16" width="992" height="992" rx="232" fill="url(#tile)"/><g id="tray-glyph" transform="translate(104 104) scale(34)"><path d="M6.4 8.9C7 4.3 10.7 2 14.5 3.5C18.1 4.9 19.3 8.1 18 11.6L16.8 14.2C16.8 11 15.6 8.7 13.3 7.5C11 6.4 8.6 6.9 6.4 8.9Z" fill="url(#ribbon)"/><path d="M17.4847 8.7003C21.1684 11.5199 21.3103 15.8742 18.1112 18.4151C15.0988 20.8328 11.7275 20.272 9.3464 17.3962L7.6947 15.0569C10.466 16.6569 13.0579 16.7677 15.2471 15.3758C17.3497 13.934 18.1167 11.6055 17.4847 8.7003Z" fill="url(#ribbon)"/><path d="M12.1153 18.3997C7.8316 20.1801 3.9897 18.1258 3.3888 14.0849C2.8012 10.2672 4.9725 7.628 8.6536 7.0038L11.5053 6.7431C8.734 8.3431 7.3421 10.5323 7.4529 13.1242C7.6503 15.666 9.2833 17.4945 12.1153 18.3997Z" fill="url(#ribbon)"/></g></svg><text x="302" y="164" text-anchor="middle" font-family="PingFang SC, Microsoft YaHei UI, Noto Sans CJK SC, sans-serif" font-size="32" font-weight="500" letter-spacing="4" fill="#F3F5FF">云枢</text></svg>
