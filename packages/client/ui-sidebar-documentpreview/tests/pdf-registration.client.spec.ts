@@ -14,8 +14,9 @@ import type { PdfBodyInjected } from '../src/client/pdf/pdf.tsx'
 vi.mock('../src/client/pdf/runtime.ts', () => ({ openPdf: vi.fn() }))
 const renderedPdf = vi.hoisted(() => vi.fn(() => null))
 vi.mock('../src/client/pdf/pdf.tsx', () => ({ PdfBody: renderedPdf }))
-import { apply, PDF_BODY_ID } from '../src/client/pdf/index.ts'
+import { apply, PDF_BODY_ID, ARTIFACT_PDF_BODY_ID } from '../src/client/pdf/index.ts'
 import { LazyPdfBody } from '../src/client/pdf/LazyPdfBody.tsx'
+import { LazyArtifactPdfBody } from '../src/client/pdf/LazyArtifactPdfBody.tsx'
 import { en, zh } from '../src/client/pdf/locales.ts'
 
 afterEach(() => { cleanup(); renderedPdf.mockClear() })
@@ -39,7 +40,7 @@ describe('PDF registration', () => {
       inject: (sessionId: SessionId, actions: ReturnType<ReturnType<typeof createPdfStore>['create']>['actions']) => PdfBodyInjected
     }> = []
     const register = vi.fn((options: typeof entries[number], component: unknown) => {
-      expect(component).toBe(LazyPdfBody)
+      expect(component).toBe(options.name === 'artifacts.preview.pdf' ? LazyArtifactPdfBody : LazyPdfBody)
       entries.push(options)
       return () => { entries.splice(entries.indexOf(options), 1) }
     })
@@ -51,7 +52,7 @@ describe('PDF registration', () => {
     ctx.provide('slots', {
       inject: (_name: string, callback: () => () => void) => callback(), register,
     } as never)
-    const fiber = ctx.plugin({ apply })
+    const fiber = ctx.plugin({ apply: (scope) => { apply(scope, { maxBytes: 1234 }) } })
     try {
       await fiber.await()
       expect(previews.candidates('REPORT.PDF')).toMatchObject([
@@ -60,6 +61,8 @@ describe('PDF registration', () => {
       expect(previews.candidates('report.pdf')[0]!.title()).toBe('PDF')
       expect(dictionaries.get('sidebarPdf')).toEqual({ zh, en })
       expect(entries[0]).toMatchObject({ name: 'sidebar.right.tab.document', key: PDF_BODY_ID, locale: 'sidebarPdf' })
+      expect(entries[1]).toMatchObject({ name: 'artifacts.preview.pdf', key: ARTIFACT_PDF_BODY_ID, locale: 'sidebarPdf' })
+      expect(entries[1]?.inject('s1' as SessionId, createPdfStore().create().actions)).toMatchObject({ maxBytes: 1234 })
       const instance = entries[0]!.store.create()
       const face = entries[0]!.inject('s1' as SessionId, instance.actions)
       const controller = new AbortController()

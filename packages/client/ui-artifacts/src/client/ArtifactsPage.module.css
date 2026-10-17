@@ -196,62 +196,6 @@
   overflow: hidden;
 }
 
-.media {
-  max-width: 100%;
-  max-height: 100%;
-  margin: auto;
-  object-fit: contain;
-}
-
-.audioPane {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 16px;
-  margin: auto;
-  padding: 24px;
-  color: var(--dsw-alias-label-tertiary);
-}
-
-.audio {
-  width: min(360px, 70vw);
-}
-
-.frame {
-  width: 100%;
-  height: 100%;
-  border: 0;
-  background: var(--dsw-alias-bg-base);
-}
-
-.code {
-  box-sizing: border-box;
-  width: 100%;
-  height: 100%;
-  margin: 0;
-  padding: 14px 16px;
-  overflow: auto;
-  background: var(--dsw-alias-markdown-code-block);
-  color: var(--dsw-alias-label-primary);
-  font-family: var(--ds-font-family-code);
-  font-size: 12px;
-  line-height: 20px;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.unsupported {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 12px;
-  margin: auto;
-  padding: 24px;
-  max-width: 420px;
-  text-align: center;
-  color: var(--dsw-alias-label-tertiary);
-}
-
 .placeholder {
   display: flex;
   flex-direction: column;
@@ -360,9 +304,11 @@
 
 .workspaceScope {
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
-  padding: 12px 14px;
+  min-width: 0;
+  padding: 8px 10px;
   border: 0.5px solid var(--dsw-alias-border-l2);
   border-radius: var(--dsw-radius-lg);
 }
@@ -370,16 +316,23 @@
 .workspaceSelect {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 12px;
+  flex: 1 1 180px;
+  min-width: 0;
+  max-width: 240px;
+  gap: 8px;
   color: var(--dsw-alias-label-primary);
   font-size: 13px;
 }
 
+.workspaceSelect > svg {
+  flex: none;
+  color: var(--dsw-alias-label-secondary);
+}
+
 .workspaceSelect select {
   box-sizing: border-box;
-  min-width: 180px;
-  max-width: 100%;
+  min-width: 0;
+  width: 100%;
   height: 32px;
   padding: 4px 8px;
   border: 0.5px solid var(--dsw-alias-border-l2);
@@ -387,6 +340,7 @@
   background: var(--dsw-alias-bg-layer-1);
   color: var(--dsw-alias-label-primary);
   font: inherit;
+  text-overflow: ellipsis;
 }
 
 .workspaceSelect select:focus-visible {
@@ -396,8 +350,50 @@
 .breadcrumbs {
   display: flex;
   align-items: center;
+  flex: 1 1 180px;
   flex-wrap: wrap;
+  min-width: 0;
   gap: 4px;
+  font-size: 13px;
+}
+
+.breadcrumbPart {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  gap: 4px;
+}
+
+.breadcrumbPart > button {
+  min-width: 0;
+  min-height: 28px;
+  height: auto;
+  overflow-wrap: anywhere;
+}
+
+.breadcrumbSeparator {
+  color: var(--dsw-alias-label-secondary);
+}
+
+.breadcrumbCurrent {
+  min-width: 0;
+  color: var(--dsw-alias-label-primary);
+  overflow-wrap: anywhere;
+}
+
+.workspaceLocationButton {
+  flex: none;
+  margin-left: auto;
+}
+
+.workspaceLocation {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 8px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
 }
 
 .emptyPane {

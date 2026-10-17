@@ -67,6 +67,8 @@ PNG、JPEG、GIF、WebP、BMP、ICO 和 SVG 通过 Blob URL 在 `<img>` 静态�
 
 文档开头的 YAML frontmatter（首行 `---` 开始，以 `---` 或 `...` 结束）在 Markdown 正文上方显示为键值列表。字符串值显示解析后的文本，包括折叠与多行字符串；其他标量、列表、映射与别名保留原始 YAML 写法。无效 YAML 或非映射文档原样显示整个块，没有内容的块不显示。未闭合的块仍按 Markdown 渲染。YAML 解析器位于包内 `client.frontmatter-fields.js` 分块，仅在文档含 frontmatter 时加载；加载期间或加载失败时显示原样块。源文件不会被修改。
 
+全局键控 slot `artifacts.preview.pdf` 使用同一个惰性加载的 PDF 阅读器和可选文字层，显示已授权的产物 PDF URL，包括 Office 转换结果。读取按实际流入字节执行 `pdf.maxBytes` 限制；切换文件或离开阅读器会取消读取并释放 PDF Worker。页面与缩放状态只属于选中的产物，独立于 Session tab 和 Office 缓存保留。
+
 <a id="excel-preview"></a>
 ## Excel 预览
 
@@ -95,10 +97,11 @@ CSV 和 TSV 默认使用表格查看器，也可选择纯文本；CSV 还提供�
 
 将 `.doc`、`.docx`、`.ppt` 和 `.pptx` 打开为 PDF 预览，使用与 PDF 文件相同的加载状态、缩放控件、取消和文本选择能力。[Host 提供方](../../document/office-to-pdf/README.zh.md)负责本地转换，并为其他消费者保留电子表格转换 API。受支持的无效文件、转换失败和超时会显示本地化消息。缺少 Host 服务时显示配置引导。
 
-[Web bundle](../../bundle/web-app/README.zh.md) 以 `ui-sidebar-documentpreview` 挂载本包。通过该条目的 `office` 设置配置临时 Office 缓存；[配置目录](../../../docs/config-catalog.zh.md#deepseek-aidsh-client-ui-sidebar-documentpreview)定义可接受的值。设置注入到每个页面；修改 YAML 后重新加载浏览器页面。
+[Web bundle](../../bundle/web-app/README.zh.md) 以 `ui-sidebar-documentpreview` 挂载本包。通过该条目的 `pdf` 设置配置产物 PDF 读取容量，通过 `office` 配置临时 Office 缓存；[配置目录](../../../docs/config-catalog.zh.md#deepseek-aidsh-client-ui-sidebar-documentpreview)定义可接受的值。设置注入到每个页面；修改 YAML 后重新加载浏览器页面。
 
 | 字段 | 默认值 | 含义 |
 |---|---|---|
+| `pdf.maxBytes` | `104857600`（100 MiB） | 实际产物 PDF 源文件字节上限，独立于 Office 缓存限制 |
 | `office.maxCachedEntries` | `8` | 最多保留的已完成 PDF 数量 |
 | `office.maxCachedBytes` | `67108864`（64 MiB） | 最多保留的二进制 PDF 字节数，按缓冲区 `byteLength` 计算 |
 | `office.maxPending` / `office.maxReaders` | `8` / `32` | 未完成转换 RPC 数量 / 含元数据查询的读取方数量 |

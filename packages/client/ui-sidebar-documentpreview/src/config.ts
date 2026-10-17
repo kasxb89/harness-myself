@@ -1,8 +1,13 @@
-/** Cache limits shared by the Host configuration and browser document previews. */
+/** Read and cache limits shared by Host configuration and browser document previews. */
 import z from '@deepseek-ai/schemastery'
 
-/** Transient Office conversion reuse within one Client connection. */
+/** PDF reads, transient Office reuse, and browser spreadsheet parser limits. */
 export interface Config {
+  /** Complete-file capacity for artifact PDF preview reads. */
+  pdf: {
+    /** Maximum actual source bytes, independently of Office cache capacity. */
+    maxBytes: number
+  }
   /** Retained PDF limits; pending conversions share cancellation by reader lifetime. */
   office: {
     /** Maximum retained completed PDFs. */
@@ -25,8 +30,9 @@ export interface Config {
   }
 }
 
-/** Deployment limits applied before Office preview registration. */
-export const Config: z<{ office?: Partial<Config['office']>; excel?: Partial<Config['excel']> }, Config> = z.object({
+/** Deployment limits applied before document preview registration. */
+export const Config: z<{ pdf?: Partial<Config['pdf']>; office?: Partial<Config['office']>; excel?: Partial<Config['excel']> }, Config> = z.object({
+  pdf: z.object({ maxBytes: z.natural().min(1).max(Number.MAX_SAFE_INTEGER).default(100 * 1024 * 1024) }),
   office: z.object({
     maxCachedEntries: z.natural().min(1).max(Number.MAX_SAFE_INTEGER).default(8),
     maxCachedBytes: z.natural().min(1).max(Number.MAX_SAFE_INTEGER).default(64 * 1024 * 1024),

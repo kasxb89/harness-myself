@@ -26,6 +26,14 @@ import { readArtifacts, readStorage, readTrash, readWorkspace, renameArtifact, r
 import { en, NS, zh, type ArtifactsKey } from './locales.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
+  interface SlotMap {
+    /** Standalone PDF presentation for an already authorized artifact URL. */
+    'artifacts.preview.pdf': {
+      kind: 'keyed'
+      scope: 'root'
+      owner: { readonly url: string; readonly name: string }
+    }
+  }
   interface LocaleNamespaceMap {
     /** Artifacts panel copy. */
     'artifacts': ArtifactsKey
@@ -87,6 +95,7 @@ export function apply(ctx: ClientContext): void {
     name: 'main',
     key: PANEL_ID,
     locale: NS,
+    children: { 'artifacts.preview.pdf': { kind: 'keyed', scope: 'root' } },
     inject: (): ArtifactsMainInjected => ({ ...face, hooks: { artifactSession: ctx.uiSession.adapter.current } }),
   }, ArtifactsMain))
   ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({

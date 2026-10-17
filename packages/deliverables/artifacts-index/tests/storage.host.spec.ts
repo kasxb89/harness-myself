@@ -18,6 +18,7 @@ import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import Storage from '@deepseek-ai/dsh-storage'
 import * as JsonStorage from '@deepseek-ai/dsh-storage-json'
 import * as StorageDomain from '@deepseek-ai/dsh-storage-domain'
+import type { OfficeToPdfRequest, OfficeToPdfResult } from '@deepseek-ai/dsh-office-to-pdf'
 import * as Artifacts from '../src/index.ts'
 import { validName, qualified } from '../src/storage.ts'
 
@@ -111,6 +112,18 @@ async function boot(existing?: string, options: { connection?: boolean; maxEntri
   return { ctx, directory, output, state, custom, base, request, requestHost, json, version }
 }
 const signal = () => new AbortController().signal
+
+const pdf = Buffer.from('%PDF-1.4\nconverted fixture\n%%EOF')
+const converted = (): OfficeToPdfResult => ({
+  pdf, missingFonts: ['Private font name'],
+  cacheKey: 'fixture-cache' as OfficeToPdfResult['cacheKey'], generation: 'fixture-generation' as OfficeToPdfResult['generation'],
+})
+function provideConverter(ctx: Context, convert: (request: OfficeToPdfRequest, signal: AbortSignal) => Promise<OfficeToPdfResult>) {
+  const call = vi.fn((request: OfficeToPdfRequest, upstream?: AbortSignal) => convert(request, upstream ?? signal()))
+  const dispose = ctx.reflect.provide('officeToPdf', { convert: call })
+  ctx.effect(() => dispose)
+  return call
+}
 
 describe('artifact storage through the real Loader and HTTP routes', () => {
   it('creates the default, persists changed directory and historical roots, and keeps captured writes in their original directory', async () => {
@@ -300,6 +313,179 @@ describe('artifact storage through the real Loader and HTTP routes', () => {
     expect(head.status).toBe(200)
     expect(head.headers.get('content-length')).toBe('6')
     expect(await head.text()).toBe('')
+  })
+
+  it('offers authorized Unicode-named downloads and serves htm with the HTML sandbox', async () => {
+    const f = await boot()
+    const path = join(f.output, "报告 'final'.txt")
+    await writeFile(path, 'keep original bytes')
+    const query = 'raw?' + new URLSearchParams({ path, download: '1' }).toString()
+    const result = await f.request(query, undefined, { headers: { range: 'bytes=0-3' } })
+    expect(result.status).toBe(206)
+    expect(await result.text()).toBe('keep')
+    expect(result.headers.get('content-type')).toBe('text/plain; charset=utf-8')
+    expect(result.headers.get('content-disposition')).toBe('attachment; filename="____final_.txt"; filename*=UTF-8\'\'%E6%8A%A5%E5%91%8A%20%27final%27.txt')
+    expect((await f.request(query, undefined, { authenticated: false })).status).toBe(401)
+    const head = await f.request(query, undefined, { method: 'HEAD' })
+    expect(head.headers.get('content-disposition')).toBe(result.headers.get('content-disposition'))
+    expect(await head.text()).toBe('')
+    const html = join(f.output, 'page.htm')
+    await writeFile(html, '<script>parent.fetch("/artifacts/api/trash")</script>')
+    const page = await f.request('raw?' + new URLSearchParams({ path: html }).toString())
+    expect(page.headers.get('content-type')).toBe('text/html; charset=utf-8')
+    expect(page.headers.get('content-security-policy')).toContain('sandbox; default-src \'none\'')
+    expect(page.headers.get('content-disposition')).toBeNull()
+    const unknown = join(f.output, 'opaque.xlsx')
+    await writeFile(unknown, new Uint8Array([0, 255, 1]))
+    expect((await f.request('raw?' + new URLSearchParams({ path: unknown }).toString())).headers.get('content-type')).toBe('application/octet-stream')
+  })
+
+  it('reports missing conversion providers after authorization and rejects unsupported preview formats', async () => {
+    const f = await boot()
+    const path = join(f.output, 'report.docx')
+    await writeFile(path, 'office bytes')
+    const query = 'preview?' + new URLSearchParams({ path }).toString()
+    expect((await f.request(query, undefined, { authenticated: false })).status).toBe(401)
+    expect(await f.requestHost(query, 'attacker.invalid')).toBe(403)
+    const unavailable = await f.request(query)
+    expect(unavailable.status).toBe(503)
+    expect(await unavailable.json()).toEqual({ code: 'preview-unavailable' })
+    const text = join(f.output, 'notes.txt')
+    await writeFile(text, 'plain text')
+    expect(await f.json('preview?' + new URLSearchParams({ path: text }).toString())).toEqual({ code: 'preview-invalid' })
+  })
+
+  it.each(['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'])('converts admitted %s bytes with cancellation and version metadata, preserving the original', async (extension) => {
+    const f = await boot()
+    const path = join(f.output, `report.${extension}`)
+    await writeFile(path, 'original office source')
+    const convert = provideConverter(f.ctx, async (request, upstream) => {
+      expect(request.extension).toBe(extension)
+      expect(request.priority).toBe('foreground')
+      expect(JSON.parse(String(request.source.key))).toEqual(['artifacts', 'library', path])
+      expect(request.source.bytes).toBe(22)
+      const source = await request.source.read(upstream, 100)
+      expect(Buffer.from(source.bytes).toString()).toBe('original office source')
+      expect(source.version).toBe(request.source.version)
+      return converted()
+    })
+    const query = 'preview?' + new URLSearchParams({ path }).toString()
+    const result = await f.request(query)
+    expect(result.status).toBe(200)
+    expect(result.headers.get('content-type')).toBe('application/pdf')
+    expect(result.headers.get('content-length')).toBe(String(pdf.length))
+    expect(result.headers.get('cache-control')).toBe('no-store')
+    expect(result.headers.get('x-content-type-options')).toBe('nosniff')
+    expect(result.headers.get('x-artifact-preview-missing-fonts')).toBe('1')
+    expect([...result.headers.values()].join(' ')).not.toContain('Private font name')
+    expect(Buffer.from(await result.arrayBuffer())).toEqual(pdf)
+    const head = await f.request(query, undefined, { method: 'HEAD' })
+    expect(head.status).toBe(200)
+    expect(head.headers.get('content-length')).toBe(String(pdf.length))
+    expect(await head.text()).toBe('')
+    expect(convert).toHaveBeenCalledTimes(2)
+    expect(await readFile(path, 'utf8')).toBe('original office source')
+  })
+
+  it('bounds the deferred read and refuses a source changed while waiting for converter admission', async () => {
+    const f = await boot()
+    const path = join(f.output, 'report.docx')
+    await writeFile(path, 'longer than capacity')
+    const convert = provideConverter(f.ctx, async (request, upstream) => {
+      await request.source.read(upstream, 3)
+      return converted()
+    })
+    const query = 'preview?' + new URLSearchParams({ path }).toString()
+    const tooLarge = await f.request(query)
+    expect(tooLarge.status).toBe(413)
+    expect(await tooLarge.json()).toEqual({ code: 'preview-too-large' })
+    const admitted = Promise.withResolvers<undefined>()
+    const release = Promise.withResolvers<undefined>()
+    convert.mockImplementationOnce(async (request, upstream) => {
+      admitted.resolve(undefined)
+      await release.promise
+      await request.source.read(upstream ?? signal(), 100)
+      return converted()
+    })
+    const pending = f.request(query)
+    await admitted.promise
+    await writeFile(path, 'replacement office source')
+    release.resolve(undefined)
+    const stale = await pending
+    expect(stale.status).toBe(409)
+    expect(await stale.json()).toEqual({ code: 'preview-stale' })
+    expect(await readFile(path, 'utf8')).toBe('replacement office source')
+  })
+
+  it.each([
+    ['input-too-large', 413, 'preview-too-large'], ['output-too-large', 413, 'preview-too-large'],
+    ['invalid-document', 422, 'preview-invalid'], ['unsupported-format', 422, 'preview-invalid'],
+    ['source-changed', 409, 'preview-stale'], ['unavailable', 503, 'preview-unavailable'],
+    ['busy', 503, 'preview-busy'], ['timeout', 500, 'preview-failed'],
+  ])('contains converter %s failures without returning engine diagnostics', async (code, status, expected) => {
+    const f = await boot()
+    const path = join(f.output, 'report.docx')
+    await writeFile(path, 'office source')
+    provideConverter(f.ctx, () => Promise.reject(Object.assign(new Error('/private/engine-secret'), { name: 'OfficeToPdfError', code })))
+    const result = await f.request('preview?' + new URLSearchParams({ path }).toString())
+    expect(result.status).toBe(status)
+    expect(await result.json()).toEqual({ code: expected })
+  })
+
+  it('aborts the converter when its browser request disconnects', async () => {
+    const f = await boot()
+    const path = join(f.output, 'report.docx')
+    await writeFile(path, 'office source')
+    const admitted = Promise.withResolvers<AbortSignal>()
+    provideConverter(f.ctx, (_request, upstream) => {
+      admitted.resolve(upstream)
+      return new Promise((_resolve, reject) => {
+        upstream.addEventListener('abort', () => { reject(new Error('Converter cancelled', { cause: upstream.reason })) }, { once: true })
+      })
+    })
+    const browser = new AbortController()
+    const pending = f.request('preview?' + new URLSearchParams({ path }).toString(), undefined, { signal: browser.signal })
+    const upstream = await admitted.promise
+    browser.abort()
+    await expect(pending).rejects.toThrow()
+    await vi.waitFor(() => { expect(upstream.aborted).toBe(true) })
+    expect(await readFile(path, 'utf8')).toBe('office source')
+  })
+
+  it('keeps Office conversion within the selected live workspace and rechecks it before returning', async () => {
+    const f = await boot(undefined, { workspaces: true })
+    const root = join(f.directory, 'project')
+    const other = join(f.directory, 'other-project')
+    await mkdir(root)
+    await mkdir(other)
+    const workspace = await f.ctx.workspaceRegistry.create(root)
+    const otherWorkspace = await f.ctx.workspaceRegistry.create(other)
+    const path = join(root, 'report.docx')
+    await writeFile(path, 'office source')
+    const admitted = Promise.withResolvers<undefined>()
+    const release = Promise.withResolvers<undefined>()
+    const convert = provideConverter(f.ctx, async (request, upstream) => {
+      await request.source.read(upstream, 100)
+      admitted.resolve(undefined)
+      await release.promise
+      return converted()
+    })
+    const query = 'preview?' + new URLSearchParams({ workspaceId: String(workspace.id), path }).toString()
+    expect((await f.request('preview?' + new URLSearchParams({ path }).toString())).status).toBe(403)
+    expect((await f.request('preview?' + new URLSearchParams({ workspaceId: String(otherWorkspace.id), path }).toString())).status).toBe(403)
+    const outside = join(other, 'secret.docx')
+    await writeFile(outside, 'secret')
+    await symlink(outside, join(root, 'link.docx'))
+    expect((await f.request('preview?' + new URLSearchParams({ workspaceId: String(workspace.id), path: join(root, 'link.docx') }).toString())).status).toBe(403)
+    expect(convert).not.toHaveBeenCalled()
+    const pending = f.request(query)
+    await admitted.promise
+    await f.ctx.workspaceRegistry.delete(workspace.id)
+    release.resolve(undefined)
+    const result = await pending
+    expect(result.status).toBe(404)
+    expect(await result.json()).toEqual({ code: 'ARTIFACT_WORKSPACE_UNAVAILABLE' })
+    expect(await readFile(path, 'utf8')).toBe('office source')
   })
 
   it('validates retained destinations before resuming and refuses an offline or redirected old root', async () => {

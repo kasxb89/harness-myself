@@ -10,7 +10,8 @@ afterEach(() => { vi.unstubAllGlobals() })
 
 /** Capture this feature's registrations without mounting unrelated shell and conversation features. */
 function assemble() {
-  const registrations: { name: string; inject?: () => unknown }[] = []
+  type Registration = { name: string; inject?: () => unknown; children?: Readonly<Record<string, { kind: string; scope: string }>> }
+  const registrations: Registration[] = []
   const cleanup: (() => void)[] = []
   const current = { getSnapshot: () => ({ key: 'session-one' }), subscribe: () => () => {} }
   const canOpen = vi.fn(async () => ({ ok: true, value: true }))
@@ -28,7 +29,7 @@ function assemble() {
     },
     slots: {
       inject: (_name: string, register: () => void) => { register() },
-      register: (options: { name: string; inject?: () => unknown }) => { registrations.push(options) },
+      register: (options: Registration) => { registrations.push(options) },
     },
   } as never)
   const page = registrations.find(row => row.name === 'main')!.inject!() as ArtifactsInjected
@@ -37,6 +38,14 @@ function assemble() {
 }
 
 describe('artifact operation ownership', () => {
+  it('authorizes the root PDF reader as a keyed child of the artifacts main panel', () => {
+    const runtime = assemble()
+    try {
+      expect(runtime.registrations.find(row => row.name === 'main')?.children)
+        .toEqual({ 'artifacts.preview.pdf': { kind: 'keyed', scope: 'root' } })
+    } finally { runtime.dispose() }
+  })
+
   it('injects the retained current-session source and reports native reveal through the shell notice', async () => {
     const runtime = assemble()
     try {

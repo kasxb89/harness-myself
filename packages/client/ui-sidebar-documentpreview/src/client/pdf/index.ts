@@ -5,6 +5,9 @@ import type {} from '../index.ts'
 import type { DocumentPreviewDefinition } from '../document/registry.ts'
 import type { PdfBodyInjected } from './pdf.tsx'
 import { LazyPdfBody } from './LazyPdfBody.tsx'
+import { LazyArtifactPdfBody } from './LazyArtifactPdfBody.tsx'
+import type {} from '@deepseek-ai/dsh-client-ui-artifacts/client'
+import type { Config } from '../../config.ts'
 import type { BoundActions } from '@deepseek-ai/dsh-client-store'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { createPdfStore, type PdfStore } from './store.ts'
@@ -13,6 +16,9 @@ import { en, zh } from './locales.ts'
 
 /** PDF metadata and keyed body share this package-local implementation identity. */
 export const PDF_BODY_ID = '@deepseek-ai/dsh-client-ui-sidebar-documentpreview/pdf'
+
+/** Global artifact reader identity; its PDF implementation remains owned by this package. */
+export const ARTIFACT_PDF_BODY_ID = '@deepseek-ai/dsh-client-ui-sidebar-documentpreview/artifact-pdf'
 
 /**
  * Describe the builtin PDF renderer independently from its keyed body slot.
@@ -23,8 +29,8 @@ export function pdfBodyDefinition(title: () => string): DocumentPreviewDefinitio
   return { id: PDF_BODY_ID, extensions: ['pdf'], binaryExtensions: ['pdf'], priority: 'builtin', title, loading: 'bytes-complete', wrap: false }
 }
 
-/** @param ctx - context carrying the locale, document registry, and slot registry. */
-export function apply(ctx: Context): void {
+/** @param ctx - context carrying the locale, document registry, and slot registry. @param config - PDF source limits. */
+export function apply(ctx: Context, config: Config['pdf']): void {
   ctx.effect(() => ctx.locale.register('sidebarPdf', { zh, en }))
   const t = ctx.locale.bind('sidebarPdf')
   ctx.effect(() => ctx.documentPreviews.register(pdfBodyDefinition(() => t('title'))))
@@ -32,6 +38,10 @@ export function apply(ctx: Context): void {
   ctx.effect(() => ctx.slots.inject('sidebar.right.tab.document', () => ctx.slots.register({
     name: 'sidebar.right.tab.document', key: PDF_BODY_ID, locale: 'sidebarPdf', ...presentation,
   }, LazyPdfBody)))
+  ctx.effect(() => ctx.slots.inject('artifacts.preview.pdf', () => ctx.slots.register({
+    name: 'artifacts.preview.pdf', key: ARTIFACT_PDF_BODY_ID, locale: 'sidebarPdf',
+    inject: () => ({ maxBytes: config.maxBytes, ZoomViewport, zoomSurfaceClass }),
+  }, LazyArtifactPdfBody)))
 }
 
 /**

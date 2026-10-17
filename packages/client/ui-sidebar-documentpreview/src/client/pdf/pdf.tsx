@@ -1,7 +1,7 @@
-/** PDF page presentation; binary content and tab information come from the document owner. */
-import { useCallback, useEffect, useRef, useState, type ComponentType, type CSSProperties, type ReactNode } from 'react'
+/** Shared PDF reader with separate tab-state and artifact-URL adapters. */
+import { useCallback, useEffect, useRef, useState, type ComponentType, type CSSProperties, type ReactNode, type RefCallback } from 'react'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { PropsLocale, PropsStore } from '@deepseek-ai/dsh-client-ui-slots'
+import type { PropsLocale, PropsRuntime, PropsStore } from '@deepseek-ai/dsh-client-ui-slots'
 import type { TabId } from '@deepseek-ai/dsh-client-ui-dockkit'
 import type { DocumentPreviewProps } from '../document/contract.ts'
 import type { PdfStore, PdfView } from './store.ts'
@@ -12,6 +12,8 @@ import { pdfTextRenderer } from './text.ts'
 import type { ZoomViewportProps } from '../zoom/ZoomViewport.tsx'
 import type { ZoomLabels, ZoomPreference } from '../zoom/types.ts'
 import type {} from './locales.ts'
+import type {} from '@deepseek-ai/dsh-client-ui-artifacts/client'
+import { readArtifactPdf, ArtifactPdfReadError } from './artifact-source.ts'
 import css from './PdfBody.module.css'
 
 /** A record's viewing preferences survive body unmounts and leave with the tab. */
@@ -46,41 +48,105 @@ export function PdfBody(props: PdfBodyProps & { readonly loading: ReactNode }): 
   const { tab } = props.useTabInfo()
   const view = props.useStore(state => state.byTab[tab.id] ?? DEFAULT_PDF_VIEW)
   const data = props.content.kind === 'bytes' ? props.content.data : undefined
+  const { retainTab, actions } = props
+  const pageVisible = useCallback((page: number): void => { actions.page(tab.id, page) }, [actions, tab.id])
+  const setPreference = useCallback((value: ZoomPreference): void => { actions.zoom(tab.id, value) }, [actions, tab.id])
+  useEffect(() => { retainTab(tab.id, tab.signal) }, [retainTab, tab.id, tab.signal])
+  return <PdfReader data={data} signal={tab.signal} view={view} onPageVisible={pageVisible} onPreference={setPreference}
+    scrollportRef={props.scrollportRef} loading={props.loading} t={props.t}
+    ZoomViewport={props.ZoomViewport} zoomSurfaceClass={props.zoomSurfaceClass} />
+}
+
+/** Complete bytes and framework-free viewing state shared by artifact and sidebar PDF readers. */
+export interface PdfReaderProps extends PropsLocale<'sidebarPdf'> {
+  readonly data: Uint8Array<ArrayBuffer> | undefined
+  readonly signal: AbortSignal
+  readonly view: PdfView
+  readonly onPageVisible: (page: number) => void
+  readonly onPreference: (preference: ZoomPreference) => void
+  readonly scrollportRef: RefCallback<HTMLElement>
+  readonly loading: ReactNode
+  readonly ZoomViewport: ComponentType<ZoomViewportProps>
+  readonly zoomSurfaceClass: string
+}
+
+/** Registered artifact PDF reader inputs; state belongs to the mounted artifact rather than a tab. */
+export type ArtifactPdfBodyProps = PropsRuntime<'artifacts.preview.pdf'> & PropsLocale<'sidebarPdf'> & {
+  readonly maxBytes: number
+  readonly ZoomViewport: ComponentType<ZoomViewportProps>
+  readonly zoomSurfaceClass: string
+}
+
+/** @param props - Authorized PDF URL and localized presentation. @returns A reader reset for each selected source. */
+export function ArtifactPdfBody(props: ArtifactPdfBodyProps & { readonly loading: ReactNode }): ReactNode {
+  return <ArtifactPdfSource key={props.url} {...props} />
+}
+
+const ignoreScrollport: RefCallback<HTMLElement> = () => {}
+
+function ArtifactPdfSource(props: ArtifactPdfBodyProps & { readonly loading: ReactNode }): ReactNode {
+  const [attempt, setAttempt] = useState(0)
+  const [load, setLoad] = useState<{ data: Uint8Array<ArrayBuffer>; signal: AbortSignal } | { error: ArtifactPdfReadError }>()
+  const [view, setView] = useState<PdfView>(DEFAULT_PDF_VIEW)
+  const pageVisible = useCallback((page: number): void => {
+    setView(current => current.page === page ? current : { ...current, page })
+  }, [])
+  const setPreference = useCallback((zoom: ZoomPreference): void => { setView(current => ({ ...current, zoom })) }, [])
+  useEffect(() => {
+    const pending = new AbortController()
+    const signal = pending.signal
+    setLoad(undefined)
+    void readArtifactPdf(props.url, signal, props.maxBytes).then(
+      (data) => { if (!signal.aborted) setLoad({ data, signal }) },
+      (error: unknown) => {
+        if (!signal.aborted) setLoad({ error: error instanceof ArtifactPdfReadError ? error : new ArtifactPdfReadError('sourceFailed', error) })
+      },
+    )
+    return () => { pending.abort() }
+  }, [props.url, props.maxBytes, attempt])
+  if (load === undefined) return props.loading
+  if ('error' in load) return <div className={css.status} role="alert">
+    <span>{props.t(load.error.code)}</span>
+    <Button size="sm" onClick={() => { setAttempt(value => value + 1) }}>{props.t('retry')}</Button>
+  </div>
+  return <PdfReader data={load.data} signal={load.signal} view={view} onPageVisible={pageVisible}
+    onPreference={setPreference} scrollportRef={ignoreScrollport} loading={props.loading}
+    t={props.t} ZoomViewport={props.ZoomViewport} zoomSurfaceClass={props.zoomSurfaceClass} />
+}
+
+/**
+ * Render PDF pages with owned workers and canvases, without Session or tab state.
+ * @param props - complete bytes, cancellation, viewing state, and localized controls.
+ * @returns the shared continuous PDF reader.
+ */
+export function PdfReader(props: PdfReaderProps): ReactNode {
+  const { data, signal, view, t, ZoomViewport, zoomSurfaceClass, onPageVisible, onPreference } = props
   const [load, setLoad] = useState<LoadState>()
   const [attempt, setAttempt] = useState(0)
   const [pageWidth, setPageWidth] = useState<number>()
   const [renderZoom, setRenderZoom] = useState(1)
-  const { retainTab, actions, t, ZoomViewport, zoomSurfaceClass } = props
   const preference = view.zoom ?? FIT_WIDTH
   const labels: ZoomLabels = {
     controls: t('zoomControls'), menu: t('zoomMenu'), out: t('zoomOut'), into: t('zoomIn'),
     fitWidth: t('zoomFitWidth'), value: percent => t('zoomValue', { percent }),
   }
-  const pageVisible = useCallback((page: number): void => {
-    actions.page(tab.id, page)
-  }, [actions, tab.id])
-  const setPreference = useCallback((value: ZoomPreference): void => {
-    actions.zoom(tab.id, value)
-  }, [actions, tab.id])
-
-  useEffect(() => { retainTab(tab.id, tab.signal) }, [retainTab, tab.id, tab.signal])
   useEffect(() => {
-    if (data === undefined || tab.signal.aborted) return
+    if (data === undefined || signal.aborted) return
     const lifetime = new AbortController()
-    const signal = AbortSignal.any([lifetime.signal, tab.signal])
+    const stopped = AbortSignal.any([lifetime.signal, signal])
     setLoad(undefined)
-    const session = openPdf(data, signal, (error) => {
-      if (!signal.aborted) setLoad({ kind: 'failed', data, error })
+    const session = openPdf(data, stopped, (error) => {
+      if (!stopped.aborted) setLoad({ kind: 'failed', data, error })
     })
     void session.document.then(
-      (document) => { if (!signal.aborted) setLoad({ kind: 'loaded', data, document }) },
-      (error: unknown) => { if (!signal.aborted) setLoad({ kind: 'failed', data, error }) },
+      (document) => { if (!stopped.aborted) setLoad({ kind: 'loaded', data, document }) },
+      (error: unknown) => { if (!stopped.aborted) setLoad({ kind: 'failed', data, error }) },
     )
     return () => {
       lifetime.abort()
       void session.dispose()
     }
-  }, [data, tab.signal, attempt])
+  }, [data, signal, attempt])
   if (data === undefined) return <p className={css.status} role="alert">{t('unsupported')}</p>
   if (load?.data !== data) return props.loading
   if (load.kind === 'failed') {
@@ -92,12 +158,12 @@ export function PdfBody(props: PdfBodyProps & { readonly loading: ReactNode }): 
   const pages = <section className={css.body} data-pdf-preview>
     {Array.from({ length: load.document.numPages }, (_, index) => (
       <PdfPage key={index} document={load.document} page={index + 1}
-        requested={index === 0 || view.page === index + 1} onVisible={pageVisible} signal={tab.signal}
+        requested={index === 0 || view.page === index + 1} onVisible={onPageVisible} signal={signal}
         onWidth={index === 0 ? setPageWidth : undefined} zoom={renderZoom} zoomSurfaceClass={zoomSurfaceClass} t={t} />
     ))}
   </section>
   return <ZoomViewport preference={preference} intrinsicWidth={pageWidth} horizontalInset={24} labels={labels}
-    signal={tab.signal} scrollportRef={props.scrollportRef} onPreference={setPreference} onRenderZoom={setRenderZoom}>
+    signal={signal} scrollportRef={props.scrollportRef} onPreference={onPreference} onRenderZoom={setRenderZoom}>
     {pages}
   </ZoomViewport>
 }

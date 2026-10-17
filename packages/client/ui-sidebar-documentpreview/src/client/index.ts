@@ -123,7 +123,7 @@ export function apply(ctx: ClientContext): void {
   registerMarkdown(ctx)
   registerHtml(ctx)
   registerImage(ctx)
-  registerPdf(ctx)
+  registerPdf(ctx, config.pdf)
   registerOffice(ctx, config.office)
   registerExcel(ctx, config.excel)
   registerCode(ctx)

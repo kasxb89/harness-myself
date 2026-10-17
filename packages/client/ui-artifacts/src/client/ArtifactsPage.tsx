@@ -7,6 +7,7 @@
  * The list and preview remain separate scrollable panes.
  */
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
+import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
 import {
   Button,
   FileTypeIcon,
@@ -23,6 +24,7 @@ import {
   SegmentedTabs,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ArtifactErrorCode, ArtifactListing, ArtifactResult, ArtifactStorage, ArtifactWorkspace, TrashedArtifact, WorkspaceListing } from './api.ts'
+import { ArtifactPreview } from './ArtifactPreview.tsx'
 import css from './ArtifactsPage.module.css'
 
 /** Artifact kinds the host derives from file extensions. */
@@ -70,21 +72,13 @@ export interface ArtifactWorkspaceState {
 
 /** Operations plus workspace facts owned by the enclosing registered main panel. */
 export type ArtifactsPageProps = ArtifactsInjected & { workspaces: ArtifactWorkspaceState }
+  & PropsRenderSlots<'artifacts.preview.pdf'>
 
 type FileDialog = ({ kind: 'rename' | 'trash'; entry: ArtifactEntry } | { kind: 'storage' }) & { scope: string }
 
 const FILTERS: readonly (ArtifactKind | 'all')[] = [
   'all', 'image', 'video', 'document', 'sheet', 'slides', 'audio', 'archive', 'code', 'text', 'other',
 ]
-
-/** Kinds the page reads as text rather than handing to a frame. */
-const TEXT_KINDS: ReadonlySet<ArtifactKind> = new Set<ArtifactKind>(['text', 'code', 'sheet'])
-
-/**
- * Largest artifact the page reads into its own code surface, in bytes. Above
- * it the raw URL still renders, served by the frame instead of held in memory.
- */
-const TEXT_PREVIEW_MAX_BYTES = 256 * 1024
 
 /** Largest image the list decodes for a row thumbnail, in bytes. */
 const THUMBNAIL_MAX_BYTES = 8 * 1024 * 1024
@@ -119,61 +113,6 @@ function Placeholder({ icon, text }: { icon: ReactNode; text: string }): ReactNo
     <div className={css.placeholder}>
       <span className={css.placeholderGlyph}>{icon}</span>
       <p className={css.placeholderText}>{text}</p>
-    </div>
-  )
-}
-
-/**
- * Read one text artifact onto the page's own code surface. The frame stays the
- * fallback: it is the only way to show a file the page declines to hold, and
- * the only way to show anything when the read fails.
- */
-function TextPreview({ url, name, t }: { url: string; name: string; t: ArtifactsInjected['t'] }): ReactNode {
-  const [text, setText] = useState<string | null>(null)
-  const [failed, setFailed] = useState(false)
-  useEffect(() => {
-    const controller = new AbortController()
-    setText(null)
-    setFailed(false)
-    void fetch(url, { signal: controller.signal })
-      .then(async (response) => {
-        if (!response.ok) throw new Error(`HTTP ${String(response.status)}`)
-        return await response.text()
-      })
-      .then((body) => { setText(body) })
-      .catch(() => { if (!controller.signal.aborted) setFailed(true) })
-    return () => { controller.abort() }
-  }, [url])
-  if (failed) return <iframe className={css.frame} src={url} title={name} sandbox="" />
-  if (text === null) {
-    return <TextShimmer active className={css.placeholderText}>{t('loading')}</TextShimmer>
-  }
-  return <pre className={css.code}>{text}</pre>
-}
-
-/** Render one preview body for the selected artifact. */
-function Preview({ entry, t }: { entry: ArtifactEntry; t: ArtifactsInjected['t'] }): ReactNode {
-  const url = rawUrl(entry.path, entry.workspaceId)
-  if (/\.(?:html?|svg)$/iu.test(entry.name)) return <iframe className={css.frame} src={url} title={entry.name} sandbox="" />
-  if (entry.kind === 'image') return <img className={css.media} src={url} alt={entry.name} />
-  if (entry.kind === 'video') return <video className={css.media} src={url} controls />
-  if (entry.kind === 'audio') {
-    return (
-      <div className={css.audioPane}>
-        <FileTypeIcon path={entry.name} size={40} />
-        <audio className={css.audio} src={url} controls />
-      </div>
-    )
-  }
-  if (TEXT_KINDS.has(entry.kind)) {
-    return entry.size <= TEXT_PREVIEW_MAX_BYTES
-      ? <TextPreview url={url} name={entry.name} t={t} />
-      : <iframe className={css.frame} src={url} title={entry.name} sandbox="" />
-  }
-  return (
-    <div className={css.unsupported}>
-      <FileTypeIcon path={entry.name} size={40} />
-      <p className={css.placeholderText}>{t('unsupported')}</p>
     </div>
   )
 }
@@ -278,6 +217,7 @@ export function ArtifactsPage(props: ArtifactsPageProps): ReactNode {
   const [view, setView] = useState<'library' | 'workspace'>('library')
   const [workspaceId, setWorkspaceId] = useState<string | null>(props.workspaces.currentWorkspaceId)
   const [directory, setDirectory] = useState('')
+  const [workspaceLocation, setWorkspaceLocation] = useState<string | null>(null)
   const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceListing | null>(null)
   const [listing, setListing] = useState<ArtifactListing | null>(null)
   const [storage, setStorage] = useState<ArtifactStorage | null>(null)
@@ -287,6 +227,7 @@ export function ArtifactsPage(props: ArtifactsPageProps): ReactNode {
   const [filter, setFilter] = useState<ArtifactKind | 'all'>('all')
   const [query, setQuery] = useState('')
   const [selection, setSelection] = useState<{ scope: string; path: string } | null>(null)
+  const [previewRevision, setPreviewRevision] = useState(0)
   const [dialog, setDialog] = useState<FileDialog | null>(null)
   const [pending, setPending] = useState(false)
   const [uncertainSource, setUncertainSource] = useState<{
@@ -344,7 +285,7 @@ export function ArtifactsPage(props: ArtifactsPageProps): ReactNode {
     })
   }, [props.workspaces.items, uncertainSource?.workspaceId, uncertainSource?.workspacePath])
 
-  useEffect(() => { setSelection(null); setDialog(null); setQuery(''); setFilter('all') }, [scope])
+  useEffect(() => { setSelection(null); setDialog(null); setWorkspaceLocation(null); setQuery(''); setFilter('all') }, [scope])
 
   const refresh = useCallback(async (explicit = false): Promise<void> => {
     request.current?.abort()
@@ -373,6 +314,7 @@ export function ArtifactsPage(props: ArtifactsPageProps): ReactNode {
       }
     }
     if (loaded !== null) {
+      if (explicit) setPreviewRevision(value => value + 1)
       setSelection(previous => previous?.scope !== scope ? previous : loaded.some(entry => entry.path === previous.path) ? previous : null)
       setDialog((previous) => {
         if (previous === null || previous.scope !== scope || previous.kind === 'storage') return previous
@@ -486,7 +428,6 @@ export function ArtifactsPage(props: ArtifactsPageProps): ReactNode {
   }, [visibleFiles])
   const selected = selection?.scope === scope ? visibleFiles.find(entry => entry.path === selection.path) ?? null : null
   const breadcrumbs = currentDirectory === null ? [] : currentDirectory.directory.split('/').filter(Boolean)
-  const title = selectedWorkspace?.title || selectedWorkspace?.path || ''
   const loaded = view === 'library' ? listing !== null : currentDirectory !== null
   const truncated = view === 'library' ? listing?.truncated === true : currentDirectory?.truncated === true
 
@@ -512,24 +453,36 @@ export function ArtifactsPage(props: ArtifactsPageProps): ReactNode {
       <p className={css.locationHint}>{t('scope.hint')}</p>
       {view === 'workspace' && <section className={css.workspaceScope} aria-label={t('workspace.scope')}>
         <label className={css.workspaceSelect}>
-          <span>{t('workspace.choose')}</span>
+          <IconFolderOpenRegular size={16} />
           <select aria-label={t('workspace.choose')} value={selectedWorkspace?.id ?? ''} disabled={!props.workspaces.ready || pending}
             onChange={(event) => { setWorkspaceId(event.currentTarget.value || null); setDirectory('') }}>
             <option value="">{t(props.workspaces.ready ? 'workspace.chooseHint' : 'workspace.loading')}</option>
-            {props.workspaces.items.map(item => <option key={item.id} value={item.id}>{item.title || item.path}</option>)}
+            {props.workspaces.items.map(item => <option key={item.id} value={item.id}>
+              {item.title || item.path.split(/[\\/]/u).filter(Boolean).at(-1) || item.path}
+            </option>)}
           </select>
         </label>
-        {selectedWorkspace !== undefined && <code className={css.storagePath}>{selectedWorkspace.path}</code>}
-        {currentDirectory !== null && <>
-          <nav className={css.breadcrumbs} aria-label={t('workspace.breadcrumb')}>
-            {currentDirectory.parentDirectory !== null && <Button size="sm" disabled={pending}
-              onClick={() => { setDirectory(currentDirectory.parentDirectory ?? '') }}>{t('workspace.parent')}</Button>}
-            <Button size="sm" disabled={pending} onClick={() => { setDirectory('') }}>{title}</Button>
-            {breadcrumbs.map((part, index) => <Button key={`${String(index)}:${part}`} size="sm" disabled={pending}
-              onClick={() => { setDirectory(breadcrumbs.slice(0, index + 1).join('/')) }}>{part}</Button>)}
-          </nav>
-          <code className={css.storagePath}>{currentDirectory.absoluteDirectory}</code>
-        </>}
+        {currentDirectory !== null && breadcrumbs.length > 0 && <nav className={css.breadcrumbs} aria-label={t('workspace.breadcrumb')}>
+          {currentDirectory.parentDirectory !== null && <Button size="sm" variant="ghost" disabled={pending}
+            onClick={() => { setDirectory(currentDirectory.parentDirectory ?? '') }}>{t('workspace.parent')}</Button>}
+          <Button size="sm" variant="ghost" disabled={pending} onClick={() => { setDirectory('') }}>{t('workspace.root')}</Button>
+          {breadcrumbs.map((part, index) => <span key={`${String(index)}:${part}`} className={css.breadcrumbPart}>
+            <span className={css.breadcrumbSeparator} aria-hidden="true">/</span>
+            {index === breadcrumbs.length - 1 ? <span className={css.breadcrumbCurrent} aria-current="page">{part}</span>
+              : <Button size="sm" variant="ghost" disabled={pending}
+                onClick={() => { setDirectory(breadcrumbs.slice(0, index + 1).join('/')) }}>{part}</Button>}
+          </span>)}
+        </nav>}
+        {selectedWorkspace !== undefined && <Button size="sm" variant="ghost" className={css.workspaceLocationButton}
+          aria-haspopup="dialog" aria-expanded={workspaceLocation === scope} disabled={directory !== '' && currentDirectory === null}
+          onClick={() => { setWorkspaceLocation(scope) }}>{t('workspace.location')}</Button>}
+        {workspaceLocation === scope && selectedWorkspace !== undefined && <Modal open title={t('workspace.locationTitle')}
+          closeLabel={t('close')} onClose={() => { setWorkspaceLocation(null) }}>
+          <div className={css.workspaceLocation}>
+            <span>{t(directory === '' ? 'workspace.root' : 'workspace.breadcrumb')}</span>
+            <code className={css.storagePath}>{currentDirectory?.absoluteDirectory ?? selectedWorkspace.path}</code>
+          </div>
+        </Modal>}
       </section>}
       {[...new Set(Object.values(errors))].map(code => <p key={code} className={css.banner} data-tone="error" role="alert">{t(`error.${code}`)}</p>)}
       {uncertainSource !== null && <div className={css.banner} data-tone="error" role="alert">
@@ -601,7 +554,9 @@ export function ArtifactsPage(props: ArtifactsPageProps): ReactNode {
                   onClick={() => { setDialog({ kind: 'trash', entry: selected, scope }) }}>{t('trash.action')}</Button>
               </div>
             </header>
-            <div className={css.previewBody}><Preview key={`${scope}:${selected.path}`} entry={selected} t={t} /></div>
+            <div className={css.previewBody}><ArtifactPreview
+              key={`${scope}:${selected.path}:${String(selected.size)}:${String(selected.mtimeMs)}:${String(previewRevision)}`}
+              entry={selected} t={t} renderSlot={props.renderSlot} /></div>
           </>}
         </section>
       </div>

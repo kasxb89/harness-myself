@@ -12,6 +12,9 @@
   ],
   "references": [
     {
+      "path": "../ui-artifacts"
+    },
+    {
       "path": "../../api/gateway/tsconfig.client.json"
     },
     {

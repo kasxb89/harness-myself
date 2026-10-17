@@ -67,6 +67,8 @@ Initial reads and renderer preparation, including Office conversion, share a cen
 
 A leading YAML frontmatter block, opened by `---` on the first line and closed by `---` or `...`, renders above the Markdown body as a key/value list. String values show their resolved text, including folded and multiline strings; other scalars, lists, mappings, and aliases keep their authored YAML. Invalid YAML and non-mapping documents show the block verbatim, and a block without content shows nothing. An unterminated block remains Markdown. The YAML parser loads in the package-local `client.frontmatter-fields.js` chunk only when a document has frontmatter; the verbatim block stands in while it loads or if it fails to load. The source file is unchanged.
 
+The global keyed `artifacts.preview.pdf` slot presents already-authorized artifact PDF URLs, including converted Office output, with this same lazy PDF reader and selectable text. Its fetch reads enforce `pdf.maxBytes` against actual streamed bytes; switching files or leaving the reader cancels the read and releases PDF workers. Page and zoom state stay local to the selected artifact, independently of Session tabs and Office cache retention.
+
 <a id="excel-preview"></a>
 ## Excel preview
 
@@ -95,10 +97,11 @@ The pinned [ExcelJS patch](../../../patches/exceljs@4.4.0.patch) resolves the wo
 
 Open `.doc`, `.docx`, `.ppt`, and `.pptx` as PDF previews with the same loading state, zoom controls, cancellation, and selectable text as PDF files. The [Host provider](../../document/office-to-pdf/README.md) performs local conversion and retains its spreadsheet conversion API for other consumers. Invalid supported files, conversion failures, and timeouts receive localized messages. Missing Host services show configuration guidance.
 
-The [Web bundle](../../bundle/web-app/README.md) mounts this package as `ui-sidebar-documentpreview`. Configure its transient Office cache through that entry's `office` settings; the [configuration catalog](../../../docs/config-catalog.md#deepseek-aidsh-client-ui-sidebar-documentpreview) defines accepted values. Settings are embedded in each served page; reload the browser page after changing YAML.
+The [Web bundle](../../bundle/web-app/README.md) mounts this package as `ui-sidebar-documentpreview`. Configure artifact PDF read capacity through `pdf` and its transient Office cache through `office`; the [configuration catalog](../../../docs/config-catalog.md#deepseek-aidsh-client-ui-sidebar-documentpreview) defines accepted values. Settings are embedded in each served page; reload the browser page after changing YAML.
 
 | Field | Default | Meaning |
 |---|---|---|
+| `pdf.maxBytes` | `104857600` (100 MiB) | Maximum actual artifact PDF source bytes; independent of Office cache limits |
 | `office.maxCachedEntries` | `8` | Maximum retained completed PDFs |
 | `office.maxCachedBytes` | `67108864` (64 MiB) | Maximum retained binary PDF bytes, counted by buffer `byteLength` |
 | `office.maxPending` / `office.maxReaders` | `8` / `32` | Unsettled conversion RPCs / readers including metadata lookups |

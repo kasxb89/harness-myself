@@ -349,7 +349,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-artifacts-index`
 
 - `inject`: `webServer`
-- `source`: [`packages/deliverables/artifacts-index/src/index.ts:40`](../packages/deliverables/artifacts-index/src/index.ts)
+- `source`: [`packages/deliverables/artifacts-index/src/index.ts:41`](../packages/deliverables/artifacts-index/src/index.ts)
 
 ```ts config-catalog
 /** Plugin config: which directories the panel browses and how far it walks. */
@@ -664,8 +664,13 @@ export interface Config {
 - `source`: [`packages/client/ui-sidebar-documentpreview/src/config.ts:5`](../packages/client/ui-sidebar-documentpreview/src/config.ts)
 
 ```ts config-catalog
-/** Transient Office conversion reuse within one Client connection. */
+/** PDF reads, transient Office reuse, and browser spreadsheet parser limits. */
 export interface Config {
+  /** Complete-file capacity for artifact PDF preview reads. */
+  pdf: {
+    /** Maximum actual source bytes, independently of Office cache capacity. */
+    maxBytes: number
+  }
   /** Retained PDF limits; pending conversions share cancellation by reader lifetime. */
   office: {
     /** Maximum retained completed PDFs. */

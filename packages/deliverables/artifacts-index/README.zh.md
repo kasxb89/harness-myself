@@ -42,7 +42,9 @@ kind: "package-reference"
 | `maxEntries` | `2000` | 限制产物库单次列表或工作区单层目录条目数的正整数。 |
 | `maxDepth` | `5` | 限制产物库在每个输出根目录下遍历深度的正整数。 |
 
-`GET /artifacts/api/list` 返回根目录、文件元数据与截断标记。`GET` 和 `HEAD /artifacts/api/raw?path=...` 预览规范根目录内的普通文件，支持单段字节范围。符号链接路径与被重定向的历史根目录会被排除。挂载 Connection 时，全部产物读取与管理请求都通过其认证及 Host/Origin 校验。启用保存管理却没有 Connection 时拒绝浏览器访问；未挂载 Connection 的旧 roots 只读配置保留原有来源校验。HTML 和 SVG 响应采用沙箱内容策略。
+`GET /artifacts/api/list` 返回根目录、文件元数据与截断标记。`GET` 和 `HEAD /artifacts/api/raw?path=...` 读取规范根目录内的普通文件，支持单段字节范围；`download=1` 返回附件，并安全编码文件名。符号链接路径与被重定向的历史根目录会被排除。挂载 Connection 时，全部产物读取与管理请求都通过其认证及 Host/Origin 校验。启用保存管理却没有 Connection 时拒绝浏览器访问；未挂载 Connection 的旧 roots 只读配置保留原有来源校验。HTML、HTM 和 SVG 响应采用沙箱内容策略；已知文本后缀使用文本媒体类型，未识别的二进制格式仍为 octet-stream。
+
+`GET` 和 `HEAD /artifacts/api/preview?path=...` 通过可选的 [Office 转换器](../../document/office-to-pdf/README.zh.md) 将 DOC、DOCX、XLS、XLSX、PPT 和 PPTX 转为 PDF。工作区来源与原始读取相同，需要附带 `workspaceId`。该接口始终要求 Connection 认证，不用会话代替所选工作区。转换前先认证规范源文件；延迟且有界的读取前后，重新检查有效浏览范围与源文件版本；响应前再次检查。源文件不会被修改。转换器负责准入、字节限制、期限和清理；请求断开或 Host 释放会取消该读取者。成功响应为 `application/pdf`，带 `no-store`、`nosniff` 和 `x-artifact-preview-missing-fonts` 数量；不暴露字体名称或引擎诊断。安全的 JSON 失败码包括 `preview-unavailable` 或 `preview-busy`（503）、`preview-too-large`（413）、`preview-invalid`（422）、`preview-stale`（409）及 `preview-failed`（500）。已有路径与授权错误保留原有 `ARTIFACT_…` 代码。
 
 产物库遍历配置目录与保留的历史输出根目录。工作区文件列出当前已注册的规范工作区根目录内的单层目录，并包含用于导航的目录条目。每次请求都通过注册表解析工作区：注销工作区会撤销浏览与文件操作权限，将该目录替换为重定向路径不会取得其他位置的访问权限。工作区浏览根目录不会作为获准输出根目录持久保存。在非 Git 目录内通过 shell 命令创建的文件，即使没有 `present` 事件或改动摘要，也能通过目录浏览找到；原有源文件属于普通工作区文件，不能证明它们是新生成的。
 
@@ -108,6 +110,7 @@ kind: "package-reference"
 - 隐藏和不可读条目会被省略；工作区浏览还排除依赖目录、私有产物状态，以及名称含可移植导航坐标不支持的 `:`、`\` 或控制字符的子目录。文件可能在列出与读取之间发生变更。
 - 索引没有文件系统监听或 Session 归属记录。重命名或回收会改变文件路径，不改写之前的聊天链接。恢复数据保留在磁盘上，直到恢复或在页面外主动清理。
 - 工作区文件反映当前目录内容，不是完整的生成历史。它要求经过校验的服务 Host 文件系统映射；不支持的远端文件系统映射会明确失败。路径与原生操作属于该 Host，不属于浏览器所在电脑。
+- 转换预览需要可选 Office 提供者及本地引擎；不支持的格式或不可用的转换器仍可通过经过授权的原始文件接口下载。转换结果不提供字节范围响应。
 
 <a id="dev-note"></a>
 ### 开发备注

@@ -1,5 +1,5 @@
 /** Adapt framework-owned current-session and workspace sources to plain page data. */
-import type { HostObservable, PropsHooks, PropsRuntime, StandardSourceBinding } from '@deepseek-ai/dsh-client-ui-slots'
+import type { HostObservable, PropsHooks, PropsRenderSlots, PropsRuntime, StandardSourceBinding } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
 import type { WorkspaceSnapshot } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import { ArtifactsPage, type ArtifactsInjected } from './ArtifactsPage.tsx'
@@ -15,7 +15,7 @@ export interface ArtifactsMainInjected extends ArtifactsInjected {
  * @returns The artifacts page with an explicit current workspace or an unselected scope.
  */
 export function ArtifactsMain(props: Omit<ArtifactsMainInjected, 'hooks'> & PropsHooks<ArtifactsMainInjected['hooks']>
-  & Pick<PropsRuntime<'main'>, 'useWorkspaces'>) {
+  & Pick<PropsRuntime<'main'>, 'useWorkspaces'> & PropsRenderSlots<'artifacts.preview.pdf'>) {
   const workspaces: WorkspaceSnapshot = props.useWorkspaces(value => value)
   const currentSessionKey = props.useArtifactSession(value => value.key ?? null)
   const current = workspaces.items.find(workspace => workspace.sessionIds.some(id => id === currentSessionKey))

@@ -20,6 +20,7 @@ import z from '@deepseek-ai/schemastery'
 import type { ArtifactStorageService } from './types.ts'
 import { ArtifactError, ArtifactStore, authorizedFile, qualified } from './storage.ts'
 import { WorkspaceAccess } from './workspace.ts'
+import { serveOfficePreview, type AuthorizePreview } from './preview.ts'
 
 export type { ArtifactDestination, ArtifactWriteResult, ArtifactWriteRequest, ArtifactPublishRequest, ArtifactStorageService, ArtifactStorageInfo } from './types.ts'
 
@@ -107,7 +108,19 @@ const MEDIA_TYPE_BY_EXTENSION: Readonly<Record<string, string>> = {
   '.mp4': 'video/mp4', '.mov': 'video/quicktime', '.webm': 'video/webm', '.mkv': 'video/x-matroska',
   '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.m4a': 'audio/mp4', '.flac': 'audio/flac',
   '.pdf': 'application/pdf', '.txt': 'text/plain; charset=utf-8', '.md': 'text/plain; charset=utf-8',
-  '.html': 'text/html; charset=utf-8', '.json': 'application/json; charset=utf-8',
+  '.markdown': 'text/plain; charset=utf-8', '.csv': 'text/csv; charset=utf-8', '.tsv': 'text/tab-separated-values; charset=utf-8',
+  '.html': 'text/html; charset=utf-8', '.htm': 'text/html; charset=utf-8', '.json': 'application/json; charset=utf-8',
+  ...Object.fromEntries(['.yaml', '.yml', '.toml', '.ini', '.xml', '.css', '.scss', '.log', '.srt', '.vtt',
+    ...EXTENSION_GROUPS.flatMap(([kind, extensions]) => kind === 'code' ? extensions : [])]
+    .map(extension => [extension, 'text/plain; charset=utf-8'])),
+}
+
+/** An ASCII fallback plus an encoded Unicode filename, with no header control bytes. */
+function downloadDisposition(path: string): string {
+  const name = basename(path)
+  const fallback = name.replace(/[^A-Za-z0-9._-]/gu, '_') || 'download'
+  const encoded = encodeURIComponent(name).replace(/[!'()*]/gu, character => `%${character.charCodeAt(0).toString(16).toUpperCase()}`)
+  return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`
 }
 
 /** Derive the panel kind from a file name. */
@@ -201,7 +214,8 @@ async function collect(root: string, limit: number, maxDepth: number, seen: Set<
 
 /** Serve one preview read, honouring a single byte range for media seeking. */
 async function serveFile(
-  response: ServerResponse, request: IncomingMessage, target: string, roots: readonly string[], signal: AbortSignal, pinned: boolean,
+  response: ServerResponse, request: IncomingMessage, target: string, roots: readonly string[],
+  signal: AbortSignal, pinned: boolean, download: boolean,
 ): Promise<void> {
   let info
   try {
@@ -222,6 +236,7 @@ async function serveFile(
       throw new ArtifactError('ARTIFACT_STALE', 409, 'File changed during preview')
     }
     response.setHeader('x-content-type-options', 'nosniff')
+    if (download) response.setHeader('content-disposition', downloadDisposition(target))
     if (mediaType === 'image/svg+xml' || mediaType.startsWith('text/html')) {
       response.setHeader('content-security-policy', "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'")
     }
@@ -341,7 +356,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
             const route = url.pathname.slice(ROUTE_PREFIX.length)
             const connection = ctx.get('connection')
             if (route.startsWith('/api/') && (connection !== undefined || store !== undefined
-              || route === '/api/workspace' || route === '/api/raw' && url.searchParams.has('workspaceId'))) {
+              || route === '/api/preview' || route === '/api/workspace' || route === '/api/raw' && url.searchParams.has('workspaceId'))) {
               const rejection = connection === undefined ? 403 : connection.requestRejection(request)
               if (rejection !== undefined) { json(response, rejection, { code: 'ARTIFACT_AUTH_REQUIRED' }); return }
             }
@@ -407,19 +422,33 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
               })
               return
             }
-            if (route === '/api/raw') {
+            if (route === '/api/raw' || route === '/api/preview') {
               const target = url.searchParams.get('path')
               if (target === null || !qualified(target)) {
                 json(response, 403, { error: 'path outside the configured roots' })
                 return
               }
               const workspaceId = url.searchParams.get('workspaceId')
+              if (route === '/api/preview') {
+                const authorize: AuthorizePreview = async (upstream) => {
+                  upstream.throwIfAborted()
+                  if (workspaceId !== null) {
+                    const workspace = await workspaces.resolve(workspaceId, upstream)
+                    return workspaces.file(workspace, target, upstream)
+                  }
+                  const roots = await rootsNow()
+                  return authorizedFile(resolve(target), store === undefined ? await Promise.all(roots.map(root => realpath(root))) : roots)
+                }
+                await serveOfficePreview(ctx, response, request, authorize, workspaceId ?? 'library', signal)
+                return
+              }
+              const download = url.searchParams.get('download') === '1'
               if (workspaceId !== null) {
                 const workspace = await workspaces.resolve(workspaceId, signal)
                 const file = await workspaces.file(workspace, target, signal)
-                await serveFile(response, request, file.path, [workspace.path], signal, true)
+                await serveFile(response, request, file.path, [workspace.path], signal, true, download)
               } else {
-                await serveFile(response, request, resolve(target), await rootsNow(), signal, store !== undefined)
+                await serveFile(response, request, resolve(target), await rootsNow(), signal, store !== undefined, download)
               }
               return
             }

@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { brandString } from '@deepseek-ai/dsh-brand'
 import { bindSnapshotSelector } from '@deepseek-ai/dsh-client-test-runtime'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
-import type { StandardSourceBinding } from '@deepseek-ai/dsh-client-ui-slots'
+import type { PropsRenderSlots, StandardSourceBinding } from '@deepseek-ai/dsh-client-ui-slots'
 import type { WorkspaceSnapshot } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import { ArtifactsMain } from '../src/client/ArtifactsMain.tsx'
 import { ArtifactsPage, type ArtifactEntry, type ArtifactsInjected, type ArtifactsPageProps } from '../src/client/ArtifactsPage.tsx'
@@ -13,6 +13,27 @@ import type { ArtifactListing, ArtifactResult, ArtifactStorage, TrashedArtifact,
 import { en, zh } from '../src/client/locales.ts'
 
 afterEach(cleanup)
+
+type PdfRenderer = PropsRenderSlots<'artifacts.preview.pdf'>['renderSlot']
+/** The generic dispatcher narrows its concrete PDF owner before rendering the test view. */
+function pdfView(owner: object) {
+  if (!('url' in owner) || typeof owner.url !== 'string' || !('name' in owner) || typeof owner.name !== 'string') {
+    throw new Error('PDF reader requires a name and URL')
+  }
+  return <section aria-label={owner.name} data-preview-url={owner.url} />
+}
+
+const renderPdf: PdfRenderer = (_key, owner) => pdfView(owner)
+
+/** Record concrete dispatches behind an adapter that preserves the generic renderSlot signature. */
+function recordedPdfRenderer() {
+  const dispatch = vi.fn<(key: string, owner: object, options?: object) => void>()
+  const renderSlot: PdfRenderer = (key, owner, options) => {
+    dispatch(key, owner, options)
+    return pdfView(owner)
+  }
+  return { dispatch, renderSlot }
+}
 
 const image: ArtifactEntry = { path: '/old/动漫.png', name: '动漫.png', kind: 'image', size: 128, mtimeMs: new Date(2026, 9, 17, 12, 0).getTime() }
 const video: ArtifactEntry = { ...image, path: '/old/story.mp4', name: 'story.mp4', kind: 'video' }
@@ -47,6 +68,7 @@ function deferred<T>() {
 /** Product-owned copy and narrow operations, without Host filesystem or credentials. */
 function props(overrides: Partial<ArtifactsPageProps> = {}): ArtifactsPageProps {
   return {
+    renderSlot: (_key, _owner, options) => options?.fallback ?? null,
     t: (key, values) => {
       const copy: Record<string, string> = zh
       return (copy[key] ?? key).replace(/\{(\w+)\}/gu, (_match, name: string) => values?.[name] ?? '')
@@ -359,6 +381,67 @@ describe('Artifacts page file management', () => {
   })
 })
 
+describe('selected document refresh', () => {
+  let createDescriptor: PropertyDescriptor | undefined
+  let revokeDescriptor: PropertyDescriptor | undefined
+  const create = vi.fn<(blob: Blob) => string>()
+  const revoke = vi.fn<(url: string) => void>()
+  const document: ArtifactEntry = { ...image, name: 'report.docx', path: '/old/report.docx', kind: 'document' }
+
+  beforeEach(() => {
+    createDescriptor = Object.getOwnPropertyDescriptor(URL, 'createObjectURL')
+    revokeDescriptor = Object.getOwnPropertyDescriptor(URL, 'revokeObjectURL')
+    create.mockReset().mockImplementation(() => `blob:https://preview.invalid/revision-${create.mock.calls.length}`)
+    revoke.mockReset()
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: create })
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revoke })
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.unstubAllGlobals()
+    if (createDescriptor === undefined) Reflect.deleteProperty(URL, 'createObjectURL')
+    else Object.defineProperty(URL, 'createObjectURL', createDescriptor)
+    if (revokeDescriptor === undefined) Reflect.deleteProperty(URL, 'revokeObjectURL')
+    else Object.defineProperty(URL, 'revokeObjectURL', revokeDescriptor)
+  })
+
+  it('retries a failed Office preview after an explicit refresh even when its metadata is unchanged', async () => {
+    const readListing = vi.fn<ArtifactsInjected['readListing']>(async () => ({ ok: true, value: { items: [document], roots: ['/old'], truncated: false } }))
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code: 'preview-unavailable' }), { status: 503, headers: { 'content-type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response('%PDF-1.7\n%%EOF\n', { headers: { 'content-type': 'application/pdf' } }))
+    vi.stubGlobal('fetch', fetcher)
+    render(<ArtifactsPage {...props({ readListing, renderSlot: renderPdf })} />)
+    fireEvent.click(await screen.findByRole('button', { name: /^report\.docx/u }))
+    await screen.findByText(zh['preview.unavailable'])
+    fireEvent.click(screen.getByRole('button', { name: '刷新' }))
+    const reader = await screen.findByRole('region', { name: document.name })
+    expect(reader.getAttribute('data-preview-url')).toBe('blob:https://preview.invalid/revision-1')
+    expect(fetcher).toHaveBeenCalledTimes(2)
+    expect(readListing).toHaveBeenCalledTimes(2)
+    expect(screen.queryByText(zh['preview.unavailable'])).toBeNull()
+    expect(within(screen.getByRole('region', { name: '预览' })).getByText(document.name)).toBeTruthy()
+  })
+
+  it.each(['size', 'mtimeMs'] as const)('retains selection and replaces the PDF when same-path %s changes during a background read', async (metadata) => {
+    const face = props({ renderSlot: renderPdf, readListing: async () => ({ ok: true, value: { items: [document], roots: ['/old'], truncated: false } }) })
+    const fetcher = vi.fn<typeof fetch>(async () => new Response('%PDF-1.7\n%%EOF\n', { headers: { 'content-type': 'application/pdf' } }))
+    vi.stubGlobal('fetch', fetcher)
+    const page = render(<ArtifactsPage {...face} />)
+    fireEvent.click(await screen.findByRole('button', { name: /^report\.docx/u }))
+    expect((await screen.findByRole('region', { name: document.name })).getAttribute('data-preview-url')).toBe('blob:https://preview.invalid/revision-1')
+    const changed = { ...document, [metadata]: document[metadata] + 1024 }
+    const readListing = vi.fn<ArtifactsInjected['readListing']>(async () => ({ ok: true, value: { items: [changed], roots: ['/old'], truncated: false } }))
+    page.rerender(<ArtifactsPage {...face} readListing={readListing} />)
+    await waitFor(() => { expect(screen.getByRole('region', { name: document.name }).getAttribute('data-preview-url')).toBe('blob:https://preview.invalid/revision-2') })
+    expect(fetcher).toHaveBeenCalledTimes(2)
+    expect(revoke).toHaveBeenCalledExactlyOnceWith('blob:https://preview.invalid/revision-1')
+    expect(within(screen.getByRole('region', { name: '预览' })).getByText(document.name)).toBeTruthy()
+    expect(screen.queryByText(zh.previewHint)).toBeNull()
+  })
+})
+
 describe('workspace file scopes', () => {
   it('keeps generated output separate, offers the empty-library entry, and waits for an explicit workspace view', async () => {
     const face = workspaceProps({ readListing: async () => ({ ok: true, value: { items: [], roots: [], truncated: false } }) })
@@ -369,11 +452,23 @@ describe('workspace file scopes', () => {
     fireEvent.click(screen.getByRole('button', { name: '查看工作区文件' }))
     await screen.findByRole('button', { name: /^动漫\.png/u })
     expect(screen.getByRole<HTMLSelectElement>('combobox', { name: '工作区' }).value).toBe(workspaceOne.id)
-    expect(screen.getAllByText(workspaceOne.path).length).toBeGreaterThan(0)
+    expect(screen.queryByText(workspaceOne.path)).toBeNull()
+    const scope = screen.getByRole('region', { name: '工作区浏览范围' })
+    expect(within(scope).queryByRole('navigation')).toBeNull()
+    const location = within(scope).getByRole('button', { name: '位置' })
+    expect(location.getAttribute('aria-expanded')).toBe('false')
+    fireEvent.click(location)
+    const locationDialog = screen.getByRole('dialog', { name: '工作区位置' })
+    expect(within(locationDialog).getByText('根目录')).toBeTruthy()
+    expect(screen.getAllByText(workspaceOne.path)).toHaveLength(1)
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(location.getAttribute('aria-expanded')).toBe('false')
+    expect(screen.queryByText(workspaceOne.path)).toBeNull()
     expect(screen.queryByText(destination.directory)).toBeNull()
     expect(face.readWorkspace).toHaveBeenCalledWith(workspaceOne.id, '', expect.any(AbortSignal))
     const snapshot = [screen.getByRole('tab', { selected: true }).textContent,
-      screen.getByRole('region', { name: '工作区浏览范围' }).textContent,
+      screen.getByRole<HTMLSelectElement>('combobox').selectedOptions[0]?.textContent?.trim(), location.textContent,
       screen.getByRole('searchbox').getAttribute('placeholder'), screen.getByRole('tabpanel').textContent].join('\n') + '\n'
     await expect(snapshot).toMatchFileSnapshot('./expected/workspace-files.txt')
   })
@@ -400,7 +495,16 @@ describe('workspace file scopes', () => {
     fireEvent.click(await screen.findByRole('button', { name: '打开文件夹 输出' }))
     await waitFor(() => { expect(face.readWorkspace).toHaveBeenLastCalledWith(workspaceOne.id, '输出', expect.any(AbortSignal)) })
     await screen.findByRole('button', { name: /^动漫\.png/u })
-    expect(screen.getByText(`${workspaceOne.path}/输出`)).toBeTruthy()
+    expect(screen.queryByText(`${workspaceOne.path}/输出`)).toBeNull()
+    const navigation = screen.getByRole('navigation', { name: '当前目录' })
+    expect(within(navigation).getByText('输出').getAttribute('aria-current')).toBe('page')
+    expect(within(navigation).queryByText(workspaceOne.title)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '位置' }))
+    const locationDialog = screen.getByRole('dialog', { name: '工作区位置' })
+    expect(within(locationDialog).getByText('当前目录')).toBeTruthy()
+    expect(screen.getAllByText(`${workspaceOne.path}/输出`)).toHaveLength(1)
+    expect(screen.queryByText(workspaceOne.path)).toBeNull()
+    fireEvent.click(within(locationDialog).getByRole('button', { name: '关闭' }))
     fireEvent.change(screen.getByRole('searchbox', { name: '搜索当前目录的名称或路径' }), { target: { value: 'no-match' } })
     expect(screen.getByText(zh.noResults)).toBeTruthy()
     expect(face.readWorkspace).toHaveBeenCalledTimes(2)
@@ -425,7 +529,8 @@ describe('workspace file scopes', () => {
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '取消' }))
     fireEvent.click(screen.getByRole('button', { name: '刷新' }))
     fireEvent.change(screen.getByRole('combobox'), { target: { value: workspaceTwo.id } })
-    await screen.findByText(workspaceTwo.path)
+    await waitFor(() => { expect(readWorkspace).toHaveBeenLastCalledWith(workspaceTwo.id, '', expect.any(AbortSignal)) })
+    expect(screen.queryByText(workspaceTwo.path)).toBeNull()
     await waitFor(() => { expect(readWorkspace.mock.calls[1]![2].aborted).toBe(true) })
     await act(async () => { old.resolve({ ok: true, value: workspaceListing() }) })
     expect(screen.getByText(zh.previewHint)).toBeTruthy()
@@ -508,8 +613,10 @@ describe('workspace file scopes', () => {
     expect(screen.queryByRole('button', { name: '打开所在目录' })).toBeNull()
   })
 
-  it('bridges the existing current-session and workspace snapshot hooks without an extra selection service', async () => {
-    const face = props()
+  it('passes the PDF renderer through Main and Page alongside existing session and workspace hooks', async () => {
+    const document: ArtifactEntry = { ...image, name: '剧情.pdf', path: '/old/剧情.pdf', kind: 'document' }
+    const { dispatch, renderSlot } = recordedPdfRenderer()
+    const face = props({ renderSlot, readListing: async () => ({ ok: true, value: { items: [document], roots: ['/old'], truncated: false } }) })
     const binding = createSnapshotStore<StandardSourceBinding>({ key: 'session-one', props: {}, hooks: {}, keyedHooks: {} })
     const snapshot: WorkspaceSnapshot = { phase: 'ready', state: 'idle', error: null, archivedSessionIds: [], pinnedSessionIds: [],
       items: [workspaceOne, workspaceTwo].map((item, index) => ({
@@ -522,6 +629,12 @@ describe('workspace file scopes', () => {
     render(<ArtifactsMain {...face} readWorkspace={readWorkspace}
       useArtifactSession={bindSnapshotSelector(binding)} useWorkspaces={bindSnapshotSelector(workspaces)} />)
     await readyStorageButton()
+    fireEvent.click(await screen.findByRole('button', { name: /^剧情\.pdf/u }))
+    expect(screen.getByRole('region', { name: document.name }).getAttribute('data-preview-url'))
+      .toBe(`/artifacts/api/raw?path=${encodeURIComponent(document.path)}`)
+    expect(dispatch).toHaveBeenCalledWith('artifacts.preview.pdf', {
+      url: `/artifacts/api/raw?path=${encodeURIComponent(document.path)}`, name: document.name,
+    }, expect.objectContaining({ entryKey: '@deepseek-ai/dsh-client-ui-sidebar-documentpreview/artifact-pdf' }))
     fireEvent.click(screen.getByRole('tab', { name: '工作区文件' }))
     await waitFor(() => { expect(readWorkspace).toHaveBeenLastCalledWith(workspaceOne.id, '', expect.any(AbortSignal)) })
     act(() => { binding.set({ ...binding.getSnapshot(), key: 'session-two' }) })

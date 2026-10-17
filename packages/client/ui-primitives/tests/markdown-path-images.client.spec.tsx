@@ -89,6 +89,20 @@ describe('MarkdownText local-path images', () => {
     expect(view.container.querySelector('img')).toBeNull()
   })
 
+  it('accepts only the Desktop artifact raw route from a local image resolver', () => {
+    const src = 'dsh-app://app/artifacts/api/raw?path=%2Ftmp%2Fgraph.png&workspaceId=mounted-workspace'
+    const view = render(<MarkdownText text={LOCAL_IMAGE} pathImages={{ resolve: () => src }} />)
+    expect(view.getByRole('img').getAttribute('src')).toBe(src)
+    for (const result of ['dsh-app://shell/artifacts/api/raw?path=x', 'dsh-app://app/artifacts/api/preview?path=x',
+      'dsh-app://app/artifacts/api/raw-other?path=x', 'dsh-app://app/artifacts/api/raw',
+      'dsh-app://app.example/artifacts/api/raw?path=x']) {
+      view.rerender(<MarkdownText text={LOCAL_IMAGE} pathImages={{ resolve: () => result }} />)
+      expect(view.container.querySelector('img')).toBeNull()
+    }
+    view.rerender(<MarkdownText text={`![diagram](${src})`} />)
+    expect(view.container.querySelector('img')).toBeNull()
+  })
+
   it('leaves remote images untouched even when the vocabulary maps them', () => {
     const remote = '![remote](https://example.com/a.png)'
     const pathImages: MarkdownPathImages = { resolve: () => 'https://cdn.example.com/b.png' }
