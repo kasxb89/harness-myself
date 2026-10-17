@@ -2,6 +2,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
+import { brandString } from '@deepseek-ai/dsh-brand'
 import { bindSnapshotSelector } from '@deepseek-ai/dsh-client-test-runtime'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { StandardSourceBinding } from '@deepseek-ai/dsh-client-ui-slots'
@@ -481,9 +482,12 @@ describe('workspace file scopes', () => {
   it('bridges the existing current-session and workspace snapshot hooks without an extra selection service', async () => {
     const face = props()
     const binding = createSnapshotStore<StandardSourceBinding>({ key: 'session-one', props: {}, hooks: {}, keyedHooks: {} })
-    const snapshot = { phase: 'ready', state: 'idle', error: null, archivedSessionIds: [], pinnedSessionIds: [],
-      items: [workspaceOne, workspaceTwo].map((item, index) => ({ workspaceId: item.id, title: item.title, path: item.path,
-        sessionIds: [index === 0 ? 'session-one' : 'session-two'], createdAt: '', updatedAt: '' })) } as WorkspaceSnapshot
+    const snapshot: WorkspaceSnapshot = { phase: 'ready', state: 'idle', error: null, archivedSessionIds: [], pinnedSessionIds: [],
+      items: [workspaceOne, workspaceTwo].map((item, index) => ({
+        workspaceId: brandString<WorkspaceSnapshot['items'][number]['workspaceId']>(item.id), title: item.title, path: item.path,
+        sessionIds: [brandString<WorkspaceSnapshot['items'][number]['sessionIds'][number]>(index === 0 ? 'session-one' : 'session-two')],
+        createdAt: '', updatedAt: '',
+      })) }
     const workspaces = createSnapshotStore(snapshot)
     const readWorkspace = vi.fn<ArtifactsInjected['readWorkspace']>(async (id, directory) => ({ ok: true, value: workspaceListing(id, directory) }))
     render(<ArtifactsMain {...face} readWorkspace={readWorkspace}

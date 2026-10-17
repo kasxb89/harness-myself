@@ -3457,6 +3457,9 @@ importers:
       '@deepseek-ai/dsh-api-workspace-controller':
         specifier: workspace:*
         version: link:../../api/workspace-controller
+      '@deepseek-ai/dsh-brand':
+        specifier: workspace:*
+        version: link:../../util/brand
       '@deepseek-ai/dsh-client-locale':
         specifier: workspace:*
         version: link:../locale
