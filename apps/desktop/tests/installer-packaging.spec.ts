@@ -139,3 +139,23 @@ it('embeds only an explicitly configured release backend authority and omits it 
   expect(createElectronBuilderConfig({ ...env, DSH_DESKTOP_UNSIGNED: '1' }, 'darwin', 'arm64').extraMetadata)
     .not.toHaveProperty('dshDesktopUpdateConfigOrigin')
 })
+
+it('keeps signed OSS ordinary updates when the separate mandatory service is explicitly disabled', async () => {
+  const { createElectronBuilderConfig } = await import('../scripts/electron-builder-config.mjs')
+  const config = createElectronBuilderConfig({
+    DSH_DESKTOP_APP_ID: 'com.example.installer', DSH_DESKTOP_AUTO_UPDATE_ENV: 'production', DSH_DESKTOP_UPLOAD_PROVIDER: 'oss',
+    DSH_DESKTOP_UPDATE_PREFIX: 'yunshu-harnes', DOWNLOAD_PROD_ORIGIN: 'https://alioss.denuoxuankeji.com',
+    DSH_DESKTOP_MANDATORY_UPDATE_ENABLED: 'false', DSH_DESKTOP_UPDATE_CONFIG_ORIGIN: 'https://8.133.202.230/harness',
+    DSH_DESKTOP_MACOS_SIGNING_IDENTITY: 'Example Company (TEAMID1234)', DSH_DESKTOP_MACOS_TEAM_ID: 'TEAMID1234',
+    APPLE_KEYCHAIN_PROFILE: 'installer-test',
+  }, 'darwin', 'arm64')
+  expect(config.extraMetadata).not.toHaveProperty('dshMandatoryUpdatePolicy')
+  expect(config.extraMetadata).toHaveProperty('dshDesktopUpdateConfigOrigin', 'https://8.133.202.230/harness')
+  expect(config.publish).toEqual([{ provider: 'generic', channel: 'nightly',
+    url: 'https://alioss.denuoxuankeji.com/yunshu-harnes/feeds/mac-arm64/' }])
+  expect(config.mac.forceCodeSigning).toBe(true)
+  expect(config.mac.notarize).toBe(true)
+  expect(() => createElectronBuilderConfig({ DSH_DESKTOP_APP_ID: 'com.example.installer',
+    DSH_DESKTOP_UPLOAD_PROVIDER: 'oss', DSH_DESKTOP_MANDATORY_UPDATE_ENABLED: 'false',
+  }, 'win32', 'x64')).toThrow('DSH_DESKTOP_UPDATE_CONFIG_ORIGIN')
+})

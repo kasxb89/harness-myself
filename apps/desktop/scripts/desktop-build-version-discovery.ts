@@ -20,7 +20,7 @@
 import { readdir } from 'node:fs/promises'
 import { parse } from 'semver'
 import { desktopBuildVersionPrefix, validateDesktopBuildVersion } from './desktop-build-version.mjs'
-import { DESKTOP_AUTO_UPDATE_ENV, resolveDesktopUploadConfig } from './desktop-auto-update-environment.mjs'
+import { DESKTOP_AUTO_UPDATE_ENV, resolveDesktopUploadConfig, resolveDesktopUploadProvider } from './desktop-auto-update-environment.mjs'
 import { createDesktopCos, DESKTOP_COS_REGION } from './desktop-cos.ts'
 import type { DesktopPackageTargetName } from './package-target.ts'
 
@@ -144,6 +144,9 @@ async function remoteVersions(options: DesktopBuildVersionSuggestionOptions): Pr
  * @returns A validated build version whose index is free.
  */
 export async function suggestDesktopBuildVersion(options: DesktopBuildVersionSuggestionOptions): Promise<string> {
+  if (resolveDesktopUploadProvider(options.environment) === 'oss') {
+    throw new Error('desktop package: automatic build numbering is unavailable for OSS; pass an explicit --build-version')
+  }
   const prefix = `${desktopBuildVersionPrefix(options.productVersion)}${options.date ?? desktopBuildDateSegment()}.`
   const published = await remoteVersions(options)
   const taken = published ?? await localVersions(options.artifactsRoot)

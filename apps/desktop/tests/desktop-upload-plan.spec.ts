@@ -113,6 +113,27 @@ afterEach(async () => {
 })
 
 describe('desktop upload plan', () => {
+  it.each(['mac-arm64', 'mac-x64', 'win-x64'] as const)('keeps OSS %s artifacts and metadata URLs under the namespace and refuses fixed-install replacement', async (target) => {
+    const paths = await fixture(target, '1.2.3', 'production')
+    Object.assign(paths.environment, {
+      DSH_DESKTOP_UPLOAD_PROVIDER: 'oss', DOWNLOAD_PROD_ORIGIN: 'https://alioss.denuoxuankeji.com',
+      DSH_DESKTOP_UPDATE_PREFIX: 'yunshu-harnes', OSS_BUCKET: 'yunshu666', OSS_REGION: 'cn-beijing',
+      OSSUTIL_BIN: '/tools/ossutil', OSSUTIL_CONFIG_FILE: '/private/ossutil.ini',
+    })
+    await writeFile(join(paths.artifactsRoot, `${target}-release.json`), JSON.stringify({
+      schemaVersion: 1, target, version: '1.2.3', environment: 'production',
+      publicUrl: `https://alioss.denuoxuankeji.com/yunshu-harnes/feeds/${target}/`,
+    }))
+    const plan = await createDesktopUploadPlan(target, paths)
+    expect(plan).toMatchObject({ provider: 'oss', bucket: 'yunshu666', oss: {
+      region: 'cn-beijing', namespace: 'yunshu-harnes', executable: '/tools/ossutil', configFile: '/private/ossutil.ini',
+    } })
+    expect(plan.artifacts.every(artifact => artifact.key.startsWith('yunshu-harnes/'))).toBe(true)
+    expect(plan.artifacts.filter(artifact => artifact.channelMetadata).every(artifact =>
+      artifact.contents!.includes(`https://alioss.denuoxuankeji.com/yunshu-harnes/bin/${target}/`))).toBe(true)
+    await expect(createDesktopUploadPlan(target, { ...paths, latest: true })).rejects.toThrow('OSS does not support --latest')
+  })
+
   it('uploads only the selected latest installer to each deployment using the existing COS transport', async () => {
     const published = []
     for (const environment of ['production', 'test'] as const) {

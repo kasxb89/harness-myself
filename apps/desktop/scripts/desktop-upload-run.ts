@@ -1,12 +1,15 @@
 /** Durable, credential-free evidence for test and production Desktop uploads. */
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { Readable } from 'node:stream'
 import type COS from 'cos-nodejs-sdk-v5'
+import { load } from 'js-yaml'
+import { gt, valid } from 'semver'
 import type { DesktopUploadArtifact, DesktopUploadPlan } from './desktop-upload-plan.ts'
 import { DESKTOP_COS_REGION } from './desktop-cos.ts'
+import { type DesktopOss, verifyDesktopOssPublicObject } from './desktop-oss.ts'
 import { recordPackagingEvent } from './packaging-run.mjs'
 
 const FAILURE_CODES = new Set(['AccessDenied', 'InternalError', 'NoSuchBucket', 'BadDigest', 'SignatureDoesNotMatch',
@@ -14,6 +17,12 @@ const FAILURE_CODES = new Set(['AccessDenied', 'InternalError', 'NoSuchBucket', 
 
 /** Object keys fingerprinted into every upload record to bind evidence to this uploader. */
 const UPLOADER_SOURCES = ['desktop-upload-run.ts', 'upload-target.ts', 'desktop-upload-plan.ts', 'desktop-cos.ts']
+
+interface FingerprintedUploadArtifact extends DesktopUploadArtifact {
+  readonly size: number
+  readonly sha512: string
+  readonly md5: string
+}
 
 async function fingerprint(artifact: DesktopUploadArtifact) {
   const sha512 = createHash('sha512')
@@ -64,6 +73,7 @@ function streamedBody(artifact: DesktopUploadArtifact): Readable {
  * @returns Fresh record directory after all PUTs succeed; errors retain partial evidence and stop later PUTs.
  */
 export async function uploadDesktopRelease(plan: DesktopUploadPlan, cos: COS, recordsRoot: string): Promise<string> {
+  if (plan.provider === 'oss') throw new Error('desktop upload: OSS plans require the OSS publisher')
   await mkdir(recordsRoot, { recursive: true })
   const directory = await mkdtemp(join(recordsRoot, `${plan.environment}-${plan.target}-`))
   process.stdout.write(`desktop upload: record ${directory}\n`)
@@ -76,7 +86,7 @@ export async function uploadDesktopRelease(plan: DesktopUploadPlan, cos: COS, re
   try {
     await writeFile(join(directory, 'events.jsonl'), '', { flag: 'wx', mode: 0o600, flush: true })
     recordPackagingEvent(directory, { type: 'upload-start', environment: plan.environment, target: plan.target, version: plan.version })
-    const artifacts = []
+    const artifacts: FingerprintedUploadArtifact[] = []
     for (const artifact of plan.artifacts) {
       stage = 'hash-input'
       key = artifact.key
@@ -121,6 +131,167 @@ export async function uploadDesktopRelease(plan: DesktopUploadPlan, cos: COS, re
     await writeFile(join(directory, 'result.json'), `${JSON.stringify({ schemaVersion: 1, startedAt,
       finishedAt: new Date().toISOString(), environment: plan.environment, target: plan.target, version: plan.version,
       success, stage, key, confirmedPuts, failure, publicReadback: 'not-performed' }, null, 2)}\n`,
+    { flag: 'wx', mode: 0o600, flush: true })
+  }
+}
+
+function previousFeedVersion(contents: string): string {
+  const metadata: unknown = load(contents)
+  if (typeof metadata !== 'object' || metadata === null || !('version' in metadata)
+    || typeof metadata.version !== 'string' || valid(metadata.version) === null) {
+    throw new Error('desktop upload: existing OSS manifest has an invalid version')
+  }
+  return metadata.version
+}
+
+/**
+ * Publish immutable OSS packages only after local validation, then replace manifests after full public readback.
+ *
+ * Existing manifests must name a lower version and are retained locally and in the history directory.
+ * Writes have one attempt. A target lock prevents concurrent publishers across machines; failure retains
+ * that lock and the local evidence until an operator reconciles the interrupted release.
+ * @param plan Validated OSS release; command settings are excluded from retained evidence.
+ * @param oss Caller-owned ossutil transport using a local credential file.
+ * @param recordsRoot Retained release evidence outside disposable package outputs.
+ * @returns Fresh record directory after all public objects match the planned bytes.
+ */
+export async function uploadDesktopOssRelease(plan: DesktopUploadPlan, oss: DesktopOss, recordsRoot: string): Promise<string> {
+  if (plan.provider !== 'oss' || plan.oss === undefined) throw new Error('desktop upload: expected an OSS release plan')
+  const namespace = plan.oss.namespace
+  const origin = new URL(plan.publicUrl).origin
+  if (plan.artifacts.length === 0 || plan.artifacts.some(artifact => !artifact.key.startsWith(`${namespace}/`))) {
+    throw new Error('desktop upload: every OSS object must stay inside its configured namespace')
+  }
+  if (valid(plan.version) === null) throw new Error('desktop upload: invalid OSS release version')
+  await mkdir(recordsRoot, { recursive: true })
+  const directory = await mkdtemp(join(recordsRoot, `${plan.environment}-${plan.target}-`))
+  process.stdout.write(`desktop upload: record ${directory}\n`)
+  const startedAt = new Date().toISOString()
+  let stage = 'prepare'
+  let key: string | undefined
+  let confirmedPuts = 0
+  let verifiedObjects = 0
+  let success = false
+  let failure: object | undefined
+  try {
+    await writeFile(join(directory, 'events.jsonl'), '', { flag: 'wx', mode: 0o600, flush: true })
+    recordPackagingEvent(directory, { type: 'upload-start', provider: 'oss', environment: plan.environment,
+      target: plan.target, version: plan.version })
+    const artifacts: FingerprintedUploadArtifact[] = []
+    for (const artifact of plan.artifacts) {
+      stage = 'hash-input'
+      key = artifact.key
+      const hashes = await fingerprint(artifact)
+      if (hashes.size > 5 * 1024 ** 3) throw new Error('desktop upload: ossutil single PUT supports at most 5 GiB')
+      artifacts.push({ ...artifact, ...hashes })
+    }
+    const sourceSha256: Record<string, string> = {}
+    for (const filename of [...UPLOADER_SOURCES, 'desktop-oss.ts']) {
+      sourceSha256[filename] = createHash('sha256').update(await readFile(join(import.meta.dirname, filename))).digest('hex')
+    }
+    await writeFile(join(directory, 'plan.json'), `${JSON.stringify({ schemaVersion: 1, provider: 'oss',
+      environment: plan.environment, target: plan.target, version: plan.version, bucket: plan.bucket,
+      publicUrl: plan.publicUrl, maxAttempts: 1, sourceSha256, artifacts }, null, 2)}\n`, { flag: 'wx', mode: 0o600, flush: true })
+    stage = 'bucket-preflight'
+    await oss.assertUnversioned(plan.bucket)
+    stage = 'acquire-lock'
+    const lockKey = `${namespace}/locks/${plan.target}.json`
+    const lockContents = `${JSON.stringify({ schemaVersion: 1, nonce: randomUUID(), run: basename(directory),
+      target: plan.target, version: plan.version, startedAt })}\n`
+    const lockPath = join(directory, 'publication-lock.json')
+    await writeFile(lockPath, lockContents, { flag: 'wx', mode: 0o600, flush: true })
+    key = lockKey
+    recordPackagingEvent(directory, { type: 'lock-intent', key })
+    await oss.putObject({ bucket: plan.bucket, key: lockKey, path: lockPath,
+      contentType: 'application/json', overwrite: false, cacheControl: 'no-store' })
+    recordPackagingEvent(directory, { type: 'lock-acquired', key })
+    const manifests = artifacts.filter(artifact => artifact.channelMetadata)
+    const previous = new Map<string, string | undefined>()
+    stage = 'version-preflight'
+    for (const artifact of manifests) {
+      key = artifact.key
+      const contents = await oss.readMetadata(plan.bucket, key)
+      if (contents !== undefined && !gt(plan.version, previousFeedVersion(contents))) {
+        throw new Error('desktop upload: the new OSS release version must be greater than every existing manifest version')
+      }
+      previous.set(key, contents)
+      if (contents !== undefined) {
+        await writeFile(join(directory, `previous-${artifact.filename}`), contents, { flag: 'wx', mode: 0o600, flush: true })
+      }
+    }
+    stage = 'package-preflight'
+    for (const artifact of artifacts.filter(artifact => !artifact.channelMetadata)) {
+      key = artifact.key
+      await oss.assertObjectAbsent(plan.bucket, key)
+    }
+
+    async function put(artifact: FingerprintedUploadArtifact, overwrite: boolean, noStore: boolean): Promise<void> {
+      const objectKey = artifact.key
+      key = objectKey
+      stage = 'verify-input'
+      const current = await fingerprint(artifact)
+      if (current.sha512 !== artifact.sha512 || current.size !== artifact.size) throw new Error('desktop upload: input changed')
+      let path = artifact.path
+      if (artifact.contents !== undefined) {
+        path = join(directory, `publish-${artifact.filename}`)
+        await writeFile(path, artifact.contents, { flag: 'wx', mode: 0o600, flush: true })
+      }
+      stage = 'put'
+      recordPackagingEvent(directory, { type: 'put-intent', key, size: artifact.size, sha512: artifact.sha512,
+        channelMetadata: artifact.channelMetadata, overwrite })
+      await oss.putObject({ bucket: plan.bucket, key: objectKey, path, contentType: artifact.contentType, overwrite,
+        ...noStore ? { cacheControl: 'no-store' } : {} })
+      confirmedPuts++
+      stage = 'record-response'
+      recordPackagingEvent(directory, { type: 'put-confirmed', key, attempts: 1 })
+      stage = 'public-readback'
+      const url = `${origin}/${objectKey.split('/').map(segment => encodeURIComponent(segment)).join('/')}`
+      await verifyDesktopOssPublicObject(url, { size: artifact.size, sha512: artifact.sha512, noStore })
+      verifiedObjects++
+      recordPackagingEvent(directory, { type: 'public-verified', key, size: artifact.size, sha512: artifact.sha512 })
+      process.stdout.write(`desktop upload: verified oss://${plan.bucket}/${key} -> ${url}\n`)
+    }
+
+    for (const artifact of artifacts.filter(artifact => !artifact.channelMetadata)) await put(artifact, false, false)
+    for (const artifact of manifests) {
+      key = artifact.key
+      stage = 'manifest-recheck'
+      if (await oss.readMetadata(plan.bucket, key) !== previous.get(key)) {
+        throw new Error('desktop upload: OSS manifest changed during release; serialize publication per target')
+      }
+      const contents = previous.get(key)
+      if (contents !== undefined) {
+        const historyKey = `${namespace}/history/${plan.target}/${basename(directory)}/${artifact.filename}`
+        const historyArtifact: FingerprintedUploadArtifact = {
+          path: join(directory, `previous-${artifact.filename}`), filename: artifact.filename, key: historyKey,
+          contentType: artifact.contentType, channelMetadata: artifact.channelMetadata,
+          ...await fingerprint({ ...artifact, contents }),
+        }
+        await put(historyArtifact, false, true)
+      }
+      await put(artifact, contents !== undefined, true)
+    }
+    stage = 'release-lock'
+    key = lockKey
+    if (await oss.readMetadata(plan.bucket, lockKey) !== lockContents) {
+      throw new Error('desktop upload: publication lock ownership changed; operator reconciliation is required')
+    }
+    recordPackagingEvent(directory, { type: 'lock-release-intent', key })
+    await oss.deleteObject(plan.bucket, lockKey)
+    recordPackagingEvent(directory, { type: 'lock-released', key })
+    stage = 'complete'
+    recordPackagingEvent(directory, { type: 'upload-complete', confirmedPuts, verifiedObjects })
+    success = true
+    return directory
+  }
+  catch (error) {
+    failure = failureReceipt(error)
+    throw new Error(`desktop upload: stopped at ${stage}; inspect ${directory} before another upload`)
+  }
+  finally {
+    await writeFile(join(directory, 'result.json'), `${JSON.stringify({ schemaVersion: 1, provider: 'oss', startedAt,
+      finishedAt: new Date().toISOString(), environment: plan.environment, target: plan.target, version: plan.version,
+      success, stage, key, confirmedPuts, verifiedObjects, failure, publicReadback: success ? 'verified' : 'incomplete' }, null, 2)}\n`,
     { flag: 'wx', mode: 0o600, flush: true })
   }
 }

@@ -10,7 +10,9 @@ import type { DesktopPackageTargetName } from './package-target.ts'
 import {
   desktopBuildRecordFilename,
   desktopUpdateMetadataFilename,
+  resolveDesktopOssUploadConfig,
   resolveDesktopUploadConfig,
+  resolveDesktopUploadProvider,
 } from './desktop-auto-update-environment.mjs'
 import { desktopTargetBuildPaths } from './desktop-build-paths.mjs'
 import { validateDesktopBuildVersion } from './desktop-build-version.mjs'
@@ -40,6 +42,15 @@ export interface DesktopUploadArtifact {
 
 /** A validated installer or update upload, with any channel metadata ordered last. */
 export interface DesktopUploadPlan {
+  /** Absent on legacy COS plans; OSS uses an explicit local credential-file transport. */
+  readonly provider?: 'oss'
+  /** Local OSS command settings, excluded from retained upload plans. */
+  readonly oss?: {
+    readonly region: string
+    readonly executable: string
+    readonly configFile: string
+    readonly namespace: string
+  }
   readonly environment: 'test' | 'production'
   readonly target: DesktopPackageTargetName
   readonly version: string
@@ -194,7 +205,12 @@ export async function createDesktopUploadPlan(
     throw new Error(`desktop upload: desktop version ${desktopVersion} does not match current dsh version ${dshVersion}`)
   }
 
-  const update = resolveDesktopUploadConfig(environment, target.platform, target.arch)
+  const provider = resolveDesktopUploadProvider(environment)
+  const oss = provider === 'oss' ? resolveDesktopOssUploadConfig(environment, target.platform, target.arch) : undefined
+  if (oss !== undefined && options.latest === true) {
+    throw new Error('desktop upload: OSS does not support --latest; publish versioned packages and update feeds instead')
+  }
+  const update = oss ?? resolveDesktopUploadConfig(environment, target.platform, target.arch)
   const buildRecord = await jsonFile(
     join(artifactsRoot, desktopBuildRecordFilename(targetName)),
     `${targetName} package completion record`,
@@ -281,13 +297,16 @@ export async function createDesktopUploadPlan(
   const latestFilename = `dsh-latest-${target.platform === 'darwin' ? 'macos' : 'windows'}-${target.arch}.${target.platform === 'darwin' ? 'dmg' : 'exe'}`
   const latestKey = `desktop/${latestFilename}`
   return {
+    ...(oss === undefined ? {} : { provider: 'oss' as const, oss: {
+      region: oss.region, executable: oss.ossutilBin, configFile: oss.ossutilConfigFile, namespace: oss.namespace,
+    } }),
     environment: update.environment,
     target: targetName,
     version: buildVersion,
     publicUrl: options.latest ? `${update.origin}/${latestKey}` : update.publicUrl,
     bucket: update.bucket,
-    secretIdEnvName: update.secretIdEnvName,
-    secretKeyEnvName: update.secretKeyEnvName,
+    secretIdEnvName: 'secretIdEnvName' in update ? update.secretIdEnvName : '',
+    secretKeyEnvName: 'secretKeyEnvName' in update ? update.secretKeyEnvName : '',
     artifacts: options.latest ? [{ ...installerArtifact, filename: latestFilename, key: latestKey }] : artifacts,
     ...typeof buildRecord.commit === 'string' ? { commit: buildRecord.commit } : {},
     ...typeof buildRecord.dirty === 'boolean' ? { dirty: buildRecord.dirty } : {},

@@ -1,9 +1,12 @@
-/** Resolve the Desktop auto-update channel and its Tencent COS destination. */
+/** Resolve the Desktop auto-update channel and its object-storage destination. */
 
 import { valid } from 'semver'
 
 /** Environment variable that selects the Desktop update deployment. */
 export const DESKTOP_AUTO_UPDATE_ENV = 'DSH_DESKTOP_AUTO_UPDATE_ENV'
+
+/** Environment variable that selects the Desktop artifact upload provider. */
+export const DESKTOP_UPLOAD_PROVIDER_ENV = 'DSH_DESKTOP_UPLOAD_PROVIDER'
 
 const UPDATE_ENVIRONMENTS = {
   test: {
@@ -23,6 +26,19 @@ const UPDATE_ENVIRONMENTS = {
 }
 
 const UPDATE_TARGETS = new Set(['mac-arm64', 'mac-x64', 'win-x64'])
+
+/**
+ * Select an upload provider without changing existing COS release configurations.
+ * @param {NodeJS.ProcessEnv} env - Packaging or upload environment.
+ * @returns {'cos' | 'oss'} Selected object-storage provider.
+ */
+export function resolveDesktopUploadProvider(env) {
+  const provider = env[DESKTOP_UPLOAD_PROVIDER_ENV]?.trim() || 'cos'
+  if (provider !== 'cos' && provider !== 'oss') {
+    throw new Error(`desktop upload: ${DESKTOP_UPLOAD_PROVIDER_ENV} must be "cos" or "oss"`)
+  }
+  return provider
+}
 
 /**
  * Resolve the update deployment, defaulting local release work to test.
@@ -101,6 +117,9 @@ function requiredEnvironmentValue(env, name) {
  * @returns {string} Normalized HTTPS origin without a trailing slash.
  */
 function httpsOrigin(value, name) {
+  if (!/^https:\/\/[^/?#\\\s]+\/?$/iu.test(value)) {
+    throw new Error(`desktop auto-update: ${name} must be an absolute HTTPS origin without a path, credentials, query, or fragment`)
+  }
   let parsed
   try {
     parsed = new URL(value)
@@ -119,25 +138,39 @@ function httpsOrigin(value, name) {
   return parsed.origin
 }
 
+function updateNamespace(env, provider) {
+  const configured = env.DSH_DESKTOP_UPDATE_PREFIX
+  const namespace = configured === undefined && provider === 'cos' ? 'dsh-desk'
+    : requiredEnvironmentValue(env, 'DSH_DESKTOP_UPDATE_PREFIX')
+  if (namespace.length > 256 || !/^[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)*$/u.test(namespace)) {
+    throw new Error('desktop auto-update: DSH_DESKTOP_UPDATE_PREFIX must contain safe relative object-key segments')
+  }
+  return namespace
+}
+
 /**
  * Resolve the public updater URL and object prefixes for one release target.
  * @param {NodeJS.ProcessEnv} env - Packaging or upload environment.
  * @param {NodeJS.Platform} platform - Target Node.js platform.
  * @param {string} arch - Target Node.js architecture.
  * @returns {{ environment: 'test' | 'production', target: 'mac-arm64' | 'mac-x64' | 'win-x64', origin: string, publicUrl: string, keyPrefix: string, binaryKeyPrefix: string }} Resolved updater configuration.
- * @throws {Error} When the test deployment lacks a valid HTTPS origin or a 32-character lowercase hexadecimal release ID.
+ * @throws {Error} When the selected origin or namespace is invalid, or test deployment lacks its release ID.
  */
 export function resolveDesktopAutoUpdateConfig(env, platform, arch) {
   const environment = resolveDesktopAutoUpdateEnvironment(env)
+  const provider = resolveDesktopUploadProvider(env)
   const target = resolveDesktopAutoUpdateTarget(platform, arch)
   const deployment = UPDATE_ENVIRONMENTS[environment]
-  let origin = deployment.fixedOrigin
+  const productionOrigin = env.DOWNLOAD_PROD_ORIGIN
+  let origin = environment === 'production' && (productionOrigin !== undefined || provider === 'oss')
+    ? httpsOrigin(requiredEnvironmentValue(env, 'DOWNLOAD_PROD_ORIGIN'), 'DOWNLOAD_PROD_ORIGIN')
+    : deployment.fixedOrigin
   if (origin === undefined) {
     const { originEnvName } = deployment
     if (originEnvName === undefined) throw new Error('desktop auto-update: selected deployment has no origin')
     origin = httpsOrigin(requiredEnvironmentValue(env, originEnvName), originEnvName)
   }
-  let releasePrefix = 'dsh-desk'
+  let releasePrefix = updateNamespace(env, provider)
   if (environment === 'test') {
     const releaseId = requiredEnvironmentValue(env, 'DOWNLOAD_TEST_RELEASE_ID')
     if (!/^[a-f0-9]{32}$/u.test(releaseId)) {
@@ -162,9 +195,12 @@ export function resolveDesktopAutoUpdateConfig(env, platform, arch) {
  * @param {NodeJS.Platform} platform - Target Node.js platform.
  * @param {string} arch - Target Node.js architecture.
  * @returns {{ environment: 'test' | 'production', target: 'mac-arm64' | 'mac-x64' | 'win-x64', origin: string, publicUrl: string, keyPrefix: string, binaryKeyPrefix: string, bucket: string, secretIdEnvName: string, secretKeyEnvName: string }} Resolved upload configuration.
- * @throws {Error} When the selected deployment lacks a bucket or valid updater configuration.
+ * @throws {Error} When OSS is selected or the COS deployment lacks a bucket or valid updater configuration.
  */
 export function resolveDesktopUploadConfig(env, platform, arch) {
+  if (resolveDesktopUploadProvider(env) === 'oss') {
+    throw new Error('desktop upload: OSS destinations require the OSS publisher; COS upload and automatic version discovery are unavailable')
+  }
   const update = resolveDesktopAutoUpdateConfig(env, platform, arch)
   const deployment = UPDATE_ENVIRONMENTS[update.environment]
   return {
@@ -172,5 +208,31 @@ export function resolveDesktopUploadConfig(env, platform, arch) {
     bucket: requiredEnvironmentValue(env, deployment.bucketEnvName),
     secretIdEnvName: deployment.secretIdEnvName,
     secretKeyEnvName: deployment.secretKeyEnvName,
+  }
+}
+
+/**
+ * Resolve an OSS upload destination without reading credentials or invoking ossutil.
+ * @param {NodeJS.ProcessEnv} env - File-owned OSS release settings.
+ * @param {NodeJS.Platform} platform - Target Node.js platform.
+ * @param {string} arch - Target Node.js architecture.
+ * @returns {{ environment: 'test' | 'production', target: 'mac-arm64' | 'mac-x64' | 'win-x64', origin: string, publicUrl: string, keyPrefix: string, binaryKeyPrefix: string, provider: 'oss', namespace: string, bucket: string, region: string, ossutilBin: string, ossutilConfigFile: string }} Resolved OSS upload configuration.
+ * @throws {Error} When OSS is not selected or its explicit destination and tool settings are incomplete.
+ */
+export function resolveDesktopOssUploadConfig(env, platform, arch) {
+  if (resolveDesktopUploadProvider(env) !== 'oss') throw new Error('desktop upload: OSS publisher requires DSH_DESKTOP_UPLOAD_PROVIDER=oss')
+  const update = resolveDesktopAutoUpdateConfig(env, platform, arch)
+  const bucket = requiredEnvironmentValue(env, 'OSS_BUCKET')
+  if (!/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/u.test(bucket)) throw new Error('desktop upload: OSS_BUCKET must be a valid bucket name')
+  const region = requiredEnvironmentValue(env, 'OSS_REGION')
+  if (!/^[a-z][a-z0-9-]*$/u.test(region)) throw new Error('desktop upload: OSS_REGION must be a region identifier')
+  return {
+    ...update,
+    provider: 'oss',
+    namespace: updateNamespace(env, 'oss'),
+    bucket,
+    region,
+    ossutilBin: requiredEnvironmentValue(env, 'OSSUTIL_BIN'),
+    ossutilConfigFile: requiredEnvironmentValue(env, 'OSSUTIL_CONFIG_FILE'),
   }
 }

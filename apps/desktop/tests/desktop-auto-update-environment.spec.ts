@@ -5,10 +5,15 @@ import {
   resolveDesktopAutoUpdateConfig,
   resolveDesktopAutoUpdateEnvironment,
   resolveDesktopAutoUpdateTarget,
+  resolveDesktopOssUploadConfig,
   resolveDesktopUploadConfig,
+  resolveDesktopUploadProvider,
 } from '../scripts/desktop-auto-update-environment.mjs'
 
 const RELEASE_ID = '0123456789abcdef0123456789abcdef'
+const OSS = { DSH_DESKTOP_UPLOAD_PROVIDER: 'oss', DSH_DESKTOP_AUTO_UPDATE_ENV: 'production',
+  DOWNLOAD_PROD_ORIGIN: 'https://alioss.denuoxuankeji.com', DSH_DESKTOP_UPDATE_PREFIX: 'yunshu-harnes',
+  OSS_BUCKET: 'test-oss-bucket', OSS_REGION: 'cn-beijing', OSSUTIL_BIN: '/tools/ossutil', OSSUTIL_CONFIG_FILE: '/private/ossutil.config' }
 
 describe('desktop auto-update environment', () => {
   it.each([undefined, 'test'])('requires a release ID for deployment %s', (deployment) => {
@@ -117,5 +122,52 @@ describe('desktop auto-update environment', () => {
     expect(desktopUpdateMetadataFilename('1.2.3-beta.2', 'win32')).toBe('nightly.yml')
     expect(() => desktopUpdateMetadataFilename('not-semver', 'darwin')).toThrow(/invalid Desktop version/u)
     expect(() => desktopUpdateMetadataFilename('1.2.3', 'linux')).toThrow(/unsupported metadata platform/u)
+  })
+
+  it('selects OSS destinations without changing upstream COS defaults', () => {
+    expect(resolveDesktopUploadProvider({})).toBe('cos')
+    expect(resolveDesktopUploadProvider({ DSH_DESKTOP_UPLOAD_PROVIDER: 'oss' })).toBe('oss')
+    expect(() => resolveDesktopUploadProvider({ DSH_DESKTOP_UPLOAD_PROVIDER: 's3' })).toThrow(/cos.*oss/u)
+    expect(resolveDesktopOssUploadConfig(OSS, 'win32', 'x64')).toEqual({
+      environment: 'production', target: 'win-x64', provider: 'oss', namespace: 'yunshu-harnes',
+      origin: 'https://alioss.denuoxuankeji.com', publicUrl: 'https://alioss.denuoxuankeji.com/yunshu-harnes/feeds/win-x64/',
+      keyPrefix: 'yunshu-harnes/feeds/win-x64', binaryKeyPrefix: 'yunshu-harnes/bin/win-x64',
+      bucket: OSS.OSS_BUCKET, region: OSS.OSS_REGION, ossutilBin: OSS.OSSUTIL_BIN, ossutilConfigFile: OSS.OSSUTIL_CONFIG_FILE,
+    })
+    expect(() => resolveDesktopUploadConfig(OSS, 'win32', 'x64')).toThrow(/OSS publisher/u)
+    expect(() => resolveDesktopOssUploadConfig({}, 'win32', 'x64')).toThrow(/UPLOAD_PROVIDER=oss/u)
+  })
+
+  it('keeps test OSS artifacts inside their release namespace', () => {
+    expect(resolveDesktopAutoUpdateConfig({ ...OSS, DSH_DESKTOP_AUTO_UPDATE_ENV: 'test',
+      DOWNLOAD_TEST_ORIGIN: 'https://test-updates.example.com', DOWNLOAD_TEST_RELEASE_ID: RELEASE_ID,
+    }, 'darwin', 'arm64')).toMatchObject({
+      publicUrl: `https://test-updates.example.com/yunshu-harnes/${RELEASE_ID}/feeds/mac-arm64/`,
+      binaryKeyPrefix: `yunshu-harnes/${RELEASE_ID}/bin/mac-arm64`,
+    })
+  })
+
+  it.each(['DOWNLOAD_PROD_ORIGIN', 'DSH_DESKTOP_UPDATE_PREFIX', 'OSS_BUCKET', 'OSS_REGION', 'OSSUTIL_BIN', 'OSSUTIL_CONFIG_FILE'] as const)
+  ('requires explicit OSS setting %s', (setting) => {
+    expect(() => resolveDesktopOssUploadConfig({ ...OSS, [setting]: '' }, 'win32', 'x64')).toThrow(setting)
+    expect(() => resolveDesktopOssUploadConfig({ ...OSS, [setting]: undefined }, 'win32', 'x64')).toThrow(setting)
+  })
+
+  it.each(['../other', '/yunshu-harnes', 'yunshu-harnes/', 'a//b', 'a/../b', 'a%2fb', 'a?b', 'a\\b', 'a'.repeat(257)])
+  ('rejects an OSS namespace that cannot be used as a relative object prefix: %j', (prefix) => {
+    expect(() => resolveDesktopAutoUpdateConfig({ ...OSS, DSH_DESKTOP_UPDATE_PREFIX: prefix }, 'win32', 'x64'))
+      .toThrow(/DSH_DESKTOP_UPDATE_PREFIX/u)
+  })
+
+  it('validates OSS origins, buckets and regions without loading credentials', () => {
+    for (const origin of ['https://example.com/path', 'https://example.com/path/..', 'https:example.com', 'https://example.com/?', 'https://example.com/\\']) {
+      expect(() => resolveDesktopAutoUpdateConfig({ ...OSS, DOWNLOAD_PROD_ORIGIN: origin }, 'win32', 'x64'))
+        .toThrow(/DOWNLOAD_PROD_ORIGIN/u)
+    }
+    expect(() => resolveDesktopOssUploadConfig({ ...OSS, OSS_BUCKET: 'a/other' }, 'win32', 'x64')).toThrow(/OSS_BUCKET/u)
+    expect(() => resolveDesktopOssUploadConfig({ ...OSS, OSS_REGION: 'cn-beijing/other' }, 'win32', 'x64')).toThrow(/OSS_REGION/u)
+    expect(resolveDesktopAutoUpdateConfig({ DSH_DESKTOP_AUTO_UPDATE_ENV: 'production',
+      DOWNLOAD_PROD_ORIGIN: 'https://upstream-cos.example.com', DSH_DESKTOP_UPDATE_PREFIX: 'custom/releases',
+    }, 'win32', 'x64').publicUrl).toBe('https://upstream-cos.example.com/custom/releases/feeds/win-x64/')
   })
 })

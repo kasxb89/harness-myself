@@ -32,6 +32,9 @@ describe('Desktop local packaging configuration', () => {
       DSH_DESKTOP_MANDATORY_UPDATE_PROD_ORIGIN: 'https://policy.example.com',
       DSH_DESKTOP_MACOS_SIGNING_IDENTITY: 'Release identity', CSC_LINK: 'missing.p12',
       APPLE_API_KEY: 'missing.p8', DOWNLOAD_PROD_COS_SECRET_KEY: 'unused-secret',
+      DSH_DESKTOP_UPLOAD_PROVIDER: 'oss', DSH_DESKTOP_UPDATE_PREFIX: 'inherited',
+      DSH_DESKTOP_MANDATORY_UPDATE_ENABLED: 'false',
+      OSS_BUCKET: 'inherited-bucket', OSS_REGION: 'cn-beijing', OSSUTIL_BIN: '/inherited/ossutil', OSSUTIL_CONFIG_FILE: '/inherited/config',
     }
     const local = localMacOSPackageEnvironment(parent)
     expect(local).toEqual({
@@ -231,6 +234,33 @@ describe('Desktop local packaging configuration', () => {
       }).toThrow(/APPLE_KEYCHAIN/u)
     })
   })
+})
+
+it('owns OSS destinations and tool paths in the platform file without retaining inherited upload settings', async () => {
+  await withDirectory(async (directory) => {
+    const fileSettings = { DSH_DESKTOP_UPLOAD_PROVIDER: 'oss', DSH_DESKTOP_UPDATE_PREFIX: 'yunshu-harnes',
+      DOWNLOAD_PROD_ORIGIN: 'https://alioss.denuoxuankeji.com', OSS_BUCKET: 'test-oss-bucket', OSS_REGION: 'cn-beijing',
+      DSH_DESKTOP_MANDATORY_UPDATE_ENABLED: 'false',
+      OSSUTIL_BIN: 'tools/ossutil', OSSUTIL_CONFIG_FILE: 'private/ossutil.config' }
+    await writeFile(join(directory, '.env.windows'), Object.entries(fileSettings).map(([key, value]) => `${key}=${value}`).join('\n'))
+    const inherited = { PATH: 'build-tools', DSH_DESKTOP_UPLOAD_PROVIDER: 'cos', DSH_DESKTOP_UPDATE_PREFIX: 'stale',
+      OSS_BUCKET: 'stale-bucket', ossutil_config_file: '/stale/config', OSS_ACCESS_KEY_ID: 'unused-sentinel' }
+    expect(loadDesktopPackageEnvironment('win32', inherited, directory)).toEqual({
+      PATH: 'build-tools', ...fileSettings, OSSUTIL_BIN: join(directory, 'tools', 'ossutil'), OSSUTIL_CONFIG_FILE: join(directory, 'private', 'ossutil.config'),
+    })
+    expect(inherited.OSS_BUCKET).toBe('stale-bucket')
+  })
+})
+
+it('requires a backend authority for signed OSS packages and preserves unsigned opt-out', () => {
+  const environment = { ...RELEASE, DSH_DESKTOP_UPLOAD_PROVIDER: 'oss', DSH_DESKTOP_AUTO_UPDATE_ENV: 'production',
+    DSH_DESKTOP_UPDATE_PREFIX: 'yunshu-harnes', DOWNLOAD_PROD_ORIGIN: 'https://alioss.denuoxuankeji.com',
+    DSH_DESKTOP_MANDATORY_UPDATE_ENABLED: 'false' }
+  expect(() => { validateDesktopPackageEnvironment(environment, WINDOWS) }).toThrow(/DSH_DESKTOP_UPDATE_CONFIG_ORIGIN/u)
+  expect(() => { validateDesktopPackageEnvironment(environment, WINDOWS, { unsigned: true }) }).not.toThrow()
+  expect(() => { validateDesktopPackageEnvironment({ ...environment,
+    DSH_DESKTOP_UPDATE_CONFIG_ORIGIN: 'https://8.133.202.230/harness',
+  }, WINDOWS) }).toThrow(/DSH_DESKTOP_WINDOWS_CER_FILE/u)
 })
 
 it('owns macOS tuning in the local file and validates it before signing credentials', async () => {

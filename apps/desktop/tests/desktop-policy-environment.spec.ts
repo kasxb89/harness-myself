@@ -10,6 +10,8 @@ const auth = { DSH_DESKTOP_MANDATORY_UPDATE_CONFIG: JSON.stringify({ allowedAuth
 it.each(['test', 'production'] as const)('selects the %s policy and authentication together', (deployment) => {
   const policy = resolveDesktopPolicyEnvironment({ ...origins, ...(deployment === 'test' ? auth : {}), DSH_DESKTOP_AUTO_UPDATE_ENV: deployment })
   const origin = deployment === 'test' ? origins.DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN : origins.DSH_DESKTOP_MANDATORY_UPDATE_PROD_ORIGIN
+  expect(policy).toBeDefined()
+  if (policy === undefined) throw new Error('Configured COS mandatory-update policy was omitted')
   expect(policy).toEqual({ origin, allowedPageOrigins: [origin],
     ...(deployment === 'test' ? { allowedAuthOrigins: ['https://login.example.com'] } : {}),
     authentication: deployment === 'test' ? 'feishu-test' : 'anonymous' })
@@ -47,9 +49,27 @@ it('rejects login origins in production', () => {
     .toThrow('must not configure allowedAuthOrigins')
 })
 
-it.each([{ unsigned: true }, { prepareOnly: true }, {}])('requires policy outside local macOS builds in %j', (options) => {
+it('omits only an explicitly disabled OSS mandatory service', () => {
+  expect(resolveDesktopPolicyEnvironment({ DSH_DESKTOP_UPLOAD_PROVIDER: 'oss', DSH_DESKTOP_MANDATORY_UPDATE_ENABLED: 'false' }))
+    .toBeUndefined()
+  expect(() => resolveDesktopPolicyEnvironment({ DSH_DESKTOP_UPLOAD_PROVIDER: 'oss' }))
+    .toThrow('DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN')
+  expect(() => resolveDesktopPolicyEnvironment({ DSH_DESKTOP_UPLOAD_PROVIDER: 'oss', DSH_DESKTOP_MANDATORY_UPDATE_ENABLED: 'true' }))
+    .toThrow('DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN')
+  expect(() => resolveDesktopPolicyEnvironment({ DSH_DESKTOP_UPLOAD_PROVIDER: 'cos', DSH_DESKTOP_MANDATORY_UPDATE_ENABLED: 'false' }))
+    .toThrow('UPLOAD_PROVIDER=oss')
+  expect(() => resolveDesktopPolicyEnvironment({ DSH_DESKTOP_MANDATORY_UPDATE_ENABLED: 'false' }))
+    .toThrow('UPLOAD_PROVIDER=oss')
+})
+
+it.each(['', '0', 'no', 'disabled'])('rejects an invalid mandatory-update enable flag %j', (enabled) => {
+  expect(() => resolveDesktopPolicyEnvironment({ DSH_DESKTOP_UPLOAD_PROVIDER: 'oss', DSH_DESKTOP_MANDATORY_UPDATE_ENABLED: enabled }))
+    .toThrow('must be true or false')
+})
+
+it.each([{ unsigned: true }, { prepareOnly: true }, {}])('requires policy for signed COS preparation and releases in %j', (options) => {
   for (const platform of ['win32', 'darwin'] as const) {
-    if (platform === 'darwin' && options.unsigned) {
+    if (options.unsigned) {
       expect(() => { validateDesktopPackageEnvironment({ DSH_DESKTOP_APP_ID: 'com.example.test' }, { platform, arch: 'x64' }, options) })
         .not.toThrow()
       continue

@@ -1,14 +1,15 @@
-/** Upload validated Desktop update artifacts or a fixed installer to Tencent COS. */
+/** Upload validated Desktop update artifacts through the selected object-storage provider. */
 
 import { resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import type { DesktopPackageTargetName } from './package-target.ts'
 import { createDesktopCos } from './desktop-cos.ts'
+import { createDesktopOss } from './desktop-oss.ts'
 import { resolveDesktopUploadConfig } from './desktop-auto-update-environment.mjs'
 import { loadDesktopPackageEnvironment } from './desktop-package-environment.mjs'
 import { createDesktopUploadPlan, type DesktopUploadPlan } from './desktop-upload-plan.ts'
 import { desktopReleaseTag, tagDesktopRelease } from './desktop-release-tag.ts'
-import { uploadDesktopRelease } from './desktop-upload-run.ts'
+import { uploadDesktopOssRelease, uploadDesktopRelease } from './desktop-upload-run.ts'
 
 const SUPPORTED_TARGETS = new Set<DesktopPackageTargetName>(['mac-arm64', 'mac-x64', 'win-x64'])
 
@@ -86,12 +87,19 @@ export async function uploadDesktopTarget(args: string[]): Promise<void> {
     ? resolveCredentialUploadEnvironment(fileEnvironment, process.env, values.environment as 'test' | 'production', values.bucket!, name)
     : fileEnvironment
   const plan = await createDesktopUploadPlan(name, { environment, latest: values.latest === true })
-  const cos = createDesktopCos({
-    secretId: requiredEnvironmentValue(environment, plan.secretIdEnvName),
-    secretKey: requiredEnvironmentValue(environment, plan.secretKeyEnvName),
-  })
   process.stdout.write(`desktop upload: ${plan.target} ${plan.version} -> ${plan.publicUrl}\n`)
-  await uploadDesktopRelease(plan, cos, resolve(import.meta.dirname, '../.desktop-build/upload-records'))
+  const recordsRoot = resolve(import.meta.dirname, '../.desktop-build/upload-records')
+  if (plan.provider === 'oss') {
+    if (plan.oss === undefined) throw new Error('desktop upload: OSS command settings are missing')
+    await uploadDesktopOssRelease(plan, createDesktopOss(plan.oss), recordsRoot)
+  }
+  else {
+    const cos = createDesktopCos({
+      secretId: requiredEnvironmentValue(environment, plan.secretIdEnvName),
+      secretKey: requiredEnvironmentValue(environment, plan.secretKeyEnvName),
+    })
+    await uploadDesktopRelease(plan, cos, recordsRoot)
+  }
   if (plan.environment === 'production' && !values.latest) recordProductionRelease(plan)
 }
 

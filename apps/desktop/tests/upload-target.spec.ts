@@ -2,13 +2,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createDesktopUploadPlan, type DesktopUploadPlan } from '../scripts/desktop-upload-plan.ts'
 import { loadDesktopPackageEnvironment } from '../scripts/desktop-package-environment.mjs'
 import { tagDesktopRelease } from '../scripts/desktop-release-tag.ts'
-import { uploadDesktopRelease } from '../scripts/desktop-upload-run.ts'
+import { createDesktopCos } from '../scripts/desktop-cos.ts'
+import { createDesktopOss } from '../scripts/desktop-oss.ts'
+import { uploadDesktopOssRelease, uploadDesktopRelease } from '../scripts/desktop-upload-run.ts'
 import { uploadDesktopTarget } from '../scripts/upload-target.ts'
 
 vi.mock('../scripts/desktop-package-environment.mjs', () => ({ loadDesktopPackageEnvironment: vi.fn() }))
 vi.mock('../scripts/desktop-upload-plan.ts', () => ({ createDesktopUploadPlan: vi.fn() }))
 vi.mock('../scripts/desktop-cos.ts', () => ({ createDesktopCos: vi.fn() }))
-vi.mock('../scripts/desktop-upload-run.ts', () => ({ uploadDesktopRelease: vi.fn() }))
+vi.mock('../scripts/desktop-oss.ts', () => ({ createDesktopOss: vi.fn() }))
+vi.mock('../scripts/desktop-upload-run.ts', () => ({ uploadDesktopRelease: vi.fn(), uploadDesktopOssRelease: vi.fn() }))
 vi.mock('../scripts/desktop-release-tag.ts', async importOriginal => ({
   ...await importOriginal<typeof import('../scripts/desktop-release-tag.ts')>(),
   tagDesktopRelease: vi.fn(),
@@ -20,6 +23,22 @@ afterEach(() => {
 })
 
 describe('desktop upload command', () => {
+  it('selects the OSS publisher without looking up COS credentials', async () => {
+    vi.spyOn(process.stdout, 'write').mockReturnValue(true)
+    const settings = { executable: '/tools/ossutil', configFile: '/private/ossutil.ini', region: 'cn-beijing', namespace: 'yunshu-harnes' }
+    const plan: DesktopUploadPlan = {
+      provider: 'oss', oss: settings, environment: 'test', target: 'mac-arm64', version: '1.2.3', bucket: 'yunshu666',
+      publicUrl: 'https://alioss.denuoxuankeji.com/yunshu-harnes/feeds/mac-arm64/', secretIdEnvName: '', secretKeyEnvName: '', artifacts: [],
+    }
+    vi.mocked(loadDesktopPackageEnvironment).mockReturnValue({})
+    vi.mocked(createDesktopUploadPlan).mockResolvedValue(plan)
+    await uploadDesktopTarget(['mac-arm64'])
+    expect(createDesktopOss).toHaveBeenCalledWith(settings)
+    expect(uploadDesktopOssRelease).toHaveBeenCalledOnce()
+    expect(uploadDesktopRelease).not.toHaveBeenCalled()
+    expect(createDesktopCos).not.toHaveBeenCalled()
+  })
+
   it.each([
     { environment: 'production', latest: true, tagged: false },
     { environment: 'production', latest: false, tagged: true },

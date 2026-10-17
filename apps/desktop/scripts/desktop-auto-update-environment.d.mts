@@ -1,6 +1,12 @@
 /** Environment variable that selects the Desktop update deployment. */
 export const DESKTOP_AUTO_UPDATE_ENV: 'DSH_DESKTOP_AUTO_UPDATE_ENV'
 
+/** Environment variable that selects the Desktop artifact upload provider. */
+export const DESKTOP_UPLOAD_PROVIDER_ENV: 'DSH_DESKTOP_UPLOAD_PROVIDER'
+
+/** Supported Desktop artifact upload provider. */
+export type DesktopUploadProvider = 'cos' | 'oss'
+
 /** Supported Desktop update deployment. */
 export type DesktopAutoUpdateEnvironment = 'test' | 'production'
 
@@ -23,6 +29,23 @@ export interface DesktopUploadConfig extends DesktopAutoUpdateConfig {
   readonly secretIdEnvName: string
   readonly secretKeyEnvName: string
 }
+
+/** Public updater URL and explicit OSS destination for one upload target. */
+export interface DesktopOssUploadConfig extends DesktopAutoUpdateConfig {
+  readonly provider: 'oss'
+  readonly namespace: string
+  readonly bucket: string
+  readonly region: string
+  readonly ossutilBin: string
+  readonly ossutilConfigFile: string
+}
+
+/**
+ * Select an upload provider without changing existing COS release configurations.
+ * @param env - Packaging or upload environment.
+ * @returns Selected object-storage provider.
+ */
+export function resolveDesktopUploadProvider(env: NodeJS.ProcessEnv): DesktopUploadProvider
 
 /**
  * Resolve the update deployment, defaulting local release work to test.
@@ -68,7 +91,7 @@ export function desktopUpdateMetadataFilename(
  * @param platform - Target Node.js platform.
  * @param arch - Target Node.js architecture.
  * @returns Resolved updater configuration.
- * @throws When the test deployment lacks a valid HTTPS origin or a 32-character lowercase hexadecimal release ID.
+ * @throws When the selected origin or namespace is invalid, or test deployment lacks its release ID.
  */
 export function resolveDesktopAutoUpdateConfig(
   env: NodeJS.ProcessEnv,
@@ -82,10 +105,24 @@ export function resolveDesktopAutoUpdateConfig(
  * @param platform - Target Node.js platform.
  * @param arch - Target Node.js architecture.
  * @returns Resolved upload configuration.
- * @throws When the selected deployment lacks a bucket or valid updater configuration.
+ * @throws When OSS is selected or the COS deployment lacks a bucket or valid updater configuration.
  */
 export function resolveDesktopUploadConfig(
   env: NodeJS.ProcessEnv,
   platform: NodeJS.Platform,
   arch: string,
 ): DesktopUploadConfig
+
+/**
+ * Resolve an OSS upload destination without reading credentials or invoking ossutil.
+ * @param env - File-owned OSS release settings.
+ * @param platform - Target Node.js platform.
+ * @param arch - Target Node.js architecture.
+ * @returns Resolved OSS upload configuration.
+ * @throws When OSS is not selected or its explicit destination and tool settings are incomplete.
+ */
+export function resolveDesktopOssUploadConfig(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+  arch: string,
+): DesktopOssUploadConfig

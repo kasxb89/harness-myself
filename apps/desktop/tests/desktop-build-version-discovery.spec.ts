@@ -79,4 +79,10 @@ describe('desktop build version discovery', () => {
     await expect(suggestDesktopBuildVersion({ productVersion: PRERELEASE, target: 'win-x64', environment: {}, date: DATE, artifactsRoot }))
       .resolves.toBe(`${PRERELEASE}.${DATE}.3`)
   })
+
+  it('requires an explicit OSS build version before attempting COS discovery or local numbering', async () => {
+    await expect(suggestDesktopBuildVersion({ productVersion: PRERELEASE, target: 'win-x64',
+      environment: { DSH_DESKTOP_UPLOAD_PROVIDER: 'oss' }, date: DATE, artifactsRoot: '/not-read',
+    })).rejects.toThrow(/automatic build numbering is unavailable for OSS.*explicit --build-version/u)
+  })
 })
