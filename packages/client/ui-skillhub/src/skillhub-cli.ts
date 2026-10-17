@@ -20,9 +20,9 @@ export interface SkillHubExecutionConfig {
   readonly maxOutputBytes: number
   /** Maximum official CLI archive bytes accepted for download. @default 1048576 */
   readonly maxDownloadBytes: number
-  /** Maximum community skills requested per search. @default 20 */
+  /** Maximum community skills returned per search or recommendation read. @default 20 */
   readonly searchLimit: number
-  /** Official community search network deadline in milliseconds. @default 15000 */
+  /** Official search and recommendation network deadline in milliseconds. @default 15000 */
   readonly searchTimeoutMs: number
 }
 
@@ -235,6 +235,35 @@ export class SkillHubClient {
         return { slug: item.slug, name: item.name, description: item.description, version: item.version, source: item.source }
       })
     } catch (error) { throw new SkillHubFailure('search-failed', { cause: error }) }
+  }
+
+  /**
+   * Read the official recommended ranking, retaining community coordinates in its published order.
+   * @param signal - Request lifetime shared with CLI setup and execution.
+   * @returns At most searchLimit community skills; invalid or unavailable rankings reject without installing skills.
+   */
+  async recommendations(signal: AbortSignal): Promise<readonly SkillHubSkill[]> {
+    const output = await this.cli(['skill', 'rankings', '--type', 'recommended', '--host', 'https://api.skillhub.cn',
+      '--timeout', String(Math.ceil(this.config.searchTimeoutMs / 1000))], signal, 'recommendations-failed')
+    try {
+      const value: unknown = JSON.parse(output)
+      if (!record(value) || value.section !== 'recommended' || !Array.isArray(value.skills)) throw new Error('invalid ranking')
+      const skills = new Map<string, SkillHubSkill>()
+      for (const item of value.skills) {
+        if (!record(item)) throw new Error('invalid skill')
+        if (item.source !== 'community') continue
+        const slug = record(item.namespace) ? item.namespace.canonicalName : item.slug
+        const description = typeof item.description_zh === 'string' && item.description_zh !== '' ? item.description_zh : item.description
+        if (!isSkillHubSlug(slug) || !slug.startsWith('@') || typeof item.name !== 'string' || typeof description !== 'string') {
+          throw new Error('invalid community skill')
+        }
+        if (!skills.has(slug)) skills.set(slug, {
+          slug, name: item.name, description, source: item.source,
+          version: typeof item.version === 'string' ? item.version : '',
+        })
+      }
+      return [...skills.values()].slice(0, this.config.searchLimit)
+    } catch (error) { throw new SkillHubFailure('recommendations-failed', { cause: error }) }
   }
 
   /**

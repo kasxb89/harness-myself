@@ -23,6 +23,8 @@
 .searchInput { display: flex; flex: 1; min-width: 0; }
 .searchInput > span { flex: 1; min-width: 0; }
 .sectionTitle { margin: 24px 0 16px; font-size: 13px; line-height: 20px; font-weight: 500; }
+.discoveryHeader { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 24px; }
+.discoveryHeader .sectionTitle { margin: 0; }
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 290px), 1fr)); gap: 16px; padding: 0; list-style: none; }
 .card { display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 20px; border: 0.5px solid var(--dsw-alias-border-l2); border-radius: var(--dsw-radius-xl); background: var(--dsw-alias-bg-layer-1); }
 .cardHeading { display: flex; align-items: center; gap: 8px; min-width: 0; }

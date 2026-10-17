@@ -4,7 +4,7 @@ import Schema from '@deepseek-ai/schemastery'
 import type {} from '@deepseek-ai/dsh-client-connection'
 import { isAbsolute } from 'node:path'
 import { SkillHubClient, SkillHubFailure, isSkillHubSlug, type SkillHubExecutionConfig } from './skillhub-cli.ts'
-import { SKILLHUB_INSTALL_PATH, SKILLHUB_INSTALLED_PATH, SKILLHUB_SEARCH_PATH } from './paths.ts'
+import { SKILLHUB_INSTALL_PATH, SKILLHUB_INSTALLED_PATH, SKILLHUB_RECOMMENDATIONS_PATH, SKILLHUB_SEARCH_PATH } from './paths.ts'
 
 /** Cordis plugin identity. */
 export const name = 'client-ui-skillhub'
@@ -63,6 +63,10 @@ export function apply(ctx: Context, config: Config): void {
   ctx.connection.fetch.register({ path: SKILLHUB_INSTALLED_PATH, methods: ['GET'], requestBody: 'buffered', fetch: handle(async () => (
     { ok: true, skills: await client.installed() }
   )) })
+  ctx.connection.fetch.register({
+    path: SKILLHUB_RECOMMENDATIONS_PATH, methods: ['GET'], requestBody: 'buffered',
+    fetch: handle(async (_request, signal) => ({ ok: true, skills: await client.recommendations(signal) })),
+  })
   ctx.connection.fetch.register({ path: SKILLHUB_INSTALL_PATH, methods: ['POST'], requestBody: 'buffered', fetch: handle(async (request, signal) => {
     let value: unknown
     try { value = await request.json() } catch (error) { throw new SkillHubFailure('invalid-request', { cause: error }) }

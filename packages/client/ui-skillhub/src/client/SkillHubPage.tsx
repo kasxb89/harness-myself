@@ -1,4 +1,4 @@
-/** User-driven community search and installation inside the product's main panel. */
+/** Community recommendations, explicit search and installation inside the product's main panel. */
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import {
   Button, IconLoadingOutlineRegular, IconRefreshOutlineRegular, IconSearchOutlineRegular,
@@ -13,6 +13,8 @@ import css from './SkillHubPage.module.css'
 
 /** Cancellable Host operations injected into the skill store. */
 export interface SkillHubInjected {
+  /** Read the official community recommendations without installing anything. */
+  readRecommendations: (signal: AbortSignal) => Promise<SkillHubSearchResponse>
   /** Search an explicitly submitted community query. */
   search: (query: string, signal: AbortSignal) => Promise<SkillHubSearchResponse>
   /** Read installed skills without mutating the product. */
@@ -27,11 +29,11 @@ type InstallState = { status: 'pending' | 'installed' } | { status: 'failed'; co
 export type SkillHubPageProps = SkillHubInjected & PropsLocale<'skillhub'>
 
 /**
- * Render search results and installed skills, owning only this panel's request lifetimes.
+ * Render recommended skills, search results and installed skills with independent request lifetimes.
  * @param props - Locale seat and cancellable Host callbacks supplied by registration.
  * @returns The native skill-store page.
  */
-export function SkillHubPage({ t, search, readInstalled, install }: SkillHubPageProps): ReactNode {
+export function SkillHubPage({ t, readRecommendations, search, readInstalled, install }: SkillHubPageProps): ReactNode {
   const id = useId()
   const [tab, setTab] = useState<'discover' | 'installed'>('discover')
   const [query, setQuery] = useState('')
@@ -39,14 +41,36 @@ export function SkillHubPage({ t, search, readInstalled, install }: SkillHubPage
   const [results, setResults] = useState<readonly SkillHubSkill[]>([])
   const [searching, setSearching] = useState(false)
   const [searchError, setSearchError] = useState<SkillHubErrorCode | null>(null)
+  const [recommendations, setRecommendations] = useState<readonly SkillHubSkill[]>([])
+  const [loadingRecommendations, setLoadingRecommendations] = useState(true)
+  const [recommendationsError, setRecommendationsError] = useState<SkillHubErrorCode | null>(null)
   const [installed, setInstalled] = useState<readonly InstalledSkill[]>([])
   const [loadingInstalled, setLoadingInstalled] = useState(true)
   const [installedError, setInstalledError] = useState<SkillHubErrorCode | null>(null)
   const [installs, setInstalls] = useState<Record<string, InstallState>>({})
   const mounted = useRef(false)
   const searchRequest = useRef<AbortController | null>(null)
+  const recommendationsRequest = useRef<AbortController | null>(null)
   const inventoryRequest = useRef<AbortController | null>(null)
   const installRequests = useRef(new Map<string, AbortController>())
+
+  const refreshRecommendations = useCallback(async () => {
+    recommendationsRequest.current?.abort()
+    const request = new AbortController()
+    recommendationsRequest.current = request
+    setLoadingRecommendations(true)
+    setRecommendationsError(null)
+    try {
+      const result = await readRecommendations(request.signal)
+      if (!mounted.current || request.signal.aborted || recommendationsRequest.current !== request) return
+      if (result.ok) setRecommendations(result.skills)
+      else setRecommendationsError(result.code)
+    } catch (_error) {
+      if (mounted.current && !request.signal.aborted) setRecommendationsError('unexpected')
+    } finally {
+      if (mounted.current && !request.signal.aborted && recommendationsRequest.current === request) setLoadingRecommendations(false)
+    }
+  }, [readRecommendations])
 
   const refreshInstalled = useCallback(async () => {
     inventoryRequest.current?.abort()
@@ -68,16 +92,27 @@ export function SkillHubPage({ t, search, readInstalled, install }: SkillHubPage
 
   useEffect(() => {
     mounted.current = true
+    void refreshRecommendations()
     void refreshInstalled()
     const pendingInstalls = installRequests.current
     return () => {
       mounted.current = false
       searchRequest.current?.abort()
+      recommendationsRequest.current?.abort()
       inventoryRequest.current?.abort()
       for (const request of pendingInstalls.values()) request.abort()
       pendingInstalls.clear()
     }
-  }, [refreshInstalled])
+  }, [refreshInstalled, refreshRecommendations])
+
+  const showRecommendations = (): void => {
+    searchRequest.current?.abort()
+    searchRequest.current = null
+    setSubmitted(null)
+    setQuery('')
+    setSearching(false)
+    setSearchError(null)
+  }
 
   const runSearch = async (text: string): Promise<void> => {
     const value = text.trim()
@@ -126,6 +161,8 @@ export function SkillHubPage({ t, search, readInstalled, install }: SkillHubPage
     }
   }
 
+  const visibleSkills = submitted === null ? recommendations : results
+
   return <section className={css.page} aria-label={t('panel')}>
     <header className={css.header}>
       <div>
@@ -158,21 +195,31 @@ export function SkillHubPage({ t, search, readInstalled, install }: SkillHubPage
         <span>{t(`error.${searchError}`)}</span>
         {submitted !== null && <Button size="sm" onClick={() => { void runSearch(submitted) }}>{t('retry')}</Button>}
       </div>}
-      {searching && <div className={css.loading} role="status" aria-label={t('searching')}><IconLoadingOutlineRegular className={css.spinner} /></div>}
-      {submitted === null && !searching && <div className={css.empty}>
-        <IconSkillOutlineRegular size={28} />
-        <h2>{t('searchPrompt')}</h2><p>{t('searchHint')}</p>
+      <div className={css.discoveryHeader}>
+        <h2 className={css.sectionTitle}>{submitted === null ? t('recommendations') : t('results', { query: submitted })}</h2>
+        {submitted !== null && <Button size="sm" variant="ghost" onClick={showRecommendations}>{t('backToRecommendations')}</Button>}
+      </div>
+      {submitted === null && recommendationsError !== null && <div className={css.notice} role="alert">
+        <span>{t(`error.${recommendationsError}`)}</span>
+        <Button size="sm" onClick={() => { void refreshRecommendations() }}>{t('retry')}</Button>
       </div>}
-      {submitted !== null && <h2 className={css.sectionTitle}>{t('results', { query: submitted })}</h2>}
+      {submitted === null && loadingRecommendations && <div className={css.loading} role="status" aria-label={t('recommendationsLoading')}><IconLoadingOutlineRegular className={css.spinner} /></div>}
+      {submitted === null && !loadingRecommendations && recommendationsError === null && recommendations.length === 0 && (
+        <div className={css.empty}>
+          <IconSkillOutlineRegular size={28} />
+          <h2>{t('recommendationsEmpty')}</h2><p>{t('searchHint')}</p>
+        </div>
+      )}
+      {submitted !== null && searching && <div className={css.loading} role="status" aria-label={t('searching')}><IconLoadingOutlineRegular className={css.spinner} /></div>}
       {submitted !== null && !searching && searchError === null && results.length === 0 && <p className={css.empty}>{t('noResults')}</p>}
       <ul className={css.cards}>
-        {results.map((skill) => {
+        {visibleSkills.map((skill) => {
           const state = installs[skill.slug]
           const isInstalled = installed.some(entry => entry.slug === skill.slug) || state?.status === 'installed'
           return <li key={skill.slug} className={css.card}>
             <div className={css.cardHeading}><IconSkillOutlineRegular /><h3>{skill.name}</h3></div>
             <p className={css.description}>{skill.description}</p>
-            <p className={css.metadata}>{t('version', { version: skill.version })}</p>
+            {skill.version !== '' && <p className={css.metadata}>{t('version', { version: skill.version })}</p>}
             <p className={css.metadata}>{t('source', { source: skill.source })}</p>
             <div className={css.cardFooter}>
               <code className={css.slug}>{skill.slug}</code>

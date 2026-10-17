@@ -71,3 +71,22 @@ it('invalidates conversation skill catalogs only after an acknowledged successfu
   expect(await install(receipt.slug, signal)).toEqual({ ok: false, code: 'install-failed' })
   expect(invalidate).toHaveBeenCalledTimes(1)
 })
+
+it('injects an independent read-only recommendation operation without invalidating skills', async () => {
+  const skill = { slug: '@community/review', name: 'Review', description: 'Review changes', version: '', source: 'SkillHub' }
+  const fetch = vi.fn<(request: Request) => Promise<Response>>(async () => Response.json({ ok: true, skills: [skill] }))
+  vi.stubGlobal('fetch', fetch)
+  const { ctx, slots } = await fixture()
+  const invalidate = vi.fn()
+  ctx.on('skills/catalog-invalidated', invalidate)
+  const readRecommendations = slots.entries('main')[0]!.inject!()['readRecommendations'] as SkillHubInjected['readRecommendations']
+
+  expect(await readRecommendations(new AbortController().signal)).toEqual({ ok: true, skills: [skill] })
+
+  expect(fetch).toHaveBeenCalledTimes(1)
+  const request = fetch.mock.calls[0]![0]
+  expect(new URL(request.url).pathname).toBe('/api/skillhub/recommendations')
+  expect(request.method).toBe('GET')
+  expect(request.body).toBeNull()
+  expect(invalidate).not.toHaveBeenCalled()
+})

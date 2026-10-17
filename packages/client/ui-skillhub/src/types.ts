@@ -22,6 +22,7 @@ export type SkillHubErrorCode =
   | 'invalid-request'
   | 'cli-unavailable'
   | 'search-failed'
+  | 'recommendations-failed'
   | 'install-failed'
   | 'already-installed'
   | 'installed-invalid'
@@ -37,7 +38,7 @@ export interface SkillHubError {
   readonly code: SkillHubErrorCode
 }
 
-/** Community catalog search result. */
+/** Community catalog search or recommendation result. */
 export type SkillHubSearchResponse = { readonly ok: true; readonly skills: readonly SkillHubSkill[] } | SkillHubError
 
 /** Product-local SkillHub installation inventory. */

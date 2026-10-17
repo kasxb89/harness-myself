@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { installSkill, readInstalledSkills, searchSkills } from '../src/client/api.ts'
+import { installSkill, readInstalledSkills, readRecommendedSkills, searchSkills } from '../src/client/api.ts'
 import type { InstalledSkill, SkillHubSkill } from '../src/types.ts'
 
 const skill: SkillHubSkill = { slug: '@community/review', name: 'Review', description: 'Review changes', version: '1.2.0', source: 'SkillHub' }
@@ -15,6 +15,31 @@ function respond(body: unknown, status = 200) {
 }
 
 describe('SkillHub same-origin requests', () => {
+  it('reads official recommendations without a query or an installation request', async () => {
+    const fetch = respond({ ok: true, skills: [skill] })
+    const controller = new AbortController()
+    expect(await readRecommendedSkills(controller.signal)).toEqual({ ok: true, skills: [skill] })
+    const request = fetch.mock.calls[0]![0]
+    const url = new URL(request.url)
+    expect(url.origin).toBe(window.location.origin)
+    expect(url.pathname).toBe('/api/skillhub/recommendations')
+    expect(url.search).toBe('')
+    expect(request.method).toBe('GET')
+    expect(request.credentials).toBe('same-origin')
+    expect(request.cache).toBe('no-store')
+    controller.abort()
+    expect(request.signal.aborted).toBe(true)
+  })
+
+  it('contains recommendation failures and rejects malformed cards', async () => {
+    const fetch = respond({ ok: false, code: 'recommendations-failed' }, 502)
+    expect(await readRecommendedSkills(new AbortController().signal)).toEqual({ ok: false, code: 'recommendations-failed' })
+    fetch.mockResolvedValueOnce(Response.json({ ok: true, skills: [{ ...skill, description: null }] }))
+    expect(await readRecommendedSkills(new AbortController().signal)).toEqual({ ok: false, code: 'unexpected' })
+    fetch.mockResolvedValueOnce(Response.json({ ok: true, skills: [] }))
+    expect(await readRecommendedSkills(new AbortController().signal)).toEqual({ ok: true, skills: [] })
+  })
+
   it('encodes an explicit search while preserving the canonical skill identity', async () => {
     const fetch = respond({ ok: true, skills: [skill] })
     const controller = new AbortController()

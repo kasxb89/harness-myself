@@ -7,7 +7,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type {} from '@deepseek-ai/dsh-client-ui-skill/client'
 import { SkillHubPage, type SkillHubInjected } from './SkillHubPage.tsx'
 import { SkillHubPanelIcon } from './SkillHubPanelIcon.tsx'
-import { installSkill, readInstalledSkills, searchSkills } from './api.ts'
+import { installSkill, readInstalledSkills, readRecommendedSkills, searchSkills } from './api.ts'
 import { en, NS, zh, type SkillHubKey } from './locales.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -30,6 +30,7 @@ export function apply(ctx: Context): void {
   const t = ctx.locale.bind(NS)
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-skillhub: dictionaries')
   const face: SkillHubInjected = {
+    readRecommendations: readRecommendedSkills,
     search: searchSkills,
     readInstalled: readInstalledSkills,
     install: async (slug, signal) => {

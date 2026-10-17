@@ -26,6 +26,7 @@ function props(overrides: Partial<SkillHubPageProps> = {}): SkillHubPageProps {
         return typeof value === 'string' || typeof value === 'number' ? String(value) : ''
       })
     },
+    readRecommendations: vi.fn(async () => ({ ok: true as const, skills: [] })),
     search: vi.fn(async () => ({ ok: true as const, skills: [review] })),
     readInstalled: vi.fn(async () => ({ ok: true as const, skills: [] })),
     install: vi.fn(async () => ({ ok: true as const, skill: installed })),
@@ -39,17 +40,165 @@ function search(query = '审查') {
 }
 
 describe('SkillHub page', () => {
-  it('guides explicit search, shows SkillHub branding, and reads installed skills without installing', async () => {
+  it('loads recommendations and inventory while reserving search and installation for user actions', async () => {
     const face = props()
     render(<SkillHubPage {...face} />)
     await waitFor(() => { expect(face.readInstalled).toHaveBeenCalledTimes(1) })
-    expect(screen.getByRole('heading', { name: '想完成什么任务？' })).toBeTruthy()
+    await screen.findByText('暂时没有推荐技能')
+    expect(screen.getByRole('heading', { name: '推荐技能' })).toBeTruthy()
+    expect(face.readRecommendations).toHaveBeenCalledTimes(1)
     expect(screen.getByRole('link', { name: '访问 SkillHub' }).getAttribute('href')).toBe('https://skillhub.cn/')
     expect(screen.getByRole('button', { name: '搜索' }).hasAttribute('disabled')).toBe(true)
     expect(face.search).not.toHaveBeenCalled()
     expect(face.install).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('tab', { name: '已安装' }))
     await screen.findByRole('heading', { name: '还没有安装 SkillHub 技能' })
+  })
+
+  it('shows recommendation cards without manufacturing an unavailable version', async () => {
+    const face = props({
+      readRecommendations: vi.fn<SkillHubPageProps['readRecommendations']>(async () => ({
+        ok: true, skills: [{ ...review, version: '' }],
+      })),
+    })
+    render(<SkillHubPage {...face} />)
+    await screen.findByRole('heading', { name: review.name })
+
+    expect(face.search).not.toHaveBeenCalled()
+    expect(face.install).not.toHaveBeenCalled()
+    expect(screen.queryByText(/^版本/u)).toBeNull()
+    const title = screen.getByRole('heading', { name: '推荐技能' }).textContent
+    const card = Array.from(screen.getByRole('listitem').querySelectorAll('h3,p,code,button')).map(node => node.textContent)
+    await expect([title, ...card].join('\n') + '\n').toMatchFileSnapshot('./expected/skillhub-recommendations.txt')
+  })
+
+  it('loads recommendations independently while the installed inventory is already available', async () => {
+    const recommendations = deferred<SkillHubSearchResponse>()
+    const readRecommendations = vi.fn<SkillHubPageProps['readRecommendations']>(() => recommendations.promise)
+    const face = props({
+      readRecommendations,
+      readInstalled: vi.fn<SkillHubPageProps['readInstalled']>(async () => ({ ok: true, skills: [installed] })),
+    })
+    render(<SkillHubPage {...face} />)
+    try {
+      expect(screen.getByRole('status', { name: '正在加载推荐技能' })).toBeTruthy()
+      fireEvent.click(screen.getByRole('tab', { name: '已安装' }))
+      await screen.findByRole('heading', { name: review.name })
+      expect(readRecommendations).toHaveBeenCalledTimes(1)
+      expect(face.search).not.toHaveBeenCalled()
+      expect(face.install).not.toHaveBeenCalled()
+    } finally {
+      await act(async () => { recommendations.resolve({ ok: true, skills: [] }) })
+    }
+  })
+
+  it('shows a recommendation failure and retries recommendations without submitting a search', async () => {
+    const readRecommendations = vi.fn<SkillHubPageProps['readRecommendations']>()
+      .mockResolvedValueOnce({ ok: false, code: 'recommendations-failed' })
+      .mockResolvedValueOnce({ ok: true, skills: [review] })
+    const face = props({ readRecommendations })
+    render(<SkillHubPage {...face} />)
+    expect((await screen.findByRole('alert')).textContent).toContain('推荐技能加载失败，请重试')
+
+    fireEvent.click(within(screen.getByRole('alert')).getByRole('button', { name: '重试' }))
+
+    await screen.findByRole('heading', { name: review.name })
+    expect(readRecommendations).toHaveBeenCalledTimes(2)
+    expect(face.search).not.toHaveBeenCalled()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('keeps an explicit search visible when the initial recommendations arrive later', async () => {
+    const recommendations = deferred<SkillHubSearchResponse>()
+    const result = { ...review, slug: 'search-result', name: '搜索结果' }
+    const face = props({
+      readRecommendations: () => recommendations.promise,
+      search: vi.fn<SkillHubPageProps['search']>(async () => ({ ok: true, skills: [result] })),
+    })
+    render(<SkillHubPage {...face} />)
+    try {
+      search('明确搜索')
+      await screen.findByRole('heading', { name: result.name })
+      await act(async () => { recommendations.resolve({ ok: true, skills: [review] }) })
+
+      expect(screen.getByRole('heading', { name: result.name })).toBeTruthy()
+      expect(screen.queryByRole('heading', { name: review.name })).toBeNull()
+      expect(face.search).toHaveBeenCalledExactlyOnceWith('明确搜索', expect.any(AbortSignal))
+    } finally {
+      await act(async () => { recommendations.resolve({ ok: true, skills: [review] }) })
+    }
+  })
+
+  it('returns from explicit search to the loaded recommendations without searching again', async () => {
+    const result = { ...review, slug: 'search-result', name: '搜索结果' }
+    const face = props({
+      readRecommendations: vi.fn<SkillHubPageProps['readRecommendations']>(async () => ({ ok: true, skills: [review] })),
+      search: vi.fn<SkillHubPageProps['search']>(async () => ({ ok: true, skills: [result] })),
+    })
+    render(<SkillHubPage {...face} />)
+    await screen.findByRole('heading', { name: review.name })
+    search('明确搜索')
+    await screen.findByRole('heading', { name: result.name })
+
+    fireEvent.click(screen.getByRole('button', { name: '返回推荐' }))
+
+    expect(screen.getByRole('heading', { name: '推荐技能' })).toBeTruthy()
+    expect(screen.getByRole('heading', { name: review.name })).toBeTruthy()
+    expect(screen.queryByRole('heading', { name: result.name })).toBeNull()
+    expect(face.readRecommendations).toHaveBeenCalledTimes(1)
+    expect(face.search).toHaveBeenCalledTimes(1)
+  })
+
+  it('aborts the recommendation request when its panel unmounts and ignores the late response', async () => {
+    const recommendations = deferred<SkillHubSearchResponse>()
+    const readRecommendations = vi.fn<SkillHubPageProps['readRecommendations']>(() => recommendations.promise)
+    const view = render(<SkillHubPage {...props({ readRecommendations })} />)
+    expect(readRecommendations).toHaveBeenCalledTimes(1)
+    expect(readRecommendations.mock.calls[0]![0].aborted).toBe(false)
+
+    view.unmount()
+
+    expect(readRecommendations.mock.calls[0]![0].aborted).toBe(true)
+    await act(async () => { recommendations.resolve({ ok: true, skills: [review] }) })
+    expect(screen.queryByRole('heading', { name: review.name })).toBeNull()
+  })
+
+  it('installs a recommended skill only after a click and shares the receipt with the installed tab', async () => {
+    const completion = deferred<SkillHubInstallResponse>()
+    const install = vi.fn<SkillHubPageProps['install']>(() => completion.promise)
+    const readInstalled = vi.fn<SkillHubPageProps['readInstalled']>()
+      .mockResolvedValueOnce({ ok: true, skills: [] }).mockResolvedValue({ ok: true, skills: [installed] })
+    const face = props({ readRecommendations: async () => ({ ok: true, skills: [review] }), install, readInstalled })
+    render(<SkillHubPage {...face} />)
+    try {
+      const button = await screen.findByRole('button', { name: '安装' })
+      expect(install).not.toHaveBeenCalled()
+      act(() => { fireEvent.click(button); fireEvent.click(button) })
+      expect(install).toHaveBeenCalledExactlyOnceWith(review.slug, expect.any(AbortSignal))
+      expect(screen.getByRole('button', { name: '安装中…' }).hasAttribute('disabled')).toBe(true)
+      await act(async () => { completion.resolve({ ok: true, skill: installed }) })
+      await waitFor(() => { expect(readInstalled).toHaveBeenCalledTimes(2) })
+      expect(screen.getByRole('button', { name: '已安装' }).hasAttribute('disabled')).toBe(true)
+      fireEvent.click(screen.getByRole('tab', { name: '已安装' }))
+      expect(screen.getByRole('heading', { name: review.name })).toBeTruthy()
+      expect(face.search).not.toHaveBeenCalled()
+    } finally {
+      await act(async () => { completion.resolve({ ok: true, skill: installed }) })
+    }
+  })
+
+  it('marks an already installed recommendation without offering a duplicate installation', async () => {
+    const face = props({
+      readRecommendations: async () => ({ ok: true, skills: [review] }),
+      readInstalled: async () => ({ ok: true, skills: [installed] }),
+    })
+    render(<SkillHubPage {...face} />)
+
+    const badge = await screen.findByRole('button', { name: '已安装' })
+
+    expect(badge.hasAttribute('disabled')).toBe(true)
+    expect(screen.queryByRole('button', { name: '安装' })).toBeNull()
+    expect(face.install).not.toHaveBeenCalled()
   })
 
   it('shows search cards with name, description, version and community source', async () => {

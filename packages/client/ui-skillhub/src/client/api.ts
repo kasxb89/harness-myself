@@ -1,12 +1,12 @@
 /** Same-origin, cancellable requests to the authenticated SkillHub Host routes. */
-import { SKILLHUB_INSTALL_PATH, SKILLHUB_INSTALLED_PATH, SKILLHUB_SEARCH_PATH } from '../paths.ts'
+import { SKILLHUB_INSTALL_PATH, SKILLHUB_INSTALLED_PATH, SKILLHUB_RECOMMENDATIONS_PATH, SKILLHUB_SEARCH_PATH } from '../paths.ts'
 import type {
   InstalledSkill, SkillHubError, SkillHubErrorCode, SkillHubInstallResponse,
   SkillHubInstalledResponse, SkillHubSearchResponse, SkillHubSkill,
 } from '../types.ts'
 
 const ERROR_CODES: readonly SkillHubErrorCode[] = [
-  'invalid-request', 'cli-unavailable', 'search-failed', 'install-failed', 'already-installed',
+  'invalid-request', 'cli-unavailable', 'search-failed', 'recommendations-failed', 'install-failed', 'already-installed',
   'installed-invalid', 'busy', 'cancelled', 'timeout', 'download-failed', 'unexpected',
 ]
 
@@ -56,6 +56,17 @@ async function request<T>(
     // Transport and decoding errors stay on the panel; private diagnostics never become product copy.
     return { ok: false, code: signal.aborted ? 'cancelled' : 'unexpected' }
   }
+}
+
+/**
+ * Read official community recommendations without submitting a search or installing a skill.
+ * @param signal - Panel or explicit retry lifetime.
+ * @returns Validated recommendation cards in official order, or a localized failure code.
+ */
+export function readRecommendedSkills(signal: AbortSignal): Promise<SkillHubSearchResponse> {
+  return request(SKILLHUB_RECOMMENDATIONS_PATH, signal, value =>
+    value.ok === true && Array.isArray(value.skills) && value.skills.every(catalogSkill)
+      ? { ok: true as const, skills: value.skills } : undefined)
 }
 
 /**

@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-Find community skills in the sidebar Skill store, install an explicitly selected skill, and inspect installed skills. Search and installation use the official SkillHub CLI in product-private storage. Installed skills become available to existing conversations without restarting. This store does not change another application's skills or installation-source preferences.
+Browse recommended community skills in the sidebar Skill store, search by task, install an explicitly selected skill, and inspect installed skills. Catalog reads and installation use the official SkillHub CLI in product-private storage. Installed skills become available to existing conversations without restarting. This store does not change another application's skills or installation-source preferences.
 
 ## Table of Contents
 
@@ -23,7 +23,7 @@ Find community skills in the sidebar Skill store, install an explicitly selected
 <a id="use-this-package"></a>
 ## Use this package
 
-The Web product bundle mounts this package. Open **Skill store**, enter a skill name or task, submit Search, and select Install on the desired result. The Installed tab lists successful product-managed installations. Installation never starts from navigation or search alone and refuses an existing destination.
+The Web product bundle mounts this package. Open **Skill store** to load community entries from SkillHub's official recommended ranking beneath the search field. Recommendations preserve the official order and exclude enterprise and external-source entries. Search by skill name or task, then return to recommendations without repeating the search. Failed recommendation reads offer Retry without blocking search. Select Install on the desired card; the Installed tab lists successful product-managed installations. Installation never starts from navigation, recommendations or search alone and refuses an existing destination.
 
 The first operation requiring the CLI downloads the official version 2026.8.5 kit and verifies its pinned SHA-256 and the four selected files. The cache lives beneath the active Harness cache's `skillhub` directory. Desktop resolves and supplies its verified bundled Python executable, so Windows needs neither system Python nor Bash. A standalone Web deployment without that runtime uses the configured `pythonExecutable`.
 
@@ -33,7 +33,7 @@ The first operation requiring the CLI downloads the official version 2026.8.5 ki
 | `cacheDirectory` | Required | Absolute product-private CLI cache and state directory |
 | `pythonExecutable` | `python3` | Verified bundled Python on Desktop; configured interpreter on Web |
 | `timeoutMs` | `120000` | Complete operation deadline in milliseconds |
-| `searchLimit` | `20` | Maximum community search results |
+| `searchLimit` | `20` | Maximum community skills in each search or recommendation list |
 
 The [configuration catalog](../../../docs/config-catalog.md#deepseek-aidsh-client-ui-skillhub) lists all execution limits. The [official installation guide](https://skillhub.cn/install/skillhub.md) describes SkillHub's standalone CLI; this integration supplies product-owned staging instead of the CLI's default relative directory, then commits verified files to the product's skills directory.
 
@@ -43,7 +43,7 @@ The [configuration catalog](../../../docs/config-catalog.md#deepseek-aidsh-clien
 <details>
 <summary>Implementation internals — click to expand</summary>
 
-The browser registers a keyed main panel and a sidebar entry between Plaza and Plugins. Authenticated local Connection routes own searches, installations and inventory reads. The Host executes the unmodified official CLI through the subprocess service with isolated configuration and disabled self-upgrade. A small Python adapter makes failed community searches explicit. No upstream account or product relay credential is passed to SkillHub.
+The browser registers a keyed main panel and a sidebar entry between Plaza and Plugins. Authenticated local Connection routes own recommendation reads, searches, installations and inventory reads. Recommendations use the official CLI's recommended ranking and retain namespace-qualified installation coordinates. Recommendation and search requests have independent lifetimes, so late recommendations do not replace search results. The Host executes the unmodified official CLI through the subprocess service with isolated configuration and disabled self-upgrade. A small Python adapter makes failed community searches explicit. No upstream account or product relay credential is passed to SkillHub.
 
 Installation uses private staging before publishing a complete skill. Canonical community names, including namespaces, remain in the official lockfile; deterministic single-level directories beneath the active Harness home's `skills` directory let the existing filesystem provider discover them. Successful commits invalidate the Host catalog and the browser's skill-reference cache. Removing the plugin cancels and joins active operations and removes its routes, panel and dictionaries.
 

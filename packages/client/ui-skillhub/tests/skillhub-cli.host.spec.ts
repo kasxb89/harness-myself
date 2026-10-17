@@ -95,6 +95,64 @@ describe('SkillHub product CLI isolation', () => {
     await instance.dispose()
   })
 
+  it('reads the official recommendations through the isolated CLI and preserves canonical community coordinates', async () => {
+    provider.output = async () => JSON.stringify({ section: 'recommended', total: 5, skills: [
+      { slug: 'hello', namespace: { canonicalName: '@team/hello' }, name: 'Hello', description: 'Original', description_zh: '中文简介', version: '1.2', source: 'community' },
+      { slug: 'private', name: 'Enterprise', source: 'enterprise' },
+      { slug: 'mirrored', name: 'Mirror', source: 'clawhub' },
+      { slug: 'other', namespace: { canonicalName: '@other/other' }, name: 'Other', description: 'Another skill', source: 'community' },
+      { slug: 'hello', namespace: { canonicalName: '@team/hello' }, name: 'Duplicate', description: 'Duplicate', version: '2', source: 'community' },
+    ] })
+    const instance = client()
+    await expect(instance.run(signal(), s => instance.recommendations(s))).resolves.toEqual([
+      { slug: '@team/hello', name: 'Hello', description: '中文简介', version: '1.2', source: 'community' },
+      { slug: '@other/other', name: 'Other', description: 'Another skill', version: '', source: 'community' },
+    ])
+    const spec = provider.specs[0]!
+    expect(spec.argv.slice(-8)).toEqual(['skill', 'rankings', '--type', 'recommended', '--host', 'https://api.skillhub.cn', '--timeout', '10'])
+    expect(spec.argv).toContain('--skip-self-upgrade')
+    expect(spec.argv).toContain('-I')
+    expect(spec.argv).not.toContain('install')
+    expect(spec.env).toHaveProperty('SKILLHUB_HOST', 'https://api.skillhub.cn')
+    expect(provider.waited).toHaveBeenCalledOnce()
+    expect(await instance.installed()).toEqual([])
+    await instance.dispose()
+  })
+
+  it('bounds recommendations by the configured search limit while preserving official ranking order', async () => {
+    provider.output = async () => JSON.stringify({ section: 'recommended', skills: ['first', 'second', 'third'].map(slug => ({
+      slug, namespace: { canonicalName: `@team/${slug}` }, name: slug, description: slug, version: '1', source: 'community',
+    })) })
+    const instance = client({ ...budget, searchLimit: 2 })
+    expect((await instance.run(signal(), s => instance.recommendations(s))).map(skill => skill.slug))
+      .toEqual(['@team/first', '@team/second'])
+    await instance.dispose()
+  })
+
+  it.each([
+    'not json', '{}', '{"section":"hot_downloads","skills":[]}',
+    '{"section":"recommended","skills":[{"source":"community","slug":"hello","name":"Hello","description":"A skill"}]}',
+    '{"section":"recommended","skills":[{"source":"community","namespace":{"canonicalName":"../escape"},"name":"Hello","description":"A skill"}]}',
+  ])('reports an invalid official recommendation response without falling back to invented skills (%s)', async (output) => {
+    provider.output = async () => output
+    const instance = client()
+    await expect(instance.run(signal(), s => instance.recommendations(s))).rejects.toMatchObject({ code: 'recommendations-failed' })
+    expect(await instance.installed()).toEqual([])
+    await instance.dispose()
+  })
+
+  it('keeps an empty ranking empty and rejects failed or truncated recommendation commands', async () => {
+    provider.output = async () => '{"section":"recommended","skills":[]}'
+    const instance = client()
+    await expect(instance.run(signal(), s => instance.recommendations(s))).resolves.toEqual([])
+    provider.exitCode = 42
+    await expect(instance.run(signal(), s => instance.recommendations(s))).rejects.toMatchObject({ code: 'recommendations-failed' })
+    provider.exitCode = 0
+    provider.lossy = true
+    await expect(instance.run(signal(), s => instance.recommendations(s))).rejects.toMatchObject({ code: 'recommendations-failed' })
+    await instance.dispose()
+  })
+
   it.each(['{}', '{"results":[{"slug":"../escape"}]}', 'not json'])('rejects invalid CLI search response %s', async (output) => {
     provider.output = async () => output
     const instance = client()
