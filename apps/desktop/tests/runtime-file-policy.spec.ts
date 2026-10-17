@@ -13,6 +13,9 @@ it('omits development artifacts while preserving executable modules, assets and 
   const source = join(root, 'source')
   const output = join(root, 'output')
   const removed = [
+    '.gitkeep', 'example/.gitkeep',
+    '@xmanrui/dsh-im/node_modules/undici/lib/llhttp/.gitkeep',
+    'dshmarket/node_modules/undici/lib/llhttp/.gitkeep',
     'example/index.d.ts', 'example/index.d.mts', 'example/index.d.cts',
     'example/index.js.map', 'example/index.mjs.map', 'example/index.cjs.map',
     'example/style.css.map', 'example/index.d.ts.map', 'example/index.d.mts.map',
@@ -36,6 +39,7 @@ it('omits development artifacts while preserving executable modules, assets and 
     'example/source.ts', 'example/src/entry.ts', 'example/test/runtime-fixture.json',
     'example/locale.json', 'example/data.map', 'example/module.wasm',
     'example/package.json', 'example/LICENSE', 'example/NOTICE', 'example/README.md',
+    'example/gitkeep', 'example/.gitkeep.json',
     'example/native.lib', 'example/native.obj', 'example/symbols.pdb',
     'fs-ext/build/Release/fs_ext.node', 'fs-ext/build/Release/runtime.dll',
     'node-pty/prebuilds/win32-x64/conpty.node',
