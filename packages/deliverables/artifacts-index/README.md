@@ -96,7 +96,7 @@ This package neither assembles provider requests nor changes model context.
 
 These limits describe the package’s current behavior and dependencies.
 
-- Renaming and recycling require filesystem support for exclusive same-volume hard links. Unsupported filesystems return a visible failure; no overwrite-capable fallback is attempted.
+- Output publication, renaming and recycling require filesystem support for exclusive same-volume hard links. Destination validation checks this before generation. Unsupported filesystems return a visible failure; no overwrite-capable fallback is attempted.
 - The listing is bounded before sorting, so a truncated response is not a globally newest-files query.
 - Hidden and unreadable entries are omitted; files can change between listing and reading.
 - The index has no filesystem watcher or Session attribution. Renaming or recycling changes the filesystem path; earlier chat links are not rewritten. Recovery data remains on disk until restored or removed outside this page.

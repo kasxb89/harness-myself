@@ -205,16 +205,32 @@ export class ArtifactStore extends Service implements ArtifactStorageService {
     }
     const probe = join(canonical, '.yunshu-write-probe-' + randomUUID())
     const linkedProbe = probe + '.linked'
+    let probeInfo: FileInfo | undefined
+    let linked = false
     try {
-      const handle = await open(probe, 'wx', 0o600)
-      await handle.close()
+      try {
+        const handle = await open(probe, 'wx', 0o600)
+        try { probeInfo = await handle.stat() }
+        finally { await handle.close() }
+      } catch { throw new ArtifactError('ARTIFACT_STORAGE_UNWRITABLE', 409, 'The output directory is not writable') }
       // Publication needs exclusive same-volume linking as well as creating a file.
-      await link(probe, linkedProbe)
-      await unlink(linkedProbe)
-      await unlink(probe)
+      try { await link(probe, linkedProbe); linked = true }
+      catch { throw new ArtifactError('ARTIFACT_MOVE_UNSUPPORTED', 409, 'This filesystem cannot safely publish without overwriting') }
+    } finally {
+      if (probeInfo !== undefined) {
+        let cleanupFailed = false
+        for (const owned of linked ? [linkedProbe, probe] : [probe]) {
+          try {
+            const current = await lstat(owned)
+            if (sameFile(probeInfo, current)) await unlink(owned)
+            else cleanupFailed = true
+          } catch (error) {
+            if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT') cleanupFailed = true
+          }
+        }
+        if (cleanupFailed) throw new ArtifactError('ARTIFACT_OPERATION_UNKNOWN', 409, 'Output probe cleanup could not be confirmed')
+      }
     }
-    catch { throw new ArtifactError('ARTIFACT_STORAGE_UNWRITABLE', 409, 'The output directory is not writable') }
-    finally { await unlink(linkedProbe).catch(() => {}); await unlink(probe).catch(() => {}) }
     signal.throwIfAborted()
     return canonical
   }
