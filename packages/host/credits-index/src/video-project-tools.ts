@@ -1,7 +1,7 @@
 /** Model tools for durable long-video generation and sandboxed local editing. @module */
 
 import { randomUUID } from 'node:crypto'
-import { isAbsolute, join, relative, resolve } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
@@ -10,6 +10,8 @@ import type { Session } from '@deepseek-ai/dsh-session'
 import { prepareVideoProject, publishVideoOutput, readVideoProject, resolveVideoOutputDirectory, runVideoProject, videoProjectFailure, VideoProjectError } from './video-project.ts'
 import type { VideoProjectManifest } from './video-project.ts'
 import type { VideoProjectInput, VideoProjectOptions } from './video-project-types.ts'
+import { CreativeError, type CreativeOperation } from './creative-store.ts'
+import { creativeOwner } from './creative-tools.ts'
 
 declare module '@deepseek-ai/dsh-jobs/view' {
   interface JobKindMap {
@@ -32,6 +34,7 @@ interface VideoToolResult {
   task_ids?: string[]
   final_path?: string
   duration_seconds?: number
+  plan_id?: string
 }
 
 /** All fields are programmatically available; prose never carries the only job id. */
@@ -42,6 +45,7 @@ const output = {
       project_id: { type: 'string' }, job_id: { type: 'string' }, code: { type: 'string' },
       plan_seconds: { type: 'array', items: { type: 'number' } }, clip_paths: { type: 'array', items: { type: 'string' } },
       task_ids: { type: 'array', items: { type: 'string' } }, final_path: { type: 'string' }, duration_seconds: { type: 'number' },
+      plan_id: { type: 'string' },
     }, additionalProperties: false,
   },
   render: (_args: unknown, value: VideoToolResult) => [{ type: 'text' as const, text: JSON.stringify(value) }],
@@ -49,6 +53,7 @@ const output = {
 
 /** Preserve only safe declared failures; infrastructure messages may contain secrets. */
 function failure(error: unknown): VideoToolResult {
+  if (error instanceof CreativeError) return { status: 'failed', code: error.code, message: error.message }
   return { status: 'failed', ...videoProjectFailure(error) }
 }
 
@@ -86,6 +91,23 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
   const lifetime = new AbortController()
   const activeProjects = new Set<string>()
   const operations = new Set<{ abort: AbortController; done: Promise<JobOutcome> }>()
+  /** Optional previews observe committed files and cannot fail the main generation. */
+  function runOptions(operation: CreativeOperation | undefined, session: Session, workspaceRoot: string): VideoProjectOptions {
+    if (operation === undefined || options.creative === undefined) return options
+    const creative = options.creative
+    return { ...options, async saved(manifest, index, signal) {
+      const path = index === undefined ? manifest.finalPath : manifest.segments[index - 1]?.path
+      if (path === undefined) return
+      const id = `${operation.operationId}_${index === undefined ? 'final' : `clip_${String(index)}`}`
+      try {
+        await creative.preview(operation, path, async () => {
+          const previewEditor = options.editor(workspaceRoot, session, [join(options.stateDirectory, manifest.id, 'clips'), dirname(path)])
+          if (previewEditor.preview === undefined) throw new CreativeError('CREATIVE_PREVIEW_UNAVAILABLE', 503, '本地视频预览工具暂时不可用。')
+          return previewEditor.preview(path, join(workspaceRoot, '.yunshu-creative', 'previews', operation.operationId), signal)
+        }, id)
+      } catch (error) { ctx.logger.warn('Video saved; optional creation preview was not recorded.', error) }
+    } }
+  }
   ctx.effect(() => async () => {
     lifetime.abort()
     for (const operation of operations) operation.abort.abort()
@@ -127,6 +149,8 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
     name: 'generate_video_project',
     description: 'Create a finished video longer than one model clip from a natural-language brief. For requests such as a 40-second video, plan the fewest supported clips (for a 15-second limit: 15+15+10, or three 15-second clips trimmed to 40), generate them in order using the signed-in account, then automatically normalize, trim, and join them locally. All local tools and every request are checked before billing. Returns a background job_id and durable project_id; read job_output for progress and call present on the completed final_path. Never claim completion before the job reports a saved final_path. Already submitted provider tasks may continue billing after local cancellation. If a current user-supplied chat attachment is outside the workspace, first copy that read-authorized attachment into this workspace with the existing file tools, then pass the copied path; do not copy unrelated files.',
     parameters: {
+      plan_id: { type: 'string', description: 'Explicit update_creation_plan id. Also supply shot_ids in generation order.' },
+      shot_ids: { type: 'array', items: { type: 'string' }, description: 'Exact shot ids belonging to plan_id, one per actual supported model clip and in generation order.' },
       prompt: { type: 'string', required: true, description: 'The complete video brief, visual continuity, story, and desired editing. Before calling, script user-delegated narrative or dialogue scenes with stable character ids, language and brief exact lines, identifying on-screen speakers versus narration; preserve user-supplied wording. Assign each line and its timing to a shot in shot_prompts. Do not reduce a story requiring voices to a music montage. Respect silent/no-dialogue requests and do not add dialogue or subtitles to unrelated nonverbal videos. Include requested lip-sync and subtitle requirements. These request native model generation, not separate speech, lip-sync or subtitle processing; verify the rendered result before claiming they are met.' },
       total_duration_seconds: { type: 'number', required: true, description: 'Desired final length in whole seconds; this may exceed the model single-clip limit.' },
       shot_prompts: { type: 'array', items: { type: 'string' }, description: 'Exact shot briefs, one per planned clip. For delegated narrative or dialogue, first write a short script and allocate each shot its character ids, language, exact lines and timing, distinguishing on-screen speech from narration; preserve user-provided wording. Keep each shot focused on its assigned lines rather than repeating the whole story. Respect silent/no-dialogue requests. Omit for briefs that do not require shot-specific scripting.' },
@@ -141,12 +165,22 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
     presentCall: args => ({ card: 'generic', title: '生成并剪辑视频', kind: 'edit', content: [{ type: 'text', text: `${String(args.total_duration_seconds)} 秒 · ${args.prompt}` }] }),
     presentResult: (_args, result) => ({ card: 'generic', title: result.isError ? '视频项目未开始' : '视频项目', content: result.content }),
     async execute(args, exec): Promise<VideoToolResult> {
+      let creation: CreativeOperation | undefined
       try {
         const { workspaceRoot, session } = caller(exec)
         const signal = AbortSignal.any([exec.signal, lifetime.signal])
         signal.throwIfAborted()
         const provider = await options.acquireProvider(workspaceRoot, session)
         const editor = options.editor(workspaceRoot, session)
+        const images = async (values: readonly string[]): Promise<string[]> => {
+          const normalized: string[] = []
+          for (const value of values) {
+            const owned = args.plan_id === undefined ? undefined
+              : await options.creativeImageReference?.(creativeOwner(exec, provider.identity), args.plan_id, value)
+            normalized.push(owned ?? value)
+          }
+          return normalized
+        }
         const input: VideoProjectInput = {
           prompt: args.prompt, totalDurationSeconds: args.total_duration_seconds,
           ...args.shot_prompts === undefined ? {} : { shotPrompts: args.shot_prompts },
@@ -154,16 +188,24 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
           ...args.resolution === undefined ? {} : { resolution: args.resolution },
           ...args.ratio === undefined ? {} : { ratio: args.ratio },
           ...args.audio === undefined ? {} : { audio: args.audio },
-          ...args.frame_images === undefined ? {} : { frameImages: args.frame_images },
-          ...args.reference_images === undefined ? {} : { referenceImages: args.reference_images },
+          ...args.frame_images === undefined ? {} : { frameImages: await images(args.frame_images) },
+          ...args.reference_images === undefined ? {} : { referenceImages: await images(args.reference_images) },
           ...args.reference_videos === undefined ? {} : { referenceVideos: args.reference_videos },
           ...args.reference_audios === undefined ? {} : { referenceAudios: args.reference_audios },
         }
         const manifest = await prepareVideoProject(options, input, session.id, workspaceRoot, provider, editor, signal)
+        creation = await options.creative?.begin(creativeOwner(exec, provider.identity), {
+          kind: 'video', prompt: input.prompt, shots: manifest.segments.map(segment => ({ prompt: segment.prompt, durationSeconds: segment.durationSeconds })), videoProjectId: manifest.id,
+          ...args.plan_id === undefined ? {} : { planId: args.plan_id }, ...args.shot_ids === undefined ? {} : { shotIds: args.shot_ids },
+        })
         const runEditor = options.editor(workspaceRoot, session, [join(options.stateDirectory, manifest.id, 'clips')])
-        const jobId = start(exec, 'video-project', `${String(input.totalDurationSeconds)} 秒视频`, (job, signal) => runVideoProject(options, manifest, provider, runEditor, job, signal), manifest.id)
-        return { status: 'background', job_id: jobId, project_id: manifest.id, plan_seconds: manifest.segments.map(segment => segment.durationSeconds), message: '视频项目已开始。使用 job_output 查看进度，完成后将 final_path 交给 present 展示；停止本地任务后，已提交的上游任务仍可能继续计费。' }
-      } catch (error) { return failure(error) }
+        const linked = creation
+        const jobId = start(exec, 'video-project', `${String(input.totalDurationSeconds)} 秒视频`, async (job, signal) => {
+          try { return await runVideoProject(runOptions(linked, session, workspaceRoot), manifest, provider, runEditor, job, signal) }
+          finally { if (linked !== undefined) options.creative?.release(linked) }
+        }, manifest.id)
+        return { status: 'background', job_id: jobId, project_id: manifest.id, ...creation === undefined ? {} : { plan_id: creation.projectId }, plan_seconds: manifest.segments.map(segment => segment.durationSeconds), message: '视频项目已开始。使用 job_output 查看进度，完成后将 final_path 交给 present 展示；停止本地任务后，已提交的上游任务仍可能继续计费。' }
+      } catch (error) { if (creation !== undefined) options.creative?.release(creation); return failure(error) }
     },
   }))
 
@@ -190,6 +232,7 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
     parameters: { project_id: { type: 'string', required: true } }, output,
     presentCall: args => ({ card: 'generic', title: '继续视频项目', kind: 'edit', content: [{ type: 'text', text: args.project_id }] }),
     async execute(args, exec): Promise<VideoToolResult> {
+      let creation: CreativeOperation | undefined
       try {
         const { workspaceRoot, session } = caller(exec)
         const signal = AbortSignal.any([exec.signal, lifetime.signal])
@@ -197,11 +240,17 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
         const provider = await options.acquireProvider(workspaceRoot, session)
         const manifest = await readVideoProject(options, args.project_id, session.id, workspaceRoot, provider.identity)
         if (manifest.status === 'completed') return statusOf(manifest, false)
+        if (activeProjects.has(manifest.id)) throw new VideoProjectError('PROJECT_ALREADY_RUNNING', '该项目已经在后台运行，请查看已有任务。')
         const editor = options.editor(workspaceRoot, session, [join(options.stateDirectory, manifest.id, 'clips')])
         await editor.preflight(signal, manifest.outputDirectory)
-        const jobId = start(exec, 'video-project', `继续 ${String(manifest.input.totalDurationSeconds)} 秒视频`, (job, signal) => runVideoProject(options, manifest, provider, editor, job, signal), manifest.id)
+        creation = await options.creative?.resumeVideo(creativeOwner(exec, provider.identity), manifest)
+        const linked = creation
+        const jobId = start(exec, 'video-project', `继续 ${String(manifest.input.totalDurationSeconds)} 秒视频`, async (job, signal) => {
+          try { return await runVideoProject(runOptions(linked, session, workspaceRoot), manifest, provider, editor, job, signal) }
+          finally { if (linked !== undefined) options.creative?.release(linked) }
+        }, manifest.id)
         return { status: 'background', project_id: manifest.id, job_id: jobId, plan_seconds: manifest.segments.map(segment => segment.durationSeconds), message: '已开始读取原任务和已保存片段。使用 job_output 查看结果；未知提交不会重新计费提交。' }
-      } catch (error) { return failure(error) }
+      } catch (error) { if (creation !== undefined) options.creative?.release(creation); return failure(error) }
     },
   }))
 

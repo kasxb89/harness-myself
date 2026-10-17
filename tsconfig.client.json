@@ -149,6 +149,7 @@
     { "path": "./packages/client/ui-background" },
     { "path": "./packages/client/ui-artifacts" },
     { "path": "./packages/client/ui-credits" },
+    { "path": "./packages/client/ui-creative" },
     { "path": "./packages/client/ui-mobile" },
     { "path": "./packages/client/creation-content/tsconfig.client.json" },
     { "path": "./packages/client/ui-prompt-assist" },

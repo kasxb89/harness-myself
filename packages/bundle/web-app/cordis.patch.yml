@@ -428,6 +428,9 @@
     - id: ui-credits
       name: '@deepseek-ai/dsh-client-ui-credits'
 
+    - id: ui-creative
+      name: '@deepseek-ai/dsh-client-ui-creative'
+
     # Sidebar Mobile column: the IM bridge's channel front, opened on WeChat so
     # the binding QR is one click from the sidebar.
     - id: ui-mobile

@@ -1,0 +1,174 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`deployed Harness API through the real product Loader > publishes chat plans and real image outputs through authenticated account/chat media routes > structured creation plan tool 1`] = `
+{
+  "description": "Create or explicitly revise the structured plan for a chat image or video: stable characters and their appearance, source materials, ordered shots, camera, actions, exact dialogue and subtitles. Use the returned plan_id and the exact shot ids in generate_image/generate_video or shot_ids in generate_video_project. Never associate a generation with a guessed latest project. Planning does not generate media or spend credits. Character/material descriptions and dialogue are requirements, not verified generation results. Preserve user wording and silent/nonverbal requests. Revisions supply the complete plan and cannot remove shots with existing generation records.",
+  "name": "update_creation_plan",
+  "parameters": {
+    "properties": {
+      "assets": {
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "description": {
+              "type": "string",
+            },
+            "id": {
+              "type": "string",
+            },
+            "kind": {
+              "enum": [
+                "image",
+                "video",
+                "audio",
+                "document",
+                "other",
+              ],
+              "type": "string",
+            },
+            "name": {
+              "type": "string",
+            },
+            "role": {
+              "type": "string",
+            },
+            "source_path_or_asset_id": {
+              "description": "Existing real path or uploaded asset id; use an empty string for an asset that has not been generated. Never invent a path.",
+              "type": "string",
+            },
+          },
+          "required": [
+            "id",
+            "name",
+            "kind",
+            "source_path_or_asset_id",
+          ],
+          "type": "object",
+        },
+        "type": "array",
+      },
+      "brief": {
+        "type": "string",
+      },
+      "characters": {
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "appearance": {
+              "type": "string",
+            },
+            "clothing": {
+              "type": "string",
+            },
+            "id": {
+              "type": "string",
+            },
+            "name": {
+              "type": "string",
+            },
+            "personality": {
+              "type": "string",
+            },
+            "reference_asset_ids": {
+              "items": {
+                "type": "string",
+              },
+              "type": "array",
+            },
+            "voice": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "id",
+            "name",
+          ],
+          "type": "object",
+        },
+        "type": "array",
+      },
+      "kind": {
+        "enum": [
+          "image",
+          "video",
+        ],
+        "type": "string",
+      },
+      "plan_id": {
+        "description": "Explicit existing plan id when revising; omit to create.",
+        "type": "string",
+      },
+      "shots": {
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "type": "string",
+            },
+            "asset_ids": {
+              "items": {
+                "type": "string",
+              },
+              "type": "array",
+            },
+            "camera": {
+              "type": "string",
+            },
+            "character_ids": {
+              "items": {
+                "type": "string",
+              },
+              "type": "array",
+            },
+            "dialogue": {
+              "type": "string",
+            },
+            "duration_seconds": {
+              "type": "number",
+            },
+            "id": {
+              "type": "string",
+            },
+            "order": {
+              "type": "number",
+            },
+            "prompt": {
+              "type": "string",
+            },
+            "scene": {
+              "type": "string",
+            },
+            "subtitles": {
+              "type": "string",
+            },
+            "title": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "id",
+            "order",
+            "title",
+            "prompt",
+          ],
+          "type": "object",
+        },
+        "type": "array",
+      },
+      "style": {
+        "type": "string",
+      },
+      "title": {
+        "type": "string",
+      },
+    },
+    "required": [
+      "kind",
+      "title",
+      "brief",
+      "shots",
+    ],
+    "type": "object",
+  },
+}
+`;

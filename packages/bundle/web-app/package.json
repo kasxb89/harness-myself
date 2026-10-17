@@ -62,6 +62,7 @@
     "@deepseek-ai/dsh-api-workspace-files": "workspace:*",
     "@deepseek-ai/dsh-artifacts-index": "workspace:*",
     "@deepseek-ai/dsh-client-ui-artifacts": "workspace:*",
+    "@deepseek-ai/dsh-client-ui-creative": "workspace:*",
     "@deepseek-ai/dsh-credits-index": "workspace:*",
     "@deepseek-ai/dsh-client-ui-credits": "workspace:*",
     "@deepseek-ai/dsh-client-ui-mobile": "workspace:*",

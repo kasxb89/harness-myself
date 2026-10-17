@@ -12,6 +12,7 @@
       "default": "./lib/index.js"
     },
     "./src/*": "./src/*",
+    "./creative-types": { "types": "./lib/types/creative-types.d.ts" },
     "./package.json": "./package.json"
   },
   "license": "MIT",
@@ -21,6 +22,7 @@
     "qrcode": "1.5.4"
   },
   "peerDependencies": {
+    "@deepseek-ai/dsh-client-connection": "workspace:*",
     "@deepseek-ai/cordis": "workspace:~",
     "@deepseek-ai/dsh-host-webserver": "workspace:*",
     "@deepseek-ai/dsh-llm": "workspace:*",
@@ -37,6 +39,7 @@
     "@deepseek-ai/dsh-artifacts-index": "workspace:*"
   },
   "devDependencies": {
+    "@deepseek-ai/dsh-client-connection": "workspace:*",
     "@deepseek-ai/cordis": "workspace:~",
     "@deepseek-ai/cordis-plugin-include": "workspace:~",
     "@deepseek-ai/cordis-plugin-loader": "workspace:~",
@@ -65,6 +68,7 @@
     "@deepseek-ai/dsh-artifacts-index": "workspace:*"
   },
   "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-client-connection": { "optional": true },
     "@deepseek-ai/dsh-llm": {
       "optional": true
     },

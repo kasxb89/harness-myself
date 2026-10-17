@@ -521,6 +521,7 @@ export async function runVideoProject(
         segment.path = path
         segment.status = 'saved'
         await persist(options, manifest)
+        await options.saved?.(manifest, segment.index, signal)
         job.append(`分镜 ${String(segment.index)} 已保存：${path}\n`)
       }
     }
@@ -549,6 +550,7 @@ export async function runVideoProject(
     manifest.finalDurationSeconds = result.durationSeconds
     manifest.status = 'completed'
     await persist(options, manifest)
+    await options.saved?.(manifest, undefined, signal)
     const summary = JSON.stringify({ status: 'succeeded', project_id: manifest.id, final_path: manifest.finalPath, duration_seconds: result.durationSeconds, clip_paths: manifest.segments.map(segment => savedPath(segment)), message: '视频已实际保存。请调用 present 展示 final_path，并在回复中提供可点击的产物链接。' })
     job.append(`${summary}\n`)
     return { status: 'completed', result: summary }

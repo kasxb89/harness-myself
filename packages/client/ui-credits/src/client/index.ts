@@ -15,6 +15,15 @@ import { RechargePage, type RechargePageInjected } from './RechargePage.tsx'
 import { en, NS, zh, type CreditsKey } from './locales.ts'
 import { WorkspaceGuide, WorkspaceGuideToast } from './WorkspaceGuide.tsx'
 import { createWorkspaceGuide } from './workspace-guide-store.ts'
+import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-store'
+import { createCreditsSessionSource, type CreditsSnapshot } from './session-store.ts'
+
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    /** Shared product account snapshot; subscribing retains account refresh. */
+    creditsSession: ObservableSnapshot<CreditsSnapshot>
+  }
+}
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
@@ -38,6 +47,7 @@ export const inject = ['slots', 'locale', 'layout']
  * @param ctx - client root context.
  */
 export function apply(ctx: ClientContext): void {
+  ctx.provide('creditsSession', createCreditsSessionSource())
   const t = ctx.locale.bind(NS)
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-credits: dictionaries')
   const guide = createWorkspaceGuide()

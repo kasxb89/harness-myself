@@ -19,6 +19,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-artifacts-index'
+import type {} from '@deepseek-ai/dsh-client-connection'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import z from '@deepseek-ai/schemastery'
 import QRCode from 'qrcode'
@@ -30,11 +31,13 @@ import { assistPrompt, parsePromptAssist, promptAssistFailure } from './prompt-a
 import { relayCreationContent } from './creation-content.ts'
 import { createVideoEditor } from './video-edit.ts'
 import { registerVideoProjectTools } from './video-project-tools.ts'
-import { VideoProjectError } from './video-project.ts'
+import { readVideoProject, VideoProjectError } from './video-project.ts'
 import { createVideoProjectRelay } from './video-project-provider.ts'
 import { bindVideoAccount } from './video-project-account.ts'
 import { captureMediaOutput } from './media-output.ts'
-import type { VideoProjectRequest, VideoRequestValue } from './video-project-types.ts'
+import type { VideoProjectIdentity, VideoProjectOptions, VideoProjectRequest, VideoRequestValue } from './video-project-types.ts'
+import { CreativeError, CreativeStore, type CreativeOperation, type CreativeOwner } from './creative-store.ts'
+import { creativeOwner, registerCreativeTools } from './creative-tools.ts'
 import {
   catalogFromPricing,
   mediaModelIds,
@@ -1205,6 +1208,8 @@ export function apply(ctx: Context, config: Config): void {
     key: string,
     body: Record<string, unknown>,
     signal = new AbortController().signal,
+    savedOutput?: (path: string) => Promise<void>,
+    submitting?: () => Promise<void>,
   ): Promise<MediaOutcome & { paths?: readonly string[]; mode?: string }> => {
     const prompt = readString(body, 'prompt')
     if (prompt === null) return { ok: false, code: 'INVALID_REQUEST', message: 'prompt 必填' }
@@ -1276,6 +1281,7 @@ export function apply(ctx: Context, config: Config): void {
     }
     try {
       const output = await captureMediaOutput(ctx.get('artifactStorage'), join(stateDir, 'media'), signal)
+      await submitting?.()
       // A plugin-served model answers on its own path and hands back a task;
       // the OpenAI host protocol answers inline on `/v1/images/generations`.
       if (capability.model.route !== '/v1/images/generations') {
@@ -1332,7 +1338,9 @@ export function apply(ctx: Context, config: Config): void {
             if (bytes === null) continue
             const suffix = format === 'jpeg' ? 'jpg' : format === 'webp' ? 'webp' : 'png'
             const filename = `gen-${new Date().toISOString().replace(/[:.]/g, '-')}-${String(index)}-${randomBytes(3).toString('hex')}.${suffix}`
-            saved.push((await output.write(filename, bytes)).path)
+            const path = (await output.write(filename, bytes)).path
+            await savedOutput?.(path)
+            saved.push(path)
           }
           if (saved.length > 0) {
             return { ok: true, model, path: saved[0], paths: saved, mode: 'generate' }
@@ -1396,7 +1404,9 @@ export function apply(ctx: Context, config: Config): void {
           }
           if (bytes === null) continue
           const filename = `gen-${stamp}-${String(saved.length)}-${randomBytes(3).toString('hex')}.${extension}`
-          saved.push((await output.write(filename, bytes)).path)
+          const path = (await output.write(filename, bytes)).path
+          await savedOutput?.(path)
+          saved.push(path)
           written += 1
         }
         return written
@@ -1823,6 +1833,31 @@ export function apply(ctx: Context, config: Config): void {
 
   const contentLife = new AbortController()
   const contentRequests = new Set<Promise<void>>()
+  let projectOptions: VideoProjectOptions | undefined
+  /** Local views and mutation admission use the same non-secret login identity. */
+  const creativeIdentity = async (): Promise<VideoProjectIdentity | undefined> => {
+    const session = await liveSession()
+    return session?.token === undefined ? undefined : { accountId: session.account.id, sessionFingerprint: createHash('sha256').update(session.token).digest('hex') }
+  }
+  const creative = new CreativeStore({
+    directory: join(stateDir, 'creative-projects'), current: creativeIdentity,
+    video: async (id, owner) => {
+      if (projectOptions === undefined) throw new CreativeError('CREATIVE_UNAVAILABLE', 503, '视频项目服务尚未准备好，请稍后重试。')
+      return readVideoProject(projectOptions, id, owner.sessionId, owner.workspaceRoot, owner)
+    },
+  })
+  registerCreativeTools(ctx, creative, creativeIdentity)
+  /** Generated outputs grant reference access only through their exact creation owner and record. */
+  const creativeImageReference = async (owner: CreativeOwner, planId: string, value: string): Promise<string | undefined> => {
+    if (value.startsWith('ma_')) return value
+    const source = await creative.imageReference(owner, planId, value)
+    if (source === undefined) return undefined
+    const mediaType = [...ALLOWED_ASSET_TYPES].find(type => referenceSignature(source.bytes, type))
+    if (mediaType === undefined) throw new CreativeError('CREATIVE_REFERENCE_INVALID', 400, '已生成的图片不是受支持的 PNG、JPEG 或 WebP，请检查原文件。')
+    const id = `ma_${randomBytes(20).toString('hex')}`
+    await storeReference(id, source.bytes, mediaType, basename(source.path))
+    return id
+  }
   ctx.effect(() => async () => {
     contentLife.abort()
     await Promise.allSettled([...contentRequests])
@@ -1857,6 +1892,34 @@ export function apply(ctx: Context, config: Config): void {
 
 
       try {
+        if (route === '/api/creative/projects' || route === '/api/creative/media') {
+          const connection = ctx.get('connection')
+          const rejected = connection === undefined ? 403 : connection.requestRejection(request)
+          if (rejected !== undefined) { json(response, rejected, { ok: false, code: 'CREATIVE_HOST_AUTH_REQUIRED', message: '请从已连接的云枢客户端查看创作。' }); return }
+          if (method !== 'GET' && method !== 'HEAD' || route === '/api/creative/projects' && method !== 'GET') { json(response, 405, { ok: false, code: 'METHOD_NOT_ALLOWED', message: '该创作接口只提供读取。' }); return }
+          const identity = await creativeIdentity()
+          if (identity === undefined) { json(response, 401, { ok: false, code: 'AUTH_REQUIRED', message: '请登录后查看本账号的创作。' }); return }
+          const sessionId = url.searchParams.get('session_id') ?? ''
+          if (!/^[A-Za-z0-9_-]{1,128}$/u.test(sessionId)) { json(response, 400, { ok: false, code: 'CREATIVE_SESSION_INVALID', message: '请选择有效的聊天。' }); return }
+          const owner = { ...identity, sessionId }
+          try {
+            if (route === '/api/creative/projects') {
+              const projects = await creative.projects(owner)
+              const current = await creativeIdentity()
+              if (current?.accountId !== identity.accountId || current.sessionFingerprint !== identity.sessionFingerprint) { json(response, 409, { ok: false, code: 'CREATIVE_ACCOUNT_CHANGED', message: '登录已变化，请刷新后查看当前账号。' }); return }
+              json(response, 200, { ok: true, payload: { accountId: identity.accountId, projects } })
+            } else {
+              const rawFrame = url.searchParams.get('frame')
+              await creative.serve(request, response, owner, url.searchParams.get('project_id') ?? '', url.searchParams.get('output_id') ?? '', rawFrame === null ? undefined : Number(rawFrame))
+            }
+          } catch (error) {
+            if (response.headersSent) { response.destroy(); return }
+            json(response, error instanceof CreativeError ? error.status : 503, error instanceof CreativeError
+              ? { ok: false, code: error.code, message: error.message }
+              : { ok: false, code: 'CREATIVE_READ_FAILED', message: '创作记录暂时无法读取，请检查本机存储后重试。' })
+          }
+          return
+        }
         if ((route === '/api/creation/content' && method === 'GET')
           || (route.startsWith('/api/creation/assets/') && (method === 'GET' || method === 'HEAD'))) {
           const operation = relayCreationContent(request, response, route, apiBaseUrl, resolved.timeoutMs, contentLife.signal)
@@ -2834,7 +2897,9 @@ export function apply(ctx: Context, config: Config): void {
   {
     const videoContext = ctx
     const projectState = join(stateDir, 'video-projects')
-    registerVideoProjectTools(videoContext, {
+    projectOptions = {
+      creative,
+      creativeImageReference,
       stateDirectory: projectState,
       outputDirectory: resolved.videoProjectOutputDirectory,
       get publication() { return videoContext.get('artifactStorage') },
@@ -2926,18 +2991,22 @@ export function apply(ctx: Context, config: Config): void {
           download: (taskId, _request, destination, signal) => relay.download(taskId, destination, signal),
         }
       },
-    })
+    }
+    registerVideoProjectTools(videoContext, projectOptions)
   }
 
   ctx.tools.register(defineTool({
     name: 'generate_image',
     description: 'Generate images from a text prompt through the local new-api relay, save every result into the artifacts directory, and return the paths. Which image models exist, and what each one accepts, is the deployment’s own answer: ask for a model only when the user names one.',
     parameters: {
+      plan_id: { type: 'string', description: 'Explicit update_creation_plan id for this generation. Also provide exactly one of shot_id or asset_id.' },
+      shot_id: { type: 'string', description: 'Exact shot id in the explicit plan; never guess a latest project.' },
+      asset_id: { type: 'string', description: 'Exact image asset id in plan_id, including a video plan. Mutually exclusive with shot_id. Creates or reconstructs this source asset, not a finished shot.' },
       prompt: { type: 'string', required: true, description: 'What the image should show.' },
       model: { type: 'string', description: 'Optional image model id such as gpt-image-2. Defaults to the first image model the deployment serves for this account.' },
       size: { type: 'string', description: 'Optional output size such as 1024x1024 or auto. A value the chosen model does not support is refused with that model’s own menu.' },
       count: { type: 'number', description: 'How many images to render, within the model’s limit (usually 1–4).' },
-      reference_images: { type: 'array', items: { type: 'string' }, description: 'Optional stored reference ids (ma_…) from the AI 生图 panel’s upload; present means the request is an edit.' },
+      reference_images: { type: 'array', items: { type: 'string' }, description: 'Existing uploaded ma_ ids, or real generated image output ids/paths already owned by the same explicit plan_id. Arbitrary local paths and URLs are refused; references request an image edit.' },
     },
     output: {
       schema: {
@@ -2947,6 +3016,8 @@ export function apply(ctx: Context, config: Config): void {
           path: { type: 'string' },
           paths: { type: 'array', items: { type: 'string' } },
           model: { type: 'string' },
+          plan_id: { type: 'string' },
+          code: { type: 'string' },
           message: { type: 'string' },
         },
         additionalProperties: false,
@@ -2954,27 +3025,34 @@ export function apply(ctx: Context, config: Config): void {
       render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
     },
     async execute(args, exec) {
-      const session = await requireToken()
-      if ('error' in session) return { status: 'unauthorized', message: session.error }
-      const relay = await requireRelayKey()
-      if ('error' in relay) return { status: 'failed', message: relay.error }
-      const outcome = await runImageGeneration(relay.key, {
-        prompt: args.prompt,
-        ...args.model === undefined ? {} : { model: args.model },
-        ...args.size === undefined ? {} : { size: args.size },
-        ...args.count === undefined ? {} : { count: args.count },
-        ...args.reference_images === undefined ? {} : { references: args.reference_images },
-      }, exec.signal)
-      if (!outcome.ok) {
-        return { status: 'failed', model: outcome.model ?? '', message: outcome.message ?? outcome.code ?? '生成失败' }
-      }
-      const paths = [...outcome.paths ?? []]
-      return {
-        status: 'succeeded',
-        path: outcome.path ?? '',
-        paths,
-        model: outcome.model ?? '',
-        message: `图片已保存到产物目录（共 ${String(paths.length)} 张）。`,
+      let operation: CreativeOperation | undefined
+      try {
+        const binding = await bindCurrentVideoAccount()
+        const owner = creativeOwner(exec, binding.identity)
+        const references: string[] = []
+        for (const value of args.reference_images ?? []) {
+          const source = value.startsWith('ma_') ? value : args.plan_id === undefined ? undefined : await creativeImageReference(owner, args.plan_id, value)
+          if (source === undefined) throw new CreativeError('CREATIVE_REFERENCE_INVALID', 400, '请使用已上传的图片，或同一创作计划内实际生成的图片；不会读取任意路径。')
+          references.push(source)
+        }
+        operation = await creative.begin(owner, { kind: 'image', prompt: args.prompt, shots: [{ prompt: args.prompt }], ...args.plan_id === undefined ? {} : { planId: args.plan_id }, ...args.shot_id === undefined ? {} : { shotIds: [args.shot_id] }, ...args.asset_id === undefined ? {} : { assetId: args.asset_id } })
+        const creation = operation
+        const outcome = await runImageGeneration(await binding.key(), {
+          prompt: args.prompt,
+          ...args.model === undefined ? {} : { model: args.model },
+          ...args.size === undefined ? {} : { size: args.size },
+          ...args.count === undefined ? {} : { count: args.count },
+          ...args.reference_images === undefined ? {} : { references },
+        }, exec.signal, path => creative.saved(creation, path, 'image'), () => creative.dispatched(creation))
+        const paths = [...outcome.paths ?? []]
+        await creative.finish(operation, { status: outcome.ok ? 'completed' : exec.signal.aborted ? 'cancelled' : outcome.code === 'TIMEOUT' || outcome.code === 'TRANSPORT' ? 'unknown' : 'failed', paths, kind: 'image', ...outcome.code === undefined ? {} : { errorCode: outcome.code } })
+        if (!outcome.ok) return { status: 'failed', plan_id: operation.projectId, model: outcome.model ?? '', message: outcome.message ?? outcome.code ?? '生成失败' }
+        return { status: 'succeeded', plan_id: operation.projectId, path: outcome.path ?? '', paths, model: outcome.model ?? '', message: `图片已保存到产物目录（共 ${String(paths.length)} 张）。` }
+      } catch (error) {
+        if (operation !== undefined) creative.release(operation)
+        return error instanceof CreativeError || error instanceof VideoProjectError
+          ? { status: 'failed', code: error.code, message: error.message }
+          : { status: 'failed', message: '图片生成或创作记录未完成，请检查产物和原始任务；不要重复提交结果未知的生成。' }
       }
     },
   }))
@@ -2983,6 +3061,8 @@ export function apply(ctx: Context, config: Config): void {
     name: 'generate_video',
     description: 'Generate one short video clip through the account relay. For a complete video such as 40 seconds, multiple shots, or automatic assembly, use generate_video_project instead. Edit existing clips with edit_video. This single-clip tool accepts only the chosen model’s declared duration, resolution, ratio, frames and references.',
     parameters: {
+      plan_id: { type: 'string', description: 'Explicit update_creation_plan id for this generation. Also provide shot_id.' },
+      shot_id: { type: 'string', description: 'Exact shot id in the explicit plan; never guess a latest project.' },
       prompt: { type: 'string', required: true, description: 'What the video should show. Before calling, script user-delegated narrative or dialogue scenes with stable character ids, language, brief exact lines and their timing, identifying on-screen speakers versus narration; preserve user-supplied wording. Do not reduce a story requiring voices to a music montage. Respect silent/no-dialogue requests and do not add dialogue or subtitles to unrelated nonverbal videos. Include requested lip-sync and subtitle requirements. These request native model generation, not separate speech, lip-sync or subtitle processing; verify the rendered result before claiming they are met.' },
       model: { type: 'string', description: 'Optional video model id such as MiniMax-H3. Defaults to the first video model the deployment serves for this account.' },
       duration_seconds: { type: 'number', description: 'Clip length in seconds; only values the chosen model declares are accepted.' },
@@ -3002,6 +3082,7 @@ export function apply(ctx: Context, config: Config): void {
           path: { type: 'string' },
           model: { type: 'string' },
           task_id: { type: 'string' },
+          plan_id: { type: 'string' },
           message: { type: 'string' },
         },
         additionalProperties: false,
@@ -3013,6 +3094,7 @@ export function apply(ctx: Context, config: Config): void {
       if ('error' in session) return { status: 'unauthorized', message: session.error }
       const relay = await requireRelayKey()
       if ('error' in relay) return { status: 'failed', message: relay.error }
+      let operation: CreativeOperation | undefined
       try {
         const binding = await bindCurrentVideoAccount()
         const capability = await capabilityFor('video', args.model ?? null)
@@ -3022,37 +3104,64 @@ export function apply(ctx: Context, config: Config): void {
         for (const value of args.reference_audios ?? []) {
           referenceAudios.push(await normalizeVideoReference(value, 'audio', exec.agent?.session.header.cwd, references, exec.signal))
         }
+        const owner = creativeOwner(exec, binding.identity)
+        const images = async (values: readonly string[] | undefined): Promise<string[]> => {
+          const result: string[] = []
+          for (const value of values ?? []) {
+            const source = value.startsWith('ma_') ? value : args.plan_id === undefined ? undefined : await creativeImageReference(owner, args.plan_id, value)
+            if (source === undefined) throw new CreativeError('CREATIVE_REFERENCE_INVALID', 400, '请使用已上传的图片，或同一创作计划内实际生成的图片。')
+            result.push(source)
+          }
+          return result
+        }
         const built = await buildVideoRequest(capability.model, {
           prompt: args.prompt,
           ...args.duration_seconds === undefined ? {} : { durationSeconds: args.duration_seconds },
           ...args.resolution === undefined ? {} : { resolution: args.resolution },
           ...args.ratio === undefined ? {} : { ratio: args.ratio },
           ...args.audio === undefined ? {} : { audio: args.audio },
-          ...args.frame_images === undefined ? {} : { frameImages: args.frame_images },
-          ...args.reference_images === undefined ? {} : { referenceImages: args.reference_images },
+          ...args.frame_images === undefined ? {} : { frameImages: await images(args.frame_images) },
+          ...args.reference_images === undefined ? {} : { referenceImages: await images(args.reference_images) },
           ...args.reference_videos === undefined ? {} : { referenceVideos: args.reference_videos },
           referenceAudios,
         })
         if (!built.ok) return { status: 'failed', model: capability.model.id, message: built.message }
         exec.signal.throwIfAborted()
+        operation = await creative.begin(creativeOwner(exec, binding.identity), { kind: 'video', prompt: args.prompt, shots: [{ prompt: args.prompt, ...args.duration_seconds === undefined ? {} : { durationSeconds: args.duration_seconds } }], ...args.plan_id === undefined ? {} : { planId: args.plan_id }, ...args.shot_id === undefined ? {} : { shotIds: [args.shot_id] } })
+        await creative.dispatched(operation)
         const outcome = await runVideoTask(await binding.key(), capability.model.route, built.request, exec.signal)
+        await creative.finish(operation, { status: outcome.ok ? 'completed' : exec.signal.aborted ? 'cancelled' : outcome.code === 'TIMEOUT' || outcome.code === 'TRANSPORT' ? 'unknown' : 'failed', kind: 'video', ...outcome.path === undefined ? {} : { paths: [outcome.path] }, ...outcome.code === undefined ? {} : { errorCode: outcome.code } })
         if (!outcome.ok) {
           return {
             status: outcome.code === 'TIMEOUT' ? 'running' : 'failed',
+            plan_id: operation.projectId,
             model: capability.model.id,
             task_id: outcome.taskId ?? '',
             message: outcome.message ?? outcome.code ?? '生成失败',
           }
         }
+        if (outcome.path !== undefined && exec.agent !== undefined) {
+          const savedPath = outcome.path
+          const session = exec.agent.session
+          const owner = operation.owner
+          const creation = operation
+          await creative.preview(operation, savedPath, async () => {
+            const editor = createVideoEditor(ctx, { workspaceRoot: owner.workspaceRoot, session, ownedMediaRoots: [dirname(savedPath)], fps: resolved.videoEditFps, timeoutMs: resolved.videoEditTimeoutMs, ...resolved.videoRuntimeRoot === '' ? {} : { runtimeRoot: resolved.videoRuntimeRoot } })
+            if (editor.preview === undefined) throw new CreativeError('CREATIVE_PREVIEW_UNAVAILABLE', 503, '本地视频预览工具暂时不可用。')
+            return editor.preview(savedPath, join(owner.workspaceRoot, '.yunshu-creative', 'previews', creation.operationId), exec.signal)
+          }).catch((error: unknown) => { ctx.logger.warn('Video saved; optional creation preview was not recorded.', error) })
+        }
         return {
           status: 'succeeded',
+          plan_id: operation.projectId,
           path: outcome.path ?? '',
           model: capability.model.id,
           task_id: outcome.taskId ?? '',
           message: '视频已保存到产物目录。',
         }
       } catch (error) {
-        if (error instanceof VideoProjectError) return { status: 'failed', message: error.message }
+        if (operation !== undefined) creative.release(operation)
+        if (error instanceof VideoProjectError || error instanceof CreativeError) return { status: 'failed', message: error.message }
         throw error
       }
     },

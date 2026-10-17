@@ -1,0 +1,778 @@
+/** Account- and chat-owned creation plans joined to committed generation files. @module */
+
+import { randomUUID } from 'node:crypto'
+import { constants } from 'node:fs'
+import { lstat, mkdir, open, readdir, realpath, rename, unlink, writeFile } from 'node:fs/promises'
+import type { IncomingMessage, ServerResponse } from 'node:http'
+import { basename, extname, isAbsolute, join, resolve } from 'node:path'
+import type { Branded } from '@deepseek-ai/dsh-brand'
+import type { CreativeAsset, CreativeCharacter, CreativeKind, CreativeOutput, CreativeOutputId, CreativeProjectId, CreativeProjectView, CreativeShotView, CreativeStatus } from './creative-types.ts'
+import type { VideoProjectManifest } from './video-project.ts'
+import type { VideoProjectIdentity } from './video-project-types.ts'
+
+/** Fixed complete-record and collection bounds for untrusted JSON and directory reads. */
+const MAX_BYTES = 2 * 1024 * 1024
+const MAX_PROJECTS = 1000
+const MAX_OPERATIONS = 256
+const MAX_LIST_BYTES = 8 * 1024 * 1024
+
+export type { CreativeProjectId } from './creative-types.ts'
+/** Owner-issued generation invocation identity. */
+export type CreativeOperationId = Branded<'CreativeOperationId'>
+
+/** A structured failure whose message excludes private paths and credentials. */
+export class CreativeError extends Error {
+  /** @param code - Stable code. @param status - Local HTTP status. @param message - Safe recovery instruction. */
+  constructor(readonly code: string, readonly status: number, message: string) { super(message); this.name = 'CreativeError' }
+}
+
+/** One captured calling chat and product account; tokens are never stored. */
+export interface CreativeOwner extends VideoProjectIdentity {
+  readonly sessionId: string
+  readonly workspaceRoot: string
+}
+
+/** Plan-only shot data, without invented execution or verification state. */
+export type CreativeShotPlan = Omit<CreativeShotView, 'status' | 'outputs'>
+
+/** Complete planning input supplied through the logged model tool. */
+export interface CreativePlan {
+  readonly kind: CreativeKind
+  readonly title: string
+  readonly brief: string
+  readonly style: string
+  readonly characters: readonly CreativeCharacter[]
+  readonly assets: readonly CreativeAsset[]
+  readonly shots: readonly CreativeShotPlan[]
+}
+
+/** Exact local files admitted after generation, never accepted as tool-provided outputs. */
+interface SavedOutput {
+  id: CreativeOutputId
+  kind: 'image' | 'video' | 'audio'
+  path: string
+  frames?: { path: string; timeSeconds: number }[]
+  previewUnavailable?: boolean
+}
+
+/** One explicitly linked invocation and its independently committed outcome. */
+interface Operation {
+  id: CreativeOperationId
+  prompt: string
+  shotIds: string[]
+  assetId?: string
+  status: CreativeStatus
+  submissionStarted?: boolean
+  outputs: SavedOutput[]
+  videoProjectId?: string
+  errorCode?: string
+}
+
+/** Private JSON v1. Existing video manifests and Session data remain unchanged. */
+interface CreativeRecord extends CreativePlan {
+  version: 1
+  id: CreativeProjectId
+  owner: CreativeOwner
+  updatedAt: string
+  operations: Operation[]
+}
+
+interface BeginInput {
+  kind: CreativeKind
+  prompt: string
+  planId?: string
+  shotIds?: readonly string[]
+  assetId?: string
+  shots: readonly { prompt: string; durationSeconds?: number }[]
+  videoProjectId?: string
+}
+
+interface ShotFacts { status: CreativeStatus; outputs: SavedOutput[]; durationSeconds?: number }
+interface CreationFacts {
+  shots: Map<string, ShotFacts[]>
+  assets: Map<string, ShotFacts[]>
+  outputs: SavedOutput[]
+  errors: string[]
+  states: { shotIds: readonly string[]; assetId?: string; status: CreativeStatus }[]
+  updatedAt: string
+}
+
+/** Exact operation identity returned before any paid submission. */
+export interface CreativeOperation {
+  readonly projectId: CreativeProjectId
+  readonly operationId: CreativeOperationId
+  readonly owner: CreativeOwner
+}
+
+/** Runtime-only adapters; records never contain service objects or credentials. */
+export interface CreativeStoreOptions {
+  readonly directory: string
+  /** @returns Current login identity, or undefined after sign-out. */
+  current(): Promise<VideoProjectIdentity | undefined>
+  /** @returns Authorized retained video state; no submission is made. */
+  video(id: string, owner: CreativeOwner): Promise<VideoProjectManifest>
+}
+
+/** Reject a malformed record or model input with a safe message. */
+function invalid(): never { throw new CreativeError('CREATIVE_INVALID', 400, '创作记录或计划无效，请检查人物、素材和镜头信息。') }
+function object(value: unknown): Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return invalid()
+  return value as Record<string, unknown>
+}
+function text(value: unknown, maximum = 12_000): string {
+  if (typeof value !== 'string' || value.length > maximum || value.includes('\0')) return invalid()
+  return value
+}
+function identifier(value: unknown): string {
+  const result = text(value, 128)
+  if (!/^[A-Za-z0-9_-]+$/u.test(result)) return invalid()
+  return result
+}
+function projectId(value: string): CreativeProjectId {
+  if (!/^cp_[a-f0-9-]{36}$/u.test(value)) return invalid()
+  return value as CreativeProjectId
+}
+function operationId(value: unknown): CreativeOperationId { const id = identifier(value); if (!id.startsWith('op_')) invalid(); return id as CreativeOperationId }
+function outputId(value: unknown): CreativeOutputId { const id = identifier(value); if (!id.startsWith('out_') && !id.startsWith('op_')) invalid(); return id as CreativeOutputId }
+function list<T>(value: unknown, parse: (item: unknown) => T, maximum: number): T[] {
+  if (!Array.isArray(value) || value.length > maximum) return invalid()
+  return value.map(parse)
+}
+function ids(value: unknown): string[] { return list(value, identifier, 128) }
+function unique(values: readonly string[]): void { if (new Set(values).size !== values.length) invalid() }
+function status(value: unknown): CreativeStatus {
+  if (value !== 'planned' && value !== 'running' && value !== 'saving' && value !== 'editing' && value !== 'completed' && value !== 'failed' && value !== 'cancelled' && value !== 'interrupted' && value !== 'unknown') return invalid()
+  return value
+}
+function kind(value: unknown): CreativeKind { return value === 'image' || value === 'video' ? value : invalid() }
+function absolute(value: unknown): string {
+  const result = text(value, 32_768)
+  if (!isAbsolute(result)) return invalid()
+  return result
+}
+
+/**
+ * Parse a complete structured plan at model/tool and private-file ingress.
+ * @param value - Untrusted camel-case planning data.
+ * @returns Bounded plan with unique ids and resolved character/material references.
+ */
+export function parseCreativePlan(value: unknown): CreativePlan {
+  const source = object(value)
+  const characters = list(source.characters, (value) => {
+    const item = object(value)
+    return {
+      id: identifier(item.id), name: text(item.name, 256), appearance: text(item.appearance), clothing: text(item.clothing),
+      personality: text(item.personality), voice: text(item.voice), referenceAssetIds: ids(item.referenceAssetIds),
+    }
+  }, 64)
+  const assets = list<CreativeAsset>(source.assets, (value) => {
+    const item = object(value)
+    const category = item.kind
+    if (category !== 'image' && category !== 'video' && category !== 'audio' && category !== 'document' && category !== 'other') return invalid()
+    return {
+      id: identifier(item.id), name: text(item.name, 256), kind: category, role: text(item.role), description: text(item.description),
+      sourcePathOrAssetId: text(item.sourcePathOrAssetId, 32_768),
+    }
+  }, 128)
+  const shots = list(source.shots, (value) => {
+    const item = object(value)
+    const order = item.order
+    const durationSeconds = item.durationSeconds
+    if (!Number.isSafeInteger(order) || typeof order !== 'number' || order < 1 || order > 128) return invalid()
+    if (durationSeconds !== undefined && (typeof durationSeconds !== 'number' || !Number.isFinite(durationSeconds) || durationSeconds <= 0 || durationSeconds > 86_400)) return invalid()
+    return {
+      id: identifier(item.id), order, title: text(item.title, 256), prompt: text(item.prompt),
+      camera: text(item.camera), scene: text(item.scene), action: text(item.action),
+      dialogue: text(item.dialogue), subtitles: text(item.subtitles), characterIds: ids(item.characterIds), assetIds: ids(item.assetIds),
+      ...durationSeconds === undefined ? {} : { durationSeconds },
+    }
+  }, 128)
+  if (shots.length === 0) invalid()
+  unique(characters.map(item => item.id))
+  unique(assets.map(item => item.id))
+  unique(shots.map(item => item.id))
+  unique(shots.map(item => String(item.order)))
+  const characterIds = new Set(characters.map(item => item.id))
+  const assetIds = new Set(assets.map(item => item.id))
+  if (characters.some(item => item.referenceAssetIds.some(id => !assetIds.has(id)))
+    || shots.some(item => item.characterIds.some(id => !characterIds.has(id)) || item.assetIds.some(id => !assetIds.has(id)))) invalid()
+  const result = {
+    kind: kind(source.kind), title: text(source.title, 256), brief: text(source.brief), style: text(source.style),
+    characters, assets, shots: shots.sort((a, b) => a.order - b.order),
+  }
+  if (result.title.trim() === '' || result.brief.trim() === '' || result.shots.some(item => item.prompt.trim() === '')) invalid()
+  if (Buffer.byteLength(JSON.stringify(result)) > MAX_BYTES / 2) invalid()
+  return result
+}
+
+/** Parse records completely before any path or media use. */
+function parseRecord(value: unknown): CreativeRecord {
+  const source = object(value)
+  if (source.version !== 1) return invalid()
+  const owner = object(source.owner)
+  const operations = list(source.operations, (value) => {
+    const item = object(value)
+    if (item.submissionStarted !== undefined && typeof item.submissionStarted !== 'boolean') return invalid()
+    const outputs = list<SavedOutput>(item.outputs, (value) => {
+      const output = object(value)
+      const category = output.kind
+      if (category !== 'image' && category !== 'video' && category !== 'audio') return invalid()
+      const frames = output.frames === undefined ? undefined : list(output.frames, (value) => {
+        const frame = object(value)
+        if (typeof frame.timeSeconds !== 'number' || !Number.isFinite(frame.timeSeconds) || frame.timeSeconds < 0) return invalid()
+        return { path: absolute(frame.path), timeSeconds: frame.timeSeconds }
+      }, 6)
+      if (output.previewUnavailable !== undefined && typeof output.previewUnavailable !== 'boolean') return invalid()
+      return {
+        id: outputId(output.id), kind: category, path: absolute(output.path), ...frames === undefined ? {} : { frames },
+        ...output.previewUnavailable === undefined ? {} : { previewUnavailable: output.previewUnavailable },
+      }
+    }, 512)
+    return {
+      id: operationId(item.id), prompt: text(item.prompt), shotIds: ids(item.shotIds), status: status(item.status), outputs,
+      ...item.assetId === undefined ? {} : { assetId: identifier(item.assetId) },
+      ...item.submissionStarted === undefined ? {} : { submissionStarted: item.submissionStarted },
+      ...item.videoProjectId === undefined ? {} : { videoProjectId: text(item.videoProjectId, 128) },
+      ...item.errorCode === undefined ? {} : { errorCode: identifier(item.errorCode) },
+    }
+  }, MAX_OPERATIONS)
+  const plan = parseCreativePlan(source)
+  if (operations.some(item => item.assetId === undefined
+    ? item.shotIds.length === 0 || item.shotIds.some(id => !plan.shots.some(shot => shot.id === id))
+    : item.shotIds.length > 0 || !plan.assets.some(asset => asset.id === item.assetId && asset.kind === 'image'))) return invalid()
+  return {
+    ...plan, version: 1, id: projectId(text(source.id)),
+    owner: {
+      accountId: text(owner.accountId, 128), sessionFingerprint: text(owner.sessionFingerprint, 256),
+      sessionId: identifier(owner.sessionId), workspaceRoot: absolute(owner.workspaceRoot),
+    },
+    updatedAt: text(source.updatedAt, 64), operations,
+  }
+}
+
+/** Open the exact canonical file and protect against symlink replacement. */
+async function safeFile(path: string): Promise<Awaited<ReturnType<typeof open>>> {
+  if (resolve(path) !== path || await realpath(path) !== path) throw new CreativeError('CREATIVE_MEDIA_UNAVAILABLE', 404, '文件已移动、删除或暂时无法读取，请检查原保存位置。')
+  const info = await lstat(path)
+  if (!info.isFile() || info.isSymbolicLink()) throw new CreativeError('CREATIVE_MEDIA_UNAVAILABLE', 404, '文件暂时无法读取。')
+  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW)
+  const opened = await file.stat()
+  if (opened.dev !== info.dev || opened.ino !== info.ino || opened.size !== info.size || opened.mtimeMs !== info.mtimeMs) { await file.close(); throw new CreativeError('CREATIVE_MEDIA_CHANGED', 409, '文件已变化，请刷新后重试。') }
+  return file
+}
+
+/** Aggregate only committed generation facts, keeping incomplete plans visibly incomplete. */
+function aggregate(states: readonly CreativeStatus[]): CreativeStatus {
+  for (const state of ['unknown', 'running', 'saving', 'editing', 'interrupted', 'failed', 'cancelled'] as const) if (states.includes(state)) return state
+  return states.length > 0 && states.every(value => value === 'completed') ? 'completed' : 'planned'
+}
+
+/** Owns serialized local records and read-only browser projections. */
+export class CreativeStore {
+  private serial: Promise<unknown> = Promise.resolve()
+  private readonly active = new Set<string>()
+  private rootDirectory: Promise<string> | undefined
+
+  /** @param options - Private directory and current-account/video adapters. */
+  constructor(private readonly options: CreativeStoreOptions) {}
+
+  private root(): Promise<string> {
+    this.rootDirectory ??= (async () => {
+      await mkdir(this.options.directory, { recursive: true, mode: 0o700 })
+      if ((await lstat(this.options.directory)).isSymbolicLink()) invalid()
+      return realpath(this.options.directory)
+    })()
+    return this.rootDirectory
+  }
+
+  private async current(owner: VideoProjectIdentity): Promise<void> {
+    const live = await this.options.current()
+    if (live?.accountId !== owner.accountId || live.sessionFingerprint !== owner.sessionFingerprint) throw new CreativeError('CREATIVE_ACCOUNT_CHANGED', 409, '登录状态已变化，已停止更新本次创作；请在原账号查看。')
+  }
+
+  private queue<T>(run: () => Promise<T>): Promise<T> {
+    const work = this.serial.then(run)
+    this.serial = work.catch((error: unknown) => { void error })
+    return work
+  }
+
+  private async read(id: string, owner: Pick<CreativeOwner, 'accountId' | 'sessionId'>): Promise<CreativeRecord> {
+    const path = join(await this.root(), projectId(id), 'project.json')
+    const file = await safeFile(path)
+    let value: unknown
+    try {
+      if ((await file.stat()).size > MAX_BYTES) invalid()
+      value = JSON.parse(await file.readFile('utf8'))
+    } finally { await file.close() }
+    const result = parseRecord(value)
+    if (result.id !== id || result.owner.accountId !== owner.accountId || result.owner.sessionId !== owner.sessionId) throw new CreativeError('CREATIVE_ACCESS_DENIED', 404, '当前聊天中没有该创作项目。')
+    return result
+  }
+
+  private async persist(record: CreativeRecord): Promise<void> {
+    await this.current(record.owner)
+    record.updatedAt = new Date().toISOString()
+    const encoded = JSON.stringify(record)
+    if (Buffer.byteLength(encoded) > MAX_BYTES) throw new CreativeError('CREATIVE_LIMIT', 400, '创作记录过大，已停止后续生成，请减少素材或镜头。')
+    const directory = join(await this.root(), record.id)
+    await mkdir(directory, { recursive: true, mode: 0o700 })
+    if (await realpath(directory) !== directory) invalid()
+    const temporary = join(directory, `.project-${randomUUID()}.json`)
+    await writeFile(temporary, encoded, { flag: 'wx', mode: 0o600 })
+    try { await this.current(record.owner); await rename(temporary, join(directory, 'project.json')) }
+    catch (error) { await unlink(temporary); throw error }
+  }
+
+  /**
+   * Save a complete explicit plan, preserving every existing execution association.
+   * @param owner - Calling chat and captured product login.
+   * @param plan - Bounded structured plan.
+   * @param id - Existing explicit project id; omission creates a fresh project.
+   * @returns Exact project id for later generation calls.
+   */
+  updatePlan(owner: CreativeOwner, plan: CreativePlan, id?: string): Promise<CreativeProjectId> {
+    return this.queue(async () => {
+      await this.current(owner)
+      const parsed = parseCreativePlan(plan)
+      if (id === undefined) {
+        const record: CreativeRecord = { ...parsed, version: 1, id: `cp_${randomUUID()}` as CreativeProjectId, owner, updatedAt: '', operations: [] }
+        await this.persist(record)
+        return record.id
+      }
+      const old = await this.read(id, owner)
+      if (old.owner.workspaceRoot !== owner.workspaceRoot || old.kind !== parsed.kind || old.operations.some(operation =>
+        operation.shotIds.some(shotId => !parsed.shots.some(shot => shot.id === shotId))
+        || operation.assetId !== undefined && !parsed.assets.some(asset => asset.id === operation.assetId && asset.kind === 'image'))) {
+        throw new CreativeError('CREATIVE_PLAN_CONFLICT', 409, '已有生成记录的镜头或图片素材不能移除，项目类型和工作区不能改变。')
+      }
+      await this.persist({ ...old, ...parsed, owner })
+      return old.id
+    })
+  }
+
+  /**
+   * Read the complete current plan before a targeted revision without changing execution state.
+   * @param owner - Current account, exact chat and workspace.
+   * @param id - Explicit existing creation plan id.
+   * @returns Bounded original planning fields without private operation, provider or login data.
+   */
+  async plan(owner: CreativeOwner, id: string): Promise<CreativePlan> {
+    await this.serial
+    await this.current(owner)
+    const record = await this.read(id, owner)
+    if (record.owner.workspaceRoot !== owner.workspaceRoot) throw new CreativeError('CREATIVE_ACCESS_DENIED', 404, '该创作计划不属于当前工作区。')
+    await this.current(owner)
+    return parseCreativePlan(record)
+  }
+
+  /**
+   * Record a named invocation before billing; no nearest-project association is allowed.
+   * @param owner - Exact captured chat and login.
+   * @param input - Actual brief, explicit association, and ordered fallback shots.
+   * @returns Durable invocation identity, also marked process-live until settlement.
+   */
+  begin(owner: CreativeOwner, input: BeginInput): Promise<CreativeOperation> {
+    return this.queue(async () => {
+      await this.current(owner)
+      let record: CreativeRecord
+      if (input.planId !== undefined) {
+        record = await this.read(input.planId, owner)
+        if (record.owner.workspaceRoot !== owner.workspaceRoot) throw new CreativeError('CREATIVE_ACCESS_DENIED', 404, '该创作项目不属于当前工作区。')
+        if (input.assetId !== undefined) {
+          if (input.kind !== 'image' || input.shotIds !== undefined
+            || !record.assets.some(asset => asset.id === input.assetId && asset.kind === 'image')) {
+            throw new CreativeError('CREATIVE_ASSET_MISMATCH', 400, '请指定计划中已有的图片素材，asset_id 与 shot_id 不能同时使用。')
+          }
+        } else if (record.kind !== input.kind || input.shotIds === undefined || input.shotIds.length !== input.shots.length
+          || input.shotIds.some(id => !record.shots.some(shot => shot.id === id))) {
+          throw new CreativeError('CREATIVE_SHOT_MISMATCH', 400, '请明确指定本次生成对应的计划镜头，镜头数量须与实际分段一致。')
+        }
+        const wanted = new Set(input.shotIds ?? [])
+        const overlaps = (item: { shotIds: readonly string[]; assetId?: string }): boolean => input.assetId === undefined
+          ? item.assetId === undefined && item.shotIds.some(id => wanted.has(id)) : item.assetId === input.assetId
+        if (record.operations.some(item => this.active.has(item.id) && overlaps(item))) {
+          throw new CreativeError('CREATIVE_SHOT_RUNNING', 409, '该镜头或素材已有正在运行的生成，请查看原任务，不要重复提交。')
+        }
+        const facts = await this.facts(record)
+        if (facts.states.some(item => item.status === 'unknown' && overlaps(item))) {
+          throw new CreativeError('CREATIVE_SUBMISSION_UNKNOWN', 409, '该镜头或素材已有结果未知的提交，可能已经计费；请先核对原任务，不会自动重新提交。')
+        }
+      } else {
+        if (input.shotIds !== undefined || input.assetId !== undefined) throw new CreativeError('CREATIVE_PLAN_REQUIRED', 400, '指定镜头或素材时必须同时指定创作计划。')
+        const plan = parseCreativePlan({
+          kind: input.kind, title: input.prompt.slice(0, 80), brief: input.prompt, style: '', characters: [], assets: [],
+          shots: input.shots.map((shot, index) => ({
+            id: `shot_${String(index + 1)}`, order: index + 1, title: String(index + 1), prompt: shot.prompt,
+            camera: '', scene: '', action: '', dialogue: '', subtitles: '', characterIds: [], assetIds: [],
+            ...shot.durationSeconds === undefined ? {} : { durationSeconds: shot.durationSeconds },
+          })),
+        })
+        record = { ...plan, version: 1, id: `cp_${randomUUID()}` as CreativeProjectId, owner, updatedAt: '', operations: [] }
+      }
+      if (record.operations.length >= MAX_OPERATIONS) throw new CreativeError('CREATIVE_LIMIT', 400, '该项目的生成记录已达上限，请新建项目。')
+      const shotIds = input.assetId === undefined ? [...input.shotIds ?? record.shots.map(shot => shot.id)] : []
+      unique(shotIds)
+      const id = operationId(`op_${randomUUID()}`)
+      record.owner = owner
+      record.operations.push({ id, prompt: text(input.prompt), shotIds, ...input.assetId === undefined ? {} : { assetId: input.assetId }, status: 'running', outputs: [], ...input.videoProjectId === undefined ? {} : { videoProjectId: input.videoProjectId } })
+      if (Buffer.byteLength(JSON.stringify(record)) > MAX_BYTES / 2) throw new CreativeError('CREATIVE_LIMIT', 400, '项目记录已接近上限，请新建项目；尚未提交生成。')
+      await this.persist(record)
+      this.active.add(id)
+      return { projectId: record.id, operationId: id, owner }
+    })
+  }
+
+  /**
+   * Retain possible billing before a single-image or single-video submission.
+   * @param operation - Original running invocation; no network request is performed.
+   */
+  dispatched(operation: CreativeOperation): Promise<void> {
+    return this.queue(async () => {
+      await this.current(operation.owner)
+      const record = await this.read(operation.projectId, operation.owner)
+      const found = record.operations.find(item => item.id === operation.operationId)
+      if (found === undefined) invalid()
+      found.submissionStarted = true
+      await this.persist(record)
+    })
+  }
+
+  /**
+   * Commit one actual image as soon as it is saved, retaining partial results if later output fails.
+   * @param operation - Exact running invocation.
+   * @param path - File exclusively published by the generation owner.
+   * @param kind - Actual generated media category.
+   */
+  saved(operation: CreativeOperation, path: string, kind: 'image' | 'video'): Promise<void> {
+    return this.queue(async () => {
+      await this.current(operation.owner)
+      if ((await lstat(path)).isSymbolicLink()) invalid()
+      const canonical = await realpath(path)
+      const file = await safeFile(canonical)
+      try { if ((await file.stat()).size <= 0) invalid() } finally { await file.close() }
+      const record = await this.read(operation.projectId, operation.owner)
+      const found = record.operations.find(item => item.id === operation.operationId)
+      if (found === undefined) invalid()
+      if (!found.outputs.some(item => item.path === canonical)) found.outputs.push({ id: outputId(`out_${randomUUID()}`), kind, path: canonical })
+      found.status = 'saving'
+      await this.persist(record)
+    })
+  }
+
+  /**
+   * Publish only independently saved files from one generation; late account results cannot write.
+   * @param operation - Original invocation identity.
+   * @param outcome - Actual saved paths or a stable failure state.
+   */
+  finish(operation: CreativeOperation, outcome: { status: CreativeStatus; paths?: readonly string[]; kind?: 'image' | 'video'; errorCode?: string; previewUnavailable?: boolean }): Promise<void> {
+    return this.queue(async () => {
+      try {
+        await this.current(operation.owner)
+        const record = await this.read(operation.projectId, operation.owner)
+        const found = record.operations.find(item => item.id === operation.operationId)
+        if (found === undefined) invalid()
+        const outputs: SavedOutput[] = []
+        if (outcome.status === 'completed' && (outcome.paths === undefined || outcome.paths.length === 0)) throw new CreativeError('CREATIVE_OUTPUT_REQUIRED', 400, '没有实际保存的产物，不能将生成标记为完成。')
+        for (const path of outcome.paths ?? []) {
+          if ((await lstat(path)).isSymbolicLink()) invalid()
+          const canonical = await realpath(path)
+          const file = await safeFile(canonical)
+          try { if ((await file.stat()).size <= 0) throw new CreativeError('CREATIVE_MEDIA_UNAVAILABLE', 404, '生成文件为空，尚未作为产物交付。') } finally { await file.close() }
+          if (!found.outputs.some(item => item.path === canonical)) outputs.push({ id: outputId(`out_${randomUUID()}`), kind: outcome.kind ?? record.kind, path: canonical, ...outcome.previewUnavailable === undefined ? {} : { previewUnavailable: outcome.previewUnavailable } })
+        }
+        found.status = outcome.status
+        found.outputs.push(...outputs)
+        if (outcome.errorCode !== undefined) found.errorCode = outcome.errorCode
+        await this.persist(record)
+      } finally { this.active.delete(operation.operationId) }
+    })
+  }
+
+  /**
+   * Mark the end of a manifest-backed run; file/status facts remain owned by its manifest.
+   * @param operation - Original generation invocation whose process-local activity ends.
+   */
+  release(operation: CreativeOperation): void { this.active.delete(operation.operationId) }
+
+  /**
+   * Reattach an explicitly resumed retained video to its original creation record.
+   * @param owner - Same account/chat/workspace with its current login generation.
+   * @param manifest - Already ownership-checked original video record.
+   * @returns Reused operation, or a minimal record for a legacy video project.
+   */
+  async resumeVideo(owner: CreativeOwner, manifest: VideoProjectManifest): Promise<CreativeOperation> {
+    await this.serial
+    const entries = await readdir(await this.root())
+    if (entries.length > MAX_PROJECTS) throw new CreativeError('CREATIVE_LIMIT', 503, '创作记录数量过多，请联系管理员整理本机记录。')
+    for (const id of entries) {
+      if (!/^cp_[a-f0-9-]{36}$/u.test(id)) continue
+      let record: CreativeRecord
+      try { record = await this.read(id, owner) } catch (error) { if (error instanceof CreativeError && error.code === 'CREATIVE_ACCESS_DENIED') continue; throw error }
+      const operation = record.operations.find(item => item.videoProjectId === manifest.id)
+      if (operation === undefined) continue
+      return this.queue(async () => {
+        const latest = await this.read(id, owner)
+        const linked = latest.operations.find(item => item.videoProjectId === manifest.id)
+        if (linked === undefined || latest.owner.workspaceRoot !== owner.workspaceRoot) {
+          throw new CreativeError('CREATIVE_ACCESS_DENIED', 404, '该创作项目不属于当前工作区。')
+        }
+        latest.owner = owner
+        await this.persist(latest)
+        this.active.add(linked.id)
+        return { projectId: latest.id, operationId: linked.id, owner }
+      })
+    }
+    return this.begin(owner, { kind: 'video', prompt: manifest.input.prompt, shots: manifest.segments.map(segment => ({ prompt: segment.prompt, durationSeconds: segment.durationSeconds })), videoProjectId: manifest.id })
+  }
+
+  /**
+   * Retain extracted frames independently from the main generation outcome.
+   * @param operation - Exact original invocation.
+   * @param path - Actual saved video.
+   * @param build - Session-sandboxed frame extraction; a failure becomes previewUnavailable.
+   * @param suppliedOutputId - Manifest-backed output id; otherwise identifies the saved invocation output by path.
+   */
+  async preview(
+    operation: CreativeOperation, path: string,
+    build: () => Promise<readonly { path: string; timeSeconds: number }[]>, suppliedOutputId?: string,
+  ): Promise<void> {
+    await this.current(operation.owner)
+    if ((await lstat(path)).isSymbolicLink()) invalid()
+    const canonical = await realpath(path)
+    let frames: { path: string; timeSeconds: number }[] | undefined
+    try {
+      frames = [...await build()]
+      if (frames.length === 0 || frames.length > 6) invalid()
+      for (const frame of frames) {
+        if ((await lstat(frame.path)).isSymbolicLink()) invalid()
+        frame.path = await realpath(frame.path)
+        const file = await safeFile(frame.path); await file.close()
+      }
+    } catch (error) {
+      // Frame extraction has no generation authority; only this optional preview is unavailable.
+      void error
+      frames = undefined
+    }
+    await this.queue(async () => {
+      await this.current(operation.owner)
+      const record = await this.read(operation.projectId, operation.owner)
+      const found = record.operations.find(item => item.id === operation.operationId)
+      if (found === undefined) invalid()
+      let output = found.outputs.find(item => suppliedOutputId === undefined ? item.path === canonical : item.id === suppliedOutputId)
+      if (output === undefined) {
+        if (suppliedOutputId === undefined) invalid()
+        output = { id: outputId(suppliedOutputId), kind: 'video', path: canonical }
+        found.outputs.push(output)
+      }
+      if (frames !== undefined) { output.frames = frames; delete output.previewUnavailable }
+      else output.previewUnavailable = true
+      await this.persist(record)
+    })
+  }
+
+  private mediaUrl(record: CreativeRecord, id: string, frame?: number): string {
+    const query = new URLSearchParams({ session_id: record.owner.sessionId, project_id: record.id, output_id: id })
+    if (frame !== undefined) query.set('frame', String(frame))
+    return '/credits/api/creative/media?' + query.toString()
+  }
+
+  private outputView(record: CreativeRecord, output: SavedOutput): CreativeOutput {
+    const frames = output.frames?.map((frame, index) => ({ url: this.mediaUrl(record, output.id, index), timeSeconds: frame.timeSeconds }))
+    const first = frames?.[0]
+    return {
+      id: output.id, kind: output.kind, name: basename(output.path), url: this.mediaUrl(record, output.id),
+      ...first === undefined || frames === undefined ? {} : { frames, posterUrl: first.url },
+      ...output.previewUnavailable === undefined ? {} : { previewUnavailable: output.previewUnavailable },
+    }
+  }
+
+  private async facts(record: CreativeRecord): Promise<CreationFacts> {
+    const shots = new Map<string, ShotFacts[]>()
+    const assets = new Map<string, ShotFacts[]>()
+    const outputs: SavedOutput[] = []
+    const errors: string[] = []
+    const states: CreationFacts['states'] = []
+    let updatedAt = record.updatedAt
+    const add = (id: string, state: CreativeStatus, result: SavedOutput[], durationSeconds?: number): void => {
+      const items = shots.get(id) ?? []
+      items.push({ status: state, outputs: result, ...durationSeconds === undefined ? {} : { durationSeconds } })
+      shots.set(id, items)
+    }
+    for (const operation of record.operations) {
+      if (operation.errorCode !== undefined) errors.push(operation.errorCode)
+      if (operation.videoProjectId === undefined) {
+        const state = (operation.status === 'running' || operation.status === 'saving') && !this.active.has(operation.id)
+          ? operation.submissionStarted ? 'unknown' : 'interrupted' : operation.status
+        states.push({ shotIds: operation.shotIds, status: state, ...operation.assetId === undefined ? {} : { assetId: operation.assetId } })
+        if (operation.assetId !== undefined) {
+          const items = assets.get(operation.assetId) ?? []
+          items.push({ status: state, outputs: operation.outputs }); assets.set(operation.assetId, items)
+          continue
+        }
+        operation.shotIds.forEach((id) => { add(id, state, operation.outputs) })
+        outputs.push(...operation.outputs)
+        continue
+      }
+      const video = await this.options.video(operation.videoProjectId, record.owner)
+      if (video.segments.length !== operation.shotIds.length) invalid()
+      if (video.failureCode !== undefined) errors.push(video.failureCode)
+      const live = this.active.has(operation.id)
+      states.push({ shotIds: operation.shotIds, status: video.failureCode === 'SUBMISSION_UNKNOWN' ? 'unknown' : video.status === 'prepared' ? 'planned' : (video.status === 'running' || video.status === 'editing') && !live ? 'interrupted' : video.status })
+      if (video.updatedAt > updatedAt) updatedAt = video.updatedAt
+      for (const [index, segment] of video.segments.entries()) {
+        const shotId = operation.shotIds[index]
+        if (shotId === undefined) invalid()
+        const state: CreativeStatus = segment.status === 'saved' ? 'completed' : segment.status === 'unknown' || segment.status === 'submitting' && segment.taskId === undefined && !this.active.has(operation.id) ? 'unknown' : segment.status === 'failed' ? 'failed' : segment.status === 'pending' ? 'planned' : !this.active.has(operation.id) ? 'interrupted' : 'running'
+        const id = outputId(`${operation.id}_clip_${String(index + 1)}`)
+        const saved: SavedOutput[] = segment.path === undefined ? [] : [{ id, kind: 'video', path: segment.path, ...operation.outputs.find(output => output.id === id) }]
+        add(shotId, state, saved, segment.durationSeconds)
+      }
+      if (video.finalPath !== undefined && video.status === 'completed') {
+        const id = outputId(`${operation.id}_final`)
+        outputs.push({ id, kind: 'video', path: video.finalPath, ...operation.outputs.find(output => output.id === id) })
+      }
+    }
+    return { shots, assets, outputs, errors, states, updatedAt }
+  }
+
+  /**
+   * List only the captured account's projects in the requested chat, including restart-safe facts.
+   * @param owner - Current account and requested exact session id.
+   * @returns Credential-free creation projections; private provider requests are excluded.
+   */
+  async projects(owner: Pick<CreativeOwner, 'accountId' | 'sessionId'>): Promise<CreativeProjectView[]> {
+    await this.serial
+    let entries: string[]
+    try { entries = await readdir(await this.root()) } catch (error) { if (isMissing(error)) return []; throw error }
+    if (entries.length > MAX_PROJECTS) throw new CreativeError('CREATIVE_LIMIT', 503, '创作记录数量过多，请联系管理员整理本机记录。')
+    const result: CreativeProjectView[] = []
+    let bytes = 2
+    for (const id of entries) {
+      if (!/^cp_[a-f0-9-]{36}$/u.test(id)) continue
+      let record: CreativeRecord
+      try { record = await this.read(id, owner) } catch (error) { if (error instanceof CreativeError && error.code === 'CREATIVE_ACCESS_DENIED') continue; throw error }
+      const facts = await this.facts(record)
+      const shots = record.shots.map((shot): CreativeShotView => {
+        const operations = facts.shots.get(shot.id) ?? []
+        const durationSeconds = operations.at(-1)?.durationSeconds
+        return {
+          ...shot, ...durationSeconds === undefined ? {} : { durationSeconds }, status: operations.at(-1)?.status ?? 'planned',
+          outputs: operations.flatMap(item => item.outputs.map(output => this.outputView(record, output))),
+        }
+      })
+      const latest = new Map<string, number>()
+      facts.states.forEach((state, index) => {
+        if (state.assetId !== undefined) latest.set('asset:' + state.assetId, index)
+        else state.shotIds.forEach((id) => { latest.set('shot:' + id, index) })
+      })
+      const currentStates = facts.states.filter((state, index) => state.status === 'unknown'
+        || (state.assetId === undefined ? state.shotIds.some(id => latest.get('shot:' + id) === index) : latest.get('asset:' + state.assetId) === index))
+      const projectStatus = aggregate([...shots.map(shot => shot.status), ...currentStates.map(item => item.status)])
+      const errorCode = projectStatus === 'unknown' ? 'SUBMISSION_UNKNOWN' : projectStatus === 'failed' || projectStatus === 'cancelled' ? facts.errors.at(-1) : undefined
+      result.push({
+        id: record.id, kind: record.kind, title: record.title, brief: record.brief, style: record.style, updatedAt: facts.updatedAt,
+        characters: record.characters, assets: record.assets.map((asset) => {
+          const history = facts.assets.get(asset.id)
+          return history === undefined ? asset : {
+            ...asset, status: history.at(-1)?.status ?? 'planned',
+            outputs: history.flatMap(item => item.outputs.map(output => this.outputView(record, output))),
+          }
+        }), shots, outputs: facts.outputs.map(output => this.outputView(record, output)),
+        status: projectStatus, ...errorCode === undefined ? {} : { errorCode },
+      })
+      bytes += Buffer.byteLength(JSON.stringify(result[result.length - 1])) + 1
+      if (bytes > MAX_LIST_BYTES) throw new CreativeError('CREATIVE_LIMIT', 503, '当前聊天的创作记录过大，请联系管理员整理本机记录。')
+    }
+    return result.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+  }
+
+  /**
+   * Read only a real generated image already retained by this explicit account/chat project.
+   * @param owner - Current captured caller login and workspace.
+   * @param id - Explicit creation plan id.
+   * @param requested - Logged generated output path or opaque output id; never a new source-file permission.
+   * @returns Bounded image bytes and recorded path, or undefined when this project owns no such output.
+   */
+  async imageReference(
+    owner: CreativeOwner, id: string, requested: string,
+  ): Promise<{ path: string; bytes: Buffer } | undefined> {
+    await this.serial
+    await this.current(owner)
+    const record = await this.read(id, owner)
+    if (record.owner.workspaceRoot !== owner.workspaceRoot) throw new CreativeError('CREATIVE_ACCESS_DENIED', 404, '该素材不属于当前工作区。')
+    const facts = await this.facts(record)
+    const outputs = [
+      ...facts.outputs, ...[...facts.shots.values(), ...facts.assets.values()].flatMap(items => items.flatMap(item => item.outputs)),
+    ]
+    const output = outputs.find(item => item.kind === 'image' && (item.id === requested || item.path === requested))
+    if (output === undefined) return undefined
+    const file = await safeFile(output.path)
+    try {
+      const size = (await file.stat()).size
+      if (size <= 0 || size > 6 * 1024 * 1024) throw new CreativeError('CREATIVE_REFERENCE_TOO_LARGE', 400, '图片参考须为 6 MiB 以内的已保存文件。')
+      const bytes = await file.readFile()
+      await this.current(owner)
+      return { path: output.path, bytes }
+    } finally { await file.close() }
+  }
+
+  /**
+   * Serve a recorded generated file or extracted frame after account/chat lookup.
+   * @param request - Authenticated Host request; supports one standard byte range.
+   * @param response - Response receiving only recorded local bytes.
+   * @param owner - Captured product account, login generation and exact requested chat; rechecked before response headers.
+   * @param id - Explicit project id.
+   * @param outputId - Published output id, never a filesystem path.
+   * @param frame - Optional nonnegative extracted-frame index.
+   */
+  async serve(
+    request: IncomingMessage, response: ServerResponse, owner: Pick<CreativeOwner, 'accountId' | 'sessionId' | 'sessionFingerprint'>,
+    id: string, outputId: string, frame?: number,
+  ): Promise<void> {
+    await this.serial
+    await this.current(owner)
+    const record = await this.read(id, owner)
+    const facts = await this.facts(record)
+    const saved = [
+      ...facts.outputs, ...[...facts.shots.values(), ...facts.assets.values()].flatMap(items => items.flatMap(item => item.outputs)),
+    ]
+    const output = saved.find(output => output.id === outputId)
+    if (output === undefined || frame !== undefined && (!Number.isSafeInteger(frame) || frame < 0)) throw new CreativeError('CREATIVE_MEDIA_UNAVAILABLE', 404, '该创作产物暂时无法读取。')
+    const path = frame === undefined ? output.path : output.frames?.[frame]?.path
+    if (path === undefined) throw new CreativeError('CREATIVE_MEDIA_UNAVAILABLE', 404, '预览帧暂时不可用。')
+    const file = await safeFile(path)
+    try {
+      const info = await file.stat()
+      await this.current(owner)
+      const types: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime', '.wav': 'audio/wav', '.mp3': 'audio/mpeg' }
+      response.setHeader('content-type', types[extname(path).toLowerCase()] ?? 'application/octet-stream')
+      response.setHeader('x-content-type-options', 'nosniff')
+      response.setHeader('cache-control', 'no-store')
+      response.setHeader('accept-ranges', 'bytes')
+      let start = 0; let end = info.size - 1
+      const range = request.headers.range
+      if (range !== undefined) {
+        const parsed = /^bytes=(\d*)-(\d*)$/u.exec(range)
+        if (parsed === null || parsed[1] === '' && parsed[2] === '') { response.writeHead(416, { 'content-range': `bytes */${String(info.size)}` }); response.end(); return }
+        if (parsed[1] === '') { const suffix = Number(parsed[2]); start = Math.max(0, info.size - suffix) }
+        else { start = Number(parsed[1]); end = parsed[2] === '' ? end : Math.min(end, Number(parsed[2])) }
+        if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || start >= info.size) { response.writeHead(416, { 'content-range': `bytes */${String(info.size)}` }); response.end(); return }
+        response.statusCode = 206
+        response.setHeader('content-range', `bytes ${String(start)}-${String(end)}/${String(info.size)}`)
+      }
+      response.setHeader('content-length', String(Math.max(0, end - start + 1)))
+      if (request.method === 'HEAD') { response.end(); return }
+      const stream = file.createReadStream({ start, end, autoClose: false })
+      await new Promise<void>((complete, reject) => {
+        const close = (): void => { stream.destroy(); complete() }
+        response.once('close', close)
+        stream.once('error', reject)
+        stream.once('end', () => { response.off('close', close); complete() })
+        stream.pipe(response)
+      })
+    } finally { await file.close() }
+  }
+}
+
+/** Node filesystem missing-file errors are expected before the first project. */
+function isMissing(error: unknown): boolean { return error instanceof Error && 'code' in error && error.code === 'ENOENT' }

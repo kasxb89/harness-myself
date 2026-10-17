@@ -21,6 +21,9 @@ import * as Credits from '../src/index.ts'
 import { registerVideoProjectTools } from '../src/video-project-tools.ts'
 import type { VideoProjectInput, VideoProjectOptions, VideoProjectProvider } from '../src/video-project-types.ts'
 import type { VideoEditor } from '../src/video-edit.ts'
+import { CreativeStore } from '../src/creative-store.ts'
+import { registerCreativeTools } from '../src/creative-tools.ts'
+import { readVideoProject } from '../src/video-project.ts'
 
 let context: Context | undefined
 let directory: string | undefined
@@ -40,11 +43,12 @@ async function boot(production = false, workspaceIncludesState = false, managedO
   const inputs: VideoProjectInput[] = []
   const composedPaths: string[] = []
   let pending = false
+  let unknownSubmission = false
   const provider: VideoProjectProvider = {
     identity: { accountId: '7', sessionFingerprint: 'login-hash' }, assertCurrent: async () => {},
     model: async () => ({ id: 'fixture-video', durations: [5, 10, 15] }),
     build: async (input, model, prompt, durationSeconds) => { inputs.push(input); return { model, prompt, durationSeconds } },
-    submit: async (request) => { requests.push(Number(request.durationSeconds)); return { taskId: `task-${String(requests.length)}` } },
+    submit: async (request) => { requests.push(Number(request.durationSeconds)); if (unknownSubmission) throw new Error('unknown fixture acceptance'); return { taskId: `task-${String(requests.length)}` } },
     check: async () => ({ status: pending ? 'running' : 'succeeded' }),
     download: async (taskId, _request, destination) => {
       await mkdir(dirname(destination), { recursive: true })
@@ -67,7 +71,13 @@ async function boot(production = false, workspaceIncludesState = false, managedO
     pollIntervalMs: 1, taskTimeoutMs: 5000, acquireProvider: async () => provider, editor: () => editor,
     get publication() { return managedOutput ? context?.get('artifactStorage') : undefined },
   }
-  const VideoFixture = { name: 'video-fixture', inject: ['tools'], apply: (ctx: Context) =>{  registerVideoProjectTools(ctx, options) } }
+  const creative = new CreativeStore({ directory: join(directory, 'creative'), current: async () => provider.identity,
+    video: (id, owner) => readVideoProject(options, id, owner.sessionId, owner.workspaceRoot, owner) })
+  options.creative = creative
+  const VideoFixture = { name: 'video-fixture', inject: ['tools'], apply: (ctx: Context) => {
+    registerCreativeTools(ctx, creative, async () => provider.identity)
+    registerVideoProjectTools(ctx, options)
+  } }
   const modules = new Map<string, unknown>([
     ['system-prompt', SystemPrompt], ['tools', Tools], ['agents', AgentRegistry], ['jobs', LocalJobs], ['job-tools', JobTools],
     ['video-fixture', VideoFixture], ['credits', Credits], ['webserver', WebServer], ['artifacts', Artifacts],
@@ -111,8 +121,9 @@ async function boot(production = false, workspaceIncludesState = false, managedO
   let callIndex = 0
   const call = (name: string, args: unknown, signal = new AbortController().signal) => ctx.tools.execute({ callId: ToolCallId(`video-${String(++callIndex)}`), name, arguments: args, agent, signal })
   return {
-    ctx, agent, call, requests, inputs, composedPaths, workspace, stateDirectory: options.stateDirectory,
+    ctx, agent, call, requests, inputs, composedPaths, workspace, stateDirectory: options.stateDirectory, creative,
     setPending: (value: boolean) => { pending = value },
+    setUnknown: () => { unknownSubmission = true },
   }
 }
 
@@ -123,6 +134,68 @@ function json(value: unknown): Record<string, unknown> {
 }
 
 describe('video tools through Loader, real tool registry and jobs runtime', () => {
+  it('reads a complete structured plan for safe revisions and refuses another chat or an invalid id without generation', async () => {
+    const fixture = await boot()
+    const created = json((await fixture.call('update_creation_plan', { kind: 'video', title: '剧情', brief: '雨夜站台对白', style: '动漫',
+      characters: [{ id: 'S1', name: '小雨', clothing: '红围巾', voice: '轻柔中文女声', reference_asset_ids: ['portrait'] }],
+      assets: [{ id: 'portrait', name: '人物参考', kind: 'image', source_path_or_asset_id: '' }],
+      shots: [{ id: 'scene', order: 1, title: '道别', duration_seconds: 5, camera: '侧面近景', prompt: '女孩在站台道别',
+        dialogue: '1–3秒 S1：“明天见。”', subtitles: '1–3秒 明天见。', character_ids: ['S1'], asset_ids: ['portrait'] }],
+    })).value)
+    const before = await fixture.creative.projects({ accountId: '7', sessionId: fixture.agent.id })
+    const read = json((await fixture.call('get_creation_plan', { plan_id: created.plan_id })).value)
+    expect(read).toMatchObject({ status: 'succeeded', plan_id: created.plan_id, plan: { kind: 'video', title: '剧情', style: '动漫',
+      characters: [{ id: 'S1', name: '小雨', clothing: '红围巾', voice: '轻柔中文女声', reference_asset_ids: ['portrait'] }],
+      assets: [{ id: 'portrait', source_path_or_asset_id: '' }], shots: [{ id: 'scene', duration_seconds: 5,
+        camera: '侧面近景', dialogue: '1–3秒 S1：“明天见。”', subtitles: '1–3秒 明天见。', character_ids: ['S1'], asset_ids: ['portrait'] }],
+    } })
+    expect(await fixture.creative.projects({ accountId: '7', sessionId: fixture.agent.id })).toEqual(before)
+    expect(fixture.ctx.tools.schemas().find(tool => tool.name === 'get_creation_plan')).toMatchSnapshot('read-only creation plan tool')
+    const otherId = SessionId('other-creation-chat')
+    const other: Agent = { ...fixture.agent, id: otherId, session: Session.create(otherId, [], {
+      version: SESSION_FORMAT_VERSION, id: otherId, createdAt: 0, isSeeded: false, cwd: fixture.workspace,
+    }) }
+    await fixture.ctx.agents.register(other)
+    const refused = await fixture.ctx.tools.execute({ name: 'get_creation_plan', callId: ToolCallId('other-plan'),
+      arguments: { plan_id: created.plan_id }, agent: other, signal: new AbortController().signal })
+    expect(json(refused.value)).toMatchObject({ status: 'failed', code: 'CREATIVE_ACCESS_DENIED' })
+    expect(json((await fixture.call('get_creation_plan', { plan_id: '../../escape' })).value)).toMatchObject({ status: 'failed', code: 'CREATIVE_INVALID' })
+    expect(JSON.stringify(read)).not.toMatch(/sessionFingerprint|workspaceRoot|login-hash|request/u)
+    expect(fixture.requests).toEqual([])
+  })
+
+  it('links exact planned shots to live and retained manifest facts while optional preview failure preserves the video', async () => {
+    const fixture = await boot()
+    const planned = json((await fixture.call('update_creation_plan', { kind: 'video', title: '三镜头', brief: '茶杯广告', shots: [1, 2, 3].map(order => ({ id: `shot_${String(order)}`, order, title: `镜头${String(order)}`, prompt: `茶杯角度${String(order)}` })) })).value)
+    const args = { plan_id: planned.plan_id, prompt: '茶杯广告', total_duration_seconds: 40, shot_prompts: ['近景', '侧面', '远景'] }
+    const mismatch = json((await fixture.call('generate_video_project', { ...args, shot_ids: ['shot_1', 'shot_2'] })).value)
+    expect(mismatch).toMatchObject({ status: 'failed', code: 'CREATIVE_SHOT_MISMATCH' })
+    expect(fixture.requests).toEqual([])
+    const started = json((await fixture.call('generate_video_project', { ...args, shot_ids: ['shot_1', 'shot_2', 'shot_3'] })).value)
+    expect(started.plan_id).toBe(planned.plan_id)
+    await vi.waitFor(() => { expect(fixture.ctx.jobs.get(JobId(String(started.job_id)), fixture.agent.id).status).toBe('completed') })
+    const projects = await fixture.creative.projects({ accountId: '7', sessionId: fixture.agent.id })
+    expect(projects).toHaveLength(1)
+    expect(projects[0]).toMatchObject({ id: planned.plan_id, status: 'completed', shots: [
+      { id: 'shot_1', status: 'completed' }, { id: 'shot_2', status: 'completed' }, { id: 'shot_3', status: 'completed' },
+    ], outputs: [{ kind: 'video', previewUnavailable: true }] })
+    for (const [index, shot] of (projects[0]?.shots ?? []).entries()) expect(shot.outputs[0]?.name).toContain(`clip-00${String(index + 1)}`)
+    expect(await fixture.creative.projects({ accountId: '7', sessionId: 'another-chat' })).toEqual([])
+    expect(fixture.requests).toEqual([15, 15, 10])
+  })
+
+  it('exposes unknown submission outcomes without resubmitting from reads or explicit unsafe resume', async () => {
+    const fixture = await boot()
+    fixture.setUnknown()
+    const started = json((await fixture.call('generate_video_project', { prompt: '茶杯', total_duration_seconds: 20 })).value)
+    await vi.waitFor(() => { expect(fixture.ctx.jobs.get(JobId(String(started.job_id)), fixture.agent.id).status).toBe('failed') })
+    expect((await fixture.creative.projects({ accountId: '7', sessionId: fixture.agent.id }))[0]).toMatchObject({ status: 'unknown', errorCode: 'SUBMISSION_UNKNOWN' })
+    const resumed = json((await fixture.call('resume_video_project', { project_id: started.project_id })).value)
+    await vi.waitFor(() => { expect(fixture.ctx.jobs.get(JobId(String(resumed.job_id)), fixture.agent.id).status).toBe('failed') })
+    expect(fixture.requests).toEqual([15])
+    expect((await fixture.creative.projects({ accountId: '7', sessionId: fixture.agent.id }))[0]?.status).toBe('unknown')
+  })
+
   it('publishes managed long-video and local-edit results while every composition stays inside the workspace', async () => {
     const fixture = await boot(false, false, true)
     const destination = await fixture.ctx.get('artifactStorage')!.capture(new AbortController().signal)

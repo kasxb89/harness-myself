@@ -7,6 +7,7 @@
  * them on a fixed interval instead of trying to account locally.
  */
 import { useEffect, useSyncExternalStore } from 'react'
+import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-store'
 import { get, newKey, post } from './api.ts'
 
 /** The signed-in account as the session route reports it. */
@@ -43,6 +44,8 @@ let snapshot: CreditsSnapshot = { session: null, balance: null, loaded: false, f
 const listeners = new Set<() => void>()
 let heartbeats = 0
 let heartbeat: ReturnType<typeof setInterval> | null = null
+let sessionReadGeneration = 0
+let heartbeatRead: AbortController | undefined
 
 const subscribe = (listener: () => void): (() => void) => {
   listeners.add(listener)
@@ -55,9 +58,14 @@ function publish(next: Partial<CreditsSnapshot>): void {
   for (const listener of listeners) listener()
 }
 
-/** Read the balance of the current session. */
-export async function refreshBalance(): Promise<void> {
-  const answer = await get<BalanceResponse>('/credits/api/summary')
+/**
+ * Read the current balance.
+ * @param signal - optional owner cancellation.
+ */
+export async function refreshBalance(signal?: AbortSignal): Promise<void> {
+  const session = snapshot.session
+  const answer = await get<BalanceResponse>('/credits/api/summary', signal)
+  if (signal?.aborted === true || snapshot.session !== session) return
   if (answer.sessionInvalid === true) {
     publish({ session: { ...UNSIGNED, creditsPerYuan: snapshot.session?.creditsPerYuan ?? 1000 }, balance: null })
     return
@@ -69,23 +77,28 @@ export async function refreshBalance(): Promise<void> {
 /**
  * Re-read the session itself, not only the balance: a sign-in completed outside
  * these pages (the login API, another window) must reach them.
+ * @param signal - optional owner cancellation.
  */
-export async function refreshCredits(): Promise<void> {
-  const answer = await get<SessionInfo>('/credits/api/session')
+export async function refreshCredits(signal?: AbortSignal): Promise<void> {
+  const generation = ++sessionReadGeneration
+  const answer = await get<SessionInfo>('/credits/api/session', signal)
+  if (signal?.aborted === true || generation !== sessionReadGeneration) return
   const info = answer.payload ?? UNSIGNED
-  publish({ session: info, loaded: true })
-  if (info.signedIn) await refreshBalance()
+  publish({ session: info, loaded: true, failure: null })
+  if (info.signedIn) await refreshBalance(signal)
   else publish({ balance: null })
 }
 
 /** Sign out: revoke on the platform, clear locally. */
 export async function signOutCredits(): Promise<void> {
+  sessionReadGeneration += 1
+  heartbeatRead?.abort()
+  publish({ session: { ...UNSIGNED, creditsPerYuan: snapshot.session?.creditsPerYuan ?? 1000 }, balance: null })
   try {
     await post('/credits/api/session/logout', { idempotencyKey: newKey('logout') })
-  } catch {
+  } catch (_error) {
     // Locally cleared regardless; 503 does not prove the revoke did not happen.
   }
-  publish({ session: { ...UNSIGNED, creditsPerYuan: snapshot.session?.creditsPerYuan ?? 1000 }, balance: null })
 }
 
 /**
@@ -96,10 +109,22 @@ export async function signOutCredits(): Promise<void> {
 function retainHeartbeat(): void {
   heartbeats += 1
   if (heartbeat !== null) return
-  void refreshCredits()
-  const onFocus = (): void => { void refreshCredits() }
+  const refresh = (): void => {
+    heartbeatRead?.abort()
+    const controller = new AbortController()
+    heartbeatRead = controller
+    const pending = refreshCredits(controller.signal)
+    const generation = sessionReadGeneration
+    void pending.catch((_readFailed: unknown) => {
+      if (!controller.signal.aborted && generation === sessionReadGeneration) publish({ loaded: true, failure: 'ACCOUNT_UNAVAILABLE' })
+    }).finally(() => {
+      if (heartbeatRead === controller) heartbeatRead = undefined
+    })
+  }
+  refresh()
+  const onFocus = refresh
   window.addEventListener('focus', onFocus)
-  heartbeat = setInterval(() => { void refreshCredits() }, HEARTBEAT_MS)
+  heartbeat = setInterval(refresh, HEARTBEAT_MS)
   heartbeatCleanup = () => { window.removeEventListener('focus', onFocus) }
 }
 
@@ -110,8 +135,25 @@ function releaseHeartbeat(): void {
   if (heartbeats > 0 || heartbeat === null) return
   clearInterval(heartbeat)
   heartbeat = null
+  heartbeatRead?.abort()
+  heartbeatRead = undefined
   heartbeatCleanup?.()
   heartbeatCleanup = null
+}
+
+/**
+ * Expose the existing account snapshot to injected client consumers.
+ * @returns an identity-stable source whose subscriptions retain the shared heartbeat.
+ */
+export function createCreditsSessionSource(): ObservableSnapshot<CreditsSnapshot> {
+  return {
+    getSnapshot: () => snapshot,
+    subscribe: (listener) => {
+      const unsubscribe = subscribe(listener)
+      retainHeartbeat()
+      return () => { unsubscribe(); releaseHeartbeat() }
+    },
+  }
 }
 
 /**

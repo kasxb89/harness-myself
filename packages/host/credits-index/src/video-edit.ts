@@ -90,6 +90,14 @@ export interface VideoEditor {
    */
   probe(path: string, signal: AbortSignal): Promise<{ durationSeconds: number }>
   /**
+   * Extract three representative JPEG frames from a real saved clip without generation.
+   * @param path - Read-authorized saved video.
+   * @param outputDirectory - Workspace-contained private preview directory.
+   * @param signal - Cancels every owned extraction process.
+   * @returns Verified local frames and exact sampling times.
+   */
+  preview?(path: string, outputDirectory: string, signal: AbortSignal): Promise<readonly { path: string; timeSeconds: number }[]>
+  /**
    * Normalize sizes, frame rates and audio, then hard-cut clips into a new MP4.
    * @param request - Clip order, trims, optional final cut and exclusive destination.
    * @returns Published path and independently probed duration; failures leave originals intact.
@@ -263,6 +271,32 @@ export function createVideoEditor(ctx: Context, options: VideoEditorOptions): Vi
   return {
     preflight: (signal, outputDirectory) => preflight(withBudget(signal), outputDirectory),
     async probe(path, signal) { return inspect(await checkedPath(path, signal, true), withBudget(signal)) },
+    async preview(path, outputDirectory, cancellation) {
+      const signal = withBudget(cancellation)
+      const current = writable()
+      const input = await checkedPath(path, signal, true)
+      const info = await inspect(input, signal)
+      const parent = dirname(await checkedPath(join(outputDirectory, `preview-${randomUUID()}.jpg`), signal, false))
+      await mkdir(parent, { recursive: true, mode: 0o700 })
+      const directory = await mkdtemp(join(parent, 'frames-'))
+      try {
+        const frames: { path: string; timeSeconds: number }[] = []
+        for (const [index, timeSeconds] of [0, info.durationSeconds / 2, Math.max(0, info.durationSeconds - 0.25)].entries()) {
+          const destination = join(directory, `frame-${String(index)}.jpg`)
+          await run([await executable('ffmpeg', signal), '-hide_banner', '-loglevel', 'error', '-nostdin', '-n',
+            '-protocol_whitelist', 'file,pipe', '-ss', String(timeSeconds), '-i', input, '-frames:v', '1',
+            '-vf', 'scale=480:-2:force_original_aspect_ratio=decrease', '-q:v', '3', destination], current, signal)
+          const frame = await fs.resolve(destination, { signal })
+          const bytes = await fs.readBytes(frame, signal, 4 * 1024 * 1024)
+          if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8 || bytes[bytes.length - 2] !== 0xff || bytes[bytes.length - 1] !== 0xd9) throw new VideoEditError('VIDEO_EDIT_OUTPUT_INVALID', 'The extracted preview frame is not a complete JPEG.')
+          frames.push({ path: destination, timeSeconds })
+        }
+        return frames
+      } catch (error) {
+        await rm(directory, { recursive: true, force: true })
+        throw error
+      }
+    },
     async compose(request) {
       const signal = withBudget(request.signal)
       const current = writable()

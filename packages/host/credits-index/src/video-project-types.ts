@@ -3,6 +3,7 @@
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { ArtifactStorageService } from '@deepseek-ai/dsh-artifacts-index'
 import type { VideoEditor } from './video-edit.ts'
+import type { CreativeOwner, CreativeStore } from './creative-store.ts'
 
 /** JSON request data reconstructed exactly when a known task is resumed. */
 export type VideoRequestValue = string | number | boolean | null | VideoRequestValue[] | { [key: string]: VideoRequestValue }
@@ -98,6 +99,23 @@ export interface VideoProjectProvider {
 
 /** Deployment choices supplied by the owning credits plugin configuration. */
 export interface VideoProjectOptions {
+  /** Optional product-owned planning records; no independent background execution. */
+  creative?: CreativeStore
+  /**
+   * Materialize only an owned generated image as an existing local relay reference.
+   * @param owner - Captured account, chat and workspace.
+   * @param planId - Explicit source creation plan.
+   * @param value - Existing uploaded id or logged generated image path.
+   * @returns Local uploaded reference id, or undefined to retain ordinary workspace validation.
+   */
+  creativeImageReference?(owner: CreativeOwner, planId: string, value: string): Promise<string | undefined>
+  /**
+   * Observe a committed saved clip or final file for optional preview extraction.
+   * @param manifest - Current project with the saved path already committed.
+   * @param segmentIndex - One-based clip index, or undefined for the final video.
+   * @param signal - Owning background job cancellation.
+   */
+  saved?(manifest: import('./video-project.ts').VideoProjectManifest, segmentIndex: number | undefined, signal: AbortSignal): Promise<void>
   /** Private durable records, outside public artifact directories. */
   stateDirectory: string
   /** Workspace-relative artifact directory; resolved against each calling agent's cwd. */

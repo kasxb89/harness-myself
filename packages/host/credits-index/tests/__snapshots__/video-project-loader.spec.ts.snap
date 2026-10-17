@@ -1,5 +1,24 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
+exports[`video tools through Loader, real tool registry and jobs runtime > reads a complete structured plan for safe revisions and refuses another chat or an invalid id without generation > read-only creation plan tool 1`] = `
+{
+  "description": "Read the complete structured plan owned by this account, chat and workspace before revising it. Returns the exact planning fields accepted by update_creation_plan, including stable character, asset and shot ids. Preserve all unrelated entries when updating. This read neither generates media, resumes tasks nor spends credits; it excludes provider requests and credentials.",
+  "name": "get_creation_plan",
+  "parameters": {
+    "properties": {
+      "plan_id": {
+        "description": "Explicit existing creation plan id.",
+        "type": "string",
+      },
+    },
+    "required": [
+      "plan_id",
+    ],
+    "type": "object",
+  },
+}
+`;
+
 exports[`video tools through Loader, real tool registry and jobs runtime > registers the same production tool schemas from the shipped credits apply path > single-clip audio and dialogue contract 1`] = `
 {
   "description": "Generate one short video clip through the account relay. For a complete video such as 40 seconds, multiple shots, or automatic assembly, use generate_video_project instead. Edit existing clips with edit_video. This single-clip tool accepts only the chosen model’s declared duration, resolution, ratio, frames and references.",
@@ -23,6 +42,10 @@ exports[`video tools through Loader, real tool registry and jobs runtime > regis
       },
       "model": {
         "description": "Optional video model id such as MiniMax-H3. Defaults to the first video model the deployment serves for this account.",
+        "type": "string",
+      },
+      "plan_id": {
+        "description": "Explicit update_creation_plan id for this generation. Also provide shot_id.",
         "type": "string",
       },
       "prompt": {
@@ -58,6 +81,10 @@ exports[`video tools through Loader, real tool registry and jobs runtime > regis
         "description": "Output resolution such as 768P or 2K, when the model offers choices.",
         "type": "string",
       },
+      "shot_id": {
+        "description": "Exact shot id in the explicit plan; never guess a latest project.",
+        "type": "string",
+      },
     },
     "required": [
       "prompt",
@@ -87,6 +114,10 @@ exports[`video tools through Loader, real tool registry and jobs runtime > regis
         },
         "model": {
           "description": "Only specify a model when requested; otherwise use an available account model.",
+          "type": "string",
+        },
+        "plan_id": {
+          "description": "Explicit update_creation_plan id. Also supply shot_ids in generation order.",
           "type": "string",
         },
         "prompt": {
@@ -119,6 +150,13 @@ exports[`video tools through Loader, real tool registry and jobs runtime > regis
         },
         "resolution": {
           "type": "string",
+        },
+        "shot_ids": {
+          "description": "Exact shot ids belonging to plan_id, one per actual supported model clip and in generation order.",
+          "items": {
+            "type": "string",
+          },
+          "type": "array",
         },
         "shot_prompts": {
           "description": "Exact shot briefs, one per planned clip. For delegated narrative or dialogue, first write a short script and allocate each shot its character ids, language, exact lines and timing, distinguishing on-screen speech from narration; preserve user-provided wording. Keep each shot focused on its assigned lines rather than repeating the whole story. Respect silent/no-dialogue requests. Omit for briefs that do not require shot-specific scripting.",

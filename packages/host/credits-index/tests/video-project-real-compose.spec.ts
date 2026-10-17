@@ -78,6 +78,7 @@ it.skipIf(!available)('generates 15 + 15 + 10 seconds with the signed-in key and
   const lengths = [15, 15, 10]
   const colors = ['red', 'green', 'blue']
   const sources: { path: string; bytes: Buffer; hash: string; duration: number }[] = []
+  const portrait = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lX8AAAAASUVORK5CYII=', 'base64')
   for (const [index, duration] of lengths.entries()) {
     const path = join(fixtureMedia, `source-${String(index + 1)}.mp4`)
     execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-nostdin', '-n', '-f', 'lavfi',
@@ -98,12 +99,16 @@ it.skipIf(!available)('generates 15 + 15 + 10 seconds with the signed-in key and
       calls.push({ path, method: request.method ?? 'GET', authorization: request.headers.authorization, body })
       response.setHeader('content-type', 'application/json')
       if (path === '/v1/models') {
-        response.end(JSON.stringify({ data: [{ id: 'MiniMax-H3', supported_endpoint_types: ['video-generation'] }] }))
+        response.end(JSON.stringify({ data: [{ id: 'MiniMax-H3', supported_endpoint_types: ['video-generation'] },
+          { id: 'gpt-image-2', supported_endpoint_types: ['image-generation'] }] }))
       } else if (path === '/api/pricing') {
         response.end(JSON.stringify({ data: [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['video-generation'],
-          billing_usage_schema: { seconds: { type: 'number' } }, billing_usage_examples: [5, 10, 15].map(seconds => ({ facts: { seconds } })) }] }))
+          billing_usage_schema: { seconds: { type: 'number' } }, billing_usage_examples: [5, 10, 15].map(seconds => ({ facts: { seconds } })) },
+        { model_name: 'gpt-image-2', supported_endpoint_types: ['image-generation'] }] }))
+      } else if (path === '/v1/images/generations' && request.method === 'POST') {
+        response.end(JSON.stringify({ data: [{ b64_json: portrait.toString('base64') }] }))
       } else if (path === '/v1/video/generations' && request.method === 'POST') {
-        const index = calls.filter(call => call.method === 'POST').length - 1
+        const index = calls.filter(call => call.method === 'POST' && call.path === '/v1/video/generations').length - 1
         const media = sources[index]
         if (media === undefined || body?.duration !== media.duration || body.seconds !== media.duration) {
           response.writeHead(400)
@@ -184,12 +189,27 @@ it.skipIf(!available)('generates 15 + 15 + 10 seconds with the signed-in key and
   expect(object(invalid.value)).toMatchObject({ status: 'failed', code: 'VIDEO_REFERENCE_INVALID' })
   expect(calls.filter(call => call.method === 'POST')).toEqual([])
   expect(ctx.jobs.list(agent.id)).toEqual([])
+  const plan = object((await ctx.tools.execute({ callId: ToolCallId('real-video-plan'), name: 'update_creation_plan', agent,
+    signal: new AbortController().signal, arguments: { kind: 'video', title: '产品短片', brief: '40秒三镜头短片',
+      characters: [{ id: 'subject', name: '固定主体', appearance: '茶杯', reference_asset_ids: ['portrait'] }],
+      assets: [{ id: 'portrait', name: '主体参考图', kind: 'image', source_path_or_asset_id: '' }],
+      shots: [1, 2, 3].map(order => ({ id: `shot_${String(order)}`, order, title: `镜头${String(order)}`, prompt: '保持主体，变换背景颜色',
+        character_ids: ['subject'], asset_ids: ['portrait'] })),
+    } })).value)
+  const image = object((await ctx.tools.execute({ callId: ToolCallId('real-video-asset'), name: 'generate_image', agent,
+    signal: new AbortController().signal, arguments: { plan_id: plan.plan_id, asset_id: 'portrait', prompt: '主体参考图', model: 'gpt-image-2' } })).value)
+  expect(image.status).toBe('succeeded')
+  const imagePath = string(image.path)
+  expect(imagePath.startsWith(stateDir)).toBe(true)
+  expect(imagePath.startsWith(workspace)).toBe(false)
   const result = await ctx.tools.execute({ callId: ToolCallId('real-video-40'), name: 'generate_video_project',
-    arguments: { prompt: '制作一个40秒的产品短片，三个镜头分别展示红色、绿色和蓝色背景，自动剪辑成片。', total_duration_seconds: 40 },
+    arguments: { plan_id: plan.plan_id, shot_ids: ['shot_1', 'shot_2', 'shot_3'], reference_images: [imagePath],
+      prompt: '制作一个40秒的产品短片，三个镜头分别展示红色、绿色和蓝色背景，自动剪辑成片。', total_duration_seconds: 40 },
     agent, signal: new AbortController().signal })
   expect(result.isError).toBe(false)
   const started = object(result.value)
   expect(started, JSON.stringify(started)).toMatchObject({ status: 'background', plan_seconds: [15, 15, 10] })
+  expect(started.plan_id).toMatch(/^cp_[a-f0-9-]{36}$/u)
   const jobId = JobId(string(started.job_id))
   const activeContext = ctx
   await vi.waitFor(() => {
@@ -206,10 +226,12 @@ it.skipIf(!available)('generates 15 + 15 + 10 seconds with the signed-in key and
     { encoding: 'utf8', timeout: 30_000 })))
   expect(Number(object(metadata.format).duration)).toBeCloseTo(40, 1)
   expect(metadata.streams).toEqual(expect.arrayContaining([{ codec_type: 'video', width: 160, height: 120 }, { codec_type: 'audio' }]))
-  const postCalls = calls.filter(call => call.method === 'POST')
+  const postCalls = calls.filter(call => call.method === 'POST' && call.path === '/v1/video/generations')
   expect(postCalls.map(call => [call.path, call.body?.duration, call.body?.seconds])).toEqual([
     ['/v1/video/generations', 15, 15], ['/v1/video/generations', 15, 15], ['/v1/video/generations', 10, 10],
   ])
+  for (const call of postCalls) expect(object(call.body?.metadata).content).toContainEqual({ type: 'image_url', role: 'reference_image',
+    image_url: { url: `data:image/png;base64,${portrait.toString('base64')}` } })
   expect(calls.filter(call => call.method === 'GET' && call.path.includes('fixture-task-')).map(call => call.path)).toEqual([
     '/v1/video/generations/fixture-task-1', '/v1/videos/fixture-task-1/content',
     '/v1/video/generations/fixture-task-2', '/v1/videos/fixture-task-2/content',
@@ -232,4 +254,30 @@ it.skipIf(!available)('generates 15 + 15 + 10 seconds with the signed-in key and
   }
   expect(JSON.stringify(manifest))
     .not.toMatch(/fixture-signed-in-account-key|fixture-deployment-key|fixture-product-session|fixture-user-token/u)
+  const creation = object(JSON.parse(await readFile(join(stateDir, 'creative-projects', string(started.plan_id), 'project.json'), 'utf8')))
+  expect(creation.owner).toMatchObject({ accountId: '7', sessionId, workspaceRoot: workspace })
+  const operations = creation.operations
+  if (!Array.isArray(operations)) throw new Error('Expected retained creation operation')
+  expect(operations).toHaveLength(2)
+  const operation = object(operations.find(value => object(value).videoProjectId === started.project_id))
+  expect(operation.videoProjectId).toBe(started.project_id)
+  const previewOutputs = operation.outputs
+  if (!Array.isArray(previewOutputs)) throw new Error('Expected extracted previews')
+  expect(previewOutputs).toHaveLength(4)
+  for (const value of previewOutputs) {
+    const output = object(value)
+    expect(output.previewUnavailable).toBeUndefined()
+    const frames = output.frames
+    if (!Array.isArray(frames)) throw new Error('Expected actual extracted frames')
+    expect(frames).toHaveLength(3)
+    for (const value of frames) {
+      const frame = object(value)
+      const path = string(frame.path)
+      expect(path.startsWith(join(workspace, '.yunshu-creative'))).toBe(true)
+      const bytes = await readFile(path)
+      expect([...bytes.subarray(0, 2)]).toEqual([0xff, 0xd8])
+      expect([...bytes.subarray(-2)]).toEqual([0xff, 0xd9])
+      expect(typeof frame.timeSeconds).toBe('number')
+    }
+  }
 }, 90_000)

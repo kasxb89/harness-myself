@@ -14,6 +14,8 @@ The credits host plans against the current account's actual model durations and 
 
 The existing jobs service owns live execution. Separate project records own recovery, without changing the agent loop or Session format. Bundled media executables run through session filesystem and process policy; a real encode in the selected output tree succeeds before paid dispatch. Only independently inspected output becomes a final artifact.
 
+The same ownership rule protects structured image and video creation plans. Explicit plan and shot identifiers join character and material descriptions to actual operations; the [creation sidebar](../../../../packages/client/ui-creative/README.md) reads those retained records and video manifests. Saved files and extracted frames are exposed through checked media identifiers, while dialogue and subtitle instructions remain unverified requirements. Refreshing a display never resumes or repeats a paid task.
+
 ## Alternatives considered
 
 **Ask the model to issue independent clip calls and shell commands.** That leaves partial billing and recovery implicit and depends on ambient tools being installed.

@@ -1,4 +1,4 @@
-/** Workspace clarification policy assembled by the real Loader and Web runtime. */
+/** Creation guidance assembled by the real Loader and Web runtime. */
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -12,7 +12,7 @@ import WebServer from '@deepseek-ai/dsh-host-webserver'
 import { expect, it, onTestFinished } from 'vitest'
 import * as WebApp from '../src/index.ts'
 
-it('assembles the missing-preference question policy and removes it when the Web entry unloads', async () => {
+it('assembles clarification and structured media planning guidance and removes it when the Web entry unloads', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-workspace-clarification-'))
   const ctx = new Context()
   onTestFinished(async () => {
@@ -60,6 +60,25 @@ it('assembles the missing-preference question policy and removes it when the Web
   expect(text).toContain('if they ask only to review the guidance or postpone creation, keep that limit after they answer')
   expect(text).toContain('“你定”, “直接做”')
   expect(text).toContain('When the request is already specific, proceed directly')
+  expect(text).toContain('Before generating images or videos, call update_creation_plan')
+  expect(text).toContain('Keep a simple single image to a short brief and one shot')
+  expect(text).toContain('appearance, clothing, personality and voice')
+  expect(text).toContain('source_path_or_asset_id (empty for a planned asset, a real source for an existing one)')
+  expect(text).toContain('camera, scene, action, character_ids, asset_ids')
+  expect(text).toContain('dialogue string')
+  expect(text).toContain('subtitles string')
+  expect(text).toContain('Pass the returned plan_id and the matching shot_id')
+  expect(text).toContain('call generate_image with plan_id and asset_id instead; never pass both asset_id and shot_id')
+  expect(text).toContain('A video plan may first generate character reference images')
+  expect(text).toContain('characters[].reference_asset_ids')
+  expect(text).toContain('ordered shot_ids and shot_prompts aligned one-to-one')
+  expect(text).toContain('Use the original plan_id')
+  expect(text).toContain('First call get_creation_plan with that plan_id to read the complete current plan')
+  expect(text).toContain('preserving unrelated content and existing execution associations')
+  expect(text).toContain('Never associate work by guessing the latest task')
+  expect(text).toContain('real inputs supported by reference_images and the selected model')
+  expect(text).toContain('Speech, lip-sync and subtitle settings are requirements awaiting verification')
+  expect(text).toContain('Saved files alone do not establish that those requirements are met')
   expect(text).toContain('Read the returned job_id through job_output for real progress')
   expect(text).toContain('present the saved final_path only after completion')
 

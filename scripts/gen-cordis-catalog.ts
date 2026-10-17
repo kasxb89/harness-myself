@@ -194,6 +194,7 @@ export const SERVICE_WALK_EXEMPTIONS: Record<string, string> = {
   conversation: 'client-side interface-typed browser service — packages/client/ui-conversation/README.md owns the API',
   layout: 'client-side interface-typed browser service — packages/client/ui-layout/README.md owns the API',
   creationContent: 'client-side interface-typed publication reader — packages/client/creation-content/README.md owns the API',
+  creditsSession: 'client-side observable account snapshot — packages/client/ui-credits/README.md owns the API',
   market: 'client-side optional market render adapter — packages/client/ui-plaza/README.md owns the API',
   dshImClient: 'client-side optional IM bridge render adapter — packages/client/ui-mobile/README.md owns the API',
   pluginNavigation: 'client-side bundle navigation — packages/client/ui-plugin-manager/README.md owns the API',

@@ -97,6 +97,7 @@
     "tests/desktop-locale.e2e.ts",
     "tests/settings-import.e2e.ts",
     "tests/desktop-updates.e2e.ts",
+    "tests/creative-sidebar.e2e.ts",
     "tests/developer-tools-settings.e2e.ts",
     "tests/models-settings.e2e.ts",
     "tests/deepseek-messages-settings.e2e.ts",

@@ -46,7 +46,7 @@ function nextResend(seconds: number): number {
 
 export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected): ReactNode {
   const { t, openRecharge, completeSignIn } = props
-  const { session, balance, loaded } = useCreditsSnapshot()
+  const { session, balance, loaded, failure: readFailure } = useCreditsSnapshot()
   const [notice, setNotice] = useState<string | null>(null)
   const [failure, setFailure] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -183,6 +183,7 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected): 
       </header>
 
       {signedIn && failure !== null && <p className={css.banner} data-tone="error" role="alert">{failure}</p>}
+      {readFailure === 'ACCOUNT_UNAVAILABLE' && <p className={css.banner} data-tone="error" role="alert">{t('accountReadFailed')}</p>}
       {signedIn && notice !== null && <p className={css.banner} data-tone="success" role="status">{notice}</p>}
       {!loaded && <p className={css.hint}>{t('loading')}</p>}
 
