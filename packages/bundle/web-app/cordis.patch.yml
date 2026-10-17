@@ -18,8 +18,6 @@
           name: 'dsh-univer-office'
         - id: ipollowork-video-studio
           name: 'deepseek-ivideo'
-        - id: dream-skin
-          name: 'dsh-dream-skin'
 # 官方痕迹（产品级）：模型源与账号面板都停用——产品自己的登录/钱包在「额度」里，
 # 模型使用已部署的 harness-api，通过登录取得的中转 key 鉴权。
 - id: llm-deepseek

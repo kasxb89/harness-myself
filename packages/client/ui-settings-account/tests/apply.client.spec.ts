@@ -79,9 +79,10 @@ productIt('keeps the official account login and menu out of the default product'
   vi.stubGlobal('dshDesktop', {})
   const c = await start()
   const entries = [...c.ctx.loader.entries()]
-  for (const name of ['dshmarket', 'dsh-skin-market', '@xmanrui/dsh-im', 'dsh-univer-office', 'deepseek-ivideo', 'dsh-dream-skin']) {
+  for (const name of ['dshmarket', 'dsh-skin-market', '@xmanrui/dsh-im', 'dsh-univer-office', 'deepseek-ivideo']) {
     expect(entries.find(entry => entry.options.name === name)?.fiber?.state, name).toBe(FiberState.ACTIVE)
   }
+  expect(entries.some(entry => entry.options.name === 'dsh-dream-skin')).toBe(false)
   expect(c.ctx.slots.entries('settings.launcher')).toHaveLength(0)
   expect(c.ctx.slots.entries('settings.models.sign-in')).toHaveLength(0)
   expect(c.ctx.slots.entries('settings.section').some(entry => entry.options.id === 'account')).toBe(false)

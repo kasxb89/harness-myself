@@ -13,7 +13,7 @@ import { apply } from '../src/startup.ts'
 
 const extensionIds = [
   'dsh-market', 'dsh-skin-market', 'find-dsh-plugin', 'xmanrui-dsh-im',
-  'univer', 'ipollowork-video-studio', 'dream-skin',
+  'univer', 'ipollowork-video-studio',
 ]
 
 afterEach(() => {
