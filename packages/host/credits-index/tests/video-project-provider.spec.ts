@@ -73,6 +73,11 @@ function json(response: ServerResponse, value: unknown): void {
   response.end(JSON.stringify(value))
 }
 
+function finishAfter(response: ServerResponse, bytes: string | Buffer, delayMs: number): void {
+  const timer = setTimeout(() => { response.end(bytes) }, delayMs)
+  response.once('close', () => { clearTimeout(timer) })
+}
+
 async function rejection(operation: Promise<unknown>): Promise<Error> {
   try { await operation } catch (error) {
     if (error instanceof Error) return error
@@ -288,13 +293,31 @@ describe('bounded private video downloads', () => {
   })
 
   it('removes partial media after an upstream connection closes mid-download', async () => {
-    const f = await fixture((_request, response) => {
+    const received = latch()
+    const disconnect = latch()
+    const f = await fixture(async (_request, response) => {
       response.setHeader('content-length', media.length * 2)
-      response.write(media, () => { response.destroy() })
+      response.once('close', disconnect.resolve)
+      response.write(media)
+      received.resolve()
+      await disconnect.promise
+      response.destroy()
     })
-    await expect(f.relay.download('task-one', f.destination, signal())).rejects.toThrow()
-    expect(await readdir(f.cacheRoot)).toEqual([])
-    expect(f.calls).toHaveLength(1)
+    const operation = rejection(f.relay.download('task-one', f.destination, signal()))
+    try {
+      await received.promise
+      await vi.waitFor(async () => { expect(await readdir(f.cacheRoot)).toHaveLength(1) })
+      disconnect.resolve()
+      const error = await operation
+      expect(error).toBeInstanceOf(VideoRelayError)
+      expect(error).toMatchObject({ code: 'VIDEO_DOWNLOAD_UNAVAILABLE' })
+      expect(error.message).not.toMatch(/account-key|Bearer|https?:\/\//u)
+      expect(await readdir(f.cacheRoot)).toEqual([])
+      expect(f.calls).toHaveLength(1)
+    } finally {
+      disconnect.resolve()
+      await operation
+    }
   })
 
   it('cancels the content response if the validated cache parent becomes unavailable before opening a temporary file', async () => {
@@ -314,6 +337,66 @@ describe('bounded private video downloads', () => {
 })
 
 describe('relay cancellation and deadlines', () => {
+  it('allows a complete content transfer to outlast the ordinary request deadline', async () => {
+    const releaseContent = latch()
+    const f = await fixture(async (_request, response, recorded) => {
+      if (recorded.path.endsWith('/content')) {
+        response.once('close', releaseContent.resolve)
+        response.setHeader('content-type', 'video/mp4')
+        response.write(media.subarray(0, 12))
+        await releaseContent.promise
+        response.end(media.subarray(12))
+      } else {
+        response.write('{"data":')
+      }
+    }, { timeoutMs: 100, downloadTimeoutMs: 10_000 })
+    const controller = new AbortController()
+    const operation = f.relay.download('task-one', f.destination, controller.signal).catch((error: unknown) => error)
+    try {
+      await vi.waitFor(async () => { expect(await readdir(f.cacheRoot)).toHaveLength(1) })
+      // This complete request deadline elapses while the content body is held open.
+      await expect(f.relay.modelIds(signal())).rejects.toThrow()
+      releaseContent.resolve()
+      expect(await operation).toBeUndefined()
+      expect(await readFile(f.destination)).toEqual(media)
+      expect(await readdir(f.cacheRoot)).toEqual(['clip.mp4'])
+      expect(f.calls.map(call => call.path)).toEqual(['/v1/videos/task-one/content', '/v1/models'])
+    } finally {
+      controller.abort(new Error('Content fixture disposed'))
+      releaseContent.resolve()
+      await operation
+    }
+  })
+
+  it.each(['modelIds', 'check'] as const)('keeps %s on the ordinary deadline when content transfers have a longer deadline', async (method) => {
+    let closed = false
+    const f = await fixture((_request, response) => {
+      response.on('close', () => { closed = true })
+      response.setHeader('content-type', 'application/json')
+      response.write('{"data":')
+      finishAfter(response, method === 'modelIds' ? '[{"id":"video-a"}]}' : '{"status":"SUCCESS"}}', 250)
+    }, { timeoutMs: 100, downloadTimeoutMs: 800 })
+    await expect(method === 'modelIds' ? f.relay.modelIds(signal()) : f.relay.check('task-one', '/v1/videos', signal())).rejects.toThrow()
+    await vi.waitFor(() => { expect(closed).toBe(true) })
+    expect(f.calls).toHaveLength(1)
+    expect(await readdir(f.cacheRoot)).toEqual([])
+  })
+
+  it('still bounds a stalled transfer by its separate content deadline and removes the partial file', async () => {
+    let closed = false
+    const f = await fixture((_request, response) => {
+      response.on('close', () => { closed = true })
+      response.write(media)
+    }, { timeoutMs: 100, downloadTimeoutMs: 200 })
+    const error = await rejection(f.relay.download('task-one', f.destination, signal()))
+    expect(error).toBeInstanceOf(VideoRelayError)
+    expect(error).toMatchObject({ code: 'VIDEO_DOWNLOAD_UNAVAILABLE' })
+    expect(error.message).not.toMatch(/account-key|Bearer|https?:\/\//u)
+    await vi.waitFor(() => { expect(closed).toBe(true) })
+    expect(f.calls).toHaveLength(1)
+    expect(await readdir(f.cacheRoot)).toEqual([])
+  })
+
   it.each(['modelIds', 'submit', 'download'] as const)('closes a stalled %s response on its deadline without retries or partial output', async (method) => {
     let closed = false
     const f = await fixture((_request, response) => {
@@ -323,7 +406,11 @@ describe('relay cancellation and deadlines', () => {
     }, { timeoutMs: 200 })
     const operation = method === 'modelIds' ? f.relay.modelIds(signal())
       : method === 'submit' ? f.relay.submit({ prompt: 'A cup' }, '/v1/videos', signal()) : f.relay.download('task-one', f.destination, signal())
-    await expect(operation).rejects.toThrow()
+    const error = await rejection(operation)
+    if (method === 'download') {
+      expect(error).toBeInstanceOf(VideoRelayError)
+      expect(error).toMatchObject({ code: 'VIDEO_DOWNLOAD_UNAVAILABLE' })
+    }
     await vi.waitFor(() => { expect(closed).toBe(true) })
     expect(f.calls).toHaveLength(1)
     expect(await readdir(f.cacheRoot)).toEqual([])
@@ -340,12 +427,20 @@ describe('relay cancellation and deadlines', () => {
     const controller = new AbortController()
     const operation = rejection(method === 'modelIds'
       ? f.relay.modelIds(controller.signal) : f.relay.download('task-one', f.destination, controller.signal))
-    await started.promise
-    controller.abort(new Error('Caller stopped'))
-    await operation
-    await vi.waitFor(() => { expect(closed).toBe(true) })
-    expect(f.calls).toHaveLength(1)
-    expect(await readdir(f.cacheRoot)).toEqual([])
+    const stopped = new Error('Caller stopped')
+    try {
+      await started.promise
+      if (method === 'download') await vi.waitFor(async () => { expect(await readdir(f.cacheRoot)).toHaveLength(1) })
+      controller.abort(stopped)
+      const error = await operation
+      if (method === 'download') expect(error).toBe(stopped)
+      await vi.waitFor(() => { expect(closed).toBe(true) })
+      expect(f.calls).toHaveLength(1)
+      expect(await readdir(f.cacheRoot)).toEqual([])
+    } finally {
+      controller.abort(stopped)
+      await operation
+    }
   })
 
   it('does not resolve a key or start a request for an already cancelled operation', async () => {

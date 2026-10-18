@@ -2956,7 +2956,7 @@ export function apply(ctx: Context, config: Config): void {
         if (fileSystem === undefined) throw new VideoProjectError('VIDEO_EDIT_SERVICE_UNAVAILABLE', '当前工作区的文件服务未准备好，请联系管理员')
         const binding = await bindCurrentVideoAccount()
         const relay = createVideoProjectRelay({
-          origin: apiBaseUrl, timeoutMs: resolved.timeoutMs,
+          origin: apiBaseUrl, timeoutMs: resolved.timeoutMs, downloadTimeoutMs: Math.max(resolved.timeoutMs, 300_000),
           maxDownloadBytes: resolved.videoProjectDownloadMaxBytes, cacheRoot: projectState, key: () => binding.key(),
         })
         const models = new Map<string, ModelCapability>()

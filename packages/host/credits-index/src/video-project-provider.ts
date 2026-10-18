@@ -7,8 +7,8 @@ import { apiUrl, normalizeApiBaseUrl } from './api-url.ts'
 
 /** Stable relay failure safe for project records and model-visible reports. */
 export class VideoRelayError extends Error {
-  /** @param code - Stable failure identity. @param message - Safe summary without upstream data. */
-  constructor(readonly code: string, message: string) { super(message); this.name = 'VideoRelayError' }
+  /** @param code - Stable failure identity. @param message - Safe summary without upstream data. @param options - Internal error cause. */
+  constructor(readonly code: string, message: string, options?: ErrorOptions) { super(message, options); this.name = 'VideoRelayError' }
 }
 
 /** Host-owned limits and a fresh credential resolver; no key enters durable project data. */
@@ -16,6 +16,8 @@ export interface VideoRelayOptions {
   /** API root including the deployment's reverse-proxy prefix. */
   origin: string
   timeoutMs: number
+  /** Complete content-transfer deadline; defaults to the ordinary request deadline. */
+  downloadTimeoutMs?: number
   maxDownloadBytes: number
   /** Host-owned private project cache; downloads never write directly into the workspace. */
   cacheRoot: string
@@ -102,7 +104,7 @@ async function jsonBody(response: Response): Promise<Record<string, unknown>> {
  */
 export function createVideoProjectRelay(options: VideoRelayOptions): VideoProjectRelay {
   const baseUrl = baseOf(options.origin)
-  async function request(path: string, signal: AbortSignal, body?: VideoProjectRequest): Promise<Response> {
+  async function request(path: string, signal: AbortSignal, body?: VideoProjectRequest, timeoutMs = options.timeoutMs): Promise<Response> {
     signal.throwIfAborted()
     const key = await options.key()
     signal.throwIfAborted()
@@ -113,7 +115,7 @@ export function createVideoProjectRelay(options: VideoRelayOptions): VideoProjec
         headers: { authorization: 'Bearer ' + key, accept: body === undefined && path.endsWith('/content') ? 'video/mp4' : 'application/json',
           ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-        redirect: 'error', signal: AbortSignal.any([signal, AbortSignal.timeout(options.timeoutMs)]),
+        redirect: 'error', signal: AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]),
       })
     } catch (_transportFailure: unknown) {
       throw new VideoRelayError(body === undefined ? 'VIDEO_READ_UNAVAILABLE' : 'VIDEO_SUBMIT_UNKNOWN', body === undefined
@@ -164,7 +166,7 @@ export function createVideoProjectRelay(options: VideoRelayOptions): VideoProjec
       if (!parentInfo.isDirectory() || parentInfo.isSymbolicLink() || within === '..' || within.startsWith('..' + sep) || isAbsolute(within)) {
         throw new VideoRelayError('VIDEO_OUTPUT_UNSAFE', '视频缓存目录不可用，已停止下载')
       }
-      const response = await request('/v1/videos/' + validTask(taskId) + '/content', signal)
+      const response = await request('/v1/videos/' + validTask(taskId) + '/content', signal, undefined, options.downloadTimeoutMs)
       const declared = Number(response.headers.get('content-length'))
       if (Number.isFinite(declared) && declared > options.maxDownloadBytes) {
         await response.body?.cancel()
@@ -182,7 +184,10 @@ export function createVideoProjectRelay(options: VideoRelayOptions): VideoProjec
       try {
         for (;;) {
           signal.throwIfAborted()
-          const chunk = await reader.read()
+          const chunk = await reader.read().catch((error: unknown) => {
+            signal.throwIfAborted()
+            throw new VideoRelayError('VIDEO_DOWNLOAD_UNAVAILABLE', '视频下载中断，已保留任务记录；请恢复原项目以重新下载，不要重新生成', { cause: error })
+          })
           if (chunk.done) break
           bytes += chunk.value.byteLength
           if (bytes > options.maxDownloadBytes) throw new VideoRelayError('VIDEO_CONTENT_LIMIT', '视频文件超过本机下载上限，已停止保存')
