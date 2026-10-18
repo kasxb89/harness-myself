@@ -27,6 +27,8 @@ export type ImageDraft = {
   referenceLimit: number
   uploading: boolean
   promptAssisting: boolean
+  /** Conversation captured before the pending paid request is sent. */
+  generationSessionId: string | null
   generationStartedAt: number | null
   sessionInvalid: boolean
   message: string | null
@@ -50,7 +52,8 @@ export function createImageDraftStore(): EngineStoreHandle<ImageDraft, DraftActi
     init: (): ImageDraft => ({
       prompt: '', modelId: '', size: '', quality: '', background: '', format: '',
       compression: 90, moderation: '', seed: '', count: 1, references: [], referenceLimit: 6,
-      uploading: false, generationStartedAt: null, sessionInvalid: false, message: null, failure: null, resultPaths: [],
+      uploading: false, generationSessionId: null, generationStartedAt: null, sessionInvalid: false,
+      message: null, failure: null, resultPaths: [],
       referenceAccountId: null, referenceEpoch: 0, promptAssisting: false,
     }),
     actions: {

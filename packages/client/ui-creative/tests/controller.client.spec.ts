@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session/types'
+import type { CreativeProjectId } from '@deepseek-ai/dsh-credits-index/src/creative-types.ts'
 import type { CreativeReadResult, ReadCreativeProjects } from '../src/client/api.ts'
 import { CreativeController } from '../src/client/controller.ts'
 import { project } from './fixtures.ts'
@@ -308,5 +309,146 @@ describe('creative read ownership', () => {
     await read.mock.results[3]!.value
     expect(controller.source(A).getSnapshot().projects).toHaveLength(1)
     expect(reveal).not.toHaveBeenCalled()
+  })
+})
+
+describe('shared workbench lifecycle', () => {
+  it('shares project and shot selection between occurrences, retains it per conversation and clears it across accounts', async () => {
+    const data = project()
+    const second = project({ id: 'cp_second' as CreativeProjectId, title: '晴天告别', shots: [
+      { ...data.shots[0]!, id: 's3', order: 2, title: '远景' },
+      { ...data.shots[0]!, id: 's2', order: 1, title: '挥手' },
+    ] })
+    let accountId = 'account-a'
+    const read = vi.fn<ReadCreativeProjects>(async sessionId => ({ ok: true,
+      payload: { accountId, projects: [data, second].map(item => ({ ...item, sessionId })) } }))
+    const { controller } = owner(read)
+    controller.accountChanged(accountId); controller.select(A)
+    await read.mock.results[0]!.value
+    const chat = controller.source(A)
+    const creation = controller.source(A)
+    expect(chat).toBe(creation)
+    expect(chat.getSnapshot()).toMatchObject({ selectedProjectId: 'cp_rain', selectedShotId: 's1' })
+    controller.selectProject(A, 'missing')
+    controller.selectShot(A, 's3')
+    expect(creation.getSnapshot().selectedProjectId).toBe('cp_rain')
+    controller.selectProject(A, second.id)
+    expect(creation.getSnapshot()).toMatchObject({ selectedProjectId: second.id, selectedShotId: 's2' })
+    controller.selectShot(A, 's3')
+    expect(chat.getSnapshot().selectedShotId).toBe('s3')
+    controller.select(B)
+    await read.mock.results[1]!.value
+    controller.selectProject(A, data.id)
+    controller.selectShot(A, 's2')
+    expect(chat.getSnapshot()).toMatchObject({ selectedProjectId: second.id, selectedShotId: 's3' })
+    expect(controller.source(B).getSnapshot()).toMatchObject({ selectedProjectId: data.id, selectedShotId: 's1' })
+    controller.select(A)
+    await read.mock.results[2]!.value
+    expect(creation.getSnapshot()).toMatchObject({ selectedProjectId: second.id, selectedShotId: 's3' })
+    accountId = 'account-b'
+    controller.accountChanged(accountId)
+    expect(creation.getSnapshot().projects).toEqual([])
+    expect(creation.getSnapshot().selectedProjectId).toBeUndefined()
+    expect(creation.getSnapshot().selectedShotId).toBeUndefined()
+    expect(controller.source(B).getSnapshot().selectedProjectId).toBeUndefined()
+    await read.mock.results[3]!.value
+    expect(creation.getSnapshot()).toMatchObject({ selectedProjectId: data.id, selectedShotId: 's1' })
+  })
+
+  it('retains a valid selection through refresh and corrects removed projects and shots from current data', async () => {
+    const data = project()
+    const second = project({ id: 'cp_second' as CreativeProjectId,
+      shots: [{ ...data.shots[0]!, id: 's2', order: 2 }, { ...data.shots[0]!, id: 's3', order: 1 }] })
+    const read = vi.fn<ReadCreativeProjects>().mockResolvedValue({ ok: true,
+      payload: { accountId: 'account-a', projects: [data, second] } })
+    const { controller } = owner(read)
+    controller.accountChanged('account-a'); controller.select(A)
+    await read.mock.results[0]!.value
+    controller.selectProject(A, second.id); controller.selectShot(A, 's2')
+    read.mockResolvedValueOnce({ ok: true, payload: { accountId: 'account-a', projects: [second, data] } })
+    await controller.refresh(A)
+    expect(controller.source(A).getSnapshot()).toMatchObject({ selectedProjectId: second.id, selectedShotId: 's2' })
+    read.mockResolvedValueOnce({ ok: true, payload: { accountId: 'account-a', projects: [data,
+      { ...second, shots: second.shots.filter(item => item.id !== 's2') }] } })
+    await controller.refresh(A)
+    expect(controller.source(A).getSnapshot()).toMatchObject({ selectedProjectId: second.id, selectedShotId: 's3' })
+    read.mockResolvedValueOnce({ ok: true, payload: { accountId: 'account-a', projects: [data] } })
+    await controller.refresh(A)
+    expect(controller.source(A).getSnapshot()).toMatchObject({ selectedProjectId: data.id, selectedShotId: 's1' })
+    read.mockResolvedValueOnce({ ok: true, payload: { accountId: 'account-a', projects: [{ ...data, shots: [] }] } })
+    await controller.refresh(A)
+    expect(controller.source(A).getSnapshot().selectedShotId).toBeUndefined()
+    read.mockResolvedValueOnce({ ok: true, payload: { accountId: 'account-a', projects: [] } })
+    await controller.refresh(A)
+    expect(controller.source(A).getSnapshot().selectedProjectId).toBeUndefined()
+  })
+
+  it('uses the same bounded read loop while an AI-page request has not published its first project', async () => {
+    vi.useFakeTimers()
+    const read = vi.fn<ReadCreativeProjects>().mockResolvedValue({ ok: true, payload: { accountId: 'account-a', projects: [] } })
+    const { controller } = owner(read)
+    controller.accountChanged('account-a')
+    controller.select(A)
+    await read.mock.results[0]!.value
+    const visibility = new AbortController()
+    const release = controller.watch(A, true, visibility.signal, true)
+    await read.mock.results[1]!.value
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(read).toHaveBeenCalledTimes(3)
+    release()
+    controller.watch(A, true, visibility.signal, false)
+    await read.mock.results[3]!.value
+    await vi.advanceTimersByTimeAsync(6000)
+    expect(read).toHaveBeenCalledTimes(4)
+    visibility.abort()
+  })
+
+  it('publishes a committed free edit once to both occurrences and rejects late account edits', async () => {
+    const read = vi.fn<ReadCreativeProjects>().mockResolvedValue(success('completed'))
+    const { controller } = owner(read)
+    controller.accountChanged('account-a')
+    controller.select(A)
+    await read.mock.results[0]!.value
+    const updated = project({ planRevision: 'revision-2' })
+    let finish!: (response: Response) => void
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ ok: true, payload: { accountId: 'account-a', projects: [updated] } }))
+      .mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+    vi.stubGlobal('fetch', fetcher)
+    try {
+      const source = controller.source(A)
+      const other = controller.source(A)
+      const result = await controller.save(A, 'cp_rain', 'revision-1', { kind: 'reorder', shotIds: ['s1'] }, new AbortController().signal)
+      expect(result.ok).toBe(true)
+      expect(source).toBe(other)
+      expect(other.getSnapshot().projects[0]?.planRevision).toBe('revision-2')
+      const pending = controller.save(A, 'cp_rain', 'revision-2', { kind: 'reorder', shotIds: ['s1'] }, new AbortController().signal)
+      controller.accountChanged(null)
+      expect(fetcher.mock.calls[1]?.[1]?.signal?.aborted).toBe(true)
+      finish(Response.json({ ok: true, payload: { accountId: 'account-a', projects: [updated] } }))
+      expect(await pending).toEqual({ ok: false, code: 'signed-out' })
+      expect(source.getSnapshot().projects).toEqual([])
+    } finally { vi.unstubAllGlobals() }
+  })
+
+  it('corrects shared shot selection from the committed save response while keeping the selected project', async () => {
+    const data = project()
+    const second = project({ id: 'cp_second' as CreativeProjectId,
+      shots: [{ ...data.shots[0]!, id: 's2', order: 1 }, { ...data.shots[0]!, id: 's3', order: 2 }] })
+    const read = vi.fn<ReadCreativeProjects>().mockResolvedValue({ ok: true,
+      payload: { accountId: 'account-a', projects: [data, second] } })
+    const { controller } = owner(read)
+    controller.accountChanged('account-a'); controller.select(A)
+    await read.mock.results[0]!.value
+    controller.selectProject(A, second.id); controller.selectShot(A, 's3')
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => Response.json({ ok: true,
+      payload: { accountId: 'account-a', projects: [data,
+        { ...second, planRevision: 'revision-2', shots: second.shots.filter(item => item.id !== 's3') }] } })))
+    try {
+      const result = await controller.save(A, second.id, 'revision-1', { kind: 'reorder', shotIds: ['s2'] }, new AbortController().signal)
+      expect(result.ok).toBe(true)
+      expect(controller.source(A).getSnapshot()).toMatchObject({ selectedProjectId: second.id, selectedShotId: 's2' })
+      expect(controller.source(A).getSnapshot().projects[1]?.planRevision).toBe('revision-2')
+    } finally { vi.unstubAllGlobals() }
   })
 })

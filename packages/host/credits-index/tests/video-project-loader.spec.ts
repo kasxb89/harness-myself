@@ -48,7 +48,11 @@ async function boot(production = false, workspaceIncludesState = false, managedO
   const provider: VideoProjectProvider = {
     identity: { accountId: '7', sessionFingerprint: 'login-hash' }, assertCurrent: async () => {},
     model: async () => ({ id: 'fixture-video', durations: [5, 10, 15] }),
-    build: async (input, model, prompt, durationSeconds) => { inputs.push(input); return { model, prompt, durationSeconds } },
+    build: async (input, model, prompt, durationSeconds) => {
+      inputs.push(input)
+      return { model, prompt, durationSeconds,
+        ...input.referenceImages === undefined ? {} : { referenceImages: [...input.referenceImages] } }
+    },
     submit: async (request) => { requests.push(Number(request.durationSeconds)); if (unknownSubmission) throw new Error('unknown fixture acceptance'); return { taskId: `task-${String(requests.length)}` } },
     check: async () => ({ status: pending ? 'running' : 'succeeded' }),
     download: async (taskId, _request, destination) => {
@@ -123,7 +127,8 @@ async function boot(production = false, workspaceIncludesState = false, managedO
   let callIndex = 0
   const call = (name: string, args: unknown, signal = new AbortController().signal) => ctx.tools.execute({ callId: ToolCallId(`video-${String(++callIndex)}`), name, arguments: args, agent, signal })
   return {
-    ctx, agent, call, requests, inputs, composedPaths, workspace, stateDirectory: options.stateDirectory, creative,
+    ctx, agent, call, requests, inputs, composedPaths, workspace, stateDirectory: options.stateDirectory,
+    creative, options, provider, editor,
     setPending: (value: boolean) => { pending = value },
     setUnknown: () => { unknownSubmission = true },
   }
@@ -136,6 +141,165 @@ function json(value: unknown): Record<string, unknown> {
 }
 
 describe('video tools through Loader, real tool registry and jobs runtime', () => {
+  it('rejects an old saved timeline changed during preflight before submitting or linking generation', async () => {
+    const fixture = await boot()
+    const owner = { ...fixture.provider.identity, sessionId: fixture.agent.id, workspaceRoot: fixture.workspace }
+    const planned = json((await fixture.call('update_creation_plan', {
+      kind: 'video', title: '时间轴', brief: '按保存的镜头生成', shots: [
+        { id: 'scene', order: 1, title: '旧镜头', duration_seconds: 5, prompt: '旧镜头的场景与动作' },
+      ],
+    })).value)
+    const planId = String(planned.plan_id)
+    const before = (await fixture.creative.projects(owner))[0]!
+    const preflightEntered = Promise.withResolvers<undefined>()
+    const continuePreflight = Promise.withResolvers<undefined>()
+    vi.spyOn(fixture.editor, 'preflight').mockImplementationOnce(async () => {
+      preflightEntered.resolve(undefined)
+      await continuePreflight.promise
+    })
+    const generation = fixture.call('generate_video_project', {
+      plan_id: planId, shot_ids: ['scene'], prompt: '根据保存的镜头生成', total_duration_seconds: 5,
+    })
+    try {
+      await preflightEntered.promise
+      await fixture.creative.revise(owner, planId, before.planRevision, {
+        kind: 'shot', id: 'scene', patch: { title: '用户已改稿', prompt: '新镜头的场景与动作' },
+      })
+      continuePreflight.resolve(undefined)
+      expect(json((await generation).value)).toMatchObject({ status: 'failed', code: 'CREATIVE_PLAN_STALE' })
+      expect(fixture.requests).toEqual([])
+      expect(fixture.ctx.jobs.list(fixture.agent.id)).toEqual([])
+      const retained = (await fixture.creative.projects(owner))[0]!
+      expect(retained).toMatchObject({ shots: [{ title: '用户已改稿', prompt: '新镜头的场景与动作', status: 'planned' }], tasks: [], outputs: [] })
+      expect(retained.planRevision).not.toBe(before.planRevision)
+    } finally {
+      continuePreflight.resolve(undefined)
+      await generation
+    }
+  })
+
+  it('executes saved Chinese shot timing and only each character’s real references through the native workflow', async () => {
+    const fixture = await boot()
+    const owner = { ...fixture.provider.identity, sessionId: fixture.agent.id, workspaceRoot: fixture.workspace }
+    const secondImage = join(fixture.workspace, '第二人物.png')
+    await writeFile(secondImage, 'real second reference')
+    const created = json((await fixture.call('update_creation_plan', {
+      kind: 'video', title: '两人在车站道别', brief: '两个人各自说一句话', style: '动漫',
+      characters: [
+        { id: 'S1', name: '小雨', appearance: '黑长发', clothing: '红围巾', personality: '安静', voice: '轻柔女声', reference_asset_ids: ['portrait_a'] },
+        { id: 'S2', name: '小海', appearance: '短发', clothing: '蓝外套', voice: '低沉男声', reference_asset_ids: ['portrait_b'] },
+      ],
+      assets: [
+        { id: 'portrait_a', name: '小雨立绘', kind: 'image', source_path_or_asset_id: 'ma_original_a' },
+        { id: 'portrait_b', name: '小海立绘', kind: 'image', source_path_or_asset_id: secondImage },
+        { id: 'not_generated', name: '尚未生成的场景', kind: 'image', source_path_or_asset_id: '' },
+      ],
+      shots: [
+        { id: 'first', order: 1, title: '挥手', duration_seconds: 5, scene: '雨夜站台', camera: '缓慢推近', action: '女孩挥手',
+          prompt: '保留红围巾', dialogue: 'S1 1–3秒：“明天见。”', subtitles: '1–3秒：明天见。', character_ids: ['S1'], asset_ids: ['not_generated'] },
+        { id: 'second', order: 2, title: '回应', duration_seconds: 10, scene: '站台另一侧', camera: '男孩近景',
+          action: '点头', prompt: '保留蓝外套', dialogue: 'S2 2–4秒：“See you.”', subtitles: '2–4秒：See you.', character_ids: ['S2'] },
+      ],
+    })).value)
+    const planId = String(created.plan_id)
+    const material = await fixture.creative.begin(owner, { kind: 'image', planId, assetId: 'portrait_a', prompt: '人物立绘', shots: [{ prompt: '人物立绘' }] })
+    const generatedPath = join(fixture.workspace, '新人物立绘.png')
+    await writeFile(generatedPath, 'actual generated reference')
+    await fixture.creative.finish(material, { status: 'completed', kind: 'image', paths: [generatedPath] })
+    const generated = (await fixture.creative.projects(owner))[0]?.assets[0]?.outputs?.[0]
+    expect(generated).toBeDefined()
+    const resolveReference = vi.fn(async (_owner: unknown, _planId: string, value: string) => value === generated?.id ? 'ma_generated_a' : undefined)
+    fixture.options.creativeImageReference = resolveReference
+    const started = json((await fixture.call('generate_video_project', {
+      plan_id: planId, shot_ids: ['first', 'second'], prompt: '两人在车站道别，按保存的分镜拍摄', total_duration_seconds: 15,
+      reference_images: ['ma_shared'],
+    })).value)
+    expect(started).toMatchObject({ status: 'background', plan_seconds: [5, 10] })
+    await vi.waitFor(() => { expect(fixture.ctx.jobs.get(JobId(String(started.job_id)), fixture.agent.id).status).toBe('completed') })
+    expect(fixture.requests).toEqual([5, 10])
+    expect(fixture.inputs.map(input => input.referenceImages)).toEqual([
+      ['ma_shared', 'ma_generated_a'], ['ma_shared', secondImage],
+    ])
+    expect(resolveReference).toHaveBeenCalledWith(owner, planId, generated!.id)
+    const retained = await readVideoProject(fixture.options, String(started.project_id), owner.sessionId, owner.workspaceRoot, owner)
+    expect(retained.input.shotDurations).toEqual([5, 10])
+    expect(retained.input.shotReferenceImages).toEqual([['ma_generated_a'], [secondImage]])
+    const [first, second] = retained.segments
+    for (const text of ['雨夜站台', '缓慢推近', '女孩挥手', '黑长发', '红围巾', '安静', '轻柔女声', 'S1 1–3秒：“明天见。”', '1–3秒：明天见。']) expect(first?.prompt).toContain(text)
+    expect(first?.prompt).not.toContain('小海')
+    expect(second?.prompt).toContain('S2 2–4秒：“See you.”')
+    expect(second?.prompt).toContain('2–4秒：See you.')
+    expect(second?.prompt).not.toContain('小雨')
+    expect(first?.request.referenceImages).toEqual(['ma_shared', 'ma_generated_a'])
+    expect(second?.request.referenceImages).toEqual(['ma_shared', secondImage])
+  })
+
+  it.each([
+    { durations: [5, 5], total: 15, ids: ['first', 'second'], code: 'SHOT_DURATION_MISMATCH' },
+    { durations: [5, undefined], total: 15, ids: ['first', 'second'], code: 'CREATIVE_SHOT_DURATION_REQUIRED' },
+    { durations: [5, 20], total: 25, ids: ['first', 'second'], code: 'SHOT_DURATION_UNSUPPORTED' },
+    { durations: [5, 10], total: 15, ids: ['second', 'first'], code: 'CREATIVE_SHOT_MISMATCH' },
+  ])('rejects an incompatible saved timeline before submitting %j', async ({ durations, total, ids, code }) => {
+    const fixture = await boot()
+    const planned = json((await fixture.call('update_creation_plan', {
+      kind: 'video', title: '时间轴', brief: '按顺序生成', shots: ['first', 'second'].map((id, index) => ({
+        id, order: index + 1, title: id, prompt: '场景', ...durations[index] === undefined ? {} : { duration_seconds: durations[index] },
+      })),
+    })).value)
+    const outcome = json((await fixture.call('generate_video_project', {
+      plan_id: planned.plan_id, shot_ids: ids, prompt: '分镜', total_duration_seconds: total,
+    })).value)
+    expect(outcome).toMatchObject({ status: 'failed', code })
+    expect(fixture.requests).toEqual([])
+    expect(fixture.ctx.jobs.list(fixture.agent.id)).toEqual([])
+  })
+
+  it('keeps explicit shot prompts verbatim while honoring explicitly selected clip durations', async () => {
+    const fixture = await boot()
+    const started = json((await fixture.call('generate_video_project', {
+      prompt: '以明确输入为准', total_duration_seconds: 15, shot_prompts: ['Keep this exact shot.', '保留中文原文。'],
+      shot_durations_seconds: [5, 10],
+    })).value)
+    expect(started).toMatchObject({ status: 'background', plan_seconds: [5, 10] })
+    await vi.waitFor(() => { expect(fixture.ctx.jobs.get(JobId(String(started.job_id)), fixture.agent.id).status).toBe('completed') })
+    expect(fixture.requests).toEqual([5, 10])
+    expect(fixture.inputs[0]?.shotPrompts).toEqual(['Keep this exact shot.', '保留中文原文。'])
+  })
+
+  it('refuses an unavailable generated reference instead of inventing an uploaded id or using an older source', async () => {
+    const fixture = await boot()
+    const owner = { ...fixture.provider.identity, sessionId: fixture.agent.id, workspaceRoot: fixture.workspace }
+    const id = await fixture.creative.updatePlan(owner, {
+      kind: 'video', title: '人物镜头', brief: '人物挥手', style: '动漫', characters: [],
+      assets: [{ id: 'portrait', name: '人物图', kind: 'image', role: '身份', description: '固定外貌', sourcePathOrAssetId: 'ma_older' }],
+      shots: [{ id: 'scene', order: 1, title: '挥手', durationSeconds: 5, prompt: '人物挥手', scene: '', camera: '', action: '', dialogue: '', subtitles: '', characterIds: [], assetIds: ['portrait'] }],
+    })
+    const operation = await fixture.creative.begin(owner, { kind: 'image', planId: id, assetId: 'portrait', prompt: '新版人物', shots: [{ prompt: '新版人物' }] })
+    const path = join(fixture.workspace, 'new-portrait.png')
+    await writeFile(path, 'real generated portrait')
+    await fixture.creative.finish(operation, { status: 'completed', kind: 'image', paths: [path] })
+    const result = json((await fixture.call('generate_video_project', {
+      plan_id: id, shot_ids: ['scene'], prompt: '按新人物拍摄', total_duration_seconds: 5,
+    })).value)
+    expect(result).toMatchObject({ status: 'failed', code: 'CREATIVE_REFERENCE_INVALID' })
+    expect(fixture.requests).toEqual([])
+  })
+
+  it('retains minimum-clip planning when the selected saved shots have no explicit timing', async () => {
+    const fixture = await boot()
+    const planned = json((await fixture.call('update_creation_plan', {
+      kind: 'video', title: '简单镜头', brief: '晨光里的茶杯', shots: [{ id: 'cup', order: 1, title: '茶杯', prompt: '光影缓慢移动' }],
+    })).value)
+    const started = json((await fixture.call('generate_video_project', {
+      plan_id: planned.plan_id, shot_ids: ['cup'], prompt: '晨光里的茶杯', total_duration_seconds: 15,
+    })).value)
+    expect(started).toMatchObject({ status: 'background', plan_seconds: [15] })
+    await vi.waitFor(() => { expect(fixture.ctx.jobs.get(JobId(String(started.job_id)), fixture.agent.id).status).toBe('completed') })
+    expect(fixture.requests).toEqual([15])
+    expect(fixture.inputs[0]?.shotDurations).toBeUndefined()
+    expect(fixture.inputs[0]?.shotPrompts?.[0]).toContain('光影缓慢移动')
+  })
+
   it('reads a complete structured plan for safe revisions and refuses another chat or an invalid id without generation', async () => {
     const fixture = await boot()
     const created = json((await fixture.call('update_creation_plan', { kind: 'video', title: '剧情', brief: '雨夜站台对白', style: '动漫',
@@ -180,7 +344,7 @@ describe('video tools through Loader, real tool registry and jobs runtime', () =
     expect(projects).toHaveLength(1)
     expect(projects[0]).toMatchObject({ id: planned.plan_id, status: 'completed', shots: [
       { id: 'shot_1', status: 'completed' }, { id: 'shot_2', status: 'completed' }, { id: 'shot_3', status: 'completed' },
-    ], outputs: [{ kind: 'video', previewUnavailable: true }] })
+    ], outputs: Array.from({ length: 4 }, () => ({ kind: 'video', previewUnavailable: true })) })
     for (const [index, shot] of (projects[0]?.shots ?? []).entries()) expect(shot.outputs[0]?.name).toContain(`clip-00${String(index + 1)}`)
     expect(await fixture.creative.projects({ accountId: '7', sessionId: 'another-chat' })).toEqual([])
     expect(fixture.requests).toEqual([15, 15, 10])

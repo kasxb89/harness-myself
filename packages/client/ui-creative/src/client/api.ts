@@ -1,7 +1,8 @@
 /** Validated, account-authorized reads of retained chat creation projects. */
+import { randomUUID } from '@deepseek-ai/dsh-util-crypto'
 import type {
   CreativeAssetView, CreativeCharacter, CreativeOutput, CreativeProjectView, CreativeProjectsPayload,
-  CreativeShotView, CreativeStatus,
+  CreativeShotView, CreativeStatus, CreativeTaskView, CreativePlanChange,
 } from '@deepseek-ai/dsh-credits-index/src/creative-types.ts'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 
@@ -51,10 +52,22 @@ function character(value: unknown): value is CreativeCharacter {
   return record(value) && ['id', 'name', 'appearance', 'clothing', 'personality', 'voice'].every(key => text(value[key]))
     && texts(value.referenceAssetIds)
 }
+function reference(value: unknown, sessionId: SessionId, projectId: string, assetId: unknown): boolean {
+  if (typeof value !== 'string' || !value.startsWith('/credits/api/creative/reference?')) return false
+  try {
+    const parsed = new URL(value, 'https://creative.invalid')
+    return parsed.origin === 'https://creative.invalid' && parsed.pathname === '/credits/api/creative/reference'
+      && parsed.hash === '' && parsed.searchParams.getAll('session_id').length === 1
+      && parsed.searchParams.get('session_id') === sessionId && parsed.searchParams.getAll('project_id').length === 1
+      && parsed.searchParams.get('project_id') === projectId && parsed.searchParams.getAll('asset_id').length === 1
+      && parsed.searchParams.get('asset_id') === assetId
+  } catch (_invalidReference) { return false }
+}
 function asset(value: unknown, sessionId: SessionId, projectId: string): value is CreativeAssetView {
   return record(value) && ['id', 'name', 'role', 'description', 'sourcePathOrAssetId'].every(key => text(value[key]))
     && text(value.kind) && ['image', 'video', 'audio', 'document', 'other'].includes(value.kind)
     && (value.status === undefined || status(value.status))
+    && (value.referenceUrl === undefined || reference(value.referenceUrl, sessionId, projectId, value.id))
     && (value.outputs === undefined || Array.isArray(value.outputs) && value.outputs.every(item => output(item, sessionId, projectId)))
 }
 function shot(value: unknown, sessionId: SessionId, projectId: string): value is CreativeShotView {
@@ -62,13 +75,27 @@ function shot(value: unknown, sessionId: SessionId, projectId: string): value is
     && typeof value.order === 'number' && Number.isSafeInteger(value.order) && value.order >= 0
     && (value.durationSeconds === undefined || typeof value.durationSeconds === 'number'
       && Number.isFinite(value.durationSeconds) && value.durationSeconds > 0)
+    && (value.actualDurationSeconds === undefined || typeof value.actualDurationSeconds === 'number'
+      && Number.isFinite(value.actualDurationSeconds) && value.actualDurationSeconds > 0)
     && texts(value.characterIds) && texts(value.assetIds) && status(value.status)
+    && Array.isArray(value.outputs) && value.outputs.every(item => output(item, sessionId, projectId))
+}
+function count(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+}
+function task(value: unknown, sessionId: SessionId, projectId: string): value is CreativeTaskView {
+  return record(value) && text(value.id) && status(value.status) && texts(value.shotIds)
+    && count(value.completedShots) && count(value.totalShots) && value.completedShots <= value.totalShots
+    && ['assetId', 'model', 'videoProjectId', 'errorCode'].every(key => value[key] === undefined || text(value[key]))
     && Array.isArray(value.outputs) && value.outputs.every(item => output(item, sessionId, projectId))
 }
 function project(value: unknown, sessionId: SessionId): value is CreativeProjectView {
   if (!record(value) || !text(value.id)) return false
   const id = value.id
-  return ['title', 'brief', 'style', 'updatedAt'].every(key => text(value[key]))
+  return ['title', 'brief', 'style', 'updatedAt', 'planRevision'].every(key => text(value[key]))
+    && value.sessionId === sessionId && count(value.completedShots) && count(value.totalShots)
+    && value.completedShots <= value.totalShots
+    && Array.isArray(value.tasks) && value.tasks.every(item => task(item, sessionId, id))
     && (value.kind === 'image' || value.kind === 'video') && status(value.status)
     && Array.isArray(value.characters) && value.characters.every(character)
     && Array.isArray(value.assets) && value.assets.every(item => asset(item, sessionId, id))
@@ -97,4 +124,72 @@ export const readCreativeProjects: ReadCreativeProjects = async (sessionId, sign
     }
     return { ok: true, payload: { accountId: value.payload.accountId, projects: value.payload.projects } }
   } catch (_readFailed) { return { ok: false, code: 'unavailable' } }
+}
+
+/** Free plan-edit outcome; ambiguous mutations must not be automatically retried. */
+export type CreativeSaveResult = CreativeReadResult | {
+  readonly ok: false
+  readonly code: 'stale' | 'rejected'
+}
+
+/** Browser-safe CAS request owned by the authoritative project controller. */
+export interface CreativePlanRequest {
+  readonly sessionId: SessionId
+  readonly projectId: string
+  readonly expectedRevision: string
+  readonly change: CreativePlanChange
+}
+
+/**
+ * Save structured directions only; this endpoint never starts media generation.
+ * @param request - captured revision and explicitly addressed plan change.
+ * @param signal - editor and account lifetime cancellation.
+ * @returns a validated current listing or a failure without automatic retry.
+ */
+export async function saveCreativePlan(request: CreativePlanRequest, signal: AbortSignal): Promise<CreativeSaveResult> {
+  try {
+    const response = await fetch('/credits/api/creative/plan', {
+      method: 'POST', signal, credentials: 'same-origin', cache: 'no-store',
+      headers: { accept: 'application/json', 'content-type': 'application/json' },
+      body: JSON.stringify({ session_id: request.sessionId, project_id: request.projectId,
+        expected_revision: request.expectedRevision, change: request.change }),
+    })
+    if (response.status === 401) return { ok: false, code: 'signed-out' }
+    const value: unknown = await response.json()
+    if (response.status === 409 && record(value) && value.code === 'CREATIVE_PLAN_STALE') return { ok: false, code: 'stale' }
+    if (!response.ok) return { ok: false, code: 'rejected' }
+    if (!record(value) || value.ok !== true || !record(value.payload) || !text(value.payload.accountId)
+      || !Array.isArray(value.payload.projects) || !value.payload.projects.every(item => project(item, request.sessionId))) {
+      return { ok: false, code: 'invalid' }
+    }
+    return { ok: true, payload: { accountId: value.payload.accountId, projects: value.payload.projects } }
+  } catch (_saveFailed) { return { ok: false, code: 'unavailable' } }
+}
+
+/** Upload result contains an opaque material id, never a provider URL. */
+export type CreativeUploadResult =
+  | { readonly ok: true; readonly assetId: string; readonly kind: 'image' | 'video' | 'audio' }
+  | { readonly ok: false }
+
+/**
+ * Upload a real source file through the existing authenticated material endpoint.
+ * @param file - nonempty supported material of at most 32 MB.
+ * @param signal - editor and account lifetime cancellation.
+ * @returns an opaque material id or an upload failure.
+ */
+export async function uploadCreativeAsset(file: File, signal: AbortSignal): Promise<CreativeUploadResult> {
+  const kind = file.type.startsWith('image/') ? 'image' : file.type.startsWith('video/') ? 'video'
+    : file.type.startsWith('audio/') ? 'audio' : null
+  if (kind === null || file.size === 0 || file.size > 32 * 1024 * 1024) return { ok: false }
+  try {
+    const response = await fetch('/credits/api/assets', {
+      method: 'POST', signal, credentials: 'same-origin', cache: 'no-store',
+      headers: { 'content-type': file.type, 'x-file-name': encodeURIComponent(file.name),
+        'x-idempotency-key': `yunshu-asset-${randomUUID()}`, accept: 'application/json' }, body: file,
+    })
+    const value: unknown = await response.json()
+    if (!response.ok || !record(value) || value.ok !== true || !record(value.asset)
+      || typeof value.asset.assetId !== 'string' || !/^ma_[A-Za-z0-9_-]+$/u.test(value.asset.assetId)) return { ok: false }
+    return { ok: true, assetId: value.asset.assetId, kind }
+  } catch (_uploadFailed) { return { ok: false } }
 }

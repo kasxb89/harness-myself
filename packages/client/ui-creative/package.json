@@ -37,6 +37,7 @@
     "@deepseek-ai/dsh-client-ui-slots": "workspace:*",
     "@deepseek-ai/dsh-credits-index": "workspace:*",
     "@deepseek-ai/dsh-session": "workspace:*",
+    "@deepseek-ai/dsh-util-crypto": "workspace:*",
     "@testing-library/react": "^16.3.3",
     "@types/react": "~18.3.1",
     "@types/react-dom": "~18.3.0",

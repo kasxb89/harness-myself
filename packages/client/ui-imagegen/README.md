@@ -35,6 +35,8 @@ The existing Credits media catalog supplies every model and its accepted paramet
 
 Saved works come from the artifact index across current and retained output roots, including custom directories and Windows paths. Manage their directory, names and recoverable deletion in the [Artifacts page](../ui-artifacts/README.md); the creation grid does not rewrite previous chat links.
 
+Select a workspace chat before generating. The request captures that exact chat and signed-in account, retaining a project with the prompt, material references, task and saved images. The shared [Creation projects](../ui-creative/README.md) section uses the same selected-chat source as the chat sidebar: timeline, characters, materials, task states and output previews stay linked across both surfaces. Opening or freely editing a plan does not generate an image. Artifact previews and reference reuse retain the originating workspace coordinate, including when different mounts contain the same path.
+
 <a id="understand-the-implementation"></a>
 ## Understand the implementation
 
@@ -74,7 +76,7 @@ Submitting a prompt starts an independent provider-owned image request. This pac
 
 <a id="known-limitations-and-deferred-work"></a>
 
-- Work artifacts have no saved prompt metadata, so a work can be used as a reference but cannot restore its original prompt or model settings.
+- Earlier unassociated artifacts have no project metadata. New account/chat-associated requests retain their prompt and material references in Creation projects; the works grid does not restore composer settings automatically.
 - Templates provide prompt text; output count and supported generation inputs remain limited by the selected model.
 - The creation grid has no favorite, publication or generation-cancellation actions. File management belongs to the Artifacts page.
 - Drafts survive mode switches during the current plugin lifetime only. Reloading the app clears them, and an interrupted request may continue upstream.

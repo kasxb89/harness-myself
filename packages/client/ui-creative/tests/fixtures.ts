@@ -4,6 +4,7 @@ import type { CreativeProjectId, CreativeProjectView } from '@deepseek-ai/dsh-cr
 /** @param overrides - test-owned project changes. @returns a complete wire-safe project. */
 export function project(overrides: Partial<CreativeProjectView> = {}): CreativeProjectView {
   return {
+    sessionId: 'session-a', planRevision: 'revision-1', tasks: [], completedShots: 0, totalShots: 1,
     id: 'cp_rain' as CreativeProjectId, kind: 'video', title: '雨夜重逢', brief: '两位角色在雨夜车站重逢',
     style: '手绘动漫', status: 'running', updatedAt: '2026-10-17T00:00:00Z',
     characters: [{ id: 'girl', name: '小雨', appearance: '黑发少女', clothing: '红色围巾', personality: '坚定',

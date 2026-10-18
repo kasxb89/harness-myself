@@ -26,6 +26,10 @@ export interface VideoProjectInput {
   totalDurationSeconds: number
   /** Shot prompts, one for each planned clip; omitted repeats the brief with sequence context. */
   shotPrompts?: readonly string[]
+  /** Exact supported duration for each shot, in execution order; the sum equals the final duration. */
+  shotDurations?: readonly number[]
+  /** Per-shot image references, merged only with the explicitly shared reference images. */
+  shotReferenceImages?: readonly (readonly string[])[]
   /** Account-visible model id; omission lets the provider select. */
   model?: string
   /** Validated by the selected provider model. */

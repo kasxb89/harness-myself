@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import { bindSnapshotSelector, makeTranslate } from '@deepseek-ai/dsh-client-test-runtime'
@@ -36,7 +36,19 @@ function fixture(initial: Partial<CreativeSnapshot> = {}, english = false) {
   })
   const props = {
     sessionId: 'session-a' as SessionId, useTabInfo, useCreative: bindSnapshotSelector(source),
-    useInput: bindSnapshotSelector(input), inputActions, watch, refresh, reportDraft, t: makeTranslate(english ? en : zh),
+    useInput: bindSnapshotSelector(input), inputActions, watch, refresh, reportDraft, reportSaved: vi.fn(),
+    selectProject: vi.fn((id: string) => {
+      const before = source.getSnapshot()
+      const selected = before.projects.find(item => item.id === id)
+      if (selected !== undefined) {
+        const { selectedShotId: _shot, ...rest } = before
+        const first = selected.shots[0]
+        source.set({ ...rest, selectedProjectId: selected.id, ...(first === undefined ? {} : { selectedShotId: first.id }) })
+      }
+    }),
+    selectShot: vi.fn((id: string) => { source.set({ ...source.getSnapshot(), selectedShotId: id }) }),
+    save: vi.fn<CreativeBodyProps['save']>(async () => ({ ok: true as const, payload: { accountId: 'account-a', projects: [project()] } })),
+    upload: vi.fn<CreativeBodyProps['upload']>(async () => ({ ok: true as const, assetId: 'ma_test', kind: 'image' as const })), t: makeTranslate(english ? en : zh),
   }
   // The remaining framework seats are not read by this pure component.
   const view = render(<CreativeBody {...props as CreativeBodyProps} />)
@@ -65,8 +77,8 @@ describe('chat creation sidebar', () => {
     const output = { id: 'out1' as CreativeOutputId, kind: 'video' as const, name: 'scene.mp4', url: mediaUrl(),
       frames: [{ url: `${mediaUrl()}&frame=0`, timeSeconds: 15.633 }, { url: `${mediaUrl()}&frame=1`, timeSeconds: 17.5 }] }
     const h = fixture({ projects: [project({ status: 'completed', outputs: [output] })] })
-    fireEvent.click(screen.getByRole('tab', { name: '成片' }))
-    expect(screen.getByText('文件已完成')).toBeTruthy()
+    fireEvent.click(screen.getByRole('tab', { name: '任务与产物' }))
+    expect(screen.getAllByText('文件已完成').some(item => item.tagName === 'SPAN')).toBe(true)
     expect(screen.getByText('人声、口型与字幕同步：待核验')).toBeTruthy()
     expect(screen.getByText('00:15.633')).toBeTruthy()
     expect(screen.getByText('00:17.500')).toBeTruthy()
@@ -110,7 +122,7 @@ describe('chat creation sidebar', () => {
   it('keeps completed files usable when frame extraction or media preview fails', () => {
     const output = { id: 'out1' as CreativeOutputId, kind: 'video' as const, name: 'scene.mp4', url: mediaUrl(), previewUnavailable: true }
     const h = fixture({ projects: [project({ outputs: [output] })] })
-    fireEvent.click(screen.getByRole('tab', { name: '成片' }))
+    fireEvent.click(screen.getByRole('tab', { name: '任务与产物' }))
     expect(screen.getByText('视频已保存，预览帧暂不可用')).toBeTruthy()
     expect(h.view.container.querySelector('img')).toBeNull()
     fireEvent.error(h.view.container.querySelector('video')!)
@@ -184,11 +196,11 @@ describe('chat creation sidebar', () => {
     const h = fixture({ projects: [{ ...data, assets: data.assets.map(asset => ({ ...asset,
       status: 'completed' as const, outputs: [output] })) }] })
     fireEvent.click(screen.getByRole('tab', { name: '人物' }))
-    expect(screen.getByRole('img', { name: 'reference.png' }).getAttribute('src')).toBe(mediaUrl())
-    expect(h.view.container.querySelectorAll('[data-creative-output="image"]')).toHaveLength(1)
+    expect(screen.getByRole('img', { name: '车站参考' }).getAttribute('src')).toBe(mediaUrl())
+    expect(h.view.container.querySelectorAll('img')).toHaveLength(1)
     fireEvent.click(screen.getByRole('tab', { name: '素材' }))
-    expect(screen.getByText('文件已完成')).toBeTruthy()
-    expect(screen.getByRole('img', { name: 'reference.png' }).getAttribute('src')).toBe(mediaUrl())
+    expect(screen.getAllByText('文件已完成').some(item => item.tagName === 'SPAN')).toBe(true)
+    expect(screen.getByRole('img', { name: '车站参考' }).getAttribute('src')).toBe(mediaUrl())
     act(() => { h.source.set({ ...h.source.getSnapshot(), projects: [data] }) })
     expect(h.view.container.querySelector('img')).toBeNull()
     fireEvent.click(screen.getByRole('tab', { name: '人物' }))
@@ -231,12 +243,144 @@ describe('chat creation sidebar', () => {
     expect(h.inputActions.submit).not.toHaveBeenCalled()
   })
 
-  it.each([{ english: false, label: '作品' }, { english: true, label: 'Images' }])(
+  it.each([{ english: false, label: '任务与作品' }, { english: true, label: 'Tasks and images' }])(
     'labels image-project outputs as $label instead of a finished video', ({ english, label }) => {
       fixture({ projects: [project({ kind: 'image' })] }, english)
       fireEvent.click(screen.getByRole('tab', { name: label }))
-      expect(screen.queryByRole('tab', { name: '成片' })).toBeNull()
+      expect(screen.queryByRole('tab', { name: '任务与产物' })).toBeNull()
       expect(screen.queryByText(english ? en['verify.pending'] : zh['verify.pending'])).toBeNull()
     },
   )
+})
+
+
+describe('shared project workbench', () => {
+  it('requires visible generation directions before adding a shot with the original CAS revision', async () => {
+    const h = fixture()
+    fireEvent.click(screen.getByRole('button', { name: '添加镜头' }))
+    const directions = screen.getByRole<HTMLTextAreaElement>('textbox', { name: '生成要求（必填）' })
+    expect(directions.required).toBe(true)
+    expect(directions.closest('details')).toBeNull()
+    fireEvent.change(screen.getByRole('textbox', { name: '名称' }), { target: { value: '站台告别' } })
+    fireEvent.change(screen.getByRole('spinbutton', { name: '计划时长（秒）' }), { target: { value: '10' } })
+    const save = screen.getByRole<HTMLButtonElement>('button', { name: '保存设定' })
+    expect(save.disabled).toBe(true)
+    fireEvent.click(save)
+    expect(h.props.save).not.toHaveBeenCalled()
+    fireEvent.change(directions, { target: { value: '   ' } })
+    expect(save.disabled).toBe(true)
+    fireEvent.change(directions, { target: { value: '手绘动漫，女孩在站台挥手告别，镜头缓慢拉远' } })
+    expect(save.disabled).toBe(false)
+    act(() => { h.source.set({ ...h.source.getSnapshot(), projects: [project({ planRevision: 'revision-2' })] }) })
+    fireEvent.click(save)
+    await waitFor(() => { expect(h.props.save).toHaveBeenCalledOnce() })
+    expect(h.props.save.mock.calls[0]?.slice(0, 2)).toEqual(['cp_rain', 'revision-1'])
+    const change = h.props.save.mock.calls[0]?.[2]
+    if (change?.kind !== 'add-shot') throw new Error('Expected the saved change to add one shot')
+    expect(change.value.id).toMatch(/^shot_[a-f0-9]+$/u)
+    expect(change).toMatchObject({ kind: 'add-shot', value: {
+      order: 2, title: '站台告别', durationSeconds: 10,
+      prompt: '手绘动漫，女孩在站台挥手告别，镜头缓慢拉远', characterIds: [], assetIds: [],
+    } })
+    expect(h.inputActions.insertText).not.toHaveBeenCalled()
+    expect(h.inputActions.submit).not.toHaveBeenCalled()
+  })
+
+  it('shows planned cumulative shot timing and saves keyboard-accessible ordering without a paid call', async () => {
+    const initial = project()
+    const second = { ...initial.shots[0]!, id: 's2', order: 2, title: '第二镜', durationSeconds: 10 }
+    const h = fixture({ projects: [project({ shots: [...initial.shots, second] })] })
+    expect(screen.getByText('00:00.000 — 00:15.000')).toBeTruthy()
+    expect(screen.getByText('00:15.000 — 00:25.000')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '选择镜头：第二镜' }))
+    expect(screen.getByRole('button', { name: '选择镜头：第二镜' }).getAttribute('aria-pressed')).toBe('true')
+    fireEvent.click(screen.getByRole('button', { name: '将 第二镜 前移' }))
+    await waitFor(() => { expect(h.props.save).toHaveBeenCalledWith('cp_rain', 'revision-1',
+      { kind: 'reorder', shotIds: ['s2', 's1'] }, expect.any(AbortSignal)) })
+    expect(h.inputActions.insertText).not.toHaveBeenCalled()
+    expect(h.inputActions.submit).not.toHaveBeenCalled()
+  })
+
+  it('saves editable shot fields and exact character/material bindings through the free CAS operation', async () => {
+    const h = fixture()
+    fireEvent.click(screen.getByRole('button', { name: '编辑设定' }))
+    fireEvent.change(screen.getByRole('textbox', { name: '场景' }), { target: { value: '日落的车站' } })
+    fireEvent.click(screen.getByRole('checkbox', { name: '小雨' }))
+    fireEvent.click(screen.getByRole('button', { name: '保存设定' }))
+    await waitFor(() => { expect(h.props.save).toHaveBeenCalledOnce() })
+    expect(h.props.save.mock.calls[0]?.slice(0, 2)).toEqual(['cp_rain', 'revision-1'])
+    expect(h.props.save.mock.calls[0]?.[2]).toMatchObject({ kind: 'shot', id: 's1',
+      patch: { scene: '日落的车站', characterIds: [], assetIds: ['station'] } })
+    await waitFor(() => { expect(screen.queryByRole('dialog')).toBeNull() })
+    expect(h.inputActions.insertText).not.toHaveBeenCalled()
+    expect(h.props.reportSaved).toHaveBeenCalledOnce()
+  })
+
+  it('retains unsaved fields on a conflicting revision instead of overwriting the new plan', async () => {
+    const h = fixture()
+    h.props.save.mockResolvedValueOnce({ ok: false, code: 'stale' })
+    fireEvent.click(screen.getByRole('button', { name: '编辑设定' }))
+    fireEvent.change(screen.getByRole('textbox', { name: '场景' }), { target: { value: '保留我的场景修改' } })
+    act(() => { h.source.set({ ...h.source.getSnapshot(), projects: [project({ planRevision: 'revision-2' })] }) })
+    fireEvent.click(screen.getByRole('button', { name: '保存设定' }))
+    await waitFor(() => { expect(screen.getByRole('alert').textContent).toContain('计划已被更新') })
+    expect(screen.getByRole<HTMLTextAreaElement>('textbox', { name: '场景' }).value).toBe('保留我的场景修改')
+    expect(h.props.save.mock.calls[0]?.[1]).toBe('revision-1')
+    expect(h.inputActions.submit).not.toHaveBeenCalled()
+  })
+
+  it('adds a real uploaded image material and binds registered thumbnail references', async () => {
+    const h = fixture()
+    fireEvent.click(screen.getByRole('tab', { name: '素材' }))
+    fireEvent.click(screen.getByRole('button', { name: '添加素材' }))
+    const file = new File(['actual image bytes'], '新人物.png', { type: 'image/png' })
+    fireEvent.change(screen.getByLabelText('上传素材'), { target: { files: [file] } })
+    await waitFor(() => { expect(screen.getByRole('textbox', { name: '素材引用' }).getAttribute('value')).toBe('ma_test') })
+    expect(h.props.upload).toHaveBeenCalledWith(file, expect.any(AbortSignal))
+    fireEvent.click(screen.getByRole('button', { name: '保存设定' }))
+    await waitFor(() => { expect(h.props.save).toHaveBeenCalledOnce() })
+    expect(h.props.save.mock.calls[0]?.slice(0, 2)).toEqual(['cp_rain', 'revision-1'])
+    expect(h.props.save.mock.calls[0]?.[2]).toMatchObject({ kind: 'asset',
+      value: { name: '新人物.png', sourcePathOrAssetId: 'ma_test', kind: 'image' } })
+    await waitFor(() => { expect(screen.queryByRole('dialog')).toBeNull() })
+    const referenceUrl = '/credits/api/creative/reference?session_id=session-a&project_id=cp_rain&asset_id=station'
+    const data = project()
+    act(() => { h.source.set({ ...h.source.getSnapshot(),
+      projects: [project({ assets: data.assets.map(item => ({ ...item, referenceUrl })) })] }) })
+    fireEvent.click(screen.getByRole('tab', { name: '人物' }))
+    fireEvent.click(screen.getByRole('button', { name: '编辑设定' }))
+    expect(screen.getByRole<HTMLInputElement>('checkbox', { name: '车站参考' }).checked).toBe(true)
+    expect(screen.getByRole('dialog').querySelector('img')?.getAttribute('src')).toBe(referenceUrl)
+  })
+
+  it('filters real task statuses and output kinds with actual completed-shot progress', () => {
+    const video = { id: 'out1' as CreativeOutputId, kind: 'video' as const, name: 'completed.mp4', url: mediaUrl() }
+    const h = fixture({ projects: [project({ completedShots: 1, totalShots: 2, outputs: [video], tasks: [
+      { id: 'task_failed', status: 'failed', shotIds: ['s1'], completedShots: 0, totalShots: 1, outputs: [], errorCode: 'VIDEO_FAILED' },
+      { id: 'task_done', status: 'completed', shotIds: ['s1'], completedShots: 1, totalShots: 1, outputs: [video] },
+    ] })] })
+    fireEvent.click(screen.getByRole('tab', { name: '任务与产物' }))
+    expect(screen.getByText('已完成 1 / 2 个镜头')).toBeTruthy()
+    expect(h.view.container.querySelectorAll('[data-creative-task]')).toHaveLength(2)
+    expect(h.view.container.querySelectorAll('video')).toHaveLength(1)
+    expect(h.view.container.querySelector('[data-creative-task] details')?.hasAttribute('open')).toBe(false)
+    fireEvent.change(screen.getByRole('combobox', { name: '任务状态' }), { target: { value: 'failed' } })
+    expect(h.view.container.querySelector('[data-creative-task="task_done"]')).toBeNull()
+    expect(h.view.container.querySelector('[data-creative-task="task_failed"]')).toBeTruthy()
+    fireEvent.change(screen.getByRole('combobox', { name: '文件类型' }), { target: { value: 'image' } })
+    expect(h.view.container.querySelector('video')).toBeNull()
+    expect(screen.getByText('人声、口型与字幕同步：待核验')).toBeTruthy()
+  })
+
+  it('reports actual material outputs without displaying an invented zero-shot completion', () => {
+    const image = { id: 'out1' as CreativeOutputId, kind: 'image' as const, name: 'character.png', url: mediaUrl() }
+    const h = fixture({ projects: [project({ kind: 'image', shots: [], completedShots: 0, totalShots: 0,
+      outputs: [image], tasks: [{ id: 'task_asset', status: 'completed', assetId: 'station', shotIds: [],
+        completedShots: 0, totalShots: 0, outputs: [image] }] })] })
+    fireEvent.click(screen.getByRole('tab', { name: '任务与作品' }))
+    expect(screen.getAllByText('1 个产物')).toHaveLength(2)
+    expect(screen.queryByText('已完成 0 / 0 个镜头')).toBeNull()
+    expect(h.view.container.querySelector('progress')).toBeNull()
+    expect(h.view.container.querySelector('[data-creative-task="task_asset"]')?.textContent).toContain('车站参考')
+  })
 })

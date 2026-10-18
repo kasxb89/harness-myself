@@ -1,15 +1,15 @@
 ---
-description: "Follow chat image and video creation through saved characters, reference materials, storyboards, real media and editable shot revisions."
+description: "Manage shared chat and AI creation projects with editable storyboard timing, character references, materials, tasks and saved media."
 kind: "package-reference"
 ---
 
-# Chat creation sidebar
+# Creation projects
 
 English | [中文](README.zh.md)
 
 ## Summary
 
-Follow image and video projects alongside the chat that creates them. Inspect saved character directions, registered reference materials, planned shots, generation states and actual output files. Stage a shot revision or redo in the chat draft, then review and send it yourself. A saved video remains separate from unverified speech, lip and subtitle synchronization.
+Manage the same image and video project from chat or AI creation. Edit storyboard timing and order, maintain characters and reference materials, and inspect retained tasks and actual outputs. Planning changes save without a model request. Generation and revisions use ordinary chat drafts and existing native workflows. A saved video remains separate from unverified speech, lip and subtitle synchronization.
 
 ## Table of Contents
 
@@ -23,7 +23,11 @@ Follow image and video projects alongside the chat that creates them. Inspect sa
 <a id="use-this-package"></a>
 ## Use this package
 
-Open **Creation** in the chat’s existing right sidebar. The first actual retained project opens its tab once; later progress does not reopen a tab you closed. Switching chats changes the project scope. Characters, materials, shots and outputs have separate tabs, with longer directions and material references folded into details.
+Open **Creation** in the chat’s existing right sidebar, or **Creation projects** in either AI creation mode. Both surfaces follow the selected chat, retain the same selected project and shot, and read the same record. The first actual project opens its sidebar tab once; later progress does not reopen a tab you closed. Characters, materials, shots and tasks have separate sections, with longer directions folded into details.
+
+The thumbnail timeline shows planned start and end times. Select a shot to inspect it, move it earlier or later, and edit its title, duration, camera, scene, action, prompt, dialogue, subtitles and character/material associations. Character and material cards support search, creation and editing; material uploads retain a real local reference identifier. Saving is free and checks the plan revision. A conflicting edit preserves the form and asks for refresh; running linked items cannot be rewritten. Requested timing and the latest submitted duration are separate facts.
+
+The task section filters retained invocation states and output kinds, shows completed shot counts and opens real saved reference images, clips and final files. Failed and unknown work remains visible beside earlier usable outputs. Counts describe committed local records, not estimated upstream rendering percentages.
 
 Only owner-authorized files appear as previews. Video frame grids contain extracted frames with actual timestamps; missing or failed frame extraction stays visible while the original file remains downloadable. File completion and synchronization verification are independent: saved videos display speech, lip and subtitle timing as unverified.
 
@@ -43,7 +47,7 @@ Read failures preserve the last available project data with a retry action. Hidi
 <details>
 <summary>Implementation internals — click to expand</summary>
 
-The plugin registers one ordinary right-sidebar tab and its icon/title through the existing slot registry. A registration-owned [controller](src/client/controller.ts) supervises cancellable, session-addressed reads. Components consume its observable through a framework-bound hook; they do not subscribe to transport or scan the conversation transcript. The [transport parser](src/client/api.ts) validates the Host projection and accepts only the controlled project-media route.
+The plugin registers one ordinary right-sidebar tab and a session-aware `creation.projects` factory used by image/video creation. A registration-owned [controller](src/client/controller.ts) supervises cancellable, session-addressed reads, free revision-checked saves and reference uploads. Both surfaces consume its observable through framework-bound hooks. The [transport parser](src/client/api.ts) validates project, task and media ownership; neither surface scans conversation prose to invent state.
 
 The authoritative Credits account observable owns sign-in state. Account changes, conversation switches and application visibility cancel superseded reads; account epochs contain late responses. Tab lifetimes own visibility holds, while the controller owns polling and waits for its reads during unload. Draft outcomes render through a shell toast that outlives the requesting tab.
 
@@ -64,7 +68,7 @@ The authoritative Credits account observable owns sign-in state. Account changes
 
 #### What the model sees
 
-Viewing, refreshing, switching sections and downloading files make no model request. Character, material and shot revisions insert localized text, the original plan/member identifiers and the user’s directions into the normal chat draft. The model sees that text only after the user sends it; the draft requests `get_creation_plan` followed by `update_creation_plan`, preservation of unrelated members, and supported generation using real references against the identified project.
+Viewing, refreshing, free field edits, uploads and downloading files make no model request. AI revisions and shot redo insert localized text, exact plan/member identifiers and the user's directions into the normal chat draft. The model sees these after the user sends them; the draft requests `get_creation_plan`, preservation of unrelated members and existing native generation/editing tools. Timeline and reference changes become model input through the logged plan read rather than a hidden message.
 
 #### Token effect
 

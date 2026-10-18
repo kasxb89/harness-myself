@@ -135,7 +135,7 @@ exports[`video tools through Loader, real tool registry and jobs runtime > regis
           "type": "array",
         },
         "reference_images": {
-          "description": "Existing uploaded ma_ subject/style image ids or workspace image paths. For a user-supplied chat attachment outside the workspace, first copy the read-authorized attachment into the workspace with existing file tools and pass its copied path.",
+          "description": "Shared uploaded ma_ subject/style image ids or workspace image paths used by every shot. With plan_id, each shot’s saved image materials and character references are added only to that shot; do not duplicate unrelated character references here. For a user-supplied chat attachment outside the workspace, first copy the read-authorized attachment into the workspace with existing file tools and pass its copied path.",
           "items": {
             "type": "string",
           },
@@ -151,15 +151,22 @@ exports[`video tools through Loader, real tool registry and jobs runtime > regis
         "resolution": {
           "type": "string",
         },
+        "shot_durations_seconds": {
+          "description": "Exact model-supported whole seconds per clip, in shot_ids or shot_prompts order. Their sum must equal total_duration_seconds. When omitted for an explicit creation plan, use its saved shot durations; do not silently change timeline timing.",
+          "items": {
+            "type": "number",
+          },
+          "type": "array",
+        },
         "shot_ids": {
-          "description": "Exact shot ids belonging to plan_id, one per actual supported model clip and in generation order.",
+          "description": "Exact shot ids belonging to plan_id, one per actual supported model clip and in the saved timeline order.",
           "items": {
             "type": "string",
           },
           "type": "array",
         },
         "shot_prompts": {
-          "description": "Exact shot briefs, one per planned clip. For delegated narrative or dialogue, first write a short script and allocate each shot its character ids, language, exact lines and timing, distinguishing on-screen speech from narration; preserve user-provided wording. Keep each shot focused on its assigned lines rather than repeating the whole story. Respect silent/no-dialogue requests. Omit for briefs that do not require shot-specific scripting.",
+          "description": "Exact shot briefs, one per planned clip. With plan_id and shot_ids, omit to use each saved shot’s scene, camera, action, prompt, exact dialogue/subtitles and associated character definitions without another model call. Explicit values remain verbatim. Otherwise allocate delegated narrative lines and timing to stable speakers, distinguishing on-screen speech from narration. Respect silent/no-dialogue requests.",
           "items": {
             "type": "string",
           },

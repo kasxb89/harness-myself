@@ -2,8 +2,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Button, IconChevronDownOutlineRegular, IconPlayOutlineRegular, IconPlusOutlineRegular, IconSettingsOutlineRegular, Menu, Modal, SegmentedTabs, Switch, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsStore } from '@deepseek-ai/dsh-client-store'
-import type { InjectFace, PropsRenderFactories, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import type { HostObservable, InjectFace, PropsRenderFactories, PropsRuntime, StandardSourceBinding } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-prompt-assist/client'
+import type {} from '@deepseek-ai/dsh-client-ui-creative/client'
 import type { Context } from '@deepseek-ai/cordis'
 import type { LocalizedText } from '@deepseek-ai/dsh-client-creation-content/client'
 import type { createVideoDraftStore, Reference, Slot, VideoDraft, Workflow } from './draft-store.ts'
@@ -19,7 +20,7 @@ export interface VideogenInjected {
   readonly releasePreview: (url: string) => void
   readonly readDraft: () => VideoDraft
   readonly refreshContent: () => void
-  readonly hooks: { readonly creationContent: Context['creationContent']; readonly locale: Context['locale'] }
+  readonly hooks: { readonly creationContent: Context['creationContent']; readonly locale: Context['locale']; readonly creationSession: HostObservable<StandardSourceBinding> }
 }
 
 /** Parameter menus supplied by the existing media catalog. */
@@ -49,7 +50,8 @@ interface SessionInfo {
   readonly creditsPerYuan: number
   readonly account?: { readonly id?: string | number } | null
 }
-interface ArtifactItem { readonly path: string; readonly name: string; readonly kind: string; readonly mtimeMs?: number }
+interface ArtifactLocation { readonly path: string; readonly workspaceId?: string }
+interface ArtifactItem extends ArtifactLocation { readonly name: string; readonly kind: string; readonly mtimeMs?: number }
 
 /** Admit the artifact fields consumed by clip history from the JSON listing. */
 function isArtifactItem(value: unknown): value is ArtifactItem {
@@ -58,6 +60,7 @@ function isArtifactItem(value: unknown): value is ArtifactItem {
     && 'name' in value && typeof value.name === 'string'
     && 'kind' in value && typeof value.kind === 'string'
     && (!('mtimeMs' in value) || typeof value.mtimeMs === 'number')
+    && (!('workspaceId' in value) || typeof value.workspaceId === 'string')
 }
 
 const SLOT_TYPES: Record<Slot, { readonly accept: string; readonly types: readonly string[] }> = {
@@ -69,7 +72,8 @@ const SLOT_LABELS = { image: 'referenceImages', video: 'referenceVideos', audio:
 const SLOT_HINTS = { image: 'dropImages', video: 'dropVideos', audio: 'dropAudios' } as const
 const WORKFLOW_LABELS = { text: 'workflow.text', image: 'workflow.image', frames: 'workflow.frames', reference: 'workflow.reference' } as const
 const WORKFLOW_HINTS = { text: 'workflow.text.hint', image: 'workflow.image.hint', frames: 'workflow.frames.hint', reference: 'workflow.reference.hint' } as const
-const rawUrl = (path: string): string => `/artifacts/api/raw?path=${encodeURIComponent(path)}`
+const rawUrl = (file: ArtifactLocation): string => `/artifacts/api/raw?path=${encodeURIComponent(file.path)}${file.workspaceId === undefined ? '' : `&workspaceId=${encodeURIComponent(file.workspaceId)}`}`
+const fileIdentity = (file: ArtifactLocation): string => JSON.stringify([file.workspaceId ?? null, file.path])
 
 /**
  * Render the video mode with window-retained drafts and capability-owned inputs.
@@ -79,6 +83,8 @@ const rawUrl = (path: string): string => `/artifacts/api/raw?path=${encodeURICom
 export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & PropsStore<ReturnType<typeof createVideoDraftStore>> & InjectFace<VideogenInjected>): ReactNode {
   const { t, openImage, actions, createPreview, releasePreview, readDraft } = props
   const draft = props.useStore(state => state)
+  const sessionId = props.useCreationSession(binding => binding.key)
+  const projects = props.renderFactorySlot('creation.projects', { refreshKey: JSON.stringify([draft.phase, draft.result]), generationPending: draft.phase === 'running' && draft.generationSessionId === sessionId })
   const { prompt, modelId, resolution, ratio, mode, seed, audio, firstFrame, lastFrame, slots,
     phase, uploading, failure, message, result } = draft
   const [signedIn, setSignedIn] = useState<boolean | null>(null)
@@ -286,7 +292,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
     try {
       const response = await fetch('/credits/api/assets', {
         method: 'POST', headers: {
-          'content-type': file.type, 'x-file-name': file.name,
+          'content-type': file.type, 'x-file-name': encodeURIComponent(file.name),
           'x-idempotency-key': `dsh-asset-${globalThis.crypto.randomUUID()}`, accept: 'application/json',
         }, body: file,
       })
@@ -358,6 +364,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
     const context = readDraft()
     if (accountIdentity === null || context.referenceAccountId !== accountIdentity) return
     actions.patch({ failure: null, message: null })
+    if (sessionId === undefined) { actions.patch({ failure: t('sessionRequired') }); return }
     if (prompt.trim() === '') { actions.patch({ failure: t('promptRequired') }); promptField.current?.focus(); return }
     if (model === null || params === null) { actions.patch({ failure: t('noModel') }); return }
     if ((workflow === 'image' && (params.frameSlots > 0 ? firstFrame === null : slots.image.length === 0))
@@ -368,7 +375,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
     if (settingsInvalid || overReferenceLimit || referenceBytesExceeded) return
     operation.current = true
     setModelMenu(false)
-    actions.patch({ phase: 'running', startedAt: Date.now() })
+    actions.patch({ phase: 'running', generationSessionId: sessionId, startedAt: Date.now() })
     const frames = workflow === 'frames' ? [firstFrame, lastFrame] : workflow === 'image' && params.frameSlots > 0 ? [firstFrame] : []
     try {
       if (frames.some(reference => reference !== null) || hasReferences) {
@@ -381,9 +388,10 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
           return
         }
       }
-      const answer = await requestJson<{ path: string }>('/credits/api/video/tasks?source=newapi-generate', {
+      const answer = await requestJson<ArtifactLocation>('/credits/api/video/tasks?source=newapi-generate', {
         method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' },
         body: JSON.stringify({
+          session_id: sessionId, account_id: accountIdentity,
           prompt: prompt.trim(), model: model.id, durationSeconds: duration,
           ...(selectedResolution === '' ? {} : { resolution: selectedResolution }),
           ...(selectedRatio === '' ? {} : { ratio: selectedRatio }),
@@ -409,11 +417,11 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
         else actions.patch({ failure: t('failed', { message: answer.message ?? answer.code ?? t('unknown') }) })
         return
       }
-      actions.patch({ result: { path: answer.payload.path }, message: t('done') })
+      actions.patch({ result: { path: answer.payload.path, ...answer.payload.workspaceId === undefined ? {} : { workspaceId: answer.payload.workspaceId } }, message: t('done') })
       await Promise.all([loadBalance(), loadHistory()])
     } finally { operation.current = false; actions.patch({ phase: 'idle' }) }
   }, [acceptAccount, accountIdentity, busy, signedIn, actions, prompt, model, params, workflow, firstFrame, lastFrame, slots,
-    hasReferences, isReferenceCurrent, readDraft,
+    hasReferences, isReferenceCurrent, readDraft, sessionId,
     duration, settingsInvalid, overReferenceLimit, referenceBytesExceeded,
     referenceImages, referenceVideos, referenceAudios,
     selectedResolution, selectedRatio, mode, seed, audio, t, loadBalance, loadHistory])
@@ -588,7 +596,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
           <span className={css.cost}>{t('costShort')}</span>
           <Tooltip label={phase === 'running' ? t('runningShort') : t('submit')} portal side="top">
             <button type="button" className={css.send} aria-label={phase === 'running' ? t('runningShort') : t('submit')}
-              onClick={() => { void generate() }} disabled={locked || model === null || prompt.trim() === '' || settingsInvalid
+              onClick={() => { void generate() }} disabled={locked || model === null || sessionId === undefined || prompt.trim() === '' || settingsInvalid
                 || overReferenceLimit || referenceBytesExceeded}>
               <span className={phase === 'running' ? css.spinner : css.sendArrow} aria-hidden="true">{phase === 'running' ? '' : '↑'}</span>
             </button>
@@ -604,12 +612,15 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
         {failure !== null && <p className={css.error} role="alert">{failure}</p>}
         {message !== null && <p className={css.notice}>{message}</p>}
         {signedIn === false && <p className={css.hint}>{t('signedOut')}</p>}
+        {sessionId === undefined && <p className={css.hint}>{t('sessionRequired')}</p>}
         {stateError && <p className={css.error}>{t('stateFailed')} <button type="button" className={css.link} onClick={() => { void refreshState() }}>{t('retry')}</button></p>}
         {modelsError !== null && <p className={css.error}>{t('modelsFailed', { message: modelsError })} <button type="button" className={css.link} onClick={() => { void loadModels() }}>{t('retry')}</button></p>}
         {signedIn === true && models.length === 0 && modelsError === null && <p className={css.hint}>{t('noModel')}</p>}
       </div>
     </section>
     {model !== null && <details className={css.capabilityNote}><summary>{t('modelInfo')}</summary><p className={css.hint}>{t('capabilityHint')}</p></details>}
+
+    <section className={css.works} aria-label={t('projects')}>{projects}</section>
 
     <section className={css.templates} aria-label={t('templates')}>
       <div className={css.sectionHeading}><div><h2 className={css.sectionTitle}>{text(content?.title) || t('templates')}</h2><p className={css.hint}>{text(content?.description) || t('templatesHint')}</p></div>
@@ -632,16 +643,16 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
 
     {result !== null && <section className={css.result} aria-label={t('result')}>
       <div className={css.sectionHeading}><h2 className={css.sectionTitle}>{t('result')}</h2><button type="button" className={css.link} onClick={() => { actions.patch({ result: null }) }}>{t('closePreview')}</button></div>
-      <video className={css.video} src={rawUrl(result.path)} controls preload="metadata" />
-      <div className={css.figureMeta}><a className={css.link} href={rawUrl(result.path)} target="_blank" rel="noreferrer">{t('open')}</a><a className={css.link} href={rawUrl(result.path)} download={result.path.split('/').pop()}>{t('download')}</a><code className={css.path}>{result.path}</code></div>
+      <video className={css.video} src={rawUrl(result)} controls preload="metadata" />
+      <div className={css.figureMeta}><a className={css.link} href={rawUrl(result)} target="_blank" rel="noreferrer">{t('open')}</a><a className={css.link} href={rawUrl(result)} download={result.path.split(/[\\/]/).pop()}>{t('download')}</a><code className={css.path}>{result.path}</code></div>
     </section>}
 
     <section className={css.works} aria-label={t('history')}>
       <div className={css.sectionHeading}><div><h2 className={css.sectionTitle}>{t('history')}</h2><p className={css.hint}>{t('historyHint')}</p></div><Button size="sm" onClick={() => { void loadHistory() }}>{t('refresh')}</Button></div>
       {historyError && <p className={css.error} role="alert">{t('historyFailed')}</p>}
       {history.length === 0 ? <div className={css.emptyWorks}><IconPlayOutlineRegular size={30} /><p>{t('historyEmpty')}</p><span>{t('historyEmptyHint')}</span></div>
-        : <ul className={css.history}>{history.map(item => <li key={item.path}><button type="button" className={css.historyButton} aria-label={t('previewNamed', { name: item.name })}
-          onClick={() => { actions.patch({ result: { path: item.path } }) }}><div className={css.historyVisual}><video src={rawUrl(item.path)} muted preload="metadata" /><span className={css.play}><IconPlayOutlineRegular size={24} /></span></div><span className={css.historyName}>{item.name}</span></button></li>)}</ul>}
+        : <ul className={css.history}>{history.map(item => <li key={fileIdentity(item)}><button type="button" className={css.historyButton} aria-label={t('previewNamed', { name: item.name })}
+          onClick={() => { actions.patch({ result: { path: item.path, ...item.workspaceId === undefined ? {} : { workspaceId: item.workspaceId } } }) }}><div className={css.historyVisual}><video src={rawUrl(item)} muted preload="metadata" /><span className={css.play}><IconPlayOutlineRegular size={24} /></span></div><span className={css.historyName}>{item.name}</span></button></li>)}</ul>}
     </section>
     <Modal open={previewTemplate !== null} title={previewTemplate === null ? t('scriptTemplate') : text(previewTemplate.title)} closeLabel={t('closePreview')} onClose={() => { setPreview(null) }}
       footer={<Button variant="primary" disabled={locked} onClick={() => { if (preview !== null) applyTemplate(preview) }}>{t('useScript')}</Button>}>

@@ -7,6 +7,7 @@ import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type { MainPanelId } from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
+import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import { VideoPage, type VideogenInjected } from './VideoPage.tsx'
@@ -27,7 +28,7 @@ export const PANEL_ID = 'videogen' as MainPanelId
 export const IMAGE_PANEL_ID = 'imagegen' as MainPanelId
 
 /** Required services: slots, dictionaries, layout and the creation publication. */
-export const inject = ['slots', 'locale', 'layout', 'creationContent']
+export const inject = ['slots', 'locale', 'layout', 'creationContent', 'uiSession']
 
 /**
  * Client plugin body: register the dictionaries, the sidebar entry, and the page.
@@ -41,7 +42,7 @@ export function apply(ctx: ClientContext): void {
   const previews = new Set<string>()
   ctx.effect(() => () => { for (const url of previews) URL.revokeObjectURL(url); previews.clear() }, 'ui-videogen: previews')
   const face: VideogenInjected = {
-    hooks: { creationContent: ctx.creationContent, locale: ctx.locale },
+    hooks: { creationContent: ctx.creationContent, locale: ctx.locale, creationSession: ctx.uiSession.adapter.current },
     refreshContent: () => { void ctx.creationContent.refresh() },
     t: (key, values) => t(key, values),
     openImage: () => { ctx.layout.selectPanel(IMAGE_PANEL_ID) },

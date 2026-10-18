@@ -34,6 +34,12 @@
     },
     {
       "path": "../creation-content/tsconfig.client.json"
+    },
+    {
+      "path": "../ui-session"
+    },
+    {
+      "path": "../ui-creative"
     }
   ]
 }

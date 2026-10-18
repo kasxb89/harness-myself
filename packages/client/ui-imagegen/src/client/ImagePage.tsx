@@ -5,8 +5,9 @@ import {
   IconPlusOutlineRegular, IconSearchOutlineRegular, IconSendOutlineRegular,
   IconSettingsOutlineRegular, IconSparkleRegular, ImageLightbox, SegmentedTabs, Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { InjectFace, PropsRenderFactories, PropsRuntime, PropsStore } from '@deepseek-ai/dsh-client-ui-slots'
+import type { HostObservable, InjectFace, PropsRenderFactories, PropsRuntime, PropsStore, StandardSourceBinding } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-prompt-assist/client'
+import type {} from '@deepseek-ai/dsh-client-ui-creative/client'
 import type { Context } from '@deepseek-ai/cordis'
 import type { LocalizedText } from '@deepseek-ai/dsh-client-creation-content/client'
 import type { createImageDraftStore, ImageDraft } from './draft-store.ts'
@@ -20,7 +21,7 @@ export interface ImagegenInjected {
   readonly createReferencePreview: (file: File) => string
   readonly releaseReferencePreview: (url: string) => void
   readonly refreshContent: () => void
-  readonly hooks: { readonly creationContent: Context['creationContent']; readonly locale: Context['locale'] }
+  readonly hooks: { readonly creationContent: Context['creationContent']; readonly locale: Context['locale']; readonly creationSession: HostObservable<StandardSourceBinding> }
 }
 
 interface Envelope<T> {
@@ -52,8 +53,11 @@ interface ImageModel {
   }
 }
 interface Catalog { readonly image: readonly ImageModel[] }
-interface ArtifactItem {
+interface ArtifactLocation {
   readonly path: string
+  readonly workspaceId?: string
+}
+interface ArtifactItem extends ArtifactLocation {
   readonly name: string
   readonly kind: string
   readonly mtimeMs?: number
@@ -76,9 +80,11 @@ async function post<T>(path: string, body: Record<string, unknown>): Promise<Env
   return await response.json() as Envelope<T>
 }
 
-function rawUrl(path: string): string {
-  return `/artifacts/api/raw?path=${encodeURIComponent(path)}`
+function rawUrl(file: ArtifactLocation): string {
+  return `/artifacts/api/raw?path=${encodeURIComponent(file.path)}${file.workspaceId === undefined ? '' : `&workspaceId=${encodeURIComponent(file.workspaceId)}`}`
 }
+
+function fileIdentity(file: ArtifactLocation): string { return JSON.stringify([file.workspaceId ?? null, file.path]) }
 
 /**
  * Render the image mode and retain its draft when the video mode is selected.
@@ -88,6 +94,8 @@ function rawUrl(path: string): string {
 export function ImagePage(props: ImagePageProps): ReactNode {
   const { t, openVideo, createReferencePreview, releaseReferencePreview, readDraft, actions } = props
   const draft = props.useStore(state => state)
+  const sessionId = props.useCreationSession(binding => binding.key)
+  const projects = props.renderFactorySlot('creation.projects', { refreshKey: JSON.stringify([draft.generationStartedAt, draft.resultPaths]), generationPending: draft.generationStartedAt !== null && draft.generationSessionId === sessionId })
   const {
     prompt, modelId, size, quality, background, format, compression, moderation, seed, count,
     references, uploading, generationStartedAt, sessionInvalid, message, failure, resultPaths: result,
@@ -117,7 +125,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
   const [dragging, setDragging] = useState(false)
   const [history, setHistory] = useState<readonly ArtifactItem[]>([])
   const [historyError, setHistoryError] = useState(false)
-  const [preview, setPreview] = useState<{ path: string; name: string } | null>(null)
+  const [preview, setPreview] = useState<(ArtifactLocation & { name: string }) | null>(null)
   const [category, setCategory] = useState<string>('all')
   const [search, setSearch] = useState('')
   const promptField = useRef<HTMLTextAreaElement | null>(null)
@@ -155,9 +163,12 @@ export function ImagePage(props: ImagePageProps): ReactNode {
     return (selectedCategory === 'all' || template.categoryId === selectedCategory) && words.includes(search.trim().toLocaleLowerCase())
   })
   const works = useMemo(() => {
-    const recent = new Map<string, { path: string; name: string }>()
-    for (const path of result) recent.set(path, { path, name: path.split('/').pop() ?? path })
-    for (const item of history) if (!recent.has(item.path)) recent.set(item.path, item)
+    const recent = new Map<string, ArtifactLocation & { name: string }>()
+    for (const path of result) {
+      const item = { path, name: path.split(/[\\/]/).pop() ?? path }
+      recent.set(fileIdentity(item), item)
+    }
+    for (const item of history) if (!recent.has(fileIdentity(item))) recent.set(fileIdentity(item), item)
     return [...recent.values()]
   }, [history, result])
 
@@ -272,7 +283,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
     actions.patch({ references: [] })
   }, [actions, readDraft, releaseReferencePreview])
 
-  const addReferences = useCallback(async (source: readonly File[] | { readonly path: string }): Promise<void> => {
+  const addReferences = useCallback(async (source: readonly File[] | ArtifactLocation): Promise<void> => {
     const current = readDraft()
     if (current.uploading || current.generationStartedAt !== null || current.promptAssisting || current.sessionInvalid || signedIn !== true
       || accountIdentity === null || current.referenceAccountId !== accountIdentity) return
@@ -289,12 +300,12 @@ export function ImagePage(props: ImagePageProps): ReactNode {
     try {
       let files: readonly File[]
       if ('path' in source) {
-        const response = await fetch(rawUrl(source.path))
+        const response = await fetch(rawUrl(source))
         if (!isCurrent()) return
         if (!response.ok) throw new Error(`HTTP_${String(response.status)}`)
         const blob = await response.blob()
         if (!isCurrent()) return
-        files = [new File([blob], source.path.split('/').pop() ?? 'image.png', { type: blob.type || 'image/png' })]
+        files = [new File([blob], source.path.split(/[\\/]/).pop() ?? 'image.png', { type: blob.type || 'image/png' })]
       } else files = source
       if (files.length > slots) setMessage(t('referenceLimit', { n: String(limit) }))
       for (const file of files.slice(0, slots)) {
@@ -342,6 +353,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
     const current = readDraft()
     if (current.uploading || current.generationStartedAt !== null || current.promptAssisting || current.sessionInvalid || signedIn !== true
       || accountIdentity === null || current.referenceAccountId !== accountIdentity) return
+    if (sessionId === undefined) { setFailure(t('sessionRequired')); return }
     const selected = models.find(entry => entry.id === current.modelId)
     if (selected === undefined) return
     const accepted = selected.params
@@ -349,7 +361,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
     if (accepted.seed && current.seed.trim() !== '' && !Number.isSafeInteger(Number(current.seed))) {
       setFailure(t('seedInvalid')); return
     }
-    actions.patch({ generationStartedAt: Date.now(), failure: null, message: null })
+    actions.patch({ generationSessionId: sessionId, generationStartedAt: Date.now(), failure: null, message: null })
     setElapsed(0)
     try {
       if (current.references.length > 0) {
@@ -371,6 +383,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
         }
       }
       const answer = await post<{ path: string; paths?: readonly string[] }>('/credits/api/image/generate', {
+        session_id: sessionId, account_id: accountIdentity,
         prompt: current.prompt.trim(), model: selected.id, count: Math.max(1, Math.min(current.count, accepted.maxCount)),
         ...accepted.sizes.includes(current.size) ? { size: current.size } : {},
         ...accepted.qualities.includes(current.quality) ? { quality: current.quality } : {},
@@ -396,7 +409,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
     } finally {
       actions.patch({ generationStartedAt: null })
     }
-  }, [acceptAccount, accountIdentity, actions, loadBalance, loadHistory, models, readDraft, setFailure, signedIn, t])
+  }, [acceptAccount, accountIdentity, actions, loadBalance, loadHistory, models, readDraft, setFailure, sessionId, signedIn, t])
 
   const applyTemplate = (value: string): void => {
     if (locked) return
@@ -496,7 +509,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
             <span className={css.mode}>{maxEdits === 0 || references.length === 0 ? t('modeGenerate') : t('modeEdit', { count: String(Math.min(references.length, maxEdits)) })}</span>
             <Tooltip label={running ? t('runningShort') : t('submit')} side="top" portal>
               <button type="button" className={css.send} aria-label={running ? t('runningShort') : t('submit')}
-                disabled={locked || model === null || !isSignedIn || prompt.trim() === ''}
+                disabled={locked || model === null || !isSignedIn || sessionId === undefined || prompt.trim() === ''}
                 onClick={() => { void generate() }}>
                 {running ? <span className={css.spinner} /> : <IconSendOutlineRegular size={19} />}
               </button>
@@ -527,6 +540,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
           </div>}
         </section>
         <div className={css.feedback} aria-live="polite">
+          {sessionId === undefined && <p className={css.hint}>{t('sessionRequired')}</p>}
           {stateError && <p className={css.error}>{t('stateFailed')} <button type="button" className={css.textAction} onClick={() => { void refreshState() }}>{t('retry')}</button></p>}
           {(signedIn === false || sessionInvalid) && <p className={css.hint}>{t('signedOut')}</p>}
           {modelsError !== null && <p className={css.error}>{t('modelsFailed', { message: modelsError })} <button type="button" className={css.textAction} onClick={() => { void loadModels() }}>{t('retry')}</button></p>}
@@ -534,6 +548,8 @@ export function ImagePage(props: ImagePageProps): ReactNode {
           {failure !== null && <p className={css.error} role="alert">{failure}</p>}
           {message !== null && <p className={css.notice}>{message}</p>}
         </div>
+
+        <section className={css.works} aria-label={t('projects')}>{projects}</section>
 
         <section className={css.templates} aria-label={t('templatesTitle')}>
           <header className={css.sectionHead}><h2>{text(content?.title) || t('templatesTitle')}</h2><span className={css.hint}>{text(content?.description) || t('templatesHint')}</span></header>
@@ -566,18 +582,18 @@ export function ImagePage(props: ImagePageProps): ReactNode {
           <header className={css.sectionHead}><h2>{t('history')}</h2><button type="button" className={css.textAction} onClick={() => { void loadHistory() }}>{t('refreshWorks')}</button></header>
           {historyError && <p className={css.error}>{t('historyFailed')}</p>}
           {works.length === 0 ? <div className={css.emptyWorks}><IconSparkleRegular size={24} /><p>{t('historyEmpty')}</p><span>{t('historyEmptyHint')}</span></div> :
-            <ul className={css.worksGrid}>{works.map(item => <li key={item.path} className={css.workCard}>
+            <ul className={css.worksGrid}>{works.map(item => <li key={fileIdentity(item)} className={css.workCard}>
               <button type="button" className={css.workImage} aria-label={t('previewNamed', { name: item.name })} onClick={() => { setPreview(item) }}>
-                <img src={rawUrl(item.path)} alt={item.name} loading="lazy" />
+                <img src={rawUrl(item)} alt={item.name} loading="lazy" />
               </button>
               <div className={css.workMeta}><span className={css.workName}>{item.name}</span><div className={css.workActions}>
-                <a className={css.textAction} href={rawUrl(item.path)} download={item.name}>{t('download')}</a>
-                <button type="button" className={css.textAction} disabled={!canUpload} onClick={() => { void addReferences({ path: item.path }) }}>{t('useAsReference')}</button>
+                <a className={css.textAction} href={rawUrl(item)} download={item.name}>{t('download')}</a>
+                <button type="button" className={css.textAction} disabled={!canUpload} onClick={() => { void addReferences(item) }}>{t('useAsReference')}</button>
               </div></div>
             </li>)}</ul>}
         </section>
       </div>
-      {preview !== null && <ImageLightbox src={rawUrl(preview.path)} alt={preview.name} labels={{ dialog: t('preview'), close: t('closePreview') }} onClose={() => { setPreview(null) }} />}
+      {preview !== null && <ImageLightbox src={rawUrl(preview)} alt={preview.name} labels={{ dialog: t('preview'), close: t('closePreview') }} onClose={() => { setPreview(null) }} />}
     </div>
   )
 }

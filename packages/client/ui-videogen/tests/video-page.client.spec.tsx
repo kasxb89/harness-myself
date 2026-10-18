@@ -19,6 +19,7 @@ const json = (value: object): Response => new Response(JSON.stringify(value), { 
 const t: Parameters<typeof VideoPage>[0]['t'] = (key, values) => zh[key].replace(/\{(\w+)\}/g, (match, name: string) => values?.[name] ?? match)
 let fetcher = vi.fn<typeof fetch>()
 let sessionAccountId: string | null = 'account-a'
+let chatSessionId: string | undefined = 'session-a'
 
 function requestBody(init: RequestInit | undefined): Record<string, unknown> {
   if (typeof init?.body !== 'string') throw new Error('Expected a JSON request body')
@@ -49,6 +50,7 @@ function setup(overrides: Partial<typeof params> = {}) {
   const fixture = contentFixture()
   const props = {
     useCreationContent: fixture.useCreationContent, useLocale: fixture.useLocale, refreshContent: vi.fn(),
+    useCreationSession: select => select({ key: chatSessionId, hooks: {}, keyedHooks: {}, props: {} }),
     t, openImage: vi.fn(), createPreview: vi.fn((file: File) => `blob:${file.name}`), releasePreview: vi.fn(),
     renderFactorySlot: vi.fn<RenderFactorySlot>(() => null),
     useStore: bindSnapshotSelector(store), actions: store.actions,
@@ -59,10 +61,86 @@ function setup(overrides: Partial<typeof params> = {}) {
 const ready = async (): Promise<void> => { await waitFor(() => { expect(screen.getByRole('button', { name: zh.model }).textContent).toContain('Real video model') }) }
 const writePrompt = (): void => { fireEvent.change(screen.getByRole('textbox', { name: zh.prompt }), { target: { value: 'A continuous tracking shot' } }) }
 
-beforeEach(() => { vi.useRealTimers(); sessionAccountId = 'account-a' })
+beforeEach(() => { vi.useRealTimers(); sessionAccountId = 'account-a'; chatSessionId = 'session-a' })
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 describe('video composer', () => {
+  it.each(['人物参考.png', 'take%1.png'])('encodes reference upload names for the shared asset contract: %s', async (name) => {
+    const { mount, asset, store } = setup()
+    mount()
+    await ready()
+    fireEvent.change(screen.getByLabelText(zh.addMedia), { target: { files: [new File(['image'], name, { type: 'image/png' })] } })
+    await waitFor(() => { expect(asset).toHaveBeenCalledOnce(); expect(store.getSnapshot().uploading).toBeNull() })
+    const request = fetcher.mock.calls.find(([path]) => path === '/credits/api/assets')
+    const headers = new Headers(request?.[1]?.headers)
+    expect(headers.get('x-file-name')).toBe(encodeURIComponent(name))
+    expect(decodeURIComponent(headers.get('x-file-name') ?? '')).toBe(name)
+    expect(store.getSnapshot().slots.image[0]?.name).toBe(name)
+  })
+
+  it('links a generated clip to the selected conversation and refreshes the shared board', async () => {
+    chatSessionId = 'session-selected'
+    const { mount, task, props, store } = setup()
+    mount()
+    await ready()
+    writePrompt()
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    await waitFor(() => { expect(task).toHaveBeenCalledOnce(); expect(store.getSnapshot().phase).toBe('idle') })
+    expect(requestBody(task.mock.calls[0]?.[0])).toMatchObject({ session_id: 'session-selected', account_id: 'account-a' })
+    const boards = vi.mocked(props.renderFactorySlot).mock.calls.filter(([name]) => name === 'creation.projects')
+    expect(boards.at(-1)?.[1]).toEqual({ refreshKey: JSON.stringify(['idle', { path: '/credits/media/new.mp4' }]), generationPending: false })
+    expect(screen.getByRole('region', { name: zh.projects })).toBeTruthy()
+  })
+
+  it('keeps a pending generation owned by its original conversation after switching chats', async () => {
+    const { mount, props, store, task } = setup()
+    let finish!: (response: Response) => void
+    task.mockImplementation(async () => await new Promise<Response>((resolve) => { finish = resolve }))
+    const view = mount()
+    await ready()
+    writePrompt()
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    expect(store.getSnapshot().generationSessionId).toBe('session-a')
+    chatSessionId = 'session-b'
+    view.rerender(<VideoPage {...props} />)
+    const board = vi.mocked(props.renderFactorySlot).mock.calls.filter(([name]) => name === 'creation.projects').at(-1)?.[1]
+    expect(board).toMatchObject({ generationPending: false })
+    expect(requestBody(task.mock.calls[0]?.[0])).toMatchObject({ session_id: 'session-a' })
+    await act(async () => { finish(json({ ok: true, payload: { path: '/credits/media/new.mp4' } })) })
+    expect(store.getSnapshot().phase).toBe('idle')
+  })
+
+  it('requires a selected conversation before starting a paid generation', async () => {
+    chatSessionId = undefined
+    const { mount, task } = setup()
+    mount()
+    await ready()
+    writePrompt()
+    expect(screen.getByText(zh.sessionRequired)).toBeTruthy()
+    const submit = screen.getByRole('button', { name: zh.submit })
+    expect(submit).toHaveProperty('disabled', true)
+    fireEvent.click(submit)
+    expect(task).not.toHaveBeenCalled()
+  })
+
+  it('keeps mounted workspace coordinates when selecting, previewing and downloading video history', async () => {
+    const { mount, store } = setup()
+    const original = fetcher.getMockImplementation()!
+    fetcher.mockImplementation(async (input, init) => input === '/artifacts/api/list'
+      ? json({ items: ['mount-one', 'mount-two'].map(workspaceId => ({
+        path: 'artifacts/片段.mp4', workspaceId, name: '片段.mp4', kind: 'video', mtimeMs: 8,
+      })) }) : await original(input, init))
+    const view = mount()
+    await ready()
+    const previews = await screen.findAllByRole('button', { name: t('previewNamed', { name: '片段.mp4' }) })
+    expect(previews).toHaveLength(2)
+    fireEvent.click(previews[1]!)
+    expect(store.getSnapshot().result).toEqual({ path: 'artifacts/片段.mp4', workspaceId: 'mount-two' })
+    const source = `/artifacts/api/raw?path=${encodeURIComponent('artifacts/片段.mp4')}&workspaceId=mount-two`
+    expect(screen.getByRole('link', { name: zh.download }).getAttribute('href')).toBe(source)
+    expect(view.container.querySelector('section[aria-label="结果"] video')?.getAttribute('src')).toBe(source)
+  })
+
   it('uses resolution-specific duration menus and visibly corrects a previously selected duration', async () => {
     const { mount, store, task } = setup({
       durations: [5, 15, 30], resolutions: ['480p', '768p', '1080p', '2K'],

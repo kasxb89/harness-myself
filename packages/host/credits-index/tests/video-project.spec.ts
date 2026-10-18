@@ -87,6 +87,84 @@ describe('minimum-request video duration planning', () => {
   })
 })
 
+describe('explicit timeline execution', () => {
+  it('prepares exact ordered durations and isolated shot references once, then resumes the stored requests', async () => {
+    const fixture = await setup()
+    const build = vi.spyOn(fixture.provider, 'build').mockImplementation(async (input, model, prompt, durationSeconds) => ({
+      model, prompt, durationSeconds, references: [...input.referenceImages ?? []],
+    }))
+    const input: VideoProjectInput = {
+      prompt: '保留时间轴与人物身份', totalDurationSeconds: 20, shotPrompts: ['第一镜头', '第二镜头', '第三镜头'],
+      shotDurations: [5, 10, 5], referenceImages: ['ma_shared'],
+      shotReferenceImages: [['ma_actor_a', 'ma_shared'], ['ma_actor_b'], []],
+    }
+    const manifest = await prepareVideoProject(fixture.options, input, 'chat-one', fixture.workspace, fixture.provider, fixture.editor, fixture.signal)
+    expect(manifest.segments.map(segment => segment.durationSeconds)).toEqual([5, 10, 5])
+    expect(manifest.segments.map(segment => segment.request.references)).toEqual([
+      ['ma_shared', 'ma_actor_a'], ['ma_shared', 'ma_actor_b'], ['ma_shared'],
+    ])
+    expect(build).toHaveBeenCalledTimes(3)
+    expect(fixture.submitted).toBe(0)
+    fixture.runningTask = 'task-1'
+    const abort = new AbortController()
+    const check = fixture.provider.check.bind(fixture.provider)
+    fixture.provider.check = async (...args) => { const state = await check(...args); abort.abort(); return state }
+    expect((await runVideoProject(fixture.options, manifest, fixture.provider, fixture.editor, fixture.job, abort.signal)).status).toBe('killed')
+    const retained = await readVideoProject(fixture.options, manifest.id, 'chat-one', fixture.workspace, fixture.provider.identity)
+    expect(retained.input).toEqual(input)
+    expect(retained.segments.map(segment => segment.request)).toEqual(manifest.segments.map(segment => segment.request))
+    fixture.runningTask = ''
+    fixture.provider.check = check
+    vi.spyOn(fixture.provider, 'model').mockRejectedValue(new Error('resume must not replan'))
+    expect((await runVideoProject(fixture.options, retained, fixture.provider, fixture.editor, fixture.job, fixture.signal)).status).toBe('completed')
+    expect(build).toHaveBeenCalledTimes(3)
+    expect(fixture.submitted).toBe(3)
+  })
+
+  it.each([
+    { shotDurations: [], code: 'INVALID_SHOT_DURATION' },
+    { shotDurations: [5.5, 14.5], code: 'INVALID_SHOT_DURATION' },
+    { shotDurations: [5, 5], code: 'SHOT_DURATION_MISMATCH' },
+    { shotDurations: [2, 18], code: 'SHOT_DURATION_UNSUPPORTED' },
+    { shotDurations: [5, 10, 5], maxSegments: 2, code: 'TOO_MANY_SEGMENTS' },
+    { shotDurations: [10, 10], shotReferenceImages: [[]], code: 'SHOT_COUNT_MISMATCH' },
+  ])('refuses an invalid timeline before building or submitting: %j', async ({ code, maxSegments, ...controls }) => {
+    const fixture = await setup()
+    if (maxSegments !== undefined) fixture.options.maxSegments = maxSegments
+    const build = vi.spyOn(fixture.provider, 'build')
+    await expect(prepareVideoProject(fixture.options, { prompt: '分镜', totalDurationSeconds: 20, ...controls },
+      'chat-one', fixture.workspace, fixture.provider, fixture.editor, fixture.signal)).rejects.toMatchObject({ code })
+    expect(build).not.toHaveBeenCalled()
+    expect(fixture.submitted).toBe(0)
+  })
+
+  it('rejects a later unreadable shot reference before the first paid submission', async () => {
+    const fixture = await setup()
+    const build = vi.spyOn(fixture.provider, 'build').mockImplementation(async (input, model, prompt, durationSeconds) => {
+      if (input.referenceImages?.includes('missing.png')) throw new VideoProjectError('VIDEO_REFERENCE_UNAVAILABLE', '参考图不可读')
+      return { model, prompt, durationSeconds }
+    })
+    await expect(prepareVideoProject(fixture.options, { prompt: '分镜', totalDurationSeconds: 20,
+      shotDurations: [10, 10], shotReferenceImages: [['ma_readable'], ['missing.png']] },
+    'chat-one', fixture.workspace, fixture.provider, fixture.editor, fixture.signal)).rejects.toMatchObject({ code: 'VIDEO_REFERENCE_UNAVAILABLE' })
+    expect(build).toHaveBeenCalledTimes(2)
+    expect(fixture.submitted).toBe(0)
+  })
+
+  it.each([
+    { shotDurations: ['15', 15, 10] }, { shotDurations: [15, 15] }, { shotDurations: [15, 10, 15] },
+    { shotReferenceImages: [['ma_first']] }, { shotReferenceImages: [['ma_first'], [42], []] },
+  ])('rejects inconsistent durable timeline fields without submitting: %j', async (invalidInput) => {
+    const fixture = await setup()
+    const manifest = await fixture.prepare()
+    await writeFile(join(fixture.options.stateDirectory, manifest.id, 'manifest.json'),
+      JSON.stringify({ ...manifest, input: { ...manifest.input, ...invalidInput } }))
+    await expect(readVideoProject(fixture.options, manifest.id, 'chat-one', fixture.workspace, fixture.provider.identity))
+      .rejects.toMatchObject({ code: 'INVALID_RECORD' })
+    expect(fixture.submitted).toBe(0)
+  })
+})
+
 describe('portable workspace output containment', () => {
   it('rejects parent traversal and absolute destinations with Windows path rules', () => {
     const root = 'C:\\workspace'

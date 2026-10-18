@@ -40,8 +40,9 @@ import { createVideoProjectRelay } from './video-project-provider.ts'
 import { bindVideoAccount } from './video-project-account.ts'
 import { captureMediaOutput } from './media-output.ts'
 import type { VideoProjectIdentity, VideoProjectOptions, VideoProjectRequest, VideoRequestValue } from './video-project-types.ts'
-import { CreativeError, CreativeStore, type CreativeOperation, type CreativeOwner } from './creative-store.ts'
+import { CreativeError, CreativeStore, parseCreativePlanChange, type CreativeOperation, type CreativeOwner } from './creative-store.ts'
 import { creativeOwner, registerCreativeTools } from './creative-tools.ts'
+import { creativePanelOwner } from './creative-panel.ts'
 import { readChatImageReference } from './chat-image-references.ts'
 import {
   catalogFromPricing,
@@ -261,6 +262,22 @@ async function readRaw(request: IncomingMessage, limitBytes: number): Promise<Bu
     chunks.push(buffer)
   }
   return Buffer.concat(chunks)
+}
+
+/** Wait without leaving a timer or abort listener after completion or owner disposal. */
+function waitForMedia(milliseconds: number, signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted()
+  return new Promise((resolve, reject) => {
+    const finish = (): void => { signal.removeEventListener('abort', abort); resolve() }
+    const timer = setTimeout(finish, milliseconds)
+    const abort = (): void => {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', abort)
+      const reason: unknown = signal.reason
+      reject(reason instanceof Error ? reason : new Error('Media generation cancelled'))
+    }
+    signal.addEventListener('abort', abort, { once: true })
+  })
 }
 
 /** Read a non-empty string field, or null. */
@@ -951,8 +968,9 @@ export function apply(ctx: Context, config: Config): void {
   const capabilityFor = async (
     kind: 'image' | 'video',
     id: string | null,
+    signal?: AbortSignal,
   ): Promise<{ ok: true; model: ModelCapability } | { ok: false; code: string; message: string; catalog: ModelCapability[] }> => {
-    const catalog = await readMediaCatalog()
+    const catalog = await readMediaCatalog(signal)
     if (!catalog.ok) return { ok: false, code: catalog.code ?? 'CATALOG_FAILED', message: catalog.message ?? '模型表不可用', catalog: [] }
     const model = pickModel(catalog.models, kind, id)
     if (model === null) {
@@ -987,10 +1005,14 @@ export function apply(ctx: Context, config: Config): void {
     route: string,
     request: Record<string, unknown>,
     signal = new AbortController().signal,
+    submitting?: () => Promise<void>,
   ): Promise<MediaOutcome> => {
     const headers = { authorization: `Bearer ${key}`, 'content-type': 'application/json', accept: 'application/json' }
     try {
       const output = await captureMediaOutput(ctx.get('artifactStorage'), join(stateDir, 'media'), signal)
+      signal.throwIfAborted()
+      await submitting?.()
+      signal.throwIfAborted()
       const created = await apiFetch(route, {
         method: 'POST',
         headers,
@@ -1015,9 +1037,9 @@ export function apply(ctx: Context, config: Config): void {
       // provider costs time and nothing else.
       for (let attempt = 0; attempt < 150; attempt += 1) {
         if (signal.aborted) return { ok: false, code: 'ABORTED', message: '任务已取消', taskId }
-        await new Promise(resolve => setTimeout(resolve, attempt === 0 ? 4000 : 6000))
+        await waitForMedia(attempt === 0 ? 4000 : 6000, signal)
         const read = await apiFetch(`${route}/${encodeURIComponent(taskId)}`, {
-          headers, signal: AbortSignal.timeout(resolved.timeoutMs),
+          headers, signal: AbortSignal.any([signal, AbortSignal.timeout(resolved.timeoutMs)]),
         })
         const readText = await read.text()
         let readBody: Record<string, unknown> | null = null
@@ -1038,9 +1060,9 @@ export function apply(ctx: Context, config: Config): void {
           const filename = `vid-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomBytes(3).toString('hex')}.mp4`
           const response_ = remote === null
             ? await apiFetch(`/v1/videos/${encodeURIComponent(taskId)}/content`, {
-              headers, signal: AbortSignal.timeout(300_000),
+              headers, signal: AbortSignal.any([signal, AbortSignal.timeout(300_000)]),
             })
-            : await mediaFetch(remote, { signal: AbortSignal.timeout(300_000) })
+            : await mediaFetch(remote, { signal: AbortSignal.any([signal, AbortSignal.timeout(300_000)]) })
           if (!response_.ok) {
             return { ok: false, code: 'CONTENT_FAILED', message: `取回视频失败（HTTP ${String(response_.status)}）`, taskId }
           }
@@ -1217,9 +1239,10 @@ export function apply(ctx: Context, config: Config): void {
     savedOutput?: (path: string) => Promise<void>,
     submitting?: () => Promise<void>,
   ): Promise<MediaOutcome & { paths?: readonly string[]; mode?: string }> => {
+    signal.throwIfAborted()
     const prompt = readString(body, 'prompt')
     if (prompt === null) return { ok: false, code: 'INVALID_REQUEST', message: 'prompt 必填' }
-    const capability = await capabilityFor('image', readString(body, 'model'))
+    const capability = await capabilityFor('image', readString(body, 'model'), signal)
     if (!capability.ok) {
       return {
         ok: false,
@@ -1287,10 +1310,15 @@ export function apply(ctx: Context, config: Config): void {
     }
     try {
       const output = await captureMediaOutput(ctx.get('artifactStorage'), join(stateDir, 'media'), signal)
-      await submitting?.()
+      const beforeSubmission = async (): Promise<void> => {
+        signal.throwIfAborted()
+        await submitting?.()
+        signal.throwIfAborted()
+      }
       // A plugin-served model answers on its own path and hands back a task;
       // the OpenAI host protocol answers inline on `/v1/images/generations`.
       if (capability.model.route !== '/v1/images/generations') {
+        await beforeSubmission()
         const submitted = await apiFetch(capability.model.route, {
           method: 'POST',
           headers,
@@ -1300,7 +1328,7 @@ export function apply(ctx: Context, config: Config): void {
             n: count,
             ...extras,
           }),
-          signal: AbortSignal.timeout(Math.max(resolved.timeoutMs, 60_000)),
+          signal: AbortSignal.any([signal, AbortSignal.timeout(Math.max(resolved.timeoutMs, 60_000))]),
         })
         const submittedText = await submitted.text()
         if (!submitted.ok) {
@@ -1313,10 +1341,10 @@ export function apply(ctx: Context, config: Config): void {
           return { ok: false, model, code: 'NO_TASK_ID', message: submittedText.slice(0, 400) }
         }
         for (let attempt = 0; attempt < 120; attempt += 1) {
-          if (attempt > 0) await new Promise(resolve => setTimeout(resolve, attempt < 5 ? 2000 : 4000))
+          if (attempt > 0) await waitForMedia(attempt < 5 ? 2000 : 4000, signal)
           const read = await apiFetch(
             `${capability.model.route}/${encodeURIComponent(taskId)}`,
-            { headers: { authorization: `Bearer ${key}`, accept: 'application/json' }, signal: AbortSignal.timeout(resolved.timeoutMs) },
+            { headers: { authorization: `Bearer ${key}`, accept: 'application/json' }, signal: AbortSignal.any([signal, AbortSignal.timeout(resolved.timeoutMs)]) },
           )
           const readText = await read.text()
           let task: Record<string, unknown> | null = null
@@ -1338,7 +1366,7 @@ export function apply(ctx: Context, config: Config): void {
             let bytes: Buffer | null = null
             if (b64 !== null) bytes = Buffer.from(b64, 'base64')
             else if (remote !== null) {
-              const image = await mediaFetch(remote, { signal: AbortSignal.timeout(120_000) })
+              const image = await mediaFetch(remote, { signal: AbortSignal.any([signal, AbortSignal.timeout(120_000)]) })
               if (image.ok) bytes = Buffer.from(await image.arrayBuffer())
             }
             if (bytes === null) continue
@@ -1355,18 +1383,21 @@ export function apply(ctx: Context, config: Config): void {
         return { ok: false, model, code: 'TIMEOUT', message: '任务仍在运行，稍后可重试。' }
       }
       const upstream = references.length === 0
-        ? await apiFetch('/v1/images/generations', {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({
-            model,
-            prompt,
-            n: count,
-            response_format: 'b64_json',
-            ...extras,
-          }),
-          signal: AbortSignal.timeout(Math.max(resolved.timeoutMs, 180_000)),
-        })
+        ? await (async (): Promise<Response> => {
+          await beforeSubmission()
+          return apiFetch('/v1/images/generations', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              model,
+              prompt,
+              n: count,
+              response_format: 'b64_json',
+              ...extras,
+            }),
+            signal: AbortSignal.any([signal, AbortSignal.timeout(Math.max(resolved.timeoutMs, 180_000))]),
+          })
+        })()
         : await (async (): Promise<Response> => {
           const form = new FormData()
           form.set('model', model)
@@ -1378,11 +1409,12 @@ export function apply(ctx: Context, config: Config): void {
             if (file === null) throw new Error(`参考图 ${assetId} 已失效，请重新上传`)
             form.append('image[]', new Blob([new Uint8Array(file.bytes)], { type: file.mediaType }), file.filename)
           }
+          await beforeSubmission()
           return await apiFetch('/v1/images/edits', {
             method: 'POST',
             headers: { authorization: `Bearer ${key}`, accept: 'application/json' },
             body: form,
-            signal: AbortSignal.timeout(Math.max(resolved.timeoutMs, 300_000)),
+            signal: AbortSignal.any([signal, AbortSignal.timeout(Math.max(resolved.timeoutMs, 300_000))]),
           })
         })()
       const text = await upstream.text()
@@ -1404,7 +1436,7 @@ export function apply(ctx: Context, config: Config): void {
           let bytes: Buffer | null = null
           if (b64 !== null) bytes = Buffer.from(b64, 'base64')
           else if (remote !== null) {
-            const image = await mediaFetch(remote, { signal: AbortSignal.timeout(120_000) })
+            const image = await mediaFetch(remote, { signal: AbortSignal.any([signal, AbortSignal.timeout(120_000)]) })
             if (!image.ok) continue
             bytes = Buffer.from(await image.arrayBuffer())
           }
@@ -1433,10 +1465,10 @@ export function apply(ctx: Context, config: Config): void {
         const status = readString(record, 'status')
         if (record !== null && taskId !== null && (record.object === 'generation.task' || status !== null)) {
           for (let attempt = 0; attempt < 45; attempt += 1) {
-            if (attempt > 0) await new Promise(resolve => setTimeout(resolve, attempt < 5 ? 2000 : 4000))
+            if (attempt > 0) await waitForMedia(attempt < 5 ? 2000 : 4000, signal)
             const read = await apiFetch(`${capability.model.route}/${encodeURIComponent(taskId)}`, {
               headers: { authorization: `Bearer ${key}`, accept: 'application/json' },
-              signal: AbortSignal.timeout(resolved.timeoutMs),
+              signal: AbortSignal.any([signal, AbortSignal.timeout(resolved.timeoutMs)]),
             })
             if (!read.ok) {
               const body = await read.text()
@@ -1864,6 +1896,51 @@ export function apply(ctx: Context, config: Config): void {
     await storeReference(id, source.bytes, mediaType, basename(source.path))
     return id
   }
+  const panelLife = new AbortController()
+  const panelOperations = new Set<Promise<unknown>>()
+  ctx.effect(() => async () => {
+    panelLife.abort()
+    await Promise.allSettled([...panelOperations])
+  }, 'credits-index: owned AI creation generation')
+  /** Both ordinary media composers register the same durable planning and saved-output facts as chat tools. */
+  const generateForPanel = async <T extends MediaOutcome & { paths?: readonly string[] }>(
+    owner: CreativeOwner, kind: 'image' | 'video', body: Record<string, unknown>,
+    run: (operation: CreativeOperation, signal: AbortSignal) => Promise<T>,
+  ): Promise<T & { planId: string }> => {
+    const work = (async () => {
+      panelLife.signal.throwIfAborted()
+      const prompt = readString(body, 'prompt') ?? ''
+      const refs = [...new Set(['references', 'frameImages', 'referenceImages', 'referenceVideos', 'referenceAudios']
+        .flatMap(key => referenceIds(body[key])))]
+      const assets = await Promise.all(refs.map(async (source, index) => {
+        const reference = await readReference(source)
+        return { id: `reference_${String(index + 1)}`, name: reference?.filename ?? `参考素材 ${String(index + 1)}`,
+          kind: reference?.mediaType.startsWith('video/') ? 'video' as const : reference?.mediaType.startsWith('audio/') ? 'audio' as const : 'image' as const,
+          role: '参考素材', description: '', sourcePathOrAssetId: source }
+      }))
+      const durationSeconds = typeof body.durationSeconds === 'number' ? body.durationSeconds : undefined
+      const planId = await creative.updatePlan(owner, {
+        kind, title: `${kind === 'image' ? '图片' : '视频'} · ${prompt.trim().split('\n')[0]?.slice(0, 40) ?? ''}`,
+        brief: prompt, style: '', characters: [], assets,
+        shots: [{ id: 'shot_1', order: 1, title: kind === 'image' ? '画面' : '镜头 1', prompt, camera: '', scene: '', action: '',
+          dialogue: '', subtitles: '', characterIds: [], assetIds: assets.map(asset => asset.id),
+          ...durationSeconds === undefined ? {} : { durationSeconds } }],
+      })
+      const operation = await creative.begin(owner, { kind, prompt, planId, shotIds: ['shot_1'],
+        shots: [{ prompt, ...durationSeconds === undefined ? {} : { durationSeconds } }],
+        ...typeof body.model === 'string' ? { model: body.model } : {} })
+      try {
+        const outcome = await run(operation, panelLife.signal)
+        const paths = outcome.paths ?? (outcome.path === undefined ? [] : [outcome.path])
+        await creative.finish(operation, { kind, paths, status: outcome.ok ? 'completed' : panelLife.signal.aborted ? 'cancelled'
+          : ['TIMEOUT', 'TRANSPORT', 'NO_TASK_ID'].includes(outcome.code ?? '') ? 'unknown' : 'failed',
+        ...outcome.code === undefined ? {} : { errorCode: outcome.code } })
+        return { ...outcome, planId }
+      } finally { creative.release(operation) }
+    })()
+    panelOperations.add(work)
+    try { return await work } finally { panelOperations.delete(work) }
+  }
   ctx.effect(() => async () => {
     contentLife.abort()
     await Promise.allSettled([...contentRequests])
@@ -1898,22 +1975,45 @@ export function apply(ctx: Context, config: Config): void {
 
 
       try {
-        if (route === '/api/creative/projects' || route === '/api/creative/media') {
+        if (route === '/api/creative/projects' || route === '/api/creative/media' || route === '/api/creative/plan' || route === '/api/creative/reference') {
           const connection = ctx.get('connection')
           const rejected = connection === undefined ? 403 : connection.requestRejection(request)
           if (rejected !== undefined) { json(response, rejected, { ok: false, code: 'CREATIVE_HOST_AUTH_REQUIRED', message: '请从已连接的云枢客户端查看创作。' }); return }
-          if (method !== 'GET' && method !== 'HEAD' || route === '/api/creative/projects' && method !== 'GET') { json(response, 405, { ok: false, code: 'METHOD_NOT_ALLOWED', message: '该创作接口只提供读取。' }); return }
+          const writing = route === '/api/creative/plan'
+          if (writing ? method !== 'POST' : method !== 'GET' && method !== 'HEAD' || route === '/api/creative/projects' && method !== 'GET') { json(response, 405, { ok: false, code: 'METHOD_NOT_ALLOWED', message: '该创作操作不支持此请求方式。' }); return }
           const identity = await creativeIdentity()
           if (identity === undefined) { json(response, 401, { ok: false, code: 'AUTH_REQUIRED', message: '请登录后查看本账号的创作。' }); return }
-          const sessionId = url.searchParams.get('session_id') ?? ''
+          const body = writing ? await readJson(request) : undefined
+          const sessionId = writing ? readString(body ?? null, 'session_id') ?? '' : url.searchParams.get('session_id') ?? ''
           if (!/^[A-Za-z0-9_-]{1,128}$/u.test(sessionId)) { json(response, 400, { ok: false, code: 'CREATIVE_SESSION_INVALID', message: '请选择有效的聊天。' }); return }
           const owner = { ...identity, sessionId }
           try {
-            if (route === '/api/creative/projects') {
+            if (writing || route === '/api/creative/projects') {
+              if (body !== undefined) {
+                const projectId = readString(body, 'project_id') ?? ''
+                const captured = await creative.owner(identity, projectId, sessionId)
+                await creative.revise(captured, projectId, readString(body, 'expected_revision') ?? '', parseCreativePlanChange(body.change))
+              }
               const projects = await creative.projects(owner)
               const current = await creativeIdentity()
               if (current?.accountId !== identity.accountId || current.sessionFingerprint !== identity.sessionFingerprint) { json(response, 409, { ok: false, code: 'CREATIVE_ACCOUNT_CHANGED', message: '登录已变化，请刷新后查看当前账号。' }); return }
               json(response, 200, { ok: true, payload: { accountId: identity.accountId, projects } })
+            } else if (route === '/api/creative/reference') {
+              const projectId = url.searchParams.get('project_id') ?? ''
+              const captured = await creative.owner(identity, projectId, sessionId)
+              const plan = await creative.plan(captured, projectId)
+              const asset = plan.assets.find(item => item.id === url.searchParams.get('asset_id') && item.kind === 'image')
+              const reference = asset === undefined ? null : await readReference(asset.sourcePathOrAssetId)
+              if (reference === null || !['image/png', 'image/jpeg', 'image/webp'].includes(reference.mediaType)
+                || reference.bytes.length === 0 || reference.bytes.length > 6 * 1024 * 1024
+                || !referenceSignature(reference.bytes, reference.mediaType)) {
+                throw new CreativeError('CREATIVE_REFERENCE_UNAVAILABLE', 404, '参考图已不可用，请重新上传素材。')
+              }
+              const current = await creativeIdentity()
+              if (current?.accountId !== identity.accountId || current.sessionFingerprint !== identity.sessionFingerprint) throw new CreativeError('CREATIVE_ACCOUNT_CHANGED', 409, '登录已变化，请刷新后查看当前账号。')
+              response.writeHead(200, { 'content-type': reference.mediaType, 'content-length': reference.bytes.length,
+                'cache-control': 'no-store', 'x-content-type-options': 'nosniff' })
+              response.end(method === 'HEAD' ? undefined : reference.bytes)
             } else {
               const rawFrame = url.searchParams.get('frame')
               await creative.serve(request, response, owner, url.searchParams.get('project_id') ?? '', url.searchParams.get('output_id') ?? '', rawFrame === null ? undefined : Number(rawFrame))
@@ -2404,7 +2504,13 @@ export function apply(ctx: Context, config: Config): void {
 
         if (route === '/api/assets' && method === 'POST') {
           const mediaType = (request.headers['content-type'] ?? '').split(';')[0]?.trim().toLowerCase() ?? ''
-          const filename = String(request.headers['x-file-name'] ?? '')
+          let filename: string
+          try { filename = decodeURIComponent(String(request.headers['x-file-name'] ?? '')) } catch {
+            json(response, 400, { ok: false, code: 'MEDIA_ASSET_REQUEST_INVALID', message: '素材文件名编码无效，请重新选择文件。' }); return
+          }
+          if (filename.trim() === '' || filename.length > 256 || /[\u0000-\u001f\u007f]/u.test(filename)) {
+            json(response, 400, { ok: false, code: 'MEDIA_ASSET_REQUEST_INVALID', message: '素材文件名为空、过长或包含控制字符。' }); return
+          }
           const idempotencyKey = String(request.headers['x-idempotency-key'] ?? '')
           const allowedTypes = resolved.baseUrl === ''
             ? new Set([...ALLOWED_ASSET_TYPES, ...ALLOWED_REFERENCE_VIDEO_TYPES, ...ALLOWED_REFERENCE_AUDIO_TYPES])
@@ -2539,7 +2645,14 @@ export function apply(ctx: Context, config: Config): void {
           }
           const key = owned.key
           const body = await readJson(request)
-          const outcome = await runImageGeneration(key, body)
+          const binding = body.session_id === undefined && body.account_id === undefined ? undefined : await bindCurrentVideoAccount()
+          const owner = binding === undefined ? undefined : creativePanelOwner(ctx, request, body, binding.identity)
+          const outcome = owner === undefined || binding === undefined ? await runImageGeneration(key, body)
+            : await generateForPanel(owner, 'image', body, async (operation, signal) => runImageGeneration(await binding.key(), body, signal,
+              path => creative.saved(operation, path, 'image'), async () => {
+                await binding.key()
+                await creative.dispatched(operation)
+              }))
           json(response, 200, {
             ok: outcome.ok,
             source: 'newapi',
@@ -2547,7 +2660,7 @@ export function apply(ctx: Context, config: Config): void {
             mode: outcome.mode ?? null,
             code: outcome.code ?? null,
             message: outcome.message ?? null,
-            payload: outcome.ok ? { path: outcome.path, paths: outcome.paths, model: outcome.model } : null,
+            payload: outcome.ok ? { path: outcome.path, paths: outcome.paths, model: outcome.model, ...'planId' in outcome ? { plan_id: outcome.planId } : {} } : null,
           })
           return
         }
@@ -2664,7 +2777,14 @@ export function apply(ctx: Context, config: Config): void {
               json(response, 200, { ok: false, code: built.code, message: built.message })
               return
             }
-            const outcome = await runVideoTask(key, capability.model.route, built.request)
+            const binding = body.session_id === undefined && body.account_id === undefined ? undefined : await bindCurrentVideoAccount()
+            const owner = binding === undefined ? undefined : creativePanelOwner(ctx, request, body, binding.identity)
+            const outcome = owner === undefined || binding === undefined ? await runVideoTask(key, capability.model.route, built.request)
+              : await generateForPanel(owner, 'video', body, async (operation, signal) => runVideoTask(await binding.key(), capability.model.route, built.request, signal,
+                async () => {
+                  await binding.key()
+                  await creative.dispatched(operation)
+                }))
             json(response, 200, {
               ok: outcome.ok,
               source: 'newapi',
@@ -2672,7 +2792,7 @@ export function apply(ctx: Context, config: Config): void {
               code: outcome.code ?? null,
               message: outcome.message ?? null,
               taskId: outcome.taskId ?? null,
-              payload: outcome.ok ? { path: outcome.path, taskId: outcome.taskId } : null,
+              payload: outcome.ok ? { path: outcome.path, taskId: outcome.taskId, ...'planId' in outcome ? { plan_id: outcome.planId } : {} } : null,
             })
             return
           }
@@ -2881,6 +3001,9 @@ export function apply(ctx: Context, config: Config): void {
 
         json(response, 404, { ok: false, code: 'NOT_FOUND', message: 'unknown credits route' })
       } catch (error) {
+        if (error instanceof CreativeError) {
+          json(response, error.status, { ok: false, code: error.code, message: error.message }); return
+        }
         json(response, 200, {
           ok: false,
           code: error instanceof Error && error.message === 'ACCOUNT_UNAVAILABLE' ? 'ACCOUNT_UNAVAILABLE' : 'TRANSPORT',
@@ -3081,7 +3204,7 @@ export function apply(ctx: Context, config: Config): void {
           }
           references.push(await normalizeVideoReference(source ?? value, 'image', exec.agent?.session.header.cwd, referenceCache, exec.signal))
         }
-        operation = await creative.begin(owner, { kind: 'image', prompt: args.prompt, shots: [{ prompt: args.prompt }], ...args.plan_id === undefined ? {} : { planId: args.plan_id }, ...args.shot_id === undefined ? {} : { shotIds: [args.shot_id] }, ...args.asset_id === undefined ? {} : { assetId: args.asset_id } })
+        operation = await creative.begin(owner, { kind: 'image', prompt: args.prompt, shots: [{ prompt: args.prompt }], ...args.model === undefined ? {} : { model: args.model }, ...args.plan_id === undefined ? {} : { planId: args.plan_id }, ...args.shot_id === undefined ? {} : { shotIds: [args.shot_id] }, ...args.asset_id === undefined ? {} : { assetId: args.asset_id } })
         const creation = operation
         const outcome = await runImageGeneration(await binding.key(), {
           prompt: args.prompt,
@@ -3173,7 +3296,7 @@ export function apply(ctx: Context, config: Config): void {
         })
         if (!built.ok) return { status: 'failed', model: capability.model.id, message: built.message }
         exec.signal.throwIfAborted()
-        operation = await creative.begin(creativeOwner(exec, binding.identity), { kind: 'video', prompt: args.prompt, shots: [{ prompt: args.prompt, ...args.duration_seconds === undefined ? {} : { durationSeconds: args.duration_seconds } }], ...args.plan_id === undefined ? {} : { planId: args.plan_id }, ...args.shot_id === undefined ? {} : { shotIds: [args.shot_id] } })
+        operation = await creative.begin(creativeOwner(exec, binding.identity), { kind: 'video', model: capability.model.id, prompt: args.prompt, shots: [{ prompt: args.prompt, ...args.duration_seconds === undefined ? {} : { durationSeconds: args.duration_seconds } }], ...args.plan_id === undefined ? {} : { planId: args.plan_id }, ...args.shot_id === undefined ? {} : { shotIds: [args.shot_id] } })
         await creative.dispatched(operation)
         const outcome = await runVideoTask(await binding.key(), capability.model.route, built.request, exec.signal)
         await creative.finish(operation, { status: outcome.ok ? 'completed' : exec.signal.aborted ? 'cancelled' : outcome.code === 'TIMEOUT' || outcome.code === 'TRANSPORT' ? 'unknown' : 'failed', kind: 'video', ...outcome.path === undefined ? {} : { paths: [outcome.path] }, ...outcome.code === undefined ? {} : { errorCode: outcome.code } })

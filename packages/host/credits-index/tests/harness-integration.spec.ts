@@ -1,5 +1,5 @@
 import { mkdir, mkdtemp, rm, readFile, readdir, rename, symlink, writeFile } from 'node:fs/promises'
-import { createServer, type Server } from 'node:http'
+import { createServer, type Server, type ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -15,7 +15,7 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
 import LocalAttachmentStore from '@deepseek-ai/dsh-attachment-local'
-import { Session, SessionId, SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
+import SessionStore, { Session, SessionId, SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
 import LlmRuntime, { createUserMessage, ToolCallId, type FinishReason } from '@deepseek-ai/dsh-llm'
 import * as LlmPiAi from '@deepseek-ai/dsh-llm-pi-ai'
 import * as Artifacts from '@deepseek-ai/dsh-artifacts-index'
@@ -41,6 +41,9 @@ let creations = 0
 let pricingRows: unknown[] = []
 let videoTaskStatus: string | undefined
 let imageResponse: unknown
+let relayKey = 'sk-owned-relay'
+let upstreamGate: ((path: string, response: ServerResponse) => Promise<void>) | undefined
+let releaseUpstreamGate: (() => void) | undefined
 const generatedVideo = Buffer.from([0, 0, 0, 24, 102, 116, 121, 112, 105, 115, 111, 109])
 const initialRelayModels = () => [
   { id: 'deepseek-v4-flash', object: 'model', supported_endpoint_types: ['openai'] },
@@ -56,6 +59,7 @@ let releaseRefresh: (() => void) | undefined
 let refreshBarrier: Promise<void> | undefined
 
 afterEach(async () => {
+  releaseUpstreamGate?.()
   releaseRefresh?.()
   releaseModels?.()
   await context?.fiber.dispose()
@@ -79,6 +83,9 @@ afterEach(async () => {
   pricingRows = []
   videoTaskStatus = undefined
   imageResponse = undefined
+  relayKey = 'sk-owned-relay'
+  upstreamGate = undefined
+  releaseUpstreamGate = undefined
   relayModels = initialRelayModels()
   modelsStatus = 200
   modelsBarrier = undefined
@@ -117,6 +124,7 @@ async function boot(
         ...request.headers.origin === undefined ? {} : { origin: request.headers.origin },
         ...request.headers.cookie === undefined ? {} : { cookie: request.headers.cookie },
       })
+      await upstreamGate?.(url.pathname, response)
       response.setHeader('content-type', 'application/json')
       const answer = (data: unknown): void => { response.end(JSON.stringify({ success: true, data })) }
       if (url.pathname === '/harness/api/status') {
@@ -129,7 +137,7 @@ async function boot(
       if (url.pathname === '/harness/api/user/phone/login') {
         response.setHeader('set-cookie', 'new_api_refresh=refresh-one; HttpOnly; Path=/harness/api/user/auth')
         answer({ access_token: access, access_expires_at: Math.floor(Date.now() / 1000) + 900,
-          relay_key: 'sk-owned-relay', relay_key_id: 9, session: { sid: 'session-one', current: true },
+          relay_key: relayKey, relay_key_id: 9, session: { sid: 'session-one', current: true },
           user: { id: selfId, username: 'test-user', quota: balanceQuota } }); return
       }
       if (url.pathname === '/harness/api/user/auth/refresh') {
@@ -142,24 +150,24 @@ async function boot(
       if (url.pathname === '/harness/api/user/auth/logout') { answer(null); return }
       if (url.pathname === '/harness/api/pricing') { answer(pricingRows); return }
       if ((url.pathname === '/harness/v1/images/generations' || url.pathname === '/harness/v1/images/edits') && imageResponse !== undefined) {
-        if (request.headers.authorization !== 'Bearer sk-owned-relay') { response.writeHead(403); response.end('{}'); return }
+        if (request.headers.authorization !== `Bearer ${relayKey}`) { response.writeHead(403); response.end('{}'); return }
         if (imageResponse === 'disconnect') { response.destroy(); return }
         response.end(JSON.stringify(imageResponse)); return
       }
       if (url.pathname === '/harness/v1/video/generations') {
-        if (request.headers.authorization !== 'Bearer sk-owned-relay') { response.writeHead(403); response.end('{}'); return }
+        if (request.headers.authorization !== `Bearer ${relayKey}`) { response.writeHead(403); response.end('{}'); return }
         response.end(JSON.stringify(videoTaskStatus === undefined ? {} : { code: 'success', data: { task_id: 'fixture-video-task' } })); return
       }
       if (url.pathname === '/harness/v1/video/generations/fixture-video-task') {
-        if (request.headers.authorization !== 'Bearer sk-owned-relay') { response.writeHead(403); response.end('{}'); return }
+        if (request.headers.authorization !== `Bearer ${relayKey}`) { response.writeHead(403); response.end('{}'); return }
         response.end(JSON.stringify({ code: 'success', data: { status: videoTaskStatus, result_url: 'https://ignored.invalid/content.mp4' } })); return
       }
       if (url.pathname === '/harness/v1/videos/fixture-video-task/content') {
-        if (request.headers.authorization !== 'Bearer sk-owned-relay') { response.writeHead(403); response.end('{}'); return }
+        if (request.headers.authorization !== `Bearer ${relayKey}`) { response.writeHead(403); response.end('{}'); return }
         response.setHeader('content-type', 'video/mp4'); response.end(generatedVideo); return
       }
       if (url.pathname === '/harness/v1/models') {
-        if (request.headers.authorization !== 'Bearer sk-owned-relay') { response.writeHead(403); response.end('{}'); return }
+        if (request.headers.authorization !== `Bearer ${relayKey}`) { response.writeHead(403); response.end('{}'); return }
         const rows = structuredClone(relayModels)
         modelReadStarted?.()
         await modelsBarrier
@@ -167,7 +175,7 @@ async function boot(
         response.end(JSON.stringify({ data: rows })); return
       }
       if (url.pathname === '/harness/v1/chat/completions') {
-        if (request.headers.authorization !== 'Bearer sk-owned-relay') { response.writeHead(403); response.end('{}'); return }
+        if (request.headers.authorization !== `Bearer ${relayKey}`) { response.writeHead(403); response.end('{}'); return }
         response.setHeader('content-type', 'text/event-stream')
         response.end([
           'data: {"choices":[{"delta":{"role":"assistant","content":"hello"},"index":0,"finish_reason":null}]}',
@@ -206,6 +214,7 @@ async function boot(
     ['@deepseek-ai/dsh-attachment-local', LocalAttachmentStore],
     ['@deepseek-ai/dsh-artifacts-index', Artifacts],
     ['@deepseek-ai/dsh-client-connection', Connection],
+    ['@deepseek-ai/dsh-session', SessionStore],
     ['fixture-auth-index', { name: 'fixture-auth-index', inject: ['webServer', 'connection'], apply(ctx: Context) {
       ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/', handler: (request, response) => {
         if (ctx.connection.authorizeIndex(request, response)) response.end('ready')
@@ -230,7 +239,7 @@ async function boot(
     { name: '@deepseek-ai/dsh-fs-local', config: { cwd: directory } },
     { name: '@deepseek-ai/dsh-attachment-local', config: { dshHome: join(directory, 'attachment-home') } },
     { name: '@deepseek-ai/dsh-credentials-local', config: { path: join(directory, 'credentials.yaml'), dshHome: directory, watch: false } },
-    ...authenticatedHost ? [{ name: '@deepseek-ai/dsh-client-connection' }, { name: 'fixture-auth-index' }] : [],
+    ...authenticatedHost ? [{ name: '@deepseek-ai/dsh-session' }, { name: '@deepseek-ai/dsh-client-connection' }, { name: 'fixture-auth-index' }] : [],
     { name: '@deepseek-ai/dsh-llm' },
     { name: '@deepseek-ai/dsh-llm-pi-ai', config: { providers: {
       'yunshu-local': { api: 'openai-completions', baseURL: api + '/v1', apiKeyEnv: relayRef, models },
@@ -248,9 +257,23 @@ async function boot(
   return { base: `http://127.0.0.1:${String(context.webServer.port)}/credits`, api, stateDir }
 }
 
-async function post(base: string, path: string, body: object): Promise<Record<string, unknown>> {
-  const response = await fetch(base + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+async function post(base: string, path: string, body: object, cookie?: string): Promise<Record<string, unknown>> {
+  const response = await fetch(base + path, { method: 'POST', headers: { 'content-type': 'application/json', ...cookie === undefined ? {} : { cookie } }, body: JSON.stringify(body) })
   return object(await response.json())
+}
+
+async function hostCookie(base: string): Promise<string> {
+  const auth = await fetch(context!.connection.authenticatedUrl(new URL(base).origin + '/'), { redirect: 'manual' })
+  const cookie = auth.headers.get('set-cookie')?.split(';')[0]
+  if (cookie === undefined) throw new Error('Expected authenticated Host cookie')
+  return cookie
+}
+
+function projects(answer: Record<string, unknown>): Record<string, unknown>[] {
+  expect(answer.ok).toBe(true)
+  const values = object(answer.payload).projects
+  if (!Array.isArray(values)) throw new Error('Expected creative project list')
+  return values.map(object)
 }
 
 async function signIn(base: string): Promise<void> {
@@ -292,6 +315,335 @@ function videoAgent(workspace: string, sessionId = 'reference-audio-chat'): Agen
 }
 
 describe('deployed Harness API through the real product Loader', () => {
+  it('shares panel images with chat plans, editable revisions, real outputs and authenticated reference thumbnails', async () => {
+    const { base, stateDir } = await boot(undefined, true, true)
+    const cookie = await hostCookie(base)
+    const origin = new URL(base).origin
+    await signIn(base)
+    context!.sessions.create(SessionId('panel-chat'), { meta: { cwd: stateDir } })
+    pricingRows = [{ model_name: 'gpt-image-2', supported_endpoint_types: ['image-generation'] }]
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lX8AAAAASUVORK5CYII=', 'base64')
+    imageResponse = { data: [{ b64_json: png.toString('base64') }] }
+    for (const filename of ['%ZZ', '%0Anote.png', '%20%20', 'x'.repeat(257)]) {
+      const refused = await fetch(base + '/api/assets', { method: 'POST', headers: {
+        cookie, 'content-type': 'image/png', 'x-file-name': filename, 'x-idempotency-key': 'invalid-filename',
+      }, body: png })
+      expect(refused.status).toBe(400)
+      expect(await refused.json()).toMatchObject({ ok: false, code: 'MEDIA_ASSET_REQUEST_INVALID' })
+    }
+    const upload = object(await (await fetch(base + '/api/assets', {
+      method: 'POST', headers: { cookie, 'content-type': 'image/png', 'x-file-name': encodeURIComponent('人物参考.png'),
+        'x-idempotency-key': 'panel-reference' }, body: png,
+    })).json())
+    expect(upload.ok).toBe(true)
+    const assetId = object(upload.asset).assetId
+    if (typeof assetId !== 'string') throw new Error('Expected uploaded reference id')
+    const generated = await post(base, '/api/image/generate', {
+      session_id: 'panel-chat', account_id: '7', prompt: '红围巾女孩的人物设定图', model: 'gpt-image-2', references: [assetId],
+    }, cookie)
+    expect(generated.ok).toBe(true)
+    const payload = object(generated.payload)
+    expect(payload.plan_id).toBeTypeOf('string')
+    expect(payload.path).toBeTypeOf('string')
+    expect(await readFile(String(payload.path))).toEqual(png)
+    const listing = async () => projects(object(await (await fetch(base + '/api/creative/projects?session_id=panel-chat', { headers: { cookie } })).json()))
+    let [project] = await listing()
+    if (project === undefined) throw new Error('Expected the linked panel project')
+    expect(project).toMatchObject({ id: payload.plan_id, sessionId: 'panel-chat', status: 'completed',
+      completedShots: 1, totalShots: 1, shots: [{ id: 'shot_1', status: 'completed', outputs: [{ kind: 'image' }] }],
+      assets: [{ id: 'reference_1', name: '人物参考.png', sourcePathOrAssetId: assetId }],
+      tasks: [{ status: 'completed', shotIds: ['shot_1'], model: 'gpt-image-2', outputs: [{ kind: 'image' }] }],
+      outputs: [{ kind: 'image' }],
+    })
+    const record = object(JSON.parse(await readFile(join(stateDir, 'creative-projects', String(payload.plan_id), 'project.json'), 'utf8')))
+    expect(record.owner).toMatchObject({ sessionId: 'panel-chat', workspaceRoot: stateDir, accountId: '7' })
+    const outputs = project.outputs
+    const assets = project.assets
+    if (!Array.isArray(outputs) || !Array.isArray(assets)) throw new Error('Expected panel media and materials')
+    const outputUrl = object(outputs[0]).url
+    const referenceUrl = object(assets[0]).referenceUrl
+    if (typeof outputUrl !== 'string' || typeof referenceUrl !== 'string') throw new Error('Expected controlled creation media URLs')
+    const image = await fetch(origin + outputUrl, { headers: { cookie } })
+    expect(image.status).toBe(200)
+    expect(Buffer.from(await image.arrayBuffer())).toEqual(png)
+    const reference = await fetch(origin + referenceUrl, { headers: { cookie } })
+    expect(reference.status).toBe(200)
+    expect(reference.headers.get('content-type')).toBe('image/png')
+    expect(Buffer.from(await reference.arrayBuffer())).toEqual(png)
+    const head = await fetch(origin + referenceUrl, { method: 'HEAD', headers: { cookie } })
+    expect(head.status).toBe(200)
+    expect(head.headers.get('content-length')).toBe(String(png.length))
+    expect(await head.text()).toBe('')
+    expect((await fetch(origin + referenceUrl)).status).toBe(401)
+    expect((await fetch(origin + referenceUrl.replace('panel-chat', 'other-chat'), { headers: { cookie } })).status).toBe(404)
+    expect((await fetch(origin + referenceUrl.replace('reference_1', 'unrelated-material'), { headers: { cookie } })).status).toBe(404)
+    const charges = () => calls.filter(call => call.path.includes('/v1/images/') || call.path === '/harness/v1/video/generations').length
+    expect(charges()).toBe(1)
+    const initialRevision = project.planRevision
+    if (typeof initialRevision !== 'string') throw new Error('Expected plan revision')
+    const revise = async (change: object) => {
+      const response = await fetch(base + '/api/creative/plan', { method: 'POST', headers: { cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({ session_id: 'panel-chat', project_id: project!.id, expected_revision: project!.planRevision, change }) })
+      expect(response.status).toBe(200)
+      const answer = object(await response.json())
+      const changed = projects(answer).find(item => item.id === payload.plan_id)
+      if (changed === undefined) throw new Error('Expected the same revised project')
+      project = changed
+    }
+    await revise({ kind: 'character', value: { id: 'girl', name: '小雨', appearance: '黑色长发', clothing: '红围巾',
+      personality: '坚定', voice: '年轻女声', referenceAssetIds: ['reference_1'] } })
+    await revise({ kind: 'shot', id: 'shot_1', patch: { title: '站台近景', durationSeconds: 8, characterIds: ['girl'],
+      scene: '清晨站台', camera: '缓慢推进', dialogue: '今天也要向前走', subtitles: '今天也要向前走' } })
+    expect(project).toMatchObject({ id: payload.plan_id, status: 'completed', characters: [{ id: 'girl', name: '小雨' }],
+      shots: [{ id: 'shot_1', title: '站台近景', durationSeconds: 8, characterIds: ['girl'], status: 'completed', outputs: [{ kind: 'image' }] }],
+      outputs: [{ kind: 'image' }], tasks: [{ status: 'completed' }],
+    })
+    const stale = await fetch(base + '/api/creative/plan', { method: 'POST', headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ session_id: 'panel-chat', project_id: payload.plan_id, expected_revision: initialRevision,
+        change: { kind: 'shot', id: 'shot_1', patch: { title: '过期覆盖' } } }) })
+    expect(stale.status).toBe(409)
+    expect(await stale.json()).toMatchObject({ ok: false, code: 'CREATIVE_PLAN_STALE' })
+    const crossChat = await fetch(base + '/api/creative/plan', { method: 'POST', headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ session_id: 'other-chat', project_id: payload.plan_id, expected_revision: project.planRevision,
+        change: { kind: 'shot', id: 'shot_1', patch: { title: '另一会话覆盖' } } }) })
+    expect(crossChat.status).toBe(404)
+    expect(await crossChat.json()).toMatchObject({ ok: false, code: 'CREATIVE_ACCESS_DENIED' })
+    const agent = videoAgent(stateDir, 'panel-chat')
+    const read = object((await context!.tools.execute({ name: 'get_creation_plan', arguments: { plan_id: payload.plan_id }, agent,
+      callId: ToolCallId('read-panel-project-in-chat'), signal: new AbortController().signal })).value)
+    expect(read).toMatchObject({ status: 'succeeded', plan_id: payload.plan_id,
+      plan: { characters: [{ name: '小雨' }], shots: [{ title: '站台近景', character_ids: ['girl'], dialogue: '今天也要向前走' }] } })
+    expect(read.plan).toMatchInlineSnapshot(`
+      {
+        "assets": [
+          {
+            "description": "",
+            "id": "reference_1",
+            "kind": "image",
+            "name": "人物参考.png",
+            "role": "参考素材",
+            "source_path_or_asset_id": "ma_panelreference",
+          },
+        ],
+        "brief": "红围巾女孩的人物设定图",
+        "characters": [
+          {
+            "appearance": "黑色长发",
+            "clothing": "红围巾",
+            "id": "girl",
+            "name": "小雨",
+            "personality": "坚定",
+            "reference_asset_ids": [
+              "reference_1",
+            ],
+            "voice": "年轻女声",
+          },
+        ],
+        "kind": "image",
+        "shots": [
+          {
+            "action": "",
+            "asset_ids": [
+              "reference_1",
+            ],
+            "camera": "缓慢推进",
+            "character_ids": [
+              "girl",
+            ],
+            "dialogue": "今天也要向前走",
+            "duration_seconds": 8,
+            "id": "shot_1",
+            "order": 1,
+            "prompt": "红围巾女孩的人物设定图",
+            "scene": "清晨站台",
+            "subtitles": "今天也要向前走",
+            "title": "站台近景",
+          },
+        ],
+        "style": "",
+        "title": "图片 · 红围巾女孩的人物设定图",
+      }
+    `)
+    expect(charges()).toBe(1)
+    expect(await listing()).toMatchObject([{ id: payload.plan_id, shots: [{ title: '站台近景' }] }])
+    const second = await post(base, '/api/image/generate', {
+      session_id: 'panel-chat', account_id: '7', prompt: '清晨车站的背景画面', model: 'gpt-image-2',
+    }, cookie)
+    expect(second.ok).toBe(true)
+    const secondId = object(second.payload).plan_id
+    expect(secondId).toBeTypeOf('string')
+    expect(secondId).not.toBe(payload.plan_id)
+    const retained = await listing()
+    expect(retained).toHaveLength(2)
+    expect(retained.find(item => item.id === payload.plan_id)).toMatchObject({ shots: [{ title: '站台近景' }] })
+    expect(retained.find(item => item.id === secondId)).toMatchObject({ brief: '清晨车站的背景画面', characters: [], status: 'completed' })
+    expect(charges()).toBe(2)
+  }, 15_000)
+
+  it.each(['image', 'video'] as const)('rejects unowned %s panel requests before any paid upstream submission', async (kind) => {
+    const { base, stateDir } = await boot(undefined, true, true)
+    const cookie = await hostCookie(base)
+    await signIn(base)
+    context!.sessions.create(SessionId('panel-chat'), { meta: { cwd: stateDir } })
+    context!.sessions.create(SessionId('chat-without-workspace'))
+    pricingRows = [
+      { model_name: 'gpt-image-2', supported_endpoint_types: ['image-generation'] },
+      { model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] },
+    ]
+    imageResponse = { data: [{ b64_json: Buffer.from('not submitted').toString('base64') }] }
+    videoTaskStatus = 'SUCCESS'
+    const route = kind === 'image' ? '/api/image/generate' : '/api/video/tasks?source=newapi-generate'
+    const parameters = kind === 'image' ? { model: 'gpt-image-2' } : { model: 'MiniMax-H3', durationSeconds: 4 }
+    const cases = [
+      { fields: { account_id: '7' }, status: 400, code: 'CREATIVE_SESSION_INVALID', cookie },
+      { fields: { account_id: '7', session_id: 'missing-chat' }, status: 409, code: 'CREATIVE_WORKSPACE_REQUIRED', cookie },
+      { fields: { account_id: '7', session_id: 'chat-without-workspace' }, status: 409, code: 'CREATIVE_WORKSPACE_REQUIRED', cookie },
+      { fields: { account_id: '7', session_id: '../escape' }, status: 400, code: 'CREATIVE_SESSION_INVALID', cookie },
+      { fields: { account_id: '8', session_id: 'panel-chat' }, status: 409, code: 'CREATIVE_ACCOUNT_CHANGED', cookie },
+      { fields: { session_id: 'panel-chat' }, status: 409, code: 'CREATIVE_ACCOUNT_CHANGED', cookie },
+      { fields: { account_id: '7', session_id: 'panel-chat' }, status: 401, code: 'CREATIVE_HOST_AUTH_REQUIRED', cookie: undefined },
+    ]
+    for (const sample of cases) {
+      const response = await fetch(base + route, { method: 'POST', headers: { 'content-type': 'application/json',
+        ...sample.cookie === undefined ? {} : { cookie: sample.cookie } },
+      body: JSON.stringify({ prompt: '不能计费的测试请求', ...parameters, ...sample.fields }) })
+      expect(response.status, sample.code).toBe(sample.status)
+      expect(await response.json()).toMatchObject({ ok: false, code: sample.code })
+    }
+    expect(calls.filter(call => call.path.includes('/v1/images/') || call.path === '/harness/v1/video/generations')).toEqual([])
+    expect(await readdir(join(stateDir, 'creative-projects')).catch((error: unknown) => {
+      if (error !== null && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return []
+      throw error
+    })).toEqual([])
+  }, 15_000)
+
+  it('aborts and settles a registered panel image request when its plugin is disposed during the paid POST', async () => {
+    const { base, stateDir } = await boot(undefined, true, true)
+    const cookie = await hostCookie(base)
+    await signIn(base)
+    context!.sessions.create(SessionId('cancel-image-post'), { meta: { cwd: stateDir } })
+    pricingRows = [{ model_name: 'gpt-image-2', supported_endpoint_types: ['image-generation'] }]
+    imageResponse = { data: [{ b64_json: Buffer.from('should never be saved').toString('base64') }] }
+    const submitted = Promise.withResolvers<undefined>()
+    const closed = Promise.withResolvers<undefined>()
+    const release = Promise.withResolvers<undefined>()
+    releaseUpstreamGate = () => { release.resolve(undefined) }
+    upstreamGate = async (path, response) => {
+      if (path !== '/harness/v1/images/generations') return
+      response.once('close', () => { closed.resolve(undefined) })
+      submitted.resolve(undefined)
+      await release.promise
+    }
+    const generation = post(base, '/api/image/generate', {
+      session_id: 'cancel-image-post', account_id: '7', prompt: '取消期间不能继续生成', model: 'gpt-image-2',
+    }, cookie)
+    try {
+      await submitted.promise
+      const [running] = projects(object(await (await fetch(base + '/api/creative/projects?session_id=cancel-image-post',
+        { headers: { cookie } })).json()))
+      expect(running).toMatchObject({ status: 'running', tasks: [{ status: 'running' }], outputs: [] })
+      const fiber = [...context!.loader.entries()].find(entry => entry.options.name === '@deepseek-ai/dsh-credits-index')?.fiber
+      if (fiber === undefined) throw new Error('Expected the loaded credits plugin')
+      await fiber.dispose()
+      await closed.promise
+      expect(await generation).toMatchObject({ ok: false })
+      expect(calls.filter(call => call.path.startsWith('/harness/v1/images/')).map(call => call.path)).toEqual(['/harness/v1/images/generations'])
+      const record = object(JSON.parse(await readFile(join(stateDir, 'creative-projects', String(running!.id), 'project.json'), 'utf8')))
+      expect(record.operations).toMatchObject([{ status: 'cancelled', outputs: [] }])
+      expect((await fetch(base + '/api/creative/projects?session_id=cancel-image-post', { headers: { cookie } })).status).toBe(404)
+    } finally {
+      release.resolve(undefined)
+      await generation
+    }
+  })
+
+  it('stops a registered panel image before billing when disposal interrupts the output destination check', async () => {
+    const { base, stateDir } = await boot(undefined, true, true)
+    const cookie = await hostCookie(base)
+    await signIn(base)
+    context!.sessions.create(SessionId('cancel-image-capture'), { meta: { cwd: stateDir } })
+    pricingRows = [{ model_name: 'gpt-image-2', supported_endpoint_types: ['image-generation'] }]
+    imageResponse = { data: [{ b64_json: Buffer.from('should not be submitted').toString('base64') }] }
+    const storage = context!.get('artifactStorage')
+    if (storage === undefined) throw new Error('Expected the real managed artifact storage')
+    const capture = storage.capture.bind(storage)
+    const entered = Promise.withResolvers<undefined>()
+    const release = Promise.withResolvers<undefined>()
+    releaseUpstreamGate = () => { release.resolve(undefined) }
+    let captureAborted = false
+    vi.spyOn(storage, 'capture').mockImplementationOnce(async (signal) => {
+      const aborted = (): void => { captureAborted = true; release.resolve(undefined) }
+      signal.addEventListener('abort', aborted, { once: true })
+      entered.resolve(undefined)
+      try {
+        await release.promise
+        signal.throwIfAborted()
+        return await capture(signal)
+      } finally { signal.removeEventListener('abort', aborted) }
+    })
+    const generation = post(base, '/api/image/generate', {
+      session_id: 'cancel-image-capture', account_id: '7', prompt: '先检查保存位置再生成', model: 'gpt-image-2',
+    }, cookie)
+    try {
+      await entered.promise
+      const fiber = [...context!.loader.entries()].find(entry => entry.options.name === '@deepseek-ai/dsh-credits-index')?.fiber
+      if (fiber === undefined) throw new Error('Expected the loaded credits plugin')
+      await fiber.dispose()
+      expect(captureAborted).toBe(true)
+      expect(await generation).toMatchObject({ ok: false })
+      expect(calls.filter(call => call.path.startsWith('/harness/v1/images/'))).toEqual([])
+      const records = await readdir(join(stateDir, 'creative-projects'))
+      expect(records).toHaveLength(1)
+      const record = object(JSON.parse(await readFile(join(stateDir, 'creative-projects', records[0]!, 'project.json'), 'utf8')))
+      expect(record.operations).toMatchObject([{ status: 'cancelled', outputs: [] }])
+    } finally {
+      release.resolve(undefined)
+      await generation
+    }
+  })
+
+  it('never bills an earlier relay key for a panel video owned by a login completed during capability lookup', async () => {
+    const { base, stateDir } = await boot(undefined, true, true)
+    const cookie = await hostCookie(base)
+    await signIn(base)
+    context!.sessions.create(SessionId('changing-video-account'), { meta: { cwd: stateDir } })
+    pricingRows = [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }]
+    videoTaskStatus = 'SUCCESS'
+    const entered = Promise.withResolvers<undefined>()
+    const release = Promise.withResolvers<undefined>()
+    releaseUpstreamGate = () => { release.resolve(undefined) }
+    let paused = false
+    upstreamGate = async (path) => {
+      if (path !== '/harness/api/pricing' || paused) return
+      paused = true
+      entered.resolve(undefined)
+      await release.promise
+    }
+    const generation = post(base, '/api/video/tasks?source=newapi-generate', {
+      session_id: 'changing-video-account', account_id: '8', prompt: '按当前账号生成视频', model: 'MiniMax-H3', durationSeconds: 4,
+    }, cookie)
+    try {
+      await entered.promise
+      await post(base, '/api/session/logout', {})
+      selfId = 8
+      access = 'access-second-account'
+      relayKey = 'sk-second-account-relay'
+      await signIn(base)
+      release.resolve(undefined)
+      const result = await generation
+      const submissions = calls.filter(call => call.path === '/harness/v1/video/generations')
+      expect(submissions.every(call => call.authorization === 'Bearer sk-second-account-relay')).toBe(true)
+      if (result.ok === true) {
+        expect(submissions).toHaveLength(1)
+        const record = object(JSON.parse(await readFile(join(stateDir, 'creative-projects', String(object(result.payload).plan_id), 'project.json'), 'utf8')))
+        expect(record.owner).toMatchObject({ accountId: '8', sessionId: 'changing-video-account' })
+      } else expect(submissions).toEqual([])
+    } finally {
+      release.resolve(undefined)
+      await generation
+    }
+  }, 15_000)
+
   it('edits current-chat uploaded images and workspace images through the documented multipart endpoint', async () => {
     const { base, stateDir } = await boot()
     await signIn(base)
@@ -378,7 +730,7 @@ describe('deployed Harness API through the real product Loader', () => {
     expect(calls.filter(call => call.path.includes('/v1/images/') || call.path.includes('/toapis/'))).toEqual([])
   }, 15_000)
 
-  it('generates and reconstructs a video-plan character asset without mixing it into shot or final outputs', async () => {
+  it('lists generated video-plan character materials without marking storyboard shots complete', async () => {
     const { base, stateDir } = await boot(undefined, true, true)
     const origin = new URL(base).origin
     const auth = await fetch(context!.connection.authenticatedUrl(origin + '/'), { redirect: 'manual' })
@@ -411,13 +763,14 @@ describe('deployed Harness API through the real product Loader', () => {
       return object(projects[0])
     }
     const project = await listing()
-    expect(project).toMatchObject({ kind: 'video', status: 'planned', outputs: [], shots: [{ id: 'scene', status: 'planned', outputs: [] }], assets: [
+    expect(project).toMatchObject({ kind: 'video', status: 'planned', outputs: [{ kind: 'image' }], shots: [{ id: 'scene', status: 'planned', outputs: [] }], assets: [
       { id: 'portrait', sourcePathOrAssetId: '', status: 'completed', outputs: [{ kind: 'image' }] }, { id: 'voice' },
     ] })
     const assets = project.assets
     if (!Array.isArray(assets)) throw new Error('Expected assets')
     const outputs = object(assets[0]).outputs
     if (!Array.isArray(outputs)) throw new Error('Expected real asset outputs')
+    expect(project.outputs).toEqual(outputs)
     const output = object(outputs[0])
     if (typeof output.url !== 'string') throw new Error('Expected controlled image URL')
     expect(Buffer.from(await (await fetch(origin + output.url, { headers: { cookie } })).arrayBuffer())).toEqual(png)
@@ -430,7 +783,10 @@ describe('deployed Harness API through the real product Loader', () => {
     const count = calls.filter(call => call.path.includes('/v1/images/')).length
     expect(await call('generate_image', args)).toMatchObject({ status: 'failed', code: 'CREATIVE_SUBMISSION_UNKNOWN' })
     expect(calls.filter(call => call.path.includes('/v1/images/'))).toHaveLength(count)
-    expect(await listing()).toMatchObject({ status: 'unknown', assets: [{ id: 'portrait', status: 'unknown', outputs: [{ kind: 'image' }, { kind: 'image' }] }, { id: 'voice' }], outputs: [] })
+    expect(await listing()).toMatchObject({ status: 'unknown',
+      assets: [{ id: 'portrait', status: 'unknown', outputs: [{ kind: 'image' }, { kind: 'image' }] }, { id: 'voice' }],
+      shots: [{ id: 'scene', status: 'planned', outputs: [] }], outputs: [{ kind: 'image' }, { kind: 'image' }],
+    })
   })
 
   it('publishes chat plans and real image outputs through authenticated account/chat media routes', async () => {
@@ -767,19 +1123,33 @@ describe('deployed Harness API through the real product Loader', () => {
     expect(calls.some(call => call.path.includes('chat/completions'))).toBe(false)
   })
 
-  it.each(['panel', 'chat'] as const)('submits H3 through the %s entry and saves uppercase generic task success', async (entry) => {
-    const { base, stateDir } = await boot()
+  it.each(['panel', 'chat', 'linked-panel'] as const)('submits H3 through the %s entry and saves uppercase generic task success', async (entry) => {
+    const linked = entry === 'linked-panel'
+    const { base, stateDir } = await boot(undefined, linked, linked)
+    const cookie = linked ? await hostCookie(base) : undefined
+    if (linked) context!.sessions.create(SessionId('panel-video-chat'), { meta: { cwd: stateDir } })
     await signIn(base)
     pricingRows = [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'], enable_groups: ['default'] }]
     videoTaskStatus = 'SUCCESS'
-    const outcome = entry === 'panel'
-      ? await post(base, '/api/video/tasks?source=newapi-generate', { prompt: 'A synthetic clip', model: 'MiniMax-H3', durationSeconds: 4 })
+    const outcome = entry !== 'chat'
+      ? await post(base, '/api/video/tasks?source=newapi-generate', { prompt: 'A synthetic clip', model: 'MiniMax-H3', durationSeconds: 4,
+        ...linked ? { session_id: 'panel-video-chat', account_id: '7' } : {} }, cookie)
       : object((await context!.tools.execute({ callId: ToolCallId('h3-chat-route'), name: 'generate_video',
         arguments: { prompt: 'A synthetic clip', model: 'MiniMax-H3', duration_seconds: 4 }, agent: videoAgent(stateDir), signal: new AbortController().signal })).value)
-    const path = entry === 'panel' ? object(outcome.payload).path : outcome.path
-    expect(outcome).toMatchObject(entry === 'panel' ? { ok: true, taskId: 'fixture-video-task' } : { status: 'succeeded', task_id: 'fixture-video-task' })
+    const path = entry !== 'chat' ? object(outcome.payload).path : outcome.path
+    expect(outcome).toMatchObject(entry !== 'chat' ? { ok: true, taskId: 'fixture-video-task' } : { status: 'succeeded', task_id: 'fixture-video-task' })
     if (typeof path !== 'string') throw new Error('Expected the saved video path')
     expect(await readFile(path)).toEqual(generatedVideo)
+    if (linked) {
+      const payload = object(outcome.payload)
+      const project = projects(object(await (await fetch(base + '/api/creative/projects?session_id=panel-video-chat',
+        { headers: { cookie: cookie! } })).json()))[0]
+      expect(project).toMatchObject({ id: payload.plan_id, sessionId: 'panel-video-chat', kind: 'video', status: 'completed',
+        completedShots: 1, totalShots: 1, shots: [{ id: 'shot_1', durationSeconds: 4, status: 'completed', outputs: [{ kind: 'video' }] }],
+        tasks: [{ status: 'completed', shotIds: ['shot_1'], model: 'MiniMax-H3', outputs: [{ kind: 'video' }] }],
+        outputs: [{ kind: 'video' }],
+      })
+    }
     const videoCalls = calls.filter(call => call.path.startsWith('/harness/v1/video'))
     expect(videoCalls.map(call => call.path)).toEqual([
       '/harness/v1/video/generations', '/harness/v1/video/generations/fixture-video-task', '/harness/v1/videos/fixture-video-task/content',

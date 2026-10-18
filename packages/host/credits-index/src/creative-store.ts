@@ -1,12 +1,12 @@
 /** Account- and chat-owned creation plans joined to committed generation files. @module */
 
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
 import { lstat, mkdir, open, readdir, realpath, rename, unlink, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { basename, extname, isAbsolute, join, resolve } from 'node:path'
 import type { Branded } from '@deepseek-ai/dsh-brand'
-import type { CreativeAsset, CreativeCharacter, CreativeKind, CreativeOutput, CreativeOutputId, CreativeProjectId, CreativeProjectView, CreativeShotView, CreativeStatus } from './creative-types.ts'
+import type { CreativeAsset, CreativeCharacter, CreativeKind, CreativeOutput, CreativeOutputId, CreativePlanChange, CreativeProjectId, CreativeProjectView, CreativeShotPlan, CreativeShotView, CreativeStatus, CreativeTaskView } from './creative-types.ts'
 import type { VideoProjectManifest } from './video-project.ts'
 import type { VideoProjectIdentity } from './video-project-types.ts'
 
@@ -16,7 +16,7 @@ const MAX_PROJECTS = 1000
 const MAX_OPERATIONS = 256
 const MAX_LIST_BYTES = 8 * 1024 * 1024
 
-export type { CreativeProjectId } from './creative-types.ts'
+export type { CreativeProjectId, CreativeShotPlan } from './creative-types.ts'
 /** Owner-issued generation invocation identity. */
 export type CreativeOperationId = Branded<'CreativeOperationId'>
 
@@ -31,9 +31,6 @@ export interface CreativeOwner extends VideoProjectIdentity {
   readonly sessionId: string
   readonly workspaceRoot: string
 }
-
-/** Plan-only shot data, without invented execution or verification state. */
-export type CreativeShotPlan = Omit<CreativeShotView, 'status' | 'outputs'>
 
 /** Complete planning input supplied through the logged model tool. */
 export interface CreativePlan {
@@ -65,6 +62,7 @@ interface Operation {
   submissionStarted?: boolean
   outputs: SavedOutput[]
   videoProjectId?: string
+  model?: string
   errorCode?: string
 }
 
@@ -85,6 +83,8 @@ interface BeginInput {
   assetId?: string
   shots: readonly { prompt: string; durationSeconds?: number }[]
   videoProjectId?: string
+  model?: string
+  expectedRevision?: string
 }
 
 interface ShotFacts { status: CreativeStatus; outputs: SavedOutput[]; durationSeconds?: number }
@@ -95,6 +95,7 @@ interface CreationFacts {
   errors: string[]
   states: { shotIds: readonly string[]; assetId?: string; status: CreativeStatus }[]
   updatedAt: string
+  tasks: (Omit<CreativeTaskView, 'outputs'> & { outputs: SavedOutput[] })[]
 }
 
 /** Exact operation identity returned before any paid submission. */
@@ -151,6 +152,91 @@ function absolute(value: unknown): string {
   return result
 }
 
+function duration(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || value > 86_400) return invalid()
+  return value
+}
+function character(value: unknown): CreativeCharacter {
+  const item = object(value)
+  return {
+    id: identifier(item.id), name: text(item.name, 256), appearance: text(item.appearance), clothing: text(item.clothing),
+    personality: text(item.personality), voice: text(item.voice), referenceAssetIds: ids(item.referenceAssetIds),
+  }
+}
+function asset(value: unknown): CreativeAsset {
+  const item = object(value)
+  const category = item.kind
+  if (category !== 'image' && category !== 'video' && category !== 'audio' && category !== 'document' && category !== 'other') return invalid()
+  return {
+    id: identifier(item.id), name: text(item.name, 256), kind: category, role: text(item.role), description: text(item.description),
+    sourcePathOrAssetId: text(item.sourcePathOrAssetId, 32_768),
+  }
+}
+function shot(value: unknown): CreativeShotPlan {
+  const item = object(value)
+  const order = item.order
+  if (!Number.isSafeInteger(order) || typeof order !== 'number' || order < 1 || order > 128) return invalid()
+  return {
+    id: identifier(item.id), order, title: text(item.title, 256), prompt: text(item.prompt),
+    camera: text(item.camera), scene: text(item.scene), action: text(item.action),
+    dialogue: text(item.dialogue), subtitles: text(item.subtitles), characterIds: ids(item.characterIds), assetIds: ids(item.assetIds),
+    ...item.durationSeconds === undefined ? {} : { durationSeconds: duration(item.durationSeconds) },
+  }
+}
+function fields(value: Record<string, unknown>, allowed: readonly string[]): void {
+  if (Object.keys(value).some(key => !allowed.includes(key))) invalid()
+}
+
+/**
+ * Parse one explicit browser edit without accepting execution state or arbitrary object properties.
+ * @param value - Untrusted JSON change from an authenticated request.
+ * @returns A bounded change whose complete resulting plan is validated by revise.
+ */
+export function parseCreativePlanChange(value: unknown): CreativePlanChange {
+  const source = object(value)
+  switch (source.kind) {
+    case 'shot': {
+      fields(source, ['kind', 'id', 'patch'])
+      const patch = object(source.patch)
+      fields(patch, ['title', 'durationSeconds', 'camera', 'scene', 'action', 'prompt', 'dialogue', 'subtitles', 'characterIds', 'assetIds'])
+      return { kind: 'shot', id: identifier(source.id), patch: {
+        ...Object.hasOwn(patch, 'title') ? { title: text(patch.title, 256) } : {},
+        ...Object.hasOwn(patch, 'durationSeconds') ? { durationSeconds: duration(patch.durationSeconds) } : {},
+        ...Object.hasOwn(patch, 'camera') ? { camera: text(patch.camera) } : {},
+        ...Object.hasOwn(patch, 'scene') ? { scene: text(patch.scene) } : {},
+        ...Object.hasOwn(patch, 'action') ? { action: text(patch.action) } : {},
+        ...Object.hasOwn(patch, 'prompt') ? { prompt: text(patch.prompt) } : {},
+        ...Object.hasOwn(patch, 'dialogue') ? { dialogue: text(patch.dialogue) } : {},
+        ...Object.hasOwn(patch, 'subtitles') ? { subtitles: text(patch.subtitles) } : {},
+        ...Object.hasOwn(patch, 'characterIds') ? { characterIds: ids(patch.characterIds) } : {},
+        ...Object.hasOwn(patch, 'assetIds') ? { assetIds: ids(patch.assetIds) } : {},
+      } }
+    }
+    case 'reorder':
+      fields(source, ['kind', 'shotIds'])
+      return { kind: 'reorder', shotIds: ids(source.shotIds) }
+    case 'character': {
+      fields(source, ['kind', 'value'])
+      fields(object(source.value), ['id', 'name', 'appearance', 'clothing', 'personality', 'voice', 'referenceAssetIds'])
+      return { kind: 'character', value: character(source.value) }
+    }
+    case 'asset': {
+      fields(source, ['kind', 'value'])
+      fields(object(source.value), ['id', 'name', 'kind', 'role', 'description', 'sourcePathOrAssetId'])
+      return { kind: 'asset', value: asset(source.value) }
+    }
+    case 'remove-character': case 'remove-asset': case 'remove-shot':
+      fields(source, ['kind', 'id'])
+      return { kind: source.kind, id: identifier(source.id) }
+    case 'add-shot':
+      fields(source, ['kind', 'value'])
+      fields(object(source.value), ['id', 'order', 'title', 'durationSeconds', 'camera', 'scene', 'action', 'prompt', 'dialogue', 'subtitles', 'characterIds', 'assetIds'])
+      return { kind: 'add-shot', value: shot(source.value) }
+    default:
+      return invalid()
+  }
+}
+
 /**
  * Parse a complete structured plan at model/tool and private-file ingress.
  * @param value - Untrusted camel-case planning data.
@@ -158,35 +244,9 @@ function absolute(value: unknown): string {
  */
 export function parseCreativePlan(value: unknown): CreativePlan {
   const source = object(value)
-  const characters = list(source.characters, (value) => {
-    const item = object(value)
-    return {
-      id: identifier(item.id), name: text(item.name, 256), appearance: text(item.appearance), clothing: text(item.clothing),
-      personality: text(item.personality), voice: text(item.voice), referenceAssetIds: ids(item.referenceAssetIds),
-    }
-  }, 64)
-  const assets = list<CreativeAsset>(source.assets, (value) => {
-    const item = object(value)
-    const category = item.kind
-    if (category !== 'image' && category !== 'video' && category !== 'audio' && category !== 'document' && category !== 'other') return invalid()
-    return {
-      id: identifier(item.id), name: text(item.name, 256), kind: category, role: text(item.role), description: text(item.description),
-      sourcePathOrAssetId: text(item.sourcePathOrAssetId, 32_768),
-    }
-  }, 128)
-  const shots = list(source.shots, (value) => {
-    const item = object(value)
-    const order = item.order
-    const durationSeconds = item.durationSeconds
-    if (!Number.isSafeInteger(order) || typeof order !== 'number' || order < 1 || order > 128) return invalid()
-    if (durationSeconds !== undefined && (typeof durationSeconds !== 'number' || !Number.isFinite(durationSeconds) || durationSeconds <= 0 || durationSeconds > 86_400)) return invalid()
-    return {
-      id: identifier(item.id), order, title: text(item.title, 256), prompt: text(item.prompt),
-      camera: text(item.camera), scene: text(item.scene), action: text(item.action),
-      dialogue: text(item.dialogue), subtitles: text(item.subtitles), characterIds: ids(item.characterIds), assetIds: ids(item.assetIds),
-      ...durationSeconds === undefined ? {} : { durationSeconds },
-    }
-  }, 128)
+  const characters = list(source.characters, character, 64)
+  const assets = list(source.assets, asset, 128)
+  const shots = list(source.shots, shot, 128)
   if (shots.length === 0) invalid()
   unique(characters.map(item => item.id))
   unique(assets.map(item => item.id))
@@ -233,6 +293,7 @@ function parseRecord(value: unknown): CreativeRecord {
       ...item.assetId === undefined ? {} : { assetId: identifier(item.assetId) },
       ...item.submissionStarted === undefined ? {} : { submissionStarted: item.submissionStarted },
       ...item.videoProjectId === undefined ? {} : { videoProjectId: text(item.videoProjectId, 128) },
+      ...item.model === undefined ? {} : { model: text(item.model, 256) },
       ...item.errorCode === undefined ? {} : { errorCode: identifier(item.errorCode) },
     }
   }, MAX_OPERATIONS)
@@ -265,6 +326,20 @@ async function safeFile(path: string): Promise<Awaited<ReturnType<typeof open>>>
 function aggregate(states: readonly CreativeStatus[]): CreativeStatus {
   for (const state of ['unknown', 'running', 'saving', 'editing', 'interrupted', 'failed', 'cancelled'] as const) if (states.includes(state)) return state
   return states.length > 0 && states.every(value => value === 'completed') ? 'completed' : 'planned'
+}
+
+/**
+ * Hash the complete normalized planning fields independently of execution progress.
+ * @param plan - The exact plan read before asynchronous generation preparation.
+ * @returns Revision to check atomically when beginning the prepared invocation.
+ */
+export function creativePlanRevision(plan: CreativePlan): string {
+  return createHash('sha256').update(JSON.stringify(parseCreativePlan(plan))).digest('hex')
+}
+
+/** Keep one real path per collection, retaining the latest preview metadata. */
+function uniqueOutputs(outputs: readonly SavedOutput[]): SavedOutput[] {
+  return [...new Map(outputs.map(output => [output.path, output])).values()]
 }
 
 /** Owns serialized local records and read-only browser projections. */
@@ -309,6 +384,21 @@ export class CreativeStore {
     return result
   }
 
+  /**
+   * Recover a project's original workspace using only its current account and exact chat identity.
+   * @param identity - Captured current product account and login generation.
+   * @param id - Explicit existing project id.
+   * @param sessionId - Exact owning conversation; another chat cannot reuse this project.
+   * @returns Current login with the record's original workspace, without activating an Agent.
+   */
+  async owner(identity: VideoProjectIdentity, id: string, sessionId: string): Promise<CreativeOwner> {
+    await this.serial
+    await this.current(identity)
+    const record = await this.read(id, { accountId: identity.accountId, sessionId })
+    await this.current(identity)
+    return { ...identity, sessionId, workspaceRoot: record.owner.workspaceRoot }
+  }
+
   private async persist(record: CreativeRecord): Promise<void> {
     await this.current(record.owner)
     record.updatedAt = new Date().toISOString()
@@ -321,6 +411,43 @@ export class CreativeStore {
     await writeFile(temporary, encoded, { flag: 'wx', mode: 0o600 })
     try { await this.current(record.owner); await rename(temporary, join(directory, 'project.json')) }
     catch (error) { await unlink(temporary); throw error }
+  }
+
+  private async replacePlan(owner: CreativeOwner, old: CreativeRecord, plan: CreativePlan): Promise<CreativeProjectId> {
+    const parsed = parseCreativePlan(plan)
+    if (old.owner.workspaceRoot !== owner.workspaceRoot || old.kind !== parsed.kind || old.operations.some(operation =>
+      operation.shotIds.some(shotId => !parsed.shots.some(shot => shot.id === shotId))
+      || operation.assetId !== undefined && !parsed.assets.some(asset => asset.id === operation.assetId && asset.kind === 'image'))) {
+      throw new CreativeError('CREATIVE_PLAN_CONFLICT', 409, '已有生成记录的镜头或图片素材不能移除，项目类型和工作区不能改变。')
+    }
+    for (const operation of old.operations) {
+      if (!this.active.has(operation.id)) continue
+      const same = (left: unknown, right: unknown): boolean => JSON.stringify(left) === JSON.stringify(right)
+      const referencedCharacters = new Set<string>()
+      const referencedAssets = new Set<string>(operation.assetId === undefined ? [] : [operation.assetId])
+      for (const id of operation.shotIds) {
+        const before = old.shots.find(shot => shot.id === id)
+        if (!same(before, parsed.shots.find(shot => shot.id === id))) {
+          throw new CreativeError('CREATIVE_PLAN_RUNNING', 409, '相关镜头正在生成，请等待任务结束后再修改或排序。')
+        }
+        before?.characterIds.forEach(id => referencedCharacters.add(id))
+        before?.assetIds.forEach(id => referencedAssets.add(id))
+      }
+      for (const character of old.characters) {
+        if (referencedCharacters.has(character.id)
+          || operation.assetId !== undefined && character.referenceAssetIds.includes(operation.assetId)) {
+          if (!same(character, parsed.characters.find(item => item.id === character.id))) {
+            throw new CreativeError('CREATIVE_PLAN_RUNNING', 409, '相关人物或素材正在生成，请等待任务结束后再修改。')
+          }
+          character.referenceAssetIds.forEach(id => referencedAssets.add(id))
+        }
+      }
+      if ([...referencedAssets].some(id => !same(old.assets.find(item => item.id === id), parsed.assets.find(item => item.id === id)))) {
+        throw new CreativeError('CREATIVE_PLAN_RUNNING', 409, '相关素材正在生成，请等待任务结束后再修改。')
+      }
+    }
+    await this.persist({ ...old, ...parsed, owner })
+    return old.id
   }
 
   /**
@@ -340,13 +467,71 @@ export class CreativeStore {
         return record.id
       }
       const old = await this.read(id, owner)
-      if (old.owner.workspaceRoot !== owner.workspaceRoot || old.kind !== parsed.kind || old.operations.some(operation =>
-        operation.shotIds.some(shotId => !parsed.shots.some(shot => shot.id === shotId))
-        || operation.assetId !== undefined && !parsed.assets.some(asset => asset.id === operation.assetId && asset.kind === 'image'))) {
-        throw new CreativeError('CREATIVE_PLAN_CONFLICT', 409, '已有生成记录的镜头或图片素材不能移除，项目类型和工作区不能改变。')
+      return this.replacePlan(owner, old, parsed)
+    })
+  }
+
+  /**
+   * Apply one explicit edit only while its original planning revision is current.
+   * @param owner - Current account, exact chat and workspace.
+   * @param id - Existing creation project id.
+   * @param expectedRevision - Hash last returned with the displayed plan; progress does not invalidate it.
+   * @param change - One targeted change, checked with the complete resulting plan before persistence.
+   * @returns The unchanged project identity after an atomic edit; stale, referenced or active changes reject without writing.
+   */
+  revise(owner: CreativeOwner, id: string, expectedRevision: string, change: CreativePlanChange): Promise<CreativeProjectId> {
+    return this.queue(async () => {
+      await this.current(owner)
+      const old = await this.read(id, owner)
+      if (old.owner.workspaceRoot !== owner.workspaceRoot) throw new CreativeError('CREATIVE_ACCESS_DENIED', 404, '该创作计划不属于当前工作区。')
+      if (creativePlanRevision(old) !== expectedRevision) throw new CreativeError('CREATIVE_PLAN_STALE', 409, '创作计划已变化，请刷新后再修改。')
+      let plan = parseCreativePlan(old)
+      const missing = (): never => { throw new CreativeError('CREATIVE_PLAN_CONFLICT', 409, '人物、素材或镜头已变化，请刷新后重新选择。') }
+      switch (change.kind) {
+        case 'shot': {
+          if (!plan.shots.some(item => item.id === change.id)) missing()
+          plan = { ...plan, shots: plan.shots.map(item => item.id === change.id
+            ? { ...item, ...change.patch, id: item.id, order: item.order } : item) }
+          break
+        }
+        case 'reorder': {
+          if (change.shotIds.length !== plan.shots.length || new Set(change.shotIds).size !== change.shotIds.length) missing()
+          plan = { ...plan, shots: change.shotIds.map((id, index) => {
+            const shot = plan.shots.find(item => item.id === id)
+            return shot === undefined ? missing() : { ...shot, order: index + 1 }
+          }) }
+          break
+        }
+        case 'character':
+          plan = { ...plan, characters: plan.characters.some(item => item.id === change.value.id)
+            ? plan.characters.map(item => item.id === change.value.id ? change.value : item) : [...plan.characters, change.value] }
+          break
+        case 'asset':
+          plan = { ...plan, assets: plan.assets.some(item => item.id === change.value.id)
+            ? plan.assets.map(item => item.id === change.value.id ? change.value : item) : [...plan.assets, change.value] }
+          break
+        case 'remove-character':
+          if (!plan.characters.some(item => item.id === change.id)) missing()
+          plan = { ...plan, characters: plan.characters.filter(item => item.id !== change.id) }
+          break
+        case 'remove-asset':
+          if (!plan.assets.some(item => item.id === change.id)) missing()
+          plan = { ...plan, assets: plan.assets.filter(item => item.id !== change.id) }
+          break
+        case 'remove-shot':
+          if (!plan.shots.some(item => item.id === change.id)) missing()
+          plan = { ...plan, shots: plan.shots.filter(item => item.id !== change.id) }
+          break
+        case 'add-shot':
+          plan = { ...plan, shots: [...plan.shots, change.value] }
+          break
+        default: {
+          const unsupported: never = change
+          void unsupported
+          return invalid()
+        }
       }
-      await this.persist({ ...old, ...parsed, owner })
-      return old.id
+      return this.replacePlan(owner, old, plan)
     })
   }
 
@@ -368,7 +553,7 @@ export class CreativeStore {
   /**
    * Record a named invocation before billing; no nearest-project association is allowed.
    * @param owner - Exact captured chat and login.
-   * @param input - Actual brief, explicit association, and ordered fallback shots.
+   * @param input - Actual brief, explicit association, ordered fallback shots and optional prepared-plan revision.
    * @returns Durable invocation identity, also marked process-live until settlement.
    */
   begin(owner: CreativeOwner, input: BeginInput): Promise<CreativeOperation> {
@@ -378,6 +563,9 @@ export class CreativeStore {
       if (input.planId !== undefined) {
         record = await this.read(input.planId, owner)
         if (record.owner.workspaceRoot !== owner.workspaceRoot) throw new CreativeError('CREATIVE_ACCESS_DENIED', 404, '该创作项目不属于当前工作区。')
+        if (input.expectedRevision !== undefined && creativePlanRevision(record) !== input.expectedRevision) {
+          throw new CreativeError('CREATIVE_PLAN_STALE', 409, '创作计划已变化，请刷新后重新生成；尚未提交生成。')
+        }
         if (input.assetId !== undefined) {
           if (input.kind !== 'image' || input.shotIds !== undefined
             || !record.assets.some(asset => asset.id === input.assetId && asset.kind === 'image')) {
@@ -414,7 +602,7 @@ export class CreativeStore {
       unique(shotIds)
       const id = operationId(`op_${randomUUID()}`)
       record.owner = owner
-      record.operations.push({ id, prompt: text(input.prompt), shotIds, ...input.assetId === undefined ? {} : { assetId: input.assetId }, status: 'running', outputs: [], ...input.videoProjectId === undefined ? {} : { videoProjectId: input.videoProjectId } })
+      record.operations.push({ id, prompt: text(input.prompt), shotIds, ...input.assetId === undefined ? {} : { assetId: input.assetId }, status: 'running', outputs: [], ...input.videoProjectId === undefined ? {} : { videoProjectId: input.videoProjectId }, ...input.model === undefined ? {} : { model: text(input.model, 256) } })
       if (Buffer.byteLength(JSON.stringify(record)) > MAX_BYTES / 2) throw new CreativeError('CREATIVE_LIMIT', 400, '项目记录已接近上限，请新建项目；尚未提交生成。')
       await this.persist(record)
       this.active.add(id)
@@ -592,7 +780,20 @@ export class CreativeStore {
     const outputs: SavedOutput[] = []
     const errors: string[] = []
     const states: CreationFacts['states'] = []
+    const tasks: CreationFacts['tasks'] = []
     let updatedAt = record.updatedAt
+    const task = (operation: Operation, state: CreativeStatus, saved: readonly SavedOutput[], completedShots: number,
+      totalShots: number, model?: string, errorCode?: string): void => {
+      tasks.push({
+        id: operation.id, status: state, shotIds: [...operation.shotIds],
+        outputs: [...new Map(saved.map(output => [output.id, output])).values()],
+        completedShots, totalShots,
+        ...operation.assetId === undefined ? {} : { assetId: operation.assetId },
+        ...model === undefined ? {} : { model },
+        ...operation.videoProjectId === undefined ? {} : { videoProjectId: operation.videoProjectId },
+        ...errorCode === undefined ? {} : { errorCode },
+      })
+    }
     const add = (id: string, state: CreativeStatus, result: SavedOutput[], durationSeconds?: number): void => {
       const items = shots.get(id) ?? []
       items.push({ status: state, outputs: result, ...durationSeconds === undefined ? {} : { durationSeconds } })
@@ -604,35 +805,43 @@ export class CreativeStore {
         const state = (operation.status === 'running' || operation.status === 'saving') && !this.active.has(operation.id)
           ? operation.submissionStarted ? 'unknown' : 'interrupted' : operation.status
         states.push({ shotIds: operation.shotIds, status: state, ...operation.assetId === undefined ? {} : { assetId: operation.assetId } })
+        task(operation, state, operation.outputs, state === 'completed' ? operation.shotIds.length : 0, operation.shotIds.length,
+          operation.model, state === 'unknown' ? 'SUBMISSION_UNKNOWN' : operation.errorCode)
+        outputs.push(...operation.outputs)
         if (operation.assetId !== undefined) {
           const items = assets.get(operation.assetId) ?? []
           items.push({ status: state, outputs: operation.outputs }); assets.set(operation.assetId, items)
           continue
         }
         operation.shotIds.forEach((id) => { add(id, state, operation.outputs) })
-        outputs.push(...operation.outputs)
         continue
       }
       const video = await this.options.video(operation.videoProjectId, record.owner)
       if (video.segments.length !== operation.shotIds.length) invalid()
       if (video.failureCode !== undefined) errors.push(video.failureCode)
       const live = this.active.has(operation.id)
-      states.push({ shotIds: operation.shotIds, status: video.failureCode === 'SUBMISSION_UNKNOWN' ? 'unknown' : video.status === 'prepared' ? 'planned' : (video.status === 'running' || video.status === 'editing') && !live ? 'interrupted' : video.status })
+      const state = video.failureCode === 'SUBMISSION_UNKNOWN' ? 'unknown' : video.status === 'prepared' ? 'planned' : (video.status === 'running' || video.status === 'editing') && !live ? 'interrupted' : video.status
+      states.push({ shotIds: operation.shotIds, status: state })
       if (video.updatedAt > updatedAt) updatedAt = video.updatedAt
+      const generated: SavedOutput[] = []
       for (const [index, segment] of video.segments.entries()) {
         const shotId = operation.shotIds[index]
         if (shotId === undefined) invalid()
         const state: CreativeStatus = segment.status === 'saved' ? 'completed' : segment.status === 'unknown' || segment.status === 'submitting' && segment.taskId === undefined && !this.active.has(operation.id) ? 'unknown' : segment.status === 'failed' ? 'failed' : segment.status === 'pending' ? 'planned' : !this.active.has(operation.id) ? 'interrupted' : 'running'
         const id = outputId(`${operation.id}_clip_${String(index + 1)}`)
         const saved: SavedOutput[] = segment.path === undefined ? [] : [{ id, kind: 'video', path: segment.path, ...operation.outputs.find(output => output.id === id) }]
+        generated.push(...saved)
         add(shotId, state, saved, segment.durationSeconds)
       }
       if (video.finalPath !== undefined && video.status === 'completed') {
         const id = outputId(`${operation.id}_final`)
-        outputs.push({ id, kind: 'video', path: video.finalPath, ...operation.outputs.find(output => output.id === id) })
+        generated.push({ id, kind: 'video', path: video.finalPath, ...operation.outputs.find(output => output.id === id) })
       }
+      outputs.push(...generated)
+      task(operation, state, generated, video.segments.filter(segment => segment.status === 'saved').length,
+        video.segments.length, video.model, video.failureCode ?? operation.errorCode)
     }
-    return { shots, assets, outputs, errors, states, updatedAt }
+    return { shots, assets, outputs: uniqueOutputs(outputs), errors, states, tasks, updatedAt }
   }
 
   /**
@@ -654,10 +863,10 @@ export class CreativeStore {
       const facts = await this.facts(record)
       const shots = record.shots.map((shot): CreativeShotView => {
         const operations = facts.shots.get(shot.id) ?? []
-        const durationSeconds = operations.at(-1)?.durationSeconds
+        const actualDurationSeconds = operations.at(-1)?.durationSeconds
         return {
-          ...shot, ...durationSeconds === undefined ? {} : { durationSeconds }, status: operations.at(-1)?.status ?? 'planned',
-          outputs: operations.flatMap(item => item.outputs.map(output => this.outputView(record, output))),
+          ...shot, ...actualDurationSeconds === undefined ? {} : { actualDurationSeconds }, status: operations.at(-1)?.status ?? 'planned',
+          outputs: uniqueOutputs(operations.flatMap(item => item.outputs)).map(output => this.outputView(record, output)),
         }
       })
       const latest = new Map<string, number>()
@@ -670,14 +879,23 @@ export class CreativeStore {
       const projectStatus = aggregate([...shots.map(shot => shot.status), ...currentStates.map(item => item.status)])
       const errorCode = projectStatus === 'unknown' ? 'SUBMISSION_UNKNOWN' : projectStatus === 'failed' || projectStatus === 'cancelled' ? facts.errors.at(-1) : undefined
       result.push({
-        id: record.id, kind: record.kind, title: record.title, brief: record.brief, style: record.style, updatedAt: facts.updatedAt,
+        id: record.id, sessionId: record.owner.sessionId, planRevision: creativePlanRevision(record), kind: record.kind,
+        title: record.title, brief: record.brief, style: record.style, updatedAt: facts.updatedAt,
+        completedShots: shots.filter(shot => shot.status === 'completed').length, totalShots: shots.length,
         characters: record.characters, assets: record.assets.map((asset) => {
           const history = facts.assets.get(asset.id)
-          return history === undefined ? asset : {
-            ...asset, status: history.at(-1)?.status ?? 'planned',
-            outputs: history.flatMap(item => item.outputs.map(output => this.outputView(record, output))),
+          const referenceUrl = asset.kind === 'image' && asset.sourcePathOrAssetId.startsWith('ma_')
+            ? '/credits/api/creative/reference?' + new URLSearchParams({ session_id: record.owner.sessionId, project_id: record.id, asset_id: asset.id }).toString()
+            : undefined
+          return {
+            ...asset, ...referenceUrl === undefined ? {} : { referenceUrl },
+            ...history === undefined ? {} : {
+              status: history.at(-1)?.status ?? 'planned',
+              outputs: uniqueOutputs(history.flatMap(item => item.outputs)).map(output => this.outputView(record, output)),
+            },
           }
         }), shots, outputs: facts.outputs.map(output => this.outputView(record, output)),
+        tasks: facts.tasks.map(task => ({ ...task, outputs: task.outputs.map(output => this.outputView(record, output)) })),
         status: projectStatus, ...errorCode === undefined ? {} : { errorCode },
       })
       bytes += Buffer.byteLength(JSON.stringify(result[result.length - 1])) + 1

@@ -36,6 +36,8 @@ export interface CreativeAsset {
 
 /** Source material descriptions joined to their explicitly generated versions. */
 export interface CreativeAssetView extends CreativeAsset {
+  /** Owner-checked preview of a retained uploaded image reference. */
+  readonly referenceUrl?: string
   readonly status?: CreativeStatus
   readonly outputs?: readonly CreativeOutput[]
 }
@@ -64,6 +66,8 @@ export interface CreativeShotView {
   readonly order: number
   readonly title: string
   readonly durationSeconds?: number
+  /** Duration submitted for the latest generated clip, separate from editable timing. */
+  readonly actualDurationSeconds?: number
   readonly camera: string
   readonly scene: string
   readonly action: string
@@ -78,9 +82,38 @@ export interface CreativeShotView {
   readonly outputs: readonly CreativeOutput[]
 }
 
+/** Editable shot fields, without generated execution state. */
+export type CreativeShotPlan = Omit<CreativeShotView, 'status' | 'outputs' | 'actualDurationSeconds'>
+
+/** Explicit plan edit supplied by the authenticated creation interface. */
+export type CreativePlanChange =
+  | { readonly kind: 'shot'; readonly id: string; readonly patch: Partial<Omit<CreativeShotPlan, 'id' | 'order'>> }
+  | { readonly kind: 'reorder'; readonly shotIds: readonly string[] }
+  | { readonly kind: 'character'; readonly value: CreativeCharacter }
+  | { readonly kind: 'asset'; readonly value: CreativeAsset }
+  | { readonly kind: 'remove-character' | 'remove-asset' | 'remove-shot'; readonly id: string }
+  | { readonly kind: 'add-shot'; readonly value: CreativeShotPlan }
+
+/** One retained invocation, without provider requests, credentials or local paths. */
+export interface CreativeTaskView {
+  readonly id: string
+  readonly status: CreativeStatus
+  readonly shotIds: readonly string[]
+  readonly assetId?: string
+  readonly model?: string
+  readonly videoProjectId?: string
+  readonly outputs: readonly CreativeOutput[]
+  readonly errorCode?: string
+  readonly completedShots: number
+  readonly totalShots: number
+}
+
 /** Persisted planning data joined to actual generation and local editing facts. */
 export interface CreativeProjectView {
   readonly id: CreativeProjectId
+  readonly sessionId: string
+  /** Hash of normalized planning fields; execution progress never changes it. */
+  readonly planRevision: string
   readonly kind: CreativeKind
   readonly title: string
   readonly brief: string
@@ -91,6 +124,9 @@ export interface CreativeProjectView {
   readonly assets: readonly CreativeAssetView[]
   readonly shots: readonly CreativeShotView[]
   readonly outputs: readonly CreativeOutput[]
+  readonly tasks: readonly CreativeTaskView[]
+  readonly completedShots: number
+  readonly totalShots: number
   readonly errorCode?: string
 }
 

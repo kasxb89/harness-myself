@@ -9,9 +9,10 @@ import type { JobHandle, JobOutcome } from '@deepseek-ai/dsh-jobs'
 import type { Session } from '@deepseek-ai/dsh-session'
 import { prepareVideoProject, publishVideoOutput, readVideoProject, resolveVideoOutputDirectory, runVideoProject, videoProjectFailure, VideoProjectError } from './video-project.ts'
 import type { VideoProjectManifest } from './video-project.ts'
-import type { VideoProjectInput, VideoProjectOptions } from './video-project-types.ts'
+import type { VideoProjectOptions } from './video-project-types.ts'
 import { CreativeError, type CreativeOperation } from './creative-store.ts'
 import { creativeOwner } from './creative-tools.ts'
+import { resolveCreationVideoInput } from './creation-plan-execution.ts'
 
 declare module '@deepseek-ai/dsh-jobs/view' {
   interface JobKindMap {
@@ -150,15 +151,16 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
     description: 'Create a finished video longer than one model clip from a natural-language brief. Use the yunshu-video-director skill for story, character/reference continuity, dialogue and subtitles, then call this native workflow; do not write polling, download or assembly scripts. For requests such as a 40-second video, plan the fewest supported clips (for a 15-second limit: 15+15+10, or three 15-second clips trimmed to 40), generate them in order using the signed-in account, then automatically normalize, trim, and join them locally. All local tools and every request are checked before billing. Returns a background job_id and durable project_id; read job_output for progress and call present on the completed final_path. Never claim completion before the job reports a saved final_path. Already submitted provider tasks may continue billing after local cancellation. If a current user-supplied chat attachment is outside the workspace, first copy that read-authorized attachment into this workspace with the existing file tools, then pass the copied path; do not copy unrelated files.',
     parameters: {
       plan_id: { type: 'string', description: 'Explicit update_creation_plan id. Also supply shot_ids in generation order.' },
-      shot_ids: { type: 'array', items: { type: 'string' }, description: 'Exact shot ids belonging to plan_id, one per actual supported model clip and in generation order.' },
+      shot_ids: { type: 'array', items: { type: 'string' }, description: 'Exact shot ids belonging to plan_id, one per actual supported model clip and in the saved timeline order.' },
       prompt: { type: 'string', required: true, description: 'The complete video brief, visual continuity, story, and desired editing. Before calling, script user-delegated narrative or dialogue scenes with stable character ids, language and brief exact lines, identifying on-screen speakers versus narration; preserve user-supplied wording. Assign each line and its timing to a shot in shot_prompts. Do not reduce a story requiring voices to a music montage. Respect silent/no-dialogue requests and do not add dialogue or subtitles to unrelated nonverbal videos. Include requested lip-sync and subtitle requirements. These request native model generation, not separate speech, lip-sync or subtitle processing; verify the rendered result before claiming they are met.' },
       total_duration_seconds: { type: 'number', required: true, description: 'Desired final length in whole seconds; this may exceed the model single-clip limit.' },
-      shot_prompts: { type: 'array', items: { type: 'string' }, description: 'Exact shot briefs, one per planned clip. For delegated narrative or dialogue, first write a short script and allocate each shot its character ids, language, exact lines and timing, distinguishing on-screen speech from narration; preserve user-provided wording. Keep each shot focused on its assigned lines rather than repeating the whole story. Respect silent/no-dialogue requests. Omit for briefs that do not require shot-specific scripting.' },
+      shot_prompts: { type: 'array', items: { type: 'string' }, description: 'Exact shot briefs, one per planned clip. With plan_id and shot_ids, omit to use each saved shot’s scene, camera, action, prompt, exact dialogue/subtitles and associated character definitions without another model call. Explicit values remain verbatim. Otherwise allocate delegated narrative lines and timing to stable speakers, distinguishing on-screen speech from narration. Respect silent/no-dialogue requests.' },
+      shot_durations_seconds: { type: 'array', items: { type: 'number' }, description: 'Exact model-supported whole seconds per clip, in shot_ids or shot_prompts order. Their sum must equal total_duration_seconds. When omitted for an explicit creation plan, use its saved shot durations; do not silently change timeline timing.' },
       model: { type: 'string', description: 'Only specify a model when requested; otherwise use an available account model.' },
       resolution: { type: 'string' }, ratio: { type: 'string' },
       audio: { type: 'boolean', description: 'Optional requested audio state. Sent as a switch only when the chosen model declares one; fixed native audio accepts only its declared state. Audio presence alone does not verify speech, lip-sync or subtitles.' },
       frame_images: { type: 'array', items: { type: 'string' }, description: 'Existing uploaded ma_ first/last frame ids or workspace image paths. For a user-supplied chat attachment outside the workspace, first copy the read-authorized attachment into the workspace with existing file tools and pass its copied path.' },
-      reference_images: { type: 'array', items: { type: 'string' }, description: 'Existing uploaded ma_ subject/style image ids or workspace image paths. For a user-supplied chat attachment outside the workspace, first copy the read-authorized attachment into the workspace with existing file tools and pass its copied path.' },
+      reference_images: { type: 'array', items: { type: 'string' }, description: 'Shared uploaded ma_ subject/style image ids or workspace image paths used by every shot. With plan_id, each shot’s saved image materials and character references are added only to that shot; do not duplicate unrelated character references here. For a user-supplied chat attachment outside the workspace, first copy the read-authorized attachment into the workspace with existing file tools and pass its copied path.' },
       reference_videos: { type: 'array', items: { type: 'string' }, description: 'Existing uploaded ma_ video reference ids or workspace video paths. For a user-supplied chat attachment outside the workspace, first copy the read-authorized attachment into the workspace with existing file tools and pass its copied path.' },
       reference_audios: { type: 'array', items: { type: 'string' }, description: 'Existing uploaded ma_ audio reference ids or workspace WAV/MP3 paths, only when the chosen model supports audio references. For a user-supplied chat attachment outside the workspace, first copy the read-authorized attachment into the workspace with existing file tools and pass its copied path. A reference does not guarantee copied speech, matching mouth movements or subtitles.' },
     }, output,
@@ -181,9 +183,10 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
           }
           return normalized
         }
-        const input: VideoProjectInput = {
+        const { input, planRevision } = await resolveCreationVideoInput(options, creativeOwner(exec, provider.identity), {
           prompt: args.prompt, totalDurationSeconds: args.total_duration_seconds,
           ...args.shot_prompts === undefined ? {} : { shotPrompts: args.shot_prompts },
+          ...args.shot_durations_seconds === undefined ? {} : { shotDurations: args.shot_durations_seconds },
           ...args.model === undefined ? {} : { model: args.model },
           ...args.resolution === undefined ? {} : { resolution: args.resolution },
           ...args.ratio === undefined ? {} : { ratio: args.ratio },
@@ -192,11 +195,14 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
           ...args.reference_images === undefined ? {} : { referenceImages: await images(args.reference_images) },
           ...args.reference_videos === undefined ? {} : { referenceVideos: args.reference_videos },
           ...args.reference_audios === undefined ? {} : { referenceAudios: args.reference_audios },
-        }
+        }, args.plan_id, args.shot_ids)
         const manifest = await prepareVideoProject(options, input, session.id, workspaceRoot, provider, editor, signal)
         creation = await options.creative?.begin(creativeOwner(exec, provider.identity), {
-          kind: 'video', prompt: input.prompt, shots: manifest.segments.map(segment => ({ prompt: segment.prompt, durationSeconds: segment.durationSeconds })), videoProjectId: manifest.id,
+          kind: 'video', prompt: input.prompt, model: manifest.model,
+          shots: manifest.segments.map(segment => ({ prompt: segment.prompt, durationSeconds: segment.durationSeconds })),
+          videoProjectId: manifest.id,
           ...args.plan_id === undefined ? {} : { planId: args.plan_id }, ...args.shot_ids === undefined ? {} : { shotIds: args.shot_ids },
+          ...planRevision === undefined ? {} : { expectedRevision: planRevision },
         })
         const runEditor = options.editor(workspaceRoot, session, [join(options.stateDirectory, manifest.id, 'clips')])
         const linked = creation

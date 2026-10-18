@@ -3,44 +3,44 @@
 # After editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write packages/client/ui-creative/README.md
 /:
-  en: 8e311733047a3b24
-  zh: 2dcd05787a566071
-/chat-creation-sidebar:
-  en: 7087577eeb7f581a
-  zh: 5af13f1eae2c921b
-/chat-creation-sidebar/summary:
-  en: 8905ef13521b8d24
-  zh: 3c7796fcfb3af072
-/chat-creation-sidebar/table-of-contents:
+  en: 8c3d6cfb5d74ec5b
+  zh: d987a69e20a82054
+/creation-projects:
+  en: 9dfc63530d8b0f9f
+  zh: aac954740ac68b1a
+/creation-projects/summary:
+  en: 898144b26d7726bb
+  zh: b90bcc4d626d369f
+/creation-projects/table-of-contents:
   en: 23386452a66b2fbd
   zh: adce2159d206cb27
-/chat-creation-sidebar/use-this-package:
-  en: ffa772c6bd09a7e4
-  zh: 217f4f14befdceba
-/chat-creation-sidebar/understand-the-implementation:
-  en: a3cda282e714765f
-  zh: 3b1443bd30831d9a
-/chat-creation-sidebar/further-exploration:
+/creation-projects/use-this-package:
+  en: d39a87690331c7a4
+  zh: 0a1e3d0a035736b3
+/creation-projects/understand-the-implementation:
+  en: fa57c82bfd972735
+  zh: 48d879dca18ad25b
+/creation-projects/further-exploration:
   en: 51f1e7b2fc911e28
   zh: 50a90bde12719d04
-/chat-creation-sidebar/model-experience:
+/creation-projects/model-experience:
   en: 215e7ba838619b7b
   zh: a311da3843709f90
-/chat-creation-sidebar/model-experience/creation-revision-drafts:
+/creation-projects/model-experience/creation-revision-drafts:
   en: c7fdaf8a14945cba
   zh: 2043de851fd33eb4
-/chat-creation-sidebar/model-experience/creation-revision-drafts/what-the-model-sees:
-  en: f24aed6b6a9dcb8d
-  zh: 794574e20fb17606
-/chat-creation-sidebar/model-experience/creation-revision-drafts/token-effect:
+/creation-projects/model-experience/creation-revision-drafts/what-the-model-sees:
+  en: d2d456adc4b68095
+  zh: da80e5c623ad9de7
+/creation-projects/model-experience/creation-revision-drafts/token-effect:
   en: a8be975acea85fdc
   zh: 57bfcdc7c82ef0b8
-/chat-creation-sidebar/model-experience/creation-revision-drafts/kv-cache-effect:
+/creation-projects/model-experience/creation-revision-drafts/kv-cache-effect:
   en: dc2696ac6af95635
   zh: 39acae0afda3018e
-/chat-creation-sidebar/known-limitations-and-deferred-work:
+/creation-projects/known-limitations-and-deferred-work:
   en: 81508d6814e76534
   zh: bcaa0518867b187f
-/chat-creation-sidebar/known-limitations-and-deferred-work/dev-note:
+/creation-projects/known-limitations-and-deferred-work/dev-note:
   en: e67f633dc6fe7773
   zh: e88aeb617ffb74ea

@@ -5,13 +5,13 @@ import type {} from './locales.ts'
 
 /** Registration-owned transient outcome, independent of tab mounts. */
 export interface CreativeDraftNoticeInjected {
-  readonly hooks: { readonly notice: HostObservable<{ seq: number; success: boolean } | null> }
+  readonly hooks: { readonly notice: HostObservable<{ seq: number; success: boolean; kind: 'draft' | 'plan' } | null> }
   readonly dismiss: () => void
 }
 
 /** @param props - framework-bound notice and locale. @returns shared shell toast or no output. */
 export function CreativeDraftNotice({ useNotice, dismiss, t }: InjectFace<CreativeDraftNoticeInjected> & PropsLocale<'creative'>) {
   const value = useNotice(snapshot => snapshot)
-  return value === null ? null : <Toast key={value.seq} text={t(value.success ? 'draft.added' : 'draft.blocked')}
+  return value === null ? null : <Toast key={value.seq} text={t(value.kind === 'plan' ? 'plan.saved' : value.success ? 'draft.added' : 'draft.blocked')}
     {...value.success ? { tone: 'success' as const } : {}} onDone={dismiss} />
 }

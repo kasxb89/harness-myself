@@ -180,6 +180,10 @@ function validateInput(input: VideoProjectInput, maxTotalSeconds: number): void 
     throw new VideoProjectError('INVALID_DURATION', `视频总时长须为 1 至 ${String(maxTotalSeconds)} 秒的整数。`)
   }
   if (input.shotPrompts?.some(prompt => prompt.trim() === '' || prompt.length > MAX_PROMPT_LENGTH)) throw new VideoProjectError('INVALID_SHOTS', '每个分镜说明须为 1 至 7000 字符。')
+  if (input.shotDurations !== undefined && (input.shotDurations.length === 0
+    || input.shotDurations.some(value => !Number.isSafeInteger(value) || value < 1))) {
+    throw new VideoProjectError('INVALID_SHOT_DURATION', '每个分镜时长必须是正整数秒，尚未提交生成。')
+  }
 }
 
 /** Retain the complete brief while limiting this clip's actions and speech to its own shot. */
@@ -280,6 +284,24 @@ function strings(source: Record<string, unknown>, key: string): string[] {
   return value
 }
 
+/** Read optional per-shot controls added without changing existing v1 records. */
+function shotControls(input: Record<string, unknown>): Pick<VideoProjectInput, 'shotDurations' | 'shotReferenceImages'> {
+  const durations = input.shotDurations
+  if (durations !== undefined && (!Array.isArray(durations) || durations.length === 0 || durations.length > 1024
+    || !durations.every((value): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value > 0))) {
+    throw new VideoProjectError('INVALID_RECORD', '视频项目分镜时长记录损坏，已停止操作。')
+  }
+  const references = input.shotReferenceImages
+  if (references !== undefined && (!Array.isArray(references) || references.length > 1024
+    || !references.every((value): value is string[] => Array.isArray(value) && value.every(item => typeof item === 'string')))) {
+    throw new VideoProjectError('INVALID_RECORD', '视频项目分镜素材记录损坏，已停止操作。')
+  }
+  return {
+    ...durations === undefined ? {} : { shotDurations: durations },
+    ...references === undefined ? {} : { shotReferenceImages: references },
+  }
+}
+
 /** Read one required positive durable number. */
 function positive(source: Record<string, unknown>, key: string): number {
   const value = source[key]
@@ -302,6 +324,7 @@ function parseManifest(value: unknown): VideoProjectManifest {
   const optionalInput = Object.fromEntries(['model', 'resolution', 'ratio'].flatMap(key => input[key] === undefined ? [] : [[key, text(input, key)]]))
   const parsedInput: VideoProjectInput = {
     prompt: text(input, 'prompt'), totalDurationSeconds: positive(input, 'totalDurationSeconds'), ...optionalInput,
+    ...shotControls(input),
     ...input.shotPrompts === undefined ? {} : { shotPrompts: strings(input, 'shotPrompts') },
     ...input.frameImages === undefined ? {} : { frameImages: strings(input, 'frameImages') },
     ...input.referenceImages === undefined ? {} : { referenceImages: strings(input, 'referenceImages') },
@@ -324,6 +347,14 @@ function parseManifest(value: unknown): VideoProjectManifest {
       ...segment.path === undefined ? {} : { path: text(segment, 'path') },
     }
   })
+  if (parsedInput.shotDurations !== undefined && (parsedInput.shotDurations.length !== segments.length
+    || parsedInput.shotDurations.some((duration, index) => duration !== segments[index]?.durationSeconds)
+    || parsedInput.shotDurations.reduce((sum, duration) => sum + duration, 0) !== parsedInput.totalDurationSeconds)) {
+    throw new VideoProjectError('INVALID_RECORD', '视频项目分镜时长与已保存请求不一致，已停止操作。')
+  }
+  if (parsedInput.shotReferenceImages !== undefined && parsedInput.shotReferenceImages.length !== segments.length) {
+    throw new VideoProjectError('INVALID_RECORD', '视频项目分镜素材数量与已保存请求不一致，已停止操作。')
+  }
   if (source.composedPath !== undefined && (source.publicationDirectory === undefined || segments.some(segment => segment.status !== 'saved'))) throw new VideoProjectError('INVALID_RECORD', '视频项目本地成片没有完整的已保存分镜记录，已停止操作。')
   if (segments.length === 0 || segments.some((segment, index) => segment.index !== index + 1 || (segment.status === 'running' && segment.taskId === undefined) || (segment.status === 'saved' && segment.path === undefined))) throw new VideoProjectError('INVALID_RECORD', '视频片段记录不完整，已停止操作。')
   return {
@@ -375,6 +406,12 @@ export async function prepareVideoProject(
   provider: VideoProjectProvider, editor: VideoEditor, signal: AbortSignal,
 ): Promise<VideoProjectManifest> {
   validateInput(input, options.maxTotalSeconds)
+  if (input.shotDurations !== undefined) {
+    if (input.shotDurations.length > options.maxSegments) throw new VideoProjectError('TOO_MANY_SEGMENTS', '分镜数量超过当前项目上限，尚未提交生成。')
+    if (input.shotDurations.reduce((sum, value) => sum + value, 0) !== input.totalDurationSeconds) {
+      throw new VideoProjectError('SHOT_DURATION_MISMATCH', '分镜时长之和必须等于视频总时长，请修改时间轴后重试；尚未提交生成。')
+    }
+  }
   const id = `vp_${randomUUID()}` as VideoProjectId
   const outputDirectory = join(resolveVideoOutputDirectory(workspaceRoot, options.outputDirectory), id)
   await editor.preflight(signal, outputDirectory)
@@ -385,8 +422,15 @@ export async function prepareVideoProject(
   }
   await provider.assertCurrent()
   const model = await provider.model(input.model, signal, input.resolution)
-  const durations = planVideoDurations(input.totalDurationSeconds, model.durations, options.maxSegments)
+  const durations = input.shotDurations === undefined
+    ? planVideoDurations(input.totalDurationSeconds, model.durations, options.maxSegments) : [...input.shotDurations]
+  if (input.shotDurations !== undefined && durations.some(duration => !model.durations.includes(duration))) {
+    throw new VideoProjectError('SHOT_DURATION_UNSUPPORTED', `当前模型不支持时间轴中的分镜时长，请从 ${model.durations.join('、')} 秒中选择；尚未提交生成。`)
+  }
   if (input.shotPrompts !== undefined && input.shotPrompts.length !== durations.length) throw new VideoProjectError('SHOT_COUNT_MISMATCH', `该时长需要 ${String(durations.length)} 个分镜，请提供相同数量的分镜说明。`)
+  if (input.shotReferenceImages !== undefined && input.shotReferenceImages.length !== durations.length) {
+    throw new VideoProjectError('SHOT_COUNT_MISMATCH', '分镜参考素材须与实际生成分镜一一对应，尚未提交生成。')
+  }
   const planned = durations.map((durationSeconds, index) => {
     const prompt = segmentPrompt(input, model.id, index, durations.length, durationSeconds)
     if (prompt.length > MAX_PROMPT_LENGTH) {
@@ -397,7 +441,10 @@ export async function prepareVideoProject(
   const segments: VideoProjectSegment[] = []
   for (const [index, { durationSeconds, prompt }] of planned.entries()) {
     signal.throwIfAborted()
-    const request = await provider.build(input, model.id, prompt, durationSeconds, signal)
+    const requestInput = input.shotReferenceImages === undefined ? input : {
+      ...input, referenceImages: [...new Set([...input.referenceImages ?? [], ...input.shotReferenceImages[index] ?? []])],
+    }
+    const request = await provider.build(requestInput, model.id, prompt, durationSeconds, signal)
     segments.push({ index: index + 1, durationSeconds, prompt, request, status: 'pending' })
   }
   const manifest: VideoProjectManifest = {

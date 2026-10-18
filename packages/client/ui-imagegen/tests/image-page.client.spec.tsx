@@ -23,6 +23,7 @@ const t: Parameters<typeof ImagePage>[0]['t'] = (key, values) => {
 
 let assets = 0
 let sessionAccountId: string | null = 'account-a'
+let chatSessionId: string | undefined = 'session-a'
 const fetchMock = vi.fn<typeof fetch>()
 
 function json(body: object): Response {
@@ -47,6 +48,7 @@ function makeProps() {
   const fixture = contentFixture()
   const props = {
     useCreationContent: fixture.useCreationContent, useLocale: fixture.useLocale, refreshContent: vi.fn(),
+    useCreationSession: select => select({ key: chatSessionId, hooks: {}, keyedHooks: {}, props: {} }),
     t,
     renderFactorySlot: vi.fn<RenderFactorySlot>(() => null),
     openVideo: vi.fn(),
@@ -55,7 +57,7 @@ function makeProps() {
     releaseReferencePreview: vi.fn(),
     actions: store.actions,
     useStore: select => select(useSyncExternalStore(subscribe, getSnapshot)),
-  } satisfies Pick<Parameters<typeof ImagePage>[0], 'useCreationContent' | 'useLocale' | 'refreshContent' | 't' | 'renderFactorySlot' | 'openVideo' | 'readDraft' | 'createReferencePreview' | 'releaseReferencePreview' | 'actions' | 'useStore'>
+  } satisfies Pick<Parameters<typeof ImagePage>[0], 'useCreationSession' | 'useCreationContent' | 'useLocale' | 'refreshContent' | 't' | 'renderFactorySlot' | 'openVideo' | 'readDraft' | 'createReferencePreview' | 'releaseReferencePreview' | 'actions' | 'useStore'>
   return { store, fixture, props: props as Parameters<typeof ImagePage>[0] }
 }
 
@@ -66,6 +68,7 @@ async function ready() {
 beforeEach(() => {
   assets = 0
   sessionAccountId = 'account-a'
+  chatSessionId = 'session-a'
   fetchMock.mockReset()
   fetchMock.mockImplementation(async (input) => {
     const url = requestUrl(input)
@@ -84,6 +87,77 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 describe('image creation workspace', () => {
+  it('links a generated project to the selected conversation and refreshes the shared board', async () => {
+    chatSessionId = 'session-selected'
+    const { props } = makeProps()
+    render(<ImagePage {...props} />)
+    await ready()
+    fireEvent.change(screen.getByRole('textbox', { name: zh.prompt }), { target: { value: '角色定妆照' } })
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    await screen.findByText(zh.done)
+    expect(requestBody(fetchMock.mock.calls.find(([url]) => url === '/credits/api/image/generate')))
+      .toMatchObject({ session_id: 'session-selected', account_id: 'account-a' })
+    const boards = vi.mocked(props.renderFactorySlot).mock.calls.filter(([name]) => name === 'creation.projects')
+    expect(boards.length).toBeGreaterThan(1)
+    expect(boards.at(-1)?.[1]).toEqual({ refreshKey: JSON.stringify([null, [path]]), generationPending: false })
+    expect(screen.getByRole('region', { name: zh.projects })).toBeTruthy()
+  })
+
+  it('keeps a pending generation owned by its original conversation after switching chats', async () => {
+    let finish!: (response: Response) => void
+    const pending = new Promise<Response>((resolve) => { finish = resolve })
+    const original = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation(async (input, init) => input === '/credits/api/image/generate'
+      ? await pending : await original(input, init))
+    const { props, store } = makeProps()
+    const view = render(<ImagePage {...props} />)
+    await ready()
+    fireEvent.change(screen.getByRole('textbox', { name: zh.prompt }), { target: { value: '画一朵云' } })
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    expect(store.getSnapshot().generationSessionId).toBe('session-a')
+    chatSessionId = 'session-b'
+    view.rerender(<ImagePage {...props} />)
+    const board = vi.mocked(props.renderFactorySlot).mock.calls.filter(([name]) => name === 'creation.projects').at(-1)?.[1]
+    expect(board).toMatchObject({ generationPending: false })
+    expect(requestBody(fetchMock.mock.calls.find(([url]) => url === '/credits/api/image/generate'))).toMatchObject({ session_id: 'session-a' })
+    await act(async () => { finish(json({ ok: true, payload: { path } })) })
+    expect(store.getSnapshot().generationStartedAt).toBeNull()
+  })
+
+  it('requires a selected conversation before starting a paid generation', async () => {
+    chatSessionId = undefined
+    const { props } = makeProps()
+    render(<ImagePage {...props} />)
+    await ready()
+    fireEvent.change(screen.getByRole('textbox', { name: zh.prompt }), { target: { value: '画一朵云' } })
+    expect(screen.getByText(zh.sessionRequired)).toBeTruthy()
+    const submit = screen.getByRole('button', { name: zh.submit })
+    expect(submit).toHaveProperty('disabled', true)
+    fireEvent.click(submit)
+    expect(fetchMock.mock.calls.some(([url]) => url === '/credits/api/image/generate')).toBe(false)
+  })
+
+  it('keeps mounted workspace coordinates in image history, previews, downloads and reference uploads', async () => {
+    const original = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation(async (input, init) => requestUrl(input) === '/artifacts/api/list'
+      ? json({ items: ['mount-one', 'mount-two'].map(workspaceId => ({
+        path: 'artifacts/角色.png', workspaceId, name: '角色.png', kind: 'image', mtimeMs: 8,
+      })) }) : await original(input, init))
+    const { props, store } = makeProps()
+    render(<ImagePage {...props} />)
+    await ready()
+    const previews = await screen.findAllByRole('button', { name: t('previewNamed', { name: '角色.png' }) })
+    expect(previews).toHaveLength(2)
+    fireEvent.click(previews[1]!)
+    const source = `/artifacts/api/raw?path=${encodeURIComponent('artifacts/角色.png')}&workspaceId=mount-two`
+    expect(screen.getByRole('dialog').querySelector('img')?.getAttribute('src')).toBe(source)
+    fireEvent.click(screen.getByRole('button', { name: zh.closePreview }))
+    expect(screen.getAllByRole('link', { name: zh.download })[1]?.getAttribute('href')).toBe(source)
+    fireEvent.click(screen.getAllByRole('button', { name: zh.useAsReference })[1]!)
+    await waitFor(() => { expect(store.getSnapshot().references).toHaveLength(1) })
+    expect(fetchMock.mock.calls.some(([input]) => requestUrl(input) === source)).toBe(true)
+  })
+
   it.each(['/Users/user/chosen-images/image.png', 'D:\\云枢产物\\image.png'])(
     'shows saved image history from the configured directory: %s', async (savedPath) => {
       const original = fetchMock.getMockImplementation()!
@@ -384,7 +458,7 @@ describe('image creation workspace', () => {
     fireEvent.click(screen.getByRole('button', { name: '生成图片' }))
     await screen.findByText(zh.done)
     const request = fetchMock.mock.calls.find(([url]) => url === '/credits/api/image/generate')
-    expect(requestBody(request)).toEqual({ prompt: 'Product photo', model: 'text-model', count: 1, size: '768x768', references: [] })
+    expect(requestBody(request)).toEqual({ session_id: 'session-a', account_id: 'account-a', prompt: 'Product photo', model: 'text-model', count: 1, size: '768x768', references: [] })
     expect(view.container.textContent).not.toContain('plugin:')
   })
 

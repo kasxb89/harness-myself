@@ -3,8 +3,9 @@ import { createServer, type Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { CreativeError, CreativeStore, parseCreativePlan, type CreativeOwner, type CreativePlan } from '../src/creative-store.ts'
+import { CreativeError, CreativeStore, creativePlanRevision, parseCreativePlan, parseCreativePlanChange, type CreativeOwner, type CreativePlan } from '../src/creative-store.ts'
 import type { VideoProjectManifest } from '../src/video-project.ts'
+import type { CreativePlanChange } from '../src/creative-types.ts'
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>()
@@ -126,14 +127,14 @@ describe('creation plans and actual generation facts', () => {
     const operation = await store.begin(owner, { kind: 'video', prompt: 'anime', shots: [{ prompt: 'actual shot', durationSeconds: 5 }], videoProjectId: video.id })
     expect((await store.projects(owner))[0]).toMatchObject({ status: 'running', shots: [{ status: 'running', outputs: [] }] })
     video.segments[0]!.status = 'saved'; video.segments[0]!.path = clip; video.status = 'editing'
-    expect((await store.projects(owner))[0]).toMatchObject({ status: 'editing', outputs: [], shots: [{ status: 'completed', outputs: [{ name: 'clip.mp4' }] }] })
+    expect((await store.projects(owner))[0]).toMatchObject({ status: 'editing', outputs: [{ name: 'clip.mp4' }], shots: [{ status: 'completed', outputs: [{ name: 'clip.mp4' }] }] })
     expect(JSON.stringify(await store.projects(owner))).not.toContain('not public')
     expect((await new CreativeStore(options).projects(owner))[0]?.status).toBe('interrupted')
     video.status = 'failed'; video.failureCode = 'SUBMISSION_UNKNOWN'
     expect((await store.projects(owner))[0]).toMatchObject({ status: 'unknown', errorCode: 'SUBMISSION_UNKNOWN' })
     video.status = 'completed'; delete video.failureCode; video.finalPath = await file('final.mp4'); video.finalDurationSeconds = 5
     store.release(operation)
-    expect((await new CreativeStore(options).projects(owner))[0]).toMatchObject({ status: 'completed', outputs: [{ name: 'final.mp4' }] })
+    expect((await new CreativeStore(options).projects(owner))[0]).toMatchObject({ status: 'completed', outputs: [{ name: 'clip.mp4' }, { name: 'final.mp4' }] })
   })
 
   it('resumes the latest retained record without overwriting a concurrent plan revision or committed asset', async () => {
@@ -172,7 +173,7 @@ describe('creation plans and actual generation facts', () => {
       expect(await resumed).toMatchObject({ projectId: id, operationId: original.operationId })
       const current = (await store.projects(owner))[0]
       expect(current).toMatchObject({ title: '并发修改后的标题', brief: '保留最新人物和分镜要求', assets: [{ id: 'portrait', status: 'completed', outputs: [{ name: 'updated-portrait.png' }] }] })
-      expect(current?.outputs).toEqual([])
+      expect(current?.outputs).toMatchObject([{ name: 'updated-portrait.png' }])
     } finally {
       continueResume.resolve(undefined)
       vi.mocked(open).mockImplementation(actual.open)
@@ -333,5 +334,220 @@ describe('creation plans and actual generation facts', () => {
       vi.mocked(open).mockImplementation(actual.open)
       await pending
     }
+  })
+})
+
+describe('creation plan revisions and task projections', () => {
+  it('parses every supported browser edit and rejects execution fields and malformed values', () => {
+    const valid: CreativePlanChange[] = [
+      { kind: 'shot', id: 'departure', patch: { title: '镜头', durationSeconds: 8, camera: '推近', scene: '雨夜', action: '挥手', prompt: '女孩挥手', dialogue: '再见', subtitles: '再见', characterIds: ['S1'], assetIds: ['portrait'] } },
+      { kind: 'reorder', shotIds: ['departure'] }, { kind: 'character', value: plan().characters[0]! },
+      { kind: 'asset', value: plan().assets[0]! }, { kind: 'add-shot', value: plan().shots[0]! },
+      { kind: 'remove-character', id: 'S1' }, { kind: 'remove-asset', id: 'portrait' }, { kind: 'remove-shot', id: 'departure' },
+    ]
+    valid.forEach((change) => { expect(parseCreativePlanChange(JSON.parse(JSON.stringify(change)))).toEqual(change) })
+    for (const invalid of [null, [], {}, { kind: 'generate', id: 'departure' },
+      { kind: 'shot', id: 'departure', patch: { status: 'completed' } },
+      { kind: 'shot', id: 'departure', patch: { durationSeconds: 0 } },
+      { kind: 'shot', id: '../outside', patch: {} }, { kind: 'reorder', shotIds: [1] },
+      { kind: 'character', value: { ...plan().characters[0], outputs: [] } },
+      { kind: 'asset', value: { ...plan().assets[0], sourcePathOrAssetId: null } },
+      { kind: 'add-shot', value: { ...plan().shots[0], actualDurationSeconds: 30 } },
+      { kind: 'remove-shot', id: 'departure', owner: 'other' },
+    ]) expect(() => parseCreativePlanChange(invalid)).toThrow(CreativeError)
+  })
+
+  it('keeps normalized plan revisions stable across progress, login generations and old v1 records', async () => {
+    const { store, owner, options, file, setLive } = await fixture()
+    const id = await store.updatePlan(owner, plan())
+    const before = (await store.projects(owner))[0]!
+    expect(before).toMatchObject({ sessionId: owner.sessionId, tasks: [], completedShots: 0, totalShots: 1 })
+    expect(before.planRevision).toMatch(/^[a-f0-9]{64}$/u)
+    expect(creativePlanRevision(await store.plan(owner, id))).toBe(before.planRevision)
+    const operation = await store.begin(owner, { kind: 'image', model: 'gpt-image-2', prompt: 'scene', planId: id,
+      shotIds: ['departure'], shots: [{ prompt: 'scene' }] })
+    await store.saved(operation, await file('progress.png'), 'image')
+    const running = (await store.projects(owner))[0]!
+    expect(running.planRevision).toBe(before.planRevision)
+    expect(running.tasks).toMatchObject([{ id: operation.operationId, model: 'gpt-image-2', status: 'saving', shotIds: ['departure'], outputs: [{ name: 'progress.png' }], completedShots: 0, totalShots: 1 }])
+    await store.finish(operation, { status: 'completed', paths: [await file('done.png')], kind: 'image' })
+    const completed = (await store.projects(owner))[0]!
+    expect(completed.planRevision).toBe(before.planRevision)
+    expect(completed).toMatchObject({ completedShots: 1, totalShots: 1, tasks: [{ completedShots: 1, totalShots: 1 }] })
+    const nextOwner = { ...owner, sessionFingerprint: 'new-login' }
+    setLive(nextOwner)
+    await store.updatePlan(nextOwner, plan(), id)
+    expect((await new CreativeStore(options).projects(nextOwner))[0]?.planRevision).toBe(before.planRevision)
+    const path = join(options.directory, id, 'project.json')
+    const legacy = JSON.parse(await readFile(path, 'utf8')) as { version: number; operations: { model?: string }[] }
+    delete legacy.operations[0]!.model
+    await writeFile(path, JSON.stringify(legacy))
+    const restored = (await new CreativeStore(options).projects(nextOwner))[0]!
+    expect(legacy.version).toBe(1)
+    expect(restored.planRevision).toBe(before.planRevision)
+    expect(restored.tasks[0]?.model).toBeUndefined()
+    expect(JSON.stringify(restored)).not.toMatch(/sessionFingerprint|workspaceRoot|new-login|request/u)
+  })
+
+  it('accepts only one concurrent edit of a displayed revision and does not overwrite its winner', async () => {
+    const { store, owner, options } = await fixture()
+    const id = await store.updatePlan(owner, plan())
+    const current = (await store.projects(owner))[0]!
+    const changes = await Promise.allSettled([
+      store.revise(owner, id, current.planRevision, { kind: 'shot', id: 'departure', patch: { title: '新的镜头标题', durationSeconds: 8 } }),
+      store.revise(owner, id, current.planRevision, { kind: 'shot', id: 'departure', patch: { title: '过期的改动' } }),
+    ])
+    expect(changes[0]).toEqual({ status: 'fulfilled', value: id })
+    expect(changes[1]).toMatchObject({ status: 'rejected', reason: { code: 'CREATIVE_PLAN_STALE', status: 409 } })
+    const project = (await new CreativeStore(options).projects(owner))[0]!
+    expect(project.planRevision).not.toBe(current.planRevision)
+    expect(project.shots[0]).toMatchObject({ title: '新的镜头标题', durationSeconds: 8 })
+  })
+
+  it('checks the prepared planning revision in the same queue that records a generation and locks its shots', async () => {
+    const { store, owner, options } = await fixture()
+    const id = await store.updatePlan(owner, plan('video'))
+    const expectedRevision = creativePlanRevision(await store.plan(owner, id))
+    const change: CreativePlanChange = { kind: 'shot', id: 'departure', patch: { prompt: '用户刚刚修改的镜头' } }
+    const changed = store.revise(owner, id, expectedRevision, change)
+    const begin = store.begin(owner, {
+      kind: 'video', planId: id, shotIds: ['departure'], expectedRevision,
+      prompt: '旧的分镜', shots: [{ prompt: '旧的分镜', durationSeconds: 5 }],
+    })
+    await expect(changed).resolves.toBe(id)
+    await expect(begin).rejects.toMatchObject({ code: 'CREATIVE_PLAN_STALE', status: 409 })
+    const current = (await new CreativeStore(options).projects(owner))[0]!
+    expect(current).toMatchObject({ shots: [{ prompt: '用户刚刚修改的镜头', status: 'planned' }], tasks: [], outputs: [] })
+    const operation = await store.begin(owner, {
+      kind: 'video', planId: id, shotIds: ['departure'], expectedRevision: current.planRevision,
+      prompt: '最新分镜', shots: [{ prompt: '最新分镜', durationSeconds: 5 }],
+    })
+    try {
+      await expect(store.revise(owner, id, current.planRevision, {
+        kind: 'shot', id: 'departure', patch: { prompt: '运行期间的改稿' },
+      })).rejects.toMatchObject({ code: 'CREATIVE_PLAN_RUNNING', status: 409 })
+      expect((await store.projects(owner))[0]?.tasks).toMatchObject([{ id: operation.operationId, status: 'running' }])
+    } finally { store.release(operation) }
+  })
+
+  it('edits, adds, reorders and explicitly removes unreferenced plan entries without starting generation', async () => {
+    const { store, owner } = await fixture()
+    const id = await store.updatePlan(owner, plan())
+    const change = async (value: CreativePlanChange) => {
+      const before = (await store.projects(owner))[0]!
+      await store.revise(owner, id, before.planRevision, value)
+      return (await store.projects(owner))[0]!
+    }
+    const otherShot = { ...plan().shots[0]!, id: 'arrival', order: 2, title: '抵达' }
+    await change({ kind: 'add-shot', value: otherShot })
+    expect((await change({ kind: 'reorder', shotIds: ['arrival', 'departure'] })).shots.map(shot => [shot.id, shot.order]))
+      .toEqual([['arrival', 1], ['departure', 2]])
+    await change({ kind: 'character', value: { ...plan().characters[0]!, appearance: '短发', voice: '温柔女声' } })
+    await change({ kind: 'asset', value: { ...plan().assets[0]!, description: '新的参考要求' } })
+    for (const shot of ['arrival', 'departure']) await change({ kind: 'shot', id: shot, patch: { characterIds: [], assetIds: [] } })
+    await change({ kind: 'remove-character', id: 'S1' })
+    await change({ kind: 'remove-asset', id: 'portrait' })
+    const final = await change({ kind: 'remove-shot', id: 'arrival' })
+    expect(final).toMatchObject({ characters: [], assets: [], tasks: [], outputs: [], shots: [{ id: 'departure' }] })
+  })
+
+  it('rejects referenced deletions, invalid ordering and malformed complete plans without persisting them', async () => {
+    const { store, owner, options } = await fixture()
+    const id = await store.updatePlan(owner, plan())
+    const current = (await store.projects(owner))[0]!
+    const record = await readFile(join(options.directory, id, 'project.json'), 'utf8')
+    const changes: CreativePlanChange[] = [
+      { kind: 'remove-character', id: 'S1' }, { kind: 'remove-asset', id: 'portrait' }, { kind: 'remove-shot', id: 'departure' },
+      { kind: 'reorder', shotIds: [] }, { kind: 'reorder', shotIds: ['missing'] },
+      { kind: 'shot', id: 'missing', patch: { title: '不存在' } },
+      { kind: 'shot', id: 'departure', patch: { durationSeconds: -1 } },
+      { kind: 'shot', id: 'departure', patch: { characterIds: ['missing'] } },
+      { kind: 'add-shot', value: { ...plan().shots[0]! } },
+    ]
+    for (const change of changes) {
+      await expect(store.revise(owner, id, current.planRevision, change)).rejects.toBeInstanceOf(CreativeError)
+      expect(await readFile(join(options.directory, id, 'project.json'), 'utf8')).toBe(record)
+    }
+  })
+
+  it('blocks edits to running shots and their character/reference data while allowing unrelated changes', async () => {
+    const { store, owner } = await fixture()
+    const initial = plan()
+    const id = await store.updatePlan(owner, { ...initial, shots: [...initial.shots, { ...initial.shots[0]!, id: 'other', order: 2 }] })
+    const current = (await store.projects(owner))[0]!
+    const operation = await store.begin(owner, { kind: 'image', prompt: 'running', planId: id, shotIds: ['departure'], shots: [{ prompt: 'running' }] })
+    const forbidden: CreativePlanChange[] = [
+      { kind: 'shot', id: 'departure', patch: { prompt: 'changed' } },
+      { kind: 'reorder', shotIds: ['other', 'departure'] },
+      { kind: 'character', value: { ...initial.characters[0]!, appearance: 'changed' } },
+      { kind: 'asset', value: { ...initial.assets[0]!, sourcePathOrAssetId: 'ma_changed' } },
+    ]
+    for (const change of forbidden) await expect(store.revise(owner, id, current.planRevision, change)).rejects.toMatchObject({ code: 'CREATIVE_PLAN_RUNNING', status: 409 })
+    await store.revise(owner, id, current.planRevision, { kind: 'shot', id: 'other', patch: { title: '无关镜头可编辑' } })
+    await store.finish(operation, { status: 'failed', errorCode: 'STOPPED' })
+    const next = (await store.projects(owner))[0]!
+    await store.revise(owner, id, next.planRevision, { kind: 'shot', id: 'departure', patch: { title: '任务结束后可编辑' } })
+    const generated = (await store.projects(owner))[0]!
+    await expect(store.revise(owner, id, generated.planRevision, { kind: 'remove-shot', id: 'departure' })).rejects.toMatchObject({ code: 'CREATIVE_PLAN_CONFLICT' })
+  })
+
+  it('refuses edits from another account, chat, workspace or login generation', async () => {
+    const { store, owner, setLive } = await fixture()
+    const id = await store.updatePlan(owner, plan())
+    const current = (await store.projects(owner))[0]!
+    const change: CreativePlanChange = { kind: 'shot', id: 'departure', patch: { title: '越权修改' } }
+    expect(await store.owner(owner, id, owner.sessionId)).toEqual(owner)
+    await expect(store.owner(owner, id, 'other-chat')).rejects.toMatchObject({ code: 'CREATIVE_ACCESS_DENIED' })
+    await expect(store.owner({ ...owner, accountId: '8' }, id, owner.sessionId)).rejects.toMatchObject({ code: 'CREATIVE_ACCOUNT_CHANGED' })
+    for (const other of [{ ...owner, accountId: '8' }, { ...owner, sessionId: 'other-chat' }, { ...owner, workspaceRoot: join(owner.workspaceRoot, 'other') }]) {
+      await expect(store.revise(other, id, current.planRevision, change)).rejects.toBeInstanceOf(CreativeError)
+    }
+    setLive(undefined)
+    await expect(store.owner(owner, id, owner.sessionId)).rejects.toMatchObject({ code: 'CREATIVE_ACCOUNT_CHANGED' })
+    await expect(store.revise(owner, id, current.planRevision, change)).rejects.toMatchObject({ code: 'CREATIVE_ACCOUNT_CHANGED' })
+  })
+
+  it('includes generated material images in both real outputs and task outputs, deduplicating shared paths', async () => {
+    const { store, owner, file } = await fixture()
+    const id = await store.updatePlan(owner, plan())
+    const path = await file('portrait.png')
+    const asset = await store.begin(owner, { kind: 'image', model: 'image-model', prompt: 'portrait', planId: id, assetId: 'portrait', shots: [{ prompt: 'portrait' }] })
+    await store.saved(asset, path, 'image')
+    await store.finish(asset, { status: 'completed', paths: [path], kind: 'image' })
+    const shot = await store.begin(owner, { kind: 'image', prompt: 'scene', planId: id, shotIds: ['departure'], shots: [{ prompt: 'scene' }] })
+    await store.finish(shot, { status: 'completed', paths: [path], kind: 'image' })
+    const project = (await store.projects(owner))[0]!
+    const referenceUrl = new URL(project.assets[0]!.referenceUrl!, 'https://local.invalid')
+    expect(referenceUrl.pathname).toBe('/credits/api/creative/reference')
+    expect(Object.fromEntries(referenceUrl.searchParams)).toEqual({ session_id: owner.sessionId, project_id: id, asset_id: 'portrait' })
+    expect(project.outputs).toHaveLength(1)
+    expect(project.assets[0]?.outputs).toHaveLength(1)
+    expect(project.tasks).toMatchObject([
+      { id: asset.operationId, assetId: 'portrait', model: 'image-model', status: 'completed', outputs: [{ name: 'portrait.png' }], completedShots: 0, totalShots: 0 },
+      { id: shot.operationId, shotIds: ['departure'], status: 'completed', outputs: [{ name: 'portrait.png' }], completedShots: 1, totalShots: 1 },
+    ])
+  })
+
+  it('keeps edited shot timing distinct from executed duration while projecting real long-video task facts', async () => {
+    const { store, owner, file, setVideo } = await fixture()
+    const id = await store.updatePlan(owner, plan('video'))
+    const clip = await file('scene.mp4')
+    const video: VideoProjectManifest = {
+      version: 1, id: 'vp_00000000-0000-0000-0000-000000000000' as VideoProjectManifest['id'], ownerSessionId: owner.sessionId,
+      workspaceRoot: owner.workspaceRoot, identity: owner, input: { prompt: 'story', totalDurationSeconds: 15 }, model: 'MiniMax-H3',
+      status: 'running', segments: [{ index: 1, durationSeconds: 15, prompt: 'shot', request: { secret: 'not-public' }, status: 'saved', taskId: 'upstream-private', path: clip }],
+      outputDirectory: join(owner.workspaceRoot, 'video'), updatedAt: new Date().toISOString(),
+    }
+    setVideo(video)
+    const operation = await store.begin(owner, { kind: 'video', prompt: 'story', planId: id, shotIds: ['departure'], shots: [{ prompt: 'shot' }], videoProjectId: video.id })
+    store.release(operation)
+    const before = (await store.projects(owner))[0]!
+    await store.revise(owner, id, before.planRevision, { kind: 'shot', id: 'departure', patch: { durationSeconds: 8 } })
+    const project = (await store.projects(owner))[0]!
+    expect(project.shots[0]).toMatchObject({ durationSeconds: 8, actualDurationSeconds: 15 })
+    expect((await store.plan(owner, id)).shots[0]).not.toHaveProperty('actualDurationSeconds')
+    expect(project.tasks).toMatchObject([{ id: operation.operationId, videoProjectId: video.id, model: 'MiniMax-H3', completedShots: 1, totalShots: 1, outputs: [{ name: 'scene.mp4' }] }])
+    expect(project.outputs).toMatchObject([{ name: 'scene.mp4' }])
+    expect(JSON.stringify(project)).not.toMatch(/not-public|upstream-private|sessionFingerprint|workspaceRoot/u)
   })
 })

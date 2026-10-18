@@ -17,6 +17,7 @@
     { "path": "../ui-sidebar-right" },
     { "path": "../ui-slots" },
     { "path": "../../host/credits-index" },
-    { "path": "../../core/session" }
+    { "path": "../../core/session" },
+    { "path": "../../util/crypto" }
   ]
 }

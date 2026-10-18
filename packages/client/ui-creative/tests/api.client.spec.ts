@@ -65,3 +65,64 @@ describe('creative project transport', () => {
     for (let i = 0; i < 3; i++) expect(await readCreativeProjects(SESSION, signal)).toEqual({ ok: false, code: 'invalid' })
   })
 })
+
+describe('free plan editing and uploaded references', () => {
+  it('sends exact CAS coordinates and distinguishes conflicting revisions without retrying', async () => {
+    const { saveCreativePlan } = await import('../src/client/api.ts')
+    const data = project()
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ ok: true, payload: { accountId: 'account-a', projects: [data] } }))
+      .mockResolvedValueOnce(Response.json({ ok: false, code: 'CREATIVE_PLAN_STALE' }, { status: 409 }))
+    vi.stubGlobal('fetch', fetcher)
+    const signal = new AbortController().signal
+    const request = { sessionId: SESSION, projectId: data.id, expectedRevision: data.planRevision,
+      change: { kind: 'reorder' as const, shotIds: ['s1'] } }
+    expect((await saveCreativePlan(request, signal)).ok).toBe(true)
+    expect(fetcher).toHaveBeenCalledWith('/credits/api/creative/plan', expect.objectContaining({ method: 'POST', signal,
+      body: JSON.stringify({ session_id: SESSION, project_id: data.id, expected_revision: 'revision-1', change: request.change }) }))
+    expect(await saveCreativePlan(request, signal)).toEqual({ ok: false, code: 'stale' })
+    expect(fetcher).toHaveBeenCalledTimes(2)
+  })
+
+  it.each([
+    { sessionId: 'other' }, { planRevision: 1 }, { completedShots: 2, totalShots: 1 },
+    { tasks: [{ id: 'task', status: 'running', shotIds: [], completedShots: -1, totalShots: 1, outputs: [] }] },
+    { tasks: [{ id: 'task', status: 'completed', shotIds: ['s1'], completedShots: 1, totalShots: 1,
+      outputs: [{ id: 'out1', kind: 'video', name: 'bad.mp4', url: 'https://untrusted.example/secret' }] }] },
+  ])('rejects mismatched session, revision, progress or task output facts', async (invalid) => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ ok: true,
+      payload: { accountId: 'account-a', projects: [{ ...project(), ...invalid }] } })))
+    expect(await readCreativeProjects(SESSION, new AbortController().signal)).toEqual({ ok: false, code: 'invalid' })
+  })
+
+  it('accepts only the exact owner-checked uploaded reference route', async () => {
+    const data = project()
+    const url = '/credits/api/creative/reference?session_id=session-a&project_id=cp_rain&asset_id=station'
+    for (const referenceUrl of [url, url.replace('station', 'other'), 'https://external.example/image.png']) {
+      vi.stubGlobal('fetch', vi.fn(async () => Response.json({ ok: true, payload: { accountId: 'account-a', projects: [
+        project({ assets: [{ ...data.assets[0]!, referenceUrl }] }),
+      ] } })))
+      const result = await readCreativeProjects(SESSION, new AbortController().signal)
+      expect(result.ok).toBe(referenceUrl === url)
+    }
+  })
+
+  it('uploads actual bytes with an idempotency key and accepts only an opaque material id', async () => {
+    const { uploadCreativeAsset } = await import('../src/client/api.ts')
+    const file = new File(['image'], '人物.png', { type: 'image/png' })
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ ok: true, asset: { assetId: 'ma_reference' } }))
+      .mockResolvedValueOnce(Response.json({ ok: true, asset: { assetId: 'https://untrusted.example/source' } }))
+    vi.stubGlobal('fetch', fetcher)
+    const signal = new AbortController().signal
+    expect(await uploadCreativeAsset(file, signal)).toEqual({ ok: true, assetId: 'ma_reference', kind: 'image' })
+    expect(fetcher).toHaveBeenCalledWith('/credits/api/assets', expect.objectContaining({ signal, body: file }))
+    const headers = new Headers(fetcher.mock.calls[0]?.[1]?.headers)
+    expect(headers.get('content-type')).toBe('image/png')
+    expect(headers.get('x-file-name')).toBe(encodeURIComponent('人物.png'))
+    expect(headers.get('x-idempotency-key')).toMatch(/^yunshu-asset-/u)
+    expect(await uploadCreativeAsset(file, signal)).toEqual({ ok: false })
+    expect(await uploadCreativeAsset(new File([], 'empty.png', { type: 'image/png' }), signal)).toEqual({ ok: false })
+    expect(fetcher).toHaveBeenCalledTimes(2)
+  })
+})
