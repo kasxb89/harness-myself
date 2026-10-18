@@ -33,6 +33,7 @@ const clientBuildEnvironment = requireObject(
   Reflect.get(record, 'environment'),
   'client build record environment must be an object',
 )
+const yunshuMarkPath = 'M6.4 8.9C7 4.3 10.7 2 14.5 3.5C18.1 4.9 19.3 8.1 18 11.6L16.8 14.2C16.8 11 15.6 8.7 13.3 7.5C11 6.4 8.6 6.9 6.4 8.9ZM17.4847 8.7003C21.1684 11.5199 21.3103 15.8742 18.1112 18.4151C15.0988 20.8328 11.7275 20.272 9.3464 17.3962L7.6947 15.0569C10.466 16.6569 13.0579 16.7677 15.2471 15.3758C17.3497 13.934 18.1167 11.6055 17.4847 8.7003ZM12.1153 18.3997C7.8316 20.1801 3.9897 18.1258 3.3888 14.0849C2.8012 10.2672 4.9725 7.628 8.6536 7.0038L11.5053 6.7431C8.734 8.3431 7.3421 10.5323 7.4529 13.1242C7.6503 15.666 9.2833 17.4945 12.1153 18.3997Z'
 
 function isBuildRecordReader(value: unknown): value is (root: string) => unknown {
   return typeof value === 'function'
@@ -56,6 +57,14 @@ function clientBuildValue(name: string): string | undefined {
   return value
 }
 
+function renderedContainer(selector: string): Promise<HTMLElement> {
+  return waitFor(() => {
+    const container = document.querySelector<HTMLElement>(selector)
+    if (container === null) throw new Error(`assembled fixture container missing: ${selector}`)
+    return container
+  })
+}
+
 it('boots the built plugin graph and renders a fixture session end to end', async () => {
   mountAssembledApp()
 
@@ -65,14 +74,15 @@ it('boots the built plugin graph and renders a fixture session end to end', asyn
     expect(document.querySelector('svg[viewBox="26 0 156 24"]')).not.toBeNull()
     expect(screen.queryByText('DSH Local Build')).toBeNull()
   } else {
-    expect(document.querySelector('svg[viewBox="0 0 23.16 17.04"]')).not.toBeNull()
+    expect(document.querySelector(`svg[viewBox="0 0 24 24"] path[d="${yunshuMarkPath}"][fill="currentColor"]`)).not.toBeNull()
     const version = clientBuildValue('DSH_CLIENT_VERSION')
     if (version === undefined) throw new Error('default client build record must carry DSH_CLIENT_VERSION')
     const commit = clientBuildValue('DSH_CLIENT_COMMIT_HASH')
     const buildVersion = version
       + (commit === undefined ? '' : `-${commit}`)
       + (clientBuildValue('DSH_CLIENT_GIT_DIRTY') === 'true' ? '-dirty' : '')
-    screen.getByText('DSH Local Build')
+    screen.getByText('Yunshu', { exact: true })
+    expect(screen.queryByText('DSH Local Build')).toBeNull()
     screen.getByText(buildVersion)
   }
   // The compact layout dropped group session counts; the fixture workspace
@@ -104,9 +114,11 @@ it('boots the built plugin graph and renders a fixture session end to end', asyn
   // Skip the resident fixture's three questions, then resolve its approval so
   // the ordinary composer bar (which owns ContextMeter) resumes.
   for (let index = 0; index < 3; index += 1) {
-    fireEvent.click(await screen.findByRole('button', { name: 'Skip' }))
+    const question = await renderedContainer('[data-question-key]')
+    fireEvent.click(await within(question).findByRole('button', { name: 'Skip' }))
   }
-  const allowOnce = await screen.findByRole('button', { name: 'Allow once' })
+  const approval = await renderedContainer('[data-approval-key]')
+  const allowOnce = await within(approval).findByRole('button', { name: 'Allow once' })
   await waitFor(() => {
     within(waitingRow).getByText('Waiting for approval')
     within(waitingRow).getByText('Approval')
@@ -116,7 +128,8 @@ it('boots the built plugin graph and renders a fixture session end to end', asyn
   // The fixture mirrors all three token-meter projections, so the assembled
   // ContextMeter reaches its composition panel instead of only the occupancy
   // fallback path.
-  const contextTrigger = await screen.findByRole('button', { name: /of context used/ })
+  const composer = await renderedContainer('[data-slot="conversation.composer.bar"]')
+  const contextTrigger = await within(composer).findByRole('button', { name: /of context used/ })
   fireEvent.click(contextTrigger)
   const contextPanel = await screen.findByRole('dialog', { name: 'of context used' })
   within(contextPanel).getByText('System prompt')

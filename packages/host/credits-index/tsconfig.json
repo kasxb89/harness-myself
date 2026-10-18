@@ -8,6 +8,10 @@
     "src"
   ],
   "references": [
+    { "path": "../../core/agent-default-model" },
+    { "path": "../../api/session-controller/tsconfig.host.json" },
+    { "path": "../../attachment/attachment" },
+    { "path": "../../skill/skill" },
     { "path": "../../client/connection/tsconfig.host.json" },
     {
       "path": "../../../vendor/cordis"

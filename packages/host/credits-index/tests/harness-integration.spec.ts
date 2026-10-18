@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, readFile, readdir, rename, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, readFile, readdir, rename, symlink, writeFile } from 'node:fs/promises'
 import { createServer, type Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -14,8 +14,9 @@ import Tools from '@deepseek-ai/dsh-tools'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
+import LocalAttachmentStore from '@deepseek-ai/dsh-attachment-local'
 import { Session, SessionId, SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
-import LlmRuntime, { ToolCallId, type FinishReason } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { createUserMessage, ToolCallId, type FinishReason } from '@deepseek-ai/dsh-llm'
 import * as LlmPiAi from '@deepseek-ai/dsh-llm-pi-ai'
 import * as Artifacts from '@deepseek-ai/dsh-artifacts-index'
 import * as Connection from '@deepseek-ai/dsh-client-connection'
@@ -202,6 +203,7 @@ async function boot(
     ['@deepseek-ai/dsh-credentials-local', LocalCredentialProvider],
     ['@deepseek-ai/dsh-llm', LlmRuntime], ['@deepseek-ai/dsh-llm-pi-ai', LlmPiAi],
     ['@deepseek-ai/dsh-fs-local', LocalFileSystem],
+    ['@deepseek-ai/dsh-attachment-local', LocalAttachmentStore],
     ['@deepseek-ai/dsh-artifacts-index', Artifacts],
     ['@deepseek-ai/dsh-client-connection', Connection],
     ['fixture-auth-index', { name: 'fixture-auth-index', inject: ['webServer', 'connection'], apply(ctx: Context) {
@@ -226,6 +228,7 @@ async function boot(
     { name: '@deepseek-ai/dsh-host-webserver', config: { host: '127.0.0.1', port: 0 } },
     { name: '@deepseek-ai/dsh-tools' }, { name: '@deepseek-ai/dsh-system-prompt' },
     { name: '@deepseek-ai/dsh-fs-local', config: { cwd: directory } },
+    { name: '@deepseek-ai/dsh-attachment-local', config: { dshHome: join(directory, 'attachment-home') } },
     { name: '@deepseek-ai/dsh-credentials-local', config: { path: join(directory, 'credentials.yaml'), dshHome: directory, watch: false } },
     ...authenticatedHost ? [{ name: '@deepseek-ai/dsh-client-connection' }, { name: 'fixture-auth-index' }] : [],
     { name: '@deepseek-ai/dsh-llm' },
@@ -271,10 +274,10 @@ async function chat(): Promise<FinishReason> {
 }
 
 /** Give file-reference tools a real workspace identity without starting an LLM turn. */
-function videoAgent(workspace: string): Agent {
+function videoAgent(workspace: string, sessionId = 'reference-audio-chat'): Agent {
   const ctx = context
   if (ctx === undefined) throw new Error('Expected a running product fixture')
-  const id = SessionId('reference-audio-chat')
+  const id = SessionId(sessionId)
   const session = Session.create(id, [], { version: SESSION_FORMAT_VERSION, id, createdAt: 0, isSeeded: false, cwd: workspace })
   const unsupported = (): never => { throw new Error('Fixture inbox is not mutable') }
   return {
@@ -289,6 +292,92 @@ function videoAgent(workspace: string): Agent {
 }
 
 describe('deployed Harness API through the real product Loader', () => {
+  it('edits current-chat uploaded images and workspace images through the documented multipart endpoint', async () => {
+    const { base, stateDir } = await boot()
+    await signIn(base)
+    pricingRows = [{ model_name: 'gpt-image-2', supported_endpoint_types: ['image-generation'] }]
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADElEQVQImWNgZGIGAAAOAAeCcsnOAAAAAElFTkSuQmCC', 'base64')
+    imageResponse = { data: [{ b64_json: png.toString('base64') }] }
+    const attachments = context!.get('attachments')!
+    const ref = await attachments.saveImage({ data: png, mediaType: 'image/png', name: '用户上传.png' })
+    const normalized = await attachments.readImage(ref)
+    const attachmentPath = attachments.imageHostPath(ref)
+    if (attachmentPath === undefined) throw new Error('Expected the real local attachment path')
+    const projectedPath = context!.fs.processPathFromHostPath(attachmentPath)
+    if (projectedPath === undefined) throw new Error('Expected the current execution filesystem projection')
+    const agent = videoAgent(stateDir)
+    agent.session.append('user/message', createUserMessage({ source: { kind: 'user' }, content: [
+      { type: 'text', text: '把这张图片改成夜晚，保留人物' }, { type: 'image', attachment: ref },
+    ] }), { surfaceOp: 'append' })
+    const workspaceImage = join(stateDir, 'workspace-image.png')
+    await writeFile(workspaceImage, png)
+    const inputs = [String(ref.attachmentId), projectedPath, workspaceImage, 'workspace-image.png']
+    for (const [index, reference] of inputs.entries()) {
+      const result = object((await context!.tools.execute({ name: 'generate_image', arguments: {
+        model: 'gpt-image-2', prompt: '保持人物身份，改成夜晚', reference_images: [reference],
+      }, agent, callId: ToolCallId(`chat-image-${String(index)}`), signal: new AbortController().signal })).value)
+      expect(result).toMatchObject({ status: 'succeeded', paths: [expect.any(String)] })
+      expect(await readFile(String(result.path))).toEqual(png)
+      const edit = calls.filter(call => call.path === '/harness/v1/images/edits').at(-1)
+      expect(edit?.authorization).toBe('Bearer sk-owned-relay')
+      const encoded = object(edit?.body).multipart
+      if (typeof encoded !== 'string') throw new Error('Expected a real multipart edit request')
+      const multipart = Buffer.from(encoded, 'base64')
+      expect(multipart.toString('utf8')).toContain('name="image[]"')
+      expect(multipart.toString('utf8')).toContain('保持人物身份，改成夜晚')
+      expect(multipart.includes(index < 2 ? Buffer.from(normalized.data) : png)).toBe(true)
+    }
+    expect(calls.filter(call => call.path === '/harness/v1/images/edits')).toHaveLength(4)
+    expect(calls.filter(call => call.path === '/harness/v1/images/generations')).toEqual([])
+    expect(context!.tools.schemas().find(tool => tool.name === 'generate_image')).toMatchSnapshot('chat image reference tool')
+  }, 15_000)
+
+  it('rejects other-chat attachments, workspace escapes, corrupt images and models without edits before paid submission', async () => {
+    const { base, stateDir } = await boot()
+    await signIn(base)
+    pricingRows = [{ model_name: 'gpt-image-2', supported_endpoint_types: ['image-generation'] }]
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADElEQVQImWNgZGIGAAAOAAeCcsnOAAAAAElFTkSuQmCC', 'base64')
+    imageResponse = { data: [{ b64_json: png.toString('base64') }] }
+    const attachments = context!.get('attachments')!
+    const ref = await attachments.saveImage({ data: png, mediaType: 'image/png' })
+    const other = videoAgent(stateDir, 'other-chat')
+    other.session.append('user/message', createUserMessage({ source: { kind: 'user' }, content: [
+      { type: 'image', attachment: ref },
+    ] }), { surfaceOp: 'append' })
+    const path = attachments.imageHostPath(ref)
+    if (path === undefined) throw new Error('Expected stored image path')
+    const agent = videoAgent(stateDir)
+    const outside = join(directory!, 'outside.png')
+    await writeFile(outside, png)
+    await writeFile(join(stateDir, 'corrupt.png'), 'not an image')
+    const call = async (reference: string, model = 'gpt-image-2') => object((await context!.tools.execute({
+      name: 'generate_image', arguments: { model, prompt: '编辑这张图片', reference_images: [reference] },
+      agent, callId: ToolCallId('refused-image'), signal: new AbortController().signal,
+    })).value)
+    const refusedReferences = [String(ref.attachmentId), path, outside, '../outside.png', 'corrupt.png', 'https://example.com/image.png']
+    // Creating file symlinks on Windows requires privileges that local test runs need not have.
+    if (process.platform !== 'win32') {
+      await symlink(outside, join(stateDir, 'escape.png'))
+      refusedReferences.push('escape.png')
+    }
+    for (const reference of refusedReferences) {
+      expect(await call(reference)).toMatchObject({ status: 'failed' })
+    }
+    await writeFile(join(stateDir, 'valid.png'), png)
+    relayModels.push({ id: 'yunshu-internal-gpt-image-2', object: 'model', supported_endpoint_types: ['image-generation'] })
+    pricingRows.push({ model_name: 'yunshu-internal-gpt-image-2', supported_endpoint_types: ['image-generation'] })
+    const unsupported = await call('valid.png', 'yunshu-internal-gpt-image-2')
+    expect(unsupported).toMatchObject({ status: 'failed' })
+    expect(unsupported.message).toContain('只支持文生图')
+    agent.session.append('user/message', createUserMessage({ source: { kind: 'user' }, content: [
+      { type: 'image', attachment: ref },
+    ] }), { surfaceOp: 'append' })
+    await rm(path)
+    await writeFile(path, 'corrupted stored attachment')
+    expect(await call(String(ref.attachmentId))).toMatchObject({ status: 'failed', code: 'CREATIVE_REFERENCE_INVALID' })
+    expect(calls.filter(call => call.path.includes('/v1/images/') || call.path.includes('/toapis/'))).toEqual([])
+  }, 15_000)
+
   it('generates and reconstructs a video-plan character asset without mixing it into shot or final outputs', async () => {
     const { base, stateDir } = await boot(undefined, true, true)
     const origin = new URL(base).origin

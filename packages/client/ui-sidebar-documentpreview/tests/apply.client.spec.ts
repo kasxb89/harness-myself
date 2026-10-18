@@ -26,6 +26,8 @@ import { MARKDOWN_BODY_ID } from '../src/client/markdown/index.ts'
 import { HtmlBody } from '../src/client/html/HtmlBody.tsx'
 import { HTML_BODY_ID } from '../src/client/html/index.ts'
 import { ImageBody } from '../src/client/image/ImageBody.tsx'
+import { MediaBody } from '../src/client/media/MediaBody.tsx'
+import { MEDIA_BODY_ID } from '../src/client/media/index.ts'
 import { IMAGE_BODY_ID } from '../src/client/image/index.ts'
 import { LazyPdfBody } from '../src/client/pdf/LazyPdfBody.tsx'
 import { LazyArtifactPdfBody } from '../src/client/pdf/LazyArtifactPdfBody.tsx'
@@ -96,6 +98,7 @@ describe('ui-sidebar-documentpreview apply', () => {
       ['sidebar.right.tab.document', MARKDOWN_BODY_ID, 'documentMarkdown', MarkdownBody],
       ['sidebar.right.tab.document', HTML_BODY_ID, 'documentHtml', HtmlBody],
       ['sidebar.right.tab.document', IMAGE_BODY_ID, 'sidebarImage', ImageBody],
+      ['sidebar.right.tab.document', MEDIA_BODY_ID, 'sidebarMedia', MediaBody],
       ['sidebar.right.tab.document', PDF_BODY_ID, 'sidebarPdf', LazyPdfBody],
       ['artifacts.preview.pdf', ARTIFACT_PDF_BODY_ID, 'sidebarPdf', LazyArtifactPdfBody],
       ['sidebar.right.tab.document.action', '@deepseek-ai/dsh-client-ui-sidebar-documentpreview/office', 'sidebarOffice', OfficeFontAction],

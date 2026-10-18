@@ -28,6 +28,7 @@ function properties(overrides: Partial<PromptAssistOwner> = {}): TestProps {
     kind: 'image', prompt: '一只橘猫', references: ['ma_reference1'],
     generation: { model: 'image-model', size: '1024x1024' },
     disabled: false, signedIn: true, accountIdentity: 'account-a',
+    useProjection: vi.fn().mockReturnValue({ lastUsed: null, next: null }),
     t: translate(zh), ...overrides, onPromptChange, onBusyChange,
   } as TestProps
 }
@@ -111,7 +112,7 @@ describe('creation prompt assistance', () => {
     fireEvent.click(view.getByRole('button', { name: 'AI 帮写' }))
     await vi.waitFor(() => { expect(view.getByRole('textbox', { name: '主提示词' })).toHaveProperty('value', '柔和窗光下的一只橘猫') })
     expect(body(post)).toEqual({
-      accountId: 'account-a', kind: 'image', prompt: '一只橘猫', instruction: '',
+      accountId: 'account-a', sessionId: null, expectedSelection: null, kind: 'image', prompt: '一只橘猫', instruction: '',
       references: ['ma_reference1', 'ma_reference2'], generation: { model: 'image-model', size: '1024x1024' },
     })
     expect(requests.mock.calls.map(([url]) => url)).toEqual(['/credits/api/session', '/credits/api/prompt/assist', '/credits/api/session'])
@@ -122,6 +123,34 @@ describe('creation prompt assistance', () => {
     expect(props.onPromptChange).toHaveBeenCalledExactlyOnceWith('柔和窗光下的一只橘猫', '一只橘猫')
     expect(props.onBusyChange.mock.calls).toEqual([[true], [false]])
     expect(view.getAllByRole('textbox')).toHaveLength(2)
+  })
+
+  it('sends the current session selection only as an expectation and discards a late result after switching models', async () => {
+    const waiting = deferred()
+    const post = vi.fn<typeof fetch>().mockReturnValue(waiting.promise)
+    installFetch(post)
+    const current = { provider: 'product', model: 'deepseek-flash', reasoningEffort: 'medium' }
+    const useProjection = vi.fn().mockReturnValue({ lastUsed: current, next: current })
+    const props = { ...properties(), sessionId: 'session-one' as Props['sessionId'], useProjection }
+    const view = render(<PromptAssist {...props} />)
+    fireEvent.click(view.getByRole('button', { name: 'AI 帮写' }))
+    await vi.waitFor(() => { expect(post).toHaveBeenCalledTimes(1) })
+    expect(body(post)).toMatchObject({ sessionId: 'session-one', expectedSelection: current })
+    useProjection.mockReturnValue({ lastUsed: current, next: { ...current, model: 'other' } })
+    view.rerender(<PromptAssist {...props} />)
+    expect(post.mock.calls[0]?.[1]?.signal?.aborted).toBe(true)
+    await act(async () => { waiting.resolve(success('过时的模型结果')) })
+    expect(props.onPromptChange).not.toHaveBeenCalled()
+    expect(props.onBusyChange.mock.calls).toEqual([[true], [false]])
+  })
+
+  it('waits for the current conversation model projection before allowing a billed action', () => {
+    const { post } = installFetch()
+    const props = { ...properties(), sessionId: 'session-one' as Props['sessionId'], useProjection: vi.fn().mockReturnValue(undefined) }
+    const view = render(<PromptAssist {...props} />)
+    expect(view.getByRole('button', { name: 'AI 帮写' })).toHaveProperty('disabled', true)
+    expect(view.getByText(zh.modelLoading)).toBeTruthy()
+    expect(post).not.toHaveBeenCalled()
   })
 
   it('uses the hand-edited main prompt and current feedback through multiple revisions', async () => {
@@ -140,7 +169,7 @@ describe('creation prompt assistance', () => {
     fireEvent.click(view.getByRole('button', { name: '按建议修改' }))
     await vi.waitFor(() => { expect(main.value).toBe('第二稿') })
     expect(body(post, 1)).toEqual({
-      accountId: 'account-a', kind: 'video', prompt: '手动调整过的第一稿', instruction: '增加缓慢推进镜头',
+      accountId: 'account-a', sessionId: null, expectedSelection: null, kind: 'video', prompt: '手动调整过的第一稿', instruction: '增加缓慢推进镜头',
       references: ['ma_reference1'], generation: { model: 'video-model', duration: '5' },
     })
     expect(feedback.value).toBe('')
@@ -433,6 +462,7 @@ describe('creation prompt assistance', () => {
 
   it.each([
     ['SESSION_REQUIRED', 'expired'], ['PROMPT_ASSIST_NOT_CONFIGURED', 'unavailable'],
+    ['PROMPT_ASSIST_SELECTION_CHANGED', 'selectionChanged'], ['PROMPT_ASSIST_VISION_REQUIRED', 'visionRequired'],
     ['PROMPT_ASSIST_REFERENCE_INVALID', 'referenceInvalid'], ['PROMPT_ASSIST_REFERENCE_LIMIT', 'referenceLimit'],
     ['PROMPT_ASSIST_STORAGE_FAILED', 'storage'], ['PROMPT_ASSIST_RESULT_STORAGE_FAILED', 'resultStorage'],
     ['PROMPT_ASSIST_RESULT_UNKNOWN', 'resultUnknown'], ['PROMPT_ASSIST_INVALID_RESPONSE', 'invalidResponse'],

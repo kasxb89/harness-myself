@@ -40,6 +40,32 @@ function search(query = '审查') {
 }
 
 describe('SkillHub page', () => {
+  it('keeps the header, tabs and their panels in one content column and switches panels by keyboard', async () => {
+    render(<SkillHubPage {...props()} />)
+    await screen.findByRole('heading', { name: '暂时没有推荐技能' })
+    const title = screen.getByRole('heading', { name: '技能商店' })
+    const header = title.closest('header')!
+    const tabs = screen.getByRole('tablist', { name: '技能目录' })
+    const discoverPanel = screen.getByRole('tabpanel', { name: '发现技能' })
+    const installedTab = screen.getByRole('tab', { name: '已安装' })
+    const installedPanel = document.getElementById(installedTab.getAttribute('aria-controls')!)!
+    const content = header.parentElement!
+
+    expect(Array.from(content.children)).toEqual([header, tabs, discoverPanel, installedPanel])
+    expect(content.parentElement).toBe(screen.getByRole('region', { name: '技能商店' }))
+    expect(installedPanel.hidden).toBe(true)
+
+    const discoverTab = screen.getByRole('tab', { name: '发现技能' })
+    discoverTab.focus()
+    fireEvent.keyDown(discoverTab, { key: 'ArrowRight' })
+
+    expect(document.activeElement).toBe(installedTab)
+    expect(installedTab.getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByRole('tabpanel', { name: '已安装' })).toBe(installedPanel)
+    expect(discoverPanel.hidden).toBe(true)
+    expect(within(installedPanel).getByRole('heading', { name: '还没有安装 SkillHub 技能' })).toBeTruthy()
+  })
+
   it('loads recommendations and inventory while reserving search and installation for user actions', async () => {
     const face = props()
     render(<SkillHubPage {...face} />)

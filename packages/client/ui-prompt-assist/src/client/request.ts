@@ -3,6 +3,8 @@ import type { PromptAssistOwner } from './index.ts'
 
 interface AssistRequest {
   readonly accountId: string
+  readonly sessionId: string | null
+  readonly expectedSelection: { readonly provider: string; readonly model: string; readonly reasoningEffort?: string } | null
   readonly kind: PromptAssistOwner['kind']
   readonly prompt: string
   readonly instruction: string
@@ -64,6 +66,8 @@ export async function requestPrompt(body: AssistRequest, signal: AbortSignal): P
     }
     if (envelope.code === 'INSUFFICIENT_BALANCE') throw new AssistFailure('balance')
     if (envelope.code === 'ACCOUNT_CHANGED') throw new AssistFailure('accountChanged')
+    if (envelope.code === 'PROMPT_ASSIST_SELECTION_CHANGED') throw new AssistFailure('selectionChanged')
+    if (envelope.code === 'PROMPT_ASSIST_VISION_REQUIRED') throw new AssistFailure('visionRequired')
     if (envelope.code === 'PROMPT_ASSIST_NOT_CONFIGURED'
       || envelope.code === 'PROMPT_ASSIST_MODEL_UNAVAILABLE') throw new AssistFailure('unavailable')
     if (envelope.code === 'INVALID_REQUEST') throw new AssistFailure('invalid')

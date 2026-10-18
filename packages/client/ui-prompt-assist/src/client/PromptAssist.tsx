@@ -20,16 +20,19 @@ interface WritingOperation {
  * @returns The writing action, revision feedback field and local operation status.
  */
 export function PromptAssist({ kind, prompt, references, generation, disabled, signedIn, accountIdentity,
-  onPromptChange, onBusyChange, t }: Props) {
+  onPromptChange, onBusyChange, sessionId, useProjection, t }: Props) {
   const [feedback, setFeedback] = useState('')
   const [phase, setPhase] = useState<'checking' | 'writing' | null>(null)
   const [error, setError] = useState<PromptAssistKey | null>(null)
   const [notice, setNotice] = useState<PromptAssistKey | null>(null)
   const active = useRef<WritingOperation | null>(null)
+  const modelSelection = useProjection('modelSelection')
+  const expectedSelection = modelSelection?.next ?? null
   const imageReferences = [...new Set(references)]
   const generationEntries = Object.entries(generation).sort(([a], [b]) => a.localeCompare(b))
-  const context = JSON.stringify([accountIdentity, kind, prompt, imageReferences, generationEntries])
-  const allowed = signedIn && accountIdentity !== null && !disabled
+  const context = JSON.stringify([accountIdentity, sessionId, expectedSelection, kind, prompt, imageReferences, generationEntries])
+  const modelReady = sessionId === undefined || modelSelection !== undefined
+  const allowed = signedIn && accountIdentity !== null && !disabled && modelReady
   const latest = useRef({ context, allowed, onPromptChange })
   latest.current = { context, allowed, onPromptChange }
   const pending = phase !== null
@@ -91,7 +94,7 @@ export function PromptAssist({ kind, prompt, references, generation, disabled, s
       operation.sent = true
       setPhase('writing')
       const result = await requestPrompt({
-        accountId: accountIdentity, kind, prompt,
+        accountId: accountIdentity, sessionId: sessionId ?? null, expectedSelection, kind, prompt,
         instruction: revise ? feedback : '', references: imageReferences, generation: { ...generation },
       }, operation.controller.signal)
       if (!isCurrent(operation)) return
@@ -110,7 +113,7 @@ export function PromptAssist({ kind, prompt, references, generation, disabled, s
   }
 
   const hint = !signedIn ? 'signIn' : accountIdentity === null ? 'accountChanged'
-    : disabled ? 'busy' : referenceLimitExceeded ? 'referenceLimit' : !canWrite ? 'empty' : null
+    : disabled ? 'busy' : !modelReady ? 'modelLoading' : referenceLimitExceeded ? 'referenceLimit' : !canWrite ? 'empty' : null
 
   return <div className={css.root}>
     <div className={css.toolbar}>

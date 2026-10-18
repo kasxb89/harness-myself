@@ -292,7 +292,7 @@ describe('document toolbar', () => {
     const h = harness()
     const base = h.props()
     const info = base.useTabInfo()
-    const address = 'dsh-resource://file/session/s-1/work/clip.mp4'
+    const address = 'dsh-resource://file/session/s-1/work/archive.zip'
     const props: TextPreviewProps = {
       ...base,
       useTabInfo: () => ({ ...info, tab: { ...info.tab, contentId: address, navigation: { ...info.tab.navigation, address } } }),

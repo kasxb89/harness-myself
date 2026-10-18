@@ -13,7 +13,7 @@ exports[`creation prompt assistance > shows permanent writing and revision contr
     },
   ],
   "copy": [
-    "AI writing uses your account’s credits and updates the prompt only",
+    "AI writing uses the current chat model and your account’s credits, and updates the prompt only",
   ],
   "fields": [
     {
@@ -38,7 +38,7 @@ exports[`creation prompt assistance > shows permanent writing and revision contr
     },
   ],
   "copy": [
-    "AI 帮写使用当前账号额度，仅修改提示词",
+    "AI 帮写使用当前聊天模型与账号额度，仅修改提示词",
   ],
   "fields": [
     {

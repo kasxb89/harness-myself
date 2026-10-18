@@ -7,6 +7,7 @@ import type {} from '@deepseek-ai/dsh-subprocess'
 import type {} from '@deepseek-ai/dsh-skill-filesystem'
 import type { InstalledSkill, SkillHubErrorCode, SkillHubSkill } from './types.ts'
 import { ensureSkillHubCli } from './skillhub-cache.ts'
+import { normalizeSkillHubMetadata } from './skillhub-metadata.ts'
 
 /** Execution budgets resolved once at plugin activation. */
 export interface SkillHubExecutionConfig {
@@ -188,7 +189,8 @@ export class SkillHubClient {
     await mkdir(state, { recursive: true, mode: 0o700 })
     if (!(await lstat(state)).isDirectory()) throw new SkillHubFailure('cli-unavailable')
     const handle = this.ctx.subprocess.spawn({
-      argv: [python, '-I', '-B', '-c', ADAPTER, directory, state, '--skip-self-upgrade', ...args],
+      // Isolated mode ignores PYTHONIOENCODING; Windows pipes need an explicit UTF-8 mode.
+      argv: [python, '-I', '-X', 'utf8', '-B', '-c', ADAPTER, directory, state, '--skip-self-upgrade', ...args],
       cwd: state, signal, graceMs: this.config.terminationGraceMs,
       env: {
         PYTHONIOENCODING: 'utf-8', SKILLHUB_SKIP_SELF_UPGRADE: '1', SKILLHUB_SKIP_WORKSPACE_SKILLS: '1',
@@ -307,6 +309,10 @@ export class SkillHubClient {
       const staged = join(stage, slug)
       await verifyTree(staged)
       if (!(await lstat(join(staged, 'SKILL.md'))).isFile()) throw new SkillHubFailure('install-failed')
+      const skillFile = join(staged, 'SKILL.md')
+      const original = await readFile(skillFile, { encoding: 'utf8', signal })
+      const normalized = normalizeSkillHubMetadata(original)
+      if (normalized !== original) await writeFile(skillFile, normalized, { encoding: 'utf8', signal })
       const lock = await readLock(stage)
       const entry = lock[slug]
       if (!record(entry)) throw new SkillHubFailure('install-failed')

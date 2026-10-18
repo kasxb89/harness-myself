@@ -23,7 +23,7 @@ Browse recommended community skills in the sidebar Skill store, search by task, 
 <a id="use-this-package"></a>
 ## Use this package
 
-The Web product bundle mounts this package. Open **Skill store** to load community entries from SkillHub's official recommended ranking beneath the search field. Recommendations preserve the official order and exclude enterprise and external-source entries. Search by skill name or task, then return to recommendations without repeating the search. Failed recommendation reads offer Retry without blocking search. Select Install on the desired card; the Installed tab lists successful product-managed installations. Installation never starts from navigation, recommendations or search alone and refuses an existing destination.
+The Web product bundle mounts this package. Open **Skill store** to load community entries from SkillHub's official recommended ranking beneath the search field. The Discover and Installed tabs sit beneath the heading, aligned with search and results in one content column. Recommendations preserve the official order and exclude enterprise and external-source entries. Search by skill name or task, then return to recommendations without repeating the search. Failed recommendation reads offer Retry without blocking search. Select Install on the desired card; the Installed tab lists successful product-managed installations. Installation never starts from navigation, recommendations or search alone and refuses an existing destination.
 
 The first operation requiring the CLI downloads the official version 2026.8.5 kit and verifies its pinned SHA-256 and the four selected files. The cache lives beneath the active Harness cache's `skillhub` directory. Desktop resolves and supplies its verified bundled Python executable, so Windows needs neither system Python nor Bash. A standalone Web deployment without that runtime uses the configured `pythonExecutable`.
 
@@ -43,9 +43,9 @@ The [configuration catalog](../../../docs/config-catalog.md#deepseek-aidsh-clien
 <details>
 <summary>Implementation internals — click to expand</summary>
 
-The browser registers a keyed main panel and a sidebar entry between Plaza and Plugins. Authenticated local Connection routes own recommendation reads, searches, installations and inventory reads. Recommendations use the official CLI's recommended ranking and retain namespace-qualified installation coordinates. Recommendation and search requests have independent lifetimes, so late recommendations do not replace search results. The Host executes the unmodified official CLI through the subprocess service with isolated configuration and disabled self-upgrade. A small Python adapter makes failed community searches explicit. No upstream account or product relay credential is passed to SkillHub.
+The browser registers a keyed main panel and a sidebar entry between Plaza and Plugins. Authenticated local Connection routes own recommendation reads, searches, installations and inventory reads. Recommendations use the official CLI's recommended ranking and retain namespace-qualified installation coordinates. Recommendation and search requests have independent lifetimes, so late recommendations do not replace search results. The Host executes the unmodified official CLI through the subprocess service with isolated Python configuration (`-I`), explicit UTF-8 mode (`-X utf8`) and disabled self-upgrade. Explicit UTF-8 mode keeps Chinese and emoji output independent of Windows' ANSI encoding; isolated mode ignores `PYTHONIOENCODING`. A small Python adapter makes failed community searches explicit. No upstream account or product relay credential is passed to SkillHub.
 
-Installation uses private staging before publishing a complete skill. Canonical community names, including namespaces, remain in the official lockfile; deterministic single-level directories beneath the active Harness home's `skills` directory let the existing filesystem provider discover them. Successful commits invalidate the Host catalog and the browser's skill-reference cache. Removing the plugin cancels and joins active operations and removes its routes, panel and dictionaries.
+Installation uses private staging before publishing a complete skill. It lowercases the `SKILL.md` frontmatter name, such as `Writing` to `writing`, while preserving other metadata, comments and the body; the store retains the official display name. Canonical community names, including namespaces, remain in the official lockfile; deterministic single-level directories beneath the active Harness home's `skills` directory let the existing filesystem provider discover them. Successful commits invalidate the Host catalog and the browser's skill-reference cache. Removing the plugin cancels and joins active operations and removes its routes, panel and dictionaries.
 
 </details>
 
@@ -82,6 +82,7 @@ This page manages community skills installed through the product.
 
 - Enterprise login, paid purchases, skill upgrades and removal are not exposed.
 - Web deployments without a bundled runtime need a usable configured Python executable.
+- Installation only normalizes name case; other invalid skill names or missing required frontmatter fields prevent publication. Names requiring normalization cannot have YAML anchors, because changing them would also change aliased metadata.
 - A lockfile write failure after a skill is published reports failure and retains the published files for inspection.
 
 <a id="dev-note"></a>

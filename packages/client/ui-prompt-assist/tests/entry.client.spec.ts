@@ -19,7 +19,7 @@ it('releases the shared factory and dictionaries on unload and permits a fresh r
     return fiber
   }
   const first = await start()
-  expect(ctx.slots.snapshot('factory:creation.prompt.assist')).toMatchObject([{ name: 'creation.prompt.assist', scope: 'root' }])
+  expect(ctx.slots.snapshot('factory:creation.prompt.assist')).toMatchObject([{ name: 'creation.prompt.assist', scope: 'session-maybe' }])
   expect(ctx.locale.bind('prompt-assist')('title')).not.toBe('title')
   await first.dispose()
   expect(ctx.slots.snapshot('factory:creation.prompt.assist')).toEqual([])

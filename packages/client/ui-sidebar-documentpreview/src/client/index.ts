@@ -33,6 +33,7 @@ import { documentTabInfoFactory } from './document/contract.ts'
 import { apply as registerText } from './text/index.ts'
 import { apply as registerMarkdown } from './markdown/index.ts'
 import { apply as registerHtml } from './html/index.ts'
+import { apply as registerMedia } from './media/index.ts'
 import { apply as registerImage } from './image/index.ts'
 import { apply as registerPdf } from './pdf/index.ts'
 import { apply as registerCode } from './code/index.ts'
@@ -123,6 +124,7 @@ export function apply(ctx: ClientContext): void {
   registerMarkdown(ctx)
   registerHtml(ctx)
   registerImage(ctx)
+  registerMedia(ctx)
   registerPdf(ctx, config.pdf)
   registerOffice(ctx, config.office)
   registerExcel(ctx, config.excel)

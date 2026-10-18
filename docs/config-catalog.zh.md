@@ -883,7 +883,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-credits-index`
 
 - `inject`: `webServer` · `tools`
-- `source`: [`packages/host/credits-index/src/index.ts:58`](../packages/host/credits-index/src/index.ts)
+- `source`: [`packages/host/credits-index/src/index.ts:63`](../packages/host/credits-index/src/index.ts)
 
 ```ts config-catalog
 /** Plugin config: platform origin, display rate, and where the session file lives. */
@@ -912,9 +912,9 @@ export interface Config {
   chatProviderRoute?: string
   /** Settings namespace holding that provider profile. */
   chatSettingsNamespace?: string
-  /** Explicit text-chat model used for prompt assistance; empty disables text-only assistance. */
+  /** Legacy setting retained for compatibility; prompt assistance follows the current chat model. */
   promptAssistantModel?: string
-  /** Explicit vision-chat model used when references are attached; no capability is inferred from its name. */
+  /** Legacy setting retained for compatibility; reference assistance requires image input on the current chat model. */
   promptAssistantVisionModel?: string
   /** Deadline for one prompt-assistance operation, independent of account and media timeouts. */
   promptAssistantTimeoutMs?: number

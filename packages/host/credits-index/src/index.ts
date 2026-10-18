@@ -20,6 +20,8 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-artifacts-index'
 import type {} from '@deepseek-ai/dsh-client-connection'
+import type {} from '@deepseek-ai/dsh-api-session-controller'
+import type {} from '@deepseek-ai/dsh-agent-default-model'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import z from '@deepseek-ai/schemastery'
 import QRCode from 'qrcode'
@@ -28,9 +30,11 @@ import type { HarnessAccount } from '@deepseek-ai/dsh-llm-pi-ai'
 import { apiUrl, normalizeApiBaseUrl } from './api-url.ts'
 import { parseUsageWindow, readAccountUsage } from './usage.ts'
 import { assistPrompt, parsePromptAssist, promptAssistFailure } from './prompt-assist.ts'
+import { isPromptAssistSelectionCurrent, resolvePromptAssistSelection } from './prompt-assist-selection.ts'
 import { relayCreationContent } from './creation-content.ts'
 import { createVideoEditor } from './video-edit.ts'
 import { registerVideoProjectTools } from './video-project-tools.ts'
+import { registerCreationWorkflows } from './creation-workflows.ts'
 import { readVideoProject, VideoProjectError } from './video-project.ts'
 import { createVideoProjectRelay } from './video-project-provider.ts'
 import { bindVideoAccount } from './video-project-account.ts'
@@ -38,6 +42,7 @@ import { captureMediaOutput } from './media-output.ts'
 import type { VideoProjectIdentity, VideoProjectOptions, VideoProjectRequest, VideoRequestValue } from './video-project-types.ts'
 import { CreativeError, CreativeStore, type CreativeOperation, type CreativeOwner } from './creative-store.ts'
 import { creativeOwner, registerCreativeTools } from './creative-tools.ts'
+import { readChatImageReference } from './chat-image-references.ts'
 import {
   catalogFromPricing,
   mediaModelIds,
@@ -80,9 +85,9 @@ export interface Config {
   chatProviderRoute?: string
   /** Settings namespace holding that provider profile. */
   chatSettingsNamespace?: string
-  /** Explicit text-chat model used for prompt assistance; empty disables text-only assistance. */
+  /** Legacy setting retained for compatibility; prompt assistance follows the current chat model. */
   promptAssistantModel?: string
-  /** Explicit vision-chat model used when references are attached; no capability is inferred from its name. */
+  /** Legacy setting retained for compatibility; reference assistance requires image input on the current chat model. */
   promptAssistantVisionModel?: string
   /** Deadline for one prompt-assistance operation, independent of account and media timeouts. */
   promptAssistantTimeoutMs?: number
@@ -685,6 +690,7 @@ async function downloadToFile(
 
 export function apply(ctx: Context, config: Config): void {
   const resolved = config as ResolvedConfig
+  registerCreationWorkflows(ctx)
   const apiBaseUrl = normalizeApiBaseUrl(resolved.newApiBaseUrl)
   const stateDir = resolved.stateDir === ''
     ? join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'plugin-data', 'credits')
@@ -1954,6 +1960,7 @@ export function apply(ctx: Context, config: Config): void {
               }
               const parsed = parsePromptAssist(value)
               if (!parsed.ok) { json(response, 200, parsed); return }
+              const expectedIdentityVersion = identityVersion
               const current = await liveSession()
               if (current?.token === undefined) {
                 json(response, 200, { ok: false, code: 'SESSION_REQUIRED', sessionInvalid: true, message: '请先用手机号登录后再使用 AI 帮写。' })
@@ -1965,10 +1972,35 @@ export function apply(ctx: Context, config: Config): void {
               }
               const owned = await accountKey(current)
               if ('reason' in owned) { json(response, 200, { ok: false, ...noCredential(owned.reason) }); return }
+              const controller = ctx.get('sessionController')
+              const llm = ctx.get('llm')
+              const defaultModel = ctx.get('agentDefaultModel')
+              if (controller === undefined || llm === undefined || defaultModel === undefined) {
+                json(response, 200, promptAssistFailure('PROMPT_ASSIST_MODEL_UNAVAILABLE'))
+                return
+              }
+              const readProjections = (sessionId: NonNullable<typeof parsed.sessionId>, operationSignal: AbortSignal) =>
+                controller.projections({ sessionId }, operationSignal)
+              const selected = await resolvePromptAssistSelection({
+                sessionId: parsed.sessionId, expectedSelection: parsed.expectedSelection,
+                hasReferences: parsed.input.references.length > 0, provider: resolved.chatProviderRoute, signal,
+                readCatalog: () => controller.modelCatalog(), readProjections,
+                readModelInfo: (provider, model, operationSignal) => llm.resolveModelInfo(provider, model, operationSignal),
+              })
+              if (!selected.ok) { json(response, 200, selected); return }
               const outcome = await assistPrompt({
                 input: parsed.input, key: owned.key, accountId: current.account.id,
-                baseUrl: apiBaseUrl, model: resolved.promptAssistantModel,
-                visionModel: resolved.promptAssistantVisionModel,
+                baseUrl: apiBaseUrl, selection: selected.selection, sessionId: parsed.sessionId,
+                isSelectionCurrent: async () => {
+                  if (identityVersion !== expectedIdentityVersion) return false
+                  const live = await liveSession()
+                  if (live?.token === undefined || live.account.id !== current.account.id
+                    || identityVersion !== expectedIdentityVersion) return false
+                  return await isPromptAssistSelectionCurrent({
+                    sessionId: parsed.sessionId, selection: selected.selection, signal, readProjections,
+                    readDefaultSelection: () => defaultModel.currentSelection(),
+                  })
+                },
                 stateDir, timeoutMs: resolved.promptAssistantTimeoutMs,
                 signal, readReference,
               })
@@ -1976,7 +2008,9 @@ export function apply(ctx: Context, config: Config): void {
             } catch (error) {
               // Route containment never forwards session, storage, or provider exception text.
               void error
-              if (!response.destroyed) json(response, 200, promptAssistFailure('PROMPT_ASSIST_UNAVAILABLE'))
+              if (!response.destroyed) json(response, 200, promptAssistFailure(signal.aborted
+                ? deadline.aborted ? 'PROMPT_ASSIST_TIMEOUT' : 'PROMPT_ASSIST_CANCELLED'
+                : 'PROMPT_ASSIST_UNAVAILABLE'))
             }
           })()
           promptAssistantRequests.add(operation)
@@ -2997,7 +3031,7 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.tools.register(defineTool({
     name: 'generate_image',
-    description: 'Generate images from a text prompt through the local new-api relay, save every result into the artifacts directory, and return the paths. Which image models exist, and what each one accepts, is the deployment’s own answer: ask for a model only when the user names one.',
+    description: 'Generate images or edit reference images through the signed-in account relay, save every result into the artifacts directory, and return the paths. For image-to-image requests, pass the current-chat user attachment or an authorized workspace image in reference_images. Which image models exist, and what each one accepts, is the deployment’s own answer: ask for a model only when the user names one.',
     parameters: {
       plan_id: { type: 'string', description: 'Explicit update_creation_plan id for this generation. Also provide exactly one of shot_id or asset_id.' },
       shot_id: { type: 'string', description: 'Exact shot id in the explicit plan; never guess a latest project.' },
@@ -3006,7 +3040,7 @@ export function apply(ctx: Context, config: Config): void {
       model: { type: 'string', description: 'Optional image model id such as gpt-image-2. Defaults to the first image model the deployment serves for this account.' },
       size: { type: 'string', description: 'Optional output size such as 1024x1024 or auto. A value the chosen model does not support is refused with that model’s own menu.' },
       count: { type: 'number', description: 'How many images to render, within the model’s limit (usually 1–4).' },
-      reference_images: { type: 'array', items: { type: 'string' }, description: 'Existing uploaded ma_ ids, or real generated image output ids/paths already owned by the same explicit plan_id. Arbitrary local paths and URLs are refused; references request an image edit.' },
+      reference_images: { type: 'array', items: { type: 'string' }, description: 'Reference images for editing: current-chat user image attachment ids or their exact read-only paths, readable PNG/JPEG/WebP files inside the current workspace, uploaded ma_ ids, or real generated image output ids/paths owned by the same explicit plan_id. Other-chat attachments, unrelated local paths and URLs are refused.' },
     },
     output: {
       schema: {
@@ -3030,10 +3064,22 @@ export function apply(ctx: Context, config: Config): void {
         const binding = await bindCurrentVideoAccount()
         const owner = creativeOwner(exec, binding.identity)
         const references: string[] = []
+        const referenceCache = new Map<string, string>()
         for (const value of args.reference_images ?? []) {
-          const source = value.startsWith('ma_') ? value : args.plan_id === undefined ? undefined : await creativeImageReference(owner, args.plan_id, value)
-          if (source === undefined) throw new CreativeError('CREATIVE_REFERENCE_INVALID', 400, '请使用已上传的图片，或同一创作计划内实际生成的图片；不会读取任意路径。')
-          references.push(source)
+          let source = value.startsWith('ma_') ? value : args.plan_id === undefined ? undefined : await creativeImageReference(owner, args.plan_id, value)
+          if (source === undefined) {
+            const attached = await readChatImageReference(value, exec.agent?.session, ctx.get('attachments'), ctx.get('fs'), Math.min(resolved.videoProjectReferenceMaxBytes, 6 * 1024 * 1024), exec.signal)
+            if (attached !== undefined) {
+              const bytes = Buffer.from(attached.data)
+              if (!ALLOWED_ASSET_TYPES.has(attached.ref.mediaType) || !referenceSignature(bytes, attached.ref.mediaType)) {
+                throw new CreativeError('CREATIVE_REFERENCE_INVALID', 400, '参考图须为可读取的 PNG、JPEG 或 WebP 图片，请重新上传。')
+              }
+              source = `ma_${randomBytes(20).toString('hex')}`
+              exec.signal.throwIfAborted()
+              await storeReference(source, bytes, attached.ref.mediaType, attached.ref.name ?? 'chat-image')
+            }
+          }
+          references.push(await normalizeVideoReference(source ?? value, 'image', exec.agent?.session.header.cwd, referenceCache, exec.signal))
         }
         operation = await creative.begin(owner, { kind: 'image', prompt: args.prompt, shots: [{ prompt: args.prompt }], ...args.plan_id === undefined ? {} : { planId: args.plan_id }, ...args.shot_id === undefined ? {} : { shotIds: [args.shot_id] }, ...args.asset_id === undefined ? {} : { assetId: args.asset_id } })
         const creation = operation
@@ -3059,7 +3105,7 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.tools.register(defineTool({
     name: 'generate_video',
-    description: 'Generate one short video clip through the account relay. For a complete video such as 40 seconds, multiple shots, or automatic assembly, use generate_video_project instead. Edit existing clips with edit_video. This single-clip tool accepts only the chosen model’s declared duration, resolution, ratio, frames and references.',
+    description: 'Generate, poll and save one short video clip through the account relay. Call this native tool directly for a simple short-video brief; do not write submission, polling or download scripts. For story direction, character/reference continuity, dialogue or subtitles, use the yunshu-video-director skill. For a complete video such as 40 seconds or automatic assembly, use generate_video_project instead; several camera beats may fit one clip. Edit existing clips with edit_video. This single-clip tool accepts only the chosen model’s declared duration, resolution, ratio, frames and references.',
     parameters: {
       plan_id: { type: 'string', description: 'Explicit update_creation_plan id for this generation. Also provide shot_id.' },
       shot_id: { type: 'string', description: 'Exact shot id in the explicit plan; never guess a latest project.' },

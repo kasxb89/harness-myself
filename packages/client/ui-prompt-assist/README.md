@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-Reference for `@deepseek-ai/dsh-client-ui-prompt-assist`, the shared writing and revision actions beside the image and video workspaces' main prompt. The root-scoped `creation.prompt.assist` factory keeps feedback and operation state separate for each render occurrence. The [Slots reference](../../../docs/subsystems/slots.md) defines factory composition.
+Reference for `@deepseek-ai/dsh-client-ui-prompt-assist`, the shared writing and revision actions beside the image and video workspaces' main prompt. The session-optional `creation.prompt.assist` factory keeps feedback and operation state separate for each render occurrence. The [Slots reference](../../../docs/subsystems/slots.md) defines factory composition.
 
 ## Table of Contents
 
@@ -25,9 +25,9 @@ The owner supplies the creation kind, current main prompt, all relevant image ma
 
 `onPromptChange(next, expectedPrompt)` lets the owner atomically compare its live draft and creation context before replacing text. Returning false keeps the current draft and feedback and reports that no replacement occurred. `onBusyChange` reports only an active operation's acquisition and release. The owner uses it to block material uploads and media generation while keeping the main prompt editable; it must not feed that same busy flag back into the factory's `disabled` prop, which describes external upload or media-generation activity.
 
-One AbortController owns account verification, model submission and final account verification. The Host independently verifies the expected account before dispatch. The factory replaces text only if both account checks succeed, the owner context still matches and the final owner callback accepts the replacement. Editing the main prompt, changing materials, parameters or account, cancellation, and unmounting abort waiting and discard late results. Only the currently owned operation releases its busy flag. Errors and rejected replacements preserve the main draft and feedback; a successful revision clears the feedback field.
+One AbortController owns account verification, model submission and final account verification. The Host independently verifies the expected account before dispatch. The factory replaces text only if both account checks succeed, the owner context still matches and the final owner callback accepts the replacement. Editing the main prompt, changing materials, parameters, account, session or chat model, cancellation, and unmounting abort waiting and discard late results. Only the currently owned operation releases its busy flag. Errors and rejected replacements preserve the main draft and feedback; a successful revision clears the feedback field.
 
-Requests post to `/credits/api/prompt/assist` with the current main prompt, deduplicated image identifiers, generation parameters and expected account identifier. Initial writing sends an empty instruction; revision sends the feedback. The browser neither receives nor submits an API key. Writing and revision never start image or video generation.
+Requests post to `/credits/api/prompt/assist` with the current main prompt, deduplicated image identifiers, generation parameters and expected account identifier, session and chat selection. The Host independently resolves the session selection or current chat default, requires its exact provider/model in the account catalog, and rechecks local selection before sending and accepting a completion. The expected browser selection never supplies routing authority. Initial writing sends an empty instruction; revision sends the feedback. The browser neither receives nor submits an API key. Writing and revision never start image or video generation.
 
 <a id="model-experience"></a>
 ## Model Experience
@@ -36,7 +36,7 @@ Requests post to `/credits/api/prompt/assist` with the current main prompt, dedu
 
 #### What the model sees
 
-On an explicit writing action through `/credits/api/prompt/assist`, the Host receives the current main prompt, workspace image identifiers and generation parameters. A revision adds the user's feedback. The Host owns image validation, model selection and account authorization. Rendering the actions, typing feedback and editing the main prompt make no model request.
+On an explicit writing action through `/credits/api/prompt/assist`, the Host receives the current main prompt, workspace image identifiers and generation parameters. A revision adds the user's feedback. The Host validates images and uses the current chat model under the signed-in product account. Video assistance applies the shared director skill guidance for story beats, shots, character and material continuity, dialogue, lip visibility and subtitle timing. Rendering the actions, typing feedback and editing the main prompt make no model request.
 
 #### Token effect
 
@@ -52,7 +52,7 @@ Each writing action is an independent Host request. The client keeps no model co
 
 - Revision feedback is local to the mounted factory occurrence and is not persisted across reloads or panel unmounts.
 - Stopping after model dispatch cannot guarantee that the request has not already been processed or charged; stopping the initial account check makes no model request.
-- Model availability and image-reading capability depend on the Host's configured prompt-assistance models.
+- AI writing uses the selected product-account chat model. It rejects models from other providers rather than sending their names with the product account credential. Image references require explicit image input capability; the Host does not silently select another model.
 
 <a id="dev-note"></a>
 ### Dev Note

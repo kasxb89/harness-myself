@@ -1,6 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
+import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import { PromptAssist } from './PromptAssist.tsx'
 import { en, NS, zh, type PromptAssistKey } from './locales.ts'
 
@@ -25,7 +26,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface SlotFactoryMap {
     /** Independent prompt-writing instances in image and video workspaces. */
     'creation.prompt.assist': {
-      scope: 'root'
+      scope: 'session-maybe'
       props: PromptAssistOwner
       locale: 'prompt-assist'
     }
@@ -41,5 +42,5 @@ export const inject = ['slots', 'locale']
  */
 export function apply(ctx: Context): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-prompt-assist: dictionaries')
-  ctx.slots.registerFactory({ name: 'creation.prompt.assist', scope: 'root', locale: NS }, PromptAssist)
+  ctx.slots.registerFactory({ name: 'creation.prompt.assist', scope: 'session-maybe', locale: NS }, PromptAssist)
 }

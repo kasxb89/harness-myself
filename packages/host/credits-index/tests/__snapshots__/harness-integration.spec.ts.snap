@@ -1,5 +1,55 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
+exports[`deployed Harness API through the real product Loader > edits current-chat uploaded images and workspace images through the documented multipart endpoint > chat image reference tool 1`] = `
+{
+  "description": "Generate images or edit reference images through the signed-in account relay, save every result into the artifacts directory, and return the paths. For image-to-image requests, pass the current-chat user attachment or an authorized workspace image in reference_images. Which image models exist, and what each one accepts, is the deployment’s own answer: ask for a model only when the user names one.",
+  "name": "generate_image",
+  "parameters": {
+    "properties": {
+      "asset_id": {
+        "description": "Exact image asset id in plan_id, including a video plan. Mutually exclusive with shot_id. Creates or reconstructs this source asset, not a finished shot.",
+        "type": "string",
+      },
+      "count": {
+        "description": "How many images to render, within the model’s limit (usually 1–4).",
+        "type": "number",
+      },
+      "model": {
+        "description": "Optional image model id such as gpt-image-2. Defaults to the first image model the deployment serves for this account.",
+        "type": "string",
+      },
+      "plan_id": {
+        "description": "Explicit update_creation_plan id for this generation. Also provide exactly one of shot_id or asset_id.",
+        "type": "string",
+      },
+      "prompt": {
+        "description": "What the image should show.",
+        "type": "string",
+      },
+      "reference_images": {
+        "description": "Reference images for editing: current-chat user image attachment ids or their exact read-only paths, readable PNG/JPEG/WebP files inside the current workspace, uploaded ma_ ids, or real generated image output ids/paths owned by the same explicit plan_id. Other-chat attachments, unrelated local paths and URLs are refused.",
+        "items": {
+          "type": "string",
+        },
+        "type": "array",
+      },
+      "shot_id": {
+        "description": "Exact shot id in the explicit plan; never guess a latest project.",
+        "type": "string",
+      },
+      "size": {
+        "description": "Optional output size such as 1024x1024 or auto. A value the chosen model does not support is refused with that model’s own menu.",
+        "type": "string",
+      },
+    },
+    "required": [
+      "prompt",
+    ],
+    "type": "object",
+  },
+}
+`;
+
 exports[`deployed Harness API through the real product Loader > publishes chat plans and real image outputs through authenticated account/chat media routes > structured creation plan tool 1`] = `
 {
   "description": "Create or explicitly revise the structured plan for a chat image or video: stable characters and their appearance, source materials, ordered shots, camera, actions, exact dialogue and subtitles. Use the returned plan_id and the exact shot ids in generate_image/generate_video or shot_ids in generate_video_project. Never associate a generation with a guessed latest project. Planning does not generate media or spend credits. Character/material descriptions and dialogue are requirements, not verified generation results. Preserve user wording and silent/nonverbal requests. Revisions supply the complete plan and cannot remove shots with existing generation records.",

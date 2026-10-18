@@ -1,6 +1,8 @@
+import { execFile } from 'node:child_process'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { promisify } from 'node:util'
 import { Context } from '@deepseek-ai/cordis'
 import SkillRegistry from '@deepseek-ai/dsh-skill'
 import * as SkillFileSystem from '@deepseek-ai/dsh-skill-filesystem'
@@ -68,6 +70,37 @@ async function stageSkill(spec: SubprocessSpawnSpec, slug = 'hello'): Promise<st
 describe('SkillHub product CLI isolation', () => {
   it.each(['hello', 'hello-world_1', '@team/hello'])('accepts public community coordinate %s', (value) =>{  expect(isSkillHubSlug(value)).toBe(true) })
   it.each(['../hello', '/hello', '@team/../hello', '--force', 'hello@1', 'hello\\other', 'hello:other', '', '@team/hello/extra', 'HELLO'])('rejects path or flag %s', (value) =>{  expect(isSkillHubSlug(value)).toBe(false) })
+
+  it('round-trips Chinese and emoji through a real isolated Python pipe despite conflicting locale environment', async () => {
+    const directory = join(root, 'official-cli-fixture')
+    await mkdir(directory)
+    await writeFile(join(directory, 'skills_store_cli.py'), `import json, sys
+def fetch_remote_search_results(*args, **kwargs):
+    return []
+def main():
+    assert sys.flags.isolated == 1
+    assert sys.flags.utf8_mode == 1, "isolated Python must explicitly enable UTF-8"
+    assert sys.stdout.encoding.lower() == "utf-8"
+    assert "中文搜索" in sys.argv
+    print(json.dumps({"results": [{"slug": "@team/hello", "name": "中文技能 🌟", "description": "中文说明 🎨", "version": "1", "source": "community"}]}, ensure_ascii=False))
+`)
+    vi.mocked(ensureSkillHubCli).mockResolvedValueOnce(directory)
+    const python = process.env.DSH_BUNDLED_PYTHON_EXECUTABLE ?? (process.platform === 'win32' ? 'python' : 'python3')
+    vi.spyOn(provider, 'resolveExecutable').mockResolvedValue(python)
+    provider.output = async (spec) => {
+      const { stdout } = await promisify(execFile)(spec.argv[0]!, spec.argv.slice(1), {
+        cwd: spec.cwd, env: { ...process.env, ...spec.env, PYTHONIOENCODING: 'cp1252', PYTHONUTF8: '0' },
+        encoding: 'utf8', timeout: budget.timeoutMs, maxBuffer: budget.maxOutputBytes,
+      })
+      return stdout
+    }
+    const instance = client()
+    try {
+      await expect(instance.run(signal(), s => instance.search('中文搜索', s))).resolves.toEqual([
+        { slug: '@team/hello', name: '中文技能 🌟', description: '中文说明 🎨', version: '1', source: 'community' },
+      ])
+    } finally { await instance.dispose() }
+  })
 
   it('maps official community results and isolates CLI files and environment', async () => {
     provider.output = async () => JSON.stringify({ results: [{ slug: '@team/hello', name: 'Hello', description: 'A skill', version: '1', source: 'community' }] })
@@ -200,6 +233,41 @@ describe('SkillHub product CLI isolation', () => {
     expect(catalog.complete).toBe(true)
     expect(catalog.skills.map(skill => skill.name)).toEqual(['hello'])
     expect((await ctx.skills.get('hello'))?.content).toContain('# Example')
+    await instance.dispose()
+  })
+
+  it('normalizes an official uppercase name before publishing and refreshing the warm conversation catalog', async () => {
+    await ctx.plugin(SkillRegistry)
+    await ctx.plugin(SkillFileSystem, { includeDefaultRoots: false, customSkillDirs: [join(root, 'skills')], watch: false })
+    expect(await ctx.skills.snapshot()).toEqual({ skills: [], complete: true })
+    provider.output = async (spec) => {
+      const output = await stageSkill(spec, '@team/writing')
+      const stage = spec.argv[spec.argv.indexOf('--dir') + 1]!
+      await writeFile(join(stage, '@team/writing', 'SKILL.md'), '---\nname: Writing # official name\ndescription: A writing skill\nmetadata:\n  keep: MixedCase\n---\n\n# Original Body\nWriting must stay unchanged.\n')
+      return output
+    }
+    const instance = client()
+    await instance.run(signal(), s => instance.install('@team/writing', s))
+    const catalog = await ctx.skills.snapshot()
+    expect(catalog.complete).toBe(true)
+    expect(catalog.skills.map(skill => skill.name)).toEqual(['writing'])
+    expect((await ctx.skills.get('writing'))?.content).toBe('# Original Body\nWriting must stay unchanged.')
+    const file = await readFile(join(root, 'skills', skillHubStorageName('@team/writing'), 'SKILL.md'), 'utf8')
+    expect(file).toContain('keep: MixedCase\n---\n\n# Original Body\nWriting must stay unchanged.\n')
+    await instance.dispose()
+  })
+
+  it.each(['"Not a valid name"', '&original Writing'])('rejects an unusable or anchored name %s before publishing files or recording an installation', async (name) => {
+    provider.output = async (spec) => {
+      const output = await stageSkill(spec)
+      const stage = spec.argv[spec.argv.indexOf('--dir') + 1]!
+      await writeFile(join(stage, 'hello', 'SKILL.md'), `---\nname: ${name}\ndescription: A skill\nmetadata:\n  original: ${name.startsWith('&') ? '*original' : 'unchanged'}\n---\nBody\n`)
+      return output
+    }
+    const instance = client()
+    await expect(instance.run(signal(), s => instance.install('hello', s))).rejects.toMatchObject({ code: 'install-failed' })
+    await expect(instance.installed()).resolves.toEqual([])
+    await expect(readFile(join(root, 'skills', skillHubStorageName('hello'), 'SKILL.md'))).rejects.toMatchObject({ code: 'ENOENT' })
     await instance.dispose()
   })
 

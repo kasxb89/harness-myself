@@ -1,0 +1,22 @@
+# Bilingual-pair consistency record for 2026-10-18-skillhub-windows-encoding.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-10-18-skillhub-windows-encoding.md
+/agent-note-skillhub-preserves-isolation-and-publishes-loadable-skill-metadata:
+  en: d8d1b99e0b4fd092
+  zh: 4f0024171c5ad175
+/agent-note-skillhub-preserves-isolation-and-publishes-loadable-skill-metadata/problem:
+  en: efb770c0c16c5fb0
+  zh: eafd053bbd6cc537
+/agent-note-skillhub-preserves-isolation-and-publishes-loadable-skill-metadata/decision:
+  en: a81e2e8d129d2efe
+  zh: b6b2e769052ee49f
+/agent-note-skillhub-preserves-isolation-and-publishes-loadable-skill-metadata/alternatives-considered:
+  en: b15a75bdf025b56e
+  zh: d39f58dd27d5969d
+/agent-note-skillhub-preserves-isolation-and-publishes-loadable-skill-metadata/consequences:
+  en: fc3a53400ffc98b8
+  zh: cbd9bd9f2eecdb28
+/agent-note-skillhub-preserves-isolation-and-publishes-loadable-skill-metadata/testing:
+  en: c2034b0d8293cb12
+  zh: 72363d65b3ac85d4

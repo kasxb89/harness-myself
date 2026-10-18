@@ -42,7 +42,8 @@
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "workspace:~",
-    "tar": "^7.5.22"
+    "tar": "^7.5.22",
+    "yaml": "^2.4.2"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "workspace:~",

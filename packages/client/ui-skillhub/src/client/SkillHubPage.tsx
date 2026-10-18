@@ -164,97 +164,99 @@ export function SkillHubPage({ t, readRecommendations, search, readInstalled, in
   const visibleSkills = submitted === null ? recommendations : results
 
   return <section className={css.page} aria-label={t('panel')}>
-    <header className={css.header}>
-      <div>
-        <p className={css.brand}>{t('brand')}</p>
-        <h1 className={css.title}>{t('panel')}</h1>
-        <p className={css.subtitle}>{t('subtitle')}</p>
-      </div>
-      <a className={css.website} href="https://skillhub.cn/" target="_blank" rel="noreferrer">
-        <LinkIconMedium kind="url" href="https://skillhub.cn/" />{t('website')}
-      </a>
-    </header>
-    <SegmentedTabs
-      className={css.tabs} value={tab} onChange={setTab} label={t('tabs')}
-      items={[
-        { value: 'discover', label: t('discover'), id: `${id}-discover`, panelId: `${id}-discover-panel` },
-        { value: 'installed', label: t('installed'), id: `${id}-installed`, panelId: `${id}-installed-panel` },
-      ]}
-    />
-    <div role="tabpanel" id={`${id}-discover-panel`} aria-labelledby={`${id}-discover`} hidden={tab !== 'discover'}>
-      <form className={css.search} onSubmit={(event) => { event.preventDefault(); void runSearch(query) }}>
-        <div className={css.searchInput}>
-          <Input
-            icon={<IconSearchOutlineRegular />} aria-label={t('searchLabel')}
-            placeholder={t('searchPlaceholder')} value={query} onChange={(event) => { setQuery(event.target.value) }}
-          />
+    <div className={css.content}>
+      <header className={css.header}>
+        <div>
+          <p className={css.brand}>{t('brand')}</p>
+          <h1 className={css.title}>{t('panel')}</h1>
+          <p className={css.subtitle}>{t('subtitle')}</p>
         </div>
-        <Button type="submit" variant="primary" disabled={query.trim() === ''}>{t('search')}</Button>
-      </form>
-      {searchError !== null && <div className={css.notice} role="alert">
-        <span>{t(`error.${searchError}`)}</span>
-        {submitted !== null && <Button size="sm" onClick={() => { void runSearch(submitted) }}>{t('retry')}</Button>}
-      </div>}
-      <div className={css.discoveryHeader}>
-        <h2 className={css.sectionTitle}>{submitted === null ? t('recommendations') : t('results', { query: submitted })}</h2>
-        {submitted !== null && <Button size="sm" variant="ghost" onClick={showRecommendations}>{t('backToRecommendations')}</Button>}
-      </div>
-      {submitted === null && recommendationsError !== null && <div className={css.notice} role="alert">
-        <span>{t(`error.${recommendationsError}`)}</span>
-        <Button size="sm" onClick={() => { void refreshRecommendations() }}>{t('retry')}</Button>
-      </div>}
-      {submitted === null && loadingRecommendations && <div className={css.loading} role="status" aria-label={t('recommendationsLoading')}><IconLoadingOutlineRegular className={css.spinner} /></div>}
-      {submitted === null && !loadingRecommendations && recommendationsError === null && recommendations.length === 0 && (
-        <div className={css.empty}>
-          <IconSkillOutlineRegular size={28} />
-          <h2>{t('recommendationsEmpty')}</h2><p>{t('searchHint')}</p>
+        <a className={css.website} href="https://skillhub.cn/" target="_blank" rel="noreferrer">
+          <LinkIconMedium kind="url" href="https://skillhub.cn/" />{t('website')}
+        </a>
+      </header>
+      <SegmentedTabs
+        className={css.tabs} value={tab} onChange={setTab} label={t('tabs')}
+        items={[
+          { value: 'discover', label: t('discover'), id: `${id}-discover`, panelId: `${id}-discover-panel` },
+          { value: 'installed', label: t('installed'), id: `${id}-installed`, panelId: `${id}-installed-panel` },
+        ]}
+      />
+      <div role="tabpanel" id={`${id}-discover-panel`} aria-labelledby={`${id}-discover`} hidden={tab !== 'discover'}>
+        <form className={css.search} onSubmit={(event) => { event.preventDefault(); void runSearch(query) }}>
+          <div className={css.searchInput}>
+            <Input
+              icon={<IconSearchOutlineRegular />} aria-label={t('searchLabel')}
+              placeholder={t('searchPlaceholder')} value={query} onChange={(event) => { setQuery(event.target.value) }}
+            />
+          </div>
+          <Button type="submit" variant="primary" disabled={query.trim() === ''}>{t('search')}</Button>
+        </form>
+        {searchError !== null && <div className={css.notice} role="alert">
+          <span>{t(`error.${searchError}`)}</span>
+          {submitted !== null && <Button size="sm" onClick={() => { void runSearch(submitted) }}>{t('retry')}</Button>}
+        </div>}
+        <div className={css.discoveryHeader}>
+          <h2 className={css.sectionTitle}>{submitted === null ? t('recommendations') : t('results', { query: submitted })}</h2>
+          {submitted !== null && <Button size="sm" variant="ghost" onClick={showRecommendations}>{t('backToRecommendations')}</Button>}
         </div>
-      )}
-      {submitted !== null && searching && <div className={css.loading} role="status" aria-label={t('searching')}><IconLoadingOutlineRegular className={css.spinner} /></div>}
-      {submitted !== null && !searching && searchError === null && results.length === 0 && <p className={css.empty}>{t('noResults')}</p>}
-      <ul className={css.cards}>
-        {visibleSkills.map((skill) => {
-          const state = installs[skill.slug]
-          const isInstalled = installed.some(entry => entry.slug === skill.slug) || state?.status === 'installed'
-          return <li key={skill.slug} className={css.card}>
+        {submitted === null && recommendationsError !== null && <div className={css.notice} role="alert">
+          <span>{t(`error.${recommendationsError}`)}</span>
+          <Button size="sm" onClick={() => { void refreshRecommendations() }}>{t('retry')}</Button>
+        </div>}
+        {submitted === null && loadingRecommendations && <div className={css.loading} role="status" aria-label={t('recommendationsLoading')}><IconLoadingOutlineRegular className={css.spinner} /></div>}
+        {submitted === null && !loadingRecommendations && recommendationsError === null && recommendations.length === 0 && (
+          <div className={css.empty}>
+            <IconSkillOutlineRegular size={28} />
+            <h2>{t('recommendationsEmpty')}</h2><p>{t('searchHint')}</p>
+          </div>
+        )}
+        {submitted !== null && searching && <div className={css.loading} role="status" aria-label={t('searching')}><IconLoadingOutlineRegular className={css.spinner} /></div>}
+        {submitted !== null && !searching && searchError === null && results.length === 0 && <p className={css.empty}>{t('noResults')}</p>}
+        <ul className={css.cards}>
+          {visibleSkills.map((skill) => {
+            const state = installs[skill.slug]
+            const isInstalled = installed.some(entry => entry.slug === skill.slug) || state?.status === 'installed'
+            return <li key={skill.slug} className={css.card}>
+              <div className={css.cardHeading}><IconSkillOutlineRegular /><h3>{skill.name}</h3></div>
+              <p className={css.description}>{skill.description}</p>
+              {skill.version !== '' && <p className={css.metadata}>{t('version', { version: skill.version })}</p>}
+              <p className={css.metadata}>{t('source', { source: skill.source })}</p>
+              <div className={css.cardFooter}>
+                <code className={css.slug}>{skill.slug}</code>
+                <Button size="sm" variant={isInstalled ? 'ghost' : 'outline'}
+                  disabled={isInstalled || state?.status === 'pending'} onClick={() => { void runInstall(skill) }}>
+                  {isInstalled ? t('installedState') : state?.status === 'pending' ? t('installing') : t('install')}
+                </Button>
+              </div>
+              {isInstalled && <span className={css.success} role="status">{t('installedState')}</span>}
+              {state?.status === 'failed' && <p className={css.error} role="alert">{t(`error.${state.code}`)}</p>}
+            </li>
+          })}
+        </ul>
+      </div>
+      <div role="tabpanel" id={`${id}-installed-panel`} aria-labelledby={`${id}-installed`} hidden={tab !== 'installed'}>
+        <div className={css.installedHeader}>
+          <h2 className={css.sectionTitle}>{t('installedTitle')}</h2>
+          <Button size="sm" icon={<IconRefreshOutlineRegular />} onClick={() => { void refreshInstalled() }}>{t('refreshInstalled')}</Button>
+        </div>
+        {installedError !== null && <div className={css.notice} role="alert">
+          <span>{t(`error.${installedError}`)}</span>
+          <Button size="sm" onClick={() => { void refreshInstalled() }}>{t('retry')}</Button>
+        </div>}
+        {loadingInstalled && <div className={css.loading} role="status" aria-label={t('installedLoading')}><IconLoadingOutlineRegular className={css.spinner} /></div>}
+        {!loadingInstalled && installedError === null && installed.length === 0 && <div className={css.empty}>
+          <h2>{t('installedEmpty')}</h2><p>{t('installedHint')}</p>
+        </div>}
+        <ul className={css.cards}>
+          {installed.map(skill => <li key={skill.slug} className={css.card}>
             <div className={css.cardHeading}><IconSkillOutlineRegular /><h3>{skill.name}</h3></div>
-            <p className={css.description}>{skill.description}</p>
-            {skill.version !== '' && <p className={css.metadata}>{t('version', { version: skill.version })}</p>}
-            <p className={css.metadata}>{t('source', { source: skill.source })}</p>
-            <div className={css.cardFooter}>
-              <code className={css.slug}>{skill.slug}</code>
-              <Button size="sm" variant={isInstalled ? 'ghost' : 'outline'}
-                disabled={isInstalled || state?.status === 'pending'} onClick={() => { void runInstall(skill) }}>
-                {isInstalled ? t('installedState') : state?.status === 'pending' ? t('installing') : t('install')}
-              </Button>
-            </div>
-            {isInstalled && <span className={css.success} role="status">{t('installedState')}</span>}
-            {state?.status === 'failed' && <p className={css.error} role="alert">{t(`error.${state.code}`)}</p>}
-          </li>
-        })}
-      </ul>
-    </div>
-    <div role="tabpanel" id={`${id}-installed-panel`} aria-labelledby={`${id}-installed`} hidden={tab !== 'installed'}>
-      <div className={css.installedHeader}>
-        <h2 className={css.sectionTitle}>{t('installedTitle')}</h2>
-        <Button size="sm" icon={<IconRefreshOutlineRegular />} onClick={() => { void refreshInstalled() }}>{t('refreshInstalled')}</Button>
+            <p className={css.metadata}>{t('version', { version: skill.version })}</p>
+            <p className={css.metadata}>{t('source', { source: t('brand') })}</p>
+            <div className={css.cardFooter}><code className={css.slug}>{skill.slug}</code><span className={css.success}>{t('installedState')}</span></div>
+          </li>)}
+        </ul>
       </div>
-      {installedError !== null && <div className={css.notice} role="alert">
-        <span>{t(`error.${installedError}`)}</span>
-        <Button size="sm" onClick={() => { void refreshInstalled() }}>{t('retry')}</Button>
-      </div>}
-      {loadingInstalled && <div className={css.loading} role="status" aria-label={t('installedLoading')}><IconLoadingOutlineRegular className={css.spinner} /></div>}
-      {!loadingInstalled && installedError === null && installed.length === 0 && <div className={css.empty}>
-        <h2>{t('installedEmpty')}</h2><p>{t('installedHint')}</p>
-      </div>}
-      <ul className={css.cards}>
-        {installed.map(skill => <li key={skill.slug} className={css.card}>
-          <div className={css.cardHeading}><IconSkillOutlineRegular /><h3>{skill.name}</h3></div>
-          <p className={css.metadata}>{t('version', { version: skill.version })}</p>
-          <p className={css.metadata}>{t('source', { source: t('brand') })}</p>
-          <div className={css.cardFooter}><code className={css.slug}>{skill.slug}</code><span className={css.success}>{t('installedState')}</span></div>
-        </li>)}
-      </ul>
     </div>
   </section>
 }

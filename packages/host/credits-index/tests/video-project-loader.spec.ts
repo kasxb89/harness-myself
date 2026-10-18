@@ -7,6 +7,7 @@ import { Context } from '@deepseek-ai/cordis'
 import Loader, { type ModuleLoaderV2 } from '@deepseek-ai/cordis-plugin-loader'
 import Include from '@deepseek-ai/cordis-plugin-include'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
+import Skills from '@deepseek-ai/dsh-skill'
 import Tools from '@deepseek-ai/dsh-tools'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import type { Agent } from '@deepseek-ai/dsh-agent'
@@ -79,12 +80,13 @@ async function boot(production = false, workspaceIncludesState = false, managedO
     registerVideoProjectTools(ctx, options)
   } }
   const modules = new Map<string, unknown>([
-    ['system-prompt', SystemPrompt], ['tools', Tools], ['agents', AgentRegistry], ['jobs', LocalJobs], ['job-tools', JobTools],
+    ['system-prompt', SystemPrompt], ['skills', Skills], ['tools', Tools], ['agents', AgentRegistry], ['jobs', LocalJobs], ['job-tools', JobTools],
     ['video-fixture', VideoFixture], ['credits', Credits], ['webserver', WebServer], ['artifacts', Artifacts],
   ])
   const path = join(directory, 'cordis.yml')
   await writeFile(path, [
     '- name: system-prompt', '- name: tools', '- name: agents', '- name: jobs', '- name: job-tools',
+    ...production ? ['- name: skills'] : [],
     ...production || managedOutput ? ['- name: webserver', '  config:', "    host: '127.0.0.1'", '    port: 0'] : [],
     ...managedOutput ? ['- name: artifacts', '  config:', `    defaultOutputDirectory: '${join(directory, 'selected-output')}'`, `    stateDirectory: '${join(directory, 'artifact-settings')}'`] : [],
     ...production ? ['- name: credits', '  config:', `    stateDir: '${join(directory, 'credits')}'`] : ['- name: video-fixture'], '',
@@ -339,6 +341,9 @@ describe('video tools through Loader, real tool registry and jobs runtime', () =
 
   it('registers the same production tool schemas from the shipped credits apply path', async () => {
     const fixture = await boot(true)
+    const skill = await fixture.ctx.skills.get('yunshu-video-director')
+    expect(skill).toMatchObject({ source: 'bundled', invocation: { modelInvocable: true, userInvocable: true } })
+    expect(skill?.content).toContain('For a simple short clip or a user-supplied finished prompt, call generate_video directly.')
     for (const name of ['generate_video', 'generate_video_project', 'video_project_status', 'resume_video_project', 'edit_video']) expect(fixture.ctx.tools.get(name)).toBeDefined()
     expect(fixture.ctx.tools.get('generate_video_project')?.description).toContain('40-second')
     expect(fixture.ctx.tools.schemas().find(schema => schema.name === 'generate_video')).toMatchSnapshot('single-clip audio and dialogue contract')
@@ -346,5 +351,8 @@ describe('video tools through Loader, real tool registry and jobs runtime', () =
     const denied = await fixture.call('generate_video_project', { prompt: '茶杯', total_duration_seconds: 40 })
     expect(json(denied.value)).toMatchObject({ status: 'failed' })
     expect(fixture.ctx.jobs.list(fixture.agent.id)).toEqual([])
+    const credits = [...fixture.ctx.loader.entries()].find(entry => entry.options.name === 'credits')!
+    await credits.fiber!.dispose()
+    expect(await fixture.ctx.skills.get('yunshu-video-director')).toBeUndefined()
   })
 })

@@ -2,6 +2,7 @@
   box-sizing: border-box;
   height: 100%;
   min-height: 0;
+  min-width: 0;
   overflow: auto;
   padding: 24px 32px 48px;
   color: var(--dsw-alias-label-primary);
@@ -11,14 +12,14 @@
   padding-top: calc(var(--dsh-frame-top-clearance) + 16px);
 }
 
-.page > * { max-width: 1120px; margin-inline: auto; }
+.content { width: 100%; max-width: 1120px; min-width: 0; margin-inline: auto; }
 .header { display: flex; align-items: flex-start; gap: 24px; margin-bottom: 24px; }
 .brand { margin: 0 0 6px; color: var(--dsw-alias-label-secondary); font-size: 13px; line-height: 20px; }
 .title { margin: 0; font-size: 22px; line-height: 30px; font-weight: 500; }
 .subtitle { margin: 8px 0 0; color: var(--dsw-alias-label-secondary); font-size: 13px; line-height: 20px; }
 .website { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; flex-shrink: 0; color: var(--dsw-alias-link); font-size: 13px; line-height: 20px; font-weight: 500; text-decoration: none; }
 .website:hover, .website:focus-visible { text-decoration: underline dotted; text-underline-offset: 3px; }
-.tabs { max-width: 320px; margin: 0 0 24px; }
+.tabs { box-sizing: border-box; width: 100%; max-width: 320px; margin: 0 0 24px; }
 .search { display: flex; align-items: center; gap: 12px; }
 .searchInput { display: flex; flex: 1; min-width: 0; }
 .searchInput > span { flex: 1; min-width: 0; }
