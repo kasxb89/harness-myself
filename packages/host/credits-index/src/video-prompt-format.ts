@@ -1,0 +1,23 @@
+/** Model-specific prompt notation, derived from the published H3 interoperability guide. */
+
+/** Compact H3 notation; generation controls still come from the selected account model. */
+export const MINIMAX_H3_PROMPT_GUIDANCE = [
+  '# MiniMax-H3 prompt notation',
+  'Apply this notation only to MiniMax-H3. It does not change supported controls, references or clip lengths. Describe only the current clip; a long project uses its native clip plan.',
+  'Select the notation from the actual supplied inputs: text only (T2VA), first frame (I2VA), first and last frames (FL2VA), last frame (L2VA), or full references (Ref2VA). Do not invent a reference, treat a style image as a first frame, or enable an unsupported mode through text.',
+  'For text/keyframe clips, output these fields in order: integrated_multimodal_description, overall_soundscape, non_diegetic_music. Put visible action, speakers, exact dialogue and sounds caused in the scene in the first field. The second field covers ambience and non-verbal sounds; the third covers audience-only background music. Use N/A for absent background music, preserving any requested dialogue.',
+  'Start the timeline with [Shot 1], without a timestamp. Later shots use [Shot 2] At 00:03.500, with increasing cut times strictly inside the actual clip duration. A visual cut is not another paid generation. State the opening frame at 0.00 seconds and/or the ending frame at the exact clip end only when those frame inputs exist.',
+  'Give speaking characters stable (S1), (S2) identities across clips. Put the speaker, action and delivery outside the dialogue tags. Inside <d>, put only the language marker and verbatim spoken words, for example <d>[Chinese]我在这里等你。</d>. Preserve supplied words, punctuation and language; avoid nesting existing dialogue tags.',
+  'For narration, identify the speaker with says in an off-screen voiceover and keep that on-screen character’s lips closed. For visible speech, request mouth movements matching those exact words. If speech continues over a cut, mark its connecting parts with <scenetrans>; use <cutoff> only for intentionally truncated speech.',
+  'Write structural and visual descriptions in English while preserving original dialogue, lyrics and visible text. Put requested subtitles in double quotes with the exact spoken text and its display window. Keep voices above any background music. These are generation instructions, not proof that the resulting speech, lips or subtitles match.',
+  'For actual full-reference inputs, use subject_definitions, summary, retention_analysis, detailed_description, overall_soundscape, non_diegetic_music in that order. Keep supplied <Picture N>, <Video N>, <Audio N> and derived <Subject N> labels consistent; separate what must stay from what changes. Never claim unseen or unprovided media was inspected.',
+].join('\n')
+
+/**
+ * Select prompt notation without a network lookup or an additional model request.
+ * @param model - Explicit generation model, independent of the chat writing model.
+ * @returns H3 notation for its exact model identity, otherwise no model-specific text.
+ */
+export function videoPromptFormatGuidance(model: string | undefined): string {
+  return model === 'MiniMax-H3' ? MINIMAX_H3_PROMPT_GUIDANCE : ''
+}

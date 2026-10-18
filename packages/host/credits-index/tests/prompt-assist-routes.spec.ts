@@ -13,6 +13,8 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import type { ModelSelection } from '@deepseek-ai/dsh-api-session-controller/types'
 import * as Credits from '../src/index.ts'
 import { VIDEO_DIRECTOR_PROMPT } from '../src/creation-workflows.ts'
+import { COMMUNITY_VIDEO_DIRECTION } from '../src/creation-director-knowledge.ts'
+import { MINIMAX_H3_PROMPT_GUIDANCE } from '../src/video-prompt-format.ts'
 
 let context: Context | undefined
 let root: string | undefined
@@ -172,6 +174,54 @@ async function post(
 }
 
 describe('prompt assistance through the real Loader and account-owned HTTP route', () => {
+  it.each([
+    { kind: 'video', generationModel: 'MiniMax-H3', usesDirector: true, usesH3: true },
+    { kind: 'video', generationModel: 'other-video-model', usesDirector: true, usesH3: false },
+    { kind: 'image', generationModel: 'MiniMax-H3', usesDirector: false, usesH3: false },
+  ])('writes $kind for $generationModel in one current-chat completion and records the full instructions', async ({
+    kind, generationModel, usesDirector, usesH3,
+  }) => {
+    const { base, stateDir } = await boot({ configured: false, prefix: '/harness' })
+    chatSelection = { provider: 'product', model: 'vision-assistant', reasoningEffort: 'medium' }
+    const body = { ...input(), kind, prompt: '女孩在雨夜站台认出朋友，说“我终于找到你了。”',
+      generation: { model: generationModel, ratio: '16:9' } }
+    expect(await post(base, body)).toMatchObject({ ok: true, payload: { model: 'vision-assistant' } })
+    expect(calls.map(call => call.path)).toEqual(['/harness/v1/models', '/harness/v1/chat/completions'])
+    expect(calls.every(call => call.authorization === 'Bearer account-key')).toBe(true)
+    const completion = calls[1]?.body
+    expect(completion).toMatchObject({ model: 'vision-assistant', stream: false, max_tokens: 2048 })
+    expect(completion).not.toHaveProperty('reasoning_effort')
+    const messages: unknown[] = Array.isArray(completion?.messages) ? completion.messages : []
+    expect(messages).toHaveLength(2)
+    const system = object(messages[0])?.content
+    expect(typeof system).toBe('string')
+    if (usesDirector) {
+      expect(system).toContain(VIDEO_DIRECTOR_PROMPT)
+      expect(system).toContain(COMMUNITY_VIDEO_DIRECTION)
+    } else {
+      expect(system).not.toContain(VIDEO_DIRECTOR_PROMPT)
+      expect(system).not.toContain(COMMUNITY_VIDEO_DIRECTION)
+    }
+    if (usesH3) expect(system).toContain(MINIMAX_H3_PROMPT_GUIDANCE)
+    else expect(system).not.toContain(MINIMAX_H3_PROMPT_GUIDANCE)
+    const auditDir = join(stateDir, 'prompt-assists')
+    const entries = (await readdir(auditDir)).filter(entry => entry !== 'references')
+    expect(entries).toHaveLength(1)
+    const request = object(JSON.parse(await readFile(join(auditDir, entries[0] ?? '', 'request.json'), 'utf8')))
+    expect(request).toMatchObject({
+      schema: 'zhishu.prompt-assist/v1', accountId: '7', sessionId: 'test-session', provider: 'product',
+      model: 'vision-assistant', reasoningEffort: 'medium', stream: false, max_tokens: 2048,
+    })
+    expect(request?.system).toBe(system)
+    expect(messages[1]).toEqual({ role: 'user', content: request?.userText })
+    expect(request?.userText).toBe(JSON.stringify({
+      kind, currentDraft: body.prompt, revisionFeedback: '', generation: body.generation,
+    }))
+    expect(object(JSON.parse(await readFile(join(auditDir, entries[0] ?? '', 'outcome.json'), 'utf8'))))
+      .toMatchObject({ ok: true, completionDispatched: true })
+    expect(calls.filter(call => call.path.endsWith('/v1/chat/completions'))).toHaveLength(1)
+  })
+
   it('uses the conversation model and records its provider and session beside the billed request', async () => {
     const { base, stateDir } = await boot({ configured: false })
     chatSelection = { provider: 'product', model: 'vision-assistant', reasoningEffort: 'medium' }

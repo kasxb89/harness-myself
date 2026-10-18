@@ -1,0 +1,56 @@
+{
+  "sources": [
+    {
+      "name": "cinematic-director",
+      "version": "2.1.0",
+      "repository": "https://github.com/wuwangzhang1216/DirectorSKILL",
+      "revision": "c65ae0d14457053efb1e354c7e7f7e120d97fad1",
+      "sourceFile": "SKILL.md",
+      "sourceSha256": "543be6ece626beaa7dbc36b8225dcdc0b763d8044563189e842b306bb5cfd792",
+      "license": "MIT",
+      "copyright": "Copyright (c) 2026 wangzhang-wu",
+      "licenseFile": "cinematic-director.LICENSE.txt",
+      "licenseSha256": "df731ea2e1ffd3b8890ad246da3df96ceba3301c16fb4970c16811df4c728b56"
+    },
+    {
+      "name": "video-storyboard-gen",
+      "repository": "https://github.com/anyhui/video-storyboard-gen-skill",
+      "revision": "60cfaf4f9b4db5d8dcc36cc59495977df2eb9c8b",
+      "sourceFile": "SKILL.md",
+      "sourceSha256": "2bd6db4c12c92fe906720fc49ba9b38b2286522de326a47deac0906d0ca67820",
+      "license": "MIT",
+      "copyright": "Copyright (c) 2026 anyhui",
+      "licenseFile": "video-storyboard-gen.LICENSE.txt",
+      "licenseSha256": "29fb6ca7f502d80acf19b33c65acfd1e301b896fdcc524f575fb700775e404b1"
+    }
+  ],
+  "adaptedPromptFile": "src/creation-director-knowledge.ts",
+  "adaptedPromptSha256": "fe917ab0d5500067bbd2b59e974504b7fecb69133aa7867bc714fb55fd235146",
+  "adaptation": {
+    "description": "Selected repository-authored directing rules, excerpted and condensed for both chat planning and video AI writing; no external scripts or reference libraries execute or load at runtime.",
+    "selections": {
+      "cinematic-director": [
+        "Hard rules: story function, blocking before framing, one dominant move/action, end state, observable behavior, continuity invariants, request-sized output",
+        "Pipeline: beat meaning, blocking, motion-only/image reference and first/last-frame prompts, timed multi-shot prompts, sound layers"
+      ],
+      "video-storyboard-gen": [
+        "Structure: story setup, confrontation, resolution and removal of redundant shots",
+        "Continuity: identity, props, direction, exact complete time windows, dialogue duration and sound layers",
+        "AI video: real material references, consistent anchors, current model controls and no output guarantee"
+      ]
+    },
+    "productAdjustments": [
+      "Keep native generation, polling, saving and assembly; no copied community script workflow.",
+      "Apply motion budget to each continuous shot, allowing distinct timed shots in a supported multi-shot clip.",
+      "Do not require extra references, keyframe images, alternatives or additional paid clips for every request.",
+      "Preserve native speech tracks; do not import any silent-source-audio policy.",
+      "Exclude model lists, fixed duration/resolution specifications and named filmmaker style modules."
+    ]
+  },
+  "promptNotationReference": {
+    "model": "MiniMax-H3",
+    "reference": "https://github.com/MiniMax-AI/MiniMax-H3/tree/main/skills/h3-prompt-writing",
+    "implementation": "src/video-prompt-format.ts",
+    "incorporation": "Locally authored interoperability instructions. Official skill and reference files are linked, not redistributed; no MIT license is asserted for those official files."
+  }
+}
