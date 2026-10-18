@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  ERROR_CODES, readArtifacts, readStorage, readTrash, readWorkspace, renameArtifact, restoreArtifact, saveStorage, trashArtifact,
+  ERROR_CODES, readArtifacts, readRootDirectory, readStorage, readTrash, readWorkspace,
+  renameArtifact, restoreArtifact, saveStorage, trashArtifact,
 } from '../src/client/api.ts'
 import { en, zh } from '../src/client/locales.ts'
 
@@ -18,6 +19,23 @@ function respond(value: unknown, status = 200) {
 }
 
 describe('artifact management HTTP boundary', () => {
+  it('reads an exact retained root directory page and rejects mismatched or looping pagination', async () => {
+    const body = { root: '/产物', directory: 'deep', absoluteDirectory: '/产物/deep', parentDirectory: '',
+      directories: [], items: [item], truncated: true, offset: 2, nextOffset: 4 }
+    const fetch = respond(body)
+    const signal = new AbortController().signal
+    expect(await readRootDirectory('/产物', 'deep', signal, 2)).toEqual({ ok: true, value: body })
+    const url = new URL(fetch.mock.calls[0]![0] as string, 'http://localhost')
+    expect(url.pathname).toBe('/artifacts/api/directory')
+    expect(url.searchParams.get('root')).toBe('/产物')
+    expect(url.searchParams.get('directory')).toBe('deep')
+    expect(url.searchParams.get('offset')).toBe('2')
+    for (const invalid of [{ ...body, root: '/other' }, { ...body, directory: 'other' }, { ...body, offset: 0 },
+      { ...body, nextOffset: 2 }, { ...body, nextOffset: 2.5 }, { ...body, items: [{ ...item, workspaceId: 'unexpected' }] }]) {
+      fetch.mockResolvedValueOnce(Response.json(invalid))
+      expect(await readRootDirectory('/产物', 'deep', signal, 2)).toEqual({ ok: false, code: 'ARTIFACT_OPERATION_FAILED' })
+    }
+  })
   it('reads exactly the requested workspace directory and binds files to its registered scope', async () => {
     const listing = { workspace: { id: 'workspace-one', title: '项目', path: 'D:\\项目' }, directory: '输出/子目录',
       absoluteDirectory: 'D:\\项目\\输出\\子目录', parentDirectory: '输出', directories: [{ name: 'assets', directory: '输出/子目录/assets' }],
@@ -60,6 +78,13 @@ describe('artifact management HTTP boundary', () => {
     fetch.mockResolvedValueOnce(Response.json({ items: [{ id: 'trash-1', name: item.name, originalPath: item.path, deletedAt: '2026-10-17T04:00:00Z' }] }))
     expect(await readTrash(controller.signal)).toEqual({ ok: true, value: [{ id: 'trash-1', name: item.name, originalPath: item.path, deletedAt: '2026-10-17T04:00:00Z' }] })
     expect(fetch.mock.calls.map(call => call[0])).toEqual(['/artifacts/api/list', '/artifacts/api/storage', '/artifacts/api/trash'])
+  })
+
+  it('accepts workspace-bound output and partial source failures without discarding readable files', async () => {
+    const value = { items: [{ ...item, workspaceId: 'workspace-one' }], roots: ['/产物'], truncated: true,
+      issues: [{ workspaceId: 'workspace-two', title: '另一个项目', code: 'ARTIFACT_PERMISSION_DENIED' }] }
+    respond(value)
+    expect(await readArtifacts(new AbortController().signal)).toEqual({ ok: true, value })
   })
 
   it('sends the selected directory revision and file fingerprint rather than replacing arbitrary files', async () => {
@@ -109,6 +134,13 @@ describe('artifact management HTTP boundary', () => {
     { items: [{ ...item, size: '128' }], roots: [], truncated: false },
     { items: [{ ...item, kind: 'invented' }], roots: [], truncated: false },
     { items: null, roots: [], truncated: false },
+    { items: [{ ...item, workspaceId: 1 }], roots: [], truncated: false },
+    { items: [{ ...item, workspaceId: '' }], roots: [], truncated: false },
+    { items: [item], roots: [], truncated: false, issues: null },
+    { items: [item], roots: [], truncated: false, issues: [{}] },
+    { items: [item], roots: [], truncated: false, issues: [{ workspaceId: '', title: '项目', code: 'ARTIFACT_OPERATION_FAILED' }] },
+    { items: [item], roots: [], truncated: false, issues: [{ workspaceId: 'one', title: 1, code: 'ARTIFACT_OPERATION_FAILED' }] },
+    { items: [item], roots: [], truncated: false, issues: [{ workspaceId: 'one', title: '项目', code: 'PRIVATE_EXCEPTION' }] },
   ])('contains malformed listings without exposing them to rendering', async (body) => {
     respond(body)
     expect(await readArtifacts(new AbortController().signal)).toEqual({ ok: false, code: 'ARTIFACT_OPERATION_FAILED' })

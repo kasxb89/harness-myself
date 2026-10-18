@@ -1,7 +1,7 @@
 /**
  * Host half of the sidebar Artifacts panel.
  *
- * Lists and previews canonical root-contained files. Optional local storage
+ * Lists and previews retained output and currently registered local Workspace files. Optional local storage
  * preferences and reversible file management require the authenticated Host
  * connection. The shared Host service captures output before billing and
  * publishes exclusive files; old output roots remain browsable after changes.
@@ -10,7 +10,7 @@
  */
 
 import { constants } from 'node:fs'
-import { lstat, open, readdir, realpath, stat } from 'node:fs/promises'
+import { lstat, open, opendir, realpath, stat } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { basename, extname, isAbsolute, join, normalize, relative, resolve } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
@@ -19,7 +19,7 @@ import type {} from '@deepseek-ai/dsh-client-connection'
 import z from '@deepseek-ai/schemastery'
 import type { ArtifactStorageService } from './types.ts'
 import { ArtifactError, ArtifactStore, authorizedFile, qualified } from './storage.ts'
-import { WorkspaceAccess } from './workspace.ts'
+import { listDirectory, WorkspaceAccess } from './workspace.ts'
 import { serveOfficePreview, type AuthorizePreview } from './preview.ts'
 
 export type { ArtifactDestination, ArtifactWriteResult, ArtifactWriteRequest, ArtifactPublishRequest, ArtifactStorageService, ArtifactStorageInfo } from './types.ts'
@@ -43,9 +43,9 @@ export interface Config {
   defaultOutputDirectory?: string
   /** Private preferences and recovery records; never a browsing root. */
   stateDirectory?: string
-  /** Absolute directories shown in the panel. An empty list serves nothing. */
+  /** Retained output directories shown alongside currently registered local Workspaces. */
   roots?: string[]
-  /** Maximum files returned by one listing. */
+  /** Maximum returned files; also bounds files and directories scanned per root. */
   maxEntries?: number
   /** Maximum directory depth walked below each root. */
   maxDepth?: number
@@ -171,45 +171,80 @@ function json(response: ServerResponse, status: number, body: unknown): void {
   response.end(payload)
 }
 
-/** Walk one root and collect the files it holds, breadth-first and bounded. */
-async function collect(root: string, limit: number, maxDepth: number, seen: Set<string>, pinned: boolean): Promise<ArtifactEntry[]> {
+/** Stable public failure codes omit filesystem paths and exception text. */
+function issueCode(error: unknown): string {
+  if (error instanceof ArtifactError && ['ARTIFACT_WORKSPACE_UNAVAILABLE', 'ARTIFACT_WORKSPACE_REMOTE_UNSUPPORTED'].includes(error.code)) return error.code
+  if (error instanceof Error && 'code' in error && (error.code === 'EACCES' || error.code === 'EPERM')) return 'ARTIFACT_PERMISSION_DENIED'
+  return 'ARTIFACT_OPERATION_FAILED'
+}
+
+/** Walk one root without following links; duplicates do not consume the file budget. */
+async function collect(
+  root: string, limit: number, maxDepth: number, seen: Set<string>, pinned: boolean,
+  signal: AbortSignal, visible?: (path: string) => void,
+): Promise<{ items: ArtifactEntry[]; truncated: boolean; issue?: string }> {
   const entries: ArtifactEntry[] = []
-  const canonical = await realpath(root).catch(() => undefined)
-  if (canonical === undefined || pinned && canonical !== root) return entries
+  let truncated = false
+  let issue: string | undefined
+  const record = (error: unknown): void => { issue ??= issueCode(error) }
+  const canonical = await realpath(root).catch((error: unknown) => { record(error); return undefined })
+  if (canonical === undefined || pinned && canonical !== root) {
+    return { items: entries, truncated, issue: issue ?? 'ARTIFACT_WORKSPACE_UNAVAILABLE' }
+  }
   const queue: { dir: string; depth: number }[] = [{ dir: canonical, depth: 0 }]
-  while (queue.length > 0 && entries.length < limit) {
-    const current = queue.shift()
+  let directoryCount = 1
+  let cursor = 0
+  traversal: while (cursor < queue.length) {
+    signal.throwIfAborted()
+    const current = queue[cursor++]
     if (current === undefined) break
-    let children: string[]
+    let directory
     try {
-      children = await readdir(current.dir)
-    } catch {
+      directory = await opendir(current.dir)
+    } catch (error) {
+      record(error)
       continue
     }
-    for (const child of children) {
-      if (entries.length >= limit) break
-      if (child.startsWith('.')) continue
-      const full = join(current.dir, child)
-      let info
-      try {
-        info = await lstat(full)
-        if (info.isSymbolicLink() || await realpath(full) !== full) continue
-      } catch {
-        continue
+    try {
+      for await (const child of directory) {
+        signal.throwIfAborted()
+        if (child.name.startsWith('.')) continue
+        const full = join(current.dir, child.name)
+        if (visible !== undefined) {
+          try { visible(full) } catch (error) {
+            if (error instanceof ArtifactError && error.code === 'ARTIFACT_PATH_FORBIDDEN') continue
+            throw error
+          }
+        }
+        let info
+        try {
+          info = await lstat(full)
+          if (info.isSymbolicLink() || await realpath(full) !== full) continue
+        } catch (error) {
+          if (!(error instanceof Error && 'code' in error && (error.code === 'ENOENT' || error.code === 'ENOTDIR'))) record(error)
+          continue
+        }
+        if (info.isDirectory()) {
+          if (current.depth >= maxDepth || directoryCount >= limit) { truncated = true; continue }
+          queue.push({ dir: full, depth: current.depth + 1 })
+          directoryCount++
+          continue
+        }
+        if (!info.isFile() || seen.has(full)) continue
+        if (entries.length >= limit) { truncated = true; break traversal }
+        seen.add(full)
+        entries.push({
+          path: join(root, relative(canonical, full)), name: basename(full), kind: kindOf(child.name),
+          size: info.size, mtimeMs: info.mtimeMs,
+        })
       }
-      if (info.isDirectory()) {
-        if (current.depth < maxDepth) queue.push({ dir: full, depth: current.depth + 1 })
-        continue
-      }
-      if (!info.isFile()) continue
-      if (seen.has(full)) continue
-      seen.add(full)
-      entries.push({
-        path: join(root, relative(canonical, full)), name: basename(full), kind: kindOf(child), size: info.size, mtimeMs: info.mtimeMs,
-      })
+    } catch (error) {
+      signal.throwIfAborted()
+      record(error)
     }
   }
-  return entries
+  signal.throwIfAborted()
+  return { items: entries, truncated, ...issue === undefined ? {} : { issue } }
 }
 
 /** Serve one preview read, honouring a single byte range for media seeking. */
@@ -355,8 +390,11 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
             const url = new URL(request.url ?? '/', 'http://127.0.0.1')
             const route = url.pathname.slice(ROUTE_PREFIX.length)
             const connection = ctx.get('connection')
+            const registeredWorkspaces = route === '/api/list' ? workspaces.registered() : []
             if (route.startsWith('/api/') && (connection !== undefined || store !== undefined
-              || route === '/api/preview' || route === '/api/workspace' || route === '/api/raw' && url.searchParams.has('workspaceId'))) {
+              || registeredWorkspaces.length > 0
+              || route === '/api/preview' || route === '/api/workspace' || route === '/api/directory'
+              || route === '/api/raw' && url.searchParams.has('workspaceId'))) {
               const rejection = connection === undefined ? 403 : connection.requestRejection(request)
               if (rejection !== undefined) { json(response, rejection, { code: 'ARTIFACT_AUTH_REQUIRED' }); return }
             }
@@ -373,7 +411,10 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
               }
               if (route === '/api/restore') {
                 if (typeof value.id !== 'string') throw new ArtifactError('ARTIFACT_REQUEST_INVALID', 400, 'Recovery id required')
-                json(response, 200, { item: await item(await store.restore(value.id, signal)) }); return
+                const restored = await store.restore(value.id, signal)
+                json(response, 200, { item: {
+                  ...await item(restored.path), ...restored.workspaceId === undefined ? {} : { workspaceId: restored.workspaceId },
+                } }); return
               }
               const expected = value.expected
               if (typeof value.path !== 'string' || expected === null || typeof expected !== 'object' || Array.isArray(expected)
@@ -398,26 +439,74 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
               json(response, 405, { error: 'method not allowed' })
               return
             }
+            const directoryOffset = (): number => {
+              const raw = url.searchParams.get('offset') ?? '0'
+              const offset = Number(raw)
+              if (!/^\d+$/u.test(raw) || !Number.isSafeInteger(offset) || offset < 0) {
+                throw new ArtifactError('ARTIFACT_DIRECTORY_INVALID', 400, 'Directory offset must be a nonnegative integer')
+              }
+              return offset
+            }
             if (route === '/api/workspace') {
               const workspaceId = url.searchParams.get('workspaceId')
               if (workspaceId === null) throw new ArtifactError('ARTIFACT_WORKSPACE_UNAVAILABLE', 404, 'Select a registered Workspace')
-              const page = await workspaces.list(workspaceId, url.searchParams.get('directory') ?? '', resolved.maxEntries, signal)
+              const page = await workspaces.list(workspaceId, url.searchParams.get('directory') ?? '', resolved.maxEntries, signal, directoryOffset())
               json(response, 200, {
                 ...page, items: page.items.map(entry => ({ ...entry, kind: kindOf(entry.name), workspaceId: page.workspace.id })),
               })
+              return
+            }
+            if (route === '/api/directory') {
+              const root = url.searchParams.get('root')
+              const authorize = async (): Promise<string> => {
+                signal.throwIfAborted()
+                if (root === null || !qualified(root) || !(await rootsNow()).includes(root)
+                  || await realpath(root).catch(() => undefined) !== root) {
+                  throw new ArtifactError('ARTIFACT_PATH_FORBIDDEN', 403, 'Select a currently available retained output root')
+                }
+                return root
+              }
+              const pinnedRoot = await authorize()
+              const page = await listDirectory(pinnedRoot, url.searchParams.get('directory') ?? '', resolved.maxEntries, signal,
+                (path) => { workspaces.visible({ path: pinnedRoot }, path) }, directoryOffset())
+              await authorize()
+              json(response, 200, { ...page, root: pinnedRoot, items: page.items.map(entry => ({ ...entry, kind: kindOf(entry.name) })) })
               return
             }
             if (route === '/api/list') {
               const roots = await rootsNow()
               const items: ArtifactEntry[] = []
               const seen = new Set<string>()
+              const issues: { workspaceId: string; title: string; code: string }[] = []
+              let truncated = roots.length < (store?.info().roots ?? configuredRoots).length
               for (const root of roots) {
-                if (items.length > resolved.maxEntries) break
-                items.push(...await collect(root, resolved.maxEntries + 1 - items.length, resolved.maxDepth, seen, store !== undefined))
+                const page = await collect(root, resolved.maxEntries + 1, resolved.maxDepth, seen, store !== undefined, signal)
+                items.push(...page.items)
+                truncated ||= page.truncated || page.issue !== undefined
+              }
+              for (const identity of registeredWorkspaces) {
+                try {
+                  const workspace = await workspaces.resolve(identity.id, signal)
+                  const scopedSeen = new Set(seen)
+                  const page = await collect(workspace.path, resolved.maxEntries + 1, resolved.maxDepth, scopedSeen, true,
+                    signal, (path) => { workspaces.visible(workspace, path) })
+                  const current = await workspaces.resolve(identity.id, signal)
+                  if (current.path !== workspace.path) throw new ArtifactError('ARTIFACT_WORKSPACE_UNAVAILABLE', 404, 'Workspace directory changed')
+                  for (const entry of page.items) {
+                    seen.add(entry.path)
+                    items.push({ ...entry, workspaceId: workspace.id })
+                  }
+                  truncated ||= page.truncated
+                  if (page.issue !== undefined) issues.push({ workspaceId: identity.id, title: identity.title, code: page.issue })
+                } catch (error) {
+                  signal.throwIfAborted()
+                  issues.push({ workspaceId: identity.id, title: identity.title, code: issueCode(error) })
+                }
               }
               items.sort((left, right) => right.mtimeMs - left.mtimeMs)
               json(response, 200, {
-                roots, items: items.slice(0, resolved.maxEntries), truncated: items.length > resolved.maxEntries,
+                roots, items: items.slice(0, resolved.maxEntries), truncated: truncated || items.length > resolved.maxEntries,
+                ...issues.length === 0 ? {} : { issues },
                 ...store === undefined ? {} : { storage: store.info() },
               })
               return

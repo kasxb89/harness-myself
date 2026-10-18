@@ -358,9 +358,9 @@ export interface Config {
   defaultOutputDirectory?: string
   /** Private preferences and recovery records; never a browsing root. */
   stateDirectory?: string
-  /** Absolute directories shown in the panel. An empty list serves nothing. */
+  /** Retained output directories shown alongside currently registered local Workspaces. */
   roots?: string[]
-  /** Maximum files returned by one listing. */
+  /** Maximum returned files; also bounds files and directories scanned per root. */
   maxEntries?: number
   /** Maximum directory depth walked below each root. */
   maxDepth?: number

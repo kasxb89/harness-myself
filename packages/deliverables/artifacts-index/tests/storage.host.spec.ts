@@ -1,5 +1,5 @@
 /** Real Loader/HTTP coverage of the local artifact output and recovery boundary. */
-import { chmod, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises'
 import { request as httpRequest } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -33,7 +33,13 @@ function object(value: unknown): Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error('Expected object')
   return value as Record<string, unknown>
 }
-async function boot(existing?: string, options: { connection?: boolean; maxEntries?: number; workspaces?: boolean } = {}) {
+async function boot(existing?: string, options: {
+  connection?: boolean
+  maxEntries?: number
+  maxDepth?: number
+  workspaces?: boolean
+  rootsOnly?: boolean
+} = {}) {
   const directory = existing ?? await realpath(await mkdtemp(join(tmpdir(), 'artifacts-storage-')))
   const ctx = new Context()
   fixtures.push({ ctx, directory })
@@ -41,6 +47,7 @@ async function boot(existing?: string, options: { connection?: boolean; maxEntri
   const state = join(directory, 'private-state')
   const custom = join(directory, 'custom')
   await mkdir(custom, { recursive: true })
+  if (options.rootsOnly === true) await mkdir(output, { recursive: true })
   const config = join(directory, 'cordis.yml')
   await writeFile(config, JSON.stringify([
     { name: 'web', config: { host: '127.0.0.1', port: 0 } },
@@ -51,7 +58,12 @@ async function boot(existing?: string, options: { connection?: boolean; maxEntri
       { name: 'storage' }, { name: 'json', config: { root: join(directory, 'domains') } },
       { name: 'domain', config: { backend: 'json' } }, { name: 'workspaces' }, { name: 'fs', config: { cwd: directory } },
     ],
-    { name: 'artifacts', config: { defaultOutputDirectory: output, stateDirectory: state, roots: [], maxEntries: options.maxEntries ?? 2000 } },
+    { name: 'artifacts', config: {
+      defaultOutputDirectory: options.rootsOnly === true ? '' : output,
+      stateDirectory: options.rootsOnly === true ? '' : state,
+      roots: options.rootsOnly === true ? [output] : [],
+      maxEntries: options.maxEntries ?? 2000, maxDepth: options.maxDepth ?? 5,
+    } },
   ]))
   const modules = new Map<string, unknown>([
     ['web', WebServer], ['credentials', LocalCredentialProvider], ['connection', Connection], ['artifacts', Artifacts],
@@ -231,7 +243,9 @@ describe('artifact storage through the real Loader and HTTP routes', () => {
     expect(await readFile(path, 'utf8')).toBe('new user file')
     // Rename the new user file through the same safe API before restoring.
     await restarted.json('rename', { path, name: 'new-user-file.txt', expected: await restarted.version(path) })
-    expect(object((await restarted.json('restore', { id: result.trashId })).item).path).toBe(path)
+    const restored = object((await restarted.json('restore', { id: result.trashId })).item)
+    expect(restored.path).toBe(path)
+    expect(restored.workspaceId).toBeUndefined()
     expect(await readFile(path, 'utf8')).toBe('recover me')
     expect(await readFile(join(f.output, 'new-user-file.txt'), 'utf8')).toBe('new user file')
     expect((await restarted.json('trash')).items).toEqual([])
@@ -274,6 +288,112 @@ describe('artifact storage through the real Loader and HTTP routes', () => {
       await rm(f.output)
     }
     expect(await readFile(join(outside, 'secret.txt'), 'utf8')).toBe('outside secret')
+  })
+
+  it('reports an offline retained save directory as partial while keeping healthy output authenticated and visible', async () => {
+    const f = await boot()
+    await f.json('storage', { directory: f.custom, expectedRevision: 0 })
+    await writeFile(join(f.custom, 'old.png'), 'old image')
+    await f.json('storage', { directory: f.output, expectedRevision: 1 })
+    await writeFile(join(f.output, 'current.png'), 'healthy image')
+    await rename(f.custom, join(f.directory, 'disconnected-custom'))
+    expect((await f.request('list', undefined, { authenticated: false })).status).toBe(401)
+    expect(await f.json('list')).toMatchObject({
+      roots: [f.output], truncated: true, items: [{ path: join(f.output, 'current.png') }],
+      storage: { directory: f.output, roots: [f.output, f.custom] },
+    })
+  })
+
+  it('opens a managed output deeper than the inventory limit through authenticated directory drilldown', async () => {
+    const f = await boot(undefined, { maxDepth: 1 })
+    const parts = ['第一层', '第二层', 'third', 'fourth', 'fifth', 'sixth']
+    const folder = join(f.output, ...parts)
+    await mkdir(folder, { recursive: true })
+    const path = join(folder, '深层产物.png')
+    await writeFile(path, 'deep generated image')
+    expect(await f.json('list')).toMatchObject({ items: [], truncated: true })
+    for (let index = 0; index <= parts.length; index++) {
+      const directory = parts.slice(0, index).join('/')
+      const page = await f.json('directory?' + new URLSearchParams({ root: f.output, directory }).toString())
+      expect(page).toMatchObject({
+        root: f.output, directory, absoluteDirectory: join(f.output, ...parts.slice(0, index)),
+        parentDirectory: index === 0 ? null : parts.slice(0, index - 1).join('/'),
+        offset: 0, nextOffset: null, truncated: false,
+      })
+      if (index < parts.length) {
+        expect(page.directories).toEqual([{ name: parts[index], directory: parts.slice(0, index + 1).join('/') }])
+      } else {
+        expect(page.items).toEqual([expect.objectContaining({ path, name: '深层产物.png', kind: 'image' })])
+        if (!Array.isArray(page.items)) throw new Error('Missing deep output')
+        const entry = object(page.items[0])
+        expect(entry.workspaceId).toBeUndefined()
+        if (typeof entry.path !== 'string') throw new Error('Missing output path')
+        const preview = await f.request('raw?' + new URLSearchParams({ path: entry.path }).toString())
+        expect(preview.status).toBe(200)
+        expect(await preview.text()).toBe('deep generated image')
+      }
+    }
+  })
+
+  it('restricts managed directory browsing to current exact roots and portable relative directories', async () => {
+    const f = await boot()
+    const route = 'directory?' + new URLSearchParams({ root: f.output }).toString()
+    expect((await f.request(route, undefined, { authenticated: false })).status).toBe(401)
+    expect(await f.requestHost(route, 'attacker.invalid')).toBe(403)
+    expect((await f.request(route, undefined, { origin: 'https://attacker.invalid' })).status).toBe(403)
+    const noConnection = await boot(undefined, { connection: false, rootsOnly: true })
+    expect((await noConnection.request('directory?' + new URLSearchParams({ root: noConnection.output }).toString())).status).toBe(403)
+    for (const root of [f.directory, f.custom, f.state, 'C:relative', '\\rooted']) {
+      expect(await f.json('directory?' + new URLSearchParams({ root }).toString())).toEqual({ code: 'ARTIFACT_PATH_FORBIDDEN' })
+    }
+    for (const directory of ['..', '../outside', '/tmp', 'C:/Windows', 'sub\\path', 'folder:stream', './drafts']) {
+      expect(await f.json('directory?' + new URLSearchParams({ root: f.output, directory }).toString()))
+        .toEqual({ code: 'ARTIFACT_DIRECTORY_INVALID' })
+    }
+    await mkdir(join(f.output, '.private'))
+    expect(await f.json('directory?' + new URLSearchParams({ root: f.output, directory: '.private' }).toString()))
+      .toEqual({ code: 'ARTIFACT_PATH_FORBIDDEN' })
+    await symlink(f.custom, join(f.output, 'linked'), process.platform === 'win32' ? 'junction' : 'dir')
+    expect(await f.json('directory?' + new URLSearchParams({ root: f.output, directory: 'linked' }).toString()))
+      .toEqual({ code: 'ARTIFACT_DIRECTORY_INVALID' })
+    expect((await f.json(route)).directories).toEqual([])
+    await rename(f.output, join(f.directory, 'offline-output'))
+    expect(await f.json(route)).toEqual({ code: 'ARTIFACT_PATH_FORBIDDEN' })
+    await symlink(f.custom, f.output, process.platform === 'win32' ? 'junction' : 'dir')
+    expect(await f.json(route)).toEqual({ code: 'ARTIFACT_PATH_FORBIDDEN' })
+  })
+
+  it('continues managed and workspace directory pages without overlaps or excluded-entry offsets', async () => {
+    const f = await boot(undefined, { workspaces: true, maxEntries: 2 })
+    const workspace = await f.ctx.workspaceRegistry.create(f.custom)
+    for (const root of [f.output, f.custom]) {
+      await mkdir(join(root, '.ignored'))
+      await writeFile(join(root, '.ignored', 'hidden.txt'), 'ignored')
+      for (const name of ['one.txt', 'two.txt', '最后一份.txt']) await writeFile(join(root, name), name)
+    }
+    const queries: readonly { route: string; params: Record<string, string> }[] = [
+      { route: 'directory', params: { root: f.output } },
+      { route: 'workspace', params: { workspaceId: String(workspace.id) } },
+    ]
+    for (const query of queries) {
+      const route = query.route + '?' + new URLSearchParams(query.params).toString()
+      const first = await f.json(route)
+      const next = await f.json(route + '&offset=' + String(first.nextOffset))
+      expect(first).toMatchObject({ offset: 0, nextOffset: 2, truncated: true })
+      expect(next).toMatchObject({ offset: 2, nextOffset: null, truncated: false })
+      if (!Array.isArray(first.items) || !Array.isArray(next.items)) throw new Error('Missing continuation files')
+      const all = first.items.map(object).concat(next.items.map(object))
+      expect(all.map(entry => entry.name).sort()).toEqual(['one.txt', 'two.txt', '最后一份.txt'].sort())
+      expect(new Set(all.map(entry => entry.path)).size).toBe(3)
+      const last = object(next.items[0])
+      if (typeof last.path !== 'string') throw new Error('Missing continued output path')
+      const coordinates = new URLSearchParams({ path: last.path })
+      if (typeof last.workspaceId === 'string') coordinates.set('workspaceId', last.workspaceId)
+      expect((await f.request('raw?' + coordinates.toString())).status).toBe(200)
+      for (const offset of ['-1', '1.5', 'NaN', '9007199254740992', '+1']) {
+        expect(await f.json(route + '&offset=' + encodeURIComponent(offset))).toEqual({ code: 'ARTIFACT_DIRECTORY_INVALID' })
+      }
+    }
   })
 
   it('publishes an edited file without removing its source, refuses duplicate output names and honors cancellation', async () => {
@@ -552,6 +672,177 @@ describe('artifact storage through the real Loader and HTTP routes', () => {
 })
 
 describe('registered Workspace files through the real Loader', () => {
+  it('merges saved output and nested shell files across workspaces, preserving usable file-operation coordinates', async () => {
+    const f = await boot(undefined, { workspaces: true, maxEntries: 3 })
+    const root = join(f.directory, '项目 空间')
+    const nested = join(root, '草稿', '版本二')
+    const media = join(root, 'media')
+    await mkdir(nested, { recursive: true })
+    await mkdir(media)
+    const workspace = await f.ctx.workspaceRegistry.create(root)
+    const second = await f.ctx.workspaceRegistry.create(f.custom)
+    await f.json('storage', { directory: media, expectedRevision: 0 })
+    const managed = join(media, '聊天生成图.png')
+    const independent = join(nested, '脚本生成文档.md')
+    const other = join(f.custom, '另一个工作区.txt')
+    await writeFile(managed, 'generated image')
+    await writeFile(independent, 'shell output without Session history or Git')
+    await writeFile(other, 'other workspace output')
+    const page = await f.json('list')
+    expect(page.truncated).toBe(false)
+    expect(page.issues).toBeUndefined()
+    if (!Array.isArray(page.items)) throw new Error('Missing unified artifact list')
+    expect(page.items).toHaveLength(3)
+    const saved = page.items.map(object).find(value => value.path === managed)
+    expect(saved).toMatchObject({ name: '聊天生成图.png' })
+    expect(saved?.workspaceId).toBeUndefined()
+    const shell = page.items.map(object).find(value => value.path === independent)
+    expect(shell).toMatchObject({ workspaceId: workspace.id, name: '脚本生成文档.md' })
+    expect(page.items).toContainEqual(expect.objectContaining({ path: other, workspaceId: second.id }))
+    if (shell === undefined || typeof shell.path !== 'string' || typeof shell.workspaceId !== 'string') throw new Error('Missing file coordinates')
+    const coordinates = { workspaceId: shell.workspaceId, path: shell.path }
+    expect(await (await f.request('raw?' + new URLSearchParams(coordinates).toString())).text()).toBe('shell output without Session history or Git')
+    const changed = await f.json('rename', { ...coordinates, name: '重命名 文档.md', expected: await f.version(shell.path) })
+    const changedPath = join(nested, '重命名 文档.md')
+    expect(changed.item).toMatchObject({ path: changedPath, workspaceId: shell.workspaceId })
+    const removed = await f.json('trash', { workspaceId: shell.workspaceId, path: changedPath, expected: await f.version(changedPath) })
+    expect((await f.json('list')).items).toHaveLength(2)
+    await f.json('restore', { id: removed.trashId })
+    expect((await f.json('list')).items).toHaveLength(3)
+    expect((await f.json('storage')).roots).toEqual([f.output, media])
+  })
+
+  it('reflects registry removal and restart without retaining workspace directories as output roots', async () => {
+    const f = await boot(undefined, { workspaces: true })
+    await writeFile(join(f.custom, 'generated.txt'), 'persisted file')
+    const workspace = await f.ctx.workspaceRegistry.create(f.custom)
+    expect((await f.json('list')).items).toEqual([expect.objectContaining({ workspaceId: workspace.id })])
+    await f.ctx.fiber.dispose()
+    fixtures.splice(fixtures.findIndex(value => value.ctx === f.ctx), 1)
+    const restarted = await boot(f.directory, { workspaces: true })
+    expect((await restarted.json('list')).items).toEqual([expect.objectContaining({ workspaceId: workspace.id })])
+    await restarted.ctx.workspaceRegistry.delete(workspace.id)
+    expect((await restarted.json('list')).items).toEqual([])
+    expect((await restarted.json('storage')).roots).toEqual([f.output])
+    expect(await (await restarted.request('raw?' + new URLSearchParams({ workspaceId: workspace.id, path: join(f.custom, 'generated.txt') }).toString())).json())
+      .toEqual({ code: 'ARTIFACT_WORKSPACE_UNAVAILABLE' })
+  })
+
+  it('requires authentication before adding workspace files to a roots-only deployment', async () => {
+    const noConnection = await boot(undefined, { workspaces: true, rootsOnly: true, connection: false })
+    await writeFile(join(noConnection.custom, 'private.txt'), 'do not expose')
+    await noConnection.ctx.workspaceRegistry.create(noConnection.custom)
+    expect(await noConnection.json('list')).toEqual({ code: 'ARTIFACT_AUTH_REQUIRED' })
+    expect((await noConnection.request('list', undefined, { noOrigin: true })).status).toBe(403)
+    const authenticated = await boot(undefined, { workspaces: true, rootsOnly: true })
+    await writeFile(join(authenticated.custom, 'generated.txt'), 'authenticated output')
+    const workspace = await authenticated.ctx.workspaceRegistry.create(authenticated.custom)
+    expect((await authenticated.request('list', undefined, { authenticated: false })).status).toBe(401)
+    expect((await authenticated.json('list')).items).toEqual([expect.objectContaining({ workspaceId: workspace.id })])
+  })
+
+  it('returns available files alongside safe issues for offline and unsupported mounts', async () => {
+    const f = await boot(undefined, { workspaces: true })
+    const missing = join(f.directory, 'missing')
+    const remote = join(f.directory, 'remote')
+    await mkdir(missing)
+    await mkdir(remote)
+    const offline = await f.ctx.workspaceRegistry.create(missing)
+    const unsupported = await f.ctx.workspaceRegistry.create(remote)
+    const healthy = await f.ctx.workspaceRegistry.create(f.custom)
+    await writeFile(join(f.output, 'saved.png'), 'saved image')
+    await writeFile(join(f.custom, 'visible.txt'), 'healthy workspace')
+    await rename(missing, join(f.directory, 'offline-copy'))
+    const original = f.ctx.fs.processPathFromHostPath.bind(f.ctx.fs)
+    const mapping = vi.spyOn(f.ctx.fs, 'processPathFromHostPath').mockImplementation(path => path === remote ? undefined : original(path))
+    try {
+      const page = await f.json('list')
+      expect(page.issues).toEqual(expect.arrayContaining([
+        { workspaceId: offline.id, title: offline.title, code: 'ARTIFACT_WORKSPACE_UNAVAILABLE' },
+        { workspaceId: unsupported.id, title: unsupported.title, code: 'ARTIFACT_WORKSPACE_REMOTE_UNSUPPORTED' },
+      ]))
+      expect(page.issues).toHaveLength(2)
+      expect(page.items).toEqual(expect.arrayContaining([
+        expect.objectContaining({ path: join(f.output, 'saved.png') }),
+        expect.objectContaining({ path: join(f.custom, 'visible.txt'), workspaceId: healthy.id }),
+      ]))
+      expect(JSON.stringify(page.issues)).not.toContain(f.directory)
+    } finally { mapping.mockRestore() }
+  })
+
+  it('drops a workspace removed during filesystem validation and omits unexpected exception details', async () => {
+    const f = await boot(undefined, { workspaces: true })
+    const workspace = await f.ctx.workspaceRegistry.create(f.custom)
+    await writeFile(join(f.custom, 'generated.txt'), 'must follow live registration')
+    const entered = Promise.withResolvers<undefined>()
+    const release = Promise.withResolvers<undefined>()
+    const original = f.ctx.fs.resolve.bind(f.ctx.fs)
+    const mapping = vi.spyOn(f.ctx.fs, 'resolve').mockImplementationOnce(async (path, options) => {
+      entered.resolve(undefined)
+      await release.promise
+      return original(path, options)
+    })
+    try {
+      const pending = f.json('list')
+      await entered.promise
+      await f.ctx.workspaceRegistry.delete(workspace.id)
+      release.resolve(undefined)
+      expect(await pending).toMatchObject({
+        items: [], issues: [{ workspaceId: workspace.id, title: workspace.title, code: 'ARTIFACT_WORKSPACE_UNAVAILABLE' }],
+      })
+      const current = await f.ctx.workspaceRegistry.create(f.custom)
+      mapping.mockRejectedValueOnce(new Error('Private mount error at ' + f.custom))
+      const failed = await f.json('list')
+      expect(failed.issues).toEqual([{ workspaceId: current.id, title: current.title, code: 'ARTIFACT_OPERATION_FAILED' }])
+      expect(JSON.stringify(failed.issues)).not.toContain(f.custom)
+    } finally {
+      release.resolve(undefined)
+      mapping.mockRestore()
+    }
+  })
+
+  it('reports depth and file limits, considering later sources before choosing the newest retained entries', async () => {
+    const f = await boot(undefined, { workspaces: true, maxDepth: 1, maxEntries: 2 })
+    const root = join(f.directory, 'project')
+    await mkdir(join(root, 'level-one', 'level-two'), { recursive: true })
+    await f.ctx.workspaceRegistry.create(root)
+    const deep = join(root, 'level-one', 'level-two', 'too-deep.txt')
+    const included = join(root, 'level-one', 'newest.txt')
+    await writeFile(deep, 'visible only at greater configured depth')
+    await writeFile(included, 'recent workspace output')
+    const old = join(f.output, 'old.txt')
+    await writeFile(old, 'old output')
+    await utimes(old, new Date(1000), new Date(1000))
+    const depthPage = await f.json('list')
+    expect(depthPage.truncated).toBe(true)
+    expect(depthPage.items).toEqual([
+      expect.objectContaining({ path: included }), expect.objectContaining({ path: old }),
+    ])
+    await writeFile(join(f.output, 'second.txt'), 'second managed file')
+    await writeFile(join(f.output, 'third.txt'), 'third managed file')
+    await utimes(included, new Date(9_000_000_000_000), new Date(9_000_000_000_000))
+    const capped = await f.json('list')
+    expect(capped.truncated).toBe(true)
+    expect(capped.items).toHaveLength(2)
+    expect(capped.items).toEqual(expect.arrayContaining([expect.objectContaining({ path: included })]))
+  })
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('reports unreadable workspace folders without hiding readable sibling output', async () => {
+    const f = await boot(undefined, { workspaces: true })
+    const root = join(f.directory, 'project')
+    const denied = join(root, 'unreadable')
+    await mkdir(denied, { recursive: true })
+    await writeFile(join(denied, 'private.txt'), 'inaccessible file')
+    await writeFile(join(root, 'visible.txt'), 'visible output')
+    const workspace = await f.ctx.workspaceRegistry.create(root)
+    await chmod(denied, 0)
+    try {
+      const page = await f.json('list')
+      expect(page.items).toEqual([expect.objectContaining({ path: join(root, 'visible.txt'), workspaceId: workspace.id })])
+      expect(page.issues).toEqual([{ workspaceId: workspace.id, title: workspace.title, code: 'ARTIFACT_PERMISSION_DENIED' }])
+    } finally { await chmod(denied, 0o700) }
+  })
+
   it('browses new non-Git files and one directory layer across registered Workspaces without expanding output preferences', async () => {
     const f = await boot(undefined, { workspaces: true })
     const alpha = join(f.directory, 'alpha')
@@ -577,7 +868,15 @@ describe('registered Workspace files through the real Loader', () => {
       items: [{ name: 'other.png', workspaceId: second.id }],
     })
     expect(await f.json('storage')).toEqual({ directory: f.output, defaultDirectory: f.output, revision: 0, roots: [f.output] })
-    expect((await f.json('list')).items).toEqual([])
+    const library = await f.json('list')
+    expect(library.truncated).toBe(false)
+    expect(library.issues).toBeUndefined()
+    expect(library.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ workspaceId: second.id, path: join(beta, 'other.png') }),
+      expect.objectContaining({ workspaceId: first.id, path: join(alpha, 'drafts', 'nested.md') }),
+      expect.objectContaining({ workspaceId: first.id, path: join(alpha, 'outside-tool.txt') }),
+    ]))
+    expect(library.items).toHaveLength(3)
     expect((await f.request('raw?' + new URLSearchParams({ workspaceId: first.id, path: join(alpha, 'outside-tool.txt') }).toString())).status).toBe(200)
     expect((await f.request('raw?' + new URLSearchParams({ path: join(alpha, 'outside-tool.txt') }).toString())).status).toBe(404)
     expect((await f.request('raw?' + new URLSearchParams({ workspaceId: second.id, path: join(alpha, 'outside-tool.txt') }).toString())).status).toBe(403)
@@ -618,7 +917,12 @@ describe('registered Workspace files through the real Loader', () => {
     expect((await restarted.json('trash')).items).toHaveLength(1)
     const next = await restarted.ctx.workspaceRegistry.create(root)
     expect(next.id).not.toBe(workspace.id)
-    expect(await restarted.json('restore', { id: removed.trashId })).toMatchObject({ item: { path: renamedPath } })
+    const restored = object((await restarted.json('restore', { id: removed.trashId })).item)
+    expect(restored).toMatchObject({ path: renamedPath, workspaceId: next.id })
+    if (typeof restored.path !== 'string' || typeof restored.workspaceId !== 'string') throw new Error('Missing restored coordinates')
+    const restoredRead = await restarted.request('raw?' + new URLSearchParams({ path: restored.path, workspaceId: restored.workspaceId }).toString())
+    expect(restoredRead.status).toBe(200)
+    expect(await restoredRead.text()).toBe('original deliverable')
     expect(await readFile(renamedPath, 'utf8')).toBe('original deliverable')
     expect(await readFile(occupied, 'utf8')).toBe('keep occupied')
     expect((await restarted.json('trash')).items).toEqual([])
@@ -654,6 +958,11 @@ describe('registered Workspace files through the real Loader', () => {
     expect(listed.directories.map(value => object(value).name)).not.toContain('private-state')
     expect(listed.directories.map(value => object(value).name)).not.toContain('nonportable:directory')
     expect(listed.directories.map(value => object(value).name)).not.toContain('nonportable\\directory')
+    const library = await f.json('list')
+    if (!Array.isArray(library.items)) throw new Error('Missing unified artifact list')
+    const libraryPaths = library.items.map(value => object(value).path)
+    for (const path of paths) expect(libraryPaths).not.toContain(path)
+    expect(libraryPaths).not.toContain(join(root, 'escape', 'secret.txt'))
     for (const path of paths) {
       expect((await f.request('raw?' + new URLSearchParams({ workspaceId: workspace.id, path }).toString())).status).toBe(403)
       expect(await f.json('trash', { workspaceId: workspace.id, path, expected: await f.version(path) })).toEqual({ code: 'ARTIFACT_PATH_FORBIDDEN' })
@@ -701,7 +1010,9 @@ describe('registered Workspace files through the real Loader', () => {
     expect(listed.items.length + listed.directories.length).toBe(2)
   })
 
-  it.each(['disconnect', 'dispose'] as const)('cancels a pending Workspace read on %s without retaining its request', async (kind) => {
+  it.each([
+    ['disconnect', 'workspace'], ['dispose', 'workspace'], ['disconnect', 'list'], ['dispose', 'list'],
+  ] as const)('cancels a pending Workspace read on %s from %s without retaining its request', async (kind, route) => {
     const f = await boot(undefined, { workspaces: true })
     const root = join(f.directory, 'project')
     await mkdir(root)
@@ -720,7 +1031,7 @@ describe('registered Workspace files through the real Loader', () => {
       return original(path, options)
     })
     const abort = new AbortController()
-    const request = f.request('workspace?' + new URLSearchParams({ workspaceId: workspace.id }).toString(), undefined, { signal: abort.signal })
+    const request = f.request(route === 'list' ? 'list' : 'workspace?' + new URLSearchParams({ workspaceId: workspace.id }).toString(), undefined, { signal: abort.signal })
       .then(() => false, () => true)
     await started
     if (kind === 'disconnect') abort.abort()

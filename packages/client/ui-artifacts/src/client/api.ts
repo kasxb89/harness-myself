@@ -46,13 +46,37 @@ export interface WorkspaceListing {
   directories: readonly { name: string; directory: string }[]
   items: readonly ArtifactEntry[]
   truncated: boolean
+  offset?: number
+  nextOffset?: number | null
 }
 
-/** Complete current filesystem listing. */
+/** One lazily read retained output directory, with no workspace authorization added. */
+export interface RootDirectoryListing {
+  root: string
+  directory: string
+  absoluteDirectory: string
+  parentDirectory: string | null
+  directories: readonly { name: string; directory: string }[]
+  items: readonly ArtifactEntry[]
+  truncated: boolean
+  offset?: number
+  nextOffset?: number | null
+}
+
+/** A workspace whose files could not be completely read without affecting other sources. */
+export interface ArtifactListingIssue {
+  workspaceId: string
+  title: string
+  code: 'ARTIFACT_WORKSPACE_UNAVAILABLE' | 'ARTIFACT_WORKSPACE_REMOTE_UNSUPPORTED'
+    | 'ARTIFACT_PERMISSION_DENIED' | 'ARTIFACT_OPERATION_FAILED'
+}
+
+/** Current artifact inventory, with explicit scan limits and independently unavailable sources. */
 export interface ArtifactListing {
   items: readonly ArtifactEntry[]
   roots: readonly string[]
   truncated: boolean
+  issues?: readonly ArtifactListingIssue[]
 }
 
 /** File identity supplied with a mutation so a changed file cannot be silently replaced. */
@@ -72,6 +96,19 @@ function entry(value: unknown): value is ArtifactEntry {
     && ['image', 'video', 'audio', 'document', 'sheet', 'slides', 'archive', 'code', 'text', 'other'].includes(value.kind)
     && typeof value.size === 'number' && Number.isFinite(value.size) && value.size >= 0
     && typeof value.mtimeMs === 'number' && Number.isFinite(value.mtimeMs)
+    && (value.workspaceId === undefined || typeof value.workspaceId === 'string' && value.workspaceId !== '')
+}
+
+function listingIssue(value: unknown): value is ArtifactListingIssue {
+  return record(value) && typeof value.workspaceId === 'string' && value.workspaceId !== '' && typeof value.title === 'string'
+    && typeof value.code === 'string' && ['ARTIFACT_WORKSPACE_UNAVAILABLE', 'ARTIFACT_WORKSPACE_REMOTE_UNSUPPORTED',
+    'ARTIFACT_PERMISSION_DENIED', 'ARTIFACT_OPERATION_FAILED'].includes(value.code)
+}
+
+function pagination(value: Record<string, unknown>, offset: number): boolean {
+  if (value.offset === undefined && value.nextOffset === undefined) return offset === 0
+  return value.offset === offset && (value.nextOffset === null
+    || typeof value.nextOffset === 'number' && Number.isSafeInteger(value.nextOffset) && value.nextOffset > offset)
 }
 
 function storage(value: unknown): value is ArtifactStorage {
@@ -105,11 +142,12 @@ async function request<T>(path: string, valid: (value: unknown) => value is T, s
 /**
  * Read current files without losing the previous listing on failure.
  * @param signal - Page-owned cancellation for an unmounted or superseded read.
- * @returns Validated files and roots, or a localizable error code.
+ * @returns Validated files, roots, scan limits, and source issues, or a localizable error code.
  */
 export function readArtifacts(signal: AbortSignal): Promise<ArtifactResult<ArtifactListing>> {
   return request('list', (value): value is ArtifactListing => record(value) && Array.isArray(value.items)
-    && value.items.every(entry) && strings(value.roots) && typeof value.truncated === 'boolean', signal)
+    && value.items.every(entry) && strings(value.roots) && typeof value.truncated === 'boolean'
+    && (value.issues === undefined || Array.isArray(value.issues) && value.issues.every(listingIssue)), signal)
 }
 
 /**
@@ -117,20 +155,42 @@ export function readArtifacts(signal: AbortSignal): Promise<ArtifactResult<Artif
  * @param workspaceId - Explicit registered workspace selected by the user or current conversation.
  * @param directory - Host-provided POSIX relative directory; the empty string names its root.
  * @param signal - Page-owned cancellation for a changed workspace or directory.
+ * @param offset - Next page offset previously supplied by the Host; zero starts a directory.
  * @returns Validated directory metadata and workspace-bound files, or a localizable error code.
  */
 export async function readWorkspace(workspaceId: string, directory: string,
-  signal: AbortSignal): Promise<ArtifactResult<WorkspaceListing>> {
-  const query = new URLSearchParams({ workspaceId, directory })
+  signal: AbortSignal, offset = 0): Promise<ArtifactResult<WorkspaceListing>> {
+  const query = new URLSearchParams({ workspaceId, directory, ...offset === 0 ? {} : { offset: String(offset) } })
   const result = await request(`workspace?${query.toString()}`, (value): value is WorkspaceListing => record(value)
     && record(value.workspace) && value.workspace.id === workspaceId && typeof value.workspace.title === 'string'
     && typeof value.workspace.path === 'string' && value.directory === directory && typeof value.absoluteDirectory === 'string'
     && (value.parentDirectory === null || typeof value.parentDirectory === 'string')
     && Array.isArray(value.directories) && value.directories.every(item => record(item)
       && typeof item.name === 'string' && typeof item.directory === 'string')
-    && Array.isArray(value.items) && value.items.every(entry) && typeof value.truncated === 'boolean', signal)
+    && Array.isArray(value.items) && value.items.every(entry) && typeof value.truncated === 'boolean'
+    && pagination(value, offset), signal)
   return result.ok ? { ok: true, value: { ...result.value,
     items: result.value.items.map(item => ({ ...item, workspaceId: result.value.workspace.id })) } } : result
+}
+
+/**
+ * Read one currently retained output root without recursively scanning it.
+ * @param root - Exact canonical root from the current library response.
+ * @param directory - Portable relative directory below that root.
+ * @param signal - Finder-owned cancellation for navigation or dismissal.
+ * @param offset - Next page offset previously supplied by the Host; zero starts a directory.
+ * @returns Validated directory metadata and files, or a localizable error code.
+ */
+export function readRootDirectory(root: string, directory: string,
+  signal: AbortSignal, offset = 0): Promise<ArtifactResult<RootDirectoryListing>> {
+  const query = new URLSearchParams({ root, directory, ...offset === 0 ? {} : { offset: String(offset) } })
+  return request(`directory?${query.toString()}`, (value): value is RootDirectoryListing => record(value)
+    && value.root === root && value.directory === directory && typeof value.absoluteDirectory === 'string'
+    && (value.parentDirectory === null || typeof value.parentDirectory === 'string')
+    && Array.isArray(value.directories) && value.directories.every(item => record(item)
+      && typeof item.name === 'string' && typeof item.directory === 'string')
+    && Array.isArray(value.items) && value.items.every(item => entry(item) && item.workspaceId === undefined)
+    && typeof value.truncated === 'boolean' && pagination(value, offset), signal)
 }
 
 /**

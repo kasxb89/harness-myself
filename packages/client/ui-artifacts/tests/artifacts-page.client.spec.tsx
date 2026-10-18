@@ -6,13 +6,14 @@ import { brandString } from '@deepseek-ai/dsh-brand'
 import { bindSnapshotSelector } from '@deepseek-ai/dsh-client-test-runtime'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { PropsRenderSlots, StandardSourceBinding } from '@deepseek-ai/dsh-client-ui-slots'
+import type { SessionStatusSnapshot } from '@deepseek-ai/dsh-client-ui-session/client'
 import type { WorkspaceSnapshot } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import { ArtifactsMain } from '../src/client/ArtifactsMain.tsx'
 import { ArtifactsPage, type ArtifactEntry, type ArtifactsInjected, type ArtifactsPageProps } from '../src/client/ArtifactsPage.tsx'
-import type { ArtifactListing, ArtifactResult, ArtifactStorage, TrashedArtifact, WorkspaceListing } from '../src/client/api.ts'
+import type { ArtifactListing, ArtifactResult, ArtifactStorage, TrashedArtifact } from '../src/client/api.ts'
 import { en, zh } from '../src/client/locales.ts'
 
-afterEach(cleanup)
+afterEach(() => { cleanup(); vi.restoreAllMocks() })
 
 type PdfRenderer = PropsRenderSlots<'artifacts.preview.pdf'>['renderSlot']
 /** The generic dispatcher narrows its concrete PDF owner before rendering the test view. */
@@ -42,22 +43,6 @@ const deleted: TrashedArtifact = { id: 'deleted-1', name: 'deleted.png', origina
 const workspaceOne = { id: 'workspace-one', title: '动漫项目', path: 'D:\\动漫项目' }
 const workspaceTwo = { id: 'workspace-two', title: '网站项目', path: '/projects/site' }
 
-/** Directory responses use Host-native absolute paths and portable relative navigation. */
-function workspaceListing(id = workspaceOne.id, directory = ''): WorkspaceListing {
-  const workspace = id === workspaceTwo.id ? workspaceTwo : { ...workspaceOne, id }
-  return { workspace, directory, absoluteDirectory: `${workspace.path}${directory ? '/' + directory : ''}`,
-    parentDirectory: directory === '' ? null : directory.split('/').slice(0, -1).join('/'),
-    directories: directory === '' ? [{ name: '输出', directory: '输出' }] : [],
-    items: [{ ...image, path: `${workspace.path}/${directory ? directory + '/' : ''}${image.name}`, workspaceId: id }], truncated: false }
-}
-
-/** Registered workspace choices remain distinct from the global generated-output destination. */
-function workspaceProps(overrides: Partial<ArtifactsPageProps> = {}): ArtifactsPageProps {
-  return props({ workspaces: { items: [workspaceOne, workspaceTwo], currentWorkspaceId: workspaceOne.id,
-    currentSessionKey: 'session-one', ready: true },
-  readWorkspace: vi.fn<ArtifactsInjected['readWorkspace']>(async (id, directory) => ({ ok: true, value: workspaceListing(id, directory) })), ...overrides })
-}
-
 /** Deferred settlement places refresh and mutation races at a deterministic boundary. */
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -77,9 +62,11 @@ function props(overrides: Partial<ArtifactsPageProps> = {}): ArtifactsPageProps 
     readStorage: vi.fn<ArtifactsInjected['readStorage']>(async () => ({ ok: true, value: destination })),
     readTrash: vi.fn<ArtifactsInjected['readTrash']>(async () => ({ ok: true, value: [] })),
     readWorkspace: vi.fn<ArtifactsInjected['readWorkspace']>(async () => ({ ok: false, code: 'ARTIFACT_WORKSPACE_UNAVAILABLE' })),
+    readRootDirectory: vi.fn<ArtifactsInjected['readRootDirectory']>(async () => ({ ok: false, code: 'ARTIFACT_PATH_FORBIDDEN' })),
     readDesktop: vi.fn(async () => false),
     reveal: vi.fn(async () => ({ ok: true as const, value: null })),
-    workspaces: { items: [], currentWorkspaceId: null, currentSessionKey: null, ready: true },
+    refreshKey: '',
+    workspaces: [workspaceOne, workspaceTwo],
     saveStorage: vi.fn<ArtifactsInjected['saveStorage']>(async directory => ({ ok: true, value: { ...destination, directory, revision: 4 } })),
     rename: vi.fn<ArtifactsInjected['rename']>(async (entry, name) => ({ ok: true, value: { ...entry, name, path: `/old/${name}` } })),
     trash: vi.fn<ArtifactsInjected['trash']>(async () => ({ ok: true, value: 'trash-1' })),
@@ -442,181 +429,192 @@ describe('selected document refresh', () => {
   })
 })
 
-describe('workspace file scopes', () => {
-  it('keeps generated output separate, offers the empty-library entry, and waits for an explicit workspace view', async () => {
-    const face = workspaceProps({ readListing: async () => ({ ok: true, value: { items: [], roots: [], truncated: false } }) })
+describe('unified artifact library', () => {
+  it('keeps a deep finder-selected file through focus reads, but requires a fresh lookup after explicit refresh', async () => {
+    const deep = { ...image, path: '/old/one/two/three/four/five/six/动漫.png' }
+    const readRootDirectory = vi.fn<ArtifactsInjected['readRootDirectory']>(async (root, directory) => ({ ok: true, value: {
+      root, directory, absoluteDirectory: root, parentDirectory: null, directories: [], items: [deep],
+      truncated: false, offset: 0, nextOffset: null,
+    } }))
+    const readListing = vi.fn<ArtifactsInjected['readListing']>(async () => ({ ok: true,
+      value: { items: [], roots: ['/old'], truncated: true } }))
+    render(<ArtifactsPage {...props({ readListing, readRootDirectory })} />)
+    fireEvent.click(await screen.findByRole('button', { name: '查找未列出的文件' }))
+    const finder = screen.getByRole('dialog', { name: '查找未列出的文件' })
+    fireEvent.click(await within(finder).findByRole('button', { name: deep.name }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+    const preview = screen.getByRole('region', { name: '预览' })
+    expect(within(preview).getByRole('img').getAttribute('src')).toContain(encodeURIComponent(deep.path))
+    fireEvent(window, new Event('focus'))
+    await waitFor(() => { expect(readListing).toHaveBeenCalledTimes(2) })
+    expect(within(preview).getByRole('img')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '刷新' }))
+    await screen.findByText(zh['finder.refreshNotice'])
+    expect(screen.queryByRole('button', { name: /^动漫\.png/u })).toBeNull()
+    expect(screen.getByText(zh.previewHint)).toBeTruthy()
+    readRootDirectory.mockResolvedValueOnce({ ok: true, value: {
+      root: '/old', directory: '', absoluteDirectory: '/old', parentDirectory: null, directories: [],
+      items: [{ ...deep, size: 999, mtimeMs: 2 }], truncated: false, offset: 0, nextOffset: null,
+    } })
+    fireEvent.click(screen.getByRole('button', { name: '查找未列出的文件' }))
+    fireEvent.click(await within(screen.getByRole('dialog')).findByRole('button', { name: deep.name }))
+    expect(screen.queryByText(zh['finder.refreshNotice'])).toBeNull()
+    expect(within(preview).getByText(/999 B/u)).toBeTruthy()
+  })
+
+  it('waits for authorized refreshed coordinates before selecting a restored workspace image without trash workspace metadata', async () => {
+    const next = deferred<ArtifactResult<ArtifactListing>>()
+    const restored = { ...image, workspaceId: workspaceOne.id, path: workspaceOne.path + '\\deep\\restored.png', name: 'restored.png' }
+    const readListing = vi.fn<ArtifactsInjected['readListing']>()
+      .mockResolvedValueOnce({ ok: true, value: { items: [], roots: ['/old'], truncated: true } })
+      .mockImplementationOnce(() => next.promise)
+    const readTrash = vi.fn<ArtifactsInjected['readTrash']>()
+      .mockResolvedValueOnce({ ok: true, value: [{ ...deleted, name: restored.name }] }).mockResolvedValue({ ok: true, value: [] })
+    const face = props({ readListing, readTrash, restore: async () => ({ ok: true, value: restored }) })
+    render(<ArtifactsPage {...face} />)
+    fireEvent.click(await screen.findByText('回收区（1 项）'))
+    fireEvent.click(screen.getByRole('button', { name: '恢复' }))
+    await waitFor(() => { expect(readListing).toHaveBeenCalledTimes(2) })
+    expect(screen.queryByRole('img', { name: restored.name })).toBeNull()
+    await act(async () => { next.resolve({ ok: true, value: { items: [], roots: ['/old'], truncated: true } }) })
+    const preview = screen.getByRole('region', { name: '预览' })
+    await within(preview).findByRole('img', { name: restored.name })
+    expect(within(preview).getByRole('img').getAttribute('src')).toContain('&workspaceId=workspace-one')
+  })
+
+  it('remounts a failed media preview when refreshed coordinates acquire workspace authorization', async () => {
+    const face = props({ readListing: async () => ({ ok: true, value: { items: [image], roots: ['/old'], truncated: false } }) })
+    const page = render(<ArtifactsPage {...face} />)
+    const preview = await selectImage()
+    fireEvent.error(within(preview).getByRole('img'))
+    await within(preview).findByText(zh['preview.invalid'])
+    const authorized = { ...image, workspaceId: workspaceOne.id }
+    page.rerender(<ArtifactsPage {...face} readListing={async () => ({ ok: true,
+      value: { items: [authorized], roots: ['/old'], truncated: false } })} />)
+    await screen.findByRole('button', { name: /^动漫\.png/u })
+    fireEvent.click(screen.getByRole('button', { name: /^动漫\.png/u }))
+    expect(within(preview).getByRole('img').getAttribute('src')).toContain('&workspaceId=workspace-one')
+    expect(within(preview).queryByText(zh['preview.invalid'])).toBeNull()
+  })
+
+  it('keeps one library without workspace tabs, selectors, or a second empty-state destination', async () => {
+    const face = props({ readListing: async () => ({ ok: true, value: { items: [], roots: [], truncated: false } }) })
     render(<ArtifactsPage {...face} />)
     await screen.findByText(zh.empty)
-    expect(face.readWorkspace).not.toHaveBeenCalled()
-    expect(screen.getByText(zh['scope.hint'])).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: '查看工作区文件' }))
-    await screen.findByRole('button', { name: /^动漫\.png/u })
-    expect(screen.getByRole<HTMLSelectElement>('combobox', { name: '工作区' }).value).toBe(workspaceOne.id)
-    expect(screen.queryByText(workspaceOne.path)).toBeNull()
-    const scope = screen.getByRole('region', { name: '工作区浏览范围' })
-    expect(within(scope).queryByRole('navigation')).toBeNull()
-    const location = within(scope).getByRole('button', { name: '位置' })
-    expect(location.getAttribute('aria-expanded')).toBe('false')
-    fireEvent.click(location)
-    const locationDialog = screen.getByRole('dialog', { name: '工作区位置' })
-    expect(within(locationDialog).getByText('根目录')).toBeTruthy()
-    expect(screen.getAllByText(workspaceOne.path)).toHaveLength(1)
-    fireEvent.keyDown(document, { key: 'Escape' })
-    expect(screen.queryByRole('dialog')).toBeNull()
-    expect(location.getAttribute('aria-expanded')).toBe('false')
+    expect(screen.getByRole('heading', { name: '产物库' })).toBeTruthy()
+    expect(screen.queryByRole('tablist')).toBeNull()
+    expect(screen.queryByRole('combobox')).toBeNull()
     expect(screen.queryByText(workspaceOne.path)).toBeNull()
     expect(screen.queryByText(destination.directory)).toBeNull()
-    expect(face.readWorkspace).toHaveBeenCalledWith(workspaceOne.id, '', expect.any(AbortSignal))
-    const snapshot = [screen.getByRole('tab', { selected: true }).textContent,
-      screen.getByRole<HTMLSelectElement>('combobox').selectedOptions[0]?.textContent?.trim(), location.textContent,
-      screen.getByRole('searchbox').getAttribute('placeholder'), screen.getByRole('tabpanel').textContent].join('\n') + '\n'
-    await expect(snapshot).toMatchFileSnapshot('./expected/workspace-files.txt')
+    expect(screen.queryByRole('button', { name: '查看工作区文件' })).toBeNull()
   })
 
-  it('does not silently choose the first workspace when the current session has no registered workspace', async () => {
-    const face = workspaceProps({ workspaces: { items: [workspaceOne, workspaceTwo], currentWorkspaceId: null,
-      currentSessionKey: null, ready: true } })
+  it('keeps readable files and their previews beside localized partial-source and scan-limit warnings', async () => {
+    const face = props({ readListing: async () => ({ ok: true, value: { items: [image], roots: ['/old'], truncated: true,
+      issues: [{ workspaceId: 'unreadable-project', title: '共享项目', code: 'ARTIFACT_PERMISSION_DENIED' }] } }) })
     render(<ArtifactsPage {...face} />)
-    await readyStorageButton()
-    fireEvent.click(screen.getByRole('tab', { name: '工作区文件' }))
-    await screen.findByText(zh['workspace.selectFirst'])
-    expect(screen.getByRole<HTMLSelectElement>('combobox').value).toBe('')
-    expect(face.readWorkspace).not.toHaveBeenCalled()
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: workspaceTwo.id } })
-    await screen.findByRole('button', { name: /^动漫\.png/u })
-    expect(face.readWorkspace).toHaveBeenCalledWith(workspaceTwo.id, '', expect.any(AbortSignal))
-  })
-
-  it('loads only the opened directory, navigates portable breadcrumbs, and searches the current directory', async () => {
-    const face = workspaceProps()
-    render(<ArtifactsPage {...face} />)
-    await readyStorageButton()
-    fireEvent.click(screen.getByRole('tab', { name: '工作区文件' }))
-    fireEvent.click(await screen.findByRole('button', { name: '打开文件夹 输出' }))
-    await waitFor(() => { expect(face.readWorkspace).toHaveBeenLastCalledWith(workspaceOne.id, '输出', expect.any(AbortSignal)) })
-    await screen.findByRole('button', { name: /^动漫\.png/u })
-    expect(screen.queryByText(`${workspaceOne.path}/输出`)).toBeNull()
-    const navigation = screen.getByRole('navigation', { name: '当前目录' })
-    expect(within(navigation).getByText('输出').getAttribute('aria-current')).toBe('page')
-    expect(within(navigation).queryByText(workspaceOne.title)).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: '位置' }))
-    const locationDialog = screen.getByRole('dialog', { name: '工作区位置' })
-    expect(within(locationDialog).getByText('当前目录')).toBeTruthy()
-    expect(screen.getAllByText(`${workspaceOne.path}/输出`)).toHaveLength(1)
-    expect(screen.queryByText(workspaceOne.path)).toBeNull()
-    fireEvent.click(within(locationDialog).getByRole('button', { name: '关闭' }))
-    fireEvent.change(screen.getByRole('searchbox', { name: '搜索当前目录的名称或路径' }), { target: { value: 'no-match' } })
-    expect(screen.getByText(zh.noResults)).toBeTruthy()
-    expect(face.readWorkspace).toHaveBeenCalledTimes(2)
-    fireEvent.click(screen.getByRole('button', { name: '上一级' }))
-    await screen.findByRole('button', { name: '打开文件夹 输出' })
-    expect(screen.getByRole<HTMLInputElement>('searchbox').value).toBe('')
-    expect(face.readWorkspace).toHaveBeenLastCalledWith(workspaceOne.id, '', expect.any(AbortSignal))
-  })
-
-  it('clears scope-bound selection and dialogs, aborts stale reads, and ignores their late response', async () => {
-    const old = deferred<ArtifactResult<WorkspaceListing>>()
-    const readWorkspace = vi.fn<ArtifactsInjected['readWorkspace']>()
-      .mockResolvedValueOnce({ ok: true, value: workspaceListing() })
-      .mockImplementationOnce(() => old.promise)
-      .mockResolvedValue({ ok: true, value: workspaceListing(workspaceTwo.id) })
-    const face = workspaceProps({ readWorkspace })
-    render(<ArtifactsPage {...face} />)
-    await readyStorageButton()
-    fireEvent.click(screen.getByRole('tab', { name: '工作区文件' }))
-    fireEvent.click(within(await selectImage()).getByRole('button', { name: '重命名' }))
-    expect(screen.getByRole('dialog')).toBeTruthy()
-    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '取消' }))
-    fireEvent.click(screen.getByRole('button', { name: '刷新' }))
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: workspaceTwo.id } })
-    await waitFor(() => { expect(readWorkspace).toHaveBeenLastCalledWith(workspaceTwo.id, '', expect.any(AbortSignal)) })
-    expect(screen.queryByText(workspaceTwo.path)).toBeNull()
-    await waitFor(() => { expect(readWorkspace.mock.calls[1]![2].aborted).toBe(true) })
-    await act(async () => { old.resolve({ ok: true, value: workspaceListing() }) })
-    expect(screen.getByText(zh.previewHint)).toBeTruthy()
-    expect(screen.queryByRole('dialog')).toBeNull()
     const preview = await selectImage()
-    expect(within(preview).getByText(`${workspaceTwo.path}/${image.name}`)).toBeTruthy()
-    fireEvent.click(within(preview).getByRole('button', { name: '重命名' }))
-    fireEvent.click(screen.getByRole('tab', { name: '产物库' }))
-    expect(screen.queryByRole('dialog')).toBeNull()
-    expect(face.rename).not.toHaveBeenCalled()
+    const warning = screen.getByRole('status', { name: zh['source.issues'] })
+    expect(warning.textContent).toContain('共享项目')
+    expect(warning.textContent).toContain(zh['error.ARTIFACT_PERMISSION_DENIED'])
+    expect(within(preview).getByRole('img').getAttribute('src')).toContain(encodeURIComponent(image.path))
+    expect(screen.getByText(zh.truncated)).toBeTruthy()
+    expect(screen.queryByRole('combobox')).toBeNull()
   })
 
-  it('binds preview, rename, and deletion to the selected workspace file', async () => {
-    const face = workspaceProps({ rename: vi.fn(async () => ({ ok: false as const, code: 'ARTIFACT_CONFLICT' as const })) })
+  it('previews and manages indexed workspace output in the same library with its workspace authorization', async () => {
+    const output: ArtifactEntry = { ...image, path: 'D:\\动漫项目\\输出\\动漫.png', workspaceId: workspaceOne.id }
+    const face = props({ readListing: async () => ({ ok: true, value: { items: [output], roots: ['/old'], truncated: false } }),
+      rename: vi.fn(async () => ({ ok: false as const, code: 'ARTIFACT_CONFLICT' as const })) })
     render(<ArtifactsPage {...face} />)
-    await readyStorageButton()
-    fireEvent.click(screen.getByRole('tab', { name: '工作区文件' }))
     const preview = await selectImage()
-    expect(within(preview).getByRole('img').getAttribute('src')).toContain('&workspaceId=workspace-one')
+    expect(within(preview).getByRole('img').getAttribute('src')).toBe(`/artifacts/api/raw?path=${encodeURIComponent(output.path)}&workspaceId=workspace-one`)
     fireEvent.click(within(preview).getByRole('button', { name: '重命名' }))
     fireEvent.change(screen.getByRole('textbox', { name: '文件名' }), { target: { value: '新图.png' } })
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '重命名' }))
     await screen.findByText(zh['error.ARTIFACT_CONFLICT'])
-    expect(face.rename).toHaveBeenCalledExactlyOnceWith(workspaceListing().items[0], '新图.png')
+    expect(face.rename).toHaveBeenCalledExactlyOnceWith(output, '新图.png')
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '取消' }))
     fireEvent.click(within(preview).getByRole('button', { name: '删除' }))
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '删除' }))
-    await waitFor(() => { expect(face.trash).toHaveBeenCalledExactlyOnceWith(workspaceListing().items[0]) })
+    await waitFor(() => { expect(face.trash).toHaveBeenCalledExactlyOnceWith(output) })
   })
 
-  it('follows a newly current conversation and clears a removed manual workspace instead of guessing', async () => {
-    const face = workspaceProps()
-    const page = render(<ArtifactsPage {...face} />)
-    await readyStorageButton()
-    fireEvent.click(screen.getByRole('tab', { name: '工作区文件' }))
-    await screen.findByRole('button', { name: /^动漫\.png/u })
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: workspaceTwo.id } })
-    await waitFor(() => { expect(face.readWorkspace).toHaveBeenLastCalledWith(workspaceTwo.id, '', expect.any(AbortSignal)) })
-    page.rerender(<ArtifactsPage {...face} workspaces={{ ...face.workspaces, currentSessionKey: 'another-session' }} />)
-    await waitFor(() => { expect(screen.getByRole<HTMLSelectElement>('combobox').value).toBe(workspaceOne.id) })
-    page.rerender(<ArtifactsPage {...face} workspaces={{ ...face.workspaces, currentSessionKey: 'another-session', items: [workspaceTwo], currentWorkspaceId: null }} />)
-    await screen.findByText(zh['workspace.selectFirst'])
-    expect(screen.getByRole<HTMLSelectElement>('combobox').value).toBe('')
-    expect(screen.queryByRole('button', { name: /^动漫\.png/u })).toBeNull()
-  })
-
-  it('rebinds a lost receipt to a re-registered directory and requires explicit inspection before unlocking', async () => {
-    const receipt = deferred<ArtifactResult<string>>()
-    const face = workspaceProps({ trash: vi.fn(() => receipt.promise) })
-    const page = render(<ArtifactsPage {...face} />)
-    await readyStorageButton()
-    fireEvent.click(screen.getByRole('tab', { name: '工作区文件' }))
-    fireEvent.click(within(await selectImage()).getByRole('button', { name: '删除' }))
-    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '删除' }))
-    const replacement = { ...workspaceOne, id: 'workspace-readded' }
-    page.rerender(<ArtifactsPage {...face} workspaces={{ ...face.workspaces, items: [replacement], currentWorkspaceId: null }} />)
-    await act(async () => { receipt.resolve({ ok: false, code: 'ARTIFACT_OPERATION_UNKNOWN' }) })
-    fireEvent.click(await screen.findByRole('button', { name: '查看待确认位置' }))
-    await waitFor(() => { expect(face.readWorkspace).toHaveBeenLastCalledWith(replacement.id, '', expect.any(AbortSignal)) })
-    await waitFor(() => { expect(screen.getByRole('button', { name: '保存目录' }).hasAttribute('disabled')).toBe(true) })
-    fireEvent.click(screen.getByRole('button', { name: '刷新' }))
-    await waitFor(() => { expect(screen.getByRole('button', { name: '保存目录' }).hasAttribute('disabled')).toBe(false) })
-    expect(face.trash).toHaveBeenCalledOnce()
-  })
-
-  it('keeps an unavailable workspace recovery visible and only offers native reveal when supported', async () => {
-    const face = workspaceProps({ readDesktop: async () => true,
+  it('keeps native reveal and unavailable workspace recovery in the single library', async () => {
+    const face = props({ readDesktop: async () => true,
       readTrash: async () => ({ ok: true, value: [{ ...deleted, workspaceRoot: workspaceOne.path }] }),
       restore: vi.fn(async () => ({ ok: false as const, code: 'ARTIFACT_WORKSPACE_UNAVAILABLE' as const })) })
-    const page = render(<ArtifactsPage {...face} />)
+    render(<ArtifactsPage {...face} />)
     fireEvent.click(within(await selectImage()).getByRole('button', { name: '打开所在目录' }))
     await waitFor(() => { expect(face.reveal).toHaveBeenCalledExactlyOnceWith(image.path) })
     fireEvent.click(screen.getByText('回收区（1 项）'))
     fireEvent.click(screen.getByRole('button', { name: '恢复' }))
     await screen.findByText(zh['error.ARTIFACT_WORKSPACE_UNAVAILABLE'])
     expect(screen.getByText(deleted.name)).toBeTruthy()
-    page.rerender(<ArtifactsPage {...face} workspaces={{ ...face.workspaces, items: [], currentWorkspaceId: null }} />)
-    fireEvent.click(screen.getByRole('tab', { name: '工作区文件' }))
-    await screen.findByText(zh['workspace.selectFirst'])
-    expect(screen.queryByRole('button', { name: '打开所在目录' })).toBeNull()
+    expect(screen.queryByRole('tablist')).toBeNull()
   })
 
-  it('passes the PDF renderer through Main and Page alongside existing session and workspace hooks', async () => {
+  it('refreshes when returning to the foreground, coalesces pending focus reads, and stops after unmount', async () => {
+    const next = deferred<ArtifactResult<ArtifactListing>>()
+    const readListing = vi.fn<ArtifactsInjected['readListing']>()
+      .mockResolvedValueOnce({ ok: true, value: { items: [image], roots: ['/old'], truncated: false } })
+      .mockImplementationOnce(() => next.promise)
+      .mockResolvedValue({ ok: true, value: { items: [image, video], roots: ['/old'], truncated: false } })
+    const page = render(<ArtifactsPage {...props({ readListing })} />)
+    await selectImage()
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+    fireEvent(document, new Event('visibilitychange'))
+    fireEvent(window, new Event('focus'))
+    expect(readListing).toHaveBeenCalledOnce()
+    visibility.mockReturnValue('visible')
+    fireEvent(document, new Event('visibilitychange'))
+    fireEvent(window, new Event('focus'))
+    expect(readListing).toHaveBeenCalledTimes(2)
+    await act(async () => { next.resolve({ ok: true, value: { items: [image, video], roots: ['/old'], truncated: false } }) })
+    expect(screen.getByRole('button', { name: /^story\.mp4/u })).toBeTruthy()
+    expect(within(screen.getByRole('region', { name: '预览' })).getByText(image.name)).toBeTruthy()
+    page.unmount()
+    fireEvent(window, new Event('focus'))
+    expect(readListing).toHaveBeenCalledTimes(2)
+  })
+
+  it('discards an older library read after conversation activity triggers a newer one', async () => {
+    const older = deferred<ArtifactResult<ArtifactListing>>()
+    const readListing = vi.fn<ArtifactsInjected['readListing']>()
+      .mockResolvedValueOnce({ ok: true, value: { items: [image], roots: ['/old'], truncated: false } })
+      .mockImplementationOnce(() => older.promise)
+      .mockResolvedValue({ ok: true, value: { items: [image, video], roots: ['/old'], truncated: false } })
+    const face = props({ readListing })
+    const page = render(<ArtifactsPage {...face} />)
+    await selectImage()
+    fireEvent(window, new Event('focus'))
+    const pending = readListing.mock.calls[1]![0]
+    page.rerender(<ArtifactsPage {...face} refreshKey="conversation-completed" />)
+    await screen.findByRole('button', { name: /^story\.mp4/u })
+    expect(pending.aborted).toBe(true)
+    await act(async () => { older.resolve({ ok: true, value: { items: [], roots: ['/old'], truncated: false } }) })
+    expect(screen.getByRole('button', { name: /^story\.mp4/u })).toBeTruthy()
+    expect(within(screen.getByRole('region', { name: '预览' })).getByText(image.name)).toBeTruthy()
+  })
+
+  it('does not clear an unconfirmed mutation lock on an automatic foreground refresh', async () => {
+    const face = props({ trash: vi.fn(async () => ({ ok: false as const, code: 'ARTIFACT_OPERATION_UNKNOWN' as const })) })
+    render(<ArtifactsPage {...face} />)
+    fireEvent.click(within(await selectImage()).getByRole('button', { name: '删除' }))
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '删除' }))
+    await within(screen.getByRole('dialog')).findByText(zh['error.ARTIFACT_OPERATION_UNKNOWN'])
+    fireEvent(window, new Event('focus'))
+    await waitFor(() => { expect(face.readListing).toHaveBeenCalledTimes(2) })
+    expect(within(screen.getByRole('dialog')).getByRole('button', { name: '删除' }).hasAttribute('disabled')).toBe(true)
+    expect(face.trash).toHaveBeenCalledOnce()
+  })
+
+  it('passes the PDF renderer through Main and refreshes unified output after conversation completion or workspace changes', async () => {
     const document: ArtifactEntry = { ...image, name: '剧情.pdf', path: '/old/剧情.pdf', kind: 'document' }
     const { dispatch, renderSlot } = recordedPdfRenderer()
-    const face = props({ renderSlot, readListing: async () => ({ ok: true, value: { items: [document], roots: ['/old'], truncated: false } }) })
+    const readListing = vi.fn<ArtifactsInjected['readListing']>(async () => ({ ok: true,
+      value: { items: [document], roots: ['/old'], truncated: false } }))
+    const face = props({ renderSlot, readListing })
     const binding = createSnapshotStore<StandardSourceBinding>({ key: 'session-one', props: {}, hooks: {}, keyedHooks: {} })
     const snapshot: WorkspaceSnapshot = { phase: 'ready', state: 'idle', error: null, archivedSessionIds: [], pinnedSessionIds: [],
       items: [workspaceOne, workspaceTwo].map((item, index) => ({
@@ -625,9 +623,12 @@ describe('workspace file scopes', () => {
         createdAt: '', updatedAt: '',
       })) }
     const workspaces = createSnapshotStore(snapshot)
-    const readWorkspace = vi.fn<ArtifactsInjected['readWorkspace']>(async (id, directory) => ({ ok: true, value: workspaceListing(id, directory) }))
-    render(<ArtifactsMain {...face} readWorkspace={readWorkspace}
-      useArtifactSession={bindSnapshotSelector(binding)} useWorkspaces={bindSnapshotSelector(workspaces)} />)
+    const sessionId = brandString<WorkspaceSnapshot['items'][number]['sessionIds'][number]>('session-one')
+    const statuses = createSnapshotStore<SessionStatusSnapshot>(new Map([[sessionId, {
+      running: true, pendingInteraction: undefined, completionUnread: false,
+    }]]))
+    render(<ArtifactsMain {...face} useArtifactSession={bindSnapshotSelector(binding)} useWorkspaces={bindSnapshotSelector(workspaces)}
+      useSessionStatus={bindSnapshotSelector(statuses)} />)
     await readyStorageButton()
     fireEvent.click(await screen.findByRole('button', { name: /^剧情\.pdf/u }))
     expect(screen.getByRole('region', { name: document.name }).getAttribute('data-preview-url'))
@@ -635,12 +636,14 @@ describe('workspace file scopes', () => {
     expect(dispatch).toHaveBeenCalledWith('artifacts.preview.pdf', {
       url: `/artifacts/api/raw?path=${encodeURIComponent(document.path)}`, name: document.name,
     }, expect.objectContaining({ entryKey: '@deepseek-ai/dsh-client-ui-sidebar-documentpreview/artifact-pdf' }))
-    fireEvent.click(screen.getByRole('tab', { name: '工作区文件' }))
-    await waitFor(() => { expect(readWorkspace).toHaveBeenLastCalledWith(workspaceOne.id, '', expect.any(AbortSignal)) })
+    expect(readListing).toHaveBeenCalledOnce()
+    act(() => { statuses.set(new Map([[sessionId, { running: false, pendingInteraction: undefined, completionUnread: true }]])) })
+    await waitFor(() => { expect(readListing).toHaveBeenCalledTimes(2) })
     act(() => { binding.set({ ...binding.getSnapshot(), key: 'session-two' }) })
-    await waitFor(() => { expect(readWorkspace).toHaveBeenLastCalledWith(workspaceTwo.id, '', expect.any(AbortSignal)) })
+    await waitFor(() => { expect(readListing).toHaveBeenCalledTimes(3) })
     act(() => { workspaces.set({ ...snapshot, items: [] }) })
-    await screen.findByText(zh['workspace.selectFirst'])
-    expect(screen.getByRole<HTMLSelectElement>('combobox').value).toBe('')
+    await waitFor(() => { expect(readListing).toHaveBeenCalledTimes(4) })
+    expect(screen.queryByRole('combobox')).toBeNull()
+    expect(screen.queryByRole('tablist')).toBeNull()
   })
 })

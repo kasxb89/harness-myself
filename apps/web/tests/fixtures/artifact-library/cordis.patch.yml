@@ -1,0 +1,9 @@
+# Exercise artifact storage and registered workspace files without unrelated account or catalog requests.
+- id: ui-credits
+  disabled: true
+- id: ui-creative
+  disabled: true
+- id: dsh-market
+  disabled: true
+- id: dsh-skin-market
+  disabled: true

@@ -22,7 +22,7 @@ import type { ArtifactsInjected } from './ArtifactsPage.tsx'
 import { ArtifactsMain, type ArtifactsMainInjected } from './ArtifactsMain.tsx'
 import { ArtifactsPanelIcon } from './ArtifactsPanelIcon.tsx'
 import { OperationToast, type ArtifactNotice, type ArtifactNoticeInjected } from './OperationToast.tsx'
-import { readArtifacts, readStorage, readTrash, readWorkspace, renameArtifact, restoreArtifact, saveStorage, trashArtifact, type ArtifactResult } from './api.ts'
+import { readArtifacts, readRootDirectory, readStorage, readTrash, readWorkspace, renameArtifact, restoreArtifact, saveStorage, trashArtifact, type ArtifactResult } from './api.ts'
 import { en, NS, zh, type ArtifactsKey } from './locales.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -72,7 +72,7 @@ export function apply(ctx: ClientContext): void {
   const desktop = (globalThis as { __DSH_DIRECTORY_PICKER__?: { pick: () => Promise<string | null> } }).__DSH_DIRECTORY_PICKER__
   const face: ArtifactsInjected = {
     t: (key, values) => t(key as Parameters<typeof t>[0], values),
-    readListing: readArtifacts, readStorage, readTrash, readWorkspace,
+    readListing: readArtifacts, readStorage, readTrash, readWorkspace, readRootDirectory,
     readDesktop: async () => {
       try { const value = await ctx.remote.session.canOpenWorkspacePath(); return value.ok && value.value }
       catch { return false }

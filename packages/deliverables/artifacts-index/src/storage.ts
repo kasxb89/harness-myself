@@ -386,12 +386,12 @@ export class ArtifactStore extends Service implements ArtifactStorageService {
       ...typeof value.workspaceRoot === 'string' ? { workspaceRoot: value.workspaceRoot } : {},
     }
   }
-  private async recoveryRoots(value: TrashRecord, signal: AbortSignal): Promise<readonly string[]> {
-    if (value.workspaceRoot === undefined) return this.prefs.roots
+  private async recoveryLocation(value: TrashRecord, signal: AbortSignal): Promise<{ roots: readonly string[]; workspaceId?: string }> {
+    if (value.workspaceRoot === undefined) return { roots: this.prefs.roots }
     if (this.workspaces === undefined) throw new ArtifactError('ARTIFACT_WORKSPACE_UNAVAILABLE', 404, 'Register the original Workspace to restore its file')
     const workspace = await this.workspaces.byRoot(value.workspaceRoot, signal)
     this.workspaces.visible(workspace, value.originalPath)
-    return [workspace.path]
+    return { roots: [workspace.path], workspaceId: workspace.id }
   }
   /**
    * List only recoverable payloads; failed or completed moves expose no phantom deletion.
@@ -408,8 +408,8 @@ export class ArtifactStore extends Service implements ArtifactStorageService {
         if (!filename.endsWith('.json')) continue
         const value = await this.trashRecord(filename.slice(0, -5))
         try {
-          const roots = await this.recoveryRoots(value, signal)
-          await authorizedFile(value.storedPath, roots)
+          const location = await this.recoveryLocation(value, signal)
+          await authorizedFile(value.storedPath, location.roots)
           items.push({ id: value.id, name: value.name, originalPath: value.originalPath, deletedAt: value.deletedAt })
         } catch (error) {
           // Detached Workspace records stay visible so re-registering the original root can recover them.
@@ -429,18 +429,19 @@ export class ArtifactStore extends Service implements ArtifactStorageService {
    * Restore the recorded original location without replacing a new file at that path.
    * @param id - Durable recovery identifier returned by a successful reversible deletion.
    * @param signal - Cancellation during authorization, before the admitted restoration begins moving files.
-   * @returns The restored canonical path; an occupied or redirected original directory rejects while retaining the payload.
+   * @returns The restored canonical path and current Workspace id when applicable; occupied or redirected directories retain the payload.
    */
-  restore(id: string, signal: AbortSignal = new AbortController().signal): Promise<string> {
+  restore(id: string, signal: AbortSignal = new AbortController().signal): Promise<{ path: string; workspaceId?: string }> {
     return this.serialize(async () => {
       const value = await this.trashRecord(id)
-      const source = await authorizedFile(value.storedPath, await this.recoveryRoots(value, signal))
+      const location = await this.recoveryLocation(value, signal)
+      const source = await authorizedFile(value.storedPath, location.roots)
       if (await realpath(dirname(value.originalPath)) !== dirname(value.originalPath)) throw new ArtifactError('ARTIFACT_PATH_FORBIDDEN', 403, 'Original directory changed')
       signal.throwIfAborted()
       await exclusiveMove(source.path, value.originalPath, source.info)
       // The payload is now absent, so a failed record cleanup never repeats the restore.
       await unlink(join(this.stateDirectory, 'trash', id + '.json')).catch(() => {})
-      return value.originalPath
+      return { path: value.originalPath, ...location.workspaceId === undefined ? {} : { workspaceId: location.workspaceId } }
     })
   }
 }

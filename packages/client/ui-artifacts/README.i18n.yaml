@@ -3,23 +3,23 @@
 # After editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write packages/client/ui-artifacts/README.md
 /:
-  en: a543abbfc3a767e0
-  zh: b4adc1065d89966f
+  en: 42a61871cd0d3c6f
+  zh: 26170523e8e6e21f
 /deepseek-ai-dsh-client-ui-artifacts:
   en: 70cd1d1272cbe127
   zh: 1040cc79989e7c14
 /deepseek-ai-dsh-client-ui-artifacts/summary:
-  en: e768defedeef738d
-  zh: 77d7be8acf1778c1
+  en: dc55a06bf95167d9
+  zh: f98137485f147c7d
 /deepseek-ai-dsh-client-ui-artifacts/table-of-contents:
   en: d152484eb41ac6b4
   zh: 09388d293f9be9cb
 /deepseek-ai-dsh-client-ui-artifacts/use-this-package:
-  en: b29d2f571370db2a
-  zh: ee43aab9e39f9b12
+  en: c8b4644473676f35
+  zh: f4f2c2bc270f0903
 /deepseek-ai-dsh-client-ui-artifacts/understand-the-implementation:
-  en: ea04c5891ff93069
-  zh: 3666b567c3da1e7e
+  en: 758aca129df87ccb
+  zh: 7df9bec2fff39fda
 /deepseek-ai-dsh-client-ui-artifacts/further-exploration:
   en: de2170a647f49a7e
   zh: defd7d05768f7488
@@ -39,8 +39,8 @@
   en: 52acdf25a8407565
   zh: 3be0aed05921cceb
 /deepseek-ai-dsh-client-ui-artifacts/known-limitations-and-deferred-work:
-  en: f852d4c8adb42394
-  zh: 69d3d7bc15ede13d
+  en: 9a5b2dfeb8422c61
+  zh: dab82a6320606ce1
 /deepseek-ai-dsh-client-ui-artifacts/known-limitations-and-deferred-work/dev-note:
   en: e67f633dc6fe7773
   zh: e88aeb617ffb74ea

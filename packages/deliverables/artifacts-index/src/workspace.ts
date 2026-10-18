@@ -1,4 +1,4 @@
-/** Registered local Workspace authorization and bounded one-level file browsing. @module */
+/** Registered local Workspace authorization and bounded file browsing. @module */
 import { lstat, opendir, realpath } from 'node:fs/promises'
 import { basename, isAbsolute, join, relative, sep } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
@@ -11,8 +11,9 @@ export interface ArtifactWorkspace { readonly id: string; readonly title: string
 /** Filesystem metadata before the HTTP owner adds its presentation kind. */
 export interface WorkspaceFile { readonly path: string; readonly name: string; readonly size: number; readonly mtimeMs: number }
 /** One bounded directory listing, with portable relative navigation coordinates. */
-export interface WorkspaceDirectory {
-  readonly workspace: ArtifactWorkspace
+export interface ArtifactDirectory {
+  readonly offset: number
+  readonly nextOffset: number | null
   readonly directory: string
   readonly absoluteDirectory: string
   readonly parentDirectory: string | null
@@ -20,11 +21,69 @@ export interface WorkspaceDirectory {
   readonly items: readonly WorkspaceFile[]
   readonly truncated: boolean
 }
+/** One directory page authorized through a currently registered Workspace. */
+export interface WorkspaceDirectory extends ArtifactDirectory { readonly workspace: ArtifactWorkspace }
 /** Authenticated operation coordinates; the directory is always resolved from the registry. */
 export interface ArtifactWorkspaceScope { readonly workspaceId: string; readonly signal: AbortSignal }
 
 // Dependency trees are navigation exclusions, not configurable output destinations.
 const DEPENDENCIES = new Set(['node_modules', 'bower_components', 'vendor', '__pycache__', 'venv'])
+
+/**
+ * Browse one directory below an already authorized canonical root without following links.
+ * @param root - Exact canonical root authorized by the route or current Workspace registry.
+ * @param directory - Portable slash-separated relative directory, empty for the root.
+ * @param limit - Combined maximum for returned files and directories.
+ * @param signal - Cancellation during filesystem access.
+ * @param visible - Owner authorization for every directory and file considered.
+ * @param offset - Number of visible eligible entries skipped before this page.
+ * @returns One bounded page; the owner must revalidate the root before publishing it.
+ */
+export async function listDirectory(
+  root: string, directory: string, limit: number, signal: AbortSignal, visible: (path: string) => void, offset = 0,
+): Promise<ArtifactDirectory> {
+  if (directory !== '' && (isAbsolute(directory) || /[\\:\u0000-\u001f\u007f]/u.test(directory)
+    || directory.split('/').some(part => part === '' || part === '.' || part === '..'))) {
+    throw new ArtifactError('ARTIFACT_DIRECTORY_INVALID', 400, 'Use a relative directory')
+  }
+  const absoluteDirectory = directory === '' ? root : join(root, ...directory.split('/'))
+  visible(absoluteDirectory)
+  if (await realpath(absoluteDirectory).catch(() => undefined) !== absoluteDirectory
+    || !(await lstat(absoluteDirectory).catch(() => undefined))?.isDirectory()) {
+    throw new ArtifactError('ARTIFACT_DIRECTORY_INVALID', 400, 'Directory is unavailable or redirected')
+  }
+  signal.throwIfAborted()
+  const directories: { name: string; directory: string }[] = []
+  const items: WorkspaceFile[] = []
+  let truncated = false
+  let skipped = 0
+  for await (const child of await opendir(absoluteDirectory)) {
+    signal.throwIfAborted()
+    const path = join(absoluteDirectory, child.name)
+    try { visible(path) } catch (error) {
+      if (error instanceof ArtifactError && error.code === 'ARTIFACT_PATH_FORBIDDEN') continue
+      throw error
+    }
+    if (child.isSymbolicLink() || !child.isDirectory() && !child.isFile()) continue
+    const info = await lstat(path).catch(() => undefined)
+    if (info === undefined || info.isSymbolicLink() || await realpath(path).catch(() => undefined) !== path) continue
+    signal.throwIfAborted()
+    if (!info.isDirectory() && !info.isFile()) continue
+    if (info.isDirectory() && /[\\:\u0000-\u001f\u007f]/u.test(child.name)) continue
+    if (skipped++ < offset) continue
+    if (directories.length + items.length >= limit) { truncated = true; break }
+    if (info.isDirectory()) directories.push({ name: child.name, directory: directory === '' ? child.name : directory + '/' + child.name })
+    else items.push({ path, name: basename(path), size: info.size, mtimeMs: info.mtimeMs })
+  }
+  signal.throwIfAborted()
+  directories.sort((left, right) => left.name.localeCompare(right.name))
+  items.sort((left, right) => right.mtimeMs - left.mtimeMs)
+  return {
+    offset, nextOffset: truncated ? offset + directories.length + items.length : null, directory, absoluteDirectory,
+    parentDirectory: directory === '' ? null : directory.split('/').slice(0, -1).join('/'),
+    directories, items, truncated,
+  }
+}
 
 /** Trusted Host reader; Workspace roots never become retained output preferences. */
 export class WorkspaceAccess {
@@ -33,6 +92,14 @@ export class WorkspaceAccess {
    * @param stateDirectory - Read the canonical private artifact state directory after storage initialization, if configured.
    */
   constructor(private readonly ctx: Context, private readonly stateDirectory: () => string | undefined = () => undefined) {}
+
+  /**
+   * Read detached identities from the current registry, including unavailable roots.
+   * @returns Workspace ids and display titles; filesystem access still requires resolve().
+   */
+  registered(): readonly Pick<ArtifactWorkspace, 'id' | 'title'>[] {
+    return this.ctx.get('workspaceRegistry')?.list().map(workspace => ({ id: String(workspace.id), title: workspace.title })) ?? []
+  }
 
   /**
    * Resolve a currently registered Workspace and verify its original local directory.
@@ -45,9 +112,12 @@ export class WorkspaceAccess {
     const workspace = this.ctx.get('workspaceRegistry')?.list().find(candidate => String(candidate.id) === id)
     if (workspace === undefined || !qualified(workspace.path)) throw this.unavailable()
     const root = { id: String(workspace.id), title: workspace.title, path: workspace.path }
-    const canonical = await realpath(root.path).catch(() => undefined)
+    const canonical = await realpath(root.path).catch((error: unknown) => {
+      if (error instanceof Error && 'code' in error && (error.code === 'ENOENT' || error.code === 'ENOTDIR')) return undefined
+      throw error
+    })
     signal.throwIfAborted()
-    if (canonical !== root.path || !(await lstat(root.path).catch(() => undefined))?.isDirectory()) throw this.unavailable()
+    if (canonical !== root.path || !(await lstat(root.path)).isDirectory()) throw this.unavailable()
     const stateDirectory = this.stateDirectory()
     if (stateDirectory !== undefined && contained(stateDirectory, root.path)) throw this.unavailable()
     const fs = this.ctx.get('fs')
@@ -57,7 +127,11 @@ export class WorkspaceAccess {
       throw new ArtifactError('ARTIFACT_WORKSPACE_REMOTE_UNSUPPORTED', 409, 'Workspace files must map to this Host filesystem')
     }
     signal.throwIfAborted()
-    if (await realpath(root.path).catch(() => undefined) !== root.path) throw this.unavailable()
+    if (await realpath(root.path).catch((error: unknown) => {
+      if (error instanceof Error && 'code' in error && (error.code === 'ENOENT' || error.code === 'ENOTDIR')) return undefined
+      throw error
+    }) !== root.path) throw this.unavailable()
+    if (this.ctx.get('workspaceRegistry')?.list().find(candidate => String(candidate.id) === id)?.path !== root.path) throw this.unavailable()
     return root
   }
 
@@ -112,46 +186,14 @@ export class WorkspaceAccess {
    * @param directory - Slash-separated relative directory; the root is an empty string.
    * @param limit - Complete result limit shared by files and navigable directories.
    * @param signal - Cancellation between filesystem operations and directory entries.
+   * @param offset - Visible entries skipped for directory-page continuation.
    * @returns One bounded page with native absolute paths and portable relative navigation coordinates.
    */
-  async list(id: string, directory: string, limit: number, signal: AbortSignal): Promise<WorkspaceDirectory> {
+  async list(id: string, directory: string, limit: number, signal: AbortSignal, offset = 0): Promise<WorkspaceDirectory> {
     const workspace = await this.resolve(id, signal)
-    if (directory !== '' && (isAbsolute(directory) || /[\\:\u0000-\u001f\u007f]/u.test(directory)
-      || directory.split('/').some(part => part === '' || part === '.' || part === '..'))) {
-      throw new ArtifactError('ARTIFACT_DIRECTORY_INVALID', 400, 'Use a relative Workspace directory')
-    }
-    const absoluteDirectory = directory === '' ? workspace.path : join(workspace.path, ...directory.split('/'))
-    this.visible(workspace, absoluteDirectory)
-    if (await realpath(absoluteDirectory).catch(() => undefined) !== absoluteDirectory
-      || !(await lstat(absoluteDirectory).catch(() => undefined))?.isDirectory()) {
-      throw new ArtifactError('ARTIFACT_DIRECTORY_INVALID', 400, 'Workspace directory is unavailable or redirected')
-    }
-    signal.throwIfAborted()
-    const directories: { name: string; directory: string }[] = []
-    const items: WorkspaceFile[] = []
-    let truncated = false
-    for await (const child of await opendir(absoluteDirectory)) {
-      signal.throwIfAborted()
-      const path = join(absoluteDirectory, child.name)
-      try { this.visible(workspace, path) } catch { continue }
-      if (child.isSymbolicLink() || !child.isDirectory() && !child.isFile()) continue
-      const info = await lstat(path).catch(() => undefined)
-      if (info === undefined || info.isSymbolicLink() || await realpath(path).catch(() => undefined) !== path) continue
-      signal.throwIfAborted()
-      if (!info.isDirectory() && !info.isFile()) continue
-      if (info.isDirectory() && /[\\:\u0000-\u001f\u007f]/u.test(child.name)) continue
-      if (directories.length + items.length >= limit) { truncated = true; break }
-      if (info.isDirectory()) directories.push({ name: child.name, directory: directory === '' ? child.name : directory + '/' + child.name })
-      else items.push({ path, name: basename(path), size: info.size, mtimeMs: info.mtimeMs })
-    }
-    signal.throwIfAborted()
-    directories.sort((left, right) => left.name.localeCompare(right.name))
-    items.sort((left, right) => right.mtimeMs - left.mtimeMs)
-    return {
-      workspace, directory, absoluteDirectory,
-      parentDirectory: directory === '' ? null : directory.split('/').slice(0, -1).join('/'),
-      directories, items, truncated,
-    }
+    const page = await listDirectory(workspace.path, directory, limit, signal, (path) => { this.visible(workspace, path) }, offset)
+    if ((await this.resolve(id, signal)).path !== workspace.path) throw this.unavailable()
+    return { ...page, workspace }
   }
 
   private unavailable(): ArtifactError {
