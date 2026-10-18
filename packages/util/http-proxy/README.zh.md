@@ -35,6 +35,7 @@ kind: "package-reference"
 |---|---|
 | 普通请求，或最终落到 `globalThis.fetch` 的 SDK | 什么都不用——全局 dispatcher 已经在路由它 |
 | 需要按“这次请求是否走代理”分支的调用 | `proxyRouteFor(url)` |
+| 拥有独立环境快照和传输生命周期的操作 | 使用 `resolveProxyPolicy(env)` 和 `proxyForUrl(policy, url)`，不安装全局 dispatcher |
 | 接受自有代理 URL 的 SDK | `proxyRouteFor(url)`，把 `route.proxy` 传进去 |
 | 由你自己构造环境的 spawn | 把 `proxyEnvironmentForChild()` 应用到该 spawn（`undefined` 表示删除） |
 | 必须连到自带 fixture（测试前置数据）服务器的 harness | 把 `clearedProxyEnv()` 应用到该 spawn |
@@ -72,7 +73,7 @@ loopback 始终被绕过——`localhost`、整个 `127.0.0.0/8` 段、`::1`、`
 |---|---|
 | `src/policy.ts` | 解析与绕过匹配；诊断只点名变量，从不带出它的值。不引入任何传输实现，因此在没有 undici 的环境中仍可加载。 |
 | `src/install.ts` | 全局 dispatcher、生效策略记录、路由与子进程环境。动态引入 undici。 |
-| `src/index.ts` | 本包的对外接口：四个函数与一个类型。 |
+| `src/index.ts` | 公共路由、策略解析和子进程环境辅助函数。 |
 
 ### 绕过匹配
 

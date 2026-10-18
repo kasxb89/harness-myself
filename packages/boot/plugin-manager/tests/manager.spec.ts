@@ -22,6 +22,7 @@ import type { PatchOptions } from '@deepseek-ai/cordis-plugin-include'
 import { Group } from '@deepseek-ai/cordis-plugin-loader'
 import * as operations from '../src/operations.ts'
 import * as githubConnection from '../src/github-connection.ts'
+import * as pnpmProxySettings from '../src/pnpm-proxy-settings.ts'
 import { parse, parseDocument } from 'yaml'
 import { isolateGitCommandLineConfig } from './git-environment.ts'
 
@@ -78,7 +79,8 @@ async function fixture(reload: 'live' | 'startup' = 'live', overlay = false, pre
   // What pnpm's own configuration names is read from pnpm before every registry plan; the fixture answers npm's own registry.
   const registry = vi.spyOn(operations, 'readProfileRegistry').mockResolvedValue('https://registry.npmjs.org/')
   const connection = vi.spyOn(githubConnection, 'checkGithubConnection').mockResolvedValue(undefined)
-  onTestFinished(() => { registry.mockRestore(); connection.mockRestore() })
+  const proxySettings = vi.spyOn(pnpmProxySettings, 'readPnpmProxyEnvironment').mockImplementation(async (_dir, options) => options.env ?? {})
+  onTestFinished(() => { registry.mockRestore(); connection.mockRestore(); proxySettings.mockRestore() })
   let stopHmr = async () => {}
   if (reload === 'live') {
     await ctx.plugin(Timer)
@@ -90,7 +92,7 @@ async function fixture(reload: 'live' | 'startup' = 'live', overlay = false, pre
 }
 
 it.each(['network', 'timeout'] as const)('stops a GitHub %s before pnpm and attributes it to the repository', async (kind) => {
-  const { manager, dir, connection } = await fixture()
+  const { manager, dir, connection } = await fixture('live', false, undefined, { githubProxy: 'https://github-proxy.example' })
   const before = readFileSync(join(dir, 'package.json'), 'utf8')
   const failure = { exitCode: 1, output: 'GitHub check failed', truncated: false, logPath: join(dir, 'git.log'), kind }
   connection.mockResolvedValue(failure)
@@ -119,8 +121,75 @@ it('leaves non-network GitHub errors to pnpm and forwards profile Git environmen
   expect(connection).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.objectContaining({ timeoutMs: 8000, env }))
 })
 
+it('shares a scoped GitHub router between Git and pnpm while retaining canonical specs and original registry configuration', async () => {
+  const env = {
+    GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.autocrlf', GIT_CONFIG_VALUE_0: 'false',
+    HTTPS_PROXY: 'http://previous-proxy.example', NO_PROXY: '*,github.com,private.example', APPLICATION_RUNTIME: 'preserved',
+  }
+  const previousEnv = { ...process.env }
+  const { manager, dir, bundle, connection } = await fixture('startup', false, undefined, {
+    githubProxy: 'https://github-proxy.example:8443/', registry: 'https://npm.corp.example/',
+    fallbackRegistries: ['https://registry.npmmirror.com/'],
+  }, { command: 'application-pnpm', args: ['runtime-prefix'], env })
+  const spec = `github:acme/proxied#${'a'.repeat(40)}`
+  const install = vi.spyOn(operations, 'runProfilePnpm').mockImplementation(async (_context, args) => {
+    bundle('proxied', [])
+    const manifest = readProfileManifest('test', dir)
+    manifest.dependencies = { ...manifest.dependencies, proxied: spec }
+    writeFileSync(join(dir, 'package.json'), JSON.stringify(manifest))
+    writeFileSync(join(dir, 'pnpm-lock.yaml'), `specifier: ${args[1]}\n`)
+    return { exitCode: 0, output: 'installed', truncated: false, logPath: join(dir, 'pnpm.log') }
+  })
+  const view = vi.spyOn(operations, 'viewProfilePackage').mockResolvedValue({
+    exitCode: 0, stdout: JSON.stringify({ name: 'another-package', version: '1.0.0', dsh: { bundle: {} } }), stderr: '', timedOut: false,
+  })
+  onTestFinished(() => { install.mockRestore(); view.mockRestore() })
+  expect(await manager.installBundle(spec, { enabled: false })).toMatchObject({ changed: true, bundle: 'proxied' })
+  const scoped = connection.mock.calls[0]?.[2].env
+  expect(scoped).toBeDefined()
+  const localProxy = scoped?.HTTPS_PROXY
+  expect(localProxy).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/u)
+  expect(install.mock.calls[0]?.[1]).toEqual(['add', spec, '--registry=https://npm.corp.example/'])
+  expect(install.mock.calls[0]?.[2]).toMatchObject({ command: 'application-pnpm', args: ['runtime-prefix'] })
+  expect(install.mock.calls[0]?.[2].env).toBe(scoped)
+  expect(scoped).toMatchObject({
+    HTTPS_PROXY: localProxy, npm_config_https_proxy: localProxy,
+    APPLICATION_RUNTIME: 'preserved', GIT_CONFIG_KEY_0: 'core.autocrlf', GIT_CONFIG_VALUE_0: 'false',
+    GIT_CONFIG_KEY_1: 'http.https://github.com/.proxy', GIT_CONFIG_VALUE_1: localProxy,
+  })
+  expect(scoped?.NO_PROXY?.split(',')).toEqual(expect.arrayContaining([
+    'private.example', 'localhost', '127.0.0.1', '::1', '[::1]',
+  ]))
+  expect(scoped?.NO_PROXY?.split(',')).not.toContain('*')
+  expect(scoped?.NO_PROXY?.split(',')).not.toContain('github.com')
+  expect(readProfileManifest('test', dir).dependencies?.proxied).toBe(spec)
+  expect(readFileSync(join(dir, 'pnpm-lock.yaml'), 'utf8')).toBe(`specifier: ${spec}\n`)
+  await manager.inspect('another-package')
+  expect(view.mock.calls.at(-1)?.[2].env).toBe(env)
+  const registry = vi.mocked(operations.readProfileRegistry)
+  expect(registry.mock.calls.every(call => call[1].env === env)).toBe(true)
+  install.mockResolvedValue({ exitCode: 1, output: 'not installed', truncated: false, logPath: join(dir, 'pnpm.log') })
+  await manager.installBundle('https://gitlab.com/acme/another.git')
+  expect(connection.mock.calls.at(-1)?.[2].env).toBe(env)
+  expect(install.mock.calls.at(-1)?.[2].env).toBe(env)
+  expect(env).toEqual({
+    GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.autocrlf', GIT_CONFIG_VALUE_0: 'false',
+    HTTPS_PROXY: 'http://previous-proxy.example', NO_PROXY: '*,github.com,private.example', APPLICATION_RUNTIME: 'preserved',
+  })
+  expect(process.env).toEqual(previousEnv)
+})
+
+it.each([
+  'http://github-proxy.example', 'https://user:password@github-proxy.example', 'https://@github-proxy.example',
+  'https://github-proxy.example/path', 'https://github-proxy.example/.', 'https://github-proxy.example?query',
+  'https://github-proxy.example#fragment', 'https://github-proxy.example\\path', 'https://github-proxy.example:65536',
+  'https://github-proxy.example\n',
+])('rejects invalid GitHub forward-proxy endpoint %s', (githubProxy) => {
+  expect(() => PluginManager.Config({ githubProxy })).toThrow()
+})
+
 it('cancels an active GitHub check before starting pnpm', async () => {
-  const { manager, connection } = await fixture()
+  const { manager, connection } = await fixture('live', false, undefined, { githubProxy: 'https://github-proxy.example' })
   const entered = Promise.withResolvers<undefined>()
   connection.mockImplementation(async (_spec, _dir, options) => {
     entered.resolve(undefined)
@@ -135,6 +204,25 @@ it('cancels an active GitHub check before starting pnpm', async () => {
   expect(await manager.cancelInstall(requestId)).toEqual({ status: 'cancelled' })
   expect(await installing).toMatchObject({ application: 'cancelled', changed: false })
   expect(pnpm).not.toHaveBeenCalled()
+})
+
+it('cancels and waits for the original pnpm proxy settings read before opening GitHub transport', async () => {
+  const { manager, connection } = await fixture('startup', false, undefined, { githubProxy: 'https://github-proxy.example' })
+  const entered = Promise.withResolvers<undefined>()
+  const released = Promise.withResolvers<undefined>()
+  vi.mocked(pnpmProxySettings.readPnpmProxyEnvironment).mockImplementation(async (_dir, options) => {
+    entered.resolve(undefined)
+    await new Promise<void>((resolve) => { options.signal.addEventListener('abort', () => { resolve() }, { once: true }) })
+    released.resolve(undefined)
+    throw new Error('cancelled settings read')
+  })
+  const requestId = '824103ec-bc45-489d-bb85-5b4fe0aefc79' as PluginInstallRequestId
+  const installing = manager.installBundle('github:acme/dsh-plugin', { requestId })
+  await entered.promise
+  expect(await manager.cancelInstall(requestId)).toEqual({ status: 'cancelled' })
+  await released.promise
+  expect(await installing).toMatchObject({ application: 'cancelled', changed: false })
+  expect(connection).not.toHaveBeenCalled()
 })
 
 it('waits for the GitHub check before installing and activating the bundle', async () => {
@@ -159,7 +247,7 @@ it('waits for the GitHub check before installing and activating the bundle', asy
 })
 
 it('disposal waits for an active GitHub check to stop', async () => {
-  const { ctx, manager, connection } = await fixture('startup')
+  const { ctx, manager, connection } = await fixture('startup', false, undefined, { githubProxy: 'https://github-proxy.example' })
   const entered = Promise.withResolvers<undefined>()
   const released = Promise.withResolvers<undefined>()
   connection.mockImplementation(async (_spec, _dir, options) => {

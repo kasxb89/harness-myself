@@ -76,11 +76,14 @@ CLI 提供 `dsh plugin --profile <profile> version-exemptions`、`allow-version 
 
 ### 配置
 
+可选的 `githubProxy` 接受不带凭据、路径、查询或片段的 HTTPS CONNECT origin。配置代理后，安装 GitHub 包要求 pnpm 11，并会启动临时 loopback 路由器，由 Git 检查与各次 pnpm 尝试共用。只有 GitHub 目标使用该 origin，其他依赖保留原网络策略。操作结束或取消时会关闭路由器。包坐标、提交、TLS 验证与锁文件完整性保持不变。其他安装不启动该路由器。
+
 | 字段 | 默认值 | 含义 |
 |---|---|---|
 | `pnpmCommand` | `pnpm` | pnpm 可执行文件名或路径，与 `dsh plugin` 命令一样通过 `PATH` 解析。 |
 | `inspectTimeoutMs` | `20000` | 单次检查所做注册表查询的上限，单位毫秒。 |
 | `githubConnectionTimeoutMs` | `5000` | 安装前 GitHub 仓库连接检查的时限，单位毫秒。 |
+| `githubProxy` | 未设置 | 安装 GitHub 包期间，供 GitHub 下载使用的 HTTPS CONNECT 代理 origin。 |
 | `registry` | pnpm 自身配置 | 查询与安装首先询问的注册表，http(s) URL；缺省为 pnpm 自身配置指定的那个。 |
 | `fallbackRegistries` | `['https://registry.npmmirror.com/']` | 前一个注册表不可达或没有该包副本时依次询问的注册表，http(s) URL；pnpm 自身的注册表只在它指向 npm 官方源或这里的某一个时才进入顺序。 |
 | `outputBytes` | `16384` | 每次操作返回的 pnpm 诊断字节上限；完整输出保留在返回的日志路径中。 |

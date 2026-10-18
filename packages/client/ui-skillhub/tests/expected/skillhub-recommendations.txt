@@ -1,6 +1,7 @@
 推荐技能
 代码审查
+@community/review
 检查代码变更
 来源：SkillHub 社区
-@community/review
+查看详情
 安装

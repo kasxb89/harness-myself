@@ -76,11 +76,14 @@ The CLI exposes `dsh plugin --profile <profile> version-exemptions`, `allow-vers
 
 ### Configuration
 
+Optional `githubProxy` accepts an HTTPS CONNECT origin without credentials, a path, a query or a fragment. A configured GitHub installation requires pnpm 11 and starts a temporary loopback router shared by its Git check and pnpm attempts. Only GitHub destinations use that origin; other dependencies retain their original network policy. The router closes with the operation, including cancellation. Package coordinates, commits, TLS verification and lockfile integrity remain unchanged. Other installations do not start this router.
+
 | Field | Default | Meaning |
 |---|---|---|
 | `pnpmCommand` | `pnpm` | The pnpm executable name or path, resolved through `PATH` like the `dsh plugin` command. |
 | `inspectTimeoutMs` | `20000` | Bound on one registry lookup an inspection runs, in milliseconds. |
 | `githubConnectionTimeoutMs` | `5000` | Deadline for the GitHub repository check before installation, in milliseconds. |
+| `githubProxy` | Unset | HTTPS CONNECT proxy origin for GitHub downloads during a GitHub package installation. |
 | `registry` | pnpm's own | The registry lookups and installations ask first, as an http(s) URL; absent, the one pnpm's own configuration names. |
 | `fallbackRegistries` | `['https://registry.npmmirror.com/']` | Registries asked in turn, as http(s) URLs, while the one before is unreachable or holds no copy of the package; pnpm's own registry joins the order only while it names npm's own registry or one of these. |
 | `outputBytes` | `16384` | Maximum pnpm diagnostic bytes returned per operation; the full output remains in the returned log path. |

@@ -29,6 +29,8 @@ import { writePluginEnabled } from './patch.ts'
 import { incompatiblePlugin, ManagementFailure } from './failure.ts'
 import { approveBuilds, recordPendingBuilds } from './build-approval.ts'
 import { checkGithubConnection } from './github-connection.ts'
+import { createGithubProxyOperation, isGithubProxySpec, normalizeGithubProxy, type GithubProxyOperation } from './github-proxy.ts'
+import { readPnpmProxyEnvironment } from './pnpm-proxy-settings.ts'
 import type {
   BundleInfo, BundleRowInfo, ChangeResult, InspectOptions, InstallBundleOptions, ManagementError, PackageResult, PluginChange,
   PluginEntryId, PluginInfo, PluginInspectProblem, PluginInstallCancellation, PluginInstallProgress, PluginInstallRequestId,
@@ -50,6 +52,8 @@ export interface Config {
   inspectTimeoutMs?: number
   /** Maximum duration of the GitHub repository connection check before installation, in milliseconds. */
   githubConnectionTimeoutMs?: number
+  /** Credential-free HTTPS forward-proxy origin for GitHub downloads; other hosts retain their existing routing. */
+  githubProxy?: string
   /** Maximum time one captured package run may print nothing before the manager terminates it, in milliseconds. */
   idleTimeoutMs?: number
   /** The registry lookups and installations ask first, as an http(s) URL; absent, the one pnpm's own configuration names. */
@@ -183,6 +187,7 @@ export class PluginManager extends TypertRemoteService {
     lockWaitMs: z.number().step(1).min(0).default(120000),
     inspectTimeoutMs: z.number().step(1).min(1000).default(20000),
     githubConnectionTimeoutMs: z.number().step(1).min(1000).default(5000),
+    githubProxy: z.transform(z.string().pattern(/^https:\/\/[^\s\\?#]+\/?$/iu), normalizeGithubProxy),
     idleTimeoutMs: z.number().step(1).min(1000).default(600000),
     registry: z.string().pattern(REGISTRY_URL),
     fallbackRegistries: z.array(z.string().pattern(REGISTRY_URL)).default([NPMMIRROR_REGISTRY]),
@@ -196,6 +201,7 @@ export class PluginManager extends TypertRemoteService {
   private readonly lockWaitMs: number
   private readonly inspectTimeoutMs: number
   private readonly githubConnectionTimeoutMs: number
+  private readonly githubProxy: string | undefined
   private readonly idleTimeoutMs: number
   private readonly pnpmCommand: string
   private readonly configuredRegistries: Omit<PluginRegistries, 'resolved'>
@@ -214,6 +220,7 @@ export class PluginManager extends TypertRemoteService {
     this.lockWaitMs = (config as Required<Config>).lockWaitMs
     this.inspectTimeoutMs = (config as Required<Config>).inspectTimeoutMs
     this.githubConnectionTimeoutMs = (config as Required<Config>).githubConnectionTimeoutMs
+    this.githubProxy = config.githubProxy
     this.idleTimeoutMs = (config as Required<Config>).idleTimeoutMs
     this.pnpmCommand = (config as Required<Config>).pnpmCommand
     this.configuredRegistries = {
@@ -513,12 +520,33 @@ export class PluginManager extends TypertRemoteService {
       const before = readProfileManifest('dsh', this.profile.dir).dependencies ?? {}
       let name: string
       let version: string | undefined
+      let github: GithubProxyOperation | undefined
       try {
         result.registries = []
-        const connection = checkGithubConnection(parsedForRegistry(spec), this.profile.dir, {
+        const parsed = parsedForRegistry(spec)
+        if (this.githubProxy !== undefined && isGithubProxySpec(parsed)) {
+          const signal = AbortSignal.any([this.abort.signal, control.abort.signal])
+          const reading = readPnpmProxyEnvironment(this.profile.dir, {
+            ...this.profile.packageManager ?? { command: this.pnpmCommand }, signal, timeoutMs: this.inspectTimeoutMs,
+          })
+          this.packageOperations.add(reading)
+          let originalEnv: Readonly<Record<string, string>>
+          try { originalEnv = await reading }
+          finally { this.packageOperations.delete(reading) }
+          const creating = createGithubProxyOperation(this.githubProxy, originalEnv, {
+            signal, idleTimeoutMs: this.idleTimeoutMs,
+          })
+          this.packageOperations.add(creating)
+          try {
+            github = await creating
+            this.packageOperations.add(github.closed)
+          } finally { this.packageOperations.delete(creating) }
+        }
+        const env = github?.env ?? this.profile.packageManager?.env
+        const connection = checkGithubConnection(parsed, this.profile.dir, {
           timeoutMs: this.githubConnectionTimeoutMs, outputBytes: this.outputBytes,
           signal: AbortSignal.any([this.abort.signal, control.abort.signal]),
-          ...this.profile.packageManager?.env === undefined ? {} : { env: this.profile.packageManager.env },
+          ...env === undefined ? {} : { env },
         })
         this.packageOperations.add(connection)
         let connectionFailure: PackageResult | undefined
@@ -539,7 +567,7 @@ export class PluginManager extends TypertRemoteService {
           if (stopped()) throw new InstallCancelledError()
           result.registries.push(registry)
           announce('installing', { registry, index: index + 1, total: plan.length })
-          run = await this.runPnpm(['add', spec, ...options?.saveExact === true ? ['--save-exact'] : [], ...registryArguments(registry)], control.abort.signal, requestId)
+          run = await this.runPnpm(['add', spec, ...options?.saveExact === true ? ['--save-exact'] : [], ...registryArguments(registry)], control.abort.signal, requestId, env)
           result.packageResult = run
           if (stopped()) throw new InstallCancelledError()
           // A compatibility refusal is the package's own answer, so no other registry is asked.
@@ -590,7 +618,14 @@ export class PluginManager extends TypertRemoteService {
       } catch (error) {
         // pnpm has exited by now, so the files it rewrote go back as they were.
         await this.restoreFiles(files)
+        if (stopped()) throw new InstallCancelledError()
         throw error
+      } finally {
+        if (github !== undefined) {
+          try { await github.close() }
+          catch (error) { await this.restoreFiles(files); throw error }
+          finally { this.packageOperations.delete(github.closed) }
+        }
       }
       control.phase = 'applying'
       announce('applying')
@@ -707,7 +742,7 @@ export class PluginManager extends TypertRemoteService {
 
   /** Run one pnpm command in the profile, streaming its output as install-log chunks. */
   private async runPnpm(
-    args: readonly string[], signal?: AbortSignal, requestId?: PluginInstallRequestId,
+    args: readonly string[], signal?: AbortSignal, requestId?: PluginInstallRequestId, env?: Readonly<Record<string, string>>,
   ): Promise<PackageResult> {
     const jobId = randomUUID()
     const argv = ['pnpm', ...args]
@@ -715,6 +750,7 @@ export class PluginManager extends TypertRemoteService {
     const identity = requestId === undefined ? {} : { requestId }
     const task = runProfilePnpm({ ...this.profile, profile: this.profile.name }, args, {
       execution: 'service', ...this.profile.packageManager ?? { command: this.pnpmCommand },
+      ...env === undefined ? {} : { env },
       signal: signal === undefined ? this.abort.signal : AbortSignal.any([this.abort.signal, signal]),
       outputBytes: this.outputBytes, activateNewBundles: false, idleTimeoutMs: this.idleTimeoutMs,
       lookupTimeoutMs: this.inspectTimeoutMs,

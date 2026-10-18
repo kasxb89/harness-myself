@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import {
   Button, IconLoadingOutlineRegular, IconRefreshOutlineRegular, IconSearchOutlineRegular,
-  IconSkillOutlineRegular, Input, LinkIconMedium, SegmentedTabs,
+  IconSkillOutlineRegular, Input, LinkIconMedium, Modal, SegmentedTabs,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import type {
@@ -10,6 +10,7 @@ import type {
   SkillHubInstalledResponse, SkillHubSearchResponse, SkillHubSkill,
 } from '../types.ts'
 import css from './SkillHubPage.module.css'
+import { SkillHubPanelIcon } from './SkillHubPanelIcon.tsx'
 
 /** Cancellable Host operations injected into the skill store. */
 export interface SkillHubInjected {
@@ -24,6 +25,15 @@ export interface SkillHubInjected {
 }
 
 type InstallState = { status: 'pending' | 'installed' } | { status: 'failed'; code: SkillHubErrorCode }
+type SkillDetails = { kind: 'community'; skill: SkillHubSkill } | { kind: 'installed'; skill: InstalledSkill }
+
+// A page occupies at most four rows in the three-column catalog.
+const PAGE_SIZE = 12
+
+function SkillIcon({ slug }: { slug: string }): ReactNode {
+  const tone = Array.from(slug).reduce((sum, character) => sum + character.charCodeAt(0), 0) % 4
+  return <span className={css.skillIcon} data-tone={tone} aria-hidden="true"><IconSkillOutlineRegular size={22} /></span>
+}
 
 /** Locale and operation shares consumed by the main-panel registration. */
 export type SkillHubPageProps = SkillHubInjected & PropsLocale<'skillhub'>
@@ -48,6 +58,9 @@ export function SkillHubPage({ t, readRecommendations, search, readInstalled, in
   const [loadingInstalled, setLoadingInstalled] = useState(true)
   const [installedError, setInstalledError] = useState<SkillHubErrorCode | null>(null)
   const [installs, setInstalls] = useState<Record<string, InstallState>>({})
+  const [discoverPage, setDiscoverPage] = useState(1)
+  const [installedPage, setInstalledPage] = useState(1)
+  const [details, setDetails] = useState<SkillDetails | null>(null)
   const mounted = useRef(false)
   const searchRequest = useRef<AbortController | null>(null)
   const recommendationsRequest = useRef<AbortController | null>(null)
@@ -112,6 +125,7 @@ export function SkillHubPage({ t, readRecommendations, search, readInstalled, in
     setQuery('')
     setSearching(false)
     setSearchError(null)
+    setDiscoverPage(1)
   }
 
   const runSearch = async (text: string): Promise<void> => {
@@ -124,6 +138,7 @@ export function SkillHubPage({ t, readRecommendations, search, readInstalled, in
     const request = new AbortController()
     searchRequest.current = request
     setSubmitted(value)
+    setDiscoverPage(1)
     setSearching(true)
     setSearchError(null)
     try {
@@ -162,11 +177,26 @@ export function SkillHubPage({ t, readRecommendations, search, readInstalled, in
   }
 
   const visibleSkills = submitted === null ? recommendations : results
+  const discoverPages = Math.max(1, Math.ceil(visibleSkills.length / PAGE_SIZE))
+  const installedPages = Math.max(1, Math.ceil(installed.length / PAGE_SIZE))
+  const currentDiscoverPage = Math.min(discoverPage, discoverPages)
+  const currentInstalledPage = Math.min(installedPage, installedPages)
+  const detailState = details === null ? undefined : installs[details.skill.slug]
+  const detailInstalled = details !== null && (details.kind === 'installed'
+    || installed.some(entry => entry.slug === details.skill.slug) || detailState?.status === 'installed')
+
+  const pagination = (page: number, pages: number, onChange: (page: number) => void): ReactNode => pages <= 1 ? null
+    : <nav className={css.pagination} aria-label={t('pagination')}>
+      <Button size="sm" variant="outline" disabled={page === 1} onClick={() => { onChange(page - 1) }}>{t('previousPage')}</Button>
+      <span aria-live="polite">{t('pageCount', { page, pages })}</span>
+      <Button size="sm" variant="outline" disabled={page === pages} onClick={() => { onChange(page + 1) }}>{t('nextPage')}</Button>
+    </nav>
 
   return <section className={css.page} aria-label={t('panel')}>
     <div className={css.content}>
       <header className={css.header}>
-        <div>
+        <span className={css.storeIcon} aria-hidden="true"><SkillHubPanelIcon /></span>
+        <div className={css.headingCopy}>
           <p className={css.brand}>{t('brand')}</p>
           <h1 className={css.title}>{t('panel')}</h1>
           <p className={css.subtitle}>{t('subtitle')}</p>
@@ -197,7 +227,10 @@ export function SkillHubPage({ t, readRecommendations, search, readInstalled, in
           {submitted !== null && <Button size="sm" onClick={() => { void runSearch(submitted) }}>{t('retry')}</Button>}
         </div>}
         <div className={css.discoveryHeader}>
-          <h2 className={css.sectionTitle}>{submitted === null ? t('recommendations') : t('results', { query: submitted })}</h2>
+          <div className={css.sectionHeading}>
+            <h2 className={css.sectionTitle}>{submitted === null ? t('recommendations') : t('results', { query: submitted })}</h2>
+            <span className={css.count}>{t('catalogCount', { count: visibleSkills.length })}</span>
+          </div>
           {submitted !== null && <Button size="sm" variant="ghost" onClick={showRecommendations}>{t('backToRecommendations')}</Button>}
         </div>
         {submitted === null && recommendationsError !== null && <div className={css.notice} role="alert">
@@ -214,30 +247,38 @@ export function SkillHubPage({ t, readRecommendations, search, readInstalled, in
         {submitted !== null && searching && <div className={css.loading} role="status" aria-label={t('searching')}><IconLoadingOutlineRegular className={css.spinner} /></div>}
         {submitted !== null && !searching && searchError === null && results.length === 0 && <p className={css.empty}>{t('noResults')}</p>}
         <ul className={css.cards}>
-          {visibleSkills.map((skill) => {
+          {visibleSkills.slice((currentDiscoverPage - 1) * PAGE_SIZE, currentDiscoverPage * PAGE_SIZE).map((skill) => {
             const state = installs[skill.slug]
             const isInstalled = installed.some(entry => entry.slug === skill.slug) || state?.status === 'installed'
             return <li key={skill.slug} className={css.card}>
-              <div className={css.cardHeading}><IconSkillOutlineRegular /><h3>{skill.name}</h3></div>
+              <div className={css.cardHeading}>
+                <SkillIcon slug={skill.slug} />
+                <div className={css.skillHeading}><h3>{skill.name}</h3><code className={css.slug}>{skill.slug}</code></div>
+              </div>
               <p className={css.description}>{skill.description}</p>
-              {skill.version !== '' && <p className={css.metadata}>{t('version', { version: skill.version })}</p>}
-              <p className={css.metadata}>{t('source', { source: skill.source })}</p>
+              <div className={css.metadataRow}>
+                {skill.version !== '' && <p className={css.metadata}>{t('version', { version: skill.version })}</p>}
+                <p className={css.metadata}>{t('source', { source: skill.source })}</p>
+              </div>
               <div className={css.cardFooter}>
-                <code className={css.slug}>{skill.slug}</code>
+                <Button size="sm" variant="ghost" onClick={() => { setDetails({ kind: 'community', skill }) }}>{t('details')}</Button>
                 <Button size="sm" variant={isInstalled ? 'ghost' : 'outline'}
                   disabled={isInstalled || state?.status === 'pending'} onClick={() => { void runInstall(skill) }}>
                   {isInstalled ? t('installedState') : state?.status === 'pending' ? t('installing') : t('install')}
                 </Button>
               </div>
-              {isInstalled && <span className={css.success} role="status">{t('installedState')}</span>}
               {state?.status === 'failed' && <p className={css.error} role="alert">{t(`error.${state.code}`)}</p>}
             </li>
           })}
         </ul>
+        {pagination(currentDiscoverPage, discoverPages, setDiscoverPage)}
       </div>
       <div role="tabpanel" id={`${id}-installed-panel`} aria-labelledby={`${id}-installed`} hidden={tab !== 'installed'}>
         <div className={css.installedHeader}>
-          <h2 className={css.sectionTitle}>{t('installedTitle')}</h2>
+          <div className={css.sectionHeading}>
+            <h2 className={css.sectionTitle}>{t('installedTitle')}</h2>
+            <span className={css.count}>{t('catalogCount', { count: installed.length })}</span>
+          </div>
           <Button size="sm" icon={<IconRefreshOutlineRegular />} onClick={() => { void refreshInstalled() }}>{t('refreshInstalled')}</Button>
         </div>
         {installedError !== null && <div className={css.notice} role="alert">
@@ -249,14 +290,44 @@ export function SkillHubPage({ t, readRecommendations, search, readInstalled, in
           <h2>{t('installedEmpty')}</h2><p>{t('installedHint')}</p>
         </div>}
         <ul className={css.cards}>
-          {installed.map(skill => <li key={skill.slug} className={css.card}>
-            <div className={css.cardHeading}><IconSkillOutlineRegular /><h3>{skill.name}</h3></div>
-            <p className={css.metadata}>{t('version', { version: skill.version })}</p>
-            <p className={css.metadata}>{t('source', { source: t('brand') })}</p>
-            <div className={css.cardFooter}><code className={css.slug}>{skill.slug}</code><span className={css.success}>{t('installedState')}</span></div>
+          {installed.slice((currentInstalledPage - 1) * PAGE_SIZE, currentInstalledPage * PAGE_SIZE).map(skill => <li key={skill.slug} className={`${css.card} ${css.installedCard}`}>
+            <div className={css.cardHeading}>
+              <SkillIcon slug={skill.slug} />
+              <div className={css.skillHeading}><h3>{skill.name}</h3><code className={css.slug}>{skill.slug}</code></div>
+            </div>
+            <div className={css.metadataRow}>
+              <p className={css.metadata}>{t('version', { version: skill.version })}</p>
+              <p className={css.metadata}>{t('source', { source: t('brand') })}</p>
+            </div>
+            <div className={css.cardFooter}>
+              <Button size="sm" variant="ghost" onClick={() => { setDetails({ kind: 'installed', skill }) }}>{t('details')}</Button>
+              <span className={css.success}>{t('installedState')}</span>
+            </div>
           </li>)}
         </ul>
+        {pagination(currentInstalledPage, installedPages, setInstalledPage)}
       </div>
     </div>
+    <Modal open={details !== null} onClose={() => { setDetails(null) }} title={t('skillDetails')}
+      closeLabel={t('closeDetails')} className={css.detailsDialog as string} contentClassName={css.detailsContent as string}
+      footer={details?.kind === 'community' && <Button variant={detailInstalled ? 'ghost' : 'primary'}
+        disabled={detailInstalled || detailState?.status === 'pending'} onClick={() => { void runInstall(details.skill) }}>
+        {detailInstalled ? t('installedState') : detailState?.status === 'pending' ? t('installing') : t('install')}
+      </Button>}>
+      {details !== null && <>
+        <h3 className={css.detailName}>{details.skill.name}</h3>
+        <div className={css.detailIdentity}><SkillIcon slug={details.skill.slug} /><div>
+          <span className={css.detailLabel}>{t('skillIdentifier')}</span><code className={css.detailSlug}>{details.skill.slug}</code>
+        </div></div>
+        <div className={css.detailMetadata}>
+          {details.skill.version !== '' && <p>{t('version', { version: details.skill.version })}</p>}
+          <p>{t('source', { source: details.kind === 'community' ? details.skill.source : t('brand') })}</p>
+        </div>
+        {details.kind === 'community' && <div className={css.detailDescription}>
+          <h3>{t('description')}</h3><p>{details.skill.description}</p>
+        </div>}
+        {detailState?.status === 'failed' && <p className={css.error} role="alert">{t(`error.${detailState.code}`)}</p>}
+      </>}
+    </Modal>
   </section>
 }

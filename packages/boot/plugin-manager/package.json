@@ -58,8 +58,12 @@
   "dependencies": {
     "@deepseek-ai/dsh-app-boot": "workspace:*",
     "@deepseek-ai/dsh-atomic-write": "workspace:*",
+    "@deepseek-ai/dsh-http-proxy": "workspace:*",
+    "@pnpm/config.reader": "1101.15.1",
+    "@pnpm/workspace.root-finder": "1100.1.3",
     "@deepseek-ai/schemastery": "workspace:~",
     "execa": "^10.0.1",
+    "proxy-chain": "^3.0.1",
     "yaml": "^2.9.0",
     "zod": "^4.4.3",
     "@deepseek-ai/dsh-util-values": "workspace:*"

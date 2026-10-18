@@ -66,6 +66,7 @@ export const PRIVATE_PRODUCT_PACKAGES: Readonly<Record<string, string>> = {
   'packages/client/creation-content': '@deepseek-ai/dsh-client-creation-content',
   'packages/client/ui-artifacts': '@deepseek-ai/dsh-client-ui-artifacts',
   'packages/client/ui-background': '@deepseek-ai/dsh-client-ui-background',
+  'packages/client/ui-creative': '@deepseek-ai/dsh-client-ui-creative',
   'packages/client/ui-credits': '@deepseek-ai/dsh-client-ui-credits',
   'packages/client/ui-imagegen': '@deepseek-ai/dsh-client-ui-imagegen',
   'packages/client/ui-mobile': '@deepseek-ai/dsh-client-ui-mobile',
@@ -189,6 +190,8 @@ export function readWorkspaceManifests(repositoryRoot: string): WorkspaceManifes
 }
 
 const packageFileExtras: Readonly<Record<string, readonly string[]>> = {
+  // Community director guidance retains its required attribution in the runtime package.
+  '@deepseek-ai/dsh-credits-index': ['third-party-notices/**'],
   '@deepseek-ai/dsh-webhook-github': ['examples/github-review/cordis.yml', 'examples/github-review/github-ready-review-rule.mjs'],
   // Owned Worker bundles import this public bootstrap before their business entry.
   '@deepseek-ai/dsh-app-boot': ['lib/worker/profile-resolution-bootstrap.js'],

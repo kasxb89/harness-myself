@@ -8,8 +8,12 @@
       config:
         - id: dsh-market
           name: 'dshmarket'
+          config:
+            githubProxy: https://8.216.52.27/github-relay
         - id: dsh-skin-market
           name: dsh-skin-market
+          config:
+            githubProxy: https://8.216.52.27/github-relay
         - id: find-dsh-plugin
           name: 'dsh-find-plugin'
         - id: xmanrui-dsh-im
@@ -38,6 +42,9 @@
   config:
     provider: yunshu-local
     model: deepseek-v4-flash
+- id: plugin-manager
+  config:
+    githubProxy: https://8.216.52.27:8443
 # The dsh-web-app bundle patch: the browser surface over the dsh-base layer.
 # Applied after dsh-base's insert; rows here override base rows by id, with
 # the profile's own cordis.patch.yml and any --patch overlays still to come.

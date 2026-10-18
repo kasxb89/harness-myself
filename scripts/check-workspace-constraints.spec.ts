@@ -31,11 +31,11 @@ const experimental = {
 } satisfies WorkspaceManifest
 
 describe('private product package constraints', () => {
-  it('classifies only the thirteen product-owned runtime directories', () => {
+  it('classifies only the fourteen product-owned runtime directories', () => {
     expect(Object.keys(PRIVATE_PRODUCT_PACKAGES)).toEqual([
       'packages/bundle/web-app',
       'packages/client/creation-content', 'packages/client/ui-artifacts', 'packages/client/ui-background',
-      'packages/client/ui-credits', 'packages/client/ui-imagegen', 'packages/client/ui-mobile',
+      'packages/client/ui-creative', 'packages/client/ui-credits', 'packages/client/ui-imagegen', 'packages/client/ui-mobile',
       'packages/client/ui-plaza', 'packages/client/ui-prompt-assist', 'packages/client/ui-skillhub',
       'packages/client/ui-videogen', 'packages/deliverables/artifacts-index', 'packages/host/credits-index',
     ])
@@ -79,11 +79,20 @@ describe('private product package constraints', () => {
     })
   })
 
+  it('requires third-party notices in the credits runtime payload', () => {
+    const dir = 'packages/host/credits-index'
+    const manifest = JSON.parse(readFileSync(new URL(`../${dir}/package.json`, import.meta.url), 'utf8')) as WorkspaceManifest['manifest']
+    expect(expectedDshPackageFiles(manifest)).toContain('third-party-notices/**')
+    expect(checkWorkspaceManifest({ dir, manifest: {
+      ...manifest, files: (manifest.files ?? []).filter(file => file !== 'third-party-notices/**'),
+    } })).toEqual([expect.stringContaining('package.json files must be')])
+  })
+
   it('continues requiring upstream public release metadata for an unclassified private package', () => {
     const dir = 'packages/host/credits-index'
     const manifest = JSON.parse(readFileSync(new URL(`../${dir}/package.json`, import.meta.url), 'utf8')) as WorkspaceManifest['manifest']
     expect(checkWorkspaceManifest({ dir: 'packages/host/unclassified-product', manifest: {
-      ...manifest, name: '@deepseek-ai/dsh-unclassified-product',
+      ...manifest, name: '@deepseek-ai/dsh-unclassified-product', files: ['lib/index.js', 'lib/types/**/*.d.ts'],
     } })).toEqual([
       expect.stringContaining('release member must not set "private": true'),
       expect.stringContaining('release member must set publishConfig.access to "public"'),

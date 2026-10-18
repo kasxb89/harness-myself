@@ -10,6 +10,7 @@
   "include": [
     "apps/web/tests/collapse-timing.e2e.ts",
     "apps/web/tests/chat-flow-layout.e2e.ts",
+    "apps/web/tests/skillhub-store.e2e.ts",
     "apps/web/product-isolation.ts",
     "apps/web/tests/connection-recovery.e2e.ts",
     "apps/web/tests/server-restart.e2e.ts",

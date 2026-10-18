@@ -2539,7 +2539,7 @@ export interface PlanModeConfig {
 ## `@deepseek-ai/dsh-plugin-manager`
 
 - `inject`: `loader` · `profileContext`
-- `source`: [`packages/boot/plugin-manager/src/index.ts:42`](../packages/boot/plugin-manager/src/index.ts)
+- `source`: [`packages/boot/plugin-manager/src/index.ts:44`](../packages/boot/plugin-manager/src/index.ts)
 
 ```ts config-catalog
 /** The pnpm executable, registries, and limits for diagnostics, lookups and connection checks. */
@@ -2554,6 +2554,8 @@ export interface Config {
   inspectTimeoutMs?: number
   /** Maximum duration of the GitHub repository connection check before installation, in milliseconds. */
   githubConnectionTimeoutMs?: number
+  /** Credential-free HTTPS forward-proxy origin for GitHub downloads; other hosts retain their existing routing. */
+  githubProxy?: string
   /** Maximum time one captured package run may print nothing before the manager terminates it, in milliseconds. */
   idleTimeoutMs?: number
   /** The registry lookups and installations ask first, as an http(s) URL; absent, the one pnpm's own configuration names. */

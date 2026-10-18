@@ -14,3 +14,258 @@ diff --git a/package.json b/package.json
    },
    "dsh": {
      "bundle": {
+diff --git a/client/client.js b/client/client.js
+index 28710f9..dcfce92 100644
+--- a/client/client.js
++++ b/client/client.js
+@@ -217,7 +217,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
+ 			setGithubProxyAutoHint: "自动选择可用线路，失败时才切换。",
+ 			setGithubProxyCustom: "自定义",
+ 			setGithubProxyCustomHint: "优先使用自定义线路，失败后仍会尝试直连。",
+-			setGithubProxyManagedHint: "由环境变量 DSHM_GITHUB_PROXY 管理，界面中不可修改。",
++			setGithubProxyManagedHint: "由管理员配置管理，界面中不可修改。",
+ 			setGithubProxyEdit: "编辑",
+ 			setGithubProxyAuto: "恢复自动",
+ 			setGithubProxyInput: "HTTPS 加速前缀",
+@@ -934,7 +934,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
+ 			setGithubProxyAutoHint: "Chooses a working route automatically and switches only after a failure.",
+ 			setGithubProxyCustom: "Custom",
+ 			setGithubProxyCustomHint: "Tries your custom route first, then falls back to GitHub directly.",
+-			setGithubProxyManagedHint: "Managed by DSHM_GITHUB_PROXY and cannot be changed here.",
++			setGithubProxyManagedHint: "Managed by the administrator and cannot be changed here.",
+ 			setGithubProxyEdit: "Edit",
+ 			setGithubProxyAuto: "Restore automatic",
+ 			setGithubProxyInput: "HTTPS acceleration prefix",
+diff --git a/lib/index.js b/lib/index.js
+index fedef94..1e536c0 100644
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -7,6 +7,7 @@ import { createDesktopPluginRuntime, setHostPackageManager } from './dsh-cli.js'
+ import { createOfficialDesktopRuntime } from './official-desktop.js';
+ import { isDshProfileName } from './profile.js';
+ import { setRequestGateSource, setTrustedHostsSource } from './http.js';
++import { useConfiguredGithubProxy, validateConfiguredGithubProxy } from './regions.js';
+ import { mountMarketRoutes } from './routes.js';
+ import { installDesktopMarketSettings, installMarketSettings } from './settings.js';
+ export const name = 'dsh-market';
+@@ -163,6 +164,8 @@ export function useTrustedHosts(ctx) {
+     };
+ }
+ export function apply(ctx, config) {
++    const githubProxy = config?.githubProxy === undefined ? undefined : validateConfiguredGithubProxy(config.githubProxy);
++    if (githubProxy !== undefined) ctx.effect(() => useConfiguredGithubProxy(githubProxy));
+     ctx.inject(['webServer', 'loader'], (hostCtx) => {
+         const host = hostCtx;
+         const desktopProfiles = ctx.get('desktopProfiles');
+diff --git a/lib/regions.js b/lib/regions.js
+index 5afef62..40cc94b 100644
+--- a/lib/regions.js
++++ b/lib/regions.js
+@@ -138,6 +138,31 @@ export function normalizeGithubProxy(value) {
+         return null;
+     }
+ }
++/** Operator-owned HTTPS prefixes, scoped to the market activation that registered them. */
++const configuredGithubProxies = [];
++/** Validate one operator prefix without changing the process environment. */
++export function validateConfiguredGithubProxy(value) {
++    const normalized = normalizeGithubProxy(value);
++    if (normalized === null || /[\s\x00-\x1f\x7f]/u.test(value) || value.length > 2048)
++        throw new TypeError('dsh-market: githubProxy must be an HTTPS URL prefix without credentials, whitespace, query or fragment');
++    return normalized;
++}
++/** Register an operator prefix; disposing an older activation leaves newer activations unchanged. */
++export function useConfiguredGithubProxy(value) {
++    const entry = { value: validateConfiguredGithubProxy(value) };
++    configuredGithubProxies.push(entry);
++    resetGithubRoutePreferences();
++    return () => {
++        const index = configuredGithubProxies.indexOf(entry);
++        if (index === -1) return;
++        configuredGithubProxies.splice(index, 1);
++        resetGithubRoutePreferences();
++    };
++}
++function configuredGithubProxy() {
++    return configuredGithubProxies.at(-1)?.value ?? null;
++}
++
+ let customGithubProxy = null;
+ const preferredGithubRoutes = new Map();
+ /** Apply (or clear) the persisted UI escape route. */
+@@ -150,7 +175,7 @@ export function setCustomGithubProxy(proxy) {
+ }
+ /** Whether the operator-owned environment variable disables UI changes. */
+ export function githubProxyManaged(env = process.env) {
+-    return override(env, 'DSHM_GITHUB_PROXY') !== null;
++    return configuredGithubProxy() !== null || override(env, 'DSHM_GITHUB_PROXY') !== null;
+ }
+ /** Remember one verified route without changing other GitHub services. */
+ export function rememberGithubRoute(service, route) {
+@@ -174,7 +199,7 @@ export function resetGithubRoutePreferences() {
+ export function routesFor(region, env = process.env) {
+     const base = ROUTES[region];
+     const npmMirror = override(env, 'DSHM_NPM_MIRROR');
+-    const githubProxy = override(env, 'DSHM_GITHUB_PROXY') ?? customGithubProxy;
++    const githubProxy = configuredGithubProxy() ?? override(env, 'DSHM_GITHUB_PROXY') ?? customGithubProxy;
+     const catalog = override(env, 'DSHM_REGISTRY_URL');
+     const registry = npmMirror ?? base.npmRegistry;
+     const githubRoutes = githubProxy === null
+diff --git a/lib/types/index.d.ts b/lib/types/index.d.ts
+index f1cddd5..2888be9 100644
+--- a/lib/types/index.d.ts
++++ b/lib/types/index.d.ts
+@@ -6,7 +6,7 @@ import type { Context } from '@deepseek-ai/cordis';
+ import { type MarketConfig } from './routes.ts';
+ export declare const name = "dsh-market";
+ /** Optional cordis.yml configuration; profile defaults to `web`. */
+-export type Config = Partial<Pick<MarketConfig, 'profile' | 'allowRestart' | 'maxSnapshots' | 'buildEnv'>>;
++export type Config = Partial<Pick<MarketConfig, 'profile' | 'allowRestart' | 'maxSnapshots' | 'buildEnv' | 'githubProxy'>>;
+ /**
+  * The launcher's `profileContext` in one line, for the exported log (#744).
+  *
+diff --git a/lib/types/regions.d.ts b/lib/types/regions.d.ts
+index 7a66399..b518462 100644
+--- a/lib/types/regions.d.ts
++++ b/lib/types/regions.d.ts
+@@ -117,3 +117,8 @@ export declare function setActiveRegion(region: Region): void;
+  * @returns the proxied URL, or `url` unchanged when there is no proxy.
+  */
+ export declare function throughProxy(proxy: string | null, url: string): string;
++
++/** Validate an operator-owned HTTPS URL prefix; invalid values throw before activation. */
++export declare function validateConfiguredGithubProxy(value: string): string;
++/** Register a prefix until this activation is disposed; newer registrations retain ownership. */
++export declare function useConfiguredGithubProxy(value: string): () => void;
+diff --git a/lib/types/routes.d.ts b/lib/types/routes.d.ts
+index b853c76..354fc33 100644
+--- a/lib/types/routes.d.ts
++++ b/lib/types/routes.d.ts
+@@ -66,6 +66,8 @@ export interface HostPluginActivation {
+     }>;
+ }
+ export interface MarketConfig {
++    /** Operator-owned HTTPS URL prefix for GitHub metadata and previews; overrides saved UI routes. */
++    githubProxy?: string;
+     /** Profile the market installs into; matches the profile serving this UI. */
+     profile: string;
+     /** Host-authoritative profile directory; ordinary DSH derives it from DSH_HOME. */
+diff --git a/src/client/locales.ts b/src/client/locales.ts
+index 8079e8e..aa3a443 100644
+--- a/src/client/locales.ts
++++ b/src/client/locales.ts
+@@ -20,7 +20,7 @@ export const zh = {
+   setGithubProxyAutoHint: '自动选择可用线路，失败时才切换。',
+   setGithubProxyCustom: '自定义',
+   setGithubProxyCustomHint: '优先使用自定义线路，失败后仍会尝试直连。',
+-  setGithubProxyManagedHint: '由环境变量 DSHM_GITHUB_PROXY 管理，界面中不可修改。',
++  setGithubProxyManagedHint: '由管理员配置管理，界面中不可修改。',
+   setGithubProxyEdit: '编辑',
+   setGithubProxyAuto: '恢复自动',
+   setGithubProxyInput: 'HTTPS 加速前缀',
+@@ -757,7 +757,7 @@ export const en: Record<MarketKey, string> = {
+   setGithubProxyAutoHint: 'Chooses a working route automatically and switches only after a failure.',
+   setGithubProxyCustom: 'Custom',
+   setGithubProxyCustomHint: 'Tries your custom route first, then falls back to GitHub directly.',
+-  setGithubProxyManagedHint: 'Managed by DSHM_GITHUB_PROXY and cannot be changed here.',
++  setGithubProxyManagedHint: 'Managed by the administrator and cannot be changed here.',
+   setGithubProxyEdit: 'Edit',
+   setGithubProxyAuto: 'Restore automatic',
+   setGithubProxyInput: 'HTTPS acceleration prefix',
+diff --git a/src/index.ts b/src/index.ts
+index 75e0a10..e2c4814 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -9,6 +9,7 @@ import { createDesktopPluginRuntime, setHostPackageManager, type DesktopPnpmLike
+ import { createOfficialDesktopRuntime, type OfficialPluginManagerLike } from './official-desktop.ts'
+ import { isDshProfileName } from './profile.ts'
+ import { setRequestGateSource, setTrustedHostsSource } from './http.ts'
++import { useConfiguredGithubProxy, validateConfiguredGithubProxy } from './regions.ts'
+ import { mountMarketRoutes, type HostPluginActivation, type MarketConfig, type MarketHost } from './routes.ts'
+ import { installDesktopMarketSettings, installMarketSettings } from './settings.ts'
+ import type { AgentsServiceLike } from './agents.ts'
+@@ -16,7 +17,7 @@ import type { AgentsServiceLike } from './agents.ts'
+ export const name = 'dsh-market'
+
+ /** Optional cordis.yml configuration; profile defaults to `web`. */
+-export type Config = Partial<Pick<MarketConfig, 'profile' | 'allowRestart' | 'maxSnapshots' | 'buildEnv'>>
++export type Config = Partial<Pick<MarketConfig, 'profile' | 'allowRestart' | 'maxSnapshots' | 'buildEnv' | 'githubProxy'>>
+
+ /**
+  * Structural subset of the dsh launcher's public `profileContext` service —
+@@ -206,6 +207,8 @@ export function useTrustedHosts(ctx: Context): () => void {
+ }
+
+ export function apply(ctx: Context, config?: Config): void {
++  const githubProxy = config?.githubProxy === undefined ? undefined : validateConfiguredGithubProxy(config.githubProxy)
++  if (githubProxy !== undefined) ctx.effect(() => useConfiguredGithubProxy(githubProxy))
+   ctx.inject(['webServer', 'loader'], (hostCtx: Context) => {
+     const host = hostCtx as unknown as MarketEffectHost
+     const desktopProfiles = ctx.get('desktopProfiles') as DesktopProfilesLike | undefined
+diff --git a/src/regions.ts b/src/regions.ts
+index cf5158a..8ce417f 100644
+--- a/src/regions.ts
++++ b/src/regions.ts
+@@ -185,6 +185,31 @@ export function normalizeGithubProxy(value: unknown): string | null {
+   }
+ }
+
++/** Operator-owned HTTPS prefixes, scoped to the market activation that registered them. */
++const configuredGithubProxies: Array<{ value: string }> = []
++/** Validate one operator prefix without changing the process environment. */
++export function validateConfiguredGithubProxy(value: string): string {
++    const normalized = normalizeGithubProxy(value);
++    if (normalized === null || /[\s\x00-\x1f\x7f]/u.test(value) || value.length > 2048)
++        throw new TypeError('dsh-market: githubProxy must be an HTTPS URL prefix without credentials, whitespace, query or fragment');
++    return normalized;
++}
++/** Register an operator prefix; disposing an older activation leaves newer activations unchanged. */
++export function useConfiguredGithubProxy(value: string): () => void {
++    const entry = { value: validateConfiguredGithubProxy(value) };
++    configuredGithubProxies.push(entry);
++    resetGithubRoutePreferences();
++    return () => {
++        const index = configuredGithubProxies.indexOf(entry);
++        if (index === -1) return;
++        configuredGithubProxies.splice(index, 1);
++        resetGithubRoutePreferences();
++    };
++}
++function configuredGithubProxy(): string | null {
++    return configuredGithubProxies.at(-1)?.value ?? null;
++}
++
+ let customGithubProxy: string | null = null
+ const preferredGithubRoutes = new Map<GithubService, GithubRoute>()
+
+@@ -198,7 +223,7 @@ export function setCustomGithubProxy(proxy: string | null): void {
+
+ /** Whether the operator-owned environment variable disables UI changes. */
+ export function githubProxyManaged(env: NodeJS.ProcessEnv = process.env): boolean {
+-  return override(env, 'DSHM_GITHUB_PROXY') !== null
++  return configuredGithubProxy() !== null || override(env, 'DSHM_GITHUB_PROXY') !== null
+ }
+
+ /** Remember one verified route without changing other GitHub services. */
+@@ -225,7 +250,7 @@ export function resetGithubRoutePreferences(): void {
+ export function routesFor(region: Region, env: NodeJS.ProcessEnv = process.env): RegionRoutes {
+   const base = ROUTES[region]
+   const npmMirror = override(env, 'DSHM_NPM_MIRROR')
+-  const githubProxy = override(env, 'DSHM_GITHUB_PROXY') ?? customGithubProxy
++  const githubProxy = configuredGithubProxy() ?? override(env, 'DSHM_GITHUB_PROXY') ?? customGithubProxy
+   const catalog = override(env, 'DSHM_REGISTRY_URL')
+   const registry = npmMirror ?? base.npmRegistry
+   const githubRoutes: GithubRoutes = githubProxy === null
+diff --git a/src/routes.ts b/src/routes.ts
+index 4e99f24..88d7142 100644
+--- a/src/routes.ts
++++ b/src/routes.ts
+@@ -130,6 +130,8 @@ export interface HostPluginActivation {
+ }
+
+ export interface MarketConfig {
++  /** Operator-owned HTTPS URL prefix for GitHub metadata and previews; overrides saved UI routes. */
++  githubProxy?: string
+   /** Profile the market installs into; matches the profile serving this UI. */
+   profile: string
+   /** Host-authoritative profile directory; ordinary DSH derives it from DSH_HOME. */

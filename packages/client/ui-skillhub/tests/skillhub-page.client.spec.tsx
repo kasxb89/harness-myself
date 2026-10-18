@@ -242,6 +242,94 @@ describe('SkillHub page', () => {
       .toMatchFileSnapshot('./expected/skillhub-search.txt')
   })
 
+  it('keeps long community descriptions and identifiers complete in a dismissible details dialog', async () => {
+    const longSkill = {
+      ...review,
+      name: 'StoryboardAndLongVideoMaterialDirector'.repeat(12),
+      slug: `@community/${'storyboard-and-materials-'.repeat(20)}`,
+      description: '整理人物设定、镜头、运镜和字幕，并保留每一段的完整创作说明。\n'.repeat(80),
+      source: 'SkillHub 社区'.repeat(30),
+      version: '2026.10.18-'.repeat(12),
+    }
+    const face = props({ readRecommendations: async () => ({ ok: true, skills: [longSkill] }) })
+    render(<SkillHubPage {...face} />)
+    await screen.findByRole('heading', { name: longSkill.name })
+    const card = screen.getByRole('listitem')
+    expect(card.querySelector('svg')).not.toBeNull()
+    const details = within(card).getByRole('button', { name: '查看详情' })
+    details.focus()
+    fireEvent.click(details)
+
+    const dialog = screen.getByRole('dialog', { name: '技能详情' })
+    expect(dialog.getAttribute('aria-modal')).toBe('true')
+    expect(within(dialog).getByRole('heading', { name: longSkill.name }).textContent).toBe(longSkill.name)
+    expect(within(dialog).getByText(longSkill.slug).textContent).toBe(longSkill.slug)
+    expect(within(dialog).getByRole('heading', { name: '技能介绍' }).nextElementSibling?.textContent).toBe(longSkill.description)
+    expect(within(dialog).getByText(`来源：${longSkill.source}`).textContent).toContain(longSkill.source)
+    expect(within(dialog).getByText(`版本 ${longSkill.version}`).textContent).toContain(longSkill.version)
+    expect(face.install).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => { expect(screen.queryByRole('dialog')).toBeNull() })
+    expect(document.activeElement).toBe(details)
+  })
+
+  it('installs the selected skill from details and keeps the dialog state synchronized', async () => {
+    const completion = deferred<SkillHubInstallResponse>()
+    const face = props({ readRecommendations: async () => ({ ok: true, skills: [review] }), install: () => completion.promise })
+    render(<SkillHubPage {...face} />)
+    fireEvent.click(await screen.findByRole('button', { name: '查看详情' }))
+    const dialog = screen.getByRole('dialog', { name: '技能详情' })
+    fireEvent.click(within(dialog).getByRole('button', { name: '安装' }))
+    expect(within(dialog).getByRole('button', { name: '安装中…' }).hasAttribute('disabled')).toBe(true)
+    await act(async () => { completion.resolve({ ok: true, skill: installed }) })
+    expect(within(dialog).getByRole('button', { name: '已安装' }).hasAttribute('disabled')).toBe(true)
+    fireEvent.click(within(dialog).getByRole('button', { name: '关闭技能详情' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('pages large catalogs without another network request and resets pagination for a new search', async () => {
+    const skills = Array.from({ length: 27 }, (_, index) => ({ ...review, name: `社区技能 ${index + 1}`, slug: `community-${index + 1}` }))
+    const face = props({ readRecommendations: vi.fn(async () => ({ ok: true as const, skills })) })
+    render(<SkillHubPage {...face} />)
+    await screen.findByRole('heading', { name: '社区技能 1' })
+    expect(screen.getAllByRole('listitem')).toHaveLength(12)
+    expect(screen.queryByRole('heading', { name: '社区技能 13' })).toBeNull()
+    expect(screen.getByText('共 27 个技能')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '上一页' }).hasAttribute('disabled')).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: '下一页' }))
+    expect(screen.getByRole('heading', { name: '社区技能 13' })).toBeTruthy()
+    expect(screen.getByText('第 2 / 3 页')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '下一页' }))
+    expect(screen.getAllByRole('listitem')).toHaveLength(3)
+    expect(screen.getByRole('button', { name: '下一页' }).hasAttribute('disabled')).toBe(true)
+    expect(face.readRecommendations).toHaveBeenCalledTimes(1)
+    search()
+    await screen.findByRole('heading', { name: review.name })
+    expect(screen.getAllByRole('listitem')).toHaveLength(1)
+    expect(screen.queryByRole('navigation', { name: '技能分页' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '返回推荐' }))
+    expect(screen.getByRole('heading', { name: '社区技能 1' })).toBeTruthy()
+  })
+
+  it('pages installed skills independently and shows their full identity in details', async () => {
+    const skills = Array.from({ length: 13 }, (_, index) => ({ ...installed, slug: `installed-${index}`, name: `已安装技能 ${index + 1}` }))
+    const face = props({ readInstalled: vi.fn(async () => ({ ok: true as const, skills })) })
+    render(<SkillHubPage {...face} />)
+    fireEvent.click(screen.getByRole('tab', { name: '已安装' }))
+    await screen.findByRole('heading', { name: '已安装技能 1' })
+    expect(screen.getAllByRole('listitem')).toHaveLength(12)
+    fireEvent.click(screen.getByRole('button', { name: '下一页' }))
+    expect(screen.getAllByRole('listitem')).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: '查看详情' }))
+    const dialog = screen.getByRole('dialog', { name: '技能详情' })
+    expect(within(dialog).getByRole('heading', { name: '已安装技能 13' })).toBeTruthy()
+    expect(within(dialog).getByText('installed-12')).toBeTruthy()
+    expect(within(dialog).queryByRole('button', { name: '安装' })).toBeNull()
+    expect(face.readInstalled).toHaveBeenCalledTimes(1)
+    expect(face.install).not.toHaveBeenCalled()
+  })
+
   it('ignores a late superseded search and aborts its request', async () => {
     const first = deferred<SkillHubSearchResponse>()
     const next = { ...review, slug: 'new-skill', name: '新结果' }

@@ -27,6 +27,9 @@
       "path": "../../util/atomic-write"
     },
     {
+      "path": "../../util/http-proxy"
+    },
+    {
       "path": "../../core/agent"
     },
     {

@@ -19,3 +19,324 @@ diff --git a/package.json b/package.json
          "@deepseek-ai/dsh-client-locale",
          "@deepseek-ai/dsh-client-ui-settings"
        ],
+diff --git a/client/client.js b/client/client.js
+index 2475381..42e80dc 100644
+--- a/client/client.js
++++ b/client/client.js
+@@ -511,6 +511,32 @@ window.__ModuleLoader__.load({
+ 			return sortBy === "latest" ? Date.parse(updatedAtFor(b)) - Date.parse(updatedAtFor(a)) : starsFor(b) - starsFor(a);
+ 		}
+ 		//#endregion
++		//#region src/github-proxy.ts
++		/** Normalize the operator's HTTPS URL prefix; invalid configuration fails before routes mount. */
++		function normalizeGithubProxy(value) {
++		    if (value === undefined) return undefined;
++		    if (typeof value !== 'string' || value === '' || value.length > 2048 || /[\s\x00-\x1f\x7f\\]/u.test(value))
++		        throw new TypeError('dsh-skin-market: githubProxy must be an HTTPS URL prefix without credentials, whitespace, query or fragment');
++		    let parsed;
++		    try { parsed = new URL(value); }
++		    catch { throw new TypeError('dsh-skin-market: githubProxy must be an HTTPS URL prefix'); }
++		    if (parsed.protocol !== 'https:' || parsed.username !== '' || parsed.password !== '' || parsed.search !== '' || parsed.hash !== '')
++		        throw new TypeError('dsh-skin-market: githubProxy must be an HTTPS URL prefix without credentials, query or fragment');
++		    return `${parsed.origin}${parsed.pathname.replace(/\/+$/u, '')}`;
++		}
++		/** Route only GitHub resource hosts and the skin market's fixed generated-media directory. */
++		function githubResourceUrl(url, proxy) {
++		    if (proxy === undefined || proxy === null) return url;
++		    let target;
++		    try { target = new URL(url); }
++		    catch { return url; }
++		    if (target.protocol !== 'https:' || target.username !== '' || target.password !== '' || target.port !== '') return url;
++		    const githubHost = ['github.com', 'raw.githubusercontent.com', 'avatars.githubusercontent.com', 'user-images.githubusercontent.com', 'camo.githubusercontent.com'].includes(target.hostname);
++		    const generatedMedia = target.hostname === 'kingofsoysauce.github.io' && target.pathname.startsWith('/dsh-skin-market/skin-media/');
++		    return githubHost || generatedMedia ? `${proxy}/${url}` : url;
++		}
++		let previewGithubProxy;
++		//#endregion
+ 		//#region src/media-preview.ts
+ 		const DEFAULT_MEDIA_BASE_URL = "https://kingofsoysauce.github.io/dsh-skin-market/skin-media";
+ 		const MEDIA_VERSION = "v1";
+@@ -1499,7 +1525,7 @@ url: https://github.com/<owner>/<repo>
+ 					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("small", { children: "暂无界面截图" })
+ 				]
+ 			});
+-			if (!lazyMedia.visible) return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
++			if (previewGithubProxy === void 0 || !lazyMedia.visible) return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+ 				ref: lazyMedia.ref,
+ 				className: SkinMarket_module_css_default.mediaLazyPlaceholder,
+ 				role: "img",
+@@ -1507,7 +1533,7 @@ url: https://github.com/<owner>/<repo>
+ 			});
+ 			const media = generatedMediaFor(skin, activeSrc, kind);
+ 			if (media === void 0) return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("img", {
+-				src: activeSrc,
++				src: githubResourceUrl(activeSrc, previewGithubProxy),
+ 				alt,
+ 				loading,
+ 				decoding: "async",
+@@ -1518,21 +1544,21 @@ url: https://github.com/<owner>/<repo>
+ 			});
+ 			if (kind === "hero") {
+ 				if (fullFailed) return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("img", {
+-					src: activeSrc,
++					src: githubResourceUrl(activeSrc, previewGithubProxy),
+ 					alt,
+ 					loading,
+ 					decoding: "async",
+ 					onError: tryNextSource
+ 				});
+ 				return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("img", {
+-					src: generatedMediaUrl(media.full),
++					src: githubResourceUrl(generatedMediaUrl(media.full), previewGithubProxy),
+ 					alt,
+ 					loading: loading === "lazy" ? "lazy" : "eager",
+ 					decoding: "async",
+ 					onError: () => setFullFailed(true)
+ 				});
+ 			}
+-			const imageSource = previewFailed ? activeSrc : generatedMediaUrl(media.preview);
++			const imageSource = githubResourceUrl(previewFailed ? activeSrc : generatedMediaUrl(media.preview), previewGithubProxy);
+ 			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("img", {
+ 				src: imageSource,
+ 				alt,
+@@ -1548,12 +1574,13 @@ url: https://github.com/<owner>/<repo>
+ 			});
+ 		}
+ 		function GalleryPreloads({ skin, screenshots }) {
++			if (previewGithubProxy === void 0) return null;
+ 			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(react_jsx_runtime.Fragment, { children: screenshots.map((source, index) => {
+ 				const media = generatedMediaFor(skin, source, "hero");
+ 				return media === void 0 ? null : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("link", {
+ 					rel: "preload",
+ 					as: "image",
+-					href: generatedMediaUrl(media.full)
++					href: githubResourceUrl(generatedMediaUrl(media.full), previewGithubProxy)
+ 				}, `${source}:${index}`);
+ 			}) });
+ 		}
+@@ -1567,6 +1594,7 @@ url: https://github.com/<owner>/<repo>
+ 		function SkinMarketSection({ t, clientRuntime, catalogCache = browserCatalogCache }) {
+ 			const [skins, setSkins] = (0, react.useState)([]);
+ 			const [states, setStates] = (0, react.useState)([]);
++			const [githubProxy, setGithubProxy] = (0, react.useState)(void 0);
+ 			const [hostKind, setHostKind] = (0, react.useState)("dsh");
+ 			const [runtime, setRuntime] = (0, react.useState)(null);
+ 			const [restartAvailable, setRestartAvailable] = (0, react.useState)(true);
+@@ -1653,6 +1681,8 @@ url: https://github.com/<owner>/<repo>
+ 				});
+ 			}, []);
+ 			const applyMarketState = (0, react.useCallback)((state) => {
++				previewGithubProxy = normalizeGithubProxy(state.githubProxy ?? void 0) ?? null;
++				setGithubProxy(previewGithubProxy);
+ 				statesRef.current = state.skins;
+ 				runtimeReadyRef.current = true;
+ 				setStates(state.skins);
+@@ -1715,6 +1745,8 @@ url: https://github.com/<owner>/<repo>
+ 				}
+ 				try {
+ 					const catalogRequest = json("/dsh-skin-market/catalog").then((catalog) => {
++						previewGithubProxy = normalizeGithubProxy(catalog.githubProxy ?? void 0) ?? null;
++						setGithubProxy(previewGithubProxy);
+ 						acceptCatalog(catalog.skins);
+ 						catalogCache.write(catalog.skins).catch(() => void 0);
+ 						catalogSettledRef.current = true;
+@@ -1889,14 +1921,15 @@ url: https://github.com/<owner>/<repo>
+ 				refresh
+ 			]);
+ 			(0, react.useEffect)(() => {
++				if (githubProxy === void 0) return;
+ 				const controller = new AbortController();
+ 				setGeneratedMediaSources([]);
+-				fetch(generatedMediaManifestUrl(), {
++				fetch(githubResourceUrl(generatedMediaManifestUrl(), githubProxy), {
+ 					cache: "no-store",
+ 					signal: controller.signal
+ 				}).then(async (response) => response.ok ? parseGeneratedMediaManifest(await response.json()) : void 0).then((sources) => setGeneratedMediaSources(sources)).catch(() => setGeneratedMediaSources(void 0));
+ 				return () => controller.abort();
+-			}, []);
++			}, [githubProxy]);
+ 			(0, react.useEffect)(() => {
+ 				checkMarketUpdate();
+ 			}, [checkMarketUpdate]);
+diff --git a/lib/catalog.js b/lib/catalog.js
+index 1dce95b..65196d3 100644
+--- a/lib/catalog.js
++++ b/lib/catalog.js
+@@ -5,6 +5,7 @@ import { decodeCatalogWire, encodeCatalogWire } from './catalog-wire.js';
+ import { githubInstallTarget, parseGithubTarget } from './install-resolution.js';
+ import { atomicWriteJson } from './profile.js';
+ import { isVersionRange } from './semver.js';
++import { githubResourceUrl, normalizeGithubProxy } from './github-proxy.js';
+ export const REMOTE_CATALOG_URL = 'https://raw.githubusercontent.com/kingOfSoySauce/dsh-skin-market/main/data/catalog.json';
+ export const CATALOG_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+ export const LOCAL_CATALOG_ENV = 'DSH_SKIN_MARKET_LOCAL_CATALOG';
+@@ -89,7 +90,7 @@ export class CatalogStore {
+         this.profileDir = profileDir;
+         const bundled = loadCatalog();
+         this.current = bundled;
+-        this.remoteUrl = options.remoteUrl ?? REMOTE_CATALOG_URL;
++        this.remoteUrl = githubResourceUrl(options.remoteUrl ?? REMOTE_CATALOG_URL, normalizeGithubProxy(options.githubProxy));
+         this.preferBundled = options.preferBundled ?? process.env[LOCAL_CATALOG_ENV] === '1';
+         this.refreshIntervalMs = options.refreshIntervalMs ?? CATALOG_REFRESH_INTERVAL_MS;
+         this.fetcher = options.fetcher ?? ((url, init) => fetch(url, init));
+diff --git a/lib/github-proxy.js b/lib/github-proxy.js
+new file mode 100644
+index 0000000..67f0785
+--- /dev/null
++++ b/lib/github-proxy.js
+@@ -0,0 +1,23 @@
++/** Normalize the operator's HTTPS URL prefix; invalid configuration fails before routes mount. */
++export function normalizeGithubProxy(value) {
++    if (value === undefined) return undefined;
++    if (typeof value !== 'string' || value === '' || value.length > 2048 || /[\s\x00-\x1f\x7f\\]/u.test(value))
++        throw new TypeError('dsh-skin-market: githubProxy must be an HTTPS URL prefix without credentials, whitespace, query or fragment');
++    let parsed;
++    try { parsed = new URL(value); }
++    catch { throw new TypeError('dsh-skin-market: githubProxy must be an HTTPS URL prefix'); }
++    if (parsed.protocol !== 'https:' || parsed.username !== '' || parsed.password !== '' || parsed.search !== '' || parsed.hash !== '')
++        throw new TypeError('dsh-skin-market: githubProxy must be an HTTPS URL prefix without credentials, query or fragment');
++    return `${parsed.origin}${parsed.pathname.replace(/\/+$/u, '')}`;
++}
++/** Route only GitHub resource hosts and the skin market's fixed generated-media directory. */
++export function githubResourceUrl(url, proxy) {
++    if (proxy === undefined || proxy === null) return url;
++    let target;
++    try { target = new URL(url); }
++    catch { return url; }
++    if (target.protocol !== 'https:' || target.username !== '' || target.password !== '' || target.port !== '') return url;
++    const githubHost = ['github.com', 'raw.githubusercontent.com', 'avatars.githubusercontent.com', 'user-images.githubusercontent.com', 'camo.githubusercontent.com'].includes(target.hostname);
++    const generatedMedia = target.hostname === 'kingofsoysauce.github.io' && target.pathname.startsWith('/dsh-skin-market/skin-media/');
++    return githubHost || generatedMedia ? `${proxy}/${url}` : url;
++}
+diff --git a/lib/index.js b/lib/index.js
+index 78b09cb..788945c 100644
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -4,12 +4,14 @@ import { resolveProfileDir } from './profile.js';
+ import { mountRoutes } from './routes.js';
+ import { createCliRestartScheduler } from './restart.js';
+ import { detectDshRuntime } from './runtime.js';
++import { normalizeGithubProxy } from './github-proxy.js';
+ export const name = 'dsh-skin-market';
+ function argvProfile() {
+     const index = process.argv.indexOf('--profile');
+     return index >= 0 && process.argv[index + 1] !== undefined ? process.argv[index + 1] : undefined;
+ }
+ export function apply(ctx, config) {
++    const githubProxy = normalizeGithubProxy(config?.githubProxy);
+     // Agent coordination is optional.  The official Electron Desktop does not
+     // expose the Web Agent registry in every generation, while the market only
+     // needs it when a Web/Host restart is explicitly requested.
+@@ -43,7 +45,7 @@ export function apply(ctx, config) {
+             // canonical Desktop directory is the explicit profile name's directory.
+             const profileDir = contextDir !== '' ? contextDir : resolveProfileDir(profile);
+             const runner = officialDesktopRunner(() => readService('pluginManager'));
+-            host.effect(() => mountRoutes(host, { profile, profileDir, runner, hostKind: 'desktop', runtime: detectDshRuntime(), agents: undefined }), 'dsh-skin-market: official Desktop routes');
++            host.effect(() => mountRoutes(host, { profile, profileDir, runner, githubProxy, hostKind: 'desktop', runtime: detectDshRuntime(), agents: undefined }), 'dsh-skin-market: official Desktop routes');
+             return;
+         }
+         if (desktopProfiles === undefined) {
+@@ -51,14 +53,14 @@ export function apply(ctx, config) {
+             const profileDir = configuredProfile === undefined && contextDir !== '' ? contextDir : resolveProfileDir(profile);
+             const appExit = readService('appExit');
+             const restart = appExit === undefined ? undefined : createCliRestartScheduler(appExit);
+-            host.effect(() => mountRoutes(host, { profile, profileDir, runner: runPluginCli, hostKind: 'dsh', runtime: detectDshRuntime(), restart, agents }), 'dsh-skin-market: routes');
++            host.effect(() => mountRoutes(host, { profile, profileDir, githubProxy, runner: runPluginCli, hostKind: 'dsh', runtime: detectDshRuntime(), restart, agents }), 'dsh-skin-market: routes');
+             return;
+         }
+         hostContext.inject(['desktopPnpm'], desktopContext => {
+             const current = desktopProfiles.current;
+             const service = desktopContext.desktopPnpm;
+             const desktopHost = desktopContext;
+-            desktopHost.effect(() => mountRoutes(host, { profile: current.name, profileDir: current.dir, runner: desktopRunner(service, current.dir), hostKind: 'desktop', runtime: detectDshRuntime(), agents }), 'dsh-skin-market: desktop routes');
++            desktopHost.effect(() => mountRoutes(host, { profile: current.name, profileDir: current.dir, githubProxy, runner: desktopRunner(service, current.dir), hostKind: 'desktop', runtime: detectDshRuntime(), agents }), 'dsh-skin-market: desktop routes');
+         });
+     });
+ }
+diff --git a/lib/routes.js b/lib/routes.js
+index beef396..f583481 100644
+--- a/lib/routes.js
++++ b/lib/routes.js
+@@ -5,6 +5,7 @@ import { SkinLifecycle } from './lifecycle.js';
+ import { installedClientPlugins, resolveProfileDir } from './profile.js';
+ import { createMarketUpdater, packageVersion } from './self-update.js';
+ import { exportLogs } from './log.js';
++import { normalizeGithubProxy } from './github-proxy.js';
+ export function canRestartSkin(state) {
+     return state?.installation === 'installed'
+         && (state.activation === 'active' || state.activation === 'restart-required');
+@@ -54,7 +55,8 @@ export function mountRoutes(host, options) {
+     // profileContext.dir resolves the Desktop profile and never silently uses
+     // the Web profile.
+     const profileDir = options.profileDir ?? resolveProfileDir(options.profile);
+-    const catalogStore = options.catalogStore ?? new CatalogStore(profileDir);
++    const githubProxy = normalizeGithubProxy(options.githubProxy);
++    const catalogStore = options.catalogStore ?? new CatalogStore(profileDir, { githubProxy });
+     const initialCatalog = catalogStore.snapshot().catalog;
+     const hostKind = options.hostKind ?? options.runner.hostKind ?? 'dsh';
+     // Keep the optional Agent registry on a prototype wrapper so Cordis host
+@@ -87,6 +89,7 @@ export function mountRoutes(host, options) {
+             lifecycleCatalogGeneratedAt = snapshot.catalog.generatedAt;
+         }
+         return {
++            githubProxy: githubProxy ?? null,
+             schemaVersion: snapshot.catalog.schemaVersion,
+             generatedAt: snapshot.catalog.generatedAt,
+             skins: await catalogWithStars(profileDir, snapshot.catalog),
+@@ -140,6 +143,7 @@ export function mountRoutes(host, options) {
+                     return;
+                 try {
+                     sendJson(response, 200, {
++                        githubProxy: githubProxy ?? null,
+                         hostKind,
+                         runtime: options.runtime,
+                         skins: lifecycle.states(),
+diff --git a/lib/types/catalog.d.ts b/lib/types/catalog.d.ts
+index a328c94..1b47254 100644
+--- a/lib/types/catalog.d.ts
++++ b/lib/types/catalog.d.ts
+@@ -18,6 +18,8 @@ interface FetchResponse {
+ }
+ export interface CatalogStoreOptions {
+     remoteUrl?: string;
++    /** Operator-owned HTTPS URL prefix for GitHub catalog and preview resources. */
++    githubProxy?: string;
+     /** Keep the bundled registry for local plugin development; never call the remote catalog. */
+     preferBundled?: boolean;
+     refreshIntervalMs?: number;
+diff --git a/lib/types/github-proxy.d.ts b/lib/types/github-proxy.d.ts
+new file mode 100644
+index 0000000..2458693
+--- /dev/null
++++ b/lib/types/github-proxy.d.ts
+@@ -0,0 +1,4 @@
++/** Validate the optional operator-owned HTTPS URL prefix before activation. */
++export declare function normalizeGithubProxy(value: string | undefined): string | undefined;
++/** Prefix only explicitly supported GitHub resource URLs, preserving the canonical value otherwise. */
++export declare function githubResourceUrl(url: string, proxy: string | null | undefined): string;
+diff --git a/lib/types/index.d.ts b/lib/types/index.d.ts
+index 1fc68d0..a0572c7 100644
+--- a/lib/types/index.d.ts
++++ b/lib/types/index.d.ts
+@@ -2,6 +2,8 @@ import type { Context } from '@deepseek-ai/cordis';
+ export declare const name = "dsh-skin-market";
+ export interface Config {
+     profile?: string;
++    /** Operator-owned HTTPS URL prefix for GitHub catalog and preview resources. */
++    githubProxy?: string;
+ }
+ export declare function apply(ctx: Context, config?: Config): void;
+ export { mountRoutes } from './routes.ts';
+diff --git a/lib/types/routes.d.ts b/lib/types/routes.d.ts
+index 5092ef4..898432c 100644
+--- a/lib/types/routes.d.ts
++++ b/lib/types/routes.d.ts
+@@ -25,6 +25,8 @@ export interface SkinMarketHost extends LifecycleHost {
+ }
+ export interface RouteOptions {
+     profile: string;
++    /** Operator-owned HTTPS URL prefix for GitHub catalog and preview resources. */
++    githubProxy?: string;
+     profileDir?: string;
+     runner: PluginRunner;
+     hostKind?: MarketHostKind;

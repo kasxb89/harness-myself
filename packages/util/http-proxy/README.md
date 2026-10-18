@@ -35,6 +35,7 @@ Plain `fetch()` is proxied, and so is any SDK that reaches `globalThis.fetch` �
 |---|---|
 | A plain request, or an SDK that reaches `globalThis.fetch` | nothing — the global dispatcher already routes it |
 | A call that must branch on whether this request is proxied | `proxyRouteFor(url)` |
+| An operation with its own environment snapshot and transport lifetime | `resolveProxyPolicy(env)` and `proxyForUrl(policy, url)` without installing a global dispatcher |
 | An SDK that takes a proxy URL of its own | `proxyRouteFor(url)`, and pass `route.proxy` |
 | A spawn whose environment you build yourself | apply `proxyEnvironmentForChild()` to it (`undefined` means remove) |
 | A harness that must reach its own fixture server | apply `clearedProxyEnv()` to the spawn |
@@ -72,7 +73,7 @@ A proxy value the package cannot use — a SOCKS or PAC URL, an unparseable stri
 |---|---|
 | `src/policy.ts` | Resolution and bypass matching; a diagnostic names the variable, never its value. Imports no transport, so it stays loadable where undici is absent. |
 | `src/install.ts` | The global dispatcher, the active-policy record, the route, and the child environment. Imports undici dynamically. |
-| `src/index.ts` | The package face: four functions and one type. |
+| `src/index.ts` | Public routing, policy-resolution and child-environment helpers. |
 
 ### Bypass matching
 
