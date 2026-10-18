@@ -17,6 +17,9 @@ it('keeps product sign-in, Chat, and AI Creation defaults when bundle patches co
     if (row === undefined) throw new Error(`missing composed entry: ${id}`)
     return row
   }
+  expect(entry('system-prompt').config).toHaveProperty(
+    'personaPrefix', expect.stringContaining('默认使用简体中文与用户沟通'),
+  )
   for (const id of ['llm-deepseek', 'llm-deepseek-account', 'ui-settings-account']) {
     expect(entry(id).disabled).toBe(true)
   }

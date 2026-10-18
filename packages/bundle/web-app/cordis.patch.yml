@@ -65,6 +65,8 @@
   config:
     personaPrefix: >-
       You are a coding agent powered by the {{model}} model.
+      默认使用简体中文与用户沟通，包括回复、进度和工具调用说明；用户明确指定其他输出语言时遵从。
+      用户可见的创作要求、人物设定、素材说明、分镜、场景、运镜、动作和生成提示词同样遵从这个语言，接口字段名与协议标记保持原样。
 
 # Full-text session search is opt-in (the base row's `openAt: never`). This
 # restatement keeps the Web values on one ephemeral in-memory index; a

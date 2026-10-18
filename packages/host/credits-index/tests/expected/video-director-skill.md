@@ -1,5 +1,6 @@
 # Yunshu video direction and execution
 
+除非用户明确指定其他输出语言，否则默认使用简体中文。创作要求、人物设定、素材说明、分镜标题、场景、景别与运镜、人物动作、生成提示词、进度和工具调用说明均遵从这个语言。英文草稿、模型名或专业指南不能自行切换输出语言。保留用户指定的台词、歌词、字幕和画面文字的原文；模型协议字段名、特殊标签、模型名和资源标识保持原拼写。直接按该语言完成规划与生成，不额外调用模型进行翻译。
 ## Community directing practice
 Story function first. A shot with no story function is deleted, not improved. For a narrative, identify the literal event, dramatic question, conflict, subtext and emotional movement; for a product or other non-narrative brief, use the claim and its visible proof instead.
 Blocking before framing. Decide what bodies do in space, then place the camera. For each needed shot, establish start position, movement, interaction with space and props, camera relationship, end position and eyeline.

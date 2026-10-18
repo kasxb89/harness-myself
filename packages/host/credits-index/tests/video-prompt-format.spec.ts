@@ -13,5 +13,8 @@ it('keeps clip formatting local and compact while separating exact dialogue from
   expect(MINIMAX_H3_PROMPT_GUIDANCE).toContain('<d>[Chinese]我在这里等你。</d>')
   expect(MINIMAX_H3_PROMPT_GUIDANCE).toContain('integrated_multimodal_description, overall_soundscape, non_diegetic_music')
   expect(MINIMAX_H3_PROMPT_GUIDANCE).toContain('not proof that the resulting speech, lips or subtitles match')
+  expect(MINIMAX_H3_PROMPT_GUIDANCE).toContain('Default to Simplified Chinese')
+  expect(MINIMAX_H3_PROMPT_GUIDANCE).toContain('Keep protocol field names and tags unchanged')
+  expect(MINIMAX_H3_PROMPT_GUIDANCE).not.toContain('descriptions in English')
   expect(MINIMAX_H3_PROMPT_GUIDANCE).not.toMatch(/https?:|curl|\bfetch\b|ffmpeg|\b(?:4K|8K|30 seconds)\b/u)
 })

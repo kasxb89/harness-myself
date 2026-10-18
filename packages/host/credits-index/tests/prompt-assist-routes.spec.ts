@@ -12,7 +12,7 @@ import Tools from '@deepseek-ai/dsh-tools'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import type { ModelSelection } from '@deepseek-ai/dsh-api-session-controller/types'
 import * as Credits from '../src/index.ts'
-import { VIDEO_DIRECTOR_PROMPT } from '../src/creation-workflows.ts'
+import { CREATION_LANGUAGE_GUIDANCE, VIDEO_DIRECTOR_PROMPT } from '../src/creation-workflows.ts'
 import { COMMUNITY_VIDEO_DIRECTION } from '../src/creation-director-knowledge.ts'
 import { MINIMAX_H3_PROMPT_GUIDANCE } from '../src/video-prompt-format.ts'
 
@@ -185,7 +185,8 @@ describe('prompt assistance through the real Loader and account-owned HTTP route
     chatSelection = { provider: 'product', model: 'vision-assistant', reasoningEffort: 'medium' }
     const body = { ...input(), kind, prompt: '女孩在雨夜站台认出朋友，说“我终于找到你了。”',
       generation: { model: generationModel, ratio: '16:9' } }
-    expect(await post(base, body)).toMatchObject({ ok: true, payload: { model: 'vision-assistant' } })
+    const result = await post(base, body)
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true, payload: { model: 'vision-assistant' } })
     expect(calls.map(call => call.path)).toEqual(['/harness/v1/models', '/harness/v1/chat/completions'])
     expect(calls.every(call => call.authorization === 'Bearer account-key')).toBe(true)
     const completion = calls[1]?.body
@@ -195,6 +196,9 @@ describe('prompt assistance through the real Loader and account-owned HTTP route
     expect(messages).toHaveLength(2)
     const system = object(messages[0])?.content
     expect(typeof system).toBe('string')
+    expect(system).toContain(CREATION_LANGUAGE_GUIDANCE)
+    expect(system).not.toContain('Use the language of the draft or revision feedback')
+    expect(system).not.toContain('unless the selected generation model requires another structural language')
     if (usesDirector) {
       expect(system).toContain(VIDEO_DIRECTOR_PROMPT)
       expect(system).toContain(COMMUNITY_VIDEO_DIRECTION)

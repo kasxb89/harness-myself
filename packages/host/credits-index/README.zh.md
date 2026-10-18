@@ -73,7 +73,7 @@ Host 先使用 `/api/user/self` 核对产品会话中的账号，再通过 `/api
 
 技能注册服务可用时，内置 `yunshu-video-director` 技能使用 [cinematic-director](https://github.com/wuwangzhang1216/DirectorSKILL) 与 [video-storyboard-gen](https://github.com/anyhui/video-storyboard-gen-skill) 的精简摘录和适配内容，指导剧情、走位、连续性、参考素材重构、分镜、对白及字幕。[固定来源及适配说明](third-party-notices/sources.json) 和两份完整 MIT 许可随包分发。生成时不运行社区脚本，也不加载整套参考库。简单且提示词完整的短片直接调用 `generate_video`；工作区参考素材可使用 `generate_video_project`，即使只生成单段。明确的剧情或连续人物创作使用显式计划，长视频仍使用该原生项目工具。原生工具负责校验、提交、轮询、下载、剪辑、发布和恢复。画面切换不必各自生成一段计费视频。不强制额外生成参考图、多个备选稿或单独请求规划模型；工作流程不能控制上游渲染耗时。
 
-独立的 `yunshu-minimax-h3` 技能依据[官方提示词指南](https://github.com/MiniMax-AI/MiniMax-H3/tree/main/skills/h3-prompt-writing) 提供本地编写的 H3 格式指导，不重新分发官方技能原文件。聊天仅在为 MiniMax-H3 编写提示词且确有需要时加载它。视频 AI 帮写仅当 `generation.model` 精确等于 `MiniMax-H3` 时加入同一份格式指导，与所选聊天模型无关。指导分别描述带标签的对白原文、环境声和背景音乐，保留对白与画面文字的原语言。其他视频模型只接收共享编导指导，图片帮写不接收任何视频指导。选择过程不下载在线指南，也不增加聊天生成请求。
+独立的 `yunshu-minimax-h3` 技能依据[官方提示词指南](https://github.com/MiniMax-AI/MiniMax-H3/tree/main/skills/h3-prompt-writing) 提供本地编写的 H3 格式指导，不重新分发官方技能原文件。聊天仅在为 MiniMax-H3 编写提示词且确有需要时加载它。视频 AI 帮写仅当 `generation.model` 精确等于 `MiniMax-H3` 时加入同一份格式指导，与所选聊天模型无关。指导分别描述带标签的对白原文、环境声和背景音乐，保留对白与画面文字的原语言。用户可见的创作要求、人物设定、素材说明、分镜、场景、运镜、动作和提示词默认使用简体中文，除非用户明确要求其他输出语言；英文草稿不改变这个默认值。协议字段、标签和资源标识保留原拼写。其他视频模型只接收共享编导指导，图片帮写接收同一语言规则，不接收任何视频指导。选择过程不下载在线指南，不请求翻译，也不增加聊天生成请求。
 
 `update_creation_plan` 保存完整的图片或视频创作描述、稳定人物设定、有明确标识的参考素材，以及包含镜头、场景、动作、对白原文和字幕指示的有序分镜。修改时明确指定 `plan_id`，不能移除已有生成记录的镜头或图片素材。源路径只描述参考资料，不授权读取或预览任意文件；空来源表示尚未生成的素材。规划不请求上游。`generate_image` 和 `generate_video` 接受 `plan_id` 与 `shot_id`；`generate_video_project` 接受 `plan_id` 与有序 `shot_ids`，与实际支持的片段一一对应。`generate_image` 也可以用 `asset_id` 代替 `shot_id`，生成已有的图片素材，包括视频计划中的人物参考图。真实输出归属该素材及引用它的人物，不显示为完成的镜头或成片。关联缺失、不匹配、已在运行或提交结果未知时在计费前拒绝。未提供计划的调用创建自己的最小记录，因此聊天生成成功后仍能找到产物；调用不会隐式选择最近的项目。
 
@@ -126,7 +126,7 @@ Host 先使用 `/api/user/self` 核对产品会话中的账号，再通过 `/api
 
 `stateDir/video-projects/<project_id>/manifest.json` 中的私有记录仅所有者可读写，保留账号编号、非秘密登录指纹、所属聊天与工作区、原始说明和完整已准备请求、分镜计划、上游任务编号、已保存片段路径及最终状态。每次提交前以及任务编号和片段保存后均原子替换记录；记录不含凭据或上游原始响应。下载片段保存在私有项目缓存。本地剪辑在沙箱内将成片保存至工作区的 `videoProjectOutputDirectory`；捕获过发布目录的项目再通过产物保存服务复制成片，并返回实际路径。记录和素材不自动清理。`video_project_status` 按账号、聊天和工作区校验读取权限。进程重启后保留的是记录，不会虚构仍在运行的任务；显式调用 `resume_video_project` 会复用已保存片段、读取已知任务编号，再决定是否提交从未提交的剩余片段。没有已持久化任务编号的提交属于未知结果，可能已计费，绝不自动重提；失败的上游任务同样需要明确创建新项目，或剪辑已保留片段。
 
-可配置 `videoProjectMaxSeconds`（默认 300）、`videoProjectMaxSegments`（32）、`videoProjectPollIntervalMs`（6000）、`videoProjectTaskTimeoutMs`（900000）、`videoProjectDownloadMaxBytes`（536870912），`videoProjectReferenceMaxBytes`（每个本地引用 20971520），以及相对于工作区的 `videoProjectOutputDirectory`（`artifacts/videos`）。生成前，完整记录连同任务与路径元数据的预留空间必须不超过 64 MiB。这些限制在计费前生效。镜头连贯性仍取决于提供方；管线提供有序分镜说明与共享参考素材，不会承诺模型尚未生成的主体一致性或转场画面。
+可配置 `videoProjectMaxSeconds`（默认 300）、`videoProjectMaxSegments`（32）、`videoProjectPollIntervalMs`（6000）、`videoProjectTaskTimeoutMs`（900000）、`videoProjectDownloadMaxBytes`（536870912），`videoProjectReferenceMaxBytes`（每个本地引用 20971520），以及相对于工作区的 `videoProjectOutputDirectory`（`artifacts/videos`）。视频内容下载的完整传输期限至少为 300000 ms，模型目录、提交和状态请求仍使用 `timeoutMs`；原有任务取消与单段任务期限也继续约束下载。内容读取中断返回 `VIDEO_DOWNLOAD_UNAVAILABLE`，清除未完成文件，保留已知任务供显式恢复，不再次提交。生成前，完整记录连同任务与路径元数据的预留空间必须不超过 64 MiB。这些限制在计费前生效。镜头连贯性仍取决于提供方；管线提供有序分镜说明与共享参考素材，不会承诺模型尚未生成的主体一致性或转场画面。
 
 <a id="understand-the-implementation"></a>
 ## 理解实现

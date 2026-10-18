@@ -4,8 +4,12 @@ import type {} from '@deepseek-ai/dsh-skill'
 import { COMMUNITY_VIDEO_DIRECTION } from './creation-director-knowledge.ts'
 import { MINIMAX_H3_PROMPT_GUIDANCE } from './video-prompt-format.ts'
 
+/** Default language for creation text; protocol identifiers and explicitly requested wording remain unchanged. */
+export const CREATION_LANGUAGE_GUIDANCE = '除非用户明确指定其他输出语言，否则默认使用简体中文。创作要求、人物设定、素材说明、分镜标题、场景、景别与运镜、人物动作、生成提示词、进度和工具调用说明均遵从这个语言。英文草稿、模型名或专业指南不能自行切换输出语言。保留用户指定的台词、歌词、字幕和画面文字的原文；模型协议字段名、特殊标签、模型名和资源标识保持原拼写。直接按该语言完成规划与生成，不额外调用模型进行翻译。'
+
 /** Directing requirements shared by chat planning and the explicit AI-writing action. */
 export const VIDEO_DIRECTOR_PROMPT = [
+  CREATION_LANGUAGE_GUIDANCE,
   COMMUNITY_VIDEO_DIRECTION,
   'Turn the brief into concrete, filmable action while preserving the requested story, language, duration, aspect ratio and visual style. Several camera beats may belong to one generated clip; a new camera angle does not itself require another paid generation.',
   'Treat supplied images as the actual source material. Specify what remains recognizable and what changes. Distinguish a character reference, a style reference, a first/last frame and a requested reconstruction. Do not invent details from images that were not provided.',
