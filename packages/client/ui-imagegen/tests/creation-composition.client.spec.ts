@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-/** Creation pages consume the same Session adapter and project factory in the shipped Loader roster. */
+/** Independent image/video pages retain their Chat association through the shipped Loader roster. */
 import { afterEach, describe, expect, vi } from 'vitest'
 import { createClientTest, webApp } from '@deepseek-ai/dsh-client-test-runtime/src/assembly/index.ts'
 import { ImagePage } from '../src/client/ImagePage.tsx'
@@ -11,7 +11,7 @@ const it = createClientTest({ roster: webApp })
 afterEach(() => { vi.unstubAllGlobals() })
 
 describe('AI creation real Loader composition', () => {
-  it('shares the current Chat scope, localized feedback and project factory, then releases page registrations', async ({ start }) => {
+  it('retains the current Chat scope without registering an embedded project workbench, then releases both pages', async ({ start }) => {
     vi.stubGlobal('fetch', vi.fn<typeof fetch>(async (input) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
       if (url !== '/credits/api/session') throw new Error(`Unexpected fixture fetch: ${url}`)
@@ -29,7 +29,7 @@ describe('AI creation real Loader composition', () => {
       }
       expect(hooks.creationSession).toBe(c.ctx.uiSession.adapter.current)
     }
-    expect(c.ctx.slots.snapshot('factory:creation.projects')[0]?.scope).toBe('session-maybe')
+    expect(c.ctx.slots.snapshot('factory:creation.projects')).toEqual([])
     const output = {
       image: c.ctx.locale.bind('imagegen')('sessionRequired'),
       video: c.ctx.locale.bind('videogen')('sessionRequired'),
@@ -44,6 +44,6 @@ describe('AI creation real Loader composition', () => {
     await c.unload(VIDEO)
     await c.flush()
     expect(c.ctx.slots.entries('main').some(entry => entry.component === ImagePage || entry.component === VideoPage)).toBe(false)
-    expect(c.ctx.slots.snapshot('factory:creation.projects')).toHaveLength(1)
+    expect(c.ctx.slots.snapshot('factory:creation.projects')).toEqual([])
   }, 60_000)
 })

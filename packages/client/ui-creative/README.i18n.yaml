@@ -3,23 +3,23 @@
 # After editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write packages/client/ui-creative/README.md
 /:
-  en: 8c3d6cfb5d74ec5b
-  zh: d987a69e20a82054
+  en: 4340de2d18eb06d7
+  zh: 7feb360fee97e384
 /creation-projects:
   en: 9dfc63530d8b0f9f
   zh: aac954740ac68b1a
 /creation-projects/summary:
-  en: 898144b26d7726bb
-  zh: b90bcc4d626d369f
+  en: c9ad58acd4197cd6
+  zh: 1171c007abede3c9
 /creation-projects/table-of-contents:
   en: 23386452a66b2fbd
   zh: adce2159d206cb27
 /creation-projects/use-this-package:
-  en: d39a87690331c7a4
-  zh: 0a1e3d0a035736b3
+  en: 9b3719986e887a6d
+  zh: 1cd0e238bdaa5259
 /creation-projects/understand-the-implementation:
-  en: fa57c82bfd972735
-  zh: 48d879dca18ad25b
+  en: c1262be24c29863e
+  zh: 01270d53d4fbc03a
 /creation-projects/further-exploration:
   en: 51f1e7b2fc911e28
   zh: 50a90bde12719d04

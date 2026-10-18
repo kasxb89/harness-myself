@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CreativeError, CreativeStore, creativePlanRevision, parseCreativePlan, parseCreativePlanChange, type CreativeOwner, type CreativePlan } from '../src/creative-store.ts'
-import type { VideoProjectManifest } from '../src/video-project.ts'
+import type { VideoProjectManifest, VideoProjectRead } from '../src/video-project.ts'
 import type { CreativePlanChange } from '../src/creative-types.ts'
 
 vi.mock('node:fs/promises', async (importOriginal) => {
@@ -36,7 +36,7 @@ async function fixture() {
   const owner: CreativeOwner = { accountId: '7', sessionFingerprint: 'login-7', sessionId: 'chat-a', workspaceRoot: join(root, 'workspace') }
   await mkdir(owner.workspaceRoot)
   let live: Pick<CreativeOwner, 'accountId' | 'sessionFingerprint'> | undefined = owner
-  let video: VideoProjectManifest | undefined
+  let video: VideoProjectRead | undefined
   const options = {
     directory: join(root, 'projects'), current: async () => live,
     video: async () => { if (video === undefined) throw new Error('No fixture video'); return video },
@@ -45,7 +45,7 @@ async function fixture() {
   const file = async (name: string, bytes = 'actual saved bytes') => { const path = join(owner.workspaceRoot, name); await writeFile(path, bytes); return path }
   return {
     store, options, owner, file,
-    setLive: (value: typeof live) => { live = value }, setVideo: (value: VideoProjectManifest) => { video = value },
+    setLive: (value: typeof live) => { live = value }, setVideo: (value: VideoProjectRead) => { video = value },
   }
 }
 
@@ -532,22 +532,28 @@ describe('creation plan revisions and task projections', () => {
     const { store, owner, file, setVideo } = await fixture()
     const id = await store.updatePlan(owner, plan('video'))
     const clip = await file('scene.mp4')
+    const published = await file('published-scene.mp4')
     const video: VideoProjectManifest = {
       version: 1, id: 'vp_00000000-0000-0000-0000-000000000000' as VideoProjectManifest['id'], ownerSessionId: owner.sessionId,
       workspaceRoot: owner.workspaceRoot, identity: owner, input: { prompt: 'story', totalDurationSeconds: 15 }, model: 'MiniMax-H3',
-      status: 'running', segments: [{ index: 1, durationSeconds: 15, prompt: 'shot', request: { secret: 'not-public' }, status: 'saved', taskId: 'upstream-private', path: clip }],
+      status: 'running', segments: [{ index: 1, durationSeconds: 15, prompt: 'shot', request: { secret: 'not-public' }, status: 'saved', taskId: 'upstream-private', path: clip, publishedPath: published }],
       outputDirectory: join(owner.workspaceRoot, 'video'), updatedAt: new Date().toISOString(),
     }
     setVideo(video)
     const operation = await store.begin(owner, { kind: 'video', prompt: 'story', planId: id, shotIds: ['departure'], shots: [{ prompt: 'shot' }], videoProjectId: video.id })
+    await store.preview(operation, clip, async () => [], `${operation.operationId}_clip_1`)
     store.release(operation)
     const before = (await store.projects(owner))[0]!
     await store.revise(owner, id, before.planRevision, { kind: 'shot', id: 'departure', patch: { durationSeconds: 8 } })
     const project = (await store.projects(owner))[0]!
     expect(project.shots[0]).toMatchObject({ durationSeconds: 8, actualDurationSeconds: 15 })
     expect((await store.plan(owner, id)).shots[0]).not.toHaveProperty('actualDurationSeconds')
-    expect(project.tasks).toMatchObject([{ id: operation.operationId, videoProjectId: video.id, model: 'MiniMax-H3', completedShots: 1, totalShots: 1, outputs: [{ name: 'scene.mp4' }] }])
-    expect(project.outputs).toMatchObject([{ name: 'scene.mp4' }])
+    expect(project.tasks).toMatchObject([{ id: operation.operationId, videoProjectId: video.id, model: 'MiniMax-H3', completedShots: 1, totalShots: 1, outputs: [{ name: 'published-scene.mp4' }] }])
+    expect(project.outputs).toMatchObject([{ name: 'published-scene.mp4' }])
     expect(JSON.stringify(project)).not.toMatch(/not-public|upstream-private|sessionFingerprint|workspaceRoot/u)
+    setVideo({ ...video, publicationErrorCode: 'ARTIFACT_PUBLISH_FAILED' })
+    const retained = (await store.projects(owner))[0]!
+    expect(retained).toMatchObject({ status: project.status, errorCode: 'ARTIFACT_PUBLISH_FAILED',
+      outputs: [{ name: 'published-scene.mp4' }], tasks: [{ errorCode: 'ARTIFACT_PUBLISH_FAILED' }] })
   })
 })

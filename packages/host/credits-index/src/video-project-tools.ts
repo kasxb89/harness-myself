@@ -7,7 +7,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import type { JobHandle, JobOutcome } from '@deepseek-ai/dsh-jobs'
 import type { Session } from '@deepseek-ai/dsh-session'
-import { prepareVideoProject, publishVideoOutput, readVideoProject, resolveVideoOutputDirectory, runVideoProject, videoProjectFailure, VideoProjectError } from './video-project.ts'
+import { prepareVideoProject, publishVideoOutput, readVideoProject, recoverVideoProjectOutputs, resolveVideoOutputDirectory, runVideoProject, videoProjectFailure, VideoProjectError } from './video-project.ts'
 import type { VideoProjectManifest } from './video-project.ts'
 import type { VideoProjectOptions } from './video-project-types.ts'
 import { CreativeError, type CreativeOperation } from './creative-store.ts'
@@ -72,7 +72,7 @@ function statusOf(manifest: VideoProjectManifest, running: boolean): VideoToolRe
   return {
     status: running ? 'running' : manifest.status === 'running' || manifest.status === 'editing' ? 'interrupted' : manifest.status,
     project_id: manifest.id, plan_seconds: manifest.segments.map(segment => segment.durationSeconds),
-    clip_paths: manifest.segments.flatMap(segment => segment.path === undefined ? [] : [segment.path]),
+    clip_paths: manifest.segments.flatMap(segment => segment.path === undefined ? [] : [segment.publishedPath ?? segment.path]),
     task_ids: manifest.segments.flatMap(segment => segment.taskId === undefined ? [] : [segment.taskId]),
     ...manifest.finalPath === undefined ? {} : { final_path: manifest.finalPath },
     ...manifest.finalDurationSeconds === undefined ? {} : { duration_seconds: manifest.finalDurationSeconds },
@@ -226,7 +226,8 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
         const signal = AbortSignal.any([exec.signal, lifetime.signal])
         signal.throwIfAborted()
         const provider = await options.acquireProvider(workspaceRoot, session)
-        const manifest = await readVideoProject(options, args.project_id, session.id, workspaceRoot, provider.identity)
+        const manifest = await recoverVideoProjectOutputs(options, args.project_id, session.id, workspaceRoot, provider.identity,
+          signal, () => provider.assertCurrent())
         return statusOf(manifest, activeProjects.has(manifest.id))
       } catch (error) { return failure(error) }
     },

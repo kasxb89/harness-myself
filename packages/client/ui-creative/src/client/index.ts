@@ -13,21 +13,12 @@ import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import { IconSparkleRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import { readCreativeProjects } from './api.ts'
 import { CreativeController } from './controller.ts'
-import { CreativeBody, CreativeProjects, CreativeTitle, type CreativeInjected } from './CreativeBody.tsx'
+import { CreativeBody, CreativeTitle, type CreativeInjected } from './CreativeBody.tsx'
 import { CreativeDraftNotice, type CreativeDraftNoticeInjected } from './CreativeDraftNotice.tsx'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { en, NS, zh, type CreativeKey } from './locales.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
-  interface SlotFactoryMap {
-    /** Session-owned workbench shared by image and video creation pages. */
-    'creation.projects': {
-      scope: 'session-maybe'
-      props: { readonly refreshKey?: string; readonly generationPending?: boolean }
-      inject: CreativeInjected
-      locale: 'creative'
-    }
-  }
   interface LocaleNamespaceMap {
     /** Character, storyboard, real file progress and editable-draft controls. */
     creative: CreativeKey
@@ -141,26 +132,11 @@ export function apply(ctx: Context, config: Config): void {
       refresh: () => { void controller.refresh(sessionId) },
       save: (projectId, revision, change, signal) => controller.save(sessionId, projectId, revision, change, signal),
       upload: (file, signal) => controller.upload(sessionId, file, signal),
-      watch: (visible, signal, pending) => controller.watch(sessionId, visible, signal, pending),
+      watch: (visible, signal) => controller.watch(sessionId, visible, signal),
       reportDraft: (success) => { notice.set({ seq: ++sequence, success, kind: 'draft' }) },
       reportSaved: () => { notice.set({ seq: ++sequence, success: true, kind: 'plan' }) },
     }),
   }, CreativeBody)), 'ui-creative: tab body')
-  const absent = createSnapshotStore({ phase: 'idle', projects: [], refreshing: false, failure: null } as const)
-  ctx.slots.registerFactory({ name: 'creation.projects', scope: 'session-maybe', locale: NS,
-    inject: (sessionId): CreativeInjected => ({
-      hooks: { creative: sessionId === undefined ? absent : controller.source(sessionId) },
-      selectProject: (id) => { if (sessionId !== undefined) controller.selectProject(sessionId, id) },
-      selectShot: (id) => { if (sessionId !== undefined) controller.selectShot(sessionId, id) },
-      refresh: () => { if (sessionId !== undefined) void controller.refresh(sessionId) },
-      save: (projectId, revision, change, signal) => sessionId === undefined
-        ? Promise.resolve({ ok: false, code: 'signed-out' }) : controller.save(sessionId, projectId, revision, change, signal),
-      upload: (file, signal) => sessionId === undefined ? Promise.resolve({ ok: false }) : controller.upload(sessionId, file, signal),
-      watch: (visible, signal, pending) => sessionId === undefined ? () => {} : controller.watch(sessionId, visible, signal, pending),
-      reportDraft: (success) => { notice.set({ seq: ++sequence, success, kind: 'draft' }) },
-      reportSaved: () => { notice.set({ seq: ++sequence, success: true, kind: 'plan' }) },
-    }),
-  }, CreativeProjects)
   ctx.effect(() => ctx.slots.inject('sidebar.right.pane.tab.title', () => ctx.slots.register({
     name: 'sidebar.right.pane.tab.title', key: ID,
   }, CreativeTitle)), 'ui-creative: tab title')

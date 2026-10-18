@@ -1,4 +1,4 @@
-/** Built creation sidebar with controlled account/media responses and real chat/navigation state. */
+/** Built chat creation sidebar, independent generation pages and real chat/navigation state. */
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
@@ -133,8 +133,8 @@ async function openCreation(page: Page, title: string, sessionId: string): Promi
   await body.waitFor({ state: 'visible' })
 }
 
-describe.skipIf(!available)('web e2e: shared creation workbench', () => {
-  it.each(['zh-CN', 'en-US'])('edits and previews the same chat project in %s', async (locale) => {
+describe.skipIf(!available)('web e2e: chat creation and independent generation pages', () => {
+  it.each(['zh-CN', 'en-US'])('retains the chat project when visiting image and video generation in %s', async (locale) => {
     const scaffold = await launchWebScaffold({})
     try {
       const browser = await chromium.launch()
@@ -161,14 +161,16 @@ describe.skipIf(!available)('web e2e: shared creation workbench', () => {
             signedOut: '登录后查看当前聊天的创作项目', edit: '编辑设定', duration: '计划时长（秒）', save: '保存设定',
             cancel: '取消', timeline: '分镜时间轴', selectShot: '选择镜头：站台远景', selectSecondShot: '选择镜头：微笑回应', moveLater: '将 站台远景 后移',
             taskStatus: '任务状态', fileType: '文件类型', details: '查看细节', preview: '预览图片', close: '关闭',
-            create: 'AI 创作', chat: '聊天', rework: '重构素材', reworkInput: '希望怎样调整这份素材？', draft: '写入聊天草稿',
+            create: 'AI 创作', chat: '聊天', image: '图片', video: '视频',
+            rework: '重构素材', reworkInput: '希望怎样调整这份素材？', draft: '写入聊天草稿',
             stale: '计划已被更新，本次内容已保留。请关闭编辑、刷新后核对最新设定，再重新修改' }
           : { title: 'Creation', characters: 'Cast', assets: 'Assets', shots: 'Shots', outputs: 'Tasks and outputs', refresh: 'Refresh creation progress',
             generating: 'Generating', complete: 'File completed', redo: 'Redo shot', balance: 'Balance', logout: 'Sign out',
             signedOut: 'Sign in to view this chat’s creation projects', edit: 'Edit directions', duration: 'Planned duration (seconds)', save: 'Save directions',
             cancel: 'Cancel', timeline: 'Storyboard timeline', selectShot: 'Select shot: 站台远景', selectSecondShot: 'Select shot: 微笑回应', moveLater: 'Move 站台远景 later',
             taskStatus: 'Task status', fileType: 'File type', details: 'View details', preview: 'Preview image', close: 'Close',
-            create: 'Create', chat: 'Chat', rework: 'Rework asset', reworkInput: 'How should this material change?', draft: 'Add to chat draft',
+            create: 'Create', chat: 'Chat', image: 'Images', video: 'Videos',
+            rework: 'Rework asset', reworkInput: 'How should this material change?', draft: 'Add to chat draft',
             stale: 'The plan changed. Your edits are retained. Close this editor, refresh and review the latest directions before editing again.' }
         await page.route('**/credits/api/**', async (route) => {
           const request = route.request()
@@ -316,26 +318,32 @@ describe.skipIf(!available)('web e2e: shared creation workbench', () => {
           await firstShot.getByText(zh ? '8 秒' : '8s', { exact: true }).waitFor()
           await page.screenshot({ path: join(evidence, 'timeline-saved.png') })
 
+          await body.getByRole('button', { name: labels.selectSecondShot, exact: true }).click()
           await page.getByRole('button', { name: labels.create, exact: true }).click()
-          const workbench = page.locator('#imagegen').locator(`[data-creative-session="${sessionId}"]`)
-          await workbench.getByText('站台重逢', { exact: true }).waitFor()
-          await expect.poll(() => workbench.getByRole('button', { name: labels.selectShot, exact: true }).getAttribute('aria-pressed')).toBe('true')
-          const mainShot = workbench.locator('[data-creative-shot="shot-1"]')
-          await mainShot.getByText(zh ? '8 秒' : '8s', { exact: true }).waitFor()
-          await mainShot.getByRole('button', { name: labels.edit, exact: true }).click()
-          editor = page.getByRole('dialog', { name: labels.edit, exact: true })
-          await editor.getByRole('spinbutton', { name: labels.duration, exact: true }).fill('9')
-          await editor.getByRole('button', { name: labels.save, exact: true }).click()
-          await editor.waitFor({ state: 'hidden' })
-          await mainShot.getByText(zh ? '9 秒' : '9s', { exact: true }).waitFor()
-          await page.screenshot({ path: join(evidence, 'ai-creation-same-project.png') })
-          await workbench.getByRole('button', { name: labels.selectSecondShot, exact: true }).click()
+          const imagePage = page.locator('#imagegen')
+          const videoPage = page.locator('#videogen')
+          for (const [panel, active, destination, name] of [
+            [imagePage, labels.image, labels.video, 'image'], [videoPage, labels.video, labels.image, 'video'],
+          ] as const) {
+            await panel.waitFor({ state: 'visible' })
+            expect(await panel.getByRole('tab').count()).toBe(2)
+            expect(await panel.getByRole('tab', { name: active, exact: true }).getAttribute('aria-selected')).toBe('true')
+            expect(await panel.locator('[data-creative-session]').count()).toBe(0)
+            expect(await panel.getByRole('list', { name: labels.timeline, exact: true }).count()).toBe(0)
+            for (const section of [labels.shots, labels.characters, labels.assets, labels.outputs]) {
+              expect(await panel.getByRole('tab', { name: section, exact: true }).count()).toBe(0)
+            }
+            await page.screenshot({ path: join(evidence, `ai-creation-${name}-independent.png`) })
+            await panel.getByRole('tab', { name: destination, exact: true }).click()
+          }
+          await imagePage.waitFor({ state: 'visible' })
           await page.getByRole('button', { name: labels.chat, exact: true }).click()
           await openCreation(page, labels.title, sessionId)
           await body.getByRole('tab', { name: labels.shots, exact: true }).click()
           await expect.poll(() => body.getByRole('button', { name: labels.selectSecondShot, exact: true }).getAttribute('aria-pressed')).toBe('true')
           await body.getByRole('button', { name: labels.selectShot, exact: true }).click()
-          await body.locator('[data-creative-shot="shot-1"]').getByText(zh ? '9 秒' : '9s', { exact: true }).waitFor()
+          await body.locator('[data-creative-shot="shot-1"]').getByText(zh ? '8 秒' : '8s', { exact: true }).waitFor()
+          await page.screenshot({ path: join(evidence, 'chat-project-retained-after-ai-creation.png') })
           expect(await userMessages(scaffold, agent)).toBe(beforeDraft)
           expect(paidRequests).toEqual([])
 
@@ -412,7 +420,7 @@ describe.skipIf(!available)('web e2e: shared creation workbench', () => {
           expect(await body.locator('[data-creative-output]').count()).toBe(0)
           expect(paidRequests).toEqual([])
           expect(unexpectedReads).toEqual([])
-          expect(planSaves.filter(save => save.accepted)).toHaveLength(3)
+          expect(planSaves.filter(save => save.accepted)).toHaveLength(2)
           expect(tripwire.pageErrors).toEqual([])
           expect(tripwire.warnings).toEqual([])
           await writeFile(join(evidence, 'result.json'), JSON.stringify({
@@ -421,13 +429,13 @@ describe.skipIf(!available)('web e2e: shared creation workbench', () => {
             videoMetadata: true, videoPlayback: true,
             characterReferencePreview: true, assetPreview: true, freeCasEdit: true, staleEditRetained: true,
             timelineReordered: true,
-            sameProjectInAiCreationAndChat: true, sharedShotSelection: true, tasksAndOutputFilters: true, redoOnlyDraft: true,
+            independentImageVideoPages: true, chatProjectAndSelectionRetained: true, tasksAndOutputFilters: true, redoOnlyDraft: true,
             chatIsolation: true, signedOutCleared: true,
             host: 'real shipped built Web composition', substituted: 'account and creative HTTP responses; real local QA color-bar media',
             upstreamGeneration: false, speechLipSyncSubtitlesVerified: false,
             fixtureSha256: Object.fromEntries(Object.entries(media).map(([name, bytes]) => [name, createHash('sha256').update(bytes).digest('hex')])),
           }, null, 2) + '\n')
-          console.log(`Creative workbench evidence: ${evidence}`)
+          console.log(`Chat creation and independent generation evidence: ${evidence}`)
         } catch (error) {
           await page.screenshot({ path: join(evidence, 'failure.png') }).catch(() => undefined)
           await writeFile(join(evidence, 'failure.json'), JSON.stringify({ error: String(error), reads, mediaReads, unexpectedReads, planSaves, paidRequests,

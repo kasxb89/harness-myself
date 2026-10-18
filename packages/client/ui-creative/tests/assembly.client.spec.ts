@@ -39,7 +39,7 @@ describe('creative sidebar real Loader composition', () => {
     expect(c.ctx.slots.entries('sidebar.right.pane.tab').find(entry => entry.options.key === SELF)?.component).toBe(CreativeBody)
     expect(c.ctx.slots.entries('sidebar.right.pane.tab.title').find(entry => entry.options.key === SELF)?.component).toBe(CreativeTitle)
     expect(c.ctx.slots.entries('shell.overlay').some(entry => entry.component === CreativeDraftNotice)).toBe(true)
-    expect(c.ctx.slots.snapshot('factory:creation.projects')).toMatchObject([{ name: 'creation.projects', scope: 'session-maybe' }])
+    expect(c.ctx.slots.snapshot('factory:creation.projects')).toEqual([])
     const sidebar = c.ctx.slots.entries('sidebar.right.pane.tab').find(entry => entry.component === CreativeBody)!
     const chat = creativeFace(sidebar.inject!('session-a' as never))
     const reopened = creativeFace(sidebar.inject!('session-a' as never))

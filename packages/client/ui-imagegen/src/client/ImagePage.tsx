@@ -7,7 +7,6 @@ import {
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { HostObservable, InjectFace, PropsRenderFactories, PropsRuntime, PropsStore, StandardSourceBinding } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-prompt-assist/client'
-import type {} from '@deepseek-ai/dsh-client-ui-creative/client'
 import type { Context } from '@deepseek-ai/cordis'
 import type { LocalizedText } from '@deepseek-ai/dsh-client-creation-content/client'
 import type { createImageDraftStore, ImageDraft } from './draft-store.ts'
@@ -95,7 +94,6 @@ export function ImagePage(props: ImagePageProps): ReactNode {
   const { t, openVideo, createReferencePreview, releaseReferencePreview, readDraft, actions } = props
   const draft = props.useStore(state => state)
   const sessionId = props.useCreationSession(binding => binding.key)
-  const projects = props.renderFactorySlot('creation.projects', { refreshKey: JSON.stringify([draft.generationStartedAt, draft.resultPaths]), generationPending: draft.generationStartedAt !== null && draft.generationSessionId === sessionId })
   const {
     prompt, modelId, size, quality, background, format, compression, moderation, seed, count,
     references, uploading, generationStartedAt, sessionInvalid, message, failure, resultPaths: result,
@@ -361,7 +359,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
     if (accepted.seed && current.seed.trim() !== '' && !Number.isSafeInteger(Number(current.seed))) {
       setFailure(t('seedInvalid')); return
     }
-    actions.patch({ generationSessionId: sessionId, generationStartedAt: Date.now(), failure: null, message: null })
+    actions.patch({ generationStartedAt: Date.now(), failure: null, message: null })
     setElapsed(0)
     try {
       if (current.references.length > 0) {
@@ -548,8 +546,6 @@ export function ImagePage(props: ImagePageProps): ReactNode {
           {failure !== null && <p className={css.error} role="alert">{failure}</p>}
           {message !== null && <p className={css.notice}>{message}</p>}
         </div>
-
-        <section className={css.works} aria-label={t('projects')}>{projects}</section>
 
         <section className={css.templates} aria-label={t('templatesTitle')}>
           <header className={css.sectionHead}><h2>{text(content?.title) || t('templatesTitle')}</h2><span className={css.hint}>{text(content?.description) || t('templatesHint')}</span></header>

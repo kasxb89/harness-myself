@@ -7,6 +7,7 @@
  * `@deepseek-ai/dsh-artifacts-index` over `/artifacts/api`.
  */
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
+import z from '@deepseek-ai/schemastery'
 import type { MainPanelId } from '@deepseek-ai/dsh-client-ui-layout/client'
 // Type-only: the client service merges (`ctx.locale`, `ctx.slots`) and the
 // root `sidebar.panellist` list and keyed `main` slot declarations.
@@ -43,14 +44,24 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 /** The panel id this plugin owns, shared by its sidebar row and its page. */
 export const PANEL_ID = 'artifacts' as MainPanelId
 
+/** Read cadence for discovering files produced independently of the active conversation. */
+export interface Config {
+  /** Delay between visible-page library checks in milliseconds. */
+  pollIntervalMs?: number
+}
+
+/** Validate the visible-page read cadence before this plugin activates. */
+export const Config: z<Config> = z.object({ pollIntervalMs: z.natural().min(1000).max(60_000).default(5000) })
+
 /** Required services: the slot registries and the dictionary registry. */
 export const inject = ['slots', 'locale', 'uiSession', 'remote', 'remote.session']
 
 /**
  * Client plugin body: register the dictionaries, the sidebar entry, and the page.
  * @param ctx - client root context.
+ * @param config - Loader-validated visible-page read cadence.
  */
-export function apply(ctx: ClientContext): void {
+export function apply(ctx: ClientContext, config: Config): void {
   const t = ctx.locale.bind(NS)
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-artifacts: dictionaries')
   const lifetime = new AbortController()
@@ -71,6 +82,7 @@ export function apply(ctx: ClientContext): void {
   }
   const desktop = (globalThis as { __DSH_DIRECTORY_PICKER__?: { pick: () => Promise<string | null> } }).__DSH_DIRECTORY_PICKER__
   const face: ArtifactsInjected = {
+    pollIntervalMs: (config as Required<Config>).pollIntervalMs,
     t: (key, values) => t(key as Parameters<typeof t>[0], values),
     readListing: readArtifacts, readStorage, readTrash, readWorkspace, readRootDirectory,
     readDesktop: async () => {

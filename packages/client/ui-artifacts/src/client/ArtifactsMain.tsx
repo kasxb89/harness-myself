@@ -15,12 +15,13 @@ export interface ArtifactsMainInjected extends ArtifactsInjected {
  * @returns One artifact library refreshed when conversation activity or registered workspaces change.
  */
 export function ArtifactsMain(props: Omit<ArtifactsMainInjected, 'hooks'> & PropsHooks<ArtifactsMainInjected['hooks']>
-  & Pick<PropsRuntime<'main'>, 'useWorkspaces' | 'useSessionStatus'> & PropsRenderSlots<'artifacts.preview.pdf'>) {
+  & Pick<PropsRuntime<'main'>, 'useWorkspaces' | 'useSessionStatus' | 'usePanelInfo'> & PropsRenderSlots<'artifacts.preview.pdf'>) {
   const workspaces: WorkspaceSnapshot = props.useWorkspaces(value => value)
   const currentSessionKey = props.useArtifactSession(value => value.key ?? null)
   const activityKey = props.useSessionStatus(value => [...value].map(([id, state]) => `${id}:${String(state.running)}`).sort().join('|'))
+  const active = props.usePanelInfo(value => value.activePanelId === 'artifacts')
   const refreshKey = JSON.stringify([currentSessionKey, workspaces.phase,
     workspaces.items.map(workspace => [workspace.workspaceId, workspace.path]), activityKey])
-  return <ArtifactsPage {...props} refreshKey={refreshKey}
+  return <ArtifactsPage {...props} active={active} refreshKey={refreshKey}
     workspaces={workspaces.items.map(workspace => ({ id: workspace.workspaceId, title: workspace.title, path: workspace.path }))} />
 }

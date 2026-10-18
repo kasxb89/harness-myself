@@ -19,7 +19,6 @@ export interface CreativeSnapshot {
 interface Bucket {
   readonly source: SnapshotStore<CreativeSnapshot>
   readonly visible: Set<symbol>
-  readonly pending: Set<symbol>
   revealed: boolean
 }
 interface Request {
@@ -179,19 +178,16 @@ export class CreativeController {
    * @param sessionId - tab's fixed conversation.
    * @param visible - selected and expanded according to the official tab hook.
    * @param signal - official tab occurrence lifetime.
-   * @param pending - whether this occurrence has an unfinished AI creation request.
    * @returns idempotent release; hidden tabs keep data without polling.
    */
-  watch(sessionId: SessionId, visible: boolean, signal: AbortSignal, pending = false): () => void {
+  watch(sessionId: SessionId, visible: boolean, signal: AbortSignal): () => void {
     if (this.closed || signal.aborted || !visible) return () => {}
     const bucket = this.bucket(sessionId)
     const id = Symbol()
     bucket.visible.add(id)
-    if (pending) bucket.pending.add(id)
     if (sessionId === this.selected) void this.refresh(sessionId)
     const release = (): void => {
       bucket.visible.delete(id)
-      bucket.pending.delete(id)
       signal.removeEventListener('abort', release)
       if (sessionId === this.selected && bucket.visible.size === 0) {
         bucket.revealed = true
@@ -349,7 +345,7 @@ export class CreativeController {
   }
   private schedule(sessionId: SessionId): void {
     const bucket = this.bucket(sessionId)
-    const pending = this.pendingCalls.size > 0 || bucket.pending.size > 0
+    const pending = this.pendingCalls.size > 0
     const awaitingFirstRecord = pending && !bucket.revealed
     const visibleWork = bucket.visible.size > 0 && (pending || bucket.source.getSnapshot().projects.some(active))
     if (!awaitingFirstRecord && !visibleWork) return
@@ -374,7 +370,7 @@ export class CreativeController {
     let bucket = this.buckets.get(sessionId)
     if (bucket === undefined) {
       bucket = { source: createSnapshotStore(this.account === null ? SIGNED_OUT : EMPTY),
-        visible: new Set(), pending: new Set(), revealed: false }
+        visible: new Set(), revealed: false }
       this.buckets.set(sessionId, bucket)
     }
     return bucket

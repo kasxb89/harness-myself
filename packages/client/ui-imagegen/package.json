@@ -29,8 +29,7 @@
         "@deepseek-ai/dsh-client-ui-renderer",
         "@deepseek-ai/dsh-client-ui-sidebar",
         "@deepseek-ai/dsh-client-ui-slots",
-        "@deepseek-ai/dsh-client-ui-session",
-        "@deepseek-ai/dsh-client-ui-creative"
+        "@deepseek-ai/dsh-client-ui-session"
       ]
     }
   },
@@ -56,7 +55,6 @@
     "react": "^18.2.0",
     "@deepseek-ai/dsh-client-creation-content": "workspace:*",
     "@deepseek-ai/dsh-client-ui-session": "workspace:*",
-    "@deepseek-ai/dsh-client-ui-creative": "workspace:*",
     "@deepseek-ai/dsh-client-test-runtime": "workspace:*",
     "@deepseek-ai/dsh-client-ui-videogen": "workspace:*"
   },

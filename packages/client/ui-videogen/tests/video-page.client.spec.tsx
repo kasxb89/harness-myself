@@ -78,7 +78,7 @@ describe('video composer', () => {
     expect(store.getSnapshot().slots.image[0]?.name).toBe(name)
   })
 
-  it('links a generated clip to the selected conversation and refreshes the shared board', async () => {
+  it('keeps only image/video modes while linking generated clips to the selected conversation', async () => {
     chatSessionId = 'session-selected'
     const { mount, task, props, store } = setup()
     mount()
@@ -87,9 +87,9 @@ describe('video composer', () => {
     fireEvent.click(screen.getByRole('button', { name: zh.submit }))
     await waitFor(() => { expect(task).toHaveBeenCalledOnce(); expect(store.getSnapshot().phase).toBe('idle') })
     expect(requestBody(task.mock.calls[0]?.[0])).toMatchObject({ session_id: 'session-selected', account_id: 'account-a' })
-    const boards = vi.mocked(props.renderFactorySlot).mock.calls.filter(([name]) => name === 'creation.projects')
-    expect(boards.at(-1)?.[1]).toEqual({ refreshKey: JSON.stringify(['idle', { path: '/credits/media/new.mp4' }]), generationPending: false })
-    expect(screen.getByRole('region', { name: zh.projects })).toBeTruthy()
+    expect(screen.getAllByRole('tab').map(tab => tab.textContent)).toEqual([zh['tab.image'], zh['tab.video']])
+    expect(vi.mocked(props.renderFactorySlot).mock.calls.every(([name]) => name === 'creation.prompt.assist')).toBe(true)
+    expect(screen.queryByRole('region', { name: '创作项目' })).toBeNull()
   })
 
   it('keeps a pending generation owned by its original conversation after switching chats', async () => {
@@ -100,12 +100,10 @@ describe('video composer', () => {
     await ready()
     writePrompt()
     fireEvent.click(screen.getByRole('button', { name: zh.submit }))
-    expect(store.getSnapshot().generationSessionId).toBe('session-a')
+    expect(store.getSnapshot().phase).toBe('running')
     chatSessionId = 'session-b'
     view.rerender(<VideoPage {...props} />)
-    const board = vi.mocked(props.renderFactorySlot).mock.calls.filter(([name]) => name === 'creation.projects').at(-1)?.[1]
-    expect(board).toMatchObject({ generationPending: false })
-    expect(requestBody(task.mock.calls[0]?.[0])).toMatchObject({ session_id: 'session-a' })
+    expect(requestBody(task.mock.calls[0]?.[0])).toMatchObject({ session_id: 'session-a', account_id: 'account-a' })
     await act(async () => { finish(json({ ok: true, payload: { path: '/credits/media/new.mp4' } })) })
     expect(store.getSnapshot().phase).toBe('idle')
   })

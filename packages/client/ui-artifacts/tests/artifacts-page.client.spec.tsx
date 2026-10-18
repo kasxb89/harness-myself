@@ -6,6 +6,7 @@ import { brandString } from '@deepseek-ai/dsh-brand'
 import { bindSnapshotSelector } from '@deepseek-ai/dsh-client-test-runtime'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { PropsRenderSlots, StandardSourceBinding } from '@deepseek-ai/dsh-client-ui-slots'
+import type { MainPanelId } from '@deepseek-ai/dsh-client-ui-layout/client'
 import type { SessionStatusSnapshot } from '@deepseek-ai/dsh-client-ui-session/client'
 import type { WorkspaceSnapshot } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import { ArtifactsMain } from '../src/client/ArtifactsMain.tsx'
@@ -13,7 +14,7 @@ import { ArtifactsPage, type ArtifactEntry, type ArtifactsInjected, type Artifac
 import type { ArtifactListing, ArtifactResult, ArtifactStorage, TrashedArtifact } from '../src/client/api.ts'
 import { en, zh } from '../src/client/locales.ts'
 
-afterEach(() => { cleanup(); vi.restoreAllMocks() })
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks() })
 
 type PdfRenderer = PropsRenderSlots<'artifacts.preview.pdf'>['renderSlot']
 /** The generic dispatcher narrows its concrete PDF owner before rendering the test view. */
@@ -53,6 +54,8 @@ function deferred<T>() {
 /** Product-owned copy and narrow operations, without Host filesystem or credentials. */
 function props(overrides: Partial<ArtifactsPageProps> = {}): ArtifactsPageProps {
   return {
+    active: true,
+    pollIntervalMs: 5000,
     renderSlot: (_key, _owner, options) => options?.fallback ?? null,
     t: (key, values) => {
       const copy: Record<string, string> = zh
@@ -554,6 +557,108 @@ describe('unified artifact library', () => {
     expect(screen.queryByRole('tablist')).toBeNull()
   })
 
+  it('discovers an independent background output while the conversation and workspace revision stays unchanged', async () => {
+    vi.useFakeTimers()
+    const readListing = vi.fn<ArtifactsInjected['readListing']>()
+      .mockResolvedValueOnce({ ok: true, value: { items: [image], roots: ['/old'], truncated: false } })
+      .mockResolvedValue({ ok: true, value: { items: [image, video], roots: ['/old'], truncated: false } })
+    render(<ArtifactsPage {...props({ readListing, refreshKey: 'session-one:running' })} />)
+    await act(async () => {})
+    expect(screen.queryByRole('button', { name: /^story\.mp4/u })).toBeNull()
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    expect(readListing).toHaveBeenCalledTimes(2)
+    expect(screen.getByRole('button', { name: /^story\.mp4/u })).toBeTruthy()
+  })
+
+  it('coalesces timer and focus checks during a slow read and retains files, selection and the reported failure', async () => {
+    vi.useFakeTimers()
+    const next = deferred<ArtifactResult<ArtifactListing>>()
+    const readListing = vi.fn<ArtifactsInjected['readListing']>()
+      .mockResolvedValueOnce({ ok: true, value: { items: [image], roots: ['/old'], truncated: false } })
+      .mockImplementationOnce(() => next.promise)
+      .mockResolvedValue({ ok: true, value: { items: [image, video], roots: ['/old'], truncated: false } })
+    render(<ArtifactsPage {...props({ readListing })} />)
+    await act(async () => {})
+    fireEvent.click(screen.getByRole('button', { name: /^动漫\.png/u }))
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    const signal = readListing.mock.calls[1]![0]
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+    fireEvent(window, new Event('focus'))
+    fireEvent(window, new Event('focus'))
+    expect(readListing).toHaveBeenCalledTimes(2)
+    expect(signal.aborted).toBe(false)
+    await act(async () => { next.resolve({ ok: false, code: 'ARTIFACT_OPERATION_FAILED' }) })
+    expect(screen.getByText(zh['error.ARTIFACT_OPERATION_FAILED'])).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^动漫\.png/u })).toBeTruthy()
+    expect(within(screen.getByRole('region', { name: '预览' })).getByText(image.name)).toBeTruthy()
+    await act(async () => { await vi.advanceTimersByTimeAsync(4999) })
+    expect(screen.getByText(zh['error.ARTIFACT_OPERATION_FAILED'])).toBeTruthy()
+    expect(readListing).toHaveBeenCalledTimes(2)
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+    expect(readListing).toHaveBeenCalledTimes(3)
+    expect(screen.getByRole('button', { name: /^story\.mp4/u })).toBeTruthy()
+  })
+
+  it('stops library checks for another main panel or a hidden window and aborts pending work on unmount', async () => {
+    vi.useFakeTimers()
+    const next = deferred<ArtifactResult<ArtifactListing>>()
+    const readListing = vi.fn<ArtifactsInjected['readListing']>()
+      .mockResolvedValue({ ok: true, value: { items: [image], roots: ['/old'], truncated: false } })
+    const face = props({ readListing })
+    const page = render(<ArtifactsPage {...face} />)
+    await act(async () => {})
+    page.rerender(<ArtifactsPage {...face} active={false} />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+    fireEvent(window, new Event('focus'))
+    expect(readListing).toHaveBeenCalledOnce()
+    page.rerender(<ArtifactsPage {...face} active />)
+    await act(async () => {})
+    expect(readListing).toHaveBeenCalledTimes(2)
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+    fireEvent(document, new Event('visibilitychange'))
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+    expect(readListing).toHaveBeenCalledTimes(2)
+    visibility.mockReturnValue('visible')
+    fireEvent(document, new Event('visibilitychange'))
+    await act(async () => {})
+    expect(readListing).toHaveBeenCalledTimes(3)
+    readListing.mockImplementationOnce(() => next.promise)
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    const signal = readListing.mock.calls[3]![0]
+    expect(signal.aborted).toBe(false)
+    page.unmount()
+    expect(signal.aborted).toBe(true)
+    await act(async () => { next.resolve({ ok: true, value: { items: [video], roots: ['/old'], truncated: false } }) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+    fireEvent(window, new Event('focus'))
+    fireEvent(document, new Event('visibilitychange'))
+    expect(readListing).toHaveBeenCalledTimes(4)
+  })
+
+  it('aborts a hidden-window read and discards its late response before resuming in the foreground', async () => {
+    vi.useFakeTimers()
+    const next = deferred<ArtifactResult<ArtifactListing>>()
+    const readListing = vi.fn<ArtifactsInjected['readListing']>()
+      .mockResolvedValueOnce({ ok: true, value: { items: [image], roots: ['/old'], truncated: false } })
+      .mockImplementationOnce(() => next.promise)
+      .mockResolvedValue({ ok: true, value: { items: [image, video], roots: ['/old'], truncated: false } })
+    render(<ArtifactsPage {...props({ readListing })} />)
+    await act(async () => {})
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+    fireEvent(document, new Event('visibilitychange'))
+    expect(readListing.mock.calls[1]![0].aborted).toBe(true)
+    await act(async () => { next.resolve({ ok: true, value: { items: [], roots: ['/old'], truncated: false } }) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+    expect(screen.getByRole('button', { name: /^动漫\.png/u })).toBeTruthy()
+    expect(readListing).toHaveBeenCalledTimes(2)
+    visibility.mockReturnValue('visible')
+    fireEvent(document, new Event('visibilitychange'))
+    await act(async () => {})
+    expect(readListing).toHaveBeenCalledTimes(3)
+    expect(screen.getByRole('button', { name: /^story\.mp4/u })).toBeTruthy()
+  })
+
   it('refreshes when returning to the foreground, coalesces pending focus reads, and stops after unmount', async () => {
     const next = deferred<ArtifactResult<ArtifactListing>>()
     const readListing = vi.fn<ArtifactsInjected['readListing']>()
@@ -628,6 +733,7 @@ describe('unified artifact library', () => {
       running: true, pendingInteraction: undefined, completionUnread: false,
     }]]))
     render(<ArtifactsMain {...face} useArtifactSession={bindSnapshotSelector(binding)} useWorkspaces={bindSnapshotSelector(workspaces)}
+      usePanelInfo={selector => selector({ activePanelId: brandString<MainPanelId>('artifacts') })}
       useSessionStatus={bindSnapshotSelector(statuses)} />)
     await readyStorageButton()
     fireEvent.click(await screen.findByRole('button', { name: /^剧情\.pdf/u }))

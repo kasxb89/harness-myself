@@ -7,7 +7,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { basename, extname, isAbsolute, join, resolve } from 'node:path'
 import type { Branded } from '@deepseek-ai/dsh-brand'
 import type { CreativeAsset, CreativeCharacter, CreativeKind, CreativeOutput, CreativeOutputId, CreativePlanChange, CreativeProjectId, CreativeProjectView, CreativeShotPlan, CreativeShotView, CreativeStatus, CreativeTaskView } from './creative-types.ts'
-import type { VideoProjectManifest } from './video-project.ts'
+import type { VideoProjectManifest, VideoProjectRead } from './video-project.ts'
 import type { VideoProjectIdentity } from './video-project-types.ts'
 
 /** Fixed complete-record and collection bounds for untrusted JSON and directory reads. */
@@ -93,6 +93,7 @@ interface CreationFacts {
   assets: Map<string, ShotFacts[]>
   outputs: SavedOutput[]
   errors: string[]
+  publicationErrorCode?: 'ARTIFACT_PUBLISH_FAILED'
   states: { shotIds: readonly string[]; assetId?: string; status: CreativeStatus }[]
   updatedAt: string
   tasks: (Omit<CreativeTaskView, 'outputs'> & { outputs: SavedOutput[] })[]
@@ -110,8 +111,8 @@ export interface CreativeStoreOptions {
   readonly directory: string
   /** @returns Current login identity, or undefined after sign-out. */
   current(): Promise<VideoProjectIdentity | undefined>
-  /** @returns Authorized retained video state; no submission is made. */
-  video(id: string, owner: CreativeOwner): Promise<VideoProjectManifest>
+  /** @returns Authorized retained video state after optional local output publication; no submission is made. */
+  video(id: string, owner: CreativeOwner): Promise<VideoProjectRead>
 }
 
 /** Reject a malformed record or model input with a safe message. */
@@ -781,6 +782,7 @@ export class CreativeStore {
     const errors: string[] = []
     const states: CreationFacts['states'] = []
     const tasks: CreationFacts['tasks'] = []
+    let publicationErrorCode: CreationFacts['publicationErrorCode']
     let updatedAt = record.updatedAt
     const task = (operation: Operation, state: CreativeStatus, saved: readonly SavedOutput[], completedShots: number,
       totalShots: number, model?: string, errorCode?: string): void => {
@@ -819,6 +821,7 @@ export class CreativeStore {
       const video = await this.options.video(operation.videoProjectId, record.owner)
       if (video.segments.length !== operation.shotIds.length) invalid()
       if (video.failureCode !== undefined) errors.push(video.failureCode)
+      if (video.publicationErrorCode !== undefined) publicationErrorCode = video.publicationErrorCode
       const live = this.active.has(operation.id)
       const state = video.failureCode === 'SUBMISSION_UNKNOWN' ? 'unknown' : video.status === 'prepared' ? 'planned' : (video.status === 'running' || video.status === 'editing') && !live ? 'interrupted' : video.status
       states.push({ shotIds: operation.shotIds, status: state })
@@ -829,7 +832,8 @@ export class CreativeStore {
         if (shotId === undefined) invalid()
         const state: CreativeStatus = segment.status === 'saved' ? 'completed' : segment.status === 'unknown' || segment.status === 'submitting' && segment.taskId === undefined && !this.active.has(operation.id) ? 'unknown' : segment.status === 'failed' ? 'failed' : segment.status === 'pending' ? 'planned' : !this.active.has(operation.id) ? 'interrupted' : 'running'
         const id = outputId(`${operation.id}_clip_${String(index + 1)}`)
-        const saved: SavedOutput[] = segment.path === undefined ? [] : [{ id, kind: 'video', path: segment.path, ...operation.outputs.find(output => output.id === id) }]
+        const saved: SavedOutput[] = segment.path === undefined ? [] : [{ ...operation.outputs.find(output => output.id === id),
+          id, kind: 'video', path: segment.publishedPath ?? segment.path }]
         generated.push(...saved)
         add(shotId, state, saved, segment.durationSeconds)
       }
@@ -839,9 +843,10 @@ export class CreativeStore {
       }
       outputs.push(...generated)
       task(operation, state, generated, video.segments.filter(segment => segment.status === 'saved').length,
-        video.segments.length, video.model, video.failureCode ?? operation.errorCode)
+        video.segments.length, video.model, video.publicationErrorCode ?? video.failureCode ?? operation.errorCode)
     }
-    return { shots, assets, outputs: uniqueOutputs(outputs), errors, states, tasks, updatedAt }
+    return { shots, assets, outputs: uniqueOutputs(outputs), errors, states, tasks, updatedAt,
+      ...publicationErrorCode === undefined ? {} : { publicationErrorCode } }
   }
 
   /**
@@ -877,7 +882,8 @@ export class CreativeStore {
       const currentStates = facts.states.filter((state, index) => state.status === 'unknown'
         || (state.assetId === undefined ? state.shotIds.some(id => latest.get('shot:' + id) === index) : latest.get('asset:' + state.assetId) === index))
       const projectStatus = aggregate([...shots.map(shot => shot.status), ...currentStates.map(item => item.status)])
-      const errorCode = projectStatus === 'unknown' ? 'SUBMISSION_UNKNOWN' : projectStatus === 'failed' || projectStatus === 'cancelled' ? facts.errors.at(-1) : undefined
+      const errorCode = projectStatus === 'unknown' ? 'SUBMISSION_UNKNOWN' : facts.publicationErrorCode
+        ?? (projectStatus === 'failed' || projectStatus === 'cancelled' ? facts.errors.at(-1) : undefined)
       result.push({
         id: record.id, sessionId: record.owner.sessionId, planRevision: creativePlanRevision(record), kind: record.kind,
         title: record.title, brief: record.brief, style: record.style, updatedAt: facts.updatedAt,

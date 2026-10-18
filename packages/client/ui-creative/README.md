@@ -1,5 +1,5 @@
 ---
-description: "Manage shared chat and AI creation projects with editable storyboard timing, character references, materials, tasks and saved media."
+description: "Manage projects in the chat sidebar with editable storyboard timing, character references, materials, tasks and saved media."
 kind: "package-reference"
 ---
 
@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-Manage the same image and video project from chat or AI creation. Edit storyboard timing and order, maintain characters and reference materials, and inspect retained tasks and actual outputs. Planning changes save without a model request. Generation and revisions use ordinary chat drafts and existing native workflows. A saved video remains separate from unverified speech, lip and subtitle synchronization.
+Manage image and video projects in the chat's right sidebar, including works initiated from AI creation. Edit storyboard timing and order, maintain characters and reference materials, and inspect retained tasks and actual outputs. Planning changes save without a model request. Generation and revisions use ordinary chat drafts and existing native workflows. A saved video remains separate from unverified speech, lip and subtitle synchronization.
 
 ## Table of Contents
 
@@ -23,7 +23,7 @@ Manage the same image and video project from chat or AI creation. Edit storyboar
 <a id="use-this-package"></a>
 ## Use this package
 
-Open **Creation** in the chat’s existing right sidebar, or **Creation projects** in either AI creation mode. Both surfaces follow the selected chat, retain the same selected project and shot, and read the same record. The first actual project opens its sidebar tab once; later progress does not reopen a tab you closed. Characters, materials, shots and tasks have separate sections, with longer directions folded into details.
+Open **Creation** in the chat's existing right sidebar. Each chat retains its selected project and shot, including projects associated with that chat by AI creation. The first actual project opens its sidebar tab once; later progress does not reopen a tab you closed. Characters, materials, shots and tasks have separate sections, with longer directions folded into details.
 
 The thumbnail timeline shows planned start and end times. Select a shot to inspect it, move it earlier or later, and edit its title, duration, camera, scene, action, prompt, dialogue, subtitles and character/material associations. Character and material cards support search, creation and editing; material uploads retain a real local reference identifier. Saving is free and checks the plan revision. A conflicting edit preserves the form and asks for refresh; running linked items cannot be rewritten. Requested timing and the latest submitted duration are separate facts.
 
@@ -47,7 +47,7 @@ Read failures preserve the last available project data with a retry action. Hidi
 <details>
 <summary>Implementation internals — click to expand</summary>
 
-The plugin registers one ordinary right-sidebar tab and a session-aware `creation.projects` factory used by image/video creation. A registration-owned [controller](src/client/controller.ts) supervises cancellable, session-addressed reads, free revision-checked saves and reference uploads. Both surfaces consume its observable through framework-bound hooks. The [transport parser](src/client/api.ts) validates project, task and media ownership; neither surface scans conversation prose to invent state.
+The plugin registers one ordinary right-sidebar tab. A registration-owned [controller](src/client/controller.ts) supervises cancellable, session-addressed reads, free revision-checked saves and reference uploads. Framework-bound hooks supply its observable to the tab. The [transport parser](src/client/api.ts) validates project, task and media ownership; the tab does not scan conversation prose to invent state.
 
 The authoritative Credits account observable owns sign-in state. Account changes, conversation switches and application visibility cancel superseded reads; account epochs contain late responses. Tab lifetimes own visibility holds, while the controller owns polling and waits for its reads during unload. Draft outcomes render through a shell toast that outlives the requesting tab.
 

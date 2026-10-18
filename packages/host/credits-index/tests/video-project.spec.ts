@@ -1,13 +1,18 @@
 import { constants } from 'node:fs'
-import { copyFile, mkdtemp, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { copyFile, mkdtemp, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, win32 } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { JobId } from '@deepseek-ai/dsh-jobs'
 import type { JobHandle } from '@deepseek-ai/dsh-jobs'
 import type { VideoEditor } from '../src/video-edit.ts'
-import { planVideoDurations, prepareVideoProject, readVideoProject, resolveVideoOutputDirectory, runVideoProject, VideoProjectError } from '../src/video-project.ts'
+import { planVideoDurations, prepareVideoProject, readVideoProject, recoverVideoProjectOutputs, resolveVideoOutputDirectory, runVideoProject, VideoProjectError } from '../src/video-project.ts'
 import type { VideoProjectInput, VideoProjectOptions, VideoProjectProvider } from '../src/video-project-types.ts'
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>()
+  return { ...actual, writeFile: vi.fn(actual.writeFile) }
+})
 
 let directory: string | undefined
 
@@ -176,6 +181,215 @@ describe('portable workspace output containment', () => {
 })
 
 describe('durable account-bound video projects', () => {
+  it('publishes every verified clip before the next billable submission and resumes a failed copy without regenerating it', async () => {
+    const fixture = await setup()
+    const destination = join(dirname(fixture.workspace), 'selected-output')
+    await mkdir(destination)
+    let fail = true
+    const publish = vi.fn(async (request: { destination: { directory: string }; sourcePath: string; filename: string }) => {
+      if (fail) throw new Error('destination temporarily unavailable')
+      const path = join(request.destination.directory, request.filename)
+      await copyFile(request.sourcePath, path, constants.COPYFILE_EXCL)
+      return { path }
+    })
+    fixture.options.publication = { capture: async () => ({ directory: destination }), validate: async () => {}, publish }
+    const manifest = await fixture.prepare()
+    expect(await runVideoProject(fixture.options, manifest, fixture.provider, fixture.editor, fixture.job, fixture.signal))
+      .toMatchObject({ status: 'failed', detail: 'ARTIFACT_PUBLISH_FAILED' })
+    expect(fixture.submitted).toBe(1)
+    expect(manifest.segments[0]?.status).toBe('saved')
+    expect(manifest.segments[0]?.path).toBeTypeOf('string')
+    expect(manifest.segments[0]?.publishedPath).toBeUndefined()
+    const retained = await readVideoProject(fixture.options, manifest.id, 'chat-one', fixture.workspace, fixture.provider.identity)
+    fail = false
+    expect((await runVideoProject(fixture.options, retained, fixture.provider, fixture.editor, fixture.job, fixture.signal)).status).toBe('completed')
+    expect(fixture.submitted).toBe(3)
+    expect(fixture.events.filter(event => event === 'download-task-1')).toHaveLength(1)
+    expect(await Promise.all(retained.segments.map(segment => readFile(segment.publishedPath!, 'utf8')))).toEqual(['15', '15', '10'])
+    expect(retained.segments.every(segment => segment.publishedPath?.startsWith(destination))).toBe(true)
+    expect(retained.segments.every(segment => segment.path?.startsWith(fixture.options.stateDirectory))).toBe(true)
+  })
+
+  it('recovers only owned historical saved clips, including a project whose later shot failed, without upstream or composition work', async () => {
+    const fixture = await setup()
+    fixture.failTask = 'task-2'
+    const manifest = await fixture.prepare()
+    expect((await runVideoProject(fixture.options, manifest, fixture.provider, fixture.editor, fixture.job, fixture.signal)).status).toBe('failed')
+    const first = manifest.segments[0]!
+    await rm(first.publishedPath!)
+    delete first.publishedPath
+    await writeFile(join(fixture.options.stateDirectory, manifest.id, 'manifest.json'), JSON.stringify(manifest))
+    const capture = vi.fn(async () => { throw new Error('old project must retain its original workspace') })
+    fixture.options.publication = { capture, validate: vi.fn(), publish: vi.fn() }
+    const submit = vi.spyOn(fixture.provider, 'submit')
+    const check = vi.spyOn(fixture.provider, 'check')
+    const compose = vi.spyOn(fixture.editor, 'compose')
+    const current = vi.fn(async () => {})
+    const recovered = await recoverVideoProjectOutputs(fixture.options, manifest.id, 'chat-one', fixture.workspace,
+      fixture.provider.identity, fixture.signal, current)
+    expect(recovered.status).toBe('failed')
+    expect(recovered.segments[0]?.publishedPath?.startsWith(await realpath(manifest.outputDirectory))).toBe(true)
+    expect(await readFile(recovered.segments[0]!.publishedPath!, 'utf8')).toBe('15')
+    expect(await readFile(first.path!, 'utf8')).toBe('15')
+    expect(submit).not.toHaveBeenCalled(); expect(check).not.toHaveBeenCalled(); expect(compose).not.toHaveBeenCalled()
+    expect(capture).not.toHaveBeenCalled()
+    const second = await recoverVideoProjectOutputs(fixture.options, manifest.id, 'chat-one', fixture.workspace,
+      fixture.provider.identity, fixture.signal, current)
+    expect(second.segments[0]?.publishedPath).toBe(recovered.segments[0]?.publishedPath)
+    await expect(recoverVideoProjectOutputs(fixture.options, manifest.id, 'other-chat', fixture.workspace,
+      fixture.provider.identity, fixture.signal, current)).rejects.toMatchObject({ code: 'PROJECT_ACCESS_DENIED' })
+    await expect(recoverVideoProjectOutputs(fixture.options, manifest.id, 'chat-one', fixture.workspace,
+      { accountId: 'other', sessionFingerprint: 'other' }, fixture.signal, current)).rejects.toMatchObject({ code: 'PROJECT_ACCESS_DENIED' })
+  })
+
+  it('serializes a free historical copy with explicit resume without copying or generating the same clip twice', async () => {
+    const fixture = await setup()
+    const destination = join(dirname(fixture.workspace), 'selected-output')
+    await mkdir(destination)
+    fixture.options.publication = { capture: async () => ({ directory: destination }), validate: async () => {},
+      publish: async () => { throw new Error('first clip could not be published') } }
+    const manifest = await fixture.prepare()
+    expect((await runVideoProject(fixture.options, manifest, fixture.provider, fixture.editor, fixture.job, fixture.signal)).status).toBe('failed')
+    const entered = Promise.withResolvers<undefined>()
+    const release = Promise.withResolvers<undefined>()
+    const copied: string[] = []
+    fixture.options.publication.publish = async (request) => {
+      if (copied.length === 0) { entered.resolve(undefined); await release.promise }
+      const path = join(destination, request.filename)
+      await copyFile(request.sourcePath, path, constants.COPYFILE_EXCL)
+      copied.push(request.sourcePath)
+      return { path }
+    }
+    const recovery = recoverVideoProjectOutputs(fixture.options, manifest.id, 'chat-one', fixture.workspace,
+      fixture.provider.identity, fixture.signal, async () => {})
+    await entered.promise
+    const resumed = runVideoProject(fixture.options, manifest, fixture.provider, fixture.editor, fixture.job, fixture.signal)
+    expect(fixture.submitted).toBe(1)
+    release.resolve(undefined)
+    await recovery
+    expect((await resumed).status).toBe('completed')
+    expect(fixture.submitted).toBe(3)
+    expect(copied.filter(path => path === manifest.segments[0]?.path)).toHaveLength(1)
+    expect(copied).toHaveLength(4)
+    const saved = await readVideoProject(fixture.options, manifest.id, 'chat-one', fixture.workspace, fixture.provider.identity)
+    expect(saved.segments.every(segment => segment.publishedPath !== undefined)).toBe(true)
+  })
+
+  it('reloads published clips after backfill finishes during resume preflight before execution enters', async () => {
+    const fixture = await setup()
+    const destination = join(dirname(fixture.workspace), 'selected-output')
+    await mkdir(destination)
+    fixture.options.publication = { capture: async () => ({ directory: destination }), validate: async () => {},
+      publish: async () => { throw new Error('temporarily unavailable') } }
+    const manifest = await fixture.prepare()
+    expect((await runVideoProject(fixture.options, manifest, fixture.provider, fixture.editor, fixture.job, fixture.signal)).status).toBe('failed')
+    const stale = await readVideoProject(fixture.options, manifest.id, 'chat-one', fixture.workspace, fixture.provider.identity)
+    const entered = Promise.withResolvers<undefined>()
+    const release = Promise.withResolvers<undefined>()
+    const copied: string[] = []
+    fixture.options.publication.publish = async (request) => {
+      const path = join(destination, request.filename)
+      await copyFile(request.sourcePath, path, constants.COPYFILE_EXCL)
+      copied.push(request.sourcePath)
+      return { path }
+    }
+    vi.spyOn(fixture.editor, 'preflight').mockImplementationOnce(async () => { entered.resolve(undefined); await release.promise })
+    const resume = (async () => {
+      await fixture.editor.preflight(fixture.signal, stale.outputDirectory)
+      return runVideoProject(fixture.options, stale, fixture.provider, fixture.editor, fixture.job, fixture.signal)
+    })()
+    await entered.promise
+    await recoverVideoProjectOutputs(fixture.options, manifest.id, 'chat-one', fixture.workspace,
+      fixture.provider.identity, fixture.signal, async () => {})
+    expect(stale.segments[0]?.publishedPath).toBeUndefined()
+    expect(copied).toHaveLength(1)
+    release.resolve(undefined)
+    expect((await resume).status).toBe('completed')
+    expect(copied.filter(path => path === manifest.segments[0]?.path)).toHaveLength(1)
+    expect(copied).toHaveLength(4)
+    expect(fixture.submitted).toBe(3)
+  })
+
+  it.each(['destination', 'clip'] as const)('keeps an owned historical projection with a retryable warning when its %s is unavailable', async (missing) => {
+    const fixture = await setup()
+    fixture.failTask = 'task-2'
+    const manifest = await fixture.prepare()
+    expect((await runVideoProject(fixture.options, manifest, fixture.provider, fixture.editor, fixture.job, fixture.signal)).status).toBe('failed')
+    const first = manifest.segments[0]!
+    delete first.publishedPath
+    if (missing === 'clip') await rm(first.path!)
+    else {
+      manifest.publicationDirectory = join(dirname(fixture.workspace), 'offline-output')
+      fixture.options.publication = { capture: async () => { throw new Error('never recapture') }, validate: async () => {},
+        publish: async () => { throw new Error('output volume is offline') } }
+    }
+    await writeFile(join(fixture.options.stateDirectory, manifest.id, 'manifest.json'), JSON.stringify(manifest))
+    const retained = await recoverVideoProjectOutputs(fixture.options, manifest.id, 'chat-one', fixture.workspace,
+      fixture.provider.identity, fixture.signal, async () => {})
+    expect(retained).toMatchObject({ publicationErrorCode: 'ARTIFACT_PUBLISH_FAILED', status: 'failed',
+      failureCode: 'PROVIDER_TASK_FAILED', segments: [{ status: 'saved', path: first.path }, { status: 'failed' }, { status: 'pending' }] })
+    expect(fixture.submitted).toBe(2)
+    expect(await readFile(join(fixture.options.stateDirectory, manifest.id, 'manifest.json'), 'utf8')).not.toContain('publicationErrorCode')
+    const denied = async () => { throw new VideoProjectError('ACCOUNT_CHANGED', '登录状态已变化') }
+    await expect(recoverVideoProjectOutputs(fixture.options, manifest.id, 'chat-one', fixture.workspace,
+      fixture.provider.identity, fixture.signal, denied)).rejects.toMatchObject({ code: 'ACCOUNT_CHANGED' })
+    let identityReads = 0
+    const changedDuringCopy = async () => {
+      if (++identityReads === 3) throw new VideoProjectError('ACCOUNT_CHANGED', '保存期间登录状态已变化')
+    }
+    await expect(recoverVideoProjectOutputs(fixture.options, manifest.id, 'chat-one', fixture.workspace,
+      fixture.provider.identity, fixture.signal, changedDuringCopy)).rejects.toMatchObject({ code: 'ACCOUNT_CHANGED' })
+    await expect(recoverVideoProjectOutputs(fixture.options, manifest.id, 'other-chat', fixture.workspace,
+      fixture.provider.identity, fixture.signal, async () => {})).rejects.toMatchObject({ code: 'PROJECT_ACCESS_DENIED' })
+    const cancelled = AbortSignal.abort(new Error('cancelled'))
+    await expect(recoverVideoProjectOutputs(fixture.options, manifest.id, 'chat-one', fixture.workspace,
+      fixture.provider.identity, cancelled, async () => {})).rejects.toThrow('cancelled')
+  })
+
+  it.each(['EACCES', 'ENOSPC'] as const)('removes only each uncommitted publication when repeated manifest writes fail with %s', async (code) => {
+    const fixture = await setup()
+    fixture.failTask = 'task-2'
+    const manifest = await fixture.prepare()
+    expect((await runVideoProject(fixture.options, manifest, fixture.provider, fixture.editor, fixture.job, fixture.signal)).status).toBe('failed')
+    const first = manifest.segments[0]!
+    await rm(first.publishedPath!)
+    delete first.publishedPath
+    const destination = join(dirname(fixture.workspace), 'selected-output')
+    await mkdir(destination)
+    const existing = join(destination, 'keep-existing.mp4')
+    await writeFile(existing, 'existing user file')
+    manifest.publicationDirectory = destination
+    const manifestPath = join(fixture.options.stateDirectory, manifest.id, 'manifest.json')
+    await writeFile(manifestPath, JSON.stringify(manifest))
+    const publish = vi.fn(async (request: { destination: { directory: string }; sourcePath: string; filename: string }) => {
+      const path = join(request.destination.directory, request.filename)
+      await copyFile(request.sourcePath, path, constants.COPYFILE_EXCL)
+      return { path }
+    })
+    fixture.options.publication = { capture: async () => ({ directory: destination }), validate: async () => {}, publish }
+    const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')
+    vi.mocked(writeFile).mockImplementation(async (...args) => {
+      if (typeof args[0] === 'string' && args[0].startsWith(join(fixture.options.stateDirectory, manifest.id, '.manifest-'))) {
+        throw Object.assign(new Error('state write unavailable'), { code })
+      }
+      return actual.writeFile(...args)
+    })
+    try {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const retained = await recoverVideoProjectOutputs(fixture.options, manifest.id, 'chat-one', fixture.workspace,
+          fixture.provider.identity, fixture.signal, async () => {})
+        expect(retained.publicationErrorCode).toBe('ARTIFACT_PUBLISH_FAILED')
+        expect(retained.segments[0]?.publishedPath).toBeUndefined()
+        expect(await readdir(destination)).toEqual(['keep-existing.mp4'])
+      }
+      expect(publish).toHaveBeenCalledTimes(2)
+      expect(await readFile(existing, 'utf8')).toBe('existing user file')
+      expect(await readFile(first.path!, 'utf8')).toBe('15')
+      expect(await readFile(manifestPath, 'utf8')).not.toContain('publishedPath')
+      expect(fixture.submitted).toBe(2)
+    } finally { vi.mocked(writeFile).mockImplementation(actual.writeFile) }
+  })
+
   it('captures the selected output once and retries a failed publication without regenerating or recomposing', async () => {
     const fixture = await setup()
     const original = join(dirname(fixture.workspace), 'selected-output')
@@ -186,7 +400,7 @@ describe('durable account-bound video projects', () => {
     const validate = vi.fn(async (destination: { directory: string }) => { expect(destination.directory).toBe(original) })
     const publish = vi.fn(async (request: { destination: { directory: string }; sourcePath: string; filename: string }) => {
       expect(request.destination.directory).toBe(original)
-      if (publicationFails) throw new Error('disk unavailable')
+      if (publicationFails && request.sourcePath.includes('final-')) throw new Error('disk unavailable')
       const path = join(request.destination.directory, request.filename)
       await copyFile(request.sourcePath, path)
       return { path }
@@ -215,7 +429,7 @@ describe('durable account-bound video projects', () => {
     expect(fixture.submitted).toBe(3)
     expect(fixture.events.filter(event => event === 'compose')).toHaveLength(1)
     expect(capture).toHaveBeenCalledTimes(1)
-    expect(publish).toHaveBeenCalledTimes(2)
+    expect(publish).toHaveBeenCalledTimes(5)
   })
 
   it('validates the retained destination before billing and never redirects a resumed project', async () => {
@@ -247,8 +461,10 @@ describe('durable account-bound video projects', () => {
       publish: async (request) => {
         const path = join(request.destination.directory, request.filename)
         await copyFile(request.sourcePath, path, constants.COPYFILE_EXCL)
-        published.push(path)
-        if (published.length === 1) await rename(recordDirectory, recordDirectory + '-unavailable')
+        if (request.sourcePath.includes('final-')) {
+          published.push(path)
+          if (published.length === 1) await rename(recordDirectory, recordDirectory + '-unavailable')
+        }
         return { path }
       },
     }

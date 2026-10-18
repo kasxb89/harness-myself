@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { apply } from '../src/client/index.ts'
+import { apply, Config } from '../src/client/index.ts'
 import type { ArtifactsInjected } from '../src/client/ArtifactsPage.tsx'
 import type { ArtifactsMainInjected } from '../src/client/ArtifactsMain.tsx'
 import type { ArtifactNoticeInjected } from '../src/client/OperationToast.tsx'
@@ -31,13 +31,19 @@ function assemble() {
       inject: (_name: string, register: () => void) => { register() },
       register: (options: Registration) => { registrations.push(options) },
     },
-  } as never)
+  } as never, Config({}))
   const page = registrations.find(row => row.name === 'main')!.inject!() as ArtifactsInjected
   const toast = registrations.find(row => row.name === 'shell.overlay')!.inject!() as ArtifactNoticeInjected
   return { page, toast, registrations, current, canOpen, open, dispose: () => { for (const close of cleanup.reverse()) close() } }
 }
 
 describe('artifact operation ownership', () => {
+  it('accepts a configured visible-page cadence and rejects an unbounded or invalid cadence', () => {
+    expect(Config({})).toEqual({ pollIntervalMs: 5000 })
+    expect(Config({ pollIntervalMs: 1234 })).toEqual({ pollIntervalMs: 1234 })
+    for (const pollIntervalMs of [0, 999, 60_001, 1.5, NaN]) expect(() => Config({ pollIntervalMs })).toThrow()
+  })
+
   it('authorizes the root PDF reader as a keyed child of the artifacts main panel', () => {
     const runtime = assemble()
     try {

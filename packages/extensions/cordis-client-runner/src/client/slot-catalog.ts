@@ -113,7 +113,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
     ],
     replaceRisk: 'none',
     example: 'return {\n  inject: [\'slots\'],\n  apply(ctx) {\n    ctx.slots.inject(\'artifacts.preview.pdf\', () => ctx.slots.register(\n      { name: \'artifacts.preview.pdf\', key: \'<one key the owner dispatches>\' },\n      () => React.createElement(\'div\', null, \'hello\'),\n    ))\n  },\n}',
-    source: 'packages/client/ui-artifacts/src/client/index.ts:31',
+    source: 'packages/client/ui-artifacts/src/client/index.ts:32',
   },
   {
     key: 'conversation.approval.detail',

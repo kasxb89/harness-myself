@@ -44,6 +44,8 @@ export interface ArtifactEntry {
 
 /** What the plugin injects into the page. */
 export interface ArtifactsInjected {
+  /** Deployment-configured cadence for checking new files while this page is visible. */
+  readonly pollIntervalMs: number
   /** Translate one key of this plugin's namespace. */
   readonly t: (key: string, values?: Record<string, string>) => string
   /** Read operations belong to the mounted page and can be superseded. */
@@ -68,7 +70,7 @@ export interface ArtifactsInjected {
 }
 
 /** Operations plus a stable revision of framework-owned conversation and workspace facts. */
-export type ArtifactsPageProps = ArtifactsInjected & { refreshKey: string; workspaces: readonly ArtifactWorkspace[] }
+export type ArtifactsPageProps = ArtifactsInjected & { active: boolean; refreshKey: string; workspaces: readonly ArtifactWorkspace[] }
   & PropsRenderSlots<'artifacts.preview.pdf'>
 
 type FileDialog = { kind: 'rename' | 'trash'; entry: ArtifactEntry } | { kind: 'storage' }
@@ -262,45 +264,50 @@ export function ArtifactsPage(props: ArtifactsPageProps): ReactNode {
     return () => { disposed = true }
   }, [readDesktop])
 
-  const refresh = useCallback(async (explicit = false): Promise<ArtifactListing | null> => {
-    if (operation.current) return null
+  const refresh = useCallback(async (explicit = false, background = false): Promise<ArtifactListing | null> => {
+    if (operation.current || (background && request.current !== null)) return null
     request.current?.abort()
     const current = new AbortController()
     const revision = ++generation.current
     request.current = current
-    setLoading(true)
-    const [files, destination, deleted] = await Promise.all([
-      readListing(current.signal).catch(() => ({ ok: false as const, code: 'ARTIFACT_OPERATION_FAILED' as const })),
-      readStorage(current.signal).catch(() => ({ ok: false as const, code: 'ARTIFACT_OPERATION_FAILED' as const })),
-      readTrash(current.signal).catch(() => ({ ok: false as const, code: 'ARTIFACT_OPERATION_FAILED' as const })),
-    ])
-    if (!alive.current || current.signal.aborted || revision !== generation.current) return null
-    const nextErrors: typeof errors = {}
-    if (files.ok) {
-      const loaded = [...files.value.items, ...(explicit ? [] : discoveredNow.current)]
-      if (explicit) {
-        setDiscoveredReset(discoveredNow.current.some(entry => !files.value.items.some(item => entryKey(item) === entryKey(entry))))
-        setDiscovered([])
+    if (!background) setLoading(true)
+    try {
+      const [files, destination, deleted] = await Promise.all([
+        readListing(current.signal).catch(() => ({ ok: false as const, code: 'ARTIFACT_OPERATION_FAILED' as const })),
+        readStorage(current.signal).catch(() => ({ ok: false as const, code: 'ARTIFACT_OPERATION_FAILED' as const })),
+        readTrash(current.signal).catch(() => ({ ok: false as const, code: 'ARTIFACT_OPERATION_FAILED' as const })),
+      ])
+      if (!alive.current || current.signal.aborted || revision !== generation.current) return null
+      const nextErrors: typeof errors = {}
+      if (files.ok) {
+        const loaded = [...files.value.items, ...(explicit ? [] : discoveredNow.current)]
+        if (explicit) {
+          setDiscoveredReset(discoveredNow.current.some(entry => !files.value.items.some(item => entryKey(item) === entryKey(entry))))
+          setDiscovered([])
+        }
+        setListing(files.value)
+        if (explicit) setPreviewRevision(value => value + 1)
+        setSelection(previous => loaded.some(entry => entryKey(entry) === previous) ? previous : null)
+        setDialog((previous) => {
+          if (previous === null || previous.kind === 'storage') return previous
+          const entry = loaded.find(item => entryKey(item) === entryKey(previous.entry))
+          return entry === undefined ? null : { ...previous, entry }
+        })
+      } else nextErrors.listing = files.code
+      if (destination.ok) setStorage(destination.value); else nextErrors.storage = destination.code
+      if (deleted.ok) setTrash(deleted.value); else nextErrors.trash = deleted.code
+      setErrors(nextErrors)
+      if (explicit && Object.keys(nextErrors).length === 0 && files.ok && (files.value.issues?.length ?? 0) === 0) {
+        setUncertain(false)
+        setRestoreError(null)
       }
-      setListing(files.value)
-      if (explicit) setPreviewRevision(value => value + 1)
-      setSelection(previous => loaded.some(entry => entryKey(entry) === previous) ? previous : null)
-      setDialog((previous) => {
-        if (previous === null || previous.kind === 'storage') return previous
-        const entry = loaded.find(item => entryKey(item) === entryKey(previous.entry))
-        return entry === undefined ? null : { ...previous, entry }
-      })
-    } else nextErrors.listing = files.code
-    if (destination.ok) setStorage(destination.value); else nextErrors.storage = destination.code
-    if (deleted.ok) setTrash(deleted.value); else nextErrors.trash = deleted.code
-    setErrors(nextErrors)
-    if (explicit && Object.keys(nextErrors).length === 0 && files.ok && (files.value.issues?.length ?? 0) === 0) {
-      setUncertain(false)
-      setRestoreError(null)
+      return files.ok ? files.value : null
+    } finally {
+      if (request.current === current) {
+        request.current = null
+        if (alive.current) setLoading(false)
+      }
     }
-    request.current = null
-    setLoading(false)
-    return files.ok ? files.value : null
   }, [readListing, readStorage, readTrash])
 
   useEffect(() => {
@@ -310,20 +317,40 @@ export function ArtifactsPage(props: ArtifactsPageProps): ReactNode {
 
   // Read after conversation completion and workspace registration changes without a second event feed.
   useEffect(() => {
-    if (document.visibilityState !== 'hidden') void refresh()
-  }, [refresh, props.refreshKey])
+    if (props.active && document.visibilityState !== 'hidden') void refresh()
+    else { request.current?.abort(); setLoading(false) }
+  }, [refresh, props.refreshKey, props.active])
 
   useEffect(() => {
-    const foreground = (): void => {
-      if (document.visibilityState !== 'hidden' && (request.current === null || request.current.signal.aborted)) void refresh()
+    let disposed = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const clear = (): void => { if (timer !== undefined) clearTimeout(timer); timer = undefined }
+    const schedule = (): void => {
+      clear()
+      if (!disposed && props.active && document.visibilityState !== 'hidden') timer = setTimeout(() => { void check() }, props.pollIntervalMs)
     }
+    const check = async (): Promise<void> => {
+      if (disposed || !props.active || document.visibilityState === 'hidden') return
+      await refresh(false, true)
+      schedule()
+    }
+    const foreground = (): void => {
+      clear()
+      if (!props.active || document.visibilityState === 'hidden') {
+        request.current?.abort()
+        setLoading(false)
+      } else void check()
+    }
+    schedule()
     document.addEventListener('visibilitychange', foreground)
     window.addEventListener('focus', foreground)
     return () => {
+      disposed = true
+      clear()
       document.removeEventListener('visibilitychange', foreground)
       window.removeEventListener('focus', foreground)
     }
-  }, [refresh])
+  }, [refresh, props.active, props.pollIntervalMs])
 
   /** Serialize mutations; a lost receipt requires an explicit successful library refresh. */
   const mutate = async <T,>(run: () => Promise<ArtifactResult<T>>): Promise<ArtifactResult<T>> => {

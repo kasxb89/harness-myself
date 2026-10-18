@@ -35,7 +35,7 @@ The existing Credits media catalog supplies every model and its accepted paramet
 
 Saved works come from the artifact index across current and retained output roots, including custom directories and Windows paths. Manage their directory, names and recoverable deletion in the [Artifacts page](../ui-artifacts/README.md); the creation grid does not rewrite previous chat links.
 
-Select a workspace chat before generating. The request captures that exact chat and signed-in account, retaining a project with the prompt, material references, task and saved images. The shared [Creation projects](../ui-creative/README.md) section uses the same selected-chat source as the chat sidebar: timeline, characters, materials, task states and output previews stay linked across both surfaces. Opening or freely editing a plan does not generate an image. Artifact previews and reference reuse retain the originating workspace coordinate, including when different mounts contain the same path.
+Select a workspace chat before generating. The request captures that exact chat and signed-in account, retaining a project with the prompt, material references, task and saved images. AI creation contains only the image and video tabs; open [Creation](../ui-creative/README.md) in the chat's right sidebar to manage its timeline, characters, materials and tasks. Artifact previews and reference reuse retain the originating workspace coordinate, including when different mounts contain the same path.
 
 <a id="understand-the-implementation"></a>
 ## Understand the implementation

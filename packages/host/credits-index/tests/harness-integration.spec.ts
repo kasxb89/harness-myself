@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, rm, readFile, readdir, rename, symlink, writeFile } from 'node:fs/promises'
 import { createServer, type Server, type ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
@@ -23,6 +23,9 @@ import * as Connection from '@deepseek-ai/dsh-client-connection'
 import * as Credits from '../src/index.ts'
 import * as VideoProjectTools from '../src/video-project-tools.ts'
 import type { VideoProjectOptions } from '../src/video-project-types.ts'
+import { prepareVideoProject, readVideoProject, runVideoProject } from '../src/video-project.ts'
+import { JobId } from '@deepseek-ai/dsh-jobs'
+import type { VideoEditor } from '../src/video-edit.ts'
 import { profileComposition } from '../../../settings/settings/tests/profile-composition.ts'
 
 const relayRef = credentialRef('HARNESS_INTEGRATION_RELAY')
@@ -888,6 +891,108 @@ describe('deployed Harness API through the real product Loader', () => {
     expect(refused.code).toBe('ARTIFACT_DESTINATION_UNAVAILABLE')
     expect(calls.filter(call => call.path === '/harness/v1/images/generations')).toHaveLength(submissions)
   }, 15_000)
+
+  it('lists saved images, every long-video clip and the final file in the artifact library, and recovers historical clips without billing', async () => {
+    let projectOptions: VideoProjectOptions | undefined
+    const register = VideoProjectTools.registerVideoProjectTools
+    vi.spyOn(VideoProjectTools, 'registerVideoProjectTools').mockImplementation((ctx, options) => {
+      projectOptions = options; register(ctx, options)
+    })
+    const { base, stateDir } = await boot(undefined, true, true)
+    const cookie = await hostCookie(base)
+    const origin = new URL(base).origin
+    await signIn(base)
+    if (projectOptions?.creative === undefined) throw new Error('Expected the real Loader creation store')
+    const options = projectOptions
+    const creative = projectOptions.creative
+    const agent = videoAgent(stateDir, 'library-video-chat')
+    const signal = new AbortController().signal
+    const bound = await options.acquireProvider(stateDir, agent.session)
+    let submitted = 0
+    let failSecond = false
+    const provider = {
+      ...bound, model: async () => ({ id: 'MiniMax-H3', durations: [15] }),
+      build: async (_input: unknown, model: string, prompt: string, durationSeconds: number) => ({ model, prompt, durationSeconds }),
+      submit: async () => ({ taskId: `task-${String(++submitted)}` }),
+      check: async (id: string) => ({ status: failSecond && id.endsWith('2') ? 'failed' as const : 'succeeded' as const }),
+      download: async (_id: string, _request: unknown, path: string) => { await writeFile(path, generatedVideo) },
+    }
+    const editor: VideoEditor = {
+      preflight: async () => {}, probe: async () => ({ durationSeconds: 15 }),
+      compose: async (request) => {
+        await mkdir(dirname(request.outputPath), { recursive: true })
+        await writeFile(request.outputPath, generatedVideo)
+        return { path: request.outputPath, durationSeconds: 30 }
+      },
+    }
+    const owner = { ...provider.identity, sessionId: agent.session.id, workspaceRoot: stateDir }
+    const generate = async () => {
+      submitted = 0
+      const manifest = await prepareVideoProject(options, { prompt: '人物在站台交谈', totalDurationSeconds: 30 },
+        owner.sessionId, stateDir, provider, editor, signal)
+      const operation = await creative.begin(owner, { kind: 'video', prompt: '人物在站台交谈', videoProjectId: manifest.id,
+        shots: manifest.segments.map(segment => ({ prompt: segment.prompt, durationSeconds: segment.durationSeconds })) })
+      const outcome = await runVideoProject(options, manifest, provider, editor,
+        { id: JobId('fixture-library-video'), append: () => {}, updateProgress: () => {} }, signal)
+      creative.release(operation)
+      return { manifest, outcome }
+    }
+    const readLibrary = async () => {
+      const response = await fetch(origin + '/artifacts/api/list', { headers: { cookie } })
+      expect(response.status).toBe(200)
+      const values = object(await response.json()).items
+      if (!Array.isArray(values)) throw new Error('Expected actual artifact listing')
+      return values.map(object)
+    }
+    pricingRows = [{ model_name: 'gpt-image-2', supported_endpoint_types: ['image-generation'] }]
+    imageResponse = { data: [{ b64_json: Buffer.from('library generated image').toString('base64') }] }
+    const image = object((await context!.tools.execute({ callId: ToolCallId('library-image'), name: 'generate_image',
+      arguments: { prompt: '人物参考图', model: 'gpt-image-2' }, agent, signal })).value)
+    const completed = await generate()
+    expect(completed.outcome.status).toBe('completed')
+    const expected = [image.path, ...completed.manifest.segments.map(segment => segment.publishedPath), completed.manifest.finalPath]
+    expect((await readLibrary()).map(item => item.path)).toEqual(expect.arrayContaining(expected))
+    expect((await readLibrary()).some(item => String(item.path).includes('/video-projects/'))).toBe(false)
+    failSecond = true
+    const partial = await generate()
+    expect(partial.outcome.status).toBe('failed')
+    expect(submitted).toBe(2)
+    expect((await readLibrary()).map(item => item.path)).toContain(partial.manifest.segments[0]?.publishedPath)
+    const oldCopy = partial.manifest.segments[0]!.publishedPath!
+    await rm(oldCopy)
+    delete partial.manifest.segments[0]!.publishedPath
+    await writeFile(join(options.stateDirectory, partial.manifest.id, 'manifest.json'), JSON.stringify(partial.manifest))
+    const before = calls.length
+    const response = await fetch(base + '/api/creative/projects?session_id=library-video-chat', { headers: { cookie } })
+    expect(response.status).toBe(200)
+    const retained = await readVideoProject(options, partial.manifest.id, owner.sessionId, stateDir, provider.identity)
+    const recoveredPath = retained.segments[0]!.publishedPath!
+    expect(recoveredPath).not.toBe(oldCopy)
+    expect((await readLibrary()).map(item => item.path)).toContain(recoveredPath)
+    expect(submitted).toBe(2)
+    expect(calls.slice(before).some(call => call.path.includes('/v1/'))).toBe(false)
+    expect(await (await fetch(origin + '/artifacts/api/raw?path=' + encodeURIComponent(recoveredPath), { headers: { cookie } })).arrayBuffer())
+      .toEqual(generatedVideo.buffer.slice(generatedVideo.byteOffset, generatedVideo.byteOffset + generatedVideo.byteLength))
+    delete retained.segments[0]!.publishedPath
+    await writeFile(join(options.stateDirectory, partial.manifest.id, 'manifest.json'), JSON.stringify(retained))
+    const outputDirectory = partial.manifest.publicationDirectory!
+    await rename(outputDirectory, outputDirectory + '-offline')
+    const offline = await fetch(base + '/api/creative/projects?session_id=library-video-chat', { headers: { cookie } })
+    expect(offline.status).toBe(200)
+    const preserved = projects(object(await offline.json()))
+    expect(preserved).toHaveLength(3)
+    expect(preserved.find(project => Array.isArray(project.tasks)
+      && object(project.tasks[0]).videoProjectId === partial.manifest.id)).toMatchObject({
+      errorCode: 'ARTIFACT_PUBLISH_FAILED', outputs: [{ kind: 'video' }],
+      tasks: [{ errorCode: 'ARTIFACT_PUBLISH_FAILED' }],
+    })
+    expect(submitted).toBe(2)
+    await rename(outputDirectory + '-offline', outputDirectory)
+    const refreshed = projects(object(await (await fetch(base + '/api/creative/projects?session_id=library-video-chat',
+      { headers: { cookie } })).json()))
+    expect(refreshed.find(project => Array.isArray(project.tasks)
+      && object(project.tasks[0]).videoProjectId === partial.manifest.id)?.errorCode).toBe('PROVIDER_TASK_FAILED')
+  }, 20_000)
 
   it('carries chat and project WAV/MP3 references through H3 native content without inventing audio switches', async () => {
     let options: VideoProjectOptions | undefined

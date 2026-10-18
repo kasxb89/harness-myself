@@ -312,7 +312,7 @@ describe('creative read ownership', () => {
   })
 })
 
-describe('shared workbench lifecycle', () => {
+describe('chat creation workspace lifecycle', () => {
   it('shares project and shot selection between occurrences, retains it per conversation and clears it across accounts', async () => {
     const data = project()
     const second = project({ id: 'cp_second' as CreativeProjectId, title: '晴天告别', shots: [
@@ -381,26 +381,6 @@ describe('shared workbench lifecycle', () => {
     read.mockResolvedValueOnce({ ok: true, payload: { accountId: 'account-a', projects: [] } })
     await controller.refresh(A)
     expect(controller.source(A).getSnapshot().selectedProjectId).toBeUndefined()
-  })
-
-  it('uses the same bounded read loop while an AI-page request has not published its first project', async () => {
-    vi.useFakeTimers()
-    const read = vi.fn<ReadCreativeProjects>().mockResolvedValue({ ok: true, payload: { accountId: 'account-a', projects: [] } })
-    const { controller } = owner(read)
-    controller.accountChanged('account-a')
-    controller.select(A)
-    await read.mock.results[0]!.value
-    const visibility = new AbortController()
-    const release = controller.watch(A, true, visibility.signal, true)
-    await read.mock.results[1]!.value
-    await vi.advanceTimersByTimeAsync(2000)
-    expect(read).toHaveBeenCalledTimes(3)
-    release()
-    controller.watch(A, true, visibility.signal, false)
-    await read.mock.results[3]!.value
-    await vi.advanceTimersByTimeAsync(6000)
-    expect(read).toHaveBeenCalledTimes(4)
-    visibility.abort()
   })
 
   it('publishes a committed free edit once to both occurrences and rejects late account edits', async () => {

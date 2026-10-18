@@ -4,7 +4,7 @@ import {
   Button, IconChevronDownOutlineRegular, IconRefreshOutlineRegular, IconSparkleRegular,
   Menu, Modal, SegmentedControl, StateDot, Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { FactoryComponentPropsOf, HostObservable, InjectFace, PropsLocale, PropsRuntime, TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
+import type { HostObservable, InjectFace, PropsLocale, PropsRuntime, TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import type {
   CreativeAssetView, CreativeCharacter, CreativePlanChange, CreativeProjectView, CreativeShotView,
 } from '@deepseek-ai/dsh-credits-index/src/creative-types.ts'
@@ -28,7 +28,7 @@ export interface CreativeInjected {
   readonly save: (projectId: string, revision: string, change: CreativePlanChange, signal: AbortSignal) => Promise<CreativeSaveResult>
   readonly upload: (file: File, signal: AbortSignal) => Promise<CreativeUploadResult>
   /** @param visible - official tab visibility. @param signal - occurrence lifetime. @returns visibility release. */
-  readonly watch: (visible: boolean, signal: AbortSignal, pending?: boolean) => () => void
+  readonly watch: (visible: boolean, signal: AbortSignal) => () => void
   /** @param success - whether revision-guarded insertion was admitted. */
   readonly reportDraft: (success: boolean) => void
   readonly reportSaved: () => void
@@ -272,6 +272,8 @@ function CreativeWorkspace({ sessionId, snapshot, visible, locked, refresh, save
               : <h3 className={css.heading}>{project.title}</h3>}
             <Status value={project.status} t={t} />
           </div>
+          {project.errorCode === 'ARTIFACT_PUBLISH_FAILED' && <p className={css.notice} role="alert">
+            {t('artifactPublishFailed')}</p>}
           <details className={css.summary}><summary>{t('brief')}</summary><p>{project.brief}</p><Facts t={t} entries={[[t('style'), project.style]]} /></details>
           <SegmentedControl id={tabsId} className={css.segments} label={t('sections')} value={section} onChange={setSection}
             options={(['shots', 'characters', 'assets', 'outputs'] as const).map(value => ({ value,
@@ -332,25 +334,6 @@ export function CreativeBody({ sessionId, useTabInfo, useCreative, useInput, inp
   useEffect(() => tab.actions.bindCommands({ refresh }), [tab.actions, refresh])
   const append = (text: string): void => { stageDraft(text, locked, inputActions, reportDraft) }
   return <CreativeWorkspace sessionId={sessionId} snapshot={snapshot} visible={tab.visible} locked={locked}
-    refresh={refresh} save={save} upload={upload} reportSaved={reportSaved}
-    selectProject={selectProject} selectShot={selectShot} append={append} t={t} />
-}
-
-/** Shared full-width workbench, addressed by the same session-maybe scope as AI writing. */
-export function CreativeProjects({ sessionId, useCreative, useInput, inputActions, refresh, save, upload, watch,
-  reportDraft, reportSaved, selectProject, selectShot, refreshKey, generationPending, t,
-}: FactoryComponentPropsOf<'creation.projects'>): ReactNode {
-  const snapshot = useCreative(value => value)
-  const phase = useInput(input => input.phase)
-  const locked = phase !== 'plain' || inputActions === undefined
-  useEffect(() => {
-    const abort = new AbortController()
-    const release = watch(true, abort.signal, generationPending)
-    return () => { abort.abort(); release() }
-  }, [watch, generationPending])
-  useEffect(() => { refresh() }, [refresh, refreshKey])
-  const append = (text: string): void => { stageDraft(text, locked, inputActions, reportDraft) }
-  return <CreativeWorkspace sessionId={sessionId} snapshot={snapshot} visible locked={locked}
     refresh={refresh} save={save} upload={upload} reportSaved={reportSaved}
     selectProject={selectProject} selectShot={selectShot} append={append} t={t} />
 }

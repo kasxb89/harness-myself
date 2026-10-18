@@ -1,7 +1,8 @@
 /** Durable, account-bound multi-clip generation and local composition. @module */
 
 import { randomUUID } from 'node:crypto'
-import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
+import { constants, type Stats } from 'node:fs'
+import { copyFile, lstat, mkdir, readFile, realpath, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import * as nativePaths from 'node:path'
 import { basename, dirname, join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -14,6 +15,9 @@ import type { VideoProjectIdentity, VideoProjectInput, VideoProjectOptions, Vide
 /** Complete private-record parser limit, including prompt and per-clip metadata. */
 const MAX_MANIFEST_BYTES = 64 * 1024 * 1024
 const MAX_PROMPT_LENGTH = 7000
+
+const runningProjects = new Set<string>()
+const recoveringProjects = new Map<string, Promise<VideoProjectRead>>()
 
 /** An opaque project identifier, validated before selecting its private record. */
 export type VideoProjectId = Branded<'VideoProjectId'>
@@ -69,8 +73,10 @@ export interface VideoProjectSegment {
   status: 'pending' | 'submitting' | 'running' | 'saved' | 'failed' | 'unknown'
   /** Present only after the provider identifies its accepted task. */
   taskId?: string
-  /** Real local file, published only after a successful probe. */
+  /** Private local original retained after a successful probe. */
   path?: string
+  /** Artifact-library copy; the private original remains available for resume and composition. */
+  publishedPath?: string
 }
 
 /** Versioned private project state, never used as an in-memory jobs substitute. */
@@ -109,6 +115,19 @@ export interface VideoProjectManifest {
   finalDurationSeconds?: number
   /** Stable failure for a stopped operation. */
   failureCode?: string
+}
+
+/** Authorized retained state plus a retryable local publication warning, never persisted as generation failure. */
+export interface VideoProjectRead extends VideoProjectManifest {
+  /** Existing outputs remain available when their artifact-library copy cannot currently be saved. */
+  readonly publicationErrorCode?: 'ARTIFACT_PUBLISH_FAILED'
+}
+
+/** Local copy or disk failures leave authorized historical projections readable. */
+function retryablePublicationFailure(error: unknown): boolean {
+  if (error instanceof VideoProjectError) return error.code === 'ARTIFACT_PUBLISH_FAILED' || error.code === 'ARTIFACT_STORAGE_UNAVAILABLE'
+  return error instanceof Error && 'code' in error && typeof error.code === 'string'
+    && ['ENOENT', 'EACCES', 'EPERM', 'ENOSPC', 'ENOTDIR', 'EROFS', 'EIO', 'EBUSY', 'EMFILE', 'ENFILE'].includes(error.code)
 }
 
 /**
@@ -210,9 +229,9 @@ function segmentPrompt(input: VideoProjectInput, model: string, index: number, c
 }
 
 /**
- * Publish an already verified workspace edit without changing the editor's filesystem authority.
+ * Publish an already verified clip or workspace edit without changing the editor's filesystem authority.
  * @param options - Optional trusted Host publisher.
- * @param sourcePath - Successfully composed workspace video.
+ * @param sourcePath - Verified private clip or successfully composed workspace video.
  * @param directory - Captured output; absence preserves legacy workspace-only delivery.
  * @param signal - Cancellation for the copy.
  * @returns Real published path, or the unchanged legacy workspace path.
@@ -230,6 +249,114 @@ export async function publishVideoOutput(
     signal.throwIfAborted()
     throw new VideoProjectError('ARTIFACT_PUBLISH_FAILED', '产物保存失败，本地成片和已生成片段仍保留，请检查保存位置后继续项目，无需重新生成。', { cause })
   }
+}
+
+/** Publish a saved clip once; legacy projects keep their copies inside their original workspace. */
+async function publishSegment(options: VideoProjectOptions, manifest: VideoProjectManifest, segment: VideoProjectSegment,
+  signal: AbortSignal): Promise<void> {
+  if (segment.publishedPath !== undefined || segment.status !== 'saved') return
+  const source = savedPath(segment)
+  if (dirname(await realpath(source)) !== await realpath(join(options.stateDirectory, manifest.id, 'clips'))) {
+    throw new VideoProjectError('INVALID_RECORD', '已保存的视频片段不在该项目目录中，已停止保存。')
+  }
+  if (manifest.publicationDirectory !== undefined) {
+    segment.publishedPath = await publishVideoOutput(options, source, manifest.publicationDirectory, signal)
+  } else {
+    const workspace = await realpath(manifest.workspaceRoot)
+    resolveVideoOutputDirectory(manifest.workspaceRoot, nativePaths.relative(manifest.workspaceRoot, manifest.outputDirectory))
+    let ancestor = manifest.outputDirectory
+    for (;;) {
+      try { ancestor = await realpath(ancestor); break } catch (error) {
+        if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT') throw error
+        ancestor = dirname(ancestor)
+      }
+    }
+    const ancestorRelative = nativePaths.relative(workspace, ancestor)
+    if (ancestorRelative === '..' || ancestorRelative.startsWith('..' + nativePaths.sep) || nativePaths.isAbsolute(ancestorRelative)) {
+      throw new VideoProjectError('INVALID_OUTPUT_DIRECTORY', '视频保存目录已离开原工作区，已停止保存；原始片段仍保留。')
+    }
+    await mkdir(manifest.outputDirectory, { recursive: true })
+    const destination = await realpath(manifest.outputDirectory)
+    const relative = nativePaths.relative(workspace, destination)
+    if (relative === '' || relative === '..' || relative.startsWith('..' + nativePaths.sep) || nativePaths.isAbsolute(relative)) {
+      throw new VideoProjectError('INVALID_OUTPUT_DIRECTORY', '视频保存目录已离开原工作区，已停止保存；原始片段仍保留。')
+    }
+    const path = join(destination, `clip-${String(segment.index).padStart(3, '0')}-${randomUUID()}.mp4`)
+    signal.throwIfAborted()
+    await copyFile(source, path, constants.COPYFILE_EXCL)
+    if (signal.aborted) { await unlink(path); signal.throwIfAborted() }
+    segment.publishedPath = path
+  }
+  const publishedPath = segment.publishedPath
+  const updatedAt = manifest.updatedAt
+  let publishedFile: Stats | undefined
+  try {
+    publishedFile = await lstat(publishedPath)
+    await persist(options, manifest)
+  } catch (error) {
+    delete segment.publishedPath
+    manifest.updatedAt = updatedAt
+    try {
+      const current = await lstat(publishedPath)
+      if (publishedFile === undefined || current.isSymbolicLink() || current.dev !== publishedFile.dev || current.ino !== publishedFile.ino
+        || current.size !== publishedFile.size || current.mtimeMs !== publishedFile.mtimeMs || current.ctimeMs !== publishedFile.ctimeMs) {
+        throw new VideoProjectError('ARTIFACT_PUBLISH_ROLLBACK_FAILED', '产物副本已发生变化，未删除该文件；请检查保存目录后重试。')
+      }
+      await unlink(publishedPath)
+    } catch (rollbackError) {
+      if (!(rollbackError instanceof Error) || !('code' in rollbackError) || rollbackError.code !== 'ENOENT') {
+        throw new VideoProjectError('ARTIFACT_PUBLISH_ROLLBACK_FAILED', '产物副本的保存状态无法确认，未删除未确认的文件；请检查保存目录后重试。', { cause: rollbackError })
+      }
+    }
+    throw error
+  }
+}
+
+/**
+ * Make previously saved clips discoverable without generation, provider reads, or rerunning composition.
+ * @param options - Original private state and trusted artifact publisher.
+ * @param id - Exact retained project selected through an owned creation record.
+ * @param ownerSessionId - Original owning chat.
+ * @param workspaceRoot - Original owning workspace.
+ * @param identity - Current signed-in account.
+ * @param signal - Owning Host lifetime.
+ * @param assertCurrent - Recheck the captured login before each local publication.
+ * @returns Latest authorized record with clip copies or a retryable local publication warning; authorization failures still reject.
+ */
+export async function recoverVideoProjectOutputs(options: VideoProjectOptions, id: string, ownerSessionId: string,
+  workspaceRoot: string, identity: VideoProjectIdentity, signal: AbortSignal,
+  assertCurrent: () => Promise<void>): Promise<VideoProjectRead> {
+  const key = join(options.stateDirectory, projectId(id))
+  signal.throwIfAborted()
+  await assertCurrent()
+  const owned = await readVideoProject(options, id, ownerSessionId, workspaceRoot, identity)
+  signal.throwIfAborted()
+  if (runningProjects.has(key)
+    || !owned.segments.some(segment => segment.status === 'saved' && segment.publishedPath === undefined)) return owned
+  const existing = recoveringProjects.get(key)
+  if (existing !== undefined) {
+    const result = await existing
+    signal.throwIfAborted()
+    await assertCurrent()
+    return result
+  }
+  const work = (async () => {
+    const manifest = await readVideoProject(options, id, ownerSessionId, workspaceRoot, identity)
+    let publicationFailed = false
+    for (const segment of manifest.segments) {
+      signal.throwIfAborted()
+      await assertCurrent()
+      try { await publishSegment(options, manifest, segment, signal) } catch (error) {
+        signal.throwIfAborted()
+        if (!retryablePublicationFailure(error)) throw error
+        publicationFailed = true
+      }
+      await assertCurrent()
+    }
+    return publicationFailed ? { ...manifest, publicationErrorCode: 'ARTIFACT_PUBLISH_FAILED' as const } : manifest
+  })()
+  recoveringProjects.set(key, work)
+  try { return await work } finally { recoveringProjects.delete(key) }
 }
 
 /** Recheck a retained destination before any additional paid clip submission. */
@@ -345,6 +472,7 @@ function parseManifest(value: unknown): VideoProjectManifest {
       index: positive(segment, 'index'), durationSeconds: positive(segment, 'durationSeconds'), prompt: text(segment, 'prompt'), request, status,
       ...segment.taskId === undefined ? {} : { taskId: text(segment, 'taskId') },
       ...segment.path === undefined ? {} : { path: text(segment, 'path') },
+      ...segment.publishedPath === undefined ? {} : { publishedPath: text(segment, 'publishedPath') },
     }
   })
   if (parsedInput.shotDurations !== undefined && (parsedInput.shotDurations.length !== segments.length
@@ -357,6 +485,9 @@ function parseManifest(value: unknown): VideoProjectManifest {
   }
   if (source.composedPath !== undefined && (source.publicationDirectory === undefined || segments.some(segment => segment.status !== 'saved'))) throw new VideoProjectError('INVALID_RECORD', '视频项目本地成片没有完整的已保存分镜记录，已停止操作。')
   if (segments.length === 0 || segments.some((segment, index) => segment.index !== index + 1 || (segment.status === 'running' && segment.taskId === undefined) || (segment.status === 'saved' && segment.path === undefined))) throw new VideoProjectError('INVALID_RECORD', '视频片段记录不完整，已停止操作。')
+  if (segments.some(segment => segment.publishedPath !== undefined && (segment.status !== 'saved' || !nativePaths.isAbsolute(segment.publishedPath)))) {
+    throw new VideoProjectError('INVALID_RECORD', '视频片段的产物保存记录损坏，已停止操作。')
+  }
   return {
     version: 1, id: projectId(text(source, 'id')), ownerSessionId: text(source, 'ownerSessionId'), workspaceRoot: text(source, 'workspaceRoot'),
     identity: { accountId: text(identity, 'accountId'), sessionFingerprint: text(identity, 'sessionFingerprint') }, input: parsedInput,
@@ -456,6 +587,7 @@ export async function prepareVideoProject(
   // Reserve all later task/path fields before the first billable request.
   const growthReserve = segments.reduce((size, segment) => size + Buffer.byteLength(JSON.stringify({
     taskId: 't'.repeat(256), path: join(options.stateDirectory, id, 'clips', `clip-${String(segment.index)}-${randomUUID()}.mp4`),
+    publishedPath: join(publicationDirectory ?? outputDirectory, `clips-${randomUUID()}-clip-${String(segment.index)}-${randomUUID()}.mp4`),
   })), 4096 + Buffer.byteLength(JSON.stringify({
     finalPath: join(publicationDirectory ?? outputDirectory, `${id}-final-${randomUUID()}.mp4`),
     ...publicationDirectory === undefined ? {} : { composedPath: join(outputDirectory, `final-${randomUUID()}.mp4`), composedDurationSeconds: input.totalDurationSeconds },
@@ -506,9 +638,48 @@ export async function runVideoProject(
   options: VideoProjectOptions, manifest: VideoProjectManifest, provider: VideoProjectProvider, editor: VideoEditor,
   job: JobHandle, signal: AbortSignal,
 ): Promise<JobOutcome> {
+  const key = join(options.stateDirectory, manifest.id)
+  for (;;) {
+    if (runningProjects.has(key)) return { status: 'failed', detail: 'PROJECT_ALREADY_RUNNING',
+      result: JSON.stringify({ status: 'failed', code: 'PROJECT_ALREADY_RUNNING' }) }
+    const recovery = recoveringProjects.get(key)
+    if (recovery === undefined) break
+    try { await recovery } catch (error) { void error /* Explicit resume rechecks authorization and publication independently. */ }
+  }
+  runningProjects.add(key)
+  try {
+    const retained = await readVideoProject(options, manifest.id, manifest.ownerSessionId, manifest.workspaceRoot, provider.identity)
+    Object.assign(manifest, retained)
+    if (manifest.status === 'completed') {
+      signal.throwIfAborted()
+      await provider.assertCurrent()
+      return { status: 'completed', result: JSON.stringify({ status: 'succeeded', project_id: manifest.id,
+        final_path: manifest.finalPath, duration_seconds: manifest.finalDurationSeconds,
+        clip_paths: manifest.segments.map(segment => segment.publishedPath ?? savedPath(segment)) }) }
+    }
+    return await executeVideoProject(options, manifest, provider, editor, job, signal)
+  } catch (error) {
+    const failure = videoProjectFailure(error)
+    return { status: signal.aborted ? 'killed' : 'failed', detail: signal.aborted ? 'CANCELLED' : failure.code,
+      result: JSON.stringify({ status: signal.aborted ? 'cancelled' : 'failed', ...failure }) }
+  } finally { runningProjects.delete(key) }
+}
+
+/** Run exclusively with respect to local clip recovery for this exact private project. */
+async function executeVideoProject(
+  options: VideoProjectOptions, manifest: VideoProjectManifest, provider: VideoProjectProvider, editor: VideoEditor,
+  job: JobHandle, signal: AbortSignal,
+): Promise<JobOutcome> {
   let upstreamMayContinue = false
   try {
     if (manifest.identity.accountId !== provider.identity.accountId) throw new VideoProjectError('PROJECT_ACCESS_DENIED', '该视频项目不属于当前登录账号。')
+    for (const segment of manifest.segments) {
+      if (segment.status !== 'saved') continue
+      signal.throwIfAborted()
+      await provider.assertCurrent()
+      await editor.probe(savedPath(segment), signal)
+      await publishSegment(options, manifest, segment, signal)
+    }
     if (manifest.segments.some(segment => segment.status === 'unknown' || segment.status === 'submitting' && segment.taskId === undefined)) throw new VideoProjectError('SUBMISSION_UNKNOWN', '有一次视频提交结果未知，可能已计费。请先在后台核对任务，系统不会自动重提。')
     if (manifest.segments.some(segment => segment.status === 'failed')) throw new VideoProjectError('PROVIDER_TASK_FAILED', '项目中有失败的上游任务，已生成片段保留；请使用 edit_video 编辑已保存片段，或明确创建新项目。')
     await editor.preflight(signal, manifest.outputDirectory)
@@ -568,8 +739,9 @@ export async function runVideoProject(
         segment.path = path
         segment.status = 'saved'
         await persist(options, manifest)
+        await publishSegment(options, manifest, segment, signal)
         await options.saved?.(manifest, segment.index, signal)
-        job.append(`分镜 ${String(segment.index)} 已保存：${path}\n`)
+        job.append(`分镜 ${String(segment.index)} 已保存：${segment.publishedPath ?? path}\n`)
       }
     }
     signal.throwIfAborted()
@@ -598,7 +770,7 @@ export async function runVideoProject(
     manifest.status = 'completed'
     await persist(options, manifest)
     await options.saved?.(manifest, undefined, signal)
-    const summary = JSON.stringify({ status: 'succeeded', project_id: manifest.id, final_path: manifest.finalPath, duration_seconds: result.durationSeconds, clip_paths: manifest.segments.map(segment => savedPath(segment)), message: '视频已实际保存。请调用 present 展示 final_path，并在回复中提供可点击的产物链接。' })
+    const summary = JSON.stringify({ status: 'succeeded', project_id: manifest.id, final_path: manifest.finalPath, duration_seconds: result.durationSeconds, clip_paths: manifest.segments.map(segment => segment.publishedPath ?? savedPath(segment)), message: '视频已实际保存。请调用 present 展示 final_path，并在回复中提供可点击的产物链接。' })
     job.append(`${summary}\n`)
     return { status: 'completed', result: summary }
   } catch (error) {
@@ -612,9 +784,9 @@ export async function runVideoProject(
       // Storage failure is independently reported; its raw path/error is not model-visible.
       void storageError
       job.append('项目状态保存失败；已停止后续提交。最后一次提交可能未记录，请先在后台核对任务，勿直接重试。\n', { channel: 'stderr' })
-      return { status: signal.aborted ? 'killed' : 'failed', detail: 'PROJECT_STORAGE_FAILED', result: JSON.stringify({ status: 'failed', project_id: manifest.id, code: 'PROJECT_STORAGE_FAILED', message: `项目记录保存失败。${warning}`, clip_paths: manifest.segments.flatMap(segment => segment.path === undefined ? [] : [segment.path]) }) }
+      return { status: signal.aborted ? 'killed' : 'failed', detail: 'PROJECT_STORAGE_FAILED', result: JSON.stringify({ status: 'failed', project_id: manifest.id, code: 'PROJECT_STORAGE_FAILED', message: `项目记录保存失败。${warning}`, clip_paths: manifest.segments.flatMap(segment => segment.path === undefined ? [] : [segment.publishedPath ?? segment.path]) }) }
     }
-    const result = JSON.stringify({ status: signal.aborted ? 'cancelled' : 'failed', project_id: manifest.id, code: manifest.failureCode, message: message + warning, clip_paths: manifest.segments.flatMap(segment => segment.path === undefined ? [] : [segment.path]), task_ids: manifest.segments.flatMap(segment => segment.taskId === undefined ? [] : [segment.taskId]) })
+    const result = JSON.stringify({ status: signal.aborted ? 'cancelled' : 'failed', project_id: manifest.id, code: manifest.failureCode, message: message + warning, clip_paths: manifest.segments.flatMap(segment => segment.path === undefined ? [] : [segment.publishedPath ?? segment.path]), task_ids: manifest.segments.flatMap(segment => segment.taskId === undefined ? [] : [segment.taskId]) })
     job.append(`${result}\n`, { channel: 'stderr' })
     return { status: signal.aborted ? 'killed' : 'failed', detail: manifest.failureCode, result }
   }

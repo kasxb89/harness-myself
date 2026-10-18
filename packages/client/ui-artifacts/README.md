@@ -25,7 +25,7 @@ Find saved outputs and files from registered local workspaces in one Artifacts l
 <a id="use-this-package"></a>
 ## Use this package
 
-Mount `@deepseek-ai/dsh-client-ui-artifacts` in the browser roster with the slot and locale services. Pair it with [artifacts-index](../../deliverables/artifacts-index/README.md) for authenticated file access and the workspace registry for mounted directories. This package has no configuration fields.
+Mount `@deepseek-ai/dsh-client-ui-artifacts` in the browser roster with the slot and locale services. Pair it with [artifacts-index](../../deliverables/artifacts-index/README.md) for authenticated file access and the workspace registry for mounted directories. `pollIntervalMs` controls foreground library refresh (default 5000 ms; accepted range 1000–60000 ms). The visible library rechecks files, save-directory settings and recovery entries without overlapping requests. Hidden or unmounted pages cancel their pending refresh and stop polling; refresh failures retain the existing listing.
 
 The library combines managed output roots and registered local workspaces, including nested files created by chat tools or shell commands without Git or a `present` call. Select Save directory to view or change the save location in a dialog; the path and settings remain hidden until the dialog opens. The dialog accepts an existing absolute path and offers the native folder picker when available. Saving a directory affects future media generation, keeps older files visible, and does not move them. Workspace registration does not change this preference or add its root to the saved output roots.
 

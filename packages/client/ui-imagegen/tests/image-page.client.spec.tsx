@@ -87,7 +87,7 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 describe('image creation workspace', () => {
-  it('links a generated project to the selected conversation and refreshes the shared board', async () => {
+  it('keeps only image/video modes while linking generated images to the selected conversation', async () => {
     chatSessionId = 'session-selected'
     const { props } = makeProps()
     render(<ImagePage {...props} />)
@@ -97,10 +97,9 @@ describe('image creation workspace', () => {
     await screen.findByText(zh.done)
     expect(requestBody(fetchMock.mock.calls.find(([url]) => url === '/credits/api/image/generate')))
       .toMatchObject({ session_id: 'session-selected', account_id: 'account-a' })
-    const boards = vi.mocked(props.renderFactorySlot).mock.calls.filter(([name]) => name === 'creation.projects')
-    expect(boards.length).toBeGreaterThan(1)
-    expect(boards.at(-1)?.[1]).toEqual({ refreshKey: JSON.stringify([null, [path]]), generationPending: false })
-    expect(screen.getByRole('region', { name: zh.projects })).toBeTruthy()
+    expect(screen.getAllByRole('tab').map(tab => tab.textContent)).toEqual([zh['tab.image'], zh['tab.video']])
+    expect(vi.mocked(props.renderFactorySlot).mock.calls.every(([name]) => name === 'creation.prompt.assist')).toBe(true)
+    expect(screen.queryByRole('region', { name: '创作项目' })).toBeNull()
   })
 
   it('keeps a pending generation owned by its original conversation after switching chats', async () => {
@@ -114,12 +113,11 @@ describe('image creation workspace', () => {
     await ready()
     fireEvent.change(screen.getByRole('textbox', { name: zh.prompt }), { target: { value: '画一朵云' } })
     fireEvent.click(screen.getByRole('button', { name: zh.submit }))
-    expect(store.getSnapshot().generationSessionId).toBe('session-a')
+    expect(store.getSnapshot().generationStartedAt).not.toBeNull()
     chatSessionId = 'session-b'
     view.rerender(<ImagePage {...props} />)
-    const board = vi.mocked(props.renderFactorySlot).mock.calls.filter(([name]) => name === 'creation.projects').at(-1)?.[1]
-    expect(board).toMatchObject({ generationPending: false })
-    expect(requestBody(fetchMock.mock.calls.find(([url]) => url === '/credits/api/image/generate'))).toMatchObject({ session_id: 'session-a' })
+    expect(requestBody(fetchMock.mock.calls.find(([url]) => url === '/credits/api/image/generate')))
+      .toMatchObject({ session_id: 'session-a', account_id: 'account-a' })
     await act(async () => { finish(json({ ok: true, payload: { path } })) })
     expect(store.getSnapshot().generationStartedAt).toBeNull()
   })

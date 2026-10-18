@@ -383,4 +383,32 @@ describe('shared project workbench', () => {
     expect(h.view.container.querySelector('progress')).toBeNull()
     expect(h.view.container.querySelector('[data-creative-task="task_asset"]')?.textContent).toContain('车站参考')
   })
+
+  it.each([
+    { english: false, status: 'completed' as const }, { english: true, status: 'completed' as const },
+    { english: false, status: 'failed' as const }, { english: true, status: 'failed' as const },
+  ])('explains local artifact publication failures and retains saved media ($status, English: $english)', ({ english, status }) => {
+    const video = { id: 'out1' as CreativeOutputId, kind: 'video' as const, name: 'retained.mp4', url: mediaUrl() }
+    const task = { id: 'task_retained', status, shotIds: ['s1'], completedShots: 1,
+      totalShots: 1, outputs: [video], errorCode: 'ARTIFACT_PUBLISH_FAILED' }
+    const data = project({ status: 'completed', completedShots: 1, outputs: [video], tasks: [task],
+      errorCode: 'ARTIFACT_PUBLISH_FAILED' })
+    const h = fixture({ projects: [data] }, english)
+    const copy = english ? en : zh
+    expect(screen.getByRole('alert').textContent).toBe(copy.artifactPublishFailed)
+    fireEvent.click(screen.getByRole('tab', { name: copy['section.outputs'] }))
+    expect(screen.getAllByRole('alert').map(item => item.textContent)).toEqual([
+      copy.artifactPublishFailed, copy.artifactPublishFailed,
+    ])
+    expect(h.view.container.querySelector('video')?.getAttribute('src')).toBe(mediaUrl())
+    expect(screen.queryByText('ARTIFACT_PUBLISH_FAILED')).toBeNull()
+    expect(screen.queryByText(copy['tasks.failed'])).toBeNull()
+    const { errorCode: _projectError, ...retained } = data
+    act(() => { h.source.set({ ...h.source.getSnapshot(), projects: [retained] }) })
+    expect(screen.getByRole('alert').textContent).toBe(copy.artifactPublishFailed)
+    const { errorCode: _taskError, ...cleared } = task
+    act(() => { h.source.set({ ...h.source.getSnapshot(), projects: [{ ...retained, tasks: [cleared] }] }) })
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(h.view.container.querySelector('video')?.getAttribute('src')).toBe(mediaUrl())
+  })
 })

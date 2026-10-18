@@ -36,8 +36,6 @@ export interface VideoDraft {
   uploading: string | null
   promptAssisting: boolean
   phase: 'idle' | 'running' | 'done'
-  /** Conversation captured before the pending paid request is sent. */
-  generationSessionId: string | null
   startedAt: number
   message: string | null
   failure: string | null
@@ -62,7 +60,7 @@ export function createVideoDraftStore(): EngineStoreHandle<VideoDraft, DraftActi
     init: (): VideoDraft => ({
       modelId: '', prompt: '', duration: 0, resolution: '', ratio: '', mode: '', seed: '', audio: true,
       workflow: 'text', firstFrame: null, lastFrame: null, slots: { image: [], video: [], audio: [] },
-      category: 'all', uploading: null, phase: 'idle', generationSessionId: null, startedAt: 0, message: null, failure: null, result: null,
+      category: 'all', uploading: null, phase: 'idle', startedAt: 0, message: null, failure: null, result: null,
       referenceAccountId: null, referenceEpoch: 0, promptAssisting: false,
     }),
     actions: {

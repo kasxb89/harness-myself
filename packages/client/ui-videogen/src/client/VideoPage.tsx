@@ -4,7 +4,6 @@ import { Button, IconChevronDownOutlineRegular, IconPlayOutlineRegular, IconPlus
 import type { PropsStore } from '@deepseek-ai/dsh-client-store'
 import type { HostObservable, InjectFace, PropsRenderFactories, PropsRuntime, StandardSourceBinding } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-prompt-assist/client'
-import type {} from '@deepseek-ai/dsh-client-ui-creative/client'
 import type { Context } from '@deepseek-ai/cordis'
 import type { LocalizedText } from '@deepseek-ai/dsh-client-creation-content/client'
 import type { createVideoDraftStore, Reference, Slot, VideoDraft, Workflow } from './draft-store.ts'
@@ -84,7 +83,6 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
   const { t, openImage, actions, createPreview, releasePreview, readDraft } = props
   const draft = props.useStore(state => state)
   const sessionId = props.useCreationSession(binding => binding.key)
-  const projects = props.renderFactorySlot('creation.projects', { refreshKey: JSON.stringify([draft.phase, draft.result]), generationPending: draft.phase === 'running' && draft.generationSessionId === sessionId })
   const { prompt, modelId, resolution, ratio, mode, seed, audio, firstFrame, lastFrame, slots,
     phase, uploading, failure, message, result } = draft
   const [signedIn, setSignedIn] = useState<boolean | null>(null)
@@ -375,7 +373,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
     if (settingsInvalid || overReferenceLimit || referenceBytesExceeded) return
     operation.current = true
     setModelMenu(false)
-    actions.patch({ phase: 'running', generationSessionId: sessionId, startedAt: Date.now() })
+    actions.patch({ phase: 'running', startedAt: Date.now() })
     const frames = workflow === 'frames' ? [firstFrame, lastFrame] : workflow === 'image' && params.frameSlots > 0 ? [firstFrame] : []
     try {
       if (frames.some(reference => reference !== null) || hasReferences) {
@@ -619,8 +617,6 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
       </div>
     </section>
     {model !== null && <details className={css.capabilityNote}><summary>{t('modelInfo')}</summary><p className={css.hint}>{t('capabilityHint')}</p></details>}
-
-    <section className={css.works} aria-label={t('projects')}>{projects}</section>
 
     <section className={css.templates} aria-label={t('templates')}>
       <div className={css.sectionHeading}><div><h2 className={css.sectionTitle}>{text(content?.title) || t('templates')}</h2><p className={css.hint}>{text(content?.description) || t('templatesHint')}</p></div>

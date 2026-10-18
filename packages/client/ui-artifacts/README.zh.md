@@ -25,7 +25,7 @@ kind: "package-reference"
 <a id="use-this-package"></a>
 ## 使用本包
 
-将 `@deepseek-ai/dsh-client-ui-artifacts` 与 slot 和语言服务一起挂载在浏览器插件列表中。配合 [artifacts-index](../../deliverables/artifacts-index/README.zh.md) 提供经过认证的文件访问，工作区注册表提供挂载目录。本包没有配置字段。
+将 `@deepseek-ai/dsh-client-ui-artifacts` 与 slot 和语言服务一起挂载在浏览器插件列表中。配合 [artifacts-index](../../deliverables/artifacts-index/README.zh.md) 提供经过认证的文件访问，工作区注册表提供挂载目录。`pollIntervalMs` 控制前台产物库刷新间隔（默认 5000 毫秒，接受范围 1000–60000 毫秒）。可见的产物页定期重查文件、保存目录设置及回收条目，同一时间只执行一轮请求。页面隐藏或卸载时取消未完成的刷新并停止轮询；刷新失败保留已有列表。
 
 产物库合并受管理的输出根目录和已注册本机工作区，包括聊天工具或 shell 命令创建的嵌套文件，不要求纳入 Git 或调用 `present`。点击“保存目录”可在弹窗中查看或修改保存位置；路径和设置在打开弹窗前保持隐藏。弹窗接受已存在的绝对路径，原生文件夹选择器可用时提供选择按钮。保存目录只影响后续媒体生成，已有文件继续可见，不自动移动。注册工作区不会修改该偏好，也不会把工作区根目录写入已保存的输出根目录。
 

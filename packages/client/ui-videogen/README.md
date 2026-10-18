@@ -37,7 +37,7 @@ The video settings control shows the current aspect ratio, resolution and durati
 
 Saved works come from the artifact index across current and retained output roots, including custom directories and Windows paths. Manage their directory, names and recoverable deletion in the [Artifacts page](../ui-artifacts/README.md); the creation grid does not rewrite previous chat links.
 
-Select a workspace chat before generating. Requests retain the initiating chat and account even if the user switches chats while waiting. The shared [Creation projects](../ui-creative/README.md) section shows the same timeline, characters, materials, retained tasks and saved outputs as that chat's creation sidebar. Free plan edits save directly; AI revisions and redo remain editable chat drafts using native fixed workflows. History playback and downloads preserve each artifact's workspace identity, including identical paths in different mounts.
+Select a workspace chat before generating. Requests retain the initiating chat and account even if the user switches chats while waiting. AI creation contains only the image and video tabs; open [Creation](../ui-creative/README.md) in that chat's right sidebar for the timeline, characters, materials, retained tasks and saved outputs. History playback and downloads preserve each artifact's workspace identity, including identical paths in different mounts.
 
 <a id="understand-the-implementation"></a>
 ## Understand the implementation
@@ -78,7 +78,7 @@ The client owns no provider cache or model conversation. Script previews and cat
 
 <a id="known-limitations-and-deferred-work"></a>
 
-- The clip endpoint waits for a final artifact path; it has no client-side generation cancellation or publication action. Creation projects supplies the shared editable timeline and retained task list, while earlier unassociated artifacts lack project metadata. The works grid does not restore composer settings automatically. Audio references and switches follow declared model support. Drafts survive mode changes within a window, but a reload resets them.
+- The clip endpoint waits for a final artifact path; it has no client-side generation cancellation or publication action. Creation projects supplies the chat sidebar's editable timeline and retained task list, while earlier unassociated artifacts lack project metadata. The works grid does not restore composer settings automatically. Audio references and switches follow declared model support. Drafts survive mode changes within a window, but a reload resets them.
 
 <a id="dev-note"></a>
 ### Dev Note

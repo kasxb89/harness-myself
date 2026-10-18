@@ -35,7 +35,7 @@ import { relayCreationContent } from './creation-content.ts'
 import { createVideoEditor } from './video-edit.ts'
 import { registerVideoProjectTools } from './video-project-tools.ts'
 import { registerCreationWorkflows } from './creation-workflows.ts'
-import { readVideoProject, VideoProjectError } from './video-project.ts'
+import { recoverVideoProjectOutputs, VideoProjectError } from './video-project.ts'
 import { createVideoProjectRelay } from './video-project-provider.ts'
 import { bindVideoAccount } from './video-project-account.ts'
 import { captureMediaOutput } from './media-output.ts'
@@ -1872,6 +1872,12 @@ export function apply(ctx: Context, config: Config): void {
   const contentLife = new AbortController()
   const contentRequests = new Set<Promise<void>>()
   let projectOptions: VideoProjectOptions | undefined
+  const projectPublicationLife = new AbortController()
+  const projectPublications = new Set<Promise<unknown>>()
+  ctx.effect(() => async () => {
+    projectPublicationLife.abort()
+    await Promise.allSettled([...projectPublications])
+  }, 'credits-index: retained project clip publication')
   /** Local views and mutation admission use the same non-secret login identity. */
   const creativeIdentity = async (): Promise<VideoProjectIdentity | undefined> => {
     const session = await liveSession()
@@ -1881,7 +1887,17 @@ export function apply(ctx: Context, config: Config): void {
     directory: join(stateDir, 'creative-projects'), current: creativeIdentity,
     video: async (id, owner) => {
       if (projectOptions === undefined) throw new CreativeError('CREATIVE_UNAVAILABLE', 503, '视频项目服务尚未准备好，请稍后重试。')
-      return readVideoProject(projectOptions, id, owner.sessionId, owner.workspaceRoot, owner)
+      const identity = await creativeIdentity()
+      if (identity?.accountId !== owner.accountId) throw new CreativeError('CREATIVE_ACCOUNT_CHANGED', 409, '登录状态已变化，请刷新后查看当前账号。')
+      const operation = recoverVideoProjectOutputs(projectOptions, id, owner.sessionId, owner.workspaceRoot, identity,
+        projectPublicationLife.signal, async () => {
+          const current = await creativeIdentity()
+          if (current?.accountId !== identity.accountId || current.sessionFingerprint !== identity.sessionFingerprint) {
+            throw new CreativeError('CREATIVE_ACCOUNT_CHANGED', 409, '登录状态已变化，已停止保存本次创作。')
+          }
+        })
+      projectPublications.add(operation)
+      try { return await operation } finally { projectPublications.delete(operation) }
     },
   })
   registerCreativeTools(ctx, creative, creativeIdentity)
