@@ -153,6 +153,9 @@ async function boot(
         answer({ access_token: access, access_expires_at: Math.floor(Date.now() / 1000) + 900, user: { id: 7 } }); return
       }
       if (url.pathname === '/harness/api/user/auth/logout') { answer(null); return }
+      if (url.pathname === '/harness/api/client-activity/heartbeat') {
+        answer({ server_time: Math.floor(Date.now() / 1000), heartbeat_interval_seconds: 30, online_timeout_seconds: 90 }); return
+      }
       if (url.pathname === '/harness/api/pricing') { answer(pricingRows); return }
       if ((url.pathname === '/harness/v1/images/generations' || url.pathname === '/harness/v1/images/edits') && imageResponse !== undefined) {
         if (request.headers.authorization !== `Bearer ${relayKey}`) { response.writeHead(403); response.end('{}'); return }
@@ -1655,6 +1658,33 @@ describe('deployed Harness API through the real product Loader', () => {
     const order: unknown = await (await fetch(base + '/api/recharge/wechat/order?outTradeNo=order-one')).json()
     expect(order).toMatchObject({ ok: true, payload: { status: 'pending', amount: 1, points: 1000 } })
     expect(calls.some(call => call.path.endsWith('/wechat/order?out_trade_no=order-one'))).toBe(true)
+  })
+
+  it('renews idle Desktop presence through the Host timer without renderer account reads', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+    const { base, api, stateDir } = await boot(undefined, false, true)
+    await signIn(base)
+    await context!.harnessAccount.refreshModels(api + '/v1')
+    const cookie = await hostCookie(base)
+    const sample = { session_id: '01234567-89ab-4cde-8fab-0123456789ab', event: 'heartbeat',
+      foreground: false, platform: 'win32', app_version: '1.2.3' }
+    expect(await post(base, '/api/activity', sample, cookie)).toEqual({ ok: true })
+    const firstId = object(calls.find(call => call.path.endsWith('/client-activity/heartbeat'))?.body).session_id
+    for (const expectedRefreshes of [1, 2]) {
+      vi.setSystemTime(Date.now() + 14 * 60_000)
+      await vi.advanceTimersByTimeAsync(60_000)
+      await vi.waitFor(() => { expect(refreshes).toBe(expectedRefreshes) })
+      await vi.waitFor(async () => {
+        const stored = object(JSON.parse(await readFile(join(stateDir, 'session.json'), 'utf8')))
+        expect(object(stored.upstream).token).toBe('access-renewed')
+        expect(Date.parse(String(object(stored.upstream).expiresAt))).toBeGreaterThan(Date.now() + 60_000)
+      })
+      expect(await post(base, '/api/activity', sample, cookie)).toEqual({ ok: true })
+      const report = calls.filter(call => call.path.endsWith('/client-activity/heartbeat')).at(-1)
+      expect(report?.authorization).toBe('Bearer access-renewed')
+      expect(object(report?.body).session_id).toBe(firstId)
+    }
+    expect(creations).toBe(0)
   })
 
   it('waits for one rotating refresh before concurrent account reads', async () => {

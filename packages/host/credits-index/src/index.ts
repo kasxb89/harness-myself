@@ -28,6 +28,7 @@ import QRCode from 'qrcode'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { HarnessAccount } from '@deepseek-ai/dsh-llm-pi-ai'
 import { apiUrl, normalizeApiBaseUrl } from './api-url.ts'
+import { ClientActivitySessions, parseClientActivity, type ClientActivitySample } from './client-activity.ts'
 import { parseUsageWindow, readAccountUsage } from './usage.ts'
 import { assistPrompt, parsePromptAssist, promptAssistFailure } from './prompt-assist.ts'
 import { isPromptAssistSelectionCurrent, resolvePromptAssistSelection } from './prompt-assist-selection.ts'
@@ -1684,6 +1685,33 @@ export function apply(ctx: Context, config: Config): void {
     return await send(renewed)
   }
 
+  const activityLife = new AbortController()
+  const activitySessions = new ClientActivitySessions()
+  const activityOperations = new Set<Promise<unknown>>()
+  let previousActivity: { session: StoredSession; sample: ClientActivitySample } | undefined
+  /** An activity failure never changes login, balance, model calls, or user-visible operation results. */
+  const sendActivity = async (session: StoredSession, sample: ClientActivitySample, signal: AbortSignal): Promise<void> => {
+    const response = await apiFetch('/api/client-activity/heartbeat', {
+      method: 'POST', headers: { authorization: `Bearer ${session.upstream?.token ?? ''}`, 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify(sample), signal,
+    })
+    await response.body?.cancel()
+    if (!response.ok) throw new Error('Client activity unavailable')
+  }
+  const stopActivity = async (token?: string): Promise<void> => {
+    const previous = previousActivity
+    if (previous === undefined || (token !== undefined && previous.session.token !== token)) return
+    previousActivity = undefined
+    activitySessions.clear()
+    try { await sendActivity(previous.session, { ...previous.sample, event: 'stop', foreground: false }, AbortSignal.timeout(2_000)) }
+    catch (_unavailableActivityServer: unknown) { /* Server heartbeat expiry represents an unconfirmed exit. */ }
+  }
+  ctx.effect(() => async () => {
+    activityLife.abort()
+    await Promise.allSettled([...activityOperations])
+    await stopActivity()
+  }, 'credits-index: current-account Desktop activity')
+
   let modelCatalogClosed = false
   let modelCatalogFlight: { version: number; token: string; controller: AbortController; promise: Promise<readonly string[]> } | null = null
   const modelCatalogOperations = new Set<Promise<readonly string[]>>()
@@ -2005,6 +2033,52 @@ export function apply(ctx: Context, config: Config): void {
 
 
       try {
+        if (route === '/api/activity') {
+          const connection = ctx.get('connection')
+          const rejected = connection === undefined ? 403 : connection.requestRejection(request)
+          if (rejected !== undefined) { json(response, rejected, { ok: false, code: 'ACTIVITY_HOST_AUTH_REQUIRED' }); return }
+          if (method !== 'POST') { json(response, 405, { ok: false, code: 'METHOD_NOT_ALLOWED' }); return }
+          const lifetime = new AbortController()
+          const disconnected = (): void => { lifetime.abort() }
+          response.once('close', disconnected)
+          const operation = (async () => {
+            const signal = AbortSignal.any([activityLife.signal, lifetime.signal, AbortSignal.timeout(2_000)])
+            addAbortSignal(signal, request)
+            let value: unknown
+            try { value = JSON.parse((await readRaw(request, 1024)).toString('utf8')) }
+            catch (_invalidActivityJson: unknown) { if (!response.destroyed) json(response, 400, { ok: false, code: 'INVALID_REQUEST' }); return }
+            const sample = parseClientActivity(value)
+            if (sample === null) { json(response, 400, { ok: false, code: 'INVALID_REQUEST' }); return }
+            const version = identityVersion
+            const isCurrent = (): boolean => version === identityVersion && !signal.aborted
+            const session = await store.read()
+            const backendBase = session?.backendBaseUrl ?? (isLoopbackOrigin(apiBaseUrl) ? apiBaseUrl : undefined)
+            const accessExpiry = Date.parse(session?.upstream?.expiresAt ?? '')
+            if (session?.token === undefined || session.upstream?.token === undefined || backendBase !== apiBaseUrl
+              || !(Date.parse(session.expiresAt) > Date.now()) || !(accessExpiry > Date.now()) || !isCurrent()) {
+              if (!response.destroyed) json(response, 200, { ok: true, recorded: false })
+              return
+            }
+            if (previousActivity !== undefined && previousActivity.session.token !== session.token) await stopActivity()
+            const forwarded = { ...sample, session_id: activitySessions.resolve(sample.session_id, session.token) }
+            if (!isCurrent()) {
+              if (!response.destroyed) json(response, 200, { ok: true, recorded: false })
+              return
+            }
+            previousActivity = sample.event === 'stop' ? undefined : { session, sample: forwarded }
+            if (sample.event === 'stop') activitySessions.clear()
+            try {
+              await sendActivity(session, forwarded, signal)
+              if (!response.destroyed) json(response, 200, { ok: true })
+            } catch (_unavailableActivityServer: unknown) {
+              if (!response.destroyed) json(response, 200, { ok: true, recorded: false })
+            }
+          })()
+          activityOperations.add(operation)
+          try { await operation } finally { activityOperations.delete(operation); response.off('close', disconnected) }
+          return
+        }
+
         if (route === '/api/creative/projects' || route === '/api/creative/media' || route === '/api/creative/plan' || route === '/api/creative/reference') {
           const connection = ctx.get('connection')
           const rejected = connection === undefined ? 403 : connection.requestRejection(request)
@@ -2342,6 +2416,7 @@ export function apply(ctx: Context, config: Config): void {
         if (route === '/api/session/logout' && method === 'POST') {
           const previous = await store.read()
           identityVersion += 1
+          await stopActivity(previous?.token)
           invalidateModelCatalog()
           const pending = renewal !== null && renewal.token === previous?.token ? renewal.promise : null
           await mutateSession(async () => {

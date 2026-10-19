@@ -58,6 +58,13 @@ afterEach(() => {
 })
 
 describe('balance phone sign-in', () => {
+  it('discloses the limited Desktop activity statistics before sign-in', () => {
+    const view = renderSignIn()
+    const notice = view.getByText(zh.activityNotice).textContent
+    expect(notice).toContain('软件上线')
+    expect(notice).toContain('聊天正文')
+  })
+
   it.each(['13800138000', '+86 138 0013 8000'])(
     'sends a normalized E.164 challenge for %s',
     async (phone) => {

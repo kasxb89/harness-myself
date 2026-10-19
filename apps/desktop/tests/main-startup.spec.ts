@@ -38,7 +38,7 @@ const harness = await vi.hoisted(async () => {
   }
   const windows: FakeWindow[] = []
   let windowFailure: Error | undefined
-  const powerMonitor = new EventEmitter()
+  const powerMonitor = Object.assign(new EventEmitter(), { getSystemIdleState: vi.fn<(_seconds: number) => string>(() => 'active') })
   const hosts: FakeHost[] = []
   const handlers = new Map<string, InvokeHandler>()
   let pluginsEnabled = false
@@ -122,6 +122,7 @@ const harness = await vi.hoisted(async () => {
     }
     async loadFile(path: string) { await this.loadURL(pathToFileURL(path).href) }
     static getAllWindows() { return windows.filter(window => !window.destroyed) }
+    static getFocusedWindow() { return windows.find(window => !window.destroyed && window.visible) ?? null }
     setMenu() {}
     getContentBounds() { return { x: 0, y: 0, width: 900, height: 650 } }
     setBounds() {}
@@ -185,6 +186,7 @@ const harness = await vi.hoisted(async () => {
   let analyticsEnabled = true
   let analyticsEnabledListener: ((enabled: boolean) => void) | undefined
   const analytics = vi.fn(async (_event: unknown) => {})
+  const activity = vi.fn(async (_sample: unknown, _signal: AbortSignal) => {})
   const nativeTheme = { themeSource: 'system', shouldUseDarkColors: false }
   const trays: FakeTray[] = []
   class FakeTray extends EventEmitter {
@@ -199,7 +201,7 @@ const harness = await vi.hoisted(async () => {
     progressOpened: vi.fn(), progressChanged: vi.fn(), dismissProgress: () => {} }
   return {
     failWindow(error: Error) { windowFailure = error },
-    windows, hosts, handlers, app, FakeWindow, FakeHost, powerMonitor, nativeTheme, analytics,
+    windows, hosts, handlers, app, FakeWindow, FakeHost, powerMonitor, nativeTheme, analytics, activity,
     trays, FakeTray, backgroundNotice, shellDialog,
     menu, popup, socketHeaders: vi.fn(), loginShell, readLoginShell, updateCheck, updateDownload, updateInstall,
     platformDispose,
@@ -253,6 +255,7 @@ const harness = await vi.hoisted(async () => {
       shellDialog.progress = undefined
       shellDialog.dismissProgress = () => {}
       powerMonitor.removeAllListeners()
+      powerMonitor.getSystemIdleState.mockReturnValue('active')
       app.isPackaged = true
       windowFailure = undefined
       pluginsEnabled = false
@@ -393,6 +396,7 @@ vi.mock('../src/welcome-backend.ts', () => ({
   connectDesktopWelcome: async () => ({
     analyticsEnabled: async () => harness.analyticsEnabled,
     report: harness.analytics,
+    activity: harness.activity,
     readLocalePreference: async () => null,
     read: async (): Promise<unknown> => (await harness.hosts.at(-1)!.fetch()).json() as Promise<unknown>,
     save: async () => ({ ok: true }),
@@ -473,6 +477,40 @@ afterEach(async () => {
 })
 
 describe('desktop main startup', () => {
+  it('keeps one native activity reporter through tray hiding and excludes idle, locked and suspended foreground time', async () => {
+    const host = await readyForUpdate()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(harness.activity.mock.calls[0]?.[0]).toMatchObject({ event: 'start', foreground: true, platform: 'win32' })
+    expect(harness.powerMonitor.getSystemIdleState).toHaveBeenCalledWith(60)
+    harness.powerMonitor.getSystemIdleState.mockReturnValue('idle')
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(harness.activity.mock.lastCall?.[0]).toMatchObject({ event: 'heartbeat', foreground: false })
+    harness.powerMonitor.getSystemIdleState.mockReturnValue('active')
+    harness.powerMonitor.emit('lock-screen')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(harness.activity.mock.lastCall?.[0]).toMatchObject({ foreground: false })
+    harness.powerMonitor.emit('unlock-screen')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(harness.activity.mock.lastCall?.[0]).toMatchObject({ foreground: true })
+    harness.powerMonitor.emit('suspend')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(harness.activity.mock.lastCall?.[0]).toMatchObject({ foreground: false })
+    harness.powerMonitor.emit('resume')
+    await vi.advanceTimersByTimeAsync(0)
+    harness.windows[0]!.visible = false
+    harness.app.emit('browser-window-blur')
+    await vi.advanceTimersByTimeAsync(0)
+    const hidden = harness.activity.mock.calls.length
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(harness.activity.mock.calls.length).toBeGreaterThan(hidden)
+    expect(harness.activity.mock.lastCall?.[0]).toMatchObject({ event: 'heartbeat', foreground: false })
+    harness.app.quit()
+    await host.stopping.promise
+    expect(harness.activity.mock.lastCall?.[0]).toMatchObject({ event: 'stop', foreground: false })
+    host.exited.resolve()
+    await harness.quitCompleted.promise
+  })
+
   it('uses the product display name while preserving the existing data and log paths', async () => {
     const userData = harness.app.getPath('userData')
     const logs = harness.app.getPath('logs')

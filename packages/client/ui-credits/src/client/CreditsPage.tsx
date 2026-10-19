@@ -181,6 +181,7 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected): 
           </Button>
         )}
       </header>
+      <p className={css.hint}>{t('activityNotice')}</p>
 
       {signedIn && failure !== null && <p className={css.banner} data-tone="error" role="alert">{failure}</p>}
       {readFailure === 'ACCOUNT_UNAVAILABLE' && <p className={css.banner} data-tone="error" role="alert">{t('accountReadFailed')}</p>}

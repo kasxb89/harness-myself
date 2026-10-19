@@ -2,6 +2,7 @@ import type { ProductEvent } from '@deepseek-ai/dsh-client-product-analytics/typ
 /** Native welcome operations using the shared Web authentication and RPC APIs. */
 
 import { randomUUID } from 'node:crypto'
+import type { DesktopActivitySample } from './client-activity.ts'
 import { desktopAccountBackend, type DesktopAccountBackend } from './account-backend.ts'
 
 /** Metadata needed before the native entry or workspace becomes visible. */
@@ -18,6 +19,8 @@ export interface DesktopWelcomeBackend {
   /** @returns the current Host policy; every read observes live configuration. */
   analyticsEnabled(): Promise<boolean>
   readonly account: DesktopAccountBackend
+  /** @param sample - native high-level presence, without identity or content. @param signal - bounded local transport lifetime. */
+  activity(sample: DesktopActivitySample, signal: AbortSignal): Promise<void>
   /** @param event - desktop-owned fields. @returns after local Host intake. */
   report(event: ProductEvent): Promise<void>
   /** @returns Product phone-session status and the shared language preference, without credential values. */
@@ -109,6 +112,14 @@ export async function connectDesktopWelcome(
   return {
     account,
     read,
+    async activity(sample, signal) {
+      const response = await send(new URL('/credits/api/activity', origin).href, {
+        method: 'POST', credentials: 'include', redirect: 'error', signal,
+        headers: { 'content-type': 'application/json' }, body: JSON.stringify(sample),
+      })
+      await response.body?.cancel()
+      if (!response.ok) throw new Error('desktop activity: Host unavailable')
+    },
     async analyticsEnabled() {
       const enabled = await invoke({ namespace: 'productAnalytics', method: 'enabled', args: {} }, AbortSignal.timeout(1000))
       if (typeof enabled !== 'boolean') throw new Error('desktop analytics: invalid collection policy')

@@ -63,6 +63,7 @@ import { DesktopUpdateOverlays } from './update-overlay.ts'
 import { DesktopQuitConfirmation } from './quit-confirmation.ts'
 import { DesktopTray } from './tray.ts'
 import { DesktopBackgroundNotice } from './background-notice.ts'
+import { DesktopClientActivity } from './client-activity.ts'
 
 let focusPrimaryWindow = (): void => {}
 let stopForRecovery = async (): Promise<void> => {}
@@ -427,6 +428,14 @@ async function main(): Promise<void> {
   const browserGuests = new DesktopBrowserGuests(() => hostUrl)
   let injections: readonly unknown[] = []
   let welcomeBackend: DesktopWelcomeBackend | undefined
+  const activity = new DesktopClientActivity(process.platform === 'win32' ? 'win32' : process.platform === 'darwin' ? 'darwin' : 'linux',
+    desktopClientVersion(), () => BrowserWindow.getFocusedWindow() !== null && powerMonitor.getSystemIdleState(60) === 'active')
+  app.on('browser-window-focus', () => { activity.changed() })
+  app.on('browser-window-blur', () => { activity.changed() })
+  powerMonitor.on('lock-screen', () => { activity.setLocked(true) })
+  powerMonitor.on('unlock-screen', () => { activity.setLocked(false) })
+  powerMonitor.on('suspend', () => { activity.setSuspended(true) })
+  powerMonitor.on('resume', () => { activity.setSuspended(false) })
   let reportedLaunch = false
   let analyticsEnabled = false
   const track = async <K extends keyof ProductEventMap>(eventName: K, attributes: ProductEventMap[K]): Promise<void> => {
@@ -476,6 +485,8 @@ async function main(): Promise<void> {
         if (ready.injections === undefined) throw new Error('Desktop Host did not provide boot injections')
         injections = ready.injections
         welcomeBackend = await connectDesktopWelcome(ready.url, (input, init) => net.fetch(input, init), async () => (await session.defaultSession.cookies.get({ url: ready.url })).map(cookie => `${cookie.name}=${cookie.value}`).join('; '))
+        const activityBackend = welcomeBackend
+        activity.connect((sample, signal) => activityBackend.activity(sample, signal))
         analyticsEnabled = await welcomeBackend.analyticsEnabled().catch(() => false)
         if (!reportedLaunch) { reportedLaunch = true; void track('desktop_app_launch', {}) }
         stopAccount?.()
@@ -508,6 +519,7 @@ async function main(): Promise<void> {
         }, (enabled) => { analyticsEnabled = enabled })
       },
       stop: async () => {
+        activity.connect(undefined)
         analyticsEnabled = false
         stopAccount?.()
         try { await host.stop(requireCleanStop) }
@@ -1294,7 +1306,8 @@ async function main(): Promise<void> {
     updateSchedule.dispose()
     updateDialog.dispose()
     mandatoryUI?.dispose()
-    void Promise.all([Promise.resolve(mandatoryPolicy?.dispose()).then(() => policyAuth?.dispose()), backend.close(),
+    void Promise.all([Promise.resolve(mandatoryPolicy?.dispose()).then(() => policyAuth?.dispose()),
+      activity.dispose().then(() => backend.close()),
       unsignedMacUpdater?.disposePreparedUpdate(),
       // A Platform cleanup failure is logged without cutting the remaining Host shutdown short.
       platformView.dispose().catch((error: unknown) => { console.error(error) })])

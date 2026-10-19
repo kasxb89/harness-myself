@@ -121,6 +121,22 @@ describe('desktop welcome Web operations', () => {
     await expect(backend.read()).rejects.toThrow(/product session/)
   })
 
+  it('forwards only native activity through the authenticated local Host', async () => {
+    const host = transport()
+    const backend = await connectDesktopWelcome(url, host.send)
+    host.send.mockResolvedValueOnce(Response.json({ ok: true }))
+    const signal = AbortSignal.timeout(1000)
+    const sample = { session_id: '01234567-89ab-4cde-8fab-0123456789ab', event: 'heartbeat' as const,
+      foreground: false, platform: 'win32' as const, app_version: '1.2.3' }
+    await backend.activity(sample, signal)
+    expect(host.send.mock.lastCall).toEqual(['http://127.0.0.1:19387/credits/api/activity', {
+      method: 'POST', credentials: 'include', redirect: 'error', signal,
+      headers: { 'content-type': 'application/json' }, body: JSON.stringify(sample),
+    }])
+    host.send.mockResolvedValueOnce(new Response(null, { status: 404 }))
+    await expect(backend.activity(sample, signal)).rejects.toThrow('Host unavailable')
+  })
+
   it('refuses an unauthenticated Web launch', async () => {
     const send = vi.fn<Parameters<typeof connectDesktopWelcome>[1]>(async () => new Response(null, { status: 401 }))
     await expect(connectDesktopWelcome(url, send)).rejects.toThrow('Web authentication failed')
