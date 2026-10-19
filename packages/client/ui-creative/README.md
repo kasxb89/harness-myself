@@ -27,6 +27,8 @@ Open **Creation** in the chat's existing right sidebar. Each chat retains its se
 
 The thumbnail timeline shows planned start and end times. Select a shot to inspect it, move it earlier or later, and edit its title, duration, camera, scene, action, prompt, dialogue, subtitles and character/material associations. Character and material cards support search, creation and editing; material uploads retain a real local reference identifier. Saving is free and checks the plan revision. A conflicting edit preserves the form and asks for refresh; running linked items cannot be rewritten. Requested timing and the latest submitted duration are separate facts.
 
+Material uploads accept common image formats, including HEIC, TIFF and animated GIF. The host converts images to model-supported PNG/JPEG and returns the converted size and authorized preview; animated or multipage sources use their first frame. The editor identifies a failed file and its reason while retaining the previous material, and permits choosing the same file again. Each material editor uploads one source at a time.
+
 The task section filters retained invocation states and output kinds, shows completed shot counts and opens real saved reference images, clips and final files. Failed and unknown work remains visible beside earlier usable outputs. Counts describe committed local records, not estimated upstream rendering percentages.
 
 Only owner-authorized files appear as previews. Video frame grids contain extracted frames with actual timestamps; missing or failed frame extraction stays visible while the original file remains downloadable. File completion and synchronization verification are independent: saved videos display speech, lip and subtitle timing as unverified.

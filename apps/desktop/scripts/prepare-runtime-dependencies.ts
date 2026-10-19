@@ -9,6 +9,8 @@ import { packedManifest } from '../../../scripts/release/tarball.ts'
 
 const VIDEO_PACKAGE = 'deepseek-ivideo'
 const VIDEO_VERSION = '0.5.0'
+const HEIC_OVERRIDE = 'heic-decode@2.1.0>libheif-js'
+const HEIC_LIBRARY_VERSION = '1.23.5'
 const REVIEWED_BUILDS = { esbuild: true, 'onnxruntime-node@1.23.2': false, 'sharp@0.34.5': false } as const
 
 interface RuntimeWorkspace {
@@ -19,6 +21,7 @@ interface RuntimeWorkspace {
 
 interface RuntimeLock {
   packages?: Record<string, { version?: string; resolution?: { integrity?: string; tarball?: string } }>
+  snapshots?: Record<string, { dependencies?: Record<string, string> }>
 }
 
 /** Immutable local release mirror required by the selected product bundle. */
@@ -38,7 +41,7 @@ function normalizeSpec(spec: string): string {
 }
 
 /**
- * Copy the locked Video Studio release and reviewed build decisions before resolving Desktop dependencies.
+ * Copy the locked Video Studio release, HEIC library pin and reviewed build decisions before resolving Desktop dependencies.
  * The source workspace remains read-only; a rejected preparation must discard the disposable project.
  * @param projectRoot - Independent Desktop project containing its generated workspace settings.
  * @param repositoryRoot - Source workspace containing the reviewed mirror, source pin and lockfile.
@@ -71,6 +74,9 @@ export function prepareRuntimeDependencies(projectRoot: string, repositoryRoot: 
   if (source.overrides?.[edge] !== `file:./${path}`) {
     throw new Error('desktop dependencies: missing reviewed Video Studio mirror override')
   }
+  if (source.overrides[HEIC_OVERRIDE] !== HEIC_LIBRARY_VERSION) {
+    throw new Error(`desktop dependencies: missing reviewed HEIC override for ${HEIC_OVERRIDE}`)
+  }
   const resolved = lock.packages?.[`${VIDEO_PACKAGE}@file:${path}`]
   const sourcePath = join(repositoryRoot, path)
   const hash = integrity(sourcePath)
@@ -88,6 +94,9 @@ export function prepareRuntimeDependencies(projectRoot: string, repositoryRoot: 
   if (target.overrides?.[edge] !== undefined && target.overrides[edge] !== source.overrides[edge]) {
     throw new Error(`desktop dependencies: conflicting dependency override for ${edge}`)
   }
+  if (target.overrides?.[HEIC_OVERRIDE] !== undefined && target.overrides[HEIC_OVERRIDE] !== HEIC_LIBRARY_VERSION) {
+    throw new Error(`desktop dependencies: conflicting dependency override for ${HEIC_OVERRIDE}`)
+  }
   for (const [name, allowed] of Object.entries(REVIEWED_BUILDS)) {
     if (source.allowBuilds?.[name] !== allowed) throw new Error(`desktop dependencies: missing reviewed build decision for ${name}`)
     if (target.allowBuilds?.[name] !== undefined && target.allowBuilds[name] !== allowed) {
@@ -98,7 +107,7 @@ export function prepareRuntimeDependencies(projectRoot: string, repositoryRoot: 
   copyFileSync(sourcePath, join(projectRoot, path))
   writeFileSync(targetPath, yaml.dump({
     ...target,
-    overrides: { ...target.overrides, [edge]: source.overrides[edge] },
+    overrides: { ...target.overrides, [edge]: source.overrides[edge], [HEIC_OVERRIDE]: HEIC_LIBRARY_VERSION },
     allowBuilds: { ...target.allowBuilds, ...REVIEWED_BUILDS },
   }))
   return { name: VIDEO_PACKAGE, version: VIDEO_VERSION, path, integrity: hash }
@@ -112,6 +121,15 @@ export function prepareRuntimeDependencies(projectRoot: string, repositoryRoot: 
 export function verifyRuntimeDependencies(projectRoot: string, plan: PreparedRuntimeDependencies): void {
   if (integrity(join(projectRoot, plan.path)) !== plan.integrity) throw new Error('desktop dependencies: staged mirror bytes changed')
   const lock = yaml.load(readFileSync(join(projectRoot, 'pnpm-lock.yaml'), 'utf8')) as RuntimeLock
+  const heicDecoders = Object.keys(lock.packages ?? {}).filter(name => name.startsWith('heic-decode@'))
+  const libraries = Object.keys(lock.packages ?? {}).filter(name => name.startsWith('libheif-js@'))
+  if (heicDecoders.length > 0 || libraries.length > 0) {
+    if (heicDecoders.length !== 1 || heicDecoders[0] !== 'heic-decode@2.1.0'
+      || libraries.length !== 1 || libraries[0] !== `libheif-js@${HEIC_LIBRARY_VERSION}`
+      || lock.snapshots?.['heic-decode@2.1.0']?.dependencies?.['libheif-js'] !== HEIC_LIBRARY_VERSION) {
+      throw new Error('desktop dependencies: HEIC decoder did not resolve its reviewed library version')
+    }
+  }
   const entries = Object.entries(lock.packages ?? {}).filter(([name]) => name.startsWith(`${plan.name}@`))
   const [entry] = entries
   if (entries.length !== 1 || entry === undefined || normalizeSpec(entry[0].slice(plan.name.length + 1)) !== `file:${plan.path}`

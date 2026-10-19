@@ -44,6 +44,7 @@ import { CreativeError, CreativeStore, parseCreativePlanChange, type CreativeOpe
 import { creativeOwner, registerCreativeTools } from './creative-tools.ts'
 import { creativePanelOwner } from './creative-panel.ts'
 import { readChatImageReference } from './chat-image-references.ts'
+import { normalizeReferenceImage, ReferenceImageError, REFERENCE_IMAGE_INPUT_LIMIT } from './reference-image.ts'
 import {
   catalogFromPricing,
   mediaModelIds,
@@ -92,6 +93,8 @@ export interface Config {
   promptAssistantVisionModel?: string
   /** Deadline for one prompt-assistance operation, independent of account and media timeouts. */
   promptAssistantTimeoutMs?: number
+  /** Maximum model output tokens for one prompt-assistance request. */
+  promptAssistantMaxTokens?: number
   /** Maximum final length accepted by natural-language video projects. */
   videoProjectMaxSeconds?: number
   /** Maximum separately billable clips in one video project. */
@@ -131,6 +134,7 @@ export const Config: z<Config> = z.object({
   promptAssistantModel: z.string().max(256).pattern(/^(?!.*[\u0000-\u001f\u007f])\S*$/u).default(''),
   promptAssistantVisionModel: z.string().max(256).pattern(/^(?!.*[\u0000-\u001f\u007f])\S*$/u).default(''),
   promptAssistantTimeoutMs: z.number().step(1).min(1).max(120_000).default(60_000),
+  promptAssistantMaxTokens: z.number().step(1).min(512).max(16_384).default(8192),
   videoProjectMaxSeconds: z.natural().min(1).default(300),
   videoProjectMaxSegments: z.natural().min(1).max(32).default(32),
   videoProjectPollIntervalMs: z.natural().min(1).default(6000),
@@ -891,30 +895,37 @@ export function apply(ctx: Context, config: Config): void {
     bytes: Buffer,
     mediaType: string,
     originalName: string,
+    accountId?: string,
   ): Promise<{ path: string; filename: string }> => {
     await mkdir(referenceDir, { recursive: true, mode: 0o700 })
     const extension = Object.entries(MEDIA_TYPE_BY_EXTENSION).find(([, type]) => type === mediaType)?.[0] ?? 'bin'
     const filename = `${assetId}.${extension}`
     const target = join(referenceDir, filename)
     await writeFile(target, bytes, { mode: 0o600 })
-    await writeFile(`${target}.json`, `${JSON.stringify({ mediaType, originalName }, null, 2)}\n`, { mode: 0o600 })
+    await writeFile(`${target}.json`, `${JSON.stringify({ mediaType, originalName, ...accountId === undefined ? {} : { accountId } }, null, 2)}\n`, { mode: 0o600 })
     return { path: target, filename }
   }
 
   /** Read one stored reference back, with the media type it was uploaded as. */
-  const readReference = async (assetId: string): Promise<{ bytes: Buffer; mediaType: string; filename: string } | null> => {
+  const readReference = async (assetId: string): Promise<{
+    bytes: Buffer
+    mediaType: string
+    filename: string
+    accountId?: string
+  } | null> => {
     if (!/^ma_[A-Za-z0-9]{1,64}$/.test(assetId)) return null
     try {
       const entries = await readdir(referenceDir)
       const match = entries.find(entry => entry.startsWith(`${assetId}.`) && !entry.endsWith('.json'))
       if (match === undefined) return null
       const bytes = await readFile(join(referenceDir, match))
-      const meta = JSON.parse(await readFile(join(referenceDir, `${match}.json`), 'utf8')) as { mediaType?: unknown; originalName?: unknown }
+      const meta = JSON.parse(await readFile(join(referenceDir, `${match}.json`), 'utf8')) as { mediaType?: unknown; originalName?: unknown; accountId?: unknown }
       const extension = match.split('.').pop() ?? 'bin'
       return {
         bytes,
         mediaType: typeof meta.mediaType === 'string' ? meta.mediaType : MEDIA_TYPE_BY_EXTENSION[extension] ?? 'application/octet-stream',
         filename: typeof meta.originalName === 'string' ? meta.originalName : match,
+        ...typeof meta.accountId === 'string' ? { accountId: meta.accountId } : {},
       }
     } catch {
       return null
@@ -1407,7 +1418,8 @@ export function apply(ctx: Context, config: Config): void {
           for (const assetId of references) {
             const file = await readReference(assetId)
             if (file === null) throw new Error(`参考图 ${assetId} 已失效，请重新上传`)
-            form.append('image[]', new Blob([new Uint8Array(file.bytes)], { type: file.mediaType }), file.filename)
+            const extension = file.mediaType === 'image/jpeg' ? 'jpg' : file.mediaType === 'image/webp' ? 'webp' : 'png'
+            form.append('image[]', new Blob([new Uint8Array(file.bytes)], { type: file.mediaType }), `reference-${String(form.getAll('image[]').length + 1)}.${extension}`)
           }
           await beforeSubmission()
           return await apiFetch('/v1/images/edits', {
@@ -2117,7 +2129,7 @@ export function apply(ctx: Context, config: Config): void {
                     readDefaultSelection: () => defaultModel.currentSelection(),
                   })
                 },
-                stateDir, timeoutMs: resolved.promptAssistantTimeoutMs,
+                stateDir, timeoutMs: resolved.promptAssistantTimeoutMs, maxTokens: resolved.promptAssistantMaxTokens,
                 signal, readReference,
               })
               if (!response.destroyed) json(response, 200, outcome)
@@ -2518,8 +2530,29 @@ export function apply(ctx: Context, config: Config): void {
           return
         }
 
+        if (route === '/api/assets/preview' && (method === 'GET' || method === 'HEAD')) {
+          const connection = ctx.get('connection')
+          const rejected = connection === undefined ? 403 : connection.requestRejection(request)
+          if (rejected !== undefined) {
+            json(response, rejected, { ok: false, code: 'IMAGE_PREVIEW_HOST_AUTH_REQUIRED', message: '请从已连接的云枢客户端查看图片' }); return
+          }
+          const session = await liveSession()
+          if (session?.upstream?.token === undefined) { sessionExpired(response); return }
+          const assetId = url.searchParams.get('asset_id') ?? ''
+          const reference = await readReference(assetId)
+          if (reference === null || reference.accountId !== session.account.id
+            || !ALLOWED_ASSET_TYPES.has(reference.mediaType)) {
+            json(response, 404, { ok: false, code: 'IMAGE_PREVIEW_UNAVAILABLE', message: '图片预览已失效，请重新上传' }); return
+          }
+          if ((await liveSession())?.account.id !== session.account.id) { sessionExpired(response); return }
+          response.writeHead(200, { 'content-type': reference.mediaType, 'content-length': reference.bytes.length,
+            'cache-control': 'no-store', 'x-content-type-options': 'nosniff' })
+          response.end(method === 'HEAD' ? undefined : reference.bytes)
+          return
+        }
+
         if (route === '/api/assets' && method === 'POST') {
-          const mediaType = (request.headers['content-type'] ?? '').split(';')[0]?.trim().toLowerCase() ?? ''
+          let mediaType = (request.headers['content-type'] ?? '').split(';')[0]?.trim().toLowerCase() ?? ''
           let filename: string
           try { filename = decodeURIComponent(String(request.headers['x-file-name'] ?? '')) } catch {
             json(response, 400, { ok: false, code: 'MEDIA_ASSET_REQUEST_INVALID', message: '素材文件名编码无效，请重新选择文件。' }); return
@@ -2528,84 +2561,76 @@ export function apply(ctx: Context, config: Config): void {
             json(response, 400, { ok: false, code: 'MEDIA_ASSET_REQUEST_INVALID', message: '素材文件名为空、过长或包含控制字符。' }); return
           }
           const idempotencyKey = String(request.headers['x-idempotency-key'] ?? '')
-          const allowedTypes = resolved.baseUrl === ''
-            ? new Set([...ALLOWED_ASSET_TYPES, ...ALLOWED_REFERENCE_VIDEO_TYPES, ...ALLOWED_REFERENCE_AUDIO_TYPES])
-            : ALLOWED_ASSET_TYPES
-          if (!allowedTypes.has(mediaType) || filename === '' || idempotencyKey === '') {
-            json(response, 200, {
-              ok: false,
-              code: 'MEDIA_ASSET_REQUEST_INVALID',
-              message: '需要受支持的 Content-Type（png/jpeg/webp/mp4/mov/mp3/wav）、x-file-name 与 x-idempotency-key',
-            })
-            return
+          const imageUpload = !ALLOWED_REFERENCE_VIDEO_TYPES.has(mediaType) && !ALLOWED_REFERENCE_AUDIO_TYPES.has(mediaType)
+          if (idempotencyKey === '' || !imageUpload && resolved.baseUrl !== '') {
+            json(response, 200, { ok: false, code: 'MEDIA_ASSET_REQUEST_INVALID', message: '素材上传参数无效，请重新选择文件' }); return
           }
-
-          // The local stack keeps reference media on this machine: new-api
-          // receives bytes inline with the generation call, so nothing has to be
-          // published to a remote asset store first. The platform branch stays
-          // for a deployment that configures one.
-          if (resolved.baseUrl === '') {
-            const session = await liveSession()
-            if (session?.upstream?.token === undefined) { sessionExpired(response); return }
-            const bytes = await readRaw(request, 32 * 1024 * 1024)
-            const limit = (ALLOWED_ASSET_TYPES.has(mediaType) ? 6 : ALLOWED_REFERENCE_AUDIO_TYPES.has(mediaType) ? 15 : 32) * 1024 * 1024
-            if (bytes.length === 0 || bytes.length > limit || !referenceSignature(bytes, mediaType)) {
-              json(response, 200, { ok: false, code: 'MEDIA_ASSET_REQUEST_INVALID', message: '上传内容为空、文件类型不匹配或超过大小限制' })
-              return
-            }
-            const assetId = `ma_${idempotencyKey.replace(/[^A-Za-z0-9]/g, '').slice(0, 40)}`
-            const stored = await storeReference(assetId, bytes, mediaType, filename)
-            json(response, 200, {
-              ok: true,
-              status: 201,
-              asset: {
-                assetId,
-                kind: mediaType.startsWith('audio/') ? 'reference_audio' : mediaType.startsWith('video/') ? 'reference_video' : 'reference_image',
-                contentType: mediaType,
-                sizeBytes: bytes.length,
-                sha256: createHash('sha256').update(bytes).digest('hex'),
-                filename: stored.filename,
-              },
-            })
-            return
-          }
-
           const session = await liveSession()
           if (session?.upstream?.token === undefined) { sessionExpired(response); return }
-          const bytes = await readRaw(request, 32 * 1024 * 1024)
-          if (bytes.length === 0) {
-            json(response, 200, { ok: false, code: 'MEDIA_ASSET_REQUEST_INVALID', message: '上传内容为空' })
+          if (Number(request.headers['content-length']) > REFERENCE_IMAGE_INPUT_LIMIT) {
+            json(response, 200, { ok: false, code: 'IMAGE_INPUT_TOO_LARGE', filename, message: '原图超过 32 MB，请缩小后重试' }); return
+          }
+          let bytes = await readRaw(request, REFERENCE_IMAGE_INPUT_LIMIT)
+          let normalized: Awaited<ReturnType<typeof normalizeReferenceImage>> | undefined
+          if (imageUpload) {
+            try { normalized = await normalizeReferenceImage(bytes, filename) } catch (error) {
+              const reason = error instanceof ReferenceImageError ? error.code : 'IMAGE_CONVERSION_FAILED'
+              const code = reason === 'IMAGE_FORMAT_UNSUPPORTED' && /^(audio|video)\//u.test(mediaType)
+                ? 'MEDIA_ASSET_REQUEST_INVALID' : reason
+              json(response, 200, { ok: false, code, filename, message: '图片无法处理，请检查图片格式、完整性和大小后重试' }); return
+            }
+            bytes = normalized.bytes
+            mediaType = normalized.mediaType
+          } else {
+            const limit = (ALLOWED_REFERENCE_AUDIO_TYPES.has(mediaType) ? 15 : 32) * 1024 * 1024
+            if (bytes.length === 0 || bytes.length > limit || !referenceSignature(bytes, mediaType)) {
+              json(response, 200, { ok: false, code: 'MEDIA_ASSET_REQUEST_INVALID', filename,
+                message: '上传内容为空、文件类型不匹配或超过大小限制' }); return
+            }
+          }
+          const imageFacts = normalized === undefined ? {} : {
+            originalName: filename, sourceFormat: normalized.sourceFormat, converted: normalized.converted,
+            firstFrameOnly: normalized.firstFrameOnly, width: normalized.width, height: normalized.height,
+          }
+          const saveUpload = async (assetId: string): Promise<{ path: string; filename: string } | null> => {
+            try { return await storeReference(assetId, bytes, mediaType, filename, session.account.id) } catch {
+              json(response, 200, { ok: false, code: 'IMAGE_STORAGE_FAILED', filename,
+                message: '图片未能保存，请检查保存目录权限和磁盘空间' }); return null
+            }
+          }
+          if (resolved.baseUrl === '') {
+            const assetId = `ma_${idempotencyKey.replace(/[^A-Za-z0-9]/g, '').slice(0, 40)}`
+            const stored = await saveUpload(assetId)
+            if (stored === null) return
+            json(response, 200, { ok: true, status: 201, asset: {
+              assetId, kind: mediaType.startsWith('audio/') ? 'reference_audio'
+                : mediaType.startsWith('video/') ? 'reference_video' : 'reference_image',
+              contentType: mediaType, sizeBytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'),
+              filename: stored.filename, ...imageFacts,
+              ...normalized === undefined ? {} : { previewUrl: `/credits/api/assets/preview?asset_id=${encodeURIComponent(assetId)}` },
+            } })
             return
           }
+          const uploadFilename = normalized === undefined ? filename
+            : `${filename.replace(/\.[^./\\]*$/u, '')}.${mediaType === 'image/jpeg' ? 'jpg' : 'png'}`
           const result = await platformUpload(resolved.baseUrl, '/v1/media/assets', {
-            token: session.upstream.token,
-            idempotencyKey,
-            mediaType,
-            filename,
-            bytes,
-            timeoutMs: resolved.timeoutMs,
+            token: session.upstream.token, idempotencyKey, mediaType, filename: uploadFilename, bytes, timeoutMs: resolved.timeoutMs,
           })
           if (result.status === 401 && result.code === 'SESSION_INVALID') {
-            await store.clear()
-            sessionExpired(response)
-            return
+            await store.clear(); sessionExpired(response); return
           }
           const payload = result.body !== null && typeof result.body === 'object' ? result.body as Record<string, unknown> : null
-          json(response, 200, {
-            ok: result.status === 201,
-            status: result.status,
-            code: result.code,
-            message: result.message,
-            asset: result.status === 201
-              ? {
-                assetId: readString(payload, 'asset_id'),
-                kind: readString(payload, 'kind'),
-                contentType: readString(payload, 'content_type'),
-                sizeBytes: typeof payload?.size_bytes === 'number' ? payload.size_bytes : null,
-                sha256: readString(payload, 'sha256'),
-              }
-              : null,
-          })
+          const assetId = readString(payload, 'asset_id')
+          if (result.status === 201 && normalized !== undefined && typeof assetId === 'string' && /^ma_[A-Za-z0-9]{1,64}$/u.test(assetId)) {
+            if (await saveUpload(assetId) === null) return
+            json(response, 200, { ok: true, status: 201, asset: {
+              assetId, kind: 'reference_image', contentType: mediaType, sizeBytes: bytes.length,
+              sha256: createHash('sha256').update(bytes).digest('hex'), ...imageFacts,
+              previewUrl: `/credits/api/assets/preview?asset_id=${encodeURIComponent(assetId)}`,
+            } }); return
+          }
+          json(response, 200, { ok: false, status: result.status, code: result.code ?? 'IMAGE_UPLOAD_FAILED',
+            filename, message: result.message ?? '图片上传失败，请稍后重试', asset: null })
           return
         }
 

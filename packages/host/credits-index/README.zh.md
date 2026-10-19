@@ -57,11 +57,11 @@ Host 先使用 `/api/user/self` 核对产品会话中的账号，再通过 `/api
 
 ### 提示词帮写
 
-`POST /credits/api/prompt/assist` 仅接受 `{ accountId: string, sessionId: string | null, expectedSelection: { provider: string, model: string, reasoningEffort?: string } | null, kind: 'image' | 'video', prompt: string, instruction: string, references: string[], generation: Record<string, string> }`。Host 将 `accountId` 与有效产品会话比较，不匹配时在查询任何模型前返回 `ACCOUNT_CHANGED`；账号及模型选择标识不进入提示词正文。当前原稿、修改意见及生成参数摘要构成模型输入。PNG、JPEG 和 WebP 参考图必须是现有本机 `ma_` 资产；任意 URL、视频，以及客户端选择的路由或凭据均被拒绝。图片以内联聊天图像内容发送。成功的额度响应封装在 `payload` 内包含 `{ prompt, model }`；失败包含稳定的 `code`，绝不返回上游响应正文或异常。只有原稿、账号、聊天及模型选择仍匹配时，客户端才将候选写入可编辑的创作提示词；请求失败时保留原稿。帮写不会提交媒体生成。
+`POST /credits/api/prompt/assist` 仅接受 `{ accountId: string, sessionId: string | null, expectedSelection: { provider: string, model: string, reasoningEffort?: string } | null, kind: 'image' | 'video', prompt: string, instruction: string, references: string[], generation: Record<string, string> }`。Host 将 `accountId` 与有效产品会话比较，不匹配时在查询任何模型前返回 `ACCOUNT_CHANGED`；账号及模型选择标识不进入提示词正文。当前原稿、修改意见、生成参数，以及按上传顺序排列、带原文件名的 `@图片1` 素材标签构成模型输入；同一标签紧邻对应图片字节，并保留在私有请求记录中。PNG、JPEG 和 WebP 参考图必须是现有本机 `ma_` 资产；任意 URL、视频，以及客户端选择的路由或凭据均被拒绝。图片以内联聊天图像内容发送。成功的额度响应封装在 `payload` 内包含 `{ prompt, model }`；失败包含稳定的 `code`，绝不返回上游响应正文或异常。只有原稿、账号、聊天及模型选择仍匹配时，客户端才将候选写入可编辑的创作提示词；请求失败时保留原稿。帮写不会提交媒体生成。
 
 帮写使用当前聊天持久化的模型选择，没有明确选择时使用当前聊天默认模型。Host 通过同一聊天目录解析选择，要求配置的产品提供方及精确模型，并按该模型声明的图片输入能力校验参考图。浏览器 `expectedSelection` 用于发现过期请求，不能授权路由。服务缺失或模型不可用时明确报错；不支持图片的选择返回 `PROMPT_ASSIST_VISION_REQUIRED`，不自动换用其他模型。旧配置 `promptAssistantModel` 和 `promptAssistantVisionModel` 仍可接受，但不决定模型。每次生成前，Host 还使用当前账号的中转 key 查询 `/v1/models`、排除媒体生成模型，并在发送前及接收候选前复核本地聊天模型和登录身份。随后使用同一 key 调用 `/v1/chat/completions`。会话过期、未登录或缺少中转凭据时停止请求，部署 key 绝不作为回退。后台续期 token 时，只有上游确认相同账号 ID，才保留中转凭据。
 
-请求 JSON 上限为 32 KiB；原稿最多 7,000 字符；修改意见最多 2,000 字符；参数摘要最多 16 个字符串条目，键最多 64 字符、值最多 256 字符。必须至少提供原稿、修改意见或参考图。最多六张不同参考图，合计不超过 12 MiB，单张不超过 6 MiB；MIME 与图片签名必须匹配。生成响应正文及账号目录上限为 64 KiB，最终提示词上限为 7,000 字符，生成上限为 2,048 tokens。`promptAssistantTimeoutMs` 为整个操作提供独立于其他 API 的统一截止时间，默认为 60,000 毫秒，接受 1 到 120,000 毫秒的整数；断开连接或插件 dispose（资源释放）会取消上游工作，dispose 等待请求结束。不自动重试上游请求。发出聊天生成后，超时、传输故障、取消或上游报错均返回 `PROMPT_ASSIST_RESULT_UNKNOWN`，表示结果未知且可能已经计费。无效的生成数据同样提示可能计费；用户应先查看用量，再决定是否重试。模型目录阶段失败时尚未发出聊天生成。
+请求 JSON 上限为 32 KiB；原稿最多 7,000 字符；修改意见最多 2,000 字符；参数摘要最多 16 个字符串条目，键最多 64 字符、值最多 256 字符。必须至少提供原稿、修改意见或参考图。最多六张不同参考图，合计不超过 12 MiB，单张不超过 6 MiB；MIME 与图片签名必须匹配。生成响应正文及账号目录上限为 64 KiB，最终提示词上限为 7,000 字符，`promptAssistantMaxTokens` 控制生成 token 上限，默认 8,192，接受 512 至 16,384 的整数。`promptAssistantTimeoutMs` 为整个操作提供独立于其他 API 的统一截止时间，默认为 60,000 毫秒，接受 1 到 120,000 毫秒的整数；断开连接或插件 dispose（资源释放）会取消上游工作，dispose 等待请求结束。不自动重试上游请求。发出聊天生成后，超时、传输故障、取消或上游报错均返回 `PROMPT_ASSIST_RESULT_UNKNOWN`，表示结果未知且可能已经计费。无效的生成数据同样提示可能计费；用户应先查看用量，再决定是否重试。模型目录阶段失败时尚未发出聊天生成。
 
 调用模型前，Host 将账号 ID、聊天、所选提供方/模型/推理强度、token 上限、准确的系统和用户文本，以及参考图元数据保存到 `stateDir/prompt-assists/<random-request-id>/request.json`。`prompt-assists/references` 下按内容寻址的图片文件，为每个 SHA-256 摘要保留一次不可变字节；普通上传可能覆盖资产 ID，因此不足以重建请求。目录权限为 `0700`，文件为 `0600` 且以独占方式创建。`outcome.json` 仅保存经过校验的候选或安全失败码，以及是否已发出聊天生成，不包含凭据及上游原始响应。输入记录失败会阻止发送；结果记录失败返回 `PROMPT_ASSIST_RESULT_STORAGE_FAILED`，表示可能已经计费但候选不可用。崩溃可能留下没有结果的请求；记录保留到部署者主动删除，不自动清理。这个独立媒体流程不添加 Session 格式或 agent loop（智能体循环）行为。
 
@@ -72,6 +72,8 @@ Host 先使用 `/api/user/self` 核对产品会话中的账号，再通过 `/api
 ### 聊天创作计划
 
 技能注册服务可用时，内置 `yunshu-video-director` 技能使用 [cinematic-director](https://github.com/wuwangzhang1216/DirectorSKILL) 与 [video-storyboard-gen](https://github.com/anyhui/video-storyboard-gen-skill) 的精简摘录和适配内容，指导剧情、走位、连续性、参考素材重构、分镜、对白及字幕。[固定来源及适配说明](third-party-notices/sources.json) 和两份完整 MIT 许可随包分发。生成时不运行社区脚本，也不加载整套参考库。简单且提示词完整的短片直接调用 `generate_video`；工作区参考素材可使用 `generate_video_project`，即使只生成单段。明确的剧情或连续人物创作使用显式计划，长视频仍使用该原生项目工具。原生工具负责校验、提交、轮询、下载、剪辑、发布和恢复。画面切换不必各自生成一段计费视频。不强制额外生成参考图、多个备选稿或单独请求规划模型；工作流程不能控制上游渲染耗时。
+
+剧情、广告和多参考图视频稿采用六部分中文结构：剧情概述；每份真实素材的职责及采用、排除内容；稳定的人物关系与场景风格；包含动作、运镜、对白时间窗、音效和配乐的连续分镜时间轴；连续性要求；禁止项。分镜沿用用户提供的图片编号。明确要求如“不要字幕”优先；台词无法在指定时长内自然说完时，必须指出冲突，不能静默加速。简单请求仍保持简短。这份共享指导不增加规划生成请求，也不要求模型编写拼接代码。
 
 独立的 `yunshu-minimax-h3` 技能依据[官方提示词指南](https://github.com/MiniMax-AI/MiniMax-H3/tree/main/skills/h3-prompt-writing) 提供本地编写的 H3 格式指导，不重新分发官方技能原文件。聊天仅在为 MiniMax-H3 编写提示词且确有需要时加载它。视频 AI 帮写仅当 `generation.model` 精确等于 `MiniMax-H3` 时加入同一份格式指导，与所选聊天模型无关。指导分别描述带标签的对白原文、环境声和背景音乐，保留对白与画面文字的原语言。用户可见的创作要求、人物设定、素材说明、分镜、场景、运镜、动作和提示词默认使用简体中文，除非用户明确要求其他输出语言；英文草稿不改变这个默认值。协议字段、标签和资源标识保留原拼写。其他视频模型只接收共享编导指导，图片帮写接收同一语言规则，不接收任何视频指导。选择过程不下载在线指南，不请求翻译，也不增加聊天生成请求。
 
@@ -101,7 +103,7 @@ Host 先使用 `/api/user/self` 核对产品会话中的账号，再通过 `/api
 
 明确的 `oneOf` 将 `properties.resolution.const` 或 `.enum` 与有限的 `properties.seconds` 或 `.duration` 配对。得到的 `durationByResolution` 菜单同时约束面板请求和项目规划；未列出的分辨率不可用，并且必须选择分辨率。例如，生产方可以明确发布 480P/768P 为 4–30 秒、2K 为 4–15 秒的两个分支。这说明解析器支持的格式，不表示当前 API 或尚未明确的上游支持这些组合。Host 在模型提交前拒绝不支持的组合、小数或非数值时长。
 
-本机 `/credits/api/assets` 接受 MIME 与文件签名相符的 PNG/JPEG/WebP 图片、MP4/MOV 视频和 MP3/WAV 音频。单文件上限分别为图片 6 MiB、视频 32 MiB、音频 15 MiB；一次生成中的全部图片总计不超过 12 MiB，全部参考素材原始字节总计不超过 48 MiB，编码后的完整生成请求不超过 64 MiB。只有所选模型声明了音频参考槽位时才展示音频。H3 的所有参考素材放入同一个完整的 `metadata.content` 数组。H3 首尾帧不能与通用参考素材混用。自适应比例要求实际图片或视频输入。这些校验不会完整解码媒体，也不证明上游生成能力。
+本机 `POST /credits/api/assets` 按真实字节识别图片，不依赖后缀或 MIME 提示；完整解码 PNG/JPEG/JFIF/WebP/AVIF/GIF/BMP/TIFF/HEIC/HEIF，纠正方向后生成模型可用的 PNG 或 JPEG。原图上限为 32 MiB、4,000 万像素；转换后每张不超过 6 MiB，一次生成中的图片合计不超过 12 MiB。动态及多页图片明确取首帧。响应保留原文件名、实际来源格式、尺寸、转换后的 MIME/大小及转换信息；结构化失败标明对应上传，不泄露解码器异常。`GET`/`HEAD /credits/api/assets/preview?asset_id=...` 通过宿主认证及上传账号校验后提供转换后的图片，响应使用 `Cache-Control: no-store`。视频和音频仍要求 MIME 与文件签名匹配，分别限制为 32 MiB 和 15 MiB。生成请求的全部参考字节不超过 48 MiB，编码后的完整请求不超过 64 MiB。H3 全部参考素材放在同一个完整的 `metadata.content` 数组；首尾帧不能与通用参考槽位混用，自适应比例需要实际图片或视频输入。媒体校验不证明上游生成质量。
 
 聊天工具的 `reference_audios` 接受已上传素材编号或可读的工作区 WAV/MP3 路径。视频项目保留这些引用用于恢复。可选的 `audio` 请求只有在所选模型声明了对应开关时才发送提供方开关。H3 固定原生音频：接受 `audio: true`，不添加上游不支持的请求字段；`audio: false` 则在提交前拒绝。
 

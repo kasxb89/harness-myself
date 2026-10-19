@@ -353,6 +353,47 @@ describe('shared project workbench', () => {
     expect(screen.getByRole('dialog').querySelector('img')?.getAttribute('src')).toBe(referenceUrl)
   })
 
+  it('previews the normalized HEIC upload and names a failed replacement while retaining the previous material', async () => {
+    const h = fixture()
+    h.props.upload.mockResolvedValueOnce({ ok: true, assetId: 'ma_heic', kind: 'image', sizeBytes: 1024,
+      converted: true, firstFrameOnly: true, previewUrl: '/credits/api/assets/preview?asset_id=ma_heic' })
+    h.props.upload.mockResolvedValueOnce({ ok: false, code: 'IMAGE_DECODE_FAILED' })
+    fireEvent.click(screen.getByRole('tab', { name: '素材' }))
+    fireEvent.click(screen.getByRole('button', { name: '添加素材' }))
+    const upload = screen.getByLabelText<HTMLInputElement>('上传素材')
+    expect(upload.accept).toContain('.heic,.heif')
+    expect(upload.multiple).toBe(false)
+    fireEvent.change(upload, { target: { files: [new File(['HEIC'], '母亲.heic')] } })
+    await waitFor(() => { expect(screen.getByRole('textbox', { name: '素材引用' }).getAttribute('value')).toBe('ma_heic') })
+    expect(screen.getByRole('dialog').querySelector('img')?.getAttribute('src')).toBe('/credits/api/assets/preview?asset_id=ma_heic')
+    expect(screen.getByText('已自动转换为模型支持的图片格式')).toBeTruthy()
+    expect(screen.getByText('动态图或多页图片仅使用第一帧')).toBeTruthy()
+    fireEvent.change(upload, { target: { files: [new File(['corrupt'], '损坏照片.tiff')] } })
+    await waitFor(() => { expect(screen.getByRole('alert').textContent).toContain('「损坏照片.tiff」上传失败') })
+    expect(screen.getByRole('alert').textContent).toContain('图片损坏或无法解码')
+    expect(screen.getByRole('alert').textContent).toContain('原素材已保留')
+    expect(screen.getByRole('textbox', { name: '素材引用' }).getAttribute('value')).toBe('ma_heic')
+    expect(screen.getByRole('dialog').querySelector('img')?.getAttribute('src')).toBe('/credits/api/assets/preview?asset_id=ma_heic')
+    fireEvent.change(screen.getByRole('textbox', { name: '素材引用' }), { target: { value: 'ma_manual' } })
+    expect(screen.getByRole('dialog').querySelector('img')).toBeNull()
+  })
+
+  it('releases the upload lock after a rejected transport and accepts a retry of the same file', async () => {
+    const h = fixture({}, true)
+    h.props.upload.mockRejectedValueOnce(new Error('private decoder details'))
+    fireEvent.click(screen.getByRole('tab', { name: 'Assets' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Add material' }))
+    const file = new File(['corrupt'], 'camera.avif')
+    const input = screen.getByLabelText<HTMLInputElement>('Upload material')
+    fireEvent.change(input, { target: { files: [file] } })
+    await waitFor(() => { expect(screen.getByRole('alert').textContent).toContain('camera.avif') })
+    expect(screen.getByRole('alert').textContent).not.toContain('private decoder details')
+    expect(input.disabled).toBe(false)
+    fireEvent.change(input, { target: { files: [file] } })
+    await waitFor(() => { expect(screen.getByRole('textbox', { name: 'Asset reference' }).getAttribute('value')).toBe('ma_test') })
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
   it('filters real task statuses and output kinds with actual completed-shot progress', () => {
     const video = { id: 'out1' as CreativeOutputId, kind: 'video' as const, name: 'completed.mp4', url: mediaUrl() }
     const h = fixture({ projects: [project({ completedShots: 1, totalShots: 2, outputs: [video], tasks: [

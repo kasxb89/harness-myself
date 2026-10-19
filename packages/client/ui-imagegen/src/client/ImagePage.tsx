@@ -9,7 +9,7 @@ import type { HostObservable, InjectFace, PropsRenderFactories, PropsRuntime, Pr
 import type {} from '@deepseek-ai/dsh-client-ui-prompt-assist/client'
 import type { Context } from '@deepseek-ai/cordis'
 import type { LocalizedText } from '@deepseek-ai/dsh-client-creation-content/client'
-import type { createImageDraftStore, ImageDraft } from './draft-store.ts'
+import type { createImageDraftStore, ImageDraft, ImageUploadResult } from './draft-store.ts'
 import css from './ImagePage.module.css'
 
 /** Plain callbacks injected by this plugin's registration. */
@@ -96,7 +96,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
   const sessionId = props.useCreationSession(binding => binding.key)
   const {
     prompt, modelId, size, quality, background, format, compression, moderation, seed, count,
-    references, uploading, generationStartedAt, sessionInvalid, message, failure, resultPaths: result,
+    references, uploading, uploadResult, generationStartedAt, sessionInvalid, message, failure, resultPaths: result,
   } = draft
   const running = generationStartedAt !== null
   const locked = running || uploading || draft.promptAssisting
@@ -278,7 +278,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
     const current = readDraft()
     if (current.uploading || current.generationStartedAt !== null || current.promptAssisting) return
     for (const item of current.references) releaseReferencePreview(item.url)
-    actions.patch({ references: [] })
+    actions.patch({ references: [], uploadResult: null })
   }, [actions, readDraft, releaseReferencePreview])
 
   const addReferences = useCallback(async (source: readonly File[] | ArtifactLocation): Promise<void> => {
@@ -291,10 +291,28 @@ export function ImagePage(props: ImagePageProps): ReactNode {
       const latest = readDraft()
       return latest.referenceAccountId === owner && latest.referenceEpoch === epoch
     }
-    const limit = 6
-    const slots = Math.max(0, limit - current.references.length)
-    if (slots === 0) { setFailure(t('referenceLimit', { n: String(limit) })); return }
-    actions.patch({ uploading: true, failure: null })
+    if (!('path' in source) && source.length === 0) return
+    let result: ImageUploadResult = { added: 0, converted: 0, firstFrames: 0, failures: [] }
+    const reject = (name: string, reason: string): void => {
+      result = { ...result, failures: [...result.failures, { name, reason }] }
+      if (isCurrent()) actions.patch({ uploadResult: result })
+    }
+    const failureReason = (code: string | null | undefined): string => {
+      switch (code) {
+        case 'IMAGE_EMPTY': return t('emptyImage')
+        case 'IMAGE_INPUT_TOO_LARGE': return t('fileSizeLimit')
+        case 'IMAGE_FORMAT_UNSUPPORTED': return t('unsupportedType')
+        case 'IMAGE_DECODE_FAILED': return t('invalidImage')
+        case 'IMAGE_CONVERSION_FAILED': return t('conversionFailed')
+        case 'IMAGE_DECODER_UNAVAILABLE': return t('decoderUnavailable')
+        case 'IMAGE_STORAGE_FAILED': return t('imageStorageFailed')
+        case 'IMAGE_UPLOAD_FAILED': return t('connectionFailure')
+        case 'IMAGE_PIXEL_LIMIT': return t('imageDimensionsLimit')
+        case 'IMAGE_OUTPUT_TOO_LARGE': return t('normalizedSizeLimit')
+        default: return t('invalidUploadResponse')
+      }
+    }
+    actions.patch({ uploading: true, failure: null, uploadResult: null })
     try {
       let files: readonly File[]
       if ('path' in source) {
@@ -303,49 +321,72 @@ export function ImagePage(props: ImagePageProps): ReactNode {
         if (!response.ok) throw new Error(`HTTP_${String(response.status)}`)
         const blob = await response.blob()
         if (!isCurrent()) return
-        files = [new File([blob], source.path.split(/[\\/]/).pop() ?? 'image.png', { type: blob.type || 'image/png' })]
+        files = [new File([blob], source.path.split(/[\\/]/).pop() ?? 'image.png', { type: blob.type })]
       } else files = source
-      if (files.length > slots) setMessage(t('referenceLimit', { n: String(limit) }))
-      for (const file of files.slice(0, slots)) {
+      for (const file of files) {
         if (!isCurrent()) return
-        if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
-          setFailure(t('uploadFailed', { message: t('unsupportedType') })); continue
+        if (readDraft().references.length >= 6) { reject(file.name, t('referenceLimit', { n: '6' })); continue }
+        if (file.size === 0) { reject(file.name, t('emptyImage')); continue }
+        if (file.size > 32 * 1024 * 1024) { reject(file.name, t('fileSizeLimit')); continue }
+        try {
+          const response = await fetch('/credits/api/assets', {
+            method: 'POST',
+            headers: {
+              'content-type': file.type || 'application/octet-stream', 'x-file-name': encodeURIComponent(file.name),
+              'x-idempotency-key': `dsh-asset-${globalThis.crypto.randomUUID()}`, accept: 'application/json',
+            },
+            body: file,
+          })
+          if (!isCurrent()) return
+          const answer = await response.json() as Envelope<never> & { asset?: {
+            assetId: string | null
+            contentType?: string
+            sizeBytes?: number
+            previewUrl?: string
+            converted?: boolean
+            firstFrameOnly?: boolean
+          } | null }
+          if (!isCurrent()) return
+          if (answer.sessionInvalid === true) {
+            reject(file.name, t('noAuth'))
+            acceptAccount({ signedIn: false })
+            actions.patch({ sessionInvalid: true, failure: t('noAuth') })
+            return
+          }
+          const asset = answer.asset
+          if (!response.ok || !answer.ok) { reject(file.name, failureReason(answer.code)); continue }
+          if (asset === null || asset === undefined || typeof asset.assetId !== 'string' || asset.assetId === '') {
+            reject(file.name, t('invalidUploadResponse')); continue
+          }
+          const expectedPreview = `/credits/api/assets/preview?asset_id=${encodeURIComponent(asset.assetId)}`
+          const legacy = asset.previewUrl === undefined && asset.contentType === undefined && asset.sizeBytes === undefined
+            && ['image/png', 'image/jpeg', 'image/webp'].includes(file.type) && file.size <= 6 * 1024 * 1024
+          const bytes = legacy ? file.size : asset.sizeBytes
+          if (typeof bytes !== 'number' || !Number.isSafeInteger(bytes) || bytes <= 0 || bytes > 6 * 1024 * 1024
+            || !legacy && (asset.previewUrl !== expectedPreview || !['image/png', 'image/jpeg'].includes(asset.contentType ?? ''))) {
+            reject(file.name, t('invalidUploadResponse')); continue
+          }
+          const latest = readDraft()
+          if (latest.references.length >= 6) { reject(file.name, t('referenceLimit', { n: '6' })); continue }
+          if (latest.references.reduce((sum, item) => sum + item.bytes, 0) + bytes > 12 * 1024 * 1024) {
+            reject(file.name, t('referenceTotalLimit')); continue
+          }
+          actions.appendReference({ assetId: asset.assetId, name: file.name,
+            url: legacy ? createReferencePreview(file) : expectedPreview, bytes })
+          result = { ...result, added: result.added + 1, converted: result.converted + (asset.converted === true ? 1 : 0),
+            firstFrames: result.firstFrames + (asset.firstFrameOnly === true ? 1 : 0) }
+          actions.patch({ uploadResult: result })
+        } catch (_error) {
+          if (!isCurrent()) return
+          reject(file.name, t('connectionFailure'))
         }
-        if (file.size === 0 || file.size > 6 * 1024 * 1024) {
-          setFailure(t('uploadFailed', { message: t('fileSizeLimit') })); continue
-        }
-        const beforeUpload = readDraft()
-        if (beforeUpload.references.length >= limit) break
-        if (beforeUpload.references.reduce((sum, item) => sum + item.bytes, 0) + file.size > 12 * 1024 * 1024) {
-          setFailure(t('referenceTotalLimit')); break
-        }
-        const response = await fetch('/credits/api/assets', {
-          method: 'POST',
-          headers: {
-            'content-type': file.type, 'x-file-name': encodeURIComponent(file.name),
-            'x-idempotency-key': `dsh-asset-${globalThis.crypto.randomUUID()}`, accept: 'application/json',
-          },
-          body: file,
-        })
-        if (!isCurrent()) return
-        if (!response.ok) throw new Error(`HTTP_${String(response.status)}`)
-        const answer = await response.json() as Envelope<never> & { asset?: { assetId: string | null } | null }
-        if (!isCurrent()) return
-        if (answer.sessionInvalid === true) { acceptAccount({ signedIn: false }); actions.patch({ sessionInvalid: true, failure: t('noAuth') }); break }
-        const assetId = answer.asset?.assetId
-        if (!answer.ok || assetId === null || assetId === undefined) {
-          setFailure(t('uploadFailed', { message: answer.message ?? answer.code ?? t('unknown') })); continue
-        }
-        const latest = readDraft()
-        if (latest.references.length >= limit) break
-        actions.appendReference({ assetId, name: file.name, url: createReferencePreview(file), bytes: file.size })
       }
     } catch (_error) {
-      if (isCurrent()) setFailure(t('uploadFailed', { message: t('connectionFailure') }))
+      if (isCurrent()) reject('path' in source ? source.path.split(/[\\/]/).pop() ?? source.path : '', t('connectionFailure'))
     } finally {
       if (isCurrent()) actions.patch({ uploading: false })
     }
-  }, [acceptAccount, accountIdentity, actions, createReferencePreview, models, readDraft, setFailure, setMessage, signedIn, t])
+  }, [acceptAccount, accountIdentity, actions, createReferencePreview, readDraft, signedIn, t])
 
   const generate = useCallback(async (): Promise<void> => {
     const current = readDraft()
@@ -447,7 +488,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
                   <span>{uploading ? t('uploadingShort') : t('addReference')}</span>
                 </button>
               </Tooltip>
-              <input ref={fileField} type="file" aria-label={t('addReference')} accept="image/png,image/jpeg,image/webp" multiple hidden
+              <input ref={fileField} type="file" aria-label={t('addReference')} accept="image/*,.png,.jpg,.jpeg,.jfif,.webp,.avif,.gif,.bmp,.tif,.tiff,.heic,.heif" multiple hidden
                 disabled={!canUpload} onChange={(event) => { void addReferences([...event.target.files ?? []]); event.target.value = '' }} />
             </div>
             <label className={css.promptField}>
@@ -469,6 +510,16 @@ export function ImagePage(props: ImagePageProps): ReactNode {
             </ul>
             <span className={css.hint}>{references.length}/6</span>
             <button type="button" className={css.textAction} onClick={clearReferences} disabled={locked}>{t('clearReferences')}</button>
+          </div>}
+          {uploadResult !== null && <div className={css.uploadResult} aria-live="polite">
+            <p className={css.notice}>{t('uploadSummary', { added: String(uploadResult.added), failed: String(uploadResult.failures.length) })}</p>
+            {uploadResult.converted > 0 && <p className={css.hint}>{t('uploadConverted', { n: String(uploadResult.converted) })}</p>}
+            {uploadResult.firstFrames > 0 && <p className={css.hint}>{t('uploadFirstFrames', { n: String(uploadResult.firstFrames) })}</p>}
+            {uploadResult.failures.length > 0 && <ul className={css.uploadFailures} aria-label={t('uploadFailures')}>
+              {uploadResult.failures.map((item, index) => <li key={index} className={css.error}>
+                <span className={css.uploadFileName}>{item.name}</span><span>{item.reason}</span>
+              </li>)}
+            </ul>}
           </div>}
           {props.renderFactorySlot('creation.prompt.assist', {
             kind: 'image', prompt, references: assistReferences, generation: assistGeneration,

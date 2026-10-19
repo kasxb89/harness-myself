@@ -65,6 +65,125 @@ beforeEach(() => { vi.useRealTimers(); sessionAccountId = 'account-a'; chatSessi
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 describe('video composer', () => {
+  it('retains six converted reference images and uses normalized previews and byte counts for video and AI writing', async () => {
+    const { mount, asset, store, props, task } = setup({ maxReferenceImages: 6, frameSlots: 0 })
+    let sequence = 0
+    asset.mockImplementation(async () => {
+      const assetId = `ma_converted${String(++sequence)}`
+      return json({ ok: true, asset: { assetId, contentType: 'image/jpeg', sizeBytes: 1024 * 1024,
+        previewUrl: `/credits/api/assets/preview?asset_id=${assetId}`, converted: true, firstFrameOnly: sequence === 5 } })
+    })
+    const files = ['heic', 'avif', 'bmp', 'tiff', 'gif', 'webp'].map((format, index) => {
+      const file = new File(['original'], `参考${String(index + 1)}.${format}`, { type: index % 2 === 0 ? '' : `image/${format}` })
+      Object.defineProperty(file, 'size', { value: 7 * 1024 * 1024 })
+      return file
+    })
+    mount()
+    await ready()
+    fireEvent.click(screen.getByRole('button', { name: zh['workflow.reference'] }))
+    fireEvent.change(screen.getByLabelText(zh.referenceImages), { target: { files } })
+    await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull(); expect(asset).toHaveBeenCalledTimes(6) })
+    const references = store.getSnapshot().slots.image
+    expect(references).toHaveLength(6)
+    expect(references.map(reference => reference.name)).toEqual(files.map(file => file.name))
+    expect(references.map(reference => reference.bytes)).toEqual(Array.from({ length: 6 }, () => 1024 * 1024))
+    for (const reference of references) {
+      expect(reference.url).toBe(`/credits/api/assets/preview?asset_id=${reference.assetId}`)
+      expect(screen.getByAltText(reference.name).getAttribute('src')).toBe(reference.url)
+    }
+    expect(props.createPreview).not.toHaveBeenCalled()
+    expect(screen.getByText(zh.firstFrameOnly)).toBeTruthy()
+    expect(screen.getAllByText(zh.imageConverted)).toHaveLength(5)
+    const assistant = vi.mocked(props.renderFactorySlot).mock.calls.at(-1)?.[1] as PromptAssistOwner
+    expect(assistant.references).toEqual(references.map(reference => reference.assetId))
+    expect(assistant.disabled).toBe(false)
+    writePrompt()
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    await waitFor(() => { expect(task).toHaveBeenCalledOnce() })
+    expect(requestBody(task.mock.calls[0]?.[0]).referenceImages).toEqual(references.map(reference => reference.assetId))
+  })
+
+  it('continues after corrupt and disconnected image uploads and retains every failed filename', async () => {
+    const { mount, store, asset } = setup({ maxReferenceImages: 3, frameSlots: 0 })
+    const accepted = (assetId: string) => json({ ok: true, asset: { assetId, contentType: 'image/jpeg', sizeBytes: 100,
+      previewUrl: `/credits/api/assets/preview?asset_id=${assetId}`, converted: true, firstFrameOnly: false } })
+    asset.mockResolvedValueOnce(accepted('ma_first')).mockResolvedValueOnce(json({ ok: false, code: 'IMAGE_DECODE_FAILED' }))
+      .mockRejectedValueOnce(new Error('fixture upload disconnected')).mockResolvedValueOnce(accepted('ma_last'))
+    mount()
+    await ready()
+    fireEvent.change(screen.getByLabelText(zh.addMedia), { target: { files: ['first.heic', 'broken.heic', 'offline.bmp', 'last.tiff']
+      .map(name => new File(['original'], name, { type: '' })) } })
+    await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull(); expect(asset).toHaveBeenCalledTimes(4) })
+    expect(store.getSnapshot().slots.image.map(reference => reference.assetId)).toEqual(['ma_first', 'ma_last'])
+    expect(store.getSnapshot().uploadFailures).toEqual([
+      { name: 'broken.heic', reason: zh.invalidImage }, { name: 'offline.bmp', reason: zh.uploadNetwork },
+    ])
+    expect(screen.getByRole('alert').textContent).toContain(t('uploadItemFailed', { name: 'broken.heic', reason: zh.invalidImage }))
+    expect(screen.getByRole('alert').textContent).toContain(t('uploadItemFailed', { name: 'offline.bmp', reason: zh.uploadNetwork }))
+  })
+
+  it('uses normalized first and last frame images without rejecting original images above six MiB', async () => {
+    const { mount, store, asset, task, props } = setup()
+    let sequence = 0
+    asset.mockImplementation(async () => {
+      const assetId = `ma_frame${String(++sequence)}`
+      return json({ ok: true, asset: { assetId, contentType: 'image/png', sizeBytes: 2 * 1024 * 1024,
+        previewUrl: `/credits/api/assets/preview?asset_id=${assetId}`, converted: true, firstFrameOnly: sequence === 2 } })
+    })
+    const file = new File(['original'], '手机照片.heic', { type: '' })
+    Object.defineProperty(file, 'size', { value: 14 * 1024 * 1024 })
+    mount()
+    await ready()
+    fireEvent.click(screen.getByRole('button', { name: zh['workflow.frames'] }))
+    fireEvent.change(screen.getByLabelText(zh.firstFrame), { target: { files: [file] } })
+    await waitFor(() => { expect(store.getSnapshot().firstFrame?.assetId).toBe('ma_frame1') })
+    fireEvent.change(screen.getByLabelText(zh.lastFrame), { target: { files: [file] } })
+    await waitFor(() => { expect(store.getSnapshot().lastFrame?.assetId).toBe('ma_frame2'); expect(store.getSnapshot().uploading).toBeNull() })
+    expect(store.getSnapshot().firstFrame).toMatchObject({ bytes: 2 * 1024 * 1024, url: '/credits/api/assets/preview?asset_id=ma_frame1' })
+    expect(store.getSnapshot().lastFrame).toMatchObject({ bytes: 2 * 1024 * 1024, firstFrameOnly: true })
+    expect(screen.getByText(zh.imageConverted)).toBeTruthy()
+    expect(screen.getByText(zh.firstFrameOnly)).toBeTruthy()
+    expect(props.createPreview).not.toHaveBeenCalled()
+    writePrompt()
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    await waitFor(() => { expect(task).toHaveBeenCalledOnce() })
+    expect(requestBody(task.mock.calls[0]?.[0]).frameImages).toEqual(['ma_frame1', 'ma_frame2'])
+  })
+
+  it('counts normalized image bytes across frame and reference slots and continues with a later smaller image', async () => {
+    const { mount, asset, store } = setup({ maxReferenceImages: 6 })
+    store.actions.patch({ firstFrame: { assetId: 'ma_saved', name: 'saved.png', url: 'blob:saved', bytes: 5 * 1024 * 1024 } })
+    let sequence = 0
+    asset.mockImplementation(async () => {
+      const index = sequence++
+      const assetId = `ma_total${String(index)}`
+      return json({ ok: true, asset: { assetId, contentType: 'image/jpeg', sizeBytes: [6, 2, 1][index]! * 1024 * 1024,
+        previewUrl: `/credits/api/assets/preview?asset_id=${assetId}` } })
+    })
+    mount()
+    await ready()
+    fireEvent.change(screen.getByLabelText(zh.addMedia), { target: { files: ['large.heic', 'excess.heic', 'small.heic']
+      .map(name => new File(['original'], name, { type: '' })) } })
+    await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull(); expect(asset).toHaveBeenCalledTimes(3) })
+    expect(store.getSnapshot().slots.image.map(reference => reference.assetId)).toEqual(['ma_total0', 'ma_total2'])
+    expect(store.getSnapshot().firstFrame?.assetId).toBe('ma_saved')
+    expect(store.getSnapshot().uploadFailures).toEqual([{ name: 'excess.heic', reason: t('materialLimit', { n: '6' }) }])
+  })
+
+  it.each(['https://other.invalid/image.jpg', 'data:image/jpeg;base64,AAAA', '/credits/api/assets/preview?asset_id=ma_other'])(
+    'refuses a converted image with an unexpected preview URL: %s', async (previewUrl) => {
+      const { mount, asset, store, props } = setup()
+      asset.mockResolvedValueOnce(json({ ok: true, asset: { assetId: 'ma_valid', contentType: 'image/jpeg', sizeBytes: 128, previewUrl } }))
+      mount()
+      await ready()
+      fireEvent.change(screen.getByLabelText(zh.addMedia), { target: { files: [new File(['original'], 'photo.heic', { type: '' })] } })
+      await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull(); expect(asset).toHaveBeenCalledOnce() })
+      expect(store.getSnapshot().slots.image).toEqual([])
+      expect(store.getSnapshot().uploadFailures).toEqual([{ name: 'photo.heic', reason: zh.invalidUploadResponse }])
+      expect(props.createPreview).not.toHaveBeenCalled()
+    },
+  )
+
   it.each(['人物参考.png', 'take%1.png'])('encodes reference upload names for the shared asset contract: %s', async (name) => {
     const { mount, asset, store } = setup()
     mount()
@@ -655,7 +774,7 @@ describe('video composer', () => {
     fireEvent.change(input, { target: { files: [new File(['x'], 'excess.png', { type: 'image/png' })] } })
     await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull() })
     expect(asset).not.toHaveBeenCalled()
-    expect(screen.getByRole('alert').textContent).toBe(t('materialLimit', { n: '3' }))
+    expect(screen.getByRole('alert').textContent).toBe(t('uploadItemFailed', { name: 'excess.png', reason: t('materialLimit', { n: '3' }) }))
     act(() => { store.actions.patch({ firstFrame: null, slots: { audio: [], image: Array.from({ length: 6 }, (_, index) => ({ assetId: `ma_${index}`, name: 'material.png', url: `blob:${index}`, bytes: 1 })), video: [] } }) })
     fireEvent.click(screen.getByRole('button', { name: zh['workflow.image'] }))
     fireEvent.change(screen.getByLabelText(zh.firstFrame), { target: { files: [new File(['image'], 'seventh.png', { type: 'image/png' })] } })
@@ -766,7 +885,7 @@ describe('video composer', () => {
     fireEvent.change(screen.getByLabelText(zh.referenceImages), { target: { files: [new File(['one'], 'one.png', { type: 'image/png' }), new File(['two'], 'two.png', { type: 'image/png' })] } })
     await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull(); expect(asset).toHaveBeenCalledTimes(2) })
     expect(store.getSnapshot().slots.image.map(item => item.assetId)).toEqual(['ma_first'])
-    expect(screen.getByRole('alert').textContent).toBe(zh.uploadNetwork)
+    expect(screen.getByRole('alert').textContent).toBe(t('uploadItemFailed', { name: 'two.png', reason: zh.uploadNetwork }))
     expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', false)
   })
 

@@ -16,6 +16,8 @@ packages:
 
 overrides:
   'extract-zip>yauzl': '3.4.0'
+  # Match the accompanying HEIC decoder source archives in every isolated Desktop install.
+  'heic-decode@2.1.0>libheif-js': '1.23.5'
   '@deepseek-ai/cosmokit': 'link:vendor/cosmokit'
   '@deepseek-ai/schemastery': 'link:vendor/schemastery'
 

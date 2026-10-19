@@ -25,6 +25,8 @@ const MIRROR_PATH = `vendor-plugins/${VIDEO_PACKAGE}-${VIDEO_VERSION}-${SOURCE_C
 const WEB_PACKAGE = '@deepseek-ai/dsh-web-app'
 const WEB_VERSION = '0.2.1-alpha.2'
 const MIRROR_EDGE = `${WEB_PACKAGE}@${WEB_VERSION}>${VIDEO_PACKAGE}`
+const HEIC_OVERRIDE = 'heic-decode@2.1.0>libheif-js'
+const HEIC_LIBRARY_VERSION = '1.23.5'
 const REVIEWED_BUILDS = { esbuild: true, 'onnxruntime-node@1.23.2': false, 'sharp@0.34.5': false }
 const roots: string[] = []
 
@@ -35,6 +37,7 @@ interface WorkspaceSettings {
 }
 
 interface RuntimeLock {
+  snapshots?: Record<string, { dependencies?: Record<string, string> }>
   packages: Record<string, { version: string; resolution: { integrity: string; tarball: string } }>
 }
 
@@ -99,7 +102,7 @@ function fixture(options: ArchiveOptions = {}): Fixture {
   write(join(source, 'vendor-plugins/deepseek-ivideo-0.5.0.files.json'), `${JSON.stringify({
     name: VIDEO_PACKAGE, version: VIDEO_VERSION, sourceCommit: SOURCE_COMMIT, tarball: basename(MIRROR_PATH),
   })}\n`)
-  writeWorkspace(source, { overrides: { [MIRROR_EDGE]: `file:./${MIRROR_PATH}` }, allowBuilds: { ...REVIEWED_BUILDS } })
+  writeWorkspace(source, { overrides: { [MIRROR_EDGE]: `file:./${MIRROR_PATH}`, [HEIC_OVERRIDE]: HEIC_LIBRARY_VERSION }, allowBuilds: { ...REVIEWED_BUILDS } })
   write(join(source, 'pnpm-lock.yaml'), yaml.dump({ packages: {
     [`${VIDEO_PACKAGE}@file:${MIRROR_PATH}`]: { version: VIDEO_VERSION, resolution: { integrity, tarball: `file:${MIRROR_PATH}` } },
   } }))
@@ -137,7 +140,7 @@ describe('Desktop runtime dependency preparation', () => {
     expect(readFileSync(join(project, plan.path)).equals(sourceArchive)).toBe(true)
     expect(workspace(project)).toEqual({
       packages: ['.'], nodeLinker: 'isolated',
-      overrides: { unrelated: '1.2.3', [MIRROR_EDGE]: `file:./${MIRROR_PATH}` },
+      overrides: { unrelated: '1.2.3', [MIRROR_EDGE]: `file:./${MIRROR_PATH}`, [HEIC_OVERRIDE]: HEIC_LIBRARY_VERSION },
       allowBuilds: { unrelated: false, ...REVIEWED_BUILDS },
     })
     expect(readFileSync(join(REPOSITORY_ROOT, 'pnpm-workspace.yaml')).equals(sourceWorkspace)).toBe(true)
@@ -149,7 +152,7 @@ describe('Desktop runtime dependency preparation', () => {
     const { source, project, integrity } = fixture()
     writeWorkspace(project, {
       ...workspace(project),
-      overrides: { unrelated: '1.2.3', [MIRROR_EDGE]: `file:./${MIRROR_PATH}` },
+      overrides: { unrelated: '1.2.3', [MIRROR_EDGE]: `file:./${MIRROR_PATH}`, [HEIC_OVERRIDE]: HEIC_LIBRARY_VERSION },
       allowBuilds: { unrelated: false, ...REVIEWED_BUILDS },
     })
 
@@ -160,6 +163,33 @@ describe('Desktop runtime dependency preparation', () => {
     expect(() => { verifyRuntimeDependencies(project, plan) }).not.toThrow()
     expect(workspace(project)).not.toHaveProperty('blockExoticSubdeps')
     expect(workspace(project)).not.toHaveProperty('dangerouslyAllowAllBuilds')
+  })
+
+  it('copies only the reviewed HEIC selector into the generated installation settings', () => {
+    const { source, project } = fixture()
+    const settings = workspace(source)
+    settings.overrides['heic-decode@2.2.0>libheif-js'] = '1.23.6'
+    settings.overrides['unrelated-parent>libheif-js'] = '1.23.6'
+    writeWorkspace(source, settings)
+
+    prepareRuntimeDependencies(project, source)
+
+    expect(workspace(project).overrides[HEIC_OVERRIDE]).toBe(HEIC_LIBRARY_VERSION)
+    expect(workspace(project).overrides).not.toHaveProperty('heic-decode@2.2.0>libheif-js')
+    expect(workspace(project).overrides).not.toHaveProperty('unrelated-parent>libheif-js')
+  })
+
+  it.each(['missing', 'changed version', 'unsupported parent'] as const)('rejects a %s HEIC pin', (failure) => {
+    const { source, project } = fixture()
+    const settings = workspace(source)
+    if (failure === 'changed version') settings.overrides[HEIC_OVERRIDE] = '1.23.6'
+    else {
+      Reflect.deleteProperty(settings.overrides, HEIC_OVERRIDE)
+      if (failure === 'unsupported parent') settings.overrides['heic-decode@2.2.0>libheif-js'] = HEIC_LIBRARY_VERSION
+    }
+    writeWorkspace(source, settings)
+
+    expect(() => prepareRuntimeDependencies(project, source)).toThrow('missing reviewed HEIC override')
   })
 
   it('refuses to stage into the source repository', () => {
@@ -219,10 +249,11 @@ describe('Desktop runtime dependency preparation', () => {
     expect(() => prepareRuntimeDependencies(project, source)).toThrow(/missing reviewed build decision/u)
   })
 
-  it.each(['override', 'build decision'] as const)('rejects a conflicting target %s', (failure) => {
+  it.each(['override', 'HEIC override', 'build decision'] as const)('rejects a conflicting target %s', (failure) => {
     const { source, project } = fixture()
     const settings = workspace(project)
     if (failure === 'override') settings.overrides[MIRROR_EDGE] = 'file:./unrelated.tgz'
+    else if (failure === 'HEIC override') settings.overrides[HEIC_OVERRIDE] = '1.23.6'
     else settings.allowBuilds.esbuild = false
     writeWorkspace(project, settings)
 
@@ -231,6 +262,30 @@ describe('Desktop runtime dependency preparation', () => {
 })
 
 describe('Desktop runtime dependency verification', () => {
+  it.each(['reviewed', 'library version', 'decoder identity', 'dependency edge', 'duplicate library'] as const)(
+    'verifies the generated HEIC lockfile: %s', (change) => {
+      const { source, project } = fixture()
+      const plan = prepareRuntimeDependencies(project, source)
+      const lock = resolvedLock(plan)
+      const resolution = { integrity: 'fixture integrity', tarball: 'fixture tarball' }
+      lock.packages['heic-decode@2.1.0'] = { version: '2.1.0', resolution }
+      lock.packages['libheif-js@1.23.5'] = { version: HEIC_LIBRARY_VERSION, resolution }
+      lock.snapshots = { 'heic-decode@2.1.0': { dependencies: { 'libheif-js': HEIC_LIBRARY_VERSION } } }
+      if (change === 'library version') {
+        Reflect.deleteProperty(lock.packages, 'libheif-js@1.23.5')
+        lock.packages['libheif-js@1.23.6'] = { version: '1.23.6', resolution }
+      } else if (change === 'decoder identity') {
+        Reflect.deleteProperty(lock.packages, 'heic-decode@2.1.0')
+        lock.packages['heic-decode@2.2.0'] = { version: '2.2.0', resolution }
+      } else if (change === 'dependency edge') lock.snapshots['heic-decode@2.1.0'] = { dependencies: { 'libheif-js': '1.23.6' } }
+      else if (change === 'duplicate library') lock.packages['libheif-js@1.23.6'] = { version: '1.23.6', resolution }
+      writeLock(project, lock)
+
+      if (change === 'reviewed') expect(() => { verifyRuntimeDependencies(project, plan) }).not.toThrow()
+      else expect(() => { verifyRuntimeDependencies(project, plan) }).toThrow('HEIC decoder did not resolve its reviewed library version')
+    },
+  )
+
   it('accepts equivalent relative file specifiers from pnpm lockfiles', () => {
     const { source, project } = fixture()
     const plan = prepareRuntimeDependencies(project, source)

@@ -68,21 +68,41 @@ export function PlanEditor({ project, edit, upload, saving, failure, save, close
   const [draft, setDraft] = useState(edit)
   const id = useId()
   const [uploading, setUploading] = useState(false)
-  const [uploadFailed, setUploadFailed] = useState(false)
+  const [uploadFailure, setUploadFailure] = useState<{ name: string; code: string } | null>(null)
+  const [uploaded, setUploaded] = useState<Extract<CreativeUploadResult, { ok: true }> | null>(null)
   const pending = useRef<AbortController | null>(null)
   useEffect(() => () => { pending.current?.abort() }, [])
   const uploadFile = async (file: File): Promise<void> => {
     if (draft.kind !== 'asset' || pending.current !== null) return
     const abort = new AbortController()
     pending.current = abort
-    setUploading(true); setUploadFailed(false)
-    const result = await upload(file, abort.signal)
+    setUploading(true); setUploadFailure(null)
+    let result: CreativeUploadResult
+    try { result = await upload(file, abort.signal) } catch (_uploadFailed) {
+      result = { ok: false, code: 'IMAGE_UPLOAD_FAILED' }
+    }
     if (abort.signal.aborted || pending.current !== abort) return
     pending.current = null
     setUploading(false)
-    if (!result.ok) { setUploadFailed(true); return }
+    if (!result.ok) { setUploadFailure({ name: file.name, code: result.code ?? 'IMAGE_UPLOAD_FAILED' }); return }
+    setUploaded(result)
     setDraft(current => current.kind !== 'asset' ? current : { ...current, value: { ...current.value,
       sourcePathOrAssetId: result.assetId, kind: result.kind, name: current.value.name.trim() || file.name } })
+  }
+  const failureReason = (code: string): string => {
+    switch (code) {
+      case 'IMAGE_EMPTY': return t('plan.uploadEmpty')
+      case 'IMAGE_INPUT_TOO_LARGE': return t('plan.uploadSize')
+      case 'IMAGE_FORMAT_UNSUPPORTED': return t('plan.uploadFormat')
+      case 'IMAGE_DECODE_FAILED': return t('plan.uploadDecode')
+      case 'IMAGE_CONVERSION_FAILED':
+      case 'IMAGE_DECODER_UNAVAILABLE': return t('plan.uploadConvert')
+      case 'IMAGE_PIXEL_LIMIT': return t('plan.uploadPixels')
+      case 'IMAGE_OUTPUT_TOO_LARGE': return t('plan.uploadOutputSize')
+      case 'IMAGE_STORAGE_FAILED': return t('plan.uploadStorage')
+      case 'IMAGE_RESPONSE_INVALID': return t('plan.uploadResponse')
+      default: return t('plan.uploadFailed')
+    }
   }
   const busy = saving || uploading
   const field = (key: string, label: string, value: string, change: (value: string) => void, multiline = false): ReactNode =>
@@ -171,10 +191,22 @@ export function PlanEditor({ project, edit, upload, saving, failure, save, close
           }, key === 'description')}</div>)}
         <p className={css.hint}>{t('plan.sourceHint')}</p>
         <label className={css.field}><span>{t(uploading ? 'plan.uploading' : 'plan.upload')}</span>
-          <input type="file" accept="image/png,image/jpeg,image/webp,video/mp4,video/webm,audio/*" disabled={busy}
-            onChange={(event) => { const file = event.target.files?.[0]; if (file !== undefined) void uploadFile(file) }} />
+          <input type="file"
+            accept=".png,.jpg,.jpeg,.jfif,.webp,.avif,.gif,.bmp,.tif,.tiff,.heic,.heif,image/*,video/mp4,video/webm,audio/*"
+            disabled={busy} onChange={(event) => {
+              const file = event.target.files?.[0]
+              event.target.value = ''
+              if (file !== undefined) void uploadFile(file)
+            }} />
         </label><p className={css.hint}>{t('plan.uploadHint')}</p>
-        {uploadFailed && <p className={css.notice} role="alert">{t('plan.uploadFailed')}</p>}
+        {uploaded !== null && uploaded.assetId === draft.value.sourcePathOrAssetId && <>
+          {uploaded.previewUrl !== undefined && <img className={css.assetThumbnail} src={uploaded.previewUrl} alt={draft.value.name} />}
+          {uploaded.converted === true && <p className={css.hint}>{t('plan.uploadConverted')}</p>}
+          {uploaded.firstFrameOnly === true && <p className={css.hint}>{t('plan.uploadFirstFrame')}</p>}
+        </>}
+        {uploadFailure !== null && <p className={css.notice} role="alert">
+          {t('plan.uploadFileFailed', { name: uploadFailure.name, reason: failureReason(uploadFailure.code) })}
+        </p>}
       </>}
       {failure !== null && <p className={css.notice} role="alert">{failure}</p>}
       <div className={css.dialogActions}><Button type="button" variant="ghost" disabled={busy} onClick={close}>{t('cancel')}</Button>

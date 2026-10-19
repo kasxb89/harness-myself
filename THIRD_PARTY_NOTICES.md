@@ -79,6 +79,7 @@ External packages installed for runtime use or distributed inside the prebuilt b
 | [`ajv`](https://github.com/ajv-validator/ajv) | MIT |
 | [`anser`](https://github.com/IonicaBizau/anser) | MIT |
 | [`big.js`](https://github.com/MikeMcl/big.js) | MIT |
+| [`bmp-ts`](https://github.com/hipstersmoothie/bmp-ts) | MIT |
 | [`buffer`](https://github.com/feross/buffer) | MIT |
 | [`chokidar`](https://github.com/paulmillr/chokidar) | MIT |
 | [`chrome-devtools-frontend`](https://github.com/ChromeDevTools/devtools-frontend) | BSD-3-Clause |
@@ -100,12 +101,14 @@ External packages installed for runtime use or distributed inside the prebuilt b
 | [`fast-xml-parser`](https://github.com/NaturalIntelligence/fast-xml-parser) | MIT |
 | [`fflate`](https://github.com/101arrowz/fflate) | MIT |
 | [`got`](https://github.com/sindresorhus/got) | MIT |
+| [`heic-decode`](https://github.com/catdad-experiments/heic-decode) | ISC |
 | [`immer`](https://github.com/immerjs/immer) | MIT |
 | [`ipaddr.js`](https://github.com/whitequark/ipaddr.js) | MIT |
 | [`js-yaml`](https://github.com/nodeca/js-yaml) | MIT |
 | [`katex`](https://github.com/KaTeX/KaTeX) | MIT |
 | [`koffi`](https://github.com/Koromix/koffi) | MIT |
 | [`lexical`](https://github.com/facebook/lexical) | MIT |
+| [`libheif-js`](https://github.com/catdad-experiments/libheif-js) | LGPL-3.0 |
 | [`mdast-util-from-markdown`](https://github.com/syntax-tree/mdast-util-from-markdown) | MIT |
 | [`mdast-util-gfm`](https://github.com/syntax-tree/mdast-util-gfm) | MIT |
 | [`mdast-util-math`](https://github.com/syntax-tree/mdast-util-math) | MIT |
@@ -203,6 +206,11 @@ The package retains its declared `SEE LICENSE IN LICENSE` terms: [iPolloWork Sou
 The [kit repository](https://github.com/deepseek-ai/dsh-libreoffice-kit) supplies the corresponding LibreOffice source pin, modifications, build instructions, Node API, and artifact validation. Its engine packages retain their license and third-party notices; the Node API retains its MPL-2.0 declaration and NOTICE. Recipients must have access to those corresponding sources and notices.
 
 
+## HEIC decoder with accompanying sources
+
+`libheif-js` 1.23.5 retains its LGPL-3.0 declaration, outside the permissive-license allowlist. Only that exact npm release and source pin are covered by this distribution decision. The package's [accompanying materials](packages/host/credits-index/third-party-notices/heic/DISTRIBUTION.txt) include complete matching libheif-js, libheif-emscripten, libheif and libde265 sources, build scripts, complete GPL/LGPL texts and instructions for replacing the separately loaded decoder in a user's application copy. [Source archives and hashes](packages/host/credits-index/third-party-notices/heic/sources.json) ship with the Credits package. No commercial authorization is asserted. The notices check rejects altered source archives, unreviewed versions, missing materials, inline decoder builds and browser inclusion.
+
+
 ## Development-only npm dependencies
 
 External packages **directly declared** for development, tests, types, or tooling, without a runtime installation or browser-build relationship. A package here may still be pulled in transitively by a runtime dependency — `pnpm-lock.yaml` is the authority on that full closure.
@@ -224,6 +232,7 @@ External packages **directly declared** for development, tests, types, or toolin
 | [`@types/babel__code-frame`](https://github.com/DefinitelyTyped/DefinitelyTyped) | MIT |
 | [`@types/big.js`](https://github.com/DefinitelyTyped/DefinitelyTyped) | MIT |
 | [`@types/compression`](https://github.com/DefinitelyTyped/DefinitelyTyped) | MIT |
+| [`@types/heic-decode`](https://github.com/DefinitelyTyped/DefinitelyTyped) | MIT |
 | [`@types/js-yaml`](https://github.com/DefinitelyTyped/DefinitelyTyped) | MIT |
 | [`@types/jsdom`](https://github.com/DefinitelyTyped/DefinitelyTyped) | MIT |
 | [`@types/mdast`](https://github.com/DefinitelyTyped/DefinitelyTyped) | MIT |

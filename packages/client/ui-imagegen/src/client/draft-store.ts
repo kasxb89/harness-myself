@@ -9,6 +9,14 @@ export interface ImageReference {
   readonly bytes: number
 }
 
+/** Per-file feedback retained with the current account's material selection. */
+export interface ImageUploadResult {
+  readonly added: number
+  readonly converted: number
+  readonly firstFrames: number
+  readonly failures: readonly { readonly name: string; readonly reason: string }[]
+}
+
 /** Composer choices and visible operation feedback shared across panel mounts. */
 export type ImageDraft = {
   prompt: string
@@ -26,6 +34,7 @@ export type ImageDraft = {
   referenceEpoch: number
   referenceLimit: number
   uploading: boolean
+  uploadResult: ImageUploadResult | null
   promptAssisting: boolean
   generationStartedAt: number | null
   sessionInvalid: boolean
@@ -50,7 +59,7 @@ export function createImageDraftStore(): EngineStoreHandle<ImageDraft, DraftActi
     init: (): ImageDraft => ({
       prompt: '', modelId: '', size: '', quality: '', background: '', format: '',
       compression: 90, moderation: '', seed: '', count: 1, references: [], referenceLimit: 6,
-      uploading: false, generationStartedAt: null, sessionInvalid: false,
+      uploading: false, uploadResult: null, generationStartedAt: null, sessionInvalid: false,
       message: null, failure: null, resultPaths: [],
       referenceAccountId: null, referenceEpoch: 0, promptAssisting: false,
     }),
@@ -63,6 +72,7 @@ export function createImageDraftStore(): EngineStoreHandle<ImageDraft, DraftActi
         draft.promptAssisting = false
         draft.references = []
         draft.uploading = false
+        draft.uploadResult = null
       },
       appendReference: (draft, reference: ImageReference) => {
         if (draft.references.length >= 6) return

@@ -25,6 +25,7 @@ let duringCompletion: (() => Promise<void>) | null = null
 const defaultSelection: ModelSelection = { provider: 'product', model: 'text-assistant' }
 const calls: { path: string; authorization: string | undefined; body: Record<string, unknown> | null }[] = []
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lX8AAAAASUVORK5CYII=', 'base64')
+const timingConflictDraft = '时长约束需确认：妈妈的逐字台词无法在 0–4 秒窗口内自然说完。\n选项：保留原句并延长时长，或确认后精简台词。\n当前稿待确认，不提交生成。'
 
 function object(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
@@ -50,6 +51,7 @@ async function boot(options: {
   session?: 'signed-out' | 'expired' | 'no-relay'
   configured?: boolean
   timeoutMs?: number
+  maxTokens?: number
   renew?: boolean
   prefix?: string
 } = {}): Promise<{ base: string; stateDir: string }> {
@@ -97,7 +99,8 @@ async function boot(options: {
       if (mode === 'selection-change') chatSelection = { provider: 'product', model: 'vision-assistant' }
       await duringCompletion?.()
       const content = mode === 'oversized' ? 'x'.repeat(70_000) : mode === 'long-prompt' ? 'x'.repeat(7001)
-        : mode === 'credential-echo' ? 'account-key' : mode === 'empty' ? '' : '柔和晨光中的陶瓷茶杯，近景构图，简洁背景。'
+        : mode === 'credential-echo' ? 'account-key' : mode === 'empty' ? ''
+          : mode === 'timing-conflict' ? timingConflictDraft : '柔和晨光中的陶瓷茶杯，近景构图，简洁背景。'
       response.end(JSON.stringify({ choices: [{ finish_reason: mode === 'truncated' ? 'length' : 'stop', message: { role: 'assistant', content } }] }))
     })().catch(() => { response.destroy() })
   })
@@ -126,6 +129,7 @@ async function boot(options: {
     "    chatProviderRoute: 'product'",
     `    timeoutMs: ${String(options.timeoutMs ?? 1000)}`,
     `    promptAssistantTimeoutMs: ${String(options.timeoutMs ?? 1000)}`,
+    ...options.maxTokens === undefined ? [] : [`    promptAssistantMaxTokens: ${String(options.maxTokens)}`],
     ...options.configured === false ? [] : ["    promptAssistantModel: 'text-assistant'", "    promptAssistantVisionModel: 'vision-assistant'"], '',
   ].join('\n'))
   context = new Context()
@@ -190,7 +194,7 @@ describe('prompt assistance through the real Loader and account-owned HTTP route
     expect(calls.map(call => call.path)).toEqual(['/harness/v1/models', '/harness/v1/chat/completions'])
     expect(calls.every(call => call.authorization === 'Bearer account-key')).toBe(true)
     const completion = calls[1]?.body
-    expect(completion).toMatchObject({ model: 'vision-assistant', stream: false, max_tokens: 2048 })
+    expect(completion).toMatchObject({ model: 'vision-assistant', stream: false, max_tokens: 8192 })
     expect(completion).not.toHaveProperty('reasoning_effort')
     const messages: unknown[] = Array.isArray(completion?.messages) ? completion.messages : []
     expect(messages).toHaveLength(2)
@@ -214,7 +218,7 @@ describe('prompt assistance through the real Loader and account-owned HTTP route
     const request = object(JSON.parse(await readFile(join(auditDir, entries[0] ?? '', 'request.json'), 'utf8')))
     expect(request).toMatchObject({
       schema: 'zhishu.prompt-assist/v1', accountId: '7', sessionId: 'test-session', provider: 'product',
-      model: 'vision-assistant', reasoningEffort: 'medium', stream: false, max_tokens: 2048,
+      model: 'vision-assistant', reasoningEffort: 'medium', stream: false, max_tokens: 8192,
     })
     expect(request?.system).toBe(system)
     expect(messages[1]).toEqual({ role: 'user', content: request?.userText })
@@ -236,6 +240,59 @@ describe('prompt assistance through the real Loader and account-owned HTTP route
     const entry = (await readdir(directory)).find(name => name !== 'references')
     expect(JSON.parse(await readFile(join(directory, entry ?? '', 'request.json'), 'utf8')))
       .toMatchObject({ provider: 'product', model: 'vision-assistant', sessionId: 'test-session', reasoningEffort: 'medium' })
+  })
+
+  it('keeps six reference identities beside their image bytes in one billed directing request', async () => {
+    const { base, stateDir } = await boot({ maxTokens: 4096 })
+    chatSelection = { provider: 'product', model: 'vision-assistant' }
+    const filenames = ['妈妈.HEIC', '孩子.jpeg', '开篇插画.png', '刷牙步骤.webp', '亲子协助.avif', '杯子归位.bmp']
+    const materials = filenames.map((filename, index) => ({ label: `@图片${String(index + 1)}`, assetId: `ma_source${String(index)}`, filename }))
+    for (const material of materials) {
+      await writeFile(join(stateDir, 'refs', `${material.assetId}.png`), png)
+      await writeFile(join(stateDir, 'refs', `${material.assetId}.png.json`), JSON.stringify({ mediaType: 'image/png', originalName: material.filename }))
+    }
+    const draft = '制作 25 秒亲子绘本广告，@图片1 是妈妈，@图片2 是孩子，@图片3 至 @图片6 是绘本内页。不要字幕和促销角标。'
+    const body = { ...input(), kind: 'video', prompt: draft, references: materials.map(material => material.assetId),
+      generation: { model: 'MiniMax-H3', duration: '25', ratio: '9:16' } }
+    expect(await post(base, body)).toMatchObject({ ok: true })
+    const completion = calls.find(call => call.path === '/v1/chat/completions')?.body
+    expect(completion).toMatchObject({ model: 'vision-assistant', stream: false, max_tokens: 4096 })
+    const messages: unknown[] = Array.isArray(completion?.messages) ? completion.messages : []
+    const content = object(messages[1])?.content
+    expect(content).toEqual([
+      { type: 'text', text: JSON.stringify({ kind: 'video', currentDraft: draft, revisionFeedback: '', generation: body.generation,
+        referenceMaterials: materials }) },
+      ...materials.flatMap(material => [
+        { type: 'text', text: JSON.stringify({ label: material.label, filename: material.filename }) },
+        { type: 'image_url', image_url: { url: `data:image/png;base64,${png.toString('base64')}` } },
+      ]),
+    ])
+    const entry = (await readdir(join(stateDir, 'prompt-assists'))).find(name => name !== 'references')
+    const audit = object(JSON.parse(await readFile(join(stateDir, 'prompt-assists', entry ?? '', 'request.json'), 'utf8')))
+    expect(audit).toMatchObject({ max_tokens: 4096, references: materials.map(({ assetId, filename }) => ({ assetId, filename })) })
+    expect(audit?.userText).toBe(object(Array.isArray(content) ? content[0] : null)?.text)
+    expect(calls.filter(call => call.path === '/v1/chat/completions')).toHaveLength(1)
+    expect(calls.every(call => ['/v1/models', '/v1/chat/completions'].includes(call.path))).toBe(true)
+  })
+
+  it('returns timing clarification inside one editable draft without dispatching media generation', async () => {
+    const { base, stateDir } = await boot()
+    mode = 'timing-conflict'
+    const draft = '总时长 4 秒。妈妈逐字说：以前每天早晚催他刷牙像打仗，直到我把他的照片做成了这本绘本。不要改台词，不要字幕。'
+    const result = await post(base, { ...input(), kind: 'video', prompt: draft, generation: { model: 'MiniMax-H3', duration: '4' } })
+    expect(result).toMatchObject({ ok: true, payload: { prompt: timingConflictDraft } })
+    const completion = calls.find(call => call.path === '/v1/chat/completions')?.body
+    const messages: unknown[] = Array.isArray(completion?.messages) ? completion.messages : []
+    const system = object(messages[0])?.content
+    expect(system).toContain('Return one editable draft')
+    expect(system).toContain('include the specific conflict and focused clarification options inside that same draft')
+    expect(system).toContain('do not claim it is ready for generation or submit a generation task before confirmation')
+    expect(system).not.toContain('without a preface, explanations, Markdown fences, or alternatives')
+    expect(object(JSON.parse(String(object(messages[1])?.content)))).toMatchObject({ currentDraft: draft })
+    expect(calls.map(call => call.path)).toEqual(['/v1/models', '/v1/chat/completions'])
+    const entry = (await readdir(join(stateDir, 'prompt-assists'))).find(name => name !== 'references')
+    const outcome = object(JSON.parse(await readFile(join(stateDir, 'prompt-assists', entry ?? '', 'outcome.json'), 'utf8')))
+    expect(outcome).toMatchObject({ ok: true, payload: { prompt: timingConflictDraft }, completionDispatched: true })
   })
 
   it('rejects image references for the current text-only model without choosing a different model', async () => {
@@ -310,10 +367,12 @@ describe('prompt assistance through the real Loader and account-owned HTTP route
     expect(object(wireMessages[0])?.content).toContain('untrusted reference material')
     expect(object(wireMessages[0])?.content).toContain(VIDEO_DIRECTOR_PROMPT)
     expect(wireMessages[1]).toEqual({ role: 'user', content: [
-      { type: 'text', text: JSON.stringify({ kind: 'video', currentDraft, revisionFeedback: feedback, generation: { duration: '5', ratio: '16:9' } }) },
+      { type: 'text', text: JSON.stringify({ kind: 'video', currentDraft, revisionFeedback: feedback, generation: { duration: '5', ratio: '16:9' },
+        referenceMaterials: [{ label: '@图片1', assetId: 'ma_one', filename: 'cup.png' }] }) },
+      { type: 'text', text: JSON.stringify({ label: '@图片1', filename: 'cup.png' }) },
       { type: 'image_url', image_url: { url: `data:image/png;base64,${png.toString('base64')}` } },
     ] })
-    expect(request).toMatchObject({ model: 'vision-assistant', stream: false, max_tokens: 2048 })
+    expect(request).toMatchObject({ model: 'vision-assistant', stream: false, max_tokens: 8192 })
     const auditDir = join(stateDir, 'prompt-assists')
     const entries = (await readdir(auditDir)).filter(entry => entry !== 'references')
     expect(entries).toHaveLength(3)

@@ -50,6 +50,7 @@ export interface PromptAssistOptions {
   readonly isSelectionCurrent: () => Promise<boolean>
   readonly stateDir: string
   readonly timeoutMs: number
+  readonly maxTokens: number
   readonly signal: AbortSignal
   readonly readReference: (assetId: string) => Promise<{
     readonly bytes: Buffer
@@ -195,7 +196,7 @@ export async function assistPrompt(options: PromptAssistOptions): Promise<Prompt
   const aborted = (): PromptAssistFailure => promptAssistFailure(timeout.aborted
     || (options.signal.reason instanceof DOMException && options.signal.reason.name === 'TimeoutError')
     ? 'PROMPT_ASSIST_TIMEOUT' : 'PROMPT_ASSIST_CANCELLED')
-  const references: { assetId: string; bytes: Buffer; mediaType: string; sha256: string; file: string }[] = []
+  const references: { assetId: string; filename: string; bytes: Buffer; mediaType: string; sha256: string; file: string }[] = []
   let imageBytes = 0
   for (const assetId of input.references) {
     if (signal.aborted) return aborted()
@@ -206,14 +207,16 @@ export async function assistPrompt(options: PromptAssistOptions): Promise<Prompt
     imageBytes += reference.bytes.length
     if (reference.bytes.length > 6 * 1024 * 1024 || imageBytes > 12 * 1024 * 1024) return promptAssistFailure('PROMPT_ASSIST_REFERENCE_LIMIT')
     const sha256 = createHash('sha256').update(reference.bytes).digest('hex')
-    references.push({ assetId, bytes: reference.bytes, mediaType: reference.mediaType, sha256, file: `references/${sha256}.${extension}` })
+    references.push({ assetId, filename: reference.filename, bytes: reference.bytes,
+      mediaType: reference.mediaType, sha256, file: `references/${sha256}.${extension}` })
   }
   const system = [
-    'You write practical generation prompts for images and videos. Return only one final prompt, without a preface, explanations, Markdown fences, or alternatives.',
+    'You write practical generation prompts for images and videos. Return one editable draft, without a preface, unrelated commentary, Markdown fences, or multiple complete versions. If requirements conflict, include the specific conflict and focused clarification options inside that same draft; do not claim it is ready for generation or submit a generation task before confirmation.',
     'Preserve the user’s intended subject and constraints; add concrete composition, lighting, style, and useful detail.',
     input.kind === 'video' ? VIDEO_DIRECTOR_PROMPT : [
       CREATION_LANGUAGE_GUIDANCE,
       'For images, describe the subject, composition, lighting, material, and visual style coherently with the supplied generation parameters.',
+      '多参考图时按实际 @图片编号和原文件名区分主体、身份、构图及画风用途，明确各自采用与排除的细节；不要将多个角色混成同一个人，也不要虚构缺失图片。',
     ].join('\n'),
     ...input.kind === 'video' && input.generation.model === 'MiniMax-H3'
       ? [videoPromptFormatGuidance(input.generation.model)] : [],
@@ -223,12 +226,18 @@ export async function assistPrompt(options: PromptAssistOptions): Promise<Prompt
   ].join('\n')
   const userText = JSON.stringify({
     kind: input.kind, currentDraft: input.prompt, revisionFeedback: input.instruction, generation: input.generation,
+    ...references.length === 0 ? {} : { referenceMaterials: references.map((reference, index) => ({
+      label: `@图片${String(index + 1)}`, assetId: reference.assetId, filename: reference.filename,
+    })) },
   })
   const messages = [
     { role: 'system', content: system },
     { role: 'user', content: references.length === 0 ? userText : [
       { type: 'text', text: userText },
-      ...references.map(reference => ({ type: 'image_url', image_url: { url: `data:${reference.mediaType};base64,${reference.bytes.toString('base64')}` } })),
+      ...references.flatMap((reference, index) => [
+        { type: 'text', text: JSON.stringify({ label: `@图片${String(index + 1)}`, filename: reference.filename }) },
+        { type: 'image_url', image_url: { url: `data:${reference.mediaType};base64,${reference.bytes.toString('base64')}` } },
+      ]),
     ] },
   ]
   const directory = join(options.stateDir, 'prompt-assists')
@@ -249,8 +258,8 @@ export async function assistPrompt(options: PromptAssistOptions): Promise<Prompt
     await writeFile(join(requestDirectory, 'request.json'), `${JSON.stringify({
       schema: 'zhishu.prompt-assist/v1', createdAt: new Date().toISOString(), accountId: options.accountId,
       sessionId: options.sessionId, provider: options.selection.provider, reasoningEffort: options.selection.reasoningEffort,
-      model, stream: false, max_tokens: 2048, system, userText,
-      references: references.map(({ assetId, mediaType, sha256, file }) => ({ assetId, mediaType, sha256, file })),
+      model, stream: false, max_tokens: options.maxTokens, system, userText,
+      references: references.map(({ assetId, filename, mediaType, sha256, file }) => ({ assetId, filename, mediaType, sha256, file })),
     }, null, 2)}\n`, { mode: 0o600, flag: 'wx' })
   } catch (error) {
     // Without a complete local record no model request may be sent.
@@ -280,7 +289,7 @@ export async function assistPrompt(options: PromptAssistOptions): Promise<Prompt
         completionDispatched = true
         const completion = await fetch(apiUrl(options.baseUrl, '/v1/chat/completions'), {
           method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, signal, redirect: 'error',
-          body: JSON.stringify({ model, messages, stream: false, max_tokens: 2048 }),
+          body: JSON.stringify({ model, messages, stream: false, max_tokens: options.maxTokens }),
         })
         if (!completion.ok) {
           await completion.body?.cancel()

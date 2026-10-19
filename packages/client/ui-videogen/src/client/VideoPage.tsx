@@ -63,7 +63,7 @@ function isArtifactItem(value: unknown): value is ArtifactItem {
 }
 
 const SLOT_TYPES: Record<Slot, { readonly accept: string; readonly types: readonly string[] }> = {
-  image: { accept: 'image/png,image/jpeg,image/webp', types: ['image/png', 'image/jpeg', 'image/webp'] },
+  image: { accept: 'image/*,.heic,.heif,.avif,.bmp,.tif,.tiff', types: ['image/png', 'image/jpeg', 'image/webp'] },
   video: { accept: 'video/mp4,video/quicktime', types: ['video/mp4', 'video/quicktime'] },
   audio: { accept: 'audio/mpeg,audio/wav', types: ['audio/mpeg', 'audio/wav'] },
 }
@@ -84,7 +84,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
   const draft = props.useStore(state => state)
   const sessionId = props.useCreationSession(binding => binding.key)
   const { prompt, modelId, resolution, ratio, mode, seed, audio, firstFrame, lastFrame, slots,
-    phase, uploading, failure, message, result } = draft
+    phase, uploading, failure, uploadFailures, message, result } = draft
   const [signedIn, setSignedIn] = useState<boolean | null>(null)
   const [accountIdentity, setAccountIdentity] = useState<string | null>(null)
   const [creditsPerYuan, setCreditsPerYuan] = useState(1000)
@@ -273,49 +273,86 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
   const upload = useCallback(async (
     slot: Slot, file: File, context: VideoDraft, replacing: Reference | null = null,
   ): Promise<Reference | null> => {
-    if (!SLOT_TYPES[slot].types.includes(file.type)) {
-      actions.patch({ failure: t('uploadFailed', { message: file.type || t('unknownType') }) })
+    const reject = (reason: string): null => {
+      if (isReferenceCurrent(context)) actions.patch({ uploadFailures: [...readDraft().uploadFailures, { name: file.name, reason }] })
       return null
     }
-    if (file.size === 0 || file.size > (slot === 'image' ? 6 : slot === 'audio' ? 15 : 32) * 1024 * 1024) {
-      actions.patch({ failure: t(slot === 'image' ? 'materialLimit' : slot === 'audio' ? 'audioUploadSize' : 'uploadSize', { n: String(imageLimit) }) }); return null
+    if (slot !== 'image' && !SLOT_TYPES[slot].types.includes(file.type)) return reject(t('unsupportedUploadType'))
+    if (slot === 'image' && file.size === 0) return reject(t('emptyImage'))
+    if (file.size === 0 || file.size > (slot === 'audio' ? 15 : 32) * 1024 * 1024) {
+      return reject(t(slot === 'audio' ? 'audioUploadSize' : 'uploadSize'))
     }
+    const retainedImages = (): Reference[] => [...new Map([readDraft().firstFrame, readDraft().lastFrame, ...readDraft().slots.image]
+      .filter((item): item is Reference => item !== null && item !== replacing).map(item => [item.assetId, item])).values()]
     if (slot === 'image') {
-      const images = [...new Map([context.firstFrame, context.lastFrame, ...context.slots.image]
-        .filter((item): item is Reference => item !== null && item !== replacing).map(item => [item.assetId, item])).values()]
-      if (images.length >= imageLimit || images.reduce((sum, item) => sum + item.bytes, 0) + file.size > 12 * 1024 * 1024) {
-        actions.patch({ failure: t('materialLimit', { n: String(imageLimit) }) }); return null
+      const images = retainedImages()
+      if (images.length >= imageLimit || images.reduce((sum, item) => sum + item.bytes, 0) >= 12 * 1024 * 1024) {
+        return reject(t('materialLimit', { n: String(imageLimit) }))
       }
     }
     try {
       const response = await fetch('/credits/api/assets', {
         method: 'POST', headers: {
-          'content-type': file.type, 'x-file-name': encodeURIComponent(file.name),
+          'content-type': file.type || 'application/octet-stream', 'x-file-name': encodeURIComponent(file.name),
           'x-idempotency-key': `dsh-asset-${globalThis.crypto.randomUUID()}`, accept: 'application/json',
         }, body: file,
       })
       if (!isReferenceCurrent(context)) return null
-      if (!response.ok) { actions.patch({ failure: t('uploadNetwork') }); return null }
+      if (!response.ok) return reject(t('uploadNetwork'))
       const answer = await response.json() as {
         ok: boolean
         code?: string
         message?: string
         sessionInvalid?: boolean
-        asset?: { assetId?: string }
+        asset?: {
+          assetId?: string
+          contentType?: string
+          sizeBytes?: number
+          previewUrl?: string
+          converted?: boolean
+          firstFrameOnly?: boolean
+        } | null
       }
       if (!isReferenceCurrent(context)) return null
       if (answer.sessionInvalid === true) { acceptAccount({ signedIn: false }); actions.patch({ failure: t('noAuth') }); return null }
-      const assetId = answer.asset?.assetId
-      if (!answer.ok || typeof assetId !== 'string') {
-        actions.patch({ failure: t('uploadFailed', { message: answer.message ?? answer.code ?? t('unknown') }) })
-        return null
+      const asset = answer.asset
+      const assetId = asset?.assetId
+      if (!answer.ok || asset === null || asset === undefined || typeof assetId !== 'string' || assetId === '') {
+        if (slot !== 'image') return reject(t('uploadFailed', { message: answer.message ?? answer.code ?? t('unknown') }))
+        switch (answer.code) {
+          case 'IMAGE_EMPTY': return reject(t('emptyImage'))
+          case 'IMAGE_INPUT_TOO_LARGE': return reject(t('uploadSize'))
+          case 'IMAGE_FORMAT_UNSUPPORTED': return reject(t('unsupportedUploadType'))
+          case 'IMAGE_DECODE_FAILED': return reject(t('invalidImage'))
+          case 'IMAGE_PIXEL_LIMIT': return reject(t('imageDimensionsLimit'))
+          case 'IMAGE_OUTPUT_TOO_LARGE': return reject(t('normalizedSizeLimit'))
+          case 'IMAGE_DECODER_UNAVAILABLE': return reject(t('decoderUnavailable'))
+          case 'IMAGE_STORAGE_FAILED': return reject(t('imageStorageFailed'))
+          case 'IMAGE_CONVERSION_FAILED': return reject(t('conversionFailed'))
+          default: return reject(t('uploadNetwork'))
+        }
+      }
+      if (slot === 'image') {
+        const expectedPreview = `/credits/api/assets/preview?asset_id=${encodeURIComponent(assetId)}`
+        const legacy = asset.previewUrl === undefined && asset.contentType === undefined && asset.sizeBytes === undefined
+          && SLOT_TYPES.image.types.includes(file.type) && file.size <= 6 * 1024 * 1024
+        const bytes = legacy ? file.size : asset.sizeBytes
+        if (typeof bytes !== 'number' || !Number.isSafeInteger(bytes) || bytes <= 0 || bytes > 6 * 1024 * 1024
+          || !legacy && (asset.previewUrl !== expectedPreview || !['image/png', 'image/jpeg'].includes(asset.contentType ?? ''))) {
+          return reject(t('invalidUploadResponse'))
+        }
+        const images = retainedImages()
+        if (images.length >= imageLimit || images.reduce((sum, item) => sum + item.bytes, 0) + bytes > 12 * 1024 * 1024) {
+          return reject(t('materialLimit', { n: String(imageLimit) }))
+        }
+        return { assetId, name: file.name, url: legacy ? createPreview(file) : expectedPreview, bytes,
+          converted: asset.converted === true, firstFrameOnly: asset.firstFrameOnly === true }
       }
       return { assetId, name: file.name, url: createPreview(file), bytes: file.size }
     } catch (_error) {
-      if (isReferenceCurrent(context)) actions.patch({ failure: t('uploadNetwork') })
-      return null
+      return reject(t('uploadNetwork'))
     }
-  }, [acceptAccount, actions, createPreview, imageLimit, isReferenceCurrent, t])
+  }, [acceptAccount, actions, createPreview, imageLimit, isReferenceCurrent, readDraft, t])
 
   const pick = useCallback(async (slot: Slot, files: FileList | null): Promise<void> => {
     if (busy || readDraft().promptAssisting || operation.current || files === null || files.length === 0) return
@@ -326,17 +363,21 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
     const available = Math.max(0, limit - slots[slot].length)
     if (available === 0) return
     operation.current = true
-    actions.patch({ failure: null, uploading: slot })
+    actions.patch({ failure: null, uploadFailures: [], uploading: slot })
     try {
-      for (const file of Array.from(files).slice(0, available)) {
+      for (const file of Array.from(files)) {
         if (!isReferenceCurrent(context)) return
+        if (readDraft().slots[slot].length >= limit) {
+          actions.patch({ uploadFailures: [...readDraft().uploadFailures, { name: file.name, reason: t('referenceFull') }] })
+          continue
+        }
         const reference = await upload(slot, file, readDraft())
-        if (reference === null) break
+        if (reference === null) continue
         if (!isReferenceCurrent(context)) { releasePreview(reference.url); return }
         actions.addReferences(slot, [reference], limit)
       }
     } finally { if (isReferenceCurrent(context)) { operation.current = false; actions.patch({ uploading: null }) } }
-  }, [accountIdentity, busy, imageLimit, isReferenceCurrent, params, readDraft, releasePreview, signedIn, slots, upload, actions])
+  }, [accountIdentity, busy, imageLimit, isReferenceCurrent, params, readDraft, releasePreview, signedIn, slots, t, upload, actions])
 
   const pickFrame = useCallback(async (which: 'first' | 'last', files: FileList | null): Promise<void> => {
     const file = files?.[0]
@@ -344,7 +385,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
     const context = readDraft()
     if (signedIn !== true || accountIdentity === null || context.referenceAccountId !== accountIdentity) return
     operation.current = true
-    actions.patch({ failure: null, uploading: which })
+    actions.patch({ failure: null, uploadFailures: [], uploading: which })
     try {
       const reference = await upload('image', file, context, which === 'first' ? context.firstFrame : context.lastFrame)
       if (reference !== null) {
@@ -438,6 +479,8 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
       {reference !== null && <button type="button" disabled={locked} className={css.link} onClick={() => {
         actions.patch(which === 'first' ? { firstFrame: null } : { lastFrame: null }); releasePreview(reference.url)
       }}>{t('remove')}</button>}
+      {reference?.firstFrameOnly === true ? <p className={css.hint}>{t('firstFrameOnly')}</p>
+        : reference?.converted === true && <p className={css.hint}>{t('imageConverted')}</p>}
     </div>
   }
 
@@ -457,6 +500,8 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
       <ul className={css.files}>{slots[slot].map(item => <li key={item.assetId} className={slot === 'audio' ? `${css.fileRow} ${css.audioReference}` : css.fileRow}>
         {slot === 'image' ? <img className={css.fileThumb} src={item.url} alt={item.name} /> : <IconPlayOutlineRegular />}
         <span className={css.fileName}>{item.name}</span>
+        {slot === 'image' && (item.firstFrameOnly === true || item.converted === true)
+          && <span className={css.count}>{t(item.firstFrameOnly === true ? 'firstFrameOnly' : 'imageConverted')}</span>}
         <button type="button" disabled={locked} className={css.link} aria-label={t('removeNamed', { name: item.name })} onClick={() => {
           actions.removeReference(slot, item.assetId); releasePreview(item.url)
         }}>{t('remove')}</button>
@@ -608,6 +653,8 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
         {settingsInvalid && <p className={css.error} role="alert">{t('settingsUnavailableForModel')}</p>}
         {referenceBytesExceeded && <p className={css.error} role="alert">{t('referenceBytesExceeded')}</p>}
         {failure !== null && <p className={css.error} role="alert">{failure}</p>}
+        {uploadFailures.length > 0 && <ul className={css.error} role="alert">{uploadFailures.map((item, index) =>
+          <li key={`${String(index)}:${item.name}`}>{t('uploadItemFailed', { name: item.name, reason: item.reason })}</li>)}</ul>}
         {message !== null && <p className={css.notice}>{message}</p>}
         {signedIn === false && <p className={css.hint}>{t('signedOut')}</p>}
         {sessionId === undefined && <p className={css.hint}>{t('sessionRequired')}</p>}

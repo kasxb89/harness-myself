@@ -7,6 +7,8 @@ export interface Reference {
   name: string
   url: string
   bytes: number
+  converted?: boolean
+  firstFrameOnly?: boolean
 }
 
 /** Supported composer input arrangements; these are not model API parameters. */
@@ -39,6 +41,8 @@ export interface VideoDraft {
   startedAt: number
   message: string | null
   failure: string | null
+  /** Per-file upload failures survive successful later items in the same batch. */
+  uploadFailures: readonly { readonly name: string; readonly reason: string }[]
   /** Selected mounted outputs retain their workspace coordinate for media reads. */
   result: { path: string; workspaceId?: string } | null
 }
@@ -61,6 +65,7 @@ export function createVideoDraftStore(): EngineStoreHandle<VideoDraft, DraftActi
       modelId: '', prompt: '', duration: 0, resolution: '', ratio: '', mode: '', seed: '', audio: true,
       workflow: 'text', firstFrame: null, lastFrame: null, slots: { image: [], video: [], audio: [] },
       category: 'all', uploading: null, phase: 'idle', startedAt: 0, message: null, failure: null, result: null,
+      uploadFailures: [],
       referenceAccountId: null, referenceEpoch: 0, promptAssisting: false,
     }),
     actions: {
@@ -74,6 +79,7 @@ export function createVideoDraftStore(): EngineStoreHandle<VideoDraft, DraftActi
         draft.lastFrame = null
         draft.slots = { image: [], video: [], audio: [] }
         draft.uploading = null
+        draft.uploadFailures = []
       },
       appendPrompt: (draft, suffix: string) => {
         if (!draft.prompt.includes(suffix)) draft.prompt += suffix

@@ -59,3 +59,17 @@ it('keeps native execution fast paths and rejects script fallbacks beyond suppor
   expect(content).toContain('When the actual generation model is MiniMax-H3, load yunshu-minimax-h3 only if its prompt notation is needed.')
   expect(content).toContain('Do not fetch online guides at generation time.')
 })
+
+it('gives narrative briefs explicit material responsibilities, executable timing and user-owned exclusions', () => {
+  expect(VIDEO_DIRECTOR_PROMPT).toContain('剧情概述 → 素材与职责 → 主体与全片设定 → 镜头 / 时间轴 → 始终保持 → 始终禁止')
+  expect(VIDEO_DIRECTOR_PROMPT).toContain('实际收到的 @图片1、@图片2 等顺序与原文件名')
+  expect(VIDEO_DIRECTOR_PROMPT).toContain('采用什么、排除什么、可改变什么')
+  expect(VIDEO_DIRECTOR_PROMPT).toContain('每个需要素材的镜头明确引用对应编号')
+  expect(VIDEO_DIRECTOR_PROMPT).toContain('角色外貌、服装、人物关系与情绪变化')
+  expect(VIDEO_DIRECTOR_PROMPT).toContain('起始位置、主动作与结束状态')
+  expect(VIDEO_DIRECTOR_PROMPT).toContain('说话者、逐字台词、语气、说话起止时间')
+  expect(VIDEO_DIRECTOR_PROMPT).toContain('用户逐字指定的台词不得擅删、改写、加速或挪出总时长')
+  expect(VIDEO_DIRECTOR_PROMPT).toContain('确认前不提交矛盾的生成任务')
+  expect(VIDEO_DIRECTOR_PROMPT).toContain('不得套用默认字幕或促销模板')
+  expect(VIDEO_DIRECTOR_PROMPT).toContain('简单单镜头或一句提示词请求只补足必要细节')
+})

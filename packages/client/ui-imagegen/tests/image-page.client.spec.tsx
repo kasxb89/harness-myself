@@ -337,18 +337,28 @@ describe('image creation workspace', () => {
     expect(store.getSnapshot().references).toHaveLength(6)
   })
 
-  it('enforces 6 MiB per image and 12 MiB across materials before transport', async () => {
+  it('uses the converted size for the material budget and reports each oversized original', async () => {
+    const original = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation(async (input, init) => {
+      if (requestUrl(input) !== '/credits/api/assets') return await original(input, init)
+      assets += 1
+      const assetId = `ma_${String(assets)}`
+      return json({ ok: true, asset: { assetId, contentType: 'image/jpeg', sizeBytes: 6 * 1024 * 1024,
+        converted: true, previewUrl: `/credits/api/assets/preview?asset_id=${assetId}` } })
+    })
     const { props, store } = makeProps()
     render(<ImagePage {...props} />)
     await ready()
     const drop = (files: File[]) => { fireEvent.drop(screen.getByRole('region', { name: '图片创作工作台' }), { dataTransfer: { files } }) }
-    drop([new File([new Uint8Array(6 * 1024 * 1024 + 1)], 'oversized.png', { type: 'image/png' })])
+    drop([new File([new Uint8Array(32 * 1024 * 1024 + 1)], 'oversized.png', { type: 'image/png' })])
     await waitFor(() => { expect(store.getSnapshot().uploading).toBe(false) })
     expect(assets).toBe(0)
-    drop([new File([new Uint8Array(6 * 1024 * 1024)], 'first.png', { type: 'image/png' }), new File([new Uint8Array(6 * 1024 * 1024)], 'second.png', { type: 'image/png' }), new File(['x'], 'excess.png', { type: 'image/png' })])
-    await waitFor(() => { expect(store.getSnapshot().uploading).toBe(false); expect(assets).toBe(2) })
+    expect(screen.getByRole('list', { name: zh.uploadFailures }).textContent).toContain('oversized.png')
+    drop([new File([new Uint8Array(8 * 1024 * 1024)], 'first.heic'), new File([new Uint8Array(8 * 1024 * 1024)], 'second.heic'), new File(['x'], 'excess.png', { type: 'image/png' })])
+    await waitFor(() => { expect(store.getSnapshot().uploading).toBe(false); expect(assets).toBe(3) })
     expect(store.getSnapshot().references).toHaveLength(2)
-    expect(screen.getByRole('alert').textContent).toBe(zh.referenceTotalLimit)
+    expect(store.getSnapshot().references.map(item => item.bytes)).toEqual([6 * 1024 * 1024, 6 * 1024 * 1024])
+    expect(screen.getByRole('list', { name: zh.uploadFailures }).textContent).toContain(`excess.png${zh.referenceTotalLimit}`)
   })
 
   it('renders live published content, real covers and locale fallback without bundled templates', async () => {
@@ -494,23 +504,103 @@ describe('image creation workspace', () => {
     expect(fetchMock.mock.calls.filter(([url]) => url === '/credits/api/image/generate')).toHaveLength(1)
   })
 
-  it('recovers from upload failures and rejects unsupported image files before transport', async () => {
+  it('names rejected files and keeps later uploads after a transport failure', async () => {
     const original = fetchMock.getMockImplementation()!
     fetchMock.mockImplementation(async (input, init) => {
-      if (requestUrl(input) === '/credits/api/assets') throw new TypeError('offline')
+      if (requestUrl(input) === '/credits/api/assets') {
+        const name = decodeURIComponent(new Headers(init?.headers).get('x-file-name') ?? '')
+        if (name === 'offline.png') throw new TypeError('offline')
+        if (name === 'broken.gif') return json({ ok: false, code: 'IMAGE_DECODE_FAILED', message: 'internal decoder detail' })
+      }
       return await original(input, init)
     })
     const { props, store } = makeProps()
     const view = render(<ImagePage {...props} />)
     await ready()
     const input = view.container.querySelector<HTMLInputElement>('input[type="file"]')!
-    fireEvent.change(input, { target: { files: [new File(['gif'], 'bad.gif', { type: 'image/gif' })] } })
-    await screen.findByText('参考图上传失败：不支持的图片格式')
-    expect(fetchMock.mock.calls.some(([url]) => url === '/credits/api/assets')).toBe(false)
-    fireEvent.change(input, { target: { files: [new File(['png'], 'good.png', { type: 'image/png' })] } })
-    await screen.findByText('参考图上传失败：连接中断，请稍后重试')
+    fireEvent.change(input, { target: { files: [new File(['png'], 'offline.png', { type: 'image/png' }),
+      new File(['gif'], 'broken.gif', { type: 'image/gif' }), new File(['png'], 'good.png', { type: 'image/png' })] } })
+    await waitFor(() => { expect(store.getSnapshot().uploading).toBe(false) })
+    const errors = screen.getByRole('list', { name: zh.uploadFailures }).textContent
+    expect(errors).toContain(`offline.png${zh.connectionFailure}`)
+    expect(errors).toContain(`broken.gif${zh.invalidImage}`)
+    expect(errors).not.toContain('internal decoder detail')
+    expect(screen.getByText(t('uploadSummary', { added: '1', failed: '2' }))).toBeTruthy()
     expect(screen.getByRole('button', { name: '添加素材' })).toHaveProperty('disabled', false)
-    expect(store.getSnapshot().references).toHaveLength(0)
+    expect(store.getSnapshot().references.map(item => item.name)).toEqual(['good.png'])
+  })
+
+  it('keeps three common-format references with normalized previews despite missing or incorrect MIME labels', async () => {
+    const original = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation(async (input, init) => {
+      if (requestUrl(input) !== '/credits/api/assets') return await original(input, init)
+      assets += 1
+      const assetId = `ma_${String(assets)}`
+      return json({ ok: true, asset: { assetId, originalName: 'source', sourceFormat: 'heif', contentType: 'image/jpeg',
+        sizeBytes: 100, converted: true, firstFrameOnly: assets === 3, previewUrl: `/credits/api/assets/preview?asset_id=${assetId}` } })
+    })
+    const { props, store } = makeProps()
+    const view = render(<ImagePage {...props} />)
+    await ready()
+    const input = view.container.querySelector<HTMLInputElement>('input[type="file"]')!
+    for (const extension of ['jfif', 'avif', 'gif', 'bmp', 'tif', 'tiff', 'heic', 'heif']) expect(input.accept).toContain(`.${extension}`)
+    fireEvent.change(input, { target: { files: [new File(['heic'], '妈妈.HEIC'),
+      new File(['tiff'], '孩子.tiff', { type: 'application/octet-stream' }), new File(['gif'], '步骤.gif', { type: 'image/gif' })] } })
+    await waitFor(() => { expect(store.getSnapshot().uploading).toBe(false) })
+    expect(store.getSnapshot().references.map(item => item.name)).toEqual(['妈妈.HEIC', '孩子.tiff', '步骤.gif'])
+    expect(screen.getByText('3/6')).toBeTruthy()
+    for (const [index, name] of ['妈妈.HEIC', '孩子.tiff', '步骤.gif'].entries()) {
+      expect(screen.getByAltText(name).getAttribute('src')).toBe(`/credits/api/assets/preview?asset_id=ma_${String(index + 1)}`)
+    }
+    expect(screen.getByText(t('uploadConverted', { n: '3' }))).toBeTruthy()
+    expect(screen.getByText(t('uploadFirstFrames', { n: '1' }))).toBeTruthy()
+    expect(new Headers(fetchMock.mock.calls.find(([url]) => url === '/credits/api/assets')?.[1]?.headers).get('content-type')).toBe('application/octet-stream')
+    expect(props.createReferencePreview).not.toHaveBeenCalled()
+  })
+
+  it('lists every skipped filename at the reference limit and clears batch feedback with the selection', async () => {
+    const { props, store } = makeProps()
+    render(<ImagePage {...props} />)
+    await ready()
+    const files = Array.from({ length: 8 }, (_, index) => new File(['image'], `${String(index + 1)}.png`, { type: 'image/png' }))
+    fireEvent.drop(screen.getByRole('region', { name: zh.composer }), { dataTransfer: { files } })
+    await waitFor(() => { expect(store.getSnapshot().uploading).toBe(false) })
+    const failures = screen.getByRole('list', { name: zh.uploadFailures })
+    expect(failures.textContent).toContain('7.png')
+    expect(failures.textContent).toContain('8.png')
+    expect(screen.getByText(t('uploadSummary', { added: '6', failed: '2' }))).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: zh.clearReferences }))
+    expect(store.getSnapshot().uploadResult).toBeNull()
+    expect(screen.queryByRole('list', { name: zh.uploadFailures })).toBeNull()
+  })
+
+  it('uses localized server failure codes and refuses foreign preview URLs without losing existing references', async () => {
+    const original = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation(async (input, init) => {
+      if (requestUrl(input) !== '/credits/api/assets') return await original(input, init)
+      const name = decodeURIComponent(new Headers(init?.headers).get('x-file-name') ?? '')
+      if (name === 'foreign.heic') return json({ ok: true, asset: { assetId: 'ma_foreign', contentType: 'image/jpeg', sizeBytes: 2,
+        converted: true, previewUrl: 'https://foreign.example/private.jpg' } })
+      return new Response(JSON.stringify({ ok: false, code: 'IMAGE_PIXEL_LIMIT', message: 'private decoder path' }),
+        { status: 413, headers: { 'content-type': 'application/json' } })
+    })
+    const { props, store } = makeProps()
+    store.actions.appendReference({ assetId: 'ma_existing', name: 'existing.png', url: 'blob:existing', bytes: 1 })
+    render(<ImagePage {...props} />)
+    await ready()
+    fireEvent.drop(screen.getByRole('region', { name: zh.composer }), { dataTransfer: {
+      files: [new File(['large'], '超大.tiff'), new File(['heic'], 'foreign.heic')],
+    } })
+    await waitFor(() => { expect(store.getSnapshot().uploading).toBe(false) })
+    const failures = screen.getByRole('list', { name: zh.uploadFailures }).textContent
+    expect(failures).toContain(`超大.tiff${zh.imageDimensionsLimit}`)
+    expect(failures).toContain(`foreign.heic${zh.invalidUploadResponse}`)
+    expect(failures).not.toContain('private decoder path')
+    expect(store.getSnapshot().references.map(item => item.assetId)).toEqual(['ma_existing'])
+    sessionAccountId = 'account-b'
+    fireEvent.focus(window)
+    await waitFor(() => { expect(store.getSnapshot().referenceAccountId).toBe('account-b') })
+    expect(store.getSnapshot().uploadResult).toBeNull()
   })
 
   it('opens a work at original size, offers a download, and uploads it as a reference', async () => {

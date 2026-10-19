@@ -144,6 +144,10 @@
 .field { display: flex; flex-direction: column; gap: 7px; min-width: 0; color: var(--dsw-alias-label-secondary); font-size: 12px; }
 .parameterHint { grid-column: 1 / -1; margin: 0; color: var(--dsw-alias-label-tertiary); font-size: 11px; }
 .referenceTray { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding-left: 108px; }
+.uploadResult { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.uploadFailures { display: flex; flex-direction: column; gap: 6px; margin: 0; padding-left: 18px; max-height: 160px; overflow-y: auto; }
+.uploadFailures li { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.uploadFileName { color: var(--dsw-alias-label-primary); overflow-wrap: anywhere; }
 .thumbs { display: flex; flex-wrap: wrap; gap: 10px; margin: 0; padding: 0; list-style: none; }
 .thumb { position: relative; }
 .thumb img { display: block; width: 54px; height: 54px; object-fit: cover; border-radius: var(--dsw-radius-sm); }

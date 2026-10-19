@@ -17,6 +17,7 @@ import parseSpdx from 'spdx-expression-parse'
 import primaryRuntimeLock from './primary-runtime/lock.json' with { type: 'json' }
 import { browserBundledExternals } from './browser-bundled-externals.ts'
 import { DEVTOOLS_NPM_VERSION, DEVTOOLS_SOURCE_REVISION } from '../packages/experimental/inspector/scripts/devtools/source.ts'
+import { assertHeicDecoderDistribution, HEIC_DECODER_DISTRIBUTION, isReviewedHeicRuntime } from './heic-decoder-distribution.ts'
 
 const root = resolve(import.meta.dirname, '..')
 const OUT = 'THIRD_PARTY_NOTICES.md'
@@ -401,7 +402,8 @@ function installedMetadata(name: string, manifests: Map<string, Manifest>): {
     throw new Error(`gen-third-party-notices: cannot resolve ${license === undefined ? 'license' : 'repository'} for ${name}; run \`pnpm install\`, or add an OVERRIDES entry.`)
   }
   const sourceCommit = name === IVIDEO_OWNER_AUTHORIZATION.name && manifest !== undefined
-    ? authorizedVideoSource(manifest, manifests) : undefined
+    ? authorizedVideoSource(manifest, manifests)
+    : name === HEIC_DECODER_DISTRIBUTION.name ? HEIC_DECODER_DISTRIBUTION.sourceCommit : undefined
   return { license, repo, ...manifest?.version === undefined ? {} : { version: manifest.version },
     ...sourceCommit === undefined ? {} : { sourceCommit } }
 }
@@ -742,13 +744,14 @@ export function isPermissive(license: string): boolean {
 /**
  * Reject unapproved non-permissive licenses on installed or browser-bundled code.
  * @param dependencies - Disclosed runtime package identities and declared licenses.
- * @throws When a runtime package has no permissive license or exact owner authorization.
+ * @throws When a runtime package has no permissive license or reviewed distribution exception.
  */
 export function assertRuntimeLicenses(
   dependencies: readonly { name: string; license: string; version?: string; sourceCommit?: string }[],
 ): void {
   const rejected = dependencies.filter(dep => !isPermissive(dep.license)
     && !isOwnerAuthorizedRuntime(dep.name, dep)
+    && !isReviewedHeicRuntime(dep)
     && !(LIBREOFFICE_PACKAGES.has(dep.name) && dep.license === 'MPL-2.0'))
   if (rejected.length > 0) {
     throw new Error(`gen-third-party-notices: runtime ${rejected.map(dep => `${dep.name} (${dep.license})`).join(', ')} is not a permissive license; review the distribution terms and record the decision before regenerating.`)
@@ -823,6 +826,8 @@ export async function render(): Promise<string> {
   const runtimeDeps = npm.filter(dep => dep.runtime)
   const devDeps = npm.filter(dep => !dep.runtime)
   const kitRuntime = runtimeDeps.some(dep => dep.name === LIBREOFFICE_KIT_PACKAGE)
+  const heicRuntime = runtimeDeps.some(dep => dep.name === HEIC_DECODER_DISTRIBUTION.name)
+  if (heicRuntime) assertHeicDecoderDistribution(root, browser)
   const vendored = collectVendored()
   const python = collectPython()
   const bundledPython = collectBundledPythonDependencies(primaryRuntimeLock.pythonPackages)
@@ -878,6 +883,11 @@ ${kitRuntime ? `
 ${[...LIBREOFFICE_PACKAGES].map(name => `\`${name}\``).join(', ')} declare MPL-2.0, which remains outside the permissive-license allowlist; the notices check accepts only these package identities at those terms. The [distribution decision](.agents/notes/implemented/architecture/2026-09-14-independent-libreoffice-kit.md) records the source obligations.
 
 The [kit repository](https://github.com/deepseek-ai/dsh-libreoffice-kit) supplies the corresponding LibreOffice source pin, modifications, build instructions, Node API, and artifact validation. Its engine packages retain their license and third-party notices; the Node API retains its MPL-2.0 declaration and NOTICE. Recipients must have access to those corresponding sources and notices.
+` : ''}
+${heicRuntime ? `
+## HEIC decoder with accompanying sources
+
+\`libheif-js\` ${HEIC_DECODER_DISTRIBUTION.version} retains its LGPL-3.0 declaration, outside the permissive-license allowlist. Only that exact npm release and source pin are covered by this distribution decision. The package's [accompanying materials](packages/host/credits-index/third-party-notices/heic/DISTRIBUTION.txt) include complete matching libheif-js, libheif-emscripten, libheif and libde265 sources, build scripts, complete GPL/LGPL texts and instructions for replacing the separately loaded decoder in a user's application copy. [Source archives and hashes](packages/host/credits-index/third-party-notices/heic/sources.json) ship with the Credits package. No commercial authorization is asserted. The notices check rejects altered source archives, unreviewed versions, missing materials, inline decoder builds and browser inclusion.
 ` : ''}
 
 ## Development-only npm dependencies

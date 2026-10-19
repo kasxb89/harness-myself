@@ -168,28 +168,49 @@ export async function saveCreativePlan(request: CreativePlanRequest, signal: Abo
 
 /** Upload result contains an opaque material id, never a provider URL. */
 export type CreativeUploadResult =
-  | { readonly ok: true; readonly assetId: string; readonly kind: 'image' | 'video' | 'audio' }
-  | { readonly ok: false }
+  | { readonly ok: true
+    readonly assetId: string
+    readonly kind: 'image' | 'video' | 'audio'
+    readonly sizeBytes?: number
+    readonly previewUrl?: string
+    readonly converted?: boolean
+    readonly firstFrameOnly?: boolean }
+  | { readonly ok: false; readonly code?: string }
 
 /**
  * Upload a real source file through the existing authenticated material endpoint.
- * @param file - nonempty supported material of at most 32 MB.
+ * @param file - Nonempty source of at most 32 MiB; the host identifies and normalizes image bytes.
  * @param signal - editor and account lifetime cancellation.
- * @returns an opaque material id or an upload failure.
+ * @returns An opaque material id with normalized image metadata, or a localizable failure code.
  */
 export async function uploadCreativeAsset(file: File, signal: AbortSignal): Promise<CreativeUploadResult> {
-  const kind = file.type.startsWith('image/') ? 'image' : file.type.startsWith('video/') ? 'video'
-    : file.type.startsWith('audio/') ? 'audio' : null
-  if (kind === null || file.size === 0 || file.size > 32 * 1024 * 1024) return { ok: false }
+  if (file.size === 0) return { ok: false, code: 'IMAGE_EMPTY' }
+  if (file.size > 32 * 1024 * 1024) return { ok: false, code: 'IMAGE_INPUT_TOO_LARGE' }
   try {
     const response = await fetch('/credits/api/assets', {
       method: 'POST', signal, credentials: 'same-origin', cache: 'no-store',
-      headers: { 'content-type': file.type, 'x-file-name': encodeURIComponent(file.name),
+      headers: { 'content-type': file.type || 'application/octet-stream', 'x-file-name': encodeURIComponent(file.name),
         'x-idempotency-key': `yunshu-asset-${randomUUID()}`, accept: 'application/json' }, body: file,
     })
     const value: unknown = await response.json()
-    if (!response.ok || !record(value) || value.ok !== true || !record(value.asset)
-      || typeof value.asset.assetId !== 'string' || !/^ma_[A-Za-z0-9_-]+$/u.test(value.asset.assetId)) return { ok: false }
-    return { ok: true, assetId: value.asset.assetId, kind }
-  } catch (_uploadFailed) { return { ok: false } }
+    if (!response.ok || !record(value) || value.ok !== true) {
+      return { ok: false, code: record(value) && text(value.code) ? value.code : 'IMAGE_UPLOAD_FAILED' }
+    }
+    if (!record(value.asset) || !text(value.asset.assetId) || !/^ma_[A-Za-z0-9_-]+$/u.test(value.asset.assetId)) {
+      return { ok: false, code: 'IMAGE_RESPONSE_INVALID' }
+    }
+    const asset = value.asset
+    const kind = asset.kind === 'reference_image' ? 'image' : asset.kind === 'reference_video' ? 'video'
+      : asset.kind === 'reference_audio' ? 'audio' : null
+    if (kind === null || !count(asset.sizeBytes) || asset.sizeBytes === 0) return { ok: false, code: 'IMAGE_RESPONSE_INVALID' }
+    if (kind !== 'image') return { ok: true, assetId: value.asset.assetId, kind, sizeBytes: asset.sizeBytes }
+    if (asset.contentType !== 'image/png' && asset.contentType !== 'image/jpeg'
+      || typeof asset.converted !== 'boolean' || typeof asset.firstFrameOnly !== 'boolean'
+      || asset.previewUrl !== `/credits/api/assets/preview?asset_id=${encodeURIComponent(value.asset.assetId)}`) {
+      return { ok: false, code: 'IMAGE_RESPONSE_INVALID' }
+    }
+    if (asset.sizeBytes > 6 * 1024 * 1024) return { ok: false, code: 'IMAGE_OUTPUT_TOO_LARGE' }
+    return { ok: true, assetId: value.asset.assetId, kind, sizeBytes: asset.sizeBytes,
+      previewUrl: asset.previewUrl, converted: asset.converted, firstFrameOnly: asset.firstFrameOnly }
+  } catch (_uploadFailed) { return { ok: false, code: 'IMAGE_UPLOAD_FAILED' } }
 }

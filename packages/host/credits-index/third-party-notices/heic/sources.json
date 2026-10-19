@@ -1,0 +1,65 @@
+{
+  "sources": [
+    {
+      "name": "heic-decode",
+      "version": "2.1.0",
+      "revision": "47773f7b17acc22bfb8bb7869b6ef087d24c0ca9",
+      "repository": "https://github.com/catdad-experiments/heic-decode",
+      "sourceUrl": "https://codeload.github.com/catdad-experiments/heic-decode/tar.gz/47773f7b17acc22bfb8bb7869b6ef087d24c0ca9",
+      "archive": "sources/heic-decode-2.1.0.tar.gz",
+      "bytes": 6486,
+      "sha256": "9abe45633cf5f04e8f269ec37dd7dfb2a5ebc2a97ae09654ae43bafc22cfa5e5",
+      "license": "ISC"
+    },
+    {
+      "name": "libheif-js",
+      "version": "1.23.5",
+      "revision": "d8ec4bc3bc5bf8055975577bccbbc7e1d7313c2d",
+      "repository": "https://github.com/catdad-experiments/libheif-js",
+      "sourceUrl": "https://codeload.github.com/catdad-experiments/libheif-js/tar.gz/d8ec4bc3bc5bf8055975577bccbbc7e1d7313c2d",
+      "archive": "sources/libheif-js-1.23.5.tar.gz",
+      "bytes": 10267,
+      "sha256": "db9c0c25b15c5c351ac5b045b01009cc446f5712091300656902f9e40a2934db",
+      "license": "LGPL-3.0"
+    },
+    {
+      "name": "libheif-emscripten",
+      "version": "v1.23.5",
+      "revision": "5c8968a44e9c68ae677e24790d77d001ed7fe7cc",
+      "repository": "https://github.com/catdad-experiments/libheif-emscripten",
+      "sourceUrl": "https://codeload.github.com/catdad-experiments/libheif-emscripten/tar.gz/5c8968a44e9c68ae677e24790d77d001ed7fe7cc",
+      "archive": "sources/libheif-emscripten-v1.23.5.tar.gz",
+      "bytes": 3122,
+      "sha256": "5e524ec5746bb0676c5865c9ce76d40cee871def4a9d437d0a96595830cd235a",
+      "license": "Build and packaging scripts; underlying library terms retained"
+    },
+    {
+      "name": "libheif",
+      "version": "1.23.5",
+      "revision": "413e2a87e6a70b3eccc3a3adc5801179dd2d9e00",
+      "repository": "https://github.com/strukturag/libheif",
+      "sourceUrl": "https://codeload.github.com/strukturag/libheif/tar.gz/413e2a87e6a70b3eccc3a3adc5801179dd2d9e00",
+      "archive": "sources/libheif-413e2a87.tar.gz",
+      "bytes": 2220554,
+      "sha256": "ef8e86a4e5670b7338a58b17553e306b8be88e506587b265dfdfe44495896999",
+      "license": "LGPL-3.0"
+    },
+    {
+      "name": "libde265",
+      "version": "1.0.15",
+      "repository": "https://github.com/strukturag/libde265",
+      "sourceUrl": "https://github.com/strukturag/libde265/releases/download/v1.0.15/libde265-1.0.15.tar.gz",
+      "archive": "sources/libde265-1.0.15.tar.gz",
+      "bytes": 846016,
+      "sha256": "00251986c29d34d3af7117ed05874950c875dd9292d016be29d3b3762666511d",
+      "license": "LGPL-3.0"
+    }
+  ],
+  "compiler": {
+    "name": "Emscripten",
+    "version": "3.1.61"
+  },
+  "libraryModifications": [],
+  "replacementInstructions": "DISTRIBUTION.txt",
+  "offlineInventoryTool": "relink-runtime.mjs"
+}

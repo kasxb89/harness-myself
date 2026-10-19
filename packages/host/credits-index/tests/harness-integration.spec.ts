@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import sharp from 'sharp'
 import { Context } from '@deepseek-ai/cordis'
 import Loader, { type ModuleLoaderV2 } from '@deepseek-ai/cordis-plugin-loader'
 import Include from '@deepseek-ai/cordis-plugin-include'
@@ -318,6 +319,123 @@ function videoAgent(workspace: string, sessionId = 'reference-audio-chat'): Agen
 }
 
 describe('deployed Harness API through the real product Loader', () => {
+  it('keeps three normalized image uploads, reports a corrupt middle file and serves only owned previews', async () => {
+    const { base, stateDir } = await boot(undefined, true, true)
+    const cookie = await hostCookie(base)
+    const origin = new URL(base).origin
+    await signIn(base)
+    const sources = [
+      { name: '同名.png', mediaType: 'image/jpeg', sourceFormat: 'png', contentType: 'image/png', width: 9, height: 7,
+        bytes: await sharp({ create: { width: 9, height: 7, channels: 4, background: '#cc552280' } }).png().toBuffer() },
+      { name: '手机照片.heic', mediaType: '', sourceFormat: 'heic', contentType: 'image/jpeg', width: 64, height: 32,
+        bytes: await readFile(new URL('./fixtures/reference-normalization.heic', import.meta.url)) },
+      { name: '同名.png', mediaType: 'video/ogg', sourceFormat: 'webp', contentType: 'image/jpeg', width: 11, height: 5,
+        bytes: await sharp({ create: { width: 11, height: 5, channels: 3, background: '#2288cc' } }).webp().toBuffer() },
+    ]
+    const upload = async (name: string, mediaType: string, bytes: Buffer): Promise<Record<string, unknown>> => {
+      const response = await fetch(base + '/api/assets', { method: 'POST', headers: {
+        cookie, 'content-type': mediaType, 'x-file-name': encodeURIComponent(name),
+        'x-idempotency-key': `dsh-asset-${globalThis.crypto.randomUUID()}`,
+      }, body: new Uint8Array(bytes) })
+      expect(response.status).toBe(200)
+      return object(await response.json())
+    }
+    const retained: { id: string; previewUrl: string; bytes: Buffer }[] = []
+    for (const [index, source] of sources.entries()) {
+      if (index === 1) {
+        const refused = await upload('损坏的照片.png', 'image/png', sources[0]!.bytes.subarray(0, 36))
+        expect(refused).toMatchObject({ ok: false, code: 'IMAGE_DECODE_FAILED', filename: '损坏的照片.png' })
+        expect(refused).not.toHaveProperty('asset')
+      }
+      const answer = await upload(source.name, source.mediaType, source.bytes)
+      expect(answer.ok).toBe(true)
+      const asset = object(answer.asset)
+      expect(asset).toMatchObject({ kind: 'reference_image', originalName: source.name, sourceFormat: source.sourceFormat,
+        contentType: source.contentType, firstFrameOnly: false, width: source.width, height: source.height })
+      if (source.sourceFormat !== 'png') expect(asset.converted).toBe(true)
+      if (typeof asset.assetId !== 'string' || typeof asset.filename !== 'string' || typeof asset.previewUrl !== 'string') {
+        throw new Error('Expected the retained normalized image and preview')
+      }
+      expect(asset.previewUrl).toBe(`/credits/api/assets/preview?asset_id=${asset.assetId}`)
+      const bytes = await readFile(join(stateDir, 'refs', asset.filename))
+      expect(asset.sizeBytes).toBe(bytes.length)
+      expect(await sharp(bytes).metadata()).toMatchObject({ format: source.contentType === 'image/png' ? 'png' : 'jpeg',
+        width: source.width, height: source.height })
+      expect(object(JSON.parse(await readFile(join(stateDir, 'refs', `${asset.filename}.json`), 'utf8')))).toMatchObject({
+        originalName: source.name, mediaType: source.contentType, accountId: '7',
+      })
+      const preview = await fetch(origin + asset.previewUrl, { headers: { cookie } })
+      expect(preview.status).toBe(200)
+      expect(preview.headers.get('content-type')).toBe(source.contentType)
+      expect(preview.headers.get('cache-control')).toBe('no-store')
+      expect(preview.headers.get('x-content-type-options')).toBe('nosniff')
+      expect(Buffer.from(await preview.arrayBuffer())).toEqual(bytes)
+      retained.push({ id: asset.assetId, previewUrl: asset.previewUrl, bytes })
+    }
+    expect(new Set(retained.map(asset => asset.id)).size).toBe(3)
+    expect(await readdir(join(stateDir, 'refs'))).toHaveLength(6)
+    for (const asset of retained) {
+      const preview = await fetch(origin + asset.previewUrl, { headers: { cookie } })
+      expect(Buffer.from(await preview.arrayBuffer())).toEqual(asset.bytes)
+      const head = await fetch(origin + asset.previewUrl, { method: 'HEAD', headers: { cookie } })
+      expect(head.status).toBe(200)
+      expect(head.headers.get('cache-control')).toBe('no-store')
+      expect(head.headers.get('content-length')).toBe(String(asset.bytes.length))
+      expect(await head.text()).toBe('')
+      expect((await fetch(origin + asset.previewUrl)).status).toBe(401)
+    }
+    expect(calls.filter(call => call.path.includes('/v1/images/') || call.path.includes('/v1/media/')
+      || call.path.includes('/v1/video/'))).toEqual([])
+    await post(base, '/api/session/logout', {}, cookie)
+    const signedOut = await fetch(origin + retained[0]!.previewUrl, { headers: { cookie } })
+    expect(await signedOut.json()).toMatchObject({ ok: false, sessionInvalid: true })
+    selfId = 8
+    await signIn(base)
+    const otherAccount = await fetch(origin + retained[0]!.previewUrl, { headers: { cookie } })
+    expect(otherAccount.status).toBe(404)
+    expect(await otherAccount.json()).toMatchObject({ ok: false, code: 'IMAGE_PREVIEW_UNAVAILABLE' })
+  })
+
+  it('sends normalized image bytes and matching multipart MIME types and extensions for image edits', async () => {
+    const { base, stateDir } = await boot(undefined, true, true)
+    const cookie = await hostCookie(base)
+    await signIn(base)
+    context!.sessions.create(SessionId('normalized-edit-chat'), { meta: { cwd: stateDir } })
+    pricingRows = [{ model_name: 'gpt-image-2', supported_endpoint_types: ['image-generation'] }]
+    const sources = [
+      { name: '手机照片.heic', bytes: await readFile(new URL('./fixtures/reference-normalization.heic', import.meta.url)) },
+      { name: '参考.webp', bytes: await sharp({ create: { width: 8, height: 6, channels: 3, background: '#54b372' } }).webp().toBuffer() },
+    ]
+    const retained: { id: string; bytes: Buffer }[] = []
+    for (const source of sources) {
+      const uploaded = object(await (await fetch(base + '/api/assets', { method: 'POST', headers: {
+        cookie, 'content-type': 'application/octet-stream', 'x-file-name': encodeURIComponent(source.name),
+        'x-idempotency-key': `dsh-asset-${globalThis.crypto.randomUUID()}`,
+      }, body: source.bytes })).json())
+      expect(uploaded.ok).toBe(true)
+      const asset = object(uploaded.asset)
+      if (typeof asset.assetId !== 'string' || typeof asset.filename !== 'string') throw new Error('Expected normalized image')
+      retained.push({ id: asset.assetId, bytes: await readFile(join(stateDir, 'refs', asset.filename)) })
+    }
+    const generated = await sharp({ create: { width: 8, height: 6, channels: 3, background: '#345678' } }).png().toBuffer()
+    imageResponse = { data: [{ b64_json: generated.toString('base64') }] }
+    const answer = await post(base, '/api/image/generate', { session_id: 'normalized-edit-chat', account_id: '7',
+      prompt: '保留两张参考图的人物和场景', model: 'gpt-image-2', references: retained.map(asset => asset.id) }, cookie)
+    expect(answer.ok).toBe(true)
+    const edit = calls.find(call => call.path === '/harness/v1/images/edits')
+    const encoded = object(edit?.body).multipart
+    if (typeof encoded !== 'string') throw new Error('Expected multipart image edit')
+    const multipart = Buffer.from(encoded, 'base64')
+    const text = multipart.toString('utf8')
+    expect(text.match(/name="image\[\]"/gu)).toHaveLength(2)
+    expect(text.match(/Content-Type: image\/jpeg/gu)).toHaveLength(2)
+    expect(text.match(/filename="[^"\r\n]+\.jpg"/gu)).toHaveLength(2)
+    expect(text).not.toMatch(/filename="[^"\r\n]+\.(?:heic|webp)"/gu)
+    for (const asset of retained) expect(multipart.includes(asset.bytes)).toBe(true)
+    expect(calls.filter(call => call.path === '/harness/v1/images/edits')).toHaveLength(1)
+    expect(calls.filter(call => call.path === '/harness/v1/images/generations')).toEqual([])
+  })
+
   it('shares panel images with chat plans, editable revisions, real outputs and authenticated reference thumbnails', async () => {
     const { base, stateDir } = await boot(undefined, true, true)
     const cookie = await hostCookie(base)
@@ -325,7 +443,7 @@ describe('deployed Harness API through the real product Loader', () => {
     await signIn(base)
     context!.sessions.create(SessionId('panel-chat'), { meta: { cwd: stateDir } })
     pricingRows = [{ model_name: 'gpt-image-2', supported_endpoint_types: ['image-generation'] }]
-    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lX8AAAAASUVORK5CYII=', 'base64')
+    const png = await sharp({ create: { width: 4, height: 3, channels: 4, background: '#cc552280' } }).png().toBuffer()
     imageResponse = { data: [{ b64_json: png.toString('base64') }] }
     for (const filename of ['%ZZ', '%0Anote.png', '%20%20', 'x'.repeat(257)]) {
       const refused = await fetch(base + '/api/assets', { method: 'POST', headers: {
@@ -336,11 +454,12 @@ describe('deployed Harness API through the real product Loader', () => {
     }
     const upload = object(await (await fetch(base + '/api/assets', {
       method: 'POST', headers: { cookie, 'content-type': 'image/png', 'x-file-name': encodeURIComponent('人物参考.png'),
-        'x-idempotency-key': 'panel-reference' }, body: png,
+        'x-idempotency-key': 'panel-reference' }, body: new Uint8Array(png),
     })).json())
     expect(upload.ok).toBe(true)
     const assetId = object(upload.asset).assetId
     if (typeof assetId !== 'string') throw new Error('Expected uploaded reference id')
+    const referenceBytes = await readFile(join(stateDir, 'refs', `${assetId}.png`))
     const generated = await post(base, '/api/image/generate', {
       session_id: 'panel-chat', account_id: '7', prompt: '红围巾女孩的人物设定图', model: 'gpt-image-2', references: [assetId],
     }, cookie)
@@ -372,10 +491,10 @@ describe('deployed Harness API through the real product Loader', () => {
     const reference = await fetch(origin + referenceUrl, { headers: { cookie } })
     expect(reference.status).toBe(200)
     expect(reference.headers.get('content-type')).toBe('image/png')
-    expect(Buffer.from(await reference.arrayBuffer())).toEqual(png)
+    expect(Buffer.from(await reference.arrayBuffer())).toEqual(referenceBytes)
     const head = await fetch(origin + referenceUrl, { method: 'HEAD', headers: { cookie } })
     expect(head.status).toBe(200)
-    expect(head.headers.get('content-length')).toBe(String(png.length))
+    expect(head.headers.get('content-length')).toBe(String(referenceBytes.length))
     expect(await head.text()).toBe('')
     expect((await fetch(origin + referenceUrl)).status).toBe(401)
     expect((await fetch(origin + referenceUrl.replace('panel-chat', 'other-chat'), { headers: { cookie } })).status).toBe(404)
@@ -1359,7 +1478,9 @@ describe('deployed Harness API through the real product Loader', () => {
       expect(result.ok).toBe(true)
       return String(object(result.asset).assetId)
     }
-    const image = await upload('image/png', 'image.png', Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]))
+    const image = await upload('image/png', 'image.png', await sharp({
+      create: { width: 4, height: 3, channels: 4, background: '#cc552280' },
+    }).png().toBuffer())
     const video = await upload('video/mp4', 'clip.mp4', Buffer.from([0, 0, 0, 16, 102, 116, 121, 112, 105, 115, 111, 109]))
     const audio = await upload('audio/wav', 'voice.wav', Buffer.from('RIFF0000WAVEdata', 'ascii'))
     expect(await generate({ durationSeconds: 30, resolution: '768P', ratio: 'adaptive', referenceAudios: [audio] })).toMatchObject({ ok: false, code: 'RATIO_NOT_SUPPORTED' })

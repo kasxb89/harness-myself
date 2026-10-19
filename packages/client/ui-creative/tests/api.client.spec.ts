@@ -111,18 +111,63 @@ describe('free plan editing and uploaded references', () => {
     const { uploadCreativeAsset } = await import('../src/client/api.ts')
     const file = new File(['image'], '人物.png', { type: 'image/png' })
     const fetcher = vi.fn<typeof fetch>()
-      .mockResolvedValueOnce(Response.json({ ok: true, asset: { assetId: 'ma_reference' } }))
+      .mockResolvedValueOnce(Response.json({ ok: true, asset: { assetId: 'ma_reference', kind: 'reference_image',
+        contentType: 'image/png', sizeBytes: 100, converted: false, firstFrameOnly: false,
+        previewUrl: '/credits/api/assets/preview?asset_id=ma_reference' } }))
       .mockResolvedValueOnce(Response.json({ ok: true, asset: { assetId: 'https://untrusted.example/source' } }))
     vi.stubGlobal('fetch', fetcher)
     const signal = new AbortController().signal
-    expect(await uploadCreativeAsset(file, signal)).toEqual({ ok: true, assetId: 'ma_reference', kind: 'image' })
+    expect(await uploadCreativeAsset(file, signal)).toEqual({ ok: true, assetId: 'ma_reference', kind: 'image',
+      sizeBytes: 100, converted: false, firstFrameOnly: false, previewUrl: '/credits/api/assets/preview?asset_id=ma_reference' })
     expect(fetcher).toHaveBeenCalledWith('/credits/api/assets', expect.objectContaining({ signal, body: file }))
     const headers = new Headers(fetcher.mock.calls[0]?.[1]?.headers)
     expect(headers.get('content-type')).toBe('image/png')
     expect(headers.get('x-file-name')).toBe(encodeURIComponent('人物.png'))
     expect(headers.get('x-idempotency-key')).toMatch(/^yunshu-asset-/u)
-    expect(await uploadCreativeAsset(file, signal)).toEqual({ ok: false })
-    expect(await uploadCreativeAsset(new File([], 'empty.png', { type: 'image/png' }), signal)).toEqual({ ok: false })
+    expect(await uploadCreativeAsset(file, signal)).toEqual({ ok: false, code: 'IMAGE_RESPONSE_INVALID' })
+    expect(await uploadCreativeAsset(new File([], 'empty.png', { type: 'image/png' }), signal)).toEqual({ ok: false, code: 'IMAGE_EMPTY' })
     expect(fetcher).toHaveBeenCalledTimes(2)
+  })
+
+  it('uploads empty-MIME HEIC bytes and uses host-normalized metadata rather than the original file size', async () => {
+    const { uploadCreativeAsset } = await import('../src/client/api.ts')
+    const file = new File([new Uint8Array(7 * 1024 * 1024)], '生活照.HEIC')
+    const asset = { assetId: 'ma_heic', kind: 'reference_image', contentType: 'image/jpeg', sizeBytes: 512,
+      converted: true, firstFrameOnly: true, previewUrl: '/credits/api/assets/preview?asset_id=ma_heic' }
+    const fetcher = vi.fn<typeof fetch>(async () => Response.json({ ok: true, asset }))
+    vi.stubGlobal('fetch', fetcher)
+    expect(await uploadCreativeAsset(file, new AbortController().signal)).toEqual({ ok: true, assetId: asset.assetId,
+      kind: 'image', sizeBytes: 512, converted: true, firstFrameOnly: true, previewUrl: asset.previewUrl })
+    expect(new Headers(fetcher.mock.calls[0]?.[1]?.headers).get('content-type')).toBe('application/octet-stream')
+  })
+
+  it.each([
+    { previewUrl: 'https://untrusted.example/converted.jpg' },
+    { previewUrl: '/credits/api/assets/preview?asset_id=ma_other' },
+    { previewUrl: '/credits/api/assets/preview?asset_id=ma_reference&extra=1' },
+    { contentType: 'image/heic' }, { converted: 'true' }, { firstFrameOnly: undefined }, { kind: 'image' },
+    { sizeBytes: 0 }, { sizeBytes: -1 }, { sizeBytes: Number.NaN },
+  ])('rejects unusable or unauthorized converted image metadata %j', async (invalid) => {
+    const { uploadCreativeAsset } = await import('../src/client/api.ts')
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ ok: true, asset: {
+      assetId: 'ma_reference', kind: 'reference_image', contentType: 'image/png', sizeBytes: 100,
+      converted: false, firstFrameOnly: false, previewUrl: '/credits/api/assets/preview?asset_id=ma_reference', ...invalid,
+    } })))
+    expect(await uploadCreativeAsset(new File(['source'], 'source.png'), new AbortController().signal))
+      .toEqual({ ok: false, code: 'IMAGE_RESPONSE_INVALID' })
+  })
+
+  it('contains conversion, storage and transport failures without exposing raw upstream messages', async () => {
+    const { uploadCreativeAsset } = await import('../src/client/api.ts')
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ ok: false, code: 'IMAGE_DECODE_FAILED', message: 'private decoder details' }))
+      .mockResolvedValueOnce(Response.json({ ok: false, code: 'IMAGE_STORAGE_FAILED', message: '/private/path' }))
+      .mockRejectedValueOnce(new Error('private transport details'))
+    vi.stubGlobal('fetch', fetcher)
+    const file = new File(['corrupt'], '损坏.heic')
+    const signal = new AbortController().signal
+    for (const code of ['IMAGE_DECODE_FAILED', 'IMAGE_STORAGE_FAILED', 'IMAGE_UPLOAD_FAILED']) {
+      expect(await uploadCreativeAsset(file, signal)).toEqual({ ok: false, code })
+    }
   })
 })
