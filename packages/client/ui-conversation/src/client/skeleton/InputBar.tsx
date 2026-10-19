@@ -105,7 +105,7 @@ export const InputBar = memo(function InputBar({
   // is still pending, and a transient banner is its only surface. Attachment
   // rejections show product copy keyed by the wire reason — whichever domain
   // refused them. Writer contention has localized recovery guidance; other
-  // failures retain the diagnostic message and code.
+  // failures display safe locale-owned copy while their owner retains diagnostics.
   useEffect(() => {
     if (promptError === null) return
     const { error } = promptError
@@ -115,11 +115,11 @@ export const InputBar = memo(function InputBar({
     }
     showToast(error.code === 'session/attachment-invalid' || error.code === 'subagent/attachment-invalid'
       ? attachmentErrorText(t, error.details.reason, imageLimits)
-      : `${error.message} (${error.code})`)
+      : t('error.serverBusy'))
   }, [promptError, showToast, t, imageLimits])
   useEffect(() => {
-    if (notice?.level === 'error') showToast(notice.text)
-  }, [notice, showToast])
+    if (notice?.level === 'error') showToast(notice.presentation === 'server-busy' ? t('error.serverBusy') : notice.text)
+  }, [notice, showToast, t])
   const rowRef = useRef<HTMLDivElement | null>(null)
   useLayoutEffect(() => {
     const row = rowRef.current

@@ -1,6 +1,6 @@
 /** Video composer, camera-script templates and real generated clips. */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Button, IconChevronDownOutlineRegular, IconPlayOutlineRegular, IconPlusOutlineRegular, IconSettingsOutlineRegular, Menu, Modal, SegmentedTabs, Switch, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, IconChevronDownOutlineRegular, IconPlayOutlineRegular, IconPlusOutlineRegular, IconSettingsOutlineRegular, Menu, Modal, productFailureKind, SegmentedTabs, Switch, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsStore } from '@deepseek-ai/dsh-client-store'
 import type { HostObservable, InjectFace, PropsRenderFactories, PropsRuntime, StandardSourceBinding } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-prompt-assist/client'
@@ -199,7 +199,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
   const loadModels = useCallback(async (): Promise<void> => {
     const answer = await requestJson<Catalog>('/credits/api/media/catalog')
     if (!answer.ok || answer.payload === undefined) {
-      setModelsError(answer.message ?? answer.code ?? t('unknown'))
+      setModelsError(t('serverBusy'))
       return
     }
     setModelsError(null)
@@ -318,7 +318,8 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
       const asset = answer.asset
       const assetId = asset?.assetId
       if (!answer.ok || asset === null || asset === undefined || typeof assetId !== 'string' || assetId === '') {
-        if (slot !== 'image') return reject(t('uploadFailed', { message: answer.message ?? answer.code ?? t('unknown') }))
+        if (slot !== 'image') return reject(answer.code === 'MEDIA_ASSET_REQUEST_INVALID'
+          ? t('unsupportedUploadType') : t('serverBusy'))
         switch (answer.code) {
           case 'IMAGE_EMPTY': return reject(t('emptyImage'))
           case 'IMAGE_INPUT_TOO_LARGE': return reject(t('uploadSize'))
@@ -448,12 +449,15 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
         acceptAccount({ signedIn: false }); actions.patch({ failure: t('noAuth') }); return
       }
       if (!answer.ok || typeof answer.payload?.path !== 'string' || answer.payload.path === '') {
-        if (answer.code === 'INSUFFICIENT_POINTS') actions.patch({ failure: t('insufficient') })
+        const kind = productFailureKind(answer.code)
+        if (kind === 'insufficient-credits') actions.patch({ failure: t('insufficient') })
+        else if (kind === 'sign-in' || kind === 'signed-out') actions.patch({ failure: t('noAuth') })
+        else if (kind === 'cancelled') actions.patch({ failure: t('cancelled') })
         else if (answer.ok || answer.code === 'TIMEOUT' || answer.code === 'TRANSPORT'
           || answer.code === 'HTTP' || answer.code === 'RESPONSE_INVALID') {
           actions.patch({ failure: t('outcomeUnknown') })
         }
-        else actions.patch({ failure: t('failed', { message: answer.message ?? answer.code ?? t('unknown') }) })
+        else actions.patch({ failure: t('serverBusy') })
         return
       }
       actions.patch({ result: { path: answer.payload.path, ...answer.payload.workspaceId === undefined ? {} : { workspaceId: answer.payload.workspaceId } }, message: t('done') })

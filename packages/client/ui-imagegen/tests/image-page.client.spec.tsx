@@ -87,6 +87,57 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 describe('image creation workspace', () => {
+  it.each(['INVALID_REQUEST', 'AUTH', 'QUOTA', 'UNRECOGNIZED_ERROR'])('replaces %s diagnostics with a safe retry message and retains the draft', async (code) => {
+    const original = fetchMock.getMockImplementation()!
+    const message = '400 {"reasoning_content":"private-id", "path":"C:/internal/key"}'
+    fetchMock.mockImplementation(async (input, init) => input === '/credits/api/image/generate'
+      ? json({ ok: false, code, message }) : await original(input, init))
+    const { props, store } = makeProps()
+    const view = render(<ImagePage {...props} />)
+    await ready()
+    fireEvent.change(screen.getByRole('textbox', { name: zh.prompt }), { target: { value: '保留这个画面' } })
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    expect((await screen.findByRole('alert')).textContent).toBe(zh.serverBusy)
+    expect(view.container.textContent).not.toContain(message)
+    expect(view.container.textContent).not.toContain(code)
+    expect(view.container.textContent).not.toContain('private-id')
+    expect(store.getSnapshot().prompt).toBe('保留这个画面')
+    expect(fetchMock.mock.calls.filter(([url]) => url === '/credits/api/image/generate')).toHaveLength(1)
+  })
+
+  it.each(['TIMEOUT', 'TRANSPORT', 'NO_TASK_ID'])('keeps unknown-result guidance for a structured %s failure without resubmitting', async (code) => {
+    const original = fetchMock.getMockImplementation()!
+    const message = 'private generation diagnostic'
+    fetchMock.mockImplementation(async (input, init) => input === '/credits/api/image/generate'
+      ? json({ ok: false, code, message }) : await original(input, init))
+    const { props, store } = makeProps()
+    const reference = { assetId: 'ma_retained', name: '参考图.png', url: 'blob:retained', bytes: 10 }
+    store.actions.appendReference(reference)
+    const view = render(<ImagePage {...props} />)
+    await ready()
+    fireEvent.change(screen.getByRole('textbox', { name: zh.prompt }), { target: { value: '保留草稿与参考图' } })
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    expect((await screen.findByRole('alert')).textContent).toBe(zh.generationConnectionLost)
+    expect(view.container.textContent).not.toContain(message)
+    expect(view.container.textContent).not.toContain(code)
+    expect(view.queryByText(zh.serverBusy)).toBeNull()
+    expect(store.getSnapshot().prompt).toBe('保留草稿与参考图')
+    expect(store.getSnapshot().references).toEqual([reference])
+    await waitFor(() => { expect(store.getSnapshot().generationStartedAt).toBeNull() })
+    expect(fetchMock.mock.calls.filter(([url]) => url === '/credits/api/image/generate')).toHaveLength(1)
+  })
+
+  it('does not display raw model-catalog failures', async () => {
+    const original = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation(async (input, init) => input === '/credits/api/media/catalog'
+      ? json({ ok: false, code: 'PRIVATE_CODE', message: 'internal upstream route' }) : await original(input, init))
+    const { props } = makeProps()
+    const view = render(<ImagePage {...props} />)
+    expect(await screen.findByText(t('modelsFailed', { message: zh.serverBusy }))).toBeTruthy()
+    expect(view.container.textContent).not.toContain('PRIVATE_CODE')
+    expect(view.container.textContent).not.toContain('internal upstream route')
+  })
+
   it('keeps only image/video modes while linking generated images to the selected conversation', async () => {
     chatSessionId = 'session-selected'
     const { props } = makeProps()

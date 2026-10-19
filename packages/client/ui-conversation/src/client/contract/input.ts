@@ -195,7 +195,7 @@ export interface SessionInput extends InputTarget {
    * the notice on that session's composer, so a result arriving after a
    * session switch still reaches its own session.
    * @param level - severity tier.
-   * @param text - notice body.
+   * @param text - localized product copy, never a raw operation diagnostic.
    */
   notify(level: 'info' | 'error', text: string): void
 
@@ -265,6 +265,8 @@ export interface InputActions {
 export interface InputNotice {
   readonly level: 'info' | 'error'
   readonly text: string
+  /** Failed sends retain diagnostics while requesting generic localized presentation. */
+  readonly presentation?: 'server-busy'
   readonly seq: number
 }
 

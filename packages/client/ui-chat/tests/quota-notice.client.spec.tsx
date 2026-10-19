@@ -114,20 +114,30 @@ describe('frame-wide quota notices', () => {
     await b.runtime.sessions.appendEvent(SID, quotaEntry(0, 'ACCOUNT_QUOTA'))
     expect(notice.getSnapshot()).toMatchObject({ code: 'ACCOUNT_QUOTA' })
     const first = notice.getSnapshot()?.seq
-    await b.runtime.sessions.appendEvent(SID, quotaEntry(1, 'QUOTA'))
-    expect(notice.getSnapshot()).toMatchObject({ code: 'QUOTA' })
+    await b.runtime.sessions.appendEvent(SID, quotaEntry(1, 'ACCOUNT_QUOTA'))
+    expect(notice.getSnapshot()).toMatchObject({ code: 'ACCOUNT_QUOTA' })
     // An unretained later notice rekeys the surface so its display restarts.
     expect(notice.getSnapshot()?.seq).not.toBe(first)
+  })
+
+  it('does not confuse an upstream quota or credential failure with product credit exhaustion', async () => {
+    const b = await bench()
+    await attach(b.runtime, b.sourceDescriptor)
+    const notice = noticeFace(b.runtime).hooks.notice
+    for (const code of ['QUOTA', 'AUTH', 'INVALID_REQUEST', 'SERVER']) {
+      await b.runtime.sessions.appendEvent(SID, quotaEntry(0, code))
+      expect(notice.getSnapshot()).toBeNull()
+    }
   })
 
   it('never publishes for history replacement or paging, or for other failures', async () => {
     const b = await bench()
     await attach(b.runtime, b.sourceDescriptor)
     const notice = noticeFace(b.runtime).hooks.notice
-    await b.runtime.sessions.appendEvent(SID, quotaEntry(0, 'QUOTA'))
+    await b.runtime.sessions.appendEvent(SID, quotaEntry(0, 'ACCOUNT_QUOTA'))
     const published = notice.getSnapshot()
-    expect(published).toMatchObject({ code: 'QUOTA' })
-    await b.runtime.sessions.replaceEvents(SID, [quotaEntry(1, 'QUOTA')])
+    expect(published).toMatchObject({ code: 'ACCOUNT_QUOTA' })
+    await b.runtime.sessions.replaceEvents(SID, [quotaEntry(1, 'ACCOUNT_QUOTA')])
     expect(notice.getSnapshot()).toBe(published)
     await b.runtime.sessions.prependEvents(SID, [quotaEntry(2, 'ACCOUNT_QUOTA')])
     expect(notice.getSnapshot()).toBe(published)
@@ -170,12 +180,12 @@ describe('frame-wide quota notices', () => {
     // failure nor a generic one may republish and remount it.
     await b.runtime.sessions.appendEvent(SID, quotaEntry(1, 'ACCOUNT_QUOTA'))
     expect(face.hooks.notice.getSnapshot()).toBe(held)
-    await b.runtime.sessions.appendEvent(SID, quotaEntry(2, 'QUOTA'))
+    await b.runtime.sessions.appendEvent(SID, quotaEntry(2, 'ACCOUNT_QUOTA'))
     expect(face.hooks.notice.getSnapshot()).toBe(held)
     // Releasing resumes future failures without replaying the ones skipped.
     release()
-    await b.runtime.sessions.appendEvent(SID, quotaEntry(3, 'QUOTA'))
-    expect(face.hooks.notice.getSnapshot()).toMatchObject({ code: 'QUOTA' })
+    await b.runtime.sessions.appendEvent(SID, quotaEntry(3, 'ACCOUNT_QUOTA'))
+    expect(face.hooks.notice.getSnapshot()).toMatchObject({ code: 'ACCOUNT_QUOTA' })
     expect(face.hooks.notice.getSnapshot()?.seq).toBeGreaterThan(held!.seq)
   })
 
@@ -185,8 +195,8 @@ describe('frame-wide quota notices', () => {
     const face = noticeFace(b.runtime)
     expect(face.hooks.notice.getSnapshot()).toBeNull()
     const release = face.keepNoticeOpen()
-    await b.runtime.sessions.appendEvent(SID, quotaEntry(0, 'QUOTA'))
-    expect(face.hooks.notice.getSnapshot()).toMatchObject({ code: 'QUOTA' })
+    await b.runtime.sessions.appendEvent(SID, quotaEntry(0, 'ACCOUNT_QUOTA'))
+    expect(face.hooks.notice.getSnapshot()).toMatchObject({ code: 'ACCOUNT_QUOTA' })
     // Its release clears nothing either.
     release()
     await b.runtime.sessions.appendEvent(SID, quotaEntry(1, 'ACCOUNT_QUOTA'))
@@ -202,9 +212,9 @@ describe('frame-wide quota notices', () => {
     // Dismissal clears every hold, then the next failure publishes anew.
     face.dismissNotice()
     expect(face.hooks.notice.getSnapshot()).toBeNull()
-    await b.runtime.sessions.appendEvent(SID, quotaEntry(1, 'QUOTA'))
+    await b.runtime.sessions.appendEvent(SID, quotaEntry(1, 'ACCOUNT_QUOTA'))
     const current = face.hooks.notice.getSnapshot()
-    expect(current).toMatchObject({ code: 'QUOTA' })
+    expect(current).toMatchObject({ code: 'ACCOUNT_QUOTA' })
     // The old release must not clear the notice a dismissal already cleared.
     stale()
     expect(face.hooks.notice.getSnapshot()).toBe(current)
@@ -215,8 +225,8 @@ describe('frame-wide quota notices', () => {
     expect(face.hooks.notice.getSnapshot()).toBe(current)
     // Only its own release ends that newer hold.
     active()
-    await b.runtime.sessions.appendEvent(SID, quotaEntry(3, 'QUOTA'))
-    expect(face.hooks.notice.getSnapshot()).toMatchObject({ code: 'QUOTA' })
+    await b.runtime.sessions.appendEvent(SID, quotaEntry(3, 'ACCOUNT_QUOTA'))
+    expect(face.hooks.notice.getSnapshot()).toMatchObject({ code: 'ACCOUNT_QUOTA' })
     expect(face.hooks.notice.getSnapshot()?.seq).toBeGreaterThan(current!.seq)
   })
 
@@ -224,9 +234,9 @@ describe('frame-wide quota notices', () => {
     const b = await bench()
     await attach(b.runtime, b.sourceDescriptor)
     const notice = noticeFace(b.runtime).hooks.notice
-    await b.runtime.sessions.appendEvent(SID, quotaEntry(0, 'QUOTA'))
+    await b.runtime.sessions.appendEvent(SID, quotaEntry(0, 'ACCOUNT_QUOTA'))
     const published = notice.getSnapshot()
-    expect(published).toMatchObject({ code: 'QUOTA' })
+    expect(published).toMatchObject({ code: 'ACCOUNT_QUOTA' })
     await b.chat.dispose()
     expect(b.runtime.slots.entries('shell.overlay').some(entry => entry.options.id === 'chat.quota-notice')).toBe(false)
     // A leaked callback would still write through the detached store.

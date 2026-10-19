@@ -105,7 +105,7 @@ export function apply(ctx: Context): void {
           for (const { event } of change.entries) {
             if (event.type !== 'turn/end' || event.data.reason.kind !== 'error') continue
             const { code } = event.data.reason.error
-            if (quotaNoticeHolds.size > 0 || (code !== 'QUOTA' && code !== 'ACCOUNT_QUOTA')) continue
+            if (quotaNoticeHolds.size > 0 || code !== 'ACCOUNT_QUOTA') continue
             quotaNotice.set({ code, seq: ++quotaNoticeSeq })
           }
         })

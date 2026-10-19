@@ -61,7 +61,7 @@ export interface AssistantActionOwnerProps {
   messageId: MessageId
 }
 
-/** Stable quota failure codes retained in the Session log; both raise the frame-wide notice. */
+/** Stable quota codes; only product account exhaustion raises the frame-wide notice. */
 export type QuotaNoticeCode = 'QUOTA' | 'ACCOUNT_QUOTA'
 
 /** The notice on display; `seq` keys remounts so an unretained later notice restarts its transient display. */

@@ -2,7 +2,7 @@ import { Fragment, memo, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { PendingSubmission } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { MessageImageSource } from '@deepseek-ai/dsh-client-ui-conversation/client'
-import { fileExtension, FileTypeIcon, fileSizeText, JsonBlock, projectUserText, StateDot, TextShimmer } from '@deepseek-ai/dsh-client-ui-primitives'
+import { fileExtension, FileTypeIcon, fileSizeText, JsonBlock, productFailureKind, projectUserText, StateDot, TextShimmer } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ChatNodeOwnerProps, ChatNodeViewProps, ChatViewSlotProps } from '../contract/slots.ts'
 import type { ModelRetryNode, TurnErrorNode, UserMessageNode } from '../contract/snapshot.ts'
 import { CompactionItem } from './CompactionItem.tsx'
@@ -48,14 +48,16 @@ interface RetryCountdown {
 }
 
 function failureMessage(
-  message: string,
   code: unknown,
   t: ChatViewSlotProps['t'],
 ): string {
-  if (code === 'ACCOUNT_SIGNED_OUT') return t('message.failure.accountSignedOut')
-  if (code === 'ACCOUNT_SIGN_IN_REQUIRED') return t('message.failure.accountSignInRequired')
-  if (code === 'QUOTA' || code === 'ACCOUNT_QUOTA') return t('message.failure.quota')
-  return code === 'AUTH' ? t('message.failure.auth') : message
+  switch (productFailureKind(code)) {
+    case 'signed-out': return t('message.failure.accountSignedOut')
+    case 'sign-in': return t('message.failure.accountSignInRequired')
+    case 'insufficient-credits': return t('message.failure.quota')
+    case 'cancelled': return t('message.failure.cancelled')
+    case 'busy': return t('message.failure.busy')
+  }
 }
 
 function ModelRetryItem({ node, active, t }: {
@@ -119,7 +121,7 @@ function ModelRetryItem({ node, active, t }: {
         </div>
         <div>
           <span className={css.retryDetailLabel}>{t('message.retry.failure')}</span>
-          {failureMessage(node.failure.message, node.failure.code, t)}
+          {failureMessage(node.failure.code, t)}
         </div>
       </div>
     </details>
@@ -136,9 +138,8 @@ function TurnErrorItem({ node, t }: {
       <StateDot state="error" className={css.turnErrorDot} />
       <div className={css.turnErrorCopy}>
         <span className={css.turnErrorTitle}>{node.code === 'ACCOUNT_SIGNED_OUT' ? t('message.accountStopped') : t('message.turnError')}</span>
-        <span className={css.turnErrorMessage}>{failureMessage(node.message, node.code, t)}</span>
+        <span className={css.turnErrorMessage}>{failureMessage(node.code, t)}</span>
       </div>
-      {node.code !== undefined && <code className={css.turnErrorCode}>{node.code}</code>}
     </div>
   )
 }

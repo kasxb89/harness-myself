@@ -59,6 +59,8 @@ Answer-panel buttons belong to the question renderer. It composes `DisclosureRow
 
 -----
 
+Explicit failures from native image generation, short or project video generation, editing, assembly and creation-plan queries show localized recovery copy in both collapsed and expanded generic cards. The cards hide diagnostic response bodies, codes and the Inspect action for those failed media results; successful output paths and plan fields remain available. Product sign-in, credit exhaustion, cancellation and unknown generation outcomes retain their own safe next steps. Original results remain unchanged for model history and diagnostics; local terminal and file-tool output keeps its existing presentation.
+
 <a id="understand-the-implementation"></a>
 ## Understand the implementation
 

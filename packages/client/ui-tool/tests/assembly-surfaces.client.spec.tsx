@@ -3,7 +3,7 @@ import { toolSessionEvents } from './tool-fixtures.client.ts'
 // @vitest-environment jsdom
 /** Tool assembly acceptance through the real ui-conversation host. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, waitFor, within } from '@testing-library/react'
 import { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client'
 import type { ISession } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
@@ -116,6 +116,31 @@ async function bench(nodes: ToolResultNode[]) {
   await runtime.mount({ inject: [...injectTool], apply: applyTool })
   return runtime
 }
+
+describe('media failure assembly', () => {
+  it('projects the durable failed receipt through product registrations without exposing its diagnostic', async () => {
+    const text = JSON.stringify({ status: 'failed', code: 'INVALID_REQUEST', message: '400 reasoning_content private-id /private/server.ts' })
+    const name = 'generate_video_project'
+    const block = bashResult(3, 'media-1', {
+      name, call: { name, argsRaw: '{"prompt":"家庭绘本短片"}' },
+      content: [{ type: 'text', text }], isError: false,
+    })
+    const runtime = await bench([block])
+    try {
+      const view = runtime.renderRoot()
+      const row = view.container.querySelector('[data-tool="generate_video_project"]')
+      expect(row).not.toBeNull()
+      expect(row?.textContent).toContain('服务器繁忙，请稍后重试')
+      fireEvent.click(within(row as HTMLElement).getByRole('button'))
+      expect(within(row as HTMLElement).getAllByText('服务器繁忙，请稍后重试')).toHaveLength(2)
+      expect(row?.textContent).not.toContain('reasoning_content')
+      expect(row?.textContent).not.toContain('INVALID_REQUEST')
+      expect(row?.textContent).not.toContain('private-id')
+      expect(row?.textContent).not.toContain('/private/server.ts')
+      expect(block.content).toEqual([{ type: 'text', text }])
+    } finally { await runtime.dispose() }
+  })
+})
 
 describe('todo_write assembly (product registrations, no outlet twins)', () => {
   it('reaches the keyed toolview row and the dock plan strip, and the strip follows projection retirement', async () => {

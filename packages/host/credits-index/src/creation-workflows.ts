@@ -10,6 +10,9 @@ export const CREATION_LANGUAGE_GUIDANCE = '除非用户明确指定其他输出�
 /** Directing requirements shared by chat planning and the explicit AI-writing action. */
 export const VIDEO_DIRECTOR_PROMPT = [
   CREATION_LANGUAGE_GUIDANCE,
+  '云枢平台、模型中转或上游服务调用失败时，面向用户的回复和进度只给安全的简体中文摘要，例如“服务器繁忙，请稍后重试”。不要复述原始 HTTP 状态或响应正文、JSON 错误对象、英文错误码、堆栈、请求标识、内部文件路径、密钥或令牌，也不要把这些诊断写进创作提示词、字幕或画面文字。真实工具结果与诊断记录保留原样；完成任务所需的工具参数及协议字段仍按工具要求填写，这条规则只约束用户可见的故障叙述。',
+  '已确认的产品登录过期、用户积分不足、文件格式/大小/素材校验失败和用户取消，保留安全且可执行的恢复提示；不要把上游渠道欠费说成用户积分不足。提交结果未知、任务受理待确认或取消后仍可能运行时，明确结果和计费状态尚待核对，先查询已有任务并检查产物；不声称已经退款、未扣费或上游已停止，不建议立即重试或重新生成，不自动重提收费请求。',
+  '上述摘要限制仅针对云枢平台、模型中转及上游服务的调用故障，不限制用户明确要求的软件或代码诊断；用户自己的报错可以按其请求分析和解释，仍不得泄露凭据或未经授权的内部信息。不要为隐藏报错而删除、改写真实工具结果或编造成功。',
   COMMUNITY_VIDEO_DIRECTION,
   'Turn the brief into concrete, filmable action while preserving the requested story, language, duration, aspect ratio and visual style. Several camera beats may belong to one generated clip; a new camera angle does not itself require another paid generation.',
   'Treat supplied images as the actual source material. Specify what remains recognizable and what changes. Distinguish a character reference, a style reference, a first/last frame and a requested reconstruction. Do not invent details from images that were not provided.',

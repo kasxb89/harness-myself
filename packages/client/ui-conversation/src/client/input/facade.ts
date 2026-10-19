@@ -361,11 +361,11 @@ export class SessionInputShell implements SessionInput {
           if (this.disposed || !this.attachmentFlights.delete(flight)) return
           if (outcome.kind === 'success') return
           this.restoreAttachments(attachmentIds)
-          if (outcome.text !== undefined) this.notify('error', outcome.text)
+          if (outcome.text !== undefined) this.notifyDiagnostic(outcome.text)
         }, (error: unknown) => {
           if (this.disposed || !this.attachmentFlights.delete(flight)) return
           this.restoreAttachments(attachmentIds)
-          this.notify('error', error instanceof Error ? error.message : String(error))
+          this.notifyDiagnostic(error instanceof Error ? error.message : String(error))
         })
       }
       return
@@ -523,11 +523,17 @@ export class SessionInputShell implements SessionInput {
   /**
    * Surface a notice from outside the machine (detached command results).
    * @param level - severity tier.
-   * @param text - notice body.
+   * @param text - localized product copy, never a raw operation diagnostic.
    */
   notify(level: 'info' | 'error', text: string): void {
     this.noticeSeq += 1
     this.notices.set({ level, text, seq: this.noticeSeq })
+  }
+
+  /** Retain a failed operation's diagnostic without exposing it as product copy. */
+  private notifyDiagnostic(text: string): void {
+    this.noticeSeq += 1
+    this.notices.set({ level: 'error', text, presentation: 'server-busy', seq: this.noticeSeq })
   }
 
   /**
@@ -640,8 +646,8 @@ export class SessionInputShell implements SessionInput {
   private execute(fx: InputEffect): void {
     switch (fx.type) {
       case 'notice': {
-        this.noticeSeq += 1
-        this.notices.set({ level: fx.level, text: fx.text, seq: this.noticeSeq })
+        if (fx.level === 'error') this.notifyDiagnostic(fx.text)
+        else this.notify(fx.level, fx.text)
         return
       }
       case 'adjudicate': {

@@ -34,11 +34,11 @@ describe('attachment rejection copy', () => {
     expect(attachmentErrorText(enT, 'TOO_MANY_IMAGES', limits)).toBe('A message can include up to 20 images')
   })
 
-  it('folds unknown reasons and limit reasons without projected limits into the send-failed line', () => {
-    expect(attachmentErrorText(t, 'INVALID_IMAGE_BASE64')).toBe('图片发送失败（INVALID_IMAGE_BASE64），请重新添加图片后再试')
-    expect(attachmentErrorText(t, 'TOO_MANY_IMAGES')).toBe('图片发送失败（TOO_MANY_IMAGES），请重新添加图片后再试')
-    expect(attachmentErrorText(t, 'IMAGE_TOO_LARGE')).toBe('图片发送失败（IMAGE_TOO_LARGE），请重新添加图片后再试')
-    expect(attachmentErrorText(t, 'IMAGES_TOO_LARGE')).toBe('图片发送失败（IMAGES_TOO_LARGE），请重新添加图片后再试')
-    expect(attachmentErrorText(t, 'IMAGE_DIMENSION_TOO_LARGE')).toBe('图片发送失败（IMAGE_DIMENSION_TOO_LARGE），请重新添加图片后再试')
+  it('keeps unknown rejection codes out of product copy', () => {
+    expect(attachmentErrorText(t, 'INVALID_IMAGE_BASE64')).toBe('服务器繁忙，请稍后重试')
+    expect(attachmentErrorText(t, 'TOO_MANY_IMAGES')).toBe('服务器繁忙，请稍后重试')
+    expect(attachmentErrorText(t, 'IMAGE_TOO_LARGE')).toBe('服务器繁忙，请稍后重试')
+    expect(attachmentErrorText(t, 'IMAGES_TOO_LARGE')).toBe('服务器繁忙，请稍后重试')
+    expect(attachmentErrorText(t, 'IMAGE_DIMENSION_TOO_LARGE')).toBe('服务器繁忙，请稍后重试')
   })
 })

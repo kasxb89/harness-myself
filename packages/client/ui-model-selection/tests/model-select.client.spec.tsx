@@ -141,7 +141,7 @@ describe('ModelSelect live catalog', () => {
     render(<ModelSelect locked={false} available directory={directory.store} load={load} select={vi.fn()} t={t} />)
     fireEvent.click(screen.getByRole('button', { name: '选择模型，当前 ys-1.0' }))
     const retry = await screen.findByRole('button', { name: '重试' })
-    expect(screen.getByText('模型操作失败：catalog offline')).toBeTruthy()
+    expect(screen.getByText('服务器繁忙，请稍后重试')).toBeTruthy()
     fireEvent.click(screen.getByRole('menuitem', { name: /模型/ }))
     expect(screen.getByRole('menuitemradio', { name: 'ys-1.0' })).toBeTruthy()
     models.mockResolvedValue({ ok: true, value: accountCatalog(['ys-1.0', 'deepseek-v4-flash']) })
@@ -149,7 +149,7 @@ describe('ModelSelect live catalog', () => {
     fireEvent.click(retry)
     await screen.findByRole('menuitemradio', { name: 'deepseek-v4-flash' })
     expect(screen.queryByRole('button', { name: '重试' })).toBeNull()
-    expect(screen.queryByText('模型操作失败：catalog offline')).toBeNull()
+    expect(screen.queryByText('服务器繁忙，请稍后重试')).toBeNull()
     expect(models).toHaveBeenCalledTimes(3)
   })
 
@@ -160,7 +160,7 @@ describe('ModelSelect live catalog', () => {
     const load = vi.fn()
     render(<ModelSelect locked={false} available directory={directory} load={load} select={vi.fn()} t={t} />)
     fireEvent.click(screen.getByRole('button', { name: /选择模型/ }))
-    expect(screen.getByText(/Yunshu.*catalog offline/)).toBeTruthy()
+    expect(screen.getByText(/Yunshu.*服务器繁忙/)).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: '重试' }))
     expect(load).toHaveBeenCalledTimes(2)
   })
@@ -340,7 +340,7 @@ describe('ModelSelect reasoning effort', () => {
     expect(document.activeElement).toBe(trigger)
     expect(toast.textContent).toBe(sessionInUse
       ? zh['error.sessionInUse']
-      : '模型操作失败：session/model-unavailable: session already contains images')
+      : '服务器繁忙，请稍后重试')
     // The selection failure does not render the in-menu load strip (no Retry).
     expect(screen.queryByRole('button', { name: '重试' })).toBeNull()
     fireEvent.keyDown(trigger, { key: 'Tab' })

@@ -114,6 +114,8 @@ The atoms cannot read the application locale, so every piece of user-facing copy
 
 -----
 
+`productFailureKind` classifies stable product failure codes for locale-owned display. Unknown, upstream credential, provider quota and protocol failures use the generic busy category; product sign-in, account-credit exhaustion and cancellation keep separate categories. The helper never reads or rewrites diagnostic text.
+
 <a id="understand-the-implementation"></a>
 ## Understand the implementation
 

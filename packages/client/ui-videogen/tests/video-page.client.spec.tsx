@@ -65,6 +65,34 @@ beforeEach(() => { vi.useRealTimers(); sessionAccountId = 'account-a'; chatSessi
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 describe('video composer', () => {
+  it.each(['INVALID_REQUEST', 'AUTH', 'QUOTA', 'UNRECOGNIZED_ERROR'])('replaces %s diagnostics with safe copy without resubmitting generation', async (code) => {
+    const { mount, task, store } = setup()
+    const message = '400 {"reasoning_content":"private-id", "path":"C:/internal/key"}'
+    task.mockResolvedValueOnce(json({ ok: false, code, message }))
+    const view = mount()
+    await ready()
+    writePrompt()
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    expect((await screen.findByRole('alert')).textContent).toBe(zh.serverBusy)
+    expect(view.container.textContent).not.toContain(message)
+    expect(view.container.textContent).not.toContain(code)
+    expect(view.container.textContent).not.toContain('private-id')
+    expect(store.getSnapshot().prompt).toBe('A continuous tracking shot')
+    expect(task).toHaveBeenCalledOnce()
+  })
+
+  it('names a failed video upload without exposing its server diagnostics', async () => {
+    const { mount, asset } = setup()
+    asset.mockResolvedValueOnce(json({ ok: false, code: 'PRIVATE_CODE', message: 'internal upstream route' }))
+    const view = mount()
+    await ready()
+    fireEvent.click(screen.getByRole('button', { name: zh['workflow.reference'] }))
+    fireEvent.change(screen.getByLabelText(zh.referenceVideos), { target: { files: [new File(['video'], '客户素材.mp4', { type: 'video/mp4' })] } })
+    expect((await screen.findByRole('alert')).textContent).toBe(t('uploadItemFailed', { name: '客户素材.mp4', reason: zh.serverBusy }))
+    expect(view.container.textContent).not.toContain('PRIVATE_CODE')
+    expect(view.container.textContent).not.toContain('internal upstream route')
+  })
+
   it('retains six converted reference images and uses normalized previews and byte counts for video and AI writing', async () => {
     const { mount, asset, store, props, task } = setup({ maxReferenceImages: 6, frameSlots: 0 })
     let sequence = 0

@@ -706,7 +706,7 @@ describe('ConversationRoot resident composer', () => {
     const b = mount(sessionSnapshotOf({
       promptError: { op: 'send', error: { code: 'offline', message: 'Message send failed' } as never },
     }))
-    expect(b.view.getByRole('alert').textContent).toContain('Message send failed (offline)')
+    expect(b.view.getByRole('alert').textContent).toContain('服务器繁忙，请稍后重试')
     expect(b.view.queryByRole('button', { name: 'Retry' })).toBeNull()
   })
 

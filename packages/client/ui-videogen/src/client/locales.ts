@@ -5,6 +5,8 @@ export const NS = 'videogen'
 
 /** Simplified Chinese copy for the video composer. */
 export const zh = {
+  'serverBusy': '服务器繁忙，请稍后重试',
+  'cancelled': '已取消本次操作，已有内容已保留',
   'panel': 'AI 生视频',
   'tab.image': '图片',
   'mode.label': '创作模式',
@@ -157,6 +159,8 @@ export const zh = {
 
 /** English copy for every video composer translation key. */
 export const en: Record<keyof typeof zh, string> = {
+  'serverBusy': 'The server is busy. Please try again later.',
+  'cancelled': 'This operation was cancelled. Your existing content is retained.',
   'panel': 'AI video',
   'tab.image': 'Images',
   'mode.label': 'Creation mode',

@@ -81,6 +81,7 @@ describe('web e2e: mixed reference image uploads', () => {
         const previews: string[] = []
         const unexpectedReads: string[] = []
         const paidRequests: string[] = []
+        const generationAttempts: string[] = []
         const labels = zh ? { create: 'AI 创作', remove: '清空参考图', upload: '添加素材', summary: '本次已添加 3 张，失败 1 张',
           failures: '未添加的图片及原因', decode: '图片损坏或无法解码，请重新导出后上传', converted: '其中 2 张已自动转换为模型支持的格式',
           firstFrame: '其中 1 张动态图片使用首帧作为参考图', oneAdded: '本次已添加 1 张，失败 0 张' }
@@ -134,6 +135,11 @@ describe('web e2e: mixed reference image uploads', () => {
           } else if (url.pathname === '/credits/api/usage') {
             await json({ rows: [], start: Number(url.searchParams.get('start')), end: Number(url.searchParams.get('end')),
               asOf: new Date().toISOString(), delayMinutes: 0 })
+          } else if (url.pathname === '/credits/api/image/generate' && request.method() === 'POST') {
+            generationAttempts.push(request.postData() ?? '')
+            const code = ['INVALID_REQUEST', 'TIMEOUT', 'NO_TASK_ID'][generationAttempts.length - 1] ?? 'UNEXPECTED_GENERATION'
+            await route.fulfill({ status: 200, json: { ok: false, code,
+              message: '400 reasoning_content private-request-id C:/private/upstream.ts:10' } })
           } else if (request.method() !== 'GET' && request.method() !== 'HEAD') {
             paidRequests.push(`${request.method()} ${url.pathname}`)
             await route.abort('blockedbyclient')
@@ -192,8 +198,41 @@ describe('web e2e: mixed reference image uploads', () => {
           expect(tripwire.pageErrors).toEqual([])
           expect(tripwire.warnings).toEqual([])
           await page.screenshot({ path: join(evidence, 'sequential-same-filename-three-decoded-references.png'), animations: 'disabled' })
+
+          const prompt = '为妈妈和孩子制作绘本展示图'
+          await panel.getByRole('textbox', { name: zh ? '画面描述' : 'Prompt', exact: true }).fill(prompt)
+          await panel.getByRole('button', { name: zh ? '生成图片' : 'Generate image', exact: true }).click()
+          const busy = zh ? '服务器繁忙，请稍后重试' : 'The server is busy. Please try again later.'
+          await panel.getByRole('alert').filter({ hasText: busy }).waitFor()
+          const visible = await panel.innerText()
+          for (const diagnostic of ['reasoning_content', 'INVALID_REQUEST', 'private-request-id', 'C:/private', '400']) {
+            expect(visible).not.toContain(diagnostic)
+          }
+          expect(generationAttempts).toHaveLength(1)
+          expect(await panel.getByRole('textbox', { name: zh ? '画面描述' : 'Prompt', exact: true }).inputValue()).toBe(prompt)
+          expect((await decodedReferences(panel)).map(image => image.name)).toEqual(['同名图片.jpg', '同名图片.jpg', '同名图片.jpg'])
+          expect(paidRequests).toEqual([])
+          expect(unexpectedReads).toEqual([])
+          expect(tripwire.pageErrors).toEqual([])
+          await page.screenshot({ path: join(evidence, 'safe-generation-failure.png'), animations: 'disabled' })
+          const unknown = zh ? '生成连接中断，结果可能仍在处理中。请先刷新作品，确认后再提交'
+            : 'The connection was interrupted. Generation may still be processing. Refresh your works before submitting again.'
+          for (const attempt of [2, 3]) {
+            await panel.getByRole('button', { name: zh ? '生成图片' : 'Generate image', exact: true }).click()
+            await expect.poll(() => generationAttempts.length).toBe(attempt)
+            await panel.getByRole('alert').filter({ hasText: unknown }).waitFor()
+            expect(await panel.getByRole('alert').innerText()).toBe(unknown)
+            expect(await panel.innerText()).not.toContain('private-request-id')
+          }
+          expect(paidRequests).toEqual([])
+          expect(tripwire.pageErrors).toEqual([])
+          expect(await decodedReferences(panel)).toHaveLength(3)
+          expect(await panel.getByRole('textbox', { name: zh ? '画面描述' : 'Prompt', exact: true }).inputValue()).toBe(prompt)
+          await page.screenshot({ path: join(evidence, 'unknown-generation-outcome.png'), animations: 'disabled' })
           await writeFile(join(evidence, 'result.json'), JSON.stringify({ passed: true, locale, uploads, previews,
             decodedMixedBatch: images, decodedSameFilename: sameNames, paidRequests, unexpectedReads,
+            safeGenerationFailure: { attempts: generationAttempts.length, rawDiagnosticVisible: false, retainedReferences: 3,
+              unknownOutcomeCodes: ['TIMEOUT', 'NO_TASK_ID'] },
             pageErrors: tripwire.pageErrors, warnings: tripwire.warnings,
             host: 'real built shipped Web composition', upload: 'route calls actual current host image decoder; previews serve its real output bytes',
             upstreamGeneration: false, persistedAssetAuth: 'covered by host Loader integration tests' }, null, 2) + '\n')

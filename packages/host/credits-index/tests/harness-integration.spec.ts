@@ -23,6 +23,7 @@ import * as Artifacts from '@deepseek-ai/dsh-artifacts-index'
 import * as Connection from '@deepseek-ai/dsh-client-connection'
 import * as Credits from '../src/index.ts'
 import * as VideoProjectTools from '../src/video-project-tools.ts'
+import { CreativeStore } from '../src/creative-store.ts'
 import type { VideoProjectOptions } from '../src/video-project-types.ts'
 import { prepareVideoProject, readVideoProject, runVideoProject } from '../src/video-project.ts'
 import { JobId } from '@deepseek-ai/dsh-jobs'
@@ -319,6 +320,21 @@ function videoAgent(workspace: string, sessionId = 'reference-audio-chat'): Agen
 }
 
 describe('deployed Harness API through the real product Loader', () => {
+  it('exposes safe platform-failure narration and unknown-outcome recovery on both native media tools', async () => {
+    await boot()
+    for (const name of ['generate_image', 'generate_video']) {
+      const tool = context!.tools.schemas().find(tool => tool.name === name)
+      expect(tool?.description).toContain('safe Simplified Chinese summary')
+      expect(tool?.description).toContain('never repeat raw HTTP responses, diagnostic JSON, error codes, stacks, internal paths or credentials')
+      expect(tool?.description).toContain('confirmed sign-in, product-credit, file-validation and cancellation failures')
+      expect(tool?.description).toContain('check existing tasks and artifacts first; do not immediately retry or automatically resubmit')
+      expect(tool?.description).toContain('Preserve real tool results')
+      expect(tool?.description).toContain('software or code diagnostics explicitly requested by the user')
+      expect(tool?.description).toMatchSnapshot(name)
+    }
+    expect(calls.filter(call => /\/v1\/(?:images|video)\//.test(call.path))).toEqual([])
+  })
+
   it('keeps three normalized image uploads, reports a corrupt middle file and serves only owned previews', async () => {
     const { base, stateDir } = await boot(undefined, true, true)
     const cookie = await hostCookie(base)
@@ -901,7 +917,7 @@ describe('deployed Harness API through the real product Loader', () => {
     if (typeof edit.multipart !== 'string') throw new Error('Expected reference image multipart')
     expect(Buffer.from(edit.multipart, 'base64').includes(png)).toBe(true)
     imageResponse = 'disconnect'
-    expect(await call('generate_image', args)).toMatchObject({ status: 'failed' })
+    expect(await call('generate_image', args)).toMatchObject({ status: 'failed', code: 'TRANSPORT' })
     const count = calls.filter(call => call.path.includes('/v1/images/')).length
     expect(await call('generate_image', args)).toMatchObject({ status: 'failed', code: 'CREATIVE_SUBMISSION_UNKNOWN' })
     expect(calls.filter(call => call.path.includes('/v1/images/'))).toHaveLength(count)
@@ -909,6 +925,45 @@ describe('deployed Harness API through the real product Loader', () => {
       assets: [{ id: 'portrait', status: 'unknown', outputs: [{ kind: 'image' }, { kind: 'image' }] }, { id: 'voice' }],
       shots: [{ id: 'scene', status: 'planned', outputs: [] }], outputs: [{ kind: 'image' }, { kind: 'image' }],
     })
+  })
+
+  it('preserves native media failure codes and records missing task ids as unconfirmed without resubmission', async () => {
+    const { base, stateDir } = await boot(undefined, false, true)
+    const cookie = await hostCookie(base)
+    await signIn(base)
+    pricingRows = [
+      { model_name: 'gpt-image-2', supported_endpoint_types: ['image-generation'] },
+      { model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] },
+    ]
+    const agent = videoAgent(stateDir)
+    const call = async (name: string, args: object) => object((await context!.tools.execute({ name, arguments: args, agent,
+      callId: ToolCallId('receipt-' + name), signal: new AbortController().signal })).value)
+    imageResponse = 'disconnect'
+    expect(await call('generate_image', { prompt: '图片', model: 'gpt-image-2' })).toMatchObject({ status: 'failed', code: 'TRANSPORT' })
+    const videoArgs = { prompt: '视频', model: 'MiniMax-H3', duration_seconds: 4 }
+    const video = await call('generate_video', videoArgs)
+    expect(video).toMatchObject({ status: 'failed', code: 'NO_TASK_ID', model: 'MiniMax-H3', task_id: '' })
+    expect(context!.tools.get('generate_video')).toMatchObject({
+      output: { schema: { properties: { code: { type: 'string' } } } },
+    })
+    const listed = projects(object(await (await fetch(base + '/api/creative/projects?session_id=reference-audio-chat', { headers: { cookie } })).json()))
+    expect(listed.find(project => project.id === video.plan_id)).toMatchObject({ status: 'unknown', tasks: [{ status: 'unknown', errorCode: 'SUBMISSION_UNKNOWN' }] })
+    expect(await call('generate_video', { ...videoArgs, plan_id: video.plan_id, shot_id: 'shot_1' }))
+      .toMatchObject({ status: 'failed', code: 'CREATIVE_SUBMISSION_UNKNOWN' })
+    expect(await call('generate_video', { ...videoArgs, duration_seconds: 0 }))
+      .toMatchObject({ status: 'failed', code: 'DURATION_NOT_SUPPORTED' })
+    expect(calls.filter(call => call.path === '/harness/v1/video/generations')).toHaveLength(1)
+
+    imageResponse = { data: [{ b64_json: Buffer.from('saved image').toString('base64') }] }
+    vi.spyOn(CreativeStore.prototype, 'finish').mockRejectedValueOnce(new Error('private finish diagnostic'))
+    const unconfirmed = await call('generate_image', { prompt: '保留生成结果', model: 'gpt-image-2' })
+    expect(unconfirmed).toMatchObject({ status: 'failed', code: 'CREATIVE_OUTCOME_UNKNOWN' })
+    expect(JSON.stringify(unconfirmed)).not.toContain('private finish diagnostic')
+    const submissions = calls.filter(call => call.path === '/harness/v1/images/generations').length
+    vi.spyOn(CreativeStore.prototype, 'begin').mockRejectedValueOnce(new Error('private preflight diagnostic'))
+    const refused = await call('generate_image', { prompt: '尚未开始', model: 'gpt-image-2' })
+    expect(refused).toMatchObject({ status: 'failed', code: 'CREATIVE_OPERATION_UNAVAILABLE' })
+    expect(calls.filter(call => call.path === '/harness/v1/images/generations')).toHaveLength(submissions)
   })
 
   it('publishes chat plans and real image outputs through authenticated account/chat media routes', async () => {

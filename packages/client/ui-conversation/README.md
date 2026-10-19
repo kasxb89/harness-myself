@@ -102,6 +102,8 @@ When another writer owns the Session, the send-error toast asks the user to quit
 
 Two independent Escape presses in the focused Chat or Composer stop its current running turn and preserve queued messages. The interval comes from the shortcuts plugin’s `stopSequenceMs` configuration (500 ms by default). A menu, approval, modal, terminal, embedded webpage, composition, repeated key, changed input region, Session or turn breaks the sequence. The shortcut uses the same scoped cancellation as the Stop button. The plugin registers Stop as a fixed action in the `input` display group. Its registration reserves plain Escape against editable shortcuts and supplies the `Esc Esc` sequence shown in the Stop button’s hover and keyboard-focus tooltip.
 
+Prompt rejection and failed-send diagnostic notices display localized busy copy while their original errors remain in the owning Session or input state. Known session contention and image-format, capability or size rejections retain safe recovery guidance. The notice presentation category distinguishes operation diagnostics from localized local notices without parsing message text.
+
 <a id="temporary-composer-entries"></a>
 ## Temporary composer entries
 

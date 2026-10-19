@@ -39,6 +39,8 @@ Saved works come from the artifact index across current and retained output root
 
 Select a workspace chat before generating. Requests retain the initiating chat and account even if the user switches chats while waiting. AI creation contains only the image and video tabs; open [Creation](../ui-creative/README.md) in that chat's right sidebar for the timeline, characters, materials, retained tasks and saved outputs. History playback and downloads preserve each artifact's workspace identity, including identical paths in different mounts.
 
+Generation, model-catalog and material server failures display localized busy copy without raw messages or codes. Sign-in, product-credit, cancellation, file validation and unknown paid outcomes retain their safe next steps. Upload failures still name the affected material, and no failed generation request is automatically repeated.
+
 <a id="understand-the-implementation"></a>
 ## Understand the implementation
 

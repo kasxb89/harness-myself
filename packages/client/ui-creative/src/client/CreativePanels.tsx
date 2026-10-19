@@ -1,6 +1,6 @@
 /** Chat project navigation and actual operation outputs. */
 import { useState, type ReactNode } from 'react'
-import { Button, IconSparkleRegular } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, IconSparkleRegular, productFailureKind } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import type {
   CreativeOutput, CreativeProjectView, CreativeShotView, CreativeStatus, CreativeTaskView,
@@ -95,6 +95,10 @@ function TaskCard({ task, order, project, kind, visible, t }: {
 }): ReactNode {
   const [expanded, setExpanded] = useState(false)
   const publicationFailed = task.errorCode === 'ARTIFACT_PUBLISH_FAILED'
+  const failureKind = productFailureKind(task.errorCode)
+  const failureText = failureKind === 'insufficient-credits' ? t('creditsRequired')
+    : failureKind === 'sign-in' || failureKind === 'signed-out' ? t('signedOut')
+      : failureKind === 'cancelled' ? t('status.cancelled') : t('serverBusy')
   const outputs = task.outputs.filter(output => kind === 'all' || output.kind === kind)
   const names = task.shotIds.map(id => project.shots.find(shot => shot.id === id)?.title ?? t('tasks.removedShot'))
   const material = task.assetId === undefined ? t('tasks.project')
@@ -111,11 +115,10 @@ function TaskCard({ task, order, project, kind, visible, t }: {
       {task.totalShots > 0 && <progress max={task.totalShots} value={task.completedShots}
         aria-label={t('tasks.progress', { completed: task.completedShots, total: task.totalShots })} />}
       {publicationFailed ? <p className={css.notice} role="alert">{t('artifactPublishFailed')}</p>
-        : task.status === 'failed' && <p className={css.hint}>{t('tasks.failed')}</p>}
+        : task.status === 'failed' && <p className={css.hint}>{failureText} {t('tasks.failed')}</p>}
       <details className={css.details} onToggle={(event) => { setExpanded(event.currentTarget.open) }}>
         <summary>{t('details')}</summary>
         <p className={css.caption}>{task.model ?? t('notSpecified')}</p><code className={css.caption}>{task.id}</code>
-        {!publicationFailed && task.errorCode !== undefined && /^[A-Z0-9_]{1,100}$/u.test(task.errorCode) && <code>{task.errorCode}</code>}
         {expanded && outputs.length > 0 && <OutputGallery outputs={outputs} visible={visible} t={t} />}
       </details>
     </div>

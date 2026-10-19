@@ -28,10 +28,10 @@ export interface GenericCommandCardProps extends CommandRowOwnerProps {
  */
 export const GenericCommandCard = memo(function GenericCommandCard({ node, t, runningSummary }: GenericCommandCardProps) {
   const [expanded, setExpanded] = useState(false)
-  const text = node.outcome?.text
+  const text = node.outcome?.kind === 'error' ? undefined : node.outcome?.text
   const summary = node.outcome === null
     ? runningSummary ?? t('command.running')
-    : text ?? (node.outcome.kind === 'error' ? t('command.failed') : t('command.done'))
+    : text ?? (node.outcome.kind === 'error' ? t('message.failure.busy') : t('command.done'))
   // The summary already carries the settlement text, so the title is the bare
   // command name.
   const title = node.name ?? t('command.title')

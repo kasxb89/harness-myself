@@ -69,7 +69,7 @@ function optionsOf(directory: ModelDirectoryState, t: TranslateNS<'model'>): Sel
     rows.push({
       id: `failure/${failure.id}`,
       label: failure.id === 'deepseek-account' ? t('provider.account') : failure.name,
-      detail: t('option.loadError', { message: failure.message }),
+      detail: t('option.loadError'),
     })
   }
   return rows
@@ -142,7 +142,7 @@ export function apply(ctx: ClientContext): void {
         }),
         options: async (session) => {
           if (sessions.subagentAddress(session.sessionId) !== undefined) {
-            throw new Error('model selection is unavailable for addressed subagent sessions')
+            throw new Error(t('error.action'))
           }
           return optionsOf(await models.directoryFor(session.sessionId).reload(), t)
         },
@@ -153,12 +153,12 @@ export function apply(ctx: ClientContext): void {
           const directory = models.directoryFor(session.sessionId)
           const selection = selectionOf(directory.store.getSnapshot(), option.id)
           if (selection === undefined) {
-            throw new Error('this provider\'s catalog failed to load — pick a model from a loaded group')
+            throw new Error(t('error.action'))
           }
           const result = await directory.select(selection)
           if (!result.ok) {
             if (result.error.code === 'session/writer-held') throw new Error(t('error.sessionInUse'))
-            throw result.error
+            throw new Error(t('error.action'), { cause: result.error })
           }
         },
       },

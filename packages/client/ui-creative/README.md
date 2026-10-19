@@ -43,6 +43,8 @@ The shipped Web application composes this browser plugin. Its Loader configurati
 
 Read failures preserve the last available project data with a retry action. Hiding an opened tab or application stops its polling. Before the first project exists, a logged media call supervises reads until an actual record becomes available; empty responses do not invent a plan or progress. Tool results and turn completion stop empty supervision. Session tool transitions, reopening and connection resets request the current full listing. Signing out clears every retained project snapshot immediately; results from the earlier account cannot repopulate it.
 
+Failed task cards show localized busy copy and guidance to inspect existing results before resubmission; task diagnostics are not rendered as codes. A saved file that could not enter the artifact library keeps its separate local-storage recovery message and remains previewable.
+
 <a id="understand-the-implementation"></a>
 ## Understand the implementation
 

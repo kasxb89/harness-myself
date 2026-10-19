@@ -61,6 +61,8 @@ export const name = 'credits-index'
 /** The route carrier this plugin registers into. */
 export const inject = ['webServer', 'tools']
 
+const MEDIA_FAILURE_GUIDANCE = ' For Yunshu platform, relay or upstream failures, give users only a safe Simplified Chinese summary such as “服务器繁忙，请稍后重试”; never repeat raw HTTP responses, diagnostic JSON, error codes, stacks, internal paths or credentials. Keep actionable guidance for confirmed sign-in, product-credit, file-validation and cancellation failures. When submission or billing outcome is unknown, check existing tasks and artifacts first; do not immediately retry or automatically resubmit. Preserve real tool results. This restriction does not prevent software or code diagnostics explicitly requested by the user.'
+
 /** Plugin config: platform origin, display rate, and where the session file lives. */
 export interface Config {
   /** Platform origin, without a trailing slash. */
@@ -3195,7 +3197,7 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.tools.register(defineTool({
     name: 'generate_image',
-    description: 'Generate images or edit reference images through the signed-in account relay, save every result into the artifacts directory, and return the paths. For image-to-image requests, pass the current-chat user attachment or an authorized workspace image in reference_images. Which image models exist, and what each one accepts, is the deployment’s own answer: ask for a model only when the user names one.',
+    description: 'Generate images or edit reference images through the signed-in account relay, save every result into the artifacts directory, and return the paths. For image-to-image requests, pass the current-chat user attachment or an authorized workspace image in reference_images. Which image models exist, and what each one accepts, is the deployment’s own answer: ask for a model only when the user names one.' + MEDIA_FAILURE_GUIDANCE,
     parameters: {
       plan_id: { type: 'string', description: 'Explicit update_creation_plan id for this generation. Also provide exactly one of shot_id or asset_id.' },
       shot_id: { type: 'string', description: 'Exact shot id in the explicit plan; never guess a latest project.' },
@@ -3255,21 +3257,21 @@ export function apply(ctx: Context, config: Config): void {
           ...args.reference_images === undefined ? {} : { references },
         }, exec.signal, path => creative.saved(creation, path, 'image'), () => creative.dispatched(creation))
         const paths = [...outcome.paths ?? []]
-        await creative.finish(operation, { status: outcome.ok ? 'completed' : exec.signal.aborted ? 'cancelled' : outcome.code === 'TIMEOUT' || outcome.code === 'TRANSPORT' ? 'unknown' : 'failed', paths, kind: 'image', ...outcome.code === undefined ? {} : { errorCode: outcome.code } })
-        if (!outcome.ok) return { status: 'failed', plan_id: operation.projectId, model: outcome.model ?? '', message: outcome.message ?? outcome.code ?? '生成失败' }
+        await creative.finish(operation, { status: outcome.ok ? 'completed' : exec.signal.aborted ? 'cancelled' : ['TIMEOUT', 'TRANSPORT', 'NO_TASK_ID'].includes(outcome.code ?? '') ? 'unknown' : 'failed', paths, kind: 'image', ...outcome.code === undefined ? {} : { errorCode: outcome.code } })
+        if (!outcome.ok) return { status: 'failed', plan_id: operation.projectId, model: outcome.model ?? '', ...outcome.code === undefined ? {} : { code: outcome.code }, message: outcome.message ?? outcome.code ?? '生成失败' }
         return { status: 'succeeded', plan_id: operation.projectId, path: outcome.path ?? '', paths, model: outcome.model ?? '', message: `图片已保存到产物目录（共 ${String(paths.length)} 张）。` }
       } catch (error) {
         if (operation !== undefined) creative.release(operation)
         return error instanceof CreativeError || error instanceof VideoProjectError
           ? { status: 'failed', code: error.code, message: error.message }
-          : { status: 'failed', message: '图片生成或创作记录未完成，请检查产物和原始任务；不要重复提交结果未知的生成。' }
+          : { status: 'failed', code: operation === undefined ? 'CREATIVE_OPERATION_UNAVAILABLE' : 'CREATIVE_OUTCOME_UNKNOWN', message: '图片生成或创作记录未完成，请检查产物和原始任务；不要重复提交结果未知的生成。' }
       }
     },
   }))
 
   ctx.tools.register(defineTool({
     name: 'generate_video',
-    description: 'Generate, poll and save one short video clip through the account relay. Call this native tool directly for a simple short-video brief; do not write submission, polling or download scripts. For story direction, character/reference continuity, dialogue or subtitles, use the yunshu-video-director skill. For a complete video such as 40 seconds or automatic assembly, use generate_video_project instead; several camera beats may fit one clip. Edit existing clips with edit_video. This single-clip tool accepts only the chosen model’s declared duration, resolution, ratio, frames and references.',
+    description: 'Generate, poll and save one short video clip through the account relay. Call this native tool directly for a simple short-video brief; do not write submission, polling or download scripts. For story direction, character/reference continuity, dialogue or subtitles, use the yunshu-video-director skill. For a complete video such as 40 seconds or automatic assembly, use generate_video_project instead; several camera beats may fit one clip. Edit existing clips with edit_video. This single-clip tool accepts only the chosen model’s declared duration, resolution, ratio, frames and references.' + MEDIA_FAILURE_GUIDANCE,
     parameters: {
       plan_id: { type: 'string', description: 'Explicit update_creation_plan id for this generation. Also provide shot_id.' },
       shot_id: { type: 'string', description: 'Exact shot id in the explicit plan; never guess a latest project.' },
@@ -3293,6 +3295,7 @@ export function apply(ctx: Context, config: Config): void {
           model: { type: 'string' },
           task_id: { type: 'string' },
           plan_id: { type: 'string' },
+          code: { type: 'string' },
           message: { type: 'string' },
         },
         additionalProperties: false,
@@ -3308,7 +3311,7 @@ export function apply(ctx: Context, config: Config): void {
       try {
         const binding = await bindCurrentVideoAccount()
         const capability = await capabilityFor('video', args.model ?? null)
-        if (!capability.ok) return { status: 'failed', message: capability.message }
+        if (!capability.ok) return { status: 'failed', code: capability.code, message: capability.message }
         const referenceAudios: string[] = []
         const references = new Map<string, string>()
         for (const value of args.reference_audios ?? []) {
@@ -3335,18 +3338,19 @@ export function apply(ctx: Context, config: Config): void {
           ...args.reference_videos === undefined ? {} : { referenceVideos: args.reference_videos },
           referenceAudios,
         })
-        if (!built.ok) return { status: 'failed', model: capability.model.id, message: built.message }
+        if (!built.ok) return { status: 'failed', code: built.code, model: capability.model.id, message: built.message }
         exec.signal.throwIfAborted()
         operation = await creative.begin(creativeOwner(exec, binding.identity), { kind: 'video', model: capability.model.id, prompt: args.prompt, shots: [{ prompt: args.prompt, ...args.duration_seconds === undefined ? {} : { durationSeconds: args.duration_seconds } }], ...args.plan_id === undefined ? {} : { planId: args.plan_id }, ...args.shot_id === undefined ? {} : { shotIds: [args.shot_id] } })
         await creative.dispatched(operation)
         const outcome = await runVideoTask(await binding.key(), capability.model.route, built.request, exec.signal)
-        await creative.finish(operation, { status: outcome.ok ? 'completed' : exec.signal.aborted ? 'cancelled' : outcome.code === 'TIMEOUT' || outcome.code === 'TRANSPORT' ? 'unknown' : 'failed', kind: 'video', ...outcome.path === undefined ? {} : { paths: [outcome.path] }, ...outcome.code === undefined ? {} : { errorCode: outcome.code } })
+        await creative.finish(operation, { status: outcome.ok ? 'completed' : exec.signal.aborted ? 'cancelled' : ['TIMEOUT', 'TRANSPORT', 'NO_TASK_ID'].includes(outcome.code ?? '') ? 'unknown' : 'failed', kind: 'video', ...outcome.path === undefined ? {} : { paths: [outcome.path] }, ...outcome.code === undefined ? {} : { errorCode: outcome.code } })
         if (!outcome.ok) {
           return {
             status: outcome.code === 'TIMEOUT' ? 'running' : 'failed',
             plan_id: operation.projectId,
             model: capability.model.id,
             task_id: outcome.taskId ?? '',
+            ...outcome.code === undefined ? {} : { code: outcome.code },
             message: outcome.message ?? outcome.code ?? '生成失败',
           }
         }
@@ -3371,7 +3375,7 @@ export function apply(ctx: Context, config: Config): void {
         }
       } catch (error) {
         if (operation !== undefined) creative.release(operation)
-        if (error instanceof VideoProjectError || error instanceof CreativeError) return { status: 'failed', message: error.message }
+        if (error instanceof VideoProjectError || error instanceof CreativeError) return { status: 'failed', code: error.code, message: error.message }
         throw error
       }
     },

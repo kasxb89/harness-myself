@@ -2301,16 +2301,35 @@ describe('ChatView', () => {
     const view = render(<h.ChatView {...h.props} />)
     const statuses = view.getAllByRole('status')
     expect(statuses.map(status => status.textContent)).toEqual([
-      '本轮运行失败API 密钥无效AUTH',
-      '本轮运行失败plugin exploded',
-      '本轮运行失败当前请求的额度已用尽QUOTA',
-      '本轮运行失败当前请求的额度已用尽ACCOUNT_QUOTA',
+      '本轮运行失败服务器繁忙，请稍后重试',
+      '本轮运行失败服务器繁忙，请稍后重试',
+      '本轮运行失败服务器繁忙，请稍后重试',
+      '本轮运行失败当前请求的额度已用尽',
     ])
     // The transient notice is the frame-wide host's job; the failure row keeps
     // neither a recharge affordance nor a toast of its own.
     expect(view.queryByRole('alert')).toBeNull()
     expect(view.queryByRole('dialog')).toBeNull()
     expect(view.queryByRole('button', { name: '去充值' })).toBeNull()
+  })
+
+  it.each([false, true])('hides raw protocol failures and stable codes in terminal and retry rows (English: %s)', (english) => {
+    const diagnostic = '400: {"message":"reasoning_content must be passed back", "request_id":"private-id", "path":"C:/internal/key"}'
+    const failure = { code: 'INVALID_REQUEST', message: diagnostic }
+    const terminal = { ...turnError(3), ...failure }
+    const scheduled = { ...retry(2), failure }
+    const h = makeHarness({ nodes: [user(1, 'try'), scheduled, terminal] })
+    const copy = english ? en : zh
+    Object.assign(h.props, { t: makeTranslate(copy, english ? commonEn : commonZh) })
+    const view = render(<h.ChatView {...h.props} />)
+    expect(view.getAllByText(copy['message.failure.busy'])).toHaveLength(2)
+    expect(view.container.textContent).not.toContain('reasoning_content')
+    expect(view.container.textContent).not.toContain('INVALID_REQUEST')
+    expect(view.container.textContent).not.toContain('private-id')
+    expect(view.container.textContent).not.toContain('C:/internal')
+    expect(view.container.textContent).not.toContain('400')
+    expect(terminal.message).toBe(diagnostic)
+    expect(scheduled.failure).toBe(failure)
   })
 
   it('renders the max-tokens notice with localized guidance, distinct from turn errors', () => {
@@ -4190,10 +4209,25 @@ describe('ChatView', () => {
       openError: { code: 'gateway/internal', message: 'boom' } as never,
     })
     const view = render(<h.ChatView {...h.props} />)
-    expect(view.getByText(/历史加载失败：boom/)).toBeTruthy()
+    expect(view.getByText(zh['chat.loadError'])).toBeTruthy()
+    expect(view.container.textContent).not.toContain('boom')
+    expect(view.container.textContent).not.toContain('gateway/internal')
     const loading = makeHarness({}, { openState: 'loading' })
     const lv = render(<loading.ChatView {...loading.props} />)
     expect(lv.getByText('载入历史…')).toBeTruthy()
+  })
+
+  it('keeps a command diagnostic in the node without rendering its response or stack', () => {
+    const text = '400 INVALID_REQUEST\nreasoning_content private-id\nC:/private/server.ts:10'
+    const outcome = { kind: 'error' as const, text }
+    const node = command({ outcome })
+    const h = makeHarness({ nodes: [node] })
+    const view = render(<h.ChatView {...h.props} />)
+    expect(view.getByText(zh['message.failure.busy'])).toBeTruthy()
+    expect(view.container.textContent).not.toContain('reasoning_content')
+    expect(view.container.textContent).not.toContain('INVALID_REQUEST')
+    expect(view.container.textContent).not.toContain('C:/private')
+    expect(node.outcome).toBe(outcome)
   })
 
   it('renders command nodes as durable rows: settled text, error state, executing spinner, run-less soft-fall', () => {
@@ -4214,7 +4248,7 @@ describe('ChatView', () => {
     const fv = render(<failed.ChatView {...failed.props} />)
     expect(fv.container.querySelector('[data-state="error"]')).not.toBeNull()
     expect(fv.container.querySelector('[data-state="error"] svg')).not.toBeNull()
-    expect(fv.getByText('指令失败')).toBeTruthy()
+    expect(fv.getByText(zh['message.failure.busy'])).toBeTruthy()
     expect(fv.getByText('失败')).toBeTruthy()
 
     // Still executing: running state with the executing copy.
@@ -4292,7 +4326,7 @@ describe('ChatView', () => {
       })],
     })
     const failedView = render(<failed.ChatView {...failed.props} />)
-    expect(failedView.getByText('Compaction cancelled.')).toBeTruthy()
+    expect(failedView.getByText(zh['message.failure.busy'])).toBeTruthy()
     expect(failedView.container.querySelector('[data-state="error"]')).not.toBeNull()
   })
 

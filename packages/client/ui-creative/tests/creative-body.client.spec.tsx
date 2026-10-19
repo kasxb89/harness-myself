@@ -408,6 +408,8 @@ describe('shared project workbench', () => {
     fireEvent.change(screen.getByRole('combobox', { name: '任务状态' }), { target: { value: 'failed' } })
     expect(h.view.container.querySelector('[data-creative-task="task_done"]')).toBeNull()
     expect(h.view.container.querySelector('[data-creative-task="task_failed"]')).toBeTruthy()
+    expect(h.view.container.textContent).toContain(zh.serverBusy)
+    expect(h.view.container.textContent).not.toContain('VIDEO_FAILED')
     fireEvent.change(screen.getByRole('combobox', { name: '文件类型' }), { target: { value: 'image' } })
     expect(h.view.container.querySelector('video')).toBeNull()
     expect(screen.getByText('人声、口型与字幕同步：待核验')).toBeTruthy()

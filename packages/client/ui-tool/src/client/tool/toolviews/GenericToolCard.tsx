@@ -11,6 +11,7 @@ import { terminalCardModel, terminalFailed } from '../models/terminal-card-model
 import { webCardModel } from '../models/web-card-model.ts'
 import { toolRowModel, type ToolRowVariant } from '../models/tool-call-model.ts'
 import { localizeAutoReviewDenial } from '../models/auto-review-denial.ts'
+import { mediaFailure } from '../models/media-failure.ts'
 import { ToolRow } from '../components/ToolRow.tsx'
 
 /** Variant leading icons (figma table); all glyphs render at 14 inside the 16px leading box. */
@@ -32,6 +33,12 @@ export type GenericToolCardProps = ToolCallOwnerProps & {
 /** @param props - current tool stage and locale. @returns its preparation or dispatched card. */
 export function GenericToolCard({ toolName, block, cwd, home, openFile, inspect, useDisclosure, t }: GenericToolCardProps) {
   const model = toolRowModel(toolName, block, cwd, home)
+  const mediaError = mediaFailure(toolName, block)
+  const mediaFailureText = mediaError === null ? null
+    : mediaError === 'sign-in' || mediaError === 'signed-out' ? t('error.signInRequired')
+      : mediaError === 'insufficient-credits' ? t('error.creditsRequired')
+        : mediaError === 'cancelled' ? t('error.cancelled')
+          : mediaError === 'unknown-outcome' ? t('error.mediaOutcomeUnknown') : t('error.serverBusy')
   const autoReview = model.autoReviewDenial === null
     ? null
     : localizeAutoReviewDenial(model.autoReviewDenial, t)
@@ -58,18 +65,18 @@ export function GenericToolCard({ toolName, block, cwd, home, openFile, inspect,
       // Single-file tools never expose an args body — the path link is the only
       // args interaction. A card is not an args body: a read/write/edit row is
       // single-file AND carries a card, so the card expands under the path link.
-      bodyRaw={singleFile || autoReview !== null ? null : model.bodyRaw}
-      output={autoReview?.output ?? model.output}
-      errorSummary={autoReview?.summary ?? model.errorSummary}
+      bodyRaw={singleFile || autoReview !== null || mediaError !== null ? null : model.bodyRaw}
+      output={mediaFailureText ?? autoReview?.output ?? model.output}
+      errorSummary={mediaFailureText ?? autoReview?.summary ?? model.errorSummary}
       terminal={terminal}
       diff={diff}
       read={read}
       search={search}
       web={web}
-      state={state}
+      state={mediaError === null ? state : mediaError === 'cancelled' ? 'stopped' : 'error'}
       filePath={model.filePath}
       onOpenFile={singleFile ? openFile : undefined}
-      inspect={inspect}
+      inspect={mediaError === null ? inspect : undefined}
     />
   )
 }

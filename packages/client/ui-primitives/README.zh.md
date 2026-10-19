@@ -114,6 +114,8 @@ kind: "package-library"
 
 -----
 
+`productFailureKind` 根据稳定的产品失败代码分类，由使用方的语言字典提供文案。未知失败、上游凭据、提供方额度及协议失败统一为繁忙；产品登录、账号积分不足和取消保留独立分类。辅助函数不读取或改写诊断文本。
+
 <a id="understand-the-implementation"></a>
 ## 理解实现
 

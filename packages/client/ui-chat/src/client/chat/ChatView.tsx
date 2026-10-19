@@ -213,7 +213,7 @@ export function ChatView({
             {openState === 'loading' && <div className={css.hint}>{t('chat.loadingHistory')}</div>}
             {openState === 'error' && openError !== null && (
               <div className={css.openError}>
-                {t('chat.loadError', { message: openError.message, code: openError.code })}
+                {t('chat.loadError')}
               </div>
             )}
             {hasMore && (

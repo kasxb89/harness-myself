@@ -73,3 +73,17 @@ it('gives narrative briefs explicit material responsibilities, executable timing
   expect(VIDEO_DIRECTOR_PROMPT).toContain('不得套用默认字幕或促销模板')
   expect(VIDEO_DIRECTOR_PROMPT).toContain('简单单镜头或一句提示词请求只补足必要细节')
 })
+
+it('keeps platform failure narration safe while preserving diagnostic tasks and unknown paid outcomes', () => {
+  expect(VIDEO_DIRECTOR_PROMPT).toContain('面向用户的回复和进度只给安全的简体中文摘要')
+  expect(VIDEO_DIRECTOR_PROMPT).toContain('服务器繁忙，请稍后重试')
+  expect(VIDEO_DIRECTOR_PROMPT).toContain('原始 HTTP 状态或响应正文、JSON 错误对象、英文错误码、堆栈、请求标识、内部文件路径、密钥或令牌')
+  expect(VIDEO_DIRECTOR_PROMPT).toContain('真实工具结果与诊断记录保留原样')
+  expect(VIDEO_DIRECTOR_PROMPT).toContain('工具参数及协议字段仍按工具要求填写')
+  expect(VIDEO_DIRECTOR_PROMPT).toContain('产品登录过期、用户积分不足、文件格式/大小/素材校验失败和用户取消')
+  expect(VIDEO_DIRECTOR_PROMPT).toContain('不要把上游渠道欠费说成用户积分不足')
+  expect(VIDEO_DIRECTOR_PROMPT).toContain('先查询已有任务并检查产物')
+  expect(VIDEO_DIRECTOR_PROMPT).toContain('不建议立即重试或重新生成，不自动重提收费请求')
+  expect(VIDEO_DIRECTOR_PROMPT).toContain('不限制用户明确要求的软件或代码诊断')
+  expect(VIDEO_DIRECTOR_PROMPT).toContain('不要为隐藏报错而删除、改写真实工具结果或编造成功')
+})

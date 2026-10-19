@@ -554,7 +554,7 @@ describe('ui-model-selection dual entry', () => {
     await expect(b.popup().options(
       projection('child'),
       new AbortController().signal,
-    )).rejects.toThrow(/unavailable for addressed subagent/)
+    )).rejects.toThrow('服务器繁忙，请稍后重试')
 
     const face = b.seat().inject!(sid('child'))
     expect(face.available).toBe(false)

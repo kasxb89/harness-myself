@@ -615,7 +615,7 @@ describe('image draft rail', () => {
     expect(model.view.getByRole('alert').textContent).toContain('当前模型不支持图片，请切换支持图片的模型')
     cleanup()
     const unknown = bench({ promptError: attachmentError('ATTACHMENT_NOT_REFERENCED') })
-    expect(unknown.view.getByRole('alert').textContent).toContain('图片发送失败（ATTACHMENT_NOT_REFERENCED）')
+    expect(unknown.view.getByRole('alert').textContent).toContain('服务器繁忙，请稍后重试')
     cleanup()
     // A subagent refusal uses the same product copy for the same reason.
     const subagent = bench({
@@ -631,7 +631,7 @@ describe('image draft rail', () => {
     const other = bench({
       promptError: { op: 'send', error: new RemoteError('gateway/internal', 'boom', {}) },
     })
-    expect(other.view.getByRole('alert').textContent).toContain('boom (gateway/internal)')
+    expect(other.view.getByRole('alert').textContent).toContain('服务器繁忙，请稍后重试')
   })
 
   it('marks the attachment slot unavailable while the composer is locked', () => {
@@ -677,7 +677,7 @@ describe('image draft rail', () => {
     await vi.waitFor(() => {
       expect(attachmentOwner(result.slotCalls).attachments).toEqual([attachments[0]])
     })
-    expect(result.view.getByRole('alert').textContent).toContain('图片发送失败')
+    expect(result.view.getByRole('alert').textContent).toBe(zh['error.serverBusy'])
   })
 
   it('announces an image-intake rejection as a fading toast, repeatable for the same reason', () => {
@@ -1750,7 +1750,7 @@ describe('strips and variants', () => {
       })
       // The toast body-portals (transformed ancestors must not trap it), so
       // queries go through the view's document-bound helpers.
-      expect(send.view.getByRole('alert').textContent).toContain('boom (session/agent-busy)')
+      expect(send.view.getByRole('alert').textContent).toContain('服务器繁忙，请稍后重试')
       expect(send.view.queryByRole('button', { name: 'Retry' })).toBeNull()
       act(() => { vi.advanceTimersByTime(4000) })
       expect(send.view.queryByRole('alert')).toBeNull()
@@ -1771,6 +1771,15 @@ describe('strips and variants', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('retains a failed-send diagnostic while rendering safe product copy', () => {
+    const { view, shell } = bench()
+    const text = '400 {"reasoning_content":"private-id"} C:/private/key'
+    act(() => { shell.notices.set({ level: 'error', text, presentation: 'server-busy', seq: 1 }) })
+    expect(view.getByRole('alert').textContent).toBe(zh['error.serverBusy'])
+    expect(view.container.textContent).not.toContain('reasoning_content')
+    expect(shell.notices.getSnapshot()?.text).toBe(text)
   })
 
   it('renders an information notice from the machine store as a status strip', () => {

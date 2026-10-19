@@ -57,6 +57,8 @@ When another writer owns the Session, model-selection failures tell the user to 
 
 -----
 
+Model-catalog, provider-group and selection failures use localized busy copy instead of raw provider messages or diagnostic codes. Writer contention keeps its existing recovery guidance. Directory state and rejected operation causes retain their original diagnostic details.
+
 <a id="understand-the-implementation"></a>
 ## Understand the implementation
 

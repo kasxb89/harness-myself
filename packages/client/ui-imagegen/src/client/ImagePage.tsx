@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import {
   IconCloseOutlineRegular,
   IconPlusOutlineRegular, IconSearchOutlineRegular, IconSendOutlineRegular,
-  IconSettingsOutlineRegular, IconSparkleRegular, ImageLightbox, SegmentedTabs, Tooltip,
+  IconSettingsOutlineRegular, IconSparkleRegular, ImageLightbox, productFailureKind, SegmentedTabs, Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { HostObservable, InjectFace, PropsRenderFactories, PropsRuntime, PropsStore, StandardSourceBinding } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-prompt-assist/client'
@@ -174,7 +174,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
     try {
       const answer = await get<Catalog>('/credits/api/media/catalog')
       if (!answer.ok || answer.payload === undefined) {
-        setModelsError(answer.message ?? answer.code ?? t('unknown'))
+        setModelsError(t('serverBusy'))
         return
       }
       const items = answer.payload.image
@@ -436,7 +436,12 @@ export function ImagePage(props: ImagePageProps): ReactNode {
       if (readDraft().referenceEpoch !== current.referenceEpoch) return
       if (answer.sessionInvalid === true) { acceptAccount({ signedIn: false }); actions.patch({ sessionInvalid: true, failure: t('noAuth') }); return }
       if (!answer.ok || answer.payload === undefined) {
-        setFailure(answer.code === 'INSUFFICIENT_POINTS' ? t('insufficient') : t('failed', { message: answer.message ?? answer.code ?? t('unknown') }))
+        const kind = productFailureKind(answer.code)
+        setFailure(kind === 'insufficient-credits' ? t('insufficient')
+          : kind === 'sign-in' || kind === 'signed-out' ? t('noAuth')
+            : kind === 'cancelled' ? t('cancelled')
+              : answer.code === 'TIMEOUT' || answer.code === 'TRANSPORT' || answer.code === 'NO_TASK_ID'
+                ? t('generationConnectionLost') : t('serverBusy'))
         return
       }
       actions.patch({ resultPaths: answer.payload.paths ?? [answer.payload.path], message: t('done') })

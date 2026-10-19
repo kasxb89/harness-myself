@@ -12,7 +12,7 @@ import {
 } from '../src/client/tool/models/tool-call-model.ts'
 import { ToolRow } from '../src/client/tool/components/ToolRow.tsx'
 import { GenericToolCard, type GenericToolCardProps } from '../src/client/tool/toolviews/GenericToolCard.tsx'
-import { zh } from '@deepseek-ai/dsh-client-ui-conversation/src/client/locales.ts'
+import { en, zh } from '@deepseek-ai/dsh-client-ui-conversation/src/client/locales.ts'
 import { PartialArguments } from '@deepseek-ai/dsh-util-values'
 
 afterEach(() => {
@@ -560,6 +560,112 @@ describe('GenericToolCard', () => {
   const props = (toolName: string, block: StartedToolCall | ToolResultNode): GenericToolCardProps => ({
     loadImage: vi.fn(() => Promise.reject(new Error('not used'))),
     useDisclosure, callId: 'c1', toolName, ...('kind' in block ? { phase: 'result' as const, block: block } : { phase: block.phase, block: block }), openFile: vi.fn(), t,
+  })
+
+  it.each([
+    'generate_image', 'generate_video', 'generate_video_project', 'edit_video', 'assemble_video',
+    'video_project_status', 'resume_video_project', 'get_creation_plan', 'update_creation_plan',
+  ])('hides a failed %s receipt in collapsed and expanded product views without changing the result', (name) => {
+    const text = JSON.stringify({ status: 'failed', code: 'INVALID_REQUEST', message: '400 reasoning_content private-id C:/private/server.ts:10' })
+    const block = result({ call: { name, argsRaw: '{"prompt":"家庭视频"}' }, content: [{ type: 'text', text }] })
+    const inspect = vi.fn()
+    const view = render(<GenericToolCard {...props(name, block)} inspect={inspect} />)
+    expect(view.getByText(zh['error.serverBusy'])).toBeTruthy()
+    fireEvent.click(view.getByRole('button'))
+    expect(view.getAllByText(zh['error.serverBusy'])).toHaveLength(2)
+    expect(view.container.textContent).not.toContain('reasoning_content')
+    expect(view.container.textContent).not.toContain('INVALID_REQUEST')
+    expect(view.container.textContent).not.toContain('private-id')
+    expect(view.container.textContent).not.toContain('C:/private')
+    expect(view.queryByText('查看')).toBeNull()
+    expect(inspect).not.toHaveBeenCalled()
+    expect(block.content).toEqual([{ type: 'text', text }])
+    expect(block.isError).toBe(false)
+  })
+
+  it.each([false, true])('hides a thrown media failure with localized product copy (English: %s)', async (english) => {
+    const block = result({ call: { name: 'generate_video', argsRaw: '{}' }, isError: true,
+      error: { name: 'UpstreamError', code: 'PRIVATE_CODE' }, content: [{ type: 'text', text: 'private stack trace' }] })
+    const dictionary = english ? en : zh
+    const view = render(<GenericToolCard {...props('generate_video', block)} t={makeTranslate(dictionary, commonZh)} />)
+    expect(view.getByText(dictionary['error.serverBusy'])).toBeTruthy()
+    fireEvent.click(view.getByRole('button'))
+    expect(view.container.textContent).not.toContain('PRIVATE_CODE')
+    expect(view.container.textContent).not.toContain('private stack trace')
+    expect(block.error?.code).toBe('PRIVATE_CODE')
+    await expect(`${view.container.textContent}\n`).toMatchFileSnapshot(english
+      ? './expected/media-failure-en.txt' : './expected/media-failure-zh.txt')
+  })
+
+  it.each([
+    ['failed', 'INSUFFICIENT_POINTS', 'error.creditsRequired'],
+    ['unauthorized', 'PRIVATE_CODE', 'error.signInRequired'],
+    ['failed', 'AUTH_REQUIRED', 'error.signInRequired'],
+    ['cancelled', 'PRIVATE_CODE', 'error.cancelled'],
+    ['unknown', 'PRIVATE_CODE', 'error.mediaOutcomeUnknown'],
+  ] as const)('retains safe recovery for media status %s with code %s', (status, code, key) => {
+    const block = result({ call: { name: 'generate_video', argsRaw: '{}' },
+      content: [{ type: 'text', text: JSON.stringify({ status, code, message: 'private upstream reason' }) }] })
+    const view = render(<GenericToolCard {...props('generate_video', block)} />)
+    fireEvent.click(view.getByRole('button'))
+    expect(view.getAllByText(zh[key]).length).toBeGreaterThan(0)
+    expect(view.container.textContent).not.toContain('private upstream reason')
+    expect(view.container.textContent).not.toContain(code)
+  })
+
+  it.each([
+    ['generate_video_project', 'SUBMISSION_UNKNOWN'],
+    ['generate_image', 'CREATIVE_SUBMISSION_UNKNOWN'],
+    ['generate_image', 'CREATIVE_OUTCOME_UNKNOWN'],
+    ['resume_video_project', 'PROJECT_STORAGE_FAILED'],
+    ['generate_image', 'TIMEOUT'],
+    ['generate_video', 'TRANSPORT'],
+    ['generate_video', 'NO_TASK_ID'],
+  ])('keeps result-confirmation guidance for a failed %s receipt with code %s', (toolName, code) => {
+    const text = JSON.stringify({ status: 'failed', code, project_id: 'vp-private',
+      message: 'private diagnostic; do not repeat an unconfirmed submission', clip_paths: [] })
+    const block = result({ call: { name: toolName, argsRaw: '{}' }, content: [{ type: 'text', text }] })
+    const view = render(<GenericToolCard {...props(toolName, block)} />)
+    expect(view.getByText(zh['error.mediaOutcomeUnknown'])).toBeTruthy()
+    fireEvent.click(view.getByRole('button'))
+    expect(view.getAllByText(zh['error.mediaOutcomeUnknown'])).toHaveLength(2)
+    expect(view.queryByText(zh['error.serverBusy'])).toBeNull()
+    expect(view.container.textContent).not.toContain('private diagnostic')
+    expect(block.content).toEqual([{ type: 'text', text }])
+  })
+
+  it('keeps an accepted single-clip timeout in its original running state with safe confirmation guidance', () => {
+    const text = JSON.stringify({ status: 'running', code: 'TIMEOUT', task_id: 'known-task' })
+    const block = result({ call: { name: 'generate_video', argsRaw: '{}' }, content: [{ type: 'text', text }] })
+    const view = render(<GenericToolCard {...props('generate_video', block)} />)
+    expect(view.getByText(zh['error.mediaOutcomeUnknown'])).toBeTruthy()
+    expect(block.content).toEqual([{ type: 'text', text }])
+  })
+
+  it('keeps a thrown unconfirmed submission distinct from a known preflight rejection', () => {
+    const uncertain = result({ call: { name: 'generate_video_project', argsRaw: '{}' }, isError: true,
+      error: { name: 'VideoProjectError', code: 'SUBMISSION_UNKNOWN' } })
+    const uncertainView = render(<GenericToolCard {...props('generate_video_project', uncertain)} />)
+    expect(uncertainView.getByText(zh['error.mediaOutcomeUnknown'])).toBeTruthy()
+    cleanup()
+    const rejected = result({ call: { name: 'generate_video_project', argsRaw: '{}' }, content: [
+      { type: 'text', text: JSON.stringify({ status: 'failed', code: 'VIDEO_EDIT_INVALID_INPUT' }) },
+    ] })
+    const rejectedView = render(<GenericToolCard {...props('generate_video_project', rejected)} />)
+    expect(rejectedView.getByText(zh['error.serverBusy'])).toBeTruthy()
+    expect(rejectedView.queryByText(zh['error.mediaOutcomeUnknown'])).toBeNull()
+  })
+
+  it('retains successful media output paths and complete creation-plan fields', () => {
+    const text = JSON.stringify({ status: 'succeeded', path: '/workspace/成片.mp4', plan: { characters: ['妈妈'], shots: ['客厅'] } })
+    const block = result({ call: { name: 'get_creation_plan', argsRaw: '{"plan_id":"plan-1"}' }, content: [{ type: 'text', text }] })
+    const inspect = vi.fn()
+    const view = render(<GenericToolCard {...props('get_creation_plan', block)} inspect={inspect} />)
+    fireEvent.click(view.getByRole('button'))
+    expect(view.getByText(text)).toBeTruthy()
+    fireEvent.click(view.getByText('查看'))
+    expect(inspect).toHaveBeenCalledOnce()
+    expect(block.content).toEqual([{ type: 'text', text }])
   })
 
   it('renders the classified variant row from the frozen slice', () => {
