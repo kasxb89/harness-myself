@@ -65,6 +65,143 @@ beforeEach(() => { vi.useRealTimers(); sessionAccountId = 'account-a'; chatSessi
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 describe('video composer', () => {
+  it('exposes one ordinary material input beside the prompt and retains only explicit frame upload controls', async () => {
+    const { mount } = setup()
+    const view = mount()
+    await ready()
+    expect(view.container.querySelectorAll('input[type="file"]')).toHaveLength(1)
+    expect(screen.getByLabelText(zh.addMedia)).toBeTruthy()
+    expect(screen.queryByLabelText(zh.referenceImages)).toBeNull()
+    expect(screen.queryByLabelText(zh.referenceVideos)).toBeNull()
+    expect(screen.queryByLabelText(zh.referenceAudios)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: zh['workflow.frames'] }))
+    expect(view.container.querySelectorAll('input[type="file"]')).toHaveLength(3)
+    expect(screen.getByLabelText(zh.firstFrame)).toBeTruthy()
+    expect(screen.getByLabelText(zh.lastFrame)).toBeTruthy()
+  })
+
+  it('restores retained images into a visible first-frame choice when opening image mode', async () => {
+    const { mount, store, task } = setup()
+    store.actions.patch({ workflow: 'image', slots: { audio: [], video: [], image: Array.from({ length: 4 }, (_, index) => ({
+      assetId: `ma_retained${String(index)}`, name: `long-material-name-${String(index)}.png`, url: `blob:${String(index)}`, bytes: 1,
+    })) } })
+    const view = mount()
+    await ready()
+    await waitFor(() => { expect(store.getSnapshot().firstFrame?.assetId).toBe('ma_retained0') })
+    const list = screen.getByRole('list', { name: t('materialList', { kind: zh.referenceImages }) })
+    expect(within(list).getAllByRole('listitem')).toHaveLength(4)
+    expect(view.container.querySelector('[data-frame="first"]')?.getAttribute('data-selected')).toBe('true')
+    expect(within(list).getByRole('button', { name: t('useFirstFrameNamed', { name: 'long-material-name-0.png' }) })).toHaveProperty('ariaPressed', 'true')
+    fireEvent.click(screen.getByRole('button', { name: t('clearFrame', { frame: zh.firstFrame }) }))
+    expect(store.getSnapshot().firstFrame).toBeNull()
+    fireEvent.click(within(list).getByRole('button', { name: t('useFirstFrameNamed', { name: 'long-material-name-2.png' }) }))
+    writePrompt()
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    await waitFor(() => { expect(task).toHaveBeenCalledOnce() })
+    expect(requestBody(task.mock.calls[0]?.[0])).toMatchObject({ frameImages: ['ma_retained2'], referenceImages: [] })
+  })
+
+  it.each(['clear', 'delete'] as const)('preserves an explicitly %s first frame across panel remounts', async (method) => {
+    const { mount, store } = setup()
+    store.actions.patch({ workflow: 'image', slots: { audio: [], video: [], image: [
+      { assetId: 'ma_first', name: 'first.png', url: 'blob:first', bytes: 1 },
+      { assetId: 'ma_second', name: 'second.png', url: 'blob:second', bytes: 1 },
+    ] } })
+    const view = mount()
+    await ready()
+    await waitFor(() => { expect(store.getSnapshot().firstFrame?.assetId).toBe('ma_first') })
+    fireEvent.click(screen.getByRole('button', { name: method === 'clear'
+      ? t('clearFrame', { frame: zh.firstFrame }) : t('removeNamed', { name: 'first.png' }) }))
+    expect(store.getSnapshot().firstFrame).toBeNull()
+    view.unmount()
+    mount()
+    await ready()
+    expect(store.getSnapshot().firstFrame).toBeNull()
+    expect(store.getSnapshot().slots.image).toHaveLength(method === 'clear' ? 2 : 1)
+    writePrompt()
+    expect(screen.getByText(zh.firstFrameRequired)).toBeTruthy()
+  })
+
+  it('shows only active frame badges, sends reference-mode images, and still clears cached frame ownership on delete', async () => {
+    const { mount, store, task } = setup({ maxReferenceImages: 4 })
+    const references = Array.from({ length: 4 }, (_, index) => ({ assetId: `ma_ref${String(index)}`,
+      name: `ref-${String(index)}.png`, url: `blob:${String(index)}`, bytes: 1 }))
+    store.actions.patch({ workflow: 'frames', slots: { image: references, audio: [], video: [] }, firstFrame: references[0]!, lastFrame: references[1]! })
+    mount()
+    await ready()
+    const first = () => screen.getByRole('button', { name: t('useFirstFrameNamed', { name: 'ref-0.png' }) })
+    const last = () => screen.getByRole('button', { name: t('useLastFrameNamed', { name: 'ref-1.png' }) })
+    expect(first().getAttribute('aria-pressed')).toBe('true')
+    expect(last().getAttribute('aria-pressed')).toBe('true')
+    fireEvent.click(screen.getByRole('button', { name: zh['workflow.reference'] }))
+    const list = screen.getByRole('list', { name: t('materialList', { kind: zh.referenceImages }) })
+    expect(first().getAttribute('aria-pressed')).toBe('false')
+    expect(last().getAttribute('aria-pressed')).toBe('false')
+    expect(within(list).queryByText(zh.firstFrame)).toBeNull()
+    expect(within(list).queryByText(zh.lastFrame)).toBeNull()
+    writePrompt()
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    await waitFor(() => { expect(task).toHaveBeenCalledOnce() })
+    expect(requestBody(task.mock.calls[0]?.[0])).toMatchObject({ frameImages: [], referenceImages: references.map(item => item.assetId) })
+    fireEvent.click(screen.getByRole('button', { name: t('removeNamed', { name: 'ref-0.png' }) }))
+    expect(store.getSnapshot().firstFrame).toBeNull()
+    expect(store.getSnapshot().lastFrame?.assetId).toBe('ma_ref1')
+  })
+
+  it('does not auto-select images from a render whose live reference owner has changed', async () => {
+    const { store, props } = setup()
+    store.actions.patch({ workflow: 'image', slots: { audio: [], video: [], image: [
+      { assetId: 'ma_old', name: 'old.png', url: 'blob:old', bytes: 1 },
+    ] } })
+    const read = props.readDraft
+    const guardedRead = vi.fn(() => {
+      const current = read()
+      if (current.referenceAccountId === 'account-a' && current.workflow === 'image') {
+        // Model the live ownership reset occurring before a stale render's effect.
+        return { ...current, referenceAccountId: 'account-b', referenceEpoch: current.referenceEpoch + 1,
+          slots: { audio: [], video: [], image: [] } }
+      }
+      return current
+    })
+    render(<VideoPage {...props} readDraft={guardedRead} />)
+    await ready()
+    expect(guardedRead).toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: t('useFirstFrameNamed', { name: 'old.png' }) }))
+    expect(store.getSnapshot().firstFrame).toBeNull()
+    expect(store.getSnapshot().frameWorkflowSelection).toBeNull()
+  })
+
+  it('explains missing input and AI writing beside generation while stating the active image count', async () => {
+    const { mount, store } = setup()
+    mount()
+    await ready()
+    expect(screen.getByText(zh.promptRequired)).toBeTruthy()
+    writePrompt()
+    fireEvent.click(screen.getByRole('button', { name: zh['workflow.image'] }))
+    expect(screen.getByText(zh.firstFrameRequired)).toBeTruthy()
+    expect(screen.getByText(t('generationFrames', { n: '0' }))).toBeTruthy()
+    act(() => { store.actions.patch({ promptAssisting: true }) })
+    expect(screen.getByText(zh.submitWriting)).toBeTruthy()
+    expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', true)
+    act(() => { store.actions.patch({ promptAssisting: false, firstFrame: { assetId: 'ma_selected', name: 'selected.png', url: 'blob:selected', bytes: 1 } }) })
+    expect(screen.queryByText(zh.firstFrameRequired)).toBeNull()
+    expect(screen.getByText(t('generationFrames', { n: '1' }))).toBeTruthy()
+  })
+
+  it('names an image-count failure separately from byte limits and retains all existing materials', async () => {
+    const { mount, store, asset } = setup()
+    store.actions.patch({ slots: { audio: [], video: [], image: Array.from({ length: 9 }, (_, index) => ({
+      assetId: `ma_count${String(index)}`, name: `image-${String(index)}.png`, url: `blob:${String(index)}`, bytes: 1,
+    })) } })
+    mount()
+    await ready()
+    fireEvent.change(screen.getByLabelText(zh.addMedia), { target: { files: [new File(['image'], 'tenth.png', { type: 'image/png' })] } })
+    await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull() })
+    expect(asset).not.toHaveBeenCalled()
+    expect(store.getSnapshot().slots.image).toHaveLength(9)
+    expect(store.getSnapshot().uploadFailures).toEqual([{ name: 'tenth.png', reason: t('materialCountLimit', { n: '9' }) }])
+  })
+
   it('retains several writing references for a single-frame model and sends the explicitly selected frame', async () => {
     const { mount, asset, store, props, task } = setup({ frameSlots: 1, maxReferenceImages: 0 })
     let id = 0
@@ -175,17 +312,17 @@ describe('video composer', () => {
   })
 
   it.each([
-    { slot: 'video' as const, label: 'referenceVideos' as const, name: 'scene.MP4', type: '', expected: 'video/mp4' },
-    { slot: 'video' as const, label: 'referenceVideos' as const, name: 'scene.mov', type: 'application/octet-stream', expected: 'video/quicktime' },
-    { slot: 'audio' as const, label: 'referenceAudios' as const, name: 'voice.wav', type: 'audio/x-wav', expected: 'audio/wav' },
-    { slot: 'audio' as const, label: 'referenceAudios' as const, name: 'voice.mp3', type: '', expected: 'audio/mpeg' },
-  ])('uploads $name with $type MIME through the existing host validation', async ({ slot, label, name, type, expected }) => {
+    { slot: 'video' as const, name: 'scene.MP4', type: '', expected: 'video/mp4' },
+    { slot: 'video' as const, name: 'scene.mov', type: 'application/octet-stream', expected: 'video/quicktime' },
+    { slot: 'audio' as const, name: 'voice.wav', type: 'audio/x-wav', expected: 'audio/wav' },
+    { slot: 'audio' as const, name: 'voice.mp3', type: '', expected: 'audio/mpeg' },
+  ])('uploads $name with $type MIME through the existing host validation', async ({ slot, name, type, expected }) => {
     const { mount, asset, store } = setup()
     mount()
     await ready()
     fireEvent.click(screen.getByRole('button', { name: zh['workflow.reference'] }))
     const file = new File(['media'], name, { type })
-    fireEvent.change(screen.getByLabelText(zh[label]), { target: { files: [file] } })
+    fireEvent.change(screen.getByLabelText(zh.addMedia), { target: { files: [file] } })
     await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull(); expect(asset).toHaveBeenCalledOnce() })
     const request = fetcher.mock.calls.find(([path]) => path === '/credits/api/assets')
     expect(new Headers(request?.[1]?.headers).get('content-type')).toBe(expected)
@@ -215,7 +352,7 @@ describe('video composer', () => {
     const view = mount()
     await ready()
     fireEvent.click(screen.getByRole('button', { name: zh['workflow.reference'] }))
-    fireEvent.change(screen.getByLabelText(zh.referenceVideos), { target: { files: [new File(['video'], '客户素材.mp4', { type: 'video/mp4' })] } })
+    fireEvent.change(screen.getByLabelText(zh.addMedia), { target: { files: [new File(['video'], '客户素材.mp4', { type: 'video/mp4' })] } })
     expect((await screen.findByRole('alert')).textContent).toBe(t('uploadItemFailed', { name: '客户素材.mp4', reason: zh.serverBusy }))
     expect(view.container.textContent).not.toContain('PRIVATE_CODE')
     expect(view.container.textContent).not.toContain('internal upstream route')
@@ -237,7 +374,7 @@ describe('video composer', () => {
     mount()
     await ready()
     fireEvent.click(screen.getByRole('button', { name: zh['workflow.reference'] }))
-    fireEvent.change(screen.getByLabelText(zh.referenceImages), { target: { files } })
+    fireEvent.change(screen.getByLabelText(zh.addMedia), { target: { files } })
     await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull(); expect(asset).toHaveBeenCalledTimes(6) })
     const references = store.getSnapshot().slots.image
     expect(references).toHaveLength(6)
@@ -323,7 +460,7 @@ describe('video composer', () => {
     await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull(); expect(asset).toHaveBeenCalledTimes(3) })
     expect(store.getSnapshot().slots.image.map(reference => reference.assetId)).toEqual(['ma_total0', 'ma_total2'])
     expect(store.getSnapshot().firstFrame?.assetId).toBe('ma_saved')
-    expect(store.getSnapshot().uploadFailures).toEqual([{ name: 'excess.heic', reason: t('materialLimit', { n: '9' }) }])
+    expect(store.getSnapshot().uploadFailures).toEqual([{ name: 'excess.heic', reason: t('materialTotalExceeded', { retained: '11.00', added: '2.00' }) }])
   })
 
   it.each(['https://other.invalid/image.jpg', 'data:image/jpeg;base64,AAAA', '/credits/api/assets/preview?asset_id=ma_other'])(
@@ -495,11 +632,11 @@ describe('video composer', () => {
     mount()
     await ready()
     fireEvent.click(screen.getByRole('button', { name: zh['workflow.reference'] }))
-    fireEvent.change(screen.getByLabelText(zh.referenceImages), { target: { files: Array.from({ length: 10 }, (_, index) =>
+    fireEvent.change(screen.getByLabelText(zh.addMedia), { target: { files: Array.from({ length: 10 }, (_, index) =>
       new File(['image'], `${index}.png`, { type: 'image/png' })) } })
     await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull(); expect(asset).toHaveBeenCalledTimes(10) })
     expect(store.getSnapshot().slots.image).toHaveLength(10)
-    expect(screen.getByLabelText(zh.referenceImages)).toHaveProperty('disabled', true)
+    expect(screen.getByLabelText(zh.addMedia)).toHaveProperty('disabled', false)
     const assistant = vi.mocked(props.renderFactorySlot).mock.calls.at(-1)?.[1] as PromptAssistOwner
     expect(assistant.disabled).toBe(true)
     expect(assistant.references).toHaveLength(10)
@@ -534,14 +671,14 @@ describe('video composer', () => {
     asset.mockImplementation(async () => json({ ok: true, asset: { assetId: `ma_audio_${++id}` } }))
     mount()
     await ready()
-    const input = screen.getByLabelText(zh.referenceAudios)
-    expect(input.getAttribute('accept')).toBe('audio/mpeg,audio/wav,.mp3,.wav')
+    const input = screen.getByLabelText(zh.addMedia)
+    expect(input.getAttribute('accept')).toContain('audio/mpeg,audio/wav,.mp3,.wav')
     fireEvent.change(input, { target: { files: [new File(['ID3'], 'one.mp3', { type: 'audio/mpeg' }),
       new File(['RIFFWAVE'], 'two.wav', { type: 'audio/wav' })] } })
     await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull(); expect(asset).toHaveBeenCalledTimes(2) })
     expect(screen.getByLabelText(t('audioPreview', { name: 'one.mp3' })).tagName).toBe('AUDIO')
     expect(screen.getByLabelText(t('audioPreview', { name: 'two.wav' })).getAttribute('src')).toBe('blob:two.wav')
-    expect(input).toHaveProperty('disabled', true)
+    expect(input).toHaveProperty('disabled', false)
     const uploadHeaders = fetcher.mock.calls.filter(([path]) => path === '/credits/api/assets')
       .map(([, init]) => init?.headers)
     expect(uploadHeaders).toMatchObject([{ 'content-type': 'audio/mpeg' }, { 'content-type': 'audio/wav' }])
@@ -637,10 +774,10 @@ describe('video composer', () => {
         : failure === 'oversize' ? new File([new Uint8Array(15 * 1024 * 1024 + 1)], 'large.mp3', { type: 'audio/mpeg' })
           : failure === 'unsupported' ? new File(['audio'], 'track.m4a', { type: 'audio/mp4' })
             : new File(['audio'], 'new.mp3', { type: 'audio/mpeg' })
-      fireEvent.change(screen.getByLabelText(zh.referenceAudios), { target: { files: [file] } })
+      fireEvent.change(screen.getByLabelText(zh.addMedia), { target: { files: [file] } })
       await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull(); expect(screen.getByRole('alert')).toBeTruthy() })
       expect(store.getSnapshot().slots.audio.map(item => item.assetId)).toEqual(['ma_retained'])
-      expect(screen.getByLabelText(zh.referenceAudios)).toHaveProperty('disabled', false)
+      expect(screen.getByLabelText(zh.addMedia)).toHaveProperty('disabled', false)
       expect(asset).toHaveBeenCalledTimes(failure === 'network' ? 1 : 0)
     },
   )
@@ -791,7 +928,7 @@ describe('video composer', () => {
       mount()
       await ready()
       fireEvent.click(screen.getByRole('button', { name: zh['workflow.reference'] }))
-      const pick = (name: string) => { fireEvent.change(screen.getByLabelText(zh.referenceImages), { target: { files: [new File(['image'], name, { type: 'image/png' })] } }) }
+      const pick = (name: string) => { fireEvent.change(screen.getByLabelText(zh.addMedia), { target: { files: [new File(['image'], name, { type: 'image/png' })] } }) }
       pick('old.png')
       sessionAccountId = 'account-b'
       fireEvent.focus(window)
@@ -804,7 +941,7 @@ describe('video composer', () => {
       pick('new.png')
       act(() => { store.actions.patch({ failure: 'new account feedback' }) })
       await act(async () => { if (fails) rejectOld(new Error('old upload failed')); else resolveOld(json({ ok: true, asset: { assetId: 'ma_old' } })) })
-      expect(store.getSnapshot()).toMatchObject({ uploading: 'image', failure: 'new account feedback', slots: { audio: [], image: [], video: [] } })
+      expect(store.getSnapshot()).toMatchObject({ uploading: 'materials', failure: 'new account feedback', slots: { audio: [], image: [], video: [] } })
       expect(props.createPreview).not.toHaveBeenCalled()
       await act(async () => { resolveNew(json({ ok: true, asset: { assetId: 'ma_new' } })) })
       expect(store.getSnapshot().slots.image.map(item => item.assetId)).toEqual(['ma_new'])
@@ -945,13 +1082,13 @@ describe('video composer', () => {
     fireEvent.change(input, { target: { files: [new File(['x'], 'excess.png', { type: 'image/png' })] } })
     await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull() })
     expect(asset).not.toHaveBeenCalled()
-    expect(screen.getByRole('alert').textContent).toBe(t('uploadItemFailed', { name: 'excess.png', reason: t('materialLimit', { n: '9' }) }))
+    expect(screen.getByRole('alert').textContent).toBe(t('uploadItemFailed', { name: 'excess.png', reason: t('materialTotalFull', { size: '12.00' }) }))
     act(() => { store.actions.patch({ firstFrame: null, slots: { audio: [], image: Array.from({ length: 9 }, (_, index) => ({ assetId: `ma_${index}`, name: 'material.png', url: `blob:${index}`, bytes: 1 })), video: [] } }) })
     fireEvent.click(screen.getByRole('button', { name: zh['workflow.image'] }))
     fireEvent.change(screen.getByLabelText(zh.firstFrame), { target: { files: [new File(['image'], 'tenth.png', { type: 'image/png' })] } })
     await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull() })
     expect(asset).not.toHaveBeenCalled()
-    expect(store.getSnapshot().firstFrame).toBeNull()
+    expect(store.getSnapshot().firstFrame?.assetId).toBe('ma_0')
   })
 
   it('renders administrator content and real cover/demo assets, with empty and retry states', async () => {
@@ -1053,7 +1190,7 @@ describe('video composer', () => {
     await ready()
     writePrompt()
     fireEvent.click(screen.getByRole('button', { name: zh['workflow.reference'] }))
-    fireEvent.change(screen.getByLabelText(zh.referenceImages), { target: { files: [new File(['one'], 'one.png', { type: 'image/png' }), new File(['two'], 'two.png', { type: 'image/png' })] } })
+    fireEvent.change(screen.getByLabelText(zh.addMedia), { target: { files: [new File(['one'], 'one.png', { type: 'image/png' }), new File(['two'], 'two.png', { type: 'image/png' })] } })
     await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull(); expect(asset).toHaveBeenCalledTimes(2) })
     expect(store.getSnapshot().slots.image.map(item => item.assetId)).toEqual(['ma_first'])
     expect(screen.getByRole('alert').textContent).toBe(t('uploadItemFailed', { name: 'two.png', reason: zh.uploadNetwork }))

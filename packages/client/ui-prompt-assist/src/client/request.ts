@@ -78,7 +78,8 @@ export async function requestPrompt(body: AssistRequest, signal: AbortSignal): P
     if (envelope.code === 'PROMPT_ASSIST_RESULT_STORAGE_FAILED') throw new AssistFailure('resultStorage')
     if (envelope.code === 'PROMPT_ASSIST_RESULT_UNKNOWN') throw new AssistFailure('resultUnknown')
     if (envelope.code === 'PROMPT_ASSIST_INVALID_RESPONSE') throw new AssistFailure('invalidResponse')
-    if (envelope.code === 'PROMPT_ASSIST_TIMEOUT' || envelope.code === 'PROMPT_ASSIST_UNAVAILABLE'
+    if (envelope.code === 'PROMPT_ASSIST_TIMEOUT') throw new AssistFailure('timeout')
+    if (envelope.code === 'PROMPT_ASSIST_UNAVAILABLE'
       || envelope.code === 'PROMPT_ASSIST_CANCELLED') throw new AssistFailure('error')
     throw new AssistFailure('resultUnknown')
   }

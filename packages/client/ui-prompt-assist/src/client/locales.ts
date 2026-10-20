@@ -5,6 +5,7 @@ export const NS = 'prompt-assist'
 export const zh = {
   title: 'AI 帮写',
   referenceCount: '将读取 {count} 张素材图片',
+  adjust: '调整要求',
   feedback: '修改建议',
   feedbackPlaceholder: '例如：保留主体，让背景更简洁，增加柔和自然光',
   revise: '按建议修改',
@@ -36,12 +37,15 @@ export const zh = {
   invalidResponse: '模型返回的提示词不可用，本次请求可能已计费。原稿已保留，请检查用量后决定是否重试',
   accountChanged: '账号已变化，内容已保留，请刷新当前页面后重试',
   accountCheckFailed: '暂时无法核验账号，内容已保留，请刷新后重试',
+  accountTimeout: '账号核验超时，已停止等待，原稿与素材已保留',
+  timeout: '等待超时，已停止等待，原稿与素材已保留。模型请求可能已计费，请先核对用量再决定是否重试',
 } as const
 
 /** English prompt-assistance copy. */
 export const en: Record<keyof typeof zh, string> = {
   title: 'AI writing',
   referenceCount: 'Using {count} material images',
+  adjust: 'Adjust requirements',
   feedback: 'Revision feedback',
   feedbackPlaceholder: 'For example: keep the subject, simplify the background and add soft daylight',
   revise: 'Revise with feedback',
@@ -73,6 +77,8 @@ export const en: Record<keyof typeof zh, string> = {
   invalidResponse: 'The model returned an unusable prompt and this request may have been charged. Your draft is retained. Check usage before deciding to retry.',
   accountChanged: 'The account changed. Your text is retained. Refresh this page before trying again.',
   accountCheckFailed: 'The account could not be verified. Your text is retained. Refresh and try again.',
+  accountTimeout: 'Account verification timed out. Stopped waiting; your draft and materials are retained.',
+  timeout: 'The wait timed out. Your draft and materials are retained. The model request may have been charged. Check usage before deciding to retry.',
 }
 
 /** Keys accepted by the prompt-assistance locale namespace. */

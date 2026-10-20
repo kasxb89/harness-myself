@@ -1,11 +1,15 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`creation prompt assistance > shows permanent writing and revision controls in en 1`] = `
+exports[`creation prompt assistance > keeps writing visible and expands revision requirements only on request in en 1`] = `
 {
   "actions": [
     {
       "disabled": false,
       "label": "AI writing",
+    },
+    {
+      "disabled": false,
+      "label": "Adjust requirements",
     },
     {
       "disabled": false,
@@ -25,12 +29,16 @@ exports[`creation prompt assistance > shows permanent writing and revision contr
 }
 `;
 
-exports[`creation prompt assistance > shows permanent writing and revision controls in zh 1`] = `
+exports[`creation prompt assistance > keeps writing visible and expands revision requirements only on request in zh 1`] = `
 {
   "actions": [
     {
       "disabled": false,
       "label": "AI 帮写",
+    },
+    {
+      "disabled": false,
+      "label": "调整要求",
     },
     {
       "disabled": false,

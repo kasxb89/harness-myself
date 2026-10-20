@@ -93,7 +93,6 @@ function materialSlot(file: File): Slot {
   return 'image'
 }
 const SLOT_LABELS = { image: 'referenceImages', video: 'referenceVideos', audio: 'referenceAudios' } as const
-const SLOT_HINTS = { image: 'dropImages', video: 'dropVideos', audio: 'dropAudios' } as const
 const WORKFLOW_LABELS = { text: 'workflow.text', image: 'workflow.image', frames: 'workflow.frames', reference: 'workflow.reference' } as const
 const WORKFLOW_HINTS = { text: 'workflow.text.hint', image: 'workflow.image.hint', frames: 'workflow.frames.hint', reference: 'workflow.reference.hint' } as const
 const rawUrl = (file: ArtifactLocation): string => `/artifacts/api/raw?path=${encodeURIComponent(file.path)}${file.workspaceId === undefined ? '' : `&workspaceId=${encodeURIComponent(file.workspaceId)}`}`
@@ -210,6 +209,21 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
     }) } : settingsInvalid ? { message: null } : {}) })
   }, [actions, duration, locked, params, readDraft, selectedRatio, selectedResolution, settingsInvalid, t])
 
+  useEffect(() => {
+    if (locked || signedIn !== true || params === null || accountIdentity === null) return
+    const current = readDraft()
+    if (current.referenceAccountId !== accountIdentity || current.referenceEpoch !== draft.referenceEpoch
+      || current.workflow !== draft.workflow || current.modelId !== draft.modelId) return
+    const key = JSON.stringify([accountIdentity, current.referenceEpoch, model?.id, workflow])
+    if (current.frameWorkflowSelection === key) return
+    const first = current.slots.image[0]
+    actions.patch({ frameWorkflowSelection: key,
+      ...((workflow === 'image' || workflow === 'frames') && params.frameSlots > 0 && current.firstFrame === null && first !== undefined
+        ? { firstFrame: first } : {}),
+    })
+  }, [accountIdentity, actions, draft.frameWorkflowSelection, draft.modelId, draft.referenceEpoch, draft.workflow,
+    firstFrame, locked, model?.id, params, readDraft, signedIn, slots.image, workflow])
+
   const assistReferences = useMemo(() => {
     if (accountIdentity === null || draft.referenceAccountId !== accountIdentity || signedIn !== true) return []
     return [...new Set([firstFrame, lastFrame, ...slots.image]
@@ -322,9 +336,9 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
     }
     if (slot === 'image') {
       const images = retainedImages()
-      if (images.length >= imageLimit || images.reduce((sum, item) => sum + item.bytes, 0) >= 12 * 1024 * 1024) {
-        return reject(t('materialLimit', { n: String(imageLimit) }))
-      }
+      if (images.length >= imageLimit) return reject(t('materialCountLimit', { n: String(imageLimit) }))
+      const retainedBytes = images.reduce((sum, item) => sum + item.bytes, 0)
+      if (retainedBytes >= 12 * 1024 * 1024) return reject(t('materialTotalFull', { size: (retainedBytes / 1024 / 1024).toFixed(2) }))
     }
     try {
       const response = await fetch('/credits/api/assets', {
@@ -374,14 +388,17 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
         const legacy = asset.previewUrl === undefined && asset.contentType === undefined && asset.sizeBytes === undefined
           && SLOT_TYPES.image.types.includes(file.type) && file.size <= 6 * 1024 * 1024
         const bytes = legacy ? file.size : asset.sizeBytes
-        if (typeof bytes !== 'number' || !Number.isSafeInteger(bytes) || bytes <= 0 || bytes > 6 * 1024 * 1024
+        if (typeof bytes !== 'number' || !Number.isSafeInteger(bytes) || bytes <= 0
           || !legacy && (asset.previewUrl !== expectedPreview || !['image/png', 'image/jpeg'].includes(asset.contentType ?? ''))) {
           return reject(t('invalidUploadResponse'))
         }
+        if (bytes > 6 * 1024 * 1024) return reject(t('normalizedSizeLimit'))
         const images = retainedImages()
-        if (images.length >= imageLimit || images.reduce((sum, item) => sum + item.bytes, 0) + bytes > 12 * 1024 * 1024) {
-          return reject(t('materialLimit', { n: String(imageLimit) }))
-        }
+        if (images.length >= imageLimit) return reject(t('materialCountLimit', { n: String(imageLimit) }))
+        const retainedBytes = images.reduce((sum, item) => sum + item.bytes, 0)
+        if (retainedBytes + bytes > 12 * 1024 * 1024) return reject(t('materialTotalExceeded', {
+          retained: (retainedBytes / 1024 / 1024).toFixed(2), added: (bytes / 1024 / 1024).toFixed(2),
+        }))
         return { assetId, name: file.name, url: legacy ? createPreview(file) : expectedPreview, bytes,
           converted: asset.converted === true, firstFrameOnly: asset.firstFrameOnly === true }
       }
@@ -408,7 +425,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
           continue
         }
         if (readDraft().slots[slot].length >= limit) {
-          actions.patch({ uploadFailures: [...readDraft().uploadFailures, { name: file.name, reason: t('referenceFull') }] })
+          actions.patch({ uploadFailures: [...readDraft().uploadFailures, { name: file.name, reason: slot === 'image' ? t('materialCountLimit', { n: String(limit) }) : t('referenceFull') }] })
           continue
         }
         const reference = await upload(slot, file, readDraft())
@@ -448,6 +465,8 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
 
   const selectFrame = (which: 'first' | 'last', reference: Reference): void => {
     const current = readDraft()
+    if (locked || signedIn !== true || accountIdentity === null || current.referenceAccountId !== accountIdentity
+      || current.referenceEpoch !== draft.referenceEpoch) return
     const previous = which === 'first' ? current.firstFrame : current.lastFrame
     actions.patch({ ...(which === 'first' ? { firstFrame: reference } : { lastFrame: reference }),
       workflow: which === 'last' || workflow === 'frames' ? 'frames' : 'image', failure: null })
@@ -526,60 +545,81 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
 
   const frameField = (which: 'first' | 'last'): ReactNode => {
     const reference = which === 'first' ? firstFrame : lastFrame
-    return <div className={css.field}>
-      <span className={css.label}>{t(which === 'first' ? 'firstFrame' : 'lastFrame')}</span>
-      <label className={css.dropzone}>
-        <input type="file" aria-label={t(which === 'first' ? 'firstFrame' : 'lastFrame')} accept={SLOT_TYPES.image.accept}
-          disabled={locked}
+    const label = t(which === 'first' ? 'firstFrame' : 'lastFrame')
+    const inPool = reference !== null && slots.image.some(item => item.assetId === reference.assetId)
+    return <div className={css.frameControl} data-frame={which} data-selected={reference !== null}>
+      {reference !== null && !inPool && <img className={css.frame} src={reference.url} alt={reference.name} />}
+      <label className={css.framePicker}>
+        <input type="file" aria-label={label} accept={SLOT_TYPES.image.accept} disabled={locked}
           onChange={(event) => { void pickFrame(which, event.target.files); event.target.value = '' }} />
-        {reference === null ? <><IconPlusOutlineRegular /><span>{uploading === which ? t('uploading') : t('frameHint')}</span></>
-          : <img className={css.frame} src={reference.url} alt={reference.name} />}
+        <IconPlusOutlineRegular size={14} /><span>{label}</span>
+        <span className={css.fileName} title={reference?.name}>{reference?.name ?? t('frameNotSelected')}</span>
       </label>
-      {reference !== null && <button type="button" disabled={locked} className={css.link} onClick={() => {
+      {reference !== null && !inPool && (reference.firstFrameOnly === true || reference.converted === true)
+        && <span className={css.conversion}>{t(reference.firstFrameOnly === true ? 'firstFrameOnly' : 'imageConverted')}</span>}
+      {reference !== null && <button type="button" disabled={locked} className={css.link} aria-label={t('clearFrame', { frame: label })} onClick={() => {
         actions.patch(which === 'first' ? { firstFrame: null } : { lastFrame: null }); releaseUnusedPreview(reference.url)
-      }}>{t('remove')}</button>}
-      {reference?.firstFrameOnly === true ? <p className={css.hint}>{t('firstFrameOnly')}</p>
-        : reference?.converted === true && <p className={css.hint}>{t('imageConverted')}</p>}
+      }}>{t('clearFrameAction')}</button>}
     </div>
   }
 
   const referenceField = (slot: Slot): ReactNode => {
     const limit = referenceLimit(slot)
     if (limit === 0 && slots[slot].length === 0) return null
-    const full = slots[slot].length >= limit
+    if (slots[slot].length === 0) return null
     return <div className={css.field} key={slot}>
-      <span className={css.label}>{t(SLOT_LABELS[slot])}
-        <span className={css.count}>{slots[slot].length}/{limit}</span>
-      </span>
-      {limit > 0 ? <label className={css.dropzone} aria-disabled={full}>
-        <input type="file" aria-label={t(SLOT_LABELS[slot])} accept={SLOT_TYPES[slot].accept} multiple disabled={full || locked}
-          onChange={(event) => { void pick(slot, event.target.files); event.target.value = '' }} />
-        <IconPlusOutlineRegular /><span>{uploading === slot ? t('uploading') : full ? t('referenceFull') : t(SLOT_HINTS[slot])}</span>
-      </label> : <p className={css.hint}>{t('unsupportedReferencesRetained')}</p>}
-      <ul className={css.files}>{slots[slot].map(item => <li key={item.assetId} className={slot === 'audio' ? `${css.fileRow} ${css.audioReference}` : css.fileRow}>
-        {slot === 'image' ? <img className={css.fileThumb} src={item.url} alt={item.name} /> : <IconPlayOutlineRegular />}
-        <span className={css.fileName}>{item.name}</span>
-        {slot === 'image' && (item.firstFrameOnly === true || item.converted === true)
-          && <span className={css.count}>{t(item.firstFrameOnly === true ? 'firstFrameOnly' : 'imageConverted')}</span>}
-        {slot === 'image' && params !== null && params.frameSlots > 0 && <button type="button" disabled={locked} className={css.link}
-          aria-label={t('useFirstFrameNamed', { name: item.name })} aria-pressed={firstFrame?.assetId === item.assetId}
-          onClick={() => { selectFrame('first', item) }}>{t('useFirstFrame')}</button>}
-        {slot === 'image' && params !== null && params.frameSlots > 1 && <button type="button" disabled={locked} className={css.link}
-          aria-label={t('useLastFrameNamed', { name: item.name })} aria-pressed={lastFrame?.assetId === item.assetId}
-          onClick={() => { selectFrame('last', item) }}>{t('useLastFrame')}</button>}
-        <button type="button" disabled={locked} className={css.link} aria-label={t('removeNamed', { name: item.name })} onClick={() => {
-          actions.removeReference(slot, item.assetId)
-          if (slot === 'image') actions.patch({
-            ...(firstFrame?.assetId === item.assetId ? { firstFrame: null } : {}),
-            ...(lastFrame?.assetId === item.assetId ? { lastFrame: null } : {}),
-          })
-          releaseUnusedPreview(item.url)
-        }}>{t('remove')}</button>
-        {slot === 'audio' && <audio className={css.audioPreview} controls preload="metadata" src={item.url}
-          aria-label={t('audioPreview', { name: item.name })} />}
-      </li>)}</ul>
+      <span className={css.label}>{t(SLOT_LABELS[slot])}<span className={css.count}>{slots[slot].length}/{limit}</span></span>
+      <ul className={slot === 'image' ? css.imageFiles : css.files} aria-label={t('materialList', { kind: t(SLOT_LABELS[slot]) })}>
+        {slots[slot].map((item) => {
+          const isFirst = firstFrame?.assetId === item.assetId
+          const isLast = lastFrame?.assetId === item.assetId
+          const activeFirst = isFirst && (workflow === 'image' || workflow === 'frames') && (params?.frameSlots ?? 0) > 0
+          const activeLast = isLast && workflow === 'frames' && (params?.frameSlots ?? 0) > 1
+          return <li key={item.assetId} className={slot === 'image' ? css.imageCard : css.fileRow}>
+            {slot === 'image' ? <div className={css.imagePreview}>
+              <img className={css.fileThumb} src={item.url} alt={item.name} />
+              {(activeFirst || activeLast) && <span className={css.frameBadges}>
+                {activeFirst && <span>{t('firstFrame')}</span>}{activeLast && <span>{t('lastFrame')}</span>}
+              </span>}
+            </div> : <IconPlayOutlineRegular />}
+            <span className={css.fileName} title={item.name}>{item.name}</span>
+            {slot === 'image' && (item.firstFrameOnly === true || item.converted === true)
+              && <span className={css.conversion} title={t(item.firstFrameOnly === true ? 'firstFrameOnly' : 'imageConverted')}>
+                {t(item.firstFrameOnly === true ? 'firstFrameOnly' : 'imageConverted')}</span>}
+            <div className={css.fileActions}>
+              {slot === 'image' && params !== null && params.frameSlots > 0 && <button type="button" disabled={locked} className={css.frameAction}
+                aria-label={t('useFirstFrameNamed', { name: item.name })} aria-pressed={activeFirst}
+                onClick={() => { selectFrame('first', item) }}>{t('firstFrameShort')}</button>}
+              {slot === 'image' && params !== null && params.frameSlots > 1 && <button type="button" disabled={locked} className={css.frameAction}
+                aria-label={t('useLastFrameNamed', { name: item.name })} aria-pressed={activeLast}
+                onClick={() => { selectFrame('last', item) }}>{t('lastFrameShort')}</button>}
+              <button type="button" disabled={locked} className={css.link} aria-label={t('removeNamed', { name: item.name })} onClick={() => {
+                actions.removeReference(slot, item.assetId)
+                if (slot === 'image') actions.patch({ ...(isFirst ? { firstFrame: null } : {}), ...(isLast ? { lastFrame: null } : {}) })
+                releaseUnusedPreview(item.url)
+              }}>{t('remove')}</button>
+            </div>
+            {slot === 'audio' && <audio className={css.audioPreview} controls preload="metadata" src={item.url}
+              aria-label={t('audioPreview', { name: item.name })} />}
+          </li>
+        })}
+      </ul>
+      {limit === 0 && <p className={css.hint}>{t('unsupportedReferencesRetained')}</p>}
     </div>
   }
+
+  const submitHint = signedIn !== true ? t('signedOut') : draft.promptAssisting ? t('submitWriting')
+    : uploading !== null ? t('submitUploading') : phase === 'running' ? t('runningShort')
+      : sessionId === undefined ? t('sessionRequired') : model === null || params === null ? t('noModel')
+        : prompt.trim() === '' ? t('promptRequired') : settingsInvalid ? t('settingsUnavailable')
+          : overReferenceLimit ? t('referenceOverLimit') : referenceBytesExceeded ? t('referenceBytesExceeded')
+            : (workflow === 'image' || workflow === 'frames') && params.frameSlots > 0 && firstFrame === null ? t('firstFrameRequired')
+              : workflow === 'frames' && lastFrame === null ? t('lastFrameRequired')
+                : workflow !== 'text' && !hasReferences ? t('mediaRequired') : null
+  const generationMaterialSummary = workflow === 'text' ? t('generationTextOnly')
+    : workflow === 'image' && (params?.frameSlots ?? 0) > 0 || workflow === 'frames'
+      ? t('generationFrames', { n: String(frameImages.filter(item => item !== null).length) })
+      : t('generationReferences', { images: String(referenceImages.length), videos: String(referenceVideos.length), audios: String(referenceAudios.length) })
 
   const applyTemplate = (id: string): void => {
     if (locked) return
@@ -606,19 +646,33 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
         <div className={css.workflowBar}>{workflows.map(entry => <button key={entry} type="button" disabled={locked} aria-pressed={workflow === entry}
           className={workflow === entry ? `${css.workflow} ${css.workflowActive}` : css.workflow}
           onClick={() => { actions.patch({ workflow: entry, failure: null, message: null }) }}>{t(WORKFLOW_LABELS[entry])}</button>)}</div>
-        <div className={css.promptRow}>
-          <label className={css.addMedia}><IconPlusOutlineRegular size={24} /><span>{t('addMedia')}</span>
-            <input type="file" aria-label={t('addMedia')} accept={[SLOT_TYPES.image.accept,
-              ...params !== null && params.maxReferenceVideos > 0 ? [SLOT_TYPES.video.accept] : [],
-              ...params !== null && params.maxReferenceAudios > 0 ? [SLOT_TYPES.audio.accept] : []].join(',')}
-            multiple disabled={locked}
-            onChange={(event) => { void pick(null, event.target.files); event.target.value = '' }} />
-          </label>
+        <div className={css.composerHero}>
           <label className={css.promptField}>
-            <textarea ref={promptField} className={css.textarea} rows={4} value={prompt} aria-label={t('prompt')}
+            <textarea ref={promptField} className={css.textarea} rows={3} value={prompt} aria-label={t('prompt')}
               placeholder={text(content?.promptPlaceholder) || t('promptPlaceholder')} onChange={(event) => { actions.patch({ prompt: event.target.value }) }} />
             <span className={css.count} aria-hidden="true">{prompt.length}</span>
           </label>
+          <div className={css.materialToolbar}>
+            <label className={css.addMedia}><IconPlusOutlineRegular size={16} /><span>{t('addMedia')}</span>
+              <input type="file" aria-label={t('addMedia')} accept={[SLOT_TYPES.image.accept,
+                ...params !== null && params.maxReferenceVideos > 0 ? [SLOT_TYPES.video.accept] : [],
+                ...params !== null && params.maxReferenceAudios > 0 ? [SLOT_TYPES.audio.accept] : []].join(',')}
+              multiple disabled={locked}
+              onChange={(event) => { void pick(null, event.target.files); event.target.value = '' }} />
+            </label>
+            <p className={css.generationScope}>{generationMaterialSummary}</p>
+          </div>
+          <div className={css.materials}>
+            {workflow !== 'text' && params !== null && params.frameSlots > 0 && (workflow === 'image' || workflow === 'frames')
+              && <div className={css.frameControls}>{frameField('first')}{workflow === 'frames' && frameField('last')}</div>}
+            {referenceField('image')}
+            <div className={css.materialNotes}>
+              <details className={css.materialHelp}><summary>{t('materialRequirements')}</summary><p className={css.hint}>{t('materialHelp', { n: String(imageLimit) })}</p>
+                <p className={css.hint}>{t(WORKFLOW_HINTS[workflow])}</p>
+                {(firstFrame !== null || lastFrame !== null || hasReferences) && <p className={css.hint}>{t('inactiveMediaHint')}</p>}</details>
+            </div>
+            {workflow === 'reference' && params !== null && <div className={css.mediaGrid}>{referenceField('video')}{referenceField('audio')}</div>}
+          </div>
         </div>
         {props.renderFactorySlot('creation.prompt.assist', {
           kind: 'video', prompt,
@@ -646,15 +700,6 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
         })}
         {assistReferenceLimitExceeded && <p className={css.hint} role="status">{t('assistReferenceLimit')}</p>}
         {(slots.video.length > 0 || slots.audio.length > 0) && <p className={css.hint}>{t('assistImagesOnly')}</p>}
-        <p className={css.hint}>{t('materialHelp', { n: String(imageLimit) })}</p>
-        <div className={css.mediaGrid}>{referenceField('image')}</div>
-        <p className={css.hint}>{t(WORKFLOW_HINTS[workflow])}</p>
-        {(firstFrame !== null || lastFrame !== null || hasReferences) && <p className={css.hint}>{t('inactiveMediaHint')}</p>}
-        {workflow !== 'text' && params !== null && <div className={css.mediaGrid}>
-          {workflow === 'image' && params.frameSlots > 0 && frameField('first')}
-          {workflow === 'frames' && <>{frameField('first')}{frameField('last')}</>}
-          {workflow === 'reference' && <>{referenceField('video')}{referenceField('audio')}</>}
-        </div>}
         {contentPresets.length > 0 && <div className={css.presets} aria-label={t('cameraIntents')}>{contentPresets.map(preset => <button key={preset.id} type="button" disabled={locked} className={css.chip}
           onClick={() => { actions.appendPrompt(text(preset.promptSuffix)) }}>{text(preset.label)}</button>)}</div>}
         <div className={css.composerBar}>
@@ -711,13 +756,14 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
             </div>
           </details>
           <span className={css.cost}>{t('costShort')}</span>
-          <Tooltip label={phase === 'running' ? t('runningShort') : t('submit')} portal side="top">
-            <button type="button" className={css.send} aria-label={phase === 'running' ? t('runningShort') : t('submit')}
-              onClick={() => { void generate() }} disabled={locked || model === null || sessionId === undefined || prompt.trim() === '' || settingsInvalid
-                || overReferenceLimit || referenceBytesExceeded}>
-              <span className={phase === 'running' ? css.spinner : css.sendArrow} aria-hidden="true">{phase === 'running' ? '' : '↑'}</span>
-            </button>
-          </Tooltip>
+          <div className={css.submitArea}>{submitHint !== null && <span className={css.submitHint} role="status">{submitHint}</span>}
+            <Tooltip label={phase === 'running' ? t('runningShort') : t('submit')} portal side="top">
+              <button type="button" className={css.send} aria-label={phase === 'running' ? t('runningShort') : t('submit')}
+                onClick={() => { void generate() }} disabled={locked || model === null || sessionId === undefined || prompt.trim() === '' || settingsInvalid
+                  || overReferenceLimit || referenceBytesExceeded}>
+                <span className={phase === 'running' ? css.spinner : css.sendArrow} aria-hidden="true">{phase === 'running' ? '' : '↑'}</span>
+              </button>
+            </Tooltip></div>
         </div>
       </fieldset>
       <div className={css.feedback} aria-live="polite">
@@ -730,11 +776,8 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
         {uploadFailures.length > 0 && <ul className={css.error} role="alert">{uploadFailures.map((item, index) =>
           <li key={`${String(index)}:${item.name}`}>{t('uploadItemFailed', { name: item.name, reason: item.reason })}</li>)}</ul>}
         {message !== null && <p className={css.notice}>{message}</p>}
-        {signedIn === false && <p className={css.hint}>{t('signedOut')}</p>}
-        {sessionId === undefined && <p className={css.hint}>{t('sessionRequired')}</p>}
         {stateError && <p className={css.error}>{t('stateFailed')} <button type="button" className={css.link} onClick={() => { void refreshState() }}>{t('retry')}</button></p>}
         {modelsError !== null && <p className={css.error}>{t('modelsFailed', { message: modelsError })} <button type="button" className={css.link} onClick={() => { void loadModels() }}>{t('retry')}</button></p>}
-        {signedIn === true && models.length === 0 && modelsError === null && <p className={css.hint}>{t('noModel')}</p>}
       </div>
     </section>
     {model !== null && <details className={css.capabilityNote}><summary>{t('modelInfo')}</summary><p className={css.hint}>{t('capabilityHint')}</p></details>}

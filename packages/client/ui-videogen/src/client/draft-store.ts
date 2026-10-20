@@ -29,6 +29,8 @@ export interface VideoDraft {
   seed: string
   audio: boolean
   workflow: Workflow
+  /** Retains the last auto-selection visit so explicit clears survive panel remounts. */
+  frameWorkflowSelection: string | null
   firstFrame: Reference | null
   lastFrame: Reference | null
   slots: Record<Slot, Reference[]>
@@ -63,7 +65,7 @@ export function createVideoDraftStore(): EngineStoreHandle<VideoDraft, DraftActi
   return defineStore({
     init: (): VideoDraft => ({
       modelId: '', prompt: '', duration: 0, resolution: '', ratio: '', mode: '', seed: '', audio: true,
-      workflow: 'text', firstFrame: null, lastFrame: null, slots: { image: [], video: [], audio: [] },
+      workflow: 'text', frameWorkflowSelection: null, firstFrame: null, lastFrame: null, slots: { image: [], video: [], audio: [] },
       category: 'all', uploading: null, phase: 'idle', startedAt: 0, message: null, failure: null, result: null,
       uploadFailures: [],
       referenceAccountId: null, referenceEpoch: 0, promptAssisting: false,
@@ -75,6 +77,7 @@ export function createVideoDraftStore(): EngineStoreHandle<VideoDraft, DraftActi
         draft.referenceAccountId = accountId
         draft.referenceEpoch += 1
         draft.promptAssisting = false
+        draft.frameWorkflowSelection = null
         draft.firstFrame = null
         draft.lastFrame = null
         draft.slots = { image: [], video: [], audio: [] }

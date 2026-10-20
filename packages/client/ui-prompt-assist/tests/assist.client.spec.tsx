@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { useRef, useState } from 'react'
-import { act, cleanup, fireEvent, render, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, within, type RenderResult } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PromptAssist } from '../src/client/PromptAssist.tsx'
 import type { PromptAssistOwner } from '../src/client/index.ts'
@@ -78,13 +78,95 @@ function Composer({ props }: { props: Props }) {
   </>
 }
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals() })
+function expandRequirements(view: Pick<RenderResult, 'getByRole'>): void {
+  const button = view.getByRole('button', { name: zh.adjust })
+  if (button.getAttribute('aria-expanded') !== 'true') fireEvent.click(button)
+}
+
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals() })
 
 describe('creation prompt assistance', () => {
-  it.each([['zh', zh], ['en', en]] as const)('shows permanent writing and revision controls in %s', (language, dictionary) => {
+  it('retains entered requirements across collapse and keeps the material count and writing action visible', () => {
+    const { requests } = installFetch()
+    const view = render(<PromptAssist {...properties()} />)
+    fireEvent.click(view.getByRole('button', { name: zh.adjust }))
+    fireEvent.change(view.getByRole('textbox', { name: zh.feedback }), { target: { value: '保留人物和原有画风' } })
+    fireEvent.click(view.getByRole('button', { name: zh.adjust }))
+    expect(view.queryByRole('textbox', { name: zh.feedback })).toBeNull()
+    expect(view.getByText('将读取 1 张素材图片')).toBeTruthy()
+    expect(view.getByRole('button', { name: zh.title })).toHaveProperty('disabled', false)
+    fireEvent.click(view.getByRole('button', { name: zh.adjust }))
+    expect(view.getByRole('textbox', { name: zh.feedback })).toHaveProperty('value', '保留人物和原有画风')
+    expect(requests).not.toHaveBeenCalled()
+  })
+
+  it.each(['preflight', 'model', 'final-account'] as const)('ends a stalled %s wait even when transport never settles on abort', async (phase) => {
+    vi.useFakeTimers()
+    const waiting = deferred()
+    const post = vi.fn<typeof fetch>().mockImplementation(async () => success())
+    const read = vi.fn<typeof fetch>().mockImplementation(async () => account())
+    if (phase === 'preflight') read.mockReturnValueOnce(waiting.promise)
+    else if (phase === 'model') post.mockReturnValueOnce(waiting.promise)
+    else read.mockResolvedValueOnce(account()).mockReturnValueOnce(waiting.promise)
+    installFetch(post, read)
+    const props = properties()
+    const view = render(<Composer props={props} />)
+    fireEvent.click(view.getByRole('button', { name: zh.adjust }))
+    fireEvent.change(view.getByRole('textbox', { name: zh.feedback }), { target: { value: '超时也保留修改要求' } })
+    await act(async () => { fireEvent.click(view.getByRole('button', { name: zh.revise })) })
+    expect(post).toHaveBeenCalledTimes(phase === 'preflight' ? 0 : 1)
+    expect(view.getByRole('button', { name: zh.stop })).toBeTruthy()
+    await act(async () => { vi.advanceTimersByTime(phase === 'model' ? 130_000 : 15_000) })
+    expect(view.getByRole('alert').textContent).toBe(phase === 'preflight' ? zh.accountTimeout : zh.timeout)
+    expect(view.queryByRole('button', { name: zh.stop })).toBeNull()
+    expect(view.getByRole('button', { name: zh.title })).toHaveProperty('disabled', false)
+    const signal = phase === 'model' ? post.mock.calls[0]?.[1]?.signal : read.mock.calls.at(-1)?.[1]?.signal
+    expect(signal?.aborted).toBe(true)
+    expect(view.getByRole('textbox', { name: '主提示词' })).toHaveProperty('value', '一只橘猫')
+    expect(view.getByRole('textbox', { name: zh.feedback })).toHaveProperty('value', '超时也保留修改要求')
+    expect(props.onBusyChange.mock.calls).toEqual([[true], [false]])
+    await act(async () => { waiting.resolve(phase === 'model' ? success('迟到结果不应写入') : account()) })
+    expect(props.onPromptChange).not.toHaveBeenCalled()
+    expect(props.onBusyChange.mock.calls).toEqual([[true], [false]])
+    expect(post).toHaveBeenCalledTimes(phase === 'preflight' ? 0 : 1)
+  })
+
+  it('releases a stalled JSON body, accepts an explicit new action, and discards the old late body', async () => {
+    vi.useFakeTimers()
+    let resolveBody = (_value: unknown): void => { throw new Error('Not initialized') }
+    const bodyPending = new Promise<unknown>((resolve) => { resolveBody = resolve })
+    const response = success()
+    vi.spyOn(response, 'json').mockReturnValue(bodyPending)
+    const post = vi.fn<typeof fetch>().mockResolvedValueOnce(response).mockResolvedValueOnce(success('重新帮写后的提示词'))
+    installFetch(post)
+    const props = properties()
+    const view = render(<Composer props={props} />)
+    await act(async () => { fireEvent.click(view.getByRole('button', { name: zh.title })) })
+    expect(post).toHaveBeenCalledTimes(1)
+    await act(async () => { vi.advanceTimersByTime(130_000) })
+    expect(view.getByRole('alert').textContent).toBe(zh.timeout)
+    expect(props.onBusyChange.mock.calls).toEqual([[true], [false]])
+    fireEvent.change(view.getByRole('textbox', { name: '主提示词' }), { target: { value: '用户超时后修改的新原稿' } })
+    await act(async () => { fireEvent.click(view.getByRole('button', { name: zh.title })) })
+    expect(view.getByRole('textbox', { name: '主提示词' })).toHaveProperty('value', '重新帮写后的提示词')
+    expect(props.onPromptChange).toHaveBeenCalledExactlyOnceWith('重新帮写后的提示词', '用户超时后修改的新原稿')
+    expect(post).toHaveBeenCalledTimes(2)
+    await act(async () => { resolveBody({ ok: true, payload: { prompt: '超时后迟到的旧结果' } }) })
+    expect(view.getByRole('textbox', { name: '主提示词' })).toHaveProperty('value', '重新帮写后的提示词')
+    expect(props.onPromptChange).toHaveBeenCalledTimes(1)
+    expect(props.onBusyChange.mock.calls).toEqual([[true], [false], [true], [false]])
+  })
+
+  it.each([['zh', zh], ['en', en]] as const)('keeps writing visible and expands revision requirements only on request in %s', (language, dictionary) => {
     const { requests } = installFetch()
     const view = render(<PromptAssist {...properties()} t={translate(dictionary)} />)
     const feedbackText = language === 'zh' ? '背景再简洁一点' : 'Simplify the background further'
+    const adjust = view.getByRole('button', { name: dictionary.adjust })
+    expect(adjust.getAttribute('aria-expanded')).toBe('false')
+    expect(view.queryByRole('textbox', { name: dictionary.feedback })).toBeNull()
+    expect(view.getByRole('button', { name: dictionary.title })).toHaveProperty('disabled', false)
+    fireEvent.click(adjust)
+    expect(adjust.getAttribute('aria-expanded')).toBe('true')
     fireEvent.change(view.getByRole('textbox', { name: dictionary.feedback }), { target: { value: feedbackText } })
     expect({
       copy: [...view.container.querySelectorAll('p')].map(node => node.textContent),
@@ -122,7 +204,7 @@ describe('creation prompt assistance', () => {
     expect(signals[2]).toBe(signals[0])
     expect(props.onPromptChange).toHaveBeenCalledExactlyOnceWith('柔和窗光下的一只橘猫', '一只橘猫')
     expect(props.onBusyChange.mock.calls).toEqual([[true], [false]])
-    expect(view.getAllByRole('textbox')).toHaveLength(2)
+    expect(view.getAllByRole('textbox')).toHaveLength(1)
   })
 
   it('sends the current session selection only as an expectation and discards a late result after switching models', async () => {
@@ -163,6 +245,7 @@ describe('creation prompt assistance', () => {
     fireEvent.click(view.getByRole('button', { name: 'AI 帮写' }))
     await vi.waitFor(() => { expect(main.value).toBe('第一稿') })
     fireEvent.change(main, { target: { value: '手动调整过的第一稿' } })
+    expandRequirements(view)
     const feedback = view.getByRole('textbox', { name: '修改建议' })
     if (!(feedback instanceof HTMLTextAreaElement)) throw new Error('Expected the revision feedback textarea')
     fireEvent.change(feedback, { target: { value: '增加缓慢推进镜头' } })
@@ -185,6 +268,7 @@ describe('creation prompt assistance', () => {
     const { post } = installFetch()
     const props = properties()
     const view = render(<Composer props={props} />)
+    expandRequirements(view)
     fireEvent.change(view.getByRole('textbox', { name: '修改建议' }), { target: { value: '更自然的光线' } })
     fireEvent.click(view.getByRole('button', { name: '按建议修改' }))
     await vi.waitFor(() => { expect(props.onPromptChange).toHaveBeenCalledTimes(1) })
@@ -197,6 +281,7 @@ describe('creation prompt assistance', () => {
     installFetch(post)
     const props = properties()
     const view = render(<Composer props={props} />)
+    expandRequirements(view)
     fireEvent.change(view.getByRole('textbox', { name: '修改建议' }), { target: { value: '保留原有主体' } })
     fireEvent.click(view.getByRole('button', { name: '按建议修改' }))
     await vi.waitFor(() => { expect(post).toHaveBeenCalledTimes(1) })
@@ -218,6 +303,7 @@ describe('creation prompt assistance', () => {
     installFetch()
     const props = properties({ onPromptChange: vi.fn(() => false) })
     const view = render(<Composer props={props} />)
+    expandRequirements(view)
     fireEvent.change(view.getByRole('textbox', { name: '修改建议' }), { target: { value: '仍需保留的修改建议' } })
     fireEvent.click(view.getByRole('button', { name: '按建议修改' }))
     expect((await view.findByRole('alert')).textContent).toBe('原稿已变化，未覆盖你的内容，请重新点击 AI 帮写')
@@ -232,6 +318,7 @@ describe('creation prompt assistance', () => {
     const { post } = installFetch(undefined, read)
     const props = properties()
     const view = render(<PromptAssist {...props} />)
+    expandRequirements(view)
     fireEvent.change(view.getByRole('textbox', { name: '修改建议' }), { target: { value: '保留修改建议' } })
     fireEvent.click(view.getByRole('button', { name: '按建议修改' }))
     expect((await view.findByRole('alert')).textContent).toBe(zh.accountChanged)
@@ -257,6 +344,7 @@ describe('creation prompt assistance', () => {
     installFetch(post)
     const props = properties()
     const view = render(<PromptAssist {...props} />)
+    expandRequirements(view)
     fireEvent.change(view.getByRole('textbox', { name: '修改建议' }), { target: { value: '保留反馈' } })
     fireEvent.click(view.getByRole('button', { name: '按建议修改' }))
     await vi.waitFor(() => { expect(post).toHaveBeenCalledTimes(1) })
@@ -299,6 +387,7 @@ describe('creation prompt assistance', () => {
     installFetch(post, read)
     const props = properties()
     const view = render(<Composer props={props} />)
+    expandRequirements(view)
     fireEvent.change(view.getByRole('textbox', { name: '修改建议' }), { target: { value: '取消也保留反馈' } })
     fireEvent.click(view.getByRole('button', { name: '按建议修改' }))
     await vi.waitFor(() => {
@@ -379,6 +468,7 @@ describe('creation prompt assistance', () => {
     const { requests } = installFetch()
     const props = properties(availability)
     const view = render(<PromptAssist {...props} />)
+    expandRequirements(view)
     fireEvent.change(view.getByRole('textbox', { name: '修改建议' }), { target: { value: '不能发送' } })
     const write = view.getByRole('button', { name: 'AI 帮写' })
     const revise = view.getByRole('button', { name: '按建议修改' })
@@ -395,6 +485,7 @@ describe('creation prompt assistance', () => {
     const { post } = installFetch()
     const props = properties({ prompt: '', references: [] })
     const view = render(<PromptAssist {...props} />)
+    expandRequirements(view)
     fireEvent.change(view.getByRole('textbox', { name: '修改建议' }), { target: { value: '不能代替主提示词' } })
     expect(view.getByRole('button', { name: 'AI 帮写' })).toHaveProperty('disabled', true)
     expect(view.getByRole('button', { name: '按建议修改' })).toHaveProperty('disabled', true)
@@ -422,7 +513,9 @@ describe('creation prompt assistance', () => {
   it('disables revision until feedback is nonempty', () => {
     const { requests } = installFetch()
     const view = render(<PromptAssist {...properties()} />)
+    expandRequirements(view)
     expect(view.getByRole('button', { name: '按建议修改' })).toHaveProperty('disabled', true)
+    expandRequirements(view)
     fireEvent.change(view.getByRole('textbox', { name: '修改建议' }), { target: { value: '   ' } })
     expect(view.getByRole('button', { name: '按建议修改' })).toHaveProperty('disabled', true)
     expect(requests).not.toHaveBeenCalled()
@@ -434,6 +527,7 @@ describe('creation prompt assistance', () => {
     installFetch(post)
     const props = properties()
     const view = render(<Composer props={props} />)
+    expandRequirements(view)
     fireEvent.change(view.getByRole('textbox', { name: '修改建议' }), { target: { value: '自然光' } })
     fireEvent.click(view.getByRole('button', { name: '按建议修改' }))
     expect((await view.findByRole('alert')).textContent).toBe(zh.error)
@@ -481,7 +575,7 @@ describe('creation prompt assistance', () => {
     ['PROMPT_ASSIST_STORAGE_FAILED', 'storage'], ['PROMPT_ASSIST_RESULT_STORAGE_FAILED', 'resultStorage'],
     ['PROMPT_ASSIST_RESULT_UNKNOWN', 'resultUnknown'], ['PROMPT_ASSIST_INVALID_RESPONSE', 'invalidResponse'],
     ['ACCOUNT_CHANGED', 'accountChanged'], ['INSUFFICIENT_BALANCE', 'balance'],
-    ['INVALID_REQUEST', 'invalid'], ['PROMPT_ASSIST_TIMEOUT', 'error'],
+    ['INVALID_REQUEST', 'invalid'], ['PROMPT_ASSIST_TIMEOUT', 'timeout'],
   ] as const)('localizes %s without exposing the upstream message or replacing the main prompt', async (code, key) => {
     const post = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ ok: false, code, message: 'upstream-secret' }))
     installFetch(post)

@@ -1,7 +1,9 @@
 .root { display: flex; flex-direction: column; min-width: 0; gap: 8px; }
 .toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .trigger { color: var(--dsw-alias-state-business-primary); }
-.hint { color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 20px; }
+.hint { margin: 0; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 20px; }
+.adjust { margin-left: auto; color: var(--dsw-alias-label-secondary); }
+.expanded { transform: rotate(180deg); }
 .feedbackRow { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 8px; }
 .field { display: flex; flex-direction: column; min-width: 0; gap: 4px; }
 .label { color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 20px; font-weight: 400; }
@@ -9,7 +11,7 @@
 .field textarea::placeholder { color: var(--dsw-alias-label-secondary); }
 .field textarea:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary); outline-offset: 2px; }
 .field textarea:disabled { cursor: default; }
-.status { min-height: 20px; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 20px; }
+.status { color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 20px; }
 .status p { margin: 0; overflow-wrap: anywhere; }
 .status .error { color: var(--dsw-alias-state-error-primary); }
 .disclosure { margin: 0; color: var(--dsw-alias-label-secondary); font-size: 11px; line-height: 18px; }

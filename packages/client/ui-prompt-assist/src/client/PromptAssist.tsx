@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
-import { Button, IconLoadingOutlineRegular, IconSparkleRegular } from '@deepseek-ai/dsh-client-ui-primitives'
+import { useEffect, useId, useRef, useState } from 'react'
+import { Button, IconChevronDownOutlineRegular, IconLoadingOutlineRegular, IconSparkleRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { FactoryComponentPropsOf } from '@deepseek-ai/dsh-client-ui-slots'
 import type { PromptAssistKey } from './locales.ts'
 import { AssistFailure, requestPrompt, verifyAccount } from './request.ts'
@@ -11,17 +11,20 @@ interface WritingOperation {
   readonly controller: AbortController
   readonly context: string
   readonly releaseBusy: () => void
+  deadline?: ReturnType<typeof setTimeout>
   sent: boolean
 }
 
 /**
  * Write directly into the owner's editable prompt using its shared image materials.
  * @param props - Current creation context, guarded replacement and operation callbacks.
- * @returns The writing action, revision feedback field and local operation status.
+ * @returns The writing action, optional revision requirements and local operation status.
  */
 export function PromptAssist({ kind, prompt, references, generation, disabled, signedIn, accountIdentity,
   onPromptChange, onBusyChange, sessionId, useProjection, t }: Props) {
   const [feedback, setFeedback] = useState('')
+  const [feedbackExpanded, setFeedbackExpanded] = useState(false)
+  const feedbackId = useId()
   const [phase, setPhase] = useState<'checking' | 'writing' | null>(null)
   const [error, setError] = useState<PromptAssistKey | null>(null)
   const [notice, setNotice] = useState<PromptAssistKey | null>(null)
@@ -41,9 +44,21 @@ export function PromptAssist({ kind, prompt, references, generation, disabled, s
 
   function finish(operation: WritingOperation, updateState = true): void {
     if (active.current !== operation) return
+    clearTimeout(operation.deadline)
     active.current = null
     if (updateState) setPhase(null)
     operation.releaseBusy()
+  }
+
+  function boundWaiting(operation: WritingOperation, writing = false): void {
+    clearTimeout(operation.deadline)
+    // The Host allows at most 120 seconds for writing; account reads have a separate shorter bound.
+    operation.deadline = setTimeout(() => {
+      if (active.current !== operation) return
+      operation.controller.abort()
+      finish(operation)
+      setError(operation.sent ? 'timeout' : 'accountTimeout')
+    }, writing ? 130_000 : 15_000)
   }
 
   useEffect(() => {
@@ -84,6 +99,7 @@ export function PromptAssist({ kind, prompt, references, generation, disabled, s
       releaseBusy: () => { onBusyChange(false) },
     }
     active.current = operation
+    boundWaiting(operation)
     setPhase('checking')
     setError(null)
     setNotice(null)
@@ -93,12 +109,14 @@ export function PromptAssist({ kind, prompt, references, generation, disabled, s
       if (!isCurrent(operation)) return
       operation.sent = true
       setPhase('writing')
+      boundWaiting(operation, true)
       const result = await requestPrompt({
         accountId: accountIdentity, sessionId: sessionId ?? null, expectedSelection, kind, prompt,
         instruction: revise ? feedback : '', references: imageReferences, generation: { ...generation },
       }, operation.controller.signal)
       if (!isCurrent(operation)) return
       setPhase('checking')
+      boundWaiting(operation)
       await verifyAccount(accountIdentity, operation.controller.signal)
       if (!isCurrent(operation)) return
       if (!latest.current.onPromptChange(result, prompt)) { setError('changed'); return }
@@ -122,10 +140,15 @@ export function PromptAssist({ kind, prompt, references, generation, disabled, s
         disabled={!allowed || pending || !canWrite || referenceLimitExceeded}
         onClick={() => { void write(false) }}>{t('title')}</Button>
       {pending && <Button size="sm" onClick={stop}>{t('stop')}</Button>}
-      {hint !== null ? <span className={css.hint}>{t(hint)}</span>
-        : imageReferences.length > 0 && <span className={css.hint}>{t('referenceCount', { count: String(imageReferences.length) })}</span>}
+      {imageReferences.length > 0 && <span className={css.hint}>{t('referenceCount', { count: String(imageReferences.length) })}</span>}
+      <Button size="sm" variant="ghost" className={css.adjust}
+        aria-expanded={feedbackExpanded} aria-controls={feedbackId}
+        onClick={() => { setFeedbackExpanded(!feedbackExpanded) }}>
+        {t('adjust')}<IconChevronDownOutlineRegular size={14} className={feedbackExpanded ? css.expanded : undefined} />
+      </Button>
     </div>
-    <div className={css.feedbackRow}>
+    {hint !== null && <p className={css.hint}>{t(hint)}</p>}
+    {feedbackExpanded && <div id={feedbackId} className={css.feedbackRow}>
       <label className={css.field}>
         <span className={css.label}>{t('feedback')}</span>
         <textarea rows={1} maxLength={2000} value={feedback} placeholder={t('feedbackPlaceholder')}
@@ -133,12 +156,12 @@ export function PromptAssist({ kind, prompt, references, generation, disabled, s
       </label>
       <Button size="sm" variant="outline" disabled={!allowed || pending || !prompt.trim() || !feedback.trim() || referenceLimitExceeded}
         onClick={() => { void write(true) }}>{t('revise')}</Button>
-    </div>
-    <div className={css.status} aria-live="polite">
+    </div>}
+    {(error !== null || pending || notice !== null) && <div className={css.status} aria-live="polite">
       {error ? <p role="alert" className={css.error}>{t(error)}</p>
         : pending ? <p role="status">{t(phase === 'checking' ? 'checkingAccount' : 'working')}</p>
           : notice ? <p role="status">{t(notice)}</p> : null}
-    </div>
+    </div>}
     <p className={css.disclosure}>{t('requestHint')}</p>
   </div>
 }
