@@ -82,6 +82,7 @@ export class PluginPackages extends Service {
    * Retained profile mappings may change their declarer, but not their normalized directory, version, or scope;
    * installation mappings must remain unchanged. Publication does not unload modules or clear Node caches.
    * @param successor - fully constructed generation accepted by {@link RuntimeInterception.replace}.
+   * @throws ProfileResolutionRestartRequiredError before publication when existing Node resolutions cannot change safely.
    */
   replace(successor: RuntimeResolution): void {
     if (this.interception === undefined) throw new Error('plugin-packages: runtime resolution is not installed')

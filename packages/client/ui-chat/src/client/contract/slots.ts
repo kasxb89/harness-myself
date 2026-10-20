@@ -62,7 +62,7 @@ export interface AssistantActionOwnerProps {
 }
 
 /** Stable quota codes; only product account exhaustion raises the frame-wide notice. */
-export type QuotaNoticeCode = 'QUOTA' | 'ACCOUNT_QUOTA'
+export type QuotaNoticeCode = 'QUOTA' | 'ACCOUNT_QUOTA' | 'INSUFFICIENT_BALANCE'
 
 /** The notice on display; `seq` keys remounts so an unretained later notice restarts its transient display. */
 export interface QuotaNoticeState {

@@ -80,7 +80,13 @@ function installOtherBundle(dir: string, shared = false): void {
   writeFileSync(join(dir, 'package.json'), JSON.stringify(manifest))
 }
 
-async function fixture(options: { live?: boolean; installed?: boolean; enabled?: boolean; shared?: boolean } = {}) {
+async function fixture(options: {
+  live?: boolean
+  installed?: boolean
+  enabled?: boolean
+  shared?: boolean
+  sharedDependency?: boolean
+} = {}) {
   const home = realpathSync.native(mkdtempSync(join(tmpdir(), 'manager-package-reload-')))
   let owner: Context | undefined
   onTestFinished(async () => {
@@ -95,19 +101,23 @@ async function fixture(options: { live?: boolean; installed?: boolean; enabled?:
   const core = join(dir, 'node_modules', 'core')
   mkdirSync(core, { recursive: true })
   writeFileSync(join(core, 'package.json'), JSON.stringify({
-    name: 'core', version: '1.0.0', dsh: { bundle: { patch: './cordis.patch.yml' } },
+    name: 'core', version: '1.0.0', dependencies: options.sharedDependency === true ? { 'shared-ui': '^1.0.0' } : {},
+    dsh: { bundle: { patch: './cordis.patch.yml' } },
   }))
   writeFileSync(join(core, 'cordis.patch.yml'), JSON.stringify([{ insert: [
     { id: 'manager', name: 'cordis:manager' },
     { id: 'sibling', name: './sibling.mjs' },
   ] }]))
   writeFileSync(join(core, 'sibling.mjs'), `
+${options.sharedDependency === true ? "import { version } from 'shared-ui';" : ''}
 export function apply(ctx) {
   ctx.get('packageReloadTrace').push('start:sibling');
   ctx.provide('packageReloadSibling', {});
+  ${options.sharedDependency === true ? "ctx.provide('packageReloadSharedVersion', version);" : ''}
   ctx.effect(() => () => { ctx.get('packageReloadTrace').push('stop:sibling'); });
 }
 `)
+  if (options.sharedDependency === true) writeSharedDependency(dir, '1.0.0')
   const manifest = readProfileManifest('test', dir)
   manifest.dependencies = {}
   writeFileSync(join(dir, 'package.json'), JSON.stringify(manifest))
@@ -171,6 +181,40 @@ function mockPnpm(dir: string, trace: string[], run: (args: readonly string[]) =
   onTestFinished(() => { pnpm.mockRestore() })
   return pnpm
 }
+
+/** A hoisted shared dependency whose version changes when a new bundle is installed. */
+function writeSharedDependency(dir: string, version: string): void {
+  const target = join(dir, 'node_modules', 'shared-ui')
+  mkdirSync(target, { recursive: true })
+  writeFileSync(join(target, 'package.json'), JSON.stringify({ name: 'shared-ui', version, type: 'module', exports: './index.mjs' }))
+  writeFileSync(join(target, 'index.mjs'), `export const version = ${JSON.stringify(version)};\n`)
+}
+
+it.each([true, false])('retains a successful new installation that needs shared-dependency replacement until restart (enabled=%s)', async (enabled) => {
+  const { ctx, dir, trace, published, manager, parentURL, evaluationPath, entry } = await fixture({ sharedDependency: true })
+  const sibling: unknown = ctx.get('packageReloadSibling')
+  expect(ctx.get('packageReloadSharedVersion')).toBe('1.0.0')
+  mockPnpm(dir, trace, () => { installFiles(dir, 1); writeSharedDependency(dir, '1.1.0') })
+
+  const result = await manager.installBundle('addon', { enabled })
+
+  expect(result).toMatchObject({ application: 'restart-required', changed: true, bundle: 'addon', version: '1.0.0', packageResult: { exitCode: 0 } })
+  expect(result.error).toBeUndefined()
+  expect(published).toHaveBeenCalledOnce()
+  expect(trace).toEqual(['start:sibling', 'pnpm:add', 'publish'])
+  expect(ctx.get('packageReloadSibling')).toBe(sibling)
+  expect(ctx.get('packageReloadSharedVersion')).toBe('1.0.0')
+  expect(entry()).toBeUndefined()
+  expect(existsSync(evaluationPath)).toBe(false)
+  expect(ctx.pluginPackages.packageOf('addon-plugin', parentURL)).toBeUndefined()
+  expect((await manager.listBundles()).find(bundle => bundle.name === 'addon')).toMatchObject({ installed: true, enabled })
+  const saved = readProfileManifest('test', dir)
+  expect(saved.dependencies).toEqual({ addon: '1.0.0' })
+  expect(saved.dsh?.profile?.bundles).toEqual(enabled ? ['core', 'addon'] : ['core'])
+  const next = await createRuntimeResolution({ installAnchor: ctx.profileContext.installAnchor,
+    profile: loadProfileDirectory('test', dir, ctx.profileContext.installAnchor), home: ctx.profileContext.home })
+  expect(next.entries.find(item => item.name === 'shared-ui')?.version).toBe('1.1.0')
+})
 
 it('publishes a newly installed enabled bundle before its private bare plugin starts', async () => {
   const { ctx, dir, trace, published, manager, parentURL, evaluationPath, entry } = await fixture()
@@ -408,6 +452,16 @@ it.each(['install', 'remove'] as const)('keeps successful %s disk changes when r
   expect(existsSync(join(dir, 'node_modules', 'addon'))).toBe(operation === 'install')
   expect(ctx.pluginPackages.packageOf('addon-plugin', parentURL)).toBe(previous)
   expect(entry()).toBeUndefined()
+})
+
+it('does not classify matching diagnostic text as a typed restart requirement', async () => {
+  const { dir, trace, published, manager } = await fixture()
+  mockPnpm(dir, trace, () => { installFiles(dir, 1) })
+  const diagnostic = 'profile resolution: replacing "shared-ui" requires a process restart'
+  published.mockImplementation(() => { throw new Error(diagnostic) })
+  expect(await manager.installBundle('addon')).toMatchObject({
+    application: 'failed', changed: true, error: { code: 'operation-error', diagnostic }, packageResult: { exitCode: 0 },
+  })
 })
 
 it('publishes nothing after installation is cancelled', async () => {

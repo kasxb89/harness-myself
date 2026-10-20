@@ -11,6 +11,8 @@ kind: "package-reference"
 
 `@deepseek-ai/dsh-client-ui-prompt-assist` 的参考文档。该包为图片和视频创作主提示词旁提供共享的帮写与修改操作。会话可选作用域的 `creation.prompt.assist` 工厂在每个渲染位置独立管理修改建议与操作状态。[Slots 参考](../../../docs/subsystems/slots.zh.md)定义工厂的组合方式。
 
+网关明确拒绝用户余额时，界面显示本地化充值提示，原稿和修改意见保留。上游渠道欠费和帮写结果未知继续使用既有安全错误类别；客户端不根据供应商错误文字推断用户欠费，也不自动重发付费帮写请求。
+
 ## 目录
 
 - [使用此包](#use-this-package)

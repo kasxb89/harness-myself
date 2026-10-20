@@ -33,6 +33,23 @@ export type AgentPresetSettingsKey =
   | 'createPluginChecking'
   | 'createPluginUnavailable'
   | 'createPluginMissing'
+  | 'employeesTitle'
+  | 'employeesIntro'
+  | 'employeesCapabilities'
+  | 'employeesSearch'
+  | 'employeesList'
+  | 'employeesLoading'
+  | 'employeesLoadFailed'
+  | 'employeesRetry'
+  | 'employeesStart'
+  | 'employeesStartNamed'
+  | 'employeesEmpty'
+  | 'employeesEmptyHint'
+  | 'employeesNoResults'
+  | 'employeesNoResultsHint'
+  | 'employeesBuiltIn'
+  | 'employeesMine'
+  | 'employeesCustomize'
 
 /** English copy. */
 export const en: Record<AgentPresetSettingsKey, string> = {
@@ -77,6 +94,24 @@ export const en: Record<AgentPresetSettingsKey, string> = {
   createPluginUnavailable: 'Temporarily unavailable. Reopen this menu to retry',
   createPluginMissing: 'Creator mode is not included in this configuration',
 
+  employeesTitle: 'Digital employees',
+  employeesIntro: 'Choose a role and start a conversation about your task.',
+  employeesCapabilities: 'Use your current workspace model and account credits. Image and video tasks use Yunshu’s existing creation tools.',
+  employeesSearch: 'Search employee names or responsibilities',
+  employeesList: 'Available employees',
+  employeesLoading: 'Loading employees',
+  employeesLoadFailed: 'Employees could not be loaded. Please try again shortly.',
+  employeesRetry: 'Retry',
+  employeesStart: 'Start conversation',
+  employeesStartNamed: 'Start conversation with {name}',
+  employeesEmpty: 'No employees available',
+  employeesEmptyHint: 'This configuration does not include any available employee roles.',
+  employeesNoResults: 'No matching employees',
+  employeesNoResultsHint: 'Try another name or responsibility.',
+  employeesBuiltIn: 'Built-in roles',
+  employeesMine: 'My employees',
+  employeesCustomize: 'Customize employee',
+
 }
 
 /** Simplified Chinese copy. */
@@ -117,6 +152,24 @@ export const zh: Record<AgentPresetSettingsKey, string> = {
   createPluginChecking: '正在确认创造模式是否可用',
   createPluginUnavailable: '暂时不可用，请重新打开菜单重试',
   createPluginMissing: '当前配置未提供创造模式',
+
+  employeesTitle: '数字员工',
+  employeesIntro: '选择适合的岗位，开始对话并交代你的任务',
+  employeesCapabilities: '沿用当前工作区的模型和账户积分，图片、视频任务使用云枢现有创作工具',
+  employeesSearch: '搜索员工名称或职责',
+  employeesList: '可用员工',
+  employeesLoading: '正在加载员工',
+  employeesLoadFailed: '暂时无法读取员工，请稍后重试',
+  employeesRetry: '重试',
+  employeesStart: '开始对话',
+  employeesStartNamed: '与{name}开始对话',
+  employeesEmpty: '暂无可用员工',
+  employeesEmptyHint: '当前配置还没有可用的员工岗位',
+  employeesNoResults: '没有找到相关员工',
+  employeesNoResultsHint: '试试其他岗位名称或工作内容',
+  employeesBuiltIn: '内置岗位',
+  employeesMine: '我的员工',
+  employeesCustomize: '自定义员工',
 
 }
 

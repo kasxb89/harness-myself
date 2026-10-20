@@ -17,6 +17,7 @@ import type { SubprocessHandle } from '@deepseek-ai/dsh-subprocess'
 import { expect, it, vi } from 'vitest'
 import { createVideoEditor } from '../src/video-edit.ts'
 import type { VideoEditorOptions } from '../src/video-edit.ts'
+import { Config } from '../src/index.ts'
 
 async function fixture(mode: SandboxMode, finish: (callback: () => Promise<void>) => void, runtimeRoot = '/missing-video-runtime') {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-video-edit-'))
@@ -33,9 +34,22 @@ async function fixture(mode: SandboxMode, finish: (callback: () => Promise<void>
   fibers.push(await ctx.plugin(LocalFileSystem, { cwd: workspace }))
   fibers.push(await ctx.plugin(LocalSubprocessRuntime))
   const options: VideoEditorOptions = { session: Session.create(SessionId('video-edit-fixture')), workspaceRoot: workspace,
-    runtimeRoot, width: 320, height: 180, fps: 10, timeoutMs: 60_000 }
+    runtimeRoot, width: 320, height: 180, fps: 10, timeoutMs: 60_000, singlePassMaxInputs: 3 }
   return { directory, workspace, ctx, options, editor: createVideoEditor(ctx, options) }
 }
+
+it('validates the configured single-pass input bound before acquiring media services', async ({ onTestFinished }) => {
+  expect(Config({}).videoEditSinglePassMaxInputs).toBe(3)
+  const ctx = new Context()
+  onTestFinished(async () => { await ctx.fiber.dispose() })
+  for (const limit of [0, 33, 1.5, Number.NaN]) {
+    expect(() => Config({ videoEditSinglePassMaxInputs: limit })).toThrow()
+    expect(() => createVideoEditor(ctx, {
+      session: Session.create(SessionId('invalid-edit-config')), workspaceRoot: '/unused-fixture',
+      fps: 30, timeoutMs: 1000, singlePassMaxInputs: limit,
+    })).toThrow(expect.objectContaining({ code: 'VIDEO_EDIT_INVALID_INPUT' }))
+  }
+})
 
 it('refuses read-only workspaces before resolving or launching media executables', async ({ onTestFinished }) => {
   const { ctx, editor } = await fixture('read-only', onTestFinished)
@@ -140,6 +154,76 @@ it.skipIf(!native)('normalizes real clips with and without audio, trims and publ
   expect(await readdir(join(workspace, 'artifacts'))).toEqual(['final.mp4'])
   await expect(editor.compose({ clips: [{ path: first }], outputPath: output, signal: new AbortController().signal }))
     .rejects.toMatchObject({ code: 'VIDEO_EDIT_INVALID_INPUT' })
+}, 60_000)
+
+it.skipIf(!native)('encodes 45 seconds once while preserving 24-to-30fps cuts and audio', async ({ onTestFinished }) => {
+  const { workspace, ctx, options } = await fixture('danger-full-access', onTestFinished, binaryRoot)
+  const editor = createVideoEditor(ctx, { ...options, fps: 30 })
+  const binary = join(binaryRoot!, 'bin', process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg')
+  const clips = [
+    { color: 'red', frequency: 440 }, { color: 'green', frequency: 660 }, { color: 'blue', frequency: 880 },
+  ].map((value, index) => ({ ...value, path: join(workspace, `source-${String(index)}.mp4`) }))
+  for (const clip of clips) {
+    execFileSync(binary, ['-v', 'error', '-f', 'lavfi', '-i', `color=c=${clip.color}:s=160x120:r=24:d=15.083333`,
+      '-f', 'lavfi', '-i', `sine=frequency=${String(clip.frequency)}:sample_rate=32000:duration=15.083333`,
+      '-vf', 'noise=alls=10:allf=t+u:all_seed=17',
+      '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', clip.path], { timeout: 30_000 })
+  }
+  let editingEncodes = 0
+  const originalSpawn = ctx.subprocess.spawn.bind(ctx.subprocess)
+  vi.spyOn(ctx.subprocess, 'spawn').mockImplementation((spec) => {
+    if (spec.argv.includes('-filter_complex') && spec.argv.includes('libx264')) editingEncodes += 1
+    return originalSpawn(spec)
+  })
+  const output = join(workspace, 'artifacts', 'forty-five.mp4')
+  const result = await editor.compose({ clips: clips.map(clip => ({ path: clip.path })), outputPath: output,
+    totalDurationSeconds: 45, signal: new AbortController().signal })
+  expect(result.durationSeconds).toBeCloseTo(45, 1)
+  expect(editingEncodes).toBe(1)
+  const probe = join(binaryRoot!, 'bin', process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe')
+  const metadata: unknown = JSON.parse(execFileSync(probe, ['-v', 'error', '-count_frames', '-show_entries',
+    'stream=codec_type,width,height,avg_frame_rate,nb_read_frames,sample_rate,channels', '-of', 'json', output], { encoding: 'utf8' }))
+  expect(metadata).toMatchObject({ streams: [
+    { codec_type: 'video', width: 320, height: 180, avg_frame_rate: '30/1', nb_read_frames: '1350' },
+    { codec_type: 'audio', sample_rate: '48000', channels: 2 },
+  ] })
+  for (const [time, channel] of [[14.9, 0], [15.2, 1], [29.9, 1], [30.3, 2], [44.9, 2]]) {
+    const pixel = execFileSync(binary, ['-v', 'error', '-ss', String(time), '-i', output,
+      '-frames:v', '1', '-vf', 'format=rgb24,crop=1:1:iw/2:ih/2', '-f', 'rawvideo', 'pipe:1'])
+    expect(pixel[channel!]).toBeGreaterThan(90)
+    expect(pixel[channel!]).toBeGreaterThan(Math.max(...[...pixel].filter((_value, index) => index !== channel)) * 2)
+  }
+  for (const [time, frequency] of [[14.8, 440], [15.15, 660], [29.8, 660], [30.25, 880], [44.8, 880]]) {
+    const pcm = execFileSync(binary, ['-v', 'error', '-ss', String(time), '-i', output,
+      '-t', '0.1', '-map', '0:a:0', '-ac', '1', '-ar', '48000', '-f', 'f32le', 'pipe:1'])
+    const samples = Array.from({ length: pcm.length / 4 }, (_, index) => pcm.readFloatLE(index * 4))
+    const rms = Math.sqrt(samples.reduce((sum, value) => sum + value * value, 0) / samples.length)
+    const crossings = samples.filter((value, index) => index > 0 && value >= 0 && samples[index - 1]! < 0).length
+    expect(rms).toBeGreaterThan(0.02)
+    expect(Math.abs(crossings * 10 - frequency!)).toBeLessThanOrEqual(20)
+  }
+  expect(await readdir(join(workspace, 'artifacts'))).toEqual(['forty-five.mp4'])
+}, 60_000)
+
+it.skipIf(!native)('keeps serial normalization when four clips exceed the configured decoder bound', async ({ onTestFinished }) => {
+  const { workspace, ctx, editor } = await fixture('danger-full-access', onTestFinished, binaryRoot)
+  const binary = join(binaryRoot!, 'bin', process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg')
+  const source = join(workspace, 'source.mp4')
+  execFileSync(binary, ['-v', 'error', '-f', 'lavfi', '-i', 'color=c=red:s=160x120:r=10:d=0.4',
+    '-f', 'lavfi', '-i', 'sine=frequency=440:duration=0.4', '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+    '-c:a', 'aac', '-shortest', source], { timeout: 30_000 })
+  let editingEncodes = 0
+  const originalSpawn = ctx.subprocess.spawn.bind(ctx.subprocess)
+  vi.spyOn(ctx.subprocess, 'spawn').mockImplementation((spec) => {
+    if (spec.argv.includes('-filter_complex') && spec.argv.includes('libx264')) editingEncodes += 1
+    return originalSpawn(spec)
+  })
+  const output = join(workspace, 'artifacts', 'four-clips.mp4')
+  const result = await editor.compose({ clips: Array.from({ length: 4 }, () => ({ path: source, endSeconds: 0.3 })),
+    outputPath: output, totalDurationSeconds: 1.2, signal: new AbortController().signal })
+  expect(result.durationSeconds).toBeCloseTo(1.2, 1)
+  expect(editingEncodes).toBe(5)
+  expect(await readdir(join(workspace, 'artifacts'))).toEqual(['four-clips.mp4'])
 }, 60_000)
 
 it.skipIf(!native)('cancels a real encoding and waits for its process range before deleting temporary files', async ({ onTestFinished }) => {

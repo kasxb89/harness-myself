@@ -37,6 +37,8 @@ kind: "package-reference"
 
 进入创造模式会为接收该选择的空白 Session 选择 `cordis`，不改变新任务默认值或代码工作工具设置。尚未绑定工作区或空白 Session 时，选择等待绑定完成后应用。应用后，创造 Session 保留该预设；之后真正创建的新 Session 使用配置的默认值，例如标准模式。
 
+侧边栏的**数字员工**页面将同一份 Host 列表中的行业岗位与用户自建预设分组展示，支持按名称和职责搜索。对内置标识的具名覆盖仍会显示。已安装的 custom-mode 编辑器注册设置分区后，**自定义员工**打开该编辑器，不创建或复制预设。长描述不会撑开卡片。列表刷新失败时保留已有卡片并提供重试，空列表显示空态。**开始对话**以选定员工打开普通聊天草稿，保留未发送草稿、工作区模型和账户，不发送消息、不修改默认值，也不切换正在运行的 Session。会话中的预设选择器也提供这些员工。图片和视频任务使用产品现有的创作工具。
+
 <a id="understand-the-implementation"></a>
 ## 理解实现
 
@@ -46,6 +48,8 @@ kind: "package-reference"
 `agentPresets/list` 提供列表并标记当前默认值，`agentPresets/read` 为查看器提供一条声明的 YAML；默认值的修改写入 `agent-preset-registry` settings 命名空间。选择器、空白会话同步和只读会话标签使用记录的 preset 标识。连接重置和设置更新会刷新列表。
 
 `CreatePluginMenuItem` 使用共享的预设列表 store，向 `plugins.add.actions` 贡献菜单项。选择时先调用页面传入的 `onDismiss()`，再调用与设置页 `creatorDraft` 相同的 `startCreatorDraft` 回调。该回调通过 `AgentPresetSeatController` 暂存 `cordis`，再通过显式保留草稿的 `uiWorkspace.startSession` 调用打开任务；它可以复用空白 Session，并在 Session 绑定可用时应用暂存选择。暂存选择应用后即清除。代码工作工具开启或关闭时均使用同一个选择器和选择 store，`AgentPresetSeat` 通过共享的 `Toast` 组件显示拒绝原因。
+
+`EmployeePage` 读取同一个 `AgentPresetSettingsController` 快照，排除无名称的内置预设，将 `employee-` 标识归入内置岗位，其余自建预设归入我的员工。编辑器操作观察 `settings.section` 账本，仅对已安装的 `custom-system-prompt` 分区发出具备类型约束的 `ui-settings/open-section` 事件。本地事件 `ui-settings/closed` 触发现有刷新流程，重读已挂载的页面、预设设置分区和会话选择器，使编辑器的新增、改名与删除立即显示，无需页面跳转或轮询。其 `main` 与 `sidebar.panellist` 注册由会话流程的生命周期管理。员工和创造入口共用暂存选择、工作区导航及空白会话应用流程；页面只持有自身的搜索内容。
 
 </details>
 

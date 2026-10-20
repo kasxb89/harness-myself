@@ -53,6 +53,8 @@ The signed-in conversation composer has a lightweight Workspace examples entry. 
 
 Choosing an example inserts plain text at the captured selection's end, preserves existing text, reference chips and attachments, and never submits or starts a billable operation. A newer draft revision or busy composer refuses insertion and shows a notice; reopening the examples captures a fresh insertion position.
 
+For a newly reported `INSUFFICIENT_BALANCE` chat failure, this package claims the existing quota-notice slot and shows a localized balance warning with a Top up action leading to the same recharge panel. Changing or signing out of the observed account dismisses the notice. The separate DeepSeek `ACCOUNT_QUOTA` notice retains its original owner; channel and provider quota errors cannot open this product recharge warning.
+
 <a id="understand-the-implementation"></a>
 ## Understand the implementation
 

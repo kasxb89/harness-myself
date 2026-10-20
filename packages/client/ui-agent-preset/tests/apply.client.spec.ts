@@ -26,6 +26,7 @@ import { CreatePluginMenuItem, type CreatePluginMenuItemInjected } from '../src/
 import { AgentPresetSectionController } from '../src/client/section-store.ts'
 import { apply as hostApply } from '../src/index.ts'
 import type { AgentPresetRow } from '@deepseek-ai/dsh-agent-preset-registry/types'
+import { EmployeePage, EmployeePanelIcon, type EmployeePageInjected } from '../src/client/EmployeePage.tsx'
 
 // These specs assert the shipped Chinese copy. The lane has no jsdom `window`,
 // so browser-language detection never runs and a fresh LocaleRuntime opens on
@@ -80,6 +81,7 @@ async function bench(options: {
   let ROSTER: { ok: true; value: { presets: AgentPresetRow[] } } = options.presets === undefined
     ? ROSTER_ONE : { ok: true, value: { presets: options.presets } }
   const moveDefault = (): void => { ROSTER = ROSTER_MOVED }
+  const setPresets = (presets: AgentPresetRow[]): void => { ROSTER = { ok: true, value: { presets } } }
   await ctx.plugin(SlotRegistry).await()
   const locale = new LocaleRuntime(ctx)
   locale.setLocale('zh')
@@ -185,7 +187,7 @@ async function bench(options: {
     await vi.waitFor(() => { expect(ctx.configForms.developerTools.enabled.getSnapshot()).toBe(enabled) })
   }
   return {
-    ctx, slots: ctx.get('slots') as SlotRegistry, calls, moveDefault, remote,
+    ctx, slots: ctx.get('slots') as SlotRegistry, calls, moveDefault, setPresets, remote,
     settingsRosterStarted: settingsRosterStarted.promise, setDeveloperTools,
   }
 }
@@ -197,6 +199,8 @@ function declareRoot(slots: SlotRegistry): () => void {
       'settings.general.item': { kind: 'list', scope: 'root' },
       'settings.section': { kind: 'list', scope: 'root' },
       conversation: { kind: 'single', scope: 'root' },
+      main: { kind: 'keyed', scope: 'root' },
+      'sidebar.panellist': { kind: 'list', scope: 'root' },
     },
   } as never, () => null)
 }
@@ -299,6 +303,137 @@ async function settingsWithoutChip(initialPreset: string, settingsRosterGate?: P
 }
 
 describe('ui-agent-preset apply', () => {
+  it('refreshes mounted employee, section and session rosters after editor create, rename and delete on settings close', async () => {
+    const b = await bench()
+    try {
+      declareRoot(b.slots)
+      declareConversation(b.slots)
+      b.ctx.provide('conversation', {} as never)
+      b.ctx.provide('sessions', sessionsDouble(b.ctx, {
+        current: 'blank', byId: { blank: { id: 'blank', blank: true, projectionValues: { agentPreset: 'standard' } } },
+      }) as never)
+      b.ctx.provide('uiWorkspace', uiWorkspaceDouble() as never)
+      const feature = b.ctx.plugin({ inject: [...inject, 'conversation', 'sessions', 'uiWorkspace'], apply })
+      await feature.await()
+      const entry = b.slots.entries('main')[0]!
+      const employee: Partial<EmployeePageInjected> | undefined = entry.inject?.()
+      const settings: Partial<AgentPresetSectionInjected> | undefined = b.slots.entries('settings.section')[0]!.inject?.()
+      const injectSeat = b.slots.entries('conversation.hero.agentPreset')[0]!.inject as
+        ((sessionId: SessionId | undefined) => Partial<AgentPresetSeatInjected>) | undefined
+      const bound = injectSeat?.(SessionId('blank'))
+      const unbound = injectSeat?.(undefined)
+      if (employee?.load === undefined || employee.hooks === undefined || settings?.load === undefined || settings.hooks === undefined) {
+        throw new Error('Expected the mounted roster surfaces')
+      }
+      if (bound?.load === undefined || bound.hooks === undefined || unbound?.load === undefined || unbound.hooks === undefined) {
+        throw new Error('Expected the session roster surfaces')
+      }
+      const boundHooks = bound.hooks
+      const unboundHooks = unbound.hooks
+      await Promise.all([employee.load(), settings.load(), bound.load(), unbound.load()])
+      expect(employee.hooks.agentPresets.getSnapshot().options).toEqual([{ id: 'standard' }])
+      const transitions: AgentPresetRow[][] = [
+        [{ id: 'standard', isDefault: true }, { id: 'custom-2', name: '测试客服员工', isDefault: false }],
+        [{ id: 'standard', isDefault: true }, { id: 'custom-2', name: '改名后的客服', isDefault: false }],
+        [{ id: 'standard', isDefault: true }],
+      ]
+      for (const presets of transitions) {
+        b.setPresets(presets)
+        b.ctx.emit('ui-settings/closed')
+        const options = presets.map(({ isDefault: _isDefault, ...option }) => option)
+        await vi.waitFor(() => {
+          expect(employee.hooks?.agentPresets.getSnapshot().options).toEqual(options)
+          expect(settings.hooks?.agentPresetSection.getSnapshot().rows).toEqual(presets)
+          expect(boundHooks.agentPresetSeat.getSnapshot().options).toEqual(options)
+          expect(unboundHooks.agentPresetSeat.getSnapshot().options).toEqual(options)
+        })
+        expect(b.slots.entries('main')[0]).toBe(entry)
+      }
+      expect(b.calls.filter(call => call.startsWith('select:') || call.startsWith('settings:'))).toEqual([])
+      await feature.dispose()
+      const reads = b.calls.filter(call => call === 'list').length
+      b.ctx.emit('ui-settings/closed')
+      await Promise.resolve()
+      expect(b.calls.filter(call => call === 'list')).toHaveLength(reads)
+    } finally { await b.ctx.fiber.dispose() }
+  })
+
+  it.each([
+    { enabled: false, id: 'employee-video-director' },
+    { enabled: true, id: 'employee-video-director' },
+    { enabled: false, id: 'my-studio' },
+    { enabled: true, id: 'custom-2' },
+  ])('opens $id in a blank session with Coding Tools $enabled and unregisters both entries', async ({ enabled, id }) => {
+    const b = await bench({ developerToolsEnabled: enabled, presets: [
+      { id: 'standard', isDefault: true },
+      { id, name: '短视频编导', description: '中文分镜与视频创作', isDefault: false },
+    ] })
+    try {
+      declareRoot(b.slots)
+      declareConversation(b.slots)
+      b.ctx.provide('conversation', {} as never)
+      const state = { current: 'running', byId: {
+        running: { id: 'running', blank: false, projectionValues: { agentPreset: 'standard' } },
+        blank: { id: 'blank', blank: true, projectionValues: { agentPreset: 'standard' } },
+      } }
+      const sessions = sessionsDouble(b.ctx, state)
+      b.ctx.provide('sessions', sessions as never)
+      const starts: unknown[] = []
+      b.ctx.provide('uiWorkspace', { startSession: (workspaceId: unknown, options: unknown) => {
+        starts.push({ workspaceId, options })
+        state.current = 'blank'
+      } } as never)
+      const feature = b.ctx.plugin({ inject: [...inject, 'conversation', 'sessions', 'uiWorkspace'], apply })
+      await feature.await()
+
+      const main = b.slots.entries('main')[0]!
+      const sidebar = b.slots.entries('sidebar.panellist')[0]!
+      expect(main.component).toBe(EmployeePage)
+      expect(main.options).toMatchObject({ key: 'employees' })
+      expect(sidebar.component).toBe(EmployeePanelIcon)
+      expect(sidebar.options).toMatchObject({ id: 'employees', order: 15 })
+      expect(resolveSlotLabel(sidebar.options.label)).toBe('数字员工')
+      const actions: Partial<EmployeePageInjected> | undefined = main.inject?.()
+      if (actions?.hooks === undefined || actions.load === undefined
+        || actions.startEmployeeDraft === undefined || actions.openCustomEmployee === undefined) {
+        throw new Error('Expected employee page actions from the native apply')
+      }
+      await actions.load()
+      expect(actions.hooks.agentPresets.getSnapshot().options.map(row => row.id))
+        .toEqual(['standard', id])
+      const openedSections: string[] = []
+      b.ctx.on('ui-settings/open-section', (sectionId) => { openedSections.push(sectionId) })
+      expect(actions.hooks.customEmployeeAvailable.getSnapshot()).toBe(false)
+      actions.openCustomEmployee()
+      expect(openedSections).toEqual([])
+      const removeEditor = b.slots.register({ name: 'settings.section', id: 'custom-system-prompt' }, () => null)
+      expect(actions.hooks.customEmployeeAvailable.getSnapshot()).toBe(true)
+      actions.openCustomEmployee()
+      expect(openedSections).toEqual(['custom-system-prompt'])
+      expect(starts).toEqual([])
+      expect(b.calls.filter(call => call.startsWith('select:'))).toEqual([])
+      removeEditor()
+      expect(actions.hooks.customEmployeeAvailable.getSnapshot()).toBe(false)
+      actions.openCustomEmployee()
+      expect(openedSections).toEqual(['custom-system-prompt'])
+      actions.startEmployeeDraft(id)
+      expect(starts).toEqual([{ workspaceId: undefined, options: { clearPreviousDraft: false } }])
+      const injectSeat = b.slots.entries('conversation.hero.agentPreset')[0]!.inject as
+        ((sessionId: SessionId | undefined) => Partial<AgentPresetSeatInjected>) | undefined
+      const seat: Partial<AgentPresetSeatInjected> | undefined = injectSeat?.(SessionId('blank'))
+      if (seat?.load === undefined || seat.hooks === undefined) throw new Error('Expected the receiving blank-session seat')
+      await seat.load()
+      await vi.waitFor(() => { expect(b.calls.filter(call => call.startsWith('select:'))).toEqual([`select:${id}`]) })
+      expect(seat.hooks.agentPresetSeat.getSnapshot().current).toBe(id)
+      expect(state.byId.running.projectionValues.agentPreset).toBe('standard')
+      expect(b.calls.filter(call => call.startsWith('settings:'))).toEqual([])
+      expect(b.ctx.configForms.developerTools.enabled.getSnapshot()).toBe(enabled)
+      await feature.dispose()
+      expect(b.slots.entries('main')).toHaveLength(0)
+      expect(b.slots.entries('sidebar.panellist')).toHaveLength(0)
+    } finally { await b.ctx.fiber.dispose() }
+  })
+
   const settingsActions = [
     { action: 'makeDefault', initial: 'standard', selected: 'minimal', run: (section: AgentPresetSectionInjected) => section.makeDefault('minimal') },
   ]

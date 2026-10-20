@@ -1,0 +1,247 @@
+[
+  {
+    "name": "generate_video_project",
+    "description": "Create a finished video longer than one model clip from a natural-language brief. Use the yunshu-video-director skill for story, character/reference continuity, dialogue and subtitles, then call this native workflow; do not write polling, download or assembly scripts. For requests such as a 40-second video, plan the fewest supported clips (for a 15-second limit: 15+15+10, or three 15-second clips trimmed to 40), generate them in order using the signed-in account, then automatically normalize, trim, and join them locally. All local tools and every request are checked before billing. Returns a background job_id and durable project_id; read job_output for progress and call present on the completed final_path. Never claim completion before the job reports a saved final_path. Already submitted provider tasks may continue billing after local cancellation. If a current user-supplied chat attachment is outside the workspace, first copy that read-authorized attachment into this workspace with the existing file tools, then pass the copied path; do not copy unrelated files.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "plan_id": {
+          "type": "string",
+          "description": "Explicit update_creation_plan id. Also supply shot_ids in generation order."
+        },
+        "shot_ids": {
+          "type": "array",
+          "description": "Exact shot ids belonging to plan_id, one per actual supported model clip and in the saved timeline order.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "prompt": {
+          "type": "string",
+          "description": "The complete video brief, visual continuity, story, and desired editing. Before calling, script user-delegated narrative or dialogue scenes with stable character ids, language and brief exact lines, identifying on-screen speakers versus narration; preserve user-supplied wording. Assign each line and its timing to a shot in shot_prompts. Do not reduce a story requiring voices to a music montage. Respect silent/no-dialogue requests and do not add dialogue or subtitles to unrelated nonverbal videos. Include requested lip-sync and subtitle requirements. These request native model generation, not separate speech, lip-sync or subtitle processing; verify the rendered result before claiming they are met."
+        },
+        "total_duration_seconds": {
+          "type": "number",
+          "description": "Desired final length in whole seconds; this may exceed the model single-clip limit."
+        },
+        "shot_prompts": {
+          "type": "array",
+          "description": "Exact shot briefs, one per planned clip. With plan_id and shot_ids, omit to use each saved shot’s scene, camera, action, prompt, exact dialogue/subtitles and associated character definitions without another model call. Explicit values remain verbatim. Otherwise allocate delegated narrative lines and timing to stable speakers, distinguishing on-screen speech from narration. Respect silent/no-dialogue requests.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "shot_durations_seconds": {
+          "type": "array",
+          "description": "Exact model-supported whole seconds per clip, in shot_ids or shot_prompts order. Their sum must equal total_duration_seconds. When omitted for an explicit creation plan, use its saved shot durations; do not silently change timeline timing.",
+          "items": {
+            "type": "number"
+          }
+        },
+        "model": {
+          "type": "string",
+          "description": "Only specify a model when requested; otherwise use an available account model."
+        },
+        "resolution": {
+          "type": "string"
+        },
+        "ratio": {
+          "type": "string"
+        },
+        "audio": {
+          "type": "boolean",
+          "description": "Optional requested audio state. Sent as a switch only when the chosen model declares one; fixed native audio accepts only its declared state. Audio presence alone does not verify speech, lip-sync or subtitles."
+        },
+        "frame_images": {
+          "type": "array",
+          "description": "Existing uploaded ma_ first/last frame ids or workspace image paths. For a user-supplied chat attachment outside the workspace, first copy the read-authorized attachment into the workspace with existing file tools and pass its copied path.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "reference_images": {
+          "type": "array",
+          "description": "Shared uploaded ma_ subject/style image ids or workspace image paths used by every shot. With plan_id, each shot’s saved image materials and character references are added only to that shot; do not duplicate unrelated character references here. For a user-supplied chat attachment outside the workspace, first copy the read-authorized attachment into the workspace with existing file tools and pass its copied path.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "reference_videos": {
+          "type": "array",
+          "description": "Existing uploaded ma_ video reference ids or workspace video paths. For a user-supplied chat attachment outside the workspace, first copy the read-authorized attachment into the workspace with existing file tools and pass its copied path.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "reference_audios": {
+          "type": "array",
+          "description": "Existing uploaded ma_ audio reference ids or workspace WAV/MP3 paths, only when the chosen model supports audio references. For a user-supplied chat attachment outside the workspace, first copy the read-authorized attachment into the workspace with existing file tools and pass its copied path. A reference does not guarantee copied speech, matching mouth movements or subtitles.",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "prompt",
+        "total_duration_seconds"
+      ]
+    }
+  },
+  {
+    "name": "edit_video",
+    "description": "Edit existing local videos without generating new media or spending model credits. Order clips as supplied, optionally trim each start/end in seconds, normalize and concatenate them, and optionally trim the final length. Input files must be readable inside this workspace or an owned generated-video project. Returns a background job_id; wait for the real final_path, then call present and include the artifact link. This performs ordered cuts and joins; it does not synthesize unseen footage, music, subtitles, or effects. If current user-supplied chat attachments are outside the workspace, first copy only those read-authorized attachments into this workspace with existing file tools, then edit the copied paths.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "clips": {
+          "type": "array",
+          "description": "Local clip paths in final playback order, with optional per-clip trim positions. Copy current user-supplied, read-authorized chat attachments from outside the workspace into the workspace with existing file tools before passing their copied paths.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "start_seconds": {
+                "type": "number"
+              },
+              "end_seconds": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "path"
+            ]
+          }
+        },
+        "total_duration_seconds": {
+          "type": "number",
+          "description": "Optional final duration after assembling clips; cannot exceed the available trimmed footage."
+        }
+      },
+      "required": [
+        "clips"
+      ]
+    }
+  },
+  {
+    "name": "generate_image",
+    "description": "Generate images or edit reference images through the signed-in account relay, save every result into the artifacts directory, and return the paths. For image-to-image requests, pass the current-chat user attachment or an authorized workspace image in reference_images. Which image models exist, and what each one accepts, is the deployment’s own answer: ask for a model only when the user names one. For Yunshu platform, relay or upstream failures, give users only a safe Simplified Chinese summary such as “服务器繁忙，请稍后重试”; never repeat raw HTTP responses, diagnostic JSON, error codes, stacks, internal paths or credentials. Keep actionable guidance for confirmed sign-in, product-credit, file-validation and cancellation failures. When submission or billing outcome is unknown, check existing tasks and artifacts first; do not immediately retry or automatically resubmit. Preserve real tool results. This restriction does not prevent software or code diagnostics explicitly requested by the user.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "plan_id": {
+          "type": "string",
+          "description": "Explicit update_creation_plan id for this generation. Also provide exactly one of shot_id or asset_id."
+        },
+        "shot_id": {
+          "type": "string",
+          "description": "Exact shot id in the explicit plan; never guess a latest project."
+        },
+        "asset_id": {
+          "type": "string",
+          "description": "Exact image asset id in plan_id, including a video plan. Mutually exclusive with shot_id. Creates or reconstructs this source asset, not a finished shot."
+        },
+        "prompt": {
+          "type": "string",
+          "description": "What the image should show."
+        },
+        "model": {
+          "type": "string",
+          "description": "Optional image model id such as gpt-image-2. Defaults to the first image model the deployment serves for this account."
+        },
+        "size": {
+          "type": "string",
+          "description": "Optional output size such as 1024x1024 or auto. A value the chosen model does not support is refused with that model’s own menu."
+        },
+        "count": {
+          "type": "number",
+          "description": "How many images to render, within the model’s limit (usually 1–4)."
+        },
+        "reference_images": {
+          "type": "array",
+          "description": "Reference images for editing: current-chat user image attachment ids or their exact read-only paths, readable PNG/JPEG/WebP files inside the current workspace, uploaded ma_ ids, or real generated image output ids/paths owned by the same explicit plan_id. Other-chat attachments, unrelated local paths and URLs are refused.",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "prompt"
+      ]
+    }
+  },
+  {
+    "name": "generate_video",
+    "description": "Generate, poll and save one short video clip through the account relay. Call this native tool directly for a simple short-video brief; do not write submission, polling or download scripts. For story direction, character/reference continuity, dialogue or subtitles, use the yunshu-video-director skill. For a complete video such as 40 seconds or automatic assembly, use generate_video_project instead; several camera beats may fit one clip. Edit existing clips with edit_video. This single-clip tool accepts only the chosen model’s declared duration, resolution, ratio, frames and references. For Yunshu platform, relay or upstream failures, give users only a safe Simplified Chinese summary such as “服务器繁忙，请稍后重试”; never repeat raw HTTP responses, diagnostic JSON, error codes, stacks, internal paths or credentials. Keep actionable guidance for confirmed sign-in, product-credit, file-validation and cancellation failures. When submission or billing outcome is unknown, check existing tasks and artifacts first; do not immediately retry or automatically resubmit. Preserve real tool results. This restriction does not prevent software or code diagnostics explicitly requested by the user.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "plan_id": {
+          "type": "string",
+          "description": "Explicit update_creation_plan id for this generation. Also provide shot_id."
+        },
+        "shot_id": {
+          "type": "string",
+          "description": "Exact shot id in the explicit plan; never guess a latest project."
+        },
+        "prompt": {
+          "type": "string",
+          "description": "What the video should show. Before calling, script user-delegated narrative or dialogue scenes with stable character ids, language, brief exact lines and their timing, identifying on-screen speakers versus narration; preserve user-supplied wording. Do not reduce a story requiring voices to a music montage. Respect silent/no-dialogue requests and do not add dialogue or subtitles to unrelated nonverbal videos. Include requested lip-sync and subtitle requirements. These request native model generation, not separate speech, lip-sync or subtitle processing; verify the rendered result before claiming they are met."
+        },
+        "model": {
+          "type": "string",
+          "description": "Optional video model id such as MiniMax-H3. Defaults to the first video model the deployment serves for this account."
+        },
+        "duration_seconds": {
+          "type": "number",
+          "description": "Clip length in seconds; only values the chosen model declares are accepted."
+        },
+        "resolution": {
+          "type": "string",
+          "description": "Output resolution such as 768P or 2K, when the model offers choices."
+        },
+        "ratio": {
+          "type": "string",
+          "description": "Aspect ratio such as 16:9 or 9:16; adaptive inherits it from the reference media."
+        },
+        "audio": {
+          "type": "boolean",
+          "description": "Optional requested audio state. Sent as a switch only when the chosen model declares one; fixed native audio accepts only its declared state. An audio stream does not verify dialogue, lip-sync or subtitles."
+        },
+        "frame_images": {
+          "type": "array",
+          "description": "Optional stored ids (ma_…) used as first/last frame.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "reference_images": {
+          "type": "array",
+          "description": "Optional stored ids (ma_…) used as multimodal subject/style references, when the model supports them.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "reference_videos": {
+          "type": "array",
+          "description": "Optional stored ids (ma_…) used as a reference video, when the model supports video-to-video.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "reference_audios": {
+          "type": "array",
+          "description": "Optional uploaded ma_ audio ids or workspace WAV/MP3 paths, when the model supports audio references. First copy a user-supplied, read-authorized chat attachment outside the workspace into the workspace using existing file tools; do not copy unrelated files. References do not guarantee copied speech, matching mouth movements or subtitles.",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "prompt"
+      ]
+    }
+  }
+]

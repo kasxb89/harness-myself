@@ -52,6 +52,21 @@ function localTransport(localBase: string) {
 
 describe('Harness model prefix and redirects', () => {
   it.each([
+    ['insufficient_user_quota', 'new_api_error', 'INSUFFICIENT_BALANCE'],
+    ['insufficient_quota', 'insufficient_quota', 'AUTH'],
+    ['pre_consume_token_quota_failed', 'new_api_error', 'AUTH'],
+    ['permission_denied', 'new_api_error', 'AUTH'],
+    ['insufficient_user_quota', 'upstream_error', 'AUTH'],
+  ])('preserves exact gateway funding identity without blaming the user for %s (%s)', async (code, type, expected) => {
+    const server = await mockServer([{ status: 403, body: JSON.stringify({ error: { code, type, message: 'upstream balance exhausted; private diagnostic' } }) }])
+    const transport = localTransport(server.url)
+    const chunks = await complete('https://8.133.202.230/harness/v1')
+    expect(chunks.find(chunk => chunk.type === 'finish')).toMatchObject({ reason: { kind: 'error', failure: { code: expected } } })
+    if (expected === 'INSUFFICIENT_BALANCE') expect(JSON.stringify(chunks)).not.toContain('private diagnostic')
+    expect(server.paths).toEqual(['/harness/v1/chat/completions'])
+    expect(transport).toHaveBeenCalledOnce()
+  })
+  it.each([
     'https://8.133.202.230/v1/chat/completions', 'https://8.133.202.230/harness/v1/../../v1/chat/completions',
     'https://8.133.202.230/harness/v1/%252e%252e/chat/completions', 'https://another-provider.invalid/harness/v1/chat/completions',
   ])('refuses an SDK request which escapes or obscures the configured prefix: %s', async (url) => {

@@ -51,6 +51,22 @@ export type { SettingsDocumentState } from './settings-document-store.ts'
 export { SettingsDocumentStore } from './settings-document-store.ts'
 export type { SettingsKey } from './locales.ts'
 
+declare module '@deepseek-ai/cordis' {
+  interface Events {
+    /**
+     * Open the settings dialog on an installed section; missing sections leave it unchanged.
+     * @mode emit
+     * @param sectionId - Exact id registered in settings.section.
+     */
+    'ui-settings/open-section'(sectionId: string): void
+    /**
+     * Notify local features after the visible settings dialog is closed by the user.
+     * @mode emit
+     */
+    'ui-settings/closed'(): void
+  }
+}
+
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
     /** Shell chrome + shell-owned General section copy. */
@@ -190,6 +206,18 @@ export function apply(ctx: ClientContext): void {
     const shellHandle = createSettingsShellStore()
     const shellInstance = shellHandle.create()
     const shellStore: typeof shellHandle = { ...shellHandle, create: () => shellInstance }
+    let wasOpen = shellInstance.getSnapshot().open
+    const disposeClosed = shellInstance.subscribe(() => {
+      const open = shellInstance.getSnapshot().open
+      const closed = wasOpen && !open
+      wasOpen = open
+      if (closed) ctx.emit('ui-settings/closed')
+    })
+    const disposeOpenSection = ctx.on('ui-settings/open-section', (sectionId) => {
+      if (ctx.slots.entries('settings.section').some(entry => entry.options.id === sectionId)) {
+        shellInstance.actions.openSection(sectionId)
+      }
+    })
     const disposeCommand = ctx.shortcuts.register({
       id: 'settings.open' as ShortcutCommandId, label: () => t('shortcut.open'), aliases: ['settings', 'preferences'],
       defaults: {
@@ -224,7 +252,7 @@ export function apply(ctx: ClientContext): void {
       },
       inject: shellInjected,
     }, SettingsRoot)
-    return () => { disposeCommand(); disposeSlot() }
+    return () => { disposeClosed(); disposeOpenSection(); disposeCommand(); disposeSlot() }
   })
 
   ctx.slots.inject('settings.trigger', () =>

@@ -62,7 +62,7 @@ import type { ResolvedPiAiProviderProfile } from './config.ts'
 import { toPiContext } from './context.ts'
 import { conversationUpdates, createModels, getSupportedThinkingLevels } from './models.ts'
 import { toStreamChunks } from './stream.ts'
-import { harnessFetch } from './harness-fetch.ts'
+import { harnessBalanceRejected, harnessFetch } from './harness-fetch.ts'
 import { gatewayReceipt, withGatewayReceipt, type GatewayReceipt } from './gateway-receipt.ts'
 
 /**
@@ -359,8 +359,12 @@ export class PiAiAdapter extends LlmAdapter {
     const profile = this.profileOf(snapshot, options.provider)
     const model = this.modelOf(snapshot, options.provider, options.model)
     let receipt: GatewayReceipt | undefined
+    const gatewayState = { balanceRejected: false }
     const captureReceipt = (headers: Headers): void => { receipt = gatewayReceipt(model.baseUrl, headers) }
-    const requestFetch = harnessFetch(model.baseUrl, (response) => { captureReceipt(response.headers) })
+    const requestFetch = harnessFetch(model.baseUrl, async (response) => {
+      captureReceipt(response.headers)
+      gatewayState.balanceRejected = await harnessBalanceRejected(response)
+    })
     const updates = conversationUpdates(model)
     // pi-ai collapses Anthropic tool updates without an initially active declaration.
     const tools = options.tools ?? []
@@ -428,7 +432,10 @@ export class PiAiAdapter extends LlmAdapter {
             exhausted = true
             return
           }
-          yield result.value.type === 'finish' ? withGatewayReceipt(result.value, receipt) : result.value
+          const chunk = result.value
+          if (chunk.type === 'finish' && chunk.reason.kind === 'error' && gatewayState.balanceRejected && !options.signal?.aborted) {
+            yield withGatewayReceipt({ ...chunk, reason: { kind: 'error', failure: { code: 'INSUFFICIENT_BALANCE', message: '余额不足，请充值' } } }, receipt)
+          } else yield chunk.type === 'finish' ? withGatewayReceipt(chunk, receipt) : chunk
         }
       } finally {
         if (!exhausted) {
@@ -445,7 +452,8 @@ export class PiAiAdapter extends LlmAdapter {
         failure = new LlmError(`pi-ai stream idle timeout after ${streamIdleTimeoutMs}ms`, 'TIMEOUT', { cause: error })
       } else if (options.signal?.aborted) {
         failure = new LlmError('pi-ai request aborted by caller', 'ABORTED', { cause: error })
-      } else if (error instanceof LlmError) failure = error
+      } else if (gatewayState.balanceRejected) failure = new LlmError('余额不足，请充值', 'INSUFFICIENT_BALANCE', { cause: error })
+      else if (error instanceof LlmError) failure = error
       else if (receipt !== undefined) failure = new LlmError(error instanceof Error ? error.message : String(error), 'UNKNOWN', { cause: error })
       else throw error
       if (receipt === undefined) throw failure

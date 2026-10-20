@@ -4,7 +4,7 @@ export const NS = 'creative'
 /** Simplified Chinese sidebar and draft copy. */
 export const zh = {
   'serverBusy': '服务器繁忙，请稍后重试',
-  'creditsRequired': '积分不足，请充值后重试',
+  'creditsRequired': '余额不足，请充值',
   'chooseSession': '请先选择一个聊天，人物、素材与分镜会与该聊天同步',
   'plan.edit': '编辑设定',
   'plan.add.shot': '添加镜头',
@@ -156,7 +156,7 @@ export type CreativeKey = keyof typeof zh
 /** English translations for every sidebar and draft key. */
 export const en: Record<CreativeKey, string> = {
   'serverBusy': 'The server is busy. Please try again later.',
-  'creditsRequired': 'Not enough credits. Top up and try again.',
+  'creditsRequired': 'Insufficient balance. Please top up.',
   'chooseSession': 'Choose a chat to share its characters, materials and storyboard',
   'plan.edit': 'Edit directions',
   'plan.add.shot': 'Add shot',

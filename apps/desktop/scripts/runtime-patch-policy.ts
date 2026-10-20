@@ -21,10 +21,13 @@ export const DESKTOP_RUNTIME_PATCHES: Readonly<Record<string, DesktopRuntimePatc
   'dshmarket@1.66.20': { scope: 'shared', reason: 'Runtime market activation needs matching Cordis, settings and schema peers.' },
   'dsh-find-plugin@0.4.0': { scope: 'shared', reason: 'Runtime plugin discovery needs matching Cordis and tools peers.' },
   'dsh-univer-office@0.3.7': { scope: 'shared', reason: 'Runtime office integration needs matching Harness service and schema peers.' },
+  'dsh-custom-mode@2.2.5': { scope: 'shared', reason: 'The bundled assistant editor must preserve the existing Agent default.' },
 }
 
 /** Reviewed Desktop dependency constraints, independent of patch selection. */
 export const DESKTOP_RUNTIME_DEPENDENCY_OVERRIDES: Readonly<Record<string, string>> = {
   // The provider declares ^1.0.2; its patch is qualified against 1.0.2.
   '@earendil-works/pi-ai@^1.0.2': '1.0.2',
+  // The editor uses the installed Host APIs and must not install a second Harness runtime for its optional peer.
+  'dsh-custom-mode@2.2.5>@deepseek-ai/dsh': '-',
 }

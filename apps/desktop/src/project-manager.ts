@@ -22,6 +22,7 @@ import {
 import type { DesktopPaths } from './paths.ts'
 import type { DesktopRelease } from './release.ts'
 import { readDesktopRuntime } from './runtime-tree.ts'
+import { initializeBuiltinPlugins, suppressBuiltinPluginActivation } from './builtin-plugins.ts'
 import {
   initProfile, PROFILE_TEMPLATES, removeLinkProjections, sanitizeProfile, type ProfileTemplate,
 } from '@deepseek-ai/dsh-app-boot'
@@ -74,7 +75,11 @@ export class DesktopProjectManager {
    * @returns Backup path after the locked profile write, or undefined if the patch was absent.
    */
   async disableAllPlugins(): Promise<string | undefined> {
-    return this.withLock(() => sanitizeProfile('dsh', this.paths.profile, WEB_PROFILE.bundles))
+    return this.withLock(() => {
+      const backup = sanitizeProfile('dsh', this.paths.profile, WEB_PROFILE.bundles)
+      suppressBuiltinPluginActivation(this.paths.profile)
+      return backup
+    })
   }
 
   /**
@@ -86,6 +91,7 @@ export class DesktopProjectManager {
       readDesktopRuntime(this.runtime.dsh)
       migrateProfileSettings(this.paths.profile)
       createPluginProfile(this.paths.profile)
+      initializeBuiltinPlugins(this.paths.profile)
       removeLinkProjections(this.paths.profile)
     })
   }

@@ -4,6 +4,7 @@ import { link, lstat, open, realpath, unlink } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, sep } from 'node:path'
 import type { VideoProjectRequest } from './video-project-types.ts'
 import { apiUrl, normalizeApiBaseUrl } from './api-url.ts'
+import { isAccountBalanceRejection } from './account-balance.ts'
 
 /** Stable relay failure safe for project records and model-visible reports. */
 export class VideoRelayError extends Error {
@@ -123,7 +124,12 @@ export function createVideoProjectRelay(options: VideoRelayOptions): VideoProjec
         : '视频提交结果未知，可能已计费；已停止后续生成，请检查用量和任务记录')
     }
     if (!response.ok) {
-      await response.body?.cancel().catch((_closedBody: unknown) => { /* No upstream error body is exposed or retained. */ })
+      let balanceRejected = false
+      if (body !== undefined && response.status === 403) {
+        try { balanceRejected = isAccountBalanceRejection(await jsonBody(response), response.status) }
+        catch (_unreadableRejection: unknown) { /* An invalid response cannot establish whose balance is exhausted. */ }
+      } else await response.body?.cancel().catch((_closedBody: unknown) => { /* No upstream error body is exposed or retained. */ })
+      if (balanceRejected) throw new VideoRelayError('INSUFFICIENT_BALANCE', '余额不足，请充值')
       throw new VideoRelayError(body === undefined ? 'VIDEO_READ_REJECTED' : 'VIDEO_SUBMIT_REJECTED', body === undefined
         ? '视频服务未能返回该任务，请稍后重试查询'
         : '视频服务未接受本次请求，已停止后续生成，请检查模型和账户状态')

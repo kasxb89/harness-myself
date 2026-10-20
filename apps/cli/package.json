@@ -104,7 +104,8 @@
     "@deepseek-ai/dsh-experimental-session-titles-bundle": "workspace:*",
     "@deepseek-ai/dsh-experimental-terminal-bundle": "workspace:*",
     "@deepseek-ai/dsh-experimental-session-search": "workspace:*",
-    "@deepseek-ai/dsh-experimental-tool-worktree": "workspace:*"
+    "@deepseek-ai/dsh-experimental-tool-worktree": "workspace:*",
+    "dsh-custom-mode": "2.2.5"
   },
   "devDependencies": {
     "@deepseek-ai/dsh-skill-badge": "workspace:*",

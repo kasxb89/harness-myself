@@ -53,6 +53,7 @@ import { readDesktopLoginShellEnvironment, resolveDesktopLoginShellConfig } from
 import { DesktopMandatoryUpdatePolicy, resolveDesktopPolicyConfig, type DesktopPolicyState } from './mandatory-update-policy.ts'
 import { desktopClientMetadata, desktopClientVersion } from './client-metadata.ts'
 import { DesktopMandatoryUpdateWindow } from './mandatory-update-window.ts'
+import { DesktopFeedMandatoryUpdate } from './feed-mandatory-update.ts'
 import { DesktopPolicyTestAuth } from './policy-test-auth.ts'
 import { readDesktopSettings } from './settings.ts'
 import { canRetryDesktopUpdateDownload, DesktopUpdateDialog, desktopUpdateFailureOptions, desktopUpdateProgressOptions, retryDesktopUpdateDownload, type UpdateDialogOptions } from './update-dialog.ts'
@@ -364,6 +365,7 @@ async function main(): Promise<void> {
   let locale = resolveDesktopStartupLocale(null, systemLanguages)
   windowsLanguage = locale.id
   let mandatoryPolicy: DesktopMandatoryUpdatePolicy | undefined
+  let feedMandatory: DesktopFeedMandatoryUpdate | undefined
   let mandatoryUI: DesktopMandatoryUpdateWindow | undefined
   let policyAuth: DesktopPolicyTestAuth | undefined
   let tray: DesktopTray | undefined
@@ -379,7 +381,9 @@ async function main(): Promise<void> {
   const currentDialogWindow = (): BrowserWindow | undefined => welcomeWindow ?? mainWindow
   const updateOverlays = new DesktopUpdateOverlays()
   const updateDialog = new DesktopUpdateDialog(fileURLToPath(new URL('./preload-update-dialog.cjs', import.meta.url)), () => locale, updateOverlays)
-  const isMandatory = (): boolean => mandatoryPolicy?.state.blocking === true
+  const mandatoryState = (): DesktopPolicyState => feedMandatory?.state.blocking === true ? feedMandatory.state
+    : mandatoryPolicy?.state ?? { blocking: false, checking: false }
+  const isMandatory = (): boolean => mandatoryState().blocking
   let downloadProgress: AbortController | undefined
   const showDownloadProgress = (state: DesktopUpdateState): void => {
     if (isMandatory()) return
@@ -557,6 +561,17 @@ async function main(): Promise<void> {
   const publishUpdate = (state: DesktopUpdateState): DesktopUpdateState => {
     updateJournal?.state(state)
     updateState = state
+    const wasMandatory = isMandatory()
+    feedMandatory?.observe(state)
+    if (!wasMandatory && isMandatory()) {
+      for (const controller of ordinaryDialogs) controller.abort()
+      updateDialog.cancel()
+      if (welcomeWindow !== undefined && !welcomeWindow.isDestroyed() && welcomeWindow.isVisible()) {
+        welcomeWindow.hide()
+        mainWindow?.show()
+        mandatoryUI?.focus()
+      }
+    }
     if (state.phase === 'downloading' || state.phase === 'verifying') updateDialog.updateProgress(state)
     else { downloadProgress?.abort(); downloadProgress = undefined }
     mandatoryUI?.sync()
@@ -616,6 +631,14 @@ async function main(): Promise<void> {
   let updateManifestFailure: DesktopUpdateSourceError | undefined
   try { updateManifest = JSON.parse(await readFile(join(app.getAppPath(), 'package.json'), 'utf8')) }
   catch (cause) { updateManifestFailure = new DesktopUpdateSourceError('source-invalid', { cause }) }
+  let updateAuthority: string | undefined
+  try { updateAuthority = resolveDesktopUpdateConfigOrigin(app.isPackaged, updateManifest, process.env) }
+  catch (cause) { updateManifestFailure = new DesktopUpdateSourceError('source-invalid', { cause }) }
+  if (app.isPackaged && updateAuthority !== undefined && ['win32', 'darwin'].includes(process.platform)) {
+    feedMandatory = new DesktopFeedMandatoryUpdate(app.getPath('userData'), {
+      authority: updateAuthority, platform: process.platform, arch: process.arch, version: app.getVersion(),
+    }, (error) => { console.error('desktop update: required-version cache unavailable', error) })
+  }
   const unsignedMacUpdater = usesUnsignedMacUpdates(updateManifest, app.isPackaged, process.platform) ? new UnsignedMacUpdater() : undefined
   const updates = new DesktopUpdateCoordinator(
     publishUpdate,
@@ -643,6 +666,7 @@ async function main(): Promise<void> {
         if (result.response !== 0 || isMandatory()) return false
       }
       // The update lock rejects new HTTP requests, including analytics intake.
+      await feedMandatory?.flush()
       await track('desktop_upgrade_install_restart_click', {})
       if (backend.host !== host) throw new DesktopUpdatePreparationError('tasks-unavailable', locale.messages.updateTasksUnavailable)
       try {
@@ -676,6 +700,7 @@ async function main(): Promise<void> {
         platform: process.platform, arch: process.arch, allowLoopbackHttp: !app.isPackaged })
     },
     unsignedMacUpdater === undefined ? undefined : version => unsignedMacUpdater.installPreparedUpdate(version),
+    () => feedMandatory?.version,
   )
 
   const updateSchedule = new DesktopUpdateSchedule(updates, resolveDesktopUpdateScheduleConfig(process.env))
@@ -1165,6 +1190,7 @@ async function main(): Promise<void> {
   }
   const enterWorkspace = async ({ activate = true, panel }: { activate?: boolean; panel?: 'credits' } = {}): Promise<void> => {
     if (quitting) return
+    if (isMandatory()) { mandatoryUI?.focus(); return }
     const window = mainWindow ?? createMainWindow()
     const target = new URL(applicationUrl)
     if (panel !== undefined) target.searchParams.set('panel', panel)
@@ -1190,6 +1216,7 @@ async function main(): Promise<void> {
   let openingWelcome: Promise<void> | undefined
   const showWelcome = (): Promise<void> => {
     if (quitting) return Promise.resolve()
+    if (isMandatory()) { mandatoryUI?.focus(); return Promise.resolve() }
     if (welcomeWindow !== undefined && !welcomeWindow.isDestroyed()) {
       if (!welcomeWindow.isVisible()) void track('auth_page_view', {})
       welcomeWindow.show()
@@ -1250,6 +1277,7 @@ async function main(): Promise<void> {
     return openingWelcome
   }
   const openInitialWindow = async (): Promise<void> => {
+    if (isMandatory()) { mandatoryUI?.focus(); return }
     if (quitting || recovery.active) return
     const state = await readWelcomeState()
     if (isQuitting() || backend.state.phase !== 'ready') return
@@ -1306,7 +1334,7 @@ async function main(): Promise<void> {
     updateSchedule.dispose()
     updateDialog.dispose()
     mandatoryUI?.dispose()
-    void Promise.all([Promise.resolve(mandatoryPolicy?.dispose()).then(() => policyAuth?.dispose()),
+    void Promise.all([Promise.resolve(mandatoryPolicy?.dispose()).then(() => policyAuth?.dispose()), feedMandatory?.dispose(),
       activity.dispose().then(() => backend.close()),
       unsignedMacUpdater?.disposePreparedUpdate(),
       // A Platform cleanup failure is logged without cutting the remaining Host shutdown short.
@@ -1366,16 +1394,18 @@ async function main(): Promise<void> {
       if (state.blocking && !wasBlocking) void updateSchedule.check(false, true).catch((error: unknown) => { console.error(error) })
       wasBlocking = state.blocking
     }, policyAuth?.request, () => desktopClientMetadata(locale.id))
-    const policy = mandatoryPolicy
+  }
+  if (policyConfig !== undefined || feedMandatory !== undefined) {
     mandatoryUI = new DesktopMandatoryUpdateWindow({
       overlays: updateOverlays,
       preload: fileURLToPath(new URL('./preload-mandatory.cjs', import.meta.url)), locale,
-      allowedPageOrigins: policyConfig.allowedPageOrigins, parent: () => mainWindow,
-      policy: () => policy.state, update: () => updates.state,
+      allowedPageOrigins: policyConfig?.allowedPageOrigins ?? [], parent: () => mainWindow,
+      policy: mandatoryState, update: () => updates.state,
       refresh: async () => { await Promise.all([checkPolicyManually(), updateSchedule.check(true)]) },
       download: downloadUpdate, install: version => updates.install(version),
     })
-    void mandatoryPolicy.check('launch').then((state) => {
+    mandatoryUI.sync()
+    void mandatoryPolicy?.check('launch').then((state) => {
       if (app.isPackaged && state.error === 'authentication-required' && !isQuitting()) queuePolicyAuthentication()
     }).catch((error: unknown) => { console.error(error) })
   }

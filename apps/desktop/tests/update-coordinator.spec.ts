@@ -61,7 +61,7 @@ function downloadedEvent(): UpdateDownloadedEvent {
     path: 'verified-package', sha512 }
 }
 
-function fixture(installUpdate?: (version: string) => Promise<void>) {
+function fixture(installUpdate?: (version: string) => Promise<void>, requiredVersion?: () => string | undefined) {
   const events = new NsisUpdater()
   const checkForUpdates = vi.fn(async () => ({
     isUpdateAvailable: true,
@@ -82,7 +82,7 @@ function fixture(installUpdate?: (version: string) => Promise<void>) {
   const updater = Object.assign(events, { checkForUpdates, downloadUpdate, quitAndInstall, setFeedURL })
   const coordinator = new DesktopUpdateCoordinator(
     (state) => { states.push(state); return state },
-    beforeRestart, updater, () => true, () => '1.1.0-alpha.1', downloadResult, resolveSource, installUpdate,
+    beforeRestart, updater, () => true, () => '1.1.0-alpha.1', downloadResult, resolveSource, installUpdate, requiredVersion,
   )
   coordinators.push(coordinator)
   return { coordinator, updater, resolveSource, setFeedURL, events, states, checkForUpdates, downloadUpdate, quitAndInstall,
@@ -90,6 +90,14 @@ function fixture(installUpdate?: (version: string) => Promise<void>) {
 }
 
 describe('desktop update coordinator', () => {
+  it('refuses a feed rollback below a previously confirmed required release', async () => {
+    const f = fixture(undefined, () => '1.1.0-rc.3')
+    await expect(f.coordinator.check(true)).resolves.toMatchObject({ phase: 'error', failedOperation: 'check',
+      message: 'desktop update: feed version is older than the required update' })
+    await expect(f.coordinator.download('1.1.0-rc.2')).rejects.toThrow('no checked update')
+    expect(f.downloadUpdate).not.toHaveBeenCalled()
+    expect(f.quitAndInstall).not.toHaveBeenCalled()
+  })
   it('awaits shared task shutdown before handing off an independent platform installer', async () => {
     const installUpdate = vi.fn(async (_version: string) => {})
     const f = fixture(installUpdate)

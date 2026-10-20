@@ -126,6 +126,8 @@ Config 更新严格验证发生变化的 provider。初始加载将已存储的�
 
 -----
 
+受限的生产 Harness 传输在 SDK 扁平化错误字段之前，识别实际 HTTP 403 及网关精确组合 `new_api_error` / `insufficient_user_quota`，返回现有字符串错误身份 `INSUFFICIENT_BALANCE` 和安全提示，使产品可引导用户到充值页。供应商额度文字、令牌额度、其他提供方响应和普通 403 均不被认作产品用户余额不足，且不会重复付费请求。存在的网关请求回执继续保留。
+
 <a id="understand-the-implementation"></a>
 ## 理解实现
 

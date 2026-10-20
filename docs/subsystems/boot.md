@@ -18,6 +18,12 @@ The [boot package group](../../packages/boot/README.md) owns launcher-provided p
 
 `ChangeResult.changed` reports a disk edit independently of `application`: `applied`, `restart-required`, `overridden` or `failed`. Optional `error` carries a localizable code and external diagnostic. `packageResult` records the pnpm exit code, bounded output, truncation flag and complete diagnostic log path, plus `timedOut` when the manager terminated a run that stopped printing. A terminated run is classified `timeout` whatever exit status the signal left behind, so installation and removal report failure instead of success and no further registry is asked. `pendingBuilds` lists undecided packages across the profile; `approvedBuilds` records the names granted permission by this operation; `registries` lists the registries an installation asked, in order; `bundle` and `version` name the package a finished installation added and its manifest version; `failedAt` says whether the last failed run could not reach the registry it asked or the host a git or tarball spec is fetched from.
 
+<a id="resolution-restart-requirement"></a>
+
+## Resolution restart requirement
+
+`ProfileResolutionRestartRequiredError`, exported by `@deepseek-ai/dsh-app-boot`, identifies a successor that cannot replace Node’s existing resolution safely. Its stable `code` is `PROFILE_RESOLUTION_RESTART_REQUIRED`; `packageName` names the affected package, and `reason` is `replace-package`, `override-local-package`, or `relink-package`. It is thrown before the runtime generation, metadata cache, or Worker resolution changes. Other validation/publication errors remain failures.
+
 <!-- BEGIN GENERATED cordis-surface (gen-cordis-catalog.ts) — do not edit between markers -->
 
 <a id="cordis-surface"></a>

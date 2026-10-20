@@ -25,6 +25,8 @@ overrides:
   '@deepseek-ai/dsh-web-app@0.2.1-alpha.2>deepseek-ivideo': 'file:./vendor-plugins/deepseek-ivideo-0.5.0-62ee529e.tgz'
 
   # Product market plugins use this release's shared Harness services.
+  # Custom Mode uses Host services, not the optional published CLI peer.
+  'dsh-custom-mode@2.2.5>@deepseek-ai/dsh': '-'
   'dshmarket@1.66.20>@deepseek-ai/cordis': '4.0.5-alpha.1'
   'dshmarket@1.66.20>@deepseek-ai/dsh-settings': '0.2.1-alpha.2'
   'dshmarket@1.66.20>@deepseek-ai/schemastery': '3.18.5-alpha.1'
@@ -151,3 +153,4 @@ patchedDependencies:
   'dshmarket@1.66.20': patches/dshmarket@1.66.20.patch
   'dsh-find-plugin@0.4.0': patches/dsh-find-plugin@0.4.0.patch
   'dsh-univer-office@0.3.7': patches/dsh-univer-office@0.3.7.patch
+  'dsh-custom-mode@2.2.5': patches/dsh-custom-mode@2.2.5.patch

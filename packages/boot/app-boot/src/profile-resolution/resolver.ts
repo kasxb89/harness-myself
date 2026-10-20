@@ -12,6 +12,26 @@ import type { RuntimeResolutionEntry, RuntimeResolution } from '../profile.ts'
 const WORKER_RESOLUTION_KEY = '@deepseek-ai/dsh-app-boot/profile-resolution'
 const EMPTY_ATTRIBUTES: ImportAttributes = Object.freeze({})
 
+/** Runtime package changes that Node's existing module and realpath caches cannot apply safely. */
+export type ProfileResolutionRestartReason = 'replace-package' | 'override-local-package' | 'relink-package'
+
+/** A rejected successor leaves the current resolution unchanged and requires a new process. */
+export class ProfileResolutionRestartRequiredError extends Error {
+  /** Stable discriminator for callers handling a restart requirement. */
+  readonly code = 'PROFILE_RESOLUTION_RESTART_REQUIRED'
+
+  /**
+   * @param reason - Package replacement, local override, or changed linked target.
+   * @param packageName - Package whose existing process resolution cannot be replaced.
+   */
+  constructor(readonly reason: ProfileResolutionRestartReason, readonly packageName: string) {
+    const action = reason === 'replace-package' ? 'replacing' : reason === 'override-local-package' ? 'overriding' : 'relinking'
+    const locally = reason === 'override-local-package' ? ' locally' : ''
+    super(`profile resolution: ${action} ${JSON.stringify(packageName)}${locally} requires a process restart`)
+    this.name = 'ProfileResolutionRestartRequiredError'
+  }
+}
+
 interface CommonJsParent {
   filename?: string | null
   parent?: CommonJsParent | null
@@ -129,9 +149,9 @@ export interface RuntimeInterception {
    * remain intact, so callers remove a package only after its plugins stop.
    * A retained profile mapping may change its declarer if its normalized directory, version, and scope stay unchanged.
    * @param successor - fully constructed generation retaining the installation mappings.
-   * @throws when the profile scope, a retained directory, version, scope, or installation declarer changes;
-   * an installation mapping is removed; a new local name overrides an existing mapping; or a previously published
-   * link name selects a different real directory.
+   * @throws ProfileResolutionRestartRequiredError before publishing when a retained directory, version, scope, or
+   * installation declarer changes; an installation mapping is removed; a new local name overrides an existing mapping;
+   * or a previously published link name selects a different real directory. Changing the profile scope also fails.
    */
   replace(successor: RuntimeResolution): void
   /** Restore the native resolver methods. Interceptions dispose in reverse order. */
@@ -387,20 +407,20 @@ class ResolutionRouter {
         || (current.scope === 'installation' && !sameResolution(current.declarer, next.declarer))
         || current.version !== next.version
         || current.scope !== next.scope) {
-        throw new Error(`profile resolution: replacing ${JSON.stringify(name)} requires a process restart`)
+        throw new ProfileResolutionRestartRequiredError('replace-package', name)
       }
     }
     const localPackageNames = new Set(successor.localPackageNames)
     for (const name of localPackageNames) {
       if (!this.current.localPackageNames.has(name) && this.current.entries.has(name)) {
-        throw new Error(`profile resolution: overriding ${JSON.stringify(name)} locally requires a process restart`)
+        throw new ProfileResolutionRestartRequiredError('override-local-package', name)
       }
     }
     // Node retains realpath caches after a root leaves the interception scope.
     for (const root of successor.linkedRoots) {
       const previous = this.linkedTargets.get(root.name)
       if (previous !== undefined && !sameResolution(previous, root.realPath)) {
-        throw new Error(`profile resolution: relinking ${JSON.stringify(root.name)} requires a process restart`)
+        throw new ProfileResolutionRestartRequiredError('relink-package', root.name)
       }
     }
     const next = compileResolution(successor)

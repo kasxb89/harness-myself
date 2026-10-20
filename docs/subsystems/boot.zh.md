@@ -18,6 +18,12 @@
 
 `ChangeResult.changed` 报告磁盘修改，独立于 `application`：`applied`、`restart-required`、`overridden` 或 `failed`。可选的 `error` 包含可本地化的错误码和外部诊断。`packageResult` 记录 pnpm 退出码、有界输出、截断标志及完整诊断日志路径；当管理器终止了一个停止打印的运行，还记录 `timedOut`。被终止的运行不论信号留下什么退出状态都归类为 `timeout`，因此安装与删除都报告失败而非成功，也不会再询问下一个注册表。`pendingBuilds` 列出整个 profile 尚未决定的包；`approvedBuilds` 记录本次操作授予权限的包名；`registries` 按顺序列出一次安装问过的注册表；`bundle` 与 `version` 给出完成的安装新增的包及其清单版本；`failedAt` 说明最后一次失败的运行连不上的是所问的注册表，还是 git 或 tarball spec 自身拉取的主机。
 
+<a id="resolution-restart-requirement"></a>
+
+## 解析所需重启
+
+`@deepseek-ai/dsh-app-boot` 导出的 `ProfileResolutionRestartRequiredError` 标识无法安全替换 Node 已有解析的后继代。固定 `code` 为 `PROFILE_RESOLUTION_RESTART_REQUIRED`；`packageName` 指明受影响的包，`reason` 为 `replace-package`、`override-local-package` 或 `relink-package`。该错误在运行时代、元数据缓存或 Worker 解析改变前抛出。其它校验或发布错误仍属于失败。
+
 <!-- BEGIN GENERATED cordis-surface (gen-cordis-catalog.ts) — do not edit between markers -->
 
 <a id="cordis-surface"></a>

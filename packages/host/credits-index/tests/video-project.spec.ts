@@ -8,6 +8,7 @@ import type { JobHandle } from '@deepseek-ai/dsh-jobs'
 import type { VideoEditor } from '../src/video-edit.ts'
 import { planVideoDurations, prepareVideoProject, readVideoProject, recoverVideoProjectOutputs, resolveVideoOutputDirectory, runVideoProject, VideoProjectError } from '../src/video-project.ts'
 import type { VideoProjectInput, VideoProjectOptions, VideoProjectProvider } from '../src/video-project-types.ts'
+import { VideoRelayError } from '../src/video-project-provider.ts'
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>()
@@ -93,6 +94,25 @@ describe('minimum-request video duration planning', () => {
 })
 
 describe('explicit timeline execution', () => {
+  it('shows the user funding rejection while preserving the unknown-submission barrier and saved work', async () => {
+    const f = await setup()
+    const manifest = await f.prepare()
+    const submit = vi.spyOn(f.provider, 'submit').mockRejectedValue(new VideoRelayError('INSUFFICIENT_BALANCE', '余额不足，请充值'))
+    const outcome = await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal)
+    expect(outcome).toMatchObject({ status: 'failed', detail: 'INSUFFICIENT_BALANCE' })
+    const result = JSON.parse(outcome.result ?? '') as { code: string; message: string }
+    expect(result.code).toBe('INSUFFICIENT_BALANCE')
+    expect(result.message).toContain('余额不足，请充值')
+    expect(result.message).toContain('可能继续运行并计费')
+    const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+    expect(retained.segments[0]?.status).toBe('unknown')
+    expect(retained.failureCode).toBe('INSUFFICIENT_BALANCE')
+    expect(submit).toHaveBeenCalledOnce()
+    expect(f.events).not.toContain('compose')
+    const resumed = await runVideoProject(f.options, retained, f.provider, f.editor, f.job, f.signal)
+    expect(resumed).toMatchObject({ status: 'failed', detail: 'SUBMISSION_UNKNOWN' })
+    expect(submit).toHaveBeenCalledOnce()
+  })
   it('prepares exact ordered durations and isolated shot references once, then resumes the stored requests', async () => {
     const fixture = await setup()
     const build = vi.spyOn(fixture.provider, 'build').mockImplementation(async (input, model, prompt, durationSeconds) => ({

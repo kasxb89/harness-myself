@@ -10,6 +10,7 @@ overrides:
   '@deepseek-ai/cosmokit': link:vendor/cosmokit
   '@deepseek-ai/schemastery': link:vendor/schemastery
   '@deepseek-ai/dsh-web-app@0.2.1-alpha.2>deepseek-ivideo': file:./vendor-plugins/deepseek-ivideo-0.5.0-62ee529e.tgz
+  dsh-custom-mode@2.2.5>@deepseek-ai/dsh: '-'
   dshmarket@1.66.20>@deepseek-ai/cordis: 4.0.5-alpha.1
   dshmarket@1.66.20>@deepseek-ai/dsh-settings: 0.2.1-alpha.2
   dshmarket@1.66.20>@deepseek-ai/schemastery: 3.18.5-alpha.1
@@ -40,8 +41,9 @@ patchedDependencies:
   '@xmanrui/dsh-im@4.38.2': 4c74071c3daf693c5e4270746b964c750e01da2c85cdfc0146ac37dec11af738
   '@yao-pkg/pkg@6.21.0': 75891fc22b277c145cafeab83e41baf4a70f5b8fe6dc0801c6a0b922d7ee88c7
   deepseek-ivideo@0.5.0: 2c8077e6bd282bca4144510792e3f881d86e4a1ddf72a536a866da0516ef0be7
+  dsh-custom-mode@2.2.5: 3b3e360b5db8862d67b33e143ec669da3cdd8edb660b86a20b7755cdc0128019
   dsh-find-plugin@0.4.0: 062d1dee81d7b8393559bee05e107249c5bf1363b1eda9d675f5f30de0e5e03b
-  dsh-skin-market@0.1.57: 65b4efb3526cee210224681fc1613acee0698145d6af71237c74161ac994cefc
+  dsh-skin-market@0.1.57: 3877c5ac25edd51ef5c13da56a761bab0326c4408e8277b7ea1ea6ebc2b5f04a
   dsh-univer-office@0.3.7: 9ab9121dd06608a991db35b48ab63aa595b8bb417cfa866eb31f8df2e4efa511
   dshmarket@1.66.20: 8e05d5e1136fc45a9502854be05bb8bd22f7757c52249e0802949187912ba945
   exceljs@4.4.0: c1bf8ac8f319dab382f08e3a669b715e691d46c703ac5a4163eb383fbedd1d48
@@ -507,6 +509,9 @@ importers:
       commander:
         specifier: ^15.0.0
         version: 15.0.0
+      dsh-custom-mode:
+        specifier: 2.2.5
+        version: 2.2.5(patch_hash=3b3e360b5db8862d67b33e143ec669da3cdd8edb660b86a20b7755cdc0128019)
       js-yaml:
         specifier: ^4.3.2
         version: 4.3.2
@@ -3003,7 +3008,7 @@ importers:
         version: 0.4.0(patch_hash=062d1dee81d7b8393559bee05e107249c5bf1363b1eda9d675f5f30de0e5e03b)(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-tools@packages+core+tools)
       dsh-skin-market:
         specifier: 0.1.57
-        version: 0.1.57(patch_hash=65b4efb3526cee210224681fc1613acee0698145d6af71237c74161ac994cefc)(@deepseek-ai/cordis@vendor+cordis)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+        version: 0.1.57(patch_hash=3877c5ac25edd51ef5c13da56a761bab0326c4408e8277b7ea1ea6ebc2b5f04a)(@deepseek-ai/cordis@vendor+cordis)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       dsh-univer-office:
         specifier: 0.3.7
         version: 0.3.7(patch_hash=9ab9121dd06608a991db35b48ab63aa595b8bb417cfa866eb31f8df2e4efa511)(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-attachment@packages+attachment+attachment)(@deepseek-ai/dsh-host-webserver@packages+host+webserver)(@deepseek-ai/dsh-llm@packages+llm+llm)(@deepseek-ai/dsh-session@packages+core+session)(@deepseek-ai/dsh-settings@packages+settings+settings)(@deepseek-ai/dsh-skill@packages+skill+skill)(@deepseek-ai/dsh-tools@packages+core+tools)(@deepseek-ai/schemastery@vendor+schemastery)(yauzl@3.4.0)
@@ -3059,6 +3064,12 @@ importers:
       '@deepseek-ai/libreoffice-kit':
         specifier: ^0.1.5
         version: 0.1.5
+      '@types/js-yaml':
+        specifier: ^4.0.9
+        version: 4.0.9
+      js-yaml:
+        specifier: ^4.3.2
+        version: 4.3.2
 
   packages/client/connection:
     dependencies:
@@ -3369,6 +3380,9 @@ importers:
       '@deepseek-ai/dsh-client-ui-conversation':
         specifier: workspace:*
         version: link:../ui-conversation
+      '@deepseek-ai/dsh-client-ui-layout':
+        specifier: workspace:*
+        version: link:../ui-layout
       '@deepseek-ai/dsh-client-ui-plugin-manager':
         specifier: workspace:*
         version: link:../ui-plugin-manager
@@ -3384,6 +3398,12 @@ importers:
       '@deepseek-ai/dsh-client-ui-settings':
         specifier: workspace:*
         version: link:../ui-settings
+      '@deepseek-ai/dsh-client-ui-settings-general':
+        specifier: workspace:*
+        version: link:../ui-settings-general
+      '@deepseek-ai/dsh-client-ui-sidebar':
+        specifier: workspace:*
+        version: link:../ui-sidebar
       '@deepseek-ai/dsh-client-ui-slots':
         specifier: workspace:*
         version: link:../ui-slots
@@ -21286,6 +21306,10 @@ packages:
     resolution: {integrity: sha512-uBq4egWHTcTt33a72vpSG0z3HnPuIl6NqYcTrKEg2azoEyl2hpW0zqlxysq2pK9HlDIHyHyakeYaYnSAwd8bow==}
     engines: {node: '>=12'}
 
+  dsh-custom-mode@2.2.5:
+    resolution: {integrity: sha512-j/Fe+8qPjRWD11CFrni11PWdxevCu1MSBcSWqo0aVWAxk1i4C9Jtj+Gq4vEw3uzV1K+Z9wGizQUVubu7rUqOCg==}
+    engines: {dsh: '>=0.1.5-rc.2 <0.2.0-0 || >=0.1.6-alpha.1 <0.2.0-0 || >=0.1.7-alpha.1 <0.2.0-0 || >=0.2.0-0 <0.3.0-0 || >=0.2.1-alpha.1 <0.3.0-0', node: '>=20'}
+
   dsh-find-plugin@0.4.0:
     resolution: {integrity: sha512-XO0zQb3iHxK7IGGygfiGDxI3t4HUEBNLK4knqYmh8KuT2cbCWzmH+4PViaIgVPsiytC7mXN5p94u5fJc3VNsBw==}
     peerDependencies:
@@ -29711,12 +29735,14 @@ snapshots:
 
   dotenv@16.6.1: {}
 
+  dsh-custom-mode@2.2.5(patch_hash=3b3e360b5db8862d67b33e143ec669da3cdd8edb660b86a20b7755cdc0128019): {}
+
   dsh-find-plugin@0.4.0(patch_hash=062d1dee81d7b8393559bee05e107249c5bf1363b1eda9d675f5f30de0e5e03b)(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-tools@packages+core+tools):
     dependencies:
       '@deepseek-ai/cordis': link:vendor/cordis
       '@deepseek-ai/dsh-tools': link:packages/core/tools
 
-  dsh-skin-market@0.1.57(patch_hash=65b4efb3526cee210224681fc1613acee0698145d6af71237c74161ac994cefc)(@deepseek-ai/cordis@vendor+cordis)(react-dom@18.3.1(react@18.3.1))(react@18.3.1):
+  dsh-skin-market@0.1.57(patch_hash=3877c5ac25edd51ef5c13da56a761bab0326c4408e8277b7ea1ea6ebc2b5f04a)(@deepseek-ai/cordis@vendor+cordis)(react-dom@18.3.1(react@18.3.1))(react@18.3.1):
     dependencies:
       '@deepseek-ai/cordis': link:vendor/cordis
       '@phosphor-icons/react': 2.1.10(react-dom@18.3.1(react@18.3.1))(react@18.3.1)

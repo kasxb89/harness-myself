@@ -706,6 +706,12 @@ async function executeVideoProject(
           let task: { taskId: string }
           try { task = await provider.submit(segment.request, clipSignal) }
           catch (error) {
+            if (error instanceof VideoRelayError && error.code === 'INSUFFICIENT_BALANCE') {
+              // The gateway can also reject an adjusted cost after upstream
+              // acceptance. Preserve the unknown-submission resume barrier.
+              segment.status = 'unknown'
+              throw error
+            }
             segment.status = 'unknown'
             throw new VideoProjectError('SUBMISSION_UNKNOWN', '视频提交结果未知，可能已计费；已停止后续生成，不会自动重提。请先在后台核对任务。', { cause: error })
           }

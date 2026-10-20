@@ -19,6 +19,7 @@ import { createWorkspaceGuide } from './workspace-guide-store.ts'
 import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-store'
 import { createCreditsSessionSource, type CreditsSnapshot } from './session-store.ts'
 import { SessionModelCredits, TurnModelCredits, type ModelCreditsInjected } from './ModelCredits.tsx'
+import { BalanceNotice, type BalanceNoticeInjected } from './BalanceNotice.tsx'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -52,6 +53,12 @@ export function apply(ctx: ClientContext): void {
   ctx.provide('creditsSession', createCreditsSessionSource())
   const t = ctx.locale.bind(NS)
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-credits: dictionaries')
+  ctx.slots.inject('shell.quota-notice', () => ctx.slots.register({
+    name: 'shell.quota-notice', locale: NS,
+    select: owner => owner.code === 'INSUFFICIENT_BALANCE' ? owner : null,
+    inject: (): BalanceNoticeInjected => ({ hooks: { creditsSession: ctx.creditsSession },
+      openRecharge: () => { ctx.layout.selectPanel(RECHARGE_PANEL_ID) } }),
+  }, BalanceNotice))
   const modelCredits = (): ModelCreditsInjected => ({ hooks: { creditsSession: ctx.creditsSession },
     openBalance: () => { ctx.layout.selectPanel(PANEL_ID) } })
   ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({

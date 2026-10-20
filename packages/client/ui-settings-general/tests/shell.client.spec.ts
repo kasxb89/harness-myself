@@ -13,6 +13,7 @@ import type { SettingsRootInjected } from '../src/client/shell-contract.ts'
 import { SettingsRoot } from '../src/client/SettingsRoot.tsx'
 import type { DesktopUpdatePresentation } from '../src/types.ts'
 import type { DesktopUpdateCheckInjected } from '../src/client/DesktopUpdateCheck.tsx'
+import type { createSettingsShellStore } from '../src/client/shell-store.ts'
 
 const SELF = '@deepseek-ai/dsh-client-ui-settings-general'
 const SIDEBAR = '@deepseek-ai/dsh-client-ui-sidebar'
@@ -23,6 +24,14 @@ const COLD_BOOT_TIMEOUT_MS = 60_000
 function injectedOf(c: TestClient): SettingsRootInjected {
   const entry = c.ctx.slots.entries('sidebar.settings')[0]!
   return (entry.inject as () => SettingsRootInjected)()
+}
+
+function shellStateOf(c: TestClient) {
+  const store = c.ctx.slots.entries('sidebar.settings')[0]?.store
+  if (typeof store !== 'object' || store === null || !('create' in store)) {
+    throw new Error('Expected the settings shell owner store')
+  }
+  return (store as ReturnType<typeof createSettingsShellStore>).create()
 }
 
 function assertUpdateCheckInjected(value: Record<string, unknown> | undefined):
@@ -73,6 +82,62 @@ const PRODUCT_ONBOARDING: readonly { id: string; order: number }[] = [
 ]
 
 describe('ui-settings-general shell', () => {
+  it('emits closed only on a visible-to-hidden transition, never on mount or shell teardown', async ({ start }) => {
+    const c = await start()
+    const closed = vi.fn()
+    c.ctx.on('ui-settings/closed', closed)
+    const before = shellStateOf(c)
+    before.actions.close()
+    expect(closed).not.toHaveBeenCalled()
+    before.actions.open()
+    before.actions.select('general')
+    before.actions.openSection('models')
+    expect(closed).not.toHaveBeenCalled()
+    before.actions.close()
+    expect(closed).toHaveBeenCalledTimes(1)
+    before.actions.close()
+    expect(closed).toHaveBeenCalledTimes(1)
+
+    before.actions.open()
+    await c.reload(SIDEBAR)
+    await c.flush()
+    expect(closed).toHaveBeenCalledTimes(1)
+    before.actions.close()
+    expect(closed).toHaveBeenCalledTimes(1)
+    const after = shellStateOf(c)
+    after.actions.openSection('general')
+    after.actions.close()
+    expect(closed).toHaveBeenCalledTimes(2)
+    after.actions.open()
+    await c.unload(SELF)
+    await c.flush()
+    after.actions.close()
+    expect(closed).toHaveBeenCalledTimes(2)
+  }, COLD_BOOT_TIMEOUT_MS)
+
+  it('opens only installed sections and releases the navigation listener with the shell', async ({ start }) => {
+    const c = await start()
+    const before = shellStateOf(c)
+    expect(before.getSnapshot()).toEqual({ open: false, activeId: undefined })
+    c.ctx.emit('ui-settings/open-section', 'missing-editor')
+    expect(before.getSnapshot().open).toBe(false)
+    const removeEditor = c.ctx.slots.register({ name: 'settings.section', id: 'custom-system-prompt', label: 'Employee editor' }, () => null)
+    c.ctx.emit('ui-settings/open-section', 'custom-system-prompt')
+    expect(before.getSnapshot()).toEqual({ open: true, activeId: 'custom-system-prompt' })
+    before.actions.close()
+    removeEditor()
+    c.ctx.emit('ui-settings/open-section', 'custom-system-prompt')
+    expect(before.getSnapshot()).toEqual({ open: false, activeId: undefined })
+
+    await c.reload(SIDEBAR)
+    await c.flush()
+    const after = shellStateOf(c)
+    expect(after).not.toBe(before)
+    c.ctx.emit('ui-settings/open-section', 'general')
+    expect(after.getSnapshot()).toEqual({ open: true, activeId: 'general' })
+    expect(before.getSnapshot()).toEqual({ open: false, activeId: undefined })
+  }, COLD_BOOT_TIMEOUT_MS)
+
   it('shares one carrier subscription across update controls and checks manually above Mobile', async ({ start }) => {
     const initial = Promise.withResolvers<DesktopUpdatePresentation>()
     let publish: ((state: DesktopUpdatePresentation) => void) | undefined

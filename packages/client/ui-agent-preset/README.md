@@ -37,6 +37,8 @@ Known shipped presets offer mode details and usage examples in a read-only dialo
 
 Entering Creator selects `cordis` for the receiving blank Session without changing the new-task default or Coding Tools setting. If no workspace or blank Session is bound yet, the choice waits for that binding. After the choice is applied, the Creator Session keeps its preset; a later newly created Session uses the configured default, such as Standard.
 
+The **Digital employees** sidebar page groups available industry roles and user-authored presets from the same Host roster, with search over their names and responsibilities. Named overrides of built-in ids remain visible. When the installed custom-mode editor registers its settings section, **Customize employee** opens that editor without creating or copying a preset. Cards retain fixed dimensions for long descriptions. A failed roster refresh keeps existing cards and offers Retry; an empty roster shows an empty state. **Start conversation** opens a regular chat draft with the chosen employee, preserving unsent drafts, the workspace model and account. It sends no message, changes no default, and never switches a running Session. The conversation's preset picker also offers these employees. Image and video work uses the product's existing creation tools.
+
 <a id="understand-the-implementation"></a>
 ## Understand the implementation
 
@@ -46,6 +48,8 @@ Entering Creator selects `cordis` for the receiving blank Session without changi
 `agentPresets/list` supplies the roster and marks the current default, and `agentPresets/read` one declaration's YAML for the viewer; default changes write the `agent-preset-registry` settings namespace. The picker, blank-session synchronization and read-only session label use recorded preset identities. Connection resets and settings updates refresh the roster.
 
 `CreatePluginMenuItem` contributes to `plugins.add.actions` using the shared roster store. Its selection calls the owner's `onDismiss()` before the same `startCreatorDraft` callback exposed to Settings as `creatorDraft`. That callback stages `cordis` through `AgentPresetSeatController` and opens the task through `uiWorkspace.startSession` with explicit draft preservation; it can reuse a blank Session and applies the staged choice when a Session binding becomes available. The choice is consumed once applied. Both Coding Tools states use the same picker and selection store, and `AgentPresetSeat` renders refusals through the shared `Toast` component.
+
+`EmployeePage` reads the same `AgentPresetSettingsController` snapshot. It excludes unnamed built-in presets, groups `employee-` ids under built-in roles, and groups other authored presets under My employees. The editor action observes the `settings.section` ledger and emits the typed `ui-settings/open-section` event for the installed `custom-system-prompt` section only. On the local `ui-settings/closed` event, the existing refresh path reloads the mounted page, preset section and conversation pickers so editor creations, renames and deletions are visible without navigation or polling. Its `main` and `sidebar.panellist` registrations belong to the conversation flow's lifetime. Employee and Creator actions share the same stage, workspace navigation and blank-session application path; the page owns only its search query.
 
 </details>
 

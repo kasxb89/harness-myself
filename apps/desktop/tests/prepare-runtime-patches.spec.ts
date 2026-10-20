@@ -44,7 +44,7 @@ it('classifies the current workspace and shares only runtime patch bytes', () =>
   const plan = prepareRuntimePatches(project, repository)
   expect(plan.patches.map(entry => entry.spec)).toEqual([
     '@earendil-works/pi-ai@1.0.2', 'node-pty@1.2.0-beta.15', 'dsh-skin-market@0.1.57', '@xmanrui/dsh-im@4.38.2',
-    'deepseek-ivideo@0.5.0', 'dshmarket@1.66.20', 'dsh-find-plugin@0.4.0', 'dsh-univer-office@0.3.7',
+    'deepseek-ivideo@0.5.0', 'dshmarket@1.66.20', 'dsh-find-plugin@0.4.0', 'dsh-univer-office@0.3.7', 'dsh-custom-mode@2.2.5',
   ])
   expect(plan.workspaceOnly).toEqual(['@electron/osx-sign', '@fortune-sheet/core', '@fortune-sheet/react', '@yao-pkg/pkg', 'exceljs'])
   const source = yaml.load(readFileSync(join(repository, 'pnpm-workspace.yaml'), 'utf8')) as { patchedDependencies: Record<string, string> }
@@ -65,7 +65,10 @@ it('classifies the current workspace and shares only runtime patch bytes', () =>
   const settings = yaml.load(readFileSync(join(project, 'pnpm-workspace.yaml'), 'utf8')) as { overrides: Record<string, string> }
   expect(settings.overrides['@earendil-works/pi-ai']).toBeUndefined()
   expect(settings.overrides['@earendil-works/pi-ai@^1.0.2']).toBe('1.0.2')
-  expect(settings.overrides).toEqual({ internal: 'file:./internal.tgz', '@earendil-works/pi-ai@^1.0.2': '1.0.2' })
+  expect(settings.overrides).toEqual({
+    internal: 'file:./internal.tgz', '@earendil-works/pi-ai@^1.0.2': '1.0.2',
+    'dsh-custom-mode@2.2.5>@deepseek-ai/dsh': '-',
+  })
   expect(readFileSync(join(repository, 'pnpm-lock.yaml'))).toEqual(before)
 })
 

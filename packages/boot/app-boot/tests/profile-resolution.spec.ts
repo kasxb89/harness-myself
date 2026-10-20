@@ -18,6 +18,7 @@ import { getEnvironmentData } from 'node:worker_threads'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   installRuntimeInterception,
+  ProfileResolutionRestartRequiredError,
   registerWorkerResolution,
   type RuntimeInterception,
 } from '../src/profile-resolution/resolver.ts'
@@ -1609,7 +1610,10 @@ describe('runtime resolution', { concurrent: false }, () => {
         ? { ...entry, packageDir: second, version: '2.0.0', declarer: join(second, 'package.json') }
         : entry),
     }
-    expect(() => { registration.replace(changed) }).toThrow(/requires a process restart/u)
+    expect(() => { registration.replace(changed) }).toThrow(ProfileResolutionRestartRequiredError)
+    expect(() => { registration.replace(changed) }).toThrow(expect.objectContaining({
+      code: 'PROFILE_RESOLUTION_RESTART_REQUIRED', reason: 'replace-package', packageName: '@deepseek-ai/dsh-core',
+    }))
     expect(() => {
       registration.replace({
         ...first,
@@ -1628,7 +1632,7 @@ describe('runtime resolution', { concurrent: false }, () => {
     }).toThrow(/requires a process restart/u)
     expect(() => {
       registration.replace({ ...first, localPackageNames: ['@deepseek-ai/dsh-core'] })
-    }).toThrow(/requires a process restart/u)
+    }).toThrow(expect.objectContaining({ reason: 'override-local-package', packageName: '@deepseek-ai/dsh-core' }))
     expect(() => {
       registration.replace({ ...first, entries: first.entries.filter(entry => entry.name !== '@deepseek-ai/dsh-core') })
     }).toThrow(/requires a process restart/u)
@@ -2288,7 +2292,7 @@ describe('runtime resolution', { concurrent: false }, () => {
           { name: 'my-plugin', realPath: replacement },
         ])
         expect(() => { registration.replace(rejected) })
-          .toThrow(/^profile resolution: relinking "my-plugin" requires a process restart$/u)
+          .toThrow(expect.objectContaining({ code: 'PROFILE_RESOLUTION_RESTART_REQUIRED', reason: 'relink-package', packageName: 'my-plugin' }))
         expectPeerLookup(registration, require, parent, join(linkedRoot, 'node_modules', peer))
         expectPeerLookup(registration, createRequire(join(rejectedTarget, 'entry.cjs')),
           pathToFileURL(join(rejectedTarget, 'entry.mjs')).href, join(rejectedTarget, 'node_modules', peer))

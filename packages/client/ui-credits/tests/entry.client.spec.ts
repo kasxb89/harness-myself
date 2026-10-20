@@ -9,6 +9,8 @@ import { LayoutController, type MainPanelId } from '../../ui-layout/src/client/s
 import { createLayoutStore } from '../../ui-layout/src/client/stores.ts'
 import { apply, inject } from '../src/client/index.ts'
 import type { CreditsPageInjected } from '../src/client/CreditsPage.tsx'
+import type { QuotaNoticeOwnerProps } from '@deepseek-ai/dsh-client-ui-chat/client'
+import type { BalanceNoticeInjected } from '../src/client/BalanceNotice.tsx'
 
 const roots: Context[] = []
 const existingPanel = 'existing-panel' as MainPanelId
@@ -50,6 +52,7 @@ async function bench(search: string) {
             'sidebar.panellist': { kind: 'list', scope: 'root' },
             'sidebar.footer.action': { kind: 'list', scope: 'root' },
             'shell.overlay': { kind: 'list', scope: 'root' },
+            'shell.quota-notice': { kind: 'chain', scope: 'root' },
             'conversation.input.dock': { kind: 'list', scope: 'session' },
           },
         }, ({ renderSlot }: PropsRenderSlots<'shell.overlay'>) => renderSlot('shell.overlay', {}))
@@ -62,6 +65,25 @@ async function bench(search: string) {
 }
 
 describe('Credits launch entry', () => {
+  it('claims only product funding failures and uses the existing recharge panel', async () => {
+    const b = await bench('')
+    await b.start()
+    await b.declare()
+    const notice = b.slots.entries('shell.quota-notice')[0]
+    if (notice?.select === undefined || notice.inject === undefined) throw new Error('Missing product balance notice entry')
+    // The real registry intentionally erases owner and injection types at storage.
+    const select = notice.select as (owner: QuotaNoticeOwnerProps) => QuotaNoticeOwnerProps | null
+    const owner = { code: 'INSUFFICIENT_BALANCE' as const, message: 'safe', dismiss: () => {}, keepOpen: () => () => {} }
+    expect(select(owner)).toBe(owner)
+    expect(select({ ...owner, code: 'ACCOUNT_QUOTA' })).toBeNull()
+    expect(select({ ...owner, code: 'QUOTA' })).toBeNull()
+    const face = notice.inject()
+    if (typeof face.openRecharge !== 'function') throw new Error('Missing recharge navigation')
+    const openRecharge = face.openRecharge as BalanceNoticeInjected['openRecharge']
+    openRecharge()
+    expect(b.layout.panelInfo.getSnapshot().activePanelId).toBe('recharge')
+    expect(b.select).toHaveBeenCalledExactlyOnceWith('recharge')
+  })
   it('waits for the main declaration before opening the registered product panel', async () => {
     const b = await bench('?panel=credits&workspace=kept#conversation')
     window.history.replaceState({ entry: 'welcome' }, '', window.location.href)

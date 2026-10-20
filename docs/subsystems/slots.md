@@ -203,3 +203,51 @@ The generated Client inspect catalog is the exhaustive contract for each key: ca
 - Keep observable source and snapshot identities stable between changes. Republish through the same source whenever its value changes.
 - Pass JSON-compatible data and callbacks between UI domains. The `hooks` compartment is the sole exception for bare observables; React content travels through slots.
 - Treat `single` and an occupied keyed cell as replacement points. Use list ids or an unoccupied key for additive extensions.
+
+Browser settings navigation uses typed Client-local Cordis events. The [settings shell](../../packages/client/ui-settings-general/README.md) owns section availability and dialog lifetime; these events are dispatched on the browser Context, separately from Host Remote calls.
+
+<!-- BEGIN GENERATED cordis-surface (gen-cordis-catalog.ts) — do not edit between markers -->
+
+<a id="cordis-surface"></a>
+
+## Cordis API
+
+Generated from source by `scripts/gen-cordis-catalog.ts` (verified fresh by `pnpm run verify-cordis-catalog` in doc-sync; regenerate with `pnpm run gen-cordis-catalog`) — the language sides differ only in locale-specific paired document paths. Signature blocks use a `ts cordis-catalog` fence and keep the original source JSDoc; dispatch modes are defined in the [primer](../cordis-primer.md#dispatch-modes), and the framework-inherited `ctx` API lives in [cordis-api/inherited.md](../cordis-api/inherited.md).
+
+<a id="ui-settings-events"></a>
+
+### `ui-settings/*` events
+
+<a id="ui-settingsclosed--emit"></a>
+
+#### `ui-settings/closed` — emit
+
+Notify local features after the visible settings dialog is closed by the user.
+
+```ts cordis-catalog
+/**
+ * Notify local features after the visible settings dialog is closed by the user.
+ * @mode emit
+ */
+'ui-settings/closed'(): void
+```
+
+Source: [`packages/client/ui-settings-general/src/client/index.ts`](../../packages/client/ui-settings-general/src/client/index.ts)
+
+<a id="ui-settingsopen-section--emit"></a>
+
+#### `ui-settings/open-section` — emit
+
+Open the settings dialog on an installed section; missing sections leave it unchanged.
+
+```ts cordis-catalog
+/**
+ * Open the settings dialog on an installed section; missing sections leave it unchanged.
+ * @mode emit
+ * @param sectionId - Exact id registered in settings.section.
+ */
+'ui-settings/open-section'(sectionId: string): void
+```
+
+Source: [`packages/client/ui-settings-general/src/client/index.ts`](../../packages/client/ui-settings-general/src/client/index.ts)
+<!-- END GENERATED cordis-surface -->

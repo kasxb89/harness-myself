@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import type { ModelSelection } from '@deepseek-ai/dsh-api-session-controller/types'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { apiUrl } from './api-url.ts'
+import { isAccountBalanceRejection } from './account-balance.ts'
 import { CREATION_LANGUAGE_GUIDANCE, VIDEO_DIRECTOR_PROMPT } from './creation-workflows.ts'
 import { videoPromptFormatGuidance } from './video-prompt-format.ts'
 
@@ -25,6 +26,7 @@ export type PromptAssistCode = 'INVALID_REQUEST' | 'PROMPT_ASSIST_NOT_CONFIGURED
   | 'PROMPT_ASSIST_RESULT_STORAGE_FAILED'
   | 'PROMPT_ASSIST_RESULT_UNKNOWN'
   | 'PROMPT_ASSIST_SELECTION_CHANGED' | 'PROMPT_ASSIST_VISION_REQUIRED' | 'PROMPT_ASSIST_CHAT_REQUIRED'
+  | 'INSUFFICIENT_BALANCE'
 
 /** Failure text is a safe host diagnostic; receiving clients localize by code. */
 export interface PromptAssistFailure {
@@ -61,6 +63,7 @@ export interface PromptAssistOptions {
 }
 
 const MESSAGES: Record<PromptAssistCode, string> = {
+  INSUFFICIENT_BALANCE: '余额不足，请充值',
   INVALID_REQUEST: '帮写内容无效，请缩短原稿或修改意见后重试。',
   PROMPT_ASSIST_CHAT_REQUIRED: '当前选择的是视频生成模型，请在聊天框切换到聊天模型后再帮写，素材与原稿已保留。',
   PROMPT_ASSIST_NOT_CONFIGURED: '当前尚未配置可用的提示词帮写模型，请联系管理员。',
@@ -336,7 +339,8 @@ export async function assistPrompt(options: PromptAssistOptions): Promise<Prompt
         diagnostic = responseMetadata(completion, 'completion')
         if (!completion.ok) {
           diagnostic = await responseDiagnostic(completion, 'completion', options.key)
-          outcome = promptAssistFailure('PROMPT_ASSIST_RESULT_UNKNOWN')
+          outcome = promptAssistFailure(isAccountBalanceRejection({ error: diagnostic.error }, completion.status)
+            ? 'INSUFFICIENT_BALANCE' : 'PROMPT_ASSIST_RESULT_UNKNOWN')
         } else {
           const body = record(await boundedJson(completion))
           const choice = record(Array.isArray(body?.choices) ? body.choices[0] : null)

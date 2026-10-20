@@ -252,6 +252,7 @@ export const EVENT_SCOPE_PAGE: Record<string, string> = {
   'session-telemetry': 'session-telemetry.md',
   'feedback': 'feedback.md',
   'tools': 'tools.md',
+  'ui-settings': 'slots.md',
   'user-questions': 'user-questions.md',
   'webserver': 'web-server.md',
   'workflow': 'workflow.md',
@@ -1185,7 +1186,14 @@ export function walkPartitionProblems(input: WalkPartitionInput, maps: WalkParti
  * @returns `[repo-relative path, exact content]` for every generated artifact.
  */
 export function computeOutputs(): [string, string][] {
-  const { projector, model } = projectCordisCatalog(root, CORDIS_CATALOG_POLICY)
+  const { projector, model: hostModel } = projectCordisCatalog(root, CORDIS_CATALOG_POLICY)
+  const { model: clientModel } = projectCordisCatalog(root, CORDIS_CATALOG_POLICY, 'client')
+  // Settings navigation is a documented Client-only protocol; it is absent
+  // from the Host face and does not add Client services to the Host catalog.
+  const model = {
+    ...hostModel,
+    events: [...hostModel.events, ...clientModel.events.filter(event => event.scope === 'ui-settings')],
+  }
   const services = [...model.services]
   const events = [...model.events]
 
@@ -1216,7 +1224,7 @@ export function computeOutputs(): [string, string][] {
   const pages = [...new Set([...Object.values(SERVICE_PAGE), ...Object.values(EVENT_SCOPE_PAGE)])].sort()
   const outputs: [string, string][] = [
     [OUT_INHERITED, renderInheritedPage(CORDIS_CATALOG_POLICY)],
-    [OUT_RUNTIME_API, projector.renderRuntimeApi(model)],
+    [OUT_RUNTIME_API, projector.renderRuntimeApi(hostModel)],
   ]
   for (const page of pages) {
     const region = renderPageRegion(

@@ -103,6 +103,12 @@ async function boot(options: {
         return
       }
       if (mode === 'upstream-error') { response.writeHead(500); response.end('upstream account-key deployment-secret stack trace'); return }
+      if (mode === 'balance-rejected' || mode === 'upstream-balance-rejected') {
+        response.writeHead(403)
+        response.end(JSON.stringify({ error: { code: mode === 'balance-rejected' ? 'insufficient_user_quota' : 'insufficient_quota',
+          type: mode === 'balance-rejected' ? 'new_api_error' : 'upstream_error', message: 'account-key private balance diagnostic' } }))
+        return
+      }
       if (mode === 'malformed') { response.end('{broken account-key'); return }
       if (mode === 'selection-change') chatSelection = { provider: 'product', model: 'vision-assistant' }
       await duringCompletion?.()
@@ -548,6 +554,24 @@ describe('prompt assistance through the real Loader and account-owned HTTP route
       expect(recorded?.completionDispatched).toBe(recorded?.code === 'PROMPT_ASSIST_RESULT_UNKNOWN'
         || recorded?.code === 'PROMPT_ASSIST_INVALID_RESPONSE')
     }
+  })
+
+  it('exposes the user funding rejection after one completion, while channel debt stays generic', async () => {
+    const { base, stateDir } = await boot()
+    for (const [nextMode, code] of [['balance-rejected', 'INSUFFICIENT_BALANCE'], ['upstream-balance-rejected', 'PROMPT_ASSIST_RESULT_UNKNOWN']] as const) {
+      mode = nextMode
+      const before = calls.filter(call => call.path === '/v1/chat/completions').length
+      const result = await post(base, input())
+      expect(result).toMatchObject({ ok: false, code })
+      expect(JSON.stringify(result)).not.toMatch(/account-key|private balance diagnostic/)
+      if (code === 'INSUFFICIENT_BALANCE') expect(result?.message).toBe('余额不足，请充值')
+      expect(calls.filter(call => call.path === '/v1/chat/completions')).toHaveLength(before + 1)
+    }
+    const entries = (await readdir(join(stateDir, 'prompt-assists'))).filter(entry => entry !== 'references')
+    expect(entries).toHaveLength(2)
+    const outcomes = await Promise.all(entries.map(entry => readFile(join(stateDir, 'prompt-assists', entry, 'outcome.json'), 'utf8')))
+    expect(outcomes.some(text => text.includes('insufficient_user_quota'))).toBe(true)
+    expect(outcomes.join('')).not.toContain('account-key')
   })
 
   it('does not read another account’s uploaded image into a billed writing request', async () => {

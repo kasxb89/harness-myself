@@ -126,6 +126,8 @@ Changing `displayName`, `apiKeyEnv`, or `baseURL` without resolving the provider
 
 -----
 
+The confined production Harness transport recognizes HTTP 403 with the exact gateway `new_api_error` / `insufficient_user_quota` pair before the SDK flattens error fields. It emits the existing string failure identity `INSUFFICIENT_BALANCE` with safe copy, allowing the product to offer its recharge panel. It does not classify vendor quota text, token limits, another provider’s response or a bare 403 as product account exhaustion, and it never repeats the paid request. Original gateway request receipts remain attached when present.
+
 <a id="understand-the-implementation"></a>
 ## Understand the implementation
 

@@ -29,6 +29,7 @@ import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { HarnessAccount } from '@deepseek-ai/dsh-llm-pi-ai'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { apiUrl, normalizeApiBaseUrl } from './api-url.ts'
+import { isAccountBalanceRejectionText } from './account-balance.ts'
 import { ClientActivitySessions, parseClientActivity, type ClientActivitySample } from './client-activity.ts'
 import { parseUsageWindow, readAccountUsage } from './usage.ts'
 import { ChatUsageReader, parseChatUsageQuery } from './chat-usage-reader.ts'
@@ -124,6 +125,8 @@ export interface Config {
   videoEditTimeoutMs?: number
   /** Common frame rate used when joining clips. */
   videoEditFps?: number
+  /** Maximum inputs decoded together in one final encode; larger edits retain serial normalization. */
+  videoEditSinglePassMaxInputs?: number
   /** Explicit bundled video runtime; empty uses the Desktop-provided runtime root. */
   videoRuntimeRoot?: string
 }
@@ -157,6 +160,7 @@ export const Config: z<Config> = z.object({
   videoProjectOutputDirectory: z.string().default('artifacts/videos'),
   videoEditTimeoutMs: z.natural().min(1).default(300_000),
   videoEditFps: z.natural().min(1).max(120).default(30),
+  videoEditSinglePassMaxInputs: z.natural().min(1).max(32).default(3),
   videoRuntimeRoot: z.string().default(''),
 })
 
@@ -1051,7 +1055,8 @@ export function apply(ctx: Context, config: Config): void {
       })
       const createdText = await created.text()
       if (!created.ok) {
-        return { ok: false, code: `HTTP_${String(created.status)}`, message: createdText.slice(0, 400) }
+        const balanceRejected = isAccountBalanceRejectionText(createdText, created.status)
+        return { ok: false, code: balanceRejected ? 'INSUFFICIENT_BALANCE' : `HTTP_${String(created.status)}`, message: balanceRejected ? '余额不足，请充值；提交结果尚未确认，请先检查已有任务，不要重复提交。' : createdText.slice(0, 400) }
       }
       let createdBody: Record<string, unknown> | null = null
       try { createdBody = JSON.parse(createdText) as Record<string, unknown> } catch { createdBody = null }
@@ -1362,7 +1367,8 @@ export function apply(ctx: Context, config: Config): void {
         })
         const submittedText = await submitted.text()
         if (!submitted.ok) {
-          return { ok: false, model, code: `HTTP_${String(submitted.status)}`, message: submittedText.slice(0, 400) }
+          const balanceRejected = isAccountBalanceRejectionText(submittedText, submitted.status)
+          return { ok: false, model, code: balanceRejected ? 'INSUFFICIENT_BALANCE' : `HTTP_${String(submitted.status)}`, message: balanceRejected ? '余额不足，请充值' : submittedText.slice(0, 400) }
         }
         let submittedBody: Record<string, unknown> | null = null
         try { submittedBody = JSON.parse(submittedText) as Record<string, unknown> } catch { submittedBody = null }
@@ -1450,7 +1456,8 @@ export function apply(ctx: Context, config: Config): void {
         })()
       const text = await upstream.text()
       if (!upstream.ok) {
-        return { ok: false, model, code: `HTTP_${String(upstream.status)}`, message: text.slice(0, 400) }
+        const balanceRejected = isAccountBalanceRejectionText(text, upstream.status)
+        return { ok: false, model, code: balanceRejected ? 'INSUFFICIENT_BALANCE' : `HTTP_${String(upstream.status)}`, message: balanceRejected ? '余额不足，请充值' : text.slice(0, 400) }
       }
       let payload: unknown = null
       try { payload = JSON.parse(text) } catch { payload = null }
@@ -2008,7 +2015,7 @@ export function apply(ctx: Context, config: Config): void {
         const outcome = await run(operation, panelLife.signal)
         const paths = outcome.paths ?? (outcome.path === undefined ? [] : [outcome.path])
         await creative.finish(operation, { kind, paths, status: outcome.ok ? 'completed' : panelLife.signal.aborted ? 'cancelled'
-          : ['TIMEOUT', 'TRANSPORT', 'NO_TASK_ID'].includes(outcome.code ?? '') ? 'unknown' : 'failed',
+          : ['TIMEOUT', 'TRANSPORT', 'NO_TASK_ID'].includes(outcome.code ?? '') || kind === 'video' && outcome.code === 'INSUFFICIENT_BALANCE' ? 'unknown' : 'failed',
         ...outcome.code === undefined ? {} : { errorCode: outcome.code } })
         return { ...outcome, planId }
       } finally { creative.release(operation) }
@@ -3237,6 +3244,7 @@ export function apply(ctx: Context, config: Config): void {
         }
         return createVideoEditor(videoContext, {
           workspaceRoot, session, fps: resolved.videoEditFps, timeoutMs: resolved.videoEditTimeoutMs,
+          singlePassMaxInputs: resolved.videoEditSinglePassMaxInputs,
           ...(resolved.videoRuntimeRoot === '' ? {} : { runtimeRoot: resolved.videoRuntimeRoot }),
           ...(ownedMediaRoots === undefined ? {} : { ownedMediaRoots }),
         })
@@ -3467,7 +3475,7 @@ export function apply(ctx: Context, config: Config): void {
         operation = await creative.begin(creativeOwner(exec, binding.identity), { kind: 'video', model: capability.model.id, prompt: args.prompt, shots: [{ prompt: args.prompt, ...args.duration_seconds === undefined ? {} : { durationSeconds: args.duration_seconds } }], ...args.plan_id === undefined ? {} : { planId: args.plan_id }, ...args.shot_id === undefined ? {} : { shotIds: [args.shot_id] } })
         await creative.dispatched(operation)
         const outcome = await runVideoTask(await binding.key(), capability.model.route, built.request, exec.signal)
-        await creative.finish(operation, { status: outcome.ok ? 'completed' : exec.signal.aborted ? 'cancelled' : ['TIMEOUT', 'TRANSPORT', 'NO_TASK_ID'].includes(outcome.code ?? '') ? 'unknown' : 'failed', kind: 'video', ...outcome.path === undefined ? {} : { paths: [outcome.path] }, ...outcome.code === undefined ? {} : { errorCode: outcome.code } })
+        await creative.finish(operation, { status: outcome.ok ? 'completed' : exec.signal.aborted ? 'cancelled' : ['TIMEOUT', 'TRANSPORT', 'NO_TASK_ID', 'INSUFFICIENT_BALANCE'].includes(outcome.code ?? '') ? 'unknown' : 'failed', kind: 'video', ...outcome.path === undefined ? {} : { paths: [outcome.path] }, ...outcome.code === undefined ? {} : { errorCode: outcome.code } })
         if (!outcome.ok) {
           return {
             status: outcome.code === 'TIMEOUT' ? 'running' : 'failed',
@@ -3484,7 +3492,7 @@ export function apply(ctx: Context, config: Config): void {
           const owner = operation.owner
           const creation = operation
           await creative.preview(operation, savedPath, async () => {
-            const editor = createVideoEditor(ctx, { workspaceRoot: owner.workspaceRoot, session, ownedMediaRoots: [dirname(savedPath)], fps: resolved.videoEditFps, timeoutMs: resolved.videoEditTimeoutMs, ...resolved.videoRuntimeRoot === '' ? {} : { runtimeRoot: resolved.videoRuntimeRoot } })
+            const editor = createVideoEditor(ctx, { workspaceRoot: owner.workspaceRoot, session, ownedMediaRoots: [dirname(savedPath)], fps: resolved.videoEditFps, timeoutMs: resolved.videoEditTimeoutMs, singlePassMaxInputs: resolved.videoEditSinglePassMaxInputs, ...resolved.videoRuntimeRoot === '' ? {} : { runtimeRoot: resolved.videoRuntimeRoot } })
             if (editor.preview === undefined) throw new CreativeError('CREATIVE_PREVIEW_UNAVAILABLE', 503, '本地视频预览工具暂时不可用。')
             return editor.preview(savedPath, join(owner.workspaceRoot, '.yunshu-creative', 'previews', creation.operationId), exec.signal)
           }).catch((error: unknown) => { ctx.logger.warn('Video saved; optional creation preview was not recorded.', error) })

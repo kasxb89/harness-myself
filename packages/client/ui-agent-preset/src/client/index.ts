@@ -1,9 +1,10 @@
 /**
- * Agent-preset surface plugin, browser half — three surfaces over one roster:
+ * Agent-preset surface plugin, browser half — shared surfaces over one roster:
  * a chip on the new-session screen for the session about to start, a
  * read-only label in the session header, and a settings section that lists
  * the roster (selection, the new-task default, a read-only view of each
- * declared composition, and the way into Creator mode).
+ * declared composition, and the way into Creator mode), plus a searchable
+ * employee page that opens ordinary conversations with a chosen role.
  *
  * A running session keeps the composition it began with (the host refuses to
  * adopt an existing session under a different preset). That is what splits
@@ -28,11 +29,15 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-api-remotes/client'
 // Type-only: pulls the settings shell's SlotMap merge (the 'settings.section' entry).
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
+import type {} from '@deepseek-ai/dsh-client-ui-settings-general/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 // Type-only: pulls the Workspace UI navigation service merge (ctx.uiWorkspace).
 import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
 import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
+import type { MainPanelId } from '@deepseek-ai/dsh-client-ui-layout/client'
+import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
+import { EmployeePage, EmployeePanelIcon, type EmployeePageInjected } from './EmployeePage.tsx'
 import { AgentPresetLabel } from './AgentPresetLabel.tsx'
 import { CreatePluginMenuItem } from './CreatePluginMenuItem.tsx'
 import type { AgentPresetLabelInjected } from './AgentPresetLabel.tsx'
@@ -58,6 +63,7 @@ export type { AgentPresetSectionInjected, AgentPresetSectionProps } from './Agen
 export type { AgentPresetSeatState } from './seat-store.ts'
 export type { AgentPresetSectionState, PresetView } from './section-store.ts'
 export type { AgentPresetOption, AgentPresetSettingsState } from './settings-store.ts'
+export type { EmployeePageInjected, EmployeePageProps } from './EmployeePage.tsx'
 export { AGENT_PRESET_SETTINGS_NS, writeDefaultPreset } from './settings-store.ts'
 
 /** Required services (cordis fiber inject). */
@@ -66,7 +72,7 @@ export const inject = [
 ]
 
 /**
- * Mount the roster surfaces: hero chip, session-header label, settings section.
+ * Mount the shared roster in the conversation, settings and employee page.
  * @param ctx - the browser plugin context.
  */
 export function apply(ctx: ClientContext): void {
@@ -165,6 +171,9 @@ export function apply(ctx: ClientContext): void {
         refresh()
       }),
       ctx.on('connection/reset', refresh),
+      // Community editors can change declarations without publishing a Host
+      // settings namespace event. Re-read once when their dialog closes.
+      ctx.on('ui-settings/closed', refresh),
     ]
     reconcile()
     return async () => {
@@ -198,12 +207,35 @@ export function apply(ctx: ClientContext): void {
       load: () => controller.load(),
     })
 
-    const startCreatorDraft = () => {
+    const startPresetDraft = (id: string) => {
       const seat = mainBlankSeat() ?? unboundSeat
-      seat.stage('cordis', true)
+      seat.stage(id, true)
       scope.uiWorkspace.startSession(undefined, { clearPreviousDraft: false })
       void seat.apply()
     }
+    const startCreatorDraft = () => { startPresetDraft('cordis') }
+
+    const employeePanel = 'employees' as MainPanelId
+    const customEmployeeSection = 'custom-system-prompt'
+    const customEmployeeAvailable = {
+      getSnapshot: () => scope.slots.entries('settings.section').some(entry => entry.options.id === customEmployeeSection),
+      subscribe: (listener: () => void) => scope.slots.subscribe('settings.section', listener),
+    }
+    scope.slots.inject('main', () => scope.slots.register({
+      name: 'main', key: employeePanel, locale: 'settings.agentPreset',
+      inject: (): EmployeePageInjected => ({
+        hooks: { agentPresets: controller.store, customEmployeeAvailable },
+        load: () => controller.load(),
+        startEmployeeDraft: startPresetDraft,
+        openCustomEmployee: () => {
+          if (customEmployeeAvailable.getSnapshot()) scope.emit('ui-settings/open-section', customEmployeeSection)
+        },
+      }),
+    }, EmployeePage))
+    scope.slots.inject('sidebar.panellist', () => scope.slots.register({
+      name: 'sidebar.panellist', id: employeePanel, order: 15,
+      label: () => ctx.locale.bind('settings.agentPreset')('employeesTitle'), locale: 'settings.agentPreset',
+    }, EmployeePanelIcon))
 
     scope.effect(() => {
       creatorDraft = startCreatorDraft

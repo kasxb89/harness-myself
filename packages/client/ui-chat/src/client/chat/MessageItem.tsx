@@ -54,7 +54,7 @@ function failureMessage(
   switch (productFailureKind(code)) {
     case 'signed-out': return t('message.failure.accountSignedOut')
     case 'sign-in': return t('message.failure.accountSignInRequired')
-    case 'insufficient-credits': return t('message.failure.quota')
+    case 'insufficient-credits': return code === 'INSUFFICIENT_BALANCE' ? t('message.failure.balance') : t('message.failure.quota')
     case 'cancelled': return t('message.failure.cancelled')
     case 'busy': return t('message.failure.busy')
   }

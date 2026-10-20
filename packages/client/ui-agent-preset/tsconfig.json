@@ -58,6 +58,15 @@
     },
     {
       "path": "../../util/values"
+    },
+    {
+      "path": "../ui-layout"
+    },
+    {
+      "path": "../ui-sidebar"
+    },
+    {
+      "path": "../ui-settings-general/tsconfig.client.json"
     }
   ]
 }

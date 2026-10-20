@@ -89,6 +89,7 @@ export {
   type PluginPackage,
   type PluginPackagesConfig,
 } from './profile-resolution/service.ts'
+export { ProfileResolutionRestartRequiredError, type ProfileResolutionRestartReason } from './profile-resolution/resolver.ts'
 
 /**
  * Resolve the config to boot. Replay swaps a `cordis.yml` basename for

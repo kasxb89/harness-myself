@@ -69,6 +69,8 @@ export interface VideoEditorOptions {
   readonly width?: number
   readonly height?: number
   readonly fps: number
+  /** Maximum inputs decoded together, integer 1..32; the Host supplies its configured hardware limit. */
+  readonly singlePassMaxInputs: number
   /** One complete edit or inspection budget, including subprocess settlement. */
   readonly timeoutMs: number
 }
@@ -98,7 +100,7 @@ export interface VideoEditor {
    */
   preview?(path: string, outputDirectory: string, signal: AbortSignal): Promise<readonly { path: string; timeSeconds: number }[]>
   /**
-   * Normalize sizes, frame rates and audio, then hard-cut clips into a new MP4.
+   * Normalize and hard-cut clips; bounded graphs encode once, while larger edits retain serial normalization.
    * @param request - Clip order, trims, optional final cut and exclusive destination.
    * @returns Published path and independently probed duration; failures leave originals intact.
    */
@@ -144,6 +146,9 @@ function parseProbe(text: string): ProbedVideo {
  * @returns An editor with no shell execution, network retrieval or system-PATH fallback.
  */
 export function createVideoEditor(ctx: Context, options: VideoEditorOptions): VideoEditor {
+  if (!Number.isInteger(options.singlePassMaxInputs) || options.singlePassMaxInputs < 1 || options.singlePassMaxInputs > 32) {
+    throw new VideoEditError('VIDEO_EDIT_INVALID_INPUT', 'The single-pass input limit must be an integer from 1 to 32.')
+  }
   const fs = ctx.get('fs')
   const subprocess = ctx.get('subprocess')
   const sandboxPolicy = ctx.get('sandboxPolicy')
@@ -333,30 +338,59 @@ export function createVideoEditor(ctx: Context, options: VideoEditorOptions): Vi
       const temporary = await mkdtemp(join(dirname(output), '.video-edit-'))
       try {
         const binary = await executable('ffmpeg', signal)
-        const normalized: string[] = []
+        const selected: { path: string; start: number; duration: number; hasAudio: boolean }[] = []
         let remaining = duration
-        for (const [index, clip] of clips.entries()) {
+        for (const clip of clips) {
           if (remaining <= 0) break
           const segmentDuration = Math.min(clip.duration, remaining)
-          const destination = join(temporary, `clip-${String(index)}.mp4`)
-          const filter = `[0:v:0]scale=${String(width)}:${String(height)}:force_original_aspect_ratio=decrease,pad=${String(width)}:${String(height)}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=${String(options.fps)},format=yuv420p[v];[${clip.hasAudio ? '0:a:0' : '1:a:0'}]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,apad[a]`
-          await run([binary, '-hide_banner', '-loglevel', 'error', '-nostdin', '-n', '-protocol_whitelist', 'file,pipe',
-            '-ss', String(clip.start), '-i', clip.path,
-            ...clip.hasAudio ? [] : ['-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo'],
-            '-filter_complex', filter, '-map', '[v]', '-map', '[a]', '-t', String(segmentDuration),
-            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', destination], current, signal)
-          normalized.push(destination)
+          selected.push({ ...clip, duration: segmentDuration })
           remaining -= segmentDuration
-          request.onProgress?.({ stage: 'normalizing', completedClips: normalized.length, totalClips: clips.length })
         }
-        request.onProgress?.({ stage: 'assembling', completedClips: normalized.length, totalClips: clips.length })
+        request.onProgress?.({ stage: 'normalizing', completedClips: 0, totalClips: selected.length })
         const final = join(temporary, 'final.mp4')
-        const inputs = normalized.flatMap(path => ['-i', path])
-        const concat = `${normalized.map((_path, index) => `[${String(index)}:v:0][${String(index)}:a:0]`).join('')}concat=n=${String(normalized.length)}:v=1:a=1[v][a]`
-        await run([binary, '-hide_banner', '-loglevel', 'error', '-nostdin', '-n', '-protocol_whitelist', 'file,pipe', ...inputs,
-          '-filter_complex', concat, '-map', '[v]', '-map', '[a]', '-t', String(duration),
-          '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', final], current, signal)
-        request.onProgress?.({ stage: 'verifying', completedClips: normalized.length, totalClips: clips.length })
+        if (selected.length <= options.singlePassMaxInputs) {
+          // Decode each bounded input with one thread, then normalize and join its frames before the sole encode.
+          // Every input retains its own local-only protocol restriction, including later inputs in the graph.
+          const inputs = selected.flatMap(clip => ['-protocol_whitelist', 'file,pipe', '-threads', '1',
+            '-ss', String(clip.start), '-i', clip.path])
+          const filters = selected.flatMap((clip, index) => {
+            const number = String(index)
+            const seconds = String(clip.duration)
+            return [
+              `[${number}:v:0]trim=duration=${seconds},setpts=PTS-STARTPTS,scale=${String(width)}:${String(height)}:force_original_aspect_ratio=decrease,pad=${String(width)}:${String(height)}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=${String(options.fps)},format=yuv420p[v${number}]`,
+              clip.hasAudio
+                ? `[${number}:a:0]atrim=duration=${seconds},asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,apad,atrim=duration=${seconds}[a${number}]`
+                : `anullsrc=r=48000:cl=stereo,atrim=duration=${seconds}[a${number}]`,
+            ]
+          })
+          const concat = `${selected.map((_clip, index) => `[v${String(index)}][a${String(index)}]`).join('')}concat=n=${String(selected.length)}:v=1:a=1[v][a]`
+          request.onProgress?.({ stage: 'assembling', completedClips: 0, totalClips: selected.length })
+          await run([binary, '-hide_banner', '-loglevel', 'error', '-nostdin', '-n', ...inputs,
+            '-filter_complex', [...filters, concat].join(';'), '-map', '[v]', '-map', '[a]', '-t', String(duration),
+            '-r', String(options.fps), '-fps_mode', 'cfr',
+            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', final], current, signal)
+        } else {
+          // Larger graphs preserve the serial decoder bound of the existing workflow.
+          const normalized: string[] = []
+          for (const [index, clip] of selected.entries()) {
+            const destination = join(temporary, `clip-${String(index)}.mp4`)
+            const filter = `[0:v:0]scale=${String(width)}:${String(height)}:force_original_aspect_ratio=decrease,pad=${String(width)}:${String(height)}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=${String(options.fps)},format=yuv420p[v];[${clip.hasAudio ? '0:a:0' : '1:a:0'}]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,apad[a]`
+            await run([binary, '-hide_banner', '-loglevel', 'error', '-nostdin', '-n', '-protocol_whitelist', 'file,pipe',
+              '-ss', String(clip.start), '-i', clip.path,
+              ...clip.hasAudio ? [] : ['-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo'],
+              '-filter_complex', filter, '-map', '[v]', '-map', '[a]', '-t', String(clip.duration),
+              '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', destination], current, signal)
+            normalized.push(destination)
+            request.onProgress?.({ stage: 'normalizing', completedClips: normalized.length, totalClips: selected.length })
+          }
+          request.onProgress?.({ stage: 'assembling', completedClips: normalized.length, totalClips: selected.length })
+          const inputs = normalized.flatMap(path => ['-protocol_whitelist', 'file,pipe', '-i', path])
+          const concat = `${normalized.map((_path, index) => `[${String(index)}:v:0][${String(index)}:a:0]`).join('')}concat=n=${String(normalized.length)}:v=1:a=1[v][a]`
+          await run([binary, '-hide_banner', '-loglevel', 'error', '-nostdin', '-n', ...inputs,
+            '-filter_complex', concat, '-map', '[v]', '-map', '[a]', '-t', String(duration),
+            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', final], current, signal)
+        }
+        request.onProgress?.({ stage: 'verifying', completedClips: selected.length, totalClips: selected.length })
         const result = await inspect(final, signal)
         if (Math.abs(result.durationSeconds - duration) > Math.max(0.1, 2 / options.fps)) {
           throw new VideoEditError('VIDEO_EDIT_OUTPUT_INVALID', 'The assembled video did not match the requested duration. Original clips are still available.')

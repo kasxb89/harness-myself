@@ -21,8 +21,8 @@
   en: 09f0b75af9f0ed14
   zh: 60bbc2e67d5e87a8
 /yunshu-desktop/installation-ownership:
-  en: 22153a298a6662e1
-  zh: 3600803c8c9d0274
+  en: 32628bf3bcbd28df
+  zh: cd86a46b6f91250b
 /yunshu-desktop/installation-ownership/runtime-and-plugin-activation:
   en: a1a47b09f4a72ba4
   zh: 7b1cf27f0b72cf31
@@ -45,8 +45,8 @@
   en: e03fab4b2e6b170a
   zh: b6f1dfad39b9b280
 /yunshu-desktop/package/local-macos-dmg-without-release-signing:
-  en: 1c53ad17534adf66
-  zh: c8f543c8cccdfad3
+  en: 10173e719fae8e99
+  zh: 61e6379f436ca6ad
 /yunshu-desktop/package/local-official-bundles-from-a-loopback-registry:
   en: 5f05072ec82cc62d
   zh: a3d63b58d1ef2db7
@@ -54,11 +54,11 @@
   en: 85142af51638bc10
   zh: 49c6ef344a1ace60
 /yunshu-desktop/package/upload-updates:
-  en: 0e90523699ad0e3b
-  zh: 77c6b268dad23a6f
+  en: 764b6e7c209ec2ae
+  zh: 543954a9d1b932c1
 /yunshu-desktop/package/unsigned-windows-test-installer:
-  en: 27a800555a9232dd
-  zh: 81fc714b3fad6263
+  en: edb137d58115153b
+  zh: 22f0d241c04e57a3
 /yunshu-desktop/package/windows-installer-interface:
   en: 66519f434687dbfd
   zh: a2770d5dda0aaf2c
@@ -69,14 +69,14 @@
   en: 20a29aaa6d321963
   zh: f775fd10fc003a79
 /yunshu-desktop/updates:
-  en: b01d8ebc1e211687
-  zh: 93838788a8e9dfe2
+  en: 995a8c1b326b625e
+  zh: 239d4577eba37a9c
 /yunshu-desktop/updates/local-desktop-settings:
   en: 2e57457c44c85b5f
   zh: 5b8510a3dc4c6c9d
 /yunshu-desktop/updates/mandatory-update-policy:
-  en: 4dae921c4144bdd9
-  zh: b51208356d213471
+  en: 13b650db7f2ff67a
+  zh: 77bb9501ec8134f9
 /yunshu-desktop/updates/local-updater-qualification:
   en: bc50fd8a4d96c227
   zh: fb0a6ce80c31cda6

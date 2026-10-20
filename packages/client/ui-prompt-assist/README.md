@@ -11,6 +11,8 @@ English | [中文](README.zh.md)
 
 Reference for `@deepseek-ai/dsh-client-ui-prompt-assist`, the shared writing and revision actions beside the image and video workspaces' main prompt. The session-optional `creation.prompt.assist` factory keeps feedback and operation state separate for each render occurrence. The [Slots reference](../../../docs/subsystems/slots.md) defines factory composition.
 
+A confirmed gateway user-balance rejection displays a localized top-up instruction while preserving the draft and feedback. Upstream channel debt and unknown completion outcomes keep their safe existing error categories; the client does not infer user debt from provider message text or automatically resend a paid writing request.
+
 ## Table of Contents
 
 - [Use this package](#use-this-package)

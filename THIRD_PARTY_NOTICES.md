@@ -91,6 +91,7 @@ External packages installed for runtime use or distributed inside the prebuilt b
 | [`deepseek-ivideo`](https://github.com/Devin-AXIS/iPolloWork) | SEE LICENSE IN LICENSE |
 | [`diff`](https://github.com/kpdecker/jsdiff) | BSD-3-Clause |
 | [`dompurify`](https://github.com/cure53/DOMPurify) | (MPL-2.0 OR Apache-2.0) |
+| [`dsh-custom-mode`](https://github.com/BOWLUNA/dsh-custom-mode) | MIT |
 | [`dsh-find-plugin`](https://github.com/awesome-dsh-plugin/dsh-find-plugin) | MIT |
 | [`dsh-skin-market`](https://github.com/kingOfSoySauce/dsh-skin-market) | MIT |
 | [`dsh-univer-office`](https://github.com/dream-num/dsh-univer-office) | Apache-2.0 |
@@ -169,6 +170,7 @@ pnpm applies local patches to the following packages at install time, so shipped
 - `dshmarket@1.66.20` — [`patches/dshmarket@1.66.20.patch`](patches/dshmarket@1.66.20.patch)
 - `dsh-find-plugin@0.4.0` — [`patches/dsh-find-plugin@0.4.0.patch`](patches/dsh-find-plugin@0.4.0.patch)
 - `dsh-univer-office@0.3.7` — [`patches/dsh-univer-office@0.3.7.patch`](patches/dsh-univer-office@0.3.7.patch)
+- `dsh-custom-mode@2.2.5` — [`patches/dsh-custom-mode@2.2.5.patch`](patches/dsh-custom-mode@2.2.5.patch)
 
 ## Chrome DevTools frontend
 

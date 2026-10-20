@@ -881,7 +881,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-credits-index`
 
 - `inject`: `webServer` · `tools`
-- `source`: [`packages/host/credits-index/src/index.ts:72`](../packages/host/credits-index/src/index.ts)
+- `source`: [`packages/host/credits-index/src/index.ts:73`](../packages/host/credits-index/src/index.ts)
 
 ```ts config-catalog
 /** Plugin config: platform origin, display rate, and where the session file lives. */
@@ -940,6 +940,8 @@ export interface Config {
   videoEditTimeoutMs?: number
   /** Common frame rate used when joining clips. */
   videoEditFps?: number
+  /** Maximum inputs decoded together in one final encode; larger edits retain serial normalization. */
+  videoEditSinglePassMaxInputs?: number
   /** Explicit bundled video runtime; empty uses the Desktop-provided runtime root. */
   videoRuntimeRoot?: string
 }
@@ -2545,7 +2547,7 @@ export interface PlanModeConfig {
 ## `@deepseek-ai/dsh-plugin-manager`
 
 - `inject`: `loader` · `profileContext`
-- `source`: [`packages/boot/plugin-manager/src/index.ts:44`](../packages/boot/plugin-manager/src/index.ts)
+- `source`: [`packages/boot/plugin-manager/src/index.ts:45`](../packages/boot/plugin-manager/src/index.ts)
 
 ```ts config-catalog
 /** The pnpm executable, registries, and limits for diagnostics, lookups and connection checks. */

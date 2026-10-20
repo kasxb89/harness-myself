@@ -45,6 +45,7 @@ let refreshes = 0
 let creations = 0
 let pricingRows: unknown[] = []
 let videoTaskStatus: string | undefined
+let videoRejection: unknown
 let imageResponse: unknown
 let relayKey = 'sk-owned-relay'
 let upstreamGate: ((path: string, response: ServerResponse) => Promise<void>) | undefined
@@ -87,6 +88,7 @@ afterEach(async () => {
   creations = 0
   pricingRows = []
   videoTaskStatus = undefined
+  videoRejection = undefined
   imageResponse = undefined
   relayKey = 'sk-owned-relay'
   upstreamGate = undefined
@@ -160,10 +162,12 @@ async function boot(
       if ((url.pathname === '/harness/v1/images/generations' || url.pathname === '/harness/v1/images/edits') && imageResponse !== undefined) {
         if (request.headers.authorization !== `Bearer ${relayKey}`) { response.writeHead(403); response.end('{}'); return }
         if (imageResponse === 'disconnect') { response.destroy(); return }
+        if (imageResponse !== null && typeof imageResponse === 'object' && 'error' in imageResponse) response.writeHead(403)
         response.end(JSON.stringify(imageResponse)); return
       }
       if (url.pathname === '/harness/v1/video/generations') {
         if (request.headers.authorization !== `Bearer ${relayKey}`) { response.writeHead(403); response.end('{}'); return }
+        if (videoRejection !== undefined) { response.writeHead(403); response.end(JSON.stringify(videoRejection)); return }
         response.end(JSON.stringify(videoTaskStatus === undefined ? {} : { code: 'success', data: { task_id: 'fixture-video-task' } })); return
       }
       if (url.pathname === '/harness/v1/video/generations/fixture-video-task') {
@@ -413,6 +417,64 @@ describe('deployed Harness API through the real product Loader', () => {
     const otherAccount = await fetch(origin + retained[0]!.previewUrl, { headers: { cookie } })
     expect(otherAccount.status).toBe(404)
     expect(await otherAccount.json()).toMatchObject({ ok: false, code: 'IMAGE_PREVIEW_UNAVAILABLE' })
+  })
+
+  it('preserves exact image user balance rejection while upstream channel quota stays generic', async () => {
+    const { base, stateDir } = await boot(undefined, true, true)
+    const cookie = await hostCookie(base)
+    await signIn(base)
+    context!.sessions.create(SessionId('funding-image-chat'), { meta: { cwd: stateDir } })
+    pricingRows = [{ model_name: 'gpt-image-2', supported_endpoint_types: ['image-generation'] }]
+    for (const [upstreamCode, type, expected] of [
+      ['insufficient_user_quota', 'new_api_error', 'INSUFFICIENT_BALANCE'],
+      ['insufficient_quota', 'upstream_error', 'HTTP_403'],
+    ]) {
+      imageResponse = { error: { code: upstreamCode, type, message: 'channel balance exhausted' } }
+      const before = calls.filter(call => call.path === '/harness/v1/images/generations').length
+      const result = await post(base, '/api/image/generate', {
+        session_id: 'funding-image-chat', account_id: '7', prompt: 'A cup', model: 'gpt-image-2',
+      }, cookie)
+      expect(result).toMatchObject({ ok: false, code: expected })
+      if (expected === 'INSUFFICIENT_BALANCE') expect(result.message).toBe('余额不足，请充值')
+      expect(calls.filter(call => call.path === '/harness/v1/images/generations')).toHaveLength(before + 1)
+    }
+  })
+
+  it.each(['panel', 'chat'] as const)('preserves exact single-video funding rejection through %s without resubmitting an unconfirmed plan', async (entry) => {
+    const { base, stateDir } = await boot(undefined, true, true)
+    const cookie = await hostCookie(base)
+    await signIn(base)
+    const sessionId = 'funding-video-chat'
+    context!.sessions.create(SessionId(sessionId), { meta: { cwd: stateDir } })
+    const agent = videoAgent(stateDir, sessionId)
+    pricingRows = [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }]
+    const args = { prompt: 'A synthetic cup in sunlight', model: 'MiniMax-H3', duration_seconds: 4 }
+    const execute = async (extra: object = {}) => object((await context!.tools.execute({ name: 'generate_video', arguments: { ...args, ...extra }, agent,
+      callId: ToolCallId('funding-video'), signal: new AbortController().signal })).value)
+    const listing = async () => projects(object(await (await fetch(base + `/api/creative/projects?session_id=${sessionId}`, { headers: { cookie } })).json()))
+    for (const { body, expected } of [
+      { body: { code: 'insufficient_user_quota', message: 'gateway funding rejection' }, expected: 'INSUFFICIENT_BALANCE' },
+      { body: { error: { code: 'insufficient_quota', type: 'upstream_error', message: 'insufficient_user_quota' } }, expected: 'HTTP_403' },
+      { body: { error: { code: 'permission_denied', type: 'new_api_error', message: 'insufficient_user_quota' } }, expected: 'HTTP_403' },
+    ]) {
+      videoRejection = body
+      const before = calls.filter(call => call.path === '/harness/v1/video/generations').length
+      const existing = new Set((await listing()).map(project => project.id))
+      const result = entry === 'chat' ? await execute() : await post(base, '/api/video/tasks?source=newapi-generate', {
+        prompt: args.prompt, model: args.model, durationSeconds: 4, session_id: sessionId, account_id: '7',
+      }, cookie)
+      expect(result).toMatchObject(entry === 'chat' ? { status: 'failed', code: expected, task_id: '' } : { ok: false, code: expected, taskId: null })
+      const project = (await listing()).find(item => !existing.has(item.id))
+      if (project === undefined) throw new Error('Expected retained video project')
+      expect(project).toMatchObject({ kind: 'video', status: expected === 'INSUFFICIENT_BALANCE' ? 'unknown' : 'failed',
+        tasks: [{ status: expected === 'INSUFFICIENT_BALANCE' ? 'unknown' : 'failed', errorCode: expected === 'INSUFFICIENT_BALANCE' ? 'SUBMISSION_UNKNOWN' : expected }], outputs: [] })
+      if (expected === 'INSUFFICIENT_BALANCE') {
+        expect(result.message).toBe('余额不足，请充值；提交结果尚未确认，请先检查已有任务，不要重复提交。')
+        expect(await execute({ plan_id: project.id, shot_id: 'shot_1' })).toMatchObject({ status: 'failed', code: 'CREATIVE_SUBMISSION_UNKNOWN' })
+      }
+      expect(calls.filter(call => call.path === '/harness/v1/video/generations')).toHaveLength(before + 1)
+      expect(calls.some(call => call.path.startsWith('/harness/v1/video/generations/'))).toBe(false)
+    }
   })
 
   it('sends normalized image bytes and matching multipart MIME types and extensions for image edits', async () => {

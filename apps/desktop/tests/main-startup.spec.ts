@@ -52,6 +52,7 @@ const harness = await vi.hoisted(async () => {
   let quitCompleted = deferred()
   let policyBlocked = deferred()
   let embeddedPolicy: unknown
+  let updateAuthority: string | undefined
   let closeWindowsOnQuit = false
   let updateState: DesktopUpdateState = { phase: 'idle' }
   let platformDisposeDeferred: ReturnType<typeof deferred> | undefined
@@ -239,6 +240,8 @@ const harness = await vi.hoisted(async () => {
     get policyBlocked() { return policyBlocked },
     get embeddedPolicy() { return embeddedPolicy },
     set embeddedPolicy(value: unknown) { embeddedPolicy = value },
+    get updateAuthority() { return updateAuthority },
+    set updateAuthority(value: string | undefined) { updateAuthority = value },
     nextNavigation() { navigated = deferred(); return navigated.promise },
     nextHostStart() { hostStarted = deferred(); return hostStarted.promise },
     deferPlatformDispose() { platformDisposeDeferred = deferred(); return platformDisposeDeferred },
@@ -272,6 +275,7 @@ const harness = await vi.hoisted(async () => {
       navigated = deferred(); dialogShown = deferred(); quitCompleted = deferred()
       policyBlocked = deferred()
       embeddedPolicy = undefined
+      updateAuthority = undefined
       platformDisposeDeferred = undefined
       platformCloseDeferred = undefined
     },
@@ -320,7 +324,8 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   const original = await importOriginal<typeof import('node:fs/promises')>()
   return { ...original, readFile: vi.fn((path: Parameters<typeof original.readFile>[0], encoding?: 'utf8') => {
     if (path === join('desktop-test-app', 'package.json')) {
-      return Promise.resolve(JSON.stringify({ dshDesktopAppId: 'com.deepseek.dsh', dshMandatoryUpdatePolicy: harness.embeddedPolicy }))
+      return Promise.resolve(JSON.stringify({ dshDesktopAppId: 'com.deepseek.dsh', dshMandatoryUpdatePolicy: harness.embeddedPolicy,
+        dshDesktopUpdateConfigOrigin: harness.updateAuthority }))
     }
     return encoding === undefined ? original.readFile(path) : original.readFile(path, encoding)
   }) }
@@ -1613,6 +1618,38 @@ describe('desktop main startup', () => {
       expect(harness.updateCheck).toHaveBeenCalledTimes(4)
       expect(vi.getTimerCount()).toBe(0)
     } finally { host.exited.resolve(); await harness.quitCompleted.promise }
+  })
+
+  it('requires the confirmed feed release in an unsigned app without an external mandatory policy', async () => {
+    harness.updateAuthority = 'https://8.133.202.230/harness'
+    const host = await readyForUpdate()
+    const window = harness.windows[0]!
+    const event = { sender: window.webContents, senderFrame: window.webContents.mainFrame }
+    const status = harness.handlers.get(MANDATORY_IPC.status)!
+    expect(status(event)).toMatchObject({ policy: { blocking: false } })
+    harness.updateState = { phase: 'available', version: '1.0.1' }
+    harness.publishUpdate(harness.updateState)
+    await harness.policyBlocked.promise
+    expect(status(event)).toMatchObject({ policy: { blocking: true }, update: { phase: 'available', version: '1.0.1' } })
+    expect(host.stop).not.toHaveBeenCalled()
+    expect(harness.updateDownload).not.toHaveBeenCalled()
+    expect(harness.updateInstall).not.toHaveBeenCalled()
+    harness.publishUpdate({ phase: 'error', failedOperation: 'check', sourceFailure: 'source-disabled' })
+    expect(status(event)).toMatchObject({ policy: { blocking: true } })
+    harness.publishUpdate({ phase: 'idle' })
+    expect(status(event)).toMatchObject({ policy: { blocking: true } })
+    expect(() => harness.handlers.get(MANDATORY_IPC.action)!(event, 'later', '1.0.1')).toThrow('no installation confirmation')
+    await invoke(DESKTOP_IPC.updatesOpen, 'app')
+    expect(harness.dialog.showMessageBox).not.toHaveBeenCalled()
+  })
+
+  it('does not require an update merely because the configured feed check fails', async () => {
+    harness.updateAuthority = 'https://8.133.202.230/harness'
+    await readyForUpdate()
+    harness.publishUpdate({ phase: 'error', failedOperation: 'check', sourceFailure: 'source-unavailable' })
+    const window = harness.windows[0]!
+    expect(harness.handlers.get(MANDATORY_IPC.status)!({ sender: window.webContents, senderFrame: window.webContents.mainFrame }))
+      .toMatchObject({ policy: { blocking: false } })
   })
 
   it('blocks subsequent product operations without stopping the Host and clears only on a fresh no-force policy', async () => {

@@ -1,13 +1,14 @@
 /** Published marketplace routing keeps canonical catalogs while operator routes survive user preferences. */
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import Include from '@deepseek-ai/cordis-plugin-include'
-import { expect, it, onTestFinished } from 'vitest'
+import { expect, it, onTestFinished, vi } from 'vitest'
 
 const require = createRequire(import.meta.url)
 const marketRoot = dirname(require.resolve('dshmarket/package.json'))
@@ -30,6 +31,11 @@ interface MarketRegions {
 interface SkinGithubProxy {
   normalizeGithubProxy(value: string | undefined): string | undefined
   githubResourceUrl(url: string, proxy: string | undefined | null): string
+  normalizePreviewPolicy(value?: {
+    concurrency?: number
+    intervalMs?: number
+    timeoutMs?: number
+  }): { concurrency: number; intervalMs: number; timeoutMs: number }
 }
 
 interface SkinCatalog {
@@ -57,6 +63,71 @@ interface SkinCatalogModule {
 const regions = await import(pathToFileURL(join(marketRoot, 'lib/regions.js')).href) as MarketRegions
 const skinProxy = await import(pathToFileURL(join(skinRoot, 'lib/github-proxy.js')).href) as SkinGithubProxy
 const skinCatalog = await import(pathToFileURL(join(skinRoot, 'lib/catalog.js')).href) as SkinCatalogModule
+const skinRoutes = await import(pathToFileURL(join(skinRoot, 'lib/routes.js')).href) as Pick<typeof import('dsh-skin-market'), 'mountRoutes'>
+
+it('validates screenshot concurrency and pacing before mounting either public route', () => {
+  expect(skinProxy.normalizePreviewPolicy()).toEqual({ concurrency: 2, intervalMs: 1000, timeoutMs: 15000 })
+  expect(skinProxy.normalizePreviewPolicy({ concurrency: 6, intervalMs: 0 })).toEqual({ concurrency: 6, intervalMs: 0, timeoutMs: 15000 })
+  for (const invalid of [
+    { concurrency: 0 }, { concurrency: 7 }, { concurrency: 1.5 },
+    { timeoutMs: 999 }, { timeoutMs: 60001 }, { timeoutMs: 1000.5 }, { intervalMs: -1 }, { intervalMs: 5001 }, { intervalMs: Number.NaN },
+  ]) expect(() => skinProxy.normalizePreviewPolicy(invalid)).toThrow(/preview/)
+})
+
+it('publishes the same validated screenshot policy through the actual catalog and state handlers', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'yunshu-skin-preview-routes-'))
+  const ctx = new Context()
+  const routes = new Map<string, (request: IncomingMessage, response: ServerResponse) => void | Promise<void>>()
+  const server = createServer((request, response) => {
+    const handler = routes.get(new URL(request.url ?? '/', 'http://localhost').pathname)
+    if (handler === undefined) { response.writeHead(404); response.end(); return }
+    Promise.resolve(handler(request, response)).catch(() => { response.writeHead(500); response.end() })
+  })
+  const networkFetch = globalThis.fetch
+  const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+    const target = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url
+    if (target === `${proxy}/${skinCatalog.REMOTE_CATALOG_URL}`) return Response.json(skinCatalog.loadCatalog())
+    throw new Error(`unexpected public request: ${target}`)
+  })
+  let disposeRoutes: ReturnType<typeof skinRoutes.mountRoutes> | undefined
+  onTestFinished(async () => {
+    try {
+      await disposeRoutes?.()
+      await ctx.fiber.dispose()
+      server.closeIdleConnections()
+      if (server.listening) await new Promise<void>((resolve, reject) => {
+        server.close((error) => { if (error === undefined) resolve(); else reject(error) })
+      })
+    } finally { fetcher.mockRestore(); rmSync(root, { recursive: true, force: true }) }
+  })
+  await ctx.plugin(Loader)
+  disposeRoutes = skinRoutes.mountRoutes({
+    loader: { entries: () => ctx.loader.entries() },
+    webServer: { register: (route) => {
+      routes.set(route.path, (request, response) => route.handler(request, response))
+      return () => { routes.delete(route.path) }
+    } },
+  }, {
+    profile: 'private-preview-test', profileDir: root, githubProxy: proxy,
+    previewPolicy: { concurrency: 3, intervalMs: 250, timeoutMs: 5000 },
+    runner: async () => { throw new Error('read-only preview routes must not run commands') },
+  })
+  await new Promise<void>((resolve, reject) => {
+    const fail = (error: Error) => { reject(error) }
+    server.once('error', fail)
+    server.listen(0, '127.0.0.1', () => { server.off('error', fail); resolve() })
+  })
+  const address = server.address()
+  if (address === null || typeof address === 'string') throw new Error('private fixture did not bind')
+  for (const path of ['catalog', 'state']) {
+    const response = await networkFetch(`http://127.0.0.1:${address.port}/dsh-skin-market/${path}`)
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({ githubProxy: proxy, previewPolicy: { concurrency: 3, intervalMs: 250, timeoutMs: 5000 } })
+  }
+  await disposeRoutes()
+  disposeRoutes = undefined
+  expect(routes.size).toBe(0)
+})
 
 it.each([
   '', 'http://downloads.example.test/github', 'https://user:password@downloads.example.test',

@@ -64,7 +64,11 @@ describe('Typert-backed Cordis catalog', () => {
   })
 
   it('reproduces every committed catalog artifact byte for byte', { timeout: 480_000 }, () => {
-    const { projector, model } = projection()
+    const { projector, model: hostModel } = projection()
+    const settingsEvents = clientProjection().model.events.filter(event => event.scope === 'ui-settings')
+    expect(settingsEvents.map(event => event.name).sort()).toEqual(['ui-settings/closed', 'ui-settings/open-section'])
+    expect(hostModel.events.some(event => event.scope === 'ui-settings')).toBe(false)
+    const model = { ...hostModel, events: [...hostModel.events, ...settingsEvents] }
     const expected = (path: string): string => readFileSync(join(workspaceRoot, path), 'utf8')
 
     expect(renderInheritedPage(CORDIS_CATALOG_POLICY)).toBe(expected('docs/cordis-api/inherited.md'))
@@ -86,9 +90,10 @@ describe('Typert-backed Cordis catalog', () => {
         )
       }
     }
-    expect(projector.renderRuntimeApi(model)).toBe(
-      expected('packages/extensions/tool-cordis/src/api-catalog.ts'),
-    )
+    const hostRuntime = projector.renderRuntimeApi(hostModel)
+    expect(hostRuntime).not.toContain('ui-settings/closed')
+    expect(hostRuntime).not.toContain('ui-settings/open-section')
+    expect(hostRuntime).toBe(expected('packages/extensions/tool-cordis/src/api-catalog.ts'))
   })
 
   it('includes referenced framework enums in the runtime declaration closure', () => {

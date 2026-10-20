@@ -203,3 +203,51 @@ root
 - 可观测 source 及其 snapshot identity 在值变化前保持稳定；值变化时通过同一个 source 发布。
 - UI domain 之间只传 JSON 兼容数据和 callback。`hooks` compartment 是裸 observable 的唯一例外；React 内容通过 slot 传递。
 - 将 `single` 和已有 occupant 的 keyed cell 视为替换点。增量扩展使用 list id 或尚未占用的 key。
+
+浏览器设置导航使用具备类型约束的 Client 本地 Cordis 事件。[设置外壳](../../packages/client/ui-settings-general/README.zh.md)拥有分区可用性与弹窗生命周期；这些事件在浏览器 Context 上分发，与 Host Remote 调用分开。
+
+<!-- BEGIN GENERATED cordis-surface (gen-cordis-catalog.ts) — do not edit between markers -->
+
+<a id="cordis-surface"></a>
+
+## Cordis API
+
+Generated from source by `scripts/gen-cordis-catalog.ts` (verified fresh by `pnpm run verify-cordis-catalog` in doc-sync; regenerate with `pnpm run gen-cordis-catalog`) — the language sides differ only in locale-specific paired document paths. Signature blocks use a `ts cordis-catalog` fence and keep the original source JSDoc; dispatch modes are defined in the [primer](../cordis-primer.zh.md#dispatch-modes), and the framework-inherited `ctx` API lives in [cordis-api/inherited.md](../cordis-api/inherited.md).
+
+<a id="ui-settings-events"></a>
+
+### `ui-settings/*` events
+
+<a id="ui-settingsclosed--emit"></a>
+
+#### `ui-settings/closed` — emit
+
+Notify local features after the visible settings dialog is closed by the user.
+
+```ts cordis-catalog
+/**
+ * Notify local features after the visible settings dialog is closed by the user.
+ * @mode emit
+ */
+'ui-settings/closed'(): void
+```
+
+Source: [`packages/client/ui-settings-general/src/client/index.ts`](../../packages/client/ui-settings-general/src/client/index.ts)
+
+<a id="ui-settingsopen-section--emit"></a>
+
+#### `ui-settings/open-section` — emit
+
+Open the settings dialog on an installed section; missing sections leave it unchanged.
+
+```ts cordis-catalog
+/**
+ * Open the settings dialog on an installed section; missing sections leave it unchanged.
+ * @mode emit
+ * @param sectionId - Exact id registered in settings.section.
+ */
+'ui-settings/open-section'(sectionId: string): void
+```
+
+Source: [`packages/client/ui-settings-general/src/client/index.ts`](../../packages/client/ui-settings-general/src/client/index.ts)
+<!-- END GENERATED cordis-surface -->

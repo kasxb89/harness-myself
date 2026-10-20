@@ -1885,6 +1885,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
     slotInject: '',
     declaredBy: 'an entry in \'root\' (client-ui-layout), so it exists while that entry is mounted',
     occupants: [
+      'client-ui-agent-preset EmployeePage',
       'client-ui-artifacts ArtifactsMain',
       'client-ui-conversation ConversationPanel key \'conversation\'',
       'client-ui-credits CreditsPage',
@@ -3069,6 +3070,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
     slotInject: '',
     declaredBy: 'an entry in \'shell.overlay\' (client-ui-chat), so it exists while that entry is mounted',
     occupants: [
+      'client-ui-credits BalanceNotice',
       'client-ui-settings-account AccountQuotaNotice',
     ],
     replaceRisk: 'none',
@@ -3302,6 +3304,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
     slotInject: '',
     declaredBy: 'an entry in \'sidebar\' (client-ui-sidebar), so it exists while that entry is mounted',
     occupants: [
+      'client-ui-agent-preset EmployeePanelIcon',
       'client-ui-artifacts ArtifactsPanelIcon',
       'client-ui-imagegen ImagePanelIcon',
       'client-ui-plaza PlazaPanelIcon',

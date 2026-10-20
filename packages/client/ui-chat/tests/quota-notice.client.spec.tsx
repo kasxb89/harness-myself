@@ -106,6 +106,15 @@ async function attach(runtime: SlotTestRuntime, descriptor: Awaited<ReturnType<t
 }
 
 describe('frame-wide quota notices', () => {
+  it('publishes the separate product funding code without changing the official account code', async () => {
+    const b = await bench()
+    await attach(b.runtime, b.sourceDescriptor)
+    const notice = noticeFace(b.runtime).hooks.notice
+    await b.runtime.sessions.appendEvent(SID, quotaEntry(0, 'INSUFFICIENT_BALANCE'))
+    expect(notice.getSnapshot()).toMatchObject({ code: 'INSUFFICIENT_BALANCE' })
+    await b.runtime.sessions.appendEvent(SID, quotaEntry(1, 'ACCOUNT_QUOTA'))
+    expect(notice.getSnapshot()).toMatchObject({ code: 'ACCOUNT_QUOTA' })
+  })
   it('publishes one notice per live append and republishes the latest', async () => {
     const b = await bench()
     await attach(b.runtime, b.sourceDescriptor)

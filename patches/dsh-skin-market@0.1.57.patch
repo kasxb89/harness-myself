@@ -1,26 +1,5 @@
-diff --git a/package.json b/package.json
---- a/package.json
-+++ b/package.json
-@@ -34,7 +34,7 @@
-     "prepack": "npm run check"
-   },
-   "peerDependencies": {
--    "@deepseek-ai/cordis": "^4.0.1"
-+    "@deepseek-ai/cordis": "4.0.5-alpha.1"
-   },
-   "dsh": {
-     "bundle": {
-@@ -42,7 +42,7 @@
-     },
-     "client": {
-       "inject": [
--        "@deepseek-ai/dsh-client-runtime",
-+        "@deepseek-ai/dsh-client-modules",
-         "@deepseek-ai/dsh-client-locale",
-         "@deepseek-ai/dsh-client-ui-settings"
-       ],
 diff --git a/client/client.js b/client/client.js
-index 2475381..42e80dc 100644
+index 2475381..378d13d 100644
 --- a/client/client.js
 +++ b/client/client.js
 @@ -511,6 +511,32 @@ window.__ModuleLoader__.load({
@@ -56,108 +35,405 @@ index 2475381..42e80dc 100644
  		//#region src/media-preview.ts
  		const DEFAULT_MEDIA_BASE_URL = "https://kingofsoysauce.github.io/dsh-skin-market/skin-media";
  		const MEDIA_VERSION = "v1";
-@@ -1499,7 +1525,7 @@ url: https://github.com/<owner>/<repo>
- 					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("small", { children: "暂无界面截图" })
+@@ -518,9 +544,73 @@ window.__ModuleLoader__.load({
+ 			const location = globalThis.location;
+ 			return location === void 0 ? void 0 : new URLSearchParams(location.search ?? "");
+ 		}
+-		let localGeneratedMediaSources;
++		// A reactive manifest prevents a pending/failed refresh from replacing working images.
++		let previewSnapshot = { ready: false, sources: void 0, revision: 0, retry: 0, failures: 0 };
++		const previewListeners = new Set();
++		function publishPreview(change) {
++			previewSnapshot = { ...previewSnapshot, ...change };
++			for (const listener of previewListeners) listener();
++		}
++		function usePreviewState() {
++			return (0, react.useSyncExternalStore)((listener) => { previewListeners.add(listener); return () => previewListeners.delete(listener); }, () => previewSnapshot);
++		}
+ 		function setGeneratedMediaSources(sources) {
+-			localGeneratedMediaSources = sources === void 0 ? void 0 : new Set(sources);
++			if (sources === void 0 && previewSnapshot.ready) return;
++			publishPreview({ ready: true, sources: sources === void 0 ? void 0 : new Set(sources), revision: previewSnapshot.revision + 1 });
++		}
++		function retryPreviewDownloads() { publishPreview({ retry: previewSnapshot.retry + 1 }); }
++		let previewPolicy;
++		let previewActive = 0;
++		let previewLastStart;
++		let previewTimer;
++		const previewQueue = [];
++		function configurePreviewPolicy(value) {
++			if (typeof value !== "object" || value === null || !Number.isInteger(value.concurrency) || value.concurrency < 1 || value.concurrency > 6 || !Number.isInteger(value.intervalMs) || value.intervalMs < 0 || value.intervalMs > 5000 || !Number.isInteger(value.timeoutMs) || value.timeoutMs < 1000 || value.timeoutMs > 60000) throw new TypeError("Invalid screenshot download policy");
++			previewPolicy = value;
++			pumpPreviewQueue();
++		}
++		function pumpPreviewQueue() {
++			if (previewTimer !== void 0) { clearTimeout(previewTimer); previewTimer = void 0; }
++			if (previewPolicy === void 0) return;
++			while (previewQueue.length > 0 && previewActive < previewPolicy.concurrency) {
++				const wait = previewLastStart === void 0 ? 0 : Math.max(0, previewLastStart + previewPolicy.intervalMs - Date.now());
++				if (wait > 0) { previewTimer = setTimeout(() => { previewTimer = void 0; pumpPreviewQueue(); }, wait); return; }
++				const job = previewQueue.shift();
++				job.started = true;
++				previewActive += 1;
++				previewLastStart = Date.now();
++				job.grant();
++			}
++		}
++		function requestPreviewPermit(grant) {
++			const job = { grant, started: false, released: false };
++			previewQueue.push(job);
++			pumpPreviewQueue();
++			return () => {
++				if (job.released) return;
++				job.released = true;
++				if (job.started) previewActive -= 1;
++				else { const index = previewQueue.indexOf(job); if (index >= 0) previewQueue.splice(index, 1); }
++				pumpPreviewQueue();
++			};
++		}
++		function usePreviewPermit(key, enabled, onTimeout) {
++			const [granted, setGranted] = (0, react.useState)(void 0);
++			const release = (0, react.useRef)(() => {});
++			const timeoutCallback = (0, react.useRef)(onTimeout);
++			timeoutCallback.current = onTimeout;
++			(0, react.useEffect)(() => {
++				if (!enabled) return;
++				let timer;
++				const cancel = requestPreviewPermit(() => {
++					setGranted(key);
++					timer = setTimeout(() => { cancel(); timeoutCallback.current(); }, previewPolicy.timeoutMs);
++				});
++				const finish = () => { clearTimeout(timer); cancel(); };
++				release.current = finish;
++				return finish;
++			}, [key, enabled]);
++			return { granted: enabled && granted === key, release: () => release.current() };
+ 		}
+ 		function parseGeneratedMediaManifest(value) {
+ 			if (typeof value !== "object" || value === null || Array.isArray(value)) return void 0;
+@@ -562,7 +652,7 @@ window.__ModuleLoader__.load({
+ 		}
+ 		function generatedMediaFor(entry, source, kind) {
+ 			if (!generatedMediaEnabled() || source === void 0 || entry.media === void 0) return void 0;
+-			if (localGeneratedMediaSources !== void 0 && !localGeneratedMediaSources.has(source)) return void 0;
++			if (previewSnapshot.sources !== void 0 && !previewSnapshot.sources.has(source)) return void 0;
+ 			if ((kind === "list" || kind === "avatar" || kind === "recommendation" || kind === "card") && source === getCatalogListScreenshot(entry)) return entry.media.list;
+ 			const index = getCatalogScreenshotUrls(entry).indexOf(source);
+ 			return index >= 0 ? entry.media.screenshots[index] ?? void 0 : void 0;
+@@ -574,12 +664,8 @@ window.__ModuleLoader__.load({
+ 		}
+ 		function useLazyMedia(loading) {
+ 			const ref = (0, react.useRef)(null);
+-			const [visible, setVisible] = (0, react.useState)(() => loading !== "lazy" || mediaObserverConstructor() === void 0);
++			const [visible, setVisible] = (0, react.useState)(() => mediaObserverConstructor() === void 0);
+ 			(0, react.useEffect)(() => {
+-				if (loading !== "lazy") {
+-					if (!visible) setVisible(true);
+-					return;
+-				}
+ 				if (visible) return;
+ 				const element = ref.current;
+ 				const Observer = mediaObserverConstructor();
+@@ -592,7 +678,7 @@ window.__ModuleLoader__.load({
+ 						setVisible(true);
+ 						observer.disconnect();
+ 					}
+-				}, { rootMargin: "1200px 0px" });
++				}, { rootMargin: "0px" });
+ 				observer.observe(element);
+ 				return () => observer.disconnect();
+ 			}, [loading, visible]);
+@@ -1465,98 +1551,59 @@ url: https://github.com/<owner>/<repo>
+ 			const bTime = Date.parse(bState.lastOperatedAt ?? bState.installedAt ?? "");
+ 			return (Number.isFinite(bTime) ? bTime : 0) - (Number.isFinite(aTime) ? aTime : 0) || a.name.zh.localeCompare(b.name.zh, "zh-CN") || a.id.localeCompare(b.id);
+ 		}
+-		function PreviewMedia({ skin, src, fallbackSources, alt, kind, loading }) {
++		function PreviewMedia({ skin, src, fallbackSources, alt, kind, loading, t }) {
++			const snapshot = usePreviewState();
+ 			const candidates = previewSourceCandidates(src, fallbackSources);
+-			const candidateKey = candidates.join("");
++			const candidateKey = candidates.join("\u0001");
+ 			const [sourceIndex, setSourceIndex] = (0, react.useState)(0);
+ 			const [failed, setFailed] = (0, react.useState)(false);
+-			const [previewFailed, setPreviewFailed] = (0, react.useState)(false);
+-			const [fullFailed, setFullFailed] = (0, react.useState)(false);
++			const [generatedFailed, setGeneratedFailed] = (0, react.useState)(false);
++			const [attempt, setAttempt] = (0, react.useState)(0);
+ 			const lazyMedia = useLazyMedia(loading);
++			const reset = () => { setSourceIndex(0); setFailed(false); setGeneratedFailed(false); setAttempt(value => value + 1); };
++			(0, react.useEffect)(reset, [candidateKey]);
++			(0, react.useEffect)(() => { if (failed) reset(); }, [snapshot.retry]);
+ 			(0, react.useEffect)(() => {
+-				setSourceIndex(0);
+-				setFailed(false);
+-				setPreviewFailed(false);
+-				setFullFailed(false);
+-			}, [candidateKey]);
++				if (!failed) return;
++				publishPreview({ failures: previewSnapshot.failures + 1 });
++				return () => publishPreview({ failures: previewSnapshot.failures - 1 });
++			}, [failed]);
+ 			const activeIndex = Math.min(sourceIndex, Math.max(0, candidates.length - 1));
+ 			const activeSrc = candidates[activeIndex];
+-			const tryNextSource = () => {
+-				if (fallbackSources !== void 0 && activeIndex + 1 < candidates.length) {
+-					setSourceIndex(activeIndex + 1);
+-					setPreviewFailed(false);
+-					setFullFailed(false);
+-				} else setFailed(true);
+-			};
+-			if (!hasCatalogPreview(skin) || activeSrc === void 0 || failed) return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
++			const hasSource = hasCatalogPreview(skin) && activeSrc !== void 0;
++			const media = generatedMediaFor(skin, activeSrc, kind);
++			const usesGenerated = media !== void 0 && !generatedFailed;
++			const imageSource = hasSource ? githubResourceUrl(usesGenerated ? generatedMediaUrl(kind === "hero" ? media.full : media.preview) : activeSrc, previewGithubProxy) : "";
++			const permit = usePreviewPermit(`${imageSource}\u0001${attempt}`, hasSource && !failed && previewGithubProxy !== void 0 && snapshot.ready && lazyMedia.visible, () => setFailed(true));
++			if (!hasSource || failed) return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+ 				className: SkinMarket_module_css_default.previewPlaceholder,
+ 				"data-preview-kind": kind,
++				"data-preview-failed": failed ? "true" : void 0,
+ 				role: "img",
+-				"aria-label": `${skin.name.zh} 暂无界面截图`,
+-				children: [
+-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(MarkGithubIcon, { "aria-hidden": "true" }),
+-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("strong", { children: skin.author }),
+-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("small", { children: "暂无界面截图" })
++				"aria-label": failed ? t("previewLoadFailed") : `${skin.name.zh} 暂无界面截图`,
++				children: failed ? [
++					(0, react_jsx_runtime.jsx)("strong", { children: t("previewLoadFailed") }),
++					(0, react_jsx_runtime.jsx)("small", { children: t("previewRetryHint") })
++				] : [
++					(0, react_jsx_runtime.jsx)(MarkGithubIcon, { "aria-hidden": "true" }),
++					(0, react_jsx_runtime.jsx)("strong", { children: skin.author }),
++					(0, react_jsx_runtime.jsx)("small", { children: "暂无界面截图" })
  				]
  			});
 -			if (!lazyMedia.visible) return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-+			if (previewGithubProxy === void 0 || !lazyMedia.visible) return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
- 				ref: lazyMedia.ref,
- 				className: SkinMarket_module_css_default.mediaLazyPlaceholder,
- 				role: "img",
-@@ -1507,7 +1533,7 @@ url: https://github.com/<owner>/<repo>
- 			});
- 			const media = generatedMediaFor(skin, activeSrc, kind);
- 			if (media === void 0) return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("img", {
+-				ref: lazyMedia.ref,
+-				className: SkinMarket_module_css_default.mediaLazyPlaceholder,
+-				role: "img",
+-				"aria-label": alt
+-			});
+-			const media = generatedMediaFor(skin, activeSrc, kind);
+-			if (media === void 0) return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("img", {
 -				src: activeSrc,
-+				src: githubResourceUrl(activeSrc, previewGithubProxy),
- 				alt,
- 				loading,
- 				decoding: "async",
-@@ -1518,21 +1544,21 @@ url: https://github.com/<owner>/<repo>
- 			});
- 			if (kind === "hero") {
- 				if (fullFailed) return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("img", {
+-				alt,
+-				loading,
+-				decoding: "async",
+-				onLoad: (event) => {
+-					event.currentTarget.dataset.loaded = "true";
+-				},
+-				onError: tryNextSource
+-			});
+-			if (kind === "hero") {
+-				if (fullFailed) return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("img", {
 -					src: activeSrc,
-+					src: githubResourceUrl(activeSrc, previewGithubProxy),
- 					alt,
- 					loading,
- 					decoding: "async",
- 					onError: tryNextSource
- 				});
- 				return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("img", {
+-					alt,
+-					loading,
+-					decoding: "async",
+-					onError: tryNextSource
+-				});
+-				return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("img", {
 -					src: generatedMediaUrl(media.full),
-+					src: githubResourceUrl(generatedMediaUrl(media.full), previewGithubProxy),
- 					alt,
- 					loading: loading === "lazy" ? "lazy" : "eager",
- 					decoding: "async",
- 					onError: () => setFullFailed(true)
- 				});
- 			}
+-					alt,
+-					loading: loading === "lazy" ? "lazy" : "eager",
+-					decoding: "async",
+-					onError: () => setFullFailed(true)
+-				});
+-			}
 -			const imageSource = previewFailed ? activeSrc : generatedMediaUrl(media.preview);
-+			const imageSource = githubResourceUrl(previewFailed ? activeSrc : generatedMediaUrl(media.preview), previewGithubProxy);
- 			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("img", {
- 				src: imageSource,
- 				alt,
-@@ -1548,12 +1574,13 @@ url: https://github.com/<owner>/<repo>
+-			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("img", {
+-				src: imageSource,
+-				alt,
+-				loading,
+-				decoding: "async",
+-				onLoad: (event) => {
+-					event.currentTarget.dataset.loaded = "true";
+-				},
++			if (!permit.granted) return (0, react_jsx_runtime.jsx)("span", { ref: lazyMedia.ref, className: SkinMarket_module_css_default.mediaLazyPlaceholder, role: "img", "aria-label": alt });
++			return (0, react_jsx_runtime.jsx)("img", {
++				src: imageSource, alt, loading, decoding: "async",
++				onLoad: event => { event.currentTarget.dataset.loaded = "true"; permit.release(); },
+ 				onError: () => {
+-					if (previewFailed) tryNextSource();
+-					else setPreviewFailed(true);
++					permit.release();
++					if (usesGenerated) setGeneratedFailed(true);
++					else if (fallbackSources !== void 0 && activeIndex + 1 < candidates.length) { setSourceIndex(activeIndex + 1); setGeneratedFailed(false); }
++					else setFailed(true);
+ 				}
  			});
  		}
- 		function GalleryPreloads({ skin, screenshots }) {
-+			if (previewGithubProxy === void 0) return null;
- 			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(react_jsx_runtime.Fragment, { children: screenshots.map((source, index) => {
- 				const media = generatedMediaFor(skin, source, "hero");
- 				return media === void 0 ? null : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("link", {
- 					rel: "preload",
- 					as: "image",
+-		function GalleryPreloads({ skin, screenshots }) {
+-			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(react_jsx_runtime.Fragment, { children: screenshots.map((source, index) => {
+-				const media = generatedMediaFor(skin, source, "hero");
+-				return media === void 0 ? null : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("link", {
+-					rel: "preload",
+-					as: "image",
 -					href: generatedMediaUrl(media.full)
-+					href: githubResourceUrl(generatedMediaUrl(media.full), previewGithubProxy)
- 				}, `${source}:${index}`);
- 			}) });
- 		}
-@@ -1567,6 +1594,7 @@ url: https://github.com/<owner>/<repo>
+-				}, `${source}:${index}`);
+-			}) });
+-		}
++		// Full images use the same visible-preview queue; never preload the entire gallery.
++		function GalleryPreloads() { return null; }
+ 		const healthLabels = {
+ 			readmeScreenshots: "README 截图",
+ 			compatibility: "兼容版本",
+@@ -1565,8 +1612,10 @@ url: https://github.com/<owner>/<repo>
+ 			topic: "dsh-plugin Topic"
+ 		};
  		function SkinMarketSection({ t, clientRuntime, catalogCache = browserCatalogCache }) {
++			const previewState = usePreviewState();
  			const [skins, setSkins] = (0, react.useState)([]);
  			const [states, setStates] = (0, react.useState)([]);
 +			const [githubProxy, setGithubProxy] = (0, react.useState)(void 0);
  			const [hostKind, setHostKind] = (0, react.useState)("dsh");
  			const [runtime, setRuntime] = (0, react.useState)(null);
  			const [restartAvailable, setRestartAvailable] = (0, react.useState)(true);
-@@ -1653,6 +1681,8 @@ url: https://github.com/<owner>/<repo>
+@@ -1653,6 +1702,9 @@ url: https://github.com/<owner>/<repo>
  				});
  			}, []);
  			const applyMarketState = (0, react.useCallback)((state) => {
++				configurePreviewPolicy(state.previewPolicy);
 +				previewGithubProxy = normalizeGithubProxy(state.githubProxy ?? void 0) ?? null;
 +				setGithubProxy(previewGithubProxy);
  				statesRef.current = state.skins;
  				runtimeReadyRef.current = true;
  				setStates(state.skins);
-@@ -1715,6 +1745,8 @@ url: https://github.com/<owner>/<repo>
+@@ -1715,6 +1767,9 @@ url: https://github.com/<owner>/<repo>
  				}
  				try {
  					const catalogRequest = json("/dsh-skin-market/catalog").then((catalog) => {
++						configurePreviewPolicy(catalog.previewPolicy);
 +						previewGithubProxy = normalizeGithubProxy(catalog.githubProxy ?? void 0) ?? null;
 +						setGithubProxy(previewGithubProxy);
  						acceptCatalog(catalog.skins);
  						catalogCache.write(catalog.skins).catch(() => void 0);
  						catalogSettledRef.current = true;
-@@ -1889,14 +1921,15 @@ url: https://github.com/<owner>/<repo>
+@@ -1889,14 +1944,23 @@ url: https://github.com/<owner>/<repo>
  				refresh
  			]);
  			(0, react.useEffect)(() => {
 +				if (githubProxy === void 0) return;
  				const controller = new AbortController();
- 				setGeneratedMediaSources([]);
+-				setGeneratedMediaSources([]);
 -				fetch(generatedMediaManifestUrl(), {
++				let settled = false;
++				let timer;
++				const finish = sources => {
++					if (settled || controller.signal.aborted) return;
++					settled = true;
++					clearTimeout(timer);
++					setGeneratedMediaSources(sources);
++				};
++				timer = setTimeout(() => { finish(void 0); controller.abort(); }, previewPolicy.timeoutMs);
 +				fetch(githubResourceUrl(generatedMediaManifestUrl(), githubProxy), {
  					cache: "no-store",
  					signal: controller.signal
- 				}).then(async (response) => response.ok ? parseGeneratedMediaManifest(await response.json()) : void 0).then((sources) => setGeneratedMediaSources(sources)).catch(() => setGeneratedMediaSources(void 0));
- 				return () => controller.abort();
+-				}).then(async (response) => response.ok ? parseGeneratedMediaManifest(await response.json()) : void 0).then((sources) => setGeneratedMediaSources(sources)).catch(() => setGeneratedMediaSources(void 0));
+-				return () => controller.abort();
 -			}, []);
++				}).then(async (response) => response.ok ? parseGeneratedMediaManifest(await response.json()) : void 0).then(finish).catch(() => finish(void 0));
++				return () => { settled = true; clearTimeout(timer); controller.abort(); };
 +			}, [githubProxy]);
  			(0, react.useEffect)(() => {
  				checkMarketUpdate();
  			}, [checkMarketUpdate]);
+@@ -2432,6 +2496,7 @@ url: https://github.com/<owner>/<repo>
+ 						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+ 							className: SkinMarket_module_css_default.homeCardMedia,
+ 							children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(PreviewMedia, {
++								 t,
+ 								skin,
+ 								src: getCatalogListScreenshot(skin),
+ 								fallbackSources: getCatalogScreenshotUrls(skin),
+@@ -2672,6 +2737,7 @@ url: https://github.com/<owner>/<repo>
+ 									children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("h2", { children: t("title") }), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("p", { children: [skins.length, " 款社区皮肤"] })] }), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+ 										className: SkinMarket_module_css_default.homeActions,
+ 										children: [
++									previewState.failures > 0 && (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, { variant: "outline", size: "sm", onClick: retryPreviewDownloads, children: t("retryPreviews") }),
+ 											marketUpdate?.updateAvailable === true && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+ 												className: `${SkinMarket_module_css_default.marketUpdateButton} ${SkinMarket_module_css_default.homeUpdateAction}`,
+ 												variant: "outline",
+@@ -2921,6 +2987,7 @@ url: https://github.com/<owner>/<repo>
+ 														/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+ 															className: `${SkinMarket_module_css_default.skinCardPreview} dsh-skin-media-hover`,
+ 															children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(PreviewMedia, {
++								 t,
+ 																skin,
+ 																src: getCatalogListScreenshot(skin),
+ 																fallbackSources: getCatalogScreenshotUrls(skin),
+@@ -3035,6 +3102,7 @@ url: https://github.com/<owner>/<repo>
+ 											children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+ 												className: SkinMarket_module_css_default.skinAvatar,
+ 												children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(PreviewMedia, {
++								 t,
+ 													skin: selected,
+ 													src: getCatalogListScreenshot(selected),
+ 													alt: "",
+@@ -3083,6 +3151,7 @@ url: https://github.com/<owner>/<repo>
+ 										/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+ 											className: SkinMarket_module_css_default.actionRow,
+ 											children: [
++									previewState.failures > 0 && (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, { variant: "outline", size: "sm", onClick: retryPreviewDownloads, children: t("retryPreviews") }),
+ 												state.installation === "missing" && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
+ 													autoInstallable && !deferInstallAndUse && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+ 														variant: "primary",
+@@ -3272,6 +3341,7 @@ url: https://github.com/<owner>/<repo>
+ 													"aria-label": `全屏查看 ${selected.name.zh} 截图 ${shotIndex + 1}`,
+ 													onClick: () => setLightboxOpen(true),
+ 													children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(PreviewMedia, {
++								 t,
+ 														skin: selected,
+ 														src: selectedScreenshots[shotIndex],
+ 														alt: `${selected.name.zh} 大图预览`,
+@@ -3305,6 +3375,7 @@ url: https://github.com/<owner>/<repo>
+ 															setCarouselEpoch((current) => current + 1);
+ 														},
+ 														children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(PreviewMedia, {
++								 t,
+ 															skin: selected,
+ 															src: shot,
+ 															alt: `${selected.name.zh} 截图 ${index + 1}`,
+@@ -3427,6 +3498,7 @@ url: https://github.com/<owner>/<repo>
+ 								"aria-label": "退出全屏查看",
+ 								onClick: () => setLightboxOpen(false),
+ 								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(PreviewMedia, {
++								 t,
+ 									skin: selected,
+ 									src: selectedScreenshots[shotIndex],
+ 									alt: `${selected.name.zh} 全屏截图 ${shotIndex + 1}`,
+@@ -3450,6 +3522,7 @@ url: https://github.com/<owner>/<repo>
+ 									"aria-label": `查看截图 ${index + 1}`,
+ 									onClick: () => setShotIndex(index),
+ 									children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(PreviewMedia, {
++								 t,
+ 										skin: selected,
+ 										src: shot,
+ 										alt: "",
+@@ -3761,14 +3834,20 @@ url: https://github.com/<owner>/<repo>
+ 				title: "皮肤市场",
+ 				subtitle: "发现并管理 DSH 外观",
+ 				search: "搜索皮肤",
+-				catalog: "皮肤列表"
++				catalog: "皮肤列表",
++				previewLoadFailed: "截图加载失败",
++				previewRetryHint: "请点击上方“重试截图”",
++				retryPreviews: "重试截图"
+ 			},
+ 			en: {
+ 				nav: "Skin Market",
+ 				title: "Skin Market",
+ 				subtitle: "Discover and manage DSH skins",
+ 				search: "Search skins",
+-				catalog: "Skin catalog"
++				catalog: "Skin catalog",
++				previewLoadFailed: "Screenshot failed to load",
++				previewRetryHint: "Use Retry screenshots above",
++				retryPreviews: "Retry screenshots"
+ 			}
+ 		};
+ 		async function switchClientSkin(runtime, packageNames, target, preserved = []) {
 diff --git a/lib/catalog.js b/lib/catalog.js
 index 1dce95b..65196d3 100644
 --- a/lib/catalog.js
@@ -181,10 +457,10 @@ index 1dce95b..65196d3 100644
          this.fetcher = options.fetcher ?? ((url, init) => fetch(url, init));
 diff --git a/lib/github-proxy.js b/lib/github-proxy.js
 new file mode 100644
-index 0000000..67f0785
+index 0000000..d0629de
 --- /dev/null
 +++ b/lib/github-proxy.js
-@@ -0,0 +1,23 @@
+@@ -0,0 +1,34 @@
 +/** Normalize the operator's HTTPS URL prefix; invalid configuration fails before routes mount. */
 +export function normalizeGithubProxy(value) {
 +    if (value === undefined) return undefined;
@@ -208,15 +484,26 @@ index 0000000..67f0785
 +    const generatedMedia = target.hostname === 'kingofsoysauce.github.io' && target.pathname.startsWith('/dsh-skin-market/skin-media/');
 +    return githubHost || generatedMedia ? `${proxy}/${url}` : url;
 +}
++/** Bound image concurrency and pacing before the host exposes the policy to clients. */
++export function normalizePreviewPolicy(value) {
++    const concurrency = value?.concurrency ?? 2;
++    const intervalMs = value?.intervalMs ?? 1000;
++    const timeoutMs = value?.timeoutMs ?? 15000;
++    if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 6
++        || !Number.isInteger(intervalMs) || intervalMs < 0 || intervalMs > 5000
++        || !Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 60000)
++        throw new TypeError('dsh-skin-market: preview concurrency must be 1..6, intervalMs 0..5000 and timeoutMs 1000..60000');
++    return { concurrency, intervalMs, timeoutMs };
++}
 diff --git a/lib/index.js b/lib/index.js
-index 78b09cb..788945c 100644
+index 78b09cb..49bff03 100644
 --- a/lib/index.js
 +++ b/lib/index.js
-@@ -4,12 +4,14 @@ import { resolveProfileDir } from './profile.js';
+@@ -4,12 +4,15 @@ import { resolveProfileDir } from './profile.js';
  import { mountRoutes } from './routes.js';
  import { createCliRestartScheduler } from './restart.js';
  import { detectDshRuntime } from './runtime.js';
-+import { normalizeGithubProxy } from './github-proxy.js';
++import { normalizeGithubProxy, normalizePreviewPolicy } from './github-proxy.js';
  export const name = 'dsh-skin-market';
  function argvProfile() {
      const index = process.argv.indexOf('--profile');
@@ -224,24 +511,25 @@ index 78b09cb..788945c 100644
  }
  export function apply(ctx, config) {
 +    const githubProxy = normalizeGithubProxy(config?.githubProxy);
++    const previewPolicy = normalizePreviewPolicy({ concurrency: config?.previewConcurrency, intervalMs: config?.previewIntervalMs, timeoutMs: config?.previewTimeoutMs });
      // Agent coordination is optional.  The official Electron Desktop does not
      // expose the Web Agent registry in every generation, while the market only
      // needs it when a Web/Host restart is explicitly requested.
-@@ -43,7 +45,7 @@ export function apply(ctx, config) {
+@@ -43,7 +46,7 @@ export function apply(ctx, config) {
              // canonical Desktop directory is the explicit profile name's directory.
              const profileDir = contextDir !== '' ? contextDir : resolveProfileDir(profile);
              const runner = officialDesktopRunner(() => readService('pluginManager'));
 -            host.effect(() => mountRoutes(host, { profile, profileDir, runner, hostKind: 'desktop', runtime: detectDshRuntime(), agents: undefined }), 'dsh-skin-market: official Desktop routes');
-+            host.effect(() => mountRoutes(host, { profile, profileDir, runner, githubProxy, hostKind: 'desktop', runtime: detectDshRuntime(), agents: undefined }), 'dsh-skin-market: official Desktop routes');
++            host.effect(() => mountRoutes(host, { profile, profileDir, runner, githubProxy, previewPolicy, hostKind: 'desktop', runtime: detectDshRuntime(), agents: undefined }), 'dsh-skin-market: official Desktop routes');
              return;
          }
          if (desktopProfiles === undefined) {
-@@ -51,14 +53,14 @@ export function apply(ctx, config) {
+@@ -51,14 +54,14 @@ export function apply(ctx, config) {
              const profileDir = configuredProfile === undefined && contextDir !== '' ? contextDir : resolveProfileDir(profile);
              const appExit = readService('appExit');
              const restart = appExit === undefined ? undefined : createCliRestartScheduler(appExit);
 -            host.effect(() => mountRoutes(host, { profile, profileDir, runner: runPluginCli, hostKind: 'dsh', runtime: detectDshRuntime(), restart, agents }), 'dsh-skin-market: routes');
-+            host.effect(() => mountRoutes(host, { profile, profileDir, githubProxy, runner: runPluginCli, hostKind: 'dsh', runtime: detectDshRuntime(), restart, agents }), 'dsh-skin-market: routes');
++            host.effect(() => mountRoutes(host, { profile, profileDir, githubProxy, previewPolicy, runner: runPluginCli, hostKind: 'dsh', runtime: detectDshRuntime(), restart, agents }), 'dsh-skin-market: routes');
              return;
          }
          hostContext.inject(['desktopPnpm'], desktopContext => {
@@ -249,45 +537,48 @@ index 78b09cb..788945c 100644
              const service = desktopContext.desktopPnpm;
              const desktopHost = desktopContext;
 -            desktopHost.effect(() => mountRoutes(host, { profile: current.name, profileDir: current.dir, runner: desktopRunner(service, current.dir), hostKind: 'desktop', runtime: detectDshRuntime(), agents }), 'dsh-skin-market: desktop routes');
-+            desktopHost.effect(() => mountRoutes(host, { profile: current.name, profileDir: current.dir, githubProxy, runner: desktopRunner(service, current.dir), hostKind: 'desktop', runtime: detectDshRuntime(), agents }), 'dsh-skin-market: desktop routes');
++            desktopHost.effect(() => mountRoutes(host, { profile: current.name, profileDir: current.dir, githubProxy, previewPolicy, runner: desktopRunner(service, current.dir), hostKind: 'desktop', runtime: detectDshRuntime(), agents }), 'dsh-skin-market: desktop routes');
          });
      });
  }
 diff --git a/lib/routes.js b/lib/routes.js
-index beef396..f583481 100644
+index beef396..f2f3935 100644
 --- a/lib/routes.js
 +++ b/lib/routes.js
 @@ -5,6 +5,7 @@ import { SkinLifecycle } from './lifecycle.js';
  import { installedClientPlugins, resolveProfileDir } from './profile.js';
  import { createMarketUpdater, packageVersion } from './self-update.js';
  import { exportLogs } from './log.js';
-+import { normalizeGithubProxy } from './github-proxy.js';
++import { normalizeGithubProxy, normalizePreviewPolicy } from './github-proxy.js';
  export function canRestartSkin(state) {
      return state?.installation === 'installed'
          && (state.activation === 'active' || state.activation === 'restart-required');
-@@ -54,7 +55,8 @@ export function mountRoutes(host, options) {
+@@ -54,7 +55,9 @@ export function mountRoutes(host, options) {
      // profileContext.dir resolves the Desktop profile and never silently uses
      // the Web profile.
      const profileDir = options.profileDir ?? resolveProfileDir(options.profile);
 -    const catalogStore = options.catalogStore ?? new CatalogStore(profileDir);
 +    const githubProxy = normalizeGithubProxy(options.githubProxy);
++    const previewPolicy = normalizePreviewPolicy(options.previewPolicy);
 +    const catalogStore = options.catalogStore ?? new CatalogStore(profileDir, { githubProxy });
      const initialCatalog = catalogStore.snapshot().catalog;
      const hostKind = options.hostKind ?? options.runner.hostKind ?? 'dsh';
      // Keep the optional Agent registry on a prototype wrapper so Cordis host
-@@ -87,6 +89,7 @@ export function mountRoutes(host, options) {
+@@ -87,6 +90,8 @@ export function mountRoutes(host, options) {
              lifecycleCatalogGeneratedAt = snapshot.catalog.generatedAt;
          }
          return {
 +            githubProxy: githubProxy ?? null,
++            previewPolicy,
              schemaVersion: snapshot.catalog.schemaVersion,
              generatedAt: snapshot.catalog.generatedAt,
              skins: await catalogWithStars(profileDir, snapshot.catalog),
-@@ -140,6 +143,7 @@ export function mountRoutes(host, options) {
+@@ -140,6 +145,8 @@ export function mountRoutes(host, options) {
                      return;
                  try {
                      sendJson(response, 200, {
 +                        githubProxy: githubProxy ?? null,
++            previewPolicy,
                          hostKind,
                          runtime: options.runtime,
                          skins: lifecycle.states(),
@@ -306,37 +597,77 @@ index a328c94..1b47254 100644
      refreshIntervalMs?: number;
 diff --git a/lib/types/github-proxy.d.ts b/lib/types/github-proxy.d.ts
 new file mode 100644
-index 0000000..2458693
+index 0000000..bc26c6b
 --- /dev/null
 +++ b/lib/types/github-proxy.d.ts
-@@ -0,0 +1,4 @@
+@@ -0,0 +1,8 @@
 +/** Validate the optional operator-owned HTTPS URL prefix before activation. */
 +export declare function normalizeGithubProxy(value: string | undefined): string | undefined;
 +/** Prefix only explicitly supported GitHub resource URLs, preserving the canonical value otherwise. */
 +export declare function githubResourceUrl(url: string, proxy: string | null | undefined): string;
++/** Screenshot request limits shared by every preview in a market client. */
++export interface PreviewPolicy { concurrency: number; intervalMs: number; timeoutMs: number; }
++/** Reject invalid limits before activation; defaults are 2 requests, 1000 ms spacing and a 15000 ms deadline. */
++export declare function normalizePreviewPolicy(value?: Partial<PreviewPolicy>): PreviewPolicy;
 diff --git a/lib/types/index.d.ts b/lib/types/index.d.ts
-index 1fc68d0..a0572c7 100644
+index 1fc68d0..0d66c3d 100644
 --- a/lib/types/index.d.ts
 +++ b/lib/types/index.d.ts
-@@ -2,6 +2,8 @@ import type { Context } from '@deepseek-ai/cordis';
+@@ -2,6 +2,14 @@ import type { Context } from '@deepseek-ai/cordis';
  export declare const name = "dsh-skin-market";
  export interface Config {
      profile?: string;
 +    /** Operator-owned HTTPS URL prefix for GitHub catalog and preview resources. */
 +    githubProxy?: string;
++    /** Maximum simultaneous screenshot downloads, integer 1..6; default 2. */
++    previewConcurrency?: number;
++    /** Minimum milliseconds between screenshot starts, integer 0..5000; default 1000. */
++    previewIntervalMs?: number;
++    /** Manifest and individual image deadline in milliseconds, integer 1000..60000; default 15000. */
++    previewTimeoutMs?: number;
  }
  export declare function apply(ctx: Context, config?: Config): void;
  export { mountRoutes } from './routes.ts';
 diff --git a/lib/types/routes.d.ts b/lib/types/routes.d.ts
-index 5092ef4..898432c 100644
+index 5092ef4..e36b2cf 100644
 --- a/lib/types/routes.d.ts
 +++ b/lib/types/routes.d.ts
-@@ -25,6 +25,8 @@ export interface SkinMarketHost extends LifecycleHost {
+@@ -25,6 +25,10 @@ export interface SkinMarketHost extends LifecycleHost {
  }
  export interface RouteOptions {
      profile: string;
 +    /** Operator-owned HTTPS URL prefix for GitHub catalog and preview resources. */
 +    githubProxy?: string;
++    /** Validated concurrency and pacing exposed identically by state and catalog. */
++    previewPolicy?: Partial<import('./github-proxy.js').PreviewPolicy>;
      profileDir?: string;
      runner: PluginRunner;
      hostKind?: MarketHostKind;
+@@ -41,4 +45,4 @@ export declare function assertRestartClearOfSkinOperations(operations: readonly
+     phase: string;
+ } | null): void;
+ export declare function waitForRestartSafety(host: Pick<SkinMarketHost, 'agents'>): Promise<void>;
+-export declare function mountRoutes(host: SkinMarketHost, options: RouteOptions): () => void;
++export declare function mountRoutes(host: SkinMarketHost, options: RouteOptions): () => void | Promise<void>;
+diff --git a/package.json b/package.json
+index df882f8..bd7493d 100644
+--- a/package.json
++++ b/package.json
+@@ -34,7 +34,7 @@
+     "prepack": "npm run check"
+   },
+   "peerDependencies": {
+-    "@deepseek-ai/cordis": "^4.0.1"
++    "@deepseek-ai/cordis": "4.0.5-alpha.1"
+   },
+   "dsh": {
+     "bundle": {
+@@ -42,7 +42,7 @@
+     },
+     "client": {
+       "inject": [
+-        "@deepseek-ai/dsh-client-runtime",
++        "@deepseek-ai/dsh-client-modules",
+         "@deepseek-ai/dsh-client-locale",
+         "@deepseek-ai/dsh-client-ui-settings"
+       ],

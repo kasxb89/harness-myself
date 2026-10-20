@@ -54,6 +54,8 @@ The sidebar [Skill store](../../client/ui-skillhub/README.md) searches SkillHub 
 
 The plugin and skin markets route GitHub metadata and preview downloads through the product's restricted HTTPS prefix, `https://8.216.52.27/github-relay/`, followed by the complete original HTTPS URL. GitHub plugin installation uses the [plugin manager](../../boot/plugin-manager/README.md)'s scoped HTTPS CONNECT route at `https://8.216.52.27:8443`. Catalog entries and pinned installation coordinates retain their canonical values. SkillHub's official CLI and community API use their own providers. These download settings do not change the product's model or payment address.
 
+Skin screenshots wait for the generated-media manifest and enter the download queue only when visible. The skin market's `previewConcurrency` (integer 1–6, default 2) and `previewIntervalMs` (integer 0–5000, default 1000) settings bound concurrent loads and space request starts; `previewTimeoutMs` (integer 1000–60000, default 15000) bounds manifest and individual image waits. Both catalog and state responses expose the same validated policy. A failed or cancelled manifest refresh preserves working previews; the first timed-out manifest permits the catalog's existing image candidates. A failed image is labelled separately from a missing screenshot, and **Retry screenshots** retries failed previews on demand. Full gallery images are not preloaded. Canonical GitHub attachment URLs can still fail when the restricted relay rejects their redirect; this UI change does not broaden the relay allowlist.
+
 This Yunshu product composition is private and is included in the Desktop runtime through local workspace tarballs. It is not part of the upstream public npm release family; its explicitly configured native computer driver remains an experimental integration.
 
 For a broad creation request, the agent uses the [question card](../../client/ui-user-questions/README.md) to clarify missing preferences before creating the result. For example, “make a website” can ask about purpose, style, and main content; “make a 40-second video” keeps the stated duration and asks only about missing subject, style, or aspect ratio. One short batch offers choices and custom answers, then the agent continues within the requested scope. Asking only to review the guidance or postponing creation still applies after answering. Specific requests and delegated choices proceed directly. Product replies, progress, tool summaries and user-visible creation plans default to Simplified Chinese unless the user explicitly requests another output language; protocol keys and tags retain their spelling. This guidance applies to the standard, PTC, and Cordis presets; a complete custom persona such as minimal intentionally replaces it and does not provide the question tool.
@@ -104,7 +106,9 @@ When you launch `dsh --profile web` over SSH, the URL line still prints but the 
 
 ### Per-session agent setup
 
-Each browser session selects a shipped preset (`standard` by default). The Agent presets settings page changes the default and edits preset child plugins; saves persist in `$DSH_HOME/profiles/web/cordis.patch.yml`. Creator's plugin-management tool is enabled only when the Host provides an editable profile.
+Each browser session selects a shipped preset (`standard` by default). The Agent presets settings page changes the default for later sessions and displays the selected composition. Creator's plugin-management tool is enabled only when the Host provides an editable profile.
+
+The eighteen [digital employee presets](presets/industry.patch.yml) specialize the selected session for a business role without changing its model, account or workspace. Each keeps Standard tools, installed skills and native image/video workflows. Choosing a role makes no model or media request. New bundle declarations appear after an upgrade without rewriting an existing profile, its default or earlier sessions. Roles describe duties and deliverables; they grant no external business-system access or professional certification.
 
 -----
 
@@ -114,7 +118,7 @@ Each browser session selects a shipped preset (`standard` by default). The Agent
 <details>
 <summary>Implementation internals — click to expand</summary>
 
-The bundle is one patch layer of five files plus one runtime glue plugin: `cordis.patch.yml` carries the host rows and the preset registry, and each `presets/<id>.patch.yml` inserts one shipped preset declaration, applied in the order `dsh.bundle.patch` lists them. The storage stack and projection cache come from `dsh-base`; the web overlay's workspace and message-feedback rows consume that shared `storageDomain` service. The patch restates the surface-specific values the base deliberately omits, inserts the web-only host rows and browser roster, then moves the agent plane behind presets. The glue plugin owns dist serving, the advertised application URL, the plain-HTTP exposure warning, prompt sections, the bash variable, and the readiness announcements. The `office-to-pdf` row mounts one lazy [Office conversion provider](../../document/office-to-pdf/README.md) for Host consumers, including Desktop compositions using this bundle. The conversion service's Remote methods authorize preview reads, while Document Preview owns the Office viewer and Client cache.
+The bundle applies the patch files in `dsh.bundle.patch` order: `cordis.patch.yml` carries the host rows and registry, the four original preset files retain their inspectable child lists, and `industry.patch.yml` adds the digital employees. Employees load a package-owned Include subtree through `standard-agent-tools`; its [generated tools](presets/standard-tools.yml) equal Standard's child list without its persona. Regenerate it from a checkout with `node packages/bundle/web-app/scripts/generate-standard-tools.mjs`; `--check` verifies the asset without writing. The storage stack and projection cache come from `dsh-base`; the web overlay's workspace and message-feedback rows consume that shared `storageDomain` service. The patch restates the surface-specific values the base deliberately omits, inserts the web-only host rows and browser roster, then moves the agent plane behind presets. The glue plugin owns dist serving, the advertised application URL, the plain-HTTP exposure warning, prompt sections, the bash variable, and the readiness announcements. The `office-to-pdf` row mounts one lazy [Office conversion provider](../../document/office-to-pdf/README.md) for Host consumers, including Desktop compositions using this bundle. The conversion service's Remote methods authorize preview reads, while Document Preview owns the Office viewer and Client cache.
 
 ### Patch semantics
 
@@ -138,7 +142,7 @@ The URL line and browser handoff are readiness signals: supervisors RPC as soon 
 | [`src/public-url.ts`](src/public-url.ts) | Advertised-root validation and trailing-slash normalization; a leaf module for local imports, not package API |
 | [`src/startup.ts`](src/startup.ts) | The `web-startup` provider: `--host`, `--port`, `--tls-cert`, `--tls-key`, `--public-url`, `--trusted-host`, `--no-open`, `--help` |
 | [`cordis.patch.yml`](cordis.patch.yml) | The web patch: restated base values, web host rows, browser roster, preset registry |
-| [`presets/`](presets) | One `@deepseek-ai/dsh-agent-preset` declaration per shipped preset (`standard`, `ptc`, `minimal`, `cordis`), each its own patch file |
+| [`presets/`](presets) | Original preset declarations, eighteen digital employees and their generated Standard tool list |
 | [`tests/web-app.spec.ts`](tests/web-app.spec.ts) | Dist index anchoring, advertised-URL publication and warnings, prompt sections, readiness publication |
 | [`tests/startup.spec.ts`](tests/startup.spec.ts) | Command-line parsing over a real Loader tree |
 | [`tests/public-url.spec.ts`](tests/public-url.spec.ts) | Advertised-root parsing and normalization |
@@ -172,11 +176,11 @@ When `surfaceContext` is true, the `harness:source` section identifies the on-di
 
 #### Token effect
 
-One source line and two prompt paragraphs per session plus two managed-environment variable lines; constant per process. Question arguments and submitted answers add ordinary tool-call history; waiting for an answer adds no tokens.
+One source line and two prompt paragraphs per session plus two managed-environment variable lines; constant per process. Question arguments and submitted answers add ordinary tool-call history; waiting for an answer adds no tokens. An employee session adds only its selected role and shared policy, not all eighteen roles; it keeps tool guidance and runtime context.
 
 #### KV Cache effect
 
-Source and Web sections follow first-party reusable instructions. Different checkout paths or application URLs leave that preceding prefix unchanged when tools and configuration match; provider cache reuse is not guaranteed.
+Source and Web sections follow first-party reusable instructions. Different checkout paths or application URLs leave that preceding prefix unchanged when tools and configuration match; provider cache reuse is not guaranteed. Changing an employee persona changes that session's prompt; it does not promise cache reuse or lower model charges.
 
 ## Known Limitations and Deferred Work
 

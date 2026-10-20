@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { resolveDesktopPaths } from '../src/paths.ts'
 import { DesktopProjectManager } from '../src/project-manager.ts'
-import { readProfilePlugins } from '@deepseek-ai/dsh-app-boot'
+import { initProfile, readProfilePlugins } from '@deepseek-ai/dsh-app-boot'
 import { runtimeFixture } from './runtime-fixture.ts'
 
 const roots: string[] = []
@@ -43,6 +43,16 @@ afterEach(() => {
 })
 
 describe('desktop external plugin profile', () => {
+  it('preserves recovery before the first launch that ships the assistant editor', async () => {
+    const { manager } = setup()
+    initProfile(manager.paths.profile, ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'])
+    await manager.disableAllPlugins()
+    await manager.applyRelease()
+    const manifest = JSON.parse(readFileSync(join(manager.paths.profile, 'package.json'), 'utf8')) as {
+      dsh: { profile: { bundles: string[] } }
+    }
+    expect(manifest.dsh.profile.bundles).not.toContain('dsh-custom-mode')
+  })
   it('preserves installed packages, profile state, and the lockfile when preparing a launch', async () => {
     const { manager } = setup()
     await manager.applyRelease()

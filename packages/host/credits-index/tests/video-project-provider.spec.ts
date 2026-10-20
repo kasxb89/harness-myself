@@ -88,6 +88,19 @@ async function rejection(operation: Promise<unknown>): Promise<Error> {
 
 describe('account-bound video relay requests', () => {
   it.each([
+    [{ error: { code: 'insufficient_user_quota', type: 'new_api_error' } }, 'INSUFFICIENT_BALANCE'],
+    [{ error: { code: 'insufficient_user_quota', type: 'invalid_request_error' } }, 'INSUFFICIENT_BALANCE'],
+    [{ code: 'insufficient_user_quota' }, 'INSUFFICIENT_BALANCE'],
+    [{ error: { code: 'insufficient_quota', type: 'upstream_error' } }, 'VIDEO_SUBMIT_REJECTED'],
+    [{ code: 'permission_denied', message: 'insufficient balance' }, 'VIDEO_SUBMIT_REJECTED'],
+    [{ error: { code: 'pre_consume_token_quota_failed', type: 'new_api_error' } }, 'VIDEO_SUBMIT_REJECTED'],
+  ])('classifies only gateway user funding rejection, without repeating the paid POST', async (body, code) => {
+    const f = await fixture((_request, response) => { response.statusCode = 403; json(response, body) })
+    await expect(f.relay.submit({ model: 'MiniMax-H3' }, '/v1/video/generations', signal())).rejects.toMatchObject({ code })
+    expect(f.calls).toHaveLength(1)
+    expect(await readdir(f.cacheRoot)).toEqual([])
+  })
+  it.each([
     'http://relay.example', 'https://user:secret@relay.example', 'https://8.133.202.230',
     'https://relay.example?credential=secret', 'https://relay.example#private', 'ftp://relay.example',
   ])('rejects an untrusted or non-origin relay configuration (%s)', (origin) => {

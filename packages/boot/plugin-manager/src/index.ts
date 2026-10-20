@@ -17,6 +17,7 @@ import {
   evaluatePluginCompatibility, readProfileCompatibility, readProfileVersionExemptions,
   setProfileVersionExemption, PROFILE_COMPATIBILITY_FILENAME,
   OFFICIAL_ON_DEMAND_CATALOG, getDshRuntimeVersion,
+  ProfileResolutionRestartRequiredError,
 } from '@deepseek-ai/dsh-app-boot'
 import type {} from '@deepseek-ai/dsh-hmr'
 import type { ProfileContext, ProfileManifest } from '@deepseek-ai/dsh-app-boot'
@@ -872,6 +873,8 @@ export class PluginManager extends TypertRemoteService {
       } catch (error) {
         if (error instanceof InstallCancelledError) {
           result.application = 'cancelled'
+        } else if (error instanceof ProfileResolutionRestartRequiredError) {
+          result.application = 'restart-required'
         } else {
           result.application = 'failed'
           result.error = managementError(error)
