@@ -1,6 +1,19 @@
 import { describe, expect, it } from 'vitest'
 import { catalogFromPricing, videoDurations, type VideoParams } from '../src/media.ts'
 
+describe('internal image capability', () => {
+  it('offers six references on the internal task route without granting edits to text-only models', () => {
+    const catalog = catalogFromPricing([
+      { model_name: 'yunshu-internal-gpt-image-2', supported_endpoint_types: ['image-generation'] },
+      { model_name: 'wanx2.1-t2i-turbo', supported_endpoint_types: ['image-generation'] },
+    ], null)
+    expect(catalog).toMatchObject([
+      { id: 'yunshu-internal-gpt-image-2', route: '/toapis/v1/images/generations', params: { maxCount: 1, maxEdits: 6 } },
+      { id: 'wanx2.1-t2i-turbo', params: { maxEdits: 0 } },
+    ])
+  })
+})
+
 function video(fields: Record<string, unknown> = {}): VideoParams {
   const [model] = catalogFromPricing([{
     model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'], enable_groups: ['product'], ...fields,

@@ -437,11 +437,14 @@ export function ImagePage(props: ImagePageProps): ReactNode {
       if (answer.sessionInvalid === true) { acceptAccount({ signedIn: false }); actions.patch({ sessionInvalid: true, failure: t('noAuth') }); return }
       if (!answer.ok || answer.payload === undefined) {
         const kind = productFailureKind(answer.code)
-        setFailure(kind === 'insufficient-credits' ? t('insufficient')
-          : kind === 'sign-in' || kind === 'signed-out' ? t('noAuth')
-            : kind === 'cancelled' ? t('cancelled')
-              : answer.code === 'TIMEOUT' || answer.code === 'TRANSPORT' || answer.code === 'NO_TASK_ID'
-                ? t('generationConnectionLost') : t('serverBusy'))
+        const referenceFailure = answer.code === 'IMAGE_REFERENCE_INVALID' || answer.code === 'IMAGE_REFERENCE_UPLOAD_FAILED'
+          || answer.code === 'IMAGE_REFERENCE_UPLOAD_INVALID'
+        setFailure(referenceFailure && typeof answer.message === 'string' && answer.message !== '' ? answer.message
+          : kind === 'insufficient-credits' ? t('insufficient')
+            : kind === 'sign-in' || kind === 'signed-out' ? t('noAuth')
+              : kind === 'cancelled' ? t('cancelled')
+                : answer.code === 'TIMEOUT' || answer.code === 'TRANSPORT' || answer.code === 'NO_TASK_ID'
+                  ? t('generationConnectionLost') : t('serverBusy'))
         return
       }
       actions.patch({ resultPaths: answer.payload.paths ?? [answer.payload.path], message: t('done') })

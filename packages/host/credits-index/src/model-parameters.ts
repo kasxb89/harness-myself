@@ -183,10 +183,10 @@ export const IMAGE_MODELS: Record<string, ImageSpec> = {
   // Served by the gateway's `toapis-image` plugin. Measured on 2026-10-14:
   // a body carrying `size` is answered with HTTP 503 "Task request failed"
   // before any task is queued, so no size menu is offered; `n` must be 1, and
-  // `reference_images` accepts only six `https://` URLs — a locally uploaded
-  // file cannot become one, so edits stay closed until that route hosts files.
+  // `reference_images` accepts at most six HTTPS URLs. The Host uploads
+  // authorized local references through the authenticated gateway first.
   'yunshu-internal-gpt-image-2': {
-    sizes: [], maxCount: 1, maxEdits: 0,
+    sizes: [], maxCount: 1, maxEdits: 6,
     qualities: ['auto', 'low', 'medium', 'high'],
     backgrounds: ['auto', 'transparent', 'opaque'],
     formats: ['png', 'jpeg', 'webp'],

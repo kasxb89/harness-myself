@@ -47,6 +47,7 @@ let pricingRows: unknown[] = []
 let videoTaskStatus: string | undefined
 let videoRejection: unknown
 let imageResponse: unknown
+const internalUploadResponses: { status: number; body?: unknown; disconnect?: boolean }[] = []
 let relayKey = 'sk-owned-relay'
 let upstreamGate: ((path: string, response: ServerResponse) => Promise<void>) | undefined
 let releaseUpstreamGate: (() => void) | undefined
@@ -90,6 +91,7 @@ afterEach(async () => {
   videoTaskStatus = undefined
   videoRejection = undefined
   imageResponse = undefined
+  internalUploadResponses.length = 0
   relayKey = 'sk-owned-relay'
   upstreamGate = undefined
   releaseUpstreamGate = undefined
@@ -159,6 +161,21 @@ async function boot(
         answer({ server_time: Math.floor(Date.now() / 1000), heartbeat_interval_seconds: 30, online_timeout_seconds: 90 }); return
       }
       if (url.pathname === '/harness/api/pricing') { answer(pricingRows); return }
+      if (url.pathname === '/harness/v1/uploads/images') {
+        if (request.headers.authorization !== `Bearer ${relayKey}`) { response.writeHead(403); response.end('{}'); return }
+        const upload = internalUploadResponses.shift()
+        if (upload?.disconnect === true) { response.destroy(); return }
+        response.writeHead(upload?.status ?? 500)
+        response.end(JSON.stringify(upload?.body ?? {})); return
+      }
+      if (url.pathname === '/harness/toapis/v1/images/generations') {
+        if (request.headers.authorization !== `Bearer ${relayKey}`) { response.writeHead(403); response.end('{}'); return }
+        response.end(JSON.stringify({ id: 'fixture-image-task' })); return
+      }
+      if (url.pathname === '/harness/toapis/v1/images/generations/fixture-image-task') {
+        if (request.headers.authorization !== `Bearer ${relayKey}`) { response.writeHead(403); response.end('{}'); return }
+        response.end(JSON.stringify({ status: 'succeeded', result: imageResponse })); return
+      }
       if ((url.pathname === '/harness/v1/images/generations' || url.pathname === '/harness/v1/images/edits') && imageResponse !== undefined) {
         if (request.headers.authorization !== `Bearer ${relayKey}`) { response.writeHead(403); response.end('{}'); return }
         if (imageResponse === 'disconnect') { response.destroy(); return }
@@ -279,6 +296,15 @@ async function hostCookie(base: string): Promise<string> {
   const cookie = auth.headers.get('set-cookie')?.split(';')[0]
   if (cookie === undefined) throw new Error('Expected authenticated Host cookie')
   return cookie
+}
+
+async function uploadImage(base: string, cookie: string, filename: string, bytes: Buffer): Promise<Record<string, unknown>> {
+  const response = await fetch(base + '/api/assets', { method: 'POST', headers: {
+    cookie, 'content-type': 'image/png', 'x-file-name': encodeURIComponent(filename), 'x-idempotency-key': Buffer.from(filename).toString('hex'),
+  }, body: new Uint8Array(bytes) })
+  const uploaded = object(await response.json())
+  expect(uploaded.ok).toBe(true)
+  return object(uploaded.asset)
 }
 
 function projects(answer: Record<string, unknown>): Record<string, unknown>[] {
@@ -887,6 +913,131 @@ describe('deployed Harness API through the real product Loader', () => {
     expect(context!.tools.schemas().find(tool => tool.name === 'generate_image')).toMatchSnapshot('chat image reference tool')
   }, 15_000)
 
+  it.each(['panel', 'chat'] as const)('uploads internal image references before the shared generation task through %s', async (entry) => {
+    const { base, stateDir } = await boot(undefined, true, true)
+    const cookie = await hostCookie(base)
+    await signIn(base)
+    const model = 'yunshu-internal-gpt-image-2'
+    relayModels.push({ id: model, object: 'model', supported_endpoint_types: ['image-generation'] })
+    pricingRows = [{ model_name: model, supported_endpoint_types: ['image-generation'] }]
+    const png = await sharp({ create: { width: 2, height: 2, channels: 3, background: '#aabbcc' } }).png().toBuffer()
+    imageResponse = { data: [{ b64_json: png.toString('base64') }] }
+    const sources = [
+      await uploadImage(base, cookie, '妈妈参考.png', png),
+      await uploadImage(base, cookie, '孩子参考.jpg', await sharp(png).jpeg().toBuffer()),
+    ]
+    const urls = ['https://files.toapis.cn/uploads/first.png', 'https://files.toapis.com/uploads/second.jpg']
+    internalUploadResponses.push(...sources.map((asset, index) => ({ status: 200, body: { success: true, data: {
+      id: `upload_${String(index)}`, url: urls[index], mime_type: asset.contentType, size: asset.sizeBytes,
+    } } })))
+    const references = sources.map(asset => String(asset.assetId))
+    const prompt = '保留妈妈和孩子的外貌，换成温暖的客厅'
+    let saved: string
+    if (entry === 'panel') {
+      context!.sessions.create(SessionId('internal-image-chat'), { meta: { cwd: stateDir } })
+      const result = await post(base, '/api/image/generate', {
+        session_id: 'internal-image-chat', account_id: '7', model, prompt, references,
+      }, cookie)
+      expect(result).toMatchObject({ ok: true, mode: 'edit' })
+      saved = String(object(result.payload).path)
+    } else {
+      const result = object((await context!.tools.execute({
+        name: 'generate_image', arguments: { model, prompt, reference_images: references },
+        agent: videoAgent(stateDir), callId: ToolCallId('internal-image'), signal: new AbortController().signal,
+      })).value)
+      expect(result).toMatchObject({ status: 'succeeded', model })
+      saved = String(result.path)
+    }
+    expect(await readFile(saved)).toEqual(png)
+    const requests = calls.filter(call => call.path.includes('/uploads/images') || call.path.includes('/toapis/'))
+    expect(requests.map(call => call.path)).toEqual([
+      '/harness/v1/uploads/images', '/harness/v1/uploads/images',
+      '/harness/toapis/v1/images/generations', '/harness/toapis/v1/images/generations/fixture-image-task',
+    ])
+    expect(requests.every(call => call.authorization === 'Bearer sk-owned-relay')).toBe(true)
+    for (const [index, request] of requests.slice(0, 2).entries()) {
+      const multipart = Buffer.from(String(object(request.body).multipart), 'base64')
+      expect(multipart.toString()).toContain('name="model"\r\n\r\nyunshu-internal-gpt-image-2')
+      expect(multipart.toString()).toContain('name="file"; filename="reference.')
+      expect(multipart.toString()).toContain(`Content-Type: ${String(sources[index]!.contentType)}`)
+      expect(multipart.includes(await readFile(join(stateDir, 'refs', String(sources[index]!.filename))))).toBe(true)
+    }
+    expect(requests[2]!.body).toEqual({ model, prompt, n: 1, reference_images: urls })
+    expect(calls.some(call => call.path === '/harness/v1/images/edits' || call.path === '/harness/v1/images/generations')).toBe(false)
+    expect(internalUploadResponses).toEqual([])
+  }, 15_000)
+
+  it('names an internal reference upload failure, rejects unsafe receipts and never submits or retries generation', async () => {
+    const { base } = await boot(undefined, false, true)
+    const cookie = await hostCookie(base)
+    await signIn(base)
+    const model = 'yunshu-internal-gpt-image-2'
+    relayModels.push({ id: model, object: 'model', supported_endpoint_types: ['image-generation'] })
+    pricingRows = [{ model_name: model, supported_endpoint_types: ['image-generation'] }]
+    const png = await sharp({ create: { width: 1, height: 1, channels: 3, background: '#aabbcc' } }).png().toBuffer()
+    const asset = await uploadImage(base, cookie, '妈妈参考.png', png)
+    const data = { id: 'upload_one', url: 'https://files.toapis.cn/uploads/verified.png', mime_type: asset.contentType, size: asset.sizeBytes }
+    const attempts = [
+      ...[401, 403, 413, 415, 429, 502, 504].map(status => ({ status, body: { error: { message: 'secret upstream diagnostic' } } })),
+      { status: 200, disconnect: true },
+      { status: 200, body: { success: false, data } },
+      { status: 200, body: { success: true, data: { ...data, url: 'http://files.toapis.cn/uploads/unsafe.png' } } },
+      { status: 200, body: { success: true, data: { ...data, url: 'https://user:password@files.toapis.cn/uploads/unsafe.png' } } },
+      { status: 200, body: { success: true, data: { ...data, url: 'https://example.test/uploads/unsafe.png' } } },
+      { status: 200, body: { success: true, data: { ...data, url: 'https://files.toapis.cn/other/unsafe.png' } } },
+      { status: 200, body: { success: true, data: { ...data, url: `${data.url}?secret=value` } } },
+      { status: 200, body: { success: true, data: { ...data, url: `${data.url}#fragment` } } },
+      { status: 200, body: { success: true, data: { ...data, url: `${data.url}?` } } },
+      { status: 200, body: { success: true, data: { ...data, url: `${data.url}#` } } },
+      { status: 200, body: { success: true, data: { ...data, id: '' } } },
+      { status: 200, body: { success: true, data: { ...data, mime_type: 'image/webp' } } },
+      { status: 200, body: { success: true, data: { ...data, size: 0 } } },
+    ]
+    for (const attempt of attempts) {
+      internalUploadResponses.push(attempt)
+      const before = calls.filter(call => call.path === '/harness/v1/uploads/images').length
+      const result = await post(base, '/api/image/generate', { model, prompt: '修改这张图', references: [asset.assetId] }, cookie)
+      expect(result).toMatchObject({ ok: false })
+      expect(result.code).toMatch(/^IMAGE_REFERENCE_UPLOAD_(?:FAILED|INVALID)$/u)
+      expect(result.message).toContain('妈妈参考.png')
+      expect(result.message).toContain('尚未提交生成')
+      expect(JSON.stringify(result)).not.toMatch(/secret upstream|password|verified\.png/u)
+      expect(calls.filter(call => call.path === '/harness/v1/uploads/images')).toHaveLength(before + 1)
+      expect(internalUploadResponses).toEqual([])
+    }
+    expect(calls.some(call => call.path.includes('/toapis/') || call.path.includes('/v1/images/'))).toBe(false)
+  }, 15_000)
+
+  it('validates all internal reference files before uploading any bytes', async () => {
+    const { base, stateDir } = await boot(undefined, false, true)
+    const cookie = await hostCookie(base)
+    await signIn(base)
+    const model = 'yunshu-internal-gpt-image-2'
+    relayModels.push({ id: model, object: 'model', supported_endpoint_types: ['image-generation'] })
+    pricingRows = [{ model_name: model, supported_endpoint_types: ['image-generation'] }]
+    const png = await sharp({ create: { width: 1, height: 1, channels: 3, background: '#aabbcc' } }).png().toBuffer()
+    const valid = await uploadImage(base, cookie, '有效.png', png)
+    const invalid = await uploadImage(base, cookie, '第二张.png', png)
+    const path = join(stateDir, 'refs', String(invalid.filename))
+    for (const [bytes, mediaType, accountId] of [
+      [Buffer.from('not an image'), 'image/png', '7'],
+      [Buffer.concat([png, Buffer.alloc(10 * 1024 * 1024)]), 'image/png', '7'],
+      [png, 'image/jpeg', '7'],
+      [png, 'image/png', '8'],
+    ] as const) {
+      await writeFile(path, bytes)
+      await writeFile(`${path}.json`, JSON.stringify({ mediaType, originalName: '第二张.png', accountId }))
+      const result = await post(base, '/api/image/generate', { model, prompt: '修改图片', references: [valid.assetId, invalid.assetId] }, cookie)
+      expect(result).toMatchObject({ ok: false, code: 'IMAGE_REFERENCE_INVALID' })
+      expect(result.message).toContain('第二张.png')
+    }
+    expect(await post(base, '/api/image/generate', { model, prompt: '修改图片', references: Array.from({ length: 7 }, () => valid.assetId) }, cookie))
+      .toMatchObject({ ok: false, code: 'REFERENCES_NOT_SUPPORTED' })
+    expect(await post(base, '/api/image/generate', { model, prompt: '修改图片', references: ['https://example.test/private.png'] }, cookie))
+      .toMatchObject({ ok: false, code: 'IMAGE_REFERENCE_INVALID' })
+    expect(calls.some(call => call.path.includes('/uploads/images') || call.path.includes('/toapis/') || call.path.includes('/v1/images/'))).toBe(false)
+  }, 15_000)
+
   it('rejects other-chat attachments, workspace escapes, corrupt images and models without edits before paid submission', async () => {
     const { base, stateDir } = await boot()
     await signIn(base)
@@ -919,9 +1070,9 @@ describe('deployed Harness API through the real product Loader', () => {
       expect(await call(reference)).toMatchObject({ status: 'failed' })
     }
     await writeFile(join(stateDir, 'valid.png'), png)
-    relayModels.push({ id: 'yunshu-internal-gpt-image-2', object: 'model', supported_endpoint_types: ['image-generation'] })
-    pricingRows.push({ model_name: 'yunshu-internal-gpt-image-2', supported_endpoint_types: ['image-generation'] })
-    const unsupported = await call('valid.png', 'yunshu-internal-gpt-image-2')
+    relayModels.push({ id: 'wanx2.1-t2i-turbo', object: 'model', supported_endpoint_types: ['image-generation'] })
+    pricingRows.push({ model_name: 'wanx2.1-t2i-turbo', supported_endpoint_types: ['image-generation'] })
+    const unsupported = await call('valid.png', 'wanx2.1-t2i-turbo')
     expect(unsupported).toMatchObject({ status: 'failed' })
     expect(unsupported.message).toContain('只支持文生图')
     agent.session.append('user/message', createUserMessage({ source: { kind: 'user' }, content: [

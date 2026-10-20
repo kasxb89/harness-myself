@@ -1265,7 +1265,8 @@ export function apply(ctx: Context, config: Config): void {
    * Generate images on the local new-api, one entry point for the panel and the
    * tool. Text-to-image posts the documented JSON body; a request carrying
    * reference images posts multipart to `/images/edits`, which is the shape
-   * new-api's own image adapter reads.
+   * new-api's own image adapter reads. The internal task model instead uploads
+   * authorized references through this gateway before sending receipt URLs.
    */
   const runImageGeneration = async (
     key: string,
@@ -1323,6 +1324,11 @@ export function apply(ctx: Context, config: Config): void {
       return { ok: false, code: 'COUNT_NOT_SUPPORTED', message: `${model} 一次可出 1–${String(params.maxCount)} 张` }
     }
     const references = referenceIds(body.references)
+    const internalImage = model === 'yunshu-internal-gpt-image-2'
+    if (internalImage && body.references !== undefined && (!Array.isArray(body.references)
+      || references.length !== body.references.length)) {
+      return { ok: false, model, code: 'IMAGE_REFERENCE_INVALID', message: '参考图编号无效，请重新添加图片；尚未提交生成。' }
+    }
     if (references.length > params.maxEdits) {
       return {
         ok: false,
@@ -1353,6 +1359,75 @@ export function apply(ctx: Context, config: Config): void {
       // A plugin-served model answers on its own path and hands back a task;
       // the OpenAI host protocol answers inline on `/v1/images/generations`.
       if (capability.model.route !== '/v1/images/generations') {
+        const referenceUrls: string[] = []
+        if (internalImage && references.length > 0) {
+          const prepared: { bytes: Buffer; mediaType: string; filename: string }[] = []
+          const session = await liveSession()
+          for (const [index, assetId] of references.entries()) {
+            const file = await readReference(assetId)
+            const filename = file === null ? `参考图 ${String(index + 1)}`
+              : basename(file.filename.replace(/\\/gu, '/')).replace(/[\u0000-\u001f\u007f]/gu, '').slice(0, 256) || `参考图 ${String(index + 1)}`
+            const invalid = file === null ? '已失效，请重新上传'
+              : file.accountId !== undefined && file.accountId !== session?.account.id ? '不属于当前账号，请重新上传'
+                : !ALLOWED_ASSET_TYPES.has(file.mediaType) ? '只支持 PNG、JPEG 或 WebP 图片'
+                  : file.bytes.length === 0 ? '内容为空，请重新选择图片'
+                    : file.bytes.length > 10 * 1024 * 1024 ? '超过 10 MB，请缩小后重新上传'
+                      : !referenceSignature(file.bytes, file.mediaType) ? '内容与图片格式不匹配，请重新上传' : undefined
+            if (file === null || invalid !== undefined) {
+              return { ok: false, model, code: 'IMAGE_REFERENCE_INVALID', message: `参考图「${filename}」${invalid ?? '不可读取'}；尚未提交生成。` }
+            }
+            prepared.push({ ...file, filename })
+          }
+          // Validate every local image before sending any bytes. Uploads have
+          // no generation charge; only the later generation POST is dispatched.
+          for (const file of prepared) {
+            if ((await liveSession())?.relay?.key !== key) {
+              return { ok: false, model, code: 'AUTH_REQUIRED', message: '登录状态已变化，请重新登录；尚未提交生成。' }
+            }
+            const form = new FormData()
+            form.set('model', model)
+            const extension = file.mediaType === 'image/jpeg' ? 'jpg' : file.mediaType === 'image/webp' ? 'webp' : 'png'
+            form.set('file', new Blob([new Uint8Array(file.bytes)], { type: file.mediaType }), `reference.${extension}`)
+            let uploaded: Response
+            let receipt: unknown
+            try {
+              signal.throwIfAborted()
+              uploaded = await apiFetch('/v1/uploads/images', {
+                method: 'POST', headers: { authorization: `Bearer ${key}`, accept: 'application/json' }, body: form,
+                signal: AbortSignal.any([signal, AbortSignal.timeout(Math.max(resolved.timeoutMs, 60_000))]),
+              })
+              receipt = uploaded.ok ? await uploaded.json() : null
+            } catch {
+              signal.throwIfAborted()
+              return { ok: false, model, code: 'IMAGE_REFERENCE_UPLOAD_FAILED', message: `参考图「${file.filename}」上传未完成，请稍后重试；尚未提交生成。` }
+            }
+            if (!uploaded.ok) {
+              const reason = uploaded.status === 401 ? '登录已失效，请重新登录'
+                : uploaded.status === 403 ? '当前账号无权上传图片'
+                  : uploaded.status === 413 ? '超过上传大小限制，请缩小图片'
+                    : uploaded.status === 400 || uploaded.status === 415 ? '图片格式或内容不受支持，请重新选择'
+                      : uploaded.status === 429 ? '上传过于频繁，请稍后重试' : '服务器繁忙，请稍后重试'
+              return { ok: false, model, code: 'IMAGE_REFERENCE_UPLOAD_FAILED', message: `参考图「${file.filename}」${reason}；尚未提交生成。` }
+            }
+            const result = receipt !== null && typeof receipt === 'object' && !Array.isArray(receipt) ? receipt as Record<string, unknown> : null
+            const data = result?.data !== null && typeof result?.data === 'object' && !Array.isArray(result.data) ? result.data as Record<string, unknown> : null
+            const remote = readString(data, 'url')
+            let validUrl = false
+            if (remote !== null && remote.length <= 2048 && !/[\u0000-\u0020\u007f\\?#]/u.test(remote)) {
+              try {
+                const url = new URL(remote)
+                validUrl = (url.origin === 'https://files.toapis.cn' || url.origin === 'https://files.toapis.com')
+                  && url.pathname.startsWith('/uploads/') && url.pathname.length > '/uploads/'.length
+                  && url.username === '' && url.password === '' && url.search === '' && url.hash === ''
+              } catch { validUrl = false }
+            }
+            if (result?.success !== true || !validUrl || remote === null || readString(data, 'id') === null
+              || data?.mime_type !== file.mediaType || data.size !== file.bytes.length) {
+              return { ok: false, model, code: 'IMAGE_REFERENCE_UPLOAD_INVALID', message: `参考图「${file.filename}」上传回执无效，请稍后重试；尚未提交生成。` }
+            }
+            referenceUrls.push(remote)
+          }
+        }
         await beforeSubmission()
         const submitted = await apiFetch(capability.model.route, {
           method: 'POST',
@@ -1362,6 +1437,7 @@ export function apply(ctx: Context, config: Config): void {
             prompt,
             n: count,
             ...extras,
+            ...referenceUrls.length === 0 ? {} : { reference_images: referenceUrls },
           }),
           signal: AbortSignal.any([signal, AbortSignal.timeout(Math.max(resolved.timeoutMs, 60_000))]),
         })
@@ -1413,7 +1489,7 @@ export function apply(ctx: Context, config: Config): void {
             saved.push(path)
           }
           if (saved.length > 0) {
-            return { ok: true, model, path: saved[0], paths: saved, mode: 'generate' }
+            return { ok: true, model, path: saved[0], paths: saved, mode: referenceUrls.length === 0 ? 'generate' : 'edit' }
           }
         }
         return { ok: false, model, code: 'TIMEOUT', message: '任务仍在运行，稍后可重试。' }

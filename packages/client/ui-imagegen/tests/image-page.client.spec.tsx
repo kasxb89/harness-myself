@@ -3,7 +3,6 @@
 import { useSyncExternalStore } from 'react'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { RenderFactorySlot } from '@deepseek-ai/dsh-client-ui-slots'
 import type { PromptAssistOwner } from '@deepseek-ai/dsh-client-ui-prompt-assist/client'
 import { ImagePage } from '../src/client/ImagePage.tsx'
 import { createImageDraftStore } from '../src/client/draft-store.ts'
@@ -50,7 +49,7 @@ function makeProps() {
     useCreationContent: fixture.useCreationContent, useLocale: fixture.useLocale, refreshContent: vi.fn(),
     useCreationSession: select => select({ key: chatSessionId, hooks: {}, keyedHooks: {}, props: {} }),
     t,
-    renderFactorySlot: vi.fn<RenderFactorySlot>(() => null),
+    renderFactorySlot: vi.fn(() => null),
     openVideo: vi.fn(),
     readDraft: getSnapshot,
     createReferencePreview: vi.fn((file: File) => `blob:${file.name}`),
@@ -104,6 +103,27 @@ describe('image creation workspace', () => {
     expect(store.getSnapshot().prompt).toBe('保留这个画面')
     expect(fetchMock.mock.calls.filter(([url]) => url === '/credits/api/image/generate')).toHaveLength(1)
   })
+
+  it.each(['IMAGE_REFERENCE_INVALID', 'IMAGE_REFERENCE_UPLOAD_FAILED', 'IMAGE_REFERENCE_UPLOAD_INVALID'])(
+    'shows the safe Host reference filename and reason for %s without retrying', async (code) => {
+      const original = fetchMock.getMockImplementation()!
+      const message = '参考图「妈妈参考.png」上传未完成，请稍后重试；尚未提交生成。'
+      fetchMock.mockImplementation(async (input, init) => input === '/credits/api/image/generate'
+        ? json({ ok: false, code, message }) : await original(input, init))
+      const { props, store } = makeProps()
+      const reference = { assetId: 'ma_retained', name: '妈妈参考.png', url: 'blob:retained', bytes: 10 }
+      store.actions.appendReference(reference)
+      render(<ImagePage {...props} />)
+      await ready()
+      fireEvent.change(screen.getByRole('textbox', { name: zh.prompt }), { target: { value: '保留人物外貌' } })
+      fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+      expect((await screen.findByRole('alert')).textContent).toBe(message)
+      expect(store.getSnapshot().prompt).toBe('保留人物外貌')
+      expect(store.getSnapshot().references).toEqual([reference])
+      await waitFor(() => { expect(store.getSnapshot().generationStartedAt).toBeNull() })
+      expect(fetchMock.mock.calls.filter(([url]) => url === '/credits/api/image/generate')).toHaveLength(1)
+    },
+  )
 
   it.each(['TIMEOUT', 'TRANSPORT', 'NO_TASK_ID'])('keeps unknown-result guidance for a structured %s failure without resubmitting', async (code) => {
     const original = fetchMock.getMockImplementation()!
