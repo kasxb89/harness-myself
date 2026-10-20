@@ -1,0 +1,8 @@
+/* Chat billing shares the established composer-pill typography and semantic colors. */
+.pill { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 1px 8px; border: 0; border-radius: 999px; background: transparent; color: var(--dsw-alias-label-secondary); font-family: inherit; font-size: calc(var(--dsh-content-font-size-secondary, 13px) - 1px); line-height: calc(20px + var(--dsh-content-font-delta-secondary, 0px)); cursor: pointer; }
+.pill:hover, .pill[aria-expanded='true'] { background: var(--dsw-alias-interactive-bg-hover); }
+.pill svg { flex: none; }
+.value { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.dialog { width: min(440px, 100%); }
+.amount { margin: 0 0 12px; color: var(--dsw-alias-label-primary); font-size: 16px; line-height: 24px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.note { margin: 8px 0 0; color: var(--dsw-alias-label-secondary); font-size: 13px; line-height: 20px; }

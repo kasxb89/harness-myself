@@ -65,6 +65,134 @@ beforeEach(() => { vi.useRealTimers(); sessionAccountId = 'account-a'; chatSessi
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 describe('video composer', () => {
+  it('retains several writing references for a single-frame model and sends the explicitly selected frame', async () => {
+    const { mount, asset, store, props, task } = setup({ frameSlots: 1, maxReferenceImages: 0 })
+    let id = 0
+    asset.mockImplementation(async () => json({ ok: true, asset: { assetId: `ma_material${String(++id)}` } }))
+    mount()
+    await ready()
+    fireEvent.change(screen.getByLabelText(zh.addMedia), { target: { files: ['mother.png', 'child.png', 'book.png']
+      .map(name => new File(['image'], name, { type: 'image/png' })) } })
+    await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull(); expect(asset).toHaveBeenCalledTimes(3) })
+    expect(store.getSnapshot().slots.image.map(item => item.assetId)).toEqual(['ma_material1', 'ma_material2', 'ma_material3'])
+    expect(store.getSnapshot()).toMatchObject({ workflow: 'image', firstFrame: { assetId: 'ma_material1' } })
+    const assistant = vi.mocked(props.renderFactorySlot).mock.calls.at(-1)?.[1] as PromptAssistOwner
+    expect(assistant.references).toEqual(['ma_material1', 'ma_material2', 'ma_material3'])
+    expect(assistant.disabled).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: t('useFirstFrameNamed', { name: 'child.png' }) }))
+    expect(store.getSnapshot().firstFrame?.assetId).toBe('ma_material2')
+    writePrompt()
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    await waitFor(() => { expect(task).toHaveBeenCalledOnce() })
+    expect(requestBody(task.mock.calls[0]?.[0])).toMatchObject({ frameImages: ['ma_material2'], referenceImages: [] })
+  })
+
+  it('uses main-entry images in the reference workflow instead of silently generating from text alone', async () => {
+    const { mount, asset, store, task } = setup({ frameSlots: 2, maxReferenceImages: 3 })
+    let id = 0
+    asset.mockImplementation(async () => json({ ok: true, asset: { assetId: `ma_material${String(++id)}` } }))
+    mount()
+    await ready()
+    fireEvent.change(screen.getByLabelText(zh.addMedia), { target: { files: ['one.png', 'two.png']
+      .map(name => new File(['image'], name, { type: 'image/png' })) } })
+    await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull(); expect(asset).toHaveBeenCalledTimes(2) })
+    expect(store.getSnapshot().workflow).toBe('reference')
+    writePrompt()
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    await waitFor(() => { expect(task).toHaveBeenCalledOnce() })
+    expect(requestBody(task.mock.calls[0]?.[0])).toMatchObject({ frameImages: [], referenceImages: ['ma_material1', 'ma_material2'] })
+  })
+
+  it('routes a mixed main-entry batch to the model-supported image, video and audio slots without passing non-images to AI writing', async () => {
+    const { mount, asset, store, props } = setup()
+    let id = 0
+    asset.mockImplementation(async () => json({ ok: true, asset: { assetId: `ma_material${String(++id)}` } }))
+    mount()
+    await ready()
+    const input = screen.getByLabelText<HTMLInputElement>(zh.addMedia)
+    expect(input.accept).toContain('.mp4,.mov')
+    expect(input.accept).toContain('.mp3,.wav')
+    fireEvent.change(input, { target: { files: [new File(['image'], 'photo.png', { type: 'image/png' }),
+      new File(['video'], 'scene.mp4'), new File(['audio'], 'voice.wav', { type: 'audio/x-wav' })] } })
+    await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull(); expect(asset).toHaveBeenCalledTimes(3) })
+    expect(store.getSnapshot()).toMatchObject({ workflow: 'reference', slots: {
+      image: [{ assetId: 'ma_material1' }], video: [{ assetId: 'ma_material2' }], audio: [{ assetId: 'ma_material3' }],
+    } })
+    expect((vi.mocked(props.renderFactorySlot).mock.calls.at(-1)?.[1] as PromptAssistOwner).references).toEqual(['ma_material1'])
+    expect(screen.getByText(zh.assistImagesOnly)).toBeTruthy()
+    const draft = store.getSnapshot()
+    expect({ workflow: draft.workflow, images: draft.slots.image.map(item => item.name),
+      videos: draft.slots.video.map(item => item.name), audio: draft.slots.audio.map(item => item.name),
+      notice: screen.getByText(zh.assistImagesOnly).textContent }).toMatchInlineSnapshot(`
+      {
+        "audio": [
+          "voice.wav",
+        ],
+        "images": [
+          "photo.png",
+        ],
+        "notice": "AI 帮写使用文字和图片，不读取视频或音频内容；这些素材仍保留用于生成",
+        "videos": [
+          "scene.mp4",
+        ],
+        "workflow": "reference",
+      }
+    `)
+  })
+
+  it('keeps a selected image preview while another slot still owns it and removes all of its frame bindings with the material', async () => {
+    const { mount, asset, store, props } = setup()
+    let id = 0
+    asset.mockImplementation(async () => json({ ok: true, asset: { assetId: `ma_material${String(++id)}` } }))
+    mount()
+    await ready()
+    fireEvent.change(screen.getByLabelText(zh.addMedia), { target: { files: ['one.png', 'two.png']
+      .map(name => new File(['image'], name, { type: 'image/png' })) } })
+    await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull(); expect(asset).toHaveBeenCalledTimes(2) })
+    fireEvent.click(screen.getByRole('button', { name: t('useFirstFrameNamed', { name: 'one.png' }) }))
+    fireEvent.click(screen.getByRole('button', { name: t('useLastFrameNamed', { name: 'two.png' }) }))
+    expect(store.getSnapshot()).toMatchObject({ workflow: 'frames', firstFrame: { assetId: 'ma_material1' }, lastFrame: { assetId: 'ma_material2' } })
+    fireEvent.click(screen.getByRole('button', { name: t('useFirstFrameNamed', { name: 'two.png' }) }))
+    expect(props.releasePreview).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: t('removeNamed', { name: 'two.png' }) }))
+    expect(store.getSnapshot()).toMatchObject({ firstFrame: null, lastFrame: null, slots: { image: [{ assetId: 'ma_material1' }] } })
+    expect(props.releasePreview).toHaveBeenCalledOnce()
+    expect(props.releasePreview).toHaveBeenCalledWith('blob:two.png')
+  })
+
+  it('rejects unsupported model media by filename and continues uploading supported images', async () => {
+    const { mount, asset, store } = setup({ maxReferenceVideos: 0, maxReferenceAudios: 0 })
+    mount()
+    await ready()
+    const input = screen.getByLabelText<HTMLInputElement>(zh.addMedia)
+    expect(input.accept).not.toContain('.mp4')
+    fireEvent.change(input, { target: { files: [new File(['video'], 'scene.mp4'),
+      new File(['image'], 'photo.png', { type: 'image/png' })] } })
+    await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull(); expect(asset).toHaveBeenCalledOnce() })
+    expect(store.getSnapshot().slots.image).toHaveLength(1)
+    expect(store.getSnapshot().slots.video).toEqual([])
+    expect(screen.getByRole('alert').textContent).toBe(t('uploadItemFailed', { name: 'scene.mp4', reason: zh.unsupportedModelMaterial }))
+  })
+
+  it.each([
+    { slot: 'video' as const, label: 'referenceVideos' as const, name: 'scene.MP4', type: '', expected: 'video/mp4' },
+    { slot: 'video' as const, label: 'referenceVideos' as const, name: 'scene.mov', type: 'application/octet-stream', expected: 'video/quicktime' },
+    { slot: 'audio' as const, label: 'referenceAudios' as const, name: 'voice.wav', type: 'audio/x-wav', expected: 'audio/wav' },
+    { slot: 'audio' as const, label: 'referenceAudios' as const, name: 'voice.mp3', type: '', expected: 'audio/mpeg' },
+  ])('uploads $name with $type MIME through the existing host validation', async ({ slot, label, name, type, expected }) => {
+    const { mount, asset, store } = setup()
+    mount()
+    await ready()
+    fireEvent.click(screen.getByRole('button', { name: zh['workflow.reference'] }))
+    const file = new File(['media'], name, { type })
+    fireEvent.change(screen.getByLabelText(zh[label]), { target: { files: [file] } })
+    await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull(); expect(asset).toHaveBeenCalledOnce() })
+    const request = fetcher.mock.calls.find(([path]) => path === '/credits/api/assets')
+    expect(new Headers(request?.[1]?.headers).get('content-type')).toBe(expected)
+    expect(request?.[1]?.body).toBe(file)
+    expect(store.getSnapshot().slots[slot][0]?.name).toBe(name)
+  })
+
   it.each(['INVALID_REQUEST', 'AUTH', 'QUOTA', 'UNRECOGNIZED_ERROR'])('replaces %s diagnostics with safe copy without resubmitting generation', async (code) => {
     const { mount, task, store } = setup()
     const message = '400 {"reasoning_content":"private-id", "path":"C:/internal/key"}'
@@ -195,7 +323,7 @@ describe('video composer', () => {
     await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull(); expect(asset).toHaveBeenCalledTimes(3) })
     expect(store.getSnapshot().slots.image.map(reference => reference.assetId)).toEqual(['ma_total0', 'ma_total2'])
     expect(store.getSnapshot().firstFrame?.assetId).toBe('ma_saved')
-    expect(store.getSnapshot().uploadFailures).toEqual([{ name: 'excess.heic', reason: t('materialLimit', { n: '6' }) }])
+    expect(store.getSnapshot().uploadFailures).toEqual([{ name: 'excess.heic', reason: t('materialLimit', { n: '9' }) }])
   })
 
   it.each(['https://other.invalid/image.jpg', 'data:image/jpeg;base64,AAAA', '/credits/api/assets/preview?asset_id=ma_other'])(
@@ -360,26 +488,41 @@ describe('video composer', () => {
     expect(screen.getByText(t('settingsAdjusted', { resolution: '720p', duration: '5', ratio: '16:9' }))).toBeTruthy()
   })
 
-  it('keeps nine model-declared reference images while disabling AI writing above its separate six-image limit', async () => {
-    const { mount, props, store, task, asset } = setup({ maxReferenceImages: 9, frameSlots: 0 })
+  it('keeps ten model-declared reference images while disabling AI writing above its separate nine-image limit', async () => {
+    const { mount, props, store, task, asset } = setup({ maxReferenceImages: 10, frameSlots: 0 })
     let id = 0
     asset.mockImplementation(async () => json({ ok: true, asset: { assetId: `ma_${++id}` } }))
     mount()
     await ready()
     fireEvent.click(screen.getByRole('button', { name: zh['workflow.reference'] }))
-    fireEvent.change(screen.getByLabelText(zh.referenceImages), { target: { files: Array.from({ length: 9 }, (_, index) =>
+    fireEvent.change(screen.getByLabelText(zh.referenceImages), { target: { files: Array.from({ length: 10 }, (_, index) =>
       new File(['image'], `${index}.png`, { type: 'image/png' })) } })
-    await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull(); expect(asset).toHaveBeenCalledTimes(9) })
-    expect(store.getSnapshot().slots.image).toHaveLength(9)
+    await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull(); expect(asset).toHaveBeenCalledTimes(10) })
+    expect(store.getSnapshot().slots.image).toHaveLength(10)
     expect(screen.getByLabelText(zh.referenceImages)).toHaveProperty('disabled', true)
     const assistant = vi.mocked(props.renderFactorySlot).mock.calls.at(-1)?.[1] as PromptAssistOwner
     expect(assistant.disabled).toBe(true)
-    expect(assistant.references).toHaveLength(9)
+    expect(assistant.references).toHaveLength(10)
     expect(screen.getByText(zh.assistReferenceLimit)).toBeTruthy()
     writePrompt()
     fireEvent.click(screen.getByRole('button', { name: zh.submit }))
     await waitFor(() => { expect(task).toHaveBeenCalledOnce() })
-    expect(requestBody(task.mock.calls[0]?.[0]).referenceImages).toEqual(Array.from({ length: 9 }, (_, index) => `ma_${index + 1}`))
+    expect(requestBody(task.mock.calls[0]?.[0]).referenceImages).toEqual(Array.from({ length: 10 }, (_, index) => `ma_${index + 1}`))
+  })
+
+  it('keeps all nine H3 image references available to AI writing', async () => {
+    const { mount, props, store, asset } = setup({ maxReferenceImages: 9 })
+    let id = 0
+    asset.mockImplementation(async () => json({ ok: true, asset: { assetId: `ma_material${String(++id)}` } }))
+    mount()
+    await ready()
+    fireEvent.change(screen.getByLabelText(zh.addMedia), { target: { files: Array.from({ length: 9 }, (_, index) =>
+      new File(['image'], `reference-${String(index + 1)}.png`, { type: 'image/png' })) } })
+    await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull(); expect(asset).toHaveBeenCalledTimes(9) })
+    const assistant = vi.mocked(props.renderFactorySlot).mock.calls.at(-1)?.[1] as PromptAssistOwner
+    expect(assistant.references).toEqual(Array.from({ length: 9 }, (_, index) => `ma_material${String(index + 1)}`))
+    expect(assistant.disabled).toBe(false)
+    expect(screen.queryByText(zh.assistReferenceLimit)).toBeNull()
   })
 
   it('uploads, previews, removes and submits only active model-supported audio references', async () => {
@@ -392,7 +535,7 @@ describe('video composer', () => {
     mount()
     await ready()
     const input = screen.getByLabelText(zh.referenceAudios)
-    expect(input.getAttribute('accept')).toBe('audio/mpeg,audio/wav')
+    expect(input.getAttribute('accept')).toBe('audio/mpeg,audio/wav,.mp3,.wav')
     fireEvent.change(input, { target: { files: [new File(['ID3'], 'one.mp3', { type: 'audio/mpeg' }),
       new File(['RIFFWAVE'], 'two.wav', { type: 'audio/wav' })] } })
     await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull(); expect(asset).toHaveBeenCalledTimes(2) })
@@ -792,7 +935,7 @@ describe('video composer', () => {
     expect(store.getSnapshot().slots.video).toHaveLength(1)
   })
 
-  it('shares the model image count and twelve-MiB budget between frames and material images', async () => {
+  it('shares the writing image count and twelve-MiB budget between frames and material images', async () => {
     const { store, mount, asset } = setup()
     store.actions.patch({ firstFrame: { assetId: 'ma_first', name: 'frame.png', url: 'blob:frame', bytes: 6 * 1024 * 1024 },
       slots: { audio: [], image: [{ assetId: 'ma_second', name: 'second.png', url: 'blob:second', bytes: 6 * 1024 * 1024 }], video: [] } })
@@ -802,10 +945,10 @@ describe('video composer', () => {
     fireEvent.change(input, { target: { files: [new File(['x'], 'excess.png', { type: 'image/png' })] } })
     await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull() })
     expect(asset).not.toHaveBeenCalled()
-    expect(screen.getByRole('alert').textContent).toBe(t('uploadItemFailed', { name: 'excess.png', reason: t('materialLimit', { n: '3' }) }))
-    act(() => { store.actions.patch({ firstFrame: null, slots: { audio: [], image: Array.from({ length: 6 }, (_, index) => ({ assetId: `ma_${index}`, name: 'material.png', url: `blob:${index}`, bytes: 1 })), video: [] } }) })
+    expect(screen.getByRole('alert').textContent).toBe(t('uploadItemFailed', { name: 'excess.png', reason: t('materialLimit', { n: '9' }) }))
+    act(() => { store.actions.patch({ firstFrame: null, slots: { audio: [], image: Array.from({ length: 9 }, (_, index) => ({ assetId: `ma_${index}`, name: 'material.png', url: `blob:${index}`, bytes: 1 })), video: [] } }) })
     fireEvent.click(screen.getByRole('button', { name: zh['workflow.image'] }))
-    fireEvent.change(screen.getByLabelText(zh.firstFrame), { target: { files: [new File(['image'], 'seventh.png', { type: 'image/png' })] } })
+    fireEvent.change(screen.getByLabelText(zh.firstFrame), { target: { files: [new File(['image'], 'tenth.png', { type: 'image/png' })] } })
     await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull() })
     expect(asset).not.toHaveBeenCalled()
     expect(store.getSnapshot().firstFrame).toBeNull()

@@ -9,6 +9,7 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
+import type {} from '@deepseek-ai/dsh-client-ui-chat/client'
 import { CreditsPage, type CreditsPageInjected } from './CreditsPage.tsx'
 import { FooterAction, type FooterInjected } from './FooterAction.tsx'
 import { RechargePage, type RechargePageInjected } from './RechargePage.tsx'
@@ -17,6 +18,7 @@ import { WorkspaceGuide, WorkspaceGuideToast } from './WorkspaceGuide.tsx'
 import { createWorkspaceGuide } from './workspace-guide-store.ts'
 import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-store'
 import { createCreditsSessionSource, type CreditsSnapshot } from './session-store.ts'
+import { SessionModelCredits, TurnModelCredits, type ModelCreditsInjected } from './ModelCredits.tsx'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -50,6 +52,14 @@ export function apply(ctx: ClientContext): void {
   ctx.provide('creditsSession', createCreditsSessionSource())
   const t = ctx.locale.bind(NS)
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-credits: dictionaries')
+  const modelCredits = (): ModelCreditsInjected => ({ hooks: { creditsSession: ctx.creditsSession },
+    openBalance: () => { ctx.layout.selectPanel(PANEL_ID) } })
+  ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
+    name: 'conversation.composer.dock', id: 'usage', order: 1, locale: NS, inject: modelCredits,
+  }, SessionModelCredits))
+  ctx.slots.inject('conversation.chat.turnTail', () => ctx.slots.register({
+    name: 'conversation.chat.turnTail', id: 'model-credits', order: 10, locale: NS, inject: modelCredits,
+  }, TurnModelCredits))
   const guide = createWorkspaceGuide()
   ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
     name: 'conversation.input.dock', id: 'workspace-guide', order: 100, locale: NS,

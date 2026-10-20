@@ -71,6 +71,16 @@ describe('prompt writing follows the chat selection', () => {
     expect(await resolvePromptAssistSelection(options({ hasReferences: true }))).toEqual({ ok: true, selection: selected })
   })
 
+  it('rejects known video generators even when the gateway advertises them as OpenAI chat', async () => {
+    const current = { provider: 'product', model: 'MiniMax-H3' }
+    const input = options({ sessionId, expectedSelection: current,
+      readProjections: vi.fn().mockResolvedValue(projection(current)),
+      readCatalog: vi.fn().mockResolvedValue({ default: current, groups: [{ id: current.provider, models: [{ id: current.model }] }] }),
+    })
+    expect(await resolvePromptAssistSelection(input)).toMatchObject({ ok: false, code: 'PROMPT_ASSIST_CHAT_REQUIRED' })
+    expect(input.readModelInfo).not.toHaveBeenCalled()
+  })
+
   it('rejects an obsolete browser selection rather than routing from it', async () => {
     expect(await resolvePromptAssistSelection(options({ sessionId, expectedSelection: { ...selected, model: 'other' },
       readProjections: vi.fn().mockResolvedValue(projection(selected)) })))

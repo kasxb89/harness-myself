@@ -32,21 +32,6 @@ const ROWS = [
   { key: 'messageTokens', label: 'context.messages', color: css.colorMessages },
 ] as const
 
-/**
- * Format a token count for the compact context panel.
- * @param value - token count.
- * @param t - Conversation locale seat with shared compact-number templates.
- * @returns Compact localized count using K or M when needed.
- */
-function formatTokens(value: number, t: ComposerBarProps['t']): string {
-  const scaled = (candidate: number): string => candidate >= 100
-    ? String(Math.round(candidate))
-    : String(Math.round(candidate * 10) / 10)
-  if (value < 1_000) return String(value)
-  if (value < 1_000_000) return t('number.thousand', { value: scaled(value / 1_000) })
-  return t('number.million', { value: scaled(value / 1_000_000) })
-}
-
 export interface ContextMeterProps {
   useProjection: UseProjection
   /** The owning bar's locale seat, passed down as a plain prop. */
@@ -144,11 +129,6 @@ export function ContextMeter({ useProjection, t }: ContextMeterProps) {
             <span className={css.headline}>{headBefore}</span>
             <span className={css.percent}>{reading}</span>
             <span className={css.headline}>{headAfter}</span>
-            {/* `~`: usedTokens prefers projectedTokens, whose surface delta is
-                heuristically repriced on top of the provider-anchored sample. */}
-            <span className={css.figures}>
-              {`~${formatTokens(context.usedTokens, t)} / ${formatTokens(context.contextWindow, t)}`}
-            </span>
           </div>
           <div className={css.bar}>
             {segments.map(segment => (
@@ -167,7 +147,7 @@ export function ContextMeter({ useProjection, t }: ContextMeterProps) {
                     <span className={`${css.swatch} ${row.color}`} aria-hidden />
                     {t(row.label)}
                   </dt>
-                  <dd>{`~${formatTokens(breakdown[row.key], t)}`}</dd>
+                  <dd>{`${breakdownTotal === 0 ? 0 : Math.round(breakdown[row.key] / breakdownTotal * 100)}%`}</dd>
                 </div>
               ))}
             </dl>

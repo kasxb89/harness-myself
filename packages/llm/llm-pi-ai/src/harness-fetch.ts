@@ -4,10 +4,11 @@ import { LlmError } from '@deepseek-ai/dsh-llm'
 /**
  * Protect the deployed Harness prefix on its shared production authority.
  * @param baseUrl - Configured model API root.
+ * @param onResponse - Optional transport observer, including rejected HTTP responses.
  * @returns A prefix-validating, redirect-refusing fetch for Harness, or the provider's normal transport selection.
  * @throws LlmError when the Harness model root can address the adjacent production service.
  */
-export function harnessFetch(baseUrl: string): typeof globalThis.fetch | undefined {
+export function harnessFetch(baseUrl: string, onResponse?: (response: Response) => void): typeof globalThis.fetch | undefined {
   let base: URL
   try { base = new URL(baseUrl) } catch (_invalidProviderUrl: unknown) {
     // Other providers retain the SDK's endpoint validation and transport behavior.
@@ -24,6 +25,8 @@ export function harnessFetch(baseUrl: string): typeof globalThis.fetch | undefin
       || url.username !== '' || url.password !== '' || url.hash !== '' || /%(?:2f|5c|25)/iu.test(url.pathname)) {
       throw new LlmError('Harness model request escaped its configured API prefix', 'INVALID_REQUEST')
     }
-    return await globalThis.fetch(input, { ...init, redirect: 'error' })
+    const response = await globalThis.fetch(input, { ...init, redirect: 'error' })
+    onResponse?.(response)
+    return response
   }
 }

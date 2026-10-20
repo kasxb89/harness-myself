@@ -10,6 +10,7 @@ import type {
   StoredImageAttachment,
 } from '@deepseek-ai/dsh-attachment'
 import LlmRuntime, { createToolResultMessage, createUserMessage, CONTEXT_WINDOW_EXCEEDED_CODE, LlmError, ReasoningEffortId, userAgent } from '@deepseek-ai/dsh-llm'
+import type { StreamChunk } from '@deepseek-ai/dsh-llm'
 import * as LlmPiAi from '@deepseek-ai/dsh-llm-pi-ai'
 import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
@@ -74,6 +75,44 @@ beforeEach(() => {
 })
 
 describe('PiAiAdapter provider routing', () => {
+  it('persists the exact gateway receipt beside provider replay without exposing credentials', async () => {
+    const server = await mockServer([
+      { events: textEvents, headers: { 'X-Oneapi-Request-Id': 'gateway-own-request' } },
+      { events: textEvents },
+    ])
+    const ctx = await harness(server.url)
+    const result = await assemble(ctx, {
+      model: 'deepseek-flash', messages: [createUserMessage({ content: [{ type: 'text', text: 'hi' }], source: { kind: 'model', provider: 'deepseek-official', model: 'deepseek-v4-flash' } })],
+    })
+    expect(result.message.source).toMatchObject({ replayState: { response: {
+      kind: 'pi-ai', gatewayReceipt: { kind: 'oneapi', version: 1, requestId: 'gateway-own-request', apiBaseUrl: server.url },
+    } } })
+    expect(JSON.stringify(result.message.source)).not.toContain('test-key')
+    expect(server.requests).toHaveLength(1)
+    await assemble(ctx, { model: 'deepseek-flash', messages: [result.message] })
+    expect(server.requests).toHaveLength(2)
+    expect(JSON.stringify(server.requests[1])).not.toMatch(/gatewayReceipt|gateway-own-request/u)
+    await ctx.fiber.dispose()
+  })
+
+  it('retains the gateway receipt of a rejected HTTP attempt without resubmitting', async () => {
+    const server = await mockServer([{ status: 500, body: '{"error":{"message":"busy"}}', headers: { 'X-Oneapi-Request-Id': 'gateway-rejected-request' } }])
+    const nativeFetch = globalThis.fetch
+    const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : input)
+      expect(url.origin + url.pathname).toBe('https://8.133.202.230/harness/v1/chat/completions')
+      return nativeFetch(`${server.url}/chat/completions`, init)
+    })
+    onTestFinished(() => { fetcher.mockRestore() })
+    const adapter = adapterOf({ deepseek: { apiKeyEnv: 'PI_TEST_KEY', baseURL: 'https://8.133.202.230/harness/v1' } })
+    const chunks: StreamChunk[] = []
+    for await (const chunk of adapter.stream({ provider: 'deepseek', model: 'deepseek-flash', messages: [] })) chunks.push(chunk)
+    expect(chunks.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'error' }, replayState: { response: {
+      gatewayReceipt: { kind: 'oneapi', version: 1, apiBaseUrl: 'https://8.133.202.230/harness/v1', requestId: 'gateway-rejected-request' },
+    } } })
+    expect(server.requests).toHaveLength(1)
+  })
+
   it('resolves a catalog model dynamically and uses a private endpoint', async () => {
     const server = await mockServer([{ events: textEvents }])
     const ctx = await harness(server.url)

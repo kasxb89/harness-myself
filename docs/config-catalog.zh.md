@@ -883,7 +883,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-credits-index`
 
 - `inject`: `webServer` · `tools`
-- `source`: [`packages/host/credits-index/src/index.ts:68`](../packages/host/credits-index/src/index.ts)
+- `source`: [`packages/host/credits-index/src/index.ts:72`](../packages/host/credits-index/src/index.ts)
 
 ```ts config-catalog
 /** Plugin config: platform origin, display rate, and where the session file lives. */
@@ -920,6 +920,10 @@ export interface Config {
   promptAssistantTimeoutMs?: number
   /** Maximum model output tokens for one prompt-assistance request. */
   promptAssistantMaxTokens?: number
+  /** Settled chat result and receipt cache lifetime, in milliseconds. */
+  chatUsageCacheTtlMs?: number
+  /** Maximum simultaneous exact-request ledger reads shared by all chat views. */
+  chatUsageConcurrency?: number
   /** Maximum final length accepted by natural-language video projects. */
   videoProjectMaxSeconds?: number
   /** Maximum separately billable clips in one video project. */

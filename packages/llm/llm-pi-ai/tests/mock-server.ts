@@ -103,7 +103,7 @@ export async function mockServer(script: {
         response.end(behavior.body)
         return
       }
-      response.writeHead(200, { 'content-type': 'text/event-stream' })
+      response.writeHead(200, { 'content-type': 'text/event-stream', ...behavior.headers })
       response.flushHeaders()
       let index = 0
       const writeNext = (): void => {

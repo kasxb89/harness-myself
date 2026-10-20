@@ -64,8 +64,33 @@ function isArtifactItem(value: unknown): value is ArtifactItem {
 
 const SLOT_TYPES: Record<Slot, { readonly accept: string; readonly types: readonly string[] }> = {
   image: { accept: 'image/*,.heic,.heif,.avif,.bmp,.tif,.tiff', types: ['image/png', 'image/jpeg', 'image/webp'] },
-  video: { accept: 'video/mp4,video/quicktime', types: ['video/mp4', 'video/quicktime'] },
-  audio: { accept: 'audio/mpeg,audio/wav', types: ['audio/mpeg', 'audio/wav'] },
+  video: { accept: 'video/mp4,video/quicktime,.mp4,.mov', types: ['video/mp4', 'video/quicktime'] },
+  audio: { accept: 'audio/mpeg,audio/wav,.mp3,.wav', types: ['audio/mpeg', 'audio/wav'] },
+}
+
+/** Browser MIME values are optional; the Host still validates actual media signatures. */
+function uploadContentType(slot: Slot, file: File): string | null {
+  const type = file.type.toLowerCase().split(';')[0]?.trim() ?? ''
+  if (slot === 'image') return type || 'application/octet-stream'
+  if (SLOT_TYPES[slot].types.includes(type)) return type
+  if (slot === 'audio' && ['audio/x-wav', 'audio/wave', 'audio/vnd.wave'].includes(type)) return 'audio/wav'
+  if (slot === 'audio' && type === 'audio/mp3') return 'audio/mpeg'
+  if (type !== '' && type !== 'application/octet-stream') return null
+  const extension = file.name.split('.').at(-1)?.toLowerCase()
+  if (slot === 'video') return extension === 'mp4' ? 'video/mp4' : extension === 'mov' ? 'video/quicktime' : null
+  return extension === 'mp3' ? 'audio/mpeg' : extension === 'wav' ? 'audio/wav' : null
+}
+
+function materialSlot(file: File): Slot {
+  const type = file.type.toLowerCase()
+  if (type.startsWith('video/')) return 'video'
+  if (type.startsWith('audio/')) return 'audio'
+  if (type === '' || type === 'application/octet-stream') {
+    const extension = file.name.split('.').at(-1)?.toLowerCase()
+    if (extension === 'mp4' || extension === 'mov') return 'video'
+    if (extension === 'mp3' || extension === 'wav') return 'audio'
+  }
+  return 'image'
 }
 const SLOT_LABELS = { image: 'referenceImages', video: 'referenceVideos', audio: 'referenceAudios' } as const
 const SLOT_HINTS = { image: 'dropImages', video: 'dropVideos', audio: 'dropAudios' } as const
@@ -158,7 +183,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
   const ratioLabel = selectedRatio === 'adaptive' ? t('ratioAdaptive') : selectedRatio
   const settingsValues = { ratio: ratioLabel, resolution: selectedResolution, duration: String(duration) }
   const modelImageLimit = Math.max(params?.maxReferenceImages ?? 0, params?.frameSlots ?? 0)
-  const imageLimit = modelImageLimit > 0 ? modelImageLimit : 6
+  const imageLimit = Math.max(9, modelImageLimit)
   const referenceLimit = (slot: Slot): number => slot === 'image' ? imageLimit
     : slot === 'video' ? params?.maxReferenceVideos ?? 0 : params?.maxReferenceAudios ?? 0
   const overReferenceLimit = referenceImages.length > (params?.maxReferenceImages ?? 0)
@@ -190,7 +215,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
     return [...new Set([firstFrame, lastFrame, ...slots.image]
       .filter((item): item is Reference => item !== null).map(item => item.assetId))]
   }, [accountIdentity, draft.referenceAccountId, signedIn, firstFrame, lastFrame, slots.image])
-  const assistReferenceLimitExceeded = assistReferences.length > 6
+  const assistReferenceLimitExceeded = assistReferences.length > 9
   const assistGeneration = useMemo(() => ({
     model: model?.id ?? '', workflow, duration: String(duration), resolution: selectedResolution,
     ratio: selectedRatio, mode,
@@ -270,20 +295,31 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
     return current.referenceAccountId === context.referenceAccountId && current.referenceEpoch === context.referenceEpoch
   }, [readDraft])
 
+  const releaseUnusedPreview = useCallback((url: string): void => {
+    const current = readDraft()
+    const references = [current.firstFrame, current.lastFrame, ...current.slots.image, ...current.slots.video, ...current.slots.audio]
+    if (!references.some(reference => reference?.url === url)) releasePreview(url)
+  }, [readDraft, releasePreview])
+
   const upload = useCallback(async (
-    slot: Slot, file: File, context: VideoDraft, replacing: Reference | null = null,
+    slot: Slot, file: File, context: VideoDraft, replacing: 'first' | 'last' | null = null,
   ): Promise<Reference | null> => {
     const reject = (reason: string): null => {
       if (isReferenceCurrent(context)) actions.patch({ uploadFailures: [...readDraft().uploadFailures, { name: file.name, reason }] })
       return null
     }
-    if (slot !== 'image' && !SLOT_TYPES[slot].types.includes(file.type)) return reject(t('unsupportedUploadType'))
+    const contentType = uploadContentType(slot, file)
+    if (contentType === null) return reject(t('unsupportedUploadType'))
     if (slot === 'image' && file.size === 0) return reject(t('emptyImage'))
     if (file.size === 0 || file.size > (slot === 'audio' ? 15 : 32) * 1024 * 1024) {
       return reject(t(slot === 'audio' ? 'audioUploadSize' : 'uploadSize'))
     }
-    const retainedImages = (): Reference[] => [...new Map([readDraft().firstFrame, readDraft().lastFrame, ...readDraft().slots.image]
-      .filter((item): item is Reference => item !== null && item !== replacing).map(item => [item.assetId, item])).values()]
+    const retainedImages = (): Reference[] => {
+      const current = readDraft()
+      return [...new Map([replacing === 'first' ? null : current.firstFrame,
+        replacing === 'last' ? null : current.lastFrame, ...current.slots.image]
+        .filter((item): item is Reference => item !== null).map(item => [item.assetId, item])).values()]
+    }
     if (slot === 'image') {
       const images = retainedImages()
       if (images.length >= imageLimit || images.reduce((sum, item) => sum + item.bytes, 0) >= 12 * 1024 * 1024) {
@@ -293,7 +329,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
     try {
       const response = await fetch('/credits/api/assets', {
         method: 'POST', headers: {
-          'content-type': file.type || 'application/octet-stream', 'x-file-name': encodeURIComponent(file.name),
+          'content-type': contentType, 'x-file-name': encodeURIComponent(file.name),
           'x-idempotency-key': `dsh-asset-${globalThis.crypto.randomUUID()}`, accept: 'application/json',
         }, body: file,
       })
@@ -355,19 +391,22 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
     }
   }, [acceptAccount, actions, createPreview, imageLimit, isReferenceCurrent, readDraft, t])
 
-  const pick = useCallback(async (slot: Slot, files: FileList | null): Promise<void> => {
+  const pick = useCallback(async (targetSlot: Slot | null, files: FileList | null): Promise<void> => {
     if (busy || readDraft().promptAssisting || operation.current || files === null || files.length === 0) return
     const context = readDraft()
     if (signedIn !== true || accountIdentity === null || context.referenceAccountId !== accountIdentity) return
-    const limit = slot === 'image' ? imageLimit
-      : slot === 'video' ? params?.maxReferenceVideos ?? 0 : params?.maxReferenceAudios ?? 0
-    const available = Math.max(0, limit - slots[slot].length)
-    if (available === 0) return
     operation.current = true
-    actions.patch({ failure: null, uploadFailures: [], uploading: slot })
+    actions.patch({ failure: null, uploadFailures: [], uploading: targetSlot ?? 'materials' })
     try {
       for (const file of Array.from(files)) {
         if (!isReferenceCurrent(context)) return
+        const slot = targetSlot ?? materialSlot(file)
+        const limit = slot === 'image' ? imageLimit
+          : slot === 'video' ? params?.maxReferenceVideos ?? 0 : params?.maxReferenceAudios ?? 0
+        if (limit === 0) {
+          actions.patch({ uploadFailures: [...readDraft().uploadFailures, { name: file.name, reason: t('unsupportedModelMaterial') }] })
+          continue
+        }
         if (readDraft().slots[slot].length >= limit) {
           actions.patch({ uploadFailures: [...readDraft().uploadFailures, { name: file.name, reason: t('referenceFull') }] })
           continue
@@ -376,9 +415,17 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
         if (reference === null) continue
         if (!isReferenceCurrent(context)) { releasePreview(reference.url); return }
         actions.addReferences(slot, [reference], limit)
+        if (slot === 'image') {
+          const current = readDraft()
+          const selectedWorkflow = workflows.includes(current.workflow) ? current.workflow : 'text'
+          if (selectedWorkflow === 'text' && (params?.maxReferenceImages ?? 0) > 0) actions.patch({ workflow: 'reference' })
+          else if ((params?.frameSlots ?? 0) > 0 && (selectedWorkflow === 'text' || selectedWorkflow === 'image' || selectedWorkflow === 'frames')
+            && current.firstFrame === null) actions.patch({ firstFrame: reference,
+            ...(selectedWorkflow === 'text' ? { workflow: 'image' as const } : {}) })
+        } else actions.patch({ workflow: 'reference' })
       }
     } finally { if (isReferenceCurrent(context)) { operation.current = false; actions.patch({ uploading: null }) } }
-  }, [accountIdentity, busy, imageLimit, isReferenceCurrent, params, readDraft, releasePreview, signedIn, slots, t, upload, actions])
+  }, [accountIdentity, busy, imageLimit, isReferenceCurrent, params, readDraft, releasePreview, signedIn, t, upload, actions, workflows])
 
   const pickFrame = useCallback(async (which: 'first' | 'last', files: FileList | null): Promise<void> => {
     const file = files?.[0]
@@ -388,16 +435,24 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
     operation.current = true
     actions.patch({ failure: null, uploadFailures: [], uploading: which })
     try {
-      const reference = await upload('image', file, context, which === 'first' ? context.firstFrame : context.lastFrame)
+      const reference = await upload('image', file, context, which)
       if (reference !== null) {
         if (!isReferenceCurrent(context)) { releasePreview(reference.url); return }
         const current = readDraft()
         const previous = which === 'first' ? current.firstFrame : current.lastFrame
         actions.patch(which === 'first' ? { firstFrame: reference } : { lastFrame: reference })
-        if (previous !== null) releasePreview(previous.url)
+        if (previous !== null) releaseUnusedPreview(previous.url)
       }
     } finally { if (isReferenceCurrent(context)) { operation.current = false; actions.patch({ uploading: null }) } }
-  }, [accountIdentity, busy, isReferenceCurrent, readDraft, signedIn, upload, actions, releasePreview])
+  }, [accountIdentity, busy, isReferenceCurrent, readDraft, signedIn, upload, actions, releasePreview, releaseUnusedPreview])
+
+  const selectFrame = (which: 'first' | 'last', reference: Reference): void => {
+    const current = readDraft()
+    const previous = which === 'first' ? current.firstFrame : current.lastFrame
+    actions.patch({ ...(which === 'first' ? { firstFrame: reference } : { lastFrame: reference }),
+      workflow: which === 'last' || workflow === 'frames' ? 'frames' : 'image', failure: null })
+    if (previous !== null) releaseUnusedPreview(previous.url)
+  }
 
   const generate = useCallback(async (): Promise<void> => {
     if (busy || readDraft().promptAssisting || operation.current || signedIn !== true) return
@@ -481,7 +536,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
           : <img className={css.frame} src={reference.url} alt={reference.name} />}
       </label>
       {reference !== null && <button type="button" disabled={locked} className={css.link} onClick={() => {
-        actions.patch(which === 'first' ? { firstFrame: null } : { lastFrame: null }); releasePreview(reference.url)
+        actions.patch(which === 'first' ? { firstFrame: null } : { lastFrame: null }); releaseUnusedPreview(reference.url)
       }}>{t('remove')}</button>}
       {reference?.firstFrameOnly === true ? <p className={css.hint}>{t('firstFrameOnly')}</p>
         : reference?.converted === true && <p className={css.hint}>{t('imageConverted')}</p>}
@@ -506,8 +561,19 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
         <span className={css.fileName}>{item.name}</span>
         {slot === 'image' && (item.firstFrameOnly === true || item.converted === true)
           && <span className={css.count}>{t(item.firstFrameOnly === true ? 'firstFrameOnly' : 'imageConverted')}</span>}
+        {slot === 'image' && params !== null && params.frameSlots > 0 && <button type="button" disabled={locked} className={css.link}
+          aria-label={t('useFirstFrameNamed', { name: item.name })} aria-pressed={firstFrame?.assetId === item.assetId}
+          onClick={() => { selectFrame('first', item) }}>{t('useFirstFrame')}</button>}
+        {slot === 'image' && params !== null && params.frameSlots > 1 && <button type="button" disabled={locked} className={css.link}
+          aria-label={t('useLastFrameNamed', { name: item.name })} aria-pressed={lastFrame?.assetId === item.assetId}
+          onClick={() => { selectFrame('last', item) }}>{t('useLastFrame')}</button>}
         <button type="button" disabled={locked} className={css.link} aria-label={t('removeNamed', { name: item.name })} onClick={() => {
-          actions.removeReference(slot, item.assetId); releasePreview(item.url)
+          actions.removeReference(slot, item.assetId)
+          if (slot === 'image') actions.patch({
+            ...(firstFrame?.assetId === item.assetId ? { firstFrame: null } : {}),
+            ...(lastFrame?.assetId === item.assetId ? { lastFrame: null } : {}),
+          })
+          releaseUnusedPreview(item.url)
         }}>{t('remove')}</button>
         {slot === 'audio' && <audio className={css.audioPreview} controls preload="metadata" src={item.url}
           aria-label={t('audioPreview', { name: item.name })} />}
@@ -542,8 +608,11 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
           onClick={() => { actions.patch({ workflow: entry, failure: null, message: null }) }}>{t(WORKFLOW_LABELS[entry])}</button>)}</div>
         <div className={css.promptRow}>
           <label className={css.addMedia}><IconPlusOutlineRegular size={24} /><span>{t('addMedia')}</span>
-            <input type="file" aria-label={t('addMedia')} accept={SLOT_TYPES.image.accept} multiple disabled={locked}
-              onChange={(event) => { void pick('image', event.target.files); event.target.value = '' }} />
+            <input type="file" aria-label={t('addMedia')} accept={[SLOT_TYPES.image.accept,
+              ...params !== null && params.maxReferenceVideos > 0 ? [SLOT_TYPES.video.accept] : [],
+              ...params !== null && params.maxReferenceAudios > 0 ? [SLOT_TYPES.audio.accept] : []].join(',')}
+            multiple disabled={locked}
+            onChange={(event) => { void pick(null, event.target.files); event.target.value = '' }} />
           </label>
           <label className={css.promptField}>
             <textarea ref={promptField} className={css.textarea} rows={4} value={prompt} aria-label={t('prompt')}
@@ -576,6 +645,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
           },
         })}
         {assistReferenceLimitExceeded && <p className={css.hint} role="status">{t('assistReferenceLimit')}</p>}
+        {(slots.video.length > 0 || slots.audio.length > 0) && <p className={css.hint}>{t('assistImagesOnly')}</p>}
         <p className={css.hint}>{t('materialHelp', { n: String(imageLimit) })}</p>
         <div className={css.mediaGrid}>{referenceField('image')}</div>
         <p className={css.hint}>{t(WORKFLOW_HINTS[workflow])}</p>

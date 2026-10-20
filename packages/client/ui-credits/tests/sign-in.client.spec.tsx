@@ -8,7 +8,7 @@ import { refreshCredits, useCreditsSnapshot } from '../src/client/session-store.
 
 vi.mock('../src/client/session-store.ts', () => ({
   useCreditsSnapshot: vi.fn(() => ({
-    loaded: true, failure: null, balance: null,
+    accountEpoch: 0, loaded: true, failure: null, balance: null,
     session: { signedIn: false, creditsPerYuan: 1000 },
   })),
   refreshCredits: vi.fn(),
@@ -44,7 +44,7 @@ function requestBody(init: RequestInit | undefined): Record<string, unknown> {
 
 beforeEach(() => {
   vi.mocked(useCreditsSnapshot).mockReturnValue({
-    loaded: true, failure: null, balance: null,
+    accountEpoch: 0, loaded: true, failure: null, balance: null,
     session: { signedIn: false, creditsPerYuan: 1000 },
   })
   vi.mocked(refreshCredits).mockResolvedValue(undefined)
@@ -174,7 +174,7 @@ describe('balance phone sign-in', () => {
   it('keeps the balance page open when an existing session or its balance refreshes', () => {
     const completeSignIn = vi.fn()
     const signedInSnapshot = {
-      loaded: true, failure: null, balance: null,
+      accountEpoch: 0, loaded: true, failure: null, balance: null,
       session: { signedIn: true, creditsPerYuan: 1000, account: { id: 'fixture-account', phone: '+8613800138000' } },
     }
     vi.mocked(useCreditsSnapshot).mockReturnValue(signedInSnapshot)

@@ -27,9 +27,13 @@ import z from '@deepseek-ai/schemastery'
 import QRCode from 'qrcode'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { HarnessAccount } from '@deepseek-ai/dsh-llm-pi-ai'
+import { SessionId } from '@deepseek-ai/dsh-session'
 import { apiUrl, normalizeApiBaseUrl } from './api-url.ts'
 import { ClientActivitySessions, parseClientActivity, type ClientActivitySample } from './client-activity.ts'
 import { parseUsageWindow, readAccountUsage } from './usage.ts'
+import { ChatUsageReader, parseChatUsageQuery } from './chat-usage-reader.ts'
+import { chatReceiptProjection, selectChatReceipts } from './chat-usage-projection.ts'
+export type { ChatReceiptState } from './chat-usage-projection.ts'
 import { assistPrompt, parsePromptAssist, promptAssistFailure } from './prompt-assist.ts'
 import { isPromptAssistSelectionCurrent, resolvePromptAssistSelection } from './prompt-assist-selection.ts'
 import { relayCreationContent } from './creation-content.ts'
@@ -98,6 +102,10 @@ export interface Config {
   promptAssistantTimeoutMs?: number
   /** Maximum model output tokens for one prompt-assistance request. */
   promptAssistantMaxTokens?: number
+  /** Settled chat result and receipt cache lifetime, in milliseconds. */
+  chatUsageCacheTtlMs?: number
+  /** Maximum simultaneous exact-request ledger reads shared by all chat views. */
+  chatUsageConcurrency?: number
   /** Maximum final length accepted by natural-language video projects. */
   videoProjectMaxSeconds?: number
   /** Maximum separately billable clips in one video project. */
@@ -138,6 +146,8 @@ export const Config: z<Config> = z.object({
   promptAssistantVisionModel: z.string().max(256).pattern(/^(?!.*[\u0000-\u001f\u007f])\S*$/u).default(''),
   promptAssistantTimeoutMs: z.number().step(1).min(1).max(120_000).default(60_000),
   promptAssistantMaxTokens: z.number().step(1).min(512).max(16_384).default(8192),
+  chatUsageCacheTtlMs: z.number().step(1).min(1).max(60_000).default(5000),
+  chatUsageConcurrency: z.number().step(1).min(1).max(8).default(4),
   videoProjectMaxSeconds: z.natural().min(1).default(300),
   videoProjectMaxSegments: z.natural().min(1).max(32).default(32),
   videoProjectPollIntervalMs: z.natural().min(1).default(6000),
@@ -722,6 +732,12 @@ export function apply(ctx: Context, config: Config): void {
   const store = new SessionStore(ctx, join(stateDir, 'session.json'))
   const relayRef = credentialRef(resolved.relayTokenEnv)
   let identityVersion = 0
+  const chatUsage = new ChatUsageReader({ baseUrl: apiBaseUrl, timeoutMs: resolved.timeoutMs,
+    cacheTtlMs: resolved.chatUsageCacheTtlMs, concurrency: resolved.chatUsageConcurrency })
+  ctx.effect(() => () => chatUsage.dispose(), 'credits-index: current-account chat ledger')
+  ctx.inject(['sessionProjections'], (projectionContext) => {
+    projectionContext.sessionProjections.register(chatReceiptProjection)
+  })
   let sessionMutations = Promise.resolve()
   /** Serialize session and credential writes so logout cannot be overwritten by an older exchange. */
   const mutateSession = async <T>(run: () => Promise<T>): Promise<T> => {
@@ -1661,6 +1677,7 @@ export function apply(ctx: Context, config: Config): void {
       await mutateSession(async () => {
         if ((await store.read())?.token !== session.token) return
         identityVersion += 1
+        chatUsage.reset()
         await store.clear()
         await releaseAccountCredential()
       })
@@ -2336,6 +2353,7 @@ export function apply(ctx: Context, config: Config): void {
             json(response, 200, { ok: false, code: 'INVALID_REQUEST', message: '手机号需使用 E.164 格式。' }); return
           }
           const version = ++identityVersion
+          chatUsage.reset()
           const login = await apiFetch('/api/user/phone/login', {
             method: 'POST',
             headers: { 'content-type': 'application/json', accept: 'application/json' },
@@ -2416,6 +2434,7 @@ export function apply(ctx: Context, config: Config): void {
         if (route === '/api/session/logout' && method === 'POST') {
           const previous = await store.read()
           identityVersion += 1
+          chatUsage.reset()
           await stopActivity(previous?.token)
           invalidateModelCatalog()
           const pending = renewal !== null && renewal.token === previous?.token ? renewal.promise : null
@@ -2439,6 +2458,36 @@ export function apply(ctx: Context, config: Config): void {
               message: response_ === null ? '本地已退出，服务端会话撤销结果未确认。' : null, retryAfterSeconds: null, body: null }
           }
           reply(response, result)
+          return
+        }
+
+        if (route === '/api/chat-usage') {
+          const connection = ctx.get('connection')
+          const rejected = connection === undefined ? 403 : connection.requestRejection(request)
+          if (rejected !== undefined) { json(response, rejected, { ok: false, code: 'CHAT_USAGE_HOST_AUTH_REQUIRED' }); return }
+          if (method !== 'GET') { json(response, 405, { ok: false, code: 'METHOD_NOT_ALLOWED' }); return }
+          const query = parseChatUsageQuery(url.searchParams)
+          if (query === undefined) { json(response, 400, { ok: false, code: 'INVALID_REQUEST' }); return }
+          const version = identityVersion
+          const live = await liveSession()
+          if (version !== identityVersion) { json(response, 200, { ok: false, code: 'ACCOUNT_CHANGED' }); return }
+          if (live?.token === undefined || live.upstream?.token === undefined) { json(response, 200, { ok: false, code: 'SESSION_REQUIRED' }); return }
+          if (query.accountId !== undefined && query.accountId !== live.account.id) { json(response, 200, { ok: false, code: 'ACCOUNT_CHANGED' }); return }
+          const attached = ctx.get('sessions')?.get(SessionId(query.sessionId))
+          const receipts = attached === undefined ? undefined : ctx.get('sessionProjections')?.stateOf(attached, 'chatReceipts')
+          const outcome = attached === undefined || receipts === undefined
+            ? { ok: true as const, payload: { scope: 'chat-model' as const, status: 'unavailable' as const, settledRequests: 0, totalRequests: 0 } }
+            : await chatUsage.read({ identity: JSON.stringify([version, live.account.id]), account: live.account,
+              upstreamToken: live.upstream.token, sessionId: attached.id, ...selectChatReceipts(receipts, query.turn),
+              ...query.turn === undefined ? {} : { turn: query.turn } })
+          const current = await store.read()
+          if (version !== identityVersion || current?.token !== live.token || current.account.id !== live.account.id) {
+            if (!response.destroyed) json(response, 200, { ok: false, code: 'ACCOUNT_CHANGED' })
+            return
+          }
+          if (!response.destroyed) {
+            json(response, 200, outcome.ok ? { ...outcome, payload: { ...outcome.payload, accountId: live.account.id } } : outcome)
+          }
           return
         }
 

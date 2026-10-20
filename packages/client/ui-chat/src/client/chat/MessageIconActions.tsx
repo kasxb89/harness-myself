@@ -28,11 +28,6 @@ export interface MessageIconActionsProps {
    * built-in copy and branch controls.
    */
   extraActions?: ReactNode
-  /**
-   * Icon-row Turn-usage trigger (the TurnUsagePanel pill), seated after the
-   * branch control at the end of the icon cluster.
-   */
-  usageAction?: ReactNode
   /** The owning view's locale seat, passed down as a plain prop. */
   t: ChatViewSlotProps['t']
 }
@@ -44,7 +39,7 @@ export interface MessageIconActionsProps {
  */
 export function MessageIconActions({
   text, time, clock, onBranch, branchUnavailable = false, className,
-  extraActions, usageAction, t,
+  extraActions, t,
 }: MessageIconActionsProps) {
   const day = useCalendarDay()
   const reasonId = useId()
@@ -107,9 +102,7 @@ export function MessageIconActions({
       {onBranch !== undefined && branchUnavailable && (
         <span id={reasonId} className={css.visuallyHidden}>{t('message.branchUnavailable')}</span>
       )}
-      {clock === 'end'
-        ? <span className={css.endInfo}>{usageAction}{clockEl}</span>
-        : usageAction}
+      {clock === 'end' && <span className={css.endInfo}>{clockEl}</span>}
     </div>
   )
 }

@@ -88,51 +88,6 @@ describe('chat flow font-size axis', () => {
       .toEqual(expect.arrayContaining([`margin: 4px 0 0 ${indent}`]))
   })
 
-  it('the usage-details trigger reads the secondary tier like its clock label', () => {
-    const css = read('TurnUsagePanel.module.css')
-    expect(declarationsFrom(css, '.trigger')).toEqual(expect.arrayContaining([
-      'font-size: calc(var(--dsh-content-font-size-secondary, 13px) - 1px)',
-      'line-height: calc(24px + var(--dsh-content-font-delta, 0px))',
-    ]))
-  })
-
-  it('the usage pill sizes its glyph and hit height like the sibling action buttons', () => {
-    // The pill sits in the icon row right of the branch action; its data glyph
-    // and 28px hit height follow the same delta rule as `.action` so the row
-    // stays one height at every font size.
-    const css = read('TurnUsagePanel.module.css')
-    expect(declarationsFrom(css, '.trigger')).toEqual(expect.arrayContaining([
-      'height: calc(28px + var(--dsh-content-font-delta, 0px))',
-      'white-space: nowrap',
-      'min-width: 0',
-    ]))
-    expect(declarationsFrom(css, '.trigger svg')).toEqual(expect.arrayContaining([
-      'width: calc(15px + var(--dsh-content-font-delta, 0px))',
-      'height: calc(15px + var(--dsh-content-font-delta, 0px))',
-    ]))
-    // A narrow column trims the pill label to an ellipsis instead of letting
-    // it overflow or widen the chat column.
-    expect(declarationsFrom(css, '.label')).toEqual(expect.arrayContaining([
-      'min-width: 0',
-      'overflow: hidden',
-      'text-overflow: ellipsis',
-    ]))
-  })
-
-  it('narrow viewports collapse the stat pills to the action-button circle', () => {
-    // Below 480px the label hides and the pill takes the sibling `.action`
-    // geometry (28px width, 6px padding, centered glyph); the -6px
-    // label-padding rebate between adjacent pills resets so the icon pair
-    // keeps the row's plain 8px rhythm instead of overlapping.
-    const css = read('TurnUsagePanel.module.css')
-    const narrow = /@media \(max-width: 480px\) \{([\s\S]*?)\n\}/.exec(css)?.[1] ?? ''
-    expect(narrow).toMatch(/\.trigger \{[^}]*justify-content: center/)
-    expect(narrow).toMatch(/\.trigger \{[^}]*width: calc\(28px \+ var\(--dsh-content-font-delta, 0px\)\)/)
-    expect(narrow).toMatch(/\.trigger \{[^}]*padding: 6px/)
-    expect(narrow).toMatch(/\.trigger \.label \{[^}]*display: none/)
-    expect(narrow).toMatch(/\.root \+ \.root \{[^}]*margin-left: 0/)
-  })
-
   it('non-latest turn tails hide the whole actions row until hover or focus', () => {
     // TurnTailNodeView tags its root data-actions-reveal='hover' for every
     // turn but the latest; the gate lives under @media (hover: hover) so

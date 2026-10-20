@@ -20,6 +20,24 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers() })
 
 describe('injected credits session source', () => {
+  it('changes the account epoch only on identity transitions, including logout and return', async () => {
+    let id = 'a'
+    api.get.mockImplementation(async path => ({ payload: path.endsWith('/session') ? account(id) : balance(1234) }))
+    const { createCreditsSessionSource, refreshCredits, signOutCredits } = await import('../src/client/session-store.ts')
+    const source = createCreditsSessionSource()
+    await refreshCredits()
+    expect(source.getSnapshot().accountEpoch).toBe(1)
+    await refreshCredits()
+    expect(source.getSnapshot().accountEpoch).toBe(1)
+    id = 'b'
+    await refreshCredits()
+    expect(source.getSnapshot().accountEpoch).toBe(2)
+    await signOutCredits()
+    expect(source.getSnapshot().accountEpoch).toBe(3)
+    await refreshCredits()
+    expect(source.getSnapshot().accountEpoch).toBe(4)
+  })
+
   it('reports an unavailable background read while retaining the last verified account', async () => {
     api.get.mockImplementation(async path => ({ payload: path.endsWith('/session') ? account('a') : balance(1234) }))
     const { createCreditsSessionSource } = await import('../src/client/session-store.ts')

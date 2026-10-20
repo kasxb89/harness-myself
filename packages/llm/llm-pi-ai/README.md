@@ -164,6 +164,8 @@ The plugin declares every installed catalog provider it can authenticate in the 
 
 Successful assistant responses store a versioned, lossless-JSON replay state beside the provider and model that produced them — response-level facts plus one per-block entry per streamed block. At request time, `LlmRuntime` passes replay state only when the same adapter instance owns both routes; the adapter validates it and restores native response ids, provider signatures, and optional `providerThinkingLevel` effort metadata, keeping absent effort metadata absent. Replay validates the requested model identity against the assistant source and uses it to retain same-model signatures; provider-reported response models remain diagnostic metadata. Absent or unusable replay state degrades to provider-neutral content while preserving the assistant source’s required provider and model. pi-ai tool-call arguments are parsed objects, so the adapter parses input and re-stringifies output to the harness raw-JSON convention; pi-ai in-stream error events map to terminal `finish` chunks.
 
+When the gateway returns `X-Oneapi-Request-Id`, the terminal finish retains a bounded, optional `response.gatewayReceipt` beside adapter-private replay data. It contains only the configured model endpoint and exact request id; it carries no credential, charge estimate or model-visible input. Successful and rejected Harness HTTP attempts retain this correlation without adding SDK retries. Existing replay readers ignore the optional field, and historical responses without it remain valid; a process loss or cancellation before durable settlement cannot establish a complete billing receipt.
+
 </details>
 
 -----

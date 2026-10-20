@@ -27,7 +27,7 @@ import type {
 import type { QuotaNoticeInjected } from '@deepseek-ai/dsh-client-ui-chat/client'
 import type { PerformanceUsageRowInjected } from '../src/client/settings/PerformanceUsageRow.tsx'
 import { CHAT_SETTINGS_NAMESPACE, type ChatSettings } from '../src/chat-settings.ts'
-import { ActivityPill, UsagePill } from '../src/client/chat/StatsPills.tsx'
+import { ActivityPill } from '../src/client/chat/StatsPills.tsx'
 import { createFlowMotion } from '../src/client/chat/flow-motion.ts'
 import { CHAT_FLOW_INJECT, CHAT_NODE_INJECT } from '../src/client/apply.ts'
 
@@ -134,7 +134,7 @@ describe('Chat apply wiring', () => {
     expect(b.runtime.slots.spec('conversation.chat.node'))
       .toMatchObject({ kind: 'keyed', scope: 'session' })
     expect(b.runtime.slots.entries('conversation.composer.dock').map(row => row.options.id))
-      .toEqual(['activity', 'usage'])
+      .toEqual(['activity'])
     expect(b.runtime.slots.entries('settings.general.item').map(row => row.options.id))
       .toEqual(['transcript-view', 'link-opening', 'composer-enter', 'performance-usage'])
     await b.runtime.dispose()
@@ -170,9 +170,9 @@ describe('Chat apply wiring', () => {
       b.runtime.slots.entriesOfSlot('conversation.composer.dock')
         .map((entry): [string, unknown] => [entry.options.id ?? '', entry.component]),
     )
-    expect(winners()).toEqual({ activity: PluginActivity, usage: UsagePill })
+    expect(winners()).toEqual({ activity: PluginActivity })
     dispose()
-    expect(winners()).toEqual({ activity: ActivityPill, usage: UsagePill })
+    expect(winners()).toEqual({ activity: ActivityPill })
   })
 
   it.each([
@@ -236,7 +236,7 @@ describe('Chat apply wiring', () => {
     }
   })
 
-  it('shares the accepted performance preference with settings, composer, and turn tails', async () => {
+  it('shares the accepted performance preference with settings and composer activity', async () => {
     const b = await bench()
     const row = b.runtime.slots.entries('settings.general.item').find(entry => entry.options.id === 'performance-usage')!
     const face = (row.inject as unknown as () => PerformanceUsageRowInjected)()
@@ -247,7 +247,6 @@ describe('Chat apply wiring', () => {
     expect(face.hooks.performanceUsage.getSnapshot()).toBe('compact')
     for (const entry of [
       ...b.runtime.slots.entries('conversation.composer.dock'),
-      b.runtime.slots.entries('conversation.chat.node').find(entry => entry.options.key === 'turn-tail')!,
     ]) {
       const injected = (entry.inject as () => Pick<PerformanceUsageRowInjected, 'hooks'>)()
       expect(injected.hooks.performanceUsage).toBe(face.hooks.performanceUsage)

@@ -5,8 +5,6 @@ import type {
   AssistantMessageNode,
 } from '@deepseek-ai/dsh-client-ui-chat/client'
 import { assistantStepReading } from '../src/client/contract/turn-metrics.ts'
-import { formatTokensPerSecond } from '../src/client/chat/message-chrome.ts'
-import { formatCacheHitPercent } from '../src/client/chat/token-format.ts'
 
 interface StepSpec {
   seq: number
@@ -59,18 +57,5 @@ describe('assistantStepReading', () => {
     const nan = assistant({ seq: 2, turn: 1, step: 1, timing, usage: { outputTokens: Number.NaN } })
     expect(assistantStepReading(nan).outputTokens).toBeNull()
     expect(assistantStepReading(assistant({ seq: 2, turn: 1, step: 1, timing, usage: { outputTokens: -3 } })).outputTokens).toBeNull()
-  })
-})
-
-describe('footer figure formatters', () => {
-  it('omits a redundant decimal zero in cache-hit percentages', () => {
-    expect(formatCacheHitPercent(1, 2, 1)).toBe('50')
-  })
-
-  it('formats throughput with whole tokens from ten up and one decimal below', () => {
-    expect(formatTokensPerSecond(34.4)).toBe('34')
-    expect(formatTokensPerSecond(9.96)).toBe('10')
-    expect(formatTokensPerSecond(3.14)).toBe('3.1')
-    expect(formatTokensPerSecond(-1)).toBe('0')
   })
 })

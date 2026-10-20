@@ -405,6 +405,20 @@ describe('creation prompt assistance', () => {
     expect(body(post)).toMatchObject({ prompt: '', instruction: '', references: ['ma_reference1'] })
   })
 
+  it('submits all nine image references and visibly rejects a tenth without truncation', async () => {
+    const { post } = installFetch()
+    const references = Array.from({ length: 9 }, (_, index) => `ma_reference${String(index)}`)
+    const props = properties({ references })
+    const view = render(<PromptAssist {...props} />)
+    fireEvent.click(view.getByRole('button', { name: 'AI 帮写' }))
+    await vi.waitFor(() => { expect(props.onPromptChange).toHaveBeenCalledTimes(1) })
+    expect(body(post)).toMatchObject({ references })
+    view.rerender(<PromptAssist {...props} references={[...references, 'ma_tenth']} />)
+    expect(view.getByRole('button', { name: 'AI 帮写' })).toHaveProperty('disabled', true)
+    expect(view.getByText(zh.referenceLimit)).toBeTruthy()
+    expect(post).toHaveBeenCalledTimes(1)
+  })
+
   it('disables revision until feedback is nonempty', () => {
     const { requests } = installFetch()
     const view = render(<PromptAssist {...properties()} />)
@@ -462,7 +476,7 @@ describe('creation prompt assistance', () => {
 
   it.each([
     ['SESSION_REQUIRED', 'expired'], ['PROMPT_ASSIST_NOT_CONFIGURED', 'unavailable'],
-    ['PROMPT_ASSIST_SELECTION_CHANGED', 'selectionChanged'], ['PROMPT_ASSIST_VISION_REQUIRED', 'visionRequired'],
+    ['PROMPT_ASSIST_CHAT_REQUIRED', 'chatRequired'], ['PROMPT_ASSIST_SELECTION_CHANGED', 'selectionChanged'], ['PROMPT_ASSIST_VISION_REQUIRED', 'visionRequired'],
     ['PROMPT_ASSIST_REFERENCE_INVALID', 'referenceInvalid'], ['PROMPT_ASSIST_REFERENCE_LIMIT', 'referenceLimit'],
     ['PROMPT_ASSIST_STORAGE_FAILED', 'storage'], ['PROMPT_ASSIST_RESULT_STORAGE_FAILED', 'resultStorage'],
     ['PROMPT_ASSIST_RESULT_UNKNOWN', 'resultUnknown'], ['PROMPT_ASSIST_INVALID_RESPONSE', 'invalidResponse'],

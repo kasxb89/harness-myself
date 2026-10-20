@@ -67,6 +67,7 @@ export async function requestPrompt(body: AssistRequest, signal: AbortSignal): P
     if (envelope.code === 'INSUFFICIENT_BALANCE') throw new AssistFailure('balance')
     if (envelope.code === 'ACCOUNT_CHANGED') throw new AssistFailure('accountChanged')
     if (envelope.code === 'PROMPT_ASSIST_SELECTION_CHANGED') throw new AssistFailure('selectionChanged')
+    if (envelope.code === 'PROMPT_ASSIST_CHAT_REQUIRED') throw new AssistFailure('chatRequired')
     if (envelope.code === 'PROMPT_ASSIST_VISION_REQUIRED') throw new AssistFailure('visionRequired')
     if (envelope.code === 'PROMPT_ASSIST_NOT_CONFIGURED'
       || envelope.code === 'PROMPT_ASSIST_MODEL_UNAVAILABLE') throw new AssistFailure('unavailable')

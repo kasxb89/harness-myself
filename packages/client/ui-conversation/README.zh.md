@@ -56,7 +56,7 @@ target package 通过 declaration merge 扩展 snapshot 与 Location data map，
 
 控件组的尺寸、内容、可见性或字体加载状态变化后，composer 测量展开状态下的控件组。若无法排在同一行，控制栏为模型位设置 `--dsh-composer-model-text-display: none` 和 `--dsh-composer-model-icon-display: block`；两者默认值分别为 `block` 和 `none`。若连图标也放不下，仍允许换行。
 
-上下文占用按钮在输入卡片下方、会话统计右侧显示圆环和百分比。点击按钮可在视口内的面板查看 token 构成，没有统计项时面板也不会越界；上下文用量和容量尚不可用时，按钮保持隐藏。
+上下文占用按钮在输入卡片下方、会话统计右侧显示圆环和百分比。点击按钮可在视口内的面板查看系统指令、工具和消息的构成百分比，没有统计项时面板也不会越界；上下文用量和容量尚不可用时，按钮保持隐藏。准确及估计的 token 数量保留在内部，这些百分比不表示费用用量。
 
 Host 的 `ui-conversation.hiddenViews` 列表默认为空，与 `busyEnter` 一起通过现有配置表单显式投影。浏览器在首次接受 Host 值之前使用本地 `hiddenViews` 作为备用值，之后跟随 Host 的实时更新；读取不可用时保留已接受的列表。其中指定的 View id 不参与渲染、选择、焦点导航和工具调用检查，当前 View 被隐藏时立即回退到 Chat。已保存或嵌入式选择指向不可用 View 时也回退到 Chat。关闭代码工作工具还会隐藏 Trajectory；重新开启也不会恢复 `hiddenViews` 排除的 View。可用 View 少于两个时隐藏 View 标签栏。View 所有者接收相同的可用列表。已保存的 View 偏好、Session 记录和贡献插件的其他能力保持不变。Host Loader 配置不会通过客户端模块图透传。
 

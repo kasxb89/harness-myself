@@ -12,7 +12,6 @@ import {
 import type { PropsLocale, PropsRuntime, TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import { NS } from './locales.ts'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
-import type {} from '@deepseek-ai/dsh-token-meter/client'
 import css from './SubagentHeaderLineage.module.css'
 
 type SubagentCatalogSnapshot = Omit<SessionProjectionSnapshot, 'values' | 'state'> & {
@@ -51,26 +50,6 @@ function treeItems(root: HTMLDivElement | null): HTMLElement[] {
   return root === null
     ? []
     : Array.from(root.querySelectorAll<HTMLElement>('[role="treeitem"]:not([aria-disabled="true"])'))
-}
-
-/** Compact token count shared in shape with the conversation stats strip. */
-function formatTokens(value: number, t: TranslateNS<typeof NS>): string {
-  const scaled = (next: number): string => next >= 100
-    ? String(Math.round(next))
-    : String(Math.round(next * 10) / 10)
-  if (value < 1_000) return String(value)
-  if (value < 1_000_000) return t('tokens.thousand', { value: scaled(value / 1_000) })
-  return t('tokens.million', { value: scaled(value / 1_000_000) })
-}
-
-/** Sum the four disjoint durable provider-usage buckets. */
-function tokenTotal(
-  usage: SessionProjectionMap['tokenUsage'] | undefined,
-): number | undefined {
-  return usage === undefined
-    ? undefined
-    : usage.uncachedInputTokens + usage.outputTokens
-      + usage.cacheReadTokens + usage.cacheWriteTokens
 }
 
 /** Exact whole-second active-turn duration for one catalog row. */
@@ -257,24 +236,18 @@ function CatalogRows({
         const secondary = [summary?.title, requiresOpening ? t('catalog.migrationRequired') : mode, activity]
           .filter(value => value !== undefined)
           .join(' · ')
-        const totalTokens = tokenTotal(summary?.projectionValues?.tokenUsage)
         const durationMs = activityDuration(
           summary,
           entry.activity,
           now,
         )
-        const tokenMetric = totalTokens === undefined
-          ? undefined
-          : t('tokens.total', { value: formatTokens(totalTokens, t) })
         const durationMetric = durationMs === undefined
           ? undefined
           : {
             compact: formatDuration(durationMs, t),
             exact: formatExactDuration(durationMs, t),
           }
-        const metrics = [tokenMetric, durationMetric?.exact]
-          .filter(value => value !== undefined)
-          .join(' · ')
+        const metrics = durationMetric?.exact ?? ''
 
         const open = (): void => {
           if (external) return
@@ -342,10 +315,8 @@ function CatalogRows({
                 </span>
                 {metrics !== '' && (
                   <span className={css.metrics}>
-                    {tokenMetric !== undefined && <span className={css.metricToken}>{tokenMetric}</span>}
                     {durationMetric !== undefined && (
                       <span
-                        className={css.metricDuration}
                         title={t('duration.exactTitle', { duration: durationMetric.exact })}
                       >
                         {durationMetric.compact}

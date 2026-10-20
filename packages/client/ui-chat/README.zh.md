@@ -19,7 +19,7 @@ kind: "package-reference"
 - [引用预览](#reference-previews)
 - [Chat 隐藏的行](#system-prompt-row)
 - [指令与失败行](#command-and-failure-rows)
-- [轮次 token 用量](#turn-token-usage)
+- [会话统计](#turn-token-usage)
 - [已完成轮次的页脚](#completed-turn-footer)
 - [轮次过程折叠](#turn-process-folding)
 - [分组渲染](#grouped-rendering)
@@ -56,13 +56,13 @@ Assistant 尝试结束且没有可见消息时，Chat 隐藏已发布的 Node，
 -----
 
 <a id="turn-token-usage"></a>
-## 轮次 token 用量
+## 会话统计
 
-只有当已加载窗口包含 `turn/start`，且每次已启动的模型尝试都报告安全、精确的用量时，已完成轮次才显示可展开的用量行。该行会省略不可用的可选用量桶。记账不完整或相互矛盾时，整个详情都不显示，避免把部分总量冒充完整结果。
+Chat 保留内部 token 记账，不展示 token 总量、吞吐率或缓存指标。账号扩展可通过 `conversation.chat.turnTail` 和 `conversation.composer.dock` 添加已结算的积分用量，不能把 token 改名为积分。压缩标记显示历史记录数，不显示 token 估计。
 
-设置 → 通用设置 → 性能与用量位于繁忙时的发送行为之后、Session Log 上传之前，将 `ui-chat.performanceUsage` 保存为 `detailed`（默认）或 `compact`。简洁模式仅在输入框下方显示可用的输出速度和缓存命中率，不显示统计交互卡片或每轮用量。详细模式提供会话统计和每轮 token 用量。两种模式的已完成轮次页脚均不显示耗时。该偏好仅影响展示，记账和 Session 事件保持完整。
+设置 → 通用设置 → 性能与用量位于繁忙时的发送行为之后、Session Log 上传之前，将 `ui-chat.performanceUsage` 保存为 `detailed`（默认）或 `compact`。简洁模式在输入框下方显示轮次与步骤数。详细模式在可关闭的详情中增加实测模型用时、工具用时与平均首次响应耗时。两种模式的已完成轮次页脚均不显示耗时。该偏好仅影响展示，记账和 Session 事件保持完整。
 
-输入框统计信息由两个 `conversation.composer.dock` 列表条目组成：`activity`（order 0，轮次数、步骤数与输出速度，以及 LLM 耗时、工具耗时与 TTFT）和 `usage`（order 1，token 总量与缓存命中）。其他插件以相同的 id 和相同的 `order` 注册即可替换某个胶囊；dock 按 `order` 排列各行，更低的 `priority` 决定由替换者渲染：动态插件会自动获得，静态组合的插件需显式传入。以新 id 注册则新增胶囊。每个胶囊在 `data-composer-stat` 中携带其 id。按下 Escape，或在已打开的对话框之外发生 pointerdown 或点击时，该对话框会关闭，因此用指针或键盘激活另一个胶囊会切换对话框，而不会叠加两个。
+输入框活动统计为 `conversation.composer.dock` 的 `activity` 条目（order 0），其 id 保留在 `data-composer-stat` 中。使用相同 id 和 order、较低 priority 的注册可替换该条目；新 id 添加独立条目。详情在 Escape 或外部指针、点击操作时关闭。
 
 在非回环地址浏览器中，设置作用域无法持久化写入，因此该偏好仅在当前进程内生效。明确选择会立即更新所有使用方；回环地址浏览器收到 Host 已接受的设置后会同步当前值。
 

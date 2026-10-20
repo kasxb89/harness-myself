@@ -17,8 +17,6 @@ interface CompactionItemProps {
   node: CompactionSummaryNode
   /** Optional command title for a manual compaction folded into this marker. */
   title?: string
-  /** Command settlement text used when structured compaction counts are unavailable. */
-  fallbackSummary?: string | null
   /** The owning view's locale seat. */
   t: ChatViewSlotProps['t']
 }
@@ -31,20 +29,17 @@ interface CompactionItemProps {
 export const CompactionItem = memo(function CompactionItem({
   node,
   title,
-  fallbackSummary,
   t,
 }: CompactionItemProps) {
   const [expanded, setExpanded] = useState(false)
   const labels = useMemo(() => markdownLabels(t), [t])
   const expandable = node.summary !== null
   const open = expandable && expanded
-  const summary = node.shadowedItemCount !== null && node.shadowedTokenCount !== null
+  const summary = node.shadowedItemCount !== null
     ? t('message.compaction.completed', {
       items: node.shadowedItemCount,
-      tokens: node.shadowedTokenCount,
     })
-    : fallbackSummary
-      ?? (expandable ? t('message.compaction.expand') : t('message.compaction.unavailable'))
+    : expandable ? t('message.compaction.expand') : t('message.compaction.unavailable')
   return (
     <div className={css.compactionRow}>
       <button

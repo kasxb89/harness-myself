@@ -9,7 +9,7 @@ import { en, zh, type CreditsKey } from '../src/client/locales.ts'
 import { refreshCredits } from '../src/client/session-store.ts'
 
 const SELF = '@deepseek-ai/dsh-client-ui-credits'
-const productIt = createClientTest({ roster: webApp.closure([SELF]) }, { mount: true })
+const productIt = createClientTest({ roster: webApp.closure([SELF, '@deepseek-ai/dsh-client-ui-chat']) }, { mount: true })
 const qr = 'data:image/png;base64,aGVsbG8='
 let accountId = 'account-a'
 let summaryReads = 0
@@ -308,4 +308,19 @@ productIt('exposes top-up through the shipped Credits composition and removes it
   await act(async () => { await client.unload(SELF) })
   expect(screen.queryByRole('heading', { name: en.rechargePageTitle })).toBeNull()
   expect(client.ctx.slots.entries('main').some(row => row.options.key === 'recharge')).toBe(false)
+}, 60_000)
+
+productIt('registers account-bound model credits in real Conversation and Chat slots and releases them on unload', async ({ start }) => {
+  const client = await start()
+  const dock = client.ctx.slots.entries('conversation.composer.dock').find(row => row.options.id === 'usage')
+  const tail = client.ctx.slots.entries('conversation.chat.turnTail').find(row => row.options.id === 'model-credits')
+  expect(dock?.options.order).toBe(1)
+  expect(dock?.locale).toBe('credits')
+  expect(tail?.locale).toBe('credits')
+  const injected = dock!.inject!()
+  expect(injected['hooks']).toMatchObject({ creditsSession: client.ctx.creditsSession })
+  expect(injected['openBalance']).toBeTypeOf('function')
+  await act(async () => { await client.unload(SELF) })
+  expect(client.ctx.slots.entries('conversation.composer.dock').some(row => row.options.id === 'usage')).toBe(false)
+  expect(client.ctx.slots.entries('conversation.chat.turnTail').some(row => row.options.id === 'model-credits')).toBe(false)
 }, 60_000)

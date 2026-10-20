@@ -27,6 +27,8 @@ export interface BalanceResponse {
 
 /** What the pages observe. */
 export interface CreditsSnapshot {
+  /** Changes only when the observed signed-in identity changes, including a logout and return. */
+  readonly accountEpoch: number
   /** Latest session, absent until the first read answers. */
   readonly session: SessionInfo | null
   /** Latest balance, absent while signed out or before the first read. */
@@ -40,7 +42,7 @@ export interface CreditsSnapshot {
 const UNSIGNED: SessionInfo = { signedIn: false, creditsPerYuan: 1000 }
 const HEARTBEAT_MS = 60_000
 
-let snapshot: CreditsSnapshot = { session: null, balance: null, loaded: false, failure: null }
+let snapshot: CreditsSnapshot = { accountEpoch: 0, session: null, balance: null, loaded: false, failure: null }
 const listeners = new Set<() => void>()
 let heartbeats = 0
 let heartbeat: ReturnType<typeof setInterval> | null = null
@@ -54,7 +56,9 @@ const subscribe = (listener: () => void): (() => void) => {
 
 /** Replace the snapshot and wake every reader. */
 function publish(next: Partial<CreditsSnapshot>): void {
-  snapshot = { ...snapshot, ...next }
+  const identity = (session: SessionInfo | null): string | null => session?.signedIn === true ? session.account?.id ?? null : null
+  const changed = next.session !== undefined && identity(next.session) !== identity(snapshot.session)
+  snapshot = { ...snapshot, ...next, accountEpoch: snapshot.accountEpoch + Number(changed) }
   for (const listener of listeners) listener()
 }
 

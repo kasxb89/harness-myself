@@ -54,12 +54,12 @@ describe('ContextMeter', () => {
     expect(view.queryByRole('dialog')).toBeNull()
     fireEvent.click(trigger)
     const panel = view.queryByRole('dialog')!
-    expect(panel.textContent).toContain('~32K / 128K')
+    expect(panel.textContent).not.toMatch(/32K|128K|token|积分/u)
     expect(panel.textContent).toContain('25%')
     expect(panel.textContent).toContain('上下文已用')
-    expect(panel.textContent).toContain('系统提示词~120')
-    expect(panel.textContent).toContain('工具定义~21.5K')
-    expect(panel.textContent).toContain('对话消息~477K')
+    expect(panel.textContent).toContain('系统提示词0%')
+    expect(panel.textContent).toContain('工具定义4%')
+    expect(panel.textContent).toContain('对话消息96%')
     // The occupancy bar splits into one colored segment per composition row.
     expect(panel.getElementsByClassName(segmentClass)).toHaveLength(3)
     // Clicking the trigger again toggles the panel shut.
@@ -94,7 +94,7 @@ describe('ContextMeter', () => {
     // `.segment` carries a min-width, so a zero-width part would still paint a
     // filled sliver over an empty context.
     expect(panel.getElementsByClassName(segmentClass)).toHaveLength(0)
-    expect(panel.textContent).toContain('~0 / 128K')
+    expect(panel.textContent).not.toContain('128K')
   })
 
   it('reads the ring from the projected figure so a compaction shows at once', () => {
@@ -106,14 +106,14 @@ describe('ContextMeter', () => {
     })
     const trigger = view.getByRole('button', { name: '上下文已用 2%' })
     fireEvent.click(trigger)
-    expect(view.queryByRole('dialog')!.textContent).toContain('~3K / 128K')
+    expect(view.queryByRole('dialog')!.textContent).not.toMatch(/3K|128K|token|积分/u)
   })
 
   it('omits the composition rows while the contextBreakdown projection is absent', () => {
     const view = meter({ contextPressure: { pressureTokens: 32_000, contextWindow: 128_000 } })
     fireEvent.click(view.getByRole('button', { name: '上下文已用 25%' }))
     const panel = view.queryByRole('dialog')!
-    expect(panel.textContent).toContain('~32K / 128K')
+    expect(panel.textContent).not.toMatch(/32K|128K|token|积分/u)
     expect(panel.textContent).not.toContain('系统提示词')
     expect(panel.textContent).not.toContain('对话消息')
     // Without composition shares, the bar falls back to one plain segment.

@@ -41,6 +41,12 @@ Today, seven-day and thirty-day periods use Asia/Shanghai calendar days through 
 
 The charts represent reported cumulative charges before refunds, consumption billing records, and combined token usage. A successful complete response supplies zero-valued day buckets where no records exist. Empty responses show an empty state; unavailable, malformed or overflowing data produces a visible error without manufactured chart values. All labels, units and query-state messages follow the product locale and theme.
 
+### Chat model credits
+
+The conversation composer shows Current chat model credits, and each turn shows This turn’s model credits. Both read verified receipts for the signed-in account and attached conversation through `/credits/api/chat-usage`; they never convert tokens into credits. The readings cover only that conversation’s chat-model calls, excluding image/video tasks, separate AI writing and subchats. Details link to the balance usage records for all consumption.
+
+A running turn or unconfirmed bill shows Settling; missing receipts and unavailable reads show Unavailable, without a fabricated zero. Reads refresh on turn completion and manual refresh; pending receipts get at most three follow-up reads. Account changes, logout and closing the control abort reads and discard late results. The shared account snapshot’s in-memory epoch changes on identity transitions, including signing back into the same account, but stays stable during ordinary balance refreshes.
+
 ### Workspace guide
 
 The signed-in conversation composer has a lightweight Workspace examples entry. It opens only at the user's request and explains natural-language video planning, generation within each model's clip limit, and trimming and joining generated or uploaded clips. This reference dialog is separate from the AI's request-specific clarification questions in chat. Escape, backdrop and close dismiss it. Only one examples dialog can be open across the client root's mounted conversations; changing accounts or releasing the composer closes it. Its state stays in memory, with no account acknowledgement or first-visit behavior.

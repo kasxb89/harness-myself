@@ -19,7 +19,7 @@ File-mention providers receive the viewed Session ID with the closing-turn owner
 - [Reference previews](#reference-previews)
 - [Hidden Chat rows](#system-prompt-row)
 - [Command and failure rows](#command-and-failure-rows)
-- [Turn token usage](#turn-token-usage)
+- [Session statistics](#turn-token-usage)
 - [Completed-turn footer](#completed-turn-footer)
 - [Turn Process Folding](#turn-process-folding)
 - [Grouped rendering](#grouped-rendering)
@@ -56,13 +56,13 @@ Generic command rows retain the ordinary command glyph in every lifecycle state;
 -----
 
 <a id="turn-token-usage"></a>
-## Turn token usage
+## Session statistics
 
-A completed Turn shows an expandable usage row only when the loaded window includes `turn/start` and every started model attempt reports safe, exact usage. The row omits unavailable optional buckets. Incomplete or contradictory accounting hides the complete disclosure instead of presenting a partial total.
+Chat retains internal token accounting without displaying token totals, throughput or cache metrics. Account extensions may add settled credit usage through `conversation.chat.turnTail` and `conversation.composer.dock`; tokens are never relabeled as credits. Compaction markers show the number of history records without token estimates.
 
-Settings → General → Performance & usage appears after Send behavior while busy and before Session Log upload, and stores `ui-chat.performanceUsage` as `detailed` (default) or `compact`. Compact shows only available output speed and cache-hit percentage beneath the composer, without interactive statistic dialogs or per-Turn usage. Detailed exposes session statistics and per-Turn token usage. Neither mode shows elapsed time in the completed-turn footer. The preference changes presentation only; accounting and Session events remain intact.
+Settings → General → Performance & usage appears after Send behavior while busy and before Session Log upload, and stores `ui-chat.performanceUsage` as `detailed` (default) or `compact`. Compact shows turn and step counts beneath the composer. Detailed adds observed model time, tool time and average first-response delay in a dismissible dialog. Neither mode shows elapsed time in the completed-turn footer. The preference changes presentation only; accounting and Session events remain intact.
 
-The composer statistics are two `conversation.composer.dock` list entries: `activity` (order 0, turn and step counts and output speed, with LLM time, tool time, and TTFT) and `usage` (order 1, token total and cache hit). Another plugin replaces one pill by registering the same id and the same `order`; the dock orders rows by `order`, while a lower `priority` picks the replacement: a dynamic plugin receives one automatically, and a statically composed plugin passes it explicitly. A new id adds a pill. Each pill carries its id in `data-composer-stat`. An open pill dialog closes on Escape or on a pointerdown or click outside it, so activating another pill by pointer or keyboard swaps dialogs instead of stacking them.
+The composer activity is the `conversation.composer.dock` entry `activity` (order 0), with its id in `data-composer-stat`. Registering the same id and order with a lower priority replaces it; a new id adds a separate entry. Activity dialogs close on Escape or an outside pointer or click.
 
 On non-loopback browsers, the preference remains process-local because the settings scope cannot persist writes. Explicit selections update every consumer immediately; accepted Host settings reconcile the live value on loopback browsers.
 

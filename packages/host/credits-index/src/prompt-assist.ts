@@ -24,7 +24,7 @@ export type PromptAssistCode = 'INVALID_REQUEST' | 'PROMPT_ASSIST_NOT_CONFIGURED
   | 'PROMPT_ASSIST_TIMEOUT' | 'PROMPT_ASSIST_INVALID_RESPONSE' | 'PROMPT_ASSIST_STORAGE_FAILED' | 'PROMPT_ASSIST_CANCELLED'
   | 'PROMPT_ASSIST_RESULT_STORAGE_FAILED'
   | 'PROMPT_ASSIST_RESULT_UNKNOWN'
-  | 'PROMPT_ASSIST_SELECTION_CHANGED' | 'PROMPT_ASSIST_VISION_REQUIRED'
+  | 'PROMPT_ASSIST_SELECTION_CHANGED' | 'PROMPT_ASSIST_VISION_REQUIRED' | 'PROMPT_ASSIST_CHAT_REQUIRED'
 
 /** Failure text is a safe host diagnostic; receiving clients localize by code. */
 export interface PromptAssistFailure {
@@ -56,15 +56,17 @@ export interface PromptAssistOptions {
     readonly bytes: Buffer
     readonly mediaType: string
     readonly filename: string
+    readonly accountId?: string
   } | null>
 }
 
 const MESSAGES: Record<PromptAssistCode, string> = {
   INVALID_REQUEST: '帮写内容无效，请缩短原稿或修改意见后重试。',
+  PROMPT_ASSIST_CHAT_REQUIRED: '当前选择的是视频生成模型，请在聊天框切换到聊天模型后再帮写，素材与原稿已保留。',
   PROMPT_ASSIST_NOT_CONFIGURED: '当前尚未配置可用的提示词帮写模型，请联系管理员。',
   PROMPT_ASSIST_MODEL_UNAVAILABLE: '当前账号暂时无法使用配置的帮写模型，请联系管理员。',
   PROMPT_ASSIST_REFERENCE_INVALID: '参考图无法读取，或格式不是 PNG、JPEG、WebP，请重新上传。',
-  PROMPT_ASSIST_REFERENCE_LIMIT: '参考图最多 6 张，每张不超过 6 MB，合计不超过 12 MB。',
+  PROMPT_ASSIST_REFERENCE_LIMIT: '参考图最多 9 张，每张不超过 6 MB，合计不超过 12 MB。',
   PROMPT_ASSIST_UNAVAILABLE: '提示词帮写暂时不可用，请稍后重试，原稿已保留。',
   PROMPT_ASSIST_TIMEOUT: '提示词帮写超时，请稍后重试，原稿已保留。',
   PROMPT_ASSIST_INVALID_RESPONSE: '模型返回的提示词不可用，本次请求可能已计费。原稿已保留，请检查用量后决定是否重试。',
@@ -128,7 +130,7 @@ export function parsePromptAssist(value: unknown): {
     }
   }
   if (sessionId === null && expectedSelection !== null) return promptAssistFailure('INVALID_REQUEST')
-  if (body.references.length > 6) return promptAssistFailure('PROMPT_ASSIST_REFERENCE_LIMIT')
+  if (body.references.length > 9) return promptAssistFailure('PROMPT_ASSIST_REFERENCE_LIMIT')
   const references: string[] = []
   for (const reference of body.references) {
     if (typeof reference !== 'string' || !/^ma_[A-Za-z0-9]{1,64}$/.test(reference) || references.includes(reference)) {
@@ -155,6 +157,37 @@ function imageExtension(bytes: Buffer, mediaType: string): string | null {
   if (mediaType === 'image/jpeg' && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255) return 'jpg'
   if (mediaType === 'image/webp' && bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP') return 'webp'
   return null
+}
+
+interface PromptAssistDiagnostic {
+  readonly stage: 'catalog' | 'completion'
+  readonly status?: number
+  readonly requestId?: string
+  readonly error?: Readonly<Record<string, string>>
+}
+
+function responseMetadata(response: Response, stage: PromptAssistDiagnostic['stage']): PromptAssistDiagnostic {
+  const requestId = response.headers.get('x-oneapi-request-id')
+  return { stage, status: response.status,
+    ...requestId !== null && /^[A-Za-z0-9._:-]{1,128}$/u.test(requestId) ? { requestId } : {},
+  }
+}
+
+/** Retain structured failure facts privately; free-form bodies and credentials are excluded. */
+async function responseDiagnostic(response: Response, stage: PromptAssistDiagnostic['stage'], key: string): Promise<PromptAssistDiagnostic> {
+  const body = record(await boundedJson(response))
+  const upstream = record(body?.error) ?? body
+  const details: Record<string, string> = {}
+  for (const field of ['code', 'type', 'message']) {
+    const value = upstream?.[field]
+    if (typeof value !== 'string') continue
+    details[field] = value.split(key).join('[redacted]')
+      .replace(/Bearer\s+[^\s"'<>]+/giu, 'Bearer [redacted]')
+      .replace(/sk-[A-Za-z0-9_-]+/gu, '[redacted]').slice(0, 2048)
+  }
+  return { ...responseMetadata(response, stage),
+    ...Object.keys(details).length === 0 ? {} : { error: details },
+  }
 }
 
 async function boundedJson(response: Response): Promise<unknown> {
@@ -201,7 +234,7 @@ export async function assistPrompt(options: PromptAssistOptions): Promise<Prompt
   for (const assetId of input.references) {
     if (signal.aborted) return aborted()
     const reference = await options.readReference(assetId)
-    if (reference === null) return promptAssistFailure('PROMPT_ASSIST_REFERENCE_INVALID')
+    if (reference === null || reference.accountId !== undefined && reference.accountId !== options.accountId) return promptAssistFailure('PROMPT_ASSIST_REFERENCE_INVALID')
     const extension = imageExtension(reference.bytes, reference.mediaType)
     if (extension === null) return promptAssistFailure('PROMPT_ASSIST_REFERENCE_INVALID')
     imageBytes += reference.bytes.length
@@ -268,12 +301,14 @@ export async function assistPrompt(options: PromptAssistOptions): Promise<Prompt
   }
   let outcome: PromptAssistResult
   let completionDispatched = false
+  let diagnostic: PromptAssistDiagnostic | undefined
   try {
     signal.throwIfAborted()
     const headers = { authorization: `Bearer ${options.key}`, accept: 'application/json' }
     const catalog = await fetch(apiUrl(options.baseUrl, '/v1/models'), { headers, signal, redirect: 'error' })
+    diagnostic = responseMetadata(catalog, 'catalog')
     if (!catalog.ok) {
-      await catalog.body?.cancel()
+      diagnostic = await responseDiagnostic(catalog, 'catalog', options.key)
       outcome = promptAssistFailure('PROMPT_ASSIST_MODEL_UNAVAILABLE')
     } else {
       const catalogBody = record(await boundedJson(catalog))
@@ -291,8 +326,9 @@ export async function assistPrompt(options: PromptAssistOptions): Promise<Prompt
           method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, signal, redirect: 'error',
           body: JSON.stringify({ model, messages, stream: false, max_tokens: options.maxTokens }),
         })
+        diagnostic = responseMetadata(completion, 'completion')
         if (!completion.ok) {
-          await completion.body?.cancel()
+          diagnostic = await responseDiagnostic(completion, 'completion', options.key)
           outcome = promptAssistFailure('PROMPT_ASSIST_RESULT_UNKNOWN')
         } else {
           const body = record(await boundedJson(completion))
@@ -307,13 +343,17 @@ export async function assistPrompt(options: PromptAssistOptions): Promise<Prompt
     }
     if (outcome.ok && !await options.isSelectionCurrent()) outcome = promptAssistFailure('PROMPT_ASSIST_SELECTION_CHANGED')
   } catch (error) {
-    // Transport and parser diagnostics can contain credentials; only the stable category is retained.
-    void error
+    // Exception messages may carry credentials; retain only the transport's typed identity.
+    const failure = record(error)
+    const cause = record(failure?.cause)
+    const code = typeof cause?.code === 'string' && /^[A-Z_]{1,64}$/u.test(cause.code) ? cause.code : undefined
+    diagnostic = { ...diagnostic, stage: completionDispatched ? 'completion' : 'catalog',
+      error: { name: error instanceof Error ? error.name.slice(0, 64) : 'UnknownError', ...code === undefined ? {} : { code } } }
     outcome = completionDispatched ? promptAssistFailure('PROMPT_ASSIST_RESULT_UNKNOWN')
       : signal.aborted ? aborted() : promptAssistFailure('PROMPT_ASSIST_UNAVAILABLE')
   }
   try {
-    await writeFile(join(requestDirectory, 'outcome.json'), `${JSON.stringify({ settledAt: new Date().toISOString(), completionDispatched, ...outcome }, null, 2)}\n`, { mode: 0o600, flag: 'wx' })
+    await writeFile(join(requestDirectory, 'outcome.json'), `${JSON.stringify({ settledAt: new Date().toISOString(), completionDispatched, ...outcome, diagnostic }, null, 2)}\n`, { mode: 0o600, flag: 'wx' })
   } catch (error) {
     // A completed provider call may have been billed; the UI receives no unrecorded candidate.
     void error

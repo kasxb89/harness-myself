@@ -246,22 +246,14 @@
 }
 
 .metrics {
-  display: grid;
-  grid-template-rows: 17px 15px;
+  display: inline-flex;
   flex: none;
   font-variant-numeric: tabular-nums;
   text-align: right;
   white-space: nowrap;
 }
 
-.metricToken {
-  grid-row: 1;
-  line-height: 17px;
-}
 
-.metricDuration {
-  grid-row: 2;
-}
 
 .sidebarButton {
   display: inline-flex;

@@ -288,11 +288,10 @@ function HarnessChatFlow({ standard, owner, hookContext, renderSlot }: {
   return <ChatFlow {...shared} {...owner} {...hooks} renderSlot={renderSlot} />
 }
 
-function HarnessChatNode({ standard, owner, hookContext, usePerformanceUsage, toolOwners, fallback }: {
+function HarnessChatNode({ standard, owner, hookContext, toolOwners, fallback }: {
   readonly standard: ChatViewSlotProps
   readonly owner: RoutedChatNodeOwner
   readonly hookContext: ChatNodeHookContext
-  readonly usePerformanceUsage: React.ComponentProps<typeof TurnTailNodeView>['usePerformanceUsage']
   readonly toolOwners: ToolOwner[]
   readonly fallback: React.ReactNode
 }) {
@@ -330,7 +329,7 @@ function HarnessChatNode({ standard, owner, hookContext, usePerformanceUsage, to
       return <SystemPromptNodeView {...nodeProps} node={owner.node} />
     case 'turn-tail':
       return <TurnTailNodeView {...nodeProps} node={owner.node}
-        usePerformanceUsage={usePerformanceUsage} renderSlot={renderTurnTailSlot} />
+        renderSlot={renderTurnTailSlot} />
     case 'unknown':
       return <UnknownNodeView {...nodeProps} node={owner.node} />
     case 'tool-call': {
@@ -409,16 +408,14 @@ function makeHarness(
   const chat = createChatStore().create()
   const transcriptView = createSnapshotStore<TranscriptViewMode>('compact')
   const collapseTiming = createSnapshotStore<CollapseTiming>('completion')
-  const performanceUsage = createSnapshotStore<'compact' | 'detailed'>('detailed')
   const t = makeTranslate(zh, commonZh)
   const toolOwners: ToolOwner[] = []
-  const usePerformanceUsage = bindSnapshotSelector(performanceUsage)
   let nodeSlotOverride: NodeRenderer | undefined
   let imageSlotOverride: ImageRenderer | undefined
   const renderNodeSlot: NodeRenderer = (key, owner, opts) => {
     if (nodeSlotOverride !== undefined) return nodeSlotOverride(key, owner, opts)
     return <HarnessChatNode standard={props} owner={owner}
-      hookContext={opts.hookContext} usePerformanceUsage={usePerformanceUsage}
+      hookContext={opts.hookContext}
       toolOwners={toolOwners} fallback={opts.fallback} />
   }
   const renderFlowSlot: ChatFlowSlotProps['renderSlot'] = (key: string, owner: object, opts?: {
@@ -521,7 +518,6 @@ function makeHarness(
     openFile, openSkill, loadOlder, loadThrough, openView,
     setOutline: (value: unknown) => { outlineValue = value },
     chatScroll, forkAt, toolOwners,
-    setPerformanceUsage: (mode: 'compact' | 'detailed') => { performanceUsage.set(mode) },
     setGrouped: (value: ConversationGroupedView<ProcessGroupData> | undefined) => {
       grouped = value
       conversation.set({ ...conversation.getSnapshot() })
@@ -2337,7 +2333,7 @@ describe('ChatView', () => {
     const view = render(<h.ChatView {...h.props} />)
     const statuses = view.getAllByRole('status')
     expect(statuses.map(status => status.textContent)).toEqual([
-      '已达到输出 token 上限回答被截断，已有输出保留在对话中。发送“继续”可让模型接着输出。',
+      '已达到本次回答长度上限回答被截断，已有输出保留在对话中。发送“继续”可让模型接着输出。',
     ])
     expect(view.queryByText('本轮运行失败')).toBeNull()
   })
@@ -3172,7 +3168,7 @@ describe('ChatView', () => {
       .not.toContain('已完成，用时 1小时5分3秒')
   })
 
-  it('the settled footer shows usage only in Detailed mode', () => {
+  it('the settled footer leaves billing to the account component and never shows token totals', () => {
     const first: AssistantMessageNode = {
       kind: 'assistant', seq: 2, time: 2_000, turn: 1, step: 1, blocks: [{ kind: 'text', text: 'mid' }],
       timing: { stepStartTime: 1_000, firstTokenTime: 2_200, completedTime: 5_200 },
@@ -3195,25 +3191,11 @@ describe('ChatView', () => {
       }]]),
     })
     const view = render(<h.ChatView {...h.props} />)
-    // The usage pill carries the compact total; cache hit stays dialog-only.
-    const trigger = view.getByRole('button', { name: /用量 10\.1K tok/ })
-    expect(trigger.textContent).toBe('用量 10.1K tok')
-    expect(view.queryByRole('dialog')).toBeNull()
-    fireEvent.click(trigger)
-    const dialog = view.getByRole('dialog')
-    expect(dialog.getAttribute('aria-label')).toBe('本轮用量')
-    expect(dialog.firstChild?.textContent).toBe('本轮用量10,100 tok')
-    expect(dialog.textContent).toContain('缓存命中49.4%')
-    expect(dialog.textContent).toContain('未缓存输入5,060 tok')
-    fireEvent.keyDown(document, { key: 'Escape' })
-    expect(view.queryByRole('dialog')).toBeNull()
     const footer = view.container.querySelector<HTMLElement>('[data-turn-tail="1"]')!
-    expect(within(footer).queryByRole('button', { name: /用时/ })).toBeNull()
+    expect(footer.textContent).not.toMatch(/tok|用量|缓存命中/u)
+    expect(within(footer).queryByRole('button', { name: /用量|用时/ })).toBeNull()
+    expect(view.queryByRole('dialog')).toBeNull()
     expect(turnProcessControl(view.container)?.textContent).toBe('已完成，用时 19秒')
-    act(() => { h.setPerformanceUsage('compact') })
-    expect(view.queryByRole('button', { name: /用量/ })).toBeNull()
-    act(() => { h.setPerformanceUsage('detailed') })
-    expect(view.getByRole('button', { name: /用量/ })).toBeTruthy()
   })
 
   it('withholds the usage-details trigger when turn usage is outside the window', () => {
@@ -4295,7 +4277,7 @@ describe('ChatView', () => {
 
     expect(view.queryByText('正在压缩…')).toBeNull()
     expect(view.queryByText('上下文已压缩')).toBeNull()
-    expect(view.getByText('已压缩 16 条历史记录（约 11309 tokens）')).toBeTruthy()
+    expect(view.getByText('已压缩 16 条历史记录')).toBeTruthy()
     const row = view.getByRole('button', { name: /compact/ })
     expect(row.getAttribute('aria-expanded')).toBe('false')
     expect(row.querySelector('[data-compaction-icon="context"]')).not.toBeNull()

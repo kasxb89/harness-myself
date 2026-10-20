@@ -16,7 +16,6 @@ export function CompactionCommandCard({ node, compaction, t }: CompactionCommand
       <CompactionItem
         node={compaction}
         title={t('message.compaction.commandTitle')}
-        fallbackSummary={node.outcome?.text ?? null}
         t={t}
       />
     )

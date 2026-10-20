@@ -19,7 +19,7 @@ import { AssistantMarkdown, type AssistantMarkdownProps } from '../src/client/ch
 import { useDetailedPresentation } from './presentation-fixture.client.ts'
 import { useDisclosure } from '../src/client/chat/use-disclosure.ts'
 import { useSearchableHidden } from '../src/client/chat/searchable-hidden.ts'
-import { ActivityPill, UsagePill, type StatPillProps } from '../src/client/chat/StatsPills.tsx'
+import { ActivityPill } from '../src/client/chat/StatsPills.tsx'
 import { zh } from '../src/client/locale.ts'
 import { chatSnapshotFixture } from './chat-snapshot-fixture.client.ts'
 
@@ -823,7 +823,7 @@ describe('MessageItem arms', () => {
     )
     const row = view.getByRole('button', { name: /上下文已压缩/ })
     expect(row.getAttribute('aria-expanded')).toBe('false')
-    expect(view.getByText('已压缩 16 条历史记录（约 11309 tokens）')).toBeTruthy()
+    expect(view.getByText('已压缩 16 条历史记录')).toBeTruthy()
     expect(view.queryByText(/保留的事实/)).toBeNull()
     fireEvent.click(row)
     expect(row.getAttribute('aria-expanded')).toBe('true')
@@ -893,7 +893,7 @@ describe('MessageItem arms', () => {
     expect(details?.dataset.active).toBe('true')
     expect(view.getByRole('status').textContent).toBe('正在重试模型请求（1/2） · 3s')
     expect(view.getByText('重试延迟：').parentElement?.textContent).toBe('重试延迟：2500毫秒')
-    expect(view.getByText('失败原因：').parentElement?.textContent).toBe('失败原因：连接被重置')
+    expect(view.getByText('失败原因：').parentElement?.textContent).toBe('失败原因：服务器繁忙，请稍后重试')
 
     act(() => { vi.advanceTimersByTime(1_100) })
     expect(view.getByRole('status').textContent).toBe('正在重试模型请求（1/2） · 2s')
@@ -1057,37 +1057,17 @@ describe('small branch tails', () => {
     expect(view.getByText('one-liner')).toBeTruthy()
   })
 
-  it('composer stats omit the cache-hit segment when no input accounting exists at all', () => {
-    // Cache hit is null only when all three prompt buckets are zero (pure
-    // output accounting) — any billed input makes it a real 0%.
-    const nodes = [{
+  it('composer activity shows counts without converting internal token usage into displayed spending', () => {
+    const snap = chatSnapshotFixture({ nodes: [{
       kind: 'assistant', seq: 1, time: 1_000, turn: 1, step: 1, blocks: [], usage: { outputTokens: 10 },
-    }] as const
-    const snap = chatSnapshotFixture({ nodes })
+    }] })
     const source = { getSnapshot: () => snap, subscribe: () => () => {} }
-    const pillProps: StatPillProps = {
-      usePerformanceUsage: selector => selector('detailed'),
-      t,
-      useChat: bindSnapshotSelector(source),
-      useProjection: (key: string) => key === 'tokenUsage'
-        ? { uncachedInputTokens: 0, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0 }
-        : undefined,
-    }
-    const view = render(
-      <>
-        <ActivityPill {...pillProps} />
-        <UsagePill {...pillProps} />
-      </>,
-    )
-    // The untimed counts pill renders static, so the usage pill is the only button.
-    const [usagePill] = [...view.getAllByRole('button')] as [HTMLElement]
+    const view = render(<ActivityPill usePerformanceUsage={selector => selector('detailed')}
+      t={t} useChat={bindSnapshotSelector(source)} useProjection={(key: string) => key === 'tokenUsage'
+        ? { uncachedInputTokens: 0, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0 } : undefined} />)
     expect(view.getByText('1 轮 1 步').closest('button')).toBeNull()
-    expect(usagePill.textContent).toBe('10 tok')
-    // Pure output accounting still reaches the usage pill's click-open dialog rows.
-    fireEvent.click(usagePill)
-    const dialog = view.getByRole('dialog')
-    expect(dialog.textContent).toContain('输出10 tok')
-    expect(dialog.textContent).not.toContain('缓存命中')
+    expect(view.container.textContent).not.toMatch(/tok|积分|缓存命中/u)
+    expect(view.queryByRole('dialog')).toBeNull()
   })
 })
 

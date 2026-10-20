@@ -63,6 +63,7 @@ import { toPiContext } from './context.ts'
 import { conversationUpdates, createModels, getSupportedThinkingLevels } from './models.ts'
 import { toStreamChunks } from './stream.ts'
 import { harnessFetch } from './harness-fetch.ts'
+import { gatewayReceipt, withGatewayReceipt, type GatewayReceipt } from './gateway-receipt.ts'
 
 /**
  * Initially active declaration added to an Anthropic request whose projected
@@ -357,7 +358,9 @@ export class PiAiAdapter extends LlmAdapter {
     // the one it started with and the next call picks up the new one.
     const profile = this.profileOf(snapshot, options.provider)
     const model = this.modelOf(snapshot, options.provider, options.model)
-    const requestFetch = harnessFetch(model.baseUrl)
+    let receipt: GatewayReceipt | undefined
+    const captureReceipt = (headers: Headers): void => { receipt = gatewayReceipt(model.baseUrl, headers) }
+    const requestFetch = harnessFetch(model.baseUrl, (response) => { captureReceipt(response.headers) })
     const updates = conversationUpdates(model)
     // pi-ai collapses Anthropic tool updates without an initially active declaration.
     const tools = options.tools ?? []
@@ -411,6 +414,7 @@ export class PiAiAdapter extends LlmAdapter {
         ...options.sessionId === undefined ? {} : { sessionId: String(options.sessionId) },
         signal: watchdog.signal,
         ...requestFetch === undefined ? {} : { fetch: requestFetch },
+        onResponse: (response) => { captureReceipt(new Headers(response.headers)) },
         // Profile headers are deployment-owned; attribution names are
         // Harness-owned and therefore win collisions.
         headers: requestHeaders(profile.headers),
@@ -424,7 +428,7 @@ export class PiAiAdapter extends LlmAdapter {
             exhausted = true
             return
           }
-          yield result.value
+          yield result.value.type === 'finish' ? withGatewayReceipt(result.value, receipt) : result.value
         }
       } finally {
         if (!exhausted) {
@@ -436,13 +440,16 @@ export class PiAiAdapter extends LlmAdapter {
         }
       }
     } catch (error: unknown) {
+      let failure: LlmError
       if (timeoutOf(watchdog.signal, 'LLM_STREAM_IDLE_TIMEOUT') !== undefined) {
-        throw new LlmError(`pi-ai stream idle timeout after ${streamIdleTimeoutMs}ms`, 'TIMEOUT', { cause: error })
-      }
-      if (options.signal?.aborted) {
-        throw new LlmError('pi-ai request aborted by caller', 'ABORTED', { cause: error })
-      }
-      throw error
+        failure = new LlmError(`pi-ai stream idle timeout after ${streamIdleTimeoutMs}ms`, 'TIMEOUT', { cause: error })
+      } else if (options.signal?.aborted) {
+        failure = new LlmError('pi-ai request aborted by caller', 'ABORTED', { cause: error })
+      } else if (error instanceof LlmError) failure = error
+      else if (receipt !== undefined) failure = new LlmError(error instanceof Error ? error.message : String(error), 'UNKNOWN', { cause: error })
+      else throw error
+      if (receipt === undefined) throw failure
+      yield withGatewayReceipt({ type: 'finish', reason: { kind: options.signal?.aborted ? 'aborted' : 'error', failure: failure.failure } }, receipt)
     } finally {
       consumer.abort('pi-ai stream consumer stopped')
     }

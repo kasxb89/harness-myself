@@ -13,7 +13,7 @@ import { createWorkspaceGuide } from '../src/client/workspace-guide-store.ts'
 
 let account: CreditsSnapshot = {
   session: { signedIn: true, creditsPerYuan: 1000, account: { id: 'account-a', phone: '+8613800138000' } },
-  loaded: true, balance: null, failure: null,
+  accountEpoch: 0, loaded: true, balance: null, failure: null,
 }
 vi.mock('../src/client/session-store.ts', () => ({ useCreditsSnapshot: () => account }))
 

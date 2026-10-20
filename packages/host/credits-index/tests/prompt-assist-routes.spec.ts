@@ -94,6 +94,12 @@ async function boot(options: {
         const entry = (await readdir(audit)).find(name => name !== 'references')
         if (entry !== undefined) await mkdir(join(audit, entry, 'outcome.json'))
       }
+      if (mode === 'upstream-json-error') {
+        response.writeHead(400, { 'x-oneapi-request-id': 'backend-request-123' })
+        response.end(JSON.stringify({ error: { code: 'invalid_request_error', type: 'invalid_request_error',
+          message: 'The reasoning_content must be passed back. account-key sk-upstreamprivate', private: 'excluded' }, extra: 'excluded' }))
+        return
+      }
       if (mode === 'upstream-error') { response.writeHead(500); response.end('upstream account-key deployment-secret stack trace'); return }
       if (mode === 'malformed') { response.end('{broken account-key'); return }
       if (mode === 'selection-change') chatSelection = { provider: 'product', model: 'vision-assistant' }
@@ -142,7 +148,7 @@ async function boot(options: {
     ['fixture:models', { apply(ctx: Context) {
       ctx.provide('sessionController', {
         modelCatalog: async () => ({ default: defaultSelection, groups: [{ id: 'product', models: [
-          { id: 'text-assistant', name: 'Text' }, { id: 'vision-assistant', name: 'Vision' },
+          { id: 'text-assistant', name: 'Text' }, { id: 'vision-assistant', name: 'Vision' }, { id: 'MiniMax-H3', name: 'H3' },
         ] }], routableProviders: ['product'], failures: [] }),
         projections: async () => ({ kind: 'sequenced', asOfSeq: 0, values: { modelSelection: { lastUsed: chatSelection, next: chatSelection } } }),
       })
@@ -242,10 +248,19 @@ describe('prompt assistance through the real Loader and account-owned HTTP route
       .toMatchObject({ provider: 'product', model: 'vision-assistant', sessionId: 'test-session', reasoningEffort: 'medium' })
   })
 
-  it('keeps six reference identities beside their image bytes in one billed directing request', async () => {
+  it('preserves a selected H3 model and asks for a chat model without sending an invalid chat request', async () => {
+    const { base } = await boot()
+    chatSelection = { provider: 'product', model: 'MiniMax-H3' }
+    expect(await post(base, { ...input(), kind: 'video' }))
+      .toMatchObject({ ok: false, code: 'PROMPT_ASSIST_CHAT_REQUIRED' })
+    expect(calls).toEqual([])
+    expect(chatSelection).toEqual({ provider: 'product', model: 'MiniMax-H3' })
+  })
+
+  it('keeps nine reference identities beside their image bytes in one billed directing request', async () => {
     const { base, stateDir } = await boot({ maxTokens: 4096 })
     chatSelection = { provider: 'product', model: 'vision-assistant' }
-    const filenames = ['妈妈.HEIC', '孩子.jpeg', '开篇插画.png', '刷牙步骤.webp', '亲子协助.avif', '杯子归位.bmp']
+    const filenames = ['妈妈.HEIC', '孩子.jpeg', '开篇插画.png', '刷牙步骤.webp', '亲子协助.avif', '杯子归位.bmp', '客厅.jpg', '浴室.png', '书封.webp']
     const materials = filenames.map((filename, index) => ({ label: `@图片${String(index + 1)}`, assetId: `ma_source${String(index)}`, filename }))
     for (const material of materials) {
       await writeFile(join(stateDir, 'refs', `${material.assetId}.png`), png)
@@ -415,7 +430,7 @@ describe('prompt assistance through the real Loader and account-owned HTTP route
     for (const references of [['https://untrusted.example/a.png'], ['../secret'], ['ma_one', 'ma_one']]) {
       expect(await post(base, { ...input(), references })).toMatchObject({ ok: false, code: 'PROMPT_ASSIST_REFERENCE_INVALID' })
     }
-    expect(await post(base, { ...input(), references: Array.from({ length: 7 }, (_, i) => `ma_${String(i)}`) })).toMatchObject({ ok: false, code: 'PROMPT_ASSIST_REFERENCE_LIMIT' })
+    expect(await post(base, { ...input(), references: Array.from({ length: 10 }, (_, i) => `ma_${String(i)}`) })).toMatchObject({ ok: false, code: 'PROMPT_ASSIST_REFERENCE_LIMIT' })
     expect(await post(base, { ...input(), prompt: 'x'.repeat(33_000) })).toMatchObject({ ok: false, code: 'INVALID_REQUEST' })
     expect(calls).toEqual([])
     expect(await readdir(stateDir)).toContain('prompt-assists')
@@ -483,6 +498,37 @@ describe('prompt assistance through the real Loader and account-owned HTTP route
       expect(recorded?.completionDispatched).toBe(recorded?.code === 'PROMPT_ASSIST_RESULT_UNKNOWN'
         || recorded?.code === 'PROMPT_ASSIST_INVALID_RESPONSE')
     }
+  })
+
+  it('does not read another account’s uploaded image into a billed writing request', async () => {
+    const { base, stateDir } = await boot()
+    chatSelection = { provider: 'product', model: 'vision-assistant' }
+    await writeFile(join(stateDir, 'refs', 'ma_one.png.json'), JSON.stringify({ mediaType: 'image/png', accountId: '8' }))
+    expect(await post(base, { ...input(), references: ['ma_one'] }))
+      .toMatchObject({ ok: false, code: 'PROMPT_ASSIST_REFERENCE_INVALID' })
+    expect(calls).toEqual([])
+    await writeFile(join(stateDir, 'refs', 'ma_one.png.json'), JSON.stringify({ mediaType: 'image/png', accountId: '7' }))
+    expect(await post(base, { ...input(), references: ['ma_one'] })).toMatchObject({ ok: true })
+    expect(calls.filter(call => call.path === '/v1/chat/completions')).toHaveLength(1)
+  })
+
+  it('retains backend correlation and structured causes privately without returning upstream details', async () => {
+    const { base, stateDir } = await boot()
+    mode = 'upstream-json-error'
+    const result = await post(base, input())
+    expect(result).toMatchObject({ ok: false, code: 'PROMPT_ASSIST_RESULT_UNKNOWN' })
+    expect(JSON.stringify(result)).not.toMatch(/reasoning_content|backend-request-123|account-key|sk-upstreamprivate/)
+    const directory = join(stateDir, 'prompt-assists')
+    const entry = (await readdir(directory)).find(name => name !== 'references')
+    const persisted = await readFile(join(directory, entry ?? '', 'outcome.json'), 'utf8')
+    expect(JSON.parse(persisted)).toMatchObject({ completionDispatched: true, diagnostic: {
+      stage: 'completion', status: 400, requestId: 'backend-request-123', error: {
+        code: 'invalid_request_error', type: 'invalid_request_error',
+        message: 'The reasoning_content must be passed back. [redacted] [redacted]',
+      },
+    } })
+    expect(persisted).not.toMatch(/account-key|sk-upstreamprivate|excluded/)
+    expect(calls.filter(call => call.path === '/v1/chat/completions')).toHaveLength(1)
   })
 
   it('does not send an unrecorded request when local audit storage is unavailable', async () => {

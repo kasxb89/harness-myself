@@ -5,6 +5,20 @@ export const NS = 'credits'
 
 /** Simplified Chinese copy for Credits pages and their navigation entries. */
 export const zh = {
+  'chatUsage.session': '当前会话模型积分',
+  'chatUsage.turn': '本轮模型积分',
+  'chatUsage.points': '{points} 积分',
+  'chatUsage.smallPoints': '少于 0.000001 积分',
+  'chatUsage.pending': '结算中',
+  'chatUsage.unavailable': '暂不可用',
+  'chatUsage.details': '查看模型积分详情',
+  'chatUsage.close': '关闭积分详情',
+  'chatUsage.refresh': '刷新积分',
+  'chatUsage.allUsage': '全部消费看余额使用明细',
+  'chatUsage.scope': '仅统计本会话的聊天模型请求，不含图片、视频、独立 AI 帮写或子会话',
+  'chatUsage.requests': '已结算 {settled} / {total} 次模型请求',
+  'chatUsage.pendingHint': '模型调用或账单仍在结算，请稍后刷新',
+  'chatUsage.unavailableHint': '暂未取得可核对的模型账单，请稍后刷新',
   'guide.entry': '工作区示例',
   'guide.title': '参考这些示例，描述你的想法',
   'guide.description': '请求不够明确时，AI 会在聊天中询问用途、风格等细节。这里的示例可帮助你了解视频创作的表达方式',
@@ -161,6 +175,20 @@ export const zh = {
 
 /** English copy for every Credits translation key. */
 export const en: Record<keyof typeof zh, string> = {
+  'chatUsage.session': 'Current chat model credits',
+  'chatUsage.turn': 'This turn’s model credits',
+  'chatUsage.points': '{points} credits',
+  'chatUsage.smallPoints': 'Less than 0.000001 credits',
+  'chatUsage.pending': 'Settling',
+  'chatUsage.unavailable': 'Unavailable',
+  'chatUsage.details': 'View model credit details',
+  'chatUsage.close': 'Close credit details',
+  'chatUsage.refresh': 'Refresh credits',
+  'chatUsage.allUsage': 'View all charges in balance usage',
+  'chatUsage.scope': 'Only chat-model requests in this conversation. Images, videos, separate AI writing and subchats are excluded.',
+  'chatUsage.requests': '{settled} / {total} model requests settled',
+  'chatUsage.pendingHint': 'Model requests or bills are still settling. Refresh shortly.',
+  'chatUsage.unavailableHint': 'No verifiable model bill is available yet. Refresh later.',
   'guide.entry': 'Workspace examples',
   'guide.title': 'Use these examples to describe your idea',
   'guide.description': 'When a request needs more detail, AI asks about its purpose, style and other choices in chat. These examples show ways to describe video creation.',

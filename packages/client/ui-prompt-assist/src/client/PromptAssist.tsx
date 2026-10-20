@@ -37,7 +37,7 @@ export function PromptAssist({ kind, prompt, references, generation, disabled, s
   latest.current = { context, allowed, onPromptChange }
   const pending = phase !== null
   const canWrite = Boolean(prompt.trim() || imageReferences.length)
-  const referenceLimitExceeded = imageReferences.length > 6
+  const referenceLimitExceeded = imageReferences.length > 9
 
   function finish(operation: WritingOperation, updateState = true): void {
     if (active.current !== operation) return

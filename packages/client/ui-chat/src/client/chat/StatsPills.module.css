@@ -52,8 +52,3 @@ button.pill[aria-expanded='true'] {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-
-.sep {
-  color: var(--dsw-alias-separator-primary);
-  margin: 0 6px;
-}

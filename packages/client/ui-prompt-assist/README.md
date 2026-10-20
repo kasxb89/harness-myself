@@ -40,7 +40,7 @@ On an explicit writing action through `/credits/api/prompt/assist`, the Host rec
 
 #### Token effect
 
-The prompt accepts up to 7,000 characters and revision feedback accepts up to 2,000. AI writing reads at most six image materials, up to 6 MiB each and 12 MiB combined; the Host validates their complete byte sizes before dispatch. Each writing or revision action can consume the current account's AI credits.
+The prompt accepts up to 7,000 characters and revision feedback accepts up to 2,000. AI writing reads at most nine image materials, up to 6 MiB each and 12 MiB combined; the Host validates their complete byte sizes before dispatch. Each writing or revision action can consume the current account's AI credits.
 
 #### KV Cache effect
 

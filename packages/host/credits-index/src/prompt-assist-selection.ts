@@ -3,6 +3,7 @@
 import type { ModelCatalog, ModelSelection, SessionProjectionsValue } from '@deepseek-ai/dsh-api-session-controller/types'
 import type { LlmResolvedModelInfo } from '@deepseek-ai/dsh-llm'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import { VIDEO_MODELS } from './model-parameters.ts'
 import { promptAssistFailure, type PromptAssistFailure } from './prompt-assist.ts'
 
 /** Host-owned readers for one account-authorized prompt-writing selection. */
@@ -71,6 +72,7 @@ export async function resolvePromptAssistSelection(options: PromptAssistSelectio
   }
   if (!samePromptAssistSelection(selected, options.expectedSelection)) return promptAssistFailure('PROMPT_ASSIST_SELECTION_CHANGED')
   const selection = selected ?? catalog.default
+  if (Object.hasOwn(VIDEO_MODELS, selection.model)) return promptAssistFailure('PROMPT_ASSIST_CHAT_REQUIRED')
   if (selection.provider !== options.provider || !catalog.groups.some(group => group.id === selection.provider
     && group.models.some(model => model.id === selection.model))) return promptAssistFailure('PROMPT_ASSIST_MODEL_UNAVAILABLE')
   const info = await options.readModelInfo(selection.provider, selection.model, options.signal)

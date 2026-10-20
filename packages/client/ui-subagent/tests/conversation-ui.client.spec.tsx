@@ -517,7 +517,7 @@ describe('SubagentHeaderLineage', () => {
     expect(input.openChild).toHaveBeenCalledWith({ parentSessionId: PARENT, childSessionId: CHILD, mode: 'unknown' })
   })
 
-  it('shows durable completion and token totals, ticks active duration, and freezes inactive rows', async () => {
+  it('shows completion and duration without exposing token counts in text or accessible names', async () => {
     const now = 2_000_000_000_000
     const minute = 60_000
     const hour = 60 * minute
@@ -594,15 +594,14 @@ describe('SubagentHeaderLineage', () => {
     expect(within(trigger).getByText('9 个子智能体')).toBeTruthy()
     hoverCatalog(trigger)
 
-    const runningRow = screen.getByRole('treeitem', { name: /running.*4\.6K tok · 1分10秒/ })
+    const runningRow = screen.getByRole('treeitem', { name: /running.*1分10秒/ })
     const runningMetrics = within(runningRow)
-    const tokenMetric = runningMetrics.getByText('4.6K tok')
-    const durationMetric = runningMetrics.getByText('1分10秒')
-    expect(tokenMetric.parentElement).toBe(durationMetric.parentElement)
-    expect(tokenMetric.nextElementSibling).toBe(durationMetric)
-    const finishedRow = screen.getByRole('treeitem', { name: /finished.*已完成.*123 tok · 1小时02分03秒/ })
+    expect(runningMetrics.getByText('1分10秒')).toBeTruthy()
+    expect(screen.queryByText(/tok/u)).toBeNull()
+    expect(runningRow.getAttribute('aria-label')).not.toMatch(/tok/u)
+    const finishedRow = screen.getByRole('treeitem', { name: /finished.*已完成.*1小时02分03秒/ })
     expect(finishedRow.querySelector('[data-state="done"]')).not.toBeNull()
-    const interruptedRow = screen.getByRole('treeitem', { name: /interrupted.*当前未运行.*123M tok · 6秒/ })
+    const interruptedRow = screen.getByRole('treeitem', { name: /interrupted.*当前未运行.*6秒/ })
     expect(interruptedRow.querySelector('[data-state="idle"]')).not.toBeNull()
     for (const row of [runningRow, finishedRow, interruptedRow]) {
       expect(row.querySelector('[data-state]')?.parentElement?.className).toContain('rowActivitySlot')
@@ -617,9 +616,9 @@ describe('SubagentHeaderLineage', () => {
     expect(screen.getByText('约1年')).toBeTruthy()
 
     await vi.advanceTimersByTimeAsync(1_000)
-    expect(screen.getByRole('treeitem', { name: /running.*4\.6K tok · 1分11秒/ })).toBeTruthy()
-    expect(screen.getByRole('treeitem', { name: /finished.*已完成.*123 tok · 1小时02分03秒/ })).toBeTruthy()
-    expect(screen.getByRole('treeitem', { name: /interrupted.*当前未运行.*123M tok · 6秒/ })).toBeTruthy()
+    expect(screen.getByRole('treeitem', { name: /running.*1分11秒/ })).toBeTruthy()
+    expect(screen.getByRole('treeitem', { name: /finished.*已完成.*1小时02分03秒/ })).toBeTruthy()
+    expect(screen.getByRole('treeitem', { name: /interrupted.*当前未运行.*6秒/ })).toBeTruthy()
   })
 
   it('ticks expanded running grandchildren under an idle child and releases their clock on collapse', async () => {
