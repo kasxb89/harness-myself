@@ -41,9 +41,9 @@ Today, seven-day and thirty-day periods use Asia/Shanghai calendar days through 
 
 The charts represent reported cumulative charges before refunds, consumption billing records, and combined token usage. A successful complete response supplies zero-valued day buckets where no records exist. Empty responses show an empty state; unavailable, malformed or overflowing data produces a visible error without manufactured chart values. All labels, units and query-state messages follow the product locale and theme.
 
-### Chat model credits
+### Chat reply credits
 
-The conversation composer shows Current chat model credits, and each turn shows This turn’s model credits. Both read verified receipts for the signed-in account and attached conversation through `/credits/api/chat-usage`; they never convert tokens into credits. The readings cover only that conversation’s chat-model calls, excluding image/video tasks, separate AI writing and subchats. Details link to the balance usage records for all consumption.
+The conversation composer shows Current chat reply credits, and each turn shows This turn’s reply credits. Both read verified receipts for the signed-in account and attached conversation through `/credits/api/chat-usage`; they never convert tokens into credits. The readings cover only recorded reply-model requests in the main conversation, excluding image/video tasks, separate AI writing, subchats, context compaction, automatic titles and other background helper calls. Details link to the balance usage records, which determine all consumption.
 
 A running turn or unconfirmed bill shows Settling; missing receipts and unavailable reads show Unavailable, without a fabricated zero. Reads refresh on turn completion and manual refresh; pending receipts get at most three follow-up reads. Account changes, logout and closing the control abort reads and discard late results. The shared account snapshot’s in-memory epoch changes on identity transitions, including signing back into the same account, but stays stable during ordinary balance refreshes.
 

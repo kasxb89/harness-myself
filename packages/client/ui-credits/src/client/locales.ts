@@ -5,17 +5,17 @@ export const NS = 'credits'
 
 /** Simplified Chinese copy for Credits pages and their navigation entries. */
 export const zh = {
-  'chatUsage.session': '当前会话模型积分',
-  'chatUsage.turn': '本轮模型积分',
+  'chatUsage.session': '当前会话回复积分',
+  'chatUsage.turn': '本轮回复积分',
   'chatUsage.points': '{points} 积分',
   'chatUsage.smallPoints': '少于 0.000001 积分',
   'chatUsage.pending': '结算中',
   'chatUsage.unavailable': '暂不可用',
-  'chatUsage.details': '查看模型积分详情',
+  'chatUsage.details': '查看回复积分详情',
   'chatUsage.close': '关闭积分详情',
   'chatUsage.refresh': '刷新积分',
   'chatUsage.allUsage': '全部消费看余额使用明细',
-  'chatUsage.scope': '仅统计本会话的聊天模型请求，不含图片、视频、独立 AI 帮写或子会话',
+  'chatUsage.scope': '仅统计主会话已记录的回复模型请求；不含图片、视频、独立 AI 帮写、子会话、上下文整理及自动标题等后台辅助调用。全部消费以余额使用明细为准。',
   'chatUsage.requests': '已结算 {settled} / {total} 次模型请求',
   'chatUsage.pendingHint': '模型调用或账单仍在结算，请稍后刷新',
   'chatUsage.unavailableHint': '暂未取得可核对的模型账单，请稍后刷新',
@@ -175,17 +175,17 @@ export const zh = {
 
 /** English copy for every Credits translation key. */
 export const en: Record<keyof typeof zh, string> = {
-  'chatUsage.session': 'Current chat model credits',
-  'chatUsage.turn': 'This turn’s model credits',
+  'chatUsage.session': 'Current chat reply credits',
+  'chatUsage.turn': 'This turn’s reply credits',
   'chatUsage.points': '{points} credits',
   'chatUsage.smallPoints': 'Less than 0.000001 credits',
   'chatUsage.pending': 'Settling',
   'chatUsage.unavailable': 'Unavailable',
-  'chatUsage.details': 'View model credit details',
+  'chatUsage.details': 'View reply credit details',
   'chatUsage.close': 'Close credit details',
   'chatUsage.refresh': 'Refresh credits',
   'chatUsage.allUsage': 'View all charges in balance usage',
-  'chatUsage.scope': 'Only chat-model requests in this conversation. Images, videos, separate AI writing and subchats are excluded.',
+  'chatUsage.scope': 'Only recorded reply-model requests in the main conversation are counted. Images, videos, separate AI writing, subchats, context compaction, automatic titles and other background helper calls are excluded. Balance usage records determine all consumption.',
   'chatUsage.requests': '{settled} / {total} model requests settled',
   'chatUsage.pendingHint': 'Model requests or bills are still settling. Refresh shortly.',
   'chatUsage.unavailableHint': 'No verifiable model bill is available yet. Refresh later.',
