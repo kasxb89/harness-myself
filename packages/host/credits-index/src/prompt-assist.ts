@@ -163,8 +163,14 @@ interface PromptAssistDiagnostic {
   readonly stage: 'catalog' | 'completion'
   readonly status?: number
   readonly requestId?: string
+  readonly finishReason?: 'stop' | 'length' | 'content_filter' | 'tool_calls' | 'function_call'
+  readonly contentChars?: number
+  readonly reasoningChars?: number
   readonly error?: Readonly<Record<string, string>>
 }
+
+// These DeepSeek chat identifiers implement the documented thinking.type switch.
+const DIRECT_DRAFT_MODELS = new Set(['deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-pro'])
 
 function responseMetadata(response: Response, stage: PromptAssistDiagnostic['stage']): PromptAssistDiagnostic {
   const requestId = response.headers.get('x-oneapi-request-id')
@@ -224,6 +230,7 @@ async function boundedJson(response: Response): Promise<unknown> {
 export async function assistPrompt(options: PromptAssistOptions): Promise<PromptAssistResult> {
   const { input } = options
   const { model } = options.selection
+  const thinking = DIRECT_DRAFT_MODELS.has(model) ? { type: 'disabled' } : undefined
   const timeout = AbortSignal.timeout(options.timeoutMs)
   const signal = AbortSignal.any([options.signal, timeout])
   const aborted = (): PromptAssistFailure => promptAssistFailure(timeout.aborted
@@ -291,7 +298,7 @@ export async function assistPrompt(options: PromptAssistOptions): Promise<Prompt
     await writeFile(join(requestDirectory, 'request.json'), `${JSON.stringify({
       schema: 'zhishu.prompt-assist/v1', createdAt: new Date().toISOString(), accountId: options.accountId,
       sessionId: options.sessionId, provider: options.selection.provider, reasoningEffort: options.selection.reasoningEffort,
-      model, stream: false, max_tokens: options.maxTokens, system, userText,
+      model, stream: false, max_tokens: options.maxTokens, thinking, system, userText,
       references: references.map(({ assetId, filename, mediaType, sha256, file }) => ({ assetId, filename, mediaType, sha256, file })),
     }, null, 2)}\n`, { mode: 0o600, flag: 'wx' })
   } catch (error) {
@@ -324,7 +331,7 @@ export async function assistPrompt(options: PromptAssistOptions): Promise<Prompt
         completionDispatched = true
         const completion = await fetch(apiUrl(options.baseUrl, '/v1/chat/completions'), {
           method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, signal, redirect: 'error',
-          body: JSON.stringify({ model, messages, stream: false, max_tokens: options.maxTokens }),
+          body: JSON.stringify({ model, messages, stream: false, max_tokens: options.maxTokens, thinking }),
         })
         diagnostic = responseMetadata(completion, 'completion')
         if (!completion.ok) {
@@ -335,6 +342,15 @@ export async function assistPrompt(options: PromptAssistOptions): Promise<Prompt
           const choice = record(Array.isArray(body?.choices) ? body.choices[0] : null)
           const message = record(choice?.message)
           const prompt = typeof message?.content === 'string' ? message.content.trim() : ''
+          const finishReason = choice?.finish_reason
+          diagnostic = { ...diagnostic,
+            ...finishReason === 'stop' || finishReason === 'length' || finishReason === 'content_filter'
+              || finishReason === 'tool_calls' || finishReason === 'function_call' ? { finishReason } : {},
+            ...message === null ? {} : {
+              contentChars: prompt.length,
+              reasoningChars: typeof message.reasoning_content === 'string' ? message.reasoning_content.length : 0,
+            },
+          }
           outcome = prompt === '' || prompt.length > 7000 || prompt.includes('```') || prompt.includes(options.key) || choice?.finish_reason === 'length'
             ? promptAssistFailure('PROMPT_ASSIST_INVALID_RESPONSE')
             : { ok: true, payload: { prompt, model } }

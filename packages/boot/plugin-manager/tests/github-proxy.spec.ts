@@ -1,6 +1,8 @@
 /** Real HTTP and CONNECT requests keep third-party downloads out of the GitHub-only upstream. */
 import { once } from 'node:events'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { createServer, request, type Server as HttpServer, type IncomingMessage } from 'node:http'
+import { createRequire } from 'node:module'
 import type { Socket } from 'node:net'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -14,6 +16,47 @@ import { parseInstallSpec } from '../src/install-spec.ts'
 import { readPnpmProxyEnvironment } from '../src/pnpm-proxy-settings.ts'
 
 const DIRECT_ENV = { http_proxy: '', HTTP_PROXY: '', https_proxy: '', HTTPS_PROXY: '', all_proxy: '', ALL_PROXY: '', no_proxy: '', NO_PROXY: '' }
+
+it('provides the pnpm reader peers when production profiles disable automatic peer installation', () => {
+  interface Manifest {
+    name: string
+    dependencies?: Record<string, string>
+    peerDependencies?: Record<string, string>
+    peerDependenciesMeta?: Record<string, { optional?: boolean }>
+  }
+  const manager = fileURLToPath(new URL('../package.json', import.meta.url))
+  const provided = new Set<string>()
+  const required: { consumer: string; peer: string }[] = []
+  const visited = new Set<string>()
+  const packageManifest = (from: string, name: string): string => {
+    for (const directory of createRequire(from).resolve.paths(name) ?? []) {
+      const path = join(directory, name, 'package.json')
+      if (existsSync(path)) return realpathSync(path)
+    }
+    throw new Error(`No manifest for runtime dependency ${name}`)
+  }
+  const visit = (path: string): void => {
+    if (visited.has(path)) return
+    visited.add(path)
+    const manifest = JSON.parse(readFileSync(path, 'utf8')) as Manifest
+    provided.add(manifest.name)
+    for (const peer of Object.keys(manifest.peerDependencies ?? {})) {
+      if (manifest.peerDependenciesMeta?.[peer]?.optional !== true) required.push({ consumer: manifest.name, peer })
+    }
+    for (const [name, spec] of Object.entries(manifest.dependencies ?? {})) {
+      if (/^(?:workspace|file|link):/u.test(spec)) continue
+      provided.add(name)
+      visit(packageManifest(path, name))
+    }
+  }
+  // The manager's optional Harness services are injected; only external runtime packages need this peer check.
+  const manifest = JSON.parse(readFileSync(manager, 'utf8')) as Manifest
+  for (const [name, spec] of Object.entries(manifest.dependencies ?? {})) {
+    if (!name.startsWith('@pnpm/') || /^(?:workspace|file|link):/u.test(spec)) continue
+    visit(packageManifest(manager, name))
+  }
+  expect(required.filter(({ peer }) => !provided.has(peer))).toEqual([])
+})
 
 function childCommands(cwd: string, env: Readonly<Record<string, string>>) {
   const controller = new AbortController()

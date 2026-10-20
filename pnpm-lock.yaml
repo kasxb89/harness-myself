@@ -1978,6 +1978,9 @@ importers:
       '@pnpm/config.reader':
         specifier: 1101.15.1
         version: 1101.15.1(@pnpm/logger@1100.0.0)
+      '@pnpm/logger':
+        specifier: 1100.0.0
+        version: 1100.0.0
       '@pnpm/workspace.root-finder':
         specifier: 1100.1.3
         version: 1100.1.3

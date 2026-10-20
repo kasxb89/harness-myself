@@ -23,6 +23,7 @@ let mode = 'success'
 let chatSelection: ModelSelection | null = null
 let duringCompletion: (() => Promise<void>) | null = null
 const defaultSelection: ModelSelection = { provider: 'product', model: 'text-assistant' }
+const deepseekDraftModels = ['deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-pro']
 const calls: { path: string; authorization: string | undefined; body: Record<string, unknown> | null }[] = []
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lX8AAAAASUVORK5CYII=', 'base64')
 const timingConflictDraft = '时长约束需确认：妈妈的逐字台词无法在 0–4 秒窗口内自然说完。\n选项：保留原句并延长时长，或确认后精简台词。\n当前稿待确认，不提交生成。'
@@ -83,6 +84,7 @@ async function boot(options: {
         response.end(JSON.stringify({ data: mode === 'catalog-missing' ? [] : [
           { id: 'text-assistant', supported_endpoint_types: mode === 'video-model' ? ['openai-video'] : ['chat-completion'] },
           { id: 'vision-assistant', supported_endpoint_types: mode === 'media-model' ? ['image-generation'] : ['chat-completion'] },
+          ...deepseekDraftModels.map(id => ({ id, supported_endpoint_types: ['chat-completion'] })),
         ] }))
         return
       }
@@ -107,7 +109,12 @@ async function boot(options: {
       const content = mode === 'oversized' ? 'x'.repeat(70_000) : mode === 'long-prompt' ? 'x'.repeat(7001)
         : mode === 'credential-echo' ? 'account-key' : mode === 'empty' ? ''
           : mode === 'timing-conflict' ? timingConflictDraft : '柔和晨光中的陶瓷茶杯，近景构图，简洁背景。'
-      response.end(JSON.stringify({ choices: [{ finish_reason: mode === 'truncated' ? 'length' : 'stop', message: { role: 'assistant', content } }] }))
+      const thinkingTruncated = mode === 'deepseek-thinking-budget' && object(body?.thinking)?.type !== 'disabled'
+      const reasoningContent = mode === 'reasoning-truncated' || thinkingTruncated ? 'private reasoning '.repeat(1000) : undefined
+      response.end(JSON.stringify({ choices: [{
+        finish_reason: mode === 'truncated' || mode === 'reasoning-truncated' || thinkingTruncated ? 'length' : 'stop',
+        message: { role: 'assistant', content, reasoning_content: reasoningContent },
+      }] }))
     })().catch(() => { response.destroy() })
   })
   await new Promise<void>(resolve => source?.listen(0, '127.0.0.1', resolve))
@@ -149,12 +156,13 @@ async function boot(options: {
       ctx.provide('sessionController', {
         modelCatalog: async () => ({ default: defaultSelection, groups: [{ id: 'product', models: [
           { id: 'text-assistant', name: 'Text' }, { id: 'vision-assistant', name: 'Vision' }, { id: 'MiniMax-H3', name: 'H3' },
+          ...deepseekDraftModels.map(id => ({ id, name: id })),
         ] }], routableProviders: ['product'], failures: [] }),
         projections: async () => ({ kind: 'sequenced', asOfSeq: 0, values: { modelSelection: { lastUsed: chatSelection, next: chatSelection } } }),
       })
       ctx.provide('agentDefaultModel', { currentSelection: () => defaultSelection })
       ctx.provide('llm', { resolveModelInfo: async (_provider: string, model: string) => ({
-        inputModalities: model === 'vision-assistant' ? ['text', 'image'] : ['text'],
+        inputModalities: model === 'vision-assistant' || deepseekDraftModels.includes(model) ? ['text', 'image'] : ['text'],
       }) })
     } }],
   ])
@@ -202,6 +210,7 @@ describe('prompt assistance through the real Loader and account-owned HTTP route
     const completion = calls[1]?.body
     expect(completion).toMatchObject({ model: 'vision-assistant', stream: false, max_tokens: 8192 })
     expect(completion).not.toHaveProperty('reasoning_effort')
+    expect(completion).not.toHaveProperty('thinking')
     const messages: unknown[] = Array.isArray(completion?.messages) ? completion.messages : []
     expect(messages).toHaveLength(2)
     const system = object(messages[0])?.content
@@ -246,6 +255,47 @@ describe('prompt assistance through the real Loader and account-owned HTTP route
     const entry = (await readdir(directory)).find(name => name !== 'references')
     expect(JSON.parse(await readFile(join(directory, entry ?? '', 'request.json'), 'utf8')))
       .toMatchObject({ provider: 'product', model: 'vision-assistant', sessionId: 'test-session', reasoningEffort: 'medium' })
+  })
+
+  it.each(deepseekDraftModels)('writes directly with %s without spending the draft budget on internal thinking', async (model) => {
+    const { base, stateDir } = await boot({ prefix: '/harness' })
+    mode = 'deepseek-thinking-budget'
+    chatSelection = { provider: 'product', model, reasoningEffort: 'high' }
+    const references = ['ma_one', 'ma_two', 'ma_three', 'ma_four']
+    for (const assetId of references.slice(1)) {
+      await writeFile(join(stateDir, 'refs', `${assetId}.png`), png)
+      await writeFile(join(stateDir, 'refs', `${assetId}.png.json`), JSON.stringify({ mediaType: 'image/png' }))
+    }
+    expect(await post(base, { ...input(), kind: 'video', references, generation: { model: 'MiniMax-H3' } }))
+      .toMatchObject({ ok: true, payload: { model } })
+    const completions = calls.filter(call => call.path === '/harness/v1/chat/completions')
+    expect(completions).toHaveLength(1)
+    expect(completions[0]?.body).toMatchObject({ model, max_tokens: 8192, thinking: { type: 'disabled' } })
+    const messages = completions[0]?.body?.messages
+    const content = object(Array.isArray(messages) ? messages[1] : null)?.content
+    expect(Array.isArray(content) ? content.filter(item => object(item)?.type === 'image_url') : []).toHaveLength(4)
+    expect(completions[0]?.body).not.toHaveProperty('reasoning_effort')
+    expect(chatSelection).toEqual({ provider: 'product', model, reasoningEffort: 'high' })
+    const directory = join(stateDir, 'prompt-assists')
+    const entry = (await readdir(directory)).find(name => name !== 'references')
+    expect(JSON.parse(await readFile(join(directory, entry ?? '', 'request.json'), 'utf8')))
+      .toMatchObject({ model, reasoningEffort: 'high', thinking: { type: 'disabled' } })
+  })
+
+  it('retains only completion lengths and finish reason when thinking exhausts the response budget', async () => {
+    const { base, stateDir } = await boot()
+    mode = 'reasoning-truncated'
+    const result = await post(base, input())
+    expect(result).toMatchObject({ ok: false, code: 'PROMPT_ASSIST_INVALID_RESPONSE' })
+    expect(result).not.toHaveProperty('diagnostic')
+    const directory = join(stateDir, 'prompt-assists')
+    const entry = (await readdir(directory)).find(name => name !== 'references')
+    const persisted = await readFile(join(directory, entry ?? '', 'outcome.json'), 'utf8')
+    expect(JSON.parse(persisted)).toMatchObject({ completionDispatched: true, diagnostic: {
+      stage: 'completion', status: 200, finishReason: 'length', contentChars: 21, reasoningChars: 18000,
+    } })
+    expect(persisted).not.toContain('private reasoning')
+    expect(calls.filter(call => call.path === '/v1/chat/completions')).toHaveLength(1)
   })
 
   it('preserves a selected H3 model and asks for a chat model without sending an invalid chat request', async () => {
