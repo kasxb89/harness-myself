@@ -8,7 +8,9 @@ describe('internal image capability', () => {
       { model_name: 'wanx2.1-t2i-turbo', supported_endpoint_types: ['image-generation'] },
     ], null)
     expect(catalog).toMatchObject([
-      { id: 'yunshu-internal-gpt-image-2', route: '/toapis/v1/images/generations', params: { maxCount: 1, maxEdits: 6 } },
+      { id: 'yunshu-internal-gpt-image-2', route: '/toapis/v1/images/generations', params: {
+        maxCount: 1, maxEdits: 6, sizes: [], qualities: [], backgrounds: [], formats: [], moderations: [], seed: false,
+      } },
       { id: 'wanx2.1-t2i-turbo', params: { maxEdits: 0 } },
     ])
   })

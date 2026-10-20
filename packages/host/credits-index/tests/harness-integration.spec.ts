@@ -932,17 +932,19 @@ describe('deployed Harness API through the real product Loader', () => {
     } } })))
     const references = sources.map(asset => String(asset.assetId))
     const prompt = '保留妈妈和孩子的外貌，换成温暖的客厅'
+    const outputKnobs = { size: '1024x1024', quality: 'high', background: 'transparent', format: 'webp', compression: 75,
+      moderation: 'low', seed: 42, output_format: 'webp', output_compression: 75 }
     let saved: string
     if (entry === 'panel') {
       context!.sessions.create(SessionId('internal-image-chat'), { meta: { cwd: stateDir } })
       const result = await post(base, '/api/image/generate', {
-        session_id: 'internal-image-chat', account_id: '7', model, prompt, references,
+        session_id: 'internal-image-chat', account_id: '7', model, prompt, references, ...outputKnobs,
       }, cookie)
       expect(result).toMatchObject({ ok: true, mode: 'edit' })
       saved = String(object(result.payload).path)
     } else {
       const result = object((await context!.tools.execute({
-        name: 'generate_image', arguments: { model, prompt, reference_images: references },
+        name: 'generate_image', arguments: { model, prompt, reference_images: references, ...outputKnobs },
         agent: videoAgent(stateDir), callId: ToolCallId('internal-image'), signal: new AbortController().signal,
       })).value)
       expect(result).toMatchObject({ status: 'succeeded', model })

@@ -93,7 +93,7 @@ Host 先使用 `/api/user/self` 核对产品会话中的账号，再通过 `/api
 
 `generate_image` 可直接编辑当前聊天用户附件中的图片，使用准确的附件 id 或投影后的只读路径，无需先复制到工作区。附件服务验证已保存字节；其他聊天图片及任意附件路径不授予读取权限。可读工作区图片仍执行通常的路径包含和文件检查。Host 将这些有界图片物化为私有 `ma_` 引用，再通过当前账号的中转 key，在完整配置的 API 前缀下向 `/v1/images/edits` 发送带 `image[]` 的 multipart 编辑请求。所选图片模型必须声明编辑能力；仅支持文生图的模型不会被静默开启编辑。
 
-`yunshu-internal-gpt-image-2` 使用聊天与 AI 创作共用的独立任务合约。Host 在上传任何字节前验证最多六张已授权的 PNG/JPEG/WebP 参考图，每张不超过 10 MiB。随后通过已鉴权的 `POST /v1/uploads/images`，用 multipart 的 `model` 和 `file` 逐张上传，再把经过验证、位于 `files.toapis.cn/uploads/` 或 `files.toapis.com/uploads/` 下的 HTTPS 回执 URL 作为 `reference_images` 提交给 `/toapis/v1/images/generations`。回执要求 MIME 与大小匹配、id 非空，URL 不含凭据、查询或片段。两条路径都保留部署前缀，只使用当前账号的中转 key。文件无效、上传失败或回执无效时，提示原始文件名并在生成前停止。上传和生成均不自动重提；普通 OpenAI 编辑保留原 multipart 路由。
+`yunshu-internal-gpt-image-2` 使用聊天与 AI 创作共用的独立任务合约。Host 在上传任何字节前验证最多六张已授权的 PNG/JPEG/WebP 参考图，每张不超过 10 MiB。随后通过已鉴权的 `POST /v1/uploads/images`，用 multipart 的 `model` 和 `file` 逐张上传，再把经过验证、位于 `files.toapis.cn/uploads/` 或 `files.toapis.com/uploads/` 下的 HTTPS 回执 URL 作为 `reference_images` 提交给 `/toapis/v1/images/generations`。生成仅携带 `model`、`prompt`、`n: 1` 和可选的 `reference_images`；输出设置由服务端决定，不透传像素尺寸或其他 OpenAI 参数。回执要求 MIME 与大小匹配、id 非空，URL 不含凭据、查询或片段。两条路径都保留部署前缀，只使用当前账号的中转 key。文件无效、上传失败或回执无效时，提示原始文件名并在生成前停止。上传和生成均不自动重提；普通 OpenAI 编辑保留原 multipart 路由。
 
 修改已保存项目之前，`get_creation_plan(plan_id)` 返回有界的完整规划字段，字段名称与 `update_creation_plan` 一致。读取同样校验账号、聊天及工作区归属，不包含执行请求或登录数据，不改变状态，也不请求上游。局部修改应先以这份权威记录保留其他人物、素材和镜头。
 

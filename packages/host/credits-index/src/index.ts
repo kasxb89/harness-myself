@@ -1288,34 +1288,35 @@ export function apply(ctx: Context, config: Config): void {
     }
     const params = capability.model.params as ImageParams
     const model = capability.model.id
-    const size = readString(body, 'size')
+    const internalImage = model === 'yunshu-internal-gpt-image-2'
+    const size = internalImage ? null : readString(body, 'size')
     if (size !== null && params.sizes.length > 0 && !params.sizes.includes(size)) {
       return { ok: false, code: 'SIZE_NOT_SUPPORTED', message: `${model} 不支持 ${size}，可选：${params.sizes.join('、')}` }
     }
-    const quality = readString(body, 'quality')
+    const quality = internalImage ? null : readString(body, 'quality')
     if (quality !== null && params.qualities.length > 0 && !params.qualities.includes(quality)) {
       return { ok: false, code: 'QUALITY_NOT_SUPPORTED', message: `${model} 不支持 ${quality}，可选：${params.qualities.join('、')}` }
     }
     // Every optional field below is "not sent" unless the caller chose one, so
     // a model that has never heard of `background` is never asked about it.
-    const background = readString(body, 'background')
+    const background = internalImage ? null : readString(body, 'background')
     if (background !== null && params.backgrounds.length > 0 && !params.backgrounds.includes(background)) {
       return { ok: false, code: 'BACKGROUND_NOT_SUPPORTED', message: `${model} 不支持背景 ${background}，可选：${params.backgrounds.join('、')}` }
     }
-    const format = readString(body, 'format')
+    const format = internalImage ? null : readString(body, 'format')
     if (format !== null && params.formats.length > 0 && !params.formats.includes(format)) {
       return { ok: false, code: 'FORMAT_NOT_SUPPORTED', message: `${model} 不支持输出格式 ${format}，可选：${params.formats.join('、')}` }
     }
-    const moderation = readString(body, 'moderation')
+    const moderation = internalImage ? null : readString(body, 'moderation')
     if (moderation !== null && params.moderations.length > 0 && !params.moderations.includes(moderation)) {
       return { ok: false, code: 'MODERATION_NOT_SUPPORTED', message: `${model} 不支持审核级别 ${moderation}，可选：${params.moderations.join('、')}` }
     }
-    const rawCompression = typeof body.compression === 'number' ? Math.round(body.compression) : null
+    const rawCompression = !internalImage && typeof body.compression === 'number' ? Math.round(body.compression) : null
     if (rawCompression !== null && (rawCompression < 0 || rawCompression > 100)) {
       return { ok: false, code: 'COMPRESSION_NOT_SUPPORTED', message: '压缩质量需要在 0–100 之间' }
     }
     const compression = rawCompression !== null && format !== null && format !== 'png' ? rawCompression : null
-    const seed = typeof body.seed === 'number' && Number.isInteger(body.seed) ? body.seed : null
+    const seed = !internalImage && typeof body.seed === 'number' && Number.isInteger(body.seed) ? body.seed : null
     if (seed !== null && !params.seed) {
       return { ok: false, code: 'SEED_NOT_SUPPORTED', message: `${model} 不支持随机种子` }
     }
@@ -1324,7 +1325,6 @@ export function apply(ctx: Context, config: Config): void {
       return { ok: false, code: 'COUNT_NOT_SUPPORTED', message: `${model} 一次可出 1–${String(params.maxCount)} 张` }
     }
     const references = referenceIds(body.references)
-    const internalImage = model === 'yunshu-internal-gpt-image-2'
     if (internalImage && body.references !== undefined && (!Array.isArray(body.references)
       || references.length !== body.references.length)) {
       return { ok: false, model, code: 'IMAGE_REFERENCE_INVALID', message: '参考图编号无效，请重新添加图片；尚未提交生成。' }
@@ -1432,13 +1432,9 @@ export function apply(ctx: Context, config: Config): void {
         const submitted = await apiFetch(capability.model.route, {
           method: 'POST',
           headers,
-          body: JSON.stringify({
-            model,
-            prompt,
-            n: count,
-            ...extras,
-            ...referenceUrls.length === 0 ? {} : { reference_images: referenceUrls },
-          }),
+          body: JSON.stringify(internalImage
+            ? { model, prompt, n: 1, ...referenceUrls.length === 0 ? {} : { reference_images: referenceUrls } }
+            : { model, prompt, n: count, ...extras }),
           signal: AbortSignal.any([signal, AbortSignal.timeout(Math.max(resolved.timeoutMs, 60_000))]),
         })
         const submittedText = await submitted.text()
@@ -3412,7 +3408,7 @@ export function apply(ctx: Context, config: Config): void {
       asset_id: { type: 'string', description: 'Exact image asset id in plan_id, including a video plan. Mutually exclusive with shot_id. Creates or reconstructs this source asset, not a finished shot.' },
       prompt: { type: 'string', required: true, description: 'What the image should show.' },
       model: { type: 'string', description: 'Optional image model id such as gpt-image-2. Defaults to the first image model the deployment serves for this account.' },
-      size: { type: 'string', description: 'Optional output size such as 1024x1024 or auto. A value the chosen model does not support is refused with that model’s own menu.' },
+      size: { type: 'string', description: 'Optional output size such as 1024x1024 or auto. A value the chosen model does not support is refused with that model’s own menu. For yunshu-internal-gpt-image-2, omit pixel size; the server controls output settings.' },
       count: { type: 'number', description: 'How many images to render, within the model’s limit (usually 1–4).' },
       reference_images: { type: 'array', items: { type: 'string' }, description: 'Reference images for editing: current-chat user image attachment ids or their exact read-only paths, readable PNG/JPEG/WebP files inside the current workspace, uploaded ma_ ids, or real generated image output ids/paths owned by the same explicit plan_id. Other-chat attachments, unrelated local paths and URLs are refused.' },
     },

@@ -38,7 +38,7 @@ exports[`deployed Harness API through the real product Loader > edits current-ch
         "type": "string",
       },
       "size": {
-        "description": "Optional output size such as 1024x1024 or auto. A value the chosen model does not support is refused with that model’s own menu.",
+        "description": "Optional output size such as 1024x1024 or auto. A value the chosen model does not support is refused with that model’s own menu. For yunshu-internal-gpt-image-2, omit pixel size; the server controls output settings.",
         "type": "string",
       },
     },
