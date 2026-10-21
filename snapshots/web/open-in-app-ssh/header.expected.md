@@ -2,6 +2,3 @@
   - navigation "Session hierarchy": Use the read tool twice
   - button "More actions"
   - button "Open right sidebar"
-  - tablist:
-    - tab "Chat" [selected]
-    - tab "Trajectory"

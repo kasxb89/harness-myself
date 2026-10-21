@@ -7,8 +7,8 @@
 - status: Completed
 - button "Completed in {{duration}}" [expanded]
 - button "Called tools" [expanded]
-- text: Stopped
-- button "Tool call The original image task was accepted, but local waiting or saving stopped. Query the original task to save its result; do not generate again."
+- text: Running
+- button "Tool call Generating or waiting to save. Check the original task’s progress without generating again."
 - button "Tool call query_image_task · cp_{{uuid}}" [expanded]
 - text: "IN { \"plan_id\": \"cp_{{uuid}}\", \"operation_id\": \"op_{{uuid}}\" } OUT {\"status\":\"succeeded\",\"submission_state\":\"completed\",\"plan_id\":\"cp_{{uuid}}\",\"operation_id\":\"op_{{uuid}}\",\"task_id\":\"snapshot-original-task\",\"request_id\":\"snapshot-original-request\",\"model\":\"yunshu-internal-gpt-image-2\",\"path\":\"{{cwd}}/retained-image.png\",\"paths\":[\"{{cwd}}/retained-image.png\"],\"message\":\"原任务图片已保存。\"}"
 - paragraph: The original task completed and its image is saved. No additional generation was submitted.

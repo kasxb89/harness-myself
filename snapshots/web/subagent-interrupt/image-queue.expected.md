@@ -6,9 +6,6 @@
   - text: Standard mode
   - button "More actions"
   - button "Open right sidebar"
-  - tablist:
-    - tab "Chat" [selected]
-    - tab "Trajectory"
 - navigation "Turn navigation":
   - button "Jump to turn 1"
   - button "Jump to turn 2"
@@ -25,8 +22,8 @@
 - text: {{clock}} Keep working until I stop you again. {{clock}}
 - button "Copy"
 - paragraph: partial
-- status: Deep diving
-- text: Deep diving for {{duration}} ···
+- status: Working
+- text: Working for {{duration}} ···
 - button "3 queued messages" [expanded]
 - list:
   - listitem:
@@ -47,6 +44,7 @@
 - textbox "Cmd/Ctrl+Enter steers all queued messages"
 - button "Add files or run commands"
 - 'button "Access mode, current: Custom"': Custom
+- button "Voice input"
 - button "Stop generating"
 - button "Send message" [disabled]
 - button "1 turns 1 steps"

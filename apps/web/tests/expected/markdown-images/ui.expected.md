@@ -2,9 +2,6 @@
   - navigation "Session hierarchy": Markdown image policy
   - button "More actions"
   - button "Open right sidebar"
-  - tablist:
-    - tab "Chat" [selected]
-    - tab "Trajectory"
 - text: Show the Markdown image policy. {{clock}}
 - button "Copy"
 - status: Completed
@@ -46,5 +43,6 @@
 - button "Add files or run commands"
 - 'button "Access mode, current: Workspace Write"': Workspace Write
 - button "Select model, current DeepSeek-V4-Flash": DeepSeek-V4-Flash
+- button "Voice input"
 - button "Send message" [disabled]
 - button "1 turns 1 steps"

@@ -21,6 +21,7 @@
 - button "Add files or run commands"
 - 'button "Access mode, current: Auto review"': Auto review
 - button "Select model, current DeepSeek-V4-Flash": DeepSeek-V4-Flash
+- button "Voice input"
 - button "Send message" [disabled]
 - button "1 turns 2 steps"
 
@@ -51,6 +52,7 @@
 - button "Add files or run commands"
 - 'button "Access mode, current: Auto review"': Auto review
 - button "Select model, current DeepSeek-V4-Flash": DeepSeek-V4-Flash
+- button "Voice input"
 - button "Send message" [disabled]
 - button "1 turns 2 steps"
 
@@ -108,5 +110,6 @@
 - button "Add files or run commands"
 - 'button "Access mode, current: Auto review"': Auto review
 - button "Select model, current DeepSeek-V4-Flash": DeepSeek-V4-Flash
+- button "Voice input"
 - button "Send message" [disabled]
 - button "1 turns 2 steps"

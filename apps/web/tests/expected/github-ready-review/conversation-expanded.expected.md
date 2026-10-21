@@ -13,9 +13,6 @@
   - text: Standard mode
   - button "More actions"
   - button "Open right sidebar"
-  - tablist:
-    - tab "Chat" [selected]
-    - tab "Trajectory"
 - button "GitHub event received {{clock}}":
   - text: GitHub event received
   - time: {{clock}}
@@ -31,5 +28,6 @@
 - button "Add files or run commands"
 - 'button "Access mode, current: Read Only"': Read Only
 - button "Select model, current github-webhook-review-test/reply": github-webhook-review-test/reply
+- button "Voice input"
 - button "Send message" [disabled]
 - button "1 turns 1 steps"

@@ -2,9 +2,6 @@
   - navigation "Session hierarchy": Use only Cordis tools. First
   - button "More actions"
   - button "Open right sidebar"
-  - tablist:
-    - tab "Chat" [selected]
-    - tab "Trajectory"
 - navigation "Turn navigation":
   - button "Jump to turn 1"
   - button "Jump to turn 2"
@@ -27,11 +24,8 @@
   - button "Copy"
   - code: "return { name: \"snapshot-noop\", apply(ctx) {} }"
 - text: Result Defined snap-1/pkg-1 (snapshot noop); it is not running yet. Use cordis_run to activate this Package. Run controls live in the Cordis panel above Settings
-- button "Inspect"
 - button "Think The Host returned snap-1/pkg-1, so I will request its first activation."
-- text: Run Cordis Plugin snap-1 · pkg-1 Ready
-- button "Inspect"
-- text: snap-1/pkg-1 is awaiting user approval (run-1).
+- text: Run Cordis Plugin snap-1 · pkg-1 Ready snap-1/pkg-1 is awaiting user approval (run-1).
 - button "Think The activation request has been submitted, so I will return the requested readiness marker."
 - paragraph: CORDIS_UI_READY
 - button "Copy"
@@ -54,9 +48,7 @@
 - status: Completed
 - button "Completed in {{duration}}" [expanded]
 - button "Called tools" [expanded]
-- text: Stop Cordis Plugin snap-1
-- button "Inspect"
-- text: Dynamic Plugin snap-1 is stopped; its definition and versions remain.
+- text: Stop Cordis Plugin snap-1 Dynamic Plugin snap-1 is stopped; its definition and versions remain.
 - paragraph: CORDIS_UI_DONE
 - button "Copy"
 - button "Good response"
@@ -68,7 +60,7 @@
 - button "Add files or run commands"
 - 'button "Access mode, current: Workspace Write"': Workspace Write
 - button "Select model, current DeepSeek-V4-Flash": DeepSeek-V4-Flash
+- button "Voice input"
 - button "Send message" [disabled]
 - button "3 turns 7 steps"
-- button "66.8K tok · Cache hit 77%": 66.8K tokCache hit 77%
 - button "0% of context used": 0%

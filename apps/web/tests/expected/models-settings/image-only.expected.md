@@ -5,6 +5,9 @@
     - button "模型"
     - button "内置插件"
     - button "Agent 预设"
+    - button "IM机器人"
+    - button "插件市场"
+    - button "皮肤市场"
   - button "打开配置文件"
   - button "关闭"
   - heading "模型" [level=2]
@@ -15,6 +18,10 @@
       - img "API 密钥已配置"
       - button "编辑 minimax-cn": 编辑
       - button "删除 minimax-cn": 删除
+    - listitem:
+      - text: 云枢 自定义
+      - img "API 密钥缺失"
+      - button "编辑 云枢 (yunshu-local)": 编辑
     - listitem:
       - text: Acme 网关 自定义
       - button "编辑 Acme 网关 (acme-gateway)": 编辑

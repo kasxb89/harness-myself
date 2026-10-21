@@ -2,9 +2,6 @@
   - navigation "Session hierarchy": Clickable links gallery
   - button "More actions"
   - button "Open right sidebar"
-  - tablist:
-    - tab "Chat" [selected]
-    - tab "Trajectory"
 - text: "Assemble the link gallery: write the report and styles, inspect the sources, and summarize. {{clock}}"
 - button "Copy"
 - status: Completed
@@ -38,11 +35,8 @@
 - button "Wrap lines"
 - button "Copy"
 - text: "src/tokens.css - --inline-code: #EBEEF2; + --inline-code: #F5F5F5;"
-- button "Inspect"
 - button "Tool call str_replace_editor · create" [expanded]
-- text: "IN { \"command\": \"create\", \"path\": \"docs/press.md\", \"file_text\": \"# Press kit\\n\" } OUT Created docs/press.md"
-- button "Inspect"
-- text: Failed
+- text: "IN { \"command\": \"create\", \"path\": \"docs/press.md\", \"file_text\": \"# Press kit\\n\" } OUT Created docs/press.md Failed"
 - 'button "Write permission denied: c/broken.css"'
 - button "Read docs/guide.md" [expanded]:
   - text: Read
@@ -53,7 +47,6 @@
 - text: "# Link style guide guide line 2 guide line 3 guide line 4"
 - button "Expand 4 more lines": … 4 more lines
 - text: guide line 9 guide line 10 guide line 11 guide line 12
-- button "Inspect"
 - button "Grep linkColor" [expanded]
 - text: 9 matches · 3 files
 - button "Copy"
@@ -62,14 +55,12 @@
 - button "Expand 4 more result lines": … 4 more lines
 - button "src/tokens.css 3" [expanded]
 - text: "3: color: var(--linkColor); 7: color: var(--linkColor); 11: color: var(--linkColor);"
-- button "Inspect"
 - button "Glob **/*.css"
 - button "Bash List the built site"
 - button "Failed Bash Run the lint gate" [expanded]
 - text: Failed site pnpm run lint exit code 1
 - button "Copy"
 - text: "style.css: unexpected hex literal"
-- button "Inspect"
 - button "Search clickable link styles, produced files ui" [expanded]
 - paragraph:
   - text: Unify links per
@@ -82,7 +73,6 @@
       - /url: https://docs.example.test/links
     - text: One cursor token, one focus ring.
   - listitem: Mirror spec (non-http) A non-http source renders inert.
-- button "Inspect"
 - button "Fetch https://docs.example.test/tokens" [expanded]:
   - text: Fetch
   - link "https://docs.example.test/tokens":
@@ -90,10 +80,8 @@
 - link "https://docs.example.test/tokens":
   - /url: https://docs.example.test/tokens
 - text: HTTP 200
-- button "Inspect"
 - button "Tool call design_tokens_sync · design-platform.css" [expanded]
 - text: "IN { \"source\": \"design-platform.css\", \"dryRun\": false } OUT {\"synced\":true,\"tokens\":12}"
-- button "Inspect"
 - heading "Link gallery" [level=2]
 - paragraph:
   - text: "Docs:"
@@ -161,5 +149,6 @@
 - button "Add files or run commands"
 - 'button "Access mode, current: Workspace Write"': Workspace Write
 - button "Select model, current DeepSeek-V4-Flash": DeepSeek-V4-Flash
+- button "Voice input"
 - button "Send message" [disabled]
 - button "1 turns 2 steps"

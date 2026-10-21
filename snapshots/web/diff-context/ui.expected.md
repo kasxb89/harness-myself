@@ -6,4 +6,3 @@
 - button "Wrap lines"
 - button "Copy"
 - text: config.txt - mode=DEBUG + mode=RELEASE level=info
-- button "Inspect"

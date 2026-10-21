@@ -3,17 +3,14 @@
   - text: Standard mode
   - button "More actions"
   - button "Open right sidebar"
-  - tablist:
-    - tab "Chat" [selected]
-    - tab "Trajectory"
 - text: Use the ask_user_question tool to ask me exactly one question with id "checkpoint", question "Ready to continue?", header "Checkpoint", and options labeled "Yes" and "No". After I answer, reply with one short sentence acknowledging my answer and stop. {{clock}}
 - button "Copy"
 - text: Running
 - button "Ask question waiting"
 - text: "Interjection: include the word BANANA in your final reply."
 - button "Copy"
-- status: Deep diving
-- text: Deep diving for {{duration}} ···
+- status: Working
+- text: Working for {{duration}} ···
 - region "Ready to continue?":
   - text: Checkpoint
   - heading "Ready to continue?" [level=2]

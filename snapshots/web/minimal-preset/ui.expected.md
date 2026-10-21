@@ -3,9 +3,6 @@
   - text: Minimal mode
   - button "More actions"
   - button "Open right sidebar"
-  - tablist:
-    - tab "Chat" [selected]
-    - tab "Trajectory"
 - text: "Use the bash tool to run exactly: printf 'MINIMAL_BASH_CARD_OK\\n'. Then reply exactly MINIMAL_PRESET_REQUEST_OK and stop. {{clock}}"
 - button "Copy"
 - status: Completed
@@ -13,7 +10,6 @@
 - button "Ran commands" [expanded]
 - button "Bash printf 'MINIMAL_BASH_CARD_OK\\n'" [expanded]
 - text: "IN { \"command\": \"printf 'MINIMAL_BASH_CARD_OK\\\\n'\" } OUT MINIMAL_BASH_CARD_OK [Command finished with exit code 0]"
-- button "Inspect"
 - paragraph: MINIMAL_PRESET_REQUEST_OK
 - button "Copy"
 - button "Good response"
@@ -24,7 +20,7 @@
 - button "Add files or run commands"
 - 'button "Access mode, current: Workspace Write"': Workspace Write
 - button "Select model, current DeepSeek-V4-Flash": DeepSeek-V4-Flash
+- button "Voice input"
 - button "Send message" [disabled]
-- button "1 turns 2 steps · {{throughput}} tok/s": 1 turns 2 steps{{throughput}} tok/s
-- button "28 tok · Cache hit 0%": 28 tokCache hit 0%
+- button "1 turns 2 steps"
 - button "0% of context used": 0%

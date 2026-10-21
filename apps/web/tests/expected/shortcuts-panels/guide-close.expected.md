@@ -6,4 +6,5 @@
 - button "Workspace files Browse files in this session's workspace"
 - button "New terminal Run commands in the Session workspace"
 - button "Choose shell"
+- button "Creation Characters, materials, shots and generated media for this chat"
 - button "Browser Browse web pages"

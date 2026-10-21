@@ -1,1 +1,1 @@
-- text: {{throughput}} tok/s Cache hit 98%
+- text: 3 turns 4 steps

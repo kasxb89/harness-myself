@@ -5,10 +5,13 @@
     - button "模型"
     - button "内置插件"
     - button "Agent 预设"
+    - button "IM机器人"
+    - button "插件市场"
+    - button "皮肤市场"
   - button "打开配置文件"
   - button "关闭"
   - heading "Agent 预设" [level=2]
-  - paragraph: 选择 Agent 的工具和工作方式。日常任务用「标准模式」，扩展 DSH 的能力用「创造模式」。
+  - paragraph: 选择 Agent 的工具和工作方式。日常任务用「标准模式」，扩展 云枢 的能力用「创造模式」。
   - heading "内置" [level=3]
   - list:
     - listitem:
@@ -39,9 +42,118 @@
       - 'button "设为新任务默认: 创造模式"':
         - text: 创造模式 内置
         - code: cordis
-        - text: 用对话定制 DSH：让 Agent 编写插件，添加新功能或界面；也能组合工具和提示词，创建自己的模式。
+        - text: 用对话定制 云枢：让 Agent 编写插件，添加新功能或界面；也能组合工具和提示词，创建自己的模式。
       - 'button "模式说明: 创造模式"': 模式说明
       - 'button "如何使用: 创造模式"': 如何使用
       - 'button "查看配置: 创造模式"': 查看配置
   - heading "自定义" [level=3]
+  - list:
+    - listitem:
+      - 'button "设为新任务默认: 通用助理"':
+        - text: 通用助理 自定义
+        - code: employee-general-assistant
+        - text: 整理资料、计划与文档，协助推进日常工作。
+      - 'button "查看配置: 通用助理"': 查看配置
+    - listitem:
+      - 'button "设为新任务默认: 电商运营"':
+        - text: 电商运营 自定义
+        - code: employee-ecommerce-operations
+        - text: 分析商品与店铺资料，产出商品文案、活动方案和运营清单。
+      - 'button "查看配置: 电商运营"': 查看配置
+    - listitem:
+      - 'button "设为新任务默认: 营销策划"':
+        - text: 营销策划 自定义
+        - code: employee-marketing-planner
+        - text: 制定品牌传播与获客方案，输出可执行的创意和投放内容。
+      - 'button "查看配置: 营销策划"': 查看配置
+    - listitem:
+      - 'button "设为新任务默认: 短视频编导"':
+        - text: 短视频编导 自定义
+        - code: employee-video-director
+        - text: 编写中文剧情与分镜，管理人物素材并衔接固定视频生成流程。
+      - 'button "查看配置: 短视频编导"': 查看配置
+    - listitem:
+      - 'button "设为新任务默认: 视觉设计"':
+        - text: 视觉设计 自定义
+        - code: employee-visual-designer
+        - text: 梳理视觉方向与参考素材，制作品牌、商品和传播图像。
+      - 'button "查看配置: 视觉设计"': 查看配置
+    - listitem:
+      - 'button "设为新任务默认: 客户服务"':
+        - text: 客户服务 自定义
+        - code: employee-customer-service
+        - text: 整理咨询与售后问题，编写准确友好的回复和处理步骤。
+      - 'button "查看配置: 客户服务"': 查看配置
+    - listitem:
+      - 'button "设为新任务默认: 销售顾问"':
+        - text: 销售顾问 自定义
+        - code: employee-sales-consultant
+        - text: 整理客户需求，编写沟通话术、方案与跟进计划。
+      - 'button "查看配置: 销售顾问"': 查看配置
+    - listitem:
+      - 'button "设为新任务默认: 产品经理"':
+        - text: 产品经理 自定义
+        - code: employee-product-manager
+        - text: 梳理用户问题、需求与验收标准，形成产品方案和迭代计划。
+      - 'button "查看配置: 产品经理"': 查看配置
+    - listitem:
+      - 'button "设为新任务默认: 软件工程"':
+        - text: 软件工程 自定义
+        - code: employee-software-engineer
+        - text: 阅读工作区代码，完成实现、排错、验证与交付说明。
+      - 'button "查看配置: 软件工程"': 查看配置
+    - listitem:
+      - 'button "设为新任务默认: 数据分析"':
+        - text: 数据分析 自定义
+        - code: employee-data-analyst
+        - text: 核对数据口径，完成分析、图表与有依据的业务建议。
+      - 'button "查看配置: 数据分析"': 查看配置
+    - listitem:
+      - 'button "设为新任务默认: 人力资源"':
+        - text: 人力资源 自定义
+        - code: employee-human-resources
+        - text: 协助招聘、培训与人才制度，输出可执行的人事文档。
+      - 'button "查看配置: 人力资源"': 查看配置
+    - listitem:
+      - 'button "设为新任务默认: 行政文秘"':
+        - text: 行政文秘 自定义
+        - code: employee-administrative-assistant
+        - text: 整理会议、通知和制度，协助日程与日常行政事务。
+      - 'button "查看配置: 行政文秘"': 查看配置
+    - listitem:
+      - 'button "设为新任务默认: 财务助理"':
+        - text: 财务助理 自定义
+        - code: employee-finance-assistant
+        - text: 整理收支与票据资料，协助核对台账、预算和财务报表。
+      - 'button "查看配置: 财务助理"': 查看配置
+    - listitem:
+      - 'button "设为新任务默认: 教育教研"':
+        - text: 教育教研 自定义
+        - code: employee-education-research
+        - text: 设计课程、教案与练习，按学习目标整理教学素材。
+      - 'button "查看配置: 教育教研"': 查看配置
+    - listitem:
+      - 'button "设为新任务默认: 餐饮运营"':
+        - text: 餐饮运营 自定义
+        - code: employee-restaurant-operations
+        - text: 围绕门店与菜品制定菜单、活动内容和运营执行清单。
+      - 'button "查看配置: 餐饮运营"': 查看配置
+    - listitem:
+      - 'button "设为新任务默认: 文旅策划"':
+        - text: 文旅策划 自定义
+        - code: employee-travel-planner
+        - text: 制定旅行路线与文旅活动，组织攻略、预算和宣传素材。
+      - 'button "查看配置: 文旅策划"': 查看配置
+    - listitem:
+      - 'button "设为新任务默认: 房产顾问"':
+        - text: 房产顾问 自定义
+        - code: employee-real-estate-advisor
+        - text: 梳理房源需求，制作房源介绍、带看方案和比较清单。
+      - 'button "查看配置: 房产顾问"': 查看配置
+    - listitem:
+      - 'button "设为新任务默认: 企业法务"':
+        - text: 企业法务 自定义
+        - code: employee-legal-assistant
+        - text: 整理合同与法律问题，输出条款审阅、风险清单和文书草稿。
+      - 'button "查看配置: 企业法务"': 查看配置
   - button "让 Agent 帮我创建预设模式"
