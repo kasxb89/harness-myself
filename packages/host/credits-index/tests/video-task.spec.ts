@@ -5,7 +5,8 @@ import type { CreativeVideoReceipt } from '../src/creative-types.ts'
 
 const fingerprint = 'a'.repeat(64)
 const accepted: CreativeVideoReceipt = { model: 'model_5', route: '/v1/videos', backendFingerprint: fingerprint, phase: 'accepted', taskId: 'public-task-1' }
-const json = (body: unknown, status = 200, headers?: HeadersInit): Response => new Response(JSON.stringify(body), { status, headers })
+const json = (body: unknown, status = 200, headers?: HeadersInit): Response =>
+  new Response(JSON.stringify(body), { status, ...headers === undefined ? {} : { headers } })
 
 function fixture(overrides: Partial<VideoTaskOptions> = {}) {
   const receipts: CreativeVideoReceipt[] = []
@@ -41,6 +42,7 @@ describe('single-submission video task receipts', () => {
     f.read.mockImplementation(async () => { controller.abort(); return json({ status: 'running' }) })
     const stopped = await executeVideoTask(f.options)
     expect(stopped).toMatchObject({ ok: false, submissionState: 'pending', code: 'VIDEO_WAIT_STOPPED', taskId: 'public-task-1', videoReceipt: { phase: 'accepted' } })
+    if (stopped.videoReceipt === undefined) throw new Error('Expected the original retained video receipt')
     const resumed = fixture({ resumeReceipt: stopped.videoReceipt })
     expect(await executeVideoTask(resumed.options)).toMatchObject({ ok: true, taskId: 'public-task-1' })
     expect(f.submit).toHaveBeenCalledTimes(1)
@@ -53,6 +55,7 @@ describe('single-submission video task receipts', () => {
     const unknown = await executeVideoTask(f.options)
     expect(unknown).toMatchObject({ ok: false, submissionState: 'unknown', videoReceipt: { phase: 'submitting' } })
     expect(f.read).not.toHaveBeenCalled()
+    if (unknown.videoReceipt === undefined) throw new Error('Expected the original retained video receipt')
     const resumed = fixture({ resumeReceipt: unknown.videoReceipt })
     expect(await executeVideoTask(resumed.options)).toMatchObject({ submissionState: 'unknown', code: 'VIDEO_SUBMISSION_UNKNOWN' })
     expect(resumed.submit).not.toHaveBeenCalled()
@@ -71,6 +74,7 @@ describe('single-submission video task receipts', () => {
     const f = fixture({ save: vi.fn(async () => { throw new Error('disk unavailable') }) })
     const pending = await executeVideoTask(f.options)
     expect(pending).toMatchObject({ submissionState: 'pending', taskId: 'public-task-1' })
+    if (pending.videoReceipt === undefined) throw new Error('Expected the original retained video receipt')
     const resumed = fixture({ resumeReceipt: pending.videoReceipt })
     expect(await executeVideoTask(resumed.options)).toMatchObject({ ok: true })
     expect(resumed.submit).not.toHaveBeenCalled()

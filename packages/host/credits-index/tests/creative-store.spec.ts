@@ -59,15 +59,16 @@ async function fixture() {
 }
 
 describe('retained ordinary video receipts', () => {
-  const accepted: CreativeVideoReceipt = {
-    route: '/v1/videos', model: 'model_5', phase: 'accepted', taskId: 'public-original-video',
+  const submitting: CreativeVideoReceipt = {
+    route: '/v1/videos', model: 'model_5', phase: 'submitting',
     requestId: 'req-original-video', backendFingerprint: 'b'.repeat(64),
   }
+  const accepted: CreativeVideoReceipt = { ...submitting, phase: 'accepted', taskId: 'public-original-video' }
 
   it('recovers the original accepted operation after restart and a fresh login without allocating another generation', async () => {
     const { store, owner, options, file, setLive } = await fixture()
     const operation = await store.begin(owner, { kind: 'video', prompt: 'one clip', shots: [{ prompt: 'one clip' }] })
-    await store.videoReceipt(operation, { ...accepted, phase: 'submitting', taskId: undefined })
+    await store.videoReceipt(operation, submitting)
     await store.videoReceipt(operation, accepted)
     expect((await store.projects(owner))[0]?.tasks[0]).toMatchObject({ videoReceipt: accepted, canQuery: false, status: 'running' })
     store.release(operation)
@@ -90,7 +91,7 @@ describe('retained ordinary video receipts', () => {
   it('keeps a submitted video uncertain after local cancellation and refuses unconfirmed task recovery', async () => {
     const { store, owner, options } = await fixture()
     const operation = await store.begin(owner, { kind: 'video', prompt: 'one', shots: [{ prompt: 'one' }] })
-    await store.videoReceipt(operation, { ...accepted, phase: 'submitting', taskId: undefined })
+    await store.videoReceipt(operation, submitting)
     await store.finish(operation, { status: 'cancelled' })
     const restarted = new CreativeStore(options)
     expect((await restarted.projects(owner))[0]?.tasks[0]).toMatchObject({ status: 'unknown', canQuery: false,
