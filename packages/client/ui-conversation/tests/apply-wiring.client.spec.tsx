@@ -79,7 +79,7 @@ describe('target-neutral Conversation apply wiring', () => {
             failures.push(error)
           }
         })
-        onTestFinished(unsubscribe)
+        onTestFinished(() => { unsubscribe() })
       },
       afterApply: (runtime) => {
         loading.push({ controller: runtime.ctx.get('conversation'), entries: runtime.slots.entries('main').length })
