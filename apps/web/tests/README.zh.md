@@ -16,6 +16,8 @@ pnpm --filter @deepseek-ai/dsh-web-frontend exec playwright install --with-deps 
 
 快照的技能目录由 fixture 持有。scaffold 将文件系统根目录限制在临时环境，通过 Univer 的公开 `skills` 设置关闭其内置技能，并为 Credits 条目设置 Loader `isolate.skills` 边界，隔离其可选编导技能注册。Host API、工具和项目技能发现仍然可用。需要验证产品技能目录的场景可显式传入 `launchWebScaffold({ bundledSkills: true })`。产品默认值与持久化 Session 的比较规则保持不变。
 
+可移植场景通过 Loader overlay 关闭原生计算机操作 provider，因为其工具目录来自当前宿主专用的 SDK 二进制。其他产品工具仍然可用。显式原生场景可传入 `launchWebScaffold({ nativeComputerUse: true })`，保留产品的 provider 配置。provider 的[所属测试](../../../packages/experimental/computer-use-cua-driver-native/tests/provider.spec.ts)通过外部 SDK fixture 覆盖目录与生命周期，不访问桌面。
+
 [手机号登录恢复](phone-login-fixture.e2e.ts)仅在 `DSH_PHONE_FIXTURE_RECEIPT` 指向全新隔离 controller fixture 回执时运行。测试要求本机 `/harness` 入口、出站 HTTP 阻断、合成大陆号码场景以及无生产访问。各用例使用临时 harness home 和真实 Host 转发；浏览器覆盖短信明确未发送、发送结果未知、成功响应丢失后跨 Host 重启恢复，以及声明支持的 MFA 备用码表单。fixture 提供虚拟发送次数和会话数量，不发送真实短信或付费请求。生产 HTTPS Cookie 策略需单独验证。
 
 ## 完成状态观察

@@ -1,6 +1,7 @@
 /** Retained video-task coordinates used to prevent blind paid resubmission. */
 import { appPath } from '@deepseek-ai/dsh-client-ui-primitives'
 
+/** Original video task coordinates and query eligibility retained for one account and conversation. */
 export interface VideoSubmission {
   readonly accountId: string
   readonly sessionId: string

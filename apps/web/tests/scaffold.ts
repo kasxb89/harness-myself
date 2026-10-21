@@ -15,7 +15,7 @@
 // patches after the shipped bundle layers, over the SAME tree (never a
 // second yml): temp persistenceRoot; host-level skill roots confined to the
 // temp workspace while project skill discovery remains real; bundled product
-// skill providers opt in per scenario; agent-instructions
+// skill providers and the host-native computer-use catalog opt in per scenario; agent-instructions
 // disabled (recorded fixtures must not embed this repo's AGENTS.md);
 // session-title-llm disabled (its fire-and-forget title call would race the
 // loop for the session's replay cursor); webserver pinned to port 0 with the
@@ -59,7 +59,7 @@ import {
   type NormalizeContext,
 } from '@deepseek-ai/dsh-session-snapshot'
 import type { Profile, ProfileContext } from '@deepseek-ai/dsh-app-boot'
-import { replaySkillPatches } from './replay-skill-isolation.ts'
+import { replayNativeComputerUsePatches, replaySkillPatches } from './replay-skill-isolation.ts'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import { LlmAdapter } from '@deepseek-ai/dsh-llm'
 import type {
@@ -312,6 +312,8 @@ export interface LaunchOptions {
   showTrajectory?: true
   /** Include product-provided bundled skill catalogs; ordinary snapshot fixtures own their skills. */
   bundledSkills?: true
+  /** Retain the product's host-native computer-use provider for an explicit native scenario. */
+  nativeComputerUse?: true
   /** Enable the real Open In rows with deterministic launch-environment facts. */
   openInAppEnvironment?: LaunchEnvironmentSnapshot
   /** Compare the replayed root Session; `read-only` also forbids refresh writes to a borrowed fixture. */
@@ -584,6 +586,7 @@ export async function launchWebScaffold(options: LaunchOptions = {}): Promise<We
     // Provider-backed product skills bypass filesystem-root isolation. Keep
     // ordinary snapshots fixture-owned while retaining explicit opt-in.
     ...replaySkillPatches(composedRows, options.bundledSkills),
+    ...replayNativeComputerUsePatches(options.nativeComputerUse),
     ...options.showTrajectory === true ? [{
       id: 'ui-conversation',
       config: {

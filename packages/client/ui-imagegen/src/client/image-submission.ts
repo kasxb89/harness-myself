@@ -1,6 +1,7 @@
 /** Retained image-task coordinates used to prevent blind paid resubmission. */
 import { appPath } from '@deepseek-ai/dsh-client-ui-primitives'
 
+/** Original image task coordinates and query eligibility retained for one account and conversation. */
 export interface ImageSubmission {
   readonly accountId: string
   readonly sessionId: string

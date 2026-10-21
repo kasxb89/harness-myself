@@ -34,3 +34,12 @@ export function replaySkillPatches(entries: readonly EntryOptions[], bundledSkil
     { id: 'credits-index', isolate: { ...findEntry(entries, 'credits-index')?.isolate, skills: true } },
   ]
 }
+
+/**
+ * Keep host-native SDK catalogs out of portable browser fixtures.
+ * @param nativeComputerUse - retain the product provider configuration for an explicit native scenario.
+ * @returns test-only Loader patches; other product capabilities stay available.
+ */
+export function replayNativeComputerUsePatches(nativeComputerUse = false): PatchOptions[] {
+  return nativeComputerUse ? [] : [{ id: 'computer-use-cua-driver-native', disabled: true }]
+}
