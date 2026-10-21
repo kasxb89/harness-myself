@@ -65,6 +65,7 @@
     "apps/web/tests/details-session-lifecycle.e2e.ts",
     "apps/web/tests/sessionless-header.e2e.ts",
     "apps/web/tests/document-preview.e2e.ts",
+    "apps/web/tests/sidebar-media.e2e.ts",
     "apps/web/tests/excel-opc.e2e.ts",
     "apps/web/tests/office-fixture.ts",
     "apps/web/tests/sidebar-browser.e2e.ts",

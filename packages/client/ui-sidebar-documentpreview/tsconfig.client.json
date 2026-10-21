@@ -57,6 +57,9 @@
       "path": "../ui-slots"
     },
     {
+      "path": "../../api/workspace-controller/tsconfig.client.json"
+    },
+    {
       "path": "../../api/workspace-files/tsconfig.client.json"
     },
     {

@@ -1,6 +1,8 @@
+diff --git a/index.mjs b/index.mjs
+index 29a2329aa51ea40f4ca4dff9c543d4f6c8ae925a..34ff813cd440c07eb6420da0803ec30458447c67 100644
 --- a/index.mjs
 +++ b/index.mjs
-@@ -56,7 +56,6 @@
+@@ -56,7 +56,6 @@ import {
  import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
  import { dirname, join } from 'node:path'
  import { PROMPT_PATH, COMPOSITION_PATH, ROUTE_PATH, PRESET_DIR, dshHome } from './paths.mjs'
@@ -8,7 +10,16 @@
  import {
    allowlistOverrides,
    applyRowExclusivity,
-@@ -1125,14 +1124,7 @@
+@@ -145,7 +144,7 @@ const MAX_DESCRIPTION = 400
+ const VARIABLE_NAME = /^[a-z][a-z0-9_]*$/
+
+ /**
+- * Variables this deployment registers for every agent (`dsh-agent-loop`).
++ * Model/provider variables come from the Host; the prompt reader supports legacy cwd references.
+  *
+  * The persona section renders with strict interpolation: an unknown `{{name}}`
+  * or a malformed group makes the renderer THROW, failing every model request in
+@@ -1125,14 +1124,7 @@ export function apply(ctx) {
      console.error('custom-mode: 初始化 preset 目录时出现意外错误（已忽略）: ' + describe(error))
    }
 
@@ -24,3 +35,68 @@
 
    try {
      ctx.inject(WEB_SERVICES, (scope) => {
+diff --git a/preset/prompt-reader.mjs b/preset/prompt-reader.mjs
+index 79a9344ab8c1317f7fbf80820dc4a44b9264e410..3c3a0df540672e47199b92992f9670802dc986bd 100644
+--- a/preset/prompt-reader.mjs
++++ b/preset/prompt-reader.mjs
+@@ -15,7 +15,7 @@
+  *
+  * Config:
+  *   path      - absolute path of the prompt file (default: prompt.md beside this module)
+- *   suffix    - persona suffix template (default: the working-directory line)
++ *   suffix    - persona suffix template (default: empty; directory facts use runtime context)
+  *   complete  - true makes this text the ONLY system prompt section, dropping
+  *               harness identity, tool guidance and the suffix. Default false:
+  *               the file replaces the persona paragraph while the coding
+@@ -35,7 +35,7 @@ const PERSONA_PREFIX_ORDER = 0
+ /** Sort order of the persona suffix, after all first-party guidance. */
+ const PERSONA_SUFFIX_ORDER = 10200
+
+-const DEFAULT_SUFFIX = 'Your working directory is {{cwd}}.'
++const DEFAULT_SUFFIX = ''
+ const DEFAULT_FALLBACK =
+   'You are a coding agent powered by the {{model}} model.\n\n' +
+   '(No custom system prompt is set yet. Open Settings -> 自定义模式 to write one.)'
+@@ -92,6 +92,19 @@ export function apply(ctx, config = {}) {
+   const fallback = config.fallback ?? DEFAULT_FALLBACK
+   const file = new PromptFile(path, fallback)
+
++  // Old user-owned prompts may still contain the variable accepted by this editor.
++  const legacyDirectory = (context) => {
++    const session = context.agent?.session
++    return session === undefined ? undefined : ctx.get('workingDirectory')?.get(session) ?? session.header.cwd
++  }
++  ctx.effect(() => ctx.systemPrompt.variable('cwd', legacyDirectory), 'custom-prompt.legacy-cwd')
++  ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
++    const assembly = await next()
++    // Directory validation can recover a missing directory during this assembly.
++    assembly.variables.cwd = legacyDirectory(context)
++    return assembly
++  })
++
+   ctx.effect(
+     () =>
+       ctx.systemPrompt.section({
+diff --git a/preset/prompt-tool.mjs b/preset/prompt-tool.mjs
+index 23c44b387ef134d2ec03804b23f0a17738788a74..f21db24639fa2bc2eddffb8ec1f423f36e5996bd 100644
+--- a/preset/prompt-tool.mjs
++++ b/preset/prompt-tool.mjs
+@@ -50,7 +50,7 @@ const FALLBACK_MODE_NAME = '自定义模式'
+ const VARIABLE_NAME = /^[a-z][a-z0-9_]*$/
+
+ /**
+- * Variables this deployment registers for every agent (`dsh-agent-loop`).
++ * Model/provider variables come from the Host; the prompt reader supports legacy cwd references.
+  *
+  * The persona section renders with strict interpolation: an unknown `{{name}}`
+  * or a malformed group makes the renderer THROW, so one typo here would fail
+diff --git a/preset/prompt.md b/preset/prompt.md
+index ac25050907c2f6d32c1e1c59d77e5f0195d8ce50..be247074ac497d8561fb58873988b6393ac16eea 100644
+--- a/preset/prompt.md
++++ b/preset/prompt.md
+@@ -2,5 +2,3 @@ You are a coding agent powered by the {{model}} model.
+
+ You work directly in the user's repository. Read the code before changing it, prefer
+ the project's existing patterns over new machinery, and keep changes reviewable.
+-
+-Your working directory is {{cwd}}.

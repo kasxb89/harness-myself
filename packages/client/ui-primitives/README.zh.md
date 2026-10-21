@@ -90,6 +90,8 @@ kind: "package-library"
 
 `Tooltip` 在悬停或键盘聚焦时读取锚点位置，再根据 `ResizeObserver` 提供的边框盒尺寸调整气泡。首次定位前气泡保持隐藏；横向移入视口留白，仅在另一侧容得下时上下翻转。标签尺寸与视口变化复用锚点坐标；定位不会同步测量气泡，也不会触发 React 渲染。 信息按钮可显式启用 `openOnClick`，点击后保持同一个气泡供阅读，并将内容关联为锚点的无障碍描述；再次点击、Escape、Tab 或外部 pointerdown 会关闭。普通操作按钮的 tooltip 仍在点击时关闭。
 
+包入口还导出 `dsh-better-sidebar@0.19.1` 使用的 [29 个带尺寸后缀的图标名称](src/icons/legacy.tsx)，包括 `IconFolderOpen16`。这些兼容组件复用当前 `Regular` 图形，保留原始默认尺寸，并接受相同的 `size` 和 `className` props。`IconSendOutline16` 默认 16px，`IconSendOutlineRegular` 仍默认 14px；`IconWarningOutline16` 虽然后缀为 16，仍保留原始 14px 默认值，而 `IconWarningOutlineRegular` 默认 16px。新调用方使用以线重命名的导出。
+
 <a id="rendering-agent-output"></a>
 
 ### 渲染 agent 输出

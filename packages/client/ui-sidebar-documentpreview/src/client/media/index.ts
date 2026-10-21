@@ -2,6 +2,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { DocumentPreviewDefinition } from '../index.ts'
 import { MediaBody } from './MediaBody.tsx'
+import { registerLegacyMediaViewer } from './legacy-viewer.tsx'
 import { en, zh } from './locales.ts'
 
 /** Browser-supported containers still report codec failures through the media body. */
@@ -27,6 +28,7 @@ export function mediaBodyDefinition(title: () => string): DocumentPreviewDefinit
  */
 export function apply(ctx: Context): void {
   const t = ctx.locale.bind('sidebarMedia')
+  registerLegacyMediaViewer(ctx, [...VIDEO_EXTENSIONS, ...AUDIO_EXTENSIONS])
   ctx.effect(() => ctx.locale.register('sidebarMedia', { zh, en }), 'document-media: dictionaries')
   ctx.effect(() => ctx.documentPreviews.register(mediaBodyDefinition(() => t('title'))), 'document-media: metadata')
   ctx.effect(() => ctx.slots.inject('sidebar.right.tab.document', () => ctx.slots.register({

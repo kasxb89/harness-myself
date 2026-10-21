@@ -41,7 +41,7 @@ patchedDependencies:
   '@xmanrui/dsh-im@4.38.2': 4c74071c3daf693c5e4270746b964c750e01da2c85cdfc0146ac37dec11af738
   '@yao-pkg/pkg@6.21.0': 75891fc22b277c145cafeab83e41baf4a70f5b8fe6dc0801c6a0b922d7ee88c7
   deepseek-ivideo@0.5.0: 2c8077e6bd282bca4144510792e3f881d86e4a1ddf72a536a866da0516ef0be7
-  dsh-custom-mode@2.2.5: 3b3e360b5db8862d67b33e143ec669da3cdd8edb660b86a20b7755cdc0128019
+  dsh-custom-mode@2.2.5: a18b7594ac0e7f8b34ee386fa09b4c0c1aa84cce9ef6434c94790b5124bbbfff
   dsh-find-plugin@0.4.0: 062d1dee81d7b8393559bee05e107249c5bf1363b1eda9d675f5f30de0e5e03b
   dsh-skin-market@0.1.57: 3877c5ac25edd51ef5c13da56a761bab0326c4408e8277b7ea1ea6ebc2b5f04a
   dsh-univer-office@0.3.7: 9ab9121dd06608a991db35b48ab63aa595b8bb417cfa866eb31f8df2e4efa511
@@ -511,7 +511,7 @@ importers:
         version: 15.0.0
       dsh-custom-mode:
         specifier: 2.2.5
-        version: 2.2.5(patch_hash=3b3e360b5db8862d67b33e143ec669da3cdd8edb660b86a20b7755cdc0128019)
+        version: 2.2.5(patch_hash=a18b7594ac0e7f8b34ee386fa09b4c0c1aa84cce9ef6434c94790b5124bbbfff)
       js-yaml:
         specifier: ^4.3.2
         version: 4.3.2
@@ -5981,6 +5981,9 @@ importers:
       '@deepseek-ai/dsh-api-remotes':
         specifier: workspace:*
         version: link:../../api/remotes
+      '@deepseek-ai/dsh-api-workspace-controller':
+        specifier: workspace:*
+        version: link:../../api/workspace-controller
       '@deepseek-ai/dsh-api-workspace-files':
         specifier: workspace:*
         version: link:../../api/workspace-files
@@ -29741,7 +29744,7 @@ snapshots:
 
   dotenv@16.6.1: {}
 
-  dsh-custom-mode@2.2.5(patch_hash=3b3e360b5db8862d67b33e143ec669da3cdd8edb660b86a20b7755cdc0128019): {}
+  dsh-custom-mode@2.2.5(patch_hash=a18b7594ac0e7f8b34ee386fa09b4c0c1aa84cce9ef6434c94790b5124bbbfff): {}
 
   dsh-find-plugin@0.4.0(patch_hash=062d1dee81d7b8393559bee05e107249c5bf1363b1eda9d675f5f30de0e5e03b)(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-tools@packages+core+tools):
     dependencies:
