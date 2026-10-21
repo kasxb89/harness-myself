@@ -36,6 +36,8 @@ const copy: Readonly<Record<string, string>> = zh
 const t: ArtifactsInjected['t'] = (key, values) => (copy[key] ?? key).replace(/\{(\w+)\}/gu, (_match, name: string) => values?.[name] ?? '')
 
 beforeEach(() => {
+  vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {})
+  vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {})
   createDescriptor = Object.getOwnPropertyDescriptor(URL, 'createObjectURL')
   revokeDescriptor = Object.getOwnPropertyDescriptor(URL, 'revokeObjectURL')
   create.mockReset().mockImplementation(() => `blob:https://preview.invalid/${create.mock.calls.length}`)

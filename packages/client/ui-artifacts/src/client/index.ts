@@ -52,10 +52,15 @@ export const PANEL_ID = 'artifacts' as MainPanelId
 export interface Config {
   /** Delay between visible-page library checks in milliseconds. */
   pollIntervalMs?: number
+  /** Maximum time for a queued video-cover read in milliseconds. */
+  videoPosterTimeoutMs?: number
 }
 
 /** Validate the visible-page read cadence before this plugin activates. */
-export const Config: z<Config> = z.object({ pollIntervalMs: z.natural().min(1000).max(60_000).default(5000) })
+export const Config: z<Config> = z.object({
+  pollIntervalMs: z.natural().min(1000).max(60_000).default(5000),
+  videoPosterTimeoutMs: z.natural().min(1000).max(60_000).default(15_000),
+})
 
 /** Required services: the slot registries and the dictionary registry. */
 export const inject = ['slots', 'locale', 'uiSession', 'remote', 'remote.session', 'sessions', 'uiWorkspace', 'conversationViews', 'layout']
@@ -91,6 +96,7 @@ export function apply(ctx: ClientContext, config: Config): void {
   const desktop = (globalThis as { __DSH_DIRECTORY_PICKER__?: { pick: () => Promise<string | null> } }).__DSH_DIRECTORY_PICKER__
   const face: ArtifactsInjected = {
     pollIntervalMs: (config as Required<Config>).pollIntervalMs,
+    videoPosterTimeoutMs: (config as Required<Config>).videoPosterTimeoutMs,
     t: (key, values) => t(key as Parameters<typeof t>[0], values),
     readListing: readArtifacts, readStorage, readTrash, readWorkspace, readRootDirectory,
     readOrigin: readArtifactOrigin,
