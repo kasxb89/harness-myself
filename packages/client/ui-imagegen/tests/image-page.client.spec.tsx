@@ -172,6 +172,7 @@ describe('image creation workspace', () => {
     const view = render(<ImagePage {...props} />)
     await ready()
     fireEvent.change(screen.getByRole('textbox', { name: zh.prompt }), { target: { value: '保留原任务' } })
+    await waitFor(() => { expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', false) })
     fireEvent.click(screen.getByRole('button', { name: zh.submit }))
     await screen.findByRole('button', { name: zh.originalQuery })
     expect(screen.getByText(zh.originalAccepted)).toBeTruthy()
@@ -187,6 +188,39 @@ describe('image creation workspace', () => {
     expect(fetchMock.mock.calls.filter(([url]) => url === '/credits/api/creative/image/recover')).toHaveLength(1)
     expect(fetchMock.mock.calls.filter(([url]) => url === '/credits/api/image/generate')).toHaveLength(1)
     expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', true)
+  })
+
+  it('keeps model-ready generation disabled until the original-task admission read finishes', async () => {
+    const original = fetchMock.getMockImplementation()!
+    const entered = Promise.withResolvers<undefined>()
+    const listing = Promise.withResolvers<Response>()
+    let firstRead = true
+    fetchMock.mockImplementation(async (input, init) => {
+      if (requestUrl(input).startsWith('/credits/api/creative/projects?') && firstRead) {
+        firstRead = false
+        entered.resolve(undefined)
+        return await listing.promise
+      }
+      return await original(input, init)
+    })
+    const { props } = makeProps()
+    render(<ImagePage {...props} />)
+    try {
+      await ready()
+      await entered.promise
+      fireEvent.change(screen.getByRole('textbox', { name: zh.prompt }), { target: { value: '先核对原任务再生成' } })
+      const submit = screen.getByRole('button', { name: zh.submit })
+      expect(submit).toHaveProperty('disabled', true)
+      fireEvent.click(submit)
+      expect(fetchMock.mock.calls.some(([url]) => url === '/credits/api/image/generate')).toBe(false)
+      await act(async () => { listing.resolve(json({ ok: true, payload: { accountId: 'account-a', projects: [] } })) })
+      await waitFor(() => { expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', false) })
+      fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+      await screen.findByText(zh.done)
+      expect(fetchMock.mock.calls.filter(([url]) => url === '/credits/api/image/generate')).toHaveLength(1)
+    } finally {
+      await act(async () => { listing.resolve(json({ ok: true, payload: { accountId: 'account-a', projects: [] } })) })
+    }
   })
 
   it('restores an unknown original task without a receipt after a full draft reload', async () => {
