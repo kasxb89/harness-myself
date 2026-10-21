@@ -23,6 +23,7 @@ export type ImageDraft = {
   prompt: string
   modelId: string
   size: string
+  resolution: string
   quality: string
   background: string
   format: string
@@ -61,7 +62,7 @@ type DraftActions = {
 export function createImageDraftStore(): EngineStoreHandle<ImageDraft, DraftActions> {
   return defineStore({
     init: (): ImageDraft => ({
-      prompt: '', modelId: '', size: '', quality: '', background: '', format: '',
+      prompt: '', modelId: '', size: '', resolution: '', quality: '', background: '', format: '',
       compression: 90, moderation: '', seed: '', count: 1, references: [], referenceLimit: 6,
       uploading: false, uploadResult: null, generationStartedAt: null, sessionInvalid: false,
       message: null, failure: null, resultPaths: [],

@@ -27,7 +27,7 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-type Row = { id: string; order: number; label: string }
+type Row = { id: string; order: number; label: string; parentId?: string }
 type Step = { id: string; order: number }
 
 /** Slot-content stand-ins: the shell renders whatever the seats contribute. */
@@ -187,6 +187,23 @@ function openPanel() {
 }
 
 describe('SettingsRoot trigger', () => {
+  it('keeps an installed skin settings page inside the market with keyboard-accessible tabs', () => {
+    const mounted = mount({ rows: [
+      { id: 'skin-market', order: 45, label: 'Skin market' },
+      { id: 'dream-skin', order: 10, label: 'Skin settings', parentId: 'skin-market' },
+    ] })
+    openPanel()
+    expect(screen.getByRole('navigation').querySelectorAll('button')).toHaveLength(1)
+    expect(screen.getByRole('tab', { name: 'Skin market' }).getAttribute('aria-selected')).toBe('true')
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Skin market' }), { key: 'ArrowRight' })
+    expect(screen.getByTestId('section-dream-skin')).toBeTruthy()
+    expect(screen.getByRole('tab', { name: 'Skin settings' }).getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByRole('tabpanel').getAttribute('aria-labelledby')).toBe(screen.getByRole('tab', { name: 'Skin settings' }).id)
+    mounted.bump([{ id: 'dream-skin', order: 10, label: 'Skin settings' }])
+    expect(screen.getByRole('button', { name: 'Skin settings' })).toBeTruthy()
+    expect(screen.queryByRole('tablist')).toBeNull()
+    expect(screen.getByTestId('section-dream-skin')).toBeTruthy()
+  })
   it('shows installation instead of expected backend reconnection and restores connection feedback after failure', () => {
     const presentation = { phase: 'installing' as const, version: '1.0.1' }
     const f = mount({ dictionary: zh, connectionState: 'connecting',

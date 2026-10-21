@@ -1,0 +1,144 @@
+/** First phone sign-in refreshes the actual composer from the deployment's authorized model catalog. */
+import { createServer } from 'node:http'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { chromium } from 'playwright'
+import { expect, it, onTestFinished } from 'vitest'
+import { launchWebScaffold, watchConsole } from './scaffold.ts'
+import { ZH_BROWSER_LOCALE, connectFreshWorkspaceZh } from './support.ts'
+
+it.each(['deepseek-flash', 'deepseek-v4-flash'])(
+  'selects the deployment default %s after first sign-in without opening the model menu', async (preferred) => {
+    const root = await mkdtemp(join(tmpdir(), 'yunshu-first-login-model-'))
+    const cleanup: { scaffold?: () => Promise<void>; browser?: () => Promise<void>; upstream?: () => Promise<void> } = {}
+    onTestFinished(async () => {
+      try { await cleanup.browser?.() }
+      finally {
+        try { await cleanup.scaffold?.() }
+        finally {
+          try { await cleanup.upstream?.() }
+          finally { await rm(root, { recursive: true, force: true }) }
+        }
+      }
+    })
+    const requests: string[] = []
+    const errors: string[] = []
+    const server = createServer((request, response) => {
+      void (async () => {
+        for await (const _chunk of request) { /* Drain the synthetic login request. */ }
+        const path = new URL(request.url ?? '/', 'http://127.0.0.1').pathname
+        requests.push(path)
+        response.setHeader('content-type', 'application/json')
+        const answer = (data: object | null): void => { response.end(JSON.stringify({ success: true, data })) }
+        if (path === '/harness/api/status') {
+          answer({ quota_per_unit: 500_000, usd_exchange_rate: 7.3,
+            client_model_config: { schema_version: 1, default_chat_model: preferred,
+              model_order: ['deepseek-flash', 'deepseek-v4-flash'] } }); return
+        }
+        if (path === '/harness/api/user/phone/challenge') {
+          answer({ challenge_id: 'synthetic-challenge', delivery_status: 'accepted',
+            expires_at: Math.floor(Date.now() / 1000) + 300, resend_after_seconds: 60, expires_in_minutes: 5 }); return
+        }
+        if (path === '/harness/api/user/phone/login') {
+          response.setHeader('set-cookie', 'new_api_refresh=synthetic-refresh; HttpOnly; Path=/harness/api/user/auth')
+          answer({ access_token: 'synthetic-access', access_expires_at: Math.floor(Date.now() / 1000) + 900,
+            relay_key: 'sk-synthetic-relay', relay_key_id: 9, user: { id: 7, username: 'synthetic-user', quota: 500_000 } }); return
+        }
+        if (path === '/harness/v1/models') {
+          if (request.headers.authorization !== 'Bearer sk-synthetic-relay') {
+            response.writeHead(403); response.end('{}'); return
+          }
+          response.end(JSON.stringify({ data: ['deepseek-v4-flash', 'deepseek-flash'].map(id =>
+            ({ id, object: 'model', supported_endpoint_types: ['openai'] })) })); return
+        }
+        if (path === '/harness/api/pricing') { answer([]); return }
+        if (path === '/harness/api/creation/content') {
+          answer({ schemaVersion: 1, revision: 'synthetic', image: { templates: [] }, video: { templates: [] },
+            guide: { title: '', body: '' } }); return
+        }
+        if (path === '/harness/api/log/self') { answer({ page: 1, page_size: 100, total: 0, items: [] }); return }
+        if (path === '/harness/api/user/self') {
+          answer({ id: 7, username: 'synthetic-user', group: 'product', quota: 500_000, used_quota: 0 }); return
+        }
+        if (path === '/harness/api/client-activity/heartbeat') {
+          answer({ server_time: Math.floor(Date.now() / 1000), heartbeat_interval_seconds: 60 }); return
+        }
+        if (path === '/harness/api/user/auth/logout') { answer(null); return }
+        errors.push(path)
+        response.writeHead(404); response.end('{}')
+      })().catch((error: unknown) => { errors.push(String(error)); response.destroy() })
+    })
+    cleanup.upstream = async () => {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => { if (error === undefined) resolve(); else reject(error) })
+        server.closeAllConnections()
+      })
+    }
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(0, '127.0.0.1', resolve)
+    })
+    const address = server.address()
+    if (address === null || typeof address === 'string') throw new Error('Synthetic backend must bind a loopback port')
+    const baseURL = `http://127.0.0.1:${String(address.port)}/harness`
+    const overlay = join(root, 'product-model.patch.yml')
+    await writeFile(overlay, JSON.stringify([
+      { id: 'credits-index', config: { newApiBaseUrl: baseURL, stateDir: join(root, 'credits') } },
+      { id: 'llm-pi-ai', config: { providers: { 'yunshu-local': {
+        displayName: '云枢', api: 'openai-completions', baseURL: `${baseURL}/v1`, apiKeyEnv: 'YUNSHU_RELAY_TOKEN',
+        models: [{ id: 'deepseek-v4-flash' }],
+      } } } },
+      { id: 'agent-default-model', config: { provider: 'yunshu-local', model: 'deepseek-v4-flash', followPolicy: true } },
+      ...['ui-creative', 'dsh-market', 'dsh-skin-market'].map(id => ({ id, disabled: true })),
+    ]))
+    const scaffold = await launchWebScaffold({ extraOverlayPath: overlay })
+    cleanup.scaffold = () => scaffold.close()
+    const browser = await chromium.launch()
+    cleanup.browser = () => browser.close()
+    const page = await browser.newPage({ locale: ZH_BROWSER_LOCALE, viewport: { width: 1440, height: 1000 } })
+    const tripwire = watchConsole(page)
+    const evidenceRoot = fileURLToPath(new URL('../../../.artifacts/', import.meta.url))
+    await mkdir(evidenceRoot, { recursive: true })
+    const evidence = await mkdtemp(join(evidenceRoot, 'product-default-model-'))
+    try {
+      await page.goto(scaffold.authenticatedUrl, { waitUntil: 'load' })
+      await connectFreshWorkspaceZh(page, scaffold.workspaceCwd, '首次登录', false)
+      const trigger = page.getByRole('button', { name: /^(?:请选择模型|选择模型)/u })
+      await trigger.waitFor()
+      await page.getByRole('button', { name: '余额', exact: true }).click()
+      await page.getByRole('region', { name: '手机号登录', exact: true }).waitFor()
+      await page.getByRole('textbox', { name: '手机号', exact: true }).fill('13800000000')
+      await page.getByRole('button', { name: '发送验证码', exact: true }).click()
+      await page.getByRole('status').filter({ hasText: '验证码已发送' }).waitFor()
+      await page.getByRole('textbox', { name: '验证码', exact: true }).fill('123456')
+      const started = performance.now()
+      await page.getByRole('button', { name: '登录', exact: true }).click()
+      await expect.poll(() => trigger.textContent(), { timeout: 10_000 }).toBe(preferred)
+      const elapsedMs = performance.now() - started
+      // No menu-opening gesture or 60-second sync is allowed to repair the first display.
+      expect(elapsedMs).toBeLessThan(10_000)
+      expect(await page.getByRole('menu', { name: '模型', exact: true }).count()).toBe(0)
+      await trigger.click()
+      await page.getByRole('menuitem', { name: /^模型/u }).click()
+      const modelMenu = page.getByRole('group', { name: '模型与推理等级', exact: true })
+      await modelMenu.getByRole('menuitemradio', { name: preferred, exact: true }).waitFor()
+      expect(await modelMenu.getByRole('menuitemradio', { name: preferred, exact: true }).getAttribute('aria-checked')).toBe('true')
+      await page.keyboard.press('Escape')
+      await page.keyboard.press('Escape')
+      expect(requests.filter(path => path.endsWith('/phone/challenge'))).toHaveLength(1)
+      expect(requests.filter(path => path.endsWith('/phone/login'))).toHaveLength(1)
+      expect(errors).toEqual([])
+      expect(tripwire.pageErrors).toEqual([])
+      await page.screenshot({ path: join(evidence, 'first-login-selected-model.png'), animations: 'disabled' })
+      await writeFile(join(evidence, 'result.json'), JSON.stringify({ preferred, elapsedMs, requests,
+        modelCalls: 0, realSMS: 0, pageErrors: tripwire.pageErrors, errors }, null, 2) + '\n')
+    } catch (error) {
+      await page.screenshot({ path: join(evidence, 'failure.png'), animations: 'disabled' })
+      await writeFile(join(evidence, 'failure.json'), JSON.stringify({ errors, requests,
+        pageErrors: tripwire.pageErrors, visible: await page.locator('body').innerText() }, null, 2) + '\n')
+      throw error
+    }
+  },
+)

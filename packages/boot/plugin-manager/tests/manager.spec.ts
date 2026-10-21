@@ -402,6 +402,18 @@ it('lists bundle versions and current-profile plugin targets', async () => {
   ])
 })
 
+it('enumerates the live Loader only twice when listing many plugin entries', async () => {
+  const { ctx, manager } = await fixture()
+  for (let index = 0; index < 120; index++) await ctx.loader.create({ name: 'cordis:uninstalled', disabled: true })
+  const expectedCount = [...ctx.loader.entries()].filter(entry => !entry.options.group).length
+  const entries = vi.spyOn(ctx.loader, 'entries')
+  onTestFinished(() => { entries.mockRestore() })
+  const plugins = await manager.listPlugins()
+  expect(plugins).toHaveLength(expectedCount)
+  expect(entries).toHaveBeenCalledTimes(2)
+  expect(plugins.find(row => row.entryId === 'include:managed')).toMatchObject({ patchId: 'managed', enabled: true })
+})
+
 it('describes a bundle by its manifest and patch: one-liner, rows without a live entry, and the built-in rows it changes', async () => {
   const { manager, dir, bundle } = await fixture()
   bundle('described', [{ id: 'described-row', name: './plugin.mjs' }])

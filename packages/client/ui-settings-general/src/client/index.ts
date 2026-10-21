@@ -77,6 +77,19 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 /** Dictionary namespace owned by this plugin (shell chrome + General copy). */
 const NS = 'settings'
 
+/** Decode only the grouping preference; other namespace fields may use Host-only schema extensions. */
+function readSectionGroups(value: unknown): Record<string, string[]> | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const groups = (value as Record<string, unknown>)['sectionGroups']
+  if (typeof groups !== 'object' || groups === null || Array.isArray(groups)) return undefined
+  const result: Record<string, string[]> = {}
+  for (const [parent, members] of Object.entries(groups)) {
+    if (!Array.isArray(members) || !members.every((member): member is string => typeof member === 'string')) return undefined
+    result[parent] = members
+  }
+  return result
+}
+
 /**
  * Required services (cordis fiber inject). The target slots are declared by
  * ui-settings' apply, whose activation order relative to this one is NOT
@@ -146,6 +159,8 @@ export function apply(ctx: ClientContext): void {
   // key includes the locale revision and subscribers ride both sources.
   let rowsVersion = -1
   let rowsRevision = -1
+  const grouping = ctx.configForms.describe()
+  let rowSettings: unknown
   let rows: readonly SettingsSectionRow[] = []
   let onboardingVersion = -1
   let onboardingSteps: readonly SettingsOnboardingStep[] = []
@@ -160,9 +175,12 @@ export function apply(ctx: ClientContext): void {
         getSnapshot: () => {
           const version = ctx.slots.getVersion('settings.section')
           const revision = ctx.locale.getSnapshot().revision
-          if (version !== rowsVersion || revision !== rowsRevision) {
+          const settings = grouping.getSnapshot().view?.namespaces.find(section => section.ns === 'ui-settings-general')?.value
+          if (version !== rowsVersion || revision !== rowsRevision || settings !== rowSettings) {
             rowsVersion = version
             rowsRevision = revision
+            rowSettings = settings
+            const groups = readSectionGroups(settings)
             rows = ctx.slots.entries('settings.section')
               .map(e => ({
                 /* v8 ignore next -- list-slot registration requires id (SlotCore rejects an entry without one) */
@@ -171,15 +189,23 @@ export function apply(ctx: ClientContext): void {
                 label: resolveSlotLabel(e.options.label) ?? '',
               }))
               .sort((a, b) => a.order - b.order)
+            const ids = new Set(rows.map(row => row.id))
+            rows = rows.map((row) => {
+              const parentId = Object.entries(groups ?? {}).find(([parent, members]) =>
+                parent !== row.id && ids.has(parent) && members.includes(row.id))?.[0]
+              return parentId === undefined ? row : { ...row, parentId }
+            })
           }
           return rows
         },
         subscribe: (listener) => {
           const offLedger = ctx.slots.subscribe('settings.section', listener)
           const offLocale = ctx.locale.subscribe(listener)
+          const offGrouping = grouping.subscribe(listener)
           return () => {
             offLedger()
             offLocale()
+            offGrouping()
           }
         },
       },

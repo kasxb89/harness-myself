@@ -25,6 +25,8 @@ export interface SkillHubExecutionConfig {
   readonly searchLimit: number
   /** Official search and recommendation network deadline in milliseconds. @default 15000 */
   readonly searchTimeoutMs: number
+  /** Successful public recommendation cache lifetime; zero disables reuse. @default 60000 */
+  readonly recommendationsCacheMs?: number
 }
 
 /** Stable failure carried to localized browser presentation. */
@@ -122,6 +124,7 @@ export class SkillHubClient {
   private readonly pending = new Set<Promise<unknown>>()
   private preparation: Promise<string> | undefined
   private installing = false
+  private recommendationCache: { expiresAt: number; skills: readonly SkillHubSkill[] } | undefined
 
   /**
    * @param ctx - Host subprocess capability.
@@ -135,6 +138,7 @@ export class SkillHubClient {
   /** Cancel requests and wait until their subprocesses and cleanup have settled. */
   async dispose(): Promise<void> {
     this.controller.abort()
+    this.recommendationCache = undefined
     await Promise.allSettled([...this.pending, ...(this.preparation === undefined ? [] : [this.preparation])])
   }
 
@@ -242,9 +246,16 @@ export class SkillHubClient {
   /**
    * Read the official recommended ranking, retaining community coordinates in its published order.
    * @param signal - Request lifetime shared with CLI setup and execution.
+   * @param refresh - Bypass a successful in-memory ranking after an explicit retry.
    * @returns At most searchLimit community skills; invalid or unavailable rankings reject without installing skills.
    */
-  async recommendations(signal: AbortSignal): Promise<readonly SkillHubSkill[]> {
+  async recommendations(signal: AbortSignal, refresh = false): Promise<readonly SkillHubSkill[]> {
+    signal.throwIfAborted()
+    this.controller.signal.throwIfAborted()
+    if (!refresh && this.recommendationCache !== undefined && this.recommendationCache.expiresAt > Date.now()) {
+      return this.recommendationCache.skills.map(skill => ({ ...skill }))
+    }
+    this.recommendationCache = undefined
     const output = await this.cli(['skill', 'rankings', '--type', 'recommended', '--host', 'https://api.skillhub.cn',
       '--timeout', String(Math.ceil(this.config.searchTimeoutMs / 1000))], signal, 'recommendations-failed')
     try {
@@ -264,7 +275,12 @@ export class SkillHubClient {
           version: typeof item.version === 'string' ? item.version : '',
         })
       }
-      return [...skills.values()].slice(0, this.config.searchLimit)
+      const result = [...skills.values()].slice(0, this.config.searchLimit)
+      signal.throwIfAborted()
+      this.controller.signal.throwIfAborted()
+      const lifetime = this.config.recommendationsCacheMs ?? 60_000
+      if (lifetime > 0) this.recommendationCache = { expiresAt: Date.now() + lifetime, skills: result }
+      return result.map(skill => ({ ...skill }))
     } catch (error) { throw new SkillHubFailure('recommendations-failed', { cause: error }) }
   }
 

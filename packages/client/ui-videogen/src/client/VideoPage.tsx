@@ -169,12 +169,12 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
   const selectedCategory = contentCategories.some(item => item.id === draft.category) ? draft.category : 'all'
   const previewTemplate = contentTemplates.find(item => item.id === preview) ?? null
   const visibleTemplates = contentTemplates.filter(template => selectedCategory === 'all' || template.categoryId === selectedCategory)
-  const supportsImage = params !== null && (params.frameSlots > 0 || params.maxReferenceImages > 0)
   const workflows: Workflow[] = ['text']
-  if (supportsImage) workflows.push('image')
+  if (params !== null && params.frameSlots > 0) workflows.push('image')
   if (params !== null && params.frameSlots > 1) workflows.push('frames')
   if (params !== null && params.maxReferenceImages + params.maxReferenceVideos + params.maxReferenceAudios > 0) workflows.push('reference')
-  const workflow = workflows.includes(draft.workflow) ? draft.workflow : 'text'
+  const workflow = workflows.includes(draft.workflow) ? draft.workflow
+    : draft.workflow === 'image' && workflows.includes('reference') ? 'reference' : 'text'
   const selectedResolution = params?.resolutions.includes(resolution) === true ? resolution : params?.resolutions[0] ?? ''
   const durations = params?.durationByResolution === undefined ? params?.durations ?? []
     : Object.hasOwn(params.durationByResolution, selectedResolution) ? params.durationByResolution[selectedResolution] ?? [] : []
@@ -194,6 +194,8 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
   const selectedRatio = allowedRatios.includes(ratio) ? ratio : allowedRatios[0] ?? ''
   const ratioLabel = selectedRatio === 'adaptive' ? t('ratioAdaptive') : selectedRatio
   const settingsValues = { ratio: ratioLabel, resolution: selectedResolution, duration: String(duration) }
+  const settingsSummaryKey = selectedRatio === '' ? 'settingsSizeSummary' : 'settingsSummary'
+  const settingsTriggerKey = selectedRatio === '' ? 'settingsSizeTrigger' : 'settingsTrigger'
   const modelImageLimit = Math.max(params?.maxReferenceImages ?? 0, params?.frameSlots ?? 0)
   const imageLimit = Math.max(9, modelImageLimit)
   const referenceLimit = (slot: Slot): number => slot === 'image' ? imageLimit
@@ -457,32 +459,13 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
     } finally { if (isReferenceCurrent(context)) { operation.current = false; actions.patch({ uploading: null }) } }
   }, [accountIdentity, busy, imageLimit, isReferenceCurrent, params, readDraft, releasePreview, signedIn, t, upload, actions, workflows])
 
-  const pickFrame = useCallback(async (which: 'first' | 'last', files: FileList | null): Promise<void> => {
-    const file = files?.[0]
-    if (busy || readDraft().promptAssisting || operation.current || file === undefined) return
-    const context = readDraft()
-    if (signedIn !== true || accountIdentity === null || context.referenceAccountId !== accountIdentity) return
-    operation.current = true
-    actions.patch({ failure: null, uploadFailures: [], uploading: which })
-    try {
-      const reference = await upload('image', file, context, which)
-      if (reference !== null) {
-        if (!isReferenceCurrent(context)) { releasePreview(reference.url); return }
-        const current = readDraft()
-        const previous = which === 'first' ? current.firstFrame : current.lastFrame
-        actions.patch(which === 'first' ? { firstFrame: reference } : { lastFrame: reference })
-        if (previous !== null) releaseUnusedPreview(previous.url)
-      }
-    } finally { if (isReferenceCurrent(context)) { operation.current = false; actions.patch({ uploading: null }) } }
-  }, [accountIdentity, busy, isReferenceCurrent, readDraft, signedIn, upload, actions, releasePreview, releaseUnusedPreview])
-
-  const selectFrame = (which: 'first' | 'last', reference: Reference): void => {
+  const selectFrame = (which: 'first' | 'last', reference: Reference | null): void => {
     const current = readDraft()
     if (locked || signedIn !== true || accountIdentity === null || current.referenceAccountId !== accountIdentity
       || current.referenceEpoch !== draft.referenceEpoch) return
     const previous = which === 'first' ? current.firstFrame : current.lastFrame
     actions.patch({ ...(which === 'first' ? { firstFrame: reference } : { lastFrame: reference }),
-      workflow: which === 'last' || workflow === 'frames' ? 'frames' : 'image', failure: null })
+      ...(reference === null ? {} : { workflow: which === 'last' || workflow === 'frames' ? 'frames' as const : 'image' as const }), failure: null })
     if (previous !== null) releaseUnusedPreview(previous.url)
   }
 
@@ -640,31 +623,30 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
   const frameField = (which: 'first' | 'last'): ReactNode => {
     const reference = which === 'first' ? firstFrame : lastFrame
     const label = t(which === 'first' ? 'firstFrame' : 'lastFrame')
-    const inPool = reference !== null && slots.image.some(item => item.assetId === reference.assetId)
-    return <div className={css.frameControl} data-frame={which} data-selected={reference !== null}>
-      {reference !== null && !inPool && <img className={css.frame} src={reference.url.startsWith('/') ? appPath(reference.url) : reference.url} alt={reference.name} />}
-      <label className={css.framePicker}>
-        <input type="file" aria-label={label} accept={SLOT_TYPES.image.accept} disabled={locked}
-          onChange={(event) => { void pickFrame(which, event.target.files); event.target.value = '' }} />
-        <IconPlusOutlineRegular size={14} /><span>{label}</span>
-        <span className={css.fileName} title={reference?.name}>{reference?.name ?? t('frameNotSelected')}</span>
-      </label>
-      {reference !== null && !inPool && (reference.firstFrameOnly === true || reference.converted === true)
-        && <span className={css.conversion}>{t(reference.firstFrameOnly === true ? 'firstFrameOnly' : 'imageConverted')}</span>}
-      {reference !== null && <button type="button" disabled={locked} className={css.link} aria-label={t('clearFrame', { frame: label })} onClick={() => {
-        actions.patch(which === 'first' ? { firstFrame: null } : { lastFrame: null }); releaseUnusedPreview(reference.url)
-      }}>{t('clearFrameAction')}</button>}
-    </div>
+    const options = [...new Map([firstFrame, lastFrame, ...slots.image]
+      .filter((item): item is Reference => item !== null).map(item => [item.assetId, item])).values()]
+    return <label className={css.frameControl} data-frame={which} data-selected={reference !== null}>
+      <span>{label}</span>
+      <select className={css.frameChoice} aria-label={label} value={reference?.assetId ?? ''} disabled={locked || options.length === 0}
+        onChange={(event) => {
+          const selected = options.find(item => item.assetId === event.target.value)
+          selectFrame(which, selected ?? null)
+        }}>
+        <option value="">{t('frameNotSelected')}</option>
+        {options.map(item => <option key={item.assetId} value={item.assetId}>{item.name}</option>)}
+      </select>
+    </label>
   }
 
   const referenceField = (slot: Slot): ReactNode => {
     const limit = referenceLimit(slot)
-    if (limit === 0 && slots[slot].length === 0) return null
-    if (slots[slot].length === 0) return null
+    const items = slot === 'image' ? [...new Map([firstFrame, lastFrame, ...slots.image]
+      .filter((item): item is Reference => item !== null).map(item => [item.assetId, item])).values()] : slots[slot]
+    if (items.length === 0) return null
     return <div className={css.field} key={slot}>
-      <span className={css.label}>{t(SLOT_LABELS[slot])}<span className={css.count}>{slots[slot].length}/{limit}</span></span>
+      <span className={css.label}>{t(SLOT_LABELS[slot])}<span className={css.count}>{items.length}/{limit}</span></span>
       <ul className={slot === 'image' ? css.imageFiles : css.files} aria-label={t('materialList', { kind: t(SLOT_LABELS[slot]) })}>
-        {slots[slot].map((item) => {
+        {items.map((item) => {
           const isFirst = firstFrame?.assetId === item.assetId
           const isLast = lastFrame?.assetId === item.assetId
           const activeFirst = isFirst && (workflow === 'image' || workflow === 'frames') && (params?.frameSlots ?? 0) > 0
@@ -681,12 +663,6 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
               && <span className={css.conversion} title={t(item.firstFrameOnly === true ? 'firstFrameOnly' : 'imageConverted')}>
                 {t(item.firstFrameOnly === true ? 'firstFrameOnly' : 'imageConverted')}</span>}
             <div className={css.fileActions}>
-              {slot === 'image' && params !== null && params.frameSlots > 0 && <button type="button" disabled={locked} className={css.frameAction}
-                aria-label={t('useFirstFrameNamed', { name: item.name })} aria-pressed={activeFirst}
-                onClick={() => { selectFrame('first', item) }}>{t('firstFrameShort')}</button>}
-              {slot === 'image' && params !== null && params.frameSlots > 1 && <button type="button" disabled={locked} className={css.frameAction}
-                aria-label={t('useLastFrameNamed', { name: item.name })} aria-pressed={activeLast}
-                onClick={() => { selectFrame('last', item) }}>{t('lastFrameShort')}</button>}
               <button type="button" disabled={locked} className={css.link} aria-label={t('removeNamed', { name: item.name })} onClick={() => {
                 actions.removeReference(slot, item.assetId)
                 if (slot === 'image') actions.patch({ ...(isFirst ? { firstFrame: null } : {}), ...(isLast ? { lastFrame: null } : {}) })
@@ -741,11 +717,6 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
           className={workflow === entry ? `${css.workflow} ${css.workflowActive}` : css.workflow}
           onClick={() => { actions.patch({ workflow: entry, failure: null, message: null }) }}>{t(WORKFLOW_LABELS[entry])}</button>)}</div>
         <div className={css.composerHero}>
-          <label className={css.promptField}>
-            <textarea ref={promptField} className={css.textarea} rows={3} value={prompt} aria-label={t('prompt')}
-              placeholder={text(content?.promptPlaceholder) || t('promptPlaceholder')} onChange={(event) => { actions.patch({ prompt: event.target.value }) }} />
-            <span className={css.count} aria-hidden="true">{prompt.length}</span>
-          </label>
           <div className={css.materialToolbar}>
             <label className={css.addMedia}><IconPlusOutlineRegular size={16} /><span>{t('addMedia')}</span>
               <input type="file" aria-label={t('addMedia')} accept={[SLOT_TYPES.image.accept,
@@ -757,9 +728,9 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
             <p className={css.generationScope}>{generationMaterialSummary}</p>
           </div>
           <div className={css.materials}>
+            {referenceField('image')}
             {workflow !== 'text' && params !== null && params.frameSlots > 0 && (workflow === 'image' || workflow === 'frames')
               && <div className={css.frameControls}>{frameField('first')}{workflow === 'frames' && frameField('last')}</div>}
-            {referenceField('image')}
             <div className={css.materialNotes}>
               <details className={css.materialHelp}><summary>{t('materialRequirements')}</summary><p className={css.hint}>{t('materialHelp', { n: String(imageLimit) })}</p>
                 <p className={css.hint}>{t(WORKFLOW_HINTS[workflow])}</p>
@@ -768,6 +739,11 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
             {workflow === 'reference' && params !== null && <div className={css.mediaGrid}>{referenceField('video')}{referenceField('audio')}</div>}
           </div>
         </div>
+        <label className={css.promptField}>
+          <textarea ref={promptField} className={css.textarea} rows={3} value={prompt} aria-label={t('prompt')}
+            placeholder={text(content?.promptPlaceholder) || t('promptPlaceholder')} onChange={(event) => { actions.patch({ prompt: event.target.value }) }} />
+          <span className={css.count} aria-hidden="true">{prompt.length}</span>
+        </label>
         {props.renderFactorySlot('creation.prompt.assist', {
           kind: 'video', prompt,
           references: assistReferences, generation: assistGeneration,
@@ -800,17 +776,17 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
           <Menu open={modelMenu} portal selectedId={model?.id} items={models.map(entry => ({ id: entry.id, label: entry.displayName }))}
             onSelect={(id) => { actions.patch({ modelId: id, message: null }); setModelMenu(false) }}
             onClose={() => { setModelMenu(false) }}
-            anchor={<button type="button" className={css.modelButton} aria-label={t('model')} aria-expanded={modelMenu}
-              disabled={locked || models.length === 0} onClick={() => { setModelMenu(!modelMenu) }}>{model?.displayName ?? t('model')}<span aria-hidden="true">⌄</span></button>} />
+            anchor={<Tooltip label={model?.displayName ?? t('model')} portal side="top"><button type="button" className={css.modelButton} aria-label={t('model')} aria-expanded={modelMenu}
+              disabled={locked || models.length === 0} onClick={() => { setModelMenu(!modelMenu) }}><span className={css.modelName}>{model?.displayName ?? t('model')}</span><span aria-hidden="true">⌄</span></button></Tooltip>} />
           <details className={css.settings}>
-            <summary className={css.settingsTrigger} aria-label={params === null || settingsInvalid ? t('settingsUnavailable') : t('settingsTrigger', settingsValues)} aria-disabled={locked || params === null}
+            <summary className={css.settingsTrigger} aria-label={params === null || settingsInvalid ? t('settingsUnavailable') : t(settingsTriggerKey, settingsValues)} aria-disabled={locked || params === null}
               onClick={(event) => { if (locked || params === null) event.preventDefault() }}>
               <span className={css.settingsTitle}><IconSettingsOutlineRegular size={16} /><span>{t('settings')}</span></span>
-              <span className={css.settingsValues} aria-hidden="true">{params === null || settingsInvalid ? t('settingsUnavailable') : <><span>{ratioLabel}</span><span>{selectedResolution}</span><span>{t('secondsCompact', { n: String(duration) })}</span></>}</span>
+              <span className={css.settingsValues} aria-hidden="true">{params === null || settingsInvalid ? t('settingsUnavailable') : <>{selectedRatio !== '' && <span>{ratioLabel}</span>}<span>{selectedResolution}</span><span>{t('secondsCompact', { n: String(duration) })}</span></>}</span>
               <IconChevronDownOutlineRegular className={css.settingsChevron} size={14} />
             </summary>
             <div className={css.settingsPanel}>
-              <div className={css.settingsHeading}><div><h3>{t('settings')}</h3><p>{t('settingsHint')}</p></div><span className={css.settingsOverview}>{settingsInvalid ? t('settingsUnavailable') : t('settingsSummary', settingsValues)}</span></div>
+              <div className={css.settingsHeading}><div><h3>{t('settings')}</h3><p>{t('settingsHint')}</p></div><span className={css.settingsOverview}>{settingsInvalid ? t('settingsUnavailable') : t(settingsSummaryKey, settingsValues)}</span></div>
               <fieldset className={css.settingsBody} aria-label={t('settings')} disabled={locked}>
                 {params !== null && params.ratios.length > 0 && <fieldset className={css.settingsGroup}><legend>{t('ratio')}</legend>
                   <div className={css.ratioGrid}>{params.ratios.map((value) => {

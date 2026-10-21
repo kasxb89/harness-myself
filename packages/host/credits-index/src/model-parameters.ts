@@ -24,6 +24,8 @@
 export interface ImageSpec {
   /** Output size menu; empty means the route takes no size field. */
   readonly sizes: readonly string[]
+  /** Named output tiers sent as resolution, independently from pixel sizes. */
+  readonly resolutions?: readonly string[]
   /** Largest number of images one call may ask for. */
   readonly maxCount: number
   /** Reference images an edit may carry; 0 means text-to-image only. */
@@ -192,11 +194,11 @@ export const IMAGE_MODELS: Record<string, ImageSpec> = {
   },
 
   // ── This deployment's own async image route ───────────────────────────────
-  // The native task contract carries only model, prompt, n=1 and optional
-  // reference_images. OpenAI output knobs and pixel sizes are not forwarded.
+  // The native task contract uses named resolution tiers, not pixel sizes.
+  // OpenAI output knobs are not forwarded.
   // Authorized local references upload through the authenticated gateway first.
   'yunshu-internal-gpt-image-2': {
-    sizes: [], maxCount: 1, maxEdits: 6,
+    sizes: [], resolutions: ['1k', '2k', '4k'], maxCount: 1, maxEdits: 6,
     qualities: [],
     backgrounds: [],
     formats: [],

@@ -15,6 +15,23 @@ import type { ArtifactListing, ArtifactResult, ArtifactStorage, TrashedArtifact 
 import { en, zh } from '../src/client/locales.ts'
 
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks() })
+beforeEach(() => {
+  vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {})
+  vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {})
+})
+
+it('shows usable files before delayed storage and recovery inventory finish', async () => {
+  const storage = deferred<ArtifactResult<ArtifactStorage>>()
+  const recovery = deferred<ArtifactResult<readonly TrashedArtifact[]>>()
+  render(<ArtifactsPage {...props({ readStorage: () => storage.promise, readTrash: () => recovery.promise })} />)
+  await selectImage()
+  expect(screen.getByRole('region', { name: '预览' })).toBeTruthy()
+  await act(async () => {
+    storage.resolve({ ok: true, value: destination })
+    recovery.resolve({ ok: true, value: [] })
+  })
+  expect(screen.getByRole('region', { name: '预览' })).toBeTruthy()
+})
 
 type PdfRenderer = PropsRenderSlots<'artifacts.preview.pdf'>['renderSlot']
 /** The generic dispatcher narrows its concrete PDF owner before rendering the test view. */
@@ -56,6 +73,7 @@ function props(overrides: Partial<ArtifactsPageProps> = {}): ArtifactsPageProps 
   return {
     active: true,
     pollIntervalMs: 5000,
+    videoPosterTimeoutMs: 15_000,
     renderSlot: (_key, _owner, options) => options?.fallback ?? null,
     t: (key, values) => {
       const copy: Record<string, string> = zh

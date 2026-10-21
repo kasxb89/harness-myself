@@ -30,6 +30,7 @@ export const Config: Schema<Config> = Schema.object({
   maxDownloadBytes: Schema.number().step(1).min(1).default(1_048_576),
   searchLimit: Schema.number().step(1).min(1).max(100).default(20),
   searchTimeoutMs: Schema.number().step(1).min(1).max(2_147_483_647).default(15_000),
+  recommendationsCacheMs: Schema.number().step(1).min(0).max(3_600_000).default(60_000),
 })
 
 /**
@@ -65,7 +66,7 @@ export function apply(ctx: Context, config: Config): void {
   )) })
   ctx.connection.fetch.register({
     path: SKILLHUB_RECOMMENDATIONS_PATH, methods: ['GET'], requestBody: 'buffered',
-    fetch: handle(async (_request, signal) => ({ ok: true, skills: await client.recommendations(signal) })),
+    fetch: handle(async (request, signal) => ({ ok: true, skills: await client.recommendations(signal, new URL(request.url).searchParams.get('refresh') === '1') })),
   })
   ctx.connection.fetch.register({ path: SKILLHUB_INSTALL_PATH, methods: ['POST'], requestBody: 'buffered', fetch: handle(async (request, signal) => {
     let value: unknown

@@ -85,7 +85,8 @@ try {
       # Only an extraction failure writes a report; it must quote 7-Zip's verdict so support can read the cause.
       $reports = @(if (Test-Path -LiteralPath $reportDir) { Get-ChildItem -LiteralPath $reportDir -File })
       if ($mode -eq 'broken') {
-        if ($reports.Count -ne 1 -or $reports[0].Name -notmatch '^extract-failure-20\d{6}-\d{6}\.log$') {
+        # NSIS GetTime leaves the hour unpadded; minutes and seconds retain two digits.
+        if ($reports.Count -ne 1 -or $reports[0].Name -notmatch '^extract-failure-20\d{6}-(?:[01]?\d|2[0-3])[0-5]\d[0-5]\d\.log$') {
           throw "Directory smoke $mode did not save exactly one extraction report"
         }
         $report = Get-Content -LiteralPath $reports[0].FullName -Raw -Encoding UTF8

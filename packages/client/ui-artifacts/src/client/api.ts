@@ -1,4 +1,5 @@
 /** Cancellable artifact reads and explicit, non-retrying file mutations. */
+import { appPath } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ArtifactEntry } from './ArtifactsPage.tsx'
 import type { SessionId, SessionSeq } from '@deepseek-ai/dsh-session/types'
 import type { ToolCallId } from '@deepseek-ai/dsh-llm/brand'
@@ -153,7 +154,7 @@ async function request<T>(path: string, valid: (value: unknown) => value is T, s
   body?: unknown): Promise<ArtifactResult<T>> {
   const uncertain = body !== undefined ? 'ARTIFACT_OPERATION_UNKNOWN' : 'ARTIFACT_OPERATION_FAILED'
   try {
-    const response = await fetch(`/artifacts/api/${path}`, {
+    const response = await fetch(appPath(`/artifacts/api/${path}`), {
       method: body === undefined ? 'GET' : 'POST', signal, credentials: 'same-origin', cache: 'no-store',
       headers: body === undefined ? { accept: 'application/json' } : { accept: 'application/json', 'content-type': 'application/json' },
       ...body === undefined ? {} : { body: JSON.stringify(body) },

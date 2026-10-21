@@ -15,7 +15,7 @@ import { SkillHubPanelIcon } from './SkillHubPanelIcon.tsx'
 /** Cancellable Host operations injected into the skill store. */
 export interface SkillHubInjected {
   /** Read the official community recommendations without installing anything. */
-  readRecommendations: (signal: AbortSignal) => Promise<SkillHubSearchResponse>
+  readRecommendations: (signal: AbortSignal, refresh?: boolean) => Promise<SkillHubSearchResponse>
   /** Search an explicitly submitted community query. */
   search: (query: string, signal: AbortSignal) => Promise<SkillHubSearchResponse>
   /** Read installed skills without mutating the product. */
@@ -67,14 +67,14 @@ export function SkillHubPage({ t, readRecommendations, search, readInstalled, in
   const inventoryRequest = useRef<AbortController | null>(null)
   const installRequests = useRef(new Map<string, AbortController>())
 
-  const refreshRecommendations = useCallback(async () => {
+  const refreshRecommendations = useCallback(async (refresh = false) => {
     recommendationsRequest.current?.abort()
     const request = new AbortController()
     recommendationsRequest.current = request
     setLoadingRecommendations(true)
     setRecommendationsError(null)
     try {
-      const result = await readRecommendations(request.signal)
+      const result = await readRecommendations(request.signal, refresh)
       if (!mounted.current || request.signal.aborted || recommendationsRequest.current !== request) return
       if (result.ok) setRecommendations(result.skills)
       else setRecommendationsError(result.code)
@@ -235,7 +235,7 @@ export function SkillHubPage({ t, readRecommendations, search, readInstalled, in
         </div>
         {submitted === null && recommendationsError !== null && <div className={css.notice} role="alert">
           <span>{t(`error.${recommendationsError}`)}</span>
-          <Button size="sm" onClick={() => { void refreshRecommendations() }}>{t('retry')}</Button>
+          <Button size="sm" onClick={() => { void refreshRecommendations(true) }}>{t('retry')}</Button>
         </div>}
         {submitted === null && loadingRecommendations && <div className={css.loading} role="status" aria-label={t('recommendationsLoading')}><IconLoadingOutlineRegular className={css.spinner} /></div>}
         {submitted === null && !loadingRecommendations && recommendationsError === null && recommendations.length === 0 && (

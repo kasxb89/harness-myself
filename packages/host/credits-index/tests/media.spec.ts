@@ -9,10 +9,20 @@ describe('internal image capability', () => {
     ], null)
     expect(catalog).toMatchObject([
       { id: 'yunshu-internal-gpt-image-2', route: '/toapis/v1/images/generations', params: {
-        maxCount: 1, maxEdits: 6, sizes: [], qualities: [], backgrounds: [], formats: [], moderations: [], seed: false,
+        maxCount: 1, maxEdits: 6, sizes: [], resolutions: ['1k', '2k', '4k'], qualities: [], backgrounds: [], formats: [], moderations: [], seed: false,
       } },
       { id: 'wanx2.1-t2i-turbo', params: { maxEdits: 0 } },
     ])
+  })
+
+  it('keeps the deployed image resolution billing tiers in the image catalog', () => {
+    const [model] = catalogFromPricing([{ model_name: 'yunshu-internal-gpt-image-2',
+      supported_endpoint_types: ['image-generation', 'openai'], enable_groups: ['product'],
+      billing_usage_schema: { image_count: { type: 'number' }, resolution: { enum: ['1k', '2k', '4k'] } },
+    }], 'product')
+    expect(model).toMatchObject({ kind: 'image', route: '/toapis/v1/images/generations', params: {
+      sizes: [], resolutions: ['1k', '2k', '4k'], maxEdits: 6,
+    } })
   })
 })
 
@@ -71,6 +81,20 @@ describe('BlackRxAI exact video contracts', () => {
     }], null)
     expect(model?.params).toMatchObject({ durations: [15, 20] })
     expect(model?.params).not.toHaveProperty('defaultDuration')
+  })
+
+  it.each([undefined, '', '   ', null, false, 12, {}, []].map(display_name => ({ display_name })))('uses the exact model id for an unusable display name: $display_name', ({ display_name }) => {
+    const id = 'sd-20-9/3/3-1'
+    const [model] = catalogFromPricing([{ model_name: id, display_name }], null)
+    expect(model?.displayName).toBe(id)
+  })
+
+  it('uses friendly catalog labels without changing identity, capability or authorization', () => {
+    const row = { model_name: 'sd-20-9/3/3-1', enable_groups: ['product'] }
+    const [baseline] = catalogFromPricing([row], 'product')
+    const [named] = catalogFromPricing([{ ...row, display_name: '云枢视频 · 15秒' }], 'product')
+    expect(named).toEqual({ ...baseline, displayName: '云枢视频 · 15秒' })
+    expect(catalogFromPricing([{ ...row, display_name: '云枢视频 · 15秒' }], 'other')).toEqual([])
   })
 })
 

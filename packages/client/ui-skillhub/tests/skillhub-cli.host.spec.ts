@@ -162,6 +162,35 @@ def main():
     await instance.dispose()
   })
 
+  it('reuses only a fresh successful ranking and honors refresh, expiry and cancellation', async () => {
+    let now = 1000
+    vi.spyOn(Date, 'now').mockImplementation(() => now)
+    provider.output = async () => JSON.stringify({ section: 'recommended', skills: [{ namespace: { canonicalName: '@team/hello' },
+      name: 'Hello', description: 'Original', source: 'community' }] })
+    const instance = client({ ...budget, recommendationsCacheMs: 100 })
+    const first = await instance.run(signal(), s => instance.recommendations(s))
+    const cached = await instance.run(signal(), s => instance.recommendations(s))
+    expect(cached).toEqual(first)
+    expect(cached).not.toBe(first)
+    expect(cached[0]).not.toBe(first[0])
+    expect(provider.specs).toHaveLength(1)
+    now += 101
+    await instance.run(signal(), s => instance.recommendations(s))
+    expect(provider.specs).toHaveLength(2)
+    provider.exitCode = 42
+    await expect(instance.run(signal(), s => instance.recommendations(s, true))).rejects.toMatchObject({ code: 'recommendations-failed' })
+    // Failed refresh withdraws the old cache; the next visit really retries.
+    provider.exitCode = 0
+    await instance.run(signal(), s => instance.recommendations(s))
+    expect(provider.specs).toHaveLength(4)
+    const cancelled = new AbortController()
+    cancelled.abort()
+    await expect(instance.recommendations(cancelled.signal)).rejects.toBeDefined()
+    expect(provider.specs).toHaveLength(4)
+    await instance.dispose()
+    vi.restoreAllMocks()
+  })
+
   it.each([
     'not json', '{}', '{"section":"hot_downloads","skills":[]}',
     '{"section":"recommended","skills":[{"source":"community","slug":"hello","name":"Hello","description":"A skill"}]}',
@@ -169,7 +198,7 @@ def main():
   ])('reports an invalid official recommendation response without falling back to invented skills (%s)', async (output) => {
     provider.output = async () => output
     const instance = client()
-    await expect(instance.run(signal(), s => instance.recommendations(s))).rejects.toMatchObject({ code: 'recommendations-failed' })
+    await expect(instance.run(signal(), s => instance.recommendations(s, true))).rejects.toMatchObject({ code: 'recommendations-failed' })
     expect(await instance.installed()).toEqual([])
     await instance.dispose()
   })
@@ -179,10 +208,10 @@ def main():
     const instance = client()
     await expect(instance.run(signal(), s => instance.recommendations(s))).resolves.toEqual([])
     provider.exitCode = 42
-    await expect(instance.run(signal(), s => instance.recommendations(s))).rejects.toMatchObject({ code: 'recommendations-failed' })
+    await expect(instance.run(signal(), s => instance.recommendations(s, true))).rejects.toMatchObject({ code: 'recommendations-failed' })
     provider.exitCode = 0
     provider.lossy = true
-    await expect(instance.run(signal(), s => instance.recommendations(s))).rejects.toMatchObject({ code: 'recommendations-failed' })
+    await expect(instance.run(signal(), s => instance.recommendations(s, true))).rejects.toMatchObject({ code: 'recommendations-failed' })
     await instance.dispose()
   })
 

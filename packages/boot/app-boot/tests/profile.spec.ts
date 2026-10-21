@@ -30,6 +30,7 @@ import {
   resolveProfileDir,
   writeProfileManifest,
   type Profile,
+  type ProfileContext,
   type RuntimeResolution,
 } from '../src/index.ts'
 import { installRuntimeInterception } from '../src/profile-resolution/resolver.ts'
@@ -205,6 +206,133 @@ it('composes current files from profile data and retains launch overlay and tele
   expect(composeEntries([readProfilePatches('test', { ...enabled, overlays: [] })])[0]?.disabled).toBe(true)
   writeFileSync(patchPath, '- id: session-telemetry-otel\n  disabled: false\n')
   expect(composeEntries([readProfilePatches('test', { ...enabled, overlays: [] })])[0]?.disabled).toBe(false)
+})
+
+/** A self-relative employee bundle and detached preferences under one disposable home. */
+function employeeProfile(options: { packageName?: string; id?: string; name?: string } = {}) {
+  const home = tmp()
+  const packageName = options.packageName ?? 'dsh-custom-mode'
+  const id = options.id ?? 'custom-mode'
+  const name = options.name ?? './index.mjs'
+  const installAnchor = stageInstallation({
+    [packageName]: { patch: JSON.stringify([{ insert: [{ id, name }] }]) },
+  })
+  const dir = resolveProfileDir('employee', home)
+  initProfile(dir, [packageName])
+  const context: ProfileContext = {
+    name: 'employee', dir, patchPath: join(dir, PROFILE_PATCH_FILENAME), installAnchor, home, cwd: home,
+    startedBundles: [packageName], overlays: [], telemetryDisabledEnv: undefined,
+  }
+  const entryName = pathToFileURL(join(dirname(installAnchor), 'node_modules', packageName, 'index.mjs')).href
+  return { context, entryName }
+}
+
+it.each([true, false])('retains an old named employee preference on startup (disabled=%s)', (disabled) => {
+  const { context, entryName } = employeeProfile()
+  const text = JSON.stringify([{ id: 'custom-mode', name: 'dsh-custom-mode', disabled, config: { title: 'authored' } }])
+  writeFileSync(context.patchPath, text)
+  const initial = loadProfileDirectory('test', context.dir, context.installAnchor)
+  const before = structuredClone(initial)
+  const patches = readProfilePatches('test', context, initial)
+  expect(composeEntries([patches])).toEqual([{
+    id: 'custom-mode', name: entryName, disabled, config: { title: 'authored' },
+  }])
+  expect(initial).toEqual(before)
+  expect(readFileSync(context.patchPath, 'utf8')).toBe(text)
+})
+
+it('retains profile, home and invocation precedence while rereading named employee preferences', () => {
+  const { context, entryName } = employeeProfile()
+  const user = [{ id: 'custom-mode', name: 'dsh-custom-mode', disabled: true, config: { source: 'profile' } }]
+  const homeFile = join(context.home, PROFILE_PATCH_FILENAME)
+  const home = [{ id: 'custom-mode', name: 'dsh-custom-mode', disabled: false, config: { source: 'home' } }]
+  const overlays = [{ id: 'custom-mode', name: 'dsh-custom-mode', disabled: true, config: { source: 'invocation' } }]
+  writeFileSync(context.patchPath, JSON.stringify(user))
+  writeFileSync(homeFile, JSON.stringify(home))
+  const launched = { ...context, overlays }
+  expect(composeEntries([readProfilePatches('test', launched)])[0]).toEqual({
+    id: 'custom-mode', name: entryName, disabled: true, config: { source: 'invocation' },
+  })
+  expect(overlays[0]?.name).toBe('dsh-custom-mode')
+  expect(readFileSync(context.patchPath, 'utf8')).toBe(JSON.stringify(user))
+  expect(readFileSync(homeFile, 'utf8')).toBe(JSON.stringify(home))
+  expect(composeEntries([readProfilePatches('test', context)])[0]).toMatchObject({ disabled: false, config: { source: 'home' } })
+  writeFileSync(homeFile, '[]\n')
+  expect(composeEntries([readProfilePatches('test', context)])[0]).toMatchObject({ disabled: true, config: { source: 'profile' } })
+  writeFileSync(context.patchPath, JSON.stringify([{ ...user[0], disabled: false }]))
+  expect(composeEntries([readProfilePatches('test', context)])[0]?.disabled).toBe(false)
+})
+
+it.each([
+  { packageName: 'another-editor' },
+  { id: 'another-entry' },
+  { name: './other.mjs' },
+  { name: '../index.mjs' },
+  { name: 'dsh-custom-mode' },
+])('keeps named assertions literal outside the exact patched employee entry (%j)', (options) => {
+  const { context } = employeeProfile(options)
+  writeFileSync(context.patchPath, '- id: custom-mode\n  name: dsh-custom-mode\n  disabled: true\n')
+  const patches = readProfilePatches('test', context)
+  expect(patches.at(-1)).toEqual({ id: 'custom-mode', name: 'dsh-custom-mode', disabled: true })
+})
+
+it('keeps missing-bundle, wrong-name, wrong-id and insertion assertions unchanged', () => {
+  const { context } = employeeProfile()
+  const user = [
+    { id: 'custom-mode', name: 'another-editor', disabled: true },
+    { id: 'another-entry', name: 'dsh-custom-mode', disabled: true },
+    { insert: [{ id: 'extra-editor', name: 'dsh-custom-mode' }] },
+  ]
+  writeFileSync(context.patchPath, JSON.stringify(user))
+  const patches = readProfilePatches('test', context)
+  expect(patches.slice(-user.length)).toEqual(user)
+  const warnings: string[] = []
+  expect(composeEntries([patches], warning => warnings.push(warning))[0]?.disabled).toBeUndefined()
+  expect(warnings).toHaveLength(2)
+  writeProfileManifest(context.dir, { dsh: { profile: { bundles: [] } } })
+  writeFileSync(context.patchPath, '- id: custom-mode\n  name: dsh-custom-mode\n  disabled: true\n')
+  expect(readProfilePatches('test', context)).toEqual([{ id: 'custom-mode', name: 'dsh-custom-mode', disabled: true }])
+})
+
+it.each(['before', 'after'] as const)('does not normalize another bundle assertion placed %s the employee bundle', (position) => {
+  const { context, entryName } = employeeProfile()
+  writeFileSync(context.patchPath, '- id: custom-mode\n  name: dsh-custom-mode\n  config: { source: profile }\n')
+  const initial = loadProfileDirectory('test', context.dir, context.installAnchor)
+  const other = { packageName: 'other-bundle', packageDir: context.home, patchPaths: [],
+    patches: [{ id: 'custom-mode', name: 'dsh-custom-mode', disabled: true }] }
+  if (position === 'before') initial.layers.unshift(other)
+  else initial.layers.push(other)
+  const patches = readProfilePatches('test', context, initial)
+  expect(patches[position === 'before' ? 0 : 1]?.name).toBe('dsh-custom-mode')
+  const warnings: string[] = []
+  expect(composeEntries([patches], warning => warnings.push(warning))).toEqual([
+    { id: 'custom-mode', name: entryName, config: { source: 'profile' } },
+  ])
+  expect(warnings).toHaveLength(1)
+})
+
+it('does not retarget an old assertion when another bundle inserts the employee id again', () => {
+  const { context } = employeeProfile()
+  writeFileSync(context.patchPath, '- id: custom-mode\n  name: dsh-custom-mode\n  disabled: true\n')
+  const initial = loadProfileDirectory('test', context.dir, context.installAnchor)
+  initial.layers.push({ packageName: 'other-bundle', packageDir: context.home, patchPaths: [],
+    patches: [{ insert: [{ id: 'custom-mode', name: 'other-editor' }] }] })
+  const patches = readProfilePatches('test', context, initial)
+  expect(patches.at(-1)).toEqual({ id: 'custom-mode', name: 'dsh-custom-mode', disabled: true })
+})
+
+it.each([false, true])('keeps an old assertion on a user-inserted employee target (nested=%s)', (nested) => {
+  const { context } = employeeProfile()
+  const entry = { id: 'custom-mode', name: 'dsh-custom-mode' }
+  const insert = nested ? [{ id: 'extra-group', name: 'cordis:group', group: true, config: [entry] }] : [entry]
+  const user = [{ insert }, { id: 'custom-mode', name: 'dsh-custom-mode', disabled: true }]
+  writeFileSync(context.patchPath, JSON.stringify(user))
+  const patches = readProfilePatches('test', context)
+  expect(patches.at(-1)).toEqual(user.at(-1))
+  const entries = composeEntries([patches])
+  const extra = entries.at(-1)
+  if (nested) expect(extra?.config).toEqual([{ ...entry, disabled: true }])
+  else expect(extra).toEqual({ ...entry, disabled: true })
 })
 
 describe('initProfile', () => {

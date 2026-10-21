@@ -16,3 +16,13 @@ it('validates and updates onboarding preferences without remounting', async () =
 })
 
 it('keeps its own instance off the generated Settings pages', () => omitsGeneratedPage(ctx => ctx.plugin(HostPlugin)))
+
+it.each([
+  { 'skin-market': ['skin-market'] },
+  { 'skin-market': ['dream-skin'], other: ['dream-skin'] },
+  { 'skin-market': ['dream-skin'], 'dream-skin': ['nested'] },
+])('rejects ambiguous or nested settings groups %j', async (sectionGroups) => {
+  const ctx = new Context()
+  onTestFinished(() => ctx.fiber.dispose())
+  await expect(ctx.plugin(General, { sectionGroups })).rejects.toThrow('one unnested group')
+})

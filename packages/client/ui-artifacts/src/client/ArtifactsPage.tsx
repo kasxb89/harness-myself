@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
 import {
+  appPath,
   Button,
   FileTypeIcon,
   IconFolderOpenRegular,
@@ -26,6 +27,8 @@ import type { ArtifactErrorCode, ArtifactListing, ArtifactOrigin, ArtifactResult
 import { ArtifactFinder } from './ArtifactFinder.tsx'
 import { ArtifactChatLink } from './ArtifactChatLink.tsx'
 import { ArtifactPreview } from './ArtifactPreview.tsx'
+import { VideoThumbnail } from './VideoPoster.tsx'
+import { VideoPosterPool, type ReadVideoPoster } from './video-poster.ts'
 import css from './ArtifactsPage.module.css'
 
 /** Artifact kinds the host derives from file extensions. */
@@ -47,6 +50,8 @@ export interface ArtifactEntry {
 export interface ArtifactsInjected {
   /** Deployment-configured cadence for checking new files while this page is visible. */
   readonly pollIntervalMs: number
+  /** Maximum time for a queued first-frame decode, including its browser media read. */
+  readonly videoPosterTimeoutMs: number
   /** Translate one key of this plugin's namespace. */
   readonly t: (key: string, values?: Record<string, string>) => string
   /** Read operations belong to the mounted page and can be superseded. */
@@ -92,7 +97,7 @@ function entryKey(entry: ArtifactEntry): string {
 
 /** Raw URL for one artifact. */
 function rawUrl(path: string, workspaceId?: string): string {
-  return `/artifacts/api/raw?path=${encodeURIComponent(path)}${workspaceId === undefined ? '' : `&workspaceId=${encodeURIComponent(workspaceId)}`}`
+  return appPath(`/artifacts/api/raw?path=${encodeURIComponent(path)}${workspaceId === undefined ? '' : `&workspaceId=${encodeURIComponent(workspaceId)}`}`)
 }
 
 /** Human-readable size for one entry. */
@@ -244,6 +249,13 @@ export function ArtifactsPage(props: ArtifactsPageProps): ReactNode {
   const operation = useRef(false)
   const openingRequest = useRef(false)
   const generation = useRef(0)
+  const posters = useRef<VideoPosterPool | null>(null)
+  const readVideoPoster = useCallback<ReadVideoPoster>((entry, signal) => {
+    if (signal.aborted) return Promise.resolve(null)
+    posters.current ??= new VideoPosterPool(props.videoPosterTimeoutMs)
+    return posters.current.read(entry, signal)
+  }, [props.videoPosterTimeoutMs])
+  useEffect(() => () => { posters.current?.dispose(); posters.current = null }, [props.videoPosterTimeoutMs])
   const discoveredNow = useRef<readonly ArtifactEntry[]>([])
   const roots = listing?.roots ?? []
   const retainedDiscovered = discovered.filter(item => item.entry.workspaceId === undefined
@@ -276,30 +288,42 @@ export function ArtifactsPage(props: ArtifactsPageProps): ReactNode {
     request.current = current
     if (!background) setLoading(true)
     try {
-      const [files, destination, deleted] = await Promise.all([
-        readListing(current.signal).catch(() => ({ ok: false as const, code: 'ARTIFACT_OPERATION_FAILED' as const })),
-        readStorage(current.signal).catch(() => ({ ok: false as const, code: 'ARTIFACT_OPERATION_FAILED' as const })),
-        readTrash(current.signal).catch(() => ({ ok: false as const, code: 'ARTIFACT_OPERATION_FAILED' as const })),
-      ])
-      if (!alive.current || current.signal.aborted || revision !== generation.current) return null
-      const nextErrors: typeof errors = {}
-      if (files.ok) {
-        const loaded = [...files.value.items, ...(explicit ? [] : discoveredNow.current)]
-        if (explicit) {
-          setDiscoveredReset(discoveredNow.current.some(entry => !files.value.items.some(item => entryKey(item) === entryKey(entry))))
-          setDiscovered([])
-        }
-        setListing(files.value)
-        if (explicit) setPreviewRevision(value => value + 1)
-        setSelection(previous => loaded.some(entry => entryKey(entry) === previous) ? previous : null)
-        setDialog((previous) => {
-          if (previous === null || previous.kind === 'storage') return previous
-          const entry = loaded.find(item => entryKey(item) === entryKey(previous.entry))
-          return entry === undefined ? null : { ...previous, entry }
+      const currentRead = (): boolean => alive.current && !current.signal.aborted && revision === generation.current
+      const filesRead = readListing(current.signal)
+        .catch(() => ({ ok: false as const, code: 'ARTIFACT_OPERATION_FAILED' as const }))
+        .then((files) => {
+          if (!currentRead()) return files
+          if (files.ok) {
+            const loaded = [...files.value.items, ...(explicit ? [] : discoveredNow.current)]
+            if (explicit) {
+              setDiscoveredReset(discoveredNow.current.some(entry => !files.value.items.some(item => entryKey(item) === entryKey(entry))))
+              setDiscovered([])
+            }
+            setListing(files.value)
+            if (explicit) setPreviewRevision(value => value + 1)
+            setSelection(previous => loaded.some(entry => entryKey(entry) === previous) ? previous : null)
+            setDialog((previous) => {
+              if (previous === null || previous.kind === 'storage') return previous
+              const entry = loaded.find(item => entryKey(item) === entryKey(previous.entry))
+              return entry === undefined ? null : { ...previous, entry }
+            })
+          }
+          // File cards become usable independently of slow recovery/preference reads.
+          setLoading(false)
+          return files
         })
-      } else nextErrors.listing = files.code
-      if (destination.ok) setStorage(destination.value); else nextErrors.storage = destination.code
-      if (deleted.ok) setTrash(deleted.value); else nextErrors.trash = deleted.code
+      const storageRead = readStorage(current.signal)
+        .catch(() => ({ ok: false as const, code: 'ARTIFACT_OPERATION_FAILED' as const }))
+        .then((value) => { if (currentRead() && value.ok) setStorage(value.value); return value })
+      const trashRead = readTrash(current.signal)
+        .catch(() => ({ ok: false as const, code: 'ARTIFACT_OPERATION_FAILED' as const }))
+        .then((value) => { if (currentRead() && value.ok) setTrash(value.value); return value })
+      const [files, destination, deleted] = await Promise.all([filesRead, storageRead, trashRead])
+      if (!currentRead()) return null
+      const nextErrors: typeof errors = {}
+      if (!files.ok) nextErrors.listing = files.code
+      if (!destination.ok) nextErrors.storage = destination.code
+      if (!deleted.ok) nextErrors.trash = deleted.code
       setErrors(nextErrors)
       if (explicit && Object.keys(nextErrors).length === 0 && files.ok && (files.value.issues?.length ?? 0) === 0) {
         setUncertain(false)
@@ -453,6 +477,7 @@ export function ArtifactsPage(props: ArtifactsPageProps): ReactNode {
     return map
   }, [visibleFiles])
   const selected = visibleFiles.find(entry => entryKey(entry) === selection) ?? null
+  useEffect(() => { posters.current?.retain(visibleFiles) }, [visibleFiles])
   const loaded = listing !== null
   const truncated = listing?.truncated === true
 
@@ -502,10 +527,10 @@ export function ArtifactsPage(props: ArtifactsPageProps): ReactNode {
             {items.map(entry => <li key={entryKey(entry)}>
               <button type="button" className={selected !== null && entryKey(entry) === entryKey(selected) ? css.rowActive : css.row}
                 onClick={() => { setSelection(entryKey(entry)) }}>
-                <span className={css.thumb}>
+                {entry.kind === 'video' ? <VideoThumbnail entry={entry} read={readVideoPoster} /> : <span className={css.thumb}>
                   {entry.kind === 'image' && !/\.svg$/iu.test(entry.name) && entry.size <= THUMBNAIL_MAX_BYTES
                     ? <img className={css.thumbImage} src={rawUrl(entry.path, entry.workspaceId)} alt="" loading="lazy" /> : <FileTypeIcon path={entry.name} size={18} />}
-                </span>
+                </span>}
                 <span className={css.rowText}>
                   <span className={css.rowName}>{entry.name}</span><span className={css.rowMeta}>{metaLine(entry, t)}</span>
                 </span>
@@ -536,7 +561,7 @@ export function ArtifactsPage(props: ArtifactsPageProps): ReactNode {
             </header>
             <div className={css.previewBody}><ArtifactPreview
               key={`${entryKey(selected)}:${String(selected.size)}:${String(selected.mtimeMs)}:${String(previewRevision)}`}
-              entry={selected} t={t} renderSlot={props.renderSlot} /></div>
+              entry={selected} t={t} renderSlot={props.renderSlot} readVideoPoster={readVideoPoster} /></div>
           </>}
         </section>
       </div>

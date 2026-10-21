@@ -4,6 +4,7 @@
  * `@deepseek-ai/dsh-credits-index` over `/credits/api/summary`.
  */
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
+import z from '@deepseek-ai/schemastery'
 import type { MainPanelId } from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
@@ -45,11 +46,24 @@ export const RECHARGE_PANEL_ID = 'recharge' as MainPanelId
  * layout service the footer row uses to open its page. */
 export const inject = ['slots', 'locale', 'layout']
 
+/** Deadline for read-only reply-credit statistics, independent of model generation. */
+export interface Config {
+  /** Client read timeout in milliseconds; configure above the owning Host's statistics timeout. */
+  chatUsageReadTimeoutMs?: number
+}
+
+/** Validate the reply-credit read deadline before activating the UI. */
+export const Config: z<Config> = z.object({
+  chatUsageReadTimeoutMs: z.natural().min(1000).max(120_000).default(20_000),
+})
+
 /**
  * Client plugin body: register the dictionaries, the sidebar entry, and the page.
  * @param ctx - client root context.
+ * @param config - Loader-validated reply-credit read settings.
  */
-export function apply(ctx: ClientContext): void {
+export function apply(ctx: ClientContext, config: Config = {}): void {
+  const resolved = Config(config) as Required<Config>
   ctx.provide('creditsSession', createCreditsSessionSource())
   const t = ctx.locale.bind(NS)
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-credits: dictionaries')
@@ -60,6 +74,7 @@ export function apply(ctx: ClientContext): void {
       openRecharge: () => { ctx.layout.selectPanel(RECHARGE_PANEL_ID) } }),
   }, BalanceNotice))
   const modelCredits = (): ModelCreditsInjected => ({ hooks: { creditsSession: ctx.creditsSession },
+    readTimeoutMs: resolved.chatUsageReadTimeoutMs,
     openBalance: () => { ctx.layout.selectPanel(PANEL_ID) } })
   ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
     name: 'conversation.composer.dock', id: 'usage', order: 1, locale: NS, inject: modelCredits,

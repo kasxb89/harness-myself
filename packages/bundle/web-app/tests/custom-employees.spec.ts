@@ -1,5 +1,5 @@
 /** Custom employees through the real editor, Loader, prompt assembly and relay adapter. */
-import { globSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, globSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
 import Loader, { Group, type ModuleLoaderV2 } from '@deepseek-ai/cordis-plugin-loader'
 import Include, { applyEntryPatches } from '@deepseek-ai/cordis-plugin-include'
-import { loadOverlayPatches } from '@deepseek-ai/dsh-app-boot'
+import { composeEntries, createRuntimeResolution, initProfile, loadOverlayPatches, loadProfileDirectory, PluginPackages, readProfileManifest, readProfilePatches, writeProfileManifest } from '@deepseek-ai/dsh-app-boot'
 import { assembleContextFor, type Agent } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
@@ -24,7 +24,7 @@ const presetRoot = join(customRoot, 'preset')
 interface CreatedAssistant { ok: boolean; id: string }
 
 /** Boot source modules through an ordinary config file; only the upstream/account are fixtures. */
-async function boot(directory: string, relayUrl: string): Promise<Context> {
+async function boot(directory: string, relayUrl: string, legacyEntry = false): Promise<Context> {
   const ctx = new Context()
   onTestFinished(() => ctx.fiber.dispose())
   const hosts = [
@@ -39,7 +39,29 @@ async function boot(directory: string, relayUrl: string): Promise<Context> {
     ...name === 'fs-local' ? { config: { cwd: directory } } : {},
   }))
   const standard = applyEntryPatches([], loadOverlayPatches('custom-employee-test', join(packageRoot, 'presets/standard.patch.yml')), (message) => { throw new Error(message) })
-  const config = join(directory, 'cordis.json')
+  const installAnchor = join(repositoryRoot, 'apps/cli/package.json')
+  const profileDir = join(directory, 'profiles', 'desktop')
+  initProfile(profileDir, ['dsh-custom-mode'])
+  const previousPackage = join(profileDir, 'node_modules', 'dsh-custom-mode')
+  cpSync(customRoot, previousPackage, { recursive: true })
+  const previousReader = join(previousPackage, 'preset', 'prompt-reader.mjs')
+  const reader = readFileSync(previousReader, 'utf8')
+    .replace("const DEFAULT_SUFFIX = ''", "const DEFAULT_SUFFIX = 'Your working directory is {{cwd}}.'")
+    .replace(/  \/\/ Old user-owned prompts[\s\S]*?\n  \}\)\n\n/u, '')
+  expect(reader).not.toContain("systemPrompt.variable('cwd'")
+  expect(reader).toContain("const DEFAULT_SUFFIX = 'Your working directory is {{cwd}}.'")
+  writeFileSync(previousReader, reader)
+  const manifest = readProfileManifest('test', profileDir)
+  writeProfileManifest(profileDir, { ...manifest, dependencies: { 'dsh-custom-mode': '2.2.5' } })
+  const profile = loadProfileDirectory('test', profileDir, installAnchor)
+  const profileContext = { name: 'desktop', dir: profileDir, patchPath: profile.patchPath, installAnchor,
+    cwd: directory, home: directory, startedBundles: ['dsh-custom-mode'], overlays: [], telemetryDisabledEnv: undefined }
+  const employeeRows = composeEntries([readProfilePatches('test', profileContext, profile)])
+  const employeeEntry = employeeRows.find(row => row.id === 'custom-mode')?.name
+  expect(employeeEntry?.startsWith('file:')).toBe(true)
+  if (employeeEntry === undefined) throw new Error('The bundled employee entry is missing')
+  expect(realpathSync(fileURLToPath(employeeEntry))).toBe(realpathSync(join(customRoot, 'index.mjs')))
+  const config = join(profileDir, 'cordis.json')
   writeFileSync(config, JSON.stringify([
     ...hosts,
     { name: '@deepseek-ai/dsh-tool-subagent/model-selection-settings' },
@@ -51,18 +73,19 @@ async function boot(directory: string, relayUrl: string): Promise<Context> {
     } } } },
     { name: '@deepseek-ai/dsh-agent-preset-registry', config: { default: 'standard' } },
     ...standard,
-    { name: 'dsh-custom-mode' },
+    ...legacyEntry ? [{ id: 'custom-mode', name: 'dsh-custom-mode' }] : employeeRows,
   ]))
   const sources = new Map(globSync('packages/*/*/package.json', { cwd: repositoryRoot }).map((path) => {
     const filename = join(repositoryRoot, path)
     return [(JSON.parse(readFileSync(filename, 'utf8')) as { name: string }).name, dirname(filename)]
   }))
-  ctx.baseUrl = pathToFileURL(directory).href + '/'
+  ctx.baseUrl = pathToFileURL(profileDir).href + '/'
   await ctx.plugin(Loader)
+  await ctx.plugin(PluginPackages, { resolution: await createRuntimeResolution({ installAnchor, profile, home: directory }) })
   ctx.loader.builtins.include = Include
   ctx.loader.builtins.group = Group
   ctx.loader.internal = {
-    version: 'v2', async import(...[specifier]: Parameters<ModuleLoaderV2['import']>) {
+    version: 'v2', async import(...[specifier, parent]: Parameters<ModuleLoaderV2['import']>) {
       if (specifier === 'fixture:account') return { apply(owner: Context) {
         owner.provide('harnessAccount', {
           provider: 'yunshu-local', refreshModels: async () => ['deepseek-flash'],
@@ -70,7 +93,9 @@ async function boot(directory: string, relayUrl: string): Promise<Context> {
         })
       } }
       if (specifier === 'dsh-custom-mode') {
-        const loaded: unknown = await import(pathToFileURL(join(customRoot, 'index.mjs')).href)
+        const resolved = createRequire(parent).resolve(specifier)
+        expect(realpathSync(resolved)).toBe(realpathSync(join(previousPackage, 'index.mjs')))
+        const loaded: unknown = await import(pathToFileURL(resolved).href)
         return loaded
       }
       if (specifier.startsWith('file:')) {
@@ -86,9 +111,38 @@ async function boot(directory: string, relayUrl: string): Promise<Context> {
   } as NonNullable<typeof ctx.loader.internal>
   await ctx.loader.create({ name: 'cordis:include', config: { path: pathToFileURL(config).href } })
   await ctx.loader.await()
-  expect([...ctx.loader.entries()].filter(row => !row.disabled && row.fiber === undefined)).toEqual([])
+  expect([...ctx.loader.entries()].filter(row => !row.disabled && row.fiber === undefined)
+    .map(row => ({ id: row.id, name: row.options.name }))).toEqual([])
   return ctx
 }
+
+it('reproduces the old bare entry selecting an installed market copy before the bundled employee fix', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'yunshu-old-employee-profile-'))
+  onTestFinished(() => { rmSync(directory, { recursive: true, force: true }); vi.unstubAllEnvs() })
+  onTestFinished(closeMockServers)
+  vi.stubEnv('DSH_HOME', directory)
+  vi.stubEnv('DSH_PRESET_PATCH_DIR', join(packageRoot, 'presets'))
+  const relay = await mockServer([{ events: textEvents }])
+  const ctx = await boot(directory, relay.url, true)
+  const handler = (ctx.connection as HostConnectionService).createSharedFetchHandler('/api')
+  const response = await handler.fetch(new Request('http://127.0.0.1/api/custom-mode/create', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Existing market employee' }),
+  }))
+  expect(response.status).toBe(200)
+  const created = await response.json() as CreatedAssistant
+  const reader = readFileSync(join(directory, '.agent-presets', created.id, 'prompt-reader.mjs'), 'utf8')
+  expect(reader).toContain("const DEFAULT_SUFFIX = 'Your working directory is {{cwd}}.'")
+  const handle = await ctx.agents.create({ sessionId: SessionId('old-market-employee'),
+    meta: { cwd: directory, agentPreset: created.id }, agentOptions: { provider: 'yunshu-local', model: 'deepseek-flash' },
+    setup: async (owner) => { await ctx.agentPresets.mount(owner, created.id) },
+  })
+  handle.agent.followup(createUserMessage({ content: [{ type: 'text', text: 'Synthetic request' }], source: { kind: 'user' } }))
+  await handle.agent.whenIdle()
+  const ended = handle.agent.session.snapshotEvents().at(-1)
+  if (ended?.type !== 'turn/end' || ended.data.reason.kind !== 'error') throw new Error('The legacy employee did not reproduce its prompt failure')
+  expect(ended.data.reason.error.message).toContain('unknown prompt variable "{{cwd}}"')
+  expect(relay.requests).toHaveLength(0)
+})
 
 it('runs new and upgraded employees twice with the same account/model and preserves authored files', { timeout: 60_000 }, async () => {
   const directory = mkdtempSync(join(tmpdir(), 'yunshu-custom-employees-'))

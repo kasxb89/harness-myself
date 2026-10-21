@@ -1,8 +1,10 @@
 /** Extension-driven previews; binary Office files never enter the text reader. */
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { CodeBlock, FileTypeIcon, MarkdownText, TextShimmer, languageForPath } from '@deepseek-ai/dsh-client-ui-primitives'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { appPath, CodeBlock, FileTypeIcon, MarkdownText, TextShimmer, languageForPath } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ArtifactEntry, ArtifactsInjected } from './ArtifactsPage.tsx'
 import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
+import { useVideoPoster } from './VideoPoster.tsx'
+import { videoPosterKey, videoSourceUrl, type ReadVideoPoster } from './video-poster.ts'
 import css from './ArtifactPreview.module.css'
 
 const TEXT_PREVIEW_MAX_BYTES = 256 * 1024
@@ -16,9 +18,10 @@ const TEXT_EXTENSIONS: ReadonlySet<string> = new Set([
 type Translate = ArtifactsInjected['t']
 type PreviewFailure = 'failed' | 'binary' | 'unavailable' | 'tooLarge' | 'invalid' | 'busy' | 'stale'
 type PdfRender = { readonly renderSlot?: PropsRenderSlots<'artifacts.preview.pdf'>['renderSlot'] | undefined }
+type PosterRead = { readonly readVideoPoster?: ReadVideoPoster | undefined }
 
 function sourceUrl(entry: ArtifactEntry, route = 'raw'): string {
-  return `/artifacts/api/${route}?path=${encodeURIComponent(entry.path)}${entry.workspaceId === undefined ? '' : `&workspaceId=${encodeURIComponent(entry.workspaceId)}`}`
+  return appPath(`/artifacts/api/${route}?path=${encodeURIComponent(entry.path)}${entry.workspaceId === undefined ? '' : `&workspaceId=${encodeURIComponent(entry.workspaceId)}`}`)
 }
 
 /** Relative Markdown images use the same file scope as their containing document. */
@@ -101,12 +104,25 @@ function TextPreview({ entry, t }: { entry: ArtifactEntry; t: Translate }): Reac
   </div>
 }
 
-function MediaPreview({ entry, t }: { entry: ArtifactEntry; t: Translate }): ReactNode {
+function MediaPreview({ entry, t, readVideoPoster }: { entry: ArtifactEntry; t: Translate } & PosterRead): ReactNode {
   const [failed, setFailed] = useState(false)
+  const poster = useVideoPoster(entry, readVideoPoster, entry.kind === 'video')
+  const player = useRef<HTMLVideoElement>(null)
+  const version = videoPosterKey(entry)
+  useEffect(() => {
+    const video = player.current
+    return () => {
+      if (video === null) return
+      video.pause()
+      video.removeAttribute('src')
+      video.load()
+    }
+  }, [version])
   const url = sourceUrl(entry)
   if (failed) return <Notice entry={entry} reason="invalid" t={t} />
   if (entry.kind === 'image') return <img className={css.media} src={url} alt={entry.name} onError={() => { setFailed(true) }} />
-  if (entry.kind === 'video') return <video className={css.media} src={url} controls onError={() => { setFailed(true) }} />
+  if (entry.kind === 'video') return <video key={version} ref={player} className={css.media} src={videoSourceUrl(entry)} controls preload="metadata"
+    poster={poster.url} data-artifact-video-preview data-video-poster={poster.state} onError={() => { setFailed(true) }} />
   return <div className={css.audioPane}><FileTypeIcon path={entry.name} size={40} />
     <audio className={css.audio} src={url} controls onError={() => { setFailed(true) }} /></div>
 }
@@ -165,7 +181,10 @@ function OfficePreview({ entry, t, renderSlot }: { entry: ArtifactEntry; t: Tran
  * @param props - Selected entry and locale-owned preview labels.
  * @returns Local previews without uploading the source to an external viewer.
  */
-export function ArtifactPreview({ entry, t, renderSlot }: { entry: ArtifactEntry; t: Translate } & PdfRender): ReactNode {
+export function ArtifactPreview({ entry, t, renderSlot, readVideoPoster }: {
+  entry: ArtifactEntry
+  t: Translate
+} & PdfRender & PosterRead): ReactNode {
   let body: ReactNode
   if (/\.(?:html?|svg)$/iu.test(entry.name)) body = <iframe className={css.frame} src={sourceUrl(entry)} title={entry.name} sandbox="" />
   else if (/\.pdf$/iu.test(entry.name)) {
@@ -174,7 +193,9 @@ export function ArtifactPreview({ entry, t, renderSlot }: { entry: ArtifactEntry
       fallback: <Notice entry={entry} reason="unavailable" t={t} />,
     }) ?? <Notice entry={entry} reason="unavailable" t={t} />
   } else if (OFFICE.test(entry.name)) body = <OfficePreview entry={entry} t={t} renderSlot={renderSlot} />
-  else if (entry.kind === 'image' || entry.kind === 'video' || entry.kind === 'audio') body = <MediaPreview entry={entry} t={t} />
+  else if (entry.kind === 'image' || entry.kind === 'video' || entry.kind === 'audio') {
+    body = <MediaPreview entry={entry} t={t} readVideoPoster={readVideoPoster} />
+  }
   else if (TEXT_EXTENSIONS.has(entry.name.slice(entry.name.lastIndexOf('.') + 1).toLowerCase())
     || /^(?:readme|license|notice|dockerfile|makefile)$/iu.test(entry.name)) body = <TextPreview entry={entry} t={t} />
   else body = <Notice entry={entry} reason="unsupported" t={t} />

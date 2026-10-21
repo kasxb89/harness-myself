@@ -36,6 +36,8 @@ const copy: Readonly<Record<string, string>> = zh
 const t: ArtifactsInjected['t'] = (key, values) => (copy[key] ?? key).replace(/\{(\w+)\}/gu, (_match, name: string) => values?.[name] ?? '')
 
 beforeEach(() => {
+  vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {})
+  vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {})
   createDescriptor = Object.getOwnPropertyDescriptor(URL, 'createObjectURL')
   revokeDescriptor = Object.getOwnPropertyDescriptor(URL, 'revokeObjectURL')
   create.mockReset().mockImplementation(() => `blob:https://preview.invalid/${create.mock.calls.length}`)
@@ -79,6 +81,30 @@ function expectDownload(entry: ArtifactEntry): void {
 }
 
 describe('Artifact preview formats and isolation', () => {
+  it('keeps the document read, relative image and original download under the public mount', async () => {
+    const base = document.createElement('base')
+    base.href = new URL('/tools/dsh/', location.href).href
+    document.head.append(base)
+    try {
+      const entry = file('剧情.md')
+      const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response('![剧情分镜](images/frame.png)'))
+      vi.stubGlobal('fetch', fetcher)
+      render(<ArtifactPreview entry={entry} t={t} renderSlot={renderPdf} />)
+      const image = await screen.findByRole<HTMLImageElement>('img', { name: '剧情分镜' })
+      const read = new URL(String(fetcher.mock.calls[0]?.[0]), location.href)
+      const relativeImage = new URL(image.src)
+      const download = new URL(screen.getByRole<HTMLAnchorElement>('link', { name: zh['preview.download'] }).href)
+      for (const url of [read, relativeImage, download]) {
+        expect(url.pathname).toBe('/tools/dsh/artifacts/api/raw')
+        expect(url.searchParams.get('workspaceId')).toBe(entry.workspaceId)
+      }
+      expect(read.searchParams.get('path')).toBe(entry.path)
+      expect(relativeImage.searchParams.get('path')).toBe('D:/动漫项目/输出/images/frame.png')
+      expect(download.searchParams.get('path')).toBe(entry.path)
+      expect(download.searchParams.get('download')).toBe('1')
+    } finally { cleanup(); base.remove() }
+  })
+
   it.each(['html', 'svg'])('loads %s through its native frame and preserves the workspace download', (extension) => {
     const entry = file(`preview.${extension}`, extension === 'svg' ? 'image' : 'document')
     const fetcher = vi.fn<typeof fetch>()

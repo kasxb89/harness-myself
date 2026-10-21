@@ -265,10 +265,17 @@ export class PluginManager extends TypertRemoteService {
   @Remote
   async listPlugins(): Promise<PluginInfo[]> {
     const rows = flatten(composeEntries([readProfilePatches('dsh', this.profile)]))
+    const rowsById = new Map<string, EntryOptions[]>()
+    for (const row of rows) {
+      const sameId = rowsById.get(row.id)
+      if (sameId === undefined) rowsById.set(row.id, [row])
+      else sameId.push(row)
+    }
     const snapshot = await readPluginInventory(this.ctx)
+    const actualById = new Map([...this.ctx.loader.entries()].map(entry => [entry.id, entry]))
     return snapshot.entries.map((entry) => {
-      const actual = [...this.ctx.loader.entries()].find(row => row.id === entry.entryId)
-      const candidates = rows.filter(row => row.id === actual?.options.id)
+      const actual = actualById.get(entry.entryId)
+      const candidates = actual === undefined ? [] : rowsById.get(actual.options.id) ?? []
       const candidate = candidates[0]
       if (protectedModules.has(entry.moduleName) || entry.entryId === this.ownerEntryId) {
         return { ...entry, readOnlyReason: 'management-required' as const }

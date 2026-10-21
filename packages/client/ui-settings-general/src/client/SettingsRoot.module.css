@@ -8,6 +8,11 @@
   margin: 4px -2px;
 }
 
+.sectionTabs {
+  margin-bottom: 20px;
+  max-width: 440px;
+}
+
 .triggerRow.railRow {
   flex-direction: column;
   gap: 4px;

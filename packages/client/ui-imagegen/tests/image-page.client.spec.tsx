@@ -88,6 +88,26 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); cleanup(); vi.unstubAllGlobals() })
 
 describe('image creation workspace', () => {
+  it('submits the catalog resolution tier independently of legacy pixel size', async () => {
+    const original = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation(async (input, init) => input === '/credits/api/media/catalog'
+      ? json({ ok: true, payload: { image: [{ ...models[0], id: 'internal-image', displayName: 'Internal image',
+        params: { ...models[0]!.params, sizes: [], resolutions: ['1k', '2k', '4k'] } }] } }) : await original(input, init))
+    const { props, store } = makeProps()
+    render(<ImagePage {...props} />)
+    await screen.findByRole('option', { name: 'Internal image' })
+    await waitFor(() => { expect(store.getSnapshot().resolution).toBe('1k') })
+    fireEvent.click(screen.getByRole('button', { expanded: false, name: '1k' }))
+    fireEvent.change(screen.getByRole('combobox', { name: zh.resolution }), { target: { value: '4k' } })
+    fireEvent.change(screen.getByRole('textbox', { name: zh.prompt }), { target: { value: '保留参考画面' } })
+    await waitFor(() => { expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', false) })
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    await waitFor(() => { expect(fetchMock.mock.calls.some(([url]) => url === '/credits/api/image/generate')).toBe(true) })
+    const submitted = requestBody(fetchMock.mock.calls.find(([url]) => url === '/credits/api/image/generate'))
+    expect(submitted).toMatchObject({ model: 'internal-image', resolution: '4k' })
+    expect(submitted).not.toHaveProperty('size')
+  })
+
   it('polls the original active submission for its accepted ids while its only generation request is still pending', async () => {
     const original = fetchMock.getMockImplementation()!
     const generation = Promise.withResolvers<Response>()

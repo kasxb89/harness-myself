@@ -74,9 +74,10 @@ describe('artifact operation ownership', () => {
     } finally { runtime.dispose() }
   })
   it('accepts a configured visible-page cadence and rejects an unbounded or invalid cadence', () => {
-    expect(Config({})).toEqual({ pollIntervalMs: 5000 })
-    expect(Config({ pollIntervalMs: 1234 })).toEqual({ pollIntervalMs: 1234 })
+    expect(Config({})).toEqual({ pollIntervalMs: 5000, videoPosterTimeoutMs: 15_000 })
+    expect(Config({ pollIntervalMs: 1234, videoPosterTimeoutMs: 2345 })).toEqual({ pollIntervalMs: 1234, videoPosterTimeoutMs: 2345 })
     for (const pollIntervalMs of [0, 999, 60_001, 1.5, NaN]) expect(() => Config({ pollIntervalMs })).toThrow()
+    for (const videoPosterTimeoutMs of [0, 999, 60_001, 1.5, NaN]) expect(() => Config({ videoPosterTimeoutMs })).toThrow()
   })
 
   it('authorizes the root PDF reader as a keyed child of the artifacts main panel', () => {

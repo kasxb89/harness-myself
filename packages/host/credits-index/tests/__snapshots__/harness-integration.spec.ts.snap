@@ -33,6 +33,10 @@ exports[`deployed Harness API through the real product Loader > edits current-ch
         },
         "type": "array",
       },
+      "resolution": {
+        "description": "Optional named output tier, only when declared by the chosen model. yunshu-internal-gpt-image-2 accepts 1k, 2k or 4k and defaults to 1k; this is independent from pixel size.",
+        "type": "string",
+      },
       "shot_id": {
         "description": "Exact shot id in the explicit plan; never guess a latest project.",
         "type": "string",

@@ -72,6 +72,7 @@ skill 可以是被扫描根目录顶层的目录 bundle `<name>/SKILL.md`，也�
 | `agentsHome` | `$DSH_AGENTS_HOME` 或 `~/.agents` | 为兼容 skill 扫描的共享 agent 配置根目录 |
 | `customSkillDirs` | `[]` | 其他本地 skill 根目录，位于项目根之后、用户根之前 |
 | `watch` | `true` | 监视本地根，并在目录可能变化时使提供方失效 |
+| `discoveryConcurrency` | `8` | 同时读取的技能文件数（1–32）；保持根目录优先级和条目顺序 |
 | `bundledSkillDir` | — | 配置后按 rank 600 扫描的随包提供的 skill 根目录 |
 
 其余 `watch*` 字段用于调节 Chokidar 行为——轮询、稳定窗口、间隔、项目上限与符号链接跟随。生成的[配置目录](../../../docs/config-catalog.zh.md#deepseek-aidsh-skill-filesystem)完整列出了所有字段，是这些字段的真源。
@@ -106,7 +107,7 @@ skill 可以是被扫描根目录顶层的目录 bundle `<name>/SKILL.md`，也�
 
 ### 发现流程
 
-发现过程先为查找 cwd 解析根列表，让监视管理器附加到每个根，再扫描每个根的直接条目：目录 bundle 解析为 `<name>/SKILL.md`，平铺文件解析为 `<name>.md`。每个文件都会解析 frontmatter——`name` 必须为 kebab-case，`description` 必填，调用键按严格布尔语法解析——候选项携带根目录的来源标签与 rank，供注册表与其他提供方合并。已确认缺失的路径属于有效空状态；格式错误或非文本条目会随警告跳过。
+发现过程先为查找 cwd 解析根列表，让监视管理器附加到每个根，再扫描每个根的直接条目：目录 bundle 解析为 `<name>/SKILL.md`，平铺文件解析为 `<name>.md`。文件按 `discoveryConcurrency`（默认 8）有界并行读取，失败时等待所有在途读取结束，再报告发现失败。每个文件都会解析 frontmatter——`name` 必须为 kebab-case，`description` 必填，调用键按严格布尔语法解析——候选项携带根目录的来源标签与 rank，供注册表与其他提供方合并。已确认缺失的路径属于有效空状态；格式错误或非文本条目会随警告跳过。
 
 ### 监视与失效
 

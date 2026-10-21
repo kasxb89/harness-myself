@@ -48,6 +48,7 @@ interface ImageModel {
   readonly displayName: string
   readonly params: {
     readonly sizes: readonly string[]
+    readonly resolutions?: readonly string[]
     readonly maxCount: number
     readonly maxEdits: number
     readonly qualities: readonly string[]
@@ -101,7 +102,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
   const draft = props.useStore(state => state)
   const sessionId = props.useCreationSession(binding => binding.key)
   const {
-    prompt, modelId, size, quality, background, format, compression, moderation, seed, count,
+    prompt, modelId, size, resolution, quality, background, format, compression, moderation, seed, count,
     references, uploading, uploadResult, generationStartedAt, sessionInvalid, message, failure, resultPaths: result,
   } = draft
   const running = generationStartedAt !== null
@@ -168,8 +169,8 @@ export function ImagePage(props: ImagePageProps): ReactNode {
   const assistReferences = useMemo(() => ownsReferences ? references.map(item => item.assetId) : [],
     [references, ownsReferences])
   const assistGeneration = useMemo(() => ({
-    model: model?.id ?? '', size, quality, background, count: String(count),
-  }), [model, size, quality, background, count])
+    model: model?.id ?? '', size, resolution, quality, background, count: String(count),
+  }), [model, size, resolution, quality, background, count])
   const selectedCategory = contentCategories.some(item => item.id === category) ? category : 'all'
   const visibleTemplates = contentTemplates.filter((template) => {
     const words = `${text(template.title)} ${text(template.description)}`.toLocaleLowerCase()
@@ -333,6 +334,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
     actions.patch({
       modelId: model.id,
       size: params.sizes.includes(current.size) ? current.size : params.sizes[0] ?? '',
+      resolution: params.resolutions?.includes(current.resolution) === true ? current.resolution : params.resolutions?.[0] ?? '',
       quality: params.qualities.includes(current.quality) ? current.quality : '',
       background: params.backgrounds.includes(current.background) ? current.background : '',
       format: params.formats.includes(current.format) ? current.format : '',
@@ -515,6 +517,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
         session_id: sessionId, account_id: accountIdentity,
         prompt: current.prompt.trim(), model: selected.id, count: Math.max(1, Math.min(current.count, accepted.maxCount)),
         ...accepted.sizes.includes(current.size) ? { size: current.size } : {},
+        ...accepted.resolutions?.includes(current.resolution) === true ? { resolution: current.resolution } : {},
         ...accepted.qualities.includes(current.quality) ? { quality: current.quality } : {},
         ...accepted.backgrounds.includes(current.background) ? { background: current.background } : {},
         ...accepted.formats.includes(current.format) ? { format: current.format } : {},
@@ -590,7 +593,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
           onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false) }}
           onDrop={(event) => { event.preventDefault(); setDragging(false); void addReferences([...event.dataTransfer.files]) }}
         >
-          <div className={css.composerBody}>
+          <div className={css.materials} aria-label={t('reference')}>
             <div className={css.referenceColumn}>
               <Tooltip label={t('dropHint')} side="bottom" portal>
                 <button type="button" className={css.addReference} aria-label={t('addReference')} disabled={!canUpload}
@@ -602,26 +605,26 @@ export function ImagePage(props: ImagePageProps): ReactNode {
               <input ref={fileField} type="file" aria-label={t('addReference')} accept="image/*,.png,.jpg,.jpeg,.jfif,.webp,.avif,.gif,.bmp,.tif,.tiff,.heic,.heif" multiple hidden
                 disabled={!canUpload} onChange={(event) => { void addReferences([...event.target.files ?? []]); event.target.value = '' }} />
             </div>
-            <label className={css.promptField}>
-              <textarea ref={promptField} className={css.textarea} rows={4} value={prompt} aria-label={t('prompt')}
-                placeholder={text(content?.promptPlaceholder) || t('promptPlaceholder')} onChange={(event) => { actions.patch({ prompt: event.target.value }) }} />
-              <span className={css.characterCount} aria-hidden="true">{prompt.length}</span>
-            </label>
+            {references.length > 0 && <div className={css.referenceTray}>
+              <ul className={css.thumbs} aria-label={t('reference')}>
+                {references.map(item => <li key={item.assetId} className={css.thumb}>
+                  <img src={item.url.startsWith('/') ? appPath(item.url) : item.url} alt={item.name} />
+                  <Tooltip label={t('removeReference', { name: item.name })} side="top" portal>
+                    <button type="button" className={css.remove} aria-label={t('removeReference', { name: item.name })} disabled={locked}
+                      onClick={() => { removeReference(item.assetId) }}><IconCloseOutlineRegular size={12} /></button>
+                  </Tooltip>
+                </li>)}
+              </ul>
+              <span className={css.hint}>{references.length}/6</span>
+              <button type="button" className={css.textAction} onClick={clearReferences} disabled={locked}>{t('clearReferences')}</button>
+            </div>}
           </div>
+          <label className={css.promptField}>
+            <textarea ref={promptField} className={css.textarea} rows={4} value={prompt} aria-label={t('prompt')}
+              placeholder={text(content?.promptPlaceholder) || t('promptPlaceholder')} onChange={(event) => { actions.patch({ prompt: event.target.value }) }} />
+            <span className={css.characterCount} aria-hidden="true">{prompt.length}</span>
+          </label>
           <p className={css.parameterHint}>{t('materialHelp')} {maxEdits === 0 ? t('generationTextOnly') : t('generationReferences', { n: String(maxEdits) })}</p>
-          {references.length > 0 && <div className={css.referenceTray}>
-            <ul className={css.thumbs} aria-label={t('reference')}>
-              {references.map(item => <li key={item.assetId} className={css.thumb}>
-                <img src={item.url.startsWith('/') ? appPath(item.url) : item.url} alt={item.name} />
-                <Tooltip label={t('removeReference', { name: item.name })} side="top" portal>
-                  <button type="button" className={css.remove} aria-label={t('removeReference', { name: item.name })} disabled={locked}
-                    onClick={() => { removeReference(item.assetId) }}><IconCloseOutlineRegular size={12} /></button>
-                </Tooltip>
-              </li>)}
-            </ul>
-            <span className={css.hint}>{references.length}/6</span>
-            <button type="button" className={css.textAction} onClick={clearReferences} disabled={locked}>{t('clearReferences')}</button>
-          </div>}
           {uploadResult !== null && <div className={css.uploadResult} aria-live="polite">
             <p className={css.notice}>{t('uploadSummary', { added: String(uploadResult.added), failed: String(uploadResult.failures.length) })}</p>
             {uploadResult.converted > 0 && <p className={css.hint}>{t('uploadConverted', { n: String(uploadResult.converted) })}</p>}
@@ -646,9 +649,11 @@ export function ImagePage(props: ImagePageProps): ReactNode {
               if (!isSignedIn || accountIdentity === null || current.referenceAccountId !== accountIdentity
                 || current.referenceEpoch !== draft.referenceEpoch || current.sessionInvalid || current.uploading
                 || current.generationStartedAt !== null || current.prompt !== expectedPrompt
-                || JSON.stringify([current.references, current.modelId, current.size, current.quality, current.background,
+                || JSON.stringify([current.references, current.modelId, current.size, current.resolution,
+                  current.quality, current.background,
                   current.format, current.compression, current.moderation, current.seed, current.count])
-                  !== JSON.stringify([references, modelId, size, quality, background, format, compression, moderation, seed, count])) {
+                  !== JSON.stringify([references, modelId, size, resolution, quality, background,
+                    format, compression, moderation, seed, count])) {
                 return false
               }
               actions.patch({ prompt: value, failure: null, message: null })
@@ -665,7 +670,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
               </select>
             </label>
             {params !== null && <button type="button" disabled={locked} className={css.parameterButton} aria-expanded={advanced} aria-controls="image-parameters"
-              onClick={() => { setAdvanced(current => !current) }}><IconSettingsOutlineRegular size={14} /><span>{size || t('parameters')}{count > 1 ? ` · ${String(count)}` : ''}</span></button>}
+              onClick={() => { setAdvanced(current => !current) }}><IconSettingsOutlineRegular size={14} /><span>{resolution || size || t('parameters')}{count > 1 ? ` · ${String(count)}` : ''}</span></button>}
             <span className={css.mode}>{maxEdits === 0 || references.length === 0 ? t('modeGenerate') : t('modeEdit', { count: String(Math.min(references.length, maxEdits)) })}</span>
             <Tooltip label={originalSubmission !== null ? t('originalLocked') : running ? t('runningShort') : t('submit')} side="top" portal>
               <button type="button" className={css.send} aria-label={running ? t('runningShort') : t('submit')}
@@ -676,6 +681,11 @@ export function ImagePage(props: ImagePageProps): ReactNode {
             </Tooltip>
           </div>
           {advanced && params !== null && <div className={css.parameters} id="image-parameters">
+            {(params.resolutions?.length ?? 0) > 0 && <label className={css.field}><span>{t('resolution')}</span><select className={css.select} aria-label={t('resolution')} value={resolution} disabled={locked}
+              onChange={(event) => { actions.patch({ resolution: event.target.value }) }}>
+              {params.resolutions?.map(value => <option key={value} value={value}>{value.toUpperCase()}</option>)}
+            </select></label>}
+
             {params.sizes.length > 0 && <label className={css.field}><span>{t('ratio')}</span><select className={css.select} value={size} disabled={locked}
               onChange={(event) => { actions.patch({ size: event.target.value }) }}>{params.sizes.map(value => <option key={value} value={value}>{value === 'auto' ? t('sizeAuto') : value}</option>)}</select></label>}
             {params.maxCount > 1 && <label className={css.field}><span>{t('count')}</span><select className={css.select} value={count} disabled={locked}

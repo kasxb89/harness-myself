@@ -29,12 +29,15 @@ Web 产品 bundle 挂载本包。打开**技能商店**后，搜索框下方会�
 
 首次需要 CLI 的操作会下载官方 2026.8.5 版本包，并核验锁定的 SHA-256 和四个选定文件。缓存位于当前 Harness 缓存下的 `skillhub` 目录。Desktop 解析并传入已验证的捆绑 Python 可执行文件，因此 Windows 无需系统 Python 或 Bash。没有该运行时的独立 Web 部署使用配置的 `pythonExecutable`。
 
+在 `recommendationsCacheMs` 内重新打开商店会复用成功的公共推荐榜，不再启动 Python 或联网。显式“重试”绕过缓存；过期缓存与失败响应不会作为兜底返回。
+
 | 字段 | 默认值 | 含义 |
 |---|---|---|
 | `skillsDirectory` | 必填 | 产品用户技能的绝对目录 |
 | `cacheDirectory` | 必填 | 产品私有 CLI 缓存与状态的绝对目录 |
 | `pythonExecutable` | `python3` | Desktop 使用已验证的捆绑 Python，Web 使用配置的解释器 |
 | `timeoutMs` | `120000` | 完整操作的截止时间，单位毫秒 |
+| `recommendationsCacheMs` | `60000` | 成功公共推荐榜的内存缓存时长；0 表示禁用 |
 | `searchLimit` | `20` | 每次搜索或推荐列表的社区技能数量上限 |
 
 [配置目录](../../../docs/config-catalog.zh.md#deepseek-aidsh-client-ui-skillhub)列出全部执行限制。[官方安装说明](https://skillhub.cn/install/skillhub.md)介绍 SkillHub 的独立 CLI；本集成传入产品私有暂存目录，不使用 CLI 默认的相对目录，再将验证后的文件提交到产品技能目录。

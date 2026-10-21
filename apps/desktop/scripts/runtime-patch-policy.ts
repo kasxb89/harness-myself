@@ -21,7 +21,7 @@ export const DESKTOP_RUNTIME_PATCHES: Readonly<Record<string, DesktopRuntimePatc
   'dshmarket@1.66.20': { scope: 'shared', reason: 'Runtime market activation needs matching Cordis, settings and schema peers.' },
   'dsh-find-plugin@0.4.0': { scope: 'shared', reason: 'Runtime plugin discovery needs matching Cordis and tools peers.' },
   'dsh-univer-office@0.3.7': { scope: 'shared', reason: 'Runtime office integration needs matching Harness service and schema peers.' },
-  'dsh-custom-mode@2.2.5': { scope: 'shared', reason: 'The bundled assistant editor must preserve the existing Agent default.' },
+  'dsh-custom-mode@2.2.5': { scope: 'shared', reason: 'The bundled assistant editor must use its patched entry and preserve Agent defaults.' },
 }
 
 /** Reviewed Desktop dependency constraints, independent of patch selection. */

@@ -14,7 +14,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from
 import { createPortal } from 'react-dom'
 import clsx from 'clsx'
 import {
-  ConnectionIndicator, Tooltip, useModalLayer,
+  ConnectionIndicator, Tooltip, useModalLayer, SegmentedTabs,
   IconAgentPresetOutlineMedium, IconArchiveOutlineMedium, IconCloseOutlineRegular, IconDataOutlineMedium,
   IconPersonalizationOutlineMedium, IconSettingsOutlineMedium, IconUserOutlineMedium,
 } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -55,7 +55,15 @@ function SettingsPanel({ rows, renderSlot, activeId, onSelect, onClose }: PanelP
   // Entries can unmount underneath the requested id, so the render-time
   // projection falls back to the first row when the id is gone.
   const active = rows.find(r => r.id === activeId)?.id ?? rows[0]?.id
+  const activeRow = rows.find(row => row.id === active)
+  const parentId = activeRow?.parentId ?? active
+  const parent = rows.find(row => row.id === parentId)
+  const tabs = [...parent === undefined ? [] : [parent], ...rows.filter(row => row.parentId === parentId)]
   const titleId = useId()
+  const sectionId = useId()
+  const tabItems = tabs.map(row => ({ value: row.id, label: row.label,
+    id: `${sectionId}-${row.id}`, panelId: `${sectionId}-panel` }))
+  const firstTab = tabItems[0]
 
   const panel = useRef<HTMLDivElement>(null)
   useModalLayer(panel, true, onClose)
@@ -72,13 +80,13 @@ function SettingsPanel({ rows, renderSlot, activeId, onSelect, onClose }: PanelP
           <div className={css.navTitle} id={titleId} tabIndex={-1}
             data-modal-autofocus={active === undefined ? '' : undefined}>{renderSlot('settings.header', {})}</div>
           <div className={css.navList}>
-            {rows.map(row => (
+            {rows.filter(row => row.parentId === undefined).map(row => (
               <button
                 key={row.id}
                 type="button"
-                className={clsx(css.navCell, row.id === active && css.active)}
-                aria-current={row.id === active ? 'true' : undefined}
-                data-modal-autofocus={row.id === active ? '' : undefined}
+                className={clsx(css.navCell, row.id === parentId && css.active)}
+                aria-current={row.id === parentId ? 'true' : undefined}
+                data-modal-autofocus={row.id === parentId ? '' : undefined}
                 onClick={() => { onSelect(row.id) }}
               >
                 {navIcon(row.id)}
@@ -96,7 +104,13 @@ function SettingsPanel({ rows, renderSlot, activeId, onSelect, onClose }: PanelP
             </button>
           </div>
           <div className={css.options}>
-            {active !== undefined && renderSlot('settings.section', { close: onClose }, { only: active })}
+            {tabs.length > 1 && firstTab !== undefined && active !== undefined && <SegmentedTabs
+              className={css.sectionTabs} items={[firstTab, ...tabItems.slice(1)]} value={active}
+              onChange={onSelect} label={rows.find(row => row.id === parentId)?.label ?? firstTab.label} />}
+            <div id={`${sectionId}-panel`} role={tabs.length > 1 ? 'tabpanel' : undefined}
+              aria-labelledby={tabs.length > 1 ? `${sectionId}-${active}` : undefined}>
+              {active !== undefined && renderSlot('settings.section', { close: onClose }, { only: active })}
+            </div>
           </div>
         </div>
       </div>

@@ -8,6 +8,36 @@ import { directoryInstallerExits, directoryInstallSection, directoryUninstaller 
 const require = createRequire(import.meta.url)
 const section = readFileSync(join(dirname(require.resolve('app-builder-lib/package.json')),
   'templates/nsis/installSection.nsh'), 'utf8')
+const directorySmoke = readFileSync(new URL('../scripts/smoke-installer-directories.ps1', import.meta.url), 'utf8')
+const reportNamePattern = directorySmoke.match(/\$reports\[0\]\.Name -notmatch '([^']+)'/)?.[1]
+if (reportNamePattern === undefined) throw new Error('Directory smoke extraction report assertion is missing')
+const reportName = new RegExp(reportNamePattern)
+
+it('accepts extraction reports with either NSIS hour width throughout the day', () => {
+  expect(reportName.test('extract-failure-20261020-24353.log')).toBe(true)
+  for (let hour = 0; hour < 24; hour++) {
+    for (const digits of [String(hour), String(hour).padStart(2, '0')]) {
+      expect(reportName.test(`extract-failure-20261020-${digits}4353.log`)).toBe(true)
+    }
+  }
+})
+
+it.each([
+  'extract-failure-20261020-244353.log',
+  'extract-failure-20261020-996059.log',
+  'extract-failure-20261020-126000.log',
+  'extract-failure-20261020-125960.log',
+  'extract-failure-20261020-2435.log',
+  'extract-failure-20261020-0024353.log',
+  'extract-failure-2026102-24353.log',
+  'extract-failure-202610200-24353.log',
+  'extract-failure-19991020-24353.log',
+  'other-extract-failure-20261020-24353.log',
+  'extract-failure-20261020-24353.txt',
+  'extract-failure-20261020-24353.log.extra',
+])('rejects a malformed extraction report name: %s', (name) => {
+  expect(reportName.test(name)).toBe(false)
+})
 
 it('keeps data cleanup out of the upstream template while retaining application removal and registration cleanup', () => {
   const source = readFileSync(join(dirname(require.resolve('app-builder-lib/package.json')), 'templates/nsis/uninstaller.nsh'), 'utf8')

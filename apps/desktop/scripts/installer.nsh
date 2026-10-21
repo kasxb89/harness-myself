@@ -144,7 +144,7 @@ ManifestDPIAware true
   Push $4
   Push $5
   Push $6
-  ; GetTime yields zero-padded day, month, year, weekday, hour, minute, second.
+  ; GetTime pads day, month, minute and second; the hour is not zero-padded.
   ${GetTime} "" "L" $0 $1 $2 $3 $4 $5 $6
   StrCpy $0 "${DSH_INSTALLER_LOG_DIR}\extract-failure-$2$1$0-$4$5$6.log"
   StrCpy $1 1

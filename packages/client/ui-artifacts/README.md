@@ -25,7 +25,7 @@ Find saved outputs and files from registered local workspaces in one Artifacts l
 <a id="use-this-package"></a>
 ## Use this package
 
-Mount `@deepseek-ai/dsh-client-ui-artifacts` in the browser roster with the slot and locale services. Pair it with [artifacts-index](../../deliverables/artifacts-index/README.md) for authenticated file access and the workspace registry for mounted directories. `pollIntervalMs` controls foreground library refresh (default 5000 ms; accepted range 1000–60000 ms). The visible library rechecks files, save-directory settings and recovery entries without overlapping requests. Hidden or unmounted pages cancel their pending refresh and stop polling; refresh failures retain the existing listing.
+Mount `@deepseek-ai/dsh-client-ui-artifacts` in the browser roster with the slot and locale services. Pair it with [artifacts-index](../../deliverables/artifacts-index/README.md) for authenticated file access and the workspace registry for mounted directories. `pollIntervalMs` controls foreground library refresh (default 5000 ms; accepted range 1000–60000 ms). `videoPosterTimeoutMs` bounds each queued video-cover read, including decoding (default 15000 ms; accepted range 1000–60000 ms). The visible library rechecks files, save-directory settings and recovery entries without overlapping requests. Hidden or unmounted pages cancel their pending refresh and stop polling; refresh failures retain the existing listing. File cards appear as soon as the listing arrives; slow save-directory or recovery reads no longer delay previews.
 
 The library combines managed output roots and registered local workspaces, including nested files created by chat tools or shell commands without Git or a `present` call. Select Save directory to view or change the save location in a dialog; the path and settings remain hidden until the dialog opens. The dialog accepts an existing absolute path and offers the native folder picker when available. Saving a directory affects future media generation, keeps older files visible, and does not move them. Workspace registration does not change this preference or add its root to the saved output roots.
 
@@ -39,6 +39,8 @@ A selected file with an exact Host-recorded generating location offers Back to c
 
 Previews follow the filename extension. PDF uses the shared PDF.js reader with continuous pages, selectable text and zoom. DOC/DOCX, XLS/XLSX and PPT/PPTX use the authorized Host's local `officeToPdf` provider for read-only PDF pages; no source file is uploaded to an external document viewer. Markdown uses the shared `MarkdownText` renderer; relative images resolve from the document's directory under the same file-access authorization. Plain text, common code and configuration files, CSV/TSV and subtitles show a bounded text preview with syntax highlighting when available. HTML, HTM and SVG remain isolated by both the frame sandbox and the Host's response policy. Images, video and audio use browser media elements, with a visible error when decoding fails. Every format offers Download original.
 
+Visible video rows show their first frame, including videos already saved before opening the library. Selecting a video reuses the same cover in the player before playback. Cover extraction stays in the browser, never plays the video or emits sound, and requires no generation request. An unavailable or timed-out cover leaves the video icon and ordinary playback/download controls available.
+
 Text previews retain at most 256 KiB, cancel further reading at the limit and display a truncation notice. Failed reads show an error rather than loading the complete raw file in a frame. Office conversion reports an unavailable provider, invalid content, size limits, a busy queue or changed files/workspaces; missing original fonts produce a substitution notice. Listing failures retain previous data with a visible retry. A successful refresh reconciles the selection and reloads its preview, including a previously failed preview at the same path; obsolete responses are ignored.
 
 -----
@@ -50,6 +52,8 @@ Text previews retain at most 256 KiB, cancel further reading at the limit and di
 <summary>Implementation internals — click to expand</summary>
 
 The browser plugin contributes the `artifacts` main panel and its sidebar entry through declaration-aware slot registrations. [`ArtifactsMain.tsx`](src/client/ArtifactsMain.tsx) derives refreshes from existing conversation activity and workspace sources; [`ArtifactsPage.tsx`](src/client/ArtifactsPage.tsx) owns search, filters, selection and management dialogs. [`ArtifactPreview.tsx`](src/client/ArtifactPreview.tsx) owns format-specific previews and original-file downloads. Injected callbacks own file management HTTP operations and optional native directory and file actions. Its injected dictionary supplies the page copy; the Host half is empty.
+
+Each page owns a [`VideoPosterPool`](src/client/video-poster.ts) with at most two decoders, 64 queued identities and 64 cached results. Rows request covers only while intersecting the viewport and release private cover state when leaving it; the selected player has an independent cancellation lease. Keys include path, workspace, size and modification time; listing changes discard deleted or replaced versions. Artifact reads, playback and original downloads follow the public mount. Raw reads decode the initial `loadeddata` frame at time zero into a JPEG no larger than 320 pixels per side and 256 Ki characters. Completion, cancellation and deadlines release decoder sources; leaving the player also pauses and releases its media source. No cover Blob URLs or persistent thumbnail files are retained.
 
 </details>
 
@@ -89,7 +93,7 @@ This package neither assembles provider requests nor changes model context.
 
 These limits describe the package’s current behavior and dependencies.
 
-- Listings refresh on mount, user request, conversation activity or workspace changes, and return to a visible focused window. The page has no filesystem subscription or polling loop.
+- Listings refresh on mount, user request, conversation activity or workspace changes, and return to a visible focused window. The page has no filesystem subscription; it polls only while visible and active.
 - Search covers the files returned within the Host's traversal limits; the folder dialog provides access beyond the initial recursive scan. Hidden, dependency and private artifact-state directories and symlink paths are excluded. Files deliberately saved outside all managed output roots and registered workspaces are outside this library's scope.
 - The library shows current filesystem contents, not a complete history of generated outputs. Existing source files remain ordinary workspace files; neither a successful `present` call nor Git tracking is required for them to appear.
 - Office previews require the serving Host's local conversion provider and show PDF pages, not an editable document or spreadsheet grid. Font substitution can change layout.

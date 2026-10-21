@@ -47,7 +47,7 @@
 
 .composer:focus-within { border-color: var(--dsw-alias-border-l3); }
 .dragging { outline: 2px dashed var(--dsw-alias-state-business-primary); outline-offset: 4px; }
-.composerBody { display: flex; align-items: flex-start; gap: 20px; }
+.materials { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 12px; min-width: 0; }
 .referenceColumn { flex: none; }
 
 .addReference {
@@ -143,14 +143,14 @@
 
 .field { display: flex; flex-direction: column; gap: 7px; min-width: 0; color: var(--dsw-alias-label-secondary); font-size: 12px; }
 .parameterHint { grid-column: 1 / -1; margin: 0; color: var(--dsw-alias-label-tertiary); font-size: 11px; }
-.referenceTray { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding-left: 108px; }
+.referenceTray { display: flex; align-items: center; flex-wrap: wrap; flex: 1; min-width: 0; gap: 10px 12px; }
 .uploadResult { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .uploadFailures { display: flex; flex-direction: column; gap: 6px; margin: 0; padding-left: 18px; max-height: 160px; overflow-y: auto; }
 .uploadFailures li { display: flex; flex-wrap: wrap; gap: 4px 12px; }
 .uploadFileName { color: var(--dsw-alias-label-primary); overflow-wrap: anywhere; }
 .thumbs { display: flex; flex-wrap: wrap; gap: 10px; margin: 0; padding: 0; list-style: none; }
 .thumb { position: relative; }
-.thumb img { display: block; width: 54px; height: 54px; object-fit: cover; border-radius: var(--dsw-radius-sm); }
+.thumb img { display: block; width: 88px; height: 88px; object-fit: cover; border-radius: var(--dsw-radius-sm); }
 .remove { position: absolute; top: -4px; right: -4px; display: flex; align-items: center; justify-content: center; width: 20px; height: 20px; padding: 0; border: 0.5px solid var(--dsw-alias-border-l1); border-radius: 50%; corner-shape: round; background: var(--dsw-alias-settings-card-fill); color: var(--dsw-alias-label-primary); cursor: pointer; }
 .feedback { display: flex; flex-direction: column; gap: 6px; min-height: 16px; margin-top: -10px; }
 .hint { margin: 0; color: var(--dsw-alias-label-tertiary); font-size: 11px; line-height: 1.6; }
@@ -214,10 +214,10 @@
   .title { font-size: 18px; }
   .modeTabs { min-width: 160px; }
   .composer { padding: 14px; }
-  .composerBody { gap: 12px; }
+  .materials { gap: 10px; }
   .addReference { width: 64px; height: 76px; }
   .textarea { min-height: 130px; font-size: 13px; }
-  .referenceTray { padding-left: 0; }
+  .thumb img { width: 64px; height: 76px; }
   .mode { display: none; }
   .templateGrid { grid-template-columns: 1fr; }
   .templateCard { min-height: 128px; }

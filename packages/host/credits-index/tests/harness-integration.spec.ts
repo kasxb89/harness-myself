@@ -992,6 +992,38 @@ describe('deployed Harness API through the real product Loader', () => {
     expect(internalUploadResponses).toEqual([])
   }, 15_000)
 
+  it.each([['panel', '1k'], ['tool', '2k'], ['panel', '4K']] as const)('preserves references with the named internal image tier through %s at %s', async (entry, resolution) => {
+    const { base, stateDir } = await boot(undefined, false, true)
+    const cookie = await hostCookie(base)
+    await signIn(base)
+    const model = 'yunshu-internal-gpt-image-2'
+    relayModels.push({ id: model, object: 'model', supported_endpoint_types: ['image-generation'] })
+    pricingRows = [{ model_name: model, supported_endpoint_types: ['image-generation', 'openai'], enable_groups: ['default', 'product'],
+      billing_usage_schema: { image_count: { type: 'number' }, resolution: { enum: ['1k', '2k', '4k'] } },
+    }]
+    const png = await sharp({ create: { width: 2, height: 2, channels: 3, background: '#aabbcc' } }).png().toBuffer()
+    imageResponse = { data: [{ b64_json: png.toString('base64') }] }
+    const asset = await uploadImage(base, cookie, 'tier-reference.png', png)
+    const url = 'https://files.toapis.cn/uploads/tier-reference.png'
+    internalUploadResponses.push({ status: 200, body: { success: true, data: {
+      id: 'upload_tier', url, mime_type: asset.contentType, size: asset.sizeBytes,
+    } } })
+    const references = [String(asset.assetId)]
+    const agent = videoAgent(stateDir, 'image-tier-chat')
+    context!.sessions.create(SessionId(agent.id), { meta: { cwd: stateDir } })
+    const generate = (tier: unknown) => entry === 'panel'
+      ? post(base, '/api/image/generate', { session_id: agent.id, account_id: '7', model,
+        prompt: '按参考图创作', references, resolution: tier }, cookie)
+      : context!.tools.execute({ name: 'generate_image', arguments: { model, prompt: '按参考图创作', reference_images: references, resolution: tier },
+        agent, callId: ToolCallId('image-tier'), signal: new AbortController().signal }).then(result => object(result.value))
+    expect(await generate(resolution)).toMatchObject(entry === 'panel' ? { ok: true } : { status: 'succeeded' })
+    expect(calls.find(call => call.path === '/harness/toapis/v1/images/generations')?.body)
+      .toEqual({ model, prompt: '按参考图创作', n: 1, resolution: resolution.toLowerCase(), reference_images: [url] })
+    const dispatches = calls.filter(call => call.path.includes('/uploads/images') || call.path.includes('/toapis/')).length
+    expect(await generate('1080p')).toMatchObject({ code: 'RESOLUTION_NOT_SUPPORTED' })
+    expect(calls.filter(call => call.path.includes('/uploads/images') || call.path.includes('/toapis/'))).toHaveLength(dispatches)
+  })
+
   it.each(['panel', 'tool'] as const)('retains accepted image identity after local cancellation and resumes through %s using GET only', async (entry) => {
     const { base, stateDir } = await boot(undefined, true, true)
     const cookie = await hostCookie(base)
@@ -1858,6 +1890,23 @@ describe('deployed Harness API through the real product Loader', () => {
     }
   })
 
+  it.each([{ input: undefined }, { input: [] }])('enables image input by default for the confirmed product alias with input $input', async ({ input }) => {
+    relayModels = [{ id: 'yunshu-flash', object: 'model', supported_endpoint_types: ['openai'] }]
+    const { base } = await boot(input === undefined ? [] : [{ id: 'yunshu-flash', input }])
+    await signIn(base)
+    expect((await context!.llm.listModels('yunshu-local')).map(model => ({ id: model.id, input: model.inputModalities })))
+      .toEqual([{ id: 'yunshu-flash', input: ['text', 'image'] }])
+    expect(calls.some(call => call.path.includes('chat/completions'))).toBe(false)
+  })
+
+  it.each([{ input: ['text'] }, { input: ['text', 'image'] }])('preserves explicit product alias inputs $input', async ({ input }) => {
+    relayModels = [{ id: 'yunshu-flash', object: 'model', supported_endpoint_types: ['openai'] }]
+    const { base } = await boot([{ id: 'yunshu-flash', input: [...input] }])
+    await signIn(base)
+    expect((await context!.llm.listModels('yunshu-local')).map(model => ({ id: model.id, input: model.inputModalities })))
+      .toEqual([{ id: 'yunshu-flash', input: [...input] }])
+  })
+
   it('keeps unknown and catalog text-only models textual without guessing aliases', async () => {
     const ids = ['gp-5.5', 'ys-1.0', 'claode-5', 'alias-kimi-k2.6', 'deepseek-v4-flash', 'qwen3.7-max']
     relayModels = ids.map(id => ({ id, object: 'model', supported_endpoint_types: ['openai'] }))
@@ -1946,6 +1995,104 @@ describe('deployed Harness API through the real product Loader', () => {
     expect(calls.filter(call => call.path.endsWith('/chat/completions') || call.path.includes('/generations'))).toEqual([])
   })
 
+  it.each(['deepseek-v4-flash', 'second-chat'])('refreshes a signed-out selector immediately after login with backend default %s', async (model) => {
+    clientModelConfig = { schema_version: 1, default_chat_model: model, model_order: ['second-chat'] }
+    relayModels = [...initialRelayModels(), { id: 'second-chat', object: 'model', supported_endpoint_types: ['openai'] }]
+    const { base } = await boot(undefined, false, false,
+      { provider: 'yunshu-local', model: 'deepseek-v4-flash', followPolicy: true })
+    expect((await buildModelCatalog(context!)).groups.some(group => group.id === 'yunshu-local')).toBe(false)
+    const refreshed: ReturnType<typeof buildModelCatalog>[] = []
+    context!.on('api-session/model-catalog-changed', () => { refreshed.push(buildModelCatalog(context!)) })
+    await signIn(base)
+    await vi.waitFor(() => { expect(refreshed.length).toBeGreaterThan(0) })
+    const catalog = await refreshed[0]!
+    expect(catalog.default).toEqual({ provider: 'yunshu-local', model })
+    expect(catalog.groups.find(group => group.id === 'yunshu-local')?.models.map(entry => entry.id))
+      .toEqual(['second-chat', 'deepseek-v4-flash'])
+    await Promise.all(refreshed)
+    const changes = refreshed.length
+    await buildModelCatalog(context!)
+    expect(refreshed).toHaveLength(changes)
+    expect(changes).toBeLessThanOrEqual(2)
+    expect(calls.filter(call => call.path.endsWith('/chat/completions') || call.path.includes('/generations'))).toEqual([])
+  })
+
+  it('finishes login while catalog discovery is pending and allows a failed discovery to be retried', async () => {
+    clientModelConfig = { schema_version: 1, default_chat_model: 'second-chat', model_order: [] }
+    relayModels = [{ id: 'second-chat', object: 'model', supported_endpoint_types: ['openai'] }]
+    const { base } = await boot(undefined, false, false,
+      { provider: 'yunshu-local', model: 'deepseek-v4-flash', followPolicy: true })
+    await buildModelCatalog(context!)
+    const started = new Promise<void>((resolve) => { modelReadStarted = resolve })
+    modelsBarrier = new Promise<void>((resolve) => { releaseModels = resolve })
+    modelsStatus = 503
+    const refreshed: ReturnType<typeof buildModelCatalog>[] = []
+    context!.on('api-session/model-catalog-changed', () => { refreshed.push(buildModelCatalog(context!)) })
+    await signIn(base)
+    await started
+    expect(refreshed).toHaveLength(1)
+    releaseModels?.()
+    const failed = await refreshed[0]!
+    expect(failed.groups.some(group => group.id === 'yunshu-local')).toBe(false)
+    expect(failed.failures).toContainEqual(expect.objectContaining({ id: 'yunshu-local' }))
+    modelsBarrier = undefined
+    modelsStatus = 200
+    const recovered = await buildModelCatalog(context!)
+    expect(recovered.default).toEqual({ provider: 'yunshu-local', model: 'second-chat' })
+    expect(recovered.groups.find(group => group.id === 'yunshu-local')?.models.map(model => model.id)).toEqual(['second-chat'])
+    await Promise.all(refreshed)
+    expect(refreshed).toHaveLength(2)
+  })
+
+  it('notifies changed account model membership and ordering while retaining a manual default', async () => {
+    clientModelConfig = { schema_version: 1, default_chat_model: 'deepseek-v4-flash', model_order: [] }
+    const { base } = await boot(undefined, false, false, { provider: 'other-provider', model: 'other-chat' })
+    await signIn(base)
+    await buildModelCatalog(context!)
+    const changes = vi.fn()
+    context!.on('api-session/model-catalog-changed', changes)
+    relayModels.push({ id: 'second-chat', object: 'model', supported_endpoint_types: ['openai'] })
+    expect((await buildModelCatalog(context!)).default).toEqual({ provider: 'other-provider', model: 'other-chat' })
+    expect(changes).toHaveBeenCalledTimes(1)
+    clientModelConfig = { schema_version: 1, default_chat_model: 'deepseek-v4-flash', model_order: ['second-chat'] }
+    const reordered = await buildModelCatalog(context!)
+    expect(reordered.groups.find(group => group.id === 'yunshu-local')?.models.map(model => model.id))
+      .toEqual(['second-chat', 'deepseek-v4-flash'])
+    expect(reordered.default).toEqual({ provider: 'other-provider', model: 'other-chat' })
+    expect(changes).toHaveBeenCalledTimes(2)
+    await buildModelCatalog(context!)
+    expect(changes).toHaveBeenCalledTimes(2)
+  })
+
+  it('withdraws the authorized selector catalog immediately after logout and local session expiry', async () => {
+    const { base } = await boot(undefined, false, false,
+      { provider: 'yunshu-local', model: 'deepseek-v4-flash', followPolicy: true })
+    await signIn(base)
+    await buildModelCatalog(context!)
+    const refreshed: ReturnType<typeof buildModelCatalog>[] = []
+    context!.on('api-session/model-catalog-changed', () => { refreshed.push(buildModelCatalog(context!)) })
+    await post(base, '/api/session/logout', {})
+    await vi.waitFor(() => { expect(refreshed.length).toBeGreaterThan(0) })
+    expect((await refreshed[0]!).groups.some(group => group.id === 'yunshu-local')).toBe(false)
+    selfId = 8
+    relayKey = 'sk-account-two'
+    relayModels = [{ id: 'second-chat', object: 'model', supported_endpoint_types: ['openai'] }]
+    clientModelConfig = { schema_version: 1, default_chat_model: 'second-chat', model_order: [] }
+    await signIn(base)
+    await Promise.all(refreshed)
+    const nextAccount = await refreshed.at(-1)!
+    expect(nextAccount.groups.find(group => group.id === 'yunshu-local')?.models.map(model => model.id)).toEqual(['second-chat'])
+    expect(nextAccount.default).toEqual({ provider: 'yunshu-local', model: 'second-chat' })
+    const count = refreshed.length
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(Date.now() + 31 * 24 * 60 * 60_000)
+    await expect(context!.llm.listModels('yunshu-local')).rejects.toThrow('登录账号已变化')
+    await expect(context!.llm.listModels('yunshu-local')).rejects.toThrow('请先登录产品账号')
+    expect(refreshed.length).toBeGreaterThan(count)
+    const expired = await refreshed.at(-1)!
+    expect(expired.groups.some(group => group.id === 'yunshu-local')).toBe(false)
+  })
+
   it.each(['gpt-image-2', 'unauthorized'])('falls back to an authorized chat when backend default %s is unusable', async (defaultModel) => {
     clientModelConfig = { schema_version: 1, default_chat_model: defaultModel,
       model_order: ['gpt-image-2', 'second-chat', 'deepseek-v4-flash'] }
@@ -1967,7 +2114,7 @@ describe('deployed Harness API through the real product Loader', () => {
     expect(catalog.default).toEqual({ provider: 'other-provider', model: 'other-chat' })
     expect(catalog.groups.find(group => group.id === 'yunshu-local')?.models.map(model => model.id))
       .toEqual(['second-chat', 'deepseek-v4-flash'])
-    expect(changes).not.toHaveBeenCalled()
+    expect(changes).toHaveBeenCalledTimes(2)
   })
 
   it('notifies a default-only change once without causing catalog reload loops', async () => {
@@ -2126,9 +2273,12 @@ describe('deployed Harness API through the real product Loader', () => {
       ['lec-rs-seedance-2-0-fast', 15], ['sd20-933-720p', 15], ['sd2-hn2-480-pro', 15], ['v3-sd2.0-933-720p', 15],
       ['sd-20-9/3/3-1', 15], ['sd-20-903', 15],
     ] as const
-    pricingRows = cases.map(([model_name]) => ({ model_name, supported_endpoint_types: ['openai-video'] }))
+    pricingRows = cases.map(([model_name]) => ({ model_name, display_name: `云枢视频 ${model_name}`, supported_endpoint_types: ['openai-video'] }))
     relayModels.push(...cases.map(([id]) => ({ id, object: 'model', supported_endpoint_types: ['openai-video'] })))
     context!.sessions.create(SessionId('blackrx-json'), { meta: { cwd: stateDir } })
+    const catalog = object(await (await fetch(base + '/api/media/catalog')).json())
+    const video = object(catalog.payload).video
+    expect(Array.isArray(video) && video.map(model => object(model).displayName)).toEqual(cases.map(([id]) => `云枢视频 ${id}`))
     videoTaskStatus = 'SUCCESS'
     for (const [model, seconds] of cases) {
       expect(await post(base, '/api/video/tasks?source=newapi-generate', {

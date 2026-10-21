@@ -751,12 +751,20 @@ export function apply(ctx: Context, config: Config): void {
   const relayRef = credentialRef(resolved.relayTokenEnv)
   let identityVersion = 0
   let productModelPresentation: ProductModelPresentation = { defaultChatModel: null, modelOrder: [] }
-  let productDefault: { version: number; selection: ModelSelection } | undefined
+  let productCatalog: { version: number; ids: readonly string[]; selection: ModelSelection | undefined } | undefined
   ctx.inject(['agentDefaultModel'], (child) => {
     child.effect(() => child.agentDefaultModel.registerPolicySelection(() =>
-      productDefault?.version === identityVersion ? productDefault.selection : undefined),
+      productCatalog?.version === identityVersion ? productCatalog.selection : undefined),
     'credits-index: account-authorized deployment default')
   })
+  /** Publish committed account or catalog changes without waiting for observer refreshes. */
+  const notifyModelCatalogChanged = (): void => {
+    if (modelCatalogClosed) return
+    const warn = (): void => { ctx.logger.warn('credits-index: a model catalog change observer failed') }
+    for (const listener of ctx.events.dispatch('emit', ['api-session/model-catalog-changed']) as Array<() => unknown>) {
+      try { void Promise.resolve(listener()).catch(warn) } catch { warn() }
+    }
+  }
   const chatUsage = new ChatUsageReader({ baseUrl: apiBaseUrl, timeoutMs: resolved.timeoutMs,
     cacheTtlMs: resolved.chatUsageCacheTtlMs, concurrency: resolved.chatUsageConcurrency })
   ctx.effect(() => () => chatUsage.dispose(), 'credits-index: current-account chat ledger')
@@ -1395,6 +1403,11 @@ export function apply(ctx: Context, config: Config): void {
       const params = capability.model.params as ImageParams
       const model = capability.model.id
       const internalImage = model === 'yunshu-internal-gpt-image-2'
+      const resolution = typeof body.resolution === 'string' ? body.resolution.toLowerCase() : undefined
+      if (body.resolution !== undefined && (resolution === undefined || !(params.resolutions ?? []).includes(resolution))) {
+        return { ok: false, submissionState: 'not-submitted', code: 'RESOLUTION_NOT_SUPPORTED',
+          message: `${model} 的分辨率可选：${(params.resolutions ?? []).join('、') || '无'}` }
+      }
       const size = internalImage ? null : readString(body, 'size')
       if (size !== null && params.sizes.length > 0 && !params.sizes.includes(size)) {
         return { ok: false, submissionState: 'not-submitted', code: 'SIZE_NOT_SUPPORTED', message: `${model} 不支持 ${size}，可选：${params.sizes.join('、')}` }
@@ -1448,6 +1461,7 @@ export function apply(ctx: Context, config: Config): void {
       /** The optional knobs, spelled the way both the relay and the vendors read them. */
       const extras: Record<string, unknown> = {
         ...size === null ? {} : { size },
+        ...resolution === undefined ? {} : { resolution },
         ...quality === null ? {} : { quality },
         ...background === null ? {} : { background },
         ...format === null ? {} : { output_format: format },
@@ -1546,7 +1560,8 @@ export function apply(ctx: Context, config: Config): void {
           return apiFetch(capability.model.route, {
             method: 'POST', headers,
             body: JSON.stringify(internalImage
-              ? { model, prompt, n: 1, ...referenceUrls.length === 0 ? {} : { reference_images: referenceUrls } }
+              ? { model, prompt, n: 1, ...resolution === undefined ? {} : { resolution },
+                ...referenceUrls.length === 0 ? {} : { reference_images: referenceUrls } }
               : { model, prompt, n: count, ...extras }),
             signal: requestSignal,
           })
@@ -1669,14 +1684,15 @@ export function apply(ctx: Context, config: Config): void {
         identityVersion += 1
         chatUsage.reset()
         const committed = identityVersion
-        await holdAccountCredential(relayKey)
         invalidateModelCatalog()
         await writeProductModels([]).catch(reportModelRefreshFailure)
+        await holdAccountCredential(relayKey)
         return committed
       })
       if (committedVersion === null || committedVersion !== identityVersion) {
         return { ok: false, code: 'ACCOUNT_CHANGED', message: '登录状态已变更，请重新操作。' }
       }
+      notifyModelCatalogChanged()
       await phoneAuth.complete(key)
       return { ok: true, payload: { status: 'authorized', expiresAt: sessionExpiresAt, account } }
     } else {
@@ -1764,13 +1780,16 @@ export function apply(ctx: Context, config: Config): void {
     const expiry = Date.parse(session.upstream?.expiresAt ?? '')
     if (bound !== apiBaseUrl || !Number.isFinite(Date.parse(session.expiresAt)) || Date.parse(session.expiresAt) <= Date.now()
       || (!Number.isFinite(expiry) && !isLoopbackOrigin(apiBaseUrl))) {
-      await mutateSession(async () => {
-        if ((await store.read())?.token !== session.token) return
+      const cleared = await mutateSession(async () => {
+        if ((await store.read())?.token !== session.token) return false
         identityVersion += 1
         chatUsage.reset()
+        invalidateModelCatalog()
         await store.clear()
         await releaseAccountCredential()
+        return true
       })
+      if (cleared) notifyModelCatalogChanged()
       return null
     }
     if (Number.isFinite(expiry) && expiry - Date.now() < 60_000) {
@@ -1839,7 +1858,9 @@ export function apply(ctx: Context, config: Config): void {
   const installedModelInputs = async (ids: readonly string[], signal: AbortSignal): Promise<ReadonlyMap<string, readonly string[]>> => {
     const llm = ctx.get('llm')
     if (llm === undefined) return new Map()
-    const wanted = new Set(ids)
+    // This published product alias uses the same official upstream model.
+    const aliases = new Map([['yunshu-flash', 'deepseek-flash']])
+    const wanted = new Set(ids.flatMap(id => [id, aliases.get(id) ?? id]))
     const inputs = new Map<string, readonly string[] | null>()
     for (const entry of llm.listConfigurableProviders()) {
       if (entry.settingsNs !== resolved.chatSettingsNamespace || entry.declared !== false) continue
@@ -1855,7 +1876,10 @@ export function apply(ctx: Context, config: Config): void {
         }
       }
     }
-    return new Map([...inputs].flatMap(([id, input]) => input === null ? [] : [[id, input] as const]))
+    return new Map(ids.flatMap((id) => {
+      const input = inputs.has(id) ? inputs.get(id) : inputs.get(aliases.get(id) ?? id)
+      return input === undefined || input === null ? [] : [[id, input] as const]
+    }))
   }
 
   /** Preserve model overrides while filling missing inputs; empty live catalogs mask old configuration. */
@@ -1961,18 +1985,17 @@ export function apply(ctx: Context, config: Config): void {
       await mutateSession(async () => {
         await currentIdentity()
         const previousDefault = ctx.get('agentDefaultModel')?.currentSelection()
+        const previousIds = productCatalog?.version === version ? productCatalog.ids : undefined
         await writeProductModels(ids, defaults)
         await currentIdentity()
         productModelPresentation = presentation
-        productDefault = preferred === undefined ? undefined
-          : { version, selection: { provider: resolved.chatProviderRoute, model: preferred } }
+        productCatalog = { version, ids,
+          selection: preferred === undefined ? undefined : { provider: resolved.chatProviderRoute, model: preferred } }
         const nextDefault = ctx.get('agentDefaultModel')?.currentSelection()
         if (previousDefault?.provider !== nextDefault?.provider || previousDefault?.model !== nextDefault?.model
-          || previousDefault?.reasoningEffort !== nextDefault?.reasoningEffort) {
-          const warn = (): void => { ctx.logger.warn('credits-index: a model catalog change observer failed') }
-          for (const listener of ctx.events.dispatch('emit', ['api-session/model-catalog-changed']) as Array<() => unknown>) {
-            try { void Promise.resolve(listener()).catch(warn) } catch { warn() }
-          }
+          || previousDefault?.reasoningEffort !== nextDefault?.reasoningEffort || previousIds === undefined
+          || previousIds.length !== ids.length || previousIds.some((id, index) => id !== ids[index])) {
+          notifyModelCatalogChanged()
         }
       })
       return ids
@@ -2703,6 +2726,7 @@ export function apply(ctx: Context, config: Config): void {
             await releaseAccountCredential()
             await writeProductModels([]).catch(reportModelRefreshFailure)
           })
+          notifyModelCatalogChanged()
           const renewed = pending === null ? null : await pending
           const session = renewed ?? previous
           let result: PlatformResult = { status: 204, code: null, message: null, retryAfterSeconds: null, body: null }
@@ -3632,6 +3656,7 @@ export function apply(ctx: Context, config: Config): void {
       prompt: { type: 'string', required: true, description: 'What the image should show.' },
       model: { type: 'string', description: 'Optional image model id such as gpt-image-2. Defaults to the first image model the deployment serves for this account.' },
       size: { type: 'string', description: 'Optional output size such as 1024x1024 or auto. A value the chosen model does not support is refused with that model’s own menu. For yunshu-internal-gpt-image-2, omit pixel size; the server controls output settings.' },
+      resolution: { type: 'string', description: 'Optional named output tier, only when declared by the chosen model. yunshu-internal-gpt-image-2 accepts 1k, 2k or 4k and defaults to 1k; this is independent from pixel size.' },
       count: { type: 'number', description: 'How many images to render, within the model’s limit (usually 1–4).' },
       reference_images: { type: 'array', items: { type: 'string' }, description: 'Reference images for editing: current-chat user image attachment ids or their exact read-only paths, readable PNG/JPEG/WebP files inside the current workspace, uploaded ma_ ids, or real generated image output ids/paths owned by the same explicit plan_id. Other-chat attachments, unrelated local paths and URLs are refused.' },
     },
@@ -3685,6 +3710,7 @@ export function apply(ctx: Context, config: Config): void {
           prompt: args.prompt,
           ...args.model === undefined ? {} : { model: args.model },
           ...args.size === undefined ? {} : { size: args.size },
+          ...args.resolution === undefined ? {} : { resolution: args.resolution },
           ...args.count === undefined ? {} : { count: args.count },
           ...args.reference_images === undefined ? {} : { references },
         }, exec.signal, path => creative.saved(creation, path, 'image'), async () => {

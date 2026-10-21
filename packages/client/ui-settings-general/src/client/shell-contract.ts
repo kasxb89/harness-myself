@@ -25,6 +25,8 @@ export interface SettingsSectionRow {
   id: string
   order: number
   label: string
+  /** Installed parent section; its contents remain accessible as a tab. */
+  parentId?: string
 }
 
 /** One ordered onboarding step projected from a slot registration. */

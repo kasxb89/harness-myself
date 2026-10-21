@@ -463,8 +463,9 @@ function assertLeanChildRecord(agent: Agent): void {
 }
 
 /**
- * The catalog the shipped Web composition puts in front of the model, minus the
- * ripgrep-dependent pair below. The absences are deliberate, not incidental
+ * The core catalog the shipped Web composition puts in front of the model,
+ * before the product's Host tools and the ripgrep-dependent pair below.
+ * The absences are deliberate, not incidental
  * gaps: the `cordis_*` toolset executes model-written JavaScript that no
  * sandbox row confines, `mcp_*` servers spawn outside `ctx.shell`, and `ralph`
  * runs unsupervised rounds whose completion is a worker self-report.
@@ -502,6 +503,43 @@ const EXPECTED_TOOLS = [
   'workflow',
   'working_directory',
   'write',
+]
+
+/**
+ * Product Host registrations are inherited by the default agent: Credits
+ * supplies ten creation/media tools, Univer supplies fourteen, and the IM,
+ * plugin finder, iVideo, and working-directory Hosts each supply one.
+ * Native computer-use tools remain an explicit scaffold opt-in.
+ */
+const EXPECTED_HOST_TOOLS = [
+  'dsh_im_return_file',
+  'edit_video',
+  'find_dsh_plugin',
+  'generate_image',
+  'generate_video',
+  'generate_video_project',
+  'get_creation_plan',
+  'ipollowork_video_validate',
+  'query_image_task',
+  'query_video_task',
+  'resume_video_project',
+  'univer_api',
+  'univer_compile_svg',
+  'univer_execute',
+  'univer_export',
+  'univer_import',
+  'univer_inspect',
+  'univer_lint',
+  'univer_new',
+  'univer_print_pdf',
+  'univer_resources',
+  'univer_screenshot',
+  'univer_status',
+  'univer_unit',
+  'univer_worktree',
+  'update_creation_plan',
+  'video_project_status',
+  'working_directory',
 ]
 
 /**
@@ -590,15 +628,17 @@ it('assembles the shipped Web transport, catalog, guidance, and defaults', async
       "mode": "always",
     }
   `)
-  // The directory tool is global; the deployment's default preset supplies the agent's remaining tools.
-  expect(ctx.tools.schemas().map(schema => schema.name)).toEqual(['working_directory'])
+  // Product Hosts register globally; the default preset adds the agent's core tools.
+  expect(ctx.tools.schemas().map(schema => schema.name).sort()).toEqual(EXPECTED_HOST_TOOLS)
   const handle = await ctx.agents.create({
     sessionId: SessionId('shipped-composition'),
     setup: agentCtx => ctx.agentPresets.mount(agentCtx).then(() => undefined),
   })
   try {
     const names = ctx.tools.schemas(handle.agent).map(schema => schema.name).sort()
-    expect(names.filter(name => !RIPGREP_TOOLS.includes(name))).toEqual(EXPECTED_TOOLS)
+    expect(names.filter(name => !RIPGREP_TOOLS.includes(name))).toEqual(
+      [...new Set([...EXPECTED_TOOLS, ...EXPECTED_HOST_TOOLS])].sort(),
+    )
     // The packaged ripgrep binary ships with the dependency, so the pair is a
     // fixed roster member on every host.
     expect(names.filter(name => RIPGREP_TOOLS.includes(name))).toEqual(RIPGREP_TOOLS)
