@@ -40,7 +40,7 @@ it.each([false, true])('keeps project and explicit fixture skills with bundled p
   ctx.skills.register({ name: 'fixture-explicit', description: 'An explicitly registered fixture skill',
     source: 'runtime', content: 'Explicit instructions.' })
   const tool = defineContentToolFixture({ name: 'fixture-credits-tool', description: 'Ordinary tool identity',
-    parameters: {}, execute: () => [] })
+    parameters: {}, execute: async () => [] })
   ctx.tools.register(tool)
   let creditsOwner: Context | undefined
   ctx.loader.builtins['credits-guidance'] = {

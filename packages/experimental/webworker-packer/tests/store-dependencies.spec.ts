@@ -33,8 +33,8 @@ function fixture(test: TestContext, hostSource = 'export const value = 42') {
   for (const [name, source] of [
     ['@deepseek-ai/cordis', 'export const value = 1'],
     ['@deepseek-ai/dsh-image-store-host', hostSource],
-  ]) {
-    const target = join(root, name.split('/').at(-1)!)
+  ] as const) {
+    const target = join(root, name)
     mkdirSync(join(target, 'lib'), { recursive: true })
     writeFileSync(join(target, 'package.json'), JSON.stringify({
       name, type: 'module', files: ['lib'], exports: { '.': './lib/index.js' },
