@@ -52,6 +52,8 @@ interface Edit {
   readonly end: number
   /** Rendered lazily so edits inside a replaced range still apply. */
   readonly render: (inner: (from: number, to: number) => string) => string
+  readonly owner: Node | undefined
+  readonly statementRewrite: boolean
 }
 
 /** One binding to publish on `exports`. */
@@ -71,6 +73,8 @@ class Transformer {
   private readonly moduleRequests = new Set<string>()
   private readonly metaResolveRequests = new Set<string>()
   private readonly createRequireBindings = new Set<string>()
+  private readonly discardedDelegations = new Set<Node>()
+  private editOwner: Node | undefined
 
   constructor(source: string, private readonly path: string) {
     // A `#!` line is only legal at offset zero, and the prologue takes that spot;
@@ -107,11 +111,16 @@ class Transformer {
    * (a desugared loop) already carries that body's newlines, and padding by the
    * whole range again would push every later line down.
    */
-  private edit(start: number, end: number, build: (inner: (from: number, to: number) => string) => string): void {
+  private edit(
+    start: number, end: number, build: (inner: (from: number, to: number) => string) => string,
+    statementRewrite = false,
+  ): void {
     const original = countNewlines(this.source.slice(start, end))
     this.edits.push({
       start,
       end,
+      owner: this.editOwner,
+      statementRewrite,
       render: (inner) => {
         const text = build(inner)
         return text + '\n'.repeat(Math.max(0, original - countNewlines(text)))
@@ -124,11 +133,11 @@ class Transformer {
   }
 
   private insert(at: number, text: string): void {
-    this.edits.push({ start: at, end: at, render: () => text })
+    this.edits.push({ start: at, end: at, owner: this.editOwner, statementRewrite: false, render: () => text })
   }
 
-  private structural(start: number, end: number, render: Edit['render']): void {
-    this.edit(start, end, render)
+  private structural(start: number, end: number, render: Edit['render'], statementRewrite = false): void {
+    this.edit(start, end, render, statementRewrite)
   }
 
   private literal(node: Node): string {
@@ -279,8 +288,9 @@ class Transformer {
 
   /**
    * `yield` resumes with whatever the consumer sent, so the snapshot is taken
-   * before suspending and restored when the call completes. `yield*` delegates,
-   * which has no expression form here: it is desugared as a statement, and a
+   * before suspending and restored when the call completes. Delegation results
+   * must be discarded: statement-position conditional and comma expressions
+   * become branches and ordered statements before delegation is lowered. A
    * consumer's `throw()` is not forwarded into the inner iterator (`next` and
    * `return` are).
    */
@@ -293,24 +303,56 @@ class Transformer {
     const argument = node.argument as Node | null
     if (argument === null) this.fail('yield* without an operand', node.start)
     if (statement === undefined) this.fail('yield* is only supported as a statement', node.start)
-    if ((statement.expression as Node) !== node) {
-      // Anything around the delegation (`x = yield* g()`, `f(yield* g())`)
-      // would be silently dropped by the statement-wide rewrite below; the
-      // all-or-nothing lowering contract demands a loud refusal instead.
+    const expression = statement.expression as Node
+    if (!this.discardsDelegation(expression, node)) {
       this.fail('yield* is only supported as the whole statement expression', node.start)
     }
+    if (this.discardedDelegations.has(statement)) return
+    this.discardedDelegations.add(statement)
+    this.structural(statement.start, statement.end, inner => this.discardedExpression(expression, inner), true)
+  }
+
+  /** Whether conditional branches and comma operands discard this delegation's result. */
+  private discardsDelegation(expression: Node, delegation: Node): boolean {
+    if (expression === delegation) return true
+    if (expression.type === 'ConditionalExpression') {
+      return this.discardsDelegation(expression.consequent as Node, delegation)
+        || this.discardsDelegation(expression.alternate as Node, delegation)
+    }
+    return expression.type === 'SequenceExpression'
+      && (expression.expressions as Node[]).some(child => this.discardsDelegation(child, delegation))
+  }
+
+  /** Render only expressions whose final value the enclosing statement discards. */
+  private discardedExpression(expression: Node, inner: (from: number, to: number) => string): string {
+    if (expression.type === 'SequenceExpression') {
+      return `{${(expression.expressions as Node[]).map(child => this.discardedExpression(child, inner)).join('')}}`
+    }
+    if (expression.type === 'ConditionalExpression') {
+      const test = expression.test as Node
+      return `if(${inner(test.start, test.end)}){${this.discardedExpression(expression.consequent as Node, inner)}}`
+        + `else{${this.discardedExpression(expression.alternate as Node, inner)}}`
+    }
+    if (expression.type !== 'YieldExpression' || expression.delegate !== true) {
+      return `(${inner(expression.start, expression.end)});`
+    }
+    return this.delegation(expression.argument as Node, inner)
+  }
+
+  /** Existing statement delegation protocol, with sent values and awaited iterator disposal. */
+  private delegation(argument: Node, inner: (from: number, to: number) => string): string {
     const iterator = this.alsTemp()
     const step = this.alsTemp()
     const sent = this.alsTemp()
     const exhausted = this.alsTemp()
-    this.structural(statement.start, statement.end, inner => [
+    return [
       `{const ${iterator}=${ALS}.iterator(${inner(argument.start, argument.end)});`,
       `let ${sent};let ${exhausted}=false;`,
       `try{for(;;){const ${step}=${ALS}.resume(await ${ALS}.pause(${iterator}.next(${sent})));`,
       `if(${step}.done){${exhausted}=true;break}`,
       `${sent}=${ALS}.afterYield(${ALS}.snapshot(),yield ${step}.value)}}`,
       `finally{if(!${exhausted})${ALS}.resume(await ${ALS}.pause(${ALS}.close(${iterator})))}}`,
-    ].join(''))
+    ].join('')
   }
 
   // --- traversal ------------------------------------------------------------
@@ -320,6 +362,7 @@ class Transformer {
     functionDepth: number
     moduleScope: boolean
     statement?: Node
+    editOwner?: Node
   }): void {
     if (node === null || typeof node !== 'object') return
     if (Array.isArray(node)) {
@@ -328,6 +371,7 @@ class Transformer {
     }
     const record = node as Node
     if (typeof record.type !== 'string') return
+    this.editOwner = record.type === 'ExpressionStatement' ? record : context.editOwner
     let next = context
     switch (record.type) {
       case 'ImportDeclaration': this.importDeclaration(record); break
@@ -409,6 +453,7 @@ class Transformer {
           asyncGenerator: record.async === true && record.generator === true,
           functionDepth: context.functionDepth + 1,
           moduleScope: false,
+          ...context.editOwner === undefined ? {} : { editOwner: context.editOwner },
         }
         break
       case 'BlockStatement':
@@ -421,7 +466,7 @@ class Transformer {
         break
       default: break
     }
-    if (record.type === 'ExpressionStatement') next = { ...next, statement: record }
+    if (record.type === 'ExpressionStatement') next = { ...next, statement: record, editOwner: record }
     for (const [key, value] of Object.entries(record)) {
       if (key === 'type' || key === 'start' || key === 'end') continue
       this.visit(value, next)
@@ -499,6 +544,11 @@ class Transformer {
       let out = ''
       for (const edit of sorted) {
         if (edit.start < cursor || edit.end > to) continue
+        // The replacement owns these edits through its child slices. Adjacent
+        // statements may share an offset, so offsets alone cannot assign them.
+        const owner = edit.owner
+        if (!edit.statementRewrite && owner !== undefined && this.discardedDelegations.has(owner)
+          && from <= owner.start && to >= owner.end) continue
         out += this.source.slice(cursor, edit.start) + edit.render(render)
         cursor = edit.end
       }

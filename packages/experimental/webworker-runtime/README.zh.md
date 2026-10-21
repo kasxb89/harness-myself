@@ -34,6 +34,8 @@ kind: "package-library"
 
 兼容层保留导入时需要的数据，不启用原生操作：HTTP/TLS Agent 类允许定义子类，但构造时明确拒绝；Node 的 `global` 指向 Worker 全局对象。维护中的 `string_decoder` 库为镜像内未修改的包提供增量解码。支付二维码适配器复用 qrcode 自身的矩阵和 SVG 渲染器，保留 `margin`、`width` 和纠错等级，并向图片元素返回 SVG 数据 URI。已配置的 pi-ai 路由为模型选择器保留原样模型元数据；传输工厂和模型集合支持初始化及查询，而请求、凭证操作和刷新均明确失败。
 
+转换器将表达式语句、条件分支与逗号操作数中结果被丢弃的 `yield*` 转换为现有委托循环。条件测试及操作数保留求值顺序，且仅执行被选择的分支。变量初始化、赋值、调用、返回值或条件测试需要消费委托结果时，仍不受支持并会拒绝打包。委托的 `next` 传值与等待迭代器释放行为保留；消费者的 `throw()` 不会转发给内部迭代器。
+
 验收在 `apps/web/tests/preview-boot.e2e.ts`：静态服务真实构建页面，在 headless Chromium 里驱动 pre-boot 选择面板与 Worker 激活。空白选择验证首次启动；`vfs-example` overlay 提供普通 workspace 文件与明文 persistence 产物，无需模型请求即可验证 Workspace/Session 冷发现、工具呈现、subagent 导航和历史分页。[打包器](../webworker-packer/README.zh.md)在 Node 中根据已提交的历史日志准备当前代后继文件；这些源日志在 overlay 中逐字节保持不变。fixture 生成器负责验收测试的当前投影缓存。选择面板为 WebFS 保留独立的用户授权来源；该 provider 不读取内置 fixture。
 
 [已构建 bundle 导入检查](tests/compile/transform-corpus-check.ts)在库构建后检查裸 Node 导入。Dockkit 例外接受 Node 针对任意样式表报告的未知 `.css` 扩展名错误，而不限定某一固定路径；其他扩展名、错误码或消息，以及意外成功的豁免导入，仍然报错。

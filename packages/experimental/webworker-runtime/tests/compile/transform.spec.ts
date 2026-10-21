@@ -20,6 +20,7 @@ import { expect, test } from 'vitest'
 import { parse } from 'acorn'
 import { lowerModuleSource } from '../../src/compile/transform.ts'
 import { LOWERING_VERSION, WRAPPER_PARAMS } from '../../src/image-layout.ts'
+import { createAlsRuntime } from '../../src/polyfill/async-context/als-runtime.ts'
 
 /**
  * Lower one probe module the way the packer does — the transform's only caller.
@@ -542,6 +543,127 @@ function recordingAls(): { als: Record<string, unknown>; calls: string[] } {
   check('yield* forwards inner values then continues', collected, ['a', 'b', 'tail'])
 }
 
+test('preserves nested conditional delegation and evaluates only the selected branch once', async () => {
+  const code = transformModule(`export async function* outer(source) {
+    source.stream ? yield* source.stream() : source.arrayBuffer ? yield await source.arrayBuffer()
+      : source[Symbol.asyncIterator] ? yield* source[Symbol.asyncIterator]() : yield source
+  }`)
+  const { als } = recordingAls()
+  const outer = runBody(code, () => ({}), als).outer as (source: unknown) => AsyncGenerator<unknown, unknown, unknown>
+  const calls: string[] = []
+  const source = {
+    *stream() { calls.push('stream'); yield 'stream-value' },
+    arrayBuffer: () => { calls.push('arrayBuffer'); return Promise.resolve('buffer-value') },
+  }
+  const collect = async (value: unknown): Promise<unknown[]> => {
+    const values: unknown[] = []
+    for await (const item of outer(value)) values.push(item)
+    return values
+  }
+  expect(await collect(source)).toEqual(['stream-value'])
+  expect(calls).toEqual(['stream'])
+  expect(await collect({ arrayBuffer: source.arrayBuffer })).toEqual(['buffer-value'])
+  expect(calls).toEqual(['stream', 'arrayBuffer'])
+  expect(await collect({ async *[Symbol.asyncIterator]() { calls.push('iterator'); yield 'iterator-value' } }))
+    .toEqual(['iterator-value'])
+  expect(calls).toEqual(['stream', 'arrayBuffer', 'iterator'])
+  expect(await collect('fallback')).toEqual(['fallback'])
+})
+
+test('keeps comma operands and conditional branch side effects in order', async () => {
+  const code = transformModule(`export async function* outer(source, choose, mark) {
+    mark('before'), choose() ? (mark('chosen'), yield* source) : mark('other'), mark('after'), yield 'tail'
+  }`)
+  const { als } = recordingAls()
+  const outer = runBody(code, () => ({}), als).outer as (
+    source: unknown, choose: () => boolean, mark: (value: string) => void,
+  ) => AsyncGenerator<unknown, unknown, unknown>
+  for (const chosen of [true, false]) {
+    const calls: string[] = []
+    const iterator = outer(['first', 'second'], () => { calls.push('choose'); return chosen }, value => calls.push(value))
+    const seen: unknown[] = []
+    for await (const value of iterator) { seen.push(value); calls.push(String(value)) }
+    expect(seen).toEqual(chosen ? ['first', 'second', 'tail'] : ['tail'])
+    expect(calls).toEqual(chosen
+      ? ['before', 'choose', 'chosen', 'first', 'second', 'after', 'tail']
+      : ['before', 'choose', 'other', 'after', 'tail'])
+  }
+})
+
+test('keeps delegated comma expressions inside a single-statement loop body', async () => {
+  const code = transformModule(`export async function* outer(parts) {
+    for (const part of parts) yield 'prefix', yield* part
+    yield 'end'
+  }`)
+  const { als } = recordingAls()
+  const outer = runBody(code, () => ({}), als).outer as (parts: unknown) => AsyncGenerator<unknown, unknown, unknown>
+  const values: unknown[] = []
+  for await (const value of outer([['one'], ['two', 'three']])) values.push(value)
+  expect(values).toEqual(['prefix', 'one', 'prefix', 'two', 'three', 'end'])
+})
+
+test.each([
+  "yield* source;yield 'tail'",
+  "yield* source\nyield 'tail'",
+  "await mark('before'), yield* source;yield 'tail'",
+  "yield* source, async () => await mark('unused');yield 'tail'",
+])('keeps suspension edits owned by adjacent statements: %s', async (body) => {
+  const code = transformModule(`export async function* outer(source, mark){${body}}`)
+  const { als } = recordingAls()
+  const outer = runBody(code, () => ({}), als).outer as (
+    source: unknown, mark: (value: string) => void,
+  ) => AsyncGenerator<unknown, unknown, unknown>
+  const calls: string[] = []
+  const seen: unknown[] = []
+  for await (const value of outer(['one'], value => calls.push(value))) seen.push(value)
+  expect(seen).toEqual(['one', 'tail'])
+  expect(calls).toEqual(body.startsWith('await') ? ['before'] : [])
+})
+
+test('awaits delegated finally before cancellation finishes without running later operands', async () => {
+  const code = transformModule(`export async function* outer(source, mark) {
+    true ? yield* source : yield 'unused', mark('after')
+  }`)
+  const { als } = recordingAls()
+  const outer = runBody(code, () => ({}), als).outer as (
+    source: unknown, mark: (value: string) => void,
+  ) => AsyncGenerator<unknown, unknown, unknown>
+  const calls: string[] = []
+  async function* inner(): AsyncGenerator<unknown, void, unknown> {
+    try { yield 'first'; yield 'unreached' }
+    finally { await Promise.resolve(); calls.push('disposed') }
+  }
+  const iterator = outer(inner(), value => calls.push(value))
+  expect(await iterator.next()).toEqual({ done: false, value: 'first' })
+  expect(await iterator.return('cancelled')).toEqual({ done: true, value: 'cancelled' })
+  expect(calls).toEqual(['disposed'])
+})
+
+test('preserves sent values and restores the generator store between delegated steps', async () => {
+  let store: unknown = 'operation'
+  const als = createAlsRuntime({ snapshot: () => store, restore: (value) => { store = value } })
+  const code = transformModule(`export async function* outer(source, observe) {
+    true ? yield* source : yield 'unused', observe(), yield 'tail'
+  }`)
+  const outer = runBody(code, () => ({}), als).outer as (
+    source: unknown, observe: () => void,
+  ) => AsyncGenerator<unknown, unknown, unknown>
+  const seen: unknown[] = []
+  async function* inner(): AsyncGenerator<unknown, void, unknown> {
+    const sent = yield 'first'
+    seen.push(store, sent)
+    yield 'second'
+  }
+  const iterator = outer(inner(), () => seen.push(store))
+  expect(await iterator.next()).toEqual({ done: false, value: 'first' })
+  store = 'unrelated-consumer'
+  expect(await iterator.next('sent-value')).toEqual({ done: false, value: 'second' })
+  store = 'another-consumer'
+  expect(await iterator.next()).toEqual({ done: false, value: 'tail' })
+  expect(seen).toEqual(['operation', 'sent-value', 'operation'])
+  await iterator.return(undefined)
+})
+
 // ---------------------------------------------------------------------------
 // 7. Line numbers. The debugging contract: a stack frame in a transformed body
 //    points at the same line as the artifact it came from.
@@ -573,6 +695,11 @@ const lineCount = (text: string): number => text.split('\n').length
   }
 }
 
+test('retains line counts around discarded conditional and comma delegation', () => {
+  const source = 'export async function* f(inner) {\n  before(), test() ? yield* inner\n    : yield "other", after()\n}\n'
+  expect(lineCount(transformModule(source))).toBe(lineCount(source))
+})
+
 // ---------------------------------------------------------------------------
 // 8. Refusals. Every one of these is a form the transform must reject loudly
 //    rather than emit something that breaks later.
@@ -603,6 +730,16 @@ refuses(
 refuses(
   'a call around yield* is refused, never silently dropped',
   'export async function* f(inner) { use(yield* inner) }\n',
+  'yield* is only supported as the whole statement expression',
+)
+refuses(
+  'a returned delegation result is refused',
+  'export async function* f(inner) { return yield* inner }\n',
+  'yield* is only supported as a statement',
+)
+refuses(
+  'a conditional test consuming a delegation result is refused',
+  'export async function* f(inner) { (yield* inner) ? use(1) : use(2) }\n',
   'yield* is only supported as the whole statement expression',
 )
 refuses(
