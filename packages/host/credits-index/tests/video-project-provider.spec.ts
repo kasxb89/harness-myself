@@ -62,7 +62,7 @@ async function fixture(handler: Handler, overrides: Partial<Omit<VideoRelayOptio
   await mkdir(cacheRoot, { mode: 0o700 })
   const key = vi.fn(async () => `account-key-${String(key.mock.calls.length)}`)
   const relay = createVideoProjectRelay({
-    origin: source.origin + prefix, timeoutMs: 1000, maxDownloadBytes: 1024,
+    origin: source.origin + prefix, timeoutMs: 1000, submitTimeoutMs: overrides.timeoutMs ?? 1000, maxDownloadBytes: 1024,
     cacheRoot, key, ...overrides,
   })
   return { ...source, root, cacheRoot, key, relay, destination: join(cacheRoot, 'clip.mp4') }

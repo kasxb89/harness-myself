@@ -5,6 +5,7 @@ import { dirname, isAbsolute, join, relative, sep } from 'node:path'
 import type { VideoProjectRequest } from './video-project-types.ts'
 import { apiUrl, normalizeApiBaseUrl } from './api-url.ts'
 import { isAccountBalanceRejection } from './account-balance.ts'
+import { videoSubmission } from './video-submission.ts'
 
 /** Stable relay failure safe for project records and model-visible reports. */
 export class VideoRelayError extends Error {
@@ -17,6 +18,8 @@ export interface VideoRelayOptions {
   /** API root including the deployment's reverse-proxy prefix. */
   origin: string
   timeoutMs: number
+  /** Complete single-submit deadline; defaults to at least 180 seconds. */
+  submitTimeoutMs?: number
   /** Complete content-transfer deadline; defaults to the ordinary request deadline. */
   downloadTimeoutMs?: number
   maxDownloadBytes: number
@@ -31,7 +34,7 @@ export interface VideoProjectRelay {
   /** @param signal - Cancels the catalog read. @returns Account-visible model identifiers. */
   modelIds(signal: AbortSignal): Promise<readonly string[]>
   /**
-   * @param body - Exact saved generation request.
+   * @param body - Exact prepared generation request; private snapshots are serialized as multipart files.
    * @param route - Selected model's generation path.
    * @param signal - Cancels dispatch.
    * @returns Accepted upstream task identifier.
@@ -109,13 +112,14 @@ export function createVideoProjectRelay(options: VideoRelayOptions): VideoProjec
     signal.throwIfAborted()
     const key = await options.key()
     signal.throwIfAborted()
+    const submission = body === undefined ? undefined : videoSubmission(body)
     let response: Response
     try {
       response = await fetch(apiUrl(baseUrl, path), {
         method: body === undefined ? 'GET' : 'POST',
         headers: { authorization: 'Bearer ' + key, accept: body === undefined && path.endsWith('/content') ? 'video/mp4' : 'application/json',
-          ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+          ...submission?.headers },
+        ...(submission === undefined ? {} : { body: submission.body }),
         redirect: 'error', signal: AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]),
       })
     } catch (_transportFailure: unknown) {
@@ -146,7 +150,7 @@ export function createVideoProjectRelay(options: VideoRelayOptions): VideoProjec
       })
     },
     async submit(body: VideoProjectRequest, route: string, signal: AbortSignal): Promise<{ taskId: string }> {
-      const value = await jsonBody(await request(route, signal, body))
+      const value = await jsonBody(await request(route, signal, body, options.submitTimeoutMs ?? Math.max(options.timeoutMs, 180_000)))
       const nested = record(value.data)
       const taskId = text(value, 'task_id') ?? text(value, 'id') ?? text(nested, 'task_id') ?? text(nested, 'id')
       if (taskId === undefined || !isTaskId(taskId)) {

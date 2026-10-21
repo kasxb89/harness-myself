@@ -39,7 +39,7 @@ export interface CreativeControllerOptions {
 
 const EMPTY: CreativeSnapshot = { phase: 'idle', projects: [], refreshing: false, failure: null }
 const SIGNED_OUT: CreativeSnapshot = { phase: 'signed-out', projects: [], refreshing: false, failure: null }
-const MEDIA_TOOLS = new Set(['update_creation_plan', 'generate_image', 'query_image_task',
+const MEDIA_TOOLS = new Set(['update_creation_plan', 'generate_image', 'query_image_task', 'query_video_task',
   'generate_video', 'generate_video_project', 'edit_video'])
 
 function active(project: CreativeProjectView): boolean {
@@ -277,7 +277,7 @@ export class CreativeController {
   }
 
   /**
-   * Query an owned original image task and supervise its accepted background read.
+   * Query an owned original image or video task and supervise its accepted background read.
    * @param sessionId - owning foreground conversation.
    * @param projectId - retained project whose task is queryable.
    * @param operationId - exact operation whose original task must be queried.
@@ -291,7 +291,8 @@ export class CreativeController {
     const task = this.bucket(sessionId).source.getSnapshot().projects.find(project => project.id === projectId)
       ?.tasks.find(operation => operation.id === operationId)
     if (task?.canQuery !== true) return { ok: false, code: 'rejected' }
-    const result = await this.mutate(signal, owned => recoverCreativeImage({ sessionId, projectId, operationId }, owned))
+    const kind = task.videoReceipt === undefined ? 'image' : 'video'
+    const result = await this.mutate(signal, owned => recoverCreativeImage({ sessionId, projectId, operationId, kind }, owned))
     if (!this.mutationCurrent(sessionId, epoch, account, signal)) return { ok: false, code: 'signed-out' }
     if (!result.ok) {
       if (result.code === 'signed-out') this.accountChanged(null)

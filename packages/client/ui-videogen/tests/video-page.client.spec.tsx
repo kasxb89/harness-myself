@@ -10,6 +10,7 @@ import { zh } from '../src/client/locales.ts'
 import { contentFixture } from '../../ui-imagegen/tests/content-fixture.client.ts'
 
 const params = {
+  defaultDuration: undefined as number | undefined,
   durationByResolution: undefined as Readonly<Record<string, readonly number[]>> | undefined,
   durations: [5, 10], resolutions: ['720p', '1080p'], ratios: ['16:9', '9:16'], frameSlots: 2,
   maxReferenceImages: 3, maxReferenceVideos: 1, maxReferenceAudios: 1,
@@ -65,6 +66,56 @@ beforeEach(() => { vi.useRealTimers(); sessionAccountId = 'account-a'; chatSessi
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 describe('video composer', () => {
+  it.each(['pending', 'unknown'])('keeps %s submissions uncertain after a local cancellation without retrying', async (submission_state) => {
+    const { mount, store, task } = setup()
+    task.mockImplementation(async () => json({ ok: false, code: 'ABORTED', submission_state }))
+    mount()
+    await ready()
+    writePrompt()
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    await waitFor(() => { expect(store.getSnapshot().failure).toBe(zh.outcomeUnknown) })
+    expect(task).toHaveBeenCalledOnce()
+    expect(screen.getByRole('alert').textContent).not.toBe(zh.cancelled)
+  })
+
+  it.each([
+    { durations: Array.from({ length: 16 }, (_, index) => index + 15), defaultDuration: 30 },
+    { durations: [10, 15], defaultDuration: 15 },
+  ])('starts with the declared $defaultDuration-second default and submits the selected actual size', async ({ durations, defaultDuration }) => {
+    const { mount, store, task } = setup({
+      durations, defaultDuration, resolutions: ['1280x720', '720x1280', '1792x1024', '1024x1792'], ratios: [],
+      frameSlots: 0, audioToggle: false, modes: [], seed: false,
+    })
+    mount()
+    await ready()
+    await waitFor(() => { expect(store.getSnapshot().duration).toBe(defaultDuration) })
+    fireEvent.click(screen.getByLabelText(t('settingsTrigger', { ratio: '', resolution: '1280x720', duration: String(defaultDuration) })))
+    const panel = screen.getByRole('group', { name: zh.settings })
+    fireEvent.click(within(panel).getByRole('button', { name: '1024x1792' }))
+    expect(within(panel).queryByRole('button', { name: '720p', exact: true })).toBeNull()
+    writePrompt()
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    await waitFor(() => { expect(task).toHaveBeenCalledOnce() })
+    expect(requestBody(task.mock.calls[0]?.[0])).toMatchObject({ durationSeconds: defaultDuration, resolution: '1024x1792' })
+  })
+
+  it('keeps an explicitly retained allowed duration ahead of the model default', async () => {
+    const { mount, store } = setup({ durations: [15, 20, 30], defaultDuration: 30 })
+    store.actions.patch({ duration: 20 })
+    mount()
+    await ready()
+    expect(store.getSnapshot().duration).toBe(20)
+  })
+
+  it('uses the current resolution menu when its declared model default is unavailable', async () => {
+    const { mount, store } = setup({
+      durations: [15, 30], defaultDuration: 30, resolutions: ['1280x720'], durationByResolution: { '1280x720': [15] },
+    })
+    mount()
+    await ready()
+    await waitFor(() => { expect(store.getSnapshot().duration).toBe(15) })
+  })
+
   it('exposes one ordinary material input beside the prompt and retains only explicit frame upload controls', async () => {
     const { mount } = setup()
     const view = mount()

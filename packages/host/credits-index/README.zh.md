@@ -117,6 +117,10 @@ Host 先使用 `/api/user/self` 核对产品会话中的账号，再通过 `/api
 
 ### 视频能力与参考素材
 
+15 个精确的 BlackRxAI 型号使用 `blackrxai-video` 网关契约，并与当前账号可见目录取交集。已声明的菜单分为固定 30 秒、15–30 秒逐整数、固定 15 秒及 10/15 秒档位，在允许时以 30 秒或 15 秒为初始选择。尺寸菜单发送 `1280x720`、`720x1280`、`1792x1024` 或 `1024x1792`；型号名称中的 `480p`、`720p` 是线路标记，不证明产物实际像素。请求仅包含网关白名单及 `n: 1`。本地参考素材先完成校验并保存私有快照，再作为重复的 multipart `images`、`videos`、`audios` 文件字段提交，保留全部已接纳素材并遵守各型号数量上限。内部快照、data URL、metadata 及额外的分辨率/比例字段不会发送到该线路。无参考素材时使用 JSON。
+
+普通单视频在提交前持久化不含凭证的回执，并在轮询前持久化已受理的任务编号。取消本地等待、查询中断和结果未保存均保留原操作及其未确认状态。同账号、同聊天已有未确认视频提交时，面板阻止再次生成。`query_video_task` 及经过宿主认证的 `POST /credits/api/creative/video/recover` 只查询并保存已保留的原任务，不再次提交视频。创作任务卡提供相同的恢复入口。已有 manifest 视频项目继续使用原有的显式恢复流程。
+
 视频提交和状态查询使用所选能力的 `route`；公开定价明确指定的路由优先。MiniMax-H3 使用 `POST /v1/video/generations` 和 `GET /v1/video/generations/:id`，其他视频模型保留原有协议。`data` 内的通用任务响应支持大写 `NOT_START`、`SUBMITTED`、`QUEUED`、`IN_PROGRESS`、`SUCCESS` 和 `FAILURE`。成片通过 `/v1/videos/:id/content` 读取，保留配置中的 `/harness` 前缀，并使用当前账号的中转 key。渠道的聊天测试不能验证视频生成。
 
 视频菜单优先读取公开定价 `parameters`（字段映射或 JSON Schema 的 `properties`）中明确的 `seconds` 或 `duration` 声明，其次读取 `billing_usage_schema`。数值枚举或有限的 `minimum`/`maximum` 范围选出 1 至 3600 秒内的整数，并覆盖模型表；排他边界和 `multipleOf` 进一步缩小时长菜单。缺失、格式错误或无上限的声明保留已知模型限制；计费样例不授予时长或额外参考槽位。分辨率枚举和常量使用相同的实时优先级。当前 H3 响应只声明未限定范围的数值秒数字段，因此保留已知的 4–15 秒菜单。公开定价列出某个模型，不代表特定账号已可用它生成。
@@ -154,7 +158,7 @@ Host 先使用 `/api/user/self` 核对产品会话中的账号，再通过 `/api
 
 `stateDir/video-projects/<project_id>/manifest.json` 中的私有记录仅所有者可读写，保留账号编号、非秘密登录指纹、所属聊天与工作区、原始说明和完整已准备请求、分镜计划、上游任务编号、已保存片段路径及最终状态。每次提交前以及任务编号和片段保存后均原子替换记录；记录不含凭据或上游原始响应。原始片段保留在私有项目缓存，供剪辑和恢复使用。每个校验完成的片段及最终成片还通过产物保存服务发布到生成前捕获的保存目录；后续片段失败时，已完成片段仍可在产物库找到。旧版仅使用工作区的项目将片段发布到原工作区的 `videoProjectOutputDirectory`。经过授权的项目读取及 `video_project_status` 会在本机补发布已有历史片段，不再提交生成请求。可重试的本机复制失败时，已授权项目继续可见并提示发布失败；恢复保存目录或原文件后刷新即可重试复制。本地剪辑先在沙箱内将成片保留到工作区，再执行发布；返回的媒体路径指向已发布副本。记录和素材不自动清理。`video_project_status` 按账号、聊天和工作区校验读取权限。进程重启后保留的是记录，不会虚构仍在运行的任务；显式调用 `resume_video_project` 会复用已保存片段、读取已知任务编号，再决定是否提交从未提交的剩余片段。没有已持久化任务编号的提交属于未知结果，可能已计费，绝不自动重提；失败的上游任务同样需要明确创建新项目，或剪辑已保留片段。
 
-可配置 `videoProjectMaxSeconds`（默认 300）、`videoProjectMaxSegments`（32）、`videoProjectPollIntervalMs`（6000）、`videoProjectTaskTimeoutMs`（900000）、`videoProjectDownloadMaxBytes`（536870912），`videoProjectReferenceMaxBytes`（每个本地引用 20971520），以及相对于工作区的 `videoProjectOutputDirectory`（`artifacts/videos`）。视频内容下载的完整传输期限至少为 300000 ms，模型目录、提交和状态请求仍使用 `timeoutMs`；原有任务取消与单段任务期限也继续约束下载。内容读取中断返回 `VIDEO_DOWNLOAD_UNAVAILABLE`，清除未完成文件，保留已知任务供显式恢复，不再次提交。生成前，完整记录连同任务与路径元数据的预留空间必须不超过 64 MiB。这些限制在计费前生效。镜头连贯性仍取决于提供方；管线提供有序分镜说明与共享参考素材，不会承诺模型尚未生成的主体一致性或转场画面。
+可配置 `videoProjectMaxSeconds`（默认 300）、`videoProjectMaxSegments`（32）、`videoProjectPollIntervalMs`（6000）、`videoProjectTaskTimeoutMs`（900000）、`videoProjectDownloadMaxBytes`（536870912），`videoProjectReferenceMaxBytes`（每个本地引用 20971520），以及相对于工作区的 `videoProjectOutputDirectory`（`artifacts/videos`）。视频内容下载的完整传输期限至少为 300000 ms，提交期限至少为 180000 ms，模型目录与状态请求仍使用 `timeoutMs`；原有任务取消与单段任务期限也继续约束下载。内容读取中断返回 `VIDEO_DOWNLOAD_UNAVAILABLE`，清除未完成文件，保留已知任务供显式恢复，不再次提交。生成前，完整记录连同任务与路径元数据的预留空间必须不超过 64 MiB。这些限制在计费前生效。镜头连贯性仍取决于提供方；管线提供有序分镜说明与共享参考素材，不会承诺模型尚未生成的主体一致性或转场画面。
 
 图片生成、单段视频提交、长视频项目和 AI 帮写仅在实际 HTTP 403 响应含网关精确错误码 `insufficient_user_quota` 时返回 `INSUFFICIENT_BALANCE`；OpenAI 错误封装还须具有网关的 `new_api_error` 或图片协议的 `invalid_request_error` 类型。上游额度不足、渠道欠费、令牌额度、普通 403 和传输故障均不表示用户余额不足。明确资金拒绝会停止固定视频流程并保留已保存片段。网关也可能在上游受理后因追加费用而返回此错误，因此未确认的提交继续保持未知状态，即使充值也不能自动重发。原生任务插件若已把错误码改为 `permission_denied`，产品无法恢复原始原因，因此仍显示通用错误。不另发余额估算或付费探测请求。
 

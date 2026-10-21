@@ -51,6 +51,8 @@ export interface ImageParams {
 export interface VideoParams {
   /** Duration values the model allows, in seconds. */
   readonly durations: readonly number[]
+  /** Preferred initial value, present only while allowed by the live menu. */
+  readonly defaultDuration?: number
   /** Resolution-specific duration menus; an absent key is unavailable. */
   readonly durationByResolution?: Readonly<Record<string, readonly number[]>>
   readonly minDuration: number
@@ -332,6 +334,7 @@ function videoParams(spec: VideoSpec, schema: unknown, parameters: unknown): {
   if (declaredResolutions?.length === 0) durations = []
   const params: VideoParams = {
     durations,
+    ...spec.defaultDuration !== undefined && durations.includes(spec.defaultDuration) ? { defaultDuration: spec.defaultDuration } : {},
     ...durationByResolution === undefined ? {} : { durationByResolution },
     minDuration: durations[0] ?? 0,
     maxDuration: durations[durations.length - 1] ?? 0,

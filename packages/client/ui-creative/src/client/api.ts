@@ -2,7 +2,7 @@
 import { randomUUID } from '@deepseek-ai/dsh-util-crypto'
 import type {
   CreativeAssetView, CreativeCharacter, CreativeOutput, CreativeProjectView, CreativeProjectsPayload,
-  CreativeShotView, CreativeStatus, CreativeTaskView, CreativePlanChange, CreativeImageReceipt,
+  CreativeShotView, CreativeStatus, CreativeTaskView, CreativePlanChange, CreativeSubmissionReceipt,
 } from '@deepseek-ai/dsh-credits-index/src/creative-types.ts'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 
@@ -87,7 +87,7 @@ function receiptId(value: unknown): value is string {
   return typeof value === 'string' && value.length <= 256 && /^[A-Za-z0-9][A-Za-z0-9._:-]*$/u.test(value)
     && !/^(?:sk-|nap_)/iu.test(value)
 }
-function imageReceipt(value: unknown): value is CreativeImageReceipt {
+function submissionReceipt(value: unknown): value is CreativeSubmissionReceipt {
   return record(value) && typeof value.route === 'string' && value.route.length <= 512
     && /^\/[A-Za-z0-9._~-]+(?:\/[A-Za-z0-9._~-]+)*$/u.test(value.route)
     && !value.route.split('/').some(part => part === '.' || part === '..')
@@ -100,12 +100,16 @@ function imageReceipt(value: unknown): value is CreativeImageReceipt {
     && (value.phase !== 'accepted' || receiptId(value.taskId))
 }
 function task(value: unknown, sessionId: SessionId, projectId: string): value is CreativeTaskView {
-  return record(value) && text(value.id) && status(value.status) && texts(value.shotIds)
+  if (!record(value)) return false
+  const receipt = value.imageReceipt ?? value.videoReceipt
+  return text(value.id) && status(value.status) && texts(value.shotIds)
     && count(value.completedShots) && count(value.totalShots) && value.completedShots <= value.totalShots
     && ['assetId', 'model', 'videoProjectId', 'errorCode'].every(key => value[key] === undefined || text(value[key]))
-    && (value.imageReceipt === undefined || imageReceipt(value.imageReceipt))
+    && (value.imageReceipt === undefined || value.videoReceipt === undefined)
+    && (value.imageReceipt === undefined || submissionReceipt(value.imageReceipt))
+    && (value.videoReceipt === undefined || submissionReceipt(value.videoReceipt))
     && (value.canQuery === undefined || typeof value.canQuery === 'boolean')
-    && (value.canQuery !== true || record(value.imageReceipt) && receiptId(value.imageReceipt.taskId))
+    && (value.canQuery !== true || record(receipt) && receiptId(receipt.taskId))
     && Array.isArray(value.outputs) && value.outputs.every(item => output(item, sessionId, projectId))
 }
 function project(value: unknown, sessionId: SessionId): value is CreativeProjectView {
@@ -189,8 +193,8 @@ export async function saveCreativePlan(request: CreativePlanRequest, signal: Abo
 export type CreativeRecoverResult = CreativeReadResult | { readonly ok: false; readonly code: 'rejected' }
 
 /**
- * Query one retained image task without sending another generation request.
- * @param request - exact conversation, project and retained operation identity.
+ * Query one retained image or video task without sending another generation request.
+ * @param request - Exact conversation, project, retained operation and optional media kind; omitted kind queries images.
  * @param signal - owning view and account lifetime cancellation.
  * @returns the accepted query's current listing or a failure without automatic retry.
  */
@@ -198,9 +202,10 @@ export async function recoverCreativeImage(request: {
   readonly sessionId: SessionId
   readonly projectId: string
   readonly operationId: string
+  readonly kind?: 'image' | 'video'
 }, signal: AbortSignal): Promise<CreativeRecoverResult> {
   try {
-    const response = await fetch('/credits/api/creative/image/recover', {
+    const response = await fetch(`/credits/api/creative/${request.kind ?? 'image'}/recover`, {
       method: 'POST', signal, credentials: 'same-origin', cache: 'no-store',
       headers: { accept: 'application/json', 'content-type': 'application/json' },
       body: JSON.stringify({ session_id: request.sessionId, project_id: request.projectId, operation_id: request.operationId }),

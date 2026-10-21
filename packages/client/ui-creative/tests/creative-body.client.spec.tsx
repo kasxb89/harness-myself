@@ -57,15 +57,20 @@ function fixture(initial: Partial<CreativeSnapshot> = {}, english = false) {
 }
 
 describe('chat creation sidebar', () => {
-  it.each([false, true])('queries only an accepted original image task and keeps its receipt visible (English: %s)', async (english) => {
+  it.each([
+    { english: false, kind: 'image' as const }, { english: true, kind: 'image' as const },
+    { english: false, kind: 'video' as const }, { english: true, kind: 'video' as const },
+  ])('queries only an accepted original $kind task and keeps its receipt visible (English: $english)', async ({ english, kind }) => {
     const copy = english ? en : zh
-    const data = project({ kind: 'image', status: 'unknown', tasks: [{ id: 'op_original', status: 'unknown', shotIds: ['s1'],
+    const receipt = { route: kind === 'image' ? '/toapis-image/submit' : '/blackrx/v1/videos', model: `${kind}-model`,
+      phase: 'accepted' as const, taskId: 'task-original', requestId: 'request-original', backendFingerprint: 'a'.repeat(64) }
+    const data = project({ kind, status: 'unknown', tasks: [{ id: 'op_original', status: 'unknown', shotIds: ['s1'],
       completedShots: 0, totalShots: 1, outputs: [], canQuery: true,
-      imageReceipt: { route: '/toapis-image/submit', model: 'image-model', phase: 'accepted', taskId: 'task-original',
-        requestId: 'request-original', backendFingerprint: 'a'.repeat(64) } }] })
+      ...kind === 'image' ? { imageReceipt: receipt } : { videoReceipt: receipt } }] })
     const h = fixture({ projects: [data] }, english)
-    fireEvent.click(screen.getByRole('tab', { name: copy['section.images'] }))
+    fireEvent.click(screen.getByRole('tab', { name: copy[kind === 'image' ? 'section.images' : 'section.outputs'] }))
     expect(screen.getByText(copy['tasks.acceptedUnconfirmed'])).toBeTruthy()
+    expect(screen.getByText(`${kind}-model`)).toBeTruthy()
     expect(screen.getByText('task-original').closest('details')?.open).toBe(false)
     expect(screen.getByText('request-original')).toBeTruthy()
     let finish!: (value: Awaited<ReturnType<CreativeBodyProps['recover']>>) => void
@@ -80,6 +85,27 @@ describe('chat creation sidebar', () => {
     expect(screen.getByRole('alert').textContent).toBe(copy['tasks.queryFailed'])
     expect(screen.getByText('task-original')).toBeTruthy()
     expect(screen.getByRole('button', { name: copy['tasks.queryOriginal'] })).toBeTruthy()
+  })
+
+  it('keeps a video receipt and aborts a local query when its task view unmounts', async () => {
+    const data = project({ kind: 'video', status: 'unknown', tasks: [{ id: 'op_video', status: 'unknown', shotIds: ['s1'],
+      completedShots: 0, totalShots: 1, outputs: [], canQuery: true,
+      videoReceipt: { route: '/blackrx/v1/videos', model: 'sora-2', phase: 'completed', taskId: 'video-original',
+        requestId: 'request-original', backendFingerprint: 'a'.repeat(64) } }] })
+    const h = fixture({ projects: [data] })
+    fireEvent.click(screen.getByRole('tab', { name: zh['section.outputs'] }))
+    expect(screen.getByText(zh['tasks.resultUnsaved'])).toBeTruthy()
+    expect(screen.getByText('video-original')).toBeTruthy()
+    const result = Promise.withResolvers<Awaited<ReturnType<CreativeBodyProps['recover']>>>()
+    h.props.recover.mockImplementationOnce(() => result.promise)
+    fireEvent.click(screen.getByRole('button', { name: zh['tasks.queryOriginal'] }))
+    const signal = h.props.recover.mock.calls[0]?.[2]
+    expect(signal?.aborted).toBe(false)
+    h.view.unmount()
+    expect(signal?.aborted).toBe(true)
+    await act(async () => { result.resolve({ ok: false, code: 'unavailable' }) })
+    expect(h.inputActions.submit).not.toHaveBeenCalled()
+    expect(h.props.recover).toHaveBeenCalledTimes(1)
   })
 
   it('keeps legacy unknown submissions conservative and hides the action while an original query is active', () => {

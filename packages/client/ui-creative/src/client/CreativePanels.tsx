@@ -98,6 +98,7 @@ function TaskCard({ task, order, project, kind, visible, recover, t }: {
   const [expanded, setExpanded] = useState(false)
   const [querying, setQuerying] = useState(false)
   const [queryFailed, setQueryFailed] = useState(false)
+  const receipt = task.imageReceipt ?? task.videoReceipt
   const query = useRef<AbortController | null>(null)
   useEffect(() => () => { query.current?.abort(); query.current = null }, [])
   useEffect(() => {
@@ -139,18 +140,18 @@ function TaskCard({ task, order, project, kind, visible, recover, t }: {
         aria-label={t('tasks.progress', { completed: task.completedShots, total: task.totalShots })} />}
       {publicationFailed ? <p className={css.notice} role="alert">{t('artifactPublishFailed')}</p>
         : task.status === 'failed' && <p className={css.hint}>{failureText} {t('tasks.failed')}</p>}
-      {task.status === 'unknown' && <p className={css.notice}>{t(task.imageReceipt?.phase === 'accepted'
-        ? 'tasks.acceptedUnconfirmed' : task.imageReceipt?.phase === 'completed' ? 'tasks.resultUnsaved' : 'tasks.unknownNoReceipt')}</p>}
+      {task.status === 'unknown' && <p className={css.notice}>{t(receipt?.phase === 'accepted'
+        ? 'tasks.acceptedUnconfirmed' : receipt?.phase === 'completed' ? 'tasks.resultUnsaved' : 'tasks.unknownNoReceipt')}</p>}
       {task.canQuery === true && <div className={css.actions}><Button variant="outline" size="sm" disabled={querying}
         onClick={() => { void recoverOriginal() }}>{t(querying ? 'tasks.querying' : 'tasks.queryOriginal')}</Button></div>}
       {queryFailed && <p className={css.notice} role="alert">{t('tasks.queryFailed')}</p>}
       <details className={css.details} onToggle={(event) => { setExpanded(event.currentTarget.open) }}>
         <summary>{t('details')}</summary>
-        <p className={css.caption}>{task.model ?? task.imageReceipt?.model ?? t('notSpecified')}</p><code className={css.caption}>{task.id}</code>
-        {task.imageReceipt !== undefined && <Facts t={t} entries={[
-          [t('tasks.receipt.phase'), t(`tasks.receipt.${task.imageReceipt.phase}`)],
-          ...task.imageReceipt.taskId === undefined ? [] : [[t('tasks.receipt.taskId'), task.imageReceipt.taskId] as const],
-          ...task.imageReceipt.requestId === undefined ? [] : [[t('tasks.receipt.requestId'), task.imageReceipt.requestId] as const],
+        <p className={css.caption}>{task.model ?? receipt?.model ?? t('notSpecified')}</p><code className={css.caption}>{task.id}</code>
+        {receipt !== undefined && <Facts t={t} entries={[
+          [t('tasks.receipt.phase'), t(`tasks.receipt.${receipt.phase}`)],
+          ...receipt.taskId === undefined ? [] : [[t('tasks.receipt.taskId'), receipt.taskId] as const],
+          ...receipt.requestId === undefined ? [] : [[t('tasks.receipt.requestId'), receipt.requestId] as const],
         ]} />}
         {expanded && outputs.length > 0 && <OutputGallery outputs={outputs} visible={visible} t={t} />}
       </details>

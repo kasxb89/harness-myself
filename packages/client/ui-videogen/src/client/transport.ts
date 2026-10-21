@@ -6,6 +6,7 @@ export interface Envelope<T> {
   readonly code?: string | null
   readonly message?: string | null
   readonly sessionInvalid?: boolean
+  readonly submission_state?: 'not-submitted' | 'pending' | 'unknown' | 'failed' | 'completed' | null
   readonly payload?: T
 }
 

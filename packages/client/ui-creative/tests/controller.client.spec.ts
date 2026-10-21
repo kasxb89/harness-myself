@@ -268,18 +268,18 @@ describe('creative read ownership', () => {
     expect(read).toHaveBeenCalledTimes(6)
   })
 
-  it('refreshes query_image_task active state and its settled original-task result', async () => {
+  it.each(['image', 'video'] as const)('refreshes query_%s_task active state and its settled original-task result', async (kind) => {
     const data = project({ status: 'unknown' })
-    const receipt = { route: '/toapis-image/submit', model: 'image-model', phase: 'accepted' as const,
+    const receipt = { route: kind === 'image' ? '/toapis-image/submit' : '/blackrx/v1/videos', model: `${kind}-model`, phase: 'accepted' as const,
       taskId: 'original-task', backendFingerprint: 'a'.repeat(64) }
     const original = { id: 'op_original', status: 'unknown' as const, shotIds: ['s1'], outputs: [],
-      completedShots: 0, totalShots: 1, imageReceipt: receipt, canQuery: true }
+      completedShots: 0, totalShots: 1, canQuery: true, ...kind === 'image' ? { imageReceipt: receipt } : { videoReceipt: receipt } }
     const read = vi.fn<ReadCreativeProjects>().mockResolvedValue({ ok: true,
       payload: { accountId: 'account-a', projects: [{ ...data, tasks: [original] }] } })
     const { controller } = owner(read)
     controller.accountChanged('account-a'); controller.select(A)
     await read.mock.results[0]!.value
-    const started = call('query_image_task')
+    const started = call(`query_${kind}_task`)
     read.mockResolvedValue({ ok: true, payload: { accountId: 'account-a', projects: [{ ...data,
       tasks: [{ ...original, status: 'running', canQuery: false }] }] } })
     controller.observe(A, started)

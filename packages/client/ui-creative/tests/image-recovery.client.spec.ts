@@ -11,6 +11,11 @@ const task = { id: 'op_original', status: 'unknown' as const, shotIds: ['s1'], c
   outputs: [], imageReceipt: receipt, canQuery: true }
 const retained = project({ kind: 'image', status: 'unknown', tasks: [task],
   shots: project().shots.map(shot => ({ ...shot, status: 'unknown' })) })
+const videoReceipt = { ...receipt, route: '/blackrx/v1/videos', model: 'sora-2' }
+const videoTask = { id: 'op_video', status: 'unknown' as const, shotIds: ['s1'], completedShots: 0, totalShots: 1,
+  outputs: [], videoReceipt, canQuery: true }
+const retainedVideo = project({ kind: 'video', status: 'unknown', tasks: [videoTask],
+  shots: project().shots.map(shot => ({ ...shot, status: 'unknown' })) })
 const payload = (projects = [retained], accountId = 'account-a') => ({ accountId, projects })
 const controllers: CreativeController[] = []
 afterEach(async () => {
@@ -57,6 +62,52 @@ describe('original image query transport', () => {
       expect(await recoverCreativeImage(request, signal)).toEqual({ ok: false, code })
     }
     expect(fetcher).toHaveBeenCalledTimes(4)
+  })
+
+  it('queries video through the same owner-validated admission protocol without generating', async () => {
+    const accepted = { ...retainedVideo, tasks: [{ ...videoTask, status: 'running' as const, canQuery: false }] }
+    const fetcher = vi.fn<typeof fetch>(async () => Response.json({ ok: true, payload: payload([accepted]) }, { status: 202 }))
+    vi.stubGlobal('fetch', fetcher)
+    const signal = new AbortController().signal
+    expect(await recoverCreativeImage({ sessionId: SESSION, projectId: retainedVideo.id, operationId: videoTask.id, kind: 'video' }, signal))
+      .toEqual({ ok: true, payload: payload([accepted]) })
+    expect(fetcher).toHaveBeenCalledExactlyOnceWith('/credits/api/creative/video/recover', expect.objectContaining({
+      method: 'POST', signal, credentials: 'same-origin', cache: 'no-store',
+      body: JSON.stringify({ session_id: SESSION, project_id: retainedVideo.id, operation_id: videoTask.id }),
+    }))
+  })
+
+  it.each([
+    { videoReceipt: { ...videoReceipt, taskId: undefined } },
+    { videoReceipt: { ...videoReceipt, phase: ['accepted'] } },
+    { videoReceipt: { ...videoReceipt, requestId: 'sk-private-credential' } },
+    { videoReceipt: { ...videoReceipt, route: 'https://private.example/task' } },
+    { videoReceipt: { ...videoReceipt, route: '/blackrx/../videos' } },
+    { videoReceipt: { ...videoReceipt, backendFingerprint: 'private-origin' } },
+    { videoReceipt: { ...videoReceipt, phase: 'submitting', taskId: undefined } },
+    { videoReceipt: undefined },
+    { imageReceipt: receipt },
+    { imageReceipt: receipt, canQuery: false },
+  ])('rejects unsafe, ambiguous or unqueryable video receipts in the project listing', async (change) => {
+    const fetcher = vi.fn<typeof fetch>(async () => Response.json({ ok: true,
+      payload: { accountId: 'account-a', projects: [{ ...retainedVideo, tasks: [{ ...videoTask, ...change }] }] } }))
+    vi.stubGlobal('fetch', fetcher)
+    expect(await readCreativeProjects(SESSION, new AbortController().signal)).toEqual({ ok: false, code: 'invalid' })
+    expect(fetcher).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects a video admission without an owned listing and discards mismatched Session data', async () => {
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ ok: true, admitted: true }, { status: 202 }))
+      .mockResolvedValueOnce(Response.json({ ok: true, payload: payload([{ ...retainedVideo, sessionId: 'other-session' }]) }, { status: 202 }))
+    vi.stubGlobal('fetch', fetcher)
+    const request = { sessionId: SESSION, projectId: retainedVideo.id, operationId: videoTask.id, kind: 'video' as const }
+    for (let index = 0; index < 2; index++) {
+      expect(await recoverCreativeImage(request, new AbortController().signal)).toEqual({ ok: false, code: 'invalid' })
+    }
+    expect(fetcher.mock.calls.map(([url]) => url)).toEqual([
+      '/credits/api/creative/video/recover', '/credits/api/creative/video/recover',
+    ])
   })
 })
 
@@ -132,5 +183,44 @@ describe('original query ownership and read supervision', () => {
     const before = read.mock.calls.length
     await vi.advanceTimersByTimeAsync(4000)
     expect(read).toHaveBeenCalledTimes(before)
+  })
+
+  it.each([
+    { data: retainedVideo, original: videoTask, route: 'video' },
+    { data: { ...retained, kind: 'video' as const }, original: task, route: 'image' },
+  ])('chooses $route recovery from the original task receipt inside a video plan', async ({ data, original, route }) => {
+    vi.useFakeTimers()
+    const { controller, read } = await start(data)
+    const active = { ...data, tasks: [{ ...original, status: 'running' as const, canQuery: false }] }
+    const fetcher = vi.fn<typeof fetch>(async () => Response.json({ ok: true, payload: payload([active]) }, { status: 202 }))
+    vi.stubGlobal('fetch', fetcher)
+    expect((await controller.recover(SESSION, data.id, original.id, new AbortController().signal)).ok).toBe(true)
+    expect(fetcher).toHaveBeenCalledExactlyOnceWith(`/credits/api/creative/${route}/recover`, expect.objectContaining({ method: 'POST' }))
+    expect(controller.source(SESSION).getSnapshot().projects[0]?.tasks[0])
+      .toMatchObject({ id: original.id, status: 'running', canQuery: false })
+    read.mockResolvedValue({ ok: true, payload: payload([{ ...data, status: 'completed', shots: [],
+      tasks: [{ ...original, status: 'completed', canQuery: false }] }]) })
+    const before = read.mock.calls.length
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(read).toHaveBeenCalledTimes(before + 1)
+    await vi.advanceTimersByTimeAsync(4000)
+    expect(read).toHaveBeenCalledTimes(before + 1)
+    expect(fetcher).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['sign-out', 'Session switch'] as const)('ignores delayed video admission after %s and aborts its request', async (change) => {
+    const { controller } = await start(retainedVideo)
+    const reply = Promise.withResolvers<Response>()
+    const fetcher = vi.fn<typeof fetch>(() => reply.promise)
+    vi.stubGlobal('fetch', fetcher)
+    const pending = controller.recover(SESSION, retainedVideo.id, videoTask.id, new AbortController().signal)
+    if (change === 'sign-out') controller.accountChanged(null)
+    else controller.select('other-session' as SessionId)
+    expect(fetcher.mock.calls[0]?.[1]?.signal?.aborted).toBe(true)
+    reply.resolve(Response.json({ ok: true, payload: payload([{ ...retainedVideo,
+      tasks: [{ ...videoTask, status: 'running', canQuery: false }] }]) }, { status: 202 }))
+    expect(await pending).toEqual({ ok: false, code: 'signed-out' })
+    expect(controller.source(SESSION).getSnapshot().projects[0]?.tasks[0]?.status).not.toBe('running')
+    expect(fetcher).toHaveBeenCalledTimes(1)
   })
 })

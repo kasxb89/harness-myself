@@ -30,6 +30,7 @@ interface VideoModel {
   readonly source: string
   readonly params: {
     readonly durations: readonly number[]
+    readonly defaultDuration?: number
     readonly durationByResolution?: Readonly<Record<string, readonly number[]>>
     readonly resolutions: readonly string[]
     readonly ratios: readonly string[]
@@ -167,7 +168,9 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
   const selectedResolution = params?.resolutions.includes(resolution) === true ? resolution : params?.resolutions[0] ?? ''
   const durations = params?.durationByResolution === undefined ? params?.durations ?? []
     : Object.hasOwn(params.durationByResolution, selectedResolution) ? params.durationByResolution[selectedResolution] ?? [] : []
-  const duration = durations.includes(draft.duration) ? draft.duration : durations[0] ?? 0
+  const preferredDuration = params?.defaultDuration
+  const duration = durations.includes(draft.duration) ? draft.duration
+    : preferredDuration !== undefined && durations.includes(preferredDuration) ? preferredDuration : durations[0] ?? 0
   const frameImages = workflow === 'frames' ? [firstFrame, lastFrame]
     : workflow === 'image' && (params?.frameSlots ?? 0) > 0 ? [firstFrame] : []
   const referenceImages = workflow === 'reference' || workflow === 'image' && params?.frameSlots === 0 ? slots.image : []
@@ -523,6 +526,10 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
         acceptAccount({ signedIn: false }); actions.patch({ failure: t('noAuth') }); return
       }
       if (!answer.ok || typeof answer.payload?.path !== 'string' || answer.payload.path === '') {
+        if (answer.submission_state === 'pending' || answer.submission_state === 'unknown') {
+          actions.patch({ failure: t('outcomeUnknown') })
+          return
+        }
         const kind = productFailureKind(answer.code)
         if (kind === 'insufficient-credits') actions.patch({ failure: t('insufficient') })
         else if (kind === 'sign-in' || kind === 'signed-out') actions.patch({ failure: t('noAuth') })

@@ -24,6 +24,56 @@ function video(fields: Record<string, unknown> = {}): VideoParams {
   return model.params as VideoParams
 }
 
+describe('BlackRxAI exact video contracts', () => {
+  const variable = Array.from({ length: 16 }, (_, index) => index + 15)
+  const policies = [
+    ['lec-mj-seedance-2-5-cd-720p', [30], 30, 9, 0, 0],
+    ['sd-25-900-2', [30], 30, 9, 0, 0],
+    ['k2-sd2.5-720p', [30], 30, 30, 10, 10],
+    ['lec-sz-sd2-full-480p', [30], 30, 30, 0, 10],
+    ['video-sd25-480p', variable, 30, 30, 10, 10],
+    ['model_5', variable, 30, 30, 10, 10],
+    ['sd2.5-720p-x2', variable, 30, 30, 10, 10],
+    ['sd2-th-2.0-720p', [15], 15, 9, 0, 3],
+    ['bt-seedance-2.0', [10, 15], 15, 8, 0, 0],
+    ['lec-rs-seedance-2-0-fast', [15], 15, 9, 0, 0],
+    ['sd20-933-720p', [15], 15, 9, 3, 3],
+    ['sd2-hn2-480-pro', [15], 15, 9, 3, 3],
+    ['v3-sd2.0-933-720p', [15], 15, 9, 3, 3],
+    ['sd-20-9/3/3-1', [15], 15, 9, 0, 3],
+    ['sd-20-903', [15], 15, 9, 0, 3],
+  ] as const
+
+  it.each(policies)('offers only the gateway contract for %s', (id, durations, defaultDuration, images, videos, audios) => {
+    const [model] = catalogFromPricing([{ model_name: id, supported_endpoint_types: ['openai-video'], enable_groups: ['product'] }], 'product')
+    expect(model).toMatchObject({
+      id, kind: 'video', route: '/v1/videos', source: 'plugin:blackrxai-video', verified: true,
+      params: {
+        durations, defaultDuration, resolutions: ['1280x720', '720x1280', '1792x1024', '1024x1792'], ratios: [],
+        maxFrameImages: 0, maxReferenceImages: images, maxReferenceVideos: videos, maxReferenceAudios: audios,
+        audioToggle: false, modes: [], seed: false,
+      },
+    })
+  })
+
+  it('does not add table models to an empty or differently authorized catalog', () => {
+    expect(catalogFromPricing([], 'product')).toEqual([])
+    expect(catalogFromPricing(policies.map(([id]) => ({
+      model_name: id, supported_endpoint_types: ['openai-video'], enable_groups: ['other'],
+    })), 'product')).toEqual([])
+    const catalog = catalogFromPricing([{ model_name: 'model_5', supported_endpoint_types: ['openai-video'], enable_groups: ['product'] }], 'product')
+    expect(catalog.map(model => model.id)).toEqual(['model_5'])
+  })
+
+  it('retains live duration restrictions without selecting an unavailable default', () => {
+    const [model] = catalogFromPricing([{
+      model_name: 'model_5', supported_endpoint_types: ['openai-video'], parameters: { seconds: { enum: [15, 20] } },
+    }], null)
+    expect(model?.params).toMatchObject({ durations: [15, 20] })
+    expect(model?.params).not.toHaveProperty('defaultDuration')
+  })
+})
+
 describe('explicit live video parameters', () => {
   it('selects the H3 task API while retaining explicit routes and other video protocols', () => {
     const catalog = catalogFromPricing([

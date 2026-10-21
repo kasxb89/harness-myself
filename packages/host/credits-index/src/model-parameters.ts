@@ -42,6 +42,8 @@ export interface ImageSpec {
 export interface VideoSpec {
   /** Every duration value the route validates, in seconds. */
   readonly durations: readonly number[]
+  /** Preferred initial duration, when the gateway declares one. */
+  readonly defaultDuration?: number
   readonly resolutions: readonly string[]
   readonly ratios: readonly string[]
   /** First/last frame slots; 2 means both ends can be pinned. */
@@ -65,6 +67,16 @@ function range(from: number, to: number): number[] {
   const values: number[] = []
   for (let value = from; value <= to; value += 1) values.push(value)
   return values
+}
+
+/** Exact BlackRxAI gateway contract; route names do not establish output pixels. */
+function blackrxVideo(durations: readonly number[], defaultDuration: number, images: number, videos = 0, audios = 0): VideoSpec {
+  return {
+    durations, defaultDuration,
+    resolutions: ['1280x720', '720x1280', '1792x1024', '1024x1792'], ratios: [],
+    frames: 0, referenceImages: images, referenceVideos: videos, referenceAudios: audios,
+    audio: false, audioToggle: false, modes: [], seed: false, source: 'plugin:blackrxai-video',
+  }
 }
 
 /** The OpenAI Images shape: shared by every compatible image channel. */
@@ -436,6 +448,23 @@ export const VIDEO_MODELS: Record<string, VideoSpec> = {
     frames: 1, referenceImages: 0, referenceVideos: 0, referenceAudios: 0,
     audio: false, audioToggle: false, modes: [], seed: false, source: 'plugin:alibaba',
   },
+
+  // ── BlackRxAI, from this gateway's exact fifteen-model plugin table ────────
+  'lec-mj-seedance-2-5-cd-720p': blackrxVideo([30], 30, 9),
+  'sd-25-900-2': blackrxVideo([30], 30, 9),
+  'k2-sd2.5-720p': blackrxVideo([30], 30, 30, 10, 10),
+  'lec-sz-sd2-full-480p': blackrxVideo([30], 30, 30, 0, 10),
+  'video-sd25-480p': blackrxVideo(range(15, 30), 30, 30, 10, 10),
+  'model_5': blackrxVideo(range(15, 30), 30, 30, 10, 10),
+  'sd2.5-720p-x2': blackrxVideo(range(15, 30), 30, 30, 10, 10),
+  'sd2-th-2.0-720p': blackrxVideo([15], 15, 9, 0, 3),
+  'bt-seedance-2.0': blackrxVideo([10, 15], 15, 8),
+  'lec-rs-seedance-2-0-fast': blackrxVideo([15], 15, 9),
+  'sd20-933-720p': blackrxVideo([15], 15, 9, 3, 3),
+  'sd2-hn2-480-pro': blackrxVideo([15], 15, 9, 3, 3),
+  'v3-sd2.0-933-720p': blackrxVideo([15], 15, 9, 3, 3),
+  'sd-20-9/3/3-1': blackrxVideo([15], 15, 9, 0, 3),
+  'sd-20-903': blackrxVideo([15], 15, 9, 0, 3),
 
   // ── ByteDance Seedance, from the Ark plugin's model table ────────────────
   'doubao-seedance-1-0-pro-250528': {
