@@ -29,6 +29,7 @@
     "tests/artifact-chat-link.e2e.ts",
     "tests/artifact-video-poster.e2e.ts",
     "tests/phone-login-fixture.e2e.ts",
+    "tests/product-default-model.e2e.ts",
     "tests/layout-bottom.e2e.ts",
     "tests/shortcuts-desktop.e2e.ts",
     "tests/shortcuts-workspace.e2e.ts",

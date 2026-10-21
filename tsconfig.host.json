@@ -15,6 +15,7 @@
     "apps/web/tests/artifact-chat-link.e2e.ts",
     "apps/web/tests/artifact-video-poster.e2e.ts",
     "apps/web/tests/phone-login-fixture.e2e.ts",
+    "apps/web/tests/product-default-model.e2e.ts",
     "apps/web/product-isolation.ts",
     "apps/web/tests/connection-recovery.e2e.ts",
     "apps/web/tests/server-restart.e2e.ts",

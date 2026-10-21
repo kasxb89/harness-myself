@@ -38,7 +38,7 @@ it('keeps product sign-in, Chat, and AI Creation defaults when bundle patches co
       },
     },
   })
-  expect(entry('agent-default-model').config).toEqual({ provider: 'yunshu-local', model: 'deepseek-v4-flash' })
+  expect(entry('agent-default-model').config).toEqual({ provider: 'yunshu-local', model: 'deepseek-v4-flash', followPolicy: true })
   for (const id of ['dsh-market', 'dsh-skin-market']) {
     expect(entry(id).config).toMatchObject({ githubProxy: 'https://8.216.52.27/github-relay' })
   }

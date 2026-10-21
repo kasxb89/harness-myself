@@ -750,12 +750,20 @@ export function apply(ctx: Context, config: Config): void {
   const relayRef = credentialRef(resolved.relayTokenEnv)
   let identityVersion = 0
   let productModelPresentation: ProductModelPresentation = { defaultChatModel: null, modelOrder: [] }
-  let productDefault: { version: number; selection: ModelSelection } | undefined
+  let productCatalog: { version: number; ids: readonly string[]; selection: ModelSelection | undefined } | undefined
   ctx.inject(['agentDefaultModel'], (child) => {
     child.effect(() => child.agentDefaultModel.registerPolicySelection(() =>
-      productDefault?.version === identityVersion ? productDefault.selection : undefined),
+      productCatalog?.version === identityVersion ? productCatalog.selection : undefined),
     'credits-index: account-authorized deployment default')
   })
+  /** Publish committed account or catalog changes without waiting for observer refreshes. */
+  const notifyModelCatalogChanged = (): void => {
+    if (modelCatalogClosed) return
+    const warn = (): void => { ctx.logger.warn('credits-index: a model catalog change observer failed') }
+    for (const listener of ctx.events.dispatch('emit', ['api-session/model-catalog-changed']) as Array<() => unknown>) {
+      try { void Promise.resolve(listener()).catch(warn) } catch { warn() }
+    }
+  }
   const chatUsage = new ChatUsageReader({ baseUrl: apiBaseUrl, timeoutMs: resolved.timeoutMs,
     cacheTtlMs: resolved.chatUsageCacheTtlMs, concurrency: resolved.chatUsageConcurrency })
   ctx.effect(() => () => chatUsage.dispose(), 'credits-index: current-account chat ledger')
@@ -1623,14 +1631,15 @@ export function apply(ctx: Context, config: Config): void {
         identityVersion += 1
         chatUsage.reset()
         const committed = identityVersion
-        await holdAccountCredential(relayKey)
         invalidateModelCatalog()
         await writeProductModels([]).catch(reportModelRefreshFailure)
+        await holdAccountCredential(relayKey)
         return committed
       })
       if (committedVersion === null || committedVersion !== identityVersion) {
         return { ok: false, code: 'ACCOUNT_CHANGED', message: '登录状态已变更，请重新操作。' }
       }
+      notifyModelCatalogChanged()
       await phoneAuth.complete(key)
       return { ok: true, payload: { status: 'authorized', expiresAt: sessionExpiresAt, account } }
     } else {
@@ -1718,13 +1727,16 @@ export function apply(ctx: Context, config: Config): void {
     const expiry = Date.parse(session.upstream?.expiresAt ?? '')
     if (bound !== apiBaseUrl || !Number.isFinite(Date.parse(session.expiresAt)) || Date.parse(session.expiresAt) <= Date.now()
       || (!Number.isFinite(expiry) && !isLoopbackOrigin(apiBaseUrl))) {
-      await mutateSession(async () => {
-        if ((await store.read())?.token !== session.token) return
+      const cleared = await mutateSession(async () => {
+        if ((await store.read())?.token !== session.token) return false
         identityVersion += 1
         chatUsage.reset()
+        invalidateModelCatalog()
         await store.clear()
         await releaseAccountCredential()
+        return true
       })
+      if (cleared) notifyModelCatalogChanged()
       return null
     }
     if (Number.isFinite(expiry) && expiry - Date.now() < 60_000) {
@@ -1915,18 +1927,17 @@ export function apply(ctx: Context, config: Config): void {
       await mutateSession(async () => {
         await currentIdentity()
         const previousDefault = ctx.get('agentDefaultModel')?.currentSelection()
+        const previousIds = productCatalog?.version === version ? productCatalog.ids : undefined
         await writeProductModels(ids, defaults)
         await currentIdentity()
         productModelPresentation = presentation
-        productDefault = preferred === undefined ? undefined
-          : { version, selection: { provider: resolved.chatProviderRoute, model: preferred } }
+        productCatalog = { version, ids,
+          selection: preferred === undefined ? undefined : { provider: resolved.chatProviderRoute, model: preferred } }
         const nextDefault = ctx.get('agentDefaultModel')?.currentSelection()
         if (previousDefault?.provider !== nextDefault?.provider || previousDefault?.model !== nextDefault?.model
-          || previousDefault?.reasoningEffort !== nextDefault?.reasoningEffort) {
-          const warn = (): void => { ctx.logger.warn('credits-index: a model catalog change observer failed') }
-          for (const listener of ctx.events.dispatch('emit', ['api-session/model-catalog-changed']) as Array<() => unknown>) {
-            try { void Promise.resolve(listener()).catch(warn) } catch { warn() }
-          }
+          || previousDefault?.reasoningEffort !== nextDefault?.reasoningEffort || previousIds === undefined
+          || previousIds.length !== ids.length || previousIds.some((id, index) => id !== ids[index])) {
+          notifyModelCatalogChanged()
         }
       })
       return ids
@@ -2633,6 +2644,7 @@ export function apply(ctx: Context, config: Config): void {
             await releaseAccountCredential()
             await writeProductModels([]).catch(reportModelRefreshFailure)
           })
+          notifyModelCatalogChanged()
           const renewed = pending === null ? null : await pending
           const session = renewed ?? previous
           let result: PlatformResult = { status: 204, code: null, message: null, retryAfterSeconds: null, body: null }
