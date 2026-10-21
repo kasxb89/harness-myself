@@ -58,7 +58,15 @@ describe('Connection binary RPC', () => {
         req.once('error', reject)
         req.end(init.body as string)
       }))
-      expect(await rpc.call('/api', 'fixture/read', {})).toEqual({ ok: true, value: { data, bytes: data.length } })
+      const received = await rpc.call('/api', 'fixture/read', {})
+      if (!received.ok || typeof received.value !== 'object' || received.value === null
+        || !('data' in received.value) || !(received.value.data instanceof Uint8Array)) {
+        throw new Error('expected a binary RPC success')
+      }
+      expect({ ...received, value: { ...received.value, data: null } })
+        .toEqual({ ok: true, value: { data: null, bytes: data.length } })
+      // Compare every byte natively instead of recursively visiting the 1 MiB array in the matcher.
+      expect(Buffer.compare(received.value.data, data)).toBe(0)
       if (compression === 'gzip') {
         expect(encoding).toBe('gzip')
         expect(transferred).toBeLessThan(data.length / 10)

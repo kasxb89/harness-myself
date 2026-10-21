@@ -30,6 +30,7 @@ usePinnedBrowserLanguages('en')
 
 const SID = 'session-1' as SessionId
 const NOTICE = 'Request quota exhausted.'
+const PRODUCT_NOTICE = 'Insufficient balance. Please top up.'
 const disposers: Array<() => Promise<void>> = []
 const references: SessionReference[] = []
 
@@ -297,29 +298,30 @@ describe('shared Platform page ownership', () => {
     expect(b.platform.open.mock.calls.map(([page]) => page)).toEqual(['top-up', 'top-up'])
   })
 
-  it('replaces a deferred account notice with the newest failure behind a settings page', async () => {
+  it('replaces a deferred account notice with a product balance failure behind a settings page', async () => {
     const b = await bench()
     await act(async () => { settingsUsage().click() })
     expect(b.platform.open).toHaveBeenLastCalledWith('usage', { x: 0, y: 0, width: 0, height: 0 })
 
     // No hold exists yet, so the deferred account notice is not retained: a
-    // later generic quota failure replaces it as the live notice.
+    // later product balance failure replaces it as the live notice.
     await fail(b.runtime, 0, 'ACCOUNT_QUOTA')
-    await fail(b.runtime, 1, 'QUOTA')
+    await fail(b.runtime, 1, 'INSUFFICIENT_BALANCE')
     expect(screen.queryByRole('dialog', { name: en.quotaTitle })).toBeNull()
     // The page itself is untouched by either failure.
     expect(b.platform.open).toHaveBeenCalledOnce()
     expect(b.platform.close).not.toHaveBeenCalled()
 
     // Back never revives the replaced account Modal; the newest failure owns the
-    // notice, and here that is the host fallback Toast.
+    // notice. This account-only fixture has no product-credit claimant, so the
+    // host renders the fallback Toast for the product failure.
     await act(async () => { screen.getByRole('button', { name: en.backToHarness }).click() })
     expect(b.pages.getSnapshot()).toBeNull()
     expect(screen.queryByRole('dialog')).toBeNull()
-    expect(screen.getByRole('alert').textContent).toBe(NOTICE)
+    expect(screen.getByRole('alert').textContent).toBe(PRODUCT_NOTICE)
   })
 
-  it('keeps the open page across later account and generic quota failures', async () => {
+  it('keeps the open page across later account and product balance failures', async () => {
     const b = await bench()
     await fail(b.runtime, 0, 'ACCOUNT_QUOTA')
     expect(screen.getByRole('dialog', { name: en.quotaTitle })).toBeTruthy()
@@ -329,7 +331,7 @@ describe('shared Platform page ownership', () => {
 
     // The hold drops later notifications before they publish, so the chain
     // neither swaps to the fallback nor remounts this entry, and the page stays.
-    await fail(b.runtime, 1, 'QUOTA')
+    await fail(b.runtime, 1, 'INSUFFICIENT_BALANCE')
     await fail(b.runtime, 2, 'ACCOUNT_QUOTA')
     expect(b.platform.close).not.toHaveBeenCalled()
     expect(screen.getByRole('button', { name: en.backToHarness })).toBeTruthy()
@@ -339,8 +341,27 @@ describe('shared Platform page ownership', () => {
     await act(async () => { screen.getByRole('button', { name: en.backToHarness }).click() })
     expect(b.platform.close).toHaveBeenCalledOnce()
     expect(screen.queryByRole('dialog')).toBeNull()
-    await fail(b.runtime, 3, 'QUOTA')
-    expect(screen.getByRole('alert').textContent).toBe(NOTICE)
+    await fail(b.runtime, 3, 'INSUFFICIENT_BALANCE')
+    expect(screen.getByRole('alert').textContent).toBe(PRODUCT_NOTICE)
+  })
+
+  it('does not let upstream quota failures replace a deferred account balance notice', async () => {
+    const b = await bench()
+    await act(async () => { settingsUsage().click() })
+    await fail(b.runtime, 0, 'ACCOUNT_QUOTA')
+    await fail(b.runtime, 1, 'QUOTA')
+    expect(b.platform.open).toHaveBeenCalledOnce()
+    expect(b.platform.close).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog', { name: en.quotaTitle })).toBeNull()
+    expect(screen.queryByRole('alert')).toBeNull()
+
+    await act(async () => { screen.getByRole('button', { name: en.backToHarness }).click() })
+    expect(b.pages.getSnapshot()).toBeNull()
+    expect(screen.getByRole('dialog', { name: en.quotaTitle })).toBeTruthy()
+    await act(async () => { screen.getByRole('button', { name: en.cancel }).click() })
+    await fail(b.runtime, 2, 'QUOTA')
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.queryByRole('alert')).toBeNull()
   })
 
   it('releases the hold with its entry, so a later failure publishes again', async () => {
@@ -372,5 +393,13 @@ describe('shared Platform page ownership', () => {
     // The hold ended with the dismissal, so the next failure publishes anew.
     await fail(b.runtime, 1, 'ACCOUNT_QUOTA')
     expect(screen.getByRole('alert').textContent).toBe(NOTICE)
+
+    act(() => { b.account.set({ view: storedView, details: undefined, failed: false }) })
+    await fail(b.runtime, 2, 'ACCOUNT_QUOTA')
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByRole('dialog', { name: en.quotaTitle })).toBeTruthy()
+    await act(async () => { screen.getByRole('button', { name: en.quotaTopUp }).click() })
+    expect(b.platform.open).toHaveBeenCalledTimes(2)
+    expect(b.pages.getSnapshot()).toEqual({ page: 'top-up' })
   })
 })

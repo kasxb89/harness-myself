@@ -2,6 +2,7 @@
 /** The review tab type: its addresses, its store, the row pairing of the split view, and the states its body draws. */
 import { renderFileActions } from './file-actions.tsx'
 import { useSyncExternalStore } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
@@ -20,7 +21,7 @@ import { PresentedOpenController } from '../src/client/present-open.ts'
 import {
   ReviewTab, type ReviewInjected, type ReviewTabProps,
 } from '../src/client/ReviewTab.tsx'
-import { hunkRows, MAX_RENDERED_LINES, renderedHunks, splitRows } from '../src/client/FileDiff.tsx'
+import { FileDiff, hunkRows, MAX_RENDERED_LINES, renderedHunks, splitRows } from '../src/client/FileDiff.tsx'
 import { changesReviewDefinition } from '../src/client/review-definition.ts'
 import { createReviewStore } from '../src/client/review-store.ts'
 import { en, zh } from '../src/client/locales.ts'
@@ -383,13 +384,20 @@ describe('ReviewTab', () => {
     expect(view.getByText(zh['diff.deleted'])).toBeTruthy()
     act(() => { diffs.state.set({ [url]: { ...text, hunks: [] } }) })
     expect(view.getByText(zh['diff.unchanged'])).toBeTruthy()
+  })
+
+  it('caps a rendered comparison at the line limit and states what was truncated', () => {
     const long = Array.from({ length: MAX_RENDERED_LINES + 1 }, (_, at) => `+line ${at}`)
-    act(() => {
-      diffs.state.set({ [url]: { ...text, hunks: [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: long.length, lines: long }] } })
-    })
-    expect(view.container.querySelector('[data-review-view]')?.getAttribute('data-review-view')).toBe('unified')
-    expect(view.container.querySelectorAll('[data-diff-line]')).toHaveLength(MAX_RENDERED_LINES)
-    expect(view.container.querySelector('[data-diff-truncated]')?.textContent).toBe(`只显示前 ${MAX_RENDERED_LINES} 行`)
+    // Static markup retains the full limit check without constructing a large jsdom tree in each worker.
+    const html = renderToStaticMarkup(<FileDiff state={{
+      ...text, path: 'notes.txt', display: 'notes.txt',
+      hunks: [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: long.length, lines: long }],
+    }} split wrap={false} retry={() => {}} t={makeTranslate(zh)} />)
+    expect(html).toContain('data-review-view="unified"')
+    expect(html.match(/data-diff-line="add"/gu)).toHaveLength(MAX_RENDERED_LINES)
+    expect(html).toContain(`只显示前 ${MAX_RENDERED_LINES} 行`)
+    expect(html).toContain(`line ${MAX_RENDERED_LINES - 1}`)
+    expect(html).not.toContain(`line ${MAX_RENDERED_LINES}`)
   })
 
   it('falls back to the first file for an index the summary does not list, and forgets its state with the tab', () => {

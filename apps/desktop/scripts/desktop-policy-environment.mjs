@@ -13,18 +13,19 @@ function origin(value, name) {
 /**
  * Resolve mandatory policy metadata before preparing artifacts or accessing signing hardware.
  * @param {NodeJS.ProcessEnv} environment File-owned release settings; the unselected origin is not required.
- * @returns {{ origin: string, allowedPageOrigins: string[], authentication: 'anonymous' | 'feishu-test', [key: string]: unknown } | undefined} Selected policy, or no mandatory service when OSS releases explicitly disable it.
+ * @returns {{ origin: string, allowedPageOrigins: string[], authentication: 'anonymous' | 'feishu-test', [key: string]: unknown } | undefined} Selected policy for COS releases; OSS product releases never include a mandatory service.
  */
 export function resolveDesktopPolicyEnvironment(environment) {
   const enabled = environment.DSH_DESKTOP_MANDATORY_UPDATE_ENABLED?.trim()
   if (enabled !== undefined && enabled !== 'true' && enabled !== 'false') {
     throw new Error('desktop package: DSH_DESKTOP_MANDATORY_UPDATE_ENABLED must be true or false')
   }
-  if (enabled === 'false') {
-    if (resolveDesktopUploadProvider(environment) !== 'oss') {
-      throw new Error('desktop package: disabling mandatory-update policy requires DSH_DESKTOP_UPLOAD_PROVIDER=oss')
-    }
+  if (resolveDesktopUploadProvider(environment) === 'oss') {
+    if (enabled === 'true') throw new Error('desktop package: OSS product releases do not support mandatory-update policy')
     return undefined
+  }
+  if (enabled === 'false') {
+    throw new Error('desktop package: disabling mandatory-update policy requires DSH_DESKTOP_UPLOAD_PROVIDER=oss')
   }
   const deployment = resolveDesktopAutoUpdateEnvironment(environment)
   const name = deployment === 'test' ? 'DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN' : 'DSH_DESKTOP_MANDATORY_UPDATE_PROD_ORIGIN'

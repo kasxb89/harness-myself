@@ -49,7 +49,7 @@ const kit = {
 
 const webUpdateProps = {
   desktopUpdateAvailable: false,
-  checkDesktopUpdate: () => {},
+  activateDesktopUpdate: () => {},
   useDesktopUpdate: (select => select({ failed: false, opening: false })) as DesktopUpdateCheckProps['useDesktopUpdate'],
 }
 
@@ -260,19 +260,19 @@ describe('current version', () => {
 describe('permanent Desktop update checks', () => {
   it('shows a manual check beside the current version and in both sidebar geometries', () => {
     vi.stubEnv('DSH_CLIENT_VERSION', '1.2.3')
-    const checkDesktopUpdate = vi.fn()
-    const props = { ...kit, ...webUpdateProps, desktopUpdateAvailable: true, checkDesktopUpdate, t }
+    const activateDesktopUpdate = vi.fn()
+    const props = { ...kit, ...webUpdateProps, desktopUpdateAvailable: true, activateDesktopUpdate, t }
     const view = render(<CurrentVersionRow {...props} />)
     expect(screen.getByText('Current version: 1.2.3')).toBeTruthy()
     expect({ version: screen.getByText('Current version: 1.2.3').textContent,
       update: screen.getByRole('button', { name: 'Check for updates' }).textContent }).toMatchSnapshot()
     fireEvent.click(screen.getByRole('button', { name: 'Check for updates' }))
-    expect(checkDesktopUpdate).toHaveBeenCalledOnce()
+    expect(activateDesktopUpdate).toHaveBeenCalledOnce()
     view.rerender(<DesktopUpdateCheckFooter {...props} wide={false} />)
     fireEvent.click(screen.getByRole('button', { name: 'Check for updates' }))
     view.rerender(<DesktopUpdateCheckFooter {...props} wide />)
     fireEvent.click(screen.getByRole('button', { name: 'Check for updates' }))
-    expect(checkDesktopUpdate).toHaveBeenCalledTimes(3)
+    expect(activateDesktopUpdate).toHaveBeenCalledTimes(3)
     expect(screen.getByText('Check for updates')).toBeTruthy()
   })
 
@@ -286,17 +286,19 @@ describe('permanent Desktop update checks', () => {
   })
 
   it.each([
-    ['checking', true], ['installing', true], ['idle', false], ['available', false],
-    ['downloading', false], ['verifying', false], ['ready', false], ['error', false],
-  ] as const)('keeps %s discoverable and guards only busy actions', (phase, disabled) => {
-    const checkDesktopUpdate = vi.fn()
+    ['checking', true, 'Checking for updates…'], ['installing', true, 'Preparing to restart…'],
+    ['idle', false, 'Check for updates'], ['available', false, 'Update version'],
+    ['downloading', false, 'Downloading 0%'], ['verifying', false, 'Verifying update files…'],
+    ['ready', false, 'Update version'], ['error', false, 'Check for updates'],
+  ] as const)('keeps %s discoverable and guards only busy actions', (phase, disabled, label) => {
+    const activateDesktopUpdate = vi.fn()
     const state: DesktopUpdateView = { failed: false, opening: phase === 'downloading', presentation: { phase, failure: 'source-development' } }
-    render(<DesktopUpdateCheck {...webUpdateProps} desktopUpdateAvailable t={t} checkDesktopUpdate={checkDesktopUpdate}
+    render(<DesktopUpdateCheck {...webUpdateProps} desktopUpdateAvailable t={t} activateDesktopUpdate={activateDesktopUpdate}
       useDesktopUpdate={select => select(state)} />)
-    const action = screen.getByRole('button', { name: 'Check for updates' })
+    const action = screen.getByRole('button', { name: label })
     expect(action.getAttribute('aria-disabled')).toBe(String(disabled))
     fireEvent.click(action)
-    expect(checkDesktopUpdate).toHaveBeenCalledTimes(disabled ? 0 : 1)
+    expect(activateDesktopUpdate).toHaveBeenCalledTimes(disabled ? 0 : 1)
   })
 
   it.each([

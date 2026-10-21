@@ -36,7 +36,7 @@ function shellStateOf(c: TestClient) {
 
 function assertUpdateCheckInjected(value: Record<string, unknown> | undefined):
   asserts value is Record<string, unknown> & DesktopUpdateCheckInjected {
-  if (value === undefined || typeof value.desktopUpdateAvailable !== 'boolean' || typeof value.checkDesktopUpdate !== 'function') {
+  if (value === undefined || typeof value.desktopUpdateAvailable !== 'boolean' || typeof value.activateDesktopUpdate !== 'function') {
     throw new Error('The update-check entry must expose availability and a check callback')
   }
   const hooks = value.hooks
@@ -166,12 +166,16 @@ describe('ui-settings-general shell', () => {
     row.openDesktopUpdate()
     await c.flush()
     expect(open).toHaveBeenCalledOnce()
-    footer.checkDesktopUpdate()
+    footer.activateDesktopUpdate()
     await c.flush()
-    version.checkDesktopUpdate()
+    version.activateDesktopUpdate()
     await c.flush()
-    expect(check).toHaveBeenCalledTimes(2)
-    expect(open).toHaveBeenCalledOnce()
+    expect(check).not.toHaveBeenCalled()
+    expect(open).toHaveBeenCalledTimes(3)
+    publish!({ phase: 'idle' })
+    footer.activateDesktopUpdate()
+    await c.flush()
+    expect(check).toHaveBeenCalledOnce()
     await c.reload(SIDEBAR)
     await c.flush()
     expect(c.ctx.slots.entries('sidebar.footer.action').filter(entry => entry.options.id === 'desktop-update-check')).toHaveLength(1)
@@ -182,7 +186,7 @@ describe('ui-settings-general shell', () => {
     expect(c.ctx.slots.entries('sidebar.toggle.badge')).toHaveLength(0)
     expect(c.ctx.slots.entries('sidebar.footer.action').some(entry => entry.options.id === 'desktop-update-check')).toBe(false)
     publish!({ phase: 'error', version: status.version, failure: 'install' })
-    expect(row.hooks.desktopUpdate.getSnapshot().presentation).toEqual(status)
+    expect(row.hooks.desktopUpdate.getSnapshot().presentation).toEqual({ phase: 'idle' })
   }, COLD_BOOT_TIMEOUT_MS)
 
   it('declares its services', () => {
@@ -201,7 +205,7 @@ describe('ui-settings-general shell', () => {
     const versionEntry = c.ctx.slots.entries('settings.general.item').find(entry => entry.options.id === 'current-version')!
     const version = updateCheckInjectedOf(versionEntry.inject)
     expect(version.desktopUpdateAvailable).toBe(false)
-    expect(() => { version.checkDesktopUpdate() }).not.toThrow()
+    expect(() => { version.activateDesktopUpdate() }).not.toThrow()
     expect(open).not.toHaveBeenCalled()
     injectedOf(c).openDesktopUpdate()
     await c.flush()

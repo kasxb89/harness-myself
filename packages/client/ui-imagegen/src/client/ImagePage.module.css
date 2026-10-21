@@ -130,7 +130,7 @@
 
 .send:hover:not(:disabled) { background: var(--dsw-alias-button-primary-hover); }
 .send:disabled { opacity: 0.45; cursor: default; }
-.spinner { display: block; width: 14px; height: 14px; border: 1.5px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin 1s linear infinite; }
+.spinner { display: block; width: 14px; height: 14px; border: 1.5px solid currentColor; border-right-color: transparent; border-radius: 50%; corner-shape: round; animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .parameters {
@@ -156,7 +156,7 @@
 .hint { margin: 0; color: var(--dsw-alias-label-tertiary); font-size: 11px; line-height: 1.6; }
 .notice { display: flex; align-items: center; gap: 7px; margin: 0; color: var(--dsw-alias-label-secondary); font-size: 12px; }
 .error { margin: 0; color: var(--dsw-alias-label-error, var(--dsw-alias-label-secondary)); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
-.statusDot { width: 6px; height: 6px; border-radius: 50%; background: var(--dsw-alias-state-business-primary); }
+.statusDot { width: 6px; height: 6px; border-radius: 50%; corner-shape: round; background: var(--dsw-alias-state-business-primary); }
 
 .templates,
 .works { display: flex; flex-direction: column; gap: 16px; }

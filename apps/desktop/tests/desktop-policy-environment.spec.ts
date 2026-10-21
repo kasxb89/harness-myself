@@ -49,13 +49,12 @@ it('rejects login origins in production', () => {
     .toThrow('must not configure allowedAuthOrigins')
 })
 
-it('omits only an explicitly disabled OSS mandatory service', () => {
+it('never enables a mandatory service in OSS product releases', () => {
   expect(resolveDesktopPolicyEnvironment({ DSH_DESKTOP_UPLOAD_PROVIDER: 'oss', DSH_DESKTOP_MANDATORY_UPDATE_ENABLED: 'false' }))
     .toBeUndefined()
-  expect(() => resolveDesktopPolicyEnvironment({ DSH_DESKTOP_UPLOAD_PROVIDER: 'oss' }))
-    .toThrow('DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN')
+  expect(resolveDesktopPolicyEnvironment({ DSH_DESKTOP_UPLOAD_PROVIDER: 'oss' })).toBeUndefined()
   expect(() => resolveDesktopPolicyEnvironment({ DSH_DESKTOP_UPLOAD_PROVIDER: 'oss', DSH_DESKTOP_MANDATORY_UPDATE_ENABLED: 'true' }))
-    .toThrow('DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN')
+    .toThrow('OSS product releases do not support mandatory-update policy')
   expect(() => resolveDesktopPolicyEnvironment({ DSH_DESKTOP_UPLOAD_PROVIDER: 'cos', DSH_DESKTOP_MANDATORY_UPDATE_ENABLED: 'false' }))
     .toThrow('UPLOAD_PROVIDER=oss')
   expect(() => resolveDesktopPolicyEnvironment({ DSH_DESKTOP_MANDATORY_UPDATE_ENABLED: 'false' }))

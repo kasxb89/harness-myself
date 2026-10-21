@@ -48,7 +48,6 @@ export class DesktopUpdateCoordinator {
    * @param downloadResult - Once per completed download attempt, including platform preparation failures.
    * @param resolveSource - Re-reads the trusted backend before every check; failure invalidates an old available target.
    * @param installUpdate - Starts a prepared platform installer after the shared restart guard succeeds.
-   * @param requiredVersion - Highest previously confirmed mandatory release; older feed targets are refused.
    */
   constructor(
     private readonly publish: (state: DesktopUpdateState) => DesktopUpdateState,
@@ -59,7 +58,6 @@ export class DesktopUpdateCoordinator {
     private readonly downloadResult?: (success: boolean, reason?: string) => void,
     private readonly resolveSource: () => Promise<DesktopUpdateSource> = () => { throw new DesktopUpdateSourceError('source-unbound') },
     private readonly installUpdate?: (version: string) => Promise<void>,
-    private readonly requiredVersion: () => string | undefined = () => undefined,
   ) {
     this.updater = updater ?? electronUpdater.autoUpdater
     if (updater === undefined) {
@@ -209,8 +207,6 @@ export class DesktopUpdateCoordinator {
       if (result === null) throw new Error('desktop update: no check result was returned')
       const version = result.updateInfo.version
       if (valid(version) === null) throw new Error('desktop update: feed version is invalid')
-      const required = this.requiredVersion()
-      if (required !== undefined && gt(required, version)) throw new Error('desktop update: feed version is older than the required update')
       this.candidate = result.isUpdateAvailable && gt(version, this.currentVersion()) ? version : undefined
       return this.setState(this.candidate === undefined ? { phase: 'idle' } : { phase: 'available', version })
     } catch (error) {

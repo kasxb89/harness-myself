@@ -3,6 +3,7 @@ import { WINDOWS_TITLEBAR_HEIGHT } from '../src/windows-layout.ts'
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import type { IpcMainInvokeEvent } from 'electron'
 import { join } from 'node:path'
+import { createHash } from 'node:crypto'
 import { pathToFileURL } from 'node:url'
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -1620,36 +1621,47 @@ describe('desktop main startup', () => {
     } finally { host.exited.resolve(); await harness.quitCompleted.promise }
   })
 
-  it('requires the confirmed feed release in an unsigned app without an external mandatory policy', async () => {
+  it.each(['win32', 'darwin'] as const)('keeps updates optional with a legacy required-version cache on %s', async (platform) => {
+    const arch = platform === 'darwin' ? 'arm64' : 'x64'
+    vi.stubGlobal('process', { ...process, platform, arch })
     harness.updateAuthority = 'https://8.133.202.230/harness'
+    const directory = join(harness.app.getPath('userData'), 'desktop')
+    mkdirSync(directory, { recursive: true })
+    const key = createHash('sha256').update(JSON.stringify([harness.updateAuthority, platform, arch])).digest('hex')
+    const cache = join(directory, `required-update-${key}.json`)
+    const retained = JSON.stringify({ schemaVersion: 1, authorityTarget: key, version: '9.0.0' })
+    writeFileSync(cache, retained)
     const host = await readyForUpdate()
+    await invoke(DESKTOP_IPC.boot, 'app')
     const window = harness.windows[0]!
-    const event = { sender: window.webContents, senderFrame: window.webContents.mainFrame }
-    const status = harness.handlers.get(MANDATORY_IPC.status)!
-    expect(status(event)).toMatchObject({ policy: { blocking: false } })
+    expect(harness.handlers.has(MANDATORY_IPC.status)).toBe(false)
     harness.updateState = { phase: 'available', version: '1.0.1' }
     harness.publishUpdate(harness.updateState)
-    await harness.policyBlocked.promise
-    expect(status(event)).toMatchObject({ policy: { blocking: true }, update: { phase: 'available', version: '1.0.1' } })
+    expect(invoke(DESKTOP_IPC.updatesStatus, 'app')).toEqual({ phase: 'available', version: '1.0.1' })
+    await expect(invoke(DESKTOP_IPC.onboardingApiKey, 'app')).resolves.toBe(true)
+    window.show.mockClear()
+    harness.app.emit('open-url', { preventDefault() {} }, 'dsh://open')
+    expect(window.show).toHaveBeenCalledOnce()
+    expect(harness.windows).toHaveLength(1)
+    expect(harness.dialog.showMessageBox).not.toHaveBeenCalled()
     expect(host.stop).not.toHaveBeenCalled()
     expect(harness.updateDownload).not.toHaveBeenCalled()
     expect(harness.updateInstall).not.toHaveBeenCalled()
     harness.publishUpdate({ phase: 'error', failedOperation: 'check', sourceFailure: 'source-disabled' })
-    expect(status(event)).toMatchObject({ policy: { blocking: true } })
     harness.publishUpdate({ phase: 'idle' })
-    expect(status(event)).toMatchObject({ policy: { blocking: true } })
-    expect(() => harness.handlers.get(MANDATORY_IPC.action)!(event, 'later', '1.0.1')).toThrow('no installation confirmation')
-    await invoke(DESKTOP_IPC.updatesOpen, 'app')
-    expect(harness.dialog.showMessageBox).not.toHaveBeenCalled()
+    expect(harness.handlers.has(MANDATORY_IPC.status)).toBe(false)
+    expect(readFileSync(cache, 'utf8')).toBe(retained)
   })
 
-  it('does not require an update merely because the configured feed check fails', async () => {
+  it('keeps the product usable when the configured feed check fails', async () => {
     harness.updateAuthority = 'https://8.133.202.230/harness'
-    await readyForUpdate()
+    const host = await readyForUpdate()
+    await invoke(DESKTOP_IPC.boot, 'app')
     harness.publishUpdate({ phase: 'error', failedOperation: 'check', sourceFailure: 'source-unavailable' })
-    const window = harness.windows[0]!
-    expect(harness.handlers.get(MANDATORY_IPC.status)!({ sender: window.webContents, senderFrame: window.webContents.mainFrame }))
-      .toMatchObject({ policy: { blocking: false } })
+    expect(harness.handlers.has(MANDATORY_IPC.status)).toBe(false)
+    await expect(invoke(DESKTOP_IPC.onboardingApiKey, 'app')).resolves.toBe(true)
+    expect(host.stop).not.toHaveBeenCalled()
+    expect(harness.updateDownload).not.toHaveBeenCalled()
   })
 
   it('blocks subsequent product operations without stopping the Host and clears only on a fresh no-force policy', async () => {

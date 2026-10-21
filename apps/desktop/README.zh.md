@@ -262,7 +262,7 @@ pnpm run package:desktop:mac:x64:unsigned
 
 添加 `--check` 仅验证本地配置和工具而不构建，或添加 `--dir` 只生成解包应用。DMG 路径为 `apps/desktop/.desktop-build/targets/<target>/unsigned-artifacts/yunshu-<version>-mac-<arch>-unsigned.dmg`。所有检查通过后，命令打印 `DMG:` 及其绝对路径。打开后将应用复制到本地测试目录。
 
-这些命令只从可选的 `.env.macos` 读取 `DSH_DESKTOP_APP_ID` 和 `DSH_DESKTOP_UPDATE_CONFIG_ORIGIN`，默认分别为 `com.deepseek.harness` 和 `https://8.133.202.230/harness`。它们忽略继承的发布设置，并省略独立的外部强制更新服务；确认 feed 有新版本后仍要求更新。构建工具、标准网络代理与 `DSH_DESKTOP_NPM_REGISTRY` 仍可从 shell 提供。它们跳过 Developer ID 签名、Apple 公证、临时签名钥匙串和公证代理修改。未签名 macOS 的 `afterPack` 编译捆绑的[原生交换辅助程序](resources/unsigned-mac-swap.c)，并为它添加 ad-hoc 签名；构建机器需要 Xcode Command Line Tools（`xcrun clang`），最终用户无需编译器。Electron 使用无需证书的本地 ad-hoc 签名，以便修改后的可执行文件能够运行；DMG 不签名。运行时完整性与冒烟检查仍会执行。安装包构建完成后，会在 `unsigned-artifacts/` 的 DMG 旁写入 `nightly-mac.yml` 和 `<target>-release.json`；目录构建不写完成记录。不生成 ZIP。[显式未签名上传](#upload-updates)发布已检查的 DMG，供[更新](#updates)一节说明的自动安装流程使用。macOS 可能要求在“系统设置 → 隐私与安全性”中批准打开未经公证的应用。
+这些命令只从可选的 `.env.macos` 读取 `DSH_DESKTOP_APP_ID` 和 `DSH_DESKTOP_UPDATE_CONFIG_ORIGIN`，默认分别为 `com.deepseek.harness` 和 `https://8.133.202.230/harness`。它们忽略继承的发布设置，并省略独立的外部强制更新服务；feed 新版本由用户自愿更新。构建工具、标准网络代理与 `DSH_DESKTOP_NPM_REGISTRY` 仍可从 shell 提供。它们跳过 Developer ID 签名、Apple 公证、临时签名钥匙串和公证代理修改。未签名 macOS 的 `afterPack` 编译捆绑的[原生交换辅助程序](resources/unsigned-mac-swap.c)，并为它添加 ad-hoc 签名；构建机器需要 Xcode Command Line Tools（`xcrun clang`），最终用户无需编译器。Electron 使用无需证书的本地 ad-hoc 签名，以便修改后的可执行文件能够运行；DMG 不签名。运行时完整性与冒烟检查仍会执行。安装包构建完成后，会在 `unsigned-artifacts/` 的 DMG 旁写入 `nightly-mac.yml` 和 `<target>-release.json`；目录构建不写完成记录。不生成 ZIP。[显式未签名上传](#upload-updates)发布已检查的 DMG，供[更新](#updates)一节说明的自动安装流程使用。macOS 可能要求在“系统设置 → 隐私与安全性”中批准打开未经公证的应用。
 
 ### 用回环 registry 安装本地 Official 包
 
@@ -319,7 +319,7 @@ DSH_DESKTOP_MANDATORY_UPDATE_ENABLED=false
 DSH_DESKTOP_UPDATE_CONFIG_ORIGIN=https://8.133.202.230/harness
 ```
 
-`DSH_DESKTOP_MANDATORY_UPDATE_ENABLED=false` 为 OSS 发布省略独立的外部[强制更新服务](#mandatory-update-policy)；feed 版本更新要求及产物校验仍启用。`OSSUTIL_BIN` 必须指向 ossutil v2 二进制文件；两个工具路径也可以相对于 `apps/desktop`。AccessKey 凭据仅保存在仓库外的私有 ossutil 配置文件中，不会写入应用、命令参数或上传记录。同一目标继续使用现有 `package:desktop:*` 和 `upload:*` 命令。OSS 不支持自动构建编号；使用更高的产品版本，或显式递增的 `--build-version`。后台 `desktop_update.feeds` 目录分别为 `https://alioss.denuoxuankeji.com/yunshu-harnes/feeds/mac-arm64/`、`mac-x64/` 和 `win-x64/`；仅设置上传凭据不会开启后台更新发现。
+OSS 产品发布默认省略外部[强制更新服务](#mandatory-update-policy)；兼容 `DSH_DESKTOP_MANDATORY_UPDATE_ENABLED=false`，拒绝设为 `true`。普通更新发现和产物校验继续启用。`OSSUTIL_BIN` 必须指向 ossutil v2 二进制文件；两个工具路径也可以相对于 `apps/desktop`。AccessKey 凭据仅保存在仓库外的私有 ossutil 配置文件中，不会写入应用、命令参数或上传记录。同一目标继续使用现有 `package:desktop:*` 和 `upload:*` 命令。OSS 不支持自动构建编号；使用更高的产品版本，或显式递增的 `--build-version`。后台 `desktop_update.feeds` 目录分别为 `https://alioss.denuoxuankeji.com/yunshu-harnes/feeds/mac-arm64/`、`mac-x64/` 和 `win-x64/`；仅设置上传凭据不会开启后台更新发现。
 
 OSS 发布器要求 bucket 从未开启过版本控制，检查现有通道版本，并在上传产物前拒绝相等或更低的版本。它拒绝已有安装包对象键，同时使用 OSS 的原子禁止覆盖功能。每个文件使用一次 PUT，关闭重试，大小上限为 5 GiB；公网 HTTPS 大小及完整 SHA-512 必须与本地一致，才能发布清单。原清单保存在本地审计目录和 `yunshu-harnes/history/<target>/<run>/` 下；新清单使用 `Cache-Control: no-store`，并通过公开域名回读验证。完成结果记录 `publicReadback: verified`；失败或中断后，需要检查审计和远端状态再重试。原子的 `yunshu-harnes/locks/<target>.json` 对象阻止不同机器并发发布同一目标。成功后核对本次运行的随机标识才会删除锁；失败或中断后保留锁。操作人员必须先核查保留的审计和远端产物，再手动移除该锁；锁不会自动过期或被抢占。OSS 拒绝 `upload:latest:*` / `--latest`；通过 `upload:*` 发布带版本的安装包和更新清单。
 
@@ -505,11 +505,11 @@ Windows 下载完成后的更新确认说明应用会在安装期间关闭、完
 
 原生更新浮层在文档就绪且父窗口可见时显示，并在父窗口再次显示时恢复。关闭浮层会释放输入拦截和父窗口监听。[本地窗口验证](tests/README.zh.md#verification-overlay)无需启动工作区即可检查这些切换。
 
-Desktop 每次检查版本清单前都从 harnes-api 后台发现固定 Nightly 更新目录。打包将经过校验的 `DSH_DESKTOP_UPDATE_CONFIG_ORIGIN` 写入应用 manifest 的 `dshDesktopUpdateConfigOrigin`；打包应用运行时忽略环境覆盖。显式未签名构建还写入 `dshDesktopUnsigned: true`，缺少来源时默认使用 `https://8.133.202.230/harness`。包内的 `app-update.yml` 包含不直接使用的初始化目录；协调器每次检查清单前均将其替换为当前后台状态给出的目录。更新服务地址不会从发布 URL 推断。未配置来源的签名包仍可启动，但更新检查会被拒绝。开发启动器使用相同默认值，并将显式覆盖值记录在 macOS 冷启动脚本。后台基址保留 `/harness`；[强制更新行为](#mandatory-update-policy)也适用于未签名构建。
+Desktop 每次检查版本清单前都从 harnes-api 后台发现固定 Nightly 更新目录。打包将经过校验的 `DSH_DESKTOP_UPDATE_CONFIG_ORIGIN` 写入应用 manifest 的 `dshDesktopUpdateConfigOrigin`；打包应用运行时忽略环境覆盖。显式未签名构建还写入 `dshDesktopUnsigned: true`，缺少来源时默认使用 `https://8.133.202.230/harness`。包内的 `app-update.yml` 包含不直接使用的初始化目录；协调器每次检查清单前均将其替换为当前后台状态给出的目录。更新服务地址不会从发布 URL 推断。未配置来源的签名包仍可启动，但更新检查会被拒绝。开发启动器使用相同默认值，并将显式覆盖值记录在 macOS 冷启动脚本。后台基址保留 `/harness`；签名与未签名产品构建均由用户自愿更新。
 
 公开的 `GET <backend-base>/api/status` 响应通过 `data.desktop_update` 提供 `enabled`、`channel: "nightly"`，以及 `feeds` 中 `mac-arm64`、`mac-x64`、`win-x64` 三个目标目录。主进程匿名读取，拒绝重定向与缓存，总期限为八秒，响应体上限为 512 KiB。后台基址接受 HTTPS origin 或其 `/harness` 部署前缀；更新源必须是 HTTPS 目录，不得携带凭据、查询、片段、控制字符或反斜杠。`8.133.202.230` 上的每个 URL 都必须位于 `/harness` 内；其根路径 `/api` 与 `/v1` 属于另一套系统。目录缺少结尾斜杠时会规范补齐。只有显式开发或测试配置允许回环 HTTP。禁用、未配置、无效与无法连接分别报告失败，并撤销旧的可用更新目标，不会报告“已是最新”或使用旧源。已在下载或准备完成的版本保留选定来源。`setFeedURL` 只变更 provider；包内 updater 配置、Windows 签名包的发布者校验、仅接受更高版本、手动下载与独立安装确认继续生效。[后台更新权限决策](../../.agents/notes/implemented/architecture/2026-10-16-desktop-backend-update-authority.zh.md)说明远程管理为何不能变更受信服务地址。
 
-打包应用在启动后异步检查更新。常规轮询以十分钟为基础间隔，每次独立采样 ±20% 的随机抖动。每次检查失败将基础延迟翻倍，上限为一小时；成功后重置。随机延迟不超过该上限，并从全部复用调用结算后开始计时。本地化的“检查更新…”菜单项及产品内常驻检查按钮立即执行，并复用正在进行的检查。Windows 也可从顶栏的“应用”菜单进入。产品按钮沿用同一手动检查流程；发现可用版本后要求更新，下载前仍需用户同意。回到前台和系统恢复时遵守相同的单调时钟截止时间。新收到的强更策略也会立即请求检查更新清单。自动检查不下载安装包；确认新版本后展示强制更新界面。手动检查显示正在检查、失败或包含已安装版本号的无更新反馈。常规更新弹窗原位渐入渐出；连续弹窗替换卡片内容并重置其滚动位置，保留黑色半透明蒙层，不模糊父页面。
+打包应用在启动后异步检查更新。常规轮询以十分钟为基础间隔，每次独立采样 ±20% 的随机抖动。每次检查失败将基础延迟翻倍，上限为一小时；成功后重置。随机延迟不超过该上限，并从全部复用调用结算后开始计时。本地化的“检查更新…”菜单项及产品内常驻检查按钮立即执行，并复用正在进行的检查。Windows 也可从顶栏的“应用”菜单进入。产品按钮在没有新版本时显示“检查更新”，发现新版本后显示“更新版本”；用户选择何时下载，并另行确认安装。回到前台和系统恢复时遵守相同的单调时钟截止时间。自动检查不下载安装包，也不打断产品使用。非产品部署显式配置的外部策略仍可请求立即检查更新清单。手动检查显示正在检查、失败或包含已安装版本号的无更新反馈。常规更新弹窗原位渐入渐出；连续弹窗替换卡片内容并重置其滚动位置，保留黑色半透明蒙层，不模糊父页面。
 
 `DSH_DESKTOP_UPDATE_CHECK_INTERVAL_MS` 配置常规基础间隔，`DSH_DESKTOP_UPDATE_CHECK_MAX_BACKOFF_MS` 配置上限；两者均接受 1000 至 2147483647 的整数毫秒数，且上限不能小于间隔。省略上限时取一小时与间隔中的较大值。`DSH_DESKTOP_UPDATE_CHECK_JITTER` 配置 0 至 1 的抖动比例，默认 `0.2`；最终延迟至少一秒，且不超过上限。这些配置不改变强更策略轮询，也不授权下载重试。
 
@@ -543,9 +543,9 @@ Electron 主进程在启动时读取一次 `app.getPath('userData')/desktop/sett
 
 ### 强制更新策略
 
-已打包的 macOS 和 Windows 应用在受信目标 Nightly feed 确认版本高于 `app.getVersion()` 时要求更新，包括未签名包。外壳阻断正常产品操作；下载同意、产物校验、任务检查及明确的安装重启确认继续沿用现有保护。确认安装前，已有任务继续运行。禁用来源、目标缺失、响应无效或网络失败都不能凭空产生更新要求。确认后的最高版本要求保存在 `userData/desktop/required-update-<authority-target-hash>.json`，检查或下载失败以及重启应用均不清除；记录仅包含格式版本、来源与目标哈希以及发布版本。已安装版本达到该版本后放行；较低的 feed 版本不能授权安装更旧的包。缓存损坏会报告错误，不猜测所需版本；缓存写入失败仍保留本次运行的阻断，但无法保证重启后保留。关闭或暂缓更新不会恢复正常产品操作。客户端遮罩不代表服务器访问控制。此前发布的旧二进制需先通过普通更新升级一次，才能获得此行为；修改 feed 无法给旧可执行文件增加强制逻辑。
+macOS 和 Windows 产品更新由用户自愿选择，包括未签名包。受信 feed 出现新版本时只改变更新提示，不阻断工作区、不打开强制更新遮罩、不停止任务，也不自动下载。取消或推迟安装后仍可继续使用。旧的 `userData/desktop/required-update-<authority-target-hash>.json` 文件不再读取，也不删除。仅接受更高版本、产物校验、任务检查及独立的安装重启确认继续生效。
 
-以下可选外部策略服务独立于 feed 版本要求。打包读取 `.env.windows` 或 `.env.macos`：`DSH_DESKTOP_AUTO_UPDATE_ENV=test`（默认值）选择 `DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN`；`production` 选择 `DSH_DESKTOP_MANDATORY_UPDATE_PROD_ORIGIN`。模板将两个源站留空；在 Git 忽略的目标 dotenv 文件中填写所选部署的源站。未签名构建省略此外部服务；本地 macOS 未签名打包仅读取上文说明的可选文件设置。签名构建和仅准备构建在准备产物或签名前必须配置所选源站；未选环境的源站可不填。这些配置不会回退到父进程环境或另一部署环境。打包将选定策略与应用 ID 写入元数据；打包应用忽略运行时覆盖。
+OSS 产品发布不嵌入外部强制更新服务；显式启用会在打包校验时报错。保留的策略实现用于独立 COS 部署及显式配置的开发环境。COS 签名构建的打包读取 `.env.windows` 或 `.env.macos`：`DSH_DESKTOP_AUTO_UPDATE_ENV=test`（默认值）选择 `DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN`；`production` 选择 `DSH_DESKTOP_MANDATORY_UPDATE_PROD_ORIGIN`。准备产物或签名前必须配置所选源站，未选环境的源站可不填。未签名构建省略此服务。这些配置不会回退到父进程环境或另一部署环境。打包将选定策略与应用 ID 写入元数据；打包应用忽略运行时覆盖。
 
 `DSH_DESKTOP_MANDATORY_UPDATE_CONFIG` JSON 提供测试登录源站，以及可选的轮询和下载页面选项；打包拒绝其中的 `origin` 和 `authentication`。页面白名单默认只包含所选服务源站；需要其他已批准下载页面源站时应显式配置。测试包选择 `feishu-test`，且必须在 `DSH_DESKTOP_MANDATORY_UPDATE_CONFIG` 中配置 `allowedAuthOrigins`；正式包选择 `anonymous`，并拒绝该字段。每个登录源站必须是没有凭据、路径、查询或片段的 HTTPS origin。登录窗口仅允许文档导航到所选策略源站和这些已配置源站。策略请求拒绝重定向；仅测试鉴权携带网关 Cookie。未打包开发模式则从此变量读取完整策略 JSON，并要求 `DSH_DESKTOP_APP_ID`；缺少 JSON 会禁用开发模式策略查询，仅匿名开发允许 HTTP `127.0.0.1`。用户发起常规检查时会并发触发策略检查，但不会等待或展示策略失败。只有已确认的强更决定可以关闭常规弹窗。测试环境鉴权会等待当前常规弹窗结束，取消或失败不会丢弃 updater 结果。
 

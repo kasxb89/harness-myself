@@ -10,6 +10,6 @@ export interface DesktopPolicyEnvironment {
 /**
  * Resolve policy settings before artifact preparation or signing.
  * @param environment File-owned release settings; only the selected origin is required.
- * @returns Policy metadata, or no mandatory service when OSS releases explicitly disable it.
+ * @returns Policy metadata for COS releases; OSS product releases never include a mandatory service.
  */
 export function resolveDesktopPolicyEnvironment(environment: NodeJS.ProcessEnv): DesktopPolicyEnvironment | undefined

@@ -1,5 +1,20 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
+exports[`changes permanent checks into update actions and retains the discovered release in either sidebar width 1`] = `
+[
+  {
+    "detail": "新版本：1.0.1",
+    "label": "更新版本",
+    "wide": true,
+  },
+  {
+    "detail": "新版本：1.0.1",
+    "label": "更新版本",
+    "wide": false,
+  },
+]
+`;
+
 exports[`keeps source-development actionable with localized guidance 1`] = `
 {
   "chinese": "开发版本不支持自动更新，请使用正式安装包",

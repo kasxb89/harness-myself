@@ -105,7 +105,7 @@ export function apply(ctx: ClientContext): void {
   ctx.effect(() => () => { desktopUpdate.dispose() }, 'ui-settings-general: desktop update carrier')
   const desktopUpdateCheckInjected = (): DesktopUpdateCheckInjected => ({
     desktopUpdateAvailable: manualUpdateCheckAvailable,
-    checkDesktopUpdate: () => { desktopUpdate.check() },
+    activateDesktopUpdate: () => { desktopUpdate.activate() },
     hooks: { desktopUpdate: desktopUpdate.store },
   })
   // Version information follows the core preferences on every platform.

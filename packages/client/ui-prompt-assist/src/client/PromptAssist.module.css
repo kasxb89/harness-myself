@@ -9,7 +9,7 @@
 .label { color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 20px; font-weight: 400; }
 .field textarea { box-sizing: border-box; width: 100%; min-width: 0; min-height: 36px; padding: 7px 10px; resize: vertical; border: 0.5px solid var(--dsw-alias-border-l2); border-radius: var(--dsw-radius-sm); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); font: inherit; font-size: 13px; line-height: 20px; }
 .field textarea::placeholder { color: var(--dsw-alias-label-secondary); }
-.field textarea:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary); outline-offset: 2px; }
+.field textarea:focus-visible { outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary)); outline-offset: 2px; }
 .field textarea:disabled { cursor: default; }
 .status { color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 20px; }
 .status p { margin: 0; overflow-wrap: anywhere; }

@@ -1,6 +1,28 @@
 /** Client-owned observation of the optional Desktop preload. */
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
-import type { DesktopUpdateBridge, DesktopUpdateView } from '../types.ts'
+import type { DesktopUpdateBridge, DesktopUpdatePresentation, DesktopUpdateView } from '../types.ts'
+
+/**
+ * Identify a release that the shell can download or install without another check.
+ * @param state - The current shell-owned release and failure state.
+ * @returns Whether a discovered release remains actionable.
+ */
+export function hasDesktopUpdate(state: DesktopUpdatePresentation | undefined): boolean {
+  if (state?.phase === 'available' || state?.phase === 'ready') return true
+  if (state?.phase !== 'error' || !state.version) return false
+  switch (state.failure) {
+    case 'download':
+    case 'download-network':
+    case 'install':
+    case 'install-network':
+    case 'stop-failed':
+    case 'tasks-changed':
+    case 'tasks-unavailable':
+      return true
+    default:
+      return false
+  }
+}
 
 /** Owns one preload subscription across settings and sidebar controls. */
 export class DesktopUpdateSource {
@@ -36,6 +58,14 @@ export class DesktopUpdateSource {
     const bridge = this.bridge
     if (!this.live || typeof bridge?.check !== 'function') return
     this.run(bridge.check.bind(bridge))
+  }
+
+  /** Check for a release, or resume the discovered update through the shell's confirmations. */
+  activate(): void {
+    if (!this.live || typeof this.bridge?.check !== 'function') return
+    const state = this.store.getSnapshot().presentation
+    if (hasDesktopUpdate(state) || state?.phase === 'downloading' || state?.phase === 'verifying') this.open()
+    else this.check()
   }
 
   /** Coalesce actions while allowing the shell's download progress window to reopen. */

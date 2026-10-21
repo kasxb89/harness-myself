@@ -51,7 +51,7 @@ describe('published document preview licenses', () => {
       // npm 11 (Node 25) answers with one entry per packed tarball; npm 10
       // answers with the entry itself.
       const packedOutput = JSON.parse(runPnpm([
-        'pack', '--json', '--pack-destination', output,
+        'pack', '--json', '--pack-gzip-level', '0', '--pack-destination', output,
       ], packageRoot, task.timeout)) as { filename: string; files: { path: string }[] } | { filename: string; files: { path: string }[] }[]
       const packed = Array.isArray(packedOutput) ? packedOutput[0]! : packedOutput
       expect(packed.files.map(file => file.path)).toContain('lib/client.js')
@@ -59,17 +59,23 @@ describe('published document preview licenses', () => {
       expect(packed.files.map(file => file.path)).toContain('lib/client.frontmatter-fields.js')
       expect(packed.files.some(file => file.path.endsWith('pdfjs-NOTICES.txt'))).toBe(false)
 
-      const client = run('tar', ['-xOf', resolve(output, packed.filename), 'package/lib/client.js'], packageRoot, task.timeout)
-      const pdf = run('tar', ['-xOf', resolve(output, packed.filename), 'package/lib/client.pdf.js'], packageRoot, task.timeout)
+      const chunks = ['client.js', 'client.pdf.js', 'client.excel.js', 'client.frontmatter-fields.js']
+      run('tar', ['-xf', resolve(output, packed.filename), '-C', output, ...chunks.map(name => `package/lib/${name}`)], packageRoot, task.timeout)
+      const client = readFileSync(join(output, 'package/lib/client.js'), 'utf8')
+      const pdf = readFileSync(join(output, 'package/lib/client.pdf.js'), 'utf8')
       expect([...client.matchAll(/require\.async\("(\.\/client[^"/]*\.js)"\)/gu)].map(match => match[1]))
-        .toEqual(['./client.frontmatter-fields.js', './client.pdf.js', './client.excel.js'])
+        .toEqual(['./client.frontmatter-fields.js', './client.pdf.js', './client.pdf.js', './client.excel.js'])
+      expect([...client.matchAll(/require\.async\("\.\/client\.pdf\.js"\)\)\.(\w+)/gu)].map(match => match[1]))
+        .toEqual(['PdfBody', 'ArtifactPdfBody'])
+      expect(pdf).toContain('exports.PdfBody = PdfBody')
+      expect(pdf).toContain('exports.ArtifactPdfBody = ArtifactPdfBody')
       expect(client).not.toMatch(/\brequire\("\.\/client[^"/]*\.js"\)/u)
       expect([...pdf.matchAll(/require\("(\.\/client[^"/]*\.js)"\)/gu)].map(match => match[1]))
         .toEqual([])
       expect(client).not.toContain('//! Bundled PDF.js license notices')
       expect(client).not.toContain('/pdfjs-dist/')
       expect(pdf).toContain('//! Bundled PDF.js license notices')
-      const excel = run('tar', ['-xOf', resolve(output, packed.filename), 'package/lib/client.excel.js'], packageRoot, task.timeout)
+      const excel = readFileSync(join(output, 'package/lib/client.excel.js'), 'utf8')
       expect(excel).not.toMatch(/\brequire\("\.\/client[^"/]*\.js"\)/u)
       expect(client).not.toContain('FortuneSheet')
       expect(excel).toContain('//! Bundled spreadsheet license notices')
@@ -80,7 +86,7 @@ describe('published document preview licenses', () => {
         const license = readFileSync(join(root, 'LICENSE'), 'utf8').trimEnd()
         expect(excel).toContain(license.split('\n').map(line => `// ${line}`).join('\n'))
       }
-      const frontmatter = run('tar', ['-xOf', resolve(output, packed.filename), 'package/lib/client.frontmatter-fields.js'], packageRoot, task.timeout)
+      const frontmatter = readFileSync(join(output, 'package/lib/client.frontmatter-fields.js'), 'utf8')
       expect(frontmatter).not.toMatch(/\brequire\("\.\/client[^"/]*\.js"\)/u)
       let frontmatterInitialized = false
       runInNewContext(frontmatter, { window: { __ModuleLoader__: { load: (registration: {

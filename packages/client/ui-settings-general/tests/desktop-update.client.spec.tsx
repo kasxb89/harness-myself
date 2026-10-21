@@ -4,6 +4,7 @@ import { useSyncExternalStore } from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import { DesktopUpdateIndicator } from '../src/client/DesktopUpdateIndicator.tsx'
+import { DesktopUpdateCheck } from '../src/client/DesktopUpdateCheck.tsx'
 import type { DesktopUpdateBridge, DesktopUpdatePresentation } from '../src/types.ts'
 import { DesktopUpdateSource } from '../src/client/desktop-update-source.ts'
 import { en, zh } from '../src/client/locales.ts'
@@ -42,10 +43,19 @@ function fixture() {
     const state = useSyncExternalStore(subscribe, snapshot)
     return <DesktopUpdateIndicator wide={wide} hidden={hidden} t={translate(dictionary)} view={state} onOpen={() => { source.open() }} />
   }
+  function Check({ wide = true, sidebar = false, dictionary = zh }: {
+    wide?: boolean
+    sidebar?: boolean
+    dictionary?: typeof zh | typeof en
+  }) {
+    const state = useSyncExternalStore(subscribe, snapshot)
+    return <DesktopUpdateCheck desktopUpdateAvailable useDesktopUpdate={select => select(state)}
+      activateDesktopUpdate={() => { source.activate() }} t={translate(dictionary)} sidebar={sidebar} wide={wide} />
+  }
   const view = render(<Indicator />)
   const unmount = view.unmount
   view.unmount = () => { source.dispose(); unmount() }
-  return { open, check, status, unsubscribe, view, Indicator, source, emit: async (state: DesktopUpdatePresentation) => {
+  return { open, check, status, unsubscribe, view, Indicator, Check, source, emit: async (state: DesktopUpdatePresentation) => {
     await act(async () => { listener?.(state) })
   } }
 }
@@ -58,8 +68,97 @@ it('renders nothing outside the Desktop carrier', () => {
     view={source.store.getSnapshot()} onOpen={() => { source.open() }} />)
   source.open()
   source.check()
+  source.activate()
   source.dispose()
   expect(view.container.innerHTML).toBe('')
+})
+
+it('changes permanent checks into update actions and retains the discovered release in either sidebar width', async () => {
+  const f = fixture()
+  try {
+    await f.emit({ phase: 'idle' })
+    f.view.rerender(<f.Check sidebar />)
+    fireEvent.click(screen.getByRole('button', { name: '检查更新' }))
+    await act(async () => {})
+    expect(f.check).toHaveBeenCalledOnce()
+    await f.emit(available)
+    const output: Array<{ wide: boolean; label: string | null; detail: string | null }> = []
+    for (const wide of [true, false]) {
+      f.view.rerender(<f.Check sidebar wide={wide} />)
+      const action = screen.getByRole('button', { name: '更新版本' })
+      fireEvent.focus(action)
+      output.push({ wide, label: action.textContent, detail: (await screen.findByRole('tooltip')).textContent })
+      fireEvent.click(action)
+      await act(async () => {})
+    }
+    expect(output).toMatchSnapshot()
+    expect(f.open).toHaveBeenCalledTimes(2)
+    expect(f.check).toHaveBeenCalledOnce()
+    await f.emit({ phase: 'ready', version: available.version })
+    f.view.rerender(<f.Check dictionary={en} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Update version' }))
+    await act(async () => {})
+    expect(f.open).toHaveBeenCalledTimes(3)
+    expect(f.check).toHaveBeenCalledOnce()
+  } finally { f.view.unmount(); f.status.resolve(available) }
+})
+
+it.each([
+  'download', 'download-network', 'install', 'install-network', 'stop-failed', 'tasks-changed', 'tasks-unavailable',
+] as const)('resumes %s for a discovered release instead of checking again', async (failure) => {
+  const f = fixture()
+  try {
+    await f.emit({ phase: 'error', version: available.version, failure })
+    f.view.rerender(<f.Check />)
+    fireEvent.click(screen.getByRole('button', { name: '更新版本' }))
+    await act(async () => {})
+    expect(f.open).toHaveBeenCalledOnce()
+    expect(f.check).not.toHaveBeenCalled()
+  } finally { f.view.unmount(); f.status.resolve(available) }
+})
+
+it.each([
+  { phase: 'error', version: '1.0.1', failure: 'check' },
+  { phase: 'error', version: '1.0.1', failure: 'source-invalid' },
+  { phase: 'error', failure: 'download' },
+] satisfies DesktopUpdatePresentation[])('checks again when an error has no resumable release: %j', async (state) => {
+  const f = fixture()
+  try {
+    await f.emit(state)
+    f.view.rerender(<f.Check />)
+    fireEvent.click(screen.getByRole('button', { name: '检查更新' }))
+    await act(async () => {})
+    expect(f.check).toHaveBeenCalledOnce()
+    expect(f.open).not.toHaveBeenCalled()
+  } finally { f.view.unmount(); f.status.resolve(available) }
+})
+
+it('keeps update confirmation pending without calling it a check and reopens only active progress', async () => {
+  const f = fixture()
+  const pending = Promise.withResolvers<undefined>()
+  try {
+    await f.emit(available)
+    f.view.rerender(<f.Check />)
+    f.open.mockImplementationOnce(() => pending.promise)
+    const action = screen.getByRole('button', { name: '更新版本' })
+    fireEvent.click(action)
+    await act(async () => {})
+    expect(action.getAttribute('aria-disabled')).toBe('true')
+    fireEvent.click(action)
+    expect(f.open).toHaveBeenCalledOnce()
+    await f.emit({ phase: 'downloading', version: available.version, percent: 42 })
+    fireEvent.click(screen.getByRole('button', { name: '下载中 42%' }))
+    await act(async () => {})
+    expect(f.open).toHaveBeenCalledTimes(2)
+    await f.emit({ phase: 'verifying', version: available.version })
+    fireEvent.click(screen.getByRole('button', { name: '正在校验更新文件…' }))
+    await act(async () => {})
+    expect(f.open).toHaveBeenCalledTimes(3)
+    await f.emit({ phase: 'installing', version: available.version })
+    fireEvent.click(screen.getByRole('button', { name: '正在准备重启…' }))
+    expect(f.open).toHaveBeenCalledTimes(3)
+    expect(f.check).not.toHaveBeenCalled()
+  } finally { f.view.unmount(); pending.resolve(undefined); f.status.resolve(available) }
 })
 
 it('runs a manual check separately from accepting an available update and coalesces duplicate checks', async () => {
@@ -93,6 +192,7 @@ it('keeps legacy v1 status actions while a missing manual-check capability is in
   })
   await Promise.resolve()
   expect(() => { source.check() }).not.toThrow()
+  expect(() => { source.activate() }).not.toThrow()
   expect(source.store.getSnapshot().opening).toBe(false)
   expect(source.store.getSnapshot().failed).toBe(false)
   source.open()

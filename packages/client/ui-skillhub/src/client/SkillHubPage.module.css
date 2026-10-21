@@ -33,7 +33,7 @@
 .discoveryHeader, .installedHeader { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .discoveryHeader { margin-top: 28px; }
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 290px), 1fr)); gap: 14px; margin: 16px 0 0; padding: 0; list-style: none; }
-.card { display: flex; box-sizing: border-box; flex-direction: column; gap: 12px; min-width: 0; height: 264px; padding: 18px; border: 1px solid var(--dsw-alias-border-l2); border-radius: var(--dsw-radius-xl); background: var(--dsw-alias-bg-layer-1); }
+.card { display: flex; box-sizing: border-box; flex-direction: column; gap: 12px; min-width: 0; height: 264px; padding: 18px; border: 0.5px solid var(--dsw-alias-border-l2); border-radius: var(--dsw-radius-xl); background: var(--dsw-alias-bg-layer-1); }
 .cardHeading { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .skillIcon { --skill-color: var(--dsw-alias-state-business-primary); width: 42px; height: 42px; color: var(--skill-color); background: color-mix(in srgb, var(--skill-color) 10%, transparent); }
 .skillIcon[data-tone='1'] { --skill-color: var(--dsw-alias-state-success-primary); }

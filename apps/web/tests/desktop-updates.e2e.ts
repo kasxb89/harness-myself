@@ -63,14 +63,16 @@ describe('web e2e: Desktop update workspace chrome', () => {
           const opens = async () => page.evaluate(() => (window as FixtureWindow).updateFixture.opens)
           const checks = async () => page.evaluate(() => (window as FixtureWindow).updateFixture.checks)
           const checkLabel = locale === 'zh-CN' ? '检查更新' : 'Check for updates'
-          const permanentCheck = page.getByRole('button', { name: checkLabel, exact: true })
-          await permanentCheck.waitFor()
-          const checkGeometry = await permanentCheck.boundingBox()
+          const updateLabel = locale === 'zh-CN' ? '更新版本' : 'Update version'
+          let actionLabel = checkLabel
+          const permanentCheck = () => page.getByRole('button', { name: actionLabel, exact: true })
+          await permanentCheck().waitFor()
+          const checkGeometry = await permanentCheck().boundingBox()
           const mobileGeometry = await page.getByRole('button', { name: locale === 'zh-CN' ? '手机' : 'Mobile', exact: true }).boundingBox()
           expect(checkGeometry).not.toBeNull()
           expect(mobileGeometry).not.toBeNull()
           expect(checkGeometry!.y + checkGeometry!.height).toBeLessThanOrEqual(mobileGeometry!.y)
-          await permanentCheck.click()
+          await permanentCheck().click()
           await expect.poll(checks).toBe(1)
           expect(await opens()).toBe(0)
           await page.screenshot({ path: join(evidence, 'permanent-check.png') })
@@ -89,29 +91,41 @@ describe('web e2e: Desktop update workspace chrome', () => {
 
           const showCheckTooltip = async (label: string) => {
             await page.mouse.move(0, 0)
-            await permanentCheck.hover()
+            await permanentCheck().hover()
             const tooltip = page.getByRole('tooltip', { name: label.replaceAll('\n', ' '), exact: true })
             await expect.poll(() => tooltip.evaluateAll(elements => elements.map(element => getComputedStyle(element).opacity))).toEqual(['1'])
           }
           await publish(available)
+          actionLabel = updateLabel
+          await permanentCheck().waitFor()
+          expect(await page.getByRole('button', { name: checkLabel, exact: true }).count()).toBe(0)
+          await page.getByRole('button', { name: locale === 'zh-CN' ? '设置' : 'Settings', exact: true }).click()
+          await versionRow.getByRole('button', { name: updateLabel, exact: true }).waitFor()
+          await page.screenshot({ path: join(evidence, 'settings-update-version.png') })
+          await settings.getByRole('button', { name: locale === 'zh-CN' ? '关闭' : 'Close', exact: true }).click()
           await showCheckTooltip(`${availableLabel}${locale === 'zh-CN' ? '：' : ': '}${version}`)
           expect(await opens()).toBe(0)
           await page.screenshot({ path: join(evidence, 'available.png') })
-          await permanentCheck.click()
-          await expect.poll(checks).toBe(3)
+          await permanentCheck().click()
+          await expect.poll(opens).toBe(1)
+          expect(await checks()).toBe(2)
 
           await publish(presentDesktopUpdate({ phase: 'checking' }, en))
-          await expect.poll(() => permanentCheck.getAttribute('aria-disabled')).toBe('true')
-          await permanentCheck.click({ force: true })
-          expect(await checks()).toBe(3)
+          actionLabel = locale === 'zh-CN' ? '正在检查更新…' : 'Checking for updates…'
+          await expect.poll(() => permanentCheck().getAttribute('aria-disabled')).toBe('true')
+          await permanentCheck().click({ force: true })
+          expect(await checks()).toBe(2)
+          expect(await opens()).toBe(1)
 
           const progress = presentDesktopUpdate({ phase: 'downloading', version, percent: 58 }, en)
           await publish(progress)
+          actionLabel = locale === 'zh-CN' ? '下载中 58%' : 'Downloading 58%'
           await showCheckTooltip(locale === 'zh-CN' ? `正在下载更新：58%\n目标版本：${version}`
             : `Downloading update: 58%\nTarget version: ${version}`)
-          expect(await permanentCheck.getAttribute('aria-disabled')).toBe('false')
-          await permanentCheck.click()
-          await expect.poll(checks).toBe(4)
+          expect(await permanentCheck().getAttribute('aria-disabled')).toBe('false')
+          await permanentCheck().click()
+          await expect.poll(opens).toBe(2)
+          expect(await checks()).toBe(2)
           await page.screenshot({ path: join(evidence, 'downloading.png') })
 
           const collapse = locale === 'zh-CN' ? '收起侧边栏' : 'Collapse sidebar'
@@ -120,13 +134,14 @@ describe('web e2e: Desktop update workspace chrome', () => {
           const toggle = page.getByRole('button', { name: expand, exact: true })
           const badge = toggle.getByRole('img', { name: '58%', exact: true })
           await badge.waitFor()
-          expect(await permanentCheck.count()).toBe(1)
+          expect(await permanentCheck().count()).toBe(1)
           expect(await page.getByRole('img', { name: '58%', exact: true }).count()).toBe(1)
           const updateBackground = await badge.evaluate(element => getComputedStyle(element).backgroundColor)
           await page.screenshot({ path: join(evidence, 'collapsed.png') })
 
           const error = presentDesktopUpdate({ phase: 'error', version, failedOperation: 'download', message: 'HTTP 503' }, en)
           await publish(error)
+          actionLabel = updateLabel
           const errorBadge = toggle.getByRole('img', { name: retryLabel, exact: true })
           await errorBadge.waitFor()
           // A failure keeps the update palette; only the label distinguishes it.
@@ -140,16 +155,17 @@ describe('web e2e: Desktop update workspace chrome', () => {
           await expect.poll(() => errorBadge.count()).toBe(0)
           await showCheckTooltip(errorDetail)
           await page.screenshot({ path: join(evidence, 'retry.png') })
-          await permanentCheck.click()
-          await expect.poll(checks).toBe(5)
+          await permanentCheck().click()
+          await expect.poll(opens).toBe(3)
+          expect(await checks()).toBe(2)
 
           await publish(presentDesktopUpdate({ phase: 'ready', version }, en))
           await showCheckTooltip(`${readyLabel}${locale === 'zh-CN' ? '：' : ': '}${version}`)
-          expect(await permanentCheck.getAttribute('aria-disabled')).toBe('false')
+          expect(await permanentCheck().getAttribute('aria-disabled')).toBe('false')
           await page.screenshot({ path: join(evidence, 'ready.png') })
-          await permanentCheck.click()
-          await expect.poll(checks).toBe(6)
-          expect(await opens()).toBe(0)
+          await permanentCheck().click()
+          await expect.poll(opens).toBe(4)
+          expect(await checks()).toBe(2)
           expect(tripwire.pageErrors).toEqual([])
           expect(tripwire.warnings).toEqual([])
           expect(await page.evaluate(() => (window as FixtureWindow).updateFixture.listeners.size)).toBe(1)

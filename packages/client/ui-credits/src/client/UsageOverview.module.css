@@ -20,7 +20,7 @@
 .loading, .empty { display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 12px; min-height: 240px; padding: 24px; border: 0.5px solid var(--dsw-alias-settings-card-stroke); border-radius: var(--dsw-radius-xl); background: var(--dsw-alias-settings-card-fill); color: var(--dsw-alias-label-secondary); font-size: 13px; text-align: center; }
 .empty h3 { margin: 0; color: var(--dsw-alias-label-primary); font-size: 15px; font-weight: 500; }
 .empty p { max-width: 460px; margin: 0; line-height: 1.7; }
-.spinner { width: 20px; height: 20px; border: 2px solid var(--dsw-alias-border-l2); border-top-color: var(--dsw-alias-label-primary); border-radius: 50%; animation: rotate 1s linear infinite; }
+.spinner { width: 20px; height: 20px; color: var(--dsw-alias-label-secondary); border: 2px solid currentColor; border-top-color: var(--dsw-alias-label-primary); border-radius: 50%; corner-shape: round; animation: rotate 1s linear infinite; }
 .note { margin: 0; color: var(--dsw-alias-label-secondary); font-size: 11px; line-height: 1.8; }
 .visuallyHidden { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 @keyframes rotate { to { transform: rotate(360deg); } }

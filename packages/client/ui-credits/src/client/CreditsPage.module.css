@@ -233,7 +233,7 @@
 .signInDescription { max-width: 310px; margin: 0; color: var(--dsw-alias-label-secondary); font-size: 13px; line-height: 1.8; }
 .signInFeatures { display: flex; flex-direction: column; gap: 24px; margin-block-start: 36px; }
 .signInFeature { display: flex; align-items: flex-start; gap: 12px; }
-.signInFeatureIcon { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 32px; height: 32px; border: 1px solid var(--dsw-alias-border-l2); border-radius: var(--dsw-radius-sm); color: var(--dsw-alias-label-secondary); }
+.signInFeatureIcon { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 32px; height: 32px; border: 0.5px solid var(--dsw-alias-border-l2); border-radius: var(--dsw-radius-sm); color: var(--dsw-alias-label-secondary); }
 .signInFeature p { margin: 0 0 4px; color: var(--dsw-alias-label-primary); font-size: 13px; line-height: 20px; font-weight: 500; }
 .signInFeature div > span { color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 20px; }
 .signInForm { display: flex; flex-direction: column; gap: 20px; min-width: 0; padding: 36px; }
@@ -242,7 +242,7 @@
 .signInFormHeading p { margin: 0; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 20px; }
 .signInField { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .signInFieldLabel { color: var(--dsw-alias-label-primary); font-size: 13px; line-height: 20px; }
-.phoneControl { display: flex; align-items: center; min-width: 0; height: 44px; border: 1px solid var(--dsw-alias-border-l4); border-radius: var(--dsw-radius-md); background: var(--dsw-alias-bg-layer-1); }
+.phoneControl { display: flex; align-items: center; min-width: 0; height: 44px; border: 0.5px solid var(--dsw-alias-border-l4); border-radius: var(--dsw-radius-md); background: var(--dsw-alias-bg-layer-1); }
 .phoneControl:focus-within { border-color: var(--dsw-alias-state-business-primary); }
 .phonePrefix { flex: none; padding-inline: 12px; border-inline-end: 1px solid var(--dsw-alias-border-l2); color: var(--dsw-alias-label-secondary); font-size: 13px; line-height: 22px; font-variant-numeric: tabular-nums; }
 .phoneInput { flex: 1; min-width: 0; height: 42px; padding-inline: 12px; border: 0; background: transparent; }
