@@ -92,7 +92,7 @@ describe('video composer', () => {
     fireEvent.click(screen.getByLabelText(t('settingsTrigger', { ratio: '', resolution: '1280x720', duration: String(defaultDuration) })))
     const panel = screen.getByRole('group', { name: zh.settings })
     fireEvent.click(within(panel).getByRole('button', { name: '1024x1792' }))
-    expect(within(panel).queryByRole('button', { name: '720p', exact: true })).toBeNull()
+    expect(within(panel).queryByRole('button', { name: '720p' })).toBeNull()
     writePrompt()
     fireEvent.click(screen.getByRole('button', { name: zh.submit }))
     await waitFor(() => { expect(task).toHaveBeenCalledOnce() })
