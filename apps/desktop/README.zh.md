@@ -108,6 +108,8 @@ Welcome 加载共享 Toast 的配色和阴影变量，挂载在 body 下的通�
 
 Desktop 在离线运行时中内置 `dsh-custom-mode@2.2.5`。此发布首次启动时只启用一次其 bundle，不安装额外包，也不改变生效的 Agent 默认值。已有本地安装及其启用或停用状态会保留；profile 回执防止后续启动撤销用户移除或恢复操作。产品补丁取消该插件对旧版默认设置的写入。内置行业员工仍是原生 Agent 预设；编辑器可创建更多助手，沿用同一模型、工具、工作区与积分账户。
 
+新建自定义员工通过 Host 运行时上下文取得目录信息。提示词读取器也会在员工自身作用域内，用 Session 当前工作目录解析旧提示词中的 `{{cwd}}`。重启时，编辑器刷新已有员工中复制的读取器和工具代码，保留提示词、初始提示词、名称和组成；旧员工因此恢复运行，无需替换用户编写的指令。
+
 Electron 拥有 `$DSH_HOME/profiles/desktop`。其 `dependencies` 包含 pnpm 安装的包；`dsh.profile.bundles` 包含内置 bundle，后接已启用插件。签名应用从 `resources/app.asar/dsh` 提供 dsh、私有 Desktop Host 及其生产依赖。打包应用选择 runtime profile 解析，不创建包链接；开发 profile 使用文件系统链接。宿主与插件在同一个 Electron Node 模式进程中执行；Desktop 不启用 `--preserve-symlinks`。CLI 不能启动此 profile。Desktop 内置命令可在应用退出后管理其插件；npm 安装的 dsh 不能修改它。
 
 应用 preload 只向 `dsh-app://app` 文档暴露启动就绪、致命启动失败上报、原生目录选择、用于 composer 路径引用的 `__DSH_HOST_PATHS__` 桥接和租约范围内的 Browser 桥接。同一个 preload 通过 `dshDesktop.deviceInfo()` 转发主进程采集的机器描述，按 `name=value` 字段以 `; ` 分隔：`platform`、`os`、`app_arch`（应用二进制实际运行的架构，模拟运行时与硬件架构不同）、`cpu` 和 `memory_gib`（物理内存总量，GiB，保留一位小数）。取值不可用时省略对应字段。该描述不包含主机名、用户名或序列号。产品页面还获得 Desktop 标记、更新展示数据和打开原生确认的操作，不能选择安装产物或授权安装。插件管理使用 Web 应用经过认证的 HTTP API；Electron 在 `dsh-app://shell/` 本地提供更新弹窗文档和资源，不依赖 Host 就绪。Electron 不提供插件管理 IPC 或独立管理页面。任何渲染进程都不会获得文件系统访问、原始 Electron IPC、shell 或任意 pnpm 参数。

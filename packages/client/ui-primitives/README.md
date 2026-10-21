@@ -90,6 +90,8 @@ The catalog above lists what each export is for; this section covers the behavio
 
 `Tooltip` reads the anchor on hover or keyboard focus and fits its bubble from `ResizeObserver` border-box sizes. The bubble stays hidden until its first fit, slides inside the horizontal viewport margin, and flips above or below only when the opposite side fits. Label-size and viewport changes reuse the anchor coordinates; fitting does not synchronously measure the bubble or trigger a React render. Opt-in `openOnClick` also lets an informational button pin the same bubble for reading and associates it with the anchor description. Another click, Escape, Tab, or an outside pointerdown closes it; ordinary action tooltips still dismiss on click.
 
+The package entry also exports the [29 size-suffixed icon names](src/icons/legacy.tsx) used by `dsh-better-sidebar@0.19.1`, including `IconFolderOpen16`. These compatibility components use the current `Regular` artwork, preserve their original defaults, and accept the same `size` and `className` props. `IconSendOutline16` defaults to 16px while `IconSendOutlineRegular` keeps its 14px default; `IconWarningOutline16` retains its original 14px default despite its suffix, while `IconWarningOutlineRegular` defaults to 16px. New consumers use the weight-named exports.
+
 <a id="rendering-agent-output"></a>
 
 ### Rendering agent output
