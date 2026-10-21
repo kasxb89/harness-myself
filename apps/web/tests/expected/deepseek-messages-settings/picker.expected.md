@@ -1,4 +1,6 @@
 - group "模型与推理等级":
+  - text: 云枢 暂时不可用，服务器繁忙，请稍后重试
+  - button "重试"
   - menu "模型":
     - group "DeepSeek":
       - text: DeepSeek

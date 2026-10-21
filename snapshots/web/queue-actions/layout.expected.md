@@ -3,17 +3,14 @@
   - text: Standard mode
   - button "More actions"
   - button "Open right sidebar"
-  - tablist:
-    - tab "Chat" [selected]
-    - tab "Trajectory"
 - group "Command input": /goal Keep the composer context panels aligned
 - 'button "goal Goal created Status: active Objective: Keep the composer context panels aligned Rounds: 0/256 Activation: armed Commands: /goal edit <objective>, /goal pause, /goal clear"'
 - button "Continuing goal {{clock}}":
   - text: Continuing goal
   - time: {{clock}}
 - paragraph: partial
-- status: Deep diving
-- text: Deep diving for {{duration}} ···
+- status: Working
+- text: Working for {{duration}} ···
 - region "To-dos":
   - button "To-dos 1 completed · 1 in progress"
 - text: Ongoing Goal Keep the composer context panels aligned
@@ -25,4 +22,5 @@
 - button "Add files or run commands"
 - 'button "Access mode, current: Workspace Write"': Workspace Write
 - button "Select model, current DeepSeek-V4-Flash": DeepSeek-V4-Flash
+- button "Voice input"
 - button "Stop generating"

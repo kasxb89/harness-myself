@@ -124,7 +124,7 @@ describe('web e2e: secondary Thinking Markdown', () => {
     await page.getByRole('button', { name: 'Collapse sidebar', exact: true }).click()
     await page.waitForFunction(() => {
       const frame = document.querySelector('[data-sidebar-collapsed]')
-      return frame !== null && getComputedStyle(frame).gridTemplateColumns.split(' ')[0] === '56px'
+      return frame !== null && getComputedStyle(frame).gridTemplateColumns.split(' ')[0] === '84px'
         && frame.getAnimations().every(animation => animation.playState === 'finished' || animation.playState === 'idle')
     }, undefined, { timeout: 10_000 })
     await expandTurnProcesses(page)

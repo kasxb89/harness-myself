@@ -213,10 +213,14 @@ it.skipIf(webSnapshotMode() === 'record')('guides voice setup, records from stan
   await page.getByRole('button', { name: 'Chat', exact: true }).click()
   await page.getByRole('button', { name: 'New session', exact: true }).filter({ hasText: 'New Session' }).click()
   await mic.waitFor()
-  const micBox = await mic.boundingBox(), modelBox = await page.getByRole('button', { name: /^Select model, current/ }).boundingBox()
-  const sendBox = await page.getByRole('button', { name: 'Send message', exact: true }).boundingBox()
-  expect(micBox!.x).toBeGreaterThan(modelBox!.x)
-  expect(micBox!.x).toBeLessThan(sendBox!.x)
+  await expect.poll(async () => {
+    const [micBox, modelBox, sendBox] = await Promise.all([
+      mic.boundingBox(), page.getByRole('button', { name: /^Select model, current/ }).boundingBox(),
+      page.getByRole('button', { name: 'Send message', exact: true }).boundingBox(),
+    ])
+    return micBox === null || modelBox === null || sendBox === null
+      ? null : [micBox.x > modelBox.x, micBox.x < sendBox.x]
+  }).toEqual([true, true])
   await input.fill(prefix)
   await mic.click()
   await page.getByRole('button', { name: 'Stop and transcribe', exact: true }).waitFor()

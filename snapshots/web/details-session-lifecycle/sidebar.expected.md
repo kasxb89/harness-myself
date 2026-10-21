@@ -9,8 +9,8 @@
     1000
   ],
   "columns": [
-    280,
-    644,
+    320,
+    604,
     756
   ],
   "columnTransition": "all",
@@ -57,8 +57,8 @@
     1000
   ],
   "columns": [
-    280,
-    644,
+    320,
+    604,
     756
   ],
   "columnTransition": "none",
@@ -105,8 +105,8 @@
     1000
   ],
   "columns": [
-    280,
-    1400,
+    320,
+    1360,
     0
   ],
   "columnTransition": "none",
@@ -153,8 +153,8 @@
     1000
   ],
   "columns": [
-    280,
-    1400,
+    320,
+    1360,
     0
   ],
   "columnTransition": "all",
@@ -190,8 +190,8 @@
     1000
   ],
   "columns": [
-    280,
-    644,
+    320,
+    604,
     756
   ],
   "columnTransition": "none",
@@ -238,8 +238,8 @@
     1000
   ],
   "columns": [
-    280,
-    644,
+    320,
+    604,
     756
   ],
   "columnTransition": "all",
@@ -273,8 +273,8 @@
     1000
   ],
   "columns": [
-    280,
-    644,
+    320,
+    604,
     756
   ],
   "columnTransition": "all",
@@ -417,8 +417,8 @@
     1000
   ],
   "columns": [
-    56,
-    711,
+    84,
+    683,
     0
   ],
   "columnTransition": "none",

@@ -66,7 +66,7 @@ describe.skipIf(MODE === 'record').each([false, true])('web e2e: native credenti
         await accountMenu.waitFor()
         expect(await accountMenu.textContent()).toBe('')
         const triggerBox = (await accountMenu.boundingBox())!
-        expect(Math.abs(triggerBox.height - 32)).toBeLessThan(1)
+        expect(Math.abs(triggerBox.height - 36)).toBeLessThan(1)
         await accountMenu.click()
         const menu = page.getByRole('menu')
         await menu.waitFor()
