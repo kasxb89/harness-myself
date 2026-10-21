@@ -1,6 +1,7 @@
 /** Browser-safe, credential-free projections of retained chat creation projects. @module */
 
 import type { Branded } from '@deepseek-ai/dsh-brand'
+import type { ArtifactOrigin } from '@deepseek-ai/dsh-artifacts-index/types'
 
 /** Owner-issued opaque project identifier. */
 export type CreativeProjectId = Branded<'CreativeProjectId'>
@@ -12,6 +13,20 @@ export type CreativeKind = 'image' | 'video'
 
 /** Committed operation state; interrupted never implies an active background job. */
 export type CreativeStatus = 'planned' | 'running' | 'saving' | 'editing' | 'completed' | 'failed' | 'cancelled' | 'interrupted' | 'unknown'
+
+/** Credential-free image submission identity retained for querying the original task. */
+export interface CreativeImageReceipt {
+  readonly route: string
+  readonly model: string
+  readonly phase: 'submitting' | 'accepted' | 'completed'
+  readonly taskId?: string
+  readonly requestId?: string
+  readonly backendFingerprint: string
+  readonly origin?: ArtifactOrigin
+}
+
+/** Credential-free single-video task identity; recovery uses its original route and backend. */
+export type CreativeVideoReceipt = CreativeImageReceipt
 
 /** A retained character description supplied through the logged planning tool. */
 export interface CreativeCharacter {
@@ -89,7 +104,10 @@ export type CreativeShotPlan = Omit<CreativeShotView, 'status' | 'outputs' | 'ac
 export type CreativePlanChange =
   | { readonly kind: 'shot'; readonly id: string; readonly patch: Partial<Omit<CreativeShotPlan, 'id' | 'order'>> }
   | { readonly kind: 'reorder'; readonly shotIds: readonly string[] }
-  | { readonly kind: 'character'; readonly value: CreativeCharacter }
+  | { readonly kind: 'character'
+    readonly value: CreativeCharacter
+    /** Newly uploaded image materials saved atomically with their character reference bindings. */
+    readonly assets?: readonly CreativeAsset[] }
   | { readonly kind: 'asset'; readonly value: CreativeAsset }
   | { readonly kind: 'remove-character' | 'remove-asset' | 'remove-shot'; readonly id: string }
   | { readonly kind: 'add-shot'; readonly value: CreativeShotPlan }
@@ -104,6 +122,10 @@ export interface CreativeTaskView {
   readonly videoProjectId?: string
   readonly outputs: readonly CreativeOutput[]
   readonly errorCode?: string
+  readonly imageReceipt?: CreativeImageReceipt
+  readonly videoReceipt?: CreativeVideoReceipt
+  /** Querying the original task is available without another paid submission. */
+  readonly canQuery?: boolean
   readonly completedShots: number
   readonly totalShots: number
 }

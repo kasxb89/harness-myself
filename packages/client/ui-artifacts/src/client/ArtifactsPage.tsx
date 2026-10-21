@@ -22,8 +22,9 @@ import {
   Pill,
   TextShimmer,
 } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { ArtifactErrorCode, ArtifactListing, ArtifactResult, ArtifactStorage, ArtifactWorkspace, RootDirectoryListing, TrashedArtifact, WorkspaceListing } from './api.ts'
+import type { ArtifactErrorCode, ArtifactListing, ArtifactOrigin, ArtifactResult, ArtifactStorage, ArtifactWorkspace, RootDirectoryListing, TrashedArtifact, WorkspaceListing } from './api.ts'
 import { ArtifactFinder } from './ArtifactFinder.tsx'
+import { ArtifactChatLink } from './ArtifactChatLink.tsx'
 import { ArtifactPreview } from './ArtifactPreview.tsx'
 import css from './ArtifactsPage.module.css'
 
@@ -59,6 +60,9 @@ export interface ArtifactsInjected {
     root: string, directory: string, signal: AbortSignal, offset?: number,
   ) => Promise<ArtifactResult<RootDirectoryListing>>
   readonly readDesktop: () => Promise<boolean>
+  readonly readOrigin: (entry: ArtifactEntry, signal: AbortSignal) => Promise<ArtifactResult<ArtifactOrigin | null>>
+  /** Revalidate the selected source, load its history and switch to the exact generating Turn. */
+  readonly returnToChat: (entry: ArtifactEntry) => Promise<ArtifactResult<null>>
   /** Mutations outlive the page, are never retried automatically, and publish shell notices. */
   readonly saveStorage: (directory: string, revision: number) => Promise<ArtifactResult<ArtifactStorage>>
   readonly rename: (entry: ArtifactEntry, name: string) => Promise<ArtifactResult<ArtifactEntry>>
@@ -521,6 +525,8 @@ export function ArtifactsPage(props: ArtifactsPageProps): ReactNode {
                 </details>
               </div>
               <div className={css.fileActions}>
+                <ArtifactChatLink key={entryKey(selected)} entry={selected}
+                  readOrigin={props.readOrigin} returnToChat={props.returnToChat} t={t} />
                 {canReveal && <Button size="sm" disabled={pending || opening} onClick={() => { void reveal(selected) }}>{t('workspace.reveal')}</Button>}
                 <Button size="sm" icon={<IconEditOutlineRegular />} disabled={pending || uncertain}
                   onClick={() => { setDialog({ kind: 'rename', entry: selected }) }}>{t('rename.action')}</Button>

@@ -75,3 +75,13 @@ export function secondsUntil(iso: string): number {
   if (Number.isNaN(target)) return 0
   return Math.max(0, Math.floor((target - Date.now()) / 1000))
 }
+
+/**
+ * Create a phone request identity containing 256 random bits before dispatch.
+ * @param prefix - Label for the SMS or session operation.
+ * @returns a printable identifier safe for durable retries.
+ */
+export function newPhoneKey(prefix: string): string {
+  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(32))
+  return `${prefix}-${Array.from(bytes, value => value.toString(16).padStart(2, '0')).join('')}`
+}

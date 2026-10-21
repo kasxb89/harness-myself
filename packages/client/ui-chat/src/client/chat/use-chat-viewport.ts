@@ -328,6 +328,43 @@ export class ChatViewport {
   }
 
   /**
+   * Align an exact loaded Node without substituting another message.
+   * @param key - Stable Chat Node identity supplied by the target's loaded location index.
+   * @param turn - Verified owning Turn.
+   * @returns Actual landing, or null when the Node is not currently visible.
+   */
+  scrollToNode(key: string, turn: number): ViewportLanding | null {
+    const row = this.anchor(key, 'node')
+    if (row === null) return null
+    const body = row.closest<HTMLElement>('[data-step-process-body]')
+    if (body !== null) {
+      const metrics = scrollMetrics(body)
+      const top = row.getBoundingClientRect().top - body.getBoundingClientRect().top
+      const follow = ScrollFollow.forElement(body)
+      if (follow === undefined) body.scrollTop = Math.max(0, Math.min(metrics.floor, metrics.top + top))
+      else { follow.jump(body, metrics, metrics.top + top); follow.setFollowing(false) }
+    }
+    return this.align(row, 24, turn)
+  }
+
+  /**
+   * Request existing searchable-disclosure owners to reveal an exact retained Node and its ancestors.
+   * @param key - Exact Chat Node identity, including currently collapsed group members.
+   * @returns Whether the Node exists in the mounted flow.
+   */
+  revealNode(key: string): boolean {
+    const list = this.elements?.list
+    if (list === undefined) return false
+    const row = [...list.querySelectorAll<HTMLElement>('[data-chat-node-key]')]
+      .find(candidate => candidate.dataset.chatNodeKey === key)
+    if (row === undefined) return false
+    for (let element: HTMLElement | null = row; element !== null && list.contains(element); element = element.parentElement) {
+      element.dispatchEvent(new Event('beforematch'))
+    }
+    return true
+  }
+
+  /**
    * Align the nearest available fallback for an unavailable turn anchor.
    * @param turn - minimum turn number for a mounted fallback row.
    * @returns the fallback landing, or null when no eligible row exists.

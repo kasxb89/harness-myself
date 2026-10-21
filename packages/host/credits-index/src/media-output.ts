@@ -3,8 +3,10 @@ import { constants } from 'node:fs'
 import { copyFile, mkdir, open, unlink, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
-import type { ArtifactStorageService } from '@deepseek-ai/dsh-artifacts-index'
+import type { ArtifactOrigin, ArtifactStorageService } from '@deepseek-ai/dsh-artifacts-index'
 import { VideoProjectError } from './video-project.ts'
+
+export { artifactOriginOf, parseArtifactOrigin } from './artifact-origin.ts'
 
 /** Operation-local output methods retain the captured service and directory. */
 export interface CapturedMediaOutput {
@@ -19,11 +21,14 @@ export interface CapturedMediaOutput {
  * @param storage - Optional trusted Host output service.
  * @param legacyDirectory - Existing private-media output for deployments without that service.
  * @param signal - Cancellation for preparation and result saving.
+ * @param origin - Exact generating tool location captured before any asynchronous generation work.
  * @returns Writers bound to this operation's validated destination.
  */
 export async function captureMediaOutput(
   storage: ArtifactStorageService | undefined, legacyDirectory: string, signal: AbortSignal,
+  origin?: ArtifactOrigin,
 ): Promise<CapturedMediaOutput> {
+  const capturedOrigin = origin === undefined ? undefined : Object.freeze({ ...origin })
   signal.throwIfAborted()
   let directory: string
   try {
@@ -45,7 +50,8 @@ export async function captureMediaOutput(
     async write(filename, bytes) {
       try {
         signal.throwIfAborted()
-        if (storage !== undefined) return await storage.write({ destination, filename, bytes, signal })
+        if (storage !== undefined) return await storage.write({ destination, filename, bytes, signal,
+          ...capturedOrigin === undefined ? {} : { origin: capturedOrigin } })
         const path = join(directory, filename)
         await writeFile(path, bytes, { flag: 'wx', mode: 0o600, signal })
         return { path }
@@ -57,7 +63,8 @@ export async function captureMediaOutput(
     async publish(sourcePath, filename) {
       try {
         signal.throwIfAborted()
-        if (storage !== undefined) return await storage.publish({ destination, sourcePath, filename, signal })
+        if (storage !== undefined) return await storage.publish({ destination, sourcePath, filename, signal,
+          ...capturedOrigin === undefined ? {} : { origin: capturedOrigin } })
         const path = join(directory, filename)
         if (sourcePath !== path) await copyFile(sourcePath, path, constants.COPYFILE_EXCL)
         signal.throwIfAborted()

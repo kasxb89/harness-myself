@@ -20,7 +20,10 @@ import * as JsonStorage from '@deepseek-ai/dsh-storage-json'
 import * as StorageDomain from '@deepseek-ai/dsh-storage-domain'
 import type { OfficeToPdfRequest, OfficeToPdfResult } from '@deepseek-ai/dsh-office-to-pdf'
 import * as Artifacts from '../src/index.ts'
+import { SessionId, SessionSeq } from '@deepseek-ai/dsh-session/types'
+import { ToolCallId } from '@deepseek-ai/dsh-llm/brand'
 import { validName, qualified } from '../src/storage.ts'
+import { originPath } from '../src/origin.ts'
 
 const fixtures: { ctx: Context; directory: string }[] = []
 afterEach(async () => {
@@ -138,6 +141,79 @@ function provideConverter(ctx: Context, convert: (request: OfficeToPdfRequest, s
 }
 
 describe('artifact storage through the real Loader and HTTP routes', () => {
+  it('records only new authorized presentation appends, preserves existing generating chats and ignores seeded history', async () => {
+    const f = await boot(undefined, { workspaces: true })
+    const workspace = await f.ctx.workspaceRegistry.create(f.custom)
+    const query = async (path: string, workspaceId?: string) => `origin?${new URLSearchParams({ path,
+      ...Object.fromEntries(Object.entries(await f.version(path)).map(([key, value]) => [key, String(value)])),
+      ...workspaceId === undefined ? {} : { workspaceId } })}`
+    const document = join(f.custom, 'document.txt')
+    const oldDocument = join(f.custom, 'history.txt')
+    const outside = join(f.directory, 'outside.txt')
+    for (const path of [document, oldDocument, outside]) await writeFile(path, 'document')
+    const session = f.ctx.sessions.create(SessionId('present-source'), { meta: { cwd: f.custom } })
+    const { seq } = session.append('deliverables/presented', { turn: 1, callId: ToolCallId('present-one'), files: [{ path: 'document.txt' }] })
+    const origin = { sessionId: session.id, turn: 1, eventSeq: seq, toolCallId: 'present-one' }
+    await vi.waitFor(async () => { expect(await f.json(await query(document, String(workspace.id)))).toEqual({ origin }) })
+    f.ctx.sessions.create(SessionId('old-history'), { meta: { cwd: f.custom }, seed: [{ type: 'deliverables/presented',
+      seq: SessionSeq(0), time: 0, data: { turn: 1, callId: ToolCallId('old-present'), files: [{ path: oldDocument }] } }] })
+    expect(await f.json(await query(oldDocument, String(workspace.id)))).toEqual({ origin: null })
+    const destination = await f.ctx.artifactStorage.capture(signal())
+    const generatingOrigin = { sessionId: SessionId('original-generator'), turn: 4, toolCallId: ToolCallId('generate') }
+    const generated = await f.ctx.artifactStorage.write({ destination, filename: 'generated.txt', bytes: Uint8Array.of(1), origin: generatingOrigin, signal: signal() })
+    const marker = join(f.custom, 'marker.txt')
+    await writeFile(marker, 'marker')
+    const other = f.ctx.sessions.create(SessionId('other-chat'), { meta: { cwd: f.custom } })
+    const warning = vi.spyOn(f.ctx.logger, 'warn')
+    other.append('deliverables/presented', { turn: 2, callId: ToolCallId('present-two'), files: [
+      { path: document }, { path: generated.path }, { path: outside }, { path: marker },
+    ] })
+    await vi.waitFor(async () => {
+      expect(object((await f.json(await query(marker, String(workspace.id)))).origin).sessionId).toBe(other.id)
+    })
+    expect(await f.json(await query(document, String(workspace.id)))).toEqual({ origin })
+    expect(await f.json(await query(generated.path))).toEqual({ origin: generatingOrigin })
+    await expect(readFile(originPath(f.state, await stat(outside)))).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(warning).toHaveBeenCalled()
+    expect(await readFile(outside, 'utf8')).toBe('document')
+    warning.mockRestore()
+    const nested = join(f.custom, 'nested.txt')
+    await writeFile(nested, 'nested')
+    other.append('tool/ptc-dispatch-start', { rootCallId: ToolCallId('run-code'), parentCallId: ToolCallId('run-code'),
+      subCallId: ToolCallId('present-child'), name: 'present', arguments: { files: [{ path: nested }] } })
+    other.append('deliverables/presented', { turn: 2, callId: ToolCallId('present-child'), files: [{ path: nested }] })
+    await vi.waitFor(async () => { expect(object((await f.json(await query(nested, String(workspace.id)))).origin).toolCallId).toBe('run-code') })
+  })
+
+  it('retains exact generating locations across rename, recycle, restore and restart while refusing replaced or legacy files', async () => {
+    const f = await boot()
+    const destination = await f.ctx.artifactStorage.capture(signal())
+    const origin = { sessionId: SessionId('source-chat'), turn: 3, eventSeq: SessionSeq(12), toolCallId: ToolCallId('image-call') }
+    const { path } = await f.ctx.artifactStorage.write({ destination, filename: 'source.png', bytes: Uint8Array.of(1, 2), origin, signal: signal() })
+    const query = async (selected: string) => `origin?${new URLSearchParams({ path: selected,
+      ...Object.fromEntries(Object.entries(await f.version(selected)).map(([key, value]) => [key, String(value)])) })}`
+    expect(await f.json(await query(path))).toEqual({ origin })
+    expect((await f.request(await query(path), undefined, { authenticated: false })).status).toBe(401)
+    const renamed = object((await f.json('rename', { path, name: 'renamed.png', expected: await f.version(path) })).item).path as string
+    expect(await f.json(await query(renamed))).toEqual({ origin })
+    const { trashId } = await f.json('trash', { path: renamed, expected: await f.version(renamed) })
+    await f.json('restore', { id: trashId })
+    expect(await f.json(await query(renamed))).toEqual({ origin })
+    await f.ctx.fiber.dispose()
+    fixtures.splice(fixtures.findIndex(value => value.ctx === f.ctx), 1)
+    const restarted = await boot(f.directory)
+    expect(await restarted.json(await query(renamed))).toEqual({ origin })
+    const selected = await query(renamed)
+    await writeFile(renamed, 'different output')
+    expect(await restarted.json(selected)).toEqual({ code: 'ARTIFACT_STALE' })
+    expect(await restarted.json(await query(renamed))).toEqual({ origin: null })
+    const legacy = join(f.output, 'source.png')
+    await writeFile(legacy, Uint8Array.of(1, 2))
+    expect(await restarted.json(await query(legacy))).toEqual({ origin: null })
+    const published = await restarted.ctx.artifactStorage.publish({ destination, sourcePath: legacy, filename: 'copy.png', origin, signal: signal() })
+    expect(await restarted.json(await query(published.path))).toEqual({ origin })
+  })
+
   it('creates the default, persists changed directory and historical roots, and keeps captured writes in their original directory', async () => {
     const f = await boot()
     expect(await f.json('storage')).toEqual({ directory: f.output, defaultDirectory: f.output, revision: 0, roots: [f.output] })

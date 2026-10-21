@@ -13,6 +13,7 @@ import type { VideoProjectOptions } from './video-project-types.ts'
 import { CreativeError, type CreativeOperation } from './creative-store.ts'
 import { creativeOwner } from './creative-tools.ts'
 import { resolveCreationVideoInput } from './creation-plan-execution.ts'
+import { artifactOriginOf } from './artifact-origin.ts'
 
 declare module '@deepseek-ai/dsh-jobs/view' {
   interface JobKindMap {
@@ -196,7 +197,8 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
           ...args.reference_videos === undefined ? {} : { referenceVideos: args.reference_videos },
           ...args.reference_audios === undefined ? {} : { referenceAudios: args.reference_audios },
         }, args.plan_id, args.shot_ids)
-        const manifest = await prepareVideoProject(options, input, session.id, workspaceRoot, provider, editor, signal)
+        const manifest = await prepareVideoProject(options, input, session.id, workspaceRoot,
+          provider, editor, signal, artifactOriginOf(exec))
         creation = await options.creative?.begin(creativeOwner(exec, provider.identity), {
           kind: 'video', prompt: input.prompt, model: manifest.model,
           shots: manifest.segments.map(segment => ({ prompt: segment.prompt, durationSeconds: segment.durationSeconds })),
@@ -301,11 +303,12 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
         }))
         for (const clip of clips) await editor.probe(clip.path, signal)
         const publicationDirectory = (await options.publication?.capture(signal))?.directory
+        const origin = artifactOriginOf(exec)
         const outputPath = join(root, `edit-${randomUUID()}`, 'final.mp4')
         const jobId = start(exec, 'video-edit', `剪辑 ${String(clips.length)} 个视频片段`, async (job, signal) => {
           try {
             const result = await editor.compose({ clips, outputPath, ...args.total_duration_seconds === undefined ? {} : { totalDurationSeconds: args.total_duration_seconds }, signal, onProgress: (progress) =>{  job.updateProgress(`剪辑 ${String(progress.completedClips)}/${String(progress.totalClips)}`) } })
-            const finalPath = await publishVideoOutput(options, result.path, publicationDirectory, signal)
+            const finalPath = await publishVideoOutput(options, result.path, publicationDirectory, signal, origin)
             const value: VideoToolResult = { status: 'succeeded', final_path: finalPath, duration_seconds: result.durationSeconds, message: '剪辑视频已实际保存。请调用 present 展示 final_path，并在回复中提供产物链接。' }
             return { status: 'completed', result: JSON.stringify(value) }
           } catch (error) {

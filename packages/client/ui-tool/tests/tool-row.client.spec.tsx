@@ -638,8 +638,43 @@ describe('GenericToolCard', () => {
     const text = JSON.stringify({ status: 'running', code: 'TIMEOUT', task_id: 'known-task' })
     const block = result({ call: { name: 'generate_video', argsRaw: '{}' }, content: [{ type: 'text', text }] })
     const view = render(<GenericToolCard {...props('generate_video', block)} />)
-    expect(view.getByText(zh['error.mediaOutcomeUnknown'])).toBeTruthy()
+    expect(view.getByText(zh['error.mediaTaskPending'])).toBeTruthy()
+    expect(view.container.querySelector('[data-state="running"]')).not.toBeNull()
+    expect(view.container.querySelector('[data-state="error"]')).toBeNull()
     expect(block.content).toEqual([{ type: 'text', text }])
+  })
+
+  it.each(['generate_image', 'generate_video', 'query_image_task', 'query_video_task'])(
+    'keeps an accepted %s receipt pending without leaking provider diagnostics', (toolName) => {
+      const text = JSON.stringify({ status: 'pending', submission_state: 'pending', task_id: 'known-task',
+        code: 'POLL_TRANSPORT', message: 'private provider diagnostic' })
+      const block = result({ call: { name: toolName, argsRaw: '{}' }, content: [{ type: 'text', text }] })
+      const view = render(<GenericToolCard {...props(toolName, block)} />)
+      expect(view.getByText(zh['error.mediaTaskPending'])).toBeTruthy()
+      fireEvent.click(view.getByRole('button'))
+      expect(view.getAllByText(zh['error.mediaTaskPending'])).toHaveLength(2)
+      expect(view.container.querySelector('[data-state="running"]')).not.toBeNull()
+      expect(view.container.textContent).not.toContain('private provider diagnostic')
+      expect(view.queryByText(zh['error.serverBusy'])).toBeNull()
+      expect(block.content).toEqual([{ type: 'text', text }])
+    },
+  )
+
+  it('does not claim acceptance without a task receipt or hide a terminal provider failure', () => {
+    const pending = result({ call: { name: 'generate_image', argsRaw: '{}' }, content: [
+      { type: 'text', text: JSON.stringify({ status: 'pending', task_id: ' ' }) },
+    ] })
+    const view = render(<GenericToolCard {...props('generate_image', pending)} />)
+    expect(view.getByText(zh['error.mediaOutcomeUnknown'])).toBeTruthy()
+    expect(view.queryByText(zh['error.mediaTaskPending'])).toBeNull()
+    cleanup()
+    const failed = result({ call: { name: 'query_video_task', argsRaw: '{}' }, content: [
+      { type: 'text', text: JSON.stringify({ status: 'failed', submission_state: 'pending', task_id: 'known-task', code: 'GENERATION_FAILED' }) },
+    ] })
+    const failedView = render(<GenericToolCard {...props('query_video_task', failed)} />)
+    expect(failedView.getByText(zh['error.serverBusy'])).toBeTruthy()
+    expect(failedView.container.querySelector('[data-state="error"]')).not.toBeNull()
+    expect(failedView.queryByText(zh['error.mediaTaskPending'])).toBeNull()
   })
 
   it('keeps a thrown unconfirmed submission distinct from a known preflight rejection', () => {

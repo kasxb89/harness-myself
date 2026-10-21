@@ -92,3 +92,11 @@
   line-height: 18px;
   text-underline-offset: 3px;
 }
+
+.originStatus {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+}

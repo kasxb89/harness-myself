@@ -4,8 +4,9 @@ import { copyFile, link, lstat, mkdir, open, readFile, readdir, realpath, rename
 import { constants } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep, win32 } from 'node:path'
-import type { ArtifactDestination, ArtifactPublishRequest, ArtifactStorageInfo, ArtifactStorageService, ArtifactWriteRequest } from './types.ts'
+import type { ArtifactDestination, ArtifactOrigin, ArtifactPublishRequest, ArtifactStorageInfo, ArtifactStorageService, ArtifactWriteRequest } from './types.ts'
 import type { ArtifactWorkspaceScope, WorkspaceAccess } from './workspace.ts'
+import { originPath, originRecord, readOrigin } from './origin.ts'
 
 /** Safe business failure exposed by the artifact HTTP owner. */
 export class ArtifactError extends Error {
@@ -152,6 +153,7 @@ export class ArtifactStore extends Service implements ArtifactStorageService {
     const [directory, stateDirectory] = await Promise.all([realpath(defaultPath), realpath(statePath)])
     if (contained(directory, stateDirectory) || contained(stateDirectory, directory)) throw new ArtifactError('ARTIFACT_STORAGE_INVALID', 400, 'Output and private state must be separate directories')
     await mkdir(join(stateDirectory, 'trash'), { mode: 0o700, recursive: true })
+    await mkdir(join(stateDirectory, 'origins'), { mode: 0o700, recursive: true })
     let prefs: Preferences = { version: 1, directory, revision: 0, roots: [directory] }
     try {
       const value: unknown = JSON.parse(await readFile(join(stateDirectory, 'storage.json'), 'utf8'))
@@ -275,6 +277,7 @@ export class ArtifactStore extends Service implements ArtifactStorageService {
   }
   private output(
     destination: ArtifactDestination, filename: string, signal: AbortSignal, prepare: (temporary: string) => Promise<void>,
+    origin?: ArtifactOrigin,
   ): Promise<{ path: string }> {
     return this.track(async () => {
       signal.throwIfAborted()
@@ -287,6 +290,7 @@ export class ArtifactStore extends Service implements ArtifactStorageService {
         await prepare(temporary)
         signal.throwIfAborted()
         const info = await lstat(temporary)
+        if (origin !== undefined) await atomicJson(originPath(this.stateDirectory, info), originRecord(info, origin))
         await exclusiveMove(temporary, target, info)
         return { path: target }
       } finally { await unlink(temporary).catch(() => {}) }
@@ -297,6 +301,43 @@ export class ArtifactStore extends Service implements ArtifactStorageService {
       const handle = await open(temporary, 'wx', 0o600)
       try { await handle.writeFile(request.bytes, { signal: request.signal }); await handle.sync() }
       finally { await handle.close() }
+    }, request.origin)
+  }
+  /**
+   * Read the generating location of the exact selected file version.
+   * @param path - Authorized artifact path; names never establish an association.
+   * @param expected - Listed file version, rejected when it has changed.
+   * @param scope - Optional current Workspace authorization.
+   * @returns Persisted generating location or null for files without a matching record.
+   */
+  origin(path: string, expected: ExpectedArtifact, scope?: ArtifactWorkspaceScope): Promise<ArtifactOrigin | null> {
+    return this.track(async () => {
+      const source = await this.source(path, scope)
+      expectedVersion(source.info, expected)
+      let origin: ArtifactOrigin | null
+      try { origin = await readOrigin(this.stateDirectory, source.info) }
+      catch { throw new ArtifactError('ARTIFACT_ORIGIN_UNAVAILABLE', 409, 'The generating conversation record could not be read') }
+      if (!sameFile(source.info, await lstat(source.path))) throw new ArtifactError('ARTIFACT_STALE', 409, 'The file changed while reading its generating location')
+      return origin
+    })
+  }
+  /**
+   * Associate a newly appended presentation with its current authorized file, preserving an existing generating source.
+   * @param path - Exact current file, resolved from the presenting Session's effective directory.
+   * @param origin - Newly committed presentation event and tool coordinates.
+   * @param signal - Host lifetime, checked before admitting the private record write.
+   * @param scope - Current Workspace authorization when the file is outside managed output roots.
+   * @returns Completion after authorization and file identity have been rechecked; file bytes are never modified.
+   */
+  rememberOrigin(path: string, origin: ArtifactOrigin, signal: AbortSignal, scope?: ArtifactWorkspaceScope): Promise<void> {
+    return this.serialize(async () => {
+      signal.throwIfAborted()
+      const source = await this.source(path, scope)
+      if (await readOrigin(this.stateDirectory, source.info) !== null) return
+      signal.throwIfAborted()
+      await atomicJson(originPath(this.stateDirectory, source.info), originRecord(source.info, origin))
+      const current = await this.source(path, scope)
+      if (!sameFile(source.info, current.info)) throw new ArtifactError('ARTIFACT_STALE', 409, 'Presented file changed while recording its source')
     })
   }
   publish(request: ArtifactPublishRequest): Promise<{ path: string }> {
@@ -305,7 +346,7 @@ export class ArtifactStore extends Service implements ArtifactStorageService {
       if (!source.isFile() || source.isSymbolicLink()) throw new ArtifactError('ARTIFACT_PATH_INVALID', 400, 'Publication source must be a regular file')
       await copyFile(request.sourcePath, temporary, constants.COPYFILE_EXCL)
       if (!sameFile(source, await lstat(request.sourcePath))) throw new ArtifactError('ARTIFACT_STALE', 409, 'Publication source changed')
-    })
+    }, request.origin)
   }
   private async source(path: string, scope?: ArtifactWorkspaceScope): Promise<{
     path: string

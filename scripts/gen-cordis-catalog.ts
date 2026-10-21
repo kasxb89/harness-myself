@@ -192,6 +192,7 @@ export const SERVICE_WALK_EXEMPTIONS: Record<string, string> = {
   commandUi: 'client-side interface-typed browser service — packages/client/ui-commands/README.md owns the API',
   feedbackUi: 'client-side feedback dialog service — packages/client/ui-message-feedback/README.md owns the API',
   conversation: 'client-side interface-typed browser service — packages/client/ui-conversation/README.md owns the API',
+  conversationViews: 'client-side interface-typed View navigation — packages/client/ui-conversation/README.md owns the API',
   layout: 'client-side interface-typed browser service — packages/client/ui-layout/README.md owns the API',
   creationContent: 'client-side interface-typed publication reader — packages/client/creation-content/README.md owns the API',
   creditsSession: 'client-side observable account snapshot — packages/client/ui-credits/README.md owns the API',

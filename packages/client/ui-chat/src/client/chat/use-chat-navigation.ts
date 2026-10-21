@@ -90,6 +90,28 @@ export class ChatNavigation {
     this.request(jump)
   }
 
+  /**
+   * Land on one already loaded generating card without a nearest-Turn fallback.
+   * @param key - Exact Chat Node key.
+   * @param turn - Verified owning Turn.
+   * @returns Whether the exact card was visible and aligned.
+   */
+  readonly navigateToNode = (key: string, turn: number): boolean => {
+    this.cancel()
+    this.reading.pauseFollowing()
+    const landing = this.viewport.scrollToNode(key, turn)
+    if (landing === null) return false
+    this.reading.acceptNavigation(landing)
+    return true
+  }
+
+  /**
+   * Ask the existing Turn and group disclosure owners to reveal one loaded generating card.
+   * @param key - Exact loaded Chat Node key.
+   * @returns Whether the card is mounted, including under collapsed disclosures.
+   */
+  readonly revealNode = (key: string): boolean => this.viewport.revealNode(key)
+
   /** Request one older page while retaining the current semantic position. */
   readonly loadEarlier = (): void => {
     this.cancel()

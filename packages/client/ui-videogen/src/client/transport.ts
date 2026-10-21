@@ -2,6 +2,11 @@
 
 /** The existing local media routes return an envelope for business failures. */
 export interface Envelope<T> {
+  readonly plan_id?: string | null
+  readonly operation_id?: string | null
+  readonly task_id?: string | null
+  readonly request_id?: string | null
+  readonly submission_state?: 'not-submitted' | 'pending' | 'unknown' | 'failed' | 'completed' | null
   readonly ok: boolean
   readonly code?: string | null
   readonly message?: string | null

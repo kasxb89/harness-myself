@@ -3,7 +3,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ArtifactStorageService } from '@deepseek-ai/dsh-artifacts-index'
-import { captureMediaOutput } from '../src/media-output.ts'
+import { SessionId, SessionSeq } from '@deepseek-ai/dsh-session/types'
+import { ToolCallId } from '@deepseek-ai/dsh-llm/brand'
+import { artifactOriginOf, captureMediaOutput, parseArtifactOrigin } from '../src/media-output.ts'
 
 let directory: string | undefined
 afterEach(async () => {
@@ -12,6 +14,46 @@ afterEach(async () => {
 })
 
 describe('operation-local media output', () => {
+  it('captures immutable source coordinates before the output check and carries them through every write and publication', async () => {
+    const origin = { sessionId: SessionId('generating-chat'), turn: 3, eventSeq: SessionSeq(12), toolCallId: ToolCallId('generate') }
+    let release!: (value: { directory: string }) => void
+    const write = vi.fn<ArtifactStorageService['write']>(async () => ({ path: '/saved/image.png' }))
+    const publish = vi.fn<ArtifactStorageService['publish']>(async () => ({ path: '/saved/video.mp4' }))
+    const storage: ArtifactStorageService = { capture: () => new Promise((resolve) => { release = resolve }),
+      validate: async () => {}, write, publish }
+    const preparing = captureMediaOutput(storage, '/legacy', new AbortController().signal, origin)
+    origin.turn = 99
+    release({ directory: '/saved' })
+    const output = await preparing
+    await output.write('image.png', Uint8Array.of(1))
+    await output.publish('/download/video.mp4', 'video.mp4')
+    for (const call of [write.mock.calls[0]![0], publish.mock.calls[0]![0]]) {
+      expect(call.origin).toEqual({ ...origin, turn: 3 })
+      expect(Object.isFrozen(call.origin)).toBe(true)
+    }
+  })
+
+  it('captures only the exact tool Agent open Turn and validates optional durable locations', () => {
+    const session = { id: SessionId('tool-chat') }
+    let boundary: { lastTurn: number; openTurnStartSeq: ReturnType<typeof SessionSeq> | null } | undefined =
+      { lastTurn: 2, openTurnStartSeq: SessionSeq(8) }
+    const stateOf = vi.fn(() => boundary)
+    const exec = { agent: { session, ctx: { get: () => ({ stateOf }) } }, rootCallId: ToolCallId('root') } as never
+    const origin = artifactOriginOf(exec)
+    expect(origin).toEqual({ sessionId: session.id, turn: 2, eventSeq: 8, toolCallId: 'root' })
+    expect(stateOf).toHaveBeenCalledWith(session, 'turnBoundary')
+    boundary = { lastTurn: 2, openTurnStartSeq: null }
+    expect(artifactOriginOf(exec)).toBeUndefined()
+    boundary = undefined
+    expect(artifactOriginOf(exec)).toBeUndefined()
+    expect(artifactOriginOf({} as never)).toBeUndefined()
+    expect(parseArtifactOrigin(undefined)).toBeUndefined()
+    expect(parseArtifactOrigin(origin, session.id)).toEqual(origin)
+    for (const value of [null, { ...origin, turn: -1 }, { ...origin, eventSeq: 1.5 }, { ...origin, toolCallId: '' }]) {
+      expect(parseArtifactOrigin(value)).toBeNull()
+    }
+    expect(parseArtifactOrigin(origin, 'another-chat')).toBeNull()
+  })
   it('keeps every result and local download in the captured destination while the user selects another one', async () => {
     directory = await mkdtemp(join(tmpdir(), 'dsh-media-output-'))
     const first = join(directory, 'first')

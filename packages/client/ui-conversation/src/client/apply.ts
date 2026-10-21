@@ -164,6 +164,8 @@ export function apply(ctx: Context, config: Config = Config({})): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-conversation: dictionaries')
   const t = ctx.locale.bind(NS)
   const conversationStore = createConversationStore()
+  const viewActions = new WeakMap<SessionBinding, BoundActions<typeof conversationStore>>()
+  const pendingViews = new WeakMap<SessionBinding, { view: string; focus: string }>()
   const conversationSettings = ctx.configForms.get<ConversationSettings>(CONVERSATION_SETTINGS_NAMESPACE)
   const submissionPolicy = new ComposerSubmissionPolicy(conversationSettings)
 
@@ -198,6 +200,17 @@ export function apply(ctx: Context, config: Config = Config({})): void {
     const active = resolveActiveView(viewTabs(), preferred)
     if (active !== undefined) uiConversation.binding(sessionId).activate(active.id)
   }
+  ctx.provide('conversationViews', {
+    open: (sessionId, view, focus) => {
+      const binding = sessions.binding(sessionId)
+      if (binding === undefined || !viewTabs().some(tab => tab.id === view)) return false
+      activateView(sessionId, view)
+      const actions = viewActions.get(binding)
+      if (actions === undefined) pendingViews.set(binding, { view, focus })
+      else actions.openView(view, focus)
+      return true
+    },
+  })
   const restoreView = (sessionId: SessionId): void => {
     activateView(sessionId, readConversationViewPreference(sessionId))
   }
@@ -377,6 +390,16 @@ export function apply(ctx: Context, config: Config = Config({})): void {
     },
     store: conversationStore,
     inject: (sessionId: SessionId, actions: BoundActions<typeof conversationStore>): ConversationSessionInjected => {
+      const binding = sessions.binding(sessionId)
+      if (binding !== undefined) {
+        viewActions.set(binding, actions)
+        const pending = pendingViews.get(binding)
+        if (pending !== undefined) {
+          pendingViews.delete(binding)
+          activateView(sessionId, pending.view)
+          actions.openView(pending.view, pending.focus)
+        }
+      }
       const openView = (view: string, focus: string): void => {
         if (!viewTabs().some(tab => tab.id === view)) return
         activateView(sessionId, view)

@@ -353,14 +353,14 @@ export interface Config {
 ## `@deepseek-ai/dsh-artifacts-index`
 
 - `inject`: `webServer`
-- `source`: [`packages/deliverables/artifacts-index/src/index.ts:41`](../packages/deliverables/artifacts-index/src/index.ts)
+- `source`: [`packages/deliverables/artifacts-index/src/index.ts:46`](../packages/deliverables/artifacts-index/src/index.ts)
 
 ```ts config-catalog
 /** Plugin config: which directories the panel browses and how far it walks. */
 export interface Config {
   /** Default generated output directory, created on first initialization when configured. */
   defaultOutputDirectory?: string
-  /** Private preferences and recovery records; never a browsing root. */
+  /** Private preferences, origin associations and recovery records; never a browsing root. */
   stateDirectory?: string
   /** Retained output directories shown alongside currently registered local Workspaces. */
   roots?: string[]
@@ -885,7 +885,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-credits-index`
 
 - `inject`: `webServer` · `tools`
-- `source`: [`packages/host/credits-index/src/index.ts:76`](../packages/host/credits-index/src/index.ts)
+- `source`: [`packages/host/credits-index/src/index.ts:81`](../packages/host/credits-index/src/index.ts)
 
 ```ts config-catalog
 /** Plugin config: platform origin, display rate, and where the session file lives. */
@@ -898,6 +898,22 @@ export interface Config {
   stateDir?: string
   /** Deadline for one platform call, in milliseconds. */
   timeoutMs?: number
+  /** Complete deadline for the single image submission, in milliseconds. */
+  imageSubmitTimeoutMs?: number
+  /** Complete image execution deadline, including polling and saving. */
+  imageTaskTimeoutMs?: number
+  /** Delay between read-only image status requests and transient query retries. */
+  imagePollIntervalMs?: number
+  /** Maximum consecutive transient query retries; image POSTs are never retried. */
+  imageQueryRetryLimit?: number
+  /** Complete single-video submission deadline. */
+  videoSubmitTimeoutMs?: number
+  /** Complete single-video polling and saving deadline. */
+  videoTaskTimeoutMs?: number
+  /** Delay between original-video task queries. */
+  videoPollIntervalMs?: number
+  /** Consecutive transient video-query retry budget; submissions are never retried. */
+  videoQueryRetryLimit?: number
   /** Loopback port of the model relay; 0 disables it. */
   relayPort?: number
   /** Credential reference the relay's bearer token lives under. */

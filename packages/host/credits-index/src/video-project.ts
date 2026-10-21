@@ -8,6 +8,8 @@ import { basename, dirname, join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import type { Branded } from '@deepseek-ai/dsh-brand'
 import type { JobHandle, JobOutcome } from '@deepseek-ai/dsh-jobs'
+import type { ArtifactOrigin } from '@deepseek-ai/dsh-artifacts-index'
+import { parseArtifactOrigin } from './artifact-origin.ts'
 import { VideoEditError, type VideoEditor } from './video-edit.ts'
 import { VideoRelayError } from './video-project-provider.ts'
 import type { VideoProjectIdentity, VideoProjectInput, VideoProjectOptions, VideoProjectProvider, VideoProjectRequest, VideoRequestValue } from './video-project-types.ts'
@@ -103,6 +105,8 @@ export interface VideoProjectManifest {
   outputDirectory: string
   /** Approved output captured before generation; absent in older workspace-only projects. */
   publicationDirectory?: string
+  /** Original generating tool location; absent in legacy records and retained unchanged during resume. */
+  origin?: ArtifactOrigin
   /** Verified workspace edit retained when publishing to the captured directory fails. */
   composedPath?: string
   /** Duration of the retained workspace edit, checked again before publishing on recovery. */
@@ -234,17 +238,20 @@ function segmentPrompt(input: VideoProjectInput, model: string, index: number, c
  * @param sourcePath - Verified private clip or successfully composed workspace video.
  * @param directory - Captured output; absence preserves legacy workspace-only delivery.
  * @param signal - Cancellation for the copy.
+ * @param origin - Original generating location retained before generation or local editing.
  * @returns Real published path, or the unchanged legacy workspace path.
  */
 export async function publishVideoOutput(
   options: VideoProjectOptions, sourcePath: string, directory: string | undefined, signal: AbortSignal,
+  origin?: ArtifactOrigin,
 ): Promise<string> {
   if (directory === undefined) return sourcePath
   const publication = options.publication
   if (publication === undefined) throw new VideoProjectError('ARTIFACT_STORAGE_UNAVAILABLE', '产物保存服务尚未准备好，本地成片仍保留，请恢复服务后继续保存，无需重新生成。')
   try {
     const filename = `${basename(dirname(sourcePath))}-${randomUUID()}-${basename(sourcePath)}`
-    return (await publication.publish({ destination: { directory }, sourcePath, filename, signal })).path
+    return (await publication.publish({ destination: { directory }, sourcePath, filename, signal,
+      ...origin === undefined ? {} : { origin: Object.freeze({ ...origin }) } })).path
   } catch (cause) {
     signal.throwIfAborted()
     throw new VideoProjectError('ARTIFACT_PUBLISH_FAILED', '产物保存失败，本地成片和已生成片段仍保留，请检查保存位置后继续项目，无需重新生成。', { cause })
@@ -260,7 +267,7 @@ async function publishSegment(options: VideoProjectOptions, manifest: VideoProje
     throw new VideoProjectError('INVALID_RECORD', '已保存的视频片段不在该项目目录中，已停止保存。')
   }
   if (manifest.publicationDirectory !== undefined) {
-    segment.publishedPath = await publishVideoOutput(options, source, manifest.publicationDirectory, signal)
+    segment.publishedPath = await publishVideoOutput(options, source, manifest.publicationDirectory, signal, manifest.origin)
   } else {
     const workspace = await realpath(manifest.workspaceRoot)
     resolveVideoOutputDirectory(manifest.workspaceRoot, nativePaths.relative(manifest.workspaceRoot, manifest.outputDirectory))
@@ -488,11 +495,14 @@ function parseManifest(value: unknown): VideoProjectManifest {
   if (segments.some(segment => segment.publishedPath !== undefined && (segment.status !== 'saved' || !nativePaths.isAbsolute(segment.publishedPath)))) {
     throw new VideoProjectError('INVALID_RECORD', '视频片段的产物保存记录损坏，已停止操作。')
   }
+  const origin = parseArtifactOrigin(source.origin, text(source, 'ownerSessionId'))
+  if (origin === null) throw new VideoProjectError('INVALID_RECORD', '视频项目生成来源损坏，已停止操作。')
   return {
     version: 1, id: projectId(text(source, 'id')), ownerSessionId: text(source, 'ownerSessionId'), workspaceRoot: text(source, 'workspaceRoot'),
     identity: { accountId: text(identity, 'accountId'), sessionFingerprint: text(identity, 'sessionFingerprint') }, input: parsedInput,
     model: text(source, 'model'), status, segments, outputDirectory: text(source, 'outputDirectory'),
     ...source.publicationDirectory === undefined ? {} : { publicationDirectory: source.publicationDirectory },
+    ...origin === undefined ? {} : { origin },
     ...source.composedPath === undefined ? {} : { composedPath: source.composedPath, composedDurationSeconds: positive(source, 'composedDurationSeconds') },
     updatedAt: text(source, 'updatedAt'),
     ...source.finalPath === undefined ? {} : { finalPath: text(source, 'finalPath') },
@@ -530,12 +540,15 @@ export async function readVideoProject(
  * @param provider - captured current account adapter.
  * @param editor - session-bound local editor.
  * @param signal - foreground preparation cancellation.
+ * @param origin - Exact generating tool location captured before preparing paid work.
  * @returns prepared record containing the exact generation plan and requests.
  */
 export async function prepareVideoProject(
   options: VideoProjectOptions, input: VideoProjectInput, ownerSessionId: string, workspaceRoot: string,
   provider: VideoProjectProvider, editor: VideoEditor, signal: AbortSignal,
+  origin?: ArtifactOrigin,
 ): Promise<VideoProjectManifest> {
+  const capturedOrigin = origin === undefined ? undefined : Object.freeze({ ...origin })
   validateInput(input, options.maxTotalSeconds)
   if (input.shotDurations !== undefined) {
     if (input.shotDurations.length > options.maxSegments) throw new VideoProjectError('TOO_MANY_SEGMENTS', '分镜数量超过当前项目上限，尚未提交生成。')
@@ -582,6 +595,7 @@ export async function prepareVideoProject(
     version: 1, id, ownerSessionId, workspaceRoot, identity: { ...provider.identity }, input, model: model.id,
     status: 'prepared', segments, outputDirectory,
     ...publicationDirectory === undefined ? {} : { publicationDirectory },
+    ...capturedOrigin === undefined ? {} : { origin: capturedOrigin },
     updatedAt: new Date().toISOString(),
   }
   // Reserve all later task/path fields before the first billable request.
@@ -649,6 +663,7 @@ export async function runVideoProject(
   runningProjects.add(key)
   try {
     const retained = await readVideoProject(options, manifest.id, manifest.ownerSessionId, manifest.workspaceRoot, provider.identity)
+    if (retained.origin === undefined) delete manifest.origin
     Object.assign(manifest, retained)
     if (manifest.status === 'completed') {
       signal.throwIfAborted()
@@ -771,7 +786,7 @@ async function executeVideoProject(
         await persist(options, manifest)
       }
     }
-    manifest.finalPath = await publishVideoOutput(options, result.path, manifest.publicationDirectory, signal)
+    manifest.finalPath = await publishVideoOutput(options, result.path, manifest.publicationDirectory, signal, manifest.origin)
     manifest.finalDurationSeconds = result.durationSeconds
     manifest.status = 'completed'
     await persist(options, manifest)

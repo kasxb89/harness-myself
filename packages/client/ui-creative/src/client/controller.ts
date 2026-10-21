@@ -2,7 +2,8 @@
 import { createSnapshotStore, type ObservableSnapshot, type SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { CreativePlanChange, CreativeProjectId, CreativeProjectView } from '@deepseek-ai/dsh-credits-index/src/creative-types.ts'
 import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session/types'
-import { saveCreativePlan, uploadCreativeAsset, type CreativeUploadResult, type CreativeSaveResult, type ReadCreativeProjects } from './api.ts'
+import { recoverCreativeImage, saveCreativePlan, uploadCreativeAsset, type CreativeRecoverResult,
+  type CreativeUploadResult, type CreativeSaveResult, type ReadCreativeProjects } from './api.ts'
 
 /** Immutable presentation facts for one explicitly addressed conversation. */
 export interface CreativeSnapshot {
@@ -38,10 +39,12 @@ export interface CreativeControllerOptions {
 
 const EMPTY: CreativeSnapshot = { phase: 'idle', projects: [], refreshing: false, failure: null }
 const SIGNED_OUT: CreativeSnapshot = { phase: 'signed-out', projects: [], refreshing: false, failure: null }
-const MEDIA_TOOLS = new Set(['update_creation_plan', 'generate_image', 'generate_video', 'generate_video_project', 'edit_video'])
+const MEDIA_TOOLS = new Set(['update_creation_plan', 'generate_image', 'query_image_task', 'query_video_task',
+  'generate_video', 'generate_video_project', 'edit_video'])
 
 function active(project: CreativeProjectView): boolean {
   return ['running', 'saving', 'editing'].includes(project.status)
+    || project.tasks.some(task => ['running', 'saving', 'editing'].includes(task.status))
     || project.shots.some(shot => ['running', 'saving', 'editing'].includes(shot.status))
     || project.assets.some(asset => asset.status !== undefined && ['running', 'saving', 'editing'].includes(asset.status))
 }
@@ -273,6 +276,37 @@ export class CreativeController {
     return result
   }
 
+  /**
+   * Query an owned original image task and supervise its accepted background read.
+   * @param sessionId - owning foreground conversation.
+   * @param projectId - retained project whose task is queryable.
+   * @param operationId - exact operation whose original task must be queried.
+   * @param signal - requesting view lifetime cancellation.
+   * @returns a confirmed listing or a contained failure; generation is never submitted.
+   */
+  async recover(sessionId: SessionId, projectId: string, operationId: string, signal: AbortSignal): Promise<CreativeRecoverResult> {
+    const epoch = this.epoch
+    const account = this.account
+    if (this.closed || signal.aborted || account === null || sessionId !== this.selected) return { ok: false, code: 'signed-out' }
+    const task = this.bucket(sessionId).source.getSnapshot().projects.find(project => project.id === projectId)
+      ?.tasks.find(operation => operation.id === operationId)
+    if (task?.canQuery !== true) return { ok: false, code: 'rejected' }
+    const result = await this.mutate(signal, owned => recoverCreativeImage({ sessionId, projectId, operationId, kind: task.videoReceipt === undefined ? 'image' : 'video' }, owned))
+    if (!this.mutationCurrent(sessionId, epoch, account, signal)) return { ok: false, code: 'signed-out' }
+    if (!result.ok) {
+      if (result.code === 'signed-out') this.accountChanged(null)
+      return result
+    }
+    if (result.payload.accountId !== account) { this.accountChanged(null); return { ok: false, code: 'signed-out' } }
+    this.stop()
+    const bucket = this.bucket(sessionId)
+    const before = bucket.source.getSnapshot()
+    bucket.source.set({ phase: 'ready', projects: result.payload.projects, refreshing: false, failure: null,
+      ...selection(result.payload.projects, before.selectedProjectId, before.selectedShotId) })
+    this.schedule(sessionId)
+    return result
+  }
+
   /** Stop supervision, abort reads and await owned work before completing plugin teardown. */
   async dispose(): Promise<void> {
     if (this.closed) return
@@ -344,6 +378,7 @@ export class CreativeController {
       && request.sessionId === this.selected && this.foreground && this.account !== null
   }
   private schedule(sessionId: SessionId): void {
+    if (this.closed || !this.foreground || this.account === null || sessionId !== this.selected) return
     const bucket = this.bucket(sessionId)
     const pending = this.pendingCalls.size > 0
     const awaitingFirstRecord = pending && !bucket.revealed

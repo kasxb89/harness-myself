@@ -16,13 +16,18 @@ import { basename, extname, isAbsolute, join, normalize, relative, resolve } fro
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-client-connection'
+import type { Session } from '@deepseek-ai/dsh-session'
+import type { ToolCallId } from '@deepseek-ai/dsh-llm/brand'
+import type {} from '@deepseek-ai/dsh-tools/types'
+import type {} from '@deepseek-ai/dsh-tool-present/types'
+import type {} from '@deepseek-ai/dsh-working-directory'
 import z from '@deepseek-ai/schemastery'
 import type { ArtifactStorageService } from './types.ts'
-import { ArtifactError, ArtifactStore, authorizedFile, qualified } from './storage.ts'
+import { ArtifactError, ArtifactStore, authorizedFile, contained, qualified } from './storage.ts'
 import { listDirectory, WorkspaceAccess } from './workspace.ts'
 import { serveOfficePreview, type AuthorizePreview } from './preview.ts'
 
-export type { ArtifactDestination, ArtifactWriteResult, ArtifactWriteRequest, ArtifactPublishRequest, ArtifactStorageService, ArtifactStorageInfo } from './types.ts'
+export type { ArtifactDestination, ArtifactOrigin, ArtifactWriteResult, ArtifactWriteRequest, ArtifactPublishRequest, ArtifactStorageService, ArtifactStorageInfo } from './types.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -41,7 +46,7 @@ export const inject = ['webServer']
 export interface Config {
   /** Default generated output directory, created on first initialization when configured. */
   defaultOutputDirectory?: string
-  /** Private preferences and recovery records; never a browsing root. */
+  /** Private preferences, origin associations and recovery records; never a browsing root. */
   stateDirectory?: string
   /** Retained output directories shown alongside currently registered local Workspaces. */
   roots?: string[]
@@ -343,6 +348,59 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     }
     return [...new Set(roots)]
   }
+  const presentedRoots = new WeakMap<Session, Map<ToolCallId, ToolCallId>>()
+  ctx.on('session/event', (session, event) => {
+    if (store === undefined || lifetime.signal.aborted) return
+    if (event.type === 'turn/start') { presentedRoots.delete(session); return }
+    if (event.type === 'tool/ptc-dispatch-start') {
+      let roots = presentedRoots.get(session)
+      if (roots === undefined) { roots = new Map(); presentedRoots.set(session, roots) }
+      roots.set(event.data.subCallId, event.data.rootCallId)
+      return
+    }
+    if (event.type !== 'deliverables/presented') return
+    const cwd = ctx.get('workingDirectory')?.get(session) ?? session.header.cwd
+    const toolCallId = presentedRoots.get(session)?.get(event.data.callId) ?? event.data.callId
+    const operation = (async () => {
+      for (const file of event.data.files) {
+        try {
+          const path = qualified(file.path) ? resolve(file.path)
+            : cwd !== undefined && qualified(cwd) ? resolve(cwd, file.path) : undefined
+          if (path === undefined) throw new ArtifactError('ARTIFACT_PATH_INVALID', 400, 'The presenting Session has no local directory')
+          const fs = ctx.get('fs')
+          const mapped = fs?.processPathFromHostPath(path)
+          if (fs === undefined || mapped === undefined || fs.processPath(await fs.resolve(mapped, { signal: lifetime.signal })) !== path) {
+            throw new ArtifactError('ARTIFACT_WORKSPACE_REMOTE_UNSUPPORTED', 409, 'Presented files must map to this Host filesystem')
+          }
+          const origin = { sessionId: session.id, turn: event.data.turn, eventSeq: event.seq, toolCallId }
+          if ((await rootsNow()).some(root => contained(root, path))) {
+            await store.rememberOrigin(path, origin, lifetime.signal)
+            continue
+          }
+          let recorded = false
+          for (const identity of workspaces.registered()) {
+            const workspace = await workspaces.resolve(identity.id, lifetime.signal).catch((error: unknown) => {
+              if (error instanceof ArtifactError && (error.code === 'ARTIFACT_WORKSPACE_UNAVAILABLE'
+                || error.code === 'ARTIFACT_WORKSPACE_REMOTE_UNSUPPORTED')) return undefined
+              throw error
+            })
+            if (workspace === undefined) continue
+            if (!contained(workspace.path, path)) continue
+            await store.rememberOrigin(path, origin, lifetime.signal, { workspaceId: workspace.id, signal: lifetime.signal })
+            recorded = true
+            break
+          }
+          if (!recorded) throw new ArtifactError('ARTIFACT_PATH_FORBIDDEN', 403, 'Presented file is outside authorized roots')
+        } catch (error) {
+          ctx.logger.warn('A presented file remains available, but its source chat could not be recorded. Open the original chat to continue. (%s)', issueCode(error))
+        }
+      }
+    })()
+    requests.add(operation)
+    void operation.finally(() => { requests.delete(operation) }).catch((error: unknown) => {
+      ctx.logger.warn('Presented file source recording stopped; files remain available. (%s)', issueCode(error))
+    })
+  })
   /** Parse bounded JSON only after authentication; query strings never authorize mutations. */
   const body = async (request: IncomingMessage): Promise<Record<string, unknown>> => {
     if (request.headers['content-type']?.split(';', 1)[0] !== 'application/json') throw new ArtifactError('ARTIFACT_REQUEST_INVALID', 400, 'JSON body required')
@@ -398,8 +456,22 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
               const rejection = connection === undefined ? 403 : connection.requestRejection(request)
               if (rejection !== undefined) { json(response, rejection, { code: 'ARTIFACT_AUTH_REQUIRED' }); return }
             }
-            if (['/api/storage', '/api/rename', '/api/trash', '/api/restore'].includes(route)) {
+            if (['/api/storage', '/api/rename', '/api/trash', '/api/restore', '/api/origin'].includes(route)) {
               if (connection === undefined) { json(response, 403, { code: 'ARTIFACT_AUTH_REQUIRED' }); return }
+              if (route === '/api/origin' && request.method === 'GET') {
+                if (store === undefined) { json(response, 200, { origin: null }); return }
+                const path = url.searchParams.get('path')
+                const size = url.searchParams.get('size')
+                const mtimeMs = url.searchParams.get('mtimeMs')
+                if (path === null || size === null || mtimeMs === null
+                  || !Number.isSafeInteger(Number(size)) || !Number.isFinite(Number(mtimeMs))) {
+                  throw new ArtifactError('ARTIFACT_REQUEST_INVALID', 400, 'Path and selected file version required')
+                }
+                const workspaceId = url.searchParams.get('workspaceId')
+                json(response, 200, { origin: await store.origin(path, { size: Number(size), mtimeMs: Number(mtimeMs) },
+                  workspaceId === null ? undefined : { workspaceId, signal }) })
+                return
+              }
               if (store === undefined) throw new ArtifactError('ARTIFACT_STORAGE_UNAVAILABLE', 503, 'Artifact storage is not configured')
               if (route === '/api/storage' && request.method === 'GET') { json(response, 200, store.info()); return }
               if (route === '/api/trash' && request.method === 'GET') { json(response, 200, { items: await store.trashed(signal) }); return }

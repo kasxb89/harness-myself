@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  ERROR_CODES, readArtifacts, readRootDirectory, readStorage, readTrash, readWorkspace,
+  ERROR_CODES, readArtifactOrigin, readArtifacts, readRootDirectory, readStorage, readTrash, readWorkspace,
   renameArtifact, restoreArtifact, saveStorage, trashArtifact,
 } from '../src/client/api.ts'
 import { en, zh } from '../src/client/locales.ts'
@@ -19,6 +19,20 @@ function respond(value: unknown, status = 200) {
 }
 
 describe('artifact management HTTP boundary', () => {
+  it('reads only explicit source coordinates for the selected version and refuses malformed locations', async () => {
+    const source = { sessionId: 'source', turn: 2, eventSeq: 17, toolCallId: 'call' }
+    const fetch = respond({ origin: source })
+    const entry = { ...item, kind: 'image' as const, workspaceId: 'workspace' }
+    expect(await readArtifactOrigin(entry, new AbortController().signal)).toEqual({ ok: true, value: source })
+    const url = new URL(fetch.mock.calls[0]![0] as string, 'http://localhost')
+    expect(Object.fromEntries(url.searchParams)).toEqual({ path: item.path, size: '128', mtimeMs: '1234', workspaceId: 'workspace' })
+    fetch.mockResolvedValueOnce(Response.json({ origin: null }))
+    expect(await readArtifactOrigin(entry, new AbortController().signal)).toEqual({ ok: true, value: null })
+    for (const origin of [{ ...source, turn: -1 }, { ...source, sessionId: '' }, { ...source, eventSeq: 2.5 }, { ...source, toolCallId: '' }]) {
+      fetch.mockResolvedValueOnce(Response.json({ origin }))
+      expect(await readArtifactOrigin(entry, new AbortController().signal)).toEqual({ ok: false, code: 'ARTIFACT_OPERATION_FAILED' })
+    }
+  })
   it('reads an exact retained root directory page and rejects mismatched or looping pagination', async () => {
     const body = { root: '/产物', directory: 'deep', absoluteDirectory: '/产物/deep', parentDirectory: '',
       directories: [], items: [item], truncated: true, offset: 2, nextOffset: 4 }

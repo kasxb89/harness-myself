@@ -1,5 +1,6 @@
 /** Video composer, camera-script templates and real generated clips. */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { queryVideoSubmission, readVideoSubmission, submissionFromAnswer, submissionKey } from './video-submission.ts'
 import { Button, IconChevronDownOutlineRegular, IconPlayOutlineRegular, IconPlusOutlineRegular, IconSettingsOutlineRegular, Menu, Modal, productFailureKind, SegmentedTabs, Switch, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsStore } from '@deepseek-ai/dsh-client-store'
 import type { HostObservable, InjectFace, PropsRenderFactories, PropsRuntime, StandardSourceBinding } from '@deepseek-ai/dsh-client-ui-slots'
@@ -111,6 +112,12 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
     phase, uploading, failure, uploadFailures, message, result } = draft
   const [signedIn, setSignedIn] = useState<boolean | null>(null)
   const [accountIdentity, setAccountIdentity] = useState<string | null>(null)
+  const [submissionCheck, setSubmissionCheck] = useState<'checking' | 'ready' | 'failed'>('checking')
+  const [checkedOwner, setCheckedOwner] = useState<string | null>(null)
+  const [submissionRevision, setSubmissionRevision] = useState(0)
+  const [queryingOriginal, setQueryingOriginal] = useState(false)
+  const originalQuery = useRef<AbortController | null>(null)
+  const setFailure = useCallback((failure: string | null): void => { actions.patch({ failure }) }, [actions])
   const [creditsPerYuan, setCreditsPerYuan] = useState(1000)
   const [balance, setBalance] = useState<number | null>(null)
   const [models, setModels] = useState<readonly VideoModel[]>([])
@@ -145,7 +152,10 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
   const model = useMemo(() => models.find(entry => entry.id === modelId) ?? models[0] ?? null, [modelId, models])
   const params = model?.params ?? null
   const busy = phase === 'running' || uploading !== null
-  const locked = busy || draft.promptAssisting
+  const submissionOwner = accountIdentity === null || sessionId === undefined ? null : { accountId: accountIdentity, sessionId }
+  const ownerKey = submissionOwner === null ? null : submissionKey(submissionOwner)
+  const originalSubmission = ownerKey === null ? null : draft.unsettled[ownerKey] ?? null
+  const locked = busy || draft.promptAssisting || originalSubmission !== null || submissionCheck !== 'ready' || checkedOwner !== ownerKey
   const publication = props.useCreationContent(state => state)
   const language = props.useLocale(state => state.active)
   const text = (value: LocalizedText | undefined): string => value === undefined ? '' : language === 'en' ? value.en || value.zh : value.zh
@@ -473,8 +483,77 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
     if (previous !== null) releaseUnusedPreview(previous.url)
   }
 
+  useEffect(() => {
+    if (accountIdentity === null || sessionId === undefined) return undefined
+    const owner = { accountId: accountIdentity, sessionId }
+    const epoch = readDraft().referenceEpoch
+    const abort = new AbortController()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let readSequence = 0
+    const current = (): boolean => !abort.signal.aborted && readDraft().referenceEpoch === epoch
+      && readDraft().referenceAccountId === owner.accountId
+    const check = async (): Promise<void> => {
+      const sequence = ++readSequence
+      const retained = readDraft().unsettled[submissionKey(owner)] ?? null
+      const result = await readVideoSubmission(owner, retained, abort.signal)
+      if (!current() || sequence !== readSequence) return
+      // An earlier listing must not erase a newly submitted or newly queried task.
+      if ((readDraft().unsettled[submissionKey(owner)] ?? null) !== retained) { void check(); return }
+      if (!result.ok) { setSubmissionCheck('failed'); return }
+      setCheckedOwner(submissionKey(owner))
+      setSubmissionCheck('ready')
+      if (result.submission !== null) {
+        actions.retainSubmission(result.submission)
+        if (result.submission.state === 'pending' && !document.hidden) {
+          timer = setTimeout(() => { timer = undefined; if (!document.hidden) void check() }, 2000)
+        }
+      } else {
+        actions.clearSubmission(owner.accountId, owner.sessionId)
+        if (retained !== null) {
+          actions.patch({ failure: result.completed ? null : t('originalFailed'), message: result.completed ? t('done') : null })
+          void loadHistory(); void loadBalance()
+        }
+      }
+    }
+    setSubmissionCheck('checking')
+    void check()
+    const revisit = (): void => {
+      if (document.hidden) { if (timer !== undefined) clearTimeout(timer); timer = undefined }
+      else if (timer === undefined) void check()
+    }
+    document.addEventListener('visibilitychange', revisit)
+    return () => {
+      abort.abort(); originalQuery.current?.abort(); originalQuery.current = null
+      setQueryingOriginal(false)
+      if (timer !== undefined) clearTimeout(timer)
+      document.removeEventListener('visibilitychange', revisit)
+    }
+  }, [accountIdentity, sessionId, submissionRevision, actions, loadHistory, loadBalance, readDraft, t])
+
+  const queryOriginal = async (): Promise<void> => {
+    if (originalSubmission === null || originalQuery.current !== null) return
+    const epoch = readDraft().referenceEpoch
+    const abort = new AbortController()
+    originalQuery.current = abort
+    setQueryingOriginal(true); setFailure(null)
+    const answer = await queryVideoSubmission(originalSubmission, abort.signal)
+    if (!abort.signal.aborted && epoch === readDraft().referenceEpoch) {
+      if (!answer.ok) setFailure(t('originalQueryFailed'))
+      else {
+        if (answer.submission !== null) actions.retainSubmission(answer.submission)
+        else {
+          actions.clearSubmission(originalSubmission.accountId, originalSubmission.sessionId)
+          actions.patch({ message: answer.completed ? t('done') : null, failure: answer.completed ? null : t('originalFailed') })
+          void loadHistory(); void loadBalance()
+        }
+        setSubmissionRevision(value => value + 1)
+      }
+    }
+    if (originalQuery.current === abort) { originalQuery.current = null; setQueryingOriginal(false) }
+  }
+
   const generate = useCallback(async (): Promise<void> => {
-    if (busy || readDraft().promptAssisting || operation.current || signedIn !== true) return
+    if (locked || readDraft().promptAssisting || operation.current || signedIn !== true) return
     const context = readDraft()
     if (accountIdentity === null || context.referenceAccountId !== accountIdentity) return
     actions.patch({ failure: null, message: null })
@@ -502,6 +581,9 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
           return
         }
       }
+      const owner = { accountId: accountIdentity, sessionId }
+      actions.retainSubmission({ ...owner, state: 'pending', canQuery: false })
+      setSubmissionRevision(value => value + 1)
       const answer = await requestJson<ArtifactLocation>('/credits/api/video/tasks?source=newapi-generate', {
         method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' },
         body: JSON.stringify({
@@ -522,6 +604,14 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
       if (answer.sessionInvalid === true) {
         acceptAccount({ signedIn: false }); actions.patch({ failure: t('noAuth') }); return
       }
+      const unsettled = submissionFromAnswer(answer, owner)
+      if (unsettled !== null) {
+        actions.retainSubmission(unsettled)
+        actions.patch({ failure: null })
+        setSubmissionRevision(value => value + 1)
+        return
+      }
+      actions.clearSubmission(owner.accountId, owner.sessionId)
       if (!answer.ok || typeof answer.payload?.path !== 'string' || answer.payload.path === '') {
         const kind = productFailureKind(answer.code)
         if (kind === 'insufficient-credits') actions.patch({ failure: t('insufficient') })
@@ -537,7 +627,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
       actions.patch({ result: { path: answer.payload.path, ...answer.payload.workspaceId === undefined ? {} : { workspaceId: answer.payload.workspaceId } }, message: t('done') })
       await Promise.all([loadBalance(), loadHistory()])
     } finally { operation.current = false; actions.patch({ phase: 'idle' }) }
-  }, [acceptAccount, accountIdentity, busy, signedIn, actions, prompt, model, params, workflow, firstFrame, lastFrame, slots,
+  }, [acceptAccount, accountIdentity, locked, signedIn, actions, prompt, model, params, workflow, firstFrame, lastFrame, slots,
     hasReferences, isReferenceCurrent, readDraft, sessionId,
     duration, settingsInvalid, overReferenceLimit, referenceBytesExceeded,
     referenceImages, referenceVideos, referenceAudios,
@@ -801,6 +891,13 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
         {t('noTemplates')} <button type="button" className={css.link} onClick={() => { actions.patch({ category: 'all' }) }}>{t('resetFilters')}</button></p>}
     </section>
 
+    {accountIdentity !== null && submissionCheck === 'failed' && <p className={css.error}>{t('originalCheckFailed')} <button type="button"
+      className={css.link} onClick={() => { setSubmissionRevision(value => value + 1) }}>{t('originalCheck')}</button></p>}
+    {originalSubmission !== null && <div className={css.notice} role="status">
+      <p>{t(originalSubmission.taskId === undefined ? 'originalUnknown' : 'originalAccepted')}</p>
+      {originalSubmission.canQuery && <Button variant="outline" disabled={queryingOriginal}
+        onClick={() => { void queryOriginal() }}>{t(queryingOriginal ? 'originalQuerying' : 'originalQuery')}</Button>}
+    </div>}
     {result !== null && <section className={css.result} aria-label={t('result')}>
       <div className={css.sectionHeading}><h2 className={css.sectionTitle}>{t('result')}</h2><button type="button" className={css.link} onClick={() => { actions.patch({ result: null }) }}>{t('closePreview')}</button></div>
       <video className={css.video} src={rawUrl(result)} controls preload="metadata" />

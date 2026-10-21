@@ -273,6 +273,7 @@
       "@deepseek-ai/dsh-client-ui-creative": ["./packages/client/ui-creative/src"],
       "@deepseek-ai/dsh-client-ui-creative/client": ["./packages/client/ui-creative/src/client/index.ts"],
       "@deepseek-ai/dsh-credits-index/creative-types": ["./packages/host/credits-index/src/creative-types.ts"],
+      "@deepseek-ai/dsh-artifacts-index/types": ["./packages/deliverables/artifacts-index/src/types.ts"],
       "@deepseek-ai/dsh-client-ui-imagegen": ["./packages/client/ui-imagegen/src"],
       "@deepseek-ai/dsh-client-ui-imagegen/client": ["./packages/client/ui-imagegen/src/client/index.ts"],
       "@deepseek-ai/dsh-client-ui-mobile": ["./packages/client/ui-mobile/src"],

@@ -68,26 +68,44 @@ export function PlanEditor({ project, edit, upload, saving, failure, save, close
   const [draft, setDraft] = useState(edit)
   const id = useId()
   const [uploading, setUploading] = useState(false)
-  const [uploadFailure, setUploadFailure] = useState<{ name: string; code: string } | null>(null)
+  const [uploadFailures, setUploadFailures] = useState<readonly { name: string; code: string }[]>([])
   const [uploaded, setUploaded] = useState<Extract<CreativeUploadResult, { ok: true }> | null>(null)
+  const [references, setReferences] = useState<readonly { asset: CreativeAsset; result: Extract<CreativeUploadResult, { ok: true }> }[]>([])
   const pending = useRef<AbortController | null>(null)
   useEffect(() => () => { pending.current?.abort() }, [])
-  const uploadFile = async (file: File): Promise<void> => {
-    if (draft.kind !== 'asset' || pending.current !== null) return
+  const uploadFiles = async (files: readonly File[]): Promise<void> => {
+    if (draft.kind === 'shot' || pending.current !== null) return
     const abort = new AbortController()
     pending.current = abort
-    setUploading(true); setUploadFailure(null)
-    let result: CreativeUploadResult
-    try { result = await upload(file, abort.signal) } catch (_uploadFailed) {
-      result = { ok: false, code: 'IMAGE_UPLOAD_FAILED' }
+    setUploading(true); setUploadFailures([])
+    for (const file of files) {
+      let result: CreativeUploadResult
+      try { result = await upload(file, abort.signal) } catch (_uploadFailed) {
+        result = { ok: false, code: 'IMAGE_UPLOAD_FAILED' }
+      }
+      if (abort.signal.aborted || pending.current !== abort) return
+      if (!result.ok) {
+        const code = result.code ?? 'IMAGE_UPLOAD_FAILED'
+        setUploadFailures(current => [...current, { name: file.name, code }]); continue
+      }
+      if (draft.kind === 'character') {
+        if (result.kind !== 'image') {
+          setUploadFailures(current => [...current, { name: file.name, code: 'IMAGE_FORMAT_UNSUPPORTED' }]); continue
+        }
+        const asset: CreativeAsset = { id: `asset_${randomUUID().replaceAll('-', '')}`, name: file.name,
+          kind: 'image', role: '', description: '', sourcePathOrAssetId: result.assetId }
+        setReferences(current => [...current, { asset, result }])
+        setDraft(current => current.kind !== 'character' ? current : { ...current, value: { ...current.value,
+          name: current.value.name.trim() || file.name,
+          referenceAssetIds: [...current.value.referenceAssetIds, asset.id] } })
+      } else {
+        setUploaded(result)
+        setDraft(current => current.kind !== 'asset' ? current : { ...current, value: { ...current.value,
+          sourcePathOrAssetId: result.assetId, kind: result.kind, name: current.value.name.trim() || file.name } })
+      }
     }
-    if (abort.signal.aborted || pending.current !== abort) return
     pending.current = null
     setUploading(false)
-    if (!result.ok) { setUploadFailure({ name: file.name, code: result.code ?? 'IMAGE_UPLOAD_FAILED' }); return }
-    setUploaded(result)
-    setDraft(current => current.kind !== 'asset' ? current : { ...current, value: { ...current.value,
-      sourcePathOrAssetId: result.assetId, kind: result.kind, name: current.value.name.trim() || file.name } })
   }
   const failureReason = (code: string): string => {
     switch (code) {
@@ -112,11 +130,12 @@ export function PlanEditor({ project, edit, upload, saving, failure, save, close
         : <input id={`${id}-${key}`} className={css.fieldInput} value={value} disabled={busy}
           maxLength={key === 'name' || key === 'title' ? 256 : key === 'sourcePathOrAssetId' ? 32_768 : 1000} onChange={(event) => { change(event.target.value) }} />}
     </label>
-  const assets = project.assets.map((asset) => {
+  const assets = [...project.assets.map((asset) => {
     const output = (asset.outputs ?? []).find(item => item.kind === 'image')
     const url = output?.url ?? asset.referenceUrl
     return { id: asset.id, name: asset.name, ...(url === undefined ? {} : { thumbnail: url }) }
-  })
+  }), ...references.map(({ asset, result }) => ({ id: asset.id, name: asset.name,
+    ...result.previewUrl === undefined ? {} : { thumbnail: result.previewUrl } }))]
   const title = draft.kind === 'shot' ? draft.value.title : draft.value.name
   const durationRequired = edit.kind === 'shot' && edit.value.durationSeconds !== undefined
   const valid = title.trim() !== '' && (draft.kind !== 'shot' || draft.value.prompt.trim() !== '')
@@ -133,7 +152,8 @@ export function PlanEditor({ project, edit, upload, saving, failure, save, close
           save({ kind: 'shot', id: shotId, patch })
         }
         break
-      case 'character': save({ kind: 'character', value: draft.value }); break
+      case 'character': save({ kind: 'character', value: draft.value,
+        ...references.length === 0 ? {} : { assets: references.map(item => item.asset) } }); break
       case 'asset': {
         const { id: assetId, name, kind, role, description, sourcePathOrAssetId } = draft.value
         save({ kind: 'asset', value: { id: assetId, name, kind, role, description, sourcePathOrAssetId } })
@@ -166,14 +186,33 @@ export function PlanEditor({ project, edit, upload, saving, failure, save, close
         <References label={t('materials')} items={assets} selected={draft.value.assetIds} disabled={busy}
           change={(ids) => { setDraft({ ...draft, value: { ...draft.value, assetIds: ids } }) }} />
       </> : draft.kind === 'character' ? <>
+        <label className={css.field}><span>{t(uploading ? 'plan.uploading' : 'plan.uploadCharacter')}</span>
+          <input type="file" multiple accept=".png,.jpg,.jpeg,.jfif,.webp,.avif,.gif,.bmp,.tif,.tiff,.heic,.heif,image/*"
+            disabled={busy} onChange={(event) => {
+              const files = Array.from(event.target.files ?? [])
+              event.target.value = ''
+              if (files.length > 0) void uploadFiles(files)
+            }} />
+        </label><p className={css.hint}>{t('plan.uploadCharacterHint')}</p>
         {(['name', 'appearance', 'clothing', 'personality', 'voice'] as const).map(key =>
           <div key={key}>{field(key, key === 'name' ? t('plan.name') : t(key), draft.value[key], (value) => {
             setDraft({ ...draft, value: { ...draft.value, [key]: value } })
           }, key !== 'name')}</div>)}
-        <References label={t('references')} items={assets.filter(asset => project.assets.some(value => value.id === asset.id
-          && value.kind === 'image'))} selected={draft.value.referenceAssetIds} disabled={busy}
+        <References label={t('references')} items={assets.filter(asset => references.some(item => item.asset.id === asset.id)
+          || project.assets.some(value => value.id === asset.id && value.kind === 'image'))} selected={draft.value.referenceAssetIds} disabled={busy}
         change={(ids) => { setDraft({ ...draft, value: { ...draft.value, referenceAssetIds: ids } }) }} />
+        {references.some(item => item.result.converted === true) && <p className={css.hint}>{t('plan.uploadConverted')}</p>}
+        {references.some(item => item.result.firstFrameOnly === true) && <p className={css.hint}>{t('plan.uploadFirstFrame')}</p>}
       </> : <>
+        <label className={css.field}><span>{t(uploading ? 'plan.uploading' : 'plan.upload')}</span>
+          <input type="file"
+            accept=".png,.jpg,.jpeg,.jfif,.webp,.avif,.gif,.bmp,.tif,.tiff,.heic,.heif,image/*,video/mp4,video/webm,audio/*"
+            disabled={busy} onChange={(event) => {
+              const file = event.target.files?.[0]
+              event.target.value = ''
+              if (file !== undefined) void uploadFiles([file])
+            }} />
+        </label><p className={css.hint}>{t('plan.uploadHint')}</p>
         {field('name', t('plan.name'), draft.value.name,
           (value) => { setDraft({ ...draft, value: { ...draft.value, name: value } }) })}
         <label className={css.field} htmlFor={`${id}-kind`}><span>{t('plan.kind')}</span>
@@ -190,24 +229,15 @@ export function PlanEditor({ project, edit, upload, saving, failure, save, close
             setDraft({ ...draft, value: { ...draft.value, [key]: value } })
           }, key === 'description')}</div>)}
         <p className={css.hint}>{t('plan.sourceHint')}</p>
-        <label className={css.field}><span>{t(uploading ? 'plan.uploading' : 'plan.upload')}</span>
-          <input type="file"
-            accept=".png,.jpg,.jpeg,.jfif,.webp,.avif,.gif,.bmp,.tif,.tiff,.heic,.heif,image/*,video/mp4,video/webm,audio/*"
-            disabled={busy} onChange={(event) => {
-              const file = event.target.files?.[0]
-              event.target.value = ''
-              if (file !== undefined) void uploadFile(file)
-            }} />
-        </label><p className={css.hint}>{t('plan.uploadHint')}</p>
         {uploaded !== null && uploaded.assetId === draft.value.sourcePathOrAssetId && <>
           {uploaded.previewUrl !== undefined && <img className={css.assetThumbnail} src={uploaded.previewUrl} alt={draft.value.name} />}
           {uploaded.converted === true && <p className={css.hint}>{t('plan.uploadConverted')}</p>}
           {uploaded.firstFrameOnly === true && <p className={css.hint}>{t('plan.uploadFirstFrame')}</p>}
         </>}
-        {uploadFailure !== null && <p className={css.notice} role="alert">
-          {t('plan.uploadFileFailed', { name: uploadFailure.name, reason: failureReason(uploadFailure.code) })}
-        </p>}
       </>}
+      {uploadFailures.map((failure, index) => <p key={index} className={css.notice} role="alert">
+        {t('plan.uploadFileFailed', { name: failure.name, reason: failureReason(failure.code) })}
+      </p>)}
       {failure !== null && <p className={css.notice} role="alert">{failure}</p>}
       <div className={css.dialogActions}><Button type="button" variant="ghost" disabled={busy} onClick={close}>{t('cancel')}</Button>
         <Button type="submit" disabled={!valid || busy}>{t(saving ? 'plan.saving' : 'plan.save')}</Button></div>

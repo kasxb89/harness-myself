@@ -43,7 +43,7 @@ export type {
 } from './contract/request-inspection.ts'
 export { inspectRequestPrompt } from './contract/request-inspection.ts'
 export type { SystemPromptState, SystemPromptInspector } from './contract/system-prompt.ts'
-export type { ConversationStoreState, ConversationViewRequest, ViewTab } from './contract/views.ts'
+export type { ConversationStoreState, ConversationViewNavigation, ConversationViewRequest, ViewTab } from './contract/views.ts'
 
 export { ConversationNodeAssembler } from './conversation/assembler.ts'
 export type {

@@ -30,6 +30,8 @@ interface ChatScrollState extends ChatReadingState {
   readonly columnRef: RefObject<HTMLDivElement>
   readonly busyTurn: number | null
   readonly navigateToTurn: ChatNavigation['navigateToTurn']
+  readonly navigateToNode: ChatNavigation['navigateToNode']
+  readonly revealNode: ChatNavigation['revealNode']
   readonly loadEarlier: ChatNavigation['loadEarlier']
   readonly returnToBottom: () => void
   readonly motion: FlowMotionRows
@@ -199,6 +201,8 @@ export function useChatScroll(input: ChatScrollInput): ChatScrollState {
   return {
     listRef, columnRef, ...state, busyTurn, motion: viewport.motion,
     navigateToTurn: navigation.navigateToTurn,
+    navigateToNode: navigation.navigateToNode,
+    revealNode: navigation.revealNode,
     loadEarlier: navigation.loadEarlier,
     returnToBottom,
   }

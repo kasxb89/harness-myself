@@ -8,6 +8,7 @@
  */
 
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import type { ArtifactOrigin } from '@deepseek-ai/dsh-artifacts-index'
 import { createWriteStream } from 'node:fs'
 import { createHash, randomBytes } from 'node:crypto'
 import { homedir } from 'node:os'
@@ -19,7 +20,6 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type { ModelSelection } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-host-webserver'
-import type {} from '@deepseek-ai/dsh-artifacts-index'
 import type {} from '@deepseek-ai/dsh-client-connection'
 import type {} from '@deepseek-ai/dsh-api-session-controller'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
@@ -30,9 +30,11 @@ import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { HarnessAccount } from '@deepseek-ai/dsh-llm-pi-ai'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { apiUrl, normalizeApiBaseUrl } from './api-url.ts'
+import { readPhoneBody, phoneFailure, phoneRetryAfter, type PhoneApiBody } from './phone-auth.ts'
+import { writePrivateState } from './private-state-file.ts'
+import { PhoneAuthState, type PhoneDeliveryStatus } from './phone-auth-state.ts'
 import { parseClientModelConfigStatus } from './client-model-config.ts'
 import { orderProductModels, preferredProductModel, type ProductModelPresentation } from './model-presentation.ts'
-import { isAccountBalanceRejectionText } from './account-balance.ts'
 import { ClientActivitySessions, parseClientActivity, type ClientActivitySample } from './client-activity.ts'
 import { parseUsageWindow, readAccountUsage } from './usage.ts'
 import { ChatUsageReader, parseChatUsageQuery } from './chat-usage-reader.ts'
@@ -47,7 +49,10 @@ import { registerCreationWorkflows } from './creation-workflows.ts'
 import { recoverVideoProjectOutputs, VideoProjectError } from './video-project.ts'
 import { createVideoProjectRelay } from './video-project-provider.ts'
 import { bindVideoAccount } from './video-project-account.ts'
-import { captureMediaOutput } from './media-output.ts'
+import { artifactOriginOf, captureMediaOutput, type CapturedMediaOutput } from './media-output.ts'
+import { executeImageTask } from './image-task.ts'
+import { executeVideoTask } from './video-task.ts'
+import type { CreativeImageReceipt, CreativeVideoReceipt } from './creative-types.ts'
 import type { VideoProjectIdentity, VideoProjectOptions, VideoProjectRequest, VideoRequestValue } from './video-project-types.ts'
 import { CreativeError, CreativeStore, parseCreativePlanChange, type CreativeOperation, type CreativeOwner } from './creative-store.ts'
 import { creativeOwner, registerCreativeTools } from './creative-tools.ts'
@@ -82,6 +87,22 @@ export interface Config {
   stateDir?: string
   /** Deadline for one platform call, in milliseconds. */
   timeoutMs?: number
+  /** Complete deadline for the single image submission, in milliseconds. */
+  imageSubmitTimeoutMs?: number
+  /** Complete image execution deadline, including polling and saving. */
+  imageTaskTimeoutMs?: number
+  /** Delay between read-only image status requests and transient query retries. */
+  imagePollIntervalMs?: number
+  /** Maximum consecutive transient query retries; image POSTs are never retried. */
+  imageQueryRetryLimit?: number
+  /** Complete single-video submission deadline. */
+  videoSubmitTimeoutMs?: number
+  /** Complete single-video polling and saving deadline. */
+  videoTaskTimeoutMs?: number
+  /** Delay between original-video task queries. */
+  videoPollIntervalMs?: number
+  /** Consecutive transient video-query retry budget; submissions are never retried. */
+  videoQueryRetryLimit?: number
   /** Loopback port of the model relay; 0 disables it. */
   relayPort?: number
   /** Credential reference the relay's bearer token lives under. */
@@ -140,6 +161,14 @@ export const Config: z<Config> = z.object({
   creditsPerYuan: z.number().min(1).default(1000),
   stateDir: z.string().default(''),
   timeoutMs: z.number().step(1).min(1).default(15_000),
+  imageSubmitTimeoutMs: z.number().step(1).min(1).max(2_147_483_647).default(180_000),
+  imageTaskTimeoutMs: z.number().step(1).min(1).max(2_147_483_647).default(600_000),
+  imagePollIntervalMs: z.number().step(1).min(1).max(60_000).default(2000),
+  imageQueryRetryLimit: z.number().step(1).min(0).max(5).default(2),
+  videoSubmitTimeoutMs: z.number().step(1).min(1).max(2_147_483_647).default(120_000),
+  videoTaskTimeoutMs: z.number().step(1).min(1).max(2_147_483_647).default(900_000),
+  videoPollIntervalMs: z.number().step(1).min(1).max(60_000).default(6000),
+  videoQueryRetryLimit: z.number().step(1).min(0).max(5).default(2),
   relayPort: z.number().step(1).min(1).default(8791),
   relayTokenEnv: z.string().default('YUNSHU_RELAY_TOKEN'),
   newApiBaseUrl: z.string().default('https://8.133.202.230/harness'),
@@ -288,22 +317,6 @@ async function readRaw(request: IncomingMessage, limitBytes: number): Promise<Bu
   return Buffer.concat(chunks)
 }
 
-/** Wait without leaving a timer or abort listener after completion or owner disposal. */
-function waitForMedia(milliseconds: number, signal: AbortSignal): Promise<void> {
-  signal.throwIfAborted()
-  return new Promise((resolve, reject) => {
-    const finish = (): void => { signal.removeEventListener('abort', abort); resolve() }
-    const timer = setTimeout(finish, milliseconds)
-    const abort = (): void => {
-      clearTimeout(timer)
-      signal.removeEventListener('abort', abort)
-      const reason: unknown = signal.reason
-      reject(reason instanceof Error ? reason : new Error('Media generation cancelled'))
-    }
-    signal.addEventListener('abort', abort, { once: true })
-  })
-}
-
 /** Read a non-empty string field, or null. */
 function readString(source: Record<string, unknown> | null, key: string): string | null {
   if (source === null) return null
@@ -441,20 +454,17 @@ class SessionStore {
     upstream?: StoredSession['upstream']
     relay?: StoredSession['relay']
   }): Promise<void> {
-    // The store is a convenience, never the source of truth: the `0600` file
-    // always carries the token, so a store that refuses the write (or a ref the
-    // store later rejects) cannot cost the operator their sign-in.
-    await this.writeCredential(session.token)
-    await mkdir(dirname(this.file), { recursive: true })
-    await writeFile(this.file, `${JSON.stringify({
+    // The complete private file commits before the optional credential-reference cache changes.
+    await writePrivateState(this.file, `${JSON.stringify({
       token: session.token,
       ...session.backendBaseUrl === undefined ? {} : { backendBaseUrl: session.backendBaseUrl },
       ...session.upstream === undefined ? {} : { upstream: session.upstream },
       ...session.relay === undefined ? {} : { relay: session.relay },
       expiresAt: session.expiresAt,
       account: session.account,
-    }, null, 2)}\n`, { mode: 0o600 })
+    }, null, 2)}\n`)
     this.cached = { ...session }
+    await this.writeCredential(session.token)
   }
 
   /** Forget the session on both halves. */
@@ -1041,6 +1051,10 @@ export function apply(ctx: Context, config: Config): void {
     readonly message?: string | undefined
     readonly model?: string | undefined
     readonly taskId?: string | undefined
+    readonly requestId?: string | undefined
+    readonly imageReceipt?: CreativeImageReceipt | undefined
+    readonly videoReceipt?: CreativeVideoReceipt | undefined
+    readonly submissionState?: 'not-submitted' | 'pending' | 'unknown' | 'failed' | 'completed' | undefined
     readonly path?: string | undefined
   }
 
@@ -1049,83 +1063,54 @@ export function apply(ctx: Context, config: Config): void {
    * The server's task plugin maps the prepared fields to its selected upstream.
    */
   const runVideoTask = async (
-    key: string,
-    route: string,
-    request: Record<string, unknown>,
-    signal = new AbortController().signal,
-    submitting?: () => Promise<void>,
+    key: string, route: string, request: Record<string, unknown>,
+    signal = new AbortController().signal, submitting?: () => Promise<void>,
+    received?: (receipt: CreativeVideoReceipt) => Promise<void>, resumeReceipt?: CreativeVideoReceipt,
+    savedOutput?: (path: string) => Promise<void>, currentKey?: () => Promise<string>,
+    reuseSavedOutput?: (bytes: Uint8Array) => Promise<string | undefined>,
+    origin?: ArtifactOrigin,
   ): Promise<MediaOutcome> => {
-    const headers = { authorization: `Bearer ${key}`, 'content-type': 'application/json', accept: 'application/json' }
-    try {
-      const output = await captureMediaOutput(ctx.get('artifactStorage'), join(stateDir, 'media'), signal)
-      signal.throwIfAborted()
-      await submitting?.()
-      signal.throwIfAborted()
-      const created = await apiFetch(route, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(request),
-        signal: AbortSignal.any([signal, AbortSignal.timeout(Math.max(resolved.timeoutMs, 120_000))]),
-      })
-      const createdText = await created.text()
-      if (!created.ok) {
-        const balanceRejected = isAccountBalanceRejectionText(createdText, created.status)
-        return { ok: false, code: balanceRejected ? 'INSUFFICIENT_BALANCE' : `HTTP_${String(created.status)}`, message: balanceRejected ? '余额不足，请充值；提交结果尚未确认，请先检查已有任务，不要重复提交。' : createdText.slice(0, 400) }
-      }
-      let createdBody: Record<string, unknown> | null = null
-      try { createdBody = JSON.parse(createdText) as Record<string, unknown> } catch { createdBody = null }
-      const nested = createdBody?.data !== null && typeof createdBody?.data === 'object'
-        ? createdBody.data as Record<string, unknown>
-        : null
-      const taskId = readString(createdBody, 'task_id') ?? readString(createdBody, 'id')
-        ?? readString(nested, 'task_id') ?? readString(nested, 'id')
-      if (taskId === null) {
-        return { ok: false, code: 'NO_TASK_ID', message: createdText.slice(0, 400) }
-      }
-      // Poll until the task settles. Every read is a plain GET, so a slow
-      // provider costs time and nothing else.
-      for (let attempt = 0; attempt < 150; attempt += 1) {
-        if (signal.aborted) return { ok: false, code: 'ABORTED', message: '任务已取消', taskId }
-        await waitForMedia(attempt === 0 ? 4000 : 6000, signal)
-        const read = await apiFetch(`${route}/${encodeURIComponent(taskId)}`, {
-          headers, signal: AbortSignal.any([signal, AbortSignal.timeout(resolved.timeoutMs)]),
-        })
-        const readText = await read.text()
-        let readBody: Record<string, unknown> | null = null
-        try { readBody = JSON.parse(readText) as Record<string, unknown> } catch { readBody = null }
-        const readNested = readBody?.data !== null && typeof readBody?.data === 'object'
-          ? readBody.data as Record<string, unknown>
-          : null
-        const status = (readString(readBody, 'task_status') ?? readString(readBody, 'status')
-          ?? readString(readNested, 'task_status') ?? readString(readNested, 'status'))?.toLowerCase()
-        const result = readNested?.task_result ?? readBody?.task_result
-        const videos = result !== null && typeof result === 'object' ? (result as Record<string, unknown>).videos : null
-        const first = Array.isArray(videos) ? videos[0] as Record<string, unknown> | undefined : undefined
-        const remote = typeof first?.url === 'string' ? first.url : null
-        // The gateway answers with `completed`, the vendors with `succeed` /
-        // `succeeded` / `success`; all three mean the file is ready, and a
-        // body that already carries a URL is ready whatever it calls itself.
-        if (status === 'succeed' || status === 'succeeded' || status === 'success' || status === 'completed' || remote !== null) {
-          const filename = `vid-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomBytes(3).toString('hex')}.mp4`
-          const response_ = remote === null
-            ? await apiFetch(`/v1/videos/${encodeURIComponent(taskId)}/content`, {
-              headers, signal: AbortSignal.any([signal, AbortSignal.timeout(300_000)]),
-            })
-            : await mediaFetch(remote, { signal: AbortSignal.any([signal, AbortSignal.timeout(300_000)]) })
-          if (!response_.ok) {
-            return { ok: false, code: 'CONTENT_FAILED', message: `取回视频失败（HTTP ${String(response_.status)}）`, taskId }
-          }
-          const saved = await output.write(filename, Buffer.from(await response_.arrayBuffer()))
-          return { ok: true, taskId, path: saved.path }
-        }
-        if (status === 'failed' || status === 'failure' || status === 'fail' || status === 'error' || status === 'cancelled' || status === 'canceled') {
-          return { ok: false, code: 'TASK_FAILED', message: readText.slice(0, 400), taskId }
-        }
-      }
-      return { ok: false, code: 'TIMEOUT', message: '任务仍在运行，稍后可在「产物」面板查看。', taskId }
-    } catch (error) {
-      return { ok: false, code: error instanceof VideoProjectError ? error.code : 'TRANSPORT', message: error instanceof Error ? error.message : String(error) }
-    }
+    let output: CapturedMediaOutput | undefined
+    const model = resumeReceipt?.model ?? readString(request, 'model') ?? ''
+    return executeVideoTask({ ...origin === undefined ? {} : { origin }, model, route, backendFingerprint: createHash('sha256').update(apiBaseUrl).digest('hex'), signal,
+      submitTimeoutMs: resolved.videoSubmitTimeoutMs, taskTimeoutMs: resolved.videoTaskTimeoutMs,
+      queryTimeoutMs: resolved.timeoutMs, pollIntervalMs: resolved.videoPollIntervalMs, queryRetryLimit: resolved.videoQueryRetryLimit,
+      ...submitting === undefined ? {} : { submitting }, ...received === undefined ? {} : { received },
+      ...resumeReceipt === undefined ? {} : { resumeReceipt },
+      prepare: async (ownedSignal) => { output = await captureMediaOutput(ctx.get('artifactStorage'), join(stateDir, 'media'), ownedSignal, resumeReceipt === undefined ? origin : resumeReceipt.origin) },
+      submit: async (ownedSignal) => {
+        const ownedKey = await currentKey?.() ?? key
+        return apiFetch(route, { method: 'POST', headers: { authorization: `Bearer ${ownedKey}`, 'content-type': 'application/json', accept: 'application/json' },
+          body: JSON.stringify(request), signal: ownedSignal })
+      },
+      read: async (taskId, ownedSignal) => {
+        const ownedKey = await currentKey?.() ?? key
+        return apiFetch(`${route}/${encodeURIComponent(taskId)}`, { headers: { authorization: `Bearer ${ownedKey}`, accept: 'application/json' }, signal: ownedSignal })
+      },
+      save: async (entry, _index, ownedSignal) => {
+        const ownedKey = await currentKey?.() ?? key
+        ownedSignal.throwIfAborted()
+        const remote = readString(entry, 'url')
+        const taskId = readString(entry, 'taskId')
+        if (remote === null && taskId === null) return undefined
+        const downloadSignal = AbortSignal.any([ownedSignal, AbortSignal.timeout(300_000)])
+        const response = remote === null ? await apiFetch(`/v1/videos/${encodeURIComponent(taskId ?? '')}/content`, {
+          headers: { authorization: `Bearer ${ownedKey}` }, signal: downloadSignal,
+        }) : await mediaFetch(remote, { signal: downloadSignal })
+        if (!response.ok) throw new VideoProjectError('VIDEO_DOWNLOAD_UNAVAILABLE', '原视频暂时无法下载，请继续查询原任务并保存；无需重新生成。')
+        const bytes = Buffer.from(await response.arrayBuffer())
+        if (bytes.length === 0) throw new VideoProjectError('VIDEO_DOWNLOAD_UNAVAILABLE', '原视频内容尚未取回，请继续查询原任务；无需重新生成。')
+        await currentKey?.()
+        ownedSignal.throwIfAborted()
+        const previous = await reuseSavedOutput?.(bytes)
+        if (previous !== undefined) return previous
+        if (output === undefined) throw new Error('Video output destination was not prepared')
+        const filename = `vid-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomBytes(3).toString('hex')}.mp4`
+        const saved = await output.write(filename, bytes)
+        await savedOutput?.(saved.path)
+        return saved.path
+      },
+    })
   }
 
   /** Only stored references reach a request; anything else is dropped. */
@@ -1288,356 +1273,256 @@ export function apply(ctx: Context, config: Config): void {
     signal = new AbortController().signal,
     savedOutput?: (path: string) => Promise<void>,
     submitting?: () => Promise<void>,
+    received?: (receipt: CreativeImageReceipt) => Promise<void>,
+    resumeReceipt?: CreativeImageReceipt,
+    reuseSavedOutput?: (bytes: Uint8Array) => Promise<string | undefined>,
+    currentKey?: () => Promise<string>,
+    origin?: ArtifactOrigin,
   ): Promise<MediaOutcome & { paths?: readonly string[]; mode?: string }> => {
-    signal.throwIfAborted()
-    const prompt = readString(body, 'prompt')
-    if (prompt === null) return { ok: false, code: 'INVALID_REQUEST', message: 'prompt 必填' }
-    const capability = await capabilityFor('image', readString(body, 'model'), signal)
-    if (!capability.ok) {
-      return {
-        ok: false,
-        code: capability.code,
-        message: `${capability.message}${capability.catalog.length === 0 ? '' : `（可用：${capability.catalog.map(entry => entry.id).join('、')}）`}`,
-      }
-    }
-    const params = capability.model.params as ImageParams
-    const model = capability.model.id
-    const internalImage = model === 'yunshu-internal-gpt-image-2'
-    const size = internalImage ? null : readString(body, 'size')
-    if (size !== null && params.sizes.length > 0 && !params.sizes.includes(size)) {
-      return { ok: false, code: 'SIZE_NOT_SUPPORTED', message: `${model} 不支持 ${size}，可选：${params.sizes.join('、')}` }
-    }
-    const quality = internalImage ? null : readString(body, 'quality')
-    if (quality !== null && params.qualities.length > 0 && !params.qualities.includes(quality)) {
-      return { ok: false, code: 'QUALITY_NOT_SUPPORTED', message: `${model} 不支持 ${quality}，可选：${params.qualities.join('、')}` }
-    }
-    // Every optional field below is "not sent" unless the caller chose one, so
-    // a model that has never heard of `background` is never asked about it.
-    const background = internalImage ? null : readString(body, 'background')
-    if (background !== null && params.backgrounds.length > 0 && !params.backgrounds.includes(background)) {
-      return { ok: false, code: 'BACKGROUND_NOT_SUPPORTED', message: `${model} 不支持背景 ${background}，可选：${params.backgrounds.join('、')}` }
-    }
-    const format = internalImage ? null : readString(body, 'format')
-    if (format !== null && params.formats.length > 0 && !params.formats.includes(format)) {
-      return { ok: false, code: 'FORMAT_NOT_SUPPORTED', message: `${model} 不支持输出格式 ${format}，可选：${params.formats.join('、')}` }
-    }
-    const moderation = internalImage ? null : readString(body, 'moderation')
-    if (moderation !== null && params.moderations.length > 0 && !params.moderations.includes(moderation)) {
-      return { ok: false, code: 'MODERATION_NOT_SUPPORTED', message: `${model} 不支持审核级别 ${moderation}，可选：${params.moderations.join('、')}` }
-    }
-    const rawCompression = !internalImage && typeof body.compression === 'number' ? Math.round(body.compression) : null
-    if (rawCompression !== null && (rawCompression < 0 || rawCompression > 100)) {
-      return { ok: false, code: 'COMPRESSION_NOT_SUPPORTED', message: '压缩质量需要在 0–100 之间' }
-    }
-    const compression = rawCompression !== null && format !== null && format !== 'png' ? rawCompression : null
-    const seed = !internalImage && typeof body.seed === 'number' && Number.isInteger(body.seed) ? body.seed : null
-    if (seed !== null && !params.seed) {
-      return { ok: false, code: 'SEED_NOT_SUPPORTED', message: `${model} 不支持随机种子` }
-    }
-    const count = typeof body.count === 'number' && Number.isInteger(body.count) ? body.count : 1
-    if (count < 1 || count > params.maxCount) {
-      return { ok: false, code: 'COUNT_NOT_SUPPORTED', message: `${model} 一次可出 1–${String(params.maxCount)} 张` }
-    }
-    const references = referenceIds(body.references)
-    if (internalImage && body.references !== undefined && (!Array.isArray(body.references)
-      || references.length !== body.references.length)) {
-      return { ok: false, model, code: 'IMAGE_REFERENCE_INVALID', message: '参考图编号无效，请重新添加图片；尚未提交生成。' }
-    }
-    if (references.length > params.maxEdits) {
-      return {
-        ok: false,
-        code: 'REFERENCES_NOT_SUPPORTED',
-        message: params.maxEdits === 0
-          ? `${model} 只支持文生图，不能带参考图`
-          : `${model} 最多接受 ${String(params.maxEdits)} 张参考图`,
-      }
-    }
-    const headers = { authorization: `Bearer ${key}`, 'content-type': 'application/json', accept: 'application/json' }
-    /** The optional knobs, spelled the way both the relay and the vendors read them. */
-    const extras: Record<string, unknown> = {
-      ...size === null ? {} : { size },
-      ...quality === null ? {} : { quality },
-      ...background === null ? {} : { background },
-      ...format === null ? {} : { output_format: format },
-      ...compression === null ? {} : { output_compression: compression },
-      ...moderation === null ? {} : { moderation },
-      ...seed === null ? {} : { seed },
-    }
-    try {
-      const output = await captureMediaOutput(ctx.get('artifactStorage'), join(stateDir, 'media'), signal)
-      const beforeSubmission = async (): Promise<void> => {
-        signal.throwIfAborted()
-        await submitting?.()
-        signal.throwIfAborted()
-      }
-      // A plugin-served model answers on its own path and hands back a task;
-      // the OpenAI host protocol answers inline on `/v1/images/generations`.
-      if (capability.model.route !== '/v1/images/generations') {
-        const referenceUrls: string[] = []
-        if (internalImage && references.length > 0) {
-          const prepared: { bytes: Buffer; mediaType: string; filename: string }[] = []
-          const session = await liveSession()
-          for (const [index, assetId] of references.entries()) {
-            const file = await readReference(assetId)
-            const filename = file === null ? `参考图 ${String(index + 1)}`
-              : basename(file.filename.replace(/\\/gu, '/')).replace(/[\u0000-\u001f\u007f]/gu, '').slice(0, 256) || `参考图 ${String(index + 1)}`
-            const invalid = file === null ? '已失效，请重新上传'
-              : file.accountId !== undefined && file.accountId !== session?.account.id ? '不属于当前账号，请重新上传'
-                : !ALLOWED_ASSET_TYPES.has(file.mediaType) ? '只支持 PNG、JPEG 或 WebP 图片'
-                  : file.bytes.length === 0 ? '内容为空，请重新选择图片'
-                    : file.bytes.length > 10 * 1024 * 1024 ? '超过 10 MB，请缩小后重新上传'
-                      : !referenceSignature(file.bytes, file.mediaType) ? '内容与图片格式不匹配，请重新上传' : undefined
-            if (file === null || invalid !== undefined) {
-              return { ok: false, model, code: 'IMAGE_REFERENCE_INVALID', message: `参考图「${filename}」${invalid ?? '不可读取'}；尚未提交生成。` }
-            }
-            prepared.push({ ...file, filename })
-          }
-          // Validate every local image before sending any bytes. Uploads have
-          // no generation charge; only the later generation POST is dispatched.
-          for (const file of prepared) {
-            if ((await liveSession())?.relay?.key !== key) {
-              return { ok: false, model, code: 'AUTH_REQUIRED', message: '登录状态已变化，请重新登录；尚未提交生成。' }
-            }
-            const form = new FormData()
-            form.set('model', model)
-            const extension = file.mediaType === 'image/jpeg' ? 'jpg' : file.mediaType === 'image/webp' ? 'webp' : 'png'
-            form.set('file', new Blob([new Uint8Array(file.bytes)], { type: file.mediaType }), `reference.${extension}`)
-            let uploaded: Response
-            let receipt: unknown
-            try {
-              signal.throwIfAborted()
-              uploaded = await apiFetch('/v1/uploads/images', {
-                method: 'POST', headers: { authorization: `Bearer ${key}`, accept: 'application/json' }, body: form,
-                signal: AbortSignal.any([signal, AbortSignal.timeout(Math.max(resolved.timeoutMs, 60_000))]),
-              })
-              receipt = uploaded.ok ? await uploaded.json() : null
-            } catch {
-              signal.throwIfAborted()
-              return { ok: false, model, code: 'IMAGE_REFERENCE_UPLOAD_FAILED', message: `参考图「${file.filename}」上传未完成，请稍后重试；尚未提交生成。` }
-            }
-            if (!uploaded.ok) {
-              const reason = uploaded.status === 401 ? '登录已失效，请重新登录'
-                : uploaded.status === 403 ? '当前账号无权上传图片'
-                  : uploaded.status === 413 ? '超过上传大小限制，请缩小图片'
-                    : uploaded.status === 400 || uploaded.status === 415 ? '图片格式或内容不受支持，请重新选择'
-                      : uploaded.status === 429 ? '上传过于频繁，请稍后重试' : '服务器繁忙，请稍后重试'
-              return { ok: false, model, code: 'IMAGE_REFERENCE_UPLOAD_FAILED', message: `参考图「${file.filename}」${reason}；尚未提交生成。` }
-            }
-            const result = receipt !== null && typeof receipt === 'object' && !Array.isArray(receipt) ? receipt as Record<string, unknown> : null
-            const data = result?.data !== null && typeof result?.data === 'object' && !Array.isArray(result.data) ? result.data as Record<string, unknown> : null
-            const remote = readString(data, 'url')
-            let validUrl = false
-            if (remote !== null && remote.length <= 2048 && !/[\u0000-\u0020\u007f\\?#]/u.test(remote)) {
-              try {
-                const url = new URL(remote)
-                validUrl = (url.origin === 'https://files.toapis.cn' || url.origin === 'https://files.toapis.com')
-                  && url.pathname.startsWith('/uploads/') && url.pathname.length > '/uploads/'.length
-                  && url.username === '' && url.password === '' && url.search === '' && url.hash === ''
-              } catch { validUrl = false }
-            }
-            if (result?.success !== true || !validUrl || remote === null || readString(data, 'id') === null
-              || data?.mime_type !== file.mediaType || data.size !== file.bytes.length) {
-              return { ok: false, model, code: 'IMAGE_REFERENCE_UPLOAD_INVALID', message: `参考图「${file.filename}」上传回执无效，请稍后重试；尚未提交生成。` }
-            }
-            referenceUrls.push(remote)
-          }
-        }
-        await beforeSubmission()
-        const submitted = await apiFetch(capability.model.route, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(internalImage
-            ? { model, prompt, n: 1, ...referenceUrls.length === 0 ? {} : { reference_images: referenceUrls } }
-            : { model, prompt, n: count, ...extras }),
-          signal: AbortSignal.any([signal, AbortSignal.timeout(Math.max(resolved.timeoutMs, 60_000))]),
-        })
-        const submittedText = await submitted.text()
-        if (!submitted.ok) {
-          const balanceRejected = isAccountBalanceRejectionText(submittedText, submitted.status)
-          return { ok: false, model, code: balanceRejected ? 'INSUFFICIENT_BALANCE' : `HTTP_${String(submitted.status)}`, message: balanceRejected ? '余额不足，请充值' : submittedText.slice(0, 400) }
-        }
-        let submittedBody: Record<string, unknown> | null = null
-        try { submittedBody = JSON.parse(submittedText) as Record<string, unknown> } catch { submittedBody = null }
-        const taskId = readString(submittedBody, 'id') ?? readString(submittedBody, 'task_id')
-        if (taskId === null) {
-          return { ok: false, model, code: 'NO_TASK_ID', message: submittedText.slice(0, 400) }
-        }
-        for (let attempt = 0; attempt < 120; attempt += 1) {
-          if (attempt > 0) await waitForMedia(attempt < 5 ? 2000 : 4000, signal)
-          const read = await apiFetch(
-            `${capability.model.route}/${encodeURIComponent(taskId)}`,
-            { headers: { authorization: `Bearer ${key}`, accept: 'application/json' }, signal: AbortSignal.any([signal, AbortSignal.timeout(resolved.timeoutMs)]) },
-          )
-          const readText = await read.text()
-          let task: Record<string, unknown> | null = null
-          try { task = JSON.parse(readText) as Record<string, unknown> } catch { task = null }
-          if (task === null) continue
-          const status = readString(task, 'status')
-          if (status === 'failed' || status === 'error') {
-            const error = task.error !== null && typeof task.error === 'object' ? task.error as Record<string, unknown> : null
-            return { ok: false, model, code: 'TASK_FAILED', message: readString(error, 'message') ?? readText.slice(0, 300) }
-          }
-          const result = task.result !== null && typeof task.result === 'object' ? task.result as Record<string, unknown> : null
-          const items = Array.isArray(result?.data) ? result.data : []
-          const saved: string[] = []
-          for (const [index, item] of items.entries()) {
-            if (item === null || typeof item !== 'object') continue
-            const entry = item as Record<string, unknown>
-            const remote = readString(entry, 'url')
-            const b64 = readString(entry, 'b64_json')
-            let bytes: Buffer | null = null
-            if (b64 !== null) bytes = Buffer.from(b64, 'base64')
-            else if (remote !== null) {
-              const image = await mediaFetch(remote, { signal: AbortSignal.any([signal, AbortSignal.timeout(120_000)]) })
-              if (image.ok) bytes = Buffer.from(await image.arrayBuffer())
-            }
-            if (bytes === null) continue
-            const suffix = format === 'jpeg' ? 'jpg' : format === 'webp' ? 'webp' : 'png'
-            const filename = `gen-${new Date().toISOString().replace(/[:.]/g, '-')}-${String(index)}-${randomBytes(3).toString('hex')}.${suffix}`
-            const path = (await output.write(filename, bytes)).path
-            await savedOutput?.(path)
-            saved.push(path)
-          }
-          if (saved.length > 0) {
-            return { ok: true, model, path: saved[0], paths: saved, mode: referenceUrls.length === 0 ? 'generate' : 'edit' }
-          }
-        }
-        return { ok: false, model, code: 'TIMEOUT', message: '任务仍在运行，稍后可重试。' }
-      }
-      const upstream = references.length === 0
-        ? await (async (): Promise<Response> => {
-          await beforeSubmission()
-          return apiFetch('/v1/images/generations', {
-            method: 'POST',
-            headers,
-            body: JSON.stringify({
-              model,
-              prompt,
-              n: count,
-              response_format: 'b64_json',
-              ...extras,
-            }),
-            signal: AbortSignal.any([signal, AbortSignal.timeout(Math.max(resolved.timeoutMs, 180_000))]),
+    const backendFingerprint = createHash('sha256').update(apiBaseUrl).digest('hex')
+    const execute = async (
+      model: string, route: string, mode: string, format: string | null,
+      submit: (requestSignal: AbortSignal) => Promise<Response>,
+    ): Promise<MediaOutcome & { paths?: readonly string[]; mode?: string }> => {
+      let output: CapturedMediaOutput | undefined
+      const result = await executeImageTask({
+        model, route, backendFingerprint, signal, submit, ...origin === undefined ? {} : { origin },
+        prepare: async (operationSignal) => {
+          output = await captureMediaOutput(ctx.get('artifactStorage'), join(stateDir, 'media'), operationSignal, resumeReceipt === undefined ? origin : resumeReceipt.origin)
+        },
+        submitTimeoutMs: resolved.imageSubmitTimeoutMs, taskTimeoutMs: resolved.imageTaskTimeoutMs,
+        queryTimeoutMs: resolved.timeoutMs, pollIntervalMs: resolved.imagePollIntervalMs,
+        queryRetryLimit: resolved.imageQueryRetryLimit,
+        ...submitting === undefined ? {} : { submitting },
+        ...received === undefined ? {} : { received },
+        ...resumeReceipt === undefined ? {} : { resumeReceipt },
+        read: async (taskId, requestSignal) => {
+          const ownedKey = await currentKey?.() ?? key
+          requestSignal.throwIfAborted()
+          return apiFetch(`${route}/${encodeURIComponent(taskId)}`, {
+            headers: { authorization: `Bearer ${ownedKey}`, accept: 'application/json' }, signal: requestSignal,
           })
-        })()
-        : await (async (): Promise<Response> => {
-          const form = new FormData()
-          form.set('model', model)
-          form.set('prompt', prompt)
-          form.set('n', String(count))
-          for (const [field, value] of Object.entries(extras)) form.set(field, String(value))
-          for (const assetId of references) {
-            const file = await readReference(assetId)
-            if (file === null) throw new Error(`参考图 ${assetId} 已失效，请重新上传`)
-            const extension = file.mediaType === 'image/jpeg' ? 'jpg' : file.mediaType === 'image/webp' ? 'webp' : 'png'
-            form.append('image[]', new Blob([new Uint8Array(file.bytes)], { type: file.mediaType }), `reference-${String(form.getAll('image[]').length + 1)}.${extension}`)
-          }
-          await beforeSubmission()
-          return await apiFetch('/v1/images/edits', {
-            method: 'POST',
-            headers: { authorization: `Bearer ${key}`, accept: 'application/json' },
-            body: form,
-            signal: AbortSignal.any([signal, AbortSignal.timeout(Math.max(resolved.timeoutMs, 300_000))]),
-          })
-        })()
-      const text = await upstream.text()
-      if (!upstream.ok) {
-        const balanceRejected = isAccountBalanceRejectionText(text, upstream.status)
-        return { ok: false, model, code: balanceRejected ? 'INSUFFICIENT_BALANCE' : `HTTP_${String(upstream.status)}`, message: balanceRejected ? '余额不足，请充值' : text.slice(0, 400) }
-      }
-      let payload: unknown = null
-      try { payload = JSON.parse(text) } catch { payload = null }
-      const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-      const extension = format === 'jpeg' ? 'jpg' : format === 'webp' ? 'webp' : 'png'
-      const saved: string[] = []
-      /** Write every inline image in one answer; returns how many landed. */
-      const saveImages = async (list: readonly unknown[]): Promise<number> => {
-        let written = 0
-        for (const entry of list) {
-          const item = entry !== null && typeof entry === 'object' ? entry as Record<string, unknown> : {}
-          const b64 = readString(item, 'b64_json')
-          const remote = readString(item, 'url')
-          let bytes: Buffer | null = null
+        },
+        save: async (entry, index, operationSignal) => {
+          await currentKey?.()
+          operationSignal.throwIfAborted()
+          const b64 = readString(entry, 'b64_json')
+          const remote = readString(entry, 'url')
+          let bytes: Buffer
           if (b64 !== null) bytes = Buffer.from(b64, 'base64')
           else if (remote !== null) {
-            const image = await mediaFetch(remote, { signal: AbortSignal.any([signal, AbortSignal.timeout(120_000)]) })
-            if (!image.ok) continue
+            const image = await mediaFetch(remote, { signal: AbortSignal.any([operationSignal, AbortSignal.timeout(120_000)]) })
+            if (!image.ok) throw new VideoProjectError('IMAGE_DOWNLOAD_UNAVAILABLE', '原图片暂时无法下载，请继续查询原任务并保存；无需重新生成。')
             bytes = Buffer.from(await image.arrayBuffer())
-          }
-          if (bytes === null) continue
-          const filename = `gen-${stamp}-${String(saved.length)}-${randomBytes(3).toString('hex')}.${extension}`
+          } else return undefined
+          if (bytes.length === 0) throw new VideoProjectError('IMAGE_DOWNLOAD_UNAVAILABLE', '原图片内容尚未取回，请继续查询原任务并保存；无需重新生成。')
+          const previous = await reuseSavedOutput?.(bytes)
+          await currentKey?.()
+          operationSignal.throwIfAborted()
+          if (previous !== undefined) return previous
+          const suffix = format === 'jpeg' || bytes[0] === 255 && bytes[1] === 216 ? 'jpg'
+            : format === 'webp' || bytes.toString('ascii', 0, 4) === 'RIFF' ? 'webp' : 'png'
+          const filename = `gen-${new Date().toISOString().replace(/[:.]/g, '-')}-${String(index)}-${randomBytes(3).toString('hex')}.${suffix}`
+          if (output === undefined) throw new Error('Image output destination was not prepared')
           const path = (await output.write(filename, bytes)).path
           await savedOutput?.(path)
-          saved.push(path)
-          written += 1
-        }
-        return written
+          return path
+        },
+      })
+      return { ...result, mode }
+    }
+    try {
+      if (resumeReceipt !== undefined) {
+        return await execute(resumeReceipt.model, resumeReceipt.route, 'recover', null, () => Promise.reject(new Error('Image recovery cannot submit a generation')))
       }
-      const entries = Array.isArray((payload as { data?: unknown } | null)?.data)
-        ? (payload as { data: unknown[] }).data
-        : []
-      await saveImages(entries)
-      /**
-       * No image came back inline, but the answer is a task envelope: some
-       * upstreams hand one out and the gateway relays it untouched. Read it
-       * back on the same path if the deployment registers that read; when it
-       * does not, say exactly that instead of "no image data".
-       */
-      if (saved.length === 0) {
-        const record = payload !== null && typeof payload === 'object' ? payload as Record<string, unknown> : null
-        const taskId = readString(record, 'id') ?? readString(record, 'task_id')
-        const status = readString(record, 'status')
-        if (record !== null && taskId !== null && (record.object === 'generation.task' || status !== null)) {
-          for (let attempt = 0; attempt < 45; attempt += 1) {
-            if (attempt > 0) await waitForMedia(attempt < 5 ? 2000 : 4000, signal)
-            const read = await apiFetch(`${capability.model.route}/${encodeURIComponent(taskId)}`, {
-              headers: { authorization: `Bearer ${key}`, accept: 'application/json' },
-              signal: AbortSignal.any([signal, AbortSignal.timeout(resolved.timeoutMs)]),
+      signal.throwIfAborted()
+      const prompt = readString(body, 'prompt')
+      if (prompt === null) return { ok: false, submissionState: 'not-submitted', code: 'INVALID_REQUEST', message: 'prompt 必填' }
+      const capability = await capabilityFor('image', readString(body, 'model'), signal)
+      if (!capability.ok) {
+        return {
+          ok: false, submissionState: 'not-submitted',
+          code: capability.code,
+          message: `${capability.message}${capability.catalog.length === 0 ? '' : `（可用：${capability.catalog.map(entry => entry.id).join('、')}）`}`,
+        }
+      }
+      const params = capability.model.params as ImageParams
+      const model = capability.model.id
+      const internalImage = model === 'yunshu-internal-gpt-image-2'
+      const size = internalImage ? null : readString(body, 'size')
+      if (size !== null && params.sizes.length > 0 && !params.sizes.includes(size)) {
+        return { ok: false, submissionState: 'not-submitted', code: 'SIZE_NOT_SUPPORTED', message: `${model} 不支持 ${size}，可选：${params.sizes.join('、')}` }
+      }
+      const quality = internalImage ? null : readString(body, 'quality')
+      if (quality !== null && params.qualities.length > 0 && !params.qualities.includes(quality)) {
+        return { ok: false, submissionState: 'not-submitted', code: 'QUALITY_NOT_SUPPORTED', message: `${model} 不支持 ${quality}，可选：${params.qualities.join('、')}` }
+      }
+      // Every optional field below is "not sent" unless the caller chose one, so
+      // a model that has never heard of `background` is never asked about it.
+      const background = internalImage ? null : readString(body, 'background')
+      if (background !== null && params.backgrounds.length > 0 && !params.backgrounds.includes(background)) {
+        return { ok: false, submissionState: 'not-submitted', code: 'BACKGROUND_NOT_SUPPORTED', message: `${model} 不支持背景 ${background}，可选：${params.backgrounds.join('、')}` }
+      }
+      const format = internalImage ? null : readString(body, 'format')
+      if (format !== null && params.formats.length > 0 && !params.formats.includes(format)) {
+        return { ok: false, submissionState: 'not-submitted', code: 'FORMAT_NOT_SUPPORTED', message: `${model} 不支持输出格式 ${format}，可选：${params.formats.join('、')}` }
+      }
+      const moderation = internalImage ? null : readString(body, 'moderation')
+      if (moderation !== null && params.moderations.length > 0 && !params.moderations.includes(moderation)) {
+        return { ok: false, submissionState: 'not-submitted', code: 'MODERATION_NOT_SUPPORTED', message: `${model} 不支持审核级别 ${moderation}，可选：${params.moderations.join('、')}` }
+      }
+      const rawCompression = !internalImage && typeof body.compression === 'number' ? Math.round(body.compression) : null
+      if (rawCompression !== null && (rawCompression < 0 || rawCompression > 100)) {
+        return { ok: false, submissionState: 'not-submitted', code: 'COMPRESSION_NOT_SUPPORTED', message: '压缩质量需要在 0–100 之间' }
+      }
+      const compression = rawCompression !== null && format !== null && format !== 'png' ? rawCompression : null
+      const seed = !internalImage && typeof body.seed === 'number' && Number.isInteger(body.seed) ? body.seed : null
+      if (seed !== null && !params.seed) {
+        return { ok: false, submissionState: 'not-submitted', code: 'SEED_NOT_SUPPORTED', message: `${model} 不支持随机种子` }
+      }
+      const count = typeof body.count === 'number' && Number.isInteger(body.count) ? body.count : 1
+      if (count < 1 || count > params.maxCount) {
+        return { ok: false, submissionState: 'not-submitted', code: 'COUNT_NOT_SUPPORTED', message: `${model} 一次可出 1–${String(params.maxCount)} 张` }
+      }
+      const references = referenceIds(body.references)
+      if (internalImage && body.references !== undefined && (!Array.isArray(body.references)
+        || references.length !== body.references.length)) {
+        return { ok: false, submissionState: 'not-submitted', model, code: 'IMAGE_REFERENCE_INVALID', message: '参考图编号无效，请重新添加图片；尚未提交生成。' }
+      }
+      if (references.length > params.maxEdits) {
+        return {
+          ok: false, submissionState: 'not-submitted',
+          code: 'REFERENCES_NOT_SUPPORTED',
+          message: params.maxEdits === 0
+            ? `${model} 只支持文生图，不能带参考图`
+            : `${model} 最多接受 ${String(params.maxEdits)} 张参考图`,
+        }
+      }
+      const headers = { authorization: `Bearer ${key}`, 'content-type': 'application/json', accept: 'application/json' }
+      /** The optional knobs, spelled the way both the relay and the vendors read them. */
+      const extras: Record<string, unknown> = {
+        ...size === null ? {} : { size },
+        ...quality === null ? {} : { quality },
+        ...background === null ? {} : { background },
+        ...format === null ? {} : { output_format: format },
+        ...compression === null ? {} : { output_compression: compression },
+        ...moderation === null ? {} : { moderation },
+        ...seed === null ? {} : { seed },
+      }
+
+      const referenceUrls: string[] = []
+      if (internalImage && references.length > 0) {
+        const prepared: { bytes: Buffer; mediaType: string; filename: string }[] = []
+        const session = await liveSession()
+        for (const [index, assetId] of references.entries()) {
+          const file = await readReference(assetId)
+          const filename = file === null ? `参考图 ${String(index + 1)}`
+            : basename(file.filename.replace(/\\/gu, '/')).replace(/[\u0000-\u001f\u007f]/gu, '').slice(0, 256) || `参考图 ${String(index + 1)}`
+          const invalid = file === null ? '已失效，请重新上传'
+            : file.accountId !== undefined && file.accountId !== session?.account.id ? '不属于当前账号，请重新上传'
+              : !ALLOWED_ASSET_TYPES.has(file.mediaType) ? '只支持 PNG、JPEG 或 WebP 图片'
+                : file.bytes.length === 0 ? '内容为空，请重新选择图片'
+                  : file.bytes.length > 10 * 1024 * 1024 ? '超过 10 MB，请缩小后重新上传'
+                    : !referenceSignature(file.bytes, file.mediaType) ? '内容与图片格式不匹配，请重新上传' : undefined
+          if (file === null || invalid !== undefined) {
+            return { ok: false, submissionState: 'not-submitted', model, code: 'IMAGE_REFERENCE_INVALID', message: `参考图「${filename}」${invalid ?? '不可读取'}；尚未提交生成。` }
+          }
+          prepared.push({ ...file, filename })
+        }
+        // Validate every local image before sending any bytes. Uploads have
+        // no generation charge; only the later generation POST is dispatched.
+        for (const file of prepared) {
+          if ((await liveSession())?.relay?.key !== key) {
+            return { ok: false, submissionState: 'not-submitted', model, code: 'AUTH_REQUIRED', message: '登录状态已变化，请重新登录；尚未提交生成。' }
+          }
+          const form = new FormData()
+          form.set('model', model)
+          const extension = file.mediaType === 'image/jpeg' ? 'jpg' : file.mediaType === 'image/webp' ? 'webp' : 'png'
+          form.set('file', new Blob([new Uint8Array(file.bytes)], { type: file.mediaType }), `reference.${extension}`)
+          let uploaded: Response
+          let receipt: unknown
+          try {
+            signal.throwIfAborted()
+            uploaded = await apiFetch('/v1/uploads/images', {
+              method: 'POST', headers: { authorization: `Bearer ${key}`, accept: 'application/json' }, body: form,
+              signal: AbortSignal.any([signal, AbortSignal.timeout(Math.max(resolved.timeoutMs, 60_000))]),
             })
-            if (!read.ok) {
-              const body = await read.text()
-              return {
-                ok: false,
-                model,
-                code: 'ASYNC_TASK_NOT_READABLE',
-                message: `上游把生图做成了异步任务（task ${taskId}），而本机 new-api 没有回读路由（${capability.model.route}/{id} 返回 HTTP ${String(read.status)}）。`
-                  + `请让 new-api 支持该渠道的任务回读，或改用能直接出图的模型。原始响应：${body.slice(0, 200)}`,
-              }
-            }
-            const readText = await read.text()
-            let task: Record<string, unknown> | null = null
-            try { task = JSON.parse(readText) as Record<string, unknown> } catch { task = null }
-            const taskStatus = readString(task, 'status')
-            if (taskStatus === 'failed' || taskStatus === 'error') {
-              const error = task?.error !== null && typeof task?.error === 'object' ? task.error as Record<string, unknown> : null
-              return { ok: false, model, code: 'TASK_FAILED', message: readString(error, 'message') ?? readText.slice(0, 300) }
-            }
-            const result = task?.result !== null && typeof task?.result === 'object' ? task.result as Record<string, unknown> : null
-            const list = Array.isArray(result?.data) ? result.data : []
-            if (await saveImages(list) > 0) {
-              return { ok: true, model, path: saved[0], paths: saved, mode: 'generate' }
-            }
+            receipt = uploaded.ok ? await uploaded.json() : null
+          } catch {
+            signal.throwIfAborted()
+            return { ok: false, submissionState: 'not-submitted', model, code: 'IMAGE_REFERENCE_UPLOAD_FAILED', message: `参考图「${file.filename}」上传未完成，请稍后重试；尚未提交生成。` }
           }
-          return {
-            ok: false,
-            model,
-            code: 'TIMEOUT',
-            message: `上游任务（${taskId}）仍在运行，稍后可在「产物」里看看，或重试。`,
+          if (!uploaded.ok) {
+            const reason = uploaded.status === 401 ? '登录已失效，请重新登录'
+              : uploaded.status === 403 ? '当前账号无权上传图片'
+                : uploaded.status === 413 ? '超过上传大小限制，请缩小图片'
+                  : uploaded.status === 400 || uploaded.status === 415 ? '图片格式或内容不受支持，请重新选择'
+                    : uploaded.status === 429 ? '上传过于频繁，请稍后重试' : '服务器繁忙，请稍后重试'
+            return { ok: false, submissionState: 'not-submitted', model, code: 'IMAGE_REFERENCE_UPLOAD_FAILED', message: `参考图「${file.filename}」${reason}；尚未提交生成。` }
           }
+          const result = receipt !== null && typeof receipt === 'object' && !Array.isArray(receipt) ? receipt as Record<string, unknown> : null
+          const data = result?.data !== null && typeof result?.data === 'object' && !Array.isArray(result.data) ? result.data as Record<string, unknown> : null
+          const remote = readString(data, 'url')
+          let validUrl = false
+          if (remote !== null && remote.length <= 2048 && !/[\u0000-\u0020\u007f\\?#]/u.test(remote)) {
+            try {
+              const url = new URL(remote)
+              validUrl = (url.origin === 'https://files.toapis.cn' || url.origin === 'https://files.toapis.com')
+                && url.pathname.startsWith('/uploads/') && url.pathname.length > '/uploads/'.length
+                && url.username === '' && url.password === '' && url.search === '' && url.hash === ''
+            } catch { validUrl = false }
+          }
+          if (result?.success !== true || !validUrl || remote === null || readString(data, 'id') === null
+            || data?.mime_type !== file.mediaType || data.size !== file.bytes.length) {
+            return { ok: false, submissionState: 'not-submitted', model, code: 'IMAGE_REFERENCE_UPLOAD_INVALID', message: `参考图「${file.filename}」上传回执无效，请稍后重试；尚未提交生成。` }
+          }
+          referenceUrls.push(remote)
         }
       }
-      if (saved.length === 0) {
-        return { ok: false, model, code: 'EMPTY_RESULT', message: text.slice(0, 400) || '上游未返回图片数据' }
+
+      const editForm = new FormData()
+      if (capability.model.route === '/v1/images/generations' && references.length > 0) {
+        const form = editForm
+        form.set('model', model)
+        form.set('prompt', prompt)
+        form.set('n', String(count))
+        for (const [field, value] of Object.entries(extras)) form.set(field, String(value))
+        for (const assetId of references) {
+          const file = await readReference(assetId)
+          if (file === null) throw new VideoProjectError('IMAGE_REFERENCE_INVALID', '参考图已失效，请重新上传；尚未提交生成。')
+          const extension = file.mediaType === 'image/jpeg' ? 'jpg' : file.mediaType === 'image/webp' ? 'webp' : 'png'
+          form.append('image[]', new Blob([new Uint8Array(file.bytes)], { type: file.mediaType }), `reference-${String(form.getAll('image[]').length + 1)}.${extension}`)
+        }
+        signal.throwIfAborted()
       }
-      return {
-        ok: true,
-        model,
-        path: saved[0],
-        paths: saved,
-        mode: references.length === 0 ? 'generate' : 'edit',
+      const submit = async (requestSignal: AbortSignal): Promise<Response> => {
+        if (capability.model.route !== '/v1/images/generations') {
+          return apiFetch(capability.model.route, {
+            method: 'POST', headers,
+            body: JSON.stringify(internalImage
+              ? { model, prompt, n: 1, ...referenceUrls.length === 0 ? {} : { reference_images: referenceUrls } }
+              : { model, prompt, n: count, ...extras }),
+            signal: requestSignal,
+          })
+        }
+        if (references.length === 0) return apiFetch('/v1/images/generations', {
+          method: 'POST', headers,
+          body: JSON.stringify({ model, prompt, n: count, response_format: 'b64_json', ...extras }), signal: requestSignal,
+        })
+        requestSignal.throwIfAborted()
+        return apiFetch('/v1/images/edits', {
+          method: 'POST', headers: { authorization: `Bearer ${key}`, accept: 'application/json' }, body: editForm, signal: requestSignal,
+        })
       }
+      return await execute(model, capability.model.route, references.length === 0 ? 'generate' : 'edit', format, submit)
     } catch (error) {
-      return { ok: false, code: error instanceof VideoProjectError ? error.code : 'TRANSPORT', message: error instanceof Error ? error.message : String(error) }
+      return { ok: false, submissionState: resumeReceipt === undefined ? 'not-submitted' : 'pending',
+        ...resumeReceipt === undefined ? {} : { imageReceipt: resumeReceipt, model: resumeReceipt.model,
+          ...resumeReceipt.taskId === undefined ? {} : { taskId: resumeReceipt.taskId },
+          ...resumeReceipt.requestId === undefined ? {} : { requestId: resumeReceipt.requestId } },
+        code: error instanceof VideoProjectError ? error.code : signal.aborted ? 'ABORTED' : 'IMAGE_PREPARATION_FAILED',
+        message: resumeReceipt === undefined ? '生成准备未完成，尚未提交生成，请检查素材与保存位置。'
+          : '原任务的查询或保存暂未完成，请检查原任务；不会重新生成。' }
     }
   }
 
@@ -1687,8 +1572,74 @@ export function apply(ctx: Context, config: Config): void {
     return { result, sessionInvalid: false }
   }
 
-  /** Phone remembered from the last challenge, so verification can find its user. */
-  let challengePhone: string | null = null
+  /** Persist request identities before dispatch and bind recovery to the complete backend URL. */
+  const phoneAuth = new PhoneAuthState(join(stateDir, `phone-auth-${createHash('sha256').update(apiBaseUrl).digest('hex')}.json`), apiBaseUrl)
+  let phoneLoginAttempt = 0
+
+
+  const phoneVerifications = new Map<string, {
+    flowToken: string
+    phone: string
+    methods: string[]
+    expiresAt: number
+    version: number
+    attempt: number
+    busy: boolean
+    uncertain: boolean
+  }>()
+
+  /** Validate and publish a complete phone session after all required security checks. */
+  const acceptPhoneSession = async (login: Response | null, loginBody: PhoneApiBody, phoneForLogin: string,
+    version: number, attempt: number, key: string) => {
+    const payload = loginBody.data ?? null
+    const token = payload?.access_token
+    const user = payload?.user !== null && typeof payload?.user === 'object' && !Array.isArray(payload.user)
+      ? payload.user as Record<string, unknown> : undefined
+    const rawPhone = typeof user?.phone_e164 === 'string' ? user.phone_e164 : phoneForLogin
+    const accountId = user?.id
+    const id = typeof accountId === 'number' && Number.isSafeInteger(accountId) && accountId > 0 ? String(accountId)
+      : typeof accountId === 'string' && /^[1-9]\d*$/u.test(accountId) && Number.isSafeInteger(Number(accountId)) ? accountId : null
+    const expiry = payload?.access_expires_at
+    const relayKey = payload?.relay_key
+    const refresh = login === null ? undefined : refreshFromSetCookie(login) ?? undefined
+    if (login?.ok === true && loginBody.success === true && refresh !== undefined
+      && loginBody.code !== 'PHONE_LOGIN_VERIFICATION_REQUIRED' && payload?.require_verification !== true && typeof token === 'string' && token.trim() !== '' && id !== null
+      && typeof expiry === 'number' && Number.isFinite(expiry) && expiry * 1000 > Date.now()
+      && Number.isFinite(new Date(expiry * 1000).getTime()) && typeof relayKey === 'string' && /^sk-\S+$/u.test(relayKey)) {
+      if (version !== identityVersion || attempt !== phoneLoginAttempt) {
+        return { ok: false, code: 'ACCOUNT_CHANGED', message: '登录状态已变更，请重新操作。' }
+      }
+      const account = { id, phone: rawPhone }
+      const sessionToken = randomBytes(32).toString('hex')
+      const sessionExpiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
+      const relayId = typeof payload?.relay_key_id === 'number' && Number.isSafeInteger(payload.relay_key_id) && payload.relay_key_id > 0
+        ? payload.relay_key_id : undefined
+      const committedVersion = await mutateSession(async (): Promise<number | null> => {
+        if (version !== identityVersion || attempt !== phoneLoginAttempt) return null
+        await store.write({ token: sessionToken, expiresAt: sessionExpiresAt, account, backendBaseUrl: apiBaseUrl,
+          upstream: { token, refresh, expiresAt: new Date(expiry * 1000).toISOString() },
+          relay: { key: relayKey, ...relayId === undefined ? {} : { id: relayId } } })
+        if (version !== identityVersion) return null
+        identityVersion += 1
+        chatUsage.reset()
+        const committed = identityVersion
+        await holdAccountCredential(relayKey)
+        invalidateModelCatalog()
+        await writeProductModels([]).catch(reportModelRefreshFailure)
+        return committed
+      })
+      if (committedVersion === null || committedVersion !== identityVersion) {
+        return { ok: false, code: 'ACCOUNT_CHANGED', message: '登录状态已变更，请重新操作。' }
+      }
+      await phoneAuth.complete(key)
+      return { ok: true, payload: { status: 'authorized', expiresAt: sessionExpiresAt, account } }
+    } else {
+      const failure = phoneFailure(login, loginBody, 'login')
+      if (failure.retryAfterSeconds !== null) await phoneAuth.delayExchange(key, Date.now() + failure.retryAfterSeconds * 1000)
+      return failure
+    }
+
+  }
 
   /** The `new_api_refresh` value inside one response's `Set-Cookie` headers. */
   const refreshFromSetCookie = (response: Response): string | null => {
@@ -2108,7 +2059,7 @@ export function apply(ctx: Context, config: Config): void {
   const generateForPanel = async <T extends MediaOutcome & { paths?: readonly string[] }>(
     owner: CreativeOwner, kind: 'image' | 'video', body: Record<string, unknown>,
     run: (operation: CreativeOperation, signal: AbortSignal) => Promise<T>,
-  ): Promise<T & { planId: string }> => {
+  ): Promise<T & { planId: string; operationId: string }> => {
     const work = (async () => {
       panelLife.signal.throwIfAborted()
       const prompt = readString(body, 'prompt') ?? ''
@@ -2134,14 +2085,76 @@ export function apply(ctx: Context, config: Config): void {
       try {
         const outcome = await run(operation, panelLife.signal)
         const paths = outcome.paths ?? (outcome.path === undefined ? [] : [outcome.path])
-        await creative.finish(operation, { kind, paths, status: outcome.ok ? 'completed' : panelLife.signal.aborted ? 'cancelled'
-          : ['TIMEOUT', 'TRANSPORT', 'NO_TASK_ID'].includes(outcome.code ?? '') || kind === 'video' && outcome.code === 'INSUFFICIENT_BALANCE' ? 'unknown' : 'failed',
-        ...outcome.code === undefined ? {} : { errorCode: outcome.code } })
-        return { ...outcome, planId }
+        await creative.finish(operation, { kind, paths,
+          ...kind === 'image' && outcome.imageReceipt !== undefined ? { imageReceipt: outcome.imageReceipt } : {},
+          ...kind === 'video' && outcome.videoReceipt !== undefined ? { videoReceipt: outcome.videoReceipt } : {},
+          ...outcome.submissionState === 'not-submitted' ? { notSubmitted: true } : {}, status: outcome.ok ? 'completed'
+            : imageCreativeStatus(outcome, panelLife.signal),
+          ...outcome.code === undefined ? {} : { errorCode: outcome.code } })
+        return { ...outcome, planId, operationId: operation.operationId }
       } finally { creative.release(operation) }
     })()
     panelOperations.add(work)
     try { return await work } finally { panelOperations.delete(work) }
+  }
+  /** Local cancellation cannot establish a submitted image task's remote outcome. */
+  const imageCreativeStatus = (outcome: MediaOutcome, signal: AbortSignal): 'running' | 'unknown' | 'cancelled' | 'failed' => {
+    if (outcome.submissionState === 'pending') return 'running'
+    if (outcome.submissionState === 'unknown') return 'unknown'
+    return signal.aborted && outcome.submissionState === 'not-submitted' ? 'cancelled' : 'failed'
+  }
+  const panelImageAdmissions = new Set<string>()
+  /** A retained uncertain submission blocks new panel plans for this account and conversation. */
+  const pendingPanelImage = async (owner: CreativeOwner, kind: 'image' | 'video' = 'image'): Promise<(Awaited<ReturnType<typeof runImageGeneration>>
+    & { planId: string; operationId: string }) | undefined> => {
+    for (const project of await creative.projects(owner)) {
+      if (project.kind !== kind) continue
+      const task = [...project.tasks].reverse().find(task => ['unknown', 'running', 'saving'].includes(task.status))
+      if (task === undefined) continue
+      const receipt = kind === 'image' ? task.imageReceipt : task.videoReceipt
+      return { ok: false, planId: project.id, operationId: task.id,
+        submissionState: receipt?.taskId === undefined ? 'unknown' : 'pending', code: 'CREATIVE_SUBMISSION_UNKNOWN',
+        ...receipt === undefined ? {} : { ...kind === 'image' ? { imageReceipt: receipt } : { videoReceipt: receipt }, model: receipt.model,
+          ...receipt.taskId === undefined ? {} : { taskId: receipt.taskId },
+          ...receipt.requestId === undefined ? {} : { requestId: receipt.requestId } },
+        message: receipt?.taskId === undefined
+          ? '此聊天已有结果未确认的图片提交，请先核对原任务与计费，不要再次生成。'
+          : '此聊天已有受理的图片任务，请查询原任务并保存结果，不要再次生成。' }
+    }
+    return undefined
+  }
+  /** Resume one retained receipt using the current account; this path never creates another task. */
+  const runRetainedImage = async (
+    retained: Awaited<ReturnType<CreativeStore['resumeImage']>>,
+    key: () => Promise<string>, signal: AbortSignal,
+  ) => {
+    const { operation, receipt } = retained
+    try {
+      const outcome = await runImageGeneration(await key(), {}, signal,
+        path => creative.saved(operation, path, 'image'), undefined,
+        next => creative.receipt(operation, next), receipt, bytes => creative.matchImageOutput(operation, bytes), key, receipt.origin)
+      await creative.finish(operation, { kind: 'image', status: outcome.ok ? 'completed' : imageCreativeStatus(outcome, signal),
+        ...outcome.imageReceipt === undefined ? {} : { imageReceipt: outcome.imageReceipt },
+        ...outcome.submissionState === 'not-submitted' ? { notSubmitted: true } : {},
+        paths: outcome.paths ?? [], ...outcome.code === undefined ? {} : { errorCode: outcome.code } })
+      return outcome
+    } catch (error) {
+      try { await creative.finish(operation, { kind: 'image', status: 'unknown', errorCode: 'CREATIVE_RECOVERY_INTERRUPTED' }) }
+      catch { ctx.logger.warn('credits-index: retained image recovery could not record its outcome; inspect the original task before submitting again') }
+      throw error
+    } finally { creative.release(operation) }
+  }
+  /** Query an owned original single-video task; never POST another generation. */
+  const runRetainedVideo = async (retained: Awaited<ReturnType<CreativeStore['resumeVideoTask']>>, key: () => Promise<string>, signal: AbortSignal) => {
+    const { operation, receipt } = retained
+    try {
+      const outcome = await runVideoTask(await key(), receipt.route, {}, signal, undefined,
+        next => creative.receipt(operation, next, 'video'), receipt, path => creative.saved(operation, path, 'video'), key, bytes => creative.matchImageOutput(operation, bytes, 'video'), receipt.origin)
+      await creative.finish(operation, { kind: 'video', status: outcome.ok ? 'completed' : imageCreativeStatus(outcome, signal),
+        ...outcome.videoReceipt === undefined ? {} : { videoReceipt: outcome.videoReceipt },
+        ...outcome.path === undefined ? {} : { paths: [outcome.path] }, ...outcome.code === undefined ? {} : { errorCode: outcome.code } })
+      return outcome
+    } finally { creative.release(operation) }
   }
   ctx.effect(() => async () => {
     contentLife.abort()
@@ -2223,11 +2236,13 @@ export function apply(ctx: Context, config: Config): void {
           return
         }
 
-        if (route === '/api/creative/projects' || route === '/api/creative/media' || route === '/api/creative/plan' || route === '/api/creative/reference') {
+        if (route === '/api/creative/projects' || route === '/api/creative/media' || route === '/api/creative/plan'
+          || route === '/api/creative/reference' || route === '/api/creative/image/recover' || route === '/api/creative/video/recover') {
           const connection = ctx.get('connection')
           const rejected = connection === undefined ? 403 : connection.requestRejection(request)
           if (rejected !== undefined) { json(response, rejected, { ok: false, code: 'CREATIVE_HOST_AUTH_REQUIRED', message: '请从已连接的云枢客户端查看创作。' }); return }
-          const writing = route === '/api/creative/plan'
+          const recovering = route === '/api/creative/image/recover' || route === '/api/creative/video/recover'
+          const writing = route === '/api/creative/plan' || recovering
           if (writing ? method !== 'POST' : method !== 'GET' && method !== 'HEAD' || route === '/api/creative/projects' && method !== 'GET') { json(response, 405, { ok: false, code: 'METHOD_NOT_ALLOWED', message: '该创作操作不支持此请求方式。' }); return }
           const identity = await creativeIdentity()
           if (identity === undefined) { json(response, 401, { ok: false, code: 'AUTH_REQUIRED', message: '请登录后查看本账号的创作。' }); return }
@@ -2236,7 +2251,30 @@ export function apply(ctx: Context, config: Config): void {
           if (!/^[A-Za-z0-9_-]{1,128}$/u.test(sessionId)) { json(response, 400, { ok: false, code: 'CREATIVE_SESSION_INVALID', message: '请选择有效的聊天。' }); return }
           const owner = { ...identity, sessionId }
           try {
-            if (writing || route === '/api/creative/projects') {
+            if (recovering && body !== undefined) {
+              const projectId = readString(body, 'project_id') ?? ''
+              const captured = await creative.owner(identity, projectId, sessionId)
+              const binding = await bindCurrentVideoAccount()
+              if (binding.identity.accountId !== identity.accountId
+                || binding.identity.sessionFingerprint !== identity.sessionFingerprint) {
+                throw new CreativeError('CREATIVE_ACCOUNT_CHANGED', 409, '登录已变化，请刷新后查询原任务。')
+              }
+              const videoRecovery = route === '/api/creative/video/recover'
+              const retained = await (videoRecovery ? creative.resumeVideoTask(captured, projectId, readString(body, 'operation_id') ?? '')
+                : creative.resumeImage(captured, projectId, readString(body, 'operation_id') ?? ''))
+              const work = (videoRecovery ? runRetainedVideo(retained, () => binding.key(), panelLife.signal)
+                : runRetainedImage(retained, () => binding.key(), panelLife.signal))
+                .catch(() => { ctx.logger.warn('credits-index: original image query stopped; its receipt remains available') })
+              panelOperations.add(work)
+              void work.finally(() => { panelOperations.delete(work) })
+              const projects = await creative.projects(owner)
+              const current = await creativeIdentity()
+              if (current?.accountId !== identity.accountId || current.sessionFingerprint !== identity.sessionFingerprint) {
+                json(response, 409, { ok: false, code: 'CREATIVE_ACCOUNT_CHANGED', message: '登录已变化，请刷新后查询原任务。' })
+                return
+              }
+              json(response, 202, { ok: true, payload: { accountId: identity.accountId, projects } })
+            } else if (writing || route === '/api/creative/projects') {
               if (body !== undefined) {
                 const projectId = readString(body, 'project_id') ?? ''
                 const captured = await creative.owner(identity, projectId, sessionId)
@@ -2378,13 +2416,16 @@ export function apply(ctx: Context, config: Config): void {
                 message: '账户凭据暂时无法续期，请重试或重新登录。',
                 payload: { signedIn: true, liveness: 'unknown', account: stored.account, expiresAt: stored.expiresAt } }); return
             }
+            const recovery = await phoneAuth.recovery().then(value => ({ available: true, value }),
+              (_unavailableRecovery: unknown) => ({ available: false, value: null }))
             json(response, 200, {
               ok: true,
               signedIn: false,
               signOutReason: 'no-session',
               creditsPerYuan: resolved.creditsPerYuan,
               statePath: store.path,
-              payload: { signedIn: false, creditsPerYuan: resolved.creditsPerYuan, account: null, expiresAt: null },
+              payload: { signedIn: false, creditsPerYuan: resolved.creditsPerYuan, account: null, expiresAt: null,
+                phoneRecoveryAvailable: recovery.available, phoneRecovery: recovery.value },
             })
             return
           }
@@ -2413,56 +2454,62 @@ export function apply(ctx: Context, config: Config): void {
           return
         }
 
+        if (route === '/api/session/phone-recovery' && method === 'GET') {
+          try { json(response, 200, { ok: true, payload: await phoneAuth.recovery() }) } catch (_unavailableRecovery: unknown) {
+            json(response, 200, { ok: false, code: 'PHONE_RECOVERY_UNAVAILABLE', message: '无法读取登录重试状态，请稍后重试。' })
+          }
+          return
+        }
+
         if (route === '/api/session/challenge' && method === 'POST') {
           const body = await readJson(request)
           const phone = readString(body, 'phone')
           const key = readString(body, 'idempotencyKey')
           if (phone === null || !/^\+[1-9]\d{7,14}$/u.test(phone) || key === null) {
-            json(response, 200, { ok: false, code: 'INVALID_REQUEST', message: 'phone 与 idempotencyKey 必填' })
+            json(response, 200, { ok: false, code: 'PHONE_INVALID_PARAMETERS', message: '手机号与请求标识必填。' })
             return
           }
-          challengePhone = phone
-          // Phone sign-in now lives in new-api itself; the Bridge is out of the picture.
+          const reserved = await phoneAuth.reserveChallenge(phone, key)
+          if (reserved !== 'reserved') {
+            json(response, 200, { ok: false, code: reserved === 'conflict' ? 'PHONE_IDEMPOTENCY_CONFLICT' : 'PHONE_RECOVERY_UNAVAILABLE',
+              message: '本次短信请求无法安全恢复，请检查原请求后重试。' }); return
+          }
           const challenge = await apiFetch('/api/user/phone/challenge', {
             method: 'POST',
             headers: { 'content-type': 'application/json', accept: 'application/json' },
-            body: JSON.stringify({ phone_e164: phone }),
+            body: JSON.stringify({ phone_e164: phone, idempotency_key: key, contract_version: 2 }),
             signal: AbortSignal.timeout(resolved.timeoutMs),
-          })
-          // A 429 answers with an empty body, so parsing must never be the thing
-          // that reports the failure.
-          const challengeText = await challenge.text()
-          let challengeBody: {
-            success?: boolean
-            message?: string
-            data?: { resend_after_seconds?: unknown; expires_in_minutes?: unknown; dev_code?: unknown; challenge_id?: unknown }
-          } = {}
-          try {
-            if (challengeText !== '') challengeBody = JSON.parse(challengeText) as typeof challengeBody
-          } catch {
-            challengeBody = {}
+          }).catch(() => null)
+          const challengeBody = await readPhoneBody(challenge)
+          const data = challengeBody.data
+          const acceptedResponse = challenge?.ok === true && challengeBody.success === true
+          const challengeId = typeof data?.challenge_id === 'string' && data.challenge_id !== '' ? data.challenge_id : undefined
+          const status = data?.delivery_status
+          let deliveryStatus: PhoneDeliveryStatus = status === 'accepted' || status === 'unknown' || status === 'sending' || status === 'not_sent'
+            ? status : 'unknown'
+          const failure = phoneFailure(challenge, challengeBody, 'challenge')
+          const resend = typeof data?.resend_after_seconds === 'number' && Number.isFinite(data.resend_after_seconds) && data.resend_after_seconds >= 0
+            ? Math.ceil(data.resend_after_seconds) : phoneRetryAfter(challenge, challengeBody) ?? 0
+          const expirySeconds = data?.expires_at
+          const expiry = typeof expirySeconds === 'number' && Number.isFinite(expirySeconds)
+            && Number.isFinite(new Date(expirySeconds * 1000).getTime()) ? new Date(expirySeconds * 1000).toISOString() : undefined
+          const accepted = acceptedResponse && challengeId !== undefined && status === 'accepted' && expiry !== undefined
+            && Date.parse(expiry) > Date.now() && typeof data?.resend_after_seconds === 'number'
+            && Number.isFinite(data.resend_after_seconds) && data.resend_after_seconds >= 0
+          if (deliveryStatus === 'accepted' && !accepted) deliveryStatus = 'unknown'
+          const saved = await phoneAuth.updateChallenge(key, { deliveryStatus,
+            ...challengeId === undefined ? {} : { challengeId }, ...expiry === undefined ? {} : { expiresAt: expiry },
+            resendAt: Date.now() + resend * 1000 })
+          if (!saved) {
+            json(response, 200, { ok: false, code: 'PHONE_RECOVERY_UNAVAILABLE', message: '短信结果未能保存，请保留本次请求并稍后重试。' }); return
           }
-          if (challenge.ok && challengeBody.success === true) {
-            json(response, 200, {
-              ok: true,
-              payload: {
-                challenge_id: typeof challengeBody.data?.challenge_id === 'string' ? challengeBody.data.challenge_id : phone,
-                phone,
-                resend_after_seconds: typeof challengeBody.data?.resend_after_seconds === 'number' ? challengeBody.data.resend_after_seconds : 60,
-                expires_in_minutes: typeof challengeBody.data?.expires_in_minutes === 'number' ? challengeBody.data.expires_in_minutes : null,
-                dev_code: typeof challengeBody.data?.dev_code === 'string' ? challengeBody.data.dev_code : null,
-              },
-            })
-          } else {
-            json(response, 200, {
-              ok: false,
-              code: challenge.status === 429 ? 'PHONE_RATE_LIMITED' : 'PHONE_CHALLENGE_FAILED',
-              message: challengeBody.message
-                ?? (challenge.status === 429
-                  ? '发码过于频繁，请等待重发冷却结束后再试。'
-                  : `发码失败（HTTP ${String(challenge.status)}）`),
-            })
+          const payload = challengeId === undefined ? undefined : {
+            challenge_id: challengeId, phone, delivery_status: deliveryStatus, expires_at: expiry ?? null,
+            resend_after_seconds: resend,
+            expires_in_minutes: typeof data?.expires_in_minutes === 'number' ? data.expires_in_minutes : null,
           }
+          json(response, 200, accepted && deliveryStatus === 'accepted' ? { ok: true, payload }
+            : { ...failure, ...payload === undefined ? {} : { payload } })
           return
         }
 
@@ -2472,89 +2519,105 @@ export function apply(ctx: Context, config: Config): void {
           const code = readString(body, 'code')
           const key = readString(body, 'idempotencyKey')
           if (challengeId === null || code === null || key === null) {
-            json(response, 200, { ok: false, code: 'INVALID_REQUEST', message: 'challengeId、code 与 idempotencyKey 必填' })
+            json(response, 200, { ok: false, code: 'PHONE_INVALID_PARAMETERS', message: '验证请求、验证码与请求标识必填。' })
             return
           }
-          const phoneForLogin = challengePhone === challengeId ? challengePhone : challengeId
-          if (!/^\+[1-9]\d{7,14}$/u.test(phoneForLogin)) {
-            json(response, 200, { ok: false, code: 'INVALID_REQUEST', message: '手机号需使用 E.164 格式。' }); return
+          const binding = await phoneAuth.phone(challengeId).then(phone => ({ phone }), (_unavailableRecovery: unknown) => null)
+          if (binding === null) {
+            json(response, 200, { ok: false, code: 'PHONE_RECOVERY_UNAVAILABLE', message: '无法读取登录重试状态，请稍后重试。' }); return
           }
-          const version = ++identityVersion
-          chatUsage.reset()
+          const phoneForLogin = binding.phone ?? challengeId
+          if (!/^\+[1-9]\d{7,14}$/u.test(phoneForLogin)) {
+            json(response, 200, { ok: false, code: 'PHONE_CODE_INVALID_OR_EXPIRED', message: '验证请求已失效，请重新获取验证码。' }); return
+          }
+          const reserved = await phoneAuth.reserveExchange(phoneForLogin, challengeId, code, key)
+          if (reserved !== 'reserved') {
+            json(response, 200, { ok: false, code: reserved === 'conflict' ? 'PHONE_IDEMPOTENCY_CONFLICT' : 'PHONE_RECOVERY_UNAVAILABLE',
+              message: '本次登录请求无法安全恢复，请检查原验证码后重试。' }); return
+          }
+          const version = identityVersion
+          const attempt = ++phoneLoginAttempt
           const login = await apiFetch('/api/user/phone/login', {
             method: 'POST',
             headers: { 'content-type': 'application/json', accept: 'application/json' },
-            body: JSON.stringify({ phone_e164: phoneForLogin, code }),
+            body: JSON.stringify({ phone_e164: phoneForLogin, code, challenge_id: challengeId, idempotency_key: key, contract_version: 2 }),
             signal: AbortSignal.timeout(resolved.timeoutMs),
-          })
-          /**
-           * A limited or throttled backend answers with an empty body, so the
-           * reply is read as text and parsed only when there is something to
-           * parse. `login.json()` on an empty body throws away the status that
-           * explains what actually happened.
-           */
-          const loginText = await login.text()
-          let loginBody: {
-            success?: boolean
-            message?: string
-            data?: {
-              access_token?: unknown
-              access_expires_at?: unknown
-              relay_key?: unknown
-              relay_key_id?: unknown
-              user?: { id?: unknown; username?: unknown; phone_e164?: unknown; group?: unknown; quota?: unknown }
+          }).catch(() => null)
+          const loginBody = await readPhoneBody(login)
+          if (loginBody.code === 'PHONE_LOGIN_VERIFICATION_REQUIRED' || loginBody.data?.require_verification === true) {
+            if (version !== identityVersion || attempt !== phoneLoginAttempt) {
+              json(response, 200, { ok: false, code: 'ACCOUNT_CHANGED', message: '登录状态已变更，请重新操作。' }); return
             }
-          } = {}
-          try {
-            if (loginText !== '') loginBody = JSON.parse(loginText) as typeof loginBody
-          } catch {
-            loginBody = {}
-          }
-          if (loginBody.success !== true && login.status === 429) {
-            json(response, 200, {
-              ok: false,
-              code: 'PHONE_RATE_LIMITED',
-              message: '验证码请求过于频繁，请稍后再试。',
-            })
+            const data = loginBody.data
+            const flowToken = data?.flow_token
+            const expiresAt = data?.expires_at
+            const methods = Array.isArray(data?.methods) ? data.methods.flatMap((item: unknown) => {
+              if (item === null || typeof item !== 'object' || Array.isArray(item)
+                || !('method' in item) || typeof item.method !== 'string' || item.method === ''
+                || !('available' in item) || item.available !== true) return []
+              return [item.method]
+            }) : []
+            if (typeof flowToken !== 'string' || flowToken === '' || typeof expiresAt !== 'number'
+              || !Number.isFinite(expiresAt) || expiresAt * 1000 <= Date.now() || methods.length === 0) {
+              json(response, 200, phoneFailure(null, {}, 'login')); return
+            }
+            if (await phoneAuth.securityPending(key)) {
+              json(response, 200, { ok: false, code: 'PHONE_SECURITY_UNCONFIRMED', message: '安全验证结果未确认，请重新短信登录。' }); return
+            }
+            phoneVerifications.set(key, { flowToken, phone: phoneForLogin, methods, expiresAt: expiresAt * 1000,
+              version, attempt, busy: false, uncertain: false })
+            json(response, 200, { ...phoneFailure(login, loginBody, 'login'), payload: { verification: { methods } } })
             return
           }
-          const payload = loginBody.data ?? null
-          const token = payload?.access_token
-          const rawPhone = typeof payload?.user?.phone_e164 === 'string' ? payload.user.phone_e164 : phoneForLogin
-          const accountId = payload?.user?.id
-          const id = typeof accountId === 'number' && Number.isSafeInteger(accountId) && accountId > 0 ? String(accountId)
-            : typeof accountId === 'string' && /^[1-9]\d*$/u.test(accountId) && Number.isSafeInteger(Number(accountId)) ? accountId : null
-          const expiry = payload?.access_expires_at
-          const relayKey = payload?.relay_key
-          if (login.ok && loginBody.success === true && typeof token === 'string' && token.trim() !== '' && id !== null
-            && typeof expiry === 'number' && Number.isFinite(expiry) && expiry * 1000 > Date.now()
-            && Number.isFinite(new Date(expiry * 1000).getTime()) && typeof relayKey === 'string' && /^sk-\S+$/u.test(relayKey)) {
-            if (version !== identityVersion) {
-              json(response, 200, { ok: false, code: 'ACCOUNT_CHANGED', message: '登录状态已变更，请重新操作。' }); return
-            }
-            const account = { id, phone: rawPhone }
-            const sessionToken = randomBytes(32).toString('hex')
-            const sessionExpiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
-            const refresh = refreshFromSetCookie(login) ?? undefined
-            const relayId = typeof payload?.relay_key_id === 'number' && Number.isSafeInteger(payload.relay_key_id) && payload.relay_key_id > 0
-              ? payload.relay_key_id : undefined
-            await mutateSession(async () => {
-              if (version !== identityVersion) return
-              await releaseAccountCredential()
-              await store.write({ token: sessionToken, expiresAt: sessionExpiresAt, account, backendBaseUrl: apiBaseUrl,
-                upstream: { token, refresh, expiresAt: new Date(expiry * 1000).toISOString() },
-                relay: { key: relayKey, ...relayId === undefined ? {} : { id: relayId } } })
-              await holdAccountCredential(relayKey)
-              invalidateModelCatalog()
-              await writeProductModels([]).catch(reportModelRefreshFailure)
-            })
-            if (version !== identityVersion) {
-              json(response, 200, { ok: false, code: 'ACCOUNT_CHANGED', message: '登录状态已变更，请重新操作。' }); return
-            }
-            json(response, 200, { ok: true, payload: { status: 'authorized', expiresAt: sessionExpiresAt, account } })
-          } else {
-            json(response, 200, { ok: false, code: 'PHONE_LOGIN_FAILED', message: loginBody.message ?? '验证码错误或已过期' })
+          json(response, 200, await acceptPhoneSession(login, loginBody, phoneForLogin, version, attempt, key))
+          return
+        }
+
+        if (route === '/api/session/verify-security' && method === 'POST') {
+          const body = await readJson(request)
+          const key = readString(body, 'exchangeKey')
+          const code = readString(body, 'code')
+          const flow = key === null ? undefined : phoneVerifications.get(key)
+          if (key === null || code === null || code.length > 128 || flow === undefined || flow.expiresAt <= Date.now()) {
+            json(response, 200, { ok: false, code: 'PHONE_SECURITY_EXPIRED', message: '安全验证已过期，请重新短信登录。' }); return
           }
+          if (flow.version !== identityVersion || flow.attempt !== phoneLoginAttempt) {
+            json(response, 200, { ok: false, code: 'ACCOUNT_CHANGED', message: '登录状态已变更，请重新操作。' }); return
+          }
+          if (!flow.methods.includes('2fa')) {
+            json(response, 200, { ok: false, code: 'PHONE_SECURITY_UNSUPPORTED', message: '此账户需要当前客户端尚未支持的安全验证方式。' }); return
+          }
+          if (flow.uncertain) {
+            json(response, 200, { ok: false, code: 'PHONE_SECURITY_UNCONFIRMED', message: '安全验证结果未确认，请重新短信登录。' }); return
+          }
+          if (flow.busy) {
+            json(response, 200, { ok: false, code: 'PHONE_RATE_LIMITED', retryAfterSeconds: 1, message: '安全验证仍在处理中，请稍候。' }); return
+          }
+          flow.busy = true
+          try {
+            if (!await phoneAuth.markSecurity(key, true)) {
+              json(response, 200, { ok: false, code: 'PHONE_RECOVERY_UNAVAILABLE', message: '无法保存安全验证状态，请稍后重试。' }); return
+            }
+            const login = await apiFetch('/api/user/login/verify', {
+              method: 'POST', headers: { ...declaredOrigin, 'content-type': 'application/json', accept: 'application/json' },
+              body: JSON.stringify({ flow_token: flow.flowToken, method: '2fa', code }),
+              signal: AbortSignal.timeout(resolved.timeoutMs),
+            }).catch(() => null)
+            const result = await readPhoneBody(login)
+            if (result.success === false && login !== null && login.status < 500) {
+              if (!await phoneAuth.markSecurity(key, false)) flow.uncertain = true
+              json(response, 200, login.status === 429 ? phoneFailure(login, result, 'login')
+                : { ok: false, code: 'PHONE_SECURITY_REJECTED', message: '安全验证未通过或已过期，请检查验证器验证码或备用码。' })
+              return
+            }
+            const outcome = await acceptPhoneSession(login, result, flow.phone, flow.version, flow.attempt, key)
+            if (outcome.ok) { phoneVerifications.delete(key); json(response, 200, outcome); return }
+            flow.uncertain = true
+            json(response, 200, { ok: false, code: 'PHONE_SECURITY_UNCONFIRMED', message: '安全验证结果未确认，请重新短信登录。' })
+          } catch (_unconfirmedSecurityResult: unknown) {
+            flow.uncertain = true
+            json(response, 200, { ok: false, code: 'PHONE_SECURITY_UNCONFIRMED', message: '安全验证结果未确认，请重新短信登录。' })
+          } finally { flow.busy = false }
           return
         }
 
@@ -2943,12 +3006,25 @@ export function apply(ctx: Context, config: Config): void {
           const body = await readJson(request)
           const binding = body.session_id === undefined && body.account_id === undefined ? undefined : await bindCurrentVideoAccount()
           const owner = binding === undefined ? undefined : creativePanelOwner(ctx, request, body, binding.identity)
-          const outcome = owner === undefined || binding === undefined ? await runImageGeneration(key, body)
-            : await generateForPanel(owner, 'image', body, async (operation, signal) => runImageGeneration(await binding.key(), body, signal,
-              path => creative.saved(operation, path, 'image'), async () => {
-                await binding.key()
-                await creative.dispatched(operation)
-              }))
+          let outcome: Awaited<ReturnType<typeof runImageGeneration>> & { planId?: string; operationId?: string }
+          if (owner === undefined || binding === undefined) outcome = await runImageGeneration(key, body)
+          else {
+            const admission = `${owner.accountId}:${owner.sessionId}`
+            if (panelImageAdmissions.has(admission)) {
+              outcome = await pendingPanelImage(owner) ?? { ok: false, submissionState: 'unknown', code: 'CREATIVE_SHOT_RUNNING',
+                message: '此聊天的图片提交正在处理，请等待并查询原任务，不要再次生成。' }
+            } else {
+              panelImageAdmissions.add(admission)
+              try {
+                outcome = await pendingPanelImage(owner) ?? await generateForPanel(owner, 'image', body,
+                  async (operation, signal) => runImageGeneration(await binding.key(), body, signal,
+                    path => creative.saved(operation, path, 'image'), async () => {
+                      await binding.key()
+                      await creative.dispatched(operation)
+                    }, receipt => creative.receipt(operation, receipt), undefined, undefined, () => binding.key()))
+              } finally { panelImageAdmissions.delete(admission) }
+            }
+          }
           json(response, 200, {
             ok: outcome.ok,
             source: 'newapi',
@@ -2956,6 +3032,11 @@ export function apply(ctx: Context, config: Config): void {
             mode: outcome.mode ?? null,
             code: outcome.code ?? null,
             message: outcome.message ?? null,
+            submission_state: outcome.submissionState ?? null,
+            task_id: outcome.taskId ?? null,
+            request_id: outcome.requestId ?? null,
+            plan_id: outcome.planId ?? null,
+            operation_id: outcome.operationId ?? null,
             payload: outcome.ok ? { path: outcome.path, paths: outcome.paths, model: outcome.model, ...'planId' in outcome ? { plan_id: outcome.planId } : {} } : null,
           })
           return
@@ -3075,12 +3156,23 @@ export function apply(ctx: Context, config: Config): void {
             }
             const binding = body.session_id === undefined && body.account_id === undefined ? undefined : await bindCurrentVideoAccount()
             const owner = binding === undefined ? undefined : creativePanelOwner(ctx, request, body, binding.identity)
-            const outcome = owner === undefined || binding === undefined ? await runVideoTask(key, capability.model.route, built.request)
-              : await generateForPanel(owner, 'video', body, async (operation, signal) => runVideoTask(await binding.key(), capability.model.route, built.request, signal,
-                async () => {
-                  await binding.key()
-                  await creative.dispatched(operation)
-                }))
+            let outcome: MediaOutcome & { planId?: string; operationId?: string }
+            if (owner === undefined || binding === undefined) outcome = await runVideoTask(key, capability.model.route, built.request)
+            else {
+              const admission = `video:${owner.accountId}:${owner.sessionId}`
+              if (panelImageAdmissions.has(admission)) outcome = await pendingPanelImage(owner, 'video')
+                ?? { ok: false, submissionState: 'unknown', code: 'CREATIVE_SHOT_RUNNING' }
+              else {
+                panelImageAdmissions.add(admission)
+                try {
+                  outcome = await pendingPanelImage(owner, 'video') ?? await generateForPanel(owner, 'video', body,
+                    async (operation, signal) => runVideoTask(await binding.key(), capability.model.route, built.request, signal,
+                      async () => { await binding.key(); await creative.dispatched(operation) },
+                      receipt => creative.receipt(operation, receipt, 'video'), undefined,
+                      path => creative.saved(operation, path, 'video'), () => binding.key()))
+                } finally { panelImageAdmissions.delete(admission) }
+              }
+            }
             json(response, 200, {
               ok: outcome.ok,
               source: 'newapi',
@@ -3088,6 +3180,9 @@ export function apply(ctx: Context, config: Config): void {
               code: outcome.code ?? null,
               message: outcome.message ?? null,
               taskId: outcome.taskId ?? null,
+              task_id: outcome.taskId ?? null, request_id: outcome.requestId ?? null,
+              plan_id: outcome.planId ?? null, operation_id: outcome.operationId ?? null,
+              submission_state: outcome.submissionState ?? null,
               payload: outcome.ok ? { path: outcome.path, taskId: outcome.taskId, ...'planId' in outcome ? { plan_id: outcome.planId } : {} } : null,
             })
             return
@@ -3297,6 +3392,10 @@ export function apply(ctx: Context, config: Config): void {
 
         json(response, 404, { ok: false, code: 'NOT_FOUND', message: 'unknown credits route' })
       } catch (error) {
+        if (route === '/api/session/challenge' || route === '/api/session/verify'
+          || route === '/api/session/verify-security' || route === '/api/session/phone-recovery') {
+          json(response, 200, phoneFailure(null, {}, route === '/api/session/challenge' ? 'challenge' : 'login')); return
+        }
         if (error instanceof CreativeError) {
           json(response, error.status, { ok: false, code: error.code, message: error.message }); return
         }
@@ -3451,7 +3550,7 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.tools.register(defineTool({
     name: 'generate_image',
-    description: 'Generate images or edit reference images through the signed-in account relay, save every result into the artifacts directory, and return the paths. For image-to-image requests, pass the current-chat user attachment or an authorized workspace image in reference_images. Which image models exist, and what each one accepts, is the deployment’s own answer: ask for a model only when the user names one.' + MEDIA_FAILURE_GUIDANCE,
+    description: 'Generate images or edit reference images through the signed-in account relay, save every result into the artifacts directory, and return the paths. For pending or unknown results, never resubmit this tool: use query_image_task with the original plan_id and operation_id when a task_id was received. Without a task_id, retain the unknown outcome and reconcile the original request before any paid retry. For image-to-image requests, pass the current-chat user attachment or an authorized workspace image in reference_images. Which image models exist, and what each one accepts, is the deployment’s own answer: ask for a model only when the user names one.' + MEDIA_FAILURE_GUIDANCE,
     parameters: {
       plan_id: { type: 'string', description: 'Explicit update_creation_plan id for this generation. Also provide exactly one of shot_id or asset_id.' },
       shot_id: { type: 'string', description: 'Exact shot id in the explicit plan; never guess a latest project.' },
@@ -3471,6 +3570,10 @@ export function apply(ctx: Context, config: Config): void {
           paths: { type: 'array', items: { type: 'string' } },
           model: { type: 'string' },
           plan_id: { type: 'string' },
+          operation_id: { type: 'string' },
+          task_id: { type: 'string' },
+          request_id: { type: 'string' },
+          submission_state: { type: 'string' },
           code: { type: 'string' },
           message: { type: 'string' },
         },
@@ -3480,6 +3583,7 @@ export function apply(ctx: Context, config: Config): void {
     },
     async execute(args, exec) {
       let operation: CreativeOperation | undefined
+      const submission = { started: false }
       try {
         const binding = await bindCurrentVideoAccount()
         const owner = creativeOwner(exec, binding.identity)
@@ -3509,16 +3613,155 @@ export function apply(ctx: Context, config: Config): void {
           ...args.size === undefined ? {} : { size: args.size },
           ...args.count === undefined ? {} : { count: args.count },
           ...args.reference_images === undefined ? {} : { references },
-        }, exec.signal, path => creative.saved(creation, path, 'image'), () => creative.dispatched(creation))
+        }, exec.signal, path => creative.saved(creation, path, 'image'), async () => {
+          await binding.key()
+          await creative.dispatched(creation)
+          submission.started = true
+        }, receipt => creative.receipt(creation, receipt), undefined, undefined, () => binding.key(), artifactOriginOf(exec))
         const paths = [...outcome.paths ?? []]
-        await creative.finish(operation, { status: outcome.ok ? 'completed' : exec.signal.aborted ? 'cancelled' : ['TIMEOUT', 'TRANSPORT', 'NO_TASK_ID'].includes(outcome.code ?? '') ? 'unknown' : 'failed', paths, kind: 'image', ...outcome.code === undefined ? {} : { errorCode: outcome.code } })
-        if (!outcome.ok) return { status: 'failed', plan_id: operation.projectId, model: outcome.model ?? '', ...outcome.code === undefined ? {} : { code: outcome.code }, message: outcome.message ?? outcome.code ?? '生成失败' }
-        return { status: 'succeeded', plan_id: operation.projectId, path: outcome.path ?? '', paths, model: outcome.model ?? '', message: `图片已保存到产物目录（共 ${String(paths.length)} 张）。` }
+        await creative.finish(operation, { status: outcome.ok ? 'completed' : imageCreativeStatus(outcome, exec.signal), paths, kind: 'image',
+          ...outcome.imageReceipt === undefined ? {} : { imageReceipt: outcome.imageReceipt },
+          ...outcome.submissionState === 'not-submitted' ? { notSubmitted: true } : {}, ...outcome.code === undefined ? {} : { errorCode: outcome.code } })
+        const receipt = { operation_id: operation.operationId, submission_state: outcome.submissionState ?? 'not-submitted',
+          ...outcome.taskId === undefined ? {} : { task_id: outcome.taskId },
+          ...outcome.requestId === undefined ? {} : { request_id: outcome.requestId } }
+        if (!outcome.ok) return { status: outcome.submissionState === 'pending' ? 'pending' : outcome.submissionState === 'unknown' ? 'unknown' : 'failed',
+          plan_id: operation.projectId, ...receipt, model: outcome.model ?? '', ...outcome.code === undefined ? {} : { code: outcome.code }, message: outcome.message ?? outcome.code ?? '生成失败' }
+        return { status: 'succeeded', plan_id: operation.projectId, ...receipt, path: outcome.path ?? '', paths, model: outcome.model ?? '', message: `图片已保存到产物目录（共 ${String(paths.length)} 张）。` }
       } catch (error) {
-        if (operation !== undefined) creative.release(operation)
+        if (operation !== undefined) {
+          try { await creative.finish(operation, { kind: 'image', status: submission.started ? 'unknown' : 'failed',
+            errorCode: submission.started ? 'CREATIVE_OUTCOME_UNKNOWN' : 'CREATIVE_PREFLIGHT_FAILED' }) }
+          catch { ctx.logger.warn('credits-index: image operation settlement could not be recorded; inspect retained outputs before submitting again') }
+          creative.release(operation)
+        }
         return error instanceof CreativeError || error instanceof VideoProjectError
           ? { status: 'failed', code: error.code, message: error.message }
           : { status: 'failed', code: operation === undefined ? 'CREATIVE_OPERATION_UNAVAILABLE' : 'CREATIVE_OUTCOME_UNKNOWN', message: '图片生成或创作记录未完成，请检查产物和原始任务；不要重复提交结果未知的生成。' }
+      }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'query_image_task',
+    description: 'Without operation_id, list unresolved image invocations owned by this account and chat (optionally filter by plan_id) to recover original ids after interruption or restart. With both original plan_id and operation_id, query that accepted task and save completed outputs. This only reads retained tasks; it never submits another generation or accepts a caller-supplied remote URL or task id. If the original submission has no task id, retain its unknown outcome and reconcile the original request instead of generating again.' + MEDIA_FAILURE_GUIDANCE,
+    parameters: {
+      plan_id: { type: 'string', description: 'Original retained creation plan id; required when querying one operation.' },
+      operation_id: { type: 'string', description: 'Original generation operation id. Omit to list unresolved receipts without starting queries.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        properties: {
+          status: { type: 'string' }, plan_id: { type: 'string' }, operation_id: { type: 'string' },
+          submission_state: { type: 'string' }, task_id: { type: 'string' }, request_id: { type: 'string' },
+          path: { type: 'string' }, paths: { type: 'array', items: { type: 'string' } },
+          model: { type: 'string' }, code: { type: 'string' }, message: { type: 'string' },
+          tasks: { type: 'array', items: { type: 'object', properties: {
+            plan_id: { type: 'string' }, operation_id: { type: 'string' }, status: { type: 'string' },
+            can_query: { type: 'boolean' }, task_id: { type: 'string' }, request_id: { type: 'string' },
+          }, additionalProperties: false } },
+        },
+        additionalProperties: false,
+      },
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+    },
+    async execute(args, exec) {
+      try {
+        const binding = await bindCurrentVideoAccount()
+        if (args.operation_id === undefined) {
+          const owner = creativeOwner(exec, binding.identity)
+          const projects = await creative.projects(owner)
+          const tasks = projects.filter(project => args.plan_id === undefined || project.id === args.plan_id)
+            .flatMap(project => project.tasks.filter(task => ['unknown', 'running', 'saving'].includes(task.status)
+              && (project.kind === 'image' || task.imageReceipt !== undefined)).map(task => ({
+              plan_id: project.id, operation_id: task.id, status: task.status, can_query: task.canQuery === true,
+              ...task.imageReceipt?.taskId === undefined ? {} : { task_id: task.imageReceipt.taskId },
+              ...task.imageReceipt?.requestId === undefined ? {} : { request_id: task.imageReceipt.requestId },
+            })))
+          await binding.key()
+          if (tasks.length > 100) return { status: 'failed', code: 'CREATIVE_TASK_LIST_TOO_LARGE', message: '未确认任务较多，请提供原计划编号缩小查询范围。' }
+          return { status: 'listed', tasks, message: '已列出本聊天未确认的原任务。仅带任务编号的记录可继续查询；本次未提交生成。' }
+        }
+        if (args.plan_id === undefined) throw new CreativeError('CREATIVE_INVALID', 400, '查询原任务需要计划编号与原操作编号；请先列出现有回执。')
+        const retained = await creative.resumeImage(creativeOwner(exec, binding.identity), args.plan_id, args.operation_id)
+        const outcome = await runRetainedImage(retained, () => binding.key(), exec.signal)
+        return {
+          status: outcome.ok ? 'succeeded' : outcome.submissionState === 'pending' ? 'pending' : outcome.submissionState === 'unknown' ? 'unknown' : 'failed',
+          plan_id: retained.operation.projectId, operation_id: retained.operation.operationId,
+          submission_state: outcome.submissionState ?? 'pending', model: outcome.model ?? retained.receipt.model,
+          ...outcome.taskId === undefined ? {} : { task_id: outcome.taskId },
+          ...outcome.requestId === undefined ? {} : { request_id: outcome.requestId },
+          ...outcome.code === undefined ? {} : { code: outcome.code },
+          ...outcome.path === undefined ? {} : { path: outcome.path },
+          paths: [...outcome.paths ?? []], message: outcome.message ?? (outcome.ok ? '原任务图片已保存。' : '原任务已受理，暂未确认结果；可继续查询原任务，请勿重新生成。'),
+        }
+      } catch (error) {
+        return error instanceof CreativeError || error instanceof VideoProjectError
+          ? { status: 'failed', code: error.code, message: error.message }
+          : { status: 'pending', code: 'CREATIVE_RECOVERY_INTERRUPTED', message: '原任务查询暂时中断，请保留回执并继续查询原任务，不要重新生成。' }
+      }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'query_video_task',
+    description: 'Without operation_id, list unresolved video invocations owned by this account and chat (optionally filter by plan_id) to recover original ids after interruption or restart. With both original plan_id and operation_id, query that accepted task and save completed outputs. This only reads retained tasks; it never submits another generation or accepts a caller-supplied remote URL or task id. If the original submission has no task id, retain its unknown outcome and reconcile the original request instead of generating again.' + MEDIA_FAILURE_GUIDANCE,
+    parameters: {
+      plan_id: { type: 'string', description: 'Original retained creation plan id; required when querying one operation.' },
+      operation_id: { type: 'string', description: 'Original generation operation id. Omit to list unresolved receipts without starting queries.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        properties: {
+          status: { type: 'string' }, plan_id: { type: 'string' }, operation_id: { type: 'string' },
+          submission_state: { type: 'string' }, task_id: { type: 'string' }, request_id: { type: 'string' },
+          path: { type: 'string' }, paths: { type: 'array', items: { type: 'string' } },
+          model: { type: 'string' }, code: { type: 'string' }, message: { type: 'string' },
+          tasks: { type: 'array', items: { type: 'object', properties: {
+            plan_id: { type: 'string' }, operation_id: { type: 'string' }, status: { type: 'string' },
+            can_query: { type: 'boolean' }, task_id: { type: 'string' }, request_id: { type: 'string' },
+          }, additionalProperties: false } },
+        },
+        additionalProperties: false,
+      },
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+    },
+    async execute(args, exec) {
+      try {
+        const binding = await bindCurrentVideoAccount()
+        if (args.operation_id === undefined) {
+          const owner = creativeOwner(exec, binding.identity)
+          const projects = await creative.projects(owner)
+          const tasks = projects.filter(project => args.plan_id === undefined || project.id === args.plan_id)
+            .flatMap(project => project.tasks.filter(task => ['unknown', 'running', 'saving'].includes(task.status)
+              && (project.kind === 'video' || task.videoReceipt !== undefined)).map(task => ({
+              plan_id: project.id, operation_id: task.id, status: task.status, can_query: task.canQuery === true,
+              ...task.videoReceipt?.taskId === undefined ? {} : { task_id: task.videoReceipt.taskId },
+              ...task.videoReceipt?.requestId === undefined ? {} : { request_id: task.videoReceipt.requestId },
+            })))
+          await binding.key()
+          if (tasks.length > 100) return { status: 'failed', code: 'CREATIVE_TASK_LIST_TOO_LARGE', message: '未确认任务较多，请提供原计划编号缩小查询范围。' }
+          return { status: 'listed', tasks, message: '已列出本聊天未确认的原任务。仅带任务编号的记录可继续查询；本次未提交生成。' }
+        }
+        if (args.plan_id === undefined) throw new CreativeError('CREATIVE_INVALID', 400, '查询原任务需要计划编号与原操作编号；请先列出现有回执。')
+        const retained = await creative.resumeVideoTask(creativeOwner(exec, binding.identity), args.plan_id, args.operation_id)
+        const outcome = await runRetainedVideo(retained, () => binding.key(), exec.signal)
+        return {
+          status: outcome.ok ? 'succeeded' : outcome.submissionState === 'pending' ? 'pending' : outcome.submissionState === 'unknown' ? 'unknown' : 'failed',
+          plan_id: retained.operation.projectId, operation_id: retained.operation.operationId,
+          submission_state: outcome.submissionState ?? 'pending', model: outcome.model ?? retained.receipt.model,
+          ...outcome.taskId === undefined ? {} : { task_id: outcome.taskId },
+          ...outcome.requestId === undefined ? {} : { request_id: outcome.requestId },
+          ...outcome.code === undefined ? {} : { code: outcome.code },
+          ...outcome.path === undefined ? {} : { path: outcome.path },
+          paths: outcome.path === undefined ? [] : [outcome.path], message: outcome.message ?? (outcome.ok ? '原任务视频已保存。' : '原任务已受理，暂未确认结果；可继续查询原任务，请勿重新生成。'),
+        }
+      } catch (error) {
+        return error instanceof CreativeError || error instanceof VideoProjectError
+          ? { status: 'failed', code: error.code, message: error.message }
+          : { status: 'pending', code: 'CREATIVE_RECOVERY_INTERRUPTED', message: '原任务查询暂时中断，请保留回执并继续查询原任务，不要重新生成。' }
       }
     },
   }))
@@ -3549,6 +3792,7 @@ export function apply(ctx: Context, config: Config): void {
           model: { type: 'string' },
           task_id: { type: 'string' },
           plan_id: { type: 'string' },
+          operation_id: { type: 'string' }, request_id: { type: 'string' }, submission_state: { type: 'string' },
           code: { type: 'string' },
           message: { type: 'string' },
         },
@@ -3595,13 +3839,19 @@ export function apply(ctx: Context, config: Config): void {
         if (!built.ok) return { status: 'failed', code: built.code, model: capability.model.id, message: built.message }
         exec.signal.throwIfAborted()
         operation = await creative.begin(creativeOwner(exec, binding.identity), { kind: 'video', model: capability.model.id, prompt: args.prompt, shots: [{ prompt: args.prompt, ...args.duration_seconds === undefined ? {} : { durationSeconds: args.duration_seconds } }], ...args.plan_id === undefined ? {} : { planId: args.plan_id }, ...args.shot_id === undefined ? {} : { shotIds: [args.shot_id] } })
-        await creative.dispatched(operation)
-        const outcome = await runVideoTask(await binding.key(), capability.model.route, built.request, exec.signal)
-        await creative.finish(operation, { status: outcome.ok ? 'completed' : exec.signal.aborted ? 'cancelled' : ['TIMEOUT', 'TRANSPORT', 'NO_TASK_ID', 'INSUFFICIENT_BALANCE'].includes(outcome.code ?? '') ? 'unknown' : 'failed', kind: 'video', ...outcome.path === undefined ? {} : { paths: [outcome.path] }, ...outcome.code === undefined ? {} : { errorCode: outcome.code } })
+        const creation = operation
+        const outcome = await runVideoTask(await binding.key(), capability.model.route, built.request, exec.signal,
+          async () => { await binding.key(); await creative.dispatched(creation) },
+          receipt => creative.receipt(creation, receipt, 'video'), undefined,
+          path => creative.saved(creation, path, 'video'), () => binding.key(), undefined, artifactOriginOf(exec))
+        await creative.finish(operation, { status: outcome.ok ? 'completed' : imageCreativeStatus(outcome, exec.signal), kind: 'video',
+          ...outcome.videoReceipt === undefined ? {} : { videoReceipt: outcome.videoReceipt },
+          ...outcome.submissionState === 'not-submitted' ? { notSubmitted: true } : {}, ...outcome.path === undefined ? {} : { paths: [outcome.path] }, ...outcome.code === undefined ? {} : { errorCode: outcome.code } })
         if (!outcome.ok) {
           return {
-            status: outcome.code === 'TIMEOUT' ? 'running' : 'failed',
-            plan_id: operation.projectId,
+            status: outcome.submissionState === 'pending' ? 'pending' : outcome.submissionState === 'unknown' ? 'unknown' : 'failed',
+            plan_id: operation.projectId, operation_id: operation.operationId, submission_state: outcome.submissionState ?? 'unknown',
+            ...outcome.requestId === undefined ? {} : { request_id: outcome.requestId },
             model: capability.model.id,
             task_id: outcome.taskId ?? '',
             ...outcome.code === undefined ? {} : { code: outcome.code },
@@ -3621,7 +3871,7 @@ export function apply(ctx: Context, config: Config): void {
         }
         return {
           status: 'succeeded',
-          plan_id: operation.projectId,
+          plan_id: operation.projectId, operation_id: operation.operationId, submission_state: outcome.submissionState ?? 'completed',
           path: outcome.path ?? '',
           model: capability.model.id,
           task_id: outcome.taskId ?? '',

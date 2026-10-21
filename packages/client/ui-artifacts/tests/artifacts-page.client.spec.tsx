@@ -67,6 +67,8 @@ function props(overrides: Partial<ArtifactsPageProps> = {}): ArtifactsPageProps 
     readWorkspace: vi.fn<ArtifactsInjected['readWorkspace']>(async () => ({ ok: false, code: 'ARTIFACT_WORKSPACE_UNAVAILABLE' })),
     readRootDirectory: vi.fn<ArtifactsInjected['readRootDirectory']>(async () => ({ ok: false, code: 'ARTIFACT_PATH_FORBIDDEN' })),
     readDesktop: vi.fn(async () => false),
+    readOrigin: vi.fn(async () => ({ ok: true as const, value: null })),
+    returnToChat: vi.fn(async () => ({ ok: true as const, value: null })),
     reveal: vi.fn(async () => ({ ok: true as const, value: null })),
     refreshKey: '',
     workspaces: [workspaceOne, workspaceTwo],

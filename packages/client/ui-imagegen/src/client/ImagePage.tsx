@@ -10,6 +10,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-prompt-assist/client'
 import type { Context } from '@deepseek-ai/cordis'
 import type { LocalizedText } from '@deepseek-ai/dsh-client-creation-content/client'
 import type { createImageDraftStore, ImageDraft, ImageUploadResult } from './draft-store.ts'
+import { queryImageSubmission, readImageSubmission, submissionFromAnswer, submissionKey } from './image-submission.ts'
 import css from './ImagePage.module.css'
 
 /** Plain callbacks injected by this plugin's registration. */
@@ -29,6 +30,11 @@ interface Envelope<T> {
   readonly message?: string | null
   readonly sessionInvalid?: boolean
   readonly payload?: T
+  readonly plan_id?: string | null
+  readonly operation_id?: string | null
+  readonly task_id?: string | null
+  readonly request_id?: string | null
+  readonly submission_state?: 'not-submitted' | 'pending' | 'unknown' | 'failed' | 'completed' | null
 }
 
 interface SessionInfo {
@@ -75,8 +81,8 @@ async function post<T>(path: string, body: Record<string, unknown>): Promise<Env
     method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' },
     body: JSON.stringify(body),
   })
-  if (!response.ok) throw new Error(`HTTP_${String(response.status)}`)
-  return await response.json() as Envelope<T>
+  const answer = await response.json() as Envelope<T>
+  return response.ok ? answer : { ...answer, ok: false }
 }
 
 function rawUrl(file: ArtifactLocation): string {
@@ -99,7 +105,6 @@ export function ImagePage(props: ImagePageProps): ReactNode {
     references, uploading, uploadResult, generationStartedAt, sessionInvalid, message, failure, resultPaths: result,
   } = draft
   const running = generationStartedAt !== null
-  const locked = running || uploading || draft.promptAssisting
   const publication = props.useCreationContent(state => state)
   const language = props.useLocale(state => state.active)
   const text = (value: LocalizedText | undefined): string => value === undefined ? '' : language === 'en' ? value.en || value.zh : value.zh
@@ -111,6 +116,11 @@ export function ImagePage(props: ImagePageProps): ReactNode {
   const contentPresets = [...content?.presets ?? []].filter(item => item.status === 'published').sort((a, b) => a.sortOrder - b.sortOrder)
   const [signedIn, setSignedIn] = useState<boolean | null>(null)
   const [accountIdentity, setAccountIdentity] = useState<string | null>(null)
+  const [submissionCheck, setSubmissionCheck] = useState<'checking' | 'ready' | 'failed'>('checking')
+  const [checkedOwner, setCheckedOwner] = useState<string | null>(null)
+  const [submissionRevision, setSubmissionRevision] = useState(0)
+  const [queryingOriginal, setQueryingOriginal] = useState(false)
+  const originalQuery = useRef<AbortController | null>(null)
   const [creditsPerYuan, setCreditsPerYuan] = useState(1000)
   const [balance, setBalance] = useState<number | null>(null)
   const [models, setModels] = useState<readonly ImageModel[]>([])
@@ -149,6 +159,11 @@ export function ImagePage(props: ImagePageProps): ReactNode {
   const maxEdits = params?.maxEdits ?? 0
   const isSignedIn = signedIn === true && !sessionInvalid
   const ownsReferences = isSignedIn && accountIdentity !== null && draft.referenceAccountId === accountIdentity
+  const submissionOwner = accountIdentity === null || sessionId === undefined ? null : { accountId: accountIdentity, sessionId }
+  const ownerKey = submissionOwner === null ? null : submissionKey(submissionOwner)
+  const originalSubmission = ownerKey === null ? null : draft.unsettled[ownerKey] ?? null
+  const locked = running || uploading || draft.promptAssisting || originalSubmission !== null
+    || submissionCheck !== 'ready' || checkedOwner !== ownerKey
   const canUpload = ownsReferences && references.length < 6 && !locked
   const assistReferences = useMemo(() => ownsReferences ? references.map(item => item.assetId) : [],
     [references, ownsReferences])
@@ -234,6 +249,75 @@ export function ImagePage(props: ImagePageProps): ReactNode {
       if (sequence === sessionSequence.current) setStateError(true)
     }
   }, [acceptAccount, actions, loadBalance, loadModels, readDraft])
+
+  useEffect(() => {
+    if (accountIdentity === null || sessionId === undefined) return undefined
+    const owner = { accountId: accountIdentity, sessionId }
+    const epoch = readDraft().referenceEpoch
+    const abort = new AbortController()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let readSequence = 0
+    const current = (): boolean => !abort.signal.aborted && readDraft().referenceEpoch === epoch
+      && readDraft().referenceAccountId === owner.accountId
+    const check = async (): Promise<void> => {
+      const sequence = ++readSequence
+      const retained = readDraft().unsettled[submissionKey(owner)] ?? null
+      const result = await readImageSubmission(owner, retained, abort.signal)
+      if (!current() || sequence !== readSequence) return
+      // An earlier listing must not erase a newly submitted or newly queried task.
+      if ((readDraft().unsettled[submissionKey(owner)] ?? null) !== retained) { void check(); return }
+      if (!result.ok) { setSubmissionCheck('failed'); return }
+      setCheckedOwner(submissionKey(owner))
+      setSubmissionCheck('ready')
+      if (result.submission !== null) {
+        actions.retainSubmission(result.submission)
+        if (result.submission.state === 'pending' && !document.hidden) {
+          timer = setTimeout(() => { timer = undefined; if (!document.hidden) void check() }, 2000)
+        }
+      } else {
+        actions.clearSubmission(owner.accountId, owner.sessionId)
+        if (retained !== null) {
+          actions.patch({ failure: result.completed ? null : t('originalFailed'), message: result.completed ? t('done') : null })
+          void loadHistory(); void loadBalance()
+        }
+      }
+    }
+    setSubmissionCheck('checking')
+    void check()
+    const revisit = (): void => {
+      if (document.hidden) { if (timer !== undefined) clearTimeout(timer); timer = undefined }
+      else if (timer === undefined) void check()
+    }
+    document.addEventListener('visibilitychange', revisit)
+    return () => {
+      abort.abort(); originalQuery.current?.abort(); originalQuery.current = null
+      setQueryingOriginal(false)
+      if (timer !== undefined) clearTimeout(timer)
+      document.removeEventListener('visibilitychange', revisit)
+    }
+  }, [accountIdentity, sessionId, submissionRevision, actions, loadHistory, loadBalance, readDraft, t])
+
+  const queryOriginal = async (): Promise<void> => {
+    if (originalSubmission === null || originalQuery.current !== null) return
+    const epoch = readDraft().referenceEpoch
+    const abort = new AbortController()
+    originalQuery.current = abort
+    setQueryingOriginal(true); setFailure(null)
+    const answer = await queryImageSubmission(originalSubmission, abort.signal)
+    if (!abort.signal.aborted && epoch === readDraft().referenceEpoch) {
+      if (!answer.ok) setFailure(t('originalQueryFailed'))
+      else {
+        if (answer.submission !== null) actions.retainSubmission(answer.submission)
+        else {
+          actions.clearSubmission(originalSubmission.accountId, originalSubmission.sessionId)
+          actions.patch({ message: answer.completed ? t('done') : null, failure: answer.completed ? null : t('originalFailed') })
+          void loadHistory(); void loadBalance()
+        }
+        setSubmissionRevision(value => value + 1)
+      }
+    }
+    if (originalQuery.current === abort) { originalQuery.current = null; setQueryingOriginal(false) }
+  }
 
   useEffect(() => { void refreshState(); void loadHistory() }, [refreshState, loadHistory])
   useEffect(() => {
@@ -391,8 +475,11 @@ export function ImagePage(props: ImagePageProps): ReactNode {
   const generate = useCallback(async (): Promise<void> => {
     const current = readDraft()
     if (current.uploading || current.generationStartedAt !== null || current.promptAssisting || current.sessionInvalid || signedIn !== true
-      || accountIdentity === null || current.referenceAccountId !== accountIdentity) return
+      || accountIdentity === null || current.referenceAccountId !== accountIdentity || submissionCheck !== 'ready') return
     if (sessionId === undefined) { setFailure(t('sessionRequired')); return }
+    const owner = { accountId: accountIdentity, sessionId }
+    if (checkedOwner !== submissionKey(owner)) return
+    if (current.unsettled[submissionKey(owner)] !== undefined) return
     const selected = models.find(entry => entry.id === current.modelId)
     if (selected === undefined) return
     const accepted = selected.params
@@ -421,6 +508,9 @@ export function ImagePage(props: ImagePageProps): ReactNode {
           return
         }
       }
+      actions.retainSubmission({ ...owner, state: 'pending', canQuery: false })
+      // Read accepted receipts while this original generation request is still waiting.
+      setSubmissionRevision(value => value + 1)
       const answer = await post<{ path: string; paths?: readonly string[] }>('/credits/api/image/generate', {
         session_id: sessionId, account_id: accountIdentity,
         prompt: current.prompt.trim(), model: selected.id, count: Math.max(1, Math.min(current.count, accepted.maxCount)),
@@ -435,6 +525,14 @@ export function ImagePage(props: ImagePageProps): ReactNode {
       })
       if (readDraft().referenceEpoch !== current.referenceEpoch) return
       if (answer.sessionInvalid === true) { acceptAccount({ signedIn: false }); actions.patch({ sessionInvalid: true, failure: t('noAuth') }); return }
+      const unsettled = submissionFromAnswer(answer, owner)
+      if (unsettled !== null) {
+        actions.retainSubmission(unsettled)
+        setFailure(answer.submission_state === undefined ? t('generationConnectionLost') : null)
+        setSubmissionRevision(value => value + 1)
+        return
+      }
+      actions.clearSubmission(owner.accountId, owner.sessionId)
       if (!answer.ok || answer.payload === undefined) {
         const kind = productFailureKind(answer.code)
         const referenceFailure = answer.code === 'IMAGE_REFERENCE_INVALID' || answer.code === 'IMAGE_REFERENCE_UPLOAD_FAILED'
@@ -451,12 +549,17 @@ export function ImagePage(props: ImagePageProps): ReactNode {
       await Promise.all([loadBalance(), loadHistory()])
     } catch (_error) {
       // A disconnected request may have completed upstream; never retry it automatically.
-      if (readDraft().referenceEpoch === current.referenceEpoch) setFailure(t('generationConnectionLost'))
+      if (readDraft().referenceEpoch === current.referenceEpoch) {
+        const retained = readDraft().unsettled[submissionKey(owner)]
+        if (retained !== undefined) actions.retainSubmission({ ...retained, state: 'unknown', canQuery: false })
+        setFailure(t('generationConnectionLost')); setSubmissionRevision(value => value + 1)
+      }
       void loadHistory()
     } finally {
-      actions.patch({ generationStartedAt: null })
+      if (readDraft().referenceEpoch === current.referenceEpoch) actions.patch({ generationStartedAt: null })
     }
-  }, [acceptAccount, accountIdentity, actions, loadBalance, loadHistory, models, readDraft, setFailure, sessionId, signedIn, t])
+  }, [acceptAccount, accountIdentity, actions, checkedOwner, loadBalance, loadHistory, models, readDraft, setFailure,
+    sessionId, signedIn, submissionCheck, t])
 
   const applyTemplate = (value: string): void => {
     if (locked) return
@@ -564,7 +667,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
             {params !== null && <button type="button" disabled={locked} className={css.parameterButton} aria-expanded={advanced} aria-controls="image-parameters"
               onClick={() => { setAdvanced(current => !current) }}><IconSettingsOutlineRegular size={14} /><span>{size || t('parameters')}{count > 1 ? ` · ${String(count)}` : ''}</span></button>}
             <span className={css.mode}>{maxEdits === 0 || references.length === 0 ? t('modeGenerate') : t('modeEdit', { count: String(Math.min(references.length, maxEdits)) })}</span>
-            <Tooltip label={running ? t('runningShort') : t('submit')} side="top" portal>
+            <Tooltip label={originalSubmission !== null ? t('originalLocked') : running ? t('runningShort') : t('submit')} side="top" portal>
               <button type="button" className={css.send} aria-label={running ? t('runningShort') : t('submit')}
                 disabled={locked || model === null || !isSignedIn || sessionId === undefined || prompt.trim() === ''}
                 onClick={() => { void generate() }}>
@@ -602,6 +705,19 @@ export function ImagePage(props: ImagePageProps): ReactNode {
           {(signedIn === false || sessionInvalid) && <p className={css.hint}>{t('signedOut')}</p>}
           {modelsError !== null && <p className={css.error}>{t('modelsFailed', { message: modelsError })} <button type="button" className={css.textAction} onClick={() => { void loadModels() }}>{t('retry')}</button></p>}
           {running && <p className={css.notice}><span className={css.statusDot} />{t('running', { seconds: String(elapsed) })}</p>}
+          {ownsReferences && submissionCheck === 'failed' && <p className={css.error}>{t('originalCheckFailed')} <button type="button"
+            className={css.textAction} onClick={() => { setSubmissionRevision(value => value + 1) }}>{t('originalCheck')}</button></p>}
+          {originalSubmission !== null && <div className={css.notice}>
+            <p>{t(originalSubmission.taskId === undefined ? 'originalUnknown' : 'originalAccepted')}</p>
+            <details><summary>{t('originalReceipt')}</summary>
+              {originalSubmission.planId !== undefined && <p>{t('originalPlanId', { id: originalSubmission.planId })}</p>}
+              {originalSubmission.operationId !== undefined && <p>{t('originalOperationId', { id: originalSubmission.operationId })}</p>}
+              {originalSubmission.taskId !== undefined && <p>{t('originalTaskId', { id: originalSubmission.taskId })}</p>}
+              {originalSubmission.requestId !== undefined && <p>{t('originalRequestId', { id: originalSubmission.requestId })}</p>}
+            </details>
+            {originalSubmission.canQuery && <button type="button" className={css.textAction} disabled={queryingOriginal}
+              onClick={() => { void queryOriginal() }}>{t(queryingOriginal ? 'originalQuerying' : 'originalQuery')}</button>}
+          </div>}
           {failure !== null && <p className={css.error} role="alert">{failure}</p>}
           {message !== null && <p className={css.notice}>{message}</p>}
         </div>

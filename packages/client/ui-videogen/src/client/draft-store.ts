@@ -1,5 +1,6 @@
 /** Video composer drafts survive image/video mode changes within one window. */
 import { defineStore, type EngineStoreHandle } from '@deepseek-ai/dsh-client-store'
+import { submissionKey, type VideoSubmission } from './video-submission.ts'
 
 /** One uploaded reference and its window-owned preview URL. */
 export interface Reference {
@@ -40,6 +41,7 @@ export interface VideoDraft {
   uploading: string | null
   promptAssisting: boolean
   phase: 'idle' | 'running' | 'done'
+  unsettled: Readonly<Record<string, VideoSubmission>>
   startedAt: number
   message: string | null
   failure: string | null
@@ -50,6 +52,8 @@ export interface VideoDraft {
 }
 
 type DraftActions = {
+  retainSubmission: (draft: VideoDraft, submission: VideoSubmission) => void
+  clearSubmission: (draft: VideoDraft, accountId: string, sessionId: string) => void
   patch: (draft: VideoDraft, values: Partial<VideoDraft>) => void
   setReferenceAccount: (draft: VideoDraft, accountId: string | null) => void
   appendPrompt: (draft: VideoDraft, suffix: string) => void
@@ -67,10 +71,17 @@ export function createVideoDraftStore(): EngineStoreHandle<VideoDraft, DraftActi
       modelId: '', prompt: '', duration: 0, resolution: '', ratio: '', mode: '', seed: '', audio: true,
       workflow: 'text', frameWorkflowSelection: null, firstFrame: null, lastFrame: null, slots: { image: [], video: [], audio: [] },
       category: 'all', uploading: null, phase: 'idle', startedAt: 0, message: null, failure: null, result: null,
-      uploadFailures: [],
+      uploadFailures: [], unsettled: {},
       referenceAccountId: null, referenceEpoch: 0, promptAssisting: false,
     }),
     actions: {
+      retainSubmission: (draft, submission: VideoSubmission) => {
+        draft.unsettled = { ...draft.unsettled, [submissionKey(submission)]: submission }
+      },
+      clearSubmission: (draft, accountId: string, sessionId: string) => {
+        const key = submissionKey({ accountId, sessionId })
+        draft.unsettled = Object.fromEntries(Object.entries(draft.unsettled).filter(([entry]) => entry !== key))
+      },
       patch: (draft, values: Partial<VideoDraft>) => { Object.assign(draft, values) },
       setReferenceAccount: (draft, accountId: string | null) => {
         if (draft.referenceAccountId === accountId) return
@@ -83,6 +94,8 @@ export function createVideoDraftStore(): EngineStoreHandle<VideoDraft, DraftActi
         draft.slots = { image: [], video: [], audio: [] }
         draft.uploading = null
         draft.uploadFailures = []
+        draft.unsettled = {}
+        draft.phase = 'idle'
       },
       appendPrompt: (draft, suffix: string) => {
         if (!draft.prompt.includes(suffix)) draft.prompt += suffix

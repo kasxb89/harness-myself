@@ -1,7 +1,7 @@
 // An enclosing `[data-conversation-scroll]` owns scrolling when present;
 // otherwise this view owns it. Each row subscribes to one stable node key.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type {
   NodeKey, RenderEntry,
 } from '@deepseek-ai/dsh-client-ui-conversation/client'
@@ -15,6 +15,7 @@ import type { ChatSnapshot } from '../contract/snapshot.ts'
 import { TurnNavigator } from './TurnNavigator.tsx'
 import { mergeTurnRailItems } from './turn-rail-items.ts'
 import { useChatScroll } from './use-chat-scroll.ts'
+import { artifactFocus, artifactFocusNode } from './artifact-focus.ts'
 import { fileMediaUrl, resolveWorkspacePath } from '@deepseek-ai/dsh-util-workspace-path'
 import css from './ChatView.module.css'
 
@@ -61,12 +62,20 @@ export function ChatView({
   useSession, useChat, useConversation, useSessions, renderSlot,
   sessionId, openFile, openSkill, openExternalLink, loadOlder, loadThrough, loadImage, inspectCall, chatScroll, forkAt, fileMentions,
   usePresentation, useProjection, t,
+  actions, viewRequest, completeViewRequest,
 }: ChatViewSlotProps) {
   const order = useChat(s => s.order)
   const groupedEntries = useConversation(snapshot => snapshot.views.grouped('chat')?.entries)
   const entries = useMemo<readonly RenderEntry[]>(() => groupedEntries
     ?? order.map(key => ({ kind: 'node', key: key as NodeKey })), [groupedEntries, order])
   const nodeStore = useChat(s => s.nodes)
+  const locations = useChat(s => s.locations)
+  const [sourceFocusError, setSourceFocusError] = useState(false)
+  const [sourceTarget, setSourceTarget] = useState<{
+    readonly key: string
+    readonly turn: number
+    readonly request: NonNullable<ChatViewSlotProps['viewRequest']>
+  } | null>(null)
   const deferCompletedTurns = usePresentation(policy => policy.collapseTiming === 'next-input')
   const transcriptView = usePresentation(policy => policy.mode)
   // The rail's items are accumulated in the Chat snapshot, so this selector is
@@ -193,9 +202,35 @@ export function ChatView({
     transcriptView,
   })
   const flowContext = useMemo<ChatFlowHookContext>(() => ({ motion: scroll.motion }), [scroll.motion])
+  const navigateToNode = scroll.navigateToNode
+  const revealNode = scroll.revealNode
+  useEffect(() => {
+    if (!scroll.initialized || viewRequest?.view !== 'chat') return
+    const focus = artifactFocus(viewRequest.focus)
+    if (focus === undefined) return
+    const node = artifactFocusNode(focus, { nodes: nodeStore, locations })
+    if (node === undefined) {
+      setSourceFocusError(true)
+      completeViewRequest()
+      return
+    }
+    const process = nodeStore.processSource(node.key).getSnapshot()
+    if (process !== undefined) actions.setTurnProcessOpen(focus.turn, process.spec.answerStep ?? 0, true)
+    revealNode(node.key)
+    // The disclosure updates above and this target commit together. A browser frame
+    // can precede that React commit and still observe hidden searchable ancestors.
+    setSourceTarget({ key: node.key, turn: focus.turn, request: viewRequest })
+  }, [scroll.initialized, viewRequest, order, nodeStore, locations, actions, completeViewRequest, revealNode])
+  useLayoutEffect(() => {
+    if (!scroll.initialized || sourceTarget === null || sourceTarget.request !== viewRequest) return
+    setSourceTarget(null)
+    setSourceFocusError(!navigateToNode(sourceTarget.key, sourceTarget.turn))
+    completeViewRequest()
+  }, [scroll.initialized, sourceTarget, viewRequest, completeViewRequest, navigateToNode])
 
   return (
     <div className={css.frame}>
+      {sourceFocusError && <p className={css.hint} role="status">{t('chat.sourceUnavailable')}</p>}
       {scroll.initialized && (
         <TurnNavigator
           items={railItems}

@@ -1,5 +1,6 @@
 /** Image composer choices retained while the creation module changes modes. */
 import { defineStore, type EngineStoreHandle } from '@deepseek-ai/dsh-client-store'
+import { submissionKey, type ImageSubmission } from './image-submission.ts'
 
 /** A locally uploaded reference selected by this composer. */
 export interface ImageReference {
@@ -41,6 +42,7 @@ export type ImageDraft = {
   message: string | null
   failure: string | null
   resultPaths: readonly string[]
+  unsettled: Readonly<Record<string, ImageSubmission>>
 }
 
 type DraftActions = {
@@ -48,6 +50,8 @@ type DraftActions = {
   appendReference: (draft: ImageDraft, reference: ImageReference) => void
   removeReference: (draft: ImageDraft, assetId: string) => void
   setReferenceAccount: (draft: ImageDraft, accountId: string | null) => void
+  retainSubmission: (draft: ImageDraft, submission: ImageSubmission) => void
+  clearSubmission: (draft: ImageDraft, accountId: string, sessionId: string) => void
 }
 
 /**
@@ -62,6 +66,7 @@ export function createImageDraftStore(): EngineStoreHandle<ImageDraft, DraftActi
       uploading: false, uploadResult: null, generationStartedAt: null, sessionInvalid: false,
       message: null, failure: null, resultPaths: [],
       referenceAccountId: null, referenceEpoch: 0, promptAssisting: false,
+      unsettled: {},
     }),
     actions: {
       patch: (draft, values: Partial<ImageDraft>) => { Object.assign(draft, values) },
@@ -73,6 +78,15 @@ export function createImageDraftStore(): EngineStoreHandle<ImageDraft, DraftActi
         draft.references = []
         draft.uploading = false
         draft.uploadResult = null
+        draft.unsettled = {}
+        draft.generationStartedAt = null
+      },
+      retainSubmission: (draft, submission: ImageSubmission) => {
+        draft.unsettled = { ...draft.unsettled, [submissionKey(submission)]: submission }
+      },
+      clearSubmission: (draft, accountId: string, sessionId: string) => {
+        const key = submissionKey({ accountId, sessionId })
+        draft.unsettled = Object.fromEntries(Object.entries(draft.unsettled).filter(([entry]) => entry !== key))
       },
       appendReference: (draft, reference: ImageReference) => {
         if (draft.references.length >= 6) return

@@ -16,9 +16,20 @@ function assemble() {
   const current = { getSnapshot: () => ({ key: 'session-one' }), subscribe: () => () => {} }
   const canOpen = vi.fn(async () => ({ ok: true, value: true }))
   const open = vi.fn(async () => ({ ok: true, value: null }))
+  const loadThrough = vi.fn(async () => {})
+  let entries: readonly object[] = [{ event: { type: 'tool/call', seq: 12, data: { turn: 2, callId: 'generate-call' } } }]
+  const binding = { session: { loadThrough, projections: { faceOf: () => ({ getSnapshot: () => [{ turn: 2, seq: 8 }] }) } },
+    eventSource: { getSnapshot: () => ({ entries }) } }
+  const using = vi.fn(async (_id: string, _options: object, operation: (reference: object) => Promise<unknown>) => operation({ binding }))
+  const openView = vi.fn(() => true)
+  const openSession = vi.fn()
   apply({
     uiSession: { adapter: { current } },
     remote: { session: { canOpenWorkspacePath: canOpen, openWorkspacePath: open } },
+    layout: { beginNavigation: () => new AbortController().signal },
+    sessions: { using },
+    conversationViews: { open: openView },
+    uiWorkspace: { openSession },
     locale: {
       bind: () => (key: keyof typeof zh) => zh[key],
       register: () => () => {},
@@ -34,10 +45,34 @@ function assemble() {
   } as never, Config({}))
   const page = registrations.find(row => row.name === 'main')!.inject!() as ArtifactsInjected
   const toast = registrations.find(row => row.name === 'shell.overlay')!.inject!() as ArtifactNoticeInjected
-  return { page, toast, registrations, current, canOpen, open, dispose: () => { for (const close of cleanup.reverse()) close() } }
+  return { page, toast, registrations, current, canOpen, open, using, loadThrough, openView, openSession,
+    removeSource: () => { entries = [] }, dispose: () => { for (const close of cleanup.reverse()) close() } }
 }
 
 describe('artifact operation ownership', () => {
+  it('loads and verifies the exact recorded generating tool before selecting its chat and View request', async () => {
+    const origin = { sessionId: 'source-chat', turn: 2, toolCallId: 'generate-call' }
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json({ origin }))
+    vi.stubGlobal('fetch', fetch)
+    const runtime = assemble()
+    const item = { path: '/files/renamed.mp4', name: 'renamed.mp4', kind: 'video' as const, size: 10, mtimeMs: 15 }
+    try {
+      expect(await runtime.page.returnToChat(item)).toEqual({ ok: true, value: null })
+      expect(runtime.using).toHaveBeenCalledWith('source-chat', expect.objectContaining({ source: 'artifactNavigation' }), expect.any(Function))
+      expect(runtime.loadThrough).toHaveBeenCalledWith(8)
+      expect(runtime.openView).toHaveBeenCalledWith('source-chat', 'chat', `artifact:${JSON.stringify(origin)}`)
+      expect(runtime.openSession).toHaveBeenCalledWith('source-chat')
+      runtime.openView.mockClear()
+      runtime.openSession.mockClear()
+      runtime.removeSource()
+      expect(await runtime.page.returnToChat(item)).toEqual({ ok: false, code: 'ARTIFACT_ORIGIN_UNAVAILABLE' })
+      expect(runtime.openView).not.toHaveBeenCalled()
+      expect(runtime.openSession).not.toHaveBeenCalled()
+      fetch.mockResolvedValueOnce(Response.json({ origin: null }))
+      expect(await runtime.page.returnToChat(item)).toEqual({ ok: false, code: 'ARTIFACT_ORIGIN_UNAVAILABLE' })
+      expect(runtime.openSession).not.toHaveBeenCalled()
+    } finally { runtime.dispose() }
+  })
   it('accepts a configured visible-page cadence and rejects an unbounded or invalid cadence', () => {
     expect(Config({})).toEqual({ pollIntervalMs: 5000 })
     expect(Config({ pollIntervalMs: 1234 })).toEqual({ pollIntervalMs: 1234 })

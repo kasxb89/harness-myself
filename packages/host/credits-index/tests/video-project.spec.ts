@@ -9,6 +9,9 @@ import type { VideoEditor } from '../src/video-edit.ts'
 import { planVideoDurations, prepareVideoProject, readVideoProject, recoverVideoProjectOutputs, resolveVideoOutputDirectory, runVideoProject, VideoProjectError } from '../src/video-project.ts'
 import type { VideoProjectInput, VideoProjectOptions, VideoProjectProvider } from '../src/video-project-types.ts'
 import { VideoRelayError } from '../src/video-project-provider.ts'
+import type { ArtifactOrigin, ArtifactPublishRequest } from '@deepseek-ai/dsh-artifacts-index'
+import { SessionId, SessionSeq } from '@deepseek-ai/dsh-session/types'
+import { ToolCallId } from '@deepseek-ai/dsh-llm/brand'
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>()
@@ -70,7 +73,8 @@ async function setup(durations = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]) {
   const output: string[] = []
   const job: JobHandle = { id: JobId('video-project-1'), append: text => output.push(text), updateProgress: text => events.push(text) }
   const signal = new AbortController().signal
-  const prepare = () => prepareVideoProject(options, { prompt: '拍一个茶杯广告', totalDurationSeconds: 40 }, 'chat-one', workspace, provider, editor, signal)
+  const prepare = (origin?: ArtifactOrigin) => prepareVideoProject(options, { prompt: '拍一个茶杯广告', totalDurationSeconds: 40 },
+    'chat-one', workspace, provider, editor, signal, origin)
   return {
     options, provider, editor, job, events, output, workspace, prepare, signal,
     get submitted() { return submitted },
@@ -201,6 +205,48 @@ describe('portable workspace output containment', () => {
 })
 
 describe('durable account-bound video projects', () => {
+  it('retains the original generation source for clip recovery, resumed clips and final publication', async () => {
+    const fixture = await setup()
+    const destination = join(dirname(fixture.workspace), 'published')
+    await mkdir(destination)
+    let unavailable = true
+    const publish = vi.fn(async (request: ArtifactPublishRequest) => {
+      if (unavailable) throw new Error('volume temporarily unavailable')
+      const path = join(destination, request.filename)
+      await copyFile(request.sourcePath, path, constants.COPYFILE_EXCL)
+      return { path }
+    })
+    fixture.options.publication = { capture: async () => ({ directory: destination }), validate: async () => {}, publish }
+    const origin = { sessionId: SessionId('chat-one'), turn: 3, eventSeq: SessionSeq(8), toolCallId: ToolCallId('original-generate') }
+    const preparing = fixture.prepare(origin)
+    origin.turn = 99
+    const manifest = await preparing
+    expect(manifest.origin?.turn).toBe(3)
+    expect((await runVideoProject(fixture.options, manifest, fixture.provider, fixture.editor, fixture.job, fixture.signal)).status).toBe('failed')
+    unavailable = false
+    await recoverVideoProjectOutputs(fixture.options, manifest.id, 'chat-one', fixture.workspace,
+      fixture.provider.identity, fixture.signal, async () => {})
+    const retained = await readVideoProject(fixture.options, manifest.id, 'chat-one', fixture.workspace, fixture.provider.identity)
+    expect(retained.origin).toEqual({ ...origin, turn: 3 })
+    expect((await runVideoProject(fixture.options, retained, fixture.provider, fixture.editor, fixture.job, fixture.signal)).status).toBe('completed')
+    expect(fixture.submitted).toBe(3)
+    for (const [request] of publish.mock.calls) expect(request.origin).toEqual({ ...origin, turn: 3 })
+    expect(publish.mock.calls.some(([request]) => request.sourcePath.includes('final-'))).toBe(true)
+  })
+
+  it('keeps legacy project sources absent and refuses damaged or cross-chat source records', async () => {
+    const fixture = await setup()
+    const manifest = await fixture.prepare()
+    const path = join(fixture.options.stateDirectory, manifest.id, 'manifest.json')
+    expect((await readVideoProject(fixture.options, manifest.id, 'chat-one', fixture.workspace, fixture.provider.identity)).origin).toBeUndefined()
+    for (const origin of [null, { sessionId: 'chat-one', turn: -1 }, { sessionId: 'chat-one', turn: 1, eventSeq: 2.5 },
+      { sessionId: 'different-chat', turn: 1 }, { sessionId: 'chat-one', turn: 1, toolCallId: '' }]) {
+      await writeFile(path, JSON.stringify({ ...manifest, origin }))
+      await expect(readVideoProject(fixture.options, manifest.id, 'chat-one', fixture.workspace, fixture.provider.identity))
+        .rejects.toMatchObject({ code: 'INVALID_RECORD' })
+    }
+    expect(fixture.submitted).toBe(0)
+  })
   it('publishes every verified clip before the next billable submission and resumes a failed copy without regenerating it', async () => {
     const fixture = await setup()
     const destination = join(dirname(fixture.workspace), 'selected-output')
