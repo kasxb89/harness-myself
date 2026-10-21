@@ -3,19 +3,6 @@ export const NS = 'creative'
 
 /** Simplified Chinese sidebar and draft copy. */
 export const zh = {
-  'tasks.acceptedUnconfirmed': '任务已受理，暂未确认结果。请查询原任务，不要再次提交生成',
-  'tasks.unknownNoReceipt': '提交结果待确认，尚无可查询的任务编号。请保留现有记录并核对原任务与计费，不要再次提交生成',
-  'tasks.resultUnsaved': '原任务已返回结果，文件尚未确认保存。请查询原任务，不要再次提交生成',
-  'tasks.queryOriginal': '查询原任务',
-  'tasks.querying': '正在查询原任务',
-  'tasks.queryFailed': '暂时无法查询原任务，现有记录已保留。请稍后再查询，不要再次提交生成',
-  'tasks.receipt.phase': '提交回执',
-  'tasks.receipt.submitting': '提交已发出，尚未取得受理回执',
-  'tasks.receipt.accepted': '任务已受理',
-  'tasks.receipt.completed': '原任务已返回结果',
-  'tasks.receipt.taskId': '原任务编号',
-  'tasks.receipt.requestId': '请求编号',
-
   'serverBusy': '服务器繁忙，请稍后重试',
   'creditsRequired': '余额不足，请充值',
   'chooseSession': '请先选择一个聊天，人物、素材与分镜会与该聊天同步',
@@ -186,19 +173,6 @@ export type CreativeKey = keyof typeof zh
 
 /** English translations for every sidebar and draft key. */
 export const en: Record<CreativeKey, string> = {
-  'tasks.acceptedUnconfirmed': 'The task was accepted, but its result is unconfirmed. Query the original task; do not submit generation again.',
-  'tasks.unknownNoReceipt': 'The submission is unconfirmed and has no queryable task ID. Keep this record and check the original task and billing; do not submit generation again.',
-  'tasks.resultUnsaved': 'The original task returned a result, but the saved file is unconfirmed. Query the original task; do not submit generation again.',
-  'tasks.queryOriginal': 'Query original task',
-  'tasks.querying': 'Querying original task',
-  'tasks.queryFailed': 'The original task could not be queried. Its record is retained. Query again later; do not submit generation again.',
-  'tasks.receipt.phase': 'Submission receipt',
-  'tasks.receipt.submitting': 'Submission sent; acceptance is unconfirmed',
-  'tasks.receipt.accepted': 'Task accepted',
-  'tasks.receipt.completed': 'Original task returned a result',
-  'tasks.receipt.taskId': 'Original task ID',
-  'tasks.receipt.requestId': 'Request ID',
-
   'serverBusy': 'The server is busy. Please try again later.',
   'creditsRequired': 'Insufficient balance. Please top up.',
   'chooseSession': 'Choose a chat to share its characters, materials and storyboard',
