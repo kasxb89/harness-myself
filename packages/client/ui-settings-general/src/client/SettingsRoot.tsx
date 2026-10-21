@@ -232,7 +232,8 @@ export function SettingsRoot(props: SettingsRootComponentProps) {
           </button>
         </Tooltip> })}
         <ConnectionIndicator
-          state={wide && desktopUpdate.presentation?.phase !== 'installing' ? connectionIndicator : undefined}
+          state={desktopUpdate.presentation?.phase !== 'installing' ? connectionIndicator : undefined}
+          compact={!wide}
           disconnectedLabel={t('connection.error')}
           connectingLabel={t('connection.connecting')}
           recoveredLabel={t('connection.connected')}

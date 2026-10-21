@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
+import type { ReactElement } from 'react'
 import { IconCheckOutlineRegular, IconRefreshOutlineRegular } from './icons/index.tsx'
 import { StateDot } from './StateDot.tsx'
+import { Tooltip } from './Tooltip.tsx'
 import css from './ConnectionIndicator.module.css'
 
 /** Visual state rendered by {@link ConnectionIndicator}. */
@@ -18,6 +20,7 @@ const EXIT_MS = 150
  * clicking it requests an immediate reconnect. The indicator animates in on
  * appearance and fades out for {@link EXIT_MS} before unmounting.
  * @param props.state - visible outage, retry-attempt, or recovered state.
+ * @param props.compact - show a fixed-width glyph with a portaled localized tooltip.
  * @param props.disconnectedLabel - localized outage text naming the retry action.
  * @param props.connectingLabel - localized retry text followed by the attempt dots.
  * @param props.recoveredLabel - localized recovery confirmation.
@@ -28,6 +31,7 @@ const EXIT_MS = 150
  */
 export function ConnectionIndicator({
   state,
+  compact = false,
   disconnectedLabel,
   connectingLabel,
   recoveredLabel,
@@ -36,6 +40,7 @@ export function ConnectionIndicator({
   onReconnect,
 }: {
   state: ConnectionIndicatorState | undefined
+  compact?: boolean
   disconnectedLabel: string
   connectingLabel: string
   recoveredLabel: string
@@ -57,24 +62,28 @@ export function ConnectionIndicator({
 
   if (rendered === undefined) return null
   const leavingClass = leaving ? ` ${css.leaving}` : ''
+  const compactClass = compact ? ` ${css.compact}` : ''
+  const withTooltip = (indicator: ReactElement, label: string) => compact
+    ? <Tooltip label={label} portal>{indicator}</Tooltip>
+    : indicator
   if (rendered === 'recovered') {
-    return (
+    return withTooltip((
       <div
-        className={`${css.indicator} ${css.success}${leavingClass}`}
+        className={`${css.indicator} ${css.success}${compactClass}${leavingClass}`}
         role="status"
         aria-label={recoveredLabel}
       >
         <span className={css.icon} aria-hidden="true"><IconCheckOutlineRegular size={14} /></span>
-        <span className={css.label}>{recoveredLabel}</span>
+        {!compact && <span className={css.label}>{recoveredLabel}</span>}
       </div>
-    )
+    ), recoveredLabel)
   }
 
   const connecting = rendered === 'connecting'
-  return (
+  return withTooltip((
     <button
       type="button"
-      className={`${css.indicator} ${css.warning}${leavingClass}`}
+      className={`${css.indicator} ${css.warning}${compactClass}${leavingClass}`}
       data-phase={rendered}
       aria-label={connecting ? restartActionLabel : reconnectActionLabel}
       onClick={onReconnect}
@@ -84,7 +93,7 @@ export function ConnectionIndicator({
           ? <StateDot state="ongoing" />
           : <IconRefreshOutlineRegular size={14} />}
       </span>
-      <span className={css.label}>
+      {!compact && <span className={css.label}>
         {connecting
           ? (
             <>
@@ -97,7 +106,7 @@ export function ConnectionIndicator({
             </>
           )
           : disconnectedLabel}
-      </span>
+      </span>}
     </button>
-  )
+  ), connecting ? restartActionLabel : reconnectActionLabel)
 }

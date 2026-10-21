@@ -13,6 +13,10 @@ import { SettingsRoot } from '../src/client/SettingsRoot.tsx'
 import { en, zh } from '../src/client/locales.ts'
 import type { DesktopUpdateView } from '../src/types.ts'
 import { Modal } from '@deepseek-ai/dsh-client-ui-primitives'
+import { SidebarRoot } from '../../ui-sidebar/src/client/SidebarRoot.tsx'
+import type { SidebarRootComponentProps, SidebarSettingsOwnerProps } from '../../ui-sidebar/src/client/contract/slots.ts'
+import { en as sidebarEn } from '../../ui-sidebar/src/client/locales.ts'
+import { en as commonEn } from '@deepseek-ai/dsh-client-locale/src/locales/en.ts'
 
 // Every fixture carries the resource hook the resources plugin merges into GlobalStandardProps.
 const useResource = (() => ({ status: 'none' as const, value: undefined, failure: undefined, reload: () => {} })) as GlobalStandardProps['useResource']
@@ -42,6 +46,7 @@ const useSessionStatus: SettingsRootComponentProps['useSessionStatus'] = selecto
 function mount({
   shortcuts = [],
   wide = true,
+  sidebarCollapsed,
   dictionary = en,
   connectionState = 'connected',
   desktopUpdate = { failed: false, opening: false },
@@ -59,6 +64,7 @@ function mount({
 }: {
   shortcuts?: readonly ShortcutCatalogEntry[]
   wide?: boolean
+  sidebarCollapsed?: boolean
   dictionary?: typeof en | typeof zh
   connectionState?: ConnectionSnapshot
   desktopUpdate?: DesktopUpdateView
@@ -130,7 +136,19 @@ function mount({
     },
     renderSlot,
   }
-  const view = render(<SettingsRoot {...props} />)
+  const renderShell = () => sidebarCollapsed === undefined
+    ? <SettingsRoot {...props} />
+    : <SidebarRoot
+      collapsed={sidebarCollapsed} width={300}
+      useSessions={props.useSessions} useSessionStatus={useSessionStatus} useSessionRetainInfo={props.useSessionRetainInfo}
+      usePanelInfo={usePanelInfo} selectPanel={() => {}} usePanels={select => select([])}
+      useShortcuts={select => select(shortcuts)} useResource={useResource} useWorkspaces={unusedHook}
+      startSession={() => {}} toggleSidebar={() => {}} t={makeTranslate({ ...commonEn, ...sidebarEn })}
+      renderSlot={((key: string, owner: SidebarSettingsOwnerProps) => key === 'sidebar.settings'
+        ? <SettingsRoot {...props} wide={owner.wide} />
+        : null) as SidebarRootComponentProps['renderSlot']}
+    />
+  const view = render(renderShell())
   const bump = (next: Row[]) => {
     act(() => {
       current = next
@@ -145,18 +163,18 @@ function mount({
   }
   const setDesktopUpdate = (next: DesktopUpdateView) => {
     desktopUpdate = next
-    view.rerender(<SettingsRoot {...props} />)
+    view.rerender(renderShell())
   }
   const setShortcuts = (next: readonly ShortcutCatalogEntry[]) => {
     shortcuts = next
-    view.rerender(<SettingsRoot {...props} />)
+    view.rerender(renderShell())
   }
   /** Turn the mounted Session blank, which is what makes an onboarding step appear. */
   const setOnboardingActive = (next: boolean) => {
     const session = sessions.byId[activeId]
     if (session === undefined) throw new Error('expected the mounted Session')
     act(() => { sessions.byId[activeId] = { ...session, blank: next } })
-    view.rerender(<SettingsRoot {...props} />)
+    view.rerender(renderShell())
   }
   return { view, renderSlot, bump, listeners, reconnect, setConnectionState, setDesktopUpdate, setShortcuts, setOnboardingActive }
 }
@@ -267,9 +285,62 @@ describe('SettingsRoot trigger', () => {
     expect(screen.queryByRole('status')).toBeNull()
   })
 
-  it('keeps the reconnect indicator out of the collapsed rail', () => {
-    mount({ wide: false, connectionState: 'disconnected' })
+  it.each([false, true])('keeps reconnect available in the actual sidebar rail (collapsed: %s)', (sidebarCollapsed) => {
+    const mounted = mount({ sidebarCollapsed, dictionary: zh, connectionState: 'disconnected' })
+    const reconnect = screen.getByRole('button', { name: '连接异常，点击立即重连' })
+    expect(reconnect.textContent).toBe('')
+    expect(reconnect.querySelector('svg')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '设置' })).toBeTruthy()
+    fireEvent.click(reconnect)
+    expect(mounted.reconnect).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the compact recovery hold, confirmation, and fade while healthy operation stays silent', () => {
+    vi.useFakeTimers()
+    const mounted = mount({ wide: false })
     expect(screen.queryByRole('button', { name: 'Disconnected, reconnect now' })).toBeNull()
+    expect(screen.queryByRole('status')).toBeNull()
+    mounted.setConnectionState('disconnected')
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnected, reconnect now' }))
+    expect(mounted.reconnect).toHaveBeenCalledOnce()
+    mounted.setConnectionState('connecting')
+    expect(screen.getByRole('button', { name: 'Reconnecting, reconnect now' }).textContent).toBe('')
+    act(() => { vi.advanceTimersByTime(100) })
+    mounted.setConnectionState('connected')
+    act(() => { vi.advanceTimersByTime(699) })
+    expect(screen.getByRole('button', { name: 'Reconnecting, reconnect now' })).toBeTruthy()
+    act(() => { vi.advanceTimersByTime(1) })
+    expect(screen.getByRole('status', { name: 'Connected' }).textContent).toBe('')
+    act(() => { vi.advanceTimersByTime(1_999) })
+    expect(screen.getByRole('status', { name: 'Connected' })).toBeTruthy()
+    act(() => { vi.advanceTimersByTime(1) })
+    expect(screen.getByRole('status', { name: 'Connected' })).toBeTruthy()
+    act(() => { vi.advanceTimersByTime(150) })
+    expect(screen.queryByRole('status')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Reconnecting, reconnect now' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Settings' })).toBeTruthy()
+  })
+
+  it('restores compact reconnection after installation fails and cancels obsolete recovery timers', () => {
+    vi.useFakeTimers()
+    const mounted = mount({ wide: false, dictionary: zh, connectionState: 'connecting',
+      desktopUpdate: { failed: false, opening: false, presentation: { phase: 'installing', version: '1.0.1' } } })
+    expect(screen.queryByRole('button', { name: '连接中断，正在重试，点击立即重连' })).toBeNull()
+    mounted.setDesktopUpdate({ failed: false, opening: false,
+      presentation: { phase: 'error', version: '1.0.1', failure: 'install' } })
+    expect(screen.getByRole('button', { name: '连接中断，正在重试，点击立即重连' })).toBeTruthy()
+    act(() => { vi.advanceTimersByTime(800) })
+    mounted.setConnectionState('connected')
+    expect(screen.getByRole('status', { name: '连接成功' })).toBeTruthy()
+    act(() => { vi.advanceTimersByTime(500) })
+    mounted.setConnectionState('disconnected')
+    act(() => { vi.advanceTimersByTime(2_000) })
+    expect(screen.queryByRole('status')).toBeNull()
+    expect(screen.getByRole('button', { name: '连接异常，点击立即重连' })).toBeTruthy()
+    mounted.setConnectionState('connecting')
+    mounted.setConnectionState('connected')
+    mounted.view.unmount()
+    expect(vi.getTimerCount()).toBe(0)
   })
 })
 

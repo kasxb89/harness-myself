@@ -655,6 +655,34 @@ describe('Modal', () => {
 })
 
 describe('ConnectionIndicator', () => {
+  it('keeps compact recovery glyphs labeled and actionable without an inline text pill', () => {
+    const reconnect = vi.fn()
+    const labels = {
+      disconnectedLabel: 'Disconnected, retry',
+      connectingLabel: 'Connecting',
+      recoveredLabel: 'Connected',
+      reconnectActionLabel: 'Disconnected, reconnect now',
+      restartActionLabel: 'Connecting, restart now',
+      onReconnect: reconnect,
+    }
+    const { rerender } = render(<ConnectionIndicator compact state="disconnected" {...labels} />)
+    const indicator = screen.getByRole('button', { name: 'Disconnected, reconnect now' })
+    expect(indicator.textContent).toBe('')
+    expect(indicator.querySelector('svg')).toBeTruthy()
+    expect(indicator.hasAttribute('title')).toBe(false)
+    fireEvent.click(indicator)
+    expect(reconnect).toHaveBeenCalledOnce()
+    rerender(<ConnectionIndicator compact state="connecting" {...labels} />)
+    const connecting = screen.getByRole('button', { name: 'Connecting, restart now' })
+    expect(connecting.textContent).toBe('')
+    expect(connecting.querySelector('[data-state="ongoing"]')).not.toBeNull()
+    fireEvent.click(connecting)
+    expect(reconnect).toHaveBeenCalledTimes(2)
+    rerender(<ConnectionIndicator compact state="recovered" {...labels} />)
+    expect(screen.queryByRole('button')).toBeNull()
+    expect(screen.getByRole('status', { name: 'Connected' }).textContent).toBe('')
+  })
+
   it('renders outage, attempt progress, and recovered states without a native tooltip', () => {
     const reconnect = vi.fn()
     const labels = {
