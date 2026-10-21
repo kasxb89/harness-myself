@@ -129,6 +129,23 @@
       }
     },
     {
+      "name": "dsh_im_return_file",
+      "description": "Register a readable file or generated image for delivery through the current IM conversation after this turn. Requires an active IM delivery consumer; in Web, Desktop, or CLI conversations use the host present tool if available. Existing and newly created files are both valid. Success means queued, not sent; do not claim the user has received the file.",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Absolute path, or a path relative to the current workspace."
+          }
+        },
+        "required": [
+          "path"
+        ]
+      }
+    },
+    {
       "name": "edit",
       "description": "Edit an existing UTF-8 text file by replacing literal text.",
       "parameters": {
@@ -171,6 +188,44 @@
       }
     },
     {
+      "name": "edit_video",
+      "description": "Edit existing local videos without generating new media or spending model credits. Order clips as supplied, optionally trim each start/end in seconds, normalize and concatenate them, and optionally trim the final length. Input files must be readable inside this workspace or an owned generated-video project. Returns a background job_id; wait for the real final_path, then call present and include the artifact link. This performs ordered cuts and joins; it does not synthesize unseen footage, music, subtitles, or effects. If current user-supplied chat attachments are outside the workspace, first copy only those read-authorized attachments into this workspace with existing file tools, then edit the copied paths.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "clips": {
+            "type": "array",
+            "description": "Local clip paths in final playback order, with optional per-clip trim positions. Copy current user-supplied, read-authorized chat attachments from outside the workspace into the workspace with existing file tools before passing their copied paths.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "start_seconds": {
+                  "type": "number"
+                },
+                "end_seconds": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "path"
+              ]
+            }
+          },
+          "total_duration_seconds": {
+            "type": "number",
+            "description": "Optional final duration after assembling clips; cannot exceed the available trimmed footage."
+          }
+        },
+        "required": [
+          "clips"
+        ]
+      }
+    },
+    {
       "name": "exit_plan_mode",
       "description": "Use only in plan mode. Present your plan for the user's review and, on approval, leave plan mode. The user may approve (carry out the plan from your next step) or keep planning — their feedback comes back in the tool result; revise and present again.",
       "parameters": {
@@ -183,6 +238,253 @@
         },
         "required": [
           "plan"
+        ]
+      }
+    },
+    {
+      "name": "find_dsh_plugin",
+      "description": "Search GitHub for DeepSeek Harness plugins (public `dsh-plugin` topic), ranked by stars. Returns descriptions and ready-to-run `dsh plugin add` install commands. Use when the user wants a capability DSH does not currently have, or asks what plugins exist. Plugins are third-party code — advise reviewing the source and pinning a commit. Falls back to keyword matches from the curated awesome-dsh-plugin list when GitHub search is rate limited or unreachable; the note states which source was used.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Keywords describing the capability, e.g. \"wechat notifications\", \"TUI\", \"跨会话记忆\""
+          },
+          "limit": {
+            "type": "number",
+            "description": "Max results to return (default 8, max 20)"
+          },
+          "lang": {
+            "type": "string",
+            "description": "Preferred description language for curated entries (e.g. 'en', 'zh'). Defaults to 'en'."
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    },
+    {
+      "name": "generate_image",
+      "description": "Generate images or edit reference images through the signed-in account relay, save every result into the artifacts directory, and return the paths. For pending or unknown results, never resubmit this tool: use query_image_task with the original plan_id and operation_id when a task_id was received. Without a task_id, retain the unknown outcome and reconcile the original request before any paid retry. For image-to-image requests, pass the current-chat user attachment or an authorized workspace image in reference_images. Which image models exist, and what each one accepts, is the deployment’s own answer: ask for a model only when the user names one. For Yunshu platform, relay or upstream failures, give users only a safe Simplified Chinese summary such as “服务器繁忙，请稍后重试”; never repeat raw HTTP responses, diagnostic JSON, error codes, stacks, internal paths or credentials. Keep actionable guidance for confirmed sign-in, product-credit, file-validation and cancellation failures. When submission or billing outcome is unknown, check existing tasks and artifacts first; do not immediately retry or automatically resubmit. Preserve real tool results. This restriction does not prevent software or code diagnostics explicitly requested by the user.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "plan_id": {
+            "type": "string",
+            "description": "Explicit update_creation_plan id for this generation. Also provide exactly one of shot_id or asset_id."
+          },
+          "shot_id": {
+            "type": "string",
+            "description": "Exact shot id in the explicit plan; never guess a latest project."
+          },
+          "asset_id": {
+            "type": "string",
+            "description": "Exact image asset id in plan_id, including a video plan. Mutually exclusive with shot_id. Creates or reconstructs this source asset, not a finished shot."
+          },
+          "prompt": {
+            "type": "string",
+            "description": "What the image should show."
+          },
+          "model": {
+            "type": "string",
+            "description": "Optional image model id such as gpt-image-2. Defaults to the first image model the deployment serves for this account."
+          },
+          "size": {
+            "type": "string",
+            "description": "Optional output size such as 1024x1024 or auto. A value the chosen model does not support is refused with that model’s own menu. For yunshu-internal-gpt-image-2, omit pixel size; the server controls output settings."
+          },
+          "count": {
+            "type": "number",
+            "description": "How many images to render, within the model’s limit (usually 1–4)."
+          },
+          "reference_images": {
+            "type": "array",
+            "description": "Reference images for editing: current-chat user image attachment ids or their exact read-only paths, readable PNG/JPEG/WebP files inside the current workspace, uploaded ma_ ids, or real generated image output ids/paths owned by the same explicit plan_id. Other-chat attachments, unrelated local paths and URLs are refused.",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "prompt"
+        ]
+      }
+    },
+    {
+      "name": "generate_video",
+      "description": "Generate, poll and save one short video clip through the account relay. Call this native tool directly for a simple short-video brief; do not write submission, polling or download scripts. For story direction, character/reference continuity, dialogue or subtitles, use the yunshu-video-director skill. For a complete video such as 40 seconds or automatic assembly, use generate_video_project instead; several camera beats may fit one clip. Edit existing clips with edit_video. This single-clip tool accepts only the chosen model’s declared duration, resolution, ratio, frames and references. For Yunshu platform, relay or upstream failures, give users only a safe Simplified Chinese summary such as “服务器繁忙，请稍后重试”; never repeat raw HTTP responses, diagnostic JSON, error codes, stacks, internal paths or credentials. Keep actionable guidance for confirmed sign-in, product-credit, file-validation and cancellation failures. When submission or billing outcome is unknown, check existing tasks and artifacts first; do not immediately retry or automatically resubmit. Preserve real tool results. This restriction does not prevent software or code diagnostics explicitly requested by the user.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "plan_id": {
+            "type": "string",
+            "description": "Explicit update_creation_plan id for this generation. Also provide shot_id."
+          },
+          "shot_id": {
+            "type": "string",
+            "description": "Exact shot id in the explicit plan; never guess a latest project."
+          },
+          "prompt": {
+            "type": "string",
+            "description": "What the video should show. Before calling, script user-delegated narrative or dialogue scenes with stable character ids, language, brief exact lines and their timing, identifying on-screen speakers versus narration; preserve user-supplied wording. Do not reduce a story requiring voices to a music montage. Respect silent/no-dialogue requests and do not add dialogue or subtitles to unrelated nonverbal videos. Include requested lip-sync and subtitle requirements. These request native model generation, not separate speech, lip-sync or subtitle processing; verify the rendered result before claiming they are met."
+          },
+          "model": {
+            "type": "string",
+            "description": "Optional video model id such as MiniMax-H3. Defaults to the first video model the deployment serves for this account."
+          },
+          "duration_seconds": {
+            "type": "number",
+            "description": "Clip length in seconds; only values the chosen model declares are accepted."
+          },
+          "resolution": {
+            "type": "string",
+            "description": "Output resolution such as 768P or 2K, when the model offers choices."
+          },
+          "ratio": {
+            "type": "string",
+            "description": "Aspect ratio such as 16:9 or 9:16; adaptive inherits it from the reference media."
+          },
+          "audio": {
+            "type": "boolean",
+            "description": "Optional requested audio state. Sent as a switch only when the chosen model declares one; fixed native audio accepts only its declared state. An audio stream does not verify dialogue, lip-sync or subtitles."
+          },
+          "frame_images": {
+            "type": "array",
+            "description": "Optional stored ids (ma_…) used as first/last frame.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reference_images": {
+            "type": "array",
+            "description": "Optional stored ids (ma_…) used as multimodal subject/style references, when the model supports them.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reference_videos": {
+            "type": "array",
+            "description": "Optional stored ids (ma_…) used as a reference video, when the model supports video-to-video.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reference_audios": {
+            "type": "array",
+            "description": "Optional uploaded ma_ audio ids or workspace WAV/MP3 paths, when the model supports audio references. First copy a user-supplied, read-authorized chat attachment outside the workspace into the workspace using existing file tools; do not copy unrelated files. References do not guarantee copied speech, matching mouth movements or subtitles.",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "prompt"
+        ]
+      }
+    },
+    {
+      "name": "generate_video_project",
+      "description": "Create a finished video longer than one model clip from a natural-language brief. Use the yunshu-video-director skill for story, character/reference continuity, dialogue and subtitles, then call this native workflow; do not write polling, download or assembly scripts. For requests such as a 40-second video, plan the fewest supported clips (for a 15-second limit: 15+15+10, or three 15-second clips trimmed to 40), generate them in order using the signed-in account, then automatically normalize, trim, and join them locally. All local tools and every request are checked before billing. Returns a background job_id and durable project_id; read job_output for progress and call present on the completed final_path. Never claim completion before the job reports a saved final_path. Already submitted provider tasks may continue billing after local cancellation. If a current user-supplied chat attachment is outside the workspace, first copy that read-authorized attachment into this workspace with the existing file tools, then pass the copied path; do not copy unrelated files.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "plan_id": {
+            "type": "string",
+            "description": "Explicit update_creation_plan id. Also supply shot_ids in generation order."
+          },
+          "shot_ids": {
+            "type": "array",
+            "description": "Exact shot ids belonging to plan_id, one per actual supported model clip and in the saved timeline order.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "prompt": {
+            "type": "string",
+            "description": "The complete video brief, visual continuity, story, and desired editing. Before calling, script user-delegated narrative or dialogue scenes with stable character ids, language and brief exact lines, identifying on-screen speakers versus narration; preserve user-supplied wording. Assign each line and its timing to a shot in shot_prompts. Do not reduce a story requiring voices to a music montage. Respect silent/no-dialogue requests and do not add dialogue or subtitles to unrelated nonverbal videos. Include requested lip-sync and subtitle requirements. These request native model generation, not separate speech, lip-sync or subtitle processing; verify the rendered result before claiming they are met."
+          },
+          "total_duration_seconds": {
+            "type": "number",
+            "description": "Desired final length in whole seconds; this may exceed the model single-clip limit."
+          },
+          "shot_prompts": {
+            "type": "array",
+            "description": "Exact shot briefs, one per planned clip. With plan_id and shot_ids, omit to use each saved shot’s scene, camera, action, prompt, exact dialogue/subtitles and associated character definitions without another model call. Explicit values remain verbatim. Otherwise allocate delegated narrative lines and timing to stable speakers, distinguishing on-screen speech from narration. Respect silent/no-dialogue requests.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "shot_durations_seconds": {
+            "type": "array",
+            "description": "Exact model-supported whole seconds per clip, in shot_ids or shot_prompts order. Their sum must equal total_duration_seconds. When omitted for an explicit creation plan, use its saved shot durations; do not silently change timeline timing.",
+            "items": {
+              "type": "number"
+            }
+          },
+          "model": {
+            "type": "string",
+            "description": "Only specify a model when requested; otherwise use an available account model."
+          },
+          "resolution": {
+            "type": "string"
+          },
+          "ratio": {
+            "type": "string"
+          },
+          "audio": {
+            "type": "boolean",
+            "description": "Optional requested audio state. Sent as a switch only when the chosen model declares one; fixed native audio accepts only its declared state. Audio presence alone does not verify speech, lip-sync or subtitles."
+          },
+          "frame_images": {
+            "type": "array",
+            "description": "Existing uploaded ma_ first/last frame ids or workspace image paths. For a user-supplied chat attachment outside the workspace, first copy the read-authorized attachment into the workspace with existing file tools and pass its copied path.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reference_images": {
+            "type": "array",
+            "description": "Shared uploaded ma_ subject/style image ids or workspace image paths used by every shot. With plan_id, each shot’s saved image materials and character references are added only to that shot; do not duplicate unrelated character references here. For a user-supplied chat attachment outside the workspace, first copy the read-authorized attachment into the workspace with existing file tools and pass its copied path.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reference_videos": {
+            "type": "array",
+            "description": "Existing uploaded ma_ video reference ids or workspace video paths. For a user-supplied chat attachment outside the workspace, first copy the read-authorized attachment into the workspace with existing file tools and pass its copied path.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reference_audios": {
+            "type": "array",
+            "description": "Existing uploaded ma_ audio reference ids or workspace WAV/MP3 paths, only when the chosen model supports audio references. For a user-supplied chat attachment outside the workspace, first copy the read-authorized attachment into the workspace with existing file tools and pass its copied path. A reference does not guarantee copied speech, matching mouth movements or subtitles.",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "prompt",
+          "total_duration_seconds"
+        ]
+      }
+    },
+    {
+      "name": "get_creation_plan",
+      "description": "Read the complete structured plan owned by this account, chat and workspace before revising it. Returns the exact planning fields accepted by update_creation_plan, including stable character, asset and shot ids. Preserve all unrelated entries when updating. This read neither generates media, resumes tasks nor spends credits; it excludes provider requests and credentials.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "plan_id": {
+            "type": "string",
+            "description": "Explicit existing creation plan id."
+          }
+        },
+        "required": [
+          "plan_id"
         ]
       }
     },
@@ -251,6 +553,27 @@
         },
         "required": [
           "agent_id"
+        ]
+      }
+    },
+    {
+      "name": "ipollowork_video_validate",
+      "description": "Validate the editable HyperFrames video belonging to one DeepSeek Harness workspace and conversation session.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "description": "DeepSeek Harness workspace id."
+          },
+          "sessionId": {
+            "type": "string",
+            "description": "Conversation session id owning video/<sessionId>."
+          }
+        },
+        "required": [
+          "workspaceId",
+          "sessionId"
         ]
       }
     },
@@ -357,6 +680,40 @@
       }
     },
     {
+      "name": "query_image_task",
+      "description": "Without operation_id, list unresolved image invocations owned by this account and chat (optionally filter by plan_id) to recover original ids after interruption or restart. With both original plan_id and operation_id, query that accepted task and save completed outputs. This only reads retained tasks; it never submits another generation or accepts a caller-supplied remote URL or task id. If the original submission has no task id, retain its unknown outcome and reconcile the original request instead of generating again. For Yunshu platform, relay or upstream failures, give users only a safe Simplified Chinese summary such as “服务器繁忙，请稍后重试”; never repeat raw HTTP responses, diagnostic JSON, error codes, stacks, internal paths or credentials. Keep actionable guidance for confirmed sign-in, product-credit, file-validation and cancellation failures. When submission or billing outcome is unknown, check existing tasks and artifacts first; do not immediately retry or automatically resubmit. Preserve real tool results. This restriction does not prevent software or code diagnostics explicitly requested by the user.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "plan_id": {
+            "type": "string",
+            "description": "Original retained creation plan id; required when querying one operation."
+          },
+          "operation_id": {
+            "type": "string",
+            "description": "Original generation operation id. Omit to list unresolved receipts without starting queries."
+          }
+        }
+      }
+    },
+    {
+      "name": "query_video_task",
+      "description": "Without operation_id, list unresolved video invocations owned by this account and chat (optionally filter by plan_id) to recover original ids after interruption or restart. With both original plan_id and operation_id, query that accepted task and save completed outputs. This only reads retained tasks; it never submits another generation or accepts a caller-supplied remote URL or task id. If the original submission has no task id, retain its unknown outcome and reconcile the original request instead of generating again. For Yunshu platform, relay or upstream failures, give users only a safe Simplified Chinese summary such as “服务器繁忙，请稍后重试”; never repeat raw HTTP responses, diagnostic JSON, error codes, stacks, internal paths or credentials. Keep actionable guidance for confirmed sign-in, product-credit, file-validation and cancellation failures. When submission or billing outcome is unknown, check existing tasks and artifacts first; do not immediately retry or automatically resubmit. Preserve real tool results. This restriction does not prevent software or code diagnostics explicitly requested by the user.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "plan_id": {
+            "type": "string",
+            "description": "Original retained creation plan id; required when querying one operation."
+          },
+          "operation_id": {
+            "type": "string",
+            "description": "Original generation operation id. Omit to list unresolved receipts without starting queries."
+          }
+        }
+      }
+    },
+    {
       "name": "read",
       "description": "Read a UTF-8 text file and return line-numbered content.",
       "parameters": {
@@ -393,6 +750,21 @@
         },
         "required": [
           "file_path"
+        ]
+      }
+    },
+    {
+      "name": "resume_video_project",
+      "description": "Explicitly continue a retained project for the same account, workspace, and chat. Reuse saved clips and query already known provider task ids before submitting any remaining never-submitted clips. Refuse unknown submissions, failed provider tasks, and a second live run; never automatically resubmit a charge whose outcome is unknown. Local cancellation cannot cancel already accepted upstream billing.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "project_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id"
         ]
       }
     },
@@ -790,6 +1162,756 @@
       }
     },
     {
+      "name": "univer_api",
+      "description": "Look up the bundled, version-matched Univer Facade API. Use find when no relevant class or API label is known. Use show for a known class, type, or exact Class.member API label; to inspect APIs on a known class, show the class itself. Find is case-insensitive. Each query runs independently and returns its own matches: queries are never combined as AND, and find does not interpret intent.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "find discovers unknown class or API labels; show documents a known class, type, or exact Class.member label. Show a known class to inspect its APIs.",
+            "enum": [
+              "find",
+              "show"
+            ]
+          },
+          "queries": {
+            "type": "array",
+            "description": "For find, API-name keywords or identifier fragments such as conditionalFormat. For show, known class, type, or exact Class.member labels such as FRange or FRange.setValue. Find queries are case-insensitive and independent, not AND terms.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "unit": {
+            "type": "string",
+            "description": "Optional find-only Unit filter; shared APIs remain included.",
+            "enum": [
+              "sheet",
+              "doc",
+              "slide",
+              "base",
+              "board"
+            ]
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Find-only maximum matches per query. Prefer 10 or fewer."
+          }
+        },
+        "required": [
+          "action",
+          "queries"
+        ]
+      }
+    },
+    {
+      "name": "univer_compile_svg",
+      "description": "Compile an SVG with real font metrics and apply it to one explicit Slide page in a draft worktree.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string",
+            "description": "Workspace-relative or absolute SVG source path."
+          },
+          "file": {
+            "type": "string",
+            "description": "Workspace-relative or absolute target .univer path."
+          },
+          "worktreeId": {
+            "type": "string",
+            "description": "Writable draft worktree id."
+          },
+          "unitId": {
+            "type": "string",
+            "description": "Explicit Slide Unit id from univer_status."
+          },
+          "page": {
+            "type": "integer",
+            "description": "1-based Slide page number."
+          },
+          "mode": {
+            "type": "string",
+            "description": "Replace the page contents by default, or add the SVG as an overlay.",
+            "enum": [
+              "replace",
+              "add"
+            ]
+          }
+        },
+        "required": [
+          "source",
+          "file",
+          "worktreeId",
+          "unitId",
+          "page"
+        ]
+      }
+    },
+    {
+      "name": "univer_execute",
+      "description": "Execute Univer Facade JavaScript and commit mutations to a draft agent worktree. Use code only for a small snippet and codeFile for multiline or reusable code. Provide exactly one source. Explicitly return readback values; bare expressions and console.log do not populate value. Read-only code creates no revision.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "string",
+            "description": "Workspace-relative or absolute .univer path."
+          },
+          "code": {
+            "type": "string",
+            "description": "Inline Facade code; use codeFile for multiline code. Mutually exclusive with codeFile."
+          },
+          "codeFile": {
+            "type": "string",
+            "description": "Workspace-relative or absolute multiline Facade JavaScript body file. Mutually exclusive with code."
+          },
+          "worktreeId": {
+            "type": "string",
+            "description": "Writable agent worktree id."
+          },
+          "unitId": {
+            "type": "string",
+            "description": "Target unit id."
+          }
+        },
+        "required": [
+          "file",
+          "worktreeId",
+          "unitId"
+        ]
+      }
+    },
+    {
+      "name": "univer_export",
+      "description": "Export a .univer document or unit to a user-facing file format.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "string",
+            "description": "Workspace-relative or absolute .univer path."
+          },
+          "output": {
+            "type": "string",
+            "description": "Workspace-relative or absolute output file path."
+          },
+          "unitId": {
+            "type": "string",
+            "description": "Explicit Unit id from univer_status."
+          },
+          "worktreeId": {
+            "type": "string",
+            "description": "Optional worktree scope; omit to export trunk."
+          }
+        },
+        "required": [
+          "file",
+          "output",
+          "unitId"
+        ]
+      }
+    },
+    {
+      "name": "univer_import",
+      "description": "Import an xlsx, csv, tsv, docx, or pptx file as a new Unit inside an explicit draft worktree.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string",
+            "description": "Workspace-relative or absolute Office source path."
+          },
+          "file": {
+            "type": "string",
+            "description": "Workspace-relative or absolute target .univer path."
+          },
+          "worktreeId": {
+            "type": "string",
+            "description": "Writable draft worktree id."
+          },
+          "name": {
+            "type": "string",
+            "description": "Name for the imported Unit."
+          },
+          "docType": {
+            "type": "string",
+            "description": "Doc import mode, .docx only. traditional (default) keeps the source page setup — page size, orientation, margins, and headers/footers survive export. modern converts to a pageless document and rewrites page geometry to a fixed layout, so the source page setup cannot be recovered.",
+            "enum": [
+              "traditional",
+              "modern"
+            ]
+          }
+        },
+        "required": [
+          "source",
+          "file",
+          "worktreeId",
+          "name"
+        ]
+      }
+    },
+    {
+      "name": "univer_inspect",
+      "description": "Inspect structured Univer content. Sheet accepts an optional range; Base and Board default to selector-free overviews; elementIds reads one or more Board elements by exact id.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "string",
+            "description": "Workspace-relative or absolute .univer path."
+          },
+          "elementIds": {
+            "type": "array",
+            "description": "One or more exact Board element IDs for type-specific detail.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "unitId": {
+            "type": "string",
+            "description": "Explicit target Unit id from univer_status."
+          },
+          "range": {
+            "type": "string",
+            "description": "Optional unit range such as Sheet1!A1:D20."
+          },
+          "worktreeId": {
+            "type": "string",
+            "description": "Optional worktree scope; omit to inspect trunk."
+          }
+        },
+        "required": [
+          "file",
+          "unitId"
+        ]
+      }
+    },
+    {
+      "name": "univer_lint",
+      "description": "Analyze Slide text layout for off-page content, escaped containers, and text overlap without producing screenshots.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "string",
+            "description": "Workspace-relative or absolute .univer path."
+          },
+          "unitId": {
+            "type": "string",
+            "description": "Explicit Slide Unit id from univer_status."
+          },
+          "worktreeId": {
+            "type": "string",
+            "description": "Optional worktree scope; omit to lint trunk."
+          },
+          "pages": {
+            "type": "array",
+            "description": "Optional 1-based page numbers or page IDs. Omit to lint every page.",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        "required": [
+          "file",
+          "unitId"
+        ]
+      }
+    },
+    {
+      "name": "univer_new",
+      "description": "Create a new empty .univer file in the current workspace. This never overwrites an existing file and does not create an implicit Unit.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "string",
+            "description": "Workspace-relative or absolute output path ending in .univer."
+          }
+        },
+        "required": [
+          "file"
+        ]
+      }
+    },
+    {
+      "name": "univer_print_pdf",
+      "description": "Print one explicit Sheet, Doc, Slide, or Board Unit from trunk or a worktree to a workspace PDF file. Base Units are not printable.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "string",
+            "description": "Workspace-relative or absolute .univer path."
+          },
+          "output": {
+            "type": "string",
+            "description": "Workspace-relative or absolute .pdf output file path."
+          },
+          "unitId": {
+            "type": "string",
+            "description": "Explicit Unit id from univer_status."
+          },
+          "worktreeId": {
+            "type": "string",
+            "description": "Optional worktree scope; omit to print trunk."
+          }
+        },
+        "required": [
+          "file",
+          "output",
+          "unitId"
+        ]
+      }
+    },
+    {
+      "name": "univer_resources",
+      "description": "Discover, read, export, and cache bundled SVG resources. Use find before read or export; resource handles are stable within the bundled manifest.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "Resource-library operation.",
+            "enum": [
+              "registries",
+              "find",
+              "read",
+              "export",
+              "clear-cache"
+            ]
+          },
+          "queries": {
+            "type": "array",
+            "description": "Non-empty search terms for find.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "registries": {
+            "type": "array",
+            "description": "Optional registry IDs that constrain find.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Optional positive total result limit for find."
+          },
+          "handle": {
+            "type": "string",
+            "description": "One resource handle for read."
+          },
+          "handles": {
+            "type": "array",
+            "description": "Resource handles for export.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "output": {
+            "type": "string",
+            "description": "Workspace-relative or absolute export directory."
+          }
+        },
+        "required": [
+          "action"
+        ]
+      }
+    },
+    {
+      "name": "univer_screenshot",
+      "description": "Render one explicit Sheet, Doc, Slide, Base, or Board Unit to PNG files and return the images for visual verification.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "string",
+            "description": "Workspace-relative or absolute .univer path."
+          },
+          "unitId": {
+            "type": "string",
+            "description": "Explicit Unit id from univer_status."
+          },
+          "worktreeId": {
+            "type": "string",
+            "description": "Optional worktree scope; omit to capture trunk."
+          },
+          "output": {
+            "type": "string",
+            "description": "Workspace-relative or absolute output directory for PNG files."
+          },
+          "sheetName": {
+            "type": "string",
+            "description": "Sheet name used with range."
+          },
+          "range": {
+            "type": "string",
+            "description": "Sheet A1 range such as B2:H40."
+          },
+          "pages": {
+            "type": "array",
+            "description": "Doc numeric pages or Slide page numbers/IDs. Omit to capture every page.",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "contactSheet": {
+            "type": "boolean",
+            "description": "Also create one Slide contact sheet."
+          },
+          "tileColumns": {
+            "type": "integer",
+            "description": "Contact-sheet grid columns; requires contactSheet and tileRows."
+          },
+          "tileRows": {
+            "type": "integer",
+            "description": "Contact-sheet grid rows; requires contactSheet and tileColumns."
+          },
+          "region": {
+            "type": "object",
+            "description": "Optional Board region to capture.",
+            "additionalProperties": false,
+            "properties": {
+              "left": {
+                "type": "number"
+              },
+              "top": {
+                "type": "number"
+              },
+              "width": {
+                "type": "number"
+              },
+              "height": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "left",
+              "top",
+              "width",
+              "height"
+            ]
+          },
+          "elementIds": {
+            "type": "array",
+            "description": "Optional Board element IDs to capture.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "padding": {
+            "type": "number",
+            "description": "Board content padding; requires region or elementIds."
+          },
+          "scale": {
+            "type": "number",
+            "description": "Render scale from 0.1 to 4 for any Unit."
+          }
+        },
+        "required": [
+          "file",
+          "unitId",
+          "output"
+        ]
+      }
+    },
+    {
+      "name": "univer_status",
+      "description": "List trunk Units and worktrees for a .univer file, or inspect one worktree scope. Call this before choosing unitId or continuing prior work.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "string",
+            "description": "Workspace-relative or absolute .univer path."
+          },
+          "worktreeId": {
+            "type": "string",
+            "description": "Optional worktree whose Units should be returned."
+          },
+          "unitId": {
+            "type": "string",
+            "description": "Optional Unit filter."
+          }
+        },
+        "required": [
+          "file"
+        ]
+      }
+    },
+    {
+      "name": "univer_unit",
+      "description": "Create or remove a top-level Sheet, Doc, Slide, Base, or Board Unit inside an explicit draft worktree. Use univer_status to list Units.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "Unit lifecycle action.",
+            "enum": [
+              "create",
+              "remove"
+            ]
+          },
+          "file": {
+            "type": "string",
+            "description": "Workspace-relative or absolute .univer path."
+          },
+          "worktreeId": {
+            "type": "string",
+            "description": "Writable draft worktree id."
+          },
+          "kind": {
+            "type": "string",
+            "description": "Required for create.",
+            "enum": [
+              "sheet",
+              "doc",
+              "slide",
+              "base",
+              "board"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "description": "Required non-empty Unit name for create."
+          },
+          "unitId": {
+            "type": "string",
+            "description": "Required for remove."
+          }
+        },
+        "required": [
+          "action",
+          "file",
+          "worktreeId"
+        ]
+      }
+    },
+    {
+      "name": "univer_worktree",
+      "description": "Create or transition an isolated Univer worktree. Actions: create, ready, reopen, merge, or discard. Merge and discard require user approval.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "Lifecycle action.",
+            "enum": [
+              "create",
+              "ready",
+              "reopen",
+              "merge",
+              "discard"
+            ]
+          },
+          "file": {
+            "type": "string",
+            "description": "Workspace-relative or absolute .univer path."
+          },
+          "worktreeId": {
+            "type": "string",
+            "description": "Required for every action except create."
+          },
+          "name": {
+            "type": "string",
+            "description": "Optional human-readable name for create."
+          }
+        },
+        "required": [
+          "action",
+          "file"
+        ]
+      }
+    },
+    {
+      "name": "update_creation_plan",
+      "description": "Create or explicitly revise the structured plan for a chat image or video: stable characters and their appearance, source materials, ordered shots, camera, actions, exact dialogue and subtitles. Use the returned plan_id and the exact shot ids in generate_image/generate_video or shot_ids in generate_video_project. Never associate a generation with a guessed latest project. Planning does not generate media or spend credits. Character/material descriptions and dialogue are requirements, not verified generation results. Preserve user wording and silent/nonverbal requests. Revisions supply the complete plan and cannot remove shots with existing generation records.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "plan_id": {
+            "type": "string",
+            "description": "Explicit existing plan id when revising; omit to create."
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "image",
+              "video"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "brief": {
+            "type": "string"
+          },
+          "style": {
+            "type": "string"
+          },
+          "characters": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "appearance": {
+                  "type": "string"
+                },
+                "clothing": {
+                  "type": "string"
+                },
+                "personality": {
+                  "type": "string"
+                },
+                "voice": {
+                  "type": "string"
+                },
+                "reference_asset_ids": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "id",
+                "name"
+              ]
+            }
+          },
+          "assets": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "image",
+                    "video",
+                    "audio",
+                    "document",
+                    "other"
+                  ]
+                },
+                "role": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "source_path_or_asset_id": {
+                  "type": "string",
+                  "description": "Existing real path or uploaded asset id; use an empty string for an asset that has not been generated. Never invent a path."
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "kind",
+                "source_path_or_asset_id"
+              ]
+            }
+          },
+          "shots": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "order": {
+                  "type": "number"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "duration_seconds": {
+                  "type": "number"
+                },
+                "camera": {
+                  "type": "string"
+                },
+                "scene": {
+                  "type": "string"
+                },
+                "action": {
+                  "type": "string"
+                },
+                "prompt": {
+                  "type": "string"
+                },
+                "dialogue": {
+                  "type": "string"
+                },
+                "subtitles": {
+                  "type": "string"
+                },
+                "character_ids": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "asset_ids": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "id",
+                "order",
+                "title",
+                "prompt"
+              ]
+            }
+          }
+        },
+        "required": [
+          "kind",
+          "title",
+          "brief",
+          "shots"
+        ]
+      }
+    },
+    {
       "name": "update_goal",
       "description": "Update the current goal.",
       "parameters": {
@@ -831,6 +1953,21 @@
           "goal_id",
           "revision",
           "action"
+        ]
+      }
+    },
+    {
+      "name": "video_project_status",
+      "description": "Read a durable video project owned by this account, workspace, and chat. This does not restart generation or spend credits. After an app restart, an interrupted project is a saved record, not a live job. Inspect clip_paths and task_ids before explicitly resuming.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "project_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id"
         ]
       }
     },
