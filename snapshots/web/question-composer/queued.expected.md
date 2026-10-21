@@ -2,9 +2,6 @@
   - navigation "Session hierarchy": Use the ask_user_question tool to
   - button "More actions"
   - button "Open right sidebar"
-  - tablist:
-    - tab "Chat" [selected]
-    - tab "Trajectory"
 - text: "Use the ask_user_question tool to ask me exactly one multi-select question with id \"color\", question \"Which color do you prefer?\", header \"Pick one\", and two options: label \"Blue\" with description \"A cool recessive hue that reads as calm and trustworthy in long reading sessions and dense dashboards.\", and label \"Green\" with description \"A restful mid-spectrum hue with the highest perceived brightness, easiest on the eye over long sessions.\" Set multi_select to true. After I answer, reply with the single word DONE and stop. {{clock}}"
 - button "Copy"
 - status: Completed
@@ -16,7 +13,6 @@
 - button "View answers"
 - term: Which color do you prefer?
 - definition: Green Answered after the timeout
-- button "Inspect"
 - list:
   - listitem:
     - text: "{\"kind\":\"answer_to_pending_question\",\"tool\":\"ask_user_question\",\"callId\":\"call_00_Cijldc88LYmVPCXYUsRq1617\",\"questions\":[{\"id\":\"color\",\"question\":\"Which color do you prefer?\",\"header\":\"Pick one\",\"mult…"
@@ -27,7 +23,6 @@
 - button "Add files or run commands"
 - 'button "Access mode, current: Workspace Write"': Workspace Write
 - button "Select model, current DeepSeek-V4-Flash": DeepSeek-V4-Flash
+- button "Voice input"
 - button "Send message" [disabled]
-- button "1 turns 1 steps · {{throughput}} tok/s": 1 turns 1 steps{{throughput}} tok/s
-- button "4.4K tok · Cache hit 97%": 4.4K tokCache hit 97%
-- button "3% of context used": 3%
+- button "1 turns 1 steps"

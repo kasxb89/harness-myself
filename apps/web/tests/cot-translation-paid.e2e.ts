@@ -123,7 +123,7 @@ it.skipIf(MODE === 'record')('reuses saved native Account Flash translations acr
   const origin = `http://127.0.0.1:${address.port}`
   const overlay = join(root, 'paid-translation.patch.yml')
   await writeFile(overlay, JSON.stringify([
-    { id: 'llm-deepseek-account', config: { baseURL: `${origin}/anthropic`, reasoningEffort: 'high',
+    { id: 'llm-deepseek-account', disabled: false, config: { baseURL: `${origin}/anthropic`, reasoningEffort: 'high',
       models: [{ id: 'deepseek-flash', name: 'Native Flash arbitrary future version' }] } },
     { id: 'translator', config: { bingEndpoint: `${origin}/unexpected-free`, googleEndpoint: `${origin}/unexpected-free`,
       deepseekTimeoutMs: 120_000 } },

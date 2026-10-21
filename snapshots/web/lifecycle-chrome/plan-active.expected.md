@@ -15,7 +15,7 @@
 - button "Settings"
 - banner:
   - button "Open right sidebar"
-- text: Into the Unknown Preview
+- text: Make it real Preview
 - button "Choose workspace": workspace
 - button "Standard mode"
 - textbox "Describe what you want to build, / commands, @ files or sessions"
@@ -23,4 +23,5 @@
 - 'button "Access mode, current: Workspace Write"': Workspace Write
 - button "Plan mode on, press to turn off": Plan
 - button "Select model, current DeepSeek-V4-Flash": DeepSeek-V4-Flash
+- button "Voice input"
 - button "Send message" [disabled]

@@ -8,6 +8,7 @@
     allowLoopbackHttp: true
 # This scenario exercises the account launcher after initial setup.
 - id: ui-settings-account
+  disabled: false
   config:
     step: done
     completion: completed

@@ -2,9 +2,6 @@
   - navigation "Session hierarchy": Use the ask_user_question tool to
   - button "More actions"
   - button "Open right sidebar"
-  - tablist:
-    - tab "Chat" [selected]
-    - tab "Trajectory"
 - navigation "Turn navigation":
   - button "Jump to turn 1"
   - button "Jump to turn 2"
@@ -19,7 +16,6 @@
 - button "View answers"
 - term: Which color do you prefer?
 - definition: Green Answered after the timeout
-- button "Inspect"
 - status: Completed
 - button "Completed in {{duration}}" [expanded]
 - button "Analysis completed" [expanded]

@@ -1,7 +1,7 @@
 import { constants } from 'node:fs'
 import { copyFile, mkdtemp, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join, win32 } from 'node:path'
+import { basename, dirname, join, win32 } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { JobId } from '@deepseek-ai/dsh-jobs'
 import type { JobHandle } from '@deepseek-ai/dsh-jobs'
@@ -23,7 +23,7 @@ afterEach(async () => {
 })
 
 async function setup(durations = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]) {
-  directory = await mkdtemp(join(tmpdir(), 'dsh-video-project-'))
+  directory = await mkdtemp(join(tmpdir(), 'dsh-video-project-final-'))
   const workspace = join(directory, 'workspace')
   await mkdir(workspace)
   const events: string[] = []
@@ -420,7 +420,7 @@ describe('durable account-bound video projects', () => {
     const validate = vi.fn(async (destination: { directory: string }) => { expect(destination.directory).toBe(original) })
     const publish = vi.fn(async (request: { destination: { directory: string }; sourcePath: string; filename: string }) => {
       expect(request.destination.directory).toBe(original)
-      if (publicationFails && request.sourcePath.includes('final-')) throw new Error('disk unavailable')
+      if (publicationFails && basename(request.sourcePath).startsWith('final-')) throw new Error('disk unavailable')
       const path = join(request.destination.directory, request.filename)
       await copyFile(request.sourcePath, path)
       return { path }
@@ -481,7 +481,7 @@ describe('durable account-bound video projects', () => {
       publish: async (request) => {
         const path = join(request.destination.directory, request.filename)
         await copyFile(request.sourcePath, path, constants.COPYFILE_EXCL)
-        if (request.sourcePath.includes('final-')) {
+        if (basename(request.sourcePath).startsWith('final-')) {
           published.push(path)
           if (published.length === 1) await rename(recordDirectory, recordDirectory + '-unavailable')
         }

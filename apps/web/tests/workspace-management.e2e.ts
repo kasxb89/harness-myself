@@ -71,8 +71,9 @@ describe('web e2e: workspace management (create / rename / grouping / hover affo
   async function addNewFolderWorkspace(parent: string, name: string): Promise<void> {
     const dialog = await browseTo(parent)
     await dialog.getByRole('button', { name: 'New folder' }).click()
-    await page.getByLabel('Folder name').fill(name)
-    await page.getByRole('button', { name: 'Create', exact: true }).click()
+    const newFolder = page.getByRole('dialog', { name: 'New folder', exact: true })
+    await newFolder.getByLabel('Folder name').fill(name)
+    await newFolder.getByRole('button', { name: 'Create', exact: true }).click()
     // Creating selects the new folder in the listing; Open adopts it.
     await dialog.getByRole('button', { name: 'Open', exact: true }).click()
     await dialog.waitFor({ state: 'hidden', timeout: 10_000 })

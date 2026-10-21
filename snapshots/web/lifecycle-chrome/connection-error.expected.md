@@ -1,2 +1,2 @@
 - button "Settings"
-- button "Reconnecting, reconnect now": Reconnecting
+- button "Reconnecting, reconnect now"

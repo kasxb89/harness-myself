@@ -7,9 +7,6 @@
   - text: Standard mode
   - button "More actions"
   - button "Open right sidebar"
-  - tablist:
-    - tab "Chat" [selected]
-    - tab "Trajectory"
 - navigation "Turn navigation":
   - button "Jump to turn 1"
   - button "Jump to turn 2"
@@ -39,7 +36,6 @@
 - textbox "Message or run a task, / commands, @ files or sessions"
 - button "Add files or run commands"
 - 'button "Access mode, current: Custom"': Custom
+- button "Voice input"
 - button "Send message" [disabled]
-- button "2 turns 2 steps · {{throughput}} tok/s": 2 turns 2 steps{{throughput}} tok/s
-- button "15.7K tok · Cache hit 99%": 15.7K tokCache hit 99%
-- button "6% of context used": 6%
+- button "2 turns 2 steps"

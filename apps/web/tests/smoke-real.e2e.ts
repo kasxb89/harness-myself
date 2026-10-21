@@ -48,6 +48,20 @@ function messagesResponse(text: string, complete = true): string {
   return events.map(event => `data: ${JSON.stringify(event)}\n\n`).join('')
 }
 
+/** Select the native provider against this case's allocated loopback listener. */
+function loopbackProviderPatch(workspace: string, port: number): string {
+  const path = join(workspace, 'mock-provider.patch.yml')
+  writeFileSync(path, JSON.stringify([
+    { id: 'llm-deepseek', disabled: false, config: {
+      baseURL: `http://127.0.0.1:${port}`, apiKeyEnv: 'DSH_WEB_CLI_MOCK_KEY',
+    } },
+    { id: 'agent-default-model', config: {
+      provider: 'deepseek-official', model: 'deepseek-v4-flash', followPolicy: false,
+    } },
+  ]))
+  return path
+}
+
 /** Exchange a printed process token once for Node-side HTTP/WebSocket probes. */
 function authenticatedWeb(launchUrl: string): Promise<{ origin: string; cookie: string }> {
   const existing = authenticatedCookies.get(launchUrl)
@@ -436,16 +450,16 @@ describe('dsh web keyless CLI smoke', () => {
     await new Promise<void>(resolve => provider.listen(0, '127.0.0.1', resolve))
     const address = provider.address()
     if (address === null || typeof address === 'string') throw new Error('mock provider did not bind a TCP port')
+    const providerPatch = loopbackProviderPatch(workspace, address.port)
     const tsxLoader = pathToFileURL(createRequire(join(REPO_ROOT, 'package.json')).resolve('tsx')).href
     const child = spawn(
       process.execPath,
-      ['--import', tsxLoader, join(REPO_ROOT, 'apps/cli/src/bin.ts'), 'web', '--no-open', '--port', '0'],
+      ['--import', tsxLoader, join(REPO_ROOT, 'apps/cli/src/bin.ts'), 'web', '--no-open', '--port', '0', '--patch', providerPatch],
       {
         cwd: workspace,
         env: {
           ...process.env,
-          DEEPSEEK_API_KEY: 'keyless-web-workspace',
-          DEEPSEEK_BASE_URL: `http://127.0.0.1:${address.port}`,
+          DSH_WEB_CLI_MOCK_KEY: 'keyless-web-workspace',
           DSH_HOME: join(workspace, '.dsh'),
           DSH_AGENTS_HOME: join(workspace, '.agents'),
           TSX_TSCONFIG_PATH: join(REPO_ROOT, 'tsconfig.json'),
@@ -544,16 +558,16 @@ describe('dsh web keyless CLI smoke', () => {
     await new Promise<void>(resolve => provider.listen(0, '127.0.0.1', resolve))
     const address = provider.address()
     if (address === null || typeof address === 'string') throw new Error('mock provider did not bind a TCP port')
+    const providerPatch = loopbackProviderPatch(workspace, address.port)
     const tsxLoader = pathToFileURL(createRequire(join(REPO_ROOT, 'package.json')).resolve('tsx')).href
     const child = spawn(
       process.execPath,
-      ['--import', tsxLoader, join(REPO_ROOT, 'apps/cli/src/bin.ts'), 'web', '--no-open', '--port', '0'],
+      ['--import', tsxLoader, join(REPO_ROOT, 'apps/cli/src/bin.ts'), 'web', '--no-open', '--port', '0', '--patch', providerPatch],
       {
         cwd: workspace,
         env: {
           ...process.env,
-          DEEPSEEK_API_KEY: 'keyless-web-retry',
-          DEEPSEEK_BASE_URL: `http://127.0.0.1:${address.port}`,
+          DSH_WEB_CLI_MOCK_KEY: 'keyless-web-retry',
           DSH_HOME: join(workspace, '.dsh'),
           TSX_TSCONFIG_PATH: join(REPO_ROOT, 'tsconfig.json'),
         },
@@ -624,16 +638,16 @@ describe('dsh web keyless CLI smoke', () => {
     await new Promise<void>(resolve => provider.listen(0, '127.0.0.1', resolve))
     const address = provider.address()
     if (address === null || typeof address === 'string') throw new Error('mock provider did not bind a TCP port')
+    const providerPatch = loopbackProviderPatch(workspace, address.port)
     const tsxLoader = pathToFileURL(createRequire(join(REPO_ROOT, 'package.json')).resolve('tsx')).href
     const child = spawn(
       process.execPath,
-      ['--import', tsxLoader, join(REPO_ROOT, 'apps/cli/src/bin.ts'), 'web', '--no-open', '--port', '0'],
+      ['--import', tsxLoader, join(REPO_ROOT, 'apps/cli/src/bin.ts'), 'web', '--no-open', '--port', '0', '--patch', providerPatch],
       {
         cwd: workspace,
         env: {
           ...process.env,
-          DEEPSEEK_API_KEY: 'keyless-web-ptc',
-          DEEPSEEK_BASE_URL: `http://127.0.0.1:${address.port}`,
+          DSH_WEB_CLI_MOCK_KEY: 'keyless-web-ptc',
           DSH_TOOLS_MODE: 'ptc',
           DSH_HOME: join(workspace, '.dsh'),
           DSH_AGENTS_HOME: join(workspace, '.agents'),

@@ -103,8 +103,8 @@ describe('web e2e: Models settings page configures a dormant provider', () => {
     await dialog.waitFor({ timeout: 10_000 })
     await dialog.getByRole('button', { name: '模型', exact: true }).click()
     await dialog.getByText('填入各提供商的 API 密钥即可使用其模型。').waitFor({ timeout: 10_000 })
-    // The dormant pi-ai adapter contributes its whole installed catalog; no
-    // provider is configured yet, so the page is one add button.
+    // The dormant pi-ai adapter contributes its installed catalog alongside
+    // the product's configured relay provider.
     const add = dialog.getByRole('button', { name: '添加模型提供商' })
     await add.waitFor({ timeout: 10_000 })
     // The button enables once the dormant catalog lands in the join.
@@ -129,7 +129,7 @@ describe('web e2e: Models settings page configures a dormant provider', () => {
   it('refuses a key no HTTP header can carry before anything is written', async () => {
     onTestFailed(() => saveFailureShot(page, 'web-e2e-models-illegal-key'))
     const dialog = page.getByRole('dialog', { name: '设置' })
-    const key = dialog.getByLabel('API 密钥')
+    const key = dialog.getByRole('textbox', { name: 'API 密钥', exact: true })
     const save = dialog.getByRole('button', { name: '保存', exact: true })
 
     // A key no HTTP header can carry would save cleanly and fail the first
@@ -150,11 +150,11 @@ describe('web e2e: Models settings page configures a dormant provider', () => {
     onTestFailed(() => saveFailureShot(page, 'web-e2e-models-native-auth'))
     const dialog = page.getByRole('dialog', { name: '设置' })
     await dialog.getByRole('button', { name: '保存', exact: true }).click()
-    const row = dialog.getByText('minimax-cn', { exact: true }).first()
+    const row = dialog.locator('li').filter({ hasText: 'minimax-cn' }).first()
     await row.waitFor({ timeout: 10_000 })
     await dialog.getByText('已保存 minimax-cn。', { exact: true }).waitFor({ timeout: 10_000 })
-    expect(await dialog.getByRole('img', { name: 'API 密钥已配置' }).count()).toBe(0)
-    expect(await dialog.getByRole('img', { name: 'API 密钥缺失' }).count()).toBe(0)
+    expect(await row.getByRole('img', { name: 'API 密钥已配置' }).count()).toBe(0)
+    expect(await row.getByRole('img', { name: 'API 密钥缺失' }).count()).toBe(0)
     const document = await readFile(join(scaffold.harnessHome, 'profiles', 'scaffold', 'cordis.patch.yml'), 'utf8')
     expect(document).toContain('minimax-cn: {}')
     expect(document).not.toContain('MINIMAX_CN_API_KEY')

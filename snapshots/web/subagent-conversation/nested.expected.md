@@ -7,9 +7,6 @@
     - 'button "Switch subagent: example editor"': example editor
   - button "More actions"
   - button "Open right sidebar"
-  - tablist:
-    - tab "Chat" [selected]
-    - tab "Trajectory"
 - text: Give one concrete event sourcing example. {{clock}}
 - button "Copy"
 - status: Completed

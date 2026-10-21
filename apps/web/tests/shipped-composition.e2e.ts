@@ -526,8 +526,8 @@ it('assembles the shipped Web transport, catalog, guidance, and defaults', async
   scaffold = await launchWebScaffold({ deepSeekMissingCredential: true })
   const ctx = scaffold.ctx
   expect(ctx.llm.listProviders().some(provider => provider.id === 'deepseek-messages')).toBe(false)
-  expect(ctx.agentDefaultModel.currentSelection()).toEqual({ provider: 'deepseek-official', model: 'deepseek-flash' })
-  const index = await fetch(`http://127.0.0.1:${String(ctx.webServer.port)}`, {
+  expect(ctx.agentDefaultModel.currentSelection()).toEqual({ provider: 'yunshu-local', model: 'deepseek-v4-flash' })
+  const index = await scaffold.hostFetch('/', {
     headers: { 'accept-encoding': 'gzip' },
   })
   expect(index.headers.get('content-encoding')).toBe('gzip')

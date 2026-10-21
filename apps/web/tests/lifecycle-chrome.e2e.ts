@@ -306,11 +306,11 @@ describe('web e2e: lifecycle & chrome (workspace flow / reload / dark mode)', ()
     }
     // The blank frame renders the hero, not the resident composer: the
     // headline plus the guidance placeholder are the empty state's anchors.
-    await expect.poll(() => page.getByText('Into the Unknown', { exact: false }).count(), { timeout: 15_000 }).toBe(1)
+    await expect.poll(() => page.getByText('Make it real', { exact: true }).count(), { timeout: 15_000 }).toBe(1)
     const input = page.locator('[data-composer-input]').first()
     await input.waitFor({ timeout: 10_000 })
     if (MODE !== 'record') {
-      await page.getByText('Into the Unknown', { exact: false }).hover()
+      await page.getByText('Make it real', { exact: true }).hover()
       await expect.poll(() => page.getByRole('tooltip').count()).toBe(0)
       // Golden of the hero's stable waiting state (captured before any send;
       // the conversation-region goldens belong to the other scenarios).
@@ -372,8 +372,7 @@ describe('web e2e: lifecycle & chrome (workspace flow / reload / dark mode)', ()
     ).toBeGreaterThanOrEqual(1)
     await expect.poll(() => page.locator('[role="treeitem"][aria-selected="true"]').count(), { timeout: 10_000 }).toBe(1)
     await expect.poll(() => page.getByText('LIGHTHOUSE', { exact: true }).count(), { timeout: 15_000 }).toBeGreaterThanOrEqual(1)
-    // The usage pill's one label span concatenates the billed total and the cache-hit share.
-    await expect.poll(() => page.getByRole('button', { name: /Cache hit 99\.5%/ }).count(), { timeout: 15_000 }).toBe(1)
+    expect(await page.getByRole('button', { name: /Cache hit/ }).count()).toBe(0)
     // Host: the session's durable header cwd is the folder the workspace
     // flow created and adopted (<workspaceCwd>/workspace) — the proof the
     // send went through workspace materialization rather than a bare
@@ -504,6 +503,7 @@ describe('web e2e: lifecycle & chrome (workspace flow / reload / dark mode)', ()
         name: 'Disconnected, reconnect now', exact: true,
       })
       await offline.waitFor({ timeout: 2_000 })
+      expect(await connectionIndicatorHitTargets(offline)).toEqual([true, true, true, true, true])
       await recoveryPage.clock.fastForward(60_000)
       expect(sockets).toHaveLength(1)
 
@@ -513,12 +513,12 @@ describe('web e2e: lifecycle & chrome (workspace flow / reload / dark mode)', ()
         name: 'Reconnecting, reconnect now', exact: true,
       })
       await connecting.waitFor({ timeout: 10_000 })
-      expect(await connecting.innerText()).toMatch(/^Reconnecting\.{1,3}$/)
+      expect(await connecting.innerText()).toBe('')
       const connectingGeometry = await connectionIndicatorGeometry(connecting)
-      expect(await connectionIndicatorTextAlignment(connecting)).toBe('left')
-      // Hover keeps the state label; the pill never swaps copy or resizes.
+      expect(connectingGeometry.outer.slice(2)).toEqual([28, 28])
+      expect(await connectionIndicatorHitTargets(connecting)).toEqual([true, true, true, true, true])
       await connecting.hover()
-      expect(await connecting.innerText()).toMatch(/^Reconnecting\.{1,3}$/)
+      await recoveryPage.getByRole('tooltip', { name: 'Reconnecting, reconnect now', exact: true }).waitFor()
       expect(await connectionIndicatorGeometry(connecting)).toEqual(connectingGeometry)
       await recoveryPage.mouse.move(0, 0)
 
@@ -535,8 +535,8 @@ describe('web e2e: lifecycle & chrome (workspace flow / reload / dark mode)', ()
       }
       const indicator = connecting
       expect(await connectionIndicatorGeometry(indicator)).toEqual(connectingGeometry)
-      expect(await connectionIndicatorTextAlignment(indicator)).toBe('left')
-      const snapshot = await captureStableAria(recoveryPage, '[class*="footArea"]', scaffold.workspaceCwd)
+      expect(await connectionIndicatorHitTargets(indicator)).toEqual([true, true, true, true, true])
+      const snapshot = await captureStableAria(recoveryPage, '[class*="railFootArea"]', scaffold.workspaceCwd)
       await compareOrRefreshGolden(CONNECTION_ERROR_EXPECTED, snapshot, MODE)
       const expectedColors = await recoveryPage.evaluate(() => {
         const probe = document.createElement('span')
@@ -561,9 +561,9 @@ describe('web e2e: lifecycle & chrome (workspace flow / reload / dark mode)', ()
       rejectConnections = false
       await recoveryPage.clock.fastForward(10_000)
       await expect.poll(() => sockets.length).toBe(10)
-      const automaticRecovery = recoveryPage.getByRole('status')
+      const automaticRecovery = recoveryPage.getByRole('status', { name: 'Connected', exact: true })
       await automaticRecovery.waitFor({ timeout: 10_000 })
-      expect(await automaticRecovery.innerText()).toBe('Connected')
+      expect(await automaticRecovery.innerText()).toBe('')
       await recoveryPage.clock.fastForward(2_000)
       await automaticRecovery.waitFor({ state: 'detached' })
 
@@ -572,8 +572,9 @@ describe('web e2e: lifecycle & chrome (workspace flow / reload / dark mode)', ()
       await connecting.waitFor()
       await recoveryPage.clock.fastForward(500)
       await expect.poll(() => sockets.length).toBe(11)
+      expect(await connectionIndicatorHitTargets(indicator)).toEqual([true, true, true, true, true])
       await indicator.hover()
-      expect(await indicator.innerText()).toMatch(/^Reconnecting\.{1,3}$/)
+      await recoveryPage.getByRole('tooltip', { name: 'Reconnecting, reconnect now', exact: true }).waitFor()
       const hoverBackground = await indicator.evaluate(element => getComputedStyle(element).backgroundColor)
       await recoveryPage.mouse.down()
       await expect.poll(() => indicator.evaluate(element => getComputedStyle(element).backgroundColor))
@@ -582,14 +583,12 @@ describe('web e2e: lifecycle & chrome (workspace flow / reload / dark mode)', ()
       await recoveryPage.mouse.up()
 
       await expect.poll(() => sockets.length).toBe(12)
-      const recovered = recoveryPage.getByRole('status')
+      const recovered = recoveryPage.getByRole('status', { name: 'Connected', exact: true })
       await recovered.waitFor({ timeout: 10_000 })
-      expect(await recovered.innerText()).toBe('Connected')
-      // The pill sizes to its current label; chrome height and icon box stay fixed.
+      expect(await recovered.innerText()).toBe('')
       const recoveredGeometry = await connectionIndicatorGeometry(recovered)
-      expect(recoveredGeometry.outer[3]).toBe(connectingGeometry.outer[3])
+      expect(recoveredGeometry.outer).toEqual(connectingGeometry.outer)
       expect(recoveredGeometry.icon).toEqual(connectingGeometry.icon)
-      expect(await connectionIndicatorTextAlignment(recovered)).toBe('left')
       await recoveryPage.clock.fastForward(2_000)
       await recovered.waitFor({ state: 'detached', timeout: 5_000 })
       expect(recoveryTripwire.pageErrors).toEqual([])
@@ -614,28 +613,30 @@ describe('web e2e: lifecycle & chrome (workspace flow / reload / dark mode)', ()
 async function connectionIndicatorGeometry(locator: ReturnType<Page['getByRole']>): Promise<{
   readonly outer: readonly number[]
   readonly icon: readonly number[]
-  readonly label: readonly number[]
 }> {
   return await locator.evaluate((element) => {
     const outer = element.getBoundingClientRect()
     const icon = element.children.item(0)?.getBoundingClientRect()
-    const label = element.children.item(1)?.getBoundingClientRect()
-    if (icon === undefined || label === undefined) throw new Error('connection indicator children missing')
+    if (icon === undefined) throw new Error('connection indicator icon missing')
     const rounded = (values: readonly number[]): readonly number[] => values.map(value => Math.round(value * 100) / 100)
     return {
       outer: rounded([outer.x, outer.y, outer.width, outer.height]),
       icon: rounded([icon.x - outer.x, icon.y - outer.y, icon.width, icon.height]),
-      label: rounded([label.x - outer.x, label.y - outer.y, label.width, label.height]),
     }
   })
 }
 
-async function connectionIndicatorTextAlignment(
+async function connectionIndicatorHitTargets(
   locator: ReturnType<Page['getByRole']>,
-): Promise<string> {
+): Promise<boolean[]> {
   return await locator.evaluate((element) => {
-    const label = element.children.item(1)
-    if (label === null) throw new Error('connection indicator label missing')
-    return getComputedStyle(label).textAlign
+    const { left, right, top, bottom, width, height } = element.getBoundingClientRect()
+    return [
+      [left + width / 2, top + height / 2],
+      [left + 4, top + 4], [right - 4, top + 4],
+      [left + 4, bottom - 4], [right - 4, bottom - 4],
+    ].map(([x, y]) => x !== undefined && y !== undefined
+      && x >= 0 && y >= 0 && x < window.innerWidth && y < window.innerHeight
+      && element.contains(document.elementFromPoint(x, y)))
   })
 }
