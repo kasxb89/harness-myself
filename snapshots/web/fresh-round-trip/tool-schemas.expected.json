@@ -295,6 +295,10 @@
             "type": "string",
             "description": "Optional output size such as 1024x1024 or auto. A value the chosen model does not support is refused with that model’s own menu. For yunshu-internal-gpt-image-2, omit pixel size; the server controls output settings."
           },
+          "resolution": {
+            "type": "string",
+            "description": "Optional named output tier, only when declared by the chosen model. yunshu-internal-gpt-image-2 accepts 1k, 2k or 4k and defaults to 1k; this is independent from pixel size."
+          },
           "count": {
             "type": "number",
             "description": "How many images to render, within the model’s limit (usually 1–4)."
