@@ -8,6 +8,11 @@
   margin: 4px -2px;
 }
 
+.sectionTabs {
+  margin-bottom: 20px;
+  max-width: 440px;
+}
+
 .triggerRow.railRow {
   width: 100%;
   margin: 0;

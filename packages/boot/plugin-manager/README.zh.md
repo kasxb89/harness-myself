@@ -41,6 +41,8 @@ kind: "package-reference"
 
 已选择但无法加载的组合包仍会出现在 `listBundles` 中，并携带 `error`；`enabled` 表示保存的选择，不代表加载成功。插件页面显示错误并允许取消选择。损坏的组合包无法启用。管理组合包的文件变得不可读后仍受保护。
 
+`listPlugins` 每次响应只为当前 Loader 条目和组合后的补丁 ID 建立一次索引，匹配各插件行时不再反复扫描整个 Loader；快照仍保留当前启用状态和歧义检查。
+
 `listBundles` 为各组合包及其声明的插件行提供可选的展示 `meta`，包括已禁用的组合包。Client 从这些值中选择语言。单独的 `description` 字段是该组合包原始的 `package.json.description`；元信息诊断不会阻止管理操作。`source` 以 `pnpm add` 接受的 spec 给出 profile 依赖：git 地址或 URL 按记录给出，但去掉 http(s) URL 的 user information（查询字符串保持原样）；`file:` 或 `link:` 路径按 profile 目录解析为绝对路径，`~` 展开为主目录；注册表版本范围、标签或别名接在包名的 `@` 之后，以别名安装的包的 spec 也是如此。安装提供的组合包没有该字段，即使 profile 也依赖它，因为实际加载的是安装中的副本。`plugin_manager` 工具的列表结果不包含 UI 展示元信息。
 
 `listBundles` 将随附可选组合包和按需目录项标为 `official`，与包的安装状态独立。`availability` 表示可读取的安装随附包、profile 包，或 `missing`；按需目录项不计入未声明的传递依赖副本。`installed` 仅表示 profile 是否声明该依赖。尚未安装的按需条目携带内嵌的本地化元信息，以及 Host 生成、包含当前 DSH 版本与安装 spec 的 `installTarget`，无需访问注册表。profile 已声明但文件不可读的包保留依赖声明，并展示原有错误。

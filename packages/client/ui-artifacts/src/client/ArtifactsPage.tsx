@@ -287,30 +287,42 @@ export function ArtifactsPage(props: ArtifactsPageProps): ReactNode {
     request.current = current
     if (!background) setLoading(true)
     try {
-      const [files, destination, deleted] = await Promise.all([
-        readListing(current.signal).catch(() => ({ ok: false as const, code: 'ARTIFACT_OPERATION_FAILED' as const })),
-        readStorage(current.signal).catch(() => ({ ok: false as const, code: 'ARTIFACT_OPERATION_FAILED' as const })),
-        readTrash(current.signal).catch(() => ({ ok: false as const, code: 'ARTIFACT_OPERATION_FAILED' as const })),
-      ])
-      if (!alive.current || current.signal.aborted || revision !== generation.current) return null
-      const nextErrors: typeof errors = {}
-      if (files.ok) {
-        const loaded = [...files.value.items, ...(explicit ? [] : discoveredNow.current)]
-        if (explicit) {
-          setDiscoveredReset(discoveredNow.current.some(entry => !files.value.items.some(item => entryKey(item) === entryKey(entry))))
-          setDiscovered([])
-        }
-        setListing(files.value)
-        if (explicit) setPreviewRevision(value => value + 1)
-        setSelection(previous => loaded.some(entry => entryKey(entry) === previous) ? previous : null)
-        setDialog((previous) => {
-          if (previous === null || previous.kind === 'storage') return previous
-          const entry = loaded.find(item => entryKey(item) === entryKey(previous.entry))
-          return entry === undefined ? null : { ...previous, entry }
+      const currentRead = (): boolean => alive.current && !current.signal.aborted && revision === generation.current
+      const filesRead = readListing(current.signal)
+        .catch(() => ({ ok: false as const, code: 'ARTIFACT_OPERATION_FAILED' as const }))
+        .then((files) => {
+          if (!currentRead()) return files
+          if (files.ok) {
+            const loaded = [...files.value.items, ...(explicit ? [] : discoveredNow.current)]
+            if (explicit) {
+              setDiscoveredReset(discoveredNow.current.some(entry => !files.value.items.some(item => entryKey(item) === entryKey(entry))))
+              setDiscovered([])
+            }
+            setListing(files.value)
+            if (explicit) setPreviewRevision(value => value + 1)
+            setSelection(previous => loaded.some(entry => entryKey(entry) === previous) ? previous : null)
+            setDialog((previous) => {
+              if (previous === null || previous.kind === 'storage') return previous
+              const entry = loaded.find(item => entryKey(item) === entryKey(previous.entry))
+              return entry === undefined ? null : { ...previous, entry }
+            })
+          }
+          // File cards become usable independently of slow recovery/preference reads.
+          setLoading(false)
+          return files
         })
-      } else nextErrors.listing = files.code
-      if (destination.ok) setStorage(destination.value); else nextErrors.storage = destination.code
-      if (deleted.ok) setTrash(deleted.value); else nextErrors.trash = deleted.code
+      const storageRead = readStorage(current.signal)
+        .catch(() => ({ ok: false as const, code: 'ARTIFACT_OPERATION_FAILED' as const }))
+        .then((value) => { if (currentRead() && value.ok) setStorage(value.value); return value })
+      const trashRead = readTrash(current.signal)
+        .catch(() => ({ ok: false as const, code: 'ARTIFACT_OPERATION_FAILED' as const }))
+        .then((value) => { if (currentRead() && value.ok) setTrash(value.value); return value })
+      const [files, destination, deleted] = await Promise.all([filesRead, storageRead, trashRead])
+      if (!currentRead()) return null
+      const nextErrors: typeof errors = {}
+      if (!files.ok) nextErrors.listing = files.code
+      if (!destination.ok) nextErrors.storage = destination.code
+      if (!deleted.ok) nextErrors.trash = deleted.code
       setErrors(nextErrors)
       if (explicit && Object.keys(nextErrors).length === 0 && files.ok && (files.value.issues?.length ?? 0) === 0) {
         setUncertain(false)

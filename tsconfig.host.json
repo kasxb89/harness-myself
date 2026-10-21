@@ -185,6 +185,7 @@
     "apps/web/tests/agent-team-panel.e2e.ts",
     "apps/web/tests/sidebar-right.e2e.ts",
     "apps/web/tests/creative-sidebar.e2e.ts",
+    "apps/web/tests/creation-composer-layout.e2e.ts",
     "apps/web/tests/image-reference-upload.e2e.ts",
     "apps/web/tests/sidebar-terminal.e2e.ts",
     "apps/web/tests/chat-scroll-fixture.ts",

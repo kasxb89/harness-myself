@@ -81,6 +81,8 @@ export interface Config {
   watchFollowSymlinks?: boolean
   /** Bundled skill root; defaults to `$DSH_BUNDLED_SKILL_DIR` when default roots are included, otherwise mounts none. */
   bundledSkillDir?: string
+  /** Maximum skill files read concurrently during discovery. Defaults to 8. */
+  discoveryConcurrency?: number
 }
 
 export const Config: Schema<Config> = z.object({
@@ -96,6 +98,7 @@ export const Config: Schema<Config> = z.object({
   watchMaxProjects: z.number().default(DEFAULT_WATCH_MAX_PROJECTS),
   watchFollowSymlinks: z.boolean().default(true),
   bundledSkillDir: z.string(),
+  discoveryConcurrency: z.number().step(1).min(1).max(32).default(8),
 })
 
 interface SkillRoot {
@@ -166,6 +169,7 @@ export class FileSystemSkillProvider implements SkillProvider {
   private readonly customSkillDirs: string[]
   private readonly watchManager: SkillWatchManager
   private readonly bundledSkillDir: string | undefined
+  private readonly discoveryConcurrency: number
   private disposal: Promise<void> | undefined
 
   constructor(
@@ -178,6 +182,9 @@ export class FileSystemSkillProvider implements SkillProvider {
     this.dshHome = resolveDshHome(config.dshHome)
     this.agentsHome = resolveAgentsHome(config.agentsHome)
     this.customSkillDirs = (config.customSkillDirs ?? []).map(root => resolve(root))
+    this.discoveryConcurrency = config.discoveryConcurrency ?? 8
+    assertPositiveInteger('discoveryConcurrency', this.discoveryConcurrency)
+    if (this.discoveryConcurrency > 32) throw new TypeError('skill-filesystem: discoveryConcurrency must not exceed 32')
     this.watchManager = new SkillWatchManager(ctx, control.invalidate, resolveWatchConfig(config))
     control.signal.addEventListener('abort', () => { void this.dispose() }, { once: true })
     // The environment bundled root is a default root: an isolated provider
@@ -205,7 +212,7 @@ export class FileSystemSkillProvider implements SkillProvider {
     }
     const candidates: SkillCandidate[] = []
     for (const root of roots) {
-      for (const skill of await discoverRoot(root, this.ctx, this.name)) {
+      for (const skill of await discoverRoot(root, this.ctx, this.name, this.discoveryConcurrency)) {
         candidates.push(skill)
       }
     }
@@ -739,34 +746,46 @@ function hasErrorCode(error: unknown, code: string): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === code
 }
 
-async function discoverRoot(root: SkillRoot, ctx: Context, provider: string): Promise<SkillCandidate[]> {
-  const skills: SkillCandidate[] = []
-  const entries = await listSkillRootEntries(root, ctx)
-  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-    if (root.skipSystem && entry.name === '.system') continue
-    const locator = entry.type === 'directory'
-      ? { path: join(entry.path, 'SKILL.md'), directory: entry.path }
-      : entry.type === 'file' && entry.name.endsWith('.md')
-        ? { path: entry.path, directory: root.path }
-        : undefined
-    if (locator === undefined) continue
-    const parsed = await parseSkillFile(locator.path, ctx, undefined, root.trustedHost === true)
-    if (parsed === undefined) continue
-    skills.push({
-      name: parsed.name,
-      description: parsed.description,
-      ...parsed.whenToUse !== undefined ? { whenToUse: parsed.whenToUse } : {},
-      invocation: parsed.invocation,
-      provider,
-      source: root.source,
-      rank: root.rank,
-      locator,
-      resourceBase: { kind: 'directory', path: locator.directory },
-      path: parsed.path,
-      ...parsed.metadata !== undefined ? { metadata: parsed.metadata } : {},
-    })
+async function discoverRoot(root: SkillRoot, ctx: Context, provider: string, concurrency: number): Promise<SkillCandidate[]> {
+  const entries = (await listSkillRootEntries(root, ctx)).sort((a, b) => a.name.localeCompare(b.name))
+  const skills = Array.from({ length: entries.length }, (): SkillCandidate | undefined => undefined)
+  let cursor = 0
+  let failed = false
+  const read = async (): Promise<void> => {
+    while (!failed && cursor < entries.length) {
+      const index = cursor++
+      const entry = entries[index]
+      if (entry === undefined) return
+      if (root.skipSystem && entry.name === '.system') continue
+      const locator = entry.type === 'directory'
+        ? { path: join(entry.path, 'SKILL.md'), directory: entry.path }
+        : entry.type === 'file' && entry.name.endsWith('.md')
+          ? { path: entry.path, directory: root.path }
+          : undefined
+      if (locator === undefined) continue
+      const parsed = await parseSkillFile(locator.path, ctx, undefined, root.trustedHost === true)
+      if (parsed === undefined) continue
+      skills[index] = {
+        name: parsed.name,
+        description: parsed.description,
+        ...parsed.whenToUse !== undefined ? { whenToUse: parsed.whenToUse } : {},
+        invocation: parsed.invocation,
+        provider,
+        source: root.source,
+        rank: root.rank,
+        locator,
+        resourceBase: { kind: 'directory', path: locator.directory },
+        path: parsed.path,
+        ...parsed.metadata !== undefined ? { metadata: parsed.metadata } : {},
+      }
+    }
   }
-  return skills
+  // Join every worker on failure so a rejected discovery leaves no unowned reads.
+  const outcomes = await Promise.allSettled(Array.from({ length: Math.min(concurrency, entries.length) }, async () => {
+    try { await read() } catch (error) { failed = true; throw error }
+  }))
+  for (const outcome of outcomes) if (outcome.status === 'rejected') throw outcome.reason
+  return skills.filter((skill): skill is SkillCandidate => skill !== undefined)
 }
 
 async function listSkillRootEntries(root: SkillRoot, ctx: Context): Promise<SkillRootEntry[]> {

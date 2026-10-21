@@ -20,6 +20,19 @@ beforeEach(() => {
   vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {})
 })
 
+it('shows usable files before delayed storage and recovery inventory finish', async () => {
+  const storage = deferred<ArtifactResult<ArtifactStorage>>()
+  const recovery = deferred<ArtifactResult<readonly TrashedArtifact[]>>()
+  render(<ArtifactsPage {...props({ readStorage: () => storage.promise, readTrash: () => recovery.promise })} />)
+  await selectImage()
+  expect(screen.getByRole('region', { name: '预览' })).toBeTruthy()
+  await act(async () => {
+    storage.resolve({ ok: true, value: destination })
+    recovery.resolve({ ok: true, value: [] })
+  })
+  expect(screen.getByRole('region', { name: '预览' })).toBeTruthy()
+})
+
 type PdfRenderer = PropsRenderSlots<'artifacts.preview.pdf'>['renderSlot']
 /** The generic dispatcher narrows its concrete PDF owner before rendering the test view. */
 function pdfView(owner: object) {

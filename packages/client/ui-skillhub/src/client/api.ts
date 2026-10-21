@@ -61,10 +61,11 @@ async function request<T>(
 /**
  * Read official community recommendations without submitting a search or installing a skill.
  * @param signal - Panel or explicit retry lifetime.
+ * @param refresh - Bypass the short-lived Host cache after an explicit retry.
  * @returns Validated recommendation cards in official order, or a localized failure code.
  */
-export function readRecommendedSkills(signal: AbortSignal): Promise<SkillHubSearchResponse> {
-  return request(SKILLHUB_RECOMMENDATIONS_PATH, signal, value =>
+export function readRecommendedSkills(signal: AbortSignal, refresh = false): Promise<SkillHubSearchResponse> {
+  return request(SKILLHUB_RECOMMENDATIONS_PATH + (refresh ? '?refresh=1' : ''), signal, value =>
     value.ok === true && Array.isArray(value.skills) && value.skills.every(catalogSkill)
       ? { ok: true as const, skills: value.skills } : undefined)
 }

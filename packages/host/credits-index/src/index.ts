@@ -48,6 +48,7 @@ import { registerVideoProjectTools } from './video-project-tools.ts'
 import { registerCreationWorkflows } from './creation-workflows.ts'
 import { recoverVideoProjectOutputs, VideoProjectError } from './video-project.ts'
 import { createVideoProjectRelay } from './video-project-provider.ts'
+import { videoSubmission, type VideoReferenceSnapshot } from './video-submission.ts'
 import { bindVideoAccount } from './video-project-account.ts'
 import { artifactOriginOf, captureMediaOutput, type CapturedMediaOutput } from './media-output.ts'
 import { executeImageTask } from './image-task.ts'
@@ -165,7 +166,7 @@ export const Config: z<Config> = z.object({
   imageTaskTimeoutMs: z.number().step(1).min(1).max(2_147_483_647).default(600_000),
   imagePollIntervalMs: z.number().step(1).min(1).max(60_000).default(2000),
   imageQueryRetryLimit: z.number().step(1).min(0).max(5).default(2),
-  videoSubmitTimeoutMs: z.number().step(1).min(1).max(2_147_483_647).default(120_000),
+  videoSubmitTimeoutMs: z.number().step(1).min(1).max(2_147_483_647).default(180_000),
   videoTaskTimeoutMs: z.number().step(1).min(1).max(2_147_483_647).default(900_000),
   videoPollIntervalMs: z.number().step(1).min(1).max(60_000).default(6000),
   videoQueryRetryLimit: z.number().step(1).min(0).max(5).default(2),
@@ -1025,7 +1026,9 @@ export function apply(ctx: Context, config: Config): void {
     }
     const id = 'ma_' + randomBytes(16).toString('hex')
     signal.throwIfAborted()
-    await storeReference(id, bytes, mediaType, basename(fileSystem.processPath(target)))
+    const account = await liveSession()
+    if (account === null) throw new VideoProjectError('VIDEO_ACCOUNT_REQUIRED', '请先登录后使用参考素材')
+    await storeReference(id, bytes, mediaType, basename(fileSystem.processPath(target)), account.account.id)
     references.set(cacheKey, id)
     return id
   }
@@ -1071,50 +1074,71 @@ export function apply(ctx: Context, config: Config): void {
    * The server's task plugin maps the prepared fields to its selected upstream.
    */
   const runVideoTask = async (
-    key: string, route: string, request: Record<string, unknown>,
-    signal = new AbortController().signal, submitting?: () => Promise<void>,
-    received?: (receipt: CreativeVideoReceipt) => Promise<void>, resumeReceipt?: CreativeVideoReceipt,
-    savedOutput?: (path: string) => Promise<void>, currentKey?: () => Promise<string>,
+    key: string, route: string, request: Record<string, unknown>, signal = new AbortController().signal,
+    submitting?: () => Promise<void>, received?: (receipt: CreativeVideoReceipt) => Promise<void>,
+    resumeReceipt?: CreativeVideoReceipt, currentKey?: () => Promise<string>, savedOutput?: (path: string) => Promise<void>,
     reuseSavedOutput?: (bytes: Uint8Array) => Promise<string | undefined>,
     origin?: ArtifactOrigin,
   ): Promise<MediaOutcome> => {
     let output: CapturedMediaOutput | undefined
-    const model = resumeReceipt?.model ?? readString(request, 'model') ?? ''
-    return executeVideoTask({ ...origin === undefined ? {} : { origin }, model, route, backendFingerprint: createHash('sha256').update(apiBaseUrl).digest('hex'), signal,
-      submitTimeoutMs: resolved.videoSubmitTimeoutMs, taskTimeoutMs: resolved.videoTaskTimeoutMs,
+    return executeVideoTask({
+      ...origin === undefined ? {} : { origin },
+      model: resumeReceipt?.model ?? readString(request, 'model') ?? '', route,
+      backendFingerprint: createHash('sha256').update(apiBaseUrl).digest('hex'), signal,
+      submitTimeoutMs: Math.max(resolved.timeoutMs, resolved.videoSubmitTimeoutMs, 180_000), taskTimeoutMs: resolved.videoTaskTimeoutMs,
       queryTimeoutMs: resolved.timeoutMs, pollIntervalMs: resolved.videoPollIntervalMs, queryRetryLimit: resolved.videoQueryRetryLimit,
+      prepare: async (operationSignal) => { output = await captureMediaOutput(ctx.get('artifactStorage'), join(stateDir, 'media'), operationSignal, resumeReceipt === undefined ? origin : resumeReceipt.origin) },
       ...submitting === undefined ? {} : { submitting }, ...received === undefined ? {} : { received },
       ...resumeReceipt === undefined ? {} : { resumeReceipt },
-      prepare: async (ownedSignal) => { output = await captureMediaOutput(ctx.get('artifactStorage'), join(stateDir, 'media'), ownedSignal, resumeReceipt === undefined ? origin : resumeReceipt.origin) },
-      submit: async (ownedSignal) => {
+      submit: async (operationSignal) => {
         const ownedKey = await currentKey?.() ?? key
-        return apiFetch(route, { method: 'POST', headers: { authorization: `Bearer ${ownedKey}`, 'content-type': 'application/json', accept: 'application/json' },
-          body: JSON.stringify(request), signal: ownedSignal })
+        operationSignal.throwIfAborted()
+        const submission = videoSubmission(request)
+        return apiFetch(route, { method: 'POST', headers: { authorization: `Bearer ${ownedKey}`, accept: 'application/json', ...submission.headers }, body: submission.body, signal: operationSignal })
       },
-      read: async (taskId, ownedSignal) => {
+      read: async (taskId, operationSignal) => {
         const ownedKey = await currentKey?.() ?? key
-        return apiFetch(`${route}/${encodeURIComponent(taskId)}`, { headers: { authorization: `Bearer ${ownedKey}`, accept: 'application/json' }, signal: ownedSignal })
+        operationSignal.throwIfAborted()
+        return apiFetch(`${route}/${encodeURIComponent(taskId)}`, { headers: { authorization: `Bearer ${ownedKey}`, accept: 'application/json' }, signal: operationSignal })
       },
-      save: async (entry, _index, ownedSignal) => {
+      save: async (taskId, operationSignal) => {
         const ownedKey = await currentKey?.() ?? key
-        ownedSignal.throwIfAborted()
-        const remote = readString(entry, 'url')
-        const taskId = readString(entry, 'taskId')
-        if (remote === null && taskId === null) return undefined
-        const downloadSignal = AbortSignal.any([ownedSignal, AbortSignal.timeout(300_000)])
-        const response = remote === null ? await apiFetch(`/v1/videos/${encodeURIComponent(taskId ?? '')}/content`, {
-          headers: { authorization: `Bearer ${ownedKey}` }, signal: downloadSignal,
-        }) : await mediaFetch(remote, { signal: downloadSignal })
-        if (!response.ok) throw new VideoProjectError('VIDEO_DOWNLOAD_UNAVAILABLE', '原视频暂时无法下载，请继续查询原任务并保存；无需重新生成。')
-        const bytes = Buffer.from(await response.arrayBuffer())
-        if (bytes.length === 0) throw new VideoProjectError('VIDEO_DOWNLOAD_UNAVAILABLE', '原视频内容尚未取回，请继续查询原任务；无需重新生成。')
+        operationSignal.throwIfAborted()
+        const response = await apiFetch(`/v1/videos/${encodeURIComponent(taskId)}/content`, {
+          headers: { authorization: `Bearer ${ownedKey}`, accept: 'video/mp4' }, redirect: 'error', signal: AbortSignal.any([operationSignal, AbortSignal.timeout(300_000)]),
+        })
+        if (!response.ok) { await response.body?.cancel(); throw new VideoProjectError('VIDEO_CONTENT_UNAVAILABLE', '原视频暂时无法下载，请继续查询原任务，不要重新生成。') }
+        const declared = Number(response.headers.get('content-length'))
+        if (Number.isFinite(declared) && declared > resolved.videoProjectDownloadMaxBytes) {
+          await response.body?.cancel()
+          throw new VideoProjectError('VIDEO_CONTENT_LIMIT', '原视频超过本机保存上限，请保留任务并联系管理员；不要重新生成。')
+        }
+        if (response.body === null) throw new VideoProjectError('VIDEO_CONTENT_INVALID', '原视频尚无可下载内容，请稍后查询原任务。')
+        const reader = response.body.getReader()
+        const chunks: Uint8Array[] = []
+        let size = 0
+        try {
+          for (;;) {
+            operationSignal.throwIfAborted()
+            const chunk = await reader.read()
+            if (chunk.done) break
+            size += chunk.value.byteLength
+            if (size > resolved.videoProjectDownloadMaxBytes) throw new VideoProjectError('VIDEO_CONTENT_LIMIT', '原视频超过本机保存上限，请保留任务并联系管理员；不要重新生成。')
+            chunks.push(chunk.value)
+          }
+        } finally {
+          await reader.cancel().catch((_closedBody: unknown) => { /* Completion or cancellation already released this transfer. */ })
+          reader.releaseLock()
+        }
+        const bytes = Buffer.concat(chunks)
+        if (bytes.length < 12 || bytes.subarray(4, 8).toString('ascii') !== 'ftyp') throw new VideoProjectError('VIDEO_CONTENT_INVALID', '原视频文件暂时无法确认，请继续查询原任务，不要重新生成。')
         await currentKey?.()
-        ownedSignal.throwIfAborted()
-        const previous = await reuseSavedOutput?.(bytes)
-        if (previous !== undefined) return previous
-        if (output === undefined) throw new Error('Video output destination was not prepared')
-        const filename = `vid-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomBytes(3).toString('hex')}.mp4`
-        const saved = await output.write(filename, bytes)
+        operationSignal.throwIfAborted()
+        const existing = await reuseSavedOutput?.(bytes)
+        operationSignal.throwIfAborted()
+        if (existing !== undefined) { await savedOutput?.(existing); return existing }
+        if (output === undefined) throw new Error('Video output was not prepared')
+        const saved = await output.write(`vid-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomBytes(3).toString('hex')}.mp4`, bytes)
         await savedOutput?.(saved.path)
         return saved.path
       },
@@ -1142,7 +1166,9 @@ export function apply(ctx: Context, config: Config): void {
       return { ok: false, code: 'RESOLUTION_NOT_SUPPORTED', message: `${model.id} 的分辨率可选：${params.resolutions.join('、')}` }
     }
     const durations = videoDurations(params, resolution)
-    const duration = body.durationSeconds === undefined ? durations[0] : body.durationSeconds
+    const duration = body.durationSeconds === undefined
+      ? params.defaultDuration !== undefined && durations.includes(params.defaultDuration) ? params.defaultDuration : durations[0]
+      : body.durationSeconds
     if (typeof duration !== 'number' || !Number.isSafeInteger(duration) || !durations.includes(duration)) {
       return { ok: false, code: 'DURATION_NOT_SUPPORTED', message: `${model.id} 当前分辨率的时长可选：${durations.join('、') || '无'} 秒，请选择受支持的分辨率和时长` }
     }
@@ -1199,6 +1225,12 @@ export function apply(ctx: Context, config: Config): void {
       return { ok: false, code: 'RATIO_NOT_SUPPORTED', message: '自适应比例需要实际提交图片或视频参考' }
     }
 
+    const blackrx = model.source === 'plugin:blackrxai-video'
+    if (blackrx && (ratio !== null || mode !== null)) {
+      return { ok: false, code: 'PARAMETER_NOT_SUPPORTED', message: `${model.id} 请直接选择实际宽高尺寸，不支持额外比例或档位参数` }
+    }
+    const account = blackrx ? await liveSession() : undefined
+    const snapshots: VideoReferenceSnapshot[] = []
     let referenceBytes = 0
     let imageBytes = 0
     /** Validate the stored kind, signature and complete byte budget before billing. */
@@ -1206,12 +1238,14 @@ export function apply(ctx: Context, config: Config): void {
       const values: string[] = []
       for (const id of ids) {
         const value = await readReference(id)
-        if (value === null || !value.mediaType.startsWith(`${kind}/`) || !referenceSignature(value.bytes, value.mediaType)) return null
+        if (value === null || !value.mediaType.startsWith(`${kind}/`) || !referenceSignature(value.bytes, value.mediaType)
+          || blackrx && (account?.account.id === undefined || value.accountId !== account.account.id)) return null
         const limit = (kind === 'image' ? 6 : kind === 'audio' ? 15 : 32) * 1024 * 1024
         referenceBytes += value.bytes.length
         if (kind === 'image') imageBytes += value.bytes.length
         if (value.bytes.length > limit || referenceBytes > 48 * 1024 * 1024 || imageBytes > 12 * 1024 * 1024) return null
-        values.push(`data:${value.mediaType};base64,${value.bytes.toString('base64')}`)
+        if (blackrx) snapshots.push({ kind, mediaType: value.mediaType, filename: `reference-${String(snapshots.length + 1)}.${Object.entries(MEDIA_TYPE_BY_EXTENSION).find(([, type]) => type === value.mediaType)?.[0] ?? 'bin'}`, base64: value.bytes.toString('base64') })
+        else values.push(`data:${value.mediaType};base64,${value.bytes.toString('base64')}`)
       }
       return values
     }
@@ -1221,6 +1255,18 @@ export function apply(ctx: Context, config: Config): void {
     const audioUrls = await inline(referenceAudios, 'audio')
     if (frameUrls === null || imageUrls === null || videoUrls === null || audioUrls === null) {
       return { ok: false, code: 'REFERENCE_MISSING', message: '参考素材已失效、类型不匹配或超过大小限制，请重新添加对应素材' }
+    }
+
+    if (blackrx) {
+      const request = {
+        model: model.id, prompt, seconds: duration, size: resolution ?? params.resolutions[0],
+        gen_type: snapshots.length === 0 ? 'text_to_video' : 'reference_to_video', n: 1,
+        _blackrxReferences: snapshots,
+      }
+      if (Buffer.byteLength(JSON.stringify(request)) > 64 * 1024 * 1024) {
+        return { ok: false, code: 'REFERENCE_REQUEST_TOO_LARGE', message: '参考素材编码后超过请求大小限制，请减少素材后重试；尚未提交生成' }
+      }
+      return { ok: true, request }
     }
 
     const metadata: Record<string, unknown> = {}
@@ -1357,6 +1403,11 @@ export function apply(ctx: Context, config: Config): void {
       const params = capability.model.params as ImageParams
       const model = capability.model.id
       const internalImage = model === 'yunshu-internal-gpt-image-2'
+      const resolution = typeof body.resolution === 'string' ? body.resolution.toLowerCase() : undefined
+      if (body.resolution !== undefined && (resolution === undefined || !(params.resolutions ?? []).includes(resolution))) {
+        return { ok: false, submissionState: 'not-submitted', code: 'RESOLUTION_NOT_SUPPORTED',
+          message: `${model} 的分辨率可选：${(params.resolutions ?? []).join('、') || '无'}` }
+      }
       const size = internalImage ? null : readString(body, 'size')
       if (size !== null && params.sizes.length > 0 && !params.sizes.includes(size)) {
         return { ok: false, submissionState: 'not-submitted', code: 'SIZE_NOT_SUPPORTED', message: `${model} 不支持 ${size}，可选：${params.sizes.join('、')}` }
@@ -1410,6 +1461,7 @@ export function apply(ctx: Context, config: Config): void {
       /** The optional knobs, spelled the way both the relay and the vendors read them. */
       const extras: Record<string, unknown> = {
         ...size === null ? {} : { size },
+        ...resolution === undefined ? {} : { resolution },
         ...quality === null ? {} : { quality },
         ...background === null ? {} : { background },
         ...format === null ? {} : { output_format: format },
@@ -1508,7 +1560,8 @@ export function apply(ctx: Context, config: Config): void {
           return apiFetch(capability.model.route, {
             method: 'POST', headers,
             body: JSON.stringify(internalImage
-              ? { model, prompt, n: 1, ...referenceUrls.length === 0 ? {} : { reference_images: referenceUrls } }
+              ? { model, prompt, n: 1, ...resolution === undefined ? {} : { resolution },
+                ...referenceUrls.length === 0 ? {} : { reference_images: referenceUrls } }
               : { model, prompt, n: count, ...extras }),
             signal: requestSignal,
           })
@@ -1805,7 +1858,9 @@ export function apply(ctx: Context, config: Config): void {
   const installedModelInputs = async (ids: readonly string[], signal: AbortSignal): Promise<ReadonlyMap<string, readonly string[]>> => {
     const llm = ctx.get('llm')
     if (llm === undefined) return new Map()
-    const wanted = new Set(ids)
+    // This published product alias uses the same official upstream model.
+    const aliases = new Map([['yunshu-flash', 'deepseek-flash']])
+    const wanted = new Set(ids.flatMap(id => [id, aliases.get(id) ?? id]))
     const inputs = new Map<string, readonly string[] | null>()
     for (const entry of llm.listConfigurableProviders()) {
       if (entry.settingsNs !== resolved.chatSettingsNamespace || entry.declared !== false) continue
@@ -1821,7 +1876,10 @@ export function apply(ctx: Context, config: Config): void {
         }
       }
     }
-    return new Map([...inputs].flatMap(([id, input]) => input === null ? [] : [[id, input] as const]))
+    return new Map(ids.flatMap((id) => {
+      const input = inputs.has(id) ? inputs.get(id) : inputs.get(aliases.get(id) ?? id)
+      return input === undefined || input === null ? [] : [[id, input] as const]
+    }))
   }
 
   /** Preserve model overrides while filling missing inputs; empty live catalogs mask old configuration. */
@@ -2057,7 +2115,7 @@ export function apply(ctx: Context, config: Config): void {
     const mediaType = [...ALLOWED_ASSET_TYPES].find(type => referenceSignature(source.bytes, type))
     if (mediaType === undefined) throw new CreativeError('CREATIVE_REFERENCE_INVALID', 400, '已生成的图片不是受支持的 PNG、JPEG 或 WebP，请检查原文件。')
     const id = `ma_${randomBytes(20).toString('hex')}`
-    await storeReference(id, source.bytes, mediaType, basename(source.path))
+    await storeReference(id, source.bytes, mediaType, basename(source.path), owner.accountId)
     return id
   }
   const panelLife = new AbortController()
@@ -2155,16 +2213,42 @@ export function apply(ctx: Context, config: Config): void {
       throw error
     } finally { creative.release(operation) }
   }
-  /** Query an owned original single-video task; never POST another generation. */
-  const runRetainedVideo = async (retained: Awaited<ReturnType<CreativeStore['resumeVideoTask']>>, key: () => Promise<string>, signal: AbortSignal) => {
+  const panelVideoAdmissions = new Set<string>()
+  /** Unknown or accepted video submissions block new plans in this same conversation. */
+  const pendingPanelVideo = async (owner: CreativeOwner): Promise<(MediaOutcome & { planId: string; operationId: string }) | undefined> => {
+    for (const project of await creative.projects(owner)) {
+      if (project.kind !== 'video') continue
+      const task = [...project.tasks].reverse().find(task => task.assetId === undefined && task.imageReceipt === undefined
+        && ['unknown', 'running', 'saving'].includes(task.status))
+      if (task === undefined) continue
+      const receipt = task.videoReceipt
+      return { ok: false, planId: project.id, operationId: task.id, code: 'CREATIVE_SUBMISSION_UNKNOWN',
+        submissionState: receipt?.taskId === undefined ? 'unknown' : 'pending',
+        ...receipt === undefined ? {} : { videoReceipt: receipt, model: receipt.model,
+          ...receipt.taskId === undefined ? {} : { taskId: receipt.taskId },
+          ...receipt.requestId === undefined ? {} : { requestId: receipt.requestId } },
+        message: receipt?.taskId === undefined ? '此聊天已有结果未确认的视频提交，请先核对原任务与计费，不要再次生成。'
+          : '此聊天已有受理的视频任务，请查询原任务并保存，不要再次生成。' }
+    }
+    return undefined
+  }
+  /** Recover exactly the accepted task in its existing operation; never POST another video. */
+  const runRetainedVideo = async (
+    retained: Awaited<ReturnType<CreativeStore['resumeVideoTask']>>, key: () => Promise<string>, signal: AbortSignal,
+  ): Promise<MediaOutcome> => {
     const { operation, receipt } = retained
     try {
       const outcome = await runVideoTask(await key(), receipt.route, {}, signal, undefined,
-        next => creative.receipt(operation, next, 'video'), receipt, path => creative.saved(operation, path, 'video'), key, bytes => creative.matchImageOutput(operation, bytes, 'video'), receipt.origin)
+        next => creative.videoReceipt(operation, next), receipt, key, path => creative.saved(operation, path, 'video'),
+        bytes => creative.matchVideoOutput(operation, bytes), receipt.origin)
       await creative.finish(operation, { kind: 'video', status: outcome.ok ? 'completed' : imageCreativeStatus(outcome, signal),
         ...outcome.videoReceipt === undefined ? {} : { videoReceipt: outcome.videoReceipt },
-        ...outcome.path === undefined ? {} : { paths: [outcome.path] }, ...outcome.code === undefined ? {} : { errorCode: outcome.code } })
+        paths: outcome.path === undefined ? [] : [outcome.path], ...outcome.code === undefined ? {} : { errorCode: outcome.code } })
       return outcome
+    } catch (error) {
+      try { await creative.finish(operation, { kind: 'video', status: 'unknown', errorCode: 'CREATIVE_RECOVERY_INTERRUPTED' }) }
+      catch { ctx.logger.warn('credits-index: original video recovery outcome could not be retained; inspect its task before generating again') }
+      throw error
     } finally { creative.release(operation) }
   }
   ctx.effect(() => async () => {
@@ -2270,12 +2354,11 @@ export function apply(ctx: Context, config: Config): void {
                 || binding.identity.sessionFingerprint !== identity.sessionFingerprint) {
                 throw new CreativeError('CREATIVE_ACCOUNT_CHANGED', 409, '登录已变化，请刷新后查询原任务。')
               }
-              const videoRecovery = route === '/api/creative/video/recover'
-              const retained = await (videoRecovery ? creative.resumeVideoTask(captured, projectId, readString(body, 'operation_id') ?? '')
-                : creative.resumeImage(captured, projectId, readString(body, 'operation_id') ?? ''))
-              const work = (videoRecovery ? runRetainedVideo(retained, () => binding.key(), panelLife.signal)
-                : runRetainedImage(retained, () => binding.key(), panelLife.signal))
-                .catch(() => { ctx.logger.warn('credits-index: original image query stopped; its receipt remains available') })
+              const work = route === '/api/creative/video/recover'
+                ? runRetainedVideo(await creative.resumeVideoTask(captured, projectId, readString(body, 'operation_id') ?? ''), () => binding.key(), panelLife.signal)
+                  .catch(() => { ctx.logger.warn('credits-index: original video query stopped; its receipt remains available') })
+                : runRetainedImage(await creative.resumeImage(captured, projectId, readString(body, 'operation_id') ?? ''), () => binding.key(), panelLife.signal)
+                  .catch(() => { ctx.logger.warn('credits-index: original image query stopped; its receipt remains available') })
               panelOperations.add(work)
               void work.finally(() => { panelOperations.delete(work) })
               const projects = await creative.projects(owner)
@@ -3169,20 +3252,21 @@ export function apply(ctx: Context, config: Config): void {
             const binding = body.session_id === undefined && body.account_id === undefined ? undefined : await bindCurrentVideoAccount()
             const owner = binding === undefined ? undefined : creativePanelOwner(ctx, request, body, binding.identity)
             let outcome: MediaOutcome & { planId?: string; operationId?: string }
-            if (owner === undefined || binding === undefined) outcome = await runVideoTask(key, capability.model.route, built.request)
-            else {
-              const admission = `video:${owner.accountId}:${owner.sessionId}`
-              if (panelImageAdmissions.has(admission)) outcome = await pendingPanelImage(owner, 'video')
-                ?? { ok: false, submissionState: 'unknown', code: 'CREATIVE_SHOT_RUNNING' }
+            if (owner === undefined || binding === undefined) {
+              if (capability.model.source === 'plugin:blackrxai-video') throw new CreativeError('CREATIVE_SESSION_INVALID', 400, '请在当前聊天中生成视频，以便保存原任务回执。')
+              outcome = await runVideoTask(key, capability.model.route, built.request)
+            } else {
+              const admission = `${owner.accountId}:${owner.sessionId}`
+              if (panelVideoAdmissions.has(admission)) outcome = await pendingPanelVideo(owner) ?? { ok: false, submissionState: 'unknown', code: 'CREATIVE_SHOT_RUNNING', message: '此聊天的视频提交正在处理，请查询原任务，不要再次生成。' }
               else {
-                panelImageAdmissions.add(admission)
+                panelVideoAdmissions.add(admission)
                 try {
-                  outcome = await pendingPanelImage(owner, 'video') ?? await generateForPanel(owner, 'video', body,
+                  outcome = await pendingPanelVideo(owner) ?? await generateForPanel(owner, 'video', body,
                     async (operation, signal) => runVideoTask(await binding.key(), capability.model.route, built.request, signal,
                       async () => { await binding.key(); await creative.dispatched(operation) },
-                      receipt => creative.receipt(operation, receipt, 'video'), undefined,
-                      path => creative.saved(operation, path, 'video'), () => binding.key()))
-                } finally { panelImageAdmissions.delete(admission) }
+                      receipt => creative.videoReceipt(operation, receipt), undefined, () => binding.key(),
+                      path => creative.saved(operation, path, 'video')))
+                } finally { panelVideoAdmissions.delete(admission) }
               }
             }
             json(response, 200, {
@@ -3193,8 +3277,8 @@ export function apply(ctx: Context, config: Config): void {
               message: outcome.message ?? null,
               taskId: outcome.taskId ?? null,
               task_id: outcome.taskId ?? null, request_id: outcome.requestId ?? null,
-              plan_id: outcome.planId ?? null, operation_id: outcome.operationId ?? null,
               submission_state: outcome.submissionState ?? null,
+              plan_id: outcome.planId ?? null, operation_id: outcome.operationId ?? null,
               payload: outcome.ok ? { path: outcome.path, taskId: outcome.taskId, ...'planId' in outcome ? { plan_id: outcome.planId } : {} } : null,
             })
             return
@@ -3216,11 +3300,13 @@ export function apply(ctx: Context, config: Config): void {
               json(response, 200, { ok: false, code: built.code, message: built.message })
               return
             }
+            if (capability.model.source === 'plugin:blackrxai-video') throw new CreativeError('CREATIVE_SESSION_INVALID', 400, '请通过当前聊天的视频生成入口保存原任务回执。')
+            const submission = videoSubmission(built.request)
             const created = await apiFetch(capability.model.route, {
               method: 'POST',
-              headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json', accept: 'application/json' },
-              body: JSON.stringify(built.request),
-              signal: AbortSignal.timeout(resolved.timeoutMs),
+              headers: { authorization: `Bearer ${key}`, accept: 'application/json', ...submission.headers },
+              body: submission.body,
+              signal: AbortSignal.timeout(Math.max(resolved.timeoutMs, 180_000)),
             })
             const text = await created.text()
             let parsed: unknown = null
@@ -3487,7 +3573,8 @@ export function apply(ctx: Context, config: Config): void {
         if (fileSystem === undefined) throw new VideoProjectError('VIDEO_EDIT_SERVICE_UNAVAILABLE', '当前工作区的文件服务未准备好，请联系管理员')
         const binding = await bindCurrentVideoAccount()
         const relay = createVideoProjectRelay({
-          origin: apiBaseUrl, timeoutMs: resolved.timeoutMs, downloadTimeoutMs: Math.max(resolved.timeoutMs, 300_000),
+          origin: apiBaseUrl, timeoutMs: resolved.timeoutMs, submitTimeoutMs: Math.max(resolved.timeoutMs, 180_000),
+          downloadTimeoutMs: Math.max(resolved.timeoutMs, 300_000),
           maxDownloadBytes: resolved.videoProjectDownloadMaxBytes, cacheRoot: projectState, key: () => binding.key(),
         })
         const models = new Map<string, ModelCapability>()
@@ -3570,6 +3657,7 @@ export function apply(ctx: Context, config: Config): void {
       prompt: { type: 'string', required: true, description: 'What the image should show.' },
       model: { type: 'string', description: 'Optional image model id such as gpt-image-2. Defaults to the first image model the deployment serves for this account.' },
       size: { type: 'string', description: 'Optional output size such as 1024x1024 or auto. A value the chosen model does not support is refused with that model’s own menu. For yunshu-internal-gpt-image-2, omit pixel size; the server controls output settings.' },
+      resolution: { type: 'string', description: 'Optional named output tier, only when declared by the chosen model. yunshu-internal-gpt-image-2 accepts 1k, 2k or 4k and defaults to 1k; this is independent from pixel size.' },
       count: { type: 'number', description: 'How many images to render, within the model’s limit (usually 1–4).' },
       reference_images: { type: 'array', items: { type: 'string' }, description: 'Reference images for editing: current-chat user image attachment ids or their exact read-only paths, readable PNG/JPEG/WebP files inside the current workspace, uploaded ma_ ids, or real generated image output ids/paths owned by the same explicit plan_id. Other-chat attachments, unrelated local paths and URLs are refused.' },
     },
@@ -3623,6 +3711,7 @@ export function apply(ctx: Context, config: Config): void {
           prompt: args.prompt,
           ...args.model === undefined ? {} : { model: args.model },
           ...args.size === undefined ? {} : { size: args.size },
+          ...args.resolution === undefined ? {} : { resolution: args.resolution },
           ...args.count === undefined ? {} : { count: args.count },
           ...args.reference_images === undefined ? {} : { references },
         }, exec.signal, path => creative.saved(creation, path, 'image'), async () => {
@@ -3748,8 +3837,10 @@ export function apply(ctx: Context, config: Config): void {
           const projects = await creative.projects(owner)
           const tasks = projects.filter(project => args.plan_id === undefined || project.id === args.plan_id)
             .flatMap(project => project.tasks.filter(task => ['unknown', 'running', 'saving'].includes(task.status)
+              && task.assetId === undefined && task.imageReceipt === undefined
               && (project.kind === 'video' || task.videoReceipt !== undefined)).map(task => ({
-              plan_id: project.id, operation_id: task.id, status: task.status, can_query: task.canQuery === true,
+              plan_id: project.id, operation_id: task.id, status: task.status,
+              can_query: task.videoReceipt?.taskId !== undefined && task.canQuery === true,
               ...task.videoReceipt?.taskId === undefined ? {} : { task_id: task.videoReceipt.taskId },
               ...task.videoReceipt?.requestId === undefined ? {} : { request_id: task.videoReceipt.requestId },
             })))
@@ -3768,7 +3859,7 @@ export function apply(ctx: Context, config: Config): void {
           ...outcome.requestId === undefined ? {} : { request_id: outcome.requestId },
           ...outcome.code === undefined ? {} : { code: outcome.code },
           ...outcome.path === undefined ? {} : { path: outcome.path },
-          paths: outcome.path === undefined ? [] : [outcome.path], message: outcome.message ?? (outcome.ok ? '原任务视频已保存。' : '原任务已受理，暂未确认结果；可继续查询原任务，请勿重新生成。'),
+          paths: [...outcome.path === undefined ? [] : [outcome.path]], message: outcome.message ?? (outcome.ok ? '原任务视频已保存。' : '原任务已受理，暂未确认结果；可继续查询原任务，请勿重新生成。'),
         }
       } catch (error) {
         return error instanceof CreativeError || error instanceof VideoProjectError
@@ -3854,11 +3945,12 @@ export function apply(ctx: Context, config: Config): void {
         const creation = operation
         const outcome = await runVideoTask(await binding.key(), capability.model.route, built.request, exec.signal,
           async () => { await binding.key(); await creative.dispatched(creation) },
-          receipt => creative.receipt(creation, receipt, 'video'), undefined,
-          path => creative.saved(creation, path, 'video'), () => binding.key(), undefined, artifactOriginOf(exec))
+          receipt => creative.videoReceipt(creation, receipt), undefined, () => binding.key(), path => creative.saved(creation, path, 'video'), undefined, artifactOriginOf(exec))
         await creative.finish(operation, { status: outcome.ok ? 'completed' : imageCreativeStatus(outcome, exec.signal), kind: 'video',
+          ...outcome.submissionState === 'not-submitted' ? { notSubmitted: true } : {},
           ...outcome.videoReceipt === undefined ? {} : { videoReceipt: outcome.videoReceipt },
-          ...outcome.submissionState === 'not-submitted' ? { notSubmitted: true } : {}, ...outcome.path === undefined ? {} : { paths: [outcome.path] }, ...outcome.code === undefined ? {} : { errorCode: outcome.code } })
+          ...outcome.path === undefined ? {} : { paths: [outcome.path] },
+          ...outcome.code === undefined ? {} : { errorCode: outcome.code } })
         if (!outcome.ok) {
           return {
             status: outcome.submissionState === 'pending' ? 'pending' : outcome.submissionState === 'unknown' ? 'unknown' : 'failed',

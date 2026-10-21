@@ -72,6 +72,7 @@ Load the plugin alongside the skill registry; it requires `ctx.skills`.
 | `agentsHome` | `$DSH_AGENTS_HOME` or `~/.agents` | Shared agent config root scanned for compatible skills |
 | `customSkillDirs` | `[]` | Additional local skill roots, after project roots and before user roots |
 | `watch` | `true` | Watch local roots and invalidate the provider when the catalog may have changed |
+| `discoveryConcurrency` | `8` | Maximum concurrent skill-file discovery reads (1–32); preserves root priority and entry order |
 | `bundledSkillDir` | — | Bundled skill root scanned at rank 600 when configured |
 
 The remaining `watch*` fields tune Chokidar behavior — polling, stability window, interval, project cap, and symlink following. The generated [configuration catalog](../../../docs/config-catalog.md#deepseek-aidsh-skill-filesystem) is the exhaustive source for every field.
@@ -106,7 +107,7 @@ The provider is built on two separations. First, catalog versus body: discovery 
 
 ### Discovery flow
 
-Discovery resolves the root list for the lookup cwd, asks the watch manager to attach to each root, then scans each root's direct entries: directory bundles resolve `<name>/SKILL.md`, flat files resolve `<name>.md`. Each file is parsed for frontmatter — `name` must be kebab-case, `description` is required, and the invocation keys resolve through the strict boolean grammar — and candidates carry the root's source label and rank so the registry can merge them with other providers. Confirmed missing paths are valid empty state; malformed or non-text entries warn and skip.
+Discovery resolves the root list for the lookup cwd, asks the watch manager to attach to each root, then scans each root's direct entries: directory bundles resolve `<name>/SKILL.md`, flat files resolve `<name>.md`. Files are read with bounded parallelism (`discoveryConcurrency`, default 8); all pending reads settle before discovery rejects. Each file is parsed for frontmatter — `name` must be kebab-case, `description` is required, and the invocation keys resolve through the strict boolean grammar — and candidates carry the root's source label and rank so the registry can merge them with other providers. Confirmed missing paths are valid empty state; malformed or non-text entries warn and skip.
 
 ### Watching and invalidation
 

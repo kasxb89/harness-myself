@@ -31,6 +31,8 @@ export type MediaKind = 'image' | 'video'
 export interface ImageParams {
   /** Output sizes in the request's own spelling, e.g. `1024x1024`. */
   readonly sizes: readonly string[]
+  /** Named resolution tiers; absent for image routes without this field. */
+  readonly resolutions?: readonly string[]
   /** Largest `n` one request may ask for. */
   readonly maxCount: number
   /** Largest number of reference images an edit may carry; 0 disables edits. */
@@ -51,6 +53,8 @@ export interface ImageParams {
 export interface VideoParams {
   /** Duration values the model allows, in seconds. */
   readonly durations: readonly number[]
+  /** Preferred initial value, present only while allowed by the live menu. */
+  readonly defaultDuration?: number
   /** Resolution-specific duration menus; an absent key is unavailable. */
   readonly durationByResolution?: Readonly<Record<string, readonly number[]>>
   readonly minDuration: number
@@ -276,9 +280,12 @@ function imageParams(spec: ImageSpec, schema: unknown, examples: readonly unknow
   // Input-image billing tells us an edit route exists even before the table does.
   const billedEdits = maxExampleValue(examples, 'input_images')
   const maxEdits = spec.maxEdits > 0 || billedEdits === null ? spec.maxEdits : billedEdits
+  const resolutions = schemaEnum(schema, 'resolution')
+  const outputResolutions = resolutions.length > 0 ? resolutions : spec.resolutions
   return {
     params: {
       sizes,
+      ...outputResolutions === undefined ? {} : { resolutions: outputResolutions },
       maxCount: spec.maxCount,
       maxEdits,
       qualities: spec.qualities,
@@ -332,6 +339,7 @@ function videoParams(spec: VideoSpec, schema: unknown, parameters: unknown): {
   if (declaredResolutions?.length === 0) durations = []
   const params: VideoParams = {
     durations,
+    ...spec.defaultDuration !== undefined && durations.includes(spec.defaultDuration) ? { defaultDuration: spec.defaultDuration } : {},
     ...durationByResolution === undefined ? {} : { durationByResolution },
     minDuration: durations[0] ?? 0,
     maxDuration: durations[durations.length - 1] ?? 0,
@@ -419,7 +427,8 @@ export function catalogFromPricing(rows: readonly unknown[], userGroup: string |
     catalog.push({
       id,
       kind,
-      displayName: id,
+      displayName: typeof record.display_name === 'string' && record.display_name.trim() !== ''
+        ? record.display_name : id,
       groups,
       route,
       params: built.params,

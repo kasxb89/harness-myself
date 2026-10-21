@@ -18,6 +18,7 @@ import { CloseLabel, HeaderContent, TriggerContent } from '../src/client/chrome.
 import { GeneralSection } from '../src/client/GeneralSection.tsx'
 import { SettingsDocumentAction } from '../src/client/SettingsDocumentAction.tsx'
 import type { SettingsDocumentActionInjected } from '../src/client/SettingsDocumentAction.tsx'
+import type { SettingsRootInjected } from '../src/client/shell-contract.ts'
 
 const SELF = '@deepseek-ai/dsh-client-ui-settings-general'
 const SIDEBAR = '@deepseek-ai/dsh-client-ui-sidebar'
@@ -88,6 +89,31 @@ function setPageUrl(url: string): void {
 }
 
 describe('ui-settings-general apply', () => {
+  it('groups a legacy skin section through the Host preference mirror and restores it when the market unloads', async ({ mock, start }) => {
+    const shellView: SettingsNamespaceView = {
+      ns: 'ui-settings-general', schema: { type: 'object', dict: {
+        welcomeNoticeVersion: { type: 'volatile', inner: { type: 'string' } },
+        sectionGroups: { type: 'dict', inner: { type: 'array', inner: { type: 'string' } } },
+      } },
+      value: { sectionGroups: { 'skin-market': ['dream-skin'] } }, autoGenerate: false,
+      applies: 'live', secrets: [], revision: 0,
+    }
+    mock.remote.settings.describe.mockResolvedValue(ok({ writable: true, hasDocument: false, namespaces: [shellView] }))
+    const c = await start()
+    await c.ctx.configForms.describe().ensure()
+    expect(c.ctx.configForms.describe().getSnapshot().view?.namespaces.find(section => section.ns === 'ui-settings-general')?.value)
+      .toEqual({ sectionGroups: { 'skin-market': ['dream-skin'] } })
+    const removeSkin = c.ctx.slots.register({ name: 'settings.section', id: 'dream-skin', order: 10, label: 'Theme / 外观' }, () => null)
+    onTestFinished(removeSkin)
+    const shell = c.ctx.slots.entries('sidebar.settings')[0]
+    if (shell === undefined) throw new Error('expected assembled settings shell')
+    const injected = (shell.inject as () => SettingsRootInjected)()
+    expect(injected.hooks.sections.getSnapshot().find(row => row.id === 'dream-skin')?.parentId).toBe('skin-market')
+    await c.unload('dsh-skin-market')
+    await c.flush()
+    expect(injected.hooks.sections.getSnapshot().find(row => row.id === 'dream-skin')?.parentId).toBeUndefined()
+    expect(c.ctx.slots.entries('settings.section').some(row => row.options.id === 'dream-skin')).toBe(true)
+  }, COLD_BOOT_TIMEOUT_MS)
   it('declares the services it uses', () => {
     expect(inject).toEqual(['slots', 'locale', 'connection', 'remote', 'remote.settings', 'configForms', 'shortcuts'])
   })

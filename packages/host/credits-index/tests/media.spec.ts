@@ -9,10 +9,20 @@ describe('internal image capability', () => {
     ], null)
     expect(catalog).toMatchObject([
       { id: 'yunshu-internal-gpt-image-2', route: '/toapis/v1/images/generations', params: {
-        maxCount: 1, maxEdits: 6, sizes: [], qualities: [], backgrounds: [], formats: [], moderations: [], seed: false,
+        maxCount: 1, maxEdits: 6, sizes: [], resolutions: ['1k', '2k', '4k'], qualities: [], backgrounds: [], formats: [], moderations: [], seed: false,
       } },
       { id: 'wanx2.1-t2i-turbo', params: { maxEdits: 0 } },
     ])
+  })
+
+  it('keeps the deployed image resolution billing tiers in the image catalog', () => {
+    const [model] = catalogFromPricing([{ model_name: 'yunshu-internal-gpt-image-2',
+      supported_endpoint_types: ['image-generation', 'openai'], enable_groups: ['product'],
+      billing_usage_schema: { image_count: { type: 'number' }, resolution: { enum: ['1k', '2k', '4k'] } },
+    }], 'product')
+    expect(model).toMatchObject({ kind: 'image', route: '/toapis/v1/images/generations', params: {
+      sizes: [], resolutions: ['1k', '2k', '4k'], maxEdits: 6,
+    } })
   })
 })
 
@@ -23,6 +33,70 @@ function video(fields: Record<string, unknown> = {}): VideoParams {
   if (model === undefined) throw new Error('Expected the video capability')
   return model.params as VideoParams
 }
+
+describe('BlackRxAI exact video contracts', () => {
+  const variable = Array.from({ length: 16 }, (_, index) => index + 15)
+  const policies = [
+    ['lec-mj-seedance-2-5-cd-720p', [30], 30, 9, 0, 0],
+    ['sd-25-900-2', [30], 30, 9, 0, 0],
+    ['k2-sd2.5-720p', [30], 30, 30, 10, 10],
+    ['lec-sz-sd2-full-480p', [30], 30, 30, 0, 10],
+    ['video-sd25-480p', variable, 30, 30, 10, 10],
+    ['model_5', variable, 30, 30, 10, 10],
+    ['sd2.5-720p-x2', variable, 30, 30, 10, 10],
+    ['sd2-th-2.0-720p', [15], 15, 9, 0, 3],
+    ['bt-seedance-2.0', [10, 15], 15, 8, 0, 0],
+    ['lec-rs-seedance-2-0-fast', [15], 15, 9, 0, 0],
+    ['sd20-933-720p', [15], 15, 9, 3, 3],
+    ['sd2-hn2-480-pro', [15], 15, 9, 3, 3],
+    ['v3-sd2.0-933-720p', [15], 15, 9, 3, 3],
+    ['sd-20-9/3/3-1', [15], 15, 9, 0, 3],
+    ['sd-20-903', [15], 15, 9, 0, 3],
+  ] as const
+
+  it.each(policies)('offers only the gateway contract for %s', (id, durations, defaultDuration, images, videos, audios) => {
+    const [model] = catalogFromPricing([{ model_name: id, supported_endpoint_types: ['openai-video'], enable_groups: ['product'] }], 'product')
+    expect(model).toMatchObject({
+      id, kind: 'video', route: '/v1/videos', source: 'plugin:blackrxai-video', verified: true,
+      params: {
+        durations, defaultDuration, resolutions: ['1280x720', '720x1280', '1792x1024', '1024x1792'], ratios: [],
+        maxFrameImages: 0, maxReferenceImages: images, maxReferenceVideos: videos, maxReferenceAudios: audios,
+        audioToggle: false, modes: [], seed: false,
+      },
+    })
+  })
+
+  it('does not add table models to an empty or differently authorized catalog', () => {
+    expect(catalogFromPricing([], 'product')).toEqual([])
+    expect(catalogFromPricing(policies.map(([id]) => ({
+      model_name: id, supported_endpoint_types: ['openai-video'], enable_groups: ['other'],
+    })), 'product')).toEqual([])
+    const catalog = catalogFromPricing([{ model_name: 'model_5', supported_endpoint_types: ['openai-video'], enable_groups: ['product'] }], 'product')
+    expect(catalog.map(model => model.id)).toEqual(['model_5'])
+  })
+
+  it('retains live duration restrictions without selecting an unavailable default', () => {
+    const [model] = catalogFromPricing([{
+      model_name: 'model_5', supported_endpoint_types: ['openai-video'], parameters: { seconds: { enum: [15, 20] } },
+    }], null)
+    expect(model?.params).toMatchObject({ durations: [15, 20] })
+    expect(model?.params).not.toHaveProperty('defaultDuration')
+  })
+
+  it.each([undefined, '', '   ', null, false, 12, {}, []].map(display_name => ({ display_name })))('uses the exact model id for an unusable display name: $display_name', ({ display_name }) => {
+    const id = 'sd-20-9/3/3-1'
+    const [model] = catalogFromPricing([{ model_name: id, display_name }], null)
+    expect(model?.displayName).toBe(id)
+  })
+
+  it('uses friendly catalog labels without changing identity, capability or authorization', () => {
+    const row = { model_name: 'sd-20-9/3/3-1', enable_groups: ['product'] }
+    const [baseline] = catalogFromPricing([row], 'product')
+    const [named] = catalogFromPricing([{ ...row, display_name: '云枢视频 · 15秒' }], 'product')
+    expect(named).toEqual({ ...baseline, displayName: '云枢视频 · 15秒' })
+    expect(catalogFromPricing([{ ...row, display_name: '云枢视频 · 15秒' }], 'other')).toEqual([])
+  })
+})
 
 describe('explicit live video parameters', () => {
   it('selects the H3 task API while retaining explicit routes and other video protocols', () => {

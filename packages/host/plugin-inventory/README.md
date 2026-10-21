@@ -53,7 +53,7 @@ The inventory is a snapshot for display and diagnostics: a client can render the
 
 The gateway is a direct projection with no second lifecycle truth: every `list()` call reads `ctx.loader.entries()` and maps each non-group entry to its public row. Cordis's internal `plugin/status` events already maintain `Entry.fiber` and `Fiber.state`, so a cache would only add another lifecycle truth to keep synchronized. The agent-preset roster is an optional peer resolved per call through `ctx.get('agentPresets')`: its `compositionInventory()` owns preset composition reads, and this package maps root-fiber states onto the public phases.
 
-Display metadata comes from the optional `pluginPackages` service using each Loader tree's resolution base, or the gateway context's base for preset rows. Without the service or the applicable base, `meta` is absent. Reading metadata does not load or activate plugins.
+Display metadata comes from the optional `pluginPackages` service using each Loader tree's resolution base, or the gateway context's base for preset rows. Without the service or the applicable base, `meta` is absent. Reading metadata does not load or activate plugins. Each response reads display metadata once per distinct module specifier and resolution base, including repeated preset rows; the next response reads it again so local metadata edits remain visible.
 
 ### The phase mapping
 

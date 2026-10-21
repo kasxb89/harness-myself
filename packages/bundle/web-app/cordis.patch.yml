@@ -364,6 +364,9 @@
 
     - id: ui-settings-general
       name: '@deepseek-ai/dsh-client-ui-settings-general'
+      config:
+        sectionGroups:
+          skin-market: [dream-skin]
 
     - id: ui-settings-models
       name: '@deepseek-ai/dsh-client-ui-settings-models'

@@ -41,7 +41,7 @@ kind: "package-reference"
 
 新产品 profile 启用 `followPolicy: true`：默认值仅在当前账号已授权的聊天列表中跟随后台偏好。默认模型为空、不可用或属于媒体模型时，回退到排序后的首个可用聊天模型。手动 `saveSelection` 成功后停止跟随策略；已有手选默认值及会话内模型选择保持不变。[默认模型服务](../../core/agent-default-model/README.zh.md)负责选择的持久化。
 
-模型 `input` 缺失或为空时，仅在安装目录中精确相同的模型 ID 具有一致的非空输入声明时继承能力。发现操作只读取同一设置命名空间内的安装提供方目录，不联系其端点。明确的非空输入声明和其他模型设置在刷新及账号模型列表变化时保留。未知或能力冲突的 ID 不推断图像能力；继承的图像声明描述目录信息，不表示已验证中转请求。
+模型 `input` 缺失或为空时，仅在安装目录中精确相同的模型 ID 具有一致的非空输入声明时继承能力。已确认的产品别名 `yunshu-flash` 在没有精确声明时继承 `deepseek-flash` 的输入能力；其他别名不作猜测。发现操作只读取同一设置命名空间内的安装提供方目录，不联系其端点。明确的非空输入声明和其他模型设置在刷新及账号模型列表变化时保留。未知或能力冲突的 ID 不推断图像能力；继承的图像声明描述目录信息，不表示已验证中转请求。
 
 启动和每 60 秒的定时器复用同一刷新操作。登录、退出及本地会话过期在状态提交后立即通知模型选择器；模型发现保持异步，不延迟登录。成功刷新时，可用模型 ID、排序或实际默认型号变化会发出通知；内容不变的读取不发通知。登录变化和退出会取消旧发现；提交前检查登录代次、已存会话身份、后端和有效期。卸载会取消并等待未结束的发现操作。界面可以请求新目录，无需等待定时器。公开定价仍用于描述媒体参数，账号模型端点决定其聊天列表；已声明或已选择的模型仍可能被上游的权限或计费校验拒绝。
 
@@ -99,9 +99,9 @@ Host 先使用 `/api/user/self` 核对产品会话中的账号，再通过 `/api
 
 `generate_image` 可直接编辑当前聊天用户附件中的图片，使用准确的附件 id 或投影后的只读路径，无需先复制到工作区。附件服务验证已保存字节；其他聊天图片及任意附件路径不授予读取权限。可读工作区图片仍执行通常的路径包含和文件检查。Host 将这些有界图片物化为私有 `ma_` 引用，再通过当前账号的中转 key，在完整配置的 API 前缀下向 `/v1/images/edits` 发送带 `image[]` 的 multipart 编辑请求。所选图片模型必须声明编辑能力；仅支持文生图的模型不会被静默开启编辑。
 
-`yunshu-internal-gpt-image-2` 使用聊天与 AI 创作共用的独立任务合约。Host 在上传任何字节前验证最多六张已授权的 PNG/JPEG/WebP 参考图，每张不超过 10 MiB。随后通过已鉴权的 `POST /v1/uploads/images`，用 multipart 的 `model` 和 `file` 逐张上传，再把经过验证、位于 `files.toapis.cn/uploads/` 或 `files.toapis.com/uploads/` 下的 HTTPS 回执 URL 作为 `reference_images` 提交给 `/toapis/v1/images/generations`。生成仅携带 `model`、`prompt`、`n: 1` 和可选的 `reference_images`；输出设置由服务端决定，不透传像素尺寸或其他 OpenAI 参数。回执要求 MIME 与大小匹配、id 非空，URL 不含凭据、查询或片段。两条路径都保留部署前缀，只使用当前账号的中转 key。文件无效、上传失败或回执无效时，提示原始文件名并在生成前停止。上传和生成均不自动重提；普通 OpenAI 编辑保留原 multipart 路由。
+`yunshu-internal-gpt-image-2` 使用聊天与 AI 创作共用的独立任务合约。Host 在上传任何字节前验证最多六张已授权的 PNG/JPEG/WebP 参考图，每张不超过 10 MiB。随后通过已鉴权的 `POST /v1/uploads/images`，用 multipart 的 `model` 和 `file` 逐张上传，再把经过验证、位于 `files.toapis.cn/uploads/` 或 `files.toapis.com/uploads/` 下的 HTTPS 回执 URL 作为 `reference_images` 提交给 `/toapis/v1/images/generations`。生成携带 `model`、`prompt`、`n: 1`、可选的 `reference_images`，以及已声明的 `resolution` 档位（`1k`、`2k` 或 `4k`，不区分大小写；省略时默认为 `1k`）。目录将档位与像素尺寸分开提供；不支持的档位在上传或生成前拒绝。不透传像素尺寸或其他 OpenAI 参数。回执要求 MIME 与大小匹配、id 非空，URL 不含凭据、查询或片段。两条路径都保留部署前缀，只使用当前账号的中转 key。文件无效、上传失败或回执无效时，提示原始文件名并在生成前停止。上传和生成均不自动重提；普通 OpenAI 编辑保留原 multipart 路由。
 
-单次图片与视频生成在后续轮询前持久保存原相对路由、模型、后端指纹、请求和任务编号，以及可用的生成来源。排队、处理中保持生成中；临时查询、下载或保存失败时保留已受理任务。校验账号、聊天及工作区归属的 `POST /credits/api/creative/image/recover` 与 `/video/recover` 只恢复原任务 GET 查询，不再发送生成 POST。对应 `query_image_task` 和 `query_video_task` 工具可列出未确认回执，或查询准确的原操作。没有任务编号时保留未知状态，后端变化时拒绝查询，同一恢复操作互斥，确认终态前阻止重复付费提交。图片使用 `imageSubmitTimeoutMs`（180000）、`imageTaskTimeoutMs`（600000）、`imagePollIntervalMs`（2000）和 `imageQueryRetryLimit`（2）；视频对应配置默认为 120000、900000、6000 和 2。查询同时受 `timeoutMs` 限制；重试预算不重试生成提交。
+单次图片与视频生成在后续轮询前持久保存原相对路由、模型、后端指纹、请求和任务编号，以及可用的生成来源。本地执行器仍在等待时，排队、处理中保持生成中；执行器停止后，原任务转为可查询的未知状态。临时查询、下载或保存失败时保留已受理任务。校验账号、聊天及工作区归属的 `POST /credits/api/creative/image/recover` 与 `/video/recover` 只恢复原任务 GET 查询，不再发送生成 POST。对应 `query_image_task` 和 `query_video_task` 工具可列出未确认回执，或查询准确的原操作。没有任务编号时保留未知状态，后端变化时拒绝查询，同一恢复操作互斥，确认终态前阻止重复付费提交。图片使用 `imageSubmitTimeoutMs`（180000）、`imageTaskTimeoutMs`（600000）、`imagePollIntervalMs`（2000）和 `imageQueryRetryLimit`（2）；视频对应配置默认为 180000、900000、6000 和 2。即使显式配置更低，视频提交等待也不低于 180000 毫秒。查询同时受 `timeoutMs` 限制；重试预算不重试生成提交。
 
 修改已保存项目之前，`get_creation_plan(plan_id)` 返回有界的完整规划字段，字段名称与 `update_creation_plan` 一致。读取同样校验账号、聊天及工作区归属，不包含执行请求或登录数据，不改变状态，也不请求上游。局部修改应先以这份权威记录保留其他人物、素材和镜头。
 
@@ -116,6 +116,12 @@ Host 先使用 `/api/user/self` 核对产品会话中的账号，再通过 `/api
 已保存的视频片段及成片通过当前会话的沙箱和内置 FFmpeg 抽取三张真实 JPEG 预览，保存在原工作区的 `.yunshu-creative/previews`。抽帧失败标记 `previewUnavailable`，保留真实视频及其生成结果。计划和记录最多为 2 MiB，每个项目最多包含 64 个人物、128 份素材或镜头、256 次调用；列表最多读取 1,000 个保留的项目目录，项目视图合计不超过 8 MiB。不自动清理记录。人物一致性、对白内容、口型及字幕时序在实际检查成片前仍属于未验证的创作要求。
 
 ### 视频能力与参考素材
+
+共享媒体目录优先显示定价中非空白字符串 `display_name`，缺失时回退到精确 `model_name`。显示名称不改变模型编号、权限、提交请求、计费或原任务身份。
+
+15 个精确的 BlackRxAI 型号使用 `blackrxai-video` 网关契约，并与当前账号可见目录取交集。已声明的菜单分为固定 30 秒、15–30 秒逐整数、固定 15 秒及 10/15 秒档位，在允许时以 30 秒或 15 秒为初始选择。尺寸菜单发送 `1280x720`、`720x1280`、`1792x1024` 或 `1024x1792`；型号名称中的 `480p`、`720p` 是线路标记，不证明产物实际像素。请求仅包含网关白名单及 `n: 1`。本地参考素材先完成校验并保存私有快照，再作为重复的 multipart `images`、`videos`、`audios` 文件字段提交，保留全部已接纳素材并遵守各型号数量上限。内部快照、data URL、metadata 及额外的分辨率/比例字段不会发送到该线路。无参考素材时使用 JSON。
+
+普通单视频在提交前持久化不含凭证的回执，并在轮询前持久化已受理的任务编号。取消本地等待、查询中断和结果未保存均保留原操作及其未确认状态。同账号、同聊天已有未确认视频提交时，面板阻止再次生成。`query_video_task` 及经过宿主认证的 `POST /credits/api/creative/video/recover` 只查询并保存已保留的原任务，不再次提交视频。创作任务卡提供相同的恢复入口。已有 manifest 视频项目继续使用原有的显式恢复流程。
 
 视频提交和状态查询使用所选能力的 `route`；公开定价明确指定的路由优先。MiniMax-H3 使用 `POST /v1/video/generations` 和 `GET /v1/video/generations/:id`，其他视频模型保留原有协议。`data` 内的通用任务响应支持大写 `NOT_START`、`SUBMITTED`、`QUEUED`、`IN_PROGRESS`、`SUCCESS` 和 `FAILURE`。成片通过 `/v1/videos/:id/content` 读取，保留配置中的 `/harness` 前缀，并使用当前账号的中转 key。渠道的聊天测试不能验证视频生成。
 
@@ -156,7 +162,7 @@ Host 先使用 `/api/user/self` 核对产品会话中的账号，再通过 `/api
 
 `stateDir/video-projects/<project_id>/manifest.json` 中的私有记录仅所有者可读写，保留账号编号、非秘密登录指纹、所属聊天与工作区、原始说明和完整已准备请求、分镜计划、上游任务编号、已保存片段路径及最终状态。每次提交前以及任务编号和片段保存后均原子替换记录；记录不含凭据或上游原始响应。原始片段保留在私有项目缓存，供剪辑和恢复使用。每个校验完成的片段及最终成片还通过产物保存服务发布到生成前捕获的保存目录；后续片段失败时，已完成片段仍可在产物库找到。旧版仅使用工作区的项目将片段发布到原工作区的 `videoProjectOutputDirectory`。经过授权的项目读取及 `video_project_status` 会在本机补发布已有历史片段，不再提交生成请求。可重试的本机复制失败时，已授权项目继续可见并提示发布失败；恢复保存目录或原文件后刷新即可重试复制。本地剪辑先在沙箱内将成片保留到工作区，再执行发布；返回的媒体路径指向已发布副本。记录和素材不自动清理。`video_project_status` 按账号、聊天和工作区校验读取权限。进程重启后保留的是记录，不会虚构仍在运行的任务；显式调用 `resume_video_project` 会复用已保存片段、读取已知任务编号，再决定是否提交从未提交的剩余片段。没有已持久化任务编号的提交属于未知结果，可能已计费，绝不自动重提；失败的上游任务同样需要明确创建新项目，或剪辑已保留片段。
 
-可配置 `videoProjectMaxSeconds`（默认 300）、`videoProjectMaxSegments`（32）、`videoProjectPollIntervalMs`（6000）、`videoProjectTaskTimeoutMs`（900000）、`videoProjectDownloadMaxBytes`（536870912），`videoProjectReferenceMaxBytes`（每个本地引用 20971520），以及相对于工作区的 `videoProjectOutputDirectory`（`artifacts/videos`）。视频内容下载的完整传输期限至少为 300000 ms，模型目录、提交和状态请求仍使用 `timeoutMs`；原有任务取消与单段任务期限也继续约束下载。内容读取中断返回 `VIDEO_DOWNLOAD_UNAVAILABLE`，清除未完成文件，保留已知任务供显式恢复，不再次提交。生成前，完整记录连同任务与路径元数据的预留空间必须不超过 64 MiB。这些限制在计费前生效。镜头连贯性仍取决于提供方；管线提供有序分镜说明与共享参考素材，不会承诺模型尚未生成的主体一致性或转场画面。
+可配置 `videoProjectMaxSeconds`（默认 300）、`videoProjectMaxSegments`（32）、`videoProjectPollIntervalMs`（6000）、`videoProjectTaskTimeoutMs`（900000）、`videoProjectDownloadMaxBytes`（536870912），`videoProjectReferenceMaxBytes`（每个本地引用 20971520），以及相对于工作区的 `videoProjectOutputDirectory`（`artifacts/videos`）。视频内容下载的完整传输期限至少为 300000 ms，提交期限至少为 180000 ms，模型目录与状态请求仍使用 `timeoutMs`；原有任务取消与单段任务期限也继续约束下载。内容读取中断返回 `VIDEO_DOWNLOAD_UNAVAILABLE`，清除未完成文件，保留已知任务供显式恢复，不再次提交。生成前，完整记录连同任务与路径元数据的预留空间必须不超过 64 MiB。这些限制在计费前生效。镜头连贯性仍取决于提供方；管线提供有序分镜说明与共享参考素材，不会承诺模型尚未生成的主体一致性或转场画面。
 
 图片生成、单段视频提交、长视频项目和 AI 帮写仅在实际 HTTP 403 响应含网关精确错误码 `insufficient_user_quota` 时返回 `INSUFFICIENT_BALANCE`；OpenAI 错误封装还须具有网关的 `new_api_error` 或图片协议的 `invalid_request_error` 类型。上游额度不足、渠道欠费、令牌额度、普通 403 和传输故障均不表示用户余额不足。明确资金拒绝会停止固定视频流程并保留已保存片段。网关也可能在上游受理后因追加费用而返回此错误，因此未确认的提交继续保持未知状态，即使充值也不能自动重发。原生任务插件若已把错误码改为 `permission_denied`，产品无法恢复原始原因，因此仍显示通用错误。不另发余额估算或付费探测请求。
 

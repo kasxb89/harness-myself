@@ -5,9 +5,9 @@ import type { ArtifactStorageService } from '@deepseek-ai/dsh-artifacts-index'
 import type { VideoEditor } from './video-edit.ts'
 import type { CreativeOwner, CreativeStore } from './creative-store.ts'
 
-/** JSON request data reconstructed exactly when a known task is resumed. */
+/** Credential-free JSON fields retained before the single submission attempt. */
 export type VideoRequestValue = string | number | boolean | null | VideoRequestValue[] | { [key: string]: VideoRequestValue }
-/** Provider request saved before its one submission attempt. */
+/** Prepared request saved before submission; private reference snapshots become multipart only at dispatch. */
 export type VideoProjectRequest = { [key: string]: VideoRequestValue }
 
 /** Product account and login generation owning a new project. */
@@ -72,7 +72,7 @@ export interface VideoProjectProvider {
    * @param prompt - Exact shot prompt.
    * @param durationSeconds - Planned supported clip duration.
    * @param signal - Cancels reference reading and request preparation.
-   * @returns Credential-free JSON saved before submission.
+   * @returns Credential-free JSON saved before submission, including immutable private reference snapshots when required.
    */
   build(input: VideoProjectInput, model: string, prompt: string, durationSeconds: number, signal: AbortSignal): Promise<VideoProjectRequest>
   /**

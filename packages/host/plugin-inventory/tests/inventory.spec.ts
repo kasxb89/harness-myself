@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -66,6 +66,26 @@ function metadataFixture(mode: 'native' | 'runtime') {
 }
 
 describe('PluginInventoryGateway', () => {
+  it('reads repeated package metadata once per snapshot and refreshes it on the next read', async () => {
+    const { dir, baseUrl } = metadataFixture('native')
+    mkdirSync(dir, { recursive: true })
+    const manifest = join(dir, 'package.json')
+    writeFileSync(manifest, JSON.stringify({ name: 'local-plugin', description: 'Before' }))
+    const { ctx, inventory } = await harness(baseUrl)
+    await ctx.plugin(PluginPackages)
+    const packages = ctx.get('pluginPackages')
+    if (packages === undefined) throw new Error('expected profile package lookup')
+    const read = vi.spyOn(packages, 'metaOf')
+    for (let index = 0; index < 120; index++) await ctx.loader.create({ name: 'local-plugin', disabled: true })
+    read.mockClear()
+    const first = await inventory.list()
+    expect(first.entries).toHaveLength(120)
+    expect(read).toHaveBeenCalledTimes(1)
+    expect(first.entries.every(row => row.meta?.description === 'Before')).toBe(true)
+    writeFileSync(manifest, JSON.stringify({ name: 'local-plugin', description: 'After' }))
+    expect((await inventory.list()).entries.every(row => row.meta?.description === 'After')).toBe(true)
+    expect(read).toHaveBeenCalledTimes(2)
+  })
   it.each(['native', 'runtime'] as const)('reads local metadata while the package entry remains disabled with %s resolution', async (mode) => {
     const { dir, baseUrl, resolution, expectUnlinked } = metadataFixture(mode)
     mkdirSync(join(dir, 'locale'), { recursive: true })

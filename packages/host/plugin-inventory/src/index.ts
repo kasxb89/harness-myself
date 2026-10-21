@@ -15,6 +15,7 @@ import type {
   PluginInventoryEntry,
   PluginInventorySnapshot,
 } from './types.ts'
+import type { PluginLocalizedMeta } from '@deepseek-ai/dsh-package-manifest'
 
 export type * from './types.ts'
 
@@ -82,10 +83,17 @@ export default PluginInventoryGateway
 export async function readPluginInventory(ctx: Context): Promise<PluginInventorySnapshot> {
   const entries: PluginInventoryEntry[] = []
   const packages = ctx.get('pluginPackages')
+  const metadata = new Map<string, PluginLocalizedMeta | undefined>()
+  const metadataOf = (name: string, base: string | undefined): PluginLocalizedMeta | undefined => {
+    if (base === undefined || packages === undefined) return undefined
+    const key = JSON.stringify([base, name])
+    if (!metadata.has(key)) metadata.set(key, packages.metaOf(name, base))
+    return metadata.get(key)
+  }
   for (const entry of ctx.loader.entries()) {
     if (entry.options.group) continue
     const base = entry.parent.tree.ctx.baseUrl
-    const meta = base === undefined ? undefined : packages?.metaOf(entry.options.name, base)
+    const meta = metadataOf(entry.options.name, base)
     entries.push({
       entryId: pluginEntryId(entry.id),
       moduleName: entry.options.name,
@@ -101,7 +109,7 @@ export async function readPluginInventory(ctx: Context): Promise<PluginInventory
     composition => ({
       ...composition,
       rows: composition.rows.map(({ fiberState, ...row }) => {
-        const meta = ctx.baseUrl === undefined ? undefined : packages?.metaOf(row.moduleName, ctx.baseUrl)
+        const meta = metadataOf(row.moduleName, ctx.baseUrl)
         return {
           ...row,
           fiberPhase: fiberState === undefined ? null : FIBER_PHASE[fiberState],

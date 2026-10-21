@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CreativeError, CreativeStore, creativePlanRevision, parseCreativePlan, parseCreativePlanChange, type CreativeOwner, type CreativePlan } from '../src/creative-store.ts'
 import type { VideoProjectManifest, VideoProjectRead } from '../src/video-project.ts'
-import type { CreativeImageReceipt, CreativePlanChange } from '../src/creative-types.ts'
+import type { CreativeImageReceipt, CreativeVideoReceipt, CreativePlanChange } from '../src/creative-types.ts'
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>()
@@ -58,6 +58,164 @@ async function fixture() {
   }
 }
 
+describe('retained ordinary video receipts', () => {
+  const submitting: CreativeVideoReceipt = {
+    route: '/v1/videos', model: 'model_5', phase: 'submitting',
+    requestId: 'req-original-video', backendFingerprint: 'b'.repeat(64),
+  }
+  const accepted: CreativeVideoReceipt = { ...submitting, phase: 'accepted', taskId: 'public-original-video' }
+
+  it('recovers the original accepted operation after restart and a fresh login without allocating another generation', async () => {
+    const { store, owner, options, file, setLive } = await fixture()
+    const operation = await store.begin(owner, { kind: 'video', prompt: 'one clip', shots: [{ prompt: 'one clip' }] })
+    await store.videoReceipt(operation, submitting)
+    await store.videoReceipt(operation, accepted)
+    expect((await store.projects(owner))[0]?.tasks[0]).toMatchObject({ videoReceipt: accepted, canQuery: false, status: 'running' })
+    store.release(operation)
+    const restarted = new CreativeStore(options)
+    expect((await restarted.projects(owner))[0]?.tasks[0]).toMatchObject({ videoReceipt: accepted, canQuery: true, status: 'unknown' })
+    await expect(restarted.begin(owner, { kind: 'video', prompt: 'retry', planId: operation.projectId,
+      shotIds: ['shot_1'], shots: [{ prompt: 'retry' }] })).rejects.toMatchObject({ code: 'CREATIVE_SUBMISSION_UNKNOWN' })
+    const current = { ...owner, sessionFingerprint: 'fresh-login' }
+    setLive(current)
+    const resumed = await restarted.resumeVideoTask(current, operation.projectId, operation.operationId)
+    expect(resumed).toEqual({ operation: { ...operation, owner: current }, receipt: accepted })
+    await expect(restarted.resumeVideoTask(current, operation.projectId, operation.operationId)).rejects.toMatchObject({ code: 'CREATIVE_SHOT_RUNNING' })
+    await restarted.finish(resumed.operation, { status: 'completed', kind: 'video', paths: [await file('original.mp4')],
+      videoReceipt: { ...accepted, phase: 'completed' } })
+    expect((await restarted.projects(current))[0]).toMatchObject({ status: 'completed', tasks: [{ id: operation.operationId,
+      status: 'completed', canQuery: false, videoReceipt: { ...accepted, phase: 'completed' } }], outputs: [{ name: 'original.mp4' }] })
+    await expect(restarted.resumeVideoTask(current, operation.projectId, operation.operationId)).rejects.toMatchObject({ code: 'CREATIVE_VIDEO_TASK_SETTLED' })
+  })
+
+  it('keeps the original video source across recovery and rejects changed or cross-chat receipt origins', async () => {
+    const { store, owner, options } = await fixture()
+    const operation = await store.begin(owner, { kind: 'video', prompt: 'one clip', shots: [{ prompt: 'one clip' }] })
+    const origin = { sessionId: owner.sessionId as import('@deepseek-ai/dsh-session/types').SessionId, turn: 3 }
+    const receipt = { ...accepted, origin }
+    await store.videoReceipt(operation, receipt)
+    await expect(store.videoReceipt(operation, { ...receipt, origin: { ...origin, turn: 7 } }))
+      .rejects.toMatchObject({ code: 'CREATIVE_VIDEO_RECEIPT_CONFLICT' })
+    await expect(store.videoReceipt(operation, { ...receipt, origin: { ...origin, sessionId: 'other-chat' as typeof origin.sessionId } }))
+      .rejects.toMatchObject({ code: 'CREATIVE_INVALID' })
+    await store.finish(operation, { status: 'unknown', videoReceipt: receipt })
+    const restarted = new CreativeStore(options)
+    const resumed = await restarted.resumeVideoTask(owner, operation.projectId, operation.operationId)
+    expect(resumed.receipt.origin).toEqual(origin)
+    restarted.release(resumed.operation)
+  })
+
+  it('keeps a submitted video uncertain after local cancellation and refuses unconfirmed task recovery', async () => {
+    const { store, owner, options } = await fixture()
+    const operation = await store.begin(owner, { kind: 'video', prompt: 'one', shots: [{ prompt: 'one' }] })
+    await store.videoReceipt(operation, submitting)
+    await store.finish(operation, { status: 'cancelled' })
+    const restarted = new CreativeStore(options)
+    expect((await restarted.projects(owner))[0]?.tasks[0]).toMatchObject({ status: 'unknown', canQuery: false,
+      videoReceipt: { phase: 'submitting', requestId: accepted.requestId } })
+    await expect(restarted.resumeVideoTask(owner, operation.projectId, operation.operationId)).rejects.toMatchObject({ code: 'CREATIVE_VIDEO_TASK_UNCONFIRMED' })
+    await expect(restarted.begin(owner, { kind: 'video', prompt: 'retry', planId: operation.projectId,
+      shotIds: ['shot_1'], shots: [{ prompt: 'retry' }] })).rejects.toMatchObject({ code: 'CREATIVE_SUBMISSION_UNKNOWN' })
+  })
+
+  it('atomically retains accepted identity on settlement and permits exactly one concurrent query', async () => {
+    const { store, owner } = await fixture()
+    const operation = await store.begin(owner, { kind: 'video', prompt: 'one', shots: [{ prompt: 'one' }] })
+    await store.finish(operation, { status: 'cancelled', videoReceipt: accepted })
+    expect((await store.projects(owner))[0]?.tasks[0]).toMatchObject({ status: 'unknown', videoReceipt: accepted, canQuery: true })
+    const claims = await Promise.allSettled([store.resumeVideoTask(owner, operation.projectId, operation.operationId),
+      store.resumeVideoTask(owner, operation.projectId, operation.operationId)])
+    expect(claims.filter(claim => claim.status === 'fulfilled')).toHaveLength(1)
+    expect(claims.find(claim => claim.status === 'rejected')).toMatchObject({ reason: { code: 'CREATIVE_SHOT_RUNNING' } })
+    store.release(operation)
+  })
+
+  it('refuses another chat, workspace, account and an old-login callback without changing the original receipt', async () => {
+    const { store, owner, options, setLive } = await fixture()
+    const operation = await store.begin(owner, { kind: 'video', prompt: 'one', shots: [{ prompt: 'one' }] })
+    await store.videoReceipt(operation, accepted)
+    store.release(operation)
+    const path = join(options.directory, operation.projectId, 'project.json')
+    const before = await readFile(path, 'utf8')
+    await expect(store.resumeVideoTask({ ...owner, sessionId: 'other-chat' }, operation.projectId, operation.operationId)).rejects.toMatchObject({ code: 'CREATIVE_ACCESS_DENIED' })
+    await expect(store.resumeVideoTask({ ...owner, workspaceRoot: join(owner.workspaceRoot, 'other') }, operation.projectId, operation.operationId)).rejects.toMatchObject({ code: 'CREATIVE_ACCESS_DENIED' })
+    const other = { ...owner, accountId: '8', sessionFingerprint: 'login-8' }
+    setLive(other)
+    await expect(store.resumeVideoTask(other, operation.projectId, operation.operationId)).rejects.toMatchObject({ code: 'CREATIVE_ACCESS_DENIED' })
+    await expect(store.videoReceipt(operation, accepted)).rejects.toMatchObject({ code: 'CREATIVE_ACCOUNT_CHANGED' })
+    expect(await readFile(path, 'utf8')).toBe(before)
+  })
+
+  it('rejects invalid or replaced identities and receipt-kind confusion before writing', async () => {
+    const { store, owner, options } = await fixture()
+    const operation = await store.begin(owner, { kind: 'video', prompt: 'one', shots: [{ prompt: 'one' }] })
+    await store.videoReceipt(operation, accepted)
+    const path = join(options.directory, operation.projectId, 'project.json')
+    const before = await readFile(path, 'utf8')
+    for (const changed of [{ taskId: 'different-task' }, { route: '/other/videos' }, { model: 'different-model' },
+      { backendFingerprint: 'c'.repeat(64) }, { phase: 'submitting' as const }]) {
+      await expect(store.videoReceipt(operation, { ...accepted, ...changed })).rejects.toMatchObject({ code: 'CREATIVE_VIDEO_RECEIPT_CONFLICT' })
+    }
+    for (const changed of [{ taskId: 'sk-secret' }, { route: 'https://elsewhere.invalid/v1/videos' }, { backendFingerprint: 'invalid' }]) {
+      await expect(store.videoReceipt(operation, { ...accepted, ...changed })).rejects.toMatchObject({ code: 'CREATIVE_INVALID' })
+    }
+    await expect(store.receipt(operation, acceptedImage)).rejects.toMatchObject({ code: 'CREATIVE_INVALID' })
+    expect(await readFile(path, 'utf8')).toBe(before)
+    store.release(operation)
+  })
+
+  it('clears a pre-dispatch video receipt only with executor proof and preserves known task evidence', async () => {
+    const { store, owner } = await fixture()
+    const untouched = await store.begin(owner, { kind: 'video', prompt: 'never sent', shots: [{ prompt: 'never sent' }] })
+    await store.videoReceipt(untouched, { route: accepted.route, model: accepted.model, phase: 'submitting', backendFingerprint: accepted.backendFingerprint })
+    await store.finish(untouched, { status: 'cancelled', notSubmitted: true })
+    expect((await store.projects(owner)).find(project => project.id === untouched.projectId)?.tasks[0]).toMatchObject({ status: 'cancelled' })
+    expect((await store.projects(owner)).find(project => project.id === untouched.projectId)?.tasks[0]).not.toHaveProperty('videoReceipt')
+    const submitted = await store.begin(owner, { kind: 'video', prompt: 'sent', shots: [{ prompt: 'sent' }] })
+    await store.videoReceipt(submitted, accepted)
+    await expect(store.finish(submitted, { status: 'cancelled', notSubmitted: true })).rejects.toMatchObject({ code: 'CREATIVE_VIDEO_RECEIPT_CONFLICT' })
+    expect((await store.projects(owner)).find(project => project.id === submitted.projectId)?.tasks[0]).toMatchObject({ status: 'unknown', videoReceipt: accepted })
+  })
+
+  it('rejects a video receipt on a character image operation in a video plan without changing its record', async () => {
+    const { store, owner, options } = await fixture()
+    const id = await store.updatePlan(owner, plan('video'))
+    const operation = await store.begin(owner, { kind: 'image', prompt: 'portrait', planId: id,
+      assetId: 'portrait', shots: [{ prompt: 'portrait' }] })
+    const path = join(options.directory, id, 'project.json')
+    const before = await readFile(path, 'utf8')
+    await expect(store.videoReceipt(operation, accepted)).rejects.toMatchObject({ code: 'CREATIVE_INVALID' })
+    await expect(store.matchVideoOutput(operation, Buffer.from('video bytes'))).rejects.toMatchObject({ code: 'CREATIVE_INVALID' })
+    await expect(store.finish(operation, { status: 'unknown', videoReceipt: accepted })).rejects.toMatchObject({ code: 'CREATIVE_INVALID' })
+    await expect(store.resumeVideoTask(owner, id, operation.operationId)).rejects.toMatchObject({ code: 'CREATIVE_INVALID' })
+    expect(await readFile(path, 'utf8')).toBe(before)
+  })
+
+  it('reuses only the full unchanged original video after interrupted settlement, without duplicating outputs', async () => {
+    const { store, owner, options, file } = await fixture()
+    const operation = await store.begin(owner, { kind: 'video', prompt: 'one', shots: [{ prompt: 'one' }] })
+    await store.videoReceipt(operation, accepted)
+    const bytes = Buffer.alloc(3 * 1024 * 1024 + 7, 1)
+    const path = await file('retained.mp4')
+    await writeFile(path, bytes)
+    await store.saved(operation, path, 'video')
+    await store.finish(operation, { status: 'unknown', videoReceipt: { ...accepted, phase: 'completed' } })
+    const restarted = new CreativeStore(options)
+    const retained = await restarted.resumeVideoTask(owner, operation.projectId, operation.operationId)
+    const different = Buffer.from(bytes)
+    different[different.length - 1] = 2
+    expect(await restarted.matchVideoOutput(retained.operation, different)).toBeUndefined()
+    expect(await restarted.matchImageOutput(retained.operation, bytes)).toBeUndefined()
+    expect(await restarted.matchVideoOutput(retained.operation, bytes)).toBe(path)
+    expect((await readFile(path)).equals(bytes)).toBe(true)
+    await restarted.finish(retained.operation, { status: 'completed', kind: 'video', paths: [path] })
+    const project = (await restarted.projects(owner))[0]
+    expect(project?.tasks).toHaveLength(1)
+    expect(project?.tasks[0]?.outputs).toHaveLength(1)
+    expect(project?.outputs).toHaveLength(1)
+  })
+})
+
 describe('retained image receipts and query-only recovery', () => {
   it('keeps original generating locations across recovery and refuses changed or cross-chat receipt sources', async () => {
     const { store, owner, options } = await fixture()
@@ -88,7 +246,7 @@ describe('retained image receipts and query-only recovery', () => {
     store.release(operation)
     const restarted = new CreativeStore(options)
     expect((await restarted.projects(owner))[0]?.tasks[0]).toMatchObject({
-      imageReceipt: acceptedImage, canQuery: true, status: 'running',
+      imageReceipt: acceptedImage, canQuery: true, status: 'unknown', errorCode: 'SUBMISSION_UNKNOWN',
     })
     await expect(restarted.begin(owner, { kind: 'image', prompt: 'one', planId: operation.projectId,
       shotIds: ['shot_1'], shots: [{ prompt: 'one' }] })).rejects.toMatchObject({ code: 'CREATIVE_SUBMISSION_UNKNOWN' })
@@ -169,7 +327,7 @@ describe('retained image receipts and query-only recovery', () => {
         .rejects.toMatchObject({ code: 'CREATIVE_IMAGE_RECEIPT_CONFLICT' })
       expect(await readFile(path, 'utf8')).toBe(before)
       expect((await new CreativeStore(options).projects(owner)).find(project => project.id === operation.projectId)?.tasks[0])
-        .toMatchObject({ status: receipt.taskId === undefined ? 'unknown' : 'running', imageReceipt: receipt })
+        .toMatchObject({ status: 'unknown', imageReceipt: receipt })
     }
   })
 
@@ -383,10 +541,10 @@ describe('creation plans and actual generation facts', () => {
     const { store, owner, options, file } = await fixture()
     const operation = await store.begin(owner, { kind: 'video', prompt: 'clip', shots: [{ prompt: 'clip' }] })
     const receipt = { ...acceptedImage, route: '/v1/videos', model: 'video-model', taskId: 'original-video' }
-    await store.receipt(operation, receipt, 'video')
+    await store.videoReceipt(operation, receipt)
     await store.finish(operation, { status: 'running', videoReceipt: receipt, errorCode: 'VIDEO_QUERY_UNAVAILABLE' })
     const restarted = new CreativeStore(options)
-    expect((await restarted.projects(owner))[0]?.tasks[0]).toMatchObject({ status: 'running', canQuery: true, videoReceipt: receipt })
+    expect((await restarted.projects(owner))[0]?.tasks[0]).toMatchObject({ status: 'unknown', canQuery: true, videoReceipt: receipt })
     await expect(restarted.begin(owner, { kind: 'video', prompt: 'duplicate', planId: operation.projectId,
       shotIds: ['shot_1'], shots: [{ prompt: 'duplicate' }] })).rejects.toMatchObject({ code: 'CREATIVE_SUBMISSION_UNKNOWN' })
     await expect(restarted.resumeImage(owner, operation.projectId, operation.operationId)).rejects.toMatchObject({ code: 'CREATIVE_IMAGE_TASK_UNCONFIRMED' })

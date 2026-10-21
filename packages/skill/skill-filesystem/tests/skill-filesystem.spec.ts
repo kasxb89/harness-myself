@@ -181,6 +181,37 @@ describe('dsh-skill-filesystem plugin exports', () => {
 })
 
 describe('FileSystemSkillProvider', () => {
+  it('bounds parallel discovery while retaining every ordered candidate', async () => {
+    const home = await tempDir('skill-parallel')
+    const root = join(home, 'skills')
+    for (let i = 0; i < 10; i++) await writeSkill(root, `skill-${i}`, `Skill ${i}`)
+    const ctx = new Context()
+    await ctx.plugin(SkillRegistry)
+    let fs!: TestFileSystem
+    await ctx.plugin((owner) => { fs = new TestFileSystem(owner) })
+    const firstBatch = Promise.withResolvers<undefined>()
+    const release = Promise.withResolvers<undefined>()
+    let active = 0
+    let peak = 0
+    let reads = 0
+    fs.readTextOverride = async (target) => {
+      reads++
+      peak = Math.max(peak, ++active)
+      if (active === 3) firstBatch.resolve(undefined)
+      try { await release.promise; return await readFile(target.displayPath, 'utf8') }
+      finally { active-- }
+    }
+    await ctx.plugin(SkillFileSystem, { includeDefaultRoots: false, customSkillDirs: [root], watch: false, discoveryConcurrency: 3 })
+    const listing = ctx.skills.list()
+    await firstBatch.promise
+    expect(reads).toBe(3)
+    release.resolve(undefined)
+    expect((await listing).map(skill => skill.name)).toEqual(Array.from({ length: 10 }, (_, i) => `skill-${i}`))
+    expect(peak).toBe(3)
+    expect(reads).toBe(10)
+    await ctx.fiber.dispose()
+  })
+
   it('discovers project, custom, user, and agents skill roots in priority order', async () => {
     const home = await tempDir('skill-home')
     const project = await tempDir('skill-project')

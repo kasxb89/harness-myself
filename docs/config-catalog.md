@@ -642,6 +642,25 @@ export type OnboardingProcess = 'compact' | 'standard' | 'detailed'
 ```
 <!-- END GENERATED config-catalog:@deepseek-ai/dsh-client-ui-settings-account -->
 
+<!-- BEGIN GENERATED config-catalog:@deepseek-ai/dsh-client-ui-settings-general -->
+<a id="deepseek-aidsh-client-ui-settings-general"></a>
+
+## `@deepseek-ai/dsh-client-ui-settings-general`
+
+- `refs`: `Volatile` (`@deepseek-ai/cordis`)
+- `source`: [`packages/client/ui-settings-general/src/index.ts:9`](../packages/client/ui-settings-general/src/index.ts)
+
+```ts config-catalog
+/** Runtime preferences projected to the browser. */
+export interface Config {
+  /** Last acknowledged welcome notice version. */
+  welcomeNoticeVersion: Volatile<string | undefined>
+  /** Existing section ids displayed as tabs inside another installed section. */
+  sectionGroups?: Record<string, string[]>
+}
+```
+<!-- END GENERATED config-catalog:@deepseek-ai/dsh-client-ui-settings-general -->
+
 <!-- BEGIN GENERATED config-catalog:@deepseek-ai/dsh-client-ui-settings-models -->
 <a id="deepseek-aidsh-client-ui-settings-models"></a>
 
@@ -730,6 +749,8 @@ export interface SkillHubExecutionConfig {
   readonly searchLimit: number
   /** Official search and recommendation network deadline in milliseconds. @default 15000 */
   readonly searchTimeoutMs: number
+  /** Successful public recommendation cache lifetime; zero disables reuse. @default 60000 */
+  readonly recommendationsCacheMs?: number
 }
 ```
 <!-- END GENERATED config-catalog:@deepseek-ai/dsh-client-ui-skillhub -->
@@ -883,7 +904,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-credits-index`
 
 - `inject`: `webServer` · `tools`
-- `source`: [`packages/host/credits-index/src/index.ts:81`](../packages/host/credits-index/src/index.ts)
+- `source`: [`packages/host/credits-index/src/index.ts:82`](../packages/host/credits-index/src/index.ts)
 
 ```ts config-catalog
 /** Plugin config: platform origin, display rate, and where the session file lives. */
@@ -3223,6 +3244,8 @@ export interface Config {
   watchFollowSymlinks?: boolean
   /** Bundled skill root; defaults to `$DSH_BUNDLED_SKILL_DIR` when default roots are included, otherwise mounts none. */
   bundledSkillDir?: string
+  /** Maximum skill files read concurrently during discovery. Defaults to 8. */
+  discoveryConcurrency?: number
 }
 ```
 <!-- END GENERATED config-catalog:@deepseek-ai/dsh-skill-filesystem -->
@@ -4719,7 +4742,6 @@ These load from a `cordis.yml` entry with no `config:` block; they declare no co
 | `@deepseek-ai/dsh-client-ui-session` | — | [`packages/client/ui-session/src/index.ts`](../packages/client/ui-session/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-settings` | — | [`packages/client/ui-settings/src/index.ts`](../packages/client/ui-settings/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-settings-agent-loop` | — | [`packages/client/ui-settings-agent-loop/src/index.ts`](../packages/client/ui-settings-agent-loop/src/index.ts) |
-| `@deepseek-ai/dsh-client-ui-settings-general` | — | [`packages/client/ui-settings-general/src/index.ts`](../packages/client/ui-settings-general/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-settings-plugin-inventory` | — | [`packages/client/ui-settings-plugin-inventory/src/index.ts`](../packages/client/ui-settings-plugin-inventory/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-settings-plugins` | — | [`packages/client/ui-settings-plugins/src/index.ts`](../packages/client/ui-settings-plugins/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-settings-session-log` | — | [`packages/client/ui-settings-session-log/src/index.ts`](../packages/client/ui-settings-session-log/src/index.ts) |

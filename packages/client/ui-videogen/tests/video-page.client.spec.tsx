@@ -11,6 +11,7 @@ import { contentFixture } from '../../ui-imagegen/tests/content-fixture.client.t
 
 const params = {
   durationByResolution: undefined as Readonly<Record<string, readonly number[]>> | undefined,
+  defaultDuration: undefined as number | undefined,
   durations: [5, 10], resolutions: ['720p', '1080p'], ratios: ['16:9', '9:16'], frameSlots: 2,
   maxReferenceImages: 3, maxReferenceVideos: 1, maxReferenceAudios: 1,
   audio: true, audioToggle: true, modes: ['normal', 'pro'], seed: true,
@@ -68,12 +69,41 @@ const ready = async (): Promise<void> => {
   await waitFor(() => { expect(screen.getByRole('button', { name: zh.model }).textContent).toContain('Real video model') })
   await act(async () => {})
 }
+function chooseFrame(which: 'first' | 'last', name: string): void {
+  if (screen.queryByRole('combobox', { name: which === 'first' ? zh.firstFrame : zh.lastFrame }) === null) {
+    fireEvent.click(screen.getByRole('button', { name: zh[which === 'last' ? 'workflow.frames' : 'workflow.image'] }))
+  }
+  const field = screen.getByRole('combobox', { name: which === 'first' ? zh.firstFrame : zh.lastFrame })
+  const option = within(field).getByRole('option', { name })
+  fireEvent.change(field, { target: { value: option.getAttribute('value') } })
+}
+
 const writePrompt = (): void => { fireEvent.change(screen.getByRole('textbox', { name: zh.prompt }), { target: { value: 'A continuous tracking shot' } }) }
 
 beforeEach(() => { vi.useRealTimers(); sessionAccountId = 'account-a'; chatSessionId = 'session-a' })
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 describe('video composer', () => {
+  it('uses catalog default duration and exact pixel dimensions for a reference-only video model', async () => {
+    const h = setup({ durations: [15, 16, 30], defaultDuration: 30,
+      resolutions: ['720x1280', '1280x720'], ratios: [], frameSlots: 0, maxReferenceImages: 9 })
+    h.mount()
+    await ready()
+    expect(screen.queryByRole('button', { name: zh['workflow.image'] })).toBeNull()
+    expect(screen.queryByRole('button', { name: zh['workflow.frames'] })).toBeNull()
+    expect(h.store.getSnapshot()).toMatchObject({ duration: 30, resolution: '720x1280', ratio: '' })
+    fireEvent.click(screen.getByRole('button', { name: zh['workflow.reference'] }))
+    fireEvent.change(screen.getByLabelText(zh.addMedia), { target: { files: [new File(['image'], 'reference.png', { type: 'image/png' })] } })
+    await waitFor(() => { expect(h.store.getSnapshot().uploading).toBeNull(); expect(h.asset).toHaveBeenCalledOnce() })
+    expect(screen.queryByRole('combobox', { name: zh.firstFrame })).toBeNull()
+    writePrompt()
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    await waitFor(() => { expect(h.task).toHaveBeenCalledOnce() })
+    expect(requestBody(h.task.mock.calls[0]?.[0])).toMatchObject({ model: 'video-real', durationSeconds: 30, resolution: '720x1280',
+      frameImages: [], referenceImages: ['ma_image'] })
+    expect(requestBody(h.task.mock.calls[0]?.[0])).not.toHaveProperty('ratio')
+  })
+
   it('rechecks a late admission read after a fast successful generation instead of leaving controls locked', async () => {
     const h = setup()
     h.mount()
@@ -90,7 +120,7 @@ describe('video composer', () => {
     } finally { late.resolve(json({ ok: true, payload: { accountId: 'account-a', projects: [] } })) }
   })
 
-  it('exposes one ordinary material input beside the prompt and retains only explicit frame upload controls', async () => {
+  it('uses one upload input for every workflow and selects frame roles from the retained material pool', async () => {
     const { mount } = setup()
     const view = mount()
     await ready()
@@ -100,7 +130,7 @@ describe('video composer', () => {
     expect(screen.queryByLabelText(zh.referenceVideos)).toBeNull()
     expect(screen.queryByLabelText(zh.referenceAudios)).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: zh['workflow.frames'] }))
-    expect(view.container.querySelectorAll('input[type="file"]')).toHaveLength(3)
+    expect(view.container.querySelectorAll('input[type="file"]')).toHaveLength(1)
     expect(screen.getByLabelText(zh.firstFrame)).toBeTruthy()
     expect(screen.getByLabelText(zh.lastFrame)).toBeTruthy()
   })
@@ -116,10 +146,10 @@ describe('video composer', () => {
     const list = screen.getByRole('list', { name: t('materialList', { kind: zh.referenceImages }) })
     expect(within(list).getAllByRole('listitem')).toHaveLength(4)
     expect(view.container.querySelector('[data-frame="first"]')?.getAttribute('data-selected')).toBe('true')
-    expect(within(list).getByRole('button', { name: t('useFirstFrameNamed', { name: 'long-material-name-0.png' }) })).toHaveProperty('ariaPressed', 'true')
-    fireEvent.click(screen.getByRole('button', { name: t('clearFrame', { frame: zh.firstFrame }) }))
+    expect(screen.getByRole('combobox', { name: zh.firstFrame })).toHaveProperty('value', 'ma_retained0')
+    fireEvent.change(screen.getByRole('combobox', { name: zh.firstFrame }), { target: { value: '' } })
     expect(store.getSnapshot().firstFrame).toBeNull()
-    fireEvent.click(within(list).getByRole('button', { name: t('useFirstFrameNamed', { name: 'long-material-name-2.png' }) }))
+    chooseFrame('first', 'long-material-name-2.png')
     writePrompt()
     fireEvent.click(screen.getByRole('button', { name: zh.submit }))
     await waitFor(() => { expect(task).toHaveBeenCalledOnce() })
@@ -135,8 +165,8 @@ describe('video composer', () => {
     const view = mount()
     await ready()
     await waitFor(() => { expect(store.getSnapshot().firstFrame?.assetId).toBe('ma_first') })
-    fireEvent.click(screen.getByRole('button', { name: method === 'clear'
-      ? t('clearFrame', { frame: zh.firstFrame }) : t('removeNamed', { name: 'first.png' }) }))
+    if (method === 'clear') fireEvent.change(screen.getByRole('combobox', { name: zh.firstFrame }), { target: { value: '' } })
+    else fireEvent.click(screen.getByRole('button', { name: t('removeNamed', { name: 'first.png' }) }))
     expect(store.getSnapshot().firstFrame).toBeNull()
     view.unmount()
     mount()
@@ -154,14 +184,12 @@ describe('video composer', () => {
     store.actions.patch({ workflow: 'frames', slots: { image: references, audio: [], video: [] }, firstFrame: references[0]!, lastFrame: references[1]! })
     mount()
     await ready()
-    const first = () => screen.getByRole('button', { name: t('useFirstFrameNamed', { name: 'ref-0.png' }) })
-    const last = () => screen.getByRole('button', { name: t('useLastFrameNamed', { name: 'ref-1.png' }) })
-    expect(first().getAttribute('aria-pressed')).toBe('true')
-    expect(last().getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByRole('combobox', { name: zh.firstFrame })).toHaveProperty('value', 'ma_ref0')
+    expect(screen.getByRole('combobox', { name: zh.lastFrame })).toHaveProperty('value', 'ma_ref1')
     fireEvent.click(screen.getByRole('button', { name: zh['workflow.reference'] }))
     const list = screen.getByRole('list', { name: t('materialList', { kind: zh.referenceImages }) })
-    expect(first().getAttribute('aria-pressed')).toBe('false')
-    expect(last().getAttribute('aria-pressed')).toBe('false')
+    expect(screen.queryByRole('combobox', { name: zh.firstFrame })).toBeNull()
+    expect(screen.queryByRole('combobox', { name: zh.lastFrame })).toBeNull()
     expect(within(list).queryByText(zh.firstFrame)).toBeNull()
     expect(within(list).queryByText(zh.lastFrame)).toBeNull()
     writePrompt()
@@ -171,6 +199,19 @@ describe('video composer', () => {
     fireEvent.click(screen.getByRole('button', { name: t('removeNamed', { name: 'ref-0.png' }) }))
     expect(store.getSnapshot().firstFrame).toBeNull()
     expect(store.getSnapshot().lastFrame?.assetId).toBe('ma_ref1')
+  })
+
+  it('does not clear a frame from a stale account render', async () => {
+    const { store, props } = setup()
+    const reference = { assetId: 'ma_private', name: 'private.png', url: 'blob:private', bytes: 1 }
+    store.actions.patch({ workflow: 'image', firstFrame: reference, slots: { image: [reference], audio: [], video: [] } })
+    const read = props.readDraft
+    render(<VideoPage {...props} readDraft={() => ({ ...read(), referenceAccountId: 'account-b' })} />)
+    await ready()
+    vi.mocked(props.releasePreview).mockClear()
+    fireEvent.change(screen.getByRole('combobox', { name: zh.firstFrame }), { target: { value: '' } })
+    expect(store.getSnapshot().firstFrame).toEqual(reference)
+    expect(props.releasePreview).not.toHaveBeenCalled()
   })
 
   it('does not auto-select images from a render whose live reference owner has changed', async () => {
@@ -191,7 +232,7 @@ describe('video composer', () => {
     render(<VideoPage {...props} readDraft={guardedRead} />)
     await ready()
     expect(guardedRead).toHaveBeenCalled()
-    fireEvent.click(screen.getByRole('button', { name: t('useFirstFrameNamed', { name: 'old.png' }) }))
+    chooseFrame('first', 'old.png')
     expect(store.getSnapshot().firstFrame).toBeNull()
     expect(store.getSnapshot().frameWorkflowSelection).toBeNull()
   })
@@ -241,7 +282,7 @@ describe('video composer', () => {
     const assistant = vi.mocked(props.renderFactorySlot).mock.calls.at(-1)?.[1] as PromptAssistOwner
     expect(assistant.references).toEqual(['ma_material1', 'ma_material2', 'ma_material3'])
     expect(assistant.disabled).toBe(false)
-    fireEvent.click(screen.getByRole('button', { name: t('useFirstFrameNamed', { name: 'child.png' }) }))
+    chooseFrame('first', 'child.png')
     expect(store.getSnapshot().firstFrame?.assetId).toBe('ma_material2')
     writePrompt()
     fireEvent.click(screen.getByRole('button', { name: zh.submit }))
@@ -311,10 +352,10 @@ describe('video composer', () => {
     fireEvent.change(screen.getByLabelText(zh.addMedia), { target: { files: ['one.png', 'two.png']
       .map(name => new File(['image'], name, { type: 'image/png' })) } })
     await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull(); expect(asset).toHaveBeenCalledTimes(2) })
-    fireEvent.click(screen.getByRole('button', { name: t('useFirstFrameNamed', { name: 'one.png' }) }))
-    fireEvent.click(screen.getByRole('button', { name: t('useLastFrameNamed', { name: 'two.png' }) }))
+    chooseFrame('first', 'one.png')
+    chooseFrame('last', 'two.png')
     expect(store.getSnapshot()).toMatchObject({ workflow: 'frames', firstFrame: { assetId: 'ma_material1' }, lastFrame: { assetId: 'ma_material2' } })
-    fireEvent.click(screen.getByRole('button', { name: t('useFirstFrameNamed', { name: 'two.png' }) }))
+    chooseFrame('first', 'two.png')
     expect(props.releasePreview).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: t('removeNamed', { name: 'two.png' }) }))
     expect(store.getSnapshot()).toMatchObject({ firstFrame: null, lastFrame: null, slots: { image: [{ assetId: 'ma_material1' }] } })
@@ -453,9 +494,11 @@ describe('video composer', () => {
     mount()
     await ready()
     fireEvent.click(screen.getByRole('button', { name: zh['workflow.frames'] }))
-    fireEvent.change(screen.getByLabelText(zh.firstFrame), { target: { files: [file] } })
+    fireEvent.change(screen.getByLabelText(zh.addMedia), { target: { files: [file] } })
     await waitFor(() => { expect(store.getSnapshot().firstFrame?.assetId).toBe('ma_frame1') })
-    fireEvent.change(screen.getByLabelText(zh.lastFrame), { target: { files: [file] } })
+    fireEvent.change(screen.getByLabelText(zh.addMedia), { target: { files: [file] } })
+    await waitFor(() => { expect(store.getSnapshot().slots.image).toHaveLength(2) })
+    fireEvent.change(screen.getByRole('combobox', { name: zh.lastFrame }), { target: { value: 'ma_frame2' } })
     await waitFor(() => { expect(store.getSnapshot().lastFrame?.assetId).toBe('ma_frame2'); expect(store.getSnapshot().uploading).toBeNull() })
     expect(store.getSnapshot().firstFrame).toMatchObject({ bytes: 2 * 1024 * 1024, url: '/credits/api/assets/preview?asset_id=ma_frame1' })
     expect(store.getSnapshot().lastFrame).toMatchObject({ bytes: 2 * 1024 * 1024, firstFrameOnly: true })
@@ -995,14 +1038,14 @@ describe('video composer', () => {
     mount()
     await ready()
     fireEvent.click(screen.getByRole('button', { name: zh['workflow.image'] }))
-    const pickFrame = (name: string) => { fireEvent.change(screen.getByLabelText(zh.firstFrame), { target: { files: [new File(['image'], name, { type: 'image/png' })] } }) }
+    const pickFrame = (name: string) => { fireEvent.change(screen.getByLabelText(zh.addMedia), { target: { files: [new File(['image'], name, { type: 'image/png' })] } }) }
     pickFrame('old.png')
     sessionAccountId = 'account-b'
     fireEvent.focus(window)
     await waitFor(() => { expect(store.getSnapshot().referenceAccountId).toBe('account-b') })
     pickFrame('new.png')
     await act(async () => { resolveOld(json({ ok: true, asset: { assetId: 'ma_old' } })) })
-    expect(store.getSnapshot()).toMatchObject({ firstFrame: null, uploading: 'first' })
+    expect(store.getSnapshot()).toMatchObject({ firstFrame: null, uploading: 'materials' })
     await act(async () => { resolveNew(json({ ok: true, asset: { assetId: 'ma_new' } })) })
     expect(store.getSnapshot().firstFrame?.assetId).toBe('ma_new')
     expect(store.getSnapshot().uploading).toBeNull()
@@ -1110,7 +1153,7 @@ describe('video composer', () => {
     expect(screen.getByRole('alert').textContent).toBe(t('uploadItemFailed', { name: 'excess.png', reason: t('materialTotalFull', { size: '12.00' }) }))
     act(() => { store.actions.patch({ firstFrame: null, slots: { audio: [], image: Array.from({ length: 9 }, (_, index) => ({ assetId: `ma_${index}`, name: 'material.png', url: `blob:${index}`, bytes: 1 })), video: [] } }) })
     fireEvent.click(screen.getByRole('button', { name: zh['workflow.image'] }))
-    fireEvent.change(screen.getByLabelText(zh.firstFrame), { target: { files: [new File(['image'], 'tenth.png', { type: 'image/png' })] } })
+    fireEvent.change(screen.getByLabelText(zh.addMedia), { target: { files: [new File(['image'], 'tenth.png', { type: 'image/png' })] } })
     await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull() })
     expect(asset).not.toHaveBeenCalled()
     expect(store.getSnapshot().firstFrame?.assetId).toBe('ma_0')
