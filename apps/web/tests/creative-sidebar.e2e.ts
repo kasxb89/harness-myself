@@ -413,6 +413,8 @@ describe.skipIf(!available)('web e2e: chat creation and independent generation p
             await json({ signedIn, creditsPerYuan: 1000, ...signedIn ? { account: { id: accountId, phone: '+8613800000000' } } : {} })
           } else if (url.pathname === '/credits/api/summary') {
             await json({ balance_points: 20000, as_of: new Date().toISOString() })
+          } else if (url.pathname === '/credits/api/chat-usage' && request.method() === 'GET') {
+            await json({ scope: 'chat-model', status: 'unavailable', settledRequests: 0, totalRequests: 0, accountId })
           } else if (url.pathname === '/credits/api/media/catalog') {
             await json({ image: [{ id: 'gpt-image-2', displayName: '图片测试模型', params: {
               sizes: ['1024x1024'], maxCount: 1, maxEdits: 1, qualities: ['auto'], backgrounds: ['auto'], formats: ['png'], moderations: ['auto'], seed: false,

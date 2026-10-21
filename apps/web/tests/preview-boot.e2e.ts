@@ -317,9 +317,7 @@ async function bootPreview(origin: string, browser: Browser): Promise<void> {
     const continueButton = page.getByRole('button', { name: 'Continue' })
     await continueButton.waitFor({ timeout: HERO_TIMEOUT_MS })
     await continueButton.click()
-    const configureLater = page.getByRole('button', { name: 'Configure later' })
-    await configureLater.waitFor({ timeout: 30_000 })
-    await configureLater.click()
+    expect(await page.getByRole('button', { name: 'Configure later' }).count()).toBe(0)
     await page.locator('[data-composer-input][data-placeholder="Describe what you want to build, / commands, @ files or sessions"]')
       .waitFor({ timeout: 30_000 })
 
@@ -396,6 +394,7 @@ async function bootPreview(origin: string, browser: Browser): Promise<void> {
         ns: 'bash-sandbox', ops: [{ op: 'unset', path: ['timeoutMs'] }], expectedRevision: saved.revision,
       })
       await remote('settings/update', { ns: 'ui-theme', patch: { fontSize: 17 } })
+      const developerTools = await remote<Setting>('settings/update', { ns: 'ui-settings', patch: { enabled: true } })
       await remote('credentials/set', { ref: 'PREVIEW_TEST_SECRET', value: 'worker-only' })
       const credentials = await remote<Record<string, { configured: boolean }>>(
         'credentials/describe',
@@ -405,6 +404,7 @@ async function bootPreview(origin: string, browser: Browser): Promise<void> {
       await new Promise((resolve) => { setTimeout(resolve, 250) })
       return {
         settingsWritable: settings.writable,
+        developerToolsEnabled: developerTools.value.enabled,
         settingIds: settings.namespaces.map(namespace => namespace.ns),
         savedTimeout: saved.value.timeoutMs,
         rereadTimeout: reread.namespaces.find(namespace => namespace.ns === 'bash-sandbox')?.value.timeoutMs,
@@ -421,6 +421,7 @@ async function bootPreview(origin: string, browser: Browser): Promise<void> {
       seededSessionTitle: SHOWCASE_TITLE,
     })
     expect(exercised.settingsWritable).toBe(true)
+    expect(exercised.developerToolsEnabled).toBe(true)
     expect(exercised.settingIds).toEqual(expect.arrayContaining([
       'bash-sandbox', 'locale', 'ui-theme', 'ui-chat', 'ui-conversation', 'ui-settings', 'ui-settings-general',
     ]))
@@ -526,11 +527,12 @@ async function bootEmptyPreview(origin: string, browser: Browser): Promise<void>
     })
     expect(sessionCount).toBe(0)
     expect(pageErrors.map(error => error.message)).toEqual([])
-    // Two accepted static-host 404s, sorted (the boot fetches race): the HMR
-    // event stream has no server here, and the open-in-app availability read
-    // has no host routes — the controller publishes an empty list and the
-    // header renders no button, which is that surface's designed degradation.
-    expect([...failedResponses].sort()).toEqual(['/open-in-app/apps', '/plugins/events'])
+    // Product HTTP reads, desktop availability, and HMR have no static-host
+    // routes; the Worker tunnel continues to own the interactive Session APIs.
+    expect([...failedResponses].sort()).toEqual([
+      '/credits/api/creation/content', '/credits/api/session', '/credits/api/summary',
+      '/open-in-app/apps', '/plugins/events',
+    ])
     expect(consoleErrors.filter(line => !line.includes('Failed to load resource: the server responded with a status of 404')))
       .toEqual([])
   } catch (error) {

@@ -217,7 +217,7 @@ async function awaitTableLayout(target: Page): Promise<void> {
     const tracks = getComputedStyle(element).gridTemplateColumns.split(' ').map(Number.parseFloat)
     const root = element.querySelector<HTMLElement>('div[data-phase]')
     // Mirrored from ui-layout's SIDEBAR_COLLAPSED; these tests use the Host compiler face.
-    return tracks[0] === 56 && tracks.at(-1) === 0
+    return tracks[0] === 84 && tracks.at(-1) === 0
       && element.getAnimations().every(animation =>
         animation.playState === 'finished' || animation.playState === 'idle')
       && root !== null

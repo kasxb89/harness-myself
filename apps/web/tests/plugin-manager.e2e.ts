@@ -121,6 +121,12 @@ describe('web e2e: plugin manager', () => {
         const skeleton = panel.locator('[data-plugin-loading]')
         await skeleton.waitFor()
         await probe.evaluate(() => document.fonts.ready)
+        // Opening a global panel animates the conversation sidebar into its 84px rail.
+        await probe.waitForFunction(() => {
+          const frame = document.querySelector<HTMLElement>('[style*="grid-template-columns"]')
+          return frame !== null && !frame.hasAttribute('data-animating')
+            && Number.parseFloat(getComputedStyle(frame).gridTemplateColumns) === 84
+        }, undefined, { timeout: 10_000 })
         expect(await skeleton.locator(':scope > ul > li').count()).toBe(4)
         expect(await skeleton.getAttribute('role')).toBe('status')
         expect(await skeleton.getAttribute('aria-label')).toBe('正在读取插件…')

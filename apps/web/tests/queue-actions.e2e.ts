@@ -249,8 +249,9 @@ describe('web e2e: queue row actions', () => {
     }, { times: 1 })
     await input.fill(FAILED)
     await input.press('Enter')
-    const failure = page.getByRole('alert').filter({ hasText: 'Queue submission failed' })
+    const failure = page.getByRole('alert').filter({ hasText: 'The server is busy. Please try again later.' })
     await failure.waitFor()
+    expect(await page.getByText('Queue submission failed', { exact: true }).count()).toBe(0)
     await expect.poll(() => input.textContent()).toBe(FAILED)
     expect(await page.locator('[data-queue-dock] [data-submission-echo]').count()).toBe(0)
     const failed = [

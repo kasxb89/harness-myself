@@ -210,6 +210,7 @@ it.skipIf(webSnapshotMode() === 'record')('guides voice setup, records from stan
   await page.getByRole('button', { name: 'Plugins', exact: true }).click()
   await page.locator('[data-plugin-package="@deepseek-ai/dsh-experimental-voice-input-bundle"]').waitFor()
   expect(await page.locator('[data-plugin-detail]').count()).toBe(0)
+  await page.getByRole('button', { name: 'Chat', exact: true }).click()
   await page.getByRole('button', { name: 'New session', exact: true }).filter({ hasText: 'New Session' }).click()
   await mic.waitFor()
   const micBox = await mic.boundingBox(), modelBox = await page.getByRole('button', { name: /^Select model, current/ }).boundingBox()

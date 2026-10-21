@@ -188,7 +188,7 @@ describe.skipIf(MODE === 'record')('web e2e: details panel follows the current S
       await blankColumn.locator('[data-sidebar-right-toggle]').click()
       await blankColumn.locator('[data-dockkit-pane]').first().waitFor({ state: 'hidden' })
       await page.setViewportSize({ width: 767, height: blankViewport.height })
-      await expect.poll(() => columns(page)).toEqual([56, 711, 0])
+      await expect.poll(() => columns(page)).toEqual([84, 683, 0])
       await page.locator('[data-sidebar-right-expand]').click()
       // The fullscreen shell keeps its viewport box while its docked content closes.
       await expect.poll(() => blankColumn.locator('[data-sidebar-right-open]').count()).toBe(1)
@@ -202,7 +202,7 @@ describe.skipIf(MODE === 'record')('web e2e: details panel follows the current S
     } finally {
       await page.setViewportSize(blankViewport)
     }
-    await expect.poll(() => columns(page)).toEqual([280, blankViewport.width - 280, 0])
+    await expect.poll(() => columns(page)).toEqual([320, blankViewport.width - 320, 0])
     await page.locator('[data-sidebar-right-expand]').click()
     await blankColumn.locator('[data-dockkit-add-tab]').click()
     await blankColumn.locator('[data-sidebar-right-guide-entry="terminal"]')
@@ -300,7 +300,7 @@ describe.skipIf(MODE === 'record')('web e2e: details panel follows the current S
     const panel = column.locator('[data-sidebar-right-panel]')
     const panes = column.locator('[data-dockkit-pane]')
     const normalWidth = Math.round(viewport.width * 0.45)
-    const normalColumns = [280, viewport.width - 280 - normalWidth, normalWidth]
+    const normalColumns = [320, viewport.width - 320 - normalWidth, normalWidth]
     const checkpoints: string[] = ['# Recorded-session Sidebar states']
     const checkpoint = async (label: string): Promise<void> => {
       checkpoints.push(`## ${label}\n\n\`\`\`json\n${JSON.stringify(await sidebarSnapshot(page), null, 2)}\n\`\`\``)
@@ -410,7 +410,7 @@ describe.skipIf(MODE === 'record')('web e2e: details panel follows the current S
     try {
       await page.setViewportSize({ width: 1024, height: viewport.height })
       // Frame measurement and the grid transition can finish after setViewportSize returns.
-      await expect.poll(() => columns(page), { timeout: 5_000 }).toEqual([280, 400, 344])
+      await expect.poll(() => columns(page), { timeout: 5_000 }).toEqual([320, 400, 304])
       await dragSidebar(page, 420)
       await expect.poll(() => columns(page)).toEqual([420, 604, 0])
       expect(await column.locator('[data-sidebar-right-open]').count()).toBe(0)
@@ -425,7 +425,7 @@ describe.skipIf(MODE === 'record')('web e2e: details panel follows the current S
       await expect.poll(() => columns(page)).toEqual([420, viewport.width - 420 - normalWidth, normalWidth])
       await page.setViewportSize({ width: 767, height: viewport.height })
       await expect.poll(() => panel.boundingBox()).toEqual({ x: 0, y: 0, width: 767, height: viewport.height })
-      await expect.poll(() => columns(page)).toEqual([56, 711, 0])
+      await expect.poll(() => columns(page)).toEqual([84, 683, 0])
       expect(await sidebarSnapshot(page)).toMatchObject({ mode: 'fullscreen', resizeHandleWidth: 0, coversViewport: true })
       await checkpoint('A automatic fullscreen at 767px')
       await column.locator('[data-sidebar-right-mode="push"]').click()
