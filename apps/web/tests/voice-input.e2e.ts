@@ -87,6 +87,20 @@ it.skipIf(webSnapshotMode() === 'record')('guides voice setup, records from stan
   })
   await page.goto(scaffold.authenticatedUrl)
   await connectFreshWorkspace(page, scaffold.workspaceCwd)
+  const startFreshSession = async () => {
+    const previousId = await page.locator('[data-conversation-session]').getAttribute('data-conversation-session')
+    const creation = page.waitForResponse('**/api/session/create')
+    await page.getByRole('button', { name: 'New session', exact: true }).filter({ hasText: 'New Session' }).click()
+    const response = await creation
+    const body = await response.json() as { result: { ok: boolean; value: { sessionId: string } } }
+    expect(body.result.ok).toBe(true)
+    const sessionId = body.result.value.sessionId
+    expect(sessionId).not.toBe(previousId)
+    const conversation = page.locator(`[data-conversation-session="${sessionId}"]`)
+    await conversation.waitFor()
+    expect(await page.locator('[data-conversation-session]').count()).toBe(1)
+    return conversation
+  }
   const input = page.locator('[data-composer-input]'), mic = page.getByRole('button', { name: 'Start recording', exact: true })
   const setupMic = page.getByRole('button', { name: 'Open voice input setup', exact: true })
   await input.fill(prefix)
@@ -203,7 +217,7 @@ it.skipIf(webSnapshotMode() === 'record')('guides voice setup, records from stan
   expect(levelBounds.x + levelBounds.width).toBeLessThan(pickerBounds.x + pickerBounds.width)
   await page.setViewportSize({ width: 1280, height: 900 })
   await page.getByRole('button', { name: 'Chat', exact: true }).click()
-  await page.getByRole('button', { name: 'New session', exact: true }).filter({ hasText: 'New Session' }).click()
+  await startFreshSession()
   await mic.waitFor()
   await expect.poll(() => page.evaluate(() => (window as Window & { voiceTestStreams?: MediaStream[] }).voiceTestStreams!
     .every(stream => stream.getTracks().every(track => track.readyState === 'ended')))).toBe(true)
@@ -211,7 +225,7 @@ it.skipIf(webSnapshotMode() === 'record')('guides voice setup, records from stan
   await page.locator('[data-plugin-package="@deepseek-ai/dsh-experimental-voice-input-bundle"]').waitFor()
   expect(await page.locator('[data-plugin-detail]').count()).toBe(0)
   await page.getByRole('button', { name: 'Chat', exact: true }).click()
-  await page.getByRole('button', { name: 'New session', exact: true }).filter({ hasText: 'New Session' }).click()
+  const recordingConversation = await startFreshSession()
   await mic.waitFor()
   await expect.poll(async () => {
     const [micBox, modelBox, sendBox] = await Promise.all([
@@ -221,8 +235,10 @@ it.skipIf(webSnapshotMode() === 'record')('guides voice setup, records from stan
     return micBox === null || modelBox === null || sendBox === null
       ? null : [micBox.x > modelBox.x, micBox.x < sendBox.x]
   }).toEqual([true, true])
-  await input.fill(prefix)
-  await mic.click()
+  const recordingInput = recordingConversation.locator('[data-composer-input]')
+  await recordingInput.fill(prefix)
+  expect(await recordingInput.innerText()).toBe(prefix)
+  await recordingConversation.getByRole('button', { name: 'Start recording', exact: true }).click()
   await page.getByRole('button', { name: 'Stop and transcribe', exact: true }).waitFor()
   expect(await page.evaluate(() => (window as Window & { voiceTestStreams?: MediaStream[] }).voiceTestStreams!
     .at(-1)!.getAudioTracks()[0]!.getSettings().deviceId)).toBe(selectedDevice.deviceId)

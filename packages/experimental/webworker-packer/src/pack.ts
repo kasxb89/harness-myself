@@ -153,39 +153,39 @@ function packageNameOf(specifier: string): string {
  * Collect module-specifier `name` fields from parsed entry rows, recursively
  * through nested `config` row lists (groups). Builtin rows (`cordis:group`)
  * and preset metadata documents carry names that are not module specifiers;
- * only names with a scope or a path separator count.
+ * every other non-empty name is a package request, including unscoped plugins.
  * @param rows - Parsed YAML value; anything but an entry array is ignored.
- * @param names - Package names collected so far.
+ * @param names - Plugin module requests collected so far.
  */
 function moduleNamesOf(rows: unknown, names: Set<string>): void {
   if (!Array.isArray(rows)) return
   for (const row of rows) {
     if (typeof row !== 'object' || row === null) continue
     const { name, config } = row as { name?: unknown; config?: unknown }
-    if (typeof name === 'string' && (name.startsWith('@') || name.includes('/'))) {
-      names.add(packageNameOf(name))
+    if (typeof name === 'string' && name !== '' && !name.startsWith('cordis:')) {
+      names.add(name)
     }
     moduleNamesOf(config, names)
   }
 }
 
 /**
- * Package names the composition names.
+ * Plugin module requests named by the composition.
  * @param config - Composed profile; `!!js` scalars parse under Include's dialect.
- * @returns Package names, deduplicated.
+ * @returns Plugin module requests, deduplicated.
  */
-function rosterOf(config: string): string[] {
+function pluginEntriesOf(config: string): string[] {
   const names = new Set<string>()
   moduleNamesOf(yaml.load(config, { schema: entryListSchema }), names)
   return [...names]
 }
 
 /**
- * Package names the compositions under one config tree name.
+ * Plugin module requests named by compositions in one config tree.
  * @param root - Directory to walk.
- * @returns Package names, deduplicated.
+ * @returns Plugin module requests, deduplicated.
  */
-function treeRosterOf(root: string): string[] {
+function treeEntriesOf(root: string): string[] {
   const names = new Set<string>()
   const walk = (directory: string): void => {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
@@ -368,6 +368,7 @@ function sweepImage(
   options: PackOptions,
   rootPackages: readonly string[],
   root: string,
+  pluginEntries: readonly string[],
 ): SweepOutcome {
   const decoder = new TextDecoder()
   const encoder = new TextEncoder()
@@ -388,6 +389,9 @@ function sweepImage(
 
   const queue: { specifier: string; from: string; importer: string; meta?: boolean }[] = (options.entries ?? IMAGE_ENTRY_SEEDS)
     .map(specifier => ({ specifier, from: root, importer: 'worker assembly entry' }))
+  for (const specifier of pluginEntries) {
+    queue.push({ specifier, from: root, importer: `composed plugin ${specifier}` })
+  }
   for (const name of rootPackages) {
     if (options.pagePackages?.has(name) === true) continue
     const manifestBytes = files[`node_modules/${name}/package.json`]
@@ -618,10 +622,11 @@ export function packVfsImage(options: PackOptions): PackResult {
     }
   }
 
-  const roster = [...new Set([
-    ...rosterOf(options.config),
-    ...configTrees.filter(tree => tree.scanRoster === true).flatMap(tree => treeRosterOf(tree.directory)),
+  const pluginEntries = [...new Set([
+    ...pluginEntriesOf(options.config),
+    ...configTrees.filter(tree => tree.scanRoster === true).flatMap(tree => treeEntriesOf(tree.directory)),
   ])]
+  const roster = [...new Set(pluginEntries.map(packageNameOf))]
   for (const name of roster) {
     if (options.pagePackages?.has(name) === true) {
       throw new Error(`vfs image: static Page package ${name} cannot be a Worker plugin row`)
@@ -635,7 +640,8 @@ export function packVfsImage(options: PackOptions): PackResult {
   const executables = dropExecutables(files)
   const rootPackages = [...packages.keys()].filter(name => options.workspaces.has(name))
   const { swept, transform, javascriptEntries, droppedJavascriptEntries, unresolvedExternalRequests } =
-    sweepImage(files, options, rootPackages, root)
+    sweepImage(files, options, rootPackages, root,
+      pluginEntries.filter(specifier => packages.has(packageNameOf(specifier))))
 
   swept[MANIFEST_PATH] = encoder.encode(`${JSON.stringify({
     root,

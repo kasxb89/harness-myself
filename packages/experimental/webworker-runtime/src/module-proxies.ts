@@ -63,6 +63,7 @@ export const MODULE_PROXIES: Record<string, string> = {
   'node:dns/promises': './node/builtin_modules/mock/dns/promises.ts',
   'dns/promises': './node/builtin_modules/mock/dns/promises.ts',
   'node:net': './node/builtin_modules/mock/net.ts',
+  'node:string_decoder': './node/builtin_modules/implemented/string_decoder.ts',
   'node:stream': './node/builtin_modules/implemented/stream.ts',
   'node:stream/promises': './node/builtin_modules/implemented/stream/promises.ts',
   'stream/promises': './node/builtin_modules/implemented/stream/promises.ts',
@@ -77,6 +78,7 @@ export const MODULE_PROXIES: Record<string, string> = {
   'node-pty': './node/external_packages/node-pty.ts',
   'execa': './node/external_packages/execa.ts',
   'got': './node/external_packages/got.ts',
+  'qrcode': './node/external_packages/qrcode.ts',
   '@vscode/ripgrep': './node/external_packages/ripgrep.ts',
   '@earendil-works/pi-ai': './node/external_packages/pi-ai.ts',
   // Constructible fakes whose methods are never reached.

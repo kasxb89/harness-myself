@@ -4,12 +4,9 @@
  * builtins plus five cloud SDKs in its transport layer) and `llm-pi-ai` imports it
  * statically at module scope, so the row cannot mount without it.
  *
- * Every symbol `llm-pi-ai` imports by name is present: a missing CommonJS symbol
- * would surface as `undefined` at call time instead of a link error. The row
- * reads the catalog while it activates, so the provider reader returns
- * providers without models and the two model readers return empty collections
- * instead of throwing: this deployment serves no pi-ai model. Everything on a
- * request path is loud.
+ * Catalog readers and configured model collections retain metadata during boot.
+ * Protocol factories construct transport descriptors without starting a request;
+ * every request, credential mutation, and dynamic refresh still refuses explicitly.
  */
 import { notImplementedFail } from '../notImplementedFail.ts'
 
@@ -27,8 +24,54 @@ export const getSupportedThinkingLevels = notImplementedFail(MODULE, 'getSupport
 /** Context-overflow predicate (unavailable). */
 export const isContextOverflow = notImplementedFail(MODULE, 'isContextOverflow')
 
-/** Collection of every builtin provider (unavailable). */
-export const builtinModels = notImplementedFail(MODULE, 'builtinModels')
+/** Model identity read by the adapter; the original descriptor object remains intact. */
+interface PreviewModel { readonly id: string }
+
+/** Configured provider metadata consumed by the model selector. */
+interface PreviewProvider {
+  readonly id: string
+  getModels(): readonly PreviewModel[]
+}
+
+/**
+ * Construct a metadata-only collection for the configured model routes.
+ * @returns Mutable provider membership and exact configured model descriptors; request methods refuse.
+ */
+export function builtinModels() {
+  const providers = new Map<string, PreviewProvider>()
+  const getModels = (provider?: string): readonly PreviewModel[] => provider === undefined
+    ? [...providers.values()].flatMap(value => value.getModels())
+    : providers.get(provider)?.getModels() ?? []
+  return {
+    clearProviders: (): void => { providers.clear() },
+    setProvider: (provider: PreviewProvider): void => { providers.set(provider.id, provider) },
+    deleteProvider: (id: string): void => { providers.delete(id) },
+    getProviders: (): readonly PreviewProvider[] => [...providers.values()],
+    getProvider: (id: string): PreviewProvider | undefined => providers.get(id),
+    getModels,
+    getModel: (provider: string, id: string): PreviewModel | undefined => getModels(provider).find(model => model.id === id),
+    getAllModels: getModels,
+    getModelsOfType: notImplementedFail(MODULE, 'Models.getModelsOfType'),
+    getModelOfType: notImplementedFail(MODULE, 'Models.getModelOfType'),
+    refresh: notImplementedFail(MODULE, 'Models.refresh'),
+    checkAuth: notImplementedFail(MODULE, 'Models.checkAuth'),
+    getAvailable: notImplementedFail(MODULE, 'Models.getAvailable'),
+    getAvailableOfType: notImplementedFail(MODULE, 'Models.getAvailableOfType'),
+    getAllAvailable: notImplementedFail(MODULE, 'Models.getAllAvailable'),
+    getAuth: notImplementedFail(MODULE, 'Models.getAuth'),
+    login: notImplementedFail(MODULE, 'Models.login'),
+    logout: notImplementedFail(MODULE, 'Models.logout'),
+    stream: notImplementedFail(MODULE, 'Models.stream'),
+    complete: notImplementedFail(MODULE, 'Models.complete'),
+    streamSimple: notImplementedFail(MODULE, 'Models.streamSimple'),
+    completeSimple: notImplementedFail(MODULE, 'Models.completeSimple'),
+    streamDeferred: notImplementedFail(MODULE, 'Models.streamDeferred'),
+    fetchDeferred: notImplementedFail(MODULE, 'Models.fetchDeferred'),
+    cancelDeferred: notImplementedFail(MODULE, 'Models.cancelDeferred'),
+    generateImages: notImplementedFail(MODULE, 'Models.generateImages'),
+    classify: notImplementedFail(MODULE, 'Models.classify'),
+  }
+}
 
 /**
  * Builtin provider ids as pi-ai 0.84.2 listed them, in catalog order. The list
@@ -60,6 +103,8 @@ export function builtinProviders(): unknown[] {
     name: id,
     auth: { apiKey: { type: 'api-key' } },
     models: [],
+    getModels: () => [],
+    ...unavailableStreams(),
   }))
 }
 
@@ -79,14 +124,31 @@ export function getAllBuiltinModels(): unknown[] {
   return []
 }
 
-/** Anthropic messages API binding (unavailable). */
-export const anthropicMessagesApi = notImplementedFail(MODULE, 'anthropicMessagesApi')
+/** Request transports remain unavailable after metadata construction. */
+function unavailableStreams() {
+  return {
+    stream: notImplementedFail(MODULE, 'Provider.stream'),
+    streamSimple: notImplementedFail(MODULE, 'Provider.streamSimple'),
+  }
+}
 
-/** OpenAI completions API binding (unavailable). */
-export const openAICompletionsApi = notImplementedFail(MODULE, 'openAICompletionsApi')
+/**
+ * Construct the Anthropic transport descriptor without starting a request.
+ * @returns Explicitly refusing stream functions.
+ */
+export function anthropicMessagesApi() { return unavailableStreams() }
 
-/** OpenAI responses API binding (unavailable). */
-export const openAIResponsesApi = notImplementedFail(MODULE, 'openAIResponsesApi')
+/**
+ * Construct the OpenAI completions descriptor without starting a request.
+ * @returns Explicitly refusing stream functions.
+ */
+export function openAICompletionsApi() { return unavailableStreams() }
+
+/**
+ * Construct the OpenAI responses descriptor without starting a request.
+ * @returns Explicitly refusing stream functions.
+ */
+export function openAIResponsesApi() { return unavailableStreams() }
 
 /** CommonJS interop marker: the worker loader hands `default` to default imports. */
 export const __esModule = true

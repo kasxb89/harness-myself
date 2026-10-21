@@ -9,8 +9,16 @@ export function createServer(): never {
   throw notAvailableError('node:https', 'createServer')
 }
 
+/** TLS agent constructor required by transport modules; native transport remains unavailable. */
+export class Agent {
+  constructor() {
+    throw notAvailableError('node:https', 'Agent')
+  }
+}
+
 /** CommonJS interop marker for the worker module loader. */
 export const __esModule = true
 
 /** CommonJS exports for the worker's explicit TLS-listener refusal. */
-export default { createServer } satisfies Partial<typeof import('node:https')>
+export default { Agent, createServer } satisfies Partial<Omit<typeof import('node:https'), 'Agent'>>
+  & Record<'Agent', unknown>

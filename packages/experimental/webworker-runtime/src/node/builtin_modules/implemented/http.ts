@@ -7,6 +7,7 @@
  * package never reaches back into this app.
  */
 
+import { notAvailableError } from '../../notImplementedFail.ts'
 import type { RequestListener } from '../../../transport/synthetic-http.ts'
 
 type Listener = (...args: unknown[]) => void
@@ -151,6 +152,13 @@ export function get(): never {
   throw new Error('web-preview: node:http.get is not available in the worker host — use fetch')
 }
 
+/** HTTP agent constructor required by transport subclass declarations; native transport remains unavailable. */
+export class Agent {
+  constructor() {
+    throw notAvailableError('node:http', 'Agent')
+  }
+}
+
 /** Status text table Node exposes; a few handlers write status lines by hand. */
 export const STATUS_CODES: typeof import('node:http').STATUS_CODES = {
   200: 'OK',
@@ -178,8 +186,8 @@ export const __esModule = true
  * `net.Server` carrying sockets and a Node `RequestListener`, while this one binds
  * nothing and captures the synthesized-request listener the tunnel feeds.
  */
-type NodeFace = Partial<Omit<typeof import('node:http'), 'Server' | 'ServerResponse' | 'createServer'>>
-  & Record<'Server' | 'ServerResponse' | 'createServer', unknown>
+type NodeFace = Partial<Omit<typeof import('node:http'), 'Agent' | 'Server' | 'ServerResponse' | 'createServer'>>
+  & Record<'Agent' | 'Server' | 'ServerResponse' | 'createServer', unknown>
 
 /** CommonJS default export: the members `require()` hands a caller of this module. */
-export default { createServer, request, get, STATUS_CODES, Server: FakeServer, ServerResponse } satisfies NodeFace
+export default { Agent, createServer, request, get, STATUS_CODES, Server: FakeServer, ServerResponse } satisfies NodeFace
