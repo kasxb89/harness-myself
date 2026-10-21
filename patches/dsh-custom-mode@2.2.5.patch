@@ -1,3 +1,12 @@
+diff --git a/cordis.patch.yml b/cordis.patch.yml
+--- a/cordis.patch.yml
++++ b/cordis.patch.yml
+@@ -17,4 +17,4 @@
+ # it, and no agent preset depends on it.
+ - insert:
+     - id: custom-mode
+-      name: dsh-custom-mode
++      name: ./index.mjs
 diff --git a/index.mjs b/index.mjs
 index 29a2329aa51ea40f4ca4dff9c543d4f6c8ae925a..34ff813cd440c07eb6420da0803ec30458447c67 100644
 --- a/index.mjs

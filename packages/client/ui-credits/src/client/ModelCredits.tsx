@@ -4,7 +4,7 @@ import { Button, IconDatabaseOutlineRegular, Modal, Tooltip } from '@deepseek-ai
 import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-store'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-chat/client'
-import { readChatUsage, type ChatUsage } from './chat-usage.ts'
+import { readChatUsage, type ChatUsage, type ChatUsageReadResult } from './chat-usage.ts'
 import type { CreditsSnapshot } from './session-store.ts'
 import { cx } from './class-names.ts'
 import css from './ModelCredits.module.css'
@@ -13,16 +13,18 @@ import css from './ModelCredits.module.css'
 export interface ModelCreditsInjected {
   readonly hooks: { readonly creditsSession: ObservableSnapshot<CreditsSnapshot> }
   readonly openBalance: () => void
+  readonly readTimeoutMs: number
 }
 
 type DockProps = PropsRuntime<'conversation.composer.dock'> & InjectFace<ModelCreditsInjected> & PropsLocale<'credits'>
 type TurnProps = PropsRuntime<'conversation.chat.turnTail'> & InjectFace<ModelCreditsInjected> & PropsLocale<'credits'>
-type ReadingProps = Pick<DockProps, 'sessionId' | 'useCreditsSession' | 'openBalance' | 't'> & {
+type ReadingProps = Pick<DockProps, 'sessionId' | 'useCreditsSession' | 'openBalance' | 'readTimeoutMs' | 't'> & {
   readonly turn?: number
   readonly running: boolean
   readonly revision: string
 }
-interface Reading { readonly key: string; readonly usage: ChatUsage | null }
+type ReadFailure = Extract<ChatUsageReadResult, { readonly ok: false }>['reason']
+interface Reading { readonly key: string; readonly usage: ChatUsage | null; readonly failure?: ReadFailure }
 
 /**
  * Display this conversation's chat-model credits after settlement.
@@ -37,7 +39,7 @@ export function SessionModelCredits(props: DockProps) {
     return `${String(turn ?? 0)}:${String(location?.end?.seq ?? 0)}`
   })
   return <ModelCredits sessionId={props.sessionId} useCreditsSession={props.useCreditsSession}
-    openBalance={props.openBalance} t={props.t} running={running} revision={revision} />
+    openBalance={props.openBalance} readTimeoutMs={props.readTimeoutMs} t={props.t} running={running} revision={revision} />
 }
 
 /**
@@ -48,12 +50,12 @@ export function SessionModelCredits(props: DockProps) {
 export function TurnModelCredits(props: TurnProps) {
   const running = props.useSession(value => value.running)
   return <ModelCredits sessionId={props.sessionId} useCreditsSession={props.useCreditsSession}
-    openBalance={props.openBalance} t={props.t} turn={props.turn.turn}
+    openBalance={props.openBalance} readTimeoutMs={props.readTimeoutMs} t={props.t} turn={props.turn.turn}
     running={props.turn.status === 'open' && running}
     revision={`${props.turn.status}:${String(props.turn.end?.seq ?? 0)}`} />
 }
 
-function ModelCredits({ sessionId, turn, running, revision, useCreditsSession, openBalance, t }: ReadingProps) {
+function ModelCredits({ sessionId, turn, running, revision, useCreditsSession, openBalance, readTimeoutMs, t }: ReadingProps) {
   const accountId = useCreditsSession(value => value.session?.signedIn === true ? value.session.account?.id ?? null : null)
   const epoch = useCreditsSession(value => value.accountEpoch)
   const [reading, setReading] = useState<Reading | null>(null)
@@ -72,22 +74,32 @@ function ModelCredits({ sessionId, turn, running, revision, useCreditsSession, o
     let deadline: ReturnType<typeof setTimeout> | undefined
     let attempts = 0
     const load = async (): Promise<void> => {
-      deadline = setTimeout(() => { controller.abort(); if (!disposed && current.current === key) setReading({ key, usage: null }) }, 8000)
-      const usage = await readChatUsage({ sessionId, accountId, ...turn === undefined ? {} : { turn } }, controller.signal)
+      deadline = setTimeout(() => {
+        controller.abort()
+        if (!disposed && current.current === key) setReading({ key, usage: null, failure: 'unavailable' })
+      }, readTimeoutMs)
+      const result = await readChatUsage({ sessionId, accountId, ...turn === undefined ? {} : { turn } }, controller.signal)
       clearTimeout(deadline)
       if (disposed || controller.signal.aborted || current.current !== key) return
+      if (!result.ok) {
+        setReading({ key, usage: null, failure: result.reason })
+        return
+      }
+      const usage = result.usage
       setReading({ key, usage })
-      if (usage?.status === 'pending' && attempts < 3) {
+      if (usage.status === 'pending' && usage.settledRequests === 0 && attempts < 3) {
         attempts += 1
         poll = setTimeout(() => { void load() }, 2000)
       }
     }
     void load()
     return () => { disposed = true; clearTimeout(poll); clearTimeout(deadline); controller.abort() }
-  }, [accountId, key, sessionId, turn])
+  }, [accountId, key, readTimeoutMs, sessionId, turn])
 
   if (accountId === null) return null
-  const usage = reading?.key === key ? reading.usage : undefined
+  const currentReading = reading?.key === key ? reading : undefined
+  const usage = currentReading?.usage
+  const failure = currentReading?.failure
   const status = running || usage === undefined ? 'pending' : usage?.status ?? 'unavailable'
   const label = t(turn === undefined ? 'chatUsage.session' : 'chatUsage.turn')
   const value = status === 'settled' && usage?.status === 'settled'
@@ -95,26 +107,31 @@ function ModelCredits({ sessionId, turn, running, revision, useCreditsSession, o
       : t('chatUsage.points', { points: usage.points.toLocaleString(undefined, { maximumFractionDigits: 6 }) })
     : t(status === 'pending' ? 'chatUsage.pending' : 'chatUsage.unavailable')
   const open = details === identity
+  const failureText = failure === undefined ? undefined : t(failure === 'authorization' ? 'chatUsage.authRequired'
+    : failure === 'rate-limited' ? 'chatUsage.rateLimited' : 'chatUsage.refreshFailed')
 
   return <>
-    <Tooltip label={t('chatUsage.details')} portal side="top">
-      <button type="button" className={css.pill} data-composer-stat={turn === undefined ? 'usage' : undefined}
-        aria-label={`${label}：${value}`} aria-haspopup="dialog" aria-expanded={open}
-        onClick={() => { setDetails(identity) }}>
-        <IconDatabaseOutlineRegular size={14} /><span>{label}</span><span className={css.value}>{value}</span>
-      </button>
-    </Tooltip>
+    <span className={css.control}>
+      <Tooltip label={t('chatUsage.details')} portal side="top">
+        <button type="button" className={css.pill} data-composer-stat={turn === undefined ? 'usage' : undefined}
+          aria-label={`${label}：${value}`} aria-haspopup="dialog" aria-expanded={open}
+          onClick={() => { setDetails(identity) }}>
+          <IconDatabaseOutlineRegular size={14} /><span>{label}</span><span className={css.value}>{value}</span>
+        </button>
+      </Tooltip>
+      <button type="button" className={css.refresh} aria-label={t('chatUsage.refreshInline')}
+        disabled={currentReading === undefined} onClick={() => { setRefresh(value => value + 1) }}>{t('chatUsage.refresh')}</button>
+      {failureText !== undefined && <span className={css.failure} role="status">{failureText}</span>}
+    </span>
     <Modal open={open} title={label} closeLabel={t('chatUsage.close')} onClose={() => { setDetails(null) }}
       className={cx(css.dialog)} footer={<>
-        <Button size="sm" onClick={() => { setRefresh(value => value + 1) }}>{t('chatUsage.refresh')}</Button>
-        <Button size="sm" variant="primary" onClick={() => { setDetails(null); openBalance() }}>{t('chatUsage.allUsage')}</Button>
+        <Button size="sm" disabled={currentReading === undefined} onClick={() => { setRefresh(value => value + 1) }}>{t('chatUsage.refresh')}</Button>
+        {status === 'settled' && <Button size="sm" variant="primary" onClick={() => { setDetails(null); openBalance() }}>{t('chatUsage.allUsage')}</Button>}
       </>}>
       <p className={css.amount}>{value}</p>
       <p className={css.note}>{t('chatUsage.scope')}</p>
-      {usage !== undefined && usage !== null && <p className={css.note}>{t('chatUsage.requests', {
-        settled: usage.settledRequests, total: usage.totalRequests,
-      })}</p>}
-      {status !== 'settled' && <p className={css.note}>{t(status === 'pending' ? 'chatUsage.pendingHint' : 'chatUsage.unavailableHint')}</p>}
+      {failureText !== undefined && <p className={css.note}>{failureText}</p>}
+      {failureText === undefined && status !== 'settled' && <p className={css.note}>{t(status === 'pending' ? 'chatUsage.pendingHint' : 'chatUsage.unavailableHint')}</p>}
     </Modal>
   </>
 }

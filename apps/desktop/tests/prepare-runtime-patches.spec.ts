@@ -1,9 +1,12 @@
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
+import { composeEntries, loadOverlayPatches } from '@deepseek-ai/dsh-app-boot'
 import { afterEach, expect, it } from 'vitest'
 import yaml from 'js-yaml'
 import { pnpmCommand } from '../../../scripts/release/process.ts'
@@ -70,6 +73,20 @@ it('classifies the current workspace and shares only runtime patch bytes', () =>
     'dsh-custom-mode@2.2.5>@deepseek-ai/dsh': '-',
   })
   expect(readFileSync(join(repository, 'pnpm-lock.yaml'))).toEqual(before)
+})
+
+it('mounts the shipped employee editor beside its patched bundle and retains entry opt-outs', () => {
+  const repository = resolve(import.meta.dirname, '../../..')
+  const entry = createRequire(join(repository, 'apps/cli/package.json')).resolve('dsh-custom-mode/package.json')
+  const packageRoot = dirname(entry)
+  const patches = loadOverlayPatches('desktop employee editor', join(packageRoot, 'cordis.patch.yml'))
+  const enabled = composeEntries([patches])
+  expect(enabled).toEqual([{
+    id: 'custom-mode', name: pathToFileURL(join(packageRoot, 'index.mjs')).href,
+  }])
+  expect(composeEntries([patches, [{ id: 'custom-mode', disabled: true }]])).toEqual([
+    { ...enabled[0], disabled: true },
+  ])
 })
 
 it('does not infer version overrides from selected patches', () => {

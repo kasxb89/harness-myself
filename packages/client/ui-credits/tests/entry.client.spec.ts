@@ -7,13 +7,21 @@ import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { LayoutController, type MainPanelId } from '../../ui-layout/src/client/service.ts'
 import { createLayoutStore } from '../../ui-layout/src/client/stores.ts'
-import { apply, inject } from '../src/client/index.ts'
+import { apply, Config, inject } from '../src/client/index.ts'
 import type { CreditsPageInjected } from '../src/client/CreditsPage.tsx'
 import type { QuotaNoticeOwnerProps } from '@deepseek-ai/dsh-client-ui-chat/client'
 import type { BalanceNoticeInjected } from '../src/client/BalanceNotice.tsx'
 
 const roots: Context[] = []
 const existingPanel = 'existing-panel' as MainPanelId
+
+it('validates the configurable statistics deadline independently from generation settings', () => {
+  expect(Config({})).toEqual({ chatUsageReadTimeoutMs: 20_000 })
+  expect(Config({ chatUsageReadTimeoutMs: 30_000 })).toEqual({ chatUsageReadTimeoutMs: 30_000 })
+  for (const chatUsageReadTimeoutMs of [0, 999, 120_001, 2000.5, Number.NaN]) {
+    expect(() => Config({ chatUsageReadTimeoutMs })).toThrow()
+  }
+})
 
 afterEach(async () => {
   for (const root of roots.splice(0)) await root.fiber.dispose()
