@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, open, readFile, realpath, rm, symlink, unlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, open, readFile, realpath, rename, rm, stat, symlink, unlink, utimes, writeFile } from 'node:fs/promises'
 import { createServer, type Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -248,6 +248,69 @@ describe('retained image receipts and query-only recovery', () => {
     expect((await restarted.projects(owner))[0]?.tasks.find(task => task.id === operation.operationId)?.outputs).toHaveLength(1)
     await rm(path)
     expect(await restarted.matchImageOutput(recovered.operation, bytes)).toBeUndefined()
+  })
+
+  it.each(['rewrite', 'replacement'] as const)('does not reuse an image changed by %s during comparison', async (change) => {
+    const { store, owner, options, file } = await fixture()
+    const operation = await store.begin(owner, { kind: 'image', prompt: 'partial', shots: [{ prompt: 'partial' }] })
+    await store.receipt(operation, acceptedImage)
+    const path = await file('partial.png')
+    const bytes = Buffer.alloc(128 * 1024 + 123, 71)
+    await writeFile(path, bytes)
+    const timestamp = new Date('2000-01-01T00:00:00.000Z')
+    await utimes(path, timestamp, timestamp)
+    await store.saved(operation, path, 'image')
+    const recordPath = join(options.directory, operation.projectId, 'project.json')
+    const recordBefore = await readFile(recordPath, 'utf8')
+    const before = await stat(path, { bigint: true })
+    const comparedFirstBlock = Promise.withResolvers<undefined>()
+    const continueReading = Promise.withResolvers<undefined>()
+    const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')
+    vi.mocked(open).mockImplementation(async (...args) => {
+      const handle = await actual.open(...args)
+      if (args[0] === path) {
+        const read = handle.read.bind(handle)
+        Object.defineProperty(handle, 'read', { value: async (buffer: Uint8Array, offset: number, length: number, position: number) => {
+          if (position === 64 * 1024) {
+            comparedFirstBlock.resolve(undefined)
+            await continueReading.promise
+          }
+          return await read(buffer, offset, length, position)
+        } })
+      }
+      return handle
+    })
+    const matching = store.matchImageOutput(operation, bytes)
+    const edited = Buffer.from(bytes)
+    edited[0] = 72
+    const retained = join(owner.workspaceRoot, 'retained-original.png')
+    try {
+      await comparedFirstBlock.promise
+      if (change === 'rewrite') {
+        await writeFile(path, edited)
+        // Whole-second timestamps round-trip on Windows; compare observed stats, not the requested Date.
+        await utimes(path, timestamp, timestamp)
+        const changed = await stat(path, { bigint: true })
+        expect(changed.mtimeNs).toBe(before.mtimeNs)
+        expect(changed.ctimeNs).not.toBe(before.ctimeNs)
+      } else {
+        await rename(path, retained)
+        await writeFile(path, bytes)
+        await utimes(path, timestamp, timestamp)
+        expect((await stat(path, { bigint: true })).ino).not.toBe(before.ino)
+      }
+      continueReading.resolve(undefined)
+      expect(await matching).toBeUndefined()
+      expect(await readFile(path)).toEqual(change === 'rewrite' ? edited : bytes)
+      if (change === 'replacement') expect(await readFile(retained)).toEqual(bytes)
+      expect(await readFile(recordPath, 'utf8')).toBe(recordBefore)
+      expect((await store.projects(owner))[0]?.tasks).toMatchObject([{ id: operation.operationId,
+        status: 'saving', imageReceipt: acceptedImage, outputs: [{ name: 'partial.png' }] }])
+    } finally {
+      continueReading.resolve(undefined)
+      vi.mocked(open).mockImplementation(actual.open)
+      await matching
+    }
   })
 
   it('rejects another account, chat, workspace and late old-login receipt writes', async () => {

@@ -721,7 +721,7 @@ export class CreativeStore {
    * Reuse exact bytes already retained by this invocation during query-only recovery.
    * @param operation - Exclusively live original invocation with its current login identity.
    * @param bytes - Actual recovered image bytes; record JSON limits do not limit image size.
-   * @returns The original saved image path when its complete contents match.
+   * @returns The original saved image path when complete contents match and file identity stays unchanged.
    */
   matchImageOutput(operation: CreativeOperation, bytes: Uint8Array): Promise<string | undefined> {
     return this.queue(async () => {
@@ -741,7 +741,8 @@ export class CreativeStore {
         })
         if (file === undefined) continue
         try {
-          if ((await file.stat()).size !== bytes.byteLength) continue
+          const before = await file.stat({ bigint: true })
+          if (before.size !== BigInt(bytes.byteLength)) continue
           let offset = 0
           while (offset < bytes.byteLength) {
             const length = Math.min(buffer.byteLength, bytes.byteLength - offset)
@@ -749,7 +750,15 @@ export class CreativeStore {
             if (bytesRead === 0 || !buffer.subarray(0, bytesRead).equals(bytes.subarray(offset, offset + bytesRead))) break
             offset += bytesRead
           }
-          if (offset === bytes.byteLength && (await file.stat()).size === bytes.byteLength) {
+          if (offset === bytes.byteLength) {
+            const after = await file.stat({ bigint: true })
+            const named = await lstat(output.path, { bigint: true }).catch((error: unknown) => {
+              if (isMissing(error)) return undefined
+              throw error
+            })
+            if (named === undefined || !named.isFile() || [after, named].some(info => info.dev !== before.dev
+              || info.ino !== before.ino || info.size !== before.size || info.mtimeNs !== before.mtimeNs
+              || info.ctimeNs !== before.ctimeNs) || await realpath(output.path) !== output.path) continue
             await this.current(operation.owner)
             return output.path
           }
