@@ -1205,6 +1205,23 @@ Types: [SessionId](core.zh.md)
 
 Source: [`packages/api/session-controller/src/types.ts`](../../packages/api/session-controller/src/types.ts)
 
+<a id="api-sessionmodel-catalog-changed--emit"></a>
+
+#### `api-session/model-catalog-changed` — emit
+
+The effective default model changed after its update committed. Consumers reload the model catalog to read the current default.
+
+```ts cordis-catalog
+/**
+ * The effective default model changed after its update committed.
+ * Consumers reload the model catalog to read the current default.
+ * @mode emit
+ */
+'api-session/model-catalog-changed'(): void
+```
+
+Source: [`packages/api/session-controller/src/types.ts`](../../packages/api/session-controller/src/types.ts)
+
 <a id="api-sessionremoved--emit"></a>
 
 #### `api-session/removed` — emit

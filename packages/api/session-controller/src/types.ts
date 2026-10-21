@@ -598,6 +598,12 @@ declare module '@deepseek-ai/cordis' {
      */
     'api-session/added'(summary: SessionSummary): void
     /**
+     * The effective default model changed after its update committed.
+     * Consumers reload the model catalog to read the current default.
+     * @mode emit
+     */
+    'api-session/model-catalog-changed'(): void
+    /**
      * A Session left the live Host registry.
      * @mode emit
      * @param sessionId - removed Session identity.

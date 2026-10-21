@@ -2,4 +2,5 @@
 - button "添加文件或调用指令"
 - button "访问模式，当前：工作区内修改": 工作区内修改
 - button "请选择模型"
+- button "语音输入"
 - button "发送消息" [disabled]

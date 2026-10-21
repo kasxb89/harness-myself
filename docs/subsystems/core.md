@@ -431,6 +431,14 @@ Owns the default model selection independently of any Host or transport. Each op
 currentSelection(): ModelSelection
 
 /**
+ * Contribute the deployment's available default without persisting an automatic choice.
+ * Only compositions with `followPolicy` enabled read this source; saved user choices opt out.
+ * @param read - synchronous source which returns an available selection or no override.
+ * @returns an owned, idempotent disposer; a second active contribution is rejected.
+ */
+registerPolicySelection(read: () => ModelSelection | undefined): () => void
+
+/**
  * Save the complete default model selection. A deployment without a configuration
  * editor keeps its composition entry. Saves commit in submission order; a failed
  * save rejects its caller without blocking later saves.

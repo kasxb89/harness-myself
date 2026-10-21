@@ -42,6 +42,7 @@
   config:
     provider: yunshu-local
     model: deepseek-v4-flash
+    followPolicy: true
 - id: plugin-manager
   config:
     githubProxy: https://8.216.52.27:8443

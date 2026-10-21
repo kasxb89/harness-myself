@@ -13,6 +13,8 @@ import { LocalCredentialProvider } from '@deepseek-ai/dsh-credentials-local'
 import WebServer from '@deepseek-ai/dsh-host-webserver'
 import Tools from '@deepseek-ai/dsh-tools'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
+import DefaultModel from '@deepseek-ai/dsh-agent-default-model'
+import { buildModelCatalog } from '@deepseek-ai/dsh-api-session-controller'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
 import LocalAttachmentStore from '@deepseek-ai/dsh-attachment-local'
@@ -38,6 +40,7 @@ const calls: { path: string; authorization?: string; origin?: string; cookie?: s
 let quotaPerUnit = 500_000
 let exchangeRate = 7.3
 let statusAvailable = true
+let clientModelConfig: unknown
 let balanceQuota = 68_493
 let selfId = 7
 let access = 'access-user'
@@ -82,6 +85,7 @@ afterEach(async () => {
   quotaPerUnit = 500_000
   exchangeRate = 7.3
   statusAvailable = true
+  clientModelConfig = undefined
   balanceQuota = 68_493
   selfId = 7
   access = 'access-user'
@@ -116,6 +120,7 @@ async function boot(
   models: readonly Record<string, unknown>[] = [{ id: 'deepseek-v4-flash' }],
   managedOutput = false,
   authenticatedHost = false,
+  defaultSelection?: { provider: string; model: string; followPolicy?: boolean },
 ): Promise<{ base: string; api: string; stateDir: string }> {
   directory = await mkdtemp(join(tmpdir(), 'harness-product-integration-'))
   const stateDir = join(directory, 'credits')
@@ -138,7 +143,8 @@ async function boot(
       const answer = (data: unknown): void => { response.end(JSON.stringify({ success: true, data })) }
       if (url.pathname === '/harness/api/status') {
         if (!statusAvailable) { response.writeHead(503); response.end('{}'); return }
-        answer({ quota_per_unit: quotaPerUnit, usd_exchange_rate: exchangeRate }); return
+        answer({ quota_per_unit: quotaPerUnit, usd_exchange_rate: exchangeRate,
+          ...clientModelConfig === undefined ? {} : { client_model_config: clientModelConfig } }); return
       }
       if (url.pathname === '/harness/api/user/phone/challenge') {
         answer({ resend_after_seconds: 60, expires_in_minutes: 5 }); return
@@ -237,6 +243,7 @@ async function boot(
   const modules = new Map<string, unknown>([
     ['@deepseek-ai/dsh-host-webserver', WebServer], ['@deepseek-ai/dsh-tools', Tools],
     ['@deepseek-ai/dsh-system-prompt', SystemPrompt], ['@deepseek-ai/dsh-credits-index', Credits],
+    ['@deepseek-ai/dsh-agent-default-model', DefaultModel],
     ['@deepseek-ai/dsh-credentials-local', LocalCredentialProvider],
     ['@deepseek-ai/dsh-llm', LlmRuntime], ['@deepseek-ai/dsh-llm-pi-ai', LlmPiAi],
     ['@deepseek-ai/dsh-fs-local', LocalFileSystem],
@@ -270,6 +277,7 @@ async function boot(
     { name: '@deepseek-ai/dsh-credentials-local', config: { path: join(directory, 'credentials.yaml'), dshHome: directory, watch: false } },
     ...authenticatedHost ? [{ name: '@deepseek-ai/dsh-session' }, { name: '@deepseek-ai/dsh-client-connection' }, { name: 'fixture-auth-index' }] : [],
     { name: '@deepseek-ai/dsh-llm' },
+    ...defaultSelection === undefined ? [] : [{ name: '@deepseek-ai/dsh-agent-default-model', config: defaultSelection }],
     { name: '@deepseek-ai/dsh-llm-pi-ai', config: { providers: {
       'yunshu-local': { api: 'openai-completions', baseURL: api + '/v1', apiKeyEnv: relayRef, models },
       'other-provider': { api: 'openai-completions', baseURL: 'https://synthetic.invalid/v1', models: [{ id: 'other-chat' }] },
@@ -1662,6 +1670,132 @@ describe('deployed Harness API through the real product Loader', () => {
     videoTaskStatus = 'NOT_START'
     expect(await post(base, '/api/video/tasks?source=newapi', { prompt: 'A synthetic clip', model: 'MiniMax-H3', durationSeconds: 4 })).toMatchObject({ ok: true })
     expect(calls.filter(call => call.path.startsWith('/harness/v1/video')).map(call => call.path)).toEqual(['/harness/v1/video/generations'])
+  })
+
+  it('selects the backend default on the first real catalog read and orders only authorized chat models', async () => {
+    clientModelConfig = { schema_version: 1, default_chat_model: 'second-chat',
+      model_order: ['unauthorized', 'gpt-image-2', 'second-chat', 'deepseek-v4-flash'] }
+    relayModels = [...initialRelayModels(), { id: 'second-chat', object: 'model', supported_endpoint_types: ['openai'] },
+      { id: 'new-chat', object: 'model', supported_endpoint_types: ['openai'] }]
+    const { base } = await boot(undefined, false, false,
+      { provider: 'yunshu-local', model: 'unavailable-bootstrap', followPolicy: true })
+    await signIn(base)
+    const catalog = await buildModelCatalog(context!)
+    expect(catalog.default).toEqual({ provider: 'yunshu-local', model: 'second-chat' })
+    expect(catalog.groups.find(group => group.id === 'yunshu-local')?.models.map(model => model.id))
+      .toEqual(['second-chat', 'deepseek-v4-flash', 'new-chat'])
+    expect(catalog.groups.flatMap(group => group.models).map(model => model.id)).not.toContain('unauthorized')
+    expect(calls.some(call => call.path === '/api/status' || call.path === '/v1/models')).toBe(false)
+    expect(calls.filter(call => call.path === '/harness/api/status').every(call => call.authorization === undefined)).toBe(true)
+    expect(calls.filter(call => call.path.endsWith('/chat/completions') || call.path.includes('/generations'))).toEqual([])
+  })
+
+  it.each(['gpt-image-2', 'unauthorized'])('falls back to an authorized chat when backend default %s is unusable', async (defaultModel) => {
+    clientModelConfig = { schema_version: 1, default_chat_model: defaultModel,
+      model_order: ['gpt-image-2', 'second-chat', 'deepseek-v4-flash'] }
+    relayModels = [...initialRelayModels(), { id: 'second-chat', object: 'model', supported_endpoint_types: ['openai'] }]
+    const { base } = await boot(undefined, false, false,
+      { provider: 'yunshu-local', model: 'unavailable-bootstrap', followPolicy: true })
+    await signIn(base)
+    expect((await buildModelCatalog(context!)).default).toEqual({ provider: 'yunshu-local', model: 'second-chat' })
+  })
+
+  it('keeps an explicit user default while applying the backend product ordering', async () => {
+    clientModelConfig = { schema_version: 1, default_chat_model: 'second-chat', model_order: ['second-chat'] }
+    relayModels = [...initialRelayModels(), { id: 'second-chat', object: 'model', supported_endpoint_types: ['openai'] }]
+    const { base } = await boot(undefined, false, false, { provider: 'other-provider', model: 'other-chat' })
+    const changes = vi.fn()
+    context!.on('api-session/model-catalog-changed', changes)
+    await signIn(base)
+    const catalog = await buildModelCatalog(context!)
+    expect(catalog.default).toEqual({ provider: 'other-provider', model: 'other-chat' })
+    expect(catalog.groups.find(group => group.id === 'yunshu-local')?.models.map(model => model.id))
+      .toEqual(['second-chat', 'deepseek-v4-flash'])
+    expect(changes).not.toHaveBeenCalled()
+  })
+
+  it('notifies a default-only change once without causing catalog reload loops', async () => {
+    clientModelConfig = { schema_version: 1, default_chat_model: 'deepseek-v4-flash', model_order: [] }
+    relayModels = [...initialRelayModels(), { id: 'second-chat', object: 'model', supported_endpoint_types: ['openai'] }]
+    const { base } = await boot(undefined, false, false,
+      { provider: 'yunshu-local', model: 'unavailable-bootstrap', followPolicy: true })
+    await signIn(base)
+    expect((await buildModelCatalog(context!)).default.model).toBe('deepseek-v4-flash')
+    const changes = vi.fn()
+    context!.on('api-session/model-catalog-changed', () => { throw new Error('unavailable observer') })
+    context!.on('api-session/model-catalog-changed', changes)
+    expect((await buildModelCatalog(context!)).default.model).toBe('deepseek-v4-flash')
+    expect(changes).not.toHaveBeenCalled()
+    clientModelConfig = { schema_version: 1, default_chat_model: 'second-chat', model_order: [] }
+    expect((await buildModelCatalog(context!)).default.model).toBe('second-chat')
+    expect(changes).toHaveBeenCalledTimes(1)
+    expect((await buildModelCatalog(context!)).default.model).toBe('second-chat')
+    expect(changes).toHaveBeenCalledTimes(1)
+  })
+
+  it('refreshes automatic defaults and retains the last valid preferences during malformed or unavailable status reads', async () => {
+    clientModelConfig = { schema_version: 1, default_chat_model: 'deepseek-v4-flash', model_order: [] }
+    relayModels = [...initialRelayModels(), { id: 'second-chat', object: 'model', supported_endpoint_types: ['openai'] }]
+    const { base } = await boot(undefined, false, false,
+      { provider: 'yunshu-local', model: 'unavailable-bootstrap', followPolicy: true })
+    await signIn(base)
+    expect((await buildModelCatalog(context!)).default.model).toBe('deepseek-v4-flash')
+    clientModelConfig = { schema_version: 1, default_chat_model: 'second-chat', model_order: ['second-chat'] }
+    expect((await buildModelCatalog(context!)).default.model).toBe('second-chat')
+    for (const unavailable of ['malformed', 'http-error']) {
+      clientModelConfig = { schema_version: 9, default_chat_model: 'deepseek-v4-flash', model_order: [] }
+      statusAvailable = unavailable !== 'http-error'
+      const catalog = await buildModelCatalog(context!)
+      expect(catalog.default.model).toBe('second-chat')
+      expect(catalog.groups.find(group => group.id === 'yunshu-local')?.models.map(model => model.id))
+        .toEqual(['second-chat', 'deepseek-v4-flash'])
+    }
+    statusAvailable = true
+    clientModelConfig = { schema_version: 1, default_chat_model: '', model_order: [] }
+    const cleared = await buildModelCatalog(context!)
+    expect(cleared.default.model).toBe('deepseek-v4-flash')
+    expect(cleared.groups.find(group => group.id === 'yunshu-local')?.models.map(model => model.id))
+      .toEqual(['deepseek-v4-flash', 'second-chat'])
+  })
+
+  it.runIf(process.env.YUNSHU_CLIENT_MODEL_QA_ORIGIN !== undefined)('applies real local API status preferences through the product Loader without granting unavailable models', async () => {
+    const origin = new URL(process.env.YUNSHU_CLIENT_MODEL_QA_ORIGIN!)
+    if (origin.protocol !== 'http:' || origin.hostname !== '127.0.0.1' || origin.pathname !== '/harness') {
+      throw new Error('Live client model QA requires the isolated loopback Harness API')
+    }
+    const response = await fetch(origin.href + '/api/status', { redirect: 'error', signal: AbortSignal.timeout(5000) })
+    expect(response.status).toBe(200)
+    expect(response.headers.get('cache-control')).toContain('no-store')
+    const status = object(await response.json())
+    expect(status.success).toBe(true)
+    clientModelConfig = object(status.data).client_model_config
+    expect(clientModelConfig).toEqual({ schema_version: 1, default_chat_model: 'qa-second-chat',
+      model_order: ['qa-second-chat', 'deepseek-qa-chat', 'gpt-image-qa'] })
+    relayModels = [
+      { id: 'deepseek-qa-chat', object: 'model', supported_endpoint_types: ['openai'] },
+      { id: 'gpt-image-qa', object: 'model', supported_endpoint_types: ['image-generation'] },
+    ]
+    const { base } = await boot(undefined, false, false,
+      { provider: 'yunshu-local', model: 'unavailable-bootstrap', followPolicy: true })
+    await signIn(base)
+    const restricted = await buildModelCatalog(context!)
+    expect(restricted.default.model).toBe('deepseek-qa-chat')
+    expect(restricted.groups.find(group => group.id === 'yunshu-local')?.models.map(model => model.id)).toEqual(['deepseek-qa-chat'])
+    relayModels.push({ id: 'qa-second-chat', object: 'model', supported_endpoint_types: ['openai'] })
+    const granted = await buildModelCatalog(context!)
+    expect(granted.default.model).toBe('qa-second-chat')
+    expect(granted.groups.find(group => group.id === 'yunshu-local')?.models.map(model => model.id))
+      .toEqual(['qa-second-chat', 'deepseek-qa-chat'])
+    expect(calls.filter(call => call.path.endsWith('/chat/completions') || call.path.includes('/generations'))).toEqual([])
+  })
+
+  it('uses the first available chat without backend preferences and withdraws its default on account logout', async () => {
+    const { base } = await boot(undefined, false, false,
+      { provider: 'yunshu-local', model: 'unavailable-bootstrap', followPolicy: true })
+    await signIn(base)
+    expect((await buildModelCatalog(context!)).default.model).toBe('deepseek-v4-flash')
+    await post(base, '/api/session/logout', {})
+    expect(context!.agentDefaultModel.currentSelection().model).toBe('unavailable-bootstrap')
   })
 
   it('refreshes the actual account list on each read without waiting for the periodic sync', async () => {

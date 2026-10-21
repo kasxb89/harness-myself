@@ -204,6 +204,46 @@ async function bench(locale: 'zh' | 'en' = 'zh') {
 const projection = (id: string) => ({ sessionId: sid(id) })
 
 describe('ui-model-selection dual entry', () => {
+  it('refreshes cached defaults for unselected and blank chats while retaining explicit selections', async () => {
+    const b = await bench()
+    try {
+      const initial: ModelSelection = { provider: 'deepseek-official', model: 'deepseek-v4-flash' }
+      const replacement: ModelSelection = { provider: 'deepseek-official', model: 'deepseek-v4-pro' }
+      const unselected = b.mint('unselected')
+      const manual = b.mint('manual')
+      b.setProjected(sid('manual'), { lastUsed: initial, next: initial })
+      const existing = b.ctx.modelDirectories.directoryFor(sid('unselected'))
+      const selected = b.ctx.modelDirectories.directoryFor(sid('manual'))
+      await existing.load()
+      await selected.load()
+      expect(existing.store.getSnapshot().current).toEqual(initial)
+      expect(selected.store.getSnapshot().current).toEqual(initial)
+
+      b.setHostCurrent(replacement)
+      const blank = b.mint('blank', true)
+      const blankDirectory = b.ctx.modelDirectories.directoryFor(sid('blank'))
+      await blankDirectory.load()
+      expect(blankDirectory.store.getSnapshot().current).toEqual(initial)
+      expect(b.calls.models).toBe(1)
+
+      b.remote.emit('api-session/model-catalog-changed', [])
+
+      await vi.waitFor(() => {
+        expect(existing.store.getSnapshot()).toMatchObject({ status: 'ready', current: replacement })
+        expect(blankDirectory.store.getSnapshot()).toMatchObject({ status: 'ready', current: replacement })
+      })
+      expect(selected.store.getSnapshot()).toMatchObject({ status: 'ready', current: initial })
+      b.mint('new-blank', true)
+      expect(b.ctx.modelDirectories.directoryFor(sid('new-blank')).store.getSnapshot().current).toEqual(replacement)
+      expect(unselected.projection.getSnapshot()?.next).toBeNull()
+      expect(blank.projection.getSnapshot()?.next).toBeNull()
+      expect(manual.projection.getSnapshot()?.next).toEqual(initial)
+      expect(b.calls).toEqual({ models: 2, select: 0 })
+    } finally {
+      await b.ctx.fiber.dispose()
+    }
+  })
+
   it.each(['composer', 'command'] as const)('refreshes newly available models through %s without a Host event', async (entry) => {
     const b = await bench()
     try {

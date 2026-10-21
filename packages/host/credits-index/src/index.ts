@@ -17,6 +17,7 @@ import { request as httpsRequest } from 'node:https'
 import { request as httpRequest } from 'node:http'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
+import type { ModelSelection } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-artifacts-index'
 import type {} from '@deepseek-ai/dsh-client-connection'
@@ -29,6 +30,8 @@ import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { HarnessAccount } from '@deepseek-ai/dsh-llm-pi-ai'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { apiUrl, normalizeApiBaseUrl } from './api-url.ts'
+import { parseClientModelConfigStatus } from './client-model-config.ts'
+import { orderProductModels, preferredProductModel, type ProductModelPresentation } from './model-presentation.ts'
 import { isAccountBalanceRejectionText } from './account-balance.ts'
 import { ClientActivitySessions, parseClientActivity, type ClientActivitySample } from './client-activity.ts'
 import { parseUsageWindow, readAccountUsage } from './usage.ts'
@@ -736,6 +739,13 @@ export function apply(ctx: Context, config: Config): void {
   const store = new SessionStore(ctx, join(stateDir, 'session.json'))
   const relayRef = credentialRef(resolved.relayTokenEnv)
   let identityVersion = 0
+  let productModelPresentation: ProductModelPresentation = { defaultChatModel: null, modelOrder: [] }
+  let productDefault: { version: number; selection: ModelSelection } | undefined
+  ctx.inject(['agentDefaultModel'], (child) => {
+    child.effect(() => child.agentDefaultModel.registerPolicySelection(() =>
+      productDefault?.version === identityVersion ? productDefault.selection : undefined),
+    'credits-index: account-authorized deployment default')
+  })
   const chatUsage = new ChatUsageReader({ baseUrl: apiBaseUrl, timeoutMs: resolved.timeoutMs,
     cacheTtlMs: resolved.chatUsageCacheTtlMs, concurrency: resolved.chatUsageConcurrency })
   ctx.effect(() => () => chatUsage.dispose(), 'credits-index: current-account chat ledger')
@@ -882,7 +892,11 @@ export function apply(ctx: Context, config: Config): void {
       }
       const body = await response.json() as { data?: unknown }
       const rows = Array.isArray(body.data) ? body.data : []
-      return { ok: true, group, models: catalogFromPricing(rows, group) }
+      const order = new Map(productModelPresentation.modelOrder.map((id, index) => [id, index]))
+      const last = order.size
+      const models = catalogFromPricing(rows, group).toSorted((left, right) =>
+        (order.get(left.id) ?? last) - (order.get(right.id) ?? last))
+      return { ok: true, group, models }
     } catch (error) {
       return {
         ok: false,
@@ -1927,9 +1941,43 @@ export function apply(ctx: Context, config: Config): void {
       const body = await pricing.json() as { data?: unknown }
       if (!Array.isArray(body.data)) throw new Error('模型类型列表无效，请稍后重试。')
       for (const id of mediaModelIds(body.data)) media.add(id)
-      const ids = discovered.chat.filter(id => id !== '' && !media.has(id))
-      const defaults = await installedModelInputs(ids, signal)
-      await mutateSession(async () => { await currentIdentity(); await writeProductModels(ids, defaults); await currentIdentity() })
+      const chatIds = discovered.chat.filter(id => id !== '' && !media.has(id))
+      const defaults = await installedModelInputs(chatIds, signal)
+      let presentation = productModelPresentation
+      try {
+        const response = await apiFetch('/api/status', { headers: { accept: 'application/json' }, signal })
+        if (!response.ok || response.body === null) throw new Error('Client model configuration unavailable')
+        const chunks: Uint8Array[] = []
+        let size = 0
+        for await (const chunk of response.body) {
+          size += chunk.length
+          if (size > 1024 * 1024) throw new Error('Client model configuration response exceeds the limit')
+          chunks.push(chunk)
+        }
+        presentation = parseClientModelConfigStatus(JSON.parse(Buffer.concat(chunks).toString('utf8')))
+          ?? { defaultChatModel: null, modelOrder: [] }
+      } catch (_unavailableClientModelConfiguration: unknown) {
+        ctx.logger.warn('credits-index: client model configuration unavailable; retaining the last valid preferences')
+      }
+      const ids = orderProductModels(chatIds, presentation)
+      const preferred = preferredProductModel(ids, presentation)
+      await mutateSession(async () => {
+        await currentIdentity()
+        const previousDefault = ctx.get('agentDefaultModel')?.currentSelection()
+        await writeProductModels(ids, defaults)
+        await currentIdentity()
+        productModelPresentation = presentation
+        productDefault = preferred === undefined ? undefined
+          : { version, selection: { provider: resolved.chatProviderRoute, model: preferred } }
+        const nextDefault = ctx.get('agentDefaultModel')?.currentSelection()
+        if (previousDefault?.provider !== nextDefault?.provider || previousDefault?.model !== nextDefault?.model
+          || previousDefault?.reasoningEffort !== nextDefault?.reasoningEffort) {
+          const warn = (): void => { ctx.logger.warn('credits-index: a model catalog change observer failed') }
+          for (const listener of ctx.events.dispatch('emit', ['api-session/model-catalog-changed']) as Array<() => unknown>) {
+            try { void Promise.resolve(listener()).catch(warn) } catch { warn() }
+          }
+        }
+      })
       return ids
     })()
     const flight = { version, token: ownerToken, controller, promise }
@@ -2620,7 +2668,9 @@ export function apply(ctx: Context, config: Config): void {
           // new-api is the deployment's own model source.
           if (url.searchParams.get('source') === 'newapi' || resolved.baseUrl === '') {
             const live = await readNewApiModels()
-            json(response, 200, { ...live, baseUrl: apiBaseUrl })
+            json(response, 200, { ...live, chat: orderProductModels(live.chat, productModelPresentation),
+              image: orderProductModels(live.image, productModelPresentation),
+              video: orderProductModels(live.video, productModelPresentation), baseUrl: apiBaseUrl })
             return
           }
           // The public catalog needs no session; it is the picker's model list.

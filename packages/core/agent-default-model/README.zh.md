@@ -42,6 +42,7 @@ kind: "package-reference"
 |---|---|---|
 | `provider` | 必填 | 新 agent 使用的已注册提供方路由 |
 | `model` | 必填 | 新 agent 使用的、由提供方持有的模型 id |
+| `followPolicy` | `false` | 在显式保存选择前使用当前部署策略 |
 
 生成的[配置目录](../../../docs/config-catalog.zh.md#deepseek-aidsh-agent-default-model) 列出所有接受的字段。`reasoningEffort` 是可选的；保存不含此字段的选择，会从 profile 的完整配置覆盖中移除此字段。
 
@@ -55,6 +56,8 @@ await ctx.agentDefaultModel.saveSelection({ provider, model, reasoningEffort: 'h
 ```
 
 没有配置编辑器时，`saveSelection()` 不执行写入。此服务不验证目录成员资格；发起模型请求的消费者负责可用性诊断。
+
+部署可开启 `followPolicy`，并通过所属插件的 effect 注册唯一的同步 `registerPolicySelection(read)` 来源。来源提供可用选择，或返回 `undefined` 以沿用配置；返回的幂等释放函数只撤销本次注册，重复的活动来源会被拒绝。自动选择仅存在于内存，不写入用户 profile。手动调用 `saveSelection()` 成功时按需保存 `followPolicy: false`，后续策略变化便不会覆盖该选择。已有完整 profile 覆盖未包含此字段时，同样保留显式选择。保存失败不改变策略跟随状态。
 
 -----
 

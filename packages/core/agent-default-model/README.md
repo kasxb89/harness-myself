@@ -42,6 +42,7 @@ The composition requires a provider and model. Consumers read the live reference
 |---|---|---|
 | `provider` | required | Registered provider route for fresh agents |
 | `model` | required | Provider-owned model id for fresh agents |
+| `followPolicy` | `false` | Use the active deployment policy until an explicit selection is saved |
 
 The generated [configuration catalog](../../../docs/config-catalog.md#deepseek-aidsh-agent-default-model) lists every accepted field. `reasoningEffort` is optional; saving a selection without it removes that field from the profile’s complete config override.
 
@@ -55,6 +56,8 @@ await ctx.agentDefaultModel.saveSelection({ provider, model, reasoningEffort: 'h
 ```
 
 Without a configuration editor, `saveSelection()` is a no-op. The service does not validate catalog membership; the consumer opening a model request owns availability diagnostics.
+
+A deployment may enable `followPolicy` and contribute one synchronous `registerPolicySelection(read)` source through an owning plugin effect. The source supplies an available selection or `undefined` to retain the configured selection; its idempotent disposer withdraws only that contribution. A second active source is rejected. Automatic choices remain in memory and are not written to the user's profile. A successful manual `saveSelection()` stores `followPolicy: false` when needed, so later policy changes do not override that choice. An existing complete profile override without the flag also retains its explicit selection. Failed writes leave policy following unchanged.
 
 -----
 

@@ -23,6 +23,7 @@ export const API_REMOTE_FORWARDED_EVENTS = [
   { event: 'api-session/activity', mode: 'emit' },
   { event: 'api-session/added', mode: 'emit' },
   { event: 'api-session/error', mode: 'emit' },
+  { event: 'api-session/model-catalog-changed', mode: 'emit' },
   { event: 'api-session/removed', mode: 'emit' },
   { event: 'api-session/status', mode: 'emit' },
   { event: 'commands/change', mode: 'emit' },

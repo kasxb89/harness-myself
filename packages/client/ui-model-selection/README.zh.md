@@ -69,7 +69,7 @@ composer 菜单中的模型名称和推理等级均使用 400（regular）字重
 
 composer 的 `ModelSelect` 与 `/model` 选项构建器共用[提供方排序](src/client/provider-order.ts)，两个搜索框均在每个提供方内使用 `rankByName`。命令通过 [popupSelect API](../ui-commands/README.zh.md#use-this-package) 提供可选分组与 `searchMode: 'fuzzy-label'`；两个入口均使用 `MenuGroup`，并在渲染分组变化时重建其吸顶观察器。命令弹窗撑满 composer 浮层，按钮则保留紧凑菜单。
 
-`ModelDirectoryResolver`（`ctx.modelDirectories`）在所有会话目录之间共用一份 Host 目录。两个选择器入口都通过 `session.modelCatalog` 刷新目录，并通过 `session.selectModel` 提交选择；会话目录把该目录与各自会话的持久选择投影合并。初始化复用缓存目录，显式菜单读取则共用一次进行中的刷新。目录与选择的代次检查防止过期响应覆盖当前状态。连接重置会清空目录，转发的适配器、设置或凭据变化会使其失效并重拉。会话目录按需创建，随所属作用域一并 dispose（资源释放）；已寻址 subagent 会话不公开任一入口。
+`ModelDirectoryResolver`（`ctx.modelDirectories`）在所有会话目录之间共用一份 Host 目录。两个选择器入口都通过 `session.modelCatalog` 刷新目录，并通过 `session.selectModel` 提交选择；会话目录把该目录与各自会话的持久选择投影合并。初始化复用缓存目录，显式菜单读取则共用一次进行中的刷新。目录与选择的代次检查防止过期响应覆盖当前状态。连接重置会清空目录，转发的适配器、设置、凭据或实际生效默认模型变化会使其失效并重拉。未手动选择模型的空白会话跟随实时目录的默认值。会话目录按需创建，随所属作用域一并 dispose（资源释放）；已寻址 subagent 会话不公开任一入口。
 
 </details>
 

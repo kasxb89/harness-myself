@@ -107,6 +107,7 @@ describe('web e2e: the composer model switch is the default for later sessions',
       expect(popupBounds!.x).toBeCloseTo(commandMenuBounds!.x)
       expect(await search.getAttribute('placeholder')).toBe('搜索模型…')
       await page.getByRole('option').first().waitFor()
+      await page.getByRole('option', { name: 'Acme Large', exact: true }).hover()
       await compareOrRefreshGolden(
         fileURLToPath(new URL('./expected/default-model/command-picker.expected.md', import.meta.url)),
         await captureStableAria(page, '[aria-label="/model 选项"]', scaffold.workspaceCwd),

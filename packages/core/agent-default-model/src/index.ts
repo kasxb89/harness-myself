@@ -28,6 +28,8 @@ export interface Config {
   model: Volatile<string>
   /** Adapter-owned reasoning effort; omission follows the provider default. */
   reasoningEffort: Volatile<string | undefined>
+  /** Follow the active deployment policy until a user saves an explicit selection. */
+  followPolicy?: Volatile<boolean>
 }
 
 /** Project stored settings onto the Agent-facing selection type. */
@@ -47,11 +49,13 @@ function selection(settings: { provider: string; model: string; reasoningEffort?
  */
 export class AgentDefaultModelConfig extends Service {
   private saves: Promise<void> = Promise.resolve()
+  private policy: { read: () => ModelSelection | undefined } | undefined
 
   static Config = z.object({
     provider: z.string().required().volatile(),
     model: z.string().required().volatile(),
     reasoningEffort: z.string().volatile(),
+    followPolicy: z.boolean().default(false).volatile(),
   })
 
   constructor(private readonly ownerContext: Context, private config: Config) {
@@ -65,11 +69,26 @@ export class AgentDefaultModelConfig extends Service {
    * @returns a detached provider, model, and optional reasoning selection.
    */
   currentSelection(): ModelSelection {
+    const policy = this.config.followPolicy?.get() === true ? this.policy?.read() : undefined
+    if (policy !== undefined) return { ...policy }
     const reasoningEffort = this.config.reasoningEffort.get()
     return selection({
       provider: this.config.provider.get(), model: this.config.model.get(),
       ...reasoningEffort === undefined ? {} : { reasoningEffort },
     })
+  }
+
+  /**
+   * Contribute the deployment's available default without persisting an automatic choice.
+   * Only compositions with `followPolicy` enabled read this source; saved user choices opt out.
+   * @param read - synchronous source which returns an available selection or no override.
+   * @returns an owned, idempotent disposer; a second active contribution is rejected.
+   */
+  registerPolicySelection(read: () => ModelSelection | undefined): () => void {
+    if (this.policy !== undefined) throw new Error('A default model policy is already registered')
+    const policy = { read }
+    this.policy = policy
+    return () => { if (this.policy === policy) this.policy = undefined }
   }
 
   /**
@@ -87,6 +106,7 @@ export class AgentDefaultModelConfig extends Service {
     const config = {
       provider: next.provider, model: next.model,
       ...next.reasoningEffort === undefined ? {} : { reasoningEffort: String(next.reasoningEffort) },
+      ...this.config.followPolicy?.get() === true ? { followPolicy: false } : {},
     }
     const saved = this.saves.then(() => editor.edit(entry, () => config))
     this.saves = saved.catch(() => {})

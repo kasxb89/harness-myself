@@ -93,6 +93,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'a detached provider, model, and optional reasoning selection.',
       },
       {
+        signature: 'registerPolicySelection(read: () => ModelSelection | undefined): () => void',
+        description: 'Contribute the deployment\'s available default without persisting an automatic choice. Only compositions with `followPolicy` enabled read this source; saved user choices opt out.',
+        parameters: [{ name: 'read', description: 'synchronous source which returns an available selection or no override.' }],
+        returns: 'an owned, idempotent disposer; a second active contribution is rejected.',
+      },
+      {
         signature: 'async saveSelection(next: ModelSelection): Promise<void>',
         description: 'Save the complete default model selection. A deployment without a configuration editor keeps its composition entry. Saves commit in submission order; a failed save rejects its caller without blocking later saves.',
         parameters: [{ name: 'next', description: 'resolved selection accepted by an entry point.' }],
@@ -4071,6 +4077,14 @@ export const EVENT_API: readonly EventApiEntry[] = [
     summary: 'One Agent failed outside a durable turn position.',
     description: 'One Agent failed outside a durable turn position.',
     parameters: [{ name: 'sessionId', description: 'Agent and Session identity.' }, { name: 'message', description: 'user-safe failure chain.' }],
+  },
+  {
+    name: 'api-session/model-catalog-changed',
+    mode: 'emit',
+    signature: '\'api-session/model-catalog-changed\'(): void',
+    summary: 'The effective default model changed after its update committed.',
+    description: 'The effective default model changed after its update committed. Consumers reload the model catalog to read the current default.',
+    parameters: [],
   },
   {
     name: 'api-session/removed',
