@@ -23,6 +23,8 @@ A confirmed gateway user-balance rejection displays a localized top-up instructi
 <a id="use-this-package"></a>
 ## Use this package
 
+Account checks and prompt requests retain the application public mount through [`appPath`](../ui-primitives/README.md#use-this-package).
+
 The owner supplies the creation kind, current main prompt, all relevant image material identifiers, generation parameters, account identity and availability. “AI writing” immediately reads that context and requests a replacement prompt; successful completion writes directly into the main input. The user can edit that input freely. “Adjust requirements” reveals the feedback field and “Revise with feedback” action on demand; collapsing it retains the entered requirements. Writing, the material count, and any pending operation's Stop action remain visible. Materials are uploaded, previewed and removed by the workspace's single material entry.
 
 `onPromptChange(next, expectedPrompt)` lets the owner atomically compare its live draft and creation context before replacing text. Returning false keeps the current draft and feedback and reports that no replacement occurred. `onBusyChange` reports only an active operation's acquisition and release. The owner uses it to block material uploads and media generation while keeping the main prompt editable; it must not feed that same busy flag back into the factory's `disabled` prop, which describes external upload or media-generation activity.

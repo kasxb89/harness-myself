@@ -23,6 +23,8 @@ View the current account's credits, sign in by phone, and inspect usage by day a
 <a id="use-this-package"></a>
 ## Use this package
 
+Account, top-up and usage requests retain the application public mount through [`appPath`](../ui-primitives/README.md#use-this-package).
+
 The balance panel displays the current account's credits, phone sign-in, and usage analytics. The separate top-up panel owns payment. Both panels share the existing session and balance store; usage queries use the signed-in account selected by the Credits host (`host/credits-index`).
 
 The balance and phone sign-in page discloses statistics about signed-in Desktop client sessions, online presence and foreground use. These statistics exclude typed input, chat text, screen contents, local file paths and hardware fingerprints. Ordinary Web has no native activity sender.
@@ -30,6 +32,8 @@ The balance and phone sign-in page discloses statistics about signed-in Desktop 
 The injected `creditsSession` source exposes that same account snapshot to sibling client plugins. Subscriptions retain the shared account refresh; the last release stops its timer and focus listener. Logout clears the observed account before waiting for revocation, and older account or balance reads cannot restore the signed-out identity or replace another account's balance.
 
 The desktop welcome opens `?panel=credits` to select the balance panel and phone sign-in form. The client consumes this entry request once, removing only `panel` while preserving other query parameters and the hash. Opening the page does not create an account session or configure an API key. Successful SMS verification refreshes the account session and returns to the existing conversation workspace without creating or clearing its Session, even when no registration reward is returned. Later balance and top-up selections, account refreshes and balance refreshes preserve the chosen panel.
+
+The phone form distinguishes an invalid or expired code from a temporary sign-in outage. Failed requests keep their original request identity for a manual retry. Unknown SMS delivery preserves the challenge when available: the user can enter a received code or check the same request, without another dispatch. Only an explicit `not_sent` delivery receipt permits a new SMS key after another click; an unavailable response without delivery data keeps the original key and reports an unconfirmed result. Server cooldowns use absolute deadlines; remounting restores pending request identities without storing the code or submitting a request. OTP expiry keeps an unconfirmed exchange available for manual recovery with the original code; the API decides whether its successful-response replay is still available. When the API declares `2fa`, the form accepts an authenticator or backup code; other methods remain unsupported. An unconfirmed security-verification result requires fresh phone authentication and is never replayed.
 
 ### Top-ups
 

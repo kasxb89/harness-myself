@@ -1,0 +1,9 @@
+# Explicitly exercise the optional official-provider setup in an isolated home.
+- id: ui-settings-models
+  config:
+    credentialOnboarding: true
+- id: agent-default-model
+  config:
+    provider: deepseek-official
+    model: deepseek-flash
+    followPolicy: false

@@ -1,4 +1,6 @@
 /** Read account-owned model settlements without deriving prices from model counters. */
+import { appPath } from '@deepseek-ai/dsh-client-ui-primitives'
+
 import type { SessionIdOf } from '@deepseek-ai/dsh-client-ui-slots'
 
 /** One exact, account-scoped receipt selection owned by the Host. */
@@ -29,7 +31,7 @@ export async function readChatUsage(query: ChatUsageQuery, signal: AbortSignal):
   if (query.turn !== undefined) params.set('turn', String(query.turn))
   const cancelled = (): boolean => signal.aborted
   try {
-    const response = await fetch(`/credits/api/chat-usage?${params.toString()}`, {
+    const response = await fetch(appPath(`/credits/api/chat-usage?${params.toString()}`), {
       headers: { accept: 'application/json' }, credentials: 'same-origin', cache: 'no-store', signal,
     })
     if (!response.ok || signal.aborted) return null

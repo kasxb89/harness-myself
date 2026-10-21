@@ -1,6 +1,7 @@
 /** Video composer, camera-script templates and real generated clips. */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Button, IconChevronDownOutlineRegular, IconPlayOutlineRegular, IconPlusOutlineRegular, IconSettingsOutlineRegular, Menu, Modal, productFailureKind, SegmentedTabs, Switch, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
+import { queryVideoSubmission, readVideoSubmission, submissionFromAnswer, submissionKey } from './video-submission.ts'
+import { appPath, Button, IconChevronDownOutlineRegular, IconPlayOutlineRegular, IconPlusOutlineRegular, IconSettingsOutlineRegular, Menu, Modal, productFailureKind, SegmentedTabs, Switch, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsStore } from '@deepseek-ai/dsh-client-store'
 import type { HostObservable, InjectFace, PropsRenderFactories, PropsRuntime, StandardSourceBinding } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-prompt-assist/client'
@@ -96,7 +97,7 @@ function materialSlot(file: File): Slot {
 const SLOT_LABELS = { image: 'referenceImages', video: 'referenceVideos', audio: 'referenceAudios' } as const
 const WORKFLOW_LABELS = { text: 'workflow.text', image: 'workflow.image', frames: 'workflow.frames', reference: 'workflow.reference' } as const
 const WORKFLOW_HINTS = { text: 'workflow.text.hint', image: 'workflow.image.hint', frames: 'workflow.frames.hint', reference: 'workflow.reference.hint' } as const
-const rawUrl = (file: ArtifactLocation): string => `/artifacts/api/raw?path=${encodeURIComponent(file.path)}${file.workspaceId === undefined ? '' : `&workspaceId=${encodeURIComponent(file.workspaceId)}`}`
+const rawUrl = (file: ArtifactLocation): string => appPath(`/artifacts/api/raw?path=${encodeURIComponent(file.path)}${file.workspaceId === undefined ? '' : `&workspaceId=${encodeURIComponent(file.workspaceId)}`}`)
 const fileIdentity = (file: ArtifactLocation): string => JSON.stringify([file.workspaceId ?? null, file.path])
 
 /**
@@ -112,6 +113,12 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
     phase, uploading, failure, uploadFailures, message, result } = draft
   const [signedIn, setSignedIn] = useState<boolean | null>(null)
   const [accountIdentity, setAccountIdentity] = useState<string | null>(null)
+  const [submissionCheck, setSubmissionCheck] = useState<'checking' | 'ready' | 'failed'>('checking')
+  const [checkedOwner, setCheckedOwner] = useState<string | null>(null)
+  const [submissionRevision, setSubmissionRevision] = useState(0)
+  const [queryingOriginal, setQueryingOriginal] = useState(false)
+  const originalQuery = useRef<AbortController | null>(null)
+  const setFailure = useCallback((failure: string | null): void => { actions.patch({ failure }) }, [actions])
   const [creditsPerYuan, setCreditsPerYuan] = useState(1000)
   const [balance, setBalance] = useState<number | null>(null)
   const [models, setModels] = useState<readonly VideoModel[]>([])
@@ -146,7 +153,10 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
   const model = useMemo(() => models.find(entry => entry.id === modelId) ?? models[0] ?? null, [modelId, models])
   const params = model?.params ?? null
   const busy = phase === 'running' || uploading !== null
-  const locked = busy || draft.promptAssisting
+  const submissionOwner = accountIdentity === null || sessionId === undefined ? null : { accountId: accountIdentity, sessionId }
+  const ownerKey = submissionOwner === null ? null : submissionKey(submissionOwner)
+  const originalSubmission = ownerKey === null ? null : draft.unsettled[ownerKey] ?? null
+  const locked = busy || draft.promptAssisting || originalSubmission !== null || submissionCheck !== 'ready' || checkedOwner !== ownerKey
   const publication = props.useCreationContent(state => state)
   const language = props.useLocale(state => state.active)
   const text = (value: LocalizedText | undefined): string => value === undefined ? '' : language === 'en' ? value.en || value.zh : value.zh
@@ -256,7 +266,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
 
   const loadHistory = useCallback(async (): Promise<void> => {
     try {
-      const response = await fetch('/artifacts/api/list', { headers: { accept: 'application/json' } })
+      const response = await fetch(appPath('/artifacts/api/list'), { headers: { accept: 'application/json' } })
       if (!response.ok) { setHistoryError(true); return }
       const answer: unknown = await response.json()
       if (answer === null || typeof answer !== 'object') { setHistoryError(true); return }
@@ -344,7 +354,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
       if (retainedBytes >= 12 * 1024 * 1024) return reject(t('materialTotalFull', { size: (retainedBytes / 1024 / 1024).toFixed(2) }))
     }
     try {
-      const response = await fetch('/credits/api/assets', {
+      const response = await fetch(appPath('/credits/api/assets'), {
         method: 'POST', headers: {
           'content-type': contentType, 'x-file-name': encodeURIComponent(file.name),
           'x-idempotency-key': `dsh-asset-${globalThis.crypto.randomUUID()}`, accept: 'application/json',
@@ -476,8 +486,77 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
     if (previous !== null) releaseUnusedPreview(previous.url)
   }
 
+  useEffect(() => {
+    if (accountIdentity === null || sessionId === undefined) return undefined
+    const owner = { accountId: accountIdentity, sessionId }
+    const epoch = readDraft().referenceEpoch
+    const abort = new AbortController()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let readSequence = 0
+    const current = (): boolean => !abort.signal.aborted && readDraft().referenceEpoch === epoch
+      && readDraft().referenceAccountId === owner.accountId
+    const check = async (): Promise<void> => {
+      const sequence = ++readSequence
+      const retained = readDraft().unsettled[submissionKey(owner)] ?? null
+      const result = await readVideoSubmission(owner, retained, abort.signal)
+      if (!current() || sequence !== readSequence) return
+      // An earlier listing must not erase a newly submitted or newly queried task.
+      if ((readDraft().unsettled[submissionKey(owner)] ?? null) !== retained) { void check(); return }
+      if (!result.ok) { setSubmissionCheck('failed'); return }
+      setCheckedOwner(submissionKey(owner))
+      setSubmissionCheck('ready')
+      if (result.submission !== null) {
+        actions.retainSubmission(result.submission)
+        if (result.submission.state === 'pending' && !document.hidden) {
+          timer = setTimeout(() => { timer = undefined; if (!document.hidden) void check() }, 2000)
+        }
+      } else {
+        actions.clearSubmission(owner.accountId, owner.sessionId)
+        if (retained !== null) {
+          actions.patch({ failure: result.completed ? null : t('originalFailed'), message: result.completed ? t('done') : null })
+          void loadHistory(); void loadBalance()
+        }
+      }
+    }
+    setSubmissionCheck('checking')
+    void check()
+    const revisit = (): void => {
+      if (document.hidden) { if (timer !== undefined) clearTimeout(timer); timer = undefined }
+      else if (timer === undefined) void check()
+    }
+    document.addEventListener('visibilitychange', revisit)
+    return () => {
+      abort.abort(); originalQuery.current?.abort(); originalQuery.current = null
+      setQueryingOriginal(false)
+      if (timer !== undefined) clearTimeout(timer)
+      document.removeEventListener('visibilitychange', revisit)
+    }
+  }, [accountIdentity, sessionId, submissionRevision, actions, loadHistory, loadBalance, readDraft, t])
+
+  const queryOriginal = async (): Promise<void> => {
+    if (originalSubmission === null || originalQuery.current !== null) return
+    const epoch = readDraft().referenceEpoch
+    const abort = new AbortController()
+    originalQuery.current = abort
+    setQueryingOriginal(true); setFailure(null)
+    const answer = await queryVideoSubmission(originalSubmission, abort.signal)
+    if (!abort.signal.aborted && epoch === readDraft().referenceEpoch) {
+      if (!answer.ok) setFailure(t('originalQueryFailed'))
+      else {
+        if (answer.submission !== null) actions.retainSubmission(answer.submission)
+        else {
+          actions.clearSubmission(originalSubmission.accountId, originalSubmission.sessionId)
+          actions.patch({ message: answer.completed ? t('done') : null, failure: answer.completed ? null : t('originalFailed') })
+          void loadHistory(); void loadBalance()
+        }
+        setSubmissionRevision(value => value + 1)
+      }
+    }
+    if (originalQuery.current === abort) { originalQuery.current = null; setQueryingOriginal(false) }
+  }
+
   const generate = useCallback(async (): Promise<void> => {
-    if (busy || readDraft().promptAssisting || operation.current || signedIn !== true) return
+    if (locked || readDraft().promptAssisting || operation.current || signedIn !== true) return
     const context = readDraft()
     if (accountIdentity === null || context.referenceAccountId !== accountIdentity) return
     actions.patch({ failure: null, message: null })
@@ -505,6 +584,9 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
           return
         }
       }
+      const owner = { accountId: accountIdentity, sessionId }
+      actions.retainSubmission({ ...owner, state: 'pending', canQuery: false })
+      setSubmissionRevision(value => value + 1)
       const answer = await requestJson<ArtifactLocation>('/credits/api/video/tasks?source=newapi-generate', {
         method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' },
         body: JSON.stringify({
@@ -525,11 +607,16 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
       if (answer.sessionInvalid === true) {
         acceptAccount({ signedIn: false }); actions.patch({ failure: t('noAuth') }); return
       }
+      const unsettled = submissionFromAnswer(answer, owner)
+      if (unsettled !== null) {
+        actions.retainSubmission(unsettled)
+        actions.patch({ failure: answer.submission_state === 'unknown' || productFailureKind(answer.code) === 'cancelled'
+          ? t('outcomeUnknown') : null })
+        setSubmissionRevision(value => value + 1)
+        return
+      }
+      actions.clearSubmission(owner.accountId, owner.sessionId)
       if (!answer.ok || typeof answer.payload?.path !== 'string' || answer.payload.path === '') {
-        if (answer.submission_state === 'pending' || answer.submission_state === 'unknown') {
-          actions.patch({ failure: t('outcomeUnknown') })
-          return
-        }
         const kind = productFailureKind(answer.code)
         if (kind === 'insufficient-credits') actions.patch({ failure: t('insufficient') })
         else if (kind === 'sign-in' || kind === 'signed-out') actions.patch({ failure: t('noAuth') })
@@ -544,7 +631,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
       actions.patch({ result: { path: answer.payload.path, ...answer.payload.workspaceId === undefined ? {} : { workspaceId: answer.payload.workspaceId } }, message: t('done') })
       await Promise.all([loadBalance(), loadHistory()])
     } finally { operation.current = false; actions.patch({ phase: 'idle' }) }
-  }, [acceptAccount, accountIdentity, busy, signedIn, actions, prompt, model, params, workflow, firstFrame, lastFrame, slots,
+  }, [acceptAccount, accountIdentity, locked, signedIn, actions, prompt, model, params, workflow, firstFrame, lastFrame, slots,
     hasReferences, isReferenceCurrent, readDraft, sessionId,
     duration, settingsInvalid, overReferenceLimit, referenceBytesExceeded,
     referenceImages, referenceVideos, referenceAudios,
@@ -555,7 +642,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
     const label = t(which === 'first' ? 'firstFrame' : 'lastFrame')
     const inPool = reference !== null && slots.image.some(item => item.assetId === reference.assetId)
     return <div className={css.frameControl} data-frame={which} data-selected={reference !== null}>
-      {reference !== null && !inPool && <img className={css.frame} src={reference.url} alt={reference.name} />}
+      {reference !== null && !inPool && <img className={css.frame} src={reference.url.startsWith('/') ? appPath(reference.url) : reference.url} alt={reference.name} />}
       <label className={css.framePicker}>
         <input type="file" aria-label={label} accept={SLOT_TYPES.image.accept} disabled={locked}
           onChange={(event) => { void pickFrame(which, event.target.files); event.target.value = '' }} />
@@ -584,7 +671,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
           const activeLast = isLast && workflow === 'frames' && (params?.frameSlots ?? 0) > 1
           return <li key={item.assetId} className={slot === 'image' ? css.imageCard : css.fileRow}>
             {slot === 'image' ? <div className={css.imagePreview}>
-              <img className={css.fileThumb} src={item.url} alt={item.name} />
+              <img className={css.fileThumb} src={item.url.startsWith('/') ? appPath(item.url) : item.url} alt={item.name} />
               {(activeFirst || activeLast) && <span className={css.frameBadges}>
                 {activeFirst && <span>{t('firstFrame')}</span>}{activeLast && <span>{t('lastFrame')}</span>}
               </span>}
@@ -606,7 +693,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
                 releaseUnusedPreview(item.url)
               }}>{t('remove')}</button>
             </div>
-            {slot === 'audio' && <audio className={css.audioPreview} controls preload="metadata" src={item.url}
+            {slot === 'audio' && <audio className={css.audioPreview} controls preload="metadata" src={item.url.startsWith('/') ? appPath(item.url) : item.url}
               aria-label={t('audioPreview', { name: item.name })} />}
           </li>
         })}
@@ -800,7 +887,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
       {publication.status === 'error' && <p role="alert" className={css.error}>{t('contentFailed')} <Button size="sm" onClick={props.refreshContent}>{t('retry')}</Button></p>}
       <div className={css.templateGrid}>{visibleTemplates.map(template => <button type="button" key={template.id}
         className={css.templateCard} disabled={locked} onClick={() => { setPreview(template.id) }} aria-label={t('previewNamed', { name: text(template.title) })}>
-        {template.coverAssetId !== null && <img className={css.templateCover} src={`/credits/api/creation/assets/${encodeURIComponent(template.coverAssetId)}`} alt="" loading="lazy" />}
+        {template.coverAssetId !== null && <img className={css.templateCover} src={appPath(`/credits/api/creation/assets/${encodeURIComponent(template.coverAssetId)}`)} alt="" loading="lazy" />}
         <div className={css.templateBody}><span className={css.templateBadge}>{t('scriptTemplate')}</span><h3>{text(template.title)}</h3><p>{text(template.description)}</p><span className={css.templateLink}>{t('viewScript')}<span aria-hidden="true">↗</span></span></div>
       </button>)}</div>
       {publication.status === 'ready' && contentTemplates.length === 0 && <p className={css.hint}>{t('contentEmpty')}</p>}
@@ -808,6 +895,13 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
         {t('noTemplates')} <button type="button" className={css.link} onClick={() => { actions.patch({ category: 'all' }) }}>{t('resetFilters')}</button></p>}
     </section>
 
+    {accountIdentity !== null && submissionCheck === 'failed' && <p className={css.error}>{t('originalCheckFailed')} <button type="button"
+      className={css.link} onClick={() => { setSubmissionRevision(value => value + 1) }}>{t('originalCheck')}</button></p>}
+    {originalSubmission !== null && <div className={css.notice} role="status">
+      <p>{t(originalSubmission.taskId === undefined ? 'originalUnknown' : 'originalAccepted')}</p>
+      {originalSubmission.canQuery && <Button variant="outline" disabled={queryingOriginal}
+        onClick={() => { void queryOriginal() }}>{t(queryingOriginal ? 'originalQuerying' : 'originalQuery')}</Button>}
+    </div>}
     {result !== null && <section className={css.result} aria-label={t('result')}>
       <div className={css.sectionHeading}><h2 className={css.sectionTitle}>{t('result')}</h2><button type="button" className={css.link} onClick={() => { actions.patch({ result: null }) }}>{t('closePreview')}</button></div>
       <video className={css.video} src={rawUrl(result)} controls preload="metadata" />
@@ -824,7 +918,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
     <Modal open={previewTemplate !== null} title={previewTemplate === null ? t('scriptTemplate') : text(previewTemplate.title)} closeLabel={t('closePreview')} onClose={() => { setPreview(null) }}
       footer={<Button variant="primary" disabled={locked} onClick={() => { if (preview !== null) applyTemplate(preview) }}>{t('useScript')}</Button>}>
       {previewTemplate?.demoVideoAssetId !== null && previewTemplate?.demoVideoAssetId !== undefined && <video controls preload="metadata" className={css.video}
-        src={`/credits/api/creation/assets/${encodeURIComponent(previewTemplate.demoVideoAssetId)}`} />}
+        src={appPath(`/credits/api/creation/assets/${encodeURIComponent(previewTemplate.demoVideoAssetId)}`)} />}
       <p className={css.hint}>{t('scriptPreviewHint')}</p><p className={css.scriptPreview}>{previewTemplate === null ? '' : text(previewTemplate.prompt)}</p>
     </Modal>
   </div>

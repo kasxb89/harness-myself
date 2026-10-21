@@ -13,6 +13,23 @@ function listing(status = 'unknown', canQuery = true): object {
 afterEach(() => { vi.unstubAllGlobals() })
 
 describe('retained image submission', () => {
+  it('keeps original-task reads and recovery beneath the document public mount', async () => {
+    vi.stubGlobal('document', { baseURI: 'https://host.invalid/mount/' })
+    const fetcher = vi.fn<typeof fetch>(async (_url, init) => Response.json(listing(), { status: init?.method === 'POST' ? 202 : 200 }))
+    vi.stubGlobal('fetch', fetcher)
+    expect(await readImageSubmission(owner, retained, signal())).toMatchObject({ ok: true })
+    expect(await queryImageSubmission(retained, signal())).toMatchObject({ ok: true })
+    expect(fetcher.mock.calls.map(([url]) => url)).toEqual([
+      '/mount/credits/api/creative/projects?session_id=session-a', '/mount/credits/api/creative/image/recover',
+    ])
+  })
+
+  it.each([{}, { path: '' }])('retains malformed successful replies until the original saved output is confirmed', (payload) => {
+    expect(submissionFromAnswer({ ok: true, submission_state: 'completed', payload,
+      plan_id: 'cp_original', operation_id: 'op_original' }, owner)).toEqual({ ...owner,
+      state: 'unknown', canQuery: false, planId: 'cp_original', operationId: 'op_original' })
+  })
+
   it.each(['pending', 'unknown'])('captures %s receipt coordinates without enabling an unadmitted query', (submission_state) => {
     expect(submissionFromAnswer({ submission_state, plan_id: 'cp_original', operation_id: 'op_original',
       task_id: 'task_original', request_id: 'request_original' }, owner)).toEqual({ ...retained, state: submission_state, canQuery: false })

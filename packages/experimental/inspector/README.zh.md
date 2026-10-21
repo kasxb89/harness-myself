@@ -62,6 +62,8 @@ Client 在 `pagehide` 时同步关闭 source，缓存页面恢复并收到 `page
 
 两个插件端运行同一份可在浏览器中安全运行的 Cordis collector。它把可达 Context 与 Fiber 对象转换成有版本的 `CordisTreeSnapshot`；Worker 存储这份与 CDP 无关的表示，并把每个 Host 或 Client source 投影到 Elements 面板。
 
+裁剪 Cordis 快照前，两个 producer 都会在 `maxSourceFrameBytes` 中预留编码后的 topic、时钟、记录数组和传输外层所占字节。大型运行时树会标记为 truncated，并保留根节点；到达帧边界不会阻止 Inspector 启动。
+
 <a id="configuration"></a>
 ## 配置
 

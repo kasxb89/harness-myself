@@ -1,6 +1,7 @@
 /** Browser-safe, credential-free projections of retained chat creation projects. @module */
 
 import type { Branded } from '@deepseek-ai/dsh-brand'
+import type { ArtifactOrigin } from '@deepseek-ai/dsh-artifacts-index/types'
 
 /** Owner-issued opaque project identifier. */
 export type CreativeProjectId = Branded<'CreativeProjectId'>
@@ -21,6 +22,7 @@ export interface CreativeSubmissionReceipt {
   readonly taskId?: string
   readonly requestId?: string
   readonly backendFingerprint: string
+  readonly origin?: ArtifactOrigin
 }
 
 /** Original image task identity; never a new-generation instruction. */
@@ -104,7 +106,10 @@ export type CreativeShotPlan = Omit<CreativeShotView, 'status' | 'outputs' | 'ac
 export type CreativePlanChange =
   | { readonly kind: 'shot'; readonly id: string; readonly patch: Partial<Omit<CreativeShotPlan, 'id' | 'order'>> }
   | { readonly kind: 'reorder'; readonly shotIds: readonly string[] }
-  | { readonly kind: 'character'; readonly value: CreativeCharacter }
+  | { readonly kind: 'character'
+    readonly value: CreativeCharacter
+    /** Newly uploaded image materials saved atomically with their character reference bindings. */
+    readonly assets?: readonly CreativeAsset[] }
   | { readonly kind: 'asset'; readonly value: CreativeAsset }
   | { readonly kind: 'remove-character' | 'remove-asset' | 'remove-shot'; readonly id: string }
   | { readonly kind: 'add-shot'; readonly value: CreativeShotPlan }

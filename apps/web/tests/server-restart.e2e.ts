@@ -21,19 +21,30 @@ class RestartableServer {
   async start(port: number, holdStartup = false): Promise<string> {
     if (this.child !== undefined) throw new Error('Server is already running')
     this.output = ''
+    // The web product defaults to its account provider. This process fixture
+    // owns a native adapter whose only destination is the listener below.
+    const providerPatch = join(this.world, 'restart-mock-provider.patch.yml')
+    await writeFile(providerPatch, JSON.stringify([
+      { id: 'llm-deepseek', disabled: false, config: {
+        baseURL: this.modelUrl, apiKeyEnv: 'DSH_WEB_RESTART_MOCK_KEY',
+      } },
+      { id: 'agent-default-model', config: {
+        provider: 'deepseek-official', model: 'deepseek-flash', followPolicy: false,
+      } },
+    ]))
     const ready = Promise.withResolvers<string>()
     const child = spawn(process.execPath, [
       join(REPO_ROOT, 'apps/cli/lib/bin.js'), '--profile', 'web',
       '--patch', fileURLToPath(new URL('./pin-browse-picker.overlay.yml', import.meta.url)),
       '--patch', fileURLToPath(new URL('./fixtures/restart-startup.overlay.yml', import.meta.url)),
+      '--patch', providerPatch,
       '--no-open', '--port', String(port),
     ], {
       cwd: this.world,
       env: {
         ...process.env, NODE_OPTIONS: '',
         DSH_HOME: join(this.world, 'home'), DSH_AGENTS_HOME: join(this.world, 'agents'),
-        DSH_TELEMETRY_DISABLED: '1', DEEPSEEK_API_KEY: 'keyless-server-restart-fixture',
-        DEEPSEEK_BASE_URL: this.modelUrl,
+        DSH_TELEMETRY_DISABLED: '1', DSH_WEB_RESTART_MOCK_KEY: 'keyless-server-restart-fixture',
         DSH_WEB_RESTART_HOLD_STARTUP: holdStartup ? '1' : '0',
       },
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],

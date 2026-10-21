@@ -228,11 +228,273 @@ describe('balance phone sign-in', () => {
     const form = code.closest('form')
     if (form === null) throw new Error('Expected the code control in a login form')
     fireEvent.submit(form)
-    expect((await within(form).findByRole('alert')).textContent).toBe('验证码不匹配，请重试')
+    expect((await within(form).findByRole('alert')).textContent).toBe(t('loginCodeInvalid'))
     expect(code.getAttribute('value')).toBe('123456')
     expect(view.getByRole('textbox', { name: '手机号' }).getAttribute('value')).toBe('13800138000')
     expect(view.getByRole('button', { name: '登录' }).hasAttribute('disabled')).toBe(false)
     expect(refreshCredits).not.toHaveBeenCalled()
     expect(completeSignIn).not.toHaveBeenCalled()
   })
+
+  it.each([
+    ['SMS_CODE_MISMATCH', 'loginCodeInvalid'],
+    ['SMS_CHALLENGE_EXPIRED', 'loginCodeExpired'],
+    ['SMS_CHALLENGE_CONSUMED', 'loginCodeConsumed'],
+    ['PHONE_LOGIN_UNAVAILABLE', 'loginVerifyFailed'],
+    ['PHONE_CODE_INVALID_OR_EXPIRED', 'loginCodeInvalidOrExpired'],
+    ['PHONE_CHALLENGE_CONSUMED', 'loginCodeConsumed'],
+    ['PHONE_LOGIN_VERIFICATION_REQUIRED', 'loginVerificationRequired'],
+    ['PHONE_LOGIN_FAILED', 'loginVerifyFailed'],
+  ])('localizes %s without displaying provider diagnostics', async (failureCode, messageKey) => {
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json(challenge))
+      .mockResolvedValueOnce(Response.json({ ok: false, code: failureCode, message: 'private upstream token diagnostic' }))
+    vi.stubGlobal('fetch', fetchMock)
+    const view = renderSignIn()
+    fireEvent.change(view.getByRole('textbox', { name: '手机号' }), { target: { value: '13800138000' } })
+    fireEvent.click(view.getByRole('button', { name: '发送验证码' }))
+    await view.findByRole('status')
+    fireEvent.change(view.getByRole('textbox', { name: '验证码' }), { target: { value: '123456' } })
+    fireEvent.click(view.getByRole('button', { name: '登录' }))
+    expect((await view.findByRole('alert')).textContent).toBe(t(messageKey))
+    expect(view.container.textContent).not.toContain('private upstream')
+  })
+
+  it('retries an unconfirmed challenge with the same key and uses a fresh key for the next SMS', async () => {
+    const immediateChallenge = { ...challenge, payload: { ...challenge.payload, resend_after_seconds: 0 } }
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockRejectedValueOnce(new Error('private transport diagnostic'))
+      .mockResolvedValue(Response.json(immediateChallenge))
+    vi.stubGlobal('fetch', fetchMock)
+    const view = renderSignIn()
+    fireEvent.change(view.getByRole('textbox', { name: '手机号' }), { target: { value: '13800138000' } })
+    fireEvent.click(view.getByRole('button', { name: '发送验证码' }))
+    expect((await view.findByRole('alert')).textContent).toBe(t('loginSendFailed'))
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    fireEvent.click(view.getByRole('button', { name: '查询发码结果' }))
+    await view.findByRole('status')
+    expect(requestBody(fetchMock.mock.calls[0]?.[1]).idempotencyKey)
+      .toBe(requestBody(fetchMock.mock.calls[1]?.[1]).idempotencyKey)
+    fireEvent.click(view.getByRole('button', { name: '发送验证码' }))
+    await act(async () => {})
+    expect(requestBody(fetchMock.mock.calls[2]?.[1]).idempotencyKey)
+      .not.toBe(requestBody(fetchMock.mock.calls[1]?.[1]).idempotencyKey)
+  })
+
+  it('keeps a failed login key for recovery and changes it when the entered code changes', async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json(challenge))
+      .mockResolvedValue(Response.json({ ok: false, code: 'PHONE_LOGIN_UNAVAILABLE', message: 'private diagnostic' }))
+    vi.stubGlobal('fetch', fetchMock)
+    const view = renderSignIn()
+    fireEvent.change(view.getByRole('textbox', { name: '手机号' }), { target: { value: '13800138000' } })
+    fireEvent.click(view.getByRole('button', { name: '发送验证码' }))
+    await view.findByRole('status')
+    const input = view.getByRole('textbox', { name: '验证码' })
+    fireEvent.change(input, { target: { value: '123456' } })
+    fireEvent.click(view.getByRole('button', { name: '登录' }))
+    await view.findByRole('alert')
+    fireEvent.click(view.getByRole('button', { name: '登录' }))
+    await act(async () => {})
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(requestBody(fetchMock.mock.calls[1]?.[1]).idempotencyKey)
+      .toBe(requestBody(fetchMock.mock.calls[2]?.[1]).idempotencyKey)
+    fireEvent.change(input, { target: { value: '654321' } })
+    fireEvent.click(view.getByRole('button', { name: '登录' }))
+    await act(async () => {})
+    expect(requestBody(fetchMock.mock.calls[3]?.[1]).idempotencyKey)
+      .not.toBe(requestBody(fetchMock.mock.calls[2]?.[1]).idempotencyKey)
+    expect(refreshCredits).not.toHaveBeenCalled()
+  })
+
+  it('uses absolute deadlines for send and verify rate limits without automatic resubmission', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ ok: false, code: 'PHONE_RATE_LIMITED', retryAfterSeconds: 3 }))
+      .mockResolvedValueOnce(Response.json(challenge))
+      .mockResolvedValueOnce(Response.json({ ok: false, code: 'PHONE_RATE_LIMITED', retryAfterSeconds: 5 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const view = renderSignIn()
+    fireEvent.change(view.getByRole('textbox', { name: '手机号' }), { target: { value: '13800138000' } })
+    await act(async () => { fireEvent.click(view.getByRole('button', { name: '发送验证码' })) })
+    expect(view.getByRole('button', { name: '3s 后可重发' }).hasAttribute('disabled')).toBe(true)
+    await act(async () => { vi.setSystemTime(Date.now() + 60_000); vi.advanceTimersByTime(250) })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    await act(async () => { fireEvent.click(view.getByRole('button', { name: '发送验证码' })) })
+    fireEvent.change(view.getByRole('textbox', { name: '验证码' }), { target: { value: '123456' } })
+    await act(async () => { fireEvent.click(view.getByRole('button', { name: '登录' })) })
+    expect(view.getByRole('button', { name: '5s 后可重试' }).hasAttribute('disabled')).toBe(true)
+    await act(async () => { vi.setSystemTime(Date.now() + 60_000); vi.advanceTimersByTime(250) })
+    expect(view.getByRole('button', { name: '登录' }).hasAttribute('disabled')).toBe(false)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+
+  it('permits entering a received code after unknown delivery and only queries the original SMS request', async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ ok: false, code: 'PHONE_DELIVERY_UNKNOWN', payload: {
+        ...challenge.payload, delivery_status: 'unknown', resend_after_seconds: 0,
+      } }))
+      .mockResolvedValueOnce(Response.json({ ok: false, code: 'PHONE_LOGIN_UNAVAILABLE' }))
+    vi.stubGlobal('fetch', fetchMock)
+    const view = renderSignIn()
+    fireEvent.change(view.getByRole('textbox', { name: '手机号' }), { target: { value: '13800138000' } })
+    fireEvent.click(view.getByRole('button', { name: '发送验证码' }))
+    expect((await view.findByRole('alert')).textContent).toBe(t('loginDeliveryUnknown'))
+    expect(view.getByRole('button', { name: '查询发码结果' })).toBeTruthy()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    fireEvent.change(view.getByRole('textbox', { name: '验证码' }), { target: { value: '123456' } })
+    fireEvent.click(view.getByRole('button', { name: '登录' }))
+    await act(async () => {})
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('/credits/api/session/verify')
+    expect(requestBody(fetchMock.mock.calls[1]?.[1]).challengeId).toBe('challenge-for-138')
+  })
+
+  it('requires an explicit new request with a new key after definite non-delivery', async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ ok: false, code: 'PHONE_CHALLENGE_UNAVAILABLE', payload: {
+        ...challenge.payload, delivery_status: 'not_sent', resend_after_seconds: 0,
+      } }))
+      .mockResolvedValueOnce(Response.json(challenge))
+    vi.stubGlobal('fetch', fetchMock)
+    const view = renderSignIn()
+    fireEvent.change(view.getByRole('textbox', { name: '手机号' }), { target: { value: '13800138000' } })
+    fireEvent.click(view.getByRole('button', { name: '发送验证码' }))
+    expect((await view.findByRole('alert')).textContent).toBe(t('loginNotSent'))
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    fireEvent.click(view.getByRole('button', { name: '发送验证码' }))
+    await view.findByRole('status')
+    expect(requestBody(fetchMock.mock.calls[0]?.[1]).idempotencyKey)
+      .not.toBe(requestBody(fetchMock.mock.calls[1]?.[1]).idempotencyKey)
+  })
+
+  it('keeps the original SMS key and received code when an unavailable query has no delivery receipt', async () => {
+    const unknown = { ok: false, code: 'PHONE_DELIVERY_UNKNOWN', payload: {
+      ...challenge.payload, delivery_status: 'unknown', resend_after_seconds: 0,
+    } }
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json(unknown))
+      .mockResolvedValueOnce(Response.json({ ok: false, code: 'PHONE_CHALLENGE_UNAVAILABLE' }))
+      .mockResolvedValueOnce(Response.json(unknown))
+    vi.stubGlobal('fetch', fetchMock)
+    const view = renderSignIn()
+    fireEvent.change(view.getByRole('textbox', { name: '手机号' }), { target: { value: '13800138000' } })
+    fireEvent.click(view.getByRole('button', { name: '发送验证码' }))
+    await view.findByRole('alert')
+    const code = view.getByRole('textbox', { name: '验证码' })
+    fireEvent.change(code, { target: { value: '123456' } })
+    await act(async () => { fireEvent.click(view.getByRole('button', { name: '查询发码结果' })) })
+    expect((await view.findByRole('alert')).textContent).toBe(t('loginDeliveryUnknown'))
+    expect(view.container.textContent).not.toContain('未发送')
+    expect(code.getAttribute('value')).toBe('123456')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    await act(async () => { fireEvent.click(view.getByRole('button', { name: '查询发码结果' })) })
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(new Set(fetchMock.mock.calls.map(call => requestBody(call[1]).idempotencyKey)).size).toBe(1)
+  })
+
+  it('restores durable request identities on remount without automatic sends or code persistence', async () => {
+    vi.mocked(useCreditsSnapshot).mockReturnValue({
+      accountEpoch: 0, loaded: true, failure: null, balance: null,
+      session: { signedIn: false, creditsPerYuan: 1000, phoneRecoveryAvailable: true, phoneRecovery: {
+        phone: '+8613800138000', challengeKey: 'restored-challenge-key', challengeId: 'restored-challenge',
+        deliveryStatus: 'unknown', expiresAt: '9999-01-01T00:00:00Z', resendAt: 0,
+        exchangeKey: 'restored-exchange-key', verifyRetryAt: 0, securityUnconfirmed: false,
+      } },
+    })
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ ok: false, code: 'PHONE_LOGIN_UNAVAILABLE' }))
+    vi.stubGlobal('fetch', fetchMock)
+    const view = renderSignIn()
+    expect(view.getByRole('textbox', { name: '手机号' }).getAttribute('value')).toBe('13800138000')
+    expect(view.getByRole('textbox', { name: '验证码' }).getAttribute('value')).toBe('')
+    expect(fetchMock).not.toHaveBeenCalled()
+    fireEvent.change(view.getByRole('textbox', { name: '验证码' }), { target: { value: '123' } })
+    fireEvent.change(view.getByRole('textbox', { name: '验证码' }), { target: { value: '123456' } })
+    fireEvent.click(view.getByRole('button', { name: '登录' }))
+    await act(async () => {})
+    expect(requestBody(fetchMock.mock.calls[0]?.[1])).toMatchObject({
+      challengeId: 'restored-challenge', idempotencyKey: 'restored-exchange-key', code: '123456',
+    })
+  })
+
+
+  it('submits only the declared 2fa code to the Host before completing sign-in', async () => {
+    const completeSignIn = vi.fn()
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json(challenge))
+      .mockResolvedValueOnce(Response.json({ ok: false, code: 'PHONE_LOGIN_VERIFICATION_REQUIRED', payload: {
+        verification: { methods: ['2fa'] },
+      } }))
+      .mockResolvedValueOnce(Response.json({ ok: true, payload: { status: 'authorized' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    const view = renderSignIn(completeSignIn)
+    fireEvent.change(view.getByRole('textbox', { name: '手机号' }), { target: { value: '13800138000' } })
+    fireEvent.click(view.getByRole('button', { name: '发送验证码' }))
+    await view.findByRole('status')
+    fireEvent.change(view.getByRole('textbox', { name: '验证码' }), { target: { value: '123456' } })
+    fireEvent.click(view.getByRole('button', { name: '登录' }))
+    const security = await view.findByRole('textbox', { name: '安全验证码或备用码' })
+    expect(completeSignIn).not.toHaveBeenCalled()
+    expect(refreshCredits).not.toHaveBeenCalled()
+    fireEvent.change(security, { target: { value: 'backup-code' } })
+    fireEvent.click(view.getByRole('button', { name: '完成安全验证' }))
+    await act(async () => {})
+    expect(fetchMock.mock.calls[2]?.[0]).toBe('/credits/api/session/verify-security')
+    expect(requestBody(fetchMock.mock.calls[2]?.[1])).toEqual({
+      exchangeKey: requestBody(fetchMock.mock.calls[1]?.[1]).idempotencyKey, code: 'backup-code',
+    })
+    expect(completeSignIn).toHaveBeenCalledTimes(1)
+  })
+
+  it('stops after an unknown security result and restarts only after an explicit action', async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json(challenge))
+      .mockResolvedValueOnce(Response.json({ ok: false, code: 'PHONE_LOGIN_VERIFICATION_REQUIRED', payload: {
+        verification: { methods: ['2fa'] },
+      } }))
+      .mockRejectedValueOnce(new Error('private network diagnostic'))
+    vi.stubGlobal('fetch', fetchMock)
+    const view = renderSignIn()
+    fireEvent.change(view.getByRole('textbox', { name: '手机号' }), { target: { value: '13800138000' } })
+    fireEvent.click(view.getByRole('button', { name: '发送验证码' }))
+    await view.findByRole('status')
+    fireEvent.change(view.getByRole('textbox', { name: '验证码' }), { target: { value: '123456' } })
+    fireEvent.click(view.getByRole('button', { name: '登录' }))
+    const security = await view.findByRole('textbox', { name: '安全验证码或备用码' })
+    fireEvent.change(security, { target: { value: '123456' } })
+    fireEvent.click(view.getByRole('button', { name: '完成安全验证' }))
+    await act(async () => {})
+    expect(view.getByRole('alert').textContent).toBe(t('loginSecurityUnconfirmed'))
+    expect(view.getByRole('button', { name: '完成安全验证' }).hasAttribute('disabled')).toBe(true)
+    fireEvent.click(view.getByRole('button', { name: '重新短信登录' }))
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(view.getByRole('button', { name: '登录' }).hasAttribute('disabled')).toBe(true)
+  })
+
+
+  it('reports OTP expiry while preserving manual recovery of the original exchange without another SMS', async () => {
+    vi.mocked(useCreditsSnapshot).mockReturnValue({
+      accountEpoch: 0, loaded: true, failure: null, balance: null,
+      session: { signedIn: false, creditsPerYuan: 1000, phoneRecoveryAvailable: true, phoneRecovery: {
+        phone: '+8613800138000', challengeKey: null, challengeId: 'expired-otp-original-exchange',
+        deliveryStatus: 'unknown', expiresAt: '2000-01-01T00:00:00Z', resendAt: 0,
+        exchangeKey: 'original-exchange-key', verifyRetryAt: 0, securityUnconfirmed: false,
+      } },
+    })
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ ok: false, code: 'PHONE_LOGIN_UNAVAILABLE' }))
+    vi.stubGlobal('fetch', fetchMock)
+    const view = renderSignIn()
+    expect(view.getByRole('alert').textContent).toBe(t('loginExpiredExchangeRecovery'))
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(view.getByRole('textbox', { name: '验证码' }).getAttribute('value')).toBe('')
+    fireEvent.change(view.getByRole('textbox', { name: '验证码' }), { target: { value: '123456' } })
+    fireEvent.click(view.getByRole('button', { name: '登录' }))
+    await act(async () => {})
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/credits/api/session/verify')
+    expect(requestBody(fetchMock.mock.calls[0]?.[1])).toMatchObject({
+      challengeId: 'expired-otp-original-exchange', idempotencyKey: 'original-exchange-key', code: '123456',
+    })
+  })
+
 })

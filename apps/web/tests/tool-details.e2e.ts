@@ -26,7 +26,7 @@ describe.skipIf(MODE === 'record')('web e2e: compact Tool details', () => {
   beforeAll(async () => {
     const fixture = await readFile(FIXTURE, 'utf8')
     expect(fixtureUserPrompts(fixture)).toEqual([PROMPT])
-    scaffold = await launchWebScaffold({})
+    scaffold = await launchWebScaffold({ showTrajectory: true })
     await seedSession(scaffold, fixture, SEED_ID)
     browser = await chromium.launch()
     page = await newEnglishPage(browser)

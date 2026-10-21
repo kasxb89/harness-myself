@@ -5,7 +5,7 @@ import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { chromium, type Locator, type Page } from 'playwright'
+import { chromium, errors, type Locator, type Page } from 'playwright'
 import { describe, expect, it } from 'vitest'
 import { brandString } from '@deepseek-ai/dsh-brand'
 import type { Agent } from '@deepseek-ai/dsh-agent'
@@ -13,6 +13,7 @@ import type {
   CreativeOutput, CreativeOutputId, CreativeProjectId, CreativeProjectView,
 } from '@deepseek-ai/dsh-credits-index/creative-types'
 import { parseCreativePlan, parseCreativePlanChange } from '../../../packages/host/credits-index/src/creative-store.ts'
+import { normalizeReferenceImage, ReferenceImageError } from '../../../packages/host/credits-index/src/reference-image.ts'
 import { createMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { launchWebScaffold, watchConsole, type WebScaffold } from './scaffold.ts'
 import { connectFreshWorkspace, connectFreshWorkspaceZh } from './support.ts'
@@ -122,7 +123,14 @@ async function openCreation(page: Page, title: string, sessionId: string): Promi
   const body = page.locator(`[data-creative-session="${sessionId}"]`)
   if (await body.isVisible()) return
   const expand = page.locator('[data-sidebar-right-expand]')
-  if (await expand.isVisible()) await expand.click()
+  if (await expand.isVisible()) {
+    try { await expand.click({ timeout: 1000 }) }
+    catch (error) {
+      // Session restoration can open the target while its expand button is being clicked.
+      if (!(error instanceof errors.TimeoutError) || !await body.isVisible()) throw error
+      return
+    }
+  }
   const tab = page.locator('[data-dockkit-tab]').filter({ hasText: title })
   if (await tab.count() > 0) await tab.first().click()
   else {
@@ -132,6 +140,231 @@ async function openCreation(page: Page, title: string, sessionId: string): Promi
   }
   await body.waitFor({ state: 'visible' })
 }
+
+describe('web e2e: direct creation uploads and accepted task recovery', () => {
+  it('keeps successful character images, saves real material bindings and queries the accepted task without regenerating', async () => {
+    const scaffold = await launchWebScaffold({})
+    try {
+      const browser = await chromium.launch()
+      try {
+        const page = await browser.newPage({ locale: 'zh-CN', viewport: { width: 1440, height: 1000 },
+          colorScheme: 'dark', reducedMotion: 'reduce' })
+        page.setDefaultTimeout(15_000)
+        const tripwire = watchConsole(page)
+        const evidenceRoot = fileURLToPath(new URL('../../../.artifacts/', import.meta.url))
+        await mkdir(evidenceRoot, { recursive: true })
+        const evidence = await mkdtemp(join(evidenceRoot, 'creative-direct-upload-'))
+        const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64')
+        const uploads: { name: string; assetId?: string; code?: string }[] = []
+        const normalized = new Map<string, Awaited<ReturnType<typeof normalizeReferenceImage>>>()
+        const projects = new Map<string, CreativeProjectView[]>()
+        const saves: ReturnType<typeof parseCreativePlanChange>[] = []
+        const queries: { sessionId: string; projectId: string; operationId: string }[] = []
+        const paidRequests: string[] = []
+        const unexpectedReads: string[] = []
+        const previewReads: string[] = []
+        const reply = { route: '/v1/videos', model: 'video-qa', phase: 'accepted' as const,
+          taskId: 'original-video-task', requestId: 'original-video-request', backendFingerprint: createHash('sha256').update('qa-backend').digest('hex') }
+        await page.route('**/credits/api/**', async (route) => {
+          const request = route.request()
+          const url = new URL(request.url())
+          const json = async (payload: unknown): Promise<void> => route.fulfill({ status: 200, json: { ok: true, payload } })
+          if (url.pathname === '/credits/api/session') {
+            await json({ signedIn: true, creditsPerYuan: 1000, account: { id: accountId } })
+          } else if (url.pathname === '/credits/api/summary') {
+            await json({ balance_points: 20000, as_of: new Date().toISOString() })
+          } else if (url.pathname === '/credits/api/chat-usage' && request.method() === 'GET') {
+            await json({ scope: 'chat-model', status: 'unavailable', settledRequests: 0, totalRequests: 0, accountId })
+          } else if (url.pathname === '/credits/api/media/catalog') {
+            await json({ image: [], video: [] })
+          } else if (url.pathname === '/credits/api/creation/content') {
+            const mode = { title: { zh: '', en: '' }, description: { zh: '', en: '' },
+              promptPlaceholder: { zh: '', en: '' }, categories: [], templates: [], presets: [] }
+            await json({ schemaVersion: 1, revision: 'direct-upload-qa', image: mode, video: mode })
+          } else if (url.pathname === '/credits/api/creative/projects') {
+            await json({ accountId, projects: projects.get(url.searchParams.get('session_id') ?? '') ?? [] })
+          } else if (url.pathname === '/credits/api/assets' && request.method() === 'POST') {
+            const name = decodeURIComponent(request.headers()['x-file-name'] ?? '')
+            const upload: typeof uploads[number] = { name }
+            uploads.push(upload)
+            try {
+              const image = await normalizeReferenceImage(request.postDataBuffer() ?? Buffer.alloc(0), name)
+              const assetId = `ma_direct${String(uploads.length)}`
+              normalized.set(assetId, image)
+              upload.assetId = assetId
+              await route.fulfill({ status: 200, json: { ok: true, asset: { assetId, kind: 'reference_image',
+                contentType: image.mediaType, sizeBytes: image.bytes.length, converted: image.converted,
+                firstFrameOnly: image.firstFrameOnly, previewUrl: `/credits/api/assets/preview?asset_id=${assetId}` } } })
+            } catch (error) {
+              if (!(error instanceof ReferenceImageError)) throw error
+              upload.code = error.code
+              await route.fulfill({ status: 400, json: { ok: false, code: error.code } })
+            }
+          } else if (url.pathname === '/credits/api/creative/plan' && request.method() === 'POST') {
+            const value: unknown = request.postDataJSON()
+            if (value === null || typeof value !== 'object' || !('session_id' in value) || typeof value.session_id !== 'string'
+              || !('project_id' in value) || typeof value.project_id !== 'string'
+              || !('expected_revision' in value) || typeof value.expected_revision !== 'string' || !('change' in value)) {
+              await route.fulfill({ status: 400, json: { ok: false, code: 'CREATIVE_INVALID' } }); return
+            }
+            const current = projects.get(value.session_id)?.find(project => project.id === value.project_id)
+            if (current === undefined) { await route.fulfill({ status: 404 }); return }
+            if (current.planRevision !== value.expected_revision) {
+              await route.fulfill({ status: 409, json: { ok: false, code: 'CREATIVE_PLAN_STALE' } }); return
+            }
+            const change = parseCreativePlanChange(value.change)
+            saves.push(change)
+            let characters = current.characters
+            let assets = current.assets
+            if (change.kind === 'character') {
+              characters = current.characters.some(character => character.id === change.value.id)
+                ? current.characters.map(character => character.id === change.value.id ? change.value : character)
+                : [...current.characters, change.value]
+              assets = [...assets, ...change.assets ?? []]
+            } else if (change.kind === 'asset') {
+              assets = current.assets.some(asset => asset.id === change.value.id)
+                ? current.assets.map(asset => asset.id === change.value.id ? change.value : asset) : [...current.assets, change.value]
+            } else throw new Error('Unexpected direct-upload fixture mutation')
+            const plan = parseCreativePlan({ ...current, characters, assets })
+            const updated: CreativeProjectView = { ...current, characters: plan.characters,
+              assets: plan.assets.map(asset => ({ ...asset, referenceUrl: '/credits/api/creative/reference?' + new URLSearchParams({
+                session_id: current.sessionId, project_id: current.id, asset_id: asset.id,
+              }).toString() })), updatedAt: new Date().toISOString() }
+            const next = { ...updated, planRevision: revisionOf(updated) }
+            projects.set(current.sessionId, [next])
+            await json({ accountId, projects: [next] })
+          } else if (url.pathname === '/credits/api/assets/preview' || url.pathname === '/credits/api/creative/reference') {
+            const assetId = url.pathname === '/credits/api/assets/preview' ? url.searchParams.get('asset_id')
+              : projects.get(url.searchParams.get('session_id') ?? '')?.find(project => project.id === url.searchParams.get('project_id'))
+                ?.assets.find(asset => asset.id === url.searchParams.get('asset_id'))?.sourcePathOrAssetId
+            const image = normalized.get(assetId ?? '')
+            if (image === undefined) { await route.fulfill({ status: 404 }); return }
+            previewReads.push(assetId ?? '')
+            await route.fulfill({ status: 200, contentType: image.mediaType, body: image.bytes })
+          } else if (url.pathname === '/credits/api/creative/video/recover' && request.method() === 'POST') {
+            const value: unknown = request.postDataJSON()
+            if (value === null || typeof value !== 'object' || !('session_id' in value) || typeof value.session_id !== 'string'
+              || !('project_id' in value) || typeof value.project_id !== 'string'
+              || !('operation_id' in value) || value.operation_id !== 'op_pending') {
+              await route.fulfill({ status: 400, json: { ok: false, code: 'CREATIVE_INVALID' } }); return
+            }
+            const current = projects.get(value.session_id)?.find(project => project.id === value.project_id)
+            if (current === undefined) { await route.fulfill({ status: 404 }); return }
+            queries.push({ sessionId: value.session_id, projectId: value.project_id, operationId: value.operation_id })
+            const next = { ...current, tasks: current.tasks.map(task => task.id === 'op_pending' ? { ...task, canQuery: false } : task) }
+            projects.set(current.sessionId, [next])
+            await route.fulfill({ status: 202, json: { ok: true, payload: { accountId, projects: [next] } } })
+          } else if (url.pathname === '/credits/api/usage') {
+            await json({ rows: [], start: Number(url.searchParams.get('start')), end: Number(url.searchParams.get('end')),
+              asOf: new Date().toISOString(), delayMinutes: 0 })
+          } else if (request.method() !== 'GET' && request.method() !== 'HEAD') {
+            paidRequests.push(`${request.method()} ${url.pathname}`)
+            await route.abort('blockedbyclient')
+          } else {
+            unexpectedReads.push(`${request.method()} ${url.pathname}`)
+            await route.fulfill({ status: 404, json: { ok: false, code: 'UNEXPECTED_FIXTURE_READ' } })
+          }
+        })
+        try {
+          await page.goto(scaffold.authenticatedUrl, { waitUntil: 'load' })
+          await page.waitForSelector('[class*="frame"]')
+          await connectFreshWorkspaceZh(page, scaffold.workspaceCwd)
+          const agent = scaffold.ctx.agents.list()[0]
+          if (agent === undefined) throw new Error('The real workspace did not create its chat Agent')
+          const sessionId = String(agent.session.id)
+          const base = projectFixture(sessionId, '', false)
+          const project: CreativeProjectView = { ...base, title: '人物素材上传验证', completedShots: 0,
+            characters: base.characters.map(character => ({ ...character, referenceAssetIds: [] })), assets: [], outputs: [],
+            shots: base.shots.map((shot, index) => ({ ...shot, status: index === 1 ? 'running' : 'planned', outputs: [], assetIds: [],
+              characterIds: index === 1 ? [] : ['S1'] })),
+            tasks: [{ id: 'op_pending', status: 'running', shotIds: ['shot-2'], outputs: [], completedShots: 0, totalShots: 1,
+              model: reply.model, videoReceipt: reply, canQuery: true, errorCode: 'VIDEO_QUERY_UNAVAILABLE' }],
+          }
+          projects.set(sessionId, [{ ...project, planRevision: revisionOf(project) }])
+          await settleChat(scaffold, agent, '直接上传验证会话')
+          await openCreation(page, '创作', sessionId)
+          const body = page.locator(`[data-creative-session="${sessionId}"]`)
+          await body.getByText('人物素材上传验证', { exact: true }).waitFor()
+          const beforeMessages = await userMessages(scaffold, agent)
+          await body.getByRole('tab', { name: '人物', exact: true }).click()
+          await body.getByRole('button', { name: '上传人物参考图', exact: true }).click()
+          const editor = page.getByRole('dialog', { name: '编辑设定', exact: true })
+          const characterUpload = editor.getByLabel('上传人物参考图', { exact: true })
+          expect(await characterUpload.getAttribute('multiple')).not.toBeNull()
+          await characterUpload.setInputFiles([
+            { name: '小雨正面.png', mimeType: 'image/png', buffer: png },
+            { name: '损坏参考.png', mimeType: 'image/png', buffer: png.subarray(0, 36) },
+            { name: '小雨侧面.jfif', mimeType: 'application/octet-stream', buffer: png },
+          ])
+          await editor.getByRole('checkbox', { name: '小雨侧面.jfif', exact: true }).waitFor()
+          expect(await editor.getByRole('checkbox', { name: '小雨正面.png', exact: true }).isChecked()).toBe(true)
+          expect(await editor.getByRole('checkbox', { name: '小雨侧面.jfif', exact: true }).isChecked()).toBe(true)
+          await editor.getByRole('alert').filter({ hasText: '「损坏参考.png」上传失败' }).waitFor()
+          expect(await editor.getByRole('alert').innerText()).toContain('图片损坏或无法解码')
+          await expect.poll(() => editor.locator('img').evaluateAll(elements => elements.length === 2 && elements.every(element =>
+            element instanceof HTMLImageElement && element.complete && element.naturalWidth === 1))).toBe(true)
+          await editor.getByRole('alert').scrollIntoViewIfNeeded()
+          await page.screenshot({ path: join(evidence, 'character-batch-retains-successes.png'), animations: 'disabled' })
+          await editor.getByRole('button', { name: '保存设定', exact: true }).click()
+          await editor.waitFor({ state: 'hidden' })
+          const characterChange = saves[0]
+          if (characterChange?.kind !== 'character') throw new Error('Expected one atomic character/material change')
+          expect(characterChange.assets?.map(asset => asset.sourcePathOrAssetId)).toEqual(['ma_direct1', 'ma_direct3'])
+          expect(characterChange.value.referenceAssetIds).toEqual(characterChange.assets?.map(asset => asset.id))
+          expect(uploads).toEqual([
+            { name: '小雨正面.png', assetId: 'ma_direct1' }, { name: '损坏参考.png', code: 'IMAGE_DECODE_FAILED' },
+            { name: '小雨侧面.jfif', assetId: 'ma_direct3' },
+          ])
+          await body.getByRole('tab', { name: '素材', exact: true }).click()
+          for (const name of ['场景参考.png', '道具参考.png']) {
+            await body.getByRole('button', { name: '添加素材', exact: true }).click()
+            const material = page.getByRole('dialog', { name: '添加素材', exact: true })
+            await material.getByLabel('上传素材', { exact: true }).setInputFiles({ name, mimeType: 'image/png', buffer: png })
+            await expect.poll(() => material.getByRole('textbox', { name: '素材引用', exact: true }).inputValue()).toMatch(/^ma_direct\d+$/u)
+            await material.getByRole('button', { name: '保存设定', exact: true }).click()
+            await material.waitFor({ state: 'hidden' })
+            await body.getByRole('heading', { name, exact: true }).waitFor()
+          }
+          const savedProject = projects.get(sessionId)?.[0]
+          expect(savedProject?.assets.map(asset => asset.sourcePathOrAssetId)).toEqual(['ma_direct1', 'ma_direct3', 'ma_direct4', 'ma_direct5'])
+          expect(savedProject?.characters[0]?.referenceAssetIds).toHaveLength(2)
+          expect(saves).toHaveLength(3)
+          await body.getByText('参考人物：小雨', { exact: true }).first().waitFor()
+          await page.screenshot({ path: join(evidence, 'saved-materials-and-character-bindings.png'), animations: 'disabled' })
+          await body.getByRole('tab', { name: '任务与产物', exact: true }).click()
+          const pending = body.locator('[data-creative-task="op_pending"]')
+          await pending.getByText('生成中', { exact: true }).waitFor()
+          expect(await pending.getByText('生成失败', { exact: true }).count()).toBe(0)
+          expect(await pending.innerText()).not.toContain('VIDEO_QUERY_UNAVAILABLE')
+          await page.screenshot({ path: join(evidence, 'accepted-task-before-query.png'), animations: 'disabled' })
+          await pending.getByRole('button', { name: '查询原任务', exact: true }).click()
+          await expect.poll(() => queries.length).toBe(1)
+          expect(queries).toEqual([{ sessionId, projectId: savedProject?.id, operationId: 'op_pending' }])
+          await pending.getByText('生成中', { exact: true }).waitFor()
+          await expect.poll(() => pending.getByRole('button', { name: '查询原任务', exact: true }).count()).toBe(0)
+          expect(await pending.getByText('生成失败', { exact: true }).count()).toBe(0)
+          await page.screenshot({ path: join(evidence, 'accepted-task-query-without-regeneration.png'), animations: 'disabled' })
+          expect(await userMessages(scaffold, agent)).toBe(beforeMessages)
+          expect(paidRequests).toEqual([])
+          expect(unexpectedReads).toEqual([])
+          expect(previewReads).toContain('ma_direct1')
+          expect(previewReads).toContain('ma_direct3')
+          expect(tripwire.pageErrors).toEqual([])
+          expect(tripwire.warnings).toEqual([])
+          await writeFile(join(evidence, 'result.json'), JSON.stringify({ passed: true, sessionId, uploads, saves, queries,
+            paidRequests, previewReads, ffmpegRequired: false, imageNormalization: 'real host decoder', upstreamGeneration: false,
+          }, null, 2) + '\n')
+          console.log(`Direct creation upload and task recovery evidence: ${evidence}`)
+        } catch (error) {
+          await page.screenshot({ path: join(evidence, 'failure.png') }).catch(() => undefined)
+          await writeFile(join(evidence, 'failure.json'), JSON.stringify({ error: String(error), uploads, saves, queries,
+            paidRequests, unexpectedReads, previewReads, pageErrors: tripwire.pageErrors }, null, 2) + '\n')
+          throw error
+        }
+      } finally { await browser.close() }
+    } finally { await scaffold.close() }
+  })
+})
 
 describe.skipIf(!available)('web e2e: chat creation and independent generation pages', () => {
   it.each(['zh-CN', 'en-US'])('retains the chat project when visiting image and video generation in %s', async (locale) => {

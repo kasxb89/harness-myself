@@ -57,7 +57,7 @@ function backgroundFixture(): string {
 }
 
 it('expands a background Bash launch to selectable arguments and its original acknowledgement', async () => {
-  const scaffold = await launchWebScaffold({})
+  const scaffold = await launchWebScaffold({ showTrajectory: true })
   try {
     await seedSession(scaffold, backgroundFixture(), 'shell-command-details-browser')
     const browser = await chromium.launch()

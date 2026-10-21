@@ -188,6 +188,7 @@ describe('web e2e: macOS window drag coverage', () => {
     // detail views — only when the deployment runs a profile it can manage.
     scaffold = await launchWebScaffold({
       profile: { packages: [{ dir: join(FIXTURE_PLUGINS, 'fixture-live-client') }] },
+      extraOverlayPath: fileURLToPath(new URL('./fixtures/stock-account-ui.patch.yml', import.meta.url)),
     })
     browser = await chromium.launch()
   }, 180_000)

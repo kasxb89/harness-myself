@@ -5,6 +5,12 @@ export const NS = 'artifacts'
 
 /** Simplified Chinese copy for the artifacts panel. */
 export const zh = {
+  'preview.backToChat': '回到聊天',
+  'preview.originUnavailable': '来源聊天不可用',
+  'preview.originError': '无法读取来源聊天',
+  'error.ARTIFACT_ORIGIN_UNAVAILABLE': '无法打开生成位置，请刷新产物后重试',
+  'retry': '重试',
+  'notice.openedChat': '已打开来源聊天',
   'storage.global': '全局设置',
   'workspace.reveal': '打开所在目录',
   'notice.revealed': '已在文件管理器中显示文件',
@@ -114,6 +120,12 @@ export const zh = {
 
 /** English copy for every artifacts panel translation key. */
 export const en: Record<keyof typeof zh, string> = {
+  'preview.backToChat': 'Back to chat',
+  'preview.originUnavailable': 'Source chat unavailable',
+  'preview.originError': 'Could not read source chat',
+  'error.ARTIFACT_ORIGIN_UNAVAILABLE': 'Could not open the generating location. Refresh the artifact and try again.',
+  'retry': 'Retry',
+  'notice.openedChat': 'Opened the source chat.',
   'storage.global': 'Global setting',
   'workspace.reveal': 'Show in file manager',
   'notice.revealed': 'File shown in the file manager',

@@ -34,7 +34,9 @@ it.each(['network', 'timeout'] as const)('offers a mirror after a GitHub %s, the
   const gitConfig = join(scratch, 'git.config')
   await writeFile(gitConfig, `[http "https://github.com/"]\n proxy = http://127.0.0.1:${String(address.port)}\n`)
   const overlay = join(scratch, 'cordis.patch.yml')
-  await writeFile(overlay, '- id: ui-plugin-manager\n  config: { registryProbeEnabled: false }\n')
+  // Keep Git's connection check on the controlled loopback proxy; the product
+  // relay would otherwise bypass this case's failing/stalled listener.
+  await writeFile(overlay, '- id: ui-plugin-manager\n  config: { registryProbeEnabled: false }\n- id: plugin-manager\n  config: {}\n')
   const scaffold = await launchWebScaffold({
     profile: { packages: [], packageManager: { command: process.execPath, args: [], env: { GIT_CONFIG_GLOBAL: gitConfig, GIT_CONFIG_NOSYSTEM: '1' } } },
     extraOverlayPath: overlay,

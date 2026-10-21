@@ -160,7 +160,7 @@ describe('web e2e: live-turn interactions (cancel / error / retry)', () => {
     // hang (prefix chunks delivered to the loop) before the stop click.
     await expect.poll(() => existsSync(marker), { timeout: 15_000 }).toBe(true)
     await expect.poll(
-      () => page.getByRole('status').filter({ hasText: 'Deep diving' }).isVisible(),
+      () => page.getByRole('status').filter({ hasText: 'Working' }).isVisible(),
       { timeout: 10_000 },
     ).toBe(true)
     await page.locator('[data-streaming="true"]:not([inert] *)')
@@ -227,8 +227,11 @@ describe('web e2e: live-turn interactions (cancel / error / retry)', () => {
     expect(await page.locator('[data-streaming="true"]:not([inert] *)').count()).toBe(0)
     const errorStatus = page.getByRole('status').filter({ hasText: 'This turn failed' })
     await errorStatus.waitFor({ timeout: 10_000 })
-    expect(await errorStatus.textContent()).toContain('API key is invalid')
-    expect(await errorStatus.textContent()).toContain('AUTH')
+    expect(await errorStatus.textContent()).toContain('The server is busy. Please try again later.')
+    expect(await errorStatus.textContent()).not.toContain('AUTH')
+    expect(sessionEvents.findLast(event => event.type === 'turn/end')).toMatchObject({
+      data: { reason: { kind: 'error', error: { code: 'AUTH' } } },
+    })
     expect(await page.locator('body').textContent()).not.toContain('sk-preview-secret')
     const snapshot = await captureStableAria(page, '[class*="centerCol"]', scaffold!.workspaceCwd)
     await compareOrRefreshGolden(ERROR_EXPECTED, snapshot, MODE)
@@ -242,21 +245,28 @@ describe('web e2e: live-turn interactions (cancel / error / retry)', () => {
     expect(tripwire.warnings).toEqual([])
   }, 120_000)
 
-  it.skipIf(MODE === 'record').each(['QUOTA', 'ACCOUNT_QUOTA'])(
-    'retains a %s failure after its Web notice expires and history reloads', async (code) => {
+  it.skipIf(MODE === 'record').each(['QUOTA', 'ACCOUNT_QUOTA', 'INSUFFICIENT_BALANCE'])(
+    'retains a %s failure with its product notice policy after history reloads', async (code) => {
       await launch(() => ({
         patches: [{ at: 0, entry: { kind: 'throw', chunks: [], message: 'Provider quota exhausted', code } }],
       }))
       onTestFailed(() => saveFailureShot(page, `web-e2e-quota-${code}`))
       const { settled } = await sendPrompt()
       await settled
-      const notice = page.getByRole('alert').filter({ hasText: 'Request quota exhausted.' })
-      await notice.waitFor({ timeout: 10_000 })
+      const copy = code === 'QUOTA' ? 'The server is busy. Please try again later.'
+        : code === 'INSUFFICIENT_BALANCE' ? 'Insufficient balance. Please top up.' : 'Request quota exhausted.'
+      const notice = page.getByRole('alert').filter({ hasText: code === 'QUOTA' ? 'Request quota exhausted.' : copy })
+      if (code === 'QUOTA') expect(await notice.count()).toBe(0)
+      else await notice.waitFor({ timeout: 10_000 })
       expect(await page.getByRole('dialog').count()).toBe(0)
-      const failure = page.getByRole('status').filter({ hasText: code })
+      const failure = page.getByRole('status').filter({ hasText: 'This turn failed' })
       await failure.waitFor({ timeout: 10_000 })
-      expect(await failure.textContent()).toContain('Request quota exhausted.')
-      await notice.waitFor({ state: 'hidden', timeout: 10_000 })
+      expect(await failure.textContent()).toContain(copy)
+      expect(await failure.textContent()).not.toContain(code)
+      expect(sessionEvents.findLast(event => event.type === 'turn/end')).toMatchObject({
+        data: { reason: { kind: 'error', error: { code } } },
+      })
+      if (code !== 'QUOTA') await notice.waitFor({ state: 'hidden', timeout: 10_000 })
       expect(await failure.isVisible()).toBe(true)
       const expected = fileURLToPath(new URL(`./expected/quota-notice/${code.toLowerCase()}.expected.md`, import.meta.url))
       await compareOrRefreshGolden(expected, await failure.ariaSnapshot(), MODE)
@@ -438,8 +448,12 @@ describe('web e2e: live-turn interactions (cancel / error / retry)', () => {
     // row by retry history would leave the failure invisible.
     const errorStatus = page.getByRole('status').filter({ hasText: 'This turn failed' })
     await errorStatus.waitFor({ timeout: 10_000 })
-    expect(await errorStatus.textContent()).toContain('upstream 503')
-    expect(await errorStatus.textContent()).toContain('SERVER')
+    expect(await errorStatus.textContent()).toContain('The server is busy. Please try again later.')
+    expect(await errorStatus.textContent()).not.toContain('upstream 503')
+    expect(await errorStatus.textContent()).not.toContain('SERVER')
+    expect(sessionEvents.findLast(event => event.type === 'turn/end')).toMatchObject({
+      data: { reason: { kind: 'error', error: { code: 'SERVER', message: 'upstream 503' } } },
+    })
     // The settled retry chain stays alongside the terminal row as recovery
     // context; the golden pins both.
     const snapshot = await captureStableAria(page, '[class*="centerCol"]', scaffold!.workspaceCwd)

@@ -14,7 +14,8 @@
 // Composition divergences from `dsh web`, all deliberate, all via include
 // patches after the shipped bundle layers, over the SAME tree (never a
 // second yml): temp persistenceRoot; host-level skill roots confined to the
-// temp workspace while project skill discovery remains real; agent-instructions
+// temp workspace while project skill discovery remains real; bundled product
+// skill providers opt in per scenario; agent-instructions
 // disabled (recorded fixtures must not embed this repo's AGENTS.md);
 // session-title-llm disabled (its fire-and-forget title call would race the
 // loop for the session's replay cursor); webserver pinned to port 0 with the
@@ -58,6 +59,7 @@ import {
   type NormalizeContext,
 } from '@deepseek-ai/dsh-session-snapshot'
 import type { Profile, ProfileContext } from '@deepseek-ai/dsh-app-boot'
+import { replaySkillPatches } from './replay-skill-isolation.ts'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import { LlmAdapter } from '@deepseek-ai/dsh-llm'
 import type {
@@ -117,7 +119,7 @@ export const WELCOME_NOTICE_VERSION = '2026-09-28.1'
 export const WELCOME_NOTICE_COPY = {
   zh: {
     title: '预览版说明',
-    body: 'DeepSeek Harness 目前的 0.2 版本仍处于预览阶段，还有许多地方需要持续改进和打磨，希望听取广大开发者和用户的反馈建议。现在，新的桌面端面向广泛用户，开发者相关的进阶功能可在配置中开启使用。预计 DeepSeek Harness 的产品功能以及插件 API 都会继续快速迭代、持续演化，并逐渐趋于稳定。\n\n我们期待与全球用户和开发者一起，在开源、可复用、可组合的基础设施之上，共同探索智能上限。欢迎大家用 DeepSeek Harness 将想法变成现实，与社区一起丰富插件生态。',
+    body: '云枢 目前的 0.2 版本仍处于预览阶段，还有许多地方需要持续改进和打磨，希望听取广大开发者和用户的反馈建议。现在，新的桌面端面向广泛用户，开发者相关的进阶功能可在配置中开启使用。预计 云枢 的产品功能以及插件 API 都会继续快速迭代、持续演化，并逐渐趋于稳定。\n\n我们期待与全球用户和开发者一起，在开源、可复用、可组合的基础设施之上，共同探索智能上限。欢迎大家用 云枢 将想法变成现实，与社区一起丰富插件生态。',
     continueLabel: '继续',
   },
 } as const
@@ -308,6 +310,8 @@ export interface LaunchOptions {
   developerTools?: boolean
   /** Reveal Trajectory through the public conversation settings while retaining other profile-hidden views. */
   showTrajectory?: true
+  /** Include product-provided bundled skill catalogs; ordinary snapshot fixtures own their skills. */
+  bundledSkills?: true
   /** Enable the real Open In rows with deterministic launch-environment facts. */
   openInAppEnvironment?: LaunchEnvironmentSnapshot
   /** Compare the replayed root Session; `read-only` also forbids refresh writes to a borrowed fixture. */
@@ -577,6 +581,9 @@ export async function launchWebScaffold(options: LaunchOptions = {}): Promise<We
       ? []
       : [{ id: 'agent-default-model', config: { provider: 'deepseek-official', model: 'deepseek-v4-flash' } }],
     ...extraOverlayPatches,
+    // Provider-backed product skills bypass filesystem-root isolation. Keep
+    // ordinary snapshots fixture-owned while retaining explicit opt-in.
+    ...replaySkillPatches(composedRows, options.bundledSkills),
     ...options.showTrajectory === true ? [{
       id: 'ui-conversation',
       config: {

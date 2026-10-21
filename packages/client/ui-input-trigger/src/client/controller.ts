@@ -10,7 +10,7 @@
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type {
-  ArbitrateKey, ArbitrateOutcome, PickOutcome, ReferenceInsert,
+  ArbitrateKey, ArbitrateOutcome, EnterOutcome, PickOutcome, ReferenceInsert,
 } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { detectTrigger } from '../core/detect.ts'
@@ -379,11 +379,10 @@ export class InputTriggerController {
    * @param line - trimmed draft; the leading char selects the trigger roster.
    * @param signal - attempt-scoped abort from the input machine.
    * @param envelope - non-text submission state accompanying the draft.
-   * @returns the winning outcome or undefined (default sink). Rejects when a
-   * polled source's warmup fails or the winning source refuses the envelope —
-   * the caller must not silently downgrade.
+   * @returns the winning outcome, localized refusal, or undefined (default sink).
+   * Rejects when a polled source's warmup fails; the caller must not silently downgrade.
    */
-  async adjudicate(line: string, signal: AbortSignal, envelope: SubmitEnvelope): Promise<PickOutcome> {
+  async adjudicate(line: string, signal: AbortSignal, envelope: SubmitEnvelope): Promise<EnterOutcome> {
     const projection = this.project()
     for (const src of this.deps.roster.all()) {
       if (signal.aborted) {

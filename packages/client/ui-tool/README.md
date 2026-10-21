@@ -61,6 +61,8 @@ Answer-panel buttons belong to the question renderer. It composes `DisclosureRow
 
 Explicit failures from native image generation, short or project video generation, editing, assembly and creation-plan queries show localized recovery copy in both collapsed and expanded generic cards. The cards hide diagnostic response bodies, codes and the Inspect action for those failed media results; successful output paths and plan fields remain available. Product sign-in, credit exhaustion, cancellation and unknown generation outcomes retain their own safe next steps. Accepted image tasks whose local waiting or saving stopped show a message directing users to query the original task; `query_image_task` uses the same distinction between pending and unknown outcomes. Original results remain unchanged for model history and diagnostics; local terminal and file-tool output keeps its existing presentation.
 
+Image and short-video results with a retained task ID and a pending state show generation in progress, including queries of the original task. The copy covers generation and local saving, and directs users to query that task without submitting again. A missing task receipt stays unconfirmed; a confirmed terminal failure keeps its failure state.
+
 <a id="understand-the-implementation"></a>
 ## Understand the implementation
 

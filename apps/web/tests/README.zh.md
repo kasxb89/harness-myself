@@ -14,6 +14,10 @@ pnpm --filter @deepseek-ai/dsh-web-frontend exec playwright install --with-deps 
 
 普通场景以没有已登记 Workspace 或 Session、但持久化标记记录默认 Workspace 已被删除的状态启动，使显式文件夹选择场景自行决定 cwd。`launchWebScaffold({ firstUse: true })` 保留初始化资格，供启动场景使用。
 
+快照的技能目录由 fixture 持有。scaffold 将文件系统根目录限制在临时环境，通过 Univer 的公开 `skills` 设置关闭其内置技能，并为 Credits 条目设置 Loader `isolate.skills` 边界，隔离其可选编导技能注册。Host API、工具和项目技能发现仍然可用。需要验证产品技能目录的场景可显式传入 `launchWebScaffold({ bundledSkills: true })`。产品默认值与持久化 Session 的比较规则保持不变。
+
+[手机号登录恢复](phone-login-fixture.e2e.ts)仅在 `DSH_PHONE_FIXTURE_RECEIPT` 指向全新隔离 controller fixture 回执时运行。测试要求本机 `/harness` 入口、出站 HTTP 阻断、合成大陆号码场景以及无生产访问。各用例使用临时 harness home 和真实 Host 转发；浏览器覆盖短信明确未发送、发送结果未知、成功响应丢失后跨 Host 重启恢复，以及声明支持的 MFA 备用码表单。fixture 提供虚拟发送次数和会话数量，不发送真实短信或付费请求。生产 HTTPS Cookie 策略需单独验证。
+
 ## 完成状态观察
 
 依赖状态的用例使用 Workspace、接纳、附件和模型流屏障，区分可见中间状态与已完成操作。模型选择器的持久化断言等待默认设置保存完成，不以菜单关闭作为完成信号。详情关闭等待框架过渡结束；归档验证为 seed Session 设置显式标题，并跨重载跟踪该身份。[CI 测试可靠性工作流](../../../.agents/skills/dsh-ci-test-reliability/SKILL.md#synchronize-on-state)负责这些同步规则。

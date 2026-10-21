@@ -1,7 +1,7 @@
 /** Image creation workspace driven by the deployment's existing media catalog. */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
-  IconCloseOutlineRegular,
+  appPath, IconCloseOutlineRegular,
   IconPlusOutlineRegular, IconSearchOutlineRegular, IconSendOutlineRegular,
   IconSettingsOutlineRegular, IconSparkleRegular, ImageLightbox, productFailureKind, SegmentedTabs, Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -71,13 +71,13 @@ interface ArtifactItem extends ArtifactLocation {
 type ImagePageProps = PropsRuntime<'main'> & PropsRenderFactories & PropsStore<ReturnType<typeof createImageDraftStore>> & InjectFace<ImagegenInjected>
 
 async function get<T>(path: string): Promise<Envelope<T>> {
-  const response = await fetch(path, { headers: { accept: 'application/json' } })
+  const response = await fetch(appPath(path), { headers: { accept: 'application/json' } })
   if (!response.ok) throw new Error(`HTTP_${String(response.status)}`)
   return await response.json() as Envelope<T>
 }
 
 async function post<T>(path: string, body: Record<string, unknown>): Promise<Envelope<T>> {
-  const response = await fetch(path, {
+  const response = await fetch(appPath(path), {
     method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' },
     body: JSON.stringify(body),
   })
@@ -86,7 +86,7 @@ async function post<T>(path: string, body: Record<string, unknown>): Promise<Env
 }
 
 function rawUrl(file: ArtifactLocation): string {
-  return `/artifacts/api/raw?path=${encodeURIComponent(file.path)}${file.workspaceId === undefined ? '' : `&workspaceId=${encodeURIComponent(file.workspaceId)}`}`
+  return appPath(`/artifacts/api/raw?path=${encodeURIComponent(file.path)}${file.workspaceId === undefined ? '' : `&workspaceId=${encodeURIComponent(file.workspaceId)}`}`)
 }
 
 function fileIdentity(file: ArtifactLocation): string { return JSON.stringify([file.workspaceId ?? null, file.path]) }
@@ -216,7 +216,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
 
   const loadHistory = useCallback(async (): Promise<void> => {
     try {
-      const response = await fetch('/artifacts/api/list', { headers: { accept: 'application/json' } })
+      const response = await fetch(appPath('/artifacts/api/list'), { headers: { accept: 'application/json' } })
       if (!response.ok) throw new Error(`HTTP_${String(response.status)}`)
       const answer = await response.json() as { items?: readonly ArtifactItem[]; payload?: { items?: readonly ArtifactItem[] } }
       const items = answer.items ?? answer.payload?.items
@@ -265,7 +265,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
       const result = await readImageSubmission(owner, retained, abort.signal)
       if (!current() || sequence !== readSequence) return
       // An earlier listing must not erase a newly submitted or newly queried task.
-      if ((readDraft().unsettled[submissionKey(owner)] ?? null) !== retained) return
+      if ((readDraft().unsettled[submissionKey(owner)] ?? null) !== retained) { void check(); return }
       if (!result.ok) { setSubmissionCheck('failed'); return }
       setCheckedOwner(submissionKey(owner))
       setSubmissionCheck('ready')
@@ -413,7 +413,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
         if (file.size === 0) { reject(file.name, t('emptyImage')); continue }
         if (file.size > 32 * 1024 * 1024) { reject(file.name, t('fileSizeLimit')); continue }
         try {
-          const response = await fetch('/credits/api/assets', {
+          const response = await fetch(appPath('/credits/api/assets'), {
             method: 'POST',
             headers: {
               'content-type': file.type || 'application/octet-stream', 'x-file-name': encodeURIComponent(file.name),
@@ -612,7 +612,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
           {references.length > 0 && <div className={css.referenceTray}>
             <ul className={css.thumbs} aria-label={t('reference')}>
               {references.map(item => <li key={item.assetId} className={css.thumb}>
-                <img src={item.url} alt={item.name} />
+                <img src={item.url.startsWith('/') ? appPath(item.url) : item.url} alt={item.name} />
                 <Tooltip label={t('removeReference', { name: item.name })} side="top" portal>
                   <button type="button" className={css.remove} aria-label={t('removeReference', { name: item.name })} disabled={locked}
                     onClick={() => { removeReference(item.assetId) }}><IconCloseOutlineRegular size={12} /></button>
@@ -737,7 +737,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
           </div>
           <ul className={css.templateGrid}>
             {visibleTemplates.map(template => <li key={template.id}><button type="button" className={css.templateCard} disabled={locked} onClick={() => { applyTemplate(text(template.prompt)) }}>
-              {template.coverAssetId !== null && <img className={css.templateCover} src={`/credits/api/creation/assets/${encodeURIComponent(template.coverAssetId)}`} alt="" loading="lazy" />}
+              {template.coverAssetId !== null && <img className={css.templateCover} src={appPath(`/credits/api/creation/assets/${encodeURIComponent(template.coverAssetId)}`)} alt="" loading="lazy" />}
               <span className={css.templateCopy}><span className={css.templateName}>{text(template.title)}</span>
                 <span className={css.templateHint}>{text(template.description)}</span></span>
             </button></li>)}

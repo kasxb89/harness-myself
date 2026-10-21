@@ -8,6 +8,7 @@
  */
 
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import type { ArtifactOrigin } from '@deepseek-ai/dsh-artifacts-index'
 import { createWriteStream } from 'node:fs'
 import { createHash, randomBytes } from 'node:crypto'
 import { homedir } from 'node:os'
@@ -19,7 +20,6 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type { ModelSelection } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-host-webserver'
-import type {} from '@deepseek-ai/dsh-artifacts-index'
 import type {} from '@deepseek-ai/dsh-client-connection'
 import type {} from '@deepseek-ai/dsh-api-session-controller'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
@@ -30,6 +30,9 @@ import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { HarnessAccount } from '@deepseek-ai/dsh-llm-pi-ai'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { apiUrl, normalizeApiBaseUrl } from './api-url.ts'
+import { readPhoneBody, phoneFailure, phoneRetryAfter, type PhoneApiBody } from './phone-auth.ts'
+import { writePrivateState } from './private-state-file.ts'
+import { PhoneAuthState, type PhoneDeliveryStatus } from './phone-auth-state.ts'
 import { parseClientModelConfigStatus } from './client-model-config.ts'
 import { orderProductModels, preferredProductModel, type ProductModelPresentation } from './model-presentation.ts'
 import { ClientActivitySessions, parseClientActivity, type ClientActivitySample } from './client-activity.ts'
@@ -47,10 +50,10 @@ import { recoverVideoProjectOutputs, VideoProjectError } from './video-project.t
 import { createVideoProjectRelay } from './video-project-provider.ts'
 import { videoSubmission, type VideoReferenceSnapshot } from './video-submission.ts'
 import { bindVideoAccount } from './video-project-account.ts'
-import { captureMediaOutput, type CapturedMediaOutput } from './media-output.ts'
+import { artifactOriginOf, captureMediaOutput, type CapturedMediaOutput } from './media-output.ts'
 import { executeImageTask } from './image-task.ts'
-import type { CreativeImageReceipt, CreativeVideoReceipt } from './creative-types.ts'
 import { executeVideoTask } from './video-task.ts'
+import type { CreativeImageReceipt, CreativeVideoReceipt } from './creative-types.ts'
 import type { VideoProjectIdentity, VideoProjectOptions, VideoProjectRequest, VideoRequestValue } from './video-project-types.ts'
 import { CreativeError, CreativeStore, parseCreativePlanChange, type CreativeOperation, type CreativeOwner } from './creative-store.ts'
 import { creativeOwner, registerCreativeTools } from './creative-tools.ts'
@@ -93,6 +96,14 @@ export interface Config {
   imagePollIntervalMs?: number
   /** Maximum consecutive transient query retries; image POSTs are never retried. */
   imageQueryRetryLimit?: number
+  /** Complete single-video submission deadline. */
+  videoSubmitTimeoutMs?: number
+  /** Complete single-video polling and saving deadline. */
+  videoTaskTimeoutMs?: number
+  /** Delay between original-video task queries. */
+  videoPollIntervalMs?: number
+  /** Consecutive transient video-query retry budget; submissions are never retried. */
+  videoQueryRetryLimit?: number
   /** Loopback port of the model relay; 0 disables it. */
   relayPort?: number
   /** Credential reference the relay's bearer token lives under. */
@@ -155,6 +166,10 @@ export const Config: z<Config> = z.object({
   imageTaskTimeoutMs: z.number().step(1).min(1).max(2_147_483_647).default(600_000),
   imagePollIntervalMs: z.number().step(1).min(1).max(60_000).default(2000),
   imageQueryRetryLimit: z.number().step(1).min(0).max(5).default(2),
+  videoSubmitTimeoutMs: z.number().step(1).min(1).max(2_147_483_647).default(180_000),
+  videoTaskTimeoutMs: z.number().step(1).min(1).max(2_147_483_647).default(900_000),
+  videoPollIntervalMs: z.number().step(1).min(1).max(60_000).default(6000),
+  videoQueryRetryLimit: z.number().step(1).min(0).max(5).default(2),
   relayPort: z.number().step(1).min(1).default(8791),
   relayTokenEnv: z.string().default('YUNSHU_RELAY_TOKEN'),
   newApiBaseUrl: z.string().default('https://8.133.202.230/harness'),
@@ -440,20 +455,17 @@ class SessionStore {
     upstream?: StoredSession['upstream']
     relay?: StoredSession['relay']
   }): Promise<void> {
-    // The store is a convenience, never the source of truth: the `0600` file
-    // always carries the token, so a store that refuses the write (or a ref the
-    // store later rejects) cannot cost the operator their sign-in.
-    await this.writeCredential(session.token)
-    await mkdir(dirname(this.file), { recursive: true })
-    await writeFile(this.file, `${JSON.stringify({
+    // The complete private file commits before the optional credential-reference cache changes.
+    await writePrivateState(this.file, `${JSON.stringify({
       token: session.token,
       ...session.backendBaseUrl === undefined ? {} : { backendBaseUrl: session.backendBaseUrl },
       ...session.upstream === undefined ? {} : { upstream: session.upstream },
       ...session.relay === undefined ? {} : { relay: session.relay },
       expiresAt: session.expiresAt,
       account: session.account,
-    }, null, 2)}\n`, { mode: 0o600 })
+    }, null, 2)}\n`)
     this.cached = { ...session }
+    await this.writeCredential(session.token)
   }
 
   /** Forget the session on both halves. */
@@ -1058,14 +1070,16 @@ export function apply(ctx: Context, config: Config): void {
     submitting?: () => Promise<void>, received?: (receipt: CreativeVideoReceipt) => Promise<void>,
     resumeReceipt?: CreativeVideoReceipt, currentKey?: () => Promise<string>, savedOutput?: (path: string) => Promise<void>,
     reuseSavedOutput?: (bytes: Uint8Array) => Promise<string | undefined>,
+    origin?: ArtifactOrigin,
   ): Promise<MediaOutcome> => {
     let output: CapturedMediaOutput | undefined
     return executeVideoTask({
+      ...origin === undefined ? {} : { origin },
       model: resumeReceipt?.model ?? readString(request, 'model') ?? '', route,
       backendFingerprint: createHash('sha256').update(apiBaseUrl).digest('hex'), signal,
-      submitTimeoutMs: Math.max(resolved.timeoutMs, 180_000), taskTimeoutMs: resolved.videoProjectTaskTimeoutMs,
-      queryTimeoutMs: resolved.timeoutMs, pollIntervalMs: resolved.videoProjectPollIntervalMs,
-      prepare: async (operationSignal) => { output = await captureMediaOutput(ctx.get('artifactStorage'), join(stateDir, 'media'), operationSignal) },
+      submitTimeoutMs: Math.max(resolved.timeoutMs, resolved.videoSubmitTimeoutMs, 180_000), taskTimeoutMs: resolved.videoTaskTimeoutMs,
+      queryTimeoutMs: resolved.timeoutMs, pollIntervalMs: resolved.videoPollIntervalMs, queryRetryLimit: resolved.videoQueryRetryLimit,
+      prepare: async (operationSignal) => { output = await captureMediaOutput(ctx.get('artifactStorage'), join(stateDir, 'media'), operationSignal, resumeReceipt === undefined ? origin : resumeReceipt.origin) },
       ...submitting === undefined ? {} : { submitting }, ...received === undefined ? {} : { received },
       ...resumeReceipt === undefined ? {} : { resumeReceipt },
       submit: async (operationSignal) => {
@@ -1083,7 +1097,7 @@ export function apply(ctx: Context, config: Config): void {
         const ownedKey = await currentKey?.() ?? key
         operationSignal.throwIfAborted()
         const response = await apiFetch(`/v1/videos/${encodeURIComponent(taskId)}/content`, {
-          headers: { authorization: `Bearer ${ownedKey}`, accept: 'video/mp4' }, signal: AbortSignal.any([operationSignal, AbortSignal.timeout(300_000)]),
+          headers: { authorization: `Bearer ${ownedKey}`, accept: 'video/mp4' }, redirect: 'error', signal: AbortSignal.any([operationSignal, AbortSignal.timeout(300_000)]),
         })
         if (!response.ok) { await response.body?.cancel(); throw new VideoProjectError('VIDEO_CONTENT_UNAVAILABLE', '原视频暂时无法下载，请继续查询原任务，不要重新生成。') }
         const declared = Number(response.headers.get('content-length'))
@@ -1309,6 +1323,7 @@ export function apply(ctx: Context, config: Config): void {
     resumeReceipt?: CreativeImageReceipt,
     reuseSavedOutput?: (bytes: Uint8Array) => Promise<string | undefined>,
     currentKey?: () => Promise<string>,
+    origin?: ArtifactOrigin,
   ): Promise<MediaOutcome & { paths?: readonly string[]; mode?: string }> => {
     const backendFingerprint = createHash('sha256').update(apiBaseUrl).digest('hex')
     const execute = async (
@@ -1317,9 +1332,9 @@ export function apply(ctx: Context, config: Config): void {
     ): Promise<MediaOutcome & { paths?: readonly string[]; mode?: string }> => {
       let output: CapturedMediaOutput | undefined
       const result = await executeImageTask({
-        model, route, backendFingerprint, signal, submit,
+        model, route, backendFingerprint, signal, submit, ...origin === undefined ? {} : { origin },
         prepare: async (operationSignal) => {
-          output = await captureMediaOutput(ctx.get('artifactStorage'), join(stateDir, 'media'), operationSignal)
+          output = await captureMediaOutput(ctx.get('artifactStorage'), join(stateDir, 'media'), operationSignal, resumeReceipt === undefined ? origin : resumeReceipt.origin)
         },
         submitTimeoutMs: resolved.imageSubmitTimeoutMs, taskTimeoutMs: resolved.imageTaskTimeoutMs,
         queryTimeoutMs: resolved.timeoutMs, pollIntervalMs: resolved.imagePollIntervalMs,
@@ -1603,8 +1618,74 @@ export function apply(ctx: Context, config: Config): void {
     return { result, sessionInvalid: false }
   }
 
-  /** Phone remembered from the last challenge, so verification can find its user. */
-  let challengePhone: string | null = null
+  /** Persist request identities before dispatch and bind recovery to the complete backend URL. */
+  const phoneAuth = new PhoneAuthState(join(stateDir, `phone-auth-${createHash('sha256').update(apiBaseUrl).digest('hex')}.json`), apiBaseUrl)
+  let phoneLoginAttempt = 0
+
+
+  const phoneVerifications = new Map<string, {
+    flowToken: string
+    phone: string
+    methods: string[]
+    expiresAt: number
+    version: number
+    attempt: number
+    busy: boolean
+    uncertain: boolean
+  }>()
+
+  /** Validate and publish a complete phone session after all required security checks. */
+  const acceptPhoneSession = async (login: Response | null, loginBody: PhoneApiBody, phoneForLogin: string,
+    version: number, attempt: number, key: string) => {
+    const payload = loginBody.data ?? null
+    const token = payload?.access_token
+    const user = payload?.user !== null && typeof payload?.user === 'object' && !Array.isArray(payload.user)
+      ? payload.user as Record<string, unknown> : undefined
+    const rawPhone = typeof user?.phone_e164 === 'string' ? user.phone_e164 : phoneForLogin
+    const accountId = user?.id
+    const id = typeof accountId === 'number' && Number.isSafeInteger(accountId) && accountId > 0 ? String(accountId)
+      : typeof accountId === 'string' && /^[1-9]\d*$/u.test(accountId) && Number.isSafeInteger(Number(accountId)) ? accountId : null
+    const expiry = payload?.access_expires_at
+    const relayKey = payload?.relay_key
+    const refresh = login === null ? undefined : refreshFromSetCookie(login) ?? undefined
+    if (login?.ok === true && loginBody.success === true && refresh !== undefined
+      && loginBody.code !== 'PHONE_LOGIN_VERIFICATION_REQUIRED' && payload?.require_verification !== true && typeof token === 'string' && token.trim() !== '' && id !== null
+      && typeof expiry === 'number' && Number.isFinite(expiry) && expiry * 1000 > Date.now()
+      && Number.isFinite(new Date(expiry * 1000).getTime()) && typeof relayKey === 'string' && /^sk-\S+$/u.test(relayKey)) {
+      if (version !== identityVersion || attempt !== phoneLoginAttempt) {
+        return { ok: false, code: 'ACCOUNT_CHANGED', message: '登录状态已变更，请重新操作。' }
+      }
+      const account = { id, phone: rawPhone }
+      const sessionToken = randomBytes(32).toString('hex')
+      const sessionExpiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
+      const relayId = typeof payload?.relay_key_id === 'number' && Number.isSafeInteger(payload.relay_key_id) && payload.relay_key_id > 0
+        ? payload.relay_key_id : undefined
+      const committedVersion = await mutateSession(async (): Promise<number | null> => {
+        if (version !== identityVersion || attempt !== phoneLoginAttempt) return null
+        await store.write({ token: sessionToken, expiresAt: sessionExpiresAt, account, backendBaseUrl: apiBaseUrl,
+          upstream: { token, refresh, expiresAt: new Date(expiry * 1000).toISOString() },
+          relay: { key: relayKey, ...relayId === undefined ? {} : { id: relayId } } })
+        if (version !== identityVersion) return null
+        identityVersion += 1
+        chatUsage.reset()
+        const committed = identityVersion
+        await holdAccountCredential(relayKey)
+        invalidateModelCatalog()
+        await writeProductModels([]).catch(reportModelRefreshFailure)
+        return committed
+      })
+      if (committedVersion === null || committedVersion !== identityVersion) {
+        return { ok: false, code: 'ACCOUNT_CHANGED', message: '登录状态已变更，请重新操作。' }
+      }
+      await phoneAuth.complete(key)
+      return { ok: true, payload: { status: 'authorized', expiresAt: sessionExpiresAt, account } }
+    } else {
+      const failure = phoneFailure(login, loginBody, 'login')
+      if (failure.retryAfterSeconds !== null) await phoneAuth.delayExchange(key, Date.now() + failure.retryAfterSeconds * 1000)
+      return failure
+    }
+
+  }
 
   /** The `new_api_refresh` value inside one response's `Set-Cookie` headers. */
   const refreshFromSetCookie = (response: Response): string | null => {
@@ -2096,7 +2177,7 @@ export function apply(ctx: Context, config: Config): void {
     try {
       const outcome = await runImageGeneration(await key(), {}, signal,
         path => creative.saved(operation, path, 'image'), undefined,
-        next => creative.receipt(operation, next), receipt, bytes => creative.matchImageOutput(operation, bytes), key)
+        next => creative.receipt(operation, next), receipt, bytes => creative.matchImageOutput(operation, bytes), key, receipt.origin)
       await creative.finish(operation, { kind: 'image', status: outcome.ok ? 'completed' : imageCreativeStatus(outcome, signal),
         ...outcome.imageReceipt === undefined ? {} : { imageReceipt: outcome.imageReceipt },
         ...outcome.submissionState === 'not-submitted' ? { notSubmitted: true } : {},
@@ -2135,7 +2216,7 @@ export function apply(ctx: Context, config: Config): void {
     try {
       const outcome = await runVideoTask(await key(), receipt.route, {}, signal, undefined,
         next => creative.videoReceipt(operation, next), receipt, key, path => creative.saved(operation, path, 'video'),
-        bytes => creative.matchVideoOutput(operation, bytes))
+        bytes => creative.matchVideoOutput(operation, bytes), receipt.origin)
       await creative.finish(operation, { kind: 'video', status: outcome.ok ? 'completed' : imageCreativeStatus(outcome, signal),
         ...outcome.videoReceipt === undefined ? {} : { videoReceipt: outcome.videoReceipt },
         paths: outcome.path === undefined ? [] : [outcome.path], ...outcome.code === undefined ? {} : { errorCode: outcome.code } })
@@ -2405,13 +2486,16 @@ export function apply(ctx: Context, config: Config): void {
                 message: '账户凭据暂时无法续期，请重试或重新登录。',
                 payload: { signedIn: true, liveness: 'unknown', account: stored.account, expiresAt: stored.expiresAt } }); return
             }
+            const recovery = await phoneAuth.recovery().then(value => ({ available: true, value }),
+              (_unavailableRecovery: unknown) => ({ available: false, value: null }))
             json(response, 200, {
               ok: true,
               signedIn: false,
               signOutReason: 'no-session',
               creditsPerYuan: resolved.creditsPerYuan,
               statePath: store.path,
-              payload: { signedIn: false, creditsPerYuan: resolved.creditsPerYuan, account: null, expiresAt: null },
+              payload: { signedIn: false, creditsPerYuan: resolved.creditsPerYuan, account: null, expiresAt: null,
+                phoneRecoveryAvailable: recovery.available, phoneRecovery: recovery.value },
             })
             return
           }
@@ -2440,56 +2524,62 @@ export function apply(ctx: Context, config: Config): void {
           return
         }
 
+        if (route === '/api/session/phone-recovery' && method === 'GET') {
+          try { json(response, 200, { ok: true, payload: await phoneAuth.recovery() }) } catch (_unavailableRecovery: unknown) {
+            json(response, 200, { ok: false, code: 'PHONE_RECOVERY_UNAVAILABLE', message: '无法读取登录重试状态，请稍后重试。' })
+          }
+          return
+        }
+
         if (route === '/api/session/challenge' && method === 'POST') {
           const body = await readJson(request)
           const phone = readString(body, 'phone')
           const key = readString(body, 'idempotencyKey')
           if (phone === null || !/^\+[1-9]\d{7,14}$/u.test(phone) || key === null) {
-            json(response, 200, { ok: false, code: 'INVALID_REQUEST', message: 'phone 与 idempotencyKey 必填' })
+            json(response, 200, { ok: false, code: 'PHONE_INVALID_PARAMETERS', message: '手机号与请求标识必填。' })
             return
           }
-          challengePhone = phone
-          // Phone sign-in now lives in new-api itself; the Bridge is out of the picture.
+          const reserved = await phoneAuth.reserveChallenge(phone, key)
+          if (reserved !== 'reserved') {
+            json(response, 200, { ok: false, code: reserved === 'conflict' ? 'PHONE_IDEMPOTENCY_CONFLICT' : 'PHONE_RECOVERY_UNAVAILABLE',
+              message: '本次短信请求无法安全恢复，请检查原请求后重试。' }); return
+          }
           const challenge = await apiFetch('/api/user/phone/challenge', {
             method: 'POST',
             headers: { 'content-type': 'application/json', accept: 'application/json' },
-            body: JSON.stringify({ phone_e164: phone }),
+            body: JSON.stringify({ phone_e164: phone, idempotency_key: key, contract_version: 2 }),
             signal: AbortSignal.timeout(resolved.timeoutMs),
-          })
-          // A 429 answers with an empty body, so parsing must never be the thing
-          // that reports the failure.
-          const challengeText = await challenge.text()
-          let challengeBody: {
-            success?: boolean
-            message?: string
-            data?: { resend_after_seconds?: unknown; expires_in_minutes?: unknown; dev_code?: unknown; challenge_id?: unknown }
-          } = {}
-          try {
-            if (challengeText !== '') challengeBody = JSON.parse(challengeText) as typeof challengeBody
-          } catch {
-            challengeBody = {}
+          }).catch(() => null)
+          const challengeBody = await readPhoneBody(challenge)
+          const data = challengeBody.data
+          const acceptedResponse = challenge?.ok === true && challengeBody.success === true
+          const challengeId = typeof data?.challenge_id === 'string' && data.challenge_id !== '' ? data.challenge_id : undefined
+          const status = data?.delivery_status
+          let deliveryStatus: PhoneDeliveryStatus = status === 'accepted' || status === 'unknown' || status === 'sending' || status === 'not_sent'
+            ? status : 'unknown'
+          const failure = phoneFailure(challenge, challengeBody, 'challenge')
+          const resend = typeof data?.resend_after_seconds === 'number' && Number.isFinite(data.resend_after_seconds) && data.resend_after_seconds >= 0
+            ? Math.ceil(data.resend_after_seconds) : phoneRetryAfter(challenge, challengeBody) ?? 0
+          const expirySeconds = data?.expires_at
+          const expiry = typeof expirySeconds === 'number' && Number.isFinite(expirySeconds)
+            && Number.isFinite(new Date(expirySeconds * 1000).getTime()) ? new Date(expirySeconds * 1000).toISOString() : undefined
+          const accepted = acceptedResponse && challengeId !== undefined && status === 'accepted' && expiry !== undefined
+            && Date.parse(expiry) > Date.now() && typeof data?.resend_after_seconds === 'number'
+            && Number.isFinite(data.resend_after_seconds) && data.resend_after_seconds >= 0
+          if (deliveryStatus === 'accepted' && !accepted) deliveryStatus = 'unknown'
+          const saved = await phoneAuth.updateChallenge(key, { deliveryStatus,
+            ...challengeId === undefined ? {} : { challengeId }, ...expiry === undefined ? {} : { expiresAt: expiry },
+            resendAt: Date.now() + resend * 1000 })
+          if (!saved) {
+            json(response, 200, { ok: false, code: 'PHONE_RECOVERY_UNAVAILABLE', message: '短信结果未能保存，请保留本次请求并稍后重试。' }); return
           }
-          if (challenge.ok && challengeBody.success === true) {
-            json(response, 200, {
-              ok: true,
-              payload: {
-                challenge_id: typeof challengeBody.data?.challenge_id === 'string' ? challengeBody.data.challenge_id : phone,
-                phone,
-                resend_after_seconds: typeof challengeBody.data?.resend_after_seconds === 'number' ? challengeBody.data.resend_after_seconds : 60,
-                expires_in_minutes: typeof challengeBody.data?.expires_in_minutes === 'number' ? challengeBody.data.expires_in_minutes : null,
-                dev_code: typeof challengeBody.data?.dev_code === 'string' ? challengeBody.data.dev_code : null,
-              },
-            })
-          } else {
-            json(response, 200, {
-              ok: false,
-              code: challenge.status === 429 ? 'PHONE_RATE_LIMITED' : 'PHONE_CHALLENGE_FAILED',
-              message: challengeBody.message
-                ?? (challenge.status === 429
-                  ? '发码过于频繁，请等待重发冷却结束后再试。'
-                  : `发码失败（HTTP ${String(challenge.status)}）`),
-            })
+          const payload = challengeId === undefined ? undefined : {
+            challenge_id: challengeId, phone, delivery_status: deliveryStatus, expires_at: expiry ?? null,
+            resend_after_seconds: resend,
+            expires_in_minutes: typeof data?.expires_in_minutes === 'number' ? data.expires_in_minutes : null,
           }
+          json(response, 200, accepted && deliveryStatus === 'accepted' ? { ok: true, payload }
+            : { ...failure, ...payload === undefined ? {} : { payload } })
           return
         }
 
@@ -2499,89 +2589,105 @@ export function apply(ctx: Context, config: Config): void {
           const code = readString(body, 'code')
           const key = readString(body, 'idempotencyKey')
           if (challengeId === null || code === null || key === null) {
-            json(response, 200, { ok: false, code: 'INVALID_REQUEST', message: 'challengeId、code 与 idempotencyKey 必填' })
+            json(response, 200, { ok: false, code: 'PHONE_INVALID_PARAMETERS', message: '验证请求、验证码与请求标识必填。' })
             return
           }
-          const phoneForLogin = challengePhone === challengeId ? challengePhone : challengeId
-          if (!/^\+[1-9]\d{7,14}$/u.test(phoneForLogin)) {
-            json(response, 200, { ok: false, code: 'INVALID_REQUEST', message: '手机号需使用 E.164 格式。' }); return
+          const binding = await phoneAuth.phone(challengeId).then(phone => ({ phone }), (_unavailableRecovery: unknown) => null)
+          if (binding === null) {
+            json(response, 200, { ok: false, code: 'PHONE_RECOVERY_UNAVAILABLE', message: '无法读取登录重试状态，请稍后重试。' }); return
           }
-          const version = ++identityVersion
-          chatUsage.reset()
+          const phoneForLogin = binding.phone ?? challengeId
+          if (!/^\+[1-9]\d{7,14}$/u.test(phoneForLogin)) {
+            json(response, 200, { ok: false, code: 'PHONE_CODE_INVALID_OR_EXPIRED', message: '验证请求已失效，请重新获取验证码。' }); return
+          }
+          const reserved = await phoneAuth.reserveExchange(phoneForLogin, challengeId, code, key)
+          if (reserved !== 'reserved') {
+            json(response, 200, { ok: false, code: reserved === 'conflict' ? 'PHONE_IDEMPOTENCY_CONFLICT' : 'PHONE_RECOVERY_UNAVAILABLE',
+              message: '本次登录请求无法安全恢复，请检查原验证码后重试。' }); return
+          }
+          const version = identityVersion
+          const attempt = ++phoneLoginAttempt
           const login = await apiFetch('/api/user/phone/login', {
             method: 'POST',
             headers: { 'content-type': 'application/json', accept: 'application/json' },
-            body: JSON.stringify({ phone_e164: phoneForLogin, code }),
+            body: JSON.stringify({ phone_e164: phoneForLogin, code, challenge_id: challengeId, idempotency_key: key, contract_version: 2 }),
             signal: AbortSignal.timeout(resolved.timeoutMs),
-          })
-          /**
-           * A limited or throttled backend answers with an empty body, so the
-           * reply is read as text and parsed only when there is something to
-           * parse. `login.json()` on an empty body throws away the status that
-           * explains what actually happened.
-           */
-          const loginText = await login.text()
-          let loginBody: {
-            success?: boolean
-            message?: string
-            data?: {
-              access_token?: unknown
-              access_expires_at?: unknown
-              relay_key?: unknown
-              relay_key_id?: unknown
-              user?: { id?: unknown; username?: unknown; phone_e164?: unknown; group?: unknown; quota?: unknown }
+          }).catch(() => null)
+          const loginBody = await readPhoneBody(login)
+          if (loginBody.code === 'PHONE_LOGIN_VERIFICATION_REQUIRED' || loginBody.data?.require_verification === true) {
+            if (version !== identityVersion || attempt !== phoneLoginAttempt) {
+              json(response, 200, { ok: false, code: 'ACCOUNT_CHANGED', message: '登录状态已变更，请重新操作。' }); return
             }
-          } = {}
-          try {
-            if (loginText !== '') loginBody = JSON.parse(loginText) as typeof loginBody
-          } catch {
-            loginBody = {}
-          }
-          if (loginBody.success !== true && login.status === 429) {
-            json(response, 200, {
-              ok: false,
-              code: 'PHONE_RATE_LIMITED',
-              message: '验证码请求过于频繁，请稍后再试。',
-            })
+            const data = loginBody.data
+            const flowToken = data?.flow_token
+            const expiresAt = data?.expires_at
+            const methods = Array.isArray(data?.methods) ? data.methods.flatMap((item: unknown) => {
+              if (item === null || typeof item !== 'object' || Array.isArray(item)
+                || !('method' in item) || typeof item.method !== 'string' || item.method === ''
+                || !('available' in item) || item.available !== true) return []
+              return [item.method]
+            }) : []
+            if (typeof flowToken !== 'string' || flowToken === '' || typeof expiresAt !== 'number'
+              || !Number.isFinite(expiresAt) || expiresAt * 1000 <= Date.now() || methods.length === 0) {
+              json(response, 200, phoneFailure(null, {}, 'login')); return
+            }
+            if (await phoneAuth.securityPending(key)) {
+              json(response, 200, { ok: false, code: 'PHONE_SECURITY_UNCONFIRMED', message: '安全验证结果未确认，请重新短信登录。' }); return
+            }
+            phoneVerifications.set(key, { flowToken, phone: phoneForLogin, methods, expiresAt: expiresAt * 1000,
+              version, attempt, busy: false, uncertain: false })
+            json(response, 200, { ...phoneFailure(login, loginBody, 'login'), payload: { verification: { methods } } })
             return
           }
-          const payload = loginBody.data ?? null
-          const token = payload?.access_token
-          const rawPhone = typeof payload?.user?.phone_e164 === 'string' ? payload.user.phone_e164 : phoneForLogin
-          const accountId = payload?.user?.id
-          const id = typeof accountId === 'number' && Number.isSafeInteger(accountId) && accountId > 0 ? String(accountId)
-            : typeof accountId === 'string' && /^[1-9]\d*$/u.test(accountId) && Number.isSafeInteger(Number(accountId)) ? accountId : null
-          const expiry = payload?.access_expires_at
-          const relayKey = payload?.relay_key
-          if (login.ok && loginBody.success === true && typeof token === 'string' && token.trim() !== '' && id !== null
-            && typeof expiry === 'number' && Number.isFinite(expiry) && expiry * 1000 > Date.now()
-            && Number.isFinite(new Date(expiry * 1000).getTime()) && typeof relayKey === 'string' && /^sk-\S+$/u.test(relayKey)) {
-            if (version !== identityVersion) {
-              json(response, 200, { ok: false, code: 'ACCOUNT_CHANGED', message: '登录状态已变更，请重新操作。' }); return
-            }
-            const account = { id, phone: rawPhone }
-            const sessionToken = randomBytes(32).toString('hex')
-            const sessionExpiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
-            const refresh = refreshFromSetCookie(login) ?? undefined
-            const relayId = typeof payload?.relay_key_id === 'number' && Number.isSafeInteger(payload.relay_key_id) && payload.relay_key_id > 0
-              ? payload.relay_key_id : undefined
-            await mutateSession(async () => {
-              if (version !== identityVersion) return
-              await releaseAccountCredential()
-              await store.write({ token: sessionToken, expiresAt: sessionExpiresAt, account, backendBaseUrl: apiBaseUrl,
-                upstream: { token, refresh, expiresAt: new Date(expiry * 1000).toISOString() },
-                relay: { key: relayKey, ...relayId === undefined ? {} : { id: relayId } } })
-              await holdAccountCredential(relayKey)
-              invalidateModelCatalog()
-              await writeProductModels([]).catch(reportModelRefreshFailure)
-            })
-            if (version !== identityVersion) {
-              json(response, 200, { ok: false, code: 'ACCOUNT_CHANGED', message: '登录状态已变更，请重新操作。' }); return
-            }
-            json(response, 200, { ok: true, payload: { status: 'authorized', expiresAt: sessionExpiresAt, account } })
-          } else {
-            json(response, 200, { ok: false, code: 'PHONE_LOGIN_FAILED', message: loginBody.message ?? '验证码错误或已过期' })
+          json(response, 200, await acceptPhoneSession(login, loginBody, phoneForLogin, version, attempt, key))
+          return
+        }
+
+        if (route === '/api/session/verify-security' && method === 'POST') {
+          const body = await readJson(request)
+          const key = readString(body, 'exchangeKey')
+          const code = readString(body, 'code')
+          const flow = key === null ? undefined : phoneVerifications.get(key)
+          if (key === null || code === null || code.length > 128 || flow === undefined || flow.expiresAt <= Date.now()) {
+            json(response, 200, { ok: false, code: 'PHONE_SECURITY_EXPIRED', message: '安全验证已过期，请重新短信登录。' }); return
           }
+          if (flow.version !== identityVersion || flow.attempt !== phoneLoginAttempt) {
+            json(response, 200, { ok: false, code: 'ACCOUNT_CHANGED', message: '登录状态已变更，请重新操作。' }); return
+          }
+          if (!flow.methods.includes('2fa')) {
+            json(response, 200, { ok: false, code: 'PHONE_SECURITY_UNSUPPORTED', message: '此账户需要当前客户端尚未支持的安全验证方式。' }); return
+          }
+          if (flow.uncertain) {
+            json(response, 200, { ok: false, code: 'PHONE_SECURITY_UNCONFIRMED', message: '安全验证结果未确认，请重新短信登录。' }); return
+          }
+          if (flow.busy) {
+            json(response, 200, { ok: false, code: 'PHONE_RATE_LIMITED', retryAfterSeconds: 1, message: '安全验证仍在处理中，请稍候。' }); return
+          }
+          flow.busy = true
+          try {
+            if (!await phoneAuth.markSecurity(key, true)) {
+              json(response, 200, { ok: false, code: 'PHONE_RECOVERY_UNAVAILABLE', message: '无法保存安全验证状态，请稍后重试。' }); return
+            }
+            const login = await apiFetch('/api/user/login/verify', {
+              method: 'POST', headers: { ...declaredOrigin, 'content-type': 'application/json', accept: 'application/json' },
+              body: JSON.stringify({ flow_token: flow.flowToken, method: '2fa', code }),
+              signal: AbortSignal.timeout(resolved.timeoutMs),
+            }).catch(() => null)
+            const result = await readPhoneBody(login)
+            if (result.success === false && login !== null && login.status < 500) {
+              if (!await phoneAuth.markSecurity(key, false)) flow.uncertain = true
+              json(response, 200, login.status === 429 ? phoneFailure(login, result, 'login')
+                : { ok: false, code: 'PHONE_SECURITY_REJECTED', message: '安全验证未通过或已过期，请检查验证器验证码或备用码。' })
+              return
+            }
+            const outcome = await acceptPhoneSession(login, result, flow.phone, flow.version, flow.attempt, key)
+            if (outcome.ok) { phoneVerifications.delete(key); json(response, 200, outcome); return }
+            flow.uncertain = true
+            json(response, 200, { ok: false, code: 'PHONE_SECURITY_UNCONFIRMED', message: '安全验证结果未确认，请重新短信登录。' })
+          } catch (_unconfirmedSecurityResult: unknown) {
+            flow.uncertain = true
+            json(response, 200, { ok: false, code: 'PHONE_SECURITY_UNCONFIRMED', message: '安全验证结果未确认，请重新短信登录。' })
+          } finally { flow.busy = false }
           return
         }
 
@@ -3359,6 +3465,10 @@ export function apply(ctx: Context, config: Config): void {
 
         json(response, 404, { ok: false, code: 'NOT_FOUND', message: 'unknown credits route' })
       } catch (error) {
+        if (route === '/api/session/challenge' || route === '/api/session/verify'
+          || route === '/api/session/verify-security' || route === '/api/session/phone-recovery') {
+          json(response, 200, phoneFailure(null, {}, route === '/api/session/challenge' ? 'challenge' : 'login')); return
+        }
         if (error instanceof CreativeError) {
           json(response, error.status, { ok: false, code: error.code, message: error.message }); return
         }
@@ -3581,7 +3691,7 @@ export function apply(ctx: Context, config: Config): void {
           await binding.key()
           await creative.dispatched(creation)
           submission.started = true
-        }, receipt => creative.receipt(creation, receipt), undefined, undefined, () => binding.key())
+        }, receipt => creative.receipt(creation, receipt), undefined, undefined, () => binding.key(), artifactOriginOf(exec))
         const paths = [...outcome.paths ?? []]
         await creative.finish(operation, { status: outcome.ok ? 'completed' : imageCreativeStatus(outcome, exec.signal), paths, kind: 'image',
           ...outcome.imageReceipt === undefined ? {} : { imageReceipt: outcome.imageReceipt },
@@ -3758,6 +3868,7 @@ export function apply(ctx: Context, config: Config): void {
           model: { type: 'string' },
           task_id: { type: 'string' },
           plan_id: { type: 'string' },
+          operation_id: { type: 'string' }, request_id: { type: 'string' }, submission_state: { type: 'string' },
           code: { type: 'string' },
           message: { type: 'string' },
         },
@@ -3807,7 +3918,7 @@ export function apply(ctx: Context, config: Config): void {
         const creation = operation
         const outcome = await runVideoTask(await binding.key(), capability.model.route, built.request, exec.signal,
           async () => { await binding.key(); await creative.dispatched(creation) },
-          receipt => creative.videoReceipt(creation, receipt), undefined, () => binding.key(), path => creative.saved(creation, path, 'video'))
+          receipt => creative.videoReceipt(creation, receipt), undefined, () => binding.key(), path => creative.saved(creation, path, 'video'), undefined, artifactOriginOf(exec))
         await creative.finish(operation, { status: outcome.ok ? 'completed' : imageCreativeStatus(outcome, exec.signal), kind: 'video',
           ...outcome.submissionState === 'not-submitted' ? { notSubmitted: true } : {},
           ...outcome.videoReceipt === undefined ? {} : { videoReceipt: outcome.videoReceipt },
@@ -3816,7 +3927,8 @@ export function apply(ctx: Context, config: Config): void {
         if (!outcome.ok) {
           return {
             status: outcome.submissionState === 'pending' ? 'pending' : outcome.submissionState === 'unknown' ? 'unknown' : 'failed',
-            plan_id: operation.projectId,
+            plan_id: operation.projectId, operation_id: operation.operationId, submission_state: outcome.submissionState ?? 'unknown',
+            ...outcome.requestId === undefined ? {} : { request_id: outcome.requestId },
             model: capability.model.id,
             task_id: outcome.taskId ?? '',
             ...outcome.code === undefined ? {} : { code: outcome.code },
@@ -3836,7 +3948,7 @@ export function apply(ctx: Context, config: Config): void {
         }
         return {
           status: 'succeeded',
-          plan_id: operation.projectId,
+          plan_id: operation.projectId, operation_id: operation.operationId, submission_state: outcome.submissionState ?? 'completed',
           path: outcome.path ?? '',
           model: capability.model.id,
           task_id: outcome.taskId ?? '',

@@ -1,5 +1,6 @@
 /** One video submission with durable acceptance and read-only recovery. @module */
 import { setTimeout as delay } from 'node:timers/promises'
+import type { ArtifactOrigin } from '@deepseek-ai/dsh-artifacts-index'
 import type { CreativeVideoReceipt } from './creative-types.ts'
 import { isAccountBalanceRejectionText } from './account-balance.ts'
 
@@ -18,6 +19,7 @@ export interface VideoTaskOutcome {
 
 /** Account-owned I/O boundaries; only submit may create a billable request. */
 export interface VideoTaskOptions {
+  origin?: ArtifactOrigin
   model: string
   route: string
   backendFingerprint: string
@@ -26,13 +28,14 @@ export interface VideoTaskOptions {
   taskTimeoutMs: number
   queryTimeoutMs: number
   pollIntervalMs: number
-  prepare?(signal: AbortSignal): Promise<void>
-  submitting?(): Promise<void>
-  received?(receipt: CreativeVideoReceipt): Promise<void>
+  queryRetryLimit: number
+  prepare?(this: void, signal: AbortSignal): Promise<void>
+  submitting?(this: void): Promise<void>
+  received?(this: void, receipt: CreativeVideoReceipt): Promise<void>
   resumeReceipt?: CreativeVideoReceipt
-  submit(signal: AbortSignal): Promise<Response>
-  read(taskId: string, signal: AbortSignal): Promise<Response>
-  save(taskId: string, signal: AbortSignal): Promise<string>
+  submit(this: void, signal: AbortSignal): Promise<Response>
+  read(this: void, taskId: string, signal: AbortSignal): Promise<Response>
+  save(this: void, taskId: string, signal: AbortSignal): Promise<string>
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -57,6 +60,8 @@ export async function executeVideoTask(options: VideoTaskOptions): Promise<Video
   let sent = receipt !== undefined
   let path: string | undefined
   let unread: Response | undefined
+  let phase: 'preparing' | 'submitting' | 'querying' | 'saving' | 'receipt' = 'preparing'
+  const currentPhase = (): typeof phase => phase
   const budget = AbortSignal.timeout(options.taskTimeoutMs)
   const signal = AbortSignal.any([options.signal, budget])
   const outcome = (submissionState: VideoTaskOutcome['submissionState'], code?: string, message?: string): VideoTaskOutcome => ({
@@ -65,10 +70,38 @@ export async function executeVideoTask(options: VideoTaskOptions): Promise<Video
     ...receipt === undefined ? {} : { videoReceipt: receipt, ...receipt.taskId === undefined ? {} : { taskId: receipt.taskId },
       ...receipt.requestId === undefined ? {} : { requestId: receipt.requestId } }, ...path === undefined ? {} : { path },
   })
-  const persist = async (next: CreativeVideoReceipt): Promise<void> => { receipt = next; await options.received?.(next) }
+  const persist = async (next: CreativeVideoReceipt): Promise<void> => {
+    receipt = next
+    const previous = phase
+    phase = 'receipt'
+    await options.received?.(next)
+    phase = previous
+  }
   const currentReceipt = (): CreativeVideoReceipt => {
     if (receipt === undefined) throw new Error('Video execution has no retained receipt')
     return receipt
+  }
+  const read = async (taskId: string): Promise<{ response: Response; text: string } | undefined> => {
+    for (let failures = 0; ; failures += 1) {
+      signal.throwIfAborted()
+      try {
+        const response = await options.read(taskId, AbortSignal.any([signal, AbortSignal.timeout(options.queryTimeoutMs)]))
+        unread = response
+        if (response.status !== 408 && response.status !== 429 && response.status < 500) {
+          const text = await response.text()
+          unread = undefined
+          return { response, text }
+        }
+      } catch (error) {
+        if (signal.aborted) throw error
+        // Only original-task GET failures may consume the finite retry budget.
+      } finally {
+        await unread?.body?.cancel().catch((_closedBody: unknown) => { /* The failed read already closed its response. */ })
+        unread = undefined
+      }
+      if (failures >= options.queryRetryLimit) return undefined
+      await delay(Math.min(options.pollIntervalMs * 2 ** failures, 30_000), undefined, { signal })
+    }
   }
   if (receipt !== undefined && receipt.backendFingerprint !== options.backendFingerprint) {
     return outcome('pending', 'VIDEO_BACKEND_CHANGED', '原视频任务所属服务已变化，请恢复原服务配置后查询；不会重新提交生成。')
@@ -81,8 +114,10 @@ export async function executeVideoTask(options: VideoTaskOptions): Promise<Video
     if (receipt === undefined) {
       await options.submitting?.()
       signal.throwIfAborted()
-      await persist({ model: options.model, route: options.route, backendFingerprint: options.backendFingerprint, phase: 'submitting' })
+      await persist({ model: options.model, route: options.route, backendFingerprint: options.backendFingerprint, phase: 'submitting',
+        ...options.origin === undefined ? {} : { origin: options.origin } })
       signal.throwIfAborted()
+      phase = 'submitting'
       sent = true
       unread = await options.submit(AbortSignal.any([signal, AbortSignal.timeout(options.submitTimeoutMs)]))
       const requestId = identifier(unread.headers.get('x-oneapi-request-id')) ?? identifier(unread.headers.get('x-request-id'))
@@ -106,15 +141,15 @@ export async function executeVideoTask(options: VideoTaskOptions): Promise<Video
     }
     const taskId = receipt?.taskId
     if (taskId === undefined) return outcome('unknown', 'NO_TASK_ID', '视频提交已发出，尚未获得可查询任务编号，请先核对原任务与计费，不要重复生成。')
+    phase = 'querying'
     let first = true
     for (;;) {
       signal.throwIfAborted()
       if (!first) await delay(options.pollIntervalMs, undefined, { signal })
       first = false
-      const response = await options.read(taskId, AbortSignal.any([signal, AbortSignal.timeout(options.queryTimeoutMs)]))
-      unread = response
-      const text = await response.text()
-      unread = undefined
+      const reply = await read(taskId)
+      if (reply === undefined) return outcome('pending', 'VIDEO_QUERY_UNAVAILABLE', '原视频已受理，当前无法读取状态；请稍后查询原任务，不要重复生成。')
+      const { response, text } = reply
       if (!response.ok) return outcome('pending', 'VIDEO_QUERY_UNAVAILABLE', '原视频已受理，当前无法读取状态；请稍后查询原任务，不要重复生成。')
       let body: Record<string, unknown> | undefined
       try { body = record(JSON.parse(text)) } catch (_invalidResponse: unknown) { /* Retain acceptance and stop uncertain polling. */ }
@@ -124,6 +159,7 @@ export async function executeVideoTask(options: VideoTaskOptions): Promise<Video
         return outcome('failed', 'TASK_FAILED', '原视频任务已结束且未成功，请检查原任务和计费记录。')
       }
       if (['succeed', 'succeeded', 'success', 'completed'].includes(state ?? '')) {
+        phase = 'saving'
         path = await options.save(taskId, signal)
         signal.throwIfAborted()
         await persist({ ...currentReceipt(), phase: 'completed' })
@@ -135,7 +171,8 @@ export async function executeVideoTask(options: VideoTaskOptions): Promise<Video
     }
   } catch (_stopped: unknown) {
     if (!sent) return outcome('not-submitted', 'VIDEO_PREPARATION_FAILED', '视频尚未提交，请检查素材或保存位置。')
-    if (receipt?.taskId !== undefined) return outcome('pending', budget.aborted ? 'VIDEO_TASK_TIMEOUT' : options.signal.aborted ? 'VIDEO_WAIT_STOPPED' : 'VIDEO_QUERY_UNAVAILABLE', '原视频任务已受理，本机等待或保存已停止；上游仍可能继续运行和计费，请查询原任务，不要重新生成。')
+    if (receipt?.taskId !== undefined) return outcome('pending', budget.aborted ? 'VIDEO_TASK_TIMEOUT' : options.signal.aborted ? 'VIDEO_WAIT_STOPPED'
+      : currentPhase() === 'saving' ? 'VIDEO_DOWNLOAD_UNAVAILABLE' : currentPhase() === 'receipt' ? 'VIDEO_RECEIPT_SAVE_FAILED' : 'VIDEO_QUERY_UNAVAILABLE', '原视频任务已受理，本机等待或保存已停止；上游仍可能继续运行和计费，请查询原任务，不要重新生成。')
     return outcome('unknown', 'VIDEO_SUBMISSION_UNKNOWN', '视频提交结果尚未确认，请先核对原任务与计费，不要重复生成。')
   } finally {
     await unread?.body?.cancel().catch((_closedBody: unknown) => { /* Completion or cancellation already released the response. */ })

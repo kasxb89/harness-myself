@@ -35,10 +35,10 @@ export function GenericToolCard({ toolName, block, cwd, home, openFile, inspect,
   const model = toolRowModel(toolName, block, cwd, home)
   const mediaError = mediaFailure(toolName, block)
   const mediaFailureText = mediaError === null ? null
-    : mediaError === 'sign-in' || mediaError === 'signed-out' ? t('error.signInRequired')
-      : mediaError === 'insufficient-credits' ? t('error.creditsRequired')
-        : mediaError === 'cancelled' ? t('error.cancelled')
-          : mediaError === 'accepted-pending' ? t('error.mediaTaskPending')
+    : mediaError === 'accepted-pending' ? t('error.mediaTaskPending')
+      : mediaError === 'sign-in' || mediaError === 'signed-out' ? t('error.signInRequired')
+        : mediaError === 'insufficient-credits' ? t('error.creditsRequired')
+          : mediaError === 'cancelled' ? t('error.cancelled')
             : mediaError === 'unknown-outcome' ? t('error.mediaOutcomeUnknown') : t('error.serverBusy')
   const autoReview = model.autoReviewDenial === null
     ? null
@@ -74,7 +74,7 @@ export function GenericToolCard({ toolName, block, cwd, home, openFile, inspect,
       read={read}
       search={search}
       web={web}
-      state={mediaError === null ? state : mediaError === 'cancelled' || mediaError === 'accepted-pending' ? 'stopped' : 'error'}
+      state={mediaError === null ? state : mediaError === 'accepted-pending' ? 'running' : mediaError === 'cancelled' ? 'stopped' : 'error'}
       filePath={model.filePath}
       onOpenFile={singleFile ? openFile : undefined}
       inspect={mediaError === null ? inspect : undefined}

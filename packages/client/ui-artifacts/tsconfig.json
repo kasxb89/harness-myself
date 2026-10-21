@@ -46,6 +46,15 @@
     },
     {
       "path": "../ui-workspace"
+    },
+    {
+      "path": "../../core/session"
+    },
+    {
+      "path": "../../llm/llm"
+    },
+    {
+      "path": "../ui-conversation/tsconfig.client.json"
     }
   ]
 }

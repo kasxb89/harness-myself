@@ -1,6 +1,6 @@
 /** Chat project navigation and actual operation outputs. */
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { Button, IconSparkleRegular, productFailureKind } from '@deepseek-ai/dsh-client-ui-primitives'
+import { appPath, Button, IconSparkleRegular, productFailureKind } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import type {
   CreativeOutput, CreativeProjectView, CreativeShotView, CreativeStatus, CreativeTaskView,
@@ -47,7 +47,7 @@ export function StoryboardTimeline({ shots, selected, select, move, busy, t }: {
           <button type="button" className={css.timelineSelect} aria-pressed={selected === shot.id}
             aria-label={t('timeline.select', { title: shot.title })} onClick={() => { select(shot.id) }}>
             <div className={css.shotThumbnail}>{poster === undefined ? <IconSparkleRegular size={24} />
-              : <img src={poster} alt="" loading="lazy" />}
+              : <img src={appPath(poster)} alt="" loading="lazy" />}
             <span className={css.shotNumber}>{index + 1}</span>
             <span className={css.shotState}><Status value={shot.status} compact t={t} /></span>
             </div>
@@ -78,7 +78,7 @@ function OutputGallery({ outputs, visible, t }: { outputs: readonly CreativeOutp
       return <button type="button" key={item.id} className={css.outputTile} aria-pressed={output?.id === item.id}
         aria-label={t('tasks.selectOutput', { name: item.name })} onClick={() => { setSelected(item.id) }}>
         <div className={css.outputThumbnail}>{poster === undefined ? <IconSparkleRegular size={24} />
-          : <img src={poster} alt="" loading="lazy" />}</div>
+          : <img src={appPath(poster)} alt="" loading="lazy" />}</div>
         <span className={css.timelineName}>{item.name}</span><span className={css.status}>{t(`kind.${item.kind}`)}</span>
       </button>
     })}</div>

@@ -28,6 +28,21 @@
     },
     {
       "path": "../../document/office-to-pdf"
+    },
+    {
+      "path": "../../core/session"
+    },
+    {
+      "path": "../../llm/llm"
+    },
+    {
+      "path": "../tool-present"
+    },
+    {
+      "path": "../../session/working-directory"
+    },
+    {
+      "path": "../../core/tools"
     }
   ]
 }

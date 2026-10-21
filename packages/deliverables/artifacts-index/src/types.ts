@@ -1,4 +1,15 @@
 /** Trusted Host-only artifact output contracts; never a model tool. @module */
+import type { SessionId, SessionSeq } from '@deepseek-ai/dsh-session/types'
+import type { ToolCallId } from '@deepseek-ai/dsh-llm/brand'
+
+/** Exact generating conversation location, supplied by the trusted producer. */
+export interface ArtifactOrigin {
+  readonly sessionId: SessionId
+  readonly turn: number
+  /** Logged generating event when the producer already has its stable sequence. */
+  readonly eventSeq?: SessionSeq
+  readonly toolCallId?: ToolCallId
+}
 
 /** A validated output directory captured before an operation starts. */
 export interface ArtifactDestination {
@@ -16,6 +27,7 @@ export interface ArtifactWriteRequest {
   readonly filename: string
   readonly bytes: Uint8Array
   readonly signal: AbortSignal
+  readonly origin?: ArtifactOrigin
 }
 
 /** Existing finished output copied by a trusted Host producer; source remains intact. */
@@ -24,6 +36,7 @@ export interface ArtifactPublishRequest {
   readonly sourcePath: string
   readonly filename: string
   readonly signal: AbortSignal
+  readonly origin?: ArtifactOrigin
 }
 
 /** Optional shared output capability consumed by account media generators. */

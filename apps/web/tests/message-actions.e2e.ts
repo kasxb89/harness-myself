@@ -319,7 +319,7 @@ describe('web e2e: message IconActions and clocks on settled history', () => {
     onTestFailed(() => saveFailureShot(page, 'web-e2e-message-actions-aria'))
     await page.getByRole('button', { name: /^Select model, current/ })
       .waitFor({ timeout: 10_000 })
-    await page.getByText(/Cache hit \d+%/u).first().waitFor({ timeout: 10_000 })
+    await page.locator('[data-composer-stat="activity"]').getByText('3 turns 4 steps', { exact: true }).waitFor({ timeout: 10_000 })
     await page.mouse.move(0, 0)
     // The golden includes the keyboard-focused action and its visible tooltip.
     const copy = page.getByRole('button', { name: 'Copy', exact: true }).first()
@@ -331,7 +331,7 @@ describe('web e2e: message IconActions and clocks on settled history', () => {
     await compareOrRefreshGolden(UI_EXPECTED, snapshot, MODE)
   })
 
-  it.skipIf(MODE === 'record')('persists performance detail and hides statistics in Compact', async () => {
+  it.skipIf(MODE === 'record')('persists performance detail and keeps Compact activity read-only', async () => {
     onTestFailed(() => saveFailureShot(page, 'web-e2e-performance-usage'))
     const stats = page.locator('[data-composer-stat]')
     const statsText = async (): Promise<string> => (await stats.allTextContents()).join(' ')
@@ -343,8 +343,8 @@ describe('web e2e: message IconActions and clocks on settled history', () => {
     await expect.poll(() => scaffold.ctx.settings.describe().find(row => row.ns === 'ui-chat')?.value).toMatchObject({ performanceUsage: 'compact' })
     await dialog.getByRole('button', { name: 'Close', exact: true }).click()
     await expect.poll(() => stats.locator('button').count()).toBe(0)
-    expect(await statsText()).not.toContain('turns')
-    expect(await statsText()).toContain('Cache hit')
+    expect(await statsText()).toBe('3 turns 4 steps')
+    expect(await page.getByRole('button', { name: /Cache hit/ }).count()).toBe(0)
     await stats.first().hover()
     expect(await page.getByRole('dialog').count()).toBe(0)
     await compareOrRefreshGolden(join(SNAPSHOT_DIR, 'compact.expected.md'), await captureStableAria(page, '[data-composer-dock]', scaffold.workspaceCwd), MODE)
@@ -357,7 +357,7 @@ describe('web e2e: message IconActions and clocks on settled history', () => {
     await page.getByRole('menuitem', { name: 'Detailed', exact: true }).click()
     await expect.poll(() => scaffold.ctx.settings.describe().find(row => row.ns === 'ui-chat')?.value).toMatchObject({ performanceUsage: 'detailed' })
     await dialog.getByRole('button', { name: 'Close', exact: true }).click()
-    await expect.poll(() => stats.locator('button').count()).toBe(2)
+    await expect.poll(() => stats.locator('button').count()).toBe(1)
     expect(await page.locator('[data-turn-tail]').getByRole('button', { name: /Ran for/ }).count()).toBe(0)
   })
 

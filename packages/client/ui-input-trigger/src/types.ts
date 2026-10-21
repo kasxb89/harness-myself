@@ -9,13 +9,13 @@
  */
 import type { ComponentType } from 'react'
 import type {
-  PickOutcome, ReferenceInsert, TokenSpan,
+  EnterOutcome, PickOutcome, ReferenceInsert, TokenSpan,
 } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { IconProps } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 
 export type {
-  ArbitrateKey, ArbitrateOutcome, BeginCommandRequest, CommandClaim, ConsumeTokenRequest,
+  ArbitrateKey, ArbitrateOutcome, BeginCommandRequest, CommandClaim, ConsumeTokenRequest, EnterOutcome,
   InsertReferenceRequest, InsertTextRequest, PickOutcome, ReferenceInsert, SubmitAttachment,
   SubmitOutcome, TokenSpan,
 } from '@deepseek-ai/dsh-client-ui-conversation/client'
@@ -189,15 +189,15 @@ export interface InputTriggerSource {
    * with trailing text present, bare-token-only kinds answer undefined
    * unless the line is exactly the token. `envelope` describes the rest of
    * the composer submission; a source that would consume the line but cannot
-   * consume the whole envelope throws to surface the refusal and leave the
-   * submission intact.
+   * consume the whole envelope returns a localized refusal and leaves the
+   * submission intact. Unknown failures reject with a diagnostic instead.
    */
   matchEnter?(
     session: ClientSessionContext,
     line: string,
     signal: AbortSignal,
     envelope: SubmitEnvelope,
-  ): Promise<PickOutcome>
+  ): Promise<EnterOutcome>
   /**
    * Scope-birth prewarm hook (fire-and-forget): the per-session controller
    * calls it once when the session scope comes alive so sources can fetch

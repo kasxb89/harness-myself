@@ -23,7 +23,9 @@ describe.skipIf(MODE === 'record')('web e2e: native and Client locale preference
   const reported: string[] = []
 
   beforeAll(async () => {
-    scaffold = await launchWebScaffold()
+    scaffold = await launchWebScaffold({
+      extraOverlayPath: fileURLToPath(new URL('./fixtures/stock-account-ui.patch.yml', import.meta.url)),
+    })
     browser = await chromium.launch()
     page = await browser.newPage({ viewport: { width: 1440, height: 960 }, locale: 'en-US' })
     tripwire = watchConsole(page)

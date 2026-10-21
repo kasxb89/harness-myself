@@ -208,6 +208,13 @@ describe('video tools through Loader, real tool registry and jobs runtime', () =
     await fixture.creative.finish(material, { status: 'completed', kind: 'image', paths: [generatedPath] })
     const generated = (await fixture.creative.projects(owner))[0]?.assets[0]?.outputs?.[0]
     expect(generated).toBeDefined()
+    const current = (await fixture.creative.projects(owner))[0]!
+    const character = current.characters.find(item => item.id === 'S1')!
+    await fixture.creative.revise(owner, planId, current.planRevision, { kind: 'character',
+      value: { ...character, referenceAssetIds: [...character.referenceAssetIds, 'portrait_side'] },
+      assets: [{ id: 'portrait_side', name: '小雨侧面.png', kind: 'image', role: '', description: '',
+        sourcePathOrAssetId: 'ma_uploaded_side' }],
+    })
     const resolveReference = vi.fn(async (_owner: unknown, _planId: string, value: string) => value === generated?.id ? 'ma_generated_a' : undefined)
     fixture.options.creativeImageReference = resolveReference
     const started = json((await fixture.call('generate_video_project', {
@@ -218,19 +225,19 @@ describe('video tools through Loader, real tool registry and jobs runtime', () =
     await vi.waitFor(() => { expect(fixture.ctx.jobs.get(JobId(String(started.job_id)), fixture.agent.id).status).toBe('completed') })
     expect(fixture.requests).toEqual([5, 10])
     expect(fixture.inputs.map(input => input.referenceImages)).toEqual([
-      ['ma_shared', 'ma_generated_a'], ['ma_shared', secondImage],
+      ['ma_shared', 'ma_generated_a', 'ma_uploaded_side'], ['ma_shared', secondImage],
     ])
     expect(resolveReference).toHaveBeenCalledWith(owner, planId, generated!.id)
     const retained = await readVideoProject(fixture.options, String(started.project_id), owner.sessionId, owner.workspaceRoot, owner)
     expect(retained.input.shotDurations).toEqual([5, 10])
-    expect(retained.input.shotReferenceImages).toEqual([['ma_generated_a'], [secondImage]])
+    expect(retained.input.shotReferenceImages).toEqual([['ma_generated_a', 'ma_uploaded_side'], [secondImage]])
     const [first, second] = retained.segments
     for (const text of ['雨夜站台', '缓慢推近', '女孩挥手', '黑长发', '红围巾', '安静', '轻柔女声', 'S1 1–3秒：“明天见。”', '1–3秒：明天见。']) expect(first?.prompt).toContain(text)
     expect(first?.prompt).not.toContain('小海')
     expect(second?.prompt).toContain('S2 2–4秒：“See you.”')
     expect(second?.prompt).toContain('2–4秒：See you.')
     expect(second?.prompt).not.toContain('小雨')
-    expect(first?.request.referenceImages).toEqual(['ma_shared', 'ma_generated_a'])
+    expect(first?.request.referenceImages).toEqual(['ma_shared', 'ma_generated_a', 'ma_uploaded_side'])
     expect(second?.request.referenceImages).toEqual(['ma_shared', secondImage])
   })
 

@@ -7,6 +7,20 @@ import { INSPECTOR_PROTOCOL_VERSION } from './version.ts'
 
 const SOURCE_FRAME_OVERHEAD_BYTES = 4_096
 
+/**
+ * Encoded payload budget for one retained source topic, including its record envelope.
+ * @param maxFrameBytes - Validated source-frame byte limit.
+ * @param topic - Declared state topic carried beside the payload.
+ * @returns Bytes available to the payload within a complete replacement record.
+ */
+export function sourceStatePayloadByteLimit(maxFrameBytes: number, topic: string): number {
+  // Finite binary64 JSON numbers fit within 32 bytes, including a sign,
+  // decimal padding and exponent. Reserve that width before the clock is read.
+  const envelopeBytes = jsonByteLength([{ monotonicMs: 0, topic, payload: null }])
+    - jsonByteLength(0) - jsonByteLength(null) + 32
+  return maxFrameBytes - SOURCE_FRAME_OVERHEAD_BYTES - envelopeBytes
+}
+
 /** Limits and declared topics shared by both source transports. */
 export interface InspectorSourceBufferOptions {
   readonly topics: readonly string[]

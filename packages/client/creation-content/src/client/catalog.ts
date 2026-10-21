@@ -35,7 +35,7 @@ export class Catalog implements CreationContentCatalog {
 
   private async read(): Promise<void> {
     try {
-      const response = await fetch('/credits/api/creation/content', {
+      const response = await fetch(new URL('credits/api/creation/content', document.baseURI).pathname, {
         credentials: 'same-origin', cache: 'no-store', redirect: 'error',
         signal: AbortSignal.any([this.life.signal, AbortSignal.timeout(this.config.timeoutMs)]),
       })

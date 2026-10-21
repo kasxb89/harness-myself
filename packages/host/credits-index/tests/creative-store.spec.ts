@@ -88,6 +88,23 @@ describe('retained ordinary video receipts', () => {
     await expect(restarted.resumeVideoTask(current, operation.projectId, operation.operationId)).rejects.toMatchObject({ code: 'CREATIVE_VIDEO_TASK_SETTLED' })
   })
 
+  it('keeps the original video source across recovery and rejects changed or cross-chat receipt origins', async () => {
+    const { store, owner, options } = await fixture()
+    const operation = await store.begin(owner, { kind: 'video', prompt: 'one clip', shots: [{ prompt: 'one clip' }] })
+    const origin = { sessionId: owner.sessionId as import('@deepseek-ai/dsh-session/types').SessionId, turn: 3 }
+    const receipt = { ...accepted, origin }
+    await store.videoReceipt(operation, receipt)
+    await expect(store.videoReceipt(operation, { ...receipt, origin: { ...origin, turn: 7 } }))
+      .rejects.toMatchObject({ code: 'CREATIVE_VIDEO_RECEIPT_CONFLICT' })
+    await expect(store.videoReceipt(operation, { ...receipt, origin: { ...origin, sessionId: 'other-chat' as typeof origin.sessionId } }))
+      .rejects.toMatchObject({ code: 'CREATIVE_INVALID' })
+    await store.finish(operation, { status: 'unknown', videoReceipt: receipt })
+    const restarted = new CreativeStore(options)
+    const resumed = await restarted.resumeVideoTask(owner, operation.projectId, operation.operationId)
+    expect(resumed.receipt.origin).toEqual(origin)
+    restarted.release(resumed.operation)
+  })
+
   it('keeps a submitted video uncertain after local cancellation and refuses unconfirmed task recovery', async () => {
     const { store, owner, options } = await fixture()
     const operation = await store.begin(owner, { kind: 'video', prompt: 'one', shots: [{ prompt: 'one' }] })
@@ -160,6 +177,20 @@ describe('retained ordinary video receipts', () => {
     expect((await store.projects(owner)).find(project => project.id === submitted.projectId)?.tasks[0]).toMatchObject({ status: 'unknown', videoReceipt: accepted })
   })
 
+  it('rejects a video receipt on a character image operation in a video plan without changing its record', async () => {
+    const { store, owner, options } = await fixture()
+    const id = await store.updatePlan(owner, plan('video'))
+    const operation = await store.begin(owner, { kind: 'image', prompt: 'portrait', planId: id,
+      assetId: 'portrait', shots: [{ prompt: 'portrait' }] })
+    const path = join(options.directory, id, 'project.json')
+    const before = await readFile(path, 'utf8')
+    await expect(store.videoReceipt(operation, accepted)).rejects.toMatchObject({ code: 'CREATIVE_INVALID' })
+    await expect(store.matchVideoOutput(operation, Buffer.from('video bytes'))).rejects.toMatchObject({ code: 'CREATIVE_INVALID' })
+    await expect(store.finish(operation, { status: 'unknown', videoReceipt: accepted })).rejects.toMatchObject({ code: 'CREATIVE_INVALID' })
+    await expect(store.resumeVideoTask(owner, id, operation.operationId)).rejects.toMatchObject({ code: 'CREATIVE_INVALID' })
+    expect(await readFile(path, 'utf8')).toBe(before)
+  })
+
   it('reuses only the full unchanged original video after interrupted settlement, without duplicating outputs', async () => {
     const { store, owner, options, file } = await fixture()
     const operation = await store.begin(owner, { kind: 'video', prompt: 'one', shots: [{ prompt: 'one' }] })
@@ -186,6 +217,22 @@ describe('retained ordinary video receipts', () => {
 })
 
 describe('retained image receipts and query-only recovery', () => {
+  it('keeps original generating locations across recovery and refuses changed or cross-chat receipt sources', async () => {
+    const { store, owner, options } = await fixture()
+    const operation = await store.begin(owner, { kind: 'image', prompt: 'one', shots: [{ prompt: 'one' }] })
+    const origin = { sessionId: owner.sessionId as import('@deepseek-ai/dsh-session/types').SessionId, turn: 3 }
+    const receipt = { ...acceptedImage, origin }
+    await store.receipt(operation, receipt)
+    await expect(store.receipt(operation, { ...receipt, origin: { ...origin, turn: 7 } })).rejects.toMatchObject({ code: 'CREATIVE_IMAGE_RECEIPT_CONFLICT' })
+    await expect(store.receipt(operation, { ...receipt, origin: { ...origin, sessionId: 'other-chat' as typeof origin.sessionId } }))
+      .rejects.toMatchObject({ code: 'CREATIVE_INVALID' })
+    await store.finish(operation, { status: 'running', imageReceipt: receipt })
+    const restarted = new CreativeStore(options)
+    const resumed = await restarted.resumeImage(owner, operation.projectId, operation.operationId)
+    expect(resumed.receipt.origin).toEqual(origin)
+    restarted.release(resumed.operation)
+  })
+
   it('retains an accepted receipt across restart and settles the original invocation without another begin', async () => {
     const { store, owner, options, file, setLive } = await fixture()
     const operation = await store.begin(owner, { kind: 'image', prompt: 'one', shots: [{ prompt: 'one' }] })
@@ -490,6 +537,24 @@ describe('retained image receipts and query-only recovery', () => {
 })
 
 describe('creation plans and actual generation facts', () => {
+  it('retains a single-video receipt across restart, refuses resubmission and exclusively recovers the original task', async () => {
+    const { store, owner, options, file } = await fixture()
+    const operation = await store.begin(owner, { kind: 'video', prompt: 'clip', shots: [{ prompt: 'clip' }] })
+    const receipt = { ...acceptedImage, route: '/v1/videos', model: 'video-model', taskId: 'original-video' }
+    await store.videoReceipt(operation, receipt)
+    await store.finish(operation, { status: 'running', videoReceipt: receipt, errorCode: 'VIDEO_QUERY_UNAVAILABLE' })
+    const restarted = new CreativeStore(options)
+    expect((await restarted.projects(owner))[0]?.tasks[0]).toMatchObject({ status: 'unknown', canQuery: true, videoReceipt: receipt })
+    await expect(restarted.begin(owner, { kind: 'video', prompt: 'duplicate', planId: operation.projectId,
+      shotIds: ['shot_1'], shots: [{ prompt: 'duplicate' }] })).rejects.toMatchObject({ code: 'CREATIVE_SUBMISSION_UNKNOWN' })
+    await expect(restarted.resumeImage(owner, operation.projectId, operation.operationId)).rejects.toMatchObject({ code: 'CREATIVE_IMAGE_TASK_UNCONFIRMED' })
+    const recovered = await restarted.resumeVideoTask(owner, operation.projectId, operation.operationId)
+    await expect(restarted.resumeVideoTask(owner, operation.projectId, operation.operationId)).rejects.toMatchObject({ code: 'CREATIVE_SHOT_RUNNING' })
+    const saved = await file('recovered.mp4')
+    await restarted.finish(recovered.operation, { status: 'completed', kind: 'video', paths: [saved], videoReceipt: { ...receipt, phase: 'completed' } })
+    expect((await restarted.projects(owner))[0]?.tasks[0]).toMatchObject({ status: 'completed', canQuery: false, outputs: [{ name: 'recovered.mp4' }] })
+  })
+
   it('retains structured character, material and shot requirements without inventing generated outputs', async () => {
     const { store, owner } = await fixture()
     const id = await store.updatePlan(owner, plan())
@@ -783,6 +848,7 @@ describe('creation plan revisions and task projections', () => {
       { kind: 'shot', id: 'departure', patch: { title: '镜头', durationSeconds: 8, camera: '推近', scene: '雨夜', action: '挥手', prompt: '女孩挥手', dialogue: '再见', subtitles: '再见', characterIds: ['S1'], assetIds: ['portrait'] } },
       { kind: 'reorder', shotIds: ['departure'] }, { kind: 'character', value: plan().characters[0]! },
       { kind: 'asset', value: plan().assets[0]! }, { kind: 'add-shot', value: plan().shots[0]! },
+      { kind: 'character', value: plan().characters[0]!, assets: [{ ...plan().assets[0]!, id: 'uploaded' }] },
       { kind: 'remove-character', id: 'S1' }, { kind: 'remove-asset', id: 'portrait' }, { kind: 'remove-shot', id: 'departure' },
     ]
     valid.forEach((change) => { expect(parseCreativePlanChange(JSON.parse(JSON.stringify(change)))).toEqual(change) })
@@ -791,10 +857,37 @@ describe('creation plan revisions and task projections', () => {
       { kind: 'shot', id: 'departure', patch: { durationSeconds: 0 } },
       { kind: 'shot', id: '../outside', patch: {} }, { kind: 'reorder', shotIds: [1] },
       { kind: 'character', value: { ...plan().characters[0], outputs: [] } },
+      { kind: 'character', value: plan().characters[0], assets: [{ ...plan().assets[0], kind: 'video' }] },
+      { kind: 'character', value: plan().characters[0], assets: [{ ...plan().assets[0], sourcePathOrAssetId: '/tmp/unuploaded.png' }] },
+      { kind: 'character', value: plan().characters[0], assets: [{ ...plan().assets[0], outputs: [] }] },
+      { kind: 'character', value: plan().characters[0], assets: [plan().assets[0], plan().assets[0]] },
       { kind: 'asset', value: { ...plan().assets[0], sourcePathOrAssetId: null } },
       { kind: 'add-shot', value: { ...plan().shots[0], actualDurationSeconds: 30 } },
       { kind: 'remove-shot', id: 'departure', owner: 'other' },
     ]) expect(() => parseCreativePlanChange(invalid)).toThrow(CreativeError)
+  })
+
+  it('commits uploaded character materials and bindings atomically while rejecting stale, duplicate and active edits', async () => {
+    const { store, owner } = await fixture()
+    const id = await store.updatePlan(owner, plan())
+    const original = (await store.projects(owner))[0]!
+    const assets = ['front', 'side'].map(id => ({ ...plan().assets[0]!, id, name: `${id}.png`, sourcePathOrAssetId: `ma_${id}` }))
+    const change: CreativePlanChange = { kind: 'character', value: { ...plan().characters[0]!, referenceAssetIds: ['portrait', 'front', 'side'] }, assets }
+    await store.revise(owner, id, original.planRevision, change)
+    const saved = (await store.projects(owner))[0]!
+    expect(saved.characters[0]?.referenceAssetIds).toEqual(['portrait', 'front', 'side'])
+    expect(saved.assets.map(asset => asset.sourcePathOrAssetId)).toEqual(['ma_portrait', 'ma_front', 'ma_side'])
+    expect(saved.assets.slice(1).every(asset => asset.referenceUrl?.includes('asset_id='))).toBe(true)
+    await expect(store.revise(owner, id, original.planRevision, change)).rejects.toMatchObject({ code: 'CREATIVE_PLAN_STALE' })
+    await expect(store.revise(owner, id, saved.planRevision, change)).rejects.toMatchObject({ code: 'CREATIVE_PLAN_CONFLICT' })
+    const operation = await store.begin(owner, { kind: 'image', prompt: 'scene', planId: id,
+      shotIds: ['departure'], shots: [{ prompt: 'scene' }] })
+    const active: CreativePlanChange = { kind: 'character', value: { ...saved.characters[0]!, referenceAssetIds: ['portrait', 'extra'] },
+      assets: [{ ...assets[0]!, id: 'extra', sourcePathOrAssetId: 'ma_extra' }] }
+    await expect(store.revise(owner, id, saved.planRevision, active)).rejects.toMatchObject({ code: 'CREATIVE_PLAN_RUNNING' })
+    expect(await store.plan(owner, id)).toMatchObject({ characters: [{ referenceAssetIds: ['portrait', 'front', 'side'] }] })
+    expect((await store.plan(owner, id)).assets.some(asset => asset.id === 'extra')).toBe(false)
+    await store.finish(operation, { status: 'failed', kind: 'image', errorCode: 'TASK_FAILED' })
   })
 
   it('keeps normalized plan revisions stable across progress, login generations and old v1 records', async () => {

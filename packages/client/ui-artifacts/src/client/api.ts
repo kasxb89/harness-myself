@@ -1,5 +1,7 @@
 /** Cancellable artifact reads and explicit, non-retrying file mutations. */
 import type { ArtifactEntry } from './ArtifactsPage.tsx'
+import type { SessionId, SessionSeq } from '@deepseek-ai/dsh-session/types'
+import type { ToolCallId } from '@deepseek-ai/dsh-llm/brand'
 
 /** Public Host errors whose details have product-owned translations. */
 export const ERROR_CODES = [
@@ -9,6 +11,7 @@ export const ERROR_CODES = [
   'ARTIFACT_OUTPUT_INVALID', 'ARTIFACT_NAME_INVALID', 'ARTIFACT_TRASH_INVALID',
   'ARTIFACT_REQUEST_INVALID', 'ARTIFACT_AUTH_REQUIRED', 'ARTIFACT_METHOD_INVALID', 'ARTIFACT_OPERATION_FAILED',
   'ARTIFACT_WORKSPACE_UNAVAILABLE', 'ARTIFACT_DIRECTORY_INVALID', 'ARTIFACT_WORKSPACE_REMOTE_UNSUPPORTED', 'ARTIFACT_OPEN_FAILED',
+  'ARTIFACT_ORIGIN_UNAVAILABLE',
 ] as const
 
 /** Localizable failure code; raw Host exception text never reaches the page. */
@@ -16,6 +19,34 @@ export type ArtifactErrorCode = typeof ERROR_CODES[number]
 
 /** A response read at the artifact boundary. */
 export type ArtifactResult<T> = { ok: true; value: T } | { ok: false; code: ArtifactErrorCode }
+
+/** Host-recorded generating location for this exact file identity. */
+export interface ArtifactOrigin {
+  readonly sessionId: SessionId
+  readonly turn: number
+  readonly eventSeq?: SessionSeq
+  readonly toolCallId?: ToolCallId
+}
+
+function origin(value: unknown): value is ArtifactOrigin | null {
+  return value === null || record(value) && typeof value.sessionId === 'string' && value.sessionId !== ''
+    && typeof value.turn === 'number' && Number.isSafeInteger(value.turn) && value.turn >= 0
+    && (value.eventSeq === undefined || typeof value.eventSeq === 'number' && Number.isSafeInteger(value.eventSeq) && value.eventSeq >= 0)
+    && (value.toolCallId === undefined || typeof value.toolCallId === 'string' && value.toolCallId !== '')
+}
+
+/**
+ * Read an exact file's generating location without interpreting its name.
+ * @param selected - Listed file version and authorization scope.
+ * @param signal - Mounted preview lifetime.
+ * @returns Verified generating location, absence for older or unrelated files, or a localizable read failure.
+ */
+export async function readArtifactOrigin(selected: ArtifactEntry, signal: AbortSignal): Promise<ArtifactResult<ArtifactOrigin | null>> {
+  const query = new URLSearchParams({ path: selected.path, size: String(selected.size), mtimeMs: String(selected.mtimeMs) })
+  if (selected.workspaceId !== undefined) query.set('workspaceId', selected.workspaceId)
+  const result = await request(`origin?${query}`, (value): value is { origin: ArtifactOrigin | null } => record(value) && origin(value.origin), signal)
+  return result.ok ? { ok: true, value: result.value.origin } : result
+}
 
 /** Authoritative future-output preference, distinct from retained browsing roots. */
 export interface ArtifactStorage {

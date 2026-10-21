@@ -10,7 +10,7 @@
  * click cannot create an order.
  */
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
-import { IconPlusOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
+import { appPath, IconPlusOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { CreditsPanelIcon } from './CreditsPanelIcon.tsx'
 import { cx } from './class-names.ts'
@@ -37,7 +37,7 @@ export function FooterAction(props: PropsRuntime<'sidebar.footer.action'> & Foot
   const [points, setPoints] = useState<number | null>(null)
 
   const load = useCallback(() => {
-    void fetch('/credits/api/summary', { headers: { accept: 'application/json' } })
+    void fetch(appPath('/credits/api/summary'), { headers: { accept: 'application/json' } })
       .then(async response => await response.json() as { payload?: { balance_points?: number } } | null)
       .then((answer) => {
         const value = answer?.payload?.balance_points

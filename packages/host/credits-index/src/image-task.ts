@@ -3,6 +3,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import type { CreativeImageReceipt } from './creative-types.ts'
 import { isAccountBalanceRejectionText } from './account-balance.ts'
 import { VideoProjectError } from './video-project.ts'
+import type { ArtifactOrigin } from '@deepseek-ai/dsh-artifacts-index'
 
 /** Billing and provider-task facts remain independent of local waiting or saving. */
 export interface ImageTaskOutcome {
@@ -20,6 +21,7 @@ export interface ImageTaskOutcome {
 
 /** Provider operations are supplied by the account-bound Host and never retried as submissions. */
 export interface ImageTaskOptions {
+  readonly origin?: ArtifactOrigin
   readonly model: string
   readonly route: string
   readonly backendFingerprint: string
@@ -119,7 +121,8 @@ export async function executeImageTask(options: ImageTaskOptions): Promise<Image
     if (receipt === undefined) {
       await options.submitting?.()
       signal.throwIfAborted()
-      await persist({ route: options.route, model: options.model, backendFingerprint: options.backendFingerprint, phase: 'submitting' })
+      await persist({ route: options.route, model: options.model, backendFingerprint: options.backendFingerprint, phase: 'submitting',
+        ...options.origin === undefined ? {} : { origin: options.origin } })
       signal.throwIfAborted()
       phase = 'submitting'
       sent = true

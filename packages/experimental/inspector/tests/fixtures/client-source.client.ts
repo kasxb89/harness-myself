@@ -6,6 +6,8 @@ import WebSocket from 'ws'
 import { ClientInspectorSource } from '../../src/client/bridge/transport.ts'
 import { ClientSourceCatalog } from '../../src/client/cdp/sources.ts'
 import { publishCordisTree } from '../../src/client/inspection/cordis.ts'
+import { sourceStatePayloadByteLimit } from '../../src/shared/bridge/buffer.ts'
+import { CORDIS_TREE_TOPIC } from '../../src/shared/bridge/messages/cordis.ts'
 import { inspectorId } from '../../src/shared/bridge/ids.ts'
 import type { InspectorClientBootstrap } from '../../src/shared/bridge/messages/control.ts'
 import type { InspectorJsonValue } from '../../src/shared/json.ts'
@@ -69,7 +71,7 @@ const sourceCatalog = input.sourceCatalog === undefined
 const source = new ClientInspectorSource(input.bootstrap, input.label, sourceCatalog)
 const disposeCordis = publishCordisTree(context, source, {
   maxNodes: input.bootstrap.maxCordisNodes,
-  maxBytes: input.bootstrap.maxFrameBytes - 4_096,
+  maxBytes: sourceStatePayloadByteLimit(input.bootstrap.maxFrameBytes, CORDIS_TREE_TOPIC),
 })
 const service = createInspectorService(source)
 let addedFiber: Fiber | undefined

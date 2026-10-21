@@ -43,6 +43,7 @@ it('authenticates native activity, isolates login epochs, retains /harness and s
       response.setHeader('content-type', 'application/json')
       if (request.url === '/harness/api/user/auth/refresh') return
       if (request.url === '/harness/api/user/phone/login') {
+        response.setHeader('set-cookie', 'new_api_refresh=fixture-refresh; HttpOnly')
         response.end(JSON.stringify({ success: true, data: { access_token: 'second-access', access_expires_at: 253402300799,
           relay_key: 'sk-second-key', user: { id: 8, phone_e164: '+8613800000001' } } }))
       } else if (unavailable) { response.writeHead(503); response.end('sensitive upstream diagnostic') }

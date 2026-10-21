@@ -23,7 +23,7 @@ export type { MenuViewProps } from './MenuView.tsx'
 export type { MenuKey } from './locales.ts'
 export type {
   ArbitrateKey, ArbitrateOutcome, BeginCommandRequest, CandidateRequest, ClientSessionContext,
-  CommandClaim, ConsumeTokenRequest, HeaderRequest, InsertReferenceRequest, PickOutcome, PickVia,
+  CommandClaim, ConsumeTokenRequest, EnterOutcome, HeaderRequest, InsertReferenceRequest, PickOutcome, PickVia,
   ReferenceCodec, ReferenceInsert, InputTriggerCandidate, InputTriggerCrumb, InputTriggerPick,
   InputTriggerSource, SubmitAttachment, SubmitEnvelope, SubmitOutcome, TokenSpan, TriggerChar,
   TriggerGuard, TriggerPosition,

@@ -4,6 +4,10 @@ import { Context, Service, type Fiber } from '@deepseek-ai/cordis'
 import { assert, describe, expect, it, type TestContext } from 'vitest'
 import { CordisTreeCollector } from '../src/shared/cordis/collector.ts'
 import type { CordisTreeNode } from '../src/shared/cordis/snapshot.ts'
+import { InspectorSourceBuffer, sourceStatePayloadByteLimit } from '../src/shared/bridge/buffer.ts'
+import { CORDIS_TREE_TOPIC } from '../src/shared/bridge/messages/cordis.ts'
+import { inspectorId } from '../src/shared/bridge/ids.ts'
+import { isJsonValue, jsonByteLength } from '../src/shared/json.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -39,6 +43,36 @@ function* walk(node: CordisTreeNode): Generator<CordisTreeNode> {
 }
 
 describe('Cordis collector live object identities', () => {
+  it('reserves the retained record envelope before pruning a tree at the frame boundary', async (test) => {
+    const { root, collector } = setup(test)
+    for (let index = 0; index < 20; index++) await root.plugin({ name: `frame-boundary-${index}`, apply() {} })
+    const complete = collector.snapshot()
+    assert(isJsonValue(complete))
+    const maxFrameBytes = jsonByteLength(complete) + 4_096
+    const bounded = new CordisTreeCollector(root, {
+      maxNodes: 100,
+      maxBytes: sourceStatePayloadByteLimit(maxFrameBytes, CORDIS_TREE_TOPIC),
+    })
+    test.onTestFinished(() => { bounded.close() })
+    const snapshot = bounded.snapshot()
+    assert(isJsonValue(snapshot))
+    const records = new InspectorSourceBuffer({
+      topics: [CORDIS_TREE_TOPIC], maxQueuedRecords: 2, maxQueuedBytes: maxFrameBytes,
+      maxRecordsPerFrame: 2, maxFrameBytes,
+    })
+    expect(() => { records.setState(CORDIS_TREE_TOPIC, snapshot, -Number.MAX_VALUE) }).not.toThrow()
+    expect(snapshot.truncated).toBe(true)
+    expect(snapshot.root.objectHandle).toBeDefined()
+    const frame = records.replacement(
+      inspectorId<'InspectorSourceId'>('frame-boundary', 'sourceId'),
+      inspectorId<'InspectorSourceGeneration'>('frame-boundary-generation', 'generation'),
+    )
+    assert(isJsonValue(frame))
+    expect(jsonByteLength(frame)).toBeLessThanOrEqual(maxFrameBytes)
+    expect(frame.records).toHaveLength(1)
+    expect(frame.records[0]?.payload).toEqual(snapshot)
+  })
+
   it('retains a service-created Fiber with its canonical Context', async (test) => {
     const { root, collector } = setup(test)
     const provider = await root.plugin(CollectorSpawner)

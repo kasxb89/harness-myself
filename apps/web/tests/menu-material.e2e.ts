@@ -18,7 +18,9 @@ async function material(menu: Locator) {
 }
 
 it('shares menu transparency and blur across palettes and follows native menu bounds', async () => {
-  const scaffold = await launchWebScaffold({})
+  const scaffold = await launchWebScaffold({
+    extraOverlayPath: fileURLToPath(new URL('./fixtures/stock-account-ui.patch.yml', import.meta.url)),
+  })
   onTestFinished(() => scaffold.close())
   await seedSession(scaffold, await readFile(seed, 'utf8'), 'menu-material-session')
   const browser = await chromium.launch()

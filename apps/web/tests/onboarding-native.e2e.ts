@@ -24,7 +24,11 @@ describe.skipIf(MODE === 'record').each([false, true])('web e2e: native credenti
     scaffold = await launchWebScaffold({
       deepSeekMissingCredential: true,
       welcomeNoticePending: true,
-      ...desktop ? {} : { extraOverlayPath: fileURLToPath(new URL('./fixtures/onboarding-native/cordis.patch.yml', import.meta.url)) },
+      extraOverlayPath: [
+        fileURLToPath(new URL('./fixtures/stock-account-ui.patch.yml', import.meta.url)),
+        fileURLToPath(new URL('./fixtures/stock-deepseek-onboarding.patch.yml', import.meta.url)),
+        ...desktop ? [] : [fileURLToPath(new URL('./fixtures/onboarding-native/cordis.patch.yml', import.meta.url))],
+      ],
     })
     browser = await chromium.launch()
     page = await browser.newPage({ viewport: { width: 1440, height: 960 }, locale: ZH_BROWSER_LOCALE })

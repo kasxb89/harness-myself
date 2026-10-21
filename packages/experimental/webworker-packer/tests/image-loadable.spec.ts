@@ -29,7 +29,7 @@ import {
 import { inflateImage } from '@deepseek-ai/dsh-experimental-webworker-runtime/src/storage/image-gzip.ts'
 import { loadVfsImage } from '@deepseek-ai/dsh-experimental-webworker-runtime/src/storage/memory.ts'
 import { setActiveVfs } from '@deepseek-ai/dsh-experimental-webworker-runtime/src/storage/active.ts'
-import { indexWorkspacePackages, previewFixtures } from '../src/repository.ts'
+import { indexWorkspacePackages, previewFixtures, staticPagePackages } from '../src/repository.ts'
 import { DEFAULT_ROOT, MANIFEST_PATH, packVfsImage, packVfsOverlay } from '../src/pack.ts'
 import { PAGE_ASSETS } from '../src/rules.ts'
 
@@ -43,6 +43,7 @@ const PLUGIN_INVENTORY = '@deepseek-ai/dsh-plugin-package-inventory-deepseek'
 const WEB_SERVER = '@deepseek-ai/dsh-host-webserver'
 
 const workspaces = indexWorkspacePackages(repoRoot)
+const pagePackages = await staticPagePackages(repoRoot)
 
 it.each([
   'node_modules/plain/lib/client.pdf.js',
@@ -106,6 +107,7 @@ const packed = (): ReturnType<typeof packVfsImage> => memo ??= packVfsImage({
   config: `- id: subject\n  name: '${SUBJECT}'\n`,
   profile: 'image-loadable-check',
   workspaces,
+  pagePackages,
   resolveFrom: repoRoot,
   // Synthetic composition: nothing boots the worker assembly, so its default
   // image entries must not be demanded of this one-package closure.
@@ -117,6 +119,7 @@ const packedLandlock = (): ReturnType<typeof packVfsImage> => landlockMemo ??= p
   config: `- id: subject\n  name: '${LANDLOCK}'\n`,
   profile: 'landlock-package-check',
   workspaces,
+  pagePackages,
   resolveFrom: repoRoot,
   entries: [],
 })
@@ -126,6 +129,7 @@ const packedPluginInventory = (): ReturnType<typeof packVfsImage> => pluginInven
   config: `- id: subject\n  name: '${PLUGIN_INVENTORY}'\n`,
   profile: 'plugin-inventory-check',
   workspaces,
+  pagePackages,
   resolveFrom: repoRoot,
   entries: [],
 })
@@ -135,6 +139,7 @@ const packedWebServer = (): ReturnType<typeof packVfsImage> => webServerMemo ??=
   config: `- id: subject\n  name: '${WEB_SERVER}'\n`,
   profile: 'webserver-dependency-check',
   workspaces,
+  pagePackages,
   resolveFrom: repoRoot,
   entries: [],
 })
@@ -199,6 +204,7 @@ const archive = async (): Promise<Uint8Array> =>
       config: `- id: subject\n  name: '${SUBJECT}'\n`,
       profile: 'image-loadable-check',
       workspaces,
+      pagePackages,
       resolveFrom: repoRoot,
       entries: [],
     })

@@ -1,7 +1,7 @@
 /** Current-chat creation details; paid work is staged in the ordinary chat draft. */
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import {
-  Button, IconChevronDownOutlineRegular, IconRefreshOutlineRegular, IconSparkleRegular,
+  appPath, Button, IconChevronDownOutlineRegular, IconRefreshOutlineRegular, IconSparkleRegular,
   Menu, Modal, SegmentedControl, StateDot, Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { HostObservable, InjectFace, PropsLocale, PropsRuntime, TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
@@ -94,18 +94,22 @@ function CharacterCards({ project, edit, manage, locked, t }: {
     <div className={css.cardContent}>
       <div className={css.cardHeader}><h3>{character.name}</h3></div>
       <p className={css.compactCaption}>{character.appearance || t('notSpecified')}</p>
+      {character.referenceAssetIds.length > 0 && <p className={css.compactCaption}>
+        {t('references')} · {ReferenceNames({ ids: character.referenceAssetIds, project, kind: 'assets' })}</p>}
       <details className={css.details}><summary>{t('details')}</summary><Facts t={t} entries={[
         [t('clothing'), character.clothing], [t('personality'), character.personality], [t('voice'), character.voice],
         [t('references'), ReferenceNames({ ids: character.referenceAssetIds, project, kind: 'assets' })],
       ]} /></details>
       <div className={css.actions}><Button variant="outline" size="sm" disabled={locked}
+        onClick={() => { manage({ kind: 'character', value: character, adding: false }) }}>{t('plan.uploadCharacter')}</Button>
+      <Button variant="outline" size="sm" disabled={locked}
         onClick={() => { manage({ kind: 'character', value: character, adding: false }) }}>{t('plan.edit')}</Button>
       <Button variant="ghost" size="sm" disabled={locked}
         onClick={() => { edit(character) }}>{t('character.edit')}</Button></div>
     </div>
     <div className={css.referenceStrip}>{project.assets.filter(asset => character.referenceAssetIds.includes(asset.id)).map((asset) => {
       const url = thumbnail(asset.outputs ?? []) ?? asset.referenceUrl
-      return url === undefined ? null : <img key={asset.id} src={url} alt={asset.name} loading="lazy" />
+      return url === undefined ? null : <img key={asset.id} src={appPath(url)} alt={asset.name} loading="lazy" />
     })}</div>
   </article>)}</div>
 }
@@ -121,24 +125,32 @@ function AssetCards({ project, edit, manage, locked, visible, t }: {
   if (project.assets.length === 0) return <p className={css.hint}>{t('noAssets')}</p>
   return <div className={css.cards}><input className={css.fieldInput} type="search" aria-label={t('library.search')}
     placeholder={t('library.search')} value={query} onChange={(event) => { setQuery(event.target.value) }} />
-  {project.assets.filter(item => `${item.name} ${item.description}`.toLocaleLowerCase().includes(query.toLocaleLowerCase())).map(asset => <article key={asset.id} className={css.card}>
-    <div className={css.cardContent}><div className={css.cardHeader}><h3>{asset.name}</h3>
-      {asset.status !== undefined && <Status value={asset.status} t={t} />}</div>
-    <p className={css.compactCaption}>{asset.description || t('notSpecified')}</p>
-    <details className={css.details}><summary>{t('details')}</summary><Facts t={t} entries={[
-      [t('role'), asset.role], [t('source'), asset.sourcePathOrAssetId],
-    ]} /></details>
-    <div className={css.actions}><Button variant="outline" size="sm" disabled={locked}
-      onClick={() => { manage({ kind: 'asset', value: asset, adding: false }) }}>{t('plan.edit')}</Button>
-    <Button variant="ghost" size="sm" disabled={locked}
-      onClick={() => { edit(asset) }}>{t('asset.edit')}</Button></div>
-    </div>
-    {(asset.outputs?.length ?? 0) > 0 && <details className={css.details}><summary>{t('library.versions')}</summary>
-      {(asset.outputs ?? []).map(output => <SavedMedia key={output.id} output={output} visible={visible} t={t} />)}</details>}
-    {(thumbnail(asset.outputs ?? []) ?? asset.referenceUrl) !== undefined && <img className={css.assetThumbnail}
-      src={thumbnail(asset.outputs ?? []) ?? asset.referenceUrl} alt={asset.name} loading="lazy" />}
-    {asset.status !== undefined && (asset.outputs?.length ?? 0) === 0 && <p className={css.notice}>{t('noOutputs')}</p>}
-  </article>)}</div>
+  {project.assets.filter(item => `${item.name} ${item.description}`.toLocaleLowerCase().includes(query.toLocaleLowerCase())).map((asset) => {
+    const preview = thumbnail(asset.outputs ?? []) ?? asset.referenceUrl
+    return <article key={asset.id} className={css.card}>
+      <div className={css.cardContent}><div className={css.cardHeader}><h3>{asset.name}</h3>
+        {asset.status !== undefined && <Status value={asset.status} t={t} />}</div>
+      <p className={css.compactCaption}>{asset.description || t('notSpecified')}</p>
+      {project.characters.some(character => character.referenceAssetIds.includes(asset.id)) && <p className={css.compactCaption}>
+        {t('plan.boundCharacters', { names: project.characters.filter(character => character.referenceAssetIds.includes(asset.id))
+          .map(character => character.name).join(' · ') })}</p>}
+      <details className={css.details}><summary>{t('details')}</summary><Facts t={t} entries={[
+        [t('role'), asset.role], [t('source'), asset.sourcePathOrAssetId],
+      ]} /></details>
+      <div className={css.actions}><Button variant="outline" size="sm" disabled={locked}
+        onClick={() => { manage({ kind: 'asset', value: asset, adding: false }) }}>{t('plan.upload')}</Button>
+      <Button variant="outline" size="sm" disabled={locked}
+        onClick={() => { manage({ kind: 'asset', value: asset, adding: false }) }}>{t('plan.edit')}</Button>
+      <Button variant="ghost" size="sm" disabled={locked}
+        onClick={() => { edit(asset) }}>{t('asset.edit')}</Button></div>
+      </div>
+      {(asset.outputs?.length ?? 0) > 0 && <details className={css.details}><summary>{t('library.versions')}</summary>
+        {(asset.outputs ?? []).map(output => <SavedMedia key={output.id} output={output} visible={visible} t={t} />)}</details>}
+      {preview !== undefined && <img className={css.assetThumbnail}
+        src={appPath(preview)} alt={asset.name} loading="lazy" />}
+      {asset.status !== undefined && (asset.outputs?.length ?? 0) === 0 && <p className={css.notice}>{t('noOutputs')}</p>}
+    </article>
+  })}</div>
 }
 function ShotCards({ project, edit, manage, redo, locked, visible, t }: {
   project: CreativeProjectView
@@ -284,6 +296,8 @@ function CreativeWorkspace({ sessionId, snapshot, visible, locked, refresh, save
               label: value === 'outputs' && project.kind === 'image' ? t('section.images') : t(`section.${value}`) }))} />
           {saveFailure !== null && planEdit === null && <p className={css.notice} role="alert">{saveFailure}</p>}
           <section role="tabpanel" id={`${tabsId}-${section}-panel`} aria-labelledby={`${tabsId}-${section}`}>
+            {(section === 'characters' || section === 'assets') && <p className={css.libraryHint}>
+              {t(section === 'characters' ? 'plan.characterGuide' : 'plan.assetGuide')}</p>}
             {section !== 'outputs' && <div className={css.libraryToolbar}><Button variant="outline" size="sm" disabled={saving}
               onClick={() => {
                 const kind = section === 'shots' ? 'shot' : section === 'characters' ? 'character' : 'asset'

@@ -152,7 +152,8 @@ async function boot(
           ...clientModelConfig === undefined ? {} : { client_model_config: clientModelConfig } }); return
       }
       if (url.pathname === '/harness/api/user/phone/challenge') {
-        answer({ resend_after_seconds: 60, expires_in_minutes: 5 }); return
+        answer({ challenge_id: '+8613800000000', delivery_status: 'accepted',
+          expires_at: Math.floor(Date.now() / 1000) + 300, resend_after_seconds: 60, expires_in_minutes: 5 }); return
       }
       if (url.pathname === '/harness/api/user/phone/login') {
         response.setHeader('set-cookie', 'new_api_refresh=refresh-one; HttpOnly; Path=/harness/api/user/auth')
@@ -2115,9 +2116,10 @@ describe('deployed Harness API through the real product Loader', () => {
   })
 
   it('submits all 15 authorized BlackRxAI models with exact integer defaults and gateway-only JSON fields', async () => {
-    const { base, stateDir } = await boot(undefined, true, true)
+    const { base, stateDir } = await boot(undefined, true, true, undefined, { videoSubmitTimeoutMs: 1 })
     const cookie = await hostCookie(base)
     await signIn(base)
+    const deadlines = vi.spyOn(AbortSignal, 'timeout')
     const cases = [
       ['lec-mj-seedance-2-5-cd-720p', 30], ['sd-25-900-2', 30], ['k2-sd2.5-720p', 30], ['lec-sz-sd2-full-480p', 30],
       ['video-sd25-480p', 30], ['model_5', 30], ['sd2.5-720p-x2', 30], ['sd2-th-2.0-720p', 15], ['bt-seedance-2.0', 15],
@@ -2139,6 +2141,7 @@ describe('deployed Harness API through the real product Loader', () => {
       expect(Object.keys(object(submission?.body)).sort()).toEqual(['gen_type', 'model', 'n', 'prompt', 'seconds', 'size'])
     }
     expect(calls.filter(call => call.path === '/harness/v1/videos')).toHaveLength(15)
+    expect(deadlines.mock.calls.filter(([milliseconds]) => milliseconds === 180_000)).toHaveLength(15)
     expect(calls.filter(call => call.path === '/harness/v1/videos/fixture-video-task/content')).toHaveLength(15)
     expect(calls.some(call => call.path.startsWith('/harness/v1/video/generations'))).toBe(false)
     pricingRows = [{ model_name: 'video-sd25-480p', supported_endpoint_types: ['openai-video'], parameters: { oneOf: [
@@ -2440,8 +2443,8 @@ describe('deployed Harness API through the real product Loader', () => {
     expect(summary).toMatchObject({ ok: true, balance: { credits: 1000 } })
     const challenge = calls.find(call => call.path.endsWith('/phone/challenge'))
     const login = calls.find(call => call.path.endsWith('/phone/login'))
-    expect(challenge?.body).toEqual({ phone_e164: '+8613800000000' })
-    expect(login?.body).toEqual({ phone_e164: '+8613800000000', code: '123456' })
+    expect(challenge?.body).toEqual({ phone_e164: '+8613800000000', idempotency_key: 'challenge-one', contract_version: 2 })
+    expect(login?.body).toEqual({ phone_e164: '+8613800000000', code: '123456', challenge_id: '+8613800000000', idempotency_key: 'login-one', contract_version: 2 })
     expect(calls.find(call => call.path.endsWith('/user/self'))?.authorization).toBe('Bearer access-user')
     expect(await (await fetch(base + '/api/models?source=newapi')).json()).toMatchObject({
       ok: true, chat: ['deepseek-v4-flash'], image: ['gpt-image-2'], video: ['MiniMax-H3'],

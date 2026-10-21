@@ -202,6 +202,7 @@ it.skipIf(webSnapshotMode() === 'record')('guides voice setup, records from stan
   expect(levelBounds.x).toBeGreaterThan(pickerBounds.x + pickerBounds.width / 2)
   expect(levelBounds.x + levelBounds.width).toBeLessThan(pickerBounds.x + pickerBounds.width)
   await page.setViewportSize({ width: 1280, height: 900 })
+  await page.getByRole('button', { name: 'Chat', exact: true }).click()
   await page.getByRole('button', { name: 'New session', exact: true }).filter({ hasText: 'New Session' }).click()
   await mic.waitFor()
   await expect.poll(() => page.evaluate(() => (window as Window & { voiceTestStreams?: MediaStream[] }).voiceTestStreams!

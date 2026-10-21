@@ -162,7 +162,7 @@ describe('web e2e: assistant IconActions wait for the turn to end', () => {
     const runningProcess = page.locator('[data-turn-process]')
     expect(await runningProcess.count()).toBe(0)
     await expect.poll(
-      () => page.getByRole('status').filter({ hasText: 'Deep diving' }).isVisible(),
+      () => page.getByRole('status').filter({ hasText: 'Working' }).isVisible(),
       { timeout: 10_000 },
     ).toBe(true)
     await page.locator('[data-streaming="true"]')
@@ -195,31 +195,31 @@ describe('web e2e: assistant IconActions wait for the turn to end', () => {
     expect(tripwire.warnings).toEqual([])
   }, 120_000)
 
-  it.skipIf(MODE === 'record')('shows exact completed-Turn usage and expands its available facts', async () => {
+  it.skipIf(MODE === 'record')('shows completed activity and expands its observed timing facts', async () => {
     await launch(undefined, 5)
     onTestFailed(() => saveFailureShot(page, 'web-e2e-turn-usage-expanded'))
     const { settled } = await sendPrompt(120_000)
     await settled
 
-    const trigger = page.getByRole('button', { name: /Usage 15\.8K tok/ })
+    const trigger = page.locator('[data-composer-stat="activity"]').getByRole('button', { name: '1 turns 2 steps', exact: true })
     await expect.poll(() => trigger.count(), { timeout: 10_000 }).toBe(1)
     expect(await trigger.getAttribute('aria-expanded')).toBe('false')
-    expect(await trigger.textContent()).toBe('Usage 15.8K tok')
+    expect(await trigger.textContent()).toBe('1 turns 2 steps')
     const timeTrigger = page.getByRole('button', { name: /^Ran for \S+$/ })
     expect(await timeTrigger.count()).toBe(0)
     expect(await page.locator('[data-turn-tail]').getByText(/tok\/s|TTFT/).count()).toBe(0)
+    expect(await page.locator('[data-turn-tail]').getByRole('button', { name: /Usage/ }).count()).toBe(0)
     expect(await page.getByRole('dialog').count()).toBe(0)
 
     await trigger.click()
     expect(await trigger.getAttribute('aria-expanded')).toBe('true')
-    const dialog = page.getByRole('dialog', { name: 'Turn usage' })
+    const dialog = page.getByRole('dialog', { name: 'Session statistics' })
     expect(await dialog.count()).toBe(1)
-    expect(await dialog.getByText('deepseek-official/deepseek-v4-flash', { exact: true }).count()).toBe(1)
-    expect(await dialog.getByText('49.7%', { exact: true }).count()).toBe(1)
-    expect(await dialog.getByText('7,891 tok', { exact: true }).count()).toBe(1)
-    expect(await dialog.getByText('7,808 tok', { exact: true }).count()).toBe(1)
-    expect(await dialog.getByText('112 tok (42 tok reasoning)', { exact: true }).count()).toBe(1)
-    expect(await dialog.getByText('15,811 tok', { exact: true }).count()).toBe(1)
+    expect(await dialog.locator('dt').allTextContents()).toEqual(['LLM time', 'Tool time', 'Average first response'])
+    const timings = await dialog.locator('dd').allTextContents()
+    expect(timings).toHaveLength(3)
+    for (const timing of timings) expect(timing).toMatch(/^\d+(?:\.\d+)?s$/u)
+    expect(await dialog.textContent()).not.toMatch(/tok|Cache hit|deepseek-official/u)
     await page.keyboard.press('Escape')
     expect(await page.getByRole('dialog').count()).toBe(0)
 

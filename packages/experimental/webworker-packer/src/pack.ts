@@ -80,6 +80,11 @@ export interface PackOptions {
   readonly root?: string
   /** Package name to absolute directory, for workspace and vendored packages. */
   readonly workspaces: ReadonlyMap<string, string>
+  /**
+   * Static libraries already compiled into the Page shell. Do not invent Worker
+   * roots for their exports; explicit Worker imports still traverse them.
+   */
+  readonly pagePackages?: ReadonlySet<string>
   /** Directory Node-style dependency resolution walks up from for the roster. */
   readonly resolveFrom: string
   /** Config trees to copy in beside the composition. */
@@ -284,10 +289,10 @@ interface SweepOutcome {
  * Keep only the JavaScript the worker can reach, transforming it on the way.
  *
  * Roots are the export faces of every materialized workspace and vendored
- * package — the harness addresses them by constructed name at runtime (Loader
- * rows, typert faces, delegating providers such as `-auto` pickers), so the
- * sweep prunes files only inside third-party packages — plus the worker
- * assembly's own image entries. Resolution runs the runtime loader's own
+ * package except the static Page assembly, plus the Worker assembly's own image
+ * entries. The harness addresses Worker packages by constructed name at runtime
+ * (Loader rows, typert faces, delegating providers such as `-auto` pickers), so
+ * every Worker export face stays reachable. Resolution runs the runtime loader's own
  * algorithm over the candidate set, so pack-time reachability and boot-time
  * resolution cannot drift, and a request that resolves nowhere — an undeclared
  * or missing dependency — fails the pack rather than the boot.
@@ -384,6 +389,7 @@ function sweepImage(
   const queue: { specifier: string; from: string; importer: string; meta?: boolean }[] = (options.entries ?? IMAGE_ENTRY_SEEDS)
     .map(specifier => ({ specifier, from: root, importer: 'worker assembly entry' }))
   for (const name of rootPackages) {
+    if (options.pagePackages?.has(name) === true) continue
     const manifestBytes = files[`node_modules/${name}/package.json`]
     if (manifestBytes === undefined) continue // materialize already reported it under `missing`
     let manifest: { exports?: Record<string, unknown> }
@@ -613,6 +619,11 @@ export function packVfsImage(options: PackOptions): PackResult {
     ...rosterOf(options.config),
     ...configTrees.filter(tree => tree.scanRoster === true).flatMap(tree => treeRosterOf(tree.directory)),
   ])]
+  for (const name of roster) {
+    if (options.pagePackages?.has(name) === true) {
+      throw new Error(`vfs image: static Page package ${name} cannot be a Worker plugin row`)
+    }
+  }
   const { files, packages, missing } = materialize(roster, options)
 
   files[CONFIG_PATH] = encoder.encode(options.config)

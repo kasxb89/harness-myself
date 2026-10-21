@@ -14,6 +14,10 @@ On Linux, `--with-deps` installs dependencies through the system package manager
 
 Ordinary scenarios begin with no registered Workspace or Session and a durable marker recording a removed default Workspace, so explicit folder-selection scenarios retain control of their cwd. `launchWebScaffold({ firstUse: true })` leaves initialization eligible for startup scenarios.
 
+Snapshot skill catalogs belong to the fixture. The scaffold confines filesystem roots to its temporary world, disables Univer's bundled skills through its public `skills` setting, and gives the Credits entry a Loader `isolate.skills` boundary for its optional directing-skill registration. Host APIs, tools, and project skill discovery remain available. `launchWebScaffold({ bundledSkills: true })` explicitly includes the product catalogs for scenarios that test them. Product defaults and persisted Session comparison rules stay unchanged.
+
+[Phone login recovery](phone-login-fixture.e2e.ts) runs only when `DSH_PHONE_FIXTURE_RECEIPT` names a fresh, isolated controller fixture receipt. It requires a loopback `/harness` endpoint, blocked outbound HTTP, synthetic mainland phone scenarios and no production access. Each case uses a temporary harness home and real Host forwarding; the browser covers definite SMS failure, unknown delivery, a lost successful response across Host restart, and the declared MFA backup-code form. The fixture owns fake dispatch and session counters; no real SMS or paid request is sent. Production HTTPS cookie policy needs separate verification.
+
 ## Completion observations
 
 State-sensitive cases use Workspace, admission, attachment, and model-stream barriers to separate visible intermediate states from completed operations. Model-picker persistence assertions wait for the saved default, independently of menu closure. Details close waits for frame transitions; archive verification assigns an explicit title to the seeded Session and follows that identity across reload. The [CI test reliability workflow](../../../.agents/skills/dsh-ci-test-reliability/SKILL.md#synchronize-on-state) owns these synchronization rules.

@@ -1,5 +1,25 @@
 /** Conversation view and session-local presentation state. */
 import type { DraftInput } from './draft-editor.ts'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
+
+/** Cross-panel access to the Conversation shell's existing one-shot View request. */
+export interface ConversationViewNavigation {
+  /**
+   * Select a registered View and request its exact target-owned focus identity.
+   * @param sessionId - Already retained and opened Session whose View will receive the request.
+   * @param view - Registered, visible Conversation View identity.
+   * @param focus - Opaque target-owned focus identity.
+   * @returns False without changing selection if the Session or View is unavailable.
+   */
+  open(sessionId: SessionId, view: string, focus: string): boolean
+}
+
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    /** One-shot View navigation shared with global panels. */
+    conversationViews: ConversationViewNavigation
+  }
+}
 
 /**
  * One conversation view tab, projected from a 'conversation.view' slot

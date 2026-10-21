@@ -154,6 +154,22 @@ async function bench(config: ConversationConfig = Config({}), projectedSettings?
 }
 
 describe('Conversation inject API', () => {
+  it('queues cross-panel View focus for an unmounted shell and rejects unavailable views or Sessions', async () => {
+    const b = await bench()
+    onTestFinished(() => b.runtime.dispose())
+    b.slots.register({ name: 'conversation.view', id: 'chat', label: 'Chat' }, (() => null) as never)
+    await b.runtime.flush()
+    const navigation = b.runtime.ctx.conversationViews
+    expect(navigation.open('missing' as SessionId, 'chat', 'artifact:missing')).toBe(false)
+    expect(navigation.open(ROOT, 'missing-view', 'artifact:missing')).toBe(false)
+    expect(navigation.open(ROOT, 'chat', 'artifact:first')).toBe(true)
+    const body = b.conversationApi(ROOT)
+    expect(body.instance.store.getSnapshot()).toMatchObject({ view: 'chat', viewRequest: { view: 'chat', focus: 'artifact:first' } })
+    expect(navigation.open(ROOT, 'chat', 'artifact:second')).toBe(true)
+    expect(body.instance.store.getSnapshot().viewRequest).toEqual({ view: 'chat', focus: 'artifact:second' })
+    expect(navigation.open(ROOT, 'missing-view', 'artifact:bad')).toBe(false)
+    expect(body.instance.store.getSnapshot().viewRequest?.focus).toBe('artifact:second')
+  })
   it('owns the File action, reads its mounted composer availability, and unregisters on disposal', async () => {
     const b = await bench()
     onTestFinished(() => b.runtime.dispose())

@@ -165,6 +165,11 @@ export class SubmitMachine {
   ): readonly InputEffect[] {
     const flight = this.inflight
     if (this.phase !== 'adjudicating' || flight === undefined || flight.attempt.seq !== attempt.seq) return []
+    if (outcome !== undefined && outcome !== 'handled' && 'refusal' in outcome) {
+      this.inflight = undefined
+      this.phase = 'plain'
+      return [{ type: 'refusal', text: outcome.refusal }]
+    }
     if (outcome !== undefined && outcome !== 'handled' && 'claim' in outcome) {
       this.claim = outcome.claim
       this.phase = 'submitting'

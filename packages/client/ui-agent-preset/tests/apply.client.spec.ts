@@ -509,6 +509,44 @@ describe('ui-agent-preset apply', () => {
     await vi.waitFor(() => { expect(slots.entries('settings.section')).toHaveLength(1) })
   })
 
+  it.each([false, true])('mounts conversation seats after their declarations and restores them on redeclaration (unrelated service=%s)', async (unrelatedService) => {
+    const { ctx, slots } = await bench()
+    try {
+      declareRoot(slots)
+      ctx.provide('sessions', sessionsDouble(ctx, { byId: {} }) as never)
+      ctx.provide('uiWorkspace', uiWorkspaceDouble() as never)
+      if (unrelatedService) ctx.provide('conversation', {} as never)
+      const feature = ctx.plugin({ inject: [...inject], apply })
+      await feature.await()
+      expect(slots.entries('conversation.hero.agentPreset')).toHaveLength(0)
+      expect(slots.entries('conversation.session.header.actions')).toHaveLength(0)
+
+      const declaration = declareConversation(slots)
+      await vi.waitFor(() => {
+        expect(slots.entries('conversation.hero.agentPreset')).toHaveLength(1)
+        expect(slots.entries('conversation.session.header.actions')).toHaveLength(1)
+        expect(slots.entries('main')).toHaveLength(1)
+        expect(slots.entries('sidebar.panellist')).toHaveLength(1)
+      })
+      declaration()
+      expect(slots.entries('conversation.hero.agentPreset')).toHaveLength(0)
+      expect(slots.entries('conversation.session.header.actions')).toHaveLength(0)
+      declareConversation(slots)
+      await vi.waitFor(() => {
+        expect(slots.entries('conversation.hero.agentPreset')).toHaveLength(1)
+        expect(slots.entries('conversation.session.header.actions')).toHaveLength(1)
+      })
+
+      await feature.dispose()
+      expect(slots.entries('conversation.hero.agentPreset')).toHaveLength(0)
+      expect(slots.entries('conversation.session.header.actions')).toHaveLength(0)
+      expect(slots.entries('main')).toHaveLength(0)
+      expect(slots.entries('sidebar.panellist')).toHaveLength(0)
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
   it('binds the Add plugin menu item to the roster and Creator flow and removes it with the feature', async () => {
     const { ctx, slots, setDeveloperTools } = await bench()
     try {

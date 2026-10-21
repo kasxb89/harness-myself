@@ -18,12 +18,16 @@ import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import type {} from '@deepseek-ai/dsh-api-remotes/client'
 import type {} from '@deepseek-ai/dsh-api-session-controller/remote'
+import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
+import type { SessionSeq } from '@deepseek-ai/dsh-session/types'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { ArtifactsInjected } from './ArtifactsPage.tsx'
 import { ArtifactsMain, type ArtifactsMainInjected } from './ArtifactsMain.tsx'
 import { ArtifactsPanelIcon } from './ArtifactsPanelIcon.tsx'
 import { OperationToast, type ArtifactNotice, type ArtifactNoticeInjected } from './OperationToast.tsx'
-import { readArtifacts, readRootDirectory, readStorage, readTrash, readWorkspace, renameArtifact, restoreArtifact, saveStorage, trashArtifact, type ArtifactResult } from './api.ts'
+import { readArtifactOrigin, readArtifacts, readRootDirectory, readStorage, readTrash, readWorkspace, renameArtifact, restoreArtifact, saveStorage, trashArtifact, type ArtifactResult } from './api.ts'
+import { generationSequence, hasGeneratingEvent } from './source-chat.ts'
 import { en, NS, zh, type ArtifactsKey } from './locales.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -54,7 +58,11 @@ export interface Config {
 export const Config: z<Config> = z.object({ pollIntervalMs: z.natural().min(1000).max(60_000).default(5000) })
 
 /** Required services: the slot registries and the dictionary registry. */
-export const inject = ['slots', 'locale', 'uiSession', 'remote', 'remote.session']
+export const inject = ['slots', 'locale', 'uiSession', 'remote', 'remote.session', 'sessions', 'uiWorkspace', 'conversationViews', 'layout']
+
+declare module '@deepseek-ai/dsh-api-session-controller/client' {
+  interface SessionReferenceSourceMap { artifactNavigation: unknown }
+}
 
 /**
  * Client plugin body: register the dictionaries, the sidebar entry, and the page.
@@ -70,7 +78,7 @@ export function apply(ctx: ClientContext, config: Config): void {
   let seq = 0
   let mutating = false
   const report = async <T>(operation: () => Promise<ArtifactResult<T>>,
-    successKey: 'notice.saved' | 'notice.renamed' | 'notice.trashed' | 'notice.restored' | 'notice.revealed'): Promise<ArtifactResult<T>> => {
+    successKey: 'notice.saved' | 'notice.renamed' | 'notice.trashed' | 'notice.restored' | 'notice.revealed' | 'notice.openedChat'): Promise<ArtifactResult<T>> => {
     if (mutating) return { ok: false, code: 'ARTIFACT_OPERATION_UNKNOWN' }
     mutating = true
     try {
@@ -85,6 +93,30 @@ export function apply(ctx: ClientContext, config: Config): void {
     pollIntervalMs: (config as Required<Config>).pollIntervalMs,
     t: (key, values) => t(key as Parameters<typeof t>[0], values),
     readListing: readArtifacts, readStorage, readTrash, readWorkspace, readRootDirectory,
+    readOrigin: readArtifactOrigin,
+    returnToChat: entry => report(async () => {
+      const signal = AbortSignal.any([lifetime.signal, ctx.layout.beginNavigation()])
+      const source = await readArtifactOrigin(entry, signal)
+      if (!source.ok) return source
+      if (source.value === null) return { ok: false as const, code: 'ARTIFACT_ORIGIN_UNAVAILABLE' as const }
+      const origin = source.value
+      try {
+        return await ctx.sessions.using(origin.sessionId, { source: 'artifactNavigation', signal }, async (reference) => {
+          const binding = reference.binding
+          const seq = generationSequence(origin, binding.session.projections.faceOf('turnOutline').getSnapshot())
+          await binding.session.loadThrough((seq ?? 0) as SessionSeq)
+          signal.throwIfAborted()
+          if (!hasGeneratingEvent(origin, binding.eventSource.getSnapshot().entries)) {
+            return { ok: false as const, code: 'ARTIFACT_ORIGIN_UNAVAILABLE' as const }
+          }
+          if (!ctx.conversationViews.open(origin.sessionId, 'chat', `artifact:${JSON.stringify(origin)}`)) {
+            return { ok: false as const, code: 'ARTIFACT_ORIGIN_UNAVAILABLE' as const }
+          }
+          ctx.uiWorkspace.openSession(origin.sessionId)
+          return { ok: true as const, value: null }
+        })
+      } catch { return { ok: false as const, code: 'ARTIFACT_ORIGIN_UNAVAILABLE' as const } }
+    }, 'notice.openedChat'),
     readDesktop: async () => {
       try { const value = await ctx.remote.session.canOpenWorkspacePath(); return value.ok && value.value }
       catch { return false }

@@ -19,7 +19,10 @@ describe.skipIf(webSnapshotMode() === 'record')('web e2e: DeepSeek Messages sett
   let tripwire: ReturnType<typeof watchConsole>
 
   beforeAll(async () => {
-    scaffold = await launchWebScaffold({ deepSeekMissingCredential: true })
+    scaffold = await launchWebScaffold({
+      deepSeekMissingCredential: true,
+      extraOverlayPath: fileURLToPath(new URL('./fixtures/stock-deepseek-onboarding.patch.yml', import.meta.url)),
+    })
     browser = await chromium.launch()
     page = await browser.newPage({ viewport: { width: 1680, height: 1000 }, locale: ZH_BROWSER_LOCALE })
     tripwire = watchConsole(page)

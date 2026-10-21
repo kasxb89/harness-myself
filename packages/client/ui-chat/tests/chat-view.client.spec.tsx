@@ -713,6 +713,61 @@ describe('Chat node rendering', () => {
 })
 
 describe('ChatView', () => {
+  it('reveals the exact generating tool inside a collapsed historical Turn and process group', async () => {
+    const builder = new ChatSnapshotBuilder()
+    const groups = new ConversationGroupStore<ProcessGroupData>()
+    const snapshot = installGroupedSnapshot(builder, new ProcessState(), groups, chatSnapshotFixture({
+      nodes: [userInTurn(1, 'make an image', 1), reasoningAssistant(2, 'preparing image', 1, 1),
+        toolResult(3, 'generated-image', 'generate_image'), assistant(4, 'saved image', 1, 2),
+        userInTurn(6, 'next question', 2), assistant(7, 'next answer', 2, 1)],
+      turnTimings: new Map([[1, { startTime: 0 }], [2, { startTime: 6_000 }]]), turnEnds: new Map([[1, 5], [2, 8]]),
+    }))
+    const h = makeHarness({ chat: snapshot }, { running: false })
+    h.setGrouped(groups)
+    h.setTranscriptView('compact')
+    const view = render(<h.ChatView {...h.props} />)
+    const card = view.getByTestId('tool-seat-generated-image')
+    expect(card.closest('[hidden]')).not.toBeNull()
+    const complete = vi.fn()
+    view.rerender(<h.ChatView {...h.props} viewRequest={{ view: 'chat', focus: 'artifact:{"turn":1,"toolCallId":"generated-image"}' }}
+      completeViewRequest={complete} />)
+    await waitFor(() => { expect(complete).toHaveBeenCalled() })
+    expect(card.closest('[hidden]')).toBeNull()
+    expect(view.queryByText(zh['chat.sourceUnavailable'])).toBeNull()
+  })
+  it('lands source focus after disclosure updates commit when a frame precedes that commit', async () => {
+    const builder = new ChatSnapshotBuilder()
+    const groups = new ConversationGroupStore<ProcessGroupData>()
+    const snapshot = installGroupedSnapshot(builder, new ProcessState(), groups, chatSnapshotFixture({
+      nodes: [userInTurn(1, 'make an image', 1), reasoningAssistant(2, 'preparing image', 1, 1),
+        toolResult(3, 'generated-image', 'generate_image'), assistant(4, 'saved image', 1, 2),
+        userInTurn(6, 'next question', 2), assistant(7, 'next answer', 2, 1)],
+      turnTimings: new Map([[1, { startTime: 0 }], [2, { startTime: 6_000 }]]), turnEnds: new Map([[1, 5], [2, 8]]),
+    }))
+    const h = makeHarness({ chat: snapshot }, { running: false })
+    h.setGrouped(groups)
+    h.setTranscriptView('compact')
+    const view = render(<h.ChatView {...h.props} />)
+    const scroller = view.container.querySelector('[data-chat-flow]')!.parentElement as HTMLDivElement
+    installScrollMetrics(scroller, 2_000, 300)
+    vi.spyOn(scroller, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 500, 300))
+    scroller.scrollTop = 1_700
+    const card = view.getByTestId('tool-seat-generated-image')
+    const row = card.closest<HTMLElement>('[data-chat-node-key]')!
+    vi.spyOn(row, 'getBoundingClientRect').mockImplementation(() =>
+      new DOMRect(0, 700 - scroller.scrollTop, 500, 60))
+    expect(card.closest('[hidden]')).not.toBeNull()
+    // A browser frame can run before React commits passive-effect disclosure updates.
+    // Scheduling another frame is not evidence that the target's hidden owners have committed.
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 1 })
+    const complete = vi.fn()
+    view.rerender(<h.ChatView {...h.props} viewRequest={{ view: 'chat', focus: 'artifact:{"turn":1,"toolCallId":"generated-image"}' }}
+      completeViewRequest={complete} />)
+    await waitFor(() => { expect(complete).toHaveBeenCalled() })
+    expect(scroller.scrollTop).toBe(676)
+    expect(card.closest('[hidden]')).toBeNull()
+    expect(view.queryByText(zh['chat.sourceUnavailable'])).toBeNull()
+  })
   it('renders only referenced Nodes without deleting unreferenced Node data', () => {
     const snapshot = chatSnapshotFixture({ nodes: [user(1, 'included'), user(2, 'omitted')] })
     const h = makeHarness({}, {}, snapshot)

@@ -48,6 +48,16 @@ function fixture() {
   return { column, viewport, group, row, prepend: (height: number) => { prependedHeight += height } }
 }
 
+it('aligns an exact generating Node without replacing a missing identity with another Turn', () => {
+  const h = fixture()
+  h.row(h.column, 'source', 700)
+  const landing = h.viewport.scrollToNode('source', 2)
+  expect(landing?.turn).toBe(2)
+  expect(h.column.scrollTop).toBe(676)
+  expect(h.viewport.scrollToNode('missing', 2)).toBeNull()
+  expect(h.column.scrollTop).toBe(676)
+})
+
 it.each([
   { count: 64, slot: false }, { count: 4096, slot: false },
   { count: 64, slot: true }, { count: 4096, slot: true },

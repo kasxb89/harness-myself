@@ -16,7 +16,7 @@ import {
 } from '@deepseek-ai/dsh-experimental-webworker-runtime'
 import { packVfsImage } from './pack.ts'
 import {
-  composeProfile, configTrees, describePack, indexWorkspacePackages, packPreviewFixture, previewFixtures,
+  composeProfile, configTrees, describePack, indexWorkspacePackages, packPreviewFixture, previewFixtures, staticPagePackages,
 } from './repository.ts'
 
 /**
@@ -50,6 +50,7 @@ const result = packVfsImage({
   profile,
   root: flag('root', '/dsh'),
   workspaces: indexWorkspacePackages(repoRoot),
+  pagePackages: await staticPagePackages(repoRoot),
   resolveFrom: repoRoot,
   configTrees: configTrees(repoRoot),
 })

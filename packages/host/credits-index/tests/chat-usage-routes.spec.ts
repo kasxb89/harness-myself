@@ -67,11 +67,13 @@ async function boot(options: { sessions?: boolean; projections?: boolean; concur
       if (hold) held.push(answer)
       else answer()
       ledgerReceived.resolve(undefined)
-    } else if (url.pathname === '/harness/api/user/phone/login') response.end(JSON.stringify({ success: true, data: {
-      access_token: 'second-access', access_expires_at: 253402300799,
-      relay_key: 'sk-second-key', user: { id: 8, phone_e164: '+8613800000001' },
-    } }))
-    else if (url.pathname === '/harness/api/user/auth/logout') response.end(JSON.stringify({ success: true }))
+    } else if (url.pathname === '/harness/api/user/phone/login') {
+      response.setHeader('set-cookie', 'new_api_refresh=fixture-refresh; HttpOnly')
+      response.end(JSON.stringify({ success: true, data: {
+        access_token: 'second-access', access_expires_at: 253402300799,
+        relay_key: 'sk-second-key', user: { id: 8, phone_e164: '+8613800000001' },
+      } }))
+    } else if (url.pathname === '/harness/api/user/auth/logout') response.end(JSON.stringify({ success: true }))
     else { response.writeHead(404); response.end() }
   })
   await new Promise<void>(resolve => upstream?.listen(0, '127.0.0.1', resolve))

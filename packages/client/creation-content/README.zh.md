@@ -21,6 +21,8 @@ kind: "package-reference"
 <a id="use-this-package"></a>
 ## 使用此包
 
+发布内容请求按 `document.baseURI` 解析，保留 `/mount/` 等应用部署前缀；预览使用者也在同一前缀下解析原始素材路径。
+
 读取器通过校验来源的 Host 转发接口访问 `/credits/api/creation/content`，仅提供已发布的模板与预设；停用的分类及其模板不对用户展示。上传的预览素材使用 `/credits/api/creation/assets/:id`，与账户自己的参考素材分开。发布内容为空时保持空态，不虚构示例内容。
 
 `getSnapshot()` 在状态变化前保持对象身份稳定。`subscribe()` 返回取消订阅函数，`refresh()` 合并同时发生的读取。`loading`、`ready` 与 `error` 分别表示首次读取、可用内容及读取失败。失败时保留上次校验通过的文档，便于使用方提示内容可能过期并提供重试；成功读到新版本后整体替换文档。使用方通过渲染器的 `hooks` 分区注入可观察对象，组件不直接订阅。

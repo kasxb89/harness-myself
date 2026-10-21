@@ -16,7 +16,7 @@ import {
 import type { LexicalEditor } from 'lexical'
 import type {
   CommandClaim, ConsumeTokenRequest, DraftAttachmentId, DraftInitializationOptions, DraftInitializationResult,
-  InputActions, InputEffect, InputNotice, InputState, InputTriggerController, PickOutcome,
+  InputActions, InputEffect, InputNotice, InputState, InputTriggerController,
   SessionInput, SubmitAttempt, SubmitAttachment, SubmitOutcome,
 } from '../contract/input.ts'
 import type {
@@ -650,6 +650,10 @@ export class SessionInputShell implements SessionInput {
         else this.notify(fx.level, fx.text)
         return
       }
+      case 'refusal': {
+        this.notify('error', fx.text)
+        return
+      }
       case 'adjudicate': {
         this.adjudicate(fx.attempt, fx.draft)
         return
@@ -824,7 +828,7 @@ export class SessionInputShell implements SessionInput {
       return
     }
     inputTriggers.adjudicate(draft.trim(), attempt.signal, { attachments: this.attachmentIds.length }).then(
-      (outcome: PickOutcome) => {
+      (outcome) => {
         if (this.dead(attempt)) return
         this.dispatchRun(({ type: 'adjudicated', attempt, outcome }))
       },

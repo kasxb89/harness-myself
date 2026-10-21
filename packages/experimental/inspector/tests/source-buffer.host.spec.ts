@@ -4,7 +4,7 @@ import { MessageChannel } from 'node:worker_threads'
 import { describe, expect, it, vi } from 'vitest'
 import { HostBridgePublisher } from '../src/host/bridge/publisher.ts'
 import { inspectorId } from '../src/shared/bridge/ids.ts'
-import { InspectorSourceBuffer, type InspectorSourceBufferOptions } from '../src/shared/bridge/buffer.ts'
+import { InspectorSourceBuffer, sourceStatePayloadByteLimit, type InspectorSourceBufferOptions } from '../src/shared/bridge/buffer.ts'
 import type { InspectorSourceDescriptor } from '../src/shared/bridge/messages/observation.ts'
 
 const sourceId = inspectorId<'InspectorSourceId'>('source-buffer-test', 'sourceId')
@@ -33,6 +33,18 @@ function buffer(
 }
 
 describe('Inspector source buffer', () => {
+  it.each([-Number.MAX_VALUE, -0.0000010000000000000002, 0, Number.MAX_VALUE])(
+    'fits a payload at its encoded budget with a multibyte topic and clock %s', (clock) => {
+      const maxFrameBytes = 8_192
+      const topic = '状态/树'
+      const payload = 'x'.repeat(sourceStatePayloadByteLimit(maxFrameBytes, topic) - 2)
+      const records = buffer(2, { maxFrameBytes })
+      expect(() => { records.setState(topic, payload, clock) }).not.toThrow()
+      expect(records.replacement(sourceId, generation).records).toEqual([{ topic, payload, monotonicMs: clock }])
+      expect(records.takeBatch(sourceId, generation)?.records).toEqual([{ topic, payload, monotonicMs: clock }])
+    },
+  )
+
   it('absorbs pre-replacement queue loss exactly once', () => {
     const records = buffer(1)
     expect(records.replacement(sourceId, generation)).toMatchObject({ nextSequence: 1, records: [] })

@@ -9,6 +9,7 @@
 import { useEffect, useSyncExternalStore } from 'react'
 import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-store'
 import { get, newKey, post } from './api.ts'
+import type { PhoneRecovery } from './phone-sign-in.ts'
 
 /** The signed-in account as the session route reports it. */
 export interface SessionInfo {
@@ -17,6 +18,8 @@ export interface SessionInfo {
   readonly account?: { readonly id: string; readonly phone: string }
   readonly expiresAt?: string
   readonly statePath?: string
+  readonly phoneRecoveryAvailable?: boolean
+  readonly phoneRecovery?: PhoneRecovery | null
 }
 
 /** One balance read. */

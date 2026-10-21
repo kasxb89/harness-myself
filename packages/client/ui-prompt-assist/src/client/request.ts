@@ -1,3 +1,5 @@
+
+import { appPath } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PromptAssistKey } from './locales.ts'
 import type { PromptAssistOwner } from './index.ts'
 
@@ -28,7 +30,7 @@ function object(value: unknown): value is Record<string, unknown> {
  */
 export async function verifyAccount(accountId: string, signal: AbortSignal): Promise<void> {
   try {
-    const response = await fetch('/credits/api/session', { headers: { accept: 'application/json' }, signal })
+    const response = await fetch(appPath('/credits/api/session'), { headers: { accept: 'application/json' }, signal })
     if (!response.ok) throw new AssistFailure('accountCheckFailed')
     const envelope: unknown = await response.json()
     if (!object(envelope) || envelope.ok !== true) throw new AssistFailure('accountCheckFailed')
@@ -49,7 +51,7 @@ export async function verifyAccount(accountId: string, signal: AbortSignal): Pro
  * @returns The validated replacement prompt.
  */
 export async function requestPrompt(body: AssistRequest, signal: AbortSignal): Promise<string> {
-  const response = await fetch('/credits/api/prompt/assist', {
+  const response = await fetch(appPath('/credits/api/prompt/assist'), {
     method: 'POST',
     headers: { 'content-type': 'application/json', accept: 'application/json' },
     body: JSON.stringify(body),

@@ -24,6 +24,29 @@ afterEach(async () => {
 })
 
 describe('original image query transport', () => {
+  it.each(['image', 'video'] as const)('retains the exact generating origin on the %s receipt', async (kind) => {
+    const origin = { sessionId: SESSION, turn: 3, eventSeq: 21, toolCallId: 'call_origin' }
+    const original = kind === 'image' ? { ...task, imageReceipt: { ...receipt, origin } }
+      : { ...videoTask, videoReceipt: { ...videoReceipt, origin } }
+    const data = { ...retained, kind, tasks: [original] }
+    const wire = { accountId: 'account-a', projects: [data] }
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ ok: true, payload: wire })))
+    expect(await readCreativeProjects(SESSION, new AbortController().signal)).toEqual({ ok: true, payload: wire })
+  })
+
+  it.each([
+    'malformed',
+    { sessionId: 'another-session', turn: 3 },
+    { sessionId: SESSION, turn: -1 },
+    { sessionId: SESSION, turn: 3, eventSeq: 1.5 },
+    { sessionId: SESSION, turn: 3, toolCallId: 7 },
+  ])('rejects malformed or cross-conversation generating origins in a receipt', async (origin) => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ ok: true,
+      payload: { accountId: 'account-a', projects: [{ ...retainedVideo,
+        tasks: [{ ...videoTask, videoReceipt: { ...videoReceipt, origin } }] }] } })))
+    expect(await readCreativeProjects(SESSION, new AbortController().signal)).toEqual({ ok: false, code: 'invalid' })
+  })
+
   it('sends only retained coordinates to recovery and accepts its 202 listing without generation or retry', async () => {
     const fetcher = vi.fn<typeof fetch>(async () => Response.json({ ok: true, payload: payload() }, { status: 202 }))
     vi.stubGlobal('fetch', fetcher)

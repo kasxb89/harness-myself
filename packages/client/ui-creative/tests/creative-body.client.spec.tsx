@@ -321,6 +321,77 @@ describe('chat creation sidebar', () => {
 
 
 describe('shared project workbench', () => {
+  it('uploads multiple character images and saves their real material bindings in one revision', async () => {
+    const h = fixture()
+    h.props.upload.mockResolvedValueOnce({ ok: true, assetId: 'ma_front', kind: 'image', converted: true,
+      previewUrl: '/credits/api/assets/preview?asset_id=ma_front' })
+    h.props.upload.mockResolvedValueOnce({ ok: true, assetId: 'ma_side', kind: 'image',
+      previewUrl: '/credits/api/assets/preview?asset_id=ma_side' })
+    fireEvent.click(screen.getByRole('tab', { name: '人物' }))
+    fireEvent.click(screen.getByRole('button', { name: '上传人物参考图' }))
+    const upload = screen.getByLabelText<HTMLInputElement>('上传人物参考图')
+    expect(upload.multiple).toBe(true)
+    const files = [new File(['front'], '正面.heic'), new File(['side'], '侧面.png')]
+    fireEvent.change(upload, { target: { files } })
+    await waitFor(() => { expect(screen.getByRole<HTMLInputElement>('checkbox', { name: '侧面.png' }).checked).toBe(true) })
+    expect(screen.getByRole<HTMLInputElement>('checkbox', { name: '正面.heic' }).checked).toBe(true)
+    expect(screen.getByRole('dialog').querySelectorAll('img')).toHaveLength(2)
+    expect(h.props.upload.mock.calls.map(call => call[0])).toEqual(files)
+    expect(h.props.save).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: '保存设定' }))
+    await waitFor(() => { expect(h.props.save).toHaveBeenCalledOnce() })
+    const [projectId, revision, change] = h.props.save.mock.calls[0]!
+    expect([projectId, revision]).toEqual(['cp_rain', 'revision-1'])
+    if (change.kind !== 'character') throw new Error('Expected one character edit')
+    expect(change.assets).toMatchObject([
+      { name: '正面.heic', kind: 'image', sourcePathOrAssetId: 'ma_front' },
+      { name: '侧面.png', kind: 'image', sourcePathOrAssetId: 'ma_side' },
+    ])
+    expect(change.value).toMatchObject({ id: 'girl', name: '小雨',
+      referenceAssetIds: ['station', ...change.assets!.map(asset => asset.id)] })
+    expect(h.inputActions.submit).not.toHaveBeenCalled()
+  })
+
+  it('keeps successful character uploads and existing references when a later image fails', async () => {
+    const h = fixture()
+    h.props.upload.mockResolvedValueOnce({ ok: true, assetId: 'ma_front', kind: 'image' })
+    h.props.upload.mockResolvedValueOnce({ ok: false, code: 'IMAGE_DECODE_FAILED' })
+    h.props.upload.mockResolvedValueOnce({ ok: true, assetId: 'ma_side', kind: 'image' })
+    fireEvent.click(screen.getByRole('tab', { name: '人物' }))
+    fireEvent.click(screen.getByRole('button', { name: '上传人物参考图' }))
+    fireEvent.change(screen.getByLabelText('上传人物参考图'), { target: { files: [
+      new File(['front'], '正面.png'), new File(['bad'], '损坏.tiff'), new File(['side'], '侧面.png'),
+    ] } })
+    await waitFor(() => { expect(screen.getByRole<HTMLInputElement>('checkbox', { name: '侧面.png' }).checked).toBe(true) })
+    expect(screen.getByRole('alert').textContent).toContain('「损坏.tiff」上传失败')
+    expect(screen.getByRole<HTMLInputElement>('checkbox', { name: '正面.png' }).checked).toBe(true)
+    expect(screen.getByRole<HTMLInputElement>('checkbox', { name: '车站参考' }).checked).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: '保存设定' }))
+    await waitFor(() => { expect(h.props.save).toHaveBeenCalledOnce() })
+    expect(h.props.save.mock.calls[0]?.[2]).toMatchObject({ kind: 'character', assets: [
+      { name: '正面.png', sourcePathOrAssetId: 'ma_front' },
+      { name: '侧面.png', sourcePathOrAssetId: 'ma_side' },
+    ] })
+  })
+
+  it('cancels the remaining character upload queue when its editor closes', async () => {
+    const h = fixture()
+    let finish!: (result: Awaited<ReturnType<CreativeBodyProps['upload']>>) => void
+    h.props.upload.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+    fireEvent.click(screen.getByRole('tab', { name: '人物' }))
+    fireEvent.click(screen.getByRole('button', { name: '上传人物参考图' }))
+    fireEvent.change(screen.getByLabelText('上传人物参考图'), { target: { files: [
+      new File(['first'], '第一张.png'), new File(['second'], '第二张.png'),
+    ] } })
+    const signal = h.props.upload.mock.calls[0]![1]
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+    await waitFor(() => { expect(screen.queryByRole('dialog')).toBeNull() })
+    expect(signal.aborted).toBe(true)
+    await act(async () => { finish({ ok: true, assetId: 'ma_late', kind: 'image' }) })
+    expect(h.props.upload).toHaveBeenCalledOnce()
+    expect(h.props.save).not.toHaveBeenCalled()
+  })
+
   it('requires visible generation directions before adding a shot with the original CAS revision', async () => {
     const h = fixture()
     fireEvent.click(screen.getByRole('button', { name: '添加镜头' }))
@@ -479,6 +550,25 @@ describe('shared project workbench', () => {
     fireEvent.change(screen.getByRole('combobox', { name: '文件类型' }), { target: { value: 'image' } })
     expect(h.view.container.querySelector('video')).toBeNull()
     expect(screen.getByText('人声、口型与字幕同步：待核验')).toBeTruthy()
+  })
+
+  it('keeps generating and unconfirmed tasks distinct from a confirmed generation failure', () => {
+    const h = fixture({ projects: [project({ tasks: [
+      { id: 'accepted', status: 'running', shotIds: ['s1'], completedShots: 0, totalShots: 1, outputs: [] },
+      { id: 'checking', status: 'unknown', shotIds: ['s1'], completedShots: 0, totalShots: 1, outputs: [], errorCode: 'TRANSPORT' },
+      { id: 'rejected', status: 'failed', shotIds: ['s1'], completedShots: 0, totalShots: 1, outputs: [], errorCode: 'TASK_FAILED' },
+    ] })] })
+    fireEvent.click(screen.getByRole('tab', { name: '任务与产物' }))
+    const accepted = h.view.container.querySelector('[data-creative-task="accepted"]')!
+    const checking = h.view.container.querySelector('[data-creative-task="checking"]')!
+    const rejected = h.view.container.querySelector('[data-creative-task="rejected"]')!
+    expect(accepted.textContent).toContain('生成中')
+    expect(accepted.textContent).not.toContain('生成失败')
+    expect(checking.textContent).toContain('状态待确认')
+    expect(checking.textContent).toContain('不要再次提交生成')
+    expect(checking.textContent).not.toContain('生成失败')
+    expect(rejected.textContent).toContain('生成失败')
+    expect(rejected.textContent).toContain('先核对结果')
   })
 
   it('reports actual material outputs without displaying an invented zero-shot completion', () => {

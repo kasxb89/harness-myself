@@ -22,9 +22,23 @@ function options(changes: Partial<ImageTaskOptions> = {}): ImageTaskOptions {
 }
 
 describe('image task execution and read-only recovery', () => {
+  it('retains the generating source in receipts and keeps it when queried from another turn', async () => {
+    const origin = { sessionId: 'original-chat' as import('@deepseek-ai/dsh-session/types').SessionId, turn: 2 }
+    const first = options({ origin, queryRetryLimit: 0, read: vi.fn(async () => { throw new Error('temporary disconnect') }) })
+    const pending = await executeImageTask(first)
+    expect(pending.imageReceipt?.origin).toEqual(origin)
+    if (pending.imageReceipt === undefined) throw new Error('Expected the accepted image task receipt before recovery')
+    const resumed = options({ resumeReceipt: pending.imageReceipt,
+      origin: { sessionId: origin.sessionId, turn: 9 } })
+    const saved = await executeImageTask(resumed)
+    expect(saved.imageReceipt?.origin).toEqual(origin)
+    expect(resumed.submit).not.toHaveBeenCalled()
+  })
+
   it('separates long image deadlines from account reads and accepts short local test budgets', () => {
     expect(Config({})).toMatchObject({ timeoutMs: 15000, imageSubmitTimeoutMs: 180000,
-      imageTaskTimeoutMs: 600000, imagePollIntervalMs: 2000, imageQueryRetryLimit: 2 })
+      imageTaskTimeoutMs: 600000, imagePollIntervalMs: 2000, imageQueryRetryLimit: 2,
+      videoSubmitTimeoutMs: 180000, videoTaskTimeoutMs: 900000, videoPollIntervalMs: 6000, videoQueryRetryLimit: 2 })
     expect(Config({ imageSubmitTimeoutMs: 1, imageTaskTimeoutMs: 1 })).toMatchObject({ imageSubmitTimeoutMs: 1, imageTaskTimeoutMs: 1 })
     for (const value of [0, -1, 1.5, Number.POSITIVE_INFINITY, 2147483648]) {
       expect(() => Config({ imageSubmitTimeoutMs: value })).toThrow()

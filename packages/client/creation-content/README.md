@@ -21,6 +21,8 @@ Reference for `@deepseek-ai/dsh-client-creation-content`, the shared publication
 <a id="use-this-package"></a>
 ## Use this package
 
+Publication requests resolve beneath `document.baseURI`, preserving an external application mount such as `/mount/`; preview consumers resolve the canonical asset paths within the same mount.
+
 The reader fetches `/credits/api/creation/content` through the origin-checked Host relay. Only published templates and presets are exposed; disabled categories and their templates are excluded. Uploaded preview media uses `/credits/api/creation/assets/:id`; it is separate from account-owned reference materials. An empty publication remains empty rather than inventing sample content.
 
 `getSnapshot()` preserves identity until state changes. `subscribe()` returns a disposer, and `refresh()` coalesces simultaneous readers. The `loading`, `ready` and `error` states distinguish the initial read, usable publication and failure. A failed read retains the last validated document, so consumers can disclose stale content and offer retry. A successful read of a new revision replaces the complete document. Consumers inject the observable through the renderer's `hooks` compartment; components never subscribe directly.

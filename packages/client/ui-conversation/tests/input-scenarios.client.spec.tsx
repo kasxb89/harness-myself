@@ -27,13 +27,14 @@ import {
 } from '@deepseek-ai/dsh-client-test-runtime'
 import type { SessionStatusSnapshot } from '@deepseek-ai/dsh-client-ui-session/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import { en as commonEn } from '@deepseek-ai/dsh-client-locale/src/locales/en.ts'
 import { zh as commonZh } from '@deepseek-ai/dsh-client-locale/src/locales/zh.ts'
 import type { DraftAttachmentId } from '../src/client/contract/input.ts'
 import { SessionInputShell } from '../src/client/input/facade.ts'
 import { $replaceDetectSpanWithText } from '../src/client/input/editor/span-map.ts'
 import { InputBar } from '../src/client/skeleton/InputBar.tsx'
 import type { InputBarProps } from '../src/client/skeleton/InputBar.tsx'
-import { zh } from '../src/client/locales.ts'
+import { en, zh } from '../src/client/locales.ts'
 
 // Every fixture carries the resource hook the resources plugin merges into GlobalStandardProps.
 const useResource = (() => ({ status: 'none' as const, value: undefined, failure: undefined })) as GlobalStandardProps['useResource']
@@ -119,7 +120,7 @@ const COMMANDS: FakeCommand[] = [
 const PNG: SubmitAttachment = { type: 'image', mediaType: 'image/png', data: 'AA==' }
 
 /** Real scope bench: a Controller-owned Session scope + InputTriggerController + shell listeners. */
-async function scopedBench(register?: (inputTriggers: InputTriggerService) => void) {
+async function scopedBench(register?: (inputTriggers: InputTriggerService) => void, english = false) {
   const runtime = await SlotTestRuntime.create()
   onTestFinished(() => runtime.dispose())
   const ctx = runtime.ctx
@@ -197,7 +198,7 @@ async function scopedBench(register?: (inputTriggers: InputTriggerService) => vo
     renderSlot: (() => null) as InputBarProps['renderSlot'],
     stop: vi.fn(),
     useStopShortcut: bindSnapshotSelector(createSnapshotStore<readonly string[]>([])),
-    t: makeTranslate(zh, commonZh),
+    t: makeTranslate(english ? en : zh, english ? commonEn : commonZh),
     variant: 'composer',
   }
   const view = render(<InputBar {...barProps} />)
@@ -453,6 +454,50 @@ describe('scenario I: unknown /xyz + enter', () => {
     await vi.waitFor(() => { expect(b.view.getByText('服务器繁忙，请稍后重试')).toBeTruthy() })
     // Never a silent downgrade: draft retained, sink untouched.
     expect(b.shell.snapshot.draft).toBe('/plan 上线')
+    expect(b.sink).not.toHaveBeenCalled()
+  })
+})
+
+
+describe('Enter adjudication feedback', () => {
+  it.each([false, true])('shows a localized attachment refusal while preserving the whole envelope (English: %s)', async (english) => {
+    const refusal = english
+      ? '/echo does not accept attachments; remove them first'
+      : '/echo 不接受附件，请先移除附件'
+    const b = await scopedBench(inputTriggers => inputTriggers.registerSource({
+      trigger: '/', name: 'command', candidates: async () => [], onPick: () => undefined,
+      matchEnter: async () => ({ refusal }),
+    }), english)
+    const attachments = ['image-a', 'file-b'] as DraftAttachmentId[]
+    act(() => { b.shell.setDraft('/echo'); b.shell.addAttachments(attachments) })
+    fireEvent.keyDown(b.textarea, { key: 'Enter' })
+    await vi.waitFor(() => { expect(b.view.getByRole('alert').textContent).toBe(refusal) })
+    expect(b.shell.snapshot.draft).toBe('/echo')
+    expect(b.shell.snapshot.attachmentIds).toEqual(attachments)
+    expect(b.shell.snapshot.phase).toBe('plain')
+    expect(b.shell.notices.getSnapshot()).toMatchObject({ level: 'error', text: refusal })
+    expect(b.shell.notices.getSnapshot()?.presentation).toBeUndefined()
+    expect(b.serialize).not.toHaveBeenCalled()
+    expect(b.release).not.toHaveBeenCalled()
+    expect(b.sink).not.toHaveBeenCalled()
+  })
+
+  it.each([false, true])('sanitizes unknown adjudication diagnostics and preserves the envelope (English: %s)', async (english) => {
+    const diagnostic = 'gateway/internal: private request token /workspace/private/path'
+    const b = await scopedBench(inputTriggers => inputTriggers.registerSource({
+      trigger: '/', name: 'command', candidates: async () => [], onPick: () => undefined,
+      matchEnter: () => Promise.reject(new Error(diagnostic)),
+    }), english)
+    const attachments = ['image-a', 'file-b'] as DraftAttachmentId[]
+    act(() => { b.shell.setDraft('/echo'); b.shell.addAttachments(attachments) })
+    fireEvent.keyDown(b.textarea, { key: 'Enter' })
+    await vi.waitFor(() => { expect(b.view.getByRole('alert').textContent).toBe((english ? en : zh)['error.serverBusy']) })
+    expect(b.view.queryByText(diagnostic)).toBeNull()
+    expect(b.shell.notices.getSnapshot()).toMatchObject({ text: diagnostic, presentation: 'server-busy' })
+    expect(b.shell.snapshot.draft).toBe('/echo')
+    expect(b.shell.snapshot.attachmentIds).toEqual(attachments)
+    expect(b.serialize).not.toHaveBeenCalled()
+    expect(b.release).not.toHaveBeenCalled()
     expect(b.sink).not.toHaveBeenCalled()
   })
 })

@@ -247,8 +247,9 @@ async function pointAt(page: Page, where: 'list' | 'away'): Promise<void> {
 /**
  * Reveal the seeded rows: every seeded session is unattached, so they all sit
  * in the collapsed Ungrouped bucket. Open the bucket, then use its transient
- * Show-more control because an open group intentionally renders only five
- * rows by default. Hand-rolled polling because
+ * Show-more control until all seeded rows are present. The group header is
+ * also a treeitem; stopping after half the sessions can leave a compact list
+ * shorter than the viewport. Hand-rolled polling because
  * `expect.poll` is test-scoped and this runs in `beforeAll`.
  * @param page - the page under test.
  */
@@ -256,6 +257,7 @@ async function expandSeededSessions(page: Page): Promise<void> {
   const bucket = page.getByText('Ungrouped', { exact: true }).locator('..').locator('..')
   await bucket.waitFor({ timeout: 15_000 })
   const rows = page.locator('[role="tree"][aria-label="Sessions"] [role="treeitem"]')
+  const expectedRows = SEED_COUNT + 1
   const deadline = Date.now() + 30_000
   for (;;) {
     if (await bucket.getAttribute('aria-expanded') !== 'true') {
@@ -263,13 +265,13 @@ async function expandSeededSessions(page: Page): Promise<void> {
     }
     const showMore = page.getByRole('button', { name: /Show \d+ more sessions/ })
     if (await bucket.getAttribute('aria-expanded') === 'true'
-      && await rows.count() <= SEED_COUNT / 2
+      && await rows.count() < expectedRows
       && await showMore.count() > 0) {
       await showMore.click()
     }
-    if (await bucket.getAttribute('aria-expanded') === 'true' && await rows.count() > SEED_COUNT / 2) return
+    if (await bucket.getAttribute('aria-expanded') === 'true' && await rows.count() === expectedRows) return
     if (Date.now() > deadline) {
-      throw new Error(`Ungrouped bucket never revealed more than ${SEED_COUNT / 2} rows`)
+      throw new Error(`Ungrouped bucket never revealed all ${String(SEED_COUNT)} sessions and its header`)
     }
     await page.waitForTimeout(200)
   }

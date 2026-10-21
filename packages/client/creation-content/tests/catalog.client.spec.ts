@@ -50,6 +50,18 @@ function response(value: unknown): Response {
 }
 
 describe('creation publications through the real Client Loader', () => {
+  it('keeps the publication read beneath the document public mount', async ({ onTestFinished }) => {
+    const base = document.createElement('base')
+    base.href = '/mount/'
+    document.head.append(base)
+    onTestFinished(() => { base.remove() })
+    const fetcher = vi.fn<typeof fetch>(async () => response(content('mounted')))
+    vi.stubGlobal('fetch', fetcher)
+    const context = await boot()
+    expect(context.creationContent.getSnapshot()).toMatchObject({ status: 'ready', content: { revision: 'mounted' } })
+    expect(fetcher).toHaveBeenCalledWith('/mount/credits/api/creation/content', expect.any(Object))
+  })
+
   it('shares published updates, retains last content on errors and recovers to an empty publication', async () => {
     const first = content('one')
     const fetcher = vi.fn<typeof fetch>().mockImplementation(async () => response(first))

@@ -1,7 +1,13 @@
 /** Media requests retain structured failures and never retry generation mutations. */
+import { appPath } from '@deepseek-ai/dsh-client-ui-primitives'
+
 
 /** The existing local media routes return an envelope for business failures. */
 export interface Envelope<T> {
+  readonly plan_id?: string | null
+  readonly operation_id?: string | null
+  readonly task_id?: string | null
+  readonly request_id?: string | null
   readonly ok: boolean
   readonly code?: string | null
   readonly message?: string | null
@@ -18,7 +24,7 @@ export interface Envelope<T> {
  */
 export async function requestJson<T>(path: string, init?: RequestInit): Promise<Envelope<T>> {
   try {
-    const response = await fetch(path, init)
+    const response = await fetch(appPath(path), init)
     if (!response.ok) return { ok: false, code: 'HTTP', message: String(response.status) }
     const value: unknown = await response.json()
     if (value === null || typeof value !== 'object' || !('ok' in value) || typeof value.ok !== 'boolean') {

@@ -184,12 +184,10 @@ export function apply(ctx: ClientContext): void {
   }, 'ui-agent-preset: settings refresh')
 
   // The settings section's conversational authoring entry: stage the
-  // self-referential preset and land a new session on it. Bound inside the
-  // conversation scope below (the seat and the session flow live there) and
-  // unbound with it, so the section's face reads the current binding per
-  // render and simply hides the button while no flow exists.
+  // self-referential preset and land a new session on it. The callback follows
+  // Workspace navigation's lifetime and is absent when that service is unavailable.
   let creatorDraft: (() => void) | undefined
-  ctx.inject(['slots', 'conversation', 'sessions', 'uiWorkspace'], (scope: ClientContext) => {
+  ctx.inject(['uiWorkspace'], (scope: ClientContext) => {
     const seatInjected = (sessionId: SessionId | undefined): AgentPresetSeatInjected => {
       const binding = sessionId === undefined ? undefined : ctx.sessions.binding(sessionId)
       const seat = binding === undefined ? unboundSeat : seatFor(binding)
@@ -239,25 +237,23 @@ export function apply(ctx: ClientContext): void {
 
     scope.effect(() => {
       creatorDraft = startCreatorDraft
-      const chip = scope.slots.register({
-        name: 'conversation.hero.agentPreset',
-        locale: 'settings.agentPreset',
-        inject: seatInjected,
-      }, AgentPresetSeat)
-      const label = scope.slots.register({
-        name: 'conversation.session.header.actions',
-        id: 'agent-preset',
-        // Static session context occupies the header's leading negative-order band.
-        order: -10,
-        locale: 'settings.agentPreset',
-        inject: labelInjected,
-      }, AgentPresetLabel)
       return () => {
         creatorDraft = undefined
-        chip()
-        label()
       }
-    }, 'ui-agent-preset: new-session chip and header label')
+    }, 'ui-agent-preset: Creator flow')
+    scope.slots.inject('conversation.hero.agentPreset', () => scope.slots.register({
+      name: 'conversation.hero.agentPreset',
+      locale: 'settings.agentPreset',
+      inject: seatInjected,
+    }, AgentPresetSeat))
+    scope.slots.inject('conversation.session.header.actions', () => scope.slots.register({
+      name: 'conversation.session.header.actions',
+      id: 'agent-preset',
+      // Static session context occupies the header's leading negative-order band.
+      order: -10,
+      locale: 'settings.agentPreset',
+      inject: labelInjected,
+    }, AgentPresetLabel))
 
     scope.slots.inject('plugins.add.actions', () => scope.slots.register({
       name: 'plugins.add.actions',

@@ -25,7 +25,7 @@ import { WeakMapWithValues } from '@deepseek-ai/dsh-util-values'
 import type { TranslateNS } from '@deepseek-ai/dsh-client-locale/client'
 import { rankByName } from '@deepseek-ai/dsh-client-ui-primitives'
 import type {
-  CandidateRequest, ClientSessionContext, CommandClaim, PickOutcome, InputTriggerCandidate, InputTriggerPick,
+  CandidateRequest, ClientSessionContext, CommandClaim, EnterOutcome, PickOutcome, InputTriggerCandidate, InputTriggerPick,
   SubmitAttachment, SubmitEnvelope, SubmitOutcome,
 } from '@deepseek-ai/dsh-client-ui-input-trigger/client'
 import type { CommandContribution, CommandDecoration, CommandUiContract } from './contract.ts'
@@ -291,7 +291,7 @@ export class CommandUiRuntime extends Service implements CommandUiContract {
    *
    * Envelope policy: an enter submission carrying attachments resolves only
    * through a command declaring attachment acceptance. Every other submitting
-   * route — popup, non-accepting claim, bare detached execute — throws the
+   * route — popup, non-accepting claim, bare detached execute — returns the
    * refusal so the machine surfaces one composer notice and the draft and
    * attachments stay in place; nothing executes and nothing is dropped. An
    * action submits nothing and runs regardless.
@@ -304,7 +304,7 @@ export class CommandUiRuntime extends Service implements CommandUiContract {
     line: string,
     signal: AbortSignal,
     envelope: SubmitEnvelope,
-  ): Promise<PickOutcome> {
+  ): Promise<EnterOutcome> {
     const trimmed = line.trim()
     if (!trimmed.startsWith('/')) return undefined
     const ws = trimmed.search(/\s/)
@@ -312,13 +312,13 @@ export class CommandUiRuntime extends Service implements CommandUiContract {
     const bare = ws === -1
     const typedName = token.slice(1)
     if (typedName === '') return undefined
-    const refuseAttachments = (): never => {
-      throw new Error(this.t('notice.attachmentsUnsupported', { command: typedName }))
-    }
+    const refuseAttachments = (): EnterOutcome => ({
+      refusal: this.t('notice.attachmentsUnsupported', { command: typedName }),
+    })
     const contribution = this.live.contributions.get(typedName)
     if (contribution !== undefined && contribution.available(session)) {
       if (!bare) return undefined
-      if (envelope.attachments > 0 && contribution.ui.kind !== 'action') refuseAttachments()
+      if (envelope.attachments > 0 && contribution.ui.kind !== 'action') return refuseAttachments()
       this.invoke(typedName, contribution.ui, session, { via: 'enter', token })
       return 'handled'
     }
@@ -332,17 +332,17 @@ export class CommandUiRuntime extends Service implements CommandUiContract {
     if (bare) {
       const decoration = this.live.decorations.get(name)
       if (decoration !== undefined && decoration.available(session)) {
-        if (envelope.attachments > 0 && decoration.ui.kind !== 'action') refuseAttachments()
+        if (envelope.attachments > 0 && decoration.ui.kind !== 'action') return refuseAttachments()
         this.invoke(name, decoration.ui, session, { via: 'enter', token })
         return 'handled'
       }
     }
     if (desc.input !== undefined) {
-      if (envelope.attachments > 0 && desc.input.attachments !== true) refuseAttachments()
+      if (envelope.attachments > 0 && desc.input.attachments !== true) return refuseAttachments()
       return { claim: this.leadingClaim(desc, session, token.slice(1)) }
     }
     if (!bare) return undefined
-    if (envelope.attachments > 0) refuseAttachments()
+    if (envelope.attachments > 0) return refuseAttachments()
     this.consumeVia(session.sessionId, { via: 'enter', token })
     this.runDetached(desc, session, canonical)
     return 'handled'

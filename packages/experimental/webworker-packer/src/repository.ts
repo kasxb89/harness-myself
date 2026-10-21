@@ -7,10 +7,12 @@
  * assumptions about pnpm workspaces or the `dsh` CLI.
  * @module @deepseek-ai/dsh-experimental-webworker-packer/src/repository
  */
-import { execFileSync } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { promisify } from 'node:util'
 import { DSH_HOME_ENV } from '@deepseek-ai/dsh-home-paths'
 import type { ConfigTree, ImageTree, PackResult } from './pack.ts'
 
@@ -32,6 +34,7 @@ const CLI_ENTRY = `${CLI_PACKAGE}/src/bin.ts`
 
 /** Repository-owned deterministic filesystem content offered by the preview. */
 const PREVIEW_EXAMPLE_ROOT = 'packages/experimental/webworker-runtime/tests/fixtures/vfs-example'
+const execFileAsync = promisify(execFile)
 
 /** Config directory metadata owned by the CLI image packer, not the public plugin manifest. */
 interface ConfigTreeDeclaration {
@@ -82,6 +85,27 @@ export function indexWorkspacePackages(repoRoot: string): Map<string, string> {
     if (existsSync(absolute)) visit(absolute)
   }
   return index
+}
+
+/**
+ * Static browser libraries compiled into the Page shell, rather than Worker roots.
+ * Uses the Client package verifier's build-config reader in its source launcher;
+ * the installed CLI itself needs no native TypeScript loading support.
+ * @param repoRoot - Complete repository root containing the Client build configs.
+ * @returns Packages whose emitted browser entry is consumed by the Page build.
+ */
+export async function staticPagePackages(repoRoot: string): Promise<ReadonlySet<string>> {
+  const reader = pathToFileURL(join(repoRoot, 'scripts/verify-client-packages.ts')).href
+  const source = `import { readStaticLinkedRoster } from ${JSON.stringify(reader)};\n`
+    + `process.stdout.write(JSON.stringify([...await readStaticLinkedRoster(${JSON.stringify(repoRoot)})]));\n`
+  const { stdout } = await execFileAsync(process.execPath, ['--import', 'tsx/esm', '--input-type=module', '--eval', source], {
+    cwd: repoRoot, encoding: 'utf8', maxBuffer: 1024 * 1024,
+  })
+  const packages: unknown = JSON.parse(stdout)
+  if (!Array.isArray(packages) || !packages.every((name: unknown): name is string => typeof name === 'string')) {
+    throw new Error('vfs image: static Page package reader must return package names')
+  }
+  return new Set(packages)
 }
 
 /**

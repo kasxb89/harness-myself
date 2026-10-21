@@ -7,6 +7,8 @@ import { INSPECTOR_BOOTSTRAP_ROUTE } from '../shared/web.ts'
 import { parseInspectorClientBootstrap } from '../shared/bridge/control-codec.ts'
 import { createInspectorService, type InspectorService as SharedInspectorService } from '../shared/service.ts'
 import { publishCordisTree } from './inspection/cordis.ts'
+import { sourceStatePayloadByteLimit } from '../shared/bridge/buffer.ts'
+import { CORDIS_TREE_TOPIC } from '../shared/bridge/messages/cordis.ts'
 import { startInspectorClient } from './bridge/controller.ts'
 import { disposeInspectorResources } from '../shared/dispose.ts'
 
@@ -130,7 +132,7 @@ class InspectorClientSession {
       this.lifetime.signal.throwIfAborted()
       disposers.push(publishCordisTree(this.ctx, source, {
         maxNodes: bootstrap.maxCordisNodes,
-        maxBytes: bootstrap.maxFrameBytes - 4_096,
+        maxBytes: sourceStatePayloadByteLimit(bootstrap.maxFrameBytes, CORDIS_TREE_TOPIC),
       }))
       disposers.push(this.ctx.provide('inspector', createInspectorService(source)))
       const panel = this.ctx.inject(['slots', 'shortcuts', 'locale'], async (ctx) => {

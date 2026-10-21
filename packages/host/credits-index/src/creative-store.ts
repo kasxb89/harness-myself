@@ -9,6 +9,7 @@ import type { Branded } from '@deepseek-ai/dsh-brand'
 import type { CreativeAsset, CreativeCharacter, CreativeImageReceipt, CreativeVideoReceipt, CreativeKind, CreativeOutput, CreativeOutputId, CreativePlanChange, CreativeProjectId, CreativeProjectView, CreativeShotPlan, CreativeShotView, CreativeStatus, CreativeTaskView } from './creative-types.ts'
 import type { VideoProjectManifest, VideoProjectRead } from './video-project.ts'
 import type { VideoProjectIdentity } from './video-project-types.ts'
+import { parseArtifactOrigin } from './artifact-origin.ts'
 
 /** Fixed complete-record and collection bounds for untrusted JSON and directory reads. */
 const MAX_BYTES = 2 * 1024 * 1024
@@ -150,7 +151,7 @@ function status(value: unknown): CreativeStatus {
 }
 
 /** Validate receipt fields before retaining or reading a private creation record. */
-function imageReceipt(value: unknown): CreativeImageReceipt {
+function imageReceipt(value: unknown, sessionId?: string): CreativeImageReceipt {
   const item = object(value)
   const route = text(item.route, 512)
   const model = text(item.model, 256)
@@ -169,7 +170,10 @@ function imageReceipt(value: unknown): CreativeImageReceipt {
   const taskId = item.taskId === undefined ? undefined : receiptId(item.taskId)
   const requestId = item.requestId === undefined ? undefined : receiptId(item.requestId)
   if (phase === 'accepted' && taskId === undefined) return invalid()
+  const origin = parseArtifactOrigin(item.origin, sessionId)
+  if (origin === null) return invalid()
   return { route, model, phase, backendFingerprint: fingerprint,
+    ...origin === undefined ? {} : { origin },
     ...taskId === undefined ? {} : { taskId }, ...requestId === undefined ? {} : { requestId } }
 }
 function mergeImageReceipt(prior: CreativeImageReceipt | undefined, value: CreativeImageReceipt, category: CreativeKind = 'image'): CreativeImageReceipt {
@@ -178,7 +182,8 @@ function mergeImageReceipt(prior: CreativeImageReceipt | undefined, value: Creat
   if (prior !== undefined && (prior.route !== incoming.route || prior.model !== incoming.model
     || prior.backendFingerprint !== incoming.backendFingerprint || order[incoming.phase] < order[prior.phase]
     || prior.taskId !== undefined && incoming.taskId !== undefined && prior.taskId !== incoming.taskId
-    || prior.requestId !== undefined && incoming.requestId !== undefined && prior.requestId !== incoming.requestId)) {
+    || prior.requestId !== undefined && incoming.requestId !== undefined && prior.requestId !== incoming.requestId
+    || JSON.stringify(prior.origin) !== JSON.stringify(incoming.origin))) {
     throw new CreativeError(category === 'image' ? 'CREATIVE_IMAGE_RECEIPT_CONFLICT' : 'CREATIVE_VIDEO_RECEIPT_CONFLICT', 409,
       category === 'image' ? '原图片任务的回执不能替换，请保留原任务编号后核对。' : '原视频任务的回执不能替换，请保留原任务编号后核对。')
   }
@@ -256,9 +261,16 @@ export function parseCreativePlanChange(value: unknown): CreativePlanChange {
       fields(source, ['kind', 'shotIds'])
       return { kind: 'reorder', shotIds: ids(source.shotIds) }
     case 'character': {
-      fields(source, ['kind', 'value'])
+      fields(source, ['kind', 'value', 'assets'])
       fields(object(source.value), ['id', 'name', 'appearance', 'clothing', 'personality', 'voice', 'referenceAssetIds'])
-      return { kind: 'character', value: character(source.value) }
+      const assets = source.assets === undefined ? undefined : list(source.assets, (value) => {
+        fields(object(value), ['id', 'name', 'kind', 'role', 'description', 'sourcePathOrAssetId'])
+        const parsed = asset(value)
+        if (parsed.kind !== 'image' || !/^ma_[A-Za-z0-9_-]+$/u.test(parsed.sourcePathOrAssetId)) return invalid()
+        return parsed
+      }, 128)
+      if (assets !== undefined) unique(assets.map(item => item.id))
+      return { kind: 'character', value: character(source.value), ...assets === undefined ? {} : { assets } }
     }
     case 'asset': {
       fields(source, ['kind', 'value'])
@@ -335,15 +347,15 @@ function parseRecord(value: unknown): CreativeRecord {
       status: recordedStatus === 'cancelled' && item.submissionStarted === true ? 'unknown' : recordedStatus, outputs,
       ...item.assetId === undefined ? {} : { assetId: identifier(item.assetId) },
       ...item.submissionStarted === undefined ? {} : { submissionStarted: item.submissionStarted },
-      ...item.imageReceipt === undefined ? {} : { imageReceipt: imageReceipt(item.imageReceipt) },
-      ...item.videoReceipt === undefined ? {} : { videoReceipt: imageReceipt(item.videoReceipt) },
+      ...item.imageReceipt === undefined ? {} : { imageReceipt: imageReceipt(item.imageReceipt, identifier(owner.sessionId)) },
+      ...item.videoReceipt === undefined ? {} : { videoReceipt: imageReceipt(item.videoReceipt, identifier(owner.sessionId)) },
       ...item.videoProjectId === undefined ? {} : { videoProjectId: text(item.videoProjectId, 128) },
       ...item.model === undefined ? {} : { model: text(item.model, 256) },
       ...item.errorCode === undefined ? {} : { errorCode: identifier(item.errorCode) },
     }
   }, MAX_OPERATIONS)
   const plan = parseCreativePlan(source)
-  if (operations.some(item => item.videoReceipt !== undefined && (plan.kind !== 'video' || item.videoProjectId !== undefined))) return invalid()
+  if (operations.some(item => item.videoReceipt !== undefined && (plan.kind !== 'video' || item.videoProjectId !== undefined || item.assetId !== undefined))) return invalid()
   if (operations.some(item => item.assetId === undefined
     ? item.shotIds.length === 0 || item.shotIds.some(id => !plan.shots.some(shot => shot.id === id))
     : item.shotIds.length > 0 || !plan.assets.some(asset => asset.id === item.assetId && asset.kind === 'image'))) return invalid()
@@ -549,8 +561,10 @@ export class CreativeStore {
           break
         }
         case 'character':
+          if (change.assets?.some(asset => plan.assets.some(item => item.id === asset.id))) missing()
           plan = { ...plan, characters: plan.characters.some(item => item.id === change.value.id)
-            ? plan.characters.map(item => item.id === change.value.id ? change.value : item) : [...plan.characters, change.value] }
+            ? plan.characters.map(item => item.id === change.value.id ? change.value : item) : [...plan.characters, change.value],
+          assets: [...plan.assets, ...change.assets ?? []] }
           break
         case 'asset':
           plan = { ...plan, assets: plan.assets.some(item => item.id === change.value.id)
@@ -628,7 +642,7 @@ export class CreativeStore {
           throw new CreativeError('CREATIVE_SHOT_RUNNING', 409, '该镜头或素材已有正在运行的生成，请查看原任务，不要重复提交。')
         }
         const facts = await this.facts(record)
-        if (facts.states.some(item => item.status === 'unknown' && overlaps(item))) {
+        if (facts.states.some(item => ['unknown', 'running', 'saving', 'editing'].includes(item.status) && overlaps(item))) {
           throw new CreativeError('CREATIVE_SUBMISSION_UNKNOWN', 409, '该镜头或素材已有结果未知的提交，可能已经计费；请先核对原任务，不会自动重新提交。')
         }
       } else {
@@ -679,7 +693,7 @@ export class CreativeStore {
   receipt(operation: CreativeOperation, received: CreativeImageReceipt): Promise<void> {
     return this.queue(async () => {
       await this.current(operation.owner)
-      const incoming = imageReceipt(received)
+      const incoming = imageReceipt(received, operation.owner.sessionId)
       const record = await this.read(operation.projectId, operation.owner)
       if (record.owner.workspaceRoot !== operation.owner.workspaceRoot) throw new CreativeError('CREATIVE_ACCESS_DENIED', 404, '该创作项目不属于当前工作区。')
       const found = record.operations.find(item => item.id === operation.operationId)
@@ -730,11 +744,11 @@ export class CreativeStore {
   videoReceipt(operation: CreativeOperation, received: CreativeVideoReceipt): Promise<void> {
     return this.queue(async () => {
       await this.current(operation.owner)
-      const incoming = imageReceipt(received)
+      const incoming = imageReceipt(received, operation.owner.sessionId)
       const record = await this.read(operation.projectId, operation.owner)
       if (record.owner.workspaceRoot !== operation.owner.workspaceRoot) throw new CreativeError('CREATIVE_ACCESS_DENIED', 404, '该创作项目不属于当前工作区。')
       const found = record.operations.find(item => item.id === operation.operationId)
-      if (record.kind !== 'video' || found === undefined || found.videoProjectId !== undefined || found.imageReceipt !== undefined) return invalid()
+      if (record.kind !== 'video' || found === undefined || found.videoProjectId !== undefined || found.assetId !== undefined || found.imageReceipt !== undefined) return invalid()
       if (!this.active.has(found.id)) throw new CreativeError('CREATIVE_VIDEO_NOT_RUNNING', 409, '本次视频操作已停止，请查询原任务；不会重新提交生成。')
       found.videoReceipt = mergeImageReceipt(found.videoReceipt, incoming, 'video')
       found.submissionStarted = true
@@ -758,7 +772,7 @@ export class CreativeStore {
       const record = await this.read(id, owner)
       if (record.owner.workspaceRoot !== owner.workspaceRoot) throw new CreativeError('CREATIVE_ACCESS_DENIED', 404, '该创作项目不属于当前工作区。')
       const found = record.operations.find(item => item.id === operationId(invocationId))
-      if (record.kind !== 'video' || found === undefined || found.videoProjectId !== undefined || found.imageReceipt !== undefined) return invalid()
+      if (record.kind !== 'video' || found === undefined || found.videoProjectId !== undefined || found.assetId !== undefined || found.imageReceipt !== undefined) return invalid()
       if (this.active.has(found.id)) throw new CreativeError('CREATIVE_SHOT_RUNNING', 409, '原视频任务正在处理，请等待当前查询完成。')
       if (found.videoReceipt?.taskId === undefined) throw new CreativeError('CREATIVE_VIDEO_TASK_UNCONFIRMED', 409, '原视频提交尚无可查询任务编号，请保留请求编号并核对；不会重新提交生成。')
       if (found.status === 'completed' || found.status === 'failed' || found.status === 'cancelled') throw new CreativeError('CREATIVE_VIDEO_TASK_SETTLED', 409, '原视频任务已明确结束，请查看保留的结果。')
@@ -797,7 +811,8 @@ export class CreativeStore {
       const record = await this.read(operation.projectId, operation.owner)
       if (record.owner.workspaceRoot !== operation.owner.workspaceRoot) throw new CreativeError('CREATIVE_ACCESS_DENIED', 404, '该创作项目不属于当前工作区。')
       const found = record.operations.find(item => item.id === operation.operationId)
-      if (found === undefined || found.videoProjectId !== undefined || category === 'video' && record.kind !== 'video') return invalid()
+      if (found === undefined || found.videoProjectId !== undefined
+        || category === 'video' && (record.kind !== 'video' || found.assetId !== undefined || found.imageReceipt !== undefined)) return invalid()
       if (!this.active.has(found.id)) throw new CreativeError(category === 'image' ? 'CREATIVE_IMAGE_NOT_RUNNING' : 'CREATIVE_VIDEO_NOT_RUNNING', 409,
         category === 'image' ? '原图片操作未在查询，请先恢复原任务。' : '原视频操作未在查询，请先恢复原任务。')
       if (bytes.byteLength === 0) return undefined
@@ -886,13 +901,14 @@ export class CreativeStore {
         if (outcome.imageReceipt !== undefined) {
           if (!this.active.has(found.id) || found.videoProjectId !== undefined
             || found.videoReceipt !== undefined || outcome.videoReceipt !== undefined) invalid()
-          found.imageReceipt = mergeImageReceipt(found.imageReceipt, outcome.imageReceipt)
+          found.imageReceipt = mergeImageReceipt(found.imageReceipt, imageReceipt(outcome.imageReceipt, operation.owner.sessionId))
           found.submissionStarted = true
           found.model = found.imageReceipt.model
         }
         if (outcome.videoReceipt !== undefined) {
-          if (!this.active.has(found.id) || record.kind !== 'video' || found.videoProjectId !== undefined || found.imageReceipt !== undefined) invalid()
-          found.videoReceipt = mergeImageReceipt(found.videoReceipt, outcome.videoReceipt, 'video')
+          if (!this.active.has(found.id) || record.kind !== 'video' || found.videoProjectId !== undefined
+            || found.assetId !== undefined || found.imageReceipt !== undefined) invalid()
+          found.videoReceipt = mergeImageReceipt(found.videoReceipt, imageReceipt(outcome.videoReceipt, operation.owner.sessionId), 'video')
           found.submissionStarted = true
           found.model = found.videoReceipt.model
         }

@@ -91,11 +91,13 @@
 .timeRange { color: var(--dsw-alias-label-secondary); font-size: 11px; font-variant-numeric: tabular-nums; }
 .timelineActions { display: flex; justify-content: space-between; border-top: 0.5px solid var(--dsw-alias-border-l3); padding: 3px; }
 .libraryToolbar { display: flex; justify-content: flex-end; margin-bottom: 10px; }
+.libraryHint { margin: 0 0 10px; line-height: 1.6; color: var(--dsw-alias-label-secondary); }
 .compactCaption { color: var(--dsw-alias-label-secondary); line-height: 1.6; margin: 0; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
 .referenceStrip { display: flex; gap: 6px; padding: 0 12px 10px; overflow-x: auto; }
 .referenceStrip img, .referenceOption img { width: 44px; height: 44px; object-fit: cover; border-radius: var(--dsw-radius-sm); }
 .assetThumbnail { width: 100%; height: 100px; object-fit: cover; }
 .planDialog { padding: 22px; display: flex; flex-direction: column; gap: 14px; min-width: 0; max-height: min(80vh, 760px); overflow: auto; }
+.planDialog > * { flex-shrink: 0; }
 .planDialog h2 { margin: 0; font-size: 16px; font-weight: 500; }
 .field { display: flex; flex-direction: column; gap: 6px; min-width: 0; font-size: 12px; }
 .fieldInput { box-sizing: border-box; min-width: 0; width: 100%; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-base); border: 0.5px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-sm); font: inherit; padding: 8px 10px; }

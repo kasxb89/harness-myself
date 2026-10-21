@@ -1,6 +1,6 @@
 /** Account-scoped usage queries, period filters and the balance page's analysis. */
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { Button, IconRefreshOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
+import { appPath, Button, IconRefreshOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import { UsageCharts } from './UsageCharts.tsx'
 import { aggregateUsage, getUsageWindow, parseUsagePayload, type UsagePayload, type UsageRange } from './usage-analytics.ts'
 import css from './UsageOverview.module.css'
@@ -43,7 +43,7 @@ export function UsageOverview({ t, creditsPerYuan }: { t: Translate; creditsPerY
     const read = async (): Promise<void> => {
       try {
         const query = new URLSearchParams({ start: String(window.start), end: String(window.end) })
-        const response = await fetch(`/credits/api/usage?${query.toString()}`, {
+        const response = await fetch(appPath(`/credits/api/usage?${query.toString()}`), {
           headers: { accept: 'application/json' }, signal: controller.signal,
         })
         const answer: unknown = await response.json()

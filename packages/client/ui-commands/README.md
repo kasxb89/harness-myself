@@ -43,7 +43,7 @@ First-party command definitions carry stable `definitionId` values. The client s
 
 ### Attachment-carrying submissions
 
-When the composer submits with images or generic files, only a host command declaring `input.attachments` proceeds. Every other command route throws the localized `attachmentsUnsupported` refusal, rendered as a transient toast while the draft and attachment cards stay in place. Handler errors preserve the same draft state for retry.
+When the composer submits with images or generic files, only a host command declaring `input.attachments` proceeds. Every other submitting command route returns the localized `attachmentsUnsupported` refusal, rendered as a transient toast while the draft and attachment cards stay in place. The typed Enter refusal remains distinct from operation diagnostics, which retain safe generic presentation. Handler errors preserve the same draft state for retry.
 
 -----
 

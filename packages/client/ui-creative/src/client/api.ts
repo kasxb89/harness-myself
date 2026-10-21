@@ -1,4 +1,6 @@
 /** Validated, account-authorized reads of retained chat creation projects. */
+import { appPath } from '@deepseek-ai/dsh-client-ui-primitives'
+
 import { randomUUID } from '@deepseek-ai/dsh-util-crypto'
 import type {
   CreativeAssetView, CreativeCharacter, CreativeOutput, CreativeProjectView, CreativeProjectsPayload,
@@ -87,7 +89,7 @@ function receiptId(value: unknown): value is string {
   return typeof value === 'string' && value.length <= 256 && /^[A-Za-z0-9][A-Za-z0-9._:-]*$/u.test(value)
     && !/^(?:sk-|nap_)/iu.test(value)
 }
-function submissionReceipt(value: unknown): value is CreativeSubmissionReceipt {
+function submissionReceipt(value: unknown, sessionId: SessionId): value is CreativeSubmissionReceipt {
   return record(value) && typeof value.route === 'string' && value.route.length <= 512
     && /^\/[A-Za-z0-9._~-]+(?:\/[A-Za-z0-9._~-]+)*$/u.test(value.route)
     && !value.route.split('/').some(part => part === '.' || part === '..')
@@ -98,6 +100,10 @@ function submissionReceipt(value: unknown): value is CreativeSubmissionReceipt {
     && (value.taskId === undefined || receiptId(value.taskId))
     && (value.requestId === undefined || receiptId(value.requestId))
     && (value.phase !== 'accepted' || receiptId(value.taskId))
+    && (value.origin === undefined || record(value.origin) && value.origin.sessionId === sessionId
+      && count(value.origin.turn)
+      && (value.origin.eventSeq === undefined || count(value.origin.eventSeq))
+      && (value.origin.toolCallId === undefined || typeof value.origin.toolCallId === 'string' && value.origin.toolCallId !== ''))
 }
 function task(value: unknown, sessionId: SessionId, projectId: string): value is CreativeTaskView {
   if (!record(value)) return false
@@ -106,8 +112,8 @@ function task(value: unknown, sessionId: SessionId, projectId: string): value is
     && count(value.completedShots) && count(value.totalShots) && value.completedShots <= value.totalShots
     && ['assetId', 'model', 'videoProjectId', 'errorCode'].every(key => value[key] === undefined || text(value[key]))
     && (value.imageReceipt === undefined || value.videoReceipt === undefined)
-    && (value.imageReceipt === undefined || submissionReceipt(value.imageReceipt))
-    && (value.videoReceipt === undefined || submissionReceipt(value.videoReceipt))
+    && (value.imageReceipt === undefined || submissionReceipt(value.imageReceipt, sessionId))
+    && (value.videoReceipt === undefined || submissionReceipt(value.videoReceipt, sessionId))
     && (value.canQuery === undefined || typeof value.canQuery === 'boolean')
     && (value.canQuery !== true || record(receipt) && receiptId(receipt.taskId))
     && Array.isArray(value.outputs) && value.outputs.every(item => output(item, sessionId, projectId))
@@ -135,7 +141,7 @@ function project(value: unknown, sessionId: SessionId): value is CreativeProject
  */
 export const readCreativeProjects: ReadCreativeProjects = async (sessionId, signal) => {
   try {
-    const response = await fetch(`/credits/api/creative/projects?${new URLSearchParams({ session_id: sessionId })}`, {
+    const response = await fetch(appPath(`/credits/api/creative/projects?${new URLSearchParams({ session_id: sessionId })}`), {
       signal, credentials: 'same-origin', cache: 'no-store', headers: { accept: 'application/json' },
     })
     if (response.status === 401) return { ok: false, code: 'signed-out' }
@@ -171,7 +177,7 @@ export interface CreativePlanRequest {
  */
 export async function saveCreativePlan(request: CreativePlanRequest, signal: AbortSignal): Promise<CreativeSaveResult> {
   try {
-    const response = await fetch('/credits/api/creative/plan', {
+    const response = await fetch(appPath('/credits/api/creative/plan'), {
       method: 'POST', signal, credentials: 'same-origin', cache: 'no-store',
       headers: { accept: 'application/json', 'content-type': 'application/json' },
       body: JSON.stringify({ session_id: request.sessionId, project_id: request.projectId,
@@ -205,7 +211,7 @@ export async function recoverCreativeImage(request: {
   readonly kind?: 'image' | 'video'
 }, signal: AbortSignal): Promise<CreativeRecoverResult> {
   try {
-    const response = await fetch(`/credits/api/creative/${request.kind ?? 'image'}/recover`, {
+    const response = await fetch(appPath(`/credits/api/creative/${request.kind ?? 'image'}/recover`), {
       method: 'POST', signal, credentials: 'same-origin', cache: 'no-store',
       headers: { accept: 'application/json', 'content-type': 'application/json' },
       body: JSON.stringify({ session_id: request.sessionId, project_id: request.projectId, operation_id: request.operationId }),
@@ -242,7 +248,7 @@ export async function uploadCreativeAsset(file: File, signal: AbortSignal): Prom
   if (file.size === 0) return { ok: false, code: 'IMAGE_EMPTY' }
   if (file.size > 32 * 1024 * 1024) return { ok: false, code: 'IMAGE_INPUT_TOO_LARGE' }
   try {
-    const response = await fetch('/credits/api/assets', {
+    const response = await fetch(appPath('/credits/api/assets'), {
       method: 'POST', signal, credentials: 'same-origin', cache: 'no-store',
       headers: { 'content-type': file.type || 'application/octet-stream', 'x-file-name': encodeURIComponent(file.name),
         'x-idempotency-key': `yunshu-asset-${randomUUID()}`, accept: 'application/json' }, body: file,

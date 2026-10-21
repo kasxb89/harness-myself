@@ -29,7 +29,7 @@ import type { Browser } from 'playwright'
 import { expect, it } from 'vitest'
 import {
   composeProfile, configTrees, indexWorkspacePackages, packVfsImage, packPreviewFixture,
-  previewFixtures, WRAPPER_CONTRACT,
+  previewFixtures, staticPagePackages, WRAPPER_CONTRACT,
 } from '@deepseek-ai/dsh-experimental-webworker-packer'
 import {
   IMAGE_FILE_NAME, PREVIEW_FIXTURE_MANIFEST_FILE, PREVIEW_FIXTURE_MANIFEST_VERSION,
@@ -129,7 +129,7 @@ function requirePreviewPages(): void {
  * @throws When the closure leaves dependencies unresolved, which would pack an
  * incomplete image the tree fails on later and further from the cause.
  */
-function requireVfsAssets(): PreviewAssets {
+async function requireVfsAssets(): Promise<PreviewAssets> {
   const fixtureDefinitions = previewFixtures(REPO_ROOT)
   const directory = mkdtempSync(join(tmpdir(), 'dsh-preview-boot-'))
   const overrides = new Map<string, string>()
@@ -146,6 +146,7 @@ function requireVfsAssets(): PreviewAssets {
       workspaces: indexWorkspacePackages(REPO_ROOT),
       resolveFrom: REPO_ROOT,
       configTrees: configTrees(REPO_ROOT),
+      pagePackages: await staticPagePackages(REPO_ROOT),
     })
     if (packed.missing.length > 0) {
       throw new Error(`preview boot: ${String(packed.missing.length)} dependencies did not resolve: ${packed.missing.join(', ')}`)
@@ -252,7 +253,7 @@ async function within<T>(work: Promise<T>, ms: number, stalled: string): Promise
 
 it('boots the packed worker deployment to an interactive page', async () => {
   requirePreviewPages()
-  const assets = requireVfsAssets()
+  const assets = await requireVfsAssets()
   try {
     const site = await serveDist(assets.overrides)
     try {

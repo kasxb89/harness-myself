@@ -1,0 +1,3 @@
+# The scenario owns the optional upstream account UI; the product uses Credits.
+- id: ui-settings-account
+  disabled: false

@@ -43,7 +43,7 @@ popupSelect 规格可提供 `searchLabels()`，在每次打开时解析占位文
 
 ### 带附件提交
 
-composer 携带图片或通用文件提交时，只有声明了 `input.attachments` 的宿主命令继续。其余命令路径都会抛出本地化的 `attachmentsUnsupported` 拒绝，以瞬态 toast 呈现，草稿与附件卡保持原位。处理器出错时保留相同草稿状态供用户重试。
+composer 携带图片或通用文件提交时，只有声明了 `input.attachments` 的宿主命令继续。其余提交命令路径都会返回本地化的 `attachmentsUnsupported` 拒绝，以瞬态 toast 呈现，草稿与附件卡保持原位。类型化的 Enter 拒绝与操作诊断明确区分，后者继续呈现安全的通用提示。处理器出错时保留相同草稿状态供用户重试。
 
 -----
 

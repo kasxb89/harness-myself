@@ -29,6 +29,8 @@ kind: "package-reference"
 
 手机验证码与登录使用配置根地址下的 `/api/user/phone/challenge` 和 `/api/user/phone/login`。登录返回短期管理凭据 `access_token`、轮换的 refresh cookie 和账号专属 `relay_key`，模型请求仅使用该 relay key。Host 私密保存这些凭据，将会话绑定至后端根地址，并在管理凭据临近过期时等待同一次共享续期完成。续期和退出声明后端 Origin。Host 通过实时 `harnessAccount` 为产品模型路由授权；已存凭据或环境变量引用不能替代有效会话。退出会立即移除这项授权；并发的旧续期不能恢复它。将已存会话切换到另一后端时，需要重新手机登录。
 
+手机号请求透传 `idempotency_key`，兑换还透传不透明的 `challenge_id`。发出请求前，Host 将独立的短信和兑换请求标识原子保存到私有文件，并绑定完整后端根路径和手机号。恢复记录保留参数指纹、验证请求标识、服务端有效期和冷却时间，不包含验证码或会话凭据。验证码过期后清理验证请求记录，但结果未确认的兑换继续保留原提交时间、请求标识和手机号绑定，直至完成确认；成功回执的回放期限由 API 判断。未登录时，`/credits/api/session` 返回非秘密的待处理恢复字段；`/credits/api/session/phone-recovery` 只读同一状态，不发出短信请求。发送结果不明或仍在处理时只能查询原短信请求。只有 `delivery_status: not_sent` 能确认未发送，允许用户明确重新请求时使用新请求标识。不可用响应缺少该回执时，保留原请求标识并提示发送结果未确认。稳定错误码选择安全提示，上游原始错误不向用户显示。只有账户、访问令牌有效期、中转凭据和同源刷新 cookie 均有效的登录结果才会提交。失败、不完整和待安全验证的结果保留既有会话，迟到结果不能撤销退出操作。Host 按 `method` 与 `available` 读取 API 方法项；只有明确可用的 `2fa` 流程通过同源安全验证端点完成，流程凭据仅留在 Host。此既有端点没有新增重放保证：结果不明时停止该流程并要求重新短信认证。
+
 桌面端通过已鉴权的 `POST /credits/api/activity`，向同一后端根地址下的 `/api/client-activity/heartbeat` 转发不含内容的活动状态。报告仅由当前手机号账号授权。随机 UUID 隔离每个原生进程与登录代次；退出停止该代次，匿名报告直接丢弃。Host 仅接受事件、前台状态、系统及应用版本，不接受调用方指定的用户 ID。失败直接丢弃，不影响模型请求、余额或登录；接收时间与在线过期由服务端确定。活动读取不发起凭据续期；应用常驻托盘期间，现有每 60 秒运行的 Host 模型目录计时器负责续期手机号会话。access 凭据过期时跳过样本，等待正常续期完成。
 
 ### 聊天模型刷新
@@ -99,6 +101,8 @@ Host 先使用 `/api/user/self` 核对产品会话中的账号，再通过 `/api
 
 `yunshu-internal-gpt-image-2` 使用聊天与 AI 创作共用的独立任务合约。Host 在上传任何字节前验证最多六张已授权的 PNG/JPEG/WebP 参考图，每张不超过 10 MiB。随后通过已鉴权的 `POST /v1/uploads/images`，用 multipart 的 `model` 和 `file` 逐张上传，再把经过验证、位于 `files.toapis.cn/uploads/` 或 `files.toapis.com/uploads/` 下的 HTTPS 回执 URL 作为 `reference_images` 提交给 `/toapis/v1/images/generations`。生成仅携带 `model`、`prompt`、`n: 1` 和可选的 `reference_images`；输出设置由服务端决定，不透传像素尺寸或其他 OpenAI 参数。回执要求 MIME 与大小匹配、id 非空，URL 不含凭据、查询或片段。两条路径都保留部署前缀，只使用当前账号的中转 key。文件无效、上传失败或回执无效时，提示原始文件名并在生成前停止。上传和生成均不自动重提；普通 OpenAI 编辑保留原 multipart 路由。
 
+单次图片与视频生成在后续轮询前持久保存原相对路由、模型、后端指纹、请求和任务编号，以及可用的生成来源。本地执行器仍在等待时，排队、处理中保持生成中；执行器停止后，原任务转为可查询的未知状态。临时查询、下载或保存失败时保留已受理任务。校验账号、聊天及工作区归属的 `POST /credits/api/creative/image/recover` 与 `/video/recover` 只恢复原任务 GET 查询，不再发送生成 POST。对应 `query_image_task` 和 `query_video_task` 工具可列出未确认回执，或查询准确的原操作。没有任务编号时保留未知状态，后端变化时拒绝查询，同一恢复操作互斥，确认终态前阻止重复付费提交。图片使用 `imageSubmitTimeoutMs`（180000）、`imageTaskTimeoutMs`（600000）、`imagePollIntervalMs`（2000）和 `imageQueryRetryLimit`（2）；视频对应配置默认为 180000、900000、6000 和 2。即使显式配置更低，视频提交等待也不低于 180000 毫秒。查询同时受 `timeoutMs` 限制；重试预算不重试生成提交。
+
 修改已保存项目之前，`get_creation_plan(plan_id)` 返回有界的完整规划字段，字段名称与 `update_creation_plan` 一致。读取同样校验账号、聊天及工作区归属，不包含执行请求或登录数据，不改变状态，也不请求上游。局部修改应先以这份权威记录保留其他人物、素材和镜头。
 
 图片提交使用 `imageSubmitTimeoutMs`（默认 180000 毫秒），完整提交、轮询和保存使用 `imageTaskTimeoutMs`（600000 毫秒）。状态查询保留独立的 `timeoutMs` 期限（15000 毫秒），查询间隔为 `imagePollIntervalMs`（2000 毫秒），连续瞬时失败最多重试 `imageQueryRetryLimit`（2）次。生成 POST 永不重试。Host 收到响应头即保留原请求 ID，并在轮询前提交已受理的任务 ID。取消、查询中断和下载失败均保留已知任务以供只读恢复；停止本地等待不代表上游任务已取消或已经退款。未取得确切任务回执的提交仍为结果未知，不得自动重提。
@@ -109,7 +113,7 @@ Host 先使用 `/api/user/self` 核对产品会话中的账号，再通过 `/api
 
 已通过 Host 认证的客户端读取 `GET /credits/api/creative/projects?session_id=...`，返回 `{ ok: true, payload: { accountId, projects } }`，使用不包含凭据的[浏览器类型](src/creative-types.ts)。结果同时按账号和精确聊天过滤。`GET` 与 `HEAD /credits/api/creative/media` 要求会话、项目、已登记产物 id，以及可选的抽帧索引；查询参数中的文件路径不能授权读取。媒体支持单个字节范围，拒绝缺失、符号链接文件，以及打开期间检测到的文件替换。媒体读取在开始响应前复核原账号和登录代次；读取期间退出或切换账号会拒绝尚未开始的响应。退出登录返回 `AUTH_REQUIRED`。损坏记录及存储不可用返回安全、可见的错误，不伪装成成功空列表。
 
-每份投影包含仅根据计划计算的 `planRevision`、所属 `sessionId`、保留调用 `tasks` 及已完成和总镜头数。素材图片、生成片段和成片进入合并产物列表，按实际路径去重。计划 `durationSeconds` 可编辑，与最近提交时长 `actualDurationSeconds` 分开保存。`POST /credits/api/creative/plan` 接受 `{ session_id, project_id, expected_revision, change }`，执行有界的镜头修改、排序、人物与素材增改或明确删除，不提交生成。版本过期返回 HTTP 409 和 `CREATIVE_PLAN_STALE`；正在运行的关联成员与保留执行关联受保护。`GET`/`HEAD /credits/api/creative/reference` 通过 `session_id`、`project_id` 和 `asset_id` 仅读取该计划确切的上传图片素材，发送字节前复核账号。
+每份投影包含仅根据计划计算的 `planRevision`、所属 `sessionId`、保留调用 `tasks` 及已完成和总镜头数。素材图片、生成片段和成片进入合并产物列表，按实际路径去重。计划 `durationSeconds` 可编辑，与最近提交时长 `actualDurationSeconds` 分开保存。`POST /credits/api/creative/plan` 接受 `{ session_id, project_id, expected_revision, change }`，执行有界的镜头修改、排序、人物与素材增改或明确删除，不提交生成。人物修改可同时携带新上传的图片 `assets`；图片素材与人物绑定在同一版本检查下原子保存，重复的素材 id 会被拒绝。版本过期返回 HTTP 409 和 `CREATIVE_PLAN_STALE`；正在运行的关联成员与保留执行关联受保护。`GET`/`HEAD /credits/api/creative/reference` 通过 `session_id`、`project_id` 和 `asset_id` 仅读取该计划确切的上传图片素材，发送字节前复核账号。
 
 当前 AI 图片和视频面板请求包含 `session_id` 和 `account_id`。Host 在提交前要求经过认证的连接、相同登录账号及准确的活动工作区聊天，再通过与聊天相同的存储保留独立最小项目和实际已保存产物，不猜测最近项目。两个关联字段均缺省的旧请求保留原媒体合约。插件卸载取消并等待所属面板生成结束；上游已受理的任务仍可能继续计费。
 
@@ -134,6 +138,8 @@ Host 先使用 `/api/user/self` 核对产品会话中的账号，再通过 `/api
 ### 产物保存位置
 
 组合提供可选的[产物保存服务](../../deliverables/artifacts-index/README.zh.md) 时，图片、下载媒体和单段视频在生成或保存前捕获当前目标目录。同一次操作的全部输出使用同一目标，即使期间用户更改了设置。新视频项目持久化已捕获的发布目录；剪辑仍在工作区沙箱内执行，随后由 Host 将成片复制到该目录，不替换已有文件。发布失败保留原片和暂存成片，供显式恢复，不重复已完成的付费提交。本地视频剪辑使用同一发布服务。
+
+聊天生成在产出文件前捕获准确的 Session、当前开放轮次及根工具调用。媒体输出通过产物存储服务携带该来源；异步图片/视频回执和长视频清单保留来源，用于下载、恢复及继续发布。恢复时不会替换成查询状态的聊天或轮次。缺少来源坐标的旧记录及独立创作页任务不自动关联，之后可通过聊天中的明确展示建立来源。损坏或跨聊天的持久化来源坐标会被拒绝。
 
 未提供该服务时，图片和单段视频继续使用 `stateDir/media`，视频项目继续使用工作区输出目录。没有发布目录字段的旧项目记录恢复时保留原有工作区行为。更改偏好不会移动已有文件或改写旧聊天路径。
 

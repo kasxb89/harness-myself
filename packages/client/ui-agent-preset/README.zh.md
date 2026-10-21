@@ -49,7 +49,7 @@ kind: "package-reference"
 
 `CreatePluginMenuItem` 使用共享的预设列表 store，向 `plugins.add.actions` 贡献菜单项。选择时先调用页面传入的 `onDismiss()`，再调用与设置页 `creatorDraft` 相同的 `startCreatorDraft` 回调。该回调通过 `AgentPresetSeatController` 暂存 `cordis`，再通过显式保留草稿的 `uiWorkspace.startSession` 调用打开任务；它可以复用空白 Session，并在 Session 绑定可用时应用暂存选择。暂存选择应用后即清除。代码工作工具开启或关闭时均使用同一个选择器和选择 store，`AgentPresetSeat` 通过共享的 `Toast` 组件显示拒绝原因。
 
-`EmployeePage` 读取同一个 `AgentPresetSettingsController` 快照，排除无名称的内置预设，将 `employee-` 标识归入内置岗位，其余自建预设归入我的员工。编辑器操作观察 `settings.section` 账本，仅对已安装的 `custom-system-prompt` 分区发出具备类型约束的 `ui-settings/open-section` 事件。本地事件 `ui-settings/closed` 触发现有刷新流程，重读已挂载的页面、预设设置分区和会话选择器，使编辑器的新增、改名与删除立即显示，无需页面跳转或轮询。其 `main` 与 `sidebar.panellist` 注册由会话流程的生命周期管理。员工和创造入口共用暂存选择、工作区导航及空白会话应用流程；页面只持有自身的搜索内容。
+`EmployeePage` 读取同一个 `AgentPresetSettingsController` 快照，排除无名称的内置预设，将 `employee-` 标识归入内置岗位，其余自建预设归入我的员工。编辑器操作观察 `settings.section` 账本，仅对已安装的 `custom-system-prompt` 分区发出具备类型约束的 `ui-settings/open-section` 事件。本地事件 `ui-settings/closed` 触发现有刷新流程，重读已挂载的页面、预设设置分区和会话选择器，使编辑器的新增、改名与删除立即显示，无需页面跳转或轮询。员工页面、侧栏入口、预设选择器和会话标签分别跟随各自 slot 声明的生命周期，声明撤回时移除、重新声明后恢复；其导航依赖 `uiWorkspace`。员工和创造入口共用暂存选择、工作区导航及空白会话应用流程；页面只持有自身的搜索内容。
 
 </details>
 

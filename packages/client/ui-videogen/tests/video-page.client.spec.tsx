@@ -32,6 +32,10 @@ function requestBody(init: RequestInit | undefined): Record<string, unknown> {
 function setup(overrides: Partial<typeof params> = {}) {
   const task = vi.fn(async (_init?: RequestInit): Promise<Response> => json({ ok: true, payload: { path: '/credits/media/new.mp4' } }))
   const asset = vi.fn(async (): Promise<Response> => json({ ok: true, asset: { assetId: 'ma_image' } }))
+  const projects = vi.fn(async (): Promise<Response> => json({ ok: true, payload: { accountId: sessionAccountId, projects: [] } }))
+  const recover = vi.fn(async (): Promise<Response> => new Response(JSON.stringify({
+    ok: true, payload: { accountId: sessionAccountId, projects: [] },
+  }), { status: 202 }))
   fetcher = vi.fn(async (input, init) => {
     const path = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
     if (path === '/credits/api/session') return json({ ok: true, payload: { signedIn: sessionAccountId !== null, creditsPerYuan: 1000, account: sessionAccountId === null ? null : { id: sessionAccountId } } })
@@ -40,6 +44,8 @@ function setup(overrides: Partial<typeof params> = {}) {
       { id: 'video-real', displayName: 'Real video model', source: 'local-config', verified: true, params: { ...params, ...overrides } },
       { id: 'video-smaller', displayName: 'Smaller video model', source: 'local-config', verified: true, params: { ...params, ...overrides, maxReferenceImages: 3 } },
     ] } })
+    if (path.startsWith('/credits/api/creative/projects?')) return projects()
+    if (path === '/credits/api/creative/video/recover') return recover()
     if (path === '/artifacts/api/list') return json({ items: [] })
     if (path === '/credits/api/assets') return asset()
     if (path.startsWith('/credits/api/video/tasks')) return task(init)
@@ -57,9 +63,12 @@ function setup(overrides: Partial<typeof params> = {}) {
     useStore: bindSnapshotSelector(store), actions: store.actions,
     readDraft: () => store.getSnapshot(),
   } as Parameters<typeof VideoPage>[0]
-  return { store, props, fixture, task, asset, mount: () => render(<VideoPage {...props} />) }
+  return { store, props, fixture, task, asset, projects, recover, mount: () => render(<VideoPage {...props} />) }
 }
-const ready = async (): Promise<void> => { await waitFor(() => { expect(screen.getByRole('button', { name: zh.model }).textContent).toContain('Real video model') }) }
+const ready = async (): Promise<void> => {
+  await waitFor(() => { expect(screen.getByRole('button', { name: zh.model }).textContent).toContain('Real video model') })
+  await act(async () => {})
+}
 const writePrompt = (): void => { fireEvent.change(screen.getByRole('textbox', { name: zh.prompt }), { target: { value: 'A continuous tracking shot' } }) }
 
 beforeEach(() => { vi.useRealTimers(); sessionAccountId = 'account-a'; chatSessionId = 'session-a' })
@@ -114,6 +123,22 @@ describe('video composer', () => {
     mount()
     await ready()
     await waitFor(() => { expect(store.getSnapshot().duration).toBe(15) })
+  })
+
+  it('rechecks a late admission read after a fast successful generation instead of leaving controls locked', async () => {
+    const h = setup()
+    h.mount()
+    await ready()
+    const late = Promise.withResolvers<Response>()
+    h.projects.mockImplementationOnce(() => late.promise)
+    writePrompt()
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    try {
+      await waitFor(() => { expect(h.store.getSnapshot().result?.path).toBe('/credits/media/new.mp4') })
+      late.resolve(json({ ok: true, payload: { accountId: 'account-a', projects: [] } }))
+      await waitFor(() => { expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', false) })
+      expect(h.task).toHaveBeenCalledOnce()
+    } finally { late.resolve(json({ ok: true, payload: { accountId: 'account-a', projects: [] } })) }
   })
 
   it('exposes one ordinary material input beside the prompt and retains only explicit frame upload controls', async () => {
@@ -1220,7 +1245,7 @@ describe('video composer', () => {
     expect(task).toHaveBeenCalledTimes(1)
   })
 
-  it('retains a previous clip and draft after a failed request without retrying generation', async () => {
+  it('locks an uncertain original submission while retaining the previous clip and draft', async () => {
     const { mount, store, task } = setup()
     store.actions.patch({ result: { path: '/credits/media/previous.mp4' } })
     task.mockRejectedValueOnce(new Error('connection closed'))
@@ -1228,10 +1253,34 @@ describe('video composer', () => {
     await ready()
     writePrompt()
     fireEvent.click(screen.getByRole('button', { name: zh.submit }))
-    await waitFor(() => { expect(screen.getByRole('alert').textContent).toBe(zh.outcomeUnknown) })
+    await waitFor(() => { expect(screen.getByRole('status').textContent).toContain(zh.originalUnknown) })
     expect(store.getSnapshot()).toMatchObject({ phase: 'idle', prompt: 'A continuous tracking shot', result: { path: '/credits/media/previous.mp4' } })
     expect(task).toHaveBeenCalledTimes(1)
-    expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', false)
+    expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', true)
+  })
+
+  it('shows accepted work as generating and queries the retained video instead of posting generation again', async () => {
+    const h = setup()
+    const retained = { id: 'cp_original', sessionId: 'session-a', kind: 'video', tasks: [{ id: 'op_original', status: 'running',
+      videoReceipt: { taskId: 'video-original', phase: 'accepted' }, canQuery: true }] }
+    h.mount()
+    await ready()
+    writePrompt()
+    h.task.mockImplementationOnce(async () => {
+      h.projects.mockImplementation(async () => json({ ok: true, payload: { accountId: 'account-a', projects: [retained] } }))
+      return json({ ok: false, submission_state: 'pending', task_id: 'video-original', plan_id: 'cp_original', operation_id: 'op_original' })
+    })
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    await waitFor(() => { expect(screen.getByRole('button', { name: zh.originalQuery })).toBeTruthy() })
+    expect(screen.getByRole('status').textContent).toContain(zh.originalAccepted)
+    expect(screen.queryByText(zh.failed)).toBeNull()
+    expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', true)
+    h.recover.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, payload: { accountId: 'account-a', projects: [retained] } }), { status: 202 }))
+    fireEvent.click(screen.getByRole('button', { name: zh.originalQuery }))
+    await waitFor(() => { expect(h.recover).toHaveBeenCalledOnce() })
+    expect(h.task).toHaveBeenCalledOnce()
+    const query = fetcher.mock.calls.find(call => call[0] === '/credits/api/creative/video/recover')
+    expect(requestBody(query?.[1])).toEqual({ session_id: 'session-a', project_id: 'cp_original', operation_id: 'op_original' })
   })
 
   it('keeps successful earlier uploads when the next file fails and releases the busy state', async () => {

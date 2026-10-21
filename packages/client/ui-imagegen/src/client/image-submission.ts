@@ -1,4 +1,6 @@
 /** Retained image-task coordinates used to prevent blind paid resubmission. */
+import { appPath } from '@deepseek-ai/dsh-client-ui-primitives'
+
 export interface ImageSubmission {
   readonly accountId: string
   readonly sessionId: string
@@ -40,9 +42,11 @@ export function submissionKey(owner: Owner): string { return JSON.stringify([own
  */
 export function submissionFromAnswer(answer: unknown, owner: Owner): ImageSubmission | null {
   if (!object(answer)) return { ...owner, state: 'unknown', canQuery: false }
-  if (['not-submitted', 'failed', 'completed'].includes(String(answer.submission_state))) return null
+  const malformedSuccess = answer.ok === true && (!object(answer.payload)
+    || typeof answer.payload.path !== 'string' || answer.payload.path === '')
+  if (!malformedSuccess && ['not-submitted', 'failed', 'completed'].includes(String(answer.submission_state))) return null
   const legacyUnknown = ['TIMEOUT', 'TRANSPORT', 'NO_TASK_ID'].includes(String(answer.code))
-  if (answer.submission_state !== 'pending' && answer.submission_state !== 'unknown' && !legacyUnknown) return null
+  if (answer.submission_state !== 'pending' && answer.submission_state !== 'unknown' && !legacyUnknown && !malformedSuccess) return null
   return { ...owner, state: answer.submission_state === 'pending' ? 'pending' : 'unknown', canQuery: false,
     ...identifier(answer.plan_id) ? { planId: answer.plan_id } : {},
     ...identifier(answer.operation_id) ? { operationId: answer.operation_id } : {},
@@ -99,7 +103,7 @@ function listing(value: unknown, owner: Owner, retained: ImageSubmission | null)
  */
 export async function readImageSubmission(owner: Owner, retained: ImageSubmission | null, signal: AbortSignal): Promise<CheckResult> {
   try {
-    const response = await fetch(`/credits/api/creative/projects?${new URLSearchParams({ session_id: owner.sessionId })}`, {
+    const response = await fetch(appPath(`/credits/api/creative/projects?${new URLSearchParams({ session_id: owner.sessionId })}`), {
       credentials: 'same-origin', cache: 'no-store', signal, headers: { accept: 'application/json' },
     })
     if (!response.ok) return { ok: false }
@@ -118,7 +122,7 @@ export async function queryImageSubmission(retained: ImageSubmission, signal: Ab
     return { ok: false }
   }
   try {
-    const response = await fetch('/credits/api/creative/image/recover', {
+    const response = await fetch(appPath('/credits/api/creative/image/recover'), {
       method: 'POST', signal, credentials: 'same-origin', cache: 'no-store',
       headers: { 'content-type': 'application/json', accept: 'application/json' },
       body: JSON.stringify({ session_id: retained.sessionId, project_id: retained.planId, operation_id: retained.operationId }),

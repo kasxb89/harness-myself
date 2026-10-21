@@ -52,6 +52,8 @@ Target packages declaration-merge their snapshot and Location data maps, then re
 <a id="shell-and-standard-props"></a>
 ## Shell and standard props
 
+`ctx.conversationViews.open(sessionId, view, focus)` addresses the existing one-shot View request from a global panel. The caller retains and verifies the target Session first, then separately opens its main Conversation. Unknown Sessions and unavailable Views return `false` without changing selection. An unmounted shell retains the request for that exact Session binding and delivers it when its shared store is bound.
+
 The shared image slot props keep display choices separate from durable references: `thumbnail` requests a contained attachment-list thumbnail, while `compact` requests a cropped gallery tile. An optional per-image `label` supplies the accessible display name; loading and cache identity still use the original attachment reference. [ui-attachment](../ui-attachment/README.md) owns rendering and the lightbox.
 
 The composer measures its expanded control groups after size, content, visibility, or font-loading changes. If they cannot share a line, the row sets `--dsh-composer-model-text-display: none` and `--dsh-composer-model-icon-display: block` for the model seat; their defaults are `block` and `none`. Wrapping remains available if even the icon cannot fit.
@@ -102,7 +104,7 @@ When another writer owns the Session, the send-error toast asks the user to quit
 
 Two independent Escape presses in the focused Chat or Composer stop its current running turn and preserve queued messages. The interval comes from the shortcuts plugin’s `stopSequenceMs` configuration (500 ms by default). A menu, approval, modal, terminal, embedded webpage, composition, repeated key, changed input region, Session or turn breaks the sequence. The shortcut uses the same scoped cancellation as the Stop button. The plugin registers Stop as a fixed action in the `input` display group. Its registration reserves plain Escape against editable shortcuts and supplies the `Esc Esc` sequence shown in the Stop button’s hover and keyboard-focus tooltip.
 
-Prompt rejection and failed-send diagnostic notices display localized busy copy while their original errors remain in the owning Session or input state. Known session contention and image-format, capability or size rejections retain safe recovery guidance. The notice presentation category distinguishes operation diagnostics from localized local notices without parsing message text.
+Prompt rejection and failed-send diagnostic notices display localized busy copy while their original errors remain in the owning Session or input state. Known session contention and image-format, capability or size rejections retain safe recovery guidance. The notice presentation category distinguishes operation diagnostics from localized local notices without parsing message text. Enter adjudication carries source-owned localized refusals separately, preserving the draft and attachments without starting a submission.
 
 <a id="temporary-composer-entries"></a>
 ## Temporary composer entries

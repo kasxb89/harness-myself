@@ -61,6 +61,13 @@ export type PickOutcome =
   | 'handled'
   | undefined
 
+/**
+ * Enter adjudication can refuse the whole envelope before any submission.
+ * `refusal` contains the source's own localized product copy; operation and
+ * transport diagnostics reject the promise instead and remain sanitized.
+ */
+export type EnterOutcome = PickOutcome | { readonly refusal: string }
+
 /** Scoped request to enter command mode. */
 export interface BeginCommandRequest {
   readonly claim: CommandClaim
@@ -118,7 +125,7 @@ export interface InputTriggerController {
     line: string,
     signal: AbortSignal,
     envelope: { readonly attachments: number },
-  ): Promise<PickOutcome>
+  ): Promise<EnterOutcome>
   /**
    * @param source - chip owner, or undefined for a text reference.
    * @param reference - source id and glyph.
@@ -321,7 +328,7 @@ export type InputEvent =
   | { readonly type: 'claim'; readonly claim: CommandClaim }
   /** Enter submission with the current clipboard projection. */
   | { readonly type: 'enter'; readonly mode: InputSubmitMode; readonly draft: string; readonly submission?: MessageSubmission }
-  | { readonly type: 'adjudicated'; readonly attempt: SubmitAttempt; readonly outcome: PickOutcome }
+  | { readonly type: 'adjudicated'; readonly attempt: SubmitAttempt; readonly outcome: EnterOutcome }
   | { readonly type: 'adjudication-failed'; readonly attempt: SubmitAttempt; readonly message: string }
   /** Settlement carries the live clipboard projection for suffix-retention and claim re-entry decisions. */
   | { readonly type: 'submit-settled'; readonly attempt: SubmitAttempt; readonly ok: boolean; readonly draft: string; readonly outcome?: SubmitOutcome; readonly message?: string }
@@ -346,6 +353,8 @@ export type InputEffect =
     readonly mode: InputSubmitMode
   }
   | { readonly type: 'notice'; readonly level: 'info' | 'error'; readonly text: string }
+  /** A source-owned localized refusal, never an operation diagnostic. */
+  | { readonly type: 'refusal'; readonly text: string }
   /**
    * Clear the committed draft in the editor and cut undo history. A string
    * snapshot keeps a pure suffix typed during the Host round-trip (content

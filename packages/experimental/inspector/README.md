@@ -62,6 +62,8 @@ A Client synchronously closes its source on `pagehide` and reconnects with the s
 
 Both plugin faces run the same browser-safe Cordis collector. It converts reachable Context and Fiber objects into a versioned `CordisTreeSnapshot`; the Worker stores that CDP-independent representation and projects each Host or Client source into the Elements panel.
 
+Before pruning a Cordis snapshot, both producers reserve the encoded topic, clock, record array and transport envelope within `maxSourceFrameBytes`. A large runtime tree is marked truncated while its root remains available; reaching the frame boundary does not prevent the Inspector from starting.
+
 <a id="configuration"></a>
 ## Configuration
 

@@ -62,7 +62,12 @@ async function openImages(page: Page, label: string): Promise<Locator> {
 }
 
 describe('web e2e: mixed reference image uploads', () => {
-  it.each(['zh-CN', 'en-US'])('decodes three references and explains the failed fourth file in %s', async (locale) => {
+  it.each([
+    { locale: 'zh-CN', unknownCode: 'TIMEOUT' },
+    { locale: 'en-US', unknownCode: 'TIMEOUT' },
+    { locale: 'zh-CN', unknownCode: 'NO_TASK_ID' },
+    { locale: 'en-US', unknownCode: 'NO_TASK_ID' },
+  ])('decodes mixed references in $locale and locks an unconfirmed $unknownCode submission', async ({ locale, unknownCode }) => {
     const scaffold = await launchWebScaffold({})
     try {
       const browser = await chromium.launch()
@@ -74,7 +79,7 @@ describe('web e2e: mixed reference image uploads', () => {
         const tripwire = watchConsole(page)
         const evidenceRoot = fileURLToPath(new URL('../../../.artifacts/', import.meta.url))
         await mkdir(evidenceRoot, { recursive: true })
-        const evidence = await mkdtemp(join(evidenceRoot, `image-reference-upload-${locale}-`))
+        const evidence = await mkdtemp(join(evidenceRoot, `image-reference-upload-${locale}-${unknownCode}-`))
         const heic = await readFile(new URL('../../../packages/host/credits-index/tests/fixtures/reference-normalization.heic', import.meta.url))
         const normalized = new Map<string, Awaited<ReturnType<typeof normalizeReferenceImage>>>()
         const uploads: { name: string; type: string; code?: string; assetId?: string; hash?: string }[] = []
@@ -137,8 +142,10 @@ describe('web e2e: mixed reference image uploads', () => {
               asOf: new Date().toISOString(), delayMinutes: 0 })
           } else if (url.pathname === '/credits/api/image/generate' && request.method() === 'POST') {
             generationAttempts.push(request.postData() ?? '')
-            const code = ['INVALID_REQUEST', 'TIMEOUT', 'NO_TASK_ID'][generationAttempts.length - 1] ?? 'UNEXPECTED_GENERATION'
+            const code = generationAttempts.length === 1 ? 'INVALID_REQUEST'
+              : generationAttempts.length === 2 ? unknownCode : 'UNEXPECTED_GENERATION'
             await route.fulfill({ status: 200, json: { ok: false, code,
+              submission_state: generationAttempts.length === 1 ? 'not-submitted' : 'unknown',
               message: '400 reasoning_content private-request-id C:/private/upstream.ts:10' } })
           } else if (request.method() !== 'GET' && request.method() !== 'HEAD') {
             paidRequests.push(`${request.method()} ${url.pathname}`)
@@ -215,15 +222,20 @@ describe('web e2e: mixed reference image uploads', () => {
           expect(unexpectedReads).toEqual([])
           expect(tripwire.pageErrors).toEqual([])
           await page.screenshot({ path: join(evidence, 'safe-generation-failure.png'), animations: 'disabled' })
-          const unknown = zh ? '生成连接中断，结果可能仍在处理中。请先刷新作品，确认后再提交'
-            : 'The connection was interrupted. Generation may still be processing. Refresh your works before submitting again.'
-          for (const attempt of [2, 3]) {
-            await panel.getByRole('button', { name: zh ? '生成图片' : 'Generate image', exact: true }).click()
-            await expect.poll(() => generationAttempts.length).toBe(attempt)
-            await panel.getByRole('alert').filter({ hasText: unknown }).waitFor()
-            expect(await panel.getByRole('alert').innerText()).toBe(unknown)
-            expect(await panel.innerText()).not.toContain('private-request-id')
-          }
+          const unknown = zh ? '提交结果待确认，尚无可查询的任务编号。请保留原记录并核对任务与计费，不要再次提交生成'
+            : 'The submission is unconfirmed and has no queryable task ID. Keep the original record and check its task and billing; do not submit generation again.'
+          const generate = panel.getByRole('button', { name: zh ? '生成图片' : 'Generate image', exact: true })
+          await generate.click()
+          await expect.poll(() => generationAttempts.length).toBe(2)
+          await panel.getByText(unknown, { exact: true }).waitFor()
+          expect(await generate.isDisabled()).toBe(true)
+          expect(await panel.innerText()).not.toContain('private-request-id')
+          const refreshed = page.waitForResponse(response => new URL(response.url()).pathname === '/artifacts/api/list')
+          await panel.getByRole('button', { name: zh ? '刷新作品' : 'Refresh works', exact: true }).click()
+          await refreshed
+          expect(await generate.isDisabled()).toBe(true)
+          expect(generationAttempts).toHaveLength(2)
+          expect(await panel.getByText(unknown, { exact: true }).isVisible()).toBe(true)
           expect(paidRequests).toEqual([])
           expect(tripwire.pageErrors).toEqual([])
           expect(await decodedReferences(panel)).toHaveLength(3)
@@ -232,7 +244,7 @@ describe('web e2e: mixed reference image uploads', () => {
           await writeFile(join(evidence, 'result.json'), JSON.stringify({ passed: true, locale, uploads, previews,
             decodedMixedBatch: images, decodedSameFilename: sameNames, paidRequests, unexpectedReads,
             safeGenerationFailure: { attempts: generationAttempts.length, rawDiagnosticVisible: false, retainedReferences: 3,
-              unknownOutcomeCodes: ['TIMEOUT', 'NO_TASK_ID'] },
+              unknownOutcomeCodes: [unknownCode], unconfirmedResubmissionBlocked: true },
             pageErrors: tripwire.pageErrors, warnings: tripwire.warnings,
             host: 'real built shipped Web composition', upload: 'route calls actual current host image decoder; previews serve its real output bytes',
             upstreamGeneration: false, persistedAssetAuth: 'covered by host Loader integration tests' }, null, 2) + '\n')

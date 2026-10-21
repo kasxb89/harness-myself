@@ -14,6 +14,8 @@ import { createInspectorService } from '../shared/service.ts'
 import { publishCordisTree } from './inspection/cordis.ts'
 import { INSPECTOR_BOOTSTRAP_PATH, INSPECTOR_CLIENT_QUERY, readInspectorClientSelection } from '../shared/web.ts'
 import { disposeInspectorResources } from '../shared/dispose.ts'
+import { sourceStatePayloadByteLimit } from '../shared/bridge/buffer.ts'
+import { CORDIS_TREE_TOPIC } from '../shared/bridge/messages/cordis.ts'
 
 const DEVTOOLS_PATH = '/inspector/devtools'
 
@@ -55,7 +57,7 @@ export async function apply(ctx: Context, config: HostPluginConfig): Promise<voi
     try {
       disposers.push(publishCordisTree(ctx, handle.source, {
         maxNodes: spec.maxCordisNodes,
-        maxBytes: spec.maxSourceFrameBytes - 4_096,
+        maxBytes: sourceStatePayloadByteLimit(spec.maxSourceFrameBytes, CORDIS_TREE_TOPIC),
       }))
       disposers.push(ctx.provide('inspector', createInspectorService(handle.source)))
       disposers.push(ctx.on('webserver/index-inject', (table: IndexInjection[]) => {

@@ -52,6 +52,8 @@ target package 通过 declaration merge 扩展 snapshot 与 Location data map，
 <a id="shell-and-standard-props"></a>
 ## Shell 与标准 props
 
+`ctx.conversationViews.open(sessionId, view, focus)` 允许全局面板发送现有的一次性 View 请求。调用方先保留并验证目标 Session，再单独打开其主 Conversation。未知 Session 或不可用 View 返回 `false`，不改变选择。shell 未挂载时，请求仅保留在该 Session 的准确 binding 上，待其共享 store 绑定后交付。
+
 共享图片插槽属性将展示选择与持久化引用分开：`thumbnail` 请求完整缩放的附件列表缩略图，`compact` 请求裁剪的图片方块。每张图片可通过可选的 `label` 提供无障碍展示名称；加载和缓存标识仍使用原始附件引用。[ui-attachment](../ui-attachment/README.zh.md) 负责渲染与灯箱。
 
 控件组的尺寸、内容、可见性或字体加载状态变化后，composer 测量展开状态下的控件组。若无法排在同一行，控制栏为模型位设置 `--dsh-composer-model-text-display: none` 和 `--dsh-composer-model-icon-display: block`；两者默认值分别为 `block` 和 `none`。若连图标也放不下，仍允许换行。
@@ -102,7 +104,7 @@ Send 和 Stop 按钮禁用时不显示提示气泡，轮次结束后由 Stop 切
 
 在获得焦点的 Chat 或 Composer 中连续独立按下两次 Esc，可停止当前运行轮次并保留排队消息。间隔由 shortcuts 插件的 `stopSequenceMs` 配置决定，默认 500 ms。菜单、审批、模态层、终端、内嵌网页、输入法、重复按键，以及输入区域、Session 或轮次变化会清空序列。快捷键与 Stop 按钮调用同一作用域取消操作。插件将 Stop 注册为 `input` 展示分组中的固定操作。该注册使普通 Esc 不能分配给可编辑快捷键，并为 Stop 按钮的悬停和键盘聚焦提示提供 `Esc Esc` 序列。
 
-提示词拒绝与发送失败的诊断提示显示本地化繁忙文案，原始错误仍保留在所属 Session 或输入状态中。已知的会话占用、图片格式、能力与大小拒绝保留安全的恢复说明。提示的展示分类区分操作诊断与本地化提示，不通过解析消息文本判断。
+提示词拒绝与发送失败的诊断提示显示本地化繁忙文案，原始错误仍保留在所属 Session 或输入状态中。已知的会话占用、图片格式、能力与大小拒绝保留安全的恢复说明。提示的展示分类区分操作诊断与本地化提示，不通过解析消息文本判断。Enter 裁决单独承载 source 自有的本地化拒绝，保留草稿与附件，不发起提交。
 
 <a id="temporary-composer-entries"></a>
 ## 临时 composer entry
