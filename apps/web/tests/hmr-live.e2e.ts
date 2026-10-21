@@ -85,7 +85,6 @@ async function stopTree(child: SubprocessHandle): Promise<void> {
 }
 
 it('hot-reloads a real client-plugin source edit without refreshing the page', async () => {
-  const world = await mkdtemp(join(tmpdir(), 'dsh-web-hmr-world-'))
   const sourcePath = join(REPO_ROOT, 'packages/client/ui-conversation/src/client/locales.ts')
   const binPath = join(REPO_ROOT, 'apps/cli/lib/bin.js')
   if (!existsSync(binPath)) throw new Error('HMR browser test needs the built dsh bin; run pnpm run build first')
@@ -94,8 +93,8 @@ it('hot-reloads a real client-plugin source edit without refreshing the page', a
     .map(async path => [path, await readFile(path)] as const))
   const originalClientArtifactPaths = new Set(originalClientArtifacts.map(([path]) => path))
   const originalSource = await readFile(sourcePath)
-  const oldText = 'Into the Unknown'
-  const sourceNeedle = "'hero.headline': 'Into the Unknown'"
+  const oldText = 'Make it real'
+  const sourceNeedle = `'hero.headline': '${oldText}'`
   const newText = `HMR UPDATED ${'x'.repeat(80)}`
   const updatedSource = originalSource.toString().replace(sourceNeedle, `'hero.headline': '${newText}'`)
   if (updatedSource === originalSource.toString()) throw new Error(`HMR source lacks ${JSON.stringify(sourceNeedle)}`)
@@ -106,6 +105,7 @@ it('hot-reloads a real client-plugin source edit without refreshing the page', a
   let host: SubprocessHandle | undefined
   let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined
   const failures: unknown[] = []
+  const world = await mkdtemp(join(tmpdir(), 'dsh-web-hmr-world-'))
   try {
     subprocessFiber = await subprocessCtx.plugin(LocalSubprocessRuntime)
     // Watchers only: the built `dsh web` below is the server under test, and the
@@ -126,7 +126,7 @@ it('hot-reloads a real client-plugin source edit without refreshing the page', a
     ))
     const baseUrl = await waitForOutput(host, /dsh web: (http:\/\/[^\s]+)/, 'built dsh web')
     browser = await chromium.launch()
-    const page = await browser.newPage()
+    const page = await browser.newPage({ locale: 'en-US' })
     const pageErrors: string[] = []
     page.on('pageerror', error => pageErrors.push(String(error)))
     await page.goto(baseUrl, { waitUntil: 'load' })

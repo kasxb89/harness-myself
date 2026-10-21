@@ -1,18 +1,24 @@
 // @vitest-environment jsdom
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, onTestFinished, vi } from 'vitest'
+import type { Context } from '@deepseek-ai/cordis'
 import {
   SlotTestRuntime, stubConfigForm, usePinnedBrowserLanguages,
 } from '@deepseek-ai/dsh-client-test-runtime'
 import { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client'
 import { createSnapshotStore, type ObservableSnapshot } from '@deepseek-ai/dsh-client-store'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
-import { apply, inject, type ViewTab } from '@deepseek-ai/dsh-client-ui-conversation/client'
+import { apply, inject, type ComposerBarInjected, type ViewTab } from '@deepseek-ai/dsh-client-ui-conversation/client'
+import { ConversationController } from '../src/client/service.ts'
 
 usePinnedBrowserLanguages('zh-CN')
 
 const SID = 'session-1' as SessionId
 
-async function bench(options: { declareConversation?: boolean } = {}) {
+async function bench(options: {
+  declareConversation?: boolean
+  beforeMount?(runtime: SlotTestRuntime): Promise<void>
+  afterApply?(runtime: SlotTestRuntime): void
+} = {}) {
   const runtime = await SlotTestRuntime.create()
   const developerTools = createSnapshotStore(true)
   runtime.ctx.provide('uiWorkspace', {
@@ -31,7 +37,11 @@ async function bench(options: { declareConversation?: boolean } = {}) {
       'settings.general.item': { kind: 'list', scope: 'root' },
     }, (_props: { renderSlot?: unknown }) => null)
   }
-  const feature = await runtime.mount({ inject: [...inject], apply })
+  await options.beforeMount?.(runtime)
+  const feature = await runtime.mount({ inject: [...inject], apply: (ctx: Context) => {
+    apply(ctx)
+    options.afterApply?.(runtime)
+  } })
   if (options.declareConversation !== false) runtime.renderRoot()
   return { runtime, feature, developerTools }
 }
@@ -44,6 +54,71 @@ function entry(
 }
 
 describe('target-neutral Conversation apply wiring', () => {
+  it('installs consumers only with the active controller and replaces them with its service generation', async () => {
+    const loading: { controller: unknown; entries: number }[] = []
+    const installations: { controller: ConversationController; composer: ComposerBarInjected }[] = []
+    const failures: unknown[] = []
+    const b = await bench({
+      beforeMount: async (runtime) => {
+        onTestFinished(() => runtime.dispose())
+        await runtime.sessions.add({ id: SID })
+        const reference = runtime.sessions.retain(SID)
+        onTestFinished(() => { reference.release() })
+        runtime.renderRoot()
+        const unsubscribe = runtime.ctx.on('slots/changed', (key) => {
+          if (key !== 'conversation.composer.bar') return
+          const entry = runtime.slots.entries(key)[0]
+          if (entry?.inject === undefined) return
+          // A mounted renderer may consume a newly published entry before the next plugin microtask.
+          try {
+            installations.push({
+              controller: runtime.ctx.get('conversation') as ConversationController,
+              composer: Reflect.apply(entry.inject, undefined, [SID]) as ComposerBarInjected,
+            })
+          } catch (error: unknown) {
+            failures.push(error)
+          }
+        })
+        onTestFinished(unsubscribe)
+      },
+      afterApply: (runtime) => {
+        loading.push({ controller: runtime.ctx.get('conversation'), entries: runtime.slots.entries('main').length })
+      },
+    })
+    expect(failures).toEqual([])
+    expect(loading).toEqual([{ controller: undefined, entries: 0 }])
+    expect(installations).toHaveLength(1)
+    const first = installations[0]!
+    expect(first.controller).toBeDefined()
+    expect(first.composer.keyboard).toBeDefined()
+    expect(first.composer.hooks.fileUploads).toBe(first.controller.fileUploads)
+
+    const provider = [...b.runtime.ctx.registry.get(ConversationController)!.fibers][0]!
+    await provider.dispose()
+    expect(b.runtime.ctx.get('conversation')).toBeUndefined()
+    expect(b.runtime.ctx.get('uiConversation')).toBeDefined()
+    expect(b.runtime.slots.entries('main')).toHaveLength(0)
+    expect(b.runtime.slots.entries('conversation.composer.bar')).toHaveLength(0)
+    expect(b.runtime.slots.spec('conversation.composer.bar')).toBeUndefined()
+
+    await b.feature.fiber.ctx.plugin(ConversationController, {
+      input: first.controller.input,
+      blocks: first.controller.blocks,
+      maxConcurrentFileUploads: 2,
+    }).await()
+    await vi.waitFor(() => { expect(installations).toHaveLength(2) })
+    expect(failures).toEqual([])
+    const second = installations[1]!
+    expect(second.controller).toBeDefined()
+    expect(second.controller.fileUploads).not.toBe(first.controller.fileUploads)
+    expect(second.composer.hooks.fileUploads).toBe(second.controller.fileUploads)
+    expect(second.composer.keyboard).toBe(first.composer.keyboard)
+    await b.feature.dispose()
+    expect(b.runtime.slots.entries('main')).toHaveLength(0)
+    expect(b.runtime.slots.entries('conversation.composer.bar')).toHaveLength(0)
+    expect(b.runtime.ctx.get('conversation')).toBeUndefined()
+  })
+
   it('hides only the Trajectory View while developer tools are disabled and restores it when enabled', async () => {
     const b = await bench()
     const header = b.runtime.slots.entries('conversation.session.header')[0]!

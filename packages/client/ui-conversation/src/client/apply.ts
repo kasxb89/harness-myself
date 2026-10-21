@@ -141,13 +141,6 @@ function scopedConversation(sessions: ISessions, id: SessionId): IConversation {
   return conversation
 }
 
-/** Resolve package-internal attachment operations from the public service. */
-function concreteConversation(ctx: Context): ConversationController {
-  const conversation = ctx.get('conversation') as ConversationController | undefined
-  if (conversation === undefined) throw new Error('ui-conversation: conversation service unavailable')
-  return conversation
-}
-
 /**
  * Mount the Conversation core and target-neutral presentation.
  * @param ctx - Client root context.
@@ -318,14 +311,16 @@ export function apply(ctx: Context, config: Config = Config({})): void {
     },
   })
 
-  const registerConversationRoot = () => slots.register({
+  const registerConversationRoot = (slots: Context['slots']) => slots.register({
     name: 'main.conversation',
     children: {
       'conversation.header': { kind: 'single', scope: 'session-maybe' },
     },
   }, ConversationRoot)
 
-  const registerConversationContent = () => slots.registerFactory({
+  const registerConversationContent = (
+    slots: Context['slots'], conversation: ConversationController, lifetime: AbortSignal,
+  ) => slots.registerFactory({
     name: 'conversation.content',
     scope: 'session-maybe',
     locale: NS,
@@ -346,31 +341,35 @@ export function apply(ctx: Context, config: Config = Config({})): void {
       hooks: {
         composerBlock: sessionId === undefined ? ABSENT_BLOCK : composerBlocks.storeFor(sessionId),
       },
-      selectWorkspace: workspaceId => workspaceNavigation.openWorkspace(workspaceId, (nextId) => {
-        if (sessionId !== undefined && nextId !== sessionId) {
-          const from = inputHub.shell(sessionId)
-          const draft = from.draftSnapshot
-          const attachmentIds = from.snapshot.attachmentIds
-          const next = inputHub.shell(nextId)
-          if (attachmentIds.length === 0 || next.addAttachments(attachmentIds)) {
-            if (sessions.binding(nextId) === undefined) {
-              throw new Error(`ui-conversation: session "${nextId}" resolved no binding`)
-            }
-            concreteConversation(ctx).rebindDraftFiles(nextId, attachmentIds)
-            if (draft.text !== '') {
-              next.setDraft(draft)
-              from.setDraft('')
-            }
-            if (attachmentIds.length > 0) {
-              for (const id of attachmentIds) from.removeAttachment(id)
+      selectWorkspace: async (workspaceId) => {
+        lifetime.throwIfAborted()
+        await workspaceNavigation.openWorkspace(workspaceId, (nextId) => {
+          lifetime.throwIfAborted()
+          if (sessionId !== undefined && nextId !== sessionId) {
+            const from = inputHub.shell(sessionId)
+            const draft = from.draftSnapshot
+            const attachmentIds = from.snapshot.attachmentIds
+            const next = inputHub.shell(nextId)
+            if (attachmentIds.length === 0 || next.addAttachments(attachmentIds)) {
+              if (sessions.binding(nextId) === undefined) {
+                throw new Error(`ui-conversation: session "${nextId}" resolved no binding`)
+              }
+              conversation.rebindDraftFiles(nextId, attachmentIds)
+              if (draft.text !== '') {
+                next.setDraft(draft)
+                from.setDraft('')
+              }
+              if (attachmentIds.length > 0) {
+                for (const id of attachmentIds) from.removeAttachment(id)
+              }
             }
           }
-        }
-      }),
+        })
+      },
     }),
   }, ConversationContent)
 
-  const registerConversationSession = () => slots.register({
+  const registerConversationSession = (slots: Context['slots']) => slots.register({
     name: 'conversation.session',
     children: {
       'conversation.view': { kind: 'list', scope: 'session' },
@@ -408,7 +407,7 @@ export function apply(ctx: Context, config: Config = Config({})): void {
     },
   }, ConversationSession)
 
-  const registerHeader = () => slots.register({
+  const registerHeader = (slots: Context['slots']) => slots.register({
     name: 'conversation.header',
     children: {
       'conversation.header.leading': { kind: 'single', scope: 'root' },
@@ -416,7 +415,7 @@ export function apply(ctx: Context, config: Config = Config({})): void {
     },
   }, ConversationHeader)
 
-  const registerSessionHeader = () => slots.register({
+  const registerSessionHeader = (slots: Context['slots']) => slots.register({
     name: 'conversation.session.header',
     locale: NS,
     children: {
@@ -437,7 +436,7 @@ export function apply(ctx: Context, config: Config = Config({})): void {
     }),
   }, ConversationSessionHeader)
 
-  const registerComposerBar = () => slots.register({
+  const registerComposerBar = (slots: Context['slots'], conversation: ConversationController) => slots.register({
     name: 'conversation.composer.bar',
     locale: NS,
     children: {
@@ -471,7 +470,6 @@ export function apply(ctx: Context, config: Config = Config({})): void {
           },
         }
       }
-      const conversation = concreteConversation(ctx)
       const shell = inputHub.shell(sessionId)
       const inputTriggers = inputHub.inputTriggers(sessionId)
       const bridge = hostPathBridge()
@@ -549,18 +547,24 @@ export function apply(ctx: Context, config: Config = Config({})): void {
     },
   }, InputBar)
 
-  slots.inject('main', function* () {
-    yield slots.register({
-      name: 'main',
-      key: 'conversation',
-      children: { 'main.conversation': { kind: 'single', scope: 'session-maybe' } },
-    }, ConversationPanel)
-    yield registerConversationRoot()
-    yield registerConversationContent()
-    yield registerConversationSession()
-    yield registerHeader()
-    yield registerSessionHeader()
-    yield registerComposerBar()
+  ctx.inject(['conversation'], (scope) => {
+    const slots = scope.slots
+    const conversation = scope.conversation as ConversationController
+    const lifetime = new AbortController()
+    scope.effect(() => () => { lifetime.abort() }, 'ui-conversation: consumer lifetime')
+    slots.inject('main', function* () {
+      yield slots.register({
+        name: 'main',
+        key: 'conversation',
+        children: { 'main.conversation': { kind: 'single', scope: 'session-maybe' } },
+      }, ConversationPanel)
+      yield registerConversationRoot(slots)
+      yield registerConversationContent(slots, conversation, lifetime.signal)
+      yield registerConversationSession(slots)
+      yield registerHeader(slots)
+      yield registerSessionHeader(slots)
+      yield registerComposerBar(slots, conversation)
+    })
   })
 
   ctx.plugin(ConversationController, {

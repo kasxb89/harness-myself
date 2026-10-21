@@ -23,6 +23,7 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace/types'
 import { createConversationStore } from '../src/client/stores.ts'
 import type { SessionInputShell } from '../src/client/input/facade.ts'
 import { RemoteError } from '@deepseek-ai/dsh-client-test-runtime'
+import { ConversationController } from '../src/client/service.ts'
 import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
 import { ConversationSettingsSchema, type ConversationSettings } from '../src/submission-settings.ts'
 import { ConfigFormController } from '../../ui-settings/src/client/config-form.ts'
@@ -766,6 +767,63 @@ describe('Conversation inject API', () => {
     expect(b.inputApi(ROOT).state.getSnapshot().draft).toBe('')
     expect(b.inputApi(ROOT).state.getSnapshot().occurrences).toEqual([])
     await b.runtime.dispose()
+  })
+
+  it.each([false, true])('cancels a pending Workspace draft transfer after its controller unloads (replacement: %s)', async (replacement) => {
+    const b = await bench()
+    onTestFinished(() => b.runtime.dispose())
+    const resident = b.residentApi(ROOT)
+    const { state, actions } = b.inputApi(ROOT)
+    actions.setDraft('keep original draft')
+    expect(b.composerApi(ROOT).addFiles?.([
+      new File([Uint8Array.of(1)], 'draft.pdf', { type: 'application/pdf' }),
+    ])).toBeNull()
+    await vi.waitFor(() => { expect(b.rootUpload).toHaveBeenCalledOnce() })
+    const original = state.getSnapshot()
+    expect(original.attachmentIds).toHaveLength(1)
+
+    const other = 'delayed-workspace-target' as SessionId
+    await b.runtime.sessions.add({ id: other, session: {} })
+    const reference = b.runtime.sessions.retain(other)
+    onTestFinished(() => { reference.release() })
+    const target = b.inputApi(other).state
+    const connection = Promise.withResolvers<SessionId>()
+    b.connectWorkspace.mockReturnValueOnce(connection.promise)
+    const navigation = resident.selectWorkspace('workspace-delayed' as WorkspaceId).then(
+      () => ({ kind: 'opened' as const }),
+      (error: unknown) => ({ kind: 'rejected' as const, error }),
+    )
+    onTestFinished(async () => {
+      connection.resolve(other)
+      await navigation
+    })
+    expect(b.connectWorkspace).toHaveBeenCalledOnce()
+
+    const controller = b.runtime.ctx.conversation as ConversationController
+    const provider = [...b.runtime.ctx.registry.get(ConversationController)!.fibers][0]!
+    await provider.dispose()
+    expect(b.runtime.ctx.get('uiConversation')).toBeDefined()
+    expect(b.runtime.ctx.get('conversation')).toBeUndefined()
+    if (replacement) {
+      await b.feature.fiber.ctx.plugin(ConversationController, {
+        input: controller.input,
+        blocks: controller.blocks,
+        maxConcurrentFileUploads: 2,
+      }).await()
+      await vi.waitFor(() => { expect(b.slots.entries('conversation.composer.bar')).toHaveLength(1) })
+    }
+
+    connection.resolve(other)
+    const outcome = await navigation
+    expect(state.getSnapshot().draft).toBe(original.draft)
+    expect(state.getSnapshot().attachmentIds).toEqual(original.attachmentIds)
+    expect(target.getSnapshot().draft).toBe('')
+    expect(target.getSnapshot().attachmentIds).toEqual([])
+    expect(b.opened).not.toHaveBeenCalled()
+    expect(outcome).toMatchObject({ kind: 'rejected', error: { name: 'AbortError' } })
+    await expect(resident.selectWorkspace('workspace-stale' as WorkspaceId))
+      .rejects.toMatchObject({ name: 'AbortError' })
+    expect(b.connectWorkspace).toHaveBeenCalledOnce()
   })
 
   it('supports no-Session navigation and propagates Workspace connection failure', async () => {

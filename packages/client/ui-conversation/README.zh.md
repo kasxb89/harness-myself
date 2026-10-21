@@ -68,9 +68,9 @@ Host 的 `ui-conversation.hiddenViews` 列表默认为空，与 `busyEnter` 一�
 
 已认领的命令在仅删除参数和末尾分隔空格时保留身份与高亮，改动命令名才会释放认领。所有命令和语言使用相同规则，包括 `/goal`、`/目标`、`/plan` 和 `/计划`。输入法组合输入期间，命令提示和普通占位文字持续隐藏，直到编辑器提交最终文字且对应输入为空时才重新显示。
 
-工作区选择使用 `uiWorkspace.openWorkspace` 准备目标并提交导航。草稿内容（包括结构化引用）和附件仅在该请求仍为当前请求时，通过它的同步准备回调搬移；后续导航或所有者释放会保留原草稿。
+工作区选择使用 `uiWorkspace.openWorkspace` 准备目标并提交导航。草稿内容（包括结构化引用）和附件仅在该请求仍为当前请求且消费方绑定的 Conversation 服务代际仍然激活时，通过它的同步准备回调搬移；后续导航或消费方释放会保留原草稿及附件选择。
 
-本包占据 root 作用域 `main` 中的 `conversation` key。其 `main.conversation` 外壳将常驻的 `conversation.header` 放在可选 Session 的 `conversation.content` Component Factory 外。未选中 Session 时，头部仍承载根作用域导航；标题、操作和 View 标签保留在严格 Session 子组件中。Factory 拥有共享正文与 Composer，通过其标准 Hook 读取当前 Session，并公开 strict-Session `views` 与 root-scoped `widthControls` 两个局部位置。默认 adapter 渲染现有 `conversation.session` entry，主 occurrence 选择宽度拖拽条；嵌入式 occurrence 可以替换 `views`、省略拖拽条，且不渲染主 Header。共享正文与 Composer 注册 queue dock 和 Todo dock。Todo dock 在 composer 上方使用共享面板 elevation；其中的行分别以共享 idle、ongoing 与 done 标记表示待处理、进行中与已完成。`ctx.uiSession.provide()` 从同一个 Session binding 物化 Conversation 与 input source，并将 `inputActions` 作为稳定标准 prop 提供。
+本包占据 root 作用域 `main` 中的 `conversation` key。 消费子树仅在 `conversation` 服务激活后安装，绑定该代服务，并随服务卸载而撤销。其 `main.conversation` 外壳将常驻的 `conversation.header` 放在可选 Session 的 `conversation.content` Component Factory 外。未选中 Session 时，头部仍承载根作用域导航；标题、操作和 View 标签保留在严格 Session 子组件中。Factory 拥有共享正文与 Composer，通过其标准 Hook 读取当前 Session，并公开 strict-Session `views` 与 root-scoped `widthControls` 两个局部位置。默认 adapter 渲染现有 `conversation.session` entry，主 occurrence 选择宽度拖拽条；嵌入式 occurrence 可以替换 `views`、省略拖拽条，且不渲染主 Header。共享正文与 Composer 注册 queue dock 和 Todo dock。Todo dock 在 composer 上方使用共享面板 elevation；其中的行分别以共享 idle、ongoing 与 done 标记表示待处理、进行中与已完成。`ctx.uiSession.provide()` 从同一个 Session binding 物化 Conversation 与 input source，并将 `inputActions` 作为稳定标准 prop 提供。
 
 blank Session 保留 header 的 leading 与 corner 控件，包括右侧栏展开入口，同时隐藏标题、actions、utilities 和 View tabs。选择 Workspace 会创建这些控件所需的 Session，无需先发送消息。没有选中 Session 时，strict header 不挂载；常驻 header 在 macOS 桌面保留 40px 的窗口顶条，由它自己作为拖拽行持有，在 Web、Windows 或 Linux 上不预留空白高度。侧栏各入口仍遵循自身的数据与执行环境要求。 已开始的 Session 在可用 View 少于两个时使用单行标题栏，仅在渲染标签行时保留其高度。
 
