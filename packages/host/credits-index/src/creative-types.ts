@@ -13,6 +13,16 @@ export type CreativeKind = 'image' | 'video'
 /** Committed operation state; interrupted never implies an active background job. */
 export type CreativeStatus = 'planned' | 'running' | 'saving' | 'editing' | 'completed' | 'failed' | 'cancelled' | 'interrupted' | 'unknown'
 
+/** Credential-free image submission identity retained for querying the original task. */
+export interface CreativeImageReceipt {
+  readonly route: string
+  readonly model: string
+  readonly phase: 'submitting' | 'accepted' | 'completed'
+  readonly taskId?: string
+  readonly requestId?: string
+  readonly backendFingerprint: string
+}
+
 /** A retained character description supplied through the logged planning tool. */
 export interface CreativeCharacter {
   readonly id: string
@@ -104,6 +114,9 @@ export interface CreativeTaskView {
   readonly videoProjectId?: string
   readonly outputs: readonly CreativeOutput[]
   readonly errorCode?: string
+  readonly imageReceipt?: CreativeImageReceipt
+  /** Querying the original task is available without another paid submission. */
+  readonly canQuery?: boolean
   readonly completedShots: number
   readonly totalShots: number
 }

@@ -49,6 +49,7 @@ function fixture(initial: Partial<CreativeSnapshot> = {}, english = false) {
     selectShot: vi.fn((id: string) => { source.set({ ...source.getSnapshot(), selectedShotId: id }) }),
     save: vi.fn<CreativeBodyProps['save']>(async () => ({ ok: true as const, payload: { accountId: 'account-a', projects: [project()] } })),
     upload: vi.fn<CreativeBodyProps['upload']>(async () => ({ ok: true as const, assetId: 'ma_test', kind: 'image' as const })), t: makeTranslate(english ? en : zh),
+    recover: vi.fn<CreativeBodyProps['recover']>(async () => ({ ok: true as const, payload: { accountId: 'account-a', projects: [] } })),
   }
   // The remaining framework seats are not read by this pure component.
   const view = render(<CreativeBody {...props as CreativeBodyProps} />)
@@ -56,6 +57,45 @@ function fixture(initial: Partial<CreativeSnapshot> = {}, english = false) {
 }
 
 describe('chat creation sidebar', () => {
+  it.each([false, true])('queries only an accepted original image task and keeps its receipt visible (English: %s)', async (english) => {
+    const copy = english ? en : zh
+    const data = project({ kind: 'image', status: 'unknown', tasks: [{ id: 'op_original', status: 'unknown', shotIds: ['s1'],
+      completedShots: 0, totalShots: 1, outputs: [], canQuery: true,
+      imageReceipt: { route: '/toapis-image/submit', model: 'image-model', phase: 'accepted', taskId: 'task-original',
+        requestId: 'request-original', backendFingerprint: 'a'.repeat(64) } }] })
+    const h = fixture({ projects: [data] }, english)
+    fireEvent.click(screen.getByRole('tab', { name: copy['section.images'] }))
+    expect(screen.getByText(copy['tasks.acceptedUnconfirmed'])).toBeTruthy()
+    expect(screen.getByText('task-original').closest('details')?.open).toBe(false)
+    expect(screen.getByText('request-original')).toBeTruthy()
+    let finish!: (value: Awaited<ReturnType<CreativeBodyProps['recover']>>) => void
+    h.props.recover.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+    fireEvent.click(screen.getByRole('button', { name: copy['tasks.queryOriginal'] }))
+    expect(screen.getByRole('button', { name: copy['tasks.querying'] }).hasAttribute('disabled')).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: copy['tasks.querying'] }))
+    expect(h.props.recover).toHaveBeenCalledExactlyOnceWith(data.id, 'op_original', expect.any(AbortSignal))
+    expect(h.inputActions.submit).not.toHaveBeenCalled()
+    expect(h.inputActions.insertText).not.toHaveBeenCalled()
+    await act(async () => { finish({ ok: false, code: 'unavailable' }) })
+    expect(screen.getByRole('alert').textContent).toBe(copy['tasks.queryFailed'])
+    expect(screen.getByText('task-original')).toBeTruthy()
+    expect(screen.getByRole('button', { name: copy['tasks.queryOriginal'] })).toBeTruthy()
+  })
+
+  it('keeps legacy unknown submissions conservative and hides the action while an original query is active', () => {
+    const task = { id: 'op_legacy', status: 'unknown' as const, shotIds: ['s1'], completedShots: 0, totalShots: 1, outputs: [] }
+    const data = project({ kind: 'image', status: 'unknown', tasks: [task] })
+    const h = fixture({ projects: [data] })
+    fireEvent.click(screen.getByRole('tab', { name: zh['section.images'] }))
+    expect(screen.getByText(zh['tasks.unknownNoReceipt'])).toBeTruthy()
+    expect(screen.queryByRole('button', { name: zh['tasks.queryOriginal'] })).toBeNull()
+    act(() => { h.source.set({ ...h.source.getSnapshot(), projects: [{ ...data, tasks: [{ ...task, status: 'running', canQuery: false,
+      imageReceipt: { route: '/toapis-image/submit', model: 'image-model', phase: 'accepted', taskId: 'task-original',
+        backendFingerprint: 'a'.repeat(64) } }] }] }) })
+    expect(screen.queryByRole('button', { name: zh['tasks.queryOriginal'] })).toBeNull()
+    expect(h.props.recover).not.toHaveBeenCalled()
+  })
+
   it('shows saved shot, character and material directions without inventing output files', () => {
     const h = fixture()
     expect(screen.getByText('雨夜重逢')).toBeTruthy()

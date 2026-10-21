@@ -1,0 +1,26 @@
+- banner:
+  - navigation "Session hierarchy": Recover the original image task
+  - button "More actions"
+  - button "Open right sidebar"
+- text: Generate one image. If waiting is interrupted, keep its receipt and query the original task without generating again. {{clock}}
+- button "Copy"
+- status: Completed
+- button "Completed in {{duration}}" [expanded]
+- button "Called tools" [expanded]
+- text: Stopped
+- button "Tool call The original image task was accepted, but local waiting or saving stopped. Query the original task to save its result; do not generate again."
+- button "Tool call query_image_task · cp_{{uuid}}" [expanded]
+- text: "IN { \"plan_id\": \"cp_{{uuid}}\", \"operation_id\": \"op_{{uuid}}\" } OUT {\"status\":\"succeeded\",\"submission_state\":\"completed\",\"plan_id\":\"cp_{{uuid}}\",\"operation_id\":\"op_{{uuid}}\",\"task_id\":\"snapshot-original-task\",\"request_id\":\"snapshot-original-request\",\"model\":\"yunshu-internal-gpt-image-2\",\"path\":\"{{cwd}}/retained-image.png\",\"paths\":[\"{{cwd}}/retained-image.png\"],\"message\":\"原任务图片已保存。\"}"
+- paragraph: The original task completed and its image is saved. No additional generation was submitted.
+- button "Copy"
+- button "Good response"
+- button "Bad response"
+- button "Branch into a new conversation"
+- text: {{clock}}
+- textbox "Message or run a task, / commands, @ files or sessions"
+- button "Add files or run commands"
+- 'button "Access mode, current: Full access"': Full access
+- button "Select model, current DeepSeek-V4-Flash": DeepSeek-V4-Flash
+- button "Voice input"
+- button "Send message" [disabled]
+- button "1 turns 3 steps"

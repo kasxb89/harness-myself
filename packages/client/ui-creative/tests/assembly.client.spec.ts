@@ -20,10 +20,10 @@ function selection(value: unknown): value is (id: string) => void {
 function creativeFace(injected: Record<string, unknown>) {
   const hooks = injected.hooks
   if (typeof hooks !== 'object' || hooks === null || !('creative' in hooks) || !readable(hooks.creative)
-    || !selection(injected.selectProject) || !selection(injected.selectShot)) {
+    || !selection(injected.selectProject) || !selection(injected.selectShot) || typeof injected.recover !== 'function') {
     throw new Error('Creation injection must provide a readable project source and selection callbacks')
   }
-  return { source: hooks.creative, selectProject: injected.selectProject, selectShot: injected.selectShot }
+  return { source: hooks.creative, selectProject: injected.selectProject, selectShot: injected.selectShot, recover: injected.recover }
 }
 
 describe('creative sidebar real Loader composition', () => {
@@ -48,6 +48,7 @@ describe('creative sidebar real Loader composition', () => {
     expect(chat.source).not.toBe(other.source)
     expect(chat.selectProject).toBeTypeOf('function')
     expect(chat.selectShot).toBeTypeOf('function')
+    expect(chat.recover).toBeTypeOf('function')
     reopened.selectProject('cp_unowned'); chat.selectShot('unowned')
     expect(chat.source.getSnapshot()).toMatchObject({ phase: 'signed-out', projects: [] })
     const t = c.ctx.locale.bind('creative')

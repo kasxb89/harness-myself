@@ -885,7 +885,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-credits-index`
 
 - `inject`: `webServer` · `tools`
-- `source`: [`packages/host/credits-index/src/index.ts:76`](../packages/host/credits-index/src/index.ts)
+- `source`: [`packages/host/credits-index/src/index.ts:78`](../packages/host/credits-index/src/index.ts)
 
 ```ts config-catalog
 /** Plugin config: platform origin, display rate, and where the session file lives. */
@@ -898,6 +898,14 @@ export interface Config {
   stateDir?: string
   /** Deadline for one platform call, in milliseconds. */
   timeoutMs?: number
+  /** Complete deadline for the single image submission, in milliseconds. */
+  imageSubmitTimeoutMs?: number
+  /** Complete image execution deadline, including polling and saving. */
+  imageTaskTimeoutMs?: number
+  /** Delay between read-only image status requests and transient query retries. */
+  imagePollIntervalMs?: number
+  /** Maximum consecutive transient query retries; image POSTs are never retried. */
+  imageQueryRetryLimit?: number
   /** Loopback port of the model relay; 0 disables it. */
   relayPort?: number
   /** Credential reference the relay's bearer token lives under. */

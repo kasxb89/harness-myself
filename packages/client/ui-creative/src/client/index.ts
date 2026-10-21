@@ -132,6 +132,7 @@ export function apply(ctx: Context, config: Config): void {
       refresh: () => { void controller.refresh(sessionId) },
       save: (projectId, revision, change, signal) => controller.save(sessionId, projectId, revision, change, signal),
       upload: (file, signal) => controller.upload(sessionId, file, signal),
+      recover: (projectId, operationId, signal) => controller.recover(sessionId, projectId, operationId, signal),
       watch: (visible, signal) => controller.watch(sessionId, visible, signal),
       reportDraft: (success) => { notice.set({ seq: ++sequence, success, kind: 'draft' }) },
       reportSaved: () => { notice.set({ seq: ++sequence, success: true, kind: 'plan' }) },

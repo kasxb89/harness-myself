@@ -1,0 +1,19 @@
+# Bilingual-pair consistency record for 2026-10-21-image-task-receipt-recovery.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-10-21-image-task-receipt-recovery.md
+/agent-note-retain-image-receipts-through-interrupted-waiting:
+  en: a105540fb7475f12
+  zh: 46c76688de4fa63b
+/agent-note-retain-image-receipts-through-interrupted-waiting/problem:
+  en: a992ffd285c5eccc
+  zh: f6229c15a2c50060
+/agent-note-retain-image-receipts-through-interrupted-waiting/decision:
+  en: 8cefdb5bc0714537
+  zh: c2d121a4bb5cf755
+/agent-note-retain-image-receipts-through-interrupted-waiting/alternatives-considered:
+  en: 496c445759d671cb
+  zh: a754ac6b88abf7ae
+/agent-note-retain-image-receipts-through-interrupted-waiting/consequences:
+  en: 845a5991ae464ee9
+  zh: 871144543a4511b1

@@ -1,11 +1,12 @@
 /** Chat project navigation and actual operation outputs. */
-import { useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Button, IconSparkleRegular, productFailureKind } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import type {
   CreativeOutput, CreativeProjectView, CreativeShotView, CreativeStatus, CreativeTaskView,
 } from '@deepseek-ai/dsh-credits-index/src/creative-types.ts'
-import { SavedMedia, Status, timecode } from './CreativeMedia.tsx'
+import { Facts, SavedMedia, Status, timecode } from './CreativeMedia.tsx'
+import type { CreativeInjected } from './CreativeBody.tsx'
 import type {} from './locales.ts'
 import css from './CreativeBody.module.css'
 
@@ -85,15 +86,37 @@ function OutputGallery({ outputs, visible, t }: { outputs: readonly CreativeOutp
   </div>
 }
 
-function TaskCard({ task, order, project, kind, visible, t }: {
+function TaskCard({ task, order, project, kind, visible, recover, t }: {
   task: CreativeTaskView
   order: number
   project: CreativeProjectView
   kind: CreativeOutput['kind'] | 'all'
   visible: boolean
+  recover: CreativeInjected['recover']
   t: Translate
 }): ReactNode {
   const [expanded, setExpanded] = useState(false)
+  const [querying, setQuerying] = useState(false)
+  const [queryFailed, setQueryFailed] = useState(false)
+  const query = useRef<AbortController | null>(null)
+  useEffect(() => () => { query.current?.abort(); query.current = null }, [])
+  useEffect(() => {
+    if (!visible) { query.current?.abort(); query.current = null; setQuerying(false); setQueryFailed(false) }
+  }, [visible])
+  const recoverOriginal = async (): Promise<void> => {
+    if (task.canQuery !== true || query.current !== null) return
+    const abort = new AbortController()
+    query.current = abort
+    setQuerying(true); setQueryFailed(false)
+    try {
+      const result = await recover(project.id, task.id, abort.signal)
+      if (!abort.signal.aborted) setQueryFailed(!result.ok)
+    } catch (_queryFailure) {
+      if (!abort.signal.aborted) setQueryFailed(true)
+    } finally {
+      if (query.current === abort) { query.current = null; setQuerying(false) }
+    }
+  }
   const publicationFailed = task.errorCode === 'ARTIFACT_PUBLISH_FAILED'
   const failureKind = productFailureKind(task.errorCode)
   const failureText = failureKind === 'insufficient-credits' ? t('creditsRequired')
@@ -116,9 +139,19 @@ function TaskCard({ task, order, project, kind, visible, t }: {
         aria-label={t('tasks.progress', { completed: task.completedShots, total: task.totalShots })} />}
       {publicationFailed ? <p className={css.notice} role="alert">{t('artifactPublishFailed')}</p>
         : task.status === 'failed' && <p className={css.hint}>{failureText} {t('tasks.failed')}</p>}
+      {task.status === 'unknown' && <p className={css.notice}>{t(task.imageReceipt?.phase === 'accepted'
+        ? 'tasks.acceptedUnconfirmed' : task.imageReceipt?.phase === 'completed' ? 'tasks.resultUnsaved' : 'tasks.unknownNoReceipt')}</p>}
+      {task.canQuery === true && <div className={css.actions}><Button variant="outline" size="sm" disabled={querying}
+        onClick={() => { void recoverOriginal() }}>{t(querying ? 'tasks.querying' : 'tasks.queryOriginal')}</Button></div>}
+      {queryFailed && <p className={css.notice} role="alert">{t('tasks.queryFailed')}</p>}
       <details className={css.details} onToggle={(event) => { setExpanded(event.currentTarget.open) }}>
         <summary>{t('details')}</summary>
-        <p className={css.caption}>{task.model ?? t('notSpecified')}</p><code className={css.caption}>{task.id}</code>
+        <p className={css.caption}>{task.model ?? task.imageReceipt?.model ?? t('notSpecified')}</p><code className={css.caption}>{task.id}</code>
+        {task.imageReceipt !== undefined && <Facts t={t} entries={[
+          [t('tasks.receipt.phase'), t(`tasks.receipt.${task.imageReceipt.phase}`)],
+          ...task.imageReceipt.taskId === undefined ? [] : [[t('tasks.receipt.taskId'), task.imageReceipt.taskId] as const],
+          ...task.imageReceipt.requestId === undefined ? [] : [[t('tasks.receipt.requestId'), task.imageReceipt.requestId] as const],
+        ]} />}
         {expanded && outputs.length > 0 && <OutputGallery outputs={outputs} visible={visible} t={t} />}
       </details>
     </div>
@@ -126,7 +159,12 @@ function TaskCard({ task, order, project, kind, visible, t }: {
 }
 
 /** Filter actual invocation records and saved outputs without inventing percentage progress. */
-export function CreativeTasks({ project, visible, t }: { project: CreativeProjectView; visible: boolean; t: Translate }): ReactNode {
+export function CreativeTasks({ project, visible, recover, t }: {
+  project: CreativeProjectView
+  visible: boolean
+  recover: CreativeInjected['recover']
+  t: Translate
+}): ReactNode {
   const [filter, setFilter] = useState<CreativeStatus | 'all'>('all')
   const [kind, setKind] = useState<CreativeOutput['kind'] | 'all'>('all')
   const tasks = project.tasks.filter(task => filter === 'all' || task.status === filter)
@@ -156,7 +194,7 @@ export function CreativeTasks({ project, visible, t }: { project: CreativeProjec
       {project.totalShots > 0 ? t('tasks.progress', { completed: project.completedShots, total: project.totalShots })
         : t('tasks.outputCount', { count: project.outputs.length })}</span></div>
     {tasks.length === 0 ? <p className={css.hint}>{t('tasks.empty')}</p> : tasks.map(task => <TaskCard key={task.id}
-      task={task} order={project.tasks.indexOf(task) + 1} project={project} kind={kind} visible={visible} t={t} />)}
+      task={task} order={project.tasks.indexOf(task) + 1} project={project} kind={kind} visible={visible} recover={recover} t={t} />)}
     <h3 className={css.subheading}>{t('tasks.outputs')}</h3>
     {outputs.length === 0 ? <p className={css.hint}>{t('noOutputs')}</p>
       : <OutputGallery outputs={outputs} visible={visible} t={t} />}

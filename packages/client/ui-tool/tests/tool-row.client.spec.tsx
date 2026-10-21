@@ -634,6 +634,52 @@ describe('GenericToolCard', () => {
     expect(block.content).toEqual([{ type: 'text', text }])
   })
 
+  it.each([
+    ['generate_image', false], ['generate_image', true],
+    ['query_image_task', false], ['query_image_task', true],
+  ] as const)('keeps an accepted %s wait distinct from success and another submission (English: %s)', (name, english) => {
+    const text = JSON.stringify({ status: 'pending', submission_state: 'pending', task_id: 'original-task',
+      request_id: 'original-request', code: 'IMAGE_WAIT_STOPPED', message: 'private upstream diagnostic' })
+    const block = result({ call: { name, argsRaw: '{}' }, content: [{ type: 'text', text }] })
+    const dictionary = english ? en : zh
+    const view = render(<GenericToolCard {...props(name, block)} t={makeTranslate(dictionary, commonZh)} />)
+    expect(view.getByText(dictionary['error.mediaTaskPending'])).toBeTruthy()
+    expect(view.container.querySelector('[data-state="stopped"]')).not.toBeNull()
+    fireEvent.click(view.getByRole('button'))
+    expect(view.getAllByText(dictionary['error.mediaTaskPending'])).toHaveLength(2)
+    expect(view.queryByText(dictionary['error.serverBusy'])).toBeNull()
+    expect(view.queryByText(dictionary['error.mediaOutcomeUnknown'])).toBeNull()
+    expect(view.container.textContent).not.toContain('private upstream diagnostic')
+    expect(view.container.textContent).not.toContain('IMAGE_WAIT_STOPPED')
+    expect(block.content).toEqual([{ type: 'text', text }])
+    expect(block.isError).toBe(false)
+  })
+
+  it.each(['generate_image', 'query_image_task'])('keeps unknown %s submission and preflight rejection distinct', (name) => {
+    const text = JSON.stringify({ status: 'failed', submission_state: 'unknown', code: 'IMAGE_SUBMISSION_UNKNOWN' })
+    const block = result({ call: { name, argsRaw: '{}' }, content: [{ type: 'text', text }] })
+    const view = render(<GenericToolCard {...props(name, block)} />)
+    expect(view.getByText(zh['error.mediaOutcomeUnknown'])).toBeTruthy()
+    expect(view.queryByText(zh['error.mediaTaskPending'])).toBeNull()
+    cleanup()
+    const refused = result({ call: { name, argsRaw: '{}' }, content: [{ type: 'text', text: JSON.stringify({
+      status: 'failed', submission_state: 'not-submitted', code: 'IMAGE_RECEIPT_UNAVAILABLE',
+    }) }] })
+    const rejected = render(<GenericToolCard {...props(name, refused)} />)
+    expect(rejected.getByText(zh['error.serverBusy'])).toBeTruthy()
+    expect(rejected.queryByText(zh['error.mediaOutcomeUnknown'])).toBeNull()
+    expect(rejected.queryByText(zh['error.mediaTaskPending'])).toBeNull()
+  })
+
+  it('does not claim acceptance when an interrupted receipt listing has no confirmed task id', () => {
+    const block = result({ call: { name: 'query_image_task', argsRaw: '{}' }, content: [{ type: 'text', text: JSON.stringify({
+      status: 'pending', code: 'CREATIVE_RECOVERY_INTERRUPTED',
+    }) }] })
+    const view = render(<GenericToolCard {...props('query_image_task', block)} />)
+    expect(view.getByText(zh['error.mediaOutcomeUnknown'])).toBeTruthy()
+    expect(view.queryByText(zh['error.mediaTaskPending'])).toBeNull()
+  })
+
   it('keeps an accepted single-clip timeout in its original running state with safe confirmation guidance', () => {
     const text = JSON.stringify({ status: 'running', code: 'TIMEOUT', task_id: 'known-task' })
     const block = result({ call: { name: 'generate_video', argsRaw: '{}' }, content: [{ type: 'text', text }] })

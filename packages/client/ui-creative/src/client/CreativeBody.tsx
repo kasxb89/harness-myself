@@ -9,7 +9,7 @@ import type {
   CreativeAssetView, CreativeCharacter, CreativePlanChange, CreativeProjectView, CreativeShotView,
 } from '@deepseek-ai/dsh-credits-index/src/creative-types.ts'
 import type { CreativeSnapshot } from './controller.ts'
-import type { CreativeSaveResult, CreativeUploadResult } from './api.ts'
+import type { CreativeRecoverResult, CreativeSaveResult, CreativeUploadResult } from './api.ts'
 import { Facts, SavedMedia, Status } from './CreativeMedia.tsx'
 import { CreativeTasks, StoryboardTimeline, thumbnail } from './CreativePanels.tsx'
 import { newPlanEdit, PlanEditor, type PlanEdit } from './PlanEditor.tsx'
@@ -27,6 +27,8 @@ export interface CreativeInjected {
   /** Free, revision-checked plan mutation shared by all creation surfaces. */
   readonly save: (projectId: string, revision: string, change: CreativePlanChange, signal: AbortSignal) => Promise<CreativeSaveResult>
   readonly upload: (file: File, signal: AbortSignal) => Promise<CreativeUploadResult>
+  /** Query the retained original task; never submit generation. */
+  readonly recover: (projectId: string, operationId: string, signal: AbortSignal) => Promise<CreativeRecoverResult>
   /** @param visible - official tab visibility. @param signal - occurrence lifetime. @returns visibility release. */
   readonly watch: (visible: boolean, signal: AbortSignal) => () => void
   /** @param success - whether revision-guarded insertion was admitted. */
@@ -185,12 +187,14 @@ interface WorkspaceProps {
   readonly refresh: () => void
   readonly save: CreativeInjected['save']
   readonly upload: CreativeInjected['upload']
+  readonly recover: CreativeInjected['recover']
   readonly reportSaved: CreativeInjected['reportSaved']
   readonly append: (text: string) => void
   readonly t: Translate
 }
 
-function CreativeWorkspace({ sessionId, snapshot, visible, locked, refresh, save, upload, reportSaved, selectProject, selectShot, append, t,
+function CreativeWorkspace({ sessionId, snapshot, visible, locked, refresh, save, upload, recover,
+  reportSaved, selectProject, selectShot, append, t,
 }: WorkspaceProps): ReactNode {
   const [section, setSection] = useState<Section>('shots')
   const [menu, setMenu] = useState(false)
@@ -296,7 +300,7 @@ function CreativeWorkspace({ sessionId, snapshot, visible, locked, refresh, save
                   <ShotCards project={{ ...project, shots: shot === undefined ? [] : [shot] }} locked={locked || saving}
                     visible={visible} t={t}
                     manage={manage} edit={(value) => { setEditing({ kind: 'shot', value }); setChanges('') }} redo={redo} />
-                </div> : <CreativeTasks key={project.id} project={project} visible={visible} t={t} />}
+                </div> : <CreativeTasks key={project.id} project={project} visible={visible} recover={recover} t={t} />}
           </section>
         </div>}
     {planEdit !== null && project !== undefined && <PlanEditor key={`${planEdit.project.id}:${planEdit.edit.kind}:${planEdit.edit.value.id}`}
@@ -324,7 +328,7 @@ function stageDraft(text: string, locked: boolean, actions: CreativeBodyProps['i
 }
 
 /** Current-chat sidebar adapter using official tab visibility and ordinary draft actions. */
-export function CreativeBody({ sessionId, useTabInfo, useCreative, useInput, inputActions, refresh, save, upload, watch,
+export function CreativeBody({ sessionId, useTabInfo, useCreative, useInput, inputActions, refresh, save, upload, recover, watch,
   reportDraft, reportSaved, selectProject, selectShot, t,
 }: CreativeBodyProps): ReactNode {
   const { tab } = useTabInfo()
@@ -334,7 +338,7 @@ export function CreativeBody({ sessionId, useTabInfo, useCreative, useInput, inp
   useEffect(() => tab.actions.bindCommands({ refresh }), [tab.actions, refresh])
   const append = (text: string): void => { stageDraft(text, locked, inputActions, reportDraft) }
   return <CreativeWorkspace sessionId={sessionId} snapshot={snapshot} visible={tab.visible} locked={locked}
-    refresh={refresh} save={save} upload={upload} reportSaved={reportSaved}
+    refresh={refresh} save={save} upload={upload} recover={recover} reportSaved={reportSaved}
     selectProject={selectProject} selectShot={selectShot} append={append} t={t} />
 }
 

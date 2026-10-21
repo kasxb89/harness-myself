@@ -6,7 +6,7 @@ import { lstat, mkdir, open, readdir, realpath, rename, unlink, writeFile } from
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { basename, extname, isAbsolute, join, resolve } from 'node:path'
 import type { Branded } from '@deepseek-ai/dsh-brand'
-import type { CreativeAsset, CreativeCharacter, CreativeKind, CreativeOutput, CreativeOutputId, CreativePlanChange, CreativeProjectId, CreativeProjectView, CreativeShotPlan, CreativeShotView, CreativeStatus, CreativeTaskView } from './creative-types.ts'
+import type { CreativeAsset, CreativeCharacter, CreativeImageReceipt, CreativeKind, CreativeOutput, CreativeOutputId, CreativePlanChange, CreativeProjectId, CreativeProjectView, CreativeShotPlan, CreativeShotView, CreativeStatus, CreativeTaskView } from './creative-types.ts'
 import type { VideoProjectManifest, VideoProjectRead } from './video-project.ts'
 import type { VideoProjectIdentity } from './video-project-types.ts'
 
@@ -60,6 +60,7 @@ interface Operation {
   assetId?: string
   status: CreativeStatus
   submissionStarted?: boolean
+  imageReceipt?: CreativeImageReceipt
   outputs: SavedOutput[]
   videoProjectId?: string
   model?: string
@@ -145,6 +146,42 @@ function unique(values: readonly string[]): void { if (new Set(values).size !== 
 function status(value: unknown): CreativeStatus {
   if (value !== 'planned' && value !== 'running' && value !== 'saving' && value !== 'editing' && value !== 'completed' && value !== 'failed' && value !== 'cancelled' && value !== 'interrupted' && value !== 'unknown') return invalid()
   return value
+}
+
+/** Validate receipt fields before retaining or reading a private creation record. */
+function imageReceipt(value: unknown): CreativeImageReceipt {
+  const item = object(value)
+  const route = text(item.route, 512)
+  const model = text(item.model, 256)
+  const phase = item.phase
+  const fingerprint = text(item.backendFingerprint, 64)
+  const receiptId = (value: unknown): string => {
+    const result = text(value, 256)
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u.test(result) || /^(?:sk-|nap_)/iu.test(result)) return invalid()
+    return result
+  }
+  if (!/^\/[A-Za-z0-9._~-]+(?:\/[A-Za-z0-9._~-]+)*$/u.test(route)
+    || route.split('/').some(part => part === '.' || part === '..')
+    || model.trim() !== model || model === '' || /[\u0000-\u001f\u007f]/u.test(model)
+    || !/^[a-f0-9]{64}$/u.test(fingerprint)
+    || phase !== 'submitting' && phase !== 'accepted' && phase !== 'completed') return invalid()
+  const taskId = item.taskId === undefined ? undefined : receiptId(item.taskId)
+  const requestId = item.requestId === undefined ? undefined : receiptId(item.requestId)
+  if (phase === 'accepted' && taskId === undefined) return invalid()
+  return { route, model, phase, backendFingerprint: fingerprint,
+    ...taskId === undefined ? {} : { taskId }, ...requestId === undefined ? {} : { requestId } }
+}
+function mergeImageReceipt(prior: CreativeImageReceipt | undefined, value: CreativeImageReceipt): CreativeImageReceipt {
+  const incoming = imageReceipt(value)
+  const order = { submitting: 0, accepted: 1, completed: 2 }
+  if (prior !== undefined && (prior.route !== incoming.route || prior.model !== incoming.model
+    || prior.backendFingerprint !== incoming.backendFingerprint || order[incoming.phase] < order[prior.phase]
+    || prior.taskId !== undefined && incoming.taskId !== undefined && prior.taskId !== incoming.taskId
+    || prior.requestId !== undefined && incoming.requestId !== undefined && prior.requestId !== incoming.requestId)) {
+    throw new CreativeError('CREATIVE_IMAGE_RECEIPT_CONFLICT', 409, '原图片任务的回执不能替换，请保留原任务编号后核对。')
+  }
+  return { ...incoming, ...prior?.taskId !== undefined ? { taskId: prior.taskId } : {},
+    ...prior?.requestId !== undefined ? { requestId: prior.requestId } : {} }
 }
 function kind(value: unknown): CreativeKind { return value === 'image' || value === 'video' ? value : invalid() }
 function absolute(value: unknown): string {
@@ -289,10 +326,13 @@ function parseRecord(value: unknown): CreativeRecord {
         ...output.previewUnavailable === undefined ? {} : { previewUnavailable: output.previewUnavailable },
       }
     }, 512)
+    const recordedStatus = status(item.status)
     return {
-      id: operationId(item.id), prompt: text(item.prompt), shotIds: ids(item.shotIds), status: status(item.status), outputs,
+      id: operationId(item.id), prompt: text(item.prompt), shotIds: ids(item.shotIds),
+      status: recordedStatus === 'cancelled' && item.submissionStarted === true ? 'unknown' : recordedStatus, outputs,
       ...item.assetId === undefined ? {} : { assetId: identifier(item.assetId) },
       ...item.submissionStarted === undefined ? {} : { submissionStarted: item.submissionStarted },
+      ...item.imageReceipt === undefined ? {} : { imageReceipt: imageReceipt(item.imageReceipt) },
       ...item.videoProjectId === undefined ? {} : { videoProjectId: text(item.videoProjectId, 128) },
       ...item.model === undefined ? {} : { model: text(item.model, 256) },
       ...item.errorCode === undefined ? {} : { errorCode: identifier(item.errorCode) },
@@ -627,6 +667,100 @@ export class CreativeStore {
   }
 
   /**
+   * Retain the original image receipt before polling, without storing credentials or submitting work.
+   * @param operation - Exact live invocation and captured account identity.
+   * @param received - Validated relative route, backend identity and available task/request ids.
+   */
+  receipt(operation: CreativeOperation, received: CreativeImageReceipt): Promise<void> {
+    return this.queue(async () => {
+      await this.current(operation.owner)
+      const incoming = imageReceipt(received)
+      const record = await this.read(operation.projectId, operation.owner)
+      if (record.owner.workspaceRoot !== operation.owner.workspaceRoot) throw new CreativeError('CREATIVE_ACCESS_DENIED', 404, '该创作项目不属于当前工作区。')
+      const found = record.operations.find(item => item.id === operation.operationId)
+      if (found === undefined || found.videoProjectId !== undefined) return invalid()
+      if (!this.active.has(found.id)) throw new CreativeError('CREATIVE_IMAGE_NOT_RUNNING', 409, '本次图片操作已停止，请查询原任务；不会重新提交生成。')
+      found.imageReceipt = mergeImageReceipt(found.imageReceipt, incoming)
+      found.submissionStarted = true
+      found.model = incoming.model
+      await this.persist(record)
+    })
+  }
+
+  /**
+   * Claim one retained image task for query-only recovery under the same account, chat and workspace.
+   * @param owner - Current login with the project's original workspace.
+   * @param id - Explicit creation project id; no latest-project inference occurs.
+   * @param invocationId - Exact retained invocation to query without calling begin or posting again.
+   * @returns The exclusively live original invocation and its nonsecret receipt.
+   */
+  resumeImage(
+    owner: CreativeOwner, id: string, invocationId: string,
+  ): Promise<{ operation: CreativeOperation; receipt: CreativeImageReceipt }> {
+    return this.queue(async () => {
+      await this.current(owner)
+      const record = await this.read(id, owner)
+      if (record.owner.workspaceRoot !== owner.workspaceRoot) throw new CreativeError('CREATIVE_ACCESS_DENIED', 404, '该创作项目不属于当前工作区。')
+      const found = record.operations.find(item => item.id === operationId(invocationId))
+      if (found === undefined || found.videoProjectId !== undefined) return invalid()
+      if (this.active.has(found.id)) throw new CreativeError('CREATIVE_SHOT_RUNNING', 409, '原图片任务正在处理，请等待当前查询完成。')
+      if (found.imageReceipt?.taskId === undefined) throw new CreativeError('CREATIVE_IMAGE_TASK_UNCONFIRMED', 409, '原图片提交尚无可查询任务编号，请保留请求编号并核对；不会重新提交生成。')
+      if (found.status === 'completed' || found.status === 'failed' || found.status === 'cancelled') {
+        throw new CreativeError('CREATIVE_IMAGE_TASK_SETTLED', 409, '原图片任务已明确结束，请查看保留的结果。')
+      }
+      record.owner = owner
+      found.status = 'running'
+      delete found.errorCode
+      await this.persist(record)
+      this.active.add(found.id)
+      return { operation: { projectId: record.id, operationId: found.id, owner }, receipt: { ...found.imageReceipt } }
+    })
+  }
+
+  /**
+   * Reuse exact bytes already retained by this invocation during query-only recovery.
+   * @param operation - Exclusively live original invocation with its current login identity.
+   * @param bytes - Actual recovered image bytes; record JSON limits do not limit image size.
+   * @returns The original saved image path when its complete contents match.
+   */
+  matchImageOutput(operation: CreativeOperation, bytes: Uint8Array): Promise<string | undefined> {
+    return this.queue(async () => {
+      await this.current(operation.owner)
+      const record = await this.read(operation.projectId, operation.owner)
+      if (record.owner.workspaceRoot !== operation.owner.workspaceRoot) throw new CreativeError('CREATIVE_ACCESS_DENIED', 404, '该创作项目不属于当前工作区。')
+      const found = record.operations.find(item => item.id === operation.operationId)
+      if (found === undefined || found.videoProjectId !== undefined) return invalid()
+      if (!this.active.has(found.id)) throw new CreativeError('CREATIVE_IMAGE_NOT_RUNNING', 409, '原图片操作未在查询，请先恢复原任务。')
+      if (bytes.byteLength === 0) return undefined
+      const buffer = Buffer.alloc(Math.min(64 * 1024, bytes.byteLength))
+      for (const output of found.outputs) {
+        if (output.kind !== 'image') continue
+        const file = await safeFile(output.path).catch((error: unknown) => {
+          if (isMissing(error)) return undefined
+          throw error
+        })
+        if (file === undefined) continue
+        try {
+          if ((await file.stat()).size !== bytes.byteLength) continue
+          let offset = 0
+          while (offset < bytes.byteLength) {
+            const length = Math.min(buffer.byteLength, bytes.byteLength - offset)
+            const { bytesRead } = await file.read(buffer, 0, length, offset)
+            if (bytesRead === 0 || !buffer.subarray(0, bytesRead).equals(bytes.subarray(offset, offset + bytesRead))) break
+            offset += bytesRead
+          }
+          if (offset === bytes.byteLength && (await file.stat()).size === bytes.byteLength) {
+            await this.current(operation.owner)
+            return output.path
+          }
+        } finally { await file.close() }
+      }
+      await this.current(operation.owner)
+      return undefined
+    })
+  }
+
+  /**
    * Commit one actual image as soon as it is saved, retaining partial results if later output fails.
    * @param operation - Exact running invocation.
    * @param path - File exclusively published by the generation owner.
@@ -653,13 +787,38 @@ export class CreativeStore {
    * @param operation - Original invocation identity.
    * @param outcome - Actual saved paths or a stable failure state.
    */
-  finish(operation: CreativeOperation, outcome: { status: CreativeStatus; paths?: readonly string[]; kind?: 'image' | 'video'; errorCode?: string; previewUnavailable?: boolean }): Promise<void> {
+  finish(operation: CreativeOperation, outcome: {
+    status: CreativeStatus
+    paths?: readonly string[]
+    kind?: 'image' | 'video'
+    errorCode?: string
+    previewUnavailable?: boolean
+    /** Executor proof that no submission fetch was invoked; it cannot override a retained receipt id. */
+    notSubmitted?: true
+    /** Final settlement atomically retains any receipt whose earlier standalone write was interrupted. */
+    imageReceipt?: CreativeImageReceipt
+  }): Promise<void> {
     return this.queue(async () => {
       try {
         await this.current(operation.owner)
         const record = await this.read(operation.projectId, operation.owner)
         const found = record.operations.find(item => item.id === operation.operationId)
         if (found === undefined) invalid()
+        if (outcome.imageReceipt !== undefined) {
+          if (!this.active.has(found.id) || found.videoProjectId !== undefined) invalid()
+          found.imageReceipt = mergeImageReceipt(found.imageReceipt, outcome.imageReceipt)
+          found.submissionStarted = true
+          found.model = found.imageReceipt.model
+        }
+        if (outcome.notSubmitted === true) {
+          const receipt = found.imageReceipt
+          if (!this.active.has(found.id) || found.videoProjectId !== undefined || found.outputs.length !== 0
+            || receipt !== undefined && (receipt.phase !== 'submitting' || receipt.taskId !== undefined || receipt.requestId !== undefined)) {
+            throw new CreativeError('CREATIVE_IMAGE_RECEIPT_CONFLICT', 409, '原图片任务已有提交证据，不能将其改为未提交；请核对原任务。')
+          }
+          found.submissionStarted = false
+          delete found.imageReceipt
+        }
         const outputs: SavedOutput[] = []
         if (outcome.status === 'completed' && (outcome.paths === undefined || outcome.paths.length === 0)) throw new CreativeError('CREATIVE_OUTPUT_REQUIRED', 400, '没有实际保存的产物，不能将生成标记为完成。')
         for (const path of outcome.paths ?? []) {
@@ -669,9 +828,11 @@ export class CreativeStore {
           try { if ((await file.stat()).size <= 0) throw new CreativeError('CREATIVE_MEDIA_UNAVAILABLE', 404, '生成文件为空，尚未作为产物交付。') } finally { await file.close() }
           if (!found.outputs.some(item => item.path === canonical)) outputs.push({ id: outputId(`out_${randomUUID()}`), kind: outcome.kind ?? record.kind, path: canonical, ...outcome.previewUnavailable === undefined ? {} : { previewUnavailable: outcome.previewUnavailable } })
         }
-        found.status = outcome.status
+        found.status = outcome.status === 'cancelled' && (found.submissionStarted === true || found.imageReceipt !== undefined)
+          ? 'unknown' : outcome.status
         found.outputs.push(...outputs)
         if (outcome.errorCode !== undefined) found.errorCode = outcome.errorCode
+        else if (found.status === 'completed') delete found.errorCode
         await this.persist(record)
       } finally { this.active.delete(operation.operationId) }
     })
@@ -794,6 +955,11 @@ export class CreativeStore {
         ...model === undefined ? {} : { model },
         ...operation.videoProjectId === undefined ? {} : { videoProjectId: operation.videoProjectId },
         ...errorCode === undefined ? {} : { errorCode },
+        ...operation.imageReceipt === undefined ? {} : {
+          imageReceipt: { ...operation.imageReceipt },
+          canQuery: operation.imageReceipt.taskId !== undefined && !this.active.has(operation.id)
+            && state !== 'completed' && state !== 'failed' && state !== 'cancelled',
+        },
       })
     }
     const add = (id: string, state: CreativeStatus, result: SavedOutput[], durationSeconds?: number): void => {

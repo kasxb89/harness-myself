@@ -78,14 +78,210 @@ beforeEach(() => {
     if (url.startsWith('/artifacts/api/raw?')) return new Response('image', { headers: { 'content-type': 'image/png' } })
     if (url === '/credits/api/assets') { assets += 1; return json({ ok: true, asset: { assetId: `ma_${String(assets)}` } }) }
     if (url === '/credits/api/image/generate') return json({ ok: true, payload: { path } })
+    if (url.startsWith('/credits/api/creative/projects?')) return json({ ok: true,
+      payload: { accountId: sessionAccountId, projects: [] } })
     throw new Error(`Unexpected request: ${url}`)
   })
   vi.stubGlobal('fetch', fetchMock)
 })
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals() })
+afterEach(() => { vi.useRealTimers(); cleanup(); vi.unstubAllGlobals() })
 
 describe('image creation workspace', () => {
+  it('polls the original active submission for its accepted ids while its only generation request is still pending', async () => {
+    const original = fetchMock.getMockImplementation()!
+    const generation = Promise.withResolvers<Response>()
+    let submitted = false
+    let accepted = false
+    fetchMock.mockImplementation(async (input, init) => {
+      if (input === '/credits/api/image/generate') { submitted = true; return await generation.promise }
+      if (requestUrl(input).startsWith('/credits/api/creative/projects?')) return json({ ok: true, payload: {
+        accountId: 'account-a', projects: submitted ? [{ id: 'cp_original', sessionId: 'session-a', kind: 'image', tasks: [{
+          id: 'op_original', status: 'running', canQuery: false,
+          imageReceipt: accepted ? { phase: 'accepted', taskId: 'task_original', requestId: 'request_original' } : { phase: 'submitting' },
+        }] }] : [],
+      } })
+      return await original(input, init)
+    })
+    const { props, store } = makeProps()
+    render(<ImagePage {...props} />)
+    await ready()
+    fireEvent.change(screen.getByRole('textbox', { name: zh.prompt }), { target: { value: '在原请求等待时显示受理编号' } })
+    await waitFor(() => { expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', false) })
+    vi.useFakeTimers()
+    try {
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: zh.submit })) })
+      expect(store.getSnapshot().generationStartedAt).not.toBeNull()
+      expect(screen.getByText(zh.originalUnknown)).toBeTruthy()
+      expect(Object.values(store.getSnapshot().unsettled)[0]).toMatchObject({
+        state: 'pending', planId: 'cp_original', operationId: 'op_original', canQuery: false,
+      })
+      accepted = true
+      await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
+      expect(screen.getByText(t('originalTaskId', { id: 'task_original' }))).toBeTruthy()
+      expect(screen.getByText(t('originalRequestId', { id: 'request_original' }))).toBeTruthy()
+      expect(screen.getByText(zh.originalAccepted)).toBeTruthy()
+      expect(store.getSnapshot().generationStartedAt).not.toBeNull()
+      expect(screen.getByRole('button', { name: zh.runningShort })).toHaveProperty('disabled', true)
+      expect(fetchMock.mock.calls.filter(([url]) => url === '/credits/api/image/generate')).toHaveLength(1)
+      expect(fetchMock.mock.calls.some(([url]) => url === '/credits/api/creative/image/recover')).toBe(false)
+    } finally {
+      await act(async () => { generation.resolve(json({ ok: false, submission_state: 'pending',
+        plan_id: 'cp_original', operation_id: 'op_original', task_id: 'task_original', request_id: 'request_original' })) })
+    }
+  })
+
+  it('does not keep polling an inactive unknown submission without a receipt', async () => {
+    const original = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation(async (input, init) => requestUrl(input).startsWith('/credits/api/creative/projects?')
+      ? json({ ok: true, payload: { accountId: 'account-a', projects: [{ id: 'cp_legacy', sessionId: 'session-a',
+        kind: 'image', tasks: [{ id: 'op_legacy', status: 'unknown', canQuery: false }] }] } }) : await original(input, init))
+    const { props, store } = makeProps()
+    render(<ImagePage {...props} />)
+    await ready()
+    await screen.findByText(zh.originalUnknown)
+    const reads = fetchMock.mock.calls.filter(([url]) => requestUrl(url).startsWith('/credits/api/creative/projects?')).length
+    vi.useFakeTimers()
+    await act(async () => { await vi.advanceTimersByTimeAsync(8000) })
+    expect(fetchMock.mock.calls.filter(([url]) => requestUrl(url).startsWith('/credits/api/creative/projects?'))).toHaveLength(reads)
+    expect(store.getSnapshot().generationStartedAt).toBeNull()
+    expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', true)
+    expect(fetchMock.mock.calls.some(([url]) => url === '/credits/api/image/generate')).toBe(false)
+  })
+
+  it('retains a structured accepted outcome after failure and remount, then queries only its original task', async () => {
+    const original = fetchMock.getMockImplementation()!
+    let accepted = false
+    let querying = false
+    const listing = () => ({ ok: true, payload: { accountId: 'account-a', projects: accepted ? [{
+      id: 'cp_original', sessionId: 'session-a', kind: 'image', tasks: [{ id: 'op_original',
+        status: querying ? 'running' : 'unknown', canQuery: !querying,
+        imageReceipt: { taskId: 'task_original', requestId: 'request_original' } }],
+    }] : [] } })
+    fetchMock.mockImplementation(async (input, init) => {
+      if (input === '/credits/api/image/generate') {
+        accepted = true
+        return Response.json({ ok: false, code: 'TASK_PENDING', submission_state: 'pending',
+          plan_id: 'cp_original', operation_id: 'op_original', task_id: 'task_original', request_id: 'request_original' }, { status: 504 })
+      }
+      if (requestUrl(input).startsWith('/credits/api/creative/projects?')) return json(listing())
+      if (input === '/credits/api/creative/image/recover') { querying = true; return Response.json(listing(), { status: 202 }) }
+      return await original(input, init)
+    })
+    const { props, store } = makeProps()
+    const view = render(<ImagePage {...props} />)
+    await ready()
+    fireEvent.change(screen.getByRole('textbox', { name: zh.prompt }), { target: { value: '保留原任务' } })
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    await screen.findByRole('button', { name: zh.originalQuery })
+    expect(screen.getByText(zh.originalAccepted)).toBeTruthy()
+    expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', true)
+    expect(store.getSnapshot().generationStartedAt).toBeNull()
+    view.unmount()
+    render(<ImagePage {...props} />)
+    const query = await screen.findByRole('button', { name: zh.originalQuery })
+    fireEvent.click(query); fireEvent.click(query)
+    await waitFor(() => { expect(screen.queryByRole('button', { name: zh.originalQuery })).toBeNull() })
+    expect(requestBody(fetchMock.mock.calls.find(([url]) => url === '/credits/api/creative/image/recover')))
+      .toEqual({ session_id: 'session-a', project_id: 'cp_original', operation_id: 'op_original' })
+    expect(fetchMock.mock.calls.filter(([url]) => url === '/credits/api/creative/image/recover')).toHaveLength(1)
+    expect(fetchMock.mock.calls.filter(([url]) => url === '/credits/api/image/generate')).toHaveLength(1)
+    expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', true)
+  })
+
+  it('restores an unknown original task without a receipt after a full draft reload', async () => {
+    const original = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation(async (input, init) => requestUrl(input).startsWith('/credits/api/creative/projects?')
+      ? json({ ok: true, payload: { accountId: 'account-a', projects: [{ id: 'cp_legacy', sessionId: 'session-a',
+        kind: 'image', tasks: [{ id: 'op_legacy', status: 'unknown', canQuery: false }] }] } }) : await original(input, init))
+    const { props } = makeProps()
+    render(<ImagePage {...props} />)
+    await ready()
+    await screen.findByText(zh.originalUnknown)
+    fireEvent.change(screen.getByRole('textbox', { name: zh.prompt }), { target: { value: '不能盲目重新生成' } })
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    expect(screen.queryByRole('button', { name: zh.originalQuery })).toBeNull()
+    expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', true)
+    expect(fetchMock.mock.calls.some(([url]) => url === '/credits/api/image/generate')).toBe(false)
+  })
+
+  it('keeps generation paused after a failed original-task read and only retries the read explicitly', async () => {
+    const original = fetchMock.getMockImplementation()!
+    let failed = true
+    fetchMock.mockImplementation(async (input, init) => requestUrl(input).startsWith('/credits/api/creative/projects?') && failed
+      ? new Response('', { status: 503 }) : await original(input, init))
+    const { props } = makeProps()
+    render(<ImagePage {...props} />)
+    await ready()
+    const check = await screen.findByRole('button', { name: zh.originalCheck })
+    fireEvent.change(screen.getByRole('textbox', { name: zh.prompt }), { target: { value: '核对后再操作' } })
+    expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', true)
+    failed = false
+    fireEvent.click(check)
+    await waitFor(() => { expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', false) })
+    expect(fetchMock.mock.calls.some(([url]) => url === '/credits/api/image/generate')).toBe(false)
+  })
+
+  it('does not let an earlier empty listing erase a new request whose connection later fails', async () => {
+    const original = fetchMock.getMockImplementation()!
+    let readAgain = false
+    let finishRead!: (response: Response) => void
+    const oldRead = new Promise<Response>((resolve) => { finishRead = resolve })
+    let failGeneration!: (error: Error) => void
+    const generation = new Promise<Response>((_resolve, reject) => { failGeneration = reject })
+    fetchMock.mockImplementation(async (input, init) => {
+      if (input === '/credits/api/image/generate') return await generation
+      if (readAgain && requestUrl(input).startsWith('/credits/api/creative/projects?')) {
+        readAgain = false
+        return await oldRead
+      }
+      return await original(input, init)
+    })
+    const { props, store } = makeProps()
+    render(<ImagePage {...props} />)
+    await ready()
+    fireEvent.change(screen.getByRole('textbox', { name: zh.prompt }), { target: { value: '保留新提交' } })
+    await waitFor(() => { expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', false) })
+    readAgain = true
+    fireEvent(document, new Event('visibilitychange'))
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    await act(async () => { finishRead(json({ ok: true, payload: { accountId: 'account-a', projects: [] } })) })
+    expect(Object.values(store.getSnapshot().unsettled)).toHaveLength(1)
+    await act(async () => { failGeneration(new TypeError('offline')) })
+    await screen.findByRole('alert')
+    expect(Object.values(store.getSnapshot().unsettled)[0]?.state).toBe('unknown')
+    expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', true)
+    expect(fetchMock.mock.calls.filter(([url]) => url === '/credits/api/image/generate')).toHaveLength(1)
+  })
+
+  it('does not restore an older unknown task after a newer visible-page read confirmed it ended', async () => {
+    const original = fetchMock.getMockImplementation()!
+    let reads = 0
+    let finishOldRead!: (response: Response) => void
+    const oldRead = new Promise<Response>((resolve) => { finishOldRead = resolve })
+    fetchMock.mockImplementation(async (input, init) => {
+      if (requestUrl(input).startsWith('/credits/api/creative/projects?')) {
+        if (++reads === 1) return await oldRead
+        return json({ ok: true, payload: { accountId: 'account-a', projects: [{ id: 'cp_original', sessionId: 'session-a',
+          kind: 'image', tasks: [{ id: 'op_original', status: 'completed', canQuery: false }] }] } })
+      }
+      return await original(input, init)
+    })
+    const { props, store } = makeProps()
+    render(<ImagePage {...props} />)
+    await ready()
+    fireEvent.change(screen.getByRole('textbox', { name: zh.prompt }), { target: { value: '已结束的原任务' } })
+    fireEvent(document, new Event('visibilitychange'))
+    await waitFor(() => { expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', false) })
+    await act(async () => { finishOldRead(json({ ok: true, payload: { accountId: 'account-a', projects: [{
+      id: 'cp_original', sessionId: 'session-a', kind: 'image', tasks: [{ id: 'op_original', status: 'unknown', canQuery: true,
+        imageReceipt: { taskId: 'task_original' } }],
+    }] } })) })
+    expect(Object.values(store.getSnapshot().unsettled)).toHaveLength(0)
+    expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', false)
+    expect(fetchMock.mock.calls.some(([url]) => url === '/credits/api/image/generate')).toBe(false)
+  })
+
   it.each(['INVALID_REQUEST', 'AUTH', 'QUOTA', 'UNRECOGNIZED_ERROR'])('replaces %s diagnostics with a safe retry message and retains the draft', async (code) => {
     const original = fetchMock.getMockImplementation()!
     const message = '400 {"reasoning_content":"private-id", "path":"C:/internal/key"}'
@@ -571,7 +767,7 @@ describe('image creation workspace', () => {
     expect(screen.getByRole('alert').textContent).toBe(zh.generationConnectionLost)
     expect(store.getSnapshot().generationStartedAt).toBeNull()
     expect(screen.getByRole('textbox', { name: '画面描述' })).toHaveProperty('value', 'Retain this draft')
-    expect(screen.getByRole('button', { name: '生成图片' })).toHaveProperty('disabled', false)
+    expect(screen.getByRole('button', { name: '生成图片' })).toHaveProperty('disabled', true)
     expect(fetchMock.mock.calls.filter(([url]) => url === '/credits/api/image/generate')).toHaveLength(1)
   })
 

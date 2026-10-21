@@ -50,6 +50,8 @@ let pricingRows: unknown[] = []
 let videoTaskStatus: string | undefined
 let videoRejection: unknown
 let imageResponse: unknown
+let imageTaskStatus: string | undefined
+let imageTaskHttpStatus = 200
 const internalUploadResponses: { status: number; body?: unknown; disconnect?: boolean }[] = []
 let relayKey = 'sk-owned-relay'
 let upstreamGate: ((path: string, response: ServerResponse) => Promise<void>) | undefined
@@ -95,6 +97,8 @@ afterEach(async () => {
   videoTaskStatus = undefined
   videoRejection = undefined
   imageResponse = undefined
+  imageTaskStatus = undefined
+  imageTaskHttpStatus = 200
   internalUploadResponses.length = 0
   relayKey = 'sk-owned-relay'
   upstreamGate = undefined
@@ -121,6 +125,7 @@ async function boot(
   managedOutput = false,
   authenticatedHost = false,
   defaultSelection?: { provider: string; model: string; followPolicy?: boolean },
+  creditsConfig: Partial<Credits.Config> = {},
 ): Promise<{ base: string; api: string; stateDir: string }> {
   directory = await mkdtemp(join(tmpdir(), 'harness-product-integration-'))
   const stateDir = join(directory, 'credits')
@@ -176,11 +181,18 @@ async function boot(
       }
       if (url.pathname === '/harness/toapis/v1/images/generations') {
         if (request.headers.authorization !== `Bearer ${relayKey}`) { response.writeHead(403); response.end('{}'); return }
+        if (imageResponse === 'disconnect') { response.destroy(); return }
+        response.setHeader('X-Oneapi-Request-Id', 'fixture-image-request')
         response.end(JSON.stringify({ id: 'fixture-image-task' })); return
       }
       if (url.pathname === '/harness/toapis/v1/images/generations/fixture-image-task') {
         if (request.headers.authorization !== `Bearer ${relayKey}`) { response.writeHead(403); response.end('{}'); return }
-        response.end(JSON.stringify({ status: 'succeeded', result: imageResponse })); return
+        response.writeHead(imageTaskHttpStatus)
+        response.end(JSON.stringify({ status: imageTaskStatus ?? 'succeeded', result: imageResponse })); return
+      }
+      if (url.pathname === '/harness/fixtures/image.png') {
+        response.setHeader('content-type', 'image/png')
+        response.end(Buffer.from('unexpected old-account download')); return
       }
       if ((url.pathname === '/harness/v1/images/generations' || url.pathname === '/harness/v1/images/edits') && imageResponse !== undefined) {
         if (request.headers.authorization !== `Bearer ${relayKey}`) { response.writeHead(403); response.end('{}'); return }
@@ -285,7 +297,7 @@ async function boot(
     ...managedOutput ? [{ name: '@deepseek-ai/dsh-artifacts-index', config: {
       defaultOutputDirectory: join(directory, 'selected-output'), stateDirectory: join(directory, 'artifact-settings'), roots: [join(stateDir, 'media')],
     } }] : [],
-    { name: '@deepseek-ai/dsh-credits-index', config: { stateDir, newApiBaseUrl: api, relayTokenEnv: relayRef } },
+    { name: '@deepseek-ai/dsh-credits-index', config: { stateDir, newApiBaseUrl: api, relayTokenEnv: relayRef, ...creditsConfig } },
   ]
   const configuration = join(directory, 'cordis.yml')
   await writeFile(configuration, JSON.stringify(entries))
@@ -786,7 +798,7 @@ describe('deployed Harness API through the real product Loader', () => {
       expect(await generation).toMatchObject({ ok: false })
       expect(calls.filter(call => call.path.startsWith('/harness/v1/images/')).map(call => call.path)).toEqual(['/harness/v1/images/generations'])
       const record = object(JSON.parse(await readFile(join(stateDir, 'creative-projects', String(running!.id), 'project.json'), 'utf8')))
-      expect(record.operations).toMatchObject([{ status: 'cancelled', outputs: [] }])
+      expect(record.operations).toMatchObject([{ status: 'unknown', outputs: [], submissionStarted: true }])
       expect((await fetch(base + '/api/creative/projects?session_id=cancel-image-post', { headers: { cookie } })).status).toBe(404)
     } finally {
       release.resolve(undefined)
@@ -832,7 +844,7 @@ describe('deployed Harness API through the real product Loader', () => {
       const records = await readdir(join(stateDir, 'creative-projects'))
       expect(records).toHaveLength(1)
       const record = object(JSON.parse(await readFile(join(stateDir, 'creative-projects', records[0]!, 'project.json'), 'utf8')))
-      expect(record.operations).toMatchObject([{ status: 'cancelled', outputs: [] }])
+      expect(record.operations).toMatchObject([{ status: 'cancelled', outputs: [], submissionStarted: false }])
     } finally {
       release.resolve(undefined)
       await generation
@@ -976,6 +988,247 @@ describe('deployed Harness API through the real product Loader', () => {
     expect(calls.some(call => call.path === '/harness/v1/images/edits' || call.path === '/harness/v1/images/generations')).toBe(false)
     expect(internalUploadResponses).toEqual([])
   }, 15_000)
+
+  it.each(['panel', 'tool'] as const)('retains accepted image identity after local cancellation and resumes through %s using GET only', async (entry) => {
+    const { base, stateDir } = await boot(undefined, true, true)
+    const cookie = await hostCookie(base)
+    await signIn(base)
+    const model = 'yunshu-internal-gpt-image-2'
+    relayModels.push({ id: model, object: 'model', supported_endpoint_types: ['image-generation'] })
+    pricingRows = [{ model_name: model, supported_endpoint_types: ['image-generation'] }]
+    const png = await sharp({ create: { width: 2, height: 2, channels: 3, background: '#aabbcc' } }).png().toBuffer()
+    imageResponse = { data: [{ b64_json: png.toString('base64') }] }
+    const agent = videoAgent(stateDir)
+    const abort = new AbortController()
+    upstreamGate = async (path) => { if (path.endsWith('/fixture-image-task')) abort.abort() }
+    await context!.tools.execute({ name: 'generate_image', arguments: { model, prompt: '保留原任务' },
+      agent, callId: ToolCallId('accepted-before-cancel'), signal: abort.signal })
+    const listing = async () => projects(object(await (await fetch(base + '/api/creative/projects?session_id=reference-audio-chat', { headers: { cookie } })).json()))
+    expect(await listing()).toMatchObject([{ status: 'unknown', tasks: [{ status: 'unknown', canQuery: true,
+      imageReceipt: { taskId: 'fixture-image-task', requestId: 'fixture-image-request', phase: 'accepted' } }] }])
+    const retained = (await listing())[0]!
+    if (!Array.isArray(retained.tasks)) throw new Error('Expected retained task records')
+    const result = { plan_id: String(retained.id), operation_id: String(object(retained.tasks[0]).id) }
+    const submission = calls.filter(call => call.path === '/harness/toapis/v1/images/generations')
+    expect(submission).toHaveLength(1)
+    expect(object((await context!.tools.execute({ name: 'generate_image', arguments: { model, prompt: '再次生成', plan_id: result.plan_id, shot_id: 'shot_1' },
+      agent, callId: ToolCallId('blocked-paid-retry'), signal: new AbortController().signal })).value))
+      .toMatchObject({ status: 'failed', code: 'CREATIVE_SUBMISSION_UNKNOWN' })
+    upstreamGate = undefined
+    const args = { plan_id: result.plan_id, operation_id: result.operation_id }
+    if (entry === 'tool') {
+      expect(object((await context!.tools.execute({ name: 'query_image_task', arguments: args,
+        agent, callId: ToolCallId('query-original-image'), signal: new AbortController().signal })).value))
+        .toMatchObject({ status: 'succeeded', task_id: 'fixture-image-task', request_id: 'fixture-image-request' })
+    } else {
+      const response = await fetch(base + '/api/creative/image/recover', { method: 'POST',
+        headers: { cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({ session_id: agent.id, project_id: args.plan_id, operation_id: args.operation_id }) })
+      expect(response.status).toBe(202)
+      expect(object(await response.json()).ok).toBe(true)
+    }
+    await vi.waitFor(async () => { expect(await listing()).toMatchObject([{ status: 'completed', tasks: [{ status: 'completed', canQuery: false }], outputs: [{ kind: 'image' }] }]) })
+    expect(calls.filter(call => call.path === '/harness/toapis/v1/images/generations')).toHaveLength(1)
+    expect(calls.filter(call => call.path.endsWith('/fixture-image-task')).length).toBeGreaterThanOrEqual(2)
+    expect(context!.tools.schemas().find(tool => tool.name === 'query_image_task')).toMatchSnapshot('GET-only retained image query tool')
+  })
+
+  it('atomically retains an accepted image receipt after its first persistence callback fails and recovers with GET only', async () => {
+    const { base, stateDir } = await boot(undefined, true, true)
+    const cookie = await hostCookie(base)
+    await signIn(base)
+    const model = 'yunshu-internal-gpt-image-2'
+    relayModels.push({ id: model, object: 'model', supported_endpoint_types: ['image-generation'] })
+    pricingRows = [{ model_name: model, supported_endpoint_types: ['image-generation'] }]
+    const png = await sharp({ create: { width: 2, height: 2, channels: 3, background: '#aabbcc' } }).png().toBuffer()
+    imageResponse = { data: [{ b64_json: png.toString('base64') }] }
+    // oxlint-disable-next-line typescript/unbound-method -- the spy invokes the original implementation with each store receiver.
+    const receipt = CreativeStore.prototype.receipt
+    let interrupted = false
+    vi.spyOn(CreativeStore.prototype, 'receipt').mockImplementation(function (this: CreativeStore, operation, received) {
+      if (received.phase === 'accepted' && !interrupted) {
+        interrupted = true
+        return Promise.reject(new Error('private transient receipt write failure'))
+      }
+      return receipt.call(this, operation, received)
+    })
+    const agent = videoAgent(stateDir)
+    const submitted = object((await context!.tools.execute({ name: 'generate_image', arguments: { model, prompt: '保留首次受理回执' },
+      agent, callId: ToolCallId('interrupted-receipt-write'), signal: new AbortController().signal })).value)
+    expect(submitted).toMatchObject({ status: 'pending', submission_state: 'pending', code: 'IMAGE_RECEIPT_UNAVAILABLE',
+      task_id: 'fixture-image-task', request_id: 'fixture-image-request' })
+    expect(interrupted).toBe(true)
+    expect(calls.filter(call => call.path.endsWith('/fixture-image-task'))).toEqual([])
+    const record = object(JSON.parse(await readFile(join(stateDir, 'creative-projects', String(submitted.plan_id), 'project.json'), 'utf8')))
+    expect(record.operations).toMatchObject([{ id: submitted.operation_id, status: 'unknown',
+      imageReceipt: { phase: 'accepted', taskId: 'fixture-image-task', requestId: 'fixture-image-request' } }])
+    const [retained] = projects(object(await (await fetch(base + '/api/creative/projects?session_id=reference-audio-chat', { headers: { cookie } })).json()))
+    expect(retained).toMatchObject({ tasks: [{ canQuery: true, imageReceipt: { taskId: 'fixture-image-task' } }] })
+    const discover = async (args: object, owner = agent) => object((await context!.tools.execute({ name: 'query_image_task', arguments: args,
+      agent: owner, callId: ToolCallId('discover-retained-image'), signal: new AbortController().signal })).value)
+    expect(await discover({})).toMatchObject({ status: 'listed', tasks: [{ plan_id: submitted.plan_id,
+      operation_id: submitted.operation_id, status: 'unknown', can_query: true,
+      task_id: 'fixture-image-task', request_id: 'fixture-image-request' }] })
+    expect(await discover({}, videoAgent(stateDir, 'other-image-chat'))).toMatchObject({ status: 'listed', tasks: [] })
+    expect(await discover({ plan_id: 'unrelated-plan' })).toMatchObject({ status: 'listed', tasks: [] })
+    expect(await discover({ operation_id: submitted.operation_id })).toMatchObject({ status: 'failed', code: 'CREATIVE_INVALID' })
+    expect(calls.filter(call => call.path.endsWith('/fixture-image-task'))).toEqual([])
+    const recovered = object((await context!.tools.execute({ name: 'query_image_task', arguments: {
+      plan_id: submitted.plan_id, operation_id: submitted.operation_id,
+    }, agent, callId: ToolCallId('recover-interrupted-receipt-write'), signal: new AbortController().signal })).value)
+    expect(recovered).toMatchObject({ status: 'succeeded', plan_id: submitted.plan_id, operation_id: submitted.operation_id,
+      task_id: 'fixture-image-task', request_id: 'fixture-image-request' })
+    expect(await readFile(String(recovered.path))).toEqual(png)
+    expect(calls.filter(call => call.path === '/harness/toapis/v1/images/generations')).toHaveLength(1)
+    expect(calls.filter(call => call.path.endsWith('/fixture-image-task'))).toHaveLength(1)
+  })
+
+  it.each(['running', 'succeeded'])('stops original image reads and saving after logout during %s and later recovers the same account task without another POST', async (status) => {
+    const { base, api, stateDir } = await boot(undefined, true, true, undefined, { imagePollIntervalMs: 1, imageQueryRetryLimit: 0 })
+    const cookie = await hostCookie(base)
+    await signIn(base)
+    const model = 'yunshu-internal-gpt-image-2'
+    relayModels.push({ id: model, object: 'model', supported_endpoint_types: ['image-generation'] })
+    pricingRows = [{ model_name: model, supported_endpoint_types: ['image-generation'] }]
+    const agent = videoAgent(stateDir)
+    const abort = new AbortController()
+    upstreamGate = async (path) => { if (path.endsWith('/fixture-image-task')) abort.abort() }
+    await context!.tools.execute({ name: 'generate_image', arguments: { model, prompt: '原账户的图片' },
+      agent, callId: ToolCallId('image-before-logout'), signal: abort.signal })
+    const [retained] = projects(object(await (await fetch(base + '/api/creative/projects?session_id=reference-audio-chat', { headers: { cookie } })).json()))
+    expect(retained).toMatchObject({ status: 'unknown', tasks: [{ imageReceipt: { taskId: 'fixture-image-task' } }] })
+    if (!Array.isArray(retained!.tasks)) throw new Error('Expected original image task')
+    const submitted = { plan_id: retained!.id, operation_id: object(retained!.tasks[0]).id }
+    const entered = Promise.withResolvers<undefined>()
+    const release = Promise.withResolvers<undefined>()
+    releaseUpstreamGate = () => { release.resolve(undefined) }
+    upstreamGate = async (path) => {
+      if (!path.endsWith('/fixture-image-task')) return
+      entered.resolve(undefined)
+      await release.promise
+    }
+    imageTaskStatus = status
+    imageResponse = status === 'succeeded' ? { data: [{ url: api + '/fixtures/image.png' }] } : undefined
+    const storage = context!.get('artifactStorage')
+    if (storage === undefined) throw new Error('Expected managed image output')
+    const writes = vi.spyOn(storage, 'write')
+    const args = { plan_id: submitted.plan_id, operation_id: submitted.operation_id }
+    const recovering = context!.tools.execute({ name: 'query_image_task', arguments: args, agent,
+      callId: ToolCallId('query-during-account-switch'), signal: new AbortController().signal })
+    try {
+      await entered.promise
+      await post(base, '/api/session/logout', {})
+      selfId = 8; access = 'access-second-account'; relayKey = 'sk-second-account-relay'
+      await signIn(base)
+      release.resolve(undefined)
+      expect(object((await recovering).value)).toMatchObject({ status: 'failed', code: 'CREATIVE_ACCOUNT_CHANGED' })
+      expect(calls.filter(call => call.path.endsWith('/fixture-image-task'))).toHaveLength(2)
+      expect(calls.filter(call => call.path.endsWith('/fixtures/image.png'))).toEqual([])
+      expect(writes).not.toHaveBeenCalled()
+      const record = object(JSON.parse(await readFile(join(stateDir, 'creative-projects', String(submitted.plan_id), 'project.json'), 'utf8')))
+      expect(record.owner).toMatchObject({ accountId: '7' })
+      expect(record.operations).toMatchObject([{ outputs: [], imageReceipt: {
+        phase: 'accepted', taskId: 'fixture-image-task', requestId: 'fixture-image-request',
+      } }])
+      expect(projects(object(await (await fetch(base + '/api/creative/projects?session_id=reference-audio-chat', { headers: { cookie } })).json()))).toEqual([])
+      await post(base, '/api/session/logout', {})
+      selfId = 7; access = 'access-returned-account'; relayKey = 'sk-owned-relay'
+      await signIn(base)
+      upstreamGate = undefined
+      imageTaskStatus = 'succeeded'
+      const png = await sharp({ create: { width: 2, height: 2, channels: 3, background: '#aabbcc' } }).png().toBuffer()
+      imageResponse = { data: [{ b64_json: png.toString('base64') }] }
+      const recovered = object((await context!.tools.execute({ name: 'query_image_task', arguments: args, agent,
+        callId: ToolCallId('query-after-original-account-returned'), signal: new AbortController().signal })).value)
+      expect(recovered).toMatchObject({ status: 'succeeded', plan_id: submitted.plan_id, operation_id: submitted.operation_id })
+      expect(await readFile(String(recovered.path))).toEqual(png)
+      expect(writes).toHaveBeenCalledOnce()
+      expect(calls.filter(call => call.path === '/harness/toapis/v1/images/generations')).toHaveLength(1)
+      expect(calls.filter(call => call.path.endsWith('/fixture-image-task'))).toHaveLength(3)
+    } finally { release.resolve(undefined); await recovering }
+  })
+
+  it('rejects a delayed original-image recovery listing after the account changes instead of returning old project data', async () => {
+    const { base, stateDir } = await boot(undefined, true, true, undefined, { imagePollIntervalMs: 1, imageQueryRetryLimit: 0 })
+    const cookie = await hostCookie(base)
+    await signIn(base)
+    const model = 'yunshu-internal-gpt-image-2'
+    relayModels.push({ id: model, object: 'model', supported_endpoint_types: ['image-generation'] })
+    pricingRows = [{ model_name: model, supported_endpoint_types: ['image-generation'] }]
+    const agent = videoAgent(stateDir)
+    const abort = new AbortController()
+    upstreamGate = async (path) => { if (path.endsWith('/fixture-image-task')) abort.abort() }
+    await context!.tools.execute({ name: 'generate_image', arguments: { model, prompt: '旧账号私有项目' },
+      agent, callId: ToolCallId('private-image-before-listing'), signal: abort.signal })
+    const [retained] = projects(object(await (await fetch(base + '/api/creative/projects?session_id=reference-audio-chat', { headers: { cookie } })).json()))
+    if (!Array.isArray(retained!.tasks)) throw new Error('Expected original image task')
+    const submitted = { plan_id: retained!.id, operation_id: object(retained!.tasks[0]).id }
+    imageTaskStatus = 'running'
+    upstreamGate = undefined
+    const entered = Promise.withResolvers<undefined>()
+    const release = Promise.withResolvers<undefined>()
+    releaseUpstreamGate = () => { release.resolve(undefined) }
+    // oxlint-disable-next-line typescript/unbound-method -- the spy invokes the original implementation with each store receiver.
+    const list = CreativeStore.prototype.projects
+    vi.spyOn(CreativeStore.prototype, 'projects').mockImplementationOnce(async function (this: CreativeStore, owner) {
+      const retained = await list.call(this, owner)
+      expect(retained).toMatchObject([{ id: submitted.plan_id }])
+      entered.resolve(undefined)
+      await release.promise
+      return retained
+    })
+    const recovering = fetch(base + '/api/creative/image/recover', { method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({
+        session_id: agent.id, project_id: submitted.plan_id, operation_id: submitted.operation_id,
+      }) })
+    try {
+      await entered.promise
+      await post(base, '/api/session/logout', {})
+      selfId = 8; access = 'access-second-account'; relayKey = 'sk-second-account-relay'
+      await signIn(base)
+      release.resolve(undefined)
+      const response = await recovering
+      expect(response.status).toBe(409)
+      const answer: unknown = await response.json()
+      expect(answer).toMatchObject({ ok: false, code: 'CREATIVE_ACCOUNT_CHANGED' })
+      expect(object(answer).payload).toBeUndefined()
+      expect(JSON.stringify(answer)).not.toContain(String(submitted.plan_id))
+      expect(JSON.stringify(answer)).not.toContain('旧账号私有项目')
+      expect(JSON.stringify(answer)).not.toContain('fixture-image-task')
+      expect(calls.filter(call => call.path === '/harness/toapis/v1/images/generations')).toHaveLength(1)
+    } finally { release.resolve(undefined); await recovering }
+  })
+
+  it.each(['pending', 'unknown'] as const)('keeps the panel original %s image lock after fresh listings and refuses a new paid plan', async (state) => {
+    const { base, stateDir } = await boot(undefined, true, true, undefined, { imagePollIntervalMs: 1, imageQueryRetryLimit: 0 })
+    const cookie = await hostCookie(base)
+    await signIn(base)
+    const model = 'yunshu-internal-gpt-image-2'
+    relayModels.push({ id: model, object: 'model', supported_endpoint_types: ['image-generation'] })
+    pricingRows = [{ model_name: model, supported_endpoint_types: ['image-generation'] }]
+    context!.sessions.create(SessionId('uncertain-panel-image'), { meta: { cwd: stateDir } })
+    imageResponse = state === 'unknown' ? 'disconnect' : undefined
+    imageTaskHttpStatus = 503
+    const body = { session_id: 'uncertain-panel-image', account_id: '7', model, prompt: '一次付费的原始图片' }
+    const submitted = await post(base, '/api/image/generate', body, cookie)
+    expect(submitted).toMatchObject({ ok: false, submission_state: state,
+      task_id: state === 'pending' ? 'fixture-image-task' : null,
+      request_id: state === 'pending' ? 'fixture-image-request' : null })
+    expect(submitted.plan_id).toBeTypeOf('string')
+    expect(submitted.operation_id).toBeTypeOf('string')
+    for (const prompt of [body.prompt, '刷新后不应产生第二次付费']) {
+      const listed = projects(object(await (await fetch(base + '/api/creative/projects?session_id=uncertain-panel-image', { headers: { cookie } })).json()))
+      expect(listed).toMatchObject([{ id: submitted.plan_id, status: 'unknown', tasks: [{ id: submitted.operation_id, status: 'unknown' }] }])
+      expect(listed).toHaveLength(1)
+      expect(await post(base, '/api/image/generate', { ...body, prompt }, cookie)).toMatchObject({
+        ok: false, code: 'CREATIVE_SUBMISSION_UNKNOWN', submission_state: state,
+        plan_id: submitted.plan_id, operation_id: submitted.operation_id,
+        task_id: submitted.task_id, request_id: submitted.request_id,
+      })
+    }
+    expect(await readdir(join(stateDir, 'creative-projects'))).toEqual([submitted.plan_id])
+    expect(calls.filter(call => call.path === '/harness/toapis/v1/images/generations')).toHaveLength(1)
+  })
 
   it('names an internal reference upload failure, rejects unsafe receipts and never submits or retries generation', async () => {
     const { base } = await boot(undefined, false, true)
@@ -1143,7 +1396,7 @@ describe('deployed Harness API through the real product Loader', () => {
     if (typeof edit.multipart !== 'string') throw new Error('Expected reference image multipart')
     expect(Buffer.from(edit.multipart, 'base64').includes(png)).toBe(true)
     imageResponse = 'disconnect'
-    expect(await call('generate_image', args)).toMatchObject({ status: 'failed', code: 'TRANSPORT' })
+    expect(await call('generate_image', args)).toMatchObject({ status: 'unknown', code: 'IMAGE_SUBMISSION_UNKNOWN', submission_state: 'unknown' })
     const count = calls.filter(call => call.path.includes('/v1/images/')).length
     expect(await call('generate_image', args)).toMatchObject({ status: 'failed', code: 'CREATIVE_SUBMISSION_UNKNOWN' })
     expect(calls.filter(call => call.path.includes('/v1/images/'))).toHaveLength(count)
@@ -1165,7 +1418,7 @@ describe('deployed Harness API through the real product Loader', () => {
     const call = async (name: string, args: object) => object((await context!.tools.execute({ name, arguments: args, agent,
       callId: ToolCallId('receipt-' + name), signal: new AbortController().signal })).value)
     imageResponse = 'disconnect'
-    expect(await call('generate_image', { prompt: '图片', model: 'gpt-image-2' })).toMatchObject({ status: 'failed', code: 'TRANSPORT' })
+    expect(await call('generate_image', { prompt: '图片', model: 'gpt-image-2' })).toMatchObject({ status: 'unknown', code: 'IMAGE_SUBMISSION_UNKNOWN', submission_state: 'unknown' })
     const videoArgs = { prompt: '视频', model: 'MiniMax-H3', duration_seconds: 4 }
     const video = await call('generate_video', videoArgs)
     expect(video).toMatchObject({ status: 'failed', code: 'NO_TASK_ID', model: 'MiniMax-H3', task_id: '' })

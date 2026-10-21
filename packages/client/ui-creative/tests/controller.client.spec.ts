@@ -220,7 +220,7 @@ describe('creative read ownership', () => {
     expect(reveal).toHaveBeenCalledExactlyOnceWith(A)
   })
 
-  it.each(['update_creation_plan', 'generate_image', 'generate_video', 'generate_video_project'])(
+  it.each(['update_creation_plan', 'generate_image', 'query_image_task', 'generate_video', 'generate_video_project'])(
     'stops empty supervision after the matching %s result', async (name) => {
       vi.useFakeTimers()
       const empty: CreativeReadResult = { ok: true, payload: { accountId: 'account-a', projects: [] } }
@@ -266,6 +266,30 @@ describe('creative read ownership', () => {
     await read.mock.results[5]!.value
     await vi.advanceTimersByTimeAsync(6000)
     expect(read).toHaveBeenCalledTimes(6)
+  })
+
+  it('refreshes query_image_task active state and its settled original-task result', async () => {
+    const data = project({ status: 'unknown' })
+    const receipt = { route: '/toapis-image/submit', model: 'image-model', phase: 'accepted' as const,
+      taskId: 'original-task', backendFingerprint: 'a'.repeat(64) }
+    const original = { id: 'op_original', status: 'unknown' as const, shotIds: ['s1'], outputs: [],
+      completedShots: 0, totalShots: 1, imageReceipt: receipt, canQuery: true }
+    const read = vi.fn<ReadCreativeProjects>().mockResolvedValue({ ok: true,
+      payload: { accountId: 'account-a', projects: [{ ...data, tasks: [original] }] } })
+    const { controller } = owner(read)
+    controller.accountChanged('account-a'); controller.select(A)
+    await read.mock.results[0]!.value
+    const started = call('query_image_task')
+    read.mockResolvedValue({ ok: true, payload: { accountId: 'account-a', projects: [{ ...data,
+      tasks: [{ ...original, status: 'running', canQuery: false }] }] } })
+    controller.observe(A, started)
+    await read.mock.results[1]!.value
+    expect(controller.source(A).getSnapshot().projects[0]?.tasks[0]).toMatchObject({ status: 'running', canQuery: false })
+    read.mockResolvedValue({ ok: true, payload: { accountId: 'account-a', projects: [{ ...data,
+      tasks: [{ ...original, status: 'completed', canQuery: false }] }] } })
+    controller.observe(A, result(started))
+    await read.mock.results[2]!.value
+    expect(controller.source(A).getSnapshot().projects[0]?.tasks[0]).toMatchObject({ status: 'completed', canQuery: false })
   })
 
   it.each(['account', 'selection', 'dispose'] as const)('clears empty pending calls on %s lifetime changes', async (change) => {

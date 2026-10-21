@@ -31,6 +31,8 @@ Material uploads accept common image formats, including HEIC, TIFF and animated 
 
 The task section filters retained invocation states and output kinds, shows completed shot counts and opens real saved reference images, clips and final files. Failed and unknown work remains visible beside earlier usable outputs. Counts describe committed local records, not estimated upstream rendering percentages.
 
+Image tasks retain their submission receipt and show **Query original task** only when the Host permits querying an existing task identifier. This action retrieves the original task without submitting generation again; an accepted query resumes visible progress reads. Accepted but unconfirmed results remain distinct from submissions with no queryable identifier. The latter retain conservative guidance to check the original task and billing without resubmitting. Receipt details show retained task and request identifiers; they do not expose credentials or backend addresses.
+
 Only owner-authorized files appear as previews. Video frame grids contain extracted frames with actual timestamps; missing or failed frame extraction stays visible while the original file remains downloadable. File completion and synchronization verification are independent: saved videos display speech, lip and subtitle timing as unverified.
 
 **Edit character**, **Rework asset** and **Edit shot** share a dialog for your directions. **Redo shot** inserts the existing project and shot identities into an editable chat draft. Every action preserves the normal send step and adds no paid request itself; sending the draft can execute generation and use credits. Character and material revisions preserve their plan identities and check real references and model support. An image material with no source can first be generated from its description; an unreadable or non-image source requires an input or workflow check. Material cards show actual saved outputs, and character cards preview only the images of their registered reference materials. A busy or changed draft refuses insertion without replacing the user’s text. Image projects label their output section **Images**.
@@ -72,7 +74,7 @@ The authoritative Credits account observable owns sign-in state. Account changes
 
 #### What the model sees
 
-Viewing, refreshing, free field edits, uploads and downloading files make no model request. AI revisions and shot redo insert localized text, exact plan/member identifiers and the user's directions into the normal chat draft. The model sees these after the user sends them; the draft requests `get_creation_plan`, preservation of unrelated members and existing native generation/editing tools. Timeline and reference changes become model input through the logged plan read rather than a hidden message.
+Viewing, refreshing, querying an original image task, free field edits, uploads and downloading files make no model request. AI revisions and shot redo insert localized text, exact plan/member identifiers and the user's directions into the normal chat draft. The model sees these after the user sends them; the draft requests `get_creation_plan`, preservation of unrelated members and existing native generation/editing tools. Timeline and reference changes become model input through the logged plan read rather than a hidden message.
 
 #### Token effect
 
@@ -89,6 +91,7 @@ The ordinary conversation submission owns caching. Reading progress and previewi
 The sidebar displays retained project facts and real files, with these limits:
 
 - Earlier conversations without registered creation plans show no reconstructed storyboard; prose is not parsed to invent one.
+- Unknown image submissions without a retained task identifier cannot be queried from this interface; a request identifier alone does not authorize resubmission.
 - Reference directions do not guarantee that a provider preserves character appearance, spoken dialogue or lip timing.
 - Synchronization remains unverified until the resulting video is inspected; a saved file is not a verification receipt.
 - Preview extraction can fail independently of generation. The original saved output remains available.

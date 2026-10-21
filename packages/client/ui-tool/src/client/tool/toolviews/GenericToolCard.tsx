@@ -38,7 +38,8 @@ export function GenericToolCard({ toolName, block, cwd, home, openFile, inspect,
     : mediaError === 'sign-in' || mediaError === 'signed-out' ? t('error.signInRequired')
       : mediaError === 'insufficient-credits' ? t('error.creditsRequired')
         : mediaError === 'cancelled' ? t('error.cancelled')
-          : mediaError === 'unknown-outcome' ? t('error.mediaOutcomeUnknown') : t('error.serverBusy')
+          : mediaError === 'accepted-pending' ? t('error.mediaTaskPending')
+            : mediaError === 'unknown-outcome' ? t('error.mediaOutcomeUnknown') : t('error.serverBusy')
   const autoReview = model.autoReviewDenial === null
     ? null
     : localizeAutoReviewDenial(model.autoReviewDenial, t)
@@ -61,7 +62,7 @@ export function GenericToolCard({ toolName, block, cwd, home, openFile, inspect,
       toolName={toolName}
       icon={VARIANT_ICONS[model.variant]}
       title={t(model.titleKey)}
-      summary={model.summary}
+      summary={mediaError === 'accepted-pending' ? t('error.mediaTaskPending') : model.summary}
       // Single-file tools never expose an args body — the path link is the only
       // args interaction. A card is not an args body: a read/write/edit row is
       // single-file AND carries a card, so the card expands under the path link.
@@ -73,7 +74,7 @@ export function GenericToolCard({ toolName, block, cwd, home, openFile, inspect,
       read={read}
       search={search}
       web={web}
-      state={mediaError === null ? state : mediaError === 'cancelled' ? 'stopped' : 'error'}
+      state={mediaError === null ? state : mediaError === 'cancelled' || mediaError === 'accepted-pending' ? 'stopped' : 'error'}
       filePath={model.filePath}
       onOpenFile={singleFile ? openFile : undefined}
       inspect={mediaError === null ? inspect : undefined}
