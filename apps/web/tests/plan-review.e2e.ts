@@ -236,8 +236,14 @@ describe('web e2e: plan review takeover round trip', () => {
         options: [{ label: 'Approve' }, { label: 'Keep planning' }], intent: { kind: 'plan-review', approve: 'Approve' },
       }],
     })
-    const outcome = asked.then(value => value, (error: unknown) => ({ error }))
+    let answered = false
+    const outcome = asked.then((value) => { answered = true; return value }, (error: unknown) => ({ error }))
     try {
+      // Global panels now hide the Session tree. Return through its real
+      // destination before selecting the still-pending warning Session.
+      expect(await page.locator('[data-plugin-panel]').isVisible()).toBe(true)
+      expect(await page.locator('[data-plan-review-key]').count()).toBe(0)
+      await page.getByRole('navigation', { name: 'Global panels' }).getByRole('button', { name: 'Chat', exact: true }).click()
       const row = page.locator('[role="treeitem"]').filter({ has: page.locator('[data-state="warning"]') }).first()
       await row.waitFor({ timeout: 10_000 })
       await row.click()
@@ -247,6 +253,7 @@ describe('web e2e: plan review takeover round trip', () => {
       await preview.waitFor({ state: 'visible', timeout: 10_000 })
       expect(await preview.getByText('Submitted while the Plugins panel was open.').isVisible()).toBe(true)
       expect(await card.getByRole('button', { name: 'Open plan in sidebar' }).count()).toBe(1)
+      expect(answered).toBe(false)
       expect(await page.locator('[data-slot-error]').count()).toBe(0)
       expect(crashes).toEqual([])
       expect(tripwire.pageErrors).toEqual([])
@@ -316,10 +323,13 @@ describe.skipIf(MODE === 'record')('web e2e: pending plan review across Sidebar 
         options: [{ label: 'Approve' }, { label: 'Keep planning' }], intent: { kind: 'plan-review', approve: 'Approve' },
       }],
     })
-    const outcome = asked.then(value => value, (error: unknown) => ({ error }))
+    let answered = false
+    const outcome = asked.then((value) => { answered = true; return value }, (error: unknown) => ({ error }))
     try {
+      await page.getByRole('navigation', { name: 'Global panels' }).getByRole('button', { name: 'Chat', exact: true }).click()
       await row(session).locator('[data-state="warning"]').waitFor({ timeout: 10_000 })
       await scenario()
+      expect(answered).toBe(false)
     } finally {
       controller.abort()
       await outcome

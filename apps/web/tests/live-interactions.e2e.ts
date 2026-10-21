@@ -88,6 +88,7 @@ describe('web e2e: live-turn interactions (cancel / error / retry)', () => {
   async function launch(
     buildOverride?: (sidecarHome: string) => ReplayOverrideDoc,
     retryPolicy?: RetryPolicyConfig,
+    preparePage?: (page: Page) => Promise<void>,
   ): Promise<void> {
     sessionEvents = []
     let overridePath: string | undefined
@@ -112,6 +113,7 @@ describe('web e2e: live-turn interactions (cancel / error / retry)', () => {
     browser = await chromium.launch()
     page = await newEnglishPage(browser)
     tripwire = watchConsole(page)
+    await preparePage?.(page)
     await page.goto(scaffold.authenticatedUrl, { waitUntil: 'load' })
     await page.waitForSelector('[class*="frame"]', { timeout: 30_000 })
     // Fresh world: connect a Workspace so the composer scenarios start live.
@@ -256,8 +258,24 @@ describe('web e2e: live-turn interactions (cancel / error / retry)', () => {
       const copy = code === 'QUOTA' ? 'The server is busy. Please try again later.'
         : code === 'INSUFFICIENT_BALANCE' ? 'Insufficient balance. Please top up.' : 'Request quota exhausted.'
       const notice = page.getByRole('alert').filter({ hasText: code === 'QUOTA' ? 'Request quota exhausted.' : copy })
-      if (code === 'QUOTA') expect(await notice.count()).toBe(0)
-      else await notice.waitFor({ timeout: 10_000 })
+      if (code === 'INSUFFICIENT_BALANCE') {
+        // Credits owns this code with a persistent, identity-bound recharge
+        // dialog. An unsigned reader can dismiss it but cannot top up.
+        const balanceDialog = page.getByRole('dialog', { name: copy, exact: true })
+        await balanceDialog.waitFor({ timeout: 10_000 })
+        expect(await notice.count()).toBe(0)
+        expect(await balanceDialog.getByRole('button', { name: 'Top up', exact: true }).isDisabled()).toBe(true)
+        const refreshed = page.waitForResponse(response => response.url() === `${scaffold!.baseUrl}/credits/api/session`)
+        await page.evaluate(() => { window.dispatchEvent(new Event('focus')) })
+        expect(await (await refreshed).json()).toMatchObject({ payload: { signedIn: false } })
+        await page.evaluate(() => new Promise<void>((resolve) => {
+          requestAnimationFrame(() => { requestAnimationFrame(() => { resolve() }) })
+        }))
+        expect(await balanceDialog.isVisible()).toBe(true)
+        await balanceDialog.getByRole('button', { name: 'Close', exact: true }).filter({ hasText: 'Close' }).click()
+        await balanceDialog.waitFor({ state: 'hidden' })
+      } else if (code === 'ACCOUNT_QUOTA') await notice.waitFor({ timeout: 10_000 })
+      else expect(await notice.count()).toBe(0)
       expect(await page.getByRole('dialog').count()).toBe(0)
       const failure = page.getByRole('status').filter({ hasText: 'This turn failed' })
       await failure.waitFor({ timeout: 10_000 })
@@ -266,7 +284,7 @@ describe('web e2e: live-turn interactions (cancel / error / retry)', () => {
       expect(sessionEvents.findLast(event => event.type === 'turn/end')).toMatchObject({
         data: { reason: { kind: 'error', error: { code } } },
       })
-      if (code !== 'QUOTA') await notice.waitFor({ state: 'hidden', timeout: 10_000 })
+      if (code === 'ACCOUNT_QUOTA') await notice.waitFor({ state: 'hidden', timeout: 10_000 })
       expect(await failure.isVisible()).toBe(true)
       const expected = fileURLToPath(new URL(`./expected/quota-notice/${code.toLowerCase()}.expected.md`, import.meta.url))
       await compareOrRefreshGolden(expected, await failure.ariaSnapshot(), MODE)
@@ -274,6 +292,80 @@ describe('web e2e: live-turn interactions (cancel / error / retry)', () => {
       await page.reload({ waitUntil: 'load' })
       await failure.waitFor({ timeout: 15_000 })
       expect(await notice.count()).toBe(0)
+      expect(await page.getByRole('dialog').count()).toBe(0)
+      expect(tripwire.pageErrors).toEqual([])
+    }, 120_000,
+  )
+
+  it.skipIf(MODE === 'record').each(['switch', 'logout'] as const)(
+    'dismisses the live balance dialog on account %s without navigating or replaying it', async (transition) => {
+      let accountId: string | undefined = 'fixture-balance-a'
+      await launch(() => ({
+        patches: [{ at: 0, entry: { kind: 'throw', chunks: [], message: 'private upstream funding diagnostic', code: 'INSUFFICIENT_BALANCE' } }],
+      }), undefined, async (prepared) => {
+        // Only three loopback account reads are controlled. No sign-in,
+        // recharge or model endpoint is called by these identity fixtures.
+        const origin = new URL(scaffold!.baseUrl).origin
+        await prepared.route(url => url.origin === origin && [
+          '/credits/api/session', '/credits/api/summary', '/credits/api/chat-usage',
+        ].includes(url.pathname), async (route) => {
+          const url = new URL(route.request().url())
+          const payload = url.pathname === '/credits/api/session'
+            ? { signedIn: accountId !== undefined, creditsPerYuan: 1000,
+              ...(accountId === undefined ? {} : { account: { id: accountId, phone: 'fixture' } }) }
+            : url.pathname === '/credits/api/summary'
+              ? { balance_points: 0, as_of: '2026-01-15T04:00:00Z' }
+              : { scope: 'chat-model', accountId: url.searchParams.get('account_id'),
+                status: 'unavailable', settledRequests: 0, totalRequests: 0 }
+          await route.fulfill({ json: { ok: true, payload } })
+        })
+      })
+      onTestFailed(() => saveFailureShot(page, `web-e2e-balance-account-${transition}`))
+      const { settled } = await sendPrompt()
+      await settled
+      const dialog = page.getByRole('dialog', { name: 'Insufficient balance. Please top up.', exact: true })
+      await dialog.waitFor({ timeout: 10_000 })
+      await expect.poll(() => dialog.getByRole('button', { name: 'Top up', exact: true }).isEnabled()).toBe(true)
+      const refreshIdentity = async (): Promise<void> => {
+        const expectedIdentity = accountId
+        const refreshed = page.waitForResponse(response => response.url() === `${scaffold!.baseUrl}/credits/api/session`)
+        // Signed-in refresh publishes the Session before asking for its
+        // balance. Observe that read, then a browser render before inspecting
+        // the identity-bound dialog rather than racing the fetch callback.
+        const balance = expectedIdentity === undefined ? undefined
+          : page.waitForResponse(response => response.url() === `${scaffold!.baseUrl}/credits/api/summary`)
+        await page.evaluate(() => { window.dispatchEvent(new Event('focus')) })
+        expect(await (await refreshed).json()).toMatchObject({ payload: {
+          signedIn: expectedIdentity !== undefined,
+          ...(expectedIdentity === undefined ? {} : { account: { id: expectedIdentity } }),
+        } })
+        if (balance !== undefined) expect(await (await balance).json()).toMatchObject({ ok: true })
+        await page.evaluate(() => new Promise<void>((resolve) => {
+          requestAnimationFrame(() => { requestAnimationFrame(() => { resolve() }) })
+        }))
+      }
+      // A same-account heartbeat retains the live decision. An identity
+      // replacement or logout withdraws it instead of charging another account.
+      await refreshIdentity()
+      expect(await dialog.isVisible()).toBe(true)
+      accountId = transition === 'switch' ? 'fixture-balance-b' : undefined
+      await refreshIdentity()
+      await dialog.waitFor({ state: 'hidden' })
+      const failure = page.getByRole('status').filter({ hasText: 'This turn failed' })
+      await failure.waitFor({ timeout: 10_000 })
+      expect(await failure.textContent()).toBe('This turn failedInsufficient balance. Please top up.')
+      expect(await page.locator('body').textContent()).not.toContain('private upstream funding diagnostic')
+      expect(await page.locator('[data-composer-input]').first().isVisible()).toBe(true)
+      expect(sessionEvents.filter(event => event.type === 'turn/end')).toHaveLength(1)
+      expect(sessionEvents.findLast(event => event.type === 'turn/end')).toMatchObject({
+        data: { reason: { kind: 'error', error: { code: 'INSUFFICIENT_BALANCE' } } },
+      })
+      expect(tripwire.warnings).toEqual([])
+      await page.reload({ waitUntil: 'load' })
+      await failure.waitFor({ timeout: 15_000 })
+      expect(await dialog.count()).toBe(0)
+      expect(await page.getByRole('alert').count()).toBe(0)
+      expect(sessionEvents.filter(event => event.type === 'turn/end')).toHaveLength(1)
       expect(tripwire.pageErrors).toEqual([])
     }, 120_000,
   )

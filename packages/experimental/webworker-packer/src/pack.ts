@@ -525,7 +525,7 @@ function materialize(
 ): { files: ImageFiles; packages: Map<string, number>; missing: string[] } {
   const files: ImageFiles = {}
   const packages = new Map<string, number>()
-  const missing: string[] = []
+  const pending: { name: string; from: string }[] = []
   const replaced = new Set(REPLACED_EXTERNAL_PACKAGES)
   const queue: { name: string; from: string }[] = roster.map(name => ({ name, from: options.resolveFrom }))
 
@@ -534,7 +534,7 @@ function materialize(
     if (packages.has(name) || replaced.has(name)) continue
     const directory = options.workspaces.get(name) ?? resolveDependency(from, name)
     if (directory === undefined) {
-      missing.push(`${name} (from ${relative(options.resolveFrom, from) || '.'})`)
+      pending.push({ name, from })
       continue
     }
     const manifest = readJson(join(directory, 'package.json'))
@@ -565,6 +565,9 @@ function materialize(
       for (const dependency of Object.keys(dependencies)) queue.push({ name: dependency, from: directory })
     }
   }
+  // A bundle's declared dependency may resolve a name after its roster lookup failed.
+  const missing = pending.filter(({ name }) => !packages.has(name))
+    .map(({ name, from }) => `${name} (from ${relative(options.resolveFrom, from) || '.'})`)
   return { files, packages, missing }
 }
 

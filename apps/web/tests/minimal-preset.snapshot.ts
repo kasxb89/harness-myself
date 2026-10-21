@@ -52,7 +52,10 @@ describe('minimal agent preset', () => {
       sessionId: SessionId('minimal-preset-smoke'),
       meta: { cwd: scaffold.workspaceCwd, agentPreset: 'minimal' },
       agentOptions: { provider: 'deepseek-official', model: 'deepseek-v4-flash' },
-      setup: agentCtx => scaffold.ctx.agentPresets.mount(agentCtx, 'minimal').then(() => undefined),
+      setup: async (agentCtx) => {
+        await scaffold.ctx.agentPresets.mount(agentCtx, 'minimal')
+        agentCtx.tools.restrict({ allow: ['bash', 'working_directory'] })
+      },
     })
     agentHandle.agent.followup(createUserMessage({
       content: [{ type: 'text', text: PROMPT }],

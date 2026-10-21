@@ -3,9 +3,6 @@
   - text: Standard mode
   - button "More actions"
   - button "Open right sidebar"
-  - tablist:
-    - tab "Chat" [selected]
-    - tab "Trajectory"
 - text: Begin your reply with the plain sentence "Reading the workspace now." as text, and in that same message call the bash tool with the command "echo alpha". After the tool result, reply with the single word DONE and stop. {{clock}}
 - button "Copy"
 - status: Stopped
@@ -24,7 +21,7 @@
 - button "Add files or run commands"
 - 'button "Access mode, current: Workspace Write"': Workspace Write
 - button "Select model, current DeepSeek-V4-Flash": DeepSeek-V4-Flash
+- button "Voice input"
 - button "Send message" [disabled]
-- button "1 turns 2 steps · {{throughput}} tok/s": 1 turns 2 steps{{throughput}} tok/s
-- button "7.9K tok · Cache hit 0%": 7.9K tokCache hit 0%
+- button "1 turns 2 steps"
 - button "6% of context used": 6%

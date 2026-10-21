@@ -12,12 +12,11 @@
 - button "Failed" [disabled] [expanded]
 - group:
   - status: Retried model request (2/2) · {{duration}}
-- status:
-  - text: This turn failedupstream 503
-  - code: SERVER
+- status: This turn failedThe server is busy. Please try again later.
 - textbox "Message or run a task, / commands, @ files or sessions"
 - button "Add files or run commands"
 - 'button "Access mode, current: Workspace Write"': Workspace Write
 - button "Select model, current DeepSeek-V4-Flash": DeepSeek-V4-Flash
+- button "Voice input"
 - button "Send message" [disabled]
 - text: 1 turns 1 steps

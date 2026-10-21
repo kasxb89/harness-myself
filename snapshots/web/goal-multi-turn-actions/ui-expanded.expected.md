@@ -3,9 +3,6 @@
   - text: Standard mode
   - button "More actions"
   - button "Open right sidebar"
-  - tablist:
-    - tab "Chat" [selected]
-    - tab "Trajectory"
 - navigation "Turn navigation":
   - button "Jump to turn 1"
   - button "Jump to turn 2"
@@ -144,7 +141,7 @@
 - button "Add files or run commands"
 - 'button "Access mode, current: Workspace Write"': Workspace Write
 - button "Select model, current DeepSeek-V4-Flash": DeepSeek-V4-Flash
+- button "Voice input"
 - button "Send message" [disabled]
-- button "2 turns 12 steps · {{throughput}} tok/s": 2 turns 12 steps{{throughput}} tok/s
-- button "115K tok · Cache hit 91%": 115K tokCache hit 91%
+- button "2 turns 12 steps"
 - button "9% of context used": 9%

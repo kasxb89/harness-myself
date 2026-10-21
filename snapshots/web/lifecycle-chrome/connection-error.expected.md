@@ -1,2 +1,5 @@
+- button "Mobile"
+- button "Balance"
+- button "Top up"
 - button "Settings"
 - button "Reconnecting, reconnect now"

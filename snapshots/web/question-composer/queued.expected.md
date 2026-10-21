@@ -26,3 +26,4 @@
 - button "Voice input"
 - button "Send message" [disabled]
 - button "1 turns 1 steps"
+- button "3% of context used": 3%

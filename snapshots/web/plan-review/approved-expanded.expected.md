@@ -2,9 +2,6 @@
   - navigation "Session hierarchy": "Plan a small change: add"
   - text: Standard mode
   - button "More actions"
-  - tablist:
-    - tab "Chat" [selected]
-    - tab "Trajectory"
 - text: "plan Plan mode on. Use /plan off to leave. Plan a small change: add a --greeting flag to a CLI. Do not read or write any files. Call exit_plan_mode with a short plan of at most five bullet points. Once the plan is approved, reply with the single word DONE and stop. {{clock}}"
 - button "Copy"
 - status: Completed
@@ -29,7 +26,7 @@
 - button "Add files or run commands"
 - 'button "Access mode, current: Workspace Write"': Workspace Write
 - button "Select model, current DeepSeek-V4-Flash": DeepSeek-V4-Flash
+- button "Voice input"
 - button "Send message" [disabled]
-- button "1 turns 2 steps · {{throughput}} tok/s": 1 turns 2 steps{{throughput}} tok/s
-- button "10.6K tok · Cache hit 51%": 10.6K tokCache hit 51%
+- button "1 turns 2 steps"
 - button "4% of context used": 4%

@@ -230,11 +230,15 @@ describe('web e2e: fresh round trip through the real assembly', () => {
     const userText = agent.session.deriveMessages().filter(message => message.role === 'user')
       .flatMap(message => message.content.flatMap(block => block.type === 'text' ? [block.text] : []))
     expect(userText.some(text => text.includes(`Current working directory: ${JSON.stringify(cwd)}.`))).toBe(true)
-    const suffix = paragraphs.slice(-2).join('\n\n')
+    const contextParagraphs = paragraphs.filter(paragraph =>
+      paragraph.startsWith('The DeepSeek Harness implementation checkout is at ')
+      || paragraph.startsWith('You are interacting with the user through the DeepSeek Harness Web GUI at '))
+    expect(contextParagraphs).toHaveLength(2)
+    const webContext = contextParagraphs.join('\n\n')
       .split(REPO_ROOT).join('{{sourceRoot}}')
       .split(join(scaffold.workspaceCwd, 'workspace')).join('{{cwd}}')
       .split(scaffold.baseUrl).join('{{webUrl}}')
-    await compareOrRefreshGolden(WEB_CONTEXT_EXPECTED, suffix, MODE)
+    await compareOrRefreshGolden(WEB_CONTEXT_EXPECTED, webContext, MODE)
   })
 
   it('exposes the assembled Web URL to the real bash tool', async () => {

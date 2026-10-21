@@ -2,8 +2,13 @@
 - button "Collapse sidebar"
 - button "New session": New Session
 - navigation "Global panels":
+  - button "Chat"
+  - button "Digital employees"
+  - button "Artifacts"
+  - button "Create"
+  - button "Plaza"
+  - button "Skill store"
   - button "Plugins"
-  - button "Automation tasks"
 - text: Workspaces
 - button "Search sessions"
 - textbox "Search session names"
@@ -12,6 +17,9 @@
 - tree "Sessions":
   - treeitem "workspace" [expanded]
   - treeitem "New Session" [selected]
+- button "Mobile"
+- button "Balance"
+- button "Top up"
 - button "Settings"
 - banner:
   - button "Open right sidebar"

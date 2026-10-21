@@ -7,7 +7,6 @@
 - button "Wrap lines"
 - button "Copy"
 - text: "from typing import Protocol class Greeter(Protocol): def greet(self, name: str) -> str: ..."
-- button "Inspect"
 
 ## Preview sample.pyi
 
@@ -24,7 +23,6 @@
 - button "Wrap lines"
 - button "Copy"
 - text: param([string]$Name = "World") Write-Host "Hello, $Name"
-- button "Inspect"
 
 ## Preview deploy.ps1
 
@@ -41,7 +39,6 @@
 - button "Wrap lines"
 - button "Copy"
 - text: name,count apples,12 pears,7
-- button "Inspect"
 
 ## Preview table.csv
 

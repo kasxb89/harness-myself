@@ -1,3 +1,1 @@
-- status:
-  - text: This turn failedRequest quota exhausted.
-  - code: QUOTA
+- status: This turn failedThe server is busy. Please try again later.

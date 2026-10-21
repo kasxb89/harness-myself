@@ -84,9 +84,9 @@ it('keeps settings and expanded plugin dialogs clear of the Windows caption acro
           if (value === 'darwin') document.documentElement.setAttribute('data-platform', value)
           else document.documentElement.removeAttribute('data-platform')
         }, platform)
-        if (await reopenSidebar.isVisible()) await reopenSidebar.click()
         // macOS intentionally collapses this narrow sidebar to zero width.
-        // Read the shell control's shortcut rather than clicking its clipped glyph.
+        // Both the rail and shell.leading can offer sidebar controls. Settings
+        // already declares its shortcut, so reopening either seat is unnecessary.
         const shortcut = await page.getByRole('button', { name: '设置', exact: true }).getAttribute('aria-keyshortcuts')
         if (shortcut === null || shortcut.trim() === '') throw new Error('Settings has no declared keyboard shortcut')
         await page.keyboard.press(shortcut)
