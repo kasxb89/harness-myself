@@ -100,6 +100,7 @@ describe('web e2e: live-turn interactions (cancel / error / retry)', () => {
       await writeFile(overridePath, JSON.stringify(buildOverride(sidecarDir)))
     }
     scaffold = await launchWebScaffold({
+      developerTools: true, showTrajectory: true,
       replayFixture: FIXTURE,
       // Throughput snapshots need a nonzero interval between replayed chunks.
       paceMs: 1,

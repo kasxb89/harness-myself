@@ -242,7 +242,7 @@ describe('web e2e: input card position across view tabs', () => {
   let tripwire: ReturnType<typeof watchConsole>
 
   beforeAll(async () => {
-    scaffold = await launchWebScaffold({})
+    scaffold = await launchWebScaffold({ developerTools: true, showTrajectory: true })
     await seedSession(scaffold, FIXTURE.log, SEED_ID)
     // Scrollbars must take layout space here or the comparison is vacuous.
     browser = await chromium.launch({ ignoreDefaultArgs: ['--hide-scrollbars'] })

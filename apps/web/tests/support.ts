@@ -50,9 +50,6 @@ export const WEB_FIXTURE_TIME = Date.parse('2026-01-15T12:00:00+08:00')
  */
 export const PLUGIN_TOGGLE_SETTLE_MS = 10_000
 
-/** How often a pinned browser clock advances, in milliseconds. */
-const PINNED_CLOCK_STEP_MS = 250
-
 /**
  * Pin the Host clock to the shared fixture day for one scenario suite.
  *
@@ -78,27 +75,28 @@ export function pinHostClock(): MockInstance<typeof Date.now> {
  * time. Pair it with {@link pinHostClock} for a scenario that stamps its own
  * message times, and with `seedSession`'s `createdAt` for a seeded one.
  *
- * The frozen instant is re-applied from the anchor on an interval rather than
- * left at one value, because product logic reads two `Date.now()` values to
- * decide a minimum display hold or a deadline window; a permanently frozen
- * clock stops supplying elapsed time, so a title that owes its golden settled
- * text keeps rendering its previous one. Both clocks therefore advance at the
- * real rate and stay within one step of each other.
+ * Only Date is replaced: timers, animation frames and performance retain their
+ * native clock. Playwright's clock also replaces those APIs, and its reload log
+ * uses the Host's Date.now spy as a real-time origin. Replaying that origin in a
+ * browser with the real wall clock can jump timer ticks by months and stall its
+ * scheduler. A native Date anchor keeps this fixture clock advancing across
+ * reloads without installing a second timer scheduler.
  * @param page - page whose clock is pinned.
- * @returns the disposer that stops re-pinning; call it in teardown.
+ * @returns a compatible disposer; the page lifetime owns the init script.
  */
 export async function pinBrowserClock(page: Page): Promise<() => void> {
-  const startedAt = Date.now()
-  const step = async (): Promise<void> => {
-    try {
-      await page.clock.setFixedTime(WEB_FIXTURE_TIME + (Date.now() - startedAt))
-    } catch {
-      // The page closed under the interval; teardown owns the last word.
-    }
-  }
-  await step()
-  const timer = setInterval(() => { void step() }, PINNED_CLOCK_STEP_MS)
-  return () => { clearInterval(timer) }
+  // Constructing Date bypasses pinHostClock's Date.now spy.
+  const nativeAnchor = new Date().getTime()
+  await page.addInitScript(({ nativeAnchor, fixtureTime }) => {
+    const NativeDate = Date
+    const now = (): number => fixtureTime + NativeDate.now() - nativeAnchor
+    globalThis.Date = new Proxy(NativeDate, {
+      apply: () => new NativeDate(now()).toString(),
+      construct: (target, args, newTarget) => Reflect.construct(target, args.length === 0 ? [now()] : args, newTarget) as Date,
+      get: (target, property, receiver): unknown => property === 'now' ? now : Reflect.get(target, property, receiver) as unknown,
+    })
+  }, { nativeAnchor, fixtureTime: WEB_FIXTURE_TIME })
+  return () => {}
 }
 
 /**

@@ -27,7 +27,7 @@
 - button "Bad response"
 - button "Branch into a new conversation"
 - text: {{clock}}
-- button "compact Compacted 5 history items (~{{tokens}} tokens)"
+- button "compact Compacted 5 history items"
 - status: Completed
 - button "Completed in {{duration}}" [disabled]
 - 'button "feedback Feedback recorded for session {{seededId}} Anonymous user: {{uuid}}." [expanded]'
@@ -36,6 +36,6 @@
 - button "Add files or run commands"
 - 'button "Access mode, current: Read Only"': Read Only
 - button "Select model, current DeepSeek-V4-Flash": DeepSeek-V4-Flash
+- button "Voice input"
 - button "Send message" [disabled]
-- button "1 turns 2 steps · {{throughput}} tok/s": 1 turns 2 steps{{throughput}} tok/s
-- button "16K tok · Cache hit 98%": 16K tokCache hit 98%
+- button "1 turns 2 steps"

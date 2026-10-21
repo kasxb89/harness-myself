@@ -239,6 +239,7 @@ describe('web e2e: seeded history renders through cold resume', () => {
     // and the SSH marker keeps the application catalog empty so the
     // Session-header split button stays out of every golden.
     scaffold = await launchWebScaffold({
+      developerTools: true, showTrajectory: true,
       extraOverlayPath: [
         ...process.platform === 'win32' ? [] : [fileURLToPath(new URL('./fixtures/sidebar-terminal.patch.yml', import.meta.url))],
         fileURLToPath(new URL('./fixtures/native-open-on.patch.yml', import.meta.url)),
@@ -373,7 +374,7 @@ describe('web e2e: seeded history renders through cold resume', () => {
     })
     await expect.poll(() => page.getByText(PROMPT, { exact: true }).count(), { timeout: 10_000 }).toBe(1)
     await expect.poll(() => page.getByText('compact', { exact: true }).count(), { timeout: 10_000 }).toBe(1)
-    await expect.poll(() => page.getByText(/^Compacted \d+ history items \(~\d+ tokens\)$/).count(), {
+    await expect.poll(() => page.getByText(/^Compacted \d+ history items$/).count(), {
       timeout: 10_000,
     }).toBe(1)
     const process = page.locator('[data-turn-process="1"]')
@@ -853,6 +854,25 @@ describe('web e2e: seeded history renders through cold resume', () => {
     await expect.poll(() => terminals().length).toBe(1)
     expect(terminals()[0]!.id).not.toBe(previous)
     await terminal.getByRole('status').waitFor({ state: 'hidden' })
+    const screen = terminal.locator('.xterm-screen')
+    await screen.waitFor()
+    const bounds = await screen.boundingBox()
+    expect(bounds?.width).toBeGreaterThan(0)
+    expect(bounds?.height).toBeGreaterThan(0)
+    await expect.poll(() => terminals()[0]?.controllerId).not.toBeUndefined()
+    const readyPath = join(scaffold.harnessHome, 'terminal-ready')
+    const quotedPath = `'${readyPath.replaceAll("'", "'\\''")}'`
+    await screen.click({ position: { x: 10, y: 10 } })
+    await expect.poll(() => terminal.getByRole('textbox', { name: 'Terminal', exact: true })
+      .evaluate(element => element === document.activeElement)).toBe(true)
+    await page.keyboard.type(`printf '\\nDSH_TERMINAL_REPLACED\\n' | tee ${quotedPath}`)
+    await page.keyboard.press('Enter')
+    await expect.poll(() => readFile(readyPath, 'utf8').catch((error: unknown) => {
+      if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return ''
+      throw error
+    })).toBe('\nDSH_TERMINAL_REPLACED\n')
+    await expect.poll(async () => (await screen.locator('.xterm-rows').innerText())
+      .split('\n').some(line => line.trim() === 'DSH_TERMINAL_REPLACED')).toBe(true)
     await terminal.getByRole('textbox', { name: 'Terminal', exact: true }).waitFor()
   })
 

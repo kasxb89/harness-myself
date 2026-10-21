@@ -199,6 +199,7 @@ describe('web e2e: generic file upload through the real assembly', () => {
 
   beforeAll(async () => {
     scaffold = await launchWebScaffold({
+      developerTools: true, showTrajectory: true,
       compareReplaySession: true,
       // The override rescripts the recorded read arguments with a
       // `{{fromRequest:…}}` placeholder: the saved-copy path differs per run,

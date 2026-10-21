@@ -51,7 +51,7 @@ describe.skipIf(MODE === 'record')('web e2e: cold Auto-review denial', () => {
     })
     expect(result?.data).not.toHaveProperty('callId')
 
-    scaffold = await launchWebScaffold(AUTO_REVIEW_FIXTURE)
+    scaffold = await launchWebScaffold({ ...AUTO_REVIEW_FIXTURE, developerTools: true, showTrajectory: true })
     await seedSession(scaffold, fixture, SEED_ID, undefined, { createdAt: WEB_FIXTURE_TIME })
     browser = await chromium.launch()
     page = await newEnglishPage(browser)

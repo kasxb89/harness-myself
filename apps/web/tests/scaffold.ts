@@ -306,6 +306,8 @@ export interface WebScaffold {
 export interface LaunchOptions {
   /** Override the developer-tools preference; omitted uses the shipped default. */
   developerTools?: boolean
+  /** Reveal Trajectory through the public conversation settings while retaining other profile-hidden views. */
+  showTrajectory?: true
   /** Enable the real Open In rows with deterministic launch-environment facts. */
   openInAppEnvironment?: LaunchEnvironmentSnapshot
   /** Compare the replayed root Session; `read-only` also forbids refresh writes to a borrowed fixture. */
@@ -562,6 +564,9 @@ export async function launchWebScaffold(options: LaunchOptions = {}): Promise<We
     surfaceContext?: boolean
   } | undefined
   const surfaceContext = webRuntimeConfig?.surfaceContext !== false
+  const conversationConfig = composedRows.find(row => row.id === 'ui-conversation')?.config as {
+    hiddenViews?: string[]
+  } | undefined
   // The scaffold's own overrides, above every bundle layer like `--patch` overlays.
   const overlayPatches: PatchOptions[] = [
     // Without HMR the profile applies configuration changes at its next start.
@@ -572,6 +577,13 @@ export async function launchWebScaffold(options: LaunchOptions = {}): Promise<We
       ? []
       : [{ id: 'agent-default-model', config: { provider: 'deepseek-official', model: 'deepseek-v4-flash' } }],
     ...extraOverlayPatches,
+    ...options.showTrajectory === true ? [{
+      id: 'ui-conversation',
+      config: {
+        ...conversationConfig,
+        hiddenViews: (conversationConfig?.hiddenViews ?? []).filter(id => id !== 'trajectory'),
+      },
+    }] : [],
     { id: 'agent-preset-registry', config: { default: 'standard' } },
     { id: 'session-persistence-jsonl', config: { root: persistenceRoot } },
     // Content search is enabled here although the shipped bundles default it

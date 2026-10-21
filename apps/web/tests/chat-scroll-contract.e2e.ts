@@ -176,13 +176,14 @@ async function launchScrollWorld(options: ScrollWorldOptions): Promise<ScrollWor
       const replayOverride = join(replayDir, 'replay.override.json')
       await writeFile(replayOverride, JSON.stringify(options.replay))
       scaffold = await launchWebScaffold({
+        developerTools: true, showTrajectory: true,
         replayFixture: join(replayDir, 'override-only.jsonl'),
         replayOverride,
         paceMs: options.paceMs ?? STREAM_PACE_MS,
         replayContextWindow: REPLAY_CONTEXT_WINDOW,
       })
     } else {
-      scaffold = await launchWebScaffold({})
+      scaffold = await launchWebScaffold({ developerTools: true, showTrajectory: true })
     }
     for (const seed of options.seeds) await seedSession(scaffold, seed.fixture.log, seed.id)
     const events: SessionEvent[] = []

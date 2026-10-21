@@ -111,7 +111,7 @@ describe('web e2e: secondary Thinking Markdown', () => {
   let tripwire: ReturnType<typeof watchConsole>
 
   beforeAll(async () => {
-    scaffold = await launchWebScaffold({})
+    scaffold = await launchWebScaffold({ developerTools: true, showTrajectory: true })
     await seedSession(scaffold, thinkingFixture(), SEED_ID)
     browser = await chromium.launch({ ignoreDefaultArgs: ['--hide-scrollbars'] })
     page = await newEnglishPage(browser)

@@ -35,6 +35,7 @@ describe('web e2e: PTC mode round renders nested sub-calls', () => {
 
   beforeAll(async () => {
     scaffold = await launchWebScaffold({
+      developerTools: true, showTrajectory: true,
       agentPresets: { default: 'ptc' },
       compareReplaySession: true,
       ...(MODE === 'record' ? {} : { replayFixture: FIXTURE, paceMs: 15 }),

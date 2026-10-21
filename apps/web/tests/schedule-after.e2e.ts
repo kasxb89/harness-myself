@@ -70,6 +70,8 @@ const EVERY_FIXTURE_AGE_MS = 90 * 60 * 1_000
 const CATALOG_SNAPSHOT_DIR = fileURLToPath(new URL('../../../snapshots/web/schedule-catalog', import.meta.url))
 const CATALOG_FIXTURE = join(CATALOG_SNAPSHOT_DIR, 'session.v3.jsonl')
 const CATALOG_EXPECTED = join(CATALOG_SNAPSHOT_DIR, 'catalog.expected.md')
+const CATALOG_PLUGIN = fileURLToPath(new URL('./fixtures/plugins/fixture-schedule-catalog/', import.meta.url))
+const CATALOG_ENTRY = 'Fixture task catalog'
 const BASE_PATCH = fileURLToPath(new URL('../../../packages/bundle/base/cordis.patch.yml', import.meta.url))
 const WEB_BUNDLE = fileURLToPath(new URL('../../../packages/bundle/web-app/', import.meta.url))
 const WEB_PATCHES = bundlePatchPaths(WEB_BUNDLE, (JSON.parse(readFileSync(join(WEB_BUNDLE, 'package.json'), 'utf8')) as { dsh: { bundle: { patch: string[] } } }).dsh.bundle)
@@ -286,6 +288,60 @@ async function liveAgent(scaffold: WebScaffold, sessionId: SessionId): Promise<A
   }
 }
 
+it.skipIf(MODE === 'record')('keeps the default task catalog entry retired and opens a current-Session reminder in the right sidebar', async () => {
+  const scaffold = await launchWebScaffold()
+  let browser: Browser | undefined
+  let page: Page | undefined
+  try {
+    const workspace = await scaffold.ctx.workspaceRegistry.create(scaffold.workspaceCwd)
+    const sessionId = await seedSession(scaffold, await readFile(CATALOG_FIXTURE, 'utf8'), 'schedule-default-entry-web-e2e', 'standard')
+    const title = 'Current-Session reminder details'
+    await workspace.attachSession(sessionId)
+    await scaffold.ctx.sessionController.rename({ sessionId, title })
+    const record = await scaffold.ctx.schedule.create(sessionId, {
+      prompt: 'Inspect the retained reminder', title: 'Retained reminder', at: '2099-08-25T12:00:00.000Z',
+    })
+    browser = await chromium.launch()
+    page = await browser.newPage({
+      viewport: { width: 1680, height: 1000 }, locale: 'en-US', timezoneId: AT_BROWSER_ZONE,
+    })
+    await page.addInitScript(() => { localStorage.setItem('dsh.locale', 'en') })
+    const tripwire = watchConsole(page)
+    await page.goto(scaffold.authenticatedUrl, { waitUntil: 'load' })
+    const workspaceItem = page.locator('[role="treeitem"][aria-expanded]').first()
+    await workspaceItem.waitFor()
+    const expansionDeadline = Date.now() + 5_000
+    while (await workspaceItem.getAttribute('aria-expanded') !== 'true') {
+      if (Date.now() >= expansionDeadline) throw new Error('default workspace item did not expand')
+      await workspaceItem.getByText(workspace.title, { exact: true }).click()
+      await new Promise<void>(resolve => setTimeout(resolve, 50))
+    }
+    await page.getByRole('treeitem', { name: new RegExp(title) }).click()
+    expect(await page.getByRole('button', { name: 'Automation tasks', exact: true }).count()).toBe(0)
+    expect(await page.getByRole('button', { name: CATALOG_ENTRY, exact: true }).count()).toBe(0)
+    expect(await page.getByRole('tab', { name: 'Trajectory', exact: true }).count()).toBe(0)
+    await page.getByRole('button', { name: '1 reminder', exact: true }).click()
+    const detail = page.getByRole('complementary', { name: 'Task details' })
+    await detail.waitFor()
+    expect(await detail.getByRole('textbox', { name: 'Automation task name', exact: true }).inputValue()).toBe(record.title)
+    expect(await detail.getByRole('textbox', { name: 'Automation task instruction', exact: true }).inputValue()).toBe(record.prompt)
+    expect(await scaffold.ctx.schedule.list({ sessionId })).toContainEqual(record)
+    expect(await page.getByRole('navigation', { name: 'Session hierarchy' }).textContent()).toContain(title)
+    expect(tripwire.pageErrors).toEqual([])
+    expect(tripwire.warnings).toEqual([])
+  } catch (error) {
+    if (page !== undefined) {
+      console.info('Default reminder tree', await page.getByRole('tree').ariaSnapshot())
+      await saveFailureShot(page, 'web-e2e-schedule-default-entry')
+    }
+    throw error
+  } finally {
+    try { await browser?.close() } finally { await scaffold.close() }
+  }
+})
+
+// The default product has no global catalog navigation; these scenarios mount
+// an explicitly named fixture plugin to cover the retained optional page.
 describe.skipIf(MODE === 'record')('web e2e: conversational reminders', () => {
   let scaffold: WebScaffold
   let afterHandle: AgentHandle
@@ -307,7 +363,8 @@ describe.skipIf(MODE === 'record')('web e2e: conversational reminders', () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-schedule-every-step-'))
     overlayRoot = root
     scaffold = await launchWebScaffold({
-      extraOverlayPath: [await writeEveryStepOverlay(root)],
+      extraInstallAnchors: [join(CATALOG_PLUGIN, 'package.json')],
+      extraOverlayPath: [await writeEveryStepOverlay(root), join(CATALOG_PLUGIN, 'cordis.patch.yml')],
     })
     scaffold.ctx.effect(
       () => scaffold.ctx.llm.registerAdapter([AFTER_PROVIDER], afterAdapter),
@@ -525,7 +582,7 @@ describe.skipIf(MODE === 'record')('web e2e: conversational reminders', () => {
     // workspace-selection view and unmounts the Tasks page with it, so the
     // linked-Session assertions run with another Session in the main pane.
     await page.getByRole('treeitem', { name: /Explicit local-time reminder/ }).click()
-    await page.getByRole('button', { name: 'Automation tasks', exact: true }).click()
+    await page.getByRole('button', { name: CATALOG_ENTRY, exact: true }).click()
     const manager = page.getByTestId('task-manager-page')
     await manager.getByRole('button', { name: 'Inactive', exact: true }).click()
     await manager.getByRole('list', { name: 'Task catalog' })
@@ -615,7 +672,7 @@ describe.skipIf(MODE === 'record')('web e2e: conversational reminders', () => {
     const original = everyRecords[0]
     const first = await scaffold.ctx.schedule.history({ sessionId: everyHandle.agent.id, id: original.id, limit: 20 })
     if ('code' in first || first.records.length !== 1) throw new Error('expected one actual recurring receipt')
-    await page.getByRole('button', { name: 'Automation tasks', exact: true }).click()
+    await page.getByRole('button', { name: CATALOG_ENTRY, exact: true }).click()
     const manager = page.getByTestId('task-manager-page')
     await manager.getByRole('list', { name: 'Task catalog' }).getByRole('button', { name: original.title, exact: true }).click()
     const detail = manager.getByRole('complementary', { name: 'Task details' })
@@ -725,7 +782,8 @@ describe.skipIf(MODE === 'record')('web e2e: conversational reminders', () => {
     expectReminderFraming(reminderRequest)
 
     const session = page.getByRole('treeitem', { name: /Explicit local-time reminder/ })
-    await session.click()
+    await session.getByText('Explicit local-time reminder', { exact: true }).click()
+    await expect.poll(() => session.getAttribute('aria-selected')).toBe('true')
     if (atAssistantReply === undefined) throw new Error('At assistant reply was not captured')
     const selector = `[data-chat-anchor-key="${assistantKey(atAssistantReply)}"]`
     const row = page.locator(selector)
@@ -763,7 +821,8 @@ describe.skipIf(MODE === 'record')('web e2e: active Schedule catalog', () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-schedule-catalog-'))
     overlayRoot = root
     scaffold = await launchWebScaffold({
-      extraOverlayPath: [await writeEveryStepOverlay(root)],
+      extraInstallAnchors: [join(CATALOG_PLUGIN, 'package.json')],
+      extraOverlayPath: [await writeEveryStepOverlay(root), join(CATALOG_PLUGIN, 'cordis.patch.yml')],
     })
     await seedSession(scaffold, fixture, CATALOG_SESSION_ID, 'standard')
     const records = foldScheduleEvents(fixture.trim().split('\n').slice(1).map(line => JSON.parse(line) as SessionEvent)).active
@@ -817,7 +876,7 @@ describe.skipIf(MODE === 'record')('web e2e: active Schedule catalog', () => {
     const other = await scaffold.ctx.schedule.create(otherSessionId, {
       prompt: 'Inspect the second workspace deployment', title: 'Second workspace deployment', at: '2099-08-25T12:08:00.000Z',
     })
-    await page.getByRole('button', { name: 'Automation tasks', exact: true }).click()
+    await page.getByRole('button', { name: CATALOG_ENTRY, exact: true }).click()
     const manager = page.getByTestId('task-manager-page')
     await manager.getByRole('heading', { name: 'Automation tasks', exact: true }).waitFor()
     const tasks = manager.getByRole('list', { name: 'Task catalog' })
@@ -929,7 +988,7 @@ describe.skipIf(MODE === 'record')('web e2e: active Schedule catalog', () => {
     expect(presetPlugins('preset-minimal').some(row => row.name === '@deepseek-ai/dsh-time-context'
       || row.name === '@deepseek-ai/dsh-tool-schedule')).toBe(false)
 
-    await page.getByRole('button', { name: 'Automation tasks', exact: true }).click()
+    await page.getByRole('button', { name: CATALOG_ENTRY, exact: true }).click()
     const manager = page.getByTestId('task-manager-page')
     await manager.getByRole('button', { name: 'Check exact cadence', exact: true }).click()
     await manager.getByRole('button', { name: `Linked session ${CATALOG_TITLE}: open original session`, exact: true }).click()
@@ -1101,7 +1160,7 @@ describe.skipIf(MODE === 'record')('web e2e: active Schedule catalog', () => {
       prompt: 'Review retained records', title: 'History retention review', at: '2099-09-01T12:00:00.000Z',
     })
     try {
-      await page.getByRole('button', { name: 'Automation tasks', exact: true }).click()
+      await page.getByRole('button', { name: CATALOG_ENTRY, exact: true }).click()
       const manager = page.getByTestId('task-manager-page')
       await manager.getByRole('button', { name: 'All', exact: true }).click()
       await manager.getByRole('searchbox', { name: 'Search tasks' }).fill(record.title)
@@ -1195,7 +1254,7 @@ describe.skipIf(MODE === 'record')('web e2e: active Schedule catalog', () => {
       expect(created).toMatchObject({ kind: 'daily', time: `${time}.000`, timeZone, status: 'active' })
       expect(clock.format(new Date(created.scheduledAt))).toBe(time)
       await page.clock.setFixedTime(new Date())
-      await page.getByRole('button', { name: 'Automation tasks', exact: true }).click()
+      await page.getByRole('button', { name: CATALOG_ENTRY, exact: true }).click()
       const manager = page.getByTestId('task-manager-page')
       await manager.getByRole('button', { name: 'All', exact: true }).click()
       await manager.getByRole('searchbox', { name: 'Search tasks' }).fill(prompt)

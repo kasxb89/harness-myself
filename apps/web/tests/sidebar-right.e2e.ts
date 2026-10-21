@@ -458,7 +458,8 @@ describe('web e2e: shipped right Sidebar', () => {
 
       await expect.poll(async () => await tabTitles(column)).toEqual(['Start'])
       await expectTitleAlignment(column.locator('[data-dockkit-tab-title]'))
-      await expect.poll(async () => await column.locator('[data-sidebar-right-guide-entry]').count()).toBe(2)
+      await expect.poll(() => column.locator('[data-sidebar-right-guide-entry]').evaluateAll(entries =>
+        entries.map(entry => entry.getAttribute('data-sidebar-right-guide-entry')))).toEqual(['files', 'terminal', 'creative'])
       expect(await column.locator('[data-sidebar-right-guide-entry="browser"]').count()).toBe(0)
       await column.locator('[data-sidebar-right-guide-entry="files"]').click()
 
@@ -659,8 +660,8 @@ describe('web e2e: shipped right Sidebar', () => {
       } finally {
         await page.setViewportSize(viewport)
         const grip = await centre(frame.locator('[data-side="sidebar"]'))
-        await dragElement(page, frame.locator('[data-side="sidebar"]'), { x: 280, y: grip.y })
-        await expect.poll(async () => await width(sidebar)).toBe(280)
+        await dragElement(page, frame.locator('[data-side="sidebar"]'), { x: 300, y: grip.y })
+        await expect.poll(async () => await width(sidebar)).toBe(300)
         await ensureExpanded(page, column)
       }
       expect(tripwire.pageErrors).toEqual([])

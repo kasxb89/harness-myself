@@ -195,6 +195,7 @@ describe('web e2e: Trajectory virtualization over tail-paged history', () => {
       chunks: STREAM_CHUNKS,
     } satisfies ReplayEntry]))
     scaffold = await launchWebScaffold({
+      developerTools: true, showTrajectory: true,
       paceMs: 10,
       replayFixture,
       replayOverride,

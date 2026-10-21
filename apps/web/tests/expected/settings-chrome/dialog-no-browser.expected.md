@@ -5,6 +5,9 @@
     - button "Models"
     - button "Built-in plugins"
     - button "Agent presets"
+    - button "IM bots"
+    - button "Plugin Market"
+    - button "Skin Market"
   - button "Open configuration file"
   - button "Close"
   - text: Permission Choose the default permission mode for new sessions
@@ -33,6 +36,6 @@
   - button "Queue"
   - text: Performance & usage Choose how much performance and usage information to show
   - button "Detailed"
-  - text: Upload Session Log when using the official model API Help improve DeepSeek models and products.
+  - text: Upload Session Log when using the official model API Help improve Yunshu models and products.
   - switch "Upload Session Log when using the official model API"
   - text: "Current version: {{version}}"
