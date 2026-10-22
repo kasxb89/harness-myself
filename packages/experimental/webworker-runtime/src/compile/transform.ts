@@ -76,7 +76,7 @@ class Transformer {
   private readonly discardedDelegations = new Set<Node>()
   private editOwner: Node | undefined
 
-  constructor(source: string, private readonly path: string) {
+  constructor(source: string, private readonly path: string, private readonly sourceType: 'module' | 'script') {
     // A `#!` line is only legal at offset zero, and the prologue takes that spot;
     // commenting it out in place keeps every offset and the line count intact.
     this.source = source.startsWith('#!') ? `//${source.slice(2)}` : source
@@ -518,7 +518,7 @@ class Transformer {
     try {
       program = parse(this.source, {
         ecmaVersion: 'latest',
-        sourceType: 'module',
+        sourceType: this.sourceType,
         allowAwaitOutsideFunction: true,
       }) as unknown as Node
     } catch (reason) {
@@ -529,7 +529,13 @@ class Transformer {
     if (this.edits.length === 0 && !this.moduleSyntax) return this.source
 
     const prologue: string[] = []
-    if (this.moduleSyntax) prologue.push('"use strict";Object.defineProperty(exports,"__esModule",{value:true});')
+    let strictDirective = false
+    for (const statement of program.body as Node[]) {
+      if (statement.type !== 'ExpressionStatement' || typeof statement.directive !== 'string') break
+      if (statement.directive === 'use strict') strictDirective = true
+    }
+    if (strictDirective || (this.moduleSyntax && this.sourceType === 'module')) prologue.push('"use strict";')
+    if (this.moduleSyntax && this.sourceType === 'module') prologue.push('Object.defineProperty(exports,"__esModule",{value:true});')
     if (this.bindings.length > 0) this.helper('def')
     for (const [name, source] of Object.entries(HELPER_SOURCE)) {
       if (this.helpers.has(name)) prologue.push(source)
@@ -614,21 +620,26 @@ interface TransformedModule {
   readonly metaResolveRequests: readonly string[]
 }
 
-const cache = new Map<string, TransformedModule>()
+const caches = {
+  module: new Map<string, TransformedModule>(),
+  script: new Map<string, TransformedModule>(),
+}
 
 /**
  * Transform one module into a body for the worker wrapper.
  *
- * Results are cached by source text, so a module reached through two paths, or
- * a repeated build, parses once.
+ * Results are cached by parser goal and source text, so a repeated source parses
+ * once per goal without allowing a CommonJS result to bypass ESM validation.
  * @param source - Module source, ESM or CommonJS.
  * @param path - Path used in diagnostics.
+ * @param sourceType - Strict ESM or CommonJS script parsing, selected by the collector.
  * @returns The lowered body and the module requests found in it.
  */
-function transformDetailed(source: string, path: string): TransformedModule {
+function transformDetailed(source: string, path: string, sourceType: 'module' | 'script'): TransformedModule {
+  const cache = caches[sourceType]
   const cached = cache.get(source)
   if (cached !== undefined) return cached
-  const transformer = new Transformer(source, path)
+  const transformer = new Transformer(source, path, sourceType)
   const transformed = { code: transformer.run(), moduleRequests: transformer.requests(), metaResolveRequests: transformer.metaRequests() }
   cache.set(source, transformed)
   return transformed
@@ -666,10 +677,14 @@ export interface LoweredModule {
  *
  * Throwing is the intended failure mode: a module this transform cannot express
  * must fail the build rather than ship an image that breaks at load.
- * @param options - Virtual path inside the image and the module source.
+ * @param options - Virtual path, source, and optional parser goal; defaults to strict ESM.
  * @returns The code to pack and whether it changed.
  */
-export function lowerModuleSource(options: { readonly filename: string; readonly source: string }): LoweredModule {
-  const { code, moduleRequests, metaResolveRequests } = transformDetailed(options.source, options.filename)
+export function lowerModuleSource(options: {
+  readonly filename: string
+  readonly source: string
+  readonly sourceType?: 'module' | 'script'
+}): LoweredModule {
+  const { code, moduleRequests, metaResolveRequests } = transformDetailed(options.source, options.filename, options.sourceType ?? 'module')
   return { code, lowered: code !== options.source, moduleRequests, metaResolveRequests }
 }

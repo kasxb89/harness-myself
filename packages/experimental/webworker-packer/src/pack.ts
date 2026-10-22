@@ -363,6 +363,22 @@ function isDeclarationOnlyExport(value: unknown): boolean {
     condition === 'types' || condition.startsWith('types@') || isDeclarationOnlyExport(target))
 }
 
+/** Select Node's explicit file-extension or nearest package scope parser goal. */
+function moduleSourceType(filename: string, files: ImageFiles): 'module' | 'script' {
+  if (filename.endsWith('.mjs')) return 'module'
+  if (filename.endsWith('.cjs')) return 'script'
+  let directory = filename
+  for (;;) {
+    directory = directory.slice(0, Math.max(0, directory.lastIndexOf('/')))
+    const bytes = files[directory === '' ? 'package.json' : `${directory}/package.json`]
+    if (bytes !== undefined) {
+      const manifest = JSON.parse(new TextDecoder().decode(bytes)) as { type?: unknown }
+      return manifest.type === 'module' ? 'module' : 'script'
+    }
+    if (directory === '') return 'script'
+  }
+}
+
 function sweepImage(
   files: ImageFiles,
   options: PackOptions,
@@ -451,7 +467,9 @@ function sweepImage(
       continue
     }
     visited += 1
-    const { code, lowered, moduleRequests, metaResolveRequests } = lowerModuleSource({ filename: `/${key}`, source: decoder.decode(bytes) })
+    const { code, lowered, moduleRequests, metaResolveRequests } = lowerModuleSource({
+      filename: `/${key}`, source: decoder.decode(bytes), sourceType: moduleSourceType(key, files),
+    })
     if (lowered) rewritten += 1
     reached.set(key, lowered ? encoder.encode(code) : bytes)
     const directory = path.slice(0, path.lastIndexOf('/'))

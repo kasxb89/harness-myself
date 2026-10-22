@@ -120,6 +120,55 @@ check(
 // 2. lowerModuleSource: the packer face. `lowered` is the pack-time decision.
 // ---------------------------------------------------------------------------
 
+test('accepts legacy CommonJS escapes only under an explicit script parser goal', () => {
+  const source = 'exports.ansi = "\\033[40m"\n'
+  const lowered = lowerModuleSource({ filename: 'legacy.js', source, sourceType: 'script' })
+  expect(lowered.lowered).toBe(false)
+  expect(runBody(lowered.code).ansi).toBe('\x1b[40m')
+  expect(() => lowerModuleSource({ filename: 'legacy.js', source, sourceType: 'module' })).toThrow('Octal literal in strict mode')
+  expect(() => lowerModuleSource({ filename: 'legacy.js', source })).toThrow('Octal literal in strict mode')
+  expect(() => lowerModuleSource({ filename: 'strict.js', source: '"use strict";\n' + source, sourceType: 'script' }))
+    .toThrow('Octal literal in strict mode')
+})
+
+test.each(['script', 'module'] as const)('keeps cached lowering separated when %s is parsed first', async (first) => {
+  const source = `// first:${first}\nexports.load = () => import('fixture')\n`
+  const goals = first === 'script' ? ['script', 'module'] as const : ['module', 'script'] as const
+  const byGoal = new Map(goals.map(sourceType => [sourceType, lowerModuleSource({ filename: 'cached.js', source, sourceType })]))
+  const script = byGoal.get('script')
+  const module = byGoal.get('module')
+  expect(script?.code).not.toBe(module?.code)
+  expect(script?.code).not.toContain('"use strict"')
+  expect(module?.code).toContain('"use strict"')
+  const load = runBody(script?.code ?? '', () => ({ value: 'from-cjs-import' })).load as () => Promise<{ value: string }>
+  expect(await load()).toMatchObject({ value: 'from-cjs-import' })
+})
+
+test('keeps CommonJS non-strict when dynamic imports need lowering', async () => {
+  const source = 'exports.ansi = "\\033"; exports.load = () => import("fixture")'
+  const result = lowerModuleSource({ filename: 'dynamic.js', source, sourceType: 'script' })
+  const loaded = runBody(result.code, () => ({ value: 'loaded' }))
+  expect(loaded.ansi).toBe('\x1b')
+  expect(loaded.__esModule).toBeUndefined()
+  expect(await (loaded.load as () => Promise<{ value: string }>)()).toMatchObject({ value: 'loaded' })
+  expect(() => lowerModuleSource({ filename: 'dynamic.js', source, sourceType: 'module' })).toThrow('Octal literal in strict mode')
+})
+
+test.each([false, true])('preserves CommonJS strict=%s when helpers precede its original directives', async (strict) => {
+  const source = (strict ? '"other directive";\n"use strict";\n' : '')
+    + 'exports.strict = (function () { return this })() === undefined; exports.load = () => import("fixture")'
+  const result = lowerModuleSource({ filename: 'directives.js', source, sourceType: 'script' })
+  const loaded = runBody(result.code, () => ({ value: 'loaded' }))
+  expect(loaded.strict).toBe(strict)
+  expect(await (loaded.load as () => Promise<{ value: string }>)()).toMatchObject({ value: 'loaded' })
+})
+
+test.each(['"use\\x20strict";\n', '0; "use strict";\n'])('keeps non-directive strict lookalikes non-strict: %s', (prefix) => {
+  const source = prefix + 'exports.strict = (function () { return this })() === undefined; exports.load = () => import("fixture")'
+  const result = lowerModuleSource({ filename: 'lookalike.js', source, sourceType: 'script' })
+  expect(runBody(result.code).strict).toBe(false)
+})
+
 {
   const esm = lowerModuleSource({ filename: 'node_modules/p/index.js', source: 'export const a = 1\n' })
   check('lowered=true for a module that needed rewriting', esm.lowered, true)
