@@ -16,6 +16,7 @@
  * mishandles them. Five traps cannot recur while the AST pass is the parser,
  * but they stay checked because a future parser swap could reintroduce them.
  */
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { expect, test } from 'vitest'
 import { parse } from 'acorn'
 import { lowerModuleSource } from '../../src/compile/transform.ts'
@@ -713,6 +714,126 @@ test('preserves sent values and restores the generator store between delegated s
   await iterator.return(undefined)
 })
 
+test('directly returns the delegated result with native sent values and a single operand evaluation', async () => {
+  async function* native(make: () => AsyncIterable<unknown, unknown, unknown>, mark: (value: string) => void) {
+    try { return yield* make() } finally { mark('outer.finally') }
+  }
+  const code = transformModule('export async function* outer(make,mark){try{return yield* make()}finally{mark("outer.finally")}}')
+  const lowered = runBody(code, () => ({}), createAlsRuntime()).outer as typeof native
+  const run = async (outer: typeof native) => {
+    const calls: unknown[] = []
+    async function* inner(): AsyncGenerator<unknown, unknown, unknown> {
+      try { const sent = yield 'first'; calls.push(['sent', sent]); return 'terminal' }
+      finally { await Promise.resolve(); calls.push('inner.finally') }
+    }
+    const iterator = outer(() => { calls.push('operand'); return inner() }, value => calls.push(value))
+    const first = await iterator.next()
+    const last = await iterator.next('sent-value')
+    return { first, last, calls }
+  }
+  const actual = await run(lowered)
+  expect(actual).toEqual(await run(native))
+  expect(actual).toEqual({ first: { done: false, value: 'first' }, last: { done: true, value: 'terminal' },
+    calls: ['operand', ['sent', 'sent-value'], 'inner.finally', 'outer.finally'] })
+})
+
+test.each([false, true])('adopts terminal thenables before finally and restores ALS (reject=%s)', async (rejected) => {
+  async function* native(source: AsyncIterable<unknown, unknown, unknown>, observe: () => void) {
+    try { return yield* source } finally { observe() }
+  }
+  const code = transformModule('export async function* outer(source,observe){try{return yield* source}finally{observe()}}')
+  const run = async (lowered: boolean) => {
+    const events: unknown[] = []
+    const storage = new AsyncLocalStorage<string>()
+    let store: unknown = 'operation'
+    const current = () => lowered ? store : storage.getStore()
+    const als = createAlsRuntime({ snapshot: () => store, restore: (value) => { store = value } })
+    const outer = lowered ? runBody(code, () => ({}), als).outer as typeof native : native
+    let resolveValue!: (value: string) => void
+    let rejectValue!: (error: Error) => void
+    let entered!: () => void
+    const value = new Promise<string>((resolve, reject) => { resolveValue = resolve; rejectValue = reject })
+    const adopted = new Promise<void>((resolve) => { entered = resolve })
+    const source: AsyncIterable<unknown, unknown, unknown> = { [Symbol.asyncIterator]: () => ({
+      next: async () => ({ done: true, value: {
+        then(resolve: (value: string) => void, reject: (error: Error) => void) {
+          events.push(['then', current()]); entered(); void value.then(resolve, reject)
+        },
+      } }),
+      return: async () => { events.push('unexpected.close'); return { done: true, value: undefined } },
+    }) }
+    const pending = storage.run('operation', () => outer(source, () => events.push(['finally', current()])).next())
+    await adopted
+    store = 'consumer'
+    storage.run('consumer', () => { if (rejected) rejectValue(new Error('terminal')); else resolveValue('terminal') })
+    try { events.push(['result', await pending]) } catch (error) { events.push(['rejected', (error as Error).message]) }
+    storage.disable()
+    return events
+  }
+  const actual = await run(true)
+  expect(actual).toEqual(await run(false))
+  expect(actual).toEqual([['then', 'operation'], ['finally', 'operation'], rejected
+    ? ['rejected', 'terminal'] : ['result', { done: true, value: 'terminal' }]])
+})
+
+test.each(['return', 'throw'] as const)('retains awaited ordinary-generator teardown on tail delegation %s', async (action) => {
+  async function* native(source: AsyncIterable<unknown, unknown, unknown>, mark: (value: string) => void) {
+    try { return yield* source } finally { await Promise.resolve(); mark('outer.finally') }
+  }
+  const code = transformModule('export async function* outer(source,mark){try{return yield* source}finally{await Promise.resolve();mark("outer.finally")}}')
+  const lowered = runBody(code, () => ({}), createAlsRuntime()).outer as typeof native
+  const run = async (outer: typeof native) => {
+    const events: unknown[] = []
+    async function* inner() {
+      try { yield 'first'; yield 'unreached' }
+      finally { await Promise.resolve(); events.push('inner.finally') }
+    }
+    const iterator = outer(inner(), value => events.push(value))
+    events.push(await iterator.next())
+    try { events.push(await (action === 'return' ? iterator.return('cancelled') : iterator.throw(new Error('cancelled')))) }
+    catch (error) { events.push(['error', (error as Error).message]) }
+    return events
+  }
+  expect(await run(lowered)).toEqual(await run(native))
+})
+
+test.each([
+  "yield 'prefix';return yield* await make()",
+  "if(true)return yield* await make();yield 'unreached'",
+  "return yield* make(async () => await mark('nested'))",
+])('keeps return-origin suspension edits within their statement: %s', async (body) => {
+  const source = `export async function* outer(make,mark){${body}}`
+  const code = transformModule(source)
+  expect(lineCount(code)).toBe(lineCount(source))
+  const outer = runBody(code, () => ({}), createAlsRuntime()).outer as (
+    make: (nested?: () => Promise<unknown>) => unknown, mark: (value: string) => Promise<string>,
+  ) => AsyncGenerator<unknown, unknown, unknown>
+  const calls: string[] = []
+  const iterator = outer(nested => (async function* () { yield nested ? await nested() : 'tail'; return 'terminal' })(),
+    (value) => { calls.push(value); return Promise.resolve(value) })
+  const values: unknown[] = []
+  let step = await iterator.next()
+  while (!step.done) { values.push(step.value); step = await iterator.next() }
+  expect(values).toEqual(body.startsWith('yield') ? ['prefix', 'tail'] : [body.includes('nested') ? 'nested' : 'tail'])
+  expect(step.value).toBe('terminal')
+  expect(calls).toEqual(body.includes('nested') ? ['nested'] : [])
+})
+
+test('keeps dynamic imports inside a directly returned delegation operand', async () => {
+  const source = 'export async function* outer(){yield "prefix";return yield* (await import("source")).default}\n'
+  const code = transformModule(source)
+  expect(lineCount(code)).toBe(lineCount(source))
+  const requests: string[] = []
+  async function* inner() { yield 'tail'; return 'terminal' }
+  const outer = runBody(code, (specifier) => { requests.push(specifier); return { __esModule: true, default: inner() } },
+    createAlsRuntime()).outer as () => AsyncGenerator<unknown, unknown, unknown>
+  const iterator = outer()
+  expect(await iterator.next()).toEqual({ done: false, value: 'prefix' })
+  expect(await iterator.next()).toEqual({ done: false, value: 'tail' })
+  expect(await iterator.next()).toEqual({ done: true, value: 'terminal' })
+  expect(requests).toEqual(['source'])
+})
+
 // ---------------------------------------------------------------------------
 // 7. Line numbers. The debugging contract: a stack frame in a transformed body
 //    points at the same line as the artifact it came from.
@@ -781,11 +902,13 @@ refuses(
   'export async function* f(inner) { use(yield* inner) }\n',
   'yield* is only supported as the whole statement expression',
 )
-refuses(
-  'a returned delegation result is refused',
-  'export async function* f(inner) { return yield* inner }\n',
-  'yield* is only supported as a statement',
-)
+for (const expression of ['(yield* inner, 1)', 'true ? yield* inner : yield* inner', 'yield* (yield* inner)']) {
+  refuses(
+    `a consumed delegation inside return is refused: ${expression}`,
+    `export async function* f(inner) { return ${expression} }\n`,
+    'yield* is only supported as the whole return argument',
+  )
+}
 refuses(
   'a conditional test consuming a delegation result is refused',
   'export async function* f(inner) { (yield* inner) ? use(1) : use(2) }\n',

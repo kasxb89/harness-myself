@@ -73,7 +73,7 @@ class Transformer {
   private readonly moduleRequests = new Set<string>()
   private readonly metaResolveRequests = new Set<string>()
   private readonly createRequireBindings = new Set<string>()
-  private readonly discardedDelegations = new Set<Node>()
+  private readonly delegationStatements = new Set<Node>()
   private editOwner: Node | undefined
 
   constructor(source: string, private readonly path: string, private readonly sourceType: 'module' | 'script') {
@@ -289,8 +289,8 @@ class Transformer {
   /**
    * `yield` resumes with whatever the consumer sent, so the snapshot is taken
    * before suspending and restored when the call completes. Delegation results
-   * must be discarded: statement-position conditional and comma expressions
-   * become branches and ordered statements before delegation is lowered. A
+   * are discarded or directly returned: statement-position conditional and comma
+   * expressions become branches and ordered statements before lowering. A
    * consumer's `throw()` is not forwarded into the inner iterator (`next` and
    * `return` are).
    */
@@ -303,12 +303,19 @@ class Transformer {
     const argument = node.argument as Node | null
     if (argument === null) this.fail('yield* without an operand', node.start)
     if (statement === undefined) this.fail('yield* is only supported as a statement', node.start)
+    if (statement.type === 'ReturnStatement') {
+      if (statement.argument !== node) this.fail('yield* is only supported as the whole return argument', node.start)
+      if (this.delegationStatements.has(statement)) return
+      this.delegationStatements.add(statement)
+      this.structural(statement.start, statement.end, inner => this.delegation(argument, inner, true), true)
+      return
+    }
     const expression = statement.expression as Node
     if (!this.discardsDelegation(expression, node)) {
       this.fail('yield* is only supported as the whole statement expression', node.start)
     }
-    if (this.discardedDelegations.has(statement)) return
-    this.discardedDelegations.add(statement)
+    if (this.delegationStatements.has(statement)) return
+    this.delegationStatements.add(statement)
     this.structural(statement.start, statement.end, inner => this.discardedExpression(expression, inner), true)
   }
 
@@ -339,8 +346,8 @@ class Transformer {
     return this.delegation(expression.argument as Node, inner)
   }
 
-  /** Existing statement delegation protocol, with sent values and awaited iterator disposal. */
-  private delegation(argument: Node, inner: (from: number, to: number) => string): string {
+  /** Delegation protocol, optionally adopting a directly returned terminal value before finally. */
+  private delegation(argument: Node, inner: (from: number, to: number) => string, returns = false): string {
     const iterator = this.alsTemp()
     const step = this.alsTemp()
     const sent = this.alsTemp()
@@ -349,7 +356,7 @@ class Transformer {
       `{const ${iterator}=${ALS}.iterator(${inner(argument.start, argument.end)});`,
       `let ${sent};let ${exhausted}=false;`,
       `try{for(;;){const ${step}=${ALS}.resume(await ${ALS}.pause(${iterator}.next(${sent})));`,
-      `if(${step}.done){${exhausted}=true;break}`,
+      `if(${step}.done){${exhausted}=true;${returns ? `return ${ALS}.resume(await ${ALS}.pause(${step}.value))` : 'break'}}`,
       `${sent}=${ALS}.afterYield(${ALS}.snapshot(),yield ${step}.value)}}`,
       `finally{if(!${exhausted})${ALS}.resume(await ${ALS}.pause(${ALS}.close(${iterator})))}}`,
     ].join('')
@@ -371,7 +378,8 @@ class Transformer {
     }
     const record = node as Node
     if (typeof record.type !== 'string') return
-    this.editOwner = record.type === 'ExpressionStatement' ? record : context.editOwner
+    const statement = record.type === 'ExpressionStatement' || record.type === 'ReturnStatement'
+    this.editOwner = statement ? record : context.editOwner
     let next = context
     switch (record.type) {
       case 'ImportDeclaration': this.importDeclaration(record); break
@@ -466,7 +474,7 @@ class Transformer {
         break
       default: break
     }
-    if (record.type === 'ExpressionStatement') next = { ...next, statement: record, editOwner: record }
+    if (statement) next = { ...next, statement: record, editOwner: record }
     for (const [key, value] of Object.entries(record)) {
       if (key === 'type' || key === 'start' || key === 'end') continue
       this.visit(value, next)
@@ -553,7 +561,7 @@ class Transformer {
         // The replacement owns these edits through its child slices. Adjacent
         // statements may share an offset, so offsets alone cannot assign them.
         const owner = edit.owner
-        if (!edit.statementRewrite && owner !== undefined && this.discardedDelegations.has(owner)
+        if (!edit.statementRewrite && owner !== undefined && this.delegationStatements.has(owner)
           && from <= owner.start && to >= owner.end) continue
         out += this.source.slice(cursor, edit.start) + edit.render(render)
         cursor = edit.end
