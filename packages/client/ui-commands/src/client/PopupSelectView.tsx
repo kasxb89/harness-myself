@@ -11,7 +11,7 @@
  * above the composer.
  */
 import { MenuGroup, MenuSurface, observeStickyMenuGroups } from '@deepseek-ai/dsh-client-ui-primitives'
-import { Fragment, useEffect, useMemo, useRef } from 'react'
+import { Fragment, useEffect, useId, useMemo, useRef } from 'react'
 import { useSyncExternalStore } from 'react'
 import clsx from 'clsx'
 import { IconCheckOutlineRegular, RiskConfirmation, useAnchoredMaxHeight } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -47,6 +47,7 @@ export function PopupSelectView({ popup, t }: PopupSelectViewProps) {
   const cardRef = useRef<HTMLDivElement>(null)
   const searchRef = useRef<HTMLInputElement>(null)
   const viewportRef = useRef<HTMLDivElement>(null)
+  const id = useId()
   const rows = useMemo(() => filterOptions(state.options, state.search, state.searchMode),
     [state.options, state.search, state.searchMode])
   const groups = useMemo(() => groupOptions(rows), [rows])
@@ -137,6 +138,7 @@ export function PopupSelectView({ popup, t }: PopupSelectViewProps) {
       role="option"
       aria-selected={index === state.active}
       aria-label={option.badge === undefined ? undefined : `${option.label} ${option.badge}`}
+      aria-describedby={option.badge !== undefined && option.detail !== undefined ? `${id}-option-${index}-detail` : undefined}
       className={clsx(css.row, index === state.active && css.rowActive)}
       onClick={() => { void popup.select(index) }}
       onMouseEnter={() => { popup.highlight(index) }}
@@ -145,7 +147,7 @@ export function PopupSelectView({ popup, t }: PopupSelectViewProps) {
         <span className={css.labelText}>{option.label}</span>
         {option.badge !== undefined && <sup className={css.badge}>{option.badge}</sup>}
       </span>
-      {option.detail !== undefined && <span className={css.detail}>{option.detail}</span>}
+      {option.detail !== undefined && <span id={option.badge === undefined ? undefined : `${id}-option-${index}-detail`} className={css.detail}>{option.detail}</span>}
       {option.active === true && <span className={css.check}><IconCheckOutlineRegular /></span>}
     </div>
   )

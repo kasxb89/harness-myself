@@ -15,16 +15,28 @@ import type { SubprocessHandle, SubprocessOutcome } from '@deepseek-ai/dsh-subpr
 export type VideoEditErrorCode = 'VIDEO_EDIT_RUNTIME_UNAVAILABLE' | 'VIDEO_EDIT_SANDBOX_DENIED'
   | 'VIDEO_EDIT_INVALID_INPUT' | 'VIDEO_EDIT_FAILED' | 'VIDEO_EDIT_CANCELLED' | 'VIDEO_EDIT_OUTPUT_INVALID'
 
+/** Local process facts safe to copy into a support report; never contains arguments, paths or child output. */
+export interface VideoEditDiagnostic {
+  readonly tool: 'ffmpeg' | 'ffprobe'
+  readonly stage: 'runtime' | 'preflight' | 'inspect' | 'preview' | 'normalize' | 'assemble' | 'verify'
+  readonly exitCode?: number | null
+  readonly signal?: NodeJS.Signals | null
+  readonly interruption?: 'cancelled' | 'deadline'
+}
+
 /** An edit failed before publication; input clips remain untouched. */
 export class VideoEditError extends Error {
+  /** Path-free local process facts, absent when the failure did not reach a known process stage. */
+  readonly diagnostic: VideoEditDiagnostic | undefined
   /**
    * @param code - Stable handling identity.
    * @param message - Safe operation summary, excluding child output.
-   * @param options - Original failure retained for trusted diagnostics.
+   * @param options - Original failure retained privately and optional path-free process facts for display.
    */
-  constructor(readonly code: VideoEditErrorCode, message: string, options?: ErrorOptions) {
+  constructor(readonly code: VideoEditErrorCode, message: string, options?: ErrorOptions & { diagnostic?: VideoEditDiagnostic }) {
     super(message, options)
     this.name = 'VideoEditError'
+    this.diagnostic = options?.diagnostic
   }
 }
 
@@ -158,14 +170,20 @@ export function createVideoEditor(ctx: Context, options: VideoEditorOptions): Vi
   const runtimeRoot = options.runtimeRoot ?? process.env.DSH_VIDEO_RUNTIME_ROOT
   const policy = (): SandboxExecutionPolicy => sandboxPolicy.resolve({ session: options.session })
   const withBudget = (signal: AbortSignal): AbortSignal => AbortSignal.any([signal, AbortSignal.timeout(options.timeoutMs)])
+  const interrupted = (signal: AbortSignal): 'cancelled' | 'deadline' => signal.reason instanceof DOMException
+    && signal.reason.name === 'TimeoutError' ? 'deadline' : 'cancelled'
   const executable = async (name: 'ffmpeg' | 'ffprobe', signal: AbortSignal): Promise<string> => {
+    const diagnostic = { tool: name, stage: 'runtime' } as const
     if (runtimeRoot === undefined || !isAbsolute(runtimeRoot)) {
-      throw new VideoEditError('VIDEO_EDIT_RUNTIME_UNAVAILABLE', 'The bundled video editor is unavailable. Prepare or reinstall the desktop runtime.')
+      throw new VideoEditError('VIDEO_EDIT_RUNTIME_UNAVAILABLE', 'The bundled video editor is unavailable. Prepare or reinstall the desktop runtime.', { diagnostic })
     }
     const path = fs.processPathFromHostPath(join(runtimeRoot, 'bin', process.platform === 'win32' ? `${name}.exe` : name))
-    if (path === undefined) throw new VideoEditError('VIDEO_EDIT_RUNTIME_UNAVAILABLE', 'The bundled editor is not available in this workspace execution environment.')
+    if (path === undefined) throw new VideoEditError('VIDEO_EDIT_RUNTIME_UNAVAILABLE', 'The bundled editor is not available in this workspace execution environment.', { diagnostic })
     try { return await subprocess.resolveExecutable(path, {}, signal) } catch (cause) {
-      throw new VideoEditError('VIDEO_EDIT_RUNTIME_UNAVAILABLE', 'A bundled video executable is missing or cannot run. Prepare or reinstall the desktop runtime.', { cause })
+      if (signal.aborted) throw new VideoEditError('VIDEO_EDIT_CANCELLED', 'Video editing stopped before publication.', {
+        cause, diagnostic: { ...diagnostic, interruption: interrupted(signal) },
+      })
+      throw new VideoEditError('VIDEO_EDIT_RUNTIME_UNAVAILABLE', 'A bundled video executable is missing or cannot run. Prepare or reinstall the desktop runtime.', { cause, diagnostic })
     }
   }
   const checkedPath = async (path: string, signal: AbortSignal, exists: boolean): Promise<string> => {
@@ -206,14 +224,19 @@ export function createVideoEditor(ctx: Context, options: VideoEditorOptions): Vi
     if (current.mode === 'read-only') throw new VideoEditError('VIDEO_EDIT_SANDBOX_DENIED', 'Video editing needs permission to write in this workspace.')
     return current
   }
-  const run = async (argv: readonly string[], current: SandboxExecutionPolicy, signal: AbortSignal): Promise<string> => {
-    signal.throwIfAborted()
+  const run = async (argv: readonly string[], current: SandboxExecutionPolicy, signal: AbortSignal,
+    operation: Pick<VideoEditDiagnostic, 'stage' | 'tool'>): Promise<string> => {
+    try { signal.throwIfAborted() } catch (cause) {
+      throw new VideoEditError('VIDEO_EDIT_CANCELLED', 'Video editing stopped before publication.', {
+        diagnostic: { ...operation, interruption: interrupted(signal) }, cause,
+      })
+    }
     let command: readonly string[] = argv
     if (current.mode !== 'danger-full-access') {
       const sandbox = ctx.get('sandbox')
-      if (sandbox === undefined) throw new VideoEditError('VIDEO_EDIT_SANDBOX_DENIED', 'The workspace process sandbox service is unavailable.')
+      if (sandbox === undefined) throw new VideoEditError('VIDEO_EDIT_SANDBOX_DENIED', 'The workspace process sandbox service is unavailable.', { diagnostic: operation })
       try { command = (await sandbox.confine(argv, { ...current, mode: current.mode }, signal)).argv } catch (cause) {
-        throw new VideoEditError('VIDEO_EDIT_SANDBOX_DENIED', 'The workspace sandbox could not start the video operation.', { cause })
+        throw new VideoEditError('VIDEO_EDIT_SANDBOX_DENIED', 'The workspace sandbox could not start the video operation.', { cause, diagnostic: operation })
       }
     }
     let child: SubprocessHandle | undefined
@@ -230,19 +253,24 @@ export function createVideoEditor(ctx: Context, options: VideoEditorOptions): Vi
         child.terminate()
         await child.waitForExit()
       }
-      if (signal.aborted) throw new VideoEditError('VIDEO_EDIT_CANCELLED', 'Video editing stopped before publication.', { cause })
-      throw new VideoEditError('VIDEO_EDIT_FAILED', 'The local video process could not finish. Original clips are still available.', { cause })
+      if (signal.aborted) throw new VideoEditError('VIDEO_EDIT_CANCELLED', 'Video editing stopped before publication.', {
+        cause, diagnostic: { ...operation, interruption: interrupted(signal) },
+      })
+      throw new VideoEditError('VIDEO_EDIT_FAILED', 'The local video process could not finish. Original clips are still available.', { cause, diagnostic: operation })
     }
-    if (signal.aborted) throw new VideoEditError('VIDEO_EDIT_CANCELLED', 'Video editing stopped before publication.', { cause: signal.reason })
-    if (outcome.exitCode !== 0 || outcome.signal !== null) throw new VideoEditError('VIDEO_EDIT_FAILED', 'The local video operation failed. Original clips are still available.')
+    const diagnostic = { ...operation, exitCode: outcome.exitCode, signal: outcome.signal }
+    if (signal.aborted) throw new VideoEditError('VIDEO_EDIT_CANCELLED', 'Video editing stopped before publication.', {
+      cause: signal.reason, diagnostic: { ...diagnostic, interruption: interrupted(signal) },
+    })
+    if (outcome.exitCode !== 0 || outcome.signal !== null) throw new VideoEditError('VIDEO_EDIT_FAILED', 'The local video operation failed. Original clips are still available.', { diagnostic })
     const output = child.collected.stdout?.readFrom(0)
-    if (output === undefined || output.lossy) throw new VideoEditError('VIDEO_EDIT_OUTPUT_INVALID', 'Video inspection exceeded its output limit.')
+    if (output === undefined || output.lossy) throw new VideoEditError('VIDEO_EDIT_OUTPUT_INVALID', 'Video inspection exceeded its output limit.', { diagnostic })
     return output.text
   }
-  const inspect = async (path: string, signal: AbortSignal): Promise<ProbedVideo> => parseProbe(await run([
+  const inspect = async (path: string, signal: AbortSignal, stage: 'inspect' | 'verify' = 'inspect'): Promise<ProbedVideo> => parseProbe(await run([
     await executable('ffprobe', signal), '-v', 'error', '-protocol_whitelist', 'file,pipe',
     '-show_entries', 'format=duration:stream=codec_type,width,height', '-of', 'json', path,
-  ], policy(), signal))
+  ], policy(), signal, { tool: 'ffprobe', stage }))
   const preflight = async (signal: AbortSignal, outputDirectory?: string): Promise<void> => {
     const current = writable()
     const root = await fs.resolve(options.workspaceRoot, { signal })
@@ -252,8 +280,8 @@ export function createVideoEditor(ctx: Context, options: VideoEditorOptions): Vi
     const checkPath = await checkedPath(join(outputDirectory ?? fs.processPath(root), `.video-preflight-${randomUUID()}`, 'check.mp4'), signal, false)
     const scratch = dirname(checkPath)
     const binary = await executable('ffmpeg', signal)
-    const version = await run([binary, '-version'], current, signal)
-    const probeVersion = await run([await executable('ffprobe', signal), '-version'], current, signal)
+    const version = await run([binary, '-version'], current, signal, { tool: 'ffmpeg', stage: 'runtime' })
+    const probeVersion = await run([await executable('ffprobe', signal), '-version'], current, signal, { tool: 'ffprobe', stage: 'runtime' })
     if (!version.startsWith('ffmpeg version ') || !probeVersion.startsWith('ffprobe version ')) {
       throw new VideoEditError('VIDEO_EDIT_RUNTIME_UNAVAILABLE', 'The bundled video executables returned invalid version information.')
     }
@@ -263,10 +291,12 @@ export function createVideoEditor(ctx: Context, options: VideoEditorOptions): Vi
       await fs.writeText(markerTarget, '', { kind: 'createIfAbsent' }, signal, current)
       await run([binary, '-hide_banner', '-loglevel', 'error', '-nostdin', '-n',
         '-f', 'lavfi', '-i', 'color=c=black:s=16x16:r=10:d=0.1', '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo',
-        '-t', '0.1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', checkPath], current, signal)
+        '-t', '0.1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', checkPath], current, signal, { tool: 'ffmpeg', stage: 'preflight' })
     } catch (cause) {
       if (cause instanceof VideoEditError && cause.code === 'VIDEO_EDIT_CANCELLED') throw cause
-      throw new VideoEditError('VIDEO_EDIT_RUNTIME_UNAVAILABLE', 'The bundled editor cannot encode H.264/AAC in the selected output directory. Check runtime installation, output permissions and available disk space.', { cause })
+      throw new VideoEditError('VIDEO_EDIT_RUNTIME_UNAVAILABLE', 'The bundled editor cannot encode H.264/AAC in the selected output directory. Check runtime installation, output permissions and available disk space.', {
+        cause, ...cause instanceof VideoEditError && cause.diagnostic !== undefined ? { diagnostic: cause.diagnostic } : {},
+      })
     } finally {
       try { await rm(scratch, { recursive: true, force: true }) } catch (error) {
         ctx.logger('video-edit').warn('Video preflight temporary files could not be removed.', error)
@@ -290,7 +320,7 @@ export function createVideoEditor(ctx: Context, options: VideoEditorOptions): Vi
           const destination = join(directory, `frame-${String(index)}.jpg`)
           await run([await executable('ffmpeg', signal), '-hide_banner', '-loglevel', 'error', '-nostdin', '-n',
             '-protocol_whitelist', 'file,pipe', '-ss', String(timeSeconds), '-i', input, '-frames:v', '1',
-            '-vf', 'scale=480:-2:force_original_aspect_ratio=decrease', '-q:v', '3', destination], current, signal)
+            '-vf', 'scale=480:-2:force_original_aspect_ratio=decrease', '-q:v', '3', destination], current, signal, { tool: 'ffmpeg', stage: 'preview' })
           const frame = await fs.resolve(destination, { signal })
           const bytes = await fs.readBytes(frame, signal, 4 * 1024 * 1024)
           if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8 || bytes[bytes.length - 2] !== 0xff || bytes[bytes.length - 1] !== 0xd9) throw new VideoEditError('VIDEO_EDIT_OUTPUT_INVALID', 'The extracted preview frame is not a complete JPEG.')
@@ -368,7 +398,7 @@ export function createVideoEditor(ctx: Context, options: VideoEditorOptions): Vi
           await run([binary, '-hide_banner', '-loglevel', 'error', '-nostdin', '-n', ...inputs,
             '-filter_complex', [...filters, concat].join(';'), '-map', '[v]', '-map', '[a]', '-t', String(duration),
             '-r', String(options.fps), '-fps_mode', 'cfr',
-            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', final], current, signal)
+            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', final], current, signal, { tool: 'ffmpeg', stage: 'assemble' })
         } else {
           // Larger graphs preserve the serial decoder bound of the existing workflow.
           const normalized: string[] = []
@@ -379,7 +409,7 @@ export function createVideoEditor(ctx: Context, options: VideoEditorOptions): Vi
               '-ss', String(clip.start), '-i', clip.path,
               ...clip.hasAudio ? [] : ['-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo'],
               '-filter_complex', filter, '-map', '[v]', '-map', '[a]', '-t', String(clip.duration),
-              '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', destination], current, signal)
+              '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', destination], current, signal, { tool: 'ffmpeg', stage: 'normalize' })
             normalized.push(destination)
             request.onProgress?.({ stage: 'normalizing', completedClips: normalized.length, totalClips: selected.length })
           }
@@ -388,10 +418,10 @@ export function createVideoEditor(ctx: Context, options: VideoEditorOptions): Vi
           const concat = `${normalized.map((_path, index) => `[${String(index)}:v:0][${String(index)}:a:0]`).join('')}concat=n=${String(normalized.length)}:v=1:a=1[v][a]`
           await run([binary, '-hide_banner', '-loglevel', 'error', '-nostdin', '-n', ...inputs,
             '-filter_complex', concat, '-map', '[v]', '-map', '[a]', '-t', String(duration),
-            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', final], current, signal)
+            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', final], current, signal, { tool: 'ffmpeg', stage: 'assemble' })
         }
         request.onProgress?.({ stage: 'verifying', completedClips: selected.length, totalClips: selected.length })
-        const result = await inspect(final, signal)
+        const result = await inspect(final, signal, 'verify')
         if (Math.abs(result.durationSeconds - duration) > Math.max(0.1, 2 / options.fps)) {
           throw new VideoEditError('VIDEO_EDIT_OUTPUT_INVALID', 'The assembled video did not match the requested duration. Original clips are still available.')
         }

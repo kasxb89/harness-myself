@@ -296,7 +296,7 @@ describe('ui-model-selection dual entry', () => {
     expect(b.seat().locale).toBe('model')
   })
 
-  it.each(['zh', 'en'] as const)('shows names and providers without catalog descriptions (%s)', async (locale) => {
+  it.each(['zh', 'en'] as const)('shows localized guidance and provider descriptions without changing names or order (%s)', async (locale) => {
     const b = await bench(locale)
     b.mint('s1')
     const options = await b.popup().options(projection('s1'), new AbortController().signal)
@@ -304,13 +304,39 @@ describe('ui-model-selection dual entry', () => {
       'DeepSeek-V4-Flash', 'DeepSeek-V4-Pro', 'External Flash',
     ])
     expect(options.map(option => option.group?.label)).toEqual(['DeepSeek', 'DeepSeek', 'External Provider'])
-    expect(options.every(option => option.detail === undefined)).toBe(true)
+    expect(options.map(option => option.detail)).toEqual([
+      GROUPS[0]!.models[0]!.description,
+      locale === 'zh' ? '适合复杂编程、知识问答与多步推理' : 'For complex coding, knowledge questions, and multi-step reasoning',
+      GROUPS[1]!.models[0]!.description,
+    ])
     expect(b.popup().searchMode).toBe('fuzzy-label')
     expect(options[0]?.active).toBe(true)
     expect(options[1]?.active).toBeUndefined()
     expect(b.popup().searchLabels?.()).toEqual(locale === 'zh'
       ? { placeholder: '搜索模型…', empty: '暂无可用模型', noResults: '没有匹配的模型。' }
       : { placeholder: 'Search models…', empty: 'No models available.', noResults: 'No matching models.' })
+  })
+
+  it.each(['zh', 'en'] as const)('marks only the available Yunshu product route as flagship (%s)', async (locale) => {
+    const b = await bench(locale)
+    b.setGroups([
+      { id: 'yunshu-local', name: '云枢', models: [{ id: 'yunshu-flash', name: 'Yunshu Flash' }] },
+      { id: 'external', name: 'External', models: [{ id: 'yunshu-flash', name: 'Custom Flash', description: 'Custom route.' }] },
+    ])
+    b.mint('s1')
+    const options = await b.popup().options(projection('s1'), new AbortController().signal)
+    expect(options).toEqual([
+      expect.objectContaining({
+        id: 'yunshu-local/yunshu-flash', label: 'Yunshu Flash',
+        badge: locale === 'zh' ? '旗舰模型' : 'Flagship model',
+        detail: locale === 'zh' ? '云枢主力模型，适合日常问答、内容写作与编程' : 'Yunshu’s main model for everyday questions, writing, and coding',
+      }),
+      expect.objectContaining({ id: 'external/yunshu-flash', label: 'Custom Flash', detail: 'Custom route.' }),
+    ])
+    expect(options[1]?.badge).toBeUndefined()
+    b.setGroups([])
+    b.remote.emit('llm/adapters-updated', [])
+    expect(await b.popup().options(projection('s1'), new AbortController().signal)).toEqual([])
   })
 
   it('orders popup provider groups account-first while retaining third-party catalog order', async () => {
@@ -594,7 +620,7 @@ describe('ui-model-selection dual entry', () => {
     await expect(b.popup().options(
       projection('child'),
       new AbortController().signal,
-    )).rejects.toThrow('服务器繁忙，请稍后重试')
+    )).rejects.toThrow('模型操作未完成，请重试')
 
     const face = b.seat().inject!(sid('child'))
     expect(face.available).toBe(false)

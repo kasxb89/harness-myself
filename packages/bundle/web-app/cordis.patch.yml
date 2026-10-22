@@ -68,6 +68,22 @@
 # second sign-in and a second model source, so they are turned off here rather
 # than left for a user to wonder about.
 
+# Desktop pins Full access into fresh sessions. Keep the enforcement defaults
+# unchanged so restored legacy sessions retain their existing permissions.
+- id: permission
+  config:
+    presets:
+      read-only:
+        sandbox: read-only
+        approval: ask
+      workspace-write:
+        sandbox: workspace-write
+        approval: ask
+      danger-full-access:
+        sandbox: danger-full-access
+        approval: never
+    defaultPreset: !!js "ctx.get('profileContext')?.name === 'desktop' ? process.env.DSH_PERMISSION_MODE ?? 'danger-full-access' : undefined"
+
 
 - id: system-prompt
   config:

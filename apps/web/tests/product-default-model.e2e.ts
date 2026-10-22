@@ -9,7 +9,7 @@ import { expect, it, onTestFinished } from 'vitest'
 import { launchWebScaffold, watchConsole } from './scaffold.ts'
 import { ZH_BROWSER_LOCALE, connectFreshWorkspaceZh } from './support.ts'
 
-it.each(['deepseek-flash', 'deepseek-v4-flash'])(
+it.each(['deepseek-flash', 'deepseek-v4-flash', 'yunshu-flash'])(
   'selects the deployment default %s after first sign-in without opening the model menu', async (preferred) => {
     const root = await mkdtemp(join(tmpdir(), 'yunshu-first-login-model-'))
     const cleanup: { scaffold?: () => Promise<void>; browser?: () => Promise<void>; upstream?: () => Promise<void> } = {}
@@ -50,7 +50,7 @@ it.each(['deepseek-flash', 'deepseek-v4-flash'])(
           if (request.headers.authorization !== 'Bearer sk-synthetic-relay') {
             response.writeHead(403); response.end('{}'); return
           }
-          response.end(JSON.stringify({ data: ['deepseek-v4-flash', 'deepseek-flash'].map(id =>
+          response.end(JSON.stringify({ data: ['deepseek-v4-flash', 'deepseek-flash', 'yunshu-flash', 'deepseek-v4-pro', 'catalog-unknown'].map(id =>
             ({ id, object: 'model', supported_endpoint_types: ['openai'] })) })); return
         }
         if (path === '/harness/api/pricing') { answer([]); return }
@@ -97,7 +97,7 @@ it.each(['deepseek-flash', 'deepseek-v4-flash'])(
     cleanup.scaffold = () => scaffold.close()
     const browser = await chromium.launch()
     cleanup.browser = () => browser.close()
-    const page = await browser.newPage({ locale: ZH_BROWSER_LOCALE, viewport: { width: 1440, height: 1000 } })
+    const page = await browser.newPage({ locale: ZH_BROWSER_LOCALE, colorScheme: 'dark', reducedMotion: 'reduce', viewport: { width: 1440, height: 1000 } })
     const tripwire = watchConsole(page)
     const evidenceRoot = fileURLToPath(new URL('../../../.artifacts/', import.meta.url))
     await mkdir(evidenceRoot, { recursive: true })
@@ -125,15 +125,61 @@ it.each(['deepseek-flash', 'deepseek-v4-flash'])(
       const modelMenu = page.getByRole('group', { name: '模型与推理等级', exact: true })
       await modelMenu.getByRole('menuitemradio', { name: preferred, exact: true }).waitFor()
       expect(await modelMenu.getByRole('menuitemradio', { name: preferred, exact: true }).getAttribute('aria-checked')).toBe('true')
+      if (preferred === 'yunshu-flash') {
+        const flagship = modelMenu.getByRole('menuitemradio', { name: 'yunshu-flash', exact: true })
+        await flagship.getByText('旗舰模型', { exact: true }).waitFor()
+        await flagship.getByText('云枢主力模型，适合日常问答、内容写作与编程', { exact: true }).waitFor()
+        await modelMenu.getByText('响应速度会随任务、推理等级与网络状况变化', { exact: true }).waitFor()
+        await page.getByRole('button', { name: 'AI 创作', exact: true }).waitFor()
+        for (const [theme, width] of [['dark', 1440], ['light', 900]] as const) {
+          await page.emulateMedia({ colorScheme: theme })
+          await page.setViewportSize({ width, height: 1000 })
+          await page.evaluate(async () => {
+            await document.fonts.ready
+            await new Promise<void>(resolve => requestAnimationFrame(() => { requestAnimationFrame(() => { resolve() }) }))
+          })
+          const composer = await page.locator('[data-composer-card]').first().boundingBox()
+          expect(composer).not.toBeNull()
+          expect(composer!.x).toBeGreaterThanOrEqual(0)
+          expect(composer!.x + composer!.width).toBeLessThanOrEqual(width)
+          const box = await modelMenu.boundingBox()
+          expect(box).not.toBeNull()
+          expect(box!.x).toBeGreaterThanOrEqual(0)
+          expect(box!.y).toBeGreaterThanOrEqual(0)
+          expect(box!.x + box!.width).toBeLessThanOrEqual(width)
+          expect(box!.y + box!.height).toBeLessThanOrEqual(1000)
+          await page.screenshot({ path: join(evidence, `model-guidance-${theme}.png`), animations: 'disabled' })
+        }
+        const search = page.getByRole('searchbox', { name: '搜索模型…', exact: true })
+        await search.fill('yunshu-flash')
+        await expect.poll(() => modelMenu.getByRole('menuitemradio').count()).toBe(1)
+        await search.press('Enter')
+        await modelMenu.waitFor({ state: 'detached' })
+        await trigger.click()
+        await page.getByRole('menuitem', { name: /^模型/u }).click()
+      }
       await page.keyboard.press('Escape')
       await page.keyboard.press('Escape')
+      if (preferred === 'yunshu-flash') {
+        await page.getByRole('button', { name: '添加文件或调用指令', exact: true }).click()
+        await page.getByRole('option', { name: /^模型/u }).click()
+        const commandMenu = page.locator('[aria-label="/model 选项"]')
+        await commandMenu.getByText('旗舰模型', { exact: true }).waitFor()
+        await commandMenu.getByText('云枢主力模型，适合日常问答、内容写作与编程', { exact: true }).waitFor()
+        const flagship = commandMenu.getByRole('option', { name: 'yunshu-flash 旗舰模型', exact: true })
+        await expect.poll(() => flagship.getAttribute('aria-describedby')).not.toBeNull()
+        expect(await flagship.evaluate(element => document.getElementById(element.getAttribute('aria-describedby')!)?.textContent))
+          .toBe('云枢主力模型，适合日常问答、内容写作与编程')
+        await page.screenshot({ path: join(evidence, 'model-command-guidance.png'), animations: 'disabled' })
+        await page.keyboard.press('Escape')
+      }
       expect(requests.filter(path => path.endsWith('/phone/challenge'))).toHaveLength(1)
       expect(requests.filter(path => path.endsWith('/phone/login'))).toHaveLength(1)
       expect(errors).toEqual([])
       expect(tripwire.pageErrors).toEqual([])
       await page.screenshot({ path: join(evidence, 'first-login-selected-model.png'), animations: 'disabled' })
       await writeFile(join(evidence, 'result.json'), JSON.stringify({ preferred, elapsedMs, requests,
-        modelCalls: 0, realSMS: 0, pageErrors: tripwire.pageErrors, errors }, null, 2) + '\n')
+        modelCalls: 0, realSMS: 0, guidanceChecked: preferred === 'yunshu-flash', pageErrors: tripwire.pageErrors, errors }, null, 2) + '\n')
     } catch (error) {
       await page.screenshot({ path: join(evidence, 'failure.png'), animations: 'disabled' })
       await writeFile(join(evidence, 'failure.json'), JSON.stringify({ errors, requests,

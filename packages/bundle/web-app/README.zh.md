@@ -42,6 +42,8 @@ dsh --profile web --no-open --port 8080
 
 产品通过**余额**面板进行手机号登录，连接 `https://8.133.202.230/harness`。本 bundle 停用 DeepSeek 官方账号面板、官方模型适配器和自动 API Key 引导。`yunshu-local` OpenAI 兼容提供方使用 `https://8.133.202.230/harness/v1`，默认选择 `deepseek-v4-flash`，并在 profile 中引用 `YUNSHU_RELAY_TOKEN`。模型请求从当前绑定后端的手机登录会话取得中转 key；已存密钥或环境变量不能替代产品登录。旧账户平台与 Bridge 地址保持未设置。
 
+Desktop 新建会话默认使用**完全权限**（`danger-full-access`，审批为 `never`）；Web profile 保持工作区默认值。显式 `DSH_PERMISSION_MODE`、已保存的权限默认值或后续 profile patch 优先。已有会话保留日志中的权限；没有权限记录的旧会话恢复时保留原有执行默认值。[Desktop 升级指南](../../../docs/upgrade-guide/v0.2.1-alpha.2/desktop-full-access-default/guide.zh.md)说明如何选择较低的默认权限。
+
 产品聊天区域通过 [Conversation 的 `hiddenViews` 配置](../../client/ui-conversation/README.zh.md#shell-and-standard-props)隐藏 Trajectory 和市场 Video 视图。独立的 AI 创作视频页面及视频插件的 Host 能力仍然可用。
 
 产品通过**设置 → 皮肤市场**管理皮肤，不随产品分发 Dream Skin。核心[主题服务](../../client/ui-theme/README.zh.md)保留基础配色与字体设置。

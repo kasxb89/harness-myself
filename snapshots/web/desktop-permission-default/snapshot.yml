@@ -1,0 +1,8 @@
+version: 1
+scenario: desktop-permission-default
+profile: web
+composition: desktop-permission-derived-web-carrier
+recording: authored
+header:
+  class: desktop-permission-derived-web-carrier
+  pin: true

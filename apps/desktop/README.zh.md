@@ -120,6 +120,8 @@ Electron 拥有 `$DSH_HOME/profiles/desktop`。其 `dependencies` 包含 pnpm �
 
 产品 UI 保留 Web 操作，包括通过共享认证 HTTP 路由执行的“打开方式…”。Desktop 使用 Web 的自动目录选择机制，并以共享 Web 模板的 bundle 列表初始化新 profile。
 
+新建会话默认使用**完全权限**（`danger-full-access`，审批为 `never`）。已保存的默认值、显式部署覆盖项及已有会话权限继续生效。[产品 bundle](../../packages/bundle/web-app/README.zh.md#starting-the-web-gui)负责此 Desktop 专用默认值；[升级指南](../../docs/upgrade-guide/v0.2.1-alpha.2/desktop-full-access-default/guide.zh.md)说明如何选择较低权限。
+
 升级文案完整展示版本号（包括预发布后缀），不额外添加 v 或 V。无可用更新时，弹窗标题显示检查结果，正文显示当前版本。
 
 Electron 根据应用语言选择类型化的英文或中文 shell 文案，并回退到英文。macOS 应用包通过 `CFBundleLocalizations` 声明支持英语和简体中文，让 macOS 根据用户的首选语言匹配初始应用语言。主界面仍优先使用已保存的 Client UI 语言偏好。在 Windows 上，主文档的语言会更新桌面菜单、恢复与更新提示。仓库 Client UI i18n 检查覆盖桌面端源码。

@@ -118,6 +118,8 @@ The `dsh-app://shell/` origin serves packaged update documents, scripts, and sty
 
 The product UI retains Web actions, including "Open In..." through the shared authenticated HTTP routes. Desktop uses Web's automatic directory-picker selection and initializes new profiles with the shared Web template's bundles.
 
+New conversations default to **Full access** (`danger-full-access` with approval `never`). Saved defaults, explicit deployment overrides, and existing conversation permissions remain effective. The [product bundle](../../packages/bundle/web-app/README.md#starting-the-web-gui) owns this Desktop-only default; the [upgrade guide](../../docs/upgrade-guide/v0.2.1-alpha.2/desktop-full-access-default/guide.md) explains choosing lower permissions.
+
 Update copy preserves the complete version, including prerelease suffixes, without adding v or V. When no update is available, the dialog title reports the result and the body shows the current version.
 
 Electron chooses typed English or Chinese shell copy from its application locale and falls back to English. The macOS application bundle declares English and Simplified Chinese in `CFBundleLocalizations`, allowing macOS to match the initial application language to the user’s preferred languages. Saved Client UI language preferences still take precedence for the main interface. On Windows, the main document's language updates desktop menus, recovery and update prompts. The repository Client UI i18n gate checks desktop sources.

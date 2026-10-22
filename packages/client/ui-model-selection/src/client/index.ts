@@ -29,6 +29,7 @@ import type { ModelSelectInjected } from './slots.ts'
 import { ModelSelect } from './ModelSelect.tsx'
 import { en, zh, type ModelKey } from './locales.ts'
 import { orderModelProviders } from './provider-order.ts'
+import { modelGuidance } from './model-guidance.ts'
 
 export { ModelDirectory } from './directory.ts'
 export type { ModelDirectoryState } from './directory.ts'
@@ -57,6 +58,7 @@ function optionsOf(directory: ModelDirectoryState, t: TranslateNS<'model'>): Sel
       rows.push({
         id: rowId(group.id, model.id),
         label: model.name,
+        ...modelGuidance(group.id, model, t),
         group: { name: group.id, label: name },
         ...(directory.current !== null
           && directory.current.provider === group.id

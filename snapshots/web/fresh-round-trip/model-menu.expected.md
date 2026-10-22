@@ -1,0 +1,9 @@
+- group "Model and reasoning effort":
+  - text: The model list for 云枢 could not be loaded. Try again.
+  - button "Retry"
+  - menu "Model":
+    - group "DeepSeek":
+      - text: DeepSeek
+      - menuitemradio "DeepSeek-V4-Flash" [checked]: DeepSeek-V4-Flash See the provider’s description for uses and capabilities
+      - menuitemradio "DeepSeek-V4-Flash-Vision-Exp": DeepSeek-V4-Flash-Vision-Exp See the provider’s description for uses and capabilities
+  - text: Response speed varies with the task, reasoning effort, and network conditions

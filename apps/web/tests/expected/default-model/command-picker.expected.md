@@ -3,12 +3,12 @@
 - listbox "/model 匹配项":
   - group "DeepSeek":
     - text: DeepSeek
-    - option "DeepSeek-V4-Flash"
-    - option "DeepSeek-V4-Flash-Vision-Exp"
+    - option "DeepSeek-V4-Flash 用途与能力以提供方说明为准"
+    - option "DeepSeek-V4-Flash-Vision-Exp 用途与能力以提供方说明为准"
   - group "Origin Gateway":
     - text: Origin Gateway
-    - option "Origin Large"
+    - option "Origin Large 用途与能力以提供方说明为准"
   - group "Acme Gateway":
     - text: Acme Gateway
-    - option "Acme Large" [selected]
-    - option "Acme Small"
+    - option "Acme Large 用途与能力以提供方说明为准" [selected]
+    - option "Acme Small 用途与能力以提供方说明为准"

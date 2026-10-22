@@ -42,6 +42,8 @@ After startup you see a `dsh web:` line whose root URL carries a fresh process t
 
 The product uses phone sign-in in the **Balance** panel and connects to `https://8.133.202.230/harness`. Its bundle disables the official DeepSeek account panel, official model adapters, and automatic API-key onboarding. The `yunshu-local` OpenAI-compatible provider uses `https://8.133.202.230/harness/v1`, selects `deepseek-v4-flash` by default, and names `YUNSHU_RELAY_TOKEN` in its profile. Its model requests obtain the relay key from the current backend-bound phone session; a stored or environment key cannot substitute for product sign-in. The legacy account-platform and Bridge roots remain unset.
 
+Fresh Desktop conversations default to **Full access** (`danger-full-access`, approval `never`); the Web profile keeps its workspace default. An explicit `DSH_PERMISSION_MODE`, saved permission default, or later profile patch takes precedence. Existing conversations retain their logged permissions, and legacy restored conversations without permission facts retain the prior enforcement defaults. The [Desktop upgrade guide](../../../docs/upgrade-guide/v0.2.1-alpha.2/desktop-full-access-default/guide.md) describes selecting a lower default.
+
 The product's Chat area hides the Trajectory and marketplace Video Views through [Conversation's `hiddenViews` configuration](../../client/ui-conversation/README.md#shell-and-standard-props). The separate AI Creation video page and the video plugin's Host capabilities remain available.
 
 The product manages skins through **Settings → Skin Market**. Dream Skin is not distributed with the product. The core [theme service](../../client/ui-theme/README.md) retains basic color and font settings.

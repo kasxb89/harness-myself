@@ -41,6 +41,7 @@ const UI_EXPANDED_EXPECTED = fileURLToPath(
   new URL('../../../snapshots/web/fresh-round-trip/ui-expanded.expected.md', import.meta.url),
 )
 const WEB_CONTEXT_EXPECTED = fileURLToPath(new URL('../../../snapshots/web/fresh-round-trip/web-context.expected.md', import.meta.url))
+const MODEL_MENU_EXPECTED = join(SNAPSHOT_DIR, 'model-menu.expected.md')
 const MODE = webSnapshotMode()
 
 // The scenario's one drive prompt. Record sends it; replay asserts the
@@ -315,6 +316,20 @@ describe('web e2e: fresh round trip through the real assembly', () => {
     expect(await page.locator('[data-system-prompt-body]').count()).toBe(0)
   })
 
+  it.skipIf(MODE === 'record')('shows model guidance beside the recorded conversation without changing its selection', async () => {
+    await page.getByRole('button', { name: 'Select model, current DeepSeek-V4-Flash', exact: true }).click()
+    await page.getByRole('menuitem', { name: /^Model/u }).click()
+    const menu = page.getByRole('group', { name: 'Model and reasoning effort', exact: true })
+    await menu.getByRole('menuitemradio', { name: 'DeepSeek-V4-Flash', exact: true }).waitFor()
+    await menu.getByText('Response speed varies with the task, reasoning effort, and network conditions', { exact: true }).waitFor()
+    await compareOrRefreshGolden(MODEL_MENU_EXPECTED,
+      await captureStableAria(page, '[aria-label="Model and reasoning effort"]', scaffold.workspaceCwd), MODE)
+    await page.keyboard.press('Escape')
+    await page.keyboard.press('Escape')
+    await menu.waitFor({ state: 'detached' })
+    await page.getByRole('button', { name: 'Select model, current DeepSeek-V4-Flash', exact: true }).waitFor()
+  })
+
   it.skipIf(MODE === 'record')('expands and collapses the reasoning fold from its click target', async () => {
     onTestFailed(() => saveFailureShot(page, 'web-e2e-round-trip-think'))
     // Interaction over the REAL wire-delivered transcript (the fixture-client
@@ -341,6 +356,7 @@ describe('web e2e: fresh round trip through the real assembly', () => {
       'system-prompt.expected.md',
       'tool-schemas.expected.json',
       'web-context.expected.md',
+      'model-menu.expected.md',
       'ui.expected.md',
       'ui-expanded.expected.md',
     ])

@@ -4,4 +4,5 @@
   - menu "模型":
     - group "Acme Gateway":
       - text: Acme Gateway
-      - menuitemradio "Acme Large"
+      - menuitemradio "Acme Large": Acme Large 用途与能力以提供方说明为准
+  - text: 响应速度会随任务、推理等级与网络状况变化

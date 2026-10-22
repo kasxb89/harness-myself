@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
+import LocalSandbox from '@deepseek-ai/dsh-sandbox-local'
 import SandboxPolicyService from '@deepseek-ai/dsh-sandbox-policy'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
@@ -15,9 +16,10 @@ import { SandboxProvider } from '@deepseek-ai/dsh-sandbox'
 import type { ConfinedArgv, SandboxMode, SandboxPolicy } from '@deepseek-ai/dsh-sandbox'
 import type { SubprocessHandle } from '@deepseek-ai/dsh-subprocess'
 import { expect, it, vi } from 'vitest'
-import { createVideoEditor } from '../src/video-edit.ts'
+import { createVideoEditor, VideoEditError } from '../src/video-edit.ts'
 import type { VideoEditorOptions } from '../src/video-edit.ts'
 import { Config } from '../src/index.ts'
+import { videoProjectFailure } from '../src/video-project.ts'
 
 async function fixture(mode: SandboxMode, finish: (callback: () => Promise<void>) => void, runtimeRoot = '/missing-video-runtime') {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-video-edit-'))
@@ -63,6 +65,30 @@ it('requires the explicit bundled executable directory and never falls back to P
   const spawn = vi.spyOn(ctx.subprocess, 'spawn')
   await expect(editor.preflight(new AbortController().signal)).rejects.toMatchObject({ code: 'VIDEO_EDIT_RUNTIME_UNAVAILABLE' })
   expect(spawn).not.toHaveBeenCalled()
+})
+
+it('retains cancellation while resolving a bundled executable without reporting a missing runtime', async ({ onTestFinished }) => {
+  const { ctx, editor } = await fixture('danger-full-access', onTestFinished)
+  const cancellation = new AbortController()
+  vi.spyOn(ctx.subprocess, 'resolveExecutable').mockImplementation(async () => {
+    cancellation.abort(new Error('private fixture path and token'))
+    throw cancellation.signal.reason
+  })
+  const spawn = vi.spyOn(ctx.subprocess, 'spawn')
+  const failure: unknown = await editor.preflight(cancellation.signal).catch((error: unknown) => error)
+  expect(failure).toMatchObject({ code: 'VIDEO_EDIT_CANCELLED',
+    diagnostic: { tool: 'ffmpeg', stage: 'runtime', interruption: 'cancelled' } })
+  expect(videoProjectFailure(failure).message).not.toMatch(/private|token|未准备好|服务器/u)
+  expect(spawn).not.toHaveBeenCalled()
+})
+
+it('distinguishes deadline diagnostics from an explicit user cancellation without exposing the private cause', () => {
+  const failure = new VideoEditError('VIDEO_EDIT_CANCELLED', 'private path and token', {
+    cause: new Error('private path and token'),
+    diagnostic: { tool: 'ffmpeg', stage: 'assemble', exitCode: 0, signal: null, interruption: 'deadline' },
+  })
+  expect(videoProjectFailure(failure)).toEqual({ code: 'VIDEO_EDIT_CANCELLED',
+    message: '本地视频处理超时已停止，原始片段保留。可重试剪辑，无需重新付费生成。 本地诊断：ffmpeg/assemble/exit=0/deadline。' })
 })
 
 it('fails closed when the session sandbox refuses a video subprocess', async ({ onTestFinished }) => {
@@ -118,6 +144,79 @@ it('rejects an output subtree symlink escaping the workspace before starting any
 
 const binaryRoot = process.env.DSH_VIDEO_TEST_RUNTIME_ROOT
 const native = binaryRoot !== undefined && existsSync(join(binaryRoot, 'bin', process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'))
+
+it.skipIf(!native || process.platform !== 'win32')('edits a real clip through the Windows workspace-write sandbox without changing its session permission', async ({ onTestFinished }) => {
+  const { workspace, ctx, editor } = await fixture('workspace-write', onTestFinished, binaryRoot)
+  const sandbox = await ctx.plugin(LocalSandbox)
+  onTestFinished(async () => { await sandbox.dispose() })
+  const confine = vi.spyOn(ctx.sandbox, 'confine')
+  const binary = join(binaryRoot!, 'bin', 'ffmpeg.exe')
+  const source = join(workspace, '工作区 原片.mp4')
+  execFileSync(binary, ['-v', 'error', '-f', 'lavfi', '-i', 'color=c=red:s=160x120:r=10:d=0.8',
+    '-c:v', 'libx264', '-pix_fmt', 'yuv420p', source], { timeout: 30_000 })
+  const original = await readFile(source)
+  const output = join(workspace, '成片', 'final.mp4')
+  const result = await editor.compose({ clips: [{ path: source }], outputPath: output,
+    totalDurationSeconds: 0.5, signal: new AbortController().signal })
+  expect(result.durationSeconds).toBeCloseTo(0.5, 1)
+  expect(confine.mock.calls.length).toBeGreaterThan(3)
+  expect(confine.mock.calls.every(([_argv, policy]) => policy.mode === 'workspace-write')).toBe(true)
+  expect((await readFile(source)).equals(original)).toBe(true)
+})
+
+it.skipIf(!native)('keeps single-clip editing local with Chinese names and spaces', async ({ onTestFinished }) => {
+  const { workspace, editor } = await fixture('danger-full-access', onTestFinished, binaryRoot)
+  const binary = join(binaryRoot!, 'bin', process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg')
+  const source = join(workspace, '第一段 参考视频.mp4')
+  execFileSync(binary, ['-v', 'error', '-f', 'lavfi', '-i', 'color=c=red:s=160x120:r=24:d=0.8',
+    '-c:v', 'libx264', '-pix_fmt', 'yuv420p', source], { timeout: 30_000 })
+  const original = await readFile(source)
+  const output = join(workspace, '成片 文件夹', '最终 视频.mp4')
+  const result = await editor.compose({ clips: [{ path: source, startSeconds: 0.1, endSeconds: 0.6 }],
+    outputPath: output, signal: new AbortController().signal })
+  expect(result.durationSeconds).toBeCloseTo(0.5, 1)
+  expect((await readFile(source)).equals(original)).toBe(true)
+  expect(await readdir(join(workspace, '成片 文件夹'))).toEqual(['最终 视频.mp4'])
+})
+
+it.skipIf(!native)('reports the local encoding stage and exit code for clips whose metadata survives damaged video bytes', async ({ onTestFinished }) => {
+  const { workspace, ctx, editor } = await fixture('danger-full-access', onTestFinished, binaryRoot)
+  const binary = join(binaryRoot!, 'bin', process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg')
+  const source = join(workspace, '私人 片段.mp4')
+  execFileSync(binary, ['-v', 'error', '-f', 'lavfi', '-i', 'color=c=red:s=160x120:r=10:d=1',
+    '-c:v', 'libx264', '-pix_fmt', 'yuv420p', source], { timeout: 30_000 })
+  const damaged = await readFile(source)
+  const mediaTag = damaged.indexOf(Buffer.from('mdat'))
+  expect(mediaTag).toBeGreaterThan(3)
+  const atomLength = damaged.readUInt32BE(mediaTag - 4)
+  // The MP4 index still probes successfully; only the encoded frame payload is damaged.
+  damaged.fill(0, mediaTag + 4, mediaTag - 4 + atomLength)
+  await writeFile(source, damaged)
+  await expect(editor.probe(source, new AbortController().signal)).resolves.toMatchObject({ durationSeconds: 1 })
+  let encoding: SubprocessHandle | undefined
+  const originalSpawn = ctx.subprocess.spawn.bind(ctx.subprocess)
+  vi.spyOn(ctx.subprocess, 'spawn').mockImplementation((spec) => {
+    const child = originalSpawn(spec)
+    if (spec.argv.includes('-filter_complex')) encoding = child
+    return child
+  })
+  const output = join(workspace, 'artifacts', 'final.mp4')
+  const failure: unknown = await editor.compose({ clips: [{ path: source }], outputPath: output,
+    signal: new AbortController().signal }).catch((error: unknown) => error)
+  expect(encoding).toBeDefined()
+  const outcome = await encoding!.done
+  expect(outcome.signal).toBeNull()
+  expect(outcome.exitCode).toBeGreaterThan(0)
+  expect(failure).toMatchObject({ code: 'VIDEO_EDIT_FAILED',
+    diagnostic: { tool: 'ffmpeg', stage: 'assemble', ...outcome } })
+  const report = videoProjectFailure(failure)
+  expect(report.message).toContain(`本地诊断：ffmpeg/assemble/exit=${String(outcome.exitCode)}。`)
+  expect(report.message).toContain('无需重新付费生成')
+  expect(report.message).not.toMatch(/服务器|Invalid NAL|私人|\.mp4|\/Users|workspace/u)
+  expect((await readFile(source)).equals(damaged)).toBe(true)
+  expect(existsSync(output)).toBe(false)
+  expect(await readdir(join(workspace, 'artifacts'))).toEqual([])
+})
 
 it.skipIf(!native)('checks the exact export tree through session filesystem policy before encoding', async ({ onTestFinished }) => {
   const { workspace, ctx, editor } = await fixture('danger-full-access', onTestFinished, binaryRoot)

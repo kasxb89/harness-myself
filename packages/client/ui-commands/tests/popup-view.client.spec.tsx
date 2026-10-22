@@ -140,12 +140,26 @@ describe('PopupSelectView', () => {
     expect(rowLabels()).toEqual(['Dark', 'Light', 'Sepia'])
   })
 
-  it('renders an optional option badge as a superscript marker', async () => {
-    await mountOpen({
-      options: () => Promise.resolve([{ id: 'auto', label: 'Auto review', badge: 'EXP' }]),
-    })
+  it('keeps badge names and makes accompanying details accessible during keyboard selection', async () => {
+    const options: SelectOption[] = [
+      { id: 'auto', label: 'Auto review', badge: 'EXP' },
+      { id: 'flagship', label: 'Yunshu Flash', badge: 'Flagship', detail: 'For questions, writing, and coding' },
+      { id: 'plain', label: 'Plain', detail: 'Provider purpose' },
+    ]
+    const onSelect = vi.fn()
+    const { search } = await mountOpen({ options: () => Promise.resolve(options), onSelect })
     const row = screen.getByRole('option', { name: 'Auto review EXP' })
     expect(row.querySelector('sup')?.textContent).toBe('EXP')
+    expect(row.getAttribute('aria-describedby')).toBeNull()
+    const flagship = screen.getByRole('option', {
+      name: 'Yunshu Flash Flagship', description: 'For questions, writing, and coding',
+    })
+    expect(screen.getByRole('option', { name: 'PlainProvider purpose' }).getAttribute('aria-label')).toBeNull()
+    fireEvent.keyDown(search, { key: 'ArrowDown' })
+    expect(flagship.getAttribute('aria-selected')).toBe('true')
+    expect(document.activeElement).toBe(search)
+    await act(async () => { fireEvent.keyDown(search, { key: 'Enter' }); await Promise.resolve() })
+    expect(onSelect).toHaveBeenCalledExactlyOnceWith(options[1], 'ctx-A')
   })
 
   it('typing filters rows locally and rebases the highlight', async () => {

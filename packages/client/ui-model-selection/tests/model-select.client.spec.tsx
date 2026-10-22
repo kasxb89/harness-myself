@@ -108,6 +108,51 @@ function liveDirectory(models: () => Promise<RemoteResult<ModelCatalog>>) {
   }
 }
 
+describe('ModelSelect purpose guidance', () => {
+  it.each(['zh', 'en'] as const)('shows flagship guidance with independent accessible names (%s)', async (locale) => {
+    const copy = locale === 'zh' ? zh : en
+    const translate: ComponentProps<typeof ModelSelect>['t'] = key => copy[key as keyof typeof copy] ?? key
+    const directory = createSnapshotStore<ModelDirectoryState>(state({
+      current: null,
+      groups: [
+        { id: 'yunshu-local', name: '云枢', models: [
+          { id: 'yunshu-flash', name: 'Yunshu Flash', reasoning },
+          { id: 'deepseek-v4-pro', name: 'DeepSeek Pro' },
+        ] },
+        { id: 'custom', name: 'Custom', models: [
+          { id: 'yunshu-flash', name: 'Custom Flash', description: '<b>Provider text</b>' },
+          { id: 'unknown-fastest', name: 'Unknown Fastest' },
+        ] },
+      ],
+    }))
+    const select = vi.fn(async () => ({ ok: true as const, value: undefined }))
+    render(<ModelSelect locked={false} available directory={directory} load={vi.fn()} select={select} t={translate} />)
+    fireEvent.click(screen.getByRole('button', { name: copy['trigger.selectAria'] }))
+    const rows = screen.getAllByRole('menuitemradio')
+    expect(rows.map(row => row.getAttribute('aria-label'))).toEqual(['Yunshu Flash', 'DeepSeek Pro', 'Custom Flash', 'Unknown Fastest'])
+    expect(screen.getAllByText(copy['guidance.flagship'])).toHaveLength(1)
+    const flagship = screen.getByRole('menuitemradio', { name: 'Yunshu Flash' })
+    const description = flagship.getAttribute('aria-describedby')!.split(' ').map(id => document.getElementById(id)?.textContent).join('\n')
+    expect(description).toBe(`${copy['guidance.flagship']}\n${copy['guidance.yunshuFlash']}`)
+    expect(screen.getByText('<b>Provider text</b>').querySelector('b')).toBeNull()
+    expect(screen.getByText(copy['guidance.unspecified'])).toBeTruthy()
+    expect(screen.getByText(copy['guidance.latency'])).toBeTruthy()
+    await expect(`${rows.map(row => row.textContent).join('\n')}\n`).toMatchFileSnapshot(`./expected/model-guidance-${locale}.txt`)
+    fireEvent.keyDown(flagship, { key: 'Enter' })
+    fireEvent.click(flagship)
+    await waitFor(() => { expect(select).toHaveBeenCalledWith({ provider: 'yunshu-local', model: 'yunshu-flash' }) })
+  })
+
+  it('shows reasoning speed guidance only in the advertised effort pane', () => {
+    render(<ModelSelect locked={false} available directory={createSnapshotStore(state())} load={vi.fn()} select={vi.fn()} t={t} />)
+    fireEvent.click(screen.getByRole('button', { name: /选择模型/ }))
+    expect(screen.queryByText(zh['guidance.effort'])).toBeNull()
+    fireEvent.click(screen.getByRole('menuitem', { name: /推理等级/ }))
+    expect(screen.getByText(zh['guidance.effort'])).toBeTruthy()
+    expect(screen.getAllByRole('menuitemradio').map(row => row.textContent)).toEqual(['Off', 'High', 'Max'])
+  })
+})
+
 describe('ModelSelect live catalog', () => {
   it('shows newly available models when the menu reopens without a Host event', async () => {
     const initial = accountCatalog(['ys-1.0'])
@@ -119,7 +164,7 @@ describe('ModelSelect live catalog', () => {
     fireEvent.click(trigger)
     fireEvent.click(screen.getByRole('menuitem', { name: /模型/ }))
     await waitFor(() => { expect(directory.store.getSnapshot().status).toBe('ready') })
-    const first = screen.getAllByRole('menuitemradio').map(row => row.textContent).join('\n')
+    const first = screen.getAllByRole('menuitemradio').map(row => row.getAttribute('aria-label') ?? row.textContent).join('\n')
     expect(first).toBe('ys-1.0')
     fireEvent.click(trigger)
     models.mockResolvedValue({ ok: true, value: accountCatalog(['ys-1.0', 'deepseek-v4-flash']) })
@@ -127,7 +172,7 @@ describe('ModelSelect live catalog', () => {
     fireEvent.click(trigger)
     fireEvent.click(screen.getByRole('menuitem', { name: /模型/ }))
     await screen.findByRole('menuitemradio', { name: 'deepseek-v4-flash' })
-    const reopened = screen.getAllByRole('menuitemradio').map(row => row.textContent).join('\n')
+    const reopened = screen.getAllByRole('menuitemradio').map(row => row.getAttribute('aria-label') ?? row.textContent).join('\n')
     expect(models).toHaveBeenCalledTimes(3)
     expect(directory.store.getSnapshot().current).toEqual({ provider: 'yunshu', model: 'ys-1.0' })
     await expect(`first open:\n${first}\n\nreopen:\n${reopened}\n`).toMatchFileSnapshot('./expected/catalog-reopen.txt')
@@ -141,7 +186,7 @@ describe('ModelSelect live catalog', () => {
     render(<ModelSelect locked={false} available directory={directory.store} load={load} select={vi.fn()} t={t} />)
     fireEvent.click(screen.getByRole('button', { name: '选择模型，当前 ys-1.0' }))
     const retry = await screen.findByRole('button', { name: '重试' })
-    expect(screen.getByText('服务器繁忙，请稍后重试')).toBeTruthy()
+    expect(screen.getByText('模型操作未完成，请重试')).toBeTruthy()
     fireEvent.click(screen.getByRole('menuitem', { name: /模型/ }))
     expect(screen.getByRole('menuitemradio', { name: 'ys-1.0' })).toBeTruthy()
     models.mockResolvedValue({ ok: true, value: accountCatalog(['ys-1.0', 'deepseek-v4-flash']) })
@@ -149,7 +194,7 @@ describe('ModelSelect live catalog', () => {
     fireEvent.click(retry)
     await screen.findByRole('menuitemradio', { name: 'deepseek-v4-flash' })
     expect(screen.queryByRole('button', { name: '重试' })).toBeNull()
-    expect(screen.queryByText('服务器繁忙，请稍后重试')).toBeNull()
+    expect(screen.queryByText('模型操作未完成，请重试')).toBeNull()
     expect(models).toHaveBeenCalledTimes(3)
   })
 
@@ -160,7 +205,7 @@ describe('ModelSelect live catalog', () => {
     const load = vi.fn()
     render(<ModelSelect locked={false} available directory={directory} load={load} select={vi.fn()} t={t} />)
     fireEvent.click(screen.getByRole('button', { name: /选择模型/ }))
-    expect(screen.getByText(/Yunshu.*服务器繁忙/)).toBeTruthy()
+    expect(screen.getByText(/Yunshu.*模型列表暂时无法读取/)).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: '重试' }))
     expect(load).toHaveBeenCalledTimes(2)
   })
@@ -254,7 +299,7 @@ describe('ModelSelect reasoning effort', () => {
     expect(screen.queryByRole('menuitem', { name: /模型/ })).toBeNull()
     expect(screen.queryByRole('menuitemradio', { name: 'removed-model' })).toBeNull()
     expect(screen.getByRole('menuitemradio', { name: 'DeepSeek-V4-Flash' })).toBeTruthy()
-    expect(screen.queryByText('Fast catalog description')).toBeNull()
+    expect(screen.getByText('Fast catalog description')).toBeTruthy()
     expect(select).not.toHaveBeenCalled()
     expect(directory.getSnapshot().current).toEqual({ provider: 'deepseek-official', model: 'removed-model' })
     fireEvent.keyDown(screen.getByRole('menuitemradio', { name: 'DeepSeek-V4-Flash' }), { key: 'Escape' })
@@ -340,7 +385,7 @@ describe('ModelSelect reasoning effort', () => {
     expect(document.activeElement).toBe(trigger)
     expect(toast.textContent).toBe(sessionInUse
       ? zh['error.sessionInUse']
-      : '服务器繁忙，请稍后重试')
+      : '模型操作未完成，请重试')
     // The selection failure does not render the in-menu load strip (no Retry).
     expect(screen.queryByRole('button', { name: '重试' })).toBeNull()
     fireEvent.keyDown(trigger, { key: 'Tab' })
@@ -404,7 +449,7 @@ describe('ModelSelect reasoning effort', () => {
     fireEvent.click(screen.getByRole('menuitemradio', { name: /Max/ }))
     expect(screen.getAllByRole('menuitemradio')
       .filter(row => row.querySelector('[data-state="ongoing"]') !== null)
-      .map(row => row.textContent)).toEqual(['Max'])
+      .map(row => row.getAttribute('aria-label') ?? row.textContent)).toEqual(['Max'])
   })
 
   it('portals the placed menu card to body and closes only on truly-outside mousedown', () => {
@@ -499,7 +544,7 @@ describe('ModelSelect keyboard walk', () => {
 
     fireEvent.click(screen.getByRole('menuitem', { name: /推理等级/ }))
     const rows = screen.getAllByRole('menuitemradio')
-    expect(rows.map(row => row.textContent)).toEqual(['Off', 'High', 'Max'])
+    expect(rows.map(row => row.getAttribute('aria-label') ?? row.textContent)).toEqual(['Off', 'High', 'Max'])
     // The pane opens on its checked row, so walking starts from High.
     fireEvent.keyDown(rows[1]!, { key: 'ArrowDown' })
     expect(document.activeElement).toBe(rows[2])
@@ -910,7 +955,7 @@ describe('ModelSelect search', () => {
     expect(fireEvent.keyDown(search, { key: 'ArrowDown', isComposing: true })).toBe(true)
     expect(document.activeElement).toBe(search)
     fireEvent.change(search, { target: { value: '  GMFL  ' } })
-    expect(screen.getAllByRole('menuitemradio').map(row => row.textContent)).toEqual(['Gemini Flash'])
+    expect(screen.getAllByRole('menuitemradio').map(row => row.getAttribute('aria-label') ?? row.textContent)).toEqual(['Gemini Flash'])
     expect(screen.getByRole('searchbox')).toBe(search)
     expect(document.activeElement).toBe(search)
     expect(screen.queryByRole('group', { name: 'DeepSeek' })).toBeNull()
@@ -972,7 +1017,7 @@ it('places account and official models before third-party models', async () => {
   const directory = createSnapshotStore<ModelDirectoryState>(state({ current: null, groups }))
   render(<ModelSelect locked={false} available directory={directory} load={vi.fn()} select={vi.fn()} t={t} />)
   fireEvent.click(screen.getByRole('button', { name: '请选择模型' }))
-  const names = screen.getAllByRole('menuitemradio').map(row => row.textContent)
+  const names = screen.getAllByRole('menuitemradio').map(row => row.getAttribute('aria-label') ?? row.textContent)
   expect(names).toEqual([
     'deepseek-account-1', 'deepseek-account-2', 'deepseek-official-1', 'deepseek-official-2',
     'custom-1', 'custom-2', 'another-1', 'another-2',

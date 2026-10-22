@@ -107,7 +107,7 @@ describe('web e2e: the composer model switch is the default for later sessions',
       expect(popupBounds!.x).toBeCloseTo(commandMenuBounds!.x)
       expect(await search.getAttribute('placeholder')).toBe('搜索模型…')
       await page.getByRole('option').first().waitFor()
-      await page.getByRole('option', { name: 'Acme Large', exact: true }).hover()
+      await page.getByRole('option').filter({ has: page.getByText('Acme Large', { exact: true }) }).hover()
       await compareOrRefreshGolden(
         fileURLToPath(new URL('./expected/default-model/command-picker.expected.md', import.meta.url)),
         await captureStableAria(page, '[aria-label="/model 选项"]', scaffold.workspaceCwd),
@@ -140,7 +140,8 @@ describe('web e2e: the composer model switch is the default for later sessions',
     const readGroups = (surface: Locator, role: 'option' | 'menuitemradio') => surface.locator('[data-menu-group]')
       .evaluateAll((groups, rowRole) => groups.map(group => ({
         label: group.querySelector('[data-menu-group-heading]')!.textContent,
-        rows: [...group.querySelectorAll(`[role="${rowRole}"]`)].map(row => row.textContent),
+        rows: [...group.querySelectorAll(`[role="${rowRole}"]`)]
+          .map(row => row.querySelector('[class*="modelName"], [class*="labelText"]')?.textContent),
       })), role)
     const checkSticky = async (surface: Locator, viewport: Locator) => {
       // Bound only this test's list viewport so native scrolling can cross a heading.
@@ -244,10 +245,12 @@ describe('web e2e: the composer model switch is the default for later sessions',
     const trigger = page.getByRole('button', { name: /^选择模型/ })
     const search = page.getByRole('searchbox', { name: '搜索模型…' })
     try {
-      await page.setViewportSize({ width: 1680, height: 220 })
+      // Keep one full two-line row visible, then constrain the list to exercise scrolling.
+      await page.setViewportSize({ width: 1680, height: 380 })
       await trigger.click()
       await page.getByRole('menuitem', { name: /模型/ }).click()
       const scroller = page.getByRole('menu', { name: '模型', exact: true })
+      await scroller.evaluate((node) => { node.style.maxHeight = '100px' })
       const headings = surface.locator('section[role="group"] > div')
       const readPinned = () => headings.evaluateAll(nodes => nodes.map(node => node.hasAttribute('data-stuck')))
       const resetScroll = async (): Promise<void> => {
@@ -376,6 +379,9 @@ describe('web e2e: the composer model switch is the default for later sessions',
       getComputedStyle(row.querySelector('span span')!).fontWeight,
     ))
     expect(new Set(modelWeights)).toEqual(new Set(['400']))
+    const modelViewport = page.getByRole('menu', { name: '模型', exact: true })
+    await modelViewport.evaluate((node) => { node.scrollTop = 0 })
+    await expect.poll(() => modelViewport.locator('[data-stuck]').count()).toBe(0)
     const headingPalettes = await page.getByRole('group', { name: '模型与推理等级', exact: true }).evaluate((menu) => {
       const html = menu.ownerDocument.documentElement
       const body = menu.ownerDocument.body
@@ -420,7 +426,8 @@ describe('web e2e: the composer model switch is the default for later sessions',
     expect(await page.getByRole('menuitemradio').count()).toBe(modelWeights.length)
     expect(await page.getByRole('button', { name: '清除搜索', exact: true }).count()).toBe(0)
     await search.fill('  ACMLG  ')
-    expect(await page.getByRole('menuitemradio').allTextContents()).toEqual(['Acme Large'])
+    expect(await page.getByRole('menuitemradio').evaluateAll(rows => rows.map(row => row.getAttribute('aria-label'))))
+      .toEqual(['Acme Large'])
     expect(await page.getByRole('group', { name: 'Origin Gateway', exact: true }).count()).toBe(0)
     await compareOrRefreshGolden(
       fileURLToPath(new URL('./expected/default-model/search.expected.md', import.meta.url)),

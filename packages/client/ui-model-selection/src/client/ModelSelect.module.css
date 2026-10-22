@@ -258,6 +258,44 @@
   flex: 1;
   flex-direction: column;
   min-width: 0;
+  gap: 2px;
+}
+
+.modelHeading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.modelBadge {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  line-height: 18px;
+  font-weight: 500;
+}
+
+.modelDetail,
+.guidance {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 400;
+  overflow-wrap: anywhere;
+}
+
+.modelDetail {
+  white-space: normal;
+}
+
+.guidance {
+  flex: 0 0 auto;
+  max-width: 340px;
+  padding: 6px 7px;
 }
 
 .modelName {

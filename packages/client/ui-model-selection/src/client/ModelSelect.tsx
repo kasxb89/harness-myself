@@ -41,6 +41,7 @@ import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ModelSelectInjected } from './slots.ts'
 import css from './ModelSelect.module.css'
 import { orderModelProviders } from './provider-order.ts'
+import { modelGuidance } from './model-guidance.ts'
 
 /** Which pane the dropdown shows: the two-row root or one drilled-in list. */
 type Pane = 'root' | 'model' | 'effort'
@@ -564,12 +565,18 @@ export function ModelSelect(
                       {group.models.map((model) => {
                         const index = modelIndex++
                         const selected = state.current?.provider === group.id && state.current.model === model.id
+                        const guidance = modelGuidance(group.id, model, t)
                         return (
                           <button
                             ref={itemRef()}
                             type="button"
                             role="menuitemradio"
                             aria-checked={selected}
+                            aria-label={model.name}
+                            aria-describedby={[
+                              ...(guidance.badge === undefined ? [] : [`${id}-model-${index}-badge`]),
+                              `${id}-model-${index}-guidance`,
+                            ].join(' ')}
                             id={`${id}-model-${index}`}
                             tabIndex={showSearch ? -1 : 0}
                             onFocus={() => { setHighlightedIndex(index) }}
@@ -587,7 +594,13 @@ export function ModelSelect(
                             onClick={() => { choose({ provider: group.id, model: model.id }) }}
                           >
                             <span className={css.optionCopy}>
-                              <span className={css.modelName}>{model.name}</span>
+                              <span className={css.modelHeading}>
+                                <span className={css.modelName}>{model.name}</span>
+                                {guidance.badge !== undefined && <span id={`${id}-model-${index}-badge`} className={css.modelBadge}>{guidance.badge}</span>}
+                              </span>
+                              <span id={`${id}-model-${index}-guidance`} className={css.modelDetail}>
+                                {guidance.detail}
+                              </span>
                             </span>
                             <span className={css.check}>
                               {pending?.provider === group.id && pending.model === model.id
@@ -604,11 +617,13 @@ export function ModelSelect(
               {state.status === 'ready' && filteredGroups.length === 0 && (
                 <div className={css.empty} role="status">{t(choices.length === 0 ? 'empty.models' : 'search.empty')}</div>
               )}
+              {filteredGroups.length > 0 && <div className={css.guidance}>{t('guidance.latency')}</div>}
             </>
           )}
 
           {pane === 'effort' && (
             <>
+              <div className={css.guidance}>{t('guidance.effort')}</div>
               {effortChoices.length === 0
                 ? <div className={css.empty}>{t('empty.efforts')}</div>
                 : effortChoices.map(level => (

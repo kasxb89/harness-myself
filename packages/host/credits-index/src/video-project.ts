@@ -57,7 +57,17 @@ export function videoProjectFailure(error: unknown): { code: string; message: st
       VIDEO_EDIT_CANCELLED: '本地视频剪辑已停止，原始片段保留。',
       VIDEO_EDIT_OUTPUT_INVALID: '剪辑结果未通过校验，未作为成片交付；原始片段保留，可重新剪辑。',
     } satisfies Record<VideoEditError['code'], string>
-    return { code: error.code, message: messages[error.code] }
+    const diagnostic = error.diagnostic
+    const reference = diagnostic === undefined ? '' : ` 本地诊断：${[
+      diagnostic.tool, diagnostic.stage,
+      ...diagnostic.exitCode === undefined ? [] : [`exit=${String(diagnostic.exitCode)}`],
+      ...diagnostic.signal === undefined || diagnostic.signal === null ? [] : [diagnostic.signal],
+      ...diagnostic.interruption === undefined ? [] : [diagnostic.interruption],
+    ].join('/')}。`
+    const message = diagnostic?.interruption === 'deadline'
+      ? '本地视频处理超时已停止，原始片段保留。可重试剪辑，无需重新付费生成。'
+      : messages[error.code]
+    return { code: error.code, message: message + reference }
   }
   return { code: 'VIDEO_OPERATION_UNAVAILABLE', message: '视频操作未完成，请查看项目状态并检查工作区权限。已保存片段保留，不要重复提交结果未知的生成任务。' }
 }

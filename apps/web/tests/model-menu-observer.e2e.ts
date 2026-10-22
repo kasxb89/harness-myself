@@ -40,7 +40,9 @@ async function frames(page: Page): Promise<void> {
 function readGroups(viewport: Locator) {
   return viewport.locator('[data-menu-group]').evaluateAll(groups => groups.map(group => ({
     label: group.querySelector('[data-menu-group-heading]')!.textContent,
-    rows: [...group.querySelectorAll('[role="option"], [role="menuitemradio"]')].map(row => row.textContent),
+    // Guidance adds a second line; ordering remains anchored to each model's name.
+    rows: [...group.querySelectorAll('[role="option"], [role="menuitemradio"]')]
+      .map(row => row.querySelector('[class*="modelName"], [class*="labelText"]')?.textContent),
   })))
 }
 
