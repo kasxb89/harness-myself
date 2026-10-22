@@ -86,6 +86,16 @@ function runBody(
   return exports
 }
 
+/** Observe yielded values and the terminal completion without discarding either. */
+async function collectGenerator(iterator: AsyncGenerator<unknown, unknown, unknown>) {
+  const values: unknown[] = []
+  for (;;) {
+    const step = await iterator.next()
+    if (step.done) return { values, completion: step.value }
+    values.push(step.value)
+  }
+}
+
 /** Every emitted body must parse as a script — the transform's own exit gate, re-checked here. */
 const parsesAsScript = (label: string, code: string): void => {
   test(label, () => {
@@ -834,6 +844,197 @@ test('keeps dynamic imports inside a directly returned delegation operand', asyn
   expect(requests).toEqual(['source'])
 })
 
+test('matches native negated while completion, operand counts, and a single-statement body', async () => {
+  async function* native(make: () => AsyncIterable<unknown, unknown, unknown>, mark: (value: string) => void) {
+    yield 'prefix'
+    while (!(yield* make())) mark('body')
+    return 'terminal'
+  }
+  const source = 'export async function* outer(make,mark){\nyield "prefix";while(!(yield* make()))mark("body");\nreturn "terminal"}\n'
+  const code = transformModule(source)
+  expect(lineCount(code)).toBe(lineCount(source))
+  const lowered = runBody(code, () => ({}), createAlsRuntime()).outer as typeof native
+  const run = async (outer: typeof native) => {
+    const events: unknown[] = []
+    let batch = 0
+    const make = () => {
+      const index = batch++
+      events.push(['operand', index])
+      return (async function* () { yield index; return index === 2 })()
+    }
+    const result = await collectGenerator(outer(make, value => events.push(value)))
+    return { result, events }
+  }
+  const actual = await run(lowered)
+  expect(actual).toEqual(await run(native))
+  expect(actual).toEqual({ result: { values: ['prefix', 0, 1, 2], completion: 'terminal' },
+    events: [['operand', 0], 'body', ['operand', 1], 'body', ['operand', 2]] })
+})
+
+test('retains labeled continue, labeled break, nested loop break, and body finally', async () => {
+  async function* native(make: () => AsyncIterable<unknown, unknown, unknown>, mark: (value: string) => void) {
+    let turn = 0
+    outer: while (!(yield* make())) {
+      try {
+        for (const value of ['inner']) { mark(value); break }
+        if (++turn === 1) continue outer
+        break outer
+      } finally { await Promise.resolve(); mark('body.finally') }
+    }
+    return 'terminal'
+  }
+  const code = transformModule(`export async function* outer(make,mark){let turn=0;
+    outer:while(!(yield* make())){try{
+      for(const value of ['inner']){mark(value);break}
+      if(++turn===1)continue outer;break outer;
+    }finally{await Promise.resolve();mark('body.finally')}}return 'terminal'}`)
+  const lowered = runBody(code, () => ({}), createAlsRuntime()).outer as typeof native
+  const run = async (outer: typeof native) => {
+    const events: unknown[] = []
+    let batch = 0
+    const result = await collectGenerator(outer(() => {
+      const index = batch++
+      return (async function* () { yield index; return false })()
+    }, value => events.push(value)))
+    return { result, batch, events }
+  }
+  const actual = await run(lowered)
+  expect(actual).toEqual(await run(native))
+  expect(actual).toEqual({ result: { values: [0, 1], completion: 'terminal' }, batch: 2,
+    events: ['inner', 'body.finally', 'inner', 'body.finally'] })
+})
+
+test.each(['async-resolve', 'async-reject', 'sync-resolve'] as const)(
+  'preserves native completion truthiness without adopting raw async thenables: %s', async (mode) => {
+    type Source = AsyncIterable<unknown, unknown, unknown> | Iterable<unknown, unknown, unknown>
+    async function* native(source: Source, mark: (value: string) => void) {
+      while (!(yield* source)) { mark('body'); break }
+      return 'terminal'
+    }
+    const code = transformModule('export async function* outer(source,mark){while(!(yield* source)){mark("body");break}return "terminal"}')
+    const lowered = runBody(code, () => ({}), createAlsRuntime()).outer as typeof native
+    const run = async (outer: typeof native) => {
+      const events: string[] = []
+      const thenable = { then(resolve: (value: boolean) => void, reject: (error: Error) => void) {
+        events.push('then')
+        if (mode === 'async-reject') reject(new Error('must not adopt'))
+        else resolve(false)
+      } }
+      const source: Source = mode === 'sync-resolve'
+        ? { [Symbol.iterator]: () => ({ next: () => ({ done: true, value: thenable }) }) }
+        : { [Symbol.asyncIterator]: () => ({ next: async () => ({ done: true, value: thenable }) }) }
+      return { result: await collectGenerator(outer(source, value => events.push(value))), events }
+    }
+    const actual = await run(lowered)
+    expect(actual).toEqual(await run(native))
+    expect(actual).toEqual({ result: { values: [], completion: 'terminal' },
+      events: mode === 'sync-resolve' ? ['then', 'body'] : [] })
+  },
+)
+
+test('restores the condition store after pending next before body and finally', async () => {
+  async function* native(source: AsyncIterable<unknown, unknown, unknown>, mark: (value: string) => void) {
+    try { while (!(yield* source)) { mark('body'); break } } finally { mark('finally') }
+    return 'terminal'
+  }
+  const code = transformModule('export async function* outer(source,mark){try{while(!(yield* source)){mark("body");break}}finally{mark("finally")}return "terminal"}')
+  const run = async (lowered: boolean) => {
+    const storage = new AsyncLocalStorage<string>()
+    let store: unknown = 'operation'
+    const events: unknown[] = []
+    const current = () => lowered ? store : storage.getStore()
+    const als = createAlsRuntime({ snapshot: () => store, restore: (value) => { store = value } })
+    const outer = lowered ? runBody(code, () => ({}), als).outer as typeof native : native
+    let release!: (step: IteratorResult<unknown, unknown>) => void
+    let entered!: () => void
+    const pendingStep = new Promise<IteratorResult<unknown, unknown>>((resolve) => { release = resolve })
+    const called = new Promise<void>((resolve) => { entered = resolve })
+    const source: AsyncIterable<unknown, unknown, unknown> = { [Symbol.asyncIterator]: () => ({
+      next: () => { entered(); return pendingStep },
+      return: async () => { events.push('unexpected.close'); return { done: true, value: undefined } },
+    }) }
+    const pending = storage.run('operation', () => collectGenerator(outer(source, value => events.push([value, current()]))))
+    await called
+    store = 'consumer'
+    storage.run('consumer', () => { release({ done: true, value: false }) })
+    const result = await pending
+    storage.disable()
+    return { events, result }
+  }
+  const actual = await run(true)
+  expect(actual).toEqual(await run(false))
+  expect(actual).toEqual({ events: [['body', 'operation'], ['finally', 'operation']],
+    result: { values: [], completion: 'terminal' } })
+})
+
+test.each(['', '\n'])('keeps condition, body, nested functions, and adjacent yield edits separately owned: %j', async (separator) => {
+  const source = `export async function* outer(make,mark){yield 'prefix';
+    loop:while(!(yield* await make(async()=>await mark('nested')))){
+      const nested=async()=>await mark('body-nested');await nested();break loop
+    }${separator}yield 'tail'}`
+  const code = transformModule(source)
+  expect(lineCount(code)).toBe(lineCount(source))
+  const outer = runBody(code, () => ({}), createAlsRuntime()).outer as (
+    make: (nested: () => Promise<unknown>) => unknown, mark: (value: string) => Promise<string>,
+  ) => AsyncGenerator<unknown, unknown, unknown>
+  const calls: string[] = []
+  const result = await collectGenerator(outer(nested => (async function* () { yield await nested(); return false })(),
+    (value) => { calls.push(value); return Promise.resolve(value) }))
+  expect(result.values).toEqual(['prefix', 'nested', 'tail'])
+  expect(calls).toEqual(['nested', 'body-nested'])
+})
+
+test('retains single-statement body suspension edits beside preceding await and following yield', async () => {
+  const source = 'export async function* outer(make,mark){await mark("before");yield "prefix";while(!(yield* make()))yield "body";yield "tail"}'
+  const code = transformModule(source)
+  const outer = runBody(code, () => ({}), createAlsRuntime()).outer as (
+    make: () => AsyncIterable<unknown, unknown, unknown>, mark: (value: string) => Promise<void>,
+  ) => AsyncGenerator<unknown, unknown, unknown>
+  let batch = 0
+  const calls: string[] = []
+  const result = await collectGenerator(outer(() => {
+    const index = batch++
+    return (async function* () { yield index; return index === 1 })()
+  }, (value) => { calls.push(value); return Promise.resolve() }))
+  expect(result.values).toEqual(['prefix', 0, 'body', 1, 'tail'])
+  expect(calls).toEqual(['before'])
+})
+
+test.each(['return', 'throw'] as const)('closes active while delegation before outer finally on %s', async (action) => {
+  async function* native(source: AsyncIterable<unknown, unknown, unknown>, mark: (value: string) => void) {
+    try { while (!(yield* source)) mark('unreached.body') } finally { await Promise.resolve(); mark('outer.finally') }
+  }
+  const code = transformModule('export async function* outer(source,mark){try{while(!(yield* source))mark("unreached.body")}finally{await Promise.resolve();mark("outer.finally")}}')
+  const lowered = runBody(code, () => ({}), createAlsRuntime()).outer as typeof native
+  const run = async (outer: typeof native) => {
+    const events: unknown[] = []
+    async function* inner() {
+      try { yield 'first'; return false }
+      finally { await Promise.resolve(); events.push('inner.finally') }
+    }
+    const iterator = outer(inner(), value => events.push(value))
+    events.push(await iterator.next())
+    try { events.push(await (action === 'return' ? iterator.return('cancelled') : iterator.throw(new Error('cancelled')))) }
+    catch (error) { events.push(['error', (error as Error).message]) }
+    return events
+  }
+  const actual = await run(lowered)
+  expect(actual).toEqual(await run(native))
+  expect(actual.slice(0, 3)).toEqual([{ done: false, value: 'first' }, 'inner.finally', 'outer.finally'])
+})
+
+test('retains dynamic import and body await inside a negated delegated condition', async () => {
+  const source = 'export async function* outer(mark){while(!(yield* (await import("batch")).default())){await mark("body");break}return "terminal"}'
+  const calls: string[] = []
+  async function* batch() { yield 'value'; return false }
+  const outer = runBody(transformModule(source), (specifier) => {
+    calls.push(specifier); return { __esModule: true, default: batch }
+  }, createAlsRuntime()).outer as (mark: (value: string) => Promise<void>) => AsyncGenerator<unknown, unknown, unknown>
+  const result = await collectGenerator(outer((value) => { calls.push(value); return Promise.resolve() }))
+  expect(result).toEqual({ values: ['value'], completion: 'terminal' })
+  expect(calls).toEqual(['batch', 'body'])
+})
+
 // ---------------------------------------------------------------------------
 // 7. Line numbers. The debugging contract: a stack frame in a transformed body
 //    points at the same line as the artifact it came from.
@@ -908,6 +1109,16 @@ for (const expression of ['(yield* inner, 1)', 'true ? yield* inner : yield* inn
     `export async function* f(inner) { return ${expression} }\n`,
     'yield* is only supported as the whole return argument',
   )
+}
+for (const body of [
+  'while(yield* inner){}',
+  'while(!!(yield* inner)){}',
+  'while(!(yield* inner)&&true){}',
+  'if(!(yield* inner)){}',
+  'while(!(yield* make(async function*(){const value=yield* inner}))){}',
+]) {
+  refuses(`delegation outside an exact negated while test is refused: ${body}`,
+    `export async function* f(inner,make){${body}}`, 'yield* is only supported')
 }
 refuses(
   'a conditional test consuming a delegation result is refused',

@@ -36,7 +36,7 @@ kind: "package-library"
 
 收集器依据文件扩展名与最近的包作用域传入明确的解析目标。CommonJS 脚本保留合法的旧式字符串转义及其自身的严格模式指令；ESM 继续使用严格模式。两种解析目标的转换缓存相互独立。调用方省略 `sourceType` 时，`lowerModuleSource` 默认使用严格的模块解析目标。
 
-转换器将表达式语句、条件分支与逗号操作数中结果被丢弃的 `yield*` 转换为现有委托循环。条件测试及操作数保留求值顺序，且仅执行被选择的分支。也支持完整的 `return yield* source` 参数：通过 ALS 协议等待并接收终值后，再执行外层 `finally`。其它消费位置，包括变量初始化、赋值、调用、条件测试及条件或逗号返回表达式，仍不受支持并会拒绝打包。委托的 `next` 传值与等待迭代器释放行为保留。沿用现有受限委托协议：取消时以 `return(undefined)` 关闭并忽略自定义返回结果；消费者的 `throw()` 不会转发给内部迭代器。
+转换器将表达式语句、条件分支与逗号操作数中结果被丢弃的 `yield*` 转换为现有委托循环。条件测试及操作数保留求值顺序，且仅执行被选择的分支。也支持完整的 `return yield* source` 参数：通过 ALS 协议等待并接收终值后，再执行外层 `finally`。也支持精确的否定条件 `while (!(yield* source))`：标签仍绑定循环，每次条件只求值一次操作数。异步迭代器的原始终值保留原生真值语义；同步迭代器的值仍由现有适配器等待并接收。其它消费位置，包括变量初始化、赋值、调用、其它条件及条件或逗号返回表达式，仍不受支持并会拒绝打包。委托的 `next` 传值与等待迭代器释放行为保留。沿用现有受限委托协议：取消时以 `return(undefined)` 关闭并忽略自定义返回结果；消费者的 `throw()` 不会转发给内部迭代器。
 
 验收在 `apps/web/tests/preview-boot.e2e.ts`：静态服务真实构建页面，在 headless Chromium 里驱动 pre-boot 选择面板与 Worker 激活。空白选择验证首次启动；`vfs-example` overlay 提供普通 workspace 文件与明文 persistence 产物，无需模型请求即可验证 Workspace/Session 冷发现、工具呈现、subagent 导航和历史分页。[打包器](../webworker-packer/README.zh.md)在 Node 中根据已提交的历史日志准备当前代后继文件；这些源日志在 overlay 中逐字节保持不变。fixture 生成器负责验收测试的当前投影缓存。选择面板为 WebFS 保留独立的用户授权来源；该 provider 不读取内置 fixture。
 

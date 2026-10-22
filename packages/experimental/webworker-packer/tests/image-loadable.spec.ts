@@ -116,7 +116,7 @@ const packed = (): ReturnType<typeof packVfsImage> => memo ??= packVfsImage({
 
 let landlockMemo: ReturnType<typeof packVfsImage> | undefined
 const packedLandlock = (): ReturnType<typeof packVfsImage> => landlockMemo ??= packVfsImage({
-  config: `- id: subject\n  name: '${LANDLOCK}'\n`,
+  config: `- id: subject\n  name: '${LANDLOCK_ENTRY}'\n`,
   profile: 'landlock-package-check',
   workspaces,
   pagePackages,

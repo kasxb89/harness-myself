@@ -73,7 +73,7 @@ class Transformer {
   private readonly moduleRequests = new Set<string>()
   private readonly metaResolveRequests = new Set<string>()
   private readonly createRequireBindings = new Set<string>()
-  private readonly delegationStatements = new Set<Node>()
+  private readonly delegationOrigins = new Set<Node>()
   private editOwner: Node | undefined
 
   constructor(source: string, private readonly path: string, private readonly sourceType: 'module' | 'script') {
@@ -289,12 +289,13 @@ class Transformer {
   /**
    * `yield` resumes with whatever the consumer sent, so the snapshot is taken
    * before suspending and restored when the call completes. Delegation results
-   * are discarded or directly returned: statement-position conditional and comma
-   * expressions become branches and ordered statements before lowering. A
+   * are discarded, directly returned, or tested by an exact negated while:
+   * statement-position conditional and comma expressions become branches and
+   * ordered statements before lowering. A
    * consumer's `throw()` is not forwarded into the inner iterator (`next` and
    * `return` are).
    */
-  private yieldExpression(node: Node, statement: Node | undefined): void {
+  private yieldExpression(node: Node, statement: Node | undefined, whileStatement: Node | undefined): void {
     if (node.delegate !== true) {
       this.insert(node.start, `${ALS}.afterYield(${ALS}.snapshot(),`)
       this.insert(node.end, ')')
@@ -302,20 +303,37 @@ class Transformer {
     }
     const argument = node.argument as Node | null
     if (argument === null) this.fail('yield* without an operand', node.start)
+    if (whileStatement !== undefined) {
+      const test = whileStatement.test as Node
+      if (test.type !== 'UnaryExpression' || test.operator !== '!' || test.argument !== node) {
+        this.fail('yield* is only supported as the whole negated while condition', node.start)
+      }
+      if (this.delegationOrigins.has(test)) return
+      this.delegationOrigins.add(test)
+      const body = whileStatement.body as Node
+      this.structural(whileStatement.start, whileStatement.end, (inner) => {
+        const completion = this.alsTemp()
+        // The label still binds to this loop. Body break/continue must stay
+        // outside the delegation loop, with the body's own lexical scope.
+        return `while(true){let ${completion};${this.delegation(argument, inner, { assign: completion })}`
+          + `if(${completion})break;{${inner(body.start, body.end)}}}`
+      }, true)
+      return
+    }
     if (statement === undefined) this.fail('yield* is only supported as a statement', node.start)
     if (statement.type === 'ReturnStatement') {
       if (statement.argument !== node) this.fail('yield* is only supported as the whole return argument', node.start)
-      if (this.delegationStatements.has(statement)) return
-      this.delegationStatements.add(statement)
-      this.structural(statement.start, statement.end, inner => this.delegation(argument, inner, true), true)
+      if (this.delegationOrigins.has(statement)) return
+      this.delegationOrigins.add(statement)
+      this.structural(statement.start, statement.end, inner => this.delegation(argument, inner, 'return'), true)
       return
     }
     const expression = statement.expression as Node
     if (!this.discardsDelegation(expression, node)) {
       this.fail('yield* is only supported as the whole statement expression', node.start)
     }
-    if (this.delegationStatements.has(statement)) return
-    this.delegationStatements.add(statement)
+    if (this.delegationOrigins.has(statement)) return
+    this.delegationOrigins.add(statement)
     this.structural(statement.start, statement.end, inner => this.discardedExpression(expression, inner), true)
   }
 
@@ -346,17 +364,21 @@ class Transformer {
     return this.delegation(expression.argument as Node, inner)
   }
 
-  /** Delegation protocol, optionally adopting a directly returned terminal value before finally. */
-  private delegation(argument: Node, inner: (from: number, to: number) => string, returns = false): string {
+  /** Adopt return values; preserve raw async-iterator completion values for condition truthiness. */
+  private delegation(
+    argument: Node, inner: (from: number, to: number) => string, completion?: 'return' | { readonly assign: string },
+  ): string {
     const iterator = this.alsTemp()
     const step = this.alsTemp()
     const sent = this.alsTemp()
     const exhausted = this.alsTemp()
+    const finish = completion === 'return' ? `return ${ALS}.resume(await ${ALS}.pause(${step}.value))`
+      : completion === undefined ? 'break' : `${completion.assign}=${step}.value;break`
     return [
       `{const ${iterator}=${ALS}.iterator(${inner(argument.start, argument.end)});`,
       `let ${sent};let ${exhausted}=false;`,
       `try{for(;;){const ${step}=${ALS}.resume(await ${ALS}.pause(${iterator}.next(${sent})));`,
-      `if(${step}.done){${exhausted}=true;${returns ? `return ${ALS}.resume(await ${ALS}.pause(${step}.value))` : 'break'}}`,
+      `if(${step}.done){${exhausted}=true;${finish}}`,
       `${sent}=${ALS}.afterYield(${ALS}.snapshot(),yield ${step}.value)}}`,
       `finally{if(!${exhausted})${ALS}.resume(await ${ALS}.pause(${ALS}.close(${iterator})))}}`,
     ].join('')
@@ -370,6 +392,7 @@ class Transformer {
     moduleScope: boolean
     statement?: Node
     editOwner?: Node
+    whileTest?: Node
   }): void {
     if (node === null || typeof node !== 'object') return
     if (Array.isArray(node)) {
@@ -452,8 +475,16 @@ class Transformer {
         break
       }
       case 'YieldExpression':
-        if (context.asyncGenerator) this.yieldExpression(record, context.statement)
+        if (context.asyncGenerator) this.yieldExpression(record, context.statement, context.whileTest)
         break
+      case 'WhileStatement': {
+        const test = record.test as Node
+        // Only test edits belong to the normalized condition. The body and
+        // functions it contains retain their own origins and acceptance scope.
+        this.visit(test, { ...next, moduleScope: false, whileTest: record, editOwner: test })
+        this.visit(record.body, { ...next, moduleScope: false })
+        return
+      }
       case 'FunctionDeclaration':
       case 'FunctionExpression':
       case 'ArrowFunctionExpression':
@@ -561,7 +592,9 @@ class Transformer {
         // The replacement owns these edits through its child slices. Adjacent
         // statements may share an offset, so offsets alone cannot assign them.
         const owner = edit.owner
-        if (!edit.statementRewrite && owner !== undefined && this.delegationStatements.has(owner)
+        if (owner !== undefined && edit.start === edit.end && (edit.start === from || edit.start === to)
+          && (owner.end <= from || owner.start >= to)) continue
+        if (!edit.statementRewrite && owner !== undefined && this.delegationOrigins.has(owner)
           && from <= owner.start && to >= owner.end) continue
         out += this.source.slice(cursor, edit.start) + edit.render(render)
         cursor = edit.end
