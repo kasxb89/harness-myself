@@ -10,6 +10,8 @@ interface RecordedRequest {
   path: string
   method: string
   authorization: string | undefined
+  clientSource: string | string[] | undefined
+  contentType: string | undefined
   body: string
 }
 
@@ -41,7 +43,8 @@ async function upstream(handler: Handler) {
       for await (const chunk of request) if (Buffer.isBuffer(chunk)) chunks.push(chunk)
       const recorded = {
         path: request.url ?? '/', method: request.method ?? 'GET',
-        authorization: request.headers.authorization, body: Buffer.concat(chunks).toString('utf8'),
+        authorization: request.headers.authorization, clientSource: request.headers['x-yunshu-client'],
+        contentType: request.headers['content-type'], body: Buffer.concat(chunks).toString('utf8'),
       }
       calls.push(recorded)
       await handler(request, response, recorded)
@@ -87,6 +90,47 @@ async function rejection(operation: Promise<unknown>): Promise<Error> {
 }
 
 describe('account-bound video relay requests', () => {
+  it.each([undefined, 'desktop'] as const)('sends the optional %s source only to fixed video task endpoints', async (clientSource) => {
+    const remote = await upstream((_request, response) => { response.end(media) })
+    const f = await fixture((_request, response, recorded) => {
+      if (recorded.path === '/v1/models') json(response, { data: [{ id: 'video-a' }] })
+      else if (recorded.path === '/v1/videos') json(response, { task_id: 'source-task' })
+      else if (recorded.path.endsWith('/content')) response.end(media)
+      else json(response, { status: 'completed', result_url: remote.origin + '/private.mp4' })
+    }, { clientSource })
+    expect(await f.relay.modelIds(signal())).toEqual(['video-a'])
+    expect(await f.relay.submit({ model: 'video-a', seconds: 4 }, '/v1/videos', signal())).toEqual({ taskId: 'source-task' })
+    expect(await f.relay.check('source-task', '/v1/videos', signal())).toEqual({ status: 'succeeded' })
+    await f.relay.download('source-task', f.destination, signal())
+    expect(f.calls.map(call => call.clientSource)).toEqual([undefined, clientSource, clientSource, clientSource])
+    expect(f.calls[1]).toMatchObject({ contentType: 'application/json', body: JSON.stringify({ model: 'video-a', seconds: 4 }) })
+    expect(f.calls.every(call => call.authorization?.startsWith('Bearer account-key-'))).toBe(true)
+    expect(await readFile(f.destination)).toEqual(media)
+    expect(remote.calls).toEqual([])
+  })
+
+  it('keeps the Desktop source and credentials at the configured API when content redirects', async () => {
+    const remote = await upstream((_request, response) => { response.end(media) })
+    const f = await fixture((_request, response) => {
+      response.writeHead(307, { location: remote.origin + '/private.mp4' }); response.end()
+    }, { clientSource: 'desktop' })
+    await expect(f.relay.download('source-task', f.destination, signal())).rejects.toMatchObject({ code: 'VIDEO_READ_UNAVAILABLE' })
+    expect(f.calls).toMatchObject([{ path: '/v1/videos/source-task/content', clientSource: 'desktop', authorization: 'Bearer account-key-1' }])
+    expect(remote.calls).toEqual([])
+    expect(await readdir(f.cacheRoot)).toEqual([])
+  })
+
+  it('preserves the Desktop source alongside fetch-owned multipart content headers', async () => {
+    const f = await fixture((_request, response) => { json(response, { task_id: 'reference-task' }) }, { clientSource: 'desktop' })
+    await f.relay.submit({ model: 'model_5', prompt: 'A cup', seconds: 4, size: '1280x720', n: 1, gen_type: 'reference_to_video',
+      _blackrxReferences: [{ kind: 'image', mediaType: 'image/png', filename: 'reference.png', base64: Buffer.from('fixture image').toString('base64') }] }, '/v1/videos', signal())
+    expect(f.calls).toHaveLength(1)
+    expect(f.calls[0]?.clientSource).toBe('desktop')
+    expect(f.calls[0]?.contentType).toMatch(/^multipart\/form-data; boundary=/u)
+    expect(f.calls[0]?.body).toContain('name="images"; filename="reference.png"')
+    expect(f.calls[0]?.body).not.toContain('x-yunshu-client')
+  })
+
   it.each([
     [{ error: { code: 'insufficient_user_quota', type: 'new_api_error' } }, 'INSUFFICIENT_BALANCE'],
     [{ error: { code: 'insufficient_user_quota', type: 'invalid_request_error' } }, 'INSUFFICIENT_BALANCE'],

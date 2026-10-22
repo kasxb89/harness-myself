@@ -8,6 +8,7 @@
     "src"
   ],
   "references": [
+    { "path": "../../boot/app-boot" },
     { "path": "../../util/atomic-write" },
     { "path": "../../core/agent-default-model" },
     { "path": "../../api/session-controller/tsconfig.host.json" },

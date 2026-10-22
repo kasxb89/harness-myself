@@ -25,6 +25,8 @@ export interface VideoRelayOptions {
   maxDownloadBytes: number
   /** Host-owned private project cache; downloads never write directly into the workspace. */
   cacheRoot: string
+  /** Launcher-derived video traffic label, absent outside Desktop; it grants no authority. */
+  clientSource?: 'desktop' | undefined
   /** Recheck the original account/login before every request. */
   key(): Promise<string>
 }
@@ -118,7 +120,7 @@ export function createVideoProjectRelay(options: VideoRelayOptions): VideoProjec
       response = await fetch(apiUrl(baseUrl, path), {
         method: body === undefined ? 'GET' : 'POST',
         headers: { authorization: 'Bearer ' + key, accept: body === undefined && path.endsWith('/content') ? 'video/mp4' : 'application/json',
-          ...submission?.headers },
+          ...submission?.headers, ...options.clientSource === undefined || path === '/v1/models' ? {} : { 'x-yunshu-client': options.clientSource } },
         ...(submission === undefined ? {} : { body: submission.body }),
         redirect: 'error', signal: AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]),
       })

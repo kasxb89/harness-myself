@@ -12,7 +12,7 @@ import ConfigEditor from '@deepseek-ai/dsh-config-editor'
 import Settings from '../src/index.ts'
 
 /** Attach the profile runtime to an initialized Loader with a source-module importer. */
-export async function profileComposition(ctx: Context, home: string, baseFile: string): Promise<string> {
+export async function profileComposition(ctx: Context, home: string, baseFile: string, profileName = 'test'): Promise<string> {
   const dir = join(home, 'profile')
   initProfile(dir, ['test-profile-bundle'])
   const bundle = join(dir, 'node_modules', 'test-profile-bundle')
@@ -24,7 +24,7 @@ export async function profileComposition(ctx: Context, home: string, baseFile: s
   await writeFile(join(bundle, 'cordis.patch.yml'), yaml.dump([{ insert: rows }], { schema: entryListSchema }))
   await writeFile(join(dir, 'cordis.yml'), '[]\n')
   const profile: ProfileContext = {
-    name: 'test', startedBundles: ['test-profile-bundle'], dir, patchPath: join(dir, 'cordis.patch.yml'),
+    name: profileName, startedBundles: ['test-profile-bundle'], dir, patchPath: join(dir, 'cordis.patch.yml'),
     installAnchor: join(home, 'package.json'), cwd: home, home, overlays: [], telemetryDisabledEnv: undefined,
   }
   ctx.provide('profileContext', profile)

@@ -29,6 +29,7 @@
     "zod": "4.4.3"
   },
   "peerDependencies": {
+    "@deepseek-ai/dsh-app-boot": "workspace:*",
     "@deepseek-ai/dsh-agent-default-model": "workspace:*",
     "@deepseek-ai/dsh-api-session-controller": "workspace:*",
     "@deepseek-ai/dsh-attachment": "workspace:*",
@@ -51,6 +52,7 @@
     "@deepseek-ai/dsh-artifacts-index": "workspace:*"
   },
   "devDependencies": {
+    "@deepseek-ai/dsh-app-boot": "workspace:*",
     "@types/heic-decode": "2.0.0",
     "@deepseek-ai/dsh-agent-default-model": "workspace:*",
     "@deepseek-ai/dsh-api-session-controller": "workspace:*",
@@ -85,6 +87,7 @@
     "@deepseek-ai/dsh-artifacts-index": "workspace:*"
   },
   "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-app-boot": { "optional": true },
     "@deepseek-ai/dsh-session-projection": { "optional": true },
     "@deepseek-ai/dsh-agent-default-model": { "optional": true },
     "@deepseek-ai/dsh-api-session-controller": { "optional": true },

@@ -37,6 +37,7 @@ let context: Context | undefined
 let upstream: Server | undefined
 let directory: string | undefined
 const calls: { path: string; authorization?: string; origin?: string; cookie?: string; body: unknown }[] = []
+const videoHeaders: { path: string; source: string | string[] | undefined; contentType: string | undefined }[] = []
 let quotaPerUnit = 500_000
 let exchangeRate = 7.3
 let statusAvailable = true
@@ -50,6 +51,7 @@ let refreshRetryAfter: string | undefined
 let creations = 0
 let pricingRows: unknown[] = []
 let videoTaskStatus: string | undefined
+let videoResultUrl = 'https://ignored.invalid/content.mp4'
 let videoRejection: unknown
 let imageResponse: unknown
 let imageTaskStatus: string | undefined
@@ -86,6 +88,7 @@ afterEach(async () => {
   if (directory !== undefined) await rm(directory, { recursive: true, force: true })
   directory = undefined
   calls.length = 0
+  videoHeaders.length = 0
   quotaPerUnit = 500_000
   exchangeRate = 7.3
   statusAvailable = true
@@ -99,6 +102,7 @@ afterEach(async () => {
   creations = 0
   pricingRows = []
   videoTaskStatus = undefined
+  videoResultUrl = 'https://ignored.invalid/content.mp4'
   videoRejection = undefined
   imageResponse = undefined
   imageTaskStatus = undefined
@@ -130,6 +134,7 @@ async function boot(
   authenticatedHost = false,
   defaultSelection?: { provider: string; model: string; followPolicy?: boolean },
   creditsConfig: Partial<Credits.Config> = {},
+  profileName?: string,
 ): Promise<{ base: string; api: string; stateDir: string }> {
   directory = await mkdtemp(join(tmpdir(), 'harness-product-integration-'))
   const stateDir = join(directory, 'credits')
@@ -142,6 +147,9 @@ async function boot(
       const body: unknown = chunks.length === 0 ? null : request.headers['content-type']?.includes('multipart/form-data')
         ? { multipart: bytes.toString('base64') } : JSON.parse(bytes.toString('utf8'))
       const url = new URL(request.url ?? '/', 'http://127.0.0.1')
+      if (/^\/harness\/v1\/(?:video\/generations|videos)(?:\/|$)/u.test(url.pathname)) {
+        videoHeaders.push({ path: url.pathname, source: request.headers['x-yunshu-client'], contentType: request.headers['content-type'] })
+      } else expect(request.headers['x-yunshu-client']).toBeUndefined()
       calls.push({ path: url.pathname + url.search, body,
         ...request.headers.authorization === undefined ? {} : { authorization: request.headers.authorization },
         ...request.headers.origin === undefined ? {} : { origin: request.headers.origin },
@@ -218,7 +226,7 @@ async function boot(
       }
       if (url.pathname === '/harness/v1/video/generations/fixture-video-task' || url.pathname === '/harness/v1/videos/fixture-video-task') {
         if (request.headers.authorization !== `Bearer ${relayKey}`) { response.writeHead(403); response.end('{}'); return }
-        response.end(JSON.stringify({ code: 'success', data: { status: videoTaskStatus, result_url: 'https://ignored.invalid/content.mp4' } })); return
+        response.end(JSON.stringify({ code: 'success', data: { status: videoTaskStatus, result_url: videoResultUrl } })); return
       }
       if (url.pathname === '/harness/v1/videos/fixture-video-task/content') {
         if (request.headers.authorization !== `Bearer ${relayKey}`) { response.writeHead(403); response.end('{}'); return }
@@ -312,7 +320,7 @@ async function boot(
   ]
   const configuration = join(directory, 'cordis.yml')
   await writeFile(configuration, JSON.stringify(entries))
-  await profileComposition(context, directory, configuration)
+  await profileComposition(context, directory, configuration, profileName)
   expect([...context.loader.entries()].filter(entry => entry.fiber === undefined && !entry.disabled)).toEqual([])
   return { base: `http://127.0.0.1:${String(context.webServer.port)}/credits`, api, stateDir }
 }
@@ -1975,9 +1983,50 @@ describe('deployed Harness API through the real product Loader', () => {
     expect(calls.some(call => call.path.includes('chat/completions'))).toBe(false)
   })
 
+  it.each(['desktop', 'web', 'headless'] as const)('labels only Desktop video requests from the %s launcher profile across chat and project operations', async (profileName) => {
+    let options: VideoProjectOptions | undefined
+    const register = VideoProjectTools.registerVideoProjectTools
+    vi.spyOn(VideoProjectTools, 'registerVideoProjectTools').mockImplementation((ctx, value) => {
+      options = value
+      register(ctx, value)
+    })
+    const { base, stateDir, api } = await boot(undefined, false, false, undefined, {}, profileName)
+    await signIn(base)
+    pricingRows = [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }]
+    videoTaskStatus = 'SUCCESS'
+    videoResultUrl = api + '/fixtures/private.mp4'
+    const agent = videoAgent(stateDir)
+    const outcome = object((await context!.tools.execute({ callId: ToolCallId('source-chat'), name: 'generate_video',
+      arguments: { prompt: 'A synthetic clip', model: 'MiniMax-H3', duration_seconds: 4 }, agent, signal: new AbortController().signal })).value)
+    expect(outcome.status).toBe('succeeded')
+    if (options === undefined) throw new Error('Expected the production project provider')
+    const signal = new AbortController().signal
+    const provider = await options.acquireProvider(stateDir, agent.session)
+    const selected = await provider.model('MiniMax-H3', signal)
+    const request = await provider.build({ prompt: 'A synthetic clip', totalDurationSeconds: 4 }, selected.id, 'A synthetic clip', 4, signal)
+    const accepted = await provider.submit(request, signal)
+    expect(await provider.check(accepted.taskId, request, signal)).toEqual({ status: 'succeeded' })
+    const cache = join(stateDir, 'video-projects')
+    await mkdir(cache, { recursive: true })
+    const destination = join(cache, 'source-check.mp4')
+    await provider.download(accepted.taskId, request, destination, signal)
+    expect(await readFile(destination)).toEqual(generatedVideo)
+    expect(videoHeaders.map(call => call.path)).toEqual(Array.from({ length: 2 }, () => [
+      '/harness/v1/video/generations', '/harness/v1/video/generations/fixture-video-task', '/harness/v1/videos/fixture-video-task/content',
+    ]).flat())
+    expect(videoHeaders.map(call => call.source)).toEqual(Array<string | undefined>(6).fill(profileName === 'desktop' ? 'desktop' : undefined))
+    expect(videoHeaders.filter(call => call.path === '/harness/v1/video/generations').map(call => call.contentType)).toEqual(['application/json', 'application/json'])
+    expect(calls.filter(call => call.path.startsWith('/harness/v1/video')).every(call => call.authorization === 'Bearer sk-owned-relay')).toBe(true)
+    expect(calls.some(call => call.path === '/harness/fixtures/private.mp4')).toBe(false)
+    expect(await post(base, '/api/video/tasks?source=newapi', { prompt: 'A synthetic clip', model: 'MiniMax-H3', durationSeconds: 4 }))
+      .toMatchObject({ ok: true })
+    expect(videoHeaders.at(-1)).toEqual({ path: '/harness/v1/video/generations',
+      source: profileName === 'desktop' ? 'desktop' : undefined, contentType: 'application/json' })
+  })
+
   it.each(['panel', 'chat', 'linked-panel'] as const)('submits H3 through the %s entry and saves uppercase generic task success', async (entry) => {
     const linked = entry === 'linked-panel'
-    const { base, stateDir } = await boot(undefined, linked, linked)
+    const { base, stateDir } = await boot(undefined, linked, linked, undefined, {}, 'desktop')
     const cookie = linked ? await hostCookie(base) : undefined
     if (linked) context!.sessions.create(SessionId('panel-video-chat'), { meta: { cwd: stateDir } })
     await signIn(base)
@@ -2007,6 +2056,7 @@ describe('deployed Harness API through the real product Loader', () => {
       '/harness/v1/video/generations', '/harness/v1/video/generations/fixture-video-task', '/harness/v1/videos/fixture-video-task/content',
     ])
     expect(videoCalls.every(call => call.authorization === 'Bearer sk-owned-relay')).toBe(true)
+    expect(videoHeaders.map(call => call.source)).toEqual(['desktop', 'desktop', 'desktop'])
     expect(calls.some(call => call.path === '/harness/v1/videos' || call.path.startsWith('/v1/'))).toBe(false)
   })
 

@@ -23,6 +23,7 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-client-connection'
 import type {} from '@deepseek-ai/dsh-api-session-controller'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
+import type {} from '@deepseek-ai/dsh-app-boot'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import z from '@deepseek-ai/schemastery'
 import QRCode from 'qrcode'
@@ -790,6 +791,9 @@ export function apply(ctx: Context, config: Config): void {
   /** Backend requests preserve the validated deployment path and never follow redirects. */
   const apiFetch = async (route: string, init: RequestInit = {}): Promise<Response> =>
     await fetch(apiUrl(apiBaseUrl, route), { ...init, redirect: 'error' })
+  /** Launcher facts identify Desktop video traffic for diagnostics, never authorization. */
+  const videoClientSource = (): 'desktop' | undefined => ctx.get('profileContext')?.name === 'desktop' ? 'desktop' : undefined
+  const videoClientHeaders = (): Record<string, string> => videoClientSource() === 'desktop' ? { 'x-yunshu-client': 'desktop' } : {}
   const diagnosticModelIds = new Set<string>()
 
   /** Remote artifact redirects cannot move a request onto another service. */
@@ -1107,18 +1111,18 @@ export function apply(ctx: Context, config: Config): void {
         const ownedKey = await currentKey?.() ?? key
         operationSignal.throwIfAborted()
         const submission = videoSubmission(request)
-        return apiFetch(route, { method: 'POST', headers: { authorization: `Bearer ${ownedKey}`, accept: 'application/json', ...submission.headers }, body: submission.body, signal: operationSignal })
+        return apiFetch(route, { method: 'POST', headers: { authorization: `Bearer ${ownedKey}`, accept: 'application/json', ...submission.headers, ...videoClientHeaders() }, body: submission.body, signal: operationSignal })
       },
       read: async (taskId, operationSignal) => {
         const ownedKey = await currentKey?.() ?? key
         operationSignal.throwIfAborted()
-        return apiFetch(`${route}/${encodeURIComponent(taskId)}`, { headers: { authorization: `Bearer ${ownedKey}`, accept: 'application/json' }, signal: operationSignal })
+        return apiFetch(`${route}/${encodeURIComponent(taskId)}`, { headers: { authorization: `Bearer ${ownedKey}`, accept: 'application/json', ...videoClientHeaders() }, signal: operationSignal })
       },
       save: async (taskId, operationSignal) => {
         const ownedKey = await currentKey?.() ?? key
         operationSignal.throwIfAborted()
         const response = await apiFetch(`/v1/videos/${encodeURIComponent(taskId)}/content`, {
-          headers: { authorization: `Bearer ${ownedKey}`, accept: 'video/mp4' }, redirect: 'error', signal: AbortSignal.any([operationSignal, AbortSignal.timeout(300_000)]),
+          headers: { authorization: `Bearer ${ownedKey}`, accept: 'video/mp4', ...videoClientHeaders() }, redirect: 'error', signal: AbortSignal.any([operationSignal, AbortSignal.timeout(300_000)]),
         })
         if (!response.ok) { await response.body?.cancel(); throw new VideoProjectError('VIDEO_CONTENT_UNAVAILABLE', '原视频暂时无法下载，请继续查询原任务，不要重新生成。') }
         const declared = Number(response.headers.get('content-length'))
@@ -3354,7 +3358,7 @@ export function apply(ctx: Context, config: Config): void {
             const submission = videoSubmission(built.request)
             const created = await apiFetch(capability.model.route, {
               method: 'POST',
-              headers: { authorization: `Bearer ${key}`, accept: 'application/json', ...submission.headers },
+              headers: { authorization: `Bearer ${key}`, accept: 'application/json', ...submission.headers, ...videoClientHeaders() },
               body: submission.body,
               signal: AbortSignal.timeout(Math.max(resolved.timeoutMs, 180_000)),
             })
@@ -3628,6 +3632,7 @@ export function apply(ctx: Context, config: Config): void {
           origin: apiBaseUrl, timeoutMs: resolved.timeoutMs, submitTimeoutMs: Math.max(resolved.timeoutMs, 180_000),
           downloadTimeoutMs: Math.max(resolved.timeoutMs, 300_000),
           maxDownloadBytes: resolved.videoProjectDownloadMaxBytes, cacheRoot: projectState, key: () => binding.key(),
+          clientSource: videoClientSource(),
         })
         const models = new Map<string, ModelCapability>()
         /** Resolve the saved model again when resuming a project with a fresh provider. */
