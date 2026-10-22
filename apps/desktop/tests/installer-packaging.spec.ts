@@ -124,6 +124,53 @@ describe('installer preparation preserves application dependencies', () => {
     expect(versionFields.some(field => /deepseek|electron desktop shell/iu.test(field))).toBe(false)
   })
 
+  it('isolates the actual Windows fixture product filename while retaining production settings', async () => {
+    const { createElectronBuilderConfig } = await import('../scripts/electron-builder-config.mjs')
+    const { createWindowsInstallerFixtureConfig } = await import('../scripts/windows-installer-fixture-config.mjs')
+    const config = createElectronBuilderConfig({ DSH_DESKTOP_APP_ID: 'com.example.installertest', DSH_DESKTOP_UNSIGNED: '1' }, 'win32', 'x64')
+    const productName = 'Harness Installer Test 0123abcd'
+    const fixtureConfig = createWindowsInstallerFixtureConfig(config, productName)
+    expect(fixtureConfig).not.toBe(config)
+    expect(fixtureConfig.win).not.toBe(config.win)
+    expect(fixtureConfig.win).toEqual({ ...config.win, executableName: productName })
+    expect(fixtureConfig.win.signtoolOptions).toBe(config.win.signtoolOptions)
+    expect(fixtureConfig.protocols).toBe(config.protocols)
+    const metadata = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
+      name: string
+      version: string
+      description: string
+    }
+    const appInfoFor = (builderConfig: { productName: string; win: { executableName: string } }) => {
+      const packager = new Packager({ projectDir: tmpdir() })
+      Object.defineProperties(packager, {
+        config: { value: builderConfig }, metadata: { value: metadata }, devMetadata: { value: metadata },
+      })
+      return new AppInfo(packager, null, { executableName: builderConfig.win.executableName })
+    }
+    // NsisTarget emits PRODUCT_FILENAME from this real AppInfo field.
+    const inheritedExecutable = appInfoFor({ ...config, productName })
+    expect(inheritedExecutable.productName).toBe(productName)
+    expect(inheritedExecutable.productFilename).toBe('Yunshu')
+    const fixture = appInfoFor(fixtureConfig)
+    expect(fixture.productName).toBe(productName)
+    expect(fixture.productFilename).toBe(productName)
+    const production = appInfoFor(config)
+    expect(production.productName).toBe('云枢')
+    expect(production.productFilename).toBe('Yunshu')
+    expect(config.win.executableName).toBe('Yunshu')
+  })
+
+  it.each(['Yunshu', 'Harness Installer Test', 'Harness Installer Test 0123abcd\n'])(
+    'rejects a non-fixture Windows installer identity: %j', async (productName) => {
+      const { createElectronBuilderConfig } = await import('../scripts/electron-builder-config.mjs')
+      const { createWindowsInstallerFixtureConfig } = await import('../scripts/windows-installer-fixture-config.mjs')
+      const config = createElectronBuilderConfig({ DSH_DESKTOP_APP_ID: 'com.example.installertest', DSH_DESKTOP_UNSIGNED: '1' }, 'win32', 'x64')
+      expect(() => createWindowsInstallerFixtureConfig(config, productName))
+        .toThrow('Windows installer fixture requires a per-run Harness Installer Test name')
+      expect(config.win.executableName).toBe('Yunshu')
+    },
+  )
+
   it('names unsigned Windows artifacts so they cannot pass for release builds', async () => {
     const { createElectronBuilderConfig } = await import('../scripts/electron-builder-config.mjs')
     const config = createElectronBuilderConfig({
