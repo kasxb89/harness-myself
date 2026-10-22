@@ -119,7 +119,7 @@ it.each([
   await ctx.plugin(ToolRuntime)
   const toolNames = [
     'dsh_im_return_file', 'edit_video', 'find_dsh_plugin', 'generate_image', 'generate_video',
-    'generate_video_project', 'get_creation_plan', 'ipollowork_video_validate', 'query_image_task',
+    'generate_video_project', 'get_creation_plan', 'ipollowork_video_validate', 'list_video_models', 'query_image_task',
     'query_video_task', 'resume_video_project', 'univer_api', 'univer_compile_svg', 'univer_execute',
     'univer_export', 'univer_import', 'univer_inspect', 'univer_lint', 'univer_new', 'univer_print_pdf',
     'univer_resources', 'univer_screenshot', 'univer_status', 'univer_unit', 'univer_worktree',

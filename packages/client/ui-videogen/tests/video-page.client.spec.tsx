@@ -14,6 +14,7 @@ const params = {
   durationByResolution: undefined as Readonly<Record<string, readonly number[]>> | undefined,
   durations: [5, 10], resolutions: ['720p', '1080p'], ratios: ['16:9', '9:16'], frameSlots: 2,
   maxReferenceImages: 3, maxReferenceVideos: 1, maxReferenceAudios: 1,
+  audioOutput: undefined as 'unknown' | 'supported' | 'unsupported' | undefined,
   audio: true, audioToggle: true, modes: ['normal', 'pro'], seed: true,
 }
 const json = (value: object): Response => new Response(JSON.stringify(value), { headers: { 'content-type': 'application/json' } })
@@ -651,6 +652,42 @@ describe('video composer', () => {
     expect(task).not.toHaveBeenCalled()
   })
 
+  it.each(['no-session', 'unknown', 'pending', 'read-failed'] as const)('allows browsing video controls while submission is blocked: %s', async (reason) => {
+    if (reason === 'no-session') chatSessionId = undefined
+    const { mount, task, projects, store } = setup()
+    if (reason === 'read-failed') projects.mockResolvedValue(new Response(null, { status: 503 }))
+    if (reason === 'unknown' || reason === 'pending') projects.mockResolvedValue(json({ ok: true, payload: {
+      accountId: 'account-a', projects: [{ id: 'project-original', sessionId: 'session-a', kind: 'video', tasks: [{
+        id: 'operation-original', status: reason === 'pending' ? 'running' : 'unknown', canQuery: true,
+        videoReceipt: { taskId: 'task-original', model: 'video-real' },
+      }] }],
+    } }))
+    mount()
+    await ready()
+    if (reason === 'read-failed') await screen.findByText(zh.originalCheckFailed)
+    if (reason === 'unknown' || reason === 'pending') await screen.findByText(zh.originalAccepted)
+    const model = screen.getByRole('button', { name: zh.model })
+    const settings = screen.getByLabelText(t('settingsTrigger', { ratio: '16:9', resolution: '720p', duration: '5' }))
+    const template = screen.getByRole('button', { name: t('previewNamed', { name: '商品出场短片' }) })
+    expect({ model: model.hasAttribute('disabled'), settings: settings.getAttribute('aria-disabled'), template: template.hasAttribute('disabled') })
+      .toEqual({ model: false, settings: 'false', template: false })
+    fireEvent.click(model)
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Smaller video model' }))
+    fireEvent.click(settings)
+    expect(settings.parentElement?.hasAttribute('open')).toBe(true)
+    fireEvent.click(template)
+    const dialog = await screen.findByRole('dialog', { name: '商品出场短片' })
+    expect(within(dialog).getByText('后台商品脚本')).toBeTruthy()
+    fireEvent.click(within(dialog).getByRole('button', { name: zh.useScript }))
+    expect(store.getSnapshot().prompt).toBe('后台商品脚本')
+    const submit = screen.getByRole('button', { name: zh.submit })
+    expect(submit.hasAttribute('disabled')).toBe(true)
+    fireEvent.click(submit)
+    expect(task).not.toHaveBeenCalled()
+    if (reason === 'no-session') expect(projects).not.toHaveBeenCalled()
+    if (reason === 'unknown' || reason === 'pending') expect(Object.values(store.getSnapshot().unsettled)[0]?.taskId).toBe('task-original')
+  })
+
   it('keeps mounted workspace coordinates when selecting, previewing and downloading video history', async () => {
     const { mount, store } = setup()
     const original = fetcher.getMockImplementation()!
@@ -993,6 +1030,21 @@ describe('video composer', () => {
     if (typeof request !== 'string') throw new Error('Expected video JSON body')
     expect(JSON.parse(request)).toMatchObject({ durationSeconds: 4, resolution: '768P', ratio: '1:1' })
     expect(JSON.parse(request)).not.toHaveProperty('audio')
+  })
+
+  it('does not describe an unknown upstream audio output as silent', async () => {
+    const { task, mount } = setup({ audio: false, audioToggle: false, audioOutput: 'unknown' })
+    mount()
+    await ready()
+    fireEvent.click(screen.getByLabelText(t('settingsTrigger', { ratio: '16:9', resolution: '720p', duration: '5' })))
+    const panel = screen.getByRole('group', { name: zh.settings })
+    expect(within(panel).getByText(zh.audioUnknownHint)).toBeTruthy()
+    expect(within(panel).queryByText(zh.audioFixedOff)).toBeNull()
+    expect(within(panel).queryByRole('switch')).toBeNull()
+    writePrompt()
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    await waitFor(() => { expect(task).toHaveBeenCalledOnce() })
+    expect(requestBody(task.mock.calls[0]?.[0])).not.toHaveProperty('audio')
   })
 
   it.each([true, false])('explains a model-fixed audio state without offering a switch: %s', async (audio) => {

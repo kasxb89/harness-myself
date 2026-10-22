@@ -14,7 +14,13 @@ const UNKNOWN_OUTCOME_CODES = new Set([
   'PROJECT_STORAGE_FAILED', 'TIMEOUT', 'TRANSPORT', 'NO_TASK_ID',
 ])
 
-type MediaFailure = ProductFailureKind | 'unknown-outcome' | 'accepted-pending'
+type MediaFailure = ProductFailureKind | 'unknown-outcome' | 'accepted-pending' | 'accepted-queued' | 'model-parameters'
+
+const PARAMETER_FAILURES = new Set([
+  'DURATION_NOT_SUPPORTED', 'SHOT_DURATION_UNSUPPORTED', 'SHOT_DURATION_MISMATCH', 'SHOT_COUNT_MISMATCH',
+  'AUDIO_NOT_SUPPORTED', 'RESOLUTION_NOT_SUPPORTED', 'RATIO_NOT_SUPPORTED', 'PARAMETER_NOT_SUPPORTED',
+  'REFERENCES_NOT_SUPPORTED', 'MIX_NOT_SUPPORTED', 'MODE_NOT_SUPPORTED', 'SEED_NOT_SUPPORTED',
+])
 
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -36,6 +42,10 @@ export function mediaFailure(toolName: string, block: ToolCallBlock): MediaFailu
     if (!record(value)) continue
     if (value.status === 'unauthorized') return 'sign-in'
     if (value.submission_state === 'unknown') return 'unknown-outcome'
+    if (value.code === 'VIDEO_QUEUE_WAITING' && value.submission_state === 'pending'
+      && typeof value.task_id === 'string' && value.task_id.trim() !== '') return 'accepted-queued'
+    if (value.code === 'VIDEO_TASK_TIMEOUT' && Array.isArray(value.task_ids)
+      && value.task_ids.some(id => typeof id === 'string' && id.trim() !== '')) return 'accepted-pending'
     if (value.submission_state !== 'failed' && value.status !== 'failed'
       && (value.status === 'pending' || value.status === 'running' || value.submission_state === 'pending')) {
       return typeof value.task_id === 'string' && value.task_id.trim() !== '' ? 'accepted-pending' : 'unknown-outcome'
@@ -45,6 +55,7 @@ export function mediaFailure(toolName: string, block: ToolCallBlock): MediaFailu
     if ((value.status === 'failed' || value.status === 'running' || value.ok === false)
       && typeof value.code === 'string' && UNKNOWN_OUTCOME_CODES.has(value.code)) return 'unknown-outcome'
     if (value.status === 'failed' || value.ok === false) {
+      if (typeof value.code === 'string' && PARAMETER_FAILURES.has(value.code)) return 'model-parameters'
       return value.code === 'AUTH_REQUIRED' ? 'sign-in' : productFailureKind(value.code)
     }
   }

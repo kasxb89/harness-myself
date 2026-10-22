@@ -88,6 +88,45 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); cleanup(); vi.unstubAllGlobals() })
 
 describe('image creation workspace', () => {
+  it.each(['no-session', 'unknown', 'read-failed'] as const)('keeps draft controls available with %s admission while generation stays paused', async (admission) => {
+    if (admission === 'no-session') chatSessionId = undefined
+    const original = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation(async (input, init) => {
+      if (!requestUrl(input).startsWith('/credits/api/creative/projects?')) return await original(input, init)
+      if (admission === 'read-failed') return new Response('', { status: 503 })
+      return json({ ok: true, payload: { accountId: 'account-a', projects: [{ id: 'cp_original', sessionId: 'session-a',
+        kind: 'image', tasks: [{ id: 'op_original', status: 'unknown', canQuery: false }] }] } })
+    })
+    const { props, store } = makeProps()
+    render(<ImagePage {...props} />)
+    await ready()
+    if (admission === 'unknown') await screen.findByText(zh.originalUnknown)
+    else if (admission === 'read-failed') await screen.findByRole('button', { name: zh.originalCheck })
+    const selector = screen.getByRole('combobox', { name: zh.model })
+    expect(selector).toHaveProperty('disabled', false)
+    const parameters = screen.getByRole('button', { name: '1024x1024' })
+    expect(parameters).toHaveProperty('disabled', false)
+    fireEvent.click(parameters)
+    const ratio = screen.getByRole('combobox', { name: zh.ratio })
+    expect(ratio).toHaveProperty('disabled', false)
+    fireEvent.change(ratio, { target: { value: '1536x1024' } })
+    expect(store.getSnapshot().size).toBe('1536x1024')
+    const template = screen.getByRole('button', { name: /^深度复刻/ })
+    expect(template).toHaveProperty('disabled', false)
+    fireEvent.click(template)
+    expect(store.getSnapshot().prompt).toBe('后台复刻提示词')
+    fireEvent.change(selector, { target: { value: 'text-model' } })
+    expect(store.getSnapshot().modelId).toBe('text-model')
+    const submit = screen.getByRole('button', { name: zh.submit })
+    expect(submit).toHaveProperty('disabled', true)
+    fireEvent.click(submit)
+    expect(fetchMock.mock.calls.some(([url]) => url === '/credits/api/image/generate')).toBe(false)
+    if (admission === 'no-session') expect(fetchMock.mock.calls.filter(([url]) => requestUrl(url).startsWith('/credits/api/creative/projects?'))).toEqual([])
+    else if (admission === 'unknown') expect(Object.values(store.getSnapshot().unsettled)[0]).toMatchObject({
+      planId: 'cp_original', operationId: 'op_original', state: 'unknown',
+    })
+  })
+
   it('submits the catalog resolution tier independently of legacy pixel size', async () => {
     const original = fetchMock.getMockImplementation()!
     fetchMock.mockImplementation(async (input, init) => input === '/credits/api/media/catalog'

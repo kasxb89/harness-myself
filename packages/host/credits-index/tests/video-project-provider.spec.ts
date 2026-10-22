@@ -158,13 +158,25 @@ describe('account-bound video relay requests', () => {
   })
 
   it.each([
-    ['NOT_START', 'running'], ['SUBMITTED', 'running'], ['QUEUED', 'running'], ['IN_PROGRESS', 'running'], ['SUCCESS', 'succeeded'], ['FAILURE', 'failed'],
-    ['queued', 'running'], ['processing', 'running'], ['succeeded', 'succeeded'], ['completed', 'succeeded'], ['failed', 'failed'], ['cancelled', 'failed'],
+    ['NOT_START', 'queued'], ['SUBMITTED', 'queued'], ['QUEUED', 'queued'], ['IN_PROGRESS', 'running'], ['SUCCESS', 'succeeded'], ['FAILURE', 'failed'],
+    ['pending', 'queued'], ['in_queue', 'queued'], ['created', 'queued'], ['queued', 'queued'], ['processing', 'running'],
+    ['generating', 'running'], ['succeeded', 'succeeded'], ['completed', 'succeeded'], ['failed', 'failed'], ['cancelled', 'failed'],
   ] as const)('projects %s as %s without returning upstream messages', async (upstreamStatus, expected) => {
     const f = await fixture((_request, response) => { json(response, { task_status: upstreamStatus, message: 'secret-upstream-body' }) })
     const result = await f.relay.check('task-one', '/v1/videos', signal())
     expect(result.status).toBe(expected)
     expect(JSON.stringify(result)).not.toContain('secret-upstream-body')
+  })
+
+  it('does not claim acceptance or queue admission after a throttled POST without a task id', async () => {
+    const f = await fixture((_request, response) => { response.writeHead(429); response.end('private rate-limit detail') })
+    const error = await rejection(f.relay.submit({ model: 'video-a' }, '/v1/videos', signal()))
+    expect(error).toMatchObject({ code: 'VIDEO_SUBMIT_BUSY' })
+    expect(error.message).toContain('繁忙')
+    expect(error.message).toContain('提交结果尚未确认')
+    expect(error.message).not.toContain('排队')
+    expect(error.message).not.toContain('private')
+    expect(f.calls.map(call => call.method)).toEqual(['POST'])
   })
 
   it('refuses an unknown task state rather than treating it as successful or starting another submission', async () => {

@@ -61,7 +61,7 @@ describe('BlackRxAI exact video contracts', () => {
       params: {
         durations, defaultDuration, resolutions: ['1280x720', '720x1280', '1792x1024', '1024x1792'], ratios: [],
         maxFrameImages: 0, maxReferenceImages: images, maxReferenceVideos: videos, maxReferenceAudios: audios,
-        audioToggle: false, modes: [], seed: false,
+        audio: false, audioOutput: 'unknown', audioToggle: false, modes: [], seed: false,
       },
     })
   })
@@ -83,6 +83,17 @@ describe('BlackRxAI exact video contracts', () => {
     expect(model?.params).not.toHaveProperty('defaultDuration')
   })
 
+  it('keeps reference audio input separate from undeclared output audio support', () => {
+    const [model] = catalogFromPricing([{
+      model_name: 'k2-sd2.5-720p', supported_endpoint_types: ['openai-video'],
+      parameters: { seconds: { enum: [30] } },
+    }], null)
+    expect(model?.params).toMatchObject({
+      durations: [30], maxReferenceAudios: 10,
+      audio: false, audioOutput: 'unknown', audioToggle: false,
+    })
+  })
+
   it.each([undefined, '', '   ', null, false, 12, {}, []].map(display_name => ({ display_name })))('uses the exact model id for an unusable display name: $display_name', ({ display_name }) => {
     const id = 'sd-20-9/3/3-1'
     const [model] = catalogFromPricing([{ model_name: id, display_name }], null)
@@ -95,6 +106,28 @@ describe('BlackRxAI exact video contracts', () => {
     const [named] = catalogFromPricing([{ ...row, display_name: '云枢视频 · 15秒' }], 'product')
     expect(named).toEqual({ ...baseline, displayName: '云枢视频 · 15秒' })
     expect(catalogFromPricing([{ ...row, display_name: '云枢视频 · 15秒' }], 'other')).toEqual([])
+  })
+})
+
+describe('legacy output audio declarations', () => {
+  it.each([
+    ['MiniMax-H3', true],
+    ['kling-v1', false],
+  ] as const)('preserves %s audio support without requiring the optional field', (id, audio) => {
+    const [model] = catalogFromPricing([{
+      model_name: id, supported_endpoint_types: ['openai-video'],
+    }], null)
+    expect(model?.params).toMatchObject({ audio, audioToggle: false })
+    expect(model?.params).not.toHaveProperty('audioOutput')
+  })
+
+  it('preserves H3 audio and its known duration menu for an old pricing response', () => {
+    const params = video({ billing_usage_schema: { seconds: { type: 'number' } } })
+    expect(params).toMatchObject({
+      audio: true, audioToggle: false, minDuration: 4, maxDuration: 15,
+      resolutions: ['768P', '2K'],
+    })
+    expect(params).not.toHaveProperty('audioOutput')
   })
 })
 

@@ -904,7 +904,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-credits-index`
 
 - `inject`: `webServer` · `tools`
-- `source`: [`packages/host/credits-index/src/index.ts:82`](../packages/host/credits-index/src/index.ts)
+- `source`: [`packages/host/credits-index/src/index.ts:83`](../packages/host/credits-index/src/index.ts)
 
 ```ts config-catalog
 /** Plugin config: platform origin, display rate, and where the session file lives. */
@@ -929,6 +929,10 @@ export interface Config {
   videoSubmitTimeoutMs?: number
   /** Complete single-video polling and saving deadline. */
   videoTaskTimeoutMs?: number
+  /** Foreground chat observation deadline after a video task is accepted. */
+  videoChatWaitMs?: number
+  /** Foreground chat recovery deadline for reading an accepted video task. */
+  videoChatQueryWaitMs?: number
   /** Delay between original-video task queries. */
   videoPollIntervalMs?: number
   /** Consecutive transient video-query retry budget; submissions are never retried. */

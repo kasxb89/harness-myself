@@ -36,6 +36,7 @@ import { PhoneAuthState, type PhoneDeliveryStatus } from './phone-auth-state.ts'
 import { parseClientModelConfigStatus } from './client-model-config.ts'
 import { orderProductModels, preferredProductModel, type ProductModelPresentation } from './model-presentation.ts'
 import { ClientActivitySessions, parseClientActivity, type ClientActivitySample } from './client-activity.ts'
+import { ClientToolErrorReporter, type ClientToolErrorAccount } from './client-tool-errors.ts'
 import { parseUsageWindow, readAccountUsage } from './usage.ts'
 import { ChatUsageReader, parseChatUsageQuery } from './chat-usage-reader.ts'
 import { chatReceiptProjection, selectChatReceipts } from './chat-usage-projection.ts'
@@ -100,6 +101,10 @@ export interface Config {
   videoSubmitTimeoutMs?: number
   /** Complete single-video polling and saving deadline. */
   videoTaskTimeoutMs?: number
+  /** Foreground chat observation deadline after a video task is accepted. */
+  videoChatWaitMs?: number
+  /** Foreground chat recovery deadline for reading an accepted video task. */
+  videoChatQueryWaitMs?: number
   /** Delay between original-video task queries. */
   videoPollIntervalMs?: number
   /** Consecutive transient video-query retry budget; submissions are never retried. */
@@ -168,6 +173,8 @@ export const Config: z<Config> = z.object({
   imageQueryRetryLimit: z.number().step(1).min(0).max(5).default(2),
   videoSubmitTimeoutMs: z.number().step(1).min(1).max(2_147_483_647).default(180_000),
   videoTaskTimeoutMs: z.number().step(1).min(1).max(2_147_483_647).default(900_000),
+  videoChatWaitMs: z.number().step(1).min(1).max(2_147_483_647).default(60_000),
+  videoChatQueryWaitMs: z.number().step(1).min(1).max(2_147_483_647).default(30_000),
   videoPollIntervalMs: z.number().step(1).min(1).max(60_000).default(6000),
   videoQueryRetryLimit: z.number().step(1).min(0).max(5).default(2),
   relayPort: z.number().step(1).min(1).default(8791),
@@ -413,6 +420,9 @@ class SessionStore {
   get path(): string {
     return this.file
   }
+
+  /** Already committed login snapshot; never starts storage or credential I/O. */
+  peek(): StoredSession | null | undefined { return this.cached }
 
   /** Read the stored session, or null when signed out. */
   async read(): Promise<StoredSession | null> {
@@ -782,6 +792,7 @@ export function apply(ctx: Context, config: Config): void {
   /** Backend requests preserve the validated deployment path and never follow redirects. */
   const apiFetch = async (route: string, init: RequestInit = {}): Promise<Response> =>
     await fetch(apiUrl(apiBaseUrl, route), { ...init, redirect: 'error' })
+  const diagnosticModelIds = new Set<string>()
 
   /** Remote artifact redirects cannot move a request onto another service. */
   const mediaFetch = async (url: string, init: RequestInit): Promise<Response> => {
@@ -915,6 +926,8 @@ export function apply(ctx: Context, config: Config): void {
       const last = order.size
       const models = catalogFromPricing(rows, group).toSorted((left, right) =>
         (order.get(left.id) ?? last) - (order.get(right.id) ?? last))
+      diagnosticModelIds.clear()
+      for (const model of models) diagnosticModelIds.add(model.id)
       return { ok: true, group, models }
     } catch (error) {
       return {
@@ -1079,6 +1092,7 @@ export function apply(ctx: Context, config: Config): void {
     resumeReceipt?: CreativeVideoReceipt, currentKey?: () => Promise<string>, savedOutput?: (path: string) => Promise<void>,
     reuseSavedOutput?: (bytes: Uint8Array) => Promise<string | undefined>,
     origin?: ArtifactOrigin,
+    foregroundWaitMs?: number,
   ): Promise<MediaOutcome> => {
     let output: CapturedMediaOutput | undefined
     return executeVideoTask({
@@ -1087,6 +1101,7 @@ export function apply(ctx: Context, config: Config): void {
       backendFingerprint: createHash('sha256').update(apiBaseUrl).digest('hex'), signal,
       submitTimeoutMs: Math.max(resolved.timeoutMs, resolved.videoSubmitTimeoutMs, 180_000), taskTimeoutMs: resolved.videoTaskTimeoutMs,
       queryTimeoutMs: resolved.timeoutMs, pollIntervalMs: resolved.videoPollIntervalMs, queryRetryLimit: resolved.videoQueryRetryLimit,
+      ...foregroundWaitMs === undefined ? {} : { foregroundWaitMs },
       prepare: async (operationSignal) => { output = await captureMediaOutput(ctx.get('artifactStorage'), join(stateDir, 'media'), operationSignal, resumeReceipt === undefined ? origin : resumeReceipt.origin) },
       ...submitting === undefined ? {} : { submitting }, ...received === undefined ? {} : { received },
       ...resumeReceipt === undefined ? {} : { resumeReceipt },
@@ -1188,8 +1203,10 @@ export function apply(ctx: Context, config: Config): void {
       return { ok: false, code: 'SEED_NOT_SUPPORTED', message: `${model.id} 不支持随机种子` }
     }
     const audio = typeof body.audio === 'boolean' ? body.audio : null
-    if (audio !== null && !params.audioToggle && audio !== params.audio) {
-      return { ok: false, code: 'AUDIO_NOT_SUPPORTED', message: params.audio ? `${model.id} 原生生成音频，不能关闭音轨` : `${model.id} 不支持生成音频` }
+    if (audio !== null && !params.audioToggle && (params.audioOutput === 'unknown' || audio !== params.audio)) {
+      return { ok: false, code: 'AUDIO_NOT_SUPPORTED', message: params.audioOutput === 'unknown'
+        ? `${model.id} 接口没有独立音频开关，声音效果需以成片为准；若接受上游默认输出，请省略 audio 参数。需要明确的对白音轨时请选择已声明支持音频的模型，不能假定该模型必定无声。尚未提交生成。`
+        : params.audio ? `${model.id} 原生生成音频，不能关闭音轨` : `${model.id} 不支持生成音频` }
     }
     for (const field of ['frameImages', 'referenceImages', 'referenceVideos', 'referenceAudios']) {
       const ids = body[field]
@@ -1811,6 +1828,29 @@ export function apply(ctx: Context, config: Config): void {
     return await send(renewed)
   }
 
+  /** Diagnostic reads never renew a login or change account state. */
+  const diagnosticAccount = (): ClientToolErrorAccount | undefined => {
+    try {
+      const session = store.peek()
+      if (session?.token === undefined || session.upstream?.token === undefined
+        || (session.backendBaseUrl ?? (isLoopbackOrigin(apiBaseUrl) ? apiBaseUrl : undefined)) !== apiBaseUrl
+        || !Number.isFinite(Date.parse(session.expiresAt)) || Date.parse(session.expiresAt) <= Date.now()
+        || !Number.isFinite(Date.parse(session.upstream.expiresAt ?? '')) || Date.parse(session.upstream.expiresAt ?? '') <= Date.now()) return undefined
+      return { accountId: session.account.id, token: session.upstream.token }
+    } catch (_unavailableLogin: unknown) { return undefined }
+  }
+  const clientErrors = new ClientToolErrorReporter({ baseUrl: apiBaseUrl, timeoutMs: Math.min(resolved.timeoutMs, 3000),
+    key: () => Promise.resolve(diagnosticAccount()), knownModelIds: () => diagnosticModelIds,
+    fetch: (_url, init) => apiFetch('/api/client-errors', init) })
+  ctx.effect(() => () => clientErrors.dispose(), 'credits-index: bounded client tool diagnostics')
+  ctx.on('tools/execute', async (exec, next) => {
+    if (!['generate_image', 'generate_video', 'generate_video_project', 'generate_image_project'].includes(exec.name)) return await next()
+    const account = diagnosticAccount()
+    const result = await next()
+    clientErrors.submit(exec.name, exec.arguments, result.isError ? undefined : result.value, exec, account?.accountId)
+    return result
+  })
+
   const activityLife = new AbortController()
   const activitySessions = new ClientActivitySessions()
   const activityOperations = new Set<Promise<unknown>>()
@@ -2234,12 +2274,13 @@ export function apply(ctx: Context, config: Config): void {
   /** Recover exactly the accepted task in its existing operation; never POST another video. */
   const runRetainedVideo = async (
     retained: Awaited<ReturnType<CreativeStore['resumeVideoTask']>>, key: () => Promise<string>, signal: AbortSignal,
+    foregroundWaitMs?: number,
   ): Promise<MediaOutcome> => {
     const { operation, receipt } = retained
     try {
       const outcome = await runVideoTask(await key(), receipt.route, {}, signal, undefined,
         next => creative.videoReceipt(operation, next), receipt, key, path => creative.saved(operation, path, 'video'),
-        bytes => creative.matchVideoOutput(operation, bytes), receipt.origin)
+        bytes => creative.matchVideoOutput(operation, bytes), receipt.origin, foregroundWaitMs)
       await creative.finish(operation, { kind: 'video', status: outcome.ok ? 'completed' : imageCreativeStatus(outcome, signal),
         ...outcome.videoReceipt === undefined ? {} : { videoReceipt: outcome.videoReceipt },
         paths: outcome.path === undefined ? [] : [outcome.path], ...outcome.code === undefined ? {} : { errorCode: outcome.code } })
@@ -3548,6 +3589,8 @@ export function apply(ctx: Context, config: Config): void {
     const projectState = join(stateDir, 'video-projects')
     projectOptions = {
       creative,
+      failed: (manifest, code) => { clientErrors.submit('generate_video_project', { model: manifest.model },
+        { status: 'failed', code }, {}, manifest.identity.accountId) },
       creativeImageReference,
       stateDirectory: projectState,
       outputDirectory: resolved.videoProjectOutputDirectory,
@@ -3601,15 +3644,16 @@ export function apply(ctx: Context, config: Config): void {
           identity: binding.identity,
           assertCurrent: async () => { await binding.key() },
           model: async (id, signal, resolution) => {
-            const allowed = new Set(await relay.modelIds(signal))
-            const catalog = await readMediaCatalog(signal)
+            const [ids, catalog] = await Promise.all([relay.modelIds(signal), readMediaCatalog(signal)])
+            const allowed = new Set(ids)
             signal.throwIfAborted()
             if (!catalog.ok) throw new VideoProjectError('VIDEO_MODELS_UNAVAILABLE', '无法读取视频模型参数，请稍后重试')
             const selected = pickModel(catalog.models.filter(model => allowed.has(model.id)), 'video', id ?? null)
             if (selected === null) throw new VideoProjectError('VIDEO_MODEL_UNAVAILABLE', '当前登录账户没有可用的所选视频模型，请检查后台模型配置')
             models.set(selected.id, selected)
             const params = selected.params as VideoParams
-            return { id: selected.id, durations: videoDurations(params, resolution ?? null) }
+            return { id: selected.id, durations: videoDurations(params, resolution ?? null),
+              ...params.defaultDuration === undefined ? {} : { defaultDuration: params.defaultDuration } }
           },
           build: async (input, model, prompt, durationSeconds, signal): Promise<VideoProjectRequest> => {
             await binding.key()
@@ -3849,7 +3893,7 @@ export function apply(ctx: Context, config: Config): void {
         }
         if (args.plan_id === undefined) throw new CreativeError('CREATIVE_INVALID', 400, '查询原任务需要计划编号与原操作编号；请先列出现有回执。')
         const retained = await creative.resumeVideoTask(creativeOwner(exec, binding.identity), args.plan_id, args.operation_id)
-        const outcome = await runRetainedVideo(retained, () => binding.key(), exec.signal)
+        const outcome = await runRetainedVideo(retained, () => binding.key(), exec.signal, resolved.videoChatQueryWaitMs)
         return {
           status: outcome.ok ? 'succeeded' : outcome.submissionState === 'pending' ? 'pending' : outcome.submissionState === 'unknown' ? 'unknown' : 'failed',
           plan_id: retained.operation.projectId, operation_id: retained.operation.operationId,
@@ -3869,8 +3913,45 @@ export function apply(ctx: Context, config: Config): void {
   }))
 
   ctx.tools.register(defineTool({
+    name: 'list_video_models',
+    description: 'Read the signed-in account’s current video models and exact generation parameters without submitting or charging for generation. Call when planning explicit model controls or paid clip lengths. A simple single-clip request can directly call generate_video_project without total_duration_seconds: the Host resolves actual model defaults in the same call. Use exact ids, durations by resolution, size strings, reference limits and audio_output; do not infer audio from a missing switch or use display names as ids. This catalog does not report live upstream capacity. For queued work use the background generate_video_project workflow, including one clip.',
+    parameters: {},
+    output: { schema: { type: 'object', properties: {
+      status: { type: 'string' }, code: { type: 'string' }, message: { type: 'string' },
+      models: { type: 'array', items: { type: 'object', additionalProperties: true } },
+    }, additionalProperties: false }, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] },
+    presentCall: () => ({ card: 'generic', title: '读取视频模型与参数', kind: 'read' }),
+    async execute(_args, exec) {
+      try {
+        const binding = await bindCurrentVideoAccount()
+        const session = await liveSession()
+        const [catalog, visible] = await Promise.all([readMediaCatalog(exec.signal), readNewApiModels(session ?? undefined, exec.signal)])
+        await binding.key()
+        exec.signal.throwIfAborted()
+        if (!catalog.ok || !visible.ok) return { status: 'failed', code: 'VIDEO_MODELS_UNAVAILABLE', message: '暂时无法读取当前账号的视频模型，请稍后重试；尚未提交生成。' }
+        const allowed = new Set([...visible.chat, ...visible.image, ...visible.video])
+        const models = catalog.models.filter(model => model.kind === 'video' && allowed.has(model.id)).map((model) => {
+          const params = model.params as VideoParams
+          return { id: model.id, display_name: model.displayName, durations: [...params.durations],
+            ...params.defaultDuration === undefined ? {} : { default_duration: params.defaultDuration },
+            ...params.durationByResolution === undefined ? {} : {
+              durations_by_resolution: Object.fromEntries(Object.entries(params.durationByResolution)
+                .map(([resolution, durations]) => [resolution, [...durations]])),
+            },
+            resolutions: [...params.resolutions], ratios: [...params.ratios], frame_slots: params.maxFrameImages,
+            max_reference_images: params.maxReferenceImages, max_reference_videos: params.maxReferenceVideos,
+            max_reference_audios: params.maxReferenceAudios, mix_frames_and_references: params.mixFramesAndReferences,
+            audio_output: params.audioOutput ?? (params.audio ? 'supported' : 'unsupported'), audio_toggle: params.audioToggle,
+            modes: [...params.modes], seed: params.seed }
+        })
+        return { status: 'listed', models, message: '按当前参数规划生成片段；一个片段可含多个镜头切换。无独立音频开关不代表成片必定无声，未声明的音频能力不能保证对白。' }
+      } catch (_error) { return { status: 'failed', code: 'VIDEO_MODELS_UNAVAILABLE', message: '暂时无法读取视频模型，请确认登录后重试；尚未提交生成。' } }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
     name: 'generate_video',
-    description: 'Generate, poll and save one short video clip through the account relay. Call this native tool directly for a simple short-video brief; do not write submission, polling or download scripts. For story direction, character/reference continuity, dialogue or subtitles, use the yunshu-video-director skill. For a complete video such as 40 seconds or automatic assembly, use generate_video_project instead; several camera beats may fit one clip. Edit existing clips with edit_video. This single-clip tool accepts only the chosen model’s declared duration, resolution, ratio, frames and references.' + MEDIA_FAILURE_GUIDANCE,
+    description: 'Compatibility single-clip generation through the account relay. Read list_video_models first. Prefer generate_video_project for new video requests, including a single clip: its background job exposes queue and generation progress without holding chat open. Do not write submission, polling or download scripts or probe invalid paid durations. For story direction, character/reference continuity, dialogue or subtitles, use the yunshu-video-director skill. For a complete video such as 40 seconds or automatic assembly, always use generate_video_project; several camera beats may fit one clip. Accepted work that outlasts this foreground wait returns pending: query_video_task reads its original receipt, never generate again. Edit existing clips with edit_video. Only declared duration, resolution, ratio, frames and references are accepted.' + MEDIA_FAILURE_GUIDANCE,
     parameters: {
       plan_id: { type: 'string', description: 'Explicit update_creation_plan id for this generation. Also provide shot_id.' },
       shot_id: { type: 'string', description: 'Exact shot id in the explicit plan; never guess a latest project.' },
@@ -3944,7 +4025,8 @@ export function apply(ctx: Context, config: Config): void {
         const creation = operation
         const outcome = await runVideoTask(await binding.key(), capability.model.route, built.request, exec.signal,
           async () => { await binding.key(); await creative.dispatched(creation) },
-          receipt => creative.videoReceipt(creation, receipt), undefined, () => binding.key(), path => creative.saved(creation, path, 'video'), undefined, artifactOriginOf(exec))
+          receipt => creative.videoReceipt(creation, receipt), undefined, () => binding.key(), path => creative.saved(creation, path, 'video'),
+          undefined, artifactOriginOf(exec), resolved.videoChatWaitMs)
         await creative.finish(operation, { status: outcome.ok ? 'completed' : imageCreativeStatus(outcome, exec.signal), kind: 'video',
           ...outcome.submissionState === 'not-submitted' ? { notSubmitted: true } : {},
           ...outcome.videoReceipt === undefined ? {} : { videoReceipt: outcome.videoReceipt },

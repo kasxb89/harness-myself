@@ -807,6 +807,85 @@ describe('durable account-bound video projects', () => {
     expect(fixture.submitted).toBe(1)
   })
 
+  it('reports accepted queue and generation waits separately without submitting another clip early', async () => {
+    const f = await setup()
+    const manifest = await f.prepare()
+    let firstTaskPolls = 0
+    const check = vi.spyOn(f.provider, 'check').mockImplementation(async (taskId) => {
+      if (taskId !== 'task-1') return { status: 'succeeded' }
+      expect(f.submitted).toBe(1)
+      firstTaskPolls += 1
+      return { status: firstTaskPolls === 1 ? 'queued' : firstTaskPolls === 2 ? 'running' : 'succeeded' }
+    })
+    const outcome = await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal)
+    expect(outcome.status).toBe('completed')
+    expect(f.events).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^分镜 1\/3 排队中，已等待 \d+ 秒$/u),
+      expect.stringMatching(/^分镜 1\/3 生成中，已等待 \d+ 秒$/u),
+    ]))
+    expect(check).toHaveBeenCalledTimes(5)
+    expect(f.submitted).toBe(3)
+  })
+
+  it('pauses a known queued task at its deadline and resumes by the retained id without charging twice', async () => {
+    const f = await setup()
+    const report = vi.fn(() => { throw new Error('unavailable optional diagnostics') })
+    f.options.failed = report
+    const manifest = await f.prepare()
+    const deadline = new AbortController()
+    let observed: (() => void) | undefined
+    const checking = new Promise<void>((resolve) => { observed = resolve })
+    let polls = 0
+    const check = vi.spyOn(f.provider, 'check').mockImplementation(async (_taskId, _request, signal) => {
+      polls += 1
+      if (polls === 1) return { status: 'queued' }
+      observed?.()
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => { reject(new DOMException('fixture query cancelled', 'AbortError')) }, { once: true })
+        if (signal.aborted) reject(new DOMException('fixture query cancelled', 'AbortError'))
+      })
+    })
+    const timer = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(deadline.signal)
+    try {
+      const running = runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal)
+      await checking
+      deadline.abort(new DOMException('deadline', 'TimeoutError'))
+      const outcome = await running
+      expect(outcome).toMatchObject({ status: 'failed', detail: 'VIDEO_TASK_TIMEOUT' })
+      expect(report).toHaveBeenCalledOnce()
+      expect(report).toHaveBeenCalledWith(expect.objectContaining({ id: manifest.id }), 'VIDEO_TASK_TIMEOUT')
+      const result = JSON.parse(outcome.result ?? '') as { message: string; task_ids: string[] }
+      expect(result.message).toContain('已暂停查询')
+      expect(result.message).toContain('不要重新提交')
+      expect(result.task_ids).toEqual(['task-1'])
+      const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+      expect(retained.segments[0]).toMatchObject({ status: 'running', taskId: 'task-1' })
+      expect(retained.segments.slice(1).map(segment => segment.status)).toEqual(['pending', 'pending'])
+      expect(f.submitted).toBe(1)
+      timer.mockRestore()
+      check.mockRestore()
+      const resumed = await runVideoProject(f.options, retained, f.provider, f.editor, f.job, f.signal)
+      expect(resumed.status).toBe('completed')
+      expect(f.submitted).toBe(3)
+    } finally { timer.mockRestore(); check.mockRestore() }
+  })
+
+  it('retains a throttled submission with no id as unknown without labelling it queued or retrying', async () => {
+    const f = await setup()
+    const manifest = await f.prepare()
+    const submit = vi.spyOn(f.provider, 'submit').mockRejectedValue(new VideoRelayError('VIDEO_SUBMIT_BUSY', '视频服务繁忙，提交结果尚未确认，请先核对原任务，不要重新提交。'))
+    const outcome = await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal)
+    expect(outcome).toMatchObject({ status: 'failed', detail: 'SUBMISSION_UNKNOWN' })
+    expect(outcome.result).toContain('繁忙')
+    expect(outcome.result).toContain('提交结果尚未确认')
+    expect(outcome.result).not.toContain('排队中')
+    const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+    expect(retained.segments[0]).toMatchObject({ status: 'unknown' })
+    expect(retained.segments[0]).not.toHaveProperty('taskId')
+    await runVideoProject(f.options, retained, f.provider, f.editor, f.job, f.signal)
+    expect(submit).toHaveBeenCalledOnce()
+  })
+
   it('stops further charges when the active product login changes', async () => {
     const fixture = await setup()
     const download = fixture.provider.download.bind(fixture.provider)

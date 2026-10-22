@@ -64,7 +64,11 @@ export interface VideoProjectProvider {
    * @param resolution - Explicit output resolution whose duration menu governs planning.
    * @returns Model id and supported whole-second durations.
    */
-  model(model: string | undefined, signal: AbortSignal, resolution?: string): Promise<{ id: string; durations: readonly number[] }>
+  model(model: string | undefined, signal: AbortSignal, resolution?: string): Promise<{
+    id: string
+    durations: readonly number[]
+    defaultDuration?: number
+  }>
   /**
    * Validate and materialize one request without making a paid submission.
    * @param input - Original project brief, references, and parameters.
@@ -87,9 +91,9 @@ export interface VideoProjectProvider {
    * @param taskId - Previously accepted upstream task.
    * @param request - Original request identifying its provider route.
    * @param signal - Cancels this read.
-   * @returns Current terminal or running task state.
+   * @returns Current terminal, accepted-but-queued, or generating task state.
    */
-  check(taskId: string, request: VideoProjectRequest, signal: AbortSignal): Promise<{ status: 'running' | 'succeeded' | 'failed'; message?: string }>
+  check(taskId: string, request: VideoProjectRequest, signal: AbortSignal): Promise<{ status: 'queued' | 'running' | 'succeeded' | 'failed'; message?: string }>
   /**
    * Save an already completed task inside its private project cache; no paid generation.
    * @param taskId - Completed upstream task id.
@@ -103,6 +107,8 @@ export interface VideoProjectProvider {
 
 /** Deployment choices supplied by the owning credits plugin configuration. */
 export interface VideoProjectOptions {
+  /** Observe a terminal local workflow failure without affecting generation or persisted state. */
+  failed?(manifest: import('./video-project.ts').VideoProjectManifest, code: string): void
   /** Optional product-owned planning records; no independent background execution. */
   creative?: CreativeStore
   /**
@@ -132,7 +138,7 @@ export interface VideoProjectOptions {
   maxSegments: number
   /** Interval between reads of a known provider task. */
   pollIntervalMs: number
-  /** Deadline for each clip including provider polling and saving. */
+  /** Deadline for each clip; expiry retains an accepted task id for explicit read-only resume. */
   taskTimeoutMs: number
   /**
    * Local editor with preflight, path validation, probe, and composition.

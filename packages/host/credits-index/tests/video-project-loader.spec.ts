@@ -141,6 +141,47 @@ function json(value: unknown): Record<string, unknown> {
 }
 
 describe('video tools through Loader, real tool registry and jobs runtime', () => {
+  it.each([undefined, 10])('starts a simple single-clip request with one real model read and default %s', async (declaredDefault) => {
+    const fixture = await boot()
+    const model = vi.spyOn(fixture.provider, 'model').mockResolvedValue({ id: 'fixture-video', durations: [5, 10, 15],
+      ...declaredDefault === undefined ? {} : { defaultDuration: declaredDefault } })
+    const started = await fixture.call('generate_video_project', { prompt: '茶杯升起热气，镜头缓慢推进' })
+    expect(started.isError).toBe(false)
+    const value = json(started.value)
+    expect(value.status).toBe('background')
+    const duration = declaredDefault ?? 5
+    expect(value.plan_seconds).toEqual([duration])
+    await vi.waitFor(() => { expect(fixture.ctx.jobs.get(JobId(String(value.job_id)), fixture.agent.id).status).toBe('completed') })
+    expect(model).toHaveBeenCalledTimes(1)
+    expect(fixture.requests).toEqual([duration])
+    expect(fixture.inputs[0]).toMatchObject({ model: 'fixture-video', totalDurationSeconds: duration })
+  })
+
+  it('does not silently replace an explicitly selected model in the single-clip shortcut', async () => {
+    const fixture = await boot()
+    const result = await fixture.call('generate_video_project', { prompt: '茶杯', model: 'exact-requested-model' })
+    expect(json(result.value)).toMatchObject({ status: 'failed', code: 'VIDEO_MODEL_UNAVAILABLE' })
+    expect(fixture.requests).toEqual([])
+  })
+
+  it('refuses an invalid catalog default without silently increasing duration or submitting', async () => {
+    const fixture = await boot()
+    vi.spyOn(fixture.provider, 'model').mockResolvedValue({ id: 'fixture-video', durations: [15, 30], defaultDuration: 5 })
+    const result = await fixture.call('generate_video_project', { prompt: '茶杯升起热气' })
+    expect(json(result.value)).toMatchObject({ status: 'failed', code: 'DURATION_MENU_UNAVAILABLE' })
+    expect(fixture.requests).toEqual([])
+    expect(fixture.ctx.jobs.list(fixture.agent.id)).toEqual([])
+  })
+
+  it.each([{ plan_id: 'explicit-plan', shot_ids: ['s1'] }, { shot_prompts: ['镜头一'] }, { shot_durations_seconds: [10] }])('requires explicit duration for retained plans and shot arrays', async (args) => {
+    const fixture = await boot()
+    const model = vi.spyOn(fixture.provider, 'model')
+    const result = await fixture.call('generate_video_project', { prompt: '按明确分镜生成', ...args })
+    expect(json(result.value)).toMatchObject({ status: 'failed', code: 'INVALID_DURATION' })
+    expect(model).not.toHaveBeenCalled()
+    expect(fixture.requests).toEqual([])
+  })
+
   it('rejects an old saved timeline changed during preflight before submitting or linking generation', async () => {
     const fixture = await boot()
     const owner = { ...fixture.provider.identity, sessionId: fixture.agent.id, workspaceRoot: fixture.workspace }
@@ -514,7 +555,8 @@ describe('video tools through Loader, real tool registry and jobs runtime', () =
     const fixture = await boot(true)
     const skill = await fixture.ctx.skills.get('yunshu-video-director')
     expect(skill).toMatchObject({ source: 'bundled', invocation: { modelInvocable: true, userInvocable: true } })
-    expect(skill?.content).toContain('For a simple short clip or a user-supplied finished prompt, call generate_video directly.')
+    expect(skill?.content).toContain('For explicit timing or complex plans, call list_video_models once')
+    expect(skill?.content).toContain('For every new chat video request, use generate_video_project by default, including a single short clip')
     for (const name of ['generate_video', 'generate_video_project', 'video_project_status', 'resume_video_project', 'edit_video']) expect(fixture.ctx.tools.get(name)).toBeDefined()
     expect(fixture.ctx.tools.get('generate_video_project')?.description).toContain('40-second')
     expect(fixture.ctx.tools.schemas().find(schema => schema.name === 'generate_video')).toMatchSnapshot('single-clip audio and dialogue contract')

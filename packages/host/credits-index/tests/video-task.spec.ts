@@ -1,5 +1,6 @@
 /** A paid video submit is attempted once; every recovery is an original-task GET. */
 import { describe, expect, it, vi } from 'vitest'
+import { setTimeout as delay } from 'node:timers/promises'
 import { executeVideoTask, type VideoTaskOptions } from '../src/video-task.ts'
 import type { CreativeVideoReceipt } from '../src/creative-types.ts'
 
@@ -205,5 +206,144 @@ describe('bounded video reads and source retention', () => {
       videoReceipt: accepted })
     expect(f.submit).not.toHaveBeenCalled()
     expect(f.read).not.toHaveBeenCalled()
+  })
+})
+
+describe('accepted video foreground waiting', () => {
+  it.each(['queued', 'pending', 'in_queue', 'not_start', 'created', 'submitted'])('returns %s as queued and resumes the original task without a generation POST', async (state) => {
+    const f = fixture({ foregroundWaitMs: 20, pollIntervalMs: 1000,
+      read: vi.fn(async () => json({ data: { task_status: state.toUpperCase() } })) })
+    const pending = await executeVideoTask(f.options)
+    expect(pending).toMatchObject({ submissionState: 'pending', code: 'VIDEO_QUEUE_WAITING',
+      taskId: 'public-task-1', videoReceipt: { phase: 'accepted' } })
+    expect(pending.message).toContain('正在排队')
+    expect(f.submit).toHaveBeenCalledOnce()
+    expect(f.save).not.toHaveBeenCalled()
+    if (pending.videoReceipt === undefined) throw new Error('Expected the accepted foreground receipt')
+    const resumed = fixture({ resumeReceipt: pending.videoReceipt, foregroundWaitMs: 20 })
+    expect(await executeVideoTask(resumed.options)).toMatchObject({ ok: true, taskId: pending.taskId })
+    expect(resumed.submit).not.toHaveBeenCalled()
+    expect(resumed.read).toHaveBeenCalledWith(pending.taskId, expect.any(AbortSignal))
+  })
+
+  it.each(['running', 'processing', 'in_progress', 'generating'])('retains %s as generating when foreground waiting ends', async (state) => {
+    const f = fixture({ foregroundWaitMs: 20, pollIntervalMs: 1000,
+      read: vi.fn(async () => json({ status: state })) })
+    const pending = await executeVideoTask(f.options)
+    expect(pending).toMatchObject({ submissionState: 'pending', code: 'VIDEO_GENERATION_PENDING', taskId: 'public-task-1' })
+    expect(pending.message).toContain('正在生成')
+    expect(f.submit).toHaveBeenCalledOnce()
+    expect(f.save).not.toHaveBeenCalled()
+  })
+
+  it('bounds a stalled GET and leaves an unread accepted result unclassified', async () => {
+    let querySignal: AbortSignal | undefined
+    const read = vi.fn<VideoTaskOptions['read']>((_taskId, signal) => {
+      querySignal = signal
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => { reject(new Error('query aborted')) }, { once: true })
+      })
+    })
+    const f = fixture({ foregroundWaitMs: 20, queryTimeoutMs: 60_000, read })
+    const pending = await executeVideoTask(f.options)
+    expect(querySignal?.aborted).toBe(true)
+    expect(pending).toMatchObject({ submissionState: 'pending', code: 'VIDEO_GENERATION_PENDING',
+      taskId: 'public-task-1' })
+    expect(pending.message).toContain('当前结果待查询')
+    expect(pending.message).not.toContain('正在生成')
+    expect(pending.message).not.toContain('正在排队')
+    expect(f.submit).toHaveBeenCalledOnce()
+    expect(read).toHaveBeenCalledOnce()
+    expect(f.save).not.toHaveBeenCalled()
+  })
+
+  it('cancels a stalled GET response body at the foreground deadline', async () => {
+    let cancelled = false
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new TextEncoder().encode('{"status":')) },
+      cancel() { cancelled = true },
+    })
+    const f = fixture({ resumeReceipt: accepted, foregroundWaitMs: 20, queryTimeoutMs: 60_000,
+      read: vi.fn(async () => new Response(body)) })
+    expect(await executeVideoTask(f.options)).toMatchObject({ submissionState: 'pending',
+      code: 'VIDEO_GENERATION_PENDING', taskId: accepted.taskId })
+    expect(cancelled).toBe(true)
+    expect(body.locked).toBe(false)
+    expect(f.submit).not.toHaveBeenCalled()
+    expect(f.save).not.toHaveBeenCalled()
+  })
+
+  it('retains the queued status from acceptance when the first GET stalls', async () => {
+    const f = fixture({ foregroundWaitMs: 20,
+      submit: vi.fn(async () => json({ id: 'public-task-1', status: 'QUEUED' }, 202)),
+      read: vi.fn<VideoTaskOptions['read']>((_taskId, signal) => new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => { reject(new Error('query aborted')) }, { once: true })
+      })) })
+    const pending = await executeVideoTask(f.options)
+    expect(pending).toMatchObject({ submissionState: 'pending', code: 'VIDEO_QUEUE_WAITING', taskId: 'public-task-1' })
+    expect(pending.message).toContain('正在排队')
+    expect(f.options.submit).toHaveBeenCalledOnce()
+  })
+
+  it('saves a queue-to-completion result before the soft deadline', async () => {
+    const f = fixture({ foregroundWaitMs: 1000 })
+    f.read.mockResolvedValueOnce(json({ status: 'queued' }))
+      .mockResolvedValueOnce(json({ status: 'running' }))
+    expect(await executeVideoTask(f.options)).toMatchObject({ ok: true, submissionState: 'completed',
+      taskId: 'public-task-1', path: '/private/artifacts/video.mp4' })
+    expect(f.submit).toHaveBeenCalledOnce()
+    expect(f.read).toHaveBeenCalledTimes(3)
+    expect(f.save).toHaveBeenCalledOnce()
+  })
+
+  it('starts the foreground budget only after the accepted submission is retained', async () => {
+    const f = fixture({ foregroundWaitMs: 10, submit: vi.fn(async () => {
+      await delay(30)
+      return json({ id: 'public-task-1' }, 202)
+    }) })
+    expect(await executeVideoTask(f.options)).toMatchObject({ ok: true, submissionState: 'completed' })
+    expect(f.options.submit).toHaveBeenCalledOnce()
+    expect(f.read).toHaveBeenCalledOnce()
+    expect(f.save).toHaveBeenCalledOnce()
+  })
+
+  it('finishes saving an already completed video without the foreground status deadline', async () => {
+    const f = fixture({ foregroundWaitMs: 10, save: vi.fn<VideoTaskOptions['save']>(async (_taskId, signal) => {
+      await delay(30)
+      signal.throwIfAborted()
+      return '/private/artifacts/saved-after-foreground.mp4'
+    }) })
+    expect(await executeVideoTask(f.options)).toMatchObject({ ok: true, submissionState: 'completed',
+      path: '/private/artifacts/saved-after-foreground.mp4' })
+    expect(f.submit).toHaveBeenCalledOnce()
+    expect(f.options.save).toHaveBeenCalledOnce()
+  })
+
+  it('keeps accepted cancellation pending instead of turning it into a queue timeout', async () => {
+    const controller = new AbortController()
+    const f = fixture({ foregroundWaitMs: 1000, signal: controller.signal,
+      read: vi.fn(async () => { controller.abort(); return json({ status: 'queued' }) }) })
+    expect(await executeVideoTask(f.options)).toMatchObject({ submissionState: 'pending', code: 'VIDEO_WAIT_STOPPED',
+      taskId: 'public-task-1', videoReceipt: { phase: 'accepted' } })
+    expect(f.submit).toHaveBeenCalledOnce()
+    expect(f.save).not.toHaveBeenCalled()
+  })
+
+  it.each([429, 502, 503])('does not claim unaccepted or queued for an HTTP %s response without a task id', async (status) => {
+    const f = fixture({ foregroundWaitMs: 20,
+      submit: vi.fn(async () => json({ error: { code: 'concurrency_limit_exceeded', message: 'too many tasks' } }, status)) })
+    expect(await executeVideoTask(f.options)).toMatchObject({ submissionState: 'unknown', code: 'VIDEO_SUBMISSION_UNKNOWN',
+      videoReceipt: { phase: 'submitting' } })
+    expect(f.options.submit).toHaveBeenCalledOnce()
+    expect(f.read).not.toHaveBeenCalled()
+    expect(f.save).not.toHaveBeenCalled()
+  })
+
+  it('does not claim queued for a successful submission without a task id', async () => {
+    const f = fixture({ foregroundWaitMs: 20, submit: vi.fn(async () => json({ status: 'queued' }, 202)) })
+    expect(await executeVideoTask(f.options)).toMatchObject({ submissionState: 'unknown', code: 'NO_TASK_ID' })
+    expect(f.options.submit).toHaveBeenCalledOnce()
+    expect(f.read).not.toHaveBeenCalled()
+    expect(f.save).not.toHaveBeenCalled()
   })
 })

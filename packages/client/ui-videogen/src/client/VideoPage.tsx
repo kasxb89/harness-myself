@@ -40,6 +40,7 @@ interface VideoModel {
     readonly maxReferenceVideos: number
     readonly maxReferenceAudios: number
     readonly audio: boolean
+    readonly audioOutput?: 'unknown' | 'supported' | 'unsupported'
     readonly audioToggle: boolean
     readonly modes: readonly string[]
     readonly seed: boolean
@@ -156,7 +157,8 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
   const submissionOwner = accountIdentity === null || sessionId === undefined ? null : { accountId: accountIdentity, sessionId }
   const ownerKey = submissionOwner === null ? null : submissionKey(submissionOwner)
   const originalSubmission = ownerKey === null ? null : draft.unsettled[ownerKey] ?? null
-  const locked = busy || draft.promptAssisting || originalSubmission !== null || submissionCheck !== 'ready' || checkedOwner !== ownerKey
+  const locked = busy || draft.promptAssisting
+  const submissionLocked = locked || originalSubmission !== null || submissionCheck !== 'ready' || checkedOwner !== ownerKey
   const publication = props.useCreationContent(state => state)
   const language = props.useLocale(state => state.active)
   const text = (value: LocalizedText | undefined): string => value === undefined ? '' : language === 'en' ? value.en || value.zh : value.zh
@@ -539,7 +541,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
   }
 
   const generate = useCallback(async (): Promise<void> => {
-    if (locked || readDraft().promptAssisting || operation.current || signedIn !== true) return
+    if (submissionLocked || readDraft().promptAssisting || operation.current || signedIn !== true) return
     const context = readDraft()
     if (accountIdentity === null || context.referenceAccountId !== accountIdentity) return
     actions.patch({ failure: null, message: null })
@@ -614,7 +616,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
       actions.patch({ result: { path: answer.payload.path, ...answer.payload.workspaceId === undefined ? {} : { workspaceId: answer.payload.workspaceId } }, message: t('done') })
       await Promise.all([loadBalance(), loadHistory()])
     } finally { operation.current = false; actions.patch({ phase: 'idle' }) }
-  }, [acceptAccount, accountIdentity, locked, signedIn, actions, prompt, model, params, workflow, firstFrame, lastFrame, slots,
+  }, [acceptAccount, accountIdentity, submissionLocked, signedIn, actions, prompt, model, params, workflow, firstFrame, lastFrame, slots,
     hasReferences, isReferenceCurrent, readDraft, sessionId,
     duration, settingsInvalid, overReferenceLimit, referenceBytesExceeded,
     referenceImages, referenceVideos, referenceAudios,
@@ -813,8 +815,8 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
                   <div className={css.durationGrid}>{durations.map(value => <button key={value} type="button" aria-pressed={duration === value}
                     className={css.parameterOption} onClick={() => { actions.patch({ duration: value, message: null }) }}>{t('seconds', { n: String(value) })}</button>)}</div></fieldset>}
                 {params !== null && <div className={css.audioRow}><div><span className={css.audioTitle}>{t('audio')}</span>
-                  <p>{t(params.audioToggle ? 'audioHint' : params.audio ? 'audioFixedOn' : 'audioFixedOff')}</p></div>
-                <div className={css.audioState}><span aria-hidden={params.audioToggle}>{t((params.audioToggle ? audio : params.audio) ? 'on' : 'off')}</span>
+                  <p>{t(params.audioToggle ? 'audioHint' : params.audioOutput === 'unknown' ? 'audioUnknownHint' : params.audio ? 'audioFixedOn' : 'audioFixedOff')}</p></div>
+                <div className={css.audioState}><span aria-hidden={params.audioToggle}>{t(params.audioOutput === 'unknown' ? 'audioUnknown' : (params.audioToggle ? audio : params.audio) ? 'on' : 'off')}</span>
                   {params.audioToggle && <Switch checked={audio} onChange={(value) => { actions.patch({ audio: value }) }} label={t('audio')} disabled={locked} className={css.audioSwitch} />}
                 </div></div>}
                 {params !== null && params.modes.length > 0 && <fieldset className={css.settingsGroup}><legend>{t('mode')}</legend>
@@ -829,7 +831,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
           <div className={css.submitArea}>{submitHint !== null && <span className={css.submitHint} role="status">{submitHint}</span>}
             <Tooltip label={phase === 'running' ? t('runningShort') : t('submit')} portal side="top">
               <button type="button" className={css.send} aria-label={phase === 'running' ? t('runningShort') : t('submit')}
-                onClick={() => { void generate() }} disabled={locked || model === null || sessionId === undefined || prompt.trim() === '' || settingsInvalid
+                onClick={() => { void generate() }} disabled={submissionLocked || model === null || sessionId === undefined || prompt.trim() === '' || settingsInvalid
                   || overReferenceLimit || referenceBytesExceeded}>
                 <span className={phase === 'running' ? css.spinner : css.sendArrow} aria-hidden="true">{phase === 'running' ? '' : '↑'}</span>
               </button>
@@ -862,7 +864,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
       {publication.status === 'loading' && <p role="status" className={css.hint}>{t('contentLoading')}</p>}
       {publication.status === 'error' && <p role="alert" className={css.error}>{t('contentFailed')} <Button size="sm" onClick={props.refreshContent}>{t('retry')}</Button></p>}
       <div className={css.templateGrid}>{visibleTemplates.map(template => <button type="button" key={template.id}
-        className={css.templateCard} disabled={locked} onClick={() => { setPreview(template.id) }} aria-label={t('previewNamed', { name: text(template.title) })}>
+        className={css.templateCard} onClick={() => { setPreview(template.id) }} aria-label={t('previewNamed', { name: text(template.title) })}>
         {template.coverAssetId !== null && <img className={css.templateCover} src={appPath(`/credits/api/creation/assets/${encodeURIComponent(template.coverAssetId)}`)} alt="" loading="lazy" />}
         <div className={css.templateBody}><span className={css.templateBadge}>{t('scriptTemplate')}</span><h3>{text(template.title)}</h3><p>{text(template.description)}</p><span className={css.templateLink}>{t('viewScript')}<span aria-hidden="true">↗</span></span></div>
       </button>)}</div>

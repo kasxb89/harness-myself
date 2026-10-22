@@ -71,8 +71,10 @@ export interface VideoParams {
   readonly maxReferenceAudios: number
   /** Frame slots the model names, so first and last can be separate controls. */
   readonly frameSlots: number
-  /** The model renders an audio track on its own. */
+  /** Legacy audio declaration, used when audioOutput is absent. */
   readonly audio: boolean
+  /** Output audio support, independent from an optional generation switch. */
+  readonly audioOutput?: 'unknown' | 'supported' | 'unsupported'
   /** The model reads a `generate_audio` switch. */
   readonly audioToggle: boolean
   /** The model accepts a burned-in watermark switch. */
@@ -351,6 +353,7 @@ function videoParams(spec: VideoSpec, schema: unknown, parameters: unknown): {
     maxReferenceAudios: spec.referenceAudios,
     frameSlots: spec.frames,
     audio: spec.audio,
+    ...spec.audioOutput === undefined ? {} : { audioOutput: spec.audioOutput },
     audioToggle: spec.audioToggle,
     watermark: false,
     modes: spec.modes,

@@ -141,7 +141,7 @@ it('loads the shared tools outside the package directory, isolates each persona,
     expect(persona.map(row => row.text).join('\n')).toContain(`你是云枢的${definition.name ?? ''}数字员工`)
     expect(persona.map(row => row.text).join('\n')).toContain('默认使用简体中文')
     const tools = ctx.tools.schemas(handle.agent).map(row => row.name)
-    for (const name of ['read', 'skill', 'ask_user_question', 'generate_image', 'generate_video', 'generate_video_project', 'edit_video']) {
+    for (const name of ['read', 'skill', 'ask_user_question', 'list_video_models', 'generate_image', 'generate_video', 'generate_video_project', 'edit_video']) {
       expect(tools, definition.id).toContain(name)
     }
     expect(request.sections.some(row => row.name !== 'deployment:persona-prefix' && row.name !== 'deployment:persona-suffix')).toBe(true)

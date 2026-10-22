@@ -47,10 +47,11 @@ it('keeps native execution fast paths and rejects script fallbacks beyond suppor
   await ctx.plugin(SkillRegistry)
   await ctx.plugin((owner) => { registerCreationWorkflows(owner) })
   const content = (await ctx.skills.get('yunshu-video-director'))?.content
-  expect(content).toContain('For a simple short clip or a user-supplied finished prompt, call generate_video directly.')
+  expect(content).toContain('For explicit timing or complex plans, call list_video_models once')
+  expect(content).toContain('For every new chat video request, use generate_video_project by default, including a single short clip')
+  expect(content).toContain('generate_video remains compatible with previously verified single-clip calls; it is not the default for a new chat request.')
   expect(content).toContain('Do not add character-sheet generation, extra reference images or a separate planning round')
-  expect(content).toContain('For an existing workspace image or a current-chat reference not accepted directly by generate_video, '
-    + 'use generate_video_project even for a single short clip.')
+  expect(content).toContain('generate_video_project handles readable workspace references even for a single short clip.')
   expect(content).toContain('For a finished video longer than one supported model clip, use generate_video_project.')
   expect(content).toContain('Do not inspect application source code, install a video SDK, '
     + 'write Python/JavaScript/curl download or polling scripts, or invoke FFmpeg yourself')
@@ -58,6 +59,13 @@ it('keeps native execution fast paths and rejects script fallbacks beyond suppor
   expect(content).toContain('state that limit and preserve the existing result; do not write an improvised script')
   expect(content).toContain('When the actual generation model is MiniMax-H3, load yunshu-minimax-h3 only if its prompt notation is needed.')
   expect(content).toContain('Do not fetch online guides at generation time.')
+  expect(content).toContain('One paid clip may contain several visual cuts.')
+  expect(content).toContain('do not try one 30-second H3 clip')
+  expect(content).toContain('60-second finished video is four 15-second clips')
+  expect(content).toContain('instead of silently switching models')
+  expect(content).toContain('A missing toggle does not mean a silent model')
+  expect(content).toContain('a busy submission without a task id is an unknown outcome, not a confirmed queue position')
+  expect(content).toContain('If the user stops, use job_kill')
 })
 
 it('gives narrative briefs explicit material responsibilities, executable timing and user-owned exclusions', () => {

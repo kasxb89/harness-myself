@@ -507,7 +507,7 @@ const EXPECTED_TOOLS = [
 
 /**
  * Product Host registrations are inherited by the default agent: Credits
- * supplies ten creation/media tools, Univer supplies fourteen, and the IM,
+ * supplies eleven creation/media tools, Univer supplies fourteen, and the IM,
  * plugin finder, iVideo, and working-directory Hosts each supply one.
  * Native computer-use tools remain an explicit scaffold opt-in.
  */
@@ -520,6 +520,7 @@ const EXPECTED_HOST_TOOLS = [
   'generate_video_project',
   'get_creation_plan',
   'ipollowork_video_validate',
+  'list_video_models',
   'query_image_task',
   'query_video_task',
   'resume_video_project',

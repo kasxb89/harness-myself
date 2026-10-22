@@ -380,7 +380,8 @@ describe('deployed Harness API through the real product Loader', () => {
       const tool = context!.tools.schemas().find(tool => tool.name === name)
       expect(tool?.description).toContain('safe Simplified Chinese summary')
       expect(tool?.description).toContain('never repeat raw HTTP responses, diagnostic JSON, error codes, stacks, internal paths or credentials')
-      expect(tool?.description).toContain('confirmed sign-in, product-credit, file-validation and cancellation failures')
+      expect(tool?.description).toContain('confirmed sign-in, product-credit, file-validation')
+      expect(tool?.description).toContain('cancellation')
       expect(tool?.description).toContain('check existing tasks and artifacts first; do not immediately retry or automatically resubmit')
       expect(tool?.description).toContain('Preserve real tool results')
       expect(tool?.description).toContain('software or code diagnostics explicitly requested by the user')
@@ -2260,6 +2261,79 @@ describe('deployed Harness API through the real product Loader', () => {
     modelsBarrier = undefined
     expect((await context!.llm.listModels('yunshu-local')).map(model => model.id)).toEqual(['account-B-model'])
     expect(JSON.stringify(context!.settings.describe({ redactSecrets: true }))).not.toContain('account-A-model')
+  })
+
+  it('reports semantic local video failures once using the original account access token without delaying the tool', async () => {
+    const { base, stateDir } = await boot(undefined, true, true)
+    await signIn(base)
+    pricingRows = [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }]
+    const result = await context!.tools.execute({ name: 'generate_video',
+      arguments: { model: 'MiniMax-H3', prompt: 'private story must not be reported', duration_seconds: 30 },
+      agent: videoAgent(stateDir), callId: ToolCallId('local-rejected-video'), signal: new AbortController().signal })
+    expect(result.isError).toBe(false)
+    expect(result.value).toMatchObject({ status: 'failed', code: 'DURATION_NOT_SUPPORTED' })
+    await vi.waitFor(() => { expect(calls.filter(call => call.path === '/harness/api/client-errors')).toHaveLength(1) })
+    const reports = calls.filter(call => call.path === '/harness/api/client-errors')
+    expect(reports[0]).toEqual({ path: '/harness/api/client-errors', authorization: 'Bearer access-user',
+      body: { tool: 'generate_video', code: 'DURATION_NOT_SUPPORTED', stage: 'preflight', model: 'MiniMax-H3' } })
+    expect(calls.filter(call => ['/harness/v1/videos', '/harness/v1/video/generations'].includes(call.path))).toHaveLength(0)
+    // The fixture's old API returns 404 for reports: the tool result and session remain intact.
+    expect((await post(base, '/api/session/phone-recovery', {})).ok).toBeDefined()
+  })
+
+  it('returns the original tool result while its diagnostic HTTP response is still pending', async () => {
+    const { base, stateDir } = await boot(undefined, true, true)
+    await signIn(base)
+    pricingRows = [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }]
+    const started = Promise.withResolvers<undefined>()
+    const held = Promise.withResolvers<undefined>()
+    let reportOpen = false
+    upstreamGate = async (path) => {
+      if (path !== '/harness/api/client-errors') return
+      reportOpen = true
+      started.resolve(undefined)
+      await held.promise
+      reportOpen = false
+    }
+    try {
+      const result = await context!.tools.execute({ name: 'generate_video', arguments: {
+        model: 'MiniMax-H3', prompt: 'A quiet cup', duration_seconds: 30,
+      }, agent: videoAgent(stateDir), callId: ToolCallId('nonblocking-diagnostic'), signal: new AbortController().signal })
+      await started.promise
+      expect(reportOpen).toBe(true)
+      expect(result.isError).toBe(false)
+      expect(result.value).toMatchObject({ status: 'failed', code: 'DURATION_NOT_SUPPORTED' })
+      expect(calls.filter(call => call.path === '/harness/api/client-errors')).toHaveLength(1)
+      expect(calls.filter(call => ['/harness/v1/videos', '/harness/v1/video/generations'].includes(call.path))).toHaveLength(0)
+    } finally { held.resolve(undefined) }
+  })
+
+  it('exposes current account video controls to chat without guessing audio or dispatching generation', async () => {
+    const { base, stateDir } = await boot(undefined, true, true)
+    await signIn(base)
+    const model = 'k2-sd2.5-720p'
+    pricingRows = ['MiniMax-H3', model, 'model_5'].map(model_name => ({ model_name, supported_endpoint_types: ['openai-video'] }))
+    relayModels.push({ id: model, object: 'model', supported_endpoint_types: ['openai-video'] })
+    const listed = await context!.tools.execute({ name: 'list_video_models', arguments: {}, agent: videoAgent(stateDir),
+      callId: ToolCallId('video-catalog'), signal: new AbortController().signal })
+    expect(listed.isError ? listed.error : undefined).toBeUndefined()
+    const result = object(listed.value)
+    expect(result.status).toBe('listed')
+    const models = result.models
+    if (!Array.isArray(models)) throw new Error('Expected current account video controls')
+    expect(models.map(entry => object(entry).id)).toEqual(['MiniMax-H3', model])
+    expect(models.map(entry => object(entry))).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'MiniMax-H3', durations: Array.from({ length: 12 }, (_, index) => index + 4), audio_output: 'supported', audio_toggle: false }),
+      expect.objectContaining({ id: model, durations: [30], audio_output: 'unknown', audio_toggle: false, ratios: [] }),
+    ]))
+    expect(calls.filter(call => ['/harness/v1/videos', '/harness/v1/video/generations'].includes(call.path))).toHaveLength(0)
+    for (const audio of [true, false]) {
+      const rejected = await post(base, '/api/video/tasks?source=newapi-generate', { model, prompt: 'A speaker', durationSeconds: 30, audio })
+      expect(rejected).toMatchObject({ ok: false, code: 'AUDIO_NOT_SUPPORTED' })
+      expect(object(rejected).message).toContain('没有独立音频开关')
+      expect(object(rejected).message).not.toContain('不支持生成音频')
+    }
+    expect(calls.filter(call => ['/harness/v1/videos', '/harness/v1/video/generations'].includes(call.path))).toHaveLength(0)
   })
 
   it('submits all 15 authorized BlackRxAI models with exact integer defaults and gateway-only JSON fields', async () => {

@@ -53,8 +53,10 @@ export interface VideoSpec {
   readonly referenceImages: number
   readonly referenceVideos: number
   readonly referenceAudios: number
-  /** Renders its own audio track. */
+  /** Legacy audio declaration, used when audioOutput is absent. */
   readonly audio: boolean
+  /** Declared output audio support; unknown does not establish a silent output. */
+  readonly audioOutput?: 'unknown' | 'supported' | 'unsupported'
   /** Reads a `generate_audio` switch. */
   readonly audioToggle: boolean
   /** Quality tiers the vendor validates, e.g. `std` / `pro`. */
@@ -77,7 +79,7 @@ function blackrxVideo(durations: readonly number[], defaultDuration: number, ima
     durations, defaultDuration,
     resolutions: ['1280x720', '720x1280', '1792x1024', '1024x1792'], ratios: [],
     frames: 0, referenceImages: images, referenceVideos: videos, referenceAudios: audios,
-    audio: false, audioToggle: false, modes: [], seed: false, source: 'plugin:blackrxai-video',
+    audio: false, audioOutput: 'unknown', audioToggle: false, modes: [], seed: false, source: 'plugin:blackrxai-video',
   }
 }
 

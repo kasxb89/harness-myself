@@ -655,6 +655,37 @@ describe('GenericToolCard', () => {
     expect(block.isError).toBe(false)
   })
 
+  it.each(['generate_video', 'query_video_task'] as const)('shows an accepted %s queue without suggesting another submission', (name) => {
+    const text = JSON.stringify({ status: 'pending', submission_state: 'pending', task_id: 'original-task', code: 'VIDEO_QUEUE_WAITING', message: 'private upstream diagnostic' })
+    const block = result({ call: { name, argsRaw: '{}' }, content: [{ type: 'text', text }] })
+    const view = render(<GenericToolCard {...props(name, block)} />)
+    expect(view.getByText(zh['error.mediaTaskQueued'])).toBeTruthy()
+    expect(view.container.querySelector('[data-state="running"]')).not.toBeNull()
+    expect(view.queryByText(zh['error.serverBusy'])).toBeNull()
+    expect(view.container.textContent).not.toContain('private upstream diagnostic')
+    expect(block.content).toEqual([{ type: 'text', text }])
+  })
+
+  it('keeps a timed-out known video project resumable instead of showing a generation rejection', () => {
+    const block = result({ call: { name: 'generate_video_project', argsRaw: '{}' }, content: [{ type: 'text', text: JSON.stringify({
+      status: 'failed', code: 'VIDEO_TASK_TIMEOUT', task_ids: ['original-task'],
+    }) }] })
+    const view = render(<GenericToolCard {...props('generate_video_project', block)} />)
+    expect(view.getByText(zh['error.mediaTaskPending'])).toBeTruthy()
+    expect(view.container.querySelector('[data-state="running"]')).not.toBeNull()
+    expect(view.queryByText(zh['error.serverBusy'])).toBeNull()
+  })
+
+  it.each(['DURATION_NOT_SUPPORTED', 'AUDIO_NOT_SUPPORTED', 'SHOT_DURATION_UNSUPPORTED'])('keeps %s preflight refusal actionable without raw diagnostics', (code) => {
+    const block = result({ call: { name: 'generate_video_project', argsRaw: '{}' }, content: [{ type: 'text', text: JSON.stringify({
+      status: 'failed', code, message: 'private upstream diagnostic',
+    }) }] })
+    const view = render(<GenericToolCard {...props('generate_video_project', block)} />)
+    expect(view.getByText(zh['error.mediaParameters'])).toBeTruthy()
+    expect(view.queryByText(zh['error.serverBusy'])).toBeNull()
+    expect(view.container.textContent).not.toContain(code)
+  })
+
   it.each(['generate_image', 'query_image_task'])('keeps unknown %s submission and preflight rejection distinct', (name) => {
     const text = JSON.stringify({ status: 'failed', submission_state: 'unknown', code: 'IMAGE_SUBMISSION_UNKNOWN' })
     const block = result({ call: { name, argsRaw: '{}' }, content: [{ type: 'text', text }] })

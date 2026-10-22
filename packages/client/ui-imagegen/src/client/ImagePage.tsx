@@ -163,8 +163,8 @@ export function ImagePage(props: ImagePageProps): ReactNode {
   const submissionOwner = accountIdentity === null || sessionId === undefined ? null : { accountId: accountIdentity, sessionId }
   const ownerKey = submissionOwner === null ? null : submissionKey(submissionOwner)
   const originalSubmission = ownerKey === null ? null : draft.unsettled[ownerKey] ?? null
-  const locked = running || uploading || draft.promptAssisting || originalSubmission !== null
-    || submissionCheck !== 'ready' || checkedOwner !== ownerKey
+  const locked = running || uploading || draft.promptAssisting
+  const submissionLocked = locked || originalSubmission !== null || submissionCheck !== 'ready' || checkedOwner !== ownerKey
   const canUpload = ownsReferences && references.length < 6 && !locked
   const assistReferences = useMemo(() => ownsReferences ? references.map(item => item.assetId) : [],
     [references, ownsReferences])
@@ -669,12 +669,12 @@ export function ImagePage(props: ImagePageProps): ReactNode {
                 {models.map(entry => <option key={entry.id} value={entry.id}>{entry.displayName}</option>)}
               </select>
             </label>
-            {params !== null && <button type="button" disabled={locked} className={css.parameterButton} aria-expanded={advanced} aria-controls="image-parameters"
+            {params !== null && <button type="button" className={css.parameterButton} aria-expanded={advanced} aria-controls="image-parameters"
               onClick={() => { setAdvanced(current => !current) }}><IconSettingsOutlineRegular size={14} /><span>{resolution || size || t('parameters')}{count > 1 ? ` · ${String(count)}` : ''}</span></button>}
             <span className={css.mode}>{maxEdits === 0 || references.length === 0 ? t('modeGenerate') : t('modeEdit', { count: String(Math.min(references.length, maxEdits)) })}</span>
             <Tooltip label={originalSubmission !== null ? t('originalLocked') : running ? t('runningShort') : t('submit')} side="top" portal>
               <button type="button" className={css.send} aria-label={running ? t('runningShort') : t('submit')}
-                disabled={locked || model === null || !isSignedIn || sessionId === undefined || prompt.trim() === ''}
+                disabled={submissionLocked || model === null || !isSignedIn || sessionId === undefined || prompt.trim() === ''}
                 onClick={() => { void generate() }}>
                 {running ? <span className={css.spinner} /> : <IconSendOutlineRegular size={19} />}
               </button>

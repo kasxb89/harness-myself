@@ -625,15 +625,19 @@ function savedPath(segment: VideoProjectSegment): string {
 
 /** Keep local waiting cancellation-owned instead of sleeping after a killed job. */
 async function waitForTask(
-  options: VideoProjectOptions, provider: VideoProjectProvider, segment: VideoProjectSegment, signal: AbortSignal,
+  options: VideoProjectOptions, provider: VideoProjectProvider, segment: VideoProjectSegment,
+  totalSegments: number, job: JobHandle, signal: AbortSignal,
 ): Promise<void> {
   const taskId = segment.taskId
   if (taskId === undefined) throw new VideoProjectError('INVALID_RECORD', '视频任务编号缺失，已停止操作。')
+  const startedAt = Date.now()
   for (;;) {
     signal.throwIfAborted()
     const state = await provider.check(taskId, segment.request, signal)
     if (state.status === 'succeeded') return
     if (state.status === 'failed') throw new VideoProjectError('PROVIDER_TASK_FAILED', '上游视频片段生成失败；已生成的其他片段保留，未重新提交任务。')
+    const seconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000))
+    job.updateProgress(`分镜 ${String(segment.index)}/${String(totalSegments)} ${state.status === 'queued' ? '排队中' : '生成中'}，已等待 ${String(seconds)} 秒`)
     await delay(options.pollIntervalMs, undefined, { signal })
   }
 }
@@ -710,7 +714,8 @@ async function executeVideoProject(
           continue
         }
         job.updateProgress(`生成分镜 ${String(segment.index)}/${String(manifest.segments.length)}`)
-        const clipSignal = AbortSignal.any([signal, AbortSignal.timeout(options.taskTimeoutMs)])
+        const deadline = AbortSignal.timeout(options.taskTimeoutMs)
+        const clipSignal = AbortSignal.any([signal, deadline])
         if (segment.taskId === undefined) {
           await validatePublication(options, manifest.publicationDirectory, clipSignal)
           await provider.assertCurrent()
@@ -728,6 +733,9 @@ async function executeVideoProject(
               throw error
             }
             segment.status = 'unknown'
+            if (error instanceof VideoRelayError && error.code === 'VIDEO_SUBMIT_BUSY') {
+              throw new VideoProjectError('SUBMISSION_UNKNOWN', error.message, { cause: error })
+            }
             throw new VideoProjectError('SUBMISSION_UNKNOWN', '视频提交结果未知，可能已计费；已停止后续生成，不会自动重提。请先在后台核对任务。', { cause: error })
           }
           if (task.taskId.trim() === '') {
@@ -739,8 +747,11 @@ async function executeVideoProject(
           await persist(options, manifest)
           job.append(`分镜 ${String(segment.index)} 已提交，任务 ${task.taskId}。\n`)
         } else upstreamMayContinue = true
-        try { await waitForTask(options, provider, segment, clipSignal) }
+        try { await waitForTask(options, provider, segment, manifest.segments.length, job, clipSignal) }
         catch (error) {
+          if (deadline.aborted && !signal.aborted) {
+            throw new VideoProjectError('VIDEO_TASK_TIMEOUT', '视频任务等待时间已到，已暂停查询并保留原任务编号。任务可能仍在排队或生成；请继续查询原项目，不要重新提交。', { cause: error })
+          }
           if (error instanceof VideoProjectError && error.code === 'PROVIDER_TASK_FAILED') {
             segment.status = 'failed'
             upstreamMayContinue = false
@@ -798,6 +809,8 @@ async function executeVideoProject(
     manifest.status = signal.aborted ? 'cancelled' : 'failed'
     const reported = videoProjectFailure(error)
     manifest.failureCode = signal.aborted ? 'CANCELLED' : reported.code
+    try { options.failed?.(manifest, manifest.failureCode) }
+    catch (_unavailableObserver: unknown) { /* Diagnostics never replace the retained workflow outcome. */ }
     const message = signal.aborted ? '视频项目已停止，已保存的片段保留。' : reported.message
     const warning = upstreamMayContinue ? ' 已提交的上游任务无法由本地取消，可能继续运行并计费。' : ''
     try { await persist(options, manifest) }

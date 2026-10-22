@@ -63,6 +63,8 @@ Explicit failures from native image generation, short or project video generatio
 
 Image and short-video results with a retained task ID and a pending state show generation in progress, including queries of the original task. The copy covers generation and local saving, and directs users to query that task without submitting again. A missing task receipt stays unconfirmed; a confirmed terminal failure keeps its failure state.
 
+Confirmed queued video receipts show accepted queue waiting rather than a generic server failure. Known video-project task IDs retained after an observation deadline remain pending. Declared model-parameter preflight failures show safe adjustment guidance; raw codes and upstream prose remain hidden, while canonical tool results stay unchanged.
+
 <a id="understand-the-implementation"></a>
 ## Understand the implementation
 

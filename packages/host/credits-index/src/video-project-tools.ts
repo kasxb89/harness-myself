@@ -9,7 +9,7 @@ import type { JobHandle, JobOutcome } from '@deepseek-ai/dsh-jobs'
 import type { Session } from '@deepseek-ai/dsh-session'
 import { prepareVideoProject, publishVideoOutput, readVideoProject, recoverVideoProjectOutputs, resolveVideoOutputDirectory, runVideoProject, videoProjectFailure, VideoProjectError } from './video-project.ts'
 import type { VideoProjectManifest } from './video-project.ts'
-import type { VideoProjectOptions } from './video-project-types.ts'
+import type { VideoProjectOptions, VideoProjectProvider } from './video-project-types.ts'
 import { CreativeError, type CreativeOperation } from './creative-store.ts'
 import { creativeOwner } from './creative-tools.ts'
 import { resolveCreationVideoInput } from './creation-plan-execution.ts'
@@ -149,23 +149,23 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
 
   ctx.tools.register(defineTool({
     name: 'generate_video_project',
-    description: 'Create a finished video longer than one model clip from a natural-language brief. Use the yunshu-video-director skill for story, character/reference continuity, dialogue and subtitles, then call this native workflow; do not write polling, download or assembly scripts. For requests such as a 40-second video, plan the fewest supported clips (for a 15-second limit: 15+15+10, or three 15-second clips trimmed to 40), generate them in order using the signed-in account, then automatically normalize, trim, and join them locally. All local tools and every request are checked before billing. Returns a background job_id and durable project_id; read job_output for progress and call present on the completed final_path. Never claim completion before the job reports a saved final_path. Already submitted provider tasks may continue billing after local cancellation. If a current user-supplied chat attachment is outside the workspace, first copy that read-authorized attachment into this workspace with the existing file tools, then pass the copied path; do not copy unrelated files.',
+    description: 'Default fixed background workflow for every new chat video, including a single short clip and a finished video longer than one model clip. For a simple single-clip brief without an explicit duration, call this tool directly with prompt and any requested model or references; omit total_duration_seconds so the Host resolves actual defaults in one call. Do not load directing skills, write a long storyboard or call list_video_models first for that simple case. For explicit timing or complex plans, read list_video_models for actual controls; never discover support by paid retries or silently replace an explicitly named model. Use the yunshu-video-director skill for story, character/reference continuity, dialogue and subtitles, then call this native workflow; do not write polling, download or assembly scripts or manually repeat generate_video for each visual cut. One paid clip can contain several camera beats. For requests such as a 40-second video, plan the fewest supported clips (for a 15-second limit: 15+15+10, or three 15-second clips trimmed to 40), generate them in order using the signed-in account, then automatically normalize, trim, and join them locally. For a catalog with H3 single clips limited to 4–15 seconds, 60 seconds means four 15-second clips, never one 30-second clip. All local tools and every request are checked before billing. Returns a background job_id and durable project_id; read job_output at measured intervals for queued/generating progress and call present on the completed final_path. A busy response without an accepted task id is unknown, not confirmed queue admission. Use job_kill when the user stops; accepted provider tasks may continue billing. A query deadline retains task ids for explicit resume, never a fresh submission. Never claim completion before the job reports a saved final_path. If a current user-supplied chat attachment is outside the workspace, first copy that read-authorized attachment into this workspace with the existing file tools, then pass the copied path; do not copy unrelated files.',
     parameters: {
       plan_id: { type: 'string', description: 'Explicit update_creation_plan id. Also supply shot_ids in generation order.' },
-      shot_ids: { type: 'array', items: { type: 'string' }, description: 'Exact shot ids belonging to plan_id, one per actual supported model clip and in the saved timeline order.' },
+      shot_ids: { type: 'array', items: { type: 'string' }, description: 'Exact shot ids belonging to plan_id, one per actual supported model clip and in the saved timeline order. Multiple visual cuts may share one paid clip; do not create an unsupported paid clip for each camera beat.' },
       prompt: { type: 'string', required: true, description: 'The complete video brief, visual continuity, story, and desired editing. Before calling, script user-delegated narrative or dialogue scenes with stable character ids, language and brief exact lines, identifying on-screen speakers versus narration; preserve user-supplied wording. Assign each line and its timing to a shot in shot_prompts. Do not reduce a story requiring voices to a music montage. Respect silent/no-dialogue requests and do not add dialogue or subtitles to unrelated nonverbal videos. Include requested lip-sync and subtitle requirements. These request native model generation, not separate speech, lip-sync or subtitle processing; verify the rendered result before claiming they are met.' },
-      total_duration_seconds: { type: 'number', required: true, description: 'Desired final length in whole seconds; this may exceed the model single-clip limit.' },
+      total_duration_seconds: { type: 'number', description: 'Desired final length in whole seconds; this may exceed the model single-clip limit. For a simple single clip with no plan or explicit shot arrays, omit to use the selected model’s actual default duration. The Host reads the real catalog itself; no separate list_video_models call is needed. Required for explicit plans and shot arrays; never omit a user-specified duration.' },
       shot_prompts: { type: 'array', items: { type: 'string' }, description: 'Exact shot briefs, one per planned clip. With plan_id and shot_ids, omit to use each saved shot’s scene, camera, action, prompt, exact dialogue/subtitles and associated character definitions without another model call. Explicit values remain verbatim. Otherwise allocate delegated narrative lines and timing to stable speakers, distinguishing on-screen speech from narration. Respect silent/no-dialogue requests.' },
       shot_durations_seconds: { type: 'array', items: { type: 'number' }, description: 'Exact model-supported whole seconds per clip, in shot_ids or shot_prompts order. Their sum must equal total_duration_seconds. When omitted for an explicit creation plan, use its saved shot durations; do not silently change timeline timing.' },
-      model: { type: 'string', description: 'Only specify a model when requested; otherwise use an available account model.' },
+      model: { type: 'string', description: 'Exact id from list_video_models. Preserve an explicitly requested model; never silently switch it. Otherwise choose an available account model using its returned duration, dimension and audio declarations.' },
       resolution: { type: 'string' }, ratio: { type: 'string' },
-      audio: { type: 'boolean', description: 'Optional requested audio state. Sent as a switch only when the chosen model declares one; fixed native audio accepts only its declared state. Audio presence alone does not verify speech, lip-sync or subtitles.' },
+      audio: { type: 'boolean', description: 'Optional requested audio state from list_video_models, not a capability probe. Sent as a switch only when the chosen model declares one; fixed native audio accepts only its declared state. No switch does not mean silent output; an undeclared audio state remains unknown. Do not blindly send true, and do not promise speech, lip-sync, subtitles or silence without checking the media.' },
       frame_images: { type: 'array', items: { type: 'string' }, description: 'Existing uploaded ma_ first/last frame ids or workspace image paths. For a user-supplied chat attachment outside the workspace, first copy the read-authorized attachment into the workspace with existing file tools and pass its copied path.' },
       reference_images: { type: 'array', items: { type: 'string' }, description: 'Shared uploaded ma_ subject/style image ids or workspace image paths used by every shot. With plan_id, each shot’s saved image materials and character references are added only to that shot; do not duplicate unrelated character references here. For a user-supplied chat attachment outside the workspace, first copy the read-authorized attachment into the workspace with existing file tools and pass its copied path.' },
       reference_videos: { type: 'array', items: { type: 'string' }, description: 'Existing uploaded ma_ video reference ids or workspace video paths. For a user-supplied chat attachment outside the workspace, first copy the read-authorized attachment into the workspace with existing file tools and pass its copied path.' },
       reference_audios: { type: 'array', items: { type: 'string' }, description: 'Existing uploaded ma_ audio reference ids or workspace WAV/MP3 paths, only when the chosen model supports audio references. For a user-supplied chat attachment outside the workspace, first copy the read-authorized attachment into the workspace with existing file tools and pass its copied path. A reference does not guarantee copied speech, matching mouth movements or subtitles.' },
     }, output,
-    presentCall: args => ({ card: 'generic', title: '生成并剪辑视频', kind: 'edit', content: [{ type: 'text', text: `${String(args.total_duration_seconds)} 秒 · ${args.prompt}` }] }),
+    presentCall: args => ({ card: 'generic', title: '生成并剪辑视频', kind: 'edit', content: [{ type: 'text', text: `${args.total_duration_seconds === undefined ? '模型默认时长' : `${String(args.total_duration_seconds)} 秒`} · ${args.prompt}` }] }),
     presentResult: (_args, result) => ({ card: 'generic', title: result.isError ? '视频项目未开始' : '视频项目', content: result.content }),
     async execute(args, exec): Promise<VideoToolResult> {
       let creation: CreativeOperation | undefined
@@ -173,7 +173,36 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
         const { workspaceRoot, session } = caller(exec)
         const signal = AbortSignal.any([exec.signal, lifetime.signal])
         signal.throwIfAborted()
-        const provider = await options.acquireProvider(workspaceRoot, session)
+        let provider = await options.acquireProvider(workspaceRoot, session)
+        let duration = args.total_duration_seconds
+        let model = args.model
+        if (duration === undefined) {
+          if (args.plan_id !== undefined || args.shot_ids !== undefined
+            || args.shot_prompts !== undefined || args.shot_durations_seconds !== undefined) {
+            throw new VideoProjectError('INVALID_DURATION', '已有创作计划或分镜时须提供明确总时长；尚未提交生成。')
+          }
+          const original = provider
+          const selected = await original.model(model, signal, args.resolution)
+          if (model !== undefined && selected.id !== model) {
+            throw new VideoProjectError('VIDEO_MODEL_UNAVAILABLE', '所选视频型号与服务返回不一致，尚未提交生成；请重新选择型号。')
+          }
+          duration = selected.defaultDuration ?? selected.durations[0]
+          if (duration === undefined || !Number.isSafeInteger(duration) || !selected.durations.includes(duration) || duration < 1) {
+            throw new VideoProjectError('DURATION_MENU_UNAVAILABLE', '当前模型没有合法的默认时长，请选择视频时长后重试；尚未提交生成。')
+          }
+          model = selected.id
+          const prepared: VideoProjectProvider = {
+            identity: original.identity, assertCurrent: () => original.assertCurrent(),
+            model: async (id, preparedSignal, resolution) => {
+              preparedSignal.throwIfAborted()
+              await original.assertCurrent()
+              return id === selected.id && resolution === args.resolution ? selected : await original.model(id, preparedSignal, resolution)
+            },
+            build: (...values) => original.build(...values), submit: (...values) => original.submit(...values),
+            check: (...values) => original.check(...values), download: (...values) => original.download(...values),
+          }
+          provider = prepared
+        }
         const editor = options.editor(workspaceRoot, session)
         const images = async (values: readonly string[]): Promise<string[]> => {
           const normalized: string[] = []
@@ -185,10 +214,10 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
           return normalized
         }
         const { input, planRevision } = await resolveCreationVideoInput(options, creativeOwner(exec, provider.identity), {
-          prompt: args.prompt, totalDurationSeconds: args.total_duration_seconds,
+          prompt: args.prompt, totalDurationSeconds: duration,
           ...args.shot_prompts === undefined ? {} : { shotPrompts: args.shot_prompts },
           ...args.shot_durations_seconds === undefined ? {} : { shotDurations: args.shot_durations_seconds },
-          ...args.model === undefined ? {} : { model: args.model },
+          ...model === undefined ? {} : { model },
           ...args.resolution === undefined ? {} : { resolution: args.resolution },
           ...args.ratio === undefined ? {} : { ratio: args.ratio },
           ...args.audio === undefined ? {} : { audio: args.audio },
