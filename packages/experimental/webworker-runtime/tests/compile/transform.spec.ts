@@ -1005,6 +1005,7 @@ test.each(['return', 'throw'] as const)('closes active while delegation before o
     source: AsyncIterable<unknown, unknown, unknown>, mark: (value: string) => void,
   ): AsyncGenerator<unknown, unknown, unknown> {
     try { while (!(yield* source)) mark('unreached.body') } finally { await Promise.resolve(); mark('outer.finally') }
+    return undefined
   }
   const code = transformModule('export async function* outer(source,mark){try{while(!(yield* source))mark("unreached.body")}finally{await Promise.resolve();mark("outer.finally")}}')
   const lowered = runBody(code, () => ({}), createAlsRuntime()).outer as typeof native
