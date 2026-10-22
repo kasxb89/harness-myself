@@ -16,13 +16,14 @@
  * @module @deepseek-ai/dsh-experimental-webworker-runtime/src/compile/transform
  */
 import { parse } from 'acorn'
+import { LOWERING_VERSION } from '../image-layout.ts'
 
-const HELPER_SOURCE: Record<string, string> = {
-  def: 'const __dsh$def=(t,k,get)=>Object.defineProperty(t,k,{enumerable:true,configurable:true,get});',
-  default: 'const __dsh$default=(m)=>(m&&m.__esModule?m.default:m);',
-  ns: 'const __dsh$ns=(m)=>(m&&m.__esModule?m:Object.assign({},m,{default:m}));',
-  exportAll: 'const __dsh$exportAll=(t,m)=>{for(const k of Object.keys(m))if(k!=="default"&&!(k in t))__dsh$def(t,k,()=>m[k]);};',
-  dynImport: 'const __dsh$dynImport=(s)=>Promise.resolve().then(()=>__dsh$ns(require(s)));',
+const HELPER_SOURCE: Record<string, (name: string, helper: (name: string) => string, require: string) => string> = {
+  def: name => `const ${name}=(t,k,get)=>Object.defineProperty(t,k,{enumerable:true,configurable:true,get});`,
+  default: name => `const ${name}=(m)=>(m&&m.__esModule?m.default:m);`,
+  ns: name => `const ${name}=(m)=>(m&&m.__esModule?m:Object.assign({},m,{default:m}));`,
+  exportAll: (name, helper) => `const ${name}=(t,m)=>{for(const k of Object.keys(m))if(k!=="default"&&!(k in t))${helper('def')}(t,k,()=>m[k]);};`,
+  dynImport: (name, helper, require) => `const ${name}=(s)=>Promise.resolve().then(()=>${helper('ns')}(${require}(s)));`,
 }
 
 const HELPER_DEPENDENCIES: Record<string, readonly string[]> = {
@@ -75,6 +76,45 @@ class Transformer {
   private readonly createRequireBindings = new Set<string>()
   private readonly delegationOrigins = new Set<Node>()
   private editOwner: Node | undefined
+  private isolatedModule = false
+  private readonly sourceIdentifiers = new Set<string>()
+  private readonly helperNames = new Map<string, string>()
+  private requireName = 'require'
+  private exportsName = 'exports'
+  private metaName = '__dsh$meta'
+  private alsName = ALS
+
+  /** Reserve generated identifiers outside every source lexical scope. */
+  private generatedName(base: string): string {
+    if (!this.isolatedModule) return base
+    let name = base
+    let index = 0
+    while (this.sourceIdentifiers.has(name)) name = `${base}$${++index}`
+    this.sourceIdentifiers.add(name)
+    return name
+  }
+
+  /** Identify actual module syntax and reserve source identifiers before emitting edits. */
+  private prepareModule(program: Node): void {
+    let syntax = false
+    const scan = (value: unknown): void => {
+      if (value === null || typeof value !== 'object') return
+      if (Array.isArray(value)) { for (const item of value) scan(item); return }
+      const node = value as Node
+      if (node.type === 'Identifier') this.sourceIdentifiers.add(String(node.name))
+      if (node.type === 'ImportDeclaration' || node.type === 'ExportNamedDeclaration'
+        || node.type === 'ExportDefaultDeclaration' || node.type === 'ExportAllDeclaration'
+        || node.type === 'ImportExpression' || (node.type === 'MetaProperty' && (node.meta as Node).name === 'import')) syntax = true
+      for (const [key, child] of Object.entries(node)) if (key !== 'type' && key !== 'start' && key !== 'end') scan(child)
+    }
+    scan(program)
+    this.isolatedModule = this.sourceType === 'module' && syntax
+    if (!this.isolatedModule) return
+    this.requireName = this.generatedName('__dsh$require')
+    this.exportsName = this.generatedName('__dsh$exports')
+    if (this.sourceIdentifiers.has(this.metaName)) this.metaName = this.generatedName('__dsh$metaValue')
+    if (this.sourceIdentifiers.has(this.alsName)) this.alsName = this.generatedName('__dsh$als')
+  }
 
   constructor(source: string, private readonly path: string, private readonly sourceType: 'module' | 'script') {
     // A `#!` line is only legal at offset zero, and the prologue takes that spot;
@@ -90,17 +130,22 @@ class Transformer {
   private helper(name: string): string {
     for (const dependency of HELPER_DEPENDENCIES[name] ?? []) this.helper(dependency)
     this.helpers.add(name)
-    return `__dsh$${name}`
+    let identifier = this.helperNames.get(name)
+    if (identifier === undefined) {
+      identifier = this.generatedName(`__dsh$${name}`)
+      this.helperNames.set(name, identifier)
+    }
+    return identifier
   }
 
   private moduleTemp(): string {
     this.modules += 1
-    return `__dsh$m${this.modules}`
+    return this.generatedName(`__dsh$m${this.modules}`)
   }
 
   private alsTemp(): string {
     this.temporaries += 1
-    return `__als$${this.temporaries}`
+    return this.generatedName(`__als$${this.temporaries}`)
   }
 
   /**
@@ -165,7 +210,7 @@ class Transformer {
       this.fail('import attributes are not supported', node.start)
     }
     const source = node.source as Node
-    const request = `require(${this.literal(source)})`
+    const request = `${this.requireName}(${this.literal(source)})`
     const specifiers = node.specifiers as Node[]
     if (specifiers.length === 0) {
       this.replace(node.start, node.end, `${request};`)
@@ -207,11 +252,11 @@ class Transformer {
     if (source !== null) {
       const held = this.moduleTemp()
       const define = this.helper('def')
-      const lines = [`const ${held}=require(${this.literal(source)});`]
+      const lines = [`const ${held}=${this.requireName}(${this.literal(source)});`]
       for (const specifier of specifiers) {
         const local = nameOf(specifier.local as Node)
         const exported = nameOf(specifier.exported as Node)
-        lines.push(`${define}(exports,${JSON.stringify(exported)},()=>${held}[${JSON.stringify(local)}]);`)
+        lines.push(`${define}(${this.exportsName},${JSON.stringify(exported)},()=>${held}[${JSON.stringify(local)}]);`)
       }
       this.replace(node.start, node.end, lines.join(''))
       return
@@ -226,15 +271,15 @@ class Transformer {
   private exportDefault(node: Node): void {
     this.moduleSyntax = true
     const declaration = node.declaration as Node
-    this.replace(node.start, declaration.start, 'exports.default = ')
+    this.replace(node.start, declaration.start, `${this.exportsName}.default = `)
   }
 
   private exportAll(node: Node): void {
     this.moduleSyntax = true
-    const request = `require(${this.literal(node.source as Node)})`
+    const request = `${this.requireName}(${this.literal(node.source as Node)})`
     const exported = node.exported as Node | null
     if (exported === null) {
-      this.replace(node.start, node.end, `${this.helper('exportAll')}(exports,${request});`)
+      this.replace(node.start, node.end, `${this.helper('exportAll')}(${this.exportsName},${request});`)
       return
     }
     const held = this.moduleTemp()
@@ -242,7 +287,7 @@ class Transformer {
     this.replace(
       node.start,
       node.end,
-      `const ${held}=${this.helper('ns')}(${request});${define}(exports,${JSON.stringify(nameOf(exported))},()=>${held});`,
+      `const ${held}=${this.helper('ns')}(${request});${define}(${this.exportsName},${JSON.stringify(nameOf(exported))},()=>${held});`,
     )
   }
 
@@ -251,7 +296,7 @@ class Transformer {
   private awaitExpression(node: Node): void {
     const keywordEnd = node.start + 'await'.length
     if (this.source.slice(node.start, keywordEnd) !== 'await') this.fail('unexpected await layout', node.start)
-    this.replace(node.start, keywordEnd, `${ALS}.resume(await ${ALS}.pause(`)
+    this.replace(node.start, keywordEnd, `${this.alsName}.resume(await ${this.alsName}.pause(`)
     this.insert(node.end, '))')
   }
 
@@ -277,12 +322,12 @@ class Transformer {
       return `${String(left.kind)} ${inner(pattern.start, pattern.end)}=${step}.value;`
     }
     this.structural(node.start, node.end, inner => [
-      `{const ${iterator}=${ALS}.iterator(${inner(right.start, right.end)});`,
+      `{const ${iterator}=${this.alsName}.iterator(${inner(right.start, right.end)});`,
       `let ${step};let ${exhausted}=false;`,
-      `try{for(;;){${step}=${ALS}.resume(await ${ALS}.pause(${iterator}.next()));`,
+      `try{for(;;){${step}=${this.alsName}.resume(await ${this.alsName}.pause(${iterator}.next()));`,
       `if(${step}.done){${exhausted}=true;break}`,
       `{${binding(inner)}${body.type === 'BlockStatement' ? inner(body.start, body.end) : `{${inner(body.start, body.end)}}`}}}}`,
-      `finally{if(!${exhausted})${ALS}.resume(await ${ALS}.pause(${ALS}.close(${iterator})))}}`,
+      `finally{if(!${exhausted})${this.alsName}.resume(await ${this.alsName}.pause(${this.alsName}.close(${iterator})))}}`,
     ].join(''))
   }
 
@@ -297,7 +342,7 @@ class Transformer {
    */
   private yieldExpression(node: Node, statement: Node | undefined, whileStatement: Node | undefined): void {
     if (node.delegate !== true) {
-      this.insert(node.start, `${ALS}.afterYield(${ALS}.snapshot(),`)
+      this.insert(node.start, `${this.alsName}.afterYield(${this.alsName}.snapshot(),`)
       this.insert(node.end, ')')
       return
     }
@@ -372,15 +417,15 @@ class Transformer {
     const step = this.alsTemp()
     const sent = this.alsTemp()
     const exhausted = this.alsTemp()
-    const finish = completion === 'return' ? `return ${ALS}.resume(await ${ALS}.pause(${step}.value))`
+    const finish = completion === 'return' ? `return ${this.alsName}.resume(await ${this.alsName}.pause(${step}.value))`
       : completion === undefined ? 'break' : `${completion.assign}=${step}.value;break`
     return [
-      `{const ${iterator}=${ALS}.iterator(${inner(argument.start, argument.end)});`,
+      `{const ${iterator}=${this.alsName}.iterator(${inner(argument.start, argument.end)});`,
       `let ${sent};let ${exhausted}=false;`,
-      `try{for(;;){const ${step}=${ALS}.resume(await ${ALS}.pause(${iterator}.next(${sent})));`,
+      `try{for(;;){const ${step}=${this.alsName}.resume(await ${this.alsName}.pause(${iterator}.next(${sent})));`,
       `if(${step}.done){${exhausted}=true;${finish}}`,
-      `${sent}=${ALS}.afterYield(${ALS}.snapshot(),yield ${step}.value)}}`,
-      `finally{if(!${exhausted})${ALS}.resume(await ${ALS}.pause(${ALS}.close(${iterator})))}}`,
+      `${sent}=${this.alsName}.afterYield(${this.alsName}.snapshot(),yield ${step}.value)}}`,
+      `finally{if(!${exhausted})${this.alsName}.resume(await ${this.alsName}.pause(${this.alsName}.close(${iterator})))}}`,
     ].join('')
   }
 
@@ -450,7 +495,7 @@ class Transformer {
         const meta = record.meta as Node
         if (meta.name === 'import') {
           this.moduleSyntax = true
-          this.replace(record.start, record.end, '__dsh$meta')
+          this.replace(record.start, record.end, this.metaName)
         }
         break
       }
@@ -550,7 +595,7 @@ class Transformer {
     // Transforming a lowered body again would nest the protocol inside itself:
     // it still runs, only slower and unreadable, so a mis-wired manifest must
     // surface here rather than as a silent tax on every load.
-    if (this.source.includes(`${ALS}.pause(`) || this.source.includes('__als$')) {
+    if (this.source.includes(`${ALS}.pause(`) || this.source.includes('__als$') || this.source.includes(`/*${LOWERING_VERSION}*/`)) {
       this.fail('the module is already lowered; check the image manifest wiring', 0)
     }
     let program: Node
@@ -563,6 +608,7 @@ class Transformer {
     } catch (reason) {
       this.fail(`parse failed: ${(reason as Error).message}`, 0)
     }
+    this.prepareModule(program)
     this.indexCreateRequireImports(program)
     this.visit(program, { asyncGenerator: false, functionDepth: 0, moduleScope: true })
     if (this.edits.length === 0 && !this.moduleSyntax) return this.source
@@ -574,13 +620,25 @@ class Transformer {
       if (statement.directive === 'use strict') strictDirective = true
     }
     if (strictDirective || (this.moduleSyntax && this.sourceType === 'module')) prologue.push('"use strict";')
-    if (this.moduleSyntax && this.sourceType === 'module') prologue.push('Object.defineProperty(exports,"__esModule",{value:true});')
+    if (this.isolatedModule) {
+      const aliases = [`${this.requireName}=require`, `${this.exportsName}=exports`]
+      if (this.metaName !== '__dsh$meta') aliases.push(`${this.metaName}=__dsh$meta`)
+      if (this.alsName !== ALS) aliases.push(`${this.alsName}=${ALS}`)
+      prologue.push(`/*${LOWERING_VERSION}*/const ${aliases.join(',')};`)
+    }
+    if (this.moduleSyntax && this.sourceType === 'module') prologue.push(`Object.defineProperty(${this.exportsName},"__esModule",{value:true});`)
     if (this.bindings.length > 0) this.helper('def')
     for (const [name, source] of Object.entries(HELPER_SOURCE)) {
-      if (this.helpers.has(name)) prologue.push(source)
+      if (this.helpers.has(name)) prologue.push(source(this.helper(name), key => this.helper(key), this.requireName))
+    }
+    if (this.isolatedModule) {
+      prologue.push('(()=>{')
+      const statements = program.body as Node[]
+      this.editOwner = undefined
+      this.insert(statements.at(-1)?.end ?? 0, ';})();')
     }
     for (const { exported, local } of this.bindings) {
-      prologue.push(`__dsh$def(exports,${JSON.stringify(exported)},()=>${local});`)
+      prologue.push(`${this.helper('def')}(${this.exportsName},${JSON.stringify(exported)},()=>${local});`)
     }
 
     const sorted = [...this.edits].sort((left, right) => left.start - right.start || left.end - right.end)

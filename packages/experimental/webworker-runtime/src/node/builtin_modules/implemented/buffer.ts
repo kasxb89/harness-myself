@@ -5,6 +5,20 @@
  */
 import { Buffer, kMaxLength } from 'buffer'
 
+// The maintained browser Buffer codec provides base64; Node's URL-safe output
+// differs only in its alphabet and omitted padding. Keep this same constructor
+// for crypto's randomBytes, file buffers, and the installed global.
+if (!Buffer.isEncoding('base64url')) {
+  const prototype = Buffer.prototype as Pick<Buffer, 'toString'>
+  const toString = prototype.toString
+  prototype.toString = function (this: Buffer, encoding?: BufferEncoding, start?: number, end?: number): string {
+    if (typeof encoding === 'string' && encoding.toLowerCase() === 'base64url') {
+      return toString.call(this, 'base64', start, end).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/u, '')
+    }
+    return toString.call(this, encoding, start, end)
+  }
+}
+
 Object.defineProperty(globalThis, 'Buffer', { value: Buffer, writable: true, configurable: true })
 
 export { Buffer, kMaxLength }

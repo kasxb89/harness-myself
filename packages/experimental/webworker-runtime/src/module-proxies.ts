@@ -44,6 +44,8 @@ export const MODULE_PROXIES: Record<string, string> = {
   // Sync-stack AsyncLocalStorage semantics.
   'node:async_hooks': './node/builtin_modules/implemented/async_hooks.ts',
   // Real implementations over browser primitives.
+  'node:assert': './node/builtin_modules/implemented/assert/strict.ts',
+  'assert': './node/builtin_modules/implemented/assert/strict.ts',
   'node:assert/strict': './node/builtin_modules/implemented/assert/strict.ts',
   'assert/strict': './node/builtin_modules/implemented/assert/strict.ts',
   'node:util': './node/builtin_modules/implemented/util.ts',
@@ -59,7 +61,19 @@ export const MODULE_PROXIES: Record<string, string> = {
   // the VFS, because a browser worker has no processes to fork.
   'node:child_process': './node/builtin_modules/implemented/child_process.ts',
   // Structural mocks: every symbol exists, every call throws.
+  'node:diagnostics_channel': './node/builtin_modules/implemented/diagnostics_channel.ts',
+  'diagnostics_channel': './node/builtin_modules/implemented/diagnostics_channel.ts',
+  'node:querystring': './node/builtin_modules/implemented/querystring.ts',
+  'querystring': './node/builtin_modules/implemented/querystring.ts',
+  'node:inspector': './node/builtin_modules/implemented/inspector.ts',
+  'node:http2': './node/builtin_modules/mock/http2.ts',
+  'http2': './node/builtin_modules/mock/http2.ts',
+  'node:readline': './node/builtin_modules/mock/readline.ts',
   'node:https': './node/builtin_modules/mock/https.ts',
+  'node:dns': './node/builtin_modules/mock/dns.ts',
+  'dns': './node/builtin_modules/mock/dns.ts',
+  'node:tls': './node/builtin_modules/mock/tls.ts',
+  'tls': './node/builtin_modules/mock/tls.ts',
   'node:dns/promises': './node/builtin_modules/mock/dns/promises.ts',
   'dns/promises': './node/builtin_modules/mock/dns/promises.ts',
   'node:net': './node/builtin_modules/mock/net.ts',
@@ -78,6 +92,8 @@ export const MODULE_PROXIES: Record<string, string> = {
   'node-pty': './node/external_packages/node-pty.ts',
   'execa': './node/external_packages/execa.ts',
   'got': './node/external_packages/got.ts',
+  'undici': './node/external_packages/undici.ts',
+  'puppeteer-core': './node/external_packages/puppeteer-core.ts',
   'qrcode': './node/external_packages/qrcode.ts',
   '@vscode/ripgrep': './node/external_packages/ripgrep.ts',
   '@earendil-works/pi-ai': './node/external_packages/pi-ai.ts',

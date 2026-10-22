@@ -272,6 +272,20 @@ export class WorkerModuleLoader {
     return this.staticModules.get(`node:${specifier}`)
   }
 
+  /** Node package lookup directories, confined to the mounted image. */
+  private packageSearchPaths(fromDirectory: string): string[] {
+    const from = resolvePath(fromDirectory).replace(/\/+$/u, '') || '/'
+    const root = resolvePath(this.root).replace(/\/+$/u, '') || '/'
+    if (root !== '/' && from !== root && !from.startsWith(`${root}/`)) {
+      return this.fail(`importer ${from} is outside image root ${root}`)
+    }
+    const paths: string[] = []
+    for (let directory = from;; directory = dirname(directory)) {
+      if (directory === root || !directory.endsWith('/node_modules')) paths.push(join(directory, 'node_modules'))
+      if (directory === root) return paths
+    }
+  }
+
   /**
    * Resolve a specifier the way the module that requested it would.
    * @param specifier - Bare name, relative path, absolute path, or file URL.
@@ -296,9 +310,13 @@ export class WorkerModuleLoader {
     const segments = specifier.split('/')
     const packageName = specifier.startsWith('@') ? segments.slice(0, 2).join('/') : segments[0] ?? specifier
     const rest = specifier.slice(packageName.length).replace(/^\//, '')
-    const packageDirectory = join(this.root, 'node_modules', packageName)
-    if (!this.vfs.existsSync(join(packageDirectory, 'package.json'))) {
-      return this.fail(`cannot resolve "${specifier}": ${packageDirectory}/package.json is not in the image`)
+    let packageDirectory: string | undefined
+    for (const directory of this.packageSearchPaths(fromDirectory)) {
+      const candidate = join(directory, packageName)
+      if (this.vfs.existsSync(join(candidate, 'package.json'))) { packageDirectory = candidate; break }
+    }
+    if (packageDirectory === undefined) {
+      return this.fail(`cannot resolve "${specifier}": ${join(this.root, 'node_modules', packageName)}/package.json is not in the image`)
     }
     const manifest = this.manifestOf(packageDirectory)
     const subpath = rest === '' ? '.' : `./${rest}`
@@ -407,7 +425,7 @@ export class WorkerModuleLoader {
     resolve.paths = (specifier: string): string[] | null => {
       if (this.staticModule(specifier) !== undefined || specifier.startsWith('node:')) return null
       if (specifier.startsWith('.')) return [resolvePath(fromDirectory, '.')]
-      return [join(this.root, 'node_modules')]
+      return this.packageSearchPaths(fromDirectory)
     }
     return Object.assign(require, { resolve })
   }

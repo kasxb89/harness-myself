@@ -39,7 +39,7 @@ export const IMAGE_OVERLAY_DIRECTORIES: readonly string[] = ['home', 'workspace'
  * would otherwise run against newer wrapper semantics. Bump on any change to
  * emitted code or to {@link WRAPPER_PARAMS}.
  */
-export const LOWERING_VERSION = 'dsh-worker-transform/1'
+export const LOWERING_VERSION = 'dsh-worker-transform/2'
 
 /**
  * Free variables a lowered body expects from its wrapper, in order.

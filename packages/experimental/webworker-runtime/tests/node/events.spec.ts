@@ -5,7 +5,9 @@
  * `emit` reports, the point at which `once` unregisters, and the listener set an
  * in-flight emit dispatches to.
  */
+import { EventEmitter as NativeEventEmitter } from 'node:events'
 import { describe, expect, it } from 'vitest'
+import { inherits } from '../../src/node/builtin_modules/implemented/util.ts'
 import { EventEmitter } from '../../src/node/builtin_modules/implemented/events.ts'
 
 describe('emit', () => {
@@ -133,5 +135,60 @@ describe('registration bookkeeping', () => {
     emitter.off('data', repeated)
     emitter.emit('data')
     expect(seen).toEqual(['repeated', 'other'])
+  })
+})
+
+
+describe('legacy emitter consumers', () => {
+  it('matches Node when util.inherits consumers omit the parent constructor', () => {
+    const trace = (parent: typeof EventEmitter): unknown[] => {
+      function Legacy(): void {}
+      inherits(Legacy, parent)
+      const emitter = Reflect.construct(Legacy, []) as EventEmitter
+      const seen: unknown[] = [emitter.emit('missing')]
+      function listener(this: unknown, value: unknown): void { seen.push([this === emitter, value]) }
+      emitter.on('data', listener).once('data', listener)
+      emitter.emit('data', 1)
+      emitter.removeListener('data', listener)
+      seen.push(emitter.emit('data', 2))
+      return seen
+    }
+    expect(trace(EventEmitter)).toEqual(trace(NativeEventEmitter))
+    expect(trace(EventEmitter)).toEqual([false, [true, 1], [true, 1], false])
+  })
+
+  it('borrows emit on a plain object and keeps Worker registry state per object', () => {
+    for (const Emitter of [EventEmitter, NativeEventEmitter]) expect(Emitter.prototype.emit.call({}, 'unused')).toBe(false)
+    {
+      const prototype = new EventEmitter()
+      let inheritedCalls = 0
+      prototype.on('data', () => { inheritedCalls++ })
+      const first = Object.create(prototype) as EventEmitter
+      const second = Object.create(prototype) as EventEmitter
+      const seen: string[] = []
+      first.on('own', () => { seen.push('first') })
+      expect(second.emit('own')).toBe(false)
+      expect(first.emit('own')).toBe(true)
+      // The Worker stores each receiver's state privately, including legacy
+      // objects inheriting an already populated emitter instance.
+      first.on('data', () => { seen.push('own-data') })
+      first.emit('data')
+      expect(seen).toEqual(['first', 'own-data'])
+      expect(inheritedCalls).toBe(0)
+    }
+  })
+
+  it('throws the original unhandled error and delivers handled errors with the emitter receiver', () => {
+    for (const Emitter of [EventEmitter, NativeEventEmitter]) {
+      const emitter = new Emitter()
+      const error = new Error('consumer failure')
+      let caught: unknown
+      try { emitter.emit('error', error) } catch (failure) { caught = failure }
+      expect(caught).toBe(error)
+      const received: unknown[] = []
+      emitter.once('error', function (this: unknown, value: unknown): void { received.push(this, value) })
+      expect(emitter.emit('error', error)).toBe(true)
+      expect(received).toEqual([emitter, error])
+    }
   })
 })

@@ -25,6 +25,15 @@ import * as nodeAssertStrict from './builtin_modules/implemented/assert/strict.t
 import * as nodeAsyncHooks from './builtin_modules/implemented/async_hooks.ts'
 import * as nodeBuffer from './builtin_modules/implemented/buffer.ts'
 import * as nodeCrypto from './builtin_modules/implemented/crypto.ts'
+import * as nodeDiagnostics from './builtin_modules/implemented/diagnostics_channel.ts'
+import * as nodeQuerystring from './builtin_modules/implemented/querystring.ts'
+import * as puppeteerCore from './external_packages/puppeteer-core.ts'
+import * as nodeInspector from './builtin_modules/implemented/inspector.ts'
+import * as nodeHttp2 from './builtin_modules/mock/http2.ts'
+import * as nodeReadline from './builtin_modules/mock/readline.ts'
+import * as nodeDns from './builtin_modules/mock/dns.ts'
+import * as nodeTls from './builtin_modules/mock/tls.ts'
+import * as undici from './external_packages/undici.ts'
 import * as nodeDnsPromises from './builtin_modules/mock/dns/promises.ts'
 import * as nodeEvents from './builtin_modules/implemented/events.ts'
 import * as nodeFs from './builtin_modules/implemented/fs.ts'
@@ -65,16 +74,21 @@ import type { StaticModuleFactory } from '../module-system/module-loader.ts'
 
 /** Builtin modules, keyed with and without the `node:` prefix. */
 const BUILTINS: Record<string, StaticModuleFactory> = {
+  assert: () => nodeAssertStrict.default,
   'assert/strict': () => nodeAssertStrict,
   async_hooks: () => nodeAsyncHooks,
-  buffer: () => nodeBuffer,
+  buffer: () => nodeBuffer.default,
   child_process: () => nodeChildProcess,
   crypto: () => nodeCrypto,
+  dns: () => nodeDns,
+  diagnostics_channel: () => nodeDiagnostics,
   'dns/promises': () => nodeDnsPromises,
-  events: () => nodeEvents,
+  events: () => nodeEvents.default,
   fs: () => nodeFs,
   'fs/promises': () => nodeFsPromises,
   http: () => nodeHttp,
+  http2: () => nodeHttp2,
+  inspector: () => nodeInspector,
   https: () => nodeHttps,
   module: () => nodeModule,
   net: () => nodeNet,
@@ -82,11 +96,14 @@ const BUILTINS: Record<string, StaticModuleFactory> = {
   path: () => nodePath,
   'path/posix': () => nodePath,
   perf_hooks: () => nodePerfHooks,
+  readline: () => nodeReadline,
+  querystring: () => nodeQuerystring,
   sqlite: () => nodeSqlite,
   string_decoder: () => nodeStringDecoder,
   stream: () => nodeStream,
   'stream/promises': () => nodeStreamPromises,
   'timers/promises': () => nodeTimersPromises,
+  tls: () => nodeTls,
   tty: () => nodeTty,
   url: () => nodeUrl,
   util: () => nodeUtil,
@@ -107,6 +124,8 @@ const EXTERNALS: Record<string, StaticModuleFactory> = {
   'got': () => got,
   'qrcode': () => qrcode,
   'ws': () => ws,
+  'undici': () => undici,
+  'puppeteer-core': () => puppeteerCore,
   '@vscode/ripgrep': () => ripgrep,
   '@earendil-works/pi-ai': () => piAi,
 }

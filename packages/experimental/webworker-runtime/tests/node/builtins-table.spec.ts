@@ -89,6 +89,20 @@ describe('module identity through the loader', () => {
     expect(require('tty')).toBe(require('node:tty'))
   })
 
+  it('gives legacy buffer consumers one ordinary CommonJS face with the shared constructor', () => {
+    const require = loaderRequire()
+    const buffer = require('buffer') as typeof import('node:buffer')
+    expect(buffer).toBe(require('node:buffer'))
+    expect(Object.getPrototypeOf(buffer)).toBe(Object.prototype)
+    expect(Object.prototype.hasOwnProperty.call(buffer, 'Buffer')).toBe(true)
+    // safer-buffer's actual module loop invokes this inherited method.
+    let copiedOwnKeys = 0
+    for (const key in buffer) if (buffer.hasOwnProperty(key)) copiedOwnKeys++
+    expect(copiedOwnKeys).toBe(Object.keys(buffer).length)
+    expect(buffer.Buffer).toBe(globalThis.Buffer)
+    expect(buffer.Buffer.from('codec').toString()).toBe('codec')
+  })
+
   it('shares promise stream helpers and observes completion and errors through the loader', async () => {
     const require = loaderRequire()
     const stream = require('node:stream') as typeof import('node:stream')
@@ -127,7 +141,7 @@ describe('module identity through the loader', () => {
 
   it('refuses a specifier the table does not hold, instead of resolving it empty', () => {
     const require = loaderRequire()
-    expect(() => require('node:dns')).toThrow()
+    expect(() => require('node:dgram')).toThrow()
   })
 
   it('exposes the package search paths used by the VFS resolver', () => {

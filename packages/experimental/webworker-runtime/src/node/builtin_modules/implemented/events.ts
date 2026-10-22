@@ -13,9 +13,17 @@ type Listener = (...args: unknown[]) => void
  */
 type OnceWrapper = Listener & { listener: Listener }
 
+const registries = new WeakMap<object, Map<string, Listener[]>>()
+
+/** Legacy subclasses and prototype borrowers initialize state on their own first use. */
+function registryOf(emitter: object): Map<string, Listener[]> {
+  let registry = registries.get(emitter)
+  if (registry === undefined) { registry = new Map(); registries.set(emitter, registry) }
+  return registry
+}
+
 /** The `node:events` subset the harness registers on: add, remove, and emit. */
 export class EventEmitter {
-  private readonly registry = new Map<string, Listener[]>()
 
   /**
    * Register a listener.
@@ -24,9 +32,9 @@ export class EventEmitter {
    * @returns this emitter.
    */
   on(event: string, listener: Listener): this {
-    const list = this.registry.get(event) ?? []
+    const list = registryOf(this).get(event) ?? []
     list.push(listener)
-    this.registry.set(event, list)
+    registryOf(this).set(event, list)
     return this
   }
 
@@ -39,7 +47,7 @@ export class EventEmitter {
   once(event: string, listener: Listener): this {
     const wrapper = ((...args: unknown[]): void => {
       this.off(event, wrapper)
-      listener(...args)
+      listener.apply(this, args)
     }) as OnceWrapper
     wrapper.listener = listener
     return this.on(event, wrapper)
@@ -52,9 +60,9 @@ export class EventEmitter {
    * @returns this emitter.
    */
   prependListener(event: string, listener: Listener): this {
-    const list = this.registry.get(event) ?? []
+    const list = registryOf(this).get(event) ?? []
     list.unshift(listener)
-    this.registry.set(event, list)
+    registryOf(this).set(event, list)
     return this
   }
 
@@ -66,7 +74,7 @@ export class EventEmitter {
    * @returns this emitter.
    */
   off(event: string, listener: Listener): this {
-    const list = this.registry.get(event)
+    const list = registryOf(this).get(event)
     if (list !== undefined) {
       // Last registration first, as Node removes it.
       for (let at = list.length - 1; at >= 0; at--) {
@@ -96,8 +104,8 @@ export class EventEmitter {
    * @returns this emitter.
    */
   removeAllListeners(event?: string): this {
-    if (event === undefined) this.registry.clear()
-    else this.registry.delete(event)
+    if (event === undefined) registryOf(this).clear()
+    else registryOf(this).delete(event)
     return this
   }
 
@@ -108,9 +116,16 @@ export class EventEmitter {
    * @returns whether any listener ran.
    */
   emit(event: string, ...args: unknown[]): boolean {
-    const list = this.registry.get(event)
-    if (list === undefined || list.length === 0) return false
-    for (const listener of [...list]) listener(...args)
+    const list = registryOf(this).get(event)
+    if (list === undefined || list.length === 0) {
+      if (event === 'error') {
+        const error = args[0]
+        if (error instanceof Error) throw error
+        throw Object.assign(new Error(`Unhandled error: ${String(error)}`), { code: 'ERR_UNHANDLED_ERROR', context: error })
+      }
+      return false
+    }
+    for (const listener of [...list]) listener.apply(this, args)
     return true
   }
 
@@ -120,7 +135,7 @@ export class EventEmitter {
    * @returns a copy of the listener list.
    */
   listeners(event: string): Listener[] {
-    return [...this.registry.get(event) ?? []]
+    return [...registryOf(this).get(event) ?? []]
   }
 
   /**
@@ -129,7 +144,7 @@ export class EventEmitter {
    * @returns the count.
    */
   listenerCount(event: string): number {
-    return this.registry.get(event)?.length ?? 0
+    return registryOf(this).get(event)?.length ?? 0
   }
 
   /**
@@ -153,4 +168,4 @@ export const __esModule = true
 type NodeFace = Partial<Omit<typeof import('node:events'), 'EventEmitter'>> & Record<'EventEmitter', unknown>
 
 /** CommonJS default export: the members `require()` hands a caller of this module. */
-export default { EventEmitter } satisfies NodeFace
+export default Object.assign(EventEmitter, { EventEmitter }) satisfies NodeFace

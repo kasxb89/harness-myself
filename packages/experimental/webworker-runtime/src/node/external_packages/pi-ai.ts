@@ -33,11 +33,51 @@ interface PreviewProvider {
   getModels(): readonly PreviewModel[]
 }
 
+/** Request functions always refuse before returning a value. */
+type UnavailableRequest = (...args: never[]) => never
+
+/** Configured catalog operations and explicit refusals retained by a Worker collection. */
+interface PreviewModels {
+  clearProviders(): void
+  setProvider(provider: PreviewProvider): void
+  deleteProvider(id: string): void
+  getProviders(): readonly PreviewProvider[]
+  getProvider(id: string): PreviewProvider | undefined
+  getModels(provider?: string): readonly PreviewModel[]
+  getModel(provider: string, id: string): PreviewModel | undefined
+  getAllModels(provider?: string): readonly PreviewModel[]
+  getModelsOfType: UnavailableRequest
+  getModelOfType: UnavailableRequest
+  refresh: UnavailableRequest
+  checkAuth: UnavailableRequest
+  getAvailable: UnavailableRequest
+  getAvailableOfType: UnavailableRequest
+  getAllAvailable: UnavailableRequest
+  getAuth: UnavailableRequest
+  login: UnavailableRequest
+  logout: UnavailableRequest
+  stream: UnavailableRequest
+  complete: UnavailableRequest
+  streamSimple: UnavailableRequest
+  completeSimple: UnavailableRequest
+  streamDeferred: UnavailableRequest
+  fetchDeferred: UnavailableRequest
+  cancelDeferred: UnavailableRequest
+  generateImages: UnavailableRequest
+  classify: UnavailableRequest
+}
+
+/** Transport descriptors expose request refusals without starting a request. */
+interface PreviewTransport {
+  stream: UnavailableRequest
+  streamSimple: UnavailableRequest
+}
+
 /**
  * Construct a metadata-only collection for the configured model routes.
  * @returns Mutable provider membership and exact configured model descriptors; request methods refuse.
  */
-export function builtinModels() {
+export function builtinModels(): PreviewModels {
   const providers = new Map<string, PreviewProvider>()
   const getModels = (provider?: string): readonly PreviewModel[] => provider === undefined
     ? [...providers.values()].flatMap(value => value.getModels())
@@ -125,7 +165,7 @@ export function getAllBuiltinModels(): unknown[] {
 }
 
 /** Request transports remain unavailable after metadata construction. */
-function unavailableStreams() {
+function unavailableStreams(): PreviewTransport {
   return {
     stream: notImplementedFail(MODULE, 'Provider.stream'),
     streamSimple: notImplementedFail(MODULE, 'Provider.streamSimple'),
@@ -136,19 +176,19 @@ function unavailableStreams() {
  * Construct the Anthropic transport descriptor without starting a request.
  * @returns Explicitly refusing stream functions.
  */
-export function anthropicMessagesApi() { return unavailableStreams() }
+export function anthropicMessagesApi(): PreviewTransport { return unavailableStreams() }
 
 /**
  * Construct the OpenAI completions descriptor without starting a request.
  * @returns Explicitly refusing stream functions.
  */
-export function openAICompletionsApi() { return unavailableStreams() }
+export function openAICompletionsApi(): PreviewTransport { return unavailableStreams() }
 
 /**
  * Construct the OpenAI responses descriptor without starting a request.
  * @returns Explicitly refusing stream functions.
  */
-export function openAIResponsesApi() { return unavailableStreams() }
+export function openAIResponsesApi(): PreviewTransport { return unavailableStreams() }
 
 /** CommonJS interop marker: the worker loader hands `default` to default imports. */
 export const __esModule = true

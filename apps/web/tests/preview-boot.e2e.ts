@@ -482,7 +482,7 @@ async function bootPreview(origin: string, browser: Browser): Promise<void> {
 async function bootEmptyPreview(origin: string, browser: Browser): Promise<void> {
   const page = await newEnglishPage(browser)
   const pageErrors: Error[] = []
-  const consoleErrors: string[] = []
+  const consoleErrors: Array<{ level: 'error' | 'warning'; text: string }> = []
   const failedResponses: string[] = []
   page.on('pageerror', (error) => { pageErrors.push(error) })
   page.on('response', (response) => {
@@ -492,7 +492,8 @@ async function bootEmptyPreview(origin: string, browser: Browser): Promise<void>
     page.on('console', (message) => {
       const text = message.text()
       if (text.includes(TREE_ACTIVE)) reported(text)
-      if (message.type() === 'error' || message.type() === 'warning') consoleErrors.push(text)
+      const level = message.type()
+      if (level === 'error' || level === 'warning') consoleErrors.push({ level, text })
     })
   })
   try {
@@ -533,8 +534,12 @@ async function bootEmptyPreview(origin: string, browser: Browser): Promise<void>
       '/credits/api/creation/content', '/credits/api/session', '/credits/api/summary',
       '/open-in-app/apps', '/plugins/events',
     ])
-    expect(consoleErrors.filter(line => !line.includes('Failed to load resource: the server responded with a status of 404')))
-      .toEqual([])
+    // An empty product account deliberately refuses model discovery. Pin that
+    // warning and its level; every other non-404 error or warning still fails.
+    expect(consoleErrors.filter(({ level, text }) => level !== 'error'
+      || !text.includes('Failed to load resource: the server responded with a status of 404'))).toEqual([
+      { level: 'warning', text: 'credits-index: credits-index: model sync unavailable: 请先登录产品账号，再读取可用模型。' },
+    ])
   } catch (error) {
     await saveFailureShot(page, 'preview-boot-empty')
     throw pageErrors.length === 0

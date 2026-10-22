@@ -90,6 +90,14 @@ export function networkInterfaces(): NodeJS.Dict<NetworkInterfaceInfo[]> {
   return {}
 }
 
+/**
+ * Physical memory is not observable from a browser Worker.
+ * @returns Zero, denoting unknown memory rather than the host's RAM capacity.
+ */
+export function totalmem(): number {
+  return 0
+}
+
 /** OS constants: only the signal table is read (terminal signal name mapping). */
 export const constants = {
   signals: {
@@ -113,5 +121,5 @@ type NodeFace = Partial<Omit<typeof import('node:os'), 'constants'>> & Record<'c
 /** CommonJS default export: the members `require()` hands a caller of this module. */
 export default {
   EOL, tmpdir, homedir, platform, type, arch, release, hostname, availableParallelism, cpus,
-  networkInterfaces, constants,
+  networkInterfaces, totalmem, constants,
 } satisfies NodeFace

@@ -34,7 +34,11 @@ kind: "package-library"
 
 兼容层保留导入时需要的数据，不启用原生操作：HTTP/TLS Agent 类允许定义子类，但构造时明确拒绝；Node 的 `global` 指向 Worker 全局对象。维护中的 `string_decoder` 库为镜像内未修改的包提供增量解码。支付二维码适配器复用 qrcode 自身的矩阵和 SVG 渲染器，保留 `margin`、`width` 和纠错等级，并向图片元素返回 SVG 数据 URI。已配置的 pi-ai 路由为模型选择器保留原样模型元数据；传输工厂和模型集合支持初始化及查询，而请求、凭证操作和刷新均明确失败。
 
+EventEmitter 的默认导出是构造函数；`util.inherits` 保留原型成员，不复制静态成员。浏览器 Buffer 在保留同一构造函数的前提下支持 URL 安全的 base64 输出。`os.totalmem()` 对无法观测的内存返回零。精确的 Undici 导入提供浏览器 Fetch 数据类及普通 Fetch；原生 dispatcher、连接池和代理均明确拒绝。DNS 查询、TLS 与 HTTP/2 连接、原生进程行读取也明确拒绝。Inspector 元数据表示没有 Node 调试端点，原生调试操作则明确拒绝。具名诊断通道保留订阅和消息；异步诊断存储上下文跟踪明确拒绝。Worker 部署只禁用身份精确匹配的宿主原生 Cua provider 行，保留其包及 Node／桌面端配置；不会声明原生 Cua 工具或引导词。
+
 收集器依据文件扩展名与最近的包作用域传入明确的解析目标。CommonJS 脚本保留合法的旧式字符串转义及其自身的严格模式指令；ESM 继续使用严格模式。两种解析目标的转换缓存相互独立。调用方省略 `sourceType` 时，`lowerModuleSource` 默认使用严格的模块解析目标。
+
+转换后的 ESM 在严格模式的函数作用域内运行，局部声明与 `var` 绑定归源码自身所有。生成的导入与导出发布使用单独捕获的 Worker 服务，标识符避开源码中的名称，因此局部 `require` 或 `exports` 不会替换这些服务。CommonJS 沿用原有包装层。镜像转换版本会拒绝按旧代码布局生成的镜像。
 
 转换器将表达式语句、条件分支与逗号操作数中结果被丢弃的 `yield*` 转换为现有委托循环。条件测试及操作数保留求值顺序，且仅执行被选择的分支。也支持完整的 `return yield* source` 参数：通过 ALS 协议等待并接收终值后，再执行外层 `finally`。也支持精确的否定条件 `while (!(yield* source))`：标签仍绑定循环，每次条件只求值一次操作数。异步迭代器的原始终值保留原生真值语义；同步迭代器的值仍由现有适配器等待并接收。其它消费位置，包括变量初始化、赋值、调用、其它条件及条件或逗号返回表达式，仍不受支持并会拒绝打包。委托的 `next` 传值与等待迭代器释放行为保留。沿用现有受限委托协议：取消时以 `return(undefined)` 关闭并忽略自定义返回结果；消费者的 `throw()` 不会转发给内部迭代器。
 
@@ -58,8 +62,11 @@ kind: "package-library"
 <a id="known-limitations-and-deferred-work"></a>
 
 - **worker 组合写明文会话日志**（`compression: 'none'` boot patch）：不带 Zstandard 编解码器，导出日志是 `.jsonl`，不会是 `.jsonl.zstd`。
-- **`node:dns/promises`、`node:vm`、`node:net`、`node:sqlite`、`node:worker_threads` 是结构化 stub**：每次调用在 console 报告拒绝并抛出。需要原生 DNS、真进程或真 realm 隔离的行在此无法运行。
-- **`node:assert/strict` 仅支持真值断言**：对于假值，可调用的默认导出和 `ok` 使用传入的消息或通用文本抛出 `ERR_ASSERTION`，或原样抛出传入的 Error。其他断言 API 未提供。
+- **`node:dns`、`node:dns/promises`、`node:tls`、`node:vm`、`node:net`、`node:sqlite`、`node:worker_threads` 是结构化 stub**：每次调用在 console 报告拒绝并抛出。需要原生 DNS、真进程或真 realm 隔离的行在此无法运行。
+- **`node:assert` 和 `node:assert/strict` 仅支持真值断言**：对于假值，可调用的默认导出和 `ok` 使用传入的消息或通用文本抛出 `ERR_ASSERTION`，或原样抛出传入的 Error。其他断言 API 未提供。
+- **原生 Chromium 渲染需要 Node Host**：精确的 Puppeteer Core 替代模块在返回浏览器对象前拒绝 `launch`。Univer 保持挂载；其原生渲染操作不可用。
+- **ESM 具名导入是立即读取的快照**：转换不模拟初始化循环中的导入活绑定，依赖尚未初始化导出时，这类循环可能失败。
+- **平面查询解码使用 Node 默认值**：`querystring.parse` 保留重复键与字面原型键名，限制为 1000 个字段。自定义分隔符、选项及格式无效的 UTF-16 均明确拒绝。
 - **原生 TLS 监听器需要 Node Host**：worker 的 `node:https.createServer` 会拒绝激活，不会替换成明文。预览内部的 HTTP 隧道不绑定套接字；面向浏览器的 HTTPS 由部署服务器提供。
 - **桌面产品埋点不可用**：`got.post` 明确报告 worker host 不支持该调用。浏览器镜像不包含 Got 及其 Node HTTP 依赖；预览组合不启用桌面上报。
 - **宿主包管理命令不可用**：`execa` 明确报告 worker host 不支持该调用；预览无法运行 pnpm、安装插件或安装原生依赖。

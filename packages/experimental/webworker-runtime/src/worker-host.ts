@@ -33,6 +33,7 @@ import { TunnelServer, type TunnelPort } from './transport/tunnel.ts'
 import { inflateImage, inflateImageStream } from './storage/image-gzip.ts'
 import { loadVfsImage, loadVfsOverlay, MemoryVfs } from './storage/memory.ts'
 import { setActiveVfs } from './storage/active.ts'
+import { workerProfileOverlays } from './worker-profile.ts'
 import { setTextViewer } from './shell/process/xdg-open.ts'
 import {
   DEFAULT_ROOT, IMAGE_CONFIG_PATH, IMAGE_EMPTY_DIRECTORIES, IMAGE_HOME_DIRECTORY, IMAGE_MANIFEST_PATH,
@@ -395,27 +396,7 @@ function bootPatches(
     // The roster's `!!js` scalars need Include's own YAML dialect.
     rows = yaml.load(text, { schema: include.entryListSchema })
   }
-  const find = (entries: unknown, id: string): Record<string, unknown> | undefined => {
-    if (!Array.isArray(entries)) return undefined
-    for (const entry of entries as Array<Record<string, unknown>>) {
-      if (entry.id === id) return entry
-      const nested = find(entry.config, id)
-      if (nested !== undefined) return nested
-    }
-    return undefined
-  }
-  const configOf = (row: Record<string, unknown>): Record<string, unknown> =>
-    (typeof row.config === 'object' && row.config !== null && !Array.isArray(row.config)
-      ? row.config
-      : {}) as Record<string, unknown>
-
-  const patches: Array<ProfileContext['overlays'][number]> = []
-  // The worker carries no compression codec, and the VFS is in-memory anyway:
-  // the JSONL backend's plaintext path is the composition's one legal encoding.
-  const jsonl = find(rows, 'session-persistence-jsonl')
-  if (jsonl !== undefined) {
-    patches.push({ id: 'session-persistence-jsonl', config: { ...configOf(jsonl), compression: 'none' } })
-  }
+  const patches = workerProfileOverlays(rows)
   const dir = join(root, IMAGE_HOME_DIRECTORY, 'profiles/preview')
   const profile: ProfileContext = {
     name: 'preview', dir, patchPath: join(dir, 'cordis.patch.yml'),

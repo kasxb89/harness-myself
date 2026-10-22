@@ -15,6 +15,8 @@ export const REPLACED_EXTERNAL_PACKAGES: readonly string[] = [
   'node-pty',
   'execa',
   'got',
+  'undici',
+  'puppeteer-core',
   'qrcode',
   'sharp',
   'ws',

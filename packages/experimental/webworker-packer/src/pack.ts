@@ -283,6 +283,7 @@ interface SweepOutcome {
   readonly droppedJavascriptEntries: number
   /** Third-party requests that resolve nowhere; loud at require time if hit. */
   readonly unresolvedExternalRequests: readonly string[]
+  readonly pageBundles: readonly string[]
 }
 
 /**
@@ -309,6 +310,42 @@ interface SweepOutcome {
  */
 /** Trailing `sourceMappingURL` comment; the image carries no `.map` files. */
 const DANGLING_SOURCE_MAP = /\n\/\/# sourceMappingURL=\S+\s*$/
+
+/**
+ * Page bundles declared by the same exact ./client entry the client registry serves.
+ * Existing conventional bundles and supported sibling client chunks remain Page bytes.
+ */
+function pageAssetsOf(files: ImageFiles): Set<string> {
+  const assets = new Set(Object.keys(files).filter(name => pageAsset(name)))
+  const chunkDirectories = new Set<string>()
+  const decoder = new TextDecoder()
+  for (const [filename, bytes] of Object.entries(files)) {
+    if (!filename.endsWith('/package.json')) continue
+    const manifest = JSON.parse(decoder.decode(bytes)) as {
+      dsh?: { client?: unknown }
+      exports?: Record<string, unknown>
+    }
+    if (manifest.dsh?.client === undefined) continue
+    const client = manifest.exports?.['./client']
+    const target = typeof client === 'string' ? client
+      : typeof client === 'object' && client !== null ? (client as { default?: unknown }).default : undefined
+    if (typeof target !== 'string') continue // The client registry reports malformed metadata.
+    const directory = posix.dirname(filename)
+    const entry = posix.join(directory, target)
+    if (!target.startsWith('./') || !entry.startsWith(`${directory}/`)) {
+      throw new Error(`vfs image: invalid ./client export ${target} in ${filename}`)
+    }
+    if (files[entry] === undefined) throw new Error(`vfs image: missing ./client bundle ${entry}`)
+    assets.add(entry)
+    chunkDirectories.add(posix.dirname(entry))
+  }
+  for (const filename of Object.keys(files)) {
+    if (chunkDirectories.has(posix.dirname(filename)) && /^client\.[A-Za-z0-9][A-Za-z0-9._-]*\.js$/u.test(posix.basename(filename))) {
+      assets.add(filename)
+    }
+  }
+  return assets
+}
 
 /**
  * Name one JavaScript entry for the debugger: append the `sourceURL` magic
@@ -391,6 +428,7 @@ function sweepImage(
   root: string,
   pluginEntries: readonly string[],
 ): SweepOutcome {
+  const pageAssets = pageAssetsOf(files)
   const decoder = new TextDecoder()
   const encoder = new TextEncoder()
   const vfs = new MemoryVfs()
@@ -467,7 +505,7 @@ function sweepImage(
     const key = path.slice(root.length + 1)
     const bytes = files[key]
     if (bytes === undefined) continue
-    if (!/\.[cm]?js$/.test(key) || pageAsset(key)) {
+    if (!/\.[cm]?js$/.test(key) || pageAssets.has(key)) {
       reached.set(key, bytes)
       continue
     }
@@ -495,7 +533,7 @@ function sweepImage(
   let dropped = 0
   for (const [name, bytes] of Object.entries(files)) {
     const isJs = /\.[cm]?js$/.test(name)
-    if (!isJs || pageAsset(name)) {
+    if (!isJs || pageAssets.has(name)) {
       swept[name] = isJs ? nameForDebugger(bytes, debuggerName(name), decoder, encoder) : bytes
       if (isJs) javascriptEntries += 1
       continue
@@ -510,6 +548,7 @@ function sweepImage(
   }
   return {
     swept,
+    pageBundles: [...pageAssets],
     transform: { visited, rewritten },
     javascriptEntries,
     droppedJavascriptEntries: dropped,
@@ -552,48 +591,88 @@ function materialize(
 ): { files: ImageFiles; packages: Map<string, number>; missing: string[] } {
   const files: ImageFiles = {}
   const packages = new Map<string, number>()
-  const pending: { name: string; from: string }[] = []
+  interface PackageNode {
+    directory: string
+    manifest: Record<string, unknown>
+    workspace: boolean
+    dependencies: Map<string, PackageNode>
+  }
+  const workspaceDirectories = new Map([...options.workspaces.values()].map(directory => [realpathSync(directory), directory]))
+  const graph = new Map<string, PackageNode>()
+  const winners = new Map<string, PackageNode>()
+  const pending: { name: string; from: string; owner?: PackageNode }[] = []
   const replaced = new Set(REPLACED_EXTERNAL_PACKAGES)
-  const queue: { name: string; from: string }[] = roster.map(name => ({ name, from: options.resolveFrom }))
+  const queue: { name: string; from: string; owner?: PackageNode }[] =
+    roster.map(name => ({ name, from: options.resolveFrom }))
 
+  // Resolve every edge before deduplicating. Package names alone cannot identify
+  // a dependency: pnpm can bind two importers to different installed versions.
   for (let entry = queue.shift(); entry !== undefined; entry = queue.shift()) {
-    const { name, from } = entry
-    if (packages.has(name) || replaced.has(name)) continue
-    const directory = options.workspaces.get(name) ?? resolveDependency(from, name)
-    if (directory === undefined) {
-      pending.push({ name, from })
-      continue
+    const { name, from, owner } = entry
+    if (replaced.has(name)) continue
+    const selected = options.workspaces.get(name) ?? resolveDependency(from, name)
+    if (selected === undefined) { pending.push(entry); continue }
+    const identity = realpathSync(selected)
+    const directory = workspaceDirectories.get(identity) ?? selected
+    let node = graph.get(identity)
+    if (node === undefined) {
+      const manifest = readJson(join(directory, 'package.json'))
+      node = { directory, manifest, workspace: workspaceDirectories.has(identity), dependencies: new Map() }
+      graph.set(identity, node)
+      for (const field of ['dependencies', 'peerDependencies'] as const) {
+        // External page peers do not bind the Worker; workspace runtime peers do.
+        if (field === 'peerDependencies' && !node.workspace) continue
+        const dependencies = manifest[field]
+        if (typeof dependencies !== 'object' || dependencies === null) continue
+        for (const dependency of Object.keys(dependencies)) {
+          queue.push({ name: dependency, from: directory, owner: node })
+        }
+      }
     }
-    const manifest = readJson(join(directory, 'package.json'))
-    const prefix = `node_modules/${name}`
-    const before = Object.keys(files).length
-    if (options.workspaces.has(name)) {
-      // A workspace package ships the slice npm would publish — `files`
-      // filters out build residue like the tsc mirror under lib/types/ —
-      // minus the workspace exclude table (no sources, no dist: the page
-      // serves its own assets).
-      const published = Array.isArray(manifest.files) ? publishedFilter(manifest.files) : undefined
-      collectTree(directory, files, prefix, relativePath =>
-        !workspaceExcluded(relativePath) && (published === undefined || published(relativePath)))
-    } else {
-      collectTree(directory, files, prefix, relativePath => !excluded(relativePath))
-    }
-    packages.set(name, Object.keys(files).length - before)
-    for (const field of ['dependencies', 'peerDependencies'] as const) {
-      // npm semantics: a peer is provided by the consumer. For an external
-      // package the consumer is the page (react behind the prebuilt client
-      // bundles), so its peer edges never bind the worker. Workspace and
-      // vendored packages declare real runtime seams as peers
-      // (@deepseek-ai/cordis is a peerDependency of every harness package),
-      // so their peer edges stay on the chain.
-      if (field === 'peerDependencies' && !options.workspaces.has(name)) continue
-      const dependencies = manifest[field]
-      if (typeof dependencies !== 'object' || dependencies === null) continue
-      for (const dependency of Object.keys(dependencies)) queue.push({ name: dependency, from: directory })
+    if (!winners.has(name)) winners.set(name, node)
+    owner?.dependencies.set(name, node)
+  }
+
+  // Keep the existing first global binding. Only a conflicting importer edge
+  // receives a nested installation, and subsequent edges obey Node's nearest
+  // ancestor lookup rather than assuming the global winner remains visible.
+  const mounts = new Map<string, PackageNode>(
+    [...winners].map(([name, node]) => [`node_modules/${name}`, node]),
+  )
+  const mounted = [...mounts].map(([prefix, node]) => ({ prefix, node, ancestors: [node] }))
+  const visible = (from: string, name: string): PackageNode | undefined => {
+    for (let directory = from;; directory = posix.dirname(directory)) {
+      const found = posix.basename(directory) === 'node_modules'
+        ? undefined : mounts.get(posix.join(directory, 'node_modules', name))
+      if (found !== undefined) return found
+      if (directory === '.' || directory === '') return undefined
     }
   }
-  // A bundle's declared dependency may resolve a name after its roster lookup failed.
-  const missing = pending.filter(({ name }) => !packages.has(name))
+  for (let entry = mounted.shift(); entry !== undefined; entry = mounted.shift()) {
+    const { prefix, node, ancestors } = entry
+    const before = Object.keys(files).length
+    const published = node.workspace && Array.isArray(node.manifest.files)
+      ? publishedFilter(node.manifest.files) : undefined
+    collectTree(node.directory, files, prefix, relativePath => node.workspace
+      ? !workspaceExcluded(relativePath) && (published === undefined || published(relativePath))
+      : !excluded(relativePath))
+    const globalName = prefix.slice('node_modules/'.length)
+    packages.set(winners.get(globalName) === node ? globalName : prefix, Object.keys(files).length - before)
+    for (const [name, dependency] of node.dependencies) {
+      if (visible(prefix, name) === dependency) continue
+      // A same-name cyclic shadow cannot be represented by a finite copied
+      // tree without package links. Refuse it rather than looping or rebinding.
+      if (ancestors.includes(dependency)) {
+        throw new Error(`vfs image: cyclic dependency shadow for ${name} below ${prefix} requires package links`)
+      }
+      const nested = `${prefix}/node_modules/${name}`
+      mounts.set(nested, dependency)
+      mounted.push({ prefix: nested, node: dependency, ancestors: [...ancestors, dependency] })
+    }
+  }
+  // A roster lookup may fail before its declaring bundle supplies the package.
+  // A missing concrete dependency edge must not be replaced by another version.
+  const missing = pending.filter(({ name, owner }) => owner !== undefined || !winners.has(name))
     .map(({ name, from }) => `${name} (from ${relative(options.resolveFrom, from) || '.'})`)
   return { files, packages, missing }
 }
@@ -662,7 +741,7 @@ export function packVfsImage(options: PackOptions): PackResult {
 
   const executables = dropExecutables(files)
   const rootPackages = [...packages.keys()].filter(name => options.workspaces.has(name))
-  const { swept, transform, javascriptEntries, droppedJavascriptEntries, unresolvedExternalRequests } =
+  const { swept, transform, javascriptEntries, droppedJavascriptEntries, unresolvedExternalRequests, pageBundles } =
     sweepImage(files, options, rootPackages, root,
       pluginEntries.filter(specifier => packages.has(packageNameOf(specifier))))
 
@@ -687,7 +766,7 @@ export function packVfsImage(options: PackOptions): PackResult {
     roster,
     missing,
     executables,
-    pageBundles: Object.keys(swept).filter(name => pageAsset(name)),
+    pageBundles,
     javascriptEntries,
     droppedJavascriptEntries,
     unresolvedExternalRequests,

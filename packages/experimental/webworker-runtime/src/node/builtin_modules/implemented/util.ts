@@ -100,6 +100,23 @@ export function isDeepStrictEqual(left: unknown, right: unknown): boolean {
   /* jscpd:ignore-end */
 }
 
+/**
+ * Link a constructor's existing prototype to its parent's, without inheriting static members.
+ * @param constructor - Constructor whose prototype and non-enumerable `super_` are updated.
+ * @param superConstructor - Parent constructor with a defined prototype.
+ */
+export function inherits(constructor: unknown, superConstructor: unknown): void {
+  const invalid = (name: string): TypeError => Object.assign(new TypeError(`The "${name}" argument must be a function.`), {
+    code: 'ERR_INVALID_ARG_TYPE',
+  })
+  if (constructor === null || constructor === undefined) throw invalid('constructor')
+  if (superConstructor === null || superConstructor === undefined) throw invalid('superConstructor')
+  const parent = (superConstructor as { prototype?: object | null }).prototype
+  if (parent === undefined) throw invalid('superConstructor.prototype')
+  Object.defineProperty(constructor, 'super_', { value: superConstructor, writable: true, configurable: true })
+  Object.setPrototypeOf((constructor as { prototype: object }).prototype, parent)
+}
+
 /** Runtime type predicates (`node:util/types`), checked against the Node module of that name. */
 export const types = {
   isPromise: (value: unknown): value is Promise<unknown> => value instanceof Promise
@@ -151,6 +168,6 @@ type NodeFace = Partial<Omit<typeof import('node:util'), 'promisify' | 'callback
 
 /** CommonJS default export: the members `require()` hands a caller of this module. */
 export default {
-  promisify, callbackify, inspect, format, isDeepStrictEqual, types, parseArgs, deprecate,
+  promisify, callbackify, inspect, format, isDeepStrictEqual, inherits, types, parseArgs, deprecate,
   TextDecoder: TextDecoderClass, TextEncoder: TextEncoderClass,
 } satisfies NodeFace
