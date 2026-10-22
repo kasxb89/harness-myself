@@ -1001,7 +1001,9 @@ test('retains single-statement body suspension edits beside preceding await and 
 })
 
 test.each(['return', 'throw'] as const)('closes active while delegation before outer finally on %s', async (action) => {
-  async function* native(source: AsyncIterable<unknown, unknown, unknown>, mark: (value: string) => void) {
+  async function* native(
+    source: AsyncIterable<unknown, unknown, unknown>, mark: (value: string) => void,
+  ): AsyncGenerator<unknown, unknown, unknown> {
     try { while (!(yield* source)) mark('unreached.body') } finally { await Promise.resolve(); mark('outer.finally') }
   }
   const code = transformModule('export async function* outer(source,mark){try{while(!(yield* source))mark("unreached.body")}finally{await Promise.resolve();mark("outer.finally")}}')
