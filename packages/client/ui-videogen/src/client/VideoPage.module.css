@@ -23,21 +23,13 @@
 .composerBar { display: flex; align-items: center; gap: 12px; padding-top: 14px; border-top: 0.5px solid var(--dsw-alias-border-l1); }
 .modelButton { display: flex; align-items: center; gap: 12px; min-width: 148px; max-width: 240px; padding: 8px 12px; border: 0; border-radius: 999px; corner-shape: round; background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); font: inherit; font-size: 12px; line-height: 1.5; cursor: pointer; overflow: hidden; text-overflow: ellipsis; }
 .modelName { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.settings { flex: 0 1 auto; min-width: 0; }
-.settingsTrigger { display: flex; align-items: center; gap: 12px; width: fit-content; max-width: 100%; min-height: 38px; box-sizing: border-box; padding: 8px 11px; border: 0.5px solid var(--dsw-alias-border-l1); border-radius: var(--dsw-radius-md); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 20px; list-style: none; cursor: pointer; transition: background .16s ease, border-color .16s ease; }
-.settingsTrigger::-webkit-details-marker { display: none; }
-.settingsTrigger::marker { content: ''; }
-.settingsTrigger:hover:not([aria-disabled='true']) { background: var(--dsw-alias-interactive-bg-hover); border-color: var(--dsw-alias-border-l2); }
+.settings { flex: 1 1 100%; order: 4; min-width: 0; }
+.settingsTrigger { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 12px; min-height: 38px; box-sizing: border-box; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 20px; }
 .settingsTitle { display: inline-flex; align-items: center; gap: 7px; flex: none; color: var(--dsw-alias-label-primary); font-weight: 500; white-space: nowrap; }
 .settingsValues { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 11px; line-height: 18px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .settingsValues > span + span { padding-left: 8px; border-left: 0.5px solid var(--dsw-alias-border-l2); }
-.settingsChevron { flex: none; margin-left: auto; color: var(--dsw-alias-label-tertiary); transition: transform .16s ease; }
-.settingsTrigger[aria-disabled='true'] { cursor: default; opacity: .5; }
-.settings[open] { flex-basis: 100%; order: 4; }
-.settings[open] .settingsTrigger { border-color: color-mix(in srgb, var(--dsw-alias-state-business-primary) 45%, var(--dsw-alias-border-l1)); background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 8%, var(--dsw-alias-bg-layer-1)); }
-.settings[open] .settingsChevron { transform: rotate(180deg); color: var(--dsw-alias-state-business-primary); }
-.composerBar:has(.settings[open]) { flex-wrap: wrap; }
-.settingsPanel { margin-top: 12px; padding: 18px; border: 0.5px solid var(--dsw-alias-border-l1); border-radius: var(--dsw-radius-lg); background: var(--dsw-alias-bg-layer-1); }
+.composerBar { flex-wrap: wrap; }
+.settingsPanel { padding: 18px; border: 0.5px solid var(--dsw-alias-border-l1); border-radius: var(--dsw-radius-lg); background: var(--dsw-alias-bg-layer-1); }
 .settingsHeading { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 8px 16px; margin-bottom: 18px; padding-bottom: 14px; border-bottom: 0.5px solid var(--dsw-alias-border-l1); }
 .settingsHeading h3 { margin: 0; color: var(--dsw-alias-label-primary); font-size: 13px; line-height: 20px; font-weight: 500; }
 .settingsHeading p, .audioRow p { margin: 3px 0 0; color: var(--dsw-alias-label-tertiary); font-size: 11px; line-height: 18px; }
@@ -86,6 +78,8 @@
 .label { display: flex; align-items: center; gap: 8px; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 1.5; }
 .materials { display: flex; flex-direction: column; min-width: 0; gap: 10px; }
 .materialNotes { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; }
+.materialCapabilities { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0; padding: 0; list-style: none; color: var(--dsw-alias-label-secondary); font-size: 11px; line-height: 1.6; }
+.videoReferencePreview { width: 100%; max-height: 180px; border-radius: var(--dsw-radius-sm); }
 .materialHelp { color: var(--dsw-alias-label-tertiary); font-size: 11px; line-height: 1.6; }
 .materialHelp summary { cursor: pointer; }
 .materialHelp[open] { flex-basis: 100%; }
@@ -138,8 +132,8 @@
 .emptyWorks p { margin: 0; font-size: 13px; line-height: 1.5; }
 .emptyWorks span { font-size: 11px; line-height: 1.5; }
 @media (max-width: 1000px) { .templateGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .history { grid-template-columns: repeat(3, minmax(0, 1fr)); } .cost { display: none; } }
-@media (max-width: 650px) { .page { gap: 20px; padding: 20px 16px 32px; } .composer { padding: 16px 16px 8px; } .header { gap: 14px; } .modeTabs { margin-left: auto; } .balance { margin-left: 0; width: 100%; } .templateGrid { grid-template-columns: 1fr; } .history { grid-template-columns: repeat(2, minmax(0, 1fr)); } .composerBar { flex-wrap: wrap; gap: 8px; } .modelButton { max-width: 190px; } .settings { flex-basis: 100%; order: 4; } .settingsTrigger { width: 100%; } .settingsValues { margin-left: auto; } .settingsPanel { padding: 14px; } .settingsChevron { margin-left: 0; } }
-@media (prefers-reduced-motion: reduce) { .templateCard, .settingsTrigger, .settingsChevron, .ratioCard, .parameterOption { transition: none; } .templateCard:hover { transform: none; } .spinner { animation: none; } }
+@media (max-width: 650px) { .page { gap: 20px; padding: 20px 16px 32px; } .composer { padding: 16px 16px 8px; } .header { gap: 14px; } .modeTabs { margin-left: auto; } .balance { margin-left: 0; width: 100%; } .templateGrid { grid-template-columns: 1fr; } .history { grid-template-columns: repeat(2, minmax(0, 1fr)); } .composerBar { gap: 8px; } .modelButton { max-width: 190px; } .settingsValues { margin-left: auto; } .settingsPanel { padding: 14px; } }
+@media (prefers-reduced-motion: reduce) { .templateCard, .ratioCard, .parameterOption { transition: none; } .templateCard:hover { transform: none; } .spinner { animation: none; } }
 
 .templateCover { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; }
 .addMedia { position: relative; }

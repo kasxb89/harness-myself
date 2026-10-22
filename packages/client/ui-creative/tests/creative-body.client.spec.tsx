@@ -545,11 +545,24 @@ describe('shared project workbench', () => {
     fireEvent.change(screen.getByRole('combobox', { name: '任务状态' }), { target: { value: 'failed' } })
     expect(h.view.container.querySelector('[data-creative-task="task_done"]')).toBeNull()
     expect(h.view.container.querySelector('[data-creative-task="task_failed"]')).toBeTruthy()
-    expect(h.view.container.textContent).toContain(zh.serverBusy)
+    expect(h.view.container.textContent).toContain(zh.operationFailed)
     expect(h.view.container.textContent).not.toContain('VIDEO_FAILED')
     fireEvent.change(screen.getByRole('combobox', { name: '文件类型' }), { target: { value: 'image' } })
     expect(h.view.container.querySelector('video')).toBeNull()
     expect(screen.getByText('人声、口型与字幕同步：待核验')).toBeTruthy()
+  })
+
+  it.each([
+    ['TRANSPORT', 'networkFailure'], ['HTTP_408', 'requestTimeout'], ['HTTP_503', 'serviceUnavailable'],
+    ['TASK_FAILED', 'upstreamUnavailable'], ['PRIVATE_CODE', 'operationFailed'],
+  ] as const)('shows the observed %s failure on a creation task without attributing an unknown cause', (errorCode, key) => {
+    const h = fixture({ projects: [project({ tasks: [
+      { id: 'task_failed', status: 'failed', shotIds: ['s1'], completedShots: 0, totalShots: 1, outputs: [], errorCode },
+    ] })] })
+    fireEvent.click(screen.getByRole('tab', { name: '任务与产物' }))
+    expect(h.view.container.textContent).toContain(zh[key])
+    expect(h.view.container.textContent).not.toContain(zh.serverBusy)
+    expect(h.view.container.textContent).not.toContain(errorCode)
   })
 
   it('keeps generating and unconfirmed tasks distinct from a confirmed generation failure', () => {

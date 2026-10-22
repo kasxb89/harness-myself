@@ -34,6 +34,30 @@ function video(fields: Record<string, unknown> = {}): VideoParams {
   return model.params as VideoParams
 }
 
+describe('reference-video capability evidence', () => {
+  it.each([
+    [{}, ['16:9', '9:16', '1:1', 'adaptive'], ['adaptive']],
+    [{ parameters: { ratio: { enum: ['16:9'] } } }, ['16:9'], []],
+    [{ parameters: { properties: { aspect_ratio: { enum: ['adaptive', '9:16'] } } } }, ['adaptive', '9:16'], ['adaptive']],
+    [{ billing_usage_schema: { ratio: { enum: ['16:9'] } } }, ['16:9'], []],
+  ] as const)('retains live ratio declarations when resolving Seedance 2.5 frame restrictions: %j', (fields, ratios, frameRatios) => {
+    const [model] = catalogFromPricing([{ model_name: 'doubao-seedance-2-5-260628', supported_endpoint_types: ['openai-video'], ...fields }], null)
+    expect(model?.params).toMatchObject({ ratios, frameRatios, mixFramesAndReferences: false })
+  })
+
+  it('keeps exact H3 media declarations without granting them to an unlisted family model', () => {
+    const catalog = catalogFromPricing(['MiniMax-H3', 'MiniMax-H3-unlisted', 'hailuo-unlisted', 'unknown-video'].map(model_name => ({
+      model_name, supported_endpoint_types: ['openai-video'],
+    })), null)
+    expect(catalog).toMatchObject([
+      { id: 'MiniMax-H3', source: 'plugin:hailuo', params: { maxReferenceVideos: 3, maxReferenceAudios: 3 } },
+      { id: 'MiniMax-H3-unlisted', source: 'family:hailuo', params: { maxReferenceVideos: 0, maxReferenceAudios: 0 } },
+      { id: 'hailuo-unlisted', source: 'family:hailuo', params: { maxReferenceVideos: 0, maxReferenceAudios: 0 } },
+      { id: 'unknown-video', source: 'fallback', params: { maxReferenceVideos: 0, maxReferenceAudios: 0 } },
+    ])
+  })
+})
+
 describe('BlackRxAI exact video contracts', () => {
   const variable = Array.from({ length: 16 }, (_, index) => index + 15)
   const policies = [

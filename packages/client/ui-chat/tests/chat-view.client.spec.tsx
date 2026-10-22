@@ -2352,9 +2352,9 @@ describe('ChatView', () => {
     const view = render(<h.ChatView {...h.props} />)
     const statuses = view.getAllByRole('status')
     expect(statuses.map(status => status.textContent)).toEqual([
-      '本轮运行失败服务器繁忙，请稍后重试',
-      '本轮运行失败服务器繁忙，请稍后重试',
-      '本轮运行失败服务器繁忙，请稍后重试',
+      '本轮运行失败操作未完成，原因暂未确认，请先查看状态',
+      '本轮运行失败操作未完成，原因暂未确认，请先查看状态',
+      '本轮运行失败操作未完成，原因暂未确认，请先查看状态',
       '本轮运行失败当前请求的额度已用尽',
     ])
     // The transient notice is the frame-wide host's job; the failure row keeps
@@ -2373,7 +2373,7 @@ describe('ChatView', () => {
     const copy = english ? en : zh
     Object.assign(h.props, { t: makeTranslate(copy, english ? commonEn : commonZh) })
     const view = render(<h.ChatView {...h.props} />)
-    expect(view.getAllByText(copy['message.failure.busy'])).toHaveLength(2)
+    expect(view.getAllByText(copy['message.failure.invalidInput'])).toHaveLength(2)
     expect(view.container.textContent).not.toContain('reasoning_content')
     expect(view.container.textContent).not.toContain('INVALID_REQUEST')
     expect(view.container.textContent).not.toContain('private-id')
@@ -2381,6 +2381,19 @@ describe('ChatView', () => {
     expect(view.container.textContent).not.toContain('400')
     expect(terminal.message).toBe(diagnostic)
     expect(scheduled.failure).toBe(failure)
+  })
+
+  it.each([
+    ['TRANSPORT', 'message.failure.networkFailure'], ['HTTP_408', 'message.failure.requestTimeout'],
+    ['HTTP_503', 'message.failure.serviceUnavailable'], ['HTTP_403', 'message.failure.permissionDenied'],
+    ['PRIVATE_CODE', 'message.failure.operationFailed'],
+  ] as const)('keeps terminal and retry %s failures separate from server-busy narration', (code, key) => {
+    const failure = { code, message: 'private failure details' }
+    const h = makeHarness({ nodes: [user(1, 'try'), { ...retry(2), failure }, { ...turnError(3), ...failure }] })
+    const view = render(<h.ChatView {...h.props} />)
+    expect(view.getAllByText(zh[key])).toHaveLength(2)
+    expect(view.queryByText(zh['message.failure.busy'])).toBeNull()
+    expect(view.container.textContent).not.toContain('private failure details')
   })
 
   it('renders the max-tokens notice with localized guidance, distinct from turn errors', () => {

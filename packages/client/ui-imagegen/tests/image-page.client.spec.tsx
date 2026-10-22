@@ -88,6 +88,37 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); cleanup(); vi.unstubAllGlobals() })
 
 describe('image creation workspace', () => {
+  it.each(['text', 'reference'] as const)('shows image specifications directly and submits the chosen values in %s mode', async (mode) => {
+    const { props, store } = makeProps()
+    render(<ImagePage {...props} />)
+    await ready()
+    const size = screen.getByRole('combobox', { name: zh.ratio })
+    expect(size).toHaveProperty('disabled', false)
+    fireEvent.change(size, { target: { value: '1536x1024' } })
+    fireEvent.change(screen.getByRole('combobox', { name: zh.count }), { target: { value: '2' } })
+    fireEvent.change(screen.getByRole('combobox', { name: zh.quality }), { target: { value: 'high' } })
+    fireEvent.change(screen.getByRole('combobox', { name: zh.background }), { target: { value: 'transparent' } })
+    fireEvent.change(screen.getByRole('combobox', { name: zh.format }), { target: { value: 'jpeg' } })
+    fireEvent.change(screen.getByRole('slider', { name: zh.compression.replace('{n}', '90') }), { target: { value: '85' } })
+    fireEvent.change(screen.getByRole('textbox', { name: zh.seed }), { target: { value: '42' } })
+    if (mode === 'reference') {
+      fireEvent.drop(screen.getByRole('region', { name: zh.composer }), {
+        dataTransfer: { files: [new File(['image'], 'reference.png', { type: 'image/png' })] },
+      })
+      await waitFor(() => { expect(store.getSnapshot().references).toHaveLength(1) })
+      expect(screen.getByText(t('modeEdit', { count: '1' }))).toBeTruthy()
+    } else expect(screen.getByText(zh.modeGenerate)).toBeTruthy()
+    expect(fetchMock.mock.calls.some(([url]) => url === '/credits/api/image/generate')).toBe(false)
+    fireEvent.change(screen.getByRole('textbox', { name: zh.prompt }), { target: { value: '选择的图片规格' } })
+    await waitFor(() => { expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', false) })
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    await screen.findByText(zh.done)
+    expect(requestBody(fetchMock.mock.calls.find(([url]) => url === '/credits/api/image/generate'))).toMatchObject({
+      size: '1536x1024', count: 2, quality: 'high', background: 'transparent', format: 'jpeg', compression: 85, seed: 42,
+      references: mode === 'reference' ? ['ma_1'] : [],
+    })
+  })
+
   it.each(['no-session', 'unknown', 'read-failed'] as const)('keeps draft controls available with %s admission while generation stays paused', async (admission) => {
     if (admission === 'no-session') chatSessionId = undefined
     const original = fetchMock.getMockImplementation()!
@@ -104,9 +135,7 @@ describe('image creation workspace', () => {
     else if (admission === 'read-failed') await screen.findByRole('button', { name: zh.originalCheck })
     const selector = screen.getByRole('combobox', { name: zh.model })
     expect(selector).toHaveProperty('disabled', false)
-    const parameters = screen.getByRole('button', { name: '1024x1024' })
-    expect(parameters).toHaveProperty('disabled', false)
-    fireEvent.click(parameters)
+    expect(screen.getByRole('group', { name: zh.parameters })).toBeTruthy()
     const ratio = screen.getByRole('combobox', { name: zh.ratio })
     expect(ratio).toHaveProperty('disabled', false)
     fireEvent.change(ratio, { target: { value: '1536x1024' } })
@@ -127,7 +156,7 @@ describe('image creation workspace', () => {
     })
   })
 
-  it('submits the catalog resolution tier independently of legacy pixel size', async () => {
+  it.each(['text', 'reference'] as const)('shows and submits the catalog resolution independently of pixel size in %s mode', async (mode) => {
     const original = fetchMock.getMockImplementation()!
     fetchMock.mockImplementation(async (input, init) => input === '/credits/api/media/catalog'
       ? json({ ok: true, payload: { image: [{ ...models[0], id: 'internal-image', displayName: 'Internal image',
@@ -136,14 +165,20 @@ describe('image creation workspace', () => {
     render(<ImagePage {...props} />)
     await screen.findByRole('option', { name: 'Internal image' })
     await waitFor(() => { expect(store.getSnapshot().resolution).toBe('1k') })
-    fireEvent.click(screen.getByRole('button', { expanded: false, name: '1k' }))
+    expect(screen.queryByRole('combobox', { name: zh.ratio })).toBeNull()
+    if (mode === 'reference') {
+      fireEvent.drop(screen.getByRole('region', { name: zh.composer }), {
+        dataTransfer: { files: [new File(['image'], 'reference.png', { type: 'image/png' })] },
+      })
+      await waitFor(() => { expect(store.getSnapshot().references).toHaveLength(1) })
+    }
     fireEvent.change(screen.getByRole('combobox', { name: zh.resolution }), { target: { value: '4k' } })
     fireEvent.change(screen.getByRole('textbox', { name: zh.prompt }), { target: { value: '保留参考画面' } })
     await waitFor(() => { expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', false) })
     fireEvent.click(screen.getByRole('button', { name: zh.submit }))
     await waitFor(() => { expect(fetchMock.mock.calls.some(([url]) => url === '/credits/api/image/generate')).toBe(true) })
     const submitted = requestBody(fetchMock.mock.calls.find(([url]) => url === '/credits/api/image/generate'))
-    expect(submitted).toMatchObject({ model: 'internal-image', resolution: '4k' })
+    expect(submitted).toMatchObject({ model: 'internal-image', resolution: '4k', references: mode === 'reference' ? ['ma_1'] : [] })
     expect(submitted).not.toHaveProperty('size')
   })
 
@@ -375,17 +410,23 @@ describe('image creation workspace', () => {
     expect(fetchMock.mock.calls.some(([url]) => url === '/credits/api/image/generate')).toBe(false)
   })
 
-  it.each(['INVALID_REQUEST', 'AUTH', 'QUOTA', 'UNRECOGNIZED_ERROR'])('replaces %s diagnostics with a safe retry message and retains the draft', async (code) => {
+  it.each([
+    ['INVALID_REQUEST', zh.invalidInput], ['AUTH', zh.operationFailed], ['QUOTA', zh.operationFailed],
+    ['UNRECOGNIZED_ERROR', zh.operationFailed], ['TRANSPORT', zh.networkFailure], ['TIMEOUT', zh.requestTimeout],
+    ['PERMISSION_DENIED', zh.permissionDenied], ['HTTP_503', zh.serviceUnavailable], ['UPSTREAM_ERROR', zh.upstreamUnavailable],
+    ['LOCAL_SAVE_FAILED', zh.localFailure], ['SERVER_BUSY', zh.serverBusy], ['CANCELLED', zh.cancelled],
+    ['ACCOUNT_QUOTA', zh.insufficient], ['ACCOUNT_SIGN_IN_REQUIRED', zh.noAuth],
+  ])('classifies a confirmed %s rejection without exposing diagnostics or losing the draft', async (code, expected) => {
     const original = fetchMock.getMockImplementation()!
     const message = '400 {"reasoning_content":"private-id", "path":"C:/internal/key"}'
     fetchMock.mockImplementation(async (input, init) => input === '/credits/api/image/generate'
-      ? json({ ok: false, code, message }) : await original(input, init))
+      ? json({ ok: false, code, message, submission_state: 'not-submitted' }) : await original(input, init))
     const { props, store } = makeProps()
     const view = render(<ImagePage {...props} />)
     await ready()
     fireEvent.change(screen.getByRole('textbox', { name: zh.prompt }), { target: { value: '保留这个画面' } })
     fireEvent.click(screen.getByRole('button', { name: zh.submit }))
-    expect((await screen.findByRole('alert')).textContent).toBe(zh.serverBusy)
+    expect((await screen.findByRole('alert')).textContent).toBe(expected)
     expect(view.container.textContent).not.toContain(message)
     expect(view.container.textContent).not.toContain(code)
     expect(view.container.textContent).not.toContain('private-id')
@@ -414,6 +455,24 @@ describe('image creation workspace', () => {
     },
   )
 
+  it.each([
+    [408, zh.requestTimeout], [403, zh.permissionDenied], [429, zh.serverBusy], [503, zh.serviceUnavailable],
+  ])('uses observed HTTP %s when a confirmed rejection has no recognized failure code', async (status, expected) => {
+    const original = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation(async (input, init) => input === '/credits/api/image/generate'
+      ? Response.json({ ok: false, code: 'PRIVATE_CODE', message: 'private route', submission_state: 'not-submitted' }, { status })
+      : await original(input, init))
+    const { props, store } = makeProps()
+    const view = render(<ImagePage {...props} />)
+    await ready()
+    fireEvent.change(screen.getByRole('textbox', { name: zh.prompt }), { target: { value: '保留画面' } })
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    expect((await screen.findByRole('alert')).textContent).toBe(expected)
+    expect(view.container.textContent).not.toContain('private route')
+    expect(store.getSnapshot().prompt).toBe('保留画面')
+    expect(fetchMock.mock.calls.filter(([url]) => url === '/credits/api/image/generate')).toHaveLength(1)
+  })
+
   it.each(['TIMEOUT', 'TRANSPORT', 'NO_TASK_ID'])('keeps unknown-result guidance for a structured %s failure without resubmitting', async (code) => {
     const original = fetchMock.getMockImplementation()!
     const message = 'private generation diagnostic'
@@ -436,15 +495,70 @@ describe('image creation workspace', () => {
     expect(fetchMock.mock.calls.filter(([url]) => url === '/credits/api/image/generate')).toHaveLength(1)
   })
 
+  it.each(['http', 'http-malformed', 'unknown', 'cancelled', 'malformed', 'null', 'primitive', 'missing-ok', 'invalid-ok'] as const)(
+    'retains the original submission after an unconfirmed %s generation failure', async (kind) => {
+      const original = fetchMock.getMockImplementation()!
+      fetchMock.mockImplementation(async (input, init) => {
+        if (input !== '/credits/api/image/generate') return await original(input, init)
+        if (kind === 'http') return Response.json({ ok: false, code: 'INVALID_REQUEST' }, { status: 503 })
+        if (kind === 'http-malformed') return new Response('private service output', { status: 503 })
+        if (kind === 'malformed') return new Response('private malformed output')
+        if (kind === 'null') return Response.json(null)
+        if (kind === 'primitive') return Response.json('private primitive output')
+        if (kind === 'missing-ok') return Response.json({ message: 'private incomplete output' })
+        if (kind === 'invalid-ok') return Response.json({ ok: 'true', message: 'private invalid output' })
+        return json({ ok: false, code: kind === 'cancelled' ? 'CANCELLED' : 'UNKNOWN' })
+      })
+      const { props, store } = makeProps()
+      const view = render(<ImagePage {...props} />)
+      await ready()
+      fireEvent.change(screen.getByRole('textbox', { name: zh.prompt }), { target: { value: '保留原任务与草稿' } })
+      fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+      await screen.findByRole('alert')
+      expect(screen.getByRole('alert').textContent).toBe(zh.generationConnectionLost)
+      expect(Object.values(store.getSnapshot().unsettled)[0]).toMatchObject({ state: 'unknown', canQuery: false })
+      expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', true)
+      expect(view.container.textContent).not.toContain('private')
+      view.unmount()
+      render(<ImagePage {...props} />)
+      await ready()
+      expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', true)
+      fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+      expect(fetchMock.mock.calls.filter(([url]) => url === '/credits/api/image/generate')).toHaveLength(1)
+    },
+  )
+
   it('does not display raw model-catalog failures', async () => {
     const original = fetchMock.getMockImplementation()!
     fetchMock.mockImplementation(async (input, init) => input === '/credits/api/media/catalog'
       ? json({ ok: false, code: 'PRIVATE_CODE', message: 'internal upstream route' }) : await original(input, init))
     const { props } = makeProps()
     const view = render(<ImagePage {...props} />)
-    expect(await screen.findByText(t('modelsFailed', { message: zh.serverBusy }))).toBeTruthy()
+    expect(await screen.findByText(t('modelsFailed', { message: zh.operationFailed }))).toBeTruthy()
     expect(view.container.textContent).not.toContain('PRIVATE_CODE')
     expect(view.container.textContent).not.toContain('internal upstream route')
+  })
+
+  it.each([
+    ['network', zh.networkFailure], ['timeout', zh.requestTimeout], ['service', zh.serviceUnavailable],
+    ['service-text', zh.serviceUnavailable], ['service-invalid-envelope', zh.serviceUnavailable],
+    ['unknown', zh.operationFailed], ['invalid-json', zh.operationFailed],
+  ])('distinguishes %s catalog failures using the observed request result', async (kind, expected) => {
+    const original = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation(async (input, init) => {
+      if (input !== '/credits/api/media/catalog') return await original(input, init)
+      if (kind === 'network') throw new TypeError('private transport details')
+      if (kind === 'timeout') throw new DOMException('private timeout details', 'TimeoutError')
+      if (kind === 'service') return Response.json({ ok: false }, { status: 503 })
+      if (kind === 'service-text') return new Response('private malformed output', { status: 503 })
+      if (kind === 'service-invalid-envelope') return Response.json(null, { status: 503 })
+      if (kind === 'invalid-json') return new Response('private malformed output')
+      throw new Error('private unexpected details')
+    })
+    const { props } = makeProps()
+    const view = render(<ImagePage {...props} />)
+    expect(await screen.findByText(t('modelsFailed', { message: expected }))).toBeTruthy()
+    expect(view.container.textContent).not.toContain('private')
   })
 
   it('keeps only image/video modes while linking generated images to the selected conversation', async () => {
@@ -795,7 +909,6 @@ describe('image creation workspace', () => {
     const first = render(<ImagePage {...props} />)
     await ready()
     fireEvent.change(screen.getByRole('textbox', { name: '画面描述' }), { target: { value: 'A green tea bottle' } })
-    fireEvent.click(screen.getByRole('button', { name: '1024x1024' }))
     fireEvent.change(screen.getByLabelText('比例与尺寸'), { target: { value: '1536x1024' } })
     fireEvent.click(screen.getByRole('tab', { name: '视频' }))
     expect(props.openVideo).toHaveBeenCalledTimes(1)
@@ -804,7 +917,7 @@ describe('image creation workspace', () => {
     await ready()
     expect(screen.getByRole('textbox', { name: '画面描述' })).toHaveProperty('value', 'A green tea bottle')
     expect(store.getSnapshot().size).toBe('1536x1024')
-    expect(screen.getByRole('button', { name: '1536x1024' })).toBeTruthy()
+    expect(screen.getByRole('combobox', { name: zh.ratio })).toHaveProperty('value', '1536x1024')
     expect(createImageDraftStore().create().getSnapshot().prompt).toBe('')
   })
 
@@ -882,12 +995,35 @@ describe('image creation workspace', () => {
       new File(['gif'], 'broken.gif', { type: 'image/gif' }), new File(['png'], 'good.png', { type: 'image/png' })] } })
     await waitFor(() => { expect(store.getSnapshot().uploading).toBe(false) })
     const errors = screen.getByRole('list', { name: zh.uploadFailures }).textContent
-    expect(errors).toContain(`offline.png${zh.connectionFailure}`)
+    expect(errors).toContain(`offline.png${zh.networkFailure}`)
     expect(errors).toContain(`broken.gif${zh.invalidImage}`)
     expect(errors).not.toContain('internal decoder detail')
     expect(screen.getByText(t('uploadSummary', { added: '1', failed: '2' }))).toBeTruthy()
     expect(screen.getByRole('button', { name: '添加素材' })).toHaveProperty('disabled', false)
     expect(store.getSnapshot().references.map(item => item.name)).toEqual(['good.png'])
+  })
+
+  it.each([
+    ['service', zh.serviceUnavailable], ['unknown', zh.operationFailed], ['invalid-json', zh.operationFailed],
+  ])('keeps a %s upload failure distinct from a network interruption', async (kind, expected) => {
+    const original = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation(async (input, init) => {
+      if (requestUrl(input) !== '/credits/api/assets') return await original(input, init)
+      if (kind === 'service') return Response.json({ ok: false }, { status: 503 })
+      if (kind === 'invalid-json') return new Response('private malformed output')
+      throw new Error('private unexpected error')
+    })
+    const { props, store } = makeProps()
+    const view = render(<ImagePage {...props} />)
+    await ready()
+    fireEvent.drop(screen.getByRole('region', { name: zh.composer }), {
+      dataTransfer: { files: [new File(['image'], 'reference.png', { type: 'image/png' })] },
+    })
+    await waitFor(() => { expect(store.getSnapshot().uploading).toBe(false) })
+    expect(screen.getByRole('list', { name: zh.uploadFailures }).textContent).toContain(`reference.png${expected}`)
+    expect(view.container.textContent).not.toContain('private')
+    expect(store.getSnapshot().references).toEqual([])
+    expect(fetchMock.mock.calls.some(([url]) => url === '/credits/api/image/generate')).toBe(false)
   })
 
   it('keeps three common-format references with normalized previews despite missing or incorrect MIME labels', async () => {

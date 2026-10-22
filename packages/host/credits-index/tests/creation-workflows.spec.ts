@@ -84,7 +84,8 @@ it('gives narrative briefs explicit material responsibilities, executable timing
 
 it('keeps platform failure narration safe while preserving diagnostic tasks and unknown paid outcomes', () => {
   expect(VIDEO_DIRECTOR_PROMPT).toContain('面向用户的回复和进度只给安全的简体中文摘要')
-  expect(VIDEO_DIRECTOR_PROMPT).toContain('服务器繁忙，请稍后重试')
+  expect(VIDEO_DIRECTOR_PROMPT).toContain('连接中断和超时不能证明是用户本地、网络、平台或上游的问题')
+  expect(VIDEO_DIRECTOR_PROMPT).toContain('原因未确认时明确尚未确认，不一概称为服务器错误')
   expect(VIDEO_DIRECTOR_PROMPT).toContain('原始 HTTP 状态或响应正文、JSON 错误对象、英文错误码、堆栈、请求标识、内部文件路径、密钥或令牌')
   expect(VIDEO_DIRECTOR_PROMPT).toContain('真实工具结果与诊断记录保留原样')
   expect(VIDEO_DIRECTOR_PROMPT).toContain('工具参数及协议字段仍按工具要求填写')

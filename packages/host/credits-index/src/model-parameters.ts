@@ -48,6 +48,8 @@ export interface VideoSpec {
   readonly defaultDuration?: number
   readonly resolutions: readonly string[]
   readonly ratios: readonly string[]
+  /** Ratio restrictions for first/last-frame input; absent means no extra restriction. */
+  readonly frameRatios?: readonly string[]
   /** First/last frame slots; 2 means both ends can be pinned. */
   readonly frames: number
   readonly referenceImages: number
@@ -507,7 +509,7 @@ export const VIDEO_MODELS: Record<string, VideoSpec> = {
     audio: true, audioToggle: true, modes: [], seed: false, source: 'plugin:doubao',
   },
   'doubao-seedance-2-5-260628': {
-    durations: range(1, 30), resolutions: ['480p', '720p', '1080p'], ratios: ['16:9', '9:16', '1:1'],
+    durations: range(1, 30), resolutions: ['480p', '720p', '1080p'], ratios: ['16:9', '9:16', '1:1', 'adaptive'], frameRatios: ['adaptive'],
     frames: 2, referenceImages: 4, referenceVideos: 1, referenceAudios: 0,
     audio: true, audioToggle: true, modes: [], seed: false, source: 'plugin:doubao',
   },
@@ -537,7 +539,7 @@ export const IMAGE_FAMILIES: readonly { readonly match: RegExp; readonly spec: I
 export const VIDEO_FAMILIES: readonly { readonly match: RegExp; readonly spec: VideoSpec }[] = [
   { match: /kling/i, spec: { durations: range(3, 15), resolutions: ['720P', '1080P'], ratios: ['16:9', '9:16', '1:1'], frames: 2, referenceImages: 0, referenceVideos: 0, referenceAudios: 0, audio: false, audioToggle: false, modes: ['std', 'pro'], seed: false, source: 'family:kling' } },
   { match: /jimeng|seedance|doubao.*video/i, spec: { durations: range(1, 12), resolutions: ['480p', '720p', '1080p'], ratios: ['16:9', '9:16', '1:1'], frames: 2, referenceImages: 2, referenceVideos: 0, referenceAudios: 0, audio: false, audioToggle: true, modes: [], seed: true, source: 'family:seedance' } },
-  { match: /hailuo|minimax/i, spec: { durations: range(4, 15), resolutions: ['768P', '1080P'], ratios: ['16:9', '9:16'], frames: 2, referenceImages: 9, referenceVideos: 3, referenceAudios: 3, audio: true, audioToggle: false, modes: [], seed: false, source: 'family:hailuo' } },
+  { match: /hailuo|minimax/i, spec: { durations: range(4, 15), resolutions: ['768P', '1080P'], ratios: ['16:9', '9:16'], frames: 2, referenceImages: 9, referenceVideos: 0, referenceAudios: 0, audio: true, audioToggle: false, modes: [], seed: false, source: 'family:hailuo' } },
   { match: /^wan(x|[0-9])|通义万相/i, spec: { durations: range(1, 15), resolutions: ['480P', '720P', '1080P'], ratios: ['16:9', '9:16'], frames: 2, referenceImages: 5, referenceVideos: 0, referenceAudios: 0, audio: false, audioToggle: true, modes: [], seed: true, source: 'family:wan' } },
   { match: /veo/i, spec: { durations: [4, 6, 8], resolutions: ['720p', '1080p', '4k'], ratios: ['16:9', '9:16'], frames: 2, referenceImages: 3, referenceVideos: 0, referenceAudios: 0, audio: true, audioToggle: false, modes: [], seed: false, source: 'family:veo' } },
   { match: /sora/i, spec: { durations: [4, 8, 12], resolutions: ['720P', '1080P'], ratios: ['9:16', '16:9', '7:4', '4:7'], frames: 1, referenceImages: 1, referenceVideos: 0, referenceAudios: 0, audio: true, audioToggle: false, modes: [], seed: false, source: 'family:sora' } },

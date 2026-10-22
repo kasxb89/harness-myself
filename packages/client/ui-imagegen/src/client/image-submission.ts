@@ -46,8 +46,11 @@ export function submissionFromAnswer(answer: unknown, owner: Owner): ImageSubmis
   const malformedSuccess = answer.ok === true && (!object(answer.payload)
     || typeof answer.payload.path !== 'string' || answer.payload.path === '')
   if (!malformedSuccess && ['not-submitted', 'failed', 'completed'].includes(String(answer.submission_state))) return null
-  const legacyUnknown = ['TIMEOUT', 'TRANSPORT', 'NO_TASK_ID'].includes(String(answer.code))
-  if (answer.submission_state !== 'pending' && answer.submission_state !== 'unknown' && !legacyUnknown && !malformedSuccess) return null
+  const httpFailure = typeof answer.httpStatus === 'number' && answer.httpStatus >= 400
+    || typeof answer.code === 'string' && /^HTTP_\d{3}$/u.test(answer.code)
+  const unconfirmed = answer.ok !== true && (httpFailure
+    || ['TIMEOUT', 'TRANSPORT', 'NO_TASK_ID', 'UNKNOWN', 'CANCELLED', 'ABORTED', 'USER_CANCELLED'].includes(String(answer.code)))
+  if (answer.submission_state !== 'pending' && answer.submission_state !== 'unknown' && !unconfirmed && !malformedSuccess) return null
   return { ...owner, state: answer.submission_state === 'pending' ? 'pending' : 'unknown', canQuery: false,
     ...identifier(answer.plan_id) ? { planId: answer.plan_id } : {},
     ...identifier(answer.operation_id) ? { operationId: answer.operation_id } : {},

@@ -79,7 +79,7 @@ export const name = 'credits-index'
 /** The route carrier this plugin registers into. */
 export const inject = ['webServer', 'tools']
 
-const MEDIA_FAILURE_GUIDANCE = ' For Yunshu platform, relay or upstream failures, give users only a safe Simplified Chinese summary such as “服务器繁忙，请稍后重试”; never repeat raw HTTP responses, diagnostic JSON, error codes, stacks, internal paths or credentials. Keep actionable guidance for confirmed sign-in, product-credit, file-validation and cancellation failures. When submission or billing outcome is unknown, check existing tasks and artifacts first; do not immediately retry or automatically resubmit. Preserve real tool results. This restriction does not prevent software or code diagnostics explicitly requested by the user.'
+const MEDIA_FAILURE_GUIDANCE = ' For failed operations, give users only a safe Simplified Chinese summary based on the observed failure category; connection failures and timeouts do not establish whether the cause is local, network, platform or upstream. Distinguish confirmed request or media validation, permission, rate limiting, service HTTP 5xx and upstream task failures; unknown causes remain unconfirmed; never repeat raw HTTP responses, diagnostic JSON, error codes, stacks, internal paths or credentials. Keep actionable guidance for confirmed sign-in, product-credit, file-validation and cancellation failures. When submission or billing outcome is unknown, check existing tasks and artifacts first; do not immediately retry or automatically resubmit. Preserve real tool results. This restriction does not prevent software or code diagnostics explicitly requested by the user.'
 
 /** Plugin config: platform origin, display rate, and where the session file lives. */
 export interface Config {
@@ -1185,7 +1185,7 @@ export function apply(ctx: Context, config: Config): void {
     if (typeof duration !== 'number' || !Number.isSafeInteger(duration) || !durations.includes(duration)) {
       return { ok: false, code: 'DURATION_NOT_SUPPORTED', message: `${model.id} 当前分辨率的时长可选：${durations.join('、') || '无'} 秒，请选择受支持的分辨率和时长` }
     }
-    const ratio = readString(body, 'ratio')
+    let ratio = readString(body, 'ratio')
     if (ratio !== null && params.ratios.length > 0 && !params.ratios.includes(ratio)) {
       return { ok: false, code: 'RATIO_NOT_SUPPORTED', message: `${model.id} 的画面比例可选：${params.ratios.join('、')}` }
     }
@@ -1217,6 +1217,11 @@ export function apply(ctx: Context, config: Config): void {
     const referenceImages = referenceIds(body.referenceImages)
     const referenceVideos = referenceIds(body.referenceVideos)
     const referenceAudios = referenceIds(body.referenceAudios)
+    if (frames.length > 0 && params.frameRatios !== undefined) {
+      if (params.frameRatios.length === 0) return { ok: false, code: 'RATIO_NOT_SUPPORTED', message: `${model.id} 的首尾帧比例与当前模型目录配置不匹配，请切换模型；尚未提交生成。` }
+      if (ratio === null) ratio = params.frameRatios[0] ?? null
+      else if (!params.frameRatios.includes(ratio)) return { ok: false, code: 'RATIO_NOT_SUPPORTED', message: `${model.id} 的首尾帧比例可选：${params.frameRatios.join('、')}；尚未提交生成。` }
+    }
     const caps: readonly [string, number, number][] = [
       ['首尾帧图', frames.length, params.maxFrameImages],
       ['参考图', referenceImages.length, params.maxReferenceImages],
@@ -1286,16 +1291,21 @@ export function apply(ctx: Context, config: Config): void {
 
     const metadata: Record<string, unknown> = {}
     if (ratio !== null) metadata.ratio = ratio
-    // The frame images are named explicitly: the gateway's video plugins read
-    // `metadata.first_frame_image` / `last_frame_image` in preference to the
-    // positional `images` array, so a model with two slots gets the shot it was
-    // told to make rather than whichever one happened to be first.
-    if (frameUrls[0] !== undefined) metadata.first_frame_image = frameUrls[0]
-    if (frameUrls[1] !== undefined) metadata.last_frame_image = frameUrls[1]
-    if (model.id === 'MiniMax-H3' && imageUrls.length + videoUrls.length + audioUrls.length > 0) {
-      // H3 treats content as the complete reference list and ignores the flat fields once it exists.
+    const ark = model.source === 'plugin:doubao'
+    if (ark) {
+      if (resolution !== null && params.resolutions.includes(resolution)) metadata.resolution = resolution
+      if (audio !== null && params.audioToggle) metadata.generate_audio = audio
+      if (seed !== null && params.seed) metadata.seed = seed
+    }
+    // Ark reads ordered frame roles inside content; other gateway plugins
+    // read named first/last frames alongside positional images.
+    if (!ark && frameUrls[0] !== undefined) metadata.first_frame_image = frameUrls[0]
+    if (!ark && frameUrls[1] !== undefined) metadata.last_frame_image = frameUrls[1]
+    if ((model.id === 'MiniMax-H3' || ark) && imageUrls.length + videoUrls.length + audioUrls.length + (ark ? frameUrls.length : 0) > 0) {
+      // These routes consume typed content; flat reference aliases do not establish their media inputs.
       metadata.content = [
         { type: 'text', text: prompt },
+        ...ark ? frameUrls.map((url, index) => ({ type: 'image_url', role: index === 0 ? 'first_frame' : 'last_frame', image_url: { url } })) : [],
         ...imageUrls.map(url => ({ type: 'image_url', role: 'reference_image', image_url: { url } })),
         ...videoUrls.map(url => ({ type: 'video_url', role: 'reference_video', video_url: { url } })),
         ...audioUrls.map(url => ({ type: 'audio_url', role: 'reference_audio', audio_url: { url } })),
@@ -1303,7 +1313,7 @@ export function apply(ctx: Context, config: Config): void {
     } else if (imageUrls.length > 0) {
       metadata.content = [{ type: 'text', text: prompt }, ...imageUrls.map(url => ({ type: 'image_url', role: 'reference_image', image_url: { url } }))]
     }
-    if (model.id !== 'MiniMax-H3') {
+    if (model.id !== 'MiniMax-H3' && !ark) {
       if (videoUrls.length > 0) metadata.reference_video = videoUrls
       if (audioUrls.length > 0) metadata.reference_audio = audioUrls
     }
@@ -1321,7 +1331,7 @@ export function apply(ctx: Context, config: Config): void {
       ...seed === null ? {} : { seed },
       ...audio === null || !params.audioToggle ? {} : { generate_audio: audio },
       ...Object.keys(metadata).length === 0 ? {} : { metadata },
-      ...frameUrls.length === 0 ? {} : { images: frameUrls },
+      ...ark || frameUrls.length === 0 ? {} : { images: frameUrls },
     }
     if (Buffer.byteLength(JSON.stringify(request)) > 64 * 1024 * 1024) {
       return { ok: false, code: 'REFERENCE_REQUEST_TOO_LARGE', message: '参考素材编码后超过请求大小限制，请减少素材后重试；尚未提交生成' }
@@ -1532,7 +1542,10 @@ export function apply(ctx: Context, config: Config): void {
               : uploaded.status === 403 ? '当前账号无权上传图片'
                 : uploaded.status === 413 ? '超过上传大小限制，请缩小图片'
                   : uploaded.status === 400 || uploaded.status === 415 ? '图片格式或内容不受支持，请重新选择'
-                    : uploaded.status === 429 ? '上传过于频繁，请稍后重试' : '服务器繁忙，请稍后重试'
+                    : uploaded.status === 429 ? '上传过于频繁，请稍后重试'
+                      : uploaded.status === 408 || uploaded.status === 504 ? '上传等待响应超时，原因尚未确认，请稍后重试'
+                        : uploaded.status >= 500 && uploaded.status < 600 ? '上传服务暂时不可用，请稍后重试'
+                          : '上传未完成，原因尚未确认，请稍后重试'
             return { ok: false, submissionState: 'not-submitted', model, code: 'IMAGE_REFERENCE_UPLOAD_FAILED', message: `参考图「${file.filename}」${reason}；尚未提交生成。` }
           }
           const result = receipt !== null && typeof receipt === 'object' && !Array.isArray(receipt) ? receipt as Record<string, unknown> : null
@@ -3936,6 +3949,7 @@ export function apply(ctx: Context, config: Config): void {
                 .map(([resolution, durations]) => [resolution, [...durations]])),
             },
             resolutions: [...params.resolutions], ratios: [...params.ratios], frame_slots: params.maxFrameImages,
+            ...params.frameRatios === undefined ? {} : { frame_ratios: [...params.frameRatios] },
             max_reference_images: params.maxReferenceImages, max_reference_videos: params.maxReferenceVideos,
             max_reference_audios: params.maxReferenceAudios, mix_frames_and_references: params.mixFramesAndReferences,
             audio_output: params.audioOutput ?? (params.audio ? 'supported' : 'unsupported'), audio_toggle: params.audioToggle,

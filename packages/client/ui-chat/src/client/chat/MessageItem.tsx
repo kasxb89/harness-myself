@@ -57,6 +57,14 @@ function failureMessage(
     case 'insufficient-credits': return code === 'INSUFFICIENT_BALANCE' ? t('message.failure.balance') : t('message.failure.quota')
     case 'cancelled': return t('message.failure.cancelled')
     case 'busy': return t('message.failure.busy')
+    case 'network': return t('message.failure.networkFailure')
+    case 'timeout': return t('message.failure.requestTimeout')
+    case 'invalid-input': return t('message.failure.invalidInput')
+    case 'forbidden': return t('message.failure.permissionDenied')
+    case 'service': return t('message.failure.serviceUnavailable')
+    case 'upstream': return t('message.failure.upstreamUnavailable')
+    case 'local': return t('message.failure.localFailure')
+    case 'unknown': return t('message.failure.operationFailed')
   }
 }
 

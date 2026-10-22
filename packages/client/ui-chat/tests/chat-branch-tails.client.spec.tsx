@@ -893,7 +893,7 @@ describe('MessageItem arms', () => {
     expect(details?.dataset.active).toBe('true')
     expect(view.getByRole('status').textContent).toBe('正在重试模型请求（1/2） · 3s')
     expect(view.getByText('重试延迟：').parentElement?.textContent).toBe('重试延迟：2500毫秒')
-    expect(view.getByText('失败原因：').parentElement?.textContent).toBe('失败原因：服务器繁忙，请稍后重试')
+    expect(view.getByText('失败原因：').parentElement?.textContent).toBe('失败原因：连接中断或未能建立，请检查网络后查看状态')
 
     act(() => { vi.advanceTimersByTime(1_100) })
     expect(view.getByRole('status').textContent).toBe('正在重试模型请求（1/2） · 2s')

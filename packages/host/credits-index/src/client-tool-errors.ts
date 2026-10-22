@@ -7,7 +7,7 @@ type ClientErrorCode = 'DURATION_NOT_SUPPORTED' | 'AUDIO_NOT_SUPPORTED' | 'SHOT_
   | 'MODEL_NOT_AVAILABLE' | 'INVALID_ARGUMENT' | 'CREATIVE_SUBMISSION_UNKNOWN' | 'TRANSPORT_TIMEOUT'
   | 'QUEUE_WAIT_TIMEOUT' | 'TASK_FAILED' | 'LOCAL_SAVE_FAILED'
 
-/** Only server-declared metadata; association ids and user content are deliberately absent. */
+/** Client-observed workflow categories, without fault attribution, association ids or user content. */
 export interface ClientToolErrorReport {
   readonly tool: ClientErrorTool
   readonly code: ClientErrorCode
@@ -80,6 +80,7 @@ export function parseClientToolError(
     if (result.stage === 'submit' || result.stage === 'query') classification = { code: 'TRANSPORT_TIMEOUT', stage: result.stage }
   } else if (Object.hasOwn(CODES, result.code)) classification = CODES[result.code]
   if (classification === undefined) return null
+  if ((classification.stage === 'preflight' || classification.code === 'TASK_FAILED') && result.status !== 'failed') return null
   const model = [result.model, record(args)?.model].find((candidate): candidate is string =>
     typeof candidate === 'string' && candidate.length > 0 && candidate.length <= 255 && knownModelIds.has(candidate))
   return { tool, ...classification, ...model === undefined ? {} : { model } }

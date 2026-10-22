@@ -8,10 +8,12 @@ import { createVideoDraftStore } from '../src/client/draft-store.ts'
 import { VideoPage } from '../src/client/VideoPage.tsx'
 import { zh } from '../src/client/locales.ts'
 import { contentFixture } from '../../ui-imagegen/tests/content-fixture.client.ts'
+import { videoSpec } from '../../../host/credits-index/src/model-parameters.ts'
 
 const params = {
   defaultDuration: undefined as number | undefined,
   durationByResolution: undefined as Readonly<Record<string, readonly number[]>> | undefined,
+  frameRatios: undefined as readonly string[] | undefined,
   durations: [5, 10], resolutions: ['720p', '1080p'], ratios: ['16:9', '9:16'], frameSlots: 2,
   maxReferenceImages: 3, maxReferenceVideos: 1, maxReferenceAudios: 1,
   audioOutput: undefined as 'unknown' | 'supported' | 'unsupported' | undefined,
@@ -30,7 +32,7 @@ function requestBody(init: RequestInit | undefined): Record<string, unknown> {
   return value as Record<string, unknown>
 }
 
-function setup(overrides: Partial<typeof params> = {}) {
+function setup(overrides: Partial<typeof params> = {}, modelId = 'video-real') {
   const task = vi.fn(async (_init?: RequestInit): Promise<Response> => json({ ok: true, payload: { path: '/credits/media/new.mp4' } }))
   const asset = vi.fn(async (): Promise<Response> => json({ ok: true, asset: { assetId: 'ma_image' } }))
   const projects = vi.fn(async (): Promise<Response> => json({ ok: true, payload: { accountId: sessionAccountId, projects: [] } }))
@@ -42,7 +44,7 @@ function setup(overrides: Partial<typeof params> = {}) {
     if (path === '/credits/api/session') return json({ ok: true, payload: { signedIn: sessionAccountId !== null, creditsPerYuan: 1000, account: sessionAccountId === null ? null : { id: sessionAccountId } } })
     if (path === '/credits/api/summary') return json({ ok: true, payload: { balance_points: 2000 } })
     if (path === '/credits/api/media/catalog') return json({ ok: true, payload: { video: [
-      { id: 'video-real', displayName: 'Real video model', source: 'local-config', verified: true, params: { ...params, ...overrides } },
+      { id: modelId, displayName: 'Real video model', source: 'local-config', verified: true, params: { ...params, ...overrides } },
       { id: 'video-smaller', displayName: 'Smaller video model', source: 'local-config', verified: true, params: { ...params, ...overrides, maxReferenceImages: 3 } },
     ] } })
     if (path.startsWith('/credits/api/creative/projects?')) return projects()
@@ -85,6 +87,118 @@ beforeEach(() => { vi.useRealTimers(); sessionAccountId = 'account-a'; chatSessi
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 describe('video composer', () => {
+  it.each([
+    ['MiniMax-H3', 3],
+    ['doubao-seedance-2-0-260128', 1], ['doubao-seedance-2-0-fast-260128', 1],
+    ['doubao-seedance-2-0-mini-260615', 1], ['doubao-seedance-2-5-260628', 1],
+    ['k2-sd2.5-720p', 10], ['video-sd25-480p', 10], ['model_5', 10], ['sd2.5-720p-x2', 10],
+    ['sd20-933-720p', 3], ['sd2-hn2-480-pro', 3], ['v3-sd2.0-933-720p', 3],
+  ] as const)('shows reference-video support before upload and submits only that media for %s', async (id, limit) => {
+    const spec = videoSpec(id)
+    expect(spec.referenceVideos).toBe(limit)
+    const { mount, asset, store, task } = setup({ durations: [...spec.durations], defaultDuration: spec.defaultDuration,
+      resolutions: [...spec.resolutions], ratios: [...spec.ratios], frameRatios: spec.frameRatios, frameSlots: spec.frames,
+      maxReferenceImages: spec.referenceImages, maxReferenceVideos: spec.referenceVideos, maxReferenceAudios: spec.referenceAudios,
+      audio: spec.audio, audioOutput: spec.audioOutput, audioToggle: spec.audioToggle, modes: [...spec.modes], seed: spec.seed }, id)
+    asset.mockResolvedValueOnce(json({ ok: true, asset: { assetId: 'ma_video' } }))
+    mount()
+    await ready()
+    const capabilities = screen.getByRole('list', { name: zh.supportedMaterials })
+    expect(capabilities.textContent).toContain(t('videoReferenceSupport', { n: String(limit) }))
+    const input = screen.getByLabelText(zh.addMedia)
+    expect(input.getAttribute('accept')).toContain('video/mp4,video/quicktime,.mp4,.mov')
+    expect(input.getAttribute('aria-describedby')).toBe(capabilities.id)
+    expect(screen.getByRole('group', { name: zh.settings }).closest('details')).toBeNull()
+    fireEvent.change(input, { target: { files: [new File(['video'], 'motion.mov', { type: 'video/quicktime' })] } })
+    await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull(); expect(asset).toHaveBeenCalledOnce() })
+    expect(store.getSnapshot().workflow).toBe('reference')
+    expect(screen.getByLabelText(t('videoPreview', { name: 'motion.mov' })).tagName).toBe('VIDEO')
+    writePrompt()
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    await waitFor(() => { expect(task).toHaveBeenCalledOnce() })
+    expect(requestBody(task.mock.calls[0]?.[0])).toMatchObject({ model: id, frameImages: [], referenceImages: [],
+      referenceVideos: ['ma_video'], referenceAudios: [] })
+  })
+
+  it('updates visible upload capabilities when switching to a model without video inputs and keeps earlier clips removable', async () => {
+    const { mount, store, task } = setup()
+    const baseFetch = fetcher.getMockImplementation()!
+    fetcher.mockImplementation(async (input, init) => input === '/credits/api/media/catalog'
+      ? json({ ok: true, payload: { video: [
+        { id: 'video-real', displayName: 'Real video model', source: 'live', verified: true, params },
+        { id: 'text-only', displayName: 'Text only model', source: 'live', verified: true, params: { ...params,
+          frameSlots: 0, maxReferenceImages: 0, maxReferenceVideos: 0, maxReferenceAudios: 0, modes: [], seed: false } },
+      ] } }) : await baseFetch(input, init))
+    store.actions.patch({ slots: { image: [], audio: [], video: [{ assetId: 'ma_retained', name: 'retained.mp4', url: 'blob:retained', bytes: 1 }] } })
+    mount()
+    await ready()
+    fireEvent.click(screen.getByRole('button', { name: zh.model }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Text only model' }))
+    const capabilities = screen.getByRole('list', { name: zh.supportedMaterials })
+    expect(capabilities.textContent).toBe(t('writingImageSupport', { n: '9' }))
+    expect(screen.getByLabelText(zh.addMedia).getAttribute('accept')).not.toContain('video/')
+    expect(screen.queryByRole('button', { name: zh['workflow.reference'] })).toBeNull()
+    expect(screen.getByLabelText(t('videoPreview', { name: 'retained.mp4' }))).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: t('removeNamed', { name: 'retained.mp4' }) }))
+    expect(store.getSnapshot().slots.video).toEqual([])
+    expect(task).not.toHaveBeenCalled()
+  })
+
+  it('selects a declared tier on entry and replaces incompatible retained tier changes', async () => {
+    const { mount, store, task } = setup()
+    store.actions.patch({ mode: 'obsolete' })
+    mount()
+    await ready()
+    expect(store.getSnapshot().mode).toBe('normal')
+    expect(screen.getByRole('button', { name: 'normal' }).getAttribute('aria-pressed')).toBe('true')
+    act(() => { store.actions.patch({ mode: 'another-obsolete' }) })
+    expect(store.getSnapshot().mode).toBe('normal')
+    writePrompt()
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    await waitFor(() => { expect(task).toHaveBeenCalledOnce() })
+    expect(requestBody(task.mock.calls[0]?.[0])).toHaveProperty('mode', 'normal')
+  })
+
+  it.each([{ frameRatios: ['adaptive'], ratios: ['16:9', 'adaptive'] }, { frameRatios: [], ratios: ['16:9'] },
+    { frameRatios: [], ratios: [] }])('shows only the compatible frame ratios and blocks a mismatched catalog: %j', async ({ frameRatios, ratios }) => {
+    const { mount, store, task } = setup({ ratios, frameRatios })
+    const first = { assetId: 'ma_first', name: 'first.png', url: 'blob:first', bytes: 1 }
+    const last = { assetId: 'ma_last', name: 'last.png', url: 'blob:last', bytes: 1 }
+    store.actions.patch({ workflow: 'frames', ratio: '16:9', firstFrame: first, lastFrame: last,
+      slots: { image: [first, last], video: [], audio: [] } })
+    mount()
+    await ready()
+    const panel = screen.getByRole('group', { name: zh.settings })
+    expect(within(panel).queryByRole('button', { name: t('ratioOption', { ratio: '16:9' }) })).toBeNull()
+    writePrompt()
+    if (frameRatios.length === 0) {
+      expect(screen.getByRole('alert').textContent).toBe(zh.frameRatiosUnavailable)
+      expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', true)
+      expect(task).not.toHaveBeenCalled()
+    } else {
+      expect(store.getSnapshot().ratio).toBe('adaptive')
+      expect(within(panel).getByRole('button', { name: t('ratioOption', { ratio: zh.ratioAdaptive }) }).getAttribute('aria-pressed')).toBe('true')
+      fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+      await waitFor(() => { expect(task).toHaveBeenCalledOnce() })
+      expect(requestBody(task.mock.calls[0]?.[0])).toMatchObject({ ratio: 'adaptive', frameImages: ['ma_first', 'ma_last'] })
+    }
+  })
+
+  it('keeps the required adaptive frame ratio visible before any image is added', async () => {
+    const { mount, store, task } = setup({ ratios: ['16:9', 'adaptive'], frameRatios: ['adaptive'] })
+    store.actions.patch({ workflow: 'image' })
+    mount()
+    await ready()
+    expect(store.getSnapshot().ratio).toBe('adaptive')
+    const ratio = screen.getByRole('button', { name: t('ratioOption', { ratio: zh.ratioAdaptive }) })
+    expect(ratio).toHaveProperty('disabled', true)
+    expect(screen.getByText(zh.adaptiveNeedsVisual)).toBeTruthy()
+    expect(screen.queryByText(zh.frameRatiosUnavailable)).toBeNull()
+    writePrompt()
+    expect(screen.getByText(zh.firstFrameRequired)).toBeTruthy()
+    expect(task).not.toHaveBeenCalled()
+  })
+
   it.each(['pending', 'unknown'])('keeps %s submissions uncertain after a local cancellation without retrying', async (submission_state) => {
     const { mount, store, task } = setup()
     task.mockImplementation(async () => json({ ok: false, code: 'ABORTED', submission_state }))
@@ -447,15 +561,15 @@ describe('video composer', () => {
     expect(store.getSnapshot().slots[slot][0]?.name).toBe(name)
   })
 
-  it.each(['INVALID_REQUEST', 'AUTH', 'QUOTA', 'UNRECOGNIZED_ERROR'])('replaces %s diagnostics with safe copy without resubmitting generation', async (code) => {
+  it.each([['INVALID_REQUEST', 'invalidInput'], ['AUTH', 'operationFailed'], ['QUOTA', 'operationFailed'], ['UNRECOGNIZED_ERROR', 'operationFailed'], ['HTTP_503', 'serviceUnavailable'], ['HTTP_408', 'requestTimeout'], ['TIMEOUT', 'requestTimeout'], ['TRANSPORT', 'networkFailure'], ['UPSTREAM_ERROR', 'upstreamUnavailable'], ['SERVER_BUSY', 'serverBusy']] as const)('replaces %s diagnostics with safe copy without resubmitting generation', async (code, key) => {
     const { mount, task, store } = setup()
     const message = '400 {"reasoning_content":"private-id", "path":"C:/internal/key"}'
-    task.mockResolvedValueOnce(json({ ok: false, code, message }))
+    task.mockResolvedValueOnce(json({ ok: false, code, message, submission_state: 'not-submitted' }))
     const view = mount()
     await ready()
     writePrompt()
     fireEvent.click(screen.getByRole('button', { name: zh.submit }))
-    expect((await screen.findByRole('alert')).textContent).toBe(zh.serverBusy)
+    expect((await screen.findByRole('alert')).textContent).toBe(zh[key])
     expect(view.container.textContent).not.toContain(message)
     expect(view.container.textContent).not.toContain(code)
     expect(view.container.textContent).not.toContain('private-id')
@@ -470,7 +584,7 @@ describe('video composer', () => {
     await ready()
     fireEvent.click(screen.getByRole('button', { name: zh['workflow.reference'] }))
     fireEvent.change(screen.getByLabelText(zh.addMedia), { target: { files: [new File(['video'], '客户素材.mp4', { type: 'video/mp4' })] } })
-    expect((await screen.findByRole('alert')).textContent).toBe(t('uploadItemFailed', { name: '客户素材.mp4', reason: zh.serverBusy }))
+    expect((await screen.findByRole('alert')).textContent).toBe(t('uploadItemFailed', { name: '客户素材.mp4', reason: zh.operationFailed }))
     expect(view.container.textContent).not.toContain('PRIVATE_CODE')
     expect(view.container.textContent).not.toContain('internal upstream route')
   })
@@ -518,7 +632,7 @@ describe('video composer', () => {
     const accepted = (assetId: string) => json({ ok: true, asset: { assetId, contentType: 'image/jpeg', sizeBytes: 100,
       previewUrl: `/credits/api/assets/preview?asset_id=${assetId}`, converted: true, firstFrameOnly: false } })
     asset.mockResolvedValueOnce(accepted('ma_first')).mockResolvedValueOnce(json({ ok: false, code: 'IMAGE_DECODE_FAILED' }))
-      .mockRejectedValueOnce(new Error('fixture upload disconnected')).mockResolvedValueOnce(accepted('ma_last'))
+      .mockRejectedValueOnce(new TypeError('fixture upload disconnected')).mockResolvedValueOnce(accepted('ma_last'))
     mount()
     await ready()
     fireEvent.change(screen.getByLabelText(zh.addMedia), { target: { files: ['first.heic', 'broken.heic', 'offline.bmp', 'last.tiff']
@@ -526,10 +640,10 @@ describe('video composer', () => {
     await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull(); expect(asset).toHaveBeenCalledTimes(4) })
     expect(store.getSnapshot().slots.image.map(reference => reference.assetId)).toEqual(['ma_first', 'ma_last'])
     expect(store.getSnapshot().uploadFailures).toEqual([
-      { name: 'broken.heic', reason: zh.invalidImage }, { name: 'offline.bmp', reason: zh.uploadNetwork },
+      { name: 'broken.heic', reason: zh.invalidImage }, { name: 'offline.bmp', reason: zh.networkFailure },
     ])
     expect(screen.getByRole('alert').textContent).toContain(t('uploadItemFailed', { name: 'broken.heic', reason: zh.invalidImage }))
-    expect(screen.getByRole('alert').textContent).toContain(t('uploadItemFailed', { name: 'offline.bmp', reason: zh.uploadNetwork }))
+    expect(screen.getByRole('alert').textContent).toContain(t('uploadItemFailed', { name: 'offline.bmp', reason: zh.networkFailure }))
   })
 
   it('uses normalized first and last frame images without rejecting original images above six MiB', async () => {
@@ -669,12 +783,12 @@ describe('video composer', () => {
     const model = screen.getByRole('button', { name: zh.model })
     const settings = screen.getByLabelText(t('settingsTrigger', { ratio: '16:9', resolution: '720p', duration: '5' }))
     const template = screen.getByRole('button', { name: t('previewNamed', { name: '商品出场短片' }) })
-    expect({ model: model.hasAttribute('disabled'), settings: settings.getAttribute('aria-disabled'), template: template.hasAttribute('disabled') })
-      .toEqual({ model: false, settings: 'false', template: false })
+    expect({ model: model.hasAttribute('disabled'), template: template.hasAttribute('disabled') })
+      .toEqual({ model: false, template: false })
     fireEvent.click(model)
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Smaller video model' }))
     fireEvent.click(settings)
-    expect(settings.parentElement?.hasAttribute('open')).toBe(true)
+    expect(screen.getByRole('group', { name: zh.settings })).toHaveProperty('disabled', false)
     fireEvent.click(template)
     const dialog = await screen.findByRole('dialog', { name: '商品出场短片' })
     expect(within(dialog).getByText('后台商品脚本')).toBeTruthy()
@@ -963,16 +1077,14 @@ describe('video composer', () => {
     expect(within(history).getAllByRole('listitem').map(item => item.textContent)).toEqual(['newer.mp4', 'older.mp4'])
   })
 
-  it('opens the parameter panel and updates the compact summary from supported choices', async () => {
+  it('keeps declared parameters visible and updates the summary from supported choices', async () => {
     const { store, mount, task } = setup({ durations: Array.from({ length: 12 }, (_, index) => index + 1) })
     store.actions.patch({ duration: 5 })
     mount()
     await ready()
     const trigger = screen.getByLabelText(t('settingsTrigger', { ratio: '16:9', resolution: '720p', duration: '5' }))
-    expect(trigger.tagName).toBe('SUMMARY')
-    expect(trigger.closest('details')).toHaveProperty('open', false)
-    fireEvent.click(trigger)
-    expect(trigger.closest('details')).toHaveProperty('open', true)
+    expect(trigger.tagName).toBe('DIV')
+    expect(trigger.closest('details')).toBeNull()
     const panel = screen.getByRole('group', { name: zh.settings })
     expect(within(panel).getAllByRole('group').map(group => group.querySelector('legend')?.textContent))
       .toEqual([zh.ratio, zh.resolution, zh.duration, zh.mode])
@@ -984,12 +1096,11 @@ describe('video composer', () => {
       .toHaveProperty('textContent', expect.stringContaining('1080p'))
     expect(within(panel).getByRole('button', { name: t('ratioOption', { ratio: '9:16' }) }).getAttribute('aria-pressed')).toBe('true')
     expect(panel.textContent).toMatchSnapshot()
-    fireEvent.click(trigger)
-    expect(trigger.closest('details')).toHaveProperty('open', false)
+    expect(trigger.closest('details')).toBeNull()
     expect(task).not.toHaveBeenCalled()
   })
 
-  it('keeps unavailable model settings closed without showing a zero duration', async () => {
+  it('keeps unavailable model settings visible without showing a zero duration', async () => {
     const { mount } = setup()
     const defaultFetcher = fetcher.getMockImplementation()!
     fetcher.mockImplementation(async (input, init) => (typeof input === 'string' ? input : input instanceof URL ? input.href : input.url) === '/credits/api/media/catalog'
@@ -997,10 +1108,9 @@ describe('video composer', () => {
     mount()
     await screen.findByText(zh.noModel)
     const trigger = screen.getByLabelText(zh.settingsUnavailable)
-    expect(trigger.getAttribute('aria-disabled')).toBe('true')
+    expect(screen.getByRole('group', { name: zh.settings }).textContent).toBe('')
     expect(trigger.textContent).not.toContain('0秒')
-    fireEvent.click(trigger)
-    expect(trigger.closest('details')).toHaveProperty('open', false)
+    expect(trigger.closest('details')).toBeNull()
   })
 
   it('shows only legal parameters after a model switch and uses them in the request', async () => {
@@ -1217,9 +1327,8 @@ describe('video composer', () => {
     expect(screen.getByRole('button', { name: zh.model })).toHaveProperty('disabled', true)
     expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', true)
     const settings = screen.getByLabelText(t('settingsTrigger', { ratio: '16:9', resolution: '720p', duration: '5' }))
-    expect(settings.getAttribute('aria-disabled')).toBe('true')
-    fireEvent.click(settings)
-    expect(settings.closest('details')).toHaveProperty('open', false)
+    expect(screen.getByRole('group', { name: zh.settings })).toHaveProperty('disabled', true)
+    expect(settings.closest('details')).toBeNull()
     fireEvent.change(screen.getByLabelText(zh.addMedia), { target: { files: [new File(['image'], 'blocked.png', { type: 'image/png' })] } })
     expect(asset).not.toHaveBeenCalled()
     writePrompt()
@@ -1379,7 +1488,7 @@ describe('video composer', () => {
 
   it('keeps successful earlier uploads when the next file fails and releases the busy state', async () => {
     const { mount, store, asset } = setup()
-    asset.mockResolvedValueOnce(json({ ok: true, asset: { assetId: 'ma_first' } })).mockRejectedValueOnce(new Error('offline'))
+    asset.mockResolvedValueOnce(json({ ok: true, asset: { assetId: 'ma_first' } })).mockRejectedValueOnce(new TypeError('offline'))
     mount()
     await ready()
     writePrompt()
@@ -1387,7 +1496,7 @@ describe('video composer', () => {
     fireEvent.change(screen.getByLabelText(zh.addMedia), { target: { files: [new File(['one'], 'one.png', { type: 'image/png' }), new File(['two'], 'two.png', { type: 'image/png' })] } })
     await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull(); expect(asset).toHaveBeenCalledTimes(2) })
     expect(store.getSnapshot().slots.image.map(item => item.assetId)).toEqual(['ma_first'])
-    expect(screen.getByRole('alert').textContent).toBe(t('uploadItemFailed', { name: 'two.png', reason: zh.uploadNetwork }))
+    expect(screen.getByRole('alert').textContent).toBe(t('uploadItemFailed', { name: 'two.png', reason: zh.networkFailure }))
     expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', false)
   })
 

@@ -63,6 +63,8 @@ export interface VideoParams {
   readonly resolutions: readonly string[]
   /** Aspect ratios; `adaptive` means "inherit from the reference media". */
   readonly ratios: readonly string[]
+  /** Allowed frame-input ratios intersected with the live menu; an empty list blocks frame input. */
+  readonly frameRatios?: readonly string[]
   /** First/last frame images, which pin the shot's ends. */
   readonly maxFrameImages: number
   /** Multimodal reference images, a style/subject hint rather than a frame. */
@@ -192,9 +194,9 @@ function restrictDurations(menu: readonly number[], schema: unknown): readonly n
   return allowed === null ? menu : menu.filter(value => allowed.includes(value))
 }
 
-/** Resolution const and enum constrain one another when both are declared. */
-function declaredResolutionMenu(schema: unknown): string[] | null {
-  const field = objectRecord(parameterFields(schema)?.resolution)
+/** String const and enum constrain one another when both are declared. */
+function declaredStringMenu(schema: unknown, name: string): string[] | null {
+  const field = objectRecord(parameterFields(schema)?.[name])
   if (field === null) return null
   if (field.const !== undefined && (typeof field.const !== 'string' || field.const === ''
     || field.const.length > 64 || field.const.trim() !== field.const)) return null
@@ -214,7 +216,7 @@ function resolutionDurations(schema: unknown): Record<string, readonly number[]>
   if (!Array.isArray(branches) || branches.length === 0 || branches.length > 64) return null
   const menus = new Map<string, Map<number, number>>()
   for (const branch of branches) {
-    const resolutions = declaredResolutionMenu(branch)
+    const resolutions = declaredStringMenu(branch, 'resolution')
     const durations = declaredDurations(branch)
     if (resolutions === null || durations === null) return null
     for (const value of resolutions) {
@@ -310,12 +312,15 @@ function videoParams(spec: VideoSpec, schema: unknown, parameters: unknown): {
   notes: string[]
 } {
   const notes: string[] = []
-  const parameterResolutions = declaredResolutionMenu(parameters)
+  const parameterResolutions = declaredStringMenu(parameters, 'resolution')
   const parameterDurations = declaredDurations(parameters)
   const parameterCombinations = resolutionDurations(parameters)
   const hasParameterDurations = parameterDurations !== null || parameterCombinations !== null
   const declaredResolutions = parameterResolutions
-    ?? (parameterCombinations === null ? declaredResolutionMenu(schema) : Object.keys(parameterCombinations))
+    ?? (parameterCombinations === null ? declaredStringMenu(schema, 'resolution') : Object.keys(parameterCombinations))
+  const declaredRatios = declaredStringMenu(parameters, 'ratio') ?? declaredStringMenu(parameters, 'aspect_ratio')
+    ?? declaredStringMenu(schema, 'ratio') ?? declaredStringMenu(schema, 'aspect_ratio')
+  const ratios = declaredRatios ?? spec.ratios
   let resolutions = declaredResolutions ?? spec.resolutions
   if (declaredResolutions !== null) notes.push('resolutions')
   const declared = hasParameterDurations ? parameterDurations : declaredDurations(schema)
@@ -346,7 +351,8 @@ function videoParams(spec: VideoSpec, schema: unknown, parameters: unknown): {
     minDuration: durations[0] ?? 0,
     maxDuration: durations[durations.length - 1] ?? 0,
     resolutions,
-    ratios: spec.ratios,
+    ratios,
+    ...spec.frameRatios === undefined ? {} : { frameRatios: spec.frameRatios.filter(value => ratios.includes(value)) },
     maxFrameImages: spec.frames,
     maxReferenceImages: spec.referenceImages,
     maxReferenceVideos: spec.referenceVideos,
@@ -360,7 +366,7 @@ function videoParams(spec: VideoSpec, schema: unknown, parameters: unknown): {
     seed: spec.seed,
     mixFramesAndReferences: spec.frames === 0 || spec.referenceImages + spec.referenceVideos + spec.referenceAudios === 0
       ? true
-      : spec.source !== 'plugin:hailuo',
+      : spec.source !== 'plugin:hailuo' && spec.source !== 'plugin:doubao',
   }
   return { params, verified: isVerified(spec.source), source: spec.source, notes }
 }

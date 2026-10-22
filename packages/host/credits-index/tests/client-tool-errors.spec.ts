@@ -53,10 +53,24 @@ describe('creation failure report selection', () => {
       .toEqual({ tool: 'generate_video', code, stage })
   })
 
-  it.each(['failed', 'unknown', 'pending'])('uses semantic %s status even when the outer tool result is not an exception', (status) => {
-    expect(parseClientToolError('generate_image', {}, { status, code: 'TASK_FAILED', isError: false }, known))
+  it('reports a confirmed failed task even when the outer tool result is not an exception', () => {
+    expect(parseClientToolError('generate_image', {}, { status: 'failed', code: 'TASK_FAILED', isError: false }, known))
       .toEqual({ tool: 'generate_image', code: 'TASK_FAILED', stage: 'query' })
   })
+
+  it.each(['unknown', 'pending'])('does not count an unconfirmed %s task or preflight as a confirmed failure', (status) => {
+    for (const code of ['TASK_FAILED', 'PROVIDER_TASK_FAILED', 'DURATION_NOT_SUPPORTED']) {
+      expect(parseClientToolError('generate_image', {}, { status, code }, known)).toBeNull()
+    }
+  })
+
+  it.each(['TRANSPORT', 'NETWORK', 'ECONNRESET', 'HTTP_408', 'HTTP_503', 'ABORTED', 'CANCELLED', 'PRIVATE_CODE'])(
+    'never infers a task or server failure from the connection, status or cancellation code %s', (code) => {
+      expect(parseClientToolError('generate_video', {}, {
+        status: 'failed', code, message: 'server TASK_FAILED', source: 'server', serverFault: true,
+      }, known)).toBeNull()
+    },
+  )
 
   it('never serializes content, association ids, user identity, time, headers or arbitrary fields', () => {
     const unsafe = { prompt: 'private prompt', path: 'C:\\private\\image.png', message: 'Bearer sk-secret',
@@ -100,6 +114,16 @@ describe('creation failure report selection', () => {
 })
 
 describe('single-attempt creation error forwarding', () => {
+  it('does not dispatch local connection or cancellation diagnostics as backend task failures', async () => {
+    const f = fixture()
+    for (const code of ['TRANSPORT', 'ECONNRESET', 'HTTP_408', 'ABORTED']) {
+      f.submit('generate_video', {}, { status: 'failed', code, message: 'TASK_FAILED server error' })
+    }
+    await f.reporter.dispose()
+    expect(f.key).not.toHaveBeenCalled()
+    expect(f.send).not.toHaveBeenCalled()
+  })
+
   it('returns immediately and sends only whitelisted JSON under the configured API prefix', async () => {
     const f = fixture()
     f.submit('generate_video', { model: 'MiniMax-H3', prompt: 'private' }, { ...failure, message: 'private' })

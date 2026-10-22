@@ -93,8 +93,7 @@
 .composerBar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .modelInline { display: flex; flex: 0 1 250px; min-width: 180px; max-width: 280px; }
 
-.select,
-.parameterButton {
+.select {
   min-height: 34px;
   box-sizing: border-box;
   padding: 7px 12px;
@@ -107,8 +106,6 @@
 }
 
 .select { width: 100%; min-width: 0; }
-.parameterButton { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
-.parameterButton:hover { color: var(--dsw-alias-label-primary); }
 .mode { color: var(--dsw-alias-label-tertiary); font-size: 11px; }
 
 .send {
@@ -141,6 +138,7 @@
   border-top: 0.5px solid var(--dsw-alias-border-l1);
 }
 
+.parameterTitle { grid-column: 1 / -1; margin: 0; color: var(--dsw-alias-label-secondary); font-size: 12px; font-weight: 500; }
 .field { display: flex; flex-direction: column; gap: 7px; min-width: 0; color: var(--dsw-alias-label-secondary); font-size: 12px; }
 .parameterHint { grid-column: 1 / -1; margin: 0; color: var(--dsw-alias-label-tertiary); font-size: 11px; }
 .referenceTray { display: flex; align-items: center; flex-wrap: wrap; flex: 1; min-width: 0; gap: 10px 12px; }

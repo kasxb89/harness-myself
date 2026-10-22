@@ -389,6 +389,8 @@ describe('deployed Harness API through the real product Loader', () => {
     for (const name of ['generate_image', 'generate_video']) {
       const tool = context!.tools.schemas().find(tool => tool.name === name)
       expect(tool?.description).toContain('safe Simplified Chinese summary')
+      expect(tool?.description).toContain('connection failures and timeouts do not establish whether the cause is local, network, platform or upstream')
+      expect(tool?.description).toContain('unknown causes remain unconfirmed')
       expect(tool?.description).toContain('never repeat raw HTTP responses, diagnostic JSON, error codes, stacks, internal paths or credentials')
       expect(tool?.description).toContain('confirmed sign-in, product-credit, file-validation')
       expect(tool?.description).toContain('cancellation')
@@ -1316,6 +1318,35 @@ describe('deployed Harness API through the real product Loader', () => {
     }
     expect(calls.some(call => call.path.includes('/toapis/') || call.path.includes('/v1/images/'))).toBe(false)
   }, 15_000)
+
+  it.each([
+    [408, '上传等待响应超时，原因尚未确认，请稍后重试'],
+    [504, '上传等待响应超时，原因尚未确认，请稍后重试'],
+    [500, '上传服务暂时不可用，请稍后重试'],
+    [503, '上传服务暂时不可用，请稍后重试'],
+    [404, '上传未完成，原因尚未确认，请稍后重试'],
+    [422, '上传未完成，原因尚未确认，请稍后重试'],
+  ] as const)('classifies internal reference upload HTTP %s without submitting generation', async (status, reason) => {
+    const { base } = await boot(undefined, false, true)
+    const cookie = await hostCookie(base)
+    await signIn(base)
+    const model = 'yunshu-internal-gpt-image-2'
+    relayModels.push({ id: model, object: 'model', supported_endpoint_types: ['image-generation'] })
+    pricingRows = [{ model_name: model, supported_endpoint_types: ['image-generation'] }]
+    const png = await sharp({ create: { width: 1, height: 1, channels: 3, background: '#aabbcc' } }).png().toBuffer()
+    const asset = await uploadImage(base, cookie, '妈妈参考.png', png)
+    internalUploadResponses.push({ status, body: { error: { message: 'private upstream diagnostic' } } })
+    const result = await post(base, '/api/image/generate', { model, prompt: '修改这张图', references: [asset.assetId] }, cookie)
+    expect(result).toMatchObject({
+      ok: false, code: 'IMAGE_REFERENCE_UPLOAD_FAILED', submission_state: 'not-submitted',
+      message: `参考图「妈妈参考.png」${reason}；尚未提交生成。`,
+    })
+    expect(calls.filter(call => call.path === '/harness/v1/uploads/images')).toHaveLength(1)
+    expect(calls.filter(call => call.path.includes('/toapis/') || call.path.includes('/v1/images/'))).toEqual([])
+    expect(creations).toBe(0)
+    expect(JSON.stringify(result)).not.toContain('private upstream diagnostic')
+    expect(JSON.stringify(result)).not.toContain('服务器繁忙')
+  })
 
   it('validates all internal reference files before uploading any bytes', async () => {
     const { base, stateDir } = await boot(undefined, false, true)
@@ -2568,6 +2599,100 @@ describe('deployed Harness API through the real product Loader', () => {
     expect(multipart.toString()).not.toMatch(/_blackrxReferences|data:|local file changed/u)
     expect(await provider.check('fixture-video-task', request, new AbortController().signal)).toEqual({ status: 'succeeded' })
     expect(calls.filter(call => call.path === '/harness/v1/videos')).toHaveLength(1)
+  })
+
+  it.each(['doubao-seedance-2-0-260128', 'doubao-seedance-2-0-fast-260128', 'doubao-seedance-2-0-mini-260615', 'doubao-seedance-2-5-260628'])(
+    'forwards %s reference videos and selected output parameters through typed Ark content', async (model) => {
+      const { base, stateDir } = await boot()
+      await signIn(base)
+      pricingRows = [{ model_name: model, supported_endpoint_types: ['openai-video'] }]
+      const png = await sharp({ create: { width: 4, height: 3, channels: 3, background: '#cc5522' } }).png().toBuffer()
+      const image = await uploadImage(base, '', 'ark-reference.png', png)
+      const response = await fetch(base + '/api/assets', { method: 'POST', headers: {
+        'content-type': 'video/mp4', 'x-file-name': 'ark-reference.mp4', 'x-idempotency-key': 'ark-reference-video',
+      }, body: new Uint8Array(generatedVideo) })
+      const video = object(await response.json())
+      expect(video.ok).toBe(true)
+      const request = { prompt: 'Use reference motion', model, durationSeconds: 5, resolution: '720p', ratio: '16:9', audio: false,
+        referenceImages: [image.assetId], referenceVideos: [object(video.asset).assetId] }
+      expect(await post(base, '/api/video/tasks?source=newapi-generate', { ...request, seed: 42 }))
+        .toMatchObject({ ok: false, code: 'SEED_NOT_SUPPORTED' })
+      expect(await post(base, '/api/video/tasks?source=newapi-generate', { ...request, frameImages: [image.assetId], ...(model === 'doubao-seedance-2-5-260628' ? { ratio: 'adaptive' } : {}) }))
+        .toMatchObject({ ok: false, code: 'MIX_NOT_SUPPORTED' })
+      expect(calls.filter(call => call.path === '/harness/v1/videos')).toHaveLength(0)
+      expect(await post(base, '/api/video/tasks?source=newapi-generate', request)).toMatchObject({ ok: false, code: 'NO_TASK_ID' })
+      const submissions = calls.filter(call => call.path === '/harness/v1/videos')
+      expect(submissions).toHaveLength(1)
+      const body = object(submissions[0]?.body)
+      expect(body).toMatchObject({ model, seconds: 5, size: '720p', generate_audio: false,
+        metadata: { resolution: '720p', ratio: '16:9', generate_audio: false } })
+      const metadata = object(body.metadata)
+      const content = metadata.content
+      if (!Array.isArray(content)) throw new Error('Expected typed Ark reference content')
+      expect(content.map(item => ({ type: object(item).type, role: object(item).role }))).toEqual([
+        { type: 'text', role: undefined }, { type: 'image_url', role: 'reference_image' }, { type: 'video_url', role: 'reference_video' },
+      ])
+      expect(object(object(content[1]).image_url).url).toBe(`data:${String(image.contentType)};base64,${(await readFile(join(stateDir, 'refs', String(image.filename)))).toString('base64')}`)
+      expect(object(object(content[2]).video_url).url).toBe(`data:video/mp4;base64,${generatedVideo.toString('base64')}`)
+      for (const key of ['reference_video', 'reference_audio', 'first_frame_image', 'last_frame_image', 'seed']) expect(metadata).not.toHaveProperty(key)
+      expect(body).not.toHaveProperty('images')
+    },
+  )
+
+  it('preserves first and last frame roles and order in Ark content without duplicate image fields', async () => {
+    const { base, stateDir } = await boot()
+    await signIn(base)
+    const model = 'doubao-seedance-2-0-260128'
+    pricingRows = [{ model_name: model, supported_endpoint_types: ['openai-video'] }]
+    const frames = []
+    for (const [name, background] of [['first.png', '#cc5522'], ['last.png', '#2255cc']] as const) {
+      frames.push(await uploadImage(base, '', name, await sharp({ create: { width: 4, height: 3, channels: 3, background } }).png().toBuffer()))
+    }
+    expect(await post(base, '/api/video/tasks?source=newapi-generate', { model, prompt: 'Move between frames',
+      durationSeconds: 5, resolution: '720p', frameImages: frames.map(frame => frame.assetId), audio: true,
+    })).toMatchObject({ ok: false, code: 'NO_TASK_ID' })
+    const submissions = calls.filter(call => call.path === '/harness/v1/videos')
+    expect(submissions).toHaveLength(1)
+    const body = object(submissions[0]?.body)
+    const metadata = object(body.metadata)
+    expect(metadata).toMatchObject({ resolution: '720p', generate_audio: true })
+    const content = metadata.content
+    if (!Array.isArray(content)) throw new Error('Expected typed Ark frame content')
+    expect(content.map(item => ({ type: object(item).type, role: object(item).role }))).toEqual([
+      { type: 'text', role: undefined }, { type: 'image_url', role: 'first_frame' }, { type: 'image_url', role: 'last_frame' },
+    ])
+    for (const [index, frame] of frames.entries()) expect(object(object(content[index + 1]).image_url).url)
+      .toBe(`data:${String(frame.contentType)};base64,${(await readFile(join(stateDir, 'refs', String(frame.filename)))).toString('base64')}`)
+    expect(body).not.toHaveProperty('images')
+    expect(metadata).not.toHaveProperty('first_frame_image')
+    expect(metadata).not.toHaveProperty('last_frame_image')
+  })
+
+  it('requires a compatible live adaptive ratio for Seedance 2.5 frames and preserves it in the model tool', async () => {
+    const { base, stateDir } = await boot()
+    await signIn(base)
+    const model = 'doubao-seedance-2-5-260628'
+    const row = { model_name: model, supported_endpoint_types: ['openai-video'] }
+    pricingRows = [row]
+    relayModels.push({ id: model, object: 'model', supported_endpoint_types: ['openai-video'] })
+    const png = await sharp({ create: { width: 4, height: 3, channels: 3, background: '#cc5522' } }).png().toBuffer()
+    const frame = await uploadImage(base, '', 'adaptive-frame.png', png)
+    const body = { model, prompt: 'Move from this frame', durationSeconds: 5, resolution: '720p', frameImages: [frame.assetId] }
+    expect(await post(base, '/api/video/tasks?source=newapi-generate', { ...body, ratio: '16:9' }))
+      .toMatchObject({ ok: false, code: 'RATIO_NOT_SUPPORTED' })
+    pricingRows = [{ ...row, parameters: { ratio: { enum: ['16:9'] } } }]
+    expect(await post(base, '/api/video/tasks?source=newapi-generate', body))
+      .toMatchObject({ ok: false, code: 'RATIO_NOT_SUPPORTED' })
+    expect(calls.filter(call => call.path === '/harness/v1/videos')).toHaveLength(0)
+    pricingRows = [{ ...row, parameters: { ratio: { enum: ['16:9', 'adaptive'] } } }]
+    const listed = await context!.tools.execute({ callId: ToolCallId('frame-ratios'), name: 'list_video_models', arguments: {},
+      agent: videoAgent(stateDir), signal: new AbortController().signal })
+    expect(listed.value).toMatchObject({ status: 'listed', models: [expect.objectContaining({ id: model, frame_ratios: ['adaptive'], mix_frames_and_references: false })] })
+    expect(await post(base, '/api/video/tasks?source=newapi-generate', body)).toMatchObject({ ok: false, code: 'NO_TASK_ID' })
+    const submissions = calls.filter(call => call.path === '/harness/v1/videos')
+    expect(submissions).toHaveLength(1)
+    expect(submissions[0]?.body).toMatchObject({ ratio: 'adaptive', aspect_ratio: 'adaptive', metadata: { ratio: 'adaptive',
+      content: [expect.objectContaining({ type: 'text' }), expect.objectContaining({ type: 'image_url', role: 'first_frame' })] } })
   })
 
   it('enforces published duration combinations before model submission and forwards complete H3 references', async () => {

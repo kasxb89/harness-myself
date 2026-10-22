@@ -30,19 +30,32 @@ export type GenericToolCardProps = ToolCallOwnerProps & {
   t: ToolTreeProps['t']
 }
 
+const MEDIA_FAILURE_KEYS = {
+  'accepted-queued': 'error.mediaTaskQueued',
+  'accepted-pending': 'error.mediaTaskPending',
+  'model-parameters': 'error.mediaParameters',
+  'sign-in': 'error.signInRequired',
+  'signed-out': 'error.signInRequired',
+  'insufficient-credits': 'error.creditsRequired',
+  'cancelled': 'error.cancelled',
+  'unknown-outcome': 'error.mediaOutcomeUnknown',
+  'network': 'error.networkFailure',
+  'timeout': 'error.requestTimeout',
+  'invalid-input': 'error.invalidInput',
+  'forbidden': 'error.permissionDenied',
+  'service': 'error.serviceUnavailable',
+  'upstream': 'error.upstreamUnavailable',
+  'local': 'error.localFailure',
+  'busy': 'error.requestBusy',
+  'unknown': 'error.operationFailed',
+} as const
+
 /** @param props - current tool stage and locale. @returns its preparation or dispatched card. */
 export function GenericToolCard({ toolName, block, cwd, home, openFile, inspect, useDisclosure, t }: GenericToolCardProps) {
   const model = toolRowModel(toolName, block, cwd, home)
   const mediaError = mediaFailure(toolName, block)
   const pending = mediaError === 'accepted-pending' || mediaError === 'accepted-queued'
-  const mediaFailureText = mediaError === null ? null
-    : mediaError === 'accepted-queued' ? t('error.mediaTaskQueued')
-      : mediaError === 'accepted-pending' ? t('error.mediaTaskPending')
-        : mediaError === 'model-parameters' ? t('error.mediaParameters')
-          : mediaError === 'sign-in' || mediaError === 'signed-out' ? t('error.signInRequired')
-            : mediaError === 'insufficient-credits' ? t('error.creditsRequired')
-              : mediaError === 'cancelled' ? t('error.cancelled')
-                : mediaError === 'unknown-outcome' ? t('error.mediaOutcomeUnknown') : t('error.serverBusy')
+  const mediaFailureText = mediaError === null ? null : t(MEDIA_FAILURE_KEYS[mediaError])
   const autoReview = model.autoReviewDenial === null
     ? null
     : localizeAutoReviewDenial(model.autoReviewDenial, t)

@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import {
   appPath, IconCloseOutlineRegular,
   IconPlusOutlineRegular, IconSearchOutlineRegular, IconSendOutlineRegular,
-  IconSettingsOutlineRegular, IconSparkleRegular, ImageLightbox, productFailureKind, SegmentedTabs, Tooltip,
+  IconSparkleRegular, ImageLightbox, productFailureKind, SegmentedTabs, Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { HostObservable, InjectFace, PropsRenderFactories, PropsRuntime, PropsStore, StandardSourceBinding } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-prompt-assist/client'
@@ -26,6 +26,8 @@ export interface ImagegenInjected {
 
 interface Envelope<T> {
   readonly ok: boolean
+  /** Observed response status added by the local request reader. */
+  readonly httpStatus?: number
   readonly code?: string | null
   readonly message?: string | null
   readonly sessionInvalid?: boolean
@@ -71,19 +73,71 @@ interface ArtifactItem extends ArtifactLocation {
 
 type ImagePageProps = PropsRuntime<'main'> & PropsRenderFactories & PropsStore<ReturnType<typeof createImageDraftStore>> & InjectFace<ImagegenInjected>
 
+class ImageRequestFailure extends Error {
+  constructor(readonly code: string | undefined, cause: unknown) {
+    super('Image workspace request failed', { cause })
+  }
+}
+
+async function request(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(input, init)
+  } catch (error) {
+    throw new ImageRequestFailure(error instanceof DOMException && error.name === 'TimeoutError' ? 'TIMEOUT'
+      : error instanceof TypeError ? 'TRANSPORT' : undefined, error)
+  }
+}
+
+async function readAnswer<T>(response: Response): Promise<Envelope<T>> {
+  let parsed: unknown
+  try {
+    parsed = await response.json()
+  } catch (error) {
+    if (response.ok) throw error
+    return { ok: false, httpStatus: response.status }
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed) || !('ok' in parsed) || typeof parsed.ok !== 'boolean') {
+    if (!response.ok) return { ok: false, httpStatus: response.status }
+    throw new Error('Invalid image workspace response')
+  }
+  const answer = parsed as Envelope<T>
+  return { ...answer, ok: response.ok && answer.ok, httpStatus: response.status }
+}
+
+function failureText(t: ImagegenInjected['t'], code: unknown, httpStatus?: number): string {
+  const declared = productFailureKind(code)
+  const kind = declared === 'unknown' && httpStatus !== undefined ? productFailureKind(`HTTP_${String(httpStatus)}`) : declared
+  switch (kind) {
+    case 'signed-out': case 'sign-in': return t('noAuth')
+    case 'insufficient-credits': return t('insufficient')
+    case 'cancelled': return t('cancelled')
+    case 'busy': return t('serverBusy')
+    case 'network': return t('networkFailure')
+    case 'timeout': return t('requestTimeout')
+    case 'invalid-input': return t('invalidInput')
+    case 'forbidden': return t('permissionDenied')
+    case 'service': return t('serviceUnavailable')
+    case 'upstream': return t('upstreamUnavailable')
+    case 'local': return t('localFailure')
+    case 'unknown': return t('operationFailed')
+  }
+}
+
+function requestFailureCode(error: unknown): string | undefined {
+  return error instanceof ImageRequestFailure ? error.code : undefined
+}
+
 async function get<T>(path: string): Promise<Envelope<T>> {
-  const response = await fetch(appPath(path), { headers: { accept: 'application/json' } })
-  if (!response.ok) throw new Error(`HTTP_${String(response.status)}`)
-  return await response.json() as Envelope<T>
+  const response = await request(appPath(path), { headers: { accept: 'application/json' } })
+  return await readAnswer<T>(response)
 }
 
 async function post<T>(path: string, body: Record<string, unknown>): Promise<Envelope<T>> {
-  const response = await fetch(appPath(path), {
+  const response = await request(appPath(path), {
     method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' },
     body: JSON.stringify(body),
   })
-  const answer = await response.json() as Envelope<T>
-  return response.ok ? answer : { ...answer, ok: false }
+  return await readAnswer<T>(response)
 }
 
 function rawUrl(file: ArtifactLocation): string {
@@ -127,7 +181,6 @@ export function ImagePage(props: ImagePageProps): ReactNode {
   const [models, setModels] = useState<readonly ImageModel[]>([])
   const [modelsError, setModelsError] = useState<string | null>(null)
   const [stateError, setStateError] = useState(false)
-  const [advanced, setAdvanced] = useState(false)
   const [elapsed, setElapsed] = useState(0)
   const setMessage = useCallback((message: string | null): void => { actions.patch({ message }) }, [actions])
   const setFailure = useCallback((failure: string | null): void => { actions.patch({ failure }) }, [actions])
@@ -190,15 +243,15 @@ export function ImagePage(props: ImagePageProps): ReactNode {
     try {
       const answer = await get<Catalog>('/credits/api/media/catalog')
       if (!answer.ok || answer.payload === undefined) {
-        setModelsError(t('serverBusy'))
+        setModelsError(failureText(t, answer.code, answer.httpStatus))
         return
       }
       const items = answer.payload.image
       setModels(items)
       setModelsError(items.length === 0 ? t('noModels') : null)
-    } catch (_error) {
+    } catch (error) {
       // Catalog errors leave the last readable model choices visible.
-      setModelsError(t('connectionFailure'))
+      setModelsError(failureText(t, requestFailureCode(error)))
     }
   }, [t])
 
@@ -383,7 +436,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
       result = { ...result, failures: [...result.failures, { name, reason }] }
       if (isCurrent()) actions.patch({ uploadResult: result })
     }
-    const failureReason = (code: string | null | undefined): string => {
+    const failureReason = (code: string | null | undefined, httpStatus?: number): string => {
       switch (code) {
         case 'IMAGE_EMPTY': return t('emptyImage')
         case 'IMAGE_INPUT_TOO_LARGE': return t('fileSizeLimit')
@@ -392,19 +445,19 @@ export function ImagePage(props: ImagePageProps): ReactNode {
         case 'IMAGE_CONVERSION_FAILED': return t('conversionFailed')
         case 'IMAGE_DECODER_UNAVAILABLE': return t('decoderUnavailable')
         case 'IMAGE_STORAGE_FAILED': return t('imageStorageFailed')
-        case 'IMAGE_UPLOAD_FAILED': return t('connectionFailure')
+        case 'IMAGE_UPLOAD_FAILED': return t('operationFailed')
         case 'IMAGE_PIXEL_LIMIT': return t('imageDimensionsLimit')
         case 'IMAGE_OUTPUT_TOO_LARGE': return t('normalizedSizeLimit')
-        default: return t('invalidUploadResponse')
+        default: return failureText(t, code, httpStatus)
       }
     }
     actions.patch({ uploading: true, failure: null, uploadResult: null })
     try {
       let files: readonly File[]
       if ('path' in source) {
-        const response = await fetch(rawUrl(source))
+        const response = await request(rawUrl(source))
         if (!isCurrent()) return
-        if (!response.ok) throw new Error(`HTTP_${String(response.status)}`)
+        if (!response.ok) throw new ImageRequestFailure(`HTTP_${String(response.status)}`, undefined)
         const blob = await response.blob()
         if (!isCurrent()) return
         files = [new File([blob], source.path.split(/[\\/]/).pop() ?? 'image.png', { type: blob.type })]
@@ -415,7 +468,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
         if (file.size === 0) { reject(file.name, t('emptyImage')); continue }
         if (file.size > 32 * 1024 * 1024) { reject(file.name, t('fileSizeLimit')); continue }
         try {
-          const response = await fetch(appPath('/credits/api/assets'), {
+          const response = await request(appPath('/credits/api/assets'), {
             method: 'POST',
             headers: {
               'content-type': file.type || 'application/octet-stream', 'x-file-name': encodeURIComponent(file.name),
@@ -424,7 +477,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
             body: file,
           })
           if (!isCurrent()) return
-          const answer = await response.json() as Envelope<never> & { asset?: {
+          const answer = await readAnswer<never>(response) as Envelope<never> & { asset?: {
             assetId: string | null
             contentType?: string
             sizeBytes?: number
@@ -440,7 +493,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
             return
           }
           const asset = answer.asset
-          if (!response.ok || !answer.ok) { reject(file.name, failureReason(answer.code)); continue }
+          if (!response.ok || !answer.ok) { reject(file.name, failureReason(answer.code, answer.httpStatus)); continue }
           if (asset === null || asset === undefined || typeof asset.assetId !== 'string' || asset.assetId === '') {
             reject(file.name, t('invalidUploadResponse')); continue
           }
@@ -462,13 +515,13 @@ export function ImagePage(props: ImagePageProps): ReactNode {
           result = { ...result, added: result.added + 1, converted: result.converted + (asset.converted === true ? 1 : 0),
             firstFrames: result.firstFrames + (asset.firstFrameOnly === true ? 1 : 0) }
           actions.patch({ uploadResult: result })
-        } catch (_error) {
+        } catch (error) {
           if (!isCurrent()) return
-          reject(file.name, t('connectionFailure'))
+          reject(file.name, failureText(t, requestFailureCode(error)))
         }
       }
-    } catch (_error) {
-      if (isCurrent()) reject('path' in source ? source.path.split(/[\\/]/).pop() ?? source.path : '', t('connectionFailure'))
+    } catch (error) {
+      if (isCurrent()) reject('path' in source ? source.path.split(/[\\/]/).pop() ?? source.path : '', failureText(t, requestFailureCode(error)))
     } finally {
       if (isCurrent()) actions.patch({ uploading: false })
     }
@@ -537,15 +590,11 @@ export function ImagePage(props: ImagePageProps): ReactNode {
       }
       actions.clearSubmission(owner.accountId, owner.sessionId)
       if (!answer.ok || answer.payload === undefined) {
-        const kind = productFailureKind(answer.code)
         const referenceFailure = answer.code === 'IMAGE_REFERENCE_INVALID' || answer.code === 'IMAGE_REFERENCE_UPLOAD_FAILED'
           || answer.code === 'IMAGE_REFERENCE_UPLOAD_INVALID'
         setFailure(referenceFailure && typeof answer.message === 'string' && answer.message !== '' ? answer.message
-          : kind === 'insufficient-credits' ? t('insufficient')
-            : kind === 'sign-in' || kind === 'signed-out' ? t('noAuth')
-              : kind === 'cancelled' ? t('cancelled')
-                : answer.code === 'TIMEOUT' || answer.code === 'TRANSPORT' || answer.code === 'NO_TASK_ID'
-                  ? t('generationConnectionLost') : t('serverBusy'))
+          : answer.submission_state === undefined && (answer.code === 'TIMEOUT' || answer.code === 'TRANSPORT' || answer.code === 'NO_TASK_ID')
+            ? t('generationConnectionLost') : failureText(t, answer.code, answer.httpStatus))
         return
       }
       actions.patch({ resultPaths: answer.payload.paths ?? [answer.payload.path], message: t('done') })
@@ -669,8 +718,6 @@ export function ImagePage(props: ImagePageProps): ReactNode {
                 {models.map(entry => <option key={entry.id} value={entry.id}>{entry.displayName}</option>)}
               </select>
             </label>
-            {params !== null && <button type="button" className={css.parameterButton} aria-expanded={advanced} aria-controls="image-parameters"
-              onClick={() => { setAdvanced(current => !current) }}><IconSettingsOutlineRegular size={14} /><span>{resolution || size || t('parameters')}{count > 1 ? ` · ${String(count)}` : ''}</span></button>}
             <span className={css.mode}>{maxEdits === 0 || references.length === 0 ? t('modeGenerate') : t('modeEdit', { count: String(Math.min(references.length, maxEdits)) })}</span>
             <Tooltip label={originalSubmission !== null ? t('originalLocked') : running ? t('runningShort') : t('submit')} side="top" portal>
               <button type="button" className={css.send} aria-label={running ? t('runningShort') : t('submit')}
@@ -680,7 +727,8 @@ export function ImagePage(props: ImagePageProps): ReactNode {
               </button>
             </Tooltip>
           </div>
-          {advanced && params !== null && <div className={css.parameters} id="image-parameters">
+          {params !== null && <div className={css.parameters} role="group" aria-label={t('parameters')}>
+            <p className={css.parameterTitle}>{t('parameters')}</p>
             {(params.resolutions?.length ?? 0) > 0 && <label className={css.field}><span>{t('resolution')}</span><select className={css.select} aria-label={t('resolution')} value={resolution} disabled={locked}
               onChange={(event) => { actions.patch({ resolution: event.target.value }) }}>
               {params.resolutions?.map(value => <option key={value} value={value}>{value.toUpperCase()}</option>)}

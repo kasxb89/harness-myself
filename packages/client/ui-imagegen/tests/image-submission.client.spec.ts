@@ -41,6 +41,17 @@ describe('retained image submission', () => {
     expect(submissionFromAnswer({ code: 'TRANSPORT', task_id: 'sk-private', request_id: 'line\nbreak' }, owner))
       .toEqual({ ...owner, state: 'unknown', canQuery: false })
   })
+  it.each(['HTTP_400', 'HTTP_408', 'HTTP_503', 'UNKNOWN', 'CANCELLED', 'USER_CANCELLED', 'ABORTED'])(
+    'keeps an unconfirmed %s response protected until a terminal receipt is known', (code) => {
+      expect(submissionFromAnswer({ ok: false, code }, owner)).toEqual({ ...owner, state: 'unknown', canQuery: false })
+      expect(submissionFromAnswer({ ok: false, code, submission_state: 'not-submitted' }, owner)).toBeNull()
+    },
+  )
+  it('retains an observed HTTP rejection even when its business code normally denotes invalid input', () => {
+    expect(submissionFromAnswer({ ok: false, code: 'INVALID_REQUEST', httpStatus: 400 }, owner))
+      .toEqual({ ...owner, state: 'unknown', canQuery: false })
+    expect(submissionFromAnswer({ ok: false, code: 'INVALID_REQUEST', httpStatus: 400, submission_state: 'not-submitted' }, owner)).toBeNull()
+  })
   it('restores the owned pending task from the Host after the view draft was lost', async () => {
     const fetch = vi.fn(async () => Response.json(listing()))
     vi.stubGlobal('fetch', fetch)

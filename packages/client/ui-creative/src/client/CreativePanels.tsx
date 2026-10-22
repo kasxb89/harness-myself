@@ -10,6 +10,22 @@ import type { CreativeInjected } from './CreativeBody.tsx'
 import type {} from './locales.ts'
 import css from './CreativeBody.module.css'
 
+const TASK_FAILURE_KEYS = {
+  'signed-out': 'signedOut',
+  'sign-in': 'signedOut',
+  'insufficient-credits': 'creditsRequired',
+  'cancelled': 'status.cancelled',
+  'network': 'networkFailure',
+  'timeout': 'requestTimeout',
+  'invalid-input': 'invalidInput',
+  'forbidden': 'permissionDenied',
+  'service': 'serviceUnavailable',
+  'upstream': 'upstreamUnavailable',
+  'local': 'localFailure',
+  'busy': 'serverBusy',
+  'unknown': 'operationFailed',
+} as const
+
 type Translate = TranslateNS<'creative'>
 /**
  * Choose a real image or extracted frame; prompts are never substitute previews.
@@ -120,9 +136,7 @@ function TaskCard({ task, order, project, kind, visible, recover, t }: {
   }
   const publicationFailed = task.errorCode === 'ARTIFACT_PUBLISH_FAILED'
   const failureKind = productFailureKind(task.errorCode)
-  const failureText = failureKind === 'insufficient-credits' ? t('creditsRequired')
-    : failureKind === 'sign-in' || failureKind === 'signed-out' ? t('signedOut')
-      : failureKind === 'cancelled' ? t('status.cancelled') : t('serverBusy')
+  const failureText = t(TASK_FAILURE_KEYS[failureKind])
   const outputs = task.outputs.filter(output => kind === 'all' || output.kind === kind)
   const names = task.shotIds.map(id => project.shots.find(shot => shot.id === id)?.title ?? t('tasks.removedShot'))
   const material = task.assetId === undefined ? t('tasks.project')

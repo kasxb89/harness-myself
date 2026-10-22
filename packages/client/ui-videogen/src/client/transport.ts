@@ -23,15 +23,23 @@ export interface Envelope<T> {
  * @returns an envelope without transport exceptions escaping into UI state.
  */
 export async function requestJson<T>(path: string, init?: RequestInit): Promise<Envelope<T>> {
+  let response: Response
   try {
-    const response = await fetch(appPath(path), init)
-    if (!response.ok) return { ok: false, code: 'HTTP', message: String(response.status) }
+    response = await fetch(appPath(path), init)
+  } catch (error) {
+    const code = init?.signal?.aborted === true ? 'CANCELLED'
+      : error instanceof DOMException && error.name === 'TimeoutError' ? 'TIMEOUT'
+        : error instanceof TypeError ? 'TRANSPORT' : 'UNKNOWN'
+    return { ok: false, code, message: error instanceof Error ? error.message : String(error) }
+  }
+  if (!response.ok) return { ok: false, code: `HTTP_${String(response.status)}` }
+  try {
     const value: unknown = await response.json()
     if (value === null || typeof value !== 'object' || !('ok' in value) || typeof value.ok !== 'boolean') {
       return { ok: false, code: 'RESPONSE_INVALID' }
     }
     return value as Envelope<T>
-  } catch (error) {
-    return { ok: false, code: 'TRANSPORT', message: error instanceof Error ? error.message : String(error) }
+  } catch (_error) {
+    return { ok: false, code: 'RESPONSE_INVALID' }
   }
 }

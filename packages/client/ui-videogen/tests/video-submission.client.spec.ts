@@ -41,6 +41,12 @@ describe('retained video submission', () => {
     expect(submissionFromAnswer({ code: 'TRANSPORT', task_id: 'sk-private', request_id: 'line\nbreak' }, owner))
       .toEqual({ ...owner, state: 'unknown', canQuery: false })
   })
+  it.each(['HTTP_400', 'HTTP_408', 'HTTP_503', 'HTTP_504', 'UNKNOWN', 'CANCELLED', 'RESPONSE_INVALID', 'TRANSPORT'])(
+    'keeps an unconfirmed %s response locked until an explicit terminal receipt arrives', (code) => {
+      expect(submissionFromAnswer({ ok: false, code }, owner)).toEqual({ ...owner, state: 'unknown', canQuery: false })
+      expect(submissionFromAnswer({ ok: false, code, submission_state: 'not-submitted' }, owner)).toBeNull()
+    },
+  )
   it('restores the owned pending task from the Host after the view draft was lost', async () => {
     const fetch = vi.fn(async () => Response.json(listing()))
     vi.stubGlobal('fetch', fetch)

@@ -3,7 +3,15 @@ export const NS = 'creative'
 
 /** Simplified Chinese sidebar and draft copy. */
 export const zh = {
-  'serverBusy': '服务器繁忙，请稍后重试',
+  'serverBusy': '请求繁忙或过于频繁，请稍后重试',
+  'networkFailure': '连接中断或未能建立，请检查网络后查看状态',
+  'requestTimeout': '等待响应超时，原因暂未确认，请先查看请求状态',
+  'invalidInput': '请求参数或素材未通过校验，请检查模型要求',
+  'permissionDenied': '当前请求未获授权，请检查登录状态与模型权限',
+  'serviceUnavailable': '服务暂时不可用，请稍后查看状态',
+  'upstreamUnavailable': '模型服务未完成请求，请检查原任务状态',
+  'localFailure': '本机读取或保存未完成，请检查文件和存储权限',
+  'operationFailed': '操作未完成，原因暂未确认，请先查看状态',
   'creditsRequired': '余额不足，请充值',
   'chooseSession': '请先选择一个聊天，人物、素材与分镜会与该聊天同步',
   'plan.edit': '编辑设定',
@@ -173,7 +181,15 @@ export type CreativeKey = keyof typeof zh
 
 /** English translations for every sidebar and draft key. */
 export const en: Record<CreativeKey, string> = {
-  'serverBusy': 'The server is busy. Please try again later.',
+  'serverBusy': 'The request is busy or rate limited. Please try again later.',
+  'networkFailure': 'The connection was interrupted or could not be established. Check your network and review the status.',
+  'requestTimeout': 'The response timed out; the cause is unconfirmed. Check the request status first.',
+  'invalidInput': 'The request parameters or media did not pass validation. Check the model requirements.',
+  'permissionDenied': 'This request was not authorized. Check your sign-in and model permissions.',
+  'serviceUnavailable': 'The service is temporarily unavailable. Check the status later.',
+  'upstreamUnavailable': 'The model provider did not complete the request. Check the original task status.',
+  'localFailure': 'Local reading or saving did not complete. Check the files and storage permissions.',
+  'operationFailed': 'The operation did not complete; the cause is unconfirmed. Check the status first.',
   'creditsRequired': 'Insufficient balance. Please top up.',
   'chooseSession': 'Choose a chat to share its characters, materials and storyboard',
   'plan.edit': 'Edit directions',

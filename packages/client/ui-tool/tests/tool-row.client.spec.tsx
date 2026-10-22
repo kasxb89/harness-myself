@@ -570,9 +570,9 @@ describe('GenericToolCard', () => {
     const block = result({ call: { name, argsRaw: '{"prompt":"家庭视频"}' }, content: [{ type: 'text', text }] })
     const inspect = vi.fn()
     const view = render(<GenericToolCard {...props(name, block)} inspect={inspect} />)
-    expect(view.getByText(zh['error.serverBusy'])).toBeTruthy()
+    expect(view.getByText(zh['error.invalidInput'])).toBeTruthy()
     fireEvent.click(view.getByRole('button'))
-    expect(view.getAllByText(zh['error.serverBusy'])).toHaveLength(2)
+    expect(view.getAllByText(zh['error.invalidInput'])).toHaveLength(2)
     expect(view.container.textContent).not.toContain('reasoning_content')
     expect(view.container.textContent).not.toContain('INVALID_REQUEST')
     expect(view.container.textContent).not.toContain('private-id')
@@ -588,13 +588,28 @@ describe('GenericToolCard', () => {
       error: { name: 'UpstreamError', code: 'PRIVATE_CODE' }, content: [{ type: 'text', text: 'private stack trace' }] })
     const dictionary = english ? en : zh
     const view = render(<GenericToolCard {...props('generate_video', block)} t={makeTranslate(dictionary, commonZh)} />)
-    expect(view.getByText(dictionary['error.serverBusy'])).toBeTruthy()
+    expect(view.getByText(dictionary['error.operationFailed'])).toBeTruthy()
     fireEvent.click(view.getByRole('button'))
     expect(view.container.textContent).not.toContain('PRIVATE_CODE')
     expect(view.container.textContent).not.toContain('private stack trace')
     expect(block.error?.code).toBe('PRIVATE_CODE')
     await expect(`${view.container.textContent}\n`).toMatchFileSnapshot(english
       ? './expected/media-failure-en.txt' : './expected/media-failure-zh.txt')
+  })
+
+  it.each([
+    ['HTTP_408', 'error.requestTimeout'], ['HTTP_503', 'error.serviceUnavailable'],
+    ['HTTP_429', 'error.requestBusy'], ['HTTP_403', 'error.permissionDenied'],
+    ['TASK_FAILED', 'error.upstreamUnavailable'], ['LOCAL_SAVE_FAILED', 'error.localFailure'],
+    ['PRIVATE_CODE', 'error.operationFailed'],
+  ] as const)('displays the observed %s failure without changing or exposing diagnostics', (code, key) => {
+    const text = JSON.stringify({ status: 'failed', code, message: 'private provider diagnostic' })
+    const block = result({ call: { name: 'query_video_task', argsRaw: '{}' }, content: [{ type: 'text', text }] })
+    const view = render(<GenericToolCard {...props('query_video_task', block)} />)
+    expect(view.getByText(zh[key])).toBeTruthy()
+    expect(view.queryByText(zh['error.serverBusy'])).toBeNull()
+    expect(view.container.textContent).not.toContain('private provider diagnostic')
+    expect(block.content).toEqual([{ type: 'text', text }])
   })
 
   it.each([
@@ -697,7 +712,7 @@ describe('GenericToolCard', () => {
       status: 'failed', submission_state: 'not-submitted', code: 'IMAGE_RECEIPT_UNAVAILABLE',
     }) }] })
     const rejected = render(<GenericToolCard {...props(name, refused)} />)
-    expect(rejected.getByText(zh['error.serverBusy'])).toBeTruthy()
+    expect(rejected.getByText(zh['error.localFailure'])).toBeTruthy()
     expect(rejected.queryByText(zh['error.mediaOutcomeUnknown'])).toBeNull()
     expect(rejected.queryByText(zh['error.mediaTaskPending'])).toBeNull()
   })
@@ -760,7 +775,7 @@ describe('GenericToolCard', () => {
       { type: 'text', text: JSON.stringify({ status: 'failed', submission_state: 'pending', task_id: 'known-task', code: 'GENERATION_FAILED' }) },
     ] })
     const failedView = render(<GenericToolCard {...props('query_video_task', failed)} />)
-    expect(failedView.getByText(zh['error.serverBusy'])).toBeTruthy()
+    expect(failedView.getByText(zh['error.operationFailed'])).toBeTruthy()
     expect(failedView.container.querySelector('[data-state="error"]')).not.toBeNull()
     expect(failedView.queryByText(zh['error.mediaTaskPending'])).toBeNull()
   })
@@ -775,7 +790,7 @@ describe('GenericToolCard', () => {
       { type: 'text', text: JSON.stringify({ status: 'failed', code: 'VIDEO_EDIT_INVALID_INPUT' }) },
     ] })
     const rejectedView = render(<GenericToolCard {...props('generate_video_project', rejected)} />)
-    expect(rejectedView.getByText(zh['error.serverBusy'])).toBeTruthy()
+    expect(rejectedView.getByText(zh['error.invalidInput'])).toBeTruthy()
     expect(rejectedView.queryByText(zh['error.mediaOutcomeUnknown'])).toBeNull()
   })
 
