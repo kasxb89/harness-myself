@@ -141,6 +141,39 @@ function json(value: unknown): Record<string, unknown> {
 }
 
 describe('video tools through Loader, real tool registry and jobs runtime', () => {
+  it('runs gateway-approved concurrent clips inside one native background project', async () => {
+    const f = await boot()
+    f.options.maxConcurrentSegments = 2
+    f.provider.parallelism = async () => 2
+    const release = Promise.withResolvers<undefined>()
+    let observing = 0, peak = 0
+    vi.spyOn(f.provider, 'check').mockImplementation(async () => {
+      observing += 1
+      peak = Math.max(peak, observing)
+      await release.promise
+      observing -= 1
+      return { status: 'succeeded' }
+    })
+    const answer = await f.call('generate_video_project', { prompt: '三段连续镜头', total_duration_seconds: 45 })
+    expect(answer.isError).toBe(false)
+    const started = json(answer.value)
+    expect(started.status).toBe('background')
+    const id = JobId(String(started.job_id))
+    try {
+      await vi.waitFor(() => { expect(observing).toBe(2) })
+      expect(f.requests).toEqual([15, 15])
+      expect(f.ctx.jobs.get(id, f.agent.id).status).toBe('running')
+      release.resolve(undefined)
+      await vi.waitFor(() => { expect(f.ctx.jobs.get(id, f.agent.id).status).toBe('completed') })
+      expect(peak).toBe(2)
+      expect(f.requests).toEqual([15, 15, 15])
+      expect(f.composedPaths).toHaveLength(1)
+    } finally {
+      release.resolve(undefined)
+      await vi.waitFor(() => { expect(f.ctx.jobs.get(id, f.agent.id).status).not.toBe('running') })
+    }
+  }, 15_000)
+
   it.each([undefined, 10])('starts a simple single-clip request with one real model read and default %s', async (declaredDefault) => {
     const fixture = await boot()
     const model = vi.spyOn(fixture.provider, 'model').mockResolvedValue({ id: 'fixture-video', durations: [5, 10, 15],

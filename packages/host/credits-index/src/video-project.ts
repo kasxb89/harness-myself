@@ -20,6 +20,7 @@ const MAX_PROMPT_LENGTH = 7000
 
 const runningProjects = new Set<string>()
 const recoveringProjects = new Map<string, Promise<VideoProjectRead>>()
+const manifestWrites = new WeakMap<VideoProjectManifest, Promise<void>>()
 
 /** An opaque project identifier, validated before selecting its private record. */
 export type VideoProjectId = Branded<'VideoProjectId'>
@@ -295,14 +296,12 @@ async function publishSegment(options: VideoProjectOptions, manifest: VideoProje
     segment.publishedPath = path
   }
   const publishedPath = segment.publishedPath
-  const updatedAt = manifest.updatedAt
   let publishedFile: Stats | undefined
   try {
     publishedFile = await lstat(publishedPath)
     await persist(options, manifest)
   } catch (error) {
     delete segment.publishedPath
-    manifest.updatedAt = updatedAt
     try {
       const current = await lstat(publishedPath)
       if (publishedFile === undefined || current.isSymbolicLink() || current.dev !== publishedFile.dev || current.ino !== publishedFile.ino
@@ -379,13 +378,22 @@ async function validatePublication(options: VideoProjectOptions, directory: stri
 
 /** Atomically replace an owner-only record before exposing its new state. */
 async function persist(options: VideoProjectOptions, manifest: VideoProjectManifest): Promise<void> {
-  manifest.updatedAt = new Date().toISOString()
-  const directory = join(options.stateDirectory, manifest.id)
-  const temporary = join(directory, `.manifest-${randomUUID()}.json`)
-  const encoded = JSON.stringify(manifest)
-  if (Buffer.byteLength(encoded) > MAX_MANIFEST_BYTES) throw new VideoProjectError('VIDEO_PROJECT_INPUT_LIMIT', '视频项目记录过大，已停止后续提交；请减少参考素材或分镜数量。')
-  await writeFile(temporary, encoded, { mode: 0o600, flag: 'wx' })
-  await rename(temporary, join(directory, 'manifest.json'))
+  const previous = manifestWrites.get(manifest) ?? Promise.resolve()
+  const write = previous.catch((_previousWriteFailed: unknown) => {
+    // A later receipt must still be retained when an earlier local write failed.
+  }).then(async () => {
+    const updatedAt = new Date().toISOString()
+    const directory = join(options.stateDirectory, manifest.id)
+    const temporary = join(directory, `.manifest-${randomUUID()}.json`)
+    const encoded = JSON.stringify({ ...manifest, updatedAt })
+    if (Buffer.byteLength(encoded) > MAX_MANIFEST_BYTES) throw new VideoProjectError('VIDEO_PROJECT_INPUT_LIMIT', '视频项目记录过大，已停止后续提交；请减少参考素材或分镜数量。')
+    await writeFile(temporary, encoded, { mode: 0o600, flag: 'wx' })
+    await rename(temporary, join(directory, 'manifest.json'))
+    manifest.updatedAt = updatedAt
+  })
+  manifestWrites.set(manifest, write)
+  try { await write }
+  finally { if (manifestWrites.get(manifest) === write) manifestWrites.delete(manifest) }
 }
 
 /** Parse retained JSON rather than asserting a durable file into trusted types. */
@@ -684,12 +692,123 @@ export async function runVideoProject(
   } finally { runningProjects.delete(key) }
 }
 
+/** Own workers and their stop barrier until every late submission receipt has settled. */
+async function executeVideoSegments(
+  options: VideoProjectOptions, manifest: VideoProjectManifest, provider: VideoProjectProvider, editor: VideoEditor,
+  job: JobHandle, signal: AbortSignal, unsettled: Set<number>, onlyAccepted: boolean,
+): Promise<void> {
+  const queue = manifest.segments.filter(segment => segment.status !== 'saved' && segment.status !== 'failed'
+    && segment.status !== 'unknown' && (!onlyAccepted || segment.taskId !== undefined))
+    .toSorted((left, right) => Number(right.taskId !== undefined) - Number(left.taskId !== undefined))
+  if (queue.length === 0) return
+  const maximum = Math.min(options.maxConcurrentSegments ?? 1, queue.length)
+  const granted = maximum === 1 || provider.parallelism === undefined ? 1 : await provider.parallelism(manifest.model, signal)
+  signal.throwIfAborted()
+  const concurrency = Math.min(maximum, granted)
+  const stop = new AbortController()
+  let failure: { error: unknown } | undefined
+  let cursor = 0
+  const active = new Set<number>()
+  const progress = (text: string): void => {
+    const saved = manifest.segments.filter(segment => segment.status === 'saved').length
+    job.updateProgress(concurrency === 1 ? text
+      : `${text} · 本项目同时处理 ${String(active.size)} 段，已保存 ${String(saved)}/${String(manifest.segments.length)}`)
+  }
+  const observeJob: JobHandle = { id: job.id, append: (...args) => { job.append(...args) }, updateProgress: progress }
+  const execute = async (segment: VideoProjectSegment): Promise<void> => {
+    const deadline = AbortSignal.timeout(options.taskTimeoutMs)
+    const clipSignal = AbortSignal.any([signal, deadline])
+    const observation = AbortSignal.any([clipSignal, stop.signal])
+    progress(`生成分镜 ${String(segment.index)}/${String(manifest.segments.length)}`)
+    if (segment.taskId === undefined) {
+      await validatePublication(options, manifest.publicationDirectory, clipSignal)
+      await provider.assertCurrent()
+      clipSignal.throwIfAborted()
+      if (stop.signal.aborted) return
+      segment.status = 'submitting'
+      try { await persist(options, manifest) }
+      catch (error) { segment.status = 'pending'; throw error }
+      if (observation.aborted) {
+        segment.status = 'pending'
+        await persist(options, manifest)
+        clipSignal.throwIfAborted()
+        return
+      }
+      unsettled.add(segment.index)
+      let task: { taskId: string }
+      try { task = await provider.submit(segment.request, clipSignal) }
+      catch (error) {
+        segment.status = 'unknown'
+        if (error instanceof VideoRelayError && error.code === 'INSUFFICIENT_BALANCE') throw error
+        if (error instanceof VideoRelayError && error.code === 'VIDEO_SUBMIT_BUSY') {
+          throw new VideoProjectError('SUBMISSION_UNKNOWN', error.message, { cause: error })
+        }
+        throw new VideoProjectError('SUBMISSION_UNKNOWN', '视频提交结果未知，可能已计费；已停止后续生成，不会自动重提。请先在后台核对任务。', { cause: error })
+      }
+      if (task.taskId.trim() === '') {
+        segment.status = 'unknown'
+        throw new VideoProjectError('SUBMISSION_UNKNOWN', '上游未返回可查询的视频任务编号，可能已计费；已停止后续生成，请先在后台核对。')
+      }
+      segment.taskId = task.taskId
+      segment.status = 'running'
+      await persist(options, manifest)
+      job.append(`分镜 ${String(segment.index)} 已提交，任务 ${task.taskId}。\n`)
+    }
+    // Never cancel another in-flight POST merely because one peer failed.
+    if (stop.signal.aborted) return
+    try { await waitForTask(options, provider, segment, manifest.segments.length, observeJob, observation) }
+    catch (error) {
+      if (deadline.aborted && !signal.aborted) {
+        throw new VideoProjectError('VIDEO_TASK_TIMEOUT', '视频任务等待时间已到，已暂停查询并保留原任务编号。任务可能仍在排队或生成；请继续查询原项目，不要重新提交。', { cause: error })
+      }
+      if (error instanceof VideoProjectError && error.code === 'PROVIDER_TASK_FAILED') {
+        segment.status = 'failed'
+        unsettled.delete(segment.index)
+      }
+      throw error
+    }
+    unsettled.delete(segment.index)
+    progress(`保存分镜 ${String(segment.index)}/${String(manifest.segments.length)}`)
+    const path = join(options.stateDirectory, manifest.id, 'clips', `clip-${String(segment.index).padStart(3, '0')}-${randomUUID()}.mp4`)
+    await provider.download(segment.taskId, segment.request, path, observation)
+    segment.path = path
+    const probe = await editor.probe(path, clipSignal)
+    if (probe.durationSeconds + 0.25 < segment.durationSeconds) {
+      segment.status = 'failed'
+      throw new VideoProjectError('CLIP_TOO_SHORT', '上游片段短于所需时长，已保留文件并停止拼接，请检查该任务。')
+    }
+    segment.status = 'saved'
+    await persist(options, manifest)
+    await publishSegment(options, manifest, segment, clipSignal)
+    await options.saved?.(manifest, segment.index, clipSignal)
+    job.append(`分镜 ${String(segment.index)} 已保存：${segment.publishedPath ?? path}\n`)
+  }
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      if (stop.signal.aborted || signal.aborted) return
+      const segment = queue[cursor++]
+      if (segment === undefined) return
+      active.add(segment.index)
+      try { await execute(segment) }
+      catch (error) {
+        if (failure === undefined) { failure = { error }; stop.abort(error) }
+        return
+      } finally { active.delete(segment.index) }
+    }
+  }
+  const workers = Array.from({ length: Math.min(concurrency, queue.length) }, worker)
+  await Promise.allSettled(workers)
+  signal.throwIfAborted()
+  if (failure !== undefined) throw failure.error
+}
+
 /** Run exclusively with respect to local clip recovery for this exact private project. */
 async function executeVideoProject(
   options: VideoProjectOptions, manifest: VideoProjectManifest, provider: VideoProjectProvider, editor: VideoEditor,
   job: JobHandle, signal: AbortSignal,
 ): Promise<JobOutcome> {
-  let upstreamMayContinue = false
+  const unsettled = new Set(manifest.segments.filter(segment =>
+    segment.status === 'unknown' || segment.status === 'submitting' || segment.status === 'running').map(segment => segment.index))
   try {
     if (manifest.identity.accountId !== provider.identity.accountId) throw new VideoProjectError('PROJECT_ACCESS_DENIED', '该视频项目不属于当前登录账号。')
     for (const segment of manifest.segments) {
@@ -699,83 +818,21 @@ async function executeVideoProject(
       await editor.probe(savedPath(segment), signal)
       await publishSegment(options, manifest, segment, signal)
     }
-    if (manifest.segments.some(segment => segment.status === 'unknown' || segment.status === 'submitting' && segment.taskId === undefined)) throw new VideoProjectError('SUBMISSION_UNKNOWN', '有一次视频提交结果未知，可能已计费。请先在后台核对任务，系统不会自动重提。')
-    if (manifest.segments.some(segment => segment.status === 'failed')) throw new VideoProjectError('PROVIDER_TASK_FAILED', '项目中有失败的上游任务，已生成片段保留；请使用 edit_video 编辑已保存片段，或明确创建新项目。')
+    const blocked = manifest.segments.some(segment => segment.status === 'unknown' || segment.status === 'submitting' && segment.taskId === undefined)
+      ? new VideoProjectError('SUBMISSION_UNKNOWN', '有一次视频提交结果未知，可能已计费。已知任务仍可查询保存；请先在后台核对未知提交，系统不会自动重提。')
+      : manifest.segments.some(segment => segment.status === 'failed')
+        ? new VideoProjectError('PROVIDER_TASK_FAILED', '项目中有失败的上游任务，已生成片段保留；其余已知任务仍可查询保存，请使用 edit_video 编辑已保存片段，或明确创建新项目。')
+        : undefined
+    if (blocked !== undefined && !manifest.segments.some(segment => segment.status === 'running' && segment.taskId !== undefined)) throw blocked
     await editor.preflight(signal, manifest.outputDirectory)
     manifest.identity = { ...provider.identity }
     manifest.status = 'running'
     delete manifest.failureCode
     await persist(options, manifest)
     if (manifest.composedPath === undefined) {
-      for (const segment of manifest.segments) {
-        signal.throwIfAborted()
-        if (segment.status === 'saved') {
-          await editor.probe(savedPath(segment), signal)
-          continue
-        }
-        job.updateProgress(`生成分镜 ${String(segment.index)}/${String(manifest.segments.length)}`)
-        const deadline = AbortSignal.timeout(options.taskTimeoutMs)
-        const clipSignal = AbortSignal.any([signal, deadline])
-        if (segment.taskId === undefined) {
-          await validatePublication(options, manifest.publicationDirectory, clipSignal)
-          await provider.assertCurrent()
-          clipSignal.throwIfAborted()
-          segment.status = 'submitting'
-          await persist(options, manifest)
-          upstreamMayContinue = true
-          let task: { taskId: string }
-          try { task = await provider.submit(segment.request, clipSignal) }
-          catch (error) {
-            if (error instanceof VideoRelayError && error.code === 'INSUFFICIENT_BALANCE') {
-              // The gateway can also reject an adjusted cost after upstream
-              // acceptance. Preserve the unknown-submission resume barrier.
-              segment.status = 'unknown'
-              throw error
-            }
-            segment.status = 'unknown'
-            if (error instanceof VideoRelayError && error.code === 'VIDEO_SUBMIT_BUSY') {
-              throw new VideoProjectError('SUBMISSION_UNKNOWN', error.message, { cause: error })
-            }
-            throw new VideoProjectError('SUBMISSION_UNKNOWN', '视频提交结果未知，可能已计费；已停止后续生成，不会自动重提。请先在后台核对任务。', { cause: error })
-          }
-          if (task.taskId.trim() === '') {
-            segment.status = 'unknown'
-            throw new VideoProjectError('SUBMISSION_UNKNOWN', '上游未返回可查询的视频任务编号，可能已计费；已停止后续生成，请先在后台核对。')
-          }
-          segment.taskId = task.taskId
-          segment.status = 'running'
-          await persist(options, manifest)
-          job.append(`分镜 ${String(segment.index)} 已提交，任务 ${task.taskId}。\n`)
-        } else upstreamMayContinue = true
-        try { await waitForTask(options, provider, segment, manifest.segments.length, job, clipSignal) }
-        catch (error) {
-          if (deadline.aborted && !signal.aborted) {
-            throw new VideoProjectError('VIDEO_TASK_TIMEOUT', '视频任务等待时间已到，已暂停查询并保留原任务编号。任务可能仍在排队或生成；请继续查询原项目，不要重新提交。', { cause: error })
-          }
-          if (error instanceof VideoProjectError && error.code === 'PROVIDER_TASK_FAILED') {
-            segment.status = 'failed'
-            upstreamMayContinue = false
-          }
-          throw error
-        }
-        upstreamMayContinue = false
-        job.updateProgress(`保存分镜 ${String(segment.index)}/${String(manifest.segments.length)}`)
-        const path = join(options.stateDirectory, manifest.id, 'clips', `clip-${String(segment.index).padStart(3, '0')}-${randomUUID()}.mp4`)
-        await provider.download(segment.taskId, segment.request, path, clipSignal)
-        segment.path = path
-        const probe = await editor.probe(path, clipSignal)
-        if (probe.durationSeconds + 0.25 < segment.durationSeconds) {
-          segment.status = 'failed'
-          throw new VideoProjectError('CLIP_TOO_SHORT', '上游片段短于所需时长，已保留文件并停止拼接，请检查该任务。')
-        }
-        segment.path = path
-        segment.status = 'saved'
-        await persist(options, manifest)
-        await publishSegment(options, manifest, segment, signal)
-        await options.saved?.(manifest, segment.index, signal)
-        job.append(`分镜 ${String(segment.index)} 已保存：${segment.publishedPath ?? path}\n`)
-      }
+      await executeVideoSegments(options, manifest, provider, editor, job, signal, unsettled, blocked !== undefined)
     }
+    if (blocked !== undefined) throw blocked
     signal.throwIfAborted()
     manifest.status = 'editing'
     await persist(options, manifest)
@@ -812,13 +869,13 @@ async function executeVideoProject(
     try { options.failed?.(manifest, manifest.failureCode) }
     catch (_unavailableObserver: unknown) { /* Diagnostics never replace the retained workflow outcome. */ }
     const message = signal.aborted ? '视频项目已停止，已保存的片段保留。' : reported.message
-    const warning = upstreamMayContinue ? ' 已提交的上游任务无法由本地取消，可能继续运行并计费。' : ''
+    const warning = unsettled.size > 0 ? ' 已提交的上游任务无法由本地取消，可能继续运行并计费。' : ''
     try { await persist(options, manifest) }
     catch (storageError) {
       // Storage failure is independently reported; its raw path/error is not model-visible.
       void storageError
       job.append('项目状态保存失败；已停止后续提交。最后一次提交可能未记录，请先在后台核对任务，勿直接重试。\n', { channel: 'stderr' })
-      return { status: signal.aborted ? 'killed' : 'failed', detail: 'PROJECT_STORAGE_FAILED', result: JSON.stringify({ status: 'failed', project_id: manifest.id, code: 'PROJECT_STORAGE_FAILED', message: `项目记录保存失败。${warning}`, clip_paths: manifest.segments.flatMap(segment => segment.path === undefined ? [] : [segment.publishedPath ?? segment.path]) }) }
+      return { status: signal.aborted ? 'killed' : 'failed', detail: 'PROJECT_STORAGE_FAILED', result: JSON.stringify({ status: 'failed', project_id: manifest.id, code: 'PROJECT_STORAGE_FAILED', message: `项目记录保存失败，请保留已返回的任务编号并在后台核对，勿直接重试。${warning}`, clip_paths: manifest.segments.flatMap(segment => segment.path === undefined ? [] : [segment.publishedPath ?? segment.path]), task_ids: manifest.segments.flatMap(segment => segment.taskId === undefined ? [] : [segment.taskId]) }) }
     }
     const result = JSON.stringify({ status: signal.aborted ? 'cancelled' : 'failed', project_id: manifest.id, code: manifest.failureCode, message: message + warning, clip_paths: manifest.segments.flatMap(segment => segment.path === undefined ? [] : [segment.publishedPath ?? segment.path]), task_ids: manifest.segments.flatMap(segment => segment.taskId === undefined ? [] : [segment.taskId]) })
     job.append(`${result}\n`, { channel: 'stderr' })

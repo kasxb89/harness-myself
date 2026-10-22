@@ -45,6 +45,8 @@ let balanceQuota = 68_493
 let selfId = 7
 let access = 'access-user'
 let refreshes = 0
+let refreshStatus = 200
+let refreshRetryAfter: string | undefined
 let creations = 0
 let pricingRows: unknown[] = []
 let videoTaskStatus: string | undefined
@@ -92,6 +94,8 @@ afterEach(async () => {
   selfId = 7
   access = 'access-user'
   refreshes = 0
+  refreshStatus = 200
+  refreshRetryAfter = undefined
   creations = 0
   pricingRows = []
   videoTaskStatus = undefined
@@ -164,6 +168,12 @@ async function boot(
       if (url.pathname === '/harness/api/user/auth/refresh') {
         refreshes += 1
         await refreshBarrier
+        if (refreshStatus !== 200) {
+          if (refreshRetryAfter !== undefined) response.setHeader('retry-after', refreshRetryAfter)
+          response.writeHead(refreshStatus)
+          response.end('')
+          return
+        }
         access = 'access-renewed'
         response.setHeader('set-cookie', 'new_api_refresh=refresh-two; HttpOnly; Path=/harness/api/user/auth')
         answer({ access_token: access, access_expires_at: Math.floor(Date.now() / 1000) + 900, user: { id: 7 } }); return
@@ -2754,6 +2764,88 @@ describe('deployed Harness API through the real product Loader', () => {
     expect(refresh?.origin).toBe(new URL(api).origin)
     expect(refresh?.cookie).toContain('new_api_refresh=refresh-one')
     expect(calls.filter(call => call.path.endsWith('/user/self')).every(call => call.authorization === 'Bearer access-renewed')).toBe(true)
+  })
+
+  it.each([429, 500, 503])('retains a still-valid login and shares HTTP %i cooldown across consumers', async (status) => {
+    const { base, api, stateDir } = await boot(undefined, false, false, undefined, {
+      refreshRetryBaseDelayMs: 10_000, refreshRecoveryRetryLimit: 0,
+    })
+    await signIn(base)
+    const original = await readFile(join(stateDir, 'session.json'), 'utf8')
+    refreshStatus = status
+    refreshRetryAfter = '60'
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(Date.now() + 14 * 60_000 + 30_000)
+    expect(await (await fetch(base + '/api/session')).json()).toMatchObject({ signedIn: true })
+    await Promise.all([
+      fetch(base + '/api/summary').then(response => response.json()),
+      fetch(base + '/api/session').then(response => response.json()),
+      context!.harnessAccount.refreshModels(api + '/v1'),
+    ])
+    expect(refreshes).toBe(1)
+    expect(await readFile(join(stateDir, 'session.json'), 'utf8')).toBe(original)
+    expect(await context!.credentials.resolve(relayRef)).toMatchObject({ value: 'sk-owned-relay' })
+    expect(await readFile(join(stateDir, 'session.json.renewal'), 'utf8')).not.toMatch(/sk-owned|access-user|refresh-one/u)
+    expect(creations).toBe(0)
+  })
+
+  it('requires login after a terminal refresh401 without retrying the revoked credential', async () => {
+    const { base } = await boot()
+    await signIn(base)
+    refreshStatus = 401
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(Date.now() + 16 * 60_000)
+    expect(await (await fetch(base + '/api/session')).json()).toMatchObject({ signedIn: false })
+    expect(await context!.credentials.resolve(relayRef)).toBeUndefined()
+    await fetch(base + '/api/summary')
+    await fetch(base + '/api/session')
+    expect(refreshes).toBe(1)
+    expect(creations).toBe(0)
+  })
+
+  it('does not repeatedly send a rejected bearer while refresh is rate limited', async () => {
+    const { base } = await boot()
+    await signIn(base)
+    access = 'server-no-longer-accepts-the-old-bearer'
+    refreshStatus = 429
+    refreshRetryAfter = '60'
+    expect(await (await fetch(base + '/api/session')).json()).toMatchObject({ signedIn: true, liveness: 'unknown' })
+    const rejectedReads = calls.filter(call => call.path.endsWith('/user/self')).length
+    for (let index = 0; index < 3; index += 1) {
+      expect(await (await fetch(base + '/api/session')).json()).toMatchObject({ signedIn: true, liveness: 'unknown' })
+      await fetch(base + '/api/summary')
+    }
+    expect(refreshes).toBe(1)
+    expect(calls.filter(call => call.path.endsWith('/user/self'))).toHaveLength(rejectedReads)
+    expect(await context!.credentials.resolve(relayRef)).toMatchObject({ value: 'sk-owned-relay' })
+    expect(await chat()).toMatchObject({ kind: 'error', failure: { code: 'MISSING_CREDENTIAL' } })
+    expect(calls.some(call => call.path.endsWith('/chat/completions'))).toBe(false)
+  })
+
+  it.each([7, 8])('preserves a concurrent new account %i when a captured old refresh401 arrives', async (id) => {
+    const { base, stateDir } = await boot()
+    await signIn(base)
+    refreshStatus = 401
+    refreshBarrier = new Promise<void>((resolve) => { releaseRefresh = resolve })
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(Date.now() + 16 * 60_000)
+    const old = fetch(base + '/api/summary')
+    try {
+      await vi.waitFor(() => { expect(refreshes).toBe(1) })
+      selfId = id
+      relayKey = 'sk-replacement-relay'
+      const challenge = await post(base, '/api/session/challenge', { phone: '+8613800000000', idempotencyKey: 'challenge-new-login' })
+      const login = await post(base, '/api/session/verify', { challengeId: object(challenge.payload).challenge_id,
+        code: '123456', idempotencyKey: 'login-new-account' })
+      expect(login.ok).toBe(true)
+      const replacement = await readFile(join(stateDir, 'session.json'), 'utf8')
+      releaseRefresh?.()
+      await old
+      expect(await readFile(join(stateDir, 'session.json'), 'utf8')).toBe(replacement)
+      expect(await context!.credentials.resolve(relayRef)).toMatchObject({ value: 'sk-replacement-relay' })
+      expect(await (await fetch(base + '/api/session')).json()).toMatchObject({ signedIn: true, account: { id: String(id) } })
+      expect(refreshes).toBe(1)
+    } finally { releaseRefresh?.() }
   })
 
   it('rejects a different account instead of showing its quota or reading an admin cache', async () => {

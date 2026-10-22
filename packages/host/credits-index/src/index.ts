@@ -27,11 +27,13 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import z from '@deepseek-ai/schemastery'
 import QRCode from 'qrcode'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
+import { withFileLock } from '@deepseek-ai/dsh-atomic-write'
 import type { HarnessAccount } from '@deepseek-ai/dsh-llm-pi-ai'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { apiUrl, normalizeApiBaseUrl } from './api-url.ts'
 import { readPhoneBody, phoneFailure, phoneRetryAfter, type PhoneApiBody } from './phone-auth.ts'
 import { writePrivateState } from './private-state-file.ts'
+import { SessionRefresh, type StoredAccount, type StoredSession } from './session-refresh.ts'
 import { PhoneAuthState, type PhoneDeliveryStatus } from './phone-auth-state.ts'
 import { parseClientModelConfigStatus } from './client-model-config.ts'
 import { orderProductModels, preferredProductModel, type ProductModelPresentation } from './model-presentation.ts'
@@ -89,6 +91,12 @@ export interface Config {
   stateDir?: string
   /** Deadline for one platform call, in milliseconds. */
   timeoutMs?: number
+  /** Minimum interval between failed session renewals. */
+  refreshRetryBaseDelayMs?: number
+  /** Maximum locally chosen session-renewal delay; valid Retry-After can be longer. */
+  refreshRetryMaxDelayMs?: number
+  /** Automatic retries inside the API rotating-cookie recovery window. */
+  refreshRecoveryRetryLimit?: number
   /** Complete deadline for the single image submission, in milliseconds. */
   imageSubmitTimeoutMs?: number
   /** Complete image execution deadline, including polling and saving. */
@@ -141,6 +149,8 @@ export interface Config {
   videoProjectMaxSeconds?: number
   /** Maximum separately billable clips in one video project. */
   videoProjectMaxSegments?: number
+  /** Maximum simultaneous clips per project; parallel execution also requires gateway atomic admission. */
+  videoProjectConcurrency?: number
   /** Delay between read-only provider task status requests. */
   videoProjectPollIntervalMs?: number
   /** Complete deadline for one generated clip, including saving it. */
@@ -167,6 +177,9 @@ export const Config: z<Config> = z.object({
   creditsPerYuan: z.number().min(1).default(1000),
   stateDir: z.string().default(''),
   timeoutMs: z.number().step(1).min(1).default(15_000),
+  refreshRetryBaseDelayMs: z.number().step(1).min(1).max(2_147_483_647).default(1000),
+  refreshRetryMaxDelayMs: z.number().step(1).min(1).max(2_147_483_647).default(60_000),
+  refreshRecoveryRetryLimit: z.number().step(1).min(0).max(5).default(2),
   imageSubmitTimeoutMs: z.number().step(1).min(1).max(2_147_483_647).default(180_000),
   imageTaskTimeoutMs: z.number().step(1).min(1).max(2_147_483_647).default(600_000),
   imagePollIntervalMs: z.number().step(1).min(1).max(60_000).default(2000),
@@ -193,6 +206,7 @@ export const Config: z<Config> = z.object({
   chatUsageConcurrency: z.number().step(1).min(1).max(8).default(4),
   videoProjectMaxSeconds: z.natural().min(1).default(300),
   videoProjectMaxSegments: z.natural().min(1).max(32).default(32),
+  videoProjectConcurrency: z.natural().min(1).max(16).default(4),
   videoProjectPollIntervalMs: z.natural().min(1).default(6000),
   videoProjectTaskTimeoutMs: z.natural().min(1).default(900_000),
   videoProjectDownloadMaxBytes: z.natural().min(12).default(536_870_912),
@@ -218,12 +232,6 @@ const ROUTE_PREFIX = '/credits'
  */
 const TOKEN_REF = credentialRef('YUNSHU_SESSION_TOKEN')
 
-/** Masked account facts the panel shows while signed in. */
-interface StoredAccount {
-  readonly id: string
-  readonly phone: string
-}
-
 /** One platform call's outcome, normalised for the panel. */
 interface PlatformResult {
   readonly status: number
@@ -231,31 +239,6 @@ interface PlatformResult {
   readonly message: string | null
   readonly retryAfterSeconds: number | null
   readonly body: unknown
-}
-
-/** Persisted sign-in facts; the token lives in the credential store when mounted. */
-interface StoredSession {
-  /** Product-local sign-in token; upstream access and refresh credentials stay Host-side. */
-  readonly token?: string | undefined
-  /** Backend base that authenticated this session; credentials never migrate to another base. */
-  readonly backendBaseUrl?: string | undefined
-  /** Short-lived access token and rotating refresh cookie for this same account. */
-  readonly upstream?: {
-    readonly token?: string | undefined
-    readonly refresh?: string | undefined
-    readonly expiresAt?: string | undefined
-  } | undefined
-  /**
-   * The signed-in account's own relay credential, minted by the backend at
-   * sign-in and owned by that account. Everything the product sends — chat,
-   * images, video — uses this, so the usage is billed to whoever is signed in
-   * and the balance on screen is the balance being spent. Absent only when the
-   * deployment has no per-account credential, in which case generation is
-   * refused until the user signs in again.
-   */
-  readonly relay?: { readonly key?: string | undefined; readonly id?: number | undefined } | undefined
-  readonly expiresAt: string
-  readonly account: StoredAccount
 }
 
 /** Write one JSON response. */
@@ -413,6 +396,7 @@ function platformCall(
 /** Session storage: credential store when mounted, `0600` file otherwise. */
 class SessionStore {
   private cached: StoredSession | null | undefined
+  private generation = 0
 
   constructor(private readonly ctx: Context, private readonly file: string) {}
 
@@ -426,7 +410,7 @@ class SessionStore {
 
   /** Read the stored session, or null when signed out. */
   async read(): Promise<StoredSession | null> {
-    if (this.cached !== undefined) return this.cached
+    const generation = this.generation
     try {
       const parsed = JSON.parse(await readFile(this.file, 'utf8')) as Omit<Partial<StoredSession>, 'upstream' | 'relay'> & {
         upstream?: StoredSession['upstream'] | null
@@ -435,12 +419,14 @@ class SessionStore {
       const token = typeof parsed.token === 'string' && parsed.token !== '' ? parsed.token : await this.readCredential()
       const account = readAccount(parsed.account)
       const expiresAt = typeof parsed.expiresAt === 'string' ? parsed.expiresAt : null
+      if (generation !== this.generation) return await this.read()
       if (token === null || account === null || expiresAt === null) {
         this.cached = null
         return null
       }
       const upstream = parsed.upstream === null || typeof parsed.upstream !== 'object' ? undefined : parsed.upstream
       const relay = parsed.relay === null || typeof parsed.relay !== 'object' ? undefined : parsed.relay
+      if (generation !== this.generation) return await this.read()
       this.cached = {
         token,
         expiresAt,
@@ -450,7 +436,8 @@ class SessionStore {
         ...relay === undefined ? {} : { relay },
       }
       return this.cached
-    } catch {
+    } catch (_unreadableSession: unknown) {
+      if (generation !== this.generation) return await this.read()
       this.cached = null
       return null
     }
@@ -474,16 +461,17 @@ class SessionStore {
       expiresAt: session.expiresAt,
       account: session.account,
     }, null, 2)}\n`)
+    this.generation += 1
     this.cached = { ...session }
     await this.writeCredential(session.token)
   }
 
   /** Forget the session on both halves. */
   async clear(): Promise<void> {
+    await writePrivateState(this.file, '{}\n')
+    this.generation += 1
     this.cached = null
     await this.deleteCredential()
-    await mkdir(dirname(this.file), { recursive: true })
-    await writeFile(this.file, '{}\n', { mode: 0o600 })
   }
 
   /**
@@ -496,6 +484,7 @@ class SessionStore {
    * that judgement is what keeps one stale process from logging everyone out.
    */
   invalidate(): void {
+    this.generation += 1
     this.cached = undefined
   }
 
@@ -752,6 +741,9 @@ async function downloadToFile(
 
 export function apply(ctx: Context, config: Config): void {
   const resolved = config as ResolvedConfig
+  if (resolved.refreshRetryMaxDelayMs < resolved.refreshRetryBaseDelayMs) {
+    throw new Error('credits-index.refreshRetryMaxDelayMs must be at least refreshRetryBaseDelayMs')
+  }
   registerCreationWorkflows(ctx)
   const apiBaseUrl = normalizeApiBaseUrl(resolved.newApiBaseUrl)
   const stateDir = resolved.stateDir === ''
@@ -784,7 +776,13 @@ export function apply(ctx: Context, config: Config): void {
   let sessionMutations = Promise.resolve()
   /** Serialize session and credential writes so logout cannot be overwritten by an older exchange. */
   const mutateSession = async <T>(run: () => Promise<T>): Promise<T> => {
-    const operation = sessionMutations.then(run)
+    const operation = sessionMutations.then(async () => {
+      await mkdir(dirname(store.path), { recursive: true })
+      return await withFileLock(store.path, async () => {
+        store.invalidate()
+        return await run()
+      }, { waitMs: resolved.timeoutMs + resolved.refreshRetryBaseDelayMs })
+    })
     sessionMutations = operation.then(() => undefined, (_failure: unknown) => undefined)
     return await operation
   }
@@ -1644,8 +1642,9 @@ export function apply(ctx: Context, config: Config): void {
     }
     const result = await run((session.upstream?.token ?? ''))
     if (result.status === 401 && result.code === 'SESSION_INVALID') {
-      await store.clear()
-      return { result, sessionInvalid: true }
+      const cleared = await invalidateSession(session)
+      return { result: cleared ? result : { ...result, status: 409, code: 'ACCOUNT_CHANGED',
+        message: '登录账号已变化，请重新读取当前账号。' }, sessionInvalid: cleared }
     }
     return { result, sessionInvalid: false }
   }
@@ -1732,62 +1731,45 @@ export function apply(ctx: Context, config: Config): void {
     return null
   }
 
-  /** Only one refresh exchange may rotate a given account's cookie at a time. */
-  let renewal: { token: string; promise: Promise<StoredSession | null> } | null = null
-
-  const refreshSession = async (previous: StoredSession): Promise<StoredSession | null> => {
+  /** Clear only the captured owner and credential epoch, including across local Hosts. */
+  const invalidateSession = async (previous: StoredSession, version = identityVersion): Promise<boolean> => {
     const owner = previous.token
-    const refresh = previous.upstream?.refresh
-    const current = await store.read()
-    if (owner === undefined || refresh === undefined || current?.token !== owner) return null
-    if (current.upstream?.token !== previous.upstream?.token) return current
-    const version = identityVersion
-    if (renewal !== null) {
-      if (renewal.token !== owner) { await renewal.promise; return null }
-      const result = await renewal.promise
-      return version === identityVersion ? result : null
-    }
-    const attempt = exchangeRefreshToken(previous, version)
-    renewal = { token: owner, promise: attempt }
-    try {
-      const result = await attempt
-      return version === identityVersion ? result : null
-    } finally {
-      renewal = null
-    }
+    if (owner === undefined) return false
+    const cleared = await mutateSession(async () => {
+      const current = await store.read()
+      if (version !== identityVersion || current?.token !== owner || current.account.id !== previous.account.id
+        || current.backendBaseUrl !== previous.backendBaseUrl
+        || current.upstream?.refresh !== previous.upstream?.refresh || current.upstream?.token !== previous.upstream?.token
+        || current.upstream?.expiresAt !== previous.upstream?.expiresAt) return false
+      identityVersion += 1
+      chatUsage.reset()
+      invalidateModelCatalog()
+      await store.clear()
+      await releaseAccountCredential()
+      return true
+    })
+    if (cleared) notifyModelCatalogChanged()
+    return cleared
   }
-
-  const exchangeRefreshToken = async (previous: StoredSession, version: number): Promise<StoredSession | null> => {
-    try {
-      const answered = await apiFetch('/api/user/auth/refresh', {
-        method: 'POST', headers: { cookie: `new_api_refresh=${previous.upstream?.refresh ?? ''}`,
-          ...declaredOrigin, 'content-type': 'application/json', accept: 'application/json' },
-        body: '{}', signal: AbortSignal.timeout(resolved.timeoutMs),
-      })
-      const payload = await answered.json() as {
-        success?: unknown
-        data?: { access_token?: unknown; access_expires_at?: unknown; user?: { id?: unknown } }
-      } | null
-      const token = payload?.data?.access_token
-      const expiry = payload?.data?.access_expires_at
-      const id = payload?.data?.user?.id
-      if (!answered.ok || payload?.success !== true || typeof token !== 'string' || token.trim() === ''
-        || typeof expiry !== 'number' || !Number.isFinite(expiry) || expiry * 1000 <= Date.now()
-        || !Number.isFinite(new Date(expiry * 1000).getTime()) || String(id) !== previous.account.id) return null
-      const rotated = refreshFromSetCookie(answered) ?? previous.upstream?.refresh
-      const candidate: StoredSession = { ...previous, backendBaseUrl: apiBaseUrl,
-        upstream: { token, refresh: rotated, expiresAt: new Date(expiry * 1000).toISOString() } }
-      await mutateSession(async () => {
-        const current = await store.read()
-        if (version === identityVersion && current?.token === previous.token && candidate.token !== undefined) {
-          await store.write({ ...candidate, token: candidate.token })
-        }
-      })
-      return candidate
-    } catch {
-      return null
-    }
+  const rejectSession = async (response: ServerResponse, previous: StoredSession): Promise<void> => {
+    if (await invalidateSession(previous)) sessionExpired(response)
+    else json(response, 200, { ok: false, code: 'ACCOUNT_CHANGED', message: '登录账号已变化，请重新读取当前账号。' })
   }
+  const renewal = new SessionRefresh({
+    baseUrl: apiBaseUrl, timeoutMs: resolved.timeoutMs,
+    retryBaseDelayMs: resolved.refreshRetryBaseDelayMs, retryMaxDelayMs: resolved.refreshRetryMaxDelayMs,
+    recoveryRetryLimit: resolved.refreshRecoveryRetryLimit, store, version: () => identityVersion, mutate: mutateSession,
+    fetch: async (cookie, signal) => await apiFetch('/api/user/auth/refresh', {
+      method: 'POST', headers: { cookie: `new_api_refresh=${cookie}`, ...declaredOrigin,
+        'content-type': 'application/json', accept: 'application/json' }, body: '{}', signal,
+    }),
+    unauthorized: invalidateSession,
+    unavailable: (reason) => { ctx.logger.warn(reason === 'recovery-exhausted'
+      ? 'Account renewal could not confirm a rotating cookie; keeping the login without replaying the old cookie. Sign in again to recover.'
+      : 'Account renewal is temporarily unavailable; keeping the login and applying the shared cooldown.') },
+  })
+  ctx.effect(() => async () => { await renewal.dispose() }, 'credits-index: session renewal and bounded recovery')
+  const refreshSession = async (previous: StoredSession): Promise<StoredSession | null> => await renewal.refresh(previous)
 
   /** A stored login belongs to one backend, and awaits renewal before protected calls. */
   const liveSession = async (): Promise<StoredSession | null> => {
@@ -1797,35 +1779,47 @@ export function apply(ctx: Context, config: Config): void {
     const expiry = Date.parse(session.upstream?.expiresAt ?? '')
     if (bound !== apiBaseUrl || !Number.isFinite(Date.parse(session.expiresAt)) || Date.parse(session.expiresAt) <= Date.now()
       || (!Number.isFinite(expiry) && !isLoopbackOrigin(apiBaseUrl))) {
-      const cleared = await mutateSession(async () => {
-        if ((await store.read())?.token !== session.token) return false
-        identityVersion += 1
-        chatUsage.reset()
-        invalidateModelCatalog()
-        await store.clear()
-        await releaseAccountCredential()
-        return true
-      })
-      if (cleared) notifyModelCatalogChanged()
+      await invalidateSession(session)
       return null
     }
-    if (Number.isFinite(expiry) && expiry - Date.now() < 60_000) {
+    if (!await renewal.canUseAccess(session) || (Number.isFinite(expiry) && expiry - Date.now() < 60_000)) {
       const renewed = await refreshSession(session)
-      return renewed
+      if (renewed !== null) return renewed
+      const current = await store.read()
+      return current?.token === session.token && current.account.id === session.account.id
+        && Date.parse(current.upstream?.expiresAt ?? '') > Date.now() && await renewal.canUseAccess(current) ? current : null
     }
     return session
   }
 
   /** Replay only an explicitly rejected access request, once, after serialized renewal. */
   const accountFetch = async (session: StoredSession, route: string, init: RequestInit = {}): Promise<Response> => {
-    const send = async (current: StoredSession): Promise<Response> => await apiFetch(route, { ...init,
-      headers: { ...Object.fromEntries(new Headers(init.headers)), authorization: `Bearer ${current.upstream?.token ?? ''}` },
-      signal: init.signal ?? AbortSignal.timeout(resolved.timeoutMs) })
-    const answered = await send(session)
+    const owner = session.token
+    if (owner === undefined) return new Response(null, { status: 401 })
+    const send = async (current: StoredSession): Promise<Response> => {
+      const latest = await store.read()
+      if (latest?.token !== owner || latest.account.id !== current.account.id
+        || latest.upstream?.token !== current.upstream?.token || latest.upstream?.refresh !== current.upstream?.refresh
+        || latest.upstream?.expiresAt !== current.upstream?.expiresAt) return new Response(null, { status: 401 })
+      return await apiFetch(route, { ...init,
+        headers: { ...Object.fromEntries(new Headers(init.headers)), authorization: `Bearer ${latest.upstream?.token ?? ''}` },
+        signal: init.signal ?? AbortSignal.timeout(resolved.timeoutMs) })
+    }
+    let current = await store.read()
+    if (current?.token !== owner || current.account.id !== session.account.id) return new Response(null, { status: 401 })
+    if (!await renewal.canUseAccess(current)) {
+      const recovered = await refreshSession(current)
+      if (recovered === null || recovered.token !== owner) return new Response(null, { status: 401 })
+      current = recovered
+    }
+    const answered = await send(current)
     if (answered.status !== 401) return answered
-    const renewed = await refreshSession(session)
-    if (renewed === null || (await store.read())?.token !== session.token) return answered
-    return await send(renewed)
+    await renewal.rejectAccess(current)
+    const renewed = await refreshSession(current)
+    const latest = await store.read()
+    if (renewed === null || latest === null || latest.token !== owner || latest.upstream?.token !== renewed.upstream?.token) return answered
+    await answered.body?.cancel()
+    return await send(latest)
   }
 
   /** Diagnostic reads never renew a login or change account state. */
@@ -1833,6 +1827,7 @@ export function apply(ctx: Context, config: Config): void {
     try {
       const session = store.peek()
       if (session?.token === undefined || session.upstream?.token === undefined
+        || renewal.knownAccessRejected(session)
         || (session.backendBaseUrl ?? (isLoopbackOrigin(apiBaseUrl) ? apiBaseUrl : undefined)) !== apiBaseUrl
         || !Number.isFinite(Date.parse(session.expiresAt)) || Date.parse(session.expiresAt) <= Date.now()
         || !Number.isFinite(Date.parse(session.upstream.expiresAt ?? '')) || Date.parse(session.upstream.expiresAt ?? '') <= Date.now()) return undefined
@@ -2761,13 +2756,15 @@ export function apply(ctx: Context, config: Config): void {
           chatUsage.reset()
           await stopActivity(previous?.token)
           invalidateModelCatalog()
-          const pending = renewal !== null && renewal.token === previous?.token ? renewal.promise : null
-          await mutateSession(async () => {
+          const pending = previous?.token === undefined ? null : renewal.pending(previous.token)
+          const cleared = await mutateSession(async () => {
+            if ((await store.read())?.token !== previous?.token) return false
             await store.clear()
             await releaseAccountCredential()
             await writeProductModels([]).catch(reportModelRefreshFailure)
+            return true
           })
-          notifyModelCatalogChanged()
+          if (cleared) notifyModelCatalogChanged()
           const renewed = pending === null ? null : await pending
           const session = renewed ?? previous
           let result: PlatformResult = { status: 204, code: null, message: null, retryAfterSeconds: null, body: null }
@@ -3070,7 +3067,7 @@ export function apply(ctx: Context, config: Config): void {
             token: session.upstream.token, idempotencyKey, mediaType, filename: uploadFilename, bytes, timeoutMs: resolved.timeoutMs,
           })
           if (result.status === 401 && result.code === 'SESSION_INVALID') {
-            await store.clear(); sessionExpired(response); return
+            await rejectSession(response, session); return
           }
           const payload = result.body !== null && typeof result.body === 'object' ? result.body as Record<string, unknown> : null
           const assetId = readString(payload, 'asset_id')
@@ -3197,13 +3194,13 @@ export function apply(ctx: Context, config: Config): void {
           }
           const session = await liveSession()
           const token = session?.token
-          if (token === undefined) { sessionExpired(response); return }
+          if (session === null || token === undefined) { sessionExpired(response); return }
           // The quote is taken host-side, immediately before submission, and
           // carried verbatim as the contract's `billing` snapshot.
           const quote = await platformCall(resolved.baseUrl, '/v1/media/images/pricing', {
             method: 'GET', token, timeoutMs: resolved.timeoutMs,
           })
-          if (quote.status === 401 && quote.code === 'SESSION_INVALID') { await store.clear(); sessionExpired(response); return }
+          if (quote.status === 401 && quote.code === 'SESSION_INVALID') { await rejectSession(response, session); return }
           const quoteBody = quote.body !== null && typeof quote.body === 'object' ? quote.body as Record<string, unknown> : null
           const pricedModel = readString(quoteBody, 'model_id')
           const billing = quoteBody?.billing
@@ -3225,7 +3222,7 @@ export function apply(ctx: Context, config: Config): void {
             },
             timeoutMs: resolved.timeoutMs,
           })
-          if (created.status === 401 && created.code === 'SESSION_INVALID') { await store.clear(); sessionExpired(response); return }
+          if (created.status === 401 && created.code === 'SESSION_INVALID') { await rejectSession(response, session); return }
           const createdBody = created.body !== null && typeof created.body === 'object' ? created.body as Record<string, unknown> : null
           json(response, 200, {
             ok: created.status === 200 || created.status === 202,
@@ -3415,8 +3412,7 @@ export function apply(ctx: Context, config: Config): void {
             timeoutMs: resolved.timeoutMs,
           })
           if (created.status === 401 && created.code === 'SESSION_INVALID') {
-            await store.clear()
-            sessionExpired(response)
+            await rejectSession(response, session)
             return
           }
           const createdBody = created.body !== null && typeof created.body === 'object' ? created.body as Record<string, unknown> : null
@@ -3597,6 +3593,7 @@ export function apply(ctx: Context, config: Config): void {
       get publication() { return videoContext.get('artifactStorage') },
       maxTotalSeconds: resolved.videoProjectMaxSeconds,
       maxSegments: resolved.videoProjectMaxSegments,
+      maxConcurrentSegments: resolved.videoProjectConcurrency,
       pollIntervalMs: resolved.videoProjectPollIntervalMs,
       taskTimeoutMs: resolved.videoProjectTaskTimeoutMs,
       editor: (workspaceRoot, session, ownedMediaRoots) => {

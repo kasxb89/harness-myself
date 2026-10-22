@@ -19,8 +19,17 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 })
 
 let directory: string | undefined
+const concurrentRuns = new Set<() => Promise<void>>()
+
+function ownConcurrentRun<T>(running: Promise<T>, release: () => void): Promise<T> {
+  const close = async (): Promise<void> => { release(); await running }
+  concurrentRuns.add(close)
+  void running.then(() => concurrentRuns.delete(close), () => concurrentRuns.delete(close))
+  return running
+}
 
 afterEach(async () => {
+  await Promise.all([...concurrentRuns].map(close => close()))
   if (directory !== undefined) await rm(directory, { recursive: true, force: true })
   directory = undefined
 })
@@ -94,6 +103,288 @@ describe('minimum-request video duration planning', () => {
     expect(() => planVideoDurations(40, [], 32)).toThrow('时长选项')
     expect(() => planVideoDurations(40.5, [15], 32)).toThrow('正整数')
     expect(() => planVideoDurations(40, [4], 2)).toThrow('项目上限')
+  })
+})
+
+// The fixture's 5s clip deadline and late-receipt drain must precede the test deadline.
+describe('bounded parallel video generation', { timeout: 15_000 }, () => {
+  it.each([undefined, 1, 2])('respects gateway parallelism %s and keeps unsupported gateways serial', async (grant) => {
+    const f = await setup()
+    f.options.maxConcurrentSegments = 4
+    if (grant !== undefined) f.provider.parallelism = async () => grant
+    const manifest = await f.prepare()
+    const release = Promise.withResolvers<undefined>()
+    const checking = new Set<string>()
+    let peak = 0
+    vi.spyOn(f.provider, 'check').mockImplementation(async (id) => {
+      checking.add(id)
+      peak = Math.max(peak, checking.size)
+      await release.promise
+      checking.delete(id)
+      return { status: 'succeeded' }
+    })
+    const running = ownConcurrentRun(runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal), () => {
+      release.resolve(undefined)
+    })
+    try {
+      await vi.waitFor(() => { expect(checking.size).toBe(grant ?? 1) })
+      expect(f.submitted).toBe(grant ?? 1)
+    } finally { release.resolve(undefined); await running }
+    expect(peak).toBe(grant ?? 1)
+  })
+
+  it('runs independent 120-second clips concurrently within the local limit and composes timeline order', async () => {
+    const f = await setup([15])
+    f.options.maxConcurrentSegments = 4
+    f.provider.parallelism = async () => 16
+    const manifest = await prepareVideoProject(f.options, { prompt: '连续的八段故事', totalDurationSeconds: 120 },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    const gates = Array.from({ length: 8 }, () => Promise.withResolvers<undefined>())
+    const checking = new Set<string>()
+    let peak = 0
+    vi.spyOn(f.provider, 'check').mockImplementation(async (id) => {
+      checking.add(id)
+      peak = Math.max(peak, checking.size)
+      await gates[Number(id.slice(5)) - 1]!.promise
+      checking.delete(id)
+      return { status: 'succeeded' }
+    })
+    const compose = vi.spyOn(f.editor, 'compose')
+    const running = ownConcurrentRun(runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal), () => {
+      for (const gate of gates) gate.resolve(undefined)
+    })
+    try {
+      await vi.waitFor(() => { expect(checking.size).toBe(4) })
+      expect(f.submitted).toBe(4)
+      gates[3]!.resolve(undefined)
+      await vi.waitFor(() => { expect(f.submitted).toBe(5) })
+      gates[2]!.resolve(undefined)
+      await vi.waitFor(() => { expect(f.submitted).toBe(6) })
+      for (const gate of gates) gate.resolve(undefined)
+      expect((await running).status).toBe('completed')
+      expect(peak).toBe(4)
+      expect(f.submitted).toBe(8)
+      expect(compose).toHaveBeenCalledOnce()
+      expect(compose.mock.calls[0]![0].clips.map(clip => basename(clip.path).slice(0, 8)))
+        .toEqual(Array.from({ length: 8 }, (_, index) => `clip-${String(index + 1).padStart(3, '0')}`))
+      const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+      expect(retained.segments.map(segment => segment.status)).toEqual(Array.from({ length: 8 }, () => 'saved'))
+      expect(retained.segments.map(segment => segment.taskId)).toEqual(Array.from({ length: 8 }, (_, index) => `task-${String(index + 1)}`))
+    } finally {
+      for (const gate of gates) gate.resolve(undefined)
+      await running
+    }
+  })
+
+  it('keeps the project owned until a late peer submission settles after another submission becomes unknown', async () => {
+    const f = await setup()
+    f.options.maxConcurrentSegments = 2
+    f.provider.parallelism = async () => 2
+    const manifest = await f.prepare()
+    const rejected = Promise.withResolvers<undefined>()
+    const late = Promise.withResolvers<undefined>()
+    const original = f.provider.submit.bind(f.provider)
+    vi.spyOn(f.provider, 'submit').mockImplementation(async (...args) => {
+      const task = await original(...args)
+      if (task.taskId === 'task-1') { await rejected.promise; throw new Error('acceptance unknown') }
+      await late.promise
+      return task
+    })
+    const check = vi.spyOn(f.provider, 'check')
+    const running = ownConcurrentRun(runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal), () => {
+      rejected.resolve(undefined); late.resolve(undefined)
+    })
+    try {
+      await vi.waitFor(() => { expect(f.submitted).toBe(2) })
+      rejected.resolve(undefined)
+      await vi.waitFor(() => { expect(manifest.segments[0]?.status).toBe('unknown') })
+      expect(await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal))
+        .toMatchObject({ status: 'failed', detail: 'PROJECT_ALREADY_RUNNING' })
+      late.resolve(undefined)
+      expect(await running).toMatchObject({ status: 'failed', detail: 'SUBMISSION_UNKNOWN' })
+      expect(f.submitted).toBe(2)
+      expect(check).not.toHaveBeenCalled()
+      const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+      expect(retained.segments.map(segment => segment.status)).toEqual(['unknown', 'running', 'pending'])
+      expect(retained.segments[1]?.taskId).toBe('task-2')
+      expect((await runVideoProject(f.options, retained, f.provider, f.editor, f.job, f.signal)).detail).toBe('SUBMISSION_UNKNOWN')
+      expect(f.submitted).toBe(2)
+      expect(check).toHaveBeenCalledWith('task-2', expect.anything(), expect.anything())
+      const recovered = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+      expect(recovered.segments.map(segment => segment.status)).toEqual(['unknown', 'saved', 'pending'])
+    } finally { rejected.resolve(undefined); late.resolve(undefined); await running }
+  })
+
+  it('retains accepted and late task ids on cancellation, then resumes them without posting again', async () => {
+    const f = await setup()
+    f.options.maxConcurrentSegments = 2
+    f.provider.parallelism = async () => 2
+    const manifest = await f.prepare()
+    const cancelled = new AbortController()
+    const late = Promise.withResolvers<undefined>()
+    const observed = Promise.withResolvers<undefined>()
+    const original = f.provider.submit.bind(f.provider)
+    const submit = vi.spyOn(f.provider, 'submit').mockImplementation(async (...args) => {
+      const task = await original(...args)
+      if (task.taskId === 'task-2') await late.promise
+      return task
+    })
+    const check = vi.spyOn(f.provider, 'check').mockImplementation(async (_id, _request, signal) => {
+      observed.resolve(undefined)
+      await new Promise<never>((_resolve, reject) => {
+        const abort = (): void => { reject(new Error('observation stopped')) }
+        signal.addEventListener('abort', abort, { once: true })
+        if (signal.aborted) abort()
+      })
+      return { status: 'succeeded' }
+    })
+    const running = ownConcurrentRun(runVideoProject(f.options, manifest, f.provider, f.editor, f.job, cancelled.signal), () => {
+      cancelled.abort(); late.resolve(undefined)
+    })
+    try {
+      await observed.promise
+      await vi.waitFor(() => { expect(f.submitted).toBe(2) })
+      cancelled.abort()
+      expect((await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal)).detail).toBe('PROJECT_ALREADY_RUNNING')
+      late.resolve(undefined)
+      expect((await running).status).toBe('killed')
+      const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+      expect(retained.segments.map(segment => segment.status)).toEqual(['running', 'running', 'pending'])
+      expect(retained.segments.slice(0, 2).map(segment => segment.taskId)).toEqual(['task-1', 'task-2'])
+      check.mockRestore()
+      submit.mockRestore()
+      expect((await runVideoProject(f.options, retained, f.provider, f.editor, f.job, f.signal)).status).toBe('completed')
+      expect(f.submitted).toBe(3)
+    } finally { cancelled.abort(); late.resolve(undefined); await running; check.mockRestore(); submit.mockRestore() }
+  })
+
+  it('serializes complete manifest writes while parallel receipts arrive', async () => {
+    const f = await setup()
+    f.options.maxConcurrentSegments = 2
+    f.provider.parallelism = async () => 2
+    const manifest = await f.prepare()
+    const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')
+    const entered = Promise.withResolvers<undefined>()
+    const release = Promise.withResolvers<undefined>()
+    let held = false, active = 0, peak = 0
+    vi.mocked(writeFile).mockImplementation(async (...args) => {
+      if (typeof args[0] !== 'string' || !args[0].startsWith(join(f.options.stateDirectory, manifest.id, '.manifest-'))) {
+        await actual.writeFile(...args)
+        return
+      }
+      active += 1
+      peak = Math.max(peak, active)
+      try {
+        if (!held && typeof args[1] === 'string' && args[1].includes('"taskId"')) {
+          held = true
+          entered.resolve(undefined)
+          await release.promise
+        }
+        await actual.writeFile(...args)
+      } finally { active -= 1 }
+    })
+    const running = ownConcurrentRun(runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal), () => {
+      release.resolve(undefined)
+    })
+    try {
+      await entered.promise
+      await vi.waitFor(() => { expect(f.submitted).toBe(2) })
+      expect(peak).toBe(1)
+      release.resolve(undefined)
+      expect((await running).status).toBe('completed')
+      expect(peak).toBe(1)
+      const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+      expect(retained.segments.map(segment => segment.taskId)).toEqual(['task-1', 'task-2', 'task-3'])
+      expect(retained.segments.every(segment => segment.status === 'saved')).toBe(true)
+    } finally { release.resolve(undefined); await running; vi.mocked(writeFile).mockImplementation(actual.writeFile) }
+  })
+
+  it.each(['failed', 'unknown'] as const)('recovers accepted peers beside a %s clip without submitting pending clips', async (status) => {
+    const f = await setup()
+    f.options.maxConcurrentSegments = 2
+    f.provider.parallelism = async () => 2
+    const manifest = await f.prepare()
+    const first = manifest.segments[0]!, second = manifest.segments[1]!
+    await f.provider.submit(first.request, f.signal)
+    const accepted = await f.provider.submit(second.request, f.signal)
+    first.status = status
+    second.status = 'running'
+    second.taskId = accepted.taskId
+    manifest.status = 'failed'
+    await writeFile(join(f.options.stateDirectory, manifest.id, 'manifest.json'), JSON.stringify(manifest))
+    const check = vi.spyOn(f.provider, 'check')
+    const compose = vi.spyOn(f.editor, 'compose')
+    const result = await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal)
+    expect(result.detail).toBe(status === 'unknown' ? 'SUBMISSION_UNKNOWN' : 'PROVIDER_TASK_FAILED')
+    expect(check).toHaveBeenCalledOnce()
+    expect(check.mock.calls[0]?.[0]).toBe('task-2')
+    expect(f.submitted).toBe(2)
+    expect(compose).not.toHaveBeenCalled()
+    const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+    expect(retained.segments.map(segment => segment.status)).toEqual([status, 'saved', 'pending'])
+    expect(retained.segments[1]?.publishedPath).toBeDefined()
+    await runVideoProject(f.options, retained, f.provider, f.editor, f.job, f.signal)
+    expect(f.submitted).toBe(2)
+  })
+
+  it('stops every queued dispatch when the first submitting record cannot be saved', async () => {
+    const f = await setup()
+    f.options.maxConcurrentSegments = 2
+    f.provider.parallelism = async () => 2
+    const manifest = await f.prepare()
+    const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')
+    let failed = false
+    vi.mocked(writeFile).mockImplementation(async (...args) => {
+      if (!failed && typeof args[0] === 'string' && args[0].startsWith(join(f.options.stateDirectory, manifest.id, '.manifest-'))
+        && typeof args[1] === 'string' && args[1].includes('"status":"submitting"')) {
+        failed = true
+        throw new Error('controlled manifest storage failure')
+      }
+      await actual.writeFile(...args)
+    })
+    try {
+      expect((await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal)).status).toBe('failed')
+      expect(failed).toBe(true)
+      expect(f.submitted).toBe(0)
+      const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+      expect(retained.segments.map(segment => segment.status)).toEqual(['pending', 'pending', 'pending'])
+    } finally { vi.mocked(writeFile).mockImplementation(actual.writeFile) }
+  })
+
+  it('reports every accepted task id when receipt storage fails and blocks later resubmission', async () => {
+    const f = await setup()
+    f.options.maxConcurrentSegments = 2
+    f.provider.parallelism = async () => 2
+    const manifest = await f.prepare()
+    const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')
+    const accepted = Promise.withResolvers<undefined>()
+    const original = f.provider.submit.bind(f.provider)
+    vi.spyOn(f.provider, 'submit').mockImplementation(async (...args) => {
+      const task = await original(...args)
+      if (f.submitted === 2) accepted.resolve(undefined)
+      await accepted.promise
+      return task
+    })
+    vi.mocked(writeFile).mockImplementation(async (...args) => {
+      if (typeof args[0] === 'string' && args[0].startsWith(join(f.options.stateDirectory, manifest.id, '.manifest-'))
+        && typeof args[1] === 'string' && args[1].includes('"taskId"')) {
+        throw Object.assign(new Error('controlled receipt storage failure'), { code: 'ENOSPC' })
+      }
+      await actual.writeFile(...args)
+    })
+    const running = ownConcurrentRun(runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal), () => {
+      accepted.resolve(undefined)
+    })
+    try {
+      const outcome = await running
+      expect(outcome).toMatchObject({ status: 'failed', detail: 'PROJECT_STORAGE_FAILED' })
+      expect(JSON.parse(outcome.result ?? '')).toMatchObject({ task_ids: ['task-1', 'task-2'] })
+      expect(f.submitted).toBe(2)
+      const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+      expect(retained.segments.map(segment => segment.status)).toEqual(['submitting', 'submitting', 'pending'])
+      expect((await runVideoProject(f.options, retained, f.provider, f.editor, f.job, f.signal)).detail).toBe('SUBMISSION_UNKNOWN')
+      expect(f.submitted).toBe(2)
+    } finally { accepted.resolve(undefined); await running; vi.mocked(writeFile).mockImplementation(actual.writeFile) }
   })
 })
 

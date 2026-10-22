@@ -904,7 +904,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-credits-index`
 
 - `inject`: `webServer` · `tools`
-- `source`: [`packages/host/credits-index/src/index.ts:83`](../packages/host/credits-index/src/index.ts)
+- `source`: [`packages/host/credits-index/src/index.ts:85`](../packages/host/credits-index/src/index.ts)
 
 ```ts config-catalog
 /** Plugin config: platform origin, display rate, and where the session file lives. */
@@ -917,6 +917,12 @@ export interface Config {
   stateDir?: string
   /** Deadline for one platform call, in milliseconds. */
   timeoutMs?: number
+  /** Minimum interval between failed session renewals. */
+  refreshRetryBaseDelayMs?: number
+  /** Maximum locally chosen session-renewal delay; valid Retry-After can be longer. */
+  refreshRetryMaxDelayMs?: number
+  /** Automatic retries inside the API rotating-cookie recovery window. */
+  refreshRecoveryRetryLimit?: number
   /** Complete deadline for the single image submission, in milliseconds. */
   imageSubmitTimeoutMs?: number
   /** Complete image execution deadline, including polling and saving. */
@@ -969,6 +975,8 @@ export interface Config {
   videoProjectMaxSeconds?: number
   /** Maximum separately billable clips in one video project. */
   videoProjectMaxSegments?: number
+  /** Maximum simultaneous clips per project; parallel execution also requires gateway atomic admission. */
+  videoProjectConcurrency?: number
   /** Delay between read-only provider task status requests. */
   videoProjectPollIntervalMs?: number
   /** Complete deadline for one generated clip, including saving it. */

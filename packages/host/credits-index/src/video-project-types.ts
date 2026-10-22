@@ -58,6 +58,13 @@ export interface VideoProjectProvider {
    */
   assertCurrent(): Promise<void>
   /**
+   * Read the gateway's enforced per-project parallelism; missing support keeps execution serial.
+   * @param model - Exact retained project model.
+   * @param signal - Cancels the capability read.
+   * @returns Positive concurrency granted by a gateway with atomic admission, never a free-slot reservation.
+   */
+  parallelism?(model: string, signal: AbortSignal): Promise<number>
+  /**
    * Resolve the account-visible model and its actual positive integer duration menu.
    * @param model - Explicit user-selected model, or undefined for account selection.
    * @param signal - Cancels model lookup.
@@ -136,6 +143,8 @@ export interface VideoProjectOptions {
   maxTotalSeconds: number
   /** Maximum billable requests per project. */
   maxSegments: number
+  /** Local maximum of simultaneously observed clips; the provider may grant a lower limit. */
+  maxConcurrentSegments?: number
   /** Interval between reads of a known provider task. */
   pollIntervalMs: number
   /** Deadline for each clip; expiry retains an accepted task id for explicit read-only resume. */

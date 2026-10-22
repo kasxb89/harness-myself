@@ -359,10 +359,11 @@ export class PiAiAdapter extends LlmAdapter {
     const profile = this.profileOf(snapshot, options.provider)
     const model = this.modelOf(snapshot, options.provider, options.model)
     let receipt: GatewayReceipt | undefined
-    const gatewayState = { balanceRejected: false }
+    const gatewayState = { balanceRejected: false, requestTimeout: false }
     const captureReceipt = (headers: Headers): void => { receipt = gatewayReceipt(model.baseUrl, headers) }
     const requestFetch = harnessFetch(model.baseUrl, async (response) => {
       captureReceipt(response.headers)
+      gatewayState.requestTimeout = response.status === 408
       gatewayState.balanceRejected = await harnessBalanceRejected(response)
     })
     const updates = conversationUpdates(model)
@@ -433,7 +434,12 @@ export class PiAiAdapter extends LlmAdapter {
             return
           }
           const chunk = result.value
-          if (chunk.type === 'finish' && chunk.reason.kind === 'error' && gatewayState.balanceRejected && !options.signal?.aborted) {
+          if (chunk.type === 'finish' && chunk.reason.kind === 'error' && gatewayState.requestTimeout && !options.signal?.aborted) {
+            yield withGatewayReceipt({ ...chunk, reason: { kind: 'error', failure: {
+              code: 'HTTP_REQUEST_TIMEOUT', status: 408,
+              message: '请求超时，提交状态未确认。请检查网络或减少图片后手动重试。',
+            } } }, receipt)
+          } else if (chunk.type === 'finish' && chunk.reason.kind === 'error' && gatewayState.balanceRejected && !options.signal?.aborted) {
             yield withGatewayReceipt({ ...chunk, reason: { kind: 'error', failure: { code: 'INSUFFICIENT_BALANCE', message: '余额不足，请充值' } } }, receipt)
           } else yield chunk.type === 'finish' ? withGatewayReceipt(chunk, receipt) : chunk
         }
@@ -448,7 +454,9 @@ export class PiAiAdapter extends LlmAdapter {
       }
     } catch (error: unknown) {
       let failure: LlmError
-      if (timeoutOf(watchdog.signal, 'LLM_STREAM_IDLE_TIMEOUT') !== undefined) {
+      if (gatewayState.requestTimeout && !options.signal?.aborted) {
+        failure = new LlmError('请求超时，提交状态未确认。请检查网络或减少图片后手动重试。', 'HTTP_REQUEST_TIMEOUT', { status: 408, cause: error })
+      } else if (timeoutOf(watchdog.signal, 'LLM_STREAM_IDLE_TIMEOUT') !== undefined) {
         failure = new LlmError(`pi-ai stream idle timeout after ${streamIdleTimeoutMs}ms`, 'TIMEOUT', { cause: error })
       } else if (options.signal?.aborted) {
         failure = new LlmError('pi-ai request aborted by caller', 'ABORTED', { cause: error })

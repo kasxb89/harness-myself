@@ -1,4 +1,5 @@
 /** The production Harness model route shares an authority with an unrelated root-path service. */
+import { createHash } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { StreamChunk } from '@deepseek-ai/dsh-llm'
 import { PiAiAdapter } from '../src/adapter.ts'
@@ -51,6 +52,43 @@ function localTransport(localBase: string) {
 }
 
 describe('Harness model prefix and redirects', () => {
+  it.each(['', '<html>408 Request Time-out: private gateway diagnostic</html>', '{"error":{"message":"408 timeout private diagnostic"}}'])(
+    'keeps HTTP408 distinct from retryable stream idle timeouts for body %s', async (body) => {
+      const server = await mockServer([{ status: 408, body }])
+      const transport = localTransport(server.url)
+      const chunks = await complete('https://8.133.202.230/harness/v1')
+      expect(chunks.find(chunk => chunk.type === 'finish')).toMatchObject({ reason: { kind: 'error', failure: {
+        code: 'HTTP_REQUEST_TIMEOUT', status: 408,
+        message: '请求超时，提交状态未确认。请检查网络或减少图片后手动重试。',
+      } } })
+      expect(JSON.stringify(chunks)).not.toContain('private')
+      const policy = adapter('https://8.133.202.230/harness/v1').providerRetryPolicy('product-relay')
+      if (policy?.mode !== 'normal') throw new Error('Expected the default normal retry policy')
+      expect(policy.retryableCodes).not.toContain('HTTP_REQUEST_TIMEOUT')
+      expect(transport).toHaveBeenCalledTimes(1)
+      expect(server.paths).toEqual(['/harness/v1/chat/completions'])
+    },
+  )
+
+  it('forwards a complete large inline-image body with its exact UTF8 length', async () => {
+    const server = await mockServer([{ body: '{}' }])
+    const transport = localTransport(server.url)
+    const body = JSON.stringify({ messages: [{ role: 'user', content: [
+      { type: 'text', text: '检查中文正文。'.repeat(4096) },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,' + Buffer.alloc(1024 * 1024, 7).toString('base64') } },
+    ] }] })
+    const guarded = harnessFetch('https://8.133.202.230/harness/v1')
+    if (guarded === undefined) throw new Error('Expected Harness transport')
+    const response = await guarded('https://8.133.202.230/harness/v1/chat/completions', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(body)) }, body,
+    })
+    await response.body?.cancel()
+    expect(server.headers[0]?.['content-length']).toBe(String(Buffer.byteLength(body)))
+    const hash = (value: string) => createHash('sha256').update(value).digest('hex')
+    expect(hash(JSON.stringify(server.requests[0]))).toBe(hash(body))
+    expect(transport).toHaveBeenCalledTimes(1)
+  })
+
   it.each([
     ['insufficient_user_quota', 'new_api_error', 'INSUFFICIENT_BALANCE'],
     ['insufficient_quota', 'insufficient_quota', 'AUTH'],
