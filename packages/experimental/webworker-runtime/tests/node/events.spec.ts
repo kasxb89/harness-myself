@@ -141,10 +141,16 @@ describe('registration bookkeeping', () => {
 
 describe('legacy emitter consumers', () => {
   it('matches Node when util.inherits consumers omit the parent constructor', () => {
-    const trace = (parent: typeof EventEmitter): unknown[] => {
+    interface LegacyEmitter {
+      emit(event: string, ...args: unknown[]): boolean
+      on(event: string, listener: (...args: unknown[]) => void): LegacyEmitter
+      once(event: string, listener: (...args: unknown[]) => void): LegacyEmitter
+      removeListener(event: string, listener: (...args: unknown[]) => void): LegacyEmitter
+    }
+    const trace = (parent: { readonly prototype: LegacyEmitter }): unknown[] => {
       function Legacy(): void {}
       inherits(Legacy, parent)
-      const emitter = Reflect.construct(Legacy, []) as EventEmitter
+      const emitter = Reflect.construct(Legacy, []) as LegacyEmitter
       const seen: unknown[] = [emitter.emit('missing')]
       function listener(this: unknown, value: unknown): void { seen.push([this === emitter, value]) }
       emitter.on('data', listener).once('data', listener)

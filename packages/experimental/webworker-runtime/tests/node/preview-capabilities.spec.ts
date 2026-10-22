@@ -1,7 +1,6 @@
 /** Reachable product imports retain pure behavior and refuse native actions before side effects. */
-import { Buffer as NativeBuffer } from 'node:buffer'
 import { inherits as nativeInherits } from 'node:util'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import events, { EventEmitter } from '../../src/node/builtin_modules/implemented/events.ts'
 import { Buffer as BrowserBuffer } from '../../src/node/builtin_modules/implemented/buffer.ts'
 import { totalmem } from '../../src/node/builtin_modules/implemented/os.ts'
@@ -12,7 +11,24 @@ import { MemoryVfs } from '../../src/storage/memory.ts'
 import { WorkerModuleLoader } from '../../src/module-system/module-loader.ts'
 import { lowerModuleSource } from '../../src/compile/transform.ts'
 
+// This owner exercises the browser dependency selected by the Worker build.
+// Keep Node's oracle outside Vitest's normalized bare/node: module mock keys.
+const { NativeBuffer, browserPackage, originalBufferDescriptor } = vi.hoisted(() => {
+  const require = process.getBuiltinModule('module').createRequire(import.meta.url)
+  return {
+    NativeBuffer: process.getBuiltinModule('buffer').Buffer,
+    browserPackage: require('buffer/') as typeof import('node:buffer'),
+    originalBufferDescriptor: Object.getOwnPropertyDescriptor(globalThis, 'Buffer'),
+  }
+})
+vi.mock('buffer', () => browserPackage)
+vi.mock('node:buffer', () => browserPackage)
+
 afterEach(() => { vi.restoreAllMocks() })
+afterAll(() => {
+  if (originalBufferDescriptor === undefined) Reflect.deleteProperty(globalThis, 'Buffer')
+  else Object.defineProperty(globalThis, 'Buffer', originalBufferDescriptor)
+})
 
 it('loads tar-style default EventEmitter inheritance and preserves the named class identity', () => {
   expect(events).toBe(EventEmitter)
@@ -61,6 +77,7 @@ it('makes DNS and TLS imports available but refuses native operations explicitly
 
 describe('browser Buffer URL-safe output', () => {
   it('uses the exact maintained browser constructor rather than Node core', () => {
+    expect(BrowserBuffer).toBe(browserPackage.Buffer)
     expect(BrowserBuffer).not.toBe(NativeBuffer)
     expect(globalThis.Buffer).toBe(BrowserBuffer)
   })

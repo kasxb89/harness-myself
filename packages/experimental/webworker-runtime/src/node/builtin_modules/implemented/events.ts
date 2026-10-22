@@ -163,9 +163,9 @@ export const __esModule = true
  * The `node:events` declarations this module stands in for. `EventEmitter` keeps
  * this module's own class: Node's declaration carries the promise helpers and
  * statics (`once`, `on`, `getEventListeners`, `errorMonitor`) that no worker
- * caller registers through.
+ * caller registers through. Its prototype remains the implemented subset too.
  */
-type NodeFace = Partial<Omit<typeof import('node:events'), 'EventEmitter'>> & Record<'EventEmitter', unknown>
+type NodeFace = Partial<Omit<typeof import('node:events'), 'EventEmitter' | 'prototype'>> & Record<'EventEmitter', unknown>
 
 /** CommonJS default export: the members `require()` hands a caller of this module. */
 export default Object.assign(EventEmitter, { EventEmitter }) satisfies NodeFace
