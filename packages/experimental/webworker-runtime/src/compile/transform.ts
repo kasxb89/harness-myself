@@ -109,6 +109,7 @@ class Transformer {
     }
     scan(program)
     this.isolatedModule = this.sourceType === 'module' && syntax
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- scan recursively assigns syntax through its closure.
     if (!this.isolatedModule) return
     this.requireName = this.generatedName('__dsh$require')
     this.exportsName = this.generatedName('__dsh$exports')

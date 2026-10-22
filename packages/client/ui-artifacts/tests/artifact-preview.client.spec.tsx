@@ -91,7 +91,9 @@ describe('Artifact preview formats and isolation', () => {
       vi.stubGlobal('fetch', fetcher)
       render(<ArtifactPreview entry={entry} t={t} renderSlot={renderPdf} />)
       const image = await screen.findByRole<HTMLImageElement>('img', { name: '剧情分镜' })
-      const read = new URL(String(fetcher.mock.calls[0]?.[0]), location.href)
+      const input = fetcher.mock.calls[0]?.[0]
+      if (typeof input !== 'string') throw new TypeError('Expected an artifact request URL')
+      const read = new URL(input, location.href)
       const relativeImage = new URL(image.src)
       const download = new URL(screen.getByRole<HTMLAnchorElement>('link', { name: zh['preview.download'] }).href)
       for (const url of [read, relativeImage, download]) {

@@ -534,10 +534,16 @@ async function bootEmptyPreview(origin: string, browser: Browser): Promise<void>
       '/credits/api/creation/content', '/credits/api/session', '/credits/api/summary',
       '/open-in-app/apps', '/plugins/events',
     ])
-    // An empty product account deliberately refuses model discovery. Pin that
-    // warning and its level; every other non-404 error or warning still fails.
+    // The market's two region auto-detection requests refuse native Agents;
+    // probeRegion handles both rejections by choosing its documented global
+    // fallback. Settings lacks the legacy register API, and the empty product
+    // account refuses model discovery. Pin all four diagnostics and their
+    // order, level, text, and count; every other non-404 diagnostic still fails.
     expect(consoleErrors.filter(({ level, text }) => level !== 'error'
       || !text.includes('Failed to load resource: the server responded with a status of 404'))).toEqual([
+      { level: 'error', text: 'web-preview: undici.Agent is not available in the worker host' },
+      { level: 'error', text: 'web-preview: undici.Agent is not available in the worker host' },
+      { level: 'warning', text: 'dsh-market: this host\'s settings service has no register() (dsh 0.1.7 derives settings from a plugin Config schema); the market keeps its composed configuration and shows no allowRestart switch on this host yet (#677)' },
       { level: 'warning', text: 'credits-index: credits-index: model sync unavailable: 请先登录产品账号，再读取可用模型。' },
     ])
   } catch (error) {
