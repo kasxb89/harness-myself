@@ -3,6 +3,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import type { ArtifactOrigin } from '@deepseek-ai/dsh-artifacts-index'
 import type { CreativeVideoReceipt } from './creative-types.ts'
 import { isAccountBalanceRejectionText } from './account-balance.ts'
+import { h3SubmissionRejection } from './video-submission-result.ts'
 
 /** Local waiting never implies that an accepted remote task stopped. */
 export interface VideoTaskOutcome {
@@ -168,6 +169,9 @@ export async function executeVideoTask(options: VideoTaskOptions): Promise<Video
         await persist({ ...currentReceipt(), taskId, phase: 'accepted' })
         lastProgress = progress(status(body))
       }
+      const rejection = h3SubmissionRejection(options.model, response.status, body)
+      // This HTTP attempt occurred: "not-submitted" is reserved for preparation before dispatch.
+      if (rejection !== undefined) return outcome('failed', rejection.code, rejection.message)
       if (!response.ok) {
         if (taskId !== undefined) return outcome('pending', 'VIDEO_QUERY_PENDING', '原视频任务已受理，请继续查询原任务，不要重复生成。')
         const balance = isAccountBalanceRejectionText(text, response.status)

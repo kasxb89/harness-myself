@@ -9,6 +9,7 @@ import type { VideoEditor } from '../src/video-edit.ts'
 import { planVideoDurations, prepareVideoProject, readVideoProject, recoverVideoProjectOutputs, resolveVideoOutputDirectory, runVideoProject, VideoProjectError } from '../src/video-project.ts'
 import type { VideoProjectInput, VideoProjectOptions, VideoProjectProvider } from '../src/video-project-types.ts'
 import { VideoRelayError } from '../src/video-project-provider.ts'
+import { h3SubmissionRejection } from '../src/video-submission-result.ts'
 import type { ArtifactOrigin, ArtifactPublishRequest } from '@deepseek-ai/dsh-artifacts-index'
 import { SessionId, SessionSeq } from '@deepseek-ai/dsh-session/types'
 import { ToolCallId } from '@deepseek-ai/dsh-llm/brand'
@@ -93,6 +94,30 @@ async function setup(durations = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]) {
 }
 
 describe('minimum-request video duration planning', () => {
+  it.each([
+    { status: 429, body: { code: 'h3_account_capacity_exhausted', data: null, submission_state: 'not_submitted', retryable: false, resubmittable: true },
+      code: 'H3_ACCOUNT_CAPACITY_EXHAUSTED', taskId: undefined },
+    { status: 502, body: { code: 'h3_upstream_auth_rejected', data: null, submission_state: 'failed', id: 'failed-h3-task', task_id: 'failed-h3-task',
+      refund_confirmed: true, retryable: false, resubmittable: false }, code: 'H3_UPSTREAM_AUTH_REJECTED', taskId: 'failed-h3-task' },
+  ])('persists a confirmed H3 $status rejection as failed and never resubmits it after fresh resume', async ({ status, body, code, taskId }) => {
+    const f = await setup([4])
+    const settled = h3SubmissionRejection('MiniMax-H3', status, body)
+    if (settled === undefined) throw new Error('Expected exact H3 settlement fixture')
+    const submit = vi.spyOn(f.provider, 'submit').mockRejectedValue(settled)
+    const manifest = await prepareVideoProject(f.options, { prompt: 'A settled H3 attempt', totalDurationSeconds: 8 },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    const outcome = await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal)
+    expect(outcome).toMatchObject({ status: 'failed', detail: code })
+    expect(outcome.result).not.toContain('可能继续运行并计费')
+    const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+    expect(retained.segments[0]?.status).toBe('failed')
+    expect(retained.segments[0]?.taskId).toBe(taskId)
+    expect(retained.segments[1]?.status).toBe('pending')
+    expect(await runVideoProject(f.options, retained, f.provider, f.editor, f.job, f.signal)).toMatchObject({ status: 'failed', detail: 'PROVIDER_TASK_FAILED' })
+    expect(submit).toHaveBeenCalledOnce()
+    expect(f.events).not.toContain('compose')
+  })
+
   it('retains a queryable H3 unknown task and resumes its existing id without another POST', async () => {
     const f = await setup([4])
     const manifest = await prepareVideoProject(f.options, { prompt: 'An original H3 task', totalDurationSeconds: 4 },

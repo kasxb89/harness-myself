@@ -18,6 +18,7 @@
     "apps/web/tests/phone-login-fixture.e2e.ts",
     "apps/web/tests/product-default-model.e2e.ts",
     "apps/web/tests/desktop-permission-default.e2e.ts",
+    "apps/web/tests/h3-submission-outcomes.e2e.ts",
     "apps/web/product-isolation.ts",
     "apps/web/tests/connection-recovery.e2e.ts",
     "apps/web/tests/server-restart.e2e.ts",

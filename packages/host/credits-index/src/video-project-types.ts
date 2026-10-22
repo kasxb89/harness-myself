@@ -87,7 +87,7 @@ export interface VideoProjectProvider {
    */
   build(input: VideoProjectInput, model: string, prompt: string, durationSeconds: number, signal: AbortSignal): Promise<VideoProjectRequest>
   /**
-   * Submit once; a throw means the outcome is unknown and must never trigger automatic resubmission.
+   * Submit once; only a VideoSubmissionRejection establishes a settled rejection. Other throws remain unknown.
    * @param request - Exact prepared request.
    * @param signal - Cancels the submission; cancellation does not establish whether it was accepted.
    * @returns Provider-issued task id.

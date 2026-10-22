@@ -1,0 +1,58 @@
+{
+  "capacity": {
+    "http_status": 429,
+    "headers": {
+      "X-New-Api-Task-Id": null
+    },
+    "body": {
+      "code": "h3_account_capacity_exhausted",
+      "message": "H3 account capacity exhausted",
+      "data": null,
+      "submission_state": "not_submitted",
+      "retryable": false,
+      "resubmittable": true
+    }
+  },
+  "confirmed_auth_rejection": {
+    "http_status": 502,
+    "headers": {
+      "X-New-Api-Task-Id": "task_fixture"
+    },
+    "body": {
+      "code": "h3_upstream_auth_rejected",
+      "message": "Upstream authentication rejected the video submission",
+      "data": null,
+      "submission_state": "failed",
+      "id": "task_fixture",
+      "task_id": "task_fixture",
+      "refund_confirmed": true,
+      "retryable": false,
+      "resubmittable": false
+    }
+  },
+  "unknown": {
+    "http_status": 202,
+    "body": {
+      "id": "task_fixture",
+      "task_id": "task_fixture",
+      "object": "video",
+      "model": "MiniMax-H3",
+      "status": "unknown",
+      "submission_state": "unknown",
+      "resubmittable": false,
+      "retryable": false,
+      "recovery": {
+        "method": "GET",
+        "path": "/v1/tasks/task_fixture"
+      },
+      "error": {
+        "code": "h3_submission_unknown",
+        "message": "Submission status is unknown; query this task and do not submit it again"
+      }
+    }
+  },
+  "notes": [
+    "Safe synthetic contract fixtures only, not production receipts.",
+    "Only exact capacity code and confirmed auth body have positive lifecycle evidence; do not allowlist arbitrary 4xx/5xx."
+  ]
+}

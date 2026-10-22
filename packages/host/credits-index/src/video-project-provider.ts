@@ -6,6 +6,7 @@ import type { VideoProjectRequest } from './video-project-types.ts'
 import { apiUrl, normalizeApiBaseUrl } from './api-url.ts'
 import { isAccountBalanceRejection } from './account-balance.ts'
 import { videoSubmission } from './video-submission.ts'
+import { h3SubmissionRejection } from './video-submission-result.ts'
 
 /** Stable relay failure safe for project records and model-visible reports. */
 export class VideoRelayError extends Error {
@@ -131,9 +132,13 @@ export function createVideoProjectRelay(options: VideoRelayOptions): VideoProjec
     }
     if (!response.ok) {
       let balanceRejected = false
-      if (body !== undefined && response.status === 403) {
-        try { balanceRejected = isAccountBalanceRejection(await jsonBody(response), response.status) }
+      if (body !== undefined && [403, 429, 502].includes(response.status)) {
+        let rejection: Record<string, unknown> | undefined
+        try { rejection = await jsonBody(response) }
         catch (_unreadableRejection: unknown) { /* An invalid response cannot establish whose balance is exhausted. */ }
+        const settled = h3SubmissionRejection(body.model, response.status, rejection)
+        if (settled !== undefined) throw settled
+        balanceRejected = isAccountBalanceRejection(rejection, response.status)
       } else await response.body?.cancel().catch((_closedBody: unknown) => { /* No upstream error body is exposed or retained. */ })
       if (balanceRejected) throw new VideoRelayError('INSUFFICIENT_BALANCE', '余额不足，请充值')
       if (body !== undefined && response.status === 429) {

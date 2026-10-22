@@ -31,6 +31,7 @@ import { prepareVideoProject, readVideoProject, runVideoProject } from '../src/v
 import { JobId } from '@deepseek-ai/dsh-jobs'
 import type { VideoEditor } from '../src/video-edit.ts'
 import { profileComposition } from '../../../settings/settings/tests/profile-composition.ts'
+import h3ResponseContract from './fixtures/h3-response-contract-v2.json' with { type: 'json' }
 
 const relayRef = credentialRef('HARNESS_INTEGRATION_RELAY')
 let context: Context | undefined
@@ -53,6 +54,7 @@ let pricingRows: unknown[] = []
 let videoTaskStatus: string | undefined
 let videoResultUrl = 'https://ignored.invalid/content.mp4'
 let videoRejection: unknown
+const videoSubmitReplies: { status: number; body: unknown; headers?: Record<string, string> }[] = []
 let imageResponse: unknown
 let imageTaskStatus: string | undefined
 let imageTaskHttpStatus = 200
@@ -104,6 +106,7 @@ afterEach(async () => {
   videoTaskStatus = undefined
   videoResultUrl = 'https://ignored.invalid/content.mp4'
   videoRejection = undefined
+  videoSubmitReplies.length = 0
   imageResponse = undefined
   imageTaskStatus = undefined
   imageTaskHttpStatus = 200
@@ -126,6 +129,13 @@ afterEach(async () => {
 function object(value: unknown): Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error('Expected JSON object')
   return value as Record<string, unknown>
+}
+
+function h3SubmitReply(envelope: { http_status: number; body: unknown; headers?: Record<string, string | null> }, requestId?: string) {
+  const headers: Record<string, string> = {}
+  for (const [name, value] of Object.entries(envelope.headers ?? {})) if (value !== null) headers[name] = value
+  if (requestId !== undefined) headers['X-Oneapi-Request-Id'] = requestId
+  return { status: envelope.http_status, body: envelope.body, headers }
 }
 
 async function boot(
@@ -221,10 +231,13 @@ async function boot(
       }
       if (url.pathname === '/harness/v1/video/generations' || url.pathname === '/harness/v1/videos') {
         if (request.headers.authorization !== `Bearer ${relayKey}`) { response.writeHead(403); response.end('{}'); return }
+        const reply = videoSubmitReplies.shift()
+        if (reply !== undefined) { response.writeHead(reply.status, reply.headers); response.end(JSON.stringify(reply.body)); return }
         if (videoRejection !== undefined) { response.writeHead(403); response.end(JSON.stringify(videoRejection)); return }
         response.end(JSON.stringify(videoTaskStatus === undefined ? {} : { code: 'success', data: { task_id: 'fixture-video-task' } })); return
       }
-      if (url.pathname === '/harness/v1/video/generations/fixture-video-task' || url.pathname === '/harness/v1/videos/fixture-video-task') {
+      if (['/harness/v1/video/generations/fixture-video-task', '/harness/v1/videos/fixture-video-task',
+        '/harness/v1/video/generations/task_fixture', '/harness/v1/videos/task_fixture'].includes(url.pathname)) {
         if (request.headers.authorization !== `Bearer ${relayKey}`) { response.writeHead(403); response.end('{}'); return }
         response.end(JSON.stringify({ code: 'success', data: { status: videoTaskStatus, result_url: videoResultUrl } })); return
       }
@@ -506,6 +519,179 @@ describe('deployed Harness API through the real product Loader', () => {
       if (expected === 'INSUFFICIENT_BALANCE') expect(result.message).toBe('余额不足，请充值')
       expect(calls.filter(call => call.path === '/harness/v1/images/generations')).toHaveLength(before + 1)
     }
+  })
+
+  it.each(['panel', 'chat'] as const)('allows an explicit H3 generation after a confirmed capacity rejection through %s', async (entry) => {
+    const { base, stateDir } = await boot(undefined, false, true)
+    const cookie = await hostCookie(base)
+    await signIn(base)
+    const sessionId = 'h3-confirmed-capacity'
+    context!.sessions.create(SessionId(sessionId), { meta: { cwd: stateDir } })
+    const agent = videoAgent(stateDir, sessionId)
+    pricingRows = [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }]
+    const generate = async (extra: object = {}) => entry === 'chat'
+      ? object((await context!.tools.execute({ name: 'generate_video', arguments: {
+        prompt: 'An explicitly requested synthetic clip', model: 'MiniMax-H3', duration_seconds: 4, ...extra,
+      }, agent, callId: ToolCallId('h3-confirmed-capacity'), signal: new AbortController().signal })).value)
+      : await post(base, '/api/video/tasks?source=newapi-generate', {
+        session_id: sessionId, account_id: '7', prompt: 'An explicitly requested synthetic clip', model: 'MiniMax-H3', durationSeconds: 4, ...extra,
+      }, cookie)
+    videoSubmitReplies.push(h3SubmitReply(h3ResponseContract.capacity, 'capacity-request'))
+    const denied = await generate()
+    expect(denied).toMatchObject({ code: 'H3_ACCOUNT_CAPACITY_EXHAUSTED', submission_state: 'failed', request_id: 'capacity-request' })
+    expect(denied).toMatchObject(entry === 'chat' ? { status: 'failed', task_id: '' } : { ok: false, taskId: null })
+    expect(denied.message).toMatch(/未.*(?:提交|扣费)|未扣费/u)
+    expect(calls.filter(call => call.path === '/harness/v1/video/generations')).toHaveLength(1)
+    const retained = projects(object(await (await fetch(base + `/api/creative/projects?session_id=${sessionId}`, { headers: { cookie } })).json()))[0]!
+    expect(retained).toMatchObject({ status: 'failed', tasks: [{ status: 'failed', errorCode: 'H3_ACCOUNT_CAPACITY_EXHAUSTED',
+      videoReceipt: { requestId: 'capacity-request' }, canQuery: false }], outputs: [] })
+    videoTaskStatus = 'SUCCESS'
+    const completed = await generate(entry === 'chat' ? { plan_id: retained.id, shot_id: 'shot_1' } : {})
+    expect(completed).toMatchObject(entry === 'chat' ? { status: 'succeeded' } : { ok: true })
+    expect(calls.filter(call => call.path === '/harness/v1/video/generations')).toHaveLength(2)
+    expect(videoSubmitReplies).toEqual([])
+  })
+
+  it.each(['panel', 'chat'] as const)('retains the failed and refunded H3 gateway task through %s without polling or retrying it', async (entry) => {
+    const { base, stateDir } = await boot(undefined, false, true)
+    const cookie = await hostCookie(base)
+    await signIn(base)
+    const sessionId = 'h3-confirmed-auth'
+    context!.sessions.create(SessionId(sessionId), { meta: { cwd: stateDir } })
+    const agent = videoAgent(stateDir, sessionId)
+    pricingRows = [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }]
+    videoSubmitReplies.push(h3SubmitReply(h3ResponseContract.confirmed_auth_rejection, 'auth-request'))
+    const denied = entry === 'chat' ? object((await context!.tools.execute({ name: 'generate_video', arguments: {
+      prompt: 'A synthetic clip', model: 'MiniMax-H3', duration_seconds: 4,
+    }, agent, callId: ToolCallId('h3-confirmed-auth'), signal: new AbortController().signal })).value)
+      : await post(base, '/api/video/tasks?source=newapi-generate', {
+        session_id: sessionId, account_id: '7', prompt: 'A synthetic clip', model: 'MiniMax-H3', durationSeconds: 4,
+      }, cookie)
+    expect(denied).toMatchObject({ code: 'H3_UPSTREAM_AUTH_REJECTED', submission_state: 'failed', task_id: 'task_fixture', request_id: 'auth-request' })
+    expect(denied).toMatchObject(entry === 'chat' ? { status: 'failed' } : { ok: false })
+    expect(denied.message).toMatch(/退款/u)
+    expect(JSON.stringify(denied)).not.toContain(h3ResponseContract.confirmed_auth_rejection.body.message)
+    const retained = projects(object(await (await fetch(base + `/api/creative/projects?session_id=${sessionId}`, { headers: { cookie } })).json()))[0]!
+    expect(retained).toMatchObject({ status: 'failed', tasks: [{ status: 'failed', errorCode: 'H3_UPSTREAM_AUTH_REJECTED',
+      videoReceipt: { taskId: 'task_fixture', requestId: 'auth-request' }, canQuery: false }], outputs: [] })
+    expect(calls.filter(call => call.path === '/harness/v1/video/generations')).toHaveLength(1)
+    expect(calls.filter(call => call.path.startsWith('/harness/v1/video/generations/'))).toEqual([])
+  })
+
+  it.each([
+    { name: 'generic429', status: 429, body: { code: 'rate_limited' } },
+    { name: 'generic502', status: 502, body: { code: 'upstream_error' } },
+    { name: 'wrong capacity HTTP502', status: 502, body: h3ResponseContract.capacity.body },
+    { name: 'wrong auth HTTP429', status: 429, body: h3ResponseContract.confirmed_auth_rejection.body },
+    { name: 'wrong capacity state', status: 429, body: { code: 'h3_account_capacity_exhausted', data: null, submission_state: 'failed', retryable: false, resubmittable: true } },
+    { name: 'missing no-retry marker', status: 429, body: { code: 'h3_account_capacity_exhausted', data: null, submission_state: 'not_submitted', resubmittable: true } },
+    { name: 'missing refund confirmation', status: 502, body: { code: 'h3_upstream_auth_rejected', data: null, submission_state: 'failed', id: 'fixture-video-task', task_id: 'fixture-video-task', retryable: false, resubmittable: false } },
+    { name: 'wrong auth state', status: 502, body: { code: 'h3_upstream_auth_rejected', data: null, submission_state: 'unknown', id: 'fixture-video-task', task_id: 'fixture-video-task', refund_confirmed: true, retryable: false, resubmittable: false } },
+  ])('keeps $name uncertain and blocks a new paid panel attempt in the same chat', async ({ status, body }) => {
+    const { base, stateDir } = await boot(undefined, false, true)
+    const cookie = await hostCookie(base)
+    await signIn(base)
+    const sessionId = 'h3-uncertain-rejection'
+    context!.sessions.create(SessionId(sessionId), { meta: { cwd: stateDir } })
+    pricingRows = [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }]
+    videoSubmitReplies.push({ status, body })
+    const args = { session_id: sessionId, account_id: '7', prompt: 'A synthetic clip', model: 'MiniMax-H3', durationSeconds: 4 }
+    const denied = await post(base, '/api/video/tasks?source=newapi-generate', args, cookie)
+    expect(denied.ok).toBe(false)
+    expect(['pending', 'unknown']).toContain(denied.submission_state)
+    expect(denied.code).not.toBe('H3_ACCOUNT_CAPACITY_EXHAUSTED')
+    expect(denied.code).not.toBe('H3_UPSTREAM_AUTH_REJECTED')
+    const retained = projects(object(await (await fetch(base + `/api/creative/projects?session_id=${sessionId}`, { headers: { cookie } })).json()))[0]!
+    expect(retained).toMatchObject({ status: 'unknown', tasks: [{ status: 'unknown', errorCode: 'SUBMISSION_UNKNOWN' }], outputs: [] })
+    expect(await post(base, '/api/video/tasks?source=newapi-generate', args, cookie)).toMatchObject({ ok: false, code: 'CREATIVE_SUBMISSION_UNKNOWN' })
+    expect(calls.filter(call => call.path === '/harness/v1/video/generations')).toHaveLength(1)
+  })
+
+  it.each([
+    { envelope: h3ResponseContract.capacity, code: 'H3_ACCOUNT_CAPACITY_EXHAUSTED', taskId: undefined },
+    { envelope: h3ResponseContract.confirmed_auth_rejection, code: 'H3_UPSTREAM_AUTH_REJECTED', taskId: 'task_fixture' },
+  ])('persists confirmed H3 project rejection $code as failed without automatically submitting another segment', async ({ envelope, code, taskId }) => {
+    let captured: VideoProjectOptions | undefined
+    const register = VideoProjectTools.registerVideoProjectTools
+    vi.spyOn(VideoProjectTools, 'registerVideoProjectTools').mockImplementation((ctx, value) => { captured = value; register(ctx, value) })
+    const { base, stateDir } = await boot(undefined, false, false, undefined, {}, 'desktop')
+    await signIn(base)
+    pricingRows = [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }]
+    if (captured === undefined) throw new Error('Expected the real Loader project options')
+    const options = { ...captured, maxConcurrentSegments: 1 }
+    const signal = new AbortController().signal
+    const provider = await options.acquireProvider(stateDir, videoAgent(stateDir, 'h3-confirmed-project').session)
+    const editor: VideoEditor = {
+      preflight: async () => {}, probe: async () => { throw new Error('A rejected task cannot download media') },
+      compose: async () => { throw new Error('A rejected project cannot assemble media') },
+    }
+    const manifest = await prepareVideoProject(options, { model: 'MiniMax-H3', prompt: 'Two synthetic clips',
+      totalDurationSeconds: 8, shotDurations: [4, 4] }, 'h3-confirmed-project', stateDir, provider, editor, signal)
+    videoSubmitReplies.push(h3SubmitReply(envelope, 'project-rejection-request'))
+    const job = { id: JobId('h3-confirmed-project'), append: () => {}, updateProgress: () => {} }
+    expect(await runVideoProject(options, manifest, provider, editor, job, signal)).toMatchObject({ status: 'failed', detail: code })
+    const retained = await readVideoProject(options, manifest.id, manifest.ownerSessionId, stateDir, provider.identity)
+    expect(retained).toMatchObject({ status: 'failed', failureCode: code, segments: [{ status: 'failed' }, { status: 'pending' }] })
+    if (taskId === undefined) expect(retained.segments[0]).not.toHaveProperty('taskId')
+    else expect(retained.segments[0]?.taskId).toBe(taskId)
+    expect(await runVideoProject(options, retained, provider, editor, job, signal)).toMatchObject({ status: 'failed' })
+    expect(calls.filter(call => call.path === '/harness/v1/video/generations')).toHaveLength(1)
+    expect(calls.filter(call => call.path.startsWith('/harness/v1/video/generations/'))).toEqual([])
+  })
+
+  it('keeps an uncertain H3 HTTP202 ordinary task queryable by its original id without another generation', async () => {
+    const { base, stateDir } = await boot(undefined, false, true)
+    const cookie = await hostCookie(base)
+    await signIn(base)
+    const sessionId = 'h3-unknown-accepted'
+    context!.sessions.create(SessionId(sessionId), { meta: { cwd: stateDir } })
+    const agent = videoAgent(stateDir, sessionId)
+    pricingRows = [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }]
+    videoSubmitReplies.push(h3SubmitReply(h3ResponseContract.unknown))
+    videoTaskStatus = 'UNKNOWN'
+    const args = { session_id: sessionId, account_id: '7', prompt: 'One uncertain original task', model: 'MiniMax-H3', durationSeconds: 4 }
+    const accepted = await post(base, '/api/video/tasks?source=newapi-generate', args, cookie)
+    expect(accepted).toMatchObject({ ok: false, taskId: 'task_fixture', submission_state: 'pending' })
+    const retained = projects(object(await (await fetch(base + `/api/creative/projects?session_id=${sessionId}`, { headers: { cookie } })).json()))[0]!
+    expect(retained).toMatchObject({ status: 'unknown', tasks: [{ status: 'unknown', canQuery: true, videoReceipt: { taskId: 'task_fixture' } }] })
+    expect(await post(base, '/api/video/tasks?source=newapi-generate', args, cookie)).toMatchObject({ ok: false, code: 'CREATIVE_SUBMISSION_UNKNOWN', taskId: 'task_fixture' })
+    if (!Array.isArray(retained.tasks)) throw new Error('Expected a retained original task')
+    videoTaskStatus = 'FAILED'
+    const queried = object((await context!.tools.execute({ name: 'query_video_task', arguments: {
+      plan_id: retained.id, operation_id: object(retained.tasks[0]).id,
+    }, agent, callId: ToolCallId('h3-original-get-only'), signal: new AbortController().signal })).value)
+    expect(queried).toMatchObject({ status: 'failed', task_id: 'task_fixture' })
+    expect(calls.filter(call => call.path === '/harness/v1/video/generations')).toHaveLength(1)
+    expect(calls.filter(call => call.path === '/harness/v1/video/generations/task_fixture')).toHaveLength(2)
+  })
+
+  it('retains an uncertain H3 HTTP202 project segment id and resumes only the original task GET', async () => {
+    let captured: VideoProjectOptions | undefined
+    const register = VideoProjectTools.registerVideoProjectTools
+    vi.spyOn(VideoProjectTools, 'registerVideoProjectTools').mockImplementation((ctx, value) => { captured = value; register(ctx, value) })
+    const { base, stateDir } = await boot(undefined, false, false, undefined, {}, 'desktop')
+    await signIn(base)
+    pricingRows = [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }]
+    if (captured === undefined) throw new Error('Expected the real Loader project options')
+    const options = { ...captured, maxConcurrentSegments: 1 }
+    const signal = new AbortController().signal
+    const provider = await options.acquireProvider(stateDir, videoAgent(stateDir, 'h3-unknown-project').session)
+    const editor: VideoEditor = {
+      preflight: async () => {}, probe: async () => { throw new Error('An uncertain task cannot download media') },
+      compose: async () => { throw new Error('An incomplete project cannot assemble media') },
+    }
+    const manifest = await prepareVideoProject(options, { model: 'MiniMax-H3', prompt: 'Two synthetic clips',
+      totalDurationSeconds: 8, shotDurations: [4, 4] }, 'h3-unknown-project', stateDir, provider, editor, signal)
+    videoSubmitReplies.push(h3SubmitReply(h3ResponseContract.unknown))
+    videoTaskStatus = 'UNKNOWN'
+    const job = { id: JobId('h3-unknown-project'), append: () => {}, updateProgress: () => {} }
+    expect(await runVideoProject(options, manifest, provider, editor, job, signal)).toMatchObject({ status: 'failed', detail: 'VIDEO_STATUS_INVALID' })
+    const retained = await readVideoProject(options, manifest.id, manifest.ownerSessionId, stateDir, provider.identity)
+    expect(retained.segments).toMatchObject([{ status: 'running', taskId: 'task_fixture' }, { status: 'pending' }])
+    videoTaskStatus = 'FAILED'
+    expect(await runVideoProject(options, retained, provider, editor, job, signal)).toMatchObject({ status: 'failed' })
+    expect(calls.filter(call => call.path === '/harness/v1/video/generations')).toHaveLength(1)
+    expect(calls.filter(call => call.path === '/harness/v1/video/generations/task_fixture')).toHaveLength(2)
   })
 
   it.each(['panel', 'chat'] as const)('preserves exact single-video funding rejection through %s without resubmitting an unconfirmed plan', async (entry) => {

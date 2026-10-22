@@ -23,6 +23,35 @@ function fixture(overrides: Partial<VideoTaskOptions> = {}) {
 }
 
 describe('single-submission video task receipts', () => {
+  it.each([
+    { status: 429, body: { code: 'h3_account_capacity_exhausted', data: null, submission_state: 'not_submitted', retryable: false, resubmittable: true },
+      code: 'H3_ACCOUNT_CAPACITY_EXHAUSTED', taskId: undefined },
+    { status: 502, body: { code: 'h3_upstream_auth_rejected', data: null, submission_state: 'failed', id: 'failed-h3-task', task_id: 'failed-h3-task',
+      refund_confirmed: true, retryable: false, resubmittable: false }, code: 'H3_UPSTREAM_AUTH_REJECTED', taskId: 'failed-h3-task' },
+  ])('settles only a complete H3 $status rejection without polling or repeating the POST', async ({ status, body, code, taskId }) => {
+    const submit = vi.fn(async () => json(body, status, { 'x-request-id': 'settled-h3-request', 'x-new-api-task-id': 'untrusted-header-task' }))
+    const f = fixture({ model: 'MiniMax-H3', submit })
+    const result = await executeVideoTask(f.options)
+    expect(result).toMatchObject({ ok: false, submissionState: 'failed', code, requestId: 'settled-h3-request' })
+    expect(result.taskId).toBe(taskId)
+    expect(f.receipts.at(-1)?.taskId).toBe(taskId)
+    expect(result.message).not.toContain('untrusted-header-task')
+    expect(submit).toHaveBeenCalledOnce()
+    expect(f.read).not.toHaveBeenCalled()
+    expect(f.save).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { status: 429, body: { code: 'h3_account_capacity_exhausted', data: null, submission_state: 'unknown', retryable: false, resubmittable: true } },
+    { status: 502, body: { code: 'h3_upstream_auth_rejected', data: null, submission_state: 'failed', refund_confirmed: false, retryable: false, resubmittable: false } },
+  ])('keeps an incomplete H3 $status settlement unknown even when a header suggests a task', async ({ status, body }) => {
+    const submit = vi.fn(async () => json(body, status, { 'x-new-api-task-id': 'header-is-not-settlement' }))
+    const f = fixture({ model: 'MiniMax-H3', submit })
+    expect(await executeVideoTask(f.options)).toMatchObject({ submissionState: 'unknown', code: 'VIDEO_SUBMISSION_UNKNOWN' })
+    expect(submit).toHaveBeenCalledOnce()
+    expect(f.read).not.toHaveBeenCalled()
+  })
+
   it('retains an H3 unknown 202 task id and recovers it by GET without submitting again', async () => {
     const unknown = { id: 'h3-original-task', task_id: 'h3-original-task', status: 'unknown', submission_state: 'unknown',
       resubmittable: false, retryable: false, code: 'h3_submission_unknown' }

@@ -12,6 +12,7 @@ import type { ArtifactOrigin } from '@deepseek-ai/dsh-artifacts-index'
 import { parseArtifactOrigin } from './artifact-origin.ts'
 import { VideoEditError, type VideoEditor } from './video-edit.ts'
 import { VideoRelayError } from './video-project-provider.ts'
+import { VideoSubmissionRejection } from './video-submission-result.ts'
 import type { VideoProjectIdentity, VideoProjectInput, VideoProjectOptions, VideoProjectProvider, VideoProjectRequest, VideoRequestValue } from './video-project-types.ts'
 
 /** Complete private-record parser limit, including prompt and per-clip metadata. */
@@ -47,7 +48,9 @@ export class VideoProjectError extends Error {
  * @returns Stable failure code and an actionable summary without raw exception data.
  */
 export function videoProjectFailure(error: unknown): { code: string; message: string } {
-  if (error instanceof VideoProjectError || error instanceof VideoRelayError) return { code: error.code, message: error.message }
+  if (error instanceof VideoProjectError || error instanceof VideoRelayError || error instanceof VideoSubmissionRejection) {
+    return { code: error.code, message: error.message }
+  }
   if (error instanceof VideoEditError) {
     const messages = {
       VIDEO_EDIT_RUNTIME_UNAVAILABLE: '本地视频工具尚未准备好，请重新启动客户端完成工具准备后重试；已生成的片段保留。',
@@ -748,6 +751,12 @@ async function executeVideoSegments(
       let task: { taskId: string }
       try { task = await provider.submit(segment.request, clipSignal) }
       catch (error) {
+        if (error instanceof VideoSubmissionRejection) {
+          segment.status = 'failed'
+          if (error.taskId !== undefined) segment.taskId = error.taskId
+          unsettled.delete(segment.index)
+          throw error
+        }
         segment.status = 'unknown'
         if (error instanceof VideoRelayError && error.code === 'INSUFFICIENT_BALANCE') throw error
         if (error instanceof VideoRelayError && error.code === 'VIDEO_SUBMIT_BUSY') {

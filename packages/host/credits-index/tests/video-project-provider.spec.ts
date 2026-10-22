@@ -90,6 +90,33 @@ async function rejection(operation: Promise<unknown>): Promise<Error> {
 }
 
 describe('account-bound video relay requests', () => {
+  it.each([
+    { status: 429, body: { code: 'h3_account_capacity_exhausted', data: null, submission_state: 'not_submitted', retryable: false, resubmittable: true },
+      code: 'H3_ACCOUNT_CAPACITY_EXHAUSTED', state: 'not_submitted', taskId: undefined },
+    { status: 502, body: { code: 'h3_upstream_auth_rejected', data: null, submission_state: 'failed', id: 'failed-h3-task', task_id: 'failed-h3-task',
+      refund_confirmed: true, retryable: false, resubmittable: false }, code: 'H3_UPSTREAM_AUTH_REJECTED', state: 'failed', taskId: 'failed-h3-task' },
+  ])('reads a complete H3 $status settlement through real HTTP without retrying or exposing supplier text', async ({ status, body, code, state, taskId }) => {
+    const f = await fixture((_request, response) => {
+      response.statusCode = status
+      response.setHeader('x-new-api-task-id', 'untrusted-header-task')
+      json(response, { ...body, message: 'private supplier credentials' })
+    })
+    const error = await rejection(f.relay.submit({ model: 'MiniMax-H3' }, '/v1/video/generations', signal()))
+    expect(error).toMatchObject({ code, submissionState: state })
+    expect(error).toHaveProperty('taskId', taskId)
+    expect(error.message).not.toContain('private')
+    expect(f.calls).toHaveLength(1)
+  })
+
+  it.each([
+    { status: 429, body: { code: 'h3_account_capacity_exhausted', data: null, submission_state: 'unknown', retryable: false, resubmittable: true }, code: 'VIDEO_SUBMIT_BUSY' },
+    { status: 502, body: { code: 'h3_upstream_auth_rejected', data: null, submission_state: 'failed', refund_confirmed: false, retryable: false, resubmittable: false }, code: 'VIDEO_SUBMIT_REJECTED' },
+  ])('does not classify a partial H3 $status response as confirmed settlement', async ({ status, body, code }) => {
+    const f = await fixture((_request, response) => { response.statusCode = status; json(response, body) })
+    await expect(f.relay.submit({ model: 'MiniMax-H3' }, '/v1/video/generations', signal())).rejects.toMatchObject({ code })
+    expect(f.calls).toHaveLength(1)
+  })
+
   it('retains an H3 unknown 202 id and only reads the original task during recovery', async () => {
     let complete = false
     const unknown = { id: 'h3-original-task', task_id: 'h3-original-task', status: 'unknown', submission_state: 'unknown',
