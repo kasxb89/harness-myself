@@ -4,4 +4,10 @@ exports[`video composer > keeps declared parameters visible and updates the summ
 
 exports[`video composer > previews a camera script, filters categories and appends it without generating 1`] = `"电影感环绕这是一份可编辑的文字脚本。填入后可补充主体与素材，再手动生成视频后台环绕脚本填入创作框"`;
 
+exports[`video composer > retains an invalid seed 1.5 and stops before generation 1`] = `"随机种子需要是有效的整数"`;
+
+exports[`video composer > retains an invalid seed 9007199254740992 and stops before generation 1`] = `"随机种子需要是有效的整数"`;
+
+exports[`video composer > retains an invalid seed not-a-seed and stops before generation 1`] = `"随机种子需要是有效的整数"`;
+
 exports[`video composer > uses resolution-specific duration menus and visibly corrects a previously selected duration 1`] = `"画面比例16:9横屏9:16竖屏分辨率480p768p1080p2K时长5 秒15 秒音轨为视频生成声音开档位normalpro随机种子"`;

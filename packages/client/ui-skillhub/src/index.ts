@@ -28,7 +28,7 @@ export const Config: Schema<Config> = Schema.object({
   terminationGraceMs: Schema.number().step(1).min(1).max(2_147_483_647).default(1_000),
   maxOutputBytes: Schema.number().step(1).min(1).default(1_048_576),
   maxDownloadBytes: Schema.number().step(1).min(1).default(1_048_576),
-  searchLimit: Schema.number().step(1).min(1).max(100).default(20),
+  searchLimit: Schema.number().step(1).min(1).max(100).default(60),
   searchTimeoutMs: Schema.number().step(1).min(1).max(2_147_483_647).default(15_000),
   recommendationsCacheMs: Schema.number().step(1).min(0).max(3_600_000).default(60_000),
 })

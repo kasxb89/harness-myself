@@ -21,7 +21,7 @@ export interface SkillHubExecutionConfig {
   readonly maxOutputBytes: number
   /** Maximum official CLI archive bytes accepted for download. @default 1048576 */
   readonly maxDownloadBytes: number
-  /** Maximum community skills returned per search or recommendation read. @default 20 */
+  /** Maximum community skills returned per search or recommendation read. @default 60 */
   readonly searchLimit: number
   /** Official search and recommendation network deadline in milliseconds. @default 15000 */
   readonly searchTimeoutMs: number

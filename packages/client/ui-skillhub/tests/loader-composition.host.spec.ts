@@ -19,6 +19,12 @@ import * as SkillHub from '../src/index.ts'
 
 vi.mock('../src/skillhub-cache.ts', () => ({ ensureSkillHubCli: vi.fn(async () => '/verified-official-cli') }))
 
+const ranking = Array.from({ length: 61 }, (_, index) => ({
+  slug: index === 0 ? 'hello' : `skill-${index + 1}`,
+  namespace: { canonicalName: index === 0 ? '@team/hello' : `@team/skill-${index + 1}` },
+  name: index === 0 ? 'Hello' : `Skill ${index + 1}`, description: 'A skill', version: '1', source: 'community',
+}))
+
 class FixtureProcess extends SubprocessRuntime {
   readonly specs: SubprocessSpawnSpec[] = []
   override resolveExecutable(): Promise<string> { return Promise.resolve(process.execPath) }
@@ -37,8 +43,7 @@ class FixtureProcess extends SubprocessRuntime {
         await writeFile(join(stage, '.skills_store_lock.json'), JSON.stringify({ version: 1, skills: { [slug]: { name: 'Writing', version: '1' } } }))
         text = JSON.stringify({ success: true, slug, targetDir })
       } else {
-        text = JSON.stringify({ section: 'recommended', skills: [{ slug: 'hello', namespace: { canonicalName: '@team/hello' },
-          name: 'Hello', description: 'A skill', version: '1', source: 'community' }] })
+        text = JSON.stringify({ section: 'recommended', skills: ranking })
       }
       return { exitCode: 0, signal: null }
     })()
@@ -111,9 +116,9 @@ it('serves the store, installs a normalized skill through a real Loader and with
   expect(processFixture.specs).toEqual([])
   const recommendations = await handler.fetch(new Request('http://127.0.0.1/api/skillhub/recommendations'))
   expect(recommendations.status).toBe(200)
-  expect(await recommendations.json()).toEqual({ ok: true, skills: [
-    { slug: '@team/hello', name: 'Hello', description: 'A skill', version: '1', source: 'community' },
-  ] })
+  expect(await recommendations.json()).toEqual({ ok: true, skills: ranking.slice(0, 60).map(skill => ({
+    slug: skill.namespace.canonicalName, name: skill.name, description: skill.description, version: skill.version, source: skill.source,
+  })) })
   expect(processFixture.specs).toHaveLength(1)
   expect(processFixture.specs[0]!.argv).not.toContain('install')
   expect((await ctx.skills.snapshot()).skills.map(skill => skill.name)).toEqual(['hello'])

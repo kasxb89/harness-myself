@@ -35,6 +35,7 @@ it('keeps product sign-in, Chat, and AI Creation defaults when bundle patches co
       'yunshu-local': {
         displayName: '云枢', api: 'openai-completions', baseURL: 'https://8.133.202.230/harness/v1',
         apiKeyEnv: 'YUNSHU_RELAY_TOKEN', models: [{ id: 'deepseek-v4-flash' }],
+        compat: { supportsStore: false, supportsDeveloperRole: false, maxTokensField: 'max_tokens' },
       },
     },
   })

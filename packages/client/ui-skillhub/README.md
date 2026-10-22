@@ -25,7 +25,7 @@ Browse recommended community skills in the sidebar Skill store, search by task, 
 
 The Web product bundle mounts this package. Open **Skill store** to load community entries from SkillHub's official recommended ranking beneath the search field. The Discover and Installed tabs sit beneath the heading, aligned with search and results in one content column. Reopening the store within `recommendationsCacheMs` reuses a successful public ranking without starting Python or another network read. Explicit Retry bypasses the cache; expired or failed reads are never returned as a fallback. Recommendations preserve the official order and exclude enterprise and external-source entries. Search by skill name or task, then return to recommendations without repeating the search. Failed recommendation reads offer Retry without blocking search. Select Install on the desired card; the Installed tab lists successful product-managed installations. Installation never starts from navigation, recommendations or search alone and refuses an existing destination.
 
-Cards use local decorative icons, two-line titles and three-line descriptions. Select Details to read the complete entry in a scrollable dialog; Escape closes it and returns focus. Each page shows at most 12 entries from the loaded results, with no extra catalog request when changing pages.
+Cards use local decorative icons, two-line titles and three-line descriptions. Select Details to read the complete entry in a scrollable dialog; Escape closes it and returns focus. Each page shows at most 24 entries from the loaded results, with no extra catalog request when changing pages. The heading displays the fixed “200,000 community skills” catalog label; each list separately reports its actual loaded count.
 
 The first operation requiring the CLI downloads the official version 2026.8.5 kit and verifies its pinned SHA-256 and the four selected files. The cache lives beneath the active Harness cache's `skillhub` directory. Desktop resolves and supplies its verified bundled Python executable, so Windows needs neither system Python nor Bash. A standalone Web deployment without that runtime uses the configured `pythonExecutable`.
 
@@ -36,7 +36,7 @@ The first operation requiring the CLI downloads the official version 2026.8.5 ki
 | `pythonExecutable` | `python3` | Verified bundled Python on Desktop; configured interpreter on Web |
 | `timeoutMs` | `120000` | Complete operation deadline in milliseconds |
 | `recommendationsCacheMs` | `60000` | Lifetime of a successful in-memory public ranking; zero disables caching |
-| `searchLimit` | `20` | Maximum community skills in each search or recommendation list |
+| `searchLimit` | `60` | Maximum community skills in each search or recommendation list |
 
 The [configuration catalog](../../../docs/config-catalog.md#deepseek-aidsh-client-ui-skillhub) lists all execution limits. The [official installation guide](https://skillhub.cn/install/skillhub.md) describes SkillHub's standalone CLI; this integration supplies product-owned staging instead of the CLI's default relative directory, then commits verified files to the product's skills directory.
 

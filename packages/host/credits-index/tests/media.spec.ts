@@ -24,6 +24,21 @@ describe('internal image capability', () => {
       sizes: [], resolutions: ['1k', '2k', '4k'], maxEdits: 6,
     } })
   })
+
+  it('opens image aspect ratios only from explicit live parameters without inventing pixel sizes', () => {
+    const base = { model_name: 'yunshu-internal-gpt-image-2', supported_endpoint_types: ['image-generation'] }
+    const sizes = ['1:1', '3:2', '2:3', '4:3', '3:4', '5:4', '4:5', '16:9', '9:16', '2:1', '1:2', '21:9', '9:21']
+    const [current] = catalogFromPricing([base], null)
+    expect(current?.params).toMatchObject({ sizes: [], resolutions: ['1k', '2k', '4k'] })
+    const [published] = catalogFromPricing([{ ...base, parameters: { type: 'object', properties: {
+      size: { type: 'string', enum: sizes }, resolution: { type: 'string', enum: ['1k', '2k', '4k'] },
+    } } }], null)
+    expect(published?.params).toMatchObject({ sizes, resolutions: ['1k', '2k', '4k'], maxCount: 1, maxEdits: 6 })
+    const [empty] = catalogFromPricing([{ ...base, parameters: { properties: { size: { enum: [] }, resolution: { enum: [] } } },
+      billing_usage_schema: { size: { enum: ['1024x1024'] }, resolution: { enum: ['1k'] } },
+    }], null)
+    expect(empty?.params).toMatchObject({ sizes: [], resolutions: [] })
+  })
 })
 
 function video(fields: Record<string, unknown> = {}): VideoParams {

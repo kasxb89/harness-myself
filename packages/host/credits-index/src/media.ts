@@ -29,7 +29,7 @@ export type MediaKind = 'image' | 'video'
 
 /** What an image model accepts. */
 export interface ImageParams {
-  /** Output sizes in the request's own spelling, e.g. `1024x1024`. */
+  /** Output sizes or aspect ratios in the request's own spelling, e.g. `1024x1024` or `16:9`. */
   readonly sizes: readonly string[]
   /** Named resolution tiers; absent for image routes without this field. */
   readonly resolutions?: readonly string[]
@@ -266,17 +266,18 @@ function isVerified(source: string): boolean {
 }
 
 /** The image menu: the table's surface, with the deployment's own enum on top. */
-function imageParams(spec: ImageSpec, schema: unknown, examples: readonly unknown[]): {
+function imageParams(spec: ImageSpec, schema: unknown, parameters: unknown, examples: readonly unknown[]): {
   params: ImageParams
   verified: boolean
   source: string
   notes: string[]
 } {
-  const declared = schemaEnum(schema, 'size').concat(schemaEnum(schema, 'sizes'))
+  const explicitSizes = declaredStringMenu(parameters, 'size')
+  const declared = explicitSizes ?? schemaEnum(schema, 'size').concat(schemaEnum(schema, 'sizes'))
   const notes: string[] = []
   let source = spec.source
   let sizes = spec.sizes
-  if (declared.length > 0) {
+  if (explicitSizes !== null || declared.length > 0) {
     sizes = declared
     notes.push('sizes')
     source = spec.source === 'fallback' ? 'newapi' : spec.source
@@ -284,8 +285,9 @@ function imageParams(spec: ImageSpec, schema: unknown, examples: readonly unknow
   // Input-image billing tells us an edit route exists even before the table does.
   const billedEdits = maxExampleValue(examples, 'input_images')
   const maxEdits = spec.maxEdits > 0 || billedEdits === null ? spec.maxEdits : billedEdits
-  const resolutions = schemaEnum(schema, 'resolution')
-  const outputResolutions = resolutions.length > 0 ? resolutions : spec.resolutions
+  const explicitResolutions = declaredStringMenu(parameters, 'resolution')
+  const resolutions = explicitResolutions ?? schemaEnum(schema, 'resolution')
+  const outputResolutions = explicitResolutions !== null || resolutions.length > 0 ? resolutions : spec.resolutions
   return {
     params: {
       sizes,
@@ -425,7 +427,7 @@ export function catalogFromPricing(rows: readonly unknown[], userGroup: string |
     const examples = Array.isArray(record.billing_usage_examples) ? record.billing_usage_examples : []
     const built = kind === 'video'
       ? videoParams(videoSpec(id), record.billing_usage_schema, record.parameters)
-      : imageParams(imageSpec(id), record.billing_usage_schema, examples)
+      : imageParams(imageSpec(id), record.billing_usage_schema, record.parameters, examples)
     // A row that names its own route wins; otherwise the built-in table for
     // plugin-served models, and the host protocol path for everything else.
     const declaredRoute = typeof record.route === 'string' && record.route.startsWith('/') ? record.route : null

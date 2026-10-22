@@ -745,7 +745,7 @@ export interface SkillHubExecutionConfig {
   readonly maxOutputBytes: number
   /** Maximum official CLI archive bytes accepted for download. @default 1048576 */
   readonly maxDownloadBytes: number
-  /** Maximum community skills returned per search or recommendation read. @default 20 */
+  /** Maximum community skills returned per search or recommendation read. @default 60 */
   readonly searchLimit: number
   /** Official search and recommendation network deadline in milliseconds. @default 15000 */
   readonly searchTimeoutMs: number
@@ -904,7 +904,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-credits-index`
 
 - `inject`: `webServer` · `tools`
-- `source`: [`packages/host/credits-index/src/index.ts:86`](../packages/host/credits-index/src/index.ts)
+- `source`: [`packages/host/credits-index/src/index.ts:87`](../packages/host/credits-index/src/index.ts)
 
 ```ts config-catalog
 /** Plugin config: platform origin, display rate, and where the session file lives. */

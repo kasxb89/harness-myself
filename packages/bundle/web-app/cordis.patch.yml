@@ -36,6 +36,10 @@
         api: openai-completions
         baseURL: https://8.133.202.230/harness/v1
         apiKeyEnv: YUNSHU_RELAY_TOKEN
+        compat:
+          supportsStore: false
+          supportsDeveloperRole: false
+          maxTokensField: max_tokens
         models:
           - id: deepseek-v4-flash
 - id: agent-default-model

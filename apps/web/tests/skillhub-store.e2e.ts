@@ -21,7 +21,7 @@ it('bounds long skill cards and scrolls complete details in light, dark and narr
   const consoleState = watchConsole(page)
   const longName = 'StoryboardAndLongVideoMaterialDirector'.repeat(12)
   const description = `${'编排镜头、人物、素材与对白，生成完整剧情和分镜。\n'.repeat(80)}完整说明结束。`
-  const skills = Array.from({ length: 25 }, (_, index) => ({
+  const skills = Array.from({ length: 60 }, (_, index) => ({
     slug: `@community/skill-${String(index)}-${'long-identifier-'.repeat(8)}`,
     name: index === 0 ? longName : `创作技能 ${String(index + 1)}`,
     description: index === 0 ? description : '用于日常创作的社区技能。',
@@ -40,7 +40,9 @@ it('bounds long skill cards and scrolls complete details in light, dark and narr
     const store = page.getByRole('region', { name: '技能商店', exact: true })
     const discover = store.getByRole('tabpanel', { name: '发现技能', exact: true })
     await discover.getByRole('heading', { name: longName, exact: true }).waitFor()
-    expect(await discover.getByRole('listitem').count()).toBe(12)
+    expect(await store.getByText('20万社区技能', { exact: false }).count()).toBe(1)
+    expect(await discover.getByText('当前列表 60 个技能', { exact: true }).count()).toBe(1)
+    expect(await discover.getByRole('listitem').count()).toBe(24)
     for (const layout of [
       { width: 1440, dark: false, name: 'wide-light' },
       { width: 1440, dark: true, name: 'wide-dark' },
@@ -93,7 +95,7 @@ it('bounds long skill cards and scrolls complete details in light, dark and narr
     await expect.poll(() => page.getByRole('dialog').count()).toBe(0)
     expect(await details.evaluate(node => node === document.activeElement)).toBe(true)
     await discover.getByRole('button', { name: '下一页', exact: true }).click()
-    expect(await discover.getByRole('listitem').count()).toBe(12)
+    expect(await discover.getByRole('listitem').count()).toBe(24)
     expect(await discover.getByRole('heading', { name: longName, exact: true }).count()).toBe(0)
     expect(installations).toBe(0)
     expect(consoleState.pageErrors).toEqual([])

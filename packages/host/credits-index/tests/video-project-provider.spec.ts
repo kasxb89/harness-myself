@@ -90,6 +90,23 @@ async function rejection(operation: Promise<unknown>): Promise<Error> {
 }
 
 describe('account-bound video relay requests', () => {
+  it('retains an H3 unknown 202 id and only reads the original task during recovery', async () => {
+    let complete = false
+    const unknown = { id: 'h3-original-task', task_id: 'h3-original-task', status: 'unknown', submission_state: 'unknown',
+      resubmittable: false, retryable: false, code: 'h3_submission_unknown' }
+    const f = await fixture((request, response) => {
+      if (request.method === 'POST') { response.statusCode = 202; json(response, unknown) }
+      else json(response, complete ? { id: 'h3-original-task', status: 'completed' } : unknown)
+    })
+    expect(await f.relay.submit({ model: 'MiniMax-H3', duration: 5 }, '/v1/video/generations', signal())).toEqual({ taskId: 'h3-original-task' })
+    await expect(f.relay.check('h3-original-task', '/v1/video/generations', signal())).rejects.toMatchObject({ code: 'VIDEO_STATUS_INVALID' })
+    complete = true
+    expect(await f.relay.check('h3-original-task', '/v1/video/generations', signal())).toEqual({ status: 'succeeded' })
+    expect(f.calls.map(call => [call.method, call.path])).toEqual([
+      ['POST', '/v1/video/generations'], ['GET', '/v1/video/generations/h3-original-task'], ['GET', '/v1/video/generations/h3-original-task'],
+    ])
+  })
+
   it.each([undefined, 'desktop'] as const)('sends the optional %s source only to fixed video task endpoints', async (clientSource) => {
     const remote = await upstream((_request, response) => { response.end(media) })
     const f = await fixture((_request, response, recorded) => {

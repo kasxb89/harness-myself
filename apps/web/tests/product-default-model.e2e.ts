@@ -9,7 +9,7 @@ import { expect, it, onTestFinished } from 'vitest'
 import { launchWebScaffold, watchConsole } from './scaffold.ts'
 import { ZH_BROWSER_LOCALE, connectFreshWorkspaceZh } from './support.ts'
 
-it.each(['deepseek-flash', 'deepseek-v4-flash', 'yunshu-flash'])(
+it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash'])(
   'selects the deployment default %s after first sign-in without opening the model menu', async (preferred) => {
     const root = await mkdtemp(join(tmpdir(), 'yunshu-first-login-model-'))
     const cleanup: { scaffold?: () => Promise<void>; browser?: () => Promise<void>; upstream?: () => Promise<void> } = {}
@@ -24,10 +24,12 @@ it.each(['deepseek-flash', 'deepseek-v4-flash', 'yunshu-flash'])(
       }
     })
     const requests: string[] = []
+    const modelRequests: { authorization: string | undefined; body: Record<string, unknown> }[] = []
     const errors: string[] = []
     const server = createServer((request, response) => {
       void (async () => {
-        for await (const _chunk of request) { /* Drain the synthetic login request. */ }
+        const chunks: Buffer[] = []
+        for await (const chunk of request) if (Buffer.isBuffer(chunk)) chunks.push(chunk)
         const path = new URL(request.url ?? '/', 'http://127.0.0.1').pathname
         requests.push(path)
         response.setHeader('content-type', 'application/json')
@@ -52,6 +54,23 @@ it.each(['deepseek-flash', 'deepseek-v4-flash', 'yunshu-flash'])(
           }
           response.end(JSON.stringify({ data: ['deepseek-v4-flash', 'deepseek-flash', 'yunshu-flash', 'deepseek-v4-pro', 'catalog-unknown'].map(id =>
             ({ id, object: 'model', supported_endpoint_types: ['openai'] })) })); return
+        }
+        if (path === '/harness/v1/chat/completions') {
+          if (request.headers.authorization !== 'Bearer sk-synthetic-relay') {
+            response.writeHead(403); response.end('{}'); return
+          }
+          const body: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+          if (body === null || typeof body !== 'object' || Array.isArray(body)) throw new Error('Expected synthetic chat JSON object')
+          modelRequests.push({ authorization: request.headers.authorization, body: body as Record<string, unknown> })
+          response.setHeader('content-type', 'text/event-stream')
+          response.end([
+            ...preferred === 'yunshu-flash' && modelRequests.length === 1
+              ? ['data: {"choices":[{"delta":{"role":"assistant","reasoning_content":"Synthetic saved reasoning."},"index":0,"finish_reason":null}]}'] : [],
+            `data: {"choices":[{"delta":{"role":"assistant","content":"CHAT_DIALECT_READY${modelRequests.length === 1 ? '' : '_FOLLOWUP'}"},"index":0,"finish_reason":null}]}`,
+            'data: {"choices":[{"delta":{},"index":0,"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1}}',
+            'data: [DONE]', '',
+          ].join('\n\n'))
+          return
         }
         if (path === '/harness/api/pricing') { answer([]); return }
         if (path === '/harness/api/creation/content') {
@@ -173,13 +192,57 @@ it.each(['deepseek-flash', 'deepseek-v4-flash', 'yunshu-flash'])(
         await page.screenshot({ path: join(evidence, 'model-command-guidance.png'), animations: 'disabled' })
         await page.keyboard.press('Escape')
       }
+      const composer = page.locator('[data-composer-input][contenteditable="true"]').last()
+      const settled = scaffold.whenTurnSettled()
+      await composer.fill('Synthetic chat parameter check')
+      await composer.press('Enter')
+      const sessionId = await settled
+      await page.getByText('CHAT_DIALECT_READY', { exact: true }).waitFor()
+      const session = scaffold.ctx.sessions.get(sessionId)
+      expect(session?.requestHeader()?.config).toMatchObject({ provider: 'yunshu-local', model: preferred })
+      expect(modelRequests).toHaveLength(1)
+      const wire = modelRequests[0]!.body
+      expect(modelRequests[0]?.authorization).toBe('Bearer sk-synthetic-relay')
+      expect(wire).toMatchObject({ model: preferred, stream: true, stream_options: { include_usage: true } })
+      expect(wire['max_tokens']).toEqual(expect.any(Number))
+      expect(wire['max_tokens']).toBeGreaterThan(0)
+      expect(wire['messages']).toEqual(expect.arrayContaining([
+        expect.objectContaining({ role: 'system' }),
+        expect.objectContaining({ role: 'user', content: 'Synthetic chat parameter check' }),
+      ]))
+      expect(wire['tools']).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'function' })]))
+      for (const field of ['store', 'max_completion_tokens', 'temperature', 'top_p', 'thinking', 'reasoning_effort', 'enable_thinking']) {
+        expect(wire).not.toHaveProperty(field)
+      }
+      expect(wire).not.toHaveProperty('tool_choice')
+      if (preferred === 'yunshu-flash') {
+        const followupSettled = scaffold.whenTurnSettled()
+        await composer.fill('Synthetic follow-up parameter check')
+        await composer.press('Enter')
+        expect(await followupSettled).toBe(sessionId)
+        await page.getByText('CHAT_DIALECT_READY_FOLLOWUP', { exact: true }).waitFor()
+        expect(modelRequests).toHaveLength(2)
+        const followup = modelRequests[1]!.body
+        expect(followup).toMatchObject({ model: preferred, stream: true })
+        expect(followup['tools']).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'function' })]))
+        expect(followup['messages']).toEqual(expect.arrayContaining([
+          expect.objectContaining({ role: 'assistant', content: 'CHAT_DIALECT_READY', reasoning_content: 'Synthetic saved reasoning.' }),
+          expect.objectContaining({ role: 'user', content: 'Synthetic follow-up parameter check' }),
+        ]))
+        expect(followup).not.toHaveProperty('tool_choice')
+      }
       expect(requests.filter(path => path.endsWith('/phone/challenge'))).toHaveLength(1)
       expect(requests.filter(path => path.endsWith('/phone/login'))).toHaveLength(1)
       expect(errors).toEqual([])
       expect(tripwire.pageErrors).toEqual([])
       await page.screenshot({ path: join(evidence, 'first-login-selected-model.png'), animations: 'disabled' })
       await writeFile(join(evidence, 'result.json'), JSON.stringify({ preferred, elapsedMs, requests,
-        modelCalls: 0, realSMS: 0, guidanceChecked: preferred === 'yunshu-flash', pageErrors: tripwire.pageErrors, errors }, null, 2) + '\n')
+        modelCalls: modelRequests.length, modelRequest: { model: wire['model'], max_tokens: wire['max_tokens'],
+          stream: wire['stream'], stream_options: wire['stream_options'],
+          forbiddenFieldsAbsent: true, toolsPresent: true },
+        historicalReasoningReplayChecked: preferred === 'yunshu-flash',
+        requestHeader: session?.requestHeader()?.config,
+        realSMS: 0, realUpstreamCalls: 0, guidanceChecked: preferred === 'yunshu-flash', pageErrors: tripwire.pageErrors, errors }, null, 2) + '\n')
     } catch (error) {
       await page.screenshot({ path: join(evidence, 'failure.png'), animations: 'disabled' })
       await writeFile(join(evidence, 'failure.json'), JSON.stringify({ errors, requests,

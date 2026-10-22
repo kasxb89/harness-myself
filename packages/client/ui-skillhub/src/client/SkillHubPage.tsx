@@ -27,8 +27,7 @@ export interface SkillHubInjected {
 type InstallState = { status: 'pending' | 'installed' } | { status: 'failed'; code: SkillHubErrorCode }
 type SkillDetails = { kind: 'community'; skill: SkillHubSkill } | { kind: 'installed'; skill: InstalledSkill }
 
-// A page occupies at most four rows in the three-column catalog.
-const PAGE_SIZE = 12
+const PAGE_SIZE = 24
 
 function SkillIcon({ slug }: { slug: string }): ReactNode {
   const tone = Array.from(slug).reduce((sum, character) => sum + character.charCodeAt(0), 0) % 4
@@ -199,7 +198,7 @@ export function SkillHubPage({ t, readRecommendations, search, readInstalled, in
         <div className={css.headingCopy}>
           <p className={css.brand}>{t('brand')}</p>
           <h1 className={css.title}>{t('panel')}</h1>
-          <p className={css.subtitle}>{t('subtitle')}</p>
+          <p className={css.subtitle}>{t('catalogScale')} · {t('subtitle')}</p>
         </div>
         <a className={css.website} href="https://skillhub.cn/" target="_blank" rel="noreferrer">
           <LinkIconMedium kind="url" href="https://skillhub.cn/" />{t('website')}

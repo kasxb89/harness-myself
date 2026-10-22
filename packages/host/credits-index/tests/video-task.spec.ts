@@ -23,6 +23,23 @@ function fixture(overrides: Partial<VideoTaskOptions> = {}) {
 }
 
 describe('single-submission video task receipts', () => {
+  it('retains an H3 unknown 202 task id and recovers it by GET without submitting again', async () => {
+    const unknown = { id: 'h3-original-task', task_id: 'h3-original-task', status: 'unknown', submission_state: 'unknown',
+      resubmittable: false, retryable: false, code: 'h3_submission_unknown' }
+    const submit = vi.fn(async () => json(unknown, 202))
+    const read = vi.fn(async () => json(unknown))
+    const f = fixture({ model: 'MiniMax-H3', route: '/v1/video/generations', submit, read })
+    const pending = await executeVideoTask(f.options)
+    expect(pending).toMatchObject({ ok: false, submissionState: 'pending', code: 'VIDEO_STATUS_INVALID', taskId: 'h3-original-task' })
+    expect(submit).toHaveBeenCalledOnce()
+    expect(read).toHaveBeenCalledWith('h3-original-task', expect.any(AbortSignal))
+    if (pending.videoReceipt === undefined) throw new Error('Expected the retained H3 receipt')
+    const resumed = fixture({ resumeReceipt: pending.videoReceipt })
+    expect(await executeVideoTask(resumed.options)).toMatchObject({ ok: true, taskId: 'h3-original-task' })
+    expect(resumed.submit).not.toHaveBeenCalled()
+    expect(resumed.read).toHaveBeenCalledWith('h3-original-task', expect.any(AbortSignal))
+  })
+
   it('persists submitting and accepted facts before the first GET, then marks the saved result complete', async () => {
     const f = fixture()
     f.read.mockImplementation(async () => {

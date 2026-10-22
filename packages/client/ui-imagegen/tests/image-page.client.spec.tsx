@@ -88,6 +88,39 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); cleanup(); vi.unstubAllGlobals() })
 
 describe('image creation workspace', () => {
+  it.each(['text', 'reference'] as const)('shows every live image ratio independently of its tier and submits both in %s mode', async (mode) => {
+    const sizes = ['1:1', '3:2', '2:3', '4:3', '3:4', '5:4', '4:5', '16:9', '9:16', '2:1', '1:2', '21:9', '9:21']
+    const original = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation(async (input, init) => input === '/credits/api/media/catalog'
+      ? json({ ok: true, payload: { image: [{ id: 'yunshu-internal-gpt-image-2', displayName: 'Internal image',
+        params: { sizes, resolutions: ['1k', '2k', '4k'], maxCount: 1, maxEdits: 6, qualities: [], backgrounds: [], formats: [], moderations: [], seed: false } }] } })
+      : await original(input, init))
+    const { props, store } = makeProps()
+    render(<ImagePage {...props} />)
+    await screen.findByRole('option', { name: 'Internal image' })
+    const ratio = screen.getByRole('combobox', { name: zh.ratio })
+    for (const size of sizes) for (const resolution of ['1k', '2k', '4k']) {
+      fireEvent.change(ratio, { target: { value: size } })
+      fireEvent.change(screen.getByRole('combobox', { name: zh.resolution }), { target: { value: resolution } })
+      expect(store.getSnapshot()).toMatchObject({ size, resolution })
+    }
+    expect(screen.queryByRole('combobox', { name: zh.quality })).toBeNull()
+    expect(screen.queryByRole('combobox', { name: zh.count })).toBeNull()
+    if (mode === 'reference') {
+      fireEvent.drop(screen.getByRole('region', { name: zh.composer }), {
+        dataTransfer: { files: [new File(['image'], 'reference.png', { type: 'image/png' })] },
+      })
+      await waitFor(() => { expect(store.getSnapshot().references).toHaveLength(1) })
+    }
+    fireEvent.change(screen.getByRole('textbox', { name: zh.prompt }), { target: { value: 'Use the exact ratio and tier' } })
+    await waitFor(() => { expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', false) })
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    await screen.findByText(zh.done)
+    expect(requestBody(fetchMock.mock.calls.find(([url]) => url === '/credits/api/image/generate'))).toMatchObject({
+      model: 'yunshu-internal-gpt-image-2', size: '9:21', resolution: '4k', count: 1, references: mode === 'reference' ? ['ma_1'] : [],
+    })
+  })
+
   it.each(['text', 'reference'] as const)('shows image specifications directly and submits the chosen values in %s mode', async (mode) => {
     const { props, store } = makeProps()
     render(<ImagePage {...props} />)

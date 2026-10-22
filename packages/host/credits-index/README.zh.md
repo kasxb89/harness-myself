@@ -51,6 +51,8 @@ kind: "package-reference"
 
 模型 `input` 缺失或为空时，仅在安装目录中精确相同的模型 ID 具有一致的非空输入声明时继承能力。已确认的产品别名 `yunshu-flash` 在没有精确声明时继承 `deepseek-flash` 的输入能力；其他别名不作猜测。发现操作只读取同一设置命名空间内的安装提供方目录，不联系其端点。明确的非空输入声明和其他模型设置在刷新及账号模型列表变化时保留。未知或能力冲突的 ID 不推断图像能力；继承的图像声明描述目录信息，不表示已验证中转请求。
 
+产品路由使用网关的 Chat Completions 格式：输出上限通过 `max_tokens` 传递，系统指令保留 `system` 角色，请求不发送 `store`。刷新保留其他兼容设置和逐型号覆盖。可选推理控件必须有该精确模型的支持声明；仅凭模型别名不推断推理格式或强度范围。未声明的上下文和输出能力保留适配器可配置的本地工作预算，不代表已经核实的上游限制；即使聊天没有选择显式上限，SDK 仍会发送按估算剩余上下文约束的本地输出预算。
+
 启动和每 60 秒的定时器复用同一刷新操作。登录、退出及本地会话过期在状态提交后立即通知模型选择器；模型发现保持异步，不延迟登录。成功刷新时，可用模型 ID、排序或实际默认型号变化会发出通知；内容不变的读取不发通知。登录变化和退出会取消旧发现；提交前检查登录代次、已存会话身份、后端和有效期。卸载会取消并等待未结束的发现操作。界面可以请求新目录，无需等待定时器。公开定价仍用于描述媒体参数，账号模型端点决定其聊天列表；已声明或已选择的模型仍可能被上游的权限或计费校验拒绝。
 
 ### 充值
@@ -107,7 +109,7 @@ Host 先使用 `/api/user/self` 核对产品会话中的账号，再通过 `/api
 
 `generate_image` 可直接编辑当前聊天用户附件中的图片，使用准确的附件 id 或投影后的只读路径，无需先复制到工作区。附件服务验证已保存字节；其他聊天图片及任意附件路径不授予读取权限。可读工作区图片仍执行通常的路径包含和文件检查。Host 将这些有界图片物化为私有 `ma_` 引用，再通过当前账号的中转 key，在完整配置的 API 前缀下向 `/v1/images/edits` 发送带 `image[]` 的 multipart 编辑请求。所选图片模型必须声明编辑能力；仅支持文生图的模型不会被静默开启编辑。
 
-`yunshu-internal-gpt-image-2` 使用聊天与 AI 创作共用的独立任务合约。Host 在上传任何字节前验证最多六张已授权的 PNG/JPEG/WebP 参考图，每张不超过 10 MiB。随后通过已鉴权的 `POST /v1/uploads/images`，用 multipart 的 `model` 和 `file` 逐张上传，再把经过验证、位于 `files.toapis.cn/uploads/` 或 `files.toapis.com/uploads/` 下的 HTTPS 回执 URL 作为 `reference_images` 提交给 `/toapis/v1/images/generations`。生成携带 `model`、`prompt`、`n: 1`、可选的 `reference_images`，以及已声明的 `resolution` 档位（`1k`、`2k` 或 `4k`，不区分大小写；省略时默认为 `1k`）。目录将档位与像素尺寸分开提供；不支持的档位在上传或生成前拒绝。不透传像素尺寸或其他 OpenAI 参数。回执要求 MIME 与大小匹配、id 非空，URL 不含凭据、查询或片段。两条路径都保留部署前缀，只使用当前账号的中转 key。文件无效、上传失败或回执无效时，提示原始文件名并在生成前停止。上传和生成均不自动重提；普通 OpenAI 编辑保留原 multipart 路由。
+`yunshu-internal-gpt-image-2` 使用聊天与 AI 创作共用的独立任务合约。Host 在上传任何字节前验证最多六张已授权的 PNG/JPEG/WebP 参考图，每张不超过 10 MiB。随后通过已鉴权的 `POST /v1/uploads/images`，用 multipart 的 `model` 和 `file` 逐张上传，再把经过验证、位于 `files.toapis.cn/uploads/` 或 `files.toapis.com/uploads/` 下的 HTTPS 回执 URL 作为 `reference_images` 提交给 `/toapis/v1/images/generations`。生成携带 `model`、`prompt`、`n: 1`、可选的 `reference_images`，以及已声明的 `resolution` 档位（`1k`、`2k` 或 `4k`，不区分大小写；省略时默认为 `1k`）。目录将档位与像素尺寸分开提供；不支持的档位在上传或生成前拒绝。只有实时定价 `size` 菜单明确发布的比例才以 `size` 发送；旧目录没有此声明时不展示比例控件。像素尺寸和不支持的 OpenAI 输出参数会在上传或生成前被拒绝，显式张数必须是模型上限内的安全整数。分辨率档位不保证输出的精确像素尺寸。回执要求 MIME 与大小匹配、id 非空，URL 不含凭据、查询或片段。两条路径都保留部署前缀，只使用当前账号的中转 key。文件无效、上传失败或回执无效时，提示原始文件名并在生成前停止。上传和生成均不自动重提；普通 OpenAI 编辑保留原 multipart 路由。
 
 单次图片与视频生成在后续轮询前持久保存原相对路由、模型、后端指纹、请求和任务编号，以及可用的生成来源。本地执行器仍在等待时，排队、处理中保持生成中；执行器停止后，原任务转为可查询的未知状态。临时查询、下载或保存失败时保留已受理任务。校验账号、聊天及工作区归属的 `POST /credits/api/creative/image/recover` 与 `/video/recover` 只恢复原任务 GET 查询，不再发送生成 POST。对应 `query_image_task` 和 `query_video_task` 工具可列出未确认回执，或查询准确的原操作。没有任务编号时保留未知状态，后端变化时拒绝查询，同一恢复操作互斥，确认终态前阻止重复付费提交。图片使用 `imageSubmitTimeoutMs`（180000）、`imageTaskTimeoutMs`（600000）、`imagePollIntervalMs`（2000）和 `imageQueryRetryLimit`（2）；视频对应配置默认为 180000、900000、6000 和 2。即使显式配置更低，视频提交等待也不低于 180000 毫秒。查询同时受 `timeoutMs` 限制；重试预算不重试生成提交。
 
@@ -143,6 +145,8 @@ Host 先使用 `/api/user/self` 核对产品会话中的账号，再通过 `/api
 
 明确的 `oneOf` 将 `properties.resolution.const` 或 `.enum` 与有限的 `properties.seconds` 或 `.duration` 配对。得到的 `durationByResolution` 菜单同时约束面板请求和项目规划；未列出的分辨率不可用，并且必须选择分辨率。例如，生产方可以明确发布 480P/768P 为 4–30 秒、2K 为 4–15 秒的两个分支。这说明解析器支持的格式，不表示当前 API 或尚未明确的上游支持这些组合。Host 在模型提交前拒绝不支持的组合、小数或非数值时长。
 
+显式视频参数的 JSON 类型不符或种子不是安全整数时，生成前会拒绝请求。分辨率、比例或档位菜单为空不授予任何值；不支持的控件会被拒绝，不会从面板请求中静默移除。
+
 本机 `POST /credits/api/assets` 按真实字节识别图片，不依赖后缀或 MIME 提示；完整解码 PNG/JPEG/JFIF/WebP/AVIF/GIF/BMP/TIFF/HEIC/HEIF，纠正方向后生成模型可用的 PNG 或 JPEG。原图上限为 32 MiB、4,000 万像素；转换后每张不超过 6 MiB，一次生成中的图片合计不超过 12 MiB。动态及多页图片明确取首帧。响应保留原文件名、实际来源格式、尺寸、转换后的 MIME/大小及转换信息；结构化失败标明对应上传，不泄露解码器异常。`GET`/`HEAD /credits/api/assets/preview?asset_id=...` 通过宿主认证及上传账号校验后提供转换后的图片，响应使用 `Cache-Control: no-store`。视频和音频仍要求 MIME 与文件签名匹配，分别限制为 32 MiB 和 15 MiB。生成请求的全部参考字节不超过 48 MiB，编码后的完整请求不超过 64 MiB。H3 与 Ark 将各自声明的参考素材放在同一个完整的 `metadata.content` 数组。Ark 条目保留 `first_frame`、`last_frame`、`reference_image` 和 `reference_video` 角色，不使用平铺首尾帧别名；已声明且选中的 `resolution`、`seed` 和 `generate_audio` 值也会发送到上游 metadata。其他线路保留原有的帧序列化方式。H3 与 Ark 禁止首尾帧和通用参考槽位混用；自适应比例需要实际图片或视频输入。媒体校验不证明上游生成质量。
 
 聊天工具的 `reference_audios` 接受已上传素材编号或可读的工作区 WAV/MP3 路径。视频项目保留这些引用用于恢复。可选的 `audio` 请求只有在所选模型声明了对应开关时才发送提供方开关。BlackRxAI 既未保证输出音轨，也未声明音频开关：目录设置 `audioOutput: unknown`，与参考音频输入上限相互独立。消费者不能根据保留的 `audio: false` 推断成片一定静音；请求也不能强制启用未声明的音频开关。缺少 `audioOutput` 的模型保留原有 `audio` 声明。H3 固定原生音频：接受 `audio: true`，不添加上游不支持的请求字段；`audio: false` 则在提交前拒绝。
@@ -177,6 +181,8 @@ Host 先使用 `/api/user/self` 核对产品会话中的账号，再通过 `/api
 项目使用已有的会话所属后台任务。工具返回规范的 `job_id`、`project_id` 和 `plan_seconds`；现有任务工具负责读取进度和取消。最终成功结果只包含经独立验证且实际保存的 `final_path` 和片段路径。代理通过现有 `present` 工具和可点击的产物链接交付最终文件。本地取消会停止后续提交和本地处理；中转服务没有取消操作，已被上游接受的任务可能继续运行和计费。
 
 同一项目的独立片段可以受控并发，最多使用 `videoProjectConcurrency` 与网关强制额度两者允许的路数。API 负责跨账号、跨用户的原子准入；读取到空闲名额不代表已预留。网关未确认具备原子准入时，项目保持串行。第一个片段失败或结果未知后停止新提交，保留已经启动工作的回执和结果。显式恢复仍可查询、下载和保存其他保留了任务编号的已受理片段；原阻塞仍存在时，不发送新的生成 POST，也不将缺段视频拼成成片。已受理任务按原编号查询，未知提交绝不自动重发。最终拼接始终遵循已保存时间轴，不按完成先后排序。客户端配置不代表上游账号实际容量，也不会配置账号池。
+
+对于精确型号 `MiniMax-H3`，真实账号绑定提供方从配置网关的当前定价行读取 `parameters["x-client-concurrency"]`，并在发现操作前后核对发起登录。仅当 `schema: 1`、`atomic_admission: true`、`model: "MiniMax-H3"`、`scope: "shared_account_pool"`、`reservation: false` 且 `max_parallelism` 是 1 至 16 的安全整数时允许并发。该值描述网关强制的账号池上限，不统计空闲槽位，也不预留上游服务。声明缺失、无效或重复时保持串行，其他型号同样串行。账号当前的中转模型清单仍须允许 H3。每一个 POST 都由网关单独执行原子准入。
 
 项目记录持续无法保存时，最终 `PROJECT_STORAGE_FAILED` 结果保留已知受理任务的 `task_ids`，提示用户保留编号并在后台核对。已保存记录仍标为 `submitting` 时，结果继续未确认并禁止重提；存储失败不表示上游生成失败。
 

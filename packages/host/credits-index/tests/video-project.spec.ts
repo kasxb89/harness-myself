@@ -93,6 +93,20 @@ async function setup(durations = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]) {
 }
 
 describe('minimum-request video duration planning', () => {
+  it('retains a queryable H3 unknown task and resumes its existing id without another POST', async () => {
+    const f = await setup([4])
+    const manifest = await prepareVideoProject(f.options, { prompt: 'An original H3 task', totalDurationSeconds: 4 },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    const check = vi.spyOn(f.provider, 'check').mockRejectedValueOnce(new VideoRelayError('VIDEO_STATUS_INVALID', '原任务尚未确认'))
+    expect(await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal)).toMatchObject({ status: 'failed', detail: 'VIDEO_STATUS_INVALID' })
+    const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+    expect(retained.segments[0]).toMatchObject({ status: 'running', taskId: 'task-1' })
+    expect(f.submitted).toBe(1)
+    expect(await runVideoProject(f.options, retained, f.provider, f.editor, f.job, f.signal)).toMatchObject({ status: 'completed' })
+    expect(f.submitted).toBe(1)
+    expect(check.mock.calls.map(([id]) => id)).toEqual(['task-1', 'task-1'])
+  })
+
   it('uses 15+15+10 when supported and three 15-second clips when fixed', () => {
     expect(planVideoDurations(40, Array.from({ length: 12 }, (_, index) => index + 4), 32)).toEqual([15, 15, 10])
     expect(planVideoDurations(40, [15], 32)).toEqual([15, 15, 15])

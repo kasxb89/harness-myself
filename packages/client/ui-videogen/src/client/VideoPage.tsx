@@ -566,6 +566,9 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
     if (sessionId === undefined) { actions.patch({ failure: t('sessionRequired') }); return }
     if (prompt.trim() === '') { actions.patch({ failure: t('promptRequired') }); promptField.current?.focus(); return }
     if (model === null || params === null) { actions.patch({ failure: t('noModel') }); return }
+    if (params.seed && seed.trim() !== '' && !Number.isSafeInteger(Number(seed))) {
+      actions.patch({ failure: t('seedInvalid') }); return
+    }
     if ((workflow === 'image' && (params.frameSlots > 0 ? firstFrame === null : slots.image.length === 0))
       || (workflow === 'frames' && (firstFrame === null || lastFrame === null))
       || (workflow === 'reference' && !hasReferences)) {

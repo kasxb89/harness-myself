@@ -252,7 +252,7 @@
           },
           "size": {
             "type": "string",
-            "description": "Optional output size such as 1024x1024 or auto. A value the chosen model does not support is refused with that model’s own menu. For yunshu-internal-gpt-image-2, omit pixel size; the server controls output settings."
+            "description": "Optional output size from the selected model’s published menu. yunshu-internal-gpt-image-2 accepts aspect-ratio strings only when its live catalog declares them, never pixel dimensions; use resolution for its independent 1k, 2k or 4k tier. An undeclared value is refused before generation."
           },
           "resolution": {
             "type": "string",

@@ -8,7 +8,7 @@ import { createVideoDraftStore } from '../src/client/draft-store.ts'
 import { VideoPage } from '../src/client/VideoPage.tsx'
 import { zh } from '../src/client/locales.ts'
 import { contentFixture } from '../../ui-imagegen/tests/content-fixture.client.ts'
-import { videoSpec } from '../../../host/credits-index/src/model-parameters.ts'
+import { videoSpec, VIDEO_MODELS } from '../../../host/credits-index/src/model-parameters.ts'
 
 const params = {
   defaultDuration: undefined as number | undefined,
@@ -87,6 +87,32 @@ beforeEach(() => { vi.useRealTimers(); sessionAccountId = 'account-a'; chatSessi
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 describe('video composer', () => {
+  it.each(Object.entries(VIDEO_MODELS).filter(([id, spec]) => id === 'MiniMax-H3' || spec.source === 'plugin:blackrxai-video'))(
+    'shows every declared duration and size and submits the selected values for %s', async (id, spec) => {
+      const { mount, task } = setup({ durations: [...spec.durations], defaultDuration: spec.defaultDuration,
+        resolutions: [...spec.resolutions], ratios: [...spec.ratios], frameRatios: spec.frameRatios, frameSlots: spec.frames,
+        maxReferenceImages: spec.referenceImages, maxReferenceVideos: spec.referenceVideos, maxReferenceAudios: spec.referenceAudios,
+        audio: spec.audio, audioOutput: spec.audioOutput, audioToggle: spec.audioToggle, modes: [...spec.modes], seed: spec.seed }, id)
+      mount()
+      await ready()
+      const settings = screen.getByRole('group', { name: zh.settings })
+      for (const resolution of spec.resolutions) fireEvent.click(within(settings).getByRole('button', { name: resolution }))
+      for (const seconds of spec.durations) fireEvent.click(within(settings).getByRole('button', { name: t('seconds', { n: String(seconds) }) }))
+      expect(within(settings).queryByRole('switch')).toBeNull()
+      expect(within(settings).queryByRole('textbox')).toBeNull()
+      if (spec.ratios.length === 0) expect(within(settings).queryByRole('group', { name: zh.ratio })).toBeNull()
+      writePrompt()
+      fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+      await waitFor(() => { expect(task).toHaveBeenCalledOnce() })
+      const body = requestBody(task.mock.calls[0]?.[0])
+      expect(body).toMatchObject({ model: id, resolution: spec.resolutions.at(-1), durationSeconds: spec.durations.at(-1),
+        frameImages: [], referenceImages: [], referenceVideos: [], referenceAudios: [] })
+      expect(body).not.toHaveProperty('audio')
+      expect(body).not.toHaveProperty('mode')
+      expect(body).not.toHaveProperty('seed')
+      if (spec.ratios.length === 0) expect(body).not.toHaveProperty('ratio')
+    })
+
   it.each([
     ['MiniMax-H3', 3],
     ['doubao-seedance-2-0-260128', 1], ['doubao-seedance-2-0-fast-260128', 1],
@@ -1446,6 +1472,20 @@ describe('video composer', () => {
     await waitFor(() => { expect(store.getSnapshot().phase).toBe('idle') })
     expect(store.getSnapshot().result?.path).toBe('/credits/media/new.mp4')
     expect(task).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['9007199254740992', '1.5', 'not-a-seed'])('retains an invalid seed %s and stops before generation', async (seed) => {
+    const { mount, store, task } = setup()
+    mount()
+    await ready()
+    writePrompt()
+    act(() => { store.actions.patch({ seed }) })
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    const failure = await screen.findByRole('alert')
+    expect(failure).toHaveProperty('textContent', zh.seedInvalid)
+    expect(failure.textContent).toMatchSnapshot()
+    expect(store.getSnapshot()).toMatchObject({ seed, phase: 'idle' })
+    expect(task).not.toHaveBeenCalled()
   })
 
   it('locks an uncertain original submission while retaining the previous clip and draft', async () => {

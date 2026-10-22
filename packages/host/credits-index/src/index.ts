@@ -52,6 +52,7 @@ import { registerVideoProjectTools } from './video-project-tools.ts'
 import { registerCreationWorkflows } from './creation-workflows.ts'
 import { recoverVideoProjectOutputs, VideoProjectError } from './video-project.ts'
 import { createVideoProjectRelay } from './video-project-provider.ts'
+import { h3ProjectParallelism } from './video-concurrency.ts'
 import { videoSubmission, type VideoReferenceSnapshot } from './video-submission.ts'
 import { bindVideoAccount } from './video-project-account.ts'
 import { artifactOriginOf, captureMediaOutput, type CapturedMediaOutput } from './media-output.ts'
@@ -911,6 +912,7 @@ export function apply(ctx: Context, config: Config): void {
     message?: string
     group: string | null
     models: ModelCapability[]
+    h3Parallelism?: number
   }> => {
     const group = await readUserGroup()
     try {
@@ -930,7 +932,7 @@ export function apply(ctx: Context, config: Config): void {
         (order.get(left.id) ?? last) - (order.get(right.id) ?? last))
       diagnosticModelIds.clear()
       for (const model of models) diagnosticModelIds.add(model.id)
-      return { ok: true, group, models }
+      return { ok: true, group, models, h3Parallelism: h3ProjectParallelism(rows) }
     } catch (error) {
       return {
         ok: false,
@@ -1177,9 +1179,20 @@ export function apply(ctx: Context, config: Config): void {
     body: Record<string, unknown>,
   ): Promise<{ ok: true; request: Record<string, unknown> } | { ok: false; code: string; message: string }> => {
     const params = model.params as VideoParams
+    for (const field of ['resolution', 'ratio', 'mode']) {
+      if (body[field] !== undefined && (typeof body[field] !== 'string' || body[field].trim() === '')) {
+        return { ok: false, code: 'INVALID_REQUEST', message: `${field} 需要是有效的模型参数；尚未提交生成` }
+      }
+    }
+    if (body.seed !== undefined && (typeof body.seed !== 'number' || !Number.isSafeInteger(body.seed))) {
+      return { ok: false, code: 'INVALID_REQUEST', message: '随机种子需要是安全整数；尚未提交生成' }
+    }
+    if (body.audio !== undefined && typeof body.audio !== 'boolean') {
+      return { ok: false, code: 'INVALID_REQUEST', message: '音频开关需要是布尔值；尚未提交生成' }
+    }
     const prompt = readString(body, 'prompt') ?? ''
     const resolution = readString(body, 'resolution')
-    if (resolution !== null && params.resolutions.length > 0 && !params.resolutions.includes(resolution)) {
+    if (resolution !== null && !params.resolutions.includes(resolution)) {
       return { ok: false, code: 'RESOLUTION_NOT_SUPPORTED', message: `${model.id} 的分辨率可选：${params.resolutions.join('、')}` }
     }
     const durations = videoDurations(params, resolution)
@@ -1190,15 +1203,17 @@ export function apply(ctx: Context, config: Config): void {
       return { ok: false, code: 'DURATION_NOT_SUPPORTED', message: `${model.id} 当前分辨率的时长可选：${durations.join('、') || '无'} 秒，请选择受支持的分辨率和时长` }
     }
     let ratio = readString(body, 'ratio')
-    if (ratio !== null && params.ratios.length > 0 && !params.ratios.includes(ratio)) {
+    if (ratio !== null && model.source !== 'plugin:blackrxai-video' && !params.ratios.includes(ratio)) {
       return { ok: false, code: 'RATIO_NOT_SUPPORTED', message: `${model.id} 的画面比例可选：${params.ratios.join('、')}` }
     }
     // Quality tiers, seed and the audio switch exist only where the vendor's
     // own route reads them; everything else is refused by name rather than
     // silently dropped on the floor.
     const mode = readString(body, 'mode')
-    if (mode !== null && params.modes.length > 0 && !params.modes.includes(mode)) {
-      return { ok: false, code: 'MODE_NOT_SUPPORTED', message: `${model.id} 的档位可选：${params.modes.join('、')}` }
+    if (mode !== null && model.source !== 'plugin:blackrxai-video' && !params.modes.includes(mode)) {
+      return { ok: false, code: 'MODE_NOT_SUPPORTED', message: params.modes.length === 0
+        ? `${model.id} 不支持档位参数，请移除 mode 后重试；尚未提交生成`
+        : `${model.id} 的档位可选：${params.modes.join('、')}` }
     }
     const seed = typeof body.seed === 'number' && Number.isInteger(body.seed) ? body.seed : null
     if (seed !== null && !params.seed) {
@@ -1295,6 +1310,7 @@ export function apply(ctx: Context, config: Config): void {
 
     const metadata: Record<string, unknown> = {}
     if (ratio !== null) metadata.ratio = ratio
+    if (model.id === 'MiniMax-H3' && resolution !== null) metadata.resolution = resolution
     const ark = model.source === 'plugin:doubao'
     if (ark) {
       if (resolution !== null && params.resolutions.includes(resolution)) metadata.resolution = resolution
@@ -1432,13 +1448,20 @@ export function apply(ctx: Context, config: Config): void {
       const params = capability.model.params as ImageParams
       const model = capability.model.id
       const internalImage = model === 'yunshu-internal-gpt-image-2'
+      if (internalImage) {
+        const unsupported = ['quality', 'background', 'format', 'compression', 'moderation', 'seed', 'output_format', 'output_compression', 'aspect_ratio']
+          .find(field => body[field] !== undefined)
+        if (unsupported !== undefined) return { ok: false, submissionState: 'not-submitted', model, code: 'PARAMETER_NOT_SUPPORTED',
+          message: `${model} 不支持 ${unsupported}，请使用目录公布的 size 比例和 resolution 档位；尚未提交生成` }
+      }
       const resolution = typeof body.resolution === 'string' ? body.resolution.toLowerCase() : undefined
       if (body.resolution !== undefined && (resolution === undefined || !(params.resolutions ?? []).includes(resolution))) {
         return { ok: false, submissionState: 'not-submitted', code: 'RESOLUTION_NOT_SUPPORTED',
           message: `${model} 的分辨率可选：${(params.resolutions ?? []).join('、') || '无'}` }
       }
-      const size = internalImage ? null : readString(body, 'size')
-      if (size !== null && params.sizes.length > 0 && !params.sizes.includes(size)) {
+      const size = readString(body, 'size')
+      if (internalImage && body.size !== undefined && (size === null || !params.sizes.includes(size))
+        || size !== null && params.sizes.length > 0 && !params.sizes.includes(size)) {
         return { ok: false, submissionState: 'not-submitted', code: 'SIZE_NOT_SUPPORTED', message: `${model} 不支持 ${size}，可选：${params.sizes.join('、')}` }
       }
       const quality = internalImage ? null : readString(body, 'quality')
@@ -1468,7 +1491,10 @@ export function apply(ctx: Context, config: Config): void {
       if (seed !== null && !params.seed) {
         return { ok: false, submissionState: 'not-submitted', code: 'SEED_NOT_SUPPORTED', message: `${model} 不支持随机种子` }
       }
-      const count = typeof body.count === 'number' && Number.isInteger(body.count) ? body.count : 1
+      if (body.count !== undefined && (typeof body.count !== 'number' || !Number.isSafeInteger(body.count))) {
+        return { ok: false, submissionState: 'not-submitted', model, code: 'COUNT_NOT_SUPPORTED', message: '图片张数需要是安全整数；尚未提交生成' }
+      }
+      const count = typeof body.count === 'number' ? body.count : 1
       if (count < 1 || count > params.maxCount) {
         return { ok: false, submissionState: 'not-submitted', code: 'COUNT_NOT_SUPPORTED', message: `${model} 一次可出 1–${String(params.maxCount)} 张` }
       }
@@ -1592,7 +1618,7 @@ export function apply(ctx: Context, config: Config): void {
           return apiFetch(capability.model.route, {
             method: 'POST', headers,
             body: JSON.stringify(internalImage
-              ? { model, prompt, n: 1, ...resolution === undefined ? {} : { resolution },
+              ? { model, prompt, n: 1, ...resolution === undefined ? {} : { resolution }, ...size === null ? {} : { size },
                 ...referenceUrls.length === 0 ? {} : { reference_images: referenceUrls } }
               : { model, prompt, n: count, ...extras }),
             signal: requestSignal,
@@ -1952,6 +1978,10 @@ export function apply(ctx: Context, config: Config): void {
     if (providers === undefined || current === undefined) throw new Error('产品模型路由尚未配置，请联系管理员。')
     const baseURL = apiUrl(apiBaseUrl, '/v1')
     const api = 'openai-completions'
+    // The product gateway accepts Chat Completions fields across vendors; its
+    // private URL cannot select the SDK's vendor-specific defaults.
+    const compat = { ...current.compat !== null && typeof current.compat === 'object' ? current.compat : {},
+      supportsStore: false, supportsDeveloperRole: false, maxTokensField: 'max_tokens' }
     const configured: readonly unknown[] = Array.isArray(current.models) ? current.models : []
     const previous = new Map<string, Record<string, unknown>>()
     for (const model of configured) {
@@ -1966,10 +1996,14 @@ export function apply(ctx: Context, config: Config): void {
         ? currentModel
         : { ...currentModel, input: [...input] }
     })
+    // Strict provider writes require a nonempty custom catalog. The live
+    // account's first discovered IDs carry the route migration in that case.
+    if (models.length === 0) return
     const sameModels = JSON.stringify(configured) === JSON.stringify(models)
-    if (sameModels && current.baseURL === baseURL && current.api === api && current.apiKeyEnv === resolved.relayTokenEnv) return
+    if (sameModels && current.baseURL === baseURL && current.api === api && current.apiKeyEnv === resolved.relayTokenEnv
+      && JSON.stringify(current.compat) === JSON.stringify(compat)) return
     await settings.replace(resolved.chatSettingsNamespace, { providers: { ...providers,
-      [route]: { ...current, baseURL, api, apiKeyEnv: resolved.relayTokenEnv,
+      [route]: { ...current, baseURL, api, apiKeyEnv: resolved.relayTokenEnv, compat,
         ...ids === undefined || ids.length === 0 ? {} : { models } },
     } }, descriptor?.revision)
   }
@@ -3658,6 +3692,20 @@ export function apply(ctx: Context, config: Config): void {
         return {
           identity: binding.identity,
           assertCurrent: async () => { await binding.key() },
+          parallelism: async (id, signal) => {
+            signal.throwIfAborted()
+            await binding.key()
+            signal.throwIfAborted()
+            if (id !== 'MiniMax-H3') return 1
+            const [ids, catalog] = await Promise.all([relay.modelIds(signal), readMediaCatalog(signal)])
+            signal.throwIfAborted()
+            await binding.key()
+            if (!catalog.ok) return 1
+            if (!ids.includes(id) || !catalog.models.some(model => model.id === id && model.kind === 'video')) {
+              throw new VideoProjectError('VIDEO_MODEL_UNAVAILABLE', '当前登录账户没有可用的所选视频模型，请检查后台模型配置')
+            }
+            return catalog.h3Parallelism ?? 1
+          },
           model: async (id, signal, resolution) => {
             const [ids, catalog] = await Promise.all([relay.modelIds(signal), readMediaCatalog(signal)])
             const allowed = new Set(ids)
@@ -3714,7 +3762,7 @@ export function apply(ctx: Context, config: Config): void {
       asset_id: { type: 'string', description: 'Exact image asset id in plan_id, including a video plan. Mutually exclusive with shot_id. Creates or reconstructs this source asset, not a finished shot.' },
       prompt: { type: 'string', required: true, description: 'What the image should show.' },
       model: { type: 'string', description: 'Optional image model id such as gpt-image-2. Defaults to the first image model the deployment serves for this account.' },
-      size: { type: 'string', description: 'Optional output size such as 1024x1024 or auto. A value the chosen model does not support is refused with that model’s own menu. For yunshu-internal-gpt-image-2, omit pixel size; the server controls output settings.' },
+      size: { type: 'string', description: 'Optional output size from the selected model’s published menu. yunshu-internal-gpt-image-2 accepts aspect-ratio strings only when its live catalog declares them, never pixel dimensions; use resolution for its independent 1k, 2k or 4k tier. An undeclared value is refused before generation.' },
       resolution: { type: 'string', description: 'Optional named output tier, only when declared by the chosen model. yunshu-internal-gpt-image-2 accepts 1k, 2k or 4k and defaults to 1k; this is independent from pixel size.' },
       count: { type: 'number', description: 'How many images to render, within the model’s limit (usually 1–4).' },
       reference_images: { type: 'array', items: { type: 'string' }, description: 'Reference images for editing: current-chat user image attachment ids or their exact read-only paths, readable PNG/JPEG/WebP files inside the current workspace, uploaded ma_ ids, or real generated image output ids/paths owned by the same explicit plan_id. Other-chat attachments, unrelated local paths and URLs are refused.' },

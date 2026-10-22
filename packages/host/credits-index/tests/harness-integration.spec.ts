@@ -19,7 +19,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
 import LocalAttachmentStore from '@deepseek-ai/dsh-attachment-local'
 import SessionStore, { Session, SessionId, SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
-import LlmRuntime, { createUserMessage, ToolCallId, type FinishReason } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { createUserMessage, ReasoningEffortId, ToolCallId, type FinishReason } from '@deepseek-ai/dsh-llm'
 import * as LlmPiAi from '@deepseek-ai/dsh-llm-pi-ai'
 import * as Artifacts from '@deepseek-ai/dsh-artifacts-index'
 import * as Connection from '@deepseek-ai/dsh-client-connection'
@@ -976,19 +976,17 @@ describe('deployed Harness API through the real product Loader', () => {
     } } })))
     const references = sources.map(asset => String(asset.assetId))
     const prompt = '保留妈妈和孩子的外貌，换成温暖的客厅'
-    const outputKnobs = { size: '1024x1024', quality: 'high', background: 'transparent', format: 'webp', compression: 75,
-      moderation: 'low', seed: 42, output_format: 'webp', output_compression: 75 }
     let saved: string
     if (entry === 'panel') {
       context!.sessions.create(SessionId('internal-image-chat'), { meta: { cwd: stateDir } })
       const result = await post(base, '/api/image/generate', {
-        session_id: 'internal-image-chat', account_id: '7', model, prompt, references, ...outputKnobs,
+        session_id: 'internal-image-chat', account_id: '7', model, prompt, references,
       }, cookie)
       expect(result).toMatchObject({ ok: true, mode: 'edit' })
       saved = String(object(result.payload).path)
     } else {
       const result = object((await context!.tools.execute({
-        name: 'generate_image', arguments: { model, prompt, reference_images: references, ...outputKnobs },
+        name: 'generate_image', arguments: { model, prompt, reference_images: references },
         agent: videoAgent(stateDir), callId: ToolCallId('internal-image'), signal: new AbortController().signal,
       })).value)
       expect(result).toMatchObject({ status: 'succeeded', model })
@@ -1012,6 +1010,72 @@ describe('deployed Harness API through the real product Loader', () => {
     expect(calls.some(call => call.path === '/harness/v1/images/edits' || call.path === '/harness/v1/images/generations')).toBe(false)
     expect(internalUploadResponses).toEqual([])
   }, 15_000)
+
+  it.each(['panel', 'tool'] as const)('rejects unsupported internal image controls and invalid counts through %s before upload or generation', async (entry) => {
+    const { base, stateDir } = await boot(undefined, true, true)
+    const cookie = await hostCookie(base)
+    await signIn(base)
+    const model = 'yunshu-internal-gpt-image-2'
+    relayModels.push({ id: model, object: 'model', supported_endpoint_types: ['image-generation'] })
+    pricingRows = [{ model_name: model, supported_endpoint_types: ['image-generation'] }]
+    const agent = videoAgent(stateDir, 'invalid-internal-image-controls')
+    context!.sessions.create(SessionId(agent.id), { meta: { cwd: stateDir } })
+    const generate = (extra: Record<string, unknown>) => entry === 'panel'
+      ? post(base, '/api/image/generate', { session_id: agent.id, account_id: '7', model, prompt: 'Validate before billing',
+        references: ['ma_missing'], ...extra }, cookie)
+      : context!.tools.execute({ name: 'generate_image', arguments: { model, prompt: 'Validate before billing',
+        reference_images: [], ...extra }, agent, callId: ToolCallId('invalid-internal-image'), signal: new AbortController().signal })
+        .then(result => object(result.value))
+    for (const size of entry === 'tool' ? ['1024x1024', '16:9'] : ['1024x1024', '16:9', null]) {
+      expect(await generate({ size })).toMatchObject({ code: 'SIZE_NOT_SUPPORTED', submission_state: 'not-submitted' })
+    }
+    const unsupported = entry === 'tool' ? [] : [
+      { quality: 'high' }, { background: 'transparent' }, { format: 'webp' },
+      { compression: 75 }, { moderation: 'low' }, { seed: 42 }, { output_format: 'webp' }, { output_compression: 75 }, { aspect_ratio: '16:9' },
+    ]
+    for (const extra of unsupported) expect(await generate(extra)).toMatchObject({ code: 'PARAMETER_NOT_SUPPORTED', submission_state: 'not-submitted' })
+    const counts = entry === 'tool' ? [1.5, Number.MAX_SAFE_INTEGER + 1, 0, 2] : [null, '2', 1.5, Number.MAX_SAFE_INTEGER + 1, 0, 2]
+    for (const count of counts) {
+      expect(await generate({ count })).toMatchObject({ code: 'COUNT_NOT_SUPPORTED', submission_state: 'not-submitted' })
+    }
+    expect(calls.filter(call => call.path.includes('/uploads/images') || call.path.includes('/toapis/')
+      || call.path === '/harness/v1/images/generations' || call.path === '/harness/v1/images/edits')).toEqual([])
+  })
+
+  it.each((['panel', 'tool'] as const).flatMap(entry => ['1:1', '3:2', '2:3', '4:3', '3:4', '5:4', '4:5', '16:9', '9:16', '2:1', '1:2', '21:9', '9:21']
+    .map(size => ({ entry, size }))))('forwards the published image ratio $size and every tier through $entry with references', async ({ entry, size }) => {
+    const { base, stateDir } = await boot(undefined, false, true)
+    const cookie = await hostCookie(base)
+    await signIn(base)
+    const model = 'yunshu-internal-gpt-image-2'
+    const sizes = ['1:1', '3:2', '2:3', '4:3', '3:4', '5:4', '4:5', '16:9', '9:16', '2:1', '1:2', '21:9', '9:21']
+    relayModels.push({ id: model, object: 'model', supported_endpoint_types: ['image-generation'] })
+    pricingRows = [{ model_name: model, supported_endpoint_types: ['image-generation'], parameters: { type: 'object', properties: {
+      size: { type: 'string', enum: sizes, default: '1:1' }, resolution: { type: 'string', enum: ['1k', '2k', '4k'], default: '1k' },
+    } } }]
+    const png = await sharp({ create: { width: 2, height: 2, channels: 3, background: '#ccbbaa' } }).png().toBuffer()
+    imageResponse = { data: [{ b64_json: png.toString('base64') }] }
+    const asset = await uploadImage(base, cookie, 'live-ratio-reference.png', png)
+    const agent = videoAgent(stateDir, 'image-ratio-chat')
+    context!.sessions.create(SessionId(agent.id), { meta: { cwd: stateDir } })
+    const referenceUrl = 'https://files.toapis.cn/uploads/live-ratio-reference.png'
+    for (const resolution of ['1k', '2k', '4k']) {
+      internalUploadResponses.push({ status: 200, body: { success: true, data: {
+        id: 'ratio_reference', url: referenceUrl, mime_type: asset.contentType, size: asset.sizeBytes,
+      } } })
+      const answer = entry === 'panel'
+        ? await post(base, '/api/image/generate', { session_id: agent.id, account_id: '7', model, prompt: 'Exact published image settings',
+          size, resolution, references: [String(asset.assetId)] }, cookie)
+        : object((await context!.tools.execute({ name: 'generate_image', arguments: { model, prompt: 'Exact published image settings',
+          size, resolution, reference_images: [String(asset.assetId)] }, agent, callId: ToolCallId('live-image-ratio'),
+        signal: new AbortController().signal })).value)
+      expect(answer).toMatchObject(entry === 'panel' ? { ok: true } : { status: 'succeeded' })
+      expect(calls.filter(call => call.path === '/harness/toapis/v1/images/generations').at(-1)?.body).toEqual({
+        model, prompt: 'Exact published image settings', n: 1, size, resolution, reference_images: [referenceUrl],
+      })
+    }
+    expect(calls.filter(call => call.path === '/harness/toapis/v1/images/generations')).toHaveLength(3)
+  })
 
   it.each([['panel', '1k'], ['tool', '2k'], ['panel', '4K']] as const)('preserves references with the named internal image tier through %s at %s', async (entry, resolution) => {
     const { base, stateDir } = await boot(undefined, false, true)
@@ -1757,6 +1821,15 @@ describe('deployed Harness API through the real product Loader', () => {
     const disabled = object((await execute({ audio: false })).value)
     expect(disabled.status).toBe('failed')
     expect(disabled.message).toContain('不能关闭')
+    expect(await post(base, '/api/video/tasks?source=newapi-generate', {
+      prompt: 'A synthetic clip', model: 'MiniMax-H3', durationSeconds: 4, mode: 'pro',
+    })).toMatchObject({ ok: false, code: 'MODE_NOT_SUPPORTED' })
+    for (const invalid of [{ resolution: 768 }, { resolution: '' }, { ratio: false }, { ratio: null }, { mode: 1 },
+      { mode: '' }, { seed: 1.5 }, { seed: '12' }, { seed: Number.MAX_SAFE_INTEGER + 1 }, { audio: 'false' }, { audio: null }]) {
+      expect(await post(base, '/api/video/tasks?source=newapi-generate', {
+        prompt: 'Reject invalid explicit parameters', model: 'MiniMax-H3', durationSeconds: 4, ...invalid,
+      })).toMatchObject({ ok: false, code: 'INVALID_REQUEST' })
+    }
     expect(calls.filter(call => call.path === '/harness/v1/video/generations')).toEqual([])
     await execute({ audio: true, reference_audios: ['voice.wav'] })
     const first = object(calls.find(call => call.path === '/harness/v1/video/generations')?.body)
@@ -1981,6 +2054,132 @@ describe('deployed Harness API through the real product Loader', () => {
       expect.objectContaining({ id: 'deepseek-flash', input: ['text'], name: 'My model', contextWindow: 65_536, maxTokens: 2048 }),
     ]))
     expect(calls.some(call => call.path.includes('chat/completions'))).toBe(false)
+  })
+
+  it('sends all current product chat IDs and historical disabled IDs through the gateway dialect', async () => {
+    // Exact enabled product-group IDs from the gateway's safe model audit;
+    // upstream aliases stay server-owned and do not imply optional capabilities.
+    const currentIds = ['yunshu-flash', 'deepseek-flash',
+      'deepseek-v4-pro', 'glm-5.1', 'glm-5.2', 'gp-5.5', 'kimi-k2.6', 'kimi-k2.7-code',
+      'qwen3.6-flash', 'qwen3.6-plus', 'qwen3.7-max', 'qwen3.7-plus', 'qwen3.8-max', 'ys-1.0', 'claode-5']
+    const disabledIds = ['deepseek-v4-flash', 'deepseek-v4-flash-0731']
+    const ids = [...currentIds, ...disabledIds]
+    relayModels = ids.map(id => ({ id, object: 'model', supported_endpoint_types: ['openai'] }))
+    const { base } = await boot(undefined, false, false, undefined, {}, 'desktop')
+    await signIn(base)
+    await context!.llm.listModels('yunshu-local')
+    for (const model of ids) {
+      const prepared = await context!.llm.prepareCall({ provider: 'yunshu-local', model, maxTokens: 512 })
+      for await (const chunk of prepared.stream({ ...prepared.config,
+        messages: [createUserMessage({ content: [{ type: 'text', text: 'Synthetic local chat check' }], source: { kind: 'user' } })],
+        system: 'Synthetic test system', tools: [{ name: 'synthetic_lookup', description: 'Local check', parameters: { type: 'object', properties: {} } }],
+      })) {
+        if (chunk.type === 'finish') expect(chunk.reason.kind).toBe('stop')
+      }
+    }
+    const requests = calls.filter(call => call.path === '/harness/v1/chat/completions')
+    expect(requests).toHaveLength(ids.length)
+    expect(requests.filter(call => currentIds.includes(String(object(call.body).model)))).toHaveLength(15)
+    expect(requests.map(call => object(call.body).model)).toEqual(ids)
+    expect(requests[0]?.body).toMatchInlineSnapshot(`
+      {
+        "max_tokens": 512,
+        "messages": [
+          {
+            "content": "Synthetic test system",
+            "role": "system",
+          },
+          {
+            "content": "Synthetic local chat check",
+            "role": "user",
+          },
+        ],
+        "model": "yunshu-flash",
+        "stream": true,
+        "stream_options": {
+          "include_usage": true,
+        },
+        "tools": [
+          {
+            "function": {
+              "description": "Local check",
+              "name": "synthetic_lookup",
+              "parameters": {
+                "properties": {},
+                "type": "object",
+              },
+            },
+            "type": "function",
+          },
+        ],
+      }
+    `)
+    for (const request of requests) {
+      expect(request.authorization).toBe('Bearer sk-owned-relay')
+      expect(request.body).toMatchObject({ stream: true, max_tokens: 512, stream_options: { include_usage: true },
+        messages: [{ role: 'system', content: 'Synthetic test system' }, { role: 'user', content: 'Synthetic local chat check' }],
+        tools: [{ type: 'function', function: { name: 'synthetic_lookup', parameters: { type: 'object', properties: {} } } }],
+      })
+      for (const field of ['store', 'max_completion_tokens', 'temperature', 'top_p', 'thinking', 'reasoning_effort', 'enable_thinking']) {
+        expect(request.body).not.toHaveProperty(field)
+      }
+    }
+    for (const model of ['gp-5.5', 'ys-1.0', 'claode-5']) {
+      await expect(context!.llm.prepareCall({ provider: 'yunshu-local', model, reasoningEffort: ReasoningEffortId('high') }))
+        .rejects.toMatchObject({ code: 'UNSUPPORTED_REASONING_EFFORT' })
+    }
+    expect(calls.filter(call => call.path === '/harness/v1/chat/completions')).toHaveLength(ids.length)
+  })
+
+  it.each([
+    { hint: undefined, maximum: 1 },
+    { hint: { schema: 1, atomic_admission: true, max_parallelism: 16, model: 'MiniMax-H3', scope: 'shared_account_pool', reservation: false }, maximum: 16 },
+    { hint: { schema: 1, atomic_admission: false, max_parallelism: 16, model: 'MiniMax-H3', scope: 'shared_account_pool', reservation: false }, maximum: 1 },
+  ])('reads only the current account-bound enforced H3 ceiling $maximum from hint $hint', async ({ hint, maximum }) => {
+    let options: VideoProjectOptions | undefined
+    const register = VideoProjectTools.registerVideoProjectTools
+    vi.spyOn(VideoProjectTools, 'registerVideoProjectTools').mockImplementation((ctx, value) => { options = value; register(ctx, value) })
+    const { base, stateDir } = await boot(undefined, false, false, undefined, {}, 'desktop')
+    await signIn(base)
+    pricingRows = [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'],
+      parameters: { 'x-client-concurrency': hint } }]
+    if (options === undefined) throw new Error('Expected the account-bound project provider')
+    const provider = await options.acquireProvider(stateDir, videoAgent(stateDir).session)
+    if (provider.parallelism === undefined) throw new Error('Expected the real gateway concurrency reader')
+    expect(await provider.parallelism('MiniMax-H3', new AbortController().signal)).toBe(maximum)
+    expect(await provider.parallelism('another-video', new AbortController().signal)).toBe(1)
+    expect(calls.filter(call => call.path === '/harness/v1/models').every(call => call.authorization === 'Bearer sk-owned-relay')).toBe(true)
+    expect(calls.some(call => call.path === '/harness/v1/video/generations' || call.path === '/harness/v1/videos')).toBe(false)
+    await post(base, '/api/session/logout', {})
+    await expect(provider.parallelism('MiniMax-H3', new AbortController().signal)).rejects.toThrow('登录')
+  })
+
+  it('rejects an H3 ceiling read whose initiating login changes before the catalog returns', async () => {
+    let options: VideoProjectOptions | undefined
+    const register = VideoProjectTools.registerVideoProjectTools
+    vi.spyOn(VideoProjectTools, 'registerVideoProjectTools').mockImplementation((ctx, value) => { options = value; register(ctx, value) })
+    const { base, stateDir } = await boot(undefined, false, false, undefined, {}, 'desktop')
+    await signIn(base)
+    await context!.llm.listModels('yunshu-local')
+    pricingRows = [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'], parameters: {
+      'x-client-concurrency': { schema: 1, atomic_admission: true, max_parallelism: 16, model: 'MiniMax-H3', scope: 'shared_account_pool', reservation: false },
+    } }]
+    if (options === undefined) throw new Error('Expected the account-bound project provider')
+    const provider = await options.acquireProvider(stateDir, videoAgent(stateDir).session)
+    if (provider.parallelism === undefined) throw new Error('Expected the real gateway concurrency reader')
+    const started = Promise.withResolvers<undefined>()
+    const release = Promise.withResolvers<undefined>()
+    releaseUpstreamGate = () => { release.resolve(undefined) }
+    upstreamGate = async (path) => {
+      if (path === '/harness/api/pricing') { started.resolve(undefined); await release.promise }
+    }
+    const rejected = expect(provider.parallelism('MiniMax-H3', new AbortController().signal)).rejects.toThrow('登录')
+    try {
+      await started.promise
+      await post(base, '/api/session/logout', {})
+    } finally { release.resolve(undefined) }
+    await rejected
+    expect(calls.some(call => call.path === '/harness/v1/video/generations' || call.path === '/harness/v1/videos')).toBe(false)
   })
 
   it.each(['desktop', 'web', 'headless'] as const)('labels only Desktop video requests from the %s launcher profile across chat and project operations', async (profileName) => {
@@ -2530,6 +2729,127 @@ describe('deployed Harness API through the real product Loader', () => {
     expect(await generate()).toMatchObject({ ok: false, code: 'REFERENCE_MISSING' })
     expect(calls.filter(call => call.path === '/harness/v1/videos')).toHaveLength(1)
   }, 15_000)
+
+  it('preserves every product video duration and size through project preparation and real relay HTTP', async () => {
+    let options: VideoProjectOptions | undefined
+    const register = VideoProjectTools.registerVideoProjectTools
+    vi.spyOn(VideoProjectTools, 'registerVideoProjectTools').mockImplementation((ctx, value) => { options = value; register(ctx, value) })
+    const { base, stateDir } = await boot()
+    await signIn(base)
+    const variable = Array.from({ length: 16 }, (_, index) => index + 15)
+    const policies = [
+      ['lec-mj-seedance-2-5-cd-720p', [30], 9, 0, 0], ['sd-25-900-2', [30], 9, 0, 0],
+      ['k2-sd2.5-720p', [30], 30, 10, 10], ['lec-sz-sd2-full-480p', [30], 30, 0, 10],
+      ['video-sd25-480p', variable, 30, 10, 10], ['model_5', variable, 30, 10, 10],
+      ['sd2.5-720p-x2', variable, 30, 10, 10], ['sd2-th-2.0-720p', [15], 9, 0, 3],
+      ['bt-seedance-2.0', [10, 15], 8, 0, 0], ['lec-rs-seedance-2-0-fast', [15], 9, 0, 0],
+      ['sd20-933-720p', [15], 9, 3, 3], ['sd2-hn2-480-pro', [15], 9, 3, 3],
+      ['v3-sd2.0-933-720p', [15], 9, 3, 3], ['sd-20-9/3/3-1', [15], 9, 0, 3],
+      ['sd-20-903', [15], 9, 0, 3],
+    ] as const
+    pricingRows = [...policies.map(([model_name]) => ({ model_name, supported_endpoint_types: ['openai-video'] })),
+      { model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }]
+    relayModels.push(...policies.map(([id]) => ({ id, object: 'model', supported_endpoint_types: ['openai-video'] })))
+    videoTaskStatus = 'SUCCESS'
+    if (options === undefined) throw new Error('Expected the real project provider')
+    const provider = await options.acquireProvider(stateDir, videoAgent(stateDir).session)
+    const signal = new AbortController().signal
+    let submitted = 0
+    for (const [model, durations] of policies) {
+      const selected = await provider.model(model, signal)
+      expect(selected.durations).toEqual(durations)
+      for (const resolution of ['1280x720', '720x1280', '1792x1024', '1024x1792']) {
+        for (const seconds of durations) {
+          const request = await provider.build({ prompt: 'A synthetic parameter check', totalDurationSeconds: seconds,
+            resolution }, model, 'A synthetic parameter check', seconds, signal)
+          await expect(provider.submit(request, signal)).resolves.toEqual({ taskId: 'fixture-video-task' })
+          expect(calls.at(-1)).toMatchObject({ path: '/harness/v1/videos', authorization: 'Bearer sk-owned-relay', body: {
+            model, prompt: 'A synthetic parameter check', seconds, size: resolution, gen_type: 'text_to_video', n: 1,
+          } })
+          expect(Object.keys(object(calls.at(-1)?.body)).sort()).toEqual(['gen_type', 'model', 'n', 'prompt', 'seconds', 'size'])
+          submitted += 1
+        }
+      }
+    }
+    const h3 = await provider.model('MiniMax-H3', signal)
+    expect(h3.durations).toEqual(Array.from({ length: 12 }, (_, index) => index + 4))
+    for (const resolution of ['768P', '2K']) for (const seconds of h3.durations) {
+      const request = await provider.build({ prompt: 'A synthetic H3 check', totalDurationSeconds: seconds,
+        resolution, ratio: '16:9', audio: true }, h3.id, 'A synthetic H3 check', seconds, signal)
+      await expect(provider.submit(request, signal)).resolves.toEqual({ taskId: 'fixture-video-task' })
+      expect(calls.at(-1)).toMatchObject({ path: '/harness/v1/video/generations', body: {
+        model: 'MiniMax-H3', prompt: 'A synthetic H3 check', duration: seconds, seconds, resolution, size: resolution,
+        ratio: '16:9', aspect_ratio: '16:9', metadata: { ratio: '16:9', resolution },
+      } })
+      expect(object(calls.at(-1)?.body)).not.toHaveProperty('generate_audio')
+      submitted += 1
+    }
+    const posts = calls.filter(call => call.path === '/harness/v1/videos' || call.path === '/harness/v1/video/generations')
+    expect(posts).toHaveLength(submitted)
+    expect(submitted).toBe(268)
+
+    const image = await uploadImage(base, '', 'parameter-reference.png', await sharp({
+      create: { width: 3, height: 2, channels: 3, background: '#663399' },
+    }).png().toBuffer())
+    const upload = async (type: string, filename: string, bytes: Buffer): Promise<string> => {
+      const response = await fetch(base + '/api/assets', { method: 'POST', headers: {
+        'content-type': type, 'x-file-name': filename, 'x-idempotency-key': filename,
+      }, body: new Uint8Array(bytes) })
+      const answer = object(await response.json())
+      expect(answer.ok).toBe(true)
+      return String(object(answer.asset).assetId)
+    }
+    const video = await upload('video/mp4', 'parameter-reference.mp4', generatedVideo)
+    const audio = await upload('audio/wav', 'parameter-reference.wav', Buffer.from('RIFF0000WAVEdata', 'ascii'))
+    for (const [model, durations, images, videos, audios] of policies) {
+      const seconds = durations[0]
+      const request = await provider.build({ prompt: 'Retain every accepted reference', totalDurationSeconds: seconds,
+        resolution: '720x1280', referenceImages: Array<string>(images).fill(String(image.assetId)),
+        referenceVideos: Array<string>(videos).fill(video), referenceAudios: Array<string>(audios).fill(audio),
+      }, model, 'Retain every accepted reference', seconds, signal)
+      await expect(provider.submit(request, signal)).resolves.toEqual({ taskId: 'fixture-video-task' })
+      const encoded = object(calls.at(-1)?.body).multipart
+      if (typeof encoded !== 'string') throw new Error('Expected multipart references')
+      const multipart = Buffer.from(encoded, 'base64').toString('utf8')
+      expect(multipart.match(/name="images";/gu) ?? []).toHaveLength(images)
+      expect(multipart.match(/name="videos";/gu) ?? []).toHaveLength(videos)
+      expect(multipart.match(/name="audios";/gu) ?? []).toHaveLength(audios)
+      expect(multipart).toContain('name="gen_type"\r\n\r\nreference_to_video')
+      expect(multipart).not.toMatch(/name="(?:metadata|resolution|ratio|duration|_blackrxReferences)"|data:(?:image|video|audio)\//u)
+      await expect(provider.build({ prompt: 'Reject the excess reference', totalDurationSeconds: seconds,
+        referenceImages: Array<string>(images + 1).fill(String(image.assetId)),
+      }, model, 'Reject the excess reference', seconds, signal)).rejects.toMatchObject({ code: 'REFERENCES_NOT_SUPPORTED' })
+      await expect(provider.build({ prompt: 'Reject the frame slot', totalDurationSeconds: seconds,
+        frameImages: [String(image.assetId)],
+      }, model, 'Reject the frame slot', seconds, signal)).rejects.toMatchObject({ code: 'REFERENCES_NOT_SUPPORTED' })
+    }
+    const request = await provider.build({ prompt: 'All H3 media slots', totalDurationSeconds: 15, resolution: '2K', ratio: 'adaptive',
+      referenceImages: Array<string>(9).fill(String(image.assetId)), referenceVideos: Array<string>(3).fill(video),
+      referenceAudios: Array<string>(3).fill(audio),
+    }, h3.id, 'All H3 media slots', 15, signal)
+    await expect(provider.submit(request, signal)).resolves.toEqual({ taskId: 'fixture-video-task' })
+    const content = object(object(calls.at(-1)?.body).metadata).content
+    if (!Array.isArray(content)) throw new Error('Expected complete H3 media content')
+    expect(content.filter(item => object(item).role === 'reference_image')).toHaveLength(9)
+    expect(content.filter(item => object(item).role === 'reference_video')).toHaveLength(3)
+    expect(content.filter(item => object(item).role === 'reference_audio')).toHaveLength(3)
+    const frames = await provider.build({ prompt: 'H3 first and last frames', totalDurationSeconds: 5, resolution: '768P',
+      frameImages: [String(image.assetId), String(image.assetId)], ratio: 'adaptive',
+    }, h3.id, 'H3 first and last frames', 5, signal)
+    await expect(provider.submit(frames, signal)).resolves.toEqual({ taskId: 'fixture-video-task' })
+    const frameMetadata = object(object(calls.at(-1)?.body).metadata)
+    expect(frameMetadata.first_frame_image).toMatch(/^data:image\/(?:png|jpeg);base64,/u)
+    expect(frameMetadata.last_frame_image).toBe(frameMetadata.first_frame_image)
+    expect(calls.filter(call => call.path === '/harness/v1/videos' || call.path === '/harness/v1/video/generations')).toHaveLength(285)
+    pricingRows.push({ model_name: 'unknown-video', supported_endpoint_types: ['openai-video'] })
+    relayModels.push({ id: 'unknown-video', object: 'model', supported_endpoint_types: ['openai-video'] })
+    const unknown = await provider.model('unknown-video', signal)
+    for (const [control, code] of [[{ resolution: '2K' }, 'RESOLUTION_NOT_SUPPORTED'], [{ ratio: '16:9' }, 'RATIO_NOT_SUPPORTED']] as const) {
+      await expect(provider.build({ prompt: 'No undeclared control', totalDurationSeconds: 4, ...control }, unknown.id,
+        'No undeclared control', 4, signal)).rejects.toMatchObject({ code })
+    }
+    expect(calls.filter(call => call.path === '/harness/v1/videos' || call.path === '/harness/v1/video/generations')).toHaveLength(285)
+  })
 
   it.each(['panel', 'tool'] as const)('recovers the original accepted BlackRxAI video through %s with GET only after local cancellation', async (entry) => {
     const { base, stateDir } = await boot(undefined, true, true)
