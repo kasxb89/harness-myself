@@ -13,7 +13,7 @@
  * @module @deepseek-ai/dsh-experimental-webworker-packer/src/pack
  */
 import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
-import { dirname, join, relative } from 'node:path'
+import { dirname, join, posix, relative } from 'node:path'
 import { gzipSync } from 'node:zlib'
 
 import {
@@ -363,7 +363,7 @@ function isDeclarationOnlyExport(value: unknown): boolean {
     condition === 'types' || condition.startsWith('types@') || isDeclarationOnlyExport(target))
 }
 
-/** Select Node's explicit file-extension or nearest package scope parser goal. */
+/** Select explicit file extensions, package scopes, or an exact declared ESM entry. */
 function moduleSourceType(filename: string, files: ImageFiles): 'module' | 'script' {
   if (filename.endsWith('.mjs')) return 'module'
   if (filename.endsWith('.cjs')) return 'script'
@@ -372,8 +372,13 @@ function moduleSourceType(filename: string, files: ImageFiles): 'module' | 'scri
     directory = directory.slice(0, Math.max(0, directory.lastIndexOf('/')))
     const bytes = files[directory === '' ? 'package.json' : `${directory}/package.json`]
     if (bytes !== undefined) {
-      const manifest = JSON.parse(new TextDecoder().decode(bytes)) as { type?: unknown }
-      return manifest.type === 'module' ? 'module' : 'script'
+      const manifest = JSON.parse(new TextDecoder().decode(bytes)) as { type?: unknown; module?: unknown }
+      if (manifest.type !== undefined) return manifest.type === 'module' ? 'module' : 'script'
+      // Dual packages can declare a single ESM .js entry without changing the
+      // CommonJS scope. Neither its neighbours nor an exports.import branch
+      // inherit that declaration; import conditions can also select CommonJS.
+      return typeof manifest.module === 'string' && posix.join(directory, manifest.module) === filename
+        ? 'module' : 'script'
     }
     if (directory === '') return 'script'
   }
