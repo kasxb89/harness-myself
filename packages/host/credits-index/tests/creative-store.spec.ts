@@ -151,6 +151,58 @@ async function fixture() {
   }
 }
 
+describe('verified image output purpose', () => {
+  it.each(['standalone', 'image-shot', 'image-asset', 'video-asset'] as const)(
+    'derives %s image purpose from the exact validated operation, without persisting a new field', async (association) => {
+      const { store, owner, options } = await fixture()
+      const planId = association === 'standalone' ? undefined : await store.updatePlan(owner,
+        plan(association === 'video-asset' ? 'video' : 'image'))
+      const operation = await store.begin(owner, { kind: 'image', prompt: 'A finished image, storyboard and video words prove nothing',
+        shots: [{ prompt: 'one image' }], ...planId === undefined ? {} : { planId },
+        ...association === 'image-shot' ? { shotIds: ['departure'] } : association.endsWith('asset') ? { assetId: 'portrait' } : {} })
+      expect(operation.imageRole).toBe(association === 'video-asset' ? 'storyboard' : 'final')
+      expect(JSON.parse(await readFile(join(options.directory, operation.projectId, 'project.json'), 'utf8'))).not.toHaveProperty('imageRole')
+      expect(await readFile(join(options.directory, operation.projectId, 'project.json'), 'utf8')).not.toContain('imageRole')
+    })
+
+  it('restores an original storyboard image after restart and plan edits without changing its role or ownership', async () => {
+    const { store, owner, options, setLive } = await fixture()
+    const originalPlan = plan('video')
+    const id = await store.updatePlan(owner, originalPlan)
+    const original = await store.begin(owner, { kind: 'image', prompt: 'material', planId: id, assetId: 'portrait', shots: [{ prompt: 'material' }] })
+    await store.receipt(original, acceptedImage)
+    await store.finish(original, { status: 'unknown', imageReceipt: acceptedImage })
+    store.release(original)
+    await expect(store.updatePlan(owner, { ...originalPlan, kind: 'image' }, id)).rejects.toMatchObject({ code: 'CREATIVE_PLAN_CONFLICT' })
+    await expect(store.updatePlan(owner, { ...originalPlan, assets: [] }, id)).rejects.toBeInstanceOf(CreativeError)
+    await expect(store.updatePlan(owner, { ...originalPlan, assets: originalPlan.assets.map(asset => ({ ...asset, kind: 'video' })) }, id))
+      .rejects.toBeInstanceOf(CreativeError)
+    await store.updatePlan(owner, { ...originalPlan, title: 'Renamed video', assets: originalPlan.assets.map(asset => ({ ...asset, name: 'Renamed material' })) }, id)
+    const other = await store.updatePlan(owner, plan('image'))
+    const restarted = new CreativeStore(options)
+    await expect(restarted.resumeImage(owner, other, original.operationId)).rejects.toMatchObject({ code: 'CREATIVE_INVALID' })
+    const foreign = { ...owner, accountId: '8', sessionFingerprint: 'login-8' }
+    setLive(foreign)
+    await expect(restarted.resumeImage(foreign, id, original.operationId)).rejects.toMatchObject({ code: 'CREATIVE_ACCESS_DENIED' })
+    setLive(owner)
+    const recovered = await restarted.resumeImage(owner, id, original.operationId)
+    expect(recovered).toEqual({ operation: original, receipt: acceptedImage })
+    expect(recovered.operation.imageRole).toBe('storyboard')
+    expect(await readFile(join(options.directory, id, 'project.json'), 'utf8')).not.toContain('imageRole')
+  })
+
+  it('leaves an old video-plan image receipt without a material association unclassified', async () => {
+    const { store, owner, options } = await fixture()
+    const id = await store.updatePlan(owner, plan('video'))
+    const legacy = await store.begin(owner, { kind: 'video', prompt: 'legacy unknown kind', planId: id,
+      shotIds: ['departure'], shots: [{ prompt: 'legacy unknown kind' }] })
+    await store.receipt(legacy, acceptedImage)
+    await store.finish(legacy, { status: 'unknown', imageReceipt: acceptedImage })
+    store.release(legacy)
+    expect((await new CreativeStore(options).resumeImage(owner, id, legacy.operationId)).operation).not.toHaveProperty('imageRole')
+  })
+})
+
 describe('retained ordinary video receipts', () => {
   const submitting: CreativeVideoReceipt = {
     route: '/v1/videos', model: 'model_5', phase: 'submitting',

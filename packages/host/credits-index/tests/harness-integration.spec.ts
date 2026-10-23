@@ -52,6 +52,7 @@ let quotaPerUnit = 500_000
 let exchangeRate = 7.3
 let statusAvailable = true
 let clientModelConfig: unknown
+let clientModelPresentation: unknown
 let balanceQuota = 68_493
 let selfId = 7
 let access = 'access-user'
@@ -108,6 +109,7 @@ afterEach(async () => {
   exchangeRate = 7.3
   statusAvailable = true
   clientModelConfig = undefined
+  clientModelPresentation = undefined
   balanceQuota = 68_493
   selfId = 7
   access = 'access-user'
@@ -196,7 +198,8 @@ async function boot(
       if (url.pathname === '/harness/api/status') {
         if (!statusAvailable) { response.writeHead(503); response.end('{}'); return }
         answer({ quota_per_unit: quotaPerUnit, usd_exchange_rate: exchangeRate,
-          ...clientModelConfig === undefined ? {} : { client_model_config: clientModelConfig } }); return
+          ...clientModelConfig === undefined ? {} : { client_model_config: clientModelConfig },
+          ...clientModelPresentation === undefined ? {} : { client_model_presentation: clientModelPresentation } }); return
       }
       if (url.pathname === '/harness/api/user/phone/challenge') {
         answer({ challenge_id: '+8613800000000', delivery_status: 'accepted',
@@ -1897,6 +1900,116 @@ describe('deployed Harness API through the real product Loader', () => {
     expect(calls.filter(call => call.path.includes('/v1/images/') || call.path.includes('/toapis/'))).toEqual([])
   }, 15_000)
 
+  it('classifies generated images by trusted plan ownership instead of prompt words or caller role hints', async () => {
+    const { base, stateDir } = await boot(undefined, true, true)
+    const cookie = await hostCookie(base)
+    await signIn(base)
+    pricingRows = [{ model_name: 'gpt-image-2', supported_endpoint_types: ['image-generation'] }]
+    const png = await sharp({ create: { width: 2, height: 2, channels: 3, background: '#aacc44' } }).png().toBuffer()
+    imageResponse = { data: [{ b64_json: png.toString('base64') }] }
+    const agent = videoAgent(stateDir)
+    let sequence = 0
+    const call = async (name: string, args: object) => object((await context!.tools.execute({ name, arguments: args, agent,
+      callId: ToolCallId(`image-purpose-${String(++sequence)}`), signal: new AbortController().signal })).value)
+    const plan = (kind: 'image' | 'video') => ({ kind, title: 'A final storyboard image', brief: 'Labels are not purpose evidence',
+      assets: [{ id: 'portrait', name: 'A finished image', kind: 'image', source_path_or_asset_id: '' }],
+      shots: [{ id: 'scene', order: 1, title: 'A finished storyboard', prompt: 'One image', asset_ids: ['portrait'] }] })
+    const imagePlan = await call('update_creation_plan', plan('image'))
+    const videoPlan = await call('update_creation_plan', plan('video'))
+    const reference = await uploadImage(base, cookie, 'reference.png', png)
+    const expected = new Map<string, 'final' | 'storyboard'>()
+    for (const [args, role] of [
+      [{ prompt: 'A storyboard frame with video words' }, 'final'],
+      [{ prompt: 'An edited storyboard', reference_images: [reference.assetId] }, 'final'],
+      [{ prompt: 'A storyboard', plan_id: imagePlan.plan_id, asset_id: 'portrait' }, 'final'],
+      [{ prompt: 'A storyboard', plan_id: imagePlan.plan_id, shot_id: 'scene' }, 'final'],
+      [{ prompt: 'A final finished image', plan_id: videoPlan.plan_id, asset_id: 'portrait' }, 'storyboard'],
+    ] as const) {
+      const result = await call('generate_image', { model: 'gpt-image-2', ...args })
+      expect(result, JSON.stringify(result)).toMatchObject({ status: 'succeeded' })
+      if (typeof result.path !== 'string') throw new Error('Expected the actual image path')
+      expected.set(result.path, role)
+    }
+    for (const references of [undefined, [reference.assetId]]) {
+      const result = await post(base, '/api/image/generate', { model: 'gpt-image-2', prompt: 'A storyboard frame',
+        plan_id: videoPlan.plan_id, imageRole: 'storyboard', ...references === undefined ? {} : { references } }, cookie)
+      expect(result.ok).toBe(true)
+      const path = object(result.payload).path
+      if (typeof path !== 'string') throw new Error('Expected actual panel output path')
+      expected.set(path, 'final')
+    }
+    const before = calls.filter(call => /\/v1\/images\/(?:generations|edits)$/u.test(call.path)).length
+    expect(await call('generate_image', { model: 'gpt-image-2', prompt: 'No workflow expansion', plan_id: videoPlan.plan_id, shot_id: 'scene' }))
+      .toMatchObject({ status: 'failed', code: 'CREATIVE_SHOT_MISMATCH' })
+    expect(calls.filter(call => /\/v1\/images\/(?:generations|edits)$/u.test(call.path))).toHaveLength(before)
+    const listed = object(await (await fetch(new URL(base).origin + '/artifacts/api/list', { headers: { cookie } })).json()).items
+    if (!Array.isArray(listed)) throw new Error('Expected actual artifact rows')
+    expect(listed).toHaveLength(expected.size)
+    for (const item of listed.map(object)) {
+      expect(item.kind).toBe('image')
+      expect(item.imageRole).toBe(expected.get(String(item.path)))
+      expect(item).not.toHaveProperty('videoRole')
+    }
+  })
+
+  it.each(['panel', 'tool'] as const)('keeps an accepted storyboard image role through %s recovery after a plan revision and refuses other owners', async (entry) => {
+    const { base, stateDir } = await boot(undefined, true, true)
+    const cookie = await hostCookie(base)
+    await signIn(base)
+    const model = 'yunshu-internal-gpt-image-2'
+    relayModels.push({ id: model, object: 'model', supported_endpoint_types: ['image-generation'] })
+    pricingRows = [{ model_name: model, supported_endpoint_types: ['image-generation'] }]
+    const png = await sharp({ create: { width: 2, height: 2, channels: 3, background: '#44aacc' } }).png().toBuffer()
+    imageResponse = { data: [{ b64_json: png.toString('base64') }] }
+    const agent = videoAgent(stateDir)
+    let sequence = 0
+    const call = async (name: string, args: object, signal = new AbortController().signal) => object((await context!.tools.execute({
+      name, arguments: args, agent, signal, callId: ToolCallId(`retained-image-purpose-${String(++sequence)}`) })).value)
+    const plan = { kind: 'video', title: 'Original video', brief: 'One reference image',
+      assets: [{ id: 'portrait', name: 'Material', kind: 'image', source_path_or_asset_id: '' }],
+      shots: [{ id: 'scene', order: 1, title: 'Scene', prompt: 'One scene', asset_ids: ['portrait'] }] }
+    const savedPlan = await call('update_creation_plan', plan)
+    const abort = new AbortController()
+    upstreamGate = async (path) => { if (path.endsWith('/fixture-image-task')) abort.abort() }
+    await context!.tools.execute({ name: 'generate_image', arguments: { model, prompt: 'Final image words do not change its plan binding',
+      plan_id: savedPlan.plan_id, asset_id: 'portrait' }, agent, signal: abort.signal, callId: ToolCallId('accepted-storyboard-image') })
+    upstreamGate = undefined
+    const discovery = await call('query_image_task', { plan_id: savedPlan.plan_id })
+    if (!Array.isArray(discovery.tasks) || discovery.tasks.length !== 1) throw new Error('Expected the retained original image operation')
+    const result = object(discovery.tasks[0])
+    expect(result).toMatchObject({ plan_id: savedPlan.plan_id, task_id: 'fixture-image-task', can_query: true })
+    expect(await call('update_creation_plan', { ...plan, plan_id: savedPlan.plan_id, title: 'Renamed video',
+      assets: [{ ...plan.assets[0]!, name: 'Renamed material' }] })).toMatchObject({ status: 'saved' })
+    expect(await call('update_creation_plan', { ...plan, plan_id: savedPlan.plan_id, kind: 'image' }))
+      .toMatchObject({ status: 'failed', code: 'CREATIVE_PLAN_CONFLICT' })
+    const another = await call('update_creation_plan', { ...plan, kind: 'image' })
+    const query = { plan_id: result.plan_id, operation_id: result.operation_id }
+    const before = calls.filter(call => call.path.endsWith('/fixture-image-task')).length
+    expect(await call('query_image_task', { ...query, plan_id: another.plan_id })).toMatchObject({ status: 'failed', code: 'CREATIVE_INVALID' })
+    await post(base, '/api/session/logout', {}, cookie)
+    selfId = 8
+    await signIn(base)
+    expect(await call('query_image_task', query)).toMatchObject({ status: 'failed', code: 'CREATIVE_ACCESS_DENIED' })
+    expect(calls.filter(call => call.path.endsWith('/fixture-image-task'))).toHaveLength(before)
+    await post(base, '/api/session/logout', {}, cookie)
+    selfId = 7
+    await signIn(base)
+    if (entry === 'tool') expect(await call('query_image_task', query)).toMatchObject({ status: 'succeeded', task_id: 'fixture-image-task' })
+    else {
+      const response = await fetch(base + '/api/creative/image/recover', { method: 'POST', headers: { cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({ session_id: agent.id, project_id: result.plan_id, operation_id: result.operation_id }) })
+      expect(response.status).toBe(202)
+    }
+    const origin = new URL(base).origin
+    await vi.waitFor(async () => {
+      const listed = object(await (await fetch(origin + '/artifacts/api/list', { headers: { cookie } })).json()).items
+      if (!Array.isArray(listed)) throw new Error('Expected actual artifact rows')
+      expect(listed.map(object)).toEqual([expect.objectContaining({ kind: 'image', imageRole: 'storyboard' })])
+    })
+    expect(calls.filter(call => call.path === '/harness/toapis/v1/images/generations')).toHaveLength(1)
+    expect(await readFile(join(stateDir, 'creative-projects', String(result.plan_id), 'project.json'), 'utf8')).not.toContain('imageRole')
+  })
+
   it('lists generated video-plan character materials without marking storyboard shots complete', async () => {
     const { base, stateDir } = await boot(undefined, true, true)
     const origin = new URL(base).origin
@@ -2735,6 +2848,108 @@ describe('deployed Harness API through the real product Loader', () => {
     videoTaskStatus = 'NOT_START'
     expect(await post(base, '/api/video/tasks?source=newapi', { prompt: 'A synthetic clip', model: 'MiniMax-H3', durationSeconds: 4 })).toMatchObject({ ok: true })
     expect(calls.filter(call => (call.path.startsWith('/harness/v1/video') || call.path.startsWith('/harness/v1/tasks/'))).map(call => call.path)).toEqual(['/harness/v1/video/generations'])
+  })
+
+  it('binds backend display text to authorized product rows and invalidates display-only changes once', async () => {
+    clientModelPresentation = { schema_version: 1, models: {
+      'deepseek-v4-flash': { description: '<b>Exact text</b>', badge: 'Custom' },
+      'unauthorized': { description: 'Cannot grant a model' },
+      'constructor': { badge: 'Exact own model' },
+    } }
+    relayModels = [...initialRelayModels(), { id: 'constructor', object: 'model', supported_endpoint_types: ['openai'] },
+      { id: 'toString', object: 'model', supported_endpoint_types: ['openai'] }]
+    const { base } = await boot(undefined, false, false,
+      { provider: 'yunshu-local', model: 'deepseek-v4-flash', followPolicy: true })
+    await signIn(base)
+    const read = async () => (await buildModelCatalog(context!)).groups.find(group => group.id === 'yunshu-local')!.models
+    const first = await read()
+    expect(first.find(model => model.id === 'deepseek-v4-flash')?.presentation)
+      .toEqual({ description: '<b>Exact text</b>', badge: 'Custom' })
+    expect(first.find(model => model.id === 'constructor')?.presentation).toEqual({ badge: 'Exact own model' })
+    expect(first.find(model => model.id === 'toString')?.presentation).toBeUndefined()
+    expect(first.some(model => model.id === 'unauthorized')).toBe(false)
+    expect(context!.waterfall('api-session/model-presentation', 'unrelated-provider', 'deepseek-v4-flash', () => ({ badge: 'next' })))
+      .toEqual({ badge: 'next' })
+    const changes = vi.fn()
+    context!.on('api-session/model-catalog-changed', changes)
+    clientModelPresentation = { schema_version: 1, models: { 'deepseek-v4-flash': { description: '', badge: 'Changed' } } }
+    const updated = await read()
+    expect(updated.find(model => model.id === 'deepseek-v4-flash')?.presentation).toEqual({ description: '', badge: 'Changed' })
+    expect(changes).toHaveBeenCalledTimes(1)
+    await read()
+    expect(changes).toHaveBeenCalledTimes(1)
+    clientModelPresentation = { schema_version: 1, models: {} }
+    expect((await read()).every(model => model.presentation === undefined)).toBe(true)
+    expect(changes).toHaveBeenCalledTimes(2)
+    expect(calls.filter(call => call.path.endsWith('/chat/completions') || call.path.includes('/generations'))).toEqual([])
+  })
+
+  it('isolates malformed display metadata from preferences and retains each last-good document', async () => {
+    relayModels = [...initialRelayModels(), { id: 'second-chat', object: 'model', supported_endpoint_types: ['openai'] }]
+    clientModelPresentation = { schema_version: 1, models: { 'second-chat': { badge: 'Retained' } } }
+    const { base } = await boot(undefined, false, false,
+      { provider: 'yunshu-local', model: 'deepseek-v4-flash', followPolicy: true })
+    await signIn(base)
+    await buildModelCatalog(context!)
+    clientModelPresentation = { schema_version: 1, models: { 'second-chat': { badge: null } } }
+    clientModelConfig = { schema_version: 1, default_chat_model: 'second-chat', model_order: ['second-chat'] }
+    const retained = await buildModelCatalog(context!)
+    expect(retained.default.model).toBe('second-chat')
+    expect(retained.groups.find(group => group.id === 'yunshu-local')?.models[0]?.presentation).toEqual({ badge: 'Retained' })
+    clientModelConfig = { schema_version: 99, default_chat_model: '', model_order: [] }
+    clientModelPresentation = { schema_version: 1, models: { 'second-chat': { badge: '', description: 'Updated' } } }
+    const independent = await buildModelCatalog(context!)
+    expect(independent.default.model).toBe('second-chat')
+    expect(independent.groups.find(group => group.id === 'yunshu-local')?.models[0]?.presentation)
+      .toEqual({ badge: '', description: 'Updated' })
+    statusAvailable = false
+    expect((await buildModelCatalog(context!)).groups.find(group => group.id === 'yunshu-local')?.models[0]?.presentation)
+      .toEqual({ badge: '', description: 'Updated' })
+    statusAvailable = true
+    clientModelPresentation = undefined
+    expect((await buildModelCatalog(context!)).groups.find(group => group.id === 'yunshu-local')?.models[0]?.presentation).toBeUndefined()
+  })
+
+  it.each(['account', 'login-token'] as const)('discards last-good display and ordering after an external shared-file %s change', async (change) => {
+    clientModelConfig = { schema_version: 1, default_chat_model: 'second-chat', model_order: ['second-chat'] }
+    clientModelPresentation = { schema_version: 1, models: { 'deepseek-v4-flash': { badge: 'Previous login' } } }
+    relayModels = [...initialRelayModels(), { id: 'second-chat', object: 'model', supported_endpoint_types: ['openai'] }]
+    const { base, stateDir } = await boot(undefined, false, false,
+      { provider: 'yunshu-local', model: 'deepseek-v4-flash', followPolicy: true })
+    await signIn(base)
+    expect((await buildModelCatalog(context!)).default.model).toBe('second-chat')
+    const file = join(stateDir, 'session.json')
+    const stored = object(JSON.parse(await readFile(file, 'utf8')))
+    const next = { ...stored, token: 'external-local-login',
+      account: { ...object(stored.account), id: change === 'account' ? '8' : '7' },
+      relay: { key: 'sk-external-relay' } }
+    await writeFile(file + '.external', JSON.stringify(next))
+    await rename(file + '.external', file)
+    selfId = change === 'account' ? 8 : 7
+    relayKey = 'sk-external-relay'
+    statusAvailable = false
+    const catalog = await buildModelCatalog(context!)
+    expect(catalog.default.model).toBe('deepseek-v4-flash')
+    const models = catalog.groups.find(group => group.id === 'yunshu-local')!.models
+    expect(models.map(model => model.id)).toEqual(['deepseek-v4-flash', 'second-chat'])
+    expect(models.every(model => model.presentation === undefined)).toBe(true)
+  })
+
+  it('withdraws display overrides on account change even when the next status read fails', async () => {
+    clientModelPresentation = { schema_version: 1, models: { 'deepseek-v4-flash': { badge: 'Account one' } } }
+    const { base } = await boot(undefined, false, false,
+      { provider: 'yunshu-local', model: 'deepseek-v4-flash', followPolicy: true })
+    await signIn(base)
+    expect((await buildModelCatalog(context!)).groups.find(group => group.id === 'yunshu-local')?.models[0]?.presentation)
+      .toEqual({ badge: 'Account one' })
+    await post(base, '/api/session/logout', {})
+    expect(context!.waterfall('api-session/model-presentation', 'yunshu-local', 'deepseek-v4-flash', () => undefined)).toBeUndefined()
+    selfId = 8
+    relayKey = 'sk-account-two'
+    statusAvailable = false
+    await signIn(base)
+    const next = await buildModelCatalog(context!)
+    expect(next.groups.find(group => group.id === 'yunshu-local')?.models[0]?.presentation).toBeUndefined()
   })
 
   it('selects the backend default on the first real catalog read and orders only authorized chat models', async () => {

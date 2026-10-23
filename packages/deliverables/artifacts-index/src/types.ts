@@ -5,6 +5,9 @@ import type { ToolCallId } from '@deepseek-ai/dsh-llm/brand'
 /** Producer-declared purpose of an exact saved video; absence never implies a shot. */
 export type ArtifactVideoRole = 'final' | 'shot'
 
+/** Producer-declared purpose of an exact saved image; absence never implies a storyboard. */
+export type ArtifactImageRole = 'final' | 'storyboard'
+
 /** Exact generating conversation location, supplied by the trusted producer. */
 export interface ArtifactOrigin {
   readonly sessionId: SessionId
@@ -32,6 +35,7 @@ export interface ArtifactWriteRequest {
   readonly signal: AbortSignal
   readonly origin?: ArtifactOrigin
   readonly videoRole?: ArtifactVideoRole
+  readonly imageRole?: ArtifactImageRole
 }
 
 /** Existing finished output copied by a trusted Host producer; source remains intact. */
@@ -42,6 +46,7 @@ export interface ArtifactPublishRequest {
   readonly signal: AbortSignal
   readonly origin?: ArtifactOrigin
   readonly videoRole?: ArtifactVideoRole
+  readonly imageRole?: ArtifactImageRole
 }
 
 /** Optional shared output capability consumed by account media generators. */

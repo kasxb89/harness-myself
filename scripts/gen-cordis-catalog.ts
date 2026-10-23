@@ -420,6 +420,7 @@ export const LINK_MAP: Readonly<Record<string, string>> = {
   SessionListRequest: 'session.md',
   SessionListValue: 'session.md',
   ModelCatalog: 'session.md',
+  ModelCatalogModel: 'session.md',
   SessionOpenWorkspacePathRequest: 'session.md',
   SessionOpenWorkspacePathValue: 'session.md',
   SessionWorkspacePathApplication: 'session.md',

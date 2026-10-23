@@ -1,7 +1,29 @@
 /** Deployment preferences applied only to a caller's authorized model directory. */
+import type { ModelCatalogModel } from '@deepseek-ai/dsh-api-session-controller/types'
+
+/** Exact-model display text; empty strings intentionally suppress local descriptions or badges. */
+export type ProductModelDisplay = NonNullable<ModelCatalogModel['presentation']>
+
+/** Deployment display entries, separate from default-model and ordering preferences. */
+export type ProductModelDisplayMap = Readonly<Record<string, ProductModelDisplay>>
+
+/** Deployment default and ordering preferences applied only to authorized model ids. */
 export interface ProductModelPresentation {
   readonly defaultChatModel: string | null
   readonly modelOrder: readonly string[]
+}
+
+/**
+ * Compare only display fields of already authorized models, independently of remote object-key order.
+ * @param ids - Ordered current account model ids.
+ * @param displays - Last validated public display entries; absence inherits local text.
+ * @returns A stable signature which distinguishes explicit empty fields from inherited fields.
+ */
+export function productModelDisplaySignature(ids: readonly string[], displays: ProductModelDisplayMap | undefined): string {
+  return JSON.stringify(ids.map((id) => {
+    const entry = displays !== undefined && Object.hasOwn(displays, id) ? displays[id] : undefined
+    return [id, entry?.description ?? null, entry?.badge ?? null]
+  }))
 }
 
 /**

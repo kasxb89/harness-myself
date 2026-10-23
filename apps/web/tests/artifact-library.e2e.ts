@@ -53,6 +53,12 @@ it('opens saved and mounted output in one library and refreshes files without a 
     const originalImage = await scaffold.ctx.artifactStorage.write({ destination: original,
       filename: '保存前图片.png', bytes: png, signal })
     await scaffold.ctx.artifactStorage.write({ destination: original,
+      filename: '创作成图.png', bytes: png, imageRole: 'final', signal })
+    await scaffold.ctx.artifactStorage.write({ destination: original,
+      filename: '狐狸角色参考.png', bytes: png, imageRole: 'storyboard', signal })
+    await scaffold.ctx.artifactStorage.write({ destination: original,
+      filename: '看似分镜-storyboard.png', bytes: png, signal })
+    await scaffold.ctx.artifactStorage.write({ destination: original,
       filename: '聊天生成笔记.md', bytes: Buffer.from('# 聊天生成的笔记\n\n从实际产物保存服务写入\n'), signal })
     const video = await readFile(new URL('./fixtures/sidebar-media/preview.mp4', import.meta.url))
     await scaffold.ctx.artifactStorage.write({ destination: original,
@@ -74,6 +80,36 @@ it('opens saved and mounted output in one library and refreshes files without a 
     for (const name of ['保存前图片.png', '聊天生成笔记.md', '聊天工作区说明.txt', '挂载目录剧本.md']) {
       await library.getByRole('button', { name: new RegExp(`^${name.replaceAll('.', '\\.')}`, 'u') }).waitFor()
     }
+    const finalImage = library.getByRole('button', { name: /^创作成图\.png/u })
+    const storyboardImage = library.getByRole('button', { name: /^狐狸角色参考\.png/u })
+    const unclassifiedImage = library.getByRole('button', { name: /^看似分镜-storyboard\.png/u })
+    await library.getByRole('button', { name: /^图片\s*4$/u }).click()
+    for (const image of [finalImage, storyboardImage, unclassifiedImage]) expect(await image.count()).toBe(1)
+    await library.getByRole('button', { name: /^成图\s*1$/u }).click()
+    expect(await finalImage.count()).toBe(1)
+    expect(await storyboardImage.count()).toBe(0)
+    expect(await unclassifiedImage.count()).toBe(0)
+    await library.getByRole('button', { name: /^分镜图片\s*1$/u }).click()
+    expect(await finalImage.count()).toBe(0)
+    expect(await storyboardImage.count()).toBe(1)
+    expect(await unclassifiedImage.count()).toBe(0)
+    await search.fill('狐狸')
+    expect(await storyboardImage.count()).toBe(1)
+    await search.fill('创作')
+    expect(await storyboardImage.count()).toBe(0)
+    await search.fill('')
+    for (const [theme, width] of [['dark', 1440], ['light', 760]] as const) {
+      await page.emulateMedia({ colorScheme: theme })
+      await page.setViewportSize({ width, height: 1000 })
+      const category = library.getByRole('button', { name: /^分镜图片\s*1$/u })
+      await category.scrollIntoViewIfNeeded()
+      const bounds = await category.boundingBox()
+      expect(bounds).not.toBeNull()
+      expect(bounds!.x).toBeGreaterThanOrEqual(0)
+      expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width)
+      await page.screenshot({ path: join(evidence, `image-storyboard-filter-${theme}.png`), animations: 'disabled' })
+    }
+    await page.setViewportSize({ width: 1440, height: 1000 })
     const finalVideo = library.getByRole('button', { name: /^四季成片\.mp4/u })
     const shotVideo = library.getByRole('button', { name: /^春天片段\.mp4/u })
     const unclassifiedVideo = library.getByRole('button', { name: /^看似分镜-shot-01\.mp4/u })

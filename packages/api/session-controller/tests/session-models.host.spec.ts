@@ -157,6 +157,40 @@ function currentSelection(ctx: Context, sessionId: SessionId) {
 }
 
 describe('Web session model selection', () => {
+  it('composes display-only waterfall metadata without changing available models or retaining mutable entries', async () => {
+    const { ctx } = await harness()
+    try {
+      const upstream = { description: 'Inherited', badge: 'Original' }
+      const earlier = vi.fn((_provider: string, _model: string, next: () => unknown) => {
+        next()
+        return upstream
+      })
+      const scoped = await ctx.plugin((scope) => {
+        scope.on('api-session/model-presentation', (provider, model, next) => {
+          const inherited = next()
+          return provider === 'deepseek-official' && model === 'deepseek-chat'
+            ? { ...inherited, description: '', badge: '<b>Literal</b>' } : inherited
+        })
+      })
+      ctx.on('api-session/model-presentation', earlier)
+      const defaultSelection = { provider: 'deepseek-official', model: 'deepseek-chat' }
+      const catalog = await buildModelCatalog(ctx, defaultSelection)
+      const models = catalog.groups.find(group => group.id === 'deepseek-official')!.models
+      expect(models.map(model => [model.id, model.name])).toEqual([
+        ['deepseek-chat', 'DeepSeek Chat'], ['deepseek-reasoner', 'DeepSeek Reasoner'],
+      ])
+      expect(models[0]?.presentation).toEqual({ description: '', badge: '<b>Literal</b>' })
+      expect(models[0]?.reasoning?.defaultEffort).toBe('high')
+      expect(models[1]?.presentation).toEqual({ description: 'Inherited', badge: 'Original' })
+      upstream.badge = 'Mutated later'
+      expect(models[1]?.presentation?.badge).toBe('Original')
+      expect(earlier).toHaveBeenCalled()
+      await scoped.dispose()
+      expect((await buildModelCatalog(ctx, defaultSelection)).groups.find(group => group.id === 'deepseek-official')?.models[0]?.presentation)
+        .toEqual({ description: 'Inherited', badge: 'Mutated later' })
+    } finally { await ctx.fiber.dispose() }
+  })
+
   it('validates an ordered image batch before persisting any member', async () => {
     const { ctx, agent, sessionId } = await harness()
     const validateImage = vi.fn((_input: { data: Uint8Array }) => Promise.resolve())

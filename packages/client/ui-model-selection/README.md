@@ -47,6 +47,8 @@ Both entries group models by provider, with DeepSeek Account first and DeepSeek 
 
 Both entries show a purpose for each available model. The exact `yunshu-local/yunshu-flash` product route is labeled “Flagship model”; matching IDs in other providers receive no product badge. Known product and official DeepSeek routes use localized guidance; other models show their provider-authored description as plain text, or a neutral capability note when absent. Guidance does not change model order, availability, search matching, selection, or stored IDs. The composer menu keeps each model name as its accessible name and supplies the guidance separately as its accessible description. Response speed is described as dependent on the task, reasoning effort, and network conditions; no measured speed or price ranking is implied. The advertised effort pane explains the simple-question versus complex-analysis tradeoff.
 
+Validated catalog `presentation.description` and `presentation.badge` override that guidance independently in both entries. A missing field inherits the existing text; an explicit empty string hides that field. Backend text renders literally, including Markdown or HTML characters. Long badges truncate within the row while retaining their complete accessible text; descriptions wrap in the composer and retain their complete accessible text in the command popup. Catalog-change notifications refresh this display without changing the selected model or its request parameters.
+
 The composer replaces the model and effort text with the Models icon when the expanded controls cannot share one line, and restores the text when space permits. The full selection remains available in the trigger's accessible name, tooltip, and menu.
 
 ### Unroutable sessions

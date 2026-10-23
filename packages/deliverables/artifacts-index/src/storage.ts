@@ -4,10 +4,10 @@ import { copyFile, link, lstat, mkdir, open, readFile, readdir, realpath, rename
 import { constants } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep, win32 } from 'node:path'
-import type { ArtifactDestination, ArtifactOrigin, ArtifactPublishRequest, ArtifactStorageInfo, ArtifactStorageService, ArtifactVideoRole, ArtifactWriteRequest } from './types.ts'
+import type { ArtifactDestination, ArtifactImageRole, ArtifactOrigin, ArtifactPublishRequest, ArtifactStorageInfo, ArtifactStorageService, ArtifactVideoRole, ArtifactWriteRequest } from './types.ts'
 import type { ArtifactWorkspaceScope, WorkspaceAccess } from './workspace.ts'
 import { originPath, originRecord, readOrigin } from './origin.ts'
-import { readVideoRole, videoRolePath, videoRoleRecord } from './video-role.ts'
+import { readMediaRoles, videoRolePath, mediaRoleRecord } from './video-role.ts'
 
 /** Safe business failure exposed by the artifact HTTP owner. */
 export class ArtifactError extends Error {
@@ -279,7 +279,7 @@ export class ArtifactStore extends Service implements ArtifactStorageService {
   }
   private output(
     destination: ArtifactDestination, filename: string, signal: AbortSignal, prepare: (temporary: string) => Promise<void>,
-    origin?: ArtifactOrigin, videoRole?: ArtifactVideoRole,
+    origin?: ArtifactOrigin, videoRole?: ArtifactVideoRole, imageRole?: ArtifactImageRole,
   ): Promise<{ path: string }> {
     return this.track(async () => {
       signal.throwIfAborted()
@@ -293,7 +293,11 @@ export class ArtifactStore extends Service implements ArtifactStorageService {
         signal.throwIfAborted()
         const info = await lstat(temporary)
         if (origin !== undefined) await atomicJson(originPath(this.stateDirectory, info), originRecord(info, origin))
-        if (videoRole !== undefined) await atomicJson(videoRolePath(this.stateDirectory, info), videoRoleRecord(info, videoRole))
+        if (videoRole !== undefined || imageRole !== undefined) {
+          await atomicJson(videoRolePath(this.stateDirectory, info), mediaRoleRecord(info, {
+            ...videoRole === undefined ? {} : { videoRole }, ...imageRole === undefined ? {} : { imageRole },
+          }))
+        }
         await exclusiveMove(temporary, target, info)
         return { path: target }
       } finally { await unlink(temporary).catch(() => {}) }
@@ -304,7 +308,7 @@ export class ArtifactStore extends Service implements ArtifactStorageService {
       const handle = await open(temporary, 'wx', 0o600)
       try { await handle.writeFile(request.bytes, { signal: request.signal }); await handle.sync() }
       finally { await handle.close() }
-    }, request.origin, request.videoRole)
+    }, request.origin, request.videoRole, request.imageRole)
   }
   /**
    * Read the generating location of the exact selected file version.
@@ -332,11 +336,24 @@ export class ArtifactStore extends Service implements ArtifactStorageService {
    * @returns Exact saved-file purpose, or absence when no valid association remains.
    */
   videoRole(path: string, expected: ExpectedArtifact, scope?: ArtifactWorkspaceScope): Promise<ArtifactVideoRole | undefined> {
+    return this.mediaRoles(path, expected, scope).then(roles => roles.videoRole)
+  }
+  /**
+   * Read an image purpose after rechecking the listed file and access scope.
+   * @param path - Authorized file path, never used to infer its purpose.
+   * @param expected - Listed file size and modification time.
+   * @param scope - Optional current Workspace authorization.
+   * @returns Exact saved-image purpose, or absence when no valid association remains.
+   */
+  imageRole(path: string, expected: ExpectedArtifact, scope?: ArtifactWorkspaceScope): Promise<ArtifactImageRole | undefined> {
+    return this.mediaRoles(path, expected, scope).then(roles => roles.imageRole)
+  }
+  private mediaRoles(path: string, expected: ExpectedArtifact, scope?: ArtifactWorkspaceScope): Promise<Pick<ArtifactWriteRequest, 'videoRole' | 'imageRole'>> {
     return this.track(async () => {
       const source = await this.source(path, scope)
       expectedVersion(source.info, expected)
-      const role = await readVideoRole(this.stateDirectory, source.info)
-      return sameFile(source.info, await lstat(source.path)) ? role : undefined
+      const roles = await readMediaRoles(this.stateDirectory, source.info)
+      return sameFile(source.info, await lstat(source.path)) ? roles : {}
     })
   }
   /**
@@ -364,7 +381,7 @@ export class ArtifactStore extends Service implements ArtifactStorageService {
       if (!source.isFile() || source.isSymbolicLink()) throw new ArtifactError('ARTIFACT_PATH_INVALID', 400, 'Publication source must be a regular file')
       await copyFile(request.sourcePath, temporary, constants.COPYFILE_EXCL)
       if (!sameFile(source, await lstat(request.sourcePath))) throw new ArtifactError('ARTIFACT_STALE', 409, 'Publication source changed')
-    }, request.origin, request.videoRole)
+    }, request.origin, request.videoRole, request.imageRole)
   }
   private async source(path: string, scope?: ArtifactWorkspaceScope): Promise<{
     path: string

@@ -269,7 +269,10 @@
 }
 
 .modelBadge {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 45%;
+  overflow: hidden;
   padding: 0 5px;
   border-radius: var(--dsw-radius-sm);
   background: var(--dsw-alias-interactive-bg-hover);
@@ -277,6 +280,8 @@
   font-size: 11px;
   line-height: 18px;
   font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .modelDetail,

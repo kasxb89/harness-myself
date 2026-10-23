@@ -22,12 +22,12 @@ import type {} from '@deepseek-ai/dsh-tools/types'
 import type {} from '@deepseek-ai/dsh-tool-present/types'
 import type {} from '@deepseek-ai/dsh-working-directory'
 import z from '@deepseek-ai/schemastery'
-import type { ArtifactStorageService, ArtifactVideoRole } from './types.ts'
+import type { ArtifactImageRole, ArtifactStorageService, ArtifactVideoRole } from './types.ts'
 import { ArtifactError, ArtifactStore, authorizedFile, contained, qualified } from './storage.ts'
 import { listDirectory, WorkspaceAccess } from './workspace.ts'
 import { serveOfficePreview, type AuthorizePreview } from './preview.ts'
 
-export type { ArtifactDestination, ArtifactOrigin, ArtifactWriteResult, ArtifactWriteRequest, ArtifactPublishRequest, ArtifactStorageService, ArtifactStorageInfo, ArtifactVideoRole } from './types.ts'
+export type { ArtifactDestination, ArtifactOrigin, ArtifactWriteResult, ArtifactWriteRequest, ArtifactPublishRequest, ArtifactStorageService, ArtifactStorageInfo, ArtifactVideoRole, ArtifactImageRole } from './types.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -103,6 +103,7 @@ export interface ArtifactEntry {
   readonly size: number
   readonly mtimeMs: number
   readonly videoRole?: ArtifactVideoRole
+  readonly imageRole?: ArtifactImageRole
   /** Present for a file addressed through a currently registered local Workspace. */
   readonly workspaceId?: string
 }
@@ -424,20 +425,26 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new ArtifactError('ARTIFACT_REQUEST_INVALID', 400, 'JSON object required')
     return value as Record<string, unknown>
   }
-  const describeVideo = async (entry: ArtifactEntry, signal: AbortSignal): Promise<ArtifactEntry> => {
-    if (entry.kind !== 'video' || store === undefined) return entry
+  const describeMedia = async (entry: ArtifactEntry, signal: AbortSignal): Promise<ArtifactEntry> => {
+    if (entry.kind !== 'video' && entry.kind !== 'image' || store === undefined) return entry
     signal.throwIfAborted()
-    let videoRole: ArtifactVideoRole | undefined
+    let roles: Pick<ArtifactEntry, 'videoRole' | 'imageRole'> = {}
     try {
-      videoRole = await store.videoRole(entry.path, entry,
-        entry.workspaceId === undefined ? undefined : { workspaceId: entry.workspaceId, signal })
+      const scope = entry.workspaceId === undefined ? undefined : { workspaceId: entry.workspaceId, signal }
+      if (entry.kind === 'video') {
+        const videoRole = await store.videoRole(entry.path, entry, scope)
+        if (videoRole !== undefined) roles = { videoRole }
+      } else {
+        const imageRole = await store.imageRole(entry.path, entry, scope)
+        if (imageRole !== undefined) roles = { imageRole }
+      }
     } catch (_unavailable: unknown) { /* A changed or unavailable association never classifies a file by its name. */ }
     signal.throwIfAborted()
-    return videoRole === undefined ? entry : { ...entry, videoRole }
+    return { ...entry, ...roles }
   }
-  const describeVideos = async (entries: readonly ArtifactEntry[], signal: AbortSignal): Promise<ArtifactEntry[]> => {
+  const describeMediaEntries = async (entries: readonly ArtifactEntry[], signal: AbortSignal): Promise<ArtifactEntry[]> => {
     const described: ArtifactEntry[] = []
-    for (const entry of entries) described.push(await describeVideo(entry, signal))
+    for (const entry of entries) described.push(await describeMedia(entry, signal))
     return described
   }
   const item = async (path: string): Promise<ArtifactEntry> => {
@@ -501,7 +508,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
               if (route === '/api/restore') {
                 if (typeof value.id !== 'string') throw new ArtifactError('ARTIFACT_REQUEST_INVALID', 400, 'Recovery id required')
                 const restored = await store.restore(value.id, signal)
-                json(response, 200, { item: await describeVideo({
+                json(response, 200, { item: await describeMedia({
                   ...await item(restored.path), ...restored.workspaceId === undefined ? {} : { workspaceId: restored.workspaceId },
                 }, signal) }); return
               }
@@ -517,7 +524,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
               const scope = typeof value.workspaceId === 'string' ? { workspaceId: value.workspaceId, signal } : undefined
               if (route === '/api/rename') {
                 if (typeof value.name !== 'string') throw new ArtifactError('ARTIFACT_REQUEST_INVALID', 400, 'File name required')
-                json(response, 200, { item: await describeVideo({
+                json(response, 200, { item: await describeMedia({
                   ...await item(await store.rename(value.path, value.name, selectedVersion, scope)),
                   ...scope === undefined ? {} : { workspaceId: scope.workspaceId },
                 }, signal) }); return
@@ -541,7 +548,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
               if (workspaceId === null) throw new ArtifactError('ARTIFACT_WORKSPACE_UNAVAILABLE', 404, 'Select a registered Workspace')
               const page = await workspaces.list(workspaceId, url.searchParams.get('directory') ?? '', resolved.maxEntries, signal, directoryOffset())
               json(response, 200, {
-                ...page, items: await describeVideos(page.items.map(entry => ({
+                ...page, items: await describeMediaEntries(page.items.map(entry => ({
                   ...entry, kind: kindOf(entry.name), workspaceId: page.workspace.id,
                 })), signal),
               })
@@ -562,7 +569,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
                 (path) => { workspaces.visible({ path: pinnedRoot }, path) }, directoryOffset())
               await authorize()
               json(response, 200, { ...page, root: pinnedRoot,
-                items: await describeVideos(page.items.map(entry => ({ ...entry, kind: kindOf(entry.name) })), signal) })
+                items: await describeMediaEntries(page.items.map(entry => ({ ...entry, kind: kindOf(entry.name) })), signal) })
               return
             }
             if (route === '/api/list') {
@@ -597,7 +604,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
               }
               items.sort((left, right) => right.mtimeMs - left.mtimeMs)
               json(response, 200, {
-                roots, items: await describeVideos(items.slice(0, resolved.maxEntries), signal),
+                roots, items: await describeMediaEntries(items.slice(0, resolved.maxEntries), signal),
                 truncated: truncated || items.length > resolved.maxEntries,
                 ...issues.length === 0 ? {} : { issues },
                 ...store === undefined ? {} : { storage: store.info() },

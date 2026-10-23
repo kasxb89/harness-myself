@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { orderProductModels, preferredProductModel } from '../src/model-presentation.ts'
+import { orderProductModels, preferredProductModel, productModelDisplaySignature } from '../src/model-presentation.ts'
 
 describe('authorized model presentation', () => {
   it('ranks configured models and appends new authorized models in their original order', () => {
@@ -35,5 +35,15 @@ describe('authorized model presentation', () => {
 
   it('does not invent a default when the account has no chat access', () => {
     expect(preferredProductModel([], { defaultChatModel: 'private', modelOrder: ['private'] })).toBeUndefined()
+  })
+
+  it('compares only authorized exact-model display values and distinguishes clearing from inheritance', () => {
+    const original = productModelDisplaySignature(['a'], { a: { description: 'text', badge: '' }, private: { badge: 'x' } })
+    expect(productModelDisplaySignature(['a'], { private: { badge: 'y' }, a: { badge: '', description: 'text' } })).toBe(original)
+    expect(productModelDisplaySignature(['a'], { a: { description: 'text' } })).not.toBe(original)
+    expect(productModelDisplaySignature(['a'], { a: {} })).toBe(productModelDisplaySignature(['a'], undefined))
+    const own = Object.fromEntries([['__proto__', { badge: 'own' }]])
+    expect(productModelDisplaySignature(['__proto__'], own)).toContain('own')
+    expect(productModelDisplaySignature(['constructor'], {})).toBe('[["constructor",null,null]]')
   })
 })

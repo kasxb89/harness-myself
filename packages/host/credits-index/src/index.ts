@@ -8,7 +8,7 @@
  */
 
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
-import type { ArtifactOrigin } from '@deepseek-ai/dsh-artifacts-index'
+import type { ArtifactImageRole, ArtifactOrigin } from '@deepseek-ai/dsh-artifacts-index'
 import { createWriteStream } from 'node:fs'
 import { createHash, randomBytes } from 'node:crypto'
 import { homedir } from 'node:os'
@@ -37,8 +37,9 @@ import { readPhoneBody, phoneFailure, phoneRetryAfter, type PhoneApiBody } from 
 import { writePrivateState } from './private-state-file.ts'
 import { SessionRefresh, type StoredAccount, type StoredSession } from './session-refresh.ts'
 import { PhoneAuthState, type PhoneDeliveryStatus } from './phone-auth-state.ts'
-import { parseClientModelConfigStatus } from './client-model-config.ts'
-import { orderProductModels, preferredProductModel, type ProductModelPresentation } from './model-presentation.ts'
+import { parseClientModelConfigStatus, parseClientModelPresentationStatus } from './client-model-config.ts'
+import { orderProductModels, preferredProductModel, productModelDisplaySignature,
+  type ProductModelDisplayMap, type ProductModelPresentation } from './model-presentation.ts'
 import { ClientActivitySessions, parseClientActivity, type ClientActivitySample } from './client-activity.ts'
 import { readAnnouncements } from './announcements.ts'
 import { ClientToolErrorReporter, type ClientToolErrorAccount } from './client-tool-errors.ts'
@@ -769,10 +770,29 @@ export function apply(ctx: Context, config: Config): void {
   const relayRef = credentialRef(resolved.relayTokenEnv)
   let identityVersion = 0
   let productModelPresentation: ProductModelPresentation = { defaultChatModel: null, modelOrder: [] }
-  let productCatalog: { version: number; ids: readonly string[]; selection: ModelSelection | undefined } | undefined
+  let productModelDisplays: ProductModelDisplayMap | undefined
+  let productModelOwner: string | undefined
+  /** Last-good status belongs to this exact backend, account and local login, including shared-file changes. */
+  const productOwner = (session: StoredSession): string =>
+    createHash('sha256').update(JSON.stringify([apiBaseUrl, session.backendBaseUrl, session.account.id, session.token])).digest('hex')
+  let productCatalog: { version: number; owner: string; ids: readonly string[]; selection: ModelSelection | undefined } | undefined
+  const productCatalogCurrent = (): boolean => {
+    const session = store.peek()
+    return session !== null && session !== undefined && productCatalog?.version === identityVersion
+      && productCatalog.owner === productOwner(session)
+  }
+  ctx.on('api-session/model-presentation', (provider, model, next) => {
+    const inherited = next()
+    if (provider !== resolved.chatProviderRoute || !productCatalogCurrent()
+      || !productCatalog?.ids.includes(model) || productModelDisplays === undefined || !Object.hasOwn(productModelDisplays, model)) {
+      return inherited
+    }
+    const display = productModelDisplays[model]
+    return display?.description === undefined && display?.badge === undefined ? inherited : { ...inherited, ...display }
+  })
   ctx.inject(['agentDefaultModel'], (child) => {
     child.effect(() => child.agentDefaultModel.registerPolicySelection(() =>
-      productCatalog?.version === identityVersion ? productCatalog.selection : undefined),
+      productCatalogCurrent() ? productCatalog?.selection : undefined),
     'credits-index: account-authorized deployment default')
   })
   /** Publish committed account or catalog changes without waiting for observer refreshes. */
@@ -1426,7 +1446,9 @@ export function apply(ctx: Context, config: Config): void {
     reuseSavedOutput?: (bytes: Uint8Array) => Promise<string | undefined>,
     currentKey?: () => Promise<string>,
     origin?: ArtifactOrigin,
+    imageRole?: ArtifactImageRole,
   ): Promise<MediaOutcome & { paths?: readonly string[]; mode?: string }> => {
+    const outputImageRole = resumeReceipt === undefined ? imageRole ?? 'final' : imageRole
     const imageEpoch = identityVersion
     signal = AbortSignal.any([signal, imageLife.signal])
     let releaseImage: (() => void) | undefined
@@ -1453,7 +1475,8 @@ export function apply(ctx: Context, config: Config): void {
       const result = await executeImageTask({
         model, route, backendFingerprint, signal, submit, ...origin === undefined ? {} : { origin },
         prepare: async (operationSignal) => {
-          output = await captureMediaOutput(ctx.get('artifactStorage'), join(stateDir, 'media'), operationSignal, resumeReceipt === undefined ? origin : resumeReceipt.origin)
+          output = await captureMediaOutput(ctx.get('artifactStorage'), join(stateDir, 'media'), operationSignal,
+            resumeReceipt === undefined ? origin : resumeReceipt.origin, undefined, outputImageRole)
         },
         submitTimeoutMs: resolved.imageSubmitTimeoutMs, taskTimeoutMs: resolved.imageTaskTimeoutMs,
         queryTimeoutMs: resolved.timeoutMs, pollIntervalMs: resolved.imagePollIntervalMs,
@@ -1832,6 +1855,8 @@ export function apply(ctx: Context, config: Config): void {
           relay: { key: relayKey, ...relayId === undefined ? {} : { id: relayId } } })
         if (version !== identityVersion) return null
         identityVersion += 1
+        productModelDisplays = undefined
+        productModelOwner = undefined
         chatUsage.reset()
         const committed = identityVersion
         invalidateModelCatalog()
@@ -1876,6 +1901,8 @@ export function apply(ctx: Context, config: Config): void {
         || current.upstream?.refresh !== previous.upstream?.refresh || current.upstream?.token !== previous.upstream?.token
         || current.upstream?.expiresAt !== previous.upstream?.expiresAt) return false
       identityVersion += 1
+      productModelDisplays = undefined
+      productModelOwner = undefined
       chatUsage.reset()
       invalidateModelCatalog()
       await store.clear()
@@ -2125,7 +2152,7 @@ export function apply(ctx: Context, config: Config): void {
         const current = await store.read()
         const bound = current?.backendBaseUrl ?? (isLoopbackOrigin(apiBaseUrl) ? apiBaseUrl : undefined)
         if (current === null || modelCatalogClosed || controller.signal.aborted || version !== identityVersion
-          || current.token !== ownerToken || bound !== apiBaseUrl
+          || current.token !== ownerToken || current.account.id !== session.account.id || bound !== apiBaseUrl
           || !Number.isFinite(Date.parse(current.expiresAt))
           || Date.parse(current.expiresAt) <= Date.now()) throw new Error('登录账号已变化，请重新读取模型列表。')
       }
@@ -2141,7 +2168,9 @@ export function apply(ctx: Context, config: Config): void {
       for (const id of mediaModelIds(body.data)) media.add(id)
       const chatIds = discovered.chat.filter(id => id !== '' && !media.has(id))
       const defaults = await installedModelInputs(chatIds, signal)
-      let presentation = productModelPresentation
+      const owner = productOwner(session)
+      let presentation = productModelOwner === owner ? productModelPresentation : { defaultChatModel: null, modelOrder: [] }
+      let displays = productModelOwner === owner ? productModelDisplays : undefined
       try {
         const response = await apiFetch('/api/status', { headers: { accept: 'application/json' }, signal })
         if (!response.ok || response.body === null) throw new Error('Client model configuration unavailable')
@@ -2152,26 +2181,38 @@ export function apply(ctx: Context, config: Config): void {
           if (size > 1024 * 1024) throw new Error('Client model configuration response exceeds the limit')
           chunks.push(chunk)
         }
-        presentation = parseClientModelConfigStatus(JSON.parse(Buffer.concat(chunks).toString('utf8')))
-          ?? { defaultChatModel: null, modelOrder: [] }
+        const status: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+        try {
+          presentation = parseClientModelConfigStatus(status) ?? { defaultChatModel: null, modelOrder: [] }
+        } catch (_invalidModelPreferences: unknown) {
+          ctx.logger.warn('credits-index: client model preferences invalid; retaining the last valid default and ordering')
+        }
+        try { displays = parseClientModelPresentationStatus(status) }
+        catch (_invalidModelDisplay: unknown) {
+          ctx.logger.warn('credits-index: client model presentation invalid; retaining the last valid display text for this login')
+        }
       } catch (_unavailableClientModelConfiguration: unknown) {
-        ctx.logger.warn('credits-index: client model configuration unavailable; retaining the last valid preferences')
+        ctx.logger.warn('credits-index: client model status unavailable; retaining the last valid preferences and display text for this login')
       }
       const ids = orderProductModels(chatIds, presentation)
       const preferred = preferredProductModel(ids, presentation)
       await mutateSession(async () => {
         await currentIdentity()
         const previousDefault = ctx.get('agentDefaultModel')?.currentSelection()
-        const previousIds = productCatalog?.version === version ? productCatalog.ids : undefined
+        const previousIds = productCatalog?.version === version && productCatalog.owner === owner ? productCatalog.ids : undefined
+        const previousDisplay = productModelDisplaySignature(previousIds ?? [], productModelDisplays)
         await writeProductModels(ids, defaults)
         await currentIdentity()
         productModelPresentation = presentation
-        productCatalog = { version, ids,
+        productModelDisplays = displays
+        productModelOwner = owner
+        productCatalog = { version, owner, ids,
           selection: preferred === undefined ? undefined : { provider: resolved.chatProviderRoute, model: preferred } }
         const nextDefault = ctx.get('agentDefaultModel')?.currentSelection()
         if (previousDefault?.provider !== nextDefault?.provider || previousDefault?.model !== nextDefault?.model
           || previousDefault?.reasoningEffort !== nextDefault?.reasoningEffort || previousIds === undefined
-          || previousIds.length !== ids.length || previousIds.some((id, index) => id !== ids[index])) {
+          || previousIds.length !== ids.length || previousIds.some((id, index) => id !== ids[index])
+          || previousDisplay !== productModelDisplaySignature(ids, displays)) {
           notifyModelCatalogChanged()
         }
       })
@@ -2377,7 +2418,8 @@ export function apply(ctx: Context, config: Config): void {
     try {
       const outcome = await runImageGeneration(await key(), {}, signal,
         path => creative.saved(operation, path, 'image'), undefined,
-        next => creative.receipt(operation, next), receipt, bytes => creative.matchImageOutput(operation, bytes), key, receipt.origin)
+        next => creative.receipt(operation, next), receipt, bytes => creative.matchImageOutput(operation, bytes), key, receipt.origin,
+        operation.imageRole)
       await creative.finish(operation, { kind: 'image', status: outcome.ok ? 'completed' : imageCreativeStatus(outcome, signal),
         ...outcome.imageReceipt === undefined ? {} : { imageReceipt: outcome.imageReceipt },
         ...outcome.submissionState === 'not-submitted' ? { notSubmitted: true } : {},
@@ -2917,6 +2959,8 @@ export function apply(ctx: Context, config: Config): void {
         if (route === '/api/session/logout' && method === 'POST') {
           const previous = await store.read()
           identityVersion += 1
+          productModelDisplays = undefined
+          productModelOwner = undefined
           chatUsage.reset()
           await stopActivity(previous?.token)
           invalidateModelCatalog()
@@ -4070,7 +4114,8 @@ export function apply(ctx: Context, config: Config): void {
           await binding.key()
           await creative.dispatched(creation)
           submission.started = true
-        }, receipt => creative.receipt(creation, receipt), undefined, undefined, () => binding.key(), artifactOriginOf(exec))
+        }, receipt => creative.receipt(creation, receipt), undefined, undefined, () => binding.key(), artifactOriginOf(exec),
+        creation.imageRole)
         const paths = [...outcome.paths ?? []]
         await creative.finish(operation, { status: outcome.ok ? 'completed' : imageCreativeStatus(outcome, exec.signal), paths, kind: 'image',
           ...outcome.imageReceipt === undefined ? {} : { imageReceipt: outcome.imageReceipt },

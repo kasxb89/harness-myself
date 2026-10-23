@@ -142,6 +142,53 @@ function provideConverter(ctx: Context, convert: (request: OfficeToPdfRequest, s
 }
 
 describe('artifact storage through the real Loader and HTTP routes', () => {
+  it('classifies producer images independently of filenames and preserves purposes only for the exact file', async () => {
+    const f = await boot()
+    const destination = await f.ctx.artifactStorage.capture(signal())
+    const final = await f.ctx.artifactStorage.write({ destination, filename: 'storyboard-001.png', bytes: Uint8Array.of(1, 2),
+      imageRole: 'final', signal: signal() })
+    const source = join(f.custom, 'source.png')
+    await writeFile(source, Uint8Array.of(3, 4))
+    const shot = await f.ctx.artifactStorage.publish({ destination, sourcePath: source, filename: 'finished.png',
+      imageRole: 'storyboard', signal: signal() })
+    const legacy = join(f.output, 'storyboard-shot-final.png')
+    await writeFile(legacy, Uint8Array.of(5, 6))
+    const listing = await f.json('list')
+    expect(listing.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: final.path, kind: 'image', imageRole: 'final' }),
+      expect.objectContaining({ path: shot.path, kind: 'image', imageRole: 'storyboard' }),
+    ]))
+    expect((listing.items as Record<string, unknown>[]).find(entry => entry.path === legacy)).not.toHaveProperty('imageRole')
+    const folder = await f.json('directory?' + new URLSearchParams({ root: f.output, directory: '' }).toString())
+    expect(folder.items).toEqual(expect.arrayContaining([expect.objectContaining({ path: final.path, imageRole: 'final' })]))
+    expect((await f.request('list', undefined, { authenticated: false })).status).toBe(401)
+    const renamed = object((await f.json('rename', { path: shot.path, name: 'renamed.png', expected: await f.version(shot.path) })).item)
+    expect(renamed.imageRole).toBe('storyboard')
+    if (typeof renamed.path !== 'string') throw new Error('Expected renamed output path')
+    const { trashId } = await f.json('trash', { path: renamed.path, expected: await f.version(renamed.path) })
+    expect(object((await f.json('restore', { id: trashId })).item).imageRole).toBe('storyboard')
+    await f.ctx.fiber.dispose()
+    fixtures.splice(fixtures.findIndex(value => value.ctx === f.ctx), 1)
+    const restarted = await boot(f.directory)
+    expect((await restarted.json('list')).items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: renamed.path, imageRole: 'storyboard' }),
+    ]))
+    const rolePath = videoRolePath(f.state, await stat(final.path))
+    const original = await readFile(rolePath, 'utf8')
+    const saved = object(JSON.parse(original))
+    for (const invalid of [{ ...saved, imageRole: 'guess' }, { ...saved, unrelated: true }, { ...saved, identity: 'wrong' }]) {
+      await writeFile(rolePath, JSON.stringify(invalid))
+      expect(((await restarted.json('list')).items as Record<string, unknown>[]).find(entry => entry.path === final.path))
+        .not.toHaveProperty('imageRole')
+    }
+    await writeFile(rolePath, original)
+    await rm(final.path)
+    await writeFile(final.path, Uint8Array.of(1, 2))
+    await writeFile(renamed.path, 'modified image')
+    const changed = (await restarted.json('list')).items as Record<string, unknown>[]
+    for (const path of [final.path, renamed.path, legacy]) expect(changed.find(entry => entry.path === path)).not.toHaveProperty('imageRole')
+  })
+
   it('classifies exact producer videos across rename, recovery and restart without guessing names or trusting changed files', async () => {
     const f = await boot()
     const destination = await f.ctx.artifactStorage.capture(signal())

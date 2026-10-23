@@ -6,6 +6,7 @@ import { lstat, mkdir, open, readdir, realpath, rename, unlink, writeFile } from
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { basename, extname, isAbsolute, join, resolve } from 'node:path'
 import type { Branded } from '@deepseek-ai/dsh-brand'
+import type { ArtifactImageRole } from '@deepseek-ai/dsh-artifacts-index'
 import type { CreativeAsset, CreativeCharacter, CreativeImageReceipt, CreativeVideoReceipt, CreativeKind, CreativeOutput, CreativeOutputId, CreativePlanChange, CreativeProjectId, CreativeProjectView, CreativeShotPlan, CreativeShotView, CreativeStatus, CreativeTaskView } from './creative-types.ts'
 import type { VideoProjectManifest, VideoProjectRead } from './video-project.ts'
 import type { VideoProjectIdentity } from './video-project-types.ts'
@@ -110,6 +111,14 @@ export interface CreativeOperation {
   readonly projectId: CreativeProjectId
   readonly operationId: CreativeOperationId
   readonly owner: CreativeOwner
+  /** Image purpose derived from the validated original plan kind and immutable material association. */
+  readonly imageRole?: ArtifactImageRole
+}
+
+/** Only the original plan kind and its validated image-material binding establish an image's purpose. */
+function operationImageRole(record: CreativeRecord, assetId: string | undefined): ArtifactImageRole | undefined {
+  if (record.kind === 'image') return 'final'
+  return assetId !== undefined && record.assets.some(asset => asset.id === assetId && asset.kind === 'image') ? 'storyboard' : undefined
 }
 
 /** Runtime-only adapters; records never contain service objects or credentials. */
@@ -749,7 +758,8 @@ export class CreativeStore {
       if (Buffer.byteLength(JSON.stringify(record)) > MAX_BYTES / 2) throw new CreativeError('CREATIVE_LIMIT', 400, '项目记录已接近上限，请新建项目；尚未提交生成。')
       await this.persist(record)
       this.active.add(id)
-      return { projectId: record.id, operationId: id, owner }
+      const imageRole = input.kind === 'image' ? operationImageRole(record, input.assetId) : undefined
+      return { projectId: record.id, operationId: id, owner, ...imageRole === undefined ? {} : { imageRole } }
     })
   }
 
@@ -794,7 +804,7 @@ export class CreativeStore {
    * @param owner - Current login with the project's original workspace.
    * @param id - Explicit creation project id; no latest-project inference occurs.
    * @param invocationId - Exact retained invocation to query without calling begin or posting again.
-   * @returns The exclusively live original invocation and its nonsecret receipt.
+   * @returns The exclusively live original invocation, purpose derived from its unchanged plan/material, and nonsecret receipt.
    */
   resumeImage(
     owner: CreativeOwner, id: string, invocationId: string,
@@ -815,7 +825,9 @@ export class CreativeStore {
       delete found.errorCode
       await this.persist(record)
       this.active.add(found.id)
-      return { operation: { projectId: record.id, operationId: found.id, owner }, receipt: { ...found.imageReceipt } }
+      const imageRole = operationImageRole(record, found.assetId)
+      return { operation: { projectId: record.id, operationId: found.id, owner, ...imageRole === undefined ? {} : { imageRole } },
+        receipt: { ...found.imageReceipt } }
     })
   }
 

@@ -9,8 +9,12 @@ import { expect, it, onTestFinished } from 'vitest'
 import { launchWebScaffold, watchConsole } from './scaffold.ts'
 import { ZH_BROWSER_LOCALE, connectFreshWorkspaceZh } from './support.ts'
 
-it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash'])(
-  'selects the deployment default %s after first sign-in without opening the model menu', async (preferred) => {
+it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash', 'yunshu-flash-configured'])(
+  'selects the deployment default %s after first sign-in without opening the model menu', async (scenario) => {
+    const configured = scenario === 'yunshu-flash-configured'
+    const preferred = configured ? 'yunshu-flash' : scenario
+    const badge = configured ? '旗舰模型介绍由后台配置，适合内容创作和编程，可按任务选择使用'.padEnd(32, '。') : '旗舰模型'
+    const description = configured ? '适合内容写作与编程。<b>后台介绍</b>'.padEnd(500, '界') : '云枢主力模型，适合日常问答、内容写作与编程'
     const root = await mkdtemp(join(tmpdir(), 'yunshu-first-login-model-'))
     const cleanup: { scaffold?: () => Promise<void>; browser?: () => Promise<void>; upstream?: () => Promise<void> } = {}
     onTestFinished(async () => {
@@ -37,7 +41,12 @@ it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash'])(
         if (path === '/harness/api/status') {
           answer({ quota_per_unit: 500_000, usd_exchange_rate: 7.3,
             client_model_config: { schema_version: 1, default_chat_model: preferred,
-              model_order: ['deepseek-flash', 'deepseek-v4-flash'] } }); return
+              model_order: ['deepseek-flash', 'deepseek-v4-flash'] },
+            ...configured ? { client_model_presentation: { schema_version: 1, models: {
+              'yunshu-flash': { description, badge },
+              'deepseek-flash': { description: '', badge: '' },
+              'unauthorized-display-model': { description: '不得新增这个模型', badge: '不可用' },
+            } } } : {} }); return
         }
         if (path === '/harness/api/user/phone/challenge') {
           answer({ challenge_id: 'synthetic-challenge', delivery_status: 'accepted',
@@ -146,8 +155,14 @@ it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash'])(
       expect(await modelMenu.getByRole('menuitemradio', { name: preferred, exact: true }).getAttribute('aria-checked')).toBe('true')
       if (preferred === 'yunshu-flash') {
         const flagship = modelMenu.getByRole('menuitemradio', { name: 'yunshu-flash', exact: true })
-        await flagship.getByText('旗舰模型', { exact: true }).waitFor()
-        await flagship.getByText('云枢主力模型，适合日常问答、内容写作与编程', { exact: true }).waitFor()
+        await flagship.getByText(badge, { exact: true }).waitFor()
+        await flagship.getByText(description, { exact: true }).waitFor()
+        if (configured) {
+          expect(await flagship.locator('b').count()).toBe(0)
+          expect(await modelMenu.getByRole('menuitemradio', { name: 'unauthorized-display-model', exact: true }).count()).toBe(0)
+          const cleared = modelMenu.getByRole('menuitemradio', { name: 'deepseek-flash', exact: true })
+          expect(await cleared.textContent()).toBe('deepseek-flash')
+        }
         await modelMenu.getByText('响应速度会随任务、推理等级与网络状况变化', { exact: true }).waitFor()
         await page.getByRole('button', { name: 'AI 创作', exact: true }).waitFor()
         for (const [theme, width] of [['dark', 1440], ['light', 900]] as const) {
@@ -167,6 +182,12 @@ it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash'])(
           expect(box!.y).toBeGreaterThanOrEqual(0)
           expect(box!.x + box!.width).toBeLessThanOrEqual(width)
           expect(box!.y + box!.height).toBeLessThanOrEqual(1000)
+          if (configured) {
+            const badgeBox = await flagship.getByText(badge, { exact: true }).boundingBox()
+            expect(badgeBox).not.toBeNull()
+            expect(badgeBox!.x).toBeGreaterThanOrEqual(box!.x)
+            expect(badgeBox!.x + badgeBox!.width).toBeLessThanOrEqual(box!.x + box!.width)
+          }
           await page.screenshot({ path: join(evidence, `model-guidance-${theme}.png`), animations: 'disabled' })
         }
         const search = page.getByRole('searchbox', { name: '搜索模型…', exact: true })
@@ -183,12 +204,21 @@ it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash'])(
         await page.getByRole('button', { name: '添加文件或调用指令', exact: true }).click()
         await page.getByRole('option', { name: /^模型/u }).click()
         const commandMenu = page.locator('[aria-label="/model 选项"]')
-        await commandMenu.getByText('旗舰模型', { exact: true }).waitFor()
-        await commandMenu.getByText('云枢主力模型，适合日常问答、内容写作与编程', { exact: true }).waitFor()
-        const flagship = commandMenu.getByRole('option', { name: 'yunshu-flash 旗舰模型', exact: true })
+        await commandMenu.getByText(badge, { exact: true }).waitFor()
+        await commandMenu.getByText(description, { exact: true }).waitFor()
+        const flagship = commandMenu.getByRole('option', { name: `yunshu-flash ${badge}`, exact: true })
         await expect.poll(() => flagship.getAttribute('aria-describedby')).not.toBeNull()
         expect(await flagship.evaluate(element => document.getElementById(element.getAttribute('aria-describedby')!)?.textContent))
-          .toBe('云枢主力模型，适合日常问答、内容写作与编程')
+          .toBe(description)
+        if (configured) {
+          const menuBox = await commandMenu.boundingBox()
+          const badgeBox = await commandMenu.getByText(badge, { exact: true }).boundingBox()
+          expect(menuBox).not.toBeNull()
+          expect(badgeBox).not.toBeNull()
+          expect(menuBox!.x).toBeGreaterThanOrEqual(0)
+          expect(menuBox!.x + menuBox!.width).toBeLessThanOrEqual(900)
+          expect(badgeBox!.x + badgeBox!.width).toBeLessThanOrEqual(menuBox!.x + menuBox!.width)
+        }
         await page.screenshot({ path: join(evidence, 'model-command-guidance.png'), animations: 'disabled' })
         await page.keyboard.press('Escape')
       }
@@ -236,7 +266,7 @@ it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash'])(
       expect(errors).toEqual([])
       expect(tripwire.pageErrors).toEqual([])
       await page.screenshot({ path: join(evidence, 'first-login-selected-model.png'), animations: 'disabled' })
-      await writeFile(join(evidence, 'result.json'), JSON.stringify({ preferred, elapsedMs, requests,
+      await writeFile(join(evidence, 'result.json'), JSON.stringify({ preferred, configured, badge, description, elapsedMs, requests,
         modelCalls: modelRequests.length, modelRequest: { model: wire['model'], max_tokens: wire['max_tokens'],
           stream: wire['stream'], stream_options: wire['stream_options'],
           forbiddenFieldsAbsent: true, toolsPresent: true },

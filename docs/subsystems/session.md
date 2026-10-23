@@ -805,6 +805,8 @@ The backends that consume this contract are on [persistence.md](persistence.md).
 
 `ModelCatalog` is the Host-generation model directory returned by `session/modelCatalog`: it carries the deployment default, routable provider ids, successful provider groups, and isolated provider failures. It is not derived from one Session and remains separate from Session projections.
 
+Each available `ModelCatalogModel` may carry display-only `presentation.description` and `presentation.badge`. The synchronous `api-session/model-presentation(provider, model, next)` waterfall delegates before composing text for an existing exact row. Missing fields inherit UI guidance; empty strings suppress it. Committed changes use `api-session/model-catalog-changed` to refresh the shared directory without changing routing, capabilities or Session events.
+
 `SessionOpenWorkspacePathRequest` carries an absolute or workspace-resolved `path`; optional `action: "reveal"` selects file-manager navigation instead of default-application opening. `SessionOpenWorkspacePathValue` confirms that the Host accepted the native handoff. A Session-aware Client resolves relative paths against its current Session cwd when known; the controller hands the path to the opener unchanged and reports invalid requests, cancellation, and opener failures through the Session Remote error vocabulary.
 
 The optional `application` selects a registered file handler without changing the system default; `workspacePathApplications({ path })` returns current handlers, names, icons, and default selection after Host path verification.
@@ -1205,15 +1207,35 @@ Source: [`packages/api/session-controller/src/types.ts`](../../packages/api/sess
 
 #### `api-session/model-catalog-changed` — emit
 
-The effective default model changed after its update committed. Consumers reload the model catalog to read the current default.
+The available product models, their display text or the effective default changed after committing. Consumers reload the model catalog to read the current directory.
 
 ```ts cordis-catalog
 /**
- * The effective default model changed after its update committed.
- * Consumers reload the model catalog to read the current default.
+ * The available product models, their display text or the effective default changed after committing.
+ * Consumers reload the model catalog to read the current directory.
  * @mode emit
  */
 'api-session/model-catalog-changed'(): void
+```
+
+Source: [`packages/api/session-controller/src/types.ts`](../../packages/api/session-controller/src/types.ts)
+
+<a id="api-sessionmodel-presentation--waterfall"></a>
+
+#### `api-session/model-presentation` — waterfall
+
+Supply display-only text for an already advertised exact provider/model row.
+
+```ts cordis-catalog
+/**
+ * Supply display-only text for an already advertised exact provider/model row.
+ * @mode waterfall
+ * @param provider - Registered provider route owning the row.
+ * @param model - Advertised model id; this event cannot add or rename a model.
+ * @param next - Delegate to the remaining presentation providers.
+ * @returns Optional plain text; undefined fields inherit and empty strings suppress inherited text.
+ */
+'api-session/model-presentation'( provider: string, model: string, next: () => ModelCatalogModel['presentation'], ): ModelCatalogModel['presentation']
 ```
 
 Source: [`packages/api/session-controller/src/types.ts`](../../packages/api/session-controller/src/types.ts)

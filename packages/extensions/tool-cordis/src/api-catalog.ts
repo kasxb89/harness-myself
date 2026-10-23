@@ -4082,9 +4082,17 @@ export const EVENT_API: readonly EventApiEntry[] = [
     name: 'api-session/model-catalog-changed',
     mode: 'emit',
     signature: '\'api-session/model-catalog-changed\'(): void',
-    summary: 'The effective default model changed after its update committed.',
-    description: 'The effective default model changed after its update committed. Consumers reload the model catalog to read the current default.',
+    summary: 'The available product models, their display text or the effective default changed after committing.',
+    description: 'The available product models, their display text or the effective default changed after committing. Consumers reload the model catalog to read the current directory.',
     parameters: [],
+  },
+  {
+    name: 'api-session/model-presentation',
+    mode: 'waterfall',
+    signature: '\'api-session/model-presentation\'( provider: string, model: string, next: () => ModelCatalogModel[\'presentation\'], ): ModelCatalogModel[\'presentation\']',
+    summary: 'Supply display-only text for an already advertised exact provider/model row.',
+    description: 'Supply display-only text for an already advertised exact provider/model row.',
+    parameters: [{ name: 'provider', description: 'Registered provider route owning the row.' }, { name: 'model', description: 'Advertised model id; this event cannot add or rename a model.' }, { name: 'next', description: 'Delegate to the remaining presentation providers.' }],
   },
   {
     name: 'api-session/removed',
@@ -4771,8 +4779,12 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface ArtifactDestination {\n    readonly directory: string;\n}',
   },
   {
+    name: 'ArtifactImageRole',
+    declaration: 'export type ArtifactImageRole = \'final\' | \'storyboard\';',
+  },
+  {
     name: 'ArtifactPublishRequest',
-    declaration: 'export interface ArtifactPublishRequest {\n    readonly destination: ArtifactDestination;\n    readonly sourcePath: string;\n    readonly filename: string;\n    readonly signal: AbortSignal;\n    readonly origin?: ArtifactOrigin;\n    readonly videoRole?: ArtifactVideoRole;\n}',
+    declaration: 'export interface ArtifactPublishRequest {\n    readonly destination: ArtifactDestination;\n    readonly sourcePath: string;\n    readonly filename: string;\n    readonly signal: AbortSignal;\n    readonly origin?: ArtifactOrigin;\n    readonly videoRole?: ArtifactVideoRole;\n    readonly imageRole?: ArtifactImageRole;\n}',
   },
   {
     name: 'ArtifactVideoRole',
@@ -4780,7 +4792,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ArtifactWriteRequest',
-    declaration: 'export interface ArtifactWriteRequest {\n    readonly destination: ArtifactDestination;\n    readonly filename: string;\n    readonly bytes: Uint8Array;\n    readonly signal: AbortSignal;\n    readonly origin?: ArtifactOrigin;\n    readonly videoRole?: ArtifactVideoRole;\n}',
+    declaration: 'export interface ArtifactWriteRequest {\n    readonly destination: ArtifactDestination;\n    readonly filename: string;\n    readonly bytes: Uint8Array;\n    readonly signal: AbortSignal;\n    readonly origin?: ArtifactOrigin;\n    readonly videoRole?: ArtifactVideoRole;\n    readonly imageRole?: ArtifactImageRole;\n}',
   },
   {
     name: 'ArtifactWriteResult',
@@ -6112,7 +6124,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ModelCatalogModel',
-    declaration: 'export interface ModelCatalogModel {\n    readonly id: string;\n    readonly name: string;\n    readonly description?: string;\n    readonly reasoning?: ModelReasoning;\n}',
+    declaration: 'export interface ModelCatalogModel {\n    readonly id: string;\n    readonly name: string;\n    readonly description?: string;\n    readonly presentation?: {\n        readonly description?: string;\n        readonly badge?: string;\n    };\n    readonly reasoning?: ModelReasoning;\n}',
   },
   {
     name: 'ModelMessageSource',

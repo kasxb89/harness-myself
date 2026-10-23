@@ -19,6 +19,20 @@ function respond(value: unknown, status = 200) {
 }
 
 describe('artifact management HTTP boundary', () => {
+  it('accepts recorded image purposes only on images and keeps old unclassified images readable', async () => {
+    const fetch = respond({ items: [{ ...item, imageRole: 'storyboard' }], roots: ['/产物'], truncated: false })
+    const signal = new AbortController().signal
+    expect(await readArtifacts(signal)).toMatchObject({ ok: true, value: { items: [{ imageRole: 'storyboard' }] } })
+    for (const entry of [{ ...item, imageRole: 'final' }, item]) {
+      fetch.mockResolvedValueOnce(Response.json({ items: [entry], roots: ['/产物'], truncated: false }))
+      expect((await readArtifacts(signal)).ok).toBe(true)
+    }
+    for (const entry of [{ ...item, kind: 'video', imageRole: 'storyboard' }, { ...item, imageRole: 'shot' }]) {
+      fetch.mockResolvedValueOnce(Response.json({ items: [entry], roots: ['/产物'], truncated: false }))
+      expect(await readArtifacts(signal)).toEqual({ ok: false, code: 'ARTIFACT_OPERATION_FAILED' })
+    }
+  })
+
   it('accepts only exact video-purpose values on video entries and preserves old listings', async () => {
     const fetch = respond({ items: [{ ...item, kind: 'video', videoRole: 'shot' }], roots: ['/产物'], truncated: false })
     const signal = new AbortController().signal

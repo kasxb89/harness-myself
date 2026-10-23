@@ -14,6 +14,19 @@ afterEach(async () => {
 })
 
 describe('operation-local media output', () => {
+  it.each(['final', 'storyboard'] as const)('retains the verified image purpose %s on every image write and publication', async (imageRole) => {
+    const write = vi.fn<ArtifactStorageService['write']>(async () => ({ path: '/saved/image.png' }))
+    const publish = vi.fn<ArtifactStorageService['publish']>(async () => ({ path: '/saved/copied.png' }))
+    const storage: ArtifactStorageService = { capture: async () => ({ directory: '/saved' }), validate: async () => {}, write, publish }
+    const output = await captureMediaOutput(storage, '/legacy', new AbortController().signal, undefined, undefined, imageRole)
+    await output.write('image.png', Uint8Array.of(1))
+    await output.publish('/download/image.png', 'copied.png')
+    for (const [call] of [...write.mock.calls, ...publish.mock.calls]) {
+      expect(call.imageRole).toBe(imageRole)
+      expect(call).not.toHaveProperty('videoRole')
+    }
+  })
+
   it('captures immutable source coordinates before the output check and carries them through every write and publication', async () => {
     const origin = { sessionId: SessionId('generating-chat'), turn: 3, eventSeq: SessionSeq(12), toolCallId: ToolCallId('generate') }
     let release!: (value: { directory: string }) => void

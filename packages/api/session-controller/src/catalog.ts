@@ -27,6 +27,7 @@ export async function buildModelCatalog(
       const models = await ctx.llm.listModels(provider.id)
       const entries = await Promise.all(models.map(async (model) => {
         const resolved = await ctx.llm.resolveModelInfo(provider.id, model.id)
+        const presentation = ctx.waterfall('api-session/model-presentation', provider.id, model.id, () => undefined)
         const reasoning: ModelReasoning | undefined = resolved.reasoning === undefined
           ? undefined
           : {
@@ -43,6 +44,10 @@ export async function buildModelCatalog(
           id: model.id,
           name: model.name,
           ...(model.description === undefined ? {} : { description: model.description }),
+          ...presentation === undefined ? {} : { presentation: {
+            ...presentation.description === undefined ? {} : { description: presentation.description },
+            ...presentation.badge === undefined ? {} : { badge: presentation.badge },
+          } },
           ...(reasoning === undefined ? {} : { reasoning }),
         }
       }))

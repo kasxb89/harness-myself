@@ -317,6 +317,29 @@ describe('ui-model-selection dual entry', () => {
       : { placeholder: 'Search models…', empty: 'No models available.', noResults: 'No matching models.' })
   })
 
+  it('uses display overrides in the composed /model command without changing routing or fallback fields', async () => {
+    const b = await bench()
+    b.setGroups([{ id: 'yunshu-local', name: '云枢', models: [
+      { id: 'yunshu-flash', name: 'Override', presentation: { badge: '后台标签', description: '<b>Plain</b>' } },
+      { id: 'deepseek-flash', name: 'Clear', presentation: { badge: '', description: '' } },
+      { id: 'deepseek-v4-pro', name: 'Fallback', presentation: { badge: 'New' } },
+    ] }])
+    b.mint('s1')
+    const options = await b.popup().options(projection('s1'), new AbortController().signal)
+    expect(options.map(option => [option.id, option.label, option.badge, option.detail])).toEqual([
+      ['yunshu-local/yunshu-flash', 'Override', '后台标签', '<b>Plain</b>'],
+      ['yunshu-local/deepseek-flash', 'Clear', undefined, undefined],
+      ['yunshu-local/deepseek-v4-pro', 'Fallback', 'New', zh['guidance.reasoning']],
+    ])
+    await b.popup().onSelect(options[0]!, projection('s1'))
+    expect(b.ctx.modelDirectories.directoryFor(sid('s1')).store.getSnapshot().current)
+      .toEqual({ provider: 'yunshu-local', model: 'yunshu-flash' })
+    b.setGroups([{ id: 'yunshu-local', name: '云枢', models: [{ id: 'yunshu-flash', name: 'Override' }] }])
+    b.remote.emit('api-session/model-catalog-changed', [])
+    const refreshed = await b.popup().options(projection('s1'), new AbortController().signal)
+    expect(refreshed[0]?.badge).toBe(zh['guidance.flagship'])
+  })
+
   it.each(['zh', 'en'] as const)('marks only the available Yunshu product route as flagship (%s)', async (locale) => {
     const b = await bench(locale)
     b.setGroups([

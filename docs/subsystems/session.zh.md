@@ -809,6 +809,8 @@ interface PluginRecord {
 
 `ModelCatalog` 是 `session/modelCatalog` 返回的 Host generation 模型目录：它携带部署默认值、可路由 provider id、成功的 provider 分组与相互隔离的 provider 失败。它不由某个 Session 派生，因此与 Session projection 分开保存。
 
+每个可用的 `ModelCatalogModel` 可携带仅供展示的 `presentation.description` 与 `presentation.badge`。同步 waterfall `api-session/model-presentation(provider, model, next)` 先委托后续处理器，再为已有的精确条目组合文字。字段缺失时继承界面说明，空字符串则隐藏说明。提交后的变化通过 `api-session/model-catalog-changed` 刷新共享目录，不改变路由、能力或 Session 事件。
+
 `SessionOpenWorkspacePathRequest` 携带绝对路径或已按 workspace 解析的 `path`。`SessionOpenWorkspacePathValue` 确认 Host 已接受原生交接。Session-aware Client 会在已知当前 Session cwd 时据此解析相对路径；controller 将路径原样交给打开器，并通过 Session Remote 错误词汇表报告无效请求、取消与打开器失败。 可选的 `action: "reveal"` 选择文件管理器导航；省略时使用默认应用打开。
 
 可选的 `application` 指定文件关联应用，不修改系统默认值；`workspacePathApplications({ path })` 在校验 Host 路径后返回当前关联应用、名称、图标和默认项。
@@ -1209,15 +1211,35 @@ Source: [`packages/api/session-controller/src/types.ts`](../../packages/api/sess
 
 #### `api-session/model-catalog-changed` — emit
 
-The effective default model changed after its update committed. Consumers reload the model catalog to read the current default.
+The available product models, their display text or the effective default changed after committing. Consumers reload the model catalog to read the current directory.
 
 ```ts cordis-catalog
 /**
- * The effective default model changed after its update committed.
- * Consumers reload the model catalog to read the current default.
+ * The available product models, their display text or the effective default changed after committing.
+ * Consumers reload the model catalog to read the current directory.
  * @mode emit
  */
 'api-session/model-catalog-changed'(): void
+```
+
+Source: [`packages/api/session-controller/src/types.ts`](../../packages/api/session-controller/src/types.ts)
+
+<a id="api-sessionmodel-presentation--waterfall"></a>
+
+#### `api-session/model-presentation` — waterfall
+
+Supply display-only text for an already advertised exact provider/model row.
+
+```ts cordis-catalog
+/**
+ * Supply display-only text for an already advertised exact provider/model row.
+ * @mode waterfall
+ * @param provider - Registered provider route owning the row.
+ * @param model - Advertised model id; this event cannot add or rename a model.
+ * @param next - Delegate to the remaining presentation providers.
+ * @returns Optional plain text; undefined fields inherit and empty strings suppress inherited text.
+ */
+'api-session/model-presentation'( provider: string, model: string, next: () => ModelCatalogModel['presentation'], ): ModelCatalogModel['presentation']
 ```
 
 Source: [`packages/api/session-controller/src/types.ts`](../../packages/api/session-controller/src/types.ts)

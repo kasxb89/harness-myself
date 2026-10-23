@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /** The real Loader, shell selection and HTTP listing discover independently produced files. */
-import { act, screen } from '@testing-library/react'
+import { act, fireEvent, screen } from '@testing-library/react'
 import { afterEach, describe, expect, vi } from 'vitest'
 import { createClientTest, webApp } from '@deepseek-ai/dsh-client-test-runtime/src/assembly/index.ts'
 import { PANEL_ID } from '../src/client/index.ts'
@@ -37,9 +37,20 @@ describe('artifact library real Loader composition', () => {
     await client.flush()
     expect(screen.getByRole('heading', { name: en.title })).toBeTruthy()
     expect(listingReads).toBe(1)
-    items = [{ path: '/output/generated.png', name: 'generated.png', kind: 'image', size: 128, mtimeMs: 1 }]
+    items = [
+      { path: '/output/generated.png', name: 'generated.png', kind: 'image', size: 128, mtimeMs: 1, imageRole: 'final' },
+      { path: '/output/scene.png', name: 'scene.png', kind: 'image', size: 128, mtimeMs: 2, imageRole: 'storyboard' },
+      { path: '/output/storyboard-old.png', name: 'storyboard-old.png', kind: 'image', size: 128, mtimeMs: 3 },
+    ]
     await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
     expect(screen.getByRole('button', { name: /^generated\.png/u })).toBeTruthy()
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: `${en['kind.storyboard-image']}1` })) })
+    expect(screen.getByRole('button', { name: /^scene\.png/u })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /^generated\.png/u })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^storyboard-old\.png/u })).toBeNull()
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: `${en['kind.final-image']}1` })) })
+    expect(screen.getByRole('button', { name: /^generated\.png/u })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /^scene\.png/u })).toBeNull()
     expect(listingReads).toBe(2)
     expect(client.ctx.uiSession.adapter.current.getSnapshot().key).toBe(selectedChat)
     await act(async () => { client.ctx.layout.selectPanel(null) })

@@ -575,8 +575,8 @@ export function ModelSelect(
                             aria-label={model.name}
                             aria-describedby={[
                               ...(guidance.badge === undefined ? [] : [`${id}-model-${index}-badge`]),
-                              `${id}-model-${index}-guidance`,
-                            ].join(' ')}
+                              ...(guidance.detail === undefined ? [] : [`${id}-model-${index}-guidance`]),
+                            ].join(' ') || undefined}
                             id={`${id}-model-${index}`}
                             tabIndex={showSearch ? -1 : 0}
                             onFocus={() => { setHighlightedIndex(index) }}
@@ -598,9 +598,9 @@ export function ModelSelect(
                                 <span className={css.modelName}>{model.name}</span>
                                 {guidance.badge !== undefined && <span id={`${id}-model-${index}-badge`} className={css.modelBadge}>{guidance.badge}</span>}
                               </span>
-                              <span id={`${id}-model-${index}-guidance`} className={css.modelDetail}>
+                              {guidance.detail !== undefined && <span id={`${id}-model-${index}-guidance`} className={css.modelDetail}>
                                 {guidance.detail}
-                              </span>
+                              </span>}
                             </span>
                             <span className={css.check}>
                               {pending?.provider === group.id && pending.model === model.id

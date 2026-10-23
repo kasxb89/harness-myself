@@ -129,6 +129,7 @@ function entry(value: unknown): value is ArtifactEntry {
     && typeof value.size === 'number' && Number.isFinite(value.size) && value.size >= 0
     && typeof value.mtimeMs === 'number' && Number.isFinite(value.mtimeMs)
     && (value.videoRole === undefined || value.kind === 'video' && (value.videoRole === 'final' || value.videoRole === 'shot'))
+    && (value.imageRole === undefined || value.kind === 'image' && (value.imageRole === 'final' || value.imageRole === 'storyboard'))
     && (value.workspaceId === undefined || typeof value.workspaceId === 'string' && value.workspaceId !== '')
 }
 

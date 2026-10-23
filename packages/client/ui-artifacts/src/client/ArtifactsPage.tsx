@@ -44,6 +44,8 @@ export interface ArtifactEntry {
   readonly mtimeMs: number
   /** Trusted producer purpose, bound to this exact file version by the Host. */
   readonly videoRole?: 'final' | 'shot'
+  /** Trusted image purpose, independent of its filename and generating prompt. */
+  readonly imageRole?: 'final' | 'storyboard'
   /** Present only for files explicitly authorized through a registered workspace. */
   readonly workspaceId?: string
 }
@@ -86,12 +88,15 @@ export type ArtifactsPageProps = ArtifactsInjected & { active: boolean; refreshK
 
 type FileDialog = { kind: 'rename' | 'trash'; entry: ArtifactEntry } | { kind: 'storage' }
 
-type ArtifactFilter = ArtifactKind | 'all' | 'final-video' | 'storyboard'
+type ArtifactFilter = ArtifactKind | 'all' | 'final-image' | 'storyboard-image' | 'final-video' | 'storyboard'
 const FILTERS: readonly ArtifactFilter[] = [
-  'all', 'image', 'video', 'final-video', 'storyboard', 'document', 'sheet', 'slides', 'audio', 'archive', 'code', 'text', 'other',
+  'all', 'image', 'final-image', 'storyboard-image', 'video', 'final-video', 'storyboard',
+  'document', 'sheet', 'slides', 'audio', 'archive', 'code', 'text', 'other',
 ]
 
 function matchesFilter(entry: ArtifactEntry, filter: ArtifactFilter): boolean {
+  if (filter === 'final-image') return entry.kind === 'image' && entry.imageRole === 'final'
+  if (filter === 'storyboard-image') return entry.kind === 'image' && entry.imageRole === 'storyboard'
   if (filter === 'final-video') return entry.kind === 'video' && entry.videoRole === 'final'
   if (filter === 'storyboard') return entry.kind === 'video' && entry.videoRole === 'shot'
   return filter === 'all' || entry.kind === filter
@@ -126,7 +131,9 @@ function formatTime(ms: number): string {
 /** One artifact's kind, size, and time on a single line. */
 function metaLine(entry: ArtifactEntry, t: ArtifactsInjected['t']): string {
   const category = entry.kind === 'video' && entry.videoRole !== undefined
-    ? entry.videoRole === 'final' ? 'final-video' : 'storyboard' : entry.kind
+    ? entry.videoRole === 'final' ? 'final-video' : 'storyboard'
+    : entry.kind === 'image' && entry.imageRole !== undefined
+      ? entry.imageRole === 'final' ? 'final-image' : 'storyboard-image' : entry.kind
   return `${t(`kind.${category}`)} · ${formatSize(entry.size)} · ${formatTime(entry.mtimeMs)}`
 }
 
@@ -522,13 +529,15 @@ export function ArtifactsPage(props: ArtifactsPageProps): ReactNode {
         {FILTERS.map((kind) => {
           const count = counts.get(kind) ?? 0
           if (kind !== 'all' && kind !== filter && count === 0
-            && (!['final-video', 'storyboard'].includes(kind) || (counts.get('video') ?? 0) === 0)) return null
+            && (!['final-video', 'storyboard'].includes(kind) || (counts.get('video') ?? 0) === 0)
+            && (!['final-image', 'storyboard-image'].includes(kind) || (counts.get('image') ?? 0) === 0)) return null
           return <Pill key={kind} active={kind === filter} onClick={() => { setFilter(kind) }}>
             {t(`kind.${kind}`)}<span className={css.filterCount}>{count}</span>
           </Pill>
         })}
       </nav>
       {(filter === 'final-video' || filter === 'storyboard') && <p className={css.hint}>{t('videoRole.hint')}</p>}
+      {(filter === 'final-image' || filter === 'storyboard-image') && <p className={css.hint}>{t('imageRole.hint')}</p>}
       <div className={css.body}>
         <div className={css.listPane} aria-busy={loading}>
           {!loaded && loading && <TextShimmer active className={css.hint}>{t('loading')}</TextShimmer>}

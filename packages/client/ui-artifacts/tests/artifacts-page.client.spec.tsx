@@ -112,6 +112,32 @@ async function readyStorageButton() {
 }
 
 describe('Artifacts page file management', () => {
+  it.each([zh, en])('filters recorded finished and storyboard images without guessing filenames or widening workspace access', async (copy) => {
+    const final: ArtifactEntry = { ...image, path: '/old/storyboard-001.png', name: 'storyboard-001.png', imageRole: 'final' }
+    const shot: ArtifactEntry = { ...image, path: '/old/finished.png', name: 'finished.png', imageRole: 'storyboard' }
+    const ordinary: ArtifactEntry = { ...image, path: '/old/storyboard-shot-final.png', name: 'storyboard-shot-final.png' }
+    const revoked: ArtifactEntry = { ...shot, path: '/revoked/image.png', name: 'revoked.png', workspaceId: 'revoked' }
+    render(<ArtifactsPage {...props({ t: key => copy[key as keyof typeof zh] ?? key,
+      readListing: async () => ({ ok: true, value: { items: [video, final, shot, ordinary, revoked], roots: ['/old'], truncated: false } }),
+    })} />)
+    fireEvent.click(await screen.findByRole('button', { name: `${copy['kind.storyboard-image']}1` }))
+    expect(screen.getByRole('button', { name: /^finished\.png/u })).toBeTruthy()
+    for (const name of ['storyboard-001', 'storyboard-shot', 'revoked', '片段']) {
+      expect(screen.queryByRole('button', { name: new RegExp(`^${name}`, 'u') })).toBeNull()
+    }
+    expect(screen.getByText(copy['imageRole.hint'])).toBeTruthy()
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'missing' } })
+    expect(screen.getByText(copy.noResults)).toBeTruthy()
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: `${copy['kind.final-image']}1` }))
+    expect(screen.getByRole('button', { name: /^storyboard-001/u })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /^finished/u })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: `${copy['kind.image']}3` }))
+    for (const name of ['storyboard-001', 'storyboard-shot', 'finished']) {
+      expect(screen.getByRole('button', { name: new RegExp(`^${name}`, 'u') })).toBeTruthy()
+    }
+  })
+
   it.each([zh, en])('filters only recorded finished videos and storyboard clips while keeping search and all videos', async (copy) => {
     const final: ArtifactEntry = { ...video, path: '/old/clip-001.mp4', name: 'clip-001.mp4', videoRole: 'final' }
     const shot: ArtifactEntry = { ...video, path: '/old/finished.mp4', name: 'finished.mp4', videoRole: 'shot' }

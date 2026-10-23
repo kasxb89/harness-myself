@@ -137,6 +137,11 @@ export interface ModelCatalogModel {
   readonly id: string
   readonly name: string
   readonly description?: string
+  /** Display-only deployment text; omitted fields inherit, while empty strings suppress the inherited text. */
+  readonly presentation?: {
+    readonly description?: string
+    readonly badge?: string
+  }
   readonly reasoning?: ModelReasoning
 }
 
@@ -598,11 +603,22 @@ declare module '@deepseek-ai/cordis' {
      */
     'api-session/added'(summary: SessionSummary): void
     /**
-     * The effective default model changed after its update committed.
-     * Consumers reload the model catalog to read the current default.
+     * The available product models, their display text or the effective default changed after committing.
+     * Consumers reload the model catalog to read the current directory.
      * @mode emit
      */
     'api-session/model-catalog-changed'(): void
+    /**
+     * Supply display-only text for an already advertised exact provider/model row.
+     * @mode waterfall
+     * @param provider - Registered provider route owning the row.
+     * @param model - Advertised model id; this event cannot add or rename a model.
+     * @param next - Delegate to the remaining presentation providers.
+     * @returns Optional plain text; undefined fields inherit and empty strings suppress inherited text.
+     */
+    'api-session/model-presentation'(
+      provider: string, model: string, next: () => ModelCatalogModel['presentation'],
+    ): ModelCatalogModel['presentation']
     /**
      * A Session left the live Host registry.
      * @mode emit

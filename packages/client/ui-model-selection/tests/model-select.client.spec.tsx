@@ -109,6 +109,28 @@ function liveDirectory(models: () => Promise<RemoteResult<ModelCatalog>>) {
 }
 
 describe('ModelSelect purpose guidance', () => {
+  it('renders backend text literally with complete accessible descriptions and independent clearing', () => {
+    const badge = '标'.repeat(32)
+    const description = '<b>' + '说'.repeat(493) + '</b>'
+    const directory = createSnapshotStore<ModelDirectoryState>(state({ current: null, groups: [
+      { id: 'yunshu-local', name: '云枢', models: [
+        { id: 'yunshu-flash', name: 'Override', presentation: { badge, description } },
+        { id: 'yunshu-flash-clear', name: 'Clear', description: 'Provider fallback', presentation: { badge: '', description: '' } },
+        { id: 'deepseek-v4-pro', name: 'Badge only', presentation: { badge: '' } },
+      ] },
+    ] }))
+    render(<ModelSelect locked={false} available directory={directory} load={vi.fn()} select={vi.fn()} t={t} />)
+    fireEvent.click(screen.getByRole('button', { name: zh['trigger.selectAria'] }))
+    const row = screen.getByRole('menuitemradio', { name: 'Override' })
+    expect(row.querySelector('b')).toBeNull()
+    expect(row.getAttribute('aria-describedby')!.split(' ').map(id => document.getElementById(id)?.textContent))
+      .toEqual([badge, description])
+    expect(screen.getByRole('menuitemradio', { name: 'Clear' }).getAttribute('aria-describedby')).toBeNull()
+    const inherited = screen.getByRole('menuitemradio', { name: 'Badge only' })
+    expect(inherited.textContent).toBe('Badge only' + zh['guidance.reasoning'])
+    expect(screen.queryByText(zh['guidance.flagship'])).toBeNull()
+  })
+
   it.each(['zh', 'en'] as const)('shows flagship guidance with independent accessible names (%s)', async (locale) => {
     const copy = locale === 'zh' ? zh : en
     const translate: ComponentProps<typeof ModelSelect>['t'] = key => copy[key as keyof typeof copy] ?? key
