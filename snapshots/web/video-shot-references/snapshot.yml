@@ -1,0 +1,12 @@
+version: 1
+scenario: video-shot-references
+profile: web
+composition: video-shot-references
+recording: authored
+header:
+  class: video-shot-references
+  pin: true
+  systemPromptSource: h3-submission-outcomes
+  toolSchemasSource: h3-submission-outcomes
+workspace:
+  final: true

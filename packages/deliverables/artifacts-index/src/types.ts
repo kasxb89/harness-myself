@@ -2,6 +2,9 @@
 import type { SessionId, SessionSeq } from '@deepseek-ai/dsh-session/types'
 import type { ToolCallId } from '@deepseek-ai/dsh-llm/brand'
 
+/** Producer-declared purpose of an exact saved video; absence never implies a shot. */
+export type ArtifactVideoRole = 'final' | 'shot'
+
 /** Exact generating conversation location, supplied by the trusted producer. */
 export interface ArtifactOrigin {
   readonly sessionId: SessionId
@@ -28,6 +31,7 @@ export interface ArtifactWriteRequest {
   readonly bytes: Uint8Array
   readonly signal: AbortSignal
   readonly origin?: ArtifactOrigin
+  readonly videoRole?: ArtifactVideoRole
 }
 
 /** Existing finished output copied by a trusted Host producer; source remains intact. */
@@ -37,6 +41,7 @@ export interface ArtifactPublishRequest {
   readonly filename: string
   readonly signal: AbortSignal
   readonly origin?: ArtifactOrigin
+  readonly videoRole?: ArtifactVideoRole
 }
 
 /** Optional shared output capability consumed by account media generators. */

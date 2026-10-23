@@ -4772,11 +4772,15 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ArtifactPublishRequest',
-    declaration: 'export interface ArtifactPublishRequest {\n    readonly destination: ArtifactDestination;\n    readonly sourcePath: string;\n    readonly filename: string;\n    readonly signal: AbortSignal;\n    readonly origin?: ArtifactOrigin;\n}',
+    declaration: 'export interface ArtifactPublishRequest {\n    readonly destination: ArtifactDestination;\n    readonly sourcePath: string;\n    readonly filename: string;\n    readonly signal: AbortSignal;\n    readonly origin?: ArtifactOrigin;\n    readonly videoRole?: ArtifactVideoRole;\n}',
+  },
+  {
+    name: 'ArtifactVideoRole',
+    declaration: 'export type ArtifactVideoRole = \'final\' | \'shot\';',
   },
   {
     name: 'ArtifactWriteRequest',
-    declaration: 'export interface ArtifactWriteRequest {\n    readonly destination: ArtifactDestination;\n    readonly filename: string;\n    readonly bytes: Uint8Array;\n    readonly signal: AbortSignal;\n    readonly origin?: ArtifactOrigin;\n}',
+    declaration: 'export interface ArtifactWriteRequest {\n    readonly destination: ArtifactDestination;\n    readonly filename: string;\n    readonly bytes: Uint8Array;\n    readonly signal: AbortSignal;\n    readonly origin?: ArtifactOrigin;\n    readonly videoRole?: ArtifactVideoRole;\n}',
   },
   {
     name: 'ArtifactWriteResult',

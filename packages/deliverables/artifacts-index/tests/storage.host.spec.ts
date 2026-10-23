@@ -24,6 +24,7 @@ import { SessionId, SessionSeq } from '@deepseek-ai/dsh-session/types'
 import { ToolCallId } from '@deepseek-ai/dsh-llm/brand'
 import { validName, qualified } from '../src/storage.ts'
 import { originPath } from '../src/origin.ts'
+import { videoRolePath } from '../src/video-role.ts'
 
 const fixtures: { ctx: Context; directory: string }[] = []
 afterEach(async () => {
@@ -141,6 +142,41 @@ function provideConverter(ctx: Context, convert: (request: OfficeToPdfRequest, s
 }
 
 describe('artifact storage through the real Loader and HTTP routes', () => {
+  it('classifies exact producer videos across rename, recovery and restart without guessing names or trusting changed files', async () => {
+    const f = await boot()
+    const destination = await f.ctx.artifactStorage.capture(signal())
+    const final = await f.ctx.artifactStorage.write({ destination, filename: 'clip-001.mp4', bytes: Uint8Array.of(1, 2),
+      videoRole: 'final', signal: signal() })
+    const source = join(f.custom, 'source.mp4')
+    await writeFile(source, Uint8Array.of(3, 4))
+    const shot = await f.ctx.artifactStorage.publish({ destination, sourcePath: source, filename: 'finished.mp4',
+      videoRole: 'shot', signal: signal() })
+    const legacy = join(f.output, 'clips-project-final.mp4')
+    await writeFile(legacy, Uint8Array.of(5, 6))
+    const listing = await f.json('list')
+    expect(listing.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: final.path, kind: 'video', videoRole: 'final' }),
+      expect.objectContaining({ path: shot.path, kind: 'video', videoRole: 'shot' }),
+    ]))
+    expect((listing.items as Record<string, unknown>[]).find(entry => entry.path === legacy)).not.toHaveProperty('videoRole')
+    expect((await f.request('list', undefined, { authenticated: false })).status).toBe(401)
+    const renamed = object((await f.json('rename', { path: shot.path, name: 'renamed.mp4', expected: await f.version(shot.path) })).item)
+    expect(renamed.videoRole).toBe('shot')
+    if (typeof renamed.path !== 'string') throw new Error('Expected renamed output path')
+    const { trashId } = await f.json('trash', { path: renamed.path, expected: await f.version(renamed.path) })
+    expect(object((await f.json('restore', { id: trashId })).item).videoRole).toBe('shot')
+    await f.ctx.fiber.dispose()
+    fixtures.splice(fixtures.findIndex(value => value.ctx === f.ctx), 1)
+    const restarted = await boot(f.directory)
+    expect((await restarted.json('list')).items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: renamed.path, videoRole: 'shot' }),
+    ]))
+    await writeFile(videoRolePath(f.state, await stat(final.path)), '{"version":1,"identity":"wrong","videoRole":"shot"}')
+    await writeFile(renamed.path, 'replaced video')
+    const changed = (await restarted.json('list')).items as Record<string, unknown>[]
+    for (const path of [final.path, renamed.path, legacy]) expect(changed.find(entry => entry.path === path)).not.toHaveProperty('videoRole')
+  })
+
   it('records only new authorized presentation appends, preserves existing generating chats and ignores seeded history', async () => {
     const f = await boot(undefined, { workspaces: true })
     const workspace = await f.ctx.workspaceRegistry.create(f.custom)

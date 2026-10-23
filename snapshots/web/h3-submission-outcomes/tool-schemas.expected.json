@@ -329,7 +329,7 @@
           },
           "reference_videos": {
             "type": "array",
-            "description": "Optional stored ids (ma_…) used as a reference video, when the model supports video-to-video.",
+            "description": "Optional uploaded ma_ ids or readable workspace MP4/MOV paths, only when the exact model supports reference videos. First copy a current user-supplied, read-authorized chat attachment outside the workspace into the workspace using existing file tools. Do not copy unrelated files or attachments from other chats. Direct external paths, URLs and attachment ids are not accepted.",
             "items": {
               "type": "string"
             }

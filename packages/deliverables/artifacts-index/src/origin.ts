@@ -8,8 +8,12 @@ import type { ArtifactOrigin } from './types.ts'
 
 type FileInfo = Awaited<ReturnType<typeof lstat>>
 
-/** Stable across exclusive rename, trash and restore; replacement or edits invalidate the record. */
-function identity(info: FileInfo): string {
+/**
+ * Identify the exact completed file across exclusive rename, trash and restore.
+ * @param info - Current filesystem identity and version.
+ * @returns Identity invalidated by replacement or edits.
+ */
+export function artifactIdentity(info: FileInfo): string {
   return JSON.stringify([info.dev, info.ino, info.birthtimeMs, info.size, info.mtimeMs])
 }
 
@@ -20,7 +24,7 @@ function identity(info: FileInfo): string {
  * @returns Private JSON record path keyed by the exact identity.
  */
 export function originPath(directory: string, info: FileInfo): string {
-  return join(directory, 'origins', createHash('sha256').update(identity(info)).digest('hex') + '.json')
+  return join(directory, 'origins', createHash('sha256').update(artifactIdentity(info)).digest('hex') + '.json')
 }
 
 /**
@@ -30,7 +34,7 @@ export function originPath(directory: string, info: FileInfo): string {
  * @returns Versioned private association record.
  */
 export function originRecord(info: FileInfo, origin: ArtifactOrigin): object {
-  return { version: 1, identity: identity(info), origin }
+  return { version: 1, identity: artifactIdentity(info), origin }
 }
 
 /**
@@ -47,7 +51,7 @@ export async function readOrigin(directory: string, info: FileInfo): Promise<Art
     throw error
   }
   if (value === null || typeof value !== 'object' || !('version' in value) || value.version !== 1
-    || !('identity' in value) || value.identity !== identity(info) || !('origin' in value)
+    || !('identity' in value) || value.identity !== artifactIdentity(info) || !('origin' in value)
     || value.origin === null || typeof value.origin !== 'object') throw new Error('Invalid artifact origin record')
   const origin = value.origin
   if (!('sessionId' in origin) || typeof origin.sessionId !== 'string' || origin.sessionId.length === 0

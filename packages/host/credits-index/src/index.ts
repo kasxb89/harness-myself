@@ -40,6 +40,7 @@ import { PhoneAuthState, type PhoneDeliveryStatus } from './phone-auth-state.ts'
 import { parseClientModelConfigStatus } from './client-model-config.ts'
 import { orderProductModels, preferredProductModel, type ProductModelPresentation } from './model-presentation.ts'
 import { ClientActivitySessions, parseClientActivity, type ClientActivitySample } from './client-activity.ts'
+import { readAnnouncements } from './announcements.ts'
 import { ClientToolErrorReporter, type ClientToolErrorAccount } from './client-tool-errors.ts'
 import { parseUsageWindow, readAccountUsage } from './usage.ts'
 import { ChatUsageReader, parseChatUsageQuery } from './chat-usage-reader.ts'
@@ -65,6 +66,7 @@ import type { VideoProjectIdentity, VideoProjectInput, VideoProjectOptions, Vide
 import { CreativeError, CreativeStore, parseCreativePlanChange, type CreativeOperation, type CreativeOwner } from './creative-store.ts'
 import { creativeOwner, registerCreativeTools } from './creative-tools.ts'
 import { videoGenerationIntentOf, videoModelChoiceCancelled } from './video-generation-intent.ts'
+import { videoShotInput } from './video-shot-references.ts'
 import { chatVideoResolution, chooseChatVideoModel, DEFAULT_CHAT_VIDEO_MODEL, readVideoModelQuote, videoModelQuoteSegment,
   VideoQuoteUnsupportedError, type VideoModelCandidate, type VideoQuoteSegment } from './video-model-choice.ts'
 import { VideoSubmissionRejection } from './video-submission-result.ts'
@@ -804,6 +806,12 @@ export function apply(ctx: Context, config: Config): void {
   /** Backend requests preserve the validated deployment path and never follow redirects. */
   const apiFetch = async (route: string, init: RequestInit = {}): Promise<Response> =>
     await fetch(apiUrl(apiBaseUrl, route), { ...init, redirect: 'error' })
+  const announcementLife = new AbortController()
+  const announcementReads = new Set<Promise<void>>()
+  ctx.effect(() => async () => {
+    announcementLife.abort()
+    await Promise.allSettled([...announcementReads])
+  }, 'credits-index: public announcement reads')
   /** Launcher facts identify Desktop video traffic for diagnostics, never authorization. */
   const videoClientSource = (): 'desktop' | undefined => ctx.get('profileContext')?.name === 'desktop' ? 'desktop' : undefined
   const videoClientHeaders = (): Record<string, string> => videoClientSource() === 'desktop' ? { 'x-yunshu-client': 'desktop' } : {}
@@ -1029,6 +1037,7 @@ export function apply(ctx: Context, config: Config): void {
     workspaceRoot: string | undefined,
     references: Map<string, string>,
     signal: AbortSignal,
+    accountId?: string,
   ): Promise<string> => {
     const maxBytes = Math.min(resolved.videoProjectReferenceMaxBytes, (kind === 'image' ? 6 : kind === 'audio' ? 15 : 32) * 1024 * 1024)
     if (/^ma_[A-Za-z0-9]{1,64}$/u.test(value)) {
@@ -1036,6 +1045,12 @@ export function apply(ctx: Context, config: Config): void {
       signal.throwIfAborted()
       if (stored === null || !stored.mediaType.startsWith(`${kind}/`) || !referenceSignature(stored.bytes, stored.mediaType) || stored.bytes.length > maxBytes) {
         throw new VideoProjectError('VIDEO_REFERENCE_INVALID', '参考素材不存在、类型不匹配或超过大小限制，请重新添加对应素材')
+      }
+      if (accountId !== undefined) {
+        const current = await liveSession()
+        signal.throwIfAborted()
+        if (current?.account.id !== accountId || stored.accountId !== accountId) throw new VideoProjectError('VIDEO_REFERENCE_INVALID',
+          '参考素材不属于当前账号或缺少账号凭据，请在当前账号下重新添加素材；尚未提交生成。')
       }
       return value
     }
@@ -1062,6 +1077,8 @@ export function apply(ctx: Context, config: Config): void {
     signal.throwIfAborted()
     const account = await liveSession()
     if (account === null) throw new VideoProjectError('VIDEO_ACCOUNT_REQUIRED', '请先登录后使用参考素材')
+    if (accountId !== undefined && account.account.id !== accountId) throw new VideoProjectError('ACCOUNT_CHANGED',
+      '登录账号已变化，尚未提交生成；请在当前账号下重新添加素材。')
     await storeReference(id, bytes, mediaType, basename(fileSystem.processPath(target)), account.account.id)
     references.set(cacheKey, id)
     return id
@@ -1128,7 +1145,7 @@ export function apply(ctx: Context, config: Config): void {
       submitTimeoutMs: Math.max(resolved.timeoutMs, resolved.videoSubmitTimeoutMs, 180_000), taskTimeoutMs: resolved.videoTaskTimeoutMs,
       queryTimeoutMs: resolved.timeoutMs, pollIntervalMs: resolved.videoPollIntervalMs, queryRetryLimit: resolved.videoQueryRetryLimit,
       ...foregroundWaitMs === undefined ? {} : { foregroundWaitMs },
-      prepare: async (operationSignal) => { output = await captureMediaOutput(ctx.get('artifactStorage'), join(stateDir, 'media'), operationSignal, resumeReceipt === undefined ? origin : resumeReceipt.origin) },
+      prepare: async (operationSignal) => { output = await captureMediaOutput(ctx.get('artifactStorage'), join(stateDir, 'media'), operationSignal, resumeReceipt === undefined ? origin : resumeReceipt.origin, 'final') },
       ...submitting === undefined ? {} : { submitting }, ...received === undefined ? {} : { received },
       ...resumeReceipt === undefined ? {} : { resumeReceipt },
       beforeSubmit: async (operationSignal) => {
@@ -1300,7 +1317,7 @@ export function apply(ctx: Context, config: Config): void {
     if (blackrx && (ratio !== null || mode !== null)) {
       return { ok: false, code: 'PARAMETER_NOT_SUPPORTED', message: `${model.id} 请直接选择实际宽高尺寸，不支持额外比例或档位参数` }
     }
-    const account = blackrx ? await liveSession() : undefined
+    const account = await liveSession()
     const snapshots: VideoReferenceSnapshot[] = []
     let referenceBytes = 0
     let imageBytes = 0
@@ -1310,7 +1327,7 @@ export function apply(ctx: Context, config: Config): void {
       for (const id of ids) {
         const value = await readReference(id)
         if (value === null || !value.mediaType.startsWith(`${kind}/`) || !referenceSignature(value.bytes, value.mediaType)
-          || blackrx && (account?.account.id === undefined || value.accountId !== account.account.id)) return null
+          || account?.account.id === undefined || value.accountId !== account.account.id) return null
         const limit = (kind === 'image' ? 6 : kind === 'audio' ? 15 : 32) * 1024 * 1024
         referenceBytes += value.bytes.length
         if (kind === 'image') imageBytes += value.bytes.length
@@ -1325,7 +1342,7 @@ export function apply(ctx: Context, config: Config): void {
     const videoUrls = await inline(referenceVideos, 'video')
     const audioUrls = await inline(referenceAudios, 'audio')
     if (frameUrls === null || imageUrls === null || videoUrls === null || audioUrls === null) {
-      return { ok: false, code: 'REFERENCE_MISSING', message: '参考素材已失效、类型不匹配或超过大小限制，请重新添加对应素材' }
+      return { ok: false, code: 'REFERENCE_MISSING', message: '参考素材已失效、缺少当前账号凭据、类型不匹配或超过大小限制，请在当前账号下重新添加对应素材' }
     }
 
     if (blackrx) {
@@ -2445,6 +2462,28 @@ export function apply(ctx: Context, config: Config): void {
 
 
       try {
+        if (route === '/api/announcements') {
+          const connection = ctx.get('connection')
+          const rejected = connection === undefined ? 403 : connection.requestRejection(request)
+          if (rejected !== undefined) { json(response, rejected, { ok: false, code: 'ANNOUNCEMENTS_HOST_AUTH_REQUIRED' }); return }
+          if (method !== 'GET') { json(response, 405, { ok: false, code: 'METHOD_NOT_ALLOWED' }); return }
+          const lifetime = new AbortController()
+          const disconnected = (): void => { lifetime.abort() }
+          response.once('close', disconnected)
+          const version = identityVersion
+          const signal = AbortSignal.any([announcementLife.signal, lifetime.signal, AbortSignal.timeout(resolved.timeoutMs)])
+          const operation = (async (): Promise<void> => {
+            const outcome = await readAnnouncements(readSignal => apiFetch('/api/status', {
+              signal: readSignal, headers: { accept: 'application/json' },
+            }), signal)
+            if (lifetime.signal.aborted || response.destroyed) return
+            json(response, 200, version !== identityVersion ? { ok: false, code: 'ACCOUNT_CHANGED' }
+              : signal.aborted ? { ok: false, code: 'ANNOUNCEMENTS_NETWORK' } : outcome)
+          })()
+          announcementReads.add(operation)
+          try { await operation } finally { announcementReads.delete(operation); response.off('close', disconnected) }
+          return
+        }
         if (route === '/api/activity') {
           const connection = ctx.get('connection')
           const rejected = connection === undefined ? 403 : connection.requestRejection(request)
@@ -3766,18 +3805,19 @@ export function apply(ctx: Context, config: Config): void {
         const normalize = async (values: readonly string[] | undefined, kind: 'image' | 'video' | 'audio'): Promise<string[]> => {
           const result: string[] = []
           for (const source of values ?? []) result.push(await normalizeVideoReference(source, kind,
-            exec.agent?.session.header.cwd, references, exec.signal))
+            exec.agent?.session.header.cwd, references, exec.signal, identity.accountId))
           return result
         }
         const segments: VideoQuoteSegment[] = []
         for (const [index, durationSeconds] of value.durations.entries()) {
+          const shot = videoShotInput(input, index)
           const built = await buildVideoRequest(capability, {
             prompt: input.shotPrompts?.[index] ?? input.prompt, durationSeconds,
             ...value.resolution === undefined ? {} : { resolution: value.resolution },
             ...input.ratio === undefined ? {} : { ratio: input.ratio }, ...input.audio === undefined ? {} : { audio: input.audio },
             frameImages: await normalize(input.frameImages, 'image'),
-            referenceImages: await normalize([...input.referenceImages ?? [], ...input.shotReferenceImages?.[index] ?? []], 'image'),
-            referenceVideos: await normalize(input.referenceVideos, 'video'), referenceAudios: await normalize(input.referenceAudios, 'audio'),
+            referenceImages: await normalize(shot.referenceImages, 'image'),
+            referenceVideos: await normalize(shot.referenceVideos, 'video'), referenceAudios: await normalize(shot.referenceAudios, 'audio'),
           })
           if (!built.ok) throw new CreativeError(built.code, 409, built.message)
           segments.push(videoModelQuoteSegment(built.request, index))
@@ -3928,7 +3968,8 @@ export function apply(ctx: Context, config: Config): void {
             if (capability === undefined) throw new VideoProjectError('VIDEO_MODEL_UNAVAILABLE', '请先确认当前账户的视频模型参数')
             const normalize = async (values: readonly string[] | undefined, kind: 'image' | 'video' | 'audio'): Promise<string[]> => {
               const result: string[] = []
-              for (const value of values ?? []) result.push(await normalizeVideoReference(value, kind, workspaceRoot, references, signal))
+              for (const value of values ?? []) result.push(await normalizeVideoReference(value, kind,
+                workspaceRoot, references, signal, binding.identity.accountId))
               return result
             }
             const built = await buildVideoRequest(capability, {
@@ -4232,7 +4273,7 @@ export function apply(ctx: Context, config: Config): void {
       audio: { type: 'boolean', description: 'Optional requested audio state. Sent as a switch only when the chosen model declares one; fixed native audio accepts only its declared state. An audio stream does not verify dialogue, lip-sync or subtitles.' },
       frame_images: { type: 'array', items: { type: 'string' }, description: 'Optional stored ids (ma_…) used as first/last frame.' },
       reference_images: { type: 'array', items: { type: 'string' }, description: 'Optional stored ids (ma_…) used as multimodal subject/style references, when the model supports them.' },
-      reference_videos: { type: 'array', items: { type: 'string' }, description: 'Optional stored ids (ma_…) used as a reference video, when the model supports video-to-video.' },
+      reference_videos: { type: 'array', items: { type: 'string' }, description: 'Optional uploaded ma_ ids or readable workspace MP4/MOV paths, only when the exact model supports reference videos. First copy a current user-supplied, read-authorized chat attachment outside the workspace into the workspace using existing file tools. Do not copy unrelated files or attachments from other chats. Direct external paths, URLs and attachment ids are not accepted.' },
       reference_audios: { type: 'array', items: { type: 'string' }, description: 'Optional uploaded ma_ audio ids or workspace WAV/MP3 paths, when the model supports audio references. First copy a user-supplied, read-authorized chat attachment outside the workspace into the workspace using existing file tools; do not copy unrelated files. References do not guarantee copied speech, matching mouth movements or subtitles.' },
     },
     output: {
@@ -4271,9 +4312,15 @@ export function apply(ctx: Context, config: Config): void {
         let capability = await capabilityFor('video', requestedModel)
         if (!capability.ok) return { status: 'failed', code: capability.code, message: capability.message }
         const referenceAudios: string[] = []
+        const referenceVideos: string[] = []
         const references = new Map<string, string>()
         for (const value of args.reference_audios ?? []) {
-          referenceAudios.push(await normalizeVideoReference(value, 'audio', exec.agent?.session.header.cwd, references, exec.signal))
+          referenceAudios.push(await normalizeVideoReference(value, 'audio', exec.agent?.session.header.cwd,
+            references, exec.signal, binding.identity.accountId))
+        }
+        for (const value of args.reference_videos ?? []) {
+          referenceVideos.push(await normalizeVideoReference(value, 'video', exec.agent?.session.header.cwd,
+            references, exec.signal, binding.identity.accountId))
         }
         const owner = creativeOwner(exec, binding.identity)
         const images = async (values: readonly string[] | undefined): Promise<string[]> => {
@@ -4281,7 +4328,8 @@ export function apply(ctx: Context, config: Config): void {
           for (const value of values ?? []) {
             const source = value.startsWith('ma_') ? value : args.plan_id === undefined ? undefined : await creativeImageReference(owner, args.plan_id, value)
             if (source === undefined) throw new CreativeError('CREATIVE_REFERENCE_INVALID', 400, '请使用已上传的图片，或同一创作计划内实际生成的图片。')
-            result.push(source)
+            result.push(await normalizeVideoReference(source, 'image', exec.agent?.session.header.cwd,
+              references, exec.signal, binding.identity.accountId))
           }
           return result
         }
@@ -4293,7 +4341,7 @@ export function apply(ctx: Context, config: Config): void {
           ...args.audio === undefined ? {} : { audio: args.audio },
           ...args.frame_images === undefined ? {} : { frameImages: await images(args.frame_images) },
           ...args.reference_images === undefined ? {} : { referenceImages: await images(args.reference_images) },
-          ...args.reference_videos === undefined ? {} : { referenceVideos: args.reference_videos },
+          ...args.reference_videos === undefined ? {} : { referenceVideos },
           referenceAudios,
         }
         let built = await buildVideoRequest(capability.model, requestInput)

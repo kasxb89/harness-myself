@@ -19,6 +19,20 @@ function respond(value: unknown, status = 200) {
 }
 
 describe('artifact management HTTP boundary', () => {
+  it('accepts only exact video-purpose values on video entries and preserves old listings', async () => {
+    const fetch = respond({ items: [{ ...item, kind: 'video', videoRole: 'shot' }], roots: ['/产物'], truncated: false })
+    const signal = new AbortController().signal
+    expect(await readArtifacts(signal)).toMatchObject({ ok: true, value: { items: [{ videoRole: 'shot' }] } })
+    for (const entry of [{ ...item, kind: 'video', videoRole: 'final' }, item]) {
+      fetch.mockResolvedValueOnce(Response.json({ items: [entry], roots: ['/产物'], truncated: false }))
+      expect((await readArtifacts(signal)).ok).toBe(true)
+    }
+    for (const entry of [{ ...item, videoRole: 'shot' }, { ...item, kind: 'video', videoRole: 'guess' }]) {
+      fetch.mockResolvedValueOnce(Response.json({ items: [entry], roots: ['/产物'], truncated: false }))
+      expect(await readArtifacts(signal)).toEqual({ ok: false, code: 'ARTIFACT_OPERATION_FAILED' })
+    }
+  })
+
   it('reads only explicit source coordinates for the selected version and refuses malformed locations', async () => {
     const source = { sessionId: 'source', turn: 2, eventSeq: 17, toolCallId: 'call' }
     const fetch = respond({ origin: source })

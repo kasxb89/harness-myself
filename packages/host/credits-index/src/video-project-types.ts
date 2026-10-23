@@ -31,6 +31,10 @@ export interface VideoProjectInput {
   shotDurations?: readonly number[]
   /** Per-shot image references, merged only with the explicitly shared reference images. */
   shotReferenceImages?: readonly (readonly string[])[]
+  /** Per-shot video references, merged only with the explicitly shared reference videos. */
+  shotReferenceVideos?: readonly (readonly string[])[]
+  /** Per-shot audio references, merged only with the explicitly shared reference audios. */
+  shotReferenceAudios?: readonly (readonly string[])[]
   /** Account-visible model id; omission lets the provider select. */
   model?: string
   /** Validated by the selected provider model. */

@@ -2119,6 +2119,8 @@ describe('deployed Harness API through the real product Loader', () => {
     let failSecond = false
     const provider = {
       ...bound, model: async () => ({ id: 'MiniMax-H3', durations: [15] }),
+      // Historical-clip recovery needs one saved clip before the deliberately failed second task.
+      parallelism: async () => 1,
       build: async (_input: unknown, model: string, prompt: string, durationSeconds: number) => ({ model, prompt, durationSeconds }),
       submit: async () => ({ taskId: `task-${String(++submitted)}` }),
       check: async (id: string) => ({ status: failSecond && id.endsWith('2') ? 'failed' as const : 'succeeded' as const }),
@@ -2346,7 +2348,8 @@ describe('deployed Harness API through the real product Loader', () => {
     } finally { release?.() }
     const stopped = object((await pending).value)
     expect(stopped.status).toBe('failed')
-    expect(stopped.message).toContain('登录状态已变化')
+    expect(stopped.code).toBe('ACCOUNT_CHANGED')
+    expect(stopped.message).toContain('登录账号已变化')
     expect(calls.some(call => call.path === '/harness/v1/video/generations')).toBe(false)
   })
 
@@ -3748,6 +3751,125 @@ describe('deployed Harness API through the real product Loader', () => {
     expect(submissions[0]?.body).toMatchObject({ ratio: 'adaptive', aspect_ratio: 'adaptive', metadata: { ratio: 'adaptive',
       content: [expect.objectContaining({ type: 'text' }), expect.objectContaining({ type: 'image_url', role: 'first_frame' })] } })
   })
+
+  it('snapshots ordinary chat workspace video and audio references into the actual H3 native request', async () => {
+    const { base, stateDir } = await boot()
+    await signIn(base)
+    pricingRows = [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }]
+    const workspace = join(stateDir, 'chat-workspace')
+    await mkdir(workspace)
+    const video = Buffer.from([0, 0, 0, 16, 102, 116, 121, 112, 105, 115, 111, 109])
+    const audio = Buffer.from('RIFF0000WAVEdata', 'ascii')
+    await writeFile(join(workspace, 'reference.mp4'), video)
+    await writeFile(join(workspace, 'voice.wav'), audio)
+    const result = object((await requestVideo({ callId: ToolCallId('chat-workspace-references'), name: 'generate_video',
+      arguments: { prompt: 'One reference-driven clip', model: 'MiniMax-H3', duration_seconds: 4,
+        reference_videos: ['reference.mp4'], reference_audios: ['voice.wav'] },
+      agent: videoAgent(workspace), signal: new AbortController().signal })).value)
+    expect(result).toMatchObject({ status: 'unknown', code: 'NO_TASK_ID' })
+    const submissions = calls.filter(call => call.path === '/harness/v1/video/generations')
+    expect(submissions).toHaveLength(1)
+    expect(submissions[0]).toMatchObject({ authorization: 'Bearer sk-owned-relay', body: { model: 'MiniMax-H3',
+      resolution: '768P', seconds: 4, metadata: { content: [
+        { type: 'text', text: 'One reference-driven clip' },
+        { type: 'video_url', role: 'reference_video', video_url: { url: `data:video/mp4;base64,${video.toString('base64')}` } },
+        { type: 'audio_url', role: 'reference_audio', audio_url: { url: `data:audio/wav;base64,${audio.toString('base64')}` } },
+      ] } } })
+    expect(calls.filter(call => call.path === '/harness/v1/video/quote')).toEqual([])
+    const metadata = (await readdir(join(stateDir, 'refs'))).filter(path => path.endsWith('.json'))
+    expect(metadata).toHaveLength(2)
+    for (const path of metadata) expect(JSON.parse(await readFile(join(stateDir, 'refs', path), 'utf8'))).toMatchObject({ accountId: '7' })
+  })
+
+  it('quotes exact Blackrx chat reference counts without paths or bytes and refuses generation when no price can be verified', async () => {
+    const { base, stateDir } = await boot()
+    await signIn(base)
+    const model = 'k2-sd2.5-720p'
+    pricingRows = [{ model_name: model, supported_endpoint_types: ['openai-video'] }]
+    relayModels.push({ id: model, object: 'model', supported_endpoint_types: ['openai-video'] })
+    const workspace = join(stateDir, 'chat-workspace')
+    await mkdir(workspace)
+    await writeFile(join(workspace, 'reference.mp4'), generatedVideo)
+    await writeFile(join(workspace, 'voice.wav'), Buffer.from('RIFF0000WAVEdata', 'ascii'))
+    const result = object((await requestVideo({ callId: ToolCallId('quote-workspace-references'), name: 'generate_video',
+      arguments: { prompt: 'One quoted reference clip', model, duration_seconds: 30, resolution: '720x1280',
+        reference_videos: ['reference.mp4'], reference_audios: ['voice.wav'] },
+      agent: videoAgent(workspace), signal: new AbortController().signal })).value)
+    expect(result).toMatchObject({ status: 'failed', code: 'CREATIVE_VIDEO_QUOTE_UNAVAILABLE' })
+    const quotes = calls.filter(call => call.path === '/harness/v1/video/quote')
+    expect(quotes).toHaveLength(1)
+    expect(quotes[0]).toMatchObject({ authorization: 'Bearer sk-owned-relay', body: { model, works_count: 1, segments: [{
+      id: 'clip-1', parameters: { seconds: 30, size: '720x1280', gen_type: 'reference_to_video', n: 1 },
+      reference_counts: { images: 0, videos: 1, audios: 1 },
+    }] } })
+    expect(JSON.stringify(quotes[0]?.body)).not.toMatch(/reference\.mp4|voice\.wav|ma_|base64|chat-workspace/u)
+    expect(calls.filter(call => /\/v1\/(?:video\/generations|videos)$/u.test(call.path))).toEqual([])
+  })
+
+  it.each(['../outside.mp4', 'https://example.invalid/reference.mp4', 'attachment_other_chat', 'wrong.wav'])(
+    'refuses an unauthorized or mistyped ordinary video reference %s before any model POST', async (reference) => {
+      const { base, stateDir } = await boot()
+      await signIn(base)
+      pricingRows = [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }]
+      const workspace = join(stateDir, 'chat-workspace')
+      await mkdir(workspace)
+      await writeFile(join(stateDir, 'outside.mp4'), generatedVideo)
+      await writeFile(join(workspace, 'wrong.wav'), Buffer.from('RIFF0000WAVEdata', 'ascii'))
+      const result = object((await requestVideo({ callId: ToolCallId('unsafe-chat-video'), name: 'generate_video',
+        arguments: { prompt: 'One clip', reference_videos: [reference] }, agent: videoAgent(workspace),
+        signal: new AbortController().signal })).value)
+      expect(result).toMatchObject({ status: 'failed', code: 'VIDEO_REFERENCE_INVALID' })
+      expect(calls.filter(call => /\/v1\/(?:video\/generations|videos|video\/quote)$/u.test(call.path))).toEqual([])
+    })
+
+  it.each(['image', 'video', 'audio'] as const)(
+    'rejects missing and different stored-account ownership for ordinary video %s references', async (kind) => {
+      const { base, stateDir } = await boot()
+      await signIn(base)
+      pricingRows = [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }]
+      const mediaType = kind === 'image' ? 'image/png' : kind === 'video' ? 'video/mp4' : 'audio/wav'
+      const bytes = kind === 'image' ? await sharp({ create: { width: 2, height: 2, channels: 3, background: '#123456' } }).png().toBuffer()
+        : kind === 'video' ? generatedVideo : Buffer.from('RIFF0000WAVEdata', 'ascii')
+      const response = await fetch(base + '/api/assets', { method: 'POST', headers: { 'content-type': mediaType,
+        'x-file-name': 'owned-reference', 'x-idempotency-key': 'owned-reference' }, body: new Uint8Array(bytes) })
+      const uploaded = object(await response.json())
+      expect(uploaded.ok).toBe(true)
+      const id = String(object(uploaded.asset).assetId)
+      const filename = (await readdir(join(stateDir, 'refs'))).find(path => path.startsWith(id + '.') && path.endsWith('.json'))
+      if (filename === undefined) throw new Error('Expected uploaded ownership metadata')
+      const path = join(stateDir, 'refs', filename)
+      const original = object(JSON.parse(await readFile(path, 'utf8')))
+      const { accountId: _accountId, ...legacy } = original
+      for (const metadata of [legacy, { ...legacy, accountId: '8' }]) {
+        await writeFile(path, JSON.stringify(metadata))
+        const result = object((await requestVideo({ callId: ToolCallId(`foreign-${kind}`), name: 'generate_video',
+          arguments: { prompt: 'One clip', [`reference_${kind === 'image' ? 'images' : kind === 'video' ? 'videos' : 'audios'}`]: [id] },
+          agent: videoAgent(stateDir), signal: new AbortController().signal })).value)
+        expect(result).toMatchObject({ status: 'failed', code: 'VIDEO_REFERENCE_INVALID' })
+        expect(result.message).toContain('当前账号下重新添加素材')
+      }
+      expect(calls.filter(call => /\/v1\/(?:video\/generations|videos|video\/quote)$/u.test(call.path))).toEqual([])
+    })
+
+  it.each([undefined, '8', '7'])(
+    'checks REST H3 video reference ownership %s against the current account before a model POST', async (owner) => {
+      const { base, stateDir } = await boot()
+      await signIn(base)
+      pricingRows = [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }]
+      const uploaded = await fetch(base + '/api/assets', { method: 'POST', headers: { 'content-type': 'video/mp4',
+        'x-file-name': 'panel-reference.mp4', 'x-idempotency-key': 'panel-reference' }, body: new Uint8Array(generatedVideo) })
+      const asset = object(object(await uploaded.json()).asset)
+      const path = join(stateDir, 'refs', String(asset.filename) + '.json')
+      const original = object(JSON.parse(await readFile(path, 'utf8')))
+      const { accountId: _accountId, ...metadata } = original
+      await writeFile(path, JSON.stringify({ ...metadata, ...owner === undefined ? {} : { accountId: owner } }))
+      const result = await post(base, '/api/video/tasks?source=newapi-generate', {
+        model: 'MiniMax-H3', prompt: 'One owned reference', durationSeconds: 4, resolution: '768P', referenceVideos: [asset.assetId],
+      })
+      expect(result).toMatchObject({ ok: false, code: owner === '7' ? 'NO_TASK_ID' : 'REFERENCE_MISSING' })
+      if (owner !== '7') expect(result.message).toContain('当前账号下重新添加')
+      expect(calls.filter(call => call.path === '/harness/v1/video/generations')).toHaveLength(owner === '7' ? 1 : 0)
+    })
 
   it('enforces published duration combinations before model submission and forwards complete H3 references', async () => {
     const { base } = await boot()

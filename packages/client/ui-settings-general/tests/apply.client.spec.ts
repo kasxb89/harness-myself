@@ -16,6 +16,7 @@ import { inject } from '../src/client/index.ts'
 import type { DeveloperToolsRowInjected } from '../src/client/DeveloperToolsRow.tsx'
 import { CloseLabel, HeaderContent, TriggerContent } from '../src/client/chrome.tsx'
 import { GeneralSection } from '../src/client/GeneralSection.tsx'
+import { Announcements } from '../src/client/Announcements.tsx'
 import { SettingsDocumentAction } from '../src/client/SettingsDocumentAction.tsx'
 import type { SettingsDocumentActionInjected } from '../src/client/SettingsDocumentAction.tsx'
 import type { SettingsRootInjected } from '../src/client/shell-contract.ts'
@@ -89,6 +90,19 @@ function setPageUrl(url: string): void {
 }
 
 describe('ui-settings-general apply', () => {
+  it('places announcements immediately after updates and removes the entry on unload', async ({ mock, start }) => {
+    const { c } = await client(mock, start)
+    const entry = c.ctx.slots.entries('sidebar.footer.action').find(row => row.options.id === 'announcements')
+    expect(entry?.component).toBe(Announcements)
+    expect(entry?.options).toMatchObject({ id: 'announcements', order: 21 })
+    expect(entry?.locale).toBe(NS)
+    await c.reload(SIDEBAR)
+    await c.flush()
+    expect(c.ctx.slots.entries('sidebar.footer.action').filter(row => row.options.id === 'announcements')).toHaveLength(1)
+    await c.unload(SELF)
+    await c.flush()
+    expect(c.ctx.slots.entries('sidebar.footer.action').filter(row => row.options.id === 'announcements')).toEqual([])
+  }, COLD_BOOT_TIMEOUT_MS)
   it('groups a legacy skin section through the Host preference mirror and restores it when the market unloads', async ({ mock, start }) => {
     const shellView: SettingsNamespaceView = {
       ns: 'ui-settings-general', schema: { type: 'object', dict: {

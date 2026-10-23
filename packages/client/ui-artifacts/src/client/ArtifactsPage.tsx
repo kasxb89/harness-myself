@@ -42,6 +42,8 @@ export interface ArtifactEntry {
   readonly kind: ArtifactKind
   readonly size: number
   readonly mtimeMs: number
+  /** Trusted producer purpose, bound to this exact file version by the Host. */
+  readonly videoRole?: 'final' | 'shot'
   /** Present only for files explicitly authorized through a registered workspace. */
   readonly workspaceId?: string
 }
@@ -84,9 +86,16 @@ export type ArtifactsPageProps = ArtifactsInjected & { active: boolean; refreshK
 
 type FileDialog = { kind: 'rename' | 'trash'; entry: ArtifactEntry } | { kind: 'storage' }
 
-const FILTERS: readonly (ArtifactKind | 'all')[] = [
-  'all', 'image', 'video', 'document', 'sheet', 'slides', 'audio', 'archive', 'code', 'text', 'other',
+type ArtifactFilter = ArtifactKind | 'all' | 'final-video' | 'storyboard'
+const FILTERS: readonly ArtifactFilter[] = [
+  'all', 'image', 'video', 'final-video', 'storyboard', 'document', 'sheet', 'slides', 'audio', 'archive', 'code', 'text', 'other',
 ]
+
+function matchesFilter(entry: ArtifactEntry, filter: ArtifactFilter): boolean {
+  if (filter === 'final-video') return entry.kind === 'video' && entry.videoRole === 'final'
+  if (filter === 'storyboard') return entry.kind === 'video' && entry.videoRole === 'shot'
+  return filter === 'all' || entry.kind === filter
+}
 
 /** Largest image the list decodes for a row thumbnail, in bytes. */
 const THUMBNAIL_MAX_BYTES = 8 * 1024 * 1024
@@ -116,7 +125,9 @@ function formatTime(ms: number): string {
 
 /** One artifact's kind, size, and time on a single line. */
 function metaLine(entry: ArtifactEntry, t: ArtifactsInjected['t']): string {
-  return `${t(`kind.${entry.kind}`)} · ${formatSize(entry.size)} · ${formatTime(entry.mtimeMs)}`
+  const category = entry.kind === 'video' && entry.videoRole !== undefined
+    ? entry.videoRole === 'final' ? 'final-video' : 'storyboard' : entry.kind
+  return `${t(`kind.${category}`)} · ${formatSize(entry.size)} · ${formatTime(entry.mtimeMs)}`
 }
 
 /** Centered glyph plus one localized line: the page's empty and pending states. */
@@ -230,7 +241,7 @@ export function ArtifactsPage(props: ArtifactsPageProps): ReactNode {
   const [trash, setTrash] = useState<readonly TrashedArtifact[]>([])
   const [loading, setLoading] = useState(true)
   const [errors, setErrors] = useState<Partial<Record<'listing' | 'storage' | 'trash', ArtifactErrorCode>>>({})
-  const [filter, setFilter] = useState<ArtifactKind | 'all'>('all')
+  const [filter, setFilter] = useState<ArtifactFilter>('all')
   const [query, setQuery] = useState('')
   const [selection, setSelection] = useState<string | null>(null)
   const [previewRevision, setPreviewRevision] = useState(0)
@@ -468,12 +479,11 @@ export function ArtifactsPage(props: ArtifactsPageProps): ReactNode {
     finally { openingRequest.current = false; if (alive.current) setOpening(false) }
   }
   const normalizedQuery = query.trim().toLocaleLowerCase()
-  const items = useMemo(() => visibleFiles.filter(entry => (filter === 'all' || entry.kind === filter)
+  const items = useMemo(() => visibleFiles.filter(entry => matchesFilter(entry, filter)
     && (normalizedQuery === '' || `${entry.name}\n${entry.path}`.toLocaleLowerCase().includes(normalizedQuery))), [visibleFiles, filter, normalizedQuery])
   const counts = useMemo(() => {
-    const map = new Map<ArtifactKind | 'all', number>()
-    map.set('all', visibleFiles.length)
-    for (const entry of visibleFiles) map.set(entry.kind, (map.get(entry.kind) ?? 0) + 1)
+    const map = new Map<ArtifactFilter, number>()
+    for (const kind of FILTERS) map.set(kind, visibleFiles.filter(entry => matchesFilter(entry, kind)).length)
     return map
   }, [visibleFiles])
   const selected = visibleFiles.find(entry => entryKey(entry) === selection) ?? null
@@ -511,12 +521,14 @@ export function ArtifactsPage(props: ArtifactsPageProps): ReactNode {
       <nav className={css.filters} aria-label={t('filter')}>
         {FILTERS.map((kind) => {
           const count = counts.get(kind) ?? 0
-          if (kind !== 'all' && kind !== filter && count === 0) return null
+          if (kind !== 'all' && kind !== filter && count === 0
+            && (!['final-video', 'storyboard'].includes(kind) || (counts.get('video') ?? 0) === 0)) return null
           return <Pill key={kind} active={kind === filter} onClick={() => { setFilter(kind) }}>
             {t(`kind.${kind}`)}<span className={css.filterCount}>{count}</span>
           </Pill>
         })}
       </nav>
+      {(filter === 'final-video' || filter === 'storyboard') && <p className={css.hint}>{t('videoRole.hint')}</p>}
       <div className={css.body}>
         <div className={css.listPane} aria-busy={loading}>
           {!loaded && loading && <TextShimmer active className={css.hint}>{t('loading')}</TextShimmer>}

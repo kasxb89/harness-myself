@@ -699,16 +699,26 @@ describe('explicit timeline execution', () => {
     const fixture = await setup()
     const build = vi.spyOn(fixture.provider, 'build').mockImplementation(async (input, model, prompt, durationSeconds) => ({
       model, prompt, durationSeconds, references: [...input.referenceImages ?? []],
+      videos: [...input.referenceVideos ?? []], audios: [...input.referenceAudios ?? []],
     }))
     const input: VideoProjectInput = {
       prompt: '保留时间轴与人物身份', totalDurationSeconds: 20, shotPrompts: ['第一镜头', '第二镜头', '第三镜头'],
       shotDurations: [5, 10, 5], referenceImages: ['ma_shared'],
       shotReferenceImages: [['ma_actor_a', 'ma_shared'], ['ma_actor_b'], []],
+      referenceVideos: ['ma_shared_video'], referenceAudios: ['ma_shared_audio'],
+      shotReferenceVideos: [['ma_video_a'], ['ma_video_b'], []],
+      shotReferenceAudios: [['ma_audio_a'], ['ma_audio_b', 'ma_shared_audio'], []],
     }
     const manifest = await prepareVideoProject(fixture.options, input, 'chat-one', fixture.workspace, fixture.provider, fixture.editor, fixture.signal)
     expect(manifest.segments.map(segment => segment.durationSeconds)).toEqual([5, 10, 5])
     expect(manifest.segments.map(segment => segment.request.references)).toEqual([
       ['ma_shared', 'ma_actor_a'], ['ma_shared', 'ma_actor_b'], ['ma_shared'],
+    ])
+    expect(manifest.segments.map(segment => segment.request.videos)).toEqual([
+      ['ma_shared_video', 'ma_video_a'], ['ma_shared_video', 'ma_video_b'], ['ma_shared_video'],
+    ])
+    expect(manifest.segments.map(segment => segment.request.audios)).toEqual([
+      ['ma_shared_audio', 'ma_audio_a'], ['ma_shared_audio', 'ma_audio_b'], ['ma_shared_audio'],
     ])
     expect(build).toHaveBeenCalledTimes(3)
     expect(fixture.submitted).toBe(0)
@@ -735,6 +745,8 @@ describe('explicit timeline execution', () => {
     { shotDurations: [2, 18], code: 'SHOT_DURATION_UNSUPPORTED' },
     { shotDurations: [5, 10, 5], maxSegments: 2, code: 'TOO_MANY_SEGMENTS' },
     { shotDurations: [10, 10], shotReferenceImages: [[]], code: 'SHOT_COUNT_MISMATCH' },
+    { shotDurations: [10, 10], shotReferenceVideos: [[]], code: 'SHOT_COUNT_MISMATCH' },
+    { shotDurations: [10, 10], shotReferenceAudios: [[]], code: 'SHOT_COUNT_MISMATCH' },
   ])('refuses an invalid timeline before building or submitting: %j', async ({ code, maxSegments, ...controls }) => {
     const fixture = await setup()
     if (maxSegments !== undefined) fixture.options.maxSegments = maxSegments
@@ -761,6 +773,8 @@ describe('explicit timeline execution', () => {
   it.each([
     { shotDurations: ['15', 15, 10] }, { shotDurations: [15, 15] }, { shotDurations: [15, 10, 15] },
     { shotReferenceImages: [['ma_first']] }, { shotReferenceImages: [['ma_first'], [42], []] },
+    { shotReferenceVideos: [['ma_first']] }, { shotReferenceVideos: [['ma_first'], [42], []] },
+    { shotReferenceAudios: [['ma_first']] }, { shotReferenceAudios: [['ma_first'], [42], []] },
   ])('rejects inconsistent durable timeline fields without submitting: %j', async (invalidInput) => {
     const fixture = await setup()
     const manifest = await fixture.prepare()
@@ -1042,7 +1056,12 @@ describe('durable account-bound video projects', () => {
     await mkdir(original)
     const capture = vi.fn(async () => ({ directory: selected }))
     const validate = vi.fn(async (destination: { directory: string }) => { expect(destination.directory).toBe(original) })
-    const publish = vi.fn(async (request: { destination: { directory: string }; sourcePath: string; filename: string }) => {
+    const publish = vi.fn(async (request: {
+      destination: { directory: string }
+      sourcePath: string
+      filename: string
+      videoRole?: 'final' | 'shot'
+    }) => {
       expect(request.destination.directory).toBe(original)
       if (publicationFails && basename(request.sourcePath).startsWith('final-')) throw new Error('disk unavailable')
       const path = join(request.destination.directory, request.filename)
@@ -1074,6 +1093,7 @@ describe('durable account-bound video projects', () => {
     expect(fixture.events.filter(event => event === 'compose')).toHaveLength(1)
     expect(capture).toHaveBeenCalledTimes(1)
     expect(publish).toHaveBeenCalledTimes(5)
+    expect(publish.mock.calls.map(([request]) => request.videoRole)).toEqual(['shot', 'shot', 'shot', 'final', 'final'])
   })
 
   it('validates the retained destination before billing and never redirects a resumed project', async () => {

@@ -49,6 +49,11 @@ The Coding Tools switch controls the shared `ui-settings.enabled` preference des
 
 The General section holds the built-in Coding Tools and Current version rows alongside rows registered into `settings.general.item` by feature packages. Each registrant owns its row copy and behavior. The Appearance row, for example, lives in ui-theme.
 
+<a id="announcements"></a>
+### Announcements
+
+The sidebar's **Announcements** action follows **Check for updates** and precedes **Mobile**; it remains available in Web and the collapsed rail. Opening it reads the current deployment's public announcement switch and list through the authenticated Host. Publication dates use the active UI language and local timezone; content and optional details render as plain text, including any source HTML or Markdown. Disabled, empty and legacy-null lists show **No announcements**. An unsupported older service, invalid data, network failure or unavailable read shows localized guidance and **Retry**. A failed refresh retains the last successful list; an observed login change clears it. Closing cancels the active request and discards the list, so reopening always reads again. The shared Modal owns Escape, outside dismissal, focus restoration, viewport clearance and internal scrolling.
+
 ### Opening the configuration file
 
 On a loopback browser, the shell renders **Open configuration file** only when the Host confirms that a provider-owned local document can be prepared. The action opens that document in the native text editor (bypassing the browser file association on macOS). Remote browsers never register the action and never issue the privileged settings read.

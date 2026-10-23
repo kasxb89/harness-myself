@@ -108,14 +108,15 @@ it.skipIf(!available)('generates 15 + 15 + 10 seconds with the signed-in key and
       } else if (path === '/v1/images/generations' && request.method === 'POST') {
         response.end(JSON.stringify({ data: [{ b64_json: portrait.toString('base64') }] }))
       } else if (path === '/v1/video/generations' && request.method === 'POST') {
-        const index = calls.filter(call => call.method === 'POST' && call.path === '/v1/video/generations').length - 1
+        const marker = /镜头 shot_([123])：/u.exec(String(body?.prompt))?.[1]
+        const index = Number(marker) - 1
         const media = sources[index]
-        if (media === undefined || body?.duration !== media.duration || body.seconds !== media.duration) {
+        const taskId = `fixture-task-${String(index + 1)}`
+        if (media === undefined || taskSources.has(taskId) || body?.duration !== media.duration || body.seconds !== media.duration) {
           response.writeHead(400)
           response.end(JSON.stringify({ error: 'Unexpected fixture duration or duplicate submission' }))
           return
         }
-        const taskId = `fixture-task-${String(index + 1)}`
         taskSources.set(taskId, media)
         response.end(JSON.stringify({ code: 'success', data: { task_id: taskId, status: 'NOT_START' } }))
       } else {
@@ -202,11 +203,22 @@ it.skipIf(!available)('generates 15 + 15 + 10 seconds with the signed-in key and
   expect(object(invalid.value)).toMatchObject({ status: 'failed', code: 'VIDEO_REFERENCE_INVALID' })
   expect(calls.filter(call => call.method === 'POST')).toEqual([])
   expect(ctx.jobs.list(agent.id)).toEqual([])
+  const referenceVideos = [join(workspace, 'shot-one.mp4'), join(workspace, 'shot-two.mp4')]
+  const referenceAudios = [join(workspace, 'shot-one.wav'), join(workspace, 'shot-two.wav')]
+  const audioBytes = [Buffer.from('RIFF0000WAVEdataONE', 'ascii'), Buffer.from('RIFF0000WAVEdataTWO', 'ascii')]
+  for (const index of [0, 1]) {
+    await writeFile(referenceVideos[index]!, sources[index]!.bytes)
+    await writeFile(referenceAudios[index]!, audioBytes[index]!)
+  }
   const plan = object((await execute('real-video-plan', 'update_creation_plan', { kind: 'video', title: '产品短片', brief: '40秒三镜头短片',
     characters: [{ id: 'subject', name: '固定主体', appearance: '茶杯', reference_asset_ids: ['portrait'] }],
-    assets: [{ id: 'portrait', name: '主体参考图', kind: 'image', source_path_or_asset_id: '' }],
+    assets: [{ id: 'portrait', name: '主体参考图', kind: 'image', source_path_or_asset_id: '' },
+      ...[0, 1].flatMap(index => [
+        { id: `video_${String(index + 1)}`, name: '本镜头参考视频', kind: 'video', source_path_or_asset_id: referenceVideos[index] },
+        { id: `audio_${String(index + 1)}`, name: '本镜头参考音频', kind: 'audio', source_path_or_asset_id: referenceAudios[index] },
+      ])],
     shots: [1, 2, 3].map(order => ({ id: `shot_${String(order)}`, order, title: `镜头${String(order)}`, prompt: '保持主体，变换背景颜色',
-      character_ids: ['subject'], asset_ids: ['portrait'] })),
+      character_ids: ['subject'], asset_ids: ['portrait', ...order > 2 ? [] : [`video_${String(order)}`, `audio_${String(order)}`]] })),
   })).value)
   const image = object((await execute('real-video-asset', 'generate_image',
     { plan_id: plan.plan_id, asset_id: 'portrait', prompt: '主体参考图', model: 'gpt-image-2' })).value)
@@ -245,16 +257,26 @@ it.skipIf(!available)('generates 15 + 15 + 10 seconds with the signed-in key and
   expect(Number(object(metadata.format).duration)).toBeCloseTo(40, 1)
   expect(metadata.streams).toEqual(expect.arrayContaining([{ codec_type: 'video', width: 160, height: 120 }, { codec_type: 'audio' }]))
   const postCalls = calls.filter(call => call.method === 'POST' && call.path === '/v1/video/generations')
-  expect(postCalls.map(call => [call.path, call.body?.duration, call.body?.seconds])).toEqual([
+  const submittedDurations = postCalls.map(call => [call.path, call.body?.duration, call.body?.seconds])
+  expect(submittedDurations.toSorted((a, b) => Number(b[1]) - Number(a[1]))).toEqual([
     ['/v1/video/generations', 15, 15], ['/v1/video/generations', 15, 15], ['/v1/video/generations', 10, 10],
   ])
   for (const call of postCalls) expect(object(call.body?.metadata).content).toContainEqual({ type: 'image_url', role: 'reference_image',
     image_url: { url: `data:image/png;base64,${portrait.toString('base64')}` } })
-  expect(calls.filter(call => call.method === 'GET' && call.path.includes('fixture-task-')).map(call => call.path)).toEqual([
+  for (const call of postCalls) {
+    const index = Number(/镜头 shot_([123])：/u.exec(String(call.body?.prompt))?.[1]) - 1
+    const content = object(call.body?.metadata).content
+    if (!Array.isArray(content)) throw new Error('Expected actual native reference content')
+    expect(content.filter(value => ['video_url', 'audio_url'].includes(String(object(value).type)))).toEqual(index < 2 ? [
+      { type: 'video_url', role: 'reference_video', video_url: { url: `data:video/mp4;base64,${sources[index]!.bytes.toString('base64')}` } },
+      { type: 'audio_url', role: 'reference_audio', audio_url: { url: `data:audio/wav;base64,${audioBytes[index]!.toString('base64')}` } },
+    ] : [])
+  }
+  expect(calls.filter(call => call.method === 'GET' && call.path.includes('fixture-task-')).map(call => call.path).toSorted()).toEqual([
     '/v1/tasks/fixture-task-1', '/v1/videos/fixture-task-1/content',
     '/v1/tasks/fixture-task-2', '/v1/videos/fixture-task-2/content',
     '/v1/tasks/fixture-task-3', '/v1/videos/fixture-task-3/content',
-  ])
+  ].toSorted())
   expect(calls.filter(call => call.path.startsWith('/v1/')).every(call => call.authorization === 'Bearer fixture-signed-in-account-key')).toBe(true)
   const manifestPath = join(stateDir, 'video-projects', string(started.project_id), 'manifest.json')
   const manifest = object(JSON.parse(await readFile(manifestPath, 'utf8')))

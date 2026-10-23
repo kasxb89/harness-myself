@@ -404,7 +404,7 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
         const jobId = start(exec, 'video-edit', `剪辑 ${String(clips.length)} 个视频片段`, async (job, signal) => {
           try {
             const result = await editor.compose({ clips, outputPath, ...args.total_duration_seconds === undefined ? {} : { totalDurationSeconds: args.total_duration_seconds }, signal, onProgress: (progress) =>{  job.updateProgress(`剪辑 ${String(progress.completedClips)}/${String(progress.totalClips)}`) } })
-            const finalPath = await publishVideoOutput(options, result.path, publicationDirectory, signal, origin)
+            const finalPath = await publishVideoOutput(options, result.path, publicationDirectory, signal, origin, 'final')
             const value: VideoToolResult = { status: 'succeeded', final_path: finalPath, duration_seconds: result.durationSeconds, message: '剪辑视频已实际保存。请调用 present 展示 final_path，并在回复中提供产物链接。' }
             return { status: 'completed', result: JSON.stringify(value) }
           } catch (error) {

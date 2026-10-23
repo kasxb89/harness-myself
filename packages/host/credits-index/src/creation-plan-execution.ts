@@ -22,7 +22,7 @@ function shotDescription(shot: CreativeShotPlan, characters: readonly CreativeCh
 }
 
 /**
- * Apply only the selected plan shots, their exact timing and real image references to a native video workflow.
+ * Apply only the selected plan shots, exact timing and shot-bound reference media to a native video workflow.
  * @param options - Existing planning store and owned generated-image reference resolver.
  * @param owner - Captured account, conversation and workspace.
  * @param input - Explicit video request; supplied shot prompts and durations retain their meaning.
@@ -68,6 +68,23 @@ export async function resolveCreationVideoInput(
     ...shot.assetIds,
     ...plan.characters.filter(character => shot.characterIds.includes(character.id)).flatMap(character => character.referenceAssetIds),
   ]))
+  const assets = new Map(plan.assets.map(asset => [asset.id, asset]))
+  const mediaReferences = (kind: 'video' | 'audio', supplied: readonly (readonly string[])[] | undefined) => shots.map((shot, index) => {
+    const references = [...supplied?.[index] ?? []]
+    for (const id of shot.assetIds) {
+      const asset = assets.get(id)
+      if (asset === undefined) throw new CreativeError('CREATIVE_REFERENCE_INVALID', 400,
+        '所选镜头引用的素材不存在，请补齐原素材后再生成；尚未提交生成。')
+      if (asset.kind !== kind) continue
+      const source = asset.sourcePathOrAssetId.trim()
+      if (source === '') throw new CreativeError('CREATIVE_REFERENCE_INVALID', 400,
+        '所选镜头的视频或音频素材尚无可读取来源，请添加实际素材后再生成；尚未提交生成。')
+      references.push(source)
+    }
+    return [...new Set(references)]
+  })
+  const shotReferenceVideos = mediaReferences('video', input.shotReferenceVideos)
+  const shotReferenceAudios = mediaReferences('audio', input.shotReferenceAudios)
   const imageAssets = plan.assets.filter(asset => asset.kind === 'image' && usedImages.some(ids => ids.has(asset.id)))
   const project = imageAssets.length === 0 ? undefined : (await store.projects(owner)).find(project => project.id === planId)
   const references = new Map<string, string>()
@@ -92,5 +109,7 @@ export async function resolveCreationVideoInput(
     ...input, shotPrompts: input.shotPrompts ?? shots.map(shot => shotDescription(shot, plan.characters)),
     ...durations === undefined ? {} : { shotDurations: durations },
     ...shotReferenceImages.every(references => references.length === 0) ? {} : { shotReferenceImages },
+    ...shotReferenceVideos.every(references => references.length === 0) ? {} : { shotReferenceVideos },
+    ...shotReferenceAudios.every(references => references.length === 0) ? {} : { shotReferenceAudios },
   } }
 }

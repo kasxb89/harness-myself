@@ -1,5 +1,5 @@
 /** The built artifact library discovers real generated output and currently mounted workspace files. */
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -54,6 +54,13 @@ it('opens saved and mounted output in one library and refreshes files without a 
       filename: '保存前图片.png', bytes: png, signal })
     await scaffold.ctx.artifactStorage.write({ destination: original,
       filename: '聊天生成笔记.md', bytes: Buffer.from('# 聊天生成的笔记\n\n从实际产物保存服务写入\n'), signal })
+    const video = await readFile(new URL('./fixtures/sidebar-media/preview.mp4', import.meta.url))
+    await scaffold.ctx.artifactStorage.write({ destination: original,
+      filename: '四季成片.mp4', bytes: video, videoRole: 'final', signal })
+    await scaffold.ctx.artifactStorage.write({ destination: original,
+      filename: '春天片段.mp4', bytes: video, videoRole: 'shot', signal })
+    await scaffold.ctx.artifactStorage.write({ destination: original,
+      filename: '看似分镜-shot-01.mp4', bytes: video, signal })
 
     await page.goto(scaffold.authenticatedUrl, { waitUntil: 'load' })
     await page.getByRole('button', { name: '产物', exact: true }).click()
@@ -67,6 +74,29 @@ it('opens saved and mounted output in one library and refreshes files without a 
     for (const name of ['保存前图片.png', '聊天生成笔记.md', '聊天工作区说明.txt', '挂载目录剧本.md']) {
       await library.getByRole('button', { name: new RegExp(`^${name.replaceAll('.', '\\.')}`, 'u') }).waitFor()
     }
+    const finalVideo = library.getByRole('button', { name: /^四季成片\.mp4/u })
+    const shotVideo = library.getByRole('button', { name: /^春天片段\.mp4/u })
+    const unclassifiedVideo = library.getByRole('button', { name: /^看似分镜-shot-01\.mp4/u })
+    await library.getByRole('button', { name: /^视频\s*3$/u }).click()
+    await finalVideo.waitFor()
+    expect(await shotVideo.count()).toBe(1)
+    expect(await unclassifiedVideo.count()).toBe(1)
+    expect(await library.getByRole('button', { name: /^保存前图片\.png/u }).count()).toBe(0)
+    await library.getByRole('button', { name: /^成片视频\s*1$/u }).click()
+    expect(await finalVideo.count()).toBe(1)
+    expect(await shotVideo.count()).toBe(0)
+    expect(await unclassifiedVideo.count()).toBe(0)
+    await library.getByRole('button', { name: /^分镜素材\s*1$/u }).click()
+    expect(await finalVideo.count()).toBe(0)
+    expect(await shotVideo.count()).toBe(1)
+    expect(await unclassifiedVideo.count()).toBe(0)
+    await search.fill('春天')
+    expect(await shotVideo.count()).toBe(1)
+    await search.fill('四季')
+    expect(await shotVideo.count()).toBe(0)
+    await search.fill('')
+    await page.screenshot({ path: join(evidence, 'storyboard-filter.png'), animations: 'disabled' })
+    await library.getByRole('button', { name: /^全部\s*\d+$/u }).click()
     expect(await library.getByRole('button', { name: /^深层产物\.txt/u }).count()).toBe(0)
     await library.getByRole('button', { name: '查找未列出的文件', exact: true }).click()
     const finder = page.getByRole('dialog', { name: '查找未列出的文件', exact: true })

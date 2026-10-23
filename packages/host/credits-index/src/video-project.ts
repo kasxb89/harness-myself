@@ -8,12 +8,13 @@ import { basename, dirname, join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import type { Branded } from '@deepseek-ai/dsh-brand'
 import type { JobHandle, JobOutcome } from '@deepseek-ai/dsh-jobs'
-import type { ArtifactOrigin } from '@deepseek-ai/dsh-artifacts-index'
+import type { ArtifactOrigin, ArtifactVideoRole } from '@deepseek-ai/dsh-artifacts-index'
 import { parseArtifactOrigin } from './artifact-origin.ts'
 import { VideoEditError, type VideoEditor } from './video-edit.ts'
 import { VideoRelayError } from './video-project-provider.ts'
 import { VideoSubmissionRejection } from './video-submission-result.ts'
 import { DEFAULT_VIDEO_PROJECT_PARALLELISM } from './video-concurrency.ts'
+import { videoShotInput } from './video-shot-references.ts'
 import type { VideoProjectIdentity, VideoProjectInput, VideoProjectOptions, VideoProjectProvider, VideoProjectRequest, VideoRequestValue } from './video-project-types.ts'
 
 /** Complete private-record parser limit, including prompt and per-clip metadata. */
@@ -254,11 +255,12 @@ function segmentPrompt(input: VideoProjectInput, model: string, index: number, c
  * @param directory - Captured output; absence preserves legacy workspace-only delivery.
  * @param signal - Cancellation for the copy.
  * @param origin - Original generating location retained before generation or local editing.
+ * @param videoRole - Explicit finished-video or storyboard-clip purpose.
  * @returns Real published path, or the unchanged legacy workspace path.
  */
 export async function publishVideoOutput(
   options: VideoProjectOptions, sourcePath: string, directory: string | undefined, signal: AbortSignal,
-  origin?: ArtifactOrigin,
+  origin?: ArtifactOrigin, videoRole?: ArtifactVideoRole,
 ): Promise<string> {
   if (directory === undefined) return sourcePath
   const publication = options.publication
@@ -266,7 +268,7 @@ export async function publishVideoOutput(
   try {
     const filename = `${basename(dirname(sourcePath))}-${randomUUID()}-${basename(sourcePath)}`
     return (await publication.publish({ destination: { directory }, sourcePath, filename, signal,
-      ...origin === undefined ? {} : { origin: Object.freeze({ ...origin }) } })).path
+      ...origin === undefined ? {} : { origin: Object.freeze({ ...origin }) }, ...videoRole === undefined ? {} : { videoRole } })).path
   } catch (cause) {
     signal.throwIfAborted()
     throw new VideoProjectError('ARTIFACT_PUBLISH_FAILED', '产物保存失败，本地成片和已生成片段仍保留，请检查保存位置后继续项目，无需重新生成。', { cause })
@@ -282,7 +284,7 @@ async function publishSegment(options: VideoProjectOptions, manifest: VideoProje
     throw new VideoProjectError('INVALID_RECORD', '已保存的视频片段不在该项目目录中，已停止保存。')
   }
   if (manifest.publicationDirectory !== undefined) {
-    segment.publishedPath = await publishVideoOutput(options, source, manifest.publicationDirectory, signal, manifest.origin)
+    segment.publishedPath = await publishVideoOutput(options, source, manifest.publicationDirectory, signal, manifest.origin, 'shot')
   } else {
     const workspace = await realpath(manifest.workspaceRoot)
     resolveVideoOutputDirectory(manifest.workspaceRoot, nativePaths.relative(manifest.workspaceRoot, manifest.outputDirectory))
@@ -441,20 +443,26 @@ function strings(source: Record<string, unknown>, key: string): string[] {
 }
 
 /** Read optional per-shot controls added without changing existing v1 records. */
-function shotControls(input: Record<string, unknown>): Pick<VideoProjectInput, 'shotDurations' | 'shotReferenceImages'> {
+function shotControls(input: Record<string, unknown>): Pick<VideoProjectInput,
+  'shotDurations' | 'shotReferenceImages' | 'shotReferenceVideos' | 'shotReferenceAudios'> {
   const durations = input.shotDurations
   if (durations !== undefined && (!Array.isArray(durations) || durations.length === 0 || durations.length > 1024
     || !durations.every((value): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value > 0))) {
     throw new VideoProjectError('INVALID_RECORD', '视频项目分镜时长记录损坏，已停止操作。')
   }
-  const references = input.shotReferenceImages
-  if (references !== undefined && (!Array.isArray(references) || references.length > 1024
-    || !references.every((value): value is string[] => Array.isArray(value) && value.every(item => typeof item === 'string')))) {
-    throw new VideoProjectError('INVALID_RECORD', '视频项目分镜素材记录损坏，已停止操作。')
+  const references: Pick<VideoProjectInput, 'shotReferenceImages' | 'shotReferenceVideos' | 'shotReferenceAudios'> = {}
+  for (const key of ['shotReferenceImages', 'shotReferenceVideos', 'shotReferenceAudios'] as const) {
+    const value = input[key]
+    if (value === undefined) continue
+    if (!Array.isArray(value) || value.length > 1024
+      || !value.every((items): items is string[] => Array.isArray(items) && items.every(item => typeof item === 'string'))) {
+      throw new VideoProjectError('INVALID_RECORD', '视频项目分镜素材记录损坏，已停止操作。')
+    }
+    references[key] = value
   }
   return {
     ...durations === undefined ? {} : { shotDurations: durations },
-    ...references === undefined ? {} : { shotReferenceImages: references },
+    ...references,
   }
 }
 
@@ -509,7 +517,8 @@ function parseManifest(value: unknown): VideoProjectManifest {
     || parsedInput.shotDurations.reduce((sum, duration) => sum + duration, 0) !== parsedInput.totalDurationSeconds)) {
     throw new VideoProjectError('INVALID_RECORD', '视频项目分镜时长与已保存请求不一致，已停止操作。')
   }
-  if (parsedInput.shotReferenceImages !== undefined && parsedInput.shotReferenceImages.length !== segments.length) {
+  if ([parsedInput.shotReferenceImages, parsedInput.shotReferenceVideos, parsedInput.shotReferenceAudios]
+    .some(references => references !== undefined && references.length !== segments.length)) {
     throw new VideoProjectError('INVALID_RECORD', '视频项目分镜素材数量与已保存请求不一致，已停止操作。')
   }
   if (source.composedPath !== undefined && (source.publicationDirectory === undefined || segments.some(segment => segment.status !== 'saved'))) throw new VideoProjectError('INVALID_RECORD', '视频项目本地成片没有完整的已保存分镜记录，已停止操作。')
@@ -594,7 +603,8 @@ export async function prepareVideoProject(
     throw new VideoProjectError('SHOT_DURATION_UNSUPPORTED', `当前模型不支持时间轴中的分镜时长，请从 ${model.durations.join('、')} 秒中选择；尚未提交生成。`)
   }
   if (input.shotPrompts !== undefined && input.shotPrompts.length !== durations.length) throw new VideoProjectError('SHOT_COUNT_MISMATCH', `该时长需要 ${String(durations.length)} 个分镜，请提供相同数量的分镜说明。`)
-  if (input.shotReferenceImages !== undefined && input.shotReferenceImages.length !== durations.length) {
+  if ([input.shotReferenceImages, input.shotReferenceVideos, input.shotReferenceAudios]
+    .some(references => references !== undefined && references.length !== durations.length)) {
     throw new VideoProjectError('SHOT_COUNT_MISMATCH', '分镜参考素材须与实际生成分镜一一对应，尚未提交生成。')
   }
   const planned = durations.map((durationSeconds, index) => {
@@ -607,9 +617,7 @@ export async function prepareVideoProject(
   const segments: VideoProjectSegment[] = []
   for (const [index, { durationSeconds, prompt }] of planned.entries()) {
     signal.throwIfAborted()
-    const requestInput = input.shotReferenceImages === undefined ? input : {
-      ...input, referenceImages: [...new Set([...input.referenceImages ?? [], ...input.shotReferenceImages[index] ?? []])],
-    }
+    const requestInput = videoShotInput(input, index)
     const request = await provider.build(requestInput, model.id, prompt, durationSeconds, signal)
     segments.push({ index: index + 1, durationSeconds, prompt, request, status: 'pending' })
   }
@@ -942,7 +950,7 @@ async function executeVideoProject(
         await persist(options, manifest)
       }
     }
-    manifest.finalPath = await publishVideoOutput(options, result.path, manifest.publicationDirectory, signal, manifest.origin)
+    manifest.finalPath = await publishVideoOutput(options, result.path, manifest.publicationDirectory, signal, manifest.origin, 'final')
     manifest.finalDurationSeconds = result.durationSeconds
     manifest.status = 'completed'
     await persist(options, manifest)

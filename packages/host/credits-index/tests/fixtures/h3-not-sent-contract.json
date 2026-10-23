@@ -1,5 +1,5 @@
 {
-  "provenance": "Synthetic local responses authored against the frozen H3 unsent-ledger contract; not production traffic or live generation.",
+  "fixture_source": "Synthetic local responses authored against the frozen H3 unsent-ledger contract; not production traffic or live generation.",
   "notCharged": {
     "httpStatus": 403,
     "body": {

@@ -49,7 +49,7 @@ async function boot(production = false, workspaceIncludesState = false, managedO
   let unknownSubmission = false
   const provider: VideoProjectProvider = {
     identity: { accountId: '7', sessionFingerprint: 'login-hash' }, assertCurrent: async () => {},
-    model: async () => ({ id: 'fixture-video', durations: [5, 10, 15] }),
+    model: async () => ({ id: 'MiniMax-H3', durations: [5, 10, 15] }),
     build: async (input, model, prompt, durationSeconds) => {
       inputs.push(input)
       return { model, prompt, durationSeconds,
@@ -191,7 +191,7 @@ describe('video tools through Loader, real tool registry and jobs runtime', () =
 
   it.each([undefined, 10])('starts a simple single-clip request with one real model read and default %s', async (declaredDefault) => {
     const fixture = await boot()
-    const model = vi.spyOn(fixture.provider, 'model').mockResolvedValue({ id: 'fixture-video', durations: [5, 10, 15],
+    const model = vi.spyOn(fixture.provider, 'model').mockResolvedValue({ id: 'MiniMax-H3', durations: [5, 10, 15],
       ...declaredDefault === undefined ? {} : { defaultDuration: declaredDefault } })
     const started = await fixture.call('generate_video_project', { prompt: '茶杯升起热气，镜头缓慢推进' })
     expect(started.isError).toBe(false)
@@ -202,7 +202,7 @@ describe('video tools through Loader, real tool registry and jobs runtime', () =
     await vi.waitFor(() => { expect(fixture.ctx.jobs.get(JobId(String(value.job_id)), fixture.agent.id).status).toBe('completed') })
     expect(model).toHaveBeenCalledTimes(1)
     expect(fixture.requests).toEqual([duration])
-    expect(fixture.inputs[0]).toMatchObject({ model: 'fixture-video', totalDurationSeconds: duration })
+    expect(fixture.inputs[0]).toMatchObject({ model: 'MiniMax-H3', totalDurationSeconds: duration })
   })
 
   it('does not silently replace an explicitly selected model in the single-clip shortcut', async () => {
@@ -214,7 +214,7 @@ describe('video tools through Loader, real tool registry and jobs runtime', () =
 
   it('refuses an invalid catalog default without silently increasing duration or submitting', async () => {
     const fixture = await boot()
-    vi.spyOn(fixture.provider, 'model').mockResolvedValue({ id: 'fixture-video', durations: [15, 30], defaultDuration: 5 })
+    vi.spyOn(fixture.provider, 'model').mockResolvedValue({ id: 'MiniMax-H3', durations: [15, 30], defaultDuration: 5 })
     const result = await fixture.call('generate_video_project', { prompt: '茶杯升起热气' })
     expect(json(result.value)).toMatchObject({ status: 'failed', code: 'DURATION_MENU_UNAVAILABLE' })
     expect(fixture.requests).toEqual([])
@@ -223,6 +223,11 @@ describe('video tools through Loader, real tool registry and jobs runtime', () =
 
   it.each([{ plan_id: 'explicit-plan', shot_ids: ['s1'] }, { shot_prompts: ['镜头一'] }, { shot_durations_seconds: [10] }])('requires explicit duration for retained plans and shot arrays', async (args) => {
     const fixture = await boot()
+    if (args.plan_id !== undefined) {
+      const plan = json((await fixture.call('update_creation_plan', { kind: 'video', title: '现有计划', brief: '一段视频',
+        shots: [{ id: 's1', order: 1, title: '原镜头', prompt: '一段视频' }] })).value)
+      args = { ...args, plan_id: String(plan.plan_id) }
+    }
     const model = vi.spyOn(fixture.provider, 'model')
     const result = await fixture.call('generate_video_project', { prompt: '按明确分镜生成', ...args })
     expect(json(result.value)).toMatchObject({ status: 'failed', code: 'INVALID_DURATION' })
@@ -328,6 +333,47 @@ describe('video tools through Loader, real tool registry and jobs runtime', () =
     expect(second?.prompt).not.toContain('小雨')
     expect(first?.request.referenceImages).toEqual(['ma_shared', 'ma_generated_a', 'ma_uploaded_side'])
     expect(second?.request.referenceImages).toEqual(['ma_shared', secondImage])
+  })
+
+  it('binds selected plan video and audio assets only to their owning native shot and retains them for recovery', async () => {
+    const f = await boot()
+    const plan = json((await f.call('update_creation_plan', { kind: 'video', title: '镜头素材', brief: '分别参考各自片段', assets: [
+      { id: 'v1', name: '第一段参考视频', kind: 'video', source_path_or_asset_id: 'ma_video1' },
+      { id: 'a1', name: '第一段参考音频', kind: 'audio', source_path_or_asset_id: 'ma_audio1' },
+      { id: 'v2', name: '第二段参考视频', kind: 'video', source_path_or_asset_id: 'second.mp4' },
+      { id: 'a2', name: '第二段参考音频', kind: 'audio', source_path_or_asset_id: 'second.wav' },
+      { id: 'unused', name: '未选中的素材', kind: 'video', source_path_or_asset_id: '' },
+    ], shots: [
+      { id: 'one', order: 1, title: '第一镜', prompt: '第一镜内容', duration_seconds: 5, asset_ids: ['v1', 'a1'] },
+      { id: 'two', order: 2, title: '第二镜', prompt: '第二镜内容', duration_seconds: 10, asset_ids: ['v2', 'a2'] },
+      { id: 'three', order: 3, title: '未选择镜头', prompt: '不生成', duration_seconds: 5, asset_ids: ['unused'] },
+    ] })).value)
+    const started = json((await f.call('generate_video_project', { plan_id: plan.plan_id, shot_ids: ['one', 'two'],
+      prompt: '按已选择的镜头生成', total_duration_seconds: 15,
+      reference_videos: ['ma_sharedvideo'], reference_audios: ['ma_sharedaudio'],
+    })).value)
+    expect(started).toMatchObject({ status: 'background', plan_seconds: [5, 10] })
+    await vi.waitFor(() => { expect(f.ctx.jobs.get(JobId(String(started.job_id)), f.agent.id).status).toBe('completed') })
+    expect(f.inputs.map(input => [input.referenceVideos, input.referenceAudios])).toEqual([
+      [['ma_sharedvideo', 'ma_video1'], ['ma_sharedaudio', 'ma_audio1']],
+      [['ma_sharedvideo', 'second.mp4'], ['ma_sharedaudio', 'second.wav']],
+    ])
+    const retained = await readVideoProject(f.options, String(started.project_id), f.agent.id, f.workspace, f.provider.identity)
+    expect(retained.input).toMatchObject({ shotReferenceVideos: [['ma_video1'], ['second.mp4']],
+      shotReferenceAudios: [['ma_audio1'], ['second.wav']] })
+    expect(f.requests).toEqual([5, 10])
+  })
+
+  it.each(['video', 'audio'])('refuses a selected plan %s material with no actual source before any job or generation', async (kind) => {
+    const f = await boot()
+    const plan = json((await f.call('update_creation_plan', { kind: 'video', title: '缺少素材', brief: '不要忽略已选择素材',
+      assets: [{ id: 'missing', name: '未添加的素材', kind, source_path_or_asset_id: '' }],
+      shots: [{ id: 'one', order: 1, title: '原镜头', prompt: '按素材生成', duration_seconds: 5, asset_ids: ['missing'] }],
+    })).value)
+    expect(json((await f.call('generate_video_project', { plan_id: plan.plan_id, shot_ids: ['one'],
+      prompt: '原镜头', total_duration_seconds: 5 })).value)).toMatchObject({ status: 'failed', code: 'CREATIVE_REFERENCE_INVALID' })
+    expect(f.requests).toEqual([])
+    expect(f.ctx.jobs.list(f.agent.id)).toEqual([])
   })
 
   it.each([
@@ -461,6 +507,7 @@ describe('video tools through Loader, real tool registry and jobs runtime', () =
   it('publishes managed long-video and local-edit results while every composition stays inside the workspace', async () => {
     const fixture = await boot(false, false, true)
     const destination = await fixture.ctx.get('artifactStorage')!.capture(new AbortController().signal)
+    const published = vi.spyOn(fixture.options.publication!, 'publish')
     const started = json((await fixture.call('generate_video_project', { prompt: 'A white cup', total_duration_seconds: 40 })).value)
     const projectJob = JobId(String(started.job_id))
     await vi.waitFor(() => { expect(fixture.ctx.jobs.get(projectJob, fixture.agent.id).status).toBe('completed') })
@@ -480,7 +527,8 @@ describe('video tools through Loader, real tool registry and jobs runtime', () =
     expect(await readFile(original, 'utf8')).toBe('9')
     expect(fixture.composedPaths).toHaveLength(2)
     expect(fixture.composedPaths.every(path => path.startsWith(fixture.workspace))).toBe(true)
-    expect(fixture.requests).toEqual([15, 15, 10])
+    expect(fixture.requests.toSorted()).toEqual([10, 15, 15])
+    expect(published.mock.calls.map(([request]) => request.videoRole)).toEqual(['shot', 'shot', 'shot', 'final', 'final'])
   })
 
   it('keeps model-facing audio references and requested native audio in the saved project input', async () => {
@@ -492,7 +540,8 @@ describe('video tools through Loader, real tool registry and jobs runtime', () =
     expect(value.status).toBe('background')
     const job = JobId(String(value.job_id))
     await vi.waitFor(() => { expect(fixture.ctx.jobs.get(job, fixture.agent.id).status).toBe('completed') })
-    expect(fixture.inputs).toEqual([{ prompt: 'A speaks Mandarin', totalDurationSeconds: 5, audio: true, referenceAudios: ['voice.wav', 'ma_voice'] }])
+    expect(fixture.inputs).toEqual([{ prompt: 'A speaks Mandarin', totalDurationSeconds: 5, model: 'MiniMax-H3', resolution: '768P',
+      audio: true, referenceAudios: ['voice.wav', 'ma_voice'] }])
     const manifest = json(JSON.parse(await readFile(join(fixture.stateDirectory, String(value.project_id), 'manifest.json'), 'utf8')))
     expect(manifest.input).toMatchObject({ audio: true, referenceAudios: ['voice.wav', 'ma_voice'] })
     const status = await fixture.call('video_project_status', { project_id: value.project_id })
@@ -558,12 +607,12 @@ describe('video tools through Loader, real tool registry and jobs runtime', () =
     const result = await fixture.call('generate_video_project', { prompt: '一个茶杯', total_duration_seconds: 40 }, abort.signal)
     const jobId = JobId(String(json(result.value).job_id))
     abort.abort()
-    await vi.waitFor(() =>{  expect(fixture.requests.length).toBe(1) })
+    await vi.waitFor(() =>{  expect(fixture.requests.length).toBe(3) })
     expect(fixture.ctx.jobs.get(jobId, fixture.agent.id).status).toBe('running')
     const killed = await fixture.call('job_kill', { job_id: jobId })
     expect(killed.isError).toBe(false)
     await vi.waitFor(() =>{  expect(fixture.ctx.jobs.get(jobId, fixture.agent.id).status).toBe('killed') })
-    expect(fixture.requests).toHaveLength(1)
+    expect(fixture.requests).toHaveLength(3)
     expect(fixture.ctx.jobs.read(jobId, fixture.agent.id).result).toContain('可能继续运行并计费')
   })
 
@@ -572,7 +621,7 @@ describe('video tools through Loader, real tool registry and jobs runtime', () =
     fixture.setPending(true)
     const result = await fixture.call('generate_video_project', { prompt: '一个茶杯', total_duration_seconds: 40 })
     const jobId = JobId(String(json(result.value).job_id))
-    await vi.waitFor(() =>{  expect(fixture.requests.length).toBe(1) })
+    await vi.waitFor(() =>{  expect(fixture.requests.length).toBe(3) })
     const entry = [...fixture.ctx.loader.entries()].find(item => item.options.name === 'video-fixture')
     expect(entry?.fiber).toBeDefined()
     await entry!.fiber!.dispose()
@@ -621,10 +670,10 @@ describe('video tools through Loader, real tool registry and jobs runtime', () =
     fixture.setPending(true)
     const result = await fixture.call('generate_video_project', { prompt: '茶杯广告', total_duration_seconds: 40 })
     const value = json(result.value)
-    await vi.waitFor(() =>{  expect(fixture.requests.length).toBe(1) })
+    await vi.waitFor(() =>{  expect(fixture.requests.length).toBe(3) })
     const duplicate = await fixture.call('resume_video_project', { project_id: value.project_id })
     expect(json(duplicate.value)).toMatchObject({ status: 'failed', code: 'PROJECT_ALREADY_RUNNING' })
-    expect(fixture.requests).toHaveLength(1)
+    expect(fixture.requests).toHaveLength(3)
     fixture.ctx.jobs.kill(JobId(String(value.job_id)), fixture.agent.id)
   })
 

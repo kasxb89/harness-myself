@@ -112,6 +112,30 @@ async function readyStorageButton() {
 }
 
 describe('Artifacts page file management', () => {
+  it.each([zh, en])('filters only recorded finished videos and storyboard clips while keeping search and all videos', async (copy) => {
+    const final: ArtifactEntry = { ...video, path: '/old/clip-001.mp4', name: 'clip-001.mp4', videoRole: 'final' }
+    const shot: ArtifactEntry = { ...video, path: '/old/finished.mp4', name: 'finished.mp4', videoRole: 'shot' }
+    const ordinary: ArtifactEntry = { ...video, path: '/old/clip-002.mp4', name: 'clip-002.mp4' }
+    const otherWorkspace: ArtifactEntry = { ...shot, path: '/revoked/video.mp4', name: 'revoked.mp4', workspaceId: 'revoked' }
+    render(<ArtifactsPage {...props({ t: key => copy[key as keyof typeof zh] ?? key,
+      readListing: async () => ({ ok: true, value: { items: [image, final, shot, ordinary, otherWorkspace], roots: ['/old'], truncated: false } }),
+    })} />)
+    fireEvent.click(await screen.findByRole('button', { name: `${copy['kind.storyboard']}1` }))
+    expect(screen.getByRole('button', { name: /^finished\.mp4/u })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /^clip-001/u })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^clip-002/u })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^revoked/u })).toBeNull()
+    expect(screen.getByText(copy['videoRole.hint'])).toBeTruthy()
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'missing' } })
+    expect(screen.getByText(copy.noResults)).toBeTruthy()
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: `${copy['kind.final-video']}1` }))
+    expect(screen.getByRole('button', { name: /^clip-001/u })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /^finished/u })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: `${copy['kind.video']}3` }))
+    for (const name of ['clip-001', 'clip-002', 'finished']) expect(screen.getByRole('button', { name: new RegExp(`^${name}`, 'u') })).toBeTruthy()
+  })
+
   it('shows retained files and keeps the save path inside its on-demand dialog', async () => {
     render(<ArtifactsPage {...props({ readTrash: async () => ({ ok: true, value: [deleted] }) })} />)
     await readyStorageButton()

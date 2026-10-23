@@ -21,7 +21,7 @@ describe('operation-local media output', () => {
     const publish = vi.fn<ArtifactStorageService['publish']>(async () => ({ path: '/saved/video.mp4' }))
     const storage: ArtifactStorageService = { capture: () => new Promise((resolve) => { release = resolve }),
       validate: async () => {}, write, publish }
-    const preparing = captureMediaOutput(storage, '/legacy', new AbortController().signal, origin)
+    const preparing = captureMediaOutput(storage, '/legacy', new AbortController().signal, origin, 'final')
     origin.turn = 99
     release({ directory: '/saved' })
     const output = await preparing
@@ -30,6 +30,7 @@ describe('operation-local media output', () => {
     for (const call of [write.mock.calls[0]![0], publish.mock.calls[0]![0]]) {
       expect(call.origin).toEqual({ ...origin, turn: 3 })
       expect(Object.isFrozen(call.origin)).toBe(true)
+      expect(call.videoRole).toBe('final')
     }
   })
 

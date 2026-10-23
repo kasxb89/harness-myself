@@ -3254,6 +3254,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
       'client-ui-credits FooterAction',
       'client-ui-mobile FooterAction',
       'client-ui-settings-general DesktopUpdateCheckFooter id \'desktop-update-check\'',
+      'client-ui-settings-general Announcements id \'announcements\'',
       'client-ui-cordis CordisPanel id \'cordis-panel\'',
     ],
     replaceRisk: 'none',
