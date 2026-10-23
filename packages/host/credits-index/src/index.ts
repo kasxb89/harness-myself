@@ -43,6 +43,7 @@ import { orderProductModels, preferredProductModel, productModelDisplaySignature
   type ProductModelDisplayMap, type ProductModelPresentation } from './model-presentation.ts'
 import { ClientActivitySessions, parseClientActivity, type ClientActivitySample } from './client-activity.ts'
 import { readAnnouncements } from './announcements.ts'
+import { readCustomerSupport } from './customer-support.ts'
 import { ClientToolErrorReporter, type ClientToolErrorAccount } from './client-tool-errors.ts'
 import { parseUsageWindow, readAccountUsage } from './usage.ts'
 import { ChatUsageReader, parseChatUsageQuery } from './chat-usage-reader.ts'
@@ -827,12 +828,12 @@ export function apply(ctx: Context, config: Config): void {
   /** Backend requests preserve the validated deployment path and never follow redirects. */
   const apiFetch = async (route: string, init: RequestInit = {}): Promise<Response> =>
     await fetch(apiUrl(apiBaseUrl, route), { ...init, redirect: 'error' })
-  const announcementLife = new AbortController()
-  const announcementReads = new Set<Promise<void>>()
+  const publicStatusLife = new AbortController()
+  const publicStatusReads = new Set<Promise<void>>()
   ctx.effect(() => async () => {
-    announcementLife.abort()
-    await Promise.allSettled([...announcementReads])
-  }, 'credits-index: public announcement reads')
+    publicStatusLife.abort()
+    await Promise.allSettled([...publicStatusReads])
+  }, 'credits-index: public status presentation reads')
   /** Launcher facts identify Desktop video traffic for diagnostics, never authorization. */
   const videoClientSource = (): 'desktop' | undefined => ctx.get('profileContext')?.name === 'desktop' ? 'desktop' : undefined
   const videoClientHeaders = (): Record<string, string> => videoClientSource() === 'desktop' ? { 'x-yunshu-client': 'desktop' } : {}
@@ -2521,26 +2522,34 @@ export function apply(ctx: Context, config: Config): void {
 
 
       try {
-        if (route === '/api/announcements') {
+        if (route === '/api/customer-support' || route === '/api/announcements') {
+          const support = route === '/api/customer-support'
           const connection = ctx.get('connection')
           const rejected = connection === undefined ? 403 : connection.requestRejection(request)
-          if (rejected !== undefined) { json(response, rejected, { ok: false, code: 'ANNOUNCEMENTS_HOST_AUTH_REQUIRED' }); return }
+          if (rejected !== undefined) {
+            json(response, rejected, { ok: false, code: support ? 'CUSTOMER_SUPPORT_HOST_AUTH_REQUIRED' : 'ANNOUNCEMENTS_HOST_AUTH_REQUIRED' })
+            return
+          }
           if (method !== 'GET') { json(response, 405, { ok: false, code: 'METHOD_NOT_ALLOWED' }); return }
           const lifetime = new AbortController()
           const disconnected = (): void => { lifetime.abort() }
           response.once('close', disconnected)
           const version = identityVersion
-          const signal = AbortSignal.any([announcementLife.signal, lifetime.signal, AbortSignal.timeout(resolved.timeoutMs)])
+          const signal = AbortSignal.any([publicStatusLife.signal, lifetime.signal, AbortSignal.timeout(resolved.timeoutMs)])
           const operation = (async (): Promise<void> => {
-            const outcome = await readAnnouncements(readSignal => apiFetch('/api/status', {
+            const fetchStatus = async (readSignal: AbortSignal): Promise<Response> => await apiFetch('/api/status', {
               signal: readSignal, headers: { accept: 'application/json' },
-            }), signal)
+            })
+            const outcome = support ? await readCustomerSupport(fetchStatus, signal, apiBaseUrl)
+              : await readAnnouncements(fetchStatus, signal)
             if (lifetime.signal.aborted || response.destroyed) return
+            const interrupted = support ? signal.reason instanceof DOMException && signal.reason.name === 'TimeoutError'
+              ? 'CUSTOMER_SUPPORT_TIMEOUT' : 'CUSTOMER_SUPPORT_NETWORK' : 'ANNOUNCEMENTS_NETWORK'
             json(response, 200, version !== identityVersion ? { ok: false, code: 'ACCOUNT_CHANGED' }
-              : signal.aborted ? { ok: false, code: 'ANNOUNCEMENTS_NETWORK' } : outcome)
+              : signal.aborted ? { ok: false, code: interrupted } : outcome)
           })()
-          announcementReads.add(operation)
-          try { await operation } finally { announcementReads.delete(operation); response.off('close', disconnected) }
+          publicStatusReads.add(operation)
+          try { await operation } finally { publicStatusReads.delete(operation); response.off('close', disconnected) }
           return
         }
         if (route === '/api/activity') {

@@ -17,6 +17,7 @@ import type { DeveloperToolsRowInjected } from '../src/client/DeveloperToolsRow.
 import { CloseLabel, HeaderContent, TriggerContent } from '../src/client/chrome.tsx'
 import { GeneralSection } from '../src/client/GeneralSection.tsx'
 import { Announcements } from '../src/client/Announcements.tsx'
+import { CustomerSupport } from '../src/client/CustomerSupport.tsx'
 import { SettingsDocumentAction } from '../src/client/SettingsDocumentAction.tsx'
 import type { SettingsDocumentActionInjected } from '../src/client/SettingsDocumentAction.tsx'
 import type { SettingsRootInjected } from '../src/client/shell-contract.ts'
@@ -90,18 +91,24 @@ function setPageUrl(url: string): void {
 }
 
 describe('ui-settings-general apply', () => {
-  it('places announcements immediately after updates and removes the entry on unload', async ({ mock, start }) => {
+  it('places announcements and support after updates, retaining one entry each across reload and removing them on unload', async ({ mock, start }) => {
     const { c } = await client(mock, start)
     const entry = c.ctx.slots.entries('sidebar.footer.action').find(row => row.options.id === 'announcements')
     expect(entry?.component).toBe(Announcements)
     expect(entry?.options).toMatchObject({ id: 'announcements', order: 21 })
     expect(entry?.locale).toBe(NS)
+    const support = c.ctx.slots.entries('sidebar.footer.action').find(row => row.options.id === 'customer-support')
+    expect(support?.component).toBe(CustomerSupport)
+    expect(support?.options).toMatchObject({ id: 'customer-support', order: 22 })
+    expect(support?.locale).toBe(NS)
     await c.reload(SIDEBAR)
     await c.flush()
     expect(c.ctx.slots.entries('sidebar.footer.action').filter(row => row.options.id === 'announcements')).toHaveLength(1)
+    expect(c.ctx.slots.entries('sidebar.footer.action').filter(row => row.options.id === 'customer-support')).toHaveLength(1)
     await c.unload(SELF)
     await c.flush()
     expect(c.ctx.slots.entries('sidebar.footer.action').filter(row => row.options.id === 'announcements')).toEqual([])
+    expect(c.ctx.slots.entries('sidebar.footer.action').filter(row => row.options.id === 'customer-support')).toEqual([])
   }, COLD_BOOT_TIMEOUT_MS)
   it('groups a legacy skin section through the Host preference mirror and restores it when the market unloads', async ({ mock, start }) => {
     const shellView: SettingsNamespaceView = {

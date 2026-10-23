@@ -1,0 +1,74 @@
+{
+  "source": "harnes-api actual isolated handlers, no outbound requests",
+  "source_sha256": "1ffc552f2612dc68092850c8a58da71051577754e10386c32298103cd4bd9258",
+  "samples": [
+    {
+      "database": "sqlite",
+      "ordinal": 0,
+      "response": {
+        "data": {
+          "customer_service": {
+            "description": "",
+            "enabled": false,
+            "qr_code_url": "",
+            "schema_version": 1,
+            "title": ""
+          }
+        },
+        "message": "",
+        "success": true
+      }
+    },
+    {
+      "database": "sqlite",
+      "ordinal": 18,
+      "response": {
+        "data": {
+          "customer_service": {
+            "description": "",
+            "enabled": false,
+            "qr_code_url": "",
+            "schema_version": 1,
+            "title": ""
+          }
+        },
+        "message": "",
+        "success": true
+      }
+    },
+    {
+      "database": "sqlite",
+      "ordinal": 21,
+      "response": {
+        "data": {
+          "customer_service": {
+            "description": "联系售后",
+            "enabled": true,
+            "qr_code_url": "/api/creation/assets/cc_8f9aae64d410eb9a9ba7a115fec22c431cf937a2a5ca6010dfbca344f8e2dfff",
+            "schema_version": 1,
+            "title": "客服 <b>字面文字</b>"
+          }
+        },
+        "message": "",
+        "success": true
+      }
+    },
+    {
+      "database": "sqlite",
+      "ordinal": 22,
+      "response": {
+        "data": {
+          "customer_service": {
+            "description": "联系售后",
+            "enabled": true,
+            "qr_code_url": "/api/creation/assets/cc_8f9aae64d410eb9a9ba7a115fec22c431cf937a2a5ca6010dfbca344f8e2dfff",
+            "schema_version": 1,
+            "title": "客服 <b>字面文字</b>"
+          }
+        },
+        "message": "",
+        "success": true
+      }
+    }
+  ]
+}

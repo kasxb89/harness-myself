@@ -28,6 +28,8 @@
     "tests/skillhub-store.e2e.ts",
     "tests/artifact-library.e2e.ts",
     "tests/announcements.e2e.ts",
+    "tests/customer-support.e2e.ts",
+    "tests/customer-support-contract.spec.ts",
     "tests/artifact-chat-link.e2e.ts",
     "tests/artifact-video-poster.e2e.ts",
     "tests/phone-login-fixture.e2e.ts",

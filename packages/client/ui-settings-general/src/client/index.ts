@@ -31,6 +31,8 @@ import { DesktopUpdateBadge } from './DesktopUpdateIndicator.tsx'
 import { DesktopUpdateCheckFooter, type DesktopUpdateCheckInjected } from './DesktopUpdateCheck.tsx'
 import { Announcements } from './Announcements.tsx'
 import { readAnnouncements } from './announcement-reader.ts'
+import { CustomerSupport } from './CustomerSupport.tsx'
+import { readCustomerSupport } from './customer-support-reader.ts'
 import type { DesktopUpdateBridge } from '../types.ts'
 import { DesktopUpdateSource } from './desktop-update-source.ts'
 import { CloseLabel, HeaderContent, TriggerContent } from './chrome.tsx'
@@ -138,6 +140,10 @@ export function apply(ctx: ClientContext): void {
     name: 'sidebar.footer.action', id: 'announcements', order: 21, locale: NS,
     inject: () => ({ readAnnouncements, hooks: { announcementLocale: ctx.locale } }),
   }, Announcements))
+  ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
+    name: 'sidebar.footer.action', id: 'customer-support', order: 22, locale: NS,
+    inject: () => ({ readCustomerSupport }),
+  }, CustomerSupport))
   ctx.slots.inject('sidebar.toggle.badge', () => ctx.slots.register({
     name: 'sidebar.toggle.badge', locale: NS,
     inject: () => ({ hooks: { desktopUpdate: desktopUpdate.store, connectionState: connection.state } }),

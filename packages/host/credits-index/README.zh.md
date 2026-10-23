@@ -101,6 +101,10 @@ Host 先使用 `/api/user/self` 核对产品会话中的账号，再通过 `/api
 
 已认证的 `GET /credits/api/announcements` 从 `newApiBaseUrl` 下现有匿名 `/api/status` 读取公告，不发送访问令牌、中转密钥或 Cookie，也不跟随重定向。仅返回 `{ ok: true, payload: { enabled, items } }`；每条包含 `content`、`publishDate` 与可选字符串 `extra`。公开开关控制可见性；启用后的空列表及旧配置的 null 列表仍为空。保留 API 返回的顺序，包括未来发布时间；读取器不负责定时发布。尚未支持、HTTP 失败、数据无效和传输失败分别保留为安全错误，不伪装成空公告。完整状态响应最多 1 MiB。请求沿用 `timeoutMs`，在断开或卸载时停止，登录周期变更后丢弃结果，不缓存公告。侧栏[公告对话框](../../client/ui-settings-general/README.zh.md#announcements)将所有内容字段作为文本展示。
 
+### 客服
+
+Host 认证的 `GET /credits/api/customer-support` 独立于产品登录，从匿名 `/api/status` 实时读取 `data.customer_service` schema 1。专用 `enabled`、`qr_code_url`、`title` 与 `description` 转为 `{ ok: true, payload: { enabled, qrCodeUrl, title, description } }`；禁用或空二维码会清空全部展示字段。旧 API 返回 `CUSTOMER_SUPPORT_UNSUPPORTED`，绝不复用登录 `wechat_qrcode`。启用后的文字作为纯文本，拒绝控制字符，标题和说明分别限 64 与 256 个 UTF-16 单元。二维码 URL 限 2048 个 UTF-8 字节，仅接受不含凭据的 HTTPS 或精确 `/api/creation/assets/cc_<sha256>` 路径，后者保留完整部署前缀；拒绝 SVG、其它协议及相对路径。Host 只拉取状态，不拉取配置的图片 URL，也不转发访问令牌、中转密钥或 Cookie。读取沿用公告的 1 MiB 上限及生命周期，超时、网络、不可用和无效响应分别返回。弹窗重试时读取当前设置，不保留先前二维码。
+
 ### 聊天创作计划
 
 技能注册服务可用时，内置 `yunshu-video-director` 技能使用 [cinematic-director](https://github.com/wuwangzhang1216/DirectorSKILL) 与 [video-storyboard-gen](https://github.com/anyhui/video-storyboard-gen-skill) 的精简摘录和适配内容，指导剧情、走位、连续性、参考素材重构、分镜、对白及字幕。[固定来源及适配说明](third-party-notices/sources.json) 和两份完整 MIT 许可随包分发。生成时不运行社区脚本，也不加载整套参考库。简单单片描述直接调用 `generate_video_project` 并使用 Host 的真实默认参数，不增加目录或编导技能的模型往返；复杂时间轴和编导任务使用目录及技能。旧 `generate_video` 保持兼容。明确的剧情或连续人物创作使用显式计划，长视频仍使用该原生项目工具。原生工具负责校验、提交、轮询、下载、剪辑、发布和恢复。画面切换不必各自生成一段计费视频。不强制额外生成参考图、多个备选稿或单独请求规划模型；工作流程不能控制上游渲染耗时。

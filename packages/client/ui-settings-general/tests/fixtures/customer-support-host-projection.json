@@ -1,0 +1,58 @@
+{
+  "sourceFixtureSha256": "e9c3e628c5c311616f57d36996406714ab0bab9ebc017158ddc15b108cc17142",
+  "hostReaderSha256": "78edd66c179afae205972d05e280e223589d2122e861d3dcc1ae61374019956d",
+  "samples": [
+    {
+      "database": "sqlite",
+      "ordinal": 0,
+      "host": {
+        "ok": true,
+        "payload": {
+          "enabled": false,
+          "qrCodeUrl": "",
+          "title": "",
+          "description": ""
+        }
+      }
+    },
+    {
+      "database": "sqlite",
+      "ordinal": 18,
+      "host": {
+        "ok": true,
+        "payload": {
+          "enabled": false,
+          "qrCodeUrl": "",
+          "title": "",
+          "description": ""
+        }
+      }
+    },
+    {
+      "database": "sqlite",
+      "ordinal": 21,
+      "host": {
+        "ok": true,
+        "payload": {
+          "enabled": true,
+          "qrCodeUrl": "https://api.example.invalid/harness/api/creation/assets/cc_8f9aae64d410eb9a9ba7a115fec22c431cf937a2a5ca6010dfbca344f8e2dfff",
+          "title": "客服 <b>字面文字</b>",
+          "description": "联系售后"
+        }
+      }
+    },
+    {
+      "database": "sqlite",
+      "ordinal": 22,
+      "host": {
+        "ok": true,
+        "payload": {
+          "enabled": true,
+          "qrCodeUrl": "https://api.example.invalid/harness/api/creation/assets/cc_8f9aae64d410eb9a9ba7a115fec22c431cf937a2a5ca6010dfbca344f8e2dfff",
+          "title": "客服 <b>字面文字</b>",
+          "description": "联系售后"
+        }
+      }
+    }
+  ]
+}

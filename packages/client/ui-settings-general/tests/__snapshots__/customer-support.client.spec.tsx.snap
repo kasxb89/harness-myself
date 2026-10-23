@@ -1,0 +1,23 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`records locale-owned default support content (Chinese: false) 1`] = `
+{
+  "alt": "Support QR code",
+  "description": "Scan the QR code to contact support.",
+  "imageFailed": "Could not load the QR image. Check your connection and try again.",
+  "imageLoading": "Loading support QR code",
+  "title": "Support",
+  "unconfigured": "No support QR code is configured yet. Please try again later.",
+}
+`;
+
+exports[`records locale-owned default support content (Chinese: true) 1`] = `
+{
+  "alt": "客服二维码",
+  "description": "扫描二维码联系客服",
+  "imageFailed": "二维码图片未能加载，请检查网络连接后重试",
+  "imageLoading": "正在加载客服二维码",
+  "title": "客服",
+  "unconfigured": "暂未配置客服二维码，请稍后再试",
+}
+`;

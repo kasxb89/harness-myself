@@ -1,4 +1,5 @@
 /** Public deployment announcements selected from status without account credentials or HTML rendering. */
+import { readPublicStatus } from './public-status.ts'
 
 /** Fields retained for the announcement dialog; unrelated public status settings are excluded. */
 export interface Announcement {
@@ -55,33 +56,9 @@ export function parseAnnouncements(value: unknown): AnnouncementResponse {
 export async function readAnnouncements(
   fetchStatus: (signal: AbortSignal) => Promise<Response>, signal: AbortSignal,
 ): Promise<AnnouncementResponse> {
-  let response: Response
-  try { response = await fetchStatus(signal) } catch (_transportFailed: unknown) { return { ok: false, code: 'ANNOUNCEMENTS_NETWORK' } }
-  if (response.status === 404) {
-    await response.body?.cancel().catch((_cancelledBody: unknown) => {})
-    return { ok: false, code: 'ANNOUNCEMENTS_UNSUPPORTED' }
-  }
-  if (!response.ok) {
-    await response.body?.cancel().catch((_cancelledBody: unknown) => {})
-    return { ok: false, code: 'ANNOUNCEMENTS_UNAVAILABLE' }
-  }
-  if (response.body === null) return { ok: false, code: 'ANNOUNCEMENTS_INVALID' }
-  const reader = response.body.getReader()
-  const chunks: Uint8Array[] = []
-  let bytes = 0
-  try {
-    for (;;) {
-      signal.throwIfAborted()
-      const chunk = await reader.read()
-      if (chunk.done) break
-      bytes += chunk.value.length
-      if (bytes > 1_048_576) return { ok: false, code: 'ANNOUNCEMENTS_INVALID' }
-      chunks.push(chunk.value)
-    }
-  } catch (_interruptedBody: unknown) { return { ok: false, code: 'ANNOUNCEMENTS_NETWORK' } }
-  finally { await reader.cancel().catch((_cancelledBody: unknown) => {}) }
-  let value: unknown
-  try { value = JSON.parse(Buffer.concat(chunks).toString('utf8')) }
-  catch (_invalidJson: unknown) { return { ok: false, code: 'ANNOUNCEMENTS_INVALID' } }
-  return parseAnnouncements(value)
+  const result = await readPublicStatus(fetchStatus, signal)
+  if (result.ok) return parseAnnouncements(result.value)
+  const codes = { unsupported: 'ANNOUNCEMENTS_UNSUPPORTED', unavailable: 'ANNOUNCEMENTS_UNAVAILABLE',
+    invalid: 'ANNOUNCEMENTS_INVALID', network: 'ANNOUNCEMENTS_NETWORK', timeout: 'ANNOUNCEMENTS_NETWORK' } as const
+  return { ok: false, code: codes[result.reason] }
 }
