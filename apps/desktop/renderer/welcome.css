@@ -185,6 +185,36 @@ body {
   background: var(--dsw-alias-button-primary-hover);
 }
 
+.welcome:has(.session-recovery) {
+  grid-template-rows: 40px minmax(80px, 1fr) auto;
+  padding-bottom: 28px;
+}
+
+.session-recovery {
+  width: 350px;
+  max-width: 100%;
+  gap: 12px;
+}
+
+.session-feedback {
+  margin: 0 0 4px;
+  color: var(--dsw-alias-label-secondary);
+  font-family: var(--dsw-font-family);
+  font-size: 14px;
+  line-height: 23px;
+  text-align: center;
+}
+
+.actions button.secondary {
+  background: var(--dsw-alias-button-elevated-fill);
+  color: var(--dsw-alias-label-primary);
+  border-color: var(--dsw-alias-border-l2);
+}
+
+.secondary:hover:not(:disabled) {
+  background: var(--dsw-alias-button-floating-hover);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .actions button { transition: none; }
 }

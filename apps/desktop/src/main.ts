@@ -43,7 +43,8 @@ import { DesktopFatalRecovery } from './fatal-recovery.ts'
 import { pruneCrashReports, RendererConsoleTail, writeCrashReport, type CrashReportSource } from './crash-report.ts'
 import { openWelcomeWindow } from './welcome-window.ts'
 import { WELCOME_IPC, needsWelcome, type WelcomeNotice } from './welcome-api.ts'
-import { connectDesktopWelcome, type DesktopWelcomeBackend } from './welcome-backend.ts'
+import { connectDesktopWelcome, type DesktopWelcomeBackend, type WelcomeState } from './welcome-backend.ts'
+import { DesktopWelcomeUnavailableError, type WelcomeRecoveryState } from './welcome-session.ts'
 import { DesktopUpdateJournal } from './update-journal.ts'
 import { DesktopUpdatePreparationError } from './update-error.ts'
 import { DesktopUpdateSchedule, resolveDesktopUpdateScheduleConfig } from './update-schedule.ts'
@@ -429,6 +430,10 @@ async function main(): Promise<void> {
   const browserGuests = new DesktopBrowserGuests(() => hostUrl)
   let injections: readonly unknown[] = []
   let welcomeBackend: DesktopWelcomeBackend | undefined
+  const disposeWelcomeBackend = (): void => { welcomeBackend?.dispose() }
+  let welcomeRecovery: WelcomeRecoveryState = { kind: 'ready' }
+  let welcomeGeneration = 0
+  let sessionRetry: Promise<WelcomeRecoveryState> | undefined
   const activity = new DesktopClientActivity(process.platform === 'win32' ? 'win32' : process.platform === 'darwin' ? 'darwin' : 'linux',
     desktopClientVersion(), () => BrowserWindow.getFocusedWindow() !== null && powerMonitor.getSystemIdleState(60) === 'active')
   app.on('browser-window-focus', () => { activity.changed() })
@@ -481,25 +486,37 @@ async function main(): Promise<void> {
     return {
       start: async () => {
         const ready = await host.start()
-        hostCookie = await authenticateWebHost(ready.url)
         hostUrl = ready.url
+        try { hostCookie = await authenticateWebHost(ready.url) }
+        catch (error) {
+          if (!(error instanceof DesktopWelcomeUnavailableError)) throw error
+          hostCookie = undefined
+        }
         if (ready.injections === undefined) throw new Error('Desktop Host did not provide boot injections')
         injections = ready.injections
+        disposeWelcomeBackend()
         welcomeBackend = await connectDesktopWelcome(ready.url, (input, init) => net.fetch(input, init), async () => (await session.defaultSession.cookies.get({ url: ready.url })).map(cookie => `${cookie.name}=${cookie.value}`).join('; '))
         const activityBackend = welcomeBackend
         activity.connect((sample, signal) => activityBackend.activity(sample, signal))
         analyticsEnabled = await welcomeBackend.analyticsEnabled().catch(() => false)
         if (!reportedLaunch) { reportedLaunch = true; void track('desktop_app_launch', {}) }
         stopAccount?.()
+        const watchedBackend = welcomeBackend
         const accountBackend = welcomeBackend.account
         stopAccount = accountBackend.watch((state) => {
-          if (quitting) return
+          if (quitting || welcomeBackend !== watchedBackend) return
           if (welcomeWindow !== undefined && !welcomeWindow.isDestroyed()) welcomeWindow.webContents.send(WELCOME_IPC.state, state)
           if (previousAccountStatus === 'credential-stored' && state.status === 'signed-out') {
+            const generation = welcomeGeneration
+            const watchedHost = backend.host
+            const ownsObservation = (): boolean => !quitting && welcomeBackend === watchedBackend && backend.host === watchedHost
             void readWelcomeState().then(async (value) => {
-              if (needsWelcome(value) && !quitting) {
+              if (needsWelcome(value) && ownsObservation() && welcomeGeneration === generation) {
                 enteredWorkspace = false
-                await showWelcome()
+                const opening = showWelcome()
+                const openedGeneration = welcomeGeneration
+                await opening
+                if (!ownsObservation() || welcomeGeneration !== openedGeneration) return
                 if (welcomeWindow !== undefined && !welcomeWindow.isDestroyed()) welcomeWindow.webContents.send(WELCOME_IPC.state, state)
               }
               return undefined
@@ -509,20 +526,31 @@ async function main(): Promise<void> {
         }, () => {
           // The stream reconnects; a transport failure does not change account state.
         }, () => {
+          if (quitting || welcomeBackend !== watchedBackend) return
+          const generation = welcomeGeneration
+          const watchedHost = backend.host
+          const ownsObservation = (): boolean => !quitting && welcomeBackend === watchedBackend && backend.host === watchedHost
           void readWelcomeState().then(async (value) => {
-            if (!needsWelcome(value) || quitting) return
-            pendingWelcomeNotice = 'session-expired'
+            if (!needsWelcome(value) || !ownsObservation() || welcomeGeneration !== generation) return
+            if (value.sessionIssue === undefined) pendingWelcomeNotice = 'session-expired'
             enteredWorkspace = false
-            await showWelcome()
+            const opening = showWelcome()
+            const openedGeneration = welcomeGeneration
+            await opening
+            if (!ownsObservation() || welcomeGeneration !== openedGeneration) return
             const state = await accountBackend.state()
+            if (!ownsObservation() || welcomeGeneration !== openedGeneration) return
             if (welcomeWindow !== undefined && !welcomeWindow.isDestroyed()) welcomeWindow.webContents.send(WELCOME_IPC.state, state)
           }).catch(() => undefined)
-        }, (enabled) => { analyticsEnabled = enabled })
+        }, (enabled) => { if (!quitting && welcomeBackend === watchedBackend) analyticsEnabled = enabled })
       },
       stop: async () => {
+        welcomeGeneration++
+        sessionRetry = undefined
         activity.connect(undefined)
         analyticsEnabled = false
         stopAccount?.()
+        disposeWelcomeBackend()
         try { await host.stop(requireCleanStop) }
         catch (error) {
           if (!requireCleanStop || !(error instanceof DesktopHostUncleanExitError)) throw error
@@ -590,9 +618,28 @@ async function main(): Promise<void> {
     return state
   }
 
-  const readWelcomeState = async () => {
+  const readWelcomeState = async (): Promise<WelcomeState> => {
     if (backend.host === undefined || welcomeBackend === undefined) throw new Error('desktop welcome: backend unavailable')
-    return welcomeBackend.read()
+    const owner = welcomeBackend
+    const host = backend.host
+    const generation = welcomeGeneration
+    const ownsRead = (): boolean => welcomeBackend === owner && backend.host === host && welcomeGeneration === generation && !isQuitting()
+    let state: WelcomeState
+    try {
+      if (hostCookie === undefined && hostUrl !== undefined) {
+        const cookie = await authenticateWebHost(hostUrl)
+        if (ownsRead()) hostCookie = cookie
+      }
+      state = await owner.read()
+    } catch (error) {
+      if (!(error instanceof DesktopWelcomeUnavailableError)) throw error
+      let preference: string | null = null
+      try { preference = await owner.readLocalePreference() }
+      catch (localeError) { if (!(localeError instanceof DesktopWelcomeUnavailableError)) throw localeError }
+      state = { loggedIn: false, hasApiKey: false, writable: false, localePreference: preference, sessionIssue: error.reason }
+    }
+    if (ownsRead()) welcomeRecovery = state.sessionIssue === undefined ? { kind: 'ready' } : { kind: 'unavailable', reason: state.sessionIssue }
+    return state
   }
   stopForRecovery = () => backend.close()
 
@@ -690,8 +737,7 @@ async function main(): Promise<void> {
     // A confirmation on a hidden window would go unseen, so it waits for the next show; the mandatory
     // flow keeps its own taskbar and Dock attention instead.
     if (!isMandatory()) await windowShown()
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- A quit can begin while the show is awaited.
-    if (quitting) return state
+    if (isQuitting()) return state
     return updates.install(version)
   }
   const windowShown = (): Promise<void> => new Promise((resolve) => {
@@ -1208,6 +1254,8 @@ async function main(): Promise<void> {
           pendingWelcomeNotice = undefined
           return Promise.resolve(notice)
         },
+        recoveryState: () => Promise.resolve(welcomeRecovery),
+        retrySession: () => retryWelcomeSession(),
         startSignIn: async () => {
           if (welcomeBackend === undefined) throw new Error('desktop welcome: backend unavailable')
           return welcomeBackend.account.start(desktopClientMetadata(locale.id))
@@ -1240,7 +1288,11 @@ async function main(): Promise<void> {
         }).catch(() => undefined)
       })
       window.once('closed', () => {
-        if (welcomeWindow === window) welcomeWindow = undefined
+        if (welcomeWindow === window) {
+          welcomeWindow = undefined
+          welcomeGeneration++
+          sessionRetry = undefined
+        }
         if (enteredWorkspace || recovery.active) return
         // Nothing runs before the workspace opens. macOS keeps the Dock convention and drops the
         // unused main window so the next activation rebuilds the welcome; elsewhere the close quits.
@@ -1255,18 +1307,38 @@ async function main(): Promise<void> {
   const openInitialWindow = async (): Promise<void> => {
     if (isMandatory()) { mandatoryUI?.focus(); return }
     if (quitting || recovery.active) return
+    const generation = welcomeGeneration
+    const owner = welcomeBackend
     const state = await readWelcomeState()
-    if (isQuitting() || backend.state.phase !== 'ready') return
+    if (isQuitting() || backend.state.phase !== 'ready' || welcomeGeneration !== generation || welcomeBackend !== owner) return
     locale = resolveDesktopStartupLocale(state.localePreference, systemLanguages)
     windowsLanguage = locale.id
     refreshApplicationMenu()
-    if (!enteredWorkspace && needsWelcome({ loggedIn: state.loggedIn, hasApiKey: state.hasApiKey })) {
+    if (state.sessionIssue !== undefined || (!enteredWorkspace && needsWelcome({ loggedIn: state.loggedIn, hasApiKey: state.hasApiKey }))) {
       // A later login must retain its own activation policy instead of replaying startup focus.
       raiseAfterUpdate = false
       await showWelcome()
     } else {
       await enterWorkspace()
     }
+  }
+  const retryWelcomeSession = (): Promise<WelcomeRecoveryState> => {
+    if (sessionRetry !== undefined) return sessionRetry
+    const generation = welcomeGeneration
+    const owner = welcomeBackend
+    const retry = (async () => {
+      try {
+        await openInitialWindow()
+        return welcomeRecovery
+      } catch (error) {
+        if (isQuitting() || welcomeGeneration !== generation || welcomeBackend !== owner) return welcomeRecovery
+        // Invalid protocol/configuration and actual Host failures retain the native fatal recovery.
+        reportFatal(error, 'main')
+        throw error
+      }
+    })().finally(() => { if (sessionRetry === retry) sessionRetry = undefined })
+    sessionRetry = retry
+    return retry
   }
   focusPrimaryWindow = () => {
     if (quitting) return

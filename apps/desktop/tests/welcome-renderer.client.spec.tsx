@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { resolveDesktopLocale } from '../src/locale.ts'
 import type { AccountView } from '@deepseek-ai/dsh-deepseek-account/types'
 import type { WelcomeSaveResult, WelcomeNotice } from '../src/welcome-api.ts'
+import type { WelcomeRecoveryState } from '../src/welcome-session.ts'
 
 const html = readFileSync(join(import.meta.dirname, '../renderer/welcome.html'), 'utf8')
 afterEach(() => { cleanup(); vi.useRealTimers() })
@@ -14,6 +15,8 @@ afterEach(() => { cleanup(); vi.useRealTimers() })
 function mount(language = 'zh-CN', takeNotice = vi.fn<() => Promise<WelcomeNotice | undefined>>().mockResolvedValue(undefined)) {
   const api = {
     takeNotice,
+    recoveryState: vi.fn<() => Promise<WelcomeRecoveryState>>().mockResolvedValue({ kind: 'ready' }),
+    retrySession: vi.fn<() => Promise<WelcomeRecoveryState>>().mockResolvedValue({ kind: 'ready' }),
     analytics: vi.fn(async (_event: string, _attributes: object) => {}),
     analyticsEnabled: async () => true,
     onAccountState: vi.fn((_listener: (state: AccountView) => void) => () => {}),
@@ -132,5 +135,28 @@ describe('desktop product welcome', () => {
     mount('en')
     await act(async () => { notice.resolve('session-expired'); navigation.reject(new Error('closed')) })
     expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it.each(['zh-CN', 'en'])('keeps an unavailable login visible with one retry and a separate sign-in action: %s', async (language) => {
+    const view = mount(language)
+    view.api.recoveryState.mockResolvedValue({ kind: 'unavailable', reason: 'network' })
+    await act(async () => { view.api.onAccountState.mock.calls[0]![0]({ status: 'credential-stored', attempt: null, links: { usageUrl: '', topUpUrl: '' } }) })
+    expect(screen.getByRole('status').textContent).toContain(view.api.messages.welcomeSessionNetwork)
+    await expect(`${screen.getByRole('status').textContent}\n${screen.getAllByRole('button').map(button => button.textContent).join('\n')}\n`)
+      .toMatchFileSnapshot(`./expected/welcome/${language}-unavailable.expected.txt`)
+    const pending = Promise.withResolvers<WelcomeRecoveryState>()
+    view.api.retrySession.mockReturnValueOnce(pending.promise)
+    const retry = screen.getByRole<HTMLButtonElement>('button', { name: view.api.messages.welcomeSessionRetry })
+    fireEvent.click(retry)
+    fireEvent.click(retry)
+    expect(view.api.retrySession).toHaveBeenCalledOnce()
+    expect(view.api.skip).not.toHaveBeenCalled()
+    expect(screen.getAllByRole<HTMLButtonElement>('button').every(button => button.disabled)).toBe(true)
+    await act(async () => { pending.resolve({ kind: 'unavailable', reason: 'timeout' }) })
+    expect(screen.getByRole('status').textContent).toContain(view.api.messages.welcomeSessionTimeout)
+    fireEvent.click(screen.getByRole('button', { name: view.api.messages.welcomeSessionSignIn }))
+    await act(async () => {})
+    expect(view.api.skip).toHaveBeenCalledOnce()
+    expect(view.api.startSignIn).not.toHaveBeenCalled()
   })
 })

@@ -1,6 +1,7 @@
 /** Local Web document and authenticated HTTP forwarding for the application window. */
 import { readFile } from 'node:fs/promises'
 import { extname, resolve, sep } from 'node:path'
+import { DesktopWelcomeUnavailableError, fetchDesktopWelcome } from './welcome-session.ts'
 
 const MIME: Readonly<Record<string, string>> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -41,9 +42,13 @@ export async function serveWebDocument(request: Request, root: string): Promise<
  * @returns Cookie header for requests forwarded to that Host.
  */
 export async function authenticateWebHost(url: string): Promise<string> {
-  const response = await fetch(url, { redirect: 'manual' })
+  const response = await fetchDesktopWelcome(fetch, url, { redirect: 'manual' })
   const cookie = response.headers.get('set-cookie')
-  await response.body?.cancel()
+  try { await response.body?.cancel() }
+  catch (error) { throw new DesktopWelcomeUnavailableError(error instanceof DOMException && ['TimeoutError', 'AbortError'].includes(error.name) ? 'timeout' : 'network') }
+  if (response.status === 408 || response.status === 504) throw new DesktopWelcomeUnavailableError('timeout')
+  if (response.status === 429) throw new DesktopWelcomeUnavailableError('rate_limited')
+  if (response.status >= 500) throw new DesktopWelcomeUnavailableError('host_unavailable')
   if (response.status !== 303 || cookie === null) throw new Error('Desktop Host authentication failed')
   const end = cookie.indexOf(';')
   return end < 0 ? cookie : cookie.slice(0, end)

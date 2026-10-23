@@ -55,6 +55,7 @@ let clientModelConfig: unknown
 let clientModelPresentation: unknown
 let balanceQuota = 68_493
 let selfId = 7
+let selfReply: { status: number; body?: unknown; raw?: string; disconnect?: boolean; waitForClose?: boolean } | undefined
 let access = 'access-user'
 let refreshes = 0
 let refreshStatus = 200
@@ -112,6 +113,7 @@ afterEach(async () => {
   clientModelPresentation = undefined
   balanceQuota = 68_493
   selfId = 7
+  selfReply = undefined
   access = 'access-user'
   refreshes = 0
   refreshStatus = 200
@@ -306,6 +308,14 @@ async function boot(
         response.writeHead(401); response.end(JSON.stringify({ success: false, message: 'expired' })); return
       }
       if (url.pathname === '/harness/api/user/self') {
+        if (selfReply !== undefined) {
+          if (selfReply.disconnect === true) { response.destroy(); return }
+          if (selfReply.waitForClose === true) {
+            await new Promise<void>((resolve) => { response.once('close', () => { resolve() }) }); return
+          }
+          response.writeHead(selfReply.status)
+          response.end(selfReply.raw ?? JSON.stringify(selfReply.body)); return
+        }
         answer({ id: selfId, username: 'test-user', group: 'default', quota: balanceQuota }); return
       }
       if (url.pathname === '/harness/api/user/wechat/native') {
@@ -4261,6 +4271,63 @@ describe('deployed Harness API through the real product Loader', () => {
       expect(object(report?.body).session_id).toBe(firstId)
     }
     expect(creations).toBe(0)
+  })
+
+  it.each([
+    { reply: { status: 408 }, reason: 'timeout', status: 408 },
+    { reply: { status: 429 }, reason: 'rate_limited', status: 429 },
+    { reply: { status: 503 }, reason: 'upstream_unavailable', status: 503 },
+    { reply: { status: 403 }, reason: 'upstream_rejected', status: 403 },
+    { reply: { status: 200, body: { success: false, message: 'must-not-leak' } }, reason: 'upstream_rejected', status: 200 },
+    { reply: { status: 200, raw: '{private-upstream-invalid' }, reason: 'protocol', status: 200 },
+    { reply: { status: 200, body: { success: true, data: { id: 7, quota: -1, private: 'must-not-leak' } } }, reason: 'protocol', status: 200 },
+    { reply: { status: 200, body: { success: true, data: { id: 8, quota: 1 } } }, reason: 'identity_mismatch', status: 200 },
+    { reply: { status: 200, disconnect: true }, reason: 'network' },
+    { reply: { status: 200, waitForClose: true }, reason: 'timeout' },
+  ])('classifies session account-read $reason with observed HTTP $status and preserves login for recovery', async ({ reply, reason, status }) => {
+    const { base, stateDir } = await boot(undefined, false, false, undefined, { timeoutMs: 1000 })
+    await signIn(base)
+    const original = await readFile(join(stateDir, 'session.json'), 'utf8')
+    selfReply = reply
+    const response = await fetch(base + '/api/session')
+    expect(response.status).toBe(200)
+    const body = object(await response.json())
+    const failure = { reason, stage: 'account-read', ...status === undefined ? {} : { status } }
+    expect(body).toMatchObject({ ok: false, code: 'ACCOUNT_UNAVAILABLE', signedIn: true, liveness: 'unknown', failure,
+      payload: { signedIn: true, liveness: 'unknown', failure } })
+    expect(Object.keys(object(body.failure)).sort()).toEqual(Object.keys(failure).sort())
+    expect(JSON.stringify(body)).not.toMatch(/private-upstream|must-not-leak|access-user|sk-owned-relay|refresh-one/u)
+    expect(await readFile(join(stateDir, 'session.json'), 'utf8')).toBe(original)
+    selfReply = undefined
+    expect(await (await fetch(base + '/api/session')).json()).toMatchObject({ ok: true, signedIn: true, liveness: 'verified' })
+    expect(creations).toBe(0)
+  })
+
+  it.each([[408, 'timeout'], [429, 'rate_limited'], [503, 'upstream_unavailable']] as const)
+  ('classifies session renewal HTTP%i as %s without clearing the original login', async (status, reason) => {
+    const { base, stateDir } = await boot(undefined, false, false, undefined, { refreshRetryBaseDelayMs: 10_000 })
+    await signIn(base)
+    const original = await readFile(join(stateDir, 'session.json'), 'utf8')
+    refreshStatus = status
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(Date.now() + 16 * 60_000)
+    const result = object(await (await fetch(base + '/api/session')).json())
+    expect(result).toMatchObject({ ok: false, code: 'ACCOUNT_UNAVAILABLE', signedIn: true, liveness: 'unknown',
+      failure: { reason, stage: 'renewal', status } })
+    expect(await readFile(join(stateDir, 'session.json'), 'utf8')).toBe(original)
+    expect(refreshes).toBe(1)
+    expect(creations).toBe(0)
+  })
+
+  it('returns signed-out immediately when account verification confirms a terminal refresh401', async () => {
+    const { base, stateDir } = await boot()
+    await signIn(base)
+    selfReply = { status: 401 }
+    refreshStatus = 401
+    expect(await (await fetch(base + '/api/session')).json()).toMatchObject({ ok: true, signedIn: false })
+    expect(object(JSON.parse(await readFile(join(stateDir, 'session.json'), 'utf8')))).not.toHaveProperty('token')
+    expect(await context!.credentials.resolve(relayRef)).toBeUndefined()
+    expect(refreshes).toBe(1)
   })
 
   it('waits for one rotating refresh before concurrent account reads', async () => {

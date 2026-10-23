@@ -22,6 +22,8 @@ Desktop Host Platform API requests and update-policy requests identify the insta
 
 Native Welcome uses the product phone session. A configured model API key or an official-provider account does not count as product sign-in. An official-account expiry only returns to Welcome when the product is also signed out; Welcome and the workspace retain the localized expiry notice.
 
+When product-session verification is temporarily unavailable, Welcome retains the stored login and offers Retry and Sign in again. Network interruption, timeout, rate limiting, renewal failure and upstream rejection have separate localized guidance; an unknown account state does not authorize workspace entry. Retry checks the session again without submitting model or media requests. Session transport failures do not open the fatal recovery dialog. Invalid local configuration and programming failures retain fatal diagnostics.
+
 Desktop microphone access is restricted to audio requests from the primary `dsh-app://app` frame. macOS uses system microphone authorization, a packaged usage description, and `com.apple.security.device.audio-input` in the main application and Helper signatures.
 
 Press F12 (Fn+F12 on media-key keyboards), Command+Option+I on macOS, or Ctrl+Shift+I on Windows to toggle DevTools for the focused application page, including in packaged builds. These native shortcuts use hidden application-menu items. Update overlays and packaged embedded browser guests disable DevTools.

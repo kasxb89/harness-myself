@@ -3,8 +3,8 @@
 # After editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write apps/desktop/README.md
 /yunshu-desktop:
-  en: 0161d2556a3dc2f2
-  zh: bad2de7fb4db3ddf
+  en: 7ed913c8aafa9aba
+  zh: 452a1b7390b4b63f
 /yunshu-desktop/terminal-command:
   en: bef92953c237363f
   zh: d21d6effd21b8c00

@@ -3,6 +3,7 @@
 import type { AccountView, SignInAttemptId } from '@deepseek-ai/dsh-deepseek-account/types'
 import type { ProductEventMap } from '@deepseek-ai/dsh-client-product-analytics/types'
 import type { DesktopLocale } from './locale.ts'
+import type { WelcomeRecoveryState } from './welcome-session.ts'
 
 /** Private native welcome channels, installed only while its window exists. */
 export const WELCOME_IPC = {
@@ -15,6 +16,8 @@ export const WELCOME_IPC = {
   copyLink: 'dsh-welcome:copy-link',
   state: 'dsh-welcome:state',
   takeNotice: 'dsh-welcome:take-notice',
+  recovery: 'dsh-welcome:recovery',
+  retrySession: 'dsh-welcome:retry-session',
 } as const
 
 /** Credential writes return a safe outcome without exposing Host diagnostics. */
@@ -33,6 +36,10 @@ export interface WelcomeOperations {
   analyticsEnabled(): Promise<boolean>
   /** @returns the pending notification, clearing it before another renderer can receive it. */
   takeNotice(): Promise<WelcomeNotice | undefined>
+  /** @returns Persistent safe feedback for an unavailable account check. */
+  recoveryState(): Promise<WelcomeRecoveryState>
+  /** @returns One new session check; verified success opens the workspace. */
+  retrySession(): Promise<WelcomeRecoveryState>
   /** @returns account state after starting a login attempt. */
   startSignIn(): Promise<AccountView>
   /** @param id - attempt to cancel. @returns the settled state. */

@@ -400,6 +400,7 @@ vi.mock('../src/platform-view.ts', async importOriginal => ({
 }))
 vi.mock('../src/welcome-backend.ts', () => ({
   connectDesktopWelcome: async () => ({
+    dispose: () => {},
     analyticsEnabled: async () => harness.analyticsEnabled,
     report: harness.analytics,
     activity: harness.activity,

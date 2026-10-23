@@ -141,6 +141,50 @@ it.each([500, 503])('keeps login and recovers HTTP %i without an immediate repea
   expect(request).toHaveBeenCalledTimes(2)
 })
 
+it.each(['network', 'timeout', 'protocol', 'identity_mismatch', 'upstream_rejected', '408', '429', '503'] as const)
+('observes safe renewal failure %s only for its credential epoch and clears it after recovery', async (mode) => {
+  const request = vi.fn(async (): Promise<Response> => {
+    if (request.mock.calls.length > 1) return success(app.now())
+    if (mode === 'network') throw new TypeError('private endpoint must not leak')
+    if (mode === 'timeout') throw new DOMException('private timeout must not leak', 'TimeoutError')
+    if (mode === 'protocol') return new Response('{private-invalid-json')
+    if (mode === 'identity_mismatch') return success(app.now(), 8)
+    if (mode === 'upstream_rejected') return Response.json({ success: false, message: 'private rejection' })
+    return new Response('', { status: Number(mode) })
+  })
+  const app: Awaited<ReturnType<typeof fixture>> = await fixture(onTestFinished, request)
+  expect(await app.renewal.refresh(app.previous)).toBeNull()
+  const reason = mode === '408' ? 'timeout' : mode === '429' ? 'rate_limited' : mode === '503' ? 'upstream_unavailable' : mode
+  const status = /^\d/u.test(mode) ? Number(mode)
+    : mode === 'protocol' || mode === 'identity_mismatch' || mode === 'upstream_rejected' ? 200 : undefined
+  expect(app.renewal.lastFailure(app.previous)).toEqual({ reason, stage: 'renewal', ...status === undefined ? {} : { status } })
+  expect(app.renewal.lastFailure({ ...app.previous, token: 'different-local-login' })).toBeUndefined()
+  expect(await app.store.read()).toEqual(app.previous)
+  await app.renewal.refresh(app.previous)
+  expect(request).toHaveBeenCalledTimes(1)
+  app.advance(1000)
+  const recovered = await app.renewal.refresh(app.previous)
+  expect(recovered?.upstream?.token).toBe('access-new')
+  expect(app.renewal.lastFailure(app.previous)).toBeUndefined()
+  expect(recovered === null ? undefined : app.renewal.lastFailure(recovered)).toBeUndefined()
+})
+
+it('reports unreadable renewal metadata as storage without clearing the account', async ({ onTestFinished }) => {
+  const app = await fixture(onTestFinished, async () => success(Date.UTC(2026, 9, 22)))
+  await writePrivateState(app.store.path + '.renewal', '{invalid-private-state')
+  expect(await app.renewal.canUseAccess(app.previous)).toBe(false)
+  expect(app.renewal.lastFailure(app.previous)).toEqual({ reason: 'storage', stage: 'renewal' })
+  expect(await app.store.read()).toEqual(app.previous)
+})
+
+it('reports a failed renewal credential commit as storage while retaining the old login', async ({ onTestFinished }) => {
+  const app = await fixture(onTestFinished, async () => success(Date.UTC(2026, 9, 22)))
+  app.settings.store.write = async () => { throw new Error('private storage path must not leak') }
+  expect(await app.renewal.refresh(app.previous)).toBeNull()
+  expect(app.renewal.lastFailure(app.previous)).toEqual({ reason: 'storage', stage: 'renewal' })
+  expect(await app.store.read()).toEqual(app.previous)
+})
+
 it('does not replay an uncertain cookie after the server recovery window', async ({ onTestFinished }) => {
   const request = vi.fn(async (_cookie: string, _signal: AbortSignal): Promise<Response> => { throw new Error('fixture transport lost after dispatch') })
   const app = await fixture(onTestFinished, request)

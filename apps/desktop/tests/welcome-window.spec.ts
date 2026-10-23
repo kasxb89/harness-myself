@@ -42,6 +42,8 @@ beforeEach(() => { electron.create.mockReset(); electron.handlers.clear() })
 const operations = {
   analyticsEnabled: async () => true,
   takeNotice: async () => undefined,
+  recoveryState: async () => ({ kind: 'ready' as const }),
+  retrySession: async () => ({ kind: 'ready' as const }),
   startSignIn: async () => ({ links: { usageUrl: 'http://localhost/usage', topUpUrl: 'http://localhost/top_up' }, status: 'signed-out' as const, attempt: null }),
   cancelSignIn: async () => ({ links: { usageUrl: 'http://localhost/usage', topUpUrl: 'http://localhost/top_up' }, status: 'signed-out' as const, attempt: null }),
   copySignInLink: async () => undefined,
@@ -125,6 +127,10 @@ describe('desktop welcome window', () => {
     expect(takeNotice).not.toHaveBeenCalled()
     expect(await take(own)).toBe('session-expired')
     expect(takeNotice).toHaveBeenCalledOnce()
+    for (const channel of [WELCOME_IPC.recovery, WELCOME_IPC.retrySession]) {
+      await expect(electron.handlers.get(channel)!({ ...own, senderFrame: {} })).rejects.toThrow('unowned frame')
+      expect(await electron.handlers.get(channel)!(own)).toEqual({ kind: 'ready' })
+    }
     const save = electron.handlers.get(WELCOME_IPC.saveApiKey)!
     await expect(save({ sender: {}, senderFrame: {} }, 'sk-test')).rejects.toThrow('unowned frame')
     await expect(save({ ...own, senderFrame: {} }, 'sk-test')).rejects.toThrow('unowned frame')

@@ -35,6 +35,11 @@ it('requires the Host authentication exchange and retains only its cookie value'
   await expect(authenticateWebHost('http://127.0.0.1:1234/')).rejects.toThrow('authentication failed')
 })
 
+it.each([[408, 'timeout'], [504, 'timeout'], [429, 'rate_limited'], [503, 'host_unavailable']] as const)('contains a temporary local authentication HTTP %s without claiming a login', async (status, reason) => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status })))
+  await expect(authenticateWebHost('http://127.0.0.1:1234/')).rejects.toMatchObject({ name: 'DesktopWelcomeUnavailableError', reason })
+})
+
 it('forwards upload bytes and cancellation with Host credentials while keeping the response streaming', async () => {
   const body = new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode('stream')); controller.close() } })
   const fetch = vi.fn().mockResolvedValue(new Response(body, { headers: { 'content-encoding': 'gzip', 'set-cookie': 'private' } }))

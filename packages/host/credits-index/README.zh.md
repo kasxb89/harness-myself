@@ -31,6 +31,8 @@ kind: "package-reference"
 
 共享同一会话文件的 Host 通过文件锁协调续期与会话修改。持久化续期状态在协作 Host 间共享冷却和访问凭据拒绝记录；旧版客户端不参与这些锁。明确收到 HTTP 401 的 access token 即使尚未到期也不再复用。续期收到终态 HTTP 401 时，只清除原先捕获的账号与凭据代次。晚到的成功或拒绝响应不能覆盖新登录或清除其凭据。dispose（资源释放）取消恢复计时器和 HTTP 工作，再等待续期与拒绝状态写入结束。释放后完成的读盘或 HTTP 响应不能发起续期或清除登录。后台故障报告若抛错，则通过独立警告报告恢复失败，不包含凭据。
 
+`GET /credits/api/session` 保留现有的 `ok`、`code`、`signedIn` 和 `liveness` 字段。已存登录暂时无法确认访问权限时，仍返回 `ACCOUNT_UNAVAILABLE`、`signedIn: true`、`liveness: 'unknown'`；这是可恢复的账号读取结果，不代表访问已验证，也不是文档非法。可选字段 `failure: { reason, stage, status? }` 同时出现在顶层和 `payload`。reason 区分 `network`、`timeout`、`rate_limited`、`upstream_unavailable`、`upstream_rejected`、`protocol`、`identity_mismatch`、`renewal_unavailable` 和 `storage`；stage 为 `account-read` 或 `renewal`，仅实际收到 HTTP 响应时包含 status。续期诊断仅保存在内存，并绑定精确的凭据代次；未在本 Host 观测的共享冷却使用 `renewal_unavailable`。这些字段不包含凭据、远端正文或异常文字。临时错误保留登录及有界续期策略；已确认的续期终态 401 会立即返回未登录，即使它发生在实时账号读取过程中。
+
 续期按 HTTP 429 与 `Retry-After` 判断限流，不要求 JSON 正文，兼容旧版空响应。有效的秒数或 HTTP 日期均按要求等待；临时 HTTP 500/503 及传输故障保留登录，并使用有界指数退避。Cookie 轮换未确认时，只在 API 的 30 秒恢复窗口及配置重试次数内重试旧 cookie。任一限制耗尽后仍保留已存登录，但恢复需要新确认的 cookie 或重新登录，不再重放旧 cookie。这项恢复绝不重试图片、视频或 AI 帮写的生成 POST。
 
 `refreshRetryBaseDelayMs` 默认为 1000，`refreshRetryMaxDelayMs` 默认为 60000；两者接受 1 至 2,147,483,647 的整数毫秒，最大值不得小于基础值。有效的服务端 `Retry-After` 可以超过本地退避上限，客户端不缩短它。`refreshRecoveryRetryLimit` 默认为 2，接受 0 至 5 的整数，限制轮换未确认后的额外兑换次数。服务端 30 秒恢复窗口不是可配置的客户端超时。

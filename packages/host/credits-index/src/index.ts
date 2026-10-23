@@ -36,6 +36,7 @@ import { apiUrl, normalizeApiBaseUrl } from './api-url.ts'
 import { readPhoneBody, phoneFailure, phoneRetryAfter, type PhoneApiBody } from './phone-auth.ts'
 import { writePrivateState } from './private-state-file.ts'
 import { SessionRefresh, type StoredAccount, type StoredSession } from './session-refresh.ts'
+import { sessionBodyFailure, sessionHttpFailure, sessionTransportFailure, type SessionFailure } from './session-failure.ts'
 import { PhoneAuthState, type PhoneDeliveryStatus } from './phone-auth-state.ts'
 import { parseClientModelConfigStatus, parseClientModelPresentationStatus } from './client-model-config.ts'
 import { orderProductModels, preferredProductModel, productModelDisplaySignature,
@@ -2245,31 +2246,47 @@ export function apply(ctx: Context, config: Config): void {
   }
   ctx.provide('harnessAccount', harnessAccount)
 
-  /** Read the same signed-in account's live quota; no admin search or cached balance is accepted. */
-  const readSelf = async (session: StoredSession): Promise<{
+  type LiveAccount = {
     id: number
     username: string
     group: string
     quota: number
     phone: string
-  } | null> => {
-    try {
-      const answered = await accountFetch(session, '/api/user/self', { headers: { accept: 'application/json' } })
-      const body = await answered.json() as {
-        success?: unknown
-        data?: { id?: unknown; username?: unknown; group?: unknown; quota?: unknown; phone_e164?: unknown }
-      } | null
-      const data = body?.data
-      if (!answered.ok || body?.success !== true || typeof data?.id !== 'number' || !Number.isSafeInteger(data.id)
-        || data.id <= 0 || String(data.id) !== session.account.id || typeof data.quota !== 'number'
-        || !Number.isFinite(data.quota) || data.quota < 0) return null
-      return { id: data.id, username: typeof data.username === 'string' ? data.username : '',
-        group: typeof data.group === 'string' ? data.group : '', quota: data.quota,
-        phone: typeof data.phone_e164 === 'string' ? data.phone_e164 : session.account.phone }
-    } catch {
-      return null
-    }
   }
+  /** Read live account facts with safe diagnostics; other account consumers retain their nullable interface. */
+  const readSelfStatus = async (session: StoredSession): Promise<{ value: LiveAccount | null; failure?: SessionFailure }> => {
+    let answered: Response
+    try {
+      answered = await accountFetch(session, '/api/user/self', { headers: { accept: 'application/json' } })
+    } catch (error: unknown) { return { value: null, failure: sessionTransportFailure(error, 'account-read') } }
+    if (!answered.ok) {
+      try { await answered.body?.cancel() } catch (_unreadableAccountBody: unknown) { /* HTTP status remains authoritative. */ }
+      return { value: null, failure: (answered.status === 401 ? renewal.lastFailure(session) : undefined)
+        ?? sessionHttpFailure(answered.status, 'account-read') }
+    }
+    let body: {
+      success?: unknown
+      data?: { id?: unknown; username?: unknown; group?: unknown; quota?: unknown; phone_e164?: unknown }
+    } | null
+    try { body = await answered.json() as typeof body }
+    catch (error: unknown) { return { value: null, failure: sessionBodyFailure(error, 'account-read', answered.status) } }
+    const data = body?.data
+    if (body?.success === false) {
+      return { value: null, failure: { reason: 'upstream_rejected', stage: 'account-read', status: answered.status } }
+    }
+    if (body?.success !== true || typeof data?.id !== 'number' || !Number.isSafeInteger(data.id)
+      || data.id <= 0 || typeof data.quota !== 'number' || !Number.isFinite(data.quota) || data.quota < 0) {
+      return { value: null, failure: { reason: 'protocol', stage: 'account-read', status: answered.status } }
+    }
+    if (String(data.id) !== session.account.id) {
+      return { value: null, failure: { reason: 'identity_mismatch', stage: 'account-read', status: answered.status } }
+    }
+    return { value: { id: data.id, username: typeof data.username === 'string' ? data.username : '',
+      group: typeof data.group === 'string' ? data.group : '', quota: data.quota,
+      phone: typeof data.phone_e164 === 'string' ? data.phone_e164 : session.account.phone } }
+  }
+  /** Read the same signed-in account's live quota; no admin search or cached balance is accepted. */
+  const readSelf = async (session: StoredSession): Promise<LiveAccount | null> => (await readSelfStatus(session)).value
 
   const reply = (response: ServerResponse, result: PlatformResult): void => {
     json(response, 200, {
@@ -2744,12 +2761,16 @@ export function apply(ctx: Context, config: Config): void {
 
         if (route === '/api/session' && method === 'GET') {
           const session = await liveSession()
-          if (session === null) {
-            const stored = await store.read()
+          const result = session === null ? undefined : await readSelfStatus(session)
+          const stored = await store.read()
+          if (session === null || stored === null || stored.token !== session.token || stored.account.id !== session.account.id) {
             if (stored?.token !== undefined) {
+              const failure = session !== null ? { reason: 'identity_mismatch' as const, stage: 'account-read' as const }
+                : renewal.lastFailure(stored) ?? { reason: 'renewal_unavailable' as const, stage: 'renewal' as const }
               json(response, 200, { ok: false, code: 'ACCOUNT_UNAVAILABLE', signedIn: true, liveness: 'unknown',
+                failure,
                 message: '账户凭据暂时无法续期，请重试或重新登录。',
-                payload: { signedIn: true, liveness: 'unknown', account: stored.account, expiresAt: stored.expiresAt } }); return
+                payload: { signedIn: true, liveness: 'unknown', account: stored.account, expiresAt: stored.expiresAt, failure } }); return
             }
             const recovery = await phoneAuth.recovery().then(value => ({ available: true, value }),
               (_unavailableRecovery: unknown) => ({ available: false, value: null }))
@@ -2764,7 +2785,7 @@ export function apply(ctx: Context, config: Config): void {
             })
             return
           }
-          const self = await readSelf(session)
+          const self = result?.value ?? null
           const account = session.account
           const liveness = self === null ? 'unknown' : 'verified'
           json(response, 200, {
@@ -2772,6 +2793,7 @@ export function apply(ctx: Context, config: Config): void {
             code: self === null ? 'ACCOUNT_UNAVAILABLE' : null,
             signedIn: true,
             liveness,
+            ...result?.failure === undefined ? {} : { failure: result.failure },
             creditsPerYuan: resolved.creditsPerYuan,
             account,
             expiresAt: session.expiresAt,
@@ -2781,6 +2803,7 @@ export function apply(ctx: Context, config: Config): void {
             payload: {
               signedIn: true,
               liveness,
+              ...result?.failure === undefined ? {} : { failure: result.failure },
               creditsPerYuan: resolved.creditsPerYuan,
               account,
               expiresAt: session.expiresAt,

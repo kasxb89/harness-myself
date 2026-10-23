@@ -5,6 +5,7 @@ import { dirname } from 'node:path'
 import { withFileLock } from '@deepseek-ai/dsh-atomic-write'
 import { z } from 'zod'
 import { writePrivateState } from './private-state-file.ts'
+import { sessionBodyFailure, sessionHttpFailure, sessionTransportFailure, type SessionFailure } from './session-failure.ts'
 
 /** Masked account facts retained by the private account session. */
 export interface StoredAccount {
@@ -111,6 +112,7 @@ export class SessionRefresh {
   private readonly rejectedAccess = new Set<string>()
   private readonly now: () => number
   private readonly stateFile: string
+  private observedFailure: { fingerprint: string; value: SessionFailure } | undefined
 
   constructor(private readonly options: RefreshOptions) {
     this.now = options.now ?? Date.now
@@ -123,7 +125,11 @@ export class SessionRefresh {
    * @returns the committed same-account session, or null while unavailable or signed out.
    */
   async refresh(previous: StoredSession): Promise<StoredSession | null> {
-    if (this.life.signal.aborted || previous.token === undefined || previous.upstream?.refresh === undefined) return null
+    if (this.life.signal.aborted || previous.token === undefined) return null
+    if (previous.upstream?.refresh === undefined) {
+      this.noteFailure(previous, { reason: 'renewal_unavailable', stage: 'renewal' })
+      return null
+    }
     const fingerprint = this.fingerprint(previous)
     const pending = this.flights.get(fingerprint)
     if (pending !== undefined) return await pending.promise
@@ -139,6 +145,7 @@ export class SessionRefresh {
         })
       } catch (_unavailableRenewalStorage: unknown) {
         if (this.isStopped()) return null
+        this.noteFailure(previous, { reason: 'storage', stage: 'renewal' })
         this.localCooldowns.set(fingerprint, this.now() + this.options.retryMaxDelayMs)
         this.options.unavailable('storage')
         return null
@@ -194,7 +201,10 @@ export class SessionRefresh {
       const state = await this.readState(this.fingerprint(session))
       if (state.terminal || state.accessRejected) this.rejectedAccess.add(this.accessFingerprint(session))
       return !state.terminal && !state.accessRejected
-    } catch (_unavailableRenewalState: unknown) { return false }
+    } catch (_unavailableRenewalState: unknown) {
+      this.noteFailure(session, { reason: 'storage', stage: 'renewal' })
+      return false
+    }
   }
 
   /**
@@ -204,6 +214,19 @@ export class SessionRefresh {
    */
   knownAccessRejected(session: StoredSession): boolean {
     return this.rejectedAccess.has(this.accessFingerprint(session))
+  }
+
+  /**
+   * Read this Host's last safe failure for the exact captured renewal epoch; no I/O or token is returned.
+   * @param session - Captured local login and upstream credential epoch.
+   * @returns An observed safe failure, or undefined after another epoch or without a local observation.
+   */
+  lastFailure(session: StoredSession): SessionFailure | undefined {
+    return this.observedFailure?.fingerprint === this.accessFingerprint(session) ? this.observedFailure.value : undefined
+  }
+
+  private noteFailure(session: StoredSession, value: SessionFailure): void {
+    this.observedFailure = { fingerprint: this.accessFingerprint(session), value }
   }
 
   /** Stop recovery callbacks, abort owned HTTP work and await exchange/lock completion. */
@@ -263,10 +286,14 @@ export class SessionRefresh {
     const state = await this.readState(fingerprint)
     if (this.isStopped()) return null
     if (state.terminal) { await this.options.unauthorized(previous, version); return null }
-    if (state.retryAt > this.now()) { this.schedule(previous, state); return null }
+    if (state.retryAt > this.now()) {
+      if (this.lastFailure(previous) === undefined) this.noteFailure(previous, { reason: 'renewal_unavailable', stage: 'renewal' })
+      this.schedule(previous, state); return null
+    }
     if (state.uncertainUntil !== null && (state.uncertainUntil <= this.now()
       || state.recoveryAttempts > this.options.recoveryRetryLimit)) {
       this.options.unavailable('recovery-exhausted')
+      this.noteFailure(previous, { reason: 'renewal_unavailable', stage: 'renewal' })
       this.localCooldowns.set(fingerprint, Number.MAX_SAFE_INTEGER)
       return null
     }
@@ -277,6 +304,8 @@ export class SessionRefresh {
     await this.save(pending)
     if (this.isStopped()) return null
     let response: Response | undefined
+    let failure: SessionFailure | undefined
+    let phase: 'fetch' | 'decode' | 'commit' = 'fetch'
     try {
       const remaining = Math.max(1, (pending.uncertainUntil ?? started) - this.now())
       response = await this.options.fetch(previous.upstream?.refresh ?? '', AbortSignal.any([
@@ -284,6 +313,7 @@ export class SessionRefresh {
       ]))
       if (this.isStopped()) { await discard(response); return null }
       if (response.status === 401) {
+        this.noteFailure(previous, sessionHttpFailure(response.status, 'renewal'))
         this.rejectedAccess.add(this.accessFingerprint(previous))
         await discard(response)
         if (this.isStopped()) return null
@@ -293,6 +323,7 @@ export class SessionRefresh {
         return null
       }
       if (response.status === 429) {
+        this.noteFailure(previous, sessionHttpFailure(response.status, 'renewal'))
         await discard(response)
         if (this.isStopped()) return null
         const next: RenewalState = { ...pending, uncertainUntil: state.uncertainUntil,
@@ -300,27 +331,42 @@ export class SessionRefresh {
           retryAt: Math.min(Number.MAX_SAFE_INTEGER, this.now()
             + refreshRetryDelay(response.headers.get('retry-after'), state.failures + 1, this.now(),
               this.options.retryBaseDelayMs, this.options.retryMaxDelayMs)) }
+        phase = 'commit'
         await this.save(next)
         if (this.isStopped()) return null
         this.options.unavailable('temporary')
         this.schedule(previous, next)
         return null
       }
-      if (!response.ok) { await discard(response); throw new Error('Account renewal temporarily unavailable') }
+      if (!response.ok) {
+        failure = sessionHttpFailure(response.status, 'renewal')
+        await discard(response); throw new Error('Account renewal temporarily unavailable')
+      }
+      phase = 'decode'
       const raw: unknown = await response.json()
       const body = raw !== null && typeof raw === 'object' ? raw as Record<string, unknown> : {}
       const data = body.data !== null && typeof body.data === 'object' ? body.data as Record<string, unknown> : {}
       const user = data.user !== null && typeof data.user === 'object' ? data.user as Record<string, unknown> : {}
       const expiry = data.access_expires_at
+      if (body.success === false) {
+        failure = { reason: 'upstream_rejected', stage: 'renewal', status: response.status }
+        throw new Error('Account renewal response was rejected')
+      }
       if (body.success !== true || typeof data.access_token !== 'string' || data.access_token.trim() === ''
         || typeof expiry !== 'number' || !Number.isFinite(expiry) || expiry * 1000 <= this.now()
-        || !Number.isFinite(new Date(expiry * 1000).getTime()) || String(user.id) !== previous.account.id) {
+        || !Number.isFinite(new Date(expiry * 1000).getTime())) {
+        failure = { reason: 'protocol', stage: 'renewal', status: response.status }
+        throw new Error('Account renewal response was not confirmed')
+      }
+      if (String(user.id) !== previous.account.id) {
+        failure = { reason: 'identity_mismatch', stage: 'renewal', status: response.status }
         throw new Error('Account renewal response was not confirmed')
       }
       const rotated = refreshCookie(response)
       const candidate: StoredSession = { ...previous, backendBaseUrl: this.options.baseUrl,
         upstream: { token: data.access_token, refresh: rotated ?? previous.upstream?.refresh,
           expiresAt: new Date(expiry * 1000).toISOString() } }
+      phase = 'commit'
       const committed = await this.options.mutate(async () => {
         const latest = await this.options.store.read()
         if (this.life.signal.aborted || version !== this.options.version()) return null
@@ -333,9 +379,14 @@ export class SessionRefresh {
         fingerprint: this.fingerprint(committed), accessRejected: false,
         uncertainUntil: rotated === undefined ? pending.uncertainUntil : null })
       if (committed !== null) this.rejectedAccess.delete(this.accessFingerprint(previous))
+      if (committed !== null) this.observedFailure = undefined
       return committed
-    } catch (_temporaryRenewalFailure: unknown) {
+    } catch (error: unknown) {
       if (this.isStopped()) return null
+      this.noteFailure(previous, response?.status === 401 ? { reason: 'storage', stage: 'renewal', status: 401 }
+        : failure ?? (phase === 'commit' ? { reason: 'storage', stage: 'renewal' }
+          : phase === 'decode' && response !== undefined ? sessionBodyFailure(error, 'renewal', response.status)
+            : sessionTransportFailure(error, 'renewal')))
       if (response?.status === 401) {
         this.localCooldowns.set(fingerprint, this.now() + this.options.retryMaxDelayMs)
         this.options.unavailable('storage')
