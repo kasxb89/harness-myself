@@ -41,7 +41,11 @@ import { PhoneAuthState, type PhoneDeliveryStatus } from './phone-auth-state.ts'
 import { parseClientModelConfigStatus, parseClientModelPresentationStatus } from './client-model-config.ts'
 import { orderProductModels, preferredProductModel, productModelDisplaySignature,
   type ProductModelDisplayMap, type ProductModelPresentation } from './model-presentation.ts'
-import { ClientActivitySessions, parseClientActivity, type ClientActivitySample } from './client-activity.ts'
+import { ClientActivitySessions, parseClientActivity, readClientActivityAcknowledgement, type ClientActivitySample } from './client-activity.ts'
+import { GenerationActivityReporter, type GenerationActivityAccount } from './generation-activity.ts'
+import { attachGenerationActivityRuntime } from './generation-activity-runtime.ts'
+import { GenerationActivityCreation } from './generation-activity-creation.ts'
+import type { CreationTaskObserver } from './creation-activity.ts'
 import { readAnnouncements } from './announcements.ts'
 import { readCustomerSupport } from './customer-support.ts'
 import { ClientToolErrorReporter, type ClientToolErrorAccount } from './client-tool-errors.ts'
@@ -110,6 +114,10 @@ export interface Config {
   refreshRetryMaxDelayMs?: number
   /** Automatic retries inside the API rotating-cookie recovery window. */
   refreshRecoveryRetryLimit?: number
+  /** Maximum interval between complete live generation-activity reports. */
+  generationActivityReportIntervalMs?: number
+  /** Minimum interval between coalesced generation-state changes. */
+  generationActivityMinReportIntervalMs?: number
   /** Complete deadline for the single image submission, in milliseconds. */
   imageSubmitTimeoutMs?: number
   /** Complete image execution deadline, including polling and saving. */
@@ -195,6 +203,8 @@ export const Config: z<Config> = z.object({
   refreshRetryBaseDelayMs: z.number().step(1).min(1).max(2_147_483_647).default(1000),
   refreshRetryMaxDelayMs: z.number().step(1).min(1).max(2_147_483_647).default(60_000),
   refreshRecoveryRetryLimit: z.number().step(1).min(0).max(5).default(2),
+  generationActivityReportIntervalMs: z.number().step(1).min(1000).max(60_000).default(30_000),
+  generationActivityMinReportIntervalMs: z.number().step(1).min(1).max(60_000).default(1000),
   imageSubmitTimeoutMs: z.number().step(1).min(1).max(2_147_483_647).default(180_000),
   imageTaskTimeoutMs: z.number().step(1).min(1).max(2_147_483_647).default(600_000),
   imagePollIntervalMs: z.number().step(1).min(1).max(60_000).default(2000),
@@ -760,6 +770,9 @@ export function apply(ctx: Context, config: Config): void {
   if (resolved.refreshRetryMaxDelayMs < resolved.refreshRetryBaseDelayMs) {
     throw new Error('credits-index.refreshRetryMaxDelayMs must be at least refreshRetryBaseDelayMs')
   }
+  if (resolved.generationActivityMinReportIntervalMs > resolved.generationActivityReportIntervalMs) {
+    throw new Error('credits-index.generationActivityMinReportIntervalMs must not exceed generationActivityReportIntervalMs')
+  }
   registerCreationWorkflows(ctx)
   const apiBaseUrl = normalizeApiBaseUrl(resolved.newApiBaseUrl)
   const stateDir = resolved.stateDir === ''
@@ -771,6 +784,8 @@ export function apply(ctx: Context, config: Config): void {
   ctx.effect(() => () => { imageLife.abort() }, 'credits-index: image execution lifetime')
   const relayRef = credentialRef(resolved.relayTokenEnv)
   let identityVersion = 0
+  let blockedGenerationEpoch: string | undefined
+  let refreshGenerationActivity: () => void = () => undefined
   let productModelPresentation: ProductModelPresentation = { defaultChatModel: null, modelOrder: [] }
   let productModelDisplays: ProductModelDisplayMap | undefined
   let productModelOwner: string | undefined
@@ -800,6 +815,7 @@ export function apply(ctx: Context, config: Config): void {
   /** Publish committed account or catalog changes without waiting for observer refreshes. */
   const notifyModelCatalogChanged = (): void => {
     if (modelCatalogClosed) return
+    refreshGenerationActivity()
     const warn = (): void => { ctx.logger.warn('credits-index: a model catalog change observer failed') }
     for (const listener of ctx.events.dispatch('emit', ['api-session/model-catalog-changed']) as Array<() => unknown>) {
       try { void Promise.resolve(listener()).catch(warn) } catch { warn() }
@@ -1156,11 +1172,13 @@ export function apply(ctx: Context, config: Config): void {
     origin?: ArtifactOrigin,
     foregroundWaitMs?: number,
     beforeSubmit?: (signal: AbortSignal) => Promise<void>,
+    activity?: CreationTaskObserver,
   ): Promise<MediaOutcome> => {
     let output: CapturedMediaOutput | undefined
     let submitKey = key
     let preparedSubmission: ReturnType<typeof videoSubmission> | undefined
     return executeVideoTask({
+      ...activity === undefined ? {} : { activity },
       ...origin === undefined ? {} : { origin },
       model: resumeReceipt?.model ?? readString(request, 'model') ?? '', route,
       backendFingerprint: createHash('sha256').update(apiBaseUrl).digest('hex'), signal,
@@ -1449,6 +1467,7 @@ export function apply(ctx: Context, config: Config): void {
     currentKey?: () => Promise<string>,
     origin?: ArtifactOrigin,
     imageRole?: ArtifactImageRole,
+    activity?: CreationTaskObserver,
   ): Promise<MediaOutcome & { paths?: readonly string[]; mode?: string }> => {
     const outputImageRole = resumeReceipt === undefined ? imageRole ?? 'final' : imageRole
     const imageEpoch = identityVersion
@@ -1475,6 +1494,7 @@ export function apply(ctx: Context, config: Config): void {
     ): Promise<MediaOutcome & { paths?: readonly string[]; mode?: string }> => {
       let output: CapturedMediaOutput | undefined
       const result = await executeImageTask({
+        ...activity === undefined ? {} : { activity },
         model, route, backendFingerprint, signal, submit, ...origin === undefined ? {} : { origin },
         prepare: async (operationSignal) => {
           output = await captureMediaOutput(ctx.get('artifactStorage'), join(stateDir, 'media'), operationSignal,
@@ -1903,6 +1923,8 @@ export function apply(ctx: Context, config: Config): void {
         || current.upstream?.refresh !== previous.upstream?.refresh || current.upstream?.token !== previous.upstream?.token
         || current.upstream?.expiresAt !== previous.upstream?.expiresAt) return false
       identityVersion += 1
+      blockedGenerationEpoch = owner
+      refreshGenerationActivity()
       productModelDisplays = undefined
       productModelOwner = undefined
       chatUsage.reset()
@@ -2013,19 +2035,29 @@ export function apply(ctx: Context, config: Config): void {
   const activitySessions = new ClientActivitySessions()
   const activityOperations = new Set<Promise<unknown>>()
   let previousActivity: { session: StoredSession; sample: ClientActivitySample } | undefined
+  let confirmedActivityRuntime: { epoch: string; id: string } | undefined
   /** An activity failure never changes login, balance, model calls, or user-visible operation results. */
   const sendActivity = async (session: StoredSession, sample: ClientActivitySample, signal: AbortSignal): Promise<void> => {
+    const epoch = session.token
+    if (epoch === undefined) throw new Error('Client activity has no login epoch')
     const response = await apiFetch('/api/client-activity/heartbeat', {
       method: 'POST', headers: { authorization: `Bearer ${session.upstream?.token ?? ''}`, 'content-type': 'application/json', accept: 'application/json' },
       body: JSON.stringify(sample), signal,
     })
-    await response.body?.cancel()
-    if (!response.ok) throw new Error('Client activity unavailable')
+    if (!await readClientActivityAcknowledgement(response, signal)) throw new Error('Client activity unavailable')
+    const previous = previousActivity
+    if (sample.event !== 'stop' && !activityLife.signal.aborted && store.peek()?.token === epoch
+      && previous !== undefined && previous.session.token === epoch && previous.sample.session_id === sample.session_id) {
+      confirmedActivityRuntime = { epoch, id: sample.session_id }
+      refreshGenerationActivity()
+    }
   }
   const stopActivity = async (token?: string): Promise<void> => {
     const previous = previousActivity
     if (previous === undefined || (token !== undefined && previous.session.token !== token)) return
     previousActivity = undefined
+    confirmedActivityRuntime = undefined
+    refreshGenerationActivity()
     activitySessions.clear()
     try { await sendActivity(previous.session, { ...previous.sample, event: 'stop', foreground: false }, AbortSignal.timeout(2_000)) }
     catch (_unavailableActivityServer: unknown) { /* Server heartbeat expiry represents an unconfirmed exit. */ }
@@ -2035,6 +2067,46 @@ export function apply(ctx: Context, config: Config): void {
     await Promise.allSettled([...activityOperations])
     await stopActivity()
   }, 'credits-index: current-account Desktop activity')
+
+  /** Generation observations keep the local login epoch during temporary access-token uncertainty. */
+  const generationAccount = (): GenerationActivityAccount | undefined => {
+    const session = store.peek()
+    if (session?.token === undefined || session.token === blockedGenerationEpoch
+      || (session.backendBaseUrl ?? (isLoopbackOrigin(apiBaseUrl) ? apiBaseUrl : undefined)) !== apiBaseUrl
+      || !(Date.parse(session.expiresAt) > Date.now())) return undefined
+    const access = diagnosticAccount()
+    return { epoch: session.token, ...access === undefined ? {} : { token: access.token },
+      ...confirmedActivityRuntime?.epoch !== session.token ? {} : { runtimeSessionId: confirmedActivityRuntime.id } }
+  }
+  const generationActivity = new GenerationActivityReporter({
+    baseUrl: apiBaseUrl, timeoutMs: Math.min(resolved.timeoutMs, 3000),
+    heartbeatMs: resolved.generationActivityReportIntervalMs,
+    minReportIntervalMs: resolved.generationActivityMinReportIntervalMs, account: generationAccount,
+    unavailable: (reason) => { ctx.logger.warn(`Generation activity reporting is unavailable (${reason}); generation is unaffected.`) },
+  })
+  const generationRuntime = attachGenerationActivityRuntime(ctx, generationActivity, () => generationAccount()?.epoch)
+  const generationCreation = new GenerationActivityCreation({
+    reporter: generationActivity,
+    current: () => {
+      const account = generationAccount()
+      const session = store.peek()
+      return account === undefined || session === undefined || session === null ? undefined
+        : { epoch: account.epoch, accountId: session.account.id,
+          sessionFingerprint: createHash('sha256').update(account.epoch).digest('hex') }
+    },
+    rootSession: raw => generationRuntime.rootSessionId(SessionId(raw)),
+    unavailable: () => { ctx.logger.warn('Creation activity observation is unavailable; generation is unaffected.') },
+  })
+  refreshGenerationActivity = () => {
+    generationActivity.refresh()
+    generationRuntime.refresh()
+    generationCreation.refresh()
+  }
+  ctx.effect(() => async () => {
+    refreshGenerationActivity = () => undefined
+    generationCreation.dispose()
+    await generationActivity.dispose()
+  }, 'credits-index: generation activity observation')
 
   let modelCatalogClosed = false
   let modelCatalogFlight: { version: number; token: string; controller: AbortController; promise: Promise<readonly string[]> } | null = null
@@ -2327,6 +2399,7 @@ export function apply(ctx: Context, config: Config): void {
   }
   const creative = new CreativeStore({
     directory: join(stateDir, 'creative-projects'), current: creativeIdentity,
+    activity: (event) => { generationCreation.operation(event) },
     video: async (id, owner) => {
       if (projectOptions === undefined) throw new CreativeError('CREATIVE_UNAVAILABLE', 503, '视频项目服务尚未准备好，请稍后重试。')
       const identity = await creativeIdentity()
@@ -2437,7 +2510,7 @@ export function apply(ctx: Context, config: Config): void {
       const outcome = await runImageGeneration(await key(), {}, signal,
         path => creative.saved(operation, path, 'image'), undefined,
         next => creative.receipt(operation, next), receipt, bytes => creative.matchImageOutput(operation, bytes), key, receipt.origin,
-        operation.imageRole)
+        operation.imageRole, generationCreation.task(operation, 'image'))
       await creative.finish(operation, { kind: 'image', status: outcome.ok ? 'completed' : imageCreativeStatus(outcome, signal),
         ...outcome.imageReceipt === undefined ? {} : { imageReceipt: outcome.imageReceipt },
         ...outcome.submissionState === 'not-submitted' ? { notSubmitted: true } : {},
@@ -2477,7 +2550,8 @@ export function apply(ctx: Context, config: Config): void {
     try {
       const outcome = await runVideoTask(await key(), receipt.route, {}, signal, undefined,
         next => creative.videoReceipt(operation, next), receipt, key, path => creative.saved(operation, path, 'video'),
-        bytes => creative.matchVideoOutput(operation, bytes), receipt.origin, foregroundWaitMs)
+        bytes => creative.matchVideoOutput(operation, bytes), receipt.origin, foregroundWaitMs, undefined,
+        generationCreation.task(operation, 'video'))
       await creative.finish(operation, { kind: 'video', status: outcome.ok ? 'completed' : imageCreativeStatus(outcome, signal),
         ...outcome.videoReceipt === undefined ? {} : { videoReceipt: outcome.videoReceipt },
         paths: outcome.path === undefined ? [] : [outcome.path], ...outcome.code === undefined ? {} : { errorCode: outcome.code } })
@@ -2585,7 +2659,11 @@ export function apply(ctx: Context, config: Config): void {
               return
             }
             previousActivity = sample.event === 'stop' ? undefined : { session, sample: forwarded }
-            if (sample.event === 'stop') activitySessions.clear()
+            if (sample.event === 'stop') {
+              activitySessions.clear()
+              confirmedActivityRuntime = undefined
+              refreshGenerationActivity()
+            }
             try {
               await sendActivity(session, forwarded, signal)
               if (!response.destroyed) json(response, 200, { ok: true })
@@ -2991,6 +3069,8 @@ export function apply(ctx: Context, config: Config): void {
         if (route === '/api/session/logout' && method === 'POST') {
           const previous = await store.read()
           identityVersion += 1
+          blockedGenerationEpoch = previous?.token
+          refreshGenerationActivity()
           productModelDisplays = undefined
           productModelOwner = undefined
           chatUsage.reset()
@@ -3381,7 +3461,8 @@ export function apply(ctx: Context, config: Config): void {
             : creativePanelOwner(ctx, request, body, binding.identity)
           let outcome: Awaited<ReturnType<typeof runImageGeneration>> & { planId?: string; operationId?: string }
           if (owner === undefined) outcome = await runImageGeneration(key, body, undefined,
-            undefined, undefined, undefined, undefined, undefined, () => binding.key())
+            undefined, undefined, undefined, undefined, undefined, () => binding.key(), undefined, undefined,
+            generationCreation.task(undefined, 'image'))
           else {
             const admission = `${owner.accountId}:${owner.sessionId}`
             if (panelImageAdmissions.has(admission)) {
@@ -3395,7 +3476,8 @@ export function apply(ctx: Context, config: Config): void {
                     path => creative.saved(operation, path, 'image'), async () => {
                       await binding.key()
                       await creative.dispatched(operation)
-                    }, receipt => creative.receipt(operation, receipt), undefined, undefined, () => binding.key()))
+                    }, receipt => creative.receipt(operation, receipt), undefined, undefined, () => binding.key(),
+                    undefined, operation.imageRole, generationCreation.task(operation, 'image')))
               } finally { panelImageAdmissions.delete(admission) }
             }
           }
@@ -3533,7 +3615,9 @@ export function apply(ctx: Context, config: Config): void {
             let outcome: MediaOutcome & { planId?: string; operationId?: string }
             if (owner === undefined || binding === undefined) {
               if (capability.model.source === 'plugin:blackrxai-video') throw new CreativeError('CREATIVE_SESSION_INVALID', 400, '请在当前聊天中生成视频，以便保存原任务回执。')
-              outcome = await runVideoTask(key, capability.model.route, built.request)
+              outcome = await runVideoTask(key, capability.model.route, built.request, undefined,
+                undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+                generationCreation.task(undefined, 'video'))
             } else {
               const admission = `${owner.accountId}:${owner.sessionId}`
               if (panelVideoAdmissions.has(admission)) outcome = await pendingPanelVideo(owner) ?? { ok: false, submissionState: 'unknown', code: 'CREATIVE_SHOT_RUNNING', message: '此聊天的视频提交正在处理，请查询原任务，不要再次生成。' }
@@ -3544,7 +3628,8 @@ export function apply(ctx: Context, config: Config): void {
                     async (operation, signal) => runVideoTask(await binding.key(), capability.model.route, built.request, signal,
                       async () => { await binding.key(); await creative.dispatched(operation) },
                       receipt => creative.videoReceipt(operation, receipt), undefined, () => binding.key(),
-                      path => creative.saved(operation, path, 'video')))
+                      path => creative.saved(operation, path, 'video'), undefined, undefined, undefined, undefined,
+                      generationCreation.task(operation, 'video')))
                 } finally { panelVideoAdmissions.delete(admission) }
               }
             }
@@ -3954,6 +4039,7 @@ export function apply(ctx: Context, config: Config): void {
     const projectState = join(stateDir, 'video-projects')
     projectOptions = {
       creative,
+      activity: (event) => { generationCreation.project(event) },
       chatModelChoice: async (input, exec, provider) => {
         return selectChatVideoModel(input, exec, provider.identity, () => provider.assertCurrent())
       },
@@ -4147,7 +4233,7 @@ export function apply(ctx: Context, config: Config): void {
           await creative.dispatched(creation)
           submission.started = true
         }, receipt => creative.receipt(creation, receipt), undefined, undefined, () => binding.key(), artifactOriginOf(exec),
-        creation.imageRole)
+        creation.imageRole, generationCreation.task(creation, 'image'))
         const paths = [...outcome.paths ?? []]
         await creative.finish(operation, { status: outcome.ok ? 'completed' : imageCreativeStatus(outcome, exec.signal), paths, kind: 'image',
           ...outcome.imageReceipt === undefined ? {} : { imageReceipt: outcome.imageReceipt },
@@ -4448,7 +4534,7 @@ export function apply(ctx: Context, config: Config): void {
               throw new VideoSubmissionRejection('CREATIVE_VIDEO_MODEL_CHOICE_UNAVAILABLE',
                 '提交前的型号与报价确认未完成，未提交新的生成；请重新确认。', 'not_submitted')
             }
-          })
+          }, generationCreation.task(creation, 'video'))
         await creative.finish(operation, { status: outcome.ok ? 'completed' : imageCreativeStatus(outcome, exec.signal), kind: 'video',
           ...outcome.submissionState === 'not-submitted' ? { notSubmitted: true } : {},
           ...outcome.videoReceipt === undefined ? {} : { videoReceipt: outcome.videoReceipt },

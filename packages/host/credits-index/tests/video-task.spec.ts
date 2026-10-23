@@ -8,6 +8,7 @@ import notSentContract from './fixtures/h3-not-sent-contract.json' with { type: 
 import apiContract from './fixtures/h3-unsent-api-contract.json' with { type: 'json' }
 import terminalContract from './fixtures/h3-terminal-api-contract.json' with { type: 'json' }
 import mediaContract from './fixtures/media-submission-api-contract-v3.json' with { type: 'json' }
+import type { CreationTaskActivity } from '../src/creation-activity.ts'
 
 const fingerprint = 'a'.repeat(64)
 const accepted: CreativeVideoReceipt = { model: 'model_5', route: '/v1/videos', backendFingerprint: fingerprint, phase: 'accepted', taskId: 'public-task-1' }
@@ -28,6 +29,36 @@ function fixture(overrides: Partial<VideoTaskOptions> = {}) {
 }
 
 describe('single-submission video task receipts', () => {
+  it('observes distinct accepted, queued, generating and saving phases without adding submissions', async () => {
+    const events: CreationTaskActivity[] = []
+    const states = ['queued', 'running', 'completed']
+    const f = fixture({ activity: event => events.push(event), read: vi.fn(async () => json({ status: states.shift() })) })
+    expect(await executeVideoTask(f.options)).toMatchObject({ ok: true, submissionState: 'completed' })
+    expect(events).toEqual([
+      { type: 'stage', stage: 'preparing' }, { type: 'stage', stage: 'submitting' },
+      { type: 'stage', stage: 'accepted' }, { type: 'stage', stage: 'queued' },
+      { type: 'stage', stage: 'generating' }, { type: 'stage', stage: 'saving' },
+      { type: 'end', stage: 'saving', outcome: 'completed' },
+    ])
+    expect(f.submit).toHaveBeenCalledOnce()
+    expect(f.options.read).toHaveBeenCalledTimes(3)
+  })
+
+  it('ends an unknown original task as unknown even when its observer throws', async () => {
+    const events: CreationTaskActivity[] = []
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const f = fixture({ resumeReceipt: accepted, read: vi.fn(async () => json({ status: 'UNKNOWN' })),
+        activity: (event) => { events.push(event); throw new Error('private observer detail') } })
+      expect(await executeVideoTask(f.options)).toMatchObject({ submissionState: 'pending', code: 'VIDEO_STATUS_INVALID' })
+      expect(events).toEqual([{ type: 'stage', stage: 'preparing' }, { type: 'stage', stage: 'accepted' },
+        { type: 'stage', stage: 'unknown' }, { type: 'end', stage: 'unknown', outcome: 'unknown' }])
+      expect(warn).toHaveBeenCalledWith('Creation activity observer failed')
+      expect(f.submit).not.toHaveBeenCalled()
+      expect(f.save).not.toHaveBeenCalled()
+    } finally { warn.mockRestore() }
+  })
+
   const capacity = mediaContract.find(entry => entry.method === 'POST' && entry.http_status === 429 && entry.response.media_kind === 'video')
   const canonical = mediaContract.find(entry => entry.method === 'GET' && entry.response.media_kind === 'video' && Object.hasOwn(entry.response, 'media_submission_receipt'))
   const uncertain = mediaContract.find(entry => entry.method === 'POST' && entry.http_status === 202)

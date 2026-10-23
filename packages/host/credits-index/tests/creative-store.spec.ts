@@ -7,6 +7,7 @@ import { CreativeError, CreativeStore, creativePlanRevision, parseCreativePlan, 
 import type { VideoProjectManifest, VideoProjectRead } from '../src/video-project.ts'
 import type { CreativeImageReceipt, CreativeVideoReceipt, CreativePlanChange } from '../src/creative-types.ts'
 import type { VideoGenerationIntent } from '../src/video-generation-intent.ts'
+import type { CreationOperationActivity } from '../src/creation-activity.ts'
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>()
@@ -133,7 +134,7 @@ const submittingImage: CreativeImageReceipt = {
   requestId: 'req-original', backendFingerprint: acceptedImage.backendFingerprint,
 }
 
-async function fixture() {
+async function fixture(activity?: (event: CreationOperationActivity) => void) {
   root = await realpath(await mkdtemp(join(tmpdir(), 'yunshu-creative-store-')))
   const owner: CreativeOwner = { accountId: '7', sessionFingerprint: 'login-7', sessionId: 'chat-a', workspaceRoot: join(root, 'workspace') }
   await mkdir(owner.workspaceRoot)
@@ -141,6 +142,7 @@ async function fixture() {
   let video: VideoProjectRead | undefined
   const options = {
     directory: join(root, 'projects'), current: async () => live,
+    ...activity === undefined ? {} : { activity },
     video: async () => { if (video === undefined) throw new Error('No fixture video'); return video },
   }
   const store = new CreativeStore(options)
@@ -150,6 +152,46 @@ async function fixture() {
     setLive: (value: typeof live) => { live = value }, setVideo: (value: VideoProjectRead) => { video = value },
   }
 }
+
+describe('process-live creation operations', () => {
+  it('observes only committed begin, explicit resume and final release rather than retained running records', async () => {
+    const events: CreationOperationActivity[] = []
+    const { store, owner, options, file } = await fixture(event => events.push(event))
+    const operation = await store.begin(owner, { kind: 'image', prompt: 'private prompt', shots: [{ prompt: 'private shot' }] })
+    expect(events).toEqual([{ active: true, kind: 'image', operation }])
+    await store.receipt(operation, acceptedImage)
+    await store.finish(operation, { status: 'unknown' })
+    store.release(operation)
+    expect(events.map(event => event.active)).toEqual([true, false])
+    const restarted = new CreativeStore(options)
+    await restarted.projects(owner)
+    expect(events).toHaveLength(2)
+    const resumed = await restarted.resumeImage(owner, operation.projectId, operation.operationId)
+    expect(events.at(-1)).toEqual({ active: true, kind: 'image', operation: resumed.operation })
+    await restarted.finish(resumed.operation, { kind: 'image', status: 'completed', paths: [await file('saved.png')] })
+    restarted.release(resumed.operation)
+    expect(events.map(event => event.active)).toEqual([true, false, true, false])
+    expect(events.every(event => event.operation.operationId === operation.operationId)).toBe(true)
+  })
+
+  it('keeps one project operation for eight shots and contains observer failures during begin and release', async () => {
+    const events: CreationOperationActivity[] = []
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const { store, owner } = await fixture((event) => { events.push(event); throw new Error('private observer failure') })
+      const operation = await store.begin(owner, { kind: 'video', prompt: 'eight clips',
+        shots: Array.from({ length: 8 }, () => ({ prompt: 'clip', durationSeconds: 15 })),
+        videoProjectId: 'vp_00000000-0000-0000-0000-000000000000' })
+      store.release(operation)
+      store.release(operation)
+      expect(events).toEqual([
+        { active: true, kind: 'video', operation, videoProjectId: 'vp_00000000-0000-0000-0000-000000000000' },
+        { active: false, kind: 'video', operation, videoProjectId: 'vp_00000000-0000-0000-0000-000000000000' },
+      ])
+      expect(warn).toHaveBeenCalledTimes(2)
+    } finally { warn.mockRestore() }
+  })
+})
 
 describe('verified image output purpose', () => {
   it.each(['standalone', 'image-shot', 'image-asset', 'video-asset'] as const)(

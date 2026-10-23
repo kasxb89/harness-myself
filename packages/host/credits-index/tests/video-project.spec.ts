@@ -15,6 +15,7 @@ import mediaContract from './fixtures/media-submission-api-contract-v3.json' wit
 import type { ArtifactOrigin, ArtifactPublishRequest } from '@deepseek-ai/dsh-artifacts-index'
 import { SessionId, SessionSeq } from '@deepseek-ai/dsh-session/types'
 import { ToolCallId } from '@deepseek-ai/dsh-llm/brand'
+import type { VideoProjectActivity } from '../src/creation-activity.ts'
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>()
@@ -98,6 +99,102 @@ async function setup(durations = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]) {
 }
 
 describe('minimum-request video duration planning', () => {
+  it('observes eight distinct clips under one project and keeps queue, generation, saving and editing separate', async () => {
+    const f = await setup([15])
+    f.options.maxConcurrentSegments = 4
+    const observations: VideoProjectActivity[] = []
+    f.options.activity = event => observations.push(event)
+    const queries = new Map<string, number>()
+    f.provider.check = async (id) => {
+      const count = (queries.get(id) ?? 0) + 1
+      queries.set(id, count)
+      return { status: count === 1 ? 'queued' : count === 2 ? 'running' : 'succeeded' }
+    }
+    const manifest = await prepareVideoProject(f.options, { prompt: 'private complete brief', totalDurationSeconds: 120 },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    expect(new Set(manifest.segments.map(segment => segment.attemptId)).size).toBe(8)
+    for (const segment of manifest.segments) expect(segment.attemptId).toMatch(/^[a-f0-9-]{36}$/u)
+    expect(observations).toEqual([])
+    expect(await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal)).toMatchObject({ status: 'completed' })
+    const clips = observations.filter(event => event.shotId !== undefined)
+    expect(new Set(clips.map(event => event.shotId)).size).toBe(8)
+    expect(new Set(observations.map(event => event.projectId))).toEqual(new Set([manifest.id]))
+    expect(new Set(observations.map(event => event.ownerSessionId))).toEqual(new Set(['chat-one']))
+    for (let index = 1; index <= 8; index += 1) {
+      const phases = clips.filter(event => event.shotId === String(index))
+      expect(new Set(phases.map(event => event.attemptId))).toEqual(new Set([manifest.segments[index - 1]?.attemptId]))
+      expect(phases.map(event => event.type === 'stage' ? event.stage : event.outcome))
+        .toEqual(['preparing', 'submitting', 'accepted', 'queued', 'generating', 'saving', 'completed'])
+    }
+    expect(observations.filter(event => event.shotId === undefined).map(event => event.type === 'stage' ? event.stage : event.outcome))
+      .toEqual(['preparing', 'editing', 'completed'])
+    expect(JSON.stringify(observations)).not.toContain('private complete brief')
+    expect(f.submitted).toBe(8)
+  })
+
+  it.each(['pending', 'running'] as const)('persists a missing legacy %s attempt before any POST or original-task GET', async (status) => {
+    const f = await setup([4])
+    const manifest = await prepareVideoProject(f.options, { prompt: 'legacy original clip', totalDurationSeconds: 4 },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    const segment = manifest.segments[0]
+    if (segment === undefined) throw new Error('Expected one retained clip')
+    delete segment.attemptId
+    segment.status = status
+    if (status === 'running') {
+      manifest.status = 'running'
+      segment.taskId = 'legacy-original-task'
+    }
+    const path = join(f.options.stateDirectory, manifest.id, 'manifest.json')
+    await writeFile(path, JSON.stringify(manifest))
+    const original = await readFile(path, 'utf8')
+    const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+    expect(retained.segments[0]?.attemptId).toBeUndefined()
+    expect(await readFile(path, 'utf8')).toBe(original)
+    const observations: VideoProjectActivity[] = []
+    f.options.activity = event => observations.push(event)
+    const originalSubmit = f.provider.submit.bind(f.provider)
+    const attempts: string[] = []
+    const assertCommittedAttempt = async (): Promise<void> => {
+      const current = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+      const attempt = current.segments[0]?.attemptId
+      expect(attempt).toMatch(/^[a-f0-9-]{36}$/u)
+      if (attempt === undefined) throw new Error('Attempt must be committed before provider I/O')
+      attempts.push(attempt)
+    }
+    f.provider.submit = async (...args) => { await assertCommittedAttempt(); return originalSubmit(...args) }
+    f.provider.check = async () => { await assertCommittedAttempt(); return { status: 'succeeded' } }
+    f.provider.download = async (_task, _request, destination) => { await writeFile(destination, '4') }
+    expect(await runVideoProject(f.options, retained, f.provider, f.editor, f.job, f.signal)).toMatchObject({ status: 'completed' })
+    const completed = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+    expect(new Set(attempts)).toEqual(new Set([completed.segments[0]?.attemptId]))
+    expect(observations.filter(event => event.shotId !== undefined)
+      .every(event => event.attemptId === completed.segments[0]?.attemptId)).toBe(true)
+    expect(f.submitted).toBe(status === 'pending' ? 1 : 0)
+    expect(await runVideoProject(f.options, completed, f.provider, f.editor, f.job, f.signal)).toMatchObject({ status: 'completed' })
+    expect(f.submitted).toBe(status === 'pending' ? 1 : 0)
+    const next = await prepareVideoProject(f.options, { prompt: 'explicit new work', totalDurationSeconds: 4 },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    expect(next.segments[0]?.attemptId).not.toBe(completed.segments[0]?.attemptId)
+  })
+
+  it('ends uncertain submission observation without inventing generating or completed state', async () => {
+    const f = await setup([15])
+    const observations: VideoProjectActivity[] = []
+    f.options.activity = event => observations.push(event)
+    f.failSubmit = 1
+    const manifest = await prepareVideoProject(f.options, { prompt: 'one clip', totalDurationSeconds: 15 },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    expect(await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal)).toMatchObject({ status: 'failed', detail: 'SUBMISSION_UNKNOWN' })
+    expect(observations.filter(event => event.shotId === '1').map(event => event.type === 'stage' ? event.stage : event.outcome))
+      .toEqual(['preparing', 'submitting', 'unknown', 'unknown'])
+    expect(observations.at(-1)).toMatchObject({ type: 'end', stage: 'unknown', outcome: 'unknown' })
+    expect(f.submitted).toBe(1)
+    const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+    const count = observations.length
+    expect(retained.segments[0]?.status).toBe('unknown')
+    expect(observations).toHaveLength(count)
+  })
+
   it('retains a coherent original ID from an uncertain media proof without clearing the project unknown lock', async () => {
     const f = await setup([4])
     const submit = vi.spyOn(f.provider, 'submit').mockRejectedValue(new VideoRelayError('VIDEO_SUBMIT_UNKNOWN',
@@ -159,9 +256,12 @@ describe('minimum-request video duration planning', () => {
     const check = vi.spyOn(f.provider, 'check').mockRejectedValueOnce(new VideoRelayError('VIDEO_STATUS_INVALID', '原任务尚未确认'))
     expect(await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal)).toMatchObject({ status: 'failed', detail: 'VIDEO_STATUS_INVALID' })
     const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+    const attempt = retained.segments[0]?.attemptId
+    expect(attempt).toBe(manifest.segments[0]?.attemptId)
     expect(retained.segments[0]).toMatchObject({ status: 'running', taskId: 'task-1' })
     expect(f.submitted).toBe(1)
     expect(await runVideoProject(f.options, retained, f.provider, f.editor, f.job, f.signal)).toMatchObject({ status: 'completed' })
+    expect(retained.segments[0]?.attemptId).toBe(attempt)
     expect(f.submitted).toBe(1)
     expect(check.mock.calls.map(([id]) => id)).toEqual(['task-1', 'task-1'])
   })
@@ -1557,6 +1657,12 @@ describe('durable account-bound video projects', () => {
     await expect(readVideoProject(fixture.options, manifest.id, 'chat-one', fixture.workspace, { accountId: '8', sessionFingerprint: 'other' })).rejects.toMatchObject({ code: 'PROJECT_ACCESS_DENIED' })
     await expect(readVideoProject(fixture.options, '../session', 'chat-one', fixture.workspace, fixture.provider.identity)).rejects.toMatchObject({ code: 'INVALID_PROJECT_ID' })
     const path = join(fixture.options.stateDirectory, manifest.id, 'manifest.json')
+    for (const attemptId of ['', null, 'not-a-uuid', 123, manifest.segments[0]?.attemptId]) {
+      await writeFile(path, JSON.stringify({ ...manifest, segments: manifest.segments.map(segment => ({ ...segment, attemptId })) }))
+      await expect(readVideoProject(fixture.options, manifest.id, 'chat-one', fixture.workspace, fixture.provider.identity))
+        .rejects.toMatchObject({ code: 'INVALID_RECORD' })
+    }
+    await writeFile(path, JSON.stringify(manifest))
     const damaged = JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>
     damaged.segments = [{ index: 1, durationSeconds: 15, prompt: '杯子', request: null, status: 'pending' }]
     await writeFile(path, JSON.stringify(damaged))

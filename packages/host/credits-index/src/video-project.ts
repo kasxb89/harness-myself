@@ -15,6 +15,8 @@ import { VideoRelayError } from './video-project-provider.ts'
 import { VideoSubmissionRejection } from './video-submission-result.ts'
 import { DEFAULT_VIDEO_PROJECT_PARALLELISM } from './video-concurrency.ts'
 import { videoShotInput } from './video-shot-references.ts'
+import { creationTaskActivity, notifyCreationActivity } from './creation-activity.ts'
+import type { CreationActivityOutcome } from './creation-activity.ts'
 import type { VideoProjectIdentity, VideoProjectInput, VideoProjectOptions, VideoProjectProvider, VideoProjectRequest, VideoRequestValue } from './video-project-types.ts'
 
 /** Complete private-record parser limit, including prompt and per-clip metadata. */
@@ -27,6 +29,9 @@ const manifestWrites = new WeakMap<VideoProjectManifest, Promise<void>>()
 
 /** An opaque project identifier, validated before selecting its private record. */
 export type VideoProjectId = Branded<'VideoProjectId'>
+
+/** One retained clip submission identity, independent of each local observation run. */
+export type VideoProjectAttemptId = Branded<'VideoProjectAttemptId'>
 
 /** Actionable failures whose messages are safe for the model and user. */
 export class VideoProjectError extends Error {
@@ -87,6 +92,8 @@ export interface VideoProjectSegment {
   prompt: string
   /** Validated request, without credentials. */
   request: VideoProjectRequest
+  /** Original submission identity; absent only in records written before activity reporting. */
+  attemptId?: VideoProjectAttemptId
   /** submitting without a task id is an unknown outcome and cannot be retried. */
   status: 'pending' | 'submitting' | 'running' | 'saved' | 'failed' | 'unknown'
   /** Present only after the provider identifies its accepted task. */
@@ -418,6 +425,14 @@ function record(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>
 }
 
+/** Accept only the UUID form issued for individual clip attempts. */
+function videoAttemptId(value: unknown): VideoProjectAttemptId {
+  if (typeof value !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u.test(value)) {
+    throw new VideoProjectError('INVALID_RECORD', '视频片段提交标识无效，已停止操作。')
+  }
+  return value as VideoProjectAttemptId
+}
+
 /** Validate the credential-free recursive provider request in a durable record. */
 function requestValue(value: unknown, depth = 0): VideoRequestValue {
   if (depth > 32) throw new VideoProjectError('INVALID_RECORD', '视频项目请求记录过深，已停止操作。')
@@ -507,11 +522,14 @@ function parseManifest(value: unknown): VideoProjectManifest {
     if (request === null || typeof request !== 'object' || Array.isArray(request)) throw new VideoProjectError('INVALID_RECORD', '视频片段请求无效，已停止操作。')
     return {
       index: positive(segment, 'index'), durationSeconds: positive(segment, 'durationSeconds'), prompt: text(segment, 'prompt'), request, status,
+      ...segment.attemptId === undefined ? {} : { attemptId: videoAttemptId(segment.attemptId) },
       ...segment.taskId === undefined ? {} : { taskId: text(segment, 'taskId') },
       ...segment.path === undefined ? {} : { path: text(segment, 'path') },
       ...segment.publishedPath === undefined ? {} : { publishedPath: text(segment, 'publishedPath') },
     }
   })
+  const attempts = segments.flatMap(segment => segment.attemptId === undefined ? [] : [segment.attemptId])
+  if (new Set(attempts).size !== attempts.length) throw new VideoProjectError('INVALID_RECORD', '视频片段提交标识重复，已停止操作。')
   if (parsedInput.shotDurations !== undefined && (parsedInput.shotDurations.length !== segments.length
     || parsedInput.shotDurations.some((duration, index) => duration !== segments[index]?.durationSeconds)
     || parsedInput.shotDurations.reduce((sum, duration) => sum + duration, 0) !== parsedInput.totalDurationSeconds)) {
@@ -619,7 +637,7 @@ export async function prepareVideoProject(
     signal.throwIfAborted()
     const requestInput = videoShotInput(input, index)
     const request = await provider.build(requestInput, model.id, prompt, durationSeconds, signal)
-    segments.push({ index: index + 1, durationSeconds, prompt, request, status: 'pending' })
+    segments.push({ index: index + 1, durationSeconds, prompt, request, status: 'pending', attemptId: videoAttemptId(randomUUID()) })
   }
   const manifest: VideoProjectManifest = {
     version: 1, id, ownerSessionId, workspaceRoot, identity: { ...provider.identity }, input, model: model.id,
@@ -732,6 +750,31 @@ function videoProjectProgress(manifest: VideoProjectManifest, job: JobHandle) {
 
 type VideoProjectProgress = ReturnType<typeof videoProjectProgress>
 
+/** A retained accepted task may still run after local cancellation or failure. */
+function segmentActivityOutcome(segment: VideoProjectSegment): CreationActivityOutcome {
+  switch (segment.status) {
+    case 'saved': return 'completed'
+    case 'failed': return 'failed'
+    case 'pending': return 'stopped'
+    case 'submitting':
+    case 'running':
+    case 'unknown': return 'unknown'
+  }
+}
+
+/** Carry only identities and typed phases into optional process-local statistics. */
+function projectActivity(options: VideoProjectOptions, manifest: VideoProjectManifest,
+  identity: VideoProjectIdentity, segment?: VideoProjectSegment) {
+  return creationTaskActivity((event) => {
+    notifyCreationActivity(options.activity, { ...event,
+      projectId: manifest.id, ownerSessionId: manifest.ownerSessionId,
+      accountId: identity.accountId, sessionFingerprint: identity.sessionFingerprint,
+      ...segment === undefined ? {} : { shotId: String(segment.index),
+        ...segment.attemptId === undefined ? {} : { attemptId: segment.attemptId } },
+    })
+  })
+}
+
 /**
  * Run or explicitly resume a durable project; never retry an unknown submission.
  * @param options - configuration and private record storage.
@@ -755,6 +798,9 @@ export async function runVideoProject(
     try { await recovery } catch (error) { void error /* Explicit resume rechecks authorization and publication independently. */ }
   }
   runningProjects.add(key)
+  const activity = projectActivity(options, manifest, provider.identity)
+  let activityOutcome: CreationActivityOutcome = 'unknown'
+  activity.stage('preparing')
   try {
     const retained = await readVideoProject(options, manifest.id, manifest.ownerSessionId, manifest.workspaceRoot, provider.identity)
     if (retained.origin === undefined) delete manifest.origin
@@ -764,16 +810,27 @@ export async function runVideoProject(
       signal.throwIfAborted()
       await provider.assertCurrent()
       progress.finish('视频已完成')
+      activityOutcome = 'completed'
       return { status: 'completed', result: JSON.stringify({ status: 'succeeded', project_id: manifest.id,
         final_path: manifest.finalPath, duration_seconds: manifest.finalDurationSeconds,
         clip_paths: manifest.segments.map(segment => segment.publishedPath ?? savedPath(segment)) }) }
     }
-    return await executeVideoProject(options, manifest, provider, editor, job, signal, progress)
+    const outcome = await executeVideoProject(options, manifest, provider, editor, job, signal, progress, activity)
+    activityOutcome = outcome.status === 'completed' ? 'completed'
+      : manifest.segments.some(segment => segmentActivityOutcome(segment) === 'unknown') ? 'unknown'
+        : outcome.status === 'killed' ? 'stopped' : 'failed'
+    return outcome
   } catch (error) {
     const failure = videoProjectFailure(error)
+    activityOutcome = manifest.segments.some(segment => segmentActivityOutcome(segment) === 'unknown') ? 'unknown'
+      : signal.aborted ? 'stopped' : 'failed'
     return { status: signal.aborted ? 'killed' : 'failed', detail: signal.aborted ? 'CANCELLED' : failure.code,
       result: JSON.stringify({ status: signal.aborted ? 'cancelled' : 'failed', ...failure }) }
-  } finally { runningProjects.delete(key) }
+  } finally {
+    runningProjects.delete(key)
+    if (activityOutcome === 'unknown') activity.stage('unknown')
+    activity.end(activityOutcome)
+  }
 }
 
 /** Own workers and their stop barrier until every late submission receipt has settled. */
@@ -789,14 +846,23 @@ async function executeVideoSegments(
     ? DEFAULT_VIDEO_PROJECT_PARALLELISM : await provider.parallelism(manifest.model, signal)
   signal.throwIfAborted()
   const concurrency = Math.min(options.maxConcurrentSegments ?? granted, granted, queue.length)
+  if (queue.some(segment => segment.attemptId === undefined)) {
+    for (const segment of queue) segment.attemptId ??= videoAttemptId(randomUUID())
+    await persist(options, manifest)
+    signal.throwIfAborted()
+  }
+  const tasks = queue.map(segment => ({ segment,
+    activity: projectActivity(options, manifest, provider.identity, segment) }))
+  for (const task of tasks) task.activity.stage('preparing')
   const stop = new AbortController()
   let failure: { error: unknown } | undefined
   let cursor = 0
-  const execute = async (segment: VideoProjectSegment): Promise<void> => {
+  const execute = async (segment: VideoProjectSegment, activity: ReturnType<typeof creationTaskActivity>): Promise<void> => {
     const deadline = AbortSignal.timeout(options.taskTimeoutMs)
     const clipSignal = AbortSignal.any([signal, deadline])
     const observation = AbortSignal.any([clipSignal, stop.signal])
     progress.segment(segment, segment.taskId === undefined ? '准备提交，尚未提交' : '已受理，等待查询')
+    if (segment.taskId !== undefined) activity.stage('accepted')
     if (segment.taskId === undefined) {
       await validatePublication(options, manifest.publicationDirectory, clipSignal)
       await provider.assertCurrent()
@@ -813,6 +879,7 @@ async function executeVideoSegments(
       }
       unsettled.add(segment.index)
       progress.segment(segment, '提交中')
+      activity.stage('submitting')
       let task: { taskId: string }
       try { task = await provider.submit(segment.request, clipSignal) }
       catch (error) {
@@ -823,6 +890,7 @@ async function executeVideoSegments(
           throw error
         }
         segment.status = 'unknown'
+        activity.stage('unknown')
         if (error instanceof VideoRelayError && error.code === 'VIDEO_SUBMIT_UNKNOWN' && error.taskId !== undefined) segment.taskId = error.taskId
         if (error instanceof VideoRelayError && error.code === 'INSUFFICIENT_BALANCE') throw error
         if (error instanceof VideoRelayError && error.code === 'VIDEO_SUBMIT_BUSY') {
@@ -832,17 +900,20 @@ async function executeVideoSegments(
       }
       if (task.taskId.trim() === '') {
         segment.status = 'unknown'
+        activity.stage('unknown')
         throw new VideoProjectError('SUBMISSION_UNKNOWN', '上游未返回可查询的视频任务编号，可能已计费；已停止后续生成，请先在后台核对。')
       }
       segment.taskId = task.taskId
       segment.status = 'running'
       await persist(options, manifest)
+      activity.stage('accepted')
       progress.segment(segment, '已受理，等待查询')
       job.append(`分镜 ${String(segment.index)} 已提交，任务 ${task.taskId}。\n`)
     }
     // Never cancel another in-flight POST merely because one peer failed.
     if (stop.signal.aborted) return
     try { await waitForTask(options, provider, segment, (status, seconds) => {
+      activity.stage(status === 'queued' ? 'queued' : 'generating')
       progress.segment(segment, `${status === 'queued' ? '排队中' : '生成中'}，已等待 ${String(seconds)} 秒`)
     }, observation) }
     catch (error) {
@@ -858,6 +929,7 @@ async function executeVideoSegments(
     }
     unsettled.delete(segment.index)
     progress.saving(segment)
+    activity.stage('saving')
     const path = join(options.stateDirectory, manifest.id, 'clips', `clip-${String(segment.index).padStart(3, '0')}-${randomUUID()}.mp4`)
     await provider.download(segment.taskId, segment.request, path, observation)
     segment.path = path
@@ -876,9 +948,10 @@ async function executeVideoSegments(
   const worker = async (): Promise<void> => {
     for (;;) {
       if (stop.signal.aborted || signal.aborted) return
-      const segment = queue[cursor++]
-      if (segment === undefined) return
-      try { await execute(segment) }
+      const task = tasks[cursor++]
+      if (task === undefined) return
+      const { segment, activity } = task
+      try { await execute(segment, activity) }
       catch (error) {
         progress.stopped(segment)
         if (failure === undefined) {
@@ -887,11 +960,16 @@ async function executeVideoSegments(
           stop.abort(error)
         }
         return
+      } finally {
+        const outcome = segmentActivityOutcome(segment)
+        if (outcome === 'unknown') activity.stage('unknown')
+        activity.end(outcome)
       }
     }
   }
   const workers = Array.from({ length: Math.min(concurrency, queue.length) }, worker)
   await Promise.allSettled(workers)
+  for (const { segment, activity } of tasks) activity.end(segmentActivityOutcome(segment))
   signal.throwIfAborted()
   if (failure !== undefined) throw failure.error
 }
@@ -899,7 +977,7 @@ async function executeVideoSegments(
 /** Run exclusively with respect to local clip recovery for this exact private project. */
 async function executeVideoProject(
   options: VideoProjectOptions, manifest: VideoProjectManifest, provider: VideoProjectProvider, editor: VideoEditor,
-  job: JobHandle, signal: AbortSignal, progress: VideoProjectProgress,
+  job: JobHandle, signal: AbortSignal, progress: VideoProjectProgress, activity: ReturnType<typeof creationTaskActivity>,
 ): Promise<JobOutcome> {
   const unsettled = new Set(manifest.segments.filter(segment =>
     segment.status === 'unknown' || segment.status === 'submitting' || segment.status === 'running').map(segment => segment.index))
@@ -932,6 +1010,7 @@ async function executeVideoProject(
     signal.throwIfAborted()
     manifest.status = 'editing'
     await persist(options, manifest)
+    activity.stage('editing')
     progress.stage('自动剪辑并拼接视频')
     let result: { path: string; durationSeconds: number }
     if (manifest.composedPath !== undefined && manifest.composedDurationSeconds !== undefined) {

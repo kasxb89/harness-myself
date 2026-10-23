@@ -12,6 +12,8 @@ import type { VideoProjectManifest, VideoProjectRead } from './video-project.ts'
 import type { VideoProjectIdentity } from './video-project-types.ts'
 import { parseArtifactOrigin } from './artifact-origin.ts'
 import { parseVideoRequestGrant, type VideoGenerationIntent, type VideoRequestGrant } from './video-generation-intent.ts'
+import { notifyCreationActivity } from './creation-activity.ts'
+import type { CreationOperationActivity } from './creation-activity.ts'
 
 /** Fixed complete-record and collection bounds for untrusted JSON and directory reads. */
 const MAX_BYTES = 2 * 1024 * 1024
@@ -124,6 +126,8 @@ function operationImageRole(record: CreativeRecord, assetId: string | undefined)
 /** Runtime-only adapters; records never contain service objects or credentials. */
 export interface CreativeStoreOptions {
   readonly directory: string
+  /** Observe committed process-live invocations without counting retained records as active. */
+  readonly activity?: (event: CreationOperationActivity) => void
   /** @returns Current login identity, or undefined after sign-out. */
   current(): Promise<VideoProjectIdentity | undefined>
   /** @returns Authorized retained video state after optional local output publication; no submission is made. */
@@ -418,11 +422,24 @@ function uniqueOutputs(outputs: readonly SavedOutput[]): SavedOutput[] {
 /** Owns serialized local records and read-only browser projections. */
 export class CreativeStore {
   private serial: Promise<unknown> = Promise.resolve()
-  private readonly active = new Set<string>()
+  private readonly active = new Map<string, Omit<CreationOperationActivity, 'active'>>()
   private rootDirectory: Promise<string> | undefined
 
   /** @param options - Private directory and current-account/video adapters. */
   constructor(private readonly options: CreativeStoreOptions) {}
+
+  private activate(operation: CreativeOperation, kind: 'image' | 'video', videoProjectId?: string): void {
+    if (this.active.has(operation.operationId)) return
+    const activity = { operation, kind, ...videoProjectId === undefined ? {} : { videoProjectId } }
+    this.active.set(operation.operationId, activity)
+    notifyCreationActivity(this.options.activity, { ...activity, active: true })
+  }
+
+  private deactivate(operation: CreativeOperation): void {
+    const activity = this.active.get(operation.operationId)
+    if (!this.active.delete(operation.operationId) || activity === undefined) return
+    notifyCreationActivity(this.options.activity, { ...activity, active: false })
+  }
 
   private root(): Promise<string> {
     this.rootDirectory ??= (async () => {
@@ -757,9 +774,10 @@ export class CreativeStore {
         ...input.kind !== 'video' || input.videoIntent === undefined ? {} : { requestGrant: { ...input.videoIntent.grant } } })
       if (Buffer.byteLength(JSON.stringify(record)) > MAX_BYTES / 2) throw new CreativeError('CREATIVE_LIMIT', 400, '项目记录已接近上限，请新建项目；尚未提交生成。')
       await this.persist(record)
-      this.active.add(id)
       const imageRole = input.kind === 'image' ? operationImageRole(record, input.assetId) : undefined
-      return { projectId: record.id, operationId: id, owner, ...imageRole === undefined ? {} : { imageRole } }
+      const operation = { projectId: record.id, operationId: id, owner, ...imageRole === undefined ? {} : { imageRole } }
+      this.activate(operation, input.kind, input.videoProjectId)
+      return operation
     })
   }
 
@@ -824,10 +842,10 @@ export class CreativeStore {
       found.status = 'running'
       delete found.errorCode
       await this.persist(record)
-      this.active.add(found.id)
       const imageRole = operationImageRole(record, found.assetId)
-      return { operation: { projectId: record.id, operationId: found.id, owner, ...imageRole === undefined ? {} : { imageRole } },
-        receipt: { ...found.imageReceipt } }
+      const operation = { projectId: record.id, operationId: found.id, owner, ...imageRole === undefined ? {} : { imageRole } }
+      this.activate(operation, 'image')
+      return { operation, receipt: { ...found.imageReceipt } }
     })
   }
 
@@ -875,8 +893,9 @@ export class CreativeStore {
       found.status = 'running'
       delete found.errorCode
       await this.persist(record)
-      this.active.add(found.id)
-      return { operation: { projectId: record.id, operationId: found.id, owner }, receipt: { ...found.videoReceipt } }
+      const operation = { projectId: record.id, operationId: found.id, owner }
+      this.activate(operation, 'video')
+      return { operation, receipt: { ...found.videoReceipt } }
     })
   }
 
@@ -1033,7 +1052,7 @@ export class CreativeStore {
         if (outcome.errorCode !== undefined) found.errorCode = outcome.errorCode
         else if (found.status === 'completed') delete found.errorCode
         await this.persist(record)
-      } finally { this.active.delete(operation.operationId) }
+      } finally { this.deactivate(operation) }
     })
   }
 
@@ -1041,7 +1060,7 @@ export class CreativeStore {
    * Mark the end of a manifest-backed run; file/status facts remain owned by its manifest.
    * @param operation - Original generation invocation whose process-local activity ends.
    */
-  release(operation: CreativeOperation): void { this.active.delete(operation.operationId) }
+  release(operation: CreativeOperation): void { this.deactivate(operation) }
 
   /**
    * Reattach an explicitly resumed retained video to its original creation record.
@@ -1067,8 +1086,9 @@ export class CreativeStore {
         }
         latest.owner = owner
         await this.persist(latest)
-        this.active.add(linked.id)
-        return { projectId: latest.id, operationId: linked.id, owner }
+        const resumed = { projectId: latest.id, operationId: linked.id, owner }
+        this.activate(resumed, 'video', manifest.id)
+        return resumed
       })
     }
     if (manifest.status === 'prepared' && manifest.segments.every(segment => segment.taskId === undefined && segment.path === undefined)) {

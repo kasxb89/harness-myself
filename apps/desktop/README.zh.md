@@ -4,7 +4,7 @@
 
 桌面埋点遵循[产品采集策略](../../packages/client/product-analytics/README.zh.md)及其动态应用配置，不包含 Web 使用情况。安装更新会等待该操作的本地埋点接收请求结束，再锁定 API 准入并停止 Host。接收请求的时限为一秒，失败不会阻止安装，也不等待收集端完成发送。
 
-产品登录后的活动统计使用[积分 Host](../../packages/host/credits-index/README.zh.md)，独立于 OTel 采集器。唯一的主进程跟踪器在应用运行时每 30 秒报告在线状态，隐藏到托盘后继续运行。前台使用要求原生窗口处于焦点且系统空闲不足 60 秒；锁屏或挂起立即报告后台状态。错过的样本不会补传。退出只尽力发送一次有截止时间的停止报告；崩溃、断网或休眠由服务端在 90 秒超时后判定离线。这些报告仅含随机登录代次 ID、事件、前台状态、系统和产品版本。余额及手机号登录页会说明这项采集。
+产品登录后的活动统计使用[积分 Host](../../packages/host/credits-index/README.zh.md)，独立于 OTel 采集器。唯一的主进程跟踪器在应用运行时每 30 秒报告在线状态，隐藏到托盘后继续运行。心跳间隔使用单调时钟，系统时间调整不会延迟或加速上报。前台使用要求原生窗口处于焦点且系统空闲不足 60 秒；锁屏或挂起立即报告后台状态。错过的样本不会补传。退出只尽力发送一次有截止时间的停止报告；崩溃、断网或休眠由服务端在 90 秒超时后判定离线。这些报告仅含随机登录代次 ID、事件、前台状态、系统和产品版本。余额及手机号登录页会说明这项采集。
 
 桌面应用是完整 dsh Web 应用外的一层 Electron 壳。Electron RunAsNode 子进程启动共享 profile runner，Electron 立即从 `dsh-app://app/` 加载打包内的 Web 入口。共享加载页等待 Host 启动注入，然后在同一文档中启动客户端。Electron 将应用 HTTP 请求转发给已认证的 Web Host，转发时丢弃描述 Node fetch 连接而非资源本身的响应头（`transfer-encoding`、`connection`、`keep-alive`），并把插件 bundle 响应标记为 `no-store`，因为其每次启动都变化的 revision 只会在 Chromium 磁盘缓存中累积；WebSocket 流连接到该 Host，仅为归属的应用窗口附加凭据。Node IPC 承载启动注入、就绪与关闭。Desktop 默认监听系统分配的端口，因此不会与 Web 的 `3080` 或系统保留端口冲突；可通过 `webserver.config.port` patch 覆盖。
 

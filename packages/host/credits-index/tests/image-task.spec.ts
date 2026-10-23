@@ -5,6 +5,7 @@ import type { CreativeImageReceipt } from '../src/creative-types.ts'
 import { Config } from '../src/index.ts'
 import { VideoProjectError } from '../src/video-project.ts'
 import mediaContract from './fixtures/media-submission-api-contract-v3.json' with { type: 'json' }
+import type { CreationTaskActivity } from '../src/creation-activity.ts'
 
 const fingerprint = 'a'.repeat(64)
 const receipt: CreativeImageReceipt = { model: 'yunshu-internal-gpt-image-2', route: '/toapis/v1/images/generations',
@@ -23,6 +24,43 @@ function options(changes: Partial<ImageTaskOptions> = {}): ImageTaskOptions {
 }
 
 describe('image task execution and read-only recovery', () => {
+  it('observes the original image queue, generation and actual saving without inventing a new task', async () => {
+    const events: CreationTaskActivity[] = []
+    const states = ['queued', 'running', 'succeeded']
+    const input = options({ route: '/v1/images/generations', activity: event => events.push(event),
+      read: vi.fn(async () => {
+        const state = states.shift()
+        return json({ status: state, ...state === 'succeeded' ? { data: [image] } : {} })
+      }) })
+    expect(await executeImageTask(input)).toMatchObject({ ok: true, submissionState: 'completed' })
+    expect(events).toEqual([
+      { type: 'stage', stage: 'preparing' }, { type: 'stage', stage: 'submitting' },
+      { type: 'stage', stage: 'accepted' }, { type: 'stage', stage: 'queued' },
+      { type: 'stage', stage: 'generating' }, { type: 'stage', stage: 'saving' },
+      { type: 'end', stage: 'saving', outcome: 'completed' },
+    ])
+    expect(input.submit).toHaveBeenCalledOnce()
+    expect(input.read).toHaveBeenCalledTimes(3)
+  })
+
+  it('contains a rejecting observer while preserving a query-only unknown image outcome', async () => {
+    const events: CreationTaskActivity[] = []
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const input = options({ resumeReceipt: { ...receipt, taskId: 'task_canonical_original' },
+        read: vi.fn(async () => json({ status: 'UNKNOWN' })),
+        // oxlint-disable-next-line typescript/no-misused-promises -- Contain a JavaScript observer's rejected Promise.
+        activity: (event) => { events.push(event); return Promise.reject(new Error('private observer detail')) } })
+      expect(await executeImageTask(input)).toMatchObject({ submissionState: 'pending', code: 'IMAGE_STATUS_INVALID' })
+      await Promise.resolve()
+      expect(events.at(-1)).toEqual({ type: 'end', stage: 'unknown', outcome: 'unknown' })
+      expect(events).not.toContainEqual({ type: 'stage', stage: 'generating' })
+      expect(warn).toHaveBeenCalledWith('Creation activity observer failed')
+      expect(input.submit).not.toHaveBeenCalled()
+      expect(input.save).not.toHaveBeenCalled()
+    } finally { warn.mockRestore() }
+  })
+
   const capacity = mediaContract.find(entry => entry.method === 'POST' && entry.http_status === 429 && entry.response.media_kind === 'image')
   const canonical = mediaContract.find(entry => entry.method === 'GET' && entry.response.media_kind === 'image')
   if (capacity === undefined || canonical === undefined || typeof capacity.response.id !== 'string') throw new Error('Actual image receipt fixtures are required')

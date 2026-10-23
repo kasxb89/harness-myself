@@ -8,6 +8,8 @@ import {
   h3SubmissionRejection, h3SubmissionQueryRejection, hasH3SubmissionReceipt, h3ProviderTerminalRejection, hasH3ProviderTerminal,
   VideoSubmissionRejection,
 } from './video-submission-result.ts'
+import { creationTaskActivity } from './creation-activity.ts'
+import type { CreationActivityOutcome, CreationTaskObserver } from './creation-activity.ts'
 
 /** Local waiting never implies that an accepted remote task stopped. */
 export interface VideoTaskOutcome {
@@ -24,6 +26,8 @@ export interface VideoTaskOutcome {
 
 /** Account-owned I/O boundaries; only submit may create a billable request. */
 export interface VideoTaskOptions {
+  /** Content-free local phases; ending local observation does not stop an accepted remote task. */
+  activity?: CreationTaskObserver
   origin?: ArtifactOrigin
   model: string
   route: string
@@ -94,6 +98,8 @@ async function readText(response: Response, signal: AbortSignal): Promise<string
  * @returns A saved path or a retained pending/unknown receipt safe to query again.
  */
 export async function executeVideoTask(options: VideoTaskOptions): Promise<VideoTaskOutcome> {
+  const activity = creationTaskActivity(options.activity)
+  let activityOutcome: CreationActivityOutcome = 'unknown'
   let receipt = options.resumeReceipt
   let canonicalRead = receipt?.taskId?.startsWith('task_') === true
   let sent = receipt !== undefined
@@ -106,18 +112,24 @@ export async function executeVideoTask(options: VideoTaskOptions): Promise<Video
   let foreground: AbortSignal | undefined
   let waitingSignal = signal
   let lastProgress: 'queued' | 'generating' | undefined
-  const outcome = (submissionState: VideoTaskOutcome['submissionState'], code?: string, message?: string): VideoTaskOutcome => ({
-    ok: submissionState === 'completed', submissionState, model: receipt?.model ?? options.model,
-    ...code === undefined ? {} : { code }, ...message === undefined ? {} : { message },
-    ...receipt === undefined ? {} : { videoReceipt: receipt, ...receipt.taskId === undefined ? {} : { taskId: receipt.taskId },
-      ...receipt.requestId === undefined ? {} : { requestId: receipt.requestId } }, ...path === undefined ? {} : { path },
-  })
+  const outcome = (submissionState: VideoTaskOutcome['submissionState'], code?: string, message?: string): VideoTaskOutcome => {
+    activityOutcome = submissionState === 'completed' ? 'completed' : submissionState === 'failed' ? 'failed'
+      : submissionState === 'not-submitted' ? 'stopped' : 'unknown'
+    if (activityOutcome === 'unknown') activity.stage('unknown')
+    return {
+      ok: submissionState === 'completed', submissionState, model: receipt?.model ?? options.model,
+      ...code === undefined ? {} : { code }, ...message === undefined ? {} : { message },
+      ...receipt === undefined ? {} : { videoReceipt: receipt, ...receipt.taskId === undefined ? {} : { taskId: receipt.taskId },
+        ...receipt.requestId === undefined ? {} : { requestId: receipt.requestId } }, ...path === undefined ? {} : { path },
+    }
+  }
   const persist = async (next: CreativeVideoReceipt): Promise<void> => {
     receipt = next
     const previous = phase
     phase = 'receipt'
     await options.received?.(next)
     phase = previous
+    if (next.phase === 'accepted') activity.stage('accepted')
   }
   const currentReceipt = (): CreativeVideoReceipt => {
     if (receipt === undefined) throw new Error('Video execution has no retained receipt')
@@ -148,10 +160,17 @@ export async function executeVideoTask(options: VideoTaskOptions): Promise<Video
     }
   }
   if (receipt !== undefined && receipt.backendFingerprint !== options.backendFingerprint) {
-    return outcome('pending', 'VIDEO_BACKEND_CHANGED', '原视频任务所属服务已变化，请恢复原服务配置后查询；不会重新提交生成。')
+    const result = outcome('pending', 'VIDEO_BACKEND_CHANGED', '原视频任务所属服务已变化，请恢复原服务配置后查询；不会重新提交生成。')
+    activity.end(activityOutcome)
+    return result
   }
-  if (receipt !== undefined && receipt.taskId === undefined) return outcome('unknown', 'VIDEO_SUBMISSION_UNKNOWN', '原视频提交尚无可查询任务编号，请先核对任务与计费；不会重新生成。')
+  if (receipt !== undefined && receipt.taskId === undefined) {
+    const result = outcome('unknown', 'VIDEO_SUBMISSION_UNKNOWN', '原视频提交尚无可查询任务编号，请先核对任务与计费；不会重新生成。')
+    activity.end(activityOutcome)
+    return result
+  }
   try {
+    activity.stage('preparing')
     signal.throwIfAborted()
     await options.prepare?.(signal)
     signal.throwIfAborted()
@@ -165,6 +184,7 @@ export async function executeVideoTask(options: VideoTaskOptions): Promise<Video
       signal.throwIfAborted()
       phase = 'submitting'
       sent = true
+      activity.stage('submitting')
       unread = await options.submit(AbortSignal.any([signal, AbortSignal.timeout(options.submitTimeoutMs)]))
       const requestId = identifier(unread.headers.get('x-oneapi-request-id')) ?? identifier(unread.headers.get('x-request-id'))
       if (requestId !== undefined) await persist({ ...currentReceipt(), requestId })
@@ -212,6 +232,7 @@ export async function executeVideoTask(options: VideoTaskOptions): Promise<Video
       waitingSignal = AbortSignal.any([signal, foreground])
     }
     phase = 'querying'
+    activity.stage('accepted')
     let first = true
     for (;;) {
       waitingSignal.throwIfAborted()
@@ -240,6 +261,7 @@ export async function executeVideoTask(options: VideoTaskOptions): Promise<Video
       }
       if (['succeed', 'succeeded', 'success', 'completed'].includes(state ?? '')) {
         phase = 'saving'
+        activity.stage('saving')
         path = await options.save(taskId, signal)
         signal.throwIfAborted()
         await persist({ ...currentReceipt(), phase: 'completed' })
@@ -250,6 +272,7 @@ export async function executeVideoTask(options: VideoTaskOptions): Promise<Video
         return outcome('pending', 'VIDEO_STATUS_INVALID', '原视频状态暂时无法确认，请保留回执并继续查询原任务，不要重复生成。')
       }
       lastProgress = nextProgress
+      activity.stage(nextProgress)
     }
   } catch (_stopped: unknown) {
     if (!sent && _stopped instanceof VideoSubmissionRejection) return outcome('not-submitted', _stopped.code, _stopped.message)
@@ -265,5 +288,6 @@ export async function executeVideoTask(options: VideoTaskOptions): Promise<Video
     return outcome('unknown', 'VIDEO_SUBMISSION_UNKNOWN', '视频提交结果尚未确认，请先核对原任务与计费，不要重复生成。')
   } finally {
     await unread?.body?.cancel().catch((_closedBody: unknown) => { /* Completion or cancellation already released the response. */ })
+    activity.end(activityOutcome)
   }
 }

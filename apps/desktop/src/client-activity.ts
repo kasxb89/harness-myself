@@ -91,7 +91,7 @@ export class DesktopClientActivity {
     let foreground = false
     try { foreground = !this.locked && !this.suspended && this.isForeground() }
     catch (_unavailableNativeState: unknown) { /* Unknown OS state contributes no foreground time. */ }
-    const now = Date.now()
+    const now = performance.now()
     if (!force && foreground === this.lastForeground && now - this.lastSentAt < 30_000) return
     const controller = new AbortController()
     const first = this.lastForeground === undefined

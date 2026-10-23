@@ -191,6 +191,8 @@ it.skipIf(!runtimeAvailable)('records concurrent per-clip progress and terminal 
   let firstTaskObserved = false
   let releaseSecondSubmission: (() => void) | undefined
   const queries: string[] = []
+  const workloads: JsonRow[] = []
+  let presenceRuntime: string | undefined
   const modelRequests: unknown[] = []
   const errors: string[] = []
   const server = createServer((request, response) => {
@@ -201,7 +203,12 @@ it.skipIf(!runtimeAvailable)('records concurrent per-clip progress and terminal 
       const path = new URL(request.url ?? '/', 'http://127.0.0.1').pathname
       response.setHeader('content-type', 'application/json')
       const answer = (data: object | null): void => { response.end(JSON.stringify({ success: true, data })) }
-      if (path === '/harness/api/status') { answer({ quota_per_unit: 500_000, usd_exchange_rate: 7.3 }); return }
+      if (path === '/harness/api/status') {
+        answer({ quota_per_unit: 500_000, usd_exchange_rate: 7.3, client_activity_workload: {
+          schema_version: 1, snapshot_path: '/api/client-activity/workload-snapshot',
+          heartbeat_interval_seconds: 30, workload_timeout_seconds: 90,
+        } }); return
+      }
       if (path === '/harness/api/user/phone/challenge') {
         answer({ challenge_id: 'video-progress-challenge', delivery_status: 'accepted',
           expires_at: Math.floor(Date.now() / 1000) + 300, resend_after_seconds: 60, expires_in_minutes: 5 }); return
@@ -213,7 +220,23 @@ it.skipIf(!runtimeAvailable)('records concurrent per-clip progress and terminal 
           user: { id: 7, username: 'video-progress-user', quota: 500_000 } }); return
       }
       if (path === '/harness/api/user/self') { answer({ id: 7, username: 'video-progress-user', group: 'product', quota: 500_000 }); return }
-      if (path === '/harness/api/client-activity/heartbeat') { answer({ heartbeat_interval_seconds: 60 }); return }
+      if (path === '/harness/api/client-activity/heartbeat') {
+        expect(request.headers.authorization).toBe('Bearer video-progress-access')
+        presenceRuntime = String(record(body).session_id)
+        answer({ server_time: Math.floor(Date.now() / 1000), heartbeat_interval_seconds: 30, online_timeout_seconds: 90 }); return
+      }
+      if (path === '/harness/api/client-activity/workload-snapshot') {
+        expect(request.headers.authorization).toBe('Bearer video-progress-access')
+        const snapshot = record(body)
+        expect(snapshot.runtime_session_id).toBe(presenceRuntime)
+        expect(snapshot.complete).toBe(true)
+        expect(Number(snapshot.sequence)).toBeGreaterThan(Number(workloads.at(-1)?.sequence ?? 0))
+        expect(JSON.stringify(snapshot)).not.toMatch(/SCENE_PROGRESS|sk-video|video-progress-access|workspaceRoot/u)
+        expect(JSON.stringify(snapshot)).not.toMatch(/sessionFingerprint|backendFingerprint|prompt|label|progress/u)
+        workloads.push(snapshot)
+        answer({ schema_version: 1, recorded: true, disposition: 'accepted', accepted_sequence: snapshot.sequence,
+          server_time: Math.floor(Date.now() / 1000), heartbeat_interval_seconds: 30, workload_timeout_seconds: 90 }); return
+      }
       if (path === '/harness/v1/models') {
         expect(request.headers.authorization).toBe('Bearer sk-video-progress-relay')
         response.end(JSON.stringify({ data: [{ id: 'MiniMax-H3', object: 'model', supported_endpoint_types: ['openai'] }] })); return
@@ -297,6 +320,7 @@ it.skipIf(!runtimeAvailable)('records concurrent per-clip progress and terminal 
     { id: 'computer-use', disabled: true }, { id: 'computer-use-cua-driver-native', disabled: true },
     { id: 'credits-index', config: { newApiBaseUrl: `${origin}/harness`, baseUrl: '', bridgeBaseUrl: '', creditsPerYuan: 1000,
       stateDir: join(root, 'credits'), videoRuntimeRoot: runtimeRoot, videoProjectConcurrency: 2, videoProjectPollIntervalMs: 60000,
+      generationActivityReportIntervalMs: 1000, generationActivityMinReportIntervalMs: 5,
       videoProjectTaskTimeoutMs: 120000, videoEditTimeoutMs: 60000 } },
     { id: 'llm-pi-ai', disabled: true },
     { id: 'llm-deepseek', disabled: !firstRecording, config: { apiKeyEnv: KEY, baseURL: origin,
@@ -317,6 +341,8 @@ it.skipIf(!runtimeAvailable)('records concurrent per-clip progress and terminal 
   expect(await post('/credits/api/session/verify', { challengeId: 'video-progress-challenge', code: '123456', idempotencyKey: 'progress-login' }))
     .toMatchObject({ ok: true })
   const { sessionId } = await host.remote<{ sessionId: string }>('session/create', { request: { cwd: workspace } })
+  expect(await post('/credits/api/activity', { session_id: randomUUID(), event: 'start', foreground: true,
+    platform: process.platform, app_version: '0.2.1-alpha.2-test' })).toMatchObject({ ok: true })
   const socket = new WebSocket(host.webUrl.replace(/^http/u, 'ws') + '/api/remote.mux', { headers: { cookie: host.cookie } })
   const closed = new Promise<void>(resolve => socket.once('close', () => { resolve() }))
   cleanup.socket = async () => {
@@ -342,8 +368,17 @@ it.skipIf(!runtimeAvailable)('records concurrent per-clip progress and terminal 
     payload: { args: { request: { sessionId } } } }))
   if (!firstRecording) expect(fixtureUserPrompts(await readFile(FIXTURE, 'utf8'))).toEqual(PROMPTS)
   for (const [index, prompt] of PROMPTS.entries()) {
-    if (index === 1) await expect.poll(() => observed.find(job => job.kind === 'video-project')?.progress, { timeout: 30000 })
-      .toMatch(/分镜 1\/3 排队中[\s\S]*分镜 2\/3 生成中[\s\S]*分镜 3\/3 尚未提交/u)
+    if (index === 1) {
+      await expect.poll(() => observed.find(job => job.kind === 'video-project')?.progress, { timeout: 30000 })
+        .toMatch(/分镜 1\/3 排队中[\s\S]*分镜 2\/3 生成中[\s\S]*分镜 3\/3 尚未提交/u)
+      await expect.poll(() => workloads.some((snapshot) => {
+        const active = (snapshot.activities as JsonRow[]).filter(row => row.work_state === 'active')
+        return active.filter(row => row.kind === 'chat_activity').length === 1
+          && active.filter(row => row.kind === 'project_run').length === 1
+          && active.filter(row => row.kind === 'storyboard_task' && row.phase === 'queued').length === 1
+          && active.filter(row => row.kind === 'storyboard_task' && row.phase === 'generating').length === 1
+      }), { timeout: 10000 }).toBe(true)
+    }
     await host.remote('session/prompt', { request: { requestId: `video-progress-intent-${String(index + 1)}`, sessionId, mode: 'queue',
       clientTimeZone: 'Asia/Shanghai', content: [{ type: 'text', text: prompt }] } })
     await expect.poll(async () => {
@@ -356,6 +391,11 @@ it.skipIf(!runtimeAvailable)('records concurrent per-clip progress and terminal 
     }, { timeout: 30000 }).toBe(index + 1)
   }
   await expect.poll(() => observed.find(job => job.kind === 'video-project')?.status, { timeout: 10000 }).toBe('killed')
+  await expect.poll(() => {
+    const activities = (workloads.at(-1)?.activities ?? []) as JsonRow[]
+    return activities.filter(row => row.kind === 'storyboard_task' && row.work_state === 'unknown').length === 2
+      && activities.every(row => row.work_state !== 'active')
+  }, { timeout: 10000 }).toBe(true)
   expect(observed.find(job => job.kind === 'video-project')?.progress).toBeUndefined()
   const raw = await storedSession(persistence, sessionId)
   const output = results(raw)

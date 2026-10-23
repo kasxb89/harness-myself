@@ -105,6 +105,12 @@ Host 先使用 `/api/user/self` 核对产品会话中的账号，再通过 `/api
 
 Host 认证的 `GET /credits/api/customer-support` 独立于产品登录，从匿名 `/api/status` 实时读取 `data.customer_service` schema 1。专用 `enabled`、`qr_code_url`、`title` 与 `description` 转为 `{ ok: true, payload: { enabled, qrCodeUrl, title, description } }`；禁用或空二维码会清空全部展示字段。旧 API 返回 `CUSTOMER_SUPPORT_UNSUPPORTED`，绝不复用登录 `wechat_qrcode`。启用后的文字作为纯文本，拒绝控制字符，标题和说明分别限 64 与 256 个 UTF-16 单元。二维码 URL 限 2048 个 UTF-8 字节，仅接受不含凭据的 HTTPS 或精确 `/api/creation/assets/cc_<sha256>` 路径，后者保留完整部署前缀；拒绝 SVG、其它协议及相对路径。Host 只拉取状态，不拉取配置的图片 URL，也不转发访问令牌、中转密钥或 Cookie。读取沿用公告的 1 MiB 上限及生命周期，超时、网络、不可用和无效响应分别返回。弹窗重试时读取当前设置，不保留先前二维码。
 
+### 实时生成活动
+
+生成统计独立于桌面在线状态和网关调用日志。Host 依据真实运行归属采集：忙碌的根聊天、其子 Agent 和拥有的创作后台任务共用一个聊天标识；一个八段项目分别计为一个项目、八次提交尝试。结构化创作回调区分准备、提交、受理、排队、上游生成、保存、本地剪辑和结果未知。工具返回后台运行不代表原聊天的创作已结束。本地操作中断不能证明已受理的上游任务停止。视频分段保留私有、可选的 UUID 尝试标识；新执行在提交前持久化，显式恢复在查询前补齐旧记录缺失的标识，沿用原尝试且不再次 POST。读取旧清单不会迁移记录，也不会生成在线活动。
+
+上报要求当前登录的原生在线心跳已成功确认 UUID，并且匿名状态文档明确声明 `client_activity_workload` 能力。完整、无内容的快照使用当前交互登录访问令牌，保留完整 API 前缀发送到 `/api/client-activity/workload-snapshot`，携带单调递增序号，结束观察保留到确认接收。聊天、项目和任务分别计数；未采集、未知或过期绝不解释为测得零。JSON 不含提示词、模型详情、进度文本、路径或凭据；统计不触发登录续期，访问状态不确定时暂停发送。`generationActivityMinReportIntervalMs` 合并状态变化，默认 1,000 毫秒；`generationActivityReportIntervalMs` 更新活动观察，默认 30,000 毫秒，均使用单调经过时间。旧 API 只接收定期能力读取，支持新协议后自动恢复采集。缺少持久任务标识时将任务采集标记为不可用。完整快照最多 256 行、256 KiB，超过上限暂停上报，不截断计数或干扰生成。运行状态读取失败会暂停更新新鲜度，直到完整读取成功。计划分镜绑定和独立本地操作观察明确标记为未采集，不用宽泛的保存或剪辑阶段虚构这些维度。
+
 ### 聊天创作计划
 
 技能注册服务可用时，内置 `yunshu-video-director` 技能使用 [cinematic-director](https://github.com/wuwangzhang1216/DirectorSKILL) 与 [video-storyboard-gen](https://github.com/anyhui/video-storyboard-gen-skill) 的精简摘录和适配内容，指导剧情、走位、连续性、参考素材重构、分镜、对白及字幕。[固定来源及适配说明](third-party-notices/sources.json) 和两份完整 MIT 许可随包分发。生成时不运行社区脚本，也不加载整套参考库。简单单片描述直接调用 `generate_video_project` 并使用 Host 的真实默认参数，不增加目录或编导技能的模型往返；复杂时间轴和编导任务使用目录及技能。旧 `generate_video` 保持兼容。明确的剧情或连续人物创作使用显式计划，长视频仍使用该原生项目工具。原生工具负责校验、提交、轮询、下载、剪辑、发布和恢复。画面切换不必各自生成一段计费视频。不强制额外生成参考图、多个备选稿或单独请求规划模型；工作流程不能控制上游渲染耗时。

@@ -2,10 +2,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DesktopClientActivity, type DesktopActivitySample } from '../src/client-activity.ts'
 
 const owned: DesktopClientActivity[] = []
-afterEach(async () => { await Promise.all(owned.splice(0).map(activity => activity.dispose())); vi.useRealTimers() })
+afterEach(async () => {
+  try { await Promise.all(owned.splice(0).map(activity => activity.dispose())) }
+  finally { vi.useRealTimers() }
+})
 
 function fixture() {
-  vi.useFakeTimers()
+  vi.useFakeTimers({ toFake: ['Date', 'performance', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
   let focused = true
   const events: DesktopActivitySample[] = []
   const sender = vi.fn(async (event: DesktopActivitySample, _signal: AbortSignal) => { events.push(event) })
@@ -15,6 +18,26 @@ function fixture() {
 }
 
 describe('Desktop activity ownership', () => {
+  it.each([-86_400_000, 86_400_000])('keeps the 30-second heartbeat interval when wall time changes by %i ms', async (shift) => {
+    const f = fixture()
+    f.activity.connect(f.sender)
+    await vi.advanceTimersByTimeAsync(15_000)
+    expect(f.events).toHaveLength(1)
+    const elapsedBeforeAdjustment = performance.now()
+    const wallBeforeAdjustment = Date.now()
+    vi.setSystemTime(wallBeforeAdjustment + shift)
+    expect(Date.now()).toBe(wallBeforeAdjustment + shift)
+    expect(performance.now()).toBe(elapsedBeforeAdjustment)
+    await vi.advanceTimersByTimeAsync(14_999)
+    expect(f.events).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(f.events).toHaveLength(2)
+    expect(f.events.at(-1)).toMatchObject({ event: 'heartbeat', foreground: true })
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(f.events).toHaveLength(3)
+    expect(f.events.at(-1)).toMatchObject({ event: 'heartbeat', foreground: true })
+  })
+
   it('reports one process identity, keeps background presence and excludes locked or idle foreground use', async () => {
     const f = fixture()
     f.activity.connect(f.sender)

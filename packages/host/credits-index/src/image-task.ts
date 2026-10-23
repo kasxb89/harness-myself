@@ -8,6 +8,8 @@ import {
   hasMediaSubmissionUnknown, mediaSubmissionUnknownTaskId,
 } from './media-submission-receipt.ts'
 import type { ArtifactOrigin } from '@deepseek-ai/dsh-artifacts-index'
+import { creationTaskActivity } from './creation-activity.ts'
+import type { CreationActivityOutcome, CreationTaskObserver } from './creation-activity.ts'
 
 /** Billing and provider-task facts remain independent of local waiting or saving. */
 export interface ImageTaskOutcome {
@@ -25,6 +27,8 @@ export interface ImageTaskOutcome {
 
 /** Provider operations are supplied by the account-bound Host and never retried as submissions. */
 export interface ImageTaskOptions {
+  /** Content-free local phases; an end notification does not cancel accepted upstream work. */
+  readonly activity?: CreationTaskObserver
   readonly origin?: ArtifactOrigin
   readonly model: string
   readonly route: string
@@ -73,6 +77,8 @@ function status(value: Record<string, unknown> | undefined): string | undefined 
  * @returns Saved outputs or a safe outcome retaining task identity and possible billing after cancellation or failure.
  */
 export async function executeImageTask(options: ImageTaskOptions): Promise<ImageTaskOutcome> {
+  const activity = creationTaskActivity(options.activity)
+  let activityOutcome: CreationActivityOutcome = 'unknown'
   let receipt = options.resumeReceipt
   let canonicalRead = receipt?.taskId?.startsWith('task_') === true
   let sent = receipt !== undefined
@@ -80,18 +86,27 @@ export async function executeImageTask(options: ImageTaskOptions): Promise<Image
   let unreadResponse: Response | undefined
   let phase: 'preparing' | 'submitting' | 'querying' | 'saving' | 'receipt' = 'preparing'
   const currentPhase = (): typeof phase => phase
-  const outcome = (submissionState: ImageTaskOutcome['submissionState'], code?: string, message?: string): ImageTaskOutcome => ({
-    ok: submissionState === 'completed', submissionState, model: receipt?.model ?? options.model,
-    ...code === undefined ? {} : { code }, ...message === undefined ? {} : { message },
-    ...receipt === undefined ? {} : { imageReceipt: receipt, ...receipt.taskId === undefined ? {} : { taskId: receipt.taskId },
-      ...receipt.requestId === undefined ? {} : { requestId: receipt.requestId } },
-    ...saved.length === 0 ? {} : { path: saved[0], paths: [...saved] },
-  })
+  const outcome = (submissionState: ImageTaskOutcome['submissionState'], code?: string, message?: string): ImageTaskOutcome => {
+    activityOutcome = submissionState === 'completed' ? 'completed' : submissionState === 'failed' ? 'failed'
+      : submissionState === 'not-submitted' ? 'stopped' : 'unknown'
+    if (activityOutcome === 'unknown') activity.stage('unknown')
+    return {
+      ok: submissionState === 'completed', submissionState, model: receipt?.model ?? options.model,
+      ...code === undefined ? {} : { code }, ...message === undefined ? {} : { message },
+      ...receipt === undefined ? {} : { imageReceipt: receipt, ...receipt.taskId === undefined ? {} : { taskId: receipt.taskId },
+        ...receipt.requestId === undefined ? {} : { requestId: receipt.requestId } },
+      ...saved.length === 0 ? {} : { path: saved[0], paths: [...saved] },
+    }
+  }
   if (receipt !== undefined && receipt.backendFingerprint !== options.backendFingerprint) {
-    return outcome('pending', 'IMAGE_BACKEND_CHANGED', '原任务所属服务已变化，请恢复原服务配置后查询；不会重新提交生成。')
+    const result = outcome('pending', 'IMAGE_BACKEND_CHANGED', '原任务所属服务已变化，请恢复原服务配置后查询；不会重新提交生成。')
+    activity.end(activityOutcome)
+    return result
   }
   if (receipt !== undefined && receipt.taskId === undefined) {
-    return outcome('unknown', 'IMAGE_SUBMISSION_UNKNOWN', '原提交尚无可查询的任务回执，请先核对原任务与计费；不会重新提交生成。')
+    const result = outcome('unknown', 'IMAGE_SUBMISSION_UNKNOWN', '原提交尚无可查询的任务回执，请先核对原任务与计费；不会重新提交生成。')
+    activity.end(activityOutcome)
+    return result
   }
   const budget = AbortSignal.timeout(options.taskTimeoutMs)
   const signal = AbortSignal.any([options.signal, budget])
@@ -101,6 +116,7 @@ export async function executeImageTask(options: ImageTaskOptions): Promise<Image
     phase = 'receipt'
     await options.received?.(next)
     phase = previousPhase
+    if (next.phase === 'accepted') activity.stage('accepted')
   }
   const save = async (value: Record<string, unknown> | undefined): Promise<void> => {
     const previousPhase = phase
@@ -109,6 +125,7 @@ export async function executeImageTask(options: ImageTaskOptions): Promise<Image
       signal.throwIfAborted()
       const entry = record(item)
       if (entry === undefined) continue
+      activity.stage('saving')
       const path = await options.save(entry, saved.length, signal)
       if (path !== undefined) saved.push(path)
     }
@@ -123,6 +140,7 @@ export async function executeImageTask(options: ImageTaskOptions): Promise<Image
     return outcome('completed')
   }
   try {
+    activity.stage('preparing')
     signal.throwIfAborted()
     await options.prepare?.(signal)
     signal.throwIfAborted()
@@ -135,6 +153,7 @@ export async function executeImageTask(options: ImageTaskOptions): Promise<Image
       phase = 'submitting'
       options.beforeSubmit?.()
       sent = true
+      activity.stage('submitting')
       const requestSignal = AbortSignal.any([signal, AbortSignal.timeout(options.submitTimeoutMs)])
       const response = await options.submit(requestSignal)
       unreadResponse = response
@@ -179,6 +198,7 @@ export async function executeImageTask(options: ImageTaskOptions): Promise<Image
     if (acceptedTaskId === undefined) return outcome('unknown', 'NO_TASK_ID', '提交已发出，但未取得可查询的任务回执，请先核对原任务与计费；不会重新生成。')
     let failures = 0
     let firstRead = true
+    activity.stage('accepted')
     while (true) {
       signal.throwIfAborted()
       if (!firstRead) await delay(options.pollIntervalMs, undefined, { signal })
@@ -239,6 +259,8 @@ export async function executeImageTask(options: ImageTaskOptions): Promise<Image
           '原图片失败状态尚无完整提交与计费证明，请保留原任务编号继续核对，不要重新生成。')
         return outcome('failed', 'TASK_FAILED', '原生成任务已结束且未成功，请检查原任务和计费记录。')
       }
+      if (['queued', 'pending', 'not_start', 'created', 'submitted', 'in_queue'].includes(taskStatus ?? '')) activity.stage('queued')
+      else if (['running', 'processing', 'in_progress', 'generating'].includes(taskStatus ?? '')) activity.stage('generating')
       await save(body)
       if (saved.length > 0) return await complete()
       if (['completed', 'success', 'succeed', 'succeeded'].includes(taskStatus ?? '')) {
@@ -260,5 +282,6 @@ export async function executeImageTask(options: ImageTaskOptions): Promise<Image
       try { await unreadResponse.body.cancel() }
       catch (_alreadyClosed: unknown) { /* A failed or already-consumed response has no remaining dependent work. */ }
     }
+    activity.end(activityOutcome)
   }
 }

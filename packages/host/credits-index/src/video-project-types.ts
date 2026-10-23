@@ -5,6 +5,7 @@ import type { ArtifactStorageService } from '@deepseek-ai/dsh-artifacts-index'
 import type { VideoEditor } from './video-edit.ts'
 import type { CreativeOwner, CreativeStore } from './creative-store.ts'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
+import type { VideoProjectActivity } from './creation-activity.ts'
 
 /** Credential-free JSON fields retained before the single submission attempt. */
 export type VideoRequestValue = string | number | boolean | null | VideoRequestValue[] | { [key: string]: VideoRequestValue }
@@ -119,6 +120,8 @@ export interface VideoProjectProvider {
 
 /** Deployment choices supplied by the owning credits plugin configuration. */
 export interface VideoProjectOptions {
+  /** Observe only process-live project and clip phases; observer failure never changes execution. */
+  activity?(this: void, event: VideoProjectActivity): void
   /** Resolve and approve a chat-only model change before preparing any billable project. */
   chatModelChoice?(
     input: VideoProjectInput, exec: ToolRunContext, provider: VideoProjectProvider,

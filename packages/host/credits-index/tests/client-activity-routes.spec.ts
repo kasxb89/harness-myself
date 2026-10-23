@@ -39,6 +39,11 @@ it('authenticates native activity, isolates login epochs, retains /harness and s
       const chunks: Buffer[] = []
       for await (const chunk of request) if (Buffer.isBuffer(chunk)) chunks.push(chunk)
       const body = chunks.length === 0 ? {} : JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>
+      if (request.url === '/harness/api/status') {
+        response.setHeader('content-type', 'application/json')
+        response.end(JSON.stringify({ success: true, data: {} }))
+        return
+      }
       calls.push({ path: request.url ?? '', ...request.headers.authorization === undefined ? {} : { authorization: request.headers.authorization }, body })
       response.setHeader('content-type', 'application/json')
       if (request.url === '/harness/api/user/auth/refresh') return

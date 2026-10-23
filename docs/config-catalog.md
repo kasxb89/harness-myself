@@ -904,7 +904,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-credits-index`
 
 - `inject`: `webServer` · `tools`
-- `source`: [`packages/host/credits-index/src/index.ts:98`](../packages/host/credits-index/src/index.ts)
+- `source`: [`packages/host/credits-index/src/index.ts:102`](../packages/host/credits-index/src/index.ts)
 
 ```ts config-catalog
 /** Plugin config: platform origin, display rate, and where the session file lives. */
@@ -923,6 +923,10 @@ export interface Config {
   refreshRetryMaxDelayMs?: number
   /** Automatic retries inside the API rotating-cookie recovery window. */
   refreshRecoveryRetryLimit?: number
+  /** Maximum interval between complete live generation-activity reports. */
+  generationActivityReportIntervalMs?: number
+  /** Minimum interval between coalesced generation-state changes. */
+  generationActivityMinReportIntervalMs?: number
   /** Complete deadline for the single image submission, in milliseconds. */
   imageSubmitTimeoutMs?: number
   /** Complete image execution deadline, including polling and saving. */
