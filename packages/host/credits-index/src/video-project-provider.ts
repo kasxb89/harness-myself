@@ -6,12 +6,19 @@ import type { VideoProjectRequest } from './video-project-types.ts'
 import { apiUrl, normalizeApiBaseUrl } from './api-url.ts'
 import { isAccountBalanceRejection } from './account-balance.ts'
 import { videoSubmission } from './video-submission.ts'
-import { h3SubmissionRejection } from './video-submission-result.ts'
+import { hasMediaSubmissionReceipt, mediaSubmissionTaskId, hasMediaSubmissionUnknown, mediaSubmissionUnknownTaskId } from './media-submission-receipt.ts'
+import {
+  h3SubmissionRejection, h3SubmissionQueryRejection, hasH3SubmissionReceipt, h3ProviderTerminalRejection, hasH3ProviderTerminal,
+} from './video-submission-result.ts'
 
 /** Stable relay failure safe for project records and model-visible reports. */
 export class VideoRelayError extends Error {
+  /** Coherent original platform identity, never inferred from a request header or conflicting response. */
+  readonly taskId: string | undefined
   /** @param code - Stable failure identity. @param message - Safe summary without upstream data. @param options - Internal error cause. */
-  constructor(readonly code: string, message: string, options?: ErrorOptions) { super(message, options); this.name = 'VideoRelayError' }
+  constructor(readonly code: string, message: string, options?: ErrorOptions & { taskId?: string }) {
+    super(message, options); this.name = 'VideoRelayError'; this.taskId = options?.taskId
+  }
 }
 
 /** Host-owned limits and a fresh credential resolver; no key enters durable project data. */
@@ -49,7 +56,7 @@ export interface VideoProjectRelay {
    * @param signal - Cancels polling.
    * @returns Normalized upstream status, preserving accepted queue admission separately from generation.
    */
-  check(taskId: string, route: string, signal: AbortSignal): Promise<{ status: 'queued' | 'running' | 'succeeded' | 'failed'; message?: string }>
+  check(taskId: string, route: string, signal: AbortSignal, model?: string): Promise<{ status: 'queued' | 'running' | 'succeeded' | 'failed'; message?: string }>
   /** @param taskId - Completed task. @param destination - New private clip path. @param signal - Cancels transfer. */
   download(taskId: string, destination: string, signal: AbortSignal): Promise<void>
 }
@@ -111,7 +118,9 @@ async function jsonBody(response: Response): Promise<Record<string, unknown>> {
  */
 export function createVideoProjectRelay(options: VideoRelayOptions): VideoProjectRelay {
   const baseUrl = baseOf(options.origin)
-  async function request(path: string, signal: AbortSignal, body?: VideoProjectRequest, timeoutMs = options.timeoutMs): Promise<Response> {
+  async function request(
+    path: string, signal: AbortSignal, body?: VideoProjectRequest, timeoutMs = options.timeoutMs, allowNotFound = false,
+  ): Promise<Response> {
     signal.throwIfAborted()
     const key = await options.key()
     signal.throwIfAborted()
@@ -130,14 +139,20 @@ export function createVideoProjectRelay(options: VideoRelayOptions): VideoProjec
         ? '无法读取视频任务，请保留项目记录后重试查询'
         : '视频提交结果未知，可能已计费；已停止后续生成，请检查用量和任务记录')
     }
+    if (body === undefined && allowNotFound && response.status === 404) return response
     if (!response.ok) {
       let balanceRejected = false
-      if (body !== undefined && [403, 429, 502].includes(response.status)) {
+      if (body !== undefined) {
         let rejection: Record<string, unknown> | undefined
         try { rejection = await jsonBody(response) }
         catch (_unreadableRejection: unknown) { /* An invalid response cannot establish whose balance is exhausted. */ }
         const settled = h3SubmissionRejection(body.model, response.status, rejection)
         if (settled !== undefined) throw settled
+        if (hasMediaSubmissionReceipt(rejection)) {
+          const taskId = mediaSubmissionTaskId(body.model, 'video', rejection)
+          throw new VideoRelayError('VIDEO_SUBMIT_UNKNOWN', '原视频回执尚未通过完整核对，请保留已有任务与计费记录，不要重新生成。',
+            taskId === undefined ? undefined : { taskId })
+        }
         balanceRejected = isAccountBalanceRejection(rejection, response.status)
       } else await response.body?.cancel().catch((_closedBody: unknown) => { /* No upstream error body is exposed or retained. */ })
       if (balanceRejected) throw new VideoRelayError('INSUFFICIENT_BALANCE', '余额不足，请充值')
@@ -160,7 +175,18 @@ export function createVideoProjectRelay(options: VideoRelayOptions): VideoProjec
       })
     },
     async submit(body: VideoProjectRequest, route: string, signal: AbortSignal): Promise<{ taskId: string }> {
-      const value = await jsonBody(await request(route, signal, body, options.submitTimeoutMs ?? Math.max(options.timeoutMs, 180_000)))
+      const response = await request(route, signal, body, options.submitTimeoutMs ?? Math.max(options.timeoutMs, 180_000))
+      const value = await jsonBody(response)
+      if (hasMediaSubmissionReceipt(value)) {
+        const taskId = mediaSubmissionTaskId(body.model, 'video', value)
+        throw new VideoRelayError('VIDEO_SUBMIT_UNKNOWN', '原视频回执尚未通过完整核对，请保留已有任务与计费记录，不要重新生成。',
+          taskId === undefined ? undefined : { taskId })
+      }
+      if (hasMediaSubmissionUnknown(value)) {
+        const taskId = mediaSubmissionUnknownTaskId(body.model, 'video', response.status, value)
+        if (taskId === undefined) throw new VideoRelayError('VIDEO_SUBMIT_UNKNOWN', '视频提交回执无法完整核对，请保留已有记录，不要重新生成。')
+        return { taskId }
+      }
       const nested = record(value.data)
       const taskId = text(value, 'task_id') ?? text(value, 'id') ?? text(nested, 'task_id') ?? text(nested, 'id')
       if (taskId === undefined || !isTaskId(taskId)) {
@@ -168,12 +194,32 @@ export function createVideoProjectRelay(options: VideoRelayOptions): VideoProjec
       }
       return { taskId }
     },
-    async check(taskId: string, route: string, signal: AbortSignal): Promise<{ status: 'queued' | 'running' | 'succeeded' | 'failed'; message?: string }> {
-      const value = await jsonBody(await request(route + '/' + validTask(taskId), signal))
+    async check(taskId: string, route: string, signal: AbortSignal, model?: string): Promise<{ status: 'queued' | 'running' | 'succeeded' | 'failed'; message?: string }> {
+      const canonical = model === 'MiniMax-H3' || taskId.startsWith('task_')
+      let response = await request((canonical ? '/v1/tasks' : route) + '/' + validTask(taskId), signal, undefined, options.timeoutMs, canonical)
+      if (canonical && response.status === 404 && route !== '/v1/tasks') {
+        await response.body?.cancel()
+        response = await request(route + '/' + validTask(taskId), signal)
+      }
+      if (response.status !== 200) {
+        await response.body?.cancel()
+        throw new VideoRelayError('VIDEO_READ_REJECTED', '视频服务未能返回该任务，请稍后重试查询')
+      }
+      const value = await jsonBody(response)
+      const rejection = h3SubmissionQueryRejection(model, response.status, value, taskId)
+      if (rejection !== undefined) throw rejection
+      const terminal = h3ProviderTerminalRejection(model, response.status, value, taskId)
+      if (terminal !== undefined) throw terminal
+      if (hasMediaSubmissionReceipt(value) || hasMediaSubmissionUnknown(value) || model === 'MiniMax-H3' && (hasH3SubmissionReceipt(value) || hasH3ProviderTerminal(value))) {
+        throw new VideoRelayError('VIDEO_STATUS_INVALID', '原视频回执尚未通过完整核对，请保留原任务编号，不要重新生成。')
+      }
       const nested = record(value.data)
       const status = (text(value, 'task_status') ?? text(value, 'status') ?? text(nested, 'task_status') ?? text(nested, 'status'))?.toLowerCase()
       if (['succeed', 'succeeded', 'success', 'completed'].includes(status ?? '')) return { status: 'succeeded' }
-      if (['failed', 'failure', 'fail', 'error', 'cancelled', 'canceled'].includes(status ?? '')) return { status: 'failed', message: '上游视频任务未完成，已保留项目和已生成片段' }
+      if (['failed', 'failure', 'fail', 'error', 'cancelled', 'canceled'].includes(status ?? '')) {
+        if (model === 'MiniMax-H3') throw new VideoRelayError('VIDEO_STATUS_INVALID', '原视频失败状态尚无完整提交与计费证明，请保留原任务编号继续核对，不要重新生成。')
+        return { status: 'failed', message: '上游视频任务未完成，已保留项目和已生成片段' }
+      }
       if (['not_start', 'pending', 'queued', 'in_queue', 'created', 'submitted'].includes(status ?? '')) return { status: 'queued' }
       if (['running', 'processing', 'in_progress', 'generating'].includes(status ?? '')) return { status: 'running' }
       throw new VideoRelayError('VIDEO_STATUS_INVALID', '视频任务状态无法确认，已保留任务标识，请稍后继续查询')

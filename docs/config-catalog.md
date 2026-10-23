@@ -904,7 +904,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-credits-index`
 
 - `inject`: `webServer` · `tools`
-- `source`: [`packages/host/credits-index/src/index.ts:87`](../packages/host/credits-index/src/index.ts)
+- `source`: [`packages/host/credits-index/src/index.ts:93`](../packages/host/credits-index/src/index.ts)
 
 ```ts config-catalog
 /** Plugin config: platform origin, display rate, and where the session file lives. */
@@ -931,6 +931,8 @@ export interface Config {
   imagePollIntervalMs?: number
   /** Maximum consecutive transient query retries; image POSTs are never retried. */
   imageQueryRetryLimit?: number
+  /** Explicit image ceiling; omitted follows verified pools or defaults to ten without changing batch size. */
+  imageConcurrency?: number
   /** Complete single-video submission deadline. */
   videoSubmitTimeoutMs?: number
   /** Complete single-video polling and saving deadline. */
@@ -975,7 +977,7 @@ export interface Config {
   videoProjectMaxSeconds?: number
   /** Maximum separately billable clips in one video project. */
   videoProjectMaxSegments?: number
-  /** Maximum simultaneous clips per project; parallel execution also requires gateway atomic admission. */
+  /** Optional local clip ceiling; omitted follows the gateway pool, or four when undeclared. */
   videoProjectConcurrency?: number
   /** Delay between read-only provider task status requests. */
   videoProjectPollIntervalMs?: number

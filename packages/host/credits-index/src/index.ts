@@ -24,7 +24,8 @@ import type {} from '@deepseek-ai/dsh-client-connection'
 import type {} from '@deepseek-ai/dsh-api-session-controller'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
 import type {} from '@deepseek-ai/dsh-app-boot'
-import { defineTool } from '@deepseek-ai/dsh-tools'
+import { defineTool, type ToolRunContext } from '@deepseek-ai/dsh-tools'
+import type {} from '@deepseek-ai/dsh-user-questions'
 import z from '@deepseek-ai/schemastery'
 import QRCode from 'qrcode'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
@@ -50,18 +51,23 @@ import { relayCreationContent } from './creation-content.ts'
 import { createVideoEditor } from './video-edit.ts'
 import { registerVideoProjectTools } from './video-project-tools.ts'
 import { registerCreationWorkflows } from './creation-workflows.ts'
-import { recoverVideoProjectOutputs, VideoProjectError } from './video-project.ts'
+import { planVideoDurations, recoverVideoProjectOutputs, VideoProjectError } from './video-project.ts'
 import { createVideoProjectRelay } from './video-project-provider.ts'
-import { h3ProjectParallelism } from './video-concurrency.ts'
+import { DEFAULT_VIDEO_PROJECT_PARALLELISM, videoProjectParallelism } from './video-concurrency.ts'
 import { videoSubmission, type VideoReferenceSnapshot } from './video-submission.ts'
 import { bindVideoAccount } from './video-project-account.ts'
 import { artifactOriginOf, captureMediaOutput, type CapturedMediaOutput } from './media-output.ts'
 import { executeImageTask } from './image-task.ts'
+import { ImageConcurrency, imageConcurrencyCeiling } from './image-concurrency.ts'
 import { executeVideoTask } from './video-task.ts'
 import type { CreativeImageReceipt, CreativeVideoReceipt } from './creative-types.ts'
-import type { VideoProjectIdentity, VideoProjectOptions, VideoProjectRequest, VideoRequestValue } from './video-project-types.ts'
+import type { VideoProjectIdentity, VideoProjectInput, VideoProjectOptions, VideoProjectRequest, VideoRequestValue } from './video-project-types.ts'
 import { CreativeError, CreativeStore, parseCreativePlanChange, type CreativeOperation, type CreativeOwner } from './creative-store.ts'
 import { creativeOwner, registerCreativeTools } from './creative-tools.ts'
+import { videoGenerationIntentOf, videoModelChoiceCancelled } from './video-generation-intent.ts'
+import { chatVideoResolution, chooseChatVideoModel, DEFAULT_CHAT_VIDEO_MODEL, readVideoModelQuote, videoModelQuoteSegment,
+  VideoQuoteUnsupportedError, type VideoModelCandidate, type VideoQuoteSegment } from './video-model-choice.ts'
+import { VideoSubmissionRejection } from './video-submission-result.ts'
 import { creativePanelOwner } from './creative-panel.ts'
 import { readChatImageReference } from './chat-image-references.ts'
 import { normalizeReferenceImage, ReferenceImageError, REFERENCE_IMAGE_INPUT_LIMIT } from './reference-image.ts'
@@ -107,6 +113,8 @@ export interface Config {
   imagePollIntervalMs?: number
   /** Maximum consecutive transient query retries; image POSTs are never retried. */
   imageQueryRetryLimit?: number
+  /** Explicit image ceiling; omitted follows verified pools or defaults to ten without changing batch size. */
+  imageConcurrency?: number
   /** Complete single-video submission deadline. */
   videoSubmitTimeoutMs?: number
   /** Complete single-video polling and saving deadline. */
@@ -151,7 +159,7 @@ export interface Config {
   videoProjectMaxSeconds?: number
   /** Maximum separately billable clips in one video project. */
   videoProjectMaxSegments?: number
-  /** Maximum simultaneous clips per project; parallel execution also requires gateway atomic admission. */
+  /** Optional local clip ceiling; omitted follows the gateway pool, or four when undeclared. */
   videoProjectConcurrency?: number
   /** Delay between read-only provider task status requests. */
   videoProjectPollIntervalMs?: number
@@ -186,6 +194,7 @@ export const Config: z<Config> = z.object({
   imageTaskTimeoutMs: z.number().step(1).min(1).max(2_147_483_647).default(600_000),
   imagePollIntervalMs: z.number().step(1).min(1).max(60_000).default(2000),
   imageQueryRetryLimit: z.number().step(1).min(0).max(5).default(2),
+  imageConcurrency: z.number().step(1).min(1).max(64),
   videoSubmitTimeoutMs: z.number().step(1).min(1).max(2_147_483_647).default(180_000),
   videoTaskTimeoutMs: z.number().step(1).min(1).max(2_147_483_647).default(900_000),
   videoChatWaitMs: z.number().step(1).min(1).max(2_147_483_647).default(60_000),
@@ -208,7 +217,7 @@ export const Config: z<Config> = z.object({
   chatUsageConcurrency: z.number().step(1).min(1).max(8).default(4),
   videoProjectMaxSeconds: z.natural().min(1).default(300),
   videoProjectMaxSegments: z.natural().min(1).max(32).default(32),
-  videoProjectConcurrency: z.natural().min(1).max(16).default(4),
+  videoProjectConcurrency: z.natural().min(1).max(16),
   videoProjectPollIntervalMs: z.natural().min(1).default(6000),
   videoProjectTaskTimeoutMs: z.natural().min(1).default(900_000),
   videoProjectDownloadMaxBytes: z.natural().min(12).default(536_870_912),
@@ -220,8 +229,8 @@ export const Config: z<Config> = z.object({
   videoRuntimeRoot: z.string().default(''),
 })
 
-/** Resolved configuration: schemastery already filled every defaulted field. */
-type ResolvedConfig = Required<Config>
+/** Defaulted fields are resolved; omitted concurrency ceilings retain automatic pool scheduling. */
+type ResolvedConfig = Omit<Required<Config>, 'videoProjectConcurrency' | 'imageConcurrency'> & Pick<Config, 'videoProjectConcurrency' | 'imageConcurrency'>
 
 /** The single prefix this plugin owns. */
 const ROUTE_PREFIX = '/credits'
@@ -752,6 +761,9 @@ export function apply(ctx: Context, config: Config): void {
     ? join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'plugin-data', 'credits')
     : resolved.stateDir
   const store = new SessionStore(ctx, join(stateDir, 'session.json'))
+  const imageExecutions = new ImageConcurrency(resolved.imageConcurrency)
+  const imageLife = new AbortController()
+  ctx.effect(() => () => { imageLife.abort() }, 'credits-index: image execution lifetime')
   const relayRef = credentialRef(resolved.relayTokenEnv)
   let identityVersion = 0
   let productModelPresentation: ProductModelPresentation = { defaultChatModel: null, modelOrder: [] }
@@ -912,7 +924,8 @@ export function apply(ctx: Context, config: Config): void {
     message?: string
     group: string | null
     models: ModelCapability[]
-    h3Parallelism?: number
+    projectParallelism?: ReadonlyMap<string, number>
+    imageCeilings?: ReadonlyMap<string, number | undefined>
   }> => {
     const group = await readUserGroup()
     try {
@@ -932,7 +945,11 @@ export function apply(ctx: Context, config: Config): void {
         (order.get(left.id) ?? last) - (order.get(right.id) ?? last))
       diagnosticModelIds.clear()
       for (const model of models) diagnosticModelIds.add(model.id)
-      return { ok: true, group, models, h3Parallelism: h3ProjectParallelism(rows) }
+      const projectParallelism = new Map(models.filter(model => model.kind === 'video')
+        .map(model => [model.id, videoProjectParallelism(rows, model.id)]))
+      const imageCeilings = new Map(models.filter(model => model.kind === 'image')
+        .map(model => [model.id, imageConcurrencyCeiling(rows, model.id)]))
+      return { ok: true, group, models, projectParallelism, imageCeilings }
     } catch (error) {
       return {
         ok: false,
@@ -1055,7 +1072,8 @@ export function apply(ctx: Context, config: Config): void {
     kind: 'image' | 'video',
     id: string | null,
     signal?: AbortSignal,
-  ): Promise<{ ok: true; model: ModelCapability } | { ok: false; code: string; message: string; catalog: ModelCapability[] }> => {
+  ): Promise<{ ok: true; model: ModelCapability; imageCeiling?: number }
+    | { ok: false; code: string; message: string; catalog: ModelCapability[] }> => {
     const catalog = await readMediaCatalog(signal)
     if (!catalog.ok) return { ok: false, code: catalog.code ?? 'CATALOG_FAILED', message: catalog.message ?? '模型表不可用', catalog: [] }
     const model = pickModel(catalog.models, kind, id)
@@ -1069,7 +1087,8 @@ export function apply(ctx: Context, config: Config): void {
         catalog: catalog.models,
       }
     }
-    return { ok: true, model }
+    const imageCeiling = kind === 'image' ? catalog.imageCeilings?.get(model.id) : undefined
+    return { ok: true, model, ...imageCeiling === undefined ? {} : { imageCeiling } }
   }
 
   /** What one media generation produced, in the shape both callers report. */
@@ -1097,8 +1116,11 @@ export function apply(ctx: Context, config: Config): void {
     reuseSavedOutput?: (bytes: Uint8Array) => Promise<string | undefined>,
     origin?: ArtifactOrigin,
     foregroundWaitMs?: number,
+    beforeSubmit?: (signal: AbortSignal) => Promise<void>,
   ): Promise<MediaOutcome> => {
     let output: CapturedMediaOutput | undefined
+    let submitKey = key
+    let preparedSubmission: ReturnType<typeof videoSubmission> | undefined
     return executeVideoTask({
       ...origin === undefined ? {} : { origin },
       model: resumeReceipt?.model ?? readString(request, 'model') ?? '', route,
@@ -1109,16 +1131,26 @@ export function apply(ctx: Context, config: Config): void {
       prepare: async (operationSignal) => { output = await captureMediaOutput(ctx.get('artifactStorage'), join(stateDir, 'media'), operationSignal, resumeReceipt === undefined ? origin : resumeReceipt.origin) },
       ...submitting === undefined ? {} : { submitting }, ...received === undefined ? {} : { received },
       ...resumeReceipt === undefined ? {} : { resumeReceipt },
-      submit: async (operationSignal) => {
-        const ownedKey = await currentKey?.() ?? key
-        operationSignal.throwIfAborted()
-        const submission = videoSubmission(request)
-        return apiFetch(route, { method: 'POST', headers: { authorization: `Bearer ${ownedKey}`, accept: 'application/json', ...submission.headers, ...videoClientHeaders() }, body: submission.body, signal: operationSignal })
+      beforeSubmit: async (operationSignal) => {
+        submitKey = await currentKey?.() ?? key
+        preparedSubmission = videoSubmission(request)
+        await beforeSubmit?.(operationSignal)
       },
-      read: async (taskId, operationSignal) => {
+      submit: async (operationSignal) => {
+        operationSignal.throwIfAborted()
+        const submission = preparedSubmission ?? videoSubmission(request)
+        return apiFetch(route, { method: 'POST', headers: { authorization: `Bearer ${submitKey}`, accept: 'application/json', ...submission.headers, ...videoClientHeaders() }, body: submission.body, signal: operationSignal })
+      },
+      read: async (taskId, operationSignal, canonical) => {
         const ownedKey = await currentKey?.() ?? key
         operationSignal.throwIfAborted()
-        return apiFetch(`${route}/${encodeURIComponent(taskId)}`, { headers: { authorization: `Bearer ${ownedKey}`, accept: 'application/json', ...videoClientHeaders() }, signal: operationSignal })
+        const queryRoute = canonical === true || (resumeReceipt?.model ?? readString(request, 'model')) === 'MiniMax-H3' ? '/v1/tasks' : route
+        const response = await apiFetch(`${queryRoute}/${encodeURIComponent(taskId)}`, { headers: { authorization: `Bearer ${ownedKey}`, accept: 'application/json', ...videoClientHeaders() }, signal: operationSignal })
+        if (canonical !== true || response.status !== 404 || queryRoute === route) return response
+        await response.body?.cancel()
+        const fallbackKey = await currentKey?.() ?? key
+        operationSignal.throwIfAborted()
+        return apiFetch(`${route}/${encodeURIComponent(taskId)}`, { headers: { authorization: `Bearer ${fallbackKey}`, accept: 'application/json', ...videoClientHeaders() }, signal: operationSignal })
       },
       save: async (taskId, operationSignal) => {
         const ownedKey = await currentKey?.() ?? key
@@ -1378,6 +1410,23 @@ export function apply(ctx: Context, config: Config): void {
     currentKey?: () => Promise<string>,
     origin?: ArtifactOrigin,
   ): Promise<MediaOutcome & { paths?: readonly string[]; mode?: string }> => {
+    const imageEpoch = identityVersion
+    signal = AbortSignal.any([signal, imageLife.signal])
+    let releaseImage: (() => void) | undefined
+    let imageAccount: Awaited<ReturnType<typeof bindCurrentVideoAccount>> | undefined
+    let submitKey = key
+    const assertImageCurrent = (): void => {
+      if (imageEpoch !== identityVersion) throw new VideoProjectError('IMAGE_ACCOUNT_CHANGED',
+        '登录状态已变化，已停止本次图片操作；请核对原任务后再决定是否生成。')
+    }
+    const imageKey = async (): Promise<string> => {
+      assertImageCurrent()
+      if (imageAccount === undefined) throw new VideoProjectError('IMAGE_ACCOUNT_CHANGED', '登录状态尚未确认，已停止本次图片操作。')
+      const ownedKey = await imageAccount.key()
+      await currentKey?.()
+      assertImageCurrent()
+      return ownedKey
+    }
     const backendFingerprint = createHash('sha256').update(apiBaseUrl).digest('hex')
     const execute = async (
       model: string, route: string, mode: string, format: string | null,
@@ -1392,18 +1441,33 @@ export function apply(ctx: Context, config: Config): void {
         submitTimeoutMs: resolved.imageSubmitTimeoutMs, taskTimeoutMs: resolved.imageTaskTimeoutMs,
         queryTimeoutMs: resolved.timeoutMs, pollIntervalMs: resolved.imagePollIntervalMs,
         queryRetryLimit: resolved.imageQueryRetryLimit,
-        ...submitting === undefined ? {} : { submitting },
+        submitting: async () => {
+          submitKey = await imageKey()
+          await submitting?.()
+          assertImageCurrent()
+        },
+        beforeSubmit: assertImageCurrent,
         ...received === undefined ? {} : { received },
         ...resumeReceipt === undefined ? {} : { resumeReceipt },
-        read: async (taskId, requestSignal) => {
-          const ownedKey = await currentKey?.() ?? key
+        read: async (taskId, requestSignal, canonical) => {
+          const ownedKey = await imageKey()
+          assertImageCurrent()
+          requestSignal.throwIfAborted()
+          const response = await apiFetch(`${canonical === true ? '/v1/tasks' : route}/${encodeURIComponent(taskId)}`, {
+            headers: { authorization: `Bearer ${ownedKey}`, accept: 'application/json' }, signal: requestSignal,
+          })
+          if (canonical !== true || response.status !== 404 || route === '/v1/tasks') return response
+          await response.body?.cancel()
+          const fallbackKey = await imageKey()
+          assertImageCurrent()
           requestSignal.throwIfAborted()
           return apiFetch(`${route}/${encodeURIComponent(taskId)}`, {
-            headers: { authorization: `Bearer ${ownedKey}`, accept: 'application/json' }, signal: requestSignal,
+            headers: { authorization: `Bearer ${fallbackKey}`, accept: 'application/json' }, signal: requestSignal,
           })
         },
         save: async (entry, index, operationSignal) => {
-          await currentKey?.()
+          await imageKey()
+          assertImageCurrent()
           operationSignal.throwIfAborted()
           const b64 = readString(entry, 'b64_json')
           const remote = readString(entry, 'url')
@@ -1416,7 +1480,8 @@ export function apply(ctx: Context, config: Config): void {
           } else return undefined
           if (bytes.length === 0) throw new VideoProjectError('IMAGE_DOWNLOAD_UNAVAILABLE', '原图片内容尚未取回，请继续查询原任务并保存；无需重新生成。')
           const previous = await reuseSavedOutput?.(bytes)
-          await currentKey?.()
+          await imageKey()
+          assertImageCurrent()
           operationSignal.throwIfAborted()
           if (previous !== undefined) return previous
           const suffix = format === 'jpeg' || bytes[0] === 255 && bytes[1] === 216 ? 'jpg'
@@ -1431,6 +1496,8 @@ export function apply(ctx: Context, config: Config): void {
       return { ...result, mode }
     }
     try {
+      imageAccount = await bindCurrentVideoAccount()
+      if (await imageKey() !== key) throw new VideoProjectError('IMAGE_ACCOUNT_CHANGED', '登录状态已变化，尚未提交本次图片生成。')
       if (resumeReceipt !== undefined) {
         return await execute(resumeReceipt.model, resumeReceipt.route, 'recover', null, () => Promise.reject(new Error('Image recovery cannot submit a generation')))
       }
@@ -1512,7 +1579,7 @@ export function apply(ctx: Context, config: Config): void {
             : `${model} 最多接受 ${String(params.maxEdits)} 张参考图`,
         }
       }
-      const headers = { authorization: `Bearer ${key}`, 'content-type': 'application/json', accept: 'application/json' }
+      const headers = { 'content-type': 'application/json', accept: 'application/json' }
       /** The optional knobs, spelled the way both the relay and the vendors read them. */
       const extras: Record<string, unknown> = {
         ...size === null ? {} : { size },
@@ -1547,6 +1614,8 @@ export function apply(ctx: Context, config: Config): void {
         // Validate every local image before sending any bytes. Uploads have
         // no generation charge; only the later generation POST is dispatched.
         for (const file of prepared) {
+          await imageKey()
+          assertImageCurrent()
           if ((await liveSession())?.relay?.key !== key) {
             return { ok: false, submissionState: 'not-submitted', model, code: 'AUTH_REQUIRED', message: '登录状态已变化，请重新登录；尚未提交生成。' }
           }
@@ -1616,7 +1685,7 @@ export function apply(ctx: Context, config: Config): void {
       const submit = async (requestSignal: AbortSignal): Promise<Response> => {
         if (capability.model.route !== '/v1/images/generations') {
           return apiFetch(capability.model.route, {
-            method: 'POST', headers,
+            method: 'POST', headers: { ...headers, authorization: `Bearer ${submitKey}` },
             body: JSON.stringify(internalImage
               ? { model, prompt, n: 1, ...resolution === undefined ? {} : { resolution }, ...size === null ? {} : { size },
                 ...referenceUrls.length === 0 ? {} : { reference_images: referenceUrls } }
@@ -1625,14 +1694,17 @@ export function apply(ctx: Context, config: Config): void {
           })
         }
         if (references.length === 0) return apiFetch('/v1/images/generations', {
-          method: 'POST', headers,
+          method: 'POST', headers: { ...headers, authorization: `Bearer ${submitKey}` },
           body: JSON.stringify({ model, prompt, n: count, response_format: 'b64_json', ...extras }), signal: requestSignal,
         })
         requestSignal.throwIfAborted()
         return apiFetch('/v1/images/edits', {
-          method: 'POST', headers: { authorization: `Bearer ${key}`, accept: 'application/json' }, body: editForm, signal: requestSignal,
+          method: 'POST', headers: { authorization: `Bearer ${submitKey}`, accept: 'application/json' }, body: editForm, signal: requestSignal,
         })
       }
+      assertImageCurrent()
+      releaseImage = await imageExecutions.acquire(model, capability.imageCeiling, signal, imageEpoch)
+      signal.throwIfAborted()
       return await execute(model, capability.model.route, references.length === 0 ? 'generate' : 'edit', format, submit)
     } catch (error) {
       return { ok: false, submissionState: resumeReceipt === undefined ? 'not-submitted' : 'pending',
@@ -1642,6 +1714,8 @@ export function apply(ctx: Context, config: Config): void {
         code: error instanceof VideoProjectError ? error.code : signal.aborted ? 'ABORTED' : 'IMAGE_PREPARATION_FAILED',
         message: resumeReceipt === undefined ? '生成准备未完成，尚未提交生成，请检查素材与保存位置。'
           : '原任务的查询或保存暂未完成，请检查原任务；不会重新生成。' }
+    } finally {
+      releaseImage?.()
     }
   }
 
@@ -3186,11 +3260,13 @@ export function apply(ctx: Context, config: Config): void {
             return
           }
           const key = owned.key
+          const binding = await bindCurrentVideoAccount()
           const body = await readJson(request)
-          const binding = body.session_id === undefined && body.account_id === undefined ? undefined : await bindCurrentVideoAccount()
-          const owner = binding === undefined ? undefined : creativePanelOwner(ctx, request, body, binding.identity)
+          const owner = body.session_id === undefined && body.account_id === undefined ? undefined
+            : creativePanelOwner(ctx, request, body, binding.identity)
           let outcome: Awaited<ReturnType<typeof runImageGeneration>> & { planId?: string; operationId?: string }
-          if (owner === undefined || binding === undefined) outcome = await runImageGeneration(key, body)
+          if (owner === undefined) outcome = await runImageGeneration(key, body, undefined,
+            undefined, undefined, undefined, undefined, undefined, () => binding.key())
           else {
             const admission = `${owner.accountId}:${owner.sessionId}`
             if (panelImageAdmissions.has(admission)) {
@@ -3630,12 +3706,141 @@ export function apply(ctx: Context, config: Config): void {
     return 'reason' in owned ? undefined : { accountId: current.account.id, token: current.token, key: owned.key }
   })
 
+  /** Resolve both chat entry points against the same catalog and real human selection. */
+  const selectChatVideoModel = async (
+    input: VideoProjectInput, exec: ToolRunContext, identity: VideoProjectIdentity, assertCurrent: () => Promise<void>,
+  ): Promise<{ input: VideoProjectInput; beforeSubmit: (signal: AbortSignal) => Promise<void> }> => {
+    if (videoModelChoiceCancelled(exec)) throw new CreativeError('USER_CANCELLED', 409,
+      '你已取消本次视频生成，未提交新的模型请求；需要生成时请明确发送新的生成要求。')
+    const intent = videoGenerationIntentOf(exec)
+    if (intent === undefined) throw new CreativeError('CREATIVE_VIDEO_INTENT_UNAVAILABLE', 409,
+      '无法确认本次新增视频的请求，尚未提交生成；请明确提出需要生成的视频及数量。')
+    const catalog = await readMediaCatalog(exec.signal)
+    if (!catalog.ok) throw new CreativeError('VIDEO_MODELS_UNAVAILABLE', 409, '当前无法读取视频型号，尚未提交生成。')
+    const baselinePlan = { requiresReplan: false }
+    const candidate = (model: string, resolution: string | undefined, allowReplan = false): VideoModelCandidate => {
+      const capability = catalog.models.find(value => value.kind === 'video' && value.id === model)
+      if (capability === undefined) throw new CreativeError('VIDEO_MODEL_UNAVAILABLE', 409,
+        '所选视频型号当前不可用，尚未提交生成；请查看当前可用型号。')
+      const params = capability.params as VideoParams
+      resolution ??= capability.source === 'plugin:blackrxai-video' ? params.resolutions[0] : undefined
+      if (resolution !== undefined && !params.resolutions.includes(resolution)) {
+        throw new CreativeError('RESOLUTION_NOT_SUPPORTED', 409,
+          '所选型号不支持请求的分辨率，尚未提交生成；请按当前型号规格重新选择。')
+      }
+      const menu = videoDurations(params, resolution ?? null)
+      let durations = input.shotDurations ?? planVideoDurations(input.totalDurationSeconds, menu, resolved.videoProjectMaxSegments)
+      if (allowReplan && (durations.some(duration => !menu.includes(duration))
+        || input.shotPrompts !== undefined && input.shotPrompts.length !== durations.length)) {
+        durations = planVideoDurations(input.totalDurationSeconds, menu, resolved.videoProjectMaxSegments)
+        baselinePlan.requiresReplan = true
+      }
+      if (durations.length === 0 || durations.some(duration => !menu.includes(duration))
+        || durations.reduce((sum, duration) => sum + duration, 0) < input.totalDurationSeconds) {
+        throw new CreativeError('DURATION_NOT_SUPPORTED', 409,
+          '所选型号与本次分镜时长不兼容，尚未提交生成；请保留用户时长并重新规划。')
+      }
+      return { model, ...resolution === undefined ? {} : { resolution }, durations: [...durations] }
+    }
+    const targetModel = intent.requestedModel ?? input.model ?? DEFAULT_CHAT_VIDEO_MODEL
+    const target = candidate(targetModel, chatVideoResolution(input.resolution, targetModel, intent.requestedResolution))
+    let baseline: VideoModelCandidate | undefined = target
+    const baselineUnsupported = (error: unknown): boolean => error instanceof VideoQuoteUnsupportedError
+      || (error instanceof CreativeError || error instanceof VideoProjectError)
+      && ['VIDEO_MODEL_UNAVAILABLE', 'RESOLUTION_NOT_SUPPORTED', 'DURATION_NOT_SUPPORTED', 'AUDIO_NOT_SUPPORTED',
+        'REFERENCES_NOT_SUPPORTED', 'MIX_NOT_SUPPORTED', 'RATIO_NOT_SUPPORTED', 'PARAMETER_NOT_SUPPORTED',
+        'TOO_MANY_SEGMENTS', 'DURATION_MENU_UNAVAILABLE', 'DURATION_PLAN_FAILED'].includes(error.code)
+    if (targetModel !== DEFAULT_CHAT_VIDEO_MODEL) {
+      try { baseline = candidate(DEFAULT_CHAT_VIDEO_MODEL, chatVideoResolution(undefined, DEFAULT_CHAT_VIDEO_MODEL), true) }
+      catch (error) { if (baselineUnsupported(error)) baseline = undefined; else throw error }
+    }
+    const quoteSegments = new Map<string, Promise<readonly VideoQuoteSegment[]>>()
+    const references = new Map<string, string>()
+    const prepareQuoteSegments = (value: VideoModelCandidate): Promise<readonly VideoQuoteSegment[]> => {
+      const key = JSON.stringify(value)
+      const existing = quoteSegments.get(key)
+      if (existing !== undefined) return existing
+      const preparing = (async () => {
+        const capability = catalog.models.find(model => model.id === value.model && model.kind === 'video')
+        if (capability === undefined) throw new CreativeError('VIDEO_MODEL_UNAVAILABLE', 409, '所选视频型号当前不可用，尚未提交生成。')
+        const normalize = async (values: readonly string[] | undefined, kind: 'image' | 'video' | 'audio'): Promise<string[]> => {
+          const result: string[] = []
+          for (const source of values ?? []) result.push(await normalizeVideoReference(source, kind,
+            exec.agent?.session.header.cwd, references, exec.signal))
+          return result
+        }
+        const segments: VideoQuoteSegment[] = []
+        for (const [index, durationSeconds] of value.durations.entries()) {
+          const built = await buildVideoRequest(capability, {
+            prompt: input.shotPrompts?.[index] ?? input.prompt, durationSeconds,
+            ...value.resolution === undefined ? {} : { resolution: value.resolution },
+            ...input.ratio === undefined ? {} : { ratio: input.ratio }, ...input.audio === undefined ? {} : { audio: input.audio },
+            frameImages: await normalize(input.frameImages, 'image'),
+            referenceImages: await normalize([...input.referenceImages ?? [], ...input.shotReferenceImages?.[index] ?? []], 'image'),
+            referenceVideos: await normalize(input.referenceVideos, 'video'), referenceAudios: await normalize(input.referenceAudios, 'audio'),
+          })
+          if (!built.ok) throw new CreativeError(built.code, 409, built.message)
+          segments.push(videoModelQuoteSegment(built.request, index))
+        }
+        return segments
+      })()
+      quoteSegments.set(key, preparing)
+      return preparing
+    }
+    if (baseline !== undefined && targetModel !== DEFAULT_CHAT_VIDEO_MODEL) {
+      try { await prepareQuoteSegments(baseline) }
+      catch (error) { if (baselineUnsupported(error)) baseline = undefined; else throw error }
+    }
+    const questions = ctx.get('userQuestions')
+    let approval: { assertCurrent(signal: AbortSignal): Promise<void> } | undefined
+    const selected = await chooseChatVideoModel({ target, baseline, accountId: identity.accountId,
+      workCount: intent.grant.maxWorks, signal: exec.signal, assertCurrent,
+      baselineRequiresReplan: baselinePlan.requiresReplan, onApproved: (value) => { approval = value },
+      quote: async (value, workCount, signal) => {
+        const segments = await prepareQuoteSegments(value)
+        return readVideoModelQuote({ candidate: value, accountId: identity.accountId, signal,
+          request: { model: value.model, works_count: workCount, segments },
+          transport: async (request, requestSignal) => {
+            await assertCurrent()
+            const current = await bindCurrentVideoAccount()
+            if (current.identity.accountId !== identity.accountId || current.identity.sessionFingerprint !== identity.sessionFingerprint) {
+              throw new CreativeError('VIDEO_ACCOUNT_CHANGED', 409, '登录状态已变化，尚未提交新的生成；请在原账户核对已有任务。')
+            }
+            const key = await current.key()
+            return apiFetch('/v1/video/quote', { method: 'POST', headers: {
+              authorization: `Bearer ${key}`, 'content-type': 'application/json', accept: 'application/json',
+            }, body: JSON.stringify(request), signal: AbortSignal.any([requestSignal, AbortSignal.timeout(resolved.timeoutMs)]) })
+          },
+        })
+      },
+      ...questions === undefined ? {} : { ask: async (items, signal) => questions.ask({
+        questions: items, ...exec.agent === undefined ? {} : { agent: exec.agent }, signal,
+      }) },
+    })
+    if (selected === baseline && baselinePlan.requiresReplan) throw new CreativeError('CREATIVE_VIDEO_MODEL_CHOICE_UNAVAILABLE', 409,
+      '已选择 H3，但原分镜时长与 H3 不兼容，本次未提交生成；请明确按 H3 重新规划，保留原定成片时长。')
+    await assertCurrent()
+    return { input: { ...input, model: selected.model,
+      ...selected.resolution === undefined ? {} : { resolution: selected.resolution } }, async beforeSubmit(signal) {
+      signal.throwIfAborted()
+      if (videoModelChoiceCancelled(exec)) throw new CreativeError('USER_CANCELLED', 409,
+        '你已取消本次视频生成，未提交新的模型请求；需要生成时请明确发送新的生成要求。')
+      await assertCurrent()
+      await approval?.assertCurrent(signal)
+      if (videoModelChoiceCancelled(exec)) throw new CreativeError('USER_CANCELLED', 409,
+        '你已取消本次视频生成，未提交新的模型请求；需要生成时请明确发送新的生成要求。')
+    } }
+  }
+
   // Keep registration visible in custom deployments; missing local capabilities fail before generation.
   {
     const videoContext = ctx
     const projectState = join(stateDir, 'video-projects')
     projectOptions = {
       creative,
+      chatModelChoice: async (input, exec, provider) => {
+        return selectChatVideoModel(input, exec, provider.identity, () => provider.assertCurrent())
+      },
       failed: (manifest, code) => { clientErrors.submit('generate_video_project', { model: manifest.model },
         { status: 'failed', code }, {}, manifest.identity.accountId) },
       creativeImageReference,
@@ -3644,7 +3849,7 @@ export function apply(ctx: Context, config: Config): void {
       get publication() { return videoContext.get('artifactStorage') },
       maxTotalSeconds: resolved.videoProjectMaxSeconds,
       maxSegments: resolved.videoProjectMaxSegments,
-      maxConcurrentSegments: resolved.videoProjectConcurrency,
+      ...resolved.videoProjectConcurrency === undefined ? {} : { maxConcurrentSegments: resolved.videoProjectConcurrency },
       pollIntervalMs: resolved.videoProjectPollIntervalMs,
       taskTimeoutMs: resolved.videoProjectTaskTimeoutMs,
       editor: (workspaceRoot, session, ownedMediaRoots) => {
@@ -3696,15 +3901,14 @@ export function apply(ctx: Context, config: Config): void {
             signal.throwIfAborted()
             await binding.key()
             signal.throwIfAborted()
-            if (id !== 'MiniMax-H3') return 1
             const [ids, catalog] = await Promise.all([relay.modelIds(signal), readMediaCatalog(signal)])
             signal.throwIfAborted()
             await binding.key()
-            if (!catalog.ok) return 1
+            if (!catalog.ok) return DEFAULT_VIDEO_PROJECT_PARALLELISM
             if (!ids.includes(id) || !catalog.models.some(model => model.id === id && model.kind === 'video')) {
               throw new VideoProjectError('VIDEO_MODEL_UNAVAILABLE', '当前登录账户没有可用的所选视频模型，请检查后台模型配置')
             }
-            return catalog.h3Parallelism ?? 1
+            return catalog.projectParallelism?.get(id) ?? DEFAULT_VIDEO_PROJECT_PARALLELISM
           },
           model: async (id, signal, resolution) => {
             const [ids, catalog] = await Promise.all([relay.modelIds(signal), readMediaCatalog(signal)])
@@ -3745,7 +3949,7 @@ export function apply(ctx: Context, config: Config): void {
             return value
           },
           submit: async (request, signal) => relay.submit(request, await requestRoute(request), signal),
-          check: async (taskId, request, signal) => relay.check(taskId, await requestRoute(request), signal),
+          check: async (taskId, request, signal) => relay.check(taskId, await requestRoute(request), signal, typeof request.model === 'string' ? request.model : undefined),
           download: (taskId, _request, destination, signal) => relay.download(taskId, destination, signal),
         }
       },
@@ -3755,6 +3959,7 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.tools.register(defineTool({
     name: 'generate_image',
+    isConcurrencySafe: () => true,
     description: 'Generate images or edit reference images through the signed-in account relay, save every result into the artifacts directory, and return the paths. For pending or unknown results, never resubmit this tool: use query_image_task with the original plan_id and operation_id when a task_id was received. Without a task_id, retain the unknown outcome and reconcile the original request before any paid retry. For image-to-image requests, pass the current-chat user attachment or an authorized workspace image in reference_images. Which image models exist, and what each one accepts, is the deployment’s own answer: ask for a model only when the user names one.' + MEDIA_FAILURE_GUIDANCE,
     parameters: {
       plan_id: { type: 'string', description: 'Explicit update_creation_plan id for this generation. Also provide exactly one of shot_id or asset_id.' },
@@ -4020,7 +4225,7 @@ export function apply(ctx: Context, config: Config): void {
       plan_id: { type: 'string', description: 'Explicit update_creation_plan id for this generation. Also provide shot_id.' },
       shot_id: { type: 'string', description: 'Exact shot id in the explicit plan; never guess a latest project.' },
       prompt: { type: 'string', required: true, description: 'What the video should show. Before calling, script user-delegated narrative or dialogue scenes with stable character ids, language, brief exact lines and their timing, identifying on-screen speakers versus narration; preserve user-supplied wording. Do not reduce a story requiring voices to a music montage. Respect silent/no-dialogue requests and do not add dialogue or subtitles to unrelated nonverbal videos. Include requested lip-sync and subtitle requirements. These request native model generation, not separate speech, lip-sync or subtitle processing; verify the rendered result before claiming they are met.' },
-      model: { type: 'string', description: 'Optional video model id such as MiniMax-H3. Defaults to the first video model the deployment serves for this account.' },
+      model: { type: 'string', description: 'Defaults to MiniMax-H3 at 768P unless the human explicitly requested another resolution. A non-H3 model requires a current full-price estimate and a real human model selection before generation; model arguments never approve that change.' },
       duration_seconds: { type: 'number', description: 'Clip length in seconds; only values the chosen model declares are accepted.' },
       resolution: { type: 'string', description: 'Output resolution such as 768P or 2K, when the model offers choices.' },
       ratio: { type: 'string', description: 'Aspect ratio such as 16:9 or 9:16; adaptive inherits it from the reference media.' },
@@ -4055,7 +4260,15 @@ export function apply(ctx: Context, config: Config): void {
       let operation: CreativeOperation | undefined
       try {
         const binding = await bindCurrentVideoAccount()
-        const capability = await capabilityFor('video', args.model ?? null)
+        if (videoModelChoiceCancelled(exec)) throw new CreativeError('USER_CANCELLED', 409,
+          '你已取消本次视频生成，未提交新的模型请求；需要生成时请明确发送新的生成要求。')
+        const videoIntent = await creative.preflightVideoWorkCount(creativeOwner(exec, binding.identity), videoGenerationIntentOf(exec), {
+          ...args.plan_id === undefined ? {} : { planId: args.plan_id },
+          ...args.shot_id === undefined ? {} : { shotIds: [args.shot_id] },
+        })
+        const requestedModel = videoIntent.requestedModel ?? args.model ?? DEFAULT_CHAT_VIDEO_MODEL
+        const requestedResolution = chatVideoResolution(args.resolution, requestedModel, videoIntent.requestedResolution)
+        let capability = await capabilityFor('video', requestedModel)
         if (!capability.ok) return { status: 'failed', code: capability.code, message: capability.message }
         const referenceAudios: string[] = []
         const references = new Map<string, string>()
@@ -4072,25 +4285,45 @@ export function apply(ctx: Context, config: Config): void {
           }
           return result
         }
-        const built = await buildVideoRequest(capability.model, {
+        const requestInput = {
           prompt: args.prompt,
           ...args.duration_seconds === undefined ? {} : { durationSeconds: args.duration_seconds },
-          ...args.resolution === undefined ? {} : { resolution: args.resolution },
+          ...requestedResolution === undefined ? {} : { resolution: requestedResolution },
           ...args.ratio === undefined ? {} : { ratio: args.ratio },
           ...args.audio === undefined ? {} : { audio: args.audio },
           ...args.frame_images === undefined ? {} : { frameImages: await images(args.frame_images) },
           ...args.reference_images === undefined ? {} : { referenceImages: await images(args.reference_images) },
           ...args.reference_videos === undefined ? {} : { referenceVideos: args.reference_videos },
           referenceAudios,
-        })
+        }
+        let built = await buildVideoRequest(capability.model, requestInput)
         if (!built.ok) return { status: 'failed', code: built.code, model: capability.model.id, message: built.message }
+        const duration = built.request.seconds
+        if (typeof duration !== 'number') throw new CreativeError('DURATION_NOT_SUPPORTED', 409,
+          '当前视频时长无法核实，尚未提交生成；请明确视频时长。')
+        const choice = await selectChatVideoModel({ ...requestInput, totalDurationSeconds: duration,
+          model: capability.model.id, shotDurations: [duration] }, exec, binding.identity, async () => { await binding.key() })
+        const selection = choice.input
+        if (selection.model !== capability.model.id || selection.resolution !== requestedResolution) {
+          capability = await capabilityFor('video', selection.model ?? DEFAULT_CHAT_VIDEO_MODEL, exec.signal)
+          if (!capability.ok) return { status: 'failed', code: capability.code, message: capability.message }
+          built = await buildVideoRequest(capability.model, { ...requestInput, resolution: selection.resolution })
+          if (!built.ok) return { status: 'failed', code: built.code, model: capability.model.id, message: built.message }
+        }
         exec.signal.throwIfAborted()
-        operation = await creative.begin(creativeOwner(exec, binding.identity), { kind: 'video', model: capability.model.id, prompt: args.prompt, shots: [{ prompt: args.prompt, ...args.duration_seconds === undefined ? {} : { durationSeconds: args.duration_seconds } }], ...args.plan_id === undefined ? {} : { planId: args.plan_id }, ...args.shot_id === undefined ? {} : { shotIds: [args.shot_id] } })
+        await choice.beforeSubmit(exec.signal)
+        operation = await creative.begin(creativeOwner(exec, binding.identity), { kind: 'video', model: capability.model.id, prompt: args.prompt, shots: [{ prompt: args.prompt, ...args.duration_seconds === undefined ? {} : { durationSeconds: args.duration_seconds } }], ...args.plan_id === undefined ? {} : { planId: args.plan_id }, ...args.shot_id === undefined ? {} : { shotIds: [args.shot_id] }, videoIntent })
         const creation = operation
         const outcome = await runVideoTask(await binding.key(), capability.model.route, built.request, exec.signal,
           async () => { await binding.key(); await creative.dispatched(creation) },
           receipt => creative.videoReceipt(creation, receipt), undefined, () => binding.key(), path => creative.saved(creation, path, 'video'),
-          undefined, artifactOriginOf(exec), resolved.videoChatWaitMs)
+          undefined, artifactOriginOf(exec), resolved.videoChatWaitMs, async (submitSignal) => {
+            try { await choice.beforeSubmit(submitSignal) } catch (error) {
+              if (error instanceof CreativeError) throw new VideoSubmissionRejection(error.code, error.message, 'not_submitted')
+              throw new VideoSubmissionRejection('CREATIVE_VIDEO_MODEL_CHOICE_UNAVAILABLE',
+                '提交前的型号与报价确认未完成，未提交新的生成；请重新确认。', 'not_submitted')
+            }
+          })
         await creative.finish(operation, { status: outcome.ok ? 'completed' : imageCreativeStatus(outcome, exec.signal), kind: 'video',
           ...outcome.submissionState === 'not-submitted' ? { notSubmitted: true } : {},
           ...outcome.videoReceipt === undefined ? {} : { videoReceipt: outcome.videoReceipt },

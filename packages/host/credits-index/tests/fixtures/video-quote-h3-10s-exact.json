@@ -1,0 +1,75 @@
+{
+  "fixture": "actual handler response from committed98c runtime with explicit test request-input overlay; synthetic local prices, not production account quotes",
+  "source_binding": "source-binding.json",
+  "outbound_requests": 0,
+  "case": "BT concrete size",
+  "http_status": 200,
+  "method": "POST",
+  "path": "/v1/video/quote",
+  "request": {
+    "model": "MiniMax-H3",
+    "segments": [
+      {
+        "id": "clip-1",
+        "parameters": {
+          "metadata": {
+            "resolution": "768P"
+          },
+          "seconds": 10
+        },
+        "reference_counts": {
+          "audios": 0,
+          "images": 0,
+          "videos": 0
+        }
+      }
+    ],
+    "works_count": 1
+  },
+  "response": {
+    "account_binding": "1ff175016496f0f5dd462b07f9433de291fd0aa0b0989022a91bd4c4cb659db2",
+    "charged": false,
+    "created_at": 1792727100,
+    "currency": "CNY",
+    "estimate_only": true,
+    "estimated_one_work": "2.8",
+    "estimated_total": "2.8",
+    "expires_at": 1792727160,
+    "model": "MiniMax-H3",
+    "object": "video.quote",
+    "one_work_quota": 200000,
+    "pricing_revision": "4533d0c50b7da3528cec78eb5966c0602923d27fb6f9e1bda7e4afa4851473c2",
+    "quota_per_usd": 500000,
+    "quote_id": "a0e8d5bd8b990eadaa4ba0213195b1cc7590b46f27fca6706de47f0928d0425c",
+    "reserved": false,
+    "schema_version": 1,
+    "segments": [
+      {
+        "estimated_amount": "2.8",
+        "id": "clip-1",
+        "parameters": {
+          "metadata": {
+            "resolution": "768P"
+          },
+          "seconds": 10
+        },
+        "quota": 200000,
+        "reference_counts": {
+          "audios": 0,
+          "images": 0,
+          "videos": 0
+        },
+        "usage": {
+          "input_images": 0,
+          "input_video_seconds": 0,
+          "resolution": "768P",
+          "seconds": 10
+        }
+      }
+    ],
+    "submitted": false,
+    "total_quota": 200000,
+    "usd_exchange_rate": 7,
+    "works_count": 1
+  }
+}

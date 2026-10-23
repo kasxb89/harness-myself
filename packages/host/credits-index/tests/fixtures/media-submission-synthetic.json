@@ -1,0 +1,109 @@
+{
+  "source": "Synthetic confirmed DTO for consumer negatives; not actual API HTTP or production evidence.",
+  "image": {
+    "http_status": 429,
+    "body": {
+      "code": "media_account_capacity_exhausted",
+      "id": "original-image-task",
+      "task_id": "original-image-task",
+      "model": "yunshu-internal-gpt-image-2",
+      "media_kind": "image",
+      "media_submission_receipt": {
+        "schema_version": 1,
+        "model": "yunshu-internal-gpt-image-2",
+        "media_kind": "image",
+        "id": "original-image-task",
+        "task_id": "original-image-task",
+        "submission_code": "media_submission_not_sent",
+        "submission_state": "not_submitted",
+        "billing_state": "not_charged",
+        "upstream_submitted": false,
+        "retryable": false,
+        "resubmittable": true,
+        "recovery": {
+          "method": "GET",
+          "path": "/v1/tasks/original-image-task"
+        }
+      }
+    },
+    "query": {
+      "code": "success",
+      "data": {
+        "id": "original-image-task",
+        "task_id": "original-image-task",
+        "model": "yunshu-internal-gpt-image-2",
+        "status": "FAILURE"
+      },
+      "media_submission_receipt": {
+        "schema_version": 1,
+        "model": "yunshu-internal-gpt-image-2",
+        "media_kind": "image",
+        "id": "original-image-task",
+        "task_id": "original-image-task",
+        "submission_code": "media_submission_not_sent",
+        "submission_state": "not_submitted",
+        "billing_state": "not_charged",
+        "upstream_submitted": false,
+        "retryable": false,
+        "resubmittable": true,
+        "recovery": {
+          "method": "GET",
+          "path": "/v1/tasks/original-image-task"
+        }
+      }
+    }
+  },
+  "video": {
+    "http_status": 429,
+    "body": {
+      "code": "media_account_capacity_exhausted",
+      "id": "original-video-task",
+      "task_id": "original-video-task",
+      "model": "model_5",
+      "media_kind": "video",
+      "media_submission_receipt": {
+        "schema_version": 1,
+        "model": "model_5",
+        "media_kind": "video",
+        "id": "original-video-task",
+        "task_id": "original-video-task",
+        "submission_code": "media_submission_not_sent",
+        "submission_state": "not_submitted",
+        "billing_state": "not_charged",
+        "upstream_submitted": false,
+        "retryable": false,
+        "resubmittable": true,
+        "recovery": {
+          "method": "GET",
+          "path": "/v1/tasks/original-video-task"
+        }
+      }
+    },
+    "query": {
+      "code": "success",
+      "data": {
+        "id": "original-video-task",
+        "task_id": "original-video-task",
+        "model": "model_5",
+        "status": "FAILURE"
+      },
+      "media_submission_receipt": {
+        "schema_version": 1,
+        "model": "model_5",
+        "media_kind": "video",
+        "id": "original-video-task",
+        "task_id": "original-video-task",
+        "submission_code": "media_submission_not_sent",
+        "submission_state": "not_submitted",
+        "billing_state": "not_charged",
+        "upstream_submitted": false,
+        "retryable": false,
+        "resubmittable": true,
+        "recovery": {
+          "method": "GET",
+          "path": "/v1/tasks/original-video-task"
+        }
+      }
+    }
+  }
+}

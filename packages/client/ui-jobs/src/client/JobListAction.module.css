@@ -323,6 +323,30 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Producer-owned progress stays plain text; long summaries scroll separately
+   from the row's output toggle and stop control. */
+.progress {
+  box-sizing: border-box;
+  min-width: 0;
+  max-height: min(224px, 35vh);
+  margin: 0 8px 8px;
+  padding: 6px 8px;
+  overflow: auto;
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-fill-l1);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  --dsh-scrollbar-track-margin: 4px;
+}
+
+.progress:focus-visible {
+  outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: -1px;
+}
+
 .chevron {
   flex: none;
   color: var(--dsw-alias-label-tertiary);

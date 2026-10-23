@@ -4,6 +4,7 @@ import { executeImageTask, type ImageTaskOptions } from '../src/image-task.ts'
 import type { CreativeImageReceipt } from '../src/creative-types.ts'
 import { Config } from '../src/index.ts'
 import { VideoProjectError } from '../src/video-project.ts'
+import mediaContract from './fixtures/media-submission-api-contract-v3.json' with { type: 'json' }
 
 const fingerprint = 'a'.repeat(64)
 const receipt: CreativeImageReceipt = { model: 'yunshu-internal-gpt-image-2', route: '/toapis/v1/images/generations',
@@ -22,6 +23,112 @@ function options(changes: Partial<ImageTaskOptions> = {}): ImageTaskOptions {
 }
 
 describe('image task execution and read-only recovery', () => {
+  const capacity = mediaContract.find(entry => entry.method === 'POST' && entry.http_status === 429 && entry.response.media_kind === 'image')
+  const canonical = mediaContract.find(entry => entry.method === 'GET' && entry.response.media_kind === 'image')
+  if (capacity === undefined || canonical === undefined || typeof capacity.response.id !== 'string') throw new Error('Actual image receipt fixtures are required')
+  const originalId = capacity.response.id
+
+  it('retains the actual image capacity proof, header and original immutable route as failed without a local not-submitted result', async () => {
+    const input = options({ submit: vi.fn(async () => json(capacity.response, capacity.http_status, { 'x-oneapi-request-id': 'actual-header' })) })
+    const result = await executeImageTask(input)
+    expect(result).toMatchObject({ submissionState: 'failed', taskId: originalId, requestId: 'actual-header',
+      code: 'media_account_capacity_exhausted', imageReceipt: { route: receipt.route, phase: 'submitting', taskId: originalId } })
+    expect(result.message).toContain('未扣费')
+    expect(input.submit).toHaveBeenCalledOnce()
+    expect(input.read).not.toHaveBeenCalled()
+    expect(input.save).not.toHaveBeenCalled()
+  })
+
+  it('recovers an actual image not-sent proof through the fixed canonical GET without submitting', async () => {
+    const input = options({ resumeReceipt: { ...receipt, taskId: originalId },
+      read: vi.fn(async () => json(canonical.response, canonical.http_status)) })
+    expect(await executeImageTask(input)).toMatchObject({ submissionState: 'failed', taskId: originalId, code: 'MEDIA_SUBMISSION_NOT_SENT' })
+    expect(input.read).toHaveBeenCalledExactlyOnceWith(originalId, expect.any(AbortSignal), true)
+    expect(input.submit).not.toHaveBeenCalled()
+    expect(input.save).not.toHaveBeenCalled()
+  })
+
+  it('prefers the canonical original task over a retained platform task native failure projection', async () => {
+    const input = options({ resumeReceipt: { ...receipt, taskId: originalId },
+      read: vi.fn(async (_taskId: string, _signal: AbortSignal, canonicalRead?: boolean) => canonicalRead === true
+        ? json(canonical.response, canonical.http_status) : json({ id: originalId, model: 'gpt-image-2', status: 'failed' })) })
+    expect(await executeImageTask(input)).toMatchObject({ submissionState: 'failed', taskId: originalId, code: 'MEDIA_SUBMISSION_NOT_SENT' })
+    expect(input.read).toHaveBeenCalledExactlyOnceWith(originalId, expect.any(AbortSignal), true)
+    expect(input.submit).not.toHaveBeenCalled()
+    expect(input.save).not.toHaveBeenCalled()
+  })
+
+  it('keeps actual Toapis legacy queued and canonical UNKNOWN projections unresolved without a new POST', async () => {
+    const native = mediaContract.find(entry => entry.method === 'GET' && entry.path.startsWith('/toapis/'))
+    const original = mediaContract.find(entry => entry.method === 'GET' && entry.path === '/v1/tasks/task_legacy_image_missing_key')
+    if (native === undefined || original === undefined || typeof original.response.task_id !== 'string') throw new Error('Actual Toapis legacy wire pair required')
+    const taskId = original.response.task_id
+    const input = options({ resumeReceipt: { ...receipt, taskId },
+      read: vi.fn(async (_id: string, _signal: AbortSignal, canonicalRead?: boolean) => canonicalRead === true
+        ? json(original.response, original.http_status) : json(native.response, native.http_status)) })
+    expect(await executeImageTask(input)).toMatchObject({ submissionState: 'pending', taskId, code: 'IMAGE_STATUS_INVALID' })
+    expect(input.read).toHaveBeenNthCalledWith(1, taskId, expect.any(AbortSignal), true)
+    expect(input.read).toHaveBeenCalledOnce()
+    expect(input.submit).not.toHaveBeenCalled()
+    expect(input.save).not.toHaveBeenCalled()
+  })
+
+  it('continues the original native image query when the old server has no canonical task endpoint', async () => {
+    let nativeReads = 0
+    const input = options({ resumeReceipt: receipt,
+      read: vi.fn(async (_id: string, _signal: AbortSignal, canonicalRead?: boolean) => {
+        if (canonicalRead === true) return json({}, 404)
+        nativeReads += 1
+        return nativeReads === 1 ? json({ id: receipt.taskId, status: 'queued' })
+          : json({ id: receipt.taskId, status: 'succeeded', result: { data: [image] } })
+      }) })
+    expect(await executeImageTask(input)).toMatchObject({ submissionState: 'completed', taskId: receipt.taskId })
+    expect(nativeReads).toBe(2)
+    expect(input.read).toHaveBeenCalledTimes(3)
+    expect(input.submit).not.toHaveBeenCalled()
+  })
+
+  it.each([200, 404, 503])('keeps an old native failure pending when canonical HTTP%s has no financial proof', async (httpStatus) => {
+    const input = options({ resumeReceipt: receipt,
+      read: vi.fn(async (_taskId: string, _signal: AbortSignal, canonicalRead?: boolean) => canonicalRead === true
+        ? json({ id: receipt.taskId, status: 'FAILURE', provider_terminal_confirmed: true }, httpStatus)
+        : json({ id: receipt.taskId, model: 'gpt-image-2', status: 'failed' })) })
+    expect(await executeImageTask(input)).toMatchObject({ submissionState: 'pending', taskId: receipt.taskId, code: 'IMAGE_STATUS_INVALID' })
+    expect(input.read).toHaveBeenCalledTimes(2)
+    expect(input.submit).not.toHaveBeenCalled()
+    expect(input.save).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { upstream_submitted: true }, { schema_version: undefined }, { model: 'gpt-image-2' }, { media_kind: 'video' },
+    { task_id: 'another-task' }, { billing_state: 'refunded', refund_confirmed: false }, { resubmittable: false },
+    { recovery: { method: 'POST', path: '/v1/tasks/' + originalId } },
+  ])('does not settle or save an invalid image POST or GET proof %j', async (patch) => {
+    const malformed = { ...capacity.response.media_submission_receipt, ...patch }
+    const post = options({ submit: vi.fn(async () => json({ ...capacity.response, media_submission_receipt: malformed }, 403)) })
+    expect((await executeImageTask(post)).submissionState).toMatch(/^(?:pending|unknown)$/u)
+    expect(post.submit).toHaveBeenCalledOnce()
+    expect(post.read).not.toHaveBeenCalled()
+    expect(post.save).not.toHaveBeenCalled()
+    const get = options({ resumeReceipt: { ...receipt, taskId: originalId },
+      read: vi.fn(async () => json({ ...canonical.response, media_submission_receipt: malformed, result: { data: [image] } })) })
+    expect(await executeImageTask(get)).toMatchObject({ submissionState: 'pending', taskId: originalId, code: 'IMAGE_STATUS_INVALID' })
+    expect(get.submit).not.toHaveBeenCalled()
+    expect(get.read).toHaveBeenCalledOnce()
+    expect(get.save).not.toHaveBeenCalled()
+  })
+
+  it('does not invent an image task from conflicting outer IDs or let a misplaced proof fall through', async () => {
+    for (const body of [{ ...capacity.response, task_id: 'another-task' },
+      { code: 'insufficient_user_quota', data: { media_submission_receipt: capacity.response.media_submission_receipt } }]) {
+      const input = options({ submit: vi.fn(async () => json(body, 403, { 'x-request-id': 'safe-header-only' })) })
+      const result = await executeImageTask(input)
+      expect(result).toMatchObject({ submissionState: 'unknown', code: 'IMAGE_SUBMISSION_UNKNOWN', requestId: 'safe-header-only' })
+      expect(result).not.toHaveProperty('taskId')
+      expect(input.read).not.toHaveBeenCalled()
+      expect(input.save).not.toHaveBeenCalled()
+    }
+  })
   it('retains the generating source in receipts and keeps it when queried from another turn', async () => {
     const origin = { sessionId: 'original-chat' as import('@deepseek-ai/dsh-session/types').SessionId, turn: 2 }
     const first = options({ origin, queryRetryLimit: 0, read: vi.fn(async () => { throw new Error('temporary disconnect') }) })
@@ -89,6 +196,24 @@ describe('image task execution and read-only recovery', () => {
     const input = options({ signal: controller.signal, submitting: async () => { controller.abort() } })
     expect(await executeImageTask(input)).toMatchObject({ submissionState: 'not-submitted', code: 'ABORTED' })
     expect(input.submit).not.toHaveBeenCalled()
+  })
+
+  it('checks the initiating login after receipt persistence and before invoking the paid POST', async () => {
+    let changed = false
+    const input = options({
+      received: async () => { changed = true },
+      beforeSubmit: () => { if (changed) throw new VideoProjectError('IMAGE_ACCOUNT_CHANGED', 'Login changed before dispatch') },
+    })
+    expect(await executeImageTask(input)).toMatchObject({ submissionState: 'not-submitted', code: 'IMAGE_ACCOUNT_CHANGED' })
+    expect(input.submit).not.toHaveBeenCalled()
+  })
+
+  it('retains an unknown outcome for a real submission failure after the final login check', async () => {
+    const beforeSubmit = vi.fn()
+    const input = options({ beforeSubmit, submit: vi.fn(async () => { throw new Error('connection lost after sending') }) })
+    expect(await executeImageTask(input)).toMatchObject({ submissionState: 'unknown', code: 'IMAGE_SUBMISSION_UNKNOWN' })
+    expect(beforeSubmit).toHaveBeenCalledOnce()
+    expect(input.submit).toHaveBeenCalledOnce()
   })
 
   it('retains accepted identity but performs no GET when persisting the accepted receipt fails', async () => {
@@ -195,11 +320,31 @@ describe('image task execution and read-only recovery', () => {
       taskId: receipt.taskId, paths: ['/artifacts/first.png'] })
   })
 
-  it.each([400, 401, 403, 429])('recognizes a definite HTTP %i rejection without retrying submission', async (status) => {
+  it.each([400, 401, 403])('recognizes a definite HTTP %i rejection without retrying submission', async (status) => {
     const input = options({ submit: vi.fn(async () => json({ error: 'rejected' }, status)) })
     expect(await executeImageTask(input)).toMatchObject({ submissionState: 'failed', code: `HTTP_${String(status)}` })
     expect(input.submit).toHaveBeenCalledOnce()
     expect(input.read).not.toHaveBeenCalled()
+  })
+
+  it.each([undefined, 'original-limited-task'])('retains generic HTTP429 uncertainty with original task %s', async (id) => {
+    const input = options({ submit: vi.fn(async () => json({ error: 'busy', ...id === undefined ? {} : { id } }, 429)) })
+    expect(await executeImageTask(input)).toMatchObject({ submissionState: id === undefined ? 'unknown' : 'pending',
+      code: id === undefined ? 'IMAGE_SUBMISSION_UNKNOWN' : 'IMAGE_QUERY_PENDING',
+      ...id === undefined ? {} : { taskId: id, imageReceipt: { taskId: id, phase: 'accepted' } } })
+    expect(input.submit).toHaveBeenCalledOnce()
+    expect(input.read).not.toHaveBeenCalled()
+    expect(input.save).not.toHaveBeenCalled()
+  })
+
+  it('retains generic HTTP429 uncertainty for an empty response while preserving its request header', async () => {
+    const input = options({ submit: vi.fn(async () => new Response(null, { status: 429,
+      headers: { 'X-Oneapi-Request-Id': 'limited-request' } })) })
+    expect(await executeImageTask(input)).toMatchObject({ submissionState: 'unknown', code: 'IMAGE_SUBMISSION_UNKNOWN',
+      requestId: 'limited-request', imageReceipt: { requestId: 'limited-request', phase: 'submitting' } })
+    expect(input.submit).toHaveBeenCalledOnce()
+    expect(input.read).not.toHaveBeenCalled()
+    expect(input.save).not.toHaveBeenCalled()
   })
 
   it.each([408, 500, 502, 504])('retains an uncertain HTTP %i submission as unknown', async (status) => {

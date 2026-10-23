@@ -12,7 +12,8 @@ import Tools from '@deepseek-ai/dsh-tools'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { Session, SessionId, SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
-import { ToolCallId } from '@deepseek-ai/dsh-llm'
+import { createToolResultMessage, createUserMessage, ToolCallId } from '@deepseek-ai/dsh-llm'
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import { JobId } from '@deepseek-ai/dsh-jobs'
 import LocalJobs from '@deepseek-ai/dsh-jobs-local'
 import * as JobTools from '@deepseek-ai/dsh-tool-jobs'
@@ -25,6 +26,7 @@ import type { VideoEditor } from '../src/video-edit.ts'
 import { CreativeStore } from '../src/creative-store.ts'
 import { registerCreativeTools } from '../src/creative-tools.ts'
 import { readVideoProject } from '../src/video-project.ts'
+import { registerVideoGenerationIntent } from '../src/video-generation-intent.ts'
 
 let context: Context | undefined
 let directory: string | undefined
@@ -80,16 +82,18 @@ async function boot(production = false, workspaceIncludesState = false, managedO
     video: (id, owner) => readVideoProject(options, id, owner.sessionId, owner.workspaceRoot, owner) })
   options.creative = creative
   const VideoFixture = { name: 'video-fixture', inject: ['tools'], apply: (ctx: Context) => {
+    registerVideoGenerationIntent(ctx)
     registerCreativeTools(ctx, creative, async () => provider.identity)
     registerVideoProjectTools(ctx, options)
   } }
   const modules = new Map<string, unknown>([
     ['system-prompt', SystemPrompt], ['skills', Skills], ['tools', Tools], ['agents', AgentRegistry], ['jobs', LocalJobs], ['job-tools', JobTools],
     ['video-fixture', VideoFixture], ['credits', Credits], ['webserver', WebServer], ['artifacts', Artifacts],
+    ['session-projections', SessionProjectionRegistry],
   ])
   const path = join(directory, 'cordis.yml')
   await writeFile(path, [
-    '- name: system-prompt', '- name: tools', '- name: agents', '- name: jobs', '- name: job-tools',
+    '- name: system-prompt', '- name: tools', '- name: agents', '- name: jobs', '- name: job-tools', '- name: session-projections',
     ...production ? ['- name: skills'] : [],
     ...production || managedOutput ? ['- name: webserver', '  config:', "    host: '127.0.0.1'", '    port: 0'] : [],
     ...managedOutput ? ['- name: artifacts', '  config:', `    defaultOutputDirectory: '${join(directory, 'selected-output')}'`, `    stateDirectory: '${join(directory, 'artifact-settings')}'`] : [],
@@ -124,8 +128,19 @@ async function boot(production = false, workspaceIncludesState = false, managedO
   }
   await context.agents.register(agent)
   const ctx = context
+  session.append('turn/start', { turn: 1 })
+  session.append('user/message', createUserMessage({ source: { kind: 'user' },
+    content: [{ type: 'text', text: '生成一个完整视频，按所选模型的实际时长生成分镜并合成。' }] }), { surfaceOp: 'append' })
   let callIndex = 0
-  const call = (name: string, args: unknown, signal = new AbortController().signal) => ctx.tools.execute({ callId: ToolCallId(`video-${String(++callIndex)}`), name, arguments: args, agent, signal })
+  const call = async (name: string, args: unknown, signal = new AbortController().signal) => {
+    const step = ++callIndex
+    const callId = ToolCallId(`video-${String(step)}`)
+    const logged = session.append('tool/call', { turn: 1, step, callId, name, arguments: JSON.stringify(args) ?? 'null' })
+    const result = await ctx.tools.execute({ callId, name, arguments: args, agent, signal })
+    session.append('tool/result', { turn: 1, step, message: createToolResultMessage({ callId,
+      content: result.content, isError: result.isError }) }, { surfaceOp: 'append', sourceEventSeqs: [logged.seq] })
+    return result
+  }
   return {
     ctx, agent, call, requests, inputs, composedPaths, workspace, stateDirectory: options.stateDirectory,
     creative, options, provider, editor,
@@ -497,6 +512,9 @@ describe('video tools through Loader, real tool registry and jobs runtime', () =
     expect(collected.isError).toBe(false)
     expect(JSON.stringify(collected.content)).toContain('final_path')
     expect(JSON.stringify(collected.content)).toContain('present')
+    expect(fixture.ctx.jobs.get(jobId, fixture.agent.id).progress).toBeUndefined()
+    for (const index of [1, 2, 3]) expect(JSON.stringify(collected.content)).toContain(`分镜 ${String(index)}/3 已保存`)
+    expect(JSON.stringify(collected.content)).toContain('视频项目：视频已完成 · 已保存 3/3 段')
     const status = await fixture.call('video_project_status', { project_id: value.project_id })
     const canonical = json(status.value)
     expect(canonical.status).toBe('completed')
@@ -505,6 +523,32 @@ describe('video tools through Loader, real tool registry and jobs runtime', () =
     expect(tool.presentCall?.({ prompt: '制作一个茶杯广告', total_duration_seconds: 40 })).toMatchSnapshot()
     expect(tool.presentCall?.({ invalid: true })).toBeUndefined()
     expect(tool.presentResult?.({ prompt: '制作一个茶杯广告', total_duration_seconds: 40 }, { content: [], isError: false })).toEqual({ card: 'generic', title: '视频项目', content: [] })
+  })
+
+  it('exposes both concurrent clip states through real job progress and retains paused rows in terminal job_output', async () => {
+    const fixture = await boot()
+    fixture.options.maxConcurrentSegments = 2
+    fixture.provider.parallelism = async () => 2
+    vi.spyOn(fixture.provider, 'check').mockImplementation(async id => ({ status: id === 'task-1' ? 'queued' : 'running' }))
+    const value = json((await fixture.call('generate_video_project', { prompt: '三个分镜分别等待与生成', total_duration_seconds: 40 })).value)
+    const jobId = JobId(String(value.job_id))
+    await vi.waitFor(() => {
+      const progress = fixture.ctx.jobs.get(jobId, fixture.agent.id).progress
+      expect(progress).toContain('分镜 1/3 排队中')
+      expect(progress).toContain('分镜 2/3 生成中')
+      expect(progress).toContain('分镜 3/3 尚未提交')
+    })
+    expect(fixture.requests).toEqual([15, 15])
+    await fixture.call('job_kill', { job_id: jobId })
+    await vi.waitFor(() => { expect(fixture.ctx.jobs.get(jobId, fixture.agent.id).status).toBe('killed') })
+    expect(fixture.ctx.jobs.get(jobId, fixture.agent.id).progress).toBeUndefined()
+    const terminal = await fixture.call('job_output', { job_id: jobId })
+    const text = JSON.stringify(terminal.content)
+    expect(text).toContain('视频项目：项目已停止 · 已保存 0/3 段')
+    expect(text).toContain('分镜 1/3 查询已暂停，保留原任务')
+    expect(text).toContain('分镜 2/3 查询已暂停，保留原任务')
+    expect(text).toContain('分镜 3/3 尚未提交')
+    expect(fixture.requests).toEqual([15, 15])
   })
 
   it('keeps a published job alive when the completed tool call signal later aborts, and job_kill stops it', async () => {

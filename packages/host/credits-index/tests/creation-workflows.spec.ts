@@ -53,6 +53,12 @@ it('keeps native execution fast paths and rejects script fallbacks beyond suppor
   expect(content).toContain('Do not add character-sheet generation, extra reference images or a separate planning round')
   expect(content).toContain('generate_video_project handles readable workspace references even for a single short clip.')
   expect(content).toContain('For a finished video longer than one supported model clip, use generate_video_project.')
+  expect(content).toContain('Without a valid gateway declaration, concurrency defaults to four clips.')
+  expect(content).toContain('Respect verified pool capacity and any lower local or gateway ceiling.')
+  expect(content).not.toContain('Older gateways remain serial')
+  expect(content).toContain('Every update_creation_plan call must include kind, title, brief and shots.')
+  expect(content).toContain('Every shot must include id, order, title and prompt.')
+  expect(content).toContain('A shot title is a plan label, not on-screen text or subtitles.')
   expect(content).toContain('Do not inspect application source code, install a video SDK, '
     + 'write Python/JavaScript/curl download or polling scripts, or invoke FFmpeg yourself')
   expect(content).toContain('It does not supply independent TTS, forced speech alignment, lip repair, subtitle burning or complex transitions.')

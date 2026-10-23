@@ -5,6 +5,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createVideoProjectRelay, VideoRelayError, type VideoRelayOptions } from '../src/video-project-provider.ts'
+import notSentContract from './fixtures/h3-not-sent-contract.json' with { type: 'json' }
+import apiContract from './fixtures/h3-unsent-api-contract.json' with { type: 'json' }
+import terminalContract from './fixtures/h3-terminal-api-contract.json' with { type: 'json' }
+import mediaContract from './fixtures/media-submission-api-contract-v3.json' with { type: 'json' }
 
 interface RecordedRequest {
   path: string
@@ -90,6 +94,149 @@ async function rejection(operation: Promise<unknown>): Promise<Error> {
 }
 
 describe('account-bound video relay requests', () => {
+  const capacity = mediaContract.find(entry => entry.method === 'POST' && entry.http_status === 429 && entry.response.media_kind === 'video')
+  const canonical = mediaContract.find(entry => entry.method === 'GET' && entry.response.media_kind === 'video' && Object.hasOwn(entry.response, 'media_submission_receipt'))
+  const uncertain = mediaContract.find(entry => entry.method === 'POST' && entry.http_status === 202)
+  const unknownGet = mediaContract.find(entry => entry.method === 'GET' && entry.response.status === 'UNKNOWN' && entry.response.media_kind === 'video')
+  if (capacity === undefined || canonical === undefined || uncertain === undefined || unknownGet === undefined
+    || typeof capacity.response.id !== 'string' || typeof uncertain.response.id !== 'string') throw new Error('Actual video receipt fixtures are required')
+  const originalId = capacity.response.id
+
+  it('consumes actual non-H3 media capacity POST and original-task GET over real local HTTP', async () => {
+    const f = await fixture((_request, response, call) => {
+      const entry = call.method === 'POST' ? capacity : canonical
+      response.statusCode = entry.http_status
+      json(response, entry.response)
+    })
+    await expect(f.relay.submit({ model: capacity.response.model }, capacity.path, signal())).rejects.toMatchObject({
+      code: 'media_account_capacity_exhausted', submissionState: 'not_submitted', taskId: originalId,
+    })
+    await expect(f.relay.check(originalId, '/v1/tasks', signal(), capacity.response.model)).rejects.toMatchObject({
+      code: 'MEDIA_SUBMISSION_NOT_SENT', taskId: originalId,
+    })
+    expect(f.calls.map(call => [call.method, call.path])).toEqual([['POST', capacity.path], ['GET', canonical.path]])
+  })
+
+  it('keeps an actual uncertain non-H3 original task and queries only its fixed canonical GET', async () => {
+    const taskId = uncertain.response.id
+    if (typeof taskId !== 'string') throw new Error('Actual uncertainty fixture must retain its original task ID')
+    const f = await fixture((_request, response, call) => {
+      const entry = call.method === 'POST' ? uncertain : unknownGet
+      response.statusCode = entry.http_status
+      json(response, entry.response)
+    })
+    expect(await f.relay.submit({ model: uncertain.response.model }, uncertain.path, signal())).toEqual({ taskId })
+    await expect(f.relay.check(taskId, '/v1/videos', signal(), uncertain.response.model)).rejects.toMatchObject({ code: 'VIDEO_STATUS_INVALID' })
+    expect(f.calls.map(call => [call.method, call.path])).toEqual([['POST', uncertain.path], ['GET', unknownGet.path]])
+  })
+
+  it.each([
+    { upstream_submitted: true }, { schema_version: undefined }, { model: 'other-model' }, { media_kind: 'image' },
+    { task_id: 'another-task' }, { billing_state: 'refunded', refund_confirmed: false }, { resubmittable: false },
+    { recovery: { method: 'POST', path: '/v1/tasks/' + originalId } },
+  ])('never converts a malformed non-H3 proof to generic failed on POST or GET %j', async (patch) => {
+    const malformed = { ...capacity.response.media_submission_receipt, ...patch }
+    const f = await fixture((_request, response, call) => {
+      response.statusCode = call.method === 'POST' ? 403 : 200
+      json(response, { ...call.method === 'POST' ? capacity.response : canonical.response, media_submission_receipt: malformed })
+    })
+    const error = await rejection(f.relay.submit({ model: capacity.response.model }, capacity.path, signal()))
+    expect(error).toMatchObject({ code: 'VIDEO_SUBMIT_UNKNOWN' })
+    await expect(f.relay.check(originalId, '/v1/videos', signal(), capacity.response.model)).rejects.toMatchObject({ code: 'VIDEO_STATUS_INVALID' })
+    expect(f.calls.map(call => call.method)).toEqual(['POST', 'GET'])
+  })
+
+  it('retains coherent original identity but rejects a proof on the wrong successful POST transport', async () => {
+    const f = await fixture((_request, response) => { json(response, capacity.response) })
+    await expect(f.relay.submit({ model: capacity.response.model }, capacity.path, signal())).rejects.toMatchObject({
+      code: 'VIDEO_SUBMIT_UNKNOWN', taskId: originalId,
+    })
+    expect(f.calls).toHaveLength(1)
+  })
+
+  it.each([201, 202, 404].flatMap(status => ['/v1/tasks', '/v1/videos'].map(route => ({ status, route }))))(
+    'does not settle a canonical proof through actual HTTP$status with retained route $route', async ({ status, route }) => {
+      const f = await fixture((_request, response) => { response.statusCode = status; json(response, canonical.response) })
+      await expect(f.relay.check(originalId, route, signal(), capacity.response.model)).rejects.toMatchObject({
+        code: 'VIDEO_READ_REJECTED',
+      })
+      expect(f.calls.every(call => call.method === 'GET')).toBe(true)
+      expect(f.calls).toHaveLength(status === 404 && route !== '/v1/tasks' ? 2 : 1)
+    },
+  )
+
+  it.each(['completed', 'FAILURE'].flatMap(status => [201, 202, 404].map(httpStatus => ({ status, httpStatus }))))(
+    'does not accept a legacy $status inside actual no-fallback canonical HTTP$httpStatus', async ({ status, httpStatus }) => {
+      const f = await fixture((_request, response) => { response.statusCode = httpStatus; json(response, { id: originalId, status }) })
+      await expect(f.relay.check(originalId, '/v1/tasks', signal(), capacity.response.model)).rejects.toMatchObject({ code: 'VIDEO_READ_REJECTED' })
+      expect(f.calls.map(call => [call.method, call.path])).toEqual([['GET', '/v1/tasks/' + originalId]])
+    },
+  )
+  it.each(terminalContract.fixtures.filter(entry => entry.name.startsWith('canonical_get_')))(
+    'reads final API $name from fixed H3 canonical GET with no generation', async ({ body, http_status: httpStatus }) => {
+      const taskId = body.task_id
+      if (typeof taskId !== 'string') throw new Error('Expected the actual canonical id')
+      const f = await fixture((_request, response) => { response.statusCode = httpStatus; json(response, body) })
+      const financial = Object.hasOwn(body, 'submission_receipt'), provider = Object.hasOwn(body, 'provider_terminal_confirmed')
+      const error = await rejection(f.relay.check(taskId, '/v1/video/generations', signal(), 'MiniMax-H3'))
+      expect(error).toMatchObject({ code: financial ? 'H3_SUBMISSION_NOT_SENT' : provider ? 'PROVIDER_TASK_FAILED' : 'VIDEO_STATUS_INVALID' })
+      if (provider) expect(error).toMatchObject({ taskId, submissionState: 'failed' })
+      expect(f.calls).toHaveLength(1)
+      expect(f.calls[0]).toMatchObject({ method: 'GET', path: '/v1/tasks/' + taskId })
+    },
+  )
+
+  it.each(apiContract.fixtures.filter(entry => entry.name.startsWith('canonical_get_')))(
+    'binds actual API writer $name over original-id HTTP GET', async ({ body, http_status: httpStatus }) => {
+      const taskId = body.task_id
+      if (typeof taskId !== 'string') throw new Error('Expected the actual API original id')
+      const f = await fixture((_request, response) => { response.statusCode = httpStatus; json(response, body) })
+      await expect(f.relay.check(taskId, '/v1/video/generations', signal(), 'MiniMax-H3')).rejects.toMatchObject({
+        code: Object.hasOwn(body, 'submission_receipt') ? 'H3_SUBMISSION_NOT_SENT' : 'VIDEO_STATUS_INVALID',
+      })
+      expect(f.calls).toHaveLength(1)
+      expect(f.calls[0]).toMatchObject({ method: 'GET', path: '/v1/tasks/' + taskId })
+    },
+  )
+
+  it.each(apiContract.fixtures.filter(entry => entry.name.startsWith('post_') && entry.http_status >= 400))(
+    'binds actual API POST business failure $name without repeating generation', async ({ body, http_status: httpStatus }) => {
+      const f = await fixture((_request, response) => { response.statusCode = httpStatus; json(response, body) })
+      await expect(f.relay.submit({ model: 'MiniMax-H3' }, '/v1/video/generations', signal())).rejects.toMatchObject({
+        code: body.code, taskId: body.task_id, submissionState: 'not_submitted',
+      })
+      expect(f.calls.map(call => call.method)).toEqual(['POST'])
+    },
+  )
+
+  it.each([notSentContract.notCharged, notSentContract.refunded])('preserves unsent HTTP $httpStatus business rejection and original id through actual local HTTP', async ({ httpStatus, body }) => {
+    const f = await fixture((_request, response) => { response.statusCode = httpStatus; json(response, body) })
+    const error = await rejection(f.relay.submit({ model: 'MiniMax-H3' }, '/v1/video/generations', signal()))
+    expect(error).toMatchObject({ code: body.code, submissionState: 'not_submitted', taskId: body.id })
+    expect(error.message).not.toContain('private')
+    expect(f.calls.map(call => call.method)).toEqual(['POST'])
+  })
+
+  it.each(['native', 'generic'] as const)('verifies a %s original-id proof over actual GET without any POST', async (envelope) => {
+    const value = { task_id: notSentContract.receipt.id, status: 'UNKNOWN', submission_receipt: notSentContract.receipt }
+    const f = await fixture((_request, response) => { json(response, envelope === 'native' ? value : { data: value }) })
+    const error = await rejection(f.relay.check(notSentContract.receipt.id, '/v1/video/generations', signal(), 'MiniMax-H3'))
+    expect(error).toMatchObject({ code: 'H3_SUBMISSION_NOT_SENT', taskId: notSentContract.receipt.id })
+    expect(f.calls).toMatchObject([{ method: 'GET', path: '/v1/tasks/h3-unsent-original' }])
+    expect(f.calls).toHaveLength(1)
+  })
+
+  it.each([
+    { id: 'other-task' }, { submission_receipt: {} },
+    { submission_receipt: { ...notSentContract.receipt, upstream_submitted: true } },
+    { submission_receipt: { ...notSentContract.receipt, id: 'other-task', task_id: 'other-task' } },
+  ])('does not accept a failed status beside a malformed original-id proof %j', async (patch) => {
+    const f = await fixture((_request, response) => { json(response, { status: 'failed', submission_receipt: notSentContract.receipt, ...patch }) })
+    await expect(f.relay.check(notSentContract.receipt.id, '/v1/video/generations', signal(), 'MiniMax-H3'))
+      .rejects.toMatchObject({ code: 'VIDEO_STATUS_INVALID' })
+    expect(f.calls.map(call => call.method)).toEqual(['GET'])
+  })
+
   it.each([
     { status: 429, body: { code: 'h3_account_capacity_exhausted', data: null, submission_state: 'not_submitted', retryable: false, resubmittable: true },
       code: 'H3_ACCOUNT_CAPACITY_EXHAUSTED', state: 'not_submitted', taskId: undefined },

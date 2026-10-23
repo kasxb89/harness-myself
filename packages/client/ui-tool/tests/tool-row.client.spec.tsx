@@ -598,8 +598,136 @@ describe('GenericToolCard', () => {
   })
 
   it.each([
+    ['zh', 'INVALID_ARGS'], ['en', 'INVALID_ARGS'],
+    ['zh', 'CREATIVE_INVALID'], ['en', 'CREATIVE_INVALID'],
+  ] as const)('identifies rejected creation-plan parameters without exposing diagnostics (%s, %s)', async (language, code) => {
+    const name = 'update_creation_plan'
+    const argsRaw = '{"title":"家庭视频","source":"C:/private/source.png"}'
+    const diagnostic = 'invalid arguments: missing required property "shots[0].title"; private-id C:/private/server.ts:10'
+    const content = [{ type: 'text' as const, text: code === 'INVALID_ARGS'
+      ? `Error: ${diagnostic}` : JSON.stringify({ status: 'failed', code, message: diagnostic }) }]
+    const error = code === 'INVALID_ARGS' ? { name: 'ToolArgsError', code } : undefined
+    const block = result({ call: { name, argsRaw }, isError: code === 'INVALID_ARGS', content,
+      ...error === undefined ? {} : { error } })
+    const dictionary = language === 'en' ? en : zh
+    const message = dictionary['error.creationPlanParameters']
+    const summary = `${name} · ${message}`
+    const inspect = vi.fn()
+    const view = render(<GenericToolCard {...props(name, block)} inspect={inspect} t={makeTranslate(dictionary, commonZh)} />)
+    expect(view.getByText(summary)).toBeTruthy()
+    expect(view.queryByText(dictionary['error.operationFailed'])).toBeNull()
+    expect(view.queryByText(dictionary['error.serviceUnavailable'])).toBeNull()
+    fireEvent.click(view.getByRole('button'))
+    expect(view.getByText(summary)).toBeTruthy()
+    expect(view.getByText(message)).toBeTruthy()
+    expect(view.getAllByRole('button')).toHaveLength(1)
+    expect(inspect).not.toHaveBeenCalled()
+    expect(view.container.textContent).not.toMatch(/C:\/private|private-id|shots\[0\]\.title|INVALID_ARGS|CREATIVE_INVALID/u)
+    expect(block.content).toBe(content)
+    expect(block.error).toBe(error)
+    expect(block.call).toEqual({ name, argsRaw })
+    if (code === 'INVALID_ARGS') {
+      await expect(`${view.container.textContent}\n`).toMatchFileSnapshot(language === 'en'
+        ? './expected/creation-plan-parameters-en.txt' : './expected/creation-plan-parameters-zh.txt')
+    }
+  })
+
+  it('does not treat a malformed stored plan as rejected model parameters in another tool', () => {
+    const name = 'get_creation_plan'
+    const block = result({ call: { name, argsRaw: '{"plan_id":"cp_example"}' },
+      content: [{ type: 'text', text: JSON.stringify({ status: 'failed', code: 'CREATIVE_INVALID', message: 'private record diagnostic' }) }] })
+    const view = render(<GenericToolCard {...props(name, block)} />)
+    expect(view.getByText(zh['error.operationFailed'])).toBeTruthy()
+    expect(view.queryByText(zh['error.creationPlanParameters'])).toBeNull()
+    expect(view.container.textContent).not.toContain('private record diagnostic')
+  })
+
+  it.each([
+    ['zh', 'CREATIVE_VIDEO_COUNT_LIMIT', 'error.videoCountLimit'],
+    ['en', 'CREATIVE_VIDEO_COUNT_LIMIT', 'error.videoCountLimit'],
+    ['zh', 'CREATIVE_VIDEO_INTENT_UNAVAILABLE', 'error.videoIntentUnavailable'],
+    ['en', 'CREATIVE_VIDEO_INTENT_UNAVAILABLE', 'error.videoIntentUnavailable'],
+    ['zh', 'CREATIVE_VIDEO_QUOTE_UNAVAILABLE', 'error.videoQuoteUnavailable'],
+    ['en', 'CREATIVE_VIDEO_QUOTE_UNAVAILABLE', 'error.videoQuoteUnavailable'],
+    ['zh', 'CREATIVE_VIDEO_QUOTE_CHANGED', 'error.videoQuoteChanged'],
+    ['en', 'CREATIVE_VIDEO_QUOTE_CHANGED', 'error.videoQuoteChanged'],
+    ['zh', 'CREATIVE_VIDEO_MODEL_CHOICE_UNAVAILABLE', 'error.videoModelChoiceUnavailable'],
+    ['en', 'CREATIVE_VIDEO_MODEL_CHOICE_UNAVAILABLE', 'error.videoModelChoiceUnavailable'],
+  ] as const)('explains the video intent restriction without suggesting an automatic retry (%s, %s)', async (language, code, key) => {
+    const dictionary = language === 'en' ? en : zh
+    const names = key === 'error.videoCountLimit' || key === 'error.videoIntentUnavailable'
+      ? ['generate_video', 'generate_video_project'] : ['generate_video', 'generate_video_project', 'resume_video_project']
+    for (const name of names) {
+      for (const thrown of [false, true]) {
+        const content = [{ type: 'text' as const, text: JSON.stringify({ status: 'failed', code, message: 'private intent record C:/private/request.json' }) }]
+        const block = result({ call: { name, argsRaw: '{"prompt":"private prompt"}' }, content,
+          isError: thrown, ...thrown ? { error: { name: 'CreativeError', code } } : {} })
+        const inspect = vi.fn()
+        const view = render(<GenericToolCard {...props(name, block)} inspect={inspect} t={makeTranslate(dictionary, commonZh)} />)
+        expect(view.getByText(dictionary[key])).toBeTruthy()
+        expect(view.queryByText(dictionary['error.serviceUnavailable'])).toBeNull()
+        fireEvent.click(view.getByRole('button'))
+        expect(view.getAllByText(dictionary[key])).toHaveLength(2)
+        expect(view.queryByText(dictionary['error.operationFailed'])).toBeNull()
+        expect(view.container.textContent).not.toMatch(/private|CREATIVE_VIDEO_/u)
+        expect(view.getAllByRole('button')).toHaveLength(1)
+        expect(inspect).not.toHaveBeenCalled()
+        expect(block.content).toBe(content)
+        expect(block.call).toEqual({ name, argsRaw: '{"prompt":"private prompt"}' })
+        if (name === 'generate_video_project' && !thrown && code === 'CREATIVE_VIDEO_COUNT_LIMIT') {
+          await expect(`${view.container.textContent}\n`).toMatchFileSnapshot(language === 'en'
+            ? './expected/video-count-limit-en.txt' : './expected/video-count-limit-zh.txt')
+        }
+        cleanup()
+      }
+    }
+  })
+
+  it('does not apply a video quantity restriction to image generation', () => {
+    const name = 'generate_image'
+    const block = result({ call: { name, argsRaw: '{}' }, content: [{ type: 'text', text: JSON.stringify({
+      status: 'failed', code: 'CREATIVE_VIDEO_COUNT_LIMIT',
+    }) }] })
+    const view = render(<GenericToolCard {...props(name, block)} />)
+    expect(view.getByText(zh['error.operationFailed'])).toBeTruthy()
+    expect(view.queryByText(zh['error.videoCountLimit'])).toBeNull()
+  })
+
+  it.each([
+    'CREATIVE_VIDEO_QUOTE_UNAVAILABLE', 'CREATIVE_VIDEO_QUOTE_CHANGED', 'CREATIVE_VIDEO_MODEL_CHOICE_UNAVAILABLE',
+    'media_account_capacity_exhausted',
+    'insufficient_user_quota',
+  ])('preserves an unknown outer submission instead of claiming no new request for %s', (code) => {
+    const name = 'generate_video_project'
+    const content = [{ type: 'text' as const, text: JSON.stringify({ status: 'failed', code }) }]
+    const block = result({ call: { name, argsRaw: '{}' }, content, isError: true,
+      error: { name: 'VideoProjectError', code: 'SUBMISSION_UNKNOWN' } })
+    const view = render(<GenericToolCard {...props(name, block)} />)
+    expect(view.getByText(zh['error.mediaOutcomeUnknown'])).toBeTruthy()
+    expect(view.queryByText(zh['error.videoQuoteUnavailable'])).toBeNull()
+    expect(view.queryByText(zh['error.videoQuoteChanged'])).toBeNull()
+    expect(view.queryByText(zh['error.videoModelChoiceUnavailable'])).toBeNull()
+    expect(block.content).toBe(content)
+  })
+
+  it.each(['INSUFFICIENT_USER_QUOTA', 'INSUFFICIENT_TOKEN_QUOTA'])(
+    'shows the retained %s response as insufficient credits', (code) => {
+      const content = [{ type: 'text' as const, text: JSON.stringify({ status: 'failed', code, message: 'private quota details' }) }]
+      const block = result({ call: { name: 'generate_video', argsRaw: '{}' }, content })
+      const view = render(<GenericToolCard {...props('generate_video', block)} />)
+      expect(view.getByText(zh['error.creditsRequired'])).toBeTruthy()
+      expect(view.queryByText(zh['error.operationFailed'])).toBeNull()
+      expect(view.container.textContent).not.toContain('private quota details')
+      expect(block.content).toBe(content)
+    },
+  )
+
+  it.each([
     ['HTTP_408', 'error.requestTimeout'], ['HTTP_503', 'error.serviceUnavailable'],
     ['HTTP_429', 'error.requestBusy'], ['HTTP_403', 'error.permissionDenied'],
+    ['H3_ACCOUNT_CAPACITY_EXHAUSTED', 'error.requestBusy'], ['media_account_capacity_exhausted', 'error.requestBusy'],
+    ['H3_UPSTREAM_AUTH_REJECTED', 'error.upstreamUnavailable'],
+    ['insufficient_user_quota', 'error.creditsRequired'],
     ['TASK_FAILED', 'error.upstreamUnavailable'], ['LOCAL_SAVE_FAILED', 'error.localFailure'],
     ['PRIVATE_CODE', 'error.operationFailed'],
   ] as const)('displays the observed %s failure without changing or exposing diagnostics', (code, key) => {

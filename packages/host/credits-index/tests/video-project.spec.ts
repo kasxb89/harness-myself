@@ -9,7 +9,9 @@ import type { VideoEditor } from '../src/video-edit.ts'
 import { planVideoDurations, prepareVideoProject, readVideoProject, recoverVideoProjectOutputs, resolveVideoOutputDirectory, runVideoProject, VideoProjectError } from '../src/video-project.ts'
 import type { VideoProjectInput, VideoProjectOptions, VideoProjectProvider } from '../src/video-project-types.ts'
 import { VideoRelayError } from '../src/video-project-provider.ts'
-import { h3SubmissionRejection } from '../src/video-submission-result.ts'
+import { h3SubmissionQueryRejection, h3SubmissionRejection } from '../src/video-submission-result.ts'
+import notSentContract from './fixtures/h3-not-sent-contract.json' with { type: 'json' }
+import mediaContract from './fixtures/media-submission-api-contract-v3.json' with { type: 'json' }
 import type { ArtifactOrigin, ArtifactPublishRequest } from '@deepseek-ai/dsh-artifacts-index'
 import { SessionId, SessionSeq } from '@deepseek-ai/dsh-session/types'
 import { ToolCallId } from '@deepseek-ai/dsh-llm/brand'
@@ -78,6 +80,8 @@ async function setup(durations = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]) {
   }
   const options: VideoProjectOptions = {
     stateDirectory: join(directory, 'state'), outputDirectory: 'artifacts/videos', maxTotalSeconds: 300, maxSegments: 32,
+    // These failure-boundary fixtures deliberately use one worker; default scheduling has its own barrier case.
+    maxConcurrentSegments: 1,
     pollIntervalMs: 1, taskTimeoutMs: 5000, editor: () => editor, acquireProvider: async () => provider,
   }
   const output: string[] = []
@@ -94,6 +98,36 @@ async function setup(durations = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]) {
 }
 
 describe('minimum-request video duration planning', () => {
+  it('retains a coherent original ID from an uncertain media proof without clearing the project unknown lock', async () => {
+    const f = await setup([4])
+    const submit = vi.spyOn(f.provider, 'submit').mockRejectedValue(new VideoRelayError('VIDEO_SUBMIT_UNKNOWN',
+      '原回执尚未通过完整核对', { taskId: 'task_original_media_unknown' }))
+    const manifest = await prepareVideoProject(f.options, { prompt: 'One original video', totalDurationSeconds: 8 },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    expect(await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal)).toMatchObject({ status: 'failed', detail: 'SUBMISSION_UNKNOWN' })
+    const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+    expect(retained.segments.map(segment => segment.status)).toEqual(['unknown', 'pending'])
+    expect(retained.segments[0]?.taskId).toBe('task_original_media_unknown')
+    expect(await runVideoProject(f.options, retained, f.provider, f.editor, f.job, f.signal)).toMatchObject({ status: 'failed', detail: 'SUBMISSION_UNKNOWN' })
+    expect(submit).toHaveBeenCalledOnce()
+  })
+
+  it('settles the actual non-H3 media no-charge proof with the original task and no automatic resubmission', async () => {
+    const f = await setup([4])
+    const actual = mediaContract.find(entry => entry.method === 'POST' && entry.http_status === 429 && entry.response.media_kind === 'video')
+    if (actual === undefined) throw new Error('Actual media capacity fixture required')
+    const rejection = h3SubmissionRejection(actual.response.model, actual.http_status, actual.response)
+    if (rejection === undefined) throw new Error('Actual media rejection must decode')
+    const submit = vi.spyOn(f.provider, 'submit').mockRejectedValue(rejection)
+    const manifest = await prepareVideoProject(f.options, { prompt: 'Original no-charge video', totalDurationSeconds: 8 },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    expect(await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal)).toMatchObject({ status: 'failed', detail: 'media_account_capacity_exhausted' })
+    const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+    expect(retained.segments.map(segment => segment.status)).toEqual(['failed', 'pending'])
+    expect(retained.segments[0]?.taskId).toBe(actual.response.id)
+    expect(await runVideoProject(f.options, retained, f.provider, f.editor, f.job, f.signal)).toMatchObject({ status: 'failed', detail: 'PROVIDER_TASK_FAILED' })
+    expect(submit).toHaveBeenCalledOnce()
+  })
   it.each([
     { status: 429, body: { code: 'h3_account_capacity_exhausted', data: null, submission_state: 'not_submitted', retryable: false, resubmittable: true },
       code: 'H3_ACCOUNT_CAPACITY_EXHAUSTED', taskId: undefined },
@@ -132,6 +166,124 @@ describe('minimum-request video duration planning', () => {
     expect(check.mock.calls.map(([id]) => id)).toEqual(['task-1', 'task-1'])
   })
 
+  it.each(['not_charged', 'refunded'] as const)('settles an original H3 GET $0 proof without losing saved work or resubmitting accepted peers', async (billingState) => {
+    const f = await setup([4])
+    f.options.maxConcurrentSegments = 2
+    f.provider.parallelism = async () => 2
+    const manifest = await prepareVideoProject(f.options, { prompt: 'Four retained H3 clips', totalDurationSeconds: 16 },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    const [saved, rejected, peer] = manifest.segments
+    if (saved === undefined || rejected === undefined || peer === undefined) throw new Error('Expected four planned clips')
+    for (const segment of [saved, rejected, peer]) {
+      segment.taskId = (await f.provider.submit(segment.request, f.signal)).taskId
+      segment.status = 'running'
+    }
+    saved.path = join(f.options.stateDirectory, manifest.id, 'clips', 'retained-first.mp4')
+    await mkdir(dirname(saved.path), { recursive: true })
+    await f.provider.download(saved.taskId!, saved.request, saved.path, f.signal)
+    saved.status = 'saved'
+    manifest.status = 'failed'
+    await writeFile(join(f.options.stateDirectory, manifest.id, 'manifest.json'), JSON.stringify(manifest))
+    const receipt = { ...notSentContract.receipt, id: rejected.taskId, task_id: rejected.taskId,
+      billing_state: billingState, ...billingState === 'refunded' ? { refund_confirmed: true } : {} }
+    const proof = h3SubmissionQueryRejection('MiniMax-H3', 200,
+      { task_id: rejected.taskId, status: 'UNKNOWN', submission_receipt: receipt }, rejected.taskId!)
+    if (proof === undefined) throw new Error('Expected the complete original H3 GET proof')
+    const submit = vi.spyOn(f.provider, 'submit')
+    const compose = vi.spyOn(f.editor, 'compose')
+    const peerObserved = Promise.withResolvers<undefined>()
+    const check = vi.spyOn(f.provider, 'check').mockImplementation(async (id, _request, signal) => {
+      if (id === rejected.taskId) { await peerObserved.promise; throw proof }
+      if (id !== peer.taskId) throw new Error('Only original retained tasks may be queried')
+      peerObserved.resolve(undefined)
+      await new Promise<never>((_resolve, reject) => {
+        const aborted = (): void => { reject(signal.reason instanceof Error ? signal.reason : new Error('Original observation stopped')) }
+        signal.addEventListener('abort', aborted, { once: true })
+        if (signal.aborted) aborted()
+      })
+      return { status: 'succeeded' }
+    })
+    const outcome = await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal)
+    expect(outcome).toMatchObject({ status: 'failed', detail: 'H3_SUBMISSION_NOT_SENT' })
+    const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+    expect(retained).toMatchObject({ failureCode: 'H3_SUBMISSION_NOT_SENT', segments: [
+      { status: 'saved', taskId: 'task-1', path: saved.path }, { status: 'failed', taskId: 'task-2' },
+      { status: 'running', taskId: 'task-3' }, { status: 'pending' },
+    ] })
+    expect(f.output.join('')).toContain('分镜 1/4 已保存\n分镜 2/4 失败\n分镜 3/4 查询已暂停，保留原任务\n分镜 4/4 尚未提交')
+    check.mockRestore()
+    const resumedChecks = vi.spyOn(f.provider, 'check')
+    expect(await runVideoProject(f.options, retained, f.provider, f.editor, f.job, f.signal))
+      .toMatchObject({ status: 'failed', detail: 'PROVIDER_TASK_FAILED' })
+    expect(resumedChecks.mock.calls.map(([id]) => id)).toEqual(['task-3'])
+    expect(retained.segments.map(segment => segment.status)).toEqual(['saved', 'failed', 'saved', 'pending'])
+    expect(await readFile(saved.path, 'utf8')).toBe('4')
+    expect(submit).not.toHaveBeenCalled()
+    expect(f.submitted).toBe(3)
+    expect(compose).not.toHaveBeenCalled()
+  })
+
+  it('removes a confirmed unsent original task from the unsettled billing warning', async () => {
+    const f = await setup([4])
+    const manifest = await prepareVideoProject(f.options, { prompt: 'One retained H3 clip', totalDurationSeconds: 4 },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    const segment = manifest.segments[0]!
+    segment.taskId = (await f.provider.submit(segment.request, f.signal)).taskId
+    segment.status = 'running'
+    await writeFile(join(f.options.stateDirectory, manifest.id, 'manifest.json'), JSON.stringify(manifest))
+    const proof = h3SubmissionQueryRejection('MiniMax-H3', 200,
+      { task_id: segment.taskId, status: 'UNKNOWN', submission_receipt: {
+        ...notSentContract.receipt, id: segment.taskId, task_id: segment.taskId,
+      } }, segment.taskId)
+    if (proof === undefined) throw new Error('Expected the complete original H3 GET proof')
+    const check = vi.spyOn(f.provider, 'check').mockRejectedValue(proof)
+    const submit = vi.spyOn(f.provider, 'submit')
+    const outcome = await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal)
+    expect(outcome).toMatchObject({ status: 'failed', detail: 'H3_SUBMISSION_NOT_SENT' })
+    expect(outcome.result).not.toContain('可能继续运行并计费')
+    expect(manifest.segments[0]).toMatchObject({ status: 'failed', taskId: 'task-1' })
+    expect(check).toHaveBeenCalledOnce()
+    expect(submit).not.toHaveBeenCalled()
+  })
+
+  it('keeps an accepted peer when another generic task failure is its stop signal reason', async () => {
+    const f = await setup([4])
+    f.options.maxConcurrentSegments = 2
+    f.provider.parallelism = async () => 2
+    const manifest = await prepareVideoProject(f.options, { prompt: 'Three independently retained tasks', totalDurationSeconds: 12 },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    const peerObserved = Promise.withResolvers<undefined>()
+    const cancelled = new AbortController()
+    const check = vi.spyOn(f.provider, 'check').mockImplementation(async (id, _request, signal) => {
+      if (id === 'task-1') { await peerObserved.promise; return { status: 'failed' } }
+      if (id !== 'task-2') throw new Error('The pending third clip must not be submitted')
+      peerObserved.resolve(undefined)
+      await new Promise<never>((_resolve, reject) => {
+        const aborted = (): void => { reject(signal.reason instanceof Error ? signal.reason : new Error('Peer observation stopped')) }
+        signal.addEventListener('abort', aborted, { once: true })
+        if (signal.aborted) aborted()
+      })
+      return { status: 'succeeded' }
+    })
+    const running = ownConcurrentRun(runVideoProject(f.options, manifest, f.provider, f.editor, f.job, cancelled.signal), () => {
+      cancelled.abort(); peerObserved.resolve(undefined)
+    })
+    expect(await running).toMatchObject({ status: 'failed', detail: 'PROVIDER_TASK_FAILED' })
+    const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+    expect(retained.segments).toMatchObject([
+      { status: 'failed', taskId: 'task-1' }, { status: 'running', taskId: 'task-2' }, { status: 'pending' },
+    ])
+    expect(f.output.join('')).toContain('分镜 1/3 失败\n分镜 2/3 查询已暂停，保留原任务\n分镜 3/3 尚未提交')
+    check.mockRestore()
+    const resumedChecks = vi.spyOn(f.provider, 'check')
+    expect(await runVideoProject(f.options, retained, f.provider, f.editor, f.job, f.signal))
+      .toMatchObject({ status: 'failed', detail: 'PROVIDER_TASK_FAILED' })
+    expect(resumedChecks.mock.calls.map(([id]) => id)).toEqual(['task-2'])
+    expect(retained.segments.map(segment => segment.status)).toEqual(['failed', 'saved', 'pending'])
+    expect(f.submitted).toBe(2)
+    expect(f.events).not.toContain('compose')
+  })
+
   it('uses 15+15+10 when supported and three 15-second clips when fixed', () => {
     expect(planVideoDurations(40, Array.from({ length: 12 }, (_, index) => index + 4), 32)).toEqual([15, 15, 10])
     expect(planVideoDurations(40, [15], 32)).toEqual([15, 15, 15])
@@ -147,11 +299,101 @@ describe('minimum-request video duration planning', () => {
 
 // The fixture's 5s clip deadline and late-receipt drain must precede the test deadline.
 describe('bounded parallel video generation', { timeout: 15_000 }, () => {
-  it.each([undefined, 1, 2])('respects gateway parallelism %s and keeps unsupported gateways serial', async (grant) => {
-    const f = await setup()
-    f.options.maxConcurrentSegments = 4
+  it('retains confirmed upstream completion when local saving fails and resumes the original task without another submission', async () => {
+    const f = await setup([4])
+    const manifest = await prepareVideoProject(f.options, { prompt: '已生成但保存中断的单段', totalDurationSeconds: 4 },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    const download = vi.spyOn(f.provider, 'download').mockRejectedValueOnce(new Error('private disk diagnostic'))
+    const check = vi.spyOn(f.provider, 'check')
+    expect((await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal)).status).toBe('failed')
+    expect(f.events).toContain('视频项目：项目未完成 · 已保存 0/1 段\n分镜 1/1 上游已完成，保存未完成')
+    expect(f.output.join('')).not.toContain('private disk diagnostic')
+    const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+    expect(retained.segments[0]).toMatchObject({ status: 'running', taskId: 'task-1' })
+    expect((await runVideoProject(f.options, retained, f.provider, f.editor, f.job, f.signal)).status).toBe('completed')
+    expect(f.submitted).toBe(1)
+    expect(download).toHaveBeenCalledTimes(2)
+    expect(check.mock.calls.map(([id]) => id)).toEqual(['task-1', 'task-1'])
+  })
+
+  it('keeps every clip visible through independent queue, generation, saving, editing and terminal updates', async () => {
+    const f = await setup([4])
+    f.options.maxConcurrentSegments = 2
+    f.provider.parallelism = async () => 2
+    const manifest = await prepareVideoProject(f.options, { prompt: '四个有独立状态的镜头', totalDurationSeconds: 16 },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    const states = new Map<string, 'queued' | 'running' | 'succeeded'>([
+      ['task-1', 'queued'], ['task-2', 'running'], ['task-3', 'queued'],
+    ])
+    vi.spyOn(f.provider, 'check').mockImplementation(async id => ({ status: states.get(id) ?? 'succeeded' }))
+    const saving = Promise.withResolvers<undefined>()
+    const releaseSave = Promise.withResolvers<undefined>()
+    const download = f.provider.download.bind(f.provider)
+    vi.spyOn(f.provider, 'download').mockImplementation(async (...args) => {
+      if (args[0] === 'task-1') { saving.resolve(undefined); await releaseSave.promise }
+      await download(...args)
+    })
+    const editing = Promise.withResolvers<undefined>()
+    const releaseEdit = Promise.withResolvers<undefined>()
+    const compose = f.editor.compose.bind(f.editor)
+    vi.spyOn(f.editor, 'compose').mockImplementation(async (request) => {
+      request.onProgress?.({ stage: 'normalizing', completedClips: 0, totalClips: 4 })
+      editing.resolve(undefined)
+      await releaseEdit.promise
+      return await compose(request)
+    })
+    let now = 1000
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now)
+    const latest = () => f.events.filter(value => value.startsWith('视频项目：')).at(-1)
+    const release = (): void => { states.clear(); releaseSave.resolve(undefined); releaseEdit.resolve(undefined) }
+    const running = ownConcurrentRun(runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal), release)
+    try {
+      await vi.waitFor(() => { expect(latest()).toContain('分镜 2/4 生成中，已等待 0 秒') })
+      expect(latest()).toBe([
+        '视频项目：生成分镜 · 已保存 0/4 段',
+        '分镜 1/4 排队中，已等待 0 秒', '分镜 2/4 生成中，已等待 0 秒', '分镜 3/4 尚未提交', '分镜 4/4 尚未提交',
+      ].join('\n'))
+      now = 6000
+      await vi.waitFor(() => { expect(latest()).toContain('分镜 2/4 生成中，已等待 5 秒') })
+      states.set('task-1', 'succeeded')
+      await saving.promise
+      expect(latest()).toContain('分镜 1/4 上游已完成，正在保存')
+      expect(latest()).toContain('分镜 2/4 生成中，已等待 5 秒')
+      expect(f.submitted).toBe(2)
+      releaseSave.resolve(undefined)
+      await vi.waitFor(() => { expect(latest()).toContain('分镜 3/4 排队中，已等待 0 秒') })
+      expect(latest()).toContain('已保存 1/4 段\n分镜 1/4 已保存')
+      expect(latest()).toContain('分镜 2/4 生成中，已等待 5 秒')
+      expect(latest()).toContain('分镜 4/4 尚未提交')
+      states.clear()
+      await editing.promise
+      expect(latest()).toBe(['视频项目：整理片段 0/4 · 已保存 4/4 段',
+        ...Array.from({ length: 4 }, (_, index) => `分镜 ${String(index + 1)}/4 已保存`)].join('\n'))
+      releaseEdit.resolve(undefined)
+      expect((await running).status).toBe('completed')
+      const terminal = ['视频项目：视频已完成 · 已保存 4/4 段',
+        ...Array.from({ length: 4 }, (_, index) => `分镜 ${String(index + 1)}/4 已保存`)].join('\n')
+      expect(latest()).toBe(terminal)
+      expect(f.output.filter(value => value.startsWith('视频项目：'))).toEqual([terminal + '\n'])
+      expect(f.output.join('')).not.toContain('排队中')
+      expect(f.submitted).toBe(4)
+    } finally { release(); await running; clock.mockRestore() }
+  })
+
+  it.each([
+    { grant: undefined, local: undefined, expected: 4 },
+    { grant: 1, local: undefined, expected: 1 },
+    { grant: 2, local: undefined, expected: 2 },
+    { grant: 16, local: undefined, expected: 16 },
+    { grant: 16, local: 4, expected: 4 },
+    { grant: 16, local: 2, expected: 2 },
+  ])('schedules $expected clips from pool $grant and explicit local ceiling $local', async ({ grant, local, expected }) => {
+    const f = await setup([10])
+    if (local === undefined) delete f.options.maxConcurrentSegments
+    else f.options.maxConcurrentSegments = local
     if (grant !== undefined) f.provider.parallelism = async () => grant
-    const manifest = await f.prepare()
+    const manifest = await prepareVideoProject(f.options, { prompt: 'One explicitly planned work with sixteen clips', totalDurationSeconds: 160 },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal)
     const release = Promise.withResolvers<undefined>()
     const checking = new Set<string>()
     let peak = 0
@@ -166,10 +408,11 @@ describe('bounded parallel video generation', { timeout: 15_000 }, () => {
       release.resolve(undefined)
     })
     try {
-      await vi.waitFor(() => { expect(checking.size).toBe(grant ?? 1) })
-      expect(f.submitted).toBe(grant ?? 1)
+      await vi.waitFor(() => { expect(checking.size).toBe(expected) })
+      expect(f.submitted).toBe(expected)
     } finally { release.resolve(undefined); await running }
-    expect(peak).toBe(grant ?? 1)
+    expect(peak).toBe(expected)
+    expect(f.submitted).toBe(16)
   })
 
   it('runs independent 120-second clips concurrently within the local limit and composes timeline order', async () => {
@@ -246,6 +489,8 @@ describe('bounded parallel video generation', { timeout: 15_000 }, () => {
       const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
       expect(retained.segments.map(segment => segment.status)).toEqual(['unknown', 'running', 'pending'])
       expect(retained.segments[1]?.taskId).toBe('task-2')
+      expect(f.output.join('')).toContain(['视频项目：项目未完成 · 已保存 0/3 段',
+        '分镜 1/3 提交结果待确认，勿重新提交', '分镜 2/3 查询已暂停，保留原任务', '分镜 3/3 尚未提交'].join('\n'))
       expect((await runVideoProject(f.options, retained, f.provider, f.editor, f.job, f.signal)).detail).toBe('SUBMISSION_UNKNOWN')
       expect(f.submitted).toBe(2)
       expect(check).toHaveBeenCalledWith('task-2', expect.anything(), expect.anything())
@@ -290,6 +535,8 @@ describe('bounded parallel video generation', { timeout: 15_000 }, () => {
       const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
       expect(retained.segments.map(segment => segment.status)).toEqual(['running', 'running', 'pending'])
       expect(retained.segments.slice(0, 2).map(segment => segment.taskId)).toEqual(['task-1', 'task-2'])
+      expect(f.output.join('')).toContain(['视频项目：项目已停止 · 已保存 0/3 段',
+        '分镜 1/3 查询已暂停，保留原任务', '分镜 2/3 查询已暂停，保留原任务', '分镜 3/3 尚未提交'].join('\n'))
       check.mockRestore()
       submit.mockRestore()
       expect((await runVideoProject(f.options, retained, f.provider, f.editor, f.job, f.signal)).status).toBe('completed')
@@ -362,6 +609,7 @@ describe('bounded parallel video generation', { timeout: 15_000 }, () => {
     const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
     expect(retained.segments.map(segment => segment.status)).toEqual([status, 'saved', 'pending'])
     expect(retained.segments[1]?.publishedPath).toBeDefined()
+    expect(f.output.join('')).toContain(`分镜 1/3 ${status === 'failed' ? '失败' : '提交结果待确认，勿重新提交'}\n分镜 2/3 已保存\n分镜 3/3 尚未提交`)
     await runVideoProject(f.options, retained, f.provider, f.editor, f.job, f.signal)
     expect(f.submitted).toBe(2)
   })
@@ -1150,8 +1398,8 @@ describe('durable account-bound video projects', () => {
     const outcome = await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal)
     expect(outcome.status).toBe('completed')
     expect(f.events).toEqual(expect.arrayContaining([
-      expect.stringMatching(/^分镜 1\/3 排队中，已等待 \d+ 秒$/u),
-      expect.stringMatching(/^分镜 1\/3 生成中，已等待 \d+ 秒$/u),
+      expect.stringMatching(/\n分镜 1\/3 排队中，已等待 \d+ 秒(?:\n|$)/u),
+      expect.stringMatching(/\n分镜 1\/3 生成中，已等待 \d+ 秒(?:\n|$)/u),
     ]))
     expect(check).toHaveBeenCalledTimes(5)
     expect(f.submitted).toBe(3)
@@ -1188,6 +1436,8 @@ describe('durable account-bound video projects', () => {
       expect(result.message).toContain('已暂停查询')
       expect(result.message).toContain('不要重新提交')
       expect(result.task_ids).toEqual(['task-1'])
+      expect(f.output.join('')).toContain(['视频项目：等待已暂停，保留原任务 · 已保存 0/3 段',
+        '分镜 1/3 查询已暂停，保留原任务', '分镜 2/3 尚未提交', '分镜 3/3 尚未提交'].join('\n'))
       const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
       expect(retained.segments[0]).toMatchObject({ status: 'running', taskId: 'task-1' })
       expect(retained.segments.slice(1).map(segment => segment.status)).toEqual(['pending', 'pending'])

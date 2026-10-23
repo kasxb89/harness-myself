@@ -1,0 +1,357 @@
+{
+  "source": "Actual httptest ResponseRecorder from production SetRouter; real SQLite 3.50.4; all provider requests confined to fixture loopback",
+  "status": "PASS",
+  "source_freeze": "v5-final",
+  "source_sha256": {
+    "controller/relay.go": "ad41b423693eefb85ef9527d063b9796b674a9d9b1a600f6a545e4948b0beef9",
+    "controller/task.go": "6e7c8538f59c48b6e41d9d63f83ee8a1afa09a6ae6b615e754fe6d05d9482f24",
+    "controller/plugin_protocol.go": "1b2d85b930280d0b195f32b1c02a50521ed9442207c18d79ce6103b4dbd11ceb",
+    "model/h3_admission.go": "ca23e28a86049c6751822626226500505c5ce599c4d28181ee4f1f124bcaead1",
+    "model/subscription.go": "b87a53b35bf81e75b4629644d10753c174dc9cff70b6d99a747b9ff6dd4a88e9",
+    "service/h3_admission.go": "712deb5147a44f9d847e2cc82629aead9812495ed684e19f004ac34e8d4ebc40",
+    "relay/relay_task.go": "d670dd4b9723c129b6c71786b99b87d062a0e8c49553d2cb00ab8cb1e73daf0e",
+    "router/h3_admission_test.go": "7fd001dccd8352b26593832c647f78526736c17037ed63d1e66a551e80fc2dac",
+    "controller/relay_task_plugin_test.go": "012b9647b0d2b5f14b49ed3f68be5369d43cd3d781dd1f44afc847a5b93921c1"
+  },
+  "fixtures": [
+    {
+      "body": {
+        "created_at": 1792722907,
+        "fail_reason": "task failed",
+        "finished_at": 1792722907,
+        "platform": "hailuo",
+        "progress": "100%",
+        "provider_terminal_confirmed": true,
+        "status": "FAILURE",
+        "task_id": "task_fBJaytdkbLznkD4rntqsE9278XX4QsV8"
+      },
+      "headers": {
+        "Cache-Control": "private, no-store",
+        "Content-Type": "application/json; charset=utf-8",
+        "X-New-Api-Task-Id": ""
+      },
+      "http_status": 200,
+      "name": "canonical_get_confirmed_provider_failure"
+    },
+    {
+      "body": {
+        "billing_state": "not_charged",
+        "code": "insufficient_user_quota",
+        "data": null,
+        "id": "task_P6zEPHGMPT2PgIC4dMSxEA5GPJmEPXm0",
+        "message": "Insufficient user quota, remaining quota: ＄0.00",
+        "recovery": {
+          "method": "GET",
+          "path": "/v1/tasks/task_P6zEPHGMPT2PgIC4dMSxEA5GPJmEPXm0"
+        },
+        "resubmittable": true,
+        "retryable": false,
+        "submission_code": "h3_submission_not_sent",
+        "submission_state": "not_submitted",
+        "task_id": "task_P6zEPHGMPT2PgIC4dMSxEA5GPJmEPXm0",
+        "upstream_submitted": false
+      },
+      "headers": {
+        "Cache-Control": "private, no-store",
+        "Content-Type": "application/json; charset=utf-8",
+        "X-New-Api-Task-Id": "task_P6zEPHGMPT2PgIC4dMSxEA5GPJmEPXm0"
+      },
+      "http_status": 403,
+      "name": "post_wallet_insufficient_not_charged"
+    },
+    {
+      "body": {
+        "created_at": 1792722908,
+        "fail_reason": "Submission was not sent",
+        "finished_at": 1792722908,
+        "platform": "35",
+        "progress": "100%",
+        "status": "FAILURE",
+        "submission_receipt": {
+          "billing_state": "not_charged",
+          "id": "task_P6zEPHGMPT2PgIC4dMSxEA5GPJmEPXm0",
+          "recovery": {
+            "method": "GET",
+            "path": "/v1/tasks/task_P6zEPHGMPT2PgIC4dMSxEA5GPJmEPXm0"
+          },
+          "resubmittable": true,
+          "retryable": false,
+          "submission_code": "h3_submission_not_sent",
+          "submission_state": "not_submitted",
+          "task_id": "task_P6zEPHGMPT2PgIC4dMSxEA5GPJmEPXm0",
+          "upstream_submitted": false
+        },
+        "task_id": "task_P6zEPHGMPT2PgIC4dMSxEA5GPJmEPXm0"
+      },
+      "headers": {
+        "Cache-Control": "private, no-store",
+        "Content-Type": "application/json; charset=utf-8",
+        "X-New-Api-Task-Id": ""
+      },
+      "http_status": 200,
+      "name": "canonical_get_not_charged"
+    },
+    {
+      "body": {
+        "created_at": 1792722909,
+        "fail_reason": "",
+        "finished_at": 0,
+        "platform": "hailuo",
+        "progress": "0%",
+        "status": "UNKNOWN",
+        "task_id": "task_h3_historical_unsent"
+      },
+      "headers": {
+        "Cache-Control": "private, no-store",
+        "Content-Type": "application/json; charset=utf-8",
+        "X-New-Api-Task-Id": ""
+      },
+      "http_status": 200,
+      "name": "canonical_get_unproven_send_fence"
+    },
+    {
+      "body": {
+        "created_at": 1792722909,
+        "fail_reason": "",
+        "finished_at": 0,
+        "platform": "hailuo",
+        "progress": "0%",
+        "status": "UNKNOWN",
+        "task_id": "task_h3_historical_unsent"
+      },
+      "headers": {
+        "Cache-Control": "private, no-store",
+        "Content-Type": "application/json; charset=utf-8",
+        "X-New-Api-Task-Id": ""
+      },
+      "http_status": 200,
+      "name": "canonical_get_unproven_refund_pending"
+    },
+    {
+      "body": {
+        "created_at": 1792722909,
+        "fail_reason": "",
+        "finished_at": 0,
+        "platform": "hailuo",
+        "progress": "0%",
+        "status": "UNKNOWN",
+        "task_id": "task_h3_historical_unsent"
+      },
+      "headers": {
+        "Cache-Control": "private, no-store",
+        "Content-Type": "application/json; charset=utf-8",
+        "X-New-Api-Task-Id": ""
+      },
+      "http_status": 200,
+      "name": "canonical_get_legacy_no_admission"
+    },
+    {
+      "body": {
+        "background": false,
+        "completed_at": null,
+        "created_at": 1792722909,
+        "error": null,
+        "id": "resp_h3_historical_unsent",
+        "incomplete_details": null,
+        "metadata": {
+          "retrieval_path": "/v1/responses/resp_h3_historical_unsent",
+          "task_id": "task_h3_historical_unsent",
+          "task_status": "queued"
+        },
+        "model": "MiniMax-H3",
+        "object": "response",
+        "output": [],
+        "status": "queued",
+        "usage": null
+      },
+      "headers": {
+        "Cache-Control": "private, no-store",
+        "Content-Type": "application/json; charset=utf-8",
+        "X-New-Api-Task-Id": ""
+      },
+      "http_status": 200,
+      "name": "responses_get_legacy_failure_remains_pending"
+    },
+    {
+      "body": {
+        "created_at": 1792722909,
+        "error": null,
+        "id": "resp_Uhzn0sViRkTVqnu4OckysnVn7akIKA94",
+        "incomplete_details": null,
+        "instructions": null,
+        "metadata": {
+          "retrieval_path": "/v1/responses/resp_Uhzn0sViRkTVqnu4OckysnVn7akIKA94",
+          "task_id": "task_Uhzn0sViRkTVqnu4OckysnVn7akIKA94",
+          "task_status": "queued"
+        },
+        "model": "MiniMax-H3",
+        "object": "response",
+        "output": [],
+        "parallel_tool_calls": true,
+        "status": "queued",
+        "temperature": 1,
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": 1,
+        "usage": null
+      },
+      "headers": {
+        "Cache-Control": "",
+        "Content-Type": "application/json; charset=utf-8",
+        "X-New-Api-Task-Id": "task_Uhzn0sViRkTVqnu4OckysnVn7akIKA94"
+      },
+      "http_status": 200,
+      "name": "responses_proof_unavailable_remains_recoverable"
+    },
+    {
+      "body": {
+        "created_at": 1792722909,
+        "error": null,
+        "id": "resp_kDQwzyMDnGU4EaS9DqamB3NYlg1jvAqr",
+        "incomplete_details": null,
+        "instructions": null,
+        "metadata": {
+          "retrieval_path": "/v1/responses/resp_kDQwzyMDnGU4EaS9DqamB3NYlg1jvAqr",
+          "task_id": "task_kDQwzyMDnGU4EaS9DqamB3NYlg1jvAqr",
+          "task_status": "queued"
+        },
+        "model": "MiniMax-H3",
+        "object": "response",
+        "output": [],
+        "parallel_tool_calls": true,
+        "status": "queued",
+        "temperature": 1,
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": 1,
+        "usage": null
+      },
+      "headers": {
+        "Cache-Control": "",
+        "Content-Type": "application/json; charset=utf-8",
+        "X-New-Api-Task-Id": "task_kDQwzyMDnGU4EaS9DqamB3NYlg1jvAqr"
+      },
+      "http_status": 200,
+      "name": "responses_primary_load_unavailable_remains_recoverable"
+    },
+    {
+      "body": {
+        "billing_state": "refunded",
+        "code": "build_request_failed",
+        "data": null,
+        "id": "task_lX2jBYe78IUsC4Fz1DJk20fzRfY0jwDQ",
+        "message": "unknown file reference \"request_file:input_reference\"",
+        "recovery": {
+          "method": "GET",
+          "path": "/v1/tasks/task_lX2jBYe78IUsC4Fz1DJk20fzRfY0jwDQ"
+        },
+        "refund_confirmed": true,
+        "resubmittable": true,
+        "retryable": false,
+        "submission_code": "h3_submission_not_sent",
+        "submission_state": "not_submitted",
+        "task_id": "task_lX2jBYe78IUsC4Fz1DJk20fzRfY0jwDQ",
+        "upstream_submitted": false
+      },
+      "headers": {
+        "Cache-Control": "private, no-store",
+        "Content-Type": "application/json; charset=utf-8",
+        "X-New-Api-Task-Id": "task_lX2jBYe78IUsC4Fz1DJk20fzRfY0jwDQ"
+      },
+      "http_status": 500,
+      "name": "post_build_failure_refunded"
+    },
+    {
+      "body": {
+        "created_at": 1792722912,
+        "fail_reason": "Submission was not sent",
+        "finished_at": 1792722912,
+        "platform": "hailuo",
+        "progress": "100%",
+        "status": "FAILURE",
+        "submission_receipt": {
+          "billing_state": "refunded",
+          "id": "task_lX2jBYe78IUsC4Fz1DJk20fzRfY0jwDQ",
+          "recovery": {
+            "method": "GET",
+            "path": "/v1/tasks/task_lX2jBYe78IUsC4Fz1DJk20fzRfY0jwDQ"
+          },
+          "refund_confirmed": true,
+          "resubmittable": true,
+          "retryable": false,
+          "submission_code": "h3_submission_not_sent",
+          "submission_state": "not_submitted",
+          "task_id": "task_lX2jBYe78IUsC4Fz1DJk20fzRfY0jwDQ",
+          "upstream_submitted": false
+        },
+        "task_id": "task_lX2jBYe78IUsC4Fz1DJk20fzRfY0jwDQ"
+      },
+      "headers": {
+        "Cache-Control": "private, no-store",
+        "Content-Type": "application/json; charset=utf-8",
+        "X-New-Api-Task-Id": ""
+      },
+      "http_status": 200,
+      "name": "canonical_get_refunded"
+    },
+    {
+      "body": {
+        "error": {
+          "code": "h3_submission_unknown",
+          "message": "Submission status is unknown; query this task and do not submit it again"
+        },
+        "id": "task_g3kP6bI2bxjsKLtIpsSKWn0AGzXe9qdg",
+        "model": "MiniMax-H3",
+        "object": "video",
+        "recovery": {
+          "method": "GET",
+          "path": "/v1/tasks/task_g3kP6bI2bxjsKLtIpsSKWn0AGzXe9qdg"
+        },
+        "resubmittable": false,
+        "retryable": false,
+        "status": "unknown",
+        "submission_state": "unknown",
+        "task_id": "task_g3kP6bI2bxjsKLtIpsSKWn0AGzXe9qdg"
+      },
+      "headers": {
+        "Cache-Control": "",
+        "Content-Type": "application/json; charset=utf-8",
+        "X-New-Api-Task-Id": "task_g3kP6bI2bxjsKLtIpsSKWn0AGzXe9qdg"
+      },
+      "http_status": 202,
+      "name": "post_unavailable_durable_proof_unknown"
+    },
+    {
+      "body": {
+        "billing_state": "refunded",
+        "code": "build_request_failed",
+        "data": null,
+        "error": {
+          "code": "build_request_failed",
+          "message": "Task protocol request failed",
+          "type": "new_api_error"
+        },
+        "id": "task_9lI8TtZk60dZniEnMom7Up1J4zYhunEq",
+        "message": "Task protocol request failed",
+        "recovery": {
+          "method": "GET",
+          "path": "/v1/tasks/task_9lI8TtZk60dZniEnMom7Up1J4zYhunEq"
+        },
+        "refund_confirmed": true,
+        "resubmittable": true,
+        "retryable": false,
+        "submission_code": "h3_submission_not_sent",
+        "submission_state": "not_submitted",
+        "task_id": "task_9lI8TtZk60dZniEnMom7Up1J4zYhunEq",
+        "upstream_submitted": false
+      },
+      "headers": {
+        "Cache-Control": "private, no-store",
+        "Content-Type": "application/json; charset=utf-8",
+        "X-New-Api-Task-Id": "task_9lI8TtZk60dZniEnMom7Up1J4zYhunEq"
+      },
+      "http_status": 500,
+      "name": "responses_build_failure_refunded_sanitized"
+    }
+  ]
+}

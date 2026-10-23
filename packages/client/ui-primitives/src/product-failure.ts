@@ -19,6 +19,9 @@ export function productFailureKind(code: unknown): ProductFailureKind {
     case 'RELAY_MISSING': return 'sign-in'
     case 'ACCOUNT_QUOTA':
     case 'INSUFFICIENT_POINTS':
+    case 'INSUFFICIENT_USER_QUOTA':
+    case 'insufficient_user_quota':
+    case 'INSUFFICIENT_TOKEN_QUOTA':
     case 'INSUFFICIENT_BALANCE': return 'insufficient-credits'
     case 'ABORTED':
     case 'CANCELLED':
@@ -40,6 +43,7 @@ export function productFailureKind(code: unknown): ProductFailureKind {
     case 'IMAGE_QUERY_TIMEOUT':
     case 'VIDEO_SUBMIT_TIMEOUT':
     case 'VIDEO_QUERY_TIMEOUT': return 'timeout'
+    case 'INVALID_ARGS':
     case 'INVALID_ARGUMENT':
     case 'INVALID_REQUEST':
     case 'INVALID_DURATION':
@@ -78,10 +82,13 @@ export function productFailureKind(code: unknown): ProductFailureKind {
     case 'HTTP_429':
     case 'RATE_LIMITED':
     case 'SERVER_BUSY':
+    case 'H3_ACCOUNT_CAPACITY_EXHAUSTED':
+    case 'media_account_capacity_exhausted':
     case 'VIDEO_SUBMIT_BUSY': return 'busy'
     case 'TASK_FAILED':
     case 'PROVIDER_TASK_FAILED':
     case 'UPSTREAM_ERROR':
+    case 'H3_UPSTREAM_AUTH_REJECTED':
     case 'UPSTREAM_AUTH':
     case 'UPSTREAM_QUOTA': return 'upstream'
     case 'LOCAL_SAVE_FAILED':

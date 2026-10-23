@@ -17,6 +17,8 @@ export const zh = {
   'originalQuerying': '正在查询原任务',
   'originalQueryFailed': '暂时无法查询原任务，现有记录已保留。请稍后再查询，不要再次提交生成',
   'originalCheck': '核对本机任务记录',
+  'originalChecking': '正在核对当前会话的视频任务…',
+  'originalCheckRequired': '请先核对原任务记录',
   'originalCheckFailed': '暂时无法核对原任务，生成保持暂停',
   'originalFailed': '原任务已结束，未保存可用视频，请查看原创作任务记录',
 
@@ -228,6 +230,8 @@ export const en: Record<keyof typeof zh, string> = {
   'originalQuerying': 'Querying original task',
   'originalQueryFailed': 'The original task could not be queried. Its record is retained. Query again later; do not submit generation again.',
   'originalCheck': 'Check retained task records',
+  'originalChecking': 'Checking video tasks in this conversation…',
+  'originalCheckRequired': 'Check the original task records first.',
   'originalCheckFailed': 'The original task cannot be checked. Generation remains paused.',
   'originalFailed': 'The original task ended without a saved video. Check the original creation-task record.',
 

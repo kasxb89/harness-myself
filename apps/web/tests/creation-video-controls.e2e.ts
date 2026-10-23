@@ -40,6 +40,9 @@ it.each(['no-session', 'unknown', 'pending', 'read-failed'] as const)(
         const evidence = await mkdtemp(join(directory, `creation-video-controls-${admission}-`))
         const paidRequests: string[] = [], unexpectedReads: string[] = [], projectReads: string[] = [], uploadedMaterials: string[] = []
         let catalogFailure: 'network' | 'service' | 'invalid' | null = null
+        let recordReadBlocked = admission === 'read-failed'
+        let recordCheckReleased = false
+        const submitGeometry: object[] = []
         const failureScreens: string[] = []
         let controlState: object | null = null
         await page.route('**/artifacts/api/list', route => route.fulfill({ status: 200, json: { items: [] } }))
@@ -63,11 +66,13 @@ it.each(['no-session', 'unknown', 'pending', 'read-failed'] as const)(
           } else if (url.pathname === '/credits/api/creative/projects') {
             const sessionId = url.searchParams.get('session_id')
             if (sessionId !== null) projectReads.push(sessionId)
-            if (admission === 'read-failed' && sessionId !== null) {
+            if (recordReadBlocked && sessionId !== null) {
               await route.fulfill({ status: 503, json: { ok: false, code: 'SERVER_BUSY' } })
             } else {
-              await json({ accountId: ACCOUNT, projects: sessionId === null ? [] : [{ id: 'cp_original', sessionId, kind: 'video',
-                tasks: [{ id: 'op_original', status: admission === 'pending' ? 'running' : 'unknown', canQuery: false }] }] })
+              await json({ accountId: ACCOUNT, projects: sessionId === null || admission === 'read-failed' ? [] : [{ id: 'cp_original', sessionId, kind: 'video',
+                tasks: [{ id: 'op_original', status: admission === 'pending' ? 'running' : 'unknown', canQuery: admission === 'pending',
+                  ...admission === 'pending' ? { videoReceipt: { taskId: 'original-video-task', model: MODEL_ID,
+                    route: '/v1/videos', phase: 'accepted', backendFingerprint: 'a'.repeat(64) } } : {} }] }] })
             }
           } else if (url.pathname === '/credits/api/chat-usage') {
             await json({ scope: 'chat-model', status: 'unavailable', settledRequests: 0, totalRequests: 0, accountId: ACCOUNT })
@@ -111,6 +116,9 @@ it.each(['no-session', 'unknown', 'pending', 'read-failed'] as const)(
           await page.screenshot({ path: join(evidence, 'video-initial-controls.png'), animations: 'disabled' })
           await videos.getByRole('button', { name: `预览 ${TEMPLATE_TITLE}`, exact: true }).waitFor()
           if (admission === 'read-failed') await videos.getByText(/^暂时无法核对原任务，生成保持暂停/).waitFor()
+          else if (admission === 'pending') {
+            await videos.getByText('生成中，任务已受理。请查询原任务，不要再次提交生成', { exact: true }).waitFor()
+          }
           else if (admission !== 'no-session') {
             await videos.getByText('提交结果待确认，尚无可查询的任务编号。请保留原记录并核对任务与计费，不要再次提交生成', { exact: true }).waitFor()
           }
@@ -135,8 +143,49 @@ it.each(['no-session', 'unknown', 'pending', 'read-failed'] as const)(
           await preview.getByText(TEMPLATE_PROMPT, { exact: true }).waitFor()
           await page.screenshot({ path: join(evidence, 'template-script.png'), animations: 'disabled' })
           await preview.getByRole('button', { name: '关闭预览', exact: true }).click()
-          await videos.getByRole('textbox', { name: '画面描述', exact: true }).fill('手冲咖啡，保持连续镜头。')
-          expect(await videos.getByRole('button', { name: '生成视频', exact: true }).isDisabled()).toBe(true)
+          const prompt = videos.getByRole('textbox', { name: '画面描述', exact: true })
+          await prompt.fill('手冲咖啡，保持连续镜头。')
+          const composer = videos.getByRole('region', { name: '视频创作输入', exact: true })
+          const submit = composer.getByRole('button', { name: '生成视频', exact: true })
+          expect(await submit.isDisabled()).toBe(true)
+          const hintId = await submit.getAttribute('aria-describedby')
+          if (hintId === null) throw new Error('A disabled filled video composer must identify its visible reason')
+          const hint = composer.locator(`[id="${hintId}"]`)
+          expect(await hint.textContent()).toBe(admission === 'no-session'
+            ? '请先在聊天中选择或新建会话，生成的项目和产物会关联到该会话'
+            : admission === 'read-failed' ? '请先核对原任务记录' : '原任务尚未确认，暂不能再次生成')
+          if (admission === 'read-failed') expect(await composer.getByRole('button', { name: '核对本机任务记录', exact: true }).isEnabled()).toBe(true)
+          if (admission === 'pending') expect(await composer.getByRole('button', { name: '查询原任务', exact: true }).isEnabled()).toBe(true)
+          for (const [theme, width] of [['dark', 1440], ['light', 900]] as const) {
+            await page.emulateMedia({ colorScheme: theme })
+            await page.setViewportSize({ width, height: 1000 })
+            await composer.scrollIntoViewIfNeeded()
+            const boxes = await Promise.all([composer.boundingBox(), submit.boundingBox(), hint.boundingBox(),
+              composer.locator('[aria-live="polite"]').boundingBox()])
+            const [composerBox, submitBox, hintBox, feedbackBox] = boxes
+            if (composerBox === null || submitBox === null || hintBox === null || feedbackBox === null) {
+              throw new Error('Video composer feedback geometry must be available')
+            }
+            expect(await hint.isVisible()).toBe(true)
+            expect(hintBox.x + hintBox.width).toBeLessThanOrEqual(submitBox.x)
+            expect(feedbackBox.y).toBeGreaterThanOrEqual(submitBox.y + submitBox.height)
+            expect(feedbackBox.y + feedbackBox.height).toBeLessThanOrEqual(composerBox.y + composerBox.height)
+            expect(composerBox.x + composerBox.width).toBeLessThanOrEqual(width)
+            expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width)
+            submitGeometry.push({ theme, viewportWidth: width, composer: composerBox,
+              submit: submitBox, hint: hintBox, feedback: feedbackBox })
+            await page.screenshot({ path: join(evidence, `send-hint-${theme}-${String(width)}.png`), animations: 'disabled' })
+          }
+          if (admission === 'read-failed') {
+            recordReadBlocked = false
+            await composer.getByRole('button', { name: '核对本机任务记录', exact: true }).click()
+            await expect.poll(() => submit.isEnabled()).toBe(true)
+            expect(await submit.getAttribute('aria-describedby')).toBeNull()
+            expect(await prompt.inputValue()).toBe('手冲咖啡，保持连续镜头。')
+            expect(paidRequests).toEqual([])
+            recordCheckReleased = true
+            await page.screenshot({ path: join(evidence, 'record-check-released.png'), animations: 'disabled' })
+          }
           if (admission === 'no-session') {
             await model.click()
             await page.getByRole('menuitem', { name: 'MiniMax-H3', exact: true }).click()
@@ -177,7 +226,8 @@ it.each(['no-session', 'unknown', 'pending', 'read-failed'] as const)(
           await writeFile(join(evidence, 'result.json'), JSON.stringify({ passed: true, admission, projectReads,
             paidRequests, uploadedMaterials, unexpectedReads, pageErrors: tripwire.pageErrors, controlState,
             modelId: MODEL_ID, modelLabel: MODEL_LABEL, failureScreens,
-            modelMenuOpened: true, parametersOpened: true, templateScriptPreviewed: true, paidSubmissionPaused: true,
+            modelMenuOpened: true, parametersOpened: true, templateScriptPreviewed: true, paidSubmissionPaused: !recordCheckReleased,
+            submitGeometry, recordCheckReleased, disabledReasonConnected: true, promptRetained: true,
             imageNoSessionDraftControlsChecked: admission === 'no-session',
             referenceVideoUploadChecked: admission === 'no-session',
             runtime: 'real built shipped Web composition' }, null, 2) + '\n')

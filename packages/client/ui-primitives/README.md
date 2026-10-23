@@ -118,7 +118,7 @@ The atoms cannot read the application locale, so every piece of user-facing copy
 
 -----
 
-`productFailureKind` classifies observed failure codes for locale-owned display: sign-in, account credits, cancellation, connection, timeout, request validation, permission, rate limiting, service HTTP 5xx, explicit upstream failure and local storage stay distinct. Connection and timeout categories do not establish whose infrastructure caused the failure. Unrecognized codes remain unknown; the helper never reads or rewrites diagnostic text. Consumers preserve accepted tasks and unknown submission outcomes before choosing a failure summary.
+`productFailureKind` classifies observed failure codes for locale-owned display: sign-in, account credits, cancellation, connection, timeout, request validation, permission, rate limiting, service HTTP 5xx, explicit upstream failure and local storage stay distinct. Tool argument validation belongs to request validation; exhausted user or token quotas belong to account credits. Connection and timeout categories do not establish whose infrastructure caused the failure. Unrecognized codes remain unknown; the helper matches exact codes and never reads or rewrites diagnostic text. Consumers preserve accepted tasks and unknown submission outcomes before choosing a failure summary.
 
 <a id="understand-the-implementation"></a>
 ## Understand the implementation

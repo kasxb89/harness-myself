@@ -3,6 +3,10 @@ import { setTimeout as delay } from 'node:timers/promises'
 import type { CreativeImageReceipt } from './creative-types.ts'
 import { isAccountBalanceRejectionText } from './account-balance.ts'
 import { VideoProjectError } from './video-project.ts'
+import {
+  hasMediaSubmissionReceipt, mediaSubmissionTaskId, mediaSubmissionRejection, mediaSubmissionQueryRejection, mediaSubmissionMessage,
+  hasMediaSubmissionUnknown, mediaSubmissionUnknownTaskId,
+} from './media-submission-receipt.ts'
 import type { ArtifactOrigin } from '@deepseek-ai/dsh-artifacts-index'
 
 /** Billing and provider-task facts remain independent of local waiting or saving. */
@@ -33,10 +37,13 @@ export interface ImageTaskOptions {
   readonly queryRetryLimit: number
   readonly prepare?: (signal: AbortSignal) => Promise<void>
   readonly submitting?: () => Promise<void>
+  /** Final synchronous login check after receipt persistence and immediately before dispatch. */
+  readonly beforeSubmit?: () => void
   readonly received?: (receipt: CreativeImageReceipt) => Promise<void>
   readonly resumeReceipt?: CreativeImageReceipt
   readonly submit: (signal: AbortSignal) => Promise<Response>
-  readonly read: (taskId: string, signal: AbortSignal) => Promise<Response>
+  /** Canonical reads select only the Host-owned /v1/tasks path, never a response-supplied URL. */
+  readonly read: (taskId: string, signal: AbortSignal, canonical?: boolean) => Promise<Response>
   readonly save: (item: Record<string, unknown>, index: number, signal: AbortSignal) => Promise<string | undefined>
 }
 
@@ -67,6 +74,7 @@ function status(value: Record<string, unknown> | undefined): string | undefined 
  */
 export async function executeImageTask(options: ImageTaskOptions): Promise<ImageTaskOutcome> {
   let receipt = options.resumeReceipt
+  let canonicalRead = receipt?.taskId?.startsWith('task_') === true
   let sent = receipt !== undefined
   const saved: string[] = []
   let unreadResponse: Response | undefined
@@ -125,6 +133,7 @@ export async function executeImageTask(options: ImageTaskOptions): Promise<Image
         ...options.origin === undefined ? {} : { origin: options.origin } })
       signal.throwIfAborted()
       phase = 'submitting'
+      options.beforeSubmit?.()
       sent = true
       const requestSignal = AbortSignal.any([signal, AbortSignal.timeout(options.submitTimeoutMs)])
       const response = await options.submit(requestSignal)
@@ -136,18 +145,34 @@ export async function executeImageTask(options: ImageTaskOptions): Promise<Image
       let body: Record<string, unknown> | undefined
       try { body = record(JSON.parse(text)) }
       catch (_invalidReply: unknown) { /* An unreadable reply cannot establish that the paid submission was rejected. */ }
-      const acceptedId = taskId(body)
-      if (acceptedId !== undefined) await persist({ ...currentReceipt(), taskId: acceptedId, phase: 'accepted' })
+      const marked = hasMediaSubmissionReceipt(body)
+      const uncertain = hasMediaSubmissionUnknown(body)
+      const canonicalId = uncertain ? mediaSubmissionUnknownTaskId(options.model, 'image', response.status, body) : undefined
+      const acceptedId = marked ? mediaSubmissionTaskId(options.model, 'image', body) : uncertain ? canonicalId : taskId(body)
+      const rejection = mediaSubmissionRejection(options.model, 'image', response.status, body)
+      if (rejection !== undefined) {
+        await persist({ ...currentReceipt(), taskId: rejection.taskId })
+        return outcome('failed', rejection.code, mediaSubmissionMessage(rejection))
+      }
+      if (acceptedId !== undefined) {
+        canonicalRead = marked || canonicalId !== undefined
+        await persist({ ...currentReceipt(), taskId: acceptedId, phase: 'accepted' })
+      }
+      if (marked) return outcome(acceptedId === undefined ? 'unknown' : 'pending',
+        acceptedId === undefined ? 'IMAGE_SUBMISSION_UNKNOWN' : 'IMAGE_STATUS_INVALID',
+        '原图片回执尚未通过完整核对，请保留已有任务与计费记录，不要重新生成。')
+      if (uncertain && canonicalId === undefined) return outcome('unknown', 'IMAGE_SUBMISSION_UNKNOWN',
+        '生成提交结果和计费状态尚未确认，请先核对原任务；不会重新提交。')
       if (!response.ok) {
         if (acceptedId !== undefined) return outcome('pending', 'IMAGE_QUERY_PENDING', '原生成任务已受理，暂时无法确认结果，请查询原任务；不会重新生成。')
-        if (response.status >= 400 && response.status < 500 && response.status !== 408) {
+        if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
           const balance = isAccountBalanceRejectionText(text, response.status)
           return outcome('failed', balance ? 'INSUFFICIENT_BALANCE' : `HTTP_${String(response.status)}`,
             balance ? '余额不足，请充值' : '生成请求未被受理，请检查登录状态、素材与模型要求。')
         }
         return outcome('unknown', 'IMAGE_SUBMISSION_UNKNOWN', '生成提交结果和计费状态尚未确认，请先核对原任务；不会重新提交。')
       }
-      await save(body)
+      if (!uncertain) await save(body)
       if (saved.length > 0) return await complete()
     }
     const acceptedTaskId = currentReceipt().taskId
@@ -163,7 +188,8 @@ export async function executeImageTask(options: ImageTaskOptions): Promise<Image
       let body: Record<string, unknown> | undefined
       try {
         const querySignal = AbortSignal.any([signal, AbortSignal.timeout(options.queryTimeoutMs)])
-        response = await options.read(acceptedTaskId, querySignal)
+        response = canonicalRead || currentReceipt().route === '/v1/tasks'
+          ? await options.read(acceptedTaskId, querySignal, true) : await options.read(acceptedTaskId, querySignal)
         const text = await response.text()
         if (!response.ok) {
           if (response.status !== 408 && response.status !== 429 && response.status < 500) {
@@ -180,8 +206,37 @@ export async function executeImageTask(options: ImageTaskOptions): Promise<Image
         continue
       }
       failures = 0
+      const rejection = mediaSubmissionQueryRejection(currentReceipt().model, 'image', response.status, body, acceptedTaskId)
+      if (rejection !== undefined) return outcome('failed', rejection.code, mediaSubmissionMessage(rejection))
+      if (hasMediaSubmissionReceipt(body) || hasMediaSubmissionUnknown(body)) return outcome('pending', 'IMAGE_STATUS_INVALID',
+        '原图片回执尚未通过完整核对，请保留原任务编号，不要重新生成。')
       const taskStatus = status(body)
-      if (['failed', 'failure', 'fail', 'error', 'cancelled', 'canceled'].includes(taskStatus ?? '')) {
+      if (canonicalRead && taskStatus === 'unknown') return outcome('pending', 'IMAGE_STATUS_INVALID',
+        '原图片状态尚未明确，请保留原任务编号继续核对，不要重新生成。')
+      const failed = ['failed', 'failure', 'fail', 'error', 'cancelled', 'canceled'].includes(taskStatus ?? '')
+      if (canonicalRead && failed) return outcome('pending', 'IMAGE_STATUS_INVALID',
+        '原图片失败状态尚无完整提交与计费证明，请保留原任务编号继续核对，不要重新生成。')
+      if (!canonicalRead && currentReceipt().route === '/toapis/v1/images/generations'
+        && (failed || ['queued', 'pending', 'unknown', 'not_start', 'created', 'submitted'].includes(taskStatus ?? ''))) {
+        const querySignal = AbortSignal.any([signal, AbortSignal.timeout(options.queryTimeoutMs)])
+        const canonical = await options.read(acceptedTaskId, querySignal, true)
+        const text = await canonical.text()
+        let original: unknown
+        try { original = JSON.parse(text) } catch (_invalidOriginalTask: unknown) { /* Keep the original receipt unresolved. */ }
+        const proof = mediaSubmissionQueryRejection(currentReceipt().model, 'image', canonical.status, original, acceptedTaskId)
+        if (proof !== undefined) return outcome('failed', proof.code, mediaSubmissionMessage(proof))
+        const originalStatus = status(record(original))
+        if (failed || hasMediaSubmissionReceipt(original) || hasMediaSubmissionUnknown(original)
+          || canonical.ok && (originalStatus === 'unknown'
+            || ['failed', 'failure', 'fail', 'error', 'cancelled', 'canceled'].includes(originalStatus ?? ''))) {
+          return outcome('pending', 'IMAGE_STATUS_INVALID', '原图片状态尚无完整提交与计费证明，请保留原任务编号继续核对，不要重新生成。')
+        }
+        if (!canonical.ok && canonical.status !== 404) return outcome('pending', 'IMAGE_QUERY_UNAVAILABLE',
+          '原任务当前无法完整核对，请稍后继续查询原任务；不会重新生成。')
+      }
+      if (failed) {
+        if (currentReceipt().route === '/v1/tasks') return outcome('pending', 'IMAGE_STATUS_INVALID',
+          '原图片失败状态尚无完整提交与计费证明，请保留原任务编号继续核对，不要重新生成。')
         return outcome('failed', 'TASK_FAILED', '原生成任务已结束且未成功，请检查原任务和计费记录。')
       }
       await save(body)

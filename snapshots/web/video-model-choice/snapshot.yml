@@ -1,0 +1,12 @@
+version: 1
+scenario: video-model-choice
+profile: web
+composition: video-model-choice
+recording: authored
+header:
+  class: video-model-choice
+  pin: true
+  systemPromptSource: h3-submission-outcomes
+  toolSchemasSource: h3-submission-outcomes
+workspace:
+  final: true

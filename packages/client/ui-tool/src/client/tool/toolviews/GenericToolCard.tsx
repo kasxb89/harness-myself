@@ -34,6 +34,12 @@ const MEDIA_FAILURE_KEYS = {
   'accepted-queued': 'error.mediaTaskQueued',
   'accepted-pending': 'error.mediaTaskPending',
   'model-parameters': 'error.mediaParameters',
+  'plan-parameters': 'error.creationPlanParameters',
+  'video-count-limit': 'error.videoCountLimit',
+  'video-intent-unavailable': 'error.videoIntentUnavailable',
+  'video-quote-unavailable': 'error.videoQuoteUnavailable',
+  'video-quote-changed': 'error.videoQuoteChanged',
+  'video-choice-unavailable': 'error.videoModelChoiceUnavailable',
   'sign-in': 'error.signInRequired',
   'signed-out': 'error.signInRequired',
   'insufficient-credits': 'error.creditsRequired',
@@ -56,6 +62,7 @@ export function GenericToolCard({ toolName, block, cwd, home, openFile, inspect,
   const mediaError = mediaFailure(toolName, block)
   const pending = mediaError === 'accepted-pending' || mediaError === 'accepted-queued'
   const mediaFailureText = mediaError === null ? null : t(MEDIA_FAILURE_KEYS[mediaError])
+  const mediaFailureSummary = mediaError === 'plan-parameters' ? `${toolName} · ${mediaFailureText}` : mediaFailureText
   const autoReview = model.autoReviewDenial === null
     ? null
     : localizeAutoReviewDenial(model.autoReviewDenial, t)
@@ -84,7 +91,7 @@ export function GenericToolCard({ toolName, block, cwd, home, openFile, inspect,
       // single-file AND carries a card, so the card expands under the path link.
       bodyRaw={singleFile || autoReview !== null || mediaError !== null ? null : model.bodyRaw}
       output={mediaFailureText ?? autoReview?.output ?? model.output}
-      errorSummary={mediaFailureText ?? autoReview?.summary ?? model.errorSummary}
+      errorSummary={mediaFailureSummary ?? autoReview?.summary ?? model.errorSummary}
       terminal={terminal}
       diff={diff}
       read={read}

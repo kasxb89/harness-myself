@@ -3,6 +3,7 @@ import { createServer, type Server, type ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { isDeepStrictEqual } from 'node:util'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import sharp from 'sharp'
 import { Context } from '@deepseek-ai/cordis'
@@ -11,27 +12,35 @@ import Include from '@deepseek-ai/cordis-plugin-include'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { LocalCredentialProvider } from '@deepseek-ai/dsh-credentials-local'
 import WebServer from '@deepseek-ai/dsh-host-webserver'
-import Tools from '@deepseek-ai/dsh-tools'
+import Tools, { type ToolExecutionInput, type ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import DefaultModel from '@deepseek-ai/dsh-agent-default-model'
 import { buildModelCatalog } from '@deepseek-ai/dsh-api-session-controller'
-import type { Agent } from '@deepseek-ai/dsh-agent'
+import AgentRegistry, { type Agent } from '@deepseek-ai/dsh-agent'
+import UserQuestionService from '@deepseek-ai/dsh-user-questions'
 import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
 import LocalAttachmentStore from '@deepseek-ai/dsh-attachment-local'
 import SessionStore, { Session, SessionId, SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
-import LlmRuntime, { createUserMessage, ReasoningEffortId, ToolCallId, type FinishReason } from '@deepseek-ai/dsh-llm'
+import SessionProjections from '@deepseek-ai/dsh-session-projection'
+import LlmRuntime, { createToolResultMessage, createUserMessage, ReasoningEffortId, ToolCallId, type FinishReason } from '@deepseek-ai/dsh-llm'
 import * as LlmPiAi from '@deepseek-ai/dsh-llm-pi-ai'
 import * as Artifacts from '@deepseek-ai/dsh-artifacts-index'
 import * as Connection from '@deepseek-ai/dsh-client-connection'
 import * as Credits from '../src/index.ts'
 import * as VideoProjectTools from '../src/video-project-tools.ts'
 import { CreativeStore } from '../src/creative-store.ts'
+import { ImageConcurrency } from '../src/image-concurrency.ts'
 import type { VideoProjectOptions } from '../src/video-project-types.ts'
 import { prepareVideoProject, readVideoProject, runVideoProject } from '../src/video-project.ts'
 import { JobId } from '@deepseek-ai/dsh-jobs'
 import type { VideoEditor } from '../src/video-edit.ts'
 import { profileComposition } from '../../../settings/settings/tests/profile-composition.ts'
 import h3ResponseContract from './fixtures/h3-response-contract-v2.json' with { type: 'json' }
+import notSentContract from './fixtures/h3-not-sent-contract.json' with { type: 'json' }
+import terminalContract from './fixtures/h3-terminal-api-contract.json' with { type: 'json' }
+import btQuote from './fixtures/video-quote-bt-exact.json' with { type: 'json' }
+import h3TenSecondQuote from './fixtures/video-quote-h3-10s-exact.json' with { type: 'json' }
+import mediaContract from './fixtures/media-submission-api-contract-v3.json' with { type: 'json' }
 
 const relayRef = credentialRef('HARNESS_INTEGRATION_RELAY')
 let context: Context | undefined
@@ -54,7 +63,10 @@ let pricingRows: unknown[] = []
 let videoTaskStatus: string | undefined
 let videoResultUrl = 'https://ignored.invalid/content.mp4'
 let videoRejection: unknown
+let videoQueryReply: unknown
 const videoSubmitReplies: { status: number; body: unknown; headers?: Record<string, string> }[] = []
+const mediaWireReplies: { method: string; path: string; status: number; body: unknown }[] = []
+let videoQuoteSamples: readonly { request: unknown; response: Record<string, unknown>; http_status: number }[] = []
 let imageResponse: unknown
 let imageTaskStatus: string | undefined
 let imageTaskHttpStatus = 200
@@ -75,6 +87,7 @@ let modelReadStarted: (() => void) | undefined
 let releaseModels: (() => void) | undefined
 let releaseRefresh: (() => void) | undefined
 let refreshBarrier: Promise<void> | undefined
+const videoAgents = new Map<string, Agent>()
 
 afterEach(async () => {
   releaseUpstreamGate?.()
@@ -106,7 +119,10 @@ afterEach(async () => {
   videoTaskStatus = undefined
   videoResultUrl = 'https://ignored.invalid/content.mp4'
   videoRejection = undefined
+  videoQueryReply = undefined
   videoSubmitReplies.length = 0
+  mediaWireReplies.length = 0
+  videoQuoteSamples = []
   imageResponse = undefined
   imageTaskStatus = undefined
   imageTaskHttpStatus = 200
@@ -121,6 +137,7 @@ afterEach(async () => {
   releaseModels = undefined
   releaseRefresh = undefined
   refreshBarrier = undefined
+  videoAgents.clear()
   vi.useRealTimers()
   vi.unstubAllEnvs()
   vi.restoreAllMocks()
@@ -157,7 +174,7 @@ async function boot(
       const body: unknown = chunks.length === 0 ? null : request.headers['content-type']?.includes('multipart/form-data')
         ? { multipart: bytes.toString('base64') } : JSON.parse(bytes.toString('utf8'))
       const url = new URL(request.url ?? '/', 'http://127.0.0.1')
-      if (/^\/harness\/v1\/(?:video\/generations|videos)(?:\/|$)/u.test(url.pathname)) {
+      if (/^\/harness\/v1\/(?:video\/generations|videos|tasks)(?:\/|$)/u.test(url.pathname)) {
         videoHeaders.push({ path: url.pathname, source: request.headers['x-yunshu-client'], contentType: request.headers['content-type'] })
       } else expect(request.headers['x-yunshu-client']).toBeUndefined()
       calls.push({ path: url.pathname + url.search, body,
@@ -167,6 +184,14 @@ async function boot(
       })
       await upstreamGate?.(url.pathname, response)
       response.setHeader('content-type', 'application/json')
+      const wireIndex = mediaWireReplies.findIndex(reply => reply.method === request.method && '/harness' + reply.path === url.pathname)
+      if (wireIndex !== -1) {
+        expect(request.headers.authorization).toBe(`Bearer ${relayKey}`)
+        const reply = mediaWireReplies.splice(wireIndex, 1)[0]!
+        response.setHeader('x-oneapi-request-id', 'media-wire-request')
+        response.writeHead(reply.status)
+        response.end(JSON.stringify(reply.body)); return
+      }
       const answer = (data: unknown): void => { response.end(JSON.stringify({ success: true, data })) }
       if (url.pathname === '/harness/api/status') {
         if (!statusAvailable) { response.writeHead(503); response.end('{}'); return }
@@ -229,6 +254,17 @@ async function boot(
         if (imageResponse !== null && typeof imageResponse === 'object' && 'error' in imageResponse) response.writeHead(403)
         response.end(JSON.stringify(imageResponse)); return
       }
+      if (url.pathname === '/harness/v1/video/quote' && videoQuoteSamples.length > 0) {
+        expect(request.method).toBe('POST')
+        expect(request.headers.authorization).toBe(`Bearer ${relayKey}`)
+        const sample = videoQuoteSamples.find(value => isDeepStrictEqual(body, value.request))
+        if (sample === undefined) throw new Error(`No exact native quote fixture for ${JSON.stringify(body)}`)
+        const ttl = Number(sample.response.expires_at) - Number(sample.response.created_at)
+        expect(ttl).toBe(60)
+        const createdAt = Math.floor(Date.now() / 1000)
+        response.writeHead(sample.http_status)
+        response.end(JSON.stringify({ ...sample.response, created_at: createdAt, expires_at: createdAt + ttl })); return
+      }
       if (url.pathname === '/harness/v1/video/generations' || url.pathname === '/harness/v1/videos') {
         if (request.headers.authorization !== `Bearer ${relayKey}`) { response.writeHead(403); response.end('{}'); return }
         const reply = videoSubmitReplies.shift()
@@ -236,10 +272,10 @@ async function boot(
         if (videoRejection !== undefined) { response.writeHead(403); response.end(JSON.stringify(videoRejection)); return }
         response.end(JSON.stringify(videoTaskStatus === undefined ? {} : { code: 'success', data: { task_id: 'fixture-video-task' } })); return
       }
-      if (['/harness/v1/video/generations/fixture-video-task', '/harness/v1/videos/fixture-video-task',
-        '/harness/v1/video/generations/task_fixture', '/harness/v1/videos/task_fixture'].includes(url.pathname)) {
+      if (['/harness/v1/tasks/fixture-video-task', '/harness/v1/videos/fixture-video-task',
+        '/harness/v1/tasks/task_fixture', '/harness/v1/videos/task_fixture'].includes(url.pathname)) {
         if (request.headers.authorization !== `Bearer ${relayKey}`) { response.writeHead(403); response.end('{}'); return }
-        response.end(JSON.stringify({ code: 'success', data: { status: videoTaskStatus, result_url: videoResultUrl } })); return
+        response.end(JSON.stringify(videoQueryReply ?? { code: 'success', data: { status: videoTaskStatus, result_url: videoResultUrl } })); return
       }
       if (url.pathname === '/harness/v1/videos/fixture-video-task/content') {
         if (request.headers.authorization !== `Bearer ${relayKey}`) { response.writeHead(403); response.end('{}'); return }
@@ -295,6 +331,9 @@ async function boot(
     ['@deepseek-ai/dsh-artifacts-index', Artifacts],
     ['@deepseek-ai/dsh-client-connection', Connection],
     ['@deepseek-ai/dsh-session', SessionStore],
+    ['@deepseek-ai/dsh-session-projection', SessionProjections],
+    ['@deepseek-ai/dsh-agent', AgentRegistry],
+    ['@deepseek-ai/dsh-user-questions', UserQuestionService],
     ['fixture-auth-index', { name: 'fixture-auth-index', inject: ['webServer', 'connection'], apply(ctx: Context) {
       ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/', handler: (request, response) => {
         if (ctx.connection.authorizeIndex(request, response)) response.end('ready')
@@ -316,6 +355,8 @@ async function boot(
   const entries = [
     { name: '@deepseek-ai/dsh-host-webserver', config: { host: '127.0.0.1', port: 0 } },
     { name: '@deepseek-ai/dsh-tools' }, { name: '@deepseek-ai/dsh-system-prompt' },
+    { name: '@deepseek-ai/dsh-session-projection' },
+    { name: '@deepseek-ai/dsh-agent' }, { name: '@deepseek-ai/dsh-user-questions' },
     { name: '@deepseek-ai/dsh-fs-local', config: { cwd: directory } },
     { name: '@deepseek-ai/dsh-attachment-local', config: { dshHome: join(directory, 'attachment-home') } },
     { name: '@deepseek-ai/dsh-credentials-local', config: { path: join(directory, 'credentials.yaml'), dshHome: directory, watch: false } },
@@ -391,9 +432,15 @@ function videoAgent(workspace: string, sessionId = 'reference-audio-chat'): Agen
   const ctx = context
   if (ctx === undefined) throw new Error('Expected a running product fixture')
   const id = SessionId(sessionId)
+  const previous = videoAgents.get(id)
+  if (previous !== undefined) {
+    if (previous.session.header.cwd !== workspace) throw new Error('Fixture Agent workspace must remain stable')
+    return previous
+  }
   const session = Session.create(id, [], { version: SESSION_FORMAT_VERSION, id, createdAt: 0, isSeeded: false, cwd: workspace })
+  session.append('turn/start', { turn: 1 })
   const unsupported = (): never => { throw new Error('Fixture inbox is not mutable') }
-  return {
+  const agent: Agent = {
     id, session, ctx, options: {}, status: 'running',
     inbox: {
       nextTurn: [], nextStep: [], clear: unsupported, append: unsupported, prepend: unsupported,
@@ -402,9 +449,103 @@ function videoAgent(workspace: string, sessionId = 'reference-audio-chat'): Agen
     send: () => {}, followup: () => {}, steer: () => {}, inject: () => {}, cancel: () => {},
     whenIdle: async () => {}, runMaintenance: task => task(new AbortController().signal),
   }
+  videoAgents.set(id, agent)
+  return agent
 }
 
+/** The existing integration scenarios name each human action explicitly; queries never grant generation. */
+function humanVideoRequest(agent: Agent): void {
+  agent.session.append('user/message', createUserMessage({ source: { kind: 'user' },
+    content: [{ type: 'text', text: '生成一条视频。' }] }), { surfaceOp: 'append' })
+}
+
+/** Dispatch through the real tool pipeline with the Session events normally owned by the Agent loop. */
+async function executeVideoFixture(input: ToolExecutionInput, newHumanRequest: boolean): Promise<ToolExecutionResult> {
+  const agent = input.agent
+  if (agent === undefined || input.name !== 'generate_video') throw new Error('Expected a video fixture Agent and tool')
+  if (context!.agents.get(agent.id) !== agent) await context!.agents.register(agent)
+  if (newHumanRequest) humanVideoRequest(agent)
+  const callId = ToolCallId(`${input.callId}-${String(agent.session.seq)}`)
+  const call = agent.session.append('tool/call', { turn: 1, step: 1, callId,
+    name: input.name, arguments: JSON.stringify(input.arguments) })
+  const result = await context!.tools.execute({ ...input, callId })
+  agent.session.append('tool/result', { turn: 1, step: 1,
+    message: createToolResultMessage({ callId, content: result.content, isError: result.isError }) },
+  { surfaceOp: 'append', sourceEventSeqs: [call.seq] })
+  return result
+}
+
+const requestVideo = (input: ToolExecutionInput): Promise<ToolExecutionResult> => executeVideoFixture(input, true)
+const continueVideo = (input: ToolExecutionInput): Promise<ToolExecutionResult> => executeVideoFixture(input, false)
+
 describe('deployed Harness API through the real product Loader', () => {
+  it.each([
+    { configured: undefined, ceiling: undefined, limit: 10 },
+    { configured: 2, ceiling: undefined, limit: 2 },
+    { configured: undefined, ceiling: 1, limit: 1 },
+    { configured: undefined, ceiling: 40, limit: 40 },
+    { configured: 10, ceiling: 40, limit: 10 },
+  ])('bounds real independent image POSTs at $limit with local $configured and declared $ceiling', async ({ configured, ceiling, limit }) => {
+    const { base } = await boot(undefined, false, false, undefined,
+      configured === undefined ? {} : { imageConcurrency: configured })
+    await signIn(base)
+    const model = 'gpt-image-2'
+    pricingRows = [{ model_name: model, supported_endpoint_types: ['image-generation'],
+      ...ceiling === undefined ? {} : { parameters: { 'x-client-concurrency': { schema: 1, atomic_admission: true,
+        model, max_parallelism: ceiling, scope: 'shared_account_pool', reservation: false } } } }]
+    const png = await sharp({ create: { width: 16, height: 16, channels: 4, background: '#abc' } }).png().toBuffer()
+    imageResponse = { data: [{ b64_json: png.toString('base64') }] }
+    const acquire = vi.spyOn(ImageConcurrency.prototype, 'acquire')
+    const release = Promise.withResolvers<undefined>()
+    releaseUpstreamGate = () => { release.resolve(undefined) }
+    let active = 0, peak = 0, entered = 0
+    upstreamGate = async (path) => {
+      if (path !== '/harness/v1/images/generations') return
+      entered += 1
+      active += 1
+      peak = Math.max(peak, active)
+      await release.promise
+      active -= 1
+    }
+    const total = limit + 1
+    const running = Promise.all(Array.from({ length: total }, (_, index) => post(base, '/api/image/generate', {
+      model, prompt: `Explicit image request ${String(index + 1)}`, count: 1,
+    })))
+    try {
+      await vi.waitFor(() => { expect(acquire).toHaveBeenCalledTimes(total); expect(entered).toBe(limit) })
+      expect(calls.filter(call => call.path === '/harness/v1/images/generations')).toHaveLength(limit)
+    } finally { release.resolve(undefined); await running }
+    expect((await running).every(result => result.ok === true)).toBe(true)
+    const submissions = calls.filter(call => call.path === '/harness/v1/images/generations')
+    expect(submissions).toHaveLength(total)
+    expect(submissions.every(call => object(call.body).n === 1)).toBe(true)
+    expect(peak).toBe(limit)
+  })
+
+  it('does not POST a queued unlinked image request after the login account changes', async () => {
+    const { base } = await boot(undefined, false, false, undefined, { imageConcurrency: 1 })
+    await signIn(base)
+    pricingRows = [{ model_name: 'gpt-image-2', supported_endpoint_types: ['image-generation'] }]
+    const png = await sharp({ create: { width: 16, height: 16, channels: 4, background: '#abc' } }).png().toBuffer()
+    imageResponse = { data: [{ b64_json: png.toString('base64') }] }
+    const acquire = vi.spyOn(ImageConcurrency.prototype, 'acquire')
+    const release = Promise.withResolvers<undefined>()
+    releaseUpstreamGate = () => { release.resolve(undefined) }
+    upstreamGate = async (path) => { if (path === '/harness/v1/images/generations') await release.promise }
+    const first = post(base, '/api/image/generate', { model: 'gpt-image-2', prompt: 'First explicitly requested image' })
+    await vi.waitFor(() => { expect(calls.filter(call => call.path === '/harness/v1/images/generations')).toHaveLength(1) })
+    const second = post(base, '/api/image/generate', { model: 'gpt-image-2', prompt: 'Queued explicitly requested image' })
+    try {
+      await vi.waitFor(() => { expect(acquire).toHaveBeenCalledTimes(2) })
+      await post(base, '/api/session/logout', {})
+      selfId = 8
+      await signIn(base)
+    } finally { release.resolve(undefined); await Promise.all([first, second]) }
+    await first
+    expect(await second).toMatchObject({ ok: false, submission_state: 'not-submitted' })
+    expect(calls.filter(call => call.path === '/harness/v1/images/generations')).toHaveLength(1)
+  })
+
   it('exposes safe platform-failure narration and unknown-outcome recovery on both native media tools', async () => {
     await boot()
     for (const name of ['generate_image', 'generate_video']) {
@@ -521,6 +662,79 @@ describe('deployed Harness API through the real product Loader', () => {
     }
   })
 
+  it.each([
+    { entry: 'panel', reply: notSentContract.notCharged }, { entry: 'chat', reply: notSentContract.notCharged },
+    { entry: 'panel', reply: notSentContract.refunded }, { entry: 'chat', reply: notSentContract.refunded },
+  ])('settles an exact unsent H3 ledger proof through $entry with original business code and task identity', async ({ entry, reply }) => {
+    const { base, stateDir } = await boot(undefined, false, true)
+    const cookie = await hostCookie(base)
+    await signIn(base)
+    const sessionId = 'h3-unsent-ledger'
+    context!.sessions.create(SessionId(sessionId), { meta: { cwd: stateDir } })
+    pricingRows = [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }]
+    videoSubmitReplies.push({ status: reply.httpStatus, body: reply.body, headers: { 'x-request-id': 'unsent-host-request' } })
+    const denied = entry === 'chat' ? object((await requestVideo({ name: 'generate_video', arguments: {
+      prompt: 'A synthetic clip', model: 'MiniMax-H3', duration_seconds: 4,
+    }, agent: videoAgent(stateDir, sessionId), callId: ToolCallId('h3-unsent-ledger'), signal: new AbortController().signal })).value)
+      : await post(base, '/api/video/tasks?source=newapi-generate', {
+        session_id: sessionId, account_id: '7', prompt: 'A synthetic clip', model: 'MiniMax-H3', durationSeconds: 4,
+      }, cookie)
+    expect(denied).toMatchObject({ code: reply.body.code, submission_state: 'failed', task_id: reply.body.id, request_id: 'unsent-host-request' })
+    const retained = projects(object(await (await fetch(base + `/api/creative/projects?session_id=${sessionId}`, { headers: { cookie } })).json()))[0]!
+    expect(retained).toMatchObject({ status: 'failed', tasks: [{ status: 'failed', errorCode: reply.body.code,
+      videoReceipt: { phase: 'submitting', taskId: reply.body.id, requestId: 'unsent-host-request' }, canQuery: false }] })
+    expect(calls.filter(call => call.path === '/harness/v1/video/generations')).toHaveLength(1)
+    expect(calls.some(call => call.path.startsWith('/harness/v1/tasks/'))).toBe(false)
+    videoTaskStatus = 'SUCCESS'
+    expect(await post(base, '/api/video/tasks?source=newapi-generate', {
+      session_id: sessionId, account_id: '7', prompt: 'An explicitly new attempt', model: 'MiniMax-H3', durationSeconds: 4,
+    }, cookie)).toMatchObject({ ok: true })
+    expect(calls.filter(call => call.path === '/harness/v1/video/generations')).toHaveLength(2)
+  })
+
+  it.each([
+    { entry: 'tool', provider: false }, { entry: 'panel', provider: false },
+    { entry: 'tool', provider: true }, { entry: 'panel', provider: true },
+  ])('reconciles the exact owned H3 task through $entry GET recovery with provider-terminal=$provider', async ({ entry, provider }) => {
+    const { base, stateDir } = await boot(undefined, false, true)
+    const cookie = await hostCookie(base)
+    await signIn(base)
+    const sessionId = 'h3-original-ledger-proof'
+    context!.sessions.create(SessionId(sessionId), { meta: { cwd: stateDir } })
+    pricingRows = [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }]
+    videoSubmitReplies.push(h3SubmitReply(h3ResponseContract.unknown, 'original-ledger-request'))
+    videoTaskStatus = 'UNKNOWN'
+    const args = { session_id: sessionId, account_id: '7', prompt: 'One original task', model: 'MiniMax-H3', durationSeconds: 4 }
+    expect(await post(base, '/api/video/tasks?source=newapi-generate', args, cookie))
+      .toMatchObject({ submission_state: 'pending', task_id: 'task_fixture' })
+    const listing = async () => projects(object(await (await fetch(base + `/api/creative/projects?session_id=${sessionId}`, { headers: { cookie } })).json()))
+    const retained = (await listing())[0]!
+    const original = object((retained.tasks as unknown[])[0])
+    const expectedCode = provider ? 'TASK_FAILED' : 'H3_SUBMISSION_NOT_SENT'
+    const terminal = terminalContract.fixtures.find(item => item.name === 'canonical_get_confirmed_provider_failure')
+    if (terminal === undefined) throw new Error('Expected the actual final API terminal fixture')
+    videoQueryReply = provider ? { ...terminal.body, task_id: 'task_fixture' } : { task_id: 'task_fixture', status: 'UNKNOWN', submission_receipt: {
+      ...notSentContract.receipt, id: 'task_fixture', task_id: 'task_fixture',
+    } }
+    if (entry === 'tool') {
+      const outcome = object((await context!.tools.execute({ name: 'query_video_task', arguments: {
+        plan_id: retained.id, operation_id: original.id,
+      }, agent: videoAgent(stateDir, sessionId), callId: ToolCallId('h3-owned-ledger-get'), signal: new AbortController().signal })).value)
+      expect(outcome).toMatchObject({ status: 'failed', code: expectedCode, task_id: 'task_fixture' })
+    } else {
+      const response = await fetch(base + '/api/creative/video/recover', { method: 'POST', headers: { cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId, project_id: retained.id, operation_id: original.id }) })
+      expect(response.status).toBe(202)
+    }
+    await vi.waitFor(async () => {
+      expect((await listing())[0]).toMatchObject({ status: 'failed', tasks: [{ id: original.id, status: 'failed',
+        errorCode: expectedCode, videoReceipt: { taskId: 'task_fixture', requestId: 'original-ledger-request' }, canQuery: false }] })
+    })
+    expect(calls.filter(call => call.path === '/harness/v1/video/generations')).toHaveLength(1)
+    expect(calls.filter(call => call.path.startsWith('/harness/v1/tasks/')).map(call => call.path))
+      .toEqual(['/harness/v1/tasks/task_fixture', '/harness/v1/tasks/task_fixture'])
+  })
+
   it.each(['panel', 'chat'] as const)('allows an explicit H3 generation after a confirmed capacity rejection through %s', async (entry) => {
     const { base, stateDir } = await boot(undefined, false, true)
     const cookie = await hostCookie(base)
@@ -530,7 +744,7 @@ describe('deployed Harness API through the real product Loader', () => {
     const agent = videoAgent(stateDir, sessionId)
     pricingRows = [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }]
     const generate = async (extra: object = {}) => entry === 'chat'
-      ? object((await context!.tools.execute({ name: 'generate_video', arguments: {
+      ? object((await requestVideo({ name: 'generate_video', arguments: {
         prompt: 'An explicitly requested synthetic clip', model: 'MiniMax-H3', duration_seconds: 4, ...extra,
       }, agent, callId: ToolCallId('h3-confirmed-capacity'), signal: new AbortController().signal })).value)
       : await post(base, '/api/video/tasks?source=newapi-generate', {
@@ -561,7 +775,7 @@ describe('deployed Harness API through the real product Loader', () => {
     const agent = videoAgent(stateDir, sessionId)
     pricingRows = [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }]
     videoSubmitReplies.push(h3SubmitReply(h3ResponseContract.confirmed_auth_rejection, 'auth-request'))
-    const denied = entry === 'chat' ? object((await context!.tools.execute({ name: 'generate_video', arguments: {
+    const denied = entry === 'chat' ? object((await requestVideo({ name: 'generate_video', arguments: {
       prompt: 'A synthetic clip', model: 'MiniMax-H3', duration_seconds: 4,
     }, agent, callId: ToolCallId('h3-confirmed-auth'), signal: new AbortController().signal })).value)
       : await post(base, '/api/video/tasks?source=newapi-generate', {
@@ -575,7 +789,7 @@ describe('deployed Harness API through the real product Loader', () => {
     expect(retained).toMatchObject({ status: 'failed', tasks: [{ status: 'failed', errorCode: 'H3_UPSTREAM_AUTH_REJECTED',
       videoReceipt: { taskId: 'task_fixture', requestId: 'auth-request' }, canQuery: false }], outputs: [] })
     expect(calls.filter(call => call.path === '/harness/v1/video/generations')).toHaveLength(1)
-    expect(calls.filter(call => call.path.startsWith('/harness/v1/video/generations/'))).toEqual([])
+    expect(calls.filter(call => call.path.startsWith('/harness/v1/tasks/'))).toEqual([])
   })
 
   it.each([
@@ -636,7 +850,7 @@ describe('deployed Harness API through the real product Loader', () => {
     else expect(retained.segments[0]?.taskId).toBe(taskId)
     expect(await runVideoProject(options, retained, provider, editor, job, signal)).toMatchObject({ status: 'failed' })
     expect(calls.filter(call => call.path === '/harness/v1/video/generations')).toHaveLength(1)
-    expect(calls.filter(call => call.path.startsWith('/harness/v1/video/generations/'))).toEqual([])
+    expect(calls.filter(call => call.path.startsWith('/harness/v1/tasks/'))).toEqual([])
   })
 
   it('keeps an uncertain H3 HTTP202 ordinary task queryable by its original id without another generation', async () => {
@@ -660,9 +874,9 @@ describe('deployed Harness API through the real product Loader', () => {
     const queried = object((await context!.tools.execute({ name: 'query_video_task', arguments: {
       plan_id: retained.id, operation_id: object(retained.tasks[0]).id,
     }, agent, callId: ToolCallId('h3-original-get-only'), signal: new AbortController().signal })).value)
-    expect(queried).toMatchObject({ status: 'failed', task_id: 'task_fixture' })
+    expect(queried).toMatchObject({ status: 'pending', code: 'VIDEO_STATUS_INVALID', task_id: 'task_fixture' })
     expect(calls.filter(call => call.path === '/harness/v1/video/generations')).toHaveLength(1)
-    expect(calls.filter(call => call.path === '/harness/v1/video/generations/task_fixture')).toHaveLength(2)
+    expect(calls.filter(call => call.path === '/harness/v1/tasks/task_fixture')).toHaveLength(2)
   })
 
   it('retains an uncertain H3 HTTP202 project segment id and resumes only the original task GET', async () => {
@@ -691,7 +905,7 @@ describe('deployed Harness API through the real product Loader', () => {
     videoTaskStatus = 'FAILED'
     expect(await runVideoProject(options, retained, provider, editor, job, signal)).toMatchObject({ status: 'failed' })
     expect(calls.filter(call => call.path === '/harness/v1/video/generations')).toHaveLength(1)
-    expect(calls.filter(call => call.path === '/harness/v1/video/generations/task_fixture')).toHaveLength(2)
+    expect(calls.filter(call => call.path === '/harness/v1/tasks/task_fixture')).toHaveLength(2)
   })
 
   it.each(['panel', 'chat'] as const)('preserves exact single-video funding rejection through %s without resubmitting an unconfirmed plan', async (entry) => {
@@ -702,34 +916,35 @@ describe('deployed Harness API through the real product Loader', () => {
     let agent = videoAgent(stateDir)
     pricingRows = [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }]
     const args = { prompt: 'A synthetic cup in sunlight', model: 'MiniMax-H3', duration_seconds: 4 }
-    const execute = async (extra: object = {}) => object((await context!.tools.execute({ name: 'generate_video', arguments: { ...args, ...extra }, agent,
+    const execute = async (extra: object = {}) => object((await continueVideo({ name: 'generate_video', arguments: { ...args, ...extra }, agent,
       callId: ToolCallId('funding-video'), signal: new AbortController().signal })).value)
     const listing = async () => projects(object(await (await fetch(base + `/api/creative/projects?session_id=${sessionId}`, { headers: { cookie } })).json()))
     for (const { body, expected } of [
       { body: { code: 'insufficient_user_quota', message: 'gateway funding rejection' }, expected: 'INSUFFICIENT_BALANCE' },
-      { body: { error: { code: 'insufficient_quota', type: 'upstream_error', message: 'insufficient_user_quota' } }, expected: 'HTTP_403' },
-      { body: { error: { code: 'permission_denied', type: 'new_api_error', message: 'insufficient_user_quota' } }, expected: 'HTTP_403' },
+      { body: { error: { code: 'insufficient_quota', type: 'upstream_error', message: 'insufficient_user_quota' } }, expected: 'VIDEO_SUBMISSION_UNKNOWN' },
+      { body: { error: { code: 'permission_denied', type: 'new_api_error', message: 'insufficient_user_quota' } }, expected: 'VIDEO_SUBMISSION_UNKNOWN' },
     ]) {
       sessionId = `funding-video-chat-${String(calls.length)}`
       context!.sessions.create(SessionId(sessionId), { meta: { cwd: stateDir } })
       agent = videoAgent(stateDir, sessionId)
+      humanVideoRequest(agent)
       videoRejection = body
       const before = calls.filter(call => call.path === '/harness/v1/video/generations').length
       const existing = new Set((await listing()).map(project => project.id))
       const result = entry === 'chat' ? await execute() : await post(base, '/api/video/tasks?source=newapi-generate', {
         prompt: args.prompt, model: args.model, durationSeconds: 4, session_id: sessionId, account_id: '7',
       }, cookie)
-      expect(result).toMatchObject(entry === 'chat' ? { status: expected === 'INSUFFICIENT_BALANCE' ? 'unknown' : 'failed', code: expected, task_id: '' } : { ok: false, code: expected, taskId: null })
+      expect(result).toMatchObject(entry === 'chat' ? { status: 'unknown', code: expected, task_id: '' } : { ok: false, code: expected, taskId: null })
       const project = (await listing()).find(item => !existing.has(item.id))
       if (project === undefined) throw new Error('Expected retained video project')
-      expect(project).toMatchObject({ kind: 'video', status: expected === 'INSUFFICIENT_BALANCE' ? 'unknown' : 'failed',
-        tasks: [{ status: expected === 'INSUFFICIENT_BALANCE' ? 'unknown' : 'failed', errorCode: expected === 'INSUFFICIENT_BALANCE' ? 'SUBMISSION_UNKNOWN' : expected }], outputs: [] })
+      expect(project).toMatchObject({ kind: 'video', status: 'unknown',
+        tasks: [{ status: 'unknown', errorCode: 'SUBMISSION_UNKNOWN' }], outputs: [] })
       if (expected === 'INSUFFICIENT_BALANCE') {
         expect(result.message).toBe('余额不足，请充值；提交结果尚未确认，请先检查已有任务，不要重复提交。')
         expect(await execute({ plan_id: project.id, shot_id: 'shot_1' })).toMatchObject({ status: 'failed', code: 'CREATIVE_SUBMISSION_UNKNOWN' })
       }
       expect(calls.filter(call => call.path === '/harness/v1/video/generations')).toHaveLength(before + 1)
-      expect(calls.some(call => call.path.startsWith('/harness/v1/video/generations/'))).toBe(false)
+      expect(calls.some(call => call.path.startsWith('/harness/v1/tasks/'))).toBe(false)
     }
   })
 
@@ -1750,11 +1965,17 @@ describe('deployed Harness API through the real product Loader', () => {
       { model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] },
     ]
     const agent = videoAgent(stateDir)
-    const call = async (name: string, args: object) => object((await context!.tools.execute({ name, arguments: args, agent,
-      callId: ToolCallId('receipt-' + name), signal: new AbortController().signal })).value)
+    const call = async (name: string, args: object) => {
+      const input = { name, arguments: args, agent, callId: ToolCallId('receipt-' + name), signal: new AbortController().signal }
+      return object((await (name === 'generate_video' ? continueVideo(input) : context!.tools.execute(input))).value)
+    }
     imageResponse = 'disconnect'
     expect(await call('generate_image', { prompt: '图片', model: 'gpt-image-2' })).toMatchObject({ status: 'unknown', code: 'IMAGE_SUBMISSION_UNKNOWN', submission_state: 'unknown' })
     const videoArgs = { prompt: '视频', model: 'MiniMax-H3', duration_seconds: 4 }
+    humanVideoRequest(agent)
+    expect(await call('generate_video', { ...videoArgs, duration_seconds: 0 }))
+      .toMatchObject({ status: 'failed', code: 'DURATION_NOT_SUPPORTED' })
+    expect(calls.filter(call => call.path === '/harness/v1/video/generations')).toHaveLength(0)
     const video = await call('generate_video', videoArgs)
     expect(video).toMatchObject({ status: 'unknown', code: 'NO_TASK_ID', model: 'MiniMax-H3', task_id: '' })
     expect(context!.tools.get('generate_video')).toMatchObject({
@@ -1764,8 +1985,6 @@ describe('deployed Harness API through the real product Loader', () => {
     expect(listed.find(project => project.id === video.plan_id)).toMatchObject({ status: 'unknown', tasks: [{ status: 'unknown', errorCode: 'SUBMISSION_UNKNOWN' }] })
     expect(await call('generate_video', { ...videoArgs, plan_id: video.plan_id, shot_id: 'shot_1' }))
       .toMatchObject({ status: 'failed', code: 'CREATIVE_SUBMISSION_UNKNOWN' })
-    expect(await call('generate_video', { ...videoArgs, duration_seconds: 0 }))
-      .toMatchObject({ status: 'failed', code: 'DURATION_NOT_SUPPORTED' })
     expect(calls.filter(call => call.path === '/harness/v1/video/generations')).toHaveLength(1)
 
     imageResponse = { data: [{ b64_json: Buffer.from('saved image').toString('base64') }] }
@@ -1863,7 +2082,7 @@ describe('deployed Harness API through the real product Loader', () => {
     expect(String(object(created.payload).path).startsWith(destination.directory)).toBe(true)
     expect(await readFile(String(object(created.payload).path), 'utf8')).toBe('managed image bytes')
     videoTaskStatus = 'completed'
-    const video = await context!.tools.execute({
+    const video = await requestVideo({
       callId: ToolCallId('managed-video'), name: 'generate_video', arguments: { prompt: 'A cup in sunlight', model: 'MiniMax-H3', duration_seconds: 4 }, signal: new AbortController().signal,
       agent: videoAgent(stateDir),
     })
@@ -1932,12 +2151,13 @@ describe('deployed Harness API through the real product Loader', () => {
       if (!Array.isArray(values)) throw new Error('Expected actual artifact listing')
       return values.map(object)
     }
-    pricingRows = [{ model_name: 'gpt-image-2', supported_endpoint_types: ['image-generation'] }]
+    pricingRows = [{ model_name: 'gpt-image-2', supported_endpoint_types: ['image-generation'] },
+      { model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }]
     imageResponse = { data: [{ b64_json: Buffer.from('library generated image').toString('base64') }] }
     const image = object((await context!.tools.execute({ callId: ToolCallId('library-image'), name: 'generate_image',
       arguments: { prompt: '人物参考图', model: 'gpt-image-2' }, agent, signal })).value)
     const completed = await generate()
-    expect(completed.outcome.status).toBe('completed')
+    expect(completed.outcome.status, JSON.stringify(completed.outcome)).toBe('completed')
     const expected = [image.path, ...completed.manifest.segments.map(segment => segment.publishedPath), completed.manifest.finalPath]
     expect((await readLibrary()).map(item => item.path)).toEqual(expect.arrayContaining(expected))
     expect((await readLibrary()).some(item => String(item.path).includes('/video-projects/'))).toBe(false)
@@ -1999,7 +2219,8 @@ describe('deployed Harness API through the real product Loader', () => {
     await writeFile(join(workspace, 'voice.wav'), wav)
     await writeFile(join(workspace, 'voice.mp3'), mp3)
     const agent = videoAgent(workspace)
-    const execute = (args: Record<string, unknown>) => context!.tools.execute({
+    humanVideoRequest(agent)
+    const execute = (args: Record<string, unknown>) => continueVideo({
       callId: ToolCallId('reference-audio'), name: 'generate_video',
       arguments: { prompt: 'A says “你好” in Mandarin; synchronized lips; no subtitles.', model: 'MiniMax-H3', duration_seconds: 4, ...args },
       agent, signal: new AbortController().signal,
@@ -2028,6 +2249,7 @@ describe('deployed Harness API through the real product Loader', () => {
     const refs = await readdir(join(stateDir, 'refs'))
     const assetId = refs.find(name => name.endsWith('.wav'))?.slice(0, -4)
     if (assetId === undefined || options === undefined) throw new Error('Missing prepared reference or project bridge')
+    humanVideoRequest(agent)
     await execute({ audio: true, reference_audios: [assetId] })
     const provider = await options.acquireProvider(workspace, agent.session)
     const model = await provider.model('MiniMax-H3', new AbortController().signal)
@@ -2041,7 +2263,7 @@ describe('deployed Harness API through the real product Loader', () => {
     ])
     await expect(provider.submit(request, new AbortController().signal)).rejects.toMatchObject({ code: 'VIDEO_SUBMIT_UNKNOWN' })
     expect(calls.filter(call => call.path === '/harness/v1/video/generations').at(-1)?.body).toEqual(request)
-    expect(calls.filter(call => call.path.startsWith('/harness/v1/video')).map(call => call.path)).toEqual(Array<string>(3).fill('/harness/v1/video/generations'))
+    expect(calls.filter(call => (call.path.startsWith('/harness/v1/video') || call.path.startsWith('/harness/v1/tasks/'))).map(call => call.path)).toEqual(Array<string>(3).fill('/harness/v1/video/generations'))
   })
 
   it('rejects unsafe, invalid and oversized chat audio references before any model submission', async () => {
@@ -2054,8 +2276,9 @@ describe('deployed Harness API through the real product Loader', () => {
     await writeFile(join(workspace, 'invalid.wav'), 'not a wave')
     await writeFile(join(workspace, 'oversized.wav'), Buffer.alloc(15 * 1024 * 1024 + 1))
     const agent = videoAgent(workspace)
+    humanVideoRequest(agent)
     for (const references of [['../outside.wav'], ['invalid.wav'], ['oversized.wav'], ['ma_missing'], Array<string>(4).fill('ma_missing')]) {
-      const result = await context!.tools.execute({ callId: ToolCallId('bad-audio'), name: 'generate_video', arguments: {
+      const result = await continueVideo({ callId: ToolCallId('bad-audio'), name: 'generate_video', arguments: {
         prompt: 'A talks', model: 'MiniMax-H3', duration_seconds: 4, reference_audios: references,
       }, agent, signal: new AbortController().signal })
       expect(object(result.value)).toMatchObject({ status: 'failed' })
@@ -2063,14 +2286,33 @@ describe('deployed Harness API through the real product Loader', () => {
     expect(calls.some(call => call.path === '/harness/v1/video/generations')).toBe(false)
   })
 
-  it('forwards the declared audio switch only for models that expose it', async () => {
+  it('keeps generic audio encoding while refusing chat billing without a real supported quotation', async () => {
+    let options: VideoProjectOptions | undefined
+    const register = VideoProjectTools.registerVideoProjectTools
+    vi.spyOn(VideoProjectTools, 'registerVideoProjectTools').mockImplementation((ctx, value) => {
+      options = value
+      register(ctx, value)
+    })
     const { base, stateDir } = await boot()
     await signIn(base)
     pricingRows = [{ model_name: 'grok-imagine-video', supported_endpoint_types: ['openai-video'], route: '/v1/video/generations' }]
+    relayModels.push({ id: 'grok-imagine-video', object: 'model', supported_endpoint_types: ['openai-video'] })
     for (const audio of [true, false]) {
-      await context!.tools.execute({ callId: ToolCallId(`audio-${String(audio)}`), name: 'generate_video', arguments: {
+      const result = await requestVideo({ callId: ToolCallId(`audio-${String(audio)}`), name: 'generate_video', arguments: {
         prompt: 'A synthetic clip', model: 'grok-imagine-video', duration_seconds: 4, audio,
       }, agent: videoAgent(stateDir), signal: new AbortController().signal })
+      expect(object(result.value)).toMatchObject({ status: 'failed', code: 'CREATIVE_VIDEO_QUOTE_UNAVAILABLE' })
+    }
+    expect(calls.filter(call => call.path === '/harness/v1/video/generations')).toEqual([])
+    if (options === undefined) throw new Error('Expected the real project provider bridge')
+    // This declared generic protocol remains a low-level encoding fixture, not a current production quote capability.
+    const provider = await options.acquireProvider(stateDir, videoAgent(stateDir).session)
+    await provider.model('grok-imagine-video', new AbortController().signal)
+    for (const audio of [true, false]) {
+      const signal = new AbortController().signal
+      const request = await provider.build({ prompt: 'A synthetic clip', totalDurationSeconds: 4, audio },
+        'grok-imagine-video', 'A synthetic clip', 4, signal)
+      await expect(provider.submit(request, signal)).rejects.toMatchObject({ code: 'VIDEO_SUBMIT_UNKNOWN' })
     }
     expect(calls.filter(call => call.path === '/harness/v1/video/generations').map(call => object(call.body).generate_audio)).toEqual([true, false])
     expect(calls.filter(call => call.path === '/harness/v1/video/generations').every(call => !('native_audio' in object(call.body)))).toBe(true)
@@ -2093,7 +2335,7 @@ describe('deployed Harness API through the real product Loader', () => {
       await barrier
       return read(...args)
     })
-    const pending = context!.tools.execute({ callId: ToolCallId('account-changing-audio'), name: 'generate_video', arguments: {
+    const pending = requestVideo({ callId: ToolCallId('account-changing-audio'), name: 'generate_video', arguments: {
       prompt: 'A talks', model: 'MiniMax-H3', duration_seconds: 4, reference_audios: ['voice.wav'],
     }, agent: videoAgent(workspace), signal: new AbortController().signal })
     try {
@@ -2318,37 +2560,64 @@ describe('deployed Harness API through the real product Loader', () => {
   })
 
   it.each([
-    { hint: undefined, maximum: 1 },
-    { hint: { schema: 1, atomic_admission: true, max_parallelism: 16, model: 'MiniMax-H3', scope: 'shared_account_pool', reservation: false }, maximum: 16 },
-    { hint: { schema: 1, atomic_admission: false, max_parallelism: 16, model: 'MiniMax-H3', scope: 'shared_account_pool', reservation: false }, maximum: 1 },
-  ])('reads only the current account-bound enforced H3 ceiling $maximum from hint $hint', async ({ hint, maximum }) => {
+    { model: 'MiniMax-H3', hint: undefined, maximum: 4 },
+    { model: 'MiniMax-H3', hint: { schema: 1, atomic_admission: true, max_parallelism: 16, model: 'MiniMax-H3', scope: 'shared_account_pool', reservation: false }, maximum: 16 },
+    { model: 'sd2.5-720p-x2', hint: { schema: 1, atomic_admission: true, max_parallelism: 2, model: 'sd2.5-720p-x2', scope: 'shared_account_pool', reservation: false }, maximum: 2 },
+    { model: 'MiniMax-H3', hint: { schema: 1, atomic_admission: false, max_parallelism: 16, model: 'MiniMax-H3', scope: 'shared_account_pool', reservation: false }, maximum: 4 },
+    { model: 'sd2.5-720p-x2', hint: undefined, maximum: 4 },
+    { model: 'sd2.5-720p-x2', hint: { schema: 1, atomic_admission: true, max_parallelism: 4, model: 'sd2.5-720p-x2', scope: 'shared_account_pool', reservation: false }, maximum: 4 },
+    { model: 'sd2.5-720p-x2', hint: { schema: 1, atomic_admission: true, max_parallelism: 16, model: 'MiniMax-H3', scope: 'shared_account_pool', reservation: false }, maximum: 4 },
+    { model: 'sd2.5-720p-x2', hint: { schema: 1, atomic_admission: true, max_parallelism: 4, model: 'sd2.5-720p-x2', scope: 'shared_account_pool', reservation: false }, maximum: 4, duplicate: true },
+  ])('reads the current account-bound enforced ceiling $maximum for $model from hint $hint', async ({ model, hint, maximum, duplicate }) => {
     let options: VideoProjectOptions | undefined
     const register = VideoProjectTools.registerVideoProjectTools
     vi.spyOn(VideoProjectTools, 'registerVideoProjectTools').mockImplementation((ctx, value) => { options = value; register(ctx, value) })
     const { base, stateDir } = await boot(undefined, false, false, undefined, {}, 'desktop')
     await signIn(base)
-    pricingRows = [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'],
+    relayModels = [{ id: model, object: 'model', supported_endpoint_types: ['openai-video'] }]
+    pricingRows = [{ model_name: model, supported_endpoint_types: ['openai-video'],
       parameters: { 'x-client-concurrency': hint } }]
+    if (duplicate === true) pricingRows.push({ model_name: model, supported_endpoint_types: ['openai-video'],
+      parameters: { 'x-client-concurrency': { ...hint, max_parallelism: 8 } } })
     if (options === undefined) throw new Error('Expected the account-bound project provider')
     const provider = await options.acquireProvider(stateDir, videoAgent(stateDir).session)
     if (provider.parallelism === undefined) throw new Error('Expected the real gateway concurrency reader')
-    expect(await provider.parallelism('MiniMax-H3', new AbortController().signal)).toBe(maximum)
-    expect(await provider.parallelism('another-video', new AbortController().signal)).toBe(1)
+    expect(await provider.parallelism(model, new AbortController().signal)).toBe(maximum)
+    await expect(provider.parallelism('another-video', new AbortController().signal)).rejects.toThrow('所选视频模型')
     expect(calls.filter(call => call.path === '/harness/v1/models').every(call => call.authorization === 'Bearer sk-owned-relay')).toBe(true)
     expect(calls.some(call => call.path === '/harness/v1/video/generations' || call.path === '/harness/v1/videos')).toBe(false)
     await post(base, '/api/session/logout', {})
-    await expect(provider.parallelism('MiniMax-H3', new AbortController().signal)).rejects.toThrow('登录')
+    await expect(provider.parallelism(model, new AbortController().signal)).rejects.toThrow('登录')
   })
 
-  it('rejects an H3 ceiling read whose initiating login changes before the catalog returns', async () => {
+  it.each(['relay allowlist', 'video catalog'] as const)('rejects a declared video ceiling without the current account %s', async (missing) => {
+    let options: VideoProjectOptions | undefined
+    const register = VideoProjectTools.registerVideoProjectTools
+    vi.spyOn(VideoProjectTools, 'registerVideoProjectTools').mockImplementation((ctx, value) => { options = value; register(ctx, value) })
+    const { base, stateDir } = await boot(undefined, false, false, undefined, {}, 'desktop')
+    await signIn(base)
+    const model = 'sd2.5-720p-x2'
+    relayModels = missing === 'relay allowlist' ? [] : [{ id: model, object: 'model', supported_endpoint_types: ['openai-video'] }]
+    pricingRows = [{ model_name: model, supported_endpoint_types: missing === 'video catalog' ? ['openai'] : ['openai-video'], parameters: {
+      'x-client-concurrency': { schema: 1, atomic_admission: true, max_parallelism: 4, model, scope: 'shared_account_pool', reservation: false },
+    } }]
+    if (options === undefined) throw new Error('Expected the account-bound project provider')
+    const provider = await options.acquireProvider(stateDir, videoAgent(stateDir).session)
+    if (provider.parallelism === undefined) throw new Error('Expected the real gateway concurrency reader')
+    await expect(provider.parallelism(model, new AbortController().signal)).rejects.toThrow('所选视频模型')
+    expect(calls.some(call => call.path === '/harness/v1/video/generations' || call.path === '/harness/v1/videos')).toBe(false)
+  })
+
+  it.each(['MiniMax-H3', 'sd2.5-720p-x2'])('rejects a %s ceiling read whose initiating account changes before the catalog returns', async (model) => {
     let options: VideoProjectOptions | undefined
     const register = VideoProjectTools.registerVideoProjectTools
     vi.spyOn(VideoProjectTools, 'registerVideoProjectTools').mockImplementation((ctx, value) => { options = value; register(ctx, value) })
     const { base, stateDir } = await boot(undefined, false, false, undefined, {}, 'desktop')
     await signIn(base)
     await context!.llm.listModels('yunshu-local')
-    pricingRows = [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'], parameters: {
-      'x-client-concurrency': { schema: 1, atomic_admission: true, max_parallelism: 16, model: 'MiniMax-H3', scope: 'shared_account_pool', reservation: false },
+    relayModels = [{ id: model, object: 'model', supported_endpoint_types: ['openai-video'] }]
+    pricingRows = [{ model_name: model, supported_endpoint_types: ['openai-video'], parameters: {
+      'x-client-concurrency': { schema: 1, atomic_admission: true, max_parallelism: 16, model, scope: 'shared_account_pool', reservation: false },
     } }]
     if (options === undefined) throw new Error('Expected the account-bound project provider')
     const provider = await options.acquireProvider(stateDir, videoAgent(stateDir).session)
@@ -2359,12 +2628,23 @@ describe('deployed Harness API through the real product Loader', () => {
     upstreamGate = async (path) => {
       if (path === '/harness/api/pricing') { started.resolve(undefined); await release.promise }
     }
-    const rejected = expect(provider.parallelism('MiniMax-H3', new AbortController().signal)).rejects.toThrow('登录')
+    const rejected = expect(provider.parallelism(model, new AbortController().signal)).rejects.toThrow('登录')
     try {
       await started.promise
       await post(base, '/api/session/logout', {})
+      selfId = 8
+      access = 'access-next-user'
+      relayKey = 'sk-next-owned-relay'
+      await signIn(base)
     } finally { release.resolve(undefined) }
     await rejected
+    upstreamGate = undefined
+    pricingRows = [{ model_name: model, supported_endpoint_types: ['openai-video'], parameters: {
+      'x-client-concurrency': { schema: 1, atomic_admission: true, max_parallelism: 4, model, scope: 'shared_account_pool', reservation: false },
+    } }]
+    const nextProvider = await options.acquireProvider(stateDir, videoAgent(stateDir).session)
+    expect(await nextProvider.parallelism?.(model, new AbortController().signal)).toBe(4)
+    expect(calls.filter(call => call.path === '/harness/v1/models').at(-1)?.authorization).toBe('Bearer sk-next-owned-relay')
     expect(calls.some(call => call.path === '/harness/v1/video/generations' || call.path === '/harness/v1/videos')).toBe(false)
   })
 
@@ -2381,7 +2661,7 @@ describe('deployed Harness API through the real product Loader', () => {
     videoTaskStatus = 'SUCCESS'
     videoResultUrl = api + '/fixtures/private.mp4'
     const agent = videoAgent(stateDir)
-    const outcome = object((await context!.tools.execute({ callId: ToolCallId('source-chat'), name: 'generate_video',
+    const outcome = object((await requestVideo({ callId: ToolCallId('source-chat'), name: 'generate_video',
       arguments: { prompt: 'A synthetic clip', model: 'MiniMax-H3', duration_seconds: 4 }, agent, signal: new AbortController().signal })).value)
     expect(outcome.status).toBe('succeeded')
     if (options === undefined) throw new Error('Expected the production project provider')
@@ -2397,11 +2677,11 @@ describe('deployed Harness API through the real product Loader', () => {
     await provider.download(accepted.taskId, request, destination, signal)
     expect(await readFile(destination)).toEqual(generatedVideo)
     expect(videoHeaders.map(call => call.path)).toEqual(Array.from({ length: 2 }, () => [
-      '/harness/v1/video/generations', '/harness/v1/video/generations/fixture-video-task', '/harness/v1/videos/fixture-video-task/content',
+      '/harness/v1/video/generations', '/harness/v1/tasks/fixture-video-task', '/harness/v1/videos/fixture-video-task/content',
     ]).flat())
     expect(videoHeaders.map(call => call.source)).toEqual(Array<string | undefined>(6).fill(profileName === 'desktop' ? 'desktop' : undefined))
     expect(videoHeaders.filter(call => call.path === '/harness/v1/video/generations').map(call => call.contentType)).toEqual(['application/json', 'application/json'])
-    expect(calls.filter(call => call.path.startsWith('/harness/v1/video')).every(call => call.authorization === 'Bearer sk-owned-relay')).toBe(true)
+    expect(calls.filter(call => (call.path.startsWith('/harness/v1/video') || call.path.startsWith('/harness/v1/tasks/'))).every(call => call.authorization === 'Bearer sk-owned-relay')).toBe(true)
     expect(calls.some(call => call.path === '/harness/fixtures/private.mp4')).toBe(false)
     expect(await post(base, '/api/video/tasks?source=newapi', { prompt: 'A synthetic clip', model: 'MiniMax-H3', durationSeconds: 4 }))
       .toMatchObject({ ok: true })
@@ -2420,7 +2700,7 @@ describe('deployed Harness API through the real product Loader', () => {
     const outcome = entry !== 'chat'
       ? await post(base, '/api/video/tasks?source=newapi-generate', { prompt: 'A synthetic clip', model: 'MiniMax-H3', durationSeconds: 4,
         ...linked ? { session_id: 'panel-video-chat', account_id: '7' } : {} }, cookie)
-      : object((await context!.tools.execute({ callId: ToolCallId('h3-chat-route'), name: 'generate_video',
+      : object((await requestVideo({ callId: ToolCallId('h3-chat-route'), name: 'generate_video',
         arguments: { prompt: 'A synthetic clip', model: 'MiniMax-H3', duration_seconds: 4 }, agent: videoAgent(stateDir), signal: new AbortController().signal })).value)
     const path = entry !== 'chat' ? object(outcome.payload).path : outcome.path
     expect(outcome).toMatchObject(entry !== 'chat' ? { ok: true, taskId: 'fixture-video-task' } : { status: 'succeeded', task_id: 'fixture-video-task' })
@@ -2436,9 +2716,9 @@ describe('deployed Harness API through the real product Loader', () => {
         outputs: [{ kind: 'video' }],
       })
     }
-    const videoCalls = calls.filter(call => call.path.startsWith('/harness/v1/video'))
+    const videoCalls = calls.filter(call => (call.path.startsWith('/harness/v1/video') || call.path.startsWith('/harness/v1/tasks/')))
     expect(videoCalls.map(call => call.path)).toEqual([
-      '/harness/v1/video/generations', '/harness/v1/video/generations/fixture-video-task', '/harness/v1/videos/fixture-video-task/content',
+      '/harness/v1/video/generations', '/harness/v1/tasks/fixture-video-task', '/harness/v1/videos/fixture-video-task/content',
     ])
     expect(videoCalls.every(call => call.authorization === 'Bearer sk-owned-relay')).toBe(true)
     expect(videoHeaders.map(call => call.source)).toEqual(['desktop', 'desktop', 'desktop'])
@@ -2451,7 +2731,7 @@ describe('deployed Harness API through the real product Loader', () => {
     pricingRows = [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'], route: '/v1/video/generations' }]
     videoTaskStatus = 'NOT_START'
     expect(await post(base, '/api/video/tasks?source=newapi', { prompt: 'A synthetic clip', model: 'MiniMax-H3', durationSeconds: 4 })).toMatchObject({ ok: true })
-    expect(calls.filter(call => call.path.startsWith('/harness/v1/video')).map(call => call.path)).toEqual(['/harness/v1/video/generations'])
+    expect(calls.filter(call => (call.path.startsWith('/harness/v1/video') || call.path.startsWith('/harness/v1/tasks/'))).map(call => call.path)).toEqual(['/harness/v1/video/generations'])
   })
 
   it('selects the backend default on the first real catalog read and orders only authorized chat models', async () => {
@@ -2743,7 +3023,7 @@ describe('deployed Harness API through the real product Loader', () => {
     const { base, stateDir } = await boot(undefined, true, true)
     await signIn(base)
     pricingRows = [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }]
-    const result = await context!.tools.execute({ name: 'generate_video',
+    const result = await requestVideo({ name: 'generate_video',
       arguments: { model: 'MiniMax-H3', prompt: 'private story must not be reported', duration_seconds: 30 },
       agent: videoAgent(stateDir), callId: ToolCallId('local-rejected-video'), signal: new AbortController().signal })
     expect(result.isError).toBe(false)
@@ -2772,7 +3052,7 @@ describe('deployed Harness API through the real product Loader', () => {
       reportOpen = false
     }
     try {
-      const result = await context!.tools.execute({ name: 'generate_video', arguments: {
+      const result = await requestVideo({ name: 'generate_video', arguments: {
         model: 'MiniMax-H3', prompt: 'A quiet cup', duration_seconds: 30,
       }, agent: videoAgent(stateDir), callId: ToolCallId('nonblocking-diagnostic'), signal: new AbortController().signal })
       await started.promise
@@ -3037,19 +3317,235 @@ describe('deployed Harness API through the real product Loader', () => {
     expect(calls.filter(call => call.path === '/harness/v1/videos' || call.path === '/harness/v1/video/generations')).toHaveLength(285)
   })
 
+  it.each((['image', 'video'] as const).flatMap(kind => (['panel', 'tool'] as const).flatMap(entry => [false, true]
+    .map(recover => ({ kind, entry, recover })))))('consumes actual media wire through $kind $entry with original-task recovery=$recover', async ({ kind, entry, recover }) => {
+    const capacity = mediaContract.find(value => value.method === 'POST' && value.http_status === 429 && value.response.media_kind === kind)
+    const canonical = mediaContract.find(value => value.method === 'GET' && value.response.media_kind === kind
+      && Object.hasOwn(value.response, 'media_submission_receipt'))
+    if (capacity === undefined || canonical === undefined || typeof capacity.response.id !== 'string') throw new Error('Actual media wire pair required')
+    const model = capacity.response.model
+    const taskId = capacity.response.id
+    const { base, stateDir } = await boot(undefined, false, true)
+    const cookie = await hostCookie(base)
+    await signIn(base)
+    const agent = videoAgent(stateDir, `actual-media-${kind}-${entry}`)
+    context!.sessions.create(SessionId(agent.id), { meta: { cwd: stateDir } })
+    const endpoints = kind === 'image' ? ['image-generation'] : ['openai-video']
+    relayModels.push({ id: model, object: 'model', supported_endpoint_types: endpoints })
+    pricingRows = [{ model_name: model, supported_endpoint_types: endpoints },
+      { model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }]
+    if (kind === 'video') {
+      videoQuoteSamples = [btQuote, h3TenSecondQuote]
+      context!.on('user-questions/request', async (request) => {
+        expect(request.agent).toBe(agent)
+        expect(request.questions.map(question => question.id)).toEqual(['video-model-price-choice'])
+        return { answers: [{ id: 'video-model-price-choice', selected: ['使用 bt-seedance-2.0（约 ¥2.499994）'] }] }
+      })
+    }
+    mediaWireReplies.push({ method: capacity.method, path: capacity.path, status: capacity.http_status,
+      body: recover ? { ...capacity.response, media_submission_receipt: {
+        ...capacity.response.media_submission_receipt, billing_state: 'refunded', refund_confirmed: false,
+      } } : capacity.response })
+    const args = { model, prompt: 'One explicitly requested original media task',
+      ...kind === 'video' ? { duration_seconds: 10, resolution: '1792x1024' } : {} }
+    const first = entry === 'panel' ? await post(base, kind === 'image' ? '/api/image/generate' : '/api/video/tasks?source=newapi-generate', {
+      ...args, session_id: agent.id, account_id: '7', ...kind === 'video' ? { durationSeconds: 10 } : {},
+    }, cookie) : object((await (kind === 'video' ? requestVideo : context!.tools.execute.bind(context!.tools))({
+      name: kind === 'video' ? 'generate_video' : 'generate_image', arguments: args,
+      agent, callId: ToolCallId('actual-media-wire'), signal: new AbortController().signal,
+    })).value)
+    expect(first).toMatchObject({ code: recover ? `${kind.toUpperCase()}_STATUS_INVALID` : 'media_account_capacity_exhausted',
+      submission_state: recover ? 'pending' : 'failed', task_id: taskId, request_id: 'media-wire-request' })
+    const listing = async () => projects(object(await (await fetch(base + `/api/creative/projects?session_id=${agent.id}`, { headers: { cookie } })).json()))
+    const retained = (await listing())[0]!
+    if (!Array.isArray(retained.tasks)) throw new Error('Expected a durable original media operation')
+    const operation = object(retained.tasks[0])
+    expect(operation.canQuery).toBe(recover)
+    expect(object(operation[kind === 'image' ? 'imageReceipt' : 'videoReceipt'])).toMatchObject({
+      taskId, route: capacity.path, requestId: 'media-wire-request', phase: recover ? 'accepted' : 'submitting',
+    })
+    if (recover) {
+      mediaWireReplies.push({ method: canonical.method, path: canonical.path, status: canonical.http_status, body: canonical.response })
+      if (entry === 'tool') {
+        expect(object((await context!.tools.execute({ name: kind === 'image' ? 'query_image_task' : 'query_video_task',
+          arguments: { plan_id: retained.id, operation_id: operation.id }, agent,
+          callId: ToolCallId('actual-media-original-get'), signal: new AbortController().signal })).value))
+          .toMatchObject({ status: 'failed', code: 'MEDIA_SUBMISSION_NOT_SENT', task_id: taskId })
+      } else {
+        const response = await fetch(base + `/api/creative/${kind}/recover`, { method: 'POST',
+          headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({
+            session_id: agent.id, project_id: retained.id, operation_id: operation.id,
+          }) })
+        expect(response.status).toBe(202)
+      }
+      await vi.waitFor(async () => { expect(await listing()).toMatchObject([{ status: 'failed', tasks: [{ status: 'failed',
+        errorCode: 'MEDIA_SUBMISSION_NOT_SENT', canQuery: false }], outputs: [] }]) })
+    }
+    expect(calls.filter(call => call.path === '/harness' + capacity.path)).toHaveLength(1)
+    expect(calls.filter(call => call.path === '/harness' + canonical.path)).toHaveLength(recover ? 1 : 0)
+    expect(mediaWireReplies).toHaveLength(0)
+  })
+
+  it.each((['image', 'video'] as const).flatMap(kind => [404, 401].map(status => ({ kind, status }))))(
+    'keeps $kind recovery pending with immutable route after canonical HTTP$status and no new generation', async ({ kind, status }) => {
+      const capacity = mediaContract.find(value => value.method === 'POST' && value.http_status === 429 && value.response.media_kind === kind)
+      const canonical = mediaContract.find(value => value.method === 'GET' && value.response.media_kind === kind
+        && Object.hasOwn(value.response, 'media_submission_receipt'))
+      if (capacity === undefined || canonical === undefined || typeof capacity.response.id !== 'string') throw new Error('Actual media wire pair required')
+      const taskId = capacity.response.id
+      const { base, stateDir } = await boot(undefined, false, true)
+      const cookie = await hostCookie(base)
+      await signIn(base)
+      const agent = videoAgent(stateDir, `media-canonical-${kind}-${String(status)}`)
+      context!.sessions.create(SessionId(agent.id), { meta: { cwd: stateDir } })
+      const model = capacity.response.model
+      const endpoint = kind === 'image' ? ['image-generation'] : ['openai-video']
+      relayModels.push({ id: model, object: 'model', supported_endpoint_types: endpoint })
+      pricingRows = [{ model_name: model, supported_endpoint_types: endpoint }]
+      mediaWireReplies.push({ method: 'POST', path: capacity.path, status: 429,
+        body: { ...capacity.response, media_submission_receipt: {
+          ...capacity.response.media_submission_receipt, upstream_submitted: true,
+        } } })
+      const first = await post(base, kind === 'image' ? '/api/image/generate' : '/api/video/tasks?source=newapi-generate', {
+        session_id: agent.id, account_id: '7', model, prompt: 'One original media task',
+        ...kind === 'video' ? { durationSeconds: 10, resolution: '1792x1024' } : {},
+      }, cookie)
+      expect(first).toMatchObject({ submission_state: 'pending', task_id: capacity.response.id })
+      const listing = async () => projects(object(await (await fetch(base + `/api/creative/projects?session_id=${agent.id}`, { headers: { cookie } })).json()))
+      const retained = (await listing())[0]!
+      if (!Array.isArray(retained.tasks)) throw new Error('Expected the retained original media task')
+      const operation = object(retained.tasks[0])
+      mediaWireReplies.push({ method: 'GET', path: canonical.path, status,
+        body: status === 401 ? canonical.response : {} })
+      if (status === 404) mediaWireReplies.push({ method: 'GET', path: capacity.path + '/' + capacity.response.id,
+        status: 200, body: { id: capacity.response.id, status: 'FAILURE', media_submission_receipt: null } })
+      const queried = object((await context!.tools.execute({ name: kind === 'image' ? 'query_image_task' : 'query_video_task',
+        arguments: { plan_id: retained.id, operation_id: operation.id }, agent, callId: ToolCallId('canonical-fallback-original-get'),
+        signal: new AbortController().signal })).value)
+      expect(queried).toMatchObject({ status: 'pending', task_id: capacity.response.id })
+      expect(await listing()).toMatchObject([{ status: 'unknown', tasks: [{ canQuery: true,
+        [kind === 'image' ? 'imageReceipt' : 'videoReceipt']: { route: capacity.path, taskId: capacity.response.id } }] }])
+      expect(calls.filter(call => call.path === '/harness' + capacity.path)).toHaveLength(1)
+      expect(calls.filter(call => call.path === '/harness' + canonical.path)).toHaveLength(1)
+      expect(calls.filter(call => call.path === '/harness' + capacity.path + '/' + taskId)).toHaveLength(status === 404 ? 1 : 0)
+      expect(mediaWireReplies).toHaveLength(0)
+    },
+  )
+
+  it.each(['panel', 'tool'] as const)('keeps actual media HTTP202 unknown on original-task GET-only recovery through %s', async (entry) => {
+    const unknown = mediaContract.find(value => value.method === 'POST' && value.http_status === 202)
+    const original = mediaContract.find(value => value.method === 'GET' && value.response.media_kind === 'video'
+      && value.response.status === 'UNKNOWN')
+    if (unknown === undefined || original === undefined || typeof unknown.response.id !== 'string') throw new Error('Actual unknown wire pair required')
+    const { base, stateDir } = await boot(undefined, false, true)
+    const cookie = await hostCookie(base)
+    await signIn(base)
+    const agent = videoAgent(stateDir, `media-unknown-${entry}`)
+    context!.sessions.create(SessionId(agent.id), { meta: { cwd: stateDir } })
+    const model = unknown.response.model
+    relayModels.push({ id: model, object: 'model', supported_endpoint_types: ['openai-video'] })
+    pricingRows = [{ model_name: model, supported_endpoint_types: ['openai-video'] },
+      { model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }]
+    videoQuoteSamples = [btQuote, h3TenSecondQuote]
+    context!.on('user-questions/request', async (request) => {
+      expect(request.agent).toBe(agent)
+      return { answers: [{ id: 'video-model-price-choice', selected: ['使用 bt-seedance-2.0（约 ¥2.499994）'] }] }
+    })
+    mediaWireReplies.push({ method: 'POST', path: unknown.path, status: unknown.http_status, body: unknown.response },
+      { method: 'GET', path: original.path, status: original.http_status, body: original.response })
+    const args = { prompt: 'One original uncertain video', model, duration_seconds: 10, resolution: '1792x1024' }
+    const first = entry === 'panel' ? await post(base, '/api/video/tasks?source=newapi-generate', {
+      ...args, session_id: agent.id, account_id: '7', durationSeconds: 10,
+    }, cookie) : object((await requestVideo({ name: 'generate_video', arguments: args, agent,
+      callId: ToolCallId('actual-media-unknown'), signal: new AbortController().signal })).value)
+    expect(first).toMatchObject({ submission_state: 'pending', task_id: unknown.response.id, code: 'VIDEO_STATUS_INVALID' })
+    const listing = async () => projects(object(await (await fetch(base + `/api/creative/projects?session_id=${agent.id}`, { headers: { cookie } })).json()))
+    const retained = (await listing())[0]!
+    if (!Array.isArray(retained.tasks)) throw new Error('Expected retained original video operation')
+    const operation = object(retained.tasks[0])
+    expect(operation).toMatchObject({ status: 'unknown', canQuery: true,
+      videoReceipt: { taskId: unknown.response.id, route: unknown.path, phase: 'accepted' } })
+    mediaWireReplies.push({ method: 'GET', path: original.path, status: original.http_status, body: original.response })
+    const queried = object((await context!.tools.execute({ name: 'query_video_task',
+      arguments: { plan_id: retained.id, operation_id: operation.id }, agent,
+      callId: ToolCallId('actual-media-unknown-query'), signal: new AbortController().signal })).value)
+    expect(queried).toMatchObject({ status: 'pending', task_id: unknown.response.id, code: 'VIDEO_STATUS_INVALID' })
+    expect(await post(base, '/api/video/tasks?source=newapi-generate', {
+      ...args, session_id: agent.id, account_id: '7', durationSeconds: 10,
+    }, cookie)).toMatchObject({ code: 'CREATIVE_SUBMISSION_UNKNOWN' })
+    expect(calls.filter(call => call.path === '/harness' + unknown.path)).toHaveLength(1)
+    expect(calls.filter(call => call.path === '/harness' + original.path)).toHaveLength(2)
+    expect(mediaWireReplies).toHaveLength(0)
+  })
+
+  it('revokes the original human video allowance for custom cancellation despite a residual target radio', async () => {
+    const { base, stateDir } = await boot()
+    await signIn(base)
+    const model = 'bt-seedance-2.0'
+    pricingRows = [{ model_name: model, supported_endpoint_types: ['openai-video'] },
+      { model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }]
+    relayModels.push({ id: model, object: 'model', supported_endpoint_types: ['openai-video'] })
+    videoQuoteSamples = [btQuote, h3TenSecondQuote]
+    const agent = videoAgent(stateDir, 'custom-price-cancellation')
+    let cards = 0
+    context!.on('user-questions/request', async (request) => {
+      expect(request.agent).toBe(agent)
+      expect(request.questions).toHaveLength(1)
+      expect(request.questions[0]?.id).toBe('video-model-price-choice')
+      const targetLabel = '使用 bt-seedance-2.0（约 ¥2.499994）'
+      expect(request.questions[0]?.options?.some(option => option.label === targetLabel)).toBe(true)
+      cards += 1
+      return { answers: [{ id: 'video-model-price-choice', selected: [targetLabel], custom: '取消' }] }
+    })
+    const invoke = (chosen: string, newHuman: boolean) => (newHuman ? requestVideo : continueVideo)({
+      name: 'generate_video', arguments: { prompt: 'One explicitly requested video', model: chosen, duration_seconds: 10,
+        ...chosen === model ? { resolution: '1792x1024' } : {} },
+      agent, callId: ToolCallId('custom-price-cancel'), signal: new AbortController().signal,
+    })
+    expect(object((await invoke(model, true)).value)).toMatchObject({ status: 'failed', code: 'USER_CANCELLED' })
+    expect(context!.sessionProjections.stateOf(agent.session, 'videoGenerationIntent')?.requests)
+      .toMatchObject([{ maxWorks: 0, cancelled: true }])
+    expect(object((await invoke('MiniMax-H3', false)).value)).toMatchObject({ status: 'failed', code: 'USER_CANCELLED' })
+    expect(calls.filter(call => call.path === '/harness/v1/videos' || call.path === '/harness/v1/video/generations')).toHaveLength(0)
+    expect(cards).toBe(1)
+    expect(calls.filter(call => call.path === '/harness/v1/video/quote')).toHaveLength(2)
+    videoTaskStatus = 'SUCCESS'
+    expect(object((await invoke('MiniMax-H3', true)).value)).toMatchObject({ status: 'succeeded', model: 'MiniMax-H3' })
+    expect(context!.sessionProjections.stateOf(agent.session, 'videoGenerationIntent')?.requests)
+      .toMatchObject([{ maxWorks: 0, cancelled: true }, { maxWorks: 1 }])
+    expect(cards).toBe(1)
+    expect(calls.filter(call => call.path === '/harness/v1/video/quote')).toHaveLength(2)
+    expect(calls.filter(call => call.path === '/harness/v1/videos')).toHaveLength(0)
+    expect(calls.filter(call => call.path === '/harness/v1/video/generations')).toHaveLength(1)
+  })
+
   it.each(['panel', 'tool'] as const)('recovers the original accepted BlackRxAI video through %s with GET only after local cancellation', async (entry) => {
     const { base, stateDir } = await boot(undefined, true, true)
     const cookie = await hostCookie(base)
     await signIn(base)
     const model = 'bt-seedance-2.0'
-    pricingRows = [{ model_name: model, supported_endpoint_types: ['openai-video'] }]
+    pricingRows = [{ model_name: model, supported_endpoint_types: ['openai-video'] },
+      { model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }]
     relayModels.push({ id: model, object: 'model', supported_endpoint_types: ['openai-video'] })
     const agent = videoAgent(stateDir, 'blackrx-recovery')
+    videoQuoteSamples = [btQuote, h3TenSecondQuote]
+    const priceCards: string[][] = []
+    context!.on('user-questions/request', async (request) => {
+      expect(request.agent).toBe(agent)
+      const question = request.questions[0]
+      expect(request.questions).toHaveLength(1)
+      expect(question?.id).toBe('video-model-price-choice')
+      const labels = question?.options?.map(option => option.label) ?? []
+      expect(labels).toEqual(['保留 H3 768P（约 ¥2.80）', '使用 bt-seedance-2.0（约 ¥2.499994）', '取消本次生成'])
+      expect(calls.filter(call => call.path === '/harness/v1/videos')).toEqual([])
+      priceCards.push(labels)
+      return { answers: [{ id: 'video-model-price-choice', selected: ['使用 bt-seedance-2.0（约 ¥2.499994）'] }] }
+    })
     context!.sessions.create(SessionId(agent.id), { meta: { cwd: stateDir } })
     videoTaskStatus = 'SUCCESS'
     const abort = new AbortController()
     upstreamGate = async (path) => { if (path === '/harness/v1/videos/fixture-video-task') abort.abort() }
-    await context!.tools.execute({ name: 'generate_video', arguments: {
+    await requestVideo({ name: 'generate_video', arguments: {
       prompt: 'One accepted ten second task', model, duration_seconds: 10, resolution: '1792x1024',
     }, agent, callId: ToolCallId('blackrx-stop'), signal: abort.signal })
     const listing = async () => projects(object(await (await fetch(base + '/api/creative/projects?session_id=blackrx-recovery', { headers: { cookie } })).json()))
@@ -3062,7 +3558,7 @@ describe('deployed Harness API through the real product Loader', () => {
     expect(await post(base, '/api/video/tasks?source=newapi-generate', {
       session_id: 'blackrx-recovery', account_id: '7', model, prompt: 'Do not generate a replacement', durationSeconds: 10,
     }, cookie)).toMatchObject({ ok: false, code: 'CREATIVE_SUBMISSION_UNKNOWN', submission_state: 'pending', taskId: 'fixture-video-task' })
-    expect(object((await context!.tools.execute({ name: 'generate_video', arguments: {
+    expect(object((await continueVideo({ name: 'generate_video', arguments: {
       prompt: 'Do not retry this paid plan', model, duration_seconds: 10, plan_id: planId, shot_id: 'shot_1',
     }, agent, callId: ToolCallId('blackrx-block-retry'), signal: new AbortController().signal })).value)).toMatchObject({ status: 'failed', code: 'CREATIVE_SUBMISSION_UNKNOWN' })
     upstreamGate = undefined
@@ -3078,6 +3574,8 @@ describe('deployed Harness API through the real product Loader', () => {
     await vi.waitFor(async () => { expect(await listing()).toMatchObject([{ status: 'completed', tasks: [{ status: 'completed', canQuery: false }], outputs: [{ kind: 'video' }] }]) })
     const submissions = calls.filter(call => call.path === '/harness/v1/videos')
     expect(submissions).toHaveLength(1)
+    expect(priceCards).toHaveLength(1)
+    expect(calls.filter(call => call.path === '/harness/v1/video/quote').length).toBeGreaterThanOrEqual(4)
     expect(submissions[0]?.body).toEqual({ model, prompt: 'One accepted ten second task', seconds: 10, size: '1792x1024', gen_type: 'text_to_video', n: 1 })
     expect(calls.filter(call => call.path === '/harness/v1/videos/fixture-video-task').length).toBeGreaterThanOrEqual(2)
     expect(calls.filter(call => call.path === '/harness/v1/videos/fixture-video-task/content')).toHaveLength(1)

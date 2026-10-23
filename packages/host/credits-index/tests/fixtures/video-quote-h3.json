@@ -1,0 +1,75 @@
+{
+  "fixture": "actual final isolated candidate HTTP; synthetic prices, not production account quotes",
+  "candidate_source_freeze_sha256": "0fd91a6d91a0fad31d5fb13526e38e3e3645009cf3b929eee18cc9582d56b170",
+  "outbound_requests": 0,
+  "case": "SD25 concrete size",
+  "http_status": 200,
+  "method": "POST",
+  "path": "/v1/video/quote",
+  "request": {
+    "model": "MiniMax-H3",
+    "segments": [
+      {
+        "id": "clip-1",
+        "parameters": {
+          "metadata": {
+            "resolution": "768P"
+          },
+          "seconds": 15
+        },
+        "reference_counts": {
+          "audios": 0,
+          "images": 0,
+          "videos": 0
+        }
+      }
+    ],
+    "works_count": 1
+  },
+  "response": {
+    "account_binding": "f906d062ddd7f65d1f474400fce5cbdb07de98616e3bdb37ba0ffc1c80b59aa8",
+    "charged": false,
+    "created_at": 1792726715,
+    "currency": "CNY",
+    "estimate_only": true,
+    "estimated_one_work": "4.2",
+    "estimated_total": "4.2",
+    "expires_at": 1792726775,
+    "model": "MiniMax-H3",
+    "object": "video.quote",
+    "one_work_quota": 300000,
+    "pricing_revision": "d155713da638f9629950156cceaa4366af6aa488f22154ae1b3a9f1555341bde",
+    "quota_per_usd": 500000,
+    "quote_id": "ee9c85af59205ae2a1d8ab506c36041edb93136d17e35a0bb87928699aec1e45",
+    "reserved": false,
+    "schema_version": 1,
+    "segments": [
+      {
+        "estimated_amount": "4.2",
+        "id": "clip-1",
+        "parameters": {
+          "metadata": {
+            "resolution": "768P"
+          },
+          "seconds": 15
+        },
+        "quota": 300000,
+        "reference_counts": {
+          "audios": 0,
+          "images": 0,
+          "videos": 0
+        },
+        "usage": {
+          "input_images": 0,
+          "input_video_seconds": 0,
+          "resolution": "768P",
+          "seconds": 15
+        }
+      }
+    ],
+    "submitted": false,
+    "total_quota": 300000,
+    "usd_exchange_rate": 7,
+    "works_count": 1
+  }
+}

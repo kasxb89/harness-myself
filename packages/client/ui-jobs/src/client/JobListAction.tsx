@@ -78,11 +78,6 @@ function isObservable(job: JobView): boolean {
   return isLive(job) || job.output.total > 0
 }
 
-/** The one-line qualifier beside the status: live progress while running, the terminal reason once settled. */
-function jobDetail(job: JobView): string | undefined {
-  return job.progress ?? job.detail
-}
-
 /** Closed-union exhaustiveness fence for the wire status set. */
 /* v8 ignore next 3 -- closed-union backstop; only reached if a status is forged */
 function assertNever(value: never): never {
@@ -198,7 +193,7 @@ function JobItem({ job, view, expanded, now, onToggle, kill, t }: {
 }) {
   const live = isLive(job)
   const status = statusLabel(job.status, t)
-  const detail = jobDetail(job)
+  const detail = job.detail
   const observable = isObservable(job)
   const labels = useMemo(() => terminalLabels(t), [t])
   const elapsed = live ? now - job.startedAt : (job.finishedAt ?? job.startedAt) - job.startedAt
@@ -295,6 +290,13 @@ function JobItem({ job, view, expanded, now, onToggle, kill, t }: {
           )
           : null}
       </div>
+      {job.progress !== undefined
+        ? (
+          <div className={css.progress} role="region" aria-label={t('progress.aria', { label: job.label })} tabIndex={0}>
+            {job.progress}
+          </div>
+        )
+        : null}
       {expanded && view !== undefined
         ? (
           <div className={css.panel}>

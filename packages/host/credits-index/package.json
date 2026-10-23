@@ -48,6 +48,7 @@
     "@deepseek-ai/dsh-sandbox-policy": "workspace:*",
     "@deepseek-ai/dsh-working-directory": "workspace:*",
     "@deepseek-ai/dsh-system-prompt": "workspace:*",
+    "@deepseek-ai/dsh-user-questions": "workspace:*",
     "@deepseek-ai/dsh-credentials": "workspace:*",
     "@deepseek-ai/dsh-artifacts-index": "workspace:*"
   },
@@ -65,6 +66,7 @@
     "@deepseek-ai/cordis-plugin-loader": "workspace:~",
     "@deepseek-ai/dsh-host-webserver": "workspace:*",
     "@deepseek-ai/dsh-system-prompt": "workspace:*",
+    "@deepseek-ai/dsh-user-questions": "workspace:*",
     "@deepseek-ai/dsh-tools": "workspace:*",
     "@deepseek-ai/dsh-jobs": "workspace:*",
     "@deepseek-ai/dsh-session": "workspace:*",
@@ -89,6 +91,7 @@
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh-app-boot": { "optional": true },
     "@deepseek-ai/dsh-session-projection": { "optional": true },
+    "@deepseek-ai/dsh-user-questions": { "optional": true },
     "@deepseek-ai/dsh-agent-default-model": { "optional": true },
     "@deepseek-ai/dsh-api-session-controller": { "optional": true },
     "@deepseek-ai/dsh-attachment": { "optional": true },

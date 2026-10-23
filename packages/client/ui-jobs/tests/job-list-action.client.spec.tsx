@@ -101,12 +101,50 @@ describe('JobListAction rows', () => {
     expect(screen.getByRole('button', { name: zh['row.expandAria'].replace('{label}', 'warming up') })).toBeDefined()
   })
 
-  it('shows the live progress line in place of the status word', () => {
+  it('shows producer progress in its own keyboard-reachable region', () => {
     render(<JobListAction {...props([job({ status: 'stopping', progress: 'winding down' })])} />)
     openList()
     const list = screen.getByRole('list', { name: zh['list.aria'] })
     expect(within(list).getByText('pnpm run build')).toBeDefined()
     expect(within(list).getByText('winding down')).toBeDefined()
+    expect(screen.getByRole('region', { name: 'pnpm run build 的任务进度' }).tabIndex).toBe(0)
+    expect(screen.getByRole('region', { name: 'pnpm run build 的任务进度' }).closest('button')).toBeNull()
+  })
+
+  it('replaces a complete multiline summary without hiding other stages or opening output', () => {
+    const observe = vi.fn(() => () => {})
+    const first = 'Project: 1/4 saved\nShot 1: saved\nShot 2: generating\nShot 3: queued\nShot 4: not submitted'
+    const next = 'Project: 2/4 saved\nShot 1: saved\nShot 2: saved\nShot 3: generating\nShot 4: queued'
+    const { rerender } = render(<JobListAction {...props([job({ progress: first })], observe)} />)
+    openList()
+    const progress = screen.getByRole('region', { name: 'pnpm run build 的任务进度' })
+    expect(progress.textContent).toBe(first)
+    expect(observe).not.toHaveBeenCalled()
+    rerender(<JobListAction {...props([job({ progress: next })], observe)} />)
+    expect(progress.textContent).toBe(next)
+    expect(progress.textContent).not.toContain('2: generating')
+    expect(screen.getByRole('button', { name: '展开 pnpm run build 的实时输出' }).getAttribute('aria-expanded')).toBe('false')
+    expect(screen.getByRole('button', { name: '停止任务 pnpm run build' })).toBeDefined()
+    expect(observe).not.toHaveBeenCalled()
+  })
+
+  it('keeps markup-like and long producer text literal, and retains terminal detail separately', () => {
+    const progress = Array.from({ length: 33 }, (_, i) => `Item ${String(i)}: <b>plain text</b> ${'x'.repeat(160)}`).join('\n')
+    render(<JobListAction {...props([job({ progress, detail: 'provider detail' })])} />)
+    openList()
+    const region = screen.getByRole('region', { name: 'pnpm run build 的任务进度' })
+    expect(region.textContent).toBe(progress)
+    expect(region.querySelector('b')).toBeNull()
+    expect(screen.getByText('provider detail')).toBeDefined()
+  })
+
+  it('removes cleared live progress on settlement and keeps the terminal reason', () => {
+    const { rerender } = render(<JobListAction {...props([job({ progress: 'Step 1: complete\nStep 2: saving' })])} />)
+    openList()
+    expect(screen.getByRole('region', { name: 'pnpm run build 的任务进度' })).toBeDefined()
+    rerender(<JobListAction {...props([job({ status: 'completed', detail: 'Saved both steps', finishedAt: 1_700_000_003_000 })])} />)
+    expect(screen.queryByRole('region', { name: 'pnpm run build 的任务进度' })).toBeNull()
+    expect(screen.getByText('Saved both steps')).toBeDefined()
   })
 
   it('folds the settled tail behind its count while live work exists, and clears on demand', () => {

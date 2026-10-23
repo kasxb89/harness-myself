@@ -3,7 +3,11 @@ import { setTimeout as delay } from 'node:timers/promises'
 import type { ArtifactOrigin } from '@deepseek-ai/dsh-artifacts-index'
 import type { CreativeVideoReceipt } from './creative-types.ts'
 import { isAccountBalanceRejectionText } from './account-balance.ts'
-import { h3SubmissionRejection } from './video-submission-result.ts'
+import { hasMediaSubmissionReceipt, mediaSubmissionTaskId, hasMediaSubmissionUnknown, mediaSubmissionUnknownTaskId } from './media-submission-receipt.ts'
+import {
+  h3SubmissionRejection, h3SubmissionQueryRejection, hasH3SubmissionReceipt, h3ProviderTerminalRejection, hasH3ProviderTerminal,
+  VideoSubmissionRejection,
+} from './video-submission-result.ts'
 
 /** Local waiting never implies that an accepted remote task stopped. */
 export interface VideoTaskOutcome {
@@ -34,10 +38,12 @@ export interface VideoTaskOptions {
   queryRetryLimit: number
   prepare?(this: void, signal: AbortSignal): Promise<void>
   submitting?(this: void): Promise<void>
+  /** Last local validation after the receipt is durable and before a POST has begun. */
+  beforeSubmit?(this: void, signal: AbortSignal): Promise<void>
   received?(this: void, receipt: CreativeVideoReceipt): Promise<void>
   resumeReceipt?: CreativeVideoReceipt
   submit(this: void, signal: AbortSignal): Promise<Response>
-  read(this: void, taskId: string, signal: AbortSignal): Promise<Response>
+  read(this: void, taskId: string, signal: AbortSignal, canonical?: boolean): Promise<Response>
   save(this: void, taskId: string, signal: AbortSignal): Promise<string>
 }
 
@@ -89,6 +95,7 @@ async function readText(response: Response, signal: AbortSignal): Promise<string
  */
 export async function executeVideoTask(options: VideoTaskOptions): Promise<VideoTaskOutcome> {
   let receipt = options.resumeReceipt
+  let canonicalRead = receipt?.taskId?.startsWith('task_') === true
   let sent = receipt !== undefined
   let path: string | undefined
   let unread: Response | undefined
@@ -121,7 +128,8 @@ export async function executeVideoTask(options: VideoTaskOptions): Promise<Video
       waitingSignal.throwIfAborted()
       try {
         const querySignal = AbortSignal.any([waitingSignal, AbortSignal.timeout(options.queryTimeoutMs)])
-        const response = await options.read(taskId, querySignal)
+        const response = canonicalRead || currentReceipt().route === '/v1/tasks'
+          ? await options.read(taskId, querySignal, true) : await options.read(taskId, querySignal)
         unread = response
         if (response.status !== 408 && response.status !== 429 && response.status < 500) {
           const text = await readText(response, querySignal)
@@ -153,6 +161,8 @@ export async function executeVideoTask(options: VideoTaskOptions): Promise<Video
       await persist({ model: options.model, route: options.route, backendFingerprint: options.backendFingerprint, phase: 'submitting',
         ...options.origin === undefined ? {} : { origin: options.origin } })
       signal.throwIfAborted()
+      await options.beforeSubmit?.(signal)
+      signal.throwIfAborted()
       phase = 'submitting'
       sent = true
       unread = await options.submit(AbortSignal.any([signal, AbortSignal.timeout(options.submitTimeoutMs)]))
@@ -164,19 +174,33 @@ export async function executeVideoTask(options: VideoTaskOptions): Promise<Video
       let body: Record<string, unknown> | undefined
       try { body = record(JSON.parse(text)) } catch (_invalidResponse: unknown) { /* An unreadable response cannot disprove acceptance. */ }
       const nested = record(body?.data)
-      const taskId = identifier(body?.task_id) ?? identifier(body?.id) ?? identifier(nested?.task_id) ?? identifier(nested?.id)
+      const marked = hasMediaSubmissionReceipt(body)
+      const uncertain = hasMediaSubmissionUnknown(body)
+      const canonicalId = uncertain ? mediaSubmissionUnknownTaskId(options.model, 'video', response.status, body) : undefined
+      const taskId = marked ? mediaSubmissionTaskId(options.model, 'video', body) : uncertain ? canonicalId
+        : identifier(body?.task_id) ?? identifier(body?.id) ?? identifier(nested?.task_id) ?? identifier(nested?.id)
+      const rejection = h3SubmissionRejection(options.model, response.status, body)
+      if (rejection?.submissionState === 'not_submitted' && rejection.taskId !== undefined) {
+        await persist({ ...currentReceipt(), taskId: rejection.taskId })
+        return outcome('failed', rejection.code, rejection.message)
+      }
       if (taskId !== undefined) {
+        canonicalRead = marked || canonicalId !== undefined
         await persist({ ...currentReceipt(), taskId, phase: 'accepted' })
         lastProgress = progress(status(body))
       }
-      const rejection = h3SubmissionRejection(options.model, response.status, body)
       // This HTTP attempt occurred: "not-submitted" is reserved for preparation before dispatch.
       if (rejection !== undefined) return outcome('failed', rejection.code, rejection.message)
+      if (marked) return outcome(taskId === undefined ? 'unknown' : 'pending',
+        taskId === undefined ? 'VIDEO_SUBMISSION_UNKNOWN' : 'VIDEO_STATUS_INVALID',
+        '原视频回执尚未通过完整核对，请保留已有任务与计费记录，不要重新生成。')
+      if (uncertain && canonicalId === undefined) return outcome('unknown', 'VIDEO_SUBMISSION_UNKNOWN',
+        '视频提交结果尚未确认，请先核对原任务与计费，不要重复生成。')
       if (!response.ok) {
         if (taskId !== undefined) return outcome('pending', 'VIDEO_QUERY_PENDING', '原视频任务已受理，请继续查询原任务，不要重复生成。')
         const balance = isAccountBalanceRejectionText(text, response.status)
         if (balance) return outcome('unknown', 'INSUFFICIENT_BALANCE', '余额不足，请充值；提交结果尚未确认，请先检查已有任务，不要重复提交。')
-        return response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429
+        return options.model !== 'MiniMax-H3' && response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429
           ? outcome('failed', `HTTP_${String(response.status)}`, '视频请求未被接受，请检查登录状态、素材和模型要求。')
           : outcome('unknown', 'VIDEO_SUBMISSION_UNKNOWN', '视频提交结果尚未确认，请先核对原任务与计费，不要重复生成。')
       }
@@ -200,8 +224,18 @@ export async function executeVideoTask(options: VideoTaskOptions): Promise<Video
       let body: Record<string, unknown> | undefined
       try { body = record(JSON.parse(text)) } catch (_invalidResponse: unknown) { /* Retain acceptance and stop uncertain polling. */ }
       waitingSignal.throwIfAborted()
+      const rejection = h3SubmissionQueryRejection(currentReceipt().model, response.status, body, taskId)
+      if (rejection !== undefined) return outcome('failed', rejection.code, rejection.message)
+      const terminal = h3ProviderTerminalRejection(currentReceipt().model, response.status, body, taskId)
+      if (terminal !== undefined) return outcome('failed', 'TASK_FAILED', terminal.message)
+      if (hasMediaSubmissionReceipt(body) || hasMediaSubmissionUnknown(body) || currentReceipt().model === 'MiniMax-H3' && (hasH3SubmissionReceipt(body) || hasH3ProviderTerminal(body))) {
+        return outcome('pending', 'VIDEO_STATUS_INVALID', '原视频回执尚未通过完整核对，请保留原任务编号，不要重新生成。')
+      }
       const state = status(body)
       if (['failed', 'failure', 'fail', 'error', 'cancelled', 'canceled'].includes(state ?? '')) {
+        if (currentReceipt().model === 'MiniMax-H3') {
+          return outcome('pending', 'VIDEO_STATUS_INVALID', '原视频失败状态尚无完整提交与计费证明，请保留原任务编号继续核对，不要重新生成。')
+        }
         return outcome('failed', 'TASK_FAILED', '原视频任务已结束且未成功，请检查原任务和计费记录。')
       }
       if (['succeed', 'succeeded', 'success', 'completed'].includes(state ?? '')) {
@@ -218,6 +252,7 @@ export async function executeVideoTask(options: VideoTaskOptions): Promise<Video
       lastProgress = nextProgress
     }
   } catch (_stopped: unknown) {
+    if (!sent && _stopped instanceof VideoSubmissionRejection) return outcome('not-submitted', _stopped.code, _stopped.message)
     if (!sent) return outcome('not-submitted', 'VIDEO_PREPARATION_FAILED', '视频尚未提交，请检查素材或保存位置。')
     if (receipt?.taskId !== undefined && foreground?.aborted && !budget.aborted && !options.signal.aborted && currentPhase() === 'querying') {
       return outcome('pending', lastProgress === 'queued' ? 'VIDEO_QUEUE_WAITING' : 'VIDEO_GENERATION_PENDING',

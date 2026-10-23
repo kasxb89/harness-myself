@@ -1,0 +1,248 @@
+{
+  "source": "Actual httptest ResponseRecorder from production SetRouter and real SQLite 3.50.4; provider loopback only",
+  "status": "PASS",
+  "command": "go test -json ./router -run TestH3Admission -count=1",
+  "source_sha256": {
+    "controller/relay.go": "ad41b423693eefb85ef9527d063b9796b674a9d9b1a600f6a545e4948b0beef9",
+    "controller/task.go": "7179424a9cde952ea73e6fed1f6430e73a9e26fc8b03ef09fe561537c37f5019",
+    "controller/plugin_protocol.go": "35fb51c4b581262d47fd4f52ec5ba50813b882573626fed6c4e8841f7002a1ea",
+    "model/h3_admission.go": "607c54956c788786c3adb9801dc0c306b288c4c90f5cb643262f5e21d18a11ac",
+    "model/subscription.go": "b87a53b35bf81e75b4629644d10753c174dc9cff70b6d99a747b9ff6dd4a88e9",
+    "service/h3_admission.go": "3cfd16401a839a24be2be929e35f9d4e3998a5c2184c515ef919d6a3a46c6601",
+    "relay/relay_task.go": "718983520333d0181df1bd8189d23c83e7d0da9fc26bc4dccaaa8a6c6bb87cc7",
+    "router/h3_admission_test.go": "a1505445e5f94784b1263c3d18abd14012f27f1b5f3cf27cf0881f4fbbe0d8b1"
+  },
+  "fixtures": [
+    {
+      "body": {
+        "billing_state": "not_charged",
+        "code": "insufficient_user_quota",
+        "data": null,
+        "id": "task_Ygbq4Urok9ybsUaEeonjmj4RKoNgSoTx",
+        "message": "Insufficient user quota, remaining quota: ＄0.00",
+        "recovery": {
+          "method": "GET",
+          "path": "/v1/tasks/task_Ygbq4Urok9ybsUaEeonjmj4RKoNgSoTx"
+        },
+        "resubmittable": true,
+        "retryable": false,
+        "submission_code": "h3_submission_not_sent",
+        "submission_state": "not_submitted",
+        "task_id": "task_Ygbq4Urok9ybsUaEeonjmj4RKoNgSoTx",
+        "upstream_submitted": false
+      },
+      "headers": {
+        "Cache-Control": "private, no-store",
+        "Content-Type": "application/json; charset=utf-8",
+        "X-New-Api-Task-Id": "task_Ygbq4Urok9ybsUaEeonjmj4RKoNgSoTx"
+      },
+      "http_status": 403,
+      "name": "post_wallet_insufficient_not_charged"
+    },
+    {
+      "body": {
+        "created_at": 1792721685,
+        "fail_reason": "Submission was not sent",
+        "finished_at": 1792721685,
+        "platform": "35",
+        "progress": "100%",
+        "status": "FAILURE",
+        "submission_receipt": {
+          "billing_state": "not_charged",
+          "id": "task_Ygbq4Urok9ybsUaEeonjmj4RKoNgSoTx",
+          "recovery": {
+            "method": "GET",
+            "path": "/v1/tasks/task_Ygbq4Urok9ybsUaEeonjmj4RKoNgSoTx"
+          },
+          "resubmittable": true,
+          "retryable": false,
+          "submission_code": "h3_submission_not_sent",
+          "submission_state": "not_submitted",
+          "task_id": "task_Ygbq4Urok9ybsUaEeonjmj4RKoNgSoTx",
+          "upstream_submitted": false
+        },
+        "task_id": "task_Ygbq4Urok9ybsUaEeonjmj4RKoNgSoTx"
+      },
+      "headers": {
+        "Cache-Control": "private, no-store",
+        "Content-Type": "application/json; charset=utf-8",
+        "X-New-Api-Task-Id": ""
+      },
+      "http_status": 200,
+      "name": "canonical_get_not_charged"
+    },
+    {
+      "body": {
+        "created_at": 1792721686,
+        "fail_reason": "Submission was not sent",
+        "finished_at": 1792721686,
+        "platform": "hailuo",
+        "progress": "100%",
+        "status": "FAILURE",
+        "task_id": "task_h3_historical_unsent"
+      },
+      "headers": {
+        "Cache-Control": "private, no-store",
+        "Content-Type": "application/json; charset=utf-8",
+        "X-New-Api-Task-Id": ""
+      },
+      "http_status": 200,
+      "name": "canonical_get_unproven_send_fence"
+    },
+    {
+      "body": {
+        "created_at": 1792721686,
+        "fail_reason": "Submission was not sent",
+        "finished_at": 1792721686,
+        "platform": "hailuo",
+        "progress": "100%",
+        "status": "FAILURE",
+        "task_id": "task_h3_historical_unsent"
+      },
+      "headers": {
+        "Cache-Control": "private, no-store",
+        "Content-Type": "application/json; charset=utf-8",
+        "X-New-Api-Task-Id": ""
+      },
+      "http_status": 200,
+      "name": "canonical_get_unproven_refund_pending"
+    },
+    {
+      "body": {
+        "created_at": 1792721686,
+        "fail_reason": "Submission was not sent",
+        "finished_at": 1792721686,
+        "platform": "hailuo",
+        "progress": "100%",
+        "status": "FAILURE",
+        "task_id": "task_h3_historical_unsent"
+      },
+      "headers": {
+        "Cache-Control": "private, no-store",
+        "Content-Type": "application/json; charset=utf-8",
+        "X-New-Api-Task-Id": ""
+      },
+      "http_status": 200,
+      "name": "canonical_get_legacy_no_admission"
+    },
+    {
+      "body": {
+        "billing_state": "refunded",
+        "code": "build_request_failed",
+        "data": null,
+        "id": "task_hijQWdFB9RMwMnTBLv4qwEfBhgcKqsNT",
+        "message": "unknown file reference \"request_file:input_reference\"",
+        "recovery": {
+          "method": "GET",
+          "path": "/v1/tasks/task_hijQWdFB9RMwMnTBLv4qwEfBhgcKqsNT"
+        },
+        "refund_confirmed": true,
+        "resubmittable": true,
+        "retryable": false,
+        "submission_code": "h3_submission_not_sent",
+        "submission_state": "not_submitted",
+        "task_id": "task_hijQWdFB9RMwMnTBLv4qwEfBhgcKqsNT",
+        "upstream_submitted": false
+      },
+      "headers": {
+        "Cache-Control": "private, no-store",
+        "Content-Type": "application/json; charset=utf-8",
+        "X-New-Api-Task-Id": "task_hijQWdFB9RMwMnTBLv4qwEfBhgcKqsNT"
+      },
+      "http_status": 500,
+      "name": "post_build_failure_refunded"
+    },
+    {
+      "body": {
+        "created_at": 1792721689,
+        "fail_reason": "Submission was not sent",
+        "finished_at": 1792721689,
+        "platform": "hailuo",
+        "progress": "100%",
+        "status": "FAILURE",
+        "submission_receipt": {
+          "billing_state": "refunded",
+          "id": "task_hijQWdFB9RMwMnTBLv4qwEfBhgcKqsNT",
+          "recovery": {
+            "method": "GET",
+            "path": "/v1/tasks/task_hijQWdFB9RMwMnTBLv4qwEfBhgcKqsNT"
+          },
+          "refund_confirmed": true,
+          "resubmittable": true,
+          "retryable": false,
+          "submission_code": "h3_submission_not_sent",
+          "submission_state": "not_submitted",
+          "task_id": "task_hijQWdFB9RMwMnTBLv4qwEfBhgcKqsNT",
+          "upstream_submitted": false
+        },
+        "task_id": "task_hijQWdFB9RMwMnTBLv4qwEfBhgcKqsNT"
+      },
+      "headers": {
+        "Cache-Control": "private, no-store",
+        "Content-Type": "application/json; charset=utf-8",
+        "X-New-Api-Task-Id": ""
+      },
+      "http_status": 200,
+      "name": "canonical_get_refunded"
+    },
+    {
+      "body": {
+        "error": {
+          "code": "h3_submission_unknown",
+          "message": "Submission status is unknown; query this task and do not submit it again"
+        },
+        "id": "task_pejBYFlghBBvyuIltYJjwkgrvqWPinvw",
+        "model": "MiniMax-H3",
+        "object": "video",
+        "recovery": {
+          "method": "GET",
+          "path": "/v1/tasks/task_pejBYFlghBBvyuIltYJjwkgrvqWPinvw"
+        },
+        "resubmittable": false,
+        "retryable": false,
+        "status": "unknown",
+        "submission_state": "unknown",
+        "task_id": "task_pejBYFlghBBvyuIltYJjwkgrvqWPinvw"
+      },
+      "headers": {
+        "Cache-Control": "",
+        "Content-Type": "application/json; charset=utf-8",
+        "X-New-Api-Task-Id": "task_pejBYFlghBBvyuIltYJjwkgrvqWPinvw"
+      },
+      "http_status": 202,
+      "name": "post_unavailable_durable_proof_unknown"
+    },
+    {
+      "body": {
+        "billing_state": "refunded",
+        "code": "build_request_failed",
+        "data": null,
+        "error": {
+          "code": "build_request_failed",
+          "message": "Task protocol request failed",
+          "type": "new_api_error"
+        },
+        "id": "task_1lQDdR8F4nSpZnhZL1JxXJBNZpW1V7JH",
+        "message": "Task protocol request failed",
+        "recovery": {
+          "method": "GET",
+          "path": "/v1/tasks/task_1lQDdR8F4nSpZnhZL1JxXJBNZpW1V7JH"
+        },
+        "refund_confirmed": true,
+        "resubmittable": true,
+        "retryable": false,
+        "submission_code": "h3_submission_not_sent",
+        "submission_state": "not_submitted",
+        "task_id": "task_1lQDdR8F4nSpZnhZL1JxXJBNZpW1V7JH",
+        "upstream_submitted": false
+      },
+      "headers": {
+        "Cache-Control": "private, no-store",
+        "Content-Type": "application/json; charset=utf-8",
+        "X-New-Api-Task-Id": "task_1lQDdR8F4nSpZnhZL1JxXJBNZpW1V7JH"
+      },
+      "http_status": 500,
+      "name": "responses_build_failure_refunded_sanitized"
+    }
+  ]
+}

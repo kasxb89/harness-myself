@@ -13,6 +13,7 @@ import { parseArtifactOrigin } from './artifact-origin.ts'
 import { VideoEditError, type VideoEditor } from './video-edit.ts'
 import { VideoRelayError } from './video-project-provider.ts'
 import { VideoSubmissionRejection } from './video-submission-result.ts'
+import { DEFAULT_VIDEO_PROJECT_PARALLELISM } from './video-concurrency.ts'
 import type { VideoProjectIdentity, VideoProjectInput, VideoProjectOptions, VideoProjectProvider, VideoProjectRequest, VideoRequestValue } from './video-project-types.ts'
 
 /** Complete private-record parser limit, including prompt and per-clip metadata. */
@@ -644,10 +645,18 @@ function savedPath(segment: VideoProjectSegment): string {
   return segment.path
 }
 
+/** A failed status read owns only the task whose response established it. */
+class VideoProjectTaskFailure extends VideoProjectError {
+  /** @param taskId - Original task whose status query returned failed. */
+  constructor(readonly taskId: string) {
+    super('PROVIDER_TASK_FAILED', '上游视频片段生成失败；已生成的其他片段保留，未重新提交任务。')
+  }
+}
+
 /** Keep local waiting cancellation-owned instead of sleeping after a killed job. */
 async function waitForTask(
   options: VideoProjectOptions, provider: VideoProjectProvider, segment: VideoProjectSegment,
-  totalSegments: number, job: JobHandle, signal: AbortSignal,
+  progress: (status: 'queued' | 'running', seconds: number) => void, signal: AbortSignal,
 ): Promise<void> {
   const taskId = segment.taskId
   if (taskId === undefined) throw new VideoProjectError('INVALID_RECORD', '视频任务编号缺失，已停止操作。')
@@ -656,12 +665,64 @@ async function waitForTask(
     signal.throwIfAborted()
     const state = await provider.check(taskId, segment.request, signal)
     if (state.status === 'succeeded') return
-    if (state.status === 'failed') throw new VideoProjectError('PROVIDER_TASK_FAILED', '上游视频片段生成失败；已生成的其他片段保留，未重新提交任务。')
+    if (state.status === 'failed') throw new VideoProjectTaskFailure(taskId)
     const seconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000))
-    job.updateProgress(`分镜 ${String(segment.index)}/${String(totalSegments)} ${state.status === 'queued' ? '排队中' : '生成中'}，已等待 ${String(seconds)} 秒`)
+    progress(state.status, seconds)
     await delay(options.pollIntervalMs, undefined, { signal })
   }
 }
+
+/** Transient observations never replace the durable submission or saved-file facts. */
+function segmentProgress(segment: VideoProjectSegment, stopped: boolean): string {
+  switch (segment.status) {
+    case 'pending': return '尚未提交'
+    case 'submitting': return '提交结果待确认，请核对原任务'
+    case 'running': return stopped ? '查询已暂停，保留原任务' : '已受理，等待查询'
+    case 'saved': return '已保存'
+    case 'failed': return '失败'
+    case 'unknown': return '提交结果待确认，勿重新提交'
+  }
+}
+
+/** Keep every clip visible; terminal jobs retain one bounded summary in ordinary output. */
+function videoProjectProgress(manifest: VideoProjectManifest, job: JobHandle) {
+  const observations = new Map<number, string>()
+  const upstreamCompleted = new Set<number>()
+  let stage = '准备分镜'
+  let previous: string | undefined
+  const render = (): string => {
+    const count = String(manifest.segments.length)
+    const saved = manifest.segments.filter(segment => segment.status === 'saved').length
+    return [`视频项目：${stage} · 已保存 ${String(saved)}/${count} 段`, ...manifest.segments.map(segment =>
+      `分镜 ${String(segment.index)}/${count} ${observations.get(segment.index) ?? segmentProgress(segment, false)}`)].join('\n')
+  }
+  const emit = (): void => {
+    const value = render()
+    if (value === previous) return
+    previous = value
+    job.updateProgress(value)
+  }
+  const stopped = (segment: VideoProjectSegment): string => segment.status === 'running' && upstreamCompleted.has(segment.index)
+    ? '上游已完成，保存未完成' : segmentProgress(segment, true)
+  return {
+    stage(value: string): void { stage = value; emit() },
+    segment(segment: VideoProjectSegment, value: string): void { observations.set(segment.index, value); emit() },
+    saving(segment: VideoProjectSegment): void {
+      upstreamCompleted.add(segment.index)
+      observations.set(segment.index, '上游已完成，正在保存')
+      emit()
+    },
+    stopped(segment: VideoProjectSegment): void { observations.set(segment.index, stopped(segment)); emit() },
+    finish(value: string, failed = false): void {
+      stage = value
+      for (const segment of manifest.segments) observations.set(segment.index, stopped(segment))
+      emit()
+      job.append(`${render()}\n`, failed ? { channel: 'stderr' } : undefined)
+    },
+  }
+}
+
+type VideoProjectProgress = ReturnType<typeof videoProjectProgress>
 
 /**
  * Run or explicitly resume a durable project; never retry an unknown submission.
@@ -690,14 +751,16 @@ export async function runVideoProject(
     const retained = await readVideoProject(options, manifest.id, manifest.ownerSessionId, manifest.workspaceRoot, provider.identity)
     if (retained.origin === undefined) delete manifest.origin
     Object.assign(manifest, retained)
+    const progress = videoProjectProgress(manifest, job)
     if (manifest.status === 'completed') {
       signal.throwIfAborted()
       await provider.assertCurrent()
+      progress.finish('视频已完成')
       return { status: 'completed', result: JSON.stringify({ status: 'succeeded', project_id: manifest.id,
         final_path: manifest.finalPath, duration_seconds: manifest.finalDurationSeconds,
         clip_paths: manifest.segments.map(segment => segment.publishedPath ?? savedPath(segment)) }) }
     }
-    return await executeVideoProject(options, manifest, provider, editor, job, signal)
+    return await executeVideoProject(options, manifest, provider, editor, job, signal, progress)
   } catch (error) {
     const failure = videoProjectFailure(error)
     return { status: signal.aborted ? 'killed' : 'failed', detail: signal.aborted ? 'CANCELLED' : failure.code,
@@ -708,31 +771,24 @@ export async function runVideoProject(
 /** Own workers and their stop barrier until every late submission receipt has settled. */
 async function executeVideoSegments(
   options: VideoProjectOptions, manifest: VideoProjectManifest, provider: VideoProjectProvider, editor: VideoEditor,
-  job: JobHandle, signal: AbortSignal, unsettled: Set<number>, onlyAccepted: boolean,
+  job: JobHandle, signal: AbortSignal, unsettled: Set<number>, onlyAccepted: boolean, progress: VideoProjectProgress,
 ): Promise<void> {
   const queue = manifest.segments.filter(segment => segment.status !== 'saved' && segment.status !== 'failed'
     && segment.status !== 'unknown' && (!onlyAccepted || segment.taskId !== undefined))
     .toSorted((left, right) => Number(right.taskId !== undefined) - Number(left.taskId !== undefined))
   if (queue.length === 0) return
-  const maximum = Math.min(options.maxConcurrentSegments ?? 1, queue.length)
-  const granted = maximum === 1 || provider.parallelism === undefined ? 1 : await provider.parallelism(manifest.model, signal)
+  const granted = options.maxConcurrentSegments === 1 || queue.length === 1 ? 1 : provider.parallelism === undefined
+    ? DEFAULT_VIDEO_PROJECT_PARALLELISM : await provider.parallelism(manifest.model, signal)
   signal.throwIfAborted()
-  const concurrency = Math.min(maximum, granted)
+  const concurrency = Math.min(options.maxConcurrentSegments ?? granted, granted, queue.length)
   const stop = new AbortController()
   let failure: { error: unknown } | undefined
   let cursor = 0
-  const active = new Set<number>()
-  const progress = (text: string): void => {
-    const saved = manifest.segments.filter(segment => segment.status === 'saved').length
-    job.updateProgress(concurrency === 1 ? text
-      : `${text} · 本项目同时处理 ${String(active.size)} 段，已保存 ${String(saved)}/${String(manifest.segments.length)}`)
-  }
-  const observeJob: JobHandle = { id: job.id, append: (...args) => { job.append(...args) }, updateProgress: progress }
   const execute = async (segment: VideoProjectSegment): Promise<void> => {
     const deadline = AbortSignal.timeout(options.taskTimeoutMs)
     const clipSignal = AbortSignal.any([signal, deadline])
     const observation = AbortSignal.any([clipSignal, stop.signal])
-    progress(`生成分镜 ${String(segment.index)}/${String(manifest.segments.length)}`)
+    progress.segment(segment, segment.taskId === undefined ? '准备提交，尚未提交' : '已受理，等待查询')
     if (segment.taskId === undefined) {
       await validatePublication(options, manifest.publicationDirectory, clipSignal)
       await provider.assertCurrent()
@@ -748,6 +804,7 @@ async function executeVideoSegments(
         return
       }
       unsettled.add(segment.index)
+      progress.segment(segment, '提交中')
       let task: { taskId: string }
       try { task = await provider.submit(segment.request, clipSignal) }
       catch (error) {
@@ -758,6 +815,7 @@ async function executeVideoSegments(
           throw error
         }
         segment.status = 'unknown'
+        if (error instanceof VideoRelayError && error.code === 'VIDEO_SUBMIT_UNKNOWN' && error.taskId !== undefined) segment.taskId = error.taskId
         if (error instanceof VideoRelayError && error.code === 'INSUFFICIENT_BALANCE') throw error
         if (error instanceof VideoRelayError && error.code === 'VIDEO_SUBMIT_BUSY') {
           throw new VideoProjectError('SUBMISSION_UNKNOWN', error.message, { cause: error })
@@ -771,23 +829,27 @@ async function executeVideoSegments(
       segment.taskId = task.taskId
       segment.status = 'running'
       await persist(options, manifest)
+      progress.segment(segment, '已受理，等待查询')
       job.append(`分镜 ${String(segment.index)} 已提交，任务 ${task.taskId}。\n`)
     }
     // Never cancel another in-flight POST merely because one peer failed.
     if (stop.signal.aborted) return
-    try { await waitForTask(options, provider, segment, manifest.segments.length, observeJob, observation) }
+    try { await waitForTask(options, provider, segment, (status, seconds) => {
+      progress.segment(segment, `${status === 'queued' ? '排队中' : '生成中'}，已等待 ${String(seconds)} 秒`)
+    }, observation) }
     catch (error) {
       if (deadline.aborted && !signal.aborted) {
         throw new VideoProjectError('VIDEO_TASK_TIMEOUT', '视频任务等待时间已到，已暂停查询并保留原任务编号。任务可能仍在排队或生成；请继续查询原项目，不要重新提交。', { cause: error })
       }
-      if (error instanceof VideoProjectError && error.code === 'PROVIDER_TASK_FAILED') {
+      // Peer cancellation can carry another clip's rejection as its abort reason.
+      if ((error instanceof VideoSubmissionRejection || error instanceof VideoProjectTaskFailure) && error.taskId === segment.taskId) {
         segment.status = 'failed'
         unsettled.delete(segment.index)
       }
       throw error
     }
     unsettled.delete(segment.index)
-    progress(`保存分镜 ${String(segment.index)}/${String(manifest.segments.length)}`)
+    progress.saving(segment)
     const path = join(options.stateDirectory, manifest.id, 'clips', `clip-${String(segment.index).padStart(3, '0')}-${randomUUID()}.mp4`)
     await provider.download(segment.taskId, segment.request, path, observation)
     segment.path = path
@@ -800,6 +862,7 @@ async function executeVideoSegments(
     await persist(options, manifest)
     await publishSegment(options, manifest, segment, clipSignal)
     await options.saved?.(manifest, segment.index, clipSignal)
+    progress.segment(segment, '已保存')
     job.append(`分镜 ${String(segment.index)} 已保存：${segment.publishedPath ?? path}\n`)
   }
   const worker = async (): Promise<void> => {
@@ -807,12 +870,16 @@ async function executeVideoSegments(
       if (stop.signal.aborted || signal.aborted) return
       const segment = queue[cursor++]
       if (segment === undefined) return
-      active.add(segment.index)
       try { await execute(segment) }
       catch (error) {
-        if (failure === undefined) { failure = { error }; stop.abort(error) }
+        progress.stopped(segment)
+        if (failure === undefined) {
+          failure = { error }
+          progress.stage('正在停止，保留已有结果')
+          stop.abort(error)
+        }
         return
-      } finally { active.delete(segment.index) }
+      }
     }
   }
   const workers = Array.from({ length: Math.min(concurrency, queue.length) }, worker)
@@ -824,12 +891,13 @@ async function executeVideoSegments(
 /** Run exclusively with respect to local clip recovery for this exact private project. */
 async function executeVideoProject(
   options: VideoProjectOptions, manifest: VideoProjectManifest, provider: VideoProjectProvider, editor: VideoEditor,
-  job: JobHandle, signal: AbortSignal,
+  job: JobHandle, signal: AbortSignal, progress: VideoProjectProgress,
 ): Promise<JobOutcome> {
   const unsettled = new Set(manifest.segments.filter(segment =>
     segment.status === 'unknown' || segment.status === 'submitting' || segment.status === 'running').map(segment => segment.index))
   try {
     if (manifest.identity.accountId !== provider.identity.accountId) throw new VideoProjectError('PROJECT_ACCESS_DENIED', '该视频项目不属于当前登录账号。')
+    progress.stage('检查已保存片段')
     for (const segment of manifest.segments) {
       if (segment.status !== 'saved') continue
       signal.throwIfAborted()
@@ -848,14 +916,15 @@ async function executeVideoProject(
     manifest.status = 'running'
     delete manifest.failureCode
     await persist(options, manifest)
+    progress.stage('生成分镜')
     if (manifest.composedPath === undefined) {
-      await executeVideoSegments(options, manifest, provider, editor, job, signal, unsettled, blocked !== undefined)
+      await executeVideoSegments(options, manifest, provider, editor, job, signal, unsettled, blocked !== undefined, progress)
     }
     if (blocked !== undefined) throw blocked
     signal.throwIfAborted()
     manifest.status = 'editing'
     await persist(options, manifest)
-    job.updateProgress('自动剪辑并拼接视频')
+    progress.stage('自动剪辑并拼接视频')
     let result: { path: string; durationSeconds: number }
     if (manifest.composedPath !== undefined && manifest.composedDurationSeconds !== undefined) {
       const checked = await editor.probe(manifest.composedPath, signal)
@@ -865,7 +934,7 @@ async function executeVideoProject(
       result = await editor.compose({
         clips: manifest.segments.map(segment => ({ path: savedPath(segment) })), outputPath: join(manifest.outputDirectory, `final-${randomUUID()}.mp4`),
         totalDurationSeconds: manifest.input.totalDurationSeconds, signal,
-        onProgress: (progress) => { job.updateProgress(progress.stage === 'normalizing' ? `整理片段 ${String(progress.completedClips)}/${String(progress.totalClips)}` : progress.stage === 'assembling' ? '拼接并剪辑视频' : '校验最终视频') },
+        onProgress: (value) => { progress.stage(value.stage === 'normalizing' ? `整理片段 ${String(value.completedClips)}/${String(value.totalClips)}` : value.stage === 'assembling' ? '拼接并剪辑视频' : '校验最终视频') },
       })
       if (manifest.publicationDirectory !== undefined) {
         manifest.composedPath = result.path
@@ -878,6 +947,7 @@ async function executeVideoProject(
     manifest.status = 'completed'
     await persist(options, manifest)
     await options.saved?.(manifest, undefined, signal)
+    progress.finish('视频已完成')
     const summary = JSON.stringify({ status: 'succeeded', project_id: manifest.id, final_path: manifest.finalPath, duration_seconds: result.durationSeconds, clip_paths: manifest.segments.map(segment => segment.publishedPath ?? savedPath(segment)), message: '视频已实际保存。请调用 present 展示 final_path，并在回复中提供可点击的产物链接。' })
     job.append(`${summary}\n`)
     return { status: 'completed', result: summary }
@@ -893,9 +963,11 @@ async function executeVideoProject(
     catch (storageError) {
       // Storage failure is independently reported; its raw path/error is not model-visible.
       void storageError
+      progress.finish('项目记录保存失败，已停止', true)
       job.append('项目状态保存失败；已停止后续提交。最后一次提交可能未记录，请先在后台核对任务，勿直接重试。\n', { channel: 'stderr' })
       return { status: signal.aborted ? 'killed' : 'failed', detail: 'PROJECT_STORAGE_FAILED', result: JSON.stringify({ status: 'failed', project_id: manifest.id, code: 'PROJECT_STORAGE_FAILED', message: `项目记录保存失败，请保留已返回的任务编号并在后台核对，勿直接重试。${warning}`, clip_paths: manifest.segments.flatMap(segment => segment.path === undefined ? [] : [segment.publishedPath ?? segment.path]), task_ids: manifest.segments.flatMap(segment => segment.taskId === undefined ? [] : [segment.taskId]) }) }
     }
+    progress.finish(signal.aborted ? '项目已停止' : reported.code === 'VIDEO_TASK_TIMEOUT' ? '等待已暂停，保留原任务' : '项目未完成', true)
     const result = JSON.stringify({ status: signal.aborted ? 'cancelled' : 'failed', project_id: manifest.id, code: manifest.failureCode, message: message + warning, clip_paths: manifest.segments.flatMap(segment => segment.path === undefined ? [] : [segment.publishedPath ?? segment.path]), task_ids: manifest.segments.flatMap(segment => segment.taskId === undefined ? [] : [segment.taskId]) })
     job.append(`${result}\n`, { channel: 'stderr' })
     return { status: signal.aborted ? 'killed' : 'failed', detail: manifest.failureCode, result }

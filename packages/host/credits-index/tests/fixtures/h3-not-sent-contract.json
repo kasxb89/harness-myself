@@ -1,0 +1,47 @@
+{
+  "provenance": "Synthetic local responses authored against the frozen H3 unsent-ledger contract; not production traffic or live generation.",
+  "notCharged": {
+    "httpStatus": 403,
+    "body": {
+      "code": "insufficient_user_quota",
+      "message": "private gateway diagnostic",
+      "data": null,
+      "submission_code": "h3_submission_not_sent",
+      "submission_state": "not_submitted",
+      "billing_state": "not_charged",
+      "upstream_submitted": false,
+      "retryable": false,
+      "resubmittable": true,
+      "id": "h3-unsent-original",
+      "task_id": "h3-unsent-original"
+    }
+  },
+  "refunded": {
+    "httpStatus": 500,
+    "body": {
+      "code": "pre_consume_token_quota_failed",
+      "message": "private gateway diagnostic",
+      "data": null,
+      "submission_code": "h3_submission_not_sent",
+      "submission_state": "not_submitted",
+      "billing_state": "refunded",
+      "upstream_submitted": false,
+      "retryable": false,
+      "resubmittable": true,
+      "refund_confirmed": true,
+      "id": "h3-unsent-original",
+      "task_id": "h3-unsent-original"
+    }
+  },
+  "receipt": {
+    "submission_code": "h3_submission_not_sent",
+    "submission_state": "not_submitted",
+    "billing_state": "not_charged",
+    "upstream_submitted": false,
+    "retryable": false,
+    "resubmittable": true,
+    "id": "h3-unsent-original",
+    "task_id": "h3-unsent-original",
+    "recovery": { "method": "GET", "path": "/v1/tasks/h3-unsent-original" }
+  }
+}

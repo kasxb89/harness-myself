@@ -1,0 +1,12 @@
+version: 1
+scenario: video-project-progress
+profile: web
+composition: video-project-progress
+recording: authored
+header:
+  class: video-project-progress
+  pin: true
+  systemPromptSource: h3-submission-outcomes
+  toolSchemasSource: h3-submission-outcomes
+workspace:
+  final: true

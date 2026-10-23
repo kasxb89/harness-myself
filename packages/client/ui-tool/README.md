@@ -63,7 +63,11 @@ Explicit failures from native image generation, short or project video generatio
 
 Image and short-video results with a retained task ID and a pending state show generation in progress, including queries of the original task. The copy covers generation and local saving, and directs users to query that task without submitting again. A missing task receipt stays unconfirmed; a confirmed terminal failure keeps its failure state.
 
-Confirmed queued video receipts show accepted queue waiting rather than a generic server failure. Known video-project task IDs retained after an observation deadline remain pending. Declared model-parameter preflight failures show safe adjustment guidance; raw codes and upstream prose remain hidden, while canonical tool results stay unchanged.
+Confirmed queued video receipts show accepted queue waiting rather than a generic server failure. Known video-project task IDs retained after an observation deadline remain pending. Declared model-parameter preflight failures show safe adjustment guidance; raw codes and upstream prose remain hidden, while canonical tool results stay unchanged. Rejected model parameters in `update_creation_plan` name the tool and ask the model to complete or correct the plan before retrying; the card neither fills missing fields nor retries the call.
+
+Video generation count limits and unavailable request intent have dedicated copy for `generate_video` and `generate_video_project`. The card explains that extra generation needs an explicit user request and can incur another charge; it does not treat the restriction as a server failure or retry automatically.
+
+Unavailable or changed video estimates and incomplete model selection show separate recovery copy for generation and project resumption. This copy says that no new generation request was submitted; an unknown earlier submission retains priority and still requires checking its original task. The owning [credits host](../../host/credits-index/README.md) supplies the estimate and human selection before switching video models.
 
 <a id="understand-the-implementation"></a>
 ## Understand the implementation

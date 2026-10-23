@@ -1,5 +1,5 @@
 /** Video composer, camera-script templates and real generated clips. */
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import { queryVideoSubmission, readVideoSubmission, submissionFromAnswer, submissionKey } from './video-submission.ts'
 import { appPath, Button, IconPlayOutlineRegular, IconPlusOutlineRegular, IconSettingsOutlineRegular, Menu, Modal, productFailureKind, SegmentedTabs, Switch, Tooltip, type ProductFailureKind } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsStore } from '@deepseek-ai/dsh-client-store'
@@ -157,6 +157,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
     return accountId
   }, [actions, readDraft, releasePreview])
   const promptField = useRef<HTMLTextAreaElement | null>(null)
+  const submitHintId = useId()
   const model = useMemo(() => models.find(entry => entry.id === modelId) ?? models[0] ?? null, [modelId, models])
   const params = model?.params ?? null
   const busy = phase === 'running' || uploading !== null
@@ -702,12 +703,14 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
 
   const submitHint = signedIn !== true ? t('signedOut') : draft.promptAssisting ? t('submitWriting')
     : uploading !== null ? t('submitUploading') : phase === 'running' ? t('runningShort')
-      : sessionId === undefined ? t('sessionRequired') : model === null || params === null ? t('noModel')
-        : prompt.trim() === '' ? t('promptRequired') : frameRatiosUnavailable ? t('frameRatiosUnavailable') : settingsInvalid ? t('settingsUnavailable')
-          : overReferenceLimit ? t('referenceOverLimit') : referenceBytesExceeded ? t('referenceBytesExceeded')
-            : (workflow === 'image' || workflow === 'frames') && params.frameSlots > 0 && firstFrame === null ? t('firstFrameRequired')
-              : workflow === 'frames' && lastFrame === null ? t('lastFrameRequired')
-                : workflow !== 'text' && !hasReferences ? t('mediaRequired') : null
+      : sessionId === undefined ? t('sessionRequired') : accountIdentity === null ? t('stateFailed')
+        : originalSubmission !== null ? t('originalLocked') : submissionCheck === 'failed' ? t('originalCheckRequired')
+          : submissionCheck !== 'ready' || checkedOwner !== ownerKey ? t('originalChecking') : model === null || params === null ? t('noModel')
+            : prompt.trim() === '' ? t('promptRequired') : frameRatiosUnavailable ? t('frameRatiosUnavailable') : settingsInvalid ? t('settingsUnavailable')
+              : overReferenceLimit ? t('referenceOverLimit') : referenceBytesExceeded ? t('referenceBytesExceeded')
+                : (workflow === 'image' || workflow === 'frames') && params.frameSlots > 0 && firstFrame === null ? t('firstFrameRequired')
+                  : workflow === 'frames' && lastFrame === null ? t('lastFrameRequired')
+                    : workflow !== 'text' && !hasReferences ? t('mediaRequired') : null
   const generationMaterialSummary = workflow === 'text' ? t('generationTextOnly')
     : workflow === 'image' && (params?.frameSlots ?? 0) > 0 || workflow === 'frames'
       ? t('generationFrames', { n: String(frameImages.filter(item => item !== null).length) })
@@ -851,9 +854,10 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
             </div>
           </section>
           <span className={css.cost}>{t('costShort')}</span>
-          <div className={css.submitArea}>{submitHint !== null && <span className={css.submitHint} role="status">{submitHint}</span>}
-            <Tooltip label={phase === 'running' ? t('runningShort') : t('submit')} portal side="top">
+          <div className={css.submitArea}>{submitHint !== null && <span className={css.submitHint} id={submitHintId}>{submitHint}</span>}
+            <Tooltip label={submitHint ?? t('submit')} portal side="top">
               <button type="button" className={css.send} aria-label={phase === 'running' ? t('runningShort') : t('submit')}
+                aria-describedby={submitHint === null ? undefined : submitHintId}
                 onClick={() => { void generate() }} disabled={submissionLocked || model === null || sessionId === undefined || prompt.trim() === '' || settingsInvalid
                   || overReferenceLimit || referenceBytesExceeded}>
                 <span className={phase === 'running' ? css.spinner : css.sendArrow} aria-hidden="true">{phase === 'running' ? '' : '↑'}</span>
@@ -862,6 +866,13 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
         </div>
       </fieldset>
       <div className={css.feedback} aria-live="polite">
+        {accountIdentity !== null && submissionCheck === 'failed' && <p className={css.error}>{t('originalCheckFailed')} <button type="button"
+          className={css.link} onClick={() => { setSubmissionRevision(value => value + 1) }}>{t('originalCheck')}</button></p>}
+        {originalSubmission !== null && <div className={css.notice} role="status">
+          <p>{t(originalSubmission.taskId === undefined ? 'originalUnknown' : 'originalAccepted')}</p>
+          {originalSubmission.canQuery && <Button variant="outline" disabled={queryingOriginal}
+            onClick={() => { void queryOriginal() }}>{t(queryingOriginal ? 'originalQuerying' : 'originalQuery')}</Button>}
+        </div>}
         {phase === 'running' && <p className={css.notice}>{t('running', { seconds: String(elapsed) })}</p>}
         {uploading !== null && <p className={css.notice}>{t('uploading')}</p>}
         {overReferenceLimit && <p className={css.error} role="alert">{t('referenceOverLimit')}</p>}
@@ -871,7 +882,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
         {uploadFailures.length > 0 && <ul className={css.error} role="alert">{uploadFailures.map((item, index) =>
           <li key={`${String(index)}:${item.name}`}>{t('uploadItemFailed', { name: item.name, reason: item.reason })}</li>)}</ul>}
         {message !== null && <p className={css.notice}>{message}</p>}
-        {stateError && <p className={css.error}>{t('stateFailed')} <button type="button" className={css.link} onClick={() => { void refreshState() }}>{t('retry')}</button></p>}
+        {(stateError || signedIn === true && accountIdentity === null) && <p className={css.error}>{t('stateFailed')} <button type="button" className={css.link} onClick={() => { void refreshState() }}>{t('retry')}</button></p>}
         {modelsError !== null && <p className={css.error}>{t('modelsFailed', { message: modelsError })} <button type="button" className={css.link} onClick={() => { void loadModels() }}>{t('retry')}</button></p>}
       </div>
     </section>
@@ -896,13 +907,6 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
         {t('noTemplates')} <button type="button" className={css.link} onClick={() => { actions.patch({ category: 'all' }) }}>{t('resetFilters')}</button></p>}
     </section>
 
-    {accountIdentity !== null && submissionCheck === 'failed' && <p className={css.error}>{t('originalCheckFailed')} <button type="button"
-      className={css.link} onClick={() => { setSubmissionRevision(value => value + 1) }}>{t('originalCheck')}</button></p>}
-    {originalSubmission !== null && <div className={css.notice} role="status">
-      <p>{t(originalSubmission.taskId === undefined ? 'originalUnknown' : 'originalAccepted')}</p>
-      {originalSubmission.canQuery && <Button variant="outline" disabled={queryingOriginal}
-        onClick={() => { void queryOriginal() }}>{t(queryingOriginal ? 'originalQuerying' : 'originalQuery')}</Button>}
-    </div>}
     {result !== null && <section className={css.result} aria-label={t('result')}>
       <div className={css.sectionHeading}><h2 className={css.sectionTitle}>{t('result')}</h2><button type="button" className={css.link} onClick={() => { actions.patch({ result: null }) }}>{t('closePreview')}</button></div>
       <video className={css.video} src={rawUrl(result)} controls preload="metadata" />

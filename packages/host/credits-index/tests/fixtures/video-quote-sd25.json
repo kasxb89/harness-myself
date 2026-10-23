@@ -1,0 +1,72 @@
+{
+  "fixture": "actual final isolated candidate HTTP; synthetic prices, not production account quotes",
+  "candidate_source_freeze_sha256": "0fd91a6d91a0fad31d5fb13526e38e3e3645009cf3b929eee18cc9582d56b170",
+  "outbound_requests": 0,
+  "case": "SD25 concrete size",
+  "http_status": 200,
+  "method": "POST",
+  "path": "/v1/video/quote",
+  "request": {
+    "model": "video-sd25-480p",
+    "segments": [
+      {
+        "id": "clip-1",
+        "parameters": {
+          "gen_type": "text_to_video",
+          "n": 1,
+          "seconds": 15,
+          "size": "1280x720"
+        },
+        "reference_counts": {
+          "audios": 0,
+          "images": 0,
+          "videos": 0
+        }
+      }
+    ],
+    "works_count": 1
+  },
+  "response": {
+    "account_binding": "f906d062ddd7f65d1f474400fce5cbdb07de98616e3bdb37ba0ffc1c80b59aa8",
+    "charged": false,
+    "created_at": 1792726715,
+    "currency": "CNY",
+    "estimate_only": true,
+    "estimated_one_work": "10.5",
+    "estimated_total": "10.5",
+    "expires_at": 1792726775,
+    "model": "video-sd25-480p",
+    "object": "video.quote",
+    "one_work_quota": 750000,
+    "pricing_revision": "e648d5240ea84a8f7b00abb0140775444990f003d029b8ad618b4b647b81414d",
+    "quota_per_usd": 500000,
+    "quote_id": "f0747f1e75ac4a1154d773928540cfeaac0e6e8ab91857a5346ba9d4e69ca11b",
+    "reserved": false,
+    "schema_version": 1,
+    "segments": [
+      {
+        "estimated_amount": "10.5",
+        "id": "clip-1",
+        "parameters": {
+          "gen_type": "text_to_video",
+          "n": 1,
+          "seconds": 15,
+          "size": "1280x720"
+        },
+        "quota": 750000,
+        "reference_counts": {
+          "audios": 0,
+          "images": 0,
+          "videos": 0
+        },
+        "usage": {
+          "seconds": 15
+        }
+      }
+    ],
+    "submitted": false,
+    "total_quota": 750000,
+    "usd_exchange_rate": 7,
+    "works_count": 1
+  }
+}

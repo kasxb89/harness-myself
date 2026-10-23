@@ -1,0 +1,12 @@
+version: 1
+scenario: video-generation-intent
+profile: web
+composition: video-generation-intent
+recording: authored
+header:
+  class: video-generation-intent
+  pin: true
+  systemPromptSource: h3-submission-outcomes
+  toolSchemasSource: h3-submission-outcomes
+workspace:
+  final: true

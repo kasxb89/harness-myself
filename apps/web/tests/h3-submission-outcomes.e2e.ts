@@ -270,7 +270,7 @@ it('records two explicit H3 attempts with confirmed capacity and refunded-auth f
   ])
   expect(results[0]?.message).toMatch(/未.*(?:提交|扣费)|未扣费/u)
   expect(results[1]?.message).toMatch(/退款/u)
-  expect(paths.filter(path => path.startsWith('/harness/v1/video/generations/'))).toEqual([])
+  expect(paths.filter(path => path.startsWith('/harness/v1/video/generations/') || path.startsWith('/harness/v1/tasks/'))).toEqual([])
   expect(modelRequests).toHaveLength(firstRecording ? 4 : 0)
   if (firstRecording) {
     expect(JSON.stringify(modelRequests[1])).toContain('H3_ACCOUNT_CAPACITY_EXHAUSTED')

@@ -4,6 +4,7 @@ import type { Session } from '@deepseek-ai/dsh-session'
 import type { ArtifactStorageService } from '@deepseek-ai/dsh-artifacts-index'
 import type { VideoEditor } from './video-edit.ts'
 import type { CreativeOwner, CreativeStore } from './creative-store.ts'
+import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 
 /** Credential-free JSON fields retained before the single submission attempt. */
 export type VideoRequestValue = string | number | boolean | null | VideoRequestValue[] | { [key: string]: VideoRequestValue }
@@ -58,10 +59,10 @@ export interface VideoProjectProvider {
    */
   assertCurrent(): Promise<void>
   /**
-   * Read the gateway's enforced per-project parallelism; missing support keeps execution serial.
+   * Read a model's scheduling ceiling; missing support uses the local video default of four.
    * @param model - Exact retained project model.
    * @param signal - Cancels the capability read.
-   * @returns Positive concurrency granted by a gateway with atomic admission, never a free-slot reservation.
+   * @returns Positive scheduling ceiling, never a free-slot reservation or a claim of provider capacity.
    */
   parallelism?(model: string, signal: AbortSignal): Promise<number>
   /**
@@ -114,6 +115,10 @@ export interface VideoProjectProvider {
 
 /** Deployment choices supplied by the owning credits plugin configuration. */
 export interface VideoProjectOptions {
+  /** Resolve and approve a chat-only model change before preparing any billable project. */
+  chatModelChoice?(
+    input: VideoProjectInput, exec: ToolRunContext, provider: VideoProjectProvider,
+  ): Promise<{ input: VideoProjectInput; beforeSubmit?: (signal: AbortSignal) => Promise<void> }>
   /** Observe a terminal local workflow failure without affecting generation or persisted state. */
   failed?(manifest: import('./video-project.ts').VideoProjectManifest, code: string): void
   /** Optional product-owned planning records; no independent background execution. */
@@ -143,7 +148,7 @@ export interface VideoProjectOptions {
   maxTotalSeconds: number
   /** Maximum billable requests per project. */
   maxSegments: number
-  /** Local maximum of simultaneously observed clips; the provider may grant a lower limit. */
+  /** Optional local ceiling; omitted follows the provider pool or the fallback of four. */
   maxConcurrentSegments?: number
   /** Interval between reads of a known provider task. */
   pollIntervalMs: number

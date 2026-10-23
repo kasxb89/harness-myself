@@ -3,6 +3,11 @@ import { describe, expect, it, vi } from 'vitest'
 import { setTimeout as delay } from 'node:timers/promises'
 import { executeVideoTask, type VideoTaskOptions } from '../src/video-task.ts'
 import type { CreativeVideoReceipt } from '../src/creative-types.ts'
+import { VideoSubmissionRejection } from '../src/video-submission-result.ts'
+import notSentContract from './fixtures/h3-not-sent-contract.json' with { type: 'json' }
+import apiContract from './fixtures/h3-unsent-api-contract.json' with { type: 'json' }
+import terminalContract from './fixtures/h3-terminal-api-contract.json' with { type: 'json' }
+import mediaContract from './fixtures/media-submission-api-contract-v3.json' with { type: 'json' }
 
 const fingerprint = 'a'.repeat(64)
 const accepted: CreativeVideoReceipt = { model: 'model_5', route: '/v1/videos', backendFingerprint: fingerprint, phase: 'accepted', taskId: 'public-task-1' }
@@ -23,6 +28,180 @@ function fixture(overrides: Partial<VideoTaskOptions> = {}) {
 }
 
 describe('single-submission video task receipts', () => {
+  const capacity = mediaContract.find(entry => entry.method === 'POST' && entry.http_status === 429 && entry.response.media_kind === 'video')
+  const canonical = mediaContract.find(entry => entry.method === 'GET' && entry.response.media_kind === 'video' && Object.hasOwn(entry.response, 'media_submission_receipt'))
+  const uncertain = mediaContract.find(entry => entry.method === 'POST' && entry.http_status === 202)
+  const unknownGet = mediaContract.find(entry => entry.method === 'GET' && entry.response.status === 'UNKNOWN' && entry.response.media_kind === 'video')
+  if (capacity === undefined || canonical === undefined || uncertain === undefined || unknownGet === undefined
+    || typeof capacity.response.id !== 'string' || typeof uncertain.response.id !== 'string') throw new Error('Actual video receipt fixtures are required')
+  const originalId = capacity.response.id
+
+  it('retains the actual non-H3 video rejection, original ID and request header without claiming local non-submission', async () => {
+    const f = fixture({ model: capacity.response.model,
+      submit: async () => json(capacity.response, capacity.http_status, { 'x-request-id': 'actual-video-request' }) })
+    expect(await executeVideoTask(f.options)).toMatchObject({ submissionState: 'failed', code: 'media_account_capacity_exhausted',
+      taskId: originalId, requestId: 'actual-video-request', videoReceipt: { phase: 'submitting', route: '/v1/videos', taskId: originalId } })
+    expect(f.receipts.at(-1)).toMatchObject({ taskId: originalId, route: '/v1/videos' })
+    expect(f.read).not.toHaveBeenCalled()
+    expect(f.save).not.toHaveBeenCalled()
+  })
+
+  it('recovers the exact non-H3 original task proof over canonical GET without a new POST', async () => {
+    const read = vi.fn(async () => json(canonical.response, canonical.http_status))
+    const f = fixture({ resumeReceipt: { ...accepted, model: capacity.response.model, taskId: originalId }, read })
+    expect(await executeVideoTask(f.options)).toMatchObject({ submissionState: 'failed', code: 'MEDIA_SUBMISSION_NOT_SENT', taskId: originalId })
+    expect(read).toHaveBeenCalledExactlyOnceWith(originalId, expect.any(AbortSignal), true)
+    expect(f.submit).not.toHaveBeenCalled()
+    expect(f.save).not.toHaveBeenCalled()
+  })
+
+  it('keeps the actual HTTP202 original task unresolved and performs only its fixed canonical GET on resume', async () => {
+    const read = vi.fn(async () => json(unknownGet.response, unknownGet.http_status))
+    const f = fixture({ model: uncertain.response.model, submit: async () => json(uncertain.response, uncertain.http_status), read })
+    const first = await executeVideoTask(f.options)
+    expect(first).toMatchObject({ submissionState: 'pending', code: 'VIDEO_STATUS_INVALID', taskId: uncertain.response.id,
+      videoReceipt: { route: '/v1/videos', phase: 'accepted' } })
+    if (first.videoReceipt === undefined) throw new Error('Expected retained original video task')
+    const resumed = fixture({ resumeReceipt: first.videoReceipt, read })
+    expect(await executeVideoTask(resumed.options)).toMatchObject({ submissionState: 'pending', taskId: uncertain.response.id })
+    expect(read).toHaveBeenCalledTimes(2)
+    for (const call of read.mock.calls) expect(call).toEqual([uncertain.response.id, expect.any(AbortSignal), true])
+    expect(resumed.submit).not.toHaveBeenCalled()
+    expect(f.save).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { upstream_submitted: true }, { schema_version: undefined }, { model: 'other-model' }, { media_kind: 'image' },
+    { task_id: 'another-task' }, { billing_state: 'refunded', refund_confirmed: false }, { resubmittable: false },
+    { recovery: { method: 'POST', path: '/v1/tasks/' + originalId } },
+  ])('keeps an incomplete new video proof unresolved on POST and GET for non-H3 %j', async (patch) => {
+    const malformed = { ...capacity.response.media_submission_receipt, ...patch }
+    const post = fixture({ model: capacity.response.model,
+      submit: async () => json({ ...capacity.response, media_submission_receipt: malformed }, 403) })
+    expect((await executeVideoTask(post.options)).submissionState).toMatch(/^(?:pending|unknown)$/u)
+    expect(post.read).not.toHaveBeenCalled()
+    expect(post.save).not.toHaveBeenCalled()
+    const read = vi.fn(async () => json({ ...canonical.response, media_submission_receipt: malformed }))
+    const get = fixture({ resumeReceipt: { ...accepted, model: capacity.response.model, taskId: originalId }, read })
+    expect(await executeVideoTask(get.options)).toMatchObject({ submissionState: 'pending', code: 'VIDEO_STATUS_INVALID', taskId: originalId })
+    expect(get.submit).not.toHaveBeenCalled()
+    expect(get.save).not.toHaveBeenCalled()
+  })
+
+  it('retains only the request header when a marked video response conflicts on the original identity', async () => {
+    const f = fixture({ model: capacity.response.model,
+      submit: async () => json({ ...capacity.response, task_id: 'another-task' }, 403, { 'x-request-id': 'safe-request-header' }) })
+    const result = await executeVideoTask(f.options)
+    expect(result).toMatchObject({ submissionState: 'unknown', code: 'VIDEO_SUBMISSION_UNKNOWN', requestId: 'safe-request-header' })
+    expect(result).not.toHaveProperty('taskId')
+    expect(f.read).not.toHaveBeenCalled()
+    expect(f.save).not.toHaveBeenCalled()
+  })
+  it('settles an exact local quote rejection after receipt persistence with zero POST', async () => {
+    const f = fixture({ beforeSubmit: async () => {
+      throw new VideoSubmissionRejection('CREATIVE_VIDEO_QUOTE_CHANGED', '报价已变化，未提交新的生成。', 'not_submitted')
+    } })
+    expect(await executeVideoTask(f.options)).toMatchObject({ submissionState: 'not-submitted',
+      code: 'CREATIVE_VIDEO_QUOTE_CHANGED', message: '报价已变化，未提交新的生成。' })
+    expect(f.submit).not.toHaveBeenCalled()
+    expect(f.receipts.at(-1)).toMatchObject({ phase: 'submitting' })
+    expect(f.receipts.at(-1)).not.toHaveProperty('taskId')
+    expect(f.read).not.toHaveBeenCalled()
+  })
+
+  it('does not apply a local pre-dispatch proof to an error thrown after the POST began', async () => {
+    const submit = vi.fn(async () => {
+      throw new VideoSubmissionRejection('CREATIVE_VIDEO_QUOTE_CHANGED', 'untrusted post exception', 'not_submitted')
+    })
+    const f = fixture({ submit })
+    expect(await executeVideoTask(f.options)).toMatchObject({ submissionState: 'unknown', code: 'VIDEO_SUBMISSION_UNKNOWN' })
+    expect(submit).toHaveBeenCalledOnce()
+    expect(f.receipts.at(-1)).toMatchObject({ phase: 'submitting' })
+  })
+
+  it.each(terminalContract.fixtures.filter(entry => entry.name.startsWith('canonical_get_')))(
+    'consumes final API canonical contract $name with original receipt only', async ({ body, http_status: httpStatus }) => {
+      const taskId = body.task_id
+      if (typeof taskId !== 'string') throw new Error('Expected an actual platform task id')
+      const read = vi.fn(async () => json(body, httpStatus))
+      const f = fixture({ resumeReceipt: { ...accepted, model: 'MiniMax-H3', taskId }, read })
+      const financial = Object.hasOwn(body, 'submission_receipt'), provider = Object.hasOwn(body, 'provider_terminal_confirmed')
+      const result = await executeVideoTask(f.options)
+      expect(result).toMatchObject({ taskId, submissionState: financial || provider ? 'failed' : 'pending',
+        code: financial ? 'H3_SUBMISSION_NOT_SENT' : provider ? 'TASK_FAILED' : 'VIDEO_STATUS_INVALID' })
+      if (provider) expect(result.message).toContain('不代表退款已确认')
+      expect(f.submit).not.toHaveBeenCalled()
+      expect(read).toHaveBeenCalledExactlyOnceWith(taskId, expect.any(AbortSignal), true)
+      expect(f.save).not.toHaveBeenCalled()
+    },
+  )
+
+  it.each([false, 'true', undefined])('keeps a malformed provider marker %j pending even beside FAILURE', async (marker) => {
+    const f = fixture({ resumeReceipt: { ...accepted, model: 'MiniMax-H3' },
+      read: vi.fn(async () => json({ task_id: accepted.taskId, status: 'FAILURE', provider_terminal_confirmed: marker })) })
+    expect(await executeVideoTask(f.options)).toMatchObject({ submissionState: 'pending', code: 'VIDEO_STATUS_INVALID' })
+    expect(f.submit).not.toHaveBeenCalled()
+  })
+
+  it.each(apiContract.fixtures.filter(entry => entry.name.startsWith('canonical_get_')))(
+    'binds actual API writer $name without treating unproven ledger failure as terminal', async ({ body, http_status: httpStatus }) => {
+      const taskId = body.task_id
+      if (typeof taskId !== 'string') throw new Error('Expected the actual API original id')
+      const f = fixture({ resumeReceipt: { ...accepted, model: 'MiniMax-H3', taskId }, read: vi.fn(async () => json(body, httpStatus)) })
+      const proven = Object.hasOwn(body, 'submission_receipt')
+      expect(await executeVideoTask(f.options)).toMatchObject({ taskId,
+        submissionState: proven ? 'failed' : 'pending', code: proven ? 'H3_SUBMISSION_NOT_SENT' : 'VIDEO_STATUS_INVALID' })
+      expect(f.submit).not.toHaveBeenCalled()
+      expect(f.save).not.toHaveBeenCalled()
+    },
+  )
+
+  it.each([notSentContract.notCharged, notSentContract.refunded])('retains an unsent HTTP $httpStatus business failure, original task and request without claiming provider acceptance', async ({ httpStatus, body }) => {
+    const submit = vi.fn(async () => json(body, httpStatus, { 'x-oneapi-request-id': 'unsent-request', 'x-new-api-task-id': 'untrusted-header-id' }))
+    const f = fixture({ model: 'MiniMax-H3', submit })
+    const result = await executeVideoTask(f.options)
+    expect(result).toMatchObject({ ok: false, submissionState: 'failed', code: body.code, taskId: body.id,
+      requestId: 'unsent-request', videoReceipt: { phase: 'submitting', taskId: body.id } })
+    expect(f.receipts.at(-1)).toMatchObject({ phase: 'submitting', taskId: body.id, requestId: 'unsent-request' })
+    expect(result.message).not.toMatch(/private|untrusted/iu)
+    expect(submit).toHaveBeenCalledOnce()
+    expect(f.read).not.toHaveBeenCalled()
+    expect(f.save).not.toHaveBeenCalled()
+  })
+
+  it.each(['native', 'generic'] as const)('settles only the original accepted id through %s GET proof with no POST', async (envelope) => {
+    const receipt = { ...accepted, model: 'MiniMax-H3', taskId: notSentContract.receipt.id, requestId: 'retained-request' }
+    const value = { task_id: receipt.taskId, status: 'UNKNOWN', submission_receipt: notSentContract.receipt }
+    const read = vi.fn(async () => json(envelope === 'generic' ? { data: value } : value))
+    const f = fixture({ resumeReceipt: receipt, read })
+    expect(await executeVideoTask(f.options)).toMatchObject({ submissionState: 'failed', code: 'H3_SUBMISSION_NOT_SENT',
+      taskId: receipt.taskId, requestId: 'retained-request', videoReceipt: receipt })
+    expect(f.submit).not.toHaveBeenCalled()
+    expect(read).toHaveBeenCalledExactlyOnceWith(receipt.taskId, expect.any(AbortSignal))
+    expect(f.save).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { submission_receipt: null }, { submission_receipt: {} },
+    { submission_receipt: { ...notSentContract.receipt, upstream_submitted: true } },
+    { submission_receipt: { ...notSentContract.receipt, task_id: 'other-task' } },
+    { id: 'other-task' },
+  ])('does not release an H3 original task for malformed GET proof %j', async (patch) => {
+    const receipt = { ...accepted, model: 'MiniMax-H3', taskId: notSentContract.receipt.id }
+    const f = fixture({ resumeReceipt: receipt, read: vi.fn(async () => json({ status: 'failed', submission_receipt: notSentContract.receipt, ...patch })) })
+    expect(await executeVideoTask(f.options)).toMatchObject({ submissionState: 'pending', code: 'VIDEO_STATUS_INVALID', taskId: receipt.taskId })
+    expect(f.submit).not.toHaveBeenCalled()
+    expect(f.save).not.toHaveBeenCalled()
+  })
+
+  it('keeps a generic H3 403 without a ledger proof unknown after dispatch', async () => {
+    const submit = vi.fn(async () => json({ code: 'permission_denied' }, 403))
+    const f = fixture({ model: 'MiniMax-H3', submit })
+    expect(await executeVideoTask(f.options)).toMatchObject({ submissionState: 'unknown', code: 'VIDEO_SUBMISSION_UNKNOWN' })
+    expect(f.read).not.toHaveBeenCalled()
+    expect(submit).toHaveBeenCalledOnce()
+  })
+
   it.each([
     { status: 429, body: { code: 'h3_account_capacity_exhausted', data: null, submission_state: 'not_submitted', retryable: false, resubmittable: true },
       code: 'H3_ACCOUNT_CAPACITY_EXHAUSTED', taskId: undefined },

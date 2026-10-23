@@ -10,6 +10,7 @@ import type { CreativeAsset, CreativeCharacter, CreativeImageReceipt, CreativeVi
 import type { VideoProjectManifest, VideoProjectRead } from './video-project.ts'
 import type { VideoProjectIdentity } from './video-project-types.ts'
 import { parseArtifactOrigin } from './artifact-origin.ts'
+import { parseVideoRequestGrant, type VideoGenerationIntent, type VideoRequestGrant } from './video-generation-intent.ts'
 
 /** Fixed complete-record and collection bounds for untrusted JSON and directory reads. */
 const MAX_BYTES = 2 * 1024 * 1024
@@ -67,6 +68,7 @@ interface Operation {
   videoProjectId?: string
   model?: string
   errorCode?: string
+  requestGrant?: VideoRequestGrant
 }
 
 /** Private JSON v1. Existing video manifests and Session data remain unchanged. */
@@ -88,6 +90,7 @@ interface BeginInput {
   videoProjectId?: string
   model?: string
   expectedRevision?: string
+  videoIntent?: VideoGenerationIntent
 }
 
 interface ShotFacts { status: CreativeStatus; outputs: SavedOutput[]; durationSeconds?: number }
@@ -324,6 +327,8 @@ function parseRecord(value: unknown): CreativeRecord {
   const owner = object(source.owner)
   const operations = list(source.operations, (value) => {
     const item = object(value)
+    const requestGrant = parseVideoRequestGrant(item.requestGrant)
+    if (requestGrant === null) return invalid()
     if (item.submissionStarted !== undefined && typeof item.submissionStarted !== 'boolean') return invalid()
     const outputs = list<SavedOutput>(item.outputs, (value) => {
       const output = object(value)
@@ -349,6 +354,7 @@ function parseRecord(value: unknown): CreativeRecord {
       ...item.submissionStarted === undefined ? {} : { submissionStarted: item.submissionStarted },
       ...item.imageReceipt === undefined ? {} : { imageReceipt: imageReceipt(item.imageReceipt, identifier(owner.sessionId)) },
       ...item.videoReceipt === undefined ? {} : { videoReceipt: imageReceipt(item.videoReceipt, identifier(owner.sessionId)) },
+      ...requestGrant === undefined ? {} : { requestGrant },
       ...item.videoProjectId === undefined ? {} : { videoProjectId: text(item.videoProjectId, 128) },
       ...item.model === undefined ? {} : { model: text(item.model, 256) },
       ...item.errorCode === undefined ? {} : { errorCode: identifier(item.errorCode) },
@@ -610,6 +616,90 @@ export class CreativeStore {
     return parseCreativePlan(record)
   }
 
+  private async assertVideoWorkCount(owner: CreativeOwner, intent: VideoGenerationIntent): Promise<void> {
+    const unavailable = (): never => { throw new CreativeError('CREATIVE_VIDEO_INTENT_UNAVAILABLE', 409,
+      '暂时无法核对已有视频与本次请求的对应关系，已停止新增生成；请先核对已有任务，需要追加时请明确发送新的生成要求。') }
+    const grant = parseVideoRequestGrant(intent.grant)
+    if (grant === undefined || grant === null) unavailable()
+    let entries: string[]
+    try { entries = await readdir(await this.root()) } catch (_error) { return unavailable() }
+    if (entries.length > MAX_PROJECTS) unavailable()
+    const used = new Set(intent.evidence.filter(item => item.messageId === intent.grant.messageId).map(item => `call:${item.callId}`))
+    for (const id of entries) {
+      if (!/^cp_[a-f0-9-]{36}$/u.test(id)) continue
+      let record: CreativeRecord
+      try { record = await this.read(id, owner) } catch (error) {
+        if (error instanceof CreativeError && error.code === 'CREATIVE_ACCESS_DENIED') continue
+        return unavailable()
+      }
+      if (record.owner.workspaceRoot !== owner.workspaceRoot) continue
+      for (const operation of record.operations) {
+        if (!(record.kind === 'video' && operation.assetId === undefined)
+          && operation.videoReceipt === undefined && operation.videoProjectId === undefined) continue
+        const evidence = intent.evidence.find(item => item.operationId === operation.id
+          || operation.videoProjectId !== undefined && item.videoProjectId === operation.videoProjectId
+          || operation.requestGrant !== undefined && item.callId === operation.requestGrant.callId)
+        let requestId = operation.requestGrant?.messageId ?? evidence?.messageId
+        if (requestId === undefined) {
+          const origin = operation.videoReceipt?.origin
+          requestId = origin?.toolCallId === undefined ? undefined
+            : intent.calls.find(item => item.callId === origin.toolCallId)?.messageId
+          if (requestId === undefined && origin !== undefined && origin.turn < intent.grant.turn) continue
+        }
+        if (requestId === undefined) unavailable()
+        if (requestId === intent.grant.messageId) used.add(evidence === undefined
+          ? `operation:${record.id}:${operation.id}` : `call:${evidence.callId}`)
+      }
+    }
+    if (used.size >= intent.grant.maxWorks) {
+      throw new CreativeError('CREATIVE_VIDEO_COUNT_LIMIT', 409,
+        `本次请求已安排 ${String(used.size)} 个视频作品，已达到明确约定的 ${String(intent.grant.maxWorks)} 个上限；不会自行生成新版本。请先查看已有结果，需要追加时请明确提出作品数量。`)
+    }
+  }
+
+  private async assertGenerationAvailable(record: CreativeRecord, input: Pick<BeginInput, 'shotIds' | 'assetId'>): Promise<void> {
+    const wanted = new Set(input.shotIds ?? [])
+    const overlaps = (item: { shotIds: readonly string[]; assetId?: string }): boolean => input.assetId === undefined
+      ? item.assetId === undefined && item.shotIds.some(id => wanted.has(id)) : item.assetId === input.assetId
+    if (record.operations.some(item => this.active.has(item.id) && overlaps(item))) {
+      throw new CreativeError('CREATIVE_SHOT_RUNNING', 409, '该镜头或素材已有正在运行的生成，请查看原任务，不要重复提交。')
+    }
+    const facts = await this.facts(record)
+    if (facts.states.some(item => ['unknown', 'running', 'saving', 'editing'].includes(item.status) && overlaps(item))) {
+      throw new CreativeError('CREATIVE_SUBMISSION_UNKNOWN', 409, '该镜头或素材已有结果未知的提交，可能已经计费；请先核对原任务，不会自动重新提交。')
+    }
+  }
+
+  /**
+   * Check original-task uncertainty before request capacity and expensive preparation.
+   * Begin repeats these checks and claims capacity atomically.
+   * @param owner - Captured account, chat, and workspace.
+   * @param intent - Attribution from the original human request, when available.
+   * @param association - Exact optional plan and shots supplied for this invocation.
+   * @returns Verified original-request attribution; no operation is created.
+   */
+  preflightVideoWorkCount(
+    owner: CreativeOwner, intent: VideoGenerationIntent | undefined,
+    association: Pick<BeginInput, 'planId' | 'shotIds'> = {},
+  ): Promise<VideoGenerationIntent> {
+    return this.queue(async () => {
+      await this.current(owner)
+      if (association.planId !== undefined) {
+        const record = await this.read(association.planId, owner)
+        if (record.owner.workspaceRoot !== owner.workspaceRoot) throw new CreativeError('CREATIVE_ACCESS_DENIED', 404, '该创作项目不属于当前工作区。')
+        if (record.kind !== 'video' || association.shotIds === undefined || association.shotIds.length === 0
+          || association.shotIds.some(id => !record.shots.some(shot => shot.id === id))) {
+          throw new CreativeError('CREATIVE_SHOT_MISMATCH', 400, '请明确指定本次生成对应的计划镜头，镜头数量须与实际分段一致。')
+        }
+        await this.assertGenerationAvailable(record, association)
+      }
+      if (intent === undefined) throw new CreativeError('CREATIVE_VIDEO_INTENT_UNAVAILABLE', 409,
+        '无法确认本次新增视频的请求与作品数量，尚未提交生成；请明确提出需要生成的视频及数量。')
+      await this.assertVideoWorkCount(owner, intent)
+      return intent
+    })
+  }
+
   /**
    * Record a named invocation before billing; no nearest-project association is allowed.
    * @param owner - Exact captured chat and login.
@@ -635,16 +725,7 @@ export class CreativeStore {
           || input.shotIds.some(id => !record.shots.some(shot => shot.id === id))) {
           throw new CreativeError('CREATIVE_SHOT_MISMATCH', 400, '请明确指定本次生成对应的计划镜头，镜头数量须与实际分段一致。')
         }
-        const wanted = new Set(input.shotIds ?? [])
-        const overlaps = (item: { shotIds: readonly string[]; assetId?: string }): boolean => input.assetId === undefined
-          ? item.assetId === undefined && item.shotIds.some(id => wanted.has(id)) : item.assetId === input.assetId
-        if (record.operations.some(item => this.active.has(item.id) && overlaps(item))) {
-          throw new CreativeError('CREATIVE_SHOT_RUNNING', 409, '该镜头或素材已有正在运行的生成，请查看原任务，不要重复提交。')
-        }
-        const facts = await this.facts(record)
-        if (facts.states.some(item => ['unknown', 'running', 'saving', 'editing'].includes(item.status) && overlaps(item))) {
-          throw new CreativeError('CREATIVE_SUBMISSION_UNKNOWN', 409, '该镜头或素材已有结果未知的提交，可能已经计费；请先核对原任务，不会自动重新提交。')
-        }
+        await this.assertGenerationAvailable(record, input)
       } else {
         if (input.shotIds !== undefined || input.assetId !== undefined) throw new CreativeError('CREATIVE_PLAN_REQUIRED', 400, '指定镜头或素材时必须同时指定创作计划。')
         const plan = parseCreativePlan({
@@ -658,11 +739,13 @@ export class CreativeStore {
         record = { ...plan, version: 1, id: `cp_${randomUUID()}` as CreativeProjectId, owner, updatedAt: '', operations: [] }
       }
       if (record.operations.length >= MAX_OPERATIONS) throw new CreativeError('CREATIVE_LIMIT', 400, '该项目的生成记录已达上限，请新建项目。')
+      if (input.kind === 'video' && input.videoIntent !== undefined) await this.assertVideoWorkCount(owner, input.videoIntent)
       const shotIds = input.assetId === undefined ? [...input.shotIds ?? record.shots.map(shot => shot.id)] : []
       unique(shotIds)
       const id = operationId(`op_${randomUUID()}`)
       record.owner = owner
-      record.operations.push({ id, prompt: text(input.prompt), shotIds, ...input.assetId === undefined ? {} : { assetId: input.assetId }, status: 'running', outputs: [], ...input.videoProjectId === undefined ? {} : { videoProjectId: input.videoProjectId }, ...input.model === undefined ? {} : { model: text(input.model, 256) } })
+      record.operations.push({ id, prompt: text(input.prompt), shotIds, ...input.assetId === undefined ? {} : { assetId: input.assetId }, status: 'running', outputs: [], ...input.videoProjectId === undefined ? {} : { videoProjectId: input.videoProjectId }, ...input.model === undefined ? {} : { model: text(input.model, 256) },
+        ...input.kind !== 'video' || input.videoIntent === undefined ? {} : { requestGrant: { ...input.videoIntent.grant } } })
       if (Buffer.byteLength(JSON.stringify(record)) > MAX_BYTES / 2) throw new CreativeError('CREATIVE_LIMIT', 400, '项目记录已接近上限，请新建项目；尚未提交生成。')
       await this.persist(record)
       this.active.add(id)
@@ -975,6 +1058,10 @@ export class CreativeStore {
         this.active.add(linked.id)
         return { projectId: latest.id, operationId: linked.id, owner }
       })
+    }
+    if (manifest.status === 'prepared' && manifest.segments.every(segment => segment.taskId === undefined && segment.path === undefined)) {
+      throw new CreativeError('CREATIVE_VIDEO_INTENT_UNAVAILABLE', 409,
+        '该未提交项目没有已确认的生成许可，已停止新增生成；需要新视频时请明确提出请求，不会通过恢复项目绕过作品数量限制。')
     }
     return this.begin(owner, { kind: 'video', prompt: manifest.input.prompt, shots: manifest.segments.map(segment => ({ prompt: segment.prompt, durationSeconds: segment.durationSeconds })), videoProjectId: manifest.id })
   }

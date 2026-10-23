@@ -14,6 +14,9 @@ import { CreativeError, type CreativeOperation } from './creative-store.ts'
 import { creativeOwner } from './creative-tools.ts'
 import { resolveCreationVideoInput } from './creation-plan-execution.ts'
 import { artifactOriginOf } from './artifact-origin.ts'
+import { videoGenerationIntentOf, videoModelChoiceCancelled } from './video-generation-intent.ts'
+import { chatVideoResolution, DEFAULT_CHAT_VIDEO_MODEL } from './video-model-choice.ts'
+import { VideoSubmissionRejection } from './video-submission-result.ts'
 
 declare module '@deepseek-ai/dsh-jobs/view' {
   interface JobKindMap {
@@ -149,7 +152,7 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
 
   ctx.tools.register(defineTool({
     name: 'generate_video_project',
-    description: 'Default fixed background workflow for every new chat video, including a single short clip and a finished video longer than one model clip. For a simple single-clip brief without an explicit duration, call this tool directly with prompt and any requested model or references; omit total_duration_seconds so the Host resolves actual defaults in one call. Do not load directing skills, write a long storyboard or call list_video_models first for that simple case. For explicit timing or complex plans, read list_video_models for actual controls; never discover support by paid retries or silently replace an explicitly named model. Use the yunshu-video-director skill for story, character/reference continuity, dialogue and subtitles, then call this native workflow; do not write polling, download or assembly scripts or manually repeat generate_video for each visual cut. One paid clip can contain several camera beats. For requests such as a 40-second video, plan the fewest supported clips (for a 15-second limit: 15+15+10, or three 15-second clips trimmed to 40), generate independent clips with gateway-approved bounded parallelism using the signed-in account, then normalize, trim, and join them in timeline order. Older gateways remain serial; the API owns shared account capacity. Do not launch a separate agent or generation-tool call for every clip. For a catalog with H3 single clips limited to 4–15 seconds, 60 seconds means four 15-second clips, never one 30-second clip. All local tools and every request are checked before billing. Returns a background job_id and durable project_id; read job_output at measured intervals for queued/generating progress and call present on the completed final_path. A busy response without an accepted task id is unknown, not confirmed queue admission. Use job_kill when the user stops; accepted provider tasks may continue billing. A query deadline retains task ids for explicit resume, never a fresh submission. Never claim completion before the job reports a saved final_path. If a current user-supplied chat attachment is outside the workspace, first copy that read-authorized attachment into this workspace with the existing file tools, then pass the copied path; do not copy unrelated files.',
+    description: 'Default fixed background workflow for every new chat video, including a single short clip and a finished video longer than one model clip. For a simple single-clip brief without an explicit duration, call this tool directly with prompt and any requested model or references; omit total_duration_seconds so the Host resolves actual defaults in one call. Do not load directing skills, write a long storyboard or call list_video_models first for that simple case. For explicit timing or complex plans, read list_video_models for actual controls; never discover support by paid retries or silently replace an explicitly named model. Use the yunshu-video-director skill for story, character/reference continuity, dialogue and subtitles, then call this native workflow; do not write polling, download or assembly scripts or manually repeat generate_video for each visual cut. One paid clip can contain several camera beats. For requests such as a 40-second video, plan the fewest supported clips (for a 15-second limit: 15+15+10, or three 15-second clips trimmed to 40), generate independent clips with gateway-approved bounded parallelism using the signed-in account, then normalize, trim, and join them in timeline order. Without a valid gateway declaration, concurrency defaults to four clips. Respect verified pool capacity and any lower local or gateway ceiling. The API owns shared account capacity. Do not launch a separate agent or generation-tool call for every clip. For a catalog with H3 single clips limited to 4–15 seconds, 60 seconds means four 15-second clips, never one 30-second clip. All local tools and every request are checked before billing. Returns a background job_id and durable project_id; read job_output at measured intervals for queued/generating progress and call present on the completed final_path. A busy response without an accepted task id is unknown, not confirmed queue admission. Use job_kill when the user stops; accepted provider tasks may continue billing. A query deadline retains task ids for explicit resume, never a fresh submission. Never claim completion before the job reports a saved final_path. If a current user-supplied chat attachment is outside the workspace, first copy that read-authorized attachment into this workspace with the existing file tools, then pass the copied path; do not copy unrelated files.',
     parameters: {
       plan_id: { type: 'string', description: 'Explicit update_creation_plan id. Also supply shot_ids in generation order.' },
       shot_ids: { type: 'array', items: { type: 'string' }, description: 'Exact shot ids belonging to plan_id, one per actual supported model clip and in the saved timeline order. Multiple visual cuts may share one paid clip; do not create an unsupported paid clip for each camera beat.' },
@@ -157,7 +160,7 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
       total_duration_seconds: { type: 'number', description: 'Desired final length in whole seconds; this may exceed the model single-clip limit. For a simple single clip with no plan or explicit shot arrays, omit to use the selected model’s actual default duration. The Host reads the real catalog itself; no separate list_video_models call is needed. Required for explicit plans and shot arrays; never omit a user-specified duration.' },
       shot_prompts: { type: 'array', items: { type: 'string' }, description: 'Exact shot briefs, one per planned clip. With plan_id and shot_ids, omit to use each saved shot’s scene, camera, action, prompt, exact dialogue/subtitles and associated character definitions without another model call. Explicit values remain verbatim. Otherwise allocate delegated narrative lines and timing to stable speakers, distinguishing on-screen speech from narration. Respect silent/no-dialogue requests.' },
       shot_durations_seconds: { type: 'array', items: { type: 'number' }, description: 'Exact model-supported whole seconds per clip, in shot_ids or shot_prompts order. Their sum must equal total_duration_seconds. When omitted for an explicit creation plan, use its saved shot durations; do not silently change timeline timing.' },
-      model: { type: 'string', description: 'Exact id from list_video_models. Preserve an explicitly requested model; never silently switch it. Otherwise choose an available account model using its returned duration, dimension and audio declarations.' },
+      model: { type: 'string', description: 'Defaults to MiniMax-H3 at 768P unless the human explicitly requested another resolution. Preserve an explicitly requested model; any non-H3 selection requires a current full-price estimate and a real human model choice before generation. Model arguments never approve that change.' },
       resolution: { type: 'string' }, ratio: { type: 'string' },
       audio: { type: 'boolean', description: 'Optional requested audio state from list_video_models, not a capability probe. Sent as a switch only when the chosen model declares one; fixed native audio accepts only its declared state. No switch does not mean silent output; an undeclared audio state remains unknown. Do not blindly send true, and do not promise speech, lip-sync, subtitles or silence without checking the media.' },
       frame_images: { type: 'array', items: { type: 'string' }, description: 'Existing uploaded ma_ first/last frame ids or workspace image paths. For a user-supplied chat attachment outside the workspace, first copy the read-authorized attachment into the workspace with existing file tools and pass its copied path.' },
@@ -171,19 +174,29 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
       let creation: CreativeOperation | undefined
       try {
         const { workspaceRoot, session } = caller(exec)
+        if (videoModelChoiceCancelled(exec)) throw new CreativeError('USER_CANCELLED', 409,
+          '你已取消本次视频生成，未提交新的模型请求；需要生成时请明确发送新的生成要求。')
+        if (options.creative === undefined) throw new CreativeError('CREATIVE_VIDEO_INTENT_UNAVAILABLE', 409,
+          '无法确认本次新增视频的请求与作品数量，尚未提交生成；请明确提出需要生成的视频及数量。')
         const signal = AbortSignal.any([exec.signal, lifetime.signal])
         signal.throwIfAborted()
         let provider = await options.acquireProvider(workspaceRoot, session)
+        const videoIntent = await options.creative.preflightVideoWorkCount(
+          creativeOwner(exec, provider.identity), videoGenerationIntentOf(exec), {
+            ...args.plan_id === undefined ? {} : { planId: args.plan_id },
+            ...args.shot_ids === undefined ? {} : { shotIds: args.shot_ids },
+          })
         let duration = args.total_duration_seconds
-        let model = args.model
+        let model = videoIntent.requestedModel ?? args.model ?? DEFAULT_CHAT_VIDEO_MODEL
+        const resolution = chatVideoResolution(args.resolution, model, videoIntent.requestedResolution)
         if (duration === undefined) {
           if (args.plan_id !== undefined || args.shot_ids !== undefined
             || args.shot_prompts !== undefined || args.shot_durations_seconds !== undefined) {
             throw new VideoProjectError('INVALID_DURATION', '已有创作计划或分镜时须提供明确总时长；尚未提交生成。')
           }
           const original = provider
-          const selected = await original.model(model, signal, args.resolution)
-          if (model !== undefined && selected.id !== model) {
+          const selected = await original.model(model, signal, resolution)
+          if (selected.id !== model) {
             throw new VideoProjectError('VIDEO_MODEL_UNAVAILABLE', '所选视频型号与服务返回不一致，尚未提交生成；请重新选择型号。')
           }
           duration = selected.defaultDuration ?? selected.durations[0]
@@ -200,7 +213,8 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
             model: async (id, preparedSignal, resolution) => {
               preparedSignal.throwIfAborted()
               await original.assertCurrent()
-              return id === selected.id && resolution === args.resolution ? selected : await original.model(id, preparedSignal, resolution)
+              return id === selected.id && resolution === chatVideoResolution(args.resolution, selected.id,
+                videoIntent.requestedResolution) ? selected : await original.model(id, preparedSignal, resolution)
             },
             build: (...values) => original.build(...values), submit: (...values) => original.submit(...values),
             check: (...values) => original.check(...values), download: (...values) => original.download(...values),
@@ -217,12 +231,12 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
           }
           return normalized
         }
-        const { input, planRevision } = await resolveCreationVideoInput(options, creativeOwner(exec, provider.identity), {
+        const { input: plannedInput, planRevision } = await resolveCreationVideoInput(options, creativeOwner(exec, provider.identity), {
           prompt: args.prompt, totalDurationSeconds: duration,
           ...args.shot_prompts === undefined ? {} : { shotPrompts: args.shot_prompts },
           ...args.shot_durations_seconds === undefined ? {} : { shotDurations: args.shot_durations_seconds },
-          ...model === undefined ? {} : { model },
-          ...args.resolution === undefined ? {} : { resolution: args.resolution },
+          model,
+          ...resolution === undefined ? {} : { resolution },
           ...args.ratio === undefined ? {} : { ratio: args.ratio },
           ...args.audio === undefined ? {} : { audio: args.audio },
           ...args.frame_images === undefined ? {} : { frameImages: await images(args.frame_images) },
@@ -230,22 +244,54 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
           ...args.reference_videos === undefined ? {} : { referenceVideos: args.reference_videos },
           ...args.reference_audios === undefined ? {} : { referenceAudios: args.reference_audios },
         }, args.plan_id, args.shot_ids)
+        if (plannedInput.model !== DEFAULT_CHAT_VIDEO_MODEL && options.chatModelChoice === undefined) {
+          throw new CreativeError('CREATIVE_VIDEO_QUOTE_UNAVAILABLE', 409,
+            '当前无法核实所选视频型号的价格并展示选择，尚未提交生成；请稍后查看报价。')
+        }
+        const choice = options.chatModelChoice === undefined ? { input: plannedInput }
+          : await options.chatModelChoice(plannedInput, exec, provider)
+        const input = choice.input
+        const originalProvider = provider
+        const beforeSubmit = async (submitSignal: AbortSignal): Promise<void> => {
+          if (videoModelChoiceCancelled(exec)) throw new CreativeError('USER_CANCELLED', 409,
+            '你已取消本次视频生成，未提交新的模型请求；需要生成时请明确发送新的生成要求。')
+          await choice.beforeSubmit?.(submitSignal)
+        }
+        provider = { identity: originalProvider.identity, assertCurrent: () => originalProvider.assertCurrent(),
+          model: (...values) => originalProvider.model(...values), build: (...values) => originalProvider.build(...values),
+          check: (...values) => originalProvider.check(...values), download: (...values) => originalProvider.download(...values),
+          ...originalProvider.parallelism === undefined ? {} : {
+            parallelism: (...values) => originalProvider.parallelism?.(...values) ?? Promise.resolve(1),
+          },
+          async submit(request, submitSignal) {
+            try { await beforeSubmit(submitSignal) } catch (error) {
+              if (error instanceof CreativeError || error instanceof VideoProjectError) {
+                throw new VideoSubmissionRejection(error.code, error.message, 'not_submitted')
+              }
+              throw new VideoSubmissionRejection('CREATIVE_VIDEO_MODEL_CHOICE_UNAVAILABLE',
+                '提交前的型号与报价确认未完成，未提交新的生成；请先核对已有任务并重新确认。', 'not_submitted')
+            }
+            return originalProvider.submit(request, submitSignal)
+          },
+        }
         const manifest = await prepareVideoProject(options, input, session.id, workspaceRoot,
           provider, editor, signal, artifactOriginOf(exec))
-        creation = await options.creative?.begin(creativeOwner(exec, provider.identity), {
+        await beforeSubmit(signal)
+        creation = await options.creative.begin(creativeOwner(exec, provider.identity), {
           kind: 'video', prompt: input.prompt, model: manifest.model,
           shots: manifest.segments.map(segment => ({ prompt: segment.prompt, durationSeconds: segment.durationSeconds })),
           videoProjectId: manifest.id,
           ...args.plan_id === undefined ? {} : { planId: args.plan_id }, ...args.shot_ids === undefined ? {} : { shotIds: args.shot_ids },
           ...planRevision === undefined ? {} : { expectedRevision: planRevision },
+          videoIntent,
         })
         const runEditor = options.editor(workspaceRoot, session, [join(options.stateDirectory, manifest.id, 'clips')])
         const linked = creation
         const jobId = start(exec, 'video-project', `${String(input.totalDurationSeconds)} 秒视频`, async (job, signal) => {
           try { return await runVideoProject(runOptions(linked, session, workspaceRoot), manifest, provider, runEditor, job, signal) }
-          finally { if (linked !== undefined) options.creative?.release(linked) }
+          finally { options.creative?.release(linked) }
         }, manifest.id)
-        return { status: 'background', job_id: jobId, project_id: manifest.id, ...creation === undefined ? {} : { plan_id: creation.projectId }, plan_seconds: manifest.segments.map(segment => segment.durationSeconds), message: '视频项目已开始。使用 job_output 查看进度，完成后将 final_path 交给 present 展示；停止本地任务后，已提交的上游任务仍可能继续计费。' }
+        return { status: 'background', job_id: jobId, project_id: manifest.id, plan_id: creation.projectId, plan_seconds: manifest.segments.map(segment => segment.durationSeconds), message: '视频项目已开始。使用 job_output 查看进度，完成后将 final_path 交给 present 展示；停止本地任务后，已提交的上游任务仍可能继续计费。' }
       } catch (error) { if (creation !== undefined) options.creative?.release(creation); return failure(error) }
     },
   }))
@@ -279,9 +325,26 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
         const { workspaceRoot, session } = caller(exec)
         const signal = AbortSignal.any([exec.signal, lifetime.signal])
         signal.throwIfAborted()
-        const provider = await options.acquireProvider(workspaceRoot, session)
-        const manifest = await readVideoProject(options, args.project_id, session.id, workspaceRoot, provider.identity)
+        const originalProvider = await options.acquireProvider(workspaceRoot, session)
+        const manifest = await readVideoProject(options, args.project_id, session.id, workspaceRoot, originalProvider.identity)
         if (manifest.status === 'completed') return statusOf(manifest, false)
+        const provider: VideoProjectProvider = {
+          identity: originalProvider.identity, assertCurrent: () => originalProvider.assertCurrent(),
+          model: (...values) => originalProvider.model(...values), build: (...values) => originalProvider.build(...values),
+          check: (...values) => originalProvider.check(...values), download: (...values) => originalProvider.download(...values),
+          ...originalProvider.parallelism === undefined ? {} : {
+            parallelism: (...values) => originalProvider.parallelism?.(...values) ?? Promise.resolve(1),
+          },
+          async submit(request, submitSignal) {
+            if (manifest.model !== DEFAULT_CHAT_VIDEO_MODEL || request.model !== DEFAULT_CHAT_VIDEO_MODEL) {
+              throw new VideoSubmissionRejection(
+                'CREATIVE_VIDEO_MODEL_CHOICE_UNAVAILABLE',
+                '原项目没有当前有效的型号与报价确认，未提交新的生成；已受理任务仍可查询和保存，请重新确认后再新增生成。',
+                'not_submitted')
+            }
+            return originalProvider.submit(request, submitSignal)
+          },
+        }
         if (activeProjects.has(manifest.id)) throw new VideoProjectError('PROJECT_ALREADY_RUNNING', '该项目已经在后台运行，请查看已有任务。')
         const editor = options.editor(workspaceRoot, session, [join(options.stateDirectory, manifest.id, 'clips')])
         await editor.preflight(signal, manifest.outputDirectory)

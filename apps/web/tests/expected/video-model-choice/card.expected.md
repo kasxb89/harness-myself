@@ -1,0 +1,17 @@
+- region "请选择本次视频使用的型号。":
+  - text: 视频型号与价格
+  - heading "请选择本次视频使用的型号。" [level=2]
+  - button "Collapse the question card" [expanded]
+  - button "Dismiss all questions"
+  - paragraph: 每件作品计划 15 秒、1 个生成片段；本次按 1 件作品估算总价。并发不会增加作品数量。这是生成前估算，最终按实际用量结算；本调用只开始一件作品。
+  - radiogroup:
+    - radio "保留 H3 768P（约 ¥4.20）": 1 保留 H3 768P（约 ¥4.20） 使用 H3 的已核实规格和本次总价。
+    - radio "使用 video-sd25-480p（约 ¥10.50）": 2 使用 video-sd25-480p（约 ¥10.50） 使用所选型号 · 1280x720。
+    - radio "取消本次生成": 3 取消本次生成 不提交本次生成。
+    - textbox "Type your answer"
+  - button "Previous question" [disabled]
+  - text: 1 / 1
+  - button "Next question" [disabled]
+  - status
+  - button "Skip"
+  - button "Submit" [disabled]

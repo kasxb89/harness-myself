@@ -16,7 +16,7 @@ import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
 import WebServer from '@deepseek-ai/dsh-host-webserver'
 import { JobId } from '@deepseek-ai/dsh-jobs'
 import LocalJobs from '@deepseek-ai/dsh-jobs-local'
-import { ToolCallId } from '@deepseek-ai/dsh-llm'
+import { createToolResultMessage, createUserMessage, ToolCallId } from '@deepseek-ai/dsh-llm'
 import LocalSandbox from '@deepseek-ai/dsh-sandbox-local'
 import SandboxPolicyService from '@deepseek-ai/dsh-sandbox-policy'
 import { Session, SessionId, SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
@@ -119,7 +119,7 @@ it.skipIf(!available)('generates 15 + 15 + 10 seconds with the signed-in key and
         taskSources.set(taskId, media)
         response.end(JSON.stringify({ code: 'success', data: { task_id: taskId, status: 'NOT_START' } }))
       } else {
-        const match = /^\/v1\/(?:video\/generations|videos)\/(fixture-task-\d+)(\/content)?$/u.exec(path)
+        const match = /^\/v1\/(?:tasks|videos)\/(fixture-task-\d+)(\/content)?$/u.exec(path)
         const media = match?.[1] === undefined ? undefined : taskSources.get(match[1])
         if (media === undefined) { response.writeHead(404); response.end(); return }
         if (match?.[2] === '/content') {
@@ -181,31 +181,43 @@ it.skipIf(!available)('generates 15 + 15 + 10 seconds with the signed-in key and
     whenIdle: async () => {}, runMaintenance: task => task(new AbortController().signal),
   }
   await ctx.agents.register(agent)
+  session.append('turn/start', { turn: 1 })
+  session.append('user/message', createUserMessage({ source: { kind: 'user' },
+    content: [{ type: 'text', text: '生成一个40秒的产品视频，先准备主体参考图，再生成分镜并自动合成。' }] }),
+  { surfaceOp: 'append' })
+  let step = 0
+  const execute = async (id: string, name: string, args: object) => {
+    const currentStep = ++step
+    const callId = ToolCallId(id)
+    const logged = session.append('tool/call', { turn: 1, step: currentStep, callId, name, arguments: JSON.stringify(args) })
+    const result = await ctx.tools.execute({ callId, name, arguments: args, agent, signal: new AbortController().signal })
+    session.append('tool/result', { turn: 1, step: currentStep, message: createToolResultMessage({ callId,
+      content: result.content, isError: result.isError }) }, { surfaceOp: 'append', sourceEventSeqs: [logged.seq] })
+    return result
+  }
   const wrongReference = join(workspace, 'video-in-image-slot.mp4')
   await writeFile(wrongReference, sources[0]!.bytes)
-  const invalid = await ctx.tools.execute({ callId: ToolCallId('real-video-invalid-reference'), name: 'generate_video_project',
-    arguments: { prompt: '参考这个画面制作短片', total_duration_seconds: 40, frame_images: [wrongReference] },
-    agent, signal: new AbortController().signal })
+  const invalid = await execute('real-video-invalid-reference', 'generate_video_project',
+    { prompt: '参考这个画面制作短片', total_duration_seconds: 40, frame_images: [wrongReference] })
   expect(object(invalid.value)).toMatchObject({ status: 'failed', code: 'VIDEO_REFERENCE_INVALID' })
   expect(calls.filter(call => call.method === 'POST')).toEqual([])
   expect(ctx.jobs.list(agent.id)).toEqual([])
-  const plan = object((await ctx.tools.execute({ callId: ToolCallId('real-video-plan'), name: 'update_creation_plan', agent,
-    signal: new AbortController().signal, arguments: { kind: 'video', title: '产品短片', brief: '40秒三镜头短片',
-      characters: [{ id: 'subject', name: '固定主体', appearance: '茶杯', reference_asset_ids: ['portrait'] }],
-      assets: [{ id: 'portrait', name: '主体参考图', kind: 'image', source_path_or_asset_id: '' }],
-      shots: [1, 2, 3].map(order => ({ id: `shot_${String(order)}`, order, title: `镜头${String(order)}`, prompt: '保持主体，变换背景颜色',
-        character_ids: ['subject'], asset_ids: ['portrait'] })),
-    } })).value)
-  const image = object((await ctx.tools.execute({ callId: ToolCallId('real-video-asset'), name: 'generate_image', agent,
-    signal: new AbortController().signal, arguments: { plan_id: plan.plan_id, asset_id: 'portrait', prompt: '主体参考图', model: 'gpt-image-2' } })).value)
+  const plan = object((await execute('real-video-plan', 'update_creation_plan', { kind: 'video', title: '产品短片', brief: '40秒三镜头短片',
+    characters: [{ id: 'subject', name: '固定主体', appearance: '茶杯', reference_asset_ids: ['portrait'] }],
+    assets: [{ id: 'portrait', name: '主体参考图', kind: 'image', source_path_or_asset_id: '' }],
+    shots: [1, 2, 3].map(order => ({ id: `shot_${String(order)}`, order, title: `镜头${String(order)}`, prompt: '保持主体，变换背景颜色',
+      character_ids: ['subject'], asset_ids: ['portrait'] })),
+  })).value)
+  const image = object((await execute('real-video-asset', 'generate_image',
+    { plan_id: plan.plan_id, asset_id: 'portrait', prompt: '主体参考图', model: 'gpt-image-2' })).value)
   expect(image.status).toBe('succeeded')
   const imagePath = string(image.path)
   expect(imagePath.startsWith(stateDir)).toBe(true)
   expect(imagePath.startsWith(workspace)).toBe(false)
-  const result = await ctx.tools.execute({ callId: ToolCallId('real-video-40'), name: 'generate_video_project',
-    arguments: { plan_id: plan.plan_id, shot_ids: ['shot_1', 'shot_2', 'shot_3'], reference_images: [imagePath],
-      prompt: '制作一个40秒的产品短片，三个镜头分别展示红色、绿色和蓝色背景，自动剪辑成片。', total_duration_seconds: 40 },
-    agent, signal: new AbortController().signal })
+  const result = await execute('real-video-40', 'generate_video_project', {
+    plan_id: plan.plan_id, shot_ids: ['shot_1', 'shot_2', 'shot_3'], reference_images: [imagePath],
+    prompt: '制作一个40秒的产品短片，三个镜头分别展示红色、绿色和蓝色背景，自动剪辑成片。', total_duration_seconds: 40,
+  })
   expect(result.isError).toBe(false)
   const started = object(result.value)
   expect(started, JSON.stringify(started)).toMatchObject({ status: 'background', plan_seconds: [15, 15, 10] })
@@ -215,9 +227,15 @@ it.skipIf(!available)('generates 15 + 15 + 10 seconds with the signed-in key and
   await vi.waitFor(() => {
     expect(['completed', 'failed', 'killed']).toContain(activeContext.jobs.get(jobId, agent.id).status)
   }, { timeout: 60_000, interval: 20 })
-  const outcome = ctx.jobs.read(jobId, agent.id)
-  expect({ status: ctx.jobs.get(jobId, agent.id).status, result: outcome.result }).toMatchObject({ status: 'completed' })
-  const completed = object(JSON.parse(outcome.result ?? '{}'))
+  expect(ctx.jobs.get(jobId, agent.id).status).toBe('completed')
+  expect(ctx.jobs.get(jobId, agent.id).progress).toBeUndefined()
+  const collected = await execute('real-video-terminal-progress', 'job_output', { job_id: jobId })
+  expect(JSON.stringify(collected.content)).toContain('视频项目：视频已完成 · 已保存 3/3 段')
+  for (const index of [1, 2, 3]) expect(JSON.stringify(collected.content)).toContain(`分镜 ${String(index)}/3 已保存`)
+  // job_output owns the consuming read; its final JSON line carries the canonical result once.
+  const finalLine = string(object(collected.value).text).split('\n').filter(line => line.startsWith('{')).at(-1)
+  if (finalLine === undefined) throw new Error('Expected the actual terminal video result')
+  const completed = object(JSON.parse(finalLine))
   expect(completed).toMatchObject({ status: 'succeeded', duration_seconds: 40 })
   const finalPath = string(completed.final_path)
   expect((await stat(finalPath)).isFile()).toBe(true)
@@ -233,9 +251,9 @@ it.skipIf(!available)('generates 15 + 15 + 10 seconds with the signed-in key and
   for (const call of postCalls) expect(object(call.body?.metadata).content).toContainEqual({ type: 'image_url', role: 'reference_image',
     image_url: { url: `data:image/png;base64,${portrait.toString('base64')}` } })
   expect(calls.filter(call => call.method === 'GET' && call.path.includes('fixture-task-')).map(call => call.path)).toEqual([
-    '/v1/video/generations/fixture-task-1', '/v1/videos/fixture-task-1/content',
-    '/v1/video/generations/fixture-task-2', '/v1/videos/fixture-task-2/content',
-    '/v1/video/generations/fixture-task-3', '/v1/videos/fixture-task-3/content',
+    '/v1/tasks/fixture-task-1', '/v1/videos/fixture-task-1/content',
+    '/v1/tasks/fixture-task-2', '/v1/videos/fixture-task-2/content',
+    '/v1/tasks/fixture-task-3', '/v1/videos/fixture-task-3/content',
   ])
   expect(calls.filter(call => call.path.startsWith('/v1/')).every(call => call.authorization === 'Bearer fixture-signed-in-account-key')).toBe(true)
   const manifestPath = join(stateDir, 'video-projects', string(started.project_id), 'manifest.json')
