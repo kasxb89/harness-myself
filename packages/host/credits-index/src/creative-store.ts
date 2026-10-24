@@ -14,6 +14,7 @@ import { parseArtifactOrigin } from './artifact-origin.ts'
 import { parseVideoRequestGrant, type VideoGenerationIntent, type VideoRequestGrant } from './video-generation-intent.ts'
 import { notifyCreationActivity } from './creation-activity.ts'
 import type { CreationOperationActivity } from './creation-activity.ts'
+import type { MediaFilenameOptions } from './media-filename.ts'
 
 /** Fixed complete-record and collection bounds for untrusted JSON and directory reads. */
 const MAX_BYTES = 2 * 1024 * 1024
@@ -120,6 +121,21 @@ export interface CreativeOperation {
   readonly imageRole?: ArtifactImageRole
   /** Remaining works in this human request after the atomic admission; absent on resumed operations. */
   readonly remainingVideoWorks?: number
+  /** Runtime-only labels from this invocation's existing plan; never task identity or persisted fields. */
+  readonly outputNaming?: Omit<MediaFilenameOptions, 'extension'>
+}
+
+/** Derive names only from the original invocation's explicit material or shot association. */
+function operationOutputNaming(record: CreativeRecord, operation: Operation, kind: CreativeKind): Omit<MediaFilenameOptions, 'extension'> {
+  const asset = operation.assetId === undefined ? undefined : record.assets.find(item => item.id === operation.assetId)
+  const shot = operation.shotIds.length !== 1 ? undefined : record.shots.find(item => item.id === operation.shotIds[0])
+  const shotTitle = shot?.title === String(shot?.order) ? undefined : shot?.title
+  const planTitle = record.title === record.brief.slice(0, 80) ? undefined : record.title
+  const title = asset?.name || shotTitle || planTitle
+  const role = kind === 'video' ? shotTitle === undefined ? 'video' : 'shot'
+    : asset === undefined ? 'image' : /参考|reference|identity|character|人物|角色/iu.test(asset.role) ? 'reference-image' : 'shot-image'
+  return { ...title === undefined ? {} : { title }, prompt: operation.prompt, role,
+    ...shotTitle === undefined || shot === undefined ? {} : { index: shot.order } }
 }
 
 /** Only the original plan kind and its validated image-material binding establish an image's purpose. */
@@ -825,13 +841,15 @@ export class CreativeStore {
       unique(shotIds)
       const id = operationId(`op_${randomUUID()}`)
       record.owner = owner
-      record.operations.push({ id, ...input.source === undefined ? {} : { source: input.source }, prompt: text(input.prompt), shotIds, ...input.assetId === undefined ? {} : { assetId: input.assetId }, status: 'running', outputs: [], ...input.videoProjectId === undefined ? {} : { videoProjectId: input.videoProjectId }, ...input.model === undefined ? {} : { model: text(input.model, 256) },
-        ...input.kind !== 'video' || input.videoIntent === undefined ? {} : { requestGrant: { ...input.videoIntent.grant } } })
+      const invocation: Operation = { id, ...input.source === undefined ? {} : { source: input.source }, prompt: text(input.prompt), shotIds, ...input.assetId === undefined ? {} : { assetId: input.assetId }, status: 'running', outputs: [], ...input.videoProjectId === undefined ? {} : { videoProjectId: input.videoProjectId }, ...input.model === undefined ? {} : { model: text(input.model, 256) },
+        ...input.kind !== 'video' || input.videoIntent === undefined ? {} : { requestGrant: { ...input.videoIntent.grant } } }
+      record.operations.push(invocation)
       if (Buffer.byteLength(JSON.stringify(record)) > MAX_BYTES / 2) throw new CreativeError('CREATIVE_LIMIT', 400, '项目记录已接近上限，请新建项目；尚未提交生成。')
       await this.persist(record)
       const imageRole = input.kind === 'image' ? operationImageRole(record, input.assetId) : undefined
       const operation = { projectId: record.id, operationId: id, owner, ...imageRole === undefined ? {} : { imageRole },
-        ...remainingVideoWorks === undefined ? {} : { remainingVideoWorks } }
+        ...remainingVideoWorks === undefined ? {} : { remainingVideoWorks },
+        outputNaming: operationOutputNaming(record, invocation, input.kind) }
       this.activate(operation, input.kind, input.videoProjectId)
       return operation
     })
@@ -899,7 +917,8 @@ export class CreativeStore {
       delete found.errorCode
       await this.persist(record)
       const imageRole = operationImageRole(record, found.assetId)
-      const operation = { projectId: record.id, operationId: found.id, owner, ...imageRole === undefined ? {} : { imageRole } }
+      const operation = { projectId: record.id, operationId: found.id, owner, ...imageRole === undefined ? {} : { imageRole },
+        outputNaming: operationOutputNaming(record, found, 'image') }
       this.activate(operation, 'image')
       return { operation, receipt: { ...found.imageReceipt } }
     })
@@ -949,7 +968,7 @@ export class CreativeStore {
       found.status = 'running'
       delete found.errorCode
       await this.persist(record)
-      const operation = { projectId: record.id, operationId: found.id, owner }
+      const operation = { projectId: record.id, operationId: found.id, owner, outputNaming: operationOutputNaming(record, found, 'video') }
       this.activate(operation, 'video')
       return { operation, receipt: { ...found.videoReceipt } }
     })

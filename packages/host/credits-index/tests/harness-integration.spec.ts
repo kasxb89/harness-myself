@@ -1,7 +1,7 @@
-import { mkdir, mkdtemp, rm, readFile, readdir, rename, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, open, rm, readFile, readdir, rename, symlink, writeFile } from 'node:fs/promises'
 import { createServer, type Server, type ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { isDeepStrictEqual } from 'node:util'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -27,6 +27,7 @@ import * as LlmPiAi from '@deepseek-ai/dsh-llm-pi-ai'
 import * as Artifacts from '@deepseek-ai/dsh-artifacts-index'
 import * as Connection from '@deepseek-ai/dsh-client-connection'
 import * as Credits from '../src/index.ts'
+import * as MediaFilenames from '../src/media-filename.ts'
 import * as VideoProjectTools from '../src/video-project-tools.ts'
 import { CreativeStore } from '../src/creative-store.ts'
 import { ImageConcurrency } from '../src/image-concurrency.ts'
@@ -41,6 +42,11 @@ import terminalContract from './fixtures/h3-terminal-api-contract.json' with { t
 import btQuote from './fixtures/video-quote-bt-exact.json' with { type: 'json' }
 import h3TenSecondQuote from './fixtures/video-quote-h3-10s-exact.json' with { type: 'json' }
 import mediaContract from './fixtures/media-submission-api-contract-v3.json' with { type: 'json' }
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>()
+  return { ...actual, open: vi.fn(actual.open) }
+})
 
 const relayRef = credentialRef('HARNESS_INTEGRATION_RELAY')
 let context: Context | undefined
@@ -166,6 +172,7 @@ async function boot(
   defaultSelection?: { provider: string; model: string; followPolicy?: boolean },
   creditsConfig: Partial<Credits.Config> = {},
   profileName?: string,
+  legacyPlatform = false,
 ): Promise<{ base: string; api: string; stateDir: string }> {
   directory = await mkdtemp(join(tmpdir(), 'harness-product-integration-'))
   const stateDir = join(directory, 'credits')
@@ -187,6 +194,7 @@ async function boot(
         ...request.headers.cookie === undefined ? {} : { cookie: request.headers.cookie },
       })
       await upstreamGate?.(url.pathname, response)
+      if (response.writableEnded || response.destroyed) return
       response.setHeader('content-type', 'application/json')
       const wireIndex = mediaWireReplies.findIndex(reply => reply.method === request.method && '/harness' + reply.path === url.pathname)
       if (wireIndex !== -1) {
@@ -383,7 +391,8 @@ async function boot(
     ...managedOutput ? [{ name: '@deepseek-ai/dsh-artifacts-index', config: {
       defaultOutputDirectory: join(directory, 'selected-output'), stateDirectory: join(directory, 'artifact-settings'), roots: [join(stateDir, 'media')],
     } }] : [],
-    { name: '@deepseek-ai/dsh-credits-index', config: { stateDir, newApiBaseUrl: api, relayTokenEnv: relayRef, ...creditsConfig } },
+    { name: '@deepseek-ai/dsh-credits-index', config: { stateDir, newApiBaseUrl: api, relayTokenEnv: relayRef,
+      ...legacyPlatform ? { baseUrl: api } : {}, ...creditsConfig } },
   ]
   const configuration = join(directory, 'cordis.yml')
   await writeFile(configuration, JSON.stringify(entries))
@@ -494,6 +503,61 @@ const requestImage = (input: ToolExecutionInput): Promise<ToolExecutionResult> =
   ? executeGenerationFixture(input, true) : context!.tools.execute(input)
 
 describe('deployed Harness API through the real product Loader', () => {
+  it.each(['interrupted', 'timeout', 'disk-full', 'collision'] as const)(
+    'contains a legacy material %s failure, preserves existing files and keeps the Host available', async (failure) => {
+      const { base, stateDir } = await boot(undefined, false, false, undefined, { timeoutMs: 200 }, undefined, true)
+      await signIn(base)
+      const media = join(stateDir, 'media')
+      await mkdir(media)
+      const kept = join(media, 'kept.png')
+      await writeFile(kept, 'existing customer material')
+      const filename = failure === 'collision' ? 'kept.png' : 'download.png'
+      vi.spyOn(MediaFilenames, 'mediaFilename').mockReturnValue(filename)
+      if (failure === 'disk-full') {
+        const originalOpen = vi.mocked(open).getMockImplementation()
+        if (originalOpen === undefined) throw new Error('Expected the fixture filesystem implementation')
+        vi.mocked(open).mockImplementation(async (...args) => {
+          const handle = await originalOpen(...args)
+          if (args[0] === join(media, filename)) {
+            const create = handle.createWriteStream.bind(handle)
+            vi.spyOn(handle, 'createWriteStream').mockImplementation((options) => {
+              const sink = create(options)
+              queueMicrotask(() => { sink.destroy(Object.assign(new Error('fixture disk full'), { code: 'ENOSPC' })) })
+              return sink
+            })
+          }
+          return handle
+        })
+      }
+      upstreamGate = async (path, response) => {
+        if (path !== '/harness/fixtures/original-material') return
+        response.writeHead(200, { 'content-type': 'image/png', 'content-length': 1000 })
+        response.write(Buffer.from('partial image bytes'))
+        if (failure === 'collision' || failure === 'disk-full') { response.end(Buffer.alloc(981)); return }
+        if (failure === 'interrupted') setTimeout(() => { response.destroy() }, 10)
+        await new Promise<void>((resolve) => { response.once('close', resolve) })
+      }
+      const saved = await post(base, '/api/media/save', { downloadPath: '/harness/fixtures/original-material' })
+      expect(saved).toMatchObject({ ok: false, code: failure === 'collision' || failure === 'disk-full' ? 'WRITE_FAILED' : 'TRANSPORT' })
+      expect(await readFile(kept, 'utf8')).toBe('existing customer material')
+      expect(await readdir(media)).toEqual(['kept.png'])
+      expect(await (await fetch(base + '/api/session')).json()).toMatchObject({ signedIn: true })
+      expect(calls.filter(call => call.path === '/harness/fixtures/original-material')).toHaveLength(1)
+    })
+
+  it('saves named legacy material with its actual content type and a complete UUID', async () => {
+    const { base } = await boot(undefined, true, false, undefined, {}, undefined, true)
+    await signIn(base)
+    upstreamGate = async (path, response) => {
+      if (path !== '/harness/fixtures/original-material') return
+      response.writeHead(200, { 'content-type': 'image/png' }); response.end('legacy image bytes')
+    }
+    const result = await post(base, '/api/media/save', { downloadPath: '/harness/fixtures/original-material', title: '春日山谷' })
+    expect(result).toMatchObject({ ok: true, mediaType: 'image/png', bytes: 18 })
+    expect(basename(String(result.path))).toMatch(/^春日山谷-成图-[a-f0-9-]{36}\.png$/u)
+    expect(await readFile(String(result.path), 'utf8')).toBe('legacy image bytes')
+  })
+
   it.each([
     { configured: undefined, ceiling: undefined, limit: 10 },
     { configured: 2, ceiling: undefined, limit: 2 },
@@ -2392,6 +2456,8 @@ describe('deployed Harness API through the real product Loader', () => {
       prompt: '红围巾女孩的侧脸', model: 'gpt-image-2', plan_id: plan.plan_id, shot_id: 'portrait',
     } })).value)
     expect(generated).toMatchObject({ status: 'succeeded', plan_id: plan.plan_id })
+    expect(basename(String(generated.path)).replace(/[a-f0-9-]{36}(?=\.png$)/u, '<uuid>'))
+      .toMatchInlineSnapshot('"人物近景-成图-01-<uuid>.png"')
     const after = object(await (await fetch(query, { headers: { cookie } })).json())
     const projects = object(after.payload).projects
     if (!Array.isArray(projects)) throw new Error('Expected creation projects')
@@ -2445,10 +2511,13 @@ describe('deployed Harness API through the real product Loader', () => {
     expect(chatImage, JSON.stringify(chatImage)).toMatchObject({ status: 'succeeded' })
     expect(String(chatImage.path).startsWith(destination.directory)).toBe(true)
     expect(await readFile(String(chatImage.path), 'utf8')).toBe('managed image bytes')
+    expect(basename(String(chatImage.path))).toMatch(/^A white cup-成图-01-[a-f0-9-]{36}\.png$/u)
     const created = await post(base, '/api/image/generate', { prompt: 'A white cup', model: 'gpt-image-2' })
     expect(created.ok).toBe(true)
     expect(String(object(created.payload).path).startsWith(destination.directory)).toBe(true)
     expect(await readFile(String(object(created.payload).path), 'utf8')).toBe('managed image bytes')
+    expect(object(created.payload).path).not.toBe(chatImage.path)
+    expect(await readFile(String(chatImage.path), 'utf8')).toBe('managed image bytes')
     videoTaskStatus = 'completed'
     const video = await requestVideo({
       callId: ToolCallId('managed-video'), name: 'generate_video', arguments: { prompt: 'A cup in sunlight', model: 'MiniMax-H3', duration_seconds: 4 }, signal: new AbortController().signal,
@@ -2458,6 +2527,7 @@ describe('deployed Harness API through the real product Loader', () => {
     expect(chatVideo.status).toBe('succeeded')
     expect(String(chatVideo.path).startsWith(destination.directory)).toBe(true)
     expect(await readFile(String(chatVideo.path))).toEqual(generatedVideo)
+    expect(basename(String(chatVideo.path))).toMatch(/^A cup in sunlight-视频-[a-f0-9-]{36}\.mp4$/u)
     const submissions = calls.filter(call => call.path === '/harness/v1/images/generations').length
     await rename(destination.directory, destination.directory + '-retained')
     await writeFile(destination.directory, 'directory unavailable')

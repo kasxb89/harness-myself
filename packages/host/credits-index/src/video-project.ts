@@ -16,6 +16,7 @@ import { VideoSubmissionRejection } from './video-submission-result.ts'
 import { DEFAULT_VIDEO_PROJECT_PARALLELISM } from './video-concurrency.ts'
 import { videoShotInput } from './video-shot-references.ts'
 import { creationTaskActivity, notifyCreationActivity } from './creation-activity.ts'
+import { mediaFilename, MAX_MEDIA_FILENAME_BYTES, type MediaFilenameOptions } from './media-filename.ts'
 import type { CreationActivityOutcome } from './creation-activity.ts'
 import type { VideoProjectIdentity, VideoProjectInput, VideoProjectOptions, VideoProjectProvider, VideoProjectRequest, VideoRequestValue } from './video-project-types.ts'
 
@@ -222,6 +223,10 @@ export function resolveVideoOutputDirectory(
 /** Restrict retained prompt and reference input before persisting provider requests. */
 function validateInput(input: VideoProjectInput, maxTotalSeconds: number): void {
   if (input.prompt.trim() === '' || input.prompt.length > MAX_PROMPT_LENGTH) throw new VideoProjectError('INVALID_PROMPT', '请提供 1 至 7000 字符的视频说明。')
+  if (input.title !== undefined && (input.title.trim() === '' || input.title.length > 256)
+    || input.shotTitles?.some(title => title.trim() === '' || title.length > 256)) {
+    throw new VideoProjectError('INVALID_TITLE', '视频和分镜名称须为 1 至 256 字符，尚未提交生成。')
+  }
   if (!Number.isSafeInteger(input.totalDurationSeconds) || input.totalDurationSeconds < 1 || input.totalDurationSeconds > maxTotalSeconds) {
     throw new VideoProjectError('INVALID_DURATION', `视频总时长须为 1 至 ${String(maxTotalSeconds)} 秒的整数。`)
   }
@@ -263,17 +268,19 @@ function segmentPrompt(input: VideoProjectInput, model: string, index: number, c
  * @param signal - Cancellation for the copy.
  * @param origin - Original generating location retained before generation or local editing.
  * @param videoRole - Explicit finished-video or storyboard-clip purpose.
+ * @param naming - Saved plan, shot or original-input label used only for the new file name.
  * @returns Real published path, or the unchanged legacy workspace path.
  */
 export async function publishVideoOutput(
   options: VideoProjectOptions, sourcePath: string, directory: string | undefined, signal: AbortSignal,
   origin?: ArtifactOrigin, videoRole?: ArtifactVideoRole,
+  naming?: Omit<MediaFilenameOptions, 'extension'>,
 ): Promise<string> {
   if (directory === undefined) return sourcePath
   const publication = options.publication
   if (publication === undefined) throw new VideoProjectError('ARTIFACT_STORAGE_UNAVAILABLE', '产物保存服务尚未准备好，本地成片仍保留，请恢复服务后继续保存，无需重新生成。')
   try {
-    const filename = `${basename(dirname(sourcePath))}-${randomUUID()}-${basename(sourcePath)}`
+    const filename = mediaFilename({ ...naming ?? { prompt: basename(sourcePath, '.mp4'), role: videoRole ?? 'video' }, extension: 'mp4' })
     return (await publication.publish({ destination: { directory }, sourcePath, filename, signal,
       ...origin === undefined ? {} : { origin: Object.freeze({ ...origin }) }, ...videoRole === undefined ? {} : { videoRole } })).path
   } catch (cause) {
@@ -290,8 +297,13 @@ async function publishSegment(options: VideoProjectOptions, manifest: VideoProje
   if (dirname(await realpath(source)) !== await realpath(join(options.stateDirectory, manifest.id, 'clips'))) {
     throw new VideoProjectError('INVALID_RECORD', '已保存的视频片段不在该项目目录中，已停止保存。')
   }
+  const title = manifest.input.shotTitles?.[segment.index - 1] ?? manifest.input.title
+  const naming: Omit<MediaFilenameOptions, 'extension'> = {
+    ...title === undefined ? {} : { title },
+    prompt: manifest.input.shotPrompts?.[segment.index - 1] ?? manifest.input.prompt, role: 'shot', index: segment.index,
+  }
   if (manifest.publicationDirectory !== undefined) {
-    segment.publishedPath = await publishVideoOutput(options, source, manifest.publicationDirectory, signal, manifest.origin, 'shot')
+    segment.publishedPath = await publishVideoOutput(options, source, manifest.publicationDirectory, signal, manifest.origin, 'shot', naming)
   } else {
     const workspace = await realpath(manifest.workspaceRoot)
     resolveVideoOutputDirectory(manifest.workspaceRoot, nativePaths.relative(manifest.workspaceRoot, manifest.outputDirectory))
@@ -312,7 +324,7 @@ async function publishSegment(options: VideoProjectOptions, manifest: VideoProje
     if (relative === '' || relative === '..' || relative.startsWith('..' + nativePaths.sep) || nativePaths.isAbsolute(relative)) {
       throw new VideoProjectError('INVALID_OUTPUT_DIRECTORY', '视频保存目录已离开原工作区，已停止保存；原始片段仍保留。')
     }
-    const path = join(destination, `clip-${String(segment.index).padStart(3, '0')}-${randomUUID()}.mp4`)
+    const path = join(destination, mediaFilename({ ...naming, extension: 'mp4' }))
     signal.throwIfAborted()
     await copyFile(source, path, constants.COPYFILE_EXCL)
     if (signal.aborted) { await unlink(path); signal.throwIfAborted() }
@@ -500,16 +512,22 @@ function parseManifest(value: unknown): VideoProjectManifest {
     throw new VideoProjectError('INVALID_RECORD', '已完成的视频项目缺少真实成片信息，无法作为成功结果交付。')
   }
   if (input.audio !== undefined && typeof input.audio !== 'boolean') throw new VideoProjectError('INVALID_RECORD', '视频项目音轨设置损坏，已停止操作。')
-  const optionalInput = Object.fromEntries(['model', 'resolution', 'ratio'].flatMap(key => input[key] === undefined ? [] : [[key, text(input, key)]]))
+  const optionalInput = Object.fromEntries(['model', 'resolution', 'ratio', 'title'].flatMap(key => input[key] === undefined ? [] : [[key, text(input, key)]]))
   const parsedInput: VideoProjectInput = {
     prompt: text(input, 'prompt'), totalDurationSeconds: positive(input, 'totalDurationSeconds'), ...optionalInput,
     ...shotControls(input),
     ...input.shotPrompts === undefined ? {} : { shotPrompts: strings(input, 'shotPrompts') },
+    ...input.shotTitles === undefined ? {} : { shotTitles: strings(input, 'shotTitles') },
     ...input.frameImages === undefined ? {} : { frameImages: strings(input, 'frameImages') },
     ...input.referenceImages === undefined ? {} : { referenceImages: strings(input, 'referenceImages') },
     ...input.referenceVideos === undefined ? {} : { referenceVideos: strings(input, 'referenceVideos') },
     ...input.referenceAudios === undefined ? {} : { referenceAudios: strings(input, 'referenceAudios') },
     ...input.audio === undefined ? {} : { audio: input.audio },
+  }
+  if (parsedInput.title !== undefined && (parsedInput.title.trim() === '' || parsedInput.title.length > 256)
+    || parsedInput.shotTitles !== undefined && (parsedInput.shotTitles.length !== source.segments.length
+      || parsedInput.shotTitles.some(title => title.trim() === '' || title.length > 256))) {
+    throw new VideoProjectError('INVALID_RECORD', '视频项目名称记录损坏，已停止操作。')
   }
   if (source.publicationDirectory !== undefined && (typeof source.publicationDirectory !== 'string' || !nativePaths.isAbsolute(source.publicationDirectory) || /[\u0000-\u001f]/u.test(source.publicationDirectory))) throw new VideoProjectError('INVALID_RECORD', '视频项目保存目录损坏，已停止操作。')
   if ((source.composedPath === undefined) !== (source.composedDurationSeconds === undefined)) throw new VideoProjectError('INVALID_RECORD', '视频项目本地成片记录不完整，已停止操作。')
@@ -621,6 +639,7 @@ export async function prepareVideoProject(
     throw new VideoProjectError('SHOT_DURATION_UNSUPPORTED', `当前模型不支持时间轴中的分镜时长，请从 ${model.durations.join('、')} 秒中选择；尚未提交生成。`)
   }
   if (input.shotPrompts !== undefined && input.shotPrompts.length !== durations.length) throw new VideoProjectError('SHOT_COUNT_MISMATCH', `该时长需要 ${String(durations.length)} 个分镜，请提供相同数量的分镜说明。`)
+  if (input.shotTitles !== undefined && input.shotTitles.length !== durations.length) throw new VideoProjectError('SHOT_COUNT_MISMATCH', '分镜名称须与实际生成分镜一一对应，尚未提交生成。')
   if ([input.shotReferenceImages, input.shotReferenceVideos, input.shotReferenceAudios]
     .some(references => references !== undefined && references.length !== durations.length)) {
     throw new VideoProjectError('SHOT_COUNT_MISMATCH', '分镜参考素材须与实际生成分镜一一对应，尚未提交生成。')
@@ -633,9 +652,15 @@ export async function prepareVideoProject(
     return { durationSeconds, prompt }
   })
   const segments: VideoProjectSegment[] = []
+  let generationInput = input
+  if (input.title !== undefined || input.shotTitles !== undefined) {
+    generationInput = { ...input }
+    delete generationInput.title
+    delete generationInput.shotTitles
+  }
   for (const [index, { durationSeconds, prompt }] of planned.entries()) {
     signal.throwIfAborted()
-    const requestInput = videoShotInput(input, index)
+    const requestInput = videoShotInput(generationInput, index)
     const request = await provider.build(requestInput, model.id, prompt, durationSeconds, signal)
     segments.push({ index: index + 1, durationSeconds, prompt, request, status: 'pending', attemptId: videoAttemptId(randomUUID()) })
   }
@@ -647,12 +672,16 @@ export async function prepareVideoProject(
     updatedAt: new Date().toISOString(),
   }
   // Reserve all later task/path fields before the first billable request.
+  const maximumFilename = 'f'.repeat(MAX_MEDIA_FILENAME_BYTES)
   const growthReserve = segments.reduce((size, segment) => size + Buffer.byteLength(JSON.stringify({
-    taskId: 't'.repeat(256), path: join(options.stateDirectory, id, 'clips', `clip-${String(segment.index)}-${randomUUID()}.mp4`),
-    publishedPath: join(publicationDirectory ?? outputDirectory, `clips-${randomUUID()}-clip-${String(segment.index)}-${randomUUID()}.mp4`),
+    taskId: 't'.repeat(256),
+    path: join(options.stateDirectory, id, 'clips', `clip-${String(segment.index).padStart(3, '0')}-${'f'.repeat(36)}.mp4`),
+    publishedPath: join(publicationDirectory ?? outputDirectory, maximumFilename),
   })), 4096 + Buffer.byteLength(JSON.stringify({
-    finalPath: join(publicationDirectory ?? outputDirectory, `${id}-final-${randomUUID()}.mp4`),
-    ...publicationDirectory === undefined ? {} : { composedPath: join(outputDirectory, `final-${randomUUID()}.mp4`), composedDurationSeconds: input.totalDurationSeconds },
+    finalPath: join(publicationDirectory ?? outputDirectory, maximumFilename),
+    ...publicationDirectory === undefined ? {} : {
+      composedPath: join(outputDirectory, maximumFilename), composedDurationSeconds: input.totalDurationSeconds,
+    },
   })))
   if (Buffer.byteLength(JSON.stringify(manifest)) + growthReserve > MAX_MANIFEST_BYTES) {
     throw new VideoProjectError('VIDEO_PROJECT_INPUT_LIMIT', '视频项目素材和记录过大，尚未提交生成；请减少参考素材或分镜数量。')
@@ -1095,7 +1124,11 @@ async function executeVideoProject(
       result = { path: manifest.composedPath, durationSeconds: manifest.composedDurationSeconds }
     } else {
       result = await editor.compose({
-        clips: manifest.segments.map(segment => ({ path: savedPath(segment) })), outputPath: join(manifest.outputDirectory, `final-${randomUUID()}.mp4`),
+        clips: manifest.segments.map(segment => ({ path: savedPath(segment) })),
+        outputPath: join(manifest.outputDirectory, mediaFilename({
+          ...manifest.input.title === undefined ? {} : { title: manifest.input.title },
+          prompt: manifest.input.prompt, role: 'final', extension: 'mp4',
+        })),
         totalDurationSeconds: manifest.input.totalDurationSeconds, signal,
         onProgress: (value) => { progress.stage(value.stage === 'normalizing' ? `整理片段 ${String(value.completedClips)}/${String(value.totalClips)}` : value.stage === 'assembling' ? '拼接并剪辑视频' : '校验最终视频') },
       })
@@ -1105,7 +1138,9 @@ async function executeVideoProject(
         await persist(options, manifest)
       }
     }
-    manifest.finalPath = await publishVideoOutput(options, result.path, manifest.publicationDirectory, signal, manifest.origin, 'final')
+    manifest.finalPath = await publishVideoOutput(options, result.path, manifest.publicationDirectory, signal, manifest.origin, 'final', {
+      ...manifest.input.title === undefined ? {} : { title: manifest.input.title }, prompt: manifest.input.prompt, role: 'final',
+    })
     manifest.finalDurationSeconds = result.durationSeconds
     manifest.status = 'completed'
     await persist(options, manifest)

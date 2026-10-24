@@ -25,6 +25,10 @@ export interface VideoProjectIdentity {
 export interface VideoProjectInput {
   /** Main brief, retained in the private project record. */
   prompt: string
+  /** Optional saved plan title used only for local output names, never provider requests. */
+  title?: string
+  /** Optional saved shot titles in execution order, used only for local output names. */
+  shotTitles?: readonly string[]
   /** Requested final duration, in whole seconds. */
   totalDurationSeconds: number
   /** Shot prompts, one for each planned clip; omitted repeats the brief with sequence context. */

@@ -565,6 +565,40 @@ describe('process-live creation operations', () => {
 })
 
 describe('verified image output purpose', () => {
+  it.each(['image', 'video'] as const)('derives %s names from the original retained invocation without new persisted fields', async (kind) => {
+    const { store, owner, options } = await fixture()
+    const id = await store.updatePlan(owner, plan(kind))
+    const prompt = '原始生成提示词，不应被恢复查询替换'
+    const operation = await store.begin(owner, { kind, planId: id, shotIds: ['departure'], prompt, shots: [{ prompt }] })
+    expect(operation.outputNaming).toEqual({ title: '车站道别', prompt, role: kind === 'image' ? 'image' : 'shot', index: 1 })
+    const receipt = { route: '/v1/videos', model: 'MiniMax-H3', phase: 'accepted' as const, taskId: 'original-name-task', backendFingerprint: 'a'.repeat(64) }
+    if (kind === 'image') await store.receipt(operation, receipt)
+    else await store.videoReceipt(operation, receipt)
+    await store.finish(operation, { status: 'unknown' })
+    store.release(operation)
+    const path = join(options.directory, id, 'project.json')
+    expect(await readFile(path, 'utf8')).not.toContain('outputNaming')
+    const restarted = new CreativeStore(options)
+    const recovered = kind === 'image' ? await restarted.resumeImage(owner, id, operation.operationId)
+      : await restarted.resumeVideoTask(owner, id, operation.operationId)
+    expect(recovered.operation.outputNaming).toEqual(operation.outputNaming)
+    expect(recovered.receipt.taskId).toBe('original-name-task')
+    expect(await readFile(path, 'utf8')).not.toContain('outputNaming')
+    restarted.release(recovered.operation)
+  })
+
+  it('names an explicitly linked reference material and keeps automatic plans on a short-brief fallback', async () => {
+    const { store, owner } = await fixture()
+    const id = await store.updatePlan(owner, plan('video'))
+    const material = await store.begin(owner, { kind: 'image', planId: id, assetId: 'portrait', prompt: '人物外形', shots: [{ prompt: '人物外形' }] })
+    expect(material.outputNaming).toEqual({ title: '人物参考', prompt: '人物外形', role: 'reference-image' })
+    store.release(material)
+    const prompt = '完整的自动计划提示词'.repeat(20)
+    const automatic = await store.begin(owner, { kind: 'image', prompt, shots: [{ prompt }] })
+    expect(automatic.outputNaming).toEqual({ prompt, role: 'image' })
+    store.release(automatic)
+  })
+
   it.each(['standalone', 'image-shot', 'image-asset', 'video-asset'] as const)(
     'derives %s image purpose from the exact validated operation, without persisting a new field', async (association) => {
       const { store, owner, options } = await fixture()
@@ -599,7 +633,7 @@ describe('verified image output purpose', () => {
     await expect(restarted.resumeImage(foreign, id, original.operationId)).rejects.toMatchObject({ code: 'CREATIVE_ACCESS_DENIED' })
     setLive(owner)
     const recovered = await restarted.resumeImage(owner, id, original.operationId)
-    expect(recovered).toEqual({ operation: original, receipt: acceptedImage })
+    expect(recovered).toEqual({ operation: { ...original, outputNaming: { ...original.outputNaming, title: 'Renamed material' } }, receipt: acceptedImage })
     expect(recovered.operation.imageRole).toBe('storyboard')
     expect(await readFile(join(options.directory, id, 'project.json'), 'utf8')).not.toContain('imageRole')
   })

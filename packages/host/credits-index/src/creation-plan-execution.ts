@@ -106,7 +106,8 @@ export async function resolveCreationVideoInput(
     }),
   ])])
   return { planRevision, input: {
-    ...input, shotPrompts: input.shotPrompts ?? shots.map(shot => shotDescription(shot, plan.characters)),
+    ...input, title: plan.title, shotTitles: shots.map(shot => shot.title),
+    shotPrompts: input.shotPrompts ?? shots.map(shot => shotDescription(shot, plan.characters)),
     ...durations === undefined ? {} : { shotDurations: durations },
     ...shotReferenceImages.every(references => references.length === 0) ? {} : { shotReferenceImages },
     ...shotReferenceVideos.every(references => references.length === 0) ? {} : { shotReferenceVideos },

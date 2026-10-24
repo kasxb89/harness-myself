@@ -1,7 +1,7 @@
 /** Model tools for durable long-video generation and sandboxed local editing. @module */
 
 import { randomUUID } from 'node:crypto'
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
@@ -17,6 +17,7 @@ import { artifactOriginOf } from './artifact-origin.ts'
 import { videoGenerationIntentOf, videoModelChoiceCancelled } from './video-generation-intent.ts'
 import { chatVideoResolution, DEFAULT_CHAT_VIDEO_MODEL } from './video-model-choice.ts'
 import { VideoSubmissionRejection } from './video-submission-result.ts'
+import { mediaFilename } from './media-filename.ts'
 
 declare module '@deepseek-ai/dsh-jobs/view' {
   interface JobKindMap {
@@ -512,14 +513,17 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
         }
         const root = resolveVideoOutputDirectory(workspaceRoot, options.outputDirectory)
         const ownedMediaRoots: string[] = []
-        for (const clip of args.clips) {
+        let editTitle: string | undefined
+        for (const [index, clip] of args.clips.entries()) {
           const fromPrivate = relative(options.stateDirectory, resolve(workspaceRoot, clip.path))
           if (fromPrivate.startsWith('..') || isAbsolute(fromPrivate)) continue
           const match = /^(vp_[a-f0-9-]{36})[\\/]clips[\\/]/u.exec(fromPrivate)
           if (match === null) throw new VideoProjectError('PROJECT_ACCESS_DENIED', '私有视频文件必须属于当前账号、聊天和工作区中的已保存项目。')
           const provider = await options.acquireProvider(workspaceRoot, session)
           const manifest = await readVideoProject(options, match[1] ?? '', session.id, workspaceRoot, provider.identity)
-          if (!manifest.segments.some(segment => segment.path === resolve(workspaceRoot, clip.path))) throw new VideoProjectError('PROJECT_ACCESS_DENIED', '该文件没有已保存的视频项目记录。')
+          const segment = manifest.segments.find(segment => segment.path === resolve(workspaceRoot, clip.path))
+          if (segment === undefined) throw new VideoProjectError('PROJECT_ACCESS_DENIED', '该文件没有已保存的视频项目记录。')
+          if (index === 0) editTitle = manifest.input.shotTitles?.[segment.index - 1] ?? manifest.input.title ?? manifest.input.prompt
           const ownedRoot = join(options.stateDirectory, manifest.id, 'clips')
           if (!ownedMediaRoots.includes(ownedRoot)) ownedMediaRoots.push(ownedRoot)
         }
@@ -533,11 +537,18 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
         for (const clip of clips) await editor.probe(clip.path, signal)
         const publicationDirectory = (await options.publication?.capture(signal))?.directory
         const origin = artifactOriginOf(exec)
-        const outputPath = join(root, `edit-${randomUUID()}`, 'final.mp4')
+        const firstPath = args.clips[0]?.path
+        if (editTitle === undefined && firstPath !== undefined) {
+          editTitle = basename(firstPath, extname(firstPath))
+            .replace(/-(?:成片|分镜|视频|剪辑视频)(?:-\d+)?-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu, '')
+          if (/^(?:final|clip[-_]?\d+)$/iu.test(editTitle)) editTitle = '视频'
+        }
+        const naming = { ...editTitle === undefined ? {} : { title: editTitle }, role: 'edited-video' as const }
+        const outputPath = join(root, `edit-${randomUUID()}`, mediaFilename({ ...naming, extension: 'mp4' }))
         const jobId = start(exec, 'video-edit', `剪辑 ${String(clips.length)} 个视频片段`, async (job, signal) => {
           try {
             const result = await editor.compose({ clips, outputPath, ...args.total_duration_seconds === undefined ? {} : { totalDurationSeconds: args.total_duration_seconds }, signal, onProgress: (progress) =>{  job.updateProgress(`剪辑 ${String(progress.completedClips)}/${String(progress.totalClips)}`) } })
-            const finalPath = await publishVideoOutput(options, result.path, publicationDirectory, signal, origin, 'final')
+            const finalPath = await publishVideoOutput(options, result.path, publicationDirectory, signal, origin, 'final', naming)
             const value: VideoToolResult = { status: 'succeeded', final_path: finalPath, duration_seconds: result.durationSeconds, message: '剪辑视频已实际保存。请调用 present 展示 final_path，并在回复中提供产物链接。' }
             return { status: 'completed', result: JSON.stringify(value) }
           } catch (error) {

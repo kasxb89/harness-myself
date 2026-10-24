@@ -18,6 +18,7 @@ import type { ArtifactOrigin, ArtifactPublishRequest } from '@deepseek-ai/dsh-ar
 import { SessionId, SessionSeq } from '@deepseek-ai/dsh-session/types'
 import { ToolCallId } from '@deepseek-ai/dsh-llm/brand'
 import type { VideoProjectActivity } from '../src/creation-activity.ts'
+import { MAX_MEDIA_FILENAME_BYTES } from '../src/media-filename.ts'
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>()
@@ -99,6 +100,77 @@ async function setup(durations = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]) {
     set currentAccount(value: boolean) { currentAccount = value }, set runningTask(value: string) { runningTask = value },
   }
 }
+
+describe('readable video output names', () => {
+  it('retains local plan and shot titles without sending them to the provider or replacing same-title files', async () => {
+    const f = await setup([15])
+    const build = vi.spyOn(f.provider, 'build')
+    const input: VideoProjectInput = { prompt: '小狐狸走过春日山谷', title: '四季流转', shotTitles: ['春日苏醒'], totalDurationSeconds: 15 }
+    const first = await prepareVideoProject(f.options, input, 'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    expect((await runVideoProject(f.options, first, f.provider, f.editor, f.job, f.signal)).status).toBe('completed')
+    const retained = await readVideoProject(f.options, first.id, 'chat-one', f.workspace, f.provider.identity)
+    expect(retained.input).toMatchObject({ title: '四季流转', shotTitles: ['春日苏醒'] })
+    expect(basename(retained.finalPath!)).toMatch(/^四季流转-成片-[a-f0-9-]{36}\.mp4$/u)
+    expect(basename(retained.segments[0]!.publishedPath!)).toMatch(/^春日苏醒-分镜-01-[a-f0-9-]{36}\.mp4$/u)
+    expect(build.mock.calls[0]?.[0]).not.toHaveProperty('title')
+    expect(build.mock.calls[0]?.[0]).not.toHaveProperty('shotTitles')
+    const second = await prepareVideoProject(f.options, input, 'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    expect((await runVideoProject(f.options, second, f.provider, f.editor, f.job, f.signal)).status).toBe('completed')
+    expect(second.finalPath).not.toBe(retained.finalPath)
+    expect(second.segments[0]?.publishedPath).not.toBe(retained.segments[0]?.publishedPath)
+    expect(await Promise.all([retained.finalPath!, second.finalPath!].map(path => readFile(path, 'utf8')))).toEqual(['15', '15'])
+    const paths = [retained.finalPath!, retained.segments[0]!.publishedPath!]
+    expect((await runVideoProject(f.options, retained, f.provider, f.editor, f.job, f.signal)).status).toBe('completed')
+    expect([retained.finalPath, retained.segments[0]?.publishedPath]).toEqual(paths)
+    expect(f.submitted).toBe(2)
+    expect(f.events.filter(event => event === 'compose')).toHaveLength(2)
+  })
+
+  it('bounds long Chinese labels and removes Windows filename syntax from workspace outputs', async () => {
+    const f = await setup([15])
+    const title = '四季<>:"/\\|?*流转' + '山谷'.repeat(100)
+    const manifest = await prepareVideoProject(f.options, { prompt: '春日山谷', title, shotTitles: ['CON'], totalDurationSeconds: 15 },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    expect((await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal)).status).toBe('completed')
+    for (const path of [manifest.finalPath!, manifest.segments[0]!.publishedPath!]) {
+      const name = basename(path)
+      expect(Buffer.byteLength(name)).toBeLessThanOrEqual(MAX_MEDIA_FILENAME_BYTES)
+      expect(name).not.toMatch(/[<>:"/\\|?*\u0000-\u001f]/u)
+      expect(name).toMatch(/-[a-f0-9-]{36}\.mp4$/u)
+    }
+    expect(basename(manifest.segments[0]!.publishedPath!)).toContain('素材-CON-分镜-01-')
+  })
+
+  it('reads old v1 manifests and preserves already saved legacy paths without generation or renaming', async () => {
+    const f = await setup()
+    const manifest = await f.prepare()
+    expect((await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal)).status).toBe('completed')
+    const legacyPath = join(manifest.outputDirectory, 'final-legacy-existing.mp4')
+    await rename(manifest.finalPath!, legacyPath)
+    manifest.finalPath = legacyPath
+    await writeFile(join(f.options.stateDirectory, manifest.id, 'manifest.json'), JSON.stringify(manifest))
+    const retained = await recoverVideoProjectOutputs(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity, f.signal, async () => {})
+    expect(retained.input).not.toHaveProperty('title')
+    expect(retained.input).not.toHaveProperty('shotTitles')
+    expect(retained.finalPath).toBe(legacyPath)
+    expect((await runVideoProject(f.options, retained, f.provider, f.editor, f.job, f.signal)).status).toBe('completed')
+    expect(retained.finalPath).toBe(legacyPath)
+    expect(await readFile(legacyPath, 'utf8')).toBe('40')
+    expect(f.submitted).toBe(3)
+    expect(f.events.filter(event => event === 'compose')).toHaveLength(1)
+  })
+
+  it('refuses malformed retained naming metadata before resuming generation', async () => {
+    const f = await setup()
+    const manifest = await f.prepare()
+    for (const fields of [{ title: '' }, { title: 42 }, { title: '名'.repeat(257) },
+      { shotTitles: ['只有一镜'] }, { shotTitles: ['第一镜', '', '第三镜'] }, { shotTitles: ['第一镜', 42, '第三镜'] }]) {
+      await writeFile(join(f.options.stateDirectory, manifest.id, 'manifest.json'), JSON.stringify({ ...manifest, input: { ...manifest.input, ...fields } }))
+      await expect(readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)).rejects.toMatchObject({ code: 'INVALID_RECORD' })
+    }
+    expect(f.submitted).toBe(0)
+  })
+})
 
 describe('minimum-request video duration planning', () => {
   it('observes eight distinct clips under one project and keeps queue, generation, saving and editing separate', async () => {
@@ -1169,7 +1241,7 @@ describe('durable account-bound video projects', () => {
       videoRole?: 'final' | 'shot'
     }) => {
       expect(request.destination.directory).toBe(original)
-      if (publicationFails && basename(request.sourcePath).startsWith('final-')) throw new Error('disk unavailable')
+      if (publicationFails && request.videoRole === 'final') throw new Error('disk unavailable')
       const path = join(request.destination.directory, request.filename)
       await copyFile(request.sourcePath, path)
       return { path }
@@ -1187,6 +1259,9 @@ describe('durable account-bound video projects', () => {
     expect(capture).toHaveBeenCalledTimes(1)
     const resumed = await readVideoProject(fixture.options, manifest.id, 'chat-one', fixture.workspace, fixture.provider.identity)
     expect(resumed.composedPath?.startsWith(fixture.workspace)).toBe(true)
+    expect(basename(resumed.composedPath!)).toMatch(/^拍一个茶杯广告-成片-[a-f0-9-]{36}\.mp4$/u)
+    const retainedComposition = resumed.composedPath
+    const retainedClips = resumed.segments.map(segment => segment.publishedPath)
     expect(await readFile(resumed.composedPath!, 'utf8')).toBe('40')
     publicationFails = false
     const succeeded = await runVideoProject(fixture.options, resumed, fixture.provider, fixture.editor, fixture.job, fixture.signal)
@@ -1195,6 +1270,8 @@ describe('durable account-bound video projects', () => {
     expect(resumed.finalPath?.startsWith(original)).toBe(true)
     expect(await readFile(resumed.finalPath!, 'utf8')).toBe('40')
     expect(await readFile(resumed.composedPath!, 'utf8')).toBe('40')
+    expect(resumed.composedPath).toBe(retainedComposition)
+    expect(resumed.segments.map(segment => segment.publishedPath)).toEqual(retainedClips)
     expect(fixture.submitted).toBe(3)
     expect(fixture.events.filter(event => event === 'compose')).toHaveLength(1)
     expect(capture).toHaveBeenCalledTimes(1)
@@ -1231,7 +1308,7 @@ describe('durable account-bound video projects', () => {
       publish: async (request) => {
         const path = join(request.destination.directory, request.filename)
         await copyFile(request.sourcePath, path, constants.COPYFILE_EXCL)
-        if (basename(request.sourcePath).startsWith('final-')) {
+        if (request.videoRole === 'final') {
           published.push(path)
           if (published.length === 1) await rename(recordDirectory, recordDirectory + '-unavailable')
         }

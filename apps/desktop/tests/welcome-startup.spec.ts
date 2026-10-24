@@ -207,7 +207,7 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-async function startWithUnavailableSession(platform: 'darwin' | 'win32' = 'darwin'): Promise<void> {
+async function startWithUnavailableSession(platform: 'darwin' | 'win32' = 'darwin', reason: 'network' | 'storage' = 'network'): Promise<void> {
   vi.resetModules()
   vi.clearAllMocks()
   vi.useFakeTimers()
@@ -226,17 +226,19 @@ async function startWithUnavailableSession(platform: 'darwin' | 'win32' = 'darwi
   state.operations = undefined
   state.welcomeClosed.length = 0
   state.sessionRead.mockReset().mockImplementation(async () => Response.json({ ok: false, code: 'ACCOUNT_UNAVAILABLE',
-    signedIn: true, liveness: 'unknown', failure: { reason: 'network', stage: 'account-read' } }))
+    signedIn: true, liveness: 'unknown', failure: { reason, stage: 'account-read' } }))
   await import('../src/main.ts')
   await vi.waitFor(() => { expect(state.operations).toBeDefined() })
 }
 
-it('contains the real session reader failure in native startup and opens the workspace only after one verified retry', async () => {
-  await startWithUnavailableSession()
+it.each([
+  { platform: 'darwin', reason: 'network' }, { platform: 'darwin', reason: 'storage' }, { platform: 'win32', reason: 'storage' },
+] as const)('contains $reason in $platform native startup and opens the workspace only after one verified retry', async ({ platform, reason }) => {
+  await startWithUnavailableSession(platform, reason)
   expect(state.dialogShow).not.toHaveBeenCalled()
   expect(state.stopHost).not.toHaveBeenCalled()
   expect(state.showWorkspace).not.toHaveBeenCalled()
-  expect(await state.operations!.recoveryState()).toEqual({ kind: 'unavailable', reason: 'network' })
+  expect(await state.operations!.recoveryState()).toEqual({ kind: 'unavailable', reason })
   const reply = Promise.withResolvers<Response>()
   state.sessionRead.mockReturnValueOnce(reply.promise)
   const first = state.operations!.retrySession()

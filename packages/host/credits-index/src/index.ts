@@ -7,13 +7,13 @@
  * @module @deepseek-ai/dsh-credits-index
  */
 
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import { mkdir, open, readFile, readdir, unlink, writeFile } from 'node:fs/promises'
 import type { ArtifactImageRole, ArtifactOrigin } from '@deepseek-ai/dsh-artifacts-index'
-import { createWriteStream } from 'node:fs'
 import { createHash, randomBytes } from 'node:crypto'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join } from 'node:path'
 import { addAbortSignal } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 import { request as httpsRequest } from 'node:https'
 import { request as httpRequest } from 'node:http'
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -66,6 +66,7 @@ import { DEFAULT_VIDEO_PROJECT_PARALLELISM, videoProjectParallelism } from './vi
 import { videoSubmission, type VideoReferenceSnapshot } from './video-submission.ts'
 import { bindVideoAccount } from './video-project-account.ts'
 import { artifactOriginOf, captureMediaOutput, type CapturedMediaOutput } from './media-output.ts'
+import { mediaFilename, type MediaFilenameOptions } from './media-filename.ts'
 import { executeImageTask } from './image-task.ts'
 import { ImageConcurrency, imageConcurrencyCeiling } from './image-concurrency.ts'
 import { executeVideoTask } from './video-task.ts'
@@ -420,6 +421,14 @@ function platformCall(
   })
 }
 
+/** A known invalid login remains unverified when its local cleanup cannot commit. */
+class SessionInvalidationUnavailableError extends Error {
+  constructor(readonly session: StoredSession, cause: unknown) {
+    super('Local account session cleanup is unavailable', { cause })
+    this.name = 'SessionInvalidationUnavailableError'
+  }
+}
+
 /** Session storage: credential store when mounted, `0600` file otherwise. */
 class SessionStore {
   private cached: StoredSession | null | undefined
@@ -716,54 +725,68 @@ async function downloadToFile(
   token: string,
   directory: string,
   timeoutMs: number,
+  naming: Pick<MediaFilenameOptions, 'title' | 'prompt'>,
 ): Promise<SaveOutcome> {
   if (url.origin !== new URL(origin).origin) {
     return { ok: false, code: 'ARTIFACT_ORIGIN', message: 'download path is outside the platform origin' }
   }
-  return await new Promise<SaveOutcome>((resolve, reject) => {
-    const request = httpsRequest({
-      protocol: url.protocol,
-      hostname: url.hostname,
-      port: url.port === '' ? undefined : Number(url.port),
-      path: `${url.pathname}${url.search}`,
-      method: 'GET',
-      headers: { authorization: `Bearer ${token}`, accept: '*/*', host: url.host },
-      timeout: timeoutMs,
-    }, (response) => {
-      if (response.statusCode !== 200) {
-        const chunks: Buffer[] = []
-        response.on('data', chunk => chunks.push(chunk as Buffer))
-        response.on('end', () => {
-          const text = Buffer.concat(chunks).toString('utf8')
-          let code = `HTTP_${String(response.statusCode ?? 0)}`
-          try {
-            const parsed = JSON.parse(text) as { error?: unknown }
-            if (typeof parsed.error === 'string') code = parsed.error
-          } catch {
-            // A non-JSON body leaves the status code as the reason.
-          }
-          resolve({ ok: false, code, message: text.slice(0, 200) })
-        })
-        return
-      }
-      const mediaType = response.headers['content-type'] ?? 'application/octet-stream'
-      const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-      const filename = `gen-${stamp}-${randomBytes(3).toString('hex')}${extensionFor(mediaType)}`
-      const target = join(directory, filename)
-      void (async () => {
-        await mkdir(directory, { recursive: true })
-        const sink = createWriteStream(target)
-        let bytes = 0
-        response.on('data', (chunk) => { bytes += (chunk as Buffer).length })
-        response.pipe(sink)
-        sink.on('finish', () => { resolve({ ok: true, path: target, bytes, mediaType }) })
-        sink.on('error', (error) => { resolve({ ok: false, code: 'WRITE_FAILED', message: error.message }) })
-      })().catch(reject)
+  let response: IncomingMessage
+  try {
+    response = await new Promise<IncomingMessage>((resolve, reject) => {
+      const request = (url.protocol === 'http:' ? httpRequest : httpsRequest)({
+        protocol: url.protocol,
+        hostname: url.hostname,
+        port: url.port === '' ? undefined : Number(url.port),
+        path: `${url.pathname}${url.search}`,
+        method: 'GET',
+        headers: { authorization: `Bearer ${token}`, accept: '*/*', host: url.host },
+        timeout: timeoutMs,
+      }, (incoming) => {
+        incoming.on('error', (_responseError: Error) => { /* The pipeline reports transfer failures; rejected HTTP responses already return a visible failure. */ })
+        resolve(incoming)
+      })
+      request.on('timeout', () => { request.destroy(new Error('artifact download timed out')) })
+      request.on('error', reject)
+      request.end()
     })
-    request.on('timeout', () => { request.destroy(new Error('artifact download timed out')) })
-    request.on('error', (error) => { resolve({ ok: false, code: 'TRANSPORT', message: error.message }) })
-    request.end()
-  })
+  } catch (_transportError) {
+    return { ok: false, code: 'TRANSPORT', message: '素材下载连接中断或超时，请稍后重新保存原素材，无需重新生成。' }
+  }
+  if (response.statusCode !== 200) {
+    response.destroy()
+    return { ok: false, code: `HTTP_${String(response.statusCode ?? 0)}`,
+      message: '原素材暂时无法下载，请核对登录状态并稍后重新保存，无需重新生成。' }
+  }
+  const mediaType = response.headers['content-type'] ?? 'application/octet-stream'
+  const target = join(directory, mediaFilename({ ...naming, role: mediaType.startsWith('image/') ? 'image' : 'video',
+    extension: extensionFor(mediaType) }))
+  let handle: Awaited<ReturnType<typeof open>>
+  try {
+    await mkdir(directory, { recursive: true, mode: 0o700 })
+    handle = await open(target, 'wx', 0o600)
+  } catch (_writeError) {
+    response.destroy()
+    return { ok: false, code: 'WRITE_FAILED', message: '素材保存目录不可写或文件已存在，请检查保存位置与磁盘空间后重新保存。' }
+  }
+  let bytes = 0
+  response.on('data', (chunk: Buffer) => { bytes += chunk.length })
+  try {
+    try { await pipeline(response, handle.createWriteStream()) }
+    finally { await handle.close() }
+    return { ok: true, path: target, bytes, mediaType }
+  } catch (transferError) {
+    try { await unlink(target) }
+    catch (cleanupError) {
+      if (!(cleanupError instanceof Error && 'code' in cleanupError && cleanupError.code === 'ENOENT')) {
+        return { ok: false, code: 'ARTIFACT_PARTIAL_CLEANUP_FAILED', message: '素材保存中断，未完成文件暂未清理，请检查保存位置与磁盘空间后重新保存原素材。' }
+      }
+    }
+    const writeFailed = transferError instanceof Error && 'code' in transferError
+      && ['EACCES', 'ENOSPC', 'EIO', 'EROFS', 'EDQUOT', 'EBADF'].includes(String(transferError.code))
+    return writeFailed || response.complete
+      ? { ok: false, code: 'WRITE_FAILED', message: '素材保存失败，请检查保存位置与磁盘空间后重新保存原素材，无需重新生成。' }
+      : { ok: false, code: 'TRANSPORT', message: '素材下载中断或超时，未完成文件已清理；请稍后重新保存原素材，无需重新生成。' }
+  }
 }
 
 export function apply(ctx: Context, config: Config): void {
@@ -1174,6 +1197,7 @@ export function apply(ctx: Context, config: Config): void {
     foregroundWaitMs?: number,
     beforeSubmit?: (signal: AbortSignal) => Promise<void>,
     activity?: CreationTaskObserver,
+    naming?: Omit<MediaFilenameOptions, 'extension'>,
   ): Promise<MediaOutcome> => {
     let output: CapturedMediaOutput | undefined
     let submitKey = key
@@ -1247,7 +1271,8 @@ export function apply(ctx: Context, config: Config): void {
         operationSignal.throwIfAborted()
         if (existing !== undefined) { await savedOutput?.(existing); return existing }
         if (output === undefined) throw new Error('Video output was not prepared')
-        const saved = await output.write(`vid-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomBytes(3).toString('hex')}.mp4`, bytes)
+        const saved = await output.write(mediaFilename({ ...naming, prompt: naming?.prompt ?? readString(request, 'prompt') ?? '',
+          role: naming?.role ?? 'video', extension: 'mp4' }), bytes)
         await savedOutput?.(saved.path)
         return saved.path
       },
@@ -1469,6 +1494,7 @@ export function apply(ctx: Context, config: Config): void {
     origin?: ArtifactOrigin,
     imageRole?: ArtifactImageRole,
     activity?: CreationTaskObserver,
+    naming?: Omit<MediaFilenameOptions, 'extension'>,
   ): Promise<MediaOutcome & { paths?: readonly string[]; mode?: string }> => {
     const outputImageRole = resumeReceipt === undefined ? imageRole ?? 'final' : imageRole
     const imageEpoch = identityVersion
@@ -1549,7 +1575,8 @@ export function apply(ctx: Context, config: Config): void {
           if (previous !== undefined) return previous
           const suffix = format === 'jpeg' || bytes[0] === 255 && bytes[1] === 216 ? 'jpg'
             : format === 'webp' || bytes.toString('ascii', 0, 4) === 'RIFF' ? 'webp' : 'png'
-          const filename = `gen-${new Date().toISOString().replace(/[:.]/g, '-')}-${String(index)}-${randomBytes(3).toString('hex')}.${suffix}`
+          const filename = mediaFilename({ ...naming, prompt: naming?.prompt ?? readString(body, 'prompt') ?? '',
+            role: naming?.role ?? (outputImageRole === 'storyboard' ? 'shot-image' : 'image'), extension: suffix, index: naming?.index ?? index + 1 })
           if (output === undefined) throw new Error('Image output destination was not prepared')
           const path = (await output.write(filename, bytes)).path
           await savedOutput?.(path)
@@ -1965,7 +1992,11 @@ export function apply(ctx: Context, config: Config): void {
     const expiry = Date.parse(session.upstream?.expiresAt ?? '')
     if (bound !== apiBaseUrl || !Number.isFinite(Date.parse(session.expiresAt)) || Date.parse(session.expiresAt) <= Date.now()
       || (!Number.isFinite(expiry) && !isLoopbackOrigin(apiBaseUrl))) {
-      await invalidateSession(session)
+      try { await invalidateSession(session) } catch (cause) {
+        blockedGenerationEpoch = session.token
+        refreshGenerationActivity()
+        throw new SessionInvalidationUnavailableError(session, cause)
+      }
       return null
     }
     if (!await renewal.canUseAccess(session) || (Number.isFinite(expiry) && expiry - Date.now() < 60_000)) {
@@ -2515,7 +2546,7 @@ export function apply(ctx: Context, config: Config): void {
       const outcome = await runImageGeneration(await key(), {}, signal,
         path => creative.saved(operation, path, 'image'), undefined,
         next => creative.receipt(operation, next), receipt, bytes => creative.matchImageOutput(operation, bytes), key, receipt.origin,
-        operation.imageRole, generationCreation.task(operation, 'image'))
+        operation.imageRole, generationCreation.task(operation, 'image'), operation.outputNaming)
       await creative.finish(operation, { kind: 'image', status: outcome.ok ? 'completed' : imageCreativeStatus(outcome, signal),
         ...outcome.imageReceipt === undefined ? {} : { imageReceipt: outcome.imageReceipt },
         ...outcome.submissionState === 'not-submitted' ? { notSubmitted: true } : {},
@@ -2557,7 +2588,7 @@ export function apply(ctx: Context, config: Config): void {
       const outcome = await runVideoTask(await key(), receipt.route, {}, signal, undefined,
         next => creative.videoReceipt(operation, next), receipt, key, path => creative.saved(operation, path, 'video'),
         bytes => creative.matchVideoOutput(operation, bytes), receipt.origin, foregroundWaitMs, undefined,
-        generationCreation.task(operation, 'video'))
+        generationCreation.task(operation, 'video'), operation.outputNaming)
       await creative.finish(operation, { kind: 'video', status: outcome.ok ? 'completed' : imageCreativeStatus(outcome, signal),
         ...outcome.videoReceipt === undefined ? {} : { videoReceipt: outcome.videoReceipt },
         paths: outcome.path === undefined ? [] : [outcome.path], ...outcome.code === undefined ? {} : { errorCode: outcome.code } })
@@ -3483,7 +3514,7 @@ export function apply(ctx: Context, config: Config): void {
                       await binding.key()
                       await creative.dispatched(operation)
                     }, receipt => creative.receipt(operation, receipt), undefined, undefined, () => binding.key(),
-                    undefined, operation.imageRole, generationCreation.task(operation, 'image')))
+                    undefined, operation.imageRole, generationCreation.task(operation, 'image'), operation.outputNaming))
               } finally { panelImageAdmissions.delete(admission) }
             }
           }
@@ -3635,7 +3666,7 @@ export function apply(ctx: Context, config: Config): void {
                       async () => { await binding.key(); await creative.dispatched(operation) },
                       receipt => creative.videoReceipt(operation, receipt), undefined, () => binding.key(),
                       path => creative.saved(operation, path, 'video'), undefined, undefined, undefined, undefined,
-                      generationCreation.task(operation, 'video')))
+                      generationCreation.task(operation, 'video'), operation.outputNaming))
                 } finally { panelVideoAdmissions.delete(admission) }
               }
             }
@@ -3800,7 +3831,10 @@ export function apply(ctx: Context, config: Config): void {
           const storage = ctx.get('artifactStorage')
           const output = await captureMediaOutput(storage, join(stateDir, 'media'), signal)
           const directory = join(stateDir, storage === undefined ? 'media' : 'downloads')
-          let saved = await downloadToFile(target, resolved.baseUrl, session.token, directory, resolved.timeoutMs)
+          const title = readString(body, 'title')
+          const prompt = readString(body, 'prompt')
+          let saved = await downloadToFile(target, resolved.baseUrl, session.token, directory, resolved.timeoutMs,
+            { ...title === null ? {} : { title }, ...prompt === null ? {} : { prompt } })
           if (saved.ok) saved = { ...saved, path: (await output.publish(saved.path, basename(saved.path))).path }
           json(response, 200, saved.ok
             ? { ok: true, path: saved.path, bytes: saved.bytes, mediaType: saved.mediaType }
@@ -3859,6 +3893,13 @@ export function apply(ctx: Context, config: Config): void {
 
         json(response, 404, { ok: false, code: 'NOT_FOUND', message: 'unknown credits route' })
       } catch (error) {
+        if (route === '/api/session' && method === 'GET' && error instanceof SessionInvalidationUnavailableError) {
+          const failure: SessionFailure = { reason: 'storage', stage: 'account-read' }
+          json(response, 200, { ok: false, code: 'ACCOUNT_UNAVAILABLE', signedIn: true, liveness: 'unknown', failure,
+            message: '无法保存登录状态变更，请检查本地存储后重试；暂未确认退出登录。',
+            payload: { signedIn: true, liveness: 'unknown', account: error.session.account,
+              expiresAt: error.session.expiresAt, failure } }); return
+        }
         if (route === '/api/session/challenge' || route === '/api/session/verify'
           || route === '/api/session/verify-security' || route === '/api/session/phone-recovery') {
           json(response, 200, phoneFailure(null, {}, route === '/api/session/challenge' ? 'challenge' : 'login')); return
@@ -4318,7 +4359,7 @@ export function apply(ctx: Context, config: Config): void {
           await creative.dispatched(creation)
           submission.started = true
         }, receipt => creative.receipt(creation, receipt), undefined, undefined, () => binding.key(), artifactOriginOf(exec),
-        creation.imageRole, generationCreation.task(creation, 'image'))
+        creation.imageRole, generationCreation.task(creation, 'image'), creation.outputNaming)
         const paths = [...outcome.paths ?? []]
         await creative.finish(operation, { status: outcome.ok ? 'completed' : imageCreativeStatus(outcome, exec.signal), paths, kind: 'image',
           ...outcome.imageReceipt === undefined ? {} : { imageReceipt: outcome.imageReceipt },
@@ -4625,7 +4666,7 @@ export function apply(ctx: Context, config: Config): void {
               throw new VideoSubmissionRejection('CREATIVE_VIDEO_MODEL_CHOICE_UNAVAILABLE',
                 '提交前的型号与报价确认未完成，未提交新的生成；请重新确认。', 'not_submitted')
             }
-          }, generationCreation.task(creation, 'video'))
+          }, generationCreation.task(creation, 'video'), creation.outputNaming)
         await creative.finish(operation, { status: outcome.ok ? 'completed' : imageCreativeStatus(outcome, exec.signal), kind: 'video',
           ...outcome.submissionState === 'not-submitted' ? { notSubmitted: true } : {},
           ...outcome.videoReceipt === undefined ? {} : { videoReceipt: outcome.videoReceipt },

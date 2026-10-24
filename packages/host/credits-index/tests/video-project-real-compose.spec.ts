@@ -6,7 +6,7 @@ import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer, type Server } from 'node:http'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
 import Include from '@deepseek-ai/cordis-plugin-include'
@@ -250,6 +250,7 @@ it.skipIf(!available)('generates 15 + 15 + 10 seconds with the signed-in key and
   const completed = object(JSON.parse(finalLine))
   expect(completed).toMatchObject({ status: 'succeeded', duration_seconds: 40 })
   const finalPath = string(completed.final_path)
+  expect(basename(finalPath)).toMatch(/^产品短片-成片-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.mp4$/u)
   expect((await stat(finalPath)).isFile()).toBe(true)
   const metadata = object(JSON.parse(execFileSync(ffprobe,
     ['-v', 'error', '-show_entries', 'format=duration:stream=codec_type,width,height', '-of', 'json', finalPath],
@@ -264,6 +265,8 @@ it.skipIf(!available)('generates 15 + 15 + 10 seconds with the signed-in key and
   for (const call of postCalls) expect(object(call.body?.metadata).content).toContainEqual({ type: 'image_url', role: 'reference_image',
     image_url: { url: `data:image/png;base64,${portrait.toString('base64')}` } })
   for (const call of postCalls) {
+    expect(call.body).not.toHaveProperty('title')
+    expect(call.body).not.toHaveProperty('shotTitles')
     const index = Number(/镜头 shot_([123])：/u.exec(String(call.body?.prompt))?.[1]) - 1
     const content = object(call.body?.metadata).content
     if (!Array.isArray(content)) throw new Error('Expected actual native reference content')
@@ -291,6 +294,8 @@ it.skipIf(!available)('generates 15 + 15 + 10 seconds with the signed-in key and
     if (sourceClip === undefined) throw new Error('Expected one source per generated clip')
     expect(digest(await readFile(sourceClip.path))).toBe(sourceClip.hash)
     expect(digest(await readFile(string(clip.path)))).toBe(sourceClip.hash)
+    expect(basename(string(clip.publishedPath))).toMatch(new RegExp(`^镜头${String(index + 1)}-分镜-0${String(index + 1)}-`, 'u'))
+    expect(digest(await readFile(string(clip.publishedPath)))).toBe(sourceClip.hash)
   }
   expect(JSON.stringify(manifest))
     .not.toMatch(/fixture-signed-in-account-key|fixture-deployment-key|fixture-product-session|fixture-user-token/u)

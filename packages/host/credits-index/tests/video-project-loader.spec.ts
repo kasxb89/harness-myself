@@ -1,5 +1,5 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
-import { dirname, join, relative } from 'node:path'
+import { basename, dirname, join, relative } from 'node:path'
 import { tmpdir } from 'node:os'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -624,6 +624,12 @@ describe('video tools through Loader, real tool registry and jobs runtime', () =
     ])
     expect(resolveReference).toHaveBeenCalledWith(owner, planId, generated!.id)
     const retained = await readVideoProject(fixture.options, String(started.project_id), owner.sessionId, owner.workspaceRoot, owner)
+    expect(retained.input).toMatchObject({ title: '两人在车站道别', shotTitles: ['挥手', '回应'] })
+    expect(fixture.inputs.every(input => input.title === undefined && input.shotTitles === undefined)).toBe(true)
+    expect(basename(retained.finalPath!)).toMatch(/^两人在车站道别-成片-[a-f0-9-]{36}\.mp4$/u)
+    expect(retained.segments.map(segment => basename(segment.publishedPath!))).toEqual([
+      expect.stringMatching(/^挥手-分镜-01-[a-f0-9-]{36}\.mp4$/u), expect.stringMatching(/^回应-分镜-02-[a-f0-9-]{36}\.mp4$/u),
+    ])
     expect(retained.input.shotDurations).toEqual([5, 10])
     expect(retained.input.shotReferenceImages).toEqual([['ma_generated_a', 'ma_uploaded_side'], [secondImage]])
     const [first, second] = retained.segments
@@ -788,7 +794,8 @@ describe('video tools through Loader, real tool registry and jobs runtime', () =
     expect(projects[0]).toMatchObject({ id: planned.plan_id, status: 'completed', shots: [
       { id: 'shot_1', status: 'completed' }, { id: 'shot_2', status: 'completed' }, { id: 'shot_3', status: 'completed' },
     ], outputs: Array.from({ length: 4 }, () => ({ kind: 'video', previewUnavailable: true })) })
-    for (const [index, shot] of (projects[0]?.shots ?? []).entries()) expect(shot.outputs[0]?.name).toContain(`clip-00${String(index + 1)}`)
+    for (const [index, shot] of (projects[0]?.shots ?? []).entries()) expect(shot.outputs[0]?.name).toMatch(
+      new RegExp(`^镜头${String(index + 1)}-分镜-0${String(index + 1)}-[a-f0-9-]{36}\\.mp4$`, 'u'))
     expect(await fixture.creative.projects({ accountId: '7', sessionId: 'another-chat' })).toEqual([])
     expect(fixture.requests).toEqual([15, 15, 10])
   })
@@ -825,6 +832,9 @@ describe('video tools through Loader, real tool registry and jobs runtime', () =
     const editOutput = json(JSON.parse(fixture.ctx.jobs.read(editJob, fixture.agent.id).result ?? '{}'))
     expect(String(editOutput.final_path).startsWith(destination.directory)).toBe(true)
     expect(await readFile(String(editOutput.final_path), 'utf8')).toBe('6')
+    expect(basename(String(editOutput.final_path))).toMatch(/^existing-剪辑视频-[a-f0-9-]{36}\.mp4$/u)
+    expect(basename(fixture.composedPaths[0]!)).toMatch(/^A white cup-成片-[a-f0-9-]{36}\.mp4$/u)
+    expect(basename(fixture.composedPaths[1]!)).toMatch(/^existing-剪辑视频-[a-f0-9-]{36}\.mp4$/u)
     expect(await readFile(original, 'utf8')).toBe('9')
     expect(fixture.composedPaths).toHaveLength(2)
     expect(fixture.composedPaths.every(path => path.startsWith(fixture.workspace))).toBe(true)
@@ -941,6 +951,7 @@ describe('video tools through Loader, real tool registry and jobs runtime', () =
     await vi.waitFor(() =>{  expect(fixture.ctx.jobs.get(jobId, fixture.agent.id).status).toBe('completed') })
     const value = JSON.parse(fixture.ctx.jobs.read(jobId, fixture.agent.id).result ?? '{}') as Record<string, unknown>
     expect(value).toMatchObject({ status: 'succeeded', duration_seconds: 12 })
+    expect(basename(String(value.final_path))).toMatch(/^second-剪辑视频-[a-f0-9-]{36}\.mp4$/u)
     expect(await readFile(String(value.final_path), 'utf8')).toBe('12')
     expect(fixture.requests).toEqual([])
     const invalid = await fixture.call('edit_video', { clips: [{ path: first, start_seconds: 5, end_seconds: 2 }] })
