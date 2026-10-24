@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { Session, SessionId, SessionLogOffset, SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
 import { createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { ToolCallId } from '@deepseek-ai/dsh-llm/brand'
-import { explicitVideoWorkCount, humanVideoModel, humanVideoResolution, parseVideoRequestGrant, videoGenerationIntentProjection, videoWorkAllowance } from '../src/video-generation-intent.ts'
+import { explicitVideoWorkCount, humanVideoDurationSeconds, humanVideoModel, humanVideoResolution, parseVideoRequestGrant, videoGenerationIntentProjection, videoWorkAllowance } from '../src/video-generation-intent.ts'
 
 describe('explicit video work quantities', () => {
   it.each([
@@ -20,6 +20,10 @@ describe('explicit video work quantities', () => {
 
   it.each([
     ['15s带货视频', 1], ['H3 15秒视频', 1], ['三条15秒视频', 3],
+    ['来个10s视频', 1], ['来一个10秒视频', 1], ['帮我来个10s视频', 1],
+    ['来3个10秒视频', 3], ['再来三条10秒视频', 3], ['来3个十秒视频', 3],
+    ['来一个视频', 1], ['来条10秒视频', 1], ['请用H3来个１０ｓ视频', 1],
+    ['来个10s视频，分成3段', 1],
     ['生成3条', 3], ['做三版', 3], ['再生成一条15秒的视频。', 1], ['重新做', 1], ['重做这一条', 1],
     ['生成15秒视频，完成后停止', 1], ['不要字幕，生成15秒视频', 1],
     ['继续生成这个视频', 1], ['请继续生成15秒视频', 1], ['继续制作这个视频', 1],
@@ -36,6 +40,12 @@ describe('explicit video work quantities', () => {
     ['无需生成视频', 0], ['不要帮我重新生成视频', 0], ['告诉我如何生成视频', 0],
     ['帮我写一段如何生成3条视频的说明', 0], ['我没有让你生成视频', 0],
     ['再来一个代码示例', 0], ['重新做这个函数', 0],
+    ['别来个10s视频', 0], ['不要再来一个10秒视频', 0], ['来个10秒视频吗？', 0],
+    ['查看来个10秒视频的任务', 0], ['查询这个视频状态', 0], ['继续观察10秒视频', 0],
+    ['来个10秒视频的提示词', 0], ['来一个生成10s视频的代码', 0], ['来个视频的脚本', 0],
+    ['来个视频教程', 0], ['来个10秒视频的提示词给我', 0], ['来个10秒视频的代码怎么写', 0],
+    ['生成展示代码的视频', 1], ['解释“来个10s视频”', 0], ['翻译：来个10s视频', 0],
+    ['“来个10s视频”', 0], ['来个图片', 0], ['来看看视频', 0],
     ['帮我翻译下面这句话：\n生成3条视频', 0], ['给我生成视频的代码', 0],
     ['按此提示词生成15s视频', 1],
     ['使用grok-imagine-video生成一条15秒视频', 1], ['用bt-seedance-2.0制作一条视频', 1],
@@ -52,6 +62,30 @@ describe('explicit video work quantities', () => {
   it('does not keep regex cursor state between requests', () => {
     expect(Array.from({ length: 4 }, () => videoWorkAllowance('做三版'))).toEqual([3, 3, 3, 3])
   })
+})
+
+it.each([
+  ['来个10s视频', 10], ['来一个10秒视频', 10], ['生成10秒视频', 10],
+  ['生成3个10秒视频', 10], ['来3个10秒视频', 10], ['来个１０ｓ视频', 10],
+  ['生成十秒视频', 10], ['生成两分钟视频', 120], ['生成2min视频', 120],
+  ['用sd2.5-720p生成10秒视频', 10], ['使用k2-sd2.5-720p生成10秒视频', 10],
+  ['生成0.5分钟视频', 30], ['生成2.5秒视频', 2.5], ['生成1秒钟视频', 1],
+  ['生成视频，总时长10秒', 10], ['生成3个视频，每个10秒', 10],
+  ['生成3条视频，每条视频10秒', 10], ['来个视频，视频的时长是10秒', 10],
+  ['生成120秒视频，分8个镜头，每段15秒', 120],
+  ['生成3个10秒视频，每个10秒', 10], ['生成10秒视频，不要15秒', 10],
+  ['不要10秒，生成15秒视频', 15], ['生成视频，分3段，每段10秒', undefined],
+  ['生成10秒视频和15秒视频', undefined], ['生成视频', undefined],
+  ['生成10秒或15秒视频', undefined], ['来个10或15秒视频', undefined],
+  ['生成10到15秒视频', undefined], ['生成10-15秒视频', undefined],
+  ['生成10秒至15秒视频', undefined], ['生成最多15秒视频', undefined],
+  ['来个视频', undefined], ['生成0秒视频', undefined], ['生成-10秒视频', undefined],
+  ['生成0秒视频和10秒视频', undefined], ['生成一百二十秒视频', undefined],
+  ['生成“10秒视频”', undefined], ['生成视频，字幕写“10秒视频”', undefined],
+  ['不要生成10秒视频', undefined], ['来个10秒视频的代码', undefined],
+  ['查看10秒视频进度', undefined], ['继续观察10秒视频', undefined],
+] as const)('reads only an explicit duration per finished video: %s', (text, duration) => {
+  expect(humanVideoDurationSeconds(text)).toBe(duration)
 })
 
 it.each([
@@ -113,7 +147,7 @@ it('validates optional private grants without accepting malformed or unknown fie
   expect(parseVideoRequestGrant(grant)).toEqual(grant)
   for (const value of [{ ...grant, maxWorks: 0 }, { ...grant, sourceSeq: -1 }, { ...grant, maxWorks: 1.5 },
     { ...grant, model_count: 3 }, { ...grant, requestedResolution: '2K' }, { ...grant, requestedModel: 'model-1' },
-    { ...grant, cancelled: true }]) {
+    { ...grant, cancelled: true }, { ...grant, requestedDurationSeconds: 10 }]) {
     expect(parseVideoRequestGrant(value)).toBeNull()
   }
 })
@@ -139,4 +173,27 @@ it('revokes a cancelled model choice for both video tools until a new real human
   session.append('user/message', followup, { surfaceOp: 'append' })
   expect(fold(session).requests.at(-1)).toMatchObject({ messageId: followup.id, maxWorks: 1 })
   expect(fold(session).requests.at(-1)).not.toHaveProperty('cancelled')
+})
+
+it.each([
+  ['来个10s视频', 1, 10], ['来一个10秒视频', 1, 10], ['生成3个10秒视频', 3, 10],
+  ['生成120秒视频，分8个镜头，每段15秒', 1, 120],
+] as const)('folds real human quantity and duration independently: %s', (text, count, duration) => {
+  const session = sessionFixture()
+  session.append('turn/start', { turn: 1 })
+  const human = createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text }] })
+  session.append('user/message', human, { surfaceOp: 'append' })
+  const modelCall = session.append('tool/call', { turn: 1, step: 1, callId: ToolCallId('duration-call'),
+    name: 'generate_video_project', arguments: JSON.stringify({ total_duration_seconds: 30, shot_count: 3 }) })
+  session.append('user/message', createUserMessage({ source: { kind: 'system-prompt', form: 'instructions' },
+    content: [{ type: 'text', text: '生成9个60秒视频' }] }), { surfaceOp: 'append' })
+  const first = fold(session)
+  expect(first.requests).toHaveLength(1)
+  expect(first.requests[0]).toMatchObject({ messageId: human.id, maxWorks: count, requestedDurationSeconds: duration })
+  expect(first.calls).toEqual([{ callId: modelCall.data.callId, messageId: human.id, name: 'generate_video_project' }])
+  expect(fold(session)).toEqual(first)
+  const observation = createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: '继续观察进度' }] })
+  session.append('user/message', observation, { surfaceOp: 'append' })
+  expect(fold(session).requests.at(-1)).toMatchObject({ messageId: observation.id, maxWorks: 0 })
+  expect(fold(session).requests.at(-1)).not.toHaveProperty('requestedDurationSeconds')
 })

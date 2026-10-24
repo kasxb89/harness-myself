@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "queue_id": "vq_924d7dc3-dd66-4e9e-a459-2c928102070c",
+  "operation_id": "924d7dc3-dd66-4e9e-a459-2c928102070c",
+  "count": 1,
+  "request": {
+    "model": "MiniMax-H3",
+    "prompt": "synthetic free contract landscape",
+    "seconds": "10"
+  }
+}

@@ -5,9 +5,9 @@ import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
 import { z } from 'zod'
 
 const NUMBER = '(?:[1-9]\\d*|[一二两三四五六七八九十]+)'
-const DURATION = '(?:\\d+(?:\\.\\d+)?\\s*(?:秒钟?|s|分钟|min)\\s*的?\\s*)?'
+const DURATION = `(?:(?:\\d+(?:\\.\\d+)?|${NUMBER})\\s*(?:秒钟?|s|分钟|min)\\s*的?\\s*)?`
 const VIDEO = '(?:短视频|带货视频|广告视频|动画视频|视频|短片|成片)'
-const VERB = '(?:生成|制作|创作|做|输出)(?:出|成|给我)?\\s*'
+const VERB = '(?:生成|制作|创作|做|输出|来)(?:出|成|给我)?\\s*'
 const MEDIA_COUNT = new RegExp(`(${NUMBER})\\s*(?:条|个|支)\\s*${DURATION}${VIDEO}`, 'giu')
 const SHORT_COUNT = new RegExp(`${VERB}(${NUMBER})\\s*(?:条|版|支)\\s*$`, 'giu')
 
@@ -65,11 +65,12 @@ export function videoWorkAllowance(text: string): number {
   const primary = value.split(/[：:\n，,。；;]/u)[0] ?? ''
   const address = '^(?:(?:请|帮我|给我|麻烦|替我)\\s*)*'
   const modelPrefix = '(?:(?:用|使用|采用)\\s*[a-z][a-z0-9._/-]*\\s*)?'
+  const artifact = '(?:代码|脚本|提示词|说明|教程|示例)'
   if (new RegExp(`${address}(?:翻译|改写|润色|解释|说明)`, 'u').test(primary)
     || /^(?:please\s+)?(?:translate|rewrite|explain)\b/iu.test(primary)
-    || new RegExp(`${address}${modelPrefix}(?:生成|制作|创作|写|编写|提供|继续(?:生成|制作)|补拍).*(?:代码|脚本|提示词|说明|教程|示例)[.!！]?$`, 'iu')
-      .test(primary)) return 0
-  const noGeneration = /(?:不要|不需要|无需|不必|不用|别|勿)(?:(?:帮我|给我|替我|再|重新|继续|重复)\s*)*(?:生成|制作|创作|重做|做)/u
+    || new RegExp(`${address}${modelPrefix}(?:生成|制作|创作|做|来|写|编写|提供|继续(?:生成|制作)|补拍)`
+      + `.*(?:${artifact}[.!！]?$|${VIDEO}的?${artifact})`, 'iu').test(primary)) return 0
+  const noGeneration = /(?:不要|不需要|无需|不必|不用|别|勿)(?:(?:帮我|给我|替我|再|重新|继续|重复)\s*)*(?:生成|制作|创作|重做|做|来)/u
   const noEn = /\b(?:do not|don't|never|stop|cancel)\s+(?:re-?generate|generating|generate|re-?make|make|create|produce|render|start)\b/iu
   if (value === '' || noGeneration.test(value)
     || /(?:停止|取消)(?:本次|整个|所有)?(?:任务|生成|创作)|^(?:停止|取消)[。！!]?$/u.test(value)
@@ -80,7 +81,7 @@ export function videoWorkAllowance(text: string): number {
     || /^(?:stop|cancel)[.!]?$/iu.test(value)) return 0
   const commandPrefix = '(?:^|[，,。；;！？!?])\\s*(?:(?:请|帮我|给我|麻烦|直接|立即|现在|只|再|重新|用H3|使用H3|用MiniMax-H3|使用MiniMax-H3|H3'
     + '|(?:用|使用|采用)\\s*[a-z][a-z0-9._/-]*|按此提示词|按这个提示词|按以下提示词|根据此提示词)\\s*)*'
-  const command = new RegExp(`${commandPrefix}(?:生成|制作|创作|做|重做)`, 'iu')
+  const command = new RegExp(`${commandPrefix}(?:生成|制作|创作|做|重做|来\\s*(?:${NUMBER}\\s*)?(?:条|个|支))`, 'iu')
   const continuation = new RegExp(`${address}(?:继续(?:生成|制作)|补拍)`, 'u').test(value)
     && new RegExp(VIDEO, 'u').test(value)
   const explicit = command.test(value)
@@ -96,6 +97,37 @@ export function videoWorkAllowance(text: string): number {
   const repeat = /^(?:请|帮我|给我)?\s*(?:再(?:生成|做|来)(?:一|1)(?:条|版)?|重新(?:生成|做)|重做(?:这(?:一)?条)?)[。.!！]?$/u.test(value)
   return explicit && (video || new RegExp(SHORT_COUNT.source, 'iu').test(value)) || brief || repeat
     ? explicitVideoWorkCount(value) : 0
+}
+
+/**
+ * Read one explicit duration per finished video without treating clip lengths as output lengths.
+ * @param text - Original human text, never a plan or model arguments.
+ * @returns Duration in seconds, or absence when missing, negated, quoted, or conflicting.
+ */
+export function humanVideoDurationSeconds(text: string): number | undefined {
+  const value = text.normalize('NFKC')
+  if (videoWorkAllowance(value) < 1) return undefined
+  const affirmative = value.replaceAll(/"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|「[^」]*」|『[^』]*』|`[^`]*`/gu, '')
+    .split(/[，,。；;\n]/u).filter(clause => !/不要|不需|无需|不用|别|勿|而非|不是/u.test(clause)).join(' ')
+  if (/或|还是|比较|对比|最多|至少|至多|多于|少于|超过/u.test(affirmative)
+    || /(?<![a-z0-9._/])[0-9一二两三四五六七八九十]+\s*(?:秒钟?|s|分钟|min)?\s*(?:到|至|[-~～—])\s*[0-9一二两三四五六七八九十]+\s*(?:秒钟?|s\b|分钟|min\b)/iu
+      .test(affirmative)) return undefined
+  const amount = `(?:\\d+(?:\\.\\d+)?|${NUMBER})`
+  const units = '(?:秒钟?|seconds?|secs?|s|分钟|min(?:ute)?s?)'
+  const duration = `(?<![0-9a-z.+一二两三四五六七八九十百千万亿零-])(${amount})\\s*(${units})`
+  const prefix = new RegExp(`${duration}\\s*的?\\s*${VIDEO}`, 'giu')
+  const specified = new RegExp('(?:每(?:条|个|支)(?:视频)?|(?:视频|成片|全片)(?:的)?(?:总)?时长|总时长|片长)'
+    + `\\s*(?:为|是|[:：])?\\s*${duration}`, 'giu')
+  const seconds = [...affirmative.matchAll(prefix), ...affirmative.matchAll(specified)].flatMap((match) => {
+    const raw = match[1]
+    const unit = match[2]
+    if (raw === undefined || unit === undefined) return []
+    const amount = /^[0-9]/u.test(raw) ? Number(raw) : countOf(raw)
+    if (amount === undefined || !Number.isFinite(amount) || amount <= 0) return [NaN]
+    return [amount * (/^(?:分|min)/iu.test(unit) ? 60 : 1)]
+  })
+  const first = seconds[0]
+  return first !== undefined && Number.isFinite(first) && seconds.every(value => value === first) ? first : undefined
 }
 
 /**
@@ -140,6 +172,7 @@ const requestSchema = z.object({
   messageId: z.string().min(1), sourceSeq: z.number().int().nonnegative(),
   maxWorks: z.number().int().nonnegative(), turn: z.number().int().nonnegative(),
   requestedResolution: z.string().min(1).optional(),
+  requestedDurationSeconds: z.number().positive().optional(),
   requestedModel: z.string().min(1).optional(),
   cancelled: z.literal(true).optional(),
 }).strict()
@@ -170,13 +203,17 @@ export interface VideoGenerationIntent {
   readonly grant: VideoRequestGrant
   /** Unambiguous output tier from the original human text, never model tool arguments. */
   readonly requestedResolution?: string
+  /** Explicit duration of each finished video from the original human request. */
+  readonly requestedDurationSeconds?: number
   /** Exact id explicitly selected in the original human request. */
   readonly requestedModel?: string
   readonly calls: readonly z.infer<typeof callSchema>[]
   readonly evidence: readonly z.infer<typeof evidenceSchema>[]
 }
 
-const grantSchema = requestSchema.omit({ requestedResolution: true, requestedModel: true, cancelled: true }).extend({
+const grantSchema = requestSchema.omit({
+  requestedResolution: true, requestedDurationSeconds: true, requestedModel: true, cancelled: true,
+}).extend({
   schema: z.literal(1), callId: z.string().min(1), rootCallId: z.string().min(1),
   maxWorks: z.number().int().positive(),
 }).strict()
@@ -230,7 +267,7 @@ function cancelledModelChoice(content: readonly { type: string; text?: string }[
 
 /** Existing-event fold; it adds no Session vocabulary or model-supplied authorization. */
 export const videoGenerationIntentProjection = {
-  key: 'videoGenerationIntent', stateVersion: 3, stateSchema,
+  key: 'videoGenerationIntent', stateVersion: 4, stateSchema,
   init: (_header, inherited) => ({ inherited, turn: 0, requests: [], calls: [], evidence: [] }),
   apply(state, event) {
     if (event.seq < state.inherited) return state
@@ -238,10 +275,12 @@ export const videoGenerationIntentProjection = {
     if (event.type === 'user/message' && event.data.source.kind === 'user') {
       const text = event.data.content.filter(block => block.type === 'text').map(block => block.text).join('\n')
       const requestedResolution = humanVideoResolution(text)
+      const requestedDurationSeconds = humanVideoDurationSeconds(text)
       const requestedModel = humanVideoModel(text)
       return { ...state, requests: [...state.requests, { messageId: event.data.id, sourceSeq: event.seq,
         maxWorks: videoWorkAllowance(text), turn: state.turn,
         ...requestedResolution === undefined ? {} : { requestedResolution },
+        ...requestedDurationSeconds === undefined ? {} : { requestedDurationSeconds },
         ...requestedModel === undefined ? {} : { requestedModel } }] }
     }
     if (event.type === 'tool/call') {
@@ -298,6 +337,7 @@ export function videoGenerationIntentOf(exec: ToolRunContext): VideoGenerationIn
   return { grant: { schema: 1, messageId: request.messageId, sourceSeq: request.sourceSeq,
     maxWorks: request.maxWorks, turn: request.turn, callId: exec.callId, rootCallId: exec.rootCallId },
   ...requestedResolution === undefined ? {} : { requestedResolution },
+  ...request.requestedDurationSeconds === undefined ? {} : { requestedDurationSeconds: request.requestedDurationSeconds },
   ...request.requestedModel === undefined ? {} : { requestedModel: request.requestedModel }, calls: state.calls, evidence: state.evidence }
 }
 

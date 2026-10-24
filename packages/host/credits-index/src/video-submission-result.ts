@@ -8,7 +8,7 @@ export class VideoSubmissionRejection extends Error {
   /**
    * @param code - Safe client-facing failure identity.
    * @param message - Gateway-owned outcome summary without upstream response content.
-   * @param submissionState - Whether generation never started or a created task definitively failed.
+   * @param submissionState - Confirmed non-acceptance, including a settled upstream refusal, or a definitively failed task.
    * @param taskId - Original platform task, absent when admission created no task.
    */
   constructor(

@@ -40,6 +40,7 @@ describe('creation failure report selection', () => {
     ['AUDIO_NOT_SUPPORTED', 'AUDIO_NOT_SUPPORTED', 'preflight'],
     ['SHOT_DURATION_UNSUPPORTED', 'SHOT_DURATION_UNSUPPORTED', 'preflight'],
     ['VIDEO_MODEL_UNAVAILABLE', 'MODEL_NOT_AVAILABLE', 'preflight'],
+    ['CREATIVE_VIDEO_INTENT_UNAVAILABLE', 'CREATIVE_VIDEO_INTENT_UNAVAILABLE', 'preflight'],
     ['RESOLUTION_NOT_SUPPORTED', 'INVALID_ARGUMENT', 'preflight'],
     ['VIDEO_SUBMISSION_UNKNOWN', 'CREATIVE_SUBMISSION_UNKNOWN', 'submit'],
     ['SUBMISSION_UNKNOWN', 'CREATIVE_SUBMISSION_UNKNOWN', 'submit'],
@@ -80,6 +81,17 @@ describe('creation failure report selection', () => {
       { ...unsafe, status: 'failed', code: 'SHOT_DURATION_UNSUPPORTED', model: 'sd-20-9/3/3-1' }, known)
     expect(report).toEqual({ tool: 'generate_video_project', code: 'SHOT_DURATION_UNSUPPORTED', stage: 'preflight', model: 'sd-20-9/3/3-1' })
     expect(JSON.stringify(report)).not.toMatch(/private|secret|password|unverified|user_id|timestamp|request_id|task_id/u)
+  })
+
+  it('reports an unavailable video authorization without leaking the retained request or blaming the server', () => {
+    const report = parseClientToolError('generate_video_project', { model: 'MiniMax-H3', prompt: 'private request' }, {
+      status: 'failed', code: 'CREATIVE_VIDEO_INTENT_UNAVAILABLE', message: 'private legacy evidence',
+      requestGrant: { messageId: 'private-message' }, token: 'secret', source: 'server', serverFault: true,
+    }, known)
+    expect(report).toEqual({ tool: 'generate_video_project', code: 'CREATIVE_VIDEO_INTENT_UNAVAILABLE', stage: 'preflight', model: 'MiniMax-H3' })
+    for (const status of ['pending', 'unknown', 'background']) {
+      expect(parseClientToolError('generate_video_project', {}, { status, code: 'CREATIVE_VIDEO_INTENT_UNAVAILABLE' }, known)).toBeNull()
+    }
   })
 
   it('selects an exact known result model or argument model and omits all other values', () => {

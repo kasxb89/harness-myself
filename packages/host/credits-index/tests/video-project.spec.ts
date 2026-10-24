@@ -7,8 +7,10 @@ import { JobId } from '@deepseek-ai/dsh-jobs'
 import type { JobHandle } from '@deepseek-ai/dsh-jobs'
 import type { VideoEditor } from '../src/video-edit.ts'
 import { planVideoDurations, prepareVideoProject, readVideoProject, recoverVideoProjectOutputs, resolveVideoOutputDirectory, runVideoProject, VideoProjectError } from '../src/video-project.ts'
-import type { VideoProjectInput, VideoProjectOptions, VideoProjectProvider } from '../src/video-project-types.ts'
+import type { VideoProjectInput, VideoProjectOptions, VideoProjectProvider, VideoProjectSubmission } from '../src/video-project-types.ts'
 import { VideoRelayError } from '../src/video-project-provider.ts'
+import type { VideoProjectRelay } from '../src/video-project-provider.ts'
+import { createVideoProjectDispatch } from '../src/video-project-dispatch.ts'
 import { h3SubmissionQueryRejection, h3SubmissionRejection } from '../src/video-submission-result.ts'
 import notSentContract from './fixtures/h3-not-sent-contract.json' with { type: 'json' }
 import mediaContract from './fixtures/media-submission-api-contract-v3.json' with { type: 'json' }
@@ -195,17 +197,21 @@ describe('minimum-request video duration planning', () => {
     expect(observations).toHaveLength(count)
   })
 
-  it('retains a coherent original ID from an uncertain media proof without clearing the project unknown lock', async () => {
+  it('queries a coherent uncertain original ID without clearing its unknown lock when the original GET is unavailable', async () => {
     const f = await setup([4])
     const submit = vi.spyOn(f.provider, 'submit').mockRejectedValue(new VideoRelayError('VIDEO_SUBMIT_UNKNOWN',
       '原回执尚未通过完整核对', { taskId: 'task_original_media_unknown' }))
+    const check = vi.spyOn(f.provider, 'check').mockRejectedValue(new VideoRelayError('VIDEO_READ_UNAVAILABLE', '原任务暂不可读取'))
     const manifest = await prepareVideoProject(f.options, { prompt: 'One original video', totalDurationSeconds: 8 },
       'chat-one', f.workspace, f.provider, f.editor, f.signal)
     expect(await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal)).toMatchObject({ status: 'failed', detail: 'SUBMISSION_UNKNOWN' })
     const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
     expect(retained.segments.map(segment => segment.status)).toEqual(['unknown', 'pending'])
     expect(retained.segments[0]?.taskId).toBe('task_original_media_unknown')
-    expect(await runVideoProject(f.options, retained, f.provider, f.editor, f.job, f.signal)).toMatchObject({ status: 'failed', detail: 'SUBMISSION_UNKNOWN' })
+    expect(await runVideoProject(f.options, retained, f.provider, f.editor, f.job, f.signal))
+      .toMatchObject({ status: 'failed', detail: 'VIDEO_TASK_OBSERVATION_UNAVAILABLE' })
+    expect(check.mock.calls.map(([id]) => id)).toEqual(['task_original_media_unknown'])
+    expect(retained.segments.map(segment => segment.status)).toEqual(['unknown', 'pending'])
     expect(submit).toHaveBeenCalledOnce()
   })
 
@@ -443,7 +449,7 @@ describe('bounded parallel video generation', { timeout: 15_000 }, () => {
       return await compose(request)
     })
     let now = 1000
-    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now)
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => now)
     const latest = () => f.events.filter(value => value.startsWith('视频项目：')).at(-1)
     const release = (): void => { states.clear(); releaseSave.resolve(undefined); releaseEdit.resolve(undefined) }
     const running = ownConcurrentRun(runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal), release)
@@ -1525,7 +1531,403 @@ describe('durable account-bound video projects', () => {
     expect(f.submitted).toBe(3)
   })
 
-  it('pauses a known queued task at its deadline and resumes by the retained id without charging twice', async () => {
+  it.each(['unknown', 'submitting'] as const)('recovers two original %s task IDs after their model is retired without new-work discovery', async (status) => {
+    const f = await setup([4])
+    const manifest = await prepareVideoProject(f.options, { prompt: 'two original accepted clips', totalDurationSeconds: 8 },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    for (const segment of manifest.segments) { segment.status = status; segment.taskId = `old-task-${String(segment.index)}` }
+    const path = join(f.options.stateDirectory, manifest.id, 'manifest.json')
+    await writeFile(path, JSON.stringify(manifest))
+    const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+    const prepareSubmissions = vi.fn(async () => { throw new Error('New capability must not be read during original-ID recovery') })
+    const parallelism = vi.fn(async () => { throw new Error('Retired model catalog must not block original-ID GET') })
+    const model = vi.fn(async () => { throw new Error('Retired model unavailable for new work') })
+    const check = vi.fn<VideoProjectProvider['check']>(async () => ({ status: 'succeeded' }))
+    const submit = vi.fn(async () => { throw new Error('Original IDs cannot be submitted again') })
+    const recovered: VideoProjectProvider = { ...f.provider, prepareSubmissions, parallelism, model, check, submit,
+      get submissionMode(): 'queued' { throw new Error('Pure original-ID recovery does not choose a submission transport') },
+      async download(_taskId, _request, destination) { await writeFile(destination, '4') },
+    }
+    expect(await runVideoProject(f.options, retained, recovered, f.editor, f.job, f.signal)).toMatchObject({ status: 'completed' })
+    expect(check.mock.calls.map(([id]) => id).toSorted()).toEqual(['old-task-1', 'old-task-2'])
+    expect(prepareSubmissions).not.toHaveBeenCalled()
+    expect(parallelism).not.toHaveBeenCalled()
+    expect(model).not.toHaveBeenCalled()
+    expect(submit).not.toHaveBeenCalled()
+    expect(retained.segments.every(segment => segment.status === 'saved')).toBe(true)
+  })
+
+  it.each(['capability', 'model', 'parallelism'] as const)('recovers original tasks beside an unsent clip when new-work %s preflight fails', async (phase) => {
+    const f = await setup([4])
+    f.options.maxConcurrentSegments = 4
+    const manifest = await prepareVideoProject(f.options, { prompt: 'two retained clips and one unsent clip', totalDurationSeconds: 12 },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    const originalPending = structuredClone(manifest.segments[2])
+    for (const segment of manifest.segments.slice(0, 2)) { segment.status = 'running'; segment.taskId = `old-task-${String(segment.index)}` }
+    await writeFile(join(f.options.stateDirectory, manifest.id, 'manifest.json'), JSON.stringify(manifest))
+    const code = phase === 'capability' ? 'VIDEO_QUEUE_CAPABILITY_UNAVAILABLE' : 'VIDEO_MODEL_UNAVAILABLE'
+    const fail = (): never => { throw new VideoRelayError(code, '新生成暂不可用，保留原任务继续查询。') }
+    const model = vi.fn(async () => fail())
+    const prepareSubmissions = vi.fn(async () => {
+      if (phase === 'capability') fail()
+      if (phase === 'model') await model()
+    })
+    const parallelism = vi.fn(async () => phase === 'parallelism' ? fail() : 4)
+    const check = vi.fn<VideoProjectProvider['check']>(async () => ({ status: 'succeeded' }))
+    const submit = vi.fn(async () => { throw new Error('New POST must remain blocked by preflight') })
+    const recovered: VideoProjectProvider = { ...f.provider, prepareSubmissions, parallelism, model, check, submit,
+      async download(_id, _request, destination) { await writeFile(destination, '4') },
+    }
+    const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, recovered.identity)
+    expect(await runVideoProject(f.options, retained, recovered, f.editor, f.job, f.signal)).toMatchObject({ status: 'failed', detail: code })
+    expect(check.mock.calls.map(([id]) => id).toSorted()).toEqual(['old-task-1', 'old-task-2'])
+    expect(retained.segments.slice(0, 2).every(segment => segment.status === 'saved')).toBe(true)
+    expect(retained.segments[2]).toEqual(originalPending)
+    expect(submit).not.toHaveBeenCalled()
+    expect(prepareSubmissions).toHaveBeenCalledOnce()
+    expect(parallelism).toHaveBeenCalledTimes(phase === 'parallelism' ? 1 : 0)
+    expect(model).toHaveBeenCalledTimes(phase === 'model' ? 1 : 0)
+  })
+
+  it('does not start a POST or invent an original task when new-work preflight fails with no retained IDs', async () => {
+    const f = await setup([4])
+    const manifest = await prepareVideoProject(f.options, { prompt: 'unsent clips only', totalDurationSeconds: 8 },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    const pending = structuredClone(manifest.segments)
+    f.provider.prepareSubmissions = async () => { throw new VideoRelayError('VIDEO_QUEUE_CAPABILITY_UNAVAILABLE', '排队服务暂不可读取。') }
+    const check = vi.spyOn(f.provider, 'check')
+    const submit = vi.spyOn(f.provider, 'submit')
+    expect(await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal))
+      .toMatchObject({ status: 'failed', detail: 'VIDEO_QUEUE_CAPABILITY_UNAVAILABLE' })
+    expect(check).not.toHaveBeenCalled(); expect(submit).not.toHaveBeenCalled()
+    expect(manifest.segments).toEqual(pending)
+  })
+
+  it('retains the original GET failure when mixed-project admission preflight also failed', async () => {
+    const f = await setup([4])
+    const manifest = await prepareVideoProject(f.options, { prompt: 'one retained and one unsent clip', totalDurationSeconds: 8 },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    const first = manifest.segments[0]
+    if (first === undefined) throw new Error('Retained task required')
+    first.status = 'running'; first.taskId = 'old-task-1'
+    const pending = structuredClone(manifest.segments[1])
+    await writeFile(join(f.options.stateDirectory, manifest.id, 'manifest.json'), JSON.stringify(manifest))
+    f.provider.prepareSubmissions = async () => { throw new VideoRelayError('VIDEO_QUEUE_CAPABILITY_UNAVAILABLE', '新生成不可用。') }
+    const check = vi.spyOn(f.provider, 'check').mockRejectedValue(new VideoRelayError('VIDEO_READ_UNAVAILABLE', '原任务暂不可读取。'))
+    const submit = vi.spyOn(f.provider, 'submit')
+    expect(await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal))
+      .toMatchObject({ status: 'failed', detail: 'VIDEO_TASK_OBSERVATION_UNAVAILABLE' })
+    expect(check).toHaveBeenCalledOnce(); expect(submit).not.toHaveBeenCalled()
+    expect(manifest.segments[0]).toMatchObject({ status: 'running', taskId: 'old-task-1' })
+    expect(manifest.segments[1]).toEqual(pending)
+  })
+
+  it('retains a definitively unsent local submission as pending without claiming unknown acceptance or billing', async () => {
+    const f = await setup([4])
+    const manifest = await prepareVideoProject(f.options, { prompt: 'local credentials unavailable before transport', totalDurationSeconds: 8 },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    const originalAttempts = manifest.segments.map(segment => segment.attemptId)
+    const submit = vi.spyOn(f.provider, 'submit').mockRejectedValueOnce(new VideoRelayError('VIDEO_SUBMIT_NOT_STARTED',
+      '提交前凭据尚未准备好，本次没有发送生成请求。'))
+    expect(await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal))
+      .toMatchObject({ status: 'failed', detail: 'VIDEO_SUBMIT_NOT_STARTED' })
+    const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+    expect(retained.segments.map(segment => segment.status)).toEqual(['pending', 'pending'])
+    expect(retained.segments.map(segment => segment.attemptId)).toEqual(originalAttempts)
+    expect(retained.segments.every(segment => segment.taskId === undefined)).toBe(true)
+    expect(f.output.join('')).not.toContain('可能继续运行并计费')
+    expect(f.submitted).toBe(0)
+    submit.mockRestore()
+    expect(await runVideoProject(f.options, retained, f.provider, f.editor, f.job, f.signal)).toMatchObject({ status: 'completed' })
+    expect(retained.segments.map(segment => segment.attemptId)).toEqual(originalAttempts)
+    expect(f.submitted).toBe(2)
+  })
+
+  it('saves a reconciled original unknown task without submitting previously blocked pending clips in that run', async () => {
+    const f = await setup([4])
+    const manifest = await prepareVideoProject(f.options, { prompt: 'one uncertain and one unsent clip', totalDurationSeconds: 8 },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    const first = manifest.segments[0]
+    if (first === undefined) throw new Error('Original clip required')
+    first.status = 'unknown'; first.taskId = 'original-accepted-task'
+    await writeFile(join(f.options.stateDirectory, manifest.id, 'manifest.json'), JSON.stringify(manifest))
+    f.provider.download = async (_id, _request, destination) => { await writeFile(destination, '4') }
+    const submit = vi.spyOn(f.provider, 'submit')
+    const prepare = vi.fn(async () => { throw new Error('No new submission may be prepared in this recovery') })
+    f.provider.prepareSubmissions = prepare
+    const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+    expect(await runVideoProject(f.options, retained, f.provider, f.editor, f.job, f.signal))
+      .toMatchObject({ status: 'failed', detail: 'VIDEO_PROJECT_RESUME_REQUIRED' })
+    expect(retained.segments.map(segment => segment.status)).toEqual(['saved', 'pending'])
+    expect(submit).not.toHaveBeenCalled()
+    expect(prepare).not.toHaveBeenCalled()
+  })
+
+  it('recovers a lost queue ACK after a failed original GET and a disk reload with no second create POST', async () => {
+    const f = await setup([4])
+    let phase: 'unavailable' | 'complete' = 'unavailable'
+    const requests: { path: string; method: string }[] = []
+    const gateway = 'task_1234567890abcdefghijklmnopqrstuv'
+    let queueId = ''
+    let operationId = ''
+    const fetch: typeof globalThis.fetch = async (input, init) => {
+      const url = input instanceof Request ? input.url : input instanceof URL ? input.href : input
+      const path = new URL(url).pathname
+      const method = init?.method ?? 'GET'
+      requests.push({ path, method })
+      if (path === '/harness/api/status') {
+        return new Response(JSON.stringify({ data: { video_queue: {
+          schema_version: 1, enabled: true, create_path: '/v1/video/queue', retrieve_path_template: '/v1/video/queue/:queue_id',
+          cancel_path_template: '/v1/video/queue/:queue_id/cancel', max_count_per_item: 1, body_max_bytes: 65_536,
+          poll_interval_seconds: 15, client_generated_id: true, queued_charge_reserved: false, lost_ack_recovery_method: 'GET',
+        } } }))
+      }
+      if (method === 'POST') throw new Error('ACK lost after the original queue was durably created')
+      if (phase === 'unavailable') return new Response('temporary observation failure', { status: 503 })
+      return new Response(JSON.stringify({ schema_version: 1, object: 'video_queue_item', accepted: true,
+        data: { id: queueId, operation_id: operationId, model: 'example-video', count: 1, duration_seconds: 4,
+          task_id: gateway, state: 'succeeded', submission_state: 'accepted', created_at: 1, updated_at: 2 },
+        cancelable: false, observation_timed_out: false, recovery: { method: 'GET', path: `/v1/video/queue/${queueId}` } }))
+    }
+    const relay: VideoProjectRelay = {
+      async modelIds() { throw new Error('Recovery must not read model catalog') },
+      async submit() { throw new Error('No legacy fallback is allowed') },
+      async check() { throw new Error('Only the original server queue can recover this attempt') },
+      async download(taskId, destination) { expect(taskId).toBe(gateway); await writeFile(destination, '4') },
+    }
+    const provider = (): VideoProjectProvider => {
+      const dispatch = createVideoProjectDispatch({ relay,
+        queue: { origin: 'https://queue.example/harness', timeoutMs: 1000, key: async () => 'synthetic-relay', fetch },
+        async route() { throw new Error('No new model routing is allowed after a queue POST') },
+      })
+      return { ...f.provider,
+        get submissionMode() { return dispatch.submissionMode }, get pollIntervalMs() { return dispatch.pollIntervalMs },
+        async build(_input, model, prompt, seconds) { return { model, prompt, seconds } },
+        prepareSubmissions: (...args) => dispatch.prepareSubmissions(...args), submit: (...args) => dispatch.submit(...args),
+        check: (...args) => dispatch.check(...args), download: (...args) => dispatch.download(...args),
+      }
+    }
+    const initial = provider()
+    const manifest = await prepareVideoProject(f.options, { prompt: 'one original queue operation', totalDurationSeconds: 4 },
+      'chat-one', f.workspace, initial, f.editor, f.signal)
+    const attempt = manifest.segments[0]?.attemptId
+    if (attempt === undefined) throw new Error('Persisted attempt required before POST')
+    operationId = attempt; queueId = `vq_${attempt}`
+    expect(await runVideoProject(f.options, manifest, initial, f.editor, f.job, f.signal))
+      .toMatchObject({ status: 'failed', detail: 'SUBMISSION_UNKNOWN' })
+    const original = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, initial.identity)
+    expect(original.segments[0]).toMatchObject({ status: 'unknown', taskId: queueId, attemptId: attempt })
+    expect(await runVideoProject(f.options, original, provider(), f.editor, f.job, f.signal))
+      .toMatchObject({ status: 'failed', detail: 'VIDEO_TASK_OBSERVATION_UNAVAILABLE' })
+    const restarted = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, initial.identity)
+    phase = 'complete'
+    expect(await runVideoProject(f.options, restarted, provider(), f.editor, f.job, f.signal)).toMatchObject({ status: 'completed' })
+    expect(requests.filter(call => call.method === 'POST')).toEqual([{ method: 'POST', path: '/harness/v1/video/queue' }])
+    expect(requests.filter(call => call.path === '/harness/api/status')).toHaveLength(1)
+    expect(requests.filter(call => call.path === `/harness/v1/video/queue/${queueId}`)).toHaveLength(4)
+    expect(restarted.segments[0]).toMatchObject({ status: 'saved', taskId: queueId, attemptId: attempt })
+  })
+
+  it('retries only transient original-task GETs and resets the finite budget after a successful observation', async () => {
+    const f = await setup([4])
+    f.options.queryRetryLimit = 1
+    const manifest = await prepareVideoProject(f.options, { prompt: 'one original task', totalDurationSeconds: 4 },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    const stages: VideoProjectActivity[] = []
+    f.options.activity = event => stages.push(event)
+    const check = vi.spyOn(f.provider, 'check')
+      .mockRejectedValueOnce(new VideoRelayError('VIDEO_READ_UNAVAILABLE', '网络暂不可用'))
+      .mockResolvedValueOnce({ status: 'running' })
+      .mockRejectedValueOnce(new VideoRelayError('VIDEO_READ_RETRYABLE', '任务查询暂不可用'))
+      .mockResolvedValueOnce({ status: 'queued' })
+      .mockResolvedValueOnce({ status: 'succeeded' })
+    expect(await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal)).toMatchObject({ status: 'completed' })
+    expect(check.mock.calls.map(([id]) => id)).toEqual(Array.from({ length: 5 }, () => 'task-1'))
+    expect(f.submitted).toBe(1)
+    expect(stages.filter(event => event.shotId === '1').map(event => event.type === 'stage' ? event.stage : event.outcome))
+      .toEqual(['preparing', 'submitting', 'accepted', 'unknown', 'generating', 'unknown', 'queued', 'saving', 'completed'])
+    expect(f.events).toEqual(expect.arrayContaining([expect.stringContaining('状态查询暂不可用，正在重试原任务')]))
+  })
+
+  it('pauses an exhausted GET retry budget as pending and resumes only the original task ID', async () => {
+    const f = await setup([4])
+    f.options.queryRetryLimit = 2
+    const observations: VideoProjectActivity[] = []
+    f.options.activity = event => observations.push(event)
+    const manifest = await prepareVideoProject(f.options, { prompt: 'retain the accepted task', totalDurationSeconds: 4 },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    const check = vi.spyOn(f.provider, 'check').mockRejectedValue(new VideoRelayError('VIDEO_READ_UNAVAILABLE', '网络暂不可用'))
+    const observed = await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal)
+    expect(observed).toMatchObject({ status: 'failed', detail: 'VIDEO_TASK_OBSERVATION_UNAVAILABLE' })
+    expect(JSON.parse(observed.result ?? '{}')).toMatchObject({ status: 'pending', task_ids: ['task-1'] })
+    expect(check).toHaveBeenCalledTimes(3)
+    expect(observations.at(-1)).toMatchObject({ type: 'end', stage: 'unknown', outcome: 'unknown' })
+    expect(observations.filter(event => event.type === 'end').every(event => event.outcome === 'unknown')).toBe(true)
+    const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+    expect(retained).toMatchObject({ status: 'running', failureCode: 'VIDEO_TASK_OBSERVATION_UNAVAILABLE' })
+    expect(retained.segments[0]).toMatchObject({ status: 'running', taskId: 'task-1' })
+    expect(f.submitted).toBe(1)
+    check.mockResolvedValue({ status: 'succeeded' })
+    expect(await runVideoProject(f.options, retained, f.provider, f.editor, f.job, f.signal)).toMatchObject({ status: 'completed' })
+    expect(check.mock.calls.map(([id]) => id)).toEqual(Array.from({ length: 4 }, () => 'task-1'))
+    expect(f.submitted).toBe(1)
+  })
+
+  it('does not retry authorization loss or an unverified original-task state', async () => {
+    const f = await setup([4])
+    f.options.queryRetryLimit = 2
+    const manifest = await prepareVideoProject(f.options, { prompt: 'retain uncertain state', totalDurationSeconds: 4 },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    const check = vi.spyOn(f.provider, 'check').mockRejectedValue(new VideoRelayError('VIDEO_STATUS_INVALID', '任务状态尚未核实'))
+    expect(await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal))
+      .toMatchObject({ status: 'failed', detail: 'VIDEO_STATUS_INVALID' })
+    expect(check).toHaveBeenCalledOnce()
+    expect(manifest.segments[0]).toMatchObject({ status: 'running', taskId: 'task-1' })
+    f.currentAccount = false
+    expect(await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal))
+      .toMatchObject({ status: 'failed', detail: 'ACCOUNT_CHANGED' })
+    expect(check).toHaveBeenCalledOnce()
+    expect(f.submitted).toBe(1)
+  })
+
+  it('admits every authorized clip durably before observing an opt-in server queue', async () => {
+    const f = await setup([15])
+    f.options.maxConcurrentSegments = 4
+    const metadata: VideoProjectSubmission[] = []
+    let project = ''
+    const provider: VideoProjectProvider = { ...f.provider, submissionMode: 'queued',
+      async submit(request, signal, submission) {
+        if (submission === undefined) throw new Error('Durable clip metadata required')
+        metadata.push(submission)
+        const stored = await readVideoProject(f.options, project, 'chat-one', f.workspace, f.provider.identity)
+        expect(stored.segments.some(segment => segment.status === 'submitting' && segment.attemptId === submission.attemptId)).toBe(true)
+        return f.provider.submit(request, signal, submission)
+      },
+      async check(taskId) {
+        const stored = await readVideoProject(f.options, project, 'chat-one', f.workspace, f.provider.identity)
+        expect(f.submitted).toBe(8)
+        expect(stored.segments.every(segment => segment.taskId !== undefined)).toBe(true)
+        expect(stored.segments.flatMap(segment => segment.taskId ?? [])).toContain(taskId)
+        return { status: 'succeeded' }
+      },
+    }
+    const manifest = await prepareVideoProject(f.options, { prompt: 'eight queued clips', totalDurationSeconds: 120 },
+      'chat-one', f.workspace, provider, f.editor, f.signal)
+    project = manifest.id
+    expect(await runVideoProject(f.options, manifest, provider, f.editor, f.job, f.signal)).toMatchObject({ status: 'completed' })
+    expect(metadata.map(value => value.count)).toEqual(Array.from({ length: 8 }, () => 1))
+    expect(metadata.map(value => value.durationSeconds)).toEqual(Array.from({ length: 8 }, () => 15))
+    expect(new Set(metadata.map(value => value.attemptId))).toEqual(new Set(manifest.segments.map(segment => segment.attemptId)))
+    expect(f.submitted).toBe(8)
+  })
+
+  it('retains all accepted server queue IDs through local cancellation and resumes without another POST', async () => {
+    const f = await setup([15])
+    f.options.maxConcurrentSegments = 4
+    const stop = new AbortController()
+    const querying = Promise.withResolvers<undefined>()
+    const provider: VideoProjectProvider = { ...f.provider, submissionMode: 'queued',
+      async check(_id, _request, signal) {
+        querying.resolve(undefined)
+        return new Promise((_resolve, reject) => {
+          const cancelled = (): void => { reject(signal.reason instanceof Error ? signal.reason : new Error('fixture cancelled')) }
+          signal.addEventListener('abort', cancelled, { once: true })
+          if (signal.aborted) cancelled()
+        })
+      },
+    }
+    const manifest = await prepareVideoProject(f.options, { prompt: 'eight accepted original tasks', totalDurationSeconds: 120 },
+      'chat-one', f.workspace, provider, f.editor, f.signal)
+    const running = ownConcurrentRun(runVideoProject(f.options, manifest, provider, f.editor, f.job, stop.signal), () => { stop.abort() })
+    try {
+      await querying.promise
+      expect(f.submitted).toBe(8)
+      stop.abort()
+      expect(await running).toMatchObject({ status: 'killed' })
+      const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, provider.identity)
+      expect(retained.segments.every(segment => segment.status === 'running' && segment.taskId !== undefined)).toBe(true)
+      const originalIds = retained.segments.map(segment => segment.taskId)
+      const queries: string[] = []
+      const resumed: VideoProjectProvider = { ...provider, async check(id) { queries.push(id); return { status: 'succeeded' } } }
+      expect(await runVideoProject(f.options, retained, resumed, f.editor, f.job, f.signal)).toMatchObject({ status: 'completed' })
+      expect(queries.toSorted()).toEqual(originalIds.toSorted())
+      expect(f.submitted).toBe(8)
+    } finally { stop.abort(); await running }
+  })
+
+  it('stops new server queue admissions after an uncertain POST and never automatically retries that clip', async () => {
+    const f = await setup([15])
+    f.options.maxConcurrentSegments = 1
+    f.failSubmit = 2
+    const provider: VideoProjectProvider = { ...f.provider, submissionMode: 'queued' }
+    const check = vi.spyOn(provider, 'check')
+    const manifest = await prepareVideoProject(f.options, { prompt: 'do not duplicate uncertain admission', totalDurationSeconds: 45 },
+      'chat-one', f.workspace, provider, f.editor, f.signal)
+    expect(await runVideoProject(f.options, manifest, provider, f.editor, f.job, f.signal))
+      .toMatchObject({ status: 'failed', detail: 'SUBMISSION_UNKNOWN' })
+    expect(manifest.segments.map(segment => segment.status)).toEqual(['running', 'unknown', 'pending'])
+    expect(check).not.toHaveBeenCalled()
+    expect(f.submitted).toBe(2)
+    const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, provider.identity)
+    expect(await runVideoProject(f.options, retained, provider, f.editor, f.job, f.signal))
+      .toMatchObject({ status: 'failed', detail: 'SUBMISSION_UNKNOWN' })
+    expect(check.mock.calls.map(([id]) => id)).toEqual(['task-1'])
+    expect(f.submitted).toBe(2)
+  })
+
+  it('keeps a thirty-minute accepted task in the background while a second independent project completes', async () => {
+    const f = await setup([15])
+    f.options.taskTimeoutMs = 15 * 60_000
+    const first = await prepareVideoProject(f.options, { prompt: 'first long-running video', totalDurationSeconds: 15 },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    const second = await prepareVideoProject(f.options, { prompt: 'second independent video', totalDurationSeconds: 15 },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    const firstObserved = Promise.withResolvers<undefined>()
+    const releaseFirst = Promise.withResolvers<undefined>()
+    let minutes = 0
+    const queries: string[] = []
+    const timeoutControllers = new Set<AbortController>()
+    vi.useFakeTimers({ toFake: ['performance', 'Date', 'setTimeout', 'clearTimeout'] })
+    const timeouts = vi.spyOn(AbortSignal, 'timeout').mockImplementation((milliseconds) => {
+      const controller = new AbortController()
+      timeoutControllers.add(controller)
+      setTimeout(() => { controller.abort(new DOMException('fixture request deadline', 'TimeoutError')) }, milliseconds)
+      return controller.signal
+    })
+    const check = vi.spyOn(f.provider, 'check').mockImplementation(async (taskId, _request, signal) => {
+      queries.push(taskId)
+      if (taskId !== 'task-1') return { status: 'succeeded' }
+      if (minutes === 0) { firstObserved.resolve(undefined); await releaseFirst.promise }
+      vi.advanceTimersByTime(60_000)
+      signal.throwIfAborted()
+      minutes += 1
+      return { status: minutes <= 30 ? 'running' : 'succeeded' }
+    })
+    const abort = new AbortController()
+    const running = ownConcurrentRun(runVideoProject(f.options, first, f.provider, f.editor, f.job, abort.signal), () => {
+      abort.abort(); releaseFirst.resolve(undefined)
+    })
+    try {
+      await firstObserved.promise
+      expect(f.submitted).toBe(1)
+      expect(await runVideoProject(f.options, second, f.provider, f.editor, f.job, f.signal)).toMatchObject({ status: 'completed' })
+      expect(f.submitted).toBe(2)
+      releaseFirst.resolve(undefined)
+      expect(await running).toMatchObject({ status: 'completed' })
+      expect(minutes).toBe(31)
+      expect(queries.filter(id => id === 'task-1')).toHaveLength(31)
+      expect(f.submitted).toBe(2)
+      expect(f.events).toEqual(expect.arrayContaining([expect.stringContaining('生成中，已等待 1800 秒')]))
+      expect((await readVideoProject(f.options, first.id, 'chat-one', f.workspace, f.provider.identity)).segments[0])
+        .toMatchObject({ status: 'saved', taskId: 'task-1' })
+    } finally {
+      abort.abort(); releaseFirst.resolve(undefined); await running
+      for (const controller of timeoutControllers) controller.abort()
+      timeouts.mockRestore(); check.mockRestore(); vi.useRealTimers()
+    }
+  })
+
+  it('pauses a timed-out original-task GET without claiming a provider failure and resumes the retained id', async () => {
     const f = await setup()
     const report = vi.fn(() => { throw new Error('unavailable optional diagnostics') })
     f.options.failed = report
@@ -1549,12 +1951,13 @@ describe('durable account-bound video projects', () => {
       await checking
       deadline.abort(new DOMException('deadline', 'TimeoutError'))
       const outcome = await running
-      expect(outcome).toMatchObject({ status: 'failed', detail: 'VIDEO_TASK_TIMEOUT' })
+      expect(outcome).toMatchObject({ status: 'failed', detail: 'VIDEO_TASK_OBSERVATION_TIMEOUT' })
       expect(report).toHaveBeenCalledOnce()
-      expect(report).toHaveBeenCalledWith(expect.objectContaining({ id: manifest.id }), 'VIDEO_TASK_TIMEOUT')
+      expect(report).toHaveBeenCalledWith(expect.objectContaining({ id: manifest.id }), 'VIDEO_TASK_OBSERVATION_TIMEOUT')
       const result = JSON.parse(outcome.result ?? '') as { message: string; task_ids: string[] }
       expect(result.message).toContain('已暂停查询')
       expect(result.message).toContain('不要重新提交')
+      expect(result.message).toContain('不代表生成失败')
       expect(result.task_ids).toEqual(['task-1'])
       expect(f.output.join('')).toContain(['视频项目：等待已暂停，保留原任务 · 已保存 0/3 段',
         '分镜 1/3 查询已暂停，保留原任务', '分镜 2/3 尚未提交', '分镜 3/3 尚未提交'].join('\n'))

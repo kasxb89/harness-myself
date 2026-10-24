@@ -76,6 +76,8 @@ export interface JobView {
   readonly owner?: SessionId
   /** Producer-owned cap for complete model-facing notices and reads, in UTF-8 bytes. */
   readonly outputLimitBytes?: number
+  /** Producer-selected live model-read policy; absent for ordinary bounded waits. */
+  readonly readMode?: 'background'
   /** Current lifecycle state. */
   readonly status: JobStatus
   /** The producer's live progress line (`3/10`, the current phase); cleared at settlement. */

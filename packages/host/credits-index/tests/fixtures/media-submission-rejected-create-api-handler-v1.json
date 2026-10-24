@@ -1,0 +1,40 @@
+{
+  "source": "real free mocked-upstream handler regression",
+  "http_status": 400,
+  "body": {
+    "code": "media_submission_rejected",
+    "data": null,
+    "id": "task_6D8MTS06viRJVxTh2TvhkH57Yk69QibB",
+    "media_kind": "video",
+    "media_submission_receipt": {
+      "id": "task_6D8MTS06viRJVxTh2TvhkH57Yk69QibB",
+      "task_id": "task_6D8MTS06viRJVxTh2TvhkH57Yk69QibB",
+      "submission_code": "media_submission_rejected",
+      "submission_state": "not_submitted",
+      "billing_state": "refunded",
+      "upstream_submitted": true,
+      "retryable": false,
+      "resubmittable": true,
+      "refund_confirmed": true,
+      "recovery": {
+        "method": "GET",
+        "path": "/v1/tasks/task_6D8MTS06viRJVxTh2TvhkH57Yk69QibB"
+      },
+      "schema_version": 1,
+      "model": "bt-seedance-2.0",
+      "media_kind": "video",
+      "rejection_reason": "upstream_model_not_available",
+      "provider_response_received": true
+    },
+    "message": "Upstream rejected video creation because the model is unavailable",
+    "model": "bt-seedance-2.0",
+    "recovery": {
+      "method": "GET",
+      "path": "/v1/tasks/task_6D8MTS06viRJVxTh2TvhkH57Yk69QibB"
+    },
+    "resubmittable": true,
+    "retryable": false,
+    "submission_state": "not_submitted",
+    "task_id": "task_6D8MTS06viRJVxTh2TvhkH57Yk69QibB"
+  }
+}

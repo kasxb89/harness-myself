@@ -461,7 +461,7 @@ export class CreativeStore {
     return work
   }
 
-  private async read(id: string, owner: Pick<CreativeOwner, 'accountId' | 'sessionId'>): Promise<CreativeRecord> {
+  private async read(id: string, owner: Pick<CreativeOwner, 'accountId' | 'sessionId'>, workspaceRoot?: string): Promise<CreativeRecord> {
     const path = join(await this.root(), projectId(id), 'project.json')
     const file = await safeFile(path)
     let value: unknown
@@ -469,6 +469,13 @@ export class CreativeStore {
       if ((await file.stat()).size > MAX_BYTES) invalid()
       value = JSON.parse(await file.readFile('utf8'))
     } finally { await file.close() }
+    const storedOwner = object(object(value).owner)
+    // Unrelated history is not an input to this owner's count or recovery checks.
+    if (typeof storedOwner.accountId === 'string' && storedOwner.accountId !== owner.accountId
+      || typeof storedOwner.sessionId === 'string' && storedOwner.sessionId !== owner.sessionId
+      || workspaceRoot !== undefined && typeof storedOwner.workspaceRoot === 'string' && storedOwner.workspaceRoot !== workspaceRoot) {
+      throw new CreativeError('CREATIVE_ACCESS_DENIED', 404, '当前聊天中没有该创作项目。')
+    }
     const result = parseRecord(value)
     if (result.id !== id || result.owner.accountId !== owner.accountId || result.owner.sessionId !== owner.sessionId) throw new CreativeError('CREATIVE_ACCESS_DENIED', 404, '当前聊天中没有该创作项目。')
     return result
@@ -654,7 +661,7 @@ export class CreativeStore {
     for (const id of entries) {
       if (!/^cp_[a-f0-9-]{36}$/u.test(id)) continue
       let record: CreativeRecord
-      try { record = await this.read(id, owner) } catch (error) {
+      try { record = await this.read(id, owner, owner.workspaceRoot) } catch (error) {
         if (error instanceof CreativeError && error.code === 'CREATIVE_ACCESS_DENIED') continue
         return unavailable()
       }
@@ -672,7 +679,8 @@ export class CreativeStore {
             : intent.calls.find(item => item.callId === origin.toolCallId)?.messageId
           if (requestId === undefined && origin !== undefined && origin.turn < intent.grant.turn) continue
         }
-        if (requestId === undefined) unavailable()
+        // Older invocations keep their original project and uncertainty without claiming a later human's allowance.
+        if (requestId === undefined) continue
         if (requestId === intent.grant.messageId) used.add(evidence === undefined
           ? `operation:${record.id}:${operation.id}` : `call:${evidence.callId}`)
       }
@@ -718,6 +726,12 @@ export class CreativeStore {
           throw new CreativeError('CREATIVE_SHOT_MISMATCH', 400, '请明确指定本次生成对应的计划镜头，镜头数量须与实际分段一致。')
         }
         await this.assertGenerationAvailable(record, association)
+        if (intent?.requestedDurationSeconds !== undefined
+          && record.shots.every(shot => shot.durationSeconds !== undefined)
+          && record.shots.reduce((sum, shot) => sum + (shot.durationSeconds ?? 0), 0) !== intent.requestedDurationSeconds) {
+          throw new CreativeError('CREATIVE_VIDEO_INTENT_UNAVAILABLE', 409,
+            '创作计划的成片时长与用户明确要求不一致，尚未提交生成；请先按用户要求调整计划。')
+        }
       }
       if (intent === undefined) throw new CreativeError('CREATIVE_VIDEO_INTENT_UNAVAILABLE', 409,
         '无法确认本次新增视频的请求与作品数量，尚未提交生成；请明确提出需要生成的视频及数量。')

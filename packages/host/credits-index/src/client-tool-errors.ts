@@ -4,7 +4,7 @@ import { apiUrl } from './api-url.ts'
 type ClientErrorTool = 'generate_video' | 'generate_video_project' | 'generate_image' | 'generate_image_project'
 type ClientErrorStage = 'preflight' | 'submit' | 'query' | 'local-save'
 type ClientErrorCode = 'DURATION_NOT_SUPPORTED' | 'AUDIO_NOT_SUPPORTED' | 'SHOT_DURATION_UNSUPPORTED'
-  | 'MODEL_NOT_AVAILABLE' | 'INVALID_ARGUMENT' | 'CREATIVE_SUBMISSION_UNKNOWN' | 'TRANSPORT_TIMEOUT'
+  | 'MODEL_NOT_AVAILABLE' | 'INVALID_ARGUMENT' | 'CREATIVE_VIDEO_INTENT_UNAVAILABLE' | 'CREATIVE_SUBMISSION_UNKNOWN' | 'TRANSPORT_TIMEOUT'
   | 'QUEUE_WAIT_TIMEOUT' | 'TASK_FAILED' | 'LOCAL_SAVE_FAILED'
 
 /** Client-observed workflow categories, without fault attribution, association ids or user content. */
@@ -30,6 +30,7 @@ const CODES: Readonly<Record<string, Classification>> = {
   SHOT_COUNT_MISMATCH: { code: 'INVALID_ARGUMENT', stage: 'preflight' },
   RESOLUTION_NOT_SUPPORTED: { code: 'INVALID_ARGUMENT', stage: 'preflight' },
   RATIO_NOT_SUPPORTED: { code: 'INVALID_ARGUMENT', stage: 'preflight' },
+  CREATIVE_VIDEO_INTENT_UNAVAILABLE: { code: 'CREATIVE_VIDEO_INTENT_UNAVAILABLE', stage: 'preflight' },
   CREATIVE_SUBMISSION_UNKNOWN: { code: 'CREATIVE_SUBMISSION_UNKNOWN', stage: 'submit' },
   SUBMISSION_UNKNOWN: { code: 'CREATIVE_SUBMISSION_UNKNOWN', stage: 'submit' },
   VIDEO_SUBMISSION_UNKNOWN: { code: 'CREATIVE_SUBMISSION_UNKNOWN', stage: 'submit' },

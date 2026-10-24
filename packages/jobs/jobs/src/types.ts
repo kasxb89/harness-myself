@@ -141,6 +141,8 @@ export interface JobSpec {
    * retention: it bounds the consuming model surface, never observers.
    */
   outputLimitBytes?: number
+  /** Keep live model reads non-blocking and conclude their turn; omission retains ordinary bounded waits. */
+  readMode?: 'background'
   /**
    * Pull sources the registry pumps into the ring at its own cadence.
    * Producers that narrate their own progress use {@link JobHandle.append}

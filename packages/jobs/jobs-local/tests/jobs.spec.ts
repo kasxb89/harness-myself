@@ -66,7 +66,7 @@ async function liveAgent(ctx: Context, rawId: string, presetScope?: ScopeKey): P
   return agent
 }
 
-type ProducerOverrides = Partial<Pick<JobSpec, 'kind' | 'label' | 'outputLimitBytes' | 'output'> & JobHooks> & {
+type ProducerOverrides = Partial<Pick<JobSpec, 'kind' | 'label' | 'outputLimitBytes' | 'output' | 'readMode'> & JobHooks> & {
   owner?: Agent
 }
 
@@ -75,7 +75,7 @@ function producer(overrides: ProducerOverrides = {}) {
   let settle!: (outcome: JobOutcome) => void
   let reject!: (error: unknown) => void
   const cancels: (string | undefined)[] = []
-  const { kind = 'bash', label = 'sleep 60', owner, outputLimitBytes, output, ...hookOverrides } = overrides
+  const { kind = 'bash', label = 'sleep 60', owner, outputLimitBytes, output, readMode, ...hookOverrides } = overrides
   const hooks: JobHooks = {
     cancel(reason) { cancels.push(reason) },
     done: new Promise<JobOutcome>((res, rej) => { settle = res; reject = rej }),
@@ -88,6 +88,7 @@ function producer(overrides: ProducerOverrides = {}) {
     ...owner !== undefined ? { owner: owner.id } : {},
     ...outputLimitBytes !== undefined ? { outputLimitBytes } : {},
     ...output !== undefined ? { output } : {},
+    ...readMode !== undefined ? { readMode } : {},
     run: (job) => {
       started = job
       return hooks
@@ -160,6 +161,29 @@ function scriptedSource(reads: { text: string; lossy?: boolean }[], channel?: 's
 }
 
 describe('LocalJobRegistry.start', () => {
+  it('retains producer-selected background reads in fresh projections through settlement', async () => {
+    const ctx = await harness()
+    const p = producer({ readMode: 'background' })
+    const ordinary = producer()
+    try {
+      const id = ctx.jobs.start(p.spec)
+      expect(ctx.jobs.get(id).readMode).toBe('background')
+      expect(ctx.jobs.list()[0]?.readMode).toBe('background')
+      expect(ctx.jobs.read(id).job.readMode).toBe('background')
+      p.settle({ status: 'completed' })
+      await ctx.jobs.wait(id, 1000)
+      expect(ctx.jobs.get(id)).toMatchObject({ status: 'completed', readMode: 'background' })
+      const ordinaryId = ctx.jobs.start(ordinary.spec)
+      expect(ctx.jobs.get(ordinaryId)).not.toHaveProperty('readMode')
+      ordinary.settle({ status: 'completed' })
+      await ctx.jobs.wait(ordinaryId, 1000)
+    } finally {
+      p.settle({ status: 'killed' })
+      ordinary.settle({ status: 'killed' })
+      await ctx.fiber.dispose()
+    }
+  })
+
   it('preserves the SessionId brand on public owner projections', () => {
     expectTypeOf<JobView['owner']>().toEqualTypeOf<SessionId | undefined>()
   })

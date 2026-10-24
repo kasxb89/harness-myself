@@ -61,6 +61,7 @@ import { registerVideoProjectTools } from './video-project-tools.ts'
 import { registerCreationWorkflows } from './creation-workflows.ts'
 import { planVideoDurations, recoverVideoProjectOutputs, VideoProjectError } from './video-project.ts'
 import { createVideoProjectRelay } from './video-project-provider.ts'
+import { createVideoProjectDispatch } from './video-project-dispatch.ts'
 import { DEFAULT_VIDEO_PROJECT_PARALLELISM, videoProjectParallelism } from './video-concurrency.ts'
 import { videoSubmission, type VideoReferenceSnapshot } from './video-submission.ts'
 import { bindVideoAccount } from './video-project-account.ts'
@@ -176,7 +177,7 @@ export interface Config {
   videoProjectConcurrency?: number
   /** Delay between read-only provider task status requests. */
   videoProjectPollIntervalMs?: number
-  /** Complete deadline for one generated clip, including saving it. */
+  /** Deadline for one submission, original-task read or save; accepted generation has no total elapsed deadline. */
   videoProjectTaskTimeoutMs?: number
   /** Maximum bytes saved for each generated clip. */
   videoProjectDownloadMaxBytes?: number
@@ -4054,6 +4055,7 @@ export function apply(ctx: Context, config: Config): void {
       ...resolved.videoProjectConcurrency === undefined ? {} : { maxConcurrentSegments: resolved.videoProjectConcurrency },
       pollIntervalMs: resolved.videoProjectPollIntervalMs,
       taskTimeoutMs: resolved.videoProjectTaskTimeoutMs,
+      queryRetryLimit: resolved.videoQueryRetryLimit,
       editor: (workspaceRoot, session, ownedMediaRoots) => {
         for (const name of ['jobs', 'fs', 'subprocess', 'sandboxPolicy', 'sandbox'] as const) {
           if (videoContext.get(name) === undefined) throw new VideoProjectError('VIDEO_EDIT_SERVICE_UNAVAILABLE', '当前工作区的视频处理服务未准备好，请联系管理员')
@@ -4086,6 +4088,9 @@ export function apply(ctx: Context, config: Config): void {
           models.set(request.model, capability.model)
           return capability.model.route
         }
+        const dispatch = createVideoProjectDispatch({ relay,
+          queue: { origin: apiBaseUrl, timeoutMs: resolved.timeoutMs, key: () => binding.key(), clientSource: videoClientSource() },
+          route: requestRoute })
         const references = new Map<string, string>()
         let preparedBytes = 0
         /** Materialize only serializable provider fields, preserving exact reference bytes without credentials. */
@@ -4098,6 +4103,9 @@ export function apply(ctx: Context, config: Config): void {
         }
         return {
           identity: binding.identity,
+          get submissionMode() { return dispatch.submissionMode },
+          get pollIntervalMs() { return dispatch.pollIntervalMs },
+          prepareSubmissions: dispatch.prepareSubmissions,
           assertCurrent: async () => { await binding.key() },
           parallelism: async (id, signal) => {
             signal.throwIfAborted()
@@ -4147,13 +4155,16 @@ export function apply(ctx: Context, config: Config): void {
             if (!built.ok) throw new VideoProjectError(built.code, built.message)
             const value = requestValue(built.request)
             if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new VideoProjectError('VIDEO_REQUEST_INVALID', '视频请求无法保存，尚未提交生成')
+            // An empty local carrier contains no reference material; nonempty snapshots retain the legacy multipart transport.
+            if (Array.isArray(value._blackrxReferences) && value._blackrxReferences.length === 0) delete value._blackrxReferences
             preparedBytes += Buffer.byteLength(JSON.stringify(value))
             if (preparedBytes > 67_108_864) throw new VideoProjectError('VIDEO_PROJECT_INPUT_LIMIT', '项目素材过大，请减少参考素材或分镜数量后重试；尚未提交生成')
             return value
           },
-          submit: async (request, signal) => relay.submit(request, await requestRoute(request), signal),
-          check: async (taskId, request, signal) => relay.check(taskId, await requestRoute(request), signal, typeof request.model === 'string' ? request.model : undefined),
-          download: (taskId, _request, destination, signal) => relay.download(taskId, destination, signal),
+          submit: dispatch.submit,
+          check: dispatch.check,
+          cancel: dispatch.cancel,
+          download: dispatch.download,
         }
       },
     }
@@ -4470,6 +4481,12 @@ export function apply(ctx: Context, config: Config): void {
           ...args.plan_id === undefined ? {} : { planId: args.plan_id },
           ...args.shot_id === undefined ? {} : { shotIds: [args.shot_id] },
         })
+        const requestedDuration = args.plan_id === undefined ? videoIntent.requestedDurationSeconds : undefined
+        if (requestedDuration !== undefined && args.duration_seconds !== undefined && requestedDuration !== args.duration_seconds) {
+          throw new CreativeError('CREATIVE_VIDEO_INTENT_UNAVAILABLE', 409,
+            '视频时长与用户明确要求不一致，尚未提交生成；请保持用户要求的每条成片时长。')
+        }
+        const durationSeconds = args.duration_seconds ?? requestedDuration
         const requestedModel = videoIntent.requestedModel ?? args.model ?? DEFAULT_CHAT_VIDEO_MODEL
         const requestedResolution = chatVideoResolution(args.resolution, requestedModel, videoIntent.requestedResolution)
         let capability = await capabilityFor('video', requestedModel)
@@ -4498,7 +4515,7 @@ export function apply(ctx: Context, config: Config): void {
         }
         const requestInput = {
           prompt: args.prompt,
-          ...args.duration_seconds === undefined ? {} : { durationSeconds: args.duration_seconds },
+          ...durationSeconds === undefined ? {} : { durationSeconds },
           ...requestedResolution === undefined ? {} : { resolution: requestedResolution },
           ...args.ratio === undefined ? {} : { ratio: args.ratio },
           ...args.audio === undefined ? {} : { audio: args.audio },
@@ -4523,7 +4540,7 @@ export function apply(ctx: Context, config: Config): void {
         }
         exec.signal.throwIfAborted()
         await choice.beforeSubmit(exec.signal)
-        operation = await creative.begin(creativeOwner(exec, binding.identity), { kind: 'video', model: capability.model.id, prompt: args.prompt, shots: [{ prompt: args.prompt, ...args.duration_seconds === undefined ? {} : { durationSeconds: args.duration_seconds } }], ...args.plan_id === undefined ? {} : { planId: args.plan_id }, ...args.shot_id === undefined ? {} : { shotIds: [args.shot_id] }, videoIntent })
+        operation = await creative.begin(creativeOwner(exec, binding.identity), { kind: 'video', model: capability.model.id, prompt: args.prompt, shots: [{ prompt: args.prompt, ...durationSeconds === undefined ? {} : { durationSeconds } }], ...args.plan_id === undefined ? {} : { planId: args.plan_id }, ...args.shot_id === undefined ? {} : { shotIds: [args.shot_id] }, videoIntent })
         const creation = operation
         const outcome = await runVideoTask(await binding.key(), capability.model.route, built.request, exec.signal,
           async () => { await binding.key(); await creative.dispatched(creation) },

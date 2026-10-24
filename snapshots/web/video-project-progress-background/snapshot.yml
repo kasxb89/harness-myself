@@ -1,0 +1,10 @@
+version: 1
+scenario: video-project-progress-background
+profile: web
+composition: video-project-progress-background
+recording: authored
+header:
+  class: video-project-progress-background
+  pin: true
+workspace:
+  final: true

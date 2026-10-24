@@ -37,6 +37,7 @@
     "tests/desktop-permission-default.e2e.ts",
     "tests/h3-submission-outcomes.e2e.ts",
     "tests/video-project-progress.e2e.ts",
+    "tests/video-background-chat.e2e.ts",
     "tests/video-shot-references.e2e.ts",
     "tests/creation-plan-h3-receipts.e2e.ts",
     "tests/video-generation-intent.e2e.ts",

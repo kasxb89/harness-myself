@@ -78,6 +78,7 @@ interface TrackedJob {
   kind: JobKind
   label: string
   outputLimitBytes: number | undefined
+  readMode: JobSpec['readMode']
   /** Exact lifecycle owner; session-id authorization is derived from it. */
   owner: Agent | undefined
   cancel: (reason?: string) => void
@@ -245,6 +246,7 @@ export class LocalJobRegistry extends JobRegistry {
       kind: spec.kind,
       label: spec.label,
       outputLimitBytes: spec.outputLimitBytes,
+      readMode: spec.readMode,
       owner,
       cancel: hooks.cancel.bind(hooks),
       status: 'running',
@@ -419,6 +421,7 @@ export class LocalJobRegistry extends JobRegistry {
       label: job.label,
       ...owner !== undefined ? { owner } : {},
       ...job.outputLimitBytes !== undefined ? { outputLimitBytes: job.outputLimitBytes } : {},
+      ...job.readMode !== undefined ? { readMode: job.readMode } : {},
       status: job.status,
       ...job.state.progress !== undefined ? { progress: job.state.progress } : {},
       ...job.detail !== undefined ? { detail: job.detail } : {},

@@ -5,7 +5,7 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
-import type { JobHandle, JobOutcome } from '@deepseek-ai/dsh-jobs'
+import type { JobHandle, JobId, JobOutcome } from '@deepseek-ai/dsh-jobs'
 import type { Session } from '@deepseek-ai/dsh-session'
 import { prepareVideoProject, publishVideoOutput, readVideoProject, recoverVideoProjectOutputs, resolveVideoOutputDirectory, runVideoProject, videoProjectFailure, VideoProjectError } from './video-project.ts'
 import type { VideoProjectManifest } from './video-project.ts'
@@ -37,6 +37,9 @@ interface VideoToolResult {
   plan_seconds?: number[]
   clip_paths?: string[]
   task_ids?: string[]
+  cancelled_task_ids?: string[]
+  unconfirmed_task_ids?: string[]
+  local_stopped?: boolean
   final_path?: string
   duration_seconds?: number
   plan_id?: string
@@ -50,6 +53,8 @@ const output = {
       project_id: { type: 'string' }, job_id: { type: 'string' }, code: { type: 'string' },
       plan_seconds: { type: 'array', items: { type: 'number' } }, clip_paths: { type: 'array', items: { type: 'string' } },
       task_ids: { type: 'array', items: { type: 'string' } }, final_path: { type: 'string' }, duration_seconds: { type: 'number' },
+      cancelled_task_ids: { type: 'array', items: { type: 'string' } }, unconfirmed_task_ids: { type: 'array', items: { type: 'string' } },
+      local_stopped: { type: 'boolean' },
       plan_id: { type: 'string' },
     }, additionalProperties: false,
   },
@@ -81,9 +86,11 @@ function statusOf(manifest: VideoProjectManifest, running: boolean): VideoToolRe
     ...manifest.finalPath === undefined ? {} : { final_path: manifest.finalPath },
     ...manifest.finalDurationSeconds === undefined ? {} : { duration_seconds: manifest.finalDurationSeconds },
     ...manifest.failureCode === undefined ? {} : { code: manifest.failureCode },
-    message: running ? '项目正在后台处理，可用 job_output 查看进度，job_kill 停止本地工作和后续提交。'
+    message: running ? '项目正在后台处理，你可以继续聊天；job_output 只读取当前进度，job_kill 停止本地工作和后续提交。'
       : manifest.status === 'completed' ? '视频已保存，请调用 present 展示 final_path，并在回复中提供产物链接。'
-        : '这是保留的项目记录；重启不会自动恢复后台任务。可显式调用 resume_video_project 读取已知任务并继续；未知提交绝不会自动重提。',
+        : manifest.failureCode === 'VIDEO_TASK_OBSERVATION_TIMEOUT' || manifest.failureCode === 'VIDEO_TASK_OBSERVATION_UNAVAILABLE'
+          ? '本地查询暂时中断，上游任务状态尚待核实，不代表生成失败；可继续按已保留的原任务编号恢复查询，不会重新提交。'
+          : '这是保留的项目记录；重启不会自动恢复后台任务。可显式调用 resume_video_project 读取已知任务并继续；未知提交绝不会自动重提。',
   }
 }
 
@@ -94,7 +101,8 @@ function statusOf(manifest: VideoProjectManifest, running: boolean): VideoToolRe
  */
 export function registerVideoProjectTools(ctx: Context, options: VideoProjectOptions): void {
   const lifetime = new AbortController()
-  const activeProjects = new Set<string>()
+  const activeProjects = new Map<string, 'starting' | 'cancelling' | { jobId: JobId; done: Promise<JobOutcome> }>()
+  const cancellationEpochs = new Map<string, number>()
   const operations = new Set<{ abort: AbortController; done: Promise<JobOutcome> }>()
   /** Optional previews observe committed files and cannot fail the main generation. */
   function runOptions(operation: CreativeOperation | undefined, session: Session, workspaceRoot: string): VideoProjectOptions {
@@ -128,20 +136,21 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
     const jobs = ctx.get('jobs')
     if (jobs === undefined) throw new VideoProjectError('JOBS_UNAVAILABLE', '当前工作区没有启用后台任务管理，暂不能生成长视频。')
     if (project !== undefined && activeProjects.has(project)) throw new VideoProjectError('PROJECT_ALREADY_RUNNING', '该项目已经在后台运行，请查看已有任务。')
-    if (project !== undefined) activeProjects.add(project)
+    if (project !== undefined) activeProjects.set(project, 'starting')
     try {
       return jobs.start({
-        kind, label, owner: agent.id,
+        kind, label, owner: agent.id, readMode: 'background',
         run: (job) => {
           const abort = new AbortController()
-          const done = run(job, abort.signal).catch((error: unknown): JobOutcome => ({ status: 'failed', detail: 'VIDEO_OPERATION_FAILED', result: JSON.stringify(failure(error)) }))
-          const operation = { abort, done }
-          operations.add(operation)
-          void done.then(() => {
+          const operation = { abort, done: run(job, abort.signal).catch((error: unknown): JobOutcome => ({ status: 'failed', detail: 'VIDEO_OPERATION_FAILED', result: JSON.stringify(failure(error)) })) }
+          operation.done = operation.done.finally(() => {
             operations.delete(operation)
-            if (project !== undefined) activeProjects.delete(project)
+            const active = project === undefined ? undefined : activeProjects.get(project)
+            if (project !== undefined && typeof active === 'object' && active.jobId === job.id) activeProjects.delete(project)
           })
-          return { cancel: () =>{  abort.abort() }, done }
+          operations.add(operation)
+          if (project !== undefined) activeProjects.set(project, { jobId: job.id, done: operation.done })
+          return { cancel: () =>{  abort.abort() }, done: operation.done }
         },
       })
     } catch (error) {
@@ -187,6 +196,13 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
             ...args.shot_ids === undefined ? {} : { shotIds: args.shot_ids },
           })
         let duration = args.total_duration_seconds
+        if (videoIntent.requestedDurationSeconds !== undefined) {
+          if (duration !== undefined && duration !== videoIntent.requestedDurationSeconds) {
+            throw new CreativeError('CREATIVE_VIDEO_INTENT_UNAVAILABLE', 409,
+              '视频总时长与用户明确要求不一致，尚未提交生成；请保持用户要求的每条成片时长。')
+          }
+          duration = videoIntent.requestedDurationSeconds
+        }
         let model = videoIntent.requestedModel ?? args.model ?? DEFAULT_CHAT_VIDEO_MODEL
         const resolution = chatVideoResolution(args.resolution, model, videoIntent.requestedResolution)
         if (duration === undefined) {
@@ -206,6 +222,14 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
           model = selected.id
           const prepared: VideoProjectProvider = {
             identity: original.identity, assertCurrent: () => original.assertCurrent(),
+            get submissionMode() { return original.submissionMode },
+            get pollIntervalMs() { return original.pollIntervalMs },
+            ...original.prepareSubmissions === undefined ? {} : {
+              prepareSubmissions: (...values) => original.prepareSubmissions?.(...values) ?? Promise.resolve(),
+            },
+            ...original.cancel === undefined ? {} : {
+              cancel: (...values) => original.cancel?.(...values) ?? Promise.resolve({ canceled: false }),
+            },
             parallelism: async (id, preparedSignal) => {
               if (original.parallelism === undefined) return 1
               return await original.parallelism(id, preparedSignal)
@@ -258,12 +282,20 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
           await choice.beforeSubmit?.(submitSignal)
         }
         provider = { identity: originalProvider.identity, assertCurrent: () => originalProvider.assertCurrent(),
+          get submissionMode() { return originalProvider.submissionMode },
+          get pollIntervalMs() { return originalProvider.pollIntervalMs },
+          ...originalProvider.prepareSubmissions === undefined ? {} : {
+            prepareSubmissions: (...values) => originalProvider.prepareSubmissions?.(...values) ?? Promise.resolve(),
+          },
+          ...originalProvider.cancel === undefined ? {} : {
+            cancel: (...values) => originalProvider.cancel?.(...values) ?? Promise.resolve({ canceled: false }),
+          },
           model: (...values) => originalProvider.model(...values), build: (...values) => originalProvider.build(...values),
           check: (...values) => originalProvider.check(...values), download: (...values) => originalProvider.download(...values),
           ...originalProvider.parallelism === undefined ? {} : {
             parallelism: (...values) => originalProvider.parallelism?.(...values) ?? Promise.resolve(1),
           },
-          async submit(request, submitSignal) {
+          async submit(request, submitSignal, submission) {
             try { await beforeSubmit(submitSignal) } catch (error) {
               if (error instanceof CreativeError || error instanceof VideoProjectError) {
                 throw new VideoSubmissionRejection(error.code, error.message, 'not_submitted')
@@ -271,7 +303,7 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
               throw new VideoSubmissionRejection('CREATIVE_VIDEO_MODEL_CHOICE_UNAVAILABLE',
                 '提交前的型号与报价确认未完成，未提交新的生成；请先核对已有任务并重新确认。', 'not_submitted')
             }
-            return originalProvider.submit(request, submitSignal)
+            return originalProvider.submit(request, submitSignal, submission)
           },
         }
         const manifest = await prepareVideoProject(options, input, session.id, workspaceRoot,
@@ -291,7 +323,8 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
           try { return await runVideoProject(runOptions(linked, session, workspaceRoot), manifest, provider, runEditor, job, signal) }
           finally { options.creative?.release(linked) }
         }, manifest.id)
-        return { status: 'background', job_id: jobId, project_id: manifest.id, plan_id: creation.projectId, plan_seconds: manifest.segments.map(segment => segment.durationSeconds), message: '视频项目已开始。使用 job_output 查看进度，完成后将 final_path 交给 present 展示；停止本地任务后，已提交的上游任务仍可能继续计费。' }
+        exec.concludeTurn()
+        return { status: 'background', job_id: jobId, project_id: manifest.id, plan_id: creation.projectId, plan_seconds: manifest.segments.map(segment => segment.durationSeconds), message: '视频项目已在后台开始，你可以继续发送其它指令，无需等待生成完成。查询进度时读取 job_output 当前快照；完成后会通知并提供产物。停止本地任务不代表已取消上游任务或停止计费。' }
       } catch (error) { if (creation !== undefined) options.creative?.release(creation); return failure(error) }
     },
   }))
@@ -315,12 +348,90 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
   }))
 
   ctx.tools.register(defineTool({
+    name: 'cancel_video_project',
+    description: 'Stop this account, workspace and chat\'s original local video project and wait for all in-flight submissions to settle before reading its latest saved task ids. Request cancellation only for original server queue ids; report cancellation only when the gateway confirms the item was never dispatched. Already dispatching, legacy and uncertain tasks retain their original ids and may continue running and billing. This never resubmits work or promises a refund.',
+    parameters: { project_id: { type: 'string', required: true } }, output,
+    presentCall: args => ({ card: 'generic', title: '取消视频项目', kind: 'execute', content: [{ type: 'text', text: args.project_id }] }),
+    async execute(args, exec): Promise<VideoToolResult> {
+      let cancelling: string | undefined
+      let locallyStopped = false
+      try {
+        const { workspaceRoot, session } = caller(exec)
+        const signal = AbortSignal.any([exec.signal, lifetime.signal])
+        signal.throwIfAborted()
+        const provider = await options.acquireProvider(workspaceRoot, session)
+        const original = await readVideoProject(options, args.project_id, session.id, workspaceRoot, provider.identity)
+        await provider.assertCurrent()
+        signal.throwIfAborted()
+        if (original.status === 'completed') return statusOf(original, false)
+        const active = activeProjects.get(original.id)
+        if (active === 'cancelling' || active === 'starting') {
+          throw new VideoProjectError('PROJECT_CANCELLATION_PENDING', '该项目正在开始或取消，请等待当前操作完成后查看原项目。')
+        }
+        activeProjects.set(original.id, 'cancelling')
+        cancellationEpochs.set(original.id, (cancellationEpochs.get(original.id) ?? 0) + 1)
+        cancelling = original.id
+        if (active !== undefined) {
+          const jobs = ctx.get('jobs')
+          if (jobs === undefined) throw new VideoProjectError('JOBS_UNAVAILABLE', '本地任务管理暂不可用，尚未确认停止；请保留原项目和任务编号。')
+          jobs.kill(active.jobId, session.id)
+          await active.done
+        }
+        locallyStopped = true
+        signal.throwIfAborted()
+        await provider.assertCurrent()
+        const manifest = await readVideoProject(options, original.id, session.id, workspaceRoot, provider.identity)
+        const cancelled: string[] = []
+        const unconfirmed: string[] = []
+        let unconfirmedWithoutId = 0
+        const seen = new Set<string>()
+        for (const segment of manifest.segments) {
+          if (segment.path !== undefined || segment.status === 'saved' || segment.status === 'failed') continue
+          const taskId = segment.taskId
+          if (taskId === undefined) {
+            if (segment.status === 'unknown' || segment.status === 'submitting' || segment.status === 'running') unconfirmedWithoutId += 1
+            continue
+          }
+          if (seen.has(taskId)) continue
+          seen.add(taskId)
+          if (provider.cancel === undefined || !/^vq_[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u.test(taskId)) {
+            unconfirmed.push(taskId)
+            continue
+          }
+          try {
+            signal.throwIfAborted()
+            await provider.assertCurrent()
+            const result = await provider.cancel(taskId, segment.request, signal)
+            if (result.canceled) cancelled.push(taskId)
+            else unconfirmed.push(taskId)
+          } catch (_cancelUnconfirmed: unknown) { unconfirmed.push(taskId) }
+        }
+        const confirmed = cancelled.length > 0 && unconfirmed.length === 0 && unconfirmedWithoutId === 0
+        return {
+          status: confirmed ? 'cancelled' : 'stopped', project_id: manifest.id, local_stopped: true,
+          task_ids: manifest.segments.flatMap(segment => segment.taskId === undefined ? [] : [segment.taskId]),
+          cancelled_task_ids: cancelled, unconfirmed_task_ids: unconfirmed,
+          ...confirmed ? {} : { code: 'VIDEO_CANCELLATION_UNCONFIRMED' },
+          message: confirmed ? '本地项目已停止，服务器已确认所列排队任务在派发前取消，未提交上游；原任务编号已保留。'
+            : `本地项目已停止；已确认取消 ${String(cancelled.length)} 条排队任务，另有 ${String(unconfirmed.length + unconfirmedWithoutId)} 条任务未确认取消。已派发、旧接口或状态未知的上游任务可能继续运行并计费；请保留原任务编号核对，不会自动重提或承诺退款。`,
+        }
+      } catch (error) {
+        const result = failure(error)
+        return locallyStopped ? { ...result, local_stopped: true,
+          message: `本地项目已停止；${result.message} 尚未确认取消上游任务，原任务可能继续运行并计费。` } : result
+      }
+      finally { if (cancelling !== undefined && activeProjects.get(cancelling) === 'cancelling') activeProjects.delete(cancelling) }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
     name: 'resume_video_project',
     description: 'Explicitly continue a retained project for the same account, workspace, and chat. Reuse saved clips and query already known provider task ids before submitting any remaining never-submitted clips. Unknown or failed clips block new submissions, while other already accepted task ids remain recoverable for download. Never repeat unknown or failed submissions, and refuse a second live run. Local cancellation cannot cancel already accepted upstream billing.',
     parameters: { project_id: { type: 'string', required: true } }, output,
     presentCall: args => ({ card: 'generic', title: '继续视频项目', kind: 'edit', content: [{ type: 'text', text: args.project_id }] }),
     async execute(args, exec): Promise<VideoToolResult> {
       let creation: CreativeOperation | undefined
+      const cancellationEpoch = cancellationEpochs.get(args.project_id) ?? 0
       try {
         const { workspaceRoot, session } = caller(exec)
         const signal = AbortSignal.any([exec.signal, lifetime.signal])
@@ -330,31 +441,46 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
         if (manifest.status === 'completed') return statusOf(manifest, false)
         const provider: VideoProjectProvider = {
           identity: originalProvider.identity, assertCurrent: () => originalProvider.assertCurrent(),
+          get submissionMode() { return originalProvider.submissionMode },
+          get pollIntervalMs() { return originalProvider.pollIntervalMs },
+          ...originalProvider.prepareSubmissions === undefined ? {} : {
+            prepareSubmissions: (...values) => originalProvider.prepareSubmissions?.(...values) ?? Promise.resolve(),
+          },
+          ...originalProvider.cancel === undefined ? {} : {
+            cancel: (...values) => originalProvider.cancel?.(...values) ?? Promise.resolve({ canceled: false }),
+          },
           model: (...values) => originalProvider.model(...values), build: (...values) => originalProvider.build(...values),
           check: (...values) => originalProvider.check(...values), download: (...values) => originalProvider.download(...values),
           ...originalProvider.parallelism === undefined ? {} : {
             parallelism: (...values) => originalProvider.parallelism?.(...values) ?? Promise.resolve(1),
           },
-          async submit(request, submitSignal) {
+          async submit(request, submitSignal, submission) {
             if (manifest.model !== DEFAULT_CHAT_VIDEO_MODEL || request.model !== DEFAULT_CHAT_VIDEO_MODEL) {
               throw new VideoSubmissionRejection(
                 'CREATIVE_VIDEO_MODEL_CHOICE_UNAVAILABLE',
                 '原项目没有当前有效的型号与报价确认，未提交新的生成；已受理任务仍可查询和保存，请重新确认后再新增生成。',
                 'not_submitted')
             }
-            return originalProvider.submit(request, submitSignal)
+            return originalProvider.submit(request, submitSignal, submission)
           },
         }
         if (activeProjects.has(manifest.id)) throw new VideoProjectError('PROJECT_ALREADY_RUNNING', '该项目已经在后台运行，请查看已有任务。')
         const editor = options.editor(workspaceRoot, session, [join(options.stateDirectory, manifest.id, 'clips')])
         await editor.preflight(signal, manifest.outputDirectory)
+        if ((cancellationEpochs.get(manifest.id) ?? 0) !== cancellationEpoch) {
+          throw new VideoProjectError('PROJECT_CANCELLED', '该恢复请求开始后项目已被取消，未启动新的本地任务；请查看原项目状态。')
+        }
         creation = await options.creative?.resumeVideo(creativeOwner(exec, provider.identity), manifest)
         const linked = creation
+        if ((cancellationEpochs.get(manifest.id) ?? 0) !== cancellationEpoch) {
+          throw new VideoProjectError('PROJECT_CANCELLED', '该恢复请求开始后项目已被取消，未启动新的本地任务；请查看原项目状态。')
+        }
         const jobId = start(exec, 'video-project', `继续 ${String(manifest.input.totalDurationSeconds)} 秒视频`, async (job, signal) => {
           try { return await runVideoProject(runOptions(linked, session, workspaceRoot), manifest, provider, editor, job, signal) }
           finally { if (linked !== undefined) options.creative?.release(linked) }
         }, manifest.id)
-        return { status: 'background', project_id: manifest.id, job_id: jobId, plan_seconds: manifest.segments.map(segment => segment.durationSeconds), message: '已开始读取原任务和已保存片段。使用 job_output 查看结果；未知提交不会重新计费提交。' }
+        exec.concludeTurn()
+        return { status: 'background', project_id: manifest.id, job_id: jobId, plan_seconds: manifest.segments.map(segment => segment.durationSeconds), message: '已在后台读取原任务和已保存片段，你可以继续聊天；完成后会通知。未知提交不会重新计费提交。' }
       } catch (error) { if (creation !== undefined) options.creative?.release(creation); return failure(error) }
     },
   }))
@@ -411,7 +537,8 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
             return { status: signal.aborted ? 'killed' : 'failed', result: JSON.stringify(failure(error)) }
           }
         })
-        return { status: 'background', job_id: jobId, message: '本地剪辑已开始，不会提交新的计费生成任务。使用 job_output 查看进度，完成后用 present 展示 final_path。' }
+        exec.concludeTurn()
+        return { status: 'background', job_id: jobId, message: '本地剪辑已在后台开始，你可以继续聊天，不会提交新的计费生成任务。完成后会通知并提供产物。' }
       } catch (error) { return failure(error) }
     },
   }))

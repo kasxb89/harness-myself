@@ -1,0 +1,36 @@
+{
+  "source": "real free mocked-upstream handler regression",
+  "http_status": 200,
+  "body": {
+    "created_at": 1792854823,
+    "fail_reason": "Upstream rejected video creation because the model is unavailable",
+    "finished_at": 1792854823,
+    "id": "task_6D8MTS06viRJVxTh2TvhkH57Yk69QibB",
+    "media_kind": "video",
+    "media_submission_receipt": {
+      "id": "task_6D8MTS06viRJVxTh2TvhkH57Yk69QibB",
+      "task_id": "task_6D8MTS06viRJVxTh2TvhkH57Yk69QibB",
+      "submission_code": "media_submission_rejected",
+      "submission_state": "not_submitted",
+      "billing_state": "refunded",
+      "upstream_submitted": true,
+      "retryable": false,
+      "resubmittable": true,
+      "refund_confirmed": true,
+      "recovery": {
+        "method": "GET",
+        "path": "/v1/tasks/task_6D8MTS06viRJVxTh2TvhkH57Yk69QibB"
+      },
+      "schema_version": 1,
+      "model": "bt-seedance-2.0",
+      "media_kind": "video",
+      "rejection_reason": "upstream_model_not_available",
+      "provider_response_received": true
+    },
+    "model": "bt-seedance-2.0",
+    "platform": "blackrxai-video",
+    "progress": "100%",
+    "status": "FAILURE",
+    "task_id": "task_6D8MTS06viRJVxTh2TvhkH57Yk69QibB"
+  }
+}

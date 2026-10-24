@@ -159,7 +159,8 @@ export function createVideoProjectRelay(options: VideoRelayOptions): VideoProjec
       if (body !== undefined && response.status === 429) {
         throw new VideoRelayError('VIDEO_SUBMIT_BUSY', '视频服务繁忙，提交结果尚未确认，请先核对原任务，不要重新提交。')
       }
-      throw new VideoRelayError(body === undefined ? 'VIDEO_READ_REJECTED' : 'VIDEO_SUBMIT_REJECTED', body === undefined
+      const retryableRead = body === undefined && (response.status === 408 || response.status === 429 || response.status >= 500)
+      throw new VideoRelayError(body === undefined ? retryableRead ? 'VIDEO_READ_RETRYABLE' : 'VIDEO_READ_REJECTED' : 'VIDEO_SUBMIT_REJECTED', body === undefined
         ? '视频服务未能返回该任务，请稍后重试查询'
         : '视频服务未接受本次请求，已停止后续生成，请检查模型和账户状态')
     }

@@ -1,0 +1,139 @@
+{
+  "source": "SYNTHETIC consumer fixture for the proposed rejected-admission schema. Not captured from an API handler or production.",
+  "cases": {
+    "image": {
+      "http_status": 400,
+      "body": {
+        "code": "media_submission_rejected",
+        "id": "rejected-image-original",
+        "task_id": "rejected-image-original",
+        "model": "yunshu-internal-gpt-image-2",
+        "media_kind": "image",
+        "submission_state": "not_submitted",
+        "retryable": false,
+        "resubmittable": true,
+        "recovery": {
+          "method": "GET",
+          "path": "/v1/tasks/rejected-image-original"
+        },
+        "media_submission_receipt": {
+          "schema_version": 1,
+          "model": "yunshu-internal-gpt-image-2",
+          "media_kind": "image",
+          "id": "rejected-image-original",
+          "task_id": "rejected-image-original",
+          "submission_code": "media_submission_rejected",
+          "submission_state": "not_submitted",
+          "billing_state": "refunded",
+          "refund_confirmed": true,
+          "upstream_submitted": true,
+          "retryable": false,
+          "resubmittable": true,
+          "rejection_reason": "upstream_model_not_available",
+          "provider_response_received": true,
+          "recovery": {
+            "method": "GET",
+            "path": "/v1/tasks/rejected-image-original"
+          }
+        }
+      },
+      "query": {
+        "code": "success",
+        "data": {
+          "id": "rejected-image-original",
+          "task_id": "rejected-image-original",
+          "model": "yunshu-internal-gpt-image-2",
+          "media_kind": "image",
+          "status": "FAILURE"
+        },
+        "media_submission_receipt": {
+          "schema_version": 1,
+          "model": "yunshu-internal-gpt-image-2",
+          "media_kind": "image",
+          "id": "rejected-image-original",
+          "task_id": "rejected-image-original",
+          "submission_code": "media_submission_rejected",
+          "submission_state": "not_submitted",
+          "billing_state": "refunded",
+          "refund_confirmed": true,
+          "upstream_submitted": true,
+          "retryable": false,
+          "resubmittable": true,
+          "rejection_reason": "upstream_model_not_available",
+          "provider_response_received": true,
+          "recovery": {
+            "method": "GET",
+            "path": "/v1/tasks/rejected-image-original"
+          }
+        }
+      }
+    },
+    "video": {
+      "http_status": 400,
+      "body": {
+        "code": "media_submission_rejected",
+        "id": "rejected-video-original",
+        "task_id": "rejected-video-original",
+        "model": "bt-seedance-2.0",
+        "media_kind": "video",
+        "submission_state": "not_submitted",
+        "retryable": false,
+        "resubmittable": true,
+        "recovery": {
+          "method": "GET",
+          "path": "/v1/tasks/rejected-video-original"
+        },
+        "media_submission_receipt": {
+          "schema_version": 1,
+          "model": "bt-seedance-2.0",
+          "media_kind": "video",
+          "id": "rejected-video-original",
+          "task_id": "rejected-video-original",
+          "submission_code": "media_submission_rejected",
+          "submission_state": "not_submitted",
+          "billing_state": "refunded",
+          "refund_confirmed": true,
+          "upstream_submitted": true,
+          "retryable": false,
+          "resubmittable": true,
+          "rejection_reason": "upstream_model_not_available",
+          "provider_response_received": true,
+          "recovery": {
+            "method": "GET",
+            "path": "/v1/tasks/rejected-video-original"
+          }
+        }
+      },
+      "query": {
+        "code": "success",
+        "data": {
+          "id": "rejected-video-original",
+          "task_id": "rejected-video-original",
+          "model": "bt-seedance-2.0",
+          "media_kind": "video",
+          "status": "FAILURE"
+        },
+        "media_submission_receipt": {
+          "schema_version": 1,
+          "model": "bt-seedance-2.0",
+          "media_kind": "video",
+          "id": "rejected-video-original",
+          "task_id": "rejected-video-original",
+          "submission_code": "media_submission_rejected",
+          "submission_state": "not_submitted",
+          "billing_state": "refunded",
+          "refund_confirmed": true,
+          "upstream_submitted": true,
+          "retryable": false,
+          "resubmittable": true,
+          "rejection_reason": "upstream_model_not_available",
+          "provider_response_received": true,
+          "recovery": {
+            "method": "GET",
+            "path": "/v1/tasks/rejected-video-original"
+          }
+        }
+      }
+    }
+  }
+}

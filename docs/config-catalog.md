@@ -904,7 +904,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-credits-index`
 
 - `inject`: `webServer` · `tools`
-- `source`: [`packages/host/credits-index/src/index.ts:102`](../packages/host/credits-index/src/index.ts)
+- `source`: [`packages/host/credits-index/src/index.ts:103`](../packages/host/credits-index/src/index.ts)
 
 ```ts config-catalog
 /** Plugin config: platform origin, display rate, and where the session file lives. */
@@ -985,7 +985,7 @@ export interface Config {
   videoProjectConcurrency?: number
   /** Delay between read-only provider task status requests. */
   videoProjectPollIntervalMs?: number
-  /** Complete deadline for one generated clip, including saving it. */
+  /** Deadline for one submission, original-task read or save; accepted generation has no total elapsed deadline. */
   videoProjectTaskTimeoutMs?: number
   /** Maximum bytes saved for each generated clip. */
   videoProjectDownloadMaxBytes?: number

@@ -2386,6 +2386,7 @@ describe('deployed Harness API through the real product Loader', () => {
       { type: 'audio_url', role: 'reference_audio', audio_url: { url: `data:audio/wav;base64,${wav.toString('base64')}` } },
       { type: 'audio_url', role: 'reference_audio', audio_url: { url: `data:audio/mpeg;base64,${mp3.toString('base64')}` } },
     ])
+    await provider.prepareSubmissions?.([request], new AbortController().signal)
     await expect(provider.submit(request, new AbortController().signal)).rejects.toMatchObject({ code: 'VIDEO_SUBMIT_UNKNOWN' })
     expect(calls.filter(call => call.path === '/harness/v1/video/generations').at(-1)?.body).toEqual(request)
     expect(calls.filter(call => (call.path.startsWith('/harness/v1/video') || call.path.startsWith('/harness/v1/tasks/'))).map(call => call.path)).toEqual(Array<string>(3).fill('/harness/v1/video/generations'))
@@ -2437,6 +2438,7 @@ describe('deployed Harness API through the real product Loader', () => {
       const signal = new AbortController().signal
       const request = await provider.build({ prompt: 'A synthetic clip', totalDurationSeconds: 4, audio },
         'grok-imagine-video', 'A synthetic clip', 4, signal)
+      await provider.prepareSubmissions?.([request], signal)
       await expect(provider.submit(request, signal)).rejects.toMatchObject({ code: 'VIDEO_SUBMIT_UNKNOWN' })
     }
     expect(calls.filter(call => call.path === '/harness/v1/video/generations').map(call => object(call.body).generate_audio)).toEqual([true, false])
@@ -2795,6 +2797,7 @@ describe('deployed Harness API through the real product Loader', () => {
     const provider = await options.acquireProvider(stateDir, agent.session)
     const selected = await provider.model('MiniMax-H3', signal)
     const request = await provider.build({ prompt: 'A synthetic clip', totalDurationSeconds: 4 }, selected.id, 'A synthetic clip', 4, signal)
+    await provider.prepareSubmissions?.([request], signal)
     const accepted = await provider.submit(request, signal)
     expect(await provider.check(accepted.taskId, request, signal)).toEqual({ status: 'succeeded' })
     const cache = join(stateDir, 'video-projects')
@@ -3456,6 +3459,7 @@ describe('deployed Harness API through the real product Loader', () => {
         for (const seconds of durations) {
           const request = await provider.build({ prompt: 'A synthetic parameter check', totalDurationSeconds: seconds,
             resolution }, model, 'A synthetic parameter check', seconds, signal)
+          await provider.prepareSubmissions?.([request], signal)
           await expect(provider.submit(request, signal)).resolves.toEqual({ taskId: 'fixture-video-task' })
           expect(calls.at(-1)).toMatchObject({ path: '/harness/v1/videos', authorization: 'Bearer sk-owned-relay', body: {
             model, prompt: 'A synthetic parameter check', seconds, size: resolution, gen_type: 'text_to_video', n: 1,
@@ -3470,6 +3474,7 @@ describe('deployed Harness API through the real product Loader', () => {
     for (const resolution of ['768P', '2K']) for (const seconds of h3.durations) {
       const request = await provider.build({ prompt: 'A synthetic H3 check', totalDurationSeconds: seconds,
         resolution, ratio: '16:9', audio: true }, h3.id, 'A synthetic H3 check', seconds, signal)
+      await provider.prepareSubmissions?.([request], signal)
       await expect(provider.submit(request, signal)).resolves.toEqual({ taskId: 'fixture-video-task' })
       expect(calls.at(-1)).toMatchObject({ path: '/harness/v1/video/generations', body: {
         model: 'MiniMax-H3', prompt: 'A synthetic H3 check', duration: seconds, seconds, resolution, size: resolution,
@@ -3501,6 +3506,7 @@ describe('deployed Harness API through the real product Loader', () => {
         resolution: '720x1280', referenceImages: Array<string>(images).fill(String(image.assetId)),
         referenceVideos: Array<string>(videos).fill(video), referenceAudios: Array<string>(audios).fill(audio),
       }, model, 'Retain every accepted reference', seconds, signal)
+      await provider.prepareSubmissions?.([request], signal)
       await expect(provider.submit(request, signal)).resolves.toEqual({ taskId: 'fixture-video-task' })
       const encoded = object(calls.at(-1)?.body).multipart
       if (typeof encoded !== 'string') throw new Error('Expected multipart references')
@@ -3521,6 +3527,7 @@ describe('deployed Harness API through the real product Loader', () => {
       referenceImages: Array<string>(9).fill(String(image.assetId)), referenceVideos: Array<string>(3).fill(video),
       referenceAudios: Array<string>(3).fill(audio),
     }, h3.id, 'All H3 media slots', 15, signal)
+    await provider.prepareSubmissions?.([request], signal)
     await expect(provider.submit(request, signal)).resolves.toEqual({ taskId: 'fixture-video-task' })
     const content = object(object(calls.at(-1)?.body).metadata).content
     if (!Array.isArray(content)) throw new Error('Expected complete H3 media content')
@@ -3530,6 +3537,7 @@ describe('deployed Harness API through the real product Loader', () => {
     const frames = await provider.build({ prompt: 'H3 first and last frames', totalDurationSeconds: 5, resolution: '768P',
       frameImages: [String(image.assetId), String(image.assetId)], ratio: 'adaptive',
     }, h3.id, 'H3 first and last frames', 5, signal)
+    await provider.prepareSubmissions?.([frames], signal)
     await expect(provider.submit(frames, signal)).resolves.toEqual({ taskId: 'fixture-video-task' })
     const frameMetadata = object(object(calls.at(-1)?.body).metadata)
     expect(frameMetadata.first_frame_image).toMatch(/^data:image\/(?:png|jpeg);base64,/u)
@@ -3873,6 +3881,7 @@ describe('deployed Harness API through the real product Loader', () => {
     expect(JSON.stringify(request)).not.toMatch(/sk-owned|access-user|data:|voice\.wav|blackrx-workspace/u)
     await writeFile(join(workspace, 'voice.wav'), 'local file changed after preparation')
     videoTaskStatus = 'SUCCESS'
+    await provider.prepareSubmissions?.([request], new AbortController().signal)
     expect(await provider.submit(request, new AbortController().signal)).toEqual({ taskId: 'fixture-video-task' })
     const encoded = object(calls.filter(call => call.path === '/harness/v1/videos')[0]?.body).multipart
     if (typeof encoded !== 'string') throw new Error('Expected multipart project submission')

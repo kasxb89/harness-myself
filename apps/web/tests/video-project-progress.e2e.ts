@@ -19,12 +19,13 @@ import { expect, it } from 'vitest'
 import { fixtureUserPrompts, normalizeWebSessionVolatiles, webSnapshotMode } from './scaffold.ts'
 import { REPO_ROOT } from './support.ts'
 
-const SNAPSHOT_DIR = fileURLToPath(new URL('../../../snapshots/web/video-project-progress', import.meta.url))
-const HEADER_DIR = fileURLToPath(new URL('../../../snapshots/web/h3-submission-outcomes', import.meta.url))
+const SNAPSHOT_DIR = fileURLToPath(new URL('../../../snapshots/web/video-project-progress-background', import.meta.url))
+const HEADER_DIR = SNAPSHOT_DIR
 const FIXTURE = join(SNAPSHOT_DIR, 'session.v4.jsonl')
 const PROMPTS = [
-  'Start one MiniMax-H3 project with three four-second clips and two concurrent observations. Reply PROJECT_STARTED and stop; do not read or cancel it yet.',
-  'Read the started project live output once, stop its local job, read its final output, then reply OBSERVATION_STOPPED. Do not generate another project or clip.',
+  'Start one MiniMax-H3 project with three four-second clips and two concurrent observations. Leave it in the background; do not read or cancel it yet.',
+  'Read the started project live output once. Do not wait or generate another project or clip.',
+  'Stop its local job, read its final output, then reply OBSERVATION_STOPPED. Do not generate another project or clip.',
 ] as const
 const SHOT_PROMPTS = ['SCENE_PROGRESS_ONE', 'SCENE_PROGRESS_TWO', 'SCENE_PROGRESS_THREE'] as const
 const KEY = 'DSH_VIDEO_PROGRESS_FIXTURE_KEY'
@@ -278,13 +279,13 @@ it.skipIf(!runtimeAvailable)('records concurrent per-clip progress and terminal 
           model: 'MiniMax-H3', prompt: 'Three independently observed synthetic clips', total_duration_seconds: 12,
           shot_durations_seconds: [4, 4, 4], shot_prompts: SHOT_PROMPTS,
         } }
-        if (attempt >= 3 && attempt <= 5) {
+        if (attempt >= 2 && attempt <= 4) {
           const job = returnedProject(body).job_id
           if (typeof job !== 'string') throw new Error('Expected the actual registered job id')
-          tool = { id: `video-control-${String(attempt)}`, name: attempt === 4 ? 'job_kill' : 'job_output',
-            args: { job_id: job, ...attempt === 5 ? { wait: true, timeout_ms: 10000 } : {} } }
+          tool = { id: `video-control-${String(attempt)}`, name: attempt === 3 ? 'job_kill' : 'job_output',
+            args: { job_id: job, ...attempt === 4 ? { wait: true, timeout_ms: 10000 } : {} } }
         }
-        if (![1, 2, 3, 4, 5, 6].includes(attempt)) throw new Error('Unexpected model continuation')
+        if (![1, 2, 3, 4, 5].includes(attempt)) throw new Error('Unexpected model continuation')
         response.setHeader('content-type', 'text/event-stream')
         const events: object[] = [{ type: 'message_start', message: { id: `progress-message-${String(attempt)}`, type: 'message',
           role: 'assistant', model: 'synthetic', content: [], usage: { input_tokens: 3, output_tokens: 0 } } }]
@@ -293,7 +294,7 @@ it.skipIf(!runtimeAvailable)('records concurrent per-clip progress and terminal 
           { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify(tool.args) } },
         )
         else events.push({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
-          { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: attempt === 2 ? 'PROJECT_STARTED' : 'OBSERVATION_STOPPED' } })
+          { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'OBSERVATION_STOPPED' } })
         events.push({ type: 'content_block_stop', index: 0 }, { type: 'message_delta',
           delta: { stop_reason: tool === undefined ? 'end_turn' : 'tool_use', stop_sequence: null }, usage: { output_tokens: 2 } },
         { type: 'message_stop' })
@@ -410,7 +411,7 @@ it.skipIf(!runtimeAvailable)('records concurrent per-clip progress and terminal 
   expect([...new Set(queries)].toSorted()).toEqual([
     '/harness/v1/tasks/progress-task-1', '/harness/v1/tasks/progress-task-2',
   ])
-  expect(modelRequests).toHaveLength(firstRecording ? 6 : 0)
+  expect(modelRequests).toHaveLength(firstRecording ? 5 : 0)
   expect(errors).toEqual([])
   await cleanup.socket()
   await host.stop()
@@ -434,9 +435,13 @@ it.skipIf(!runtimeAvailable)('records concurrent per-clip progress and terminal 
   const schemas = normalizedToolSchemas(normalizedRaw, context)
   const promptSidecar = formatSystemPromptSnapshot(prompts[0]!, prompts.slice(1))
   const schemaSidecar = formatToolSchemasSnapshot(schemas[0]!, schemas.slice(1))
-  if (firstRecording) await writeFile(FIXTURE, redactSessionSnapshotIds([
-    scrubSessionSnapshot(tokenizeSessionFixtureCwd(normalizedRaw)),
-  ])[0]!)
+  if (firstRecording) {
+    await writeFile(FIXTURE, redactSessionSnapshotIds([scrubSessionSnapshot(tokenizeSessionFixtureCwd(normalizedRaw))])[0]!)
+  }
+  if (firstRecording || mode === 'refresh') {
+    await writeFile(join(HEADER_DIR, 'system-prompt.expected.md'), promptSidecar)
+    await writeFile(join(HEADER_DIR, 'tool-schemas.expected.json'), schemaSidecar)
+  }
   const expected = await readFile(FIXTURE, 'utf8')
   expect(normalizeSessionSnapshots([normalizedRaw], context)[0]).toBe(normalizeSessionSnapshots([expected], fixtureContext(expected))[0])
   expect(promptSidecar).toBe(await readFile(join(HEADER_DIR, 'system-prompt.expected.md'), 'utf8'))

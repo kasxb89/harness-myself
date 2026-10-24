@@ -38,7 +38,8 @@ afterEach(async () => {
   directory = undefined
 })
 
-async function boot(production = false, workspaceIncludesState = false, managedOutput = false) {
+async function boot(production = false, workspaceIncludesState = false, managedOutput = false,
+  humanText = '生成一个完整视频，按所选模型的实际时长生成分镜并合成。') {
   directory = await mkdtemp(join(tmpdir(), 'dsh-video-tools-loader-'))
   const workspace = workspaceIncludesState ? directory : join(directory, 'workspace')
   await mkdir(workspace, { recursive: true })
@@ -130,14 +131,14 @@ async function boot(production = false, workspaceIncludesState = false, managedO
   const ctx = context
   session.append('turn/start', { turn: 1 })
   session.append('user/message', createUserMessage({ source: { kind: 'user' },
-    content: [{ type: 'text', text: '生成一个完整视频，按所选模型的实际时长生成分镜并合成。' }] }), { surfaceOp: 'append' })
+    content: [{ type: 'text', text: humanText }] }), { surfaceOp: 'append' })
   let callIndex = 0
-  const call = async (name: string, args: unknown, signal = new AbortController().signal) => {
+  const call = async (name: string, args: unknown, signal = new AbortController().signal, callerAgent = agent) => {
     const step = ++callIndex
     const callId = ToolCallId(`video-${String(step)}`)
-    const logged = session.append('tool/call', { turn: 1, step, callId, name, arguments: JSON.stringify(args) ?? 'null' })
-    const result = await ctx.tools.execute({ callId, name, arguments: args, agent, signal })
-    session.append('tool/result', { turn: 1, step, message: createToolResultMessage({ callId,
+    const logged = callerAgent.session.append('tool/call', { turn: 1, step, callId, name, arguments: JSON.stringify(args) ?? 'null' })
+    const result = await ctx.tools.execute({ callId, name, arguments: args, agent: callerAgent, signal })
+    callerAgent.session.append('tool/result', { turn: 1, step, message: createToolResultMessage({ callId,
       content: result.content, isError: result.isError }) }, { surfaceOp: 'append', sourceEventSeqs: [logged.seq] })
     return result
   }
@@ -156,6 +157,201 @@ function json(value: unknown): Record<string, unknown> {
 }
 
 describe('video tools through Loader, real tool registry and jobs runtime', () => {
+  it('reads a mode selected after all builds and resumes known IDs without new admission discovery', async () => {
+    const f = await boot()
+    f.setPending(true)
+    f.options.maxConcurrentSegments = 1
+    let mode: 'queued' | undefined
+    const modes: (typeof mode)[] = []
+    Object.defineProperty(f.provider, 'submissionMode', { get() { modes.push(mode); return mode } })
+    const prepare = vi.fn(async (requests: readonly object[]) => { expect(requests).toHaveLength(3); mode = 'queued' })
+    f.provider.prepareSubmissions = prepare
+    const generated = json((await f.call('generate_video_project', { prompt: '三段', total_duration_seconds: 45 })).value)
+    await vi.waitFor(() => { expect(f.requests).toEqual([15, 15, 15]) })
+    expect(modes.at(-1)).toBe('queued')
+    expect(prepare).toHaveBeenCalledOnce()
+    const id = JobId(String(generated.job_id))
+    f.ctx.jobs.kill(id, f.agent.id)
+    await f.ctx.jobs.wait(id, 1000, f.agent.id)
+    const read = vi.spyOn(f.provider, 'check')
+    mode = undefined
+    const modeReads = modes.length
+    const resumed = await f.call('resume_video_project', { project_id: generated.project_id })
+    expect(resumed.value).toMatchObject({ status: 'background' })
+    await vi.waitFor(() => { expect(read).toHaveBeenCalled() })
+    expect(prepare).toHaveBeenCalledOnce()
+    expect(modes).toHaveLength(modeReads)
+    expect(f.requests).toEqual([15, 15, 15])
+  })
+
+  it('preserves dynamic scheduling and gateway poll policy through the implicit-duration wrapper', async () => {
+    const f = await boot(false, false, false, '做个视频')
+    f.setPending(true)
+    let mode: 'queued' | undefined
+    let minimumPoll = 1
+    const modes: (typeof mode)[] = []
+    const intervals: number[] = []
+    Object.defineProperty(f.provider, 'submissionMode', { get() { modes.push(mode); return mode } })
+    Object.defineProperty(f.provider, 'pollIntervalMs', { get() { intervals.push(minimumPoll); return minimumPoll } })
+    const prepare = vi.fn(async () => { mode = 'queued'; minimumPoll = 20 })
+    f.provider.prepareSubmissions = prepare
+    const generated = await f.call('generate_video_project', { prompt: '一个茶杯' })
+    expect(generated.value).toMatchObject({ status: 'background' })
+    await vi.waitFor(() => { expect(intervals).toContain(20) })
+    expect(prepare).toHaveBeenCalledOnce()
+    expect(modes.at(-1)).toBe('queued')
+    expect(f.requests).toEqual([5])
+  })
+
+  it('cancels only original queued ids after the owned local job has stopped', async () => {
+    const f = await boot(false, false, false, '生成10秒视频')
+    f.setPending(true)
+    const queueId = 'vq_11111111-1111-4111-8111-111111111111'
+    vi.spyOn(f.provider, 'submit').mockImplementation(async (request) => { f.requests.push(Number(request.durationSeconds)); return { taskId: queueId } })
+    const cancel = vi.fn(async (_taskId: string) => ({ canceled: true }))
+    f.provider.cancel = cancel
+    const generated = json((await f.call('generate_video_project', { prompt: '茶杯' })).value)
+    await vi.waitFor(() => { expect(f.requests).toEqual([10]) })
+    const jobId = JobId(String(generated.job_id))
+    const result = await f.call('cancel_video_project', { project_id: generated.project_id })
+    expect(result.value).toMatchObject({ status: 'cancelled', task_ids: [queueId], cancelled_task_ids: [queueId], unconfirmed_task_ids: [] })
+    expect(cancel).toHaveBeenCalledOnce()
+    expect(cancel.mock.calls[0]?.[0]).toBe(queueId)
+    await vi.waitFor(() => { expect(f.ctx.jobs.get(jobId, f.agent.id).status).toBe('killed') })
+    const retained = await readVideoProject(f.options, String(generated.project_id), f.agent.id, f.workspace, f.provider.identity)
+    expect(retained.segments[0]?.taskId).toBe(queueId)
+    expect(f.requests).toEqual([10])
+  })
+
+  it.each(['dispatching', 'network', 'legacy'] as const)('does not claim provider cancellation or refund after %s', async (state) => {
+    const f = await boot(false, false, false, '生成10秒视频')
+    f.setPending(true)
+    const taskId = state === 'legacy' ? 'task-legacy' : 'vq_22222222-2222-4222-8222-222222222222'
+    vi.spyOn(f.provider, 'submit').mockImplementation(async (request) => { f.requests.push(Number(request.durationSeconds)); return { taskId } })
+    const cancel = vi.fn(async () => { if (state === 'network') throw new Error('private timeout detail'); return { canceled: false } })
+    f.provider.cancel = cancel
+    const generated = json((await f.call('generate_video_project', { prompt: '茶杯' })).value)
+    await vi.waitFor(() => { expect(f.requests).toEqual([10]) })
+    const result = await f.call('cancel_video_project', { project_id: generated.project_id })
+    expect(result.value).toMatchObject({ status: 'stopped', code: 'VIDEO_CANCELLATION_UNCONFIRMED',
+      task_ids: [taskId], cancelled_task_ids: [], unconfirmed_task_ids: [taskId] })
+    expect(json(result.value).message).toContain('可能继续运行并计费')
+    expect(JSON.stringify(result.value)).not.toContain('private timeout detail')
+    expect(cancel).toHaveBeenCalledTimes(state === 'legacy' ? 0 : 1)
+    expect(f.requests).toEqual([10])
+  })
+
+  it.each(['account', 'workspace', 'chat'] as const)('rejects %s ownership changes before stopping or canceling the original task', async (scope) => {
+    const f = await boot(false, false, false, '生成10秒视频')
+    f.setPending(true)
+    const cancel = vi.fn(async (_taskId: string) => ({ canceled: true }))
+    f.provider.cancel = cancel
+    const generated = json((await f.call('generate_video_project', { prompt: '茶杯' })).value)
+    await vi.waitFor(() => { expect(f.requests).toEqual([10]) })
+    const foreignId = scope === 'chat' ? SessionId('another-chat') : f.agent.id
+    const foreignSession = Session.create(foreignId, [], { version: SESSION_FORMAT_VERSION, id: foreignId, createdAt: 0,
+      isSeeded: false, cwd: scope === 'workspace' ? join(f.workspace, 'other') : f.workspace })
+    const foreign: Agent = { ...f.agent, id: foreignId, session: foreignSession }
+    if (scope === 'account') f.options.acquireProvider = async () => ({ ...f.provider, identity: { accountId: 'other', sessionFingerprint: 'other' } })
+    const result = await f.call('cancel_video_project', { project_id: generated.project_id }, new AbortController().signal, foreign)
+    expect(result.value).toMatchObject({ status: 'failed', code: 'PROJECT_ACCESS_DENIED' })
+    expect(cancel).not.toHaveBeenCalled()
+    expect(f.ctx.jobs.get(JobId(String(generated.job_id)), f.agent.id).status).toBe('running')
+    expect(f.requests).toEqual([10])
+  })
+
+  it('joins a late accepted queue id before canceling it and blocks a competing resume', async () => {
+    const f = await boot(false, false, false, '生成10秒视频')
+    const queueId = 'vq_33333333-3333-4333-8333-333333333333'
+    const admission = Promise.withResolvers<{ taskId: string }>()
+    vi.spyOn(f.provider, 'submit').mockImplementation(async (request) => { f.requests.push(Number(request.durationSeconds)); return admission.promise })
+    const cancel = vi.fn(async (_taskId: string) => ({ canceled: true }))
+    f.provider.cancel = cancel
+    const generated = json((await f.call('generate_video_project', { prompt: '茶杯' })).value)
+    await vi.waitFor(() => { expect(f.requests).toEqual([10]) })
+    const jobId = JobId(String(generated.job_id))
+    const cancelling = f.call('cancel_video_project', { project_id: generated.project_id })
+    try {
+      await vi.waitFor(() => { expect(f.ctx.jobs.get(jobId, f.agent.id).status).toBe('stopping') })
+      expect(cancel).not.toHaveBeenCalled()
+      const resumed = await f.call('resume_video_project', { project_id: generated.project_id })
+      expect(resumed.value).toMatchObject({ status: 'failed', code: 'PROJECT_ALREADY_RUNNING' })
+      admission.resolve({ taskId: queueId })
+      const result = await cancelling
+      expect(result.value).toMatchObject({ status: 'cancelled', task_ids: [queueId], cancelled_task_ids: [queueId] })
+      expect(cancel.mock.calls[0]?.[0]).toBe(queueId)
+      const retained = await readVideoProject(f.options, String(generated.project_id), f.agent.id, f.workspace, f.provider.identity)
+      expect(retained.segments[0]?.taskId).toBe(queueId)
+      expect(f.requests).toEqual([10])
+    } finally { admission.resolve({ taskId: queueId }); await cancelling }
+  })
+
+  it('does not restart an earlier resume whose preflight finished after cancellation', async () => {
+    const f = await boot(false, false, false, '生成10秒视频')
+    f.setPending(true)
+    const generated = json((await f.call('generate_video_project', { prompt: '茶杯' })).value)
+    await vi.waitFor(() => { expect(f.requests).toEqual([10]) })
+    const jobId = JobId(String(generated.job_id))
+    f.ctx.jobs.kill(jobId, f.agent.id)
+    await f.ctx.jobs.wait(jobId, 1000, f.agent.id)
+    const preflight = Promise.withResolvers<undefined>()
+    const entered = Promise.withResolvers<undefined>()
+    vi.spyOn(f.editor, 'preflight').mockImplementation(async () => { entered.resolve(undefined); await preflight.promise })
+    const resume = f.call('resume_video_project', { project_id: generated.project_id })
+    try {
+      await entered.promise
+      const cancelled = await f.call('cancel_video_project', { project_id: generated.project_id })
+      expect(cancelled.value).toMatchObject({ status: 'stopped' })
+      preflight.resolve(undefined)
+      expect((await resume).value).toMatchObject({ status: 'failed', code: 'PROJECT_CANCELLED' })
+      expect(f.ctx.jobs.list(f.agent.id)).toHaveLength(1)
+      expect(f.requests).toEqual([10])
+    } finally { preflight.resolve(undefined); await resume }
+  })
+
+  it('binds a ten-second human request and releases the turn while its original job is still running', async () => {
+    const f = await boot(false, false, false, '来个10s视频')
+    f.setPending(true)
+    const answer = await f.call('generate_video_project', { prompt: '茶杯升起热气' })
+    expect(answer.isError).toBe(false)
+    expect(answer.concludesTurn).toBe(true)
+    const value = json(answer.value)
+    expect(value.plan_seconds).toEqual([10])
+    const id = JobId(String(value.job_id))
+    await vi.waitFor(() => { expect(f.requests).toEqual([10]) })
+    expect(f.ctx.jobs.get(id, f.agent.id)).toMatchObject({ status: 'running', readMode: 'background' })
+    const wait = vi.spyOn(f.ctx.jobs, 'wait')
+    const read = await f.call('job_output', { job_id: id, wait: true, timeout_ms: 600_000 })
+    expect(wait).not.toHaveBeenCalled()
+    expect(read.isError).toBe(false)
+    expect(read.concludesTurn).toBe(true)
+    expect(json(json(read.value).job).status).toBe('running')
+    expect(f.requests).toEqual([10])
+  })
+
+  it('rejects a tool duration conflicting with the original human before any submission', async () => {
+    const f = await boot(false, false, false, '来一个10秒视频')
+    const result = await f.call('generate_video_project', { prompt: '茶杯', total_duration_seconds: 30 })
+    expect(result.isError).toBe(false)
+    expect(result.value).toMatchObject({ status: 'failed', code: 'CREATIVE_VIDEO_INTENT_UNAVAILABLE' })
+    expect(result.concludesTurn).toBeUndefined()
+    expect(f.requests).toEqual([])
+  })
+
+  it('creates three separate ten-second works without treating their duration as a work count', async () => {
+    const f = await boot(false, false, false, '来3个10s视频')
+    f.setPending(true)
+    for (let index = 0; index < 3; index += 1) {
+      const result = await f.call('generate_video_project', { prompt: `第${String(index + 1)}个茶杯视频` })
+      expect(result.concludesTurn).toBe(true)
+      expect(result.value).toMatchObject({ status: 'background', plan_seconds: [10] })
+    }
+    await vi.waitFor(() => { expect(f.requests).toEqual([10, 10, 10]) })
+    const extra = await f.call('generate_video_project', { prompt: '不应多出的第四个视频' })
+    expect(extra.value).toMatchObject({ status: 'failed', code: 'CREATIVE_VIDEO_COUNT_LIMIT' })
+    expect(f.requests).toEqual([10, 10, 10])
+  })
+
   it('runs gateway-approved concurrent clips inside one native background project', async () => {
     const f = await boot()
     f.options.maxConcurrentSegments = 2
@@ -625,7 +821,7 @@ describe('video tools through Loader, real tool registry and jobs runtime', () =
     const entry = [...fixture.ctx.loader.entries()].find(item => item.options.name === 'video-fixture')
     expect(entry?.fiber).toBeDefined()
     await entry!.fiber!.dispose()
-    for (const name of ['generate_video_project', 'video_project_status', 'resume_video_project', 'edit_video']) expect(fixture.ctx.tools.get(name)).toBeUndefined()
+    for (const name of ['generate_video_project', 'video_project_status', 'resume_video_project', 'cancel_video_project', 'edit_video']) expect(fixture.ctx.tools.get(name)).toBeUndefined()
     expect(fixture.ctx.jobs.get(jobId, fixture.agent.id).status).toBe('killed')
   })
 
@@ -683,7 +879,7 @@ describe('video tools through Loader, real tool registry and jobs runtime', () =
     expect(skill).toMatchObject({ source: 'bundled', invocation: { modelInvocable: true, userInvocable: true } })
     expect(skill?.content).toContain('For explicit timing or complex plans, call list_video_models once')
     expect(skill?.content).toContain('For every new chat video request, use generate_video_project by default, including a single short clip')
-    for (const name of ['generate_video', 'generate_video_project', 'video_project_status', 'resume_video_project', 'edit_video']) expect(fixture.ctx.tools.get(name)).toBeDefined()
+    for (const name of ['generate_video', 'generate_video_project', 'video_project_status', 'resume_video_project', 'cancel_video_project', 'edit_video']) expect(fixture.ctx.tools.get(name)).toBeDefined()
     expect(fixture.ctx.tools.get('generate_video_project')?.description).toContain('40-second')
     expect(fixture.ctx.tools.schemas().find(schema => schema.name === 'generate_video')).toMatchSnapshot('single-clip audio and dialogue contract')
     expect(fixture.ctx.tools.schemas().filter(schema => ['generate_video_project', 'video_project_status', 'resume_video_project', 'edit_video'].includes(schema.name))).toMatchSnapshot()

@@ -336,14 +336,16 @@ export function apply(ctx: Context, config: Config): void {
     async execute(args, exec) {
       const id = validateJobId(args.job_id)
       const jobs = ctx.jobs
-      if (args.wait === true) {
+      if (args.wait === true && jobs.get(id, exec.agent?.id).readMode !== 'background') {
         // A settlement that releases this wait is reported `awaited`, so the
         // notice listener above skips it: this result carries the terminal
         // state. A timed-out or aborted wait has left the registry's waiter
         // set before any later settlement, which then notifies as usual.
         await jobs.wait(id, Math.min(args.timeout_ms ?? waitDefault, waitCap), exec.agent?.id, exec.signal)
       }
-      return readBody(jobs.read(id, exec.agent?.id))
+      const read = jobs.read(id, exec.agent?.id)
+      if (read.job.readMode === 'background' && (read.job.status === 'running' || read.job.status === 'stopping')) exec.concludeTurn()
+      return readBody(read)
     },
     presentCall: args => presentJobCall(`Read output from background job ${args.job_id}`, 'read', args.job_id),
   }))

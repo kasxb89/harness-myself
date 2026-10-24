@@ -94,6 +94,17 @@ async function rejection(operation: Promise<unknown>): Promise<Error> {
 }
 
 describe('account-bound video relay requests', () => {
+  it.each([408, 429, 500, 502, 503, 401, 403])('classifies original-task GET HTTP %s without submitting or exposing its body', async (status) => {
+    const f = await fixture((_request, response) => {
+      response.statusCode = status
+      json(response, { message: 'synthetic private provider detail' })
+    })
+    const error = await rejection(f.relay.check('original-provider-task', '/v1/videos', signal(), 'other-video-model'))
+    expect(error).toMatchObject({ code: status === 408 || status === 429 || status >= 500 ? 'VIDEO_READ_RETRYABLE' : 'VIDEO_READ_REJECTED' })
+    expect(error.message).not.toContain('synthetic private provider detail')
+    expect(f.calls.map(call => [call.method, call.path])).toEqual([['GET', '/v1/videos/original-provider-task']])
+  })
+
   const capacity = mediaContract.find(entry => entry.method === 'POST' && entry.http_status === 429 && entry.response.media_kind === 'video')
   const canonical = mediaContract.find(entry => entry.method === 'GET' && entry.response.media_kind === 'video' && Object.hasOwn(entry.response, 'media_submission_receipt'))
   const uncertain = mediaContract.find(entry => entry.method === 'POST' && entry.http_status === 202)

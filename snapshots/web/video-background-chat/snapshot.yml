@@ -1,0 +1,10 @@
+version: 1
+scenario: video-background-chat
+profile: web
+composition: video-background-chat
+recording: authored
+header:
+  class: video-background-chat
+  pin: true
+workspace:
+  final: true

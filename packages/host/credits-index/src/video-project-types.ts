@@ -6,6 +6,7 @@ import type { VideoEditor } from './video-edit.ts'
 import type { CreativeOwner, CreativeStore } from './creative-store.ts'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import type { VideoProjectActivity } from './creation-activity.ts'
+import type { VideoProjectAttemptId } from './video-project.ts'
 
 /** Credential-free JSON fields retained before the single submission attempt. */
 export type VideoRequestValue = string | number | boolean | null | VideoRequestValue[] | { [key: string]: VideoRequestValue }
@@ -54,8 +55,22 @@ export interface VideoProjectInput {
   referenceAudios?: readonly string[]
 }
 
+/** One authorized clip's stable admission identity, separate from the requested number of final works. */
+export interface VideoProjectSubmission {
+  /** Persisted identity of this original clip; repeat dispatch must remain idempotent at the gateway. */
+  readonly attemptId: VideoProjectAttemptId
+  /** Duration of this clip, never the number of requested videos. */
+  readonly durationSeconds: number
+  /** One billable clip request; a multi-clip project still represents one final work. */
+  readonly count: 1
+}
+
 /** One live account-bound relay adapter, captured without storing its key. */
 export interface VideoProjectProvider {
+  /** Opt in only when the gateway durably queues each accepted task before provider dispatch. */
+  readonly submissionMode?: 'queued' | undefined
+  /** Minimum original-task observation interval advertised by the gateway. */
+  readonly pollIntervalMs?: number | undefined
   /** Account and login generation against which later charges are checked. */
   readonly identity: VideoProjectIdentity
   /**
@@ -93,12 +108,20 @@ export interface VideoProjectProvider {
    */
   build(input: VideoProjectInput, model: string, prompt: string, durationSeconds: number, signal: AbortSignal): Promise<VideoProjectRequest>
   /**
+   * Check every retained request before choosing admission transport, without submitting work.
+   * @param requests - Complete requests retained for this execution, including original accepted tasks.
+   * @param signal - Cancels discovery and validation before any new submission.
+   * @returns Resolves after the whole project selects a supported transport.
+   */
+  prepareSubmissions?(requests: readonly VideoProjectRequest[], signal: AbortSignal): Promise<void>
+  /**
    * Submit once; only a VideoSubmissionRejection establishes a settled rejection. Other throws remain unknown.
    * @param request - Exact prepared request.
    * @param signal - Cancels the submission; cancellation does not establish whether it was accepted.
-   * @returns Provider-issued task id.
+   * @param submission - Persisted clip identity for an opt-in idempotent gateway admission.
+   * @returns Stable accepted task id, including a gateway queue task when explicitly supported.
    */
-  submit(request: VideoProjectRequest, signal: AbortSignal): Promise<{ taskId: string }>
+  submit(request: VideoProjectRequest, signal: AbortSignal, submission?: VideoProjectSubmission): Promise<{ taskId: string }>
   /**
    * Read only a previously persisted task id. No method may submit from here.
    * @param taskId - Previously accepted upstream task.
@@ -107,6 +130,14 @@ export interface VideoProjectProvider {
    * @returns Current terminal, accepted-but-queued, or generating task state.
    */
   check(taskId: string, request: VideoProjectRequest, signal: AbortSignal): Promise<{ status: 'queued' | 'running' | 'succeeded' | 'failed'; message?: string }>
+  /**
+   * Cancel an original server queue item only when the gateway confirms it was never dispatched.
+   * @param taskId - Original persisted queue identity, never a new generation request.
+   * @param request - Original prepared model and duration.
+   * @param signal - Cancels this request without establishing remote cancellation.
+   * @returns Whether the original queue item is confirmed canceled before submission.
+   */
+  cancel?(taskId: string, request: VideoProjectRequest, signal: AbortSignal): Promise<{ canceled: boolean }>
   /**
    * Save an already completed task inside its private project cache; no paid generation.
    * @param taskId - Completed upstream task id.
@@ -159,8 +190,10 @@ export interface VideoProjectOptions {
   maxConcurrentSegments?: number
   /** Interval between reads of a known provider task. */
   pollIntervalMs: number
-  /** Deadline for each clip; expiry retains an accepted task id for explicit read-only resume. */
+  /** Deadline for each submission, original-task GET or save; accepted generation has no total elapsed deadline. */
   taskTimeoutMs: number
+  /** Maximum consecutive transient original-task GET retries; absence pauses on the first unavailable read. */
+  queryRetryLimit?: number
   /**
    * Local editor with preflight, path validation, probe, and composition.
    * @param workspaceRoot - Calling session workspace.

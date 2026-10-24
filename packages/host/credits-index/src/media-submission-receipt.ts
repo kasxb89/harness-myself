@@ -1,4 +1,4 @@
-/** Platform-owned proofs for a durable media task which was never sent upstream. @module */
+/** Platform-owned proofs for unsent media tasks or confirmed upstream admission rejections. @module */
 
 /** Media category retained by the initiating request, never inferred from a provider alias. */
 export type MediaKind = 'image' | 'video'
@@ -9,6 +9,8 @@ export interface MediaSubmissionRejection {
   readonly model: string
   readonly mediaKind: MediaKind
   readonly billingState: 'not_charged' | 'refunded'
+  /** True only for a received upstream rejection; false for the older never-sent proof. */
+  readonly upstreamSubmitted: boolean
   readonly code: string
 }
 
@@ -35,14 +37,21 @@ function canonicalRecovery(value: unknown, taskId: string): boolean {
     && Object.keys(recovery).every(key => key === 'method' || key === 'path')
 }
 
+function declaresRejected(body: Record<string, unknown>): boolean {
+  return containers(body).some(container => container.code === 'media_submission_rejected'
+    || container.submission_code === 'media_submission_rejected'
+    || record(container.media_submission_receipt)?.submission_code === 'media_submission_rejected')
+}
+
 /**
  * Detect malformed or misplaced proofs before legacy failure decoding.
  * @param value - Parsed HTTP body.
- * @returns Whether a proof field exists.
+ * @returns Whether a proof field or an explicit platform rejection marker exists.
  */
 export function hasMediaSubmissionReceipt(value: unknown): boolean {
   const body = record(value)
-  return body !== undefined && containers(body).some(container => Object.hasOwn(container, 'media_submission_receipt'))
+  return body !== undefined && (declaresRejected(body)
+    || containers(body).some(container => Object.hasOwn(container, 'media_submission_receipt')))
 }
 
 /**
@@ -130,7 +139,35 @@ function notSent(model: unknown, kind: MediaKind, body: Record<string, unknown>,
     || container.billing_state !== undefined && container.billing_state !== proof.billing_state
     || container.refund_confirmed !== undefined && container.refund_confirmed !== proof.refund_confirmed
     || container.code === 'media_submission_unknown')) return undefined
-  return { taskId: String(proof.id), model: String(proof.model), mediaKind: kind, billingState: proof.billing_state, code }
+  return { taskId: String(proof.id), model: String(proof.model), mediaKind: kind,
+    billingState: proof.billing_state, upstreamSubmitted: false, code }
+}
+
+const REJECTION_KEYS = new Set([...PROOF_KEYS, 'rejection_reason', 'provider_response_received'])
+
+function rejected(
+  model: unknown, kind: MediaKind, body: Record<string, unknown>, query: boolean,
+): MediaSubmissionRejection | undefined {
+  const proof = originalIdentity(model, kind, body)
+  if (proof === undefined || Object.keys(proof).some(key => !REJECTION_KEYS.has(key))
+    || proof.submission_code !== 'media_submission_rejected' || proof.submission_state !== 'not_submitted'
+    || proof.upstream_submitted !== true || proof.retryable !== false || proof.resubmittable !== true
+    || proof.billing_state !== 'refunded' || proof.refund_confirmed !== true
+    || proof.rejection_reason !== 'upstream_model_not_available' || proof.provider_response_received !== true) return undefined
+  if (containers(body).some(container =>
+    container.submission_code !== undefined && container.submission_code !== proof.submission_code
+    || container.submission_state !== undefined && container.submission_state !== proof.submission_state
+    || container.upstream_submitted !== undefined && container.upstream_submitted !== true
+    || container.retryable !== undefined && container.retryable !== false
+    || container.resubmittable !== undefined && container.resubmittable !== true
+    || container.billing_state !== undefined && container.billing_state !== 'refunded'
+    || container.refund_confirmed !== undefined && container.refund_confirmed !== true
+    || container.rejection_reason !== undefined && container.rejection_reason !== proof.rejection_reason
+    || container.provider_response_received !== undefined && container.provider_response_received !== true
+    || container.code !== undefined && container.code !== 'media_submission_rejected'
+      && !(query && container === body && container.code === 'success'))) return undefined
+  return { taskId: String(proof.id), model: String(proof.model), mediaKind: kind,
+    billingState: 'refunded', upstreamSubmitted: true, code: 'media_submission_rejected' }
 }
 
 /**
@@ -145,6 +182,15 @@ export function mediaSubmissionRejection(
   model: unknown, kind: MediaKind, httpStatus: number, value: unknown,
 ): MediaSubmissionRejection | undefined {
   const body = record(value)
+  if (body !== undefined && declaresRejected(body)) {
+    if (httpStatus !== 400 || body.code !== 'media_submission_rejected' || body.data !== undefined && body.data !== null
+      || body.submission_state !== 'not_submitted' || body.retryable !== false || body.resubmittable !== true
+      || containers(body).some(container => [container.status, container.task_status].some(state => state !== undefined
+        && state !== 'FAILURE' && state !== 'failed'))) return undefined
+    const proof = rejected(model, kind, body, false)
+    return proof !== undefined && body.id === proof.taskId && body.task_id === proof.taskId
+      && body.model === proof.model && body.media_kind === kind ? proof : undefined
+  }
   if (body === undefined || !Number.isInteger(httpStatus) || httpStatus < 400 || httpStatus > 499 || !businessCode(body.code)
     || (httpStatus === 429) !== (body.code === 'media_account_capacity_exhausted')
     || body.data !== undefined && body.data !== null) return undefined
@@ -172,6 +218,11 @@ export function mediaSubmissionQueryRejection(
   const body = record(value)
   if (httpStatus !== 200 || body === undefined || !identifier(taskId)) return undefined
   const states = containers(body).flatMap(container => [container.status, container.task_status].filter(state => state !== undefined))
+  if (declaresRejected(body)) {
+    if (states.length === 0 || states.some(state => state !== 'FAILURE')) return undefined
+    const proof = rejected(model, kind, body, true)
+    return proof?.taskId === taskId ? proof : undefined
+  }
   if (states.length === 0 || states.some(state => typeof state !== 'string'
     || !['failed', 'failure', 'fail', 'error', 'cancelled', 'canceled'].includes(state.toLowerCase()))) return undefined
   const proof = notSent(model, kind, body, 'MEDIA_SUBMISSION_NOT_SENT')
@@ -185,6 +236,7 @@ export function mediaSubmissionQueryRejection(
  */
 export function mediaSubmissionMessage(proof: MediaSubmissionRejection): string {
   const kind = proof.mediaKind === 'image' ? '图片' : '视频'
+  if (proof.upstreamSubmitted) return `本次${kind}请求已发送，但上游已明确拒绝受理，退款已确认；原任务记录保留，不会自动重新生成。`
   return proof.billingState === 'refunded'
     ? `本次${kind}请求未发送至上游，退款已确认；原任务记录保留，不会自动重新生成。`
     : `本次${kind}请求未发送至上游且未扣费；原任务记录保留，不会自动重新生成。`

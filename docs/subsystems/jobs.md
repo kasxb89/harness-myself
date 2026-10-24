@@ -49,6 +49,8 @@ interface JobSpec {
    * retention: it bounds the consuming model surface, never observers.
    */
   outputLimitBytes?: number
+  /** Keep live model reads non-blocking and conclude their turn; omission retains ordinary bounded waits. */
+  readMode?: 'background'
   /**
    * Pull sources the registry pumps into the ring at its own cadence.
    * Producers that narrate their own progress use {@link JobHandle.append}
@@ -233,6 +235,8 @@ interface JobView {
   readonly owner?: SessionId
   /** Producer-owned cap for complete model-facing notices and reads, in UTF-8 bytes. */
   readonly outputLimitBytes?: number
+  /** Producer-selected live model-read policy; absent for ordinary bounded waits. */
+  readonly readMode?: 'background'
   /** Current lifecycle state. */
   readonly status: JobStatus
   /** The producer's live progress line (`3/10`, the current phase); cleared at settlement. */
