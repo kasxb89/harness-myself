@@ -414,6 +414,12 @@ it.skipIf(!runtimeAvailable)('records independent native video requests while or
   })
   expect(actualWorkspace).toEqual(expectedWorkspace)
   const normalizedRaw = normalizeOutput(normalizeWebSessionVolatiles(raw))
+  const canonicalStarts = Object.fromEntries(toolResults(normalizedRaw)
+    .filter(result => result.name === 'generate_video_project')
+    .map(result => [result.callId, record(JSON.parse(result.text))]))
+  const capturedResults = join(REPO_ROOT, '.artifacts/web-session-headers/video-background-chat')
+  await mkdir(capturedResults, { recursive: true })
+  await writeFile(join(capturedResults, 'tool-results.expected.json'), JSON.stringify(canonicalStarts, null, 2) + '\n')
   const context = { sessionIds: [sessionId], cwd: workspace }
   const prompts = normalizedSystemPrompts(normalizedRaw, context)
     .map((value) => {
@@ -432,7 +438,27 @@ it.skipIf(!runtimeAvailable)('records independent native video requests while or
     await writeFile(join(SNAPSHOT_DIR, 'tool-schemas.expected.json'), schemaSidecar)
   }
   const expected = await readFile(FIXTURE, 'utf8')
-  expect(normalizeSessionSnapshots([normalizedRaw], context)[0]).toBe(normalizeSessionSnapshots([expected], fixtureContext(expected))[0])
+  // The immutable recording remains the replay input. This exact output
+  // golden records the later remaining-work contract without changing it.
+  const expectedStarts = record(JSON.parse(await readFile(join(SNAPSHOT_DIR, 'tool-results.expected.json'), 'utf8')))
+  expect(Object.keys(expectedStarts)).toEqual(Array.from({ length: 7 }, (_value, index) => `background-start-${index + 1}`))
+  expect(Object.values(expectedStarts).map(value => record(value).remaining_works)).toEqual([0, 0, 2, 1, 0, 0, 0])
+  expect(canonicalStarts).toEqual(expectedStarts)
+  const expectedRows = rows(expected)
+  const replaced: string[] = []
+  for (const row of expectedRows) {
+    if (row.type !== 'tool/result') continue
+    const message = record(record(row.data).message)
+    const callId = String(message.toolCallId)
+    const replacement = expectedStarts[callId]
+    if (replacement === undefined) continue
+    message.content = [{ type: 'text', text: JSON.stringify(replacement) }]
+    replaced.push(callId)
+  }
+  expect(replaced).toEqual(Object.keys(expectedStarts))
+  const expectedOutput = expectedRows.map(row => JSON.stringify(row)).join('\n') + '\n'
+  expect(normalizeSessionSnapshots([normalizedRaw], context)[0])
+    .toBe(normalizeSessionSnapshots([expectedOutput], fixtureContext(expected))[0])
   expect(promptSidecar).toBe(await readFile(join(SNAPSHOT_DIR, 'system-prompt.expected.md'), 'utf8'))
   expect(schemaSidecar).toBe(await readFile(join(SNAPSHOT_DIR, 'tool-schemas.expected.json'), 'utf8'))
 })

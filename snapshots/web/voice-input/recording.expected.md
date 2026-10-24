@@ -1,6 +1,7 @@
 - textbox "Describe what you want to build, / commands, @ files or sessions":
   - paragraph: Use the bash tool to
 - button "Cancel"
+- status "Receiving audio. Click Stop and transcribe when finished."
 - img "Recording…"
 - button "Stop and transcribe"
 - button "Send message"

@@ -196,6 +196,7 @@
       "@deepseek-ai/dsh-agent/brand": ["./packages/core/agent/src/brand.ts"],
       "@deepseek-ai/dsh-headless/startup": ["./packages/bundle/headless/src/startup.ts"],
       "@deepseek-ai/dsh-web-app/startup": ["./packages/bundle/web-app/src/startup.ts"],
+      "@deepseek-ai/dsh-web-app/standard-agent-tools": ["./packages/bundle/web-app/src/standard-agent-tools.ts"],
       "@deepseek-ai/dsh-client-*/client": ["./packages/client/*/src/client"],
       // One wildcard maps every @deepseek-ai/dsh-<name> to its source. Package
       // dir names are unique across groups, so first-on-disk-wins resolution is
@@ -535,6 +536,7 @@
       "@deepseek-ai/dsh-tool-ralph": ["./packages/experimental/tool-ralph/src"],
       "@deepseek-ai/dsh-tool-schedule": ["./packages/schedule/tool-schedule/src"],
       "@deepseek-ai/dsh-tool-session-query": ["./packages/experimental/tool-session-query/src"],
+      "@deepseek-ai/dsh-tool-session-relay": ["./packages/session-query/tool-session-relay/src"],
       "@deepseek-ai/dsh-tool-skill": ["./packages/skill/tool-skill/src"],
       "@deepseek-ai/dsh-tool-str-replace-editor": ["./packages/fs/tool-str-replace-editor/src"],
       "@deepseek-ai/dsh-tool-subagent": ["./packages/subagent/tool-subagent/src"],

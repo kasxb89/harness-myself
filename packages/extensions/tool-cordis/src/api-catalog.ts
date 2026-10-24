@@ -2024,6 +2024,36 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'the live Agent or the stable Session-domain failure.',
       },
       {
+        signature: 'listPeerSessions(caller: Agent, request: PeerSessionListRequest, signal: AbortSignal): Promise<PeerSessionListValue>',
+        description: 'List ordinary local-operator Sessions in the calling Session\'s workspace.',
+        parameters: [{ name: 'caller', description: 'exact live Agent.' }, { name: 'request', description: 'bounded offset page.' }, { name: 'signal', description: 'caller lifetime.' }],
+        returns: 'one non-activating metadata page.',
+      },
+      {
+        signature: 'peerToolCallSeq(caller: Agent, callId: ToolCallId): number | undefined',
+        description: 'Capture a current human-owned native tool event without synchronously reading Session history.',
+        parameters: [{ name: 'caller', description: 'exact live calling Agent.' }, { name: 'callId', description: 'actual runtime native root call identity.' }],
+        returns: 'root event sequence, or absence when no human-owned call is available.',
+      },
+      {
+        signature: 'readPeerSession(caller: Agent, request: PeerSessionReadRequest, signal: AbortSignal): Promise<PeerSessionReadValue>',
+        description: 'Read one ordinary peer\'s bounded text history without activating its Agent.',
+        parameters: [{ name: 'caller', description: 'exact live Agent.' }, { name: 'request', description: 'target, cursor, and optional consent.' }, { name: 'signal', description: 'caller lifetime.' }],
+        returns: 'chronological messages and an exclusive older-history cursor.',
+      },
+      {
+        signature: 'confirmPeerSession( caller: Agent, sessionId: SessionId, action: \'read\' | \'send\', confirm: (target: PeerSessionSummary, signal: AbortSignal) => Promise<boolean>, signal: AbortSignal, ): Promise<PeerSessionConfirmation | undefined>',
+        description: 'Obtain human consent for one exact target and action in another workspace.',
+        parameters: [{ name: 'caller', description: 'exact live human-driven Agent.' }, { name: 'sessionId', description: 'selected target.' }, { name: 'action', description: 'only authorized action.' }, { name: 'confirm', description: 'Host human answerer honoring its supplied signal.' }, { name: 'signal', description: 'caller lifetime.' }],
+        returns: 'opaque consent, or absence for an already shared workspace.',
+      },
+      {
+        signature: 'sendPeerMessage(caller: Agent, request: PeerSessionSendRequest, signal: AbortSignal): Promise<PeerSessionSendValue>',
+        description: 'Deliver one attributed message to an ordinary Session inbox exactly once per original submission.',
+        parameters: [{ name: 'caller', description: 'exact live human-driven Agent.' }, { name: 'request', description: 'tool-owned identity, text, delivery, and optional consent.' }, { name: 'signal', description: 'caller lifetime before acceptance.' }],
+        returns: 'durable inbox acceptance, without implying processing or a reply.',
+      },
+      {
         signature: 'inspect( sessionId: SessionId, signal?: AbortSignal, ): Promise<SessionInspection>',
         description: 'Inspect one attached or persisted Session without activating its Agent.',
         parameters: [{ name: 'sessionId', description: 'durable Session identity.' }, { name: 'signal', description: 'optional caller cancellation for persistence reads.' }],
@@ -6271,6 +6301,42 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'PeerScope',
     declaration: 'export interface PeerScope {\n    readonly id: PeerId;\n    readonly ctx: Context;\n    dispose(): Promise<void>;\n}',
+  },
+  {
+    name: 'PeerSessionConfirmation',
+    declaration: 'export interface PeerSessionConfirmation {\n    readonly [confirmationIdentity]: true;\n}',
+  },
+  {
+    name: 'PeerSessionListRequest',
+    declaration: 'export interface PeerSessionListRequest {\n    readonly offset?: number;\n    readonly limit?: number;\n}',
+  },
+  {
+    name: 'PeerSessionListValue',
+    declaration: 'export interface PeerSessionListValue {\n    readonly items: readonly PeerSessionSummary[];\n    readonly nextOffset?: number;\n}',
+  },
+  {
+    name: 'PeerSessionMessage',
+    declaration: 'export interface PeerSessionMessage {\n    readonly seq: number;\n    readonly role: \'user\' | \'assistant\';\n    readonly text: string;\n    readonly sourceKind: string;\n    readonly senderSessionId?: SessionId;\n    readonly truncated: boolean;\n}',
+  },
+  {
+    name: 'PeerSessionReadRequest',
+    declaration: 'export interface PeerSessionReadRequest {\n    readonly sessionId: SessionId;\n    readonly beforeSeq?: number;\n    readonly limit?: number;\n    readonly confirmation?: PeerSessionConfirmation;\n}',
+  },
+  {
+    name: 'PeerSessionReadValue',
+    declaration: 'export interface PeerSessionReadValue {\n    readonly session: PeerSessionSummary;\n    readonly messages: readonly PeerSessionMessage[];\n    readonly nextBeforeSeq?: number;\n}',
+  },
+  {
+    name: 'PeerSessionSendRequest',
+    declaration: 'export interface PeerSessionSendRequest {\n    readonly sessionId: SessionId;\n    readonly submissionId: string;\n    readonly message: string;\n    readonly delivery: \'queue\' | \'notice\';\n    readonly confirmation?: PeerSessionConfirmation;\n}',
+  },
+  {
+    name: 'PeerSessionSendValue',
+    declaration: 'export interface PeerSessionSendValue {\n    readonly status: \'accepted\';\n    readonly sessionId: SessionId;\n    readonly messageId: MessageId;\n    readonly delivery: \'queue\' | \'notice\';\n    readonly duplicate: boolean;\n}',
+  },
+  {
+    name: 'PeerSessionSummary',
+    declaration: 'export interface PeerSessionSummary {\n    readonly sessionId: SessionId;\n    readonly title: string;\n    readonly cwd: string;\n    readonly running: boolean;\n}',
   },
   {
     name: 'PermissionCatalog',

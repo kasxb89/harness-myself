@@ -1241,6 +1241,14 @@ async function assertReplaySession(
   const schemaPath = join(fixtureDir, 'tool-schemas.expected.json')
   const promptSnapshot = formatSystemPromptSnapshot(prompts[0] as string, prompts.slice(1))
   const schemaSnapshot = formatToolSchemasSnapshot(schemas[0] as unknown[], schemas.slice(1))
+  // Keep the actual producer output outside the corpus so an intentional
+  // header-only update never needs to rewrite an immutable Session recording.
+  const capturedHeaders = join(REPO_ROOT, '.artifacts/web-session-headers', basename(fixtureDir))
+  await mkdir(capturedHeaders, { recursive: true })
+  await Promise.all([
+    writeFile(join(capturedHeaders, 'system-prompt.expected.md'), promptSnapshot),
+    writeFile(join(capturedHeaders, 'tool-schemas.expected.json'), schemaSnapshot),
+  ])
   if (mode === 'refresh') {
     await Promise.all([writeFile(promptPath, promptSnapshot), writeFile(schemaPath, schemaSnapshot)])
   }

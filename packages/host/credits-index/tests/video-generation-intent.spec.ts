@@ -7,7 +7,9 @@ import SessionProjections from '@deepseek-ai/dsh-session-projection'
 import { Session, SessionId, SessionLogOffset, SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
 import { createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { ToolCallId } from '@deepseek-ai/dsh-llm/brand'
-import { explicitVideoWorkCount, humanVideoDurationSeconds, humanVideoModel, humanVideoResolution, parseVideoRequestGrant, registerVideoGenerationIntent, videoGenerationIntentOf, videoModelChoiceCancelled, videoGenerationIntentProjection, videoWorkAllowance } from '../src/video-generation-intent.ts'
+import type {} from '@deepseek-ai/dsh-tool-jobs'
+import type {} from '@deepseek-ai/dsh-subagent'
+import { hasCurrentHumanRequest, explicitVideoWorkCount, humanVideoDurationSeconds, humanVideoModel, humanVideoResolution, parseVideoRequestGrant, registerVideoGenerationIntent, videoGenerationIntentOf, videoModelChoiceCancelled, videoGenerationIntentProjection, videoWorkAllowance } from '../src/video-generation-intent.ts'
 
 describe('explicit video work quantities', () => {
   it.each([
@@ -178,22 +180,19 @@ function fold(session: Session) {
   return state
 }
 
-it('records the actual native execution turn and gives PTC children only the original root turn', () => {
+it('does not inherit an unused human allowance when a later turn has no human input', () => {
   const session = sessionFixture()
   session.append('turn/start', { turn: 1 })
   const human = createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: '生成三条视频' }] })
   session.append('user/message', human, { surfaceOp: 'append' })
   session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
   session.append('turn/start', { turn: 2 })
-  const root = session.append('tool/call', { turn: 2, step: 1, callId: ToolCallId('root-0'), name: 'run_ptc', arguments: '{}' })
+  session.append('tool/call', { turn: 2, step: 1, callId: ToolCallId('root-0'), name: 'run_ptc', arguments: '{}' })
   session.append('tool/ptc-dispatch-start', { rootCallId: ToolCallId('root-0'), parentCallId: ToolCallId('root-0'),
     subCallId: ToolCallId('child-0'), name: 'generate_video', arguments: {} })
   const state = fold(session)
   expect(state.requests[0]).toMatchObject({ messageId: human.id, turn: 1 })
-  expect(state.calls).toEqual([
-    { callId: 'root-0', messageId: human.id, name: 'run_ptc', rootCallSeq: root.seq, turn: 2, native: true },
-    { callId: 'child-0', messageId: human.id, name: 'generate_video', rootCallSeq: root.seq, turn: 2, pending: true },
-  ])
+  expect(state.calls).toEqual([])
   expect(fold(session)).toEqual(state)
 })
 
@@ -466,6 +465,115 @@ it('does not infer trusted intent when the execution capture was never registere
     async execute(_args, exec) { intent = videoGenerationIntentOf(exec); return [] } }))
   await ctx.tools.execute({ signal: new AbortController().signal, agent, callId: ToolCallId('call-0'), name: 'generate_video', arguments: {} })
   expect(intent).toBeUndefined()
+})
+
+it.each(['生成一张图片。', '生成一条视频，并先画人物参考图。'])('attributes image tool executions to a human independently of video allowance: %s', async (text) => {
+  const { ctx, session, agent } = await executionFixture()
+  const observed: boolean[] = []
+  let captured: ToolExecution | undefined
+  ctx.tools.register(defineContentToolFixture({ name: 'generate_image', description: 'Observe human attribution.', parameters: {},
+    async execute(_args, exec) { captured = exec; observed.push(hasCurrentHumanRequest(exec)); return [] } }))
+  session.append('turn/start', { turn: 1 })
+  session.append('user/message', createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text }] }), { surfaceOp: 'append' })
+  session.append('tool/call', { turn: 1, step: 1, callId: ToolCallId('image-human'), name: 'generate_image', arguments: '{}' })
+  await ctx.tools.execute({ agent, name: 'generate_image', callId: ToolCallId('image-human'), arguments: {}, signal: new AbortController().signal })
+  expect(observed).toEqual([true])
+  expect(fold(session).requests[0]?.maxWorks).toBe(text.includes('视频') ? 1 : 0)
+  if (captured === undefined) throw new Error('Expected captured image execution')
+  expect(hasCurrentHumanRequest(captured)).toBe(false)
+})
+
+it.each(['agent-message', 'tool-jobs'] as const)('does not grant image calls the old human ownership in a new %s turn', async (kind) => {
+  const { ctx, session, agent } = await executionFixture()
+  const observed: boolean[] = []
+  ctx.tools.register(defineContentToolFixture({ name: 'generate_image', description: 'Observe human ownership.', parameters: {},
+    async execute(_args, exec) { observed.push(hasCurrentHumanRequest(exec)); return [] } }))
+  const call = () => ctx.tools.execute({ agent, name: 'generate_image', callId: ToolCallId('call-0'), arguments: {}, signal: new AbortController().signal })
+  session.append('turn/start', { turn: 1 })
+  session.append('user/message', createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: '生成一张图片' }] }), { surfaceOp: 'append' })
+  const first = session.append('tool/call', { turn: 1, step: 1, callId: ToolCallId('call-0'), name: 'generate_image', arguments: '{}' })
+  await call()
+  session.append('tool/result', { turn: 1, step: 1, message: createToolResultMessage({ callId: ToolCallId('call-0'), content: [], isError: false }) },
+    { surfaceOp: 'append', sourceEventSeqs: [first.seq] })
+  session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+  session.append('turn/start', { turn: 2 })
+  session.append('user/message', createUserMessage({
+    source: kind === 'agent-message' ? { kind, form: 'relay', senderSessionId: SessionId('peer') }
+      : { kind, form: 'notice', summary: 'A job ended.' },
+    content: [{ type: 'text', text: '生成一张图片' }],
+  }), { surfaceOp: 'append' })
+  await call()
+  session.append('tool/call', { turn: 2, step: 1, callId: ToolCallId('call-0'), name: 'generate_image', arguments: '{}' })
+  await call()
+  expect(observed).toEqual([true, false, false])
+})
+
+it('carries image ownership through the opaque PTC parent without requiring a video allowance', async () => {
+  const { ctx, session, agent } = await executionFixture()
+  const observed: boolean[] = []
+  ctx.tools.register(defineContentToolFixture({ name: 'generate_image', description: 'Observe image PTC ownership.', parameters: {},
+    async execute(_args, exec) {
+      observed.push(hasCurrentHumanRequest(exec))
+      expect(videoGenerationIntentOf(exec)).toBeUndefined()
+      return []
+    } }))
+  ctx.tools.register(defineContentToolFixture({ name: 'image-composite', description: 'Dispatch image child.', parameters: {},
+    async execute(_args, exec) {
+      const subCallId = ToolCallId('image-child')
+      const data = { rootCallId: exec.rootCallId, parentCallId: exec.callId, subCallId, name: 'generate_image', arguments: {} }
+      session.append('tool/ptc-dispatch-start', data)
+      const result = await ctx.tools.execute({ agent, signal: exec.signal, callId: subCallId, rootCallId: exec.rootCallId,
+        parent: exec.token, name: 'generate_image', arguments: {} })
+      session.append('tool/ptc-dispatch', { ...data, isError: result.isError, content: result.content })
+      return []
+    } }))
+  session.append('turn/start', { turn: 1 })
+  session.append('user/message', createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: '画一张图片' }] }), { surfaceOp: 'append' })
+  session.append('tool/call', { turn: 1, step: 1, callId: ToolCallId('image-parent'), name: 'image-composite', arguments: '{}' })
+  await ctx.tools.execute({ agent, signal: new AbortController().signal, callId: ToolCallId('image-parent'), name: 'image-composite', arguments: {} })
+  expect(observed).toEqual([true])
+})
+
+it.each(['agent-message', 'tool-jobs'] as const)('does not reuse unused human quota in a new %s turn with a repeated raw call id', async (kind) => {
+  const { ctx, session, agent } = await executionFixture()
+  const observed: ReturnType<typeof videoGenerationIntentOf>[] = []
+  ctx.tools.register(defineContentToolFixture({ name: 'generate_video', description: 'Observe the request authorization.', parameters: {},
+    async execute(_args, exec) { observed.push(videoGenerationIntentOf(exec)); return [] } }))
+  session.append('turn/start', { turn: 1 })
+  const human = createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: '生成3条10秒视频' }] })
+  session.append('user/message', human, { surfaceOp: 'append' })
+  const first = session.append('tool/call', { turn: 1, step: 1, callId: ToolCallId('call-0'), name: 'generate_video', arguments: '{}' })
+  await ctx.tools.execute({ signal: new AbortController().signal, agent, callId: ToolCallId('call-0'), name: 'generate_video', arguments: {} })
+  session.append('tool/result', { turn: 1, step: 1, message: createToolResultMessage({ callId: ToolCallId('call-0'), content: [], isError: false }) },
+    { surfaceOp: 'append', sourceEventSeqs: [first.seq] })
+  session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+  session.append('turn/start', { turn: 2 })
+  session.append('user/message', createUserMessage({
+    source: kind === 'agent-message'
+      ? { kind, form: 'relay', senderSessionId: SessionId('peer-session') }
+      : { kind, form: 'notice', summary: 'An existing job completed.' },
+    content: [{ type: 'text', text: '生成3条10秒视频' }],
+  }), { surfaceOp: 'append' })
+  session.append('tool/call', { turn: 2, step: 1, callId: ToolCallId('call-0'), name: 'generate_video', arguments: '{}' })
+  await ctx.tools.execute({ signal: new AbortController().signal, agent, callId: ToolCallId('call-0'), name: 'generate_video', arguments: {} })
+  expect(observed[0]?.grant).toMatchObject({ messageId: human.id, maxWorks: 3, turn: 1 })
+  expect(observed[1]).toBeUndefined()
+  expect(fold(session).calls).toHaveLength(1)
+})
+
+it('retains the current human allowance across steps and later notice or relay context in the same turn', () => {
+  const session = sessionFixture()
+  session.append('turn/start', { turn: 1 })
+  const human = createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: '生成3条视频' }] })
+  session.append('user/message', human, { surfaceOp: 'append' })
+  session.append('tool/call', { turn: 1, step: 1, callId: ToolCallId('first'), name: 'generate_video', arguments: '{}' })
+  session.append('user/message', createUserMessage({ source: { kind: 'tool-jobs', form: 'notice', summary: 'Existing work completed.' },
+    content: [{ type: 'text', text: 'Unrelated job notification.' }] }), { surfaceOp: 'append' })
+  session.append('tool/call', { turn: 1, step: 2, callId: ToolCallId('second'), name: 'generate_video', arguments: '{}' })
+  session.append('user/message', createUserMessage({ source: { kind: 'agent-message', form: 'relay', senderSessionId: SessionId('peer') },
+    content: [{ type: 'text', text: 'Unrelated peer context.' }] }), { surfaceOp: 'append' })
+  session.append('tool/call', { turn: 1, step: 3, callId: ToolCallId('third'), name: 'generate_video', arguments: '{}' })
+  expect(fold(session).calls.map(call => call.messageId)).toEqual([human.id, human.id, human.id])
 })
 
 it('pairs late reused-id results by exact source event and cancels only the owning request', () => {

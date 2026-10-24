@@ -173,10 +173,10 @@ it('releases the microphone if audio analysis cannot initialize', async () => {
   } finally { await b.recording.dispose() }
 })
 
-it('preserves browser device-busy errors', async () => {
+it('classifies browser device-busy errors', async () => {
   const b = captureFixture(), error = new DOMException('busy', 'NotReadableError')
   b.getUserMedia.mockRejectedValueOnce(error)
-  try { await expect(b.recording.preview()).rejects.toBe(error) } finally { await b.recording.dispose() }
+  try { await expect(b.recording.preview()).rejects.toMatchObject({ kind: 'deviceBusy' }) } finally { await b.recording.dispose() }
 })
 
 it('does not create a recorder after cancellation at preview completion', async () => {
@@ -191,4 +191,57 @@ it('does not create a recorder after cancellation at preview completion', async 
     await rejected
     expect(b.trackStop).toHaveBeenCalledOnce()
   } finally { proceed.resolve(undefined); await b.recording.dispose() }
+})
+
+it('resumes a suspended audio context before sampling or recording', async () => {
+  const b = captureFixture({ suspended: true })
+  try {
+    await b.recording.start()
+    expect(b.resume).toHaveBeenCalledOnce()
+    expect(b.recording.amplitude()).toBe(0.25)
+    expect(await b.recording.stop(120)).toEqual(encodeWave(new Float32Array([0.5, -0.5])))
+  } finally { await b.recording.dispose() }
+})
+
+it('releases capture when a suspended audio context cannot resume', async () => {
+  const b = captureFixture({ suspended: true })
+  b.resume.mockImplementationOnce(async () => {})
+  await expect(b.recording.start()).rejects.toMatchObject({ kind: 'audioBlocked' })
+  expect(b.trackStop).toHaveBeenCalledOnce()
+  expect(b.close).toHaveBeenCalledOnce()
+})
+
+it('reports a zero-sample recording as missing audio and releases the microphone', async () => {
+  const b = captureFixture({ silent: true })
+  await b.recording.start()
+  await expect(b.recording.stop(120)).rejects.toMatchObject({ kind: 'noInput' })
+  expect(b.trackStop).toHaveBeenCalled()
+  expect(b.close).toHaveBeenCalledOnce()
+})
+
+it.each([['SecurityError', 'permission'], ['AbortError', 'interrupted'], ['TrackStartError', 'deviceBusy']])(
+  'classifies microphone %s as %s', async (name, kind) => {
+    const b = captureFixture()
+    b.getUserMedia.mockRejectedValueOnce(new DOMException('device unavailable', name))
+    try { await expect(b.recording.start()).rejects.toMatchObject({ kind }) } finally { await b.recording.dispose() }
+  })
+
+it('joins resource release when audio resume settles after cancellation', async () => {
+  const b = captureFixture({ suspended: true }), resuming = Promise.withResolvers<undefined>()
+  b.resume.mockReturnValueOnce(resuming.promise)
+  const starting = b.recording.start(), rejected = expect(starting).rejects.toMatchObject({ kind: 'cancelled' })
+  try {
+    await vi.waitFor(() => { expect(b.resume).toHaveBeenCalledOnce() })
+    await b.recording.dispose()
+    expect(b.trackStop).toHaveBeenCalledOnce()
+  } finally { resuming.resolve(undefined); await rejected; await b.recording.dispose() }
+  expect(b.close).toHaveBeenCalledOnce()
+})
+
+it('reports rejected audio activation with a localized category and retained cause', async () => {
+  const b = captureFixture({ suspended: true }), reason = new DOMException('audio denied', 'NotAllowedError')
+  b.resume.mockRejectedValueOnce(reason)
+  await expect(b.recording.start()).rejects.toMatchObject({ kind: 'audioBlocked', cause: reason })
+  expect(b.trackStop).toHaveBeenCalledOnce()
+  expect(b.close).toHaveBeenCalledOnce()
 })

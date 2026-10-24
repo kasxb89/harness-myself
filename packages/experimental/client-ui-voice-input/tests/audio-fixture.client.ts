@@ -7,10 +7,18 @@ import { Recording } from '../src/client/audio.ts'
  * @param options - device failures or an empty final recording.
  * @returns the recording, device controls, and resource observations.
  */
-export function captureFixture(options: { empty?: boolean; recorderError?: boolean; constructError?: boolean } = {}) {
+export function captureFixture(options: {
+  empty?: boolean
+  recorderError?: boolean
+  constructError?: boolean
+  suspended?: boolean
+  silent?: boolean
+} = {}) {
   const trackStop = vi.fn(), close = vi.fn(async () => {}), disposed = vi.fn()
   const decoding = vi.fn(async (_data: ArrayBuffer) => ({ duration: 2 }))
-  const rendering = vi.fn(async () => ({ getChannelData: () => new Float32Array([0.5, -0.5]) }))
+  const rendering = vi.fn(async () => ({ getChannelData: () => new Float32Array(options.silent ? [0, 0] : [0.5, -0.5]) }))
+  let state = options.suspended ? 'suspended' : 'running'
+  const resume = vi.fn(async () => { state = 'running' })
   let failRecorder: () => void
   class Recorder {
     state = 'inactive'
@@ -43,11 +51,11 @@ export function captureFixture(options: { empty?: boolean; recorderError?: boole
   const getUserMedia = vi.fn(async (_constraints: MediaStreamConstraints) => stream)
   vi.stubGlobal('navigator', { mediaDevices: { getUserMedia } })
   vi.stubGlobal('MediaRecorder', Recorder)
-  vi.stubGlobal('AudioContext', function Audio() { return { state: 'running', close, decodeAudioData: decoding,
+  vi.stubGlobal('AudioContext', function Audio() { return { get state() { return state }, resume, close, decodeAudioData: decoding,
     createMediaStreamSource: () => ({ connect: vi.fn() }),
     createAnalyser: () => ({ fftSize: 256, getFloatTimeDomainData: (buffer: Float32Array) => { buffer.fill(0.25) } }),
   } })
   vi.stubGlobal('OfflineAudioContext', offline)
   return { recording: new Recording(disposed), getUserMedia, stream, track, trackStop, close, disposed, decoding, rendering, offline,
-    failRecorder: () => { failRecorder() } }
+    resume, failRecorder: () => { failRecorder() } }
 }

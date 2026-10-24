@@ -121,3 +121,7 @@ export {
 export { GuideArtworkBrowser, GuideArtworkFiles } from './guide-artwork.tsx'
 export { ImageLightbox } from './ImageLightbox.tsx'
 export type { ImageLightboxLabels } from './ImageLightbox.tsx'
+export { MediaProgress } from './MediaProgress.tsx'
+export type { MediaProgressLabels, MediaProgressProps } from './MediaProgress.tsx'
+export { VideoPlayer } from './VideoPlayer.tsx'
+export type { VideoPlayerProps } from './VideoPlayer.tsx'

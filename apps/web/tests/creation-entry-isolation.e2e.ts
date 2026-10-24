@@ -1,6 +1,4 @@
 /** AI Creation submissions and a real chat request retain separate entry identities and duplicate guards. */
-import { spawn } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
@@ -8,7 +6,6 @@ import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { resolveExampleLaunch } from '@deepseek-ai/dsh-loader-smoke'
 import {
   captureExpectedWorkspaceSnapshot, captureWorkspaceSnapshot, fixtureContext, formatSystemPromptSnapshot,
   formatToolSchemasSnapshot, latestPersistedSessionPaths,
@@ -18,6 +15,7 @@ import {
 import { expect, it } from 'vitest'
 import { fixtureUserPrompts, normalizeWebSessionVolatiles, webSnapshotMode } from './scaffold.ts'
 import { REPO_ROOT } from './support.ts'
+import { startProfileWeb } from './profile-process.ts'
 
 const SNAPSHOT_DIR = fileURLToPath(new URL('../../../snapshots/web/creation-entry-isolation', import.meta.url))
 const FIXTURE = join(SNAPSHOT_DIR, 'session.v4.jsonl')
@@ -27,7 +25,6 @@ const REPLAY_MODULE = pathToFileURL(createRequire(join(REPO_ROOT, 'apps/cli/pack
   .resolve('@deepseek-ai/dsh-llm-replay')).href
 
 type JsonRow = Record<string, unknown>
-type RpcResult<T> = { ok: true; value: T } | { ok: false; error: { code: string; message: string } }
 
 function rows(raw: string): JsonRow[] {
   return raw.trimEnd().split('\n').map(line => JSON.parse(line) as JsonRow)
@@ -42,61 +39,7 @@ async function storedSession(root: string, id: string): Promise<string> {
   throw new Error(`No persisted Session ${id}`)
 }
 
-async function startWeb(root: string, workspace: string, overlay: string) {
-  const launch = resolveExampleLaunch({
-    srcBin: join(REPO_ROOT, 'apps/cli/src/bin.ts'), sourceImport: 'tsx/esm',
-    tsconfigPath: join(REPO_ROOT, 'tsconfig.json'),
-    configArgs: ['--profile', 'web', '--patch', overlay, '--host', '127.0.0.1', '--port', '0', '--no-open'],
-    env: {
-      DSH_HOME: join(root, 'home'), DSH_AGENTS_HOME: join(root, 'agents'),
-      DSH_BUNDLED_SKILL_DIR: join(root, 'bundled-skills'), DSH_TELEMETRY_DISABLED: '1',
-      DSH_PERMISSION_MODE: undefined, [KEY]: 'keyless-creation-entry-fixture',
-    },
-  })
-  const child = spawn(launch.command, launch.args, {
-    cwd: workspace, env: { ...process.env, ...launch.env }, stdio: ['ignore', 'pipe', 'pipe'],
-  })
-  let output = ''
-  for (const stream of [child.stdout, child.stderr]) stream.on('data', (chunk) => { output = (output + String(chunk)).slice(-40_000) })
-  const completion = new Promise<void>((resolve, reject) => {
-    child.once('close', () => { resolve() })
-    child.once('error', reject)
-  })
-  const stop = async () => {
-    if (child.exitCode === null) child.kill('SIGTERM')
-    let forced = false
-    const timer = setTimeout(() => { forced = true; child.kill('SIGKILL') }, 10_000)
-    timer.unref()
-    try { await completion } finally { clearTimeout(timer) }
-    if (forced) throw new Error('The owned Web process did not stop after SIGTERM')
-  }
-  try {
-    await expect.poll(() => {
-      if (child.exitCode !== null) throw new Error(output)
-      return /dsh web: (http:\/\/\S+)/u.exec(output)?.[1]
-    }, { timeout: 60_000 }).toBeDefined()
-    const authenticatedUrl = /dsh web: (http:\/\/\S+)/u.exec(output)?.[1]
-    if (authenticatedUrl === undefined) throw new Error('Web startup supplied no authenticated URL')
-    const exchange = await fetch(authenticatedUrl, { redirect: 'manual', signal: AbortSignal.timeout(10_000) })
-    const cookie = exchange.headers.get('set-cookie')?.split(';', 1)[0]
-    if (cookie === undefined) throw new Error('Web startup supplied no authentication cookie')
-    const remote = async <T>(endpoint: string, args: Readonly<Record<string, unknown>>): Promise<T> => {
-      const response = await fetch(new URL(`/api/${endpoint}`, authenticatedUrl), {
-        method: 'POST', headers: { 'content-type': 'application/json', cookie },
-        body: JSON.stringify({ type: 'client-request', rpcId: randomUUID(), method: endpoint, payload: { args } }),
-        signal: AbortSignal.timeout(20_000),
-      })
-      if (!response.ok) throw new Error(`${endpoint}: HTTP ${response.status}: ${await response.text()}`)
-      const { result } = await response.json() as { result: RpcResult<T> }
-      if (!result.ok) throw new Error(`${endpoint}: ${result.error.code}: ${result.error.message}`)
-      return result.value
-    }
-    return { stop, remote, cookie, webUrl: new URL(authenticatedUrl).origin }
-  } catch (error) {
-    await stop()
-    throw error
-  }
-}
+
 
 
 /** Only creation identities declared by the real generate_video result are volatile. */
@@ -226,7 +169,7 @@ it('records an independent chat video after AI Creation uncertainty while refusi
       providers: [{ id: 'deepseek-official', name: 'DeepSeek', models: [{ id: 'deepseek-v4-flash', contextWindow: 128_000,
         inputModalities: ['text'], defaultMaxTokens: 256_000, reasoningEfforts: ['off'], defaultReasoningEffort: 'off' }] }] } }] }],
   ]))
-  const host = await startWeb(root, workspace, overlay)
+  const host = await startProfileWeb(root, workspace, overlay, { [KEY]: 'keyless-creation-entry-fixture' })
   cleanup.host = () => host.stop()
   const post = async (path: string, args: object) => {
     const response = await fetch(new URL(path, host.webUrl), { method: 'POST', headers: { 'content-type': 'application/json', cookie: host.cookie },

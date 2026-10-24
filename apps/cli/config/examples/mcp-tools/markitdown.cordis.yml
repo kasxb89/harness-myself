@@ -1,0 +1,13 @@
+# Opt-in MarkItDown MCP 0.0.1a8. Install the pinned executable separately;
+# DSH starts it over stdio and never runs a package manager.
+- insert:
+    - id: tools-markitdown
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: markitdown
+        transport: stdio
+        command: markitdown-mcp
+        args: []
+        env: {}
+        cwd: !!js process.cwd()
+        failOnStartupError: false

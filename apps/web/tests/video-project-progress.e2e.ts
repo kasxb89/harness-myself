@@ -429,6 +429,12 @@ it.skipIf(!runtimeAvailable)('records concurrent per-clip progress and terminal 
   })
   expect(actualWorkspace, 'complete final workspace, including the actual project output directory').toEqual(expectedWorkspace)
   const normalizedRaw = normalizeProjectOutput(normalizeWebSessionVolatiles(raw))
+  const started = results(normalizedRaw).find(result => result.name === 'generate_video_project')
+  if (started === undefined) throw new Error('Missing canonical project acceptance')
+  const canonicalStart = record(JSON.parse(started.text))
+  const capturedResults = join(REPO_ROOT, '.artifacts/web-session-headers/video-project-progress-background')
+  await mkdir(capturedResults, { recursive: true })
+  await writeFile(join(capturedResults, 'tool-results.expected.json'), JSON.stringify({ 'video-start': canonicalStart }, null, 2) + '\n')
   const context = { sessionIds: [sessionId], cwd: workspace }
   const prompts = normalizedSystemPrompts(normalizedRaw, context)
     .map(prompt => prompt.split(REPO_ROOT).join('{{sourceRoot}}').split(host.webUrl).join('{{webUrl}}'))
@@ -443,7 +449,25 @@ it.skipIf(!runtimeAvailable)('records concurrent per-clip progress and terminal 
     await writeFile(join(HEADER_DIR, 'tool-schemas.expected.json'), schemaSidecar)
   }
   const expected = await readFile(FIXTURE, 'utf8')
-  expect(normalizeSessionSnapshots([normalizedRaw], context)[0]).toBe(normalizeSessionSnapshots([expected], fixtureContext(expected))[0])
+  // Keep this historical replay input immutable while pinning the later
+  // remaining-work contract in one explicit output golden.
+  const expectedStarts = record(JSON.parse(await readFile(join(SNAPSHOT_DIR, 'tool-results.expected.json'), 'utf8')))
+  expect(Object.keys(expectedStarts)).toEqual(['video-start'])
+  expect(expectedStarts['video-start']).toMatchObject({ remaining_works: 0 })
+  expect(canonicalStart).toEqual(expectedStarts['video-start'])
+  const expectedRows = rows(expected)
+  let replaced = 0
+  for (const row of expectedRows) {
+    if (row.type !== 'tool/result') continue
+    const message = record(record(row.data).message)
+    if (message.toolCallId !== 'video-start') continue
+    message.content = [{ type: 'text', text: JSON.stringify(expectedStarts['video-start']) }]
+    replaced++
+  }
+  expect(replaced).toBe(1)
+  const expectedOutput = expectedRows.map(row => JSON.stringify(row)).join('\n') + '\n'
+  expect(normalizeSessionSnapshots([normalizedRaw], context)[0])
+    .toBe(normalizeSessionSnapshots([expectedOutput], fixtureContext(expected))[0])
   expect(promptSidecar).toBe(await readFile(join(HEADER_DIR, 'system-prompt.expected.md'), 'utf8'))
   expect(schemaSidecar).toBe(await readFile(join(HEADER_DIR, 'tool-schemas.expected.json'), 'utf8'))
 })

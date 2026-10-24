@@ -212,6 +212,8 @@ const evidenceSchema = z.object({
 }).strict()
 const stateSchema = z.object({
   inherited: z.number().int().nonnegative(), turn: z.number().int().nonnegative(),
+  activeMessageId: z.string().min(1).optional(),
+  nativeHeads: z.array(z.object({ callId: z.string(), name: z.string(), seq: z.number().int().nonnegative() })),
   requests: z.array(requestSchema), calls: z.array(callSchema), evidence: z.array(evidenceSchema),
 }).strict()
 type VideoIntentState = z.infer<typeof stateSchema>
@@ -302,25 +304,28 @@ function cancelledModelChoice(content: readonly { type: string; text?: string }[
 
 /** Existing-event fold; it adds no Session vocabulary or model-supplied authorization. */
 export const videoGenerationIntentProjection = {
-  key: 'videoGenerationIntent', stateVersion: 8, stateSchema,
-  init: (_header, inherited) => ({ inherited, turn: 0, requests: [], calls: [], evidence: [] }),
+  key: 'videoGenerationIntent', stateVersion: 9, stateSchema,
+  init: (_header, inherited) => ({ inherited, turn: 0, nativeHeads: [], requests: [], calls: [], evidence: [] }),
   apply(state, event) {
     if (event.seq < state.inherited) return state
-    if (event.type === 'turn/start') return { ...state, turn: event.data.turn }
+    if (event.type === 'turn/start') return { ...state, turn: event.data.turn, activeMessageId: undefined }
     if (event.type === 'user/message' && event.data.source.kind === 'user') {
       const text = event.data.content.filter(block => block.type === 'text').map(block => block.text).join('\n')
       const requestedResolution = humanVideoResolution(text)
       const requestedDurationSeconds = humanVideoDurationSeconds(text)
       const requestedModel = humanVideoModel(text)
-      return { ...state, requests: [...state.requests, { messageId: event.data.id, sourceSeq: event.seq,
+      return { ...state, activeMessageId: event.data.id, requests: [...state.requests, { messageId: event.data.id, sourceSeq: event.seq,
         maxWorks: videoWorkAllowance(text), turn: state.turn,
         ...requestedResolution === undefined ? {} : { requestedResolution },
         ...requestedDurationSeconds === undefined ? {} : { requestedDurationSeconds },
         ...requestedModel === undefined ? {} : { requestedModel } }] }
     }
     if (event.type === 'tool/call') {
-      const request = state.requests.at(-1)
-      return request === undefined ? state : { ...state, calls: [...state.calls,
+      const nativeHeads = [...state.nativeHeads.filter(head => head.callId !== event.data.callId),
+        { callId: event.data.callId, name: event.data.name, seq: event.seq }]
+      const request = state.requests.findLast(request => request.messageId === state.activeMessageId
+        && request.turn === state.turn && request.turn === event.data.turn)
+      return request === undefined ? { ...state, nativeHeads } : { ...state, nativeHeads, calls: [...state.calls,
         { callId: event.data.callId, messageId: request.messageId, name: event.data.name, rootCallSeq: event.seq,
           turn: event.data.turn, native: true }] }
     }
@@ -374,6 +379,20 @@ declare module '@deepseek-ai/dsh-session-projection/types' {
     /** Original human video-work allowance and exact logged tool attribution. */
     videoGenerationIntent: VideoIntentState
   }
+}
+
+/**
+ * Check whether this execution was captured under a logged human request.
+ * @param exec - Native execution or nested PTC execution with its opaque parent token.
+ * @returns Human ownership independently of the request's video-work allowance; messages from tools or agents grant none.
+ */
+export function hasCurrentHumanRequest(exec: ToolExecution): boolean {
+  const agent = exec.agent
+  if (agent === undefined) return false
+  const identity = executionOwners.get(agent.ctx.root)?.get(exec.token)
+  if (identity === undefined) return false
+  const state = agent.ctx.get('sessionProjections')?.stateOf(agent.session, 'videoGenerationIntent')
+  return state?.requests.some(request => request.messageId === identity.messageId) === true
 }
 
 /**
@@ -431,10 +450,12 @@ export function registerVideoGenerationIntent(ctx: Context): void {
     })
     owner.on('tools/pre-execute', async (exec, next) => {
       const state = exec.agent === undefined ? undefined : owner.sessionProjections.stateOf(exec.agent.session, 'videoGenerationIntent')
-      const call = exec.parent === undefined
-        ? state?.calls.findLast(call => call.callId === exec.rootCallId && call.name === exec.name) : undefined
+      const logged = exec.parent === undefined ? state?.nativeHeads.findLast(head =>
+        head.callId === exec.rootCallId && head.name === exec.name) : undefined
+      const call = logged === undefined ? undefined : state?.calls.findLast(call => call.rootCallSeq === logged.seq)
       const identity = exec.parent === undefined
-        ? call?.rootCallSeq === undefined ? undefined : { messageId: call.messageId, rootCallSeq: call.rootCallSeq }
+        ? call?.rootCallSeq === undefined || call.turn !== state?.turn ? undefined
+          : { messageId: call.messageId, rootCallSeq: call.rootCallSeq }
         : owners.get(exec.parent)
       if (identity !== undefined) owners.set(exec.token, identity)
       try { return await next() } catch (error) { owners.delete(exec.token); throw error }

@@ -248,8 +248,11 @@ const packageFileExtras: Readonly<Record<string, readonly string[]>> = {
   // through a hashed chunk. The committed bin.js is the link target pnpm can
   // resolve at install time, before the build produces lib/bin.js.
   '@deepseek-ai/dsh-experimental-webworker-packer': ['bin.js', 'lib/repository-*.js'],
-  // Startup and runtime share the advertised URL parser.
-  '@deepseek-ai/dsh-web-app': ['lib/public-url-*.js'],
+  // Startup and runtime share the URL parser; industry presets load the
+  // Standard tool subtree through its exported entry and adjacent YAML.
+  '@deepseek-ai/dsh-web-app': [
+    'lib/public-url-*.js', 'presets/standard-tools.yml', 'lib/standard-agent-tools.js',
+  ],
   // The headless entry and its startup row share the JSON projection code
   // through a hashed tsdown chunk; both import it by relative path.
   '@deepseek-ai/dsh-headless': ['lib/json-stream-*.js'],

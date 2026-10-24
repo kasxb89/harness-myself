@@ -62,6 +62,8 @@ import Lsp from '@deepseek-ai/dsh-lsp'
 import * as ToolLsp from '@deepseek-ai/dsh-tool-lsp'
 import * as ToolSkill from '@deepseek-ai/dsh-tool-skill'
 import * as ToolSessionQuery from '@deepseek-ai/dsh-tool-session-query'
+import * as ToolSessionRelay from '@deepseek-ai/dsh-tool-session-relay'
+import type SessionController from '@deepseek-ai/dsh-api-session-controller'
 import * as ToolJobs from '@deepseek-ai/dsh-tool-jobs'
 import BrowserUseRegistry from '@deepseek-ai/dsh-browser-use'
 import * as StagehandBrowserTools from '@deepseek-ai/dsh-experimental-browser-use-stagehand-native'
@@ -503,6 +505,21 @@ const TOOL_PACKAGES: ToolPackage[] = [
     },
     note:
       'The five read-only tools hide provider cursors and authorize every result from the immutable calling agent session. The package is opt-in; compositions that need enforced deadlines or bounded inline output also mount the generic timeout or spill policies.',
+  },
+  {
+    pkg: '@deepseek-ai/dsh-tool-session-relay',
+    dir: 'tool-session-relay',
+    source: 'packages/session-query/tool-session-relay/src/index.ts',
+    requires: ['ctx.tools', 'ctx.systemPrompt', 'ctx.sessionController', 'ctx.userQuestions', 'a current human-authorized calling Agent'],
+    writes: ['tool/call', 'tool/result', 'attributed target inbox and user/message events'],
+    async mount(ctx) {
+      // Schema harvest does not execute peer operations or open another chat.
+      ctx.provide('sessionController', {} as SessionController)
+      await ctx.plugin(UserQuestionService)
+      await ctx.plugin(ToolSessionRelay)
+    },
+    note:
+      'Ordinary local chats use exact Session IDs and retain agent-message attribution. Queue acceptance is not a reply; notices do not wake an idle chat. Cross-workspace reads and sends require Host-owned human confirmation, and received messages cannot authorize automatic replies or paid generation.',
   },
   {
     pkg: '@deepseek-ai/dsh-tool-subagent',

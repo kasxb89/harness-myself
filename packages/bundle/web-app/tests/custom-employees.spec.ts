@@ -15,6 +15,7 @@ import { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import type { HostConnectionService } from '@deepseek-ai/dsh-client-connection'
 import { expect, it, onTestFinished, vi } from 'vitest'
 import { closeMockServers, mockServer, textEvents } from '../../../llm/llm-pi-ai/tests/mock-server.ts'
+import { provideSessionRelayFixture } from './fixtures/session-relay.ts'
 
 const packageRoot = fileURLToPath(new URL('../', import.meta.url))
 const repositoryRoot = fileURLToPath(new URL('../../../../', import.meta.url))
@@ -26,6 +27,7 @@ interface CreatedAssistant { ok: boolean; id: string }
 /** Boot source modules through an ordinary config file; only the upstream/account are fixtures. */
 async function boot(directory: string, relayUrl: string, legacyEntry = false): Promise<Context> {
   const ctx = new Context()
+  provideSessionRelayFixture(ctx)
   onTestFinished(() => ctx.fiber.dispose())
   const hosts = [
     'llm', 'session', 'session-projection', 'system-prompt', 'tools', 'agent', 'agent-loop',
@@ -113,6 +115,9 @@ async function boot(directory: string, relayUrl: string, legacyEntry = false): P
   await ctx.loader.await()
   expect([...ctx.loader.entries()].filter(row => !row.disabled && row.fiber === undefined)
     .map(row => ({ id: row.id, name: row.options.name }))).toEqual([])
+  const standardExport = (await ctx.agentPresets.remoteExportList()).presets.find(row => row.id === 'standard')
+  expect(standardExport).toBeDefined()
+  expect(standardExport?.broken).toBeUndefined()
   return ctx
 }
 

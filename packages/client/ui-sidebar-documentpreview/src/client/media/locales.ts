@@ -1,5 +1,8 @@
 /** Locale-owned media controls and playback failures. */
 export const zh = {
+  'playback.seek': '播放进度',
+  'playback.waiting': '读取视频时长后可拖动播放',
+  'playback.failed': '暂时无法跳转播放位置，请等待视频加载后重试',
   title: '媒体',
   preview: '媒体预览：{name}',
   loading: '正在加载媒体...',
@@ -13,6 +16,9 @@ export type MediaPreviewKey = keyof typeof zh
 
 /** English labels share the Chinese dictionary keys. */
 export const en = {
+  'playback.seek': 'Playback position',
+  'playback.waiting': 'Seeking is available after the video duration loads',
+  'playback.failed': 'This position could not be reached. Wait for the video to load and retry.',
   title: 'Media',
   preview: 'Media preview: {name}',
   loading: 'Loading media...',

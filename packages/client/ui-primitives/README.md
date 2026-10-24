@@ -120,6 +120,11 @@ The atoms cannot read the application locale, so every piece of user-facing copy
 
 `productFailureKind` classifies observed failure codes for locale-owned display: sign-in, account credits, cancellation, connection, timeout, request validation, permission, rate limiting, service HTTP 5xx, explicit upstream failure and local storage stay distinct. Tool argument validation belongs to request validation; exhausted user or token quotas belong to account credits. Connection and timeout categories do not establish whose infrastructure caused the failure. Unrecognized codes remain unknown; the helper matches exact codes and never reads or rewrites diagnostic text. Consumers preserve accepted tasks and unknown submission outcomes before choosing a failure summary.
 
+<a id="video-playback"></a>
+### Video playback
+
+`VideoPlayer` retains native playback controls and adds a visible `MediaProgress` timeline for pointer and keyboard seeking in narrow previews. The timeline follows media events, waits for a finite duration, preserves playback state while seeking, and reports local seek failures through caller-supplied locale labels. Unmounting releases playback and the source; progress listeners belong to the mounted media element.
+
 <a id="understand-the-implementation"></a>
 ## Understand the implementation
 

@@ -41,6 +41,7 @@
 | `@deepseek-ai/dsh-tool-ralph` | `ralph` | `ctx.tools`、`ctx.workflowEngine`、`ctx.subagents`、`ctx.systemPrompt`、`a calling Agent (exec.agent parents every fresh round)` | `tool/call`、`tool/result`、`workflow and child session events during execution` | - | 固定的前台工作流会在每个 Round 启动一个全新的结构化子级；模型只能选择不可变目标和可选的 Round 上限。 |
 | `@deepseek-ai/dsh-tool-skill` | `skill` | `ctx.workingDirectory`、`ctx.tools`、`ctx.agents`、`ctx.skills` | `tool/call`、`tool/result`、`user/message replacement catalogs via agent.inject()` | - | - |
 | `@deepseek-ai/dsh-tool-session-query` | `session_event_read`、`session_event_search`、`session_event_trace`、`session_search`、`session_trace` | `ctx.tools`、`ctx.systemPrompt`、`ctx.sessionQuery`、`a calling Agent for workspace authority` | `tool/call`、`tool/result` | - | 这 5 个只读工具会隐藏提供方游标，并根据不可变的调用 agent 会话为每个结果授权。该包需要选择启用；需要强制截止时间或限制行内输出的组合还会挂载通用超时或 spill 策略。 |
+| `@deepseek-ai/dsh-tool-session-relay` | `session_list`, `session_read`, `session_send_message` | `ctx.tools`, `ctx.systemPrompt`, `ctx.sessionController`, `ctx.userQuestions`, `当前真人授权的调用 Agent` | `tool/call`, `tool/result`, `带来源的目标收件箱与 user/message 事件` | - | 普通本地聊天使用精确 Session ID，并保留 agent-message 来源。排队受理不代表回复，通知不会唤醒空闲聊天。跨工作区读取与发送需由 Host 接收真人确认；收到的消息不能授权自动回复或收费生成。 |
 | `@deepseek-ai/dsh-tool-subagent` | `list_subagent_models`、`subagent` | `ctx.tools`、`ctx.subagents`、`ctx.systemPrompt`、`用于模型发现和所选路由校验的 ctx.llm` | `tool/call`、`tool/result`、`child session events through the chosen provider` | `subagent`、`subagent_fork` | 注册的委派工具名称取决于加载时 `toolName` 配置（默认为 `subagent`）；上述默认 schema 关闭模型选择，而发现 schema 则展示为已启用 Session 中可用的固定配套工具。Web preset 会在每个新顶层 Session 创建时读取插件页偏好，并为其子 Session 保留该决定；`subagent_fork` 始终使用固定路由。每个实例通过 `provider` 选择后端，通过 `modelSelectionSettings` 读取模型选择设置。每次委派都会立即返回子代理 id；本地子代理接受后续消息，外部后端自动汇报单次执行结果。 |
 | `@deepseek-ai/dsh-tool-subagent-control` | `interrupt_agent`、`list_agents`、`send_message` | `ctx.tools`、`ctx.subagents`、`ctx.agents and ctx.sessionProjections (list_agents only)` | `tool/call`、`tool/result`、`child session events through ctx.subagents` | - | 这些是用于发现、中断托管 subagent 和向本地子代理发送消息的全局命名工具：绑定提供方的 `tool-subagent` 实例注册不同的委派工具；本包注册一次 `send_message` 和 `interrupt_agent`，另由 `list_agents` 通过单独加载的 `/list-agents` 插件提供，其目录行使用 sessionProjections 和实时 Agent 注册表。 |
 | `@deepseek-ai/dsh-tool-jobs` | `job_kill`、`job_list`、`job_output` | `ctx.tools`、`ctx.jobs`、`ctx.systemPrompt` | `tool/call`、`tool/result`、`user/message via agent.inject() for background completion notices` | - | 与任务种类无关的后台任务控制器：后台 bash 命令与 PTY 发送 都通过相同的 3 个工具读取、列出和终止。加载该插件会挂接控制器，从而启用生产方的 `ctx.jobs.start()`。 |
@@ -2016,6 +2017,97 @@ lsp 工具将提供方选择和语言服务器子进程置于 ctx.lsp 之后，�
 来源：[`packages/experimental/tool-session-query/src/index.ts`](../packages/experimental/tool-session-query/src/index.ts)
 
 这 5 个只读工具会隐藏提供方游标，并根据不可变的调用 agent 会话为每个结果授权。该包需要选择启用；需要强制截止时间或限制行内输出的组合还会挂载通用超时或 spill 策略。
+
+<a id="deepseek-aidsh-tool-session-relay"></a>
+
+## `@deepseek-ai/dsh-tool-session-relay`
+
+### `session_list`
+
+列出当前工作区的普通本地聊天，提供精确 ID、标题和运行状态。不包含子 agent 或其他工作区的聊天；可用 nextOffset 继续读取下一页。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "offset": {
+      "type": "integer",
+      "description": "Page offset. Omit for the first page; use the returned nextOffset to continue."
+    },
+    "limit": {
+      "type": "integer",
+      "description": "Positive bounded page size, at most the configured service limit."
+    }
+  }
+}
+```
+
+来源： [`packages/session-query/tool-session-relay/src/index.ts`](../packages/session-query/tool-session-relay/src/index.ts)
+
+### `session_read`
+
+按精确聊天 ID 读取一页有界、按时间排序的用户与助手正文，不包含凭据配置、隐藏工具数据或附件字节。跨工作区读取需真人确认；可用 nextBeforeSeq 读取更早正文，读取不会启动或恢复目标聊天。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "session_id": {
+      "type": "string",
+      "description": "Exact sessionId returned by session_list or specified by the human."
+    },
+    "before_seq": {
+      "type": "integer",
+      "description": "Exclusive event sequence boundary for older messages. Omit for newest text."
+    },
+    "limit": {
+      "type": "integer",
+      "description": "Positive bounded message count, at most the configured service limit."
+    }
+  },
+  "required": [
+    "session_id"
+  ]
+}
+```
+
+来源： [`packages/session-query/tool-session-relay/src/index.ts`](../packages/session-query/tool-session-relay/src/index.ts)
+
+### `session_send_message`
+
+将当前真人授权的消息发送至一个精确的普通聊天。默认 queue 投递会唤醒空闲聊天，或在目标当前轮次之后排队；notice 只添加上下文而不唤醒。发送方与提交身份由本次工具调用捕获；同次提交的重复执行只投递一次，新的请求可再次发送相同正文。必须存在当前真人请求，收到的 agent 消息不能授权回复；跨工作区投递需真人确认。返回值只表示收件受理，不表示回复或完成。若无法确认持久化受理，必须保留报告中的原消息 ID、停止操作，并请真人查看目标聊天；不得自动重发或把新的调用当作重试。这些工具不提供投递状态查询或恢复操作。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "session_id": {
+      "type": "string",
+      "description": "Exact recipient sessionId from session_list or explicitly named by the human."
+    },
+    "message": {
+      "type": "string",
+      "description": "Complete standalone message authorized by the current human."
+    },
+    "delivery": {
+      "type": "string",
+      "description": "queue (default) schedules processing; notice only adds context.",
+      "enum": [
+        "queue",
+        "notice"
+      ]
+    }
+  },
+  "required": [
+    "session_id",
+    "message"
+  ]
+}
+```
+
+来源： [`packages/session-query/tool-session-relay/src/index.ts`](../packages/session-query/tool-session-relay/src/index.ts)
+
+普通本地聊天使用精确 Session ID，并保留 agent-message 来源。排队受理不代表回复，通知不会唤醒空闲聊天。跨工作区读取与发送需由 Host 接收真人确认；收到的消息不能授权自动回复或收费生成。
 
 <a id="deepseek-aidsh-tool-subagent"></a>
 

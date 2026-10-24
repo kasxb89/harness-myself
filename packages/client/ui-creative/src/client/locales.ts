@@ -3,6 +3,9 @@ export const NS = 'creative'
 
 /** Simplified Chinese sidebar and draft copy. */
 export const zh = {
+  'playback.seek': '播放进度',
+  'playback.waiting': '读取视频时长后可拖动播放',
+  'playback.failed': '暂时无法跳转播放位置，请等待视频加载后重试',
   'serverBusy': '请求繁忙或过于频繁，请稍后重试',
   'networkFailure': '连接中断或未能建立，请检查网络后查看状态',
   'requestTimeout': '等待响应超时，原因暂未确认，请先查看请求状态',
@@ -181,6 +184,9 @@ export type CreativeKey = keyof typeof zh
 
 /** English translations for every sidebar and draft key. */
 export const en: Record<CreativeKey, string> = {
+  'playback.seek': 'Playback position',
+  'playback.waiting': 'Seeking is available after the video duration loads',
+  'playback.failed': 'This position could not be reached. Wait for the video to load and retry.',
   'serverBusy': 'The request is busy or rate limited. Please try again later.',
   'networkFailure': 'The connection was interrupted or could not be established. Check your network and review the status.',
   'requestTimeout': 'The response timed out; the cause is unconfirmed. Check the request status first.',

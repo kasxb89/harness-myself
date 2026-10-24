@@ -3,8 +3,12 @@
 .captureRow { display: flex; align-items: center; gap: 12px; width: 100%; min-width: 0; min-height: 34px; }
 .roundButton { width: 32px; height: 32px; padding: 0; border-radius: 50%; corner-shape: round; flex: none; background: var(--dsw-specific-selector); }
 .roundButton:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover-solid); }
-.waveform { display: block; flex: 1; width: 0; height: 24px; min-width: 24px; color: var(--dsw-alias-label-secondary); }
+.recordingSignal { display: flex; flex-direction: column; flex: 1; min-width: 0; gap: 2px; }
+.recordingHint { font-size: 11px; color: var(--dsw-alias-label-secondary); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.stopButton { flex: none; height: 32px; gap: 4px; background: var(--dsw-specific-selector); }
+.waveform { display: block; flex: 1; width: 100%; height: 16px; min-width: 24px; color: var(--dsw-alias-label-secondary); }
 .activityMessage { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; font-size: 12px; color: var(--dsw-alias-label-secondary); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.captureRow[data-voice-activity='feedback'] .activityMessage { white-space: normal; overflow-wrap: anywhere; line-height: 1.5; }
 .inlineAction { flex: none; }
 
 .preparation { display: flex; flex-direction: column; gap: 10px; padding: 14px; margin: 12px 0; border: 0.5px solid var(--dsw-alias-border-l1); border-radius: 10px; font-size: 13px; }

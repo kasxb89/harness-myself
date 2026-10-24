@@ -106,6 +106,8 @@
         provider: spawn
     - id: tool-workflow
       name: '@deepseek-ai/dsh-tool-workflow'
+- id: tool-session-relay
+  name: '@deepseek-ai/dsh-tool-session-relay'
 - id: tool-ask-user
   name: '@deepseek-ai/dsh-tool-ask-user'
 - id: tool-todo

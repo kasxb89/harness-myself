@@ -49,6 +49,8 @@ Read failures preserve the last available project data with a retry action. Hidi
 
 Known accepted tasks keep generating status through queueing or temporary read/save failures. Task cards offer **Query original task** when a retained receipt permits recovery; this queries and saves the same image or video without another generation. Unconfirmed submissions remain visibly uncertain and cannot be automatically resubmitted. Failed task cards show localized busy copy and guidance to inspect existing results before resubmission; task diagnostics are not rendered as codes. A saved file that could not enter the artifact library keeps its separate local-storage recovery message and remains previewable.
 
+Saved video outputs use the [shared video player](../ui-primitives/README.md#video-playback) with a visible seek timeline.
+
 <a id="understand-the-implementation"></a>
 ## Understand the implementation
 

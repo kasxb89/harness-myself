@@ -127,6 +127,8 @@ The page refresh shortcut reuses the selected preview’s reload operation, incl
 
 </details>
 
+Video file previews use the [shared video player](../ui-primitives/README.md#video-playback) with a visible seek timeline.
+
 <a id="navigation"></a>
 ## Navigation
 

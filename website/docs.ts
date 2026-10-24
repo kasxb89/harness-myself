@@ -178,6 +178,14 @@ const homeAndGuide = pairedPages([
     section: { root: '集成', en: 'Integrations' },
     order: 1,
   },
+  {
+    source: 'docs/user/guide/mcp-tools.md',
+    route: 'guide/mcp-tools.md',
+    label: { root: '常用 MCP 工具', en: 'Common MCP tools' },
+    sidebar: { root: 'zh-guide', en: 'en-guide' },
+    section: { root: '集成', en: 'Integrations' },
+    order: 2,
+  },
 ])
 
 const develop = pairedPages([

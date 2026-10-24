@@ -64,7 +64,7 @@ export function VoiceInput({ sessionId, inputActions, locked, onActiveChange,
   const usable = readiness.connected && (provider?.preparation.phase === 'ready' || provider?.preparation.phase === 'standby'
     || provider?.preparation.phase === 'waking')
   const [phase, setPhase] = useState<Phase>('idle'), [message, setMessage] = useState(''), [pending, setPending] = useState('')
-  const [setupOpen, setSetupOpen] = useState(false)
+  const [setupOpen, setSetupOpen] = useState(false), [hasInput, setHasInput] = useState(false)
   useEffect(() => { if (usable) setSetupOpen(false) }, [usable])
   const current = useRef<ActiveRecording>(), generation = useRef(0)
   const expanded = phase !== 'idle'
@@ -127,7 +127,7 @@ export function VoiceInput({ sessionId, inputActions, locked, onActiveChange,
       span: inputActions.captureInsertion(), selection: catalog.selection,
       maxDurationSeconds: catalog.maxDurationSeconds, maxAudioBytes: catalog.maxAudioBytes, phase: 'requesting' }
     current.current = active
-    setMessage(''); setPending(''); setPhase('requesting')
+    setMessage(''); setPending(''); setHasInput(false); setPhase('requesting')
     try {
       await active.capture.start((failure) => {
         if (run !== generation.current || current.current !== active || active.phase === 'transcribing') return
@@ -158,13 +158,16 @@ export function VoiceInput({ sessionId, inputActions, locked, onActiveChange,
   return <div className={css.captureRow} data-voice-activity={phase}>
     <Button type="button" className={css.roundButton} size="sm" aria-label={t(pending ? 'discard' : 'cancel')}
       onClick={cancel}><IconCloseOutlineRegular size={14} /></Button>
-    {phase === 'recording' ? <Waveform recording={current.current?.capture} label={t('recording')} />
+    {phase === 'recording' ? <div className={css.recordingSignal}>
+      <span className={css.recordingHint} role="status" title={t(hasInput ? 'recordingInstruction' : 'recordingNoSignal')}>
+        {t(hasInput ? 'recordingInstruction' : 'recordingNoSignal')}</span>
+      <Waveform recording={current.current?.capture} label={t('recording')} onSignal={setHasInput} /></div>
       : <span className={css.activityMessage} role="status" title={pending || message}>
         {(phase === 'requesting' || phase === 'transcribing') && <StateDot state="ongoing" />}
         {phase === 'feedback' ? message : t(phase === 'requesting' ? 'requesting'
           : provider?.preparation.phase === 'waking' ? 'wakingShort' : 'transcribingShort')}</span>}
-    {phase === 'recording' && <Button type="button" className={css.roundButton} size="sm" aria-label={t('stop')}
-      onClick={() => { void finish() }}><IconStopFillRegular size={14} /></Button>}
+    {phase === 'recording' && <Button type="button" className={css.stopButton} size="sm" aria-label={t('stop')}
+      onClick={() => { void finish() }}><IconStopFillRegular size={14} />{t('stop')}</Button>}
     {phase === 'feedback' && (pending
       ? <Button className={css.inlineAction} size="sm" type="button" onClick={() => {
         if (inputActions.insertText(pending, inputActions.captureInsertion())) { setPending(''); setPhase('idle') }

@@ -1,0 +1,8 @@
+version: 1
+scenario: session-relay
+profile: web
+composition: session-relay
+recording: authored
+header:
+  class: session-relay
+  pin: true

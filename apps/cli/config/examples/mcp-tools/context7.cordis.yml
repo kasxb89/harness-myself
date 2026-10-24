@@ -1,0 +1,16 @@
+# Opt-in official Context7 hosted MCP. Set CONTEXT7_API_KEY before launch.
+- insert:
+    - id: tools-context7
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: context7
+        transport: streamable-http
+        url: https://mcp.context7.com/mcp
+        headers:
+          Authorization: !!js >-
+            (() => {
+              const token = process.env.CONTEXT7_API_KEY?.trim()
+              if (!token) throw new Error('Context7 MCP requires CONTEXT7_API_KEY')
+              return `Bearer ${token}`
+            })()
+        failOnStartupError: false

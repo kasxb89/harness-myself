@@ -49,6 +49,8 @@ kind: "package-reference"
 
 -----
 
+已保存视频的预览使用[共享播放器](../ui-primitives/README.zh.md#video-playback)，始终显示可拖动的进度条。
+
 <a id="understand-the-implementation"></a>
 ## 理解实现
 

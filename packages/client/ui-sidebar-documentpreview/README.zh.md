@@ -127,6 +127,8 @@ Office Remote 通过 Connection 的 multipart 二进制传输返回原生 `Uint8
 
 </details>
 
+视频文件预览使用[共享播放器](../ui-primitives/README.zh.md#video-playback)，显示可拖动的进度条。
+
 <a id="navigation"></a>
 ## 导航
 

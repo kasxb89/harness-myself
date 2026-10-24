@@ -57,6 +57,8 @@ Accepted image and video tasks keep their original receipt and show generating s
 
 Generation, model-catalog and material failures use observed error codes to distinguish connection failures, timeouts, invalid inputs, permission, local processing, model-service failures and confirmed service failures; only explicit busy or rate-limit codes use busy copy. An unconfirmed cause uses neutral copy, and raw messages or codes stay hidden. HTTP status survives transport handling, while malformed JSON remains a response failure instead of a connection diagnosis. Sign-in, product-credit, cancellation, file validation and unknown paid outcomes retain their safe next steps. Upload failures still name the affected material, and no failed generation request is automatically repeated.
 
+Generated videos, reference clips and template demos use the [shared video player](../ui-primitives/README.md#video-playback) with a visible seek timeline.
+
 <a id="understand-the-implementation"></a>
 ## Understand the implementation
 

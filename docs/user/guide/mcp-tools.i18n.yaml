@@ -1,0 +1,22 @@
+# Bilingual-pair consistency record for mcp-tools.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write docs/user/guide/mcp-tools.md
+/connect-common-mcp-tools:
+  en: d64beec74fef4e6c
+  zh: 01ddde1730307256
+/connect-common-mcp-tools/choose-a-connection:
+  en: 1b98ce8c1f2b0059
+  zh: fc38dc4da72bf3ad
+/connect-common-mcp-tools/enable-an-overlay:
+  en: 46aa6d6c770322a4
+  zh: 8825cc1cfacb42a0
+/connect-common-mcp-tools/enable-an-overlay/use-a-firecrawl-account:
+  en: 29a839ae4668c2ce
+  zh: 31419b3f832e79d4
+/connect-common-mcp-tools/verify-the-connection:
+  en: cc66718560eddf98
+  zh: 59f65729458f0345
+/connect-common-mcp-tools/reuse-browser-tools-and-account-integrations:
+  en: 016d82c9310c2649
+  zh: 1813823c3ab02fbf

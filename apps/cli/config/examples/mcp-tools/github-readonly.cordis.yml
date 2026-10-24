@@ -1,0 +1,16 @@
+# Opt-in official GitHub hosted MCP, restricted to its read-only endpoint.
+- insert:
+    - id: tools-github-readonly
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: github
+        transport: streamable-http
+        url: https://api.githubcopilot.com/mcp/readonly
+        headers:
+          Authorization: !!js >-
+            (() => {
+              const token = process.env.GITHUB_MCP_PAT?.trim()
+              if (!token) throw new Error('GitHub MCP requires GITHUB_MCP_PAT')
+              return `Bearer ${token}`
+            })()
+        failOnStartupError: false

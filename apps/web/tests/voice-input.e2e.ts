@@ -242,6 +242,8 @@ it.skipIf(webSnapshotMode() === 'record')('guides voice setup, records from stan
   await page.getByRole('button', { name: 'Stop and transcribe', exact: true }).waitFor()
   expect(await page.evaluate(() => (window as Window & { voiceTestStreams?: MediaStream[] }).voiceTestStreams!
     .at(-1)!.getAudioTracks()[0]!.getSettings().deviceId)).toBe(selectedDevice.deviceId)
+  await page.getByText('Receiving audio. Click Stop and transcribe when finished.', { exact: true }).waitFor()
+  expect(await page.getByRole('button', { name: 'Stop and transcribe', exact: true }).innerText()).toBe('Stop and transcribe')
   await compareOrRefreshGolden(recordingExpected,
     await captureStableAria(page, '[data-composer-card]', scaffold.workspaceCwd), webSnapshotMode())
   expect(await page.getByRole('dialog').count()).toBe(0)
@@ -308,5 +310,18 @@ it.skipIf(webSnapshotMode() === 'record')('guides voice setup, records from stan
   await stop.waitFor()
   await page.keyboard.press('Escape')
   expect(messages).toBe(1)
+  recognize.mockResolvedValueOnce({ text: '', audioSeconds: 1, inferenceSeconds: 0.1 })
+  await mic.click()
+  await stop.waitFor()
+  await page.getByText('Receiving audio. Click Stop and transcribe when finished.', { exact: true }).waitFor()
+  // Record a bounded fake-audio interval so MediaRecorder can encode the final chunk.
+  await page.waitForTimeout(300)
+  await stop.click()
+  await page.getByText(/^No speech recognized\. Speak a complete sentence/).waitFor()
+  expect(recognize).toHaveBeenCalledTimes(2)
+  expect(messages).toBe(1)
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await expect.poll(() => page.evaluate(() => (window as Window & { voiceTestStreams?: MediaStream[] }).voiceTestStreams!
+    .every(stream => stream.getTracks().every(track => track.readyState === 'ended')))).toBe(true)
   expect(tripwire.pageErrors).toEqual([])
 }, 120_000)

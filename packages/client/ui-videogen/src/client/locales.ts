@@ -5,6 +5,9 @@ export const NS = 'videogen'
 
 /** Simplified Chinese copy for the video composer. */
 export const zh = {
+  'playback.seek': '播放进度',
+  'playback.waiting': '读取视频时长后可拖动播放',
+  'playback.failed': '暂时无法跳转播放位置，请等待视频加载后重试',
   'originalAccepted': '生成中，任务已受理。请查询原任务，不要再次提交生成',
   'originalUnknown': '提交结果待确认，尚无可查询的任务编号。请保留原记录并核对任务与计费，不要再次提交生成',
   'originalLocked': '原任务尚未确认，暂不能再次生成',
@@ -218,6 +221,9 @@ export const zh = {
 
 /** English copy for every video composer translation key. */
 export const en: Record<keyof typeof zh, string> = {
+  'playback.seek': 'Playback position',
+  'playback.waiting': 'Seeking is available after the video duration loads',
+  'playback.failed': 'This position could not be reached. Wait for the video to load and retry.',
   'originalAccepted': 'Generating. The original task was accepted. Query it without submitting generation again.',
   'originalUnknown': 'The submission is unconfirmed and has no queryable task ID. Keep the original record and check its task and billing; do not submit generation again.',
   'originalLocked': 'The original task is unconfirmed. Generation is paused.',

@@ -1,0 +1,15 @@
+{
+  "video-start": {
+    "status": "background",
+    "job_id": "video-project-1",
+    "project_id": "{{id:1001}}",
+    "plan_id": "{{id:1002}}",
+    "remaining_works": 0,
+    "plan_seconds": [
+      4,
+      4,
+      4
+    ],
+    "message": "本次请求的视频作品已全部安排，你可以继续发送其它指令，无需等待生成完成。视频项目已在后台开始。查询进度时读取 job_output 当前快照；完成后会通知并提供产物。停止本地任务不代表已取消上游任务或停止计费。"
+  }
+}

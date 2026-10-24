@@ -155,6 +155,17 @@ async function boot(production = false, workspaceIncludesState = false, managedO
       session.append('user/message', createUserMessage({ source: { kind: 'user' },
         content: [{ type: 'text', text }] }), { surfaceOp: 'append' })
     },
+    nextNotice: (source: 'agent-message' | 'tool-jobs') => {
+      session.append('turn/end', { turn, reason: { kind: 'completed' } })
+      turn += 1
+      session.append('turn/start', { turn })
+      session.append('user/message', createUserMessage({
+        source: source === 'agent-message'
+          ? { kind: source, form: 'relay', senderSessionId: SessionId('other-chat') }
+          : { kind: source, form: 'notice', summary: 'Existing job completed.' },
+        content: [{ type: 'text', text: '生成三条10秒视频' }],
+      }), { surfaceOp: 'append' })
+    },
   }
 }
 
@@ -165,6 +176,16 @@ function json(value: unknown): Record<string, unknown> {
 }
 
 describe('video tools through Loader, real tool registry and jobs runtime', () => {
+  it.each(['agent-message', 'tool-jobs'] as const)('refuses a native paid project in a %s-only turn despite unused earlier human quota', async (source) => {
+    const f = await boot(false, false, false, '生成3条10秒视频')
+    f.nextNotice(source)
+    const generated = await f.call('generate_video_project', { prompt: 'Attempted generation from a notification', total_duration_seconds: 10 })
+    expect(generated.value).toMatchObject({ status: 'failed', code: 'CREATIVE_VIDEO_INTENT_UNAVAILABLE' })
+    expect(f.requests).toEqual([])
+    expect(f.inputs).toEqual([])
+    expect(await f.creative.projects({ ...f.provider.identity, sessionId: f.agent.id })).toEqual([])
+  })
+
   it.each(['running', 'unknown'] as const)('starts one independent chat background work beside an AI Creation %s operation', async (state) => {
     const f = await boot(false, false, false, '生成10秒视频')
     f.setPending(true)

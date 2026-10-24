@@ -1,0 +1,79 @@
+{
+  "background-start-1": {
+    "status": "background",
+    "job_id": "video-project-1",
+    "project_id": "{{id:1001}}",
+    "plan_id": "{{id:1002}}",
+    "remaining_works": 0,
+    "plan_seconds": [
+      10
+    ],
+    "message": "本次请求的视频作品已全部安排，你可以继续发送其它指令，无需等待生成完成。视频项目已在后台开始。查询进度时读取 job_output 当前快照；完成后会通知并提供产物。停止本地任务不代表已取消上游任务或停止计费。"
+  },
+  "background-start-2": {
+    "status": "background",
+    "job_id": "video-project-2",
+    "project_id": "{{id:1003}}",
+    "plan_id": "{{id:1004}}",
+    "remaining_works": 0,
+    "plan_seconds": [
+      10
+    ],
+    "message": "本次请求的视频作品已全部安排，你可以继续发送其它指令，无需等待生成完成。视频项目已在后台开始。查询进度时读取 job_output 当前快照；完成后会通知并提供产物。停止本地任务不代表已取消上游任务或停止计费。"
+  },
+  "background-start-3": {
+    "status": "background",
+    "job_id": "video-project-3",
+    "project_id": "{{id:1005}}",
+    "plan_id": "{{id:1006}}",
+    "remaining_works": 2,
+    "plan_seconds": [
+      10
+    ],
+    "message": "本次明确请求还有 2 个视频作品待安排，请继续为这些作品调用 generate_video_project，不要等待已启动作品完成。视频项目已在后台开始。查询进度时读取 job_output 当前快照；完成后会通知并提供产物。停止本地任务不代表已取消上游任务或停止计费。"
+  },
+  "background-start-4": {
+    "status": "background",
+    "job_id": "video-project-4",
+    "project_id": "{{id:1007}}",
+    "plan_id": "{{id:1008}}",
+    "remaining_works": 1,
+    "plan_seconds": [
+      10
+    ],
+    "message": "本次明确请求还有 1 个视频作品待安排，请继续为这些作品调用 generate_video_project，不要等待已启动作品完成。视频项目已在后台开始。查询进度时读取 job_output 当前快照；完成后会通知并提供产物。停止本地任务不代表已取消上游任务或停止计费。"
+  },
+  "background-start-5": {
+    "status": "background",
+    "job_id": "video-project-5",
+    "project_id": "{{id:1009}}",
+    "plan_id": "{{id:1010}}",
+    "remaining_works": 0,
+    "plan_seconds": [
+      10
+    ],
+    "message": "本次请求的视频作品已全部安排，你可以继续发送其它指令，无需等待生成完成。视频项目已在后台开始。查询进度时读取 job_output 当前快照；完成后会通知并提供产物。停止本地任务不代表已取消上游任务或停止计费。"
+  },
+  "background-start-6": {
+    "status": "background",
+    "job_id": "video-project-6",
+    "project_id": "{{id:1011}}",
+    "plan_id": "{{id:1012}}",
+    "remaining_works": 0,
+    "plan_seconds": [
+      10
+    ],
+    "message": "本次请求的视频作品已全部安排，你可以继续发送其它指令，无需等待生成完成。视频项目已在后台开始。查询进度时读取 job_output 当前快照；完成后会通知并提供产物。停止本地任务不代表已取消上游任务或停止计费。"
+  },
+  "background-start-7": {
+    "status": "background",
+    "job_id": "video-project-2",
+    "project_id": "{{id:1013}}",
+    "plan_id": "{{id:1014}}",
+    "remaining_works": 0,
+    "plan_seconds": [
+      10
+    ],
+    "message": "本次请求的视频作品已全部安排，你可以继续发送其它指令，无需等待生成完成。视频项目已在后台开始。查询进度时读取 job_output 当前快照；完成后会通知并提供产物。停止本地任务不代表已取消上游任务或停止计费。"
+  }
+}

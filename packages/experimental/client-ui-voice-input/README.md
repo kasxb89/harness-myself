@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-This optional browser plugin adds an outline microphone icon between the model selector and Send. When recognition is ready, clicking it opens a recording toolbar with measured audio levels, Cancel and Stop. The waveform stays shorter than the recording buttons. Stopping transcribes into the draft. Recognition preferences and model preparation live in plugin settings; language choices come from the selected provider.
+This optional browser plugin adds an outline microphone icon between the model selector and Send. When recognition is ready, clicking it opens a recording toolbar with measured audio levels, a visible audio-signal indicator, Cancel and a labeled Stop and transcribe button. The recording hint explains when to stop; transcription starts only after Stop or the recording limit. The waveform stays shorter than the recording buttons. Stopping transcribes into the draft. Recognition preferences and model preparation live in plugin settings; language choices come from the selected provider.
 
 ## Table of Contents
 
@@ -39,7 +39,7 @@ Before downloading or retrying, **Model download source** offers Automatic and t
 <details>
 <summary>Maintainer details — click to expand</summary>
 
-Native MediaRecorder captures audio and Web Audio converts it to the Host PCM format after flushing the final recorder chunks. Input-level previews use Web Audio without creating a MediaRecorder. Window blur during the microphone permission request does not cancel capture; blur during recording does. Capture failures immediately end the recording UI and offer retry inside the toolbar. Cancellation, failure and plugin disposal share one resource-release promise; the plugin retains ownership until AudioContext closure settles. The original editor selection carries a draft revision: changed drafts retain the transcript for explicit insertion or discard beside the microphone. Session changes, hiding the page during capture and plugin disposal invalidate late results and release tracks. One plugin-owned readiness subscription serves the composer, installation prompt and details. These views use the existing Slot lifecycle and own no preparation tasks.
+Web Audio explicitly resumes suspended contexts before measuring input. Microphone permission, missing or unreadable devices, interrupted capture, blocked audio and recordings containing only zero samples have separate actionable feedback. Zero-sample recordings are not submitted to recognition. Native MediaRecorder captures audio and Web Audio converts it to the Host PCM format after flushing the final recorder chunks. Input-level previews use Web Audio without creating a MediaRecorder. Window blur during the microphone permission request does not cancel capture; blur during recording does. Capture failures immediately end the recording UI and offer retry inside the toolbar. Cancellation, failure and plugin disposal share one resource-release promise; the plugin retains ownership until AudioContext closure settles. The original editor selection carries a draft revision: changed drafts retain the transcript for explicit insertion or discard beside the microphone. Session changes, hiding the page during capture and plugin disposal invalidate late results and release tracks. One plugin-owned readiness subscription serves the composer, installation prompt and details. These views use the existing Slot lifecycle and own no preparation tasks.
 
 </details>
 

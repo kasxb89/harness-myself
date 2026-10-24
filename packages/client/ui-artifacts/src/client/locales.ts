@@ -5,6 +5,9 @@ export const NS = 'artifacts'
 
 /** Simplified Chinese copy for the artifacts panel. */
 export const zh = {
+  'playback.seek': '播放进度',
+  'playback.waiting': '读取视频时长后可拖动播放',
+  'playback.failed': '暂时无法跳转播放位置，请等待视频加载后重试',
   'preview.backToChat': '回到聊天',
   'preview.originUnavailable': '来源聊天不可用',
   'preview.originError': '无法读取来源聊天',
@@ -126,6 +129,9 @@ export const zh = {
 
 /** English copy for every artifacts panel translation key. */
 export const en: Record<keyof typeof zh, string> = {
+  'playback.seek': 'Playback position',
+  'playback.waiting': 'Seeking is available after the video duration loads',
+  'playback.failed': 'This position could not be reached. Wait for the video to load and retry.',
   'preview.backToChat': 'Back to chat',
   'preview.originUnavailable': 'Source chat unavailable',
   'preview.originError': 'Could not read source chat',

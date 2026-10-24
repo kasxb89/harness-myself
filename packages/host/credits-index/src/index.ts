@@ -73,7 +73,7 @@ import type { CreativeImageReceipt, CreativeVideoReceipt, CreativeTaskView } fro
 import type { VideoProjectIdentity, VideoProjectInput, VideoProjectOptions, VideoProjectRequest, VideoRequestValue } from './video-project-types.ts'
 import { CreativeError, CreativeStore, parseCreativePlanChange, type CreativeOperation, type CreativeOwner } from './creative-store.ts'
 import { creativeOwner, registerCreativeTools } from './creative-tools.ts'
-import { videoGenerationIntentOf, videoModelChoiceCancelled } from './video-generation-intent.ts'
+import { hasCurrentHumanRequest, videoGenerationIntentOf, videoModelChoiceCancelled } from './video-generation-intent.ts'
 import { videoShotInput } from './video-shot-references.ts'
 import { chatVideoResolution, chooseChatVideoModel, DEFAULT_CHAT_VIDEO_MODEL, readVideoModelQuote, videoModelQuoteSegment,
   VideoQuoteUnsupportedError, type VideoModelCandidate, type VideoQuoteSegment } from './video-model-choice.ts'
@@ -4177,9 +4177,74 @@ export function apply(ctx: Context, config: Config): void {
   }
 
   ctx.tools.register(defineTool({
+    name: 'list_image_models',
+    description: 'Read the signed-in account’s available image models and current Host-validated generation controls without submitting images or charging for generation. Read when an exact image model, size, aspect ratio, resolution, count or reference-image limit is needed. Use exact ids and the size strings as returned, including aspect-ratio strings; resolution is a separate field. Empty menus and omitted fields offer no optional choice. Unverified model limits are conservative local limits, not confirmed upstream capabilities. Only pass controls declared by generate_image; this catalog also describes controls available to AI Creation. Listing does not reserve capacity, estimate prices or authorize a generation.',
+    parameters: {},
+    isConcurrencySafe: () => true,
+    output: { schema: { type: 'object', properties: {
+      status: { type: 'string' }, code: { type: 'string' }, message: { type: 'string' },
+      models: { type: 'array', items: { type: 'object', properties: {
+        id: { type: 'string' }, display_name: { type: 'string' }, parameters_verified: { type: 'boolean' },
+        sizes: { type: 'array', items: { type: 'string' } },
+        resolutions: { type: 'array', items: { type: 'string' } },
+        max_count: { type: 'number' }, max_reference_images: { type: 'number' },
+        qualities: { type: 'array', items: { type: 'string' } },
+        backgrounds: { type: 'array', items: { type: 'string' } },
+        formats: { type: 'array', items: { type: 'string' } },
+        moderations: { type: 'array', items: { type: 'string' } }, seed: { type: 'boolean' },
+      }, additionalProperties: false } },
+    }, additionalProperties: false }, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] },
+    presentCall: () => ({ card: 'generic', title: '读取图片模型与参数', kind: 'read' }),
+    async execute(_args, exec) {
+      try {
+        const binding = await bindCurrentVideoAccount()
+        const session = await liveSession()
+        const signal = AbortSignal.any([exec.signal, AbortSignal.timeout(resolved.timeoutMs)])
+        const [catalog, visible] = await Promise.all([readMediaCatalog(signal), readNewApiModels(session ?? undefined, signal)])
+        await binding.key()
+        exec.signal.throwIfAborted()
+        if (!catalog.ok || !visible.ok) {
+          const code = !visible.ok ? visible.code : catalog.code
+          if (code === 'HTTP_401' || code === 'SESSION_REQUIRED' || code === 'RELAY_MISSING') {
+            return { status: 'failed', code: 'IMAGE_MODELS_AUTH_REQUIRED', message: '登录或中转授权已失效，请确认登录后重试；尚未提交生成。' }
+          }
+          if (code === 'HTTP_403') return { status: 'failed', code: 'IMAGE_MODELS_FORBIDDEN', message: '当前账号无权读取图片模型，请核对账号权限；尚未提交生成。' }
+          if (code === 'HTTP_429') return { status: 'failed', code: 'IMAGE_MODELS_RATE_LIMITED', message: '图片模型目录读取受到限流，请稍后重试；尚未提交生成。' }
+          if (code === 'HTTP_408' || code === 'HTTP_504') return { status: 'failed', code: 'IMAGE_MODELS_TIMEOUT', message: '读取图片模型目录超时，请稍后重试；尚未提交生成。' }
+          if (code !== undefined && /^HTTP_5\d\d$/u.test(code)) return { status: 'failed', code: 'IMAGE_MODELS_SERVICE_UNAVAILABLE', message: '图片模型目录服务暂不可用，请稍后重试；尚未提交生成。' }
+          if (code === 'TRANSPORT') return { status: 'failed', code: 'IMAGE_MODELS_TRANSPORT', message: '连接中断或读取超时，暂未取得完整图片模型目录；请稍后重试，尚未提交生成。' }
+          return { status: 'failed', code: 'IMAGE_MODELS_UNAVAILABLE', message: '图片模型目录暂不可用，请稍后重试；尚未提交生成。' }
+        }
+        const allowed = new Set([...visible.chat, ...visible.image, ...visible.video])
+        const models = catalog.models.filter(model => model.kind === 'image' && allowed.has(model.id)).map((model) => {
+          const params = model.params as ImageParams
+          return { id: model.id, display_name: model.displayName, parameters_verified: model.verified,
+            sizes: model.verified || model.notes.includes('sizes') ? [...params.sizes] : [],
+            ...params.resolutions === undefined ? {} : { resolutions: [...params.resolutions] },
+            max_count: params.maxCount, max_reference_images: params.maxEdits,
+            qualities: model.verified ? [...params.qualities] : [], backgrounds: model.verified ? [...params.backgrounds] : [],
+            formats: model.verified ? [...params.formats] : [], moderations: model.verified ? [...params.moderations] : [],
+            seed: model.verified && params.seed }
+        })
+        return { status: 'listed', models, message: models.length === 0 ? '当前账号没有可用的图片模型；尚未提交生成。'
+          : '按精确型号和已声明参数生成；空菜单不提供可选规格，未验证型号的数量限制仅为客户端保守限制。尚未提交生成。' }
+      } catch (error) {
+        if (error instanceof VideoProjectError && error.code === 'VIDEO_ACCOUNT_REQUIRED') {
+          return { status: 'failed', code: 'IMAGE_MODELS_AUTH_REQUIRED', message: '请先在「额度」里登录，再读取图片模型；尚未提交生成。' }
+        }
+        if (error instanceof VideoProjectError && error.code === 'VIDEO_ACCOUNT_CHANGED') {
+          return { status: 'failed', code: 'ACCOUNT_CHANGED', message: '登录状态已变化，请在当前账号下重新读取图片模型；尚未提交生成。' }
+        }
+        return { status: 'failed', code: exec.signal.aborted ? 'CANCELLED' : 'IMAGE_MODELS_UNAVAILABLE',
+          message: exec.signal.aborted ? '已停止读取图片模型；尚未提交生成。' : '暂时无法确认图片模型目录，请稍后重试；尚未提交生成。' }
+      }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
     name: 'generate_image',
     isConcurrencySafe: () => true,
-    description: 'Generate images or edit reference images through the signed-in account relay, save every result into the artifacts directory, and return the paths. For pending or unknown results, never resubmit this tool: use query_image_task with the original plan_id and operation_id when a task_id was received. Without a task_id, retain the unknown outcome and reconcile the original request before any paid retry. For image-to-image requests, pass the current-chat user attachment or an authorized workspace image in reference_images. Which image models exist, and what each one accepts, is the deployment’s own answer: ask for a model only when the user names one.' + MEDIA_FAILURE_GUIDANCE,
+    description: 'Generate images or edit reference images through the signed-in account relay, save every result into the artifacts directory, and return the paths. For pending or unknown results, never resubmit this tool: use query_image_task with the original plan_id and operation_id when a task_id was received. Without a task_id, retain the unknown outcome and reconcile the original request before any paid retry. For image-to-image requests, pass the current-chat user attachment or an authorized workspace image in reference_images. Use list_image_models when the requested model or image controls need checking; preserve its exact model ids, size strings, independent resolution tiers and count/reference limits. Ask the user to choose a model only when their request requires that choice.' + MEDIA_FAILURE_GUIDANCE,
     parameters: {
       plan_id: { type: 'string', description: 'Explicit update_creation_plan id for this generation. Also provide exactly one of shot_id or asset_id.' },
       shot_id: { type: 'string', description: 'Exact shot id in the explicit plan; never guess a latest project.' },
@@ -4188,7 +4253,7 @@ export function apply(ctx: Context, config: Config): void {
       model: { type: 'string', description: 'Optional image model id such as gpt-image-2. Defaults to the first image model the deployment serves for this account.' },
       size: { type: 'string', description: 'Optional output size from the selected model’s published menu. yunshu-internal-gpt-image-2 accepts aspect-ratio strings only when its live catalog declares them, never pixel dimensions; use resolution for its independent 1k, 2k or 4k tier. An undeclared value is refused before generation.' },
       resolution: { type: 'string', description: 'Optional named output tier, only when declared by the chosen model. yunshu-internal-gpt-image-2 accepts 1k, 2k or 4k and defaults to 1k; this is independent from pixel size.' },
-      count: { type: 'number', description: 'How many images to render, within the model’s limit (usually 1–4).' },
+      count: { type: 'number', description: 'How many images to render, within max_count returned by list_image_models; do not infer a model’s batch limit.' },
       reference_images: { type: 'array', items: { type: 'string' }, description: 'Reference images for editing: current-chat user image attachment ids or their exact read-only paths, readable PNG/JPEG/WebP files inside the current workspace, uploaded ma_ ids, or real generated image output ids/paths owned by the same explicit plan_id. Other-chat attachments, unrelated local paths and URLs are refused.' },
     },
     output: {
@@ -4215,6 +4280,10 @@ export function apply(ctx: Context, config: Config): void {
       let operation: CreativeOperation | undefined
       const submission = { started: false }
       try {
+        if (exec.agent !== undefined && !hasCurrentHumanRequest(exec)) {
+          throw new CreativeError('CREATIVE_IMAGE_INTENT_UNAVAILABLE', 409,
+            '本轮没有可确认的用户请求，尚未提交图片生成；会话消息或任务通知不能自动发起付费生成。')
+        }
         const binding = await bindCurrentVideoAccount()
         const owner = creativeOwner(exec, binding.identity)
         const references: string[] = []

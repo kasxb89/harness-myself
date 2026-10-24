@@ -52,6 +52,8 @@ it('clicks to record, shows measured audio, and stops to insert without sending 
   await start()
   expect(b.props.onActiveChange).toHaveBeenLastCalledWith(true)
   expect(screen.getByRole('img', { name: zh.recording })).toBeTruthy()
+  expect(screen.getByRole('status').textContent).toBe(zh.recordingNoSignal)
+  expect(screen.getByRole('button', { name: zh.stop }).textContent).toBe(zh.stop)
   expect(b.transcribe).not.toHaveBeenCalled()
   stop()
   await waitFor(() => { expect(b.inputActions.insertText).toHaveBeenCalledWith(transcript.text, { start: 3, end: 3, draftRev: 1 }) })
@@ -157,7 +159,7 @@ it.each([new RecordingError('empty'), new Error('decode failed'), 'decode failed
 it('bounds recordings, indicates idle wake-up, and cancels an in-flight transcription', async () => {
   const b = fixture(), result = Promise.withResolvers<RemoteResult<Transcript>>()
   b.transcribe.mockReturnValueOnce(result.promise)
-  vi.useFakeTimers()
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
   fireEvent.click(screen.getByRole('button', { name: zh.start })); await act(async () => {})
   await act(async () => { await vi.advanceTimersByTimeAsync(120000) })
   expect(b.capture.stop).toHaveBeenCalledWith(120)
@@ -381,4 +383,13 @@ it.each(['later', 'escape', 'ready', 'session'])('dismisses unavailable recognit
     open()
     expect(screen.getByRole('dialog')).toBeTruthy()
   }
+})
+
+it('explains missing microphone audio without submitting it for recognition', async () => {
+  const devices = captureFixture({ silent: true }), b = fixture(devices.recording)
+  await start(); stop()
+  expect((await screen.findByRole('status')).textContent).toBe(zh.noInput)
+  expect(b.transcribe).not.toHaveBeenCalled()
+  expect(b.inputActions.insertText).not.toHaveBeenCalled()
+  expect(b.inputActions.submit).not.toHaveBeenCalled()
 })

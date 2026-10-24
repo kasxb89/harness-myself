@@ -815,6 +815,21 @@ interface PluginRecord {
 
 可选的 `application` 指定文件关联应用，不修改系统默认值；`workspacePathApplications({ path })` 在校验 Host 路径后返回当前关联应用、名称、图标和默认项。
 
+## 普通聊天消息转交值
+
+仅限 Host 的 peer 方法操作本地操作方的普通聊天。请求与结果类型由 [api-session-controller](../../packages/api/session-controller/src/peer-types.ts) 声明；授权与投递语义由[包参考](../../packages/api/session-controller/README.zh.md)说明。
+
+| 类型 | 字段与含义 |
+| --- | --- |
+| `PeerSessionSummary` | 精确 `sessionId`、当前 `title`、记录的 `cwd` 和 `running` 状态。 |
+| `PeerSessionListRequest` / `PeerSessionListValue` | 有界 `offset` / `limit`；`items` 和可选 `nextOffset` 列出调用方工作区中的普通聊天。 |
+| `PeerSessionReadRequest` / `PeerSessionReadValue` | 精确目标、可选排他游标 `beforeSeq`、有界 `limit` 和可选同意凭据；返回按时间排序的 `messages`、目标摘要与可选 `nextBeforeSeq`。 |
+| `PeerSessionMessage` | 事件 `seq`、用户或助手 `role`、可见 `text`、`sourceKind`、可选 `senderSessionId` 和 `truncated` 标记。 |
+| `PeerSessionConfirmation` | Host 发放的不透明同意凭据，绑定一个调用方、目标、真人请求以及读取或发送操作。 |
+| `PeerSessionSendRequest` | 目标 `sessionId`、工具捕获的 `submissionId`、完整 `message`、显式 `queue` 或 `notice` 投递方式和可选同意凭据。 |
+| `PeerSessionSendValue` | `accepted` 收件状态、精确目标与 `messageId`、投递方式以及是否为原提交的重复调用。受理不代表已处理或已回复。 |
+| `PeerSessionErrorCode` | 区分不可用调用方、缺少真人授权或同意、目标或大小不合法、写入冲突，以及持久化未确认或不可用。 |
+
 <!-- BEGIN GENERATED cordis-surface (gen-cordis-catalog.ts) — do not edit between markers -->
 
 <a id="cordis-surface"></a>
@@ -832,14 +847,69 @@ Host service backing the generated `ctx.remote.session` namespace.
 ```ts cordis-catalog
 /**
  * Resolve or resume one ordinary Session for another Host API domain.
+ *
  * @param sessionId - Session identity whose Agent owns the operation.
  * @returns the live Agent or the stable Session-domain failure.
  */
 resolveAgent(sessionId: SessionId): Promise<ApiSessionAgentResult>
 
 /**
+ * List ordinary local-operator Sessions in the calling Session's workspace.
+ *
+ * @param caller - exact live Agent.
+ * @param request - bounded offset page.
+ * @param signal - caller lifetime.
+ * @returns one non-activating metadata page.
+ */
+listPeerSessions(caller: Agent, request: PeerSessionListRequest, signal: AbortSignal): Promise<PeerSessionListValue>
+
+/**
+ * Capture a current human-owned native tool event without synchronously reading Session history.
+ * @param caller - exact live calling Agent.
+ * @param callId - actual runtime native root call identity.
+ * @returns root event sequence, or absence when no human-owned call is available.
+ */
+peerToolCallSeq(caller: Agent, callId: ToolCallId): number | undefined
+
+/**
+ * Read one ordinary peer's bounded text history without activating its Agent.
+ *
+ * @param caller - exact live Agent.
+ * @param request - target, cursor, and optional consent.
+ * @param signal - caller lifetime.
+ * @returns chronological messages and an exclusive older-history cursor.
+ */
+readPeerSession(caller: Agent, request: PeerSessionReadRequest, signal: AbortSignal): Promise<PeerSessionReadValue>
+
+/**
+ * Obtain human consent for one exact target and action in another workspace.
+ *
+ * @param caller - exact live human-driven Agent.
+ * @param sessionId - selected target.
+ * @param action - only authorized action.
+ *
+ * @param confirm - Host human answerer honoring its supplied signal.
+ * @param signal - caller lifetime.
+ * @returns opaque consent, or absence for an already shared workspace.
+ */
+confirmPeerSession( caller: Agent, sessionId: SessionId, action: 'read' | 'send', confirm: (target: PeerSessionSummary, signal: AbortSignal) => Promise<boolean>, signal: AbortSignal, ): Promise<PeerSessionConfirmation | undefined>
+
+/**
+ * Deliver one attributed message to an ordinary Session inbox exactly once per original submission.
+ *
+ * @param caller - exact live human-driven Agent.
+ * @param request - tool-owned identity, text, delivery, and optional consent.
+ *
+ * @param signal - caller lifetime before acceptance.
+ * @returns durable inbox acceptance, without implying processing or a reply.
+ */
+sendPeerMessage(caller: Agent, request: PeerSessionSendRequest, signal: AbortSignal): Promise<PeerSessionSendValue>
+
+/**
  * Inspect one attached or persisted Session without activating its Agent.
+ *
  * @param sessionId - durable Session identity.
+ *
  * @param signal - optional caller cancellation for persistence reads.
  * @returns the current attached state or persisted header and event prefix.
  */
@@ -847,7 +917,9 @@ inspect( sessionId: SessionId, signal?: AbortSignal, ): Promise<SessionInspectio
 
 /**
  * Read all visible Session rows without resuming an Agent.
+ *
  * @param _request - reserved empty list request.
+ *
  * @param signal - cancellation for persistence reads and summary generation.
  * @returns visible Session summaries ordered by activity.
  */
@@ -855,7 +927,9 @@ inspect( sessionId: SessionId, signal?: AbortSignal, ): Promise<SessionInspectio
 
 /**
  * Search visible Session content without resuming an Agent.
+ *
  * @param request - literal message-content query.
+ *
  * @param signal - cancellation for list and search reads.
  * @returns authorized bounded Session search results.
  */
@@ -863,6 +937,7 @@ inspect( sessionId: SessionId, signal?: AbortSignal, ): Promise<SessionInspectio
 
 /**
  * Create or idempotently adopt one ordinary Session.
+ *
  * @param request - requested identity, location, and Agent preset.
  * @returns the Session identity and resolved preset when configured.
  */
@@ -870,6 +945,7 @@ inspect( sessionId: SessionId, signal?: AbortSignal, ): Promise<SessionInspectio
 
 /**
  * Select one Session-local model after explicitly resuming the Session; save the default in the background.
+ *
  * @param request - Session identity and requested model selection.
  * @returns the normalized selection installed for the Session, without waiting for default persistence.
  */
@@ -901,7 +977,9 @@ workspaceDesktop(): { name: string; available: boolean; fileManager: 'finder' | 
 
 /**
  * Verify one path through the composed filesystem and open it on the Host desktop.
+ *
  * @param request - path after best-effort Session workspace resolution.
+ *
  * @param signal - caller lifetime; abort terminates the native command.
  * @returns confirmation after the native opener accepts the path.
  * @throws RemoteError when the request is invalid, has no verified Host mapping, is cancelled, or the opener fails.
@@ -910,7 +988,9 @@ workspaceDesktop(): { name: string; available: boolean; fileManager: 'finder' | 
 
 /**
  * Query current file handlers on the serving desktop without activating an Agent.
+ *
  * @param request - file path in Host filesystem syntax.
+ *
  * @param signal - caller lifetime, propagated to filesystem and desktop queries.
  * @returns OS application names, icons, and default selection; empty when desktop opening is unavailable.
  * @throws RemoteError when the path is invalid, the query is cancelled, or native discovery fails.
@@ -919,6 +999,7 @@ workspaceDesktop(): { name: string; available: boolean; fileManager: 'finder' | 
 
 /**
  * Rename one Session after explicitly resuming it.
+ *
  * @param request - Session identity and proposed title.
  * @returns the accepted title and durable event sequence.
  */
@@ -928,6 +1009,7 @@ workspaceDesktop(): { name: string; available: boolean; fileManager: 'finder' | 
  * Fork one cold-readable exact event prefix into a new Session. An omitted
  * boundary selects the latest completed-turn prefix; an open cut receives
  * synthetic fork closers.
+ *
  * @param request - source Session, optional exact inclusive event boundary, and migration preflight choice.
  * @returns the new Session identity.
  */
@@ -935,7 +1017,9 @@ workspaceDesktop(): { name: string; available: boolean; fileManager: 'finder' | 
 
 /**
  * Admit one prompt after explicitly resuming its Session.
+ *
  * @param request - Session identity, prompt content, source metadata, and delivery mode.
+ *
  * @param signal - caller cancellation before prompt admission begins.
  * @returns acknowledgement that the Agent accepted the prompt.
  */
@@ -943,6 +1027,7 @@ workspaceDesktop(): { name: string; available: boolean; fileManager: 'finder' | 
 
 /**
  * Read one image proven reachable from the addressed Session log.
+ *
  * @param request - Session and attachment identities used for authorization.
  * @returns the durable attachment reference and base64-encoded bytes.
  */
@@ -950,6 +1035,7 @@ workspaceDesktop(): { name: string; available: boolean; fileManager: 'finder' | 
 
 /**
  * Mutate one still-pending queue occurrence, resuming a cold Agent first.
+ *
  * @param request - Session, queue item, and requested mutation.
  * @returns acknowledgement that the queue mutation was applied.
  */
@@ -957,6 +1043,7 @@ workspaceDesktop(): { name: string; available: boolean; fileManager: 'finder' | 
 
 /**
  * Cancel one active Agent turn without dropping its pending inbox.
+ *
  * @param request - Session whose active Agent turn is cancelled.
  * @returns acknowledgement that cancellation was requested.
  */
@@ -964,7 +1051,9 @@ workspaceDesktop(): { name: string; available: boolean; fileManager: 'finder' | 
 
 /**
  * Read one cold-safe, message-aligned Session history page.
+ *
  * @param request - durable address, backward cursor, and page budget.
+ *
  * @param signal - cancellation for persistence reads.
  * @returns one chronological page.
  */
@@ -972,7 +1061,9 @@ workspaceDesktop(): { name: string; available: boolean; fileManager: 'finder' | 
 
 /**
  * Follow one Session log from its opening or resume cursor.
+ *
  * @param request - durable address and last committed sequence already held by the caller.
+ *
  * @param signal - cancellation owned by the Remote stream carrier.
  * @returns a complete opening snapshot followed by gap-free durable event
  *   frames and optional cursorless assistant-stream frames.
@@ -981,7 +1072,9 @@ workspaceDesktop(): { name: string; available: boolean; fileManager: 'finder' | 
 
 /**
  * Read exact projections, returning cached hints only when migration is required.
+ *
  * @param request - Session whose current values are required.
+ *
  * @param signal - cancellation for the Session read.
  * @returns a sequenced baseline, cached hints when migration is deferred, or null when absent.
  */
@@ -989,13 +1082,14 @@ workspaceDesktop(): { name: string; available: boolean; fileManager: 'finder' | 
 
 /**
  * Stream a complete live-control baseline followed by replacement frames.
+ *
  * @param signal - cancellation owned by the Remote stream carrier.
  * @returns one complete baseline followed by live replacement frames.
  */
 @Remote({ mode: 'stream' }) control(signal: AbortSignal): AsyncIterable<SessionControlFrame>
 ```
 
-Types: [SessionId](core.zh.md) · [SessionInspection](persistence.zh.md) · [SessionSearchRequest](session-query.zh.md)
+Types: [Agent](core.zh.md) · [SessionId](core.zh.md) · [SessionInspection](persistence.zh.md) · [SessionSearchRequest](session-query.zh.md) · [ToolCallId](core.zh.md)
 
 Source: [`packages/api/session-controller/src/index.ts`](../../packages/api/session-controller/src/index.ts)
 

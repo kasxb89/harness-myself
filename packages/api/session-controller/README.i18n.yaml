@@ -12,8 +12,8 @@
   en: 4914824c347fdab5
   zh: 684a7b7fa970c39f
 /session-controller/table-of-contents:
-  en: 1fdf707322fb6996
-  zh: 0204f7e9d4aa3cce
+  en: 6f530c958ec0d398
+  zh: 09342178cb9ea375
 /session-controller/use-this-package:
   en: 18a9e580c8bccea1
   zh: 43bbac8d8271fb47
@@ -21,14 +21,17 @@
   en: 41bdda1ac32df558
   zh: aa5d0e325924066b
 /session-controller/session-media-references:
-  en: 266ab2b1e2fec542
-  zh: b3450ae28a1e0baf
+  en: 1822fa0a2ddb7cee
+  zh: 808474767056e3e9
+/session-controller/ordinary-peer-sessions:
+  en: c069668cc9023b4e
+  zh: 0f076074d9c60ac9
 /session-controller/configuration:
-  en: 5ae2b340c630897f
-  zh: 1ffbd61ecf302ec2
+  en: 81bc1f2fcc09ea71
+  zh: 2bad9e95386d6c08
 /session-controller/model-experience:
-  en: 30b917bf822bb4df
-  zh: b0b023b5b526c317
+  en: 45ceca3c5fcc8c15
+  zh: ec8bf7df83ad1315
 /session-controller/model-experience/kv-cache-effect:
   en: 22fc0c9dbedd3bb6
   zh: fad040ca55fd0e0a

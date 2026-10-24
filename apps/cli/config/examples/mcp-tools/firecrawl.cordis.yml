@@ -1,0 +1,11 @@
+# Opt-in official Firecrawl hosted MCP using the provider's limited keyless tier.
+# For account authentication, add the per-header mapping from the MCP tools guide.
+- insert:
+    - id: tools-firecrawl
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: firecrawl
+        transport: streamable-http
+        url: https://mcp.firecrawl.dev/v2/mcp
+        headers: {}
+        failOnStartupError: false

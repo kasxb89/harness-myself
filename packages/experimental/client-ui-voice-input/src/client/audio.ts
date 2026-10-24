@@ -2,7 +2,8 @@
 
 /** Capture failure whose message is localized by the caller. */
 export class RecordingError extends Error {
-  constructor(readonly kind: 'unavailable' | 'permission' | 'empty' | 'cancelled' | 'interrupted' | 'deviceMissing') { super(kind); this.name = 'RecordingError' }
+  constructor(readonly kind: 'unavailable' | 'permission' | 'empty' | 'cancelled' | 'interrupted'
+    | 'deviceMissing' | 'deviceBusy' | 'audioBlocked' | 'noInput', options?: ErrorOptions) { super(kind, options); this.name = 'RecordingError' }
 }
 
 /**
@@ -64,7 +65,9 @@ export class Recording {
         ...(this.deviceId === '' ? {} : { deviceId: { exact: this.deviceId } }) }, video: false })
     } catch (error) {
       if (error instanceof DOMException) {
-        if (error.name === 'NotAllowedError') throw new RecordingError('permission')
+        if (error.name === 'NotAllowedError' || error.name === 'SecurityError') throw new RecordingError('permission')
+        if (error.name === 'NotReadableError' || error.name === 'TrackStartError') throw new RecordingError('deviceBusy')
+        if (error.name === 'AbortError') throw new RecordingError('interrupted')
         if (error.name === 'NotFoundError' || error.name === 'OverconstrainedError') throw new RecordingError('deviceMissing')
       }
       throw error
@@ -73,6 +76,14 @@ export class Recording {
     this.stream = stream
     try {
       this.context = new AudioContext()
+      if (this.context.state === 'suspended') {
+        try { await this.context.resume() } catch (error) {
+          this.lifetime.signal.throwIfAborted()
+          throw new RecordingError('audioBlocked', { cause: error })
+        }
+      }
+      this.lifetime.signal.throwIfAborted()
+      if (this.context.state !== 'running') throw new RecordingError('audioBlocked')
       this.analyser = this.context.createAnalyser()
       this.analyser.fftSize = this.samples.length
       this.context.createMediaStreamSource(stream).connect(this.analyser)
@@ -156,7 +167,9 @@ export class Recording {
       source.start()
       const resampled = await offline.startRendering()
       this.lifetime.signal.throwIfAborted()
-      return encodeWave(resampled.getChannelData(0))
+      const samples = resampled.getChannelData(0)
+      if (!samples.some(sample => sample !== 0)) throw new RecordingError('noInput')
+      return encodeWave(samples)
     } finally { await this.dispose() }
   }
 

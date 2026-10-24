@@ -1,0 +1,18 @@
+.player { display: flex; flex-direction: column; width: 100%; max-height: 100%; min-width: 0; min-height: 0; }
+.player > video { flex: 0 1 auto; min-height: 0; }
+
+.timeline {
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  width: 100%;
+  padding: 6px 2px;
+  color: var(--dsw-alias-label-secondary);
+  font-family: var(--dsw-font, sans-serif);
+}
+
+.row { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.slider { flex: 1 1 auto; width: 0; min-width: 48px; height: 24px; margin: 0; cursor: pointer; accent-color: var(--dsw-alias-state-business-primary); }
+.slider:disabled { cursor: default; }
+.slider:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary); outline-offset: 2px; border-radius: 3px; }
+.time { flex: 0 0 auto; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.error { display: block; margin-top: 4px; font-size: 12px; color: var(--dsw-alias-label-error); }

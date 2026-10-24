@@ -15,6 +15,7 @@ Desktop analytics follows the [product collection policy](../../client/product-a
 ## Table of Contents
 
 - [Use this package](#use-this-package)
+- [Ordinary peer Sessions](#ordinary-peer-sessions)
 - [Client references](#client-references)
 - [Session media references](#session-media-references)
 - [Configuration](#configuration)
@@ -92,6 +93,21 @@ A successful `selectModel` response acknowledges the Session-local selection wit
 
 -----
 
+<a id="ordinary-peer-sessions"></a>
+## Ordinary peer Sessions
+
+The Host-only `listPeerSessions`, `readPeerSession`, `confirmPeerSession`, and `sendPeerMessage` methods serve model-tool consumers through the same local operator. They are separate from browser-authored `session.prompt` and from parent-child subagent control. Discovery lists unarchived ordinary Sessions in the caller's recorded workspace, with bounded offset pages. History returns bounded chronological conversation text pages and exclusive event-sequence cursors without activating the target: human messages, attributed agent relays, and model assistant messages only. Time, runtime, skill, and other injected context, reasoning, tool results, attachment bytes, and credential configuration are excluded. Visible conversation text is not a credential-redaction service.
+
+Every caller must be the exact live ordinary Agent. Cross-workspace reads and sends require an opaque Host-issued confirmation bound to the caller, current human request, target, and action; a send confirmation cannot authorize reading. The human answerer receives the selected target metadata and a cancellation signal. Same-workspace operations require no additional confirmation. Archived, unknown, delegated, unreadable, or writer-held targets never silently create replacement Sessions.
+
+Tool consumers capture their native root event with `peerToolCallSeq` before awaiting policy, then retain that identity through nested execution tokens. The lookup returns absence for unrelated, stale, delegated, archived, or non-human-driven calls without blocking their ordinary tools. Authority and accepted-content fingerprints rebuild through the Host-only `peerSessionRelay` projection rather than synchronous historical reads.
+
+Sending requires a current human-owned durable tool call. An incoming `agent-message` cannot authorize another send or an automatic reply. `queue` submits a distinct waking turn; `notice` leaves a non-waking item in the next-turn inbox. Both preserve `agent-message` attribution and `senderSessionId`, so delivery does not become a new human instruction or paid-generation allowance. A stable sender/target/original-tool-submission identity selects the inbox message ID. Concurrent or restarted retries consult durable inbox insertions and messages, including insertions later removed by the user; independently requested sends may repeat the same text. Changing text under an accepted submission identity is rejected.
+
+The service checkpoints the target before admitting new input and after acceptance. Only a successful durable checkpoint returns `status: accepted`, which does not mean processed or answered. A failed post-acceptance checkpoint reports `PEER_DELIVERY_UNCONFIRMED` with the original message ID and target; the agent stops automatic sending and asks the human to inspect that target and its queued messages. A Host retaining the exact original submission can checkpoint its existing acceptance, but the model tools expose no recovery action and a fresh tool call is not that original submission. Cancellation before acceptance inserts nothing; accepted work belongs to the target. Disposal rejects new operations and joins admitted work.
+
+-----
+
 <a id="configuration"></a>
 ## Configuration
 
@@ -99,6 +115,10 @@ A successful `selectModel` response acknowledges the Session-local selection wit
 |---|---:|---|
 | `nativeOpen` | platform-detected | Whether Session workspace paths can be handed to a native desktop opener |
 | `listWorkSliceMs` | `16` | Positive integral list-work time slice in milliseconds; checks occur between complete rows |
+| `peerListLimit` | `50` | Maximum ordinary peer metadata rows in one page |
+| `peerReadLimit` | `30` | Maximum text messages in one peer history page |
+| `peerResultBytes` | `32768` | Maximum complete peer list/history result size in UTF-8 bytes |
+| `peerMessageBytes` | `16384` | Maximum complete sender-framed peer message size in UTF-8 bytes |
 
 The generated [configuration catalog](../../../docs/config-catalog.md#deepseek-aidsh-api-session-controller) is the exhaustive source for accepted fields and their JSDoc.
 
@@ -107,7 +127,7 @@ The generated [configuration catalog](../../../docs/config-catalog.md#deepseek-a
 <a id="model-experience"></a>
 ## Model Experience
 
-None, as invoked Agent commands own any model-visible effect.
+None, as this package exposes Host operations and registers no model-facing tool.
 
 #### KV Cache effect
 

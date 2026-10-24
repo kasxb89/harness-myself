@@ -20,7 +20,10 @@
     "src/media-references.ts",
     "src/model-selection-projection.ts",
     "src/archived-session-gate.ts",
-    "src/skill-catalog.ts"
+    "src/skill-catalog.ts",
+    "src/peer-sessions.ts",
+    "src/peer-projection.ts",
+    "src/peer-types.ts"
   ],
   "references": [
     {

@@ -88,6 +88,29 @@ describe('private product package constraints', () => {
     } })).toEqual([expect.stringContaining('package.json files must be')])
   })
 
+  it('requires the industry patch and shared Standard tools in the Web payload', () => {
+    const dir = 'packages/bundle/web-app'
+    const manifest = JSON.parse(readFileSync(new URL(`../${dir}/package.json`, import.meta.url), 'utf8')) as WorkspaceManifest['manifest']
+    const required = ['presets/industry.patch.yml', 'presets/standard-tools.yml', 'lib/standard-agent-tools.js']
+    expect(expectedDshPackageFiles(manifest)).toEqual(expect.arrayContaining(required))
+    expect(checkWorkspaceManifest({ dir, manifest })).toEqual([])
+    for (const omitted of required) {
+      expect(checkWorkspaceManifest({ dir, manifest: {
+        ...manifest, files: (manifest.files ?? []).filter(file => file !== omitted),
+      } })).toEqual([expect.stringContaining('package.json files must be')])
+    }
+  })
+
+  it('rejects additional or reordered Web payload entries', () => {
+    const dir = 'packages/bundle/web-app'
+    const manifest = JSON.parse(readFileSync(new URL(`../${dir}/package.json`, import.meta.url), 'utf8')) as WorkspaceManifest['manifest']
+    const files = manifest.files ?? []
+    for (const changed of [[...files, 'lib/unrelated.js'], [...files].reverse()]) {
+      expect(checkWorkspaceManifest({ dir, manifest: { ...manifest, files: changed } }))
+        .toEqual([expect.stringContaining('package.json files must be')])
+    }
+  })
+
   it('continues requiring upstream public release metadata for an unclassified private package', () => {
     const dir = 'packages/host/credits-index'
     const manifest = JSON.parse(readFileSync(new URL(`../${dir}/package.json`, import.meta.url), 'utf8')) as WorkspaceManifest['manifest']

@@ -49,6 +49,8 @@ Text previews retain at most 256 KiB, cancel further reading at the limit and di
 
 -----
 
+Saved video previews use the [shared video player](../ui-primitives/README.md#video-playback) with an always-visible seek timeline.
+
 <a id="understand-the-implementation"></a>
 ## Understand the implementation
 

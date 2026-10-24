@@ -1,6 +1,6 @@
 /** Actual saved media, localized facts and explicit generation states. */
 import { useEffect, useState, type ReactNode } from 'react'
-import { appPath, ImageLightbox, StateDot, type StateDotState } from '@deepseek-ai/dsh-client-ui-primitives'
+import { appPath, ImageLightbox, StateDot, VideoPlayer, type StateDotState } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import type { CreativeOutput, CreativeStatus } from '@deepseek-ai/dsh-credits-index/src/creative-types.ts'
 import type {} from './locales.ts'
@@ -45,7 +45,7 @@ export function SavedMedia({ output, visible, t }: { output: CreativeOutput; vis
           <img src={appPath(output.url)} alt={output.name} loading="lazy" onError={() => { setFailed(true) }} />
         </button>
         : output.kind === 'video'
-          ? <video controls preload="metadata" src={appPath(output.url)} poster={output.posterUrl === undefined ? undefined : appPath(output.posterUrl)} aria-label={output.name}
+          ? <VideoPlayer progressLabels={{ seek: t('playback.seek'), unavailable: t('playback.waiting'), failed: t('playback.failed') }} controls preload="metadata" src={appPath(output.url)} poster={output.posterUrl === undefined ? undefined : appPath(output.posterUrl)} aria-label={output.name}
             onError={() => { setFailed(true) }} />
           : <audio controls preload="metadata" src={appPath(output.url)} aria-label={output.name} onError={() => { setFailed(true) }} />}
     <figcaption className={css.mediaFooter}>

@@ -1,0 +1,16 @@
+# Opt-in official Tavily hosted MCP. Set TAVILY_API_KEY before launch.
+- insert:
+    - id: tools-tavily
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: tavily
+        transport: streamable-http
+        url: https://mcp.tavily.com/mcp
+        headers:
+          Authorization: !!js >-
+            (() => {
+              const token = process.env.TAVILY_API_KEY?.trim()
+              if (!token) throw new Error('Tavily MCP requires TAVILY_API_KEY')
+              return `Bearer ${token}`
+            })()
+        failOnStartupError: false

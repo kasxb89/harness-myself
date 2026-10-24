@@ -6,7 +6,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-fs'
 import { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { errorChain, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import { errorChain, ReasoningEffortId, type ToolCallId } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-client-file-upload'
 import { canOpenNativePath, nativeFileManager, nativeFileApplications, openNativeFileApplication, openNativeAssociatedPath, revealNativePath } from '@deepseek-ai/dsh-native-command'
 import type { SessionId } from '@deepseek-ai/dsh-session'
@@ -29,6 +29,11 @@ import { installModelSelectionProjection } from './model-selection-projection.ts
 import { SessionSkillCatalog } from './skill-catalog.ts'
 import { SessionMediaReferences } from './media-references.ts'
 import { ArchivedSessionGate } from './archived-session-gate.ts'
+import { PeerSessions } from './peer-sessions.ts'
+import type {
+  PeerSessionConfirmation, PeerSessionListRequest, PeerSessionListValue, PeerSessionReadRequest,
+  PeerSessionReadValue, PeerSessionSendRequest, PeerSessionSendValue, PeerSessionSummary,
+} from './peer-types.ts'
 import type {
   ModelCatalog,
   SessionWorkspacePathApplication,
@@ -65,6 +70,8 @@ import type {
 } from './types.ts'
 
 export type * from './types.ts'
+export type * from './peer-types.ts'
+export { PeerSessionError } from './peer-sessions.ts'
 export { ApiSessionNotFound } from './agent.ts'
 export { SessionFileReferences } from './file-references.ts'
 export { SessionSkillCatalog } from './skill-catalog.ts'
@@ -82,10 +89,24 @@ export interface Config {
   readonly nativeOpen?: boolean
   /** Positive integral milliseconds of list work before yielding between complete rows. */
   readonly listWorkSliceMs?: number
+  /** Maximum ordinary peer Sessions returned in one model-tool page. */
+  readonly peerListLimit?: number
+  /** Maximum text messages returned in one peer history page. */
+  readonly peerReadLimit?: number
+  /** Maximum UTF-8 bytes of a complete peer list or history result. */
+  readonly peerResultBytes?: number
+  /** Maximum UTF-8 bytes of one complete sender-framed peer message. */
+  readonly peerMessageBytes?: number
 }
 
 /** Deployment policy after schema defaults have been applied. */
-type ResolvedConfig = Config & { readonly listWorkSliceMs: number }
+type ResolvedConfig = Config & {
+  readonly listWorkSliceMs: number
+  readonly peerListLimit: number
+  readonly peerReadLimit: number
+  readonly peerResultBytes: number
+  readonly peerMessageBytes: number
+}
 
 /** Host integrations replaceable by direct unit tests. */
 export interface SessionControllerInternals {
@@ -120,6 +141,10 @@ export class SessionController extends TypertRemoteService {
   static Config: z<Config, ResolvedConfig> = z.object({
     nativeOpen: z.boolean(),
     listWorkSliceMs: z.natural().min(1).default(16),
+    peerListLimit: z.natural().min(1).default(50),
+    peerReadLimit: z.natural().min(1).default(30),
+    peerResultBytes: z.natural().min(1024).default(32768),
+    peerMessageBytes: z.natural().min(256).default(16384),
   })
 
   private readonly agents: ApiSessionAgentController
@@ -127,6 +152,7 @@ export class SessionController extends TypertRemoteService {
   private readonly controlState: SessionControlController
   private readonly history: SessionHistoryController
   private readonly listState: ApiSessionList
+  private readonly peers: PeerSessions
   private readonly openPath: (path: string, signal: AbortSignal) => Promise<void>
   private readonly fileApplications: typeof nativeFileApplications
   private readonly openFileApplication: typeof openNativeFileApplication
@@ -135,8 +161,11 @@ export class SessionController extends TypertRemoteService {
   private readonly promotions = new Set<Promise<void>>()
 
   /**
+   *
    * @param ctx - Host context containing the Session capability assembly.
+   *
    * @param config - native-opener and list-scheduling deployment policy.
+   *
    * @param internals - host integrations replaceable by direct unit tests.
    */
   constructor(ctx: Context, config: Config, internals: SessionControllerInternals = {}) {
@@ -144,6 +173,10 @@ export class SessionController extends TypertRemoteService {
     const resolved = SessionController.Config(config)
     installModelSelectionProjection(ctx)
     this.agents = new ApiSessionAgentController(ctx)
+    this.peers = new PeerSessions(ctx, this.agents, {
+      maxListItems: resolved.peerListLimit, maxReadMessages: resolved.peerReadLimit,
+      maxResultBytes: resolved.peerResultBytes, maxMessageBytes: resolved.peerMessageBytes,
+    })
     this.commands = new SessionCommandController(ctx, this.agents, process.cwd())
     ctx.effect(() => ctx.fileUploads.registerAgentResolver(async (sessionId) => {
       const result = await this.agents.resolveAgent(sessionId)
@@ -221,6 +254,7 @@ export class SessionController extends TypertRemoteService {
 
   /**
    * Resolve or resume one ordinary Session for another Host API domain.
+   *
    * @param sessionId - Session identity whose Agent owns the operation.
    * @returns the live Agent or the stable Session-domain failure.
    */
@@ -229,8 +263,75 @@ export class SessionController extends TypertRemoteService {
   }
 
   /**
+   * List ordinary local-operator Sessions in the calling Session's workspace.
+   *
+   * @param caller - exact live Agent.
+   * @param request - bounded offset page.
+   * @param signal - caller lifetime.
+   * @returns one non-activating metadata page.
+   */
+  listPeerSessions(caller: Agent, request: PeerSessionListRequest, signal: AbortSignal): Promise<PeerSessionListValue> {
+    return this.peers.list(caller, request, signal)
+  }
+
+  /**
+   * Capture a current human-owned native tool event without synchronously reading Session history.
+   * @param caller - exact live calling Agent.
+   * @param callId - actual runtime native root call identity.
+   * @returns root event sequence, or absence when no human-owned call is available.
+   */
+  peerToolCallSeq(caller: Agent, callId: ToolCallId): number | undefined {
+    return this.peers.toolCallSeq(caller, callId)
+  }
+
+  /**
+   * Read one ordinary peer's bounded text history without activating its Agent.
+   *
+   * @param caller - exact live Agent.
+   * @param request - target, cursor, and optional consent.
+   * @param signal - caller lifetime.
+   * @returns chronological messages and an exclusive older-history cursor.
+   */
+  readPeerSession(caller: Agent, request: PeerSessionReadRequest, signal: AbortSignal): Promise<PeerSessionReadValue> {
+    return this.peers.read(caller, request, signal)
+  }
+
+  /**
+   * Obtain human consent for one exact target and action in another workspace.
+   *
+   * @param caller - exact live human-driven Agent.
+   * @param sessionId - selected target.
+   * @param action - only authorized action.
+   *
+   * @param confirm - Host human answerer honoring its supplied signal.
+   * @param signal - caller lifetime.
+   * @returns opaque consent, or absence for an already shared workspace.
+   */
+  confirmPeerSession(
+    caller: Agent, sessionId: SessionId, action: 'read' | 'send',
+    confirm: (target: PeerSessionSummary, signal: AbortSignal) => Promise<boolean>, signal: AbortSignal,
+  ): Promise<PeerSessionConfirmation | undefined> {
+    return this.peers.confirm(caller, sessionId, action, confirm, signal)
+  }
+
+  /**
+   * Deliver one attributed message to an ordinary Session inbox exactly once per original submission.
+   *
+   * @param caller - exact live human-driven Agent.
+   * @param request - tool-owned identity, text, delivery, and optional consent.
+   *
+   * @param signal - caller lifetime before acceptance.
+   * @returns durable inbox acceptance, without implying processing or a reply.
+   */
+  sendPeerMessage(caller: Agent, request: PeerSessionSendRequest, signal: AbortSignal): Promise<PeerSessionSendValue> {
+    return this.peers.send(caller, request, signal)
+  }
+
+  /**
    * Inspect one attached or persisted Session without activating its Agent.
+   *
    * @param sessionId - durable Session identity.
+   *
    * @param signal - optional caller cancellation for persistence reads.
    * @returns the current attached state or persisted header and event prefix.
    */
@@ -252,7 +353,9 @@ export class SessionController extends TypertRemoteService {
 
   /**
    * Read all visible Session rows without resuming an Agent.
+   *
    * @param _request - reserved empty list request.
+   *
    * @param signal - cancellation for persistence reads and summary generation.
    * @returns visible Session summaries ordered by activity.
    */
@@ -263,7 +366,9 @@ export class SessionController extends TypertRemoteService {
 
   /**
    * Search visible Session content without resuming an Agent.
+   *
    * @param request - literal message-content query.
+   *
    * @param signal - cancellation for list and search reads.
    * @returns authorized bounded Session search results.
    */
@@ -274,6 +379,7 @@ export class SessionController extends TypertRemoteService {
 
   /**
    * Create or idempotently adopt one ordinary Session.
+   *
    * @param request - requested identity, location, and Agent preset.
    * @returns the Session identity and resolved preset when configured.
    */
@@ -284,6 +390,7 @@ export class SessionController extends TypertRemoteService {
 
   /**
    * Select one Session-local model after explicitly resuming the Session; save the default in the background.
+   *
    * @param request - Session identity and requested model selection.
    * @returns the normalized selection installed for the Session, without waiting for default persistence.
    */
@@ -339,7 +446,9 @@ export class SessionController extends TypertRemoteService {
 
   /**
    * Verify one path through the composed filesystem and open it on the Host desktop.
+   *
    * @param request - path after best-effort Session workspace resolution.
+   *
    * @param signal - caller lifetime; abort terminates the native command.
    * @returns confirmation after the native opener accepts the path.
    * @throws RemoteError when the request is invalid, has no verified Host mapping, is cancelled, or the opener fails.
@@ -369,7 +478,9 @@ export class SessionController extends TypertRemoteService {
 
   /**
    * Query current file handlers on the serving desktop without activating an Agent.
+   *
    * @param request - file path in Host filesystem syntax.
+   *
    * @param signal - caller lifetime, propagated to filesystem and desktop queries.
    * @returns OS application names, icons, and default selection; empty when desktop opening is unavailable.
    * @throws RemoteError when the path is invalid, the query is cancelled, or native discovery fails.
@@ -404,6 +515,7 @@ export class SessionController extends TypertRemoteService {
 
   /**
    * Rename one Session after explicitly resuming it.
+   *
    * @param request - Session identity and proposed title.
    * @returns the accepted title and durable event sequence.
    */
@@ -416,6 +528,7 @@ export class SessionController extends TypertRemoteService {
    * Fork one cold-readable exact event prefix into a new Session. An omitted
    * boundary selects the latest completed-turn prefix; an open cut receives
    * synthetic fork closers.
+   *
    * @param request - source Session, optional exact inclusive event boundary, and migration preflight choice.
    * @returns the new Session identity.
    */
@@ -434,7 +547,9 @@ export class SessionController extends TypertRemoteService {
 
   /**
    * Admit one prompt after explicitly resuming its Session.
+   *
    * @param request - Session identity, prompt content, source metadata, and delivery mode.
+   *
    * @param signal - caller cancellation before prompt admission begins.
    * @returns acknowledgement that the Agent accepted the prompt.
    */
@@ -446,6 +561,7 @@ export class SessionController extends TypertRemoteService {
 
   /**
    * Read one image proven reachable from the addressed Session log.
+   *
    * @param request - Session and attachment identities used for authorization.
    * @returns the durable attachment reference and base64-encoded bytes.
    */
@@ -456,6 +572,7 @@ export class SessionController extends TypertRemoteService {
 
   /**
    * Mutate one still-pending queue occurrence, resuming a cold Agent first.
+   *
    * @param request - Session, queue item, and requested mutation.
    * @returns acknowledgement that the queue mutation was applied.
    */
@@ -466,6 +583,7 @@ export class SessionController extends TypertRemoteService {
 
   /**
    * Cancel one active Agent turn without dropping its pending inbox.
+   *
    * @param request - Session whose active Agent turn is cancelled.
    * @returns acknowledgement that cancellation was requested.
    */
@@ -476,7 +594,9 @@ export class SessionController extends TypertRemoteService {
 
   /**
    * Read one cold-safe, message-aligned Session history page.
+   *
    * @param request - durable address, backward cursor, and page budget.
+   *
    * @param signal - cancellation for persistence reads.
    * @returns one chronological page.
    */
@@ -487,7 +607,9 @@ export class SessionController extends TypertRemoteService {
 
   /**
    * Follow one Session log from its opening or resume cursor.
+   *
    * @param request - durable address and last committed sequence already held by the caller.
+   *
    * @param signal - cancellation owned by the Remote stream carrier.
    * @returns a complete opening snapshot followed by gap-free durable event
    *   frames and optional cursorless assistant-stream frames.
@@ -499,7 +621,9 @@ export class SessionController extends TypertRemoteService {
 
   /**
    * Read exact projections, returning cached hints only when migration is required.
+   *
    * @param request - Session whose current values are required.
+   *
    * @param signal - cancellation for the Session read.
    * @returns a sequenced baseline, cached hints when migration is deferred, or null when absent.
    */
@@ -551,6 +675,7 @@ export class SessionController extends TypertRemoteService {
 
   /**
    * Stream a complete live-control baseline followed by replacement frames.
+   *
    * @param signal - cancellation owned by the Remote stream carrier.
    * @returns one complete baseline followed by live replacement frames.
    */

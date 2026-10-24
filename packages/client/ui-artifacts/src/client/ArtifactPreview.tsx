@@ -1,6 +1,6 @@
 /** Extension-driven previews; binary Office files never enter the text reader. */
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { appPath, CodeBlock, FileTypeIcon, MarkdownText, TextShimmer, languageForPath } from '@deepseek-ai/dsh-client-ui-primitives'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { appPath, CodeBlock, FileTypeIcon, MarkdownText, TextShimmer, VideoPlayer, languageForPath } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ArtifactEntry, ArtifactsInjected } from './ArtifactsPage.tsx'
 import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
 import { useVideoPoster } from './VideoPoster.tsx'
@@ -107,21 +107,11 @@ function TextPreview({ entry, t }: { entry: ArtifactEntry; t: Translate }): Reac
 function MediaPreview({ entry, t, readVideoPoster }: { entry: ArtifactEntry; t: Translate } & PosterRead): ReactNode {
   const [failed, setFailed] = useState(false)
   const poster = useVideoPoster(entry, readVideoPoster, entry.kind === 'video')
-  const player = useRef<HTMLVideoElement>(null)
   const version = videoPosterKey(entry)
-  useEffect(() => {
-    const video = player.current
-    return () => {
-      if (video === null) return
-      video.pause()
-      video.removeAttribute('src')
-      video.load()
-    }
-  }, [version])
   const url = sourceUrl(entry)
   if (failed) return <Notice entry={entry} reason="invalid" t={t} />
   if (entry.kind === 'image') return <img className={css.media} src={url} alt={entry.name} onError={() => { setFailed(true) }} />
-  if (entry.kind === 'video') return <video key={version} ref={player} className={css.media} src={videoSourceUrl(entry)} controls preload="metadata"
+  if (entry.kind === 'video') return <VideoPlayer key={version} progressLabels={{ seek: t('playback.seek'), unavailable: t('playback.waiting'), failed: t('playback.failed') }} className={css.media} src={videoSourceUrl(entry)} controls preload="metadata"
     poster={poster.url} data-artifact-video-preview data-video-poster={poster.state} onError={() => { setFailed(true) }} />
   return <div className={css.audioPane}><FileTypeIcon path={entry.name} size={40} />
     <audio className={css.audio} src={url} controls onError={() => { setFailed(true) }} /></div>

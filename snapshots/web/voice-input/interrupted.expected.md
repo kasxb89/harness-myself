@@ -1,5 +1,5 @@
 - textbox "Message or run a task, / commands, @ files or sessions"
 - button "Cancel"
-- status "Recording was interrupted. Please try again."
+- status "Recording was interrupted. Check the device connection, then record again."
 - button "Record again"
 - button "Send message" [disabled]

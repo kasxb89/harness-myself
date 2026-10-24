@@ -10,6 +10,8 @@
   "include": [
     "apps/web/tests/creation-entry-isolation.e2e.ts",
     "apps/web/tests/independent-generation-requests.e2e.ts",
+    "apps/web/tests/profile-process.ts",
+    "apps/web/tests/session-relay.e2e.ts",
     "apps/web/tests/image-task-recovery.e2e.ts",
     "apps/web/tests/collapse-timing.e2e.ts",
     "apps/web/tests/chat-flow-layout.e2e.ts",
@@ -358,6 +360,7 @@
     { "path": "./packages/session-query/session-query" },
     { "path": "./packages/session-query/session-query-sqlite" },
     { "path": "./packages/session-query/session-log-export/tsconfig.host.json" },
+    { "path": "./packages/session-query/tool-session-relay" },
     { "path": "./packages/settings/settings" },
     { "path": "./packages/credentials/credentials" },
     { "path": "./packages/credentials/credentials-local" },
