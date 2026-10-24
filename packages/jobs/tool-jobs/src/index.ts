@@ -344,7 +344,8 @@ export function apply(ctx: Context, config: Config): void {
         await jobs.wait(id, Math.min(args.timeout_ms ?? waitDefault, waitCap), exec.agent?.id, exec.signal)
       }
       const read = jobs.read(id, exec.agent?.id)
-      if (read.job.readMode === 'background' && (read.job.status === 'running' || read.job.status === 'stopping')) exec.concludeTurn()
+      if (read.job.readMode === 'background' && (read.job.status === 'running' || read.job.status === 'stopping')
+        && jobs.backgroundReadConcludesTurn(id, exec.agent?.id)) exec.concludeTurn()
       return readBody(read)
     },
     presentCall: args => presentJobCall(`Read output from background job ${args.job_id}`, 'read', args.job_id),

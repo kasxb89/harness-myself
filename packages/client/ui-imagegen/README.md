@@ -55,6 +55,8 @@ Generation and model-catalog failures use the observed failure code or HTTP stat
 
 The [client entry](src/client/index.ts) registers one AI creation sidebar entry and the `imagegen` main panel. Its image/video tabs select the sibling panel through layout callbacks. A registration-owned [draft store](src/client/draft-store.ts) keeps the image prompt, selected model, parameters, reference selections, operation status, original-task receipts and feedback across panel switches; it is not written to disk. The page checks the account/chat-owned Host project listing before enabling generation, restoring pending-task protection after reload. Only a confirmed terminal original task releases a retained lock. Active original-task queries are polled while the page is visible; account changes and unmounting cancel their reads. Reference preview URLs belong to the plugin and are released when removed, their owner changes, or the plugin unloads.
 
+Without retained project/operation coordinates, the composer restores invocations marked `source: 'ai-creation'` by the Host. Confirmed chat invocations do not lock the form; source-less legacy work remains protected unless a retained video-project id or tool-call origin establishes chat ownership. Once captured, exact original coordinates remain authoritative: missing records, failed reads and unknown outcomes retain protection; another pending task cannot replace the original, and only its confirmed terminal result releases the lock.
+
 </details>
 
 <a id="further-exploration"></a>

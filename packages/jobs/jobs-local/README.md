@@ -29,7 +29,7 @@ Load this plugin when a composition needs in-process background jobs: long-runni
 
 ### When to choose it
 
-The registry preserves each producer's optional `readMode` in fresh job projections, including the terminal projection. The [job controls](../tool-jobs/README.md#use-this-package) own how model reads use it.
+The registry preserves each producer's optional `readMode` in fresh job projections, including the terminal projection. It stores `backgroundReadConcludesTurn` privately and exposes it through the owner-fenced runtime accessor; omission means true. The [job controls](../tool-jobs/README.md#use-this-package) apply these policies to model reads.
 
 Choose it when jobs should live in the harness process and die with it. Avoid it when work must survive a restart or span processes: records are in-memory, so a durable or cross-process backend must implement the same contract differently.
 

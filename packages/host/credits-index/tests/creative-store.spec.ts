@@ -33,11 +33,299 @@ const plan = (kind: 'image' | 'video' = 'image'): CreativePlan => ({
   shots: [{ id: 'departure', order: 1, title: '车站道别', durationSeconds: 5, camera: '侧面近景，缓慢推近', scene: '雨夜站台', action: '轻声道别', prompt: '女孩在站台上轻声说再见', dialogue: 'S1 1–3秒：“明天见。”', subtitles: '1–3秒：明天见。', characterIds: ['S1'], assetIds: ['portrait'] }],
 })
 
-function intent(messageId = 'human-1', callId = 'call-1', maxWorks = 1): VideoGenerationIntent {
-  return { grant: { schema: 1, messageId, sourceSeq: 1, maxWorks, turn: 1, callId, rootCallId: callId }, calls: [], evidence: [] }
+function intent(messageId = 'human-1', callId = 'call-1', maxWorks = 1, rootCallSeq?: number): VideoGenerationIntent {
+  return { grant: { schema: 1, messageId, sourceSeq: 1, maxWorks, turn: 1, callId, rootCallId: callId,
+    ...rootCallSeq === undefined ? {} : { rootCallSeq } }, calls: [], evidence: [] }
 }
 
+describe('creation entry ownership', () => {
+  it.each(['image', 'video'] as const)('retains independent %s entry sources across restart without changing legacy records', async (kind) => {
+    const { store, owner, options } = await fixture()
+    const input = { kind, prompt: 'separate entry', shots: [{ prompt: 'one' }] }
+    const legacy = await store.begin(owner, input)
+    await store.dispatched(legacy)
+    await store.finish(legacy, { status: 'unknown' })
+    const legacyPath = join(options.directory, legacy.projectId, 'project.json')
+    const original = await readFile(legacyPath, 'utf8')
+    const panel = await store.begin(owner, { ...input, source: 'ai-creation' })
+    await store.dispatched(panel)
+    await store.finish(panel, { status: 'unknown' })
+    const restarted = new CreativeStore(options)
+    const chat = await restarted.begin(owner, { ...input, source: 'chat',
+      ...kind === 'video' ? { videoIntent: intent() } : {} })
+    restarted.release(chat)
+    const projects = await new CreativeStore(options).projects(owner)
+    expect(projects.find(project => project.id === panel.projectId)?.tasks[0]).toMatchObject({ source: 'ai-creation', status: 'unknown' })
+    expect(projects.find(project => project.id === chat.projectId)?.tasks[0]).toMatchObject({ source: 'chat' })
+    expect(projects.find(project => project.id === legacy.projectId)?.tasks[0]).not.toHaveProperty('source')
+    expect(await readFile(legacyPath, 'utf8')).toBe(original)
+  })
+
+  it('keeps an AI Creation original shot locked without spending a new chat request allowance', async () => {
+    const { store, owner, options } = await fixture()
+    const original = await store.begin(owner, { kind: 'video', source: 'ai-creation', prompt: 'manual', shots: [{ prompt: 'one' }] })
+    await store.dispatched(original)
+    await store.finish(original, { status: 'unknown' })
+    const restarted = new CreativeStore(options)
+    await expect(restarted.preflightVideoWorkCount(owner, undefined, { planId: original.projectId, shotIds: ['shot_1'] }))
+      .rejects.toMatchObject({ code: 'CREATIVE_SUBMISSION_UNKNOWN' })
+    await expect(restarted.preflightVideoWorkCount(owner, intent(), { planId: original.projectId, shotIds: ['shot_1'] }))
+      .resolves.toMatchObject(intent())
+    await expect(restarted.begin(owner, { kind: 'video', source: 'chat', prompt: 'independent',
+      shots: [{ prompt: 'new' }], videoIntent: intent() })).resolves.toMatchObject({ owner })
+    await expect(restarted.begin(owner, { kind: 'video', source: 'chat', prompt: 'unrequested extra',
+      shots: [{ prompt: 'new' }], videoIntent: intent('human-1', 'call-2') }))
+      .rejects.toMatchObject({ code: 'CREATIVE_VIDEO_COUNT_LIMIT' })
+  })
+
+  it.each(['unrecognized', 'conflicting-chat-grant', 'conflicting-chat-project'] as const)('refuses damaged durable entry attribution: %s', async (damage) => {
+    const { store, owner, options } = await fixture()
+    const operation = await store.begin(owner, { kind: 'video', source: 'ai-creation', prompt: 'one', shots: [{ prompt: 'one' }] })
+    store.release(operation)
+    const path = join(options.directory, operation.projectId, 'project.json')
+    const record = JSON.parse(await readFile(path, 'utf8')) as { operations: Record<string, unknown>[] }
+    const saved = record.operations[0]!
+    if (damage === 'unrecognized') saved.source = 'guessed'
+    else if (damage === 'conflicting-chat-grant') saved.requestGrant = intent().grant
+    else saved.videoProjectId = 'vp_conflicting_chat'
+    await writeFile(path, JSON.stringify(record))
+    await expect(new CreativeStore(options).projects(owner)).rejects.toMatchObject({ code: 'CREATIVE_INVALID' })
+  })
+})
+
 describe('human video-work limits', () => {
+  it('retains an old pre-result submission for its original human without blocking a later human', async () => {
+    const { store, owner, options } = await fixture()
+    const original = await store.begin(owner, { kind: 'video', prompt: 'legacy original', shots: [{ prompt: 'one' }] })
+    const receipt: CreativeVideoReceipt = { route: '/v1/videos', model: 'MiniMax-H3', phase: 'submitting',
+      requestId: 'old-original', backendFingerprint: 'b'.repeat(64), origin: {
+        sessionId: owner.sessionId as import('@deepseek-ai/dsh-session/types').SessionId, turn: 2,
+        eventSeq: 10 as import('@deepseek-ai/dsh-session/types').SessionSeq,
+        toolCallId: 'call-0' as import('@deepseek-ai/dsh-llm/brand').ToolCallId,
+      } }
+    await store.videoReceipt(original, receipt)
+    await store.finish(original, { status: 'unknown' })
+    store.release(original)
+    const path = join(options.directory, original.projectId, 'project.json')
+    const bytes = await readFile(path, 'utf8')
+    const calls = [{ callId: 'call-0', messageId: 'human-a', name: 'generate_video', rootCallSeq: 12, turn: 2, native: true as const },
+      { callId: 'call-0', messageId: 'human-b', name: 'generate_video', rootCallSeq: 20, turn: 3, native: true as const }]
+    const restarted = new CreativeStore(options)
+    await expect(restarted.preflightVideoWorkCount(owner, { ...intent('human-a', 'call-0', 3, 12), calls }))
+      .rejects.toMatchObject({ code: 'CREATIVE_VIDEO_SUBMISSION_DUPLICATE' })
+    await expect(restarted.begin(owner, { kind: 'video', prompt: 'unrequested duplicate', shots: [{ prompt: 'one' }],
+      videoIntent: { ...intent('human-a', 'another-call', 1, 15), calls } }))
+      .rejects.toMatchObject({ code: 'CREATIVE_VIDEO_COUNT_LIMIT' })
+    await expect(restarted.begin(owner, { kind: 'video', prompt: 'independent b', shots: [{ prompt: 'one' }],
+      videoIntent: { ...intent('human-b', 'call-0', 1, 20), calls } })).resolves.toMatchObject({ remainingVideoWorks: 0 })
+    expect(await readFile(path, 'utf8')).toBe(bytes)
+  })
+
+  it.each(['ambiguous-humans', 'ptc-child'] as const)('does not assign an old receipt to another human from %s', async (scenario) => {
+    const { store, owner, options } = await fixture()
+    const original = await store.begin(owner, { kind: 'video', prompt: 'legacy original', shots: [{ prompt: 'one' }] })
+    await store.videoReceipt(original, { route: '/v1/videos', model: 'MiniMax-H3', phase: 'submitting',
+      backendFingerprint: 'b'.repeat(64), origin: {
+        sessionId: owner.sessionId as import('@deepseek-ai/dsh-session/types').SessionId, turn: 1,
+        eventSeq: 0 as import('@deepseek-ai/dsh-session/types').SessionSeq,
+        toolCallId: 'call-0' as import('@deepseek-ai/dsh-llm/brand').ToolCallId,
+      } })
+    await store.finish(original, { status: 'unknown' })
+    store.release(original)
+    const calls = scenario === 'ambiguous-humans'
+      ? [{ callId: 'call-0', messageId: 'human-a', name: 'generate_video', rootCallSeq: 3, turn: 1, native: true as const },
+        { callId: 'call-0', messageId: 'human-b', name: 'generate_video', rootCallSeq: 5, turn: 1, native: true as const }]
+      : [{ callId: 'call-0', messageId: 'human-b', name: 'generate_video', rootCallSeq: 3, turn: 1 }]
+    await expect(new CreativeStore(options).begin(owner, { kind: 'video', prompt: 'independent b', shots: [{ prompt: 'one' }],
+      videoIntent: { ...intent('human-b', 'new-call', 1, 10), calls } })).resolves.toMatchObject({ remainingVideoWorks: 0 })
+  })
+
+  it('protects an old PTC submission when repeated root ids belong to one original human', async () => {
+    const { store, owner, options } = await fixture()
+    const original = await store.begin(owner, { kind: 'video', prompt: 'legacy original', shots: [{ prompt: 'one' }] })
+    await store.videoReceipt(original, { route: '/v1/videos', model: 'MiniMax-H3', phase: 'submitting',
+      backendFingerprint: 'b'.repeat(64), origin: {
+        sessionId: owner.sessionId as import('@deepseek-ai/dsh-session/types').SessionId, turn: 1,
+        toolCallId: 'ptc-root' as import('@deepseek-ai/dsh-llm/brand').ToolCallId,
+      } })
+    await store.finish(original, { status: 'unknown' })
+    store.release(original)
+    const calls = [3, 5].map(rootCallSeq => ({ callId: 'ptc-root', messageId: 'human-a', name: 'run_ptc',
+      rootCallSeq, turn: 1, native: true as const }))
+    const current = intent('human-a', 'ptc-child', 3, 5)
+    await expect(new CreativeStore(options).begin(owner, { kind: 'video', prompt: 'same uncertain submission', shots: [{ prompt: 'one' }],
+      videoIntent: { ...current, grant: { ...current.grant, rootCallId: 'ptc-root' }, calls } }))
+      .rejects.toMatchObject({ code: 'CREATIVE_VIDEO_SUBMISSION_DUPLICATE' })
+  })
+
+  it('admits different human requests when the provider reuses the same raw call id', async () => {
+    const { store, owner } = await fixture()
+    const input = { kind: 'video' as const, prompt: 'one requested video', shots: [{ prompt: 'one clip' }] }
+    const first = await store.begin(owner, { ...input, videoIntent: intent('human-a', 'call-0') })
+    await store.dispatched(first)
+    await store.finish(first, { status: 'unknown' })
+    const current = { ...intent('human-b', 'call-0'),
+      evidence: [{ messageId: 'human-a', callId: 'call-0', operationId: first.operationId }] }
+    await expect(store.begin(owner, { ...input, videoIntent: current }))
+      .resolves.toMatchObject({ remainingVideoWorks: 0 })
+  })
+
+  it('counts distinct root call events with reused provider call ids as distinct requested works', async () => {
+    const { store, owner, options } = await fixture()
+    const input = { kind: 'video' as const, prompt: 'one of three requested videos', shots: [{ prompt: 'one clip' }] }
+    for (const [index, seq] of [10, 20, 30].entries()) {
+      const operation = await store.begin(owner, { ...input, videoIntent: intent('human-three', 'call-0', 3, seq) })
+      expect(operation.remainingVideoWorks).toBe(2 - index)
+      store.release(operation)
+    }
+    const restarted = new CreativeStore(options)
+    await expect(restarted.preflightVideoWorkCount(owner, intent('human-three', 'call-0', 3, 30)))
+      .rejects.toMatchObject({ code: 'CREATIVE_VIDEO_SUBMISSION_DUPLICATE' })
+    await expect(restarted.begin(owner, { ...input, videoIntent: intent('human-three', 'call-0', 3, 40) }))
+      .rejects.toMatchObject({ code: 'CREATIVE_VIDEO_COUNT_LIMIT' })
+  })
+
+  it('uses the original operation evidence to disambiguate a legacy grant without rewriting it', async () => {
+    const { store, owner, options } = await fixture()
+    const input = { kind: 'video' as const, prompt: 'one of three requested videos', shots: [{ prompt: 'one clip' }] }
+    const first = await store.begin(owner, { ...input, videoIntent: intent('human-three', 'call-0', 3) })
+    store.release(first)
+    const path = join(options.directory, first.projectId, 'project.json')
+    const before = await readFile(path, 'utf8')
+    const current = intent('human-three', 'call-0', 3, 20)
+    const evidence = [{ messageId: 'human-three', callId: 'call-0', rootCallSeq: 10, operationId: first.operationId }]
+    await expect(store.preflightVideoWorkCount(owner, current)).rejects.toMatchObject({ code: 'CREATIVE_VIDEO_SUBMISSION_DUPLICATE' })
+    await expect(store.begin(owner, { ...input, videoIntent: { ...current, evidence } })).resolves.toMatchObject({ remainingVideoWorks: 1 })
+    const replay = { ...intent('human-three', 'call-0', 3, 10), evidence }
+    await expect(new CreativeStore(options).preflightVideoWorkCount(owner, replay))
+      .rejects.toMatchObject({ code: 'CREATIVE_VIDEO_SUBMISSION_DUPLICATE' })
+    expect(await readFile(path, 'utf8')).toBe(before)
+  })
+
+  it('uses a saved exact grant to disambiguate its old logged result without a root call sequence', async () => {
+    const { store, owner } = await fixture()
+    const input = { kind: 'video' as const, prompt: 'one of three requested videos', shots: [{ prompt: 'one clip' }] }
+    const first = await store.begin(owner, { ...input, videoIntent: intent('human-three', 'call-0', 3, 10) })
+    store.release(first)
+    const evidence = [{ messageId: 'human-three', callId: 'call-0', operationId: first.operationId }]
+    await expect(store.begin(owner, { ...input, videoIntent: { ...intent('human-three', 'call-0', 3, 20), evidence } }))
+      .resolves.toMatchObject({ remainingVideoWorks: 1 })
+    await expect(store.preflightVideoWorkCount(owner, { ...intent('human-three', 'call-0', 3, 10), evidence }))
+      .rejects.toMatchObject({ code: 'CREATIVE_VIDEO_SUBMISSION_DUPLICATE' })
+  })
+
+  it('counts independent old operations sharing a raw call id and merges only their exact logged results', async () => {
+    const { store, owner, options } = await fixture()
+    const input = { kind: 'video' as const, prompt: 'one of three requested videos', shots: [{ prompt: 'one clip' }] }
+    const originals = []
+    for (const [index, seq] of [10, 20].entries()) {
+      const operation = await store.begin(owner, { ...input, videoIntent: intent('human-three', `old-${String(index)}`, 3) })
+      store.release(operation)
+      const path = join(options.directory, operation.projectId, 'project.json')
+      const record = JSON.parse(await readFile(path, 'utf8')) as { operations: { requestGrant: { callId: string } }[] }
+      record.operations[0]!.requestGrant.callId = 'call-0'
+      await writeFile(path, JSON.stringify(record))
+      originals.push({ operation, path, bytes: await readFile(path, 'utf8'), seq })
+    }
+    const evidence = originals.map(({ operation, seq }) => ({ messageId: 'human-three', callId: 'call-0',
+      rootCallSeq: seq, operationId: operation.operationId }))
+    const restarted = new CreativeStore(options)
+    await expect(restarted.begin(owner, { ...input, videoIntent: { ...intent('human-three', 'call-0', 3, 30), evidence } }))
+      .resolves.toMatchObject({ remainingVideoWorks: 0 })
+    await expect(restarted.preflightVideoWorkCount(owner, { ...intent('human-three', 'call-0', 3, 40), evidence }))
+      .rejects.toMatchObject({ code: 'CREATIVE_VIDEO_COUNT_LIMIT' })
+    for (const original of originals) expect(await readFile(original.path, 'utf8')).toBe(original.bytes)
+  })
+
+  it('counts distinct logged submissions with reused provider call ids even without local operation records', async () => {
+    const { store, owner } = await fixture()
+    const evidence = [10, 20].map(rootCallSeq => ({ messageId: 'human-three', callId: 'call-0', rootCallSeq,
+      videoProjectId: `vp_${String(rootCallSeq)}` }))
+    const input = { kind: 'video' as const, prompt: 'third requested video', shots: [{ prompt: 'one clip' }] }
+    await expect(store.begin(owner, { ...input, videoIntent: { ...intent('human-three', 'call-0', 3, 30), evidence } }))
+      .resolves.toMatchObject({ remainingVideoWorks: 0 })
+    await expect(store.preflightVideoWorkCount(owner, { ...intent('human-three', 'call-0', 3, 40), evidence }))
+      .rejects.toMatchObject({ code: 'CREATIVE_VIDEO_COUNT_LIMIT' })
+  })
+
+  it.each(['running', 'unknown'] as const)('admits a later human request using the same plan while the earlier request is %s', async (status) => {
+    const { store, owner, options } = await fixture()
+    const planId = await store.updatePlan(owner, plan('video'))
+    const input = { kind: 'video' as const, source: 'chat' as const, prompt: 'one independent video', planId,
+      shotIds: ['departure'], shots: [{ prompt: 'one clip' }] }
+    const first = await store.begin(owner, { ...input, videoIntent: intent('human-a', 'call-a') })
+    await store.dispatched(first)
+    if (status === 'unknown') await store.finish(first, { status: 'unknown' })
+    const reader = status === 'unknown' ? new CreativeStore(options) : store
+    await expect(reader.preflightVideoWorkCount(owner, intent('human-b', 'call-b'), input)).resolves.toMatchObject(intent('human-b', 'call-b'))
+    const second = await reader.begin(owner, { ...input, videoIntent: intent('human-b', 'call-b') })
+    expect(second.operationId).not.toBe(first.operationId)
+    expect(second).toMatchObject({ projectId: planId, remainingVideoWorks: 0 })
+    const project = (await reader.projects(owner)).find(item => item.id === planId)
+    expect(project?.tasks).toHaveLength(2)
+    expect(project?.tasks.find(item => item.id === first.operationId)?.status).toBe(status)
+    await expect(reader.begin(owner, { ...input, videoIntent: intent('human-b', 'call-b-extra') }))
+      .rejects.toMatchObject({ code: 'CREATIVE_VIDEO_COUNT_LIMIT' })
+  })
+
+  it('admits three distinct PTC calls sharing a root and plan while preserving the exact submission identity', async () => {
+    const { store, owner, options } = await fixture()
+    const planId = await store.updatePlan(owner, plan('video'))
+    const input = { kind: 'video' as const, source: 'chat' as const, prompt: 'three requested works', planId,
+      shotIds: ['departure'], shots: [{ prompt: 'one clip' }] }
+    const batchIntent = (callId: string): VideoGenerationIntent => {
+      const original = intent('human-three', callId, 3, 50)
+      return { ...original, grant: { ...original.grant, rootCallId: 'ptc-root' } }
+    }
+    const first = await store.begin(owner, { ...input, videoIntent: batchIntent('ptc-child-1') })
+    expect(first.remainingVideoWorks).toBe(2)
+    await store.dispatched(first)
+    await store.finish(first, { status: 'unknown' })
+    const restarted = new CreativeStore(options)
+    await expect(restarted.preflightVideoWorkCount(owner, batchIntent('ptc-child-1'), input))
+      .rejects.toMatchObject({ code: 'CREATIVE_VIDEO_SUBMISSION_DUPLICATE' })
+    await expect(restarted.begin(owner, { ...input, videoIntent: batchIntent('ptc-child-1') }))
+      .rejects.toMatchObject({ code: 'CREATIVE_VIDEO_SUBMISSION_DUPLICATE' })
+    const next = await Promise.allSettled(['ptc-child-2', 'ptc-child-3', 'ptc-child-4'].map(callId =>
+      restarted.begin(owner, { ...input, videoIntent: batchIntent(callId) })))
+    const admitted = next.filter(item => item.status === 'fulfilled').map(item => item.value)
+    expect(admitted.map(item => item.remainingVideoWorks).sort()).toEqual([0, 1])
+    expect(next.find(item => item.status === 'rejected')?.reason).toMatchObject({ code: 'CREATIVE_VIDEO_COUNT_LIMIT' })
+    expect((await restarted.projects(owner)).find(item => item.id === planId)?.tasks).toHaveLength(3)
+  })
+
+  it.each(['persisted', 'logged'] as const)('refuses replay of the same call without a plan even when the batch has capacity: %s', async (source) => {
+    const { store, owner, options } = await fixture()
+    const current = intent('human-batch', 'one-submission', 3)
+    if (source === 'persisted') {
+      const operation = await store.begin(owner, { kind: 'video', prompt: 'one', shots: [{ prompt: 'one' }], videoIntent: current })
+      store.release(operation)
+    }
+    const replay = source === 'logged' ? { ...current, evidence: [{ messageId: current.grant.messageId, callId: current.grant.callId,
+      videoProjectId: 'vp_00000000-0000-0000-0000-000000000001' }] } : current
+    const restarted = new CreativeStore(options)
+    await expect(restarted.preflightVideoWorkCount(owner, replay)).rejects.toMatchObject({ code: 'CREATIVE_VIDEO_SUBMISSION_DUPLICATE' })
+    await expect(restarted.begin(owner, { kind: 'video', prompt: 'same submission', shots: [{ prompt: 'one' }], videoIntent: replay }))
+      .rejects.toMatchObject({ code: 'CREATIVE_VIDEO_SUBMISSION_DUPLICATE' })
+  })
+
+  it('atomically admits a single submission after concurrent preflights pass for the same call', async () => {
+    const { store, owner, options } = await fixture()
+    const current = intent('human-batch', 'same-call', 3)
+    await Promise.all([store.preflightVideoWorkCount(owner, current), store.preflightVideoWorkCount(owner, current)])
+    const results = await Promise.allSettled([1, 2].map(() => store.begin(owner, {
+      kind: 'video', source: 'chat', prompt: 'same submission', shots: [{ prompt: 'one' }], videoIntent: current,
+    })))
+    const accepted = results.filter(item => item.status === 'fulfilled')
+    expect(accepted).toHaveLength(1)
+    expect(results.find(item => item.status === 'rejected')?.reason).toMatchObject({ code: 'CREATIVE_VIDEO_SUBMISSION_DUPLICATE' })
+    const operation = accepted[0]!.value
+    expect(operation.remainingVideoWorks).toBe(2)
+    const persisted = await readFile(join(options.directory, operation.projectId, 'project.json'), 'utf8')
+    expect(persisted).not.toContain('remainingVideoWorks')
+    expect((await new CreativeStore(options).projects(owner)).flatMap(project => project.tasks)).toHaveLength(1)
+  })
+
   it('checks the complete saved plan against human duration while allowing shorter component shots', async () => {
     const { store, owner } = await fixture()
     const source = plan('video')
@@ -51,7 +339,7 @@ describe('human video-work limits', () => {
       { planId, shotIds: ['departure'] })).resolves.toMatchObject({ requestedDurationSeconds: 30 })
   })
 
-  it.each([false, true])('preserves an original unknown charge before checking request allowance (missing intent: %s)', async (missing) => {
+  it.each([false, true])('preserves an original unknown charge and guards its request allowance (missing intent: %s)', async (missing) => {
     const { store, owner } = await fixture()
     const planId = await store.updatePlan(owner, plan('video'))
     const original = await store.begin(owner, { kind: 'video', prompt: 'one video', planId, shotIds: ['departure'],
@@ -59,7 +347,7 @@ describe('human video-work limits', () => {
     await store.dispatched(original)
     await store.finish(original, { status: 'unknown', errorCode: 'TRANSPORT' })
     await expect(store.preflightVideoWorkCount(owner, missing ? undefined : intent('human-1', 'call-2'),
-      { planId, shotIds: ['departure'] })).rejects.toMatchObject({ code: 'CREATIVE_SUBMISSION_UNKNOWN' })
+      { planId, shotIds: ['departure'] })).rejects.toMatchObject({ code: missing ? 'CREATIVE_SUBMISSION_UNKNOWN' : 'CREATIVE_VIDEO_COUNT_LIMIT' })
     expect((await store.projects(owner)).find(project => project.id === planId)?.tasks[0]).toMatchObject({ status: 'unknown' })
   })
 
@@ -140,6 +428,8 @@ describe('human video-work limits', () => {
     expect(await readFile(path, 'utf8')).toBe(original)
     if (status === 'unknown') {
       await expect(new CreativeStore(options).preflightVideoWorkCount(owner, intent('human-new-3', 'call-new-4'),
+        { planId: old.projectId, shotIds: ['shot_1'] })).resolves.toMatchObject(intent('human-new-3', 'call-new-4'))
+      await expect(new CreativeStore(options).preflightVideoWorkCount(owner, undefined,
         { planId: old.projectId, shotIds: ['shot_1'] })).rejects.toMatchObject({ code: 'CREATIVE_SUBMISSION_UNKNOWN' })
       expect(await readFile(path, 'utf8')).toBe(original)
     }
@@ -200,7 +490,9 @@ describe('human video-work limits', () => {
     const granted = await store.begin(owner, { kind: 'video', prompt: 'authorized', shots: [{ prompt: 'one shot' }],
       videoProjectId: manifest.id, videoIntent: intent() })
     store.release(granted)
-    await expect(store.resumeVideo(owner, manifest)).resolves.toMatchObject(granted)
+    await expect(store.resumeVideo(owner, manifest)).resolves.toMatchObject({
+      projectId: granted.projectId, operationId: granted.operationId, owner,
+    })
   })
 })
 

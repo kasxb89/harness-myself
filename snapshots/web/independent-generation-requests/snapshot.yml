@@ -1,0 +1,10 @@
+version: 1
+scenario: independent-generation-requests
+profile: web
+composition: independent-generation-requests
+recording: authored
+header:
+  class: independent-generation-requests
+  pin: true
+workspace:
+  final: true

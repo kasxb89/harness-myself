@@ -109,6 +109,7 @@ function task(value: unknown, sessionId: SessionId, projectId: string): value is
   if (!record(value)) return false
   const receipt = value.imageReceipt ?? value.videoReceipt
   return text(value.id) && status(value.status) && texts(value.shotIds)
+    && (value.source === undefined || value.source === 'chat' || value.source === 'ai-creation')
     && count(value.completedShots) && count(value.totalShots) && value.completedShots <= value.totalShots
     && ['assetId', 'model', 'videoProjectId', 'errorCode'].every(key => value[key] === undefined || text(value[key]))
     && (value.imageReceipt === undefined || value.videoReceipt === undefined)

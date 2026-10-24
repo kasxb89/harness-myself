@@ -467,9 +467,9 @@ function videoAgent(workspace: string, sessionId = 'reference-audio-chat'): Agen
 }
 
 /** The existing integration scenarios name each human action explicitly; queries never grant generation. */
-function humanVideoRequest(agent: Agent): void {
+function humanVideoRequest(agent: Agent, text = '生成一条视频。'): void {
   agent.session.append('user/message', createUserMessage({ source: { kind: 'user' },
-    content: [{ type: 'text', text: '生成一条视频。' }] }), { surfaceOp: 'append' })
+    content: [{ type: 'text', text }] }), { surfaceOp: 'append' })
 }
 
 /** Dispatch through the real tool pipeline with the Session events normally owned by the Agent loop. */
@@ -954,11 +954,211 @@ describe('deployed Harness API through the real product Loader', () => {
         tasks: [{ status: 'unknown', errorCode: 'SUBMISSION_UNKNOWN' }], outputs: [] })
       if (expected === 'INSUFFICIENT_BALANCE') {
         expect(result.message).toBe('余额不足，请充值；提交结果尚未确认，请先检查已有任务，不要重复提交。')
-        expect(await execute({ plan_id: project.id, shot_id: 'shot_1' })).toMatchObject({ status: 'failed', code: 'CREATIVE_SUBMISSION_UNKNOWN' })
+        if (entry === 'chat') {
+          expect(await execute({ plan_id: project.id, shot_id: 'shot_1' })).toMatchObject({ status: 'failed', code: 'CREATIVE_VIDEO_COUNT_LIMIT' })
+        } else {
+          expect(await post(base, '/api/video/tasks?source=newapi-generate', {
+            prompt: args.prompt, model: args.model, durationSeconds: 4, session_id: sessionId, account_id: '7',
+          }, cookie)).toMatchObject({ ok: false, code: 'CREATIVE_SUBMISSION_UNKNOWN', plan_id: project.id })
+        }
       }
       expect(calls.filter(call => call.path === '/harness/v1/video/generations')).toHaveLength(before + 1)
       expect(calls.some(call => call.path.startsWith('/harness/v1/tasks/'))).toBe(false)
     }
+  })
+
+  it('admits a second human request with the same prompt and plan while the first submission is unknown', async () => {
+    const { base, stateDir } = await boot(undefined, false, true)
+    const cookie = await hostCookie(base)
+    await signIn(base)
+    const agent = videoAgent(stateDir, 'same-plan-independent-humans')
+    context!.sessions.create(SessionId(agent.id), { meta: { cwd: stateDir } })
+    pricingRows = [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }]
+    const args = { model: 'MiniMax-H3', prompt: 'The same explicitly requested cup video', duration_seconds: 4 }
+    const execute = async (arguments_: object) => object((await continueVideo({ name: 'generate_video', arguments: arguments_,
+      agent, callId: ToolCallId('same-prompt'), signal: new AbortController().signal })).value)
+    humanVideoRequest(agent, '生成一条4秒的H3视频。')
+    const first = await execute(args)
+    expect(first).toMatchObject({ status: 'unknown', code: 'NO_TASK_ID' })
+    const recordPath = join(stateDir, 'creative-projects', String(first.plan_id), 'project.json')
+    const original = object((object(JSON.parse(await readFile(recordPath, 'utf8'))).operations as unknown[])[0])
+    humanVideoRequest(agent, '生成一条4秒的H3视频。')
+    const second = await execute({ ...args, plan_id: first.plan_id, shot_id: 'shot_1' })
+    expect(second).toMatchObject({ status: 'unknown', code: 'NO_TASK_ID', plan_id: first.plan_id })
+    expect(second.operation_id).not.toBe(first.operation_id)
+    expect(await execute({ ...args, plan_id: first.plan_id, shot_id: 'shot_1' }))
+      .toMatchObject({ status: 'failed', code: 'CREATIVE_VIDEO_COUNT_LIMIT' })
+    expect(calls.filter(call => call.path === '/harness/v1/video/generations')).toHaveLength(2)
+    const retained = projects(object(await (await fetch(base + `/api/creative/projects?session_id=${agent.id}`, { headers: { cookie } })).json()))
+    expect(retained).toHaveLength(1)
+    expect(retained[0]).toMatchObject({ id: first.plan_id, tasks: [
+      { id: first.operation_id, status: 'unknown' }, { id: second.operation_id, status: 'unknown' },
+    ] })
+    expect(object((object(JSON.parse(await readFile(recordPath, 'utf8'))).operations as unknown[])[0])).toEqual(original)
+  })
+
+  it('submits a second human request before a stalled original POST returns and retains its late receipt separately', async () => {
+    const { base, stateDir } = await boot(undefined, false, true, undefined,
+      { videoChatWaitMs: 1, videoPollIntervalMs: 1 })
+    const cookie = await hostCookie(base)
+    await signIn(base)
+    const agent = videoAgent(stateDir, 'same-plan-stalled-upstream')
+    context!.sessions.create(SessionId(agent.id), { meta: { cwd: stateDir } })
+    pricingRows = [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }]
+    const entered = Promise.withResolvers<undefined>()
+    const release = Promise.withResolvers<undefined>()
+    releaseUpstreamGate = () => { release.resolve(undefined) }
+    let firstPost = true
+    upstreamGate = async (path) => {
+      if (path !== '/harness/v1/video/generations' || !firstPost) return
+      firstPost = false
+      entered.resolve(undefined)
+      await release.promise
+    }
+    const args = { model: 'MiniMax-H3', prompt: 'First requested video', duration_seconds: 4 }
+    humanVideoRequest(agent, '生成一条4秒的H3视频。')
+    const first = continueVideo({ name: 'generate_video', arguments: args, agent,
+      callId: ToolCallId('stalled-first'), signal: new AbortController().signal })
+    let second: Record<string, unknown> | undefined
+    let original: Record<string, unknown> | undefined
+    const listing = async () => projects(object(await (await fetch(base + `/api/creative/projects?session_id=${agent.id}`,
+      { headers: { cookie } })).json()))
+    try {
+      await entered.promise
+      original = (await listing())[0]!
+      expect(original).toMatchObject({ tasks: [{ status: 'running' }] })
+      humanVideoRequest(agent, '另外生成一条4秒的H3视频。')
+      second = object((await continueVideo({ name: 'generate_video', agent,
+        arguments: { ...args, prompt: 'Second independently requested video', plan_id: original.id, shot_id: 'shot_1' },
+        callId: ToolCallId('independent-second'), signal: new AbortController().signal })).value)
+      expect(second).toMatchObject({ status: 'unknown', code: 'NO_TASK_ID', plan_id: original.id })
+      expect(calls.filter(call => call.path === '/harness/v1/video/generations')).toHaveLength(2)
+      expect((await listing())[0]).toMatchObject({ tasks: [{ status: 'running' }, { id: second.operation_id, status: 'unknown' }] })
+      videoTaskStatus = 'PROCESSING'
+    } finally { release.resolve(undefined); await first }
+    const late = object((await first).value)
+    expect(late).toMatchObject({ status: 'pending', task_id: 'fixture-video-task', plan_id: original?.id })
+    expect(late.operation_id).not.toBe(second?.operation_id)
+    expect((await listing())[0]).toMatchObject({ tasks: [
+      { id: late.operation_id, videoReceipt: { taskId: 'fixture-video-task' } },
+      { id: second?.operation_id, status: 'unknown' },
+    ] })
+    expect(calls.filter(call => call.path === '/harness/v1/video/generations')).toHaveLength(2)
+  })
+
+  it.each(['unknown', 'running'] as const)('keeps an AI Creation %s video independent of one new chat work allowance', async (state) => {
+    const { base, stateDir } = await boot(undefined, false, true)
+    const cookie = await hostCookie(base)
+    await signIn(base)
+    const sessionId = 'separate-panel-and-chat-video'
+    context!.sessions.create(SessionId(sessionId), { meta: { cwd: stateDir } })
+    const agent = videoAgent(stateDir, sessionId)
+    pricingRows = [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }]
+    const listing = async () => projects(object(await (await fetch(base + `/api/creative/projects?session_id=${sessionId}`, { headers: { cookie } })).json()))
+    const entered = Promise.withResolvers<undefined>()
+    const release = Promise.withResolvers<undefined>()
+    releaseUpstreamGate = () => { release.resolve(undefined) }
+    let firstSubmission = true
+    if (state === 'running') upstreamGate = async (path) => {
+      if (path !== '/harness/v1/video/generations' || !firstSubmission) return
+      firstSubmission = false
+      entered.resolve(undefined)
+      await release.promise
+    }
+    const panelBody = { session_id: sessionId, account_id: '7', prompt: 'An independently requested AI Creation video',
+      model: 'MiniMax-H3', durationSeconds: 4 }
+    const panel = post(base, '/api/video/tasks?source=newapi-generate', panelBody, cookie)
+    try {
+      if (state === 'running') await entered.promise
+      else await panel
+      const original = (await listing())[0]!
+      expect(original).toMatchObject({ tasks: [{ source: 'ai-creation', status: state }] })
+      const chatInput: ToolExecutionInput = { name: 'generate_video', callId: ToolCallId('independent-chat-video'),
+        arguments: { model: 'MiniMax-H3', prompt: 'A new video explicitly requested in chat', duration_seconds: 4 },
+        agent, signal: new AbortController().signal }
+      const generated = object((await requestVideo(chatInput)).value)
+      expect(generated).toMatchObject({ status: 'unknown', code: 'NO_TASK_ID' })
+      expect(generated.plan_id).not.toBe(original.id)
+      expect(object((await continueVideo(chatInput)).value)).toMatchObject({ status: 'failed', code: 'CREATIVE_VIDEO_COUNT_LIMIT' })
+      expect(await post(base, '/api/video/tasks?source=newapi-generate', panelBody, cookie))
+        .toMatchObject({ ok: false, code: 'CREATIVE_SUBMISSION_UNKNOWN', plan_id: original.id })
+      const explicitOriginal = object((await continueVideo({ ...chatInput,
+        arguments: { ...object(chatInput.arguments), plan_id: original.id, shot_id: 'shot_1' } })).value)
+      expect(explicitOriginal).toMatchObject({ status: 'failed', code: 'CREATIVE_VIDEO_COUNT_LIMIT' })
+      expect(calls.filter(call => call.path === '/harness/v1/video/generations')).toHaveLength(2)
+    } finally { release.resolve(undefined); await panel }
+    const retained = await listing()
+    expect(retained).toHaveLength(2)
+    expect(retained.flatMap(project => (project.tasks as unknown[]).map(task => object(task).source)).toSorted())
+      .toEqual(['ai-creation', 'chat'])
+    for (const project of retained) {
+      const record = object(JSON.parse(await readFile(join(stateDir, 'creative-projects', String(project.id), 'project.json'), 'utf8')))
+      expect(object((record.operations as unknown[])[0]).source).toBe(object((project.tasks as unknown[])[0]).source)
+    }
+  })
+
+  it.each([false, true])('allows AI Creation after an unknown chat video with legacy source=%s while retaining each original submission', async (legacy) => {
+    const { base, stateDir } = await boot(undefined, false, true)
+    const cookie = await hostCookie(base)
+    await signIn(base)
+    const sessionId = 'separate-chat-and-panel-video'
+    context!.sessions.create(SessionId(sessionId), { meta: { cwd: stateDir } })
+    const agent = videoAgent(stateDir, sessionId)
+    pricingRows = [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }]
+    const original = object((await requestVideo({ name: 'generate_video', callId: ToolCallId('original-chat-video'),
+      arguments: { model: 'MiniMax-H3', prompt: 'A chat video', duration_seconds: 4 }, agent, signal: new AbortController().signal })).value)
+    expect(original).toMatchObject({ status: 'unknown', code: 'NO_TASK_ID' })
+    if (legacy) {
+      const path = join(stateDir, 'creative-projects', String(original.plan_id), 'project.json')
+      const record = object(JSON.parse(await readFile(path, 'utf8')))
+      const operation = object((record.operations as unknown[])[0])
+      const grant = object(operation.requestGrant)
+      expect(grant.callId).toBeTypeOf('string')
+      // This registry fixture has no AgentLoop turn projection; seed the released receipt from its actual logged call.
+      object(operation.videoReceipt).origin = { sessionId, turn: grant.turn, toolCallId: grant.callId }
+      delete operation.source
+      await writeFile(path, JSON.stringify(record))
+    }
+    const args = { session_id: sessionId, account_id: '7', prompt: 'An independent AI Creation video', model: 'MiniMax-H3', durationSeconds: 4 }
+    const panel = await post(base, '/api/video/tasks?source=newapi-generate', args, cookie)
+    expect(panel).toMatchObject({ ok: false, code: 'NO_TASK_ID', submission_state: 'unknown' })
+    expect(panel.plan_id).not.toBe(original.plan_id)
+    expect(await post(base, '/api/video/tasks?source=newapi-generate', args, cookie))
+      .toMatchObject({ ok: false, code: 'CREATIVE_SUBMISSION_UNKNOWN', plan_id: panel.plan_id, operation_id: panel.operation_id })
+    const retained = projects(object(await (await fetch(base + `/api/creative/projects?session_id=${sessionId}`, { headers: { cookie } })).json()))
+    const chat = retained.find(project => project.id === original.plan_id)!
+    expect(chat).toMatchObject({ status: 'unknown', tasks: [{ status: 'unknown' }] })
+    if (legacy) expect(object((chat.tasks as unknown[])[0])).not.toHaveProperty('source')
+    else expect(chat).toMatchObject({ tasks: [{ source: 'chat' }] })
+    expect(retained.find(project => project.id === panel.plan_id)).toMatchObject({ status: 'unknown', tasks: [{ source: 'ai-creation', status: 'unknown' }] })
+    expect(calls.filter(call => call.path === '/harness/v1/video/generations')).toHaveLength(2)
+    expect(calls.some(call => call.path.startsWith('/harness/v1/tasks/'))).toBe(false)
+  })
+
+  it('ignores an HTTP source claim and retains an unclassified legacy AI Creation video lock without another provider POST', async () => {
+    const { base, stateDir } = await boot(undefined, false, true)
+    const cookie = await hostCookie(base)
+    await signIn(base)
+    const sessionId = 'legacy-panel-video-lock'
+    context!.sessions.create(SessionId(sessionId), { meta: { cwd: stateDir } })
+    pricingRows = [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }]
+    const args = { session_id: sessionId, account_id: '7', source: 'chat', prompt: 'An actual AI Creation video',
+      model: 'MiniMax-H3', durationSeconds: 4 }
+    const original = await post(base, '/api/video/tasks?source=newapi-generate', args, cookie)
+    expect(original).toMatchObject({ ok: false, code: 'NO_TASK_ID', submission_state: 'unknown' })
+    const path = join(stateDir, 'creative-projects', String(original.plan_id), 'project.json')
+    const record = object(JSON.parse(await readFile(path, 'utf8')))
+    const operation = object((record.operations as unknown[])[0])
+    expect(operation.source).toBe('ai-creation')
+    delete operation.source
+    await writeFile(path, JSON.stringify(record))
+    const listing = projects(object(await (await fetch(base + `/api/creative/projects?session_id=${sessionId}`, { headers: { cookie } })).json()))
+    expect(listing).toMatchObject([{ id: original.plan_id, tasks: [{ id: original.operation_id, status: 'unknown' }] }])
+    expect(object((listing[0]!.tasks as unknown[])[0])).not.toHaveProperty('source')
+    expect(await post(base, '/api/video/tasks?source=newapi-generate', { ...args, prompt: 'Do not duplicate the legacy unknown work' }, cookie))
+      .toMatchObject({ ok: false, code: 'CREATIVE_SUBMISSION_UNKNOWN', plan_id: original.plan_id, operation_id: original.operation_id })
+    expect(calls.filter(call => call.path === '/harness/v1/video/generations')).toHaveLength(1)
+    expect(await readdir(join(stateDir, 'creative-projects'))).toEqual([original.plan_id])
   })
 
   it('sends normalized image bytes and matching multipart MIME types and extensions for image edits', async () => {
@@ -2107,7 +2307,7 @@ describe('deployed Harness API through the real product Loader', () => {
     const listed = projects(object(await (await fetch(base + '/api/creative/projects?session_id=reference-audio-chat', { headers: { cookie } })).json()))
     expect(listed.find(project => project.id === video.plan_id)).toMatchObject({ status: 'unknown', tasks: [{ status: 'unknown', errorCode: 'SUBMISSION_UNKNOWN' }] })
     expect(await call('generate_video', { ...videoArgs, plan_id: video.plan_id, shot_id: 'shot_1' }))
-      .toMatchObject({ status: 'failed', code: 'CREATIVE_SUBMISSION_UNKNOWN' })
+      .toMatchObject({ status: 'failed', code: 'CREATIVE_VIDEO_COUNT_LIMIT' })
     expect(calls.filter(call => call.path === '/harness/v1/video/generations')).toHaveLength(1)
 
     imageResponse = { data: [{ b64_json: Buffer.from('saved image').toString('base64') }] }
@@ -3706,9 +3906,19 @@ describe('deployed Harness API through the real product Loader', () => {
       arguments: { plan_id: retained.id, operation_id: operation.id }, agent,
       callId: ToolCallId('actual-media-unknown-query'), signal: new AbortController().signal })).value)
     expect(queried).toMatchObject({ status: 'pending', task_id: unknown.response.id, code: 'VIDEO_STATUS_INVALID' })
-    expect(await post(base, '/api/video/tasks?source=newapi-generate', {
-      ...args, session_id: agent.id, account_id: '7', durationSeconds: 10,
-    }, cookie)).toMatchObject({ code: 'CREATIVE_SUBMISSION_UNKNOWN' })
+    if (entry === 'panel') {
+      expect(await post(base, '/api/video/tasks?source=newapi-generate', {
+        ...args, session_id: agent.id, account_id: '7', durationSeconds: 10,
+      }, cookie)).toMatchObject({ code: 'CREATIVE_SUBMISSION_UNKNOWN', plan_id: retained.id, operation_id: operation.id })
+    } else {
+      expect(object((await continueVideo({ name: 'generate_video', arguments: {
+        ...args, plan_id: retained.id, shot_id: 'shot_1',
+      }, agent, callId: ToolCallId('actual-media-unknown-repeat'), signal: new AbortController().signal })).value))
+        .toMatchObject({ status: 'failed', code: 'CREATIVE_VIDEO_COUNT_LIMIT' })
+    }
+    expect(await listing()).toMatchObject([{ id: retained.id, tasks: [{ id: operation.id, status: 'unknown',
+      videoReceipt: { taskId: unknown.response.id } }] }])
+    expect(await listing()).toHaveLength(1)
     expect(calls.filter(call => call.path === '/harness' + unknown.path)).toHaveLength(1)
     expect(calls.filter(call => call.path === '/harness' + original.path)).toHaveLength(2)
     expect(mediaWireReplies).toHaveLength(0)
@@ -3791,12 +4001,13 @@ describe('deployed Harness API through the real product Loader', () => {
     if (!Array.isArray(project.tasks)) throw new Error('Expected the retained video operation')
     const planId = String(project.id)
     const operationId = String(object(project.tasks[0]).id)
-    expect(await post(base, '/api/video/tasks?source=newapi-generate', {
-      session_id: 'blackrx-recovery', account_id: '7', model, prompt: 'Do not generate a replacement', durationSeconds: 10,
-    }, cookie)).toMatchObject({ ok: false, code: 'CREATIVE_SUBMISSION_UNKNOWN', submission_state: 'pending', taskId: 'fixture-video-task' })
     expect(object((await continueVideo({ name: 'generate_video', arguments: {
       prompt: 'Do not retry this paid plan', model, duration_seconds: 10, plan_id: planId, shot_id: 'shot_1',
-    }, agent, callId: ToolCallId('blackrx-block-retry'), signal: new AbortController().signal })).value)).toMatchObject({ status: 'failed', code: 'CREATIVE_SUBMISSION_UNKNOWN' })
+    }, agent, callId: ToolCallId('blackrx-block-retry'), signal: new AbortController().signal })).value)).toMatchObject({ status: 'failed', code: 'CREATIVE_VIDEO_COUNT_LIMIT' })
+    expect(calls.filter(call => call.path === '/harness/v1/videos')).toHaveLength(1)
+    expect(await listing()).toMatchObject([{ id: planId, tasks: [{ id: operationId, status: 'unknown', canQuery: true,
+      videoReceipt: { taskId: 'fixture-video-task', phase: 'accepted' } }] }])
+    expect(await listing()).toHaveLength(1)
     upstreamGate = undefined
     if (entry === 'tool') {
       expect(object((await context!.tools.execute({ name: 'query_video_task', arguments: { plan_id: planId, operation_id: operationId },

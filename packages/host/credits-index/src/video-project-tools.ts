@@ -43,6 +43,7 @@ interface VideoToolResult {
   final_path?: string
   duration_seconds?: number
   plan_id?: string
+  remaining_works?: number
 }
 
 /** All fields are programmatically available; prose never carries the only job id. */
@@ -56,6 +57,7 @@ const output = {
       cancelled_task_ids: { type: 'array', items: { type: 'string' } }, unconfirmed_task_ids: { type: 'array', items: { type: 'string' } },
       local_stopped: { type: 'boolean' },
       plan_id: { type: 'string' },
+      remaining_works: { type: 'number' },
     }, additionalProperties: false,
   },
   render: (_args: unknown, value: VideoToolResult) => [{ type: 'text' as const, text: JSON.stringify(value) }],
@@ -128,7 +130,7 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
   }, 'video project operations')
 
   /** Allocate the cancellation lifetime only after jobs admission succeeds. */
-  function start(exec: ToolRunContext, kind: 'video-project' | 'video-edit', label: string, run: (job: JobHandle, signal: AbortSignal) => Promise<JobOutcome>, project?: string): string {
+  function start(exec: ToolRunContext, kind: 'video-project' | 'video-edit', label: string, run: (job: JobHandle, signal: AbortSignal) => Promise<JobOutcome>, project?: string, backgroundReadConcludesTurn?: false): string {
     exec.signal.throwIfAborted()
     lifetime.signal.throwIfAborted()
     const agent = exec.agent
@@ -140,6 +142,7 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
     try {
       return jobs.start({
         kind, label, owner: agent.id, readMode: 'background',
+        ...backgroundReadConcludesTurn === undefined ? {} : { backgroundReadConcludesTurn },
         run: (job) => {
           const abort = new AbortController()
           const operation = { abort, done: run(job, abort.signal).catch((error: unknown): JobOutcome => ({ status: 'failed', detail: 'VIDEO_OPERATION_FAILED', result: JSON.stringify(failure(error)) })) }
@@ -161,7 +164,7 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
 
   ctx.tools.register(defineTool({
     name: 'generate_video_project',
-    description: 'Default fixed background workflow for every new chat video, including a single short clip and a finished video longer than one model clip. For a simple single-clip brief without an explicit duration, call this tool directly with prompt and any requested model or references; omit total_duration_seconds so the Host resolves actual defaults in one call. Do not load directing skills, write a long storyboard or call list_video_models first for that simple case. For explicit timing or complex plans, read list_video_models for actual controls; never discover support by paid retries or silently replace an explicitly named model. Use the yunshu-video-director skill for story, character/reference continuity, dialogue and subtitles, then call this native workflow; do not write polling, download or assembly scripts or manually repeat generate_video for each visual cut. One paid clip can contain several camera beats. For requests such as a 40-second video, plan the fewest supported clips (for a 15-second limit: 15+15+10, or three 15-second clips trimmed to 40), generate independent clips with gateway-approved bounded parallelism using the signed-in account, then normalize, trim, and join them in timeline order. Without a valid gateway declaration, concurrency defaults to four clips. Respect verified pool capacity and any lower local or gateway ceiling. The API owns shared account capacity. Do not launch a separate agent or generation-tool call for every clip. For a catalog with H3 single clips limited to 4–15 seconds, 60 seconds means four 15-second clips, never one 30-second clip. All local tools and every request are checked before billing. Returns a background job_id and durable project_id; read job_output at measured intervals for queued/generating progress and call present on the completed final_path. A busy response without an accepted task id is unknown, not confirmed queue admission. Use job_kill when the user stops; accepted provider tasks may continue billing. A query deadline retains task ids for explicit resume, never a fresh submission. Never claim completion before the job reports a saved final_path. If a current user-supplied chat attachment is outside the workspace, first copy that read-authorized attachment into this workspace with the existing file tools, then pass the copied path; do not copy unrelated files.',
+    description: 'Default fixed background workflow for every new chat video, including a single short clip and a finished video longer than one model clip. Each independent human generation request has its own allowance: default to one finished video, or the exact explicitly requested work count and parameters. This tool starts one finished work per invocation; its clips and gateway concurrency do not multiply that count. A previous running or unknown work never consumes a new human request’s allowance, even when both requests use the same chat, plan, or shots. Plans associate content, not submission identity. Only retries of the same invocation are duplicates. Query or resume the original project by its retained id rather than generating it again. If remaining_works is positive, continue arranging that many works in further tool steps without waiting for earlier jobs; stop after zero. For a simple single-clip brief without an explicit duration, call this tool directly with prompt and any requested model or references; omit total_duration_seconds so the Host resolves actual defaults in one call. Do not load directing skills, write a long storyboard or call list_video_models first for that simple case. For explicit timing or complex plans, read list_video_models for actual controls; never discover support by paid retries or silently replace an explicitly named model. Use the yunshu-video-director skill for story, character/reference continuity, dialogue and subtitles, then call this native workflow; do not write polling, download or assembly scripts or manually repeat generate_video for each visual cut. One paid clip can contain several camera beats. For requests such as a 40-second video, plan the fewest supported clips (for a 15-second limit: 15+15+10, or three 15-second clips trimmed to 40), generate independent clips with gateway-approved bounded parallelism using the signed-in account, then normalize, trim, and join them in timeline order. Without a valid gateway declaration, concurrency defaults to four clips. Respect verified pool capacity and any lower local or gateway ceiling. The API owns shared account capacity. Do not launch a separate agent or generation-tool call for every clip. For a catalog with H3 single clips limited to 4–15 seconds, 60 seconds means four 15-second clips, never one 30-second clip. All local tools and every request are checked before billing. Returns a background job_id and durable project_id; read job_output at measured intervals for queued/generating progress and call present on the completed final_path. A busy response without an accepted task id is unknown, not confirmed queue admission. Use job_kill when the user stops; accepted provider tasks may continue billing. A query deadline retains task ids for explicit resume, never a fresh submission. Never claim completion before the job reports a saved final_path. If a current user-supplied chat attachment is outside the workspace, first copy that read-authorized attachment into this workspace with the existing file tools, then pass the copied path; do not copy unrelated files.',
     parameters: {
       plan_id: { type: 'string', description: 'Explicit update_creation_plan id. Also supply shot_ids in generation order.' },
       shot_ids: { type: 'array', items: { type: 'string' }, description: 'Exact shot ids belonging to plan_id, one per actual supported model clip and in the saved timeline order. Multiple visual cuts may share one paid clip; do not create an unsupported paid clip for each camera beat.' },
@@ -310,6 +313,7 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
           provider, editor, signal, artifactOriginOf(exec))
         await beforeSubmit(signal)
         creation = await options.creative.begin(creativeOwner(exec, provider.identity), {
+          source: 'chat',
           kind: 'video', prompt: input.prompt, model: manifest.model,
           shots: manifest.segments.map(segment => ({ prompt: segment.prompt, durationSeconds: segment.durationSeconds })),
           videoProjectId: manifest.id,
@@ -319,12 +323,15 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
         })
         const runEditor = options.editor(workspaceRoot, session, [join(options.stateDirectory, manifest.id, 'clips')])
         const linked = creation
+        const remaining = creation.remainingVideoWorks ?? 0
         const jobId = start(exec, 'video-project', `${String(input.totalDurationSeconds)} 秒视频`, async (job, signal) => {
           try { return await runVideoProject(runOptions(linked, session, workspaceRoot), manifest, provider, runEditor, job, signal) }
           finally { options.creative?.release(linked) }
-        }, manifest.id)
-        exec.concludeTurn()
-        return { status: 'background', job_id: jobId, project_id: manifest.id, plan_id: creation.projectId, plan_seconds: manifest.segments.map(segment => segment.durationSeconds), message: '视频项目已在后台开始，你可以继续发送其它指令，无需等待生成完成。查询进度时读取 job_output 当前快照；完成后会通知并提供产物。停止本地任务不代表已取消上游任务或停止计费。' }
+        }, manifest.id, remaining > 0 ? false : undefined)
+        if (remaining === 0) exec.concludeTurn()
+        return { status: 'background', job_id: jobId, project_id: manifest.id, plan_id: creation.projectId,
+          remaining_works: remaining, plan_seconds: manifest.segments.map(segment => segment.durationSeconds),
+          message: `${remaining > 0 ? `本次明确请求还有 ${String(remaining)} 个视频作品待安排，请继续为这些作品调用 generate_video_project，不要等待已启动作品完成。` : '本次请求的视频作品已全部安排，你可以继续发送其它指令，无需等待生成完成。'}视频项目已在后台开始。查询进度时读取 job_output 当前快照；完成后会通知并提供产物。停止本地任务不代表已取消上游任务或停止计费。` }
       } catch (error) { if (creation !== undefined) options.creative?.release(creation); return failure(error) }
     },
   }))

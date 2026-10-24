@@ -90,7 +90,7 @@ function producer(overrides: Partial<Omit<JobSpec, 'run' | 'output'> & JobHooks>
   let settle!: (outcome: JobOutcome) => void
   let handle: JobHandle | undefined
   const cancels: (string | undefined)[] = []
-  const { kind = 'bash', label = 'sleep 60', owner, outputLimitBytes, readMode, ...hookOverrides } = overrides
+  const { kind = 'bash', label = 'sleep 60', owner, outputLimitBytes, readMode, backgroundReadConcludesTurn, ...hookOverrides } = overrides
   const hooks: JobHooks = {
     cancel(reason) { cancels.push(reason) },
     done: new Promise<JobOutcome>((res) => { settle = res }),
@@ -102,6 +102,7 @@ function producer(overrides: Partial<Omit<JobSpec, 'run' | 'output'> & JobHooks>
     ...owner !== undefined ? { owner } : {},
     ...outputLimitBytes !== undefined ? { outputLimitBytes } : {},
     ...readMode !== undefined ? { readMode } : {},
+    ...backgroundReadConcludesTurn !== undefined ? { backgroundReadConcludesTurn } : {},
     run: (job) => { handle = job; return hooks },
   }
   const started = (): JobHandle => {
@@ -291,41 +292,45 @@ describe('tool-jobs setup', () => {
 })
 
 describe('job_output', () => {
-  it.each([false, true])('returns background output and concludes the live turn even with wait: %s', async (wait) => {
-    const { ctx } = await setup()
-    const p = producer({ readMode: 'background' })
-    const id = ctx.jobs.start(p.spec)
-    p.append('still generating')
-    const waited = vi.spyOn(LocalJobRegistry.prototype, 'wait').mockRejectedValue(new Error('background read attempted a blocking wait'))
-    try {
-      const result = await call(ctx, 'job_output', { job_id: id, wait, timeout_ms: 600_000 })
-      expect(waited).not.toHaveBeenCalled()
-      expect(result).toMatchObject({ concludesTurn: true })
-      expect(text(result)).toBe('still generating\n[status: running]')
-      expect(ctx.jobs.get(id).status).toBe('running')
-      p.settle({ status: 'completed', result: 'completed video' })
-      await vi.waitFor(() => { expect(ctx.jobs.get(id).status).toBe('completed') })
-      const finished = await call(ctx, 'job_output', { job_id: id, wait: true })
-      expect(finished).not.toHaveProperty('concludesTurn')
-      expect(text(finished)).toBe('completed video\n[status: completed]')
-      expect(text(await call(ctx, 'job_output', { job_id: id }))).toBe('(no new output)\n[status: completed]')
-    } finally {
-      waited.mockRestore()
-      p.settle({ status: 'killed' })
-      await ctx.fiber.dispose()
-    }
-  })
+  it.each([false, true].flatMap(wait => [undefined, true, false].map(policy => ({ wait, policy }))))(
+    'returns background output immediately with wait=$wait and conclude policy=$policy', async ({ wait, policy }) => {
+      const { ctx } = await setup()
+      const p = producer({ readMode: 'background', ...policy === undefined ? {} : { backgroundReadConcludesTurn: policy } })
+      const id = ctx.jobs.start(p.spec)
+      p.append('still generating')
+      const waited = vi.spyOn(LocalJobRegistry.prototype, 'wait').mockRejectedValue(new Error('background read attempted a blocking wait'))
+      try {
+        const result = await call(ctx, 'job_output', { job_id: id, wait, timeout_ms: 600_000 })
+        expect(waited).not.toHaveBeenCalled()
+        if (policy === false) expect(result).not.toHaveProperty('concludesTurn')
+        else expect(result).toMatchObject({ concludesTurn: true })
+        expect(text(result)).toBe('still generating\n[status: running]')
+        expect(ctx.jobs.get(id).status).toBe('running')
+        p.settle({ status: 'completed', result: 'completed video' })
+        await vi.waitFor(() => { expect(ctx.jobs.get(id).status).toBe('completed') })
+        const finished = await call(ctx, 'job_output', { job_id: id, wait: true })
+        expect(finished).not.toHaveProperty('concludesTurn')
+        expect(text(finished)).toBe('completed video\n[status: completed]')
+        expect(text(await call(ctx, 'job_output', { job_id: id }))).toBe('(no new output)\n[status: completed]')
+      } finally {
+        waited.mockRestore()
+        p.settle({ status: 'killed' })
+        await ctx.fiber.dispose()
+      }
+    })
 
-  it('keeps stopping background reads non-blocking and delivers their later completion notice', async () => {
+  it.each([undefined, true, false])('keeps stopping background reads non-blocking with conclude policy %s', async (policy) => {
     const { ctx } = await setup()
     const followup = vi.fn()
     const owner = await fakeAgent(ctx, 'background-owner', { status: 'idle', followup })
-    const p = producer({ owner: owner.id, kind: 'test-task', readMode: 'background' })
+    const p = producer({ owner: owner.id, kind: 'test-task', readMode: 'background',
+      ...policy === undefined ? {} : { backgroundReadConcludesTurn: policy } })
     const id = ctx.jobs.start(p.spec)
     ctx.jobs.kill(id, owner.id)
     try {
       const result = await call(ctx, 'job_output', { job_id: id, wait: true }, owner)
-      expect(result).toMatchObject({ concludesTurn: true })
+      if (policy === false) expect(result).not.toHaveProperty('concludesTurn')
+      else expect(result).toMatchObject({ concludesTurn: true })
       expect(text(result)).toBe('(no new output)\n[status: stopping]')
       p.settle({ status: 'killed', result: 'cancelled result' })
       await vi.waitFor(() => { expect(followup).toHaveBeenCalledOnce() })
@@ -336,6 +341,20 @@ describe('job_output', () => {
       await ctx.fiber.dispose()
     }
   })
+
+  it.each((['failed', 'killed'] as const).flatMap(status => [false, true].map(policy => ({ status, policy }))))(
+    'delivers terminal $status output without concluding for policy=$policy', async ({ status, policy }) => {
+      const { ctx } = await setup()
+      const p = producer({ readMode: 'background', backgroundReadConcludesTurn: policy })
+      const id = ctx.jobs.start(p.spec)
+      try {
+        p.settle({ status, result: 'terminal result' })
+        await ctx.jobs.wait(id, 1000)
+        const result = await call(ctx, 'job_output', { job_id: id, wait: true, timeout_ms: 600_000 })
+        expect(result).not.toHaveProperty('concludesTurn')
+        expect(text(result)).toBe(`terminal result\n[status: ${status}]`)
+      } finally { p.settle({ status: 'killed' }); await ctx.fiber.dispose() }
+    })
 
   it('reads a consuming delta with a trailing status line', async () => {
     const { ctx } = await setup()

@@ -7,7 +7,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { basename, extname, isAbsolute, join, resolve } from 'node:path'
 import type { Branded } from '@deepseek-ai/dsh-brand'
 import type { ArtifactImageRole } from '@deepseek-ai/dsh-artifacts-index'
-import type { CreativeAsset, CreativeCharacter, CreativeImageReceipt, CreativeVideoReceipt, CreativeKind, CreativeOutput, CreativeOutputId, CreativePlanChange, CreativeProjectId, CreativeProjectView, CreativeShotPlan, CreativeShotView, CreativeStatus, CreativeTaskView } from './creative-types.ts'
+import type { CreativeAsset, CreativeCharacter, CreativeImageReceipt, CreativeVideoReceipt, CreativeKind, CreativeOutput, CreativeOutputId, CreativePlanChange, CreativeProjectId, CreativeProjectView, CreativeShotPlan, CreativeShotView, CreativeSource, CreativeStatus, CreativeTaskView } from './creative-types.ts'
 import type { VideoProjectManifest, VideoProjectRead } from './video-project.ts'
 import type { VideoProjectIdentity } from './video-project-types.ts'
 import { parseArtifactOrigin } from './artifact-origin.ts'
@@ -60,6 +60,7 @@ interface SavedOutput {
 /** One explicitly linked invocation and its independently committed outcome. */
 interface Operation {
   id: CreativeOperationId
+  source?: CreativeSource
   prompt: string
   shotIds: string[]
   assetId?: string
@@ -85,6 +86,8 @@ interface CreativeRecord extends CreativePlan {
 
 interface BeginInput {
   kind: CreativeKind
+  /** Supplied by the trusted calling entry, never by model or HTTP parameters. */
+  source?: CreativeSource
   prompt: string
   planId?: string
   shotIds?: readonly string[]
@@ -115,6 +118,8 @@ export interface CreativeOperation {
   readonly owner: CreativeOwner
   /** Image purpose derived from the validated original plan kind and immutable material association. */
   readonly imageRole?: ArtifactImageRole
+  /** Remaining works in this human request after the atomic admission; absent on resumed operations. */
+  readonly remainingVideoWorks?: number
 }
 
 /** Only the original plan kind and its validated image-material binding establish an image's purpose. */
@@ -338,10 +343,11 @@ function parseRecord(value: unknown): CreativeRecord {
   const source = object(value)
   if (source.version !== 1) return invalid()
   const owner = object(source.owner)
-  const operations = list(source.operations, (value) => {
+  const operations = list<Operation>(source.operations, (value) => {
     const item = object(value)
     const requestGrant = parseVideoRequestGrant(item.requestGrant)
     if (requestGrant === null) return invalid()
+    if (item.source !== undefined && item.source !== 'chat' && item.source !== 'ai-creation') return invalid()
     if (item.submissionStarted !== undefined && typeof item.submissionStarted !== 'boolean') return invalid()
     const outputs = list<SavedOutput>(item.outputs, (value) => {
       const output = object(value)
@@ -362,6 +368,7 @@ function parseRecord(value: unknown): CreativeRecord {
     if (item.imageReceipt !== undefined && item.videoReceipt !== undefined) return invalid()
     return {
       id: operationId(item.id), prompt: text(item.prompt), shotIds: ids(item.shotIds),
+      ...item.source === undefined ? {} : { source: item.source },
       status: recordedStatus === 'cancelled' && item.submissionStarted === true ? 'unknown' : recordedStatus, outputs,
       ...item.assetId === undefined ? {} : { assetId: identifier(item.assetId) },
       ...item.submissionStarted === undefined ? {} : { submissionStarted: item.submissionStarted },
@@ -374,6 +381,9 @@ function parseRecord(value: unknown): CreativeRecord {
     }
   }, MAX_OPERATIONS)
   const plan = parseCreativePlan(source)
+  if (operations.some(item => item.source === 'ai-creation' && (item.requestGrant !== undefined
+    || item.videoProjectId !== undefined || item.videoReceipt?.origin?.toolCallId !== undefined
+    || item.imageReceipt?.origin?.toolCallId !== undefined))) return invalid()
   if (operations.some(item => item.videoReceipt !== undefined && (plan.kind !== 'video' || item.videoProjectId !== undefined || item.assetId !== undefined))) return invalid()
   if (operations.some(item => item.assetId === undefined
     ? item.shotIds.length === 0 || item.shotIds.some(id => !plan.shots.some(shot => shot.id === id))
@@ -649,15 +659,21 @@ export class CreativeStore {
     return parseCreativePlan(record)
   }
 
-  private async assertVideoWorkCount(owner: CreativeOwner, intent: VideoGenerationIntent): Promise<void> {
+  private async assertVideoWorkCount(owner: CreativeOwner, intent: VideoGenerationIntent): Promise<number> {
     const unavailable = (): never => { throw new CreativeError('CREATIVE_VIDEO_INTENT_UNAVAILABLE', 409,
       '暂时无法核对已有视频与本次请求的对应关系，已停止新增生成；请先核对已有任务，需要追加时请明确发送新的生成要求。') }
     const grant = parseVideoRequestGrant(intent.grant)
     if (grant === undefined || grant === null) unavailable()
+    const duplicate = (): never => { throw new CreativeError('CREATIVE_VIDEO_SUBMISSION_DUPLICATE', 409,
+      '本次视频提交已登记，可能已被上游受理；请查看原任务，不会重复提交。需要另做一条时请明确提出新的生成要求。') }
+    const sameSubmission = (prior: Pick<VideoGenerationIntent['evidence'][number], 'messageId' | 'callId' | 'rootCallSeq'>): boolean =>
+      prior.messageId === intent.grant.messageId && prior.callId === intent.grant.callId
+      && (prior.rootCallSeq === undefined || intent.grant.rootCallSeq === undefined || prior.rootCallSeq === intent.grant.rootCallSeq)
     let entries: string[]
     try { entries = await readdir(await this.root()) } catch (_error) { return unavailable() }
     if (entries.length > MAX_PROJECTS) unavailable()
-    const used = new Set(intent.evidence.filter(item => item.messageId === intent.grant.messageId).map(item => `call:${item.callId}`))
+    const matchedEvidence = new Set<VideoGenerationIntent['evidence'][number]>()
+    let used = 0
     for (const id of entries) {
       if (!/^cp_[a-f0-9-]{36}$/u.test(id)) continue
       let record: CreativeRecord
@@ -667,28 +683,51 @@ export class CreativeStore {
       }
       if (record.owner.workspaceRoot !== owner.workspaceRoot) continue
       for (const operation of record.operations) {
+        if (operation.source === 'ai-creation') continue
         if (!(record.kind === 'video' && operation.assetId === undefined)
           && operation.videoReceipt === undefined && operation.videoProjectId === undefined) continue
-        const evidence = intent.evidence.find(item => item.operationId === operation.id
-          || operation.videoProjectId !== undefined && item.videoProjectId === operation.videoProjectId
-          || operation.requestGrant !== undefined && item.callId === operation.requestGrant.callId)
-        let requestId = operation.requestGrant?.messageId ?? evidence?.messageId
-        if (requestId === undefined) {
+        const evidence = intent.evidence.filter(item => item.operationId === operation.id
+          || operation.videoProjectId !== undefined && item.videoProjectId === operation.videoProjectId)
+        for (const item of evidence) matchedEvidence.add(item)
+        let prior: Pick<VideoGenerationIntent['evidence'][number], 'messageId' | 'callId' | 'rootCallSeq'> | undefined
+          = operation.requestGrant ?? evidence[0]
+        let legacyRoot = false
+        if (prior === undefined) {
           const origin = operation.videoReceipt?.origin
-          requestId = origin?.toolCallId === undefined ? undefined
-            : intent.calls.find(item => item.callId === origin.toolCallId)?.messageId
-          if (requestId === undefined && origin !== undefined && origin.turn < intent.grant.turn) continue
+          if (origin?.sessionId === owner.sessionId && origin.toolCallId !== undefined) {
+            const candidates = intent.calls.filter(call => call.native === true && call.callId === origin.toolCallId
+              && call.turn === origin.turn && (origin.eventSeq === undefined
+                || call.rootCallSeq !== undefined && call.rootCallSeq > origin.eventSeq))
+            const original = candidates[0]
+            if (original !== undefined && new Set(candidates.map(call => call.messageId)).size === 1) {
+              prior = { messageId: original.messageId, callId: original.callId,
+                ...candidates.length !== 1 || original.rootCallSeq === undefined ? {} : { rootCallSeq: original.rootCallSeq } }
+              legacyRoot = true
+            }
+          }
         }
         // Older invocations keep their original project and uncertainty without claiming a later human's allowance.
-        if (requestId === undefined) continue
-        if (requestId === intent.grant.messageId) used.add(evidence === undefined
-          ? `operation:${record.id}:${operation.id}` : `call:${evidence.callId}`)
+        if (prior === undefined) continue
+        const rootCallSeq = prior.rootCallSeq ?? evidence.find(item => item.messageId === prior.messageId
+          && item.callId === prior.callId && item.rootCallSeq !== undefined)?.rootCallSeq
+        const priorSubmission = { messageId: prior.messageId, callId: prior.callId,
+          ...rootCallSeq === undefined ? {} : { rootCallSeq } }
+        if (legacyRoot ? prior.callId === intent.grant.rootCallId
+          && sameSubmission({ ...priorSubmission, callId: intent.grant.callId }) : sameSubmission(priorSubmission)) duplicate()
+        if (prior.messageId === intent.grant.messageId) used += 1
       }
     }
-    if (used.size >= intent.grant.maxWorks) {
+    const unrecordedEvidence = intent.evidence.filter(item => item.messageId === intent.grant.messageId && !matchedEvidence.has(item))
+    if (unrecordedEvidence.some(sameSubmission)) duplicate()
+    const unrecorded = new Set(unrecordedEvidence.map(item => item.operationId !== undefined ? `operation:${item.operationId}`
+      : item.videoProjectId !== undefined ? `project:${item.videoProjectId}`
+        : `call:${String(item.rootCallSeq)}:${item.callId}`))
+    used += unrecorded.size
+    if (used >= intent.grant.maxWorks) {
       throw new CreativeError('CREATIVE_VIDEO_COUNT_LIMIT', 409,
-        `本次请求已安排 ${String(used.size)} 个视频作品，已达到明确约定的 ${String(intent.grant.maxWorks)} 个上限；不会自行生成新版本。请先查看已有结果，需要追加时请明确提出作品数量。`)
+        `本次请求已安排 ${String(used)} 个视频作品，已达到明确约定的 ${String(intent.grant.maxWorks)} 个上限；不会自行生成新版本。请先查看已有结果，需要追加时请明确提出作品数量。`)
     }
+    return used
   }
 
   private async assertGenerationAvailable(record: CreativeRecord, input: Pick<BeginInput, 'shotIds' | 'assetId'>): Promise<void> {
@@ -705,8 +744,9 @@ export class CreativeStore {
   }
 
   /**
-   * Check original-task uncertainty before request capacity and expensive preparation.
-   * Begin repeats these checks and claims capacity atomically.
+   * Check exact submission identity and human-request capacity before expensive preparation.
+   * Plans associate content; only calls lacking trusted human intent retain the original-shot lock.
+   * Begin repeats admission and claims capacity atomically.
    * @param owner - Captured account, chat, and workspace.
    * @param intent - Attribution from the original human request, when available.
    * @param association - Exact optional plan and shots supplied for this invocation.
@@ -725,7 +765,7 @@ export class CreativeStore {
           || association.shotIds.some(id => !record.shots.some(shot => shot.id === id))) {
           throw new CreativeError('CREATIVE_SHOT_MISMATCH', 400, '请明确指定本次生成对应的计划镜头，镜头数量须与实际分段一致。')
         }
-        await this.assertGenerationAvailable(record, association)
+        if (intent === undefined) await this.assertGenerationAvailable(record, association)
         if (intent?.requestedDurationSeconds !== undefined
           && record.shots.every(shot => shot.durationSeconds !== undefined)
           && record.shots.reduce((sum, shot) => sum + (shot.durationSeconds ?? 0), 0) !== intent.requestedDurationSeconds) {
@@ -743,7 +783,7 @@ export class CreativeStore {
   /**
    * Record a named invocation before billing; no nearest-project association is allowed.
    * @param owner - Exact captured chat and login.
-   * @param input - Actual brief, explicit association, ordered fallback shots and optional prepared-plan revision.
+   * @param input - Trusted entry, actual brief, explicit association, ordered fallback shots and optional prepared-plan revision.
    * @returns Durable invocation identity, also marked process-live until settlement.
    */
   begin(owner: CreativeOwner, input: BeginInput): Promise<CreativeOperation> {
@@ -765,7 +805,7 @@ export class CreativeStore {
           || input.shotIds.some(id => !record.shots.some(shot => shot.id === id))) {
           throw new CreativeError('CREATIVE_SHOT_MISMATCH', 400, '请明确指定本次生成对应的计划镜头，镜头数量须与实际分段一致。')
         }
-        await this.assertGenerationAvailable(record, input)
+        if (input.kind !== 'video' || input.videoIntent === undefined) await this.assertGenerationAvailable(record, input)
       } else {
         if (input.shotIds !== undefined || input.assetId !== undefined) throw new CreativeError('CREATIVE_PLAN_REQUIRED', 400, '指定镜头或素材时必须同时指定创作计划。')
         const plan = parseCreativePlan({
@@ -779,17 +819,19 @@ export class CreativeStore {
         record = { ...plan, version: 1, id: `cp_${randomUUID()}` as CreativeProjectId, owner, updatedAt: '', operations: [] }
       }
       if (record.operations.length >= MAX_OPERATIONS) throw new CreativeError('CREATIVE_LIMIT', 400, '该项目的生成记录已达上限，请新建项目。')
-      if (input.kind === 'video' && input.videoIntent !== undefined) await this.assertVideoWorkCount(owner, input.videoIntent)
+      const remainingVideoWorks = input.kind === 'video' && input.videoIntent !== undefined
+        ? input.videoIntent.grant.maxWorks - await this.assertVideoWorkCount(owner, input.videoIntent) - 1 : undefined
       const shotIds = input.assetId === undefined ? [...input.shotIds ?? record.shots.map(shot => shot.id)] : []
       unique(shotIds)
       const id = operationId(`op_${randomUUID()}`)
       record.owner = owner
-      record.operations.push({ id, prompt: text(input.prompt), shotIds, ...input.assetId === undefined ? {} : { assetId: input.assetId }, status: 'running', outputs: [], ...input.videoProjectId === undefined ? {} : { videoProjectId: input.videoProjectId }, ...input.model === undefined ? {} : { model: text(input.model, 256) },
+      record.operations.push({ id, ...input.source === undefined ? {} : { source: input.source }, prompt: text(input.prompt), shotIds, ...input.assetId === undefined ? {} : { assetId: input.assetId }, status: 'running', outputs: [], ...input.videoProjectId === undefined ? {} : { videoProjectId: input.videoProjectId }, ...input.model === undefined ? {} : { model: text(input.model, 256) },
         ...input.kind !== 'video' || input.videoIntent === undefined ? {} : { requestGrant: { ...input.videoIntent.grant } } })
       if (Buffer.byteLength(JSON.stringify(record)) > MAX_BYTES / 2) throw new CreativeError('CREATIVE_LIMIT', 400, '项目记录已接近上限，请新建项目；尚未提交生成。')
       await this.persist(record)
       const imageRole = input.kind === 'image' ? operationImageRole(record, input.assetId) : undefined
-      const operation = { projectId: record.id, operationId: id, owner, ...imageRole === undefined ? {} : { imageRole } }
+      const operation = { projectId: record.id, operationId: id, owner, ...imageRole === undefined ? {} : { imageRole },
+        ...remainingVideoWorks === undefined ? {} : { remainingVideoWorks } }
       this.activate(operation, input.kind, input.videoProjectId)
       return operation
     })
@@ -1109,7 +1151,7 @@ export class CreativeStore {
       throw new CreativeError('CREATIVE_VIDEO_INTENT_UNAVAILABLE', 409,
         '该未提交项目没有已确认的生成许可，已停止新增生成；需要新视频时请明确提出请求，不会通过恢复项目绕过作品数量限制。')
     }
-    return this.begin(owner, { kind: 'video', prompt: manifest.input.prompt, shots: manifest.segments.map(segment => ({ prompt: segment.prompt, durationSeconds: segment.durationSeconds })), videoProjectId: manifest.id })
+    return this.begin(owner, { kind: 'video', source: 'chat', prompt: manifest.input.prompt, shots: manifest.segments.map(segment => ({ prompt: segment.prompt, durationSeconds: segment.durationSeconds })), videoProjectId: manifest.id })
   }
 
   /**
@@ -1186,6 +1228,7 @@ export class CreativeStore {
       totalShots: number, model?: string, errorCode?: string): void => {
       tasks.push({
         id: operation.id, status: state, shotIds: [...operation.shotIds],
+        ...operation.source === undefined ? {} : { source: operation.source },
         outputs: [...new Map(saved.map(output => [output.id, output])).values()],
         completedShots, totalShots,
         ...operation.assetId === undefined ? {} : { assetId: operation.assetId },

@@ -7,6 +7,21 @@ afterEach(() => { vi.unstubAllGlobals() })
 const SESSION = 'session-a' as SessionId
 
 describe('creative project transport', () => {
+  it.each([undefined, 'chat', 'ai-creation'])('retains optional trusted generation entry: %s', async (source) => {
+    const task = { id: 'task', status: 'unknown', shotIds: [], completedShots: 0, totalShots: 0, outputs: [],
+      ...source === undefined ? {} : { source } }
+    const payload = { accountId: 'account-a', projects: [{ ...project(), tasks: [task] }] }
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ ok: true, payload })))
+    expect(await readCreativeProjects(SESSION, new AbortController().signal)).toEqual({ ok: true, payload })
+  })
+
+  it('refuses an invalid generation entry without treating the project list as empty', async () => {
+    const task = { id: 'task', source: 'guessed', status: 'unknown', shotIds: [], completedShots: 0, totalShots: 0, outputs: [] }
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ ok: true,
+      payload: { accountId: 'account-a', projects: [{ ...project(), tasks: [task] }] } })))
+    expect(await readCreativeProjects(SESSION, new AbortController().signal)).toEqual({ ok: false, code: 'invalid' })
+  })
+
   it('addresses the exact conversation and validates real saved media routes', async () => {
     const data = { ...project(), outputs: [{ id: 'out1', kind: 'video', name: 'scene.mp4', url: mediaUrl(),
       frames: [{ url: `${mediaUrl()}&frame=0`, timeSeconds: 15.633 }] }] }

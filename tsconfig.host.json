@@ -8,6 +8,8 @@
     "rewriteRelativeImportExtensions": false
   },
   "include": [
+    "apps/web/tests/creation-entry-isolation.e2e.ts",
+    "apps/web/tests/independent-generation-requests.e2e.ts",
     "apps/web/tests/image-task-recovery.e2e.ts",
     "apps/web/tests/collapse-timing.e2e.ts",
     "apps/web/tests/chat-flow-layout.e2e.ts",

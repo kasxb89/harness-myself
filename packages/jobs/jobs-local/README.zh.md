@@ -29,7 +29,7 @@ kind: "package-reference"
 
 ### 何时选择
 
-注册表在每份新的任务投影中保留生产方可选的 `readMode`，包括终态投影。[任务控制工具](../tool-jobs/README.zh.md#use-this-package) 决定模型读取如何使用它。
+注册表在每份新的任务投影中保留生产方可选的 `readMode`，包括终态投影。`backgroundReadConcludesTurn` 私下保存，通过限制拥有者权限的运行时方法读取；省略时为 true。[任务控制工具](../tool-jobs/README.zh.md#use-this-package) 将这些策略应用于模型读取。
 
 当任务应存活于 harness 进程内、并随进程终止时选择它。当工作必须跨重启存活或跨进程存在时避免它：记录保存在内存中，持久或跨进程后端必须以不同方式实现同一约定。
 

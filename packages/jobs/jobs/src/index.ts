@@ -126,6 +126,16 @@ export abstract class JobRegistry extends Service {
   abstract get(id: JobId, caller?: SessionId): JobView
 
   /**
+   * Read the producer's runtime turn policy without consuming output. It applies
+   * only to live background model reads; omitted producer policy returns true.
+   * Throws for an unknown or foreign job, using the same access fence as get.
+   * @param id - job whose producer selected the policy.
+   * @param caller - reading session checked against the owner.
+   * @returns whether a live background read concludes the caller's turn.
+   */
+  abstract backgroundReadConcludesTurn(id: JobId, caller?: SessionId): boolean
+
+  /**
    * Consume the ring from the model cursor and advance it to the current
    * total. After settlement the first read also carries the producer's
    * result. Throws for an unknown or foreign job.

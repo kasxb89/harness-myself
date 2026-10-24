@@ -133,12 +133,13 @@ async function boot(production = false, workspaceIncludesState = false, managedO
   session.append('user/message', createUserMessage({ source: { kind: 'user' },
     content: [{ type: 'text', text: humanText }] }), { surfaceOp: 'append' })
   let callIndex = 0
+  let turn = 1
   const call = async (name: string, args: unknown, signal = new AbortController().signal, callerAgent = agent) => {
     const step = ++callIndex
     const callId = ToolCallId(`video-${String(step)}`)
-    const logged = callerAgent.session.append('tool/call', { turn: 1, step, callId, name, arguments: JSON.stringify(args) ?? 'null' })
+    const logged = callerAgent.session.append('tool/call', { turn, step, callId, name, arguments: JSON.stringify(args) ?? 'null' })
     const result = await ctx.tools.execute({ callId, name, arguments: args, agent: callerAgent, signal })
-    callerAgent.session.append('tool/result', { turn: 1, step, message: createToolResultMessage({ callId,
+    callerAgent.session.append('tool/result', { turn, step, message: createToolResultMessage({ callId,
       content: result.content, isError: result.isError }) }, { surfaceOp: 'append', sourceEventSeqs: [logged.seq] })
     return result
   }
@@ -146,7 +147,14 @@ async function boot(production = false, workspaceIncludesState = false, managedO
     ctx, agent, call, requests, inputs, composedPaths, workspace, stateDirectory: options.stateDirectory,
     creative, options, provider, editor,
     setPending: (value: boolean) => { pending = value },
-    setUnknown: () => { unknownSubmission = true },
+    setUnknown: (value = true) => { unknownSubmission = value },
+    nextHuman: (text: string) => {
+      session.append('turn/end', { turn, reason: { kind: 'completed' } })
+      turn += 1
+      session.append('turn/start', { turn })
+      session.append('user/message', createUserMessage({ source: { kind: 'user' },
+        content: [{ type: 'text', text }] }), { surfaceOp: 'append' })
+    },
   }
 }
 
@@ -157,6 +165,65 @@ function json(value: unknown): Record<string, unknown> {
 }
 
 describe('video tools through Loader, real tool registry and jobs runtime', () => {
+  it.each(['running', 'unknown'] as const)('starts one independent chat background work beside an AI Creation %s operation', async (state) => {
+    const f = await boot(false, false, false, '生成10秒视频')
+    f.setPending(true)
+    const owner = { ...f.provider.identity, sessionId: f.agent.id, workspaceRoot: f.workspace }
+    const panel = await f.creative.begin(owner, { kind: 'video', source: 'ai-creation',
+      prompt: 'Independent AI Creation work', shots: [{ prompt: 'Original panel shot', durationSeconds: 10 }] })
+    await f.creative.dispatched(panel)
+    if (state === 'unknown') {
+      await f.creative.finish(panel, { status: 'unknown' })
+      f.creative.release(panel)
+    }
+    try {
+      const generated = await f.call('generate_video_project', { prompt: 'New human-requested chat video' })
+      expect(generated.value).toMatchObject({ status: 'background', plan_seconds: [10] })
+      const value = json(generated.value)
+      expect(value.plan_id).not.toBe(panel.projectId)
+      await vi.waitFor(() => { expect(f.requests).toEqual([10]) })
+      expect((await f.call('generate_video_project', { prompt: 'Unrequested second chat version' })).value)
+        .toMatchObject({ status: 'failed', code: 'CREATIVE_VIDEO_COUNT_LIMIT' })
+      expect((await f.call('generate_video_project', { plan_id: panel.projectId, shot_ids: ['shot_1'],
+        prompt: 'Do not duplicate the exact panel work', total_duration_seconds: 10 })).value)
+        .toMatchObject({ status: 'failed', code: 'CREATIVE_VIDEO_COUNT_LIMIT' })
+      const retained = await f.creative.projects(owner)
+      expect(retained.find(project => project.id === panel.projectId)?.tasks).toMatchObject([{ source: 'ai-creation', status: state }])
+      expect(retained.find(project => project.id === value.plan_id)?.tasks).toMatchObject([{ source: 'chat', status: 'running' }])
+      expect(f.requests).toEqual([10])
+    } finally { f.creative.release(panel) }
+  })
+
+  it.each(['running', 'unknown'] as const)('starts an identical new human brief on the same plan while the previous work is %s', async (state) => {
+    const f = await boot(false, false, false, '生成10秒视频')
+    f.setPending(true)
+    f.setUnknown(state === 'unknown')
+    const first = await f.call('generate_video_project', { prompt: 'Identical independently requested work' })
+    const original = json(first.value)
+    expect(original).toMatchObject({ status: 'background', remaining_works: 0 })
+    await vi.waitFor(async () => {
+      const views = await f.creative.projects({ accountId: '7', sessionId: f.agent.id })
+      expect(views[0]?.tasks[0]?.status).toBe(state)
+    })
+    let taskIds: unknown
+    await vi.waitFor(async () => {
+      const before = await f.call('video_project_status', { project_id: original.project_id })
+      taskIds = json(before.value).task_ids
+      expect(taskIds).toEqual(state === 'running' ? ['task-1'] : [])
+    })
+    f.nextHuman('生成10秒视频')
+    f.setUnknown(false)
+    const second = await f.call('generate_video_project', { plan_id: original.plan_id,
+      shot_ids: ['shot_1'], total_duration_seconds: 10, prompt: 'Identical independently requested work' })
+    expect(second.value).toMatchObject({ status: 'background', plan_id: original.plan_id, remaining_works: 0 })
+    expect(json(second.value).project_id).not.toBe(original.project_id)
+    await vi.waitFor(() => { expect(f.requests).toEqual([10, 10]) })
+    expect((await f.call('generate_video_project', { prompt: 'Unrequested duplicate version' })).value)
+      .toMatchObject({ status: 'failed', code: 'CREATIVE_VIDEO_COUNT_LIMIT' })
+    expect(json((await f.call('video_project_status', { project_id: original.project_id })).value).task_ids).toEqual(taskIds)
+    expect(f.requests).toEqual([10, 10])
+  })
+
   it('reads a mode selected after all builds and resumes known IDs without new admission discovery', async () => {
     const f = await boot()
     f.setPending(true)
@@ -341,10 +408,27 @@ describe('video tools through Loader, real tool registry and jobs runtime', () =
   it('creates three separate ten-second works without treating their duration as a work count', async () => {
     const f = await boot(false, false, false, '来3个10s视频')
     f.setPending(true)
+    let planId: string | undefined
     for (let index = 0; index < 3; index += 1) {
-      const result = await f.call('generate_video_project', { prompt: `第${String(index + 1)}个茶杯视频` })
-      expect(result.concludesTurn).toBe(true)
-      expect(result.value).toMatchObject({ status: 'background', plan_seconds: [10] })
+      const result = await f.call('generate_video_project', { prompt: `第${String(index + 1)}个茶杯视频`,
+        ...planId === undefined ? {} : { plan_id: planId, shot_ids: ['shot_1'], total_duration_seconds: 10 } })
+      expect(result.concludesTurn).toBe(index === 2 ? true : undefined)
+      expect(result.value).toMatchObject({ status: 'background', plan_seconds: [10], remaining_works: 2 - index })
+      const value = json(result.value)
+      if (typeof value.plan_id !== 'string') throw new Error('Expected the original plan id')
+      if (planId !== undefined) expect(value.plan_id).toBe(planId)
+      planId = value.plan_id
+      if (index === 0) {
+        const replay = await f.ctx.tools.execute({ callId: ToolCallId('video-1'), name: 'generate_video_project',
+          arguments: { prompt: '第1个茶杯视频' }, agent: f.agent, signal: new AbortController().signal })
+        expect(replay.value).toMatchObject({ status: 'failed', code: 'CREATIVE_VIDEO_SUBMISSION_DUPLICATE' })
+      }
+      const wait = vi.spyOn(f.ctx.jobs, 'wait')
+      const snapshot = await f.call('job_output', { job_id: value.job_id, wait: true, timeout_ms: 600_000 })
+      expect(wait).not.toHaveBeenCalled()
+      expect(snapshot.concludesTurn).toBe(index === 2 ? true : undefined)
+      expect(json(json(snapshot.value).job).status).toBe('running')
+      wait.mockRestore()
     }
     await vi.waitFor(() => { expect(f.requests).toEqual([10, 10, 10]) })
     const extra = await f.call('generate_video_project', { prompt: '不应多出的第四个视频' })

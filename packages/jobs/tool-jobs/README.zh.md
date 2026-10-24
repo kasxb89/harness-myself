@@ -33,7 +33,7 @@ kind: "package-reference"
 - `job_list()`——列出你的后台任务及其 id、kind 与状态，每行一个：`<id> [<kind>] <status> — <label>`。
 - `job_kill(job_id, reason?)`——立即请求取消运行中的任务；任务在其工作真正停止后以 `killed` 结算。终止任务返回其当前快照，可选的原因会被记录并转发给任务。
 
-对于生产方选择 `readMode: 'background'` 的任务，读取 `running` 或 `stopping` 状态会立即返回当前输出，忽略 `wait: true`，并在正常记录工具结果后结束当前 agent 轮次。任务继续运行，稍后的完成仍会产生通知。终态读取保留普通的最终结果交付；未设置此模式的任务保留有界等待。
+对于生产方选择 `readMode: 'background'` 的任务，读取 `running` 或 `stopping` 状态会立即返回当前输出，并忽略 `wait: true`。正常记录工具结果后默认结束当前 agent 轮次；若生产方设置 `backgroundReadConcludesTurn: false`，则允许在该轮次继续完成用户要求的其它工作。任务继续运行，稍后的完成仍会产生通知。终态读取保留普通的最终结果交付，不结束轮次；未设置此模式的任务保留有界等待。
 
 三个工具依次返回 `{ text, job }`、`PublicJobSnapshot[]` 与 `{ outcome: 'cancellation-requested' | 'already-finished', job }`。公共快照携带 id、kind、label、带实时进度行或终态 detail 的状态，以及开始／结束时间，并省略归属与环偏移。三个工具都通过通用 UI 卡片渲染：output 和 list 用 `read`，kill 用 `execute`。
 

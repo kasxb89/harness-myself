@@ -7,7 +7,7 @@ const retained: VideoSubmission = { ...owner, state: 'unknown', planId: 'cp_orig
 const signal = (): AbortSignal => new AbortController().signal
 function listing(status = 'unknown', canQuery = true): object {
   return { ok: true, payload: { accountId: owner.accountId, projects: [{ id: 'cp_original', sessionId: owner.sessionId,
-    kind: 'video', tasks: [{ id: 'op_original', status, canQuery,
+    kind: 'video', tasks: [{ id: 'op_original', source: 'ai-creation', status, canQuery,
       videoReceipt: { taskId: 'task_original', requestId: 'request_original' } }] }] } }
 }
 afterEach(() => { vi.unstubAllGlobals() })
@@ -120,12 +120,73 @@ describe('retained video submission', () => {
     expect(await readVideoSubmission(owner, retained, signal())).toEqual({ ok: false })
   })
 
-  it('keeps an unidentified legacy ordinary video protected without granting a query', async () => {
+  it('keeps ambiguous legacy work protected without assigning it an entry source', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({ ok: true, payload: { accountId: owner.accountId, projects: [{
       id: 'cp_original', sessionId: owner.sessionId, kind: 'video', tasks: [{ id: 'op_original', status: 'unknown' }],
     }] } })))
     expect(await readVideoSubmission(owner, null, signal())).toEqual({ ok: true, completed: false,
       submission: { ...owner, planId: 'cp_original', operationId: 'op_original', state: 'unknown', canQuery: false } })
+    expect(await readVideoSubmission(owner, retained, signal())).toEqual({ ok: true, completed: false,
+      submission: { ...owner, planId: 'cp_original', operationId: 'op_original', state: 'unknown', canQuery: false } })
+  })
+
+  it.each([
+    { videoProjectId: 'vp_chat' },
+    { videoReceipt: { origin: { toolCallId: 'call_chat' } } },
+    { videoReceipt: { origin: { toolCallId: 'provider/tool-call-1' } } },
+  ])('does not claim legacy chat work with explicit tool or project evidence', async (evidence) => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ ok: true, payload: { accountId: owner.accountId, projects: [{
+      id: 'cp_original', sessionId: owner.sessionId, kind: 'video', tasks: [{ id: 'op_original', status: 'unknown', ...evidence }],
+    }] } })))
+    expect(await readVideoSubmission(owner, null, signal())).toEqual({ ok: true, completed: false, submission: null })
+    expect(await readVideoSubmission(owner, retained, signal())).toEqual({ ok: true, completed: false,
+      submission: { ...owner, planId: 'cp_original', operationId: 'op_original', state: 'unknown', canQuery: false } })
+  })
+
+  it.each(['running', 'unknown'])('does not claim %s chat work as this form submission', async (status) => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ ok: true, payload: { accountId: owner.accountId, projects: [{
+      id: 'cp_original', sessionId: owner.sessionId, kind: 'video', tasks: [{ id: 'op_chat', source: 'chat', status,
+        canQuery: true, videoReceipt: { taskId: 'task_chat' } }],
+    }] } })))
+    expect(await readVideoSubmission(owner, null, signal())).toEqual({ ok: true, completed: false, submission: null })
+  })
+
+  it('restores this form unknown submission without a provider task id', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ ok: true, payload: { accountId: owner.accountId, projects: [{
+      id: 'cp_original', sessionId: owner.sessionId, kind: 'video', tasks: [
+        { id: 'op_chat', source: 'chat', status: 'running', canQuery: true, videoReceipt: { taskId: 'task_chat' } },
+        { id: 'op_original', source: 'ai-creation', status: 'unknown' },
+      ],
+    }] } })))
+    expect(await readVideoSubmission(owner, null, signal())).toEqual({ ok: true, completed: false,
+      submission: { ...owner, planId: 'cp_original', operationId: 'op_original', state: 'unknown', canQuery: false } })
+  })
+
+  it.each(['missing', 'planned', 'unknown', 'completed', 'failed', 'cancelled'])(
+    'never replaces the original %s task with another pending form task', async (status) => {
+      vi.stubGlobal('fetch', vi.fn(async () => Response.json({ ok: true, payload: { accountId: owner.accountId, projects: [{
+        id: 'cp_original', sessionId: owner.sessionId, kind: 'video', tasks: [
+          { id: 'op_other', source: 'ai-creation', status: 'running', canQuery: true, videoReceipt: { taskId: 'task_other' } },
+          ...status === 'missing' ? [] : [{ id: 'op_original', status, videoReceipt: { taskId: 'task_original', requestId: 'request_original' }, canQuery: true }],
+        ],
+      }] } })))
+      const terminal = ['completed', 'failed', 'cancelled'].includes(status)
+      expect(await readVideoSubmission(owner, retained, signal())).toEqual({ ok: true, completed: status === 'completed',
+        submission: terminal ? null : retained })
+    },
+  )
+
+  it('preserves partial original coordinates rather than claiming another form operation', async () => {
+    const original = { ...owner, state: 'unknown' as const, planId: 'cp_other', canQuery: false }
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json(listing())))
+    expect(await readVideoSubmission(owner, original, signal())).toEqual({ ok: true, completed: false, submission: original })
+  })
+
+  it('rejects an unrecognized task source without releasing the captured original', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ ok: true, payload: { accountId: owner.accountId, projects: [{
+      id: 'cp_original', sessionId: owner.sessionId, kind: 'video', tasks: [{ id: 'op_original', source: 'future-entry', status: 'completed' }],
+    }] } })))
+    expect(await readVideoSubmission(owner, retained, signal())).toEqual({ ok: false })
   })
 
 })

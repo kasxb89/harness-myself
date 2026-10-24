@@ -152,6 +152,25 @@ describe('image creation workspace', () => {
     })
   })
 
+  it.each(['running', 'unknown'])('keeps AI Creation usable while chat has a %s image task', async (status) => {
+    const original = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation(async (input, init) => requestUrl(input).startsWith('/credits/api/creative/projects?')
+      ? json({ ok: true, payload: { accountId: 'account-a', projects: [{ id: 'cp_chat', sessionId: 'session-a',
+        kind: 'image', tasks: [{ id: 'op_chat', source: 'chat', status, canQuery: true,
+          imageReceipt: { taskId: 'task_chat' } }] }] } }) : await original(input, init))
+    const { props, store } = makeProps()
+    render(<ImagePage {...props} />)
+    await ready()
+    fireEvent.change(screen.getByRole('textbox', { name: zh.prompt }), { target: { value: '独立的 AI 创作图片' } })
+    const submit = screen.getByRole('button', { name: zh.submit })
+    await waitFor(() => { expect(submit).toHaveProperty('disabled', false) })
+    expect(screen.queryByText(zh.originalAccepted)).toBeNull()
+    expect(Object.values(store.getSnapshot().unsettled)).toHaveLength(0)
+    fireEvent.click(submit)
+    await screen.findByText(zh.done)
+    expect(fetchMock.mock.calls.filter(([url]) => url === '/credits/api/image/generate')).toHaveLength(1)
+  })
+
   it.each(['no-session', 'unknown', 'read-failed'] as const)('keeps draft controls available with %s admission while generation stays paused', async (admission) => {
     if (admission === 'no-session') chatSessionId = undefined
     const original = fetchMock.getMockImplementation()!
@@ -159,7 +178,7 @@ describe('image creation workspace', () => {
       if (!requestUrl(input).startsWith('/credits/api/creative/projects?')) return await original(input, init)
       if (admission === 'read-failed') return new Response('', { status: 503 })
       return json({ ok: true, payload: { accountId: 'account-a', projects: [{ id: 'cp_original', sessionId: 'session-a',
-        kind: 'image', tasks: [{ id: 'op_original', status: 'unknown', canQuery: false }] }] } })
+        kind: 'image', tasks: [{ id: 'op_original', source: 'ai-creation', status: 'unknown', canQuery: false }] }] } })
     })
     const { props, store } = makeProps()
     render(<ImagePage {...props} />)
@@ -224,7 +243,7 @@ describe('image creation workspace', () => {
       if (input === '/credits/api/image/generate') { submitted = true; return await generation.promise }
       if (requestUrl(input).startsWith('/credits/api/creative/projects?')) return json({ ok: true, payload: {
         accountId: 'account-a', projects: submitted ? [{ id: 'cp_original', sessionId: 'session-a', kind: 'image', tasks: [{
-          id: 'op_original', status: 'running', canQuery: false,
+          id: 'op_original', source: 'ai-creation', status: 'running', canQuery: false,
           imageReceipt: accepted ? { phase: 'accepted', taskId: 'task_original', requestId: 'request_original' } : { phase: 'submitting' },
         }] }] : [],
       } })
@@ -262,7 +281,7 @@ describe('image creation workspace', () => {
     const original = fetchMock.getMockImplementation()!
     fetchMock.mockImplementation(async (input, init) => requestUrl(input).startsWith('/credits/api/creative/projects?')
       ? json({ ok: true, payload: { accountId: 'account-a', projects: [{ id: 'cp_legacy', sessionId: 'session-a',
-        kind: 'image', tasks: [{ id: 'op_legacy', status: 'unknown', canQuery: false }] }] } }) : await original(input, init))
+        kind: 'image', tasks: [{ id: 'op_legacy', source: 'ai-creation', status: 'unknown', canQuery: false }] }] } }) : await original(input, init))
     const { props, store } = makeProps()
     render(<ImagePage {...props} />)
     await ready()
@@ -354,7 +373,7 @@ describe('image creation workspace', () => {
     const original = fetchMock.getMockImplementation()!
     fetchMock.mockImplementation(async (input, init) => requestUrl(input).startsWith('/credits/api/creative/projects?')
       ? json({ ok: true, payload: { accountId: 'account-a', projects: [{ id: 'cp_legacy', sessionId: 'session-a',
-        kind: 'image', tasks: [{ id: 'op_legacy', status: 'unknown', canQuery: false }] }] } }) : await original(input, init))
+        kind: 'image', tasks: [{ id: 'op_legacy', source: 'ai-creation', status: 'unknown', canQuery: false }] }] } }) : await original(input, init))
     const { props } = makeProps()
     render(<ImagePage {...props} />)
     await ready()
@@ -435,7 +454,7 @@ describe('image creation workspace', () => {
     fireEvent(document, new Event('visibilitychange'))
     await waitFor(() => { expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', false) })
     await act(async () => { finishOldRead(json({ ok: true, payload: { accountId: 'account-a', projects: [{
-      id: 'cp_original', sessionId: 'session-a', kind: 'image', tasks: [{ id: 'op_original', status: 'unknown', canQuery: true,
+      id: 'cp_original', sessionId: 'session-a', kind: 'image', tasks: [{ id: 'op_original', source: 'ai-creation', status: 'unknown', canQuery: true,
         imageReceipt: { taskId: 'task_original' } }],
     }] } })) })
     expect(Object.values(store.getSnapshot().unsettled)).toHaveLength(0)

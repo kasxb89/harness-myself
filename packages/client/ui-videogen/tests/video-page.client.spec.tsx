@@ -792,13 +792,31 @@ describe('video composer', () => {
     expect(task).not.toHaveBeenCalled()
   })
 
+  it.each(['running', 'unknown'])('keeps AI Creation usable while chat has a %s video task', async (status) => {
+    const { mount, task, projects, store } = setup()
+    projects.mockResolvedValue(json({ ok: true, payload: { accountId: 'account-a', projects: [{
+      id: 'project-chat', sessionId: 'session-a', kind: 'video', tasks: [{
+        id: 'operation-chat', source: 'chat', status, canQuery: true, videoReceipt: { taskId: 'task-chat' },
+      }],
+    }] } }))
+    mount()
+    await ready()
+    writePrompt()
+    const submit = screen.getByRole('button', { name: zh.submit })
+    await waitFor(() => { expect(submit).toHaveProperty('disabled', false) })
+    expect(screen.queryByText(zh.originalAccepted)).toBeNull()
+    expect(Object.values(store.getSnapshot().unsettled)).toHaveLength(0)
+    fireEvent.click(submit)
+    await waitFor(() => { expect(task).toHaveBeenCalledOnce() })
+  })
+
   it.each(['no-session', 'unknown', 'pending', 'read-failed'] as const)('allows browsing video controls while submission is blocked: %s', async (reason) => {
     if (reason === 'no-session') chatSessionId = undefined
     const { mount, task, projects, store } = setup()
     if (reason === 'read-failed') projects.mockResolvedValue(new Response(null, { status: 503 }))
     if (reason === 'unknown' || reason === 'pending') projects.mockResolvedValue(json({ ok: true, payload: {
       accountId: 'account-a', projects: [{ id: 'project-original', sessionId: 'session-a', kind: 'video', tasks: [{
-        id: 'operation-original', status: reason === 'pending' ? 'running' : 'unknown', canQuery: true,
+        id: 'operation-original', source: 'ai-creation', status: reason === 'pending' ? 'running' : 'unknown', canQuery: true,
         videoReceipt: { taskId: 'task-original', model: 'video-real' },
       }] }],
     } }))

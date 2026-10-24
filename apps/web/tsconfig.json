@@ -22,6 +22,8 @@
   // this client-registered project must not also hold them (one program
   // cannot see both sides of the cordis Context merges).
   "exclude": [
+    "tests/creation-entry-isolation.e2e.ts",
+    "tests/independent-generation-requests.e2e.ts",
     "tests/image-task-recovery.e2e.ts",
     "tests/collapse-timing.e2e.ts",
     "tests/chat-flow-layout.e2e.ts",

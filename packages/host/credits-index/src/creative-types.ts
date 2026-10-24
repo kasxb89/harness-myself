@@ -11,6 +11,9 @@ export type CreativeOutputId = Branded<'CreativeOutputId'>
 /** Requested output category. */
 export type CreativeKind = 'image' | 'video'
 
+/** Trusted generation entry recorded by the Host; absent on older invocations. */
+export type CreativeSource = 'chat' | 'ai-creation'
+
 /** Committed operation state; interrupted never implies an active background job. */
 export type CreativeStatus = 'planned' | 'running' | 'saving' | 'editing' | 'completed' | 'failed' | 'cancelled' | 'interrupted' | 'unknown'
 
@@ -117,6 +120,8 @@ export type CreativePlanChange =
 /** One retained invocation, without provider requests, credentials or local paths. */
 export interface CreativeTaskView {
   readonly id: string
+  /** Initiating entry, independent of the shared account, chat and editable plan. */
+  readonly source?: CreativeSource
   readonly status: CreativeStatus
   readonly shotIds: readonly string[]
   readonly assetId?: string

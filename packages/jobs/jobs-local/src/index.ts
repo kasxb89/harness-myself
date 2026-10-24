@@ -79,6 +79,7 @@ interface TrackedJob {
   label: string
   outputLimitBytes: number | undefined
   readMode: JobSpec['readMode']
+  backgroundReadConcludesTurn: boolean
   /** Exact lifecycle owner; session-id authorization is derived from it. */
   owner: Agent | undefined
   cancel: (reason?: string) => void
@@ -247,6 +248,7 @@ export class LocalJobRegistry extends JobRegistry {
       label: spec.label,
       outputLimitBytes: spec.outputLimitBytes,
       readMode: spec.readMode,
+      backgroundReadConcludesTurn: spec.backgroundReadConcludesTurn ?? true,
       owner,
       cancel: hooks.cancel.bind(hooks),
       status: 'running',
@@ -313,6 +315,10 @@ export class LocalJobRegistry extends JobRegistry {
 
   get(id: JobId, caller?: SessionId): JobView {
     return this.view(this.expect(id, caller))
+  }
+
+  backgroundReadConcludesTurn(id: JobId, caller?: SessionId): boolean {
+    return this.expect(id, caller).backgroundReadConcludesTurn
   }
 
   read(id: JobId, caller?: SessionId): JobRead {

@@ -66,7 +66,7 @@ async function liveAgent(ctx: Context, rawId: string, presetScope?: ScopeKey): P
   return agent
 }
 
-type ProducerOverrides = Partial<Pick<JobSpec, 'kind' | 'label' | 'outputLimitBytes' | 'output' | 'readMode'> & JobHooks> & {
+type ProducerOverrides = Partial<Pick<JobSpec, 'kind' | 'label' | 'outputLimitBytes' | 'output' | 'readMode' | 'backgroundReadConcludesTurn'> & JobHooks> & {
   owner?: Agent
 }
 
@@ -75,7 +75,7 @@ function producer(overrides: ProducerOverrides = {}) {
   let settle!: (outcome: JobOutcome) => void
   let reject!: (error: unknown) => void
   const cancels: (string | undefined)[] = []
-  const { kind = 'bash', label = 'sleep 60', owner, outputLimitBytes, output, readMode, ...hookOverrides } = overrides
+  const { kind = 'bash', label = 'sleep 60', owner, outputLimitBytes, output, readMode, backgroundReadConcludesTurn, ...hookOverrides } = overrides
   const hooks: JobHooks = {
     cancel(reason) { cancels.push(reason) },
     done: new Promise<JobOutcome>((res, rej) => { settle = res; reject = rej }),
@@ -89,6 +89,7 @@ function producer(overrides: ProducerOverrides = {}) {
     ...outputLimitBytes !== undefined ? { outputLimitBytes } : {},
     ...output !== undefined ? { output } : {},
     ...readMode !== undefined ? { readMode } : {},
+    ...backgroundReadConcludesTurn !== undefined ? { backgroundReadConcludesTurn } : {},
     run: (job) => {
       started = job
       return hooks
@@ -161,6 +162,27 @@ function scriptedSource(reads: { text: string; lossy?: boolean }[], channel?: 's
 }
 
 describe('LocalJobRegistry.start', () => {
+  it.each([undefined, true, false])('keeps background conclude policy %s private and owner-fenced through settlement', async (policy) => {
+    const ctx = await harness()
+    const owner = await liveAgent(ctx, 'read-policy-owner')
+    const p = producer({ owner, readMode: 'background', ...policy === undefined ? {} : { backgroundReadConcludesTurn: policy } })
+    try {
+      const id = ctx.jobs.start(p.spec)
+      expect(ctx.jobs.backgroundReadConcludesTurn(id, owner.id)).toBe(policy ?? true)
+      expect(() => ctx.jobs.backgroundReadConcludesTurn(id, SessionId('foreign'))).toThrow()
+      expect(() => ctx.jobs.backgroundReadConcludesTurn(id)).toThrow()
+      expect(ctx.jobs.get(id, owner.id)).not.toHaveProperty('backgroundReadConcludesTurn')
+      expect(ctx.jobs.list(owner.id)[0]).not.toHaveProperty('backgroundReadConcludesTurn')
+      expect(ctx.jobs.read(id, owner.id).job).not.toHaveProperty('backgroundReadConcludesTurn')
+      p.settle({ status: 'completed' })
+      await ctx.jobs.wait(id, 1000, owner.id)
+      expect(ctx.jobs.backgroundReadConcludesTurn(id, owner.id)).toBe(policy ?? true)
+      expect(ctx.jobs.get(id, owner.id)).not.toHaveProperty('backgroundReadConcludesTurn')
+      ctx.jobs.remove(id, owner.id)
+      expect(() => ctx.jobs.backgroundReadConcludesTurn(id, owner.id)).toThrow()
+    } finally { p.settle({ status: 'killed' }); await ctx.fiber.dispose() }
+  })
+
   it('retains producer-selected background reads in fresh projections through settlement', async () => {
     const ctx = await harness()
     const p = producer({ readMode: 'background' })

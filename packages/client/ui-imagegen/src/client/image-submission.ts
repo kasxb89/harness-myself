@@ -28,6 +28,14 @@ function identifier(value: unknown): value is string {
     && !/^(?:sk-|nap_)/iu.test(value)
 }
 
+function discoverable(task: Record<string, unknown>): boolean {
+  if (task.source !== undefined) return task.source === 'ai-creation'
+  const receipt = object(task.imageReceipt) ? task.imageReceipt : undefined
+  const origin = object(receipt?.origin) ? receipt.origin : undefined
+  return !(typeof task.videoProjectId === 'string' && task.videoProjectId !== '')
+    && !(typeof origin?.toolCallId === 'string' && origin.toolCallId !== '')
+}
+
 /**
  * Identify view state belonging to one account and conversation.
  * @param owner - Captured account and conversation.
@@ -61,6 +69,8 @@ export function submissionFromAnswer(answer: unknown, owner: Owner): ImageSubmis
 function listing(value: unknown, owner: Owner, retained: ImageSubmission | null): CheckResult {
   if (!object(value) || value.ok !== true || !object(value.payload) || value.payload.accountId !== owner.accountId
     || !Array.isArray(value.payload.projects)) return { ok: false }
+  const hasCoordinates = retained !== null && [retained.planId, retained.operationId, retained.taskId, retained.requestId]
+    .some(value => value !== undefined)
   let matched: { status: string; projectId: string; task: Record<string, unknown> } | undefined
   const pending: { status: string; projectId: string; task: Record<string, unknown> }[] = []
   for (const project of value.payload.projects) {
@@ -70,6 +80,7 @@ function listing(value: unknown, owner: Owner, retained: ImageSubmission | null)
     if (project.kind !== 'image') continue
     for (const task of project.tasks) {
       if (!object(task) || !identifier(task.id) || typeof task.status !== 'string'
+        || task.source !== undefined && task.source !== 'chat' && task.source !== 'ai-creation'
         || !['planned', 'running', 'saving', 'editing', 'unknown', 'interrupted', 'completed', 'failed', 'cancelled'].includes(task.status)) {
         return { ok: false }
       }
@@ -79,8 +90,10 @@ function listing(value: unknown, owner: Owner, retained: ImageSubmission | null)
         || task.status === 'interrupted' && object(task.imageReceipt)) pending.push(fact)
     }
   }
-  const candidate = matched !== undefined && pending.includes(matched) ? matched
-    : pending.find(item => item.task.canQuery === true) ?? pending[0]
+  const candidate = hasCoordinates
+    ? matched !== undefined && pending.includes(matched) ? matched : undefined
+    : pending.find(item => discoverable(item.task) && item.task.canQuery === true)
+      ?? pending.find(item => discoverable(item.task))
   if (candidate !== undefined) {
     const receipt = object(candidate.task.imageReceipt) ? candidate.task.imageReceipt : undefined
     const taskId = identifier(receipt?.taskId) ? receipt.taskId : undefined
@@ -99,11 +112,11 @@ function listing(value: unknown, owner: Owner, retained: ImageSubmission | null)
 }
 
 /**
- * Reconcile the captured task against the owned Host listing, preserving missing/ambiguous records.
+ * Reconcile exact retained coordinates, otherwise protect AI Creation and ambiguous legacy work while excluding chat tasks.
  * @param owner - current account and explicitly selected chat.
  * @param retained - earlier unsettled request, if one was captured by this view.
  * @param signal - view/account lifetime cancellation.
- * @returns current original-task state; failed reads never release a captured lock.
+ * @returns current original-task state; missing records and failed reads never release a captured lock.
  */
 export async function readImageSubmission(owner: Owner, retained: ImageSubmission | null, signal: AbortSignal): Promise<CheckResult> {
   try {

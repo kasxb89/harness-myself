@@ -1,0 +1,10 @@
+version: 1
+scenario: creation-entry-isolation
+profile: web
+composition: creation-entry-isolation
+recording: authored
+header:
+  class: creation-entry-isolation
+  pin: true
+workspace:
+  final: true

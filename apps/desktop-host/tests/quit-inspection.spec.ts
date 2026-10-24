@@ -31,6 +31,7 @@ class RosterOnlyJobRegistry extends JobRegistry {
     }))
   }
   get(): never { throw new Error('unsupported') }
+  backgroundReadConcludesTurn(): never { throw new Error('unsupported') }
   read(): never { throw new Error('unsupported') }
   readAt(): never { throw new Error('unsupported') }
   kill(): never { throw new Error('unsupported') }

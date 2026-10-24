@@ -39,6 +39,11 @@ class ScriptedJobRegistry extends JobRegistry {
     return this.view(row)
   }
 
+  backgroundReadConcludesTurn(id: JobId): boolean {
+    this.get(id)
+    return true
+  }
+
   read(id: JobId): JobRead {
     return { chunks: [], lossy: false, job: this.get(id) }
   }

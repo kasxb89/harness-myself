@@ -1429,6 +1429,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'a fresh projection.',
       },
       {
+        signature: 'abstract backgroundReadConcludesTurn(id: JobId, caller?: SessionId): boolean',
+        description: 'Read the producer\'s runtime turn policy without consuming output. It applies only to live background model reads; omitted producer policy returns true. Throws for an unknown or foreign job, using the same access fence as get.',
+        parameters: [{ name: 'id', description: 'job whose producer selected the policy.' }, { name: 'caller', description: 'reading session checked against the owner.' }],
+        returns: 'whether a live background read concludes the caller\'s turn.',
+      },
+      {
         signature: 'abstract read(id: JobId, caller?: SessionId): JobRead',
         description: 'Consume the ring from the model cursor and advance it to the current total. After settlement the first read also carries the producer\'s result. Throws for an unknown or foreign job.',
         parameters: [{ name: 'id', description: 'job to read.' }, { name: 'caller', description: 'reading session checked against the owner.' }],
@@ -5832,7 +5838,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'JobSpec',
-    declaration: 'export interface JobSpec {\n    kind: JobKind;\n    label: string;\n    owner?: SessionId;\n    outputLimitBytes?: number;\n    readMode?: \'background\';\n    output?: readonly JobOutputSource[];\n    run(job: JobHandle): JobHooks;\n}',
+    declaration: 'export interface JobSpec {\n    kind: JobKind;\n    label: string;\n    owner?: SessionId;\n    outputLimitBytes?: number;\n    readMode?: \'background\';\n    backgroundReadConcludesTurn?: boolean;\n    output?: readonly JobOutputSource[];\n    run(job: JobHandle): JobHooks;\n}',
   },
   {
     name: 'JobStatus',

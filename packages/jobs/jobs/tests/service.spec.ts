@@ -53,6 +53,11 @@ class StubJobRegistry extends JobRegistry {
     return this.view(id, caller)
   }
 
+  backgroundReadConcludesTurn(id: JobId, caller?: SessionId): boolean {
+    this.get(id, caller)
+    return this.started.find(spec => `${spec.kind}-1` === id)?.backgroundReadConcludesTurn ?? true
+  }
+
   read(id: JobId, caller?: SessionId): JobRead {
     return { chunks: [], lossy: false, job: this.view(id, caller) }
   }
@@ -91,6 +96,7 @@ describe('JobRegistry seam', () => {
     expect(jobs.list(caller)).toHaveLength(1)
     expect(jobs.get(id, caller).status).toBe('running')
     expect(jobs.get(id, caller).owner).toBe(caller)
+    expect(jobs.backgroundReadConcludesTurn(id, caller)).toBe(true)
     expect(jobs.read(id, caller)).toMatchObject({ chunks: [], lossy: false, job: { id } })
     expect(jobs.readAt(id, 7, caller)).toEqual({ chunks: [], next: 7, lossy: false })
     expect(jobs.kill(id, caller, 'seam test')).toBe('requested')

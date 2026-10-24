@@ -69,7 +69,7 @@ import { artifactOriginOf, captureMediaOutput, type CapturedMediaOutput } from '
 import { executeImageTask } from './image-task.ts'
 import { ImageConcurrency, imageConcurrencyCeiling } from './image-concurrency.ts'
 import { executeVideoTask } from './video-task.ts'
-import type { CreativeImageReceipt, CreativeVideoReceipt } from './creative-types.ts'
+import type { CreativeImageReceipt, CreativeVideoReceipt, CreativeTaskView } from './creative-types.ts'
 import type { VideoProjectIdentity, VideoProjectInput, VideoProjectOptions, VideoProjectRequest, VideoRequestValue } from './video-project-types.ts'
 import { CreativeError, CreativeStore, parseCreativePlanChange, type CreativeOperation, type CreativeOwner } from './creative-store.ts'
 import { creativeOwner, registerCreativeTools } from './creative-tools.ts'
@@ -2458,7 +2458,7 @@ export function apply(ctx: Context, config: Config): void {
           dialogue: '', subtitles: '', characterIds: [], assetIds: assets.map(asset => asset.id),
           ...durationSeconds === undefined ? {} : { durationSeconds } }],
       })
-      const operation = await creative.begin(owner, { kind, prompt, planId, shotIds: ['shot_1'],
+      const operation = await creative.begin(owner, { kind, source: 'ai-creation', prompt, planId, shotIds: ['shot_1'],
         shots: [{ prompt, ...durationSeconds === undefined ? {} : { durationSeconds } }],
         ...typeof body.model === 'string' ? { model: body.model } : {} })
       try {
@@ -2482,12 +2482,16 @@ export function apply(ctx: Context, config: Config): void {
     return signal.aborted && outcome.submissionState === 'not-submitted' ? 'cancelled' : 'failed'
   }
   const panelImageAdmissions = new Set<string>()
-  /** A retained uncertain submission blocks new panel plans for this account and conversation. */
+  /** Preserve legacy uncertainty unless retained fields establish that a chat tool owns the invocation. */
+  const protectsPanelSubmission = (task: CreativeTaskView): boolean => task.source === 'ai-creation'
+    || task.source === undefined && task.videoProjectId === undefined
+      && task.imageReceipt?.origin?.toolCallId === undefined && task.videoReceipt?.origin?.toolCallId === undefined
+  /** This entry's uncertain submissions and unclassified legacy work retain panel protection. */
   const pendingPanelImage = async (owner: CreativeOwner): Promise<(Awaited<ReturnType<typeof runImageGeneration>>
     & { planId: string; operationId: string }) | undefined> => {
     for (const project of await creative.projects(owner)) {
       if (project.kind !== 'image') continue
-      const task = [...project.tasks].reverse().find(task => ['unknown', 'running', 'saving'].includes(task.status))
+      const task = [...project.tasks].reverse().find(task => protectsPanelSubmission(task) && ['unknown', 'running', 'saving'].includes(task.status))
       if (task === undefined) continue
       const receipt = task.imageReceipt
       return { ok: false, planId: project.id, operationId: task.id,
@@ -2524,11 +2528,12 @@ export function apply(ctx: Context, config: Config): void {
     } finally { creative.release(operation) }
   }
   const panelVideoAdmissions = new Set<string>()
-  /** Unknown or accepted video submissions block new plans in this same conversation. */
+  /** Confirmed chat work does not block AI Creation; unclassified legacy work keeps its original protection. */
   const pendingPanelVideo = async (owner: CreativeOwner): Promise<(MediaOutcome & { planId: string; operationId: string }) | undefined> => {
     for (const project of await creative.projects(owner)) {
       if (project.kind !== 'video') continue
-      const task = [...project.tasks].reverse().find(task => task.assetId === undefined && task.imageReceipt === undefined
+      const task = [...project.tasks].reverse().find(task => protectsPanelSubmission(task)
+        && task.assetId === undefined && task.imageReceipt === undefined
         && ['unknown', 'running', 'saving'].includes(task.status))
       if (task === undefined) continue
       const receipt = task.videoReceipt
@@ -4230,7 +4235,7 @@ export function apply(ctx: Context, config: Config): void {
           }
           references.push(await normalizeVideoReference(source ?? value, 'image', exec.agent?.session.header.cwd, referenceCache, exec.signal))
         }
-        operation = await creative.begin(owner, { kind: 'image', prompt: args.prompt, shots: [{ prompt: args.prompt }], ...args.model === undefined ? {} : { model: args.model }, ...args.plan_id === undefined ? {} : { planId: args.plan_id }, ...args.shot_id === undefined ? {} : { shotIds: [args.shot_id] }, ...args.asset_id === undefined ? {} : { assetId: args.asset_id } })
+        operation = await creative.begin(owner, { kind: 'image', source: 'chat', prompt: args.prompt, shots: [{ prompt: args.prompt }], ...args.model === undefined ? {} : { model: args.model }, ...args.plan_id === undefined ? {} : { planId: args.plan_id }, ...args.shot_id === undefined ? {} : { shotIds: [args.shot_id] }, ...args.asset_id === undefined ? {} : { assetId: args.asset_id } })
         const creation = operation
         const outcome = await runImageGeneration(await binding.key(), {
           prompt: args.prompt,
@@ -4435,7 +4440,7 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.tools.register(defineTool({
     name: 'generate_video',
-    description: 'Compatibility single-clip generation through the account relay. Read list_video_models first. Prefer generate_video_project for new video requests, including a single clip: its background job exposes queue and generation progress without holding chat open. Do not write submission, polling or download scripts or probe invalid paid durations. For story direction, character/reference continuity, dialogue or subtitles, use the yunshu-video-director skill. For a complete video such as 40 seconds or automatic assembly, always use generate_video_project; several camera beats may fit one clip. Accepted work that outlasts this foreground wait returns pending: query_video_task reads its original receipt, never generate again. Edit existing clips with edit_video. Only declared duration, resolution, ratio, frames and references are accepted.' + MEDIA_FAILURE_GUIDANCE,
+    description: 'Compatibility single-clip generation through the account relay. Read list_video_models first. Prefer generate_video_project for new video requests, including a single clip: its background job exposes queue and generation progress without holding chat open. Each independent human generation request defaults to one finished video, or its explicit work count. An earlier running or unknown submission does not block a separate human request, even with the same brief or plan; create independent work and retain the original task. Do not repeat the same submission. Progress checks and continuing the original task use its existing query or resume tools. Do not write submission, polling or download scripts or probe invalid paid durations. For story direction, character/reference continuity, dialogue or subtitles, use the yunshu-video-director skill. For a complete video such as 40 seconds or automatic assembly, always use generate_video_project; several camera beats may fit one clip. Accepted work that outlasts this foreground wait returns pending: query_video_task reads its original receipt without repeating that submission. Edit existing clips with edit_video. Only declared duration, resolution, ratio, frames and references are accepted.' + MEDIA_FAILURE_GUIDANCE,
     parameters: {
       plan_id: { type: 'string', description: 'Explicit update_creation_plan id for this generation. Also provide shot_id.' },
       shot_id: { type: 'string', description: 'Exact shot id in the explicit plan; never guess a latest project.' },
@@ -4540,7 +4545,7 @@ export function apply(ctx: Context, config: Config): void {
         }
         exec.signal.throwIfAborted()
         await choice.beforeSubmit(exec.signal)
-        operation = await creative.begin(creativeOwner(exec, binding.identity), { kind: 'video', model: capability.model.id, prompt: args.prompt, shots: [{ prompt: args.prompt, ...durationSeconds === undefined ? {} : { durationSeconds } }], ...args.plan_id === undefined ? {} : { planId: args.plan_id }, ...args.shot_id === undefined ? {} : { shotIds: [args.shot_id] }, videoIntent })
+        operation = await creative.begin(creativeOwner(exec, binding.identity), { kind: 'video', source: 'chat', model: capability.model.id, prompt: args.prompt, shots: [{ prompt: args.prompt, ...durationSeconds === undefined ? {} : { durationSeconds } }], ...args.plan_id === undefined ? {} : { planId: args.plan_id }, ...args.shot_id === undefined ? {} : { shotIds: [args.shot_id] }, videoIntent })
         const creation = operation
         const outcome = await runVideoTask(await binding.key(), capability.model.route, built.request, exec.signal,
           async () => { await binding.key(); await creative.dispatched(creation) },
