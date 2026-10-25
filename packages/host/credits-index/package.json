@@ -54,6 +54,10 @@
     "@deepseek-ai/dsh-artifacts-index": "workspace:*"
   },
   "devDependencies": {
+    "@deepseek-ai/dsh-agent-loop": "workspace:*",
+    "@deepseek-ai/dsh-subagent": "workspace:*",
+    "@deepseek-ai/dsh-ptc-runtime-node": "workspace:*",
+    "@deepseek-ai/dsh-tool-ask-user": "workspace:*",
     "@deepseek-ai/dsh-app-boot": "workspace:*",
     "@types/heic-decode": "2.0.0",
     "@deepseek-ai/dsh-agent-default-model": "workspace:*",

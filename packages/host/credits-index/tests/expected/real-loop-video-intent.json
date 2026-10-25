@@ -1,0 +1,21 @@
+{
+  "lateQuestion": {
+    "question": { "pending": true },
+    "generation": { "status": "background", "plan_seconds": [15, 15], "remaining_works": 0 },
+    "attribution": {
+      "requestSource": "user",
+      "sameOriginalMessage": true,
+      "sourceSeqMatches": true,
+      "requestTurn": 1,
+      "workCount": 1,
+      "requestedDurationSeconds": 30
+    },
+    "providerSeconds": [15, 15],
+    "workCount": 1,
+    "turnCount": 2
+  },
+  "noticeDenied": {
+    "status": "failed",
+    "code": "CREATIVE_VIDEO_INTENT_UNAVAILABLE"
+  }
+}

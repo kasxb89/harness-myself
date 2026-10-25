@@ -8,10 +8,11 @@ const NUMBER = '(?:[1-9]\\d*|[一二两三四五六七八九十]+)'
 const DURATION = `(?:(?:\\d+(?:\\.\\d+)?|${NUMBER})\\s*(?:秒钟?|s|分钟|min)\\s*的?\\s*)?`
 const VIDEO_NOUN = '(?:短视频|带货视频|广告视频|动画视频|视频|短片|成片)'
 const VIDEO = `(?:(?:MiniMax-H3|H3)\\s*)?${VIDEO_NOUN}`
+const VIDEO_MODIFIER = '(?:[\\p{Script=Han}]|[23]D|\\s){0,16}?'
 const REQUEST_PREFIX = '(?:请|帮我|给我|麻烦|替我|直接|立即|现在|只|再|重新|另外|额外|分别'
   + '|在(?:当前|这个)?(?:聊天|对话)(?:框)?(?:里|中))'
 const VERB = '(?:生成|制作|创作|做|输出|来)(?:出|成|给我)?\\s*'
-const MEDIA_COUNT = new RegExp(`(${NUMBER})\\s*(?:条|个|支)\\s*([\\p{Script=Han}]{0,16}?)${DURATION}${VIDEO}`, 'giu')
+const MEDIA_COUNT = new RegExp(`(${NUMBER})\\s*(?:条|个|支)\\s*([\\p{Script=Han}]{0,16}?)${DURATION}(${VIDEO_MODIFIER})${VIDEO}`, 'giu')
 const SHORT_COUNT = new RegExp(`${VERB}(${NUMBER})\\s*(?:条|版|支)\\s*$`, 'giu')
 
 function countOf(value: string | undefined): number | undefined {
@@ -32,26 +33,47 @@ function countOf(value: string | undefined): number | undefined {
   return tens === undefined || ones === undefined ? undefined : tens * 10 + ones
 }
 
+function isNonOutputVideoDescription(before: string, description: string): boolean {
+  const directive = new RegExp('(?:^|[，,。；;！？!?])\\s*'
+    + `(?:(?:${REQUEST_PREFIX}|然后|接着|同时|并且|按此提示词|按这个提示词|按以下提示词|根据此提示词`
+    + '|(?:用|使用|采用)\\s*[a-z][a-z0-9._/-]*)\\s*)*' + VERB, 'iu')
+  const context = before.split(directive).at(-1) ?? before
+  const modifier = description.trim().replace(/^的\s*/u, '')
+  return /参考|素材|片段|分镜|镜头|片名|标题|名字|名称|名为|名叫|叫作?|(?:字幕|台词|对白)\s*(?:写(?:成|着|上)?|为|是|内容(?:为|是)|设(?:置)?为|说|念|讲|唱|[:：])/u.test(context)
+    || /参考|素材|片段|分镜|镜头/u.test(modifier)
+    || /^(?:以前|之前|以后|之后|以内|之内|以外|以下|以上|前|后|内|外)(?:的|在|拍|发布|上传|录制|生成|制作|发生|已经|就|才|完成|结束|开始|$)/u.test(modifier)
+}
+
+function unquotedVideoRequest(text: string): string | undefined {
+  const value = text.normalize('NFKC').replaceAll(/"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|「[^」]*」|『[^』]*』|《[^》]*》|`[^`]*`/gu, '')
+  return /["'“”‘’「」『』《》`]/u.test(value) ? undefined : value
+}
+
 /**
  * Recognize a small set of explicit work-count phrases in the original human text.
  * @param text - Original human text, never model arguments or plan names.
  * @returns Explicit consistent count, or one when quantities are absent or ambiguous.
  */
 export function explicitVideoWorkCount(text: string): number {
-  const normalized = text.normalize('NFKC').replaceAll(/"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|「[^」]*」|『[^』]*』|`[^`]*`/gu, '')
-  if (/[<>≤≥]/u.test(normalized)
+  const normalized = unquotedVideoRequest(text)
+  if (normalized === undefined || /[?？吗]\s*$/u.test(normalized) || /[<>≤≥]/u.test(normalized)
     || /比较|对比|最多|至少|至多|多于|少于|超过|或|还是|改成|改为/u.test(normalized)) return 1
   const counts: number[] = []
-  for (const clause of normalized.split(/[\n，,。；;！？!?]/u)) {
+  for (const item of normalized.matchAll(/[^\n，,。；;！？!?]+/gu)) {
+    const clause = item[0]
     if (/不要|不需|无需|不必|不能|不是|并非|而非|(?<!分)别|勿|取消/u.test(clause)
       && (new RegExp(VERB, 'iu').test(clause) || new RegExp(MEDIA_COUNT.source, 'iu').test(clause))) return 1
     for (const match of clause.matchAll(MEDIA_COUNT)) {
-      if (/人物|角色|商品|产品|物品|模型|镜头|分镜|片段/u.test(match[2] ?? '')) continue
+      const modifier = (match[2] ?? '') + (match[3] ?? '')
+      if (/人物|角色|商品|产品|物品|模型|镜头|分镜|片段/u.test(modifier)
+        || isNonOutputVideoDescription(normalized.slice(0, item.index + match.index), modifier)) continue
       const count = countOf(match[1])
       if (count === undefined) return 1
       counts.push(count)
     }
     for (const match of clause.matchAll(SHORT_COUNT)) {
+      if (isNonOutputVideoDescription(normalized.slice(0, item.index + match.index
+        + match[0].indexOf(match[1] ?? '')), '')) continue
       const count = countOf(match[1])
       if (count === undefined) return 1
       counts.push(count)
@@ -130,25 +152,29 @@ export function videoWorkAllowance(text: string): number {
 export function humanVideoDurationSeconds(text: string): number | undefined {
   const value = text.normalize('NFKC')
   if (videoWorkAllowance(value) < 1) return undefined
-  const affirmative = value.replaceAll(/"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|「[^」]*」|『[^』]*』|`[^`]*`/gu, '')
-    .split(/[，,。；;\n]/u).filter(clause => !/不要|不需|无需|不用|(?<!分)别|勿|而非|不是/u.test(clause)).join(' ')
+  const unquoted = unquotedVideoRequest(value)
+  if (unquoted === undefined) return undefined
+  const clauses = [...unquoted.matchAll(/[^，,。；;\n]+/gu)]
+    .filter(item => !/不要|不需|无需|不用|(?<!分)别|勿|而非|不是/u.test(item[0]))
+  const affirmative = clauses.map(item => item[0]).join(' ')
   if (/或|还是|比较|对比|最多|至少|至多|多于|少于|超过/u.test(affirmative)
     || /(?<![a-z0-9._/])[0-9一二两三四五六七八九十]+\s*(?:秒钟?|s|分钟|min)?\s*(?:到|至|[-~～—])\s*[0-9一二两三四五六七八九十]+\s*(?:秒钟?|s\b|分钟|min\b)/iu
       .test(affirmative)) return undefined
   const amount = `(?:\\d+(?:\\.\\d+)?|${NUMBER})`
   const units = '(?:秒钟?|seconds?|secs?|s|分钟|min(?:ute)?s?)'
   const duration = `(?<![0-9a-z.+一二两三四五六七八九十百千万亿零-])(${amount})\\s*(${units})`
-  const prefix = new RegExp(`${duration}\\s*的?\\s*${VIDEO}`, 'giu')
+  const prefix = new RegExp(`${duration}\\s*的?\\s*(${VIDEO_MODIFIER})${VIDEO}`, 'giu')
   const specified = new RegExp('(?:每(?:条|个|支)(?:视频)?|(?:视频|成片|全片)(?:的)?(?:总)?时长|总时长|片长)'
     + `\\s*(?:为|是|[:：])?\\s*${duration}`, 'giu')
-  const seconds = [...affirmative.matchAll(prefix), ...affirmative.matchAll(specified)].flatMap((match) => {
+  const seconds = clauses.flatMap(item => [...item[0].matchAll(prefix), ...item[0].matchAll(specified)].flatMap((match) => {
+    if (isNonOutputVideoDescription(unquoted.slice(0, item.index + match.index), match[3] ?? '')) return []
     const raw = match[1]
     const unit = match[2]
     if (raw === undefined || unit === undefined) return []
     const amount = /^[0-9]/u.test(raw) ? Number(raw) : countOf(raw)
     if (amount === undefined || !Number.isFinite(amount) || amount <= 0) return [NaN]
     return [amount * (/^(?:分|min)/iu.test(unit) ? 60 : 1)]
-  })
+  }))
   const first = seconds[0]
   return first !== undefined && Number.isFinite(first) && seconds.every(value => value === first) ? first : undefined
 }
@@ -210,11 +236,15 @@ const evidenceSchema = z.object({
   rootCallSeq: z.number().int().nonnegative().optional(),
   operationId: z.string().optional(), videoProjectId: z.string().optional(),
 }).strict()
+const continuedQuestionSchema = z.object({
+  callId: z.string().min(1), messageId: z.string().min(1), rootCallSeq: z.number().int().nonnegative(),
+}).strict()
 const stateSchema = z.object({
   inherited: z.number().int().nonnegative(), turn: z.number().int().nonnegative(),
   activeMessageId: z.string().min(1).optional(),
   nativeHeads: z.array(z.object({ callId: z.string(), name: z.string(), seq: z.number().int().nonnegative() })),
   requests: z.array(requestSchema), calls: z.array(callSchema), evidence: z.array(evidenceSchema),
+  continuedQuestions: z.array(continuedQuestionSchema),
 }).strict()
 type VideoIntentState = z.infer<typeof stateSchema>
 
@@ -302,10 +332,33 @@ function cancelledModelChoice(content: readonly { type: string; text?: string }[
   })
 }
 
+/** Only the real pending question result can make a later human answer continue its owning request. */
+function pendingQuestion(
+  content: readonly { type: string; text?: string }[], call: z.infer<typeof callSchema>,
+): z.infer<typeof continuedQuestionSchema> | undefined {
+  if (call.name !== 'ask_user_question' || call.rootCallSeq === undefined) return undefined
+  for (const block of content) {
+    if (block.type !== 'text' || block.text === undefined) continue
+    let value: unknown
+    try { value = JSON.parse(block.text) } catch (_error) { continue }
+    if (record(value) && value.pending === true && value.callId === call.callId) {
+      return { callId: call.callId, messageId: call.messageId, rootCallSeq: call.rootCallSeq }
+    }
+  }
+  return undefined
+}
+
+function retainPendingQuestion(
+  state: VideoIntentState, question: z.infer<typeof continuedQuestionSchema> | undefined,
+): VideoIntentState['continuedQuestions'] {
+  return question === undefined || state.continuedQuestions.some(value => value.callId === question.callId
+    && value.rootCallSeq === question.rootCallSeq) ? state.continuedQuestions : [...state.continuedQuestions, question]
+}
+
 /** Existing-event fold; it adds no Session vocabulary or model-supplied authorization. */
 export const videoGenerationIntentProjection = {
-  key: 'videoGenerationIntent', stateVersion: 9, stateSchema,
-  init: (_header, inherited) => ({ inherited, turn: 0, nativeHeads: [], requests: [], calls: [], evidence: [] }),
+  key: 'videoGenerationIntent', stateVersion: 10, stateSchema,
+  init: (_header, inherited) => ({ inherited, turn: 0, nativeHeads: [], requests: [], calls: [], evidence: [], continuedQuestions: [] }),
   apply(state, event) {
     if (event.seq < state.inherited) return state
     if (event.type === 'turn/start') return { ...state, turn: event.data.turn, activeMessageId: undefined }
@@ -320,11 +373,22 @@ export const videoGenerationIntentProjection = {
         ...requestedDurationSeconds === undefined ? {} : { requestedDurationSeconds },
         ...requestedModel === undefined ? {} : { requestedModel } }] }
     }
+    if (event.type === 'user/message' && event.data.source.kind === 'user-question-reply') {
+      const callId = event.data.source.callId
+      const matching = state.continuedQuestions.filter(question => question.callId === callId)
+      const question = matching.length === 1 ? matching[0] : undefined
+      const request = state.requests.findLast(request => request.messageId === question?.messageId)
+      const latest = state.requests.at(-1)
+      return { ...state,
+        ...(question !== undefined && request !== undefined && latest === request && request.cancelled !== true
+          ? { activeMessageId: request.messageId } : {}),
+        continuedQuestions: state.continuedQuestions.filter(question => question.callId !== callId) }
+    }
     if (event.type === 'tool/call') {
       const nativeHeads = [...state.nativeHeads.filter(head => head.callId !== event.data.callId),
         { callId: event.data.callId, name: event.data.name, seq: event.seq }]
       const request = state.requests.findLast(request => request.messageId === state.activeMessageId
-        && request.turn === state.turn && request.turn === event.data.turn)
+        && state.turn === event.data.turn)
       return request === undefined ? { ...state, nativeHeads } : { ...state, nativeHeads, calls: [...state.calls,
         { callId: event.data.callId, messageId: request.messageId, name: event.data.name, rootCallSeq: event.seq,
           turn: event.data.turn, native: true }] }
@@ -340,9 +404,12 @@ export const videoGenerationIntentProjection = {
           ? { ...request, maxWorks: 0, cancelled: true } : request) }
       }
       const evidence = call === undefined ? undefined : evidenceOf(event.data.message.content, call)
-      return evidence === undefined || state.evidence.some(item => item.callId === evidence.callId
-        && item.rootCallSeq === evidence.rootCallSeq)
-        ? state : { ...state, evidence: [...state.evidence, evidence] }
+      const continuedQuestions = retainPendingQuestion(state, call === undefined || event.data.message.isError
+        ? undefined : pendingQuestion(event.data.message.content, call))
+      const nextEvidence = evidence === undefined || state.evidence.some(item => item.callId === evidence.callId
+        && item.rootCallSeq === evidence.rootCallSeq) ? state.evidence : [...state.evidence, evidence]
+      return continuedQuestions === state.continuedQuestions && nextEvidence === state.evidence ? state
+        : { ...state, evidence: nextEvidence, continuedQuestions }
     }
     if (event.type === 'tool/ptc-dispatch-start' || event.type === 'tool/ptc-dispatch') {
       const pending = state.calls.filter(call => call.callId === event.data.subCallId && call.name === event.data.name && call.pending)
@@ -366,9 +433,11 @@ export const videoGenerationIntentProjection = {
         requests: state.requests.map(request => request.messageId === call.messageId
           ? { ...request, maxWorks: 0, cancelled: true } : request) }
       const evidence = evidenceOf(event.data.content, call)
-      return { ...state, calls, evidence: evidence === undefined
-        || state.evidence.some(item => item.callId === call.callId && item.rootCallSeq === call.rootCallSeq)
-        ? state.evidence : [...state.evidence, evidence] }
+      return { ...state, calls,
+        continuedQuestions: retainPendingQuestion(state, event.data.isError ? undefined : pendingQuestion(event.data.content, call)),
+        evidence: evidence === undefined
+          || state.evidence.some(item => item.callId === call.callId && item.rootCallSeq === call.rootCallSeq)
+          ? state.evidence : [...state.evidence, evidence] }
     }
     return state
   },

@@ -101,4 +101,6 @@ it('keeps platform failure narration safe while preserving diagnostic tasks and 
   expect(VIDEO_DIRECTOR_PROMPT).toContain('不自动重提同一次收费提交')
   expect(VIDEO_DIRECTOR_PROMPT).toContain('不限制用户明确要求的软件或代码诊断')
   expect(VIDEO_DIRECTOR_PROMPT).toContain('不要为隐藏报错而删除、改写真实工具结果或编造成功')
+  expect(VIDEO_DIRECTOR_PROMPT).toContain('这是客户端请求归属检查未通过，不能推断为服务器临时不可用')
+  expect(VIDEO_DIRECTOR_PROMPT).toContain('不要自动换单段接口、重建计划或安排定时收费重试来绕过检查')
 })
