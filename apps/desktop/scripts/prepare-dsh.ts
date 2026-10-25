@@ -26,7 +26,6 @@ import { writeDesktopRuntime, verifyDesktopRuntime } from '../src/runtime-tree.t
 import {
   resolveDesktopAppId,
   resolveMacOSSigningEnvironment,
-  resolveNpmRegistry,
 } from './desktop-release-environment.mjs'
 import {
   signMacOSRuntime,
@@ -34,12 +33,12 @@ import {
 import { desktopTargetPlatform, resolveDesktopBuildTarget, resolveDesktopTargetBuildPaths } from './desktop-build-paths.mjs'
 import { desktopRuntimeFileExclusion } from './runtime-file-policy.ts'
 import { selectOfficeEngine } from '../../../scripts/libreoffice-packages.mjs'
+import { desktopDependencyCacheArguments, prepareDesktopDependencyCache, type DesktopDependencyCache } from './desktop-dependency-cache.ts'
 
 const APP_ROOT = resolve(import.meta.dirname, '..')
 const BUILD_PATHS = resolveDesktopTargetBuildPaths()
 const DSH_OUTPUT_ROOT = BUILD_PATHS.dsh
 const BUILD_ROOT = mkdtempSync(join(tmpdir(), 'dsh-desktop-runtime-'))
-const STORE_ROOT = join(BUILD_ROOT, 'store')
 const RUNTIME_ROOT = BUILD_PATHS.runtime
 const PNPM_BUILD_STATE = BUILD_PATHS.dshPnpm
 const PACKAGE_SET_ROOT = BUILD_PATHS.packageSet
@@ -68,11 +67,10 @@ function desktopRelease(): DesktopRelease {
   })
 }
 
-function runPnpm(args: readonly string[]): Promise<void> {
+function runPnpm(args: readonly string[], cache: DesktopDependencyCache): Promise<void> {
   return new Promise((resolvePromise, reject) => {
     const [command, ...commandArgs] = args
     if (command === undefined) throw new Error('desktop runtime: pnpm command is required')
-    const registry = resolveNpmRegistry(process.env)
     const config = join(PNPM_BUILD_STATE, 'config')
     const userConfig = join(config, 'npmrc')
     mkdirSync(config, { recursive: true })
@@ -80,9 +78,7 @@ function runPnpm(args: readonly string[]): Promise<void> {
     const child = spawn(NODE, [
       '--expose-internals',
       PNPM,
-      `--config.registry=${registry}`,
-      `--config.store-dir=${STORE_ROOT}`,
-      '--config.enable-global-virtual-store=false',
+      ...desktopDependencyCacheArguments(cache),
       `--config.userconfig=${userConfig}`,
       command,
       ...commandArgs,
@@ -92,12 +88,12 @@ function runPnpm(args: readonly string[]): Promise<void> {
         ...Object.fromEntries(Object.entries(process.env).filter(([name]) => (
           name !== 'NODE_OPTIONS' && name !== 'NODE_PATH' && !/^DSH_DESKTOP_/u.test(name) && !/^(?:npm|pnpm|corepack)_/iu.test(name)
         ))),
-        NPM_CONFIG_REGISTRY: registry,
-        NPM_CONFIG_STORE_DIR: STORE_ROOT,
+        NPM_CONFIG_REGISTRY: cache.registry,
+        NPM_CONFIG_STORE_DIR: cache.store,
         NPM_CONFIG_USERCONFIG: userConfig,
         ...desktopNodeEnvironment(NODE, join(RUNTIME_ROOT, 'bin'), {}),
         PATH: `${join(RUNTIME_ROOT, 'bin')}${delimiter}${process.env.PATH ?? ''}`,
-        XDG_CACHE_HOME: join(PNPM_BUILD_STATE, 'cache'),
+        XDG_CACHE_HOME: cache.metadata,
         XDG_CONFIG_HOME: config,
         XDG_STATE_HOME: join(PNPM_BUILD_STATE, 'state'),
       },
@@ -116,9 +112,13 @@ async function main(): Promise<void> {
     await packagingStep(process.env.DSH_DESKTOP_PACKAGING_RUN_DIR, 'runtime:reset', async () => {
       rmSync(DSH_OUTPUT_ROOT, { recursive: true, force: true })
       rmSync(PNPM_BUILD_STATE, { recursive: true, force: true })
-      mkdirSync(STORE_ROOT, { recursive: true })
     })
     const release = desktopRelease()
+    const cache = await packagingStep(process.env.DSH_DESKTOP_PACKAGING_RUN_DIR, 'runtime:dependency-cache', async () => {
+      const selected = prepareDesktopDependencyCache(process.env, resolveDesktopBuildTarget(), release)
+      console.log(`desktop runtime: dependency cache ${selected.directory}`)
+      return selected
+    })
     const { patches, dependencies } = await packagingStep(process.env.DSH_DESKTOP_PACKAGING_RUN_DIR, 'runtime:stage-packages', async () => {
       copyFileSync(join(PACKAGE_SET_ROOT, DESKTOP_PACKAGE_SET_FILE), join(BUILD_ROOT, DESKTOP_PACKAGE_SET_FILE))
       cpSync(join(PACKAGE_SET_ROOT, DESKTOP_PACKAGES_DIR), join(BUILD_ROOT, DESKTOP_PACKAGES_DIR), { recursive: true })
@@ -127,14 +127,14 @@ async function main(): Promise<void> {
       const dependencies = prepareRuntimeDependencies(BUILD_ROOT, repositoryRoot)
       return { dependencies, patches: prepareRuntimePatches(BUILD_ROOT, repositoryRoot) }
     })
-    await packagingStep(process.env.DSH_DESKTOP_PACKAGING_RUN_DIR, 'runtime:lockfile', () => runPnpm(['install', '--lockfile-only']))
+    await packagingStep(process.env.DSH_DESKTOP_PACKAGING_RUN_DIR, 'runtime:lockfile', () => runPnpm(['install', '--lockfile-only'], cache))
     verifyRuntimeDependencies(BUILD_ROOT, dependencies)
     verifyRuntimePatches(BUILD_ROOT, patches)
     verifyDesktopCoreLockfile(
       readFileSync(join(BUILD_ROOT, 'pnpm-lock.yaml'), 'utf8'),
       readDesktopCorePackageSet(BUILD_ROOT, release.version),
     )
-    await packagingStep(process.env.DSH_DESKTOP_PACKAGING_RUN_DIR, 'runtime:install', () => runPnpm(['install', '--prod', '--frozen-lockfile', '--trust-lockfile']))
+    await packagingStep(process.env.DSH_DESKTOP_PACKAGING_RUN_DIR, 'runtime:install', () => runPnpm(['install', '--prod', '--frozen-lockfile', '--trust-lockfile'], cache))
     const packageSet = readDesktopCorePackageSet(BUILD_ROOT, release.version)
     const targetName = resolveDesktopBuildTarget()
     const target = { platform: process.platform, arch: desktopTargetPlatform(targetName).arch }

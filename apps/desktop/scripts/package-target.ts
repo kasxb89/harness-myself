@@ -25,6 +25,7 @@ import { desktopBuildCommitEnvironment, readDesktopBuildCommit, resolveDesktopBu
 import { requireDesktopToolchain } from './desktop-toolchain-preflight.ts'
 import { withMacOSNotarizationProxy } from './macos-notarization-proxy.ts'
 import { resolveUnsignedDesktopUpdateConfig } from './desktop-update-config-origin.mjs'
+import { resolveWindowsPackageSettings } from './windows-package-settings.mjs'
 
 const APP_ROOT = resolve(import.meta.dirname, '..')
 const REPOSITORY_ROOT = resolve(APP_ROOT, '..', '..')
@@ -375,6 +376,7 @@ async function main(): Promise<void> {
         ? packageTarget(invocation, environment, run)
         : withMacOSSigningKeychain(environment, signingEnvironment => packageTarget(invocation, signingEnvironment, run)), secrets)
     } else {
+      recordPackagingEvent(run.directory, { type: 'windows-settings', packConcurrency: resolveWindowsPackageSettings(environment).packConcurrency })
       await packagingStep(run.directory, 'windows-package', () => packageTarget(invocation, environment, run), secrets)
     }
     success = true
@@ -411,7 +413,8 @@ export async function packageTarget(
   const journal = target.platform === 'darwin' ? process.env.DSH_DESKTOP_PACKAGING_RUN_DIR : undefined
   const proxyEvent = (status: string) => { if (journal) recordPackagingEvent(journal, { type: 'notarization-proxy', status }) }
   const mac = target.platform === 'darwin' ? resolveMacOSPackageSettings(environment) : undefined
-  const packArguments = mac === undefined ? [] : ['--concurrency', String(mac.packConcurrency)]
+  const packConcurrency = mac?.packConcurrency ?? resolveWindowsPackageSettings(environment).packConcurrency
+  const packArguments = ['--concurrency', String(packConcurrency)]
   const buildPaths = desktopTargetBuildPaths(target.name)
   const artifactsRoot = invocation.unsigned ? buildPaths.unsignedArtifacts : buildPaths.artifacts
   const releaseRecordPath = join(artifactsRoot, desktopBuildRecordFilename(target.name))

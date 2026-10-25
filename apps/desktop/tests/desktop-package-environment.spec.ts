@@ -84,6 +84,31 @@ describe('Desktop local packaging configuration', () => {
     expect(settings.signatureCacheConcurrency).toBe(Number(value))
   })
 
+  it('uses four Windows tarball workers and accepts a file-owned bounded override', async () => {
+    expect(resolveWindowsPackageSettings({}).packConcurrency).toBe(4)
+    await withDirectory(async (directory) => {
+      await writeFile(join(directory, '.env.windows'), 'DSH_DESKTOP_WINDOWS_PACK_CONCURRENCY=2\n')
+      const environment = loadDesktopPackageEnvironment('win32', { DSH_DESKTOP_WINDOWS_PACK_CONCURRENCY: '8' }, directory)
+      expect(resolveWindowsPackageSettings(environment).packConcurrency).toBe(2)
+    })
+  })
+
+  it.each(['', '0', '-1', '9', '1.5', 'Infinity', '01'])('rejects invalid tarball concurrency %s before building', (value) => {
+    expect(() => {
+      validateDesktopPackageEnvironment({ ...RELEASE, DSH_DESKTOP_WINDOWS_PACK_CONCURRENCY: value }, WINDOWS, { unsigned: true })
+    }).toThrow('DSH_DESKTOP_WINDOWS_PACK_CONCURRENCY')
+  })
+
+  it('loads the shared build cache in Windows and unsigned macOS without exposing signing settings', async () => {
+    await withDirectory(async (directory) => {
+      const cache = join(directory, 'shared-cache')
+      await writeFile(join(directory, '.env.windows'), `DSH_DESKTOP_DEPENDENCY_CACHE_DIR=${cache}\n`)
+      await writeFile(join(directory, '.env.macos'), `DSH_DESKTOP_DEPENDENCY_CACHE_DIR=${cache}\n`)
+      expect(loadDesktopPackageEnvironment('win32', {}, directory).DSH_DESKTOP_DEPENDENCY_CACHE_DIR).toBe(cache)
+      expect(localMacOSPackageEnvironment({}, directory).DSH_DESKTOP_DEPENDENCY_CACHE_DIR).toBe(cache)
+    })
+  })
+
   it.each(['', '0', '-1', '9', '1.5', 'Infinity', '01'])('rejects invalid cache concurrency %s', (value) => {
     expect(() => resolveWindowsPackageSettings({ DSH_DESKTOP_WINDOWS_SIGNATURE_CACHE_CONCURRENCY: value })).toThrow('integer from 1 to 8')
     for (const options of [{ unsigned: true }, { prepareOnly: true }]) {

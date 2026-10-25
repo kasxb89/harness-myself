@@ -394,7 +394,7 @@ Mac 打包从 `.env.macos` 读取三个调优字段：
 | `DSH_DESKTOP_MACOS_DOWNLOAD_PROXY` | 空 | Electron、运行时资源、pnpm 安装及 builder 下载使用的 HTTP/HTTPS 代理 origin。 |
 | `DSH_DESKTOP_MACOS_NOTARIZATION_PROXY` | 空 | 通过临时系统代理设置供 Apple 工具使用的 HTTP 代理 origin。 |
 
-两个代理字段互相独立，拒绝 URL 中的凭证、路径、查询参数和片段。空值沿用继承的网络设置。显式下载代理会替换子进程的代理变量，仅绕过本地主机；它不修改系统设置。Windows 与独立 `release:pack` 保持现有并发默认值。公司代理地址仅写入 Git 忽略的本地文件；具体地址参见内部文档。
+两个代理字段互相独立，拒绝 URL 中的凭证、路径、查询参数和片段。空值沿用继承的网络设置。显式下载代理会替换子进程的代理变量，仅绕过本地主机；它不修改系统设置。Windows 默认使用 4 个 tarball worker；`.env.windows` 中的 `DSH_DESKTOP_WINDOWS_PACK_CONCURRENCY` 可设为 1 至 8。独立 `release:pack` 默认仍串行，除非显式指定 `--concurrency`。公司代理地址仅写入 Git 忽略的本地文件；具体地址参见内部文档。
 
 Apple 工具使用 macOS 当前活动网络服务的 HTTP/HTTPS 代理。配置公证代理后，打包会检查代理可达性、保存该服务的设置，在两条产物任务期间启用代理，并在两条任务均结束后恢复原设置。对于原本关闭、服务器为空且端口为零的代理，恢复时仅关闭代理；临时服务器和端口可能保留，但不生效。仅生成目录的打包会在签名目录构建完成后的 App 公证期间启用代理。这会临时影响其他应用，并要求修改系统代理的权限；必须先禁用 PAC、自动发现、SOCKS 及需要认证的代理配置。打包和恢复在读取恢复记录或修改代理前获取同一个用户级 POSIX 文件锁；进程退出会释放锁的持有权，锁文件保留。该锁在首次使用时才加载 `@deepseek-ai/node-addon-system/flock`，而不是在脚本启动时加载，因此 `check:package` 和打包入口在未构建 `native/system` 的 checkout 上也能加载；加锁时若宿主 addon 二进制或入口的 JavaScript 缺失，加载器会先运行 `pnpm run build:native-system` 和 `pnpm --dir native/system run build:ts` 再加锁，因此恢复命令在这样的 checkout 上同样可用。这会阻止不同 checkout 的代理事务重叠；其他用户及网络设置工具不得同时修改这些设置。SIGINT/SIGTERM 会等待活动任务结束后恢复。强制终止或恢复失败后，先停止残留公证进程，再运行 `pnpm --dir apps/desktop run restore:mac-proxy`；保存的记录会保留到恢复成功。配置检查仅验证 URL 语法，不修改系统设置或连接代理。
 
@@ -488,6 +488,8 @@ pnpm run prepare:desktop
 <a id="desktop-runtime-preparation"></a>
 
 ### Desktop 运行时准备
+
+运行时准备在 `<home>/.dsh-desktop-build/dependencies/v1` 中跨 worktree 共享 pnpm 下载内容与 registry 元数据。构建环境或目标 dotenv 中的 `DSH_DESKTOP_DEPENDENCY_CACHE_DIR` 可指定绝对目录；使用临时构建 profile 时，每轮应指定同一个构建账户私有目录。缓存按载荷目标、内置 Node 与 pnpm 版本及 registry 分区。pnpm 优先使用缓存、校验存储文件完整性、复制安装文件，并重新执行获准的生命周期构建。每轮仍从当前 tarball、override 和补丁重新生成锁文件，重复包、运行时与 smoke 验证。已安装模块、构建输出、凭据和每轮 npmrc 文件不共享；清理会保留下载缓存。只使用可信的本地构建存储。无效或带链接的缓存目录会停止准备；仅在构建停止后清理损坏缓存项。
 
 Desktop [补丁策略](scripts/runtime-patch-policy.ts) 将每份工作区补丁明确归为共享、仅工作区或仅运行时。共享项复用根目录补丁字节，并对照根锁文件校验 hash；仅运行时项使用仓库内的独立文件，不改变工作区安装。仅工作区补丁用于构建工具或已嵌入客户端 bundle 的依赖。市场、皮肤、IM、视频编辑、插件发现和办公插件作为运行时包加载，因此共享其 manifest 兼容性补丁。未分类或过期的条目、文件缺失、hash 改变、解析版本不兼容，以及仅工作区包进入运行时，都会阻止打包。[准备脚本](scripts/prepare-runtime-patches.ts) 只写入临时项目；pnpm 负责应用选中的补丁，应用失败时会报错。
 
