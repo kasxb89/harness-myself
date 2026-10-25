@@ -8,7 +8,8 @@ import { basename, extname, isAbsolute, join, resolve } from 'node:path'
 import type { Branded } from '@deepseek-ai/dsh-brand'
 import type { ArtifactImageRole } from '@deepseek-ai/dsh-artifacts-index'
 import type { CreativeAsset, CreativeCharacter, CreativeImageReceipt, CreativeVideoReceipt, CreativeKind, CreativeOutput, CreativeOutputId, CreativePlanChange, CreativeProjectId, CreativeProjectView, CreativeShotPlan, CreativeShotView, CreativeSource, CreativeStatus, CreativeTaskView } from './creative-types.ts'
-import type { VideoProjectManifest, VideoProjectRead } from './video-project.ts'
+import type { VideoProjectId, VideoProjectManifest, VideoProjectRead } from './video-project.ts'
+import type { VideoWorkId, VideoWorkLink } from './video-work-store.ts'
 import type { VideoProjectIdentity } from './video-project-types.ts'
 import { parseArtifactOrigin } from './artifact-origin.ts'
 import { parseVideoRequestGrant, type VideoGenerationIntent, type VideoRequestGrant } from './video-generation-intent.ts'
@@ -74,6 +75,7 @@ interface Operation {
   model?: string
   errorCode?: string
   requestGrant?: VideoRequestGrant
+  workId?: VideoWorkId
 }
 
 /** Private JSON v1. Existing video manifests and Session data remain unchanged. */
@@ -98,6 +100,8 @@ interface BeginInput {
   model?: string
   expectedRevision?: string
   videoIntent?: VideoGenerationIntent
+  /** Host-issued finished-work identity, separate from a model tool call. */
+  videoWorkId?: VideoWorkId
 }
 
 interface ShotFacts { status: CreativeStatus; outputs: SavedOutput[]; durationSeconds?: number }
@@ -119,8 +123,6 @@ export interface CreativeOperation {
   readonly owner: CreativeOwner
   /** Image purpose derived from the validated original plan kind and immutable material association. */
   readonly imageRole?: ArtifactImageRole
-  /** Remaining works in this human request after the atomic admission; absent on resumed operations. */
-  readonly remainingVideoWorks?: number
   /** Runtime-only labels from this invocation's existing plan; never task identity or persisted fields. */
   readonly outputNaming?: Omit<MediaFilenameOptions, 'extension'>
 }
@@ -173,6 +175,11 @@ function identifier(value: unknown): string {
 function projectId(value: string): CreativeProjectId {
   if (!/^cp_[a-f0-9-]{36}$/u.test(value)) return invalid()
   return value as CreativeProjectId
+}
+function parseVideoWorkId(value: unknown): VideoWorkId {
+  const id = identifier(value)
+  if (!/^vw_[a-f0-9]{64}_[1-9][0-9]*$/u.test(id)) return invalid()
+  return id as VideoWorkId
 }
 function operationId(value: unknown): CreativeOperationId { const id = identifier(value); if (!id.startsWith('op_')) invalid(); return id as CreativeOperationId }
 function outputId(value: unknown): CreativeOutputId { const id = identifier(value); if (!id.startsWith('out_') && !id.startsWith('op_')) invalid(); return id as CreativeOutputId }
@@ -391,15 +398,18 @@ function parseRecord(value: unknown): CreativeRecord {
       ...item.imageReceipt === undefined ? {} : { imageReceipt: imageReceipt(item.imageReceipt, identifier(owner.sessionId)) },
       ...item.videoReceipt === undefined ? {} : { videoReceipt: imageReceipt(item.videoReceipt, identifier(owner.sessionId)) },
       ...requestGrant === undefined ? {} : { requestGrant },
+      ...item.workId === undefined ? {} : { workId: parseVideoWorkId(item.workId) },
       ...item.videoProjectId === undefined ? {} : { videoProjectId: text(item.videoProjectId, 128) },
       ...item.model === undefined ? {} : { model: text(item.model, 256) },
       ...item.errorCode === undefined ? {} : { errorCode: identifier(item.errorCode) },
     }
   }, MAX_OPERATIONS)
   const plan = parseCreativePlan(source)
-  if (operations.some(item => item.source === 'ai-creation' && (item.requestGrant !== undefined
+  if (operations.some(item => item.source === 'ai-creation' && (item.requestGrant !== undefined || item.workId !== undefined
     || item.videoProjectId !== undefined || item.videoReceipt?.origin?.toolCallId !== undefined
     || item.imageReceipt?.origin?.toolCallId !== undefined))) return invalid()
+  if (operations.some(item => item.workId !== undefined && (plan.kind !== 'video' || item.source !== 'chat'
+    || item.assetId !== undefined))) return invalid()
   if (operations.some(item => item.videoReceipt !== undefined && (plan.kind !== 'video' || item.videoProjectId !== undefined || item.assetId !== undefined))) return invalid()
   if (operations.some(item => item.assetId === undefined
     ? item.shotIds.length === 0 || item.shotIds.some(id => !plan.shots.some(shot => shot.id === id))
@@ -675,11 +685,14 @@ export class CreativeStore {
     return parseCreativePlan(record)
   }
 
-  private async assertVideoWorkCount(owner: CreativeOwner, intent: VideoGenerationIntent): Promise<number> {
+  private async videoSubmissions(
+    owner: CreativeOwner, intent: VideoGenerationIntent, rejectDuplicate: boolean, protectedWorkId?: string,
+  ): Promise<readonly VideoWorkLink[]> {
     const unavailable = (): never => { throw new CreativeError('CREATIVE_VIDEO_INTENT_UNAVAILABLE', 409,
       '暂时无法核对已有视频与本次请求的对应关系，已停止新增生成；请先核对已有任务，需要追加时请明确发送新的生成要求。') }
     const grant = parseVideoRequestGrant(intent.grant)
     if (grant === undefined || grant === null) unavailable()
+    const workId = protectedWorkId === undefined ? undefined : parseVideoWorkId(protectedWorkId)
     const duplicate = (): never => { throw new CreativeError('CREATIVE_VIDEO_SUBMISSION_DUPLICATE', 409,
       '本次视频提交已登记，可能已被上游受理；请查看原任务，不会重复提交。需要另做一条时请明确提出新的生成要求。') }
     const sameSubmission = (prior: Pick<VideoGenerationIntent['evidence'][number], 'messageId' | 'callId' | 'rootCallSeq'>): boolean =>
@@ -689,7 +702,7 @@ export class CreativeStore {
     try { entries = await readdir(await this.root()) } catch (_error) { return unavailable() }
     if (entries.length > MAX_PROJECTS) unavailable()
     const matchedEvidence = new Set<VideoGenerationIntent['evidence'][number]>()
-    let used = 0
+    const links: VideoWorkLink[] = []
     for (const id of entries) {
       if (!/^cp_[a-f0-9-]{36}$/u.test(id)) continue
       let record: CreativeRecord
@@ -702,6 +715,7 @@ export class CreativeStore {
         if (operation.source === 'ai-creation') continue
         if (!(record.kind === 'video' && operation.assetId === undefined)
           && operation.videoReceipt === undefined && operation.videoProjectId === undefined) continue
+        if (rejectDuplicate && workId !== undefined && operation.workId === workId) duplicate()
         const evidence = intent.evidence.filter(item => item.operationId === operation.id
           || operation.videoProjectId !== undefined && item.videoProjectId === operation.videoProjectId)
         for (const item of evidence) matchedEvidence.add(item)
@@ -728,22 +742,33 @@ export class CreativeStore {
           && item.callId === prior.callId && item.rootCallSeq !== undefined)?.rootCallSeq
         const priorSubmission = { messageId: prior.messageId, callId: prior.callId,
           ...rootCallSeq === undefined ? {} : { rootCallSeq } }
-        if (legacyRoot ? prior.callId === intent.grant.rootCallId
-          && sameSubmission({ ...priorSubmission, callId: intent.grant.callId }) : sameSubmission(priorSubmission)) duplicate()
-        if (prior.messageId === intent.grant.messageId) used += 1
+        if (rejectDuplicate && (legacyRoot ? prior.callId === intent.grant.rootCallId
+          && sameSubmission({ ...priorSubmission, callId: intent.grant.callId }) : sameSubmission(priorSubmission))) duplicate()
+        if (prior.messageId === intent.grant.messageId
+          && (operation.requestGrant === undefined || operation.requestGrant.sourceSeq === intent.grant.sourceSeq)) {
+          links.push({ projectId: record.id, operationId: operation.id,
+            ...operation.videoProjectId === undefined ? {} : { videoProjectId: operation.videoProjectId as VideoProjectId } })
+        }
       }
     }
     const unrecordedEvidence = intent.evidence.filter(item => item.messageId === intent.grant.messageId && !matchedEvidence.has(item))
-    if (unrecordedEvidence.some(sameSubmission)) duplicate()
-    const unrecorded = new Set(unrecordedEvidence.map(item => item.operationId !== undefined ? `operation:${item.operationId}`
-      : item.videoProjectId !== undefined ? `project:${item.videoProjectId}`
-        : `call:${String(item.rootCallSeq)}:${item.callId}`))
-    used += unrecorded.size
-    if (used >= intent.grant.maxWorks) {
-      throw new CreativeError('CREATIVE_VIDEO_COUNT_LIMIT', 409,
-        `这次已经安排 ${String(used)} 个视频作品，请先查看或恢复原任务。若想追加，可直接说明另做几条，或修改成片总数量；已安排的作品会计入总量。`)
-    }
-    return used
+    if (rejectDuplicate && unrecordedEvidence.some(sameSubmission)) duplicate()
+    if (!rejectDuplicate && unrecordedEvidence.length > 0) unavailable()
+    return links
+  }
+
+  /**
+   * Read original-source video associations for safe adoption into finished-work identities.
+   * @param owner - Captured account, chat and workspace.
+   * @param intent - Actual logged source and original submission evidence.
+   * @returns Existing original-source operation links; another human's operations are excluded.
+   */
+  async videoWorkLinks(owner: CreativeOwner, intent: VideoGenerationIntent): Promise<readonly VideoWorkLink[]> {
+    await this.serial
+    await this.current(owner)
+    const links = await this.videoSubmissions(owner, intent, false)
+    await this.current(owner)
+    return links
   }
 
   private async assertGenerationAvailable(record: CreativeRecord, input: Pick<BeginInput, 'shotIds' | 'assetId'>): Promise<void> {
@@ -760,17 +785,17 @@ export class CreativeStore {
   }
 
   /**
-   * Check exact submission identity and human-request capacity before expensive preparation.
-   * Plans associate content; only calls lacking trusted human intent retain the original-shot lock.
-   * Begin repeats admission and claims capacity atomically.
+   * Check account, plan parameters and exact legacy submission identity before preparation.
+   * Plans associate content; finished-work reservation separately owns repeat submission prevention.
+   * Begin repeats the exact submission check without imposing natural-language or quantity limits.
    * @param owner - Captured account, chat, and workspace.
    * @param intent - Attribution from the original human request, when available.
-   * @param association - Exact optional plan and shots supplied for this invocation.
+   * @param association - Exact optional plan, shots and host-issued finished-work identity.
    * @returns Verified original-request attribution; no operation is created.
    */
   preflightVideoWorkCount(
     owner: CreativeOwner, intent: VideoGenerationIntent | undefined,
-    association: Pick<BeginInput, 'planId' | 'shotIds'> = {},
+    association: Pick<BeginInput, 'planId' | 'shotIds'> & { videoWorkId?: string } = {},
   ): Promise<VideoGenerationIntent> {
     return this.queue(async () => {
       await this.current(owner)
@@ -791,7 +816,7 @@ export class CreativeStore {
       }
       if (intent === undefined) throw new CreativeError('CREATIVE_VIDEO_INTENT_UNAVAILABLE', 409,
         '这次尚未提交生成。请结合前文简短确认是继续原视频还是另做作品；未指定数量时默认一条，无需重述完整需求。')
-      await this.assertVideoWorkCount(owner, intent)
+      await this.videoSubmissions(owner, intent, true, association.videoWorkId)
       return intent
     })
   }
@@ -835,20 +860,23 @@ export class CreativeStore {
         record = { ...plan, version: 1, id: `cp_${randomUUID()}` as CreativeProjectId, owner, updatedAt: '', operations: [] }
       }
       if (record.operations.length >= MAX_OPERATIONS) throw new CreativeError('CREATIVE_LIMIT', 400, '该项目的生成记录已达上限，请新建项目。')
-      const remainingVideoWorks = input.kind === 'video' && input.videoIntent !== undefined
-        ? input.videoIntent.grant.maxWorks - await this.assertVideoWorkCount(owner, input.videoIntent) - 1 : undefined
+      const videoWorkId = input.videoWorkId === undefined ? undefined : parseVideoWorkId(input.videoWorkId)
+      if (videoWorkId !== undefined && (input.kind !== 'video' || input.source !== 'chat' || input.videoIntent === undefined)) invalid()
+      if (input.kind === 'video' && input.videoIntent !== undefined) {
+        await this.videoSubmissions(owner, input.videoIntent, true, videoWorkId)
+      }
       const shotIds = input.assetId === undefined ? [...input.shotIds ?? record.shots.map(shot => shot.id)] : []
       unique(shotIds)
       const id = operationId(`op_${randomUUID()}`)
       record.owner = owner
       const invocation: Operation = { id, ...input.source === undefined ? {} : { source: input.source }, prompt: text(input.prompt), shotIds, ...input.assetId === undefined ? {} : { assetId: input.assetId }, status: 'running', outputs: [], ...input.videoProjectId === undefined ? {} : { videoProjectId: input.videoProjectId }, ...input.model === undefined ? {} : { model: text(input.model, 256) },
-        ...input.kind !== 'video' || input.videoIntent === undefined ? {} : { requestGrant: { ...input.videoIntent.grant } } }
+        ...input.kind !== 'video' || input.videoIntent === undefined ? {} : { requestGrant: { ...input.videoIntent.grant } },
+        ...videoWorkId === undefined ? {} : { workId: videoWorkId } }
       record.operations.push(invocation)
       if (Buffer.byteLength(JSON.stringify(record)) > MAX_BYTES / 2) throw new CreativeError('CREATIVE_LIMIT', 400, '项目记录已接近上限，请新建项目；尚未提交生成。')
       await this.persist(record)
       const imageRole = input.kind === 'image' ? operationImageRole(record, input.assetId) : undefined
       const operation = { projectId: record.id, operationId: id, owner, ...imageRole === undefined ? {} : { imageRole },
-        ...remainingVideoWorks === undefined ? {} : { remainingVideoWorks },
         outputNaming: operationOutputNaming(record, invocation, input.kind) }
       this.activate(operation, input.kind, input.videoProjectId)
       return operation

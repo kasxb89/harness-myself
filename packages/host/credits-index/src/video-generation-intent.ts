@@ -1,5 +1,6 @@
-/** Human-request attribution and bounded video-work counts, reconstructed from existing Session events. @module */
+/** Real human execution sources and optional video parameter hints from existing Session events. @module */
 import type { Context } from '@deepseek-ai/cordis'
+import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ToolExecution, ToolExecutionToken } from '@deepseek-ai/dsh-tools'
 import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
 import { z } from 'zod'
@@ -16,9 +17,6 @@ const CREATION_SOURCE = '(?:(?:用|使用|采用)\\s*[a-z][a-z0-9._/-]*'
   + '|(?:把|将|用|使用|根据|基于)\\s*(?:(?:这|那)(?:张|个)?|(?:我)?(?:上传|提供)的|已上传的)?(?:图(?:片)?|照片|参考图))'
 const VERB = '(?:生成|制作|创作|做|输出|来|整)(?:出|成|给我)?\\s*'
 const VIDEO_CONTENT = '(?:(?:视频|成片|短片)的)?(?:字幕|台词|对白|配乐|背景音乐|文字|水印|标题|音频|声音)'
-const MEDIA_COUNT = new RegExp(`(${NUMBER})\\s*(?:条|个|支)\\s*([\\p{Script=Han}]{0,16}?)${DURATION}(${VIDEO_MODIFIER})${VIDEO}`, 'giu')
-const SHORT_COUNT = new RegExp(`${VERB}(${NUMBER})\\s*(?:条|版|支)\\s*$`, 'giu')
-
 function countOf(value: string | undefined): number | undefined {
   if (value === undefined) return undefined
   if (/^[1-9]\d*$/u.test(value)) {
@@ -65,7 +63,7 @@ function withoutContentConstraints(text: string): string {
     + `${VIDEO_CONTENT}(?!${VIDEO_NOUN})`, 'gu'), match => ' '.repeat(match.length))
 }
 
-/** Explicit stop, delay, observation and non-generation instructions cannot continue a paid request. */
+/** Keep stop, query and non-generation prose out of optional video parameter hints. */
 function humanVideoGenerationBlocked(text: string): boolean {
   const value = text.normalize('NFKC').trim()
   const request = unquotedVideoRequest(value) ?? value
@@ -105,95 +103,13 @@ function humanVideoGenerationBlocked(text: string): boolean {
 }
 
 /**
- * Recognize a small set of explicit work-count phrases in the original human text.
- * @param text - Original human text, never model arguments or plan names.
- * @returns Explicit consistent count, or one when quantities are absent or ambiguous.
- */
-export function explicitVideoWorkCount(text: string): number {
-  const normalized = unquotedVideoRequest(text)
-  const polite = new RegExp(`^(?:请|帮我|给我|麻烦|替我|${POLITE_REQUEST})`, 'u')
-  if (normalized === undefined || /[?？吗]\s*$/u.test(normalized) && !polite.test(normalized)) return 1
-  if ([...normalized.matchAll(/[<>≤≥]|比较|对比|最多|至少|至多|多于|少于|超过|或|还是|改成|改为/gu)]
-    .some(match => !isNonOutputVideoDescription(normalized.slice(0, match.index), ''))) return 1
-  const counts: number[] = []
-  for (const item of normalized.matchAll(/[^\n，,。；;！？!?]+/gu)) {
-    const clause = item[0]
-    const checked = withoutContentConstraints(clause).replace(new RegExp(`^\\s*${POLITE_REQUEST}`, 'u'), match => ' '.repeat(match.length))
-    const negation = /不要|不需|无需|不必|不能|不是|并非|而非|(?<!分)别|勿|取消/u.exec(checked)
-    for (const match of clause.matchAll(MEDIA_COUNT)) {
-      const modifier = (match[2] ?? '') + (match[3] ?? '')
-      if (/人物|角色|商品|产品|物品|模型|镜头|分镜|片段/u.test(modifier)
-        || isNonOutputVideoDescription(normalized.slice(0, item.index + match.index), modifier)) continue
-      if (negation !== null && negation.index <= match.index) return 1
-      const count = countOf(match[1])
-      if (count === undefined) return 1
-      counts.push(count)
-    }
-    for (const match of clause.matchAll(SHORT_COUNT)) {
-      if (isNonOutputVideoDescription(normalized.slice(0, item.index + match.index
-        + match[0].indexOf(match[1] ?? '')), '')) continue
-      if (negation !== null && negation.index <= match.index) return 1
-      const count = countOf(match[1])
-      if (count === undefined) return 1
-      counts.push(count)
-    }
-  }
-  const first = counts[0]
-  return first !== undefined && counts.every(count => count === first) ? first : 1
-}
-
-/**
- * Distinguish new creation requests from recovery, observation, cancellation, or uncertain text.
- * @param text - Original human text.
- * @returns The bounded grammar's work count, or zero when no new generation is established.
- */
-export function videoWorkAllowance(text: string): number {
-  const value = text.normalize('NFKC').trim()
-  if (humanVideoGenerationBlocked(value)) return 0
-  const request = unquotedVideoRequest(value) ?? value
-  const clauses = request.split(/[\n，,。；;]/u)
-  const address = `^(?:${REQUEST_PREFIX}\\s*)*`
-  const modelPrefix = `(?:${CREATION_SOURCE}\\s*)?`
-  const remaining = '(?:剩余|剩下|未完成)(?:的)?'
-  const existing = `(?:这个|这条|那个|那条|上一个|上一条|之前的|原来的|原)${VIDEO_NOUN}`
-  const recovery = new RegExp(`${address}${modelPrefix}(?:(?:继续|接着|恢复)(?:生成|制作|创作)|补拍`
-    + `|(?:生成|制作|创作)\\s*(?:${remaining}|${existing}\\s*${remaining}))`, 'iu')
-  const newAttempt = new RegExp(`${address}(?:另外|额外|再|重新)${modelPrefix}(?:生成|制作|创作|做)`, 'iu')
-  if (clauses.some(clause => recovery.test(clause.trim()) && !newAttempt.test(clause.trim()))) return 0
-  const confirmation = '(?:等|等待)我(?:确认|同意|批准)'
-  const commandPrefix = '(?:^|[，,。；;！？!?])\\s*'
-    + `(?:(?:${REQUEST_PREFIX}|用H3|使用H3|用MiniMax-H3|使用MiniMax-H3|H3`
-    + `|${CREATION_SOURCE}|按此提示词|按这个提示词|按以下提示词|根据此提示词)\\s*)*`
-  const command = new RegExp(`${commandPrefix}(?:(?:生成|制作|创作|新做|做|重做|整)(?!的|过的|出来的)`
-    + `|来\\s*(?:${NUMBER}\\s*)?(?:条|个|支)|我(?:要|想要|需要)\\s*(?:${NUMBER}\\s*)?(?:条|个|支))`, 'iu')
-  const commandMatch = command.exec(request)
-  if (commandMatch !== null) {
-    const preceding = request.slice(0, commandMatch.index).split(/[：:\n，,。；;！？!?]/u)
-    const condition = new RegExp(`${address}(?:如果|假如|${confirmation})`, 'u')
-    if (preceding.some(clause => condition.test(clause.trim()))) return 0
-  }
-  const explicit = commandMatch !== null
-    || /(?:^|[.;!?]\s*)(?:please\s+)?(?:generate|create|make|start|produce|render)\b/iu.test(request)
-  if (!explicit && /进度|状态|这么慢|多久|完成了|完成没有|好了没|好了没有|已有成片|已有视频|现有视频/u.test(request)) return 0
-  if (/[?？吗]\s*$/u.test(request) && !new RegExp(`^(?:请|帮我|给我|麻烦|替我|${POLITE_REQUEST})`, 'u').test(request)) return 0
-  const video = new RegExp(VIDEO, 'u').test(value) || /\b(?:videos?|MiniMax-H3|H3)\b/iu.test(value)
-  const briefPattern = `^(?:(?:请|帮我|给我)\\s*)?(?:(?:用|使用)?(?:H3|MiniMax-H3)\\s*)?(?:${NUMBER}\\s*(?:条|个|支)\\s*)?`
-    + `\\d+(?:\\.\\d+)?\\s*(?:秒钟?|s|分钟|min)\\s*的?\\s*${VIDEO}[。.!！]?$`
-  const brief = new RegExp(briefPattern, 'iu').test(value)
-    || new RegExp(`^${NUMBER}\\s*(?:条|个|支)\\s*${VIDEO}[。.!！]?$`, 'u').test(value)
-  const repeat = /^(?:请|帮我|给我)?\s*(?:再(?:生成|做|来)(?:一|1)(?:条|版)?|(?:另外|再)生成|重新(?:生成|做)|新做|重做(?:这(?:一)?条)?)[。.!！]?$/u.test(value)
-  return explicit && (video || new RegExp(SHORT_COUNT.source, 'iu').test(value)) || brief || repeat
-    ? explicitVideoWorkCount(value) : 0
-}
-
-/**
  * Read one explicit duration per finished video without treating clip lengths as output lengths.
  * @param text - Original human text, never a plan or model arguments.
  * @returns Duration in seconds, or absence when missing, negated, quoted, or conflicting.
  */
 export function humanVideoDurationSeconds(text: string): number | undefined {
   const value = text.normalize('NFKC')
-  if (videoWorkAllowance(value) < 1) return undefined
+  if (humanVideoGenerationBlocked(value)) return undefined
   const unquoted = unquotedVideoRequest(value)
   if (unquoted === undefined) return undefined
   const clauses = [...unquoted.matchAll(/[^，,。；;\n]+/gu)]
@@ -229,7 +145,7 @@ export function humanVideoDurationSeconds(text: string): number | undefined {
  */
 export function humanVideoResolution(text: string): string | undefined {
   const value = text.normalize('NFKC')
-  if (videoWorkAllowance(value) < 1) return undefined
+  if (humanVideoGenerationBlocked(value)) return undefined
   const affirmative = value.replaceAll(/"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|「[^」]*」|『[^』]*』|`[^`]*`/gu, '')
     .split(/[，,。；;\n]/u).filter(clause => !/不要|不需|无需|不用|(?<!分)别|勿|而非|不是/u.test(clause)).join(' ')
   const pattern = /(?<![a-z0-9._/-])(?:\d+[pk]|\d+\s*[x×]\s*\d+)(?![a-z0-9._/-])/giu
@@ -247,7 +163,7 @@ export function humanVideoResolution(text: string): string | undefined {
  */
 export function humanVideoModel(text: string): string | undefined {
   const value = text.normalize('NFKC')
-  if (videoWorkAllowance(value) < 1) return undefined
+  if (humanVideoGenerationBlocked(value)) return undefined
   const clauses = value.replaceAll(/"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|「[^」]*」|『[^』]*』|`[^`]*`/gu, '')
     .split(/[，,。；;\n]/u).filter(clause => !/不要|不需|无需|不用|(?<!分)别|勿|而非|不是/u.test(clause))
   const model = '(?:MiniMax-H3|H3|[a-z][a-z0-9._/-]*[0-9._/-][a-z0-9._/-]*)'
@@ -265,15 +181,14 @@ export function humanVideoModel(text: string): string | undefined {
 
 const requestSchema = z.object({
   messageId: z.string().min(1), sourceSeq: z.number().int().nonnegative(),
-  maxWorks: z.number().int().nonnegative(), turn: z.number().int().nonnegative(),
+  turn: z.number().int().nonnegative(),
   requestedResolution: z.string().min(1).optional(),
   requestedDurationSeconds: z.number().positive().optional(),
   requestedModel: z.string().min(1).optional(),
-  cancelled: z.literal(true).optional(),
 }).strict()
 const callSchema = z.object({ callId: z.string().min(1), messageId: z.string().min(1), name: z.string(),
   rootCallSeq: z.number().int().nonnegative().optional(), turn: z.number().int().nonnegative().optional(),
-  native: z.literal(true).optional(), pending: z.literal(true).optional() }).strict()
+  native: z.literal(true).optional(), pending: z.literal(true).optional(), cancelled: z.literal(true).optional() }).strict()
 const evidenceSchema = z.object({
   callId: z.string().min(1), messageId: z.string().min(1),
   rootCallSeq: z.number().int().nonnegative().optional(),
@@ -282,9 +197,11 @@ const evidenceSchema = z.object({
 const continuedQuestionSchema = z.object({
   callId: z.string().min(1), messageId: z.string().min(1), rootCallSeq: z.number().int().nonnegative(),
 }).strict()
+const humanRevisionSchema = z.object({ messageId: z.string().min(1), seq: z.number().int().nonnegative() }).strict()
 const stateSchema = z.object({
-  inherited: z.number().int().nonnegative(), turn: z.number().int().nonnegative(),
+  inherited: z.number().int().nonnegative(), delegated: z.boolean(), turn: z.number().int().nonnegative(),
   activeMessageId: z.string().min(1).optional(),
+  activeHumanRevision: humanRevisionSchema.optional(),
   nativeHeads: z.array(z.object({ callId: z.string(), name: z.string(), seq: z.number().int().nonnegative() })),
   requests: z.array(requestSchema), calls: z.array(callSchema), evidence: z.array(evidenceSchema),
   continuedQuestions: z.array(continuedQuestionSchema),
@@ -292,12 +209,13 @@ const stateSchema = z.object({
 }).strict()
 type VideoIntentState = z.infer<typeof stateSchema>
 
-/** Private v1 operation attribution, committed before a new video work may submit. */
+/** Private v1 attribution of a concrete execution to its real human source. */
 export interface VideoRequestGrant {
   readonly schema: 1
   readonly messageId: string
   readonly sourceSeq: number
-  readonly maxWorks: number
+  /** Legacy private-record field; current execution sources do not impose a work-count limit. */
+  readonly maxWorks?: number
   readonly turn: number
   readonly callId: string
   readonly rootCallId: string
@@ -308,6 +226,8 @@ export interface VideoRequestGrant {
 /** Same-process request attribution plus existing logged operation evidence. */
 export interface VideoGenerationIntent {
   readonly grant: VideoRequestGrant
+  /** Exact real human event captured for this execution, including a late answer to its original request. */
+  readonly humanRevision?: { readonly messageId: string; readonly seq: number }
   /** Unambiguous output tier from the human request or its related follow-up, never model arguments. */
   readonly requestedResolution?: string
   /** Explicit duration per finished video from the human request or its related follow-up. */
@@ -319,11 +239,11 @@ export interface VideoGenerationIntent {
 }
 
 const grantSchema = requestSchema.omit({
-  requestedResolution: true, requestedDurationSeconds: true, requestedModel: true, cancelled: true,
+  requestedResolution: true, requestedDurationSeconds: true, requestedModel: true,
 }).extend({
   schema: z.literal(1), callId: z.string().min(1), rootCallId: z.string().min(1),
   rootCallSeq: z.number().int().nonnegative().optional(),
-  maxWorks: z.number().int().positive(),
+  maxWorks: z.number().int().positive().optional(),
 }).strict()
 
 /**
@@ -335,8 +255,9 @@ export function parseVideoRequestGrant(value: unknown): VideoRequestGrant | unde
   if (value === undefined) return undefined
   const result = grantSchema.safeParse(value)
   if (!result.success) return null
-  const { rootCallSeq, ...grant } = result.data
-  return { ...grant, ...rootCallSeq === undefined ? {} : { rootCallSeq } }
+  const { rootCallSeq, maxWorks, ...grant } = result.data
+  return { ...grant, ...rootCallSeq === undefined ? {} : { rootCallSeq },
+    ...maxWorks === undefined ? {} : { maxWorks } }
 }
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -365,7 +286,7 @@ function evidenceOf(
   return undefined
 }
 
-/** Only a native generation result can revoke the request after its real selection card is cancelled. */
+/** A real generation selection cancellation belongs only to its exact logged call. */
 function cancelledModelChoice(content: readonly { type: string; text?: string }[], call: z.infer<typeof callSchema>): boolean {
   if (call.name !== 'generate_video' && call.name !== 'generate_video_project') return false
   return content.some((block) => {
@@ -400,9 +321,9 @@ function retainPendingQuestion(
 }
 
 type VideoFollowup = Partial<Pick<z.infer<typeof requestSchema>,
-  'maxWorks' | 'requestedResolution' | 'requestedDurationSeconds' | 'requestedModel'>>
+  'requestedResolution' | 'requestedDurationSeconds' | 'requestedModel'>>
 
-/** Related human replies revise the same requested work, never its submission identity or used count. */
+/** Recognized parameter replies inherit optional hints without reusing the prior human source. */
 function humanVideoFollowup(text: string): VideoFollowup | undefined {
   const value = text.normalize('NFKC').trim().replace(/[。.!！?？]+$/u, '')
   if (value === '' || humanVideoGenerationBlocked(text)) return undefined
@@ -417,16 +338,6 @@ function humanVideoFollowup(text: string): VideoFollowup | undefined {
       continue
     }
     const parameter = action.replace(/^(?:改成|改为|调整为|设置为|换成|就做|总共做|一共做)\s*/u, '')
-    const quantity = new RegExp('^(?:(?:数量|总数|总量|总共|一共|成片总数)(?:为|是|[:：])?\\s*)?'
-      + `(${NUMBER})\\s*(?:条|个|支)(?:视频|成片|作品)?$`, 'u').exec(parameter)
-    const explicitTotal = parameter !== action || /^(?:数量|总数|总量|总共|一共|成片总数)/u.test(parameter)
-      || /(?:视频|成片|作品)$/u.test(parameter)
-    if (quantity !== null && explicitTotal) {
-      const count = countOf(quantity[1])
-      if (count === undefined) return undefined
-      result.maxWorks = count
-      continue
-    }
     const duration = new RegExp('^(?:(?:视频|成片)?(?:总时长|时长|片长|长度)(?:为|是|[:：])?\\s*)?'
       + `((?:\\d+(?:\\.\\d+)?|${NUMBER})\\s*(?:秒钟?|s|分钟|min))(?:的?(?:视频|成片))?$`, 'iu').exec(parameter)
     if (duration !== null) {
@@ -459,37 +370,30 @@ function humanVideoFollowup(text: string): VideoFollowup | undefined {
   return result
 }
 
-function isVideoProgressQuestion(text: string): boolean {
-  const value = unquotedVideoRequest(text)?.normalize('NFKC').trim().replace(/[。.!！?？]+$/u, '')
-  if (value === undefined || /取消|停止|不要生成|不用生成|代码|脚本|教程|示例|邮件|翻译|改写|润色|换个话题/u.test(value)) return false
-  if (!/进度|状态|没好|失败|报错|完成|好了|多久|这么慢|怎么样/u.test(value)) return false
-  if (/(?:视频|成片|生成任务|视频任务|这个任务|刚才的任务)/u.test(value)) return true
-  return value.split(/[，,。；;\n]/u).every(clause => /^(?:请问|问一下)?\s*(?:进度|状态)(?:怎么样|如何|呢|怎样|正常吗)?$/u.test(clause.trim())
-    || /^(?:怎么|为什么)?(?:还没好|还没完成|这么慢|还(?:要等|要|需|得)多久|多久能好|多久完成|什么时候完成|完成了没|完成没有|好了没|好了没有|(?:现在)?怎么样了)(?:了|啊|呀|呢|吗)?$/u.test(clause.trim()))
-}
+/** External asynchronous notifications cannot continue the current human's generation call. */
+function isExternalNotice(kind: string): boolean { return kind === 'agent-message' || kind === 'tool-jobs' }
 
 /** Existing-event fold; it adds no Session vocabulary or model-supplied authorization. */
 export const videoGenerationIntentProjection = {
-  key: 'videoGenerationIntent', stateVersion: 11, stateSchema,
-  init: (_header, inherited) => ({ inherited, turn: 0, nativeHeads: [], requests: [], calls: [], evidence: [], continuedQuestions: [] }),
+  key: 'videoGenerationIntent', stateVersion: 13, stateSchema,
+  init: (header, inherited) => ({ inherited, delegated: header.origin === 'subagent', turn: 0,
+    nativeHeads: [], requests: [], calls: [], evidence: [], continuedQuestions: [] }),
   apply(state, event) {
-    if (event.seq < state.inherited) return state
-    if (event.type === 'turn/start') return { ...state, turn: event.data.turn, activeMessageId: undefined }
+    if (event.seq < state.inherited || state.delegated) return state
+    if (event.type === 'turn/start') return { ...state, turn: event.data.turn, activeMessageId: undefined, activeHumanRevision: undefined }
     if (event.type === 'user/message' && event.data.source.kind === 'user') {
       const text = event.data.content.filter(block => block.type === 'text').map(block => block.text).join('\n')
-      const maxWorks = videoWorkAllowance(text)
-      const prior = state.requests.find(request => request.messageId === state.continuationMessageId
-        && request.maxWorks > 0 && request.cancelled !== true)
-      const followup = maxWorks === 0 && prior !== undefined ? humanVideoFollowup(text) : undefined
-      if (prior !== undefined && followup !== undefined) return { ...state, activeMessageId: prior.messageId,
-        requests: state.requests.map(request => request === prior ? { ...request, ...followup } : request) }
-      const requestedResolution = humanVideoResolution(text)
-      const requestedDurationSeconds = humanVideoDurationSeconds(text)
-      const requestedModel = humanVideoModel(text)
-      return { ...state, activeMessageId: event.data.id,
-        continuationMessageId: maxWorks > 0 ? event.data.id : isVideoProgressQuestion(text) ? state.continuationMessageId : undefined,
-        requests: [...state.requests, { messageId: event.data.id, sourceSeq: event.seq,
-          maxWorks, turn: state.turn,
+      const prior = state.requests.findLast(request => request.messageId === state.continuationMessageId)
+      const followup = prior === undefined ? undefined : humanVideoFollowup(text)
+      const requestedResolution = humanVideoResolution(text) ?? followup?.requestedResolution
+        ?? (followup === undefined ? undefined : prior?.requestedResolution)
+      const requestedDurationSeconds = humanVideoDurationSeconds(text) ?? followup?.requestedDurationSeconds
+        ?? (followup === undefined ? undefined : prior?.requestedDurationSeconds)
+      const requestedModel = humanVideoModel(text) ?? followup?.requestedModel
+        ?? (followup === undefined ? undefined : prior?.requestedModel)
+      return { ...state, activeMessageId: event.data.id, continuationMessageId: event.data.id,
+        activeHumanRevision: { messageId: event.data.id, seq: event.seq },
+        requests: [...state.requests, { messageId: event.data.id, sourceSeq: event.seq, turn: state.turn,
           ...requestedResolution === undefined ? {} : { requestedResolution },
           ...requestedDurationSeconds === undefined ? {} : { requestedDurationSeconds },
           ...requestedModel === undefined ? {} : { requestedModel } }] }
@@ -501,9 +405,11 @@ export const videoGenerationIntentProjection = {
       const request = state.requests.findLast(request => request.messageId === question?.messageId)
       return { ...state,
         ...(question !== undefined && request !== undefined && state.continuationMessageId === request.messageId
-          && request.cancelled !== true
-          ? { activeMessageId: request.messageId } : {}),
+          ? { activeMessageId: request.messageId, activeHumanRevision: { messageId: event.data.id, seq: event.seq } } : {}),
         continuedQuestions: state.continuedQuestions.filter(question => question.callId !== callId) }
+    }
+    if (event.type === 'user/message' && isExternalNotice(event.data.source.kind)) {
+      return { ...state, activeMessageId: undefined, activeHumanRevision: undefined }
     }
     if (event.type === 'tool/call') {
       const nativeHeads = [...state.nativeHeads.filter(head => head.callId !== event.data.callId),
@@ -521,8 +427,7 @@ export const videoGenerationIntentProjection = {
         : matching.findLast(call => call.rootCallSeq !== undefined
           && event.sourceEventSeqs?.some(seq => seq === call.rootCallSeq))
       if (call !== undefined && cancelledModelChoice(event.data.message.content, call)) {
-        return { ...state, requests: state.requests.map(request => request.messageId === call.messageId
-          ? { ...request, maxWorks: 0, cancelled: true } : request) }
+        return { ...state, calls: state.calls.map(value => value === call ? { ...value, cancelled: true } : value) }
       }
       const evidence = call === undefined ? undefined : evidenceOf(event.data.message.content, call)
       const continuedQuestions = retainPendingQuestion(state, call === undefined || event.data.message.isError
@@ -550,9 +455,8 @@ export const videoGenerationIntentProjection = {
       const call = event.type === 'tool/ptc-dispatch-start' ? { ...settled, pending: true as const } : settled
       const calls = existing === undefined ? [...state.calls, call] : state.calls.map(value => value === existing ? call : value)
       if (event.type === 'tool/ptc-dispatch-start') return { ...state, calls }
-      if (cancelledModelChoice(event.data.content, call)) return { ...state, calls,
-        requests: state.requests.map(request => request.messageId === call.messageId
-          ? { ...request, maxWorks: 0, cancelled: true } : request) }
+      if (cancelledModelChoice(event.data.content, call)) return { ...state,
+        calls: calls.map(value => value === call ? { ...value, cancelled: true } : value) }
       const evidence = evidenceOf(event.data.content, call)
       return { ...state, calls,
         continuedQuestions: retainPendingQuestion(state, event.data.isError ? undefined : pendingQuestion(event.data.content, call)),
@@ -566,7 +470,7 @@ export const videoGenerationIntentProjection = {
 
 declare module '@deepseek-ai/dsh-session-projection/types' {
   interface SessionProjectionStateMap {
-    /** Original human video-work allowance and exact logged tool attribution. */
+    /** Real human execution sources, optional video hints and exact logged tool attribution. */
     videoGenerationIntent: VideoIntentState
   }
 }
@@ -574,11 +478,11 @@ declare module '@deepseek-ai/dsh-session-projection/types' {
 /**
  * Check whether this execution was captured under a logged human request.
  * @param exec - Native execution or nested PTC execution with its opaque parent token.
- * @returns Human ownership independently of the request's video-work allowance; messages from tools or agents grant none.
+ * @returns Real human ownership; delegated agents and tool or peer messages cannot create it.
  */
 export function hasCurrentHumanRequest(exec: ToolExecution): boolean {
   const agent = exec.agent
-  if (agent === undefined) return false
+  if (agent === undefined || delegatedAgent(agent)) return false
   const identity = executionOwners.get(agent.ctx.root)?.get(exec.token)
   if (identity === undefined) return false
   const state = agent.ctx.get('sessionProjections')?.stateOf(agent.session, 'videoGenerationIntent')
@@ -588,39 +492,52 @@ export function hasCurrentHumanRequest(exec: ToolExecution): boolean {
 /**
  * Read the original human request owning this exact tool execution.
  * @param exec - Calling tool, including nested executions and their root call.
- * @returns Attributed work allowance, or absence when no trusted request is available.
+ * @returns Real execution source with optional parameter hints, or absence for non-human execution.
  */
 export function videoGenerationIntentOf(exec: ToolExecution): VideoGenerationIntent | undefined {
   const agent = exec.agent
-  if (agent === undefined) return undefined
+  if (agent === undefined || delegatedAgent(agent)) return undefined
   const identity = executionOwners.get(agent.ctx.root)?.get(exec.token)
   if (identity === undefined) return undefined
   const state = agent.ctx.get('sessionProjections')?.stateOf(agent.session, 'videoGenerationIntent')
   const request = state?.requests.find(request => request.messageId === identity.messageId)
-  if (state === undefined || request === undefined || request.maxWorks < 1) return undefined
+  if (state === undefined || request === undefined) return undefined
   const requestedResolution = request.requestedResolution
   return { grant: { schema: 1, messageId: request.messageId, sourceSeq: request.sourceSeq,
-    maxWorks: request.maxWorks, turn: request.turn, callId: exec.callId, rootCallId: exec.rootCallId, rootCallSeq: identity.rootCallSeq },
+    turn: request.turn, callId: exec.callId, rootCallId: exec.rootCallId, rootCallSeq: identity.rootCallSeq },
+  ...identity.humanRevision === undefined ? {} : { humanRevision: identity.humanRevision },
   ...requestedResolution === undefined ? {} : { requestedResolution },
   ...request.requestedDurationSeconds === undefined ? {} : { requestedDurationSeconds: request.requestedDurationSeconds },
   ...request.requestedModel === undefined ? {} : { requestedModel: request.requestedModel }, calls: state.calls, evidence: state.evidence }
 }
 
 /**
- * Preserve a real selection-card cancellation for this original human request across later tool calls.
- * @param exec - Current native generation call.
- * @returns Whether its attributed human request was explicitly cancelled.
+ * Read a real selection-card cancellation for this exact logged generation call.
+ * @param exec - Current generation execution, including an attributed PTC dispatch.
+ * @returns Whether this call was cancelled; other works from the same source remain independent.
  */
 export function videoModelChoiceCancelled(exec: ToolExecution): boolean {
   const agent = exec.agent
-  if (agent === undefined) return false
+  if (agent === undefined || delegatedAgent(agent)) return false
   const identity = executionOwners.get(agent.ctx.root)?.get(exec.token)
   if (identity === undefined) return false
   const state = agent.ctx.get('sessionProjections')?.stateOf(agent.session, 'videoGenerationIntent')
-  return state?.requests.find(request => request.messageId === identity.messageId)?.cancelled === true
+  return state?.calls.some(call => call.callId === exec.callId && call.rootCallSeq === identity.rootCallSeq
+    && call.cancelled === true) === true
 }
 
-interface ExecutionOwner { readonly messageId: string; readonly rootCallSeq: number }
+function delegatedAgent(agent: Agent): boolean {
+  if (agent.session.header.origin === 'subagent') return true
+  const registry = agent.ctx.get('agents')
+  if (registry === undefined) return false
+  return registry.list().some(parent => registry.isOwnedBy(agent.id, parent))
+}
+
+interface ExecutionOwner {
+  readonly messageId: string
+  readonly rootCallSeq: number
+  readonly humanRevision?: { readonly messageId: string; readonly seq: number }
+}
 const executionOwners = new WeakMap<Context, Map<ToolExecutionToken, ExecutionOwner>>()
 
 /**
@@ -639,14 +556,17 @@ export function registerVideoGenerationIntent(ctx: Context): void {
       }
     })
     owner.on('tools/pre-execute', async (exec, next) => {
-      const state = exec.agent === undefined ? undefined : owner.sessionProjections.stateOf(exec.agent.session, 'videoGenerationIntent')
+      const state = exec.agent === undefined || delegatedAgent(exec.agent) ? undefined
+        : owner.sessionProjections.stateOf(exec.agent.session, 'videoGenerationIntent')
       const logged = exec.parent === undefined ? state?.nativeHeads.findLast(head =>
         head.callId === exec.rootCallId && head.name === exec.name) : undefined
       const call = logged === undefined ? undefined : state?.calls.findLast(call => call.rootCallSeq === logged.seq)
+      const humanRevision = state?.activeMessageId === call?.messageId ? state?.activeHumanRevision : undefined
       const identity = exec.parent === undefined
         ? call?.rootCallSeq === undefined || call.turn !== state?.turn ? undefined
-          : { messageId: call.messageId, rootCallSeq: call.rootCallSeq }
-        : owners.get(exec.parent)
+          : { messageId: call.messageId, rootCallSeq: call.rootCallSeq,
+            ...humanRevision === undefined ? {} : { humanRevision: { ...humanRevision } } }
+        : exec.agent === undefined || delegatedAgent(exec.agent) ? undefined : owners.get(exec.parent)
       if (identity !== undefined) owners.set(exec.token, identity)
       try { return await next() } catch (error) { owners.delete(exec.token); throw error }
     }, { prepend: true })

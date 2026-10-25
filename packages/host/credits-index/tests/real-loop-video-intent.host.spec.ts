@@ -30,6 +30,7 @@ import { registerVideoGenerationIntent, videoGenerationIntentOf, type VideoGener
 import { readVideoProject } from '../src/video-project.ts'
 import type { VideoEditor } from '../src/video-edit.ts'
 import type { VideoProjectInput, VideoProjectOptions, VideoProjectProvider } from '../src/video-project-types.ts'
+import { VideoWorkStore } from '../src/video-work-store.ts'
 import expected from './expected/real-loop-video-intent.json' with { type: 'json' }
 
 type ScriptStep = () => StreamChunk[]
@@ -44,9 +45,15 @@ class ScriptAdapter extends LlmAdapter {
 }
 
 function toolReply(id: string, name: string, args: object): StreamChunk[] {
+  return toolReplies([{ id, name, args }])
+}
+
+function toolReplies(calls: readonly { id: string; name: string; args: object }[]): StreamChunk[] {
   return [
-    { type: 'block-start', index: 0, blockType: 'tool-call' },
-    { type: 'block-end', index: 0, block: { type: 'tool-call', id: ToolCallId(id), name, arguments: JSON.stringify(args) } },
+    ...calls.flatMap(({ id, name, args }, index): StreamChunk[] => [
+      { type: 'block-start', index, blockType: 'tool-call' },
+      { type: 'block-end', index, block: { type: 'tool-call', id: ToolCallId(id), name, arguments: JSON.stringify(args) } },
+    ]),
     { type: 'finish', reason: { kind: 'tool-calls' } },
   ]
 }
@@ -64,14 +71,27 @@ function object(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>
 }
 
+function preparedWorks(value: Record<string, unknown>): { work_id: string; index: number; state: string }[] {
+  expect(value.status).toBe('prepared')
+  expect(typeof value.work_request_id).toBe('string')
+  if (!Array.isArray(value.works)) throw new Error('Expected the concrete prepared work list')
+  return value.works.map((value) => {
+    const work = object(value)
+    if (typeof work.work_id !== 'string' || typeof work.index !== 'number' || typeof work.state !== 'string') {
+      throw new Error('Expected a complete prepared work identity')
+    }
+    return { work_id: work.work_id, index: work.index, state: work.state }
+  })
+}
+
 const cleanup: (() => Promise<void>)[] = []
 afterEach(async () => { for (const dispose of cleanup.splice(0).reverse()) await dispose() })
 
-async function boot(mode: 'native' | 'ptc' = 'native') {
-  const directory = await mkdtemp(join(tmpdir(), 'yunshu-real-loop-video-'))
-  cleanup.push(async () => { await rm(directory, { recursive: true, force: true }) })
+async function boot(mode: 'native' | 'ptc' = 'native', restore?: { directory: string; seed: readonly SessionEvent[] }) {
+  const directory = restore?.directory ?? await mkdtemp(join(tmpdir(), 'yunshu-real-loop-video-'))
+  if (restore === undefined) cleanup.push(async () => { await rm(directory, { recursive: true, force: true }) })
   const workspace = join(directory, 'workspace')
-  await mkdir(workspace)
+  await mkdir(workspace, { recursive: true })
   const ctx = new Context()
   cleanup.push(async () => { await ctx.fiber.dispose() })
   await ctx.plugin(LlmRuntime)
@@ -135,6 +155,7 @@ async function boot(mode: 'native' | 'ptc' = 'native') {
     stateDirectory: join(directory, 'projects'), outputDirectory: 'artifacts/videos',
     maxTotalSeconds: 300, maxSegments: 32, pollIntervalMs: 1, taskTimeoutMs: 1000,
     acquireProvider: async () => provider, editor: () => editor,
+    videoWorks: new VideoWorkStore({ directory: join(directory, 'works'), current: async () => identity }),
   }
   const creative = new CreativeStore({ directory: join(directory, 'creative'), current: async () => identity,
     video: (id, owner) => readVideoProject(options, id, owner.sessionId, owner.workspaceRoot, owner) })
@@ -145,7 +166,10 @@ async function boot(mode: 'native' | 'ptc' = 'native') {
   await ctx.plugin(AgentLoop, { agents: [] })
   const script: ScriptStep[] = []
   ctx.llm.registerAdapter(['local-script'], new ScriptAdapter(script))
-  const agent = await ctx.agentLoop.create(SessionId('real-loop-video'), { provider: 'local-script', model: 'local-script' }, { cwd: workspace })
+  const agent = restore === undefined
+    ? await ctx.agentLoop.create(SessionId('real-loop-video'), { provider: 'local-script', model: 'local-script' }, { cwd: workspace })
+    : (await ctx.agents.create({ sessionId: SessionId('real-loop-video'), seed: restore.seed,
+      agentOptions: { provider: 'local-script', model: 'local-script' }, meta: { cwd: workspace } })).agent
   function result(callId: string): Record<string, unknown> {
     const event = events.findLast(event => event.type === 'tool/result' && event.data.message.toolCallId === callId)
     if (event?.type !== 'tool/result') throw new Error(`No committed tool result for ${callId}`)
@@ -164,7 +188,8 @@ async function boot(mode: 'native' | 'ptc' = 'native') {
     expect(job.status).not.toBe('running')
     expect(job.status).not.toBe('stopping')
   }
-  return { ctx, agent, events, result, settled, human: send, send, script, requests, inputs, grants, creative, options, workspace, identity,
+  return { ctx, agent, events, result, settled, human: send, send, script, requests, inputs, grants,
+    creative, options, workspace, directory, identity,
     unknown: (value: boolean) => { unknown = value } }
 }
 
@@ -238,11 +263,12 @@ describe('production AgentLoop human video request ownership', () => {
     const human = f.events.find(event => event.type === 'user/message' && event.data.source.kind === 'user')
     if (human?.type !== 'user/message' || grant === undefined) throw new Error('Expected the original human attribution')
     const generation = f.result('answered-project')
+    expect(grant.grant.maxWorks).toBeUndefined()
     expect({
       question: { pending: f.result('ask-style').pending },
       generation: { status: generation.status, plan_seconds: generation.plan_seconds, remaining_works: generation.remaining_works },
       attribution: { requestSource: human.data.source.kind, sameOriginalMessage: grant.grant.messageId === human.data.id,
-        sourceSeqMatches: grant.grant.sourceSeq === human.seq, requestTurn: grant.grant.turn, workCount: grant.grant.maxWorks,
+        sourceSeqMatches: grant.grant.sourceSeq === human.seq, requestTurn: grant.grant.turn,
         requestedDurationSeconds: grant.requestedDurationSeconds },
       providerSeconds: f.requests, workCount: projects.flatMap(project => project.tasks).length,
       turnCount: f.events.filter(event => event.type === 'turn/start').length,
@@ -303,7 +329,7 @@ describe('production AgentLoop human video request ownership', () => {
     expect(f.requests).toEqual([15, 15])
   })
 
-  it('keeps ordinary confirmations inside an unknown submission allowance while allowing an explicit new request', async () => {
+  it('reuses the explicit unknown work across changed call ids and human follow-ups without another submission', async () => {
     const f = await boot()
     f.unknown(true)
     f.script.push(() => toolReply('continued-unknown', 'generate_video_project', {
@@ -314,17 +340,19 @@ describe('production AgentLoop human video request ownership', () => {
     await f.settled('continued-unknown')
     const original = f.grants[0]?.intent?.grant
     if (original === undefined) throw new Error('Expected the original human request grant')
+    const workId = f.result('continued-unknown').work_id
+    expect(typeof workId).toBe('string')
     expect(f.requests).toEqual([15])
     for (const [index, text] of ['好的开始吧', '继续生成这个视频'].entries()) {
       const call = `continued-retry-${String(index)}`
       f.script.push(() => toolReply(call, 'generate_video_project', {
-        prompt: '普通确认仍对应同一原作品', total_duration_seconds: 15,
+        prompt: '普通确认仍对应同一原作品', total_duration_seconds: 15, work_id: workId,
       }), finalReply)
       await f.human(text)
-      expect(f.result(call)).toMatchObject({ status: 'failed', code: 'CREATIVE_VIDEO_COUNT_LIMIT' })
-      expect(f.grants.at(-1)?.intent?.grant).toMatchObject({
-        messageId: original.messageId, sourceSeq: original.sourceSeq, maxWorks: 1, turn: original.turn,
-      })
+      expect(f.result(call)).toMatchObject({ status: 'existing', work_id: workId,
+        project_id: f.result('continued-unknown').project_id })
+      expect(f.grants.at(-1)?.intent?.grant.messageId).not.toBe(original.messageId)
+      expect(f.grants.at(-1)?.intent?.grant.maxWorks).toBeUndefined()
       expect(f.requests).toEqual([15])
     }
     f.unknown(false)
@@ -348,37 +376,306 @@ describe('production AgentLoop human video request ownership', () => {
     expect(projects.flatMap(project => project.tasks)).toHaveLength(2)
   })
 
-  it('counts the first submitted work toward a later total of three instead of creating three more', async () => {
+  it('prepares three stable work ids and submits each once without enlarging the same source batch', async () => {
     const f = await boot()
-    f.script.push(() => toolReply('total-first', 'generate_video_project', {
-      prompt: '总量调整前已完成的第一条', total_duration_seconds: 15,
-    }))
-    await f.human('生成一条15秒视频')
-    expect(f.result('total-first')).toMatchObject({ status: 'background', remaining_works: 0 })
-    await f.settled('total-first')
-    const original = f.grants[0]?.intent?.grant
-    if (original === undefined) throw new Error('Expected the original single-work grant')
-    for (const [index, text] of ['改成3条成片', '好的开始吧'].entries()) {
-      const call = `total-followup-${String(index)}`
-      f.script.push(() => toolReply(call, 'generate_video_project', {
-        prompt: `原请求总量三条中的第${String(index + 2)}条`, total_duration_seconds: 15,
-      }))
-      await f.human(text)
-      expect(f.result(call)).toMatchObject({ status: 'background', remaining_works: 1 - index })
+    f.script.push(
+      () => toolReply('three-works', 'prepare_video_works', { count: 3 }),
+      () => toolReply('same-three-works', 'prepare_video_works', { count: 5 }),
+      ...[0, 1, 2].map(index => () => toolReply(`prepared-generation-${String(index)}`, 'generate_video_project', {
+        work_id: preparedWorks(f.result('three-works'))[index]?.work_id,
+        prompt: `三条作品中的第${String(index + 1)}条`, total_duration_seconds: 15,
+      })),
+    )
+    await f.human('这个故事做三个不同版本吧')
+    const prepared = preparedWorks(f.result('three-works'))
+    const repeated = preparedWorks(f.result('same-three-works'))
+    expect(prepared).toHaveLength(3)
+    expect(repeated).toEqual(prepared)
+    expect(f.result('same-three-works').work_request_id).toBe(f.result('three-works').work_request_id)
+    expect(new Set(prepared.map(work => work.work_id)).size).toBe(3)
+    for (const [index, work] of prepared.entries()) {
+      const call = `prepared-generation-${String(index)}`
+      expect(f.result(call)).toMatchObject({ status: 'background', work_id: work.work_id,
+        work_request_id: f.result('three-works').work_request_id, remaining_works: 2 - index,
+        pending_work_ids: prepared.slice(index + 1).map(work => work.work_id) })
       await f.settled(call)
-      expect(f.grants.at(-1)?.intent?.grant).toMatchObject({
-        messageId: original.messageId, sourceSeq: original.sourceSeq, maxWorks: 3, turn: original.turn,
-      })
-      expect(f.requests).toHaveLength(index + 2)
     }
-    f.script.push(() => toolReply('total-fourth', 'generate_video_project', {
-      prompt: '未被用户追加的第四条', total_duration_seconds: 15,
+    expect(f.requests).toEqual([15, 15, 15])
+    expect(new Set(prepared.map((_work, index) => f.result(`prepared-generation-${String(index)}`).project_id)).size).toBe(3)
+    f.script.push(() => toolReply('prepared-repeat-first', 'generate_video_project', {
+      prompt: '复查已有第一条作品', total_duration_seconds: 15, work_id: prepared[0]?.work_id,
     }), finalReply)
-    await f.human('好的开始吧')
-    expect(f.result('total-fourth')).toMatchObject({ status: 'failed', code: 'CREATIVE_VIDEO_COUNT_LIMIT' })
+    await f.human('第一条继续看原任务')
+    expect(f.result('prepared-repeat-first')).toMatchObject({ status: 'existing', work_id: prepared[0]?.work_id,
+      project_id: f.result('prepared-generation-0').project_id })
     expect(f.requests).toEqual([15, 15, 15])
     const projects = await f.creative.projects({ ...f.identity, sessionId: f.agent.id })
     expect(projects.flatMap(project => project.tasks)).toHaveLength(3)
+  })
+
+  it('appends two works after a real late quantity answer without restarting the original unknown work', async () => {
+    const f = await boot()
+    f.unknown(true)
+    f.script.push(
+      () => toolReply('before-quantity-answer', 'prepare_video_works', {}),
+      () => toolReplies([
+        { id: 'ask-final-quantity', name: 'ask_user_question', args: {
+          questions: [{ id: 'count', question: '这次总共做几条？', options: [{ label: '一条' }, { label: '三条' }] }],
+        } },
+        { id: 'quantity-original-unknown', name: 'generate_video_project', args: {
+          work_id: preparedWorks(f.result('before-quantity-answer'))[0]?.work_id,
+          prompt: '已提交的第一条作品', total_duration_seconds: 15,
+        } },
+      ]),
+    )
+    await f.human('先准备一条15秒视频，稍后再定作品总数')
+    expect(f.result('ask-final-quantity')).toMatchObject({ pending: true })
+    expect(f.result('quantity-original-unknown')).toMatchObject({ status: 'background' })
+    await f.settled('quantity-original-unknown')
+    expect(f.requests).toEqual([15])
+    const original = f.result('quantity-original-unknown')
+    const originalSource = f.grants[0]?.intent?.grant
+    if (originalSource === undefined) throw new Error('Expected the original human source')
+    f.unknown(false)
+    f.script.push(
+      () => toolReply('quantity-append-two', 'append_video_works', { count: 2 }),
+      () => toolReply('quantity-repeat-two', 'append_video_works', { count: 2 }),
+      () => toolReply('quantity-repeat-three', 'append_video_works', { count: 3 }),
+      () => toolReply('quantity-query-original', 'generate_video_project', {
+        work_id: original.work_id, prompt: '继续读取第一条原任务', total_duration_seconds: 15,
+      }),
+      ...[1, 2].map(index => () => toolReply(`quantity-new-${String(index)}`, 'generate_video_project', {
+        work_id: preparedWorks(f.result('quantity-append-two'))[index]?.work_id,
+        prompt: `追加作品中的第${String(index)}条`, total_duration_seconds: 15,
+      })),
+    )
+    expect(f.ctx.userQuestions.answer(f.agent, ToolCallId('ask-final-quantity'), {
+      answers: [{ id: 'count', selected: ['三条'] }],
+    })).toBe(true)
+    await f.agent.whenIdle()
+    const appended = preparedWorks(f.result('quantity-append-two'))
+    expect(appended).toHaveLength(3)
+    expect(appended[0]?.work_id).toBe(original.work_id)
+    expect(new Set(appended.map(work => work.work_id)).size).toBe(3)
+    expect(preparedWorks(f.result('quantity-repeat-two'))).toEqual(appended)
+    expect(preparedWorks(f.result('quantity-repeat-three'))).toEqual(appended)
+    for (const call of ['quantity-append-two', 'quantity-repeat-two', 'quantity-repeat-three']) {
+      expect(f.result(call).work_request_id).toBe(original.work_request_id)
+      expect(f.result(call).pending_work_ids).toEqual(appended.slice(1).map(work => work.work_id))
+    }
+    expect(f.result('quantity-query-original')).toMatchObject({ status: 'existing', work_id: original.work_id,
+      project_id: original.project_id, operation_id: original.operation_id })
+    const reply = f.events.find(event => event.type === 'user/message' && event.data.source.kind === 'user-question-reply')
+    if (reply?.type !== 'user/message') throw new Error('Expected the actual committed quantity reply')
+    for (const captured of f.grants.slice(1)) {
+      expect(captured.intent?.grant).toMatchObject({
+        messageId: originalSource.messageId, sourceSeq: originalSource.sourceSeq, turn: originalSource.turn,
+      })
+      expect(captured.intent?.humanRevision).toEqual({ messageId: reply.data.id, seq: reply.seq })
+    }
+    for (const index of [1, 2]) {
+      const call = `quantity-new-${String(index)}`
+      expect(f.result(call)).toMatchObject({ status: 'background', work_id: appended[index]?.work_id,
+        work_request_id: original.work_request_id, remaining_works: 2 - index })
+      await f.settled(call)
+    }
+    expect(f.requests).toEqual([15, 15, 15])
+    const projects = await f.creative.projects({ ...f.identity, sessionId: f.agent.id })
+    expect(projects.flatMap(project => project.tasks)).toHaveLength(3)
+  })
+
+  it('allows a late human answer to use only one of three prepared works without forcing the other two to submit', async () => {
+    const f = await boot()
+    f.script.push(
+      () => toolReply('before-reduced-quantity', 'prepare_video_works', { count: 3 }),
+      () => toolReply('ask-reduced-quantity', 'ask_user_question', {
+        questions: [{ id: 'count', question: '最终需要几条？', options: [{ label: '只要一条' }, { label: '三条' }] }],
+      }),
+      finalReply,
+    )
+    await f.human('先准备三个视频版本')
+    expect(f.result('ask-reduced-quantity')).toMatchObject({ pending: true })
+    expect(f.requests).toEqual([])
+    const prepared = preparedWorks(f.result('before-reduced-quantity'))
+    expect(prepared).toHaveLength(3)
+    f.script.push(() => toolReply('only-requested-work', 'generate_video_project', {
+      work_id: prepared[0]?.work_id, prompt: '用户最终只需要这一条', total_duration_seconds: 15,
+    }), finalReply)
+    expect(f.ctx.userQuestions.answer(f.agent, ToolCallId('ask-reduced-quantity'), {
+      answers: [{ id: 'count', selected: ['只要一条'] }],
+    })).toBe(true)
+    await f.agent.whenIdle()
+    expect(f.result('only-requested-work')).toMatchObject({ status: 'background', work_id: prepared[0]?.work_id,
+      remaining_works: 2, pending_work_ids: prepared.slice(1).map(work => work.work_id) })
+    await f.settled('only-requested-work')
+    expect(f.requests).toEqual([15])
+    expect(f.script).toEqual([])
+    const projects = await f.creative.projects({ ...f.identity, sessionId: f.agent.id })
+    expect(projects.flatMap(project => project.tasks)).toHaveLength(1)
+  })
+
+  it('reuses the default work across calls with different ids in the same model step', async () => {
+    const f = await boot()
+    f.script.push(() => toolReplies(['parallel-a', 'parallel-b'].map(id => ({
+      id, name: 'generate_video_project', args: { prompt: '同一次提交的同一条作品', total_duration_seconds: 15 },
+    }))), finalReply)
+    await f.human('给我来一段15秒动画')
+    const results = ['parallel-a', 'parallel-b'].map(call => ({ call, result: f.result(call) }))
+    expect(new Set(results.map(({ result }) => result.work_id)).size).toBe(1)
+    expect(new Set(results.map(({ result }) => result.work_request_id)).size).toBe(1)
+    expect(results.filter(({ result }) => result.status === 'background')).toHaveLength(1)
+    expect(results.filter(({ result }) => result.status === 'existing')).toHaveLength(1)
+    const started = results.find(({ result }) => result.status === 'background')
+    if (started === undefined) throw new Error('Expected exactly one original background project')
+    expect(typeof started.result.work_id).toBe('string')
+    await f.settled(started.call)
+    expect(f.requests).toEqual([15])
+    const projects = await f.creative.projects({ ...f.identity, sessionId: f.agent.id })
+    expect(projects.flatMap(project => project.tasks)).toHaveLength(1)
+  })
+
+  it('keeps an unknown default work through a real late question answer even when the model changes its call id', async () => {
+    const f = await boot()
+    f.unknown(true)
+    f.script.push(() => toolReplies([
+      { id: 'unknown-pending-question', name: 'ask_user_question', args: {
+        questions: [{ id: 'followup', question: '后续继续按这个方案吗？', options: [{ label: '是' }] }],
+      } },
+      { id: 'unknown-before-answer', name: 'generate_video_project', args: {
+        prompt: '等待答复期间已提交的原作品', total_duration_seconds: 15,
+      } },
+    ]))
+    await f.human('给我来一段15秒动画')
+    expect(f.result('unknown-pending-question')).toMatchObject({ pending: true })
+    expect(f.result('unknown-before-answer')).toMatchObject({ status: 'background' })
+    await f.settled('unknown-before-answer')
+    expect(f.requests).toEqual([15])
+    f.unknown(false)
+    f.script.push(() => toolReply('unknown-after-answer', 'generate_video_project', {
+      prompt: '答复后读取同一默认作品', total_duration_seconds: 15,
+    }), finalReply)
+    expect(f.ctx.userQuestions.answer(f.agent, ToolCallId('unknown-pending-question'), {
+      answers: [{ id: 'followup', selected: ['是'] }],
+    })).toBe(true)
+    await f.agent.whenIdle()
+    expect(f.result('unknown-after-answer')).toMatchObject({ status: 'existing',
+      work_id: f.result('unknown-before-answer').work_id,
+      work_request_id: f.result('unknown-before-answer').work_request_id,
+      project_id: f.result('unknown-before-answer').project_id,
+    })
+    expect(f.requests).toEqual([15])
+    expect(f.grants.at(-1)?.intent?.grant.messageId).toBe(f.grants[0]?.intent?.grant.messageId)
+    const projects = await f.creative.projects({ ...f.identity, sessionId: f.agent.id })
+    expect(projects.flatMap(project => project.tasks)).toHaveLength(1)
+  })
+
+  it('defaults preparation to one concrete work and does not enlarge it under a changed call id', async () => {
+    const f = await boot()
+    f.script.push(
+      () => toolReply('default-work', 'prepare_video_works', {}),
+      () => toolReply('changed-count', 'prepare_video_works', { count: 3 }),
+      finalReply,
+    )
+    await f.human('那就按这个故事出片吧')
+    const prepared = preparedWorks(f.result('default-work'))
+    expect(prepared).toHaveLength(1)
+    expect(preparedWorks(f.result('changed-count'))).toEqual(prepared)
+    expect(f.result('changed-count').work_request_id).toBe(f.result('default-work').work_request_id)
+    expect(f.requests).toEqual([])
+    expect(await f.creative.projects({ ...f.identity, sessionId: f.agent.id })).toEqual([])
+  })
+
+  it('reads the original linked work after rebuilding the real Host services on the retained private state', async () => {
+    const first = await boot()
+    first.script.push(() => toolReply('before-restart', 'generate_video_project', {
+      prompt: '完整保留以便重启查看的原作品', total_duration_seconds: 15,
+    }))
+    await first.human('给我来一段15秒动画')
+    expect(first.result('before-restart')).toMatchObject({ status: 'background' })
+    await first.settled('before-restart')
+    expect(first.requests).toEqual([15])
+    const original = first.result('before-restart')
+    const seed = first.agent.session.snapshotEvents()
+    await first.ctx.fiber.dispose()
+    const restored = await boot('native', { directory: first.directory, seed })
+    restored.script.push(() => toolReply('after-restart', 'generate_video_project', {
+      prompt: '重启后继续读取原作品', total_duration_seconds: 15, work_id: original.work_id,
+    }), finalReply)
+    await restored.human('继续看原作品')
+    expect(restored.result('after-restart')).toMatchObject({ status: 'existing', work_id: original.work_id,
+      work_request_id: original.work_request_id, project_id: original.project_id })
+    expect(restored.requests).toEqual([])
+    const projects = await restored.creative.projects({ ...restored.identity, sessionId: restored.agent.id })
+    expect(projects.flatMap(project => project.tasks)).toHaveLength(1)
+  })
+
+  it.each(['给我来一段15秒动画', '那就按这个故事出片吧'])(
+    'does not require an NLP creation phrase to create a default work for %s', async (text) => {
+      const f = await boot()
+      f.script.push(() => toolReply('unrestricted-human', 'generate_video_project', {
+        prompt: '按真人上下文生成一条作品', total_duration_seconds: 15,
+      }))
+      await f.human(text)
+      expect(f.result('unrestricted-human')).toMatchObject({ status: 'background', remaining_works: 0 })
+      expect(typeof f.result('unrestricted-human').work_id).toBe('string')
+      await f.settled('unrestricted-human')
+      expect(f.requests).toEqual([15])
+    },
+  )
+
+  it('creates separate works for two real human requests with the same prompt, saved plan and shots', async () => {
+    const f = await boot()
+    const args = () => ({
+      plan_id: f.result('same-plan').plan_id, shot_ids: ['shot_01'], prompt: '完全相同的作品提示词',
+      total_duration_seconds: 15, shot_durations_seconds: [15], model: 'MiniMax-H3', resolution: '768P',
+    })
+    f.script.push(
+      () => toolReply('same-plan', 'update_creation_plan', {
+        kind: 'video', title: '同一计划', brief: '允许真人独立发起两次',
+        shots: [{ id: 'shot_01', order: 1, title: '同一镜头', duration_seconds: 15, prompt: '完全相同的镜头提示词' }],
+      }),
+      () => toolReply('same-request-first', 'generate_video_project', args()),
+    )
+    await f.human('生成一条15秒视频')
+    expect(f.result('same-request-first')).toMatchObject({ status: 'background' })
+    await f.settled('same-request-first')
+    f.script.push(() => toolReply('same-request-second', 'generate_video_project', args()))
+    await f.human('生成一条15秒视频')
+    expect(f.result('same-request-second')).toMatchObject({ status: 'background' })
+    await f.settled('same-request-second')
+    expect(f.result('same-request-second').work_id).not.toBe(f.result('same-request-first').work_id)
+    expect(f.result('same-request-second').work_request_id).not.toBe(f.result('same-request-first').work_request_id)
+    expect(f.result('same-request-second').project_id).not.toBe(f.result('same-request-first').project_id)
+    expect(f.requests).toEqual([15, 15])
+    const projects = await f.creative.projects({ ...f.identity, sessionId: f.agent.id })
+    expect(projects.flatMap(project => project.tasks)).toHaveLength(2)
+  })
+
+  it.each(['agent-message', 'tool-jobs'] as const)(
+    'does not prepare new work from a %s notice', async (source) => {
+      const f = await boot()
+      f.script.push(() => toolReply('notice-prepare', 'prepare_video_works', { count: 3 }), finalReply)
+      await f.send('给我来三个视频', source === 'agent-message'
+        ? { kind: 'agent-message', form: 'relay', senderSessionId: SessionId('notice-other-chat') }
+        : { kind: 'tool-jobs', form: 'notice', summary: 'A background task finished' })
+      expect(f.result('notice-prepare')).toMatchObject({ status: 'failed' })
+      expect(f.result('notice-prepare').works).toBeUndefined()
+      expect(f.requests).toEqual([])
+      expect(await f.creative.projects({ ...f.identity, sessionId: f.agent.id })).toEqual([])
+    },
+  )
+
+  it('does not treat a delegated child user-labelled message as a new human work source', async () => {
+    const f = await boot()
+    const child = (await f.ctx.agents.create({ sessionId: SessionId('delegated-video-child'), parentAgent: f.agent,
+      meta: { cwd: f.workspace, origin: 'subagent', parentSession: f.agent.id },
+      agentOptions: { provider: 'local-script', model: 'local-script' } })).agent
+    f.script.push(() => toolReply('child-prepare', 'prepare_video_works', { count: 3 }), finalReply)
+    await f.send('给我来三个视频', { kind: 'user' }, child)
+    expect(f.result('child-prepare')).toMatchObject({ status: 'failed' })
+    expect(f.result('child-prepare').works).toBeUndefined()
+    expect(f.requests).toEqual([])
+    expect(await f.creative.projects({ ...f.identity, sessionId: child.id })).toEqual([])
   })
 
   it('carries a late question reply through real run_code subprocess bindings and logs the nested generation', async () => {
@@ -413,7 +710,7 @@ describe('production AgentLoop human video request ownership', () => {
     const f = await boot()
     f.unknown(true)
     f.script.push(() => toolReply('first-chat-unknown', 'generate_video_project', {
-      prompt: '原聊天里结果未知的任务', total_duration_seconds: 15,
+      prompt: '两个聊天各自独立的同一提示词', total_duration_seconds: 15,
     }))
     await f.human('生成一条15秒视频')
     expect(f.result('first-chat-unknown')).toMatchObject({ status: 'background', remaining_works: 0 })
@@ -424,12 +721,13 @@ describe('production AgentLoop human video request ownership', () => {
     }, { cwd: f.workspace })
     f.unknown(false)
     f.script.push(() => toolReply('other-chat-project', 'generate_video_project', {
-      prompt: '另一聊天中的真人独立请求', total_duration_seconds: 15,
+      prompt: '两个聊天各自独立的同一提示词', total_duration_seconds: 15,
     }))
     await f.send('生成一条15秒视频', { kind: 'user' }, other)
     expect(f.result('other-chat-project')).toMatchObject({ status: 'background', remaining_works: 0 })
     await f.settled('other-chat-project', other)
     expect(f.requests).toEqual([15, 15])
+    expect(f.result('other-chat-project').work_id).not.toBe(f.result('first-chat-unknown').work_id)
     expect(f.result('other-chat-project').project_id).not.toBe(f.result('first-chat-unknown').project_id)
     const original = await f.creative.projects({ ...f.identity, sessionId: f.agent.id })
     const independent = await f.creative.projects({ ...f.identity, sessionId: other.id })

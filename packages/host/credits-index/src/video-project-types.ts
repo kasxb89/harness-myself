@@ -7,6 +7,7 @@ import type { CreativeOwner, CreativeStore } from './creative-store.ts'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import type { VideoProjectActivity } from './creation-activity.ts'
 import type { VideoProjectAttemptId } from './video-project.ts'
+import type { VideoWorkStore } from './video-work-store.ts'
 
 /** Credential-free JSON fields retained before the single submission attempt. */
 export type VideoRequestValue = string | number | boolean | null | VideoRequestValue[] | { [key: string]: VideoRequestValue }
@@ -165,6 +166,8 @@ export interface VideoProjectOptions {
   failed?(manifest: import('./video-project.ts').VideoProjectManifest, code: string): void
   /** Optional product-owned planning records; no independent background execution. */
   creative?: CreativeStore
+  /** Persistent finished-work identities shared by native chat generation entry points. */
+  videoWorks?: VideoWorkStore
   /**
    * Materialize only an owned generated image as an existing local relay reference.
    * @param owner - Captured account, chat and workspace.

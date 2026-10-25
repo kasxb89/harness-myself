@@ -63,7 +63,7 @@ describe('video requests continued by an answered pending question', () => {
     generate(session)
     const state = fold(session)
     expect(state.requests).toHaveLength(1)
-    expect(state.requests[0]).toMatchObject({ messageId: request.id, turn: 1, maxWorks: 2, requestedDurationSeconds: 30 })
+    expect(state.requests[0]).toMatchObject({ messageId: request.id, turn: 1, requestedDurationSeconds: 30 })
     expect(state.calls.at(-1)).toMatchObject({ messageId: request.id, turn: 2, name: 'generate_video_project' })
     expect(state.evidence).toEqual([{ callId: 'earlier-video', messageId: request.id, rootCallSeq: generated.seq, operationId: 'op_already_used' }])
     expect(state.continuedQuestions).toEqual([])
@@ -136,10 +136,10 @@ describe('video requests continued by an answered pending question', () => {
     generate(session)
     const state = fold(session)
     expect(state.calls.at(-1)?.messageId).toBe(observation.id)
-    expect(state.requests.at(-1)?.maxWorks).toBe(0)
+    expect(state.requests.at(-1)).not.toHaveProperty('maxWorks')
   })
 
-  it('does not reactivate a request cancelled by the native model selection', () => {
+  it('restores the original source after a pending answer without clearing its exact cancelled work call', () => {
     const session = sessionFixture()
     session.append('turn/start', { turn: 1 })
     human(session)
@@ -151,7 +151,9 @@ describe('video requests continued by an answered pending question', () => {
     laterTurn(session)
     answer(session)
     generate(session)
-    expect(fold(session).calls.filter(call => call.turn === 2)).toEqual([])
+    const state = fold(session)
+    expect(state.calls.find(value => value.callId === 'cancelled-video')?.cancelled).toBe(true)
+    expect(state.calls.at(-1)).toMatchObject({ callId: 'generate-2', turn: 2 })
   })
 
   it('does not reuse a consumed question in a later turn', () => {

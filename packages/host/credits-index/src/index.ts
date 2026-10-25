@@ -73,6 +73,8 @@ import { executeVideoTask } from './video-task.ts'
 import type { CreativeImageReceipt, CreativeVideoReceipt, CreativeTaskView } from './creative-types.ts'
 import type { VideoProjectIdentity, VideoProjectInput, VideoProjectOptions, VideoProjectRequest, VideoRequestValue } from './video-project-types.ts'
 import { CreativeError, CreativeStore, parseCreativePlanChange, type CreativeOperation, type CreativeOwner } from './creative-store.ts'
+import { VideoWorkStore, type VideoWorkClaim } from './video-work-store.ts'
+import { claimChatVideoWork, existingVideoWorkResult, settleVideoWorkPreparation } from './video-work-execution.ts'
 import { creativeOwner, registerCreativeTools } from './creative-tools.ts'
 import { hasCurrentHumanRequest, videoGenerationIntentOf, videoModelChoiceCancelled } from './video-generation-intent.ts'
 import { videoShotInput } from './video-shot-references.ts'
@@ -2429,6 +2431,7 @@ export function apply(ctx: Context, config: Config): void {
     const session = await liveSession()
     return session?.token === undefined ? undefined : { accountId: session.account.id, sessionFingerprint: createHash('sha256').update(session.token).digest('hex') }
   }
+  const videoWorks = new VideoWorkStore({ directory: join(stateDir, 'video-work-requests'), current: creativeIdentity })
   const creative = new CreativeStore({
     directory: join(stateDir, 'creative-projects'), current: creativeIdentity,
     activity: (event) => { generationCreation.operation(event) },
@@ -4042,7 +4045,7 @@ export function apply(ctx: Context, config: Config): void {
     const questions = ctx.get('userQuestions')
     let approval: { assertCurrent(signal: AbortSignal): Promise<void> } | undefined
     const selected = await chooseChatVideoModel({ target, baseline, accountId: identity.accountId,
-      workCount: intent.grant.maxWorks, signal: exec.signal, assertCurrent,
+      workCount: 1, signal: exec.signal, assertCurrent,
       baselineRequiresReplan: baselinePlan.requiresReplan, onApproved: (value) => { approval = value },
       quote: async (value, workCount, signal) => {
         const segments = await prepareQuoteSegments(value)
@@ -4086,6 +4089,7 @@ export function apply(ctx: Context, config: Config): void {
     const projectState = join(stateDir, 'video-projects')
     projectOptions = {
       creative,
+      videoWorks,
       activity: (event) => { generationCreation.project(event) },
       chatModelChoice: async (input, exec, provider) => {
         return selectChatVideoModel(input, exec, provider.identity, () => provider.assertCurrent())
@@ -4550,8 +4554,9 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.tools.register(defineTool({
     name: 'generate_video',
-    description: 'Compatibility single-clip generation through the account relay. Read list_video_models first. Prefer generate_video_project for new video requests, including a single clip: its background job exposes queue and generation progress without holding chat open. Each independent human generation request defaults to one finished video, or its explicit work count. An earlier running or unknown submission does not block a separate human request, even with the same brief or plan; create independent work and retain the original task. Do not repeat the same submission. Progress checks and continuing the original task use its existing query or resume tools. Do not write submission, polling or download scripts or probe invalid paid durations. For story direction, character/reference continuity, dialogue or subtitles, use the yunshu-video-director skill. For a complete video such as 40 seconds or automatic assembly, always use generate_video_project; several camera beats may fit one clip. Accepted work that outlasts this foreground wait returns pending: query_video_task reads its original receipt without repeating that submission. Edit existing clips with edit_video. Only declared duration, resolution, ratio, frames and references are accepted.' + VIDEO_REQUEST_GUIDANCE + MEDIA_FAILURE_GUIDANCE,
+    description: 'Compatibility single-clip generation through the account relay. Read list_video_models first. Prefer generate_video_project for new video requests, including a single clip: its background job exposes queue and generation progress without holding chat open. Default to one finished work. For several user-requested works, first prepare_video_works with their concrete count and pass a separate returned work_id for each work. Reuse work_id when confirming, correcting or retrying the same finished work: even a new tool-call id returns its original operation instead of another generation POST. A separate actual human request can prepare independent work even with the same brief or plan, while the original accepted or unknown work retains its own task. Natural-language intent and inferred total counts do not gate execution. Progress checks and continuing the original task use its existing query or resume tools. Do not write submission, polling or download scripts or probe invalid paid durations. For story direction, character/reference continuity, dialogue or subtitles, use the yunshu-video-director skill. For a complete video such as 40 seconds or automatic assembly, always use generate_video_project; several camera beats may fit one clip. Accepted work that outlasts this foreground wait returns pending: query_video_task reads its original receipt without repeating that submission. Edit existing clips with edit_video. Only declared duration, resolution, ratio, frames and references are accepted.' + VIDEO_REQUEST_GUIDANCE + MEDIA_FAILURE_GUIDANCE,
     parameters: {
+      work_id: { type: 'string', description: 'Existing work_id from prepare_video_works or an earlier generation result. Reuse it for the same finished work across tool calls and confirmations. Omission selects the current request’s first default work; it never creates another version of that work. For several works, prepare the complete count first and use each returned work_id once.' },
       plan_id: { type: 'string', description: 'Explicit update_creation_plan id for this generation. Also provide shot_id.' },
       shot_id: { type: 'string', description: 'Exact shot id in the explicit plan; never guess a latest project.' },
       prompt: { type: 'string', required: true, description: 'What the video should show. Before calling, script user-delegated narrative or dialogue scenes with stable character ids, language, brief exact lines and their timing, identifying on-screen speakers versus narration; preserve user-supplied wording. Do not reduce a story requiring voices to a music montage. Respect silent/no-dialogue requests and do not add dialogue or subtitles to unrelated nonverbal videos. Include requested lip-sync and subtitle requirements. These request native model generation, not separate speech, lip-sync or subtitle processing; verify the rendered result before claiming they are met.' },
@@ -4575,6 +4580,8 @@ export function apply(ctx: Context, config: Config): void {
           task_id: { type: 'string' },
           plan_id: { type: 'string' },
           operation_id: { type: 'string' }, request_id: { type: 'string' }, submission_state: { type: 'string' },
+          work_id: { type: 'string' }, work_request_id: { type: 'string' }, project_id: { type: 'string' },
+          pending_work_ids: { type: 'array', items: { type: 'string' } }, remaining_works: { type: 'number' },
           code: { type: 'string' },
           message: { type: 'string' },
         },
@@ -4588,11 +4595,19 @@ export function apply(ctx: Context, config: Config): void {
       const relay = await requireRelayKey()
       if ('error' in relay) return { status: 'failed', message: relay.error }
       let operation: CreativeOperation | undefined
+      let workClaim: VideoWorkClaim | undefined
       try {
         const binding = await bindCurrentVideoAccount()
         if (videoModelChoiceCancelled(exec)) throw new CreativeError('USER_CANCELLED', 409,
           '你已取消本次视频生成，未提交新的模型请求；需要生成时请明确发送新的生成要求。')
-        const videoIntent = await creative.preflightVideoWorkCount(creativeOwner(exec, binding.identity), videoGenerationIntentOf(exec), {
+        const owner = creativeOwner(exec, binding.identity)
+        const source = videoGenerationIntentOf(exec)
+        const reservation = await claimChatVideoWork(videoWorks, creative, owner, source, args.work_id)
+        if (reservation.kind === 'existing') return existingVideoWorkResult(reservation)
+        const work = reservation.claim
+        workClaim = work
+        const videoIntent = await creative.preflightVideoWorkCount(owner, source, {
+          videoWorkId: work.workId,
           ...args.plan_id === undefined ? {} : { planId: args.plan_id },
           ...args.shot_id === undefined ? {} : { shotIds: [args.shot_id] },
         })
@@ -4617,7 +4632,6 @@ export function apply(ctx: Context, config: Config): void {
           referenceVideos.push(await normalizeVideoReference(value, 'video', exec.agent?.session.header.cwd,
             references, exec.signal, binding.identity.accountId))
         }
-        const owner = creativeOwner(exec, binding.identity)
         const images = async (values: readonly string[] | undefined): Promise<string[]> => {
           const result: string[] = []
           for (const value of values ?? []) {
@@ -4655,7 +4669,8 @@ export function apply(ctx: Context, config: Config): void {
         }
         exec.signal.throwIfAborted()
         await choice.beforeSubmit(exec.signal)
-        operation = await creative.begin(creativeOwner(exec, binding.identity), { kind: 'video', source: 'chat', model: capability.model.id, prompt: args.prompt, shots: [{ prompt: args.prompt, ...durationSeconds === undefined ? {} : { durationSeconds } }], ...args.plan_id === undefined ? {} : { planId: args.plan_id }, ...args.shot_id === undefined ? {} : { shotIds: [args.shot_id] }, videoIntent })
+        operation = await creative.begin(owner, { kind: 'video', source: 'chat', model: capability.model.id, prompt: args.prompt, shots: [{ prompt: args.prompt, ...durationSeconds === undefined ? {} : { durationSeconds } }], ...args.plan_id === undefined ? {} : { planId: args.plan_id }, ...args.shot_id === undefined ? {} : { shotIds: [args.shot_id] }, videoIntent, videoWorkId: work.workId })
+        await videoWorks.attach(work, { projectId: operation.projectId, operationId: operation.operationId })
         const creation = operation
         const outcome = await runVideoTask(await binding.key(), capability.model.route, built.request, exec.signal,
           async () => { await binding.key(); await creative.dispatched(creation) },
@@ -4672,8 +4687,12 @@ export function apply(ctx: Context, config: Config): void {
           ...outcome.videoReceipt === undefined ? {} : { videoReceipt: outcome.videoReceipt },
           ...outcome.path === undefined ? {} : { paths: [outcome.path] },
           ...outcome.code === undefined ? {} : { errorCode: outcome.code } })
+        const pending = [...await videoWorks.pending(owner, work.workId)]
+        const workFields = { work_id: work.workId, work_request_id: work.requestId,
+          pending_work_ids: pending, remaining_works: pending.length }
         if (!outcome.ok) {
           return {
+            ...workFields,
             status: outcome.submissionState === 'pending' ? 'pending' : outcome.submissionState === 'unknown' ? 'unknown' : 'failed',
             plan_id: operation.projectId, operation_id: operation.operationId, submission_state: outcome.submissionState ?? 'unknown',
             ...outcome.requestId === undefined ? {} : { request_id: outcome.requestId },
@@ -4695,6 +4714,7 @@ export function apply(ctx: Context, config: Config): void {
           }).catch((error: unknown) => { ctx.logger.warn('Video saved; optional creation preview was not recorded.', error) })
         }
         return {
+          ...workFields,
           status: 'succeeded',
           plan_id: operation.projectId, operation_id: operation.operationId, submission_state: outcome.submissionState ?? 'completed',
           path: outcome.path ?? '',
@@ -4704,8 +4724,13 @@ export function apply(ctx: Context, config: Config): void {
         }
       } catch (error) {
         if (operation !== undefined) creative.release(operation)
+        if (workClaim !== undefined && error instanceof CreativeError && error.code === 'USER_CANCELLED') {
+          await settleVideoWorkPreparation(videoWorks, workClaim, true)
+        }
         if (error instanceof VideoProjectError || error instanceof CreativeError) return { status: 'failed', code: error.code, message: error.message }
         throw error
+      } finally {
+        if (operation === undefined && workClaim !== undefined) await settleVideoWorkPreparation(videoWorks, workClaim)
       }
     },
   }))

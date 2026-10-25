@@ -19,6 +19,8 @@ import { chatVideoResolution, DEFAULT_CHAT_VIDEO_MODEL } from './video-model-cho
 import { VideoSubmissionRejection } from './video-submission-result.ts'
 import { mediaFilename } from './media-filename.ts'
 import { VIDEO_REQUEST_GUIDANCE } from './creation-workflows.ts'
+import type { VideoWorkBatch, VideoWorkClaim } from './video-work-store.ts'
+import { appendChatVideoWorks, claimChatVideoWork, existingVideoWorkResult, prepareChatVideoWorks, settleVideoWorkPreparation } from './video-work-execution.ts'
 
 declare module '@deepseek-ai/dsh-jobs/view' {
   interface JobKindMap {
@@ -46,6 +48,11 @@ interface VideoToolResult {
   duration_seconds?: number
   plan_id?: string
   remaining_works?: number
+  work_id?: string
+  work_request_id?: string
+  operation_id?: string
+  pending_work_ids?: string[]
+  works?: { work_id: string; index: number; state: string; plan_id?: string; operation_id?: string; project_id?: string }[]
 }
 
 /** All fields are programmatically available; prose never carries the only job id. */
@@ -60,6 +67,12 @@ const output = {
       local_stopped: { type: 'boolean' },
       plan_id: { type: 'string' },
       remaining_works: { type: 'number' },
+      work_id: { type: 'string' }, work_request_id: { type: 'string' }, operation_id: { type: 'string' },
+      pending_work_ids: { type: 'array', items: { type: 'string' } },
+      works: { type: 'array', items: { type: 'object', properties: {
+        work_id: { type: 'string', required: true }, index: { type: 'number', required: true }, state: { type: 'string', required: true },
+        plan_id: { type: 'string' }, operation_id: { type: 'string' }, project_id: { type: 'string' },
+      }, additionalProperties: false } },
     }, additionalProperties: false,
   },
   render: (_args: unknown, value: VideoToolResult) => [{ type: 'text' as const, text: JSON.stringify(value) }],
@@ -69,6 +82,16 @@ const output = {
 function failure(error: unknown): VideoToolResult {
   if (error instanceof CreativeError) return { status: 'failed', code: error.code, message: error.message }
   return { status: 'failed', ...videoProjectFailure(error) }
+}
+
+/** Return exact prepared identities without minting generation or hiding existing operations. */
+function preparedWorks(batch: VideoWorkBatch): VideoToolResult {
+  return { status: 'prepared', work_request_id: batch.requestId,
+    pending_work_ids: batch.works.filter(work => work.state === 'prepared').map(work => work.workId),
+    works: batch.works.map(work => ({ work_id: work.workId, index: work.index, state: work.state,
+      ...work.link === undefined ? {} : { plan_id: work.link.projectId, operation_id: work.link.operationId,
+        ...work.link.videoProjectId === undefined ? {} : { project_id: work.link.videoProjectId } } })),
+    message: '作品编号已准备，尚未新增生成。每条成片使用对应 work_id；继续、重试和恢复同一作品时始终复用原编号。' }
 }
 
 /** Bind an execution to its existing workspace and session rather than the host cwd. */
@@ -165,9 +188,56 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
   }
 
   ctx.tools.register(defineTool({
-    name: 'generate_video_project',
-    description: 'Default fixed background workflow for every new chat video, including a single short clip and a finished video longer than one model clip. Each independent human generation request has its own allowance: default to one finished video, or the exact explicitly requested work count and parameters. This tool starts one finished work per invocation; its clips and gateway concurrency do not multiply that count. A previous running or unknown work never consumes a new human request’s allowance, even when both requests use the same chat, plan, or shots. Plans associate content, not submission identity. Only retries of the same invocation are duplicates. Query or resume the original project by its retained id rather than generating it again. If remaining_works is positive, continue arranging that many works in further tool steps without waiting for earlier jobs; stop after zero. For a simple single-clip brief without an explicit duration, call this tool directly with prompt and any requested model or references; omit total_duration_seconds so the Host resolves actual defaults in one call. Do not load directing skills, write a long storyboard or call list_video_models first for that simple case. For explicit timing or complex plans, read list_video_models for actual controls; never discover support by paid retries or silently replace an explicitly named model. Use the yunshu-video-director skill for story, character/reference continuity, dialogue and subtitles, then call this native workflow; do not write polling, download or assembly scripts or manually repeat generate_video for each visual cut. One paid clip can contain several camera beats. For requests such as a 40-second video, plan the fewest supported clips (for a 15-second limit: 15+15+10, or three 15-second clips trimmed to 40), generate independent clips with gateway-approved bounded parallelism using the signed-in account, then normalize, trim, and join them in timeline order. Without a valid gateway declaration, concurrency defaults to four clips. Respect verified pool capacity and any lower local or gateway ceiling. The API owns shared account capacity. Do not launch a separate agent or generation-tool call for every clip. For a catalog with H3 single clips limited to 4–15 seconds, 60 seconds means four 15-second clips, never one 30-second clip. All local tools and every request are checked before billing. Returns a background job_id and durable project_id; read job_output at measured intervals for queued/generating progress and call present on the completed final_path. A busy response without an accepted task id is unknown, not confirmed queue admission. Use job_kill when the user stops; accepted provider tasks may continue billing. A query deadline retains task ids for explicit resume, never a fresh submission. Never claim completion before the job reports a saved final_path. If a current user-supplied chat attachment is outside the workspace, first copy that read-authorized attachment into this workspace with the existing file tools, then pass the copied path; do not copy unrelated files.' + VIDEO_REQUEST_GUIDANCE,
+    name: 'prepare_video_works',
+    description: 'Prepare concrete finished-video work ids without generation or billing. Omit count for one finished video. When the user requests several works, interpret the full conversation and prepare that complete count before starting any work, then pass a different returned work_id for each finished work. This is a concrete work list, not a language-based permission or quota. Repeating preparation under the same human source returns the original list even with another tool-call id; it never creates extra versions or resets a submitted work. Reuse existing work_id values for confirmations, parameter corrections, queries and recovery. A separate actual human request can prepare an independent list even with the same prompt or plan. Do not prepare again to retry an unknown submission; query its original operation or project. For a later real answer requesting additional works, use append_video_works with the missing count; do not reset existing identities. Only the Host assigns work identities.',
     parameters: {
+      count: { type: 'number', description: 'Concrete positive whole number of finished works requested in the conversation. Defaults to one. Shot count, clip count and concurrency do not increase this value. Prepare the complete work list before generating its first work.' },
+    }, output,
+    presentCall: args => ({ card: 'generic', title: '准备视频作品', kind: 'read',
+      content: [{ type: 'text', text: `${String(args.count ?? 1)} 个作品` }] }),
+    presentResult: (_args, result) => ({ card: 'generic', title: result.isError ? '作品尚未准备' : '视频作品', content: result.content }),
+    async execute(args, exec): Promise<VideoToolResult> {
+      try {
+        const { workspaceRoot, session } = caller(exec)
+        const creative = options.creative
+        const store = options.videoWorks
+        if (creative === undefined || store === undefined) throw new CreativeError('VIDEO_WORK_UNAVAILABLE', 503,
+          '视频作品登记服务尚未准备好，尚未提交生成。')
+        const provider = await options.acquireProvider(workspaceRoot, session)
+        const batch = await prepareChatVideoWorks(store, creative, creativeOwner(exec, provider.identity),
+          videoGenerationIntentOf(exec), args.count)
+        return preparedWorks(batch)
+      } catch (error) { return failure(error) }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'append_video_works',
+    description: 'Append concrete additional finished works only when a later real human answer explicitly increases an already prepared list. count is the ADDITIONAL number: an existing list of one changed to three needs count=2. Read the current works first. The Host binds this revision to the exact real answer captured for this execution; repeating it or changing tool-call ids cannot append twice. An answer already used to prepare the list cannot append another copy. Existing work ids, UNKNOWN submissions and operation ids remain unchanged. Use returned pending_work_ids for genuinely new works and query original existing works. Do not append for retries, quality review, parameter correction or concurrency. A new independent human message prepares its own list with prepare_video_works instead. This tool neither generates nor approves a model price; each new non-H3 work still requires its actual quote and human choice.',
+    parameters: {
+      count: { type: 'number', required: true, description: 'Positive whole number of ADDITIONAL finished works explicitly requested by the later real human answer, excluding all existing works. For a change from one to three, use two.' },
+    }, output,
+    presentCall: args => ({ card: 'generic', title: '追加视频作品', kind: 'read',
+      content: [{ type: 'text', text: `追加 ${String(args.count)} 个作品` }] }),
+    presentResult: (_args, result) => ({ card: 'generic', title: result.isError ? '作品尚未追加' : '视频作品清单', content: result.content }),
+    async execute(args, exec): Promise<VideoToolResult> {
+      try {
+        const { workspaceRoot, session } = caller(exec)
+        const store = options.videoWorks
+        if (store === undefined) throw new CreativeError('VIDEO_WORK_UNAVAILABLE', 503,
+          '视频作品登记服务尚未准备好，尚未追加作品。')
+        const provider = await options.acquireProvider(workspaceRoot, session)
+        return preparedWorks(await appendChatVideoWorks(store, creativeOwner(exec, provider.identity),
+          videoGenerationIntentOf(exec), args.count))
+      } catch (error) { return failure(error) }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'generate_video_project',
+    description: 'Default fixed background workflow for every new chat video, including a single short clip and a finished video longer than one model clip. Default to one finished work. For several user-requested works, first prepare_video_works with the concrete count and use each returned work_id once. This tool starts one finished work per invocation; clips and gateway concurrency never add works. Reuse work_id when continuing, correcting or retrying the same finished work. Its durable claim survives new tool-call ids and restarts; an existing work returns original task coordinates without a new generation POST. A new actual human request can prepare independent work even with the same prompt, plan or shots, and an earlier unknown task cannot block it. Natural-language phrasing and inferred work totals are not permission gates. pending_work_ids identifies concrete prepared works still available to start; start only those still requested by the user, without waiting for earlier jobs. If the user reduces the count, leave unwanted prepared works unstarted; never generate merely to empty this list. remaining_works counts that list, not a user allowance. Query or resume accepted and unknown original projects instead of generating again. For a simple single-clip brief without an explicit duration, call this tool directly with prompt and any requested model or references; omit total_duration_seconds so the Host resolves actual defaults in one call. Do not load directing skills, write a long storyboard or call list_video_models first for that simple case. For explicit timing or complex plans, read list_video_models for actual controls; never discover support by paid retries or silently replace an explicitly named model. Use the yunshu-video-director skill for story, character/reference continuity, dialogue and subtitles, then call this native workflow; do not write polling, download or assembly scripts or manually repeat generate_video for each visual cut. One paid clip can contain several camera beats. For requests such as a 40-second video, plan the fewest supported clips (for a 15-second limit: 15+15+10, or three 15-second clips trimmed to 40), generate independent clips with gateway-approved bounded parallelism using the signed-in account, then normalize, trim, and join them in timeline order. Without a valid gateway declaration, concurrency defaults to four clips. Respect verified pool capacity and any lower local or gateway ceiling. The API owns shared account capacity. Do not launch a separate agent or generation-tool call for every clip. For a catalog with H3 single clips limited to 4–15 seconds, 60 seconds means four 15-second clips, never one 30-second clip. All local tools and every request are checked before billing. Returns a background job_id and durable project_id; read job_output at measured intervals for queued/generating progress and call present on the completed final_path. A busy response without an accepted task id is unknown, not confirmed queue admission. Use job_kill when the user stops; accepted provider tasks may continue billing. A query deadline retains task ids for explicit resume, never a fresh submission. Never claim completion before the job reports a saved final_path. If a current user-supplied chat attachment is outside the workspace, first copy that read-authorized attachment into this workspace with the existing file tools, then pass the copied path; do not copy unrelated files.' + VIDEO_REQUEST_GUIDANCE,
+    parameters: {
+      work_id: { type: 'string', description: 'Existing work_id from prepare_video_works or an earlier result. Reuse it for the same finished work across retries, confirmations and parameter corrections. Omission uses the current human request’s first default work. For several finished works, prepare their count first and pass each returned work_id; do not create new work ids to retry an unknown submission.' },
       plan_id: { type: 'string', description: 'Explicit update_creation_plan id. Also supply shot_ids in generation order.' },
       shot_ids: { type: 'array', items: { type: 'string' }, description: 'Exact shot ids belonging to plan_id, one per actual supported model clip and in the saved timeline order. Multiple visual cuts may share one paid clip; do not create an unsupported paid clip for each camera beat.' },
       prompt: { type: 'string', required: true, description: 'The complete video brief, visual continuity, story, and desired editing. Before calling, script user-delegated narrative or dialogue scenes with stable character ids, language and brief exact lines, identifying on-screen speakers versus narration; preserve user-supplied wording. Assign each line and its timing to a shot in shot_prompts. Do not reduce a story requiring voices to a music montage. Respect silent/no-dialogue requests and do not add dialogue or subtitles to unrelated nonverbal videos. Include requested lip-sync and subtitle requirements. These request native model generation, not separate speech, lip-sync or subtitle processing; verify the rendered result before claiming they are met.' },
@@ -186,17 +256,25 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
     presentResult: (_args, result) => ({ card: 'generic', title: result.isError ? '视频项目未开始' : '视频项目', content: result.content }),
     async execute(args, exec): Promise<VideoToolResult> {
       let creation: CreativeOperation | undefined
+      let workClaim: VideoWorkClaim | undefined
       try {
         const { workspaceRoot, session } = caller(exec)
         if (videoModelChoiceCancelled(exec)) throw new CreativeError('USER_CANCELLED', 409,
           '你已取消本次视频生成，未提交新的模型请求；需要生成时请明确发送新的生成要求。')
-        if (options.creative === undefined) throw new CreativeError('CREATIVE_VIDEO_INTENT_UNAVAILABLE', 409,
-          '无法确认本次新增视频的请求与作品数量，尚未提交生成；请明确提出需要生成的视频及数量。')
+        if (options.creative === undefined || options.videoWorks === undefined) throw new CreativeError('VIDEO_WORK_UNAVAILABLE', 503,
+          '视频作品登记服务尚未准备好，尚未提交生成。')
         const signal = AbortSignal.any([exec.signal, lifetime.signal])
         signal.throwIfAborted()
         let provider = await options.acquireProvider(workspaceRoot, session)
+        const owner = creativeOwner(exec, provider.identity)
+        const source = videoGenerationIntentOf(exec)
+        const reservation = await claimChatVideoWork(options.videoWorks, options.creative, owner, source, args.work_id)
+        if (reservation.kind === 'existing') return existingVideoWorkResult(reservation)
+        const work = reservation.claim
+        workClaim = work
         const videoIntent = await options.creative.preflightVideoWorkCount(
-          creativeOwner(exec, provider.identity), videoGenerationIntentOf(exec), {
+          owner, source, {
+            videoWorkId: work.workId,
             ...args.plan_id === undefined ? {} : { planId: args.plan_id },
             ...args.shot_ids === undefined ? {} : { shotIds: args.shot_ids },
           })
@@ -319,22 +397,37 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
           kind: 'video', prompt: input.prompt, model: manifest.model,
           shots: manifest.segments.map(segment => ({ prompt: segment.prompt, durationSeconds: segment.durationSeconds })),
           videoProjectId: manifest.id,
+          videoWorkId: work.workId,
           ...args.plan_id === undefined ? {} : { planId: args.plan_id }, ...args.shot_ids === undefined ? {} : { shotIds: args.shot_ids },
           ...planRevision === undefined ? {} : { expectedRevision: planRevision },
           videoIntent,
         })
+        await options.videoWorks.attach(work, { projectId: creation.projectId, operationId: creation.operationId,
+          videoProjectId: manifest.id })
         const runEditor = options.editor(workspaceRoot, session, [join(options.stateDirectory, manifest.id, 'clips')])
         const linked = creation
-        const remaining = creation.remainingVideoWorks ?? 0
+        const pending = [...await options.videoWorks.pending(owner, work.workId)]
+        const remaining = pending.length
         const jobId = start(exec, 'video-project', `${String(input.totalDurationSeconds)} 秒视频`, async (job, signal) => {
           try { return await runVideoProject(runOptions(linked, session, workspaceRoot), manifest, provider, runEditor, job, signal) }
           finally { options.creative?.release(linked) }
         }, manifest.id, remaining > 0 ? false : undefined)
         if (remaining === 0) exec.concludeTurn()
         return { status: 'background', job_id: jobId, project_id: manifest.id, plan_id: creation.projectId,
+          work_id: work.workId, work_request_id: work.requestId, operation_id: creation.operationId, pending_work_ids: pending,
           remaining_works: remaining, plan_seconds: manifest.segments.map(segment => segment.durationSeconds),
-          message: `${remaining > 0 ? `本次明确请求还有 ${String(remaining)} 个视频作品待安排，请继续为这些作品调用 generate_video_project，不要等待已启动作品完成。` : '本次请求的视频作品已全部安排，你可以继续发送其它指令，无需等待生成完成。'}视频项目已在后台开始。查询进度时读取 job_output 当前快照；完成后会通知并提供产物。停止本地任务不代表已取消上游任务或停止计费。` }
-      } catch (error) { if (creation !== undefined) options.creative?.release(creation); return failure(error) }
+          message: `${remaining > 0 ? `已准备的清单中还有 ${String(remaining)} 个作品尚未启动，请按用户最新要求选择所需的 pending_work_ids，不必等待先前作品完成，也不要为了清空清单多生成。` : '当前作品清单已全部安排，你可以继续发送其它指令，无需等待生成完成。'}视频项目已在后台开始。查询进度时读取 job_output 当前快照；完成后会通知并提供产物。停止本地任务不代表已取消上游任务或停止计费。` }
+      } catch (error) {
+        if (creation !== undefined) options.creative?.release(creation)
+        if (workClaim !== undefined && error instanceof CreativeError && error.code === 'USER_CANCELLED') {
+          if (options.videoWorks !== undefined) await settleVideoWorkPreparation(options.videoWorks, workClaim, true)
+        }
+        return failure(error)
+      } finally {
+        if (creation === undefined && workClaim !== undefined && options.videoWorks !== undefined) {
+          await settleVideoWorkPreparation(options.videoWorks, workClaim)
+        }
+      }
     },
   }))
 

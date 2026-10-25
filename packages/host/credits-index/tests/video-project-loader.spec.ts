@@ -21,6 +21,7 @@ import WebServer from '@deepseek-ai/dsh-host-webserver'
 import * as Artifacts from '@deepseek-ai/dsh-artifacts-index'
 import * as Credits from '../src/index.ts'
 import { registerVideoProjectTools } from '../src/video-project-tools.ts'
+import { VideoWorkStore } from '../src/video-work-store.ts'
 import type { VideoProjectInput, VideoProjectOptions, VideoProjectProvider } from '../src/video-project-types.ts'
 import type { VideoEditor } from '../src/video-edit.ts'
 import { CreativeStore } from '../src/creative-store.ts'
@@ -82,6 +83,7 @@ async function boot(production = false, workspaceIncludesState = false, managedO
   const creative = new CreativeStore({ directory: join(directory, 'creative'), current: async () => provider.identity,
     video: (id, owner) => readVideoProject(options, id, owner.sessionId, owner.workspaceRoot, owner) })
   options.creative = creative
+  options.videoWorks = new VideoWorkStore({ directory: join(directory, 'video-works'), current: async () => provider.identity })
   const VideoFixture = { name: 'video-fixture', inject: ['tools'], apply: (ctx: Context) => {
     registerVideoGenerationIntent(ctx)
     registerCreativeTools(ctx, creative, async () => provider.identity)
@@ -176,11 +178,62 @@ function json(value: unknown): Record<string, unknown> {
 }
 
 describe('video tools through Loader, real tool registry and jobs runtime', () => {
+  it('cannot append works without a later real human revision', async () => {
+    const f = await boot()
+    const initial = json((await f.call('prepare_video_works', {})).value)
+    const result = await f.call('append_video_works', { count: 2 })
+    expect(result.value).toMatchObject({ status: 'failed' })
+    const retained = json((await f.call('prepare_video_works', { count: 3 })).value)
+    expect(retained.work_request_id).toBe(initial.work_request_id)
+    expect(retained.works).toEqual(initial.works)
+    expect(f.requests).toEqual([])
+    expect(await f.creative.projects({ ...f.provider.identity, sessionId: f.agent.id })).toEqual([])
+  })
+
+  it('claims one default work when two real registry executions reach provider acquisition together', async () => {
+    const f = await boot(false, false, false, '让画面动起来')
+    f.setUnknown()
+    let arrivals = 0
+    let open = () => {}
+    const gate = new Promise<void>((resolve) => { open = resolve })
+    f.options.acquireProvider = async () => {
+      arrivals += 1
+      if (arrivals === 2) open()
+      await gate
+      return f.provider
+    }
+    // Exercise competing executor entries without changing native/PTC scheduling policy.
+    const results = await Promise.all([
+      f.call('generate_video_project', { prompt: '同一片树叶随风摆动' }),
+      f.call('generate_video_project', { prompt: '同一片树叶随风摆动' }),
+    ])
+    expect(arrivals).toBe(2)
+    const values = results.map(result => json(result.value))
+    expect(values.map(value => value.status).sort()).toEqual(['background', 'existing'])
+    expect(new Set(values.map(value => value.work_id)).size).toBe(1)
+    await vi.waitFor(() => { expect(f.requests).toEqual([5]) })
+    const projects = await f.creative.projects({ ...f.provider.identity, sessionId: f.agent.id })
+    expect(projects).toHaveLength(1)
+    expect(projects[0]?.tasks).toHaveLength(1)
+    const original = values.find(value => value.status === 'background')
+    expect(original).toBeDefined()
+    await vi.waitFor(async () => {
+      const views = await f.creative.projects({ ...f.provider.identity, sessionId: f.agent.id })
+      expect(views[0]?.tasks[0]?.status).toBe('unknown')
+    })
+    const retried = json((await f.call('generate_video_project', {
+      work_id: original?.work_id, prompt: '同一片树叶随风摆动',
+    })).value)
+    expect(retried).toMatchObject({ status: 'existing', work_id: original?.work_id,
+      project_id: original?.project_id, operation_id: original?.operation_id })
+    expect(f.requests).toEqual([5])
+  })
+
   it.each(['agent-message', 'tool-jobs'] as const)('refuses a native paid project in a %s-only turn despite unused earlier human quota', async (source) => {
     const f = await boot(false, false, false, '生成3条10秒视频')
     f.nextNotice(source)
     const generated = await f.call('generate_video_project', { prompt: 'Attempted generation from a notification', total_duration_seconds: 10 })
-    expect(generated.value).toMatchObject({ status: 'failed', code: 'CREATIVE_VIDEO_INTENT_UNAVAILABLE' })
+    expect(generated.value).toMatchObject({ status: 'failed', code: 'CREATIVE_VIDEO_SOURCE_UNAVAILABLE' })
     expect(f.requests).toEqual([])
     expect(f.inputs).toEqual([])
     expect(await f.creative.projects({ ...f.provider.identity, sessionId: f.agent.id })).toEqual([])
@@ -204,10 +257,10 @@ describe('video tools through Loader, real tool registry and jobs runtime', () =
       expect(value.plan_id).not.toBe(panel.projectId)
       await vi.waitFor(() => { expect(f.requests).toEqual([10]) })
       expect((await f.call('generate_video_project', { prompt: 'Unrequested second chat version' })).value)
-        .toMatchObject({ status: 'failed', code: 'CREATIVE_VIDEO_COUNT_LIMIT' })
+        .toMatchObject({ status: 'existing', work_id: value.work_id, project_id: value.project_id })
       expect((await f.call('generate_video_project', { plan_id: panel.projectId, shot_ids: ['shot_1'],
         prompt: 'Do not duplicate the exact panel work', total_duration_seconds: 10 })).value)
-        .toMatchObject({ status: 'failed', code: 'CREATIVE_VIDEO_COUNT_LIMIT' })
+        .toMatchObject({ status: 'existing', work_id: value.work_id, project_id: value.project_id })
       const retained = await f.creative.projects(owner)
       expect(retained.find(project => project.id === panel.projectId)?.tasks).toMatchObject([{ source: 'ai-creation', status: state }])
       expect(retained.find(project => project.id === value.plan_id)?.tasks).toMatchObject([{ source: 'chat', status: 'running' }])
@@ -240,7 +293,7 @@ describe('video tools through Loader, real tool registry and jobs runtime', () =
     expect(json(second.value).project_id).not.toBe(original.project_id)
     await vi.waitFor(() => { expect(f.requests).toEqual([10, 10]) })
     expect((await f.call('generate_video_project', { prompt: 'Unrequested duplicate version' })).value)
-      .toMatchObject({ status: 'failed', code: 'CREATIVE_VIDEO_COUNT_LIMIT' })
+      .toMatchObject({ status: 'existing', work_id: json(second.value).work_id, project_id: json(second.value).project_id })
     expect(json((await f.call('video_project_status', { project_id: original.project_id })).value).task_ids).toEqual(taskIds)
     expect(f.requests).toEqual([10, 10])
   })
@@ -429,9 +482,13 @@ describe('video tools through Loader, real tool registry and jobs runtime', () =
   it('creates three separate ten-second works without treating their duration as a work count', async () => {
     const f = await boot(false, false, false, '来3个10s视频')
     f.setPending(true)
+    const prepared = json((await f.call('prepare_video_works', { count: 3 })).value)
+    if (!Array.isArray(prepared.works)) throw new Error('Expected three concrete prepared works')
+    const workIds = prepared.works.map(work => String(json(work).work_id))
+    expect(new Set(workIds).size).toBe(3)
     let planId: string | undefined
     for (let index = 0; index < 3; index += 1) {
-      const result = await f.call('generate_video_project', { prompt: `第${String(index + 1)}个茶杯视频`,
+      const result = await f.call('generate_video_project', { work_id: workIds[index], prompt: `第${String(index + 1)}个茶杯视频`,
         ...planId === undefined ? {} : { plan_id: planId, shot_ids: ['shot_1'], total_duration_seconds: 10 } })
       expect(result.concludesTurn).toBe(index === 2 ? true : undefined)
       expect(result.value).toMatchObject({ status: 'background', plan_seconds: [10], remaining_works: 2 - index })
@@ -440,9 +497,8 @@ describe('video tools through Loader, real tool registry and jobs runtime', () =
       if (planId !== undefined) expect(value.plan_id).toBe(planId)
       planId = value.plan_id
       if (index === 0) {
-        const replay = await f.ctx.tools.execute({ callId: ToolCallId('video-1'), name: 'generate_video_project',
-          arguments: { prompt: '第1个茶杯视频' }, agent: f.agent, signal: new AbortController().signal })
-        expect(replay.value).toMatchObject({ status: 'failed', code: 'CREATIVE_VIDEO_SUBMISSION_DUPLICATE' })
+        const replay = await f.call('generate_video_project', { work_id: workIds[0], prompt: '第1个茶杯视频' })
+        expect(replay.value).toMatchObject({ status: 'existing', work_id: workIds[0], project_id: value.project_id })
       }
       const wait = vi.spyOn(f.ctx.jobs, 'wait')
       const snapshot = await f.call('job_output', { job_id: value.job_id, wait: true, timeout_ms: 600_000 })
@@ -453,7 +509,7 @@ describe('video tools through Loader, real tool registry and jobs runtime', () =
     }
     await vi.waitFor(() => { expect(f.requests).toEqual([10, 10, 10]) })
     const extra = await f.call('generate_video_project', { prompt: '不应多出的第四个视频' })
-    expect(extra.value).toMatchObject({ status: 'failed', code: 'CREATIVE_VIDEO_COUNT_LIMIT' })
+    expect(extra.value).toMatchObject({ status: 'existing', work_id: workIds[0] })
     expect(f.requests).toEqual([10, 10, 10])
   })
 
@@ -995,10 +1051,10 @@ describe('video tools through Loader, real tool registry and jobs runtime', () =
     expect(skill).toMatchObject({ source: 'bundled', invocation: { modelInvocable: true, userInvocable: true } })
     expect(skill?.content).toContain('For explicit timing or complex plans, call list_video_models once')
     expect(skill?.content).toContain('For every new chat video request, use generate_video_project by default, including a single short clip')
-    for (const name of ['generate_video', 'generate_video_project', 'video_project_status', 'resume_video_project', 'cancel_video_project', 'edit_video']) expect(fixture.ctx.tools.get(name)).toBeDefined()
+    for (const name of ['prepare_video_works', 'append_video_works', 'generate_video', 'generate_video_project', 'video_project_status', 'resume_video_project', 'cancel_video_project', 'edit_video']) expect(fixture.ctx.tools.get(name)).toBeDefined()
     expect(fixture.ctx.tools.get('generate_video_project')?.description).toContain('40-second')
     expect(fixture.ctx.tools.schemas().find(schema => schema.name === 'generate_video')).toMatchSnapshot('single-clip audio and dialogue contract')
-    expect(fixture.ctx.tools.schemas().filter(schema => ['generate_video_project', 'video_project_status', 'resume_video_project', 'edit_video'].includes(schema.name))).toMatchSnapshot()
+    expect(fixture.ctx.tools.schemas().filter(schema => ['prepare_video_works', 'append_video_works', 'generate_video_project', 'video_project_status', 'resume_video_project', 'edit_video'].includes(schema.name))).toMatchSnapshot()
     const denied = await fixture.call('generate_video_project', { prompt: '茶杯', total_duration_seconds: 40 })
     expect(json(denied.value)).toMatchObject({ status: 'failed' })
     expect(fixture.ctx.jobs.list(fixture.agent.id)).toEqual([])

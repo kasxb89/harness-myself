@@ -7,7 +7,6 @@
       "sameOriginalMessage": true,
       "sourceSeqMatches": true,
       "requestTurn": 1,
-      "workCount": 1,
       "requestedDurationSeconds": 30
     },
     "providerSeconds": [15, 15],
@@ -16,6 +15,6 @@
   },
   "noticeDenied": {
     "status": "failed",
-    "code": "CREATIVE_VIDEO_INTENT_UNAVAILABLE"
+    "code": "CREATIVE_VIDEO_SOURCE_UNAVAILABLE"
   }
 }
