@@ -741,7 +741,7 @@ export class CreativeStore {
     used += unrecorded.size
     if (used >= intent.grant.maxWorks) {
       throw new CreativeError('CREATIVE_VIDEO_COUNT_LIMIT', 409,
-        `本次请求已安排 ${String(used)} 个视频作品，已达到明确约定的 ${String(intent.grant.maxWorks)} 个上限；不会自行生成新版本。请先查看已有结果，需要追加时请明确提出作品数量。`)
+        `这次已经安排 ${String(used)} 个视频作品，请先查看或恢复原任务。若想追加，可直接说明另做几条，或修改成片总数量；已安排的作品会计入总量。`)
     }
     return used
   }
@@ -790,7 +790,7 @@ export class CreativeStore {
         }
       }
       if (intent === undefined) throw new CreativeError('CREATIVE_VIDEO_INTENT_UNAVAILABLE', 409,
-        '无法确认本次新增视频的请求与作品数量，尚未提交生成；请明确提出需要生成的视频及数量。')
+        '这次尚未提交生成。请结合前文简短确认是继续原视频还是另做作品；未指定数量时默认一条，无需重述完整需求。')
       await this.assertVideoWorkCount(owner, intent)
       return intent
     })

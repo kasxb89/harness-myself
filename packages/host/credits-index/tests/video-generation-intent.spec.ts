@@ -188,12 +188,83 @@ it.each([
   expect(explicitVideoWorkCount(text)).toBe(1)
 })
 
-it.each(['生成3条30秒的美剧视频吗？', '请生成3条30秒的美剧视频，可以吗？'])(
-  'does not increase work quantity from a question: %s', (text) => {
+it.each(['生成3条30秒的美剧视频吗？'])(
+  'does not increase work quantity from a bare capability question: %s', (text) => {
     expect(videoWorkAllowance(text)).toBeLessThanOrEqual(1)
     expect(explicitVideoWorkCount(text)).toBe(1)
   },
 )
+
+it.each([
+  ['能帮我生成一条30秒视频吗', 1, 30], ['可以帮我生成一条30秒视频吗？', 1, 30],
+  ['能不能帮我生成3条30秒的美剧视频？', 3, 30], ['请生成3条30秒的美剧视频，可以吗？', 3, 30],
+  ['给我整一条30秒短片', 1, 30], ['给我整三条30秒的海边短片', 3, 30],
+  ['我要一个30秒海边视频', 1, 30], ['我想要三个30秒海边视频', 3, 30],
+  ['用这张图生成30秒视频', 1, 30], ['帮我把这张图做成30秒视频', 1, 30],
+  ['生成3条30秒视频，不要生成字幕', 3, 30], ['生成3条30秒视频不要生成字幕', 3, 30],
+  ['生成3条30秒视频，台词是为什么不要生成', 3, 30],
+  ['生成3条30秒视频，台词里说为什么不要生成4条15秒视频', 3, 30],
+  ['生成3条30秒视频，标题写为什么要生成视频', 3, 30],
+  ['生成3条30秒视频，故事讲述等我确认后再生成', 3, 30],
+  ['生成3条30秒视频，不要生成视频的字幕', 3, 30],
+  ['参考3条15秒视频，我要三条30秒海边视频', 3, 30],
+  ['生成一条30秒视频讲述为什么不要生成虚假信息', 1, 30],
+] as const)('accepts an explicit natural creation request and preserves its parameters: %s', (text, count, duration) => {
+  expect(videoWorkAllowance(text)).toBe(count)
+  expect(explicitVideoWorkCount(text)).toBe(count)
+  expect(humanVideoDurationSeconds(text)).toBe(duration)
+})
+
+it.each([
+  ['帮我把这张图做成视频', 1], ['请生成讲述怎么做饭的视频', 1],
+  ['生成一个关于为什么天空是蓝色的视频', 1],
+  ['能生成30秒视频吗？', 0], ['可以生成3条30秒视频吗？', 0],
+  ['生成的视频怎么还没好？', 0], ['帮我生成的视频怎么还没好', 0],
+  ['能帮我生成视频的代码吗？', 0], ['帮我把这张图做成视频的教程', 0],
+  ['用这张图生成视频的脚本', 0], ['取消整个视频', 0], ['不要生成字幕视频', 0],
+] as const)('distinguishes a concrete creation request from capability, observation, cancellation, or code: %s', (text, count) => {
+  expect(videoWorkAllowance(text)).toBe(count)
+})
+
+it.each([
+  '生成一条30秒视频，先不要生成，等我确认',
+  '生成一条30秒视频，暂时不要生成',
+  '生成一条30秒视频，但是别生成',
+  '生成一条30秒视频，风格不对暂时别生成',
+  '生成一条30秒视频，风格说明不用生成视频',
+  '生成一条30秒视频，台词是你好，先不要生成',
+  '生成一条30秒视频，故事讲述不要生成焦虑，取消生成',
+  '生成一条30秒视频，台词是你好，等我确认',
+  '生成一条30秒视频，台词是你好，生成视频为什么报错',
+  '字幕别做了先不生成',
+  '生成一条30秒视频，先不生成',
+  '生成一条30秒视频，暂不生成',
+  '生成一条30秒视频，暂时不生成',
+  '生成一条30秒视频，暂不生成视频',
+  '风格还不行暂不生成视频',
+  '生成一条30秒视频，剧情讲述一个男孩。先不要生成',
+  '帮我生成视频为什么失败了',
+  '生成视频为什么报错',
+  '帮我生成视频怎么还没完成？',
+  '生成视频耗时多久',
+] as const)('does not authorize a creation request followed by a real hold or an existing-task question: %s', (text) => {
+  expect(videoWorkAllowance(text)).toBe(0)
+  expect(humanVideoDurationSeconds(text)).toBeUndefined()
+})
+
+it.each([
+  ['生成一条30秒视频，台词是不要生成焦虑', 30],
+  ['生成一条30秒视频，不要生成字幕', 30],
+  ['生成一条30秒视频，标题写生成视频为什么报错', 30],
+  ['生成一条30秒视频，故事讲述帮我生成视频为什么失败了', 30],
+  ['生成一条30秒视频，台词里说生成视频耗时多久', 30],
+  ['生成一个关于视频为什么报错的30秒短片', 30],
+  ['生成一条30秒不要做作的视频', 30],
+  ['生成一条30秒视频，人物说“暂时别生成，等我确认”', 30],
+] as const)('preserves creation when control or progress language belongs to the requested content: %s', (text, duration) => {
+  expect(videoWorkAllowance(text)).toBe(1)
+  expect(humanVideoDurationSeconds(text)).toBe(duration)
+})
 
 const conditionalChatRequests = [
   '在聊天里，如果我确认，另外生成3条4秒的H3视频。',
@@ -441,18 +512,22 @@ it.each([1, 2] as const)('retains message ownership while independent requests o
         content: [{ type: 'text', text: JSON.stringify({ status: 'background', operation_id: 'op_independent_a' }) }], isError: false }) },
       { surfaceOp: 'append', sourceEventSeqs: [aCall.seq] })
       const state = fold(session)
+      const continues = followup !== '查看视频状态'
       expect(state.requests).toMatchObject([
         { messageId: a.id, sourceSeq: aEvent.seq, turn: 1, maxWorks: 1, requestedDurationSeconds: 4, requestedModel: 'MiniMax-H3' },
         { messageId: b.id, sourceSeq: bEvent.seq, turn: secondTurn, maxWorks: nextRequest.includes('3条') ? 3 : 1,
           requestedDurationSeconds: 10, requestedModel: 'MiniMax-H3' },
-        { messageId: c.id, turn: secondTurn, maxWorks: 0 },
+        ...continues ? [] : [{ messageId: c.id, turn: secondTurn, maxWorks: 0 }],
       ])
-      expect(state.requests[2]).not.toHaveProperty('requestedDurationSeconds')
-      expect(state.requests[2]).not.toHaveProperty('requestedModel')
+      expect(state.requests).toHaveLength(continues ? 2 : 3)
+      if (!continues) {
+        expect(state.requests[2]).not.toHaveProperty('requestedDurationSeconds')
+        expect(state.requests[2]).not.toHaveProperty('requestedModel')
+      }
       expect(state.calls).toEqual([
         { callId: aCallId, messageId: a.id, name: 'generate_video_project', rootCallSeq: aCall.seq, turn: 1, native: true },
         { callId: bCallId, messageId: b.id, name: 'generate_video', rootCallSeq: bCall.seq, turn: secondTurn, native: true },
-        { callId: 'followup-no-new-work', messageId: c.id, name: 'generate_video_project',
+        { callId: 'followup-no-new-work', messageId: continues ? b.id : c.id, name: 'generate_video_project',
           rootCallSeq: cCall.seq, turn: secondTurn, native: true },
       ])
       expect(state.evidence).toEqual([

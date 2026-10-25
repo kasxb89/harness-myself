@@ -1,7 +1,7 @@
 import { Context } from '@deepseek-ai/cordis'
 import SkillRegistry from '@deepseek-ai/dsh-skill'
 import { afterEach, expect, it } from 'vitest'
-import { CREATION_LANGUAGE_GUIDANCE, registerCreationWorkflows, VIDEO_DIRECTOR_PROMPT } from '../src/creation-workflows.ts'
+import { CREATION_LANGUAGE_GUIDANCE, registerCreationWorkflows, VIDEO_DIRECTOR_PROMPT, VIDEO_REQUEST_GUIDANCE } from '../src/creation-workflows.ts'
 import { COMMUNITY_VIDEO_DIRECTION } from '../src/creation-director-knowledge.ts'
 import { MINIMAX_H3_PROMPT_GUIDANCE } from '../src/video-prompt-format.ts'
 
@@ -21,6 +21,7 @@ it('publishes shared community direction and an optional H3 skill and removes bo
   const skill = await ctx.skills.get('yunshu-video-director')
   expect(skill?.content).toContain(VIDEO_DIRECTOR_PROMPT)
   expect(skill?.content).toContain(CREATION_LANGUAGE_GUIDANCE)
+  expect(skill?.content).toContain(VIDEO_REQUEST_GUIDANCE)
   expect(skill?.content).toContain(COMMUNITY_VIDEO_DIRECTION)
   expect(skill?.content).not.toContain(MINIMAX_H3_PROMPT_GUIDANCE)
   await expect(`${skill?.content}\n`).toMatchFileSnapshot('./expected/video-director-skill.md')

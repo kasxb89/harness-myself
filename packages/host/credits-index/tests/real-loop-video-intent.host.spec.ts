@@ -303,6 +303,84 @@ describe('production AgentLoop human video request ownership', () => {
     expect(f.requests).toEqual([15, 15])
   })
 
+  it('keeps ordinary confirmations inside an unknown submission allowance while allowing an explicit new request', async () => {
+    const f = await boot()
+    f.unknown(true)
+    f.script.push(() => toolReply('continued-unknown', 'generate_video_project', {
+      prompt: '已提交但未能确认上游响应的原作品', total_duration_seconds: 15,
+    }))
+    await f.human('生成一条15秒视频')
+    expect(f.result('continued-unknown')).toMatchObject({ status: 'background', remaining_works: 0 })
+    await f.settled('continued-unknown')
+    const original = f.grants[0]?.intent?.grant
+    if (original === undefined) throw new Error('Expected the original human request grant')
+    expect(f.requests).toEqual([15])
+    for (const [index, text] of ['好的开始吧', '继续生成这个视频'].entries()) {
+      const call = `continued-retry-${String(index)}`
+      f.script.push(() => toolReply(call, 'generate_video_project', {
+        prompt: '普通确认仍对应同一原作品', total_duration_seconds: 15,
+      }), finalReply)
+      await f.human(text)
+      expect(f.result(call)).toMatchObject({ status: 'failed', code: 'CREATIVE_VIDEO_COUNT_LIMIT' })
+      expect(f.grants.at(-1)?.intent?.grant).toMatchObject({
+        messageId: original.messageId, sourceSeq: original.sourceSeq, maxWorks: 1, turn: original.turn,
+      })
+      expect(f.requests).toEqual([15])
+    }
+    f.unknown(false)
+    f.script.push(() => toolReply('continued-new-human', 'generate_video_project', {
+      prompt: '用户明确追加的独立作品', total_duration_seconds: 15,
+    }))
+    await f.human('再生成一条15秒视频')
+    expect(f.result('continued-new-human')).toMatchObject({ status: 'background', remaining_works: 0 })
+    await f.settled('continued-new-human')
+    expect(f.grants.at(-1)?.intent?.grant.messageId).not.toBe(original.messageId)
+    expect(f.grants.at(-1)?.intent?.grant.sourceSeq).not.toBe(original.sourceSeq)
+    expect(f.requests).toEqual([15, 15])
+    f.script.push(() => toolReply('continued-resume-original', 'resume_video_project', {
+      project_id: f.result('continued-unknown').project_id,
+    }), finalReply)
+    await f.human('继续查询第一条原任务，不要重新生成')
+    expect(f.result('continued-resume-original')).toMatchObject({ status: 'background' })
+    await f.settled('continued-resume-original')
+    expect(f.requests).toEqual([15, 15])
+    const projects = await f.creative.projects({ ...f.identity, sessionId: f.agent.id })
+    expect(projects.flatMap(project => project.tasks)).toHaveLength(2)
+  })
+
+  it('counts the first submitted work toward a later total of three instead of creating three more', async () => {
+    const f = await boot()
+    f.script.push(() => toolReply('total-first', 'generate_video_project', {
+      prompt: '总量调整前已完成的第一条', total_duration_seconds: 15,
+    }))
+    await f.human('生成一条15秒视频')
+    expect(f.result('total-first')).toMatchObject({ status: 'background', remaining_works: 0 })
+    await f.settled('total-first')
+    const original = f.grants[0]?.intent?.grant
+    if (original === undefined) throw new Error('Expected the original single-work grant')
+    for (const [index, text] of ['改成3条成片', '好的开始吧'].entries()) {
+      const call = `total-followup-${String(index)}`
+      f.script.push(() => toolReply(call, 'generate_video_project', {
+        prompt: `原请求总量三条中的第${String(index + 2)}条`, total_duration_seconds: 15,
+      }))
+      await f.human(text)
+      expect(f.result(call)).toMatchObject({ status: 'background', remaining_works: 1 - index })
+      await f.settled(call)
+      expect(f.grants.at(-1)?.intent?.grant).toMatchObject({
+        messageId: original.messageId, sourceSeq: original.sourceSeq, maxWorks: 3, turn: original.turn,
+      })
+      expect(f.requests).toHaveLength(index + 2)
+    }
+    f.script.push(() => toolReply('total-fourth', 'generate_video_project', {
+      prompt: '未被用户追加的第四条', total_duration_seconds: 15,
+    }), finalReply)
+    await f.human('好的开始吧')
+    expect(f.result('total-fourth')).toMatchObject({ status: 'failed', code: 'CREATIVE_VIDEO_COUNT_LIMIT' })
+    expect(f.requests).toEqual([15, 15, 15])
+    const projects = await f.creative.projects({ ...f.identity, sessionId: f.agent.id })
+    expect(projects.flatMap(project => project.tasks)).toHaveLength(3)
+  })
+
   it('carries a late question reply through real run_code subprocess bindings and logs the nested generation', async () => {
     const f = await boot('ptc')
     f.script.push(() => toolReply('ptc-question', 'run_code', {
