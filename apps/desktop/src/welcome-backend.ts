@@ -165,7 +165,10 @@ export async function connectDesktopWelcome(
       return unavailable(error instanceof DOMException && ['TimeoutError', 'AbortError'].includes(error.name) ? 'timeout' : 'network')
     }
     if (!record(session) || typeof session.signedIn !== 'boolean') throw new Error('desktop welcome: invalid product session')
-    if (session.ok === false && session.code === 'ACCOUNT_UNAVAILABLE' && session.signedIn && session.liveness === 'unknown') {
+    if (session.ok === false && typeof session.code === 'string'
+      && ['ACCOUNT_UNAVAILABLE', 'ACCOUNT_AUTH_REQUIRED', 'ACCOUNT_ACCESS_DENIED', 'ACCOUNT_RATE_LIMITED',
+        'ACCOUNT_TIMEOUT', 'ACCOUNT_NETWORK_ERROR', 'ACCOUNT_INVALID_RESPONSE'].includes(session.code)
+      && session.signedIn && session.liveness === 'unknown') {
       let issue: WelcomeSessionIssue = 'account_unavailable'
       if (session.failure !== undefined) {
         const failure = session.failure

@@ -142,6 +142,30 @@ describe('desktop welcome Web operations', () => {
     expect(host.send.mock.calls.some(([, init]) => /signOut|credentials\/(?:set|delete)/u.test(typeof init?.body === 'string' ? init.body : ''))).toBe(false)
   })
 
+  it.each([
+    { code: 'ACCOUNT_NETWORK_ERROR', reason: 'network' },
+    { code: 'ACCOUNT_TIMEOUT', reason: 'timeout', status: 408 },
+    { code: 'ACCOUNT_RATE_LIMITED', reason: 'rate_limited', status: 429 },
+    { code: 'ACCOUNT_AUTH_REQUIRED', reason: 'upstream_rejected', status: 401 },
+    { code: 'ACCOUNT_ACCESS_DENIED', reason: 'upstream_rejected', status: 403 },
+    { code: 'ACCOUNT_INVALID_RESPONSE', reason: 'protocol', status: 200 },
+  ])('keeps the current account-read response recoverable: $code', async ({ code, reason, status }) => {
+    const host = transport('zh')
+    const send = host.send.getMockImplementation()!
+    let unavailable = true
+    host.send.mockImplementation((input, init) => new URL(input).pathname === '/credits/api/session' && unavailable
+      ? Promise.resolve(Response.json({ ok: false, code, signedIn: true, liveness: 'unknown',
+        failure: { reason, stage: 'account-read', ...status === undefined ? {} : { status } } })) : send(input, init))
+    const backend = await connectDesktopWelcome(url, host.send)
+    try {
+      expect(await backend.read()).toMatchObject({ loggedIn: false, sessionIssue: reason, localePreference: 'zh' })
+      unavailable = false
+      host.productSession.signedIn = true
+      expect(await backend.read()).toMatchObject({ loggedIn: true, localePreference: 'zh' })
+      expect(host.send.mock.calls.some(([, init]) => /signOut|credentials\/(?:set|delete)/u.test(typeof init?.body === 'string' ? init.body : ''))).toBe(false)
+    } finally { backend.dispose() }
+  })
+
   it('accepts the legacy unknown-session response while refusing contradictory authentication claims', async () => {
     const host = transport()
     const send = host.send.getMockImplementation()!
@@ -150,6 +174,7 @@ describe('desktop welcome Web operations', () => {
     const backend = await connectDesktopWelcome(url, host.send)
     expect(await backend.read()).toMatchObject({ loggedIn: false, sessionIssue: 'account_unavailable' })
     for (product of [{ ok: true, signedIn: true, liveness: 'unknown' },
+      { ok: false, code: 'ACCOUNT_UNKNOWN_FAILURE', signedIn: true, liveness: 'unknown' },
       { ok: false, code: 'ACCOUNT_UNAVAILABLE', signedIn: false, liveness: 'unknown' },
       { ok: false, code: 'ACCOUNT_UNAVAILABLE', signedIn: true, liveness: 'unknown', failure: { reason: 'not-a-code', stage: 'renewal' } }]) {
       await expect(backend.read()).rejects.toThrow('invalid product session')
