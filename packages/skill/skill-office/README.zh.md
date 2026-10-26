@@ -38,10 +38,25 @@ Agent（智能体）可以加载 Word、PowerPoint 和 Excel 工作流，默认�
 | `assetRoot` | 包内的 `assets/` | 包含三个 skill 文件夹和共享 `scripts/` 的绝对资源目录；部署可将其放在应用归档之外。 |
 | `node` | 当前独立 Node 进程 | Node 可执行文件的绝对路径；Electron 和独立 SDK 可执行文件必须显式提供。 |
 | `cli` | 已安装 kit 的 `lib/cli.js` | CLI 入口的绝对路径；`false` 显式禁用 CLI。 |
+| `renderApi` | 包内 `lib/render-cache.js` | 应用归档外独立模块的绝对路径；Desktop 和 SDK 将其复制到固定脚本旁。 |
 
 相对路径、资源缺失或 skill 文件的 YAML frontmatter 缺少描述都会导致激活失败。卸载插件会移除其候选项。项目和用户 skill 的优先级仍由 skill 注册表负责。
 
-加载的技能在 `Installed LibreOffice Kit` 段落中提供 `libreofficeKit.node` 和 `libreofficeKit.cli` 的绝对路径。除非用户明确要求不用内置二进制，Agent 将内置 CLI 作为 Node 的第一个参数运行，无需依赖工作目录或搜索 PATH。内置 CLI 失败时报告错误，不替换为系统可执行文件。激活时检查两个路径是否为实际文件。npm 部署默认使用已安装的 kit；Desktop 提供独立 Node 和 ASAR 外的完整 Office 依赖；Python SDK 提供独立 Node 和可执行文件旁的 Office 目录。仅有 Python 的自定义部署必须配置 `cli: false`，或提供独立 Node。
+加载的技能在 `Installed LibreOffice Kit` 段落中提供 `libreofficeKit.node` 和 `libreofficeKit.cli` 的绝对路径。除非用户明确要求不用内置二进制，Agent 将内置 CLI 作为 Node 的第一个参数运行，无需依赖工作目录或搜索 PATH。内置 CLI 失败时报告错误，不替换为系统可执行文件。激活时检查两个路径是否为实际文件。npm 部署默认使用已安装的 kit；Desktop 提供独立 Node 和 ASAR 外的完整 Office 依赖；Python SDK 提供独立 Node 和可执行文件旁的 Office 目录。Electron／SEA 打包部署还必须显式提供应用归档外的独立 `renderApi`。仅有 Python 的自定义部署必须配置 `cli: false`，或提供独立运行时路径。
+
+已安装运行环境还提供 `libreofficeKit.renderWrapper` 和 `libreofficeKit.renderApi`。使用 Node 调用此固定脚本，传入 `--api <渲染接口绝对路径>` 和 `--cli <Kit CLI 绝对路径>`、`--input`、新的 `--output-dir`，以及完整的 `--pages` 页码选择或工作表 `--sheet`/`--range`；脚本对整批只调用一次公共 Kit `renderImages`，随后释放引擎。可选的 `--cache-dir`、`--cache-ttl-ms`、`--cache-max-bytes` 和 `--font-inventory` 控制磁盘复用及其预算。复用键包含已保存文件的 SHA256、页码或范围与渲染设置、引擎版本及内容身份、每次重新验证的完整字体库存。可信库存需声明 `schemaVersion: 1`、当前 `platform`、`complete: true`、绝对路径 `roots` 和 `files: [{path, sha256}]`；目录成员与每个字体的摘要必须匹配。库存缺失或无法验证时仍正常批量渲染，只是不复用结果。缓存损坏或存储不可用不代表预览通过，也不更改源文件。输出独占创建，只在整批完成后发布清单；取消会等待引擎清理。`--invalidate-cache --cache-dir <私有目录>` 推进缓存代际，不改变源文档或已经交付的输出。调用之间不保留运行中的引擎。
+
+### 结构化创建
+
+Desktop 传入 `creation: { source, root, enabled: true }` 后提供 `word_create`、`slides_create`、`workbook_create`、`office_inspect` 和 `office_patch`。工具通过原有会话工作目录、权限策略和 shell 执行通道调用内置 Python，不需模型编写代码或安装依赖。新文件使用语义标题和完整 UUID，结构检查完成后才发布，不能覆盖已有文件。创建支持原生可编辑 Word 块、PowerPoint 文字／表格／图表／备注，以及 Excel 类型化数据／样式／公式。复杂排版、模板、高级修改、新工作簿图表和大型本地数据仍走可编程技能流程。
+
+存在 creation 段时 `creation.enabled` 默认 true；未配置则不启用。`source` 必填，`root` 可选。可调默认值为 `timeoutMs: 120000`、`maxInputBytes: 2097152`、`maxItems: 1000000`、`maxCells: 1000000`、`maxOutputBytes: 131072`；仍受原 shell 时限上限约束。显式 Excel 公式通过内置 CLI 真正重算整个工作簿，并检查公式保留和非空、非错误缓存结果。数据中的等号开头字符串保持文本。重算失败不能声称已有计算值。
+
+成功结果包含绝对路径、格式、结构摘要、重算标记、视觉检查要求和本地编写耗时。Word 与 PowerPoint 仍按技能完成适用的排版检查，结构化创建不能证明外观。相关检查通过后使用 present 交付；运行时和子进程失败属于本地执行错误，不归为服务器错误。
+
+`office_inspect` 返回源文件的精确 SHA256、有界文字／对象／单元格摘要和兼容警告。`office_patch` 在修改前后检查该 SHA；替换唯一匹配的 Word 段落／run 或 PowerPoint 形状／备注文字并保留 run 属性，或修改指定 Excel 单元格／数字格式。仅重写受影响 XML 部件，无关图表、图片、嵌入数据和样式部件保持原字节。影响公式的工作簿修改会真正重算，仅把计算缓存合回保留的原包，并报告已有公式错误；新增公式提供预期值时需精确验证。修改值／公式时移除过期计算链。含宏、外链、主动内容或不支持的高级特征时转可编程保全流程；被动 custom XML 保留且不单独阻止编辑。原文件不变，SHA 过期需要重新检查。
+
+检查／修改默认配置为 `maxFileBytes: 52428800`、`maxArchiveEntries: 10000`、`maxUncompressedBytes: 262144000`、`maxInspectItems: 200`、`maxPreviewChars: 1000`，均位于同一 creation Config。摘要截断会明确标记，仍检查档案、原文件及完整输出预算。这些定点操作不支持任意 OOXML 特性修改，也不保证与 Microsoft Office 像素一致。
 
 ### 结构检查
 
@@ -84,7 +99,7 @@ Excel 数据和公式任务跳过视觉检查；涉及格式、排版、图表�
 
 #### KV 缓存影响
 
-挂载提供方会增加三个目录项；加载 skill 时，其正文进入既有 skill 工具的插入位置。提供方不另增提示词分区。
+挂载提供方会增加三个目录项；加载 skill 时，其正文进入既有 skill 工具的插入位置。提供方不另增提示词分区。启用结构化编写会增加五个稳定的具名 JSON 工具 schema 和紧凑结果，普通创建避免生成编写脚本及中间 shell 调用。
 
 ## 已知限制与暂缓事项
 

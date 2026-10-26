@@ -76,6 +76,7 @@ interface Operation {
   errorCode?: string
   requestGrant?: VideoRequestGrant
   workId?: VideoWorkId
+  imageInvocationId?: string
 }
 
 /** Private JSON v1. Existing video manifests and Session data remain unchanged. */
@@ -102,6 +103,8 @@ interface BeginInput {
   videoIntent?: VideoGenerationIntent
   /** Host-issued finished-work identity, separate from a model tool call. */
   videoWorkId?: VideoWorkId
+  /** Exclusive Host-issued image claim; never accepted from model or HTTP parameters. */
+  imageInvocationId?: string
 }
 
 interface ShotFacts { status: CreativeStatus; outputs: SavedOutput[]; durationSeconds?: number }
@@ -180,6 +183,11 @@ function parseVideoWorkId(value: unknown): VideoWorkId {
   const id = identifier(value)
   if (!/^vw_[a-f0-9]{64}_[1-9][0-9]*$/u.test(id)) return invalid()
   return id as VideoWorkId
+}
+function parseImageInvocationId(value: unknown): string {
+  const id = identifier(value)
+  if (!/^ii_[a-f0-9]{64}$/u.test(id)) return invalid()
+  return id
 }
 function operationId(value: unknown): CreativeOperationId { const id = identifier(value); if (!id.startsWith('op_')) invalid(); return id as CreativeOperationId }
 function outputId(value: unknown): CreativeOutputId { const id = identifier(value); if (!id.startsWith('out_') && !id.startsWith('op_')) invalid(); return id as CreativeOutputId }
@@ -399,6 +407,7 @@ function parseRecord(value: unknown): CreativeRecord {
       ...item.videoReceipt === undefined ? {} : { videoReceipt: imageReceipt(item.videoReceipt, identifier(owner.sessionId)) },
       ...requestGrant === undefined ? {} : { requestGrant },
       ...item.workId === undefined ? {} : { workId: parseVideoWorkId(item.workId) },
+      ...item.imageInvocationId === undefined ? {} : { imageInvocationId: parseImageInvocationId(item.imageInvocationId) },
       ...item.videoProjectId === undefined ? {} : { videoProjectId: text(item.videoProjectId, 128) },
       ...item.model === undefined ? {} : { model: text(item.model, 256) },
       ...item.errorCode === undefined ? {} : { errorCode: identifier(item.errorCode) },
@@ -410,6 +419,10 @@ function parseRecord(value: unknown): CreativeRecord {
     || item.imageReceipt?.origin?.toolCallId !== undefined))) return invalid()
   if (operations.some(item => item.workId !== undefined && (plan.kind !== 'video' || item.source !== 'chat'
     || item.assetId !== undefined))) return invalid()
+  if (operations.some(item => item.imageInvocationId !== undefined && (item.source !== 'chat'
+    || plan.kind !== 'image' && item.assetId === undefined || item.videoProjectId !== undefined
+    || item.videoReceipt !== undefined || item.workId !== undefined || item.requestGrant !== undefined))) return invalid()
+  unique(operations.flatMap(item => item.imageInvocationId === undefined ? [] : [item.imageInvocationId]))
   if (operations.some(item => item.videoReceipt !== undefined && (plan.kind !== 'video' || item.videoProjectId !== undefined || item.assetId !== undefined))) return invalid()
   if (operations.some(item => item.assetId === undefined
     ? item.shotIds.length === 0 || item.shotIds.some(id => !plan.shots.some(shot => shot.id === id))
@@ -830,6 +843,8 @@ export class CreativeStore {
   begin(owner: CreativeOwner, input: BeginInput): Promise<CreativeOperation> {
     return this.queue(async () => {
       await this.current(owner)
+      const imageInvocationId = input.imageInvocationId === undefined ? undefined : parseImageInvocationId(input.imageInvocationId)
+      if (imageInvocationId !== undefined && (input.kind !== 'image' || input.source !== 'chat')) invalid()
       let record: CreativeRecord
       if (input.planId !== undefined) {
         record = await this.read(input.planId, owner)
@@ -846,7 +861,12 @@ export class CreativeStore {
           || input.shotIds.some(id => !record.shots.some(shot => shot.id === id))) {
           throw new CreativeError('CREATIVE_SHOT_MISMATCH', 400, '请明确指定本次生成对应的计划镜头，镜头数量须与实际分段一致。')
         }
-        if (input.kind !== 'video' || input.videoIntent === undefined) await this.assertGenerationAvailable(record, input)
+        if (imageInvocationId !== undefined && record.operations.some(item => item.imageInvocationId === imageInvocationId)) {
+          throw new CreativeError('CREATIVE_IMAGE_SUBMISSION_DUPLICATE', 409, '这次图片提交已有原任务，请查询原任务，不会重复提交生成。')
+        }
+        if (imageInvocationId === undefined && (input.kind !== 'video' || input.videoIntent === undefined)) {
+          await this.assertGenerationAvailable(record, input)
+        }
       } else {
         if (input.shotIds !== undefined || input.assetId !== undefined) throw new CreativeError('CREATIVE_PLAN_REQUIRED', 400, '指定镜头或素材时必须同时指定创作计划。')
         const plan = parseCreativePlan({
@@ -871,7 +891,8 @@ export class CreativeStore {
       record.owner = owner
       const invocation: Operation = { id, ...input.source === undefined ? {} : { source: input.source }, prompt: text(input.prompt), shotIds, ...input.assetId === undefined ? {} : { assetId: input.assetId }, status: 'running', outputs: [], ...input.videoProjectId === undefined ? {} : { videoProjectId: input.videoProjectId }, ...input.model === undefined ? {} : { model: text(input.model, 256) },
         ...input.kind !== 'video' || input.videoIntent === undefined ? {} : { requestGrant: { ...input.videoIntent.grant } },
-        ...videoWorkId === undefined ? {} : { workId: videoWorkId } }
+        ...videoWorkId === undefined ? {} : { workId: videoWorkId },
+        ...imageInvocationId === undefined ? {} : { imageInvocationId } }
       record.operations.push(invocation)
       if (Buffer.byteLength(JSON.stringify(record)) > MAX_BYTES / 2) throw new CreativeError('CREATIVE_LIMIT', 400, '项目记录已接近上限，请新建项目；尚未提交生成。')
       await this.persist(record)

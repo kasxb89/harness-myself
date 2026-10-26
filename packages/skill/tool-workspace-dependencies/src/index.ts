@@ -1,10 +1,13 @@
 /** Model-facing query for a bundled Python, Node.js, and pnpm payload, in place or installed under the Harness home. */
 
+import { createHash, randomUUID } from 'node:crypto'
+import { constants } from 'node:fs'
 import { cp, lstat, mkdir, mkdtemp, readFile, rename, rm, stat } from 'node:fs/promises'
 import { dirname, isAbsolute, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { withInstallationLock } from './installation-lock.ts'
 
 /** Cordis plugin identity. */
 export const name = 'tool-workspace-dependencies'
@@ -21,12 +24,18 @@ export interface Config {
    * which suits read-only carriers such as container image layers.
    */
   readonly root?: string
+  /** Maximum wait for a concurrent installer, without expiring its ownership. */
+  readonly lockWaitMs?: number
+  /** Interval between concurrent installer ownership checks. */
+  readonly lockPollMs?: number
 }
 
 /** Require a named payload source before the Loader activates the tool. */
 export const Config: z<Config> = z.object({
   source: z.string().min(1).required(),
   root: z.string().min(1),
+  lockWaitMs: z.number().min(1).default(30_000),
+  lockPollMs: z.number().min(1).default(100),
 })
 
 /** Canonical build metadata, independent of user-installed packages; legacy files are normalized on read. */
@@ -199,33 +208,67 @@ export async function resolvePrimaryRuntime(source: string): Promise<WorkspaceDe
  * Install the application-owned payload locally, retaining a complete previous tree on copy failure.
  * @param source - Payload carried by the current installation.
  * @param root - Fixed primary runtime directory under the Harness home.
+ * @param options - Bounded installation-lock polling and waiting configuration.
  * @returns Paths into the installed payload; no PATH or package-manager configuration is changed.
  */
-export async function installPrimaryRuntime(source: string, root: string): Promise<WorkspaceDependencies> {
+export async function installPrimaryRuntime(source: string, root: string, options: Pick<Config, 'lockWaitMs' | 'lockPollMs'> = {}): Promise<WorkspaceDependencies> {
   const manifest = await compatibleManifest(source)
+  const lock = { lockWaitMs: options.lockWaitMs ?? 30_000, lockPollMs: options.lockPollMs ?? 100 }
+  for (const [key, value] of Object.entries(lock)) if (!Number.isFinite(value) || value <= 0) throw new Error(`primary runtime: ${key} must be positive`)
+  return withInstallationLock(root, lock, async () => {
+    // Digest-bearing installations have stable process paths across carrier upgrades.
+    await exists(root)
+    if (manifest.payloadDigest !== undefined) await exists(`${root}.payloads`)
+    const target = manifest.payloadDigest === undefined ? root : join(`${root}.payloads`, dependencyIdentity(manifest))
+    return installPayload(source, target, manifest)
+  })
+}
+
+function dependencyIdentity(manifest: PrimaryRuntimeManifest): string {
+  return createHash('sha256').update(JSON.stringify({
+    platform: manifest.platform, arch: manifest.arch, payloadDigest: manifest.payloadDigest,
+    python: manifest.python, node: manifest.node, pnpm: manifest.pnpm,
+    pythonPackages: Object.entries(manifest.pythonPackages).sort(([left], [right]) => left.localeCompare(right)),
+  })).digest('hex')
+}
+
+async function installPayload(source: string, root: string, manifest: PrimaryRuntimeManifest): Promise<WorkspaceDependencies> {
+  await validatePayloadEntries(workspaceDependencyPaths(source, manifest))
   await mkdir(dirname(root), { recursive: true })
   const previous = `${root}.previous`
   const previousExists = await exists(previous)
   const rootExists = await exists(root)
   if (!rootExists && previousExists) await rename(previous, root)
-  if (await exists(join(root, 'runtime.json')) && JSON.stringify(await readPrimaryRuntime(root)) === JSON.stringify(manifest)) {
-    const paths = workspaceDependencyPaths(root, manifest)
-    await validatePayloadEntries(paths)
-    return paths
+  if (await exists(join(root, 'runtime.json'))) {
+    try {
+      const installed = await readPrimaryRuntime(root)
+      const matches = manifest.payloadDigest === undefined
+        ? JSON.stringify(installed) === JSON.stringify(manifest)
+        : installed.payloadDigest !== undefined && dependencyIdentity(installed) === dependencyIdentity(manifest)
+      if (matches) {
+        const paths = workspaceDependencyPaths(root, installed)
+        await validatePayloadEntries(paths)
+        return paths
+      }
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code !== undefined && code !== 'ENOENT' && code !== 'ENOTDIR') throw error
+      // Incomplete local entries and invalid metadata are repaired from the validated carrier.
+    }
   }
   const staging = await mkdtemp(join(dirname(root), '.primary-runtime-'))
   try {
-    await cp(source, staging, { recursive: true, dereference: true })
+    await cp(source, staging, { recursive: true, dereference: true, mode: constants.COPYFILE_FICLONE })
     const paths = workspaceDependencyPaths(staging, manifest)
     await validatePayloadEntries(paths)
-    await rm(previous, { recursive: true, force: true })
+    if (await exists(previous)) await rename(previous, `${previous}.retained-${randomUUID()}`)
     const replacing = await exists(root)
     if (replacing) await rename(root, previous)
     try { await rename(staging, root) } catch (error) {
       if (replacing) await rename(previous, root)
       throw error
     }
-    await rm(previous, { recursive: true, force: true })
+    // Retain old executable trees: another application may still have files in use.
   } finally {
     await rm(staging, { recursive: true, force: true })
   }
@@ -265,7 +308,8 @@ export function apply(ctx: Context, config: Config): void {
       render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, undefined, 2) }],
     },
     execute: () => {
-      preparation ??= (config.root === undefined ? resolvePrimaryRuntime(config.source) : installPrimaryRuntime(config.source, config.root))
+      preparation ??= (config.root === undefined
+        ? resolvePrimaryRuntime(config.source) : installPrimaryRuntime(config.source, config.root, config))
         .catch((error: unknown) => {
           preparation = undefined
           throw error

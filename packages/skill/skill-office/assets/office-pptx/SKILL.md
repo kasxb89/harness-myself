@@ -9,6 +9,10 @@ Follow an explicit user or applicable AGENTS.md requirement for an environment o
 
 Keep scripts and output files in the task workspace. The runtime and skill directory contain shared read-only resources. Match the requested slide language and the supplied presentation's design when editing it.
 
+When `slides_create` is available and covers a new ordinary file, prefer it to writing an authoring script. Supply content once; it locates the bundled runtime and performs structural checks. Follow the remaining visual or formula checks indicated by its result, then present the final file. Custom layouts, existing-file edits, templates, unsupported features, and large local datasets keep the programmable workflow below; do not reject those requests merely because the structured tool does not cover them.
+
+For supported existing-file edits, use `office_inspect` then `office_patch` with its exact `source_sha256`. It preserves unrelated package parts and publishes a new file. A compatibility warning or unsupported operation means continue the programmable workflow below rather than refuse the user’s request. A changed source requires a fresh inspection; do not overwrite or blindly retry against stale indices.
+
 ## Create and edit
 
 Use `python-pptx` to inspect or modify an existing presentation. Inspect slide layouts, text runs, images, tables, and charts before editing. Change only the requested content, preserve mixed text formatting, and save to a new file unless the user requests an in-place edit. Rebuilding slides can discard unsupported animation, SmartArt, or other extension content.
@@ -67,10 +71,10 @@ Render for requested images/PDFs or an actionable layout check. Before generatin
 
 Use the bundled LibreOffice binaries unless the user explicitly asks not to use them. Without that explicit opt-out, never search for or invoke system LibreOffice, `soffice`, an application-installed binary, or a downloaded replacement. If the bundled CLI is unavailable or fails, report that failure instead of substituting another executable.
 
-Use the `libreofficeKit.node` and `libreofficeKit.cli` absolute paths supplied in the loaded skill's **Installed LibreOffice Kit** section. Run Node with the CLI entry as its first argument, then `capabilities --json` once. For the bundled runtime, these paths work from the task directory; do not search PATH, guess a package directory, use `npx`, or install a renderer. Quote each path separately; PowerShell also requires the `&` invocation operator. The examples below use `<node>` and `<cli>` for those two returned paths. Render slides directly:
+Use the `libreofficeKit.node` and `libreofficeKit.cli` absolute paths supplied in the loaded skill's **Installed LibreOffice Kit** section. Run Node with the CLI entry as its first argument, then `capabilities --json` once. For the bundled runtime, these paths work from the task directory; do not search PATH, guess a package directory, use `npx`, or install a renderer. Quote each path separately; PowerShell also requires the `&` invocation operator. The examples below use `<node>`, `<cli>`, `<render-wrapper>`, and `<render-api>` for the returned absolute paths. Rendering uses the fixed wrapper with `--api`, batches the selected pages or range into one converter call, and reuses a preview only when saved bytes, engine settings, and a verified complete font inventory match. Without that verified inventory it still renders once and does not persistently reuse images. Render slides directly:
 
 ```sh
-"<node>" "<cli>" render --input report.pptx --output-dir preview-v1 --pages 1,3,4 --dpi 144
+"<node>" "<render-wrapper>" --api "<render-api>" --cli "<cli>" --input report.pptx --output-dir preview-v1 --pages 1,3,4 --dpi 144
 "<node>" "<cli>" convert --input report.pptx --output report.pdf
 ```
 

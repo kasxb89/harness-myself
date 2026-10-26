@@ -914,7 +914,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-credits-index`
 
 - `inject`: `webServer` · `tools`
-- `source`: [`packages/host/credits-index/src/index.ts:106`](../packages/host/credits-index/src/index.ts)
+- `source`: [`packages/host/credits-index/src/index.ts:112`](../packages/host/credits-index/src/index.ts)
 
 ```ts config-catalog
 /** Plugin config: platform origin, display rate, and where the session file lives. */
@@ -983,10 +983,32 @@ export interface Config {
   promptAssistantTimeoutMs?: number
   /** Maximum model output tokens for one prompt-assistance request. */
   promptAssistantMaxTokens?: number
-  /** Settled chat result and receipt cache lifetime, in milliseconds. */
+  /** Maximum fresh pricing reuse lifetime, respecting HTTP cache controls. */
+  mediaCatalogCacheTtlMs?: number
+  /** Maximum independent reference uploads. */
+  imageUploadConcurrency?: number
+  /** Maximum foreground wait before exposing an owned image background job. */
+  imageForegroundWaitMs?: number
+  /** Bounded private latency records; zero disables them. */
+  generationPerformanceMaxRecords?: number
+  /** Maximum independent result downloads. */
+  imageDownloadConcurrency?: number
+  /** Complete per-image response byte limit. */
+  imageDownloadMaxBytes?: number
+  /** Short-lived whole-view cache; settled receipts have their own longer lifetime. */
   chatUsageCacheTtlMs?: number
   /** Maximum simultaneous exact-request ledger reads shared by all chat views. */
   chatUsageConcurrency?: number
+  /** Settled receipt reuse; a later expiry permits refund reconciliation. */
+  chatUsageSettledTtlMs?: number
+  /** Delay before checking an unsettled receipt again. */
+  chatUsagePendingTtlMs?: number
+  /** Bounded fallback after a failed account read. */
+  accountReadFailureCooldownMs?: number
+  /** Minimum interval between account GET starts per login. */
+  accountReadMinIntervalMs?: number
+  /** Maximum active account GETs. */
+  accountReadConcurrency?: number
   /** Maximum final length accepted by natural-language video projects. */
   videoProjectMaxSeconds?: number
   /** Maximum separately billable clips in one video project. */
@@ -3284,7 +3306,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-skill-office`
 
 - `inject`: `skills`
-- `source`: [`packages/skill/skill-office/src/index.ts:16`](../packages/skill/skill-office/src/index.ts)
+- `source`: [`packages/skill/skill-office/src/index.ts:20`](../packages/skill/skill-office/src/index.ts)
 
 ```ts config-catalog
 /** Office skill resource location. */
@@ -3295,6 +3317,40 @@ export interface Config {
   node?: string
   /** Absolute LibreOffice Kit CLI entry; false explicitly disables CLI access. */
   cli?: string | false
+  /** Standalone render-cache module outside application archives; defaults to the packaged public entry. */
+  renderApi?: string
+  /** Optional structured creation tools; Desktop supplies its bundled runtime. */
+  creation?: false | (Pick<OfficeCreationConfig, 'source'> & Partial<Omit<OfficeCreationConfig, 'source'>>)
+}
+
+/** Structured authoring configuration independent of tool schemas. */
+export interface OfficeCreationConfig {
+  /** Enable structured creation, inspection, and safe patch tools. */
+  readonly enabled: boolean
+  /** Bundled Python payload. */
+  readonly source: string
+  /** Optional dependency installation root. */
+  readonly root?: string
+  /** Whole authoring command deadline, subject to the shell's existing cap. */
+  readonly timeoutMs: number
+  /** Maximum structured content bytes. */
+  readonly maxInputBytes: number
+  /** Maximum total array entries across one request. */
+  readonly maxItems: number
+  /** Maximum worksheet cells touched, including number-format ranges. */
+  readonly maxCells: number
+  /** Maximum source file bytes for inspection and SHA-bound editing. */
+  readonly maxFileBytes: number
+  /** Maximum ZIP members in a source Office file. */
+  readonly maxArchiveEntries: number
+  /** Maximum declared expanded ZIP bytes. */
+  readonly maxUncompressedBytes: number
+  /** Maximum objects returned by an inspection. */
+  readonly maxInspectItems: number
+  /** Maximum text characters per inspected object preview. */
+  readonly maxPreviewChars: number
+  /** Maximum complete stdout result bytes. */
+  readonly maxOutputBytes: number
 }
 ```
 <!-- END GENERATED config-catalog:@deepseek-ai/dsh-skill-office -->
@@ -4360,7 +4416,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-tool-workspace-dependencies`
 
 - `inject`: `tools`
-- `source`: [`packages/skill/tool-workspace-dependencies/src/index.ts:15`](../packages/skill/tool-workspace-dependencies/src/index.ts)
+- `source`: [`packages/skill/tool-workspace-dependencies/src/index.ts:18`](../packages/skill/tool-workspace-dependencies/src/index.ts)
 
 ```ts config-catalog
 /** Payload location and optional installation directory. */
@@ -4373,6 +4429,10 @@ export interface Config {
    * which suits read-only carriers such as container image layers.
    */
   readonly root?: string
+  /** Maximum wait for a concurrent installer, without expiring its ownership. */
+  readonly lockWaitMs?: number
+  /** Interval between concurrent installer ownership checks. */
+  readonly lockPollMs?: number
 }
 ```
 <!-- END GENERATED config-catalog:@deepseek-ai/dsh-tool-workspace-dependencies -->

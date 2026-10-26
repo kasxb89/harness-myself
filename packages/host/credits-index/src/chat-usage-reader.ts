@@ -1,4 +1,5 @@
 /** Login-owned chat receipt reads, shared flights and short-lived settled results. */
+import type { AccountGetRequest, AccountReadScheduler } from './account-read.ts'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { ChatUsageLedger, readChatUsage, type ChatUsageFailure, type ChatUsagePayload, type ChatUsageSelection } from './chat-usage.ts'
 
@@ -34,6 +35,7 @@ export interface ChatUsageRead {
   readonly sessionId: SessionId
   readonly selection: ChatUsageSelection
   readonly ongoing: boolean
+  readonly request?: AccountGetRequest
   readonly turn?: number
 }
 
@@ -55,8 +57,15 @@ export class ChatUsageReader {
     readonly timeoutMs: number
     readonly cacheTtlMs: number
     readonly concurrency: number
+    readonly settledTtlMs?: number
+    readonly pendingTtlMs?: number
+    readonly failureCooldownMs?: number
+    readonly scheduler?: AccountReadScheduler
   }) {
-    this.ledger = new ChatUsageLedger({ ttlMs: options.cacheTtlMs, concurrency: options.concurrency })
+    this.ledger = new ChatUsageLedger({ ttlMs: options.cacheTtlMs, concurrency: options.concurrency,
+      ...options.settledTtlMs === undefined ? {} : { settledTtlMs: options.settledTtlMs },
+      ...options.pendingTtlMs === undefined ? {} : { pendingTtlMs: options.pendingTtlMs },
+      ...options.failureCooldownMs === undefined ? {} : { failureCooldownMs: options.failureCooldownMs } })
   }
 
   /** Invalidate a changed or signed-out login and prevent old results repopulating caches. */
@@ -92,7 +101,7 @@ export class ChatUsageReader {
       return { ok: true, payload: { scope: 'chat-model', status: 'pending', settledRequests: 0, totalRequests: selection.requests.length } }
     }
     const key = JSON.stringify([input.sessionId, input.turn, selection])
-    const now = Date.now()
+    const now = performance.now()
     for (const [id, cached] of this.settled) if (cached.expires <= now) this.settled.delete(id)
     const cached = this.settled.get(key)
     if (cached !== undefined) return cached.outcome
@@ -101,13 +110,20 @@ export class ChatUsageReader {
     const operation = readChatUsage({
       baseUrl: this.options.baseUrl, timeoutMs: this.options.timeoutMs,
       account: input.account, upstreamToken: input.upstreamToken, selection,
-      signal: owner.controller.signal, ledger: this.ledger,
+      signal: owner.controller.signal, ledger: this.ledger, identity: input.identity,
+      ...input.request === undefined ? {} : { request: input.request },
+      ...this.options.scheduler === undefined ? {} : { scheduler: this.options.scheduler },
     }).then((outcome) => {
       if (owner !== this.owner || owner.controller.signal.aborted) return unavailable()
-      if (outcome.ok && outcome.payload.status === 'settled') {
-        this.settled.set(key, { expires: Date.now() + this.options.cacheTtlMs, outcome })
+      {
+        const ttl = !outcome.ok ? this.options.failureCooldownMs ?? 10_000
+          : outcome.payload.status === 'settled' ? this.options.cacheTtlMs : this.options.pendingTtlMs ?? 5000
+        this.settled.set(key, { expires: performance.now() + ttl, outcome })
       }
       return outcome
+    }).catch((error: unknown) => {
+      if (owner !== this.owner || owner.controller.signal.aborted) return unavailable()
+      throw error
     })
     this.flights.set(key, operation)
     this.operations.add(operation)

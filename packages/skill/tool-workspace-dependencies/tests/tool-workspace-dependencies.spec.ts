@@ -1,9 +1,10 @@
 import * as fs from 'node:fs/promises'
 import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, expect, it, vi } from 'vitest'
+import { execa } from 'execa'
 import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import Include from '@deepseek-ai/cordis-plugin-include'
@@ -21,6 +22,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 })
 
 const roots: string[] = []
+function installedRoot(paths: workspaceDependencies.WorkspaceDependencies): string { return paths.python.split(`${sep}dependencies${sep}`)[0]! }
 afterEach(async () => {
   vi.resetAllMocks()
   await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })))
@@ -67,6 +69,89 @@ it('installs offline, reuses the same release, and leaves environment and user p
   expect(process.env).toEqual(environment)
 })
 
+it('reuses locked dependencies across carrier releases without copying or replacing active paths', async () => {
+  const { source, root, manifest } = await fixture()
+  const locked = { ...manifest, payloadDigest: 'a'.repeat(64) }
+  await writeFile(join(source, 'runtime.json'), JSON.stringify(locked))
+  const first = await installPrimaryRuntime(source, root)
+  const copied = vi.mocked(fs.cp).mock.calls.length
+  await writeFile(join(source, 'runtime.json'), JSON.stringify({ ...locked, desktopVersion: '2.0.0', pythonPackages: Object.fromEntries(Object.entries(locked.pythonPackages).reverse()) }))
+  expect(await installPrimaryRuntime(source, root)).toEqual(first)
+  expect(vi.mocked(fs.cp).mock.calls.length).toBe(copied)
+  expect((await readPrimaryRuntime(installedRoot(first))).desktopVersion).toBe('1.0.0')
+})
+
+it('serializes independent installers and copies a locked payload once', async () => {
+  const { source, root, manifest } = await fixture()
+  await writeFile(join(source, 'runtime.json'), JSON.stringify({ ...manifest, payloadDigest: 'a'.repeat(64) }))
+  const results = await Promise.all(Array.from({ length: 5 }, () => installPrimaryRuntime(source, root, { lockPollMs: 1 })))
+  expect(results.every(value => value.python === results[0]!.python)).toBe(true)
+  expect(vi.mocked(fs.cp)).toHaveBeenCalledTimes(1)
+  await expect(fs.lstat(`${root}.install-lock`)).rejects.toMatchObject({ code: 'ENOENT' })
+})
+
+it('publishes one stable generation when independent Node processes prepare the same home', async () => {
+  const { source, root, manifest } = await fixture()
+  await writeFile(join(source, 'runtime.json'), JSON.stringify({ ...manifest, payloadDigest: 'a'.repeat(64) }))
+  const module = new URL('../src/index.ts', import.meta.url).href
+  const script = `import { installPrimaryRuntime } from ${JSON.stringify(module)}; console.log((await installPrimaryRuntime(process.argv[1], process.argv[2], { lockPollMs: 2 })).python)`
+  const children = await Promise.all(Array.from({ length: 3 }, () => execa(process.execPath,
+    ['--import', 'tsx/esm', '--input-type=module', '-e', script, source, root], { timeout: 10_000 })))
+  expect(new Set(children.map(child => child.stdout)).size).toBe(1)
+  expect(await fs.readdir(`${root}.payloads`)).toHaveLength(1)
+  expect(await readFile(children[0]!.stdout, 'utf8')).toBe('interpreter')
+  await expect(fs.lstat(`${root}.install-lock`)).rejects.toMatchObject({ code: 'ENOENT' })
+}, 15_000)
+
+it('repairs damaged local entries from the valid carrier without accepting corrupt metadata', async () => {
+  const { source, root, manifest } = await fixture()
+  await writeFile(join(source, 'runtime.json'), JSON.stringify({ ...manifest, payloadDigest: 'a'.repeat(64) }))
+  const first = await installPrimaryRuntime(source, root)
+  await writeFile(join(installedRoot(first), 'runtime.json'), '{broken')
+  expect(await installPrimaryRuntime(source, root)).toEqual(first)
+  await rm(first.python)
+  expect(await installPrimaryRuntime(source, root)).toEqual(first)
+  expect(await readFile(first.python, 'utf8')).toBe('interpreter')
+})
+
+it('does not steal a live installer after the waiting deadline', async () => {
+  const { source, root } = await fixture()
+  const lock = `${root}.install-lock`
+  await mkdir(lock, { recursive: true })
+  const owner = JSON.stringify({ pid: process.pid, nonce: 'other-owner' })
+  await writeFile(join(lock, 'owner.json'), owner)
+  await expect(installPrimaryRuntime(source, root, { lockWaitMs: 5, lockPollMs: 1 })).rejects.toThrow('another application')
+  expect(await readFile(join(lock, 'owner.json'), 'utf8')).toBe(owner)
+})
+
+it('recovers a dead installer without a time-based ownership takeover', async () => {
+  const { source, root } = await fixture()
+  const lock = `${root}.install-lock`
+  await mkdir(lock, { recursive: true })
+  const kill = vi.spyOn(process, 'kill').mockImplementation(() => { throw Object.assign(new Error('gone'), { code: 'ESRCH' }) })
+  try {
+    await writeFile(join(lock, 'owner.json'), JSON.stringify({ pid: 2147483647, nonce: 'dead-owner' }))
+    await expect(installPrimaryRuntime(source, root, { lockPollMs: 1 })).resolves.toBeDefined()
+    await expect(fs.lstat(lock)).rejects.toMatchObject({ code: 'ENOENT' })
+  } finally { kill.mockRestore() }
+})
+
+it('preserves an interrupted reaper marker instead of risking another live lock during recovery', async () => {
+  const { source, root } = await fixture()
+  const lock = `${root}.install-lock`
+  await mkdir(lock, { recursive: true })
+  const owner = JSON.stringify({ pid: 2147483647, nonce: 'dead-owner' })
+  const recovery = JSON.stringify({ pid: 2147483646, nonce: 'dead-reaper' })
+  await writeFile(join(lock, 'owner.json'), owner)
+  await writeFile(join(lock, 'recover'), recovery)
+  const kill = vi.spyOn(process, 'kill').mockImplementation(() => { throw Object.assign(new Error('gone'), { code: 'ESRCH' }) })
+  try {
+    await expect(installPrimaryRuntime(source, root, { lockPollMs: 1 })).rejects.toThrow('interrupted recovery')
+    expect(await readFile(join(lock, 'owner.json'), 'utf8')).toBe(owner)
+    expect(await readFile(join(lock, 'recover'), 'utf8')).toBe(recovery)
+  } finally { kill.mockRestore() }
+})
+
 it('replaces release components and recovers an interrupted directory swap', async () => {
   const { source, root, manifest } = await fixture()
   await installPrimaryRuntime(source, root)
@@ -85,18 +170,18 @@ it('replaces dependencies when the locked payload changes without a Desktop vers
   const next = { ...first, payloadDigest: 'b'.repeat(64), pythonPackages: { 'python-docx': '1.2.0' } }
   await writeFile(join(source, 'runtime.json'), JSON.stringify(next))
   await writeFile(join(workspaceDependencyPaths(source, next).pythonPackages, 'new-package.py'), 'new dependency')
-  await installPrimaryRuntime(source, root)
-  expect(await readPrimaryRuntime(root)).toEqual(next)
-  expect(await readFile(join(installed.pythonPackages, 'new-package.py'), 'utf8')).toBe('new dependency')
-  await expect(readFile(join(installed.pythonPackages, 'old-package.py'))).rejects.toMatchObject({ code: 'ENOENT' })
+  const updated = await installPrimaryRuntime(source, root)
+  expect(await readPrimaryRuntime(installedRoot(updated))).toEqual(next)
+  expect(await readFile(join(updated.pythonPackages, 'new-package.py'), 'utf8')).toBe('new dependency')
+  expect(await readFile(join(installed.pythonPackages, 'old-package.py'), 'utf8')).toBe('old dependency')
 })
 
 it('upgrades a release manifest without a payload digest', async () => {
   const { source, root, manifest } = await fixture()
   await installPrimaryRuntime(source, root)
   await writeFile(join(source, 'runtime.json'), JSON.stringify({ ...manifest, payloadDigest: 'a'.repeat(64), pythonPackages: { 'python-docx': '1.2.0' } }))
-  await installPrimaryRuntime(source, root)
-  expect((await readPrimaryRuntime(root)).payloadDigest).toBe('a'.repeat(64))
+  const installed = await installPrimaryRuntime(source, root)
+  expect((await readPrimaryRuntime(installedRoot(installed))).payloadDigest).toBe('a'.repeat(64))
 })
 
 it('replaces changed payload bytes when only the digest changes', async () => {
@@ -108,9 +193,10 @@ it('replaces changed payload bytes when only the digest changes', async () => {
   const installed = await installPrimaryRuntime(source, root)
   await writeFile(join(source, 'runtime.json'), JSON.stringify({ ...first, payloadDigest: 'b'.repeat(64) }))
   await writeFile(sourceFile, 'repacked wheel bytes')
-  await installPrimaryRuntime(source, root)
-  expect(await readFile(join(installed.pythonPackages, 'library.py'), 'utf8')).toBe('repacked wheel bytes')
-  expect((await readPrimaryRuntime(root)).pythonPackages).toEqual(first.pythonPackages)
+  const updated = await installPrimaryRuntime(source, root)
+  expect(await readFile(join(updated.pythonPackages, 'library.py'), 'utf8')).toBe('repacked wheel bytes')
+  expect(await readFile(join(installed.pythonPackages, 'library.py'), 'utf8')).toBe('first wheel bytes')
+  expect((await readPrimaryRuntime(installedRoot(updated))).pythonPackages).toEqual(first.pythonPackages)
 })
 
 it('keeps the installed release when the replacement payload is incomplete', async () => {
@@ -144,7 +230,8 @@ it.each(['in-place', 'copy', 'reuse'] as const)('rejects wrong payload entry typ
     if (directory) await writeFile(path, 'not a library directory')
     else await mkdir(path)
     const operation = mode === 'in-place' ? resolvePrimaryRuntime(source) : installPrimaryRuntime(source, root)
-    await expect(operation).rejects.toThrow(`expected ${directory ? 'directory' : 'file'} at`)
+    if (mode === 'reuse') await expect(operation).resolves.toEqual(workspaceDependencyPaths(root, manifest))
+    else await expect(operation).rejects.toThrow(`expected ${directory ? 'directory' : 'file'} at`)
     if (mode === 'copy') await expect(readFile(join(root, 'runtime.json'))).rejects.toMatchObject({ code: 'ENOENT' })
   }
 })
@@ -300,8 +387,10 @@ it.each([false, true])('preserves the previous installation if publication fails
     await writeFile(join(source, 'runtime.json'), JSON.stringify({ ...manifest, desktopVersion: '2.0.0' }))
   }
   const actual = await vi.importActual<typeof fs>('node:fs/promises')
-  vi.mocked(fs.rename).mockImplementationOnce(previous ? actual.rename : async () => { throw new Error('publication failed') })
-  if (previous) vi.mocked(fs.rename).mockRejectedValueOnce(new Error('publication failed'))
+  vi.mocked(fs.rename).mockImplementation(async (...args) => {
+    if (String(args[0]).includes(`${sep}.primary-runtime-`)) throw new Error('publication failed')
+    await actual.rename(...args)
+  })
   await expect(installPrimaryRuntime(source, root)).rejects.toThrow('publication failed')
   if (previous) expect((await readPrimaryRuntime(root)).desktopVersion).toBe('1.0.0')
   else await expect(readFile(join(root, 'runtime.json'))).rejects.toMatchObject({ code: 'ENOENT' })

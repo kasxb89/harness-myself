@@ -170,7 +170,7 @@ describe('web e2e: direct creation uploads and accepted task recovery', () => {
           const url = new URL(request.url())
           const json = async (payload: unknown): Promise<void> => route.fulfill({ status: 200, json: { ok: true, payload } })
           if (url.pathname === '/credits/api/session') {
-            await json({ signedIn: true, creditsPerYuan: 1000, account: { id: accountId } })
+            await json({ signedIn: true, creditsPerYuan: 1000, account: { id: accountId, phone: '+8613800000000' } })
           } else if (url.pathname === '/credits/api/summary') {
             await json({ balance_points: 20000, as_of: new Date().toISOString() })
           } else if (url.pathname === '/credits/api/chat-usage' && request.method() === 'GET') {

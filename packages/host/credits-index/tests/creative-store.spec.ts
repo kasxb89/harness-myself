@@ -9,6 +9,7 @@ import type { CreativeImageReceipt, CreativeVideoReceipt, CreativePlanChange } f
 import type { VideoGenerationIntent } from '../src/video-generation-intent.ts'
 import type { CreationOperationActivity } from '../src/creation-activity.ts'
 import { VideoWorkStore } from '../src/video-work-store.ts'
+import { ImageInvocationStore } from '../src/image-invocation.ts'
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>()
@@ -912,6 +913,79 @@ describe('retained ordinary video receipts', () => {
     expect(project?.tasks).toHaveLength(1)
     expect(project?.tasks[0]?.outputs).toHaveLength(1)
     expect(project?.outputs).toHaveLength(1)
+  })
+})
+
+describe('trusted independent chat image submissions', () => {
+  it.each(['image', 'video'] as const)('admits distinct concurrent claims for the same %s plan association', async (kind) => {
+    const { store, owner, options } = await fixture()
+    const planId = await store.updatePlan(owner, plan(kind))
+    const claims = new ImageInvocationStore({ directory: join(owner.workspaceRoot, 'claims'),
+      apiBaseUrl: 'https://fixture.test/harness', current: options.current })
+    const [first, second] = await Promise.all([1, 2].map(sourceSeq => claims.claim(owner, {
+      sourceSeq, rootCallId: `root-${String(sourceSeq)}`, callId: 'image-call',
+    })))
+    if (first?.kind !== 'claimed' || second?.kind !== 'claimed') throw new Error('Fixture claims unavailable')
+    const input = { kind: 'image' as const, source: 'chat' as const, prompt: 'same image prompt', planId,
+      ...kind === 'video' ? { assetId: 'portrait' } : { shotIds: ['departure'] }, shots: [{ prompt: 'same image prompt' }] }
+    const attempts = await Promise.allSettled([first.claim, second.claim, first.claim].map(claim =>
+      store.begin(owner, { ...input, imageInvocationId: claim.invocationId })))
+    const accepted = attempts.filter(item => item.status === 'fulfilled').map(item => item.value)
+    expect(accepted).toHaveLength(2)
+    expect(new Set(accepted.map(item => item.operationId)).size).toBe(2)
+    expect(attempts.find(item => item.status === 'rejected')?.reason)
+      .toMatchObject({ code: 'CREATIVE_IMAGE_SUBMISSION_DUPLICATE' })
+    for (const operation of accepted) store.release(operation)
+    const restarted = new CreativeStore(options)
+    await expect(restarted.begin(owner, { ...input, imageInvocationId: first.claim.invocationId }))
+      .rejects.toMatchObject({ code: 'CREATIVE_IMAGE_SUBMISSION_DUPLICATE' })
+    const project = (await restarted.projects(owner)).find(item => item.id === planId)
+    expect(project?.tasks).toHaveLength(2)
+    expect(JSON.stringify(project)).not.toContain('imageInvocationId')
+  })
+
+  it.each([false, true])('keeps UNKNOWN independent from a later claim and queries only the old receipt (receipt: %s)', async (hasReceipt) => {
+    const { store, owner, options } = await fixture()
+    const planId = await store.updatePlan(owner, plan('image'))
+    const input = { kind: 'image' as const, source: 'chat' as const, prompt: 'same image prompt', planId,
+      shotIds: ['departure'], shots: [{ prompt: 'same image prompt' }] }
+    const first = await store.begin(owner, { ...input, imageInvocationId: `ii_${'a'.repeat(64)}` })
+    await store.dispatched(first)
+    if (hasReceipt) await store.receipt(first, acceptedImage)
+    await store.finish(first, { status: 'unknown' })
+    const path = join(options.directory, planId, 'project.json')
+    const before = JSON.parse(await readFile(path, 'utf8')) as { operations: unknown[] }
+    const restarted = new CreativeStore(options)
+    await expect(restarted.begin(owner, { ...input, source: 'ai-creation' }))
+      .rejects.toMatchObject({ code: 'CREATIVE_SUBMISSION_UNKNOWN' })
+    const second = await restarted.begin(owner, { ...input, imageInvocationId: `ii_${'b'.repeat(64)}` })
+    expect(second.operationId).not.toBe(first.operationId)
+    const after = JSON.parse(await readFile(path, 'utf8')) as { operations: unknown[] }
+    expect(after.operations).toHaveLength(2)
+    expect(after.operations[0]).toEqual(before.operations[0])
+    const begin = vi.spyOn(restarted, 'begin')
+    if (hasReceipt) {
+      const resumed = await restarted.resumeImage(owner, planId, first.operationId)
+      expect(resumed.receipt).toEqual(acceptedImage)
+      expect(resumed.operation.operationId).toBe(first.operationId)
+      restarted.release(resumed.operation)
+    } else {
+      await expect(restarted.resumeImage(owner, planId, first.operationId))
+        .rejects.toMatchObject({ code: 'CREATIVE_IMAGE_TASK_UNCONFIRMED' })
+    }
+    expect(begin).not.toHaveBeenCalled()
+    expect((await restarted.projects(owner)).find(item => item.id === planId)?.tasks).toHaveLength(2)
+    restarted.release(second)
+  })
+
+  it('refuses forged entry attribution and malformed image invocation ids', async () => {
+    const { store, owner } = await fixture()
+    const input = { kind: 'image' as const, prompt: 'one', shots: [{ prompt: 'one' }], imageInvocationId: `ii_${'c'.repeat(64)}` }
+    for (const invalid of [{ ...input }, { ...input, source: 'ai-creation' as const },
+      { ...input, kind: 'video' as const, source: 'chat' as const }, { ...input, source: 'chat' as const, imageInvocationId: 'prompt' }]) {
+      await expect(store.begin(owner, invalid)).rejects.toMatchObject({ code: 'CREATIVE_INVALID' })
+    }
+    expect(await store.projects(owner)).toEqual([])
   })
 })
 

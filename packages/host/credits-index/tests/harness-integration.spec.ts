@@ -397,6 +397,7 @@ async function boot(
       defaultOutputDirectory: join(directory, 'selected-output'), stateDirectory: join(directory, 'artifact-settings'), roots: [join(stateDir, 'media')],
     } }] : [],
     { name: '@deepseek-ai/dsh-credits-index', config: { stateDir, newApiBaseUrl: api, relayTokenEnv: relayRef,
+      accountReadMinIntervalMs: 0, accountReadFailureCooldownMs: 1, mediaCatalogCacheTtlMs: 0,
       ...legacyPlatform ? { baseUrl: api } : {}, ...creditsConfig } },
   ]
   const configuration = join(directory, 'cordis.yml')
@@ -507,7 +508,56 @@ const continueVideo = (input: ToolExecutionInput): Promise<ToolExecutionResult> 
 const requestImage = (input: ToolExecutionInput): Promise<ToolExecutionResult> => input.name === 'generate_image' && input.agent !== undefined
   ? executeGenerationFixture(input, true) : context!.tools.execute(input)
 
+/** Replay one actual logged image submission without adding a new human request or tool-call event. */
+function replayLastImage(agent: Agent): Promise<ToolExecutionResult> {
+  const call = agent.session.snapshotEvents().findLast(event => event.type === 'tool/call' && event.data.name === 'generate_image')
+  if (call?.type !== 'tool/call') throw new Error('Expected an original image tool call')
+  const args: unknown = JSON.parse(call.data.arguments)
+  return context!.tools.execute({ name: 'generate_image', arguments: args, agent,
+    callId: call.data.callId, signal: new AbortController().signal })
+}
+
 describe('deployed Harness API through the real product Loader', () => {
+  it('reads fresh account access and public media pricing concurrently before filtering by the confirmed group', async () => {
+    const { base } = await boot(undefined, true)
+    await signIn(base)
+    pricingRows = [
+      { model_name: 'gpt-image-2', supported_endpoint_types: ['image-generation'], enable_groups: ['default'] },
+      { model_name: 'vip-image-model', supported_endpoint_types: ['image-generation'], enable_groups: ['vip'] },
+    ]
+    const release = Promise.withResolvers<undefined>()
+    releaseUpstreamGate = () => { release.resolve(undefined) }
+    const entered = new Set<string>()
+    upstreamGate = async (path) => {
+      if (path !== '/harness/api/pricing' && path !== '/harness/api/user/self') return
+      entered.add(path)
+      await release.promise
+    }
+    const before = calls.length
+    let settled = false
+    const reading = fetch(base + '/api/media/catalog').then((response) => { settled = true; return response })
+    try {
+      // Both live GETs must start before either reply is available: serial execution cannot satisfy this barrier.
+      await vi.waitFor(() => { expect(entered.size).toBe(2) }, { timeout: 1000 })
+      expect(settled).toBe(false)
+      const observed = calls.slice(before)
+      expect(observed.filter(call => call.path === '/harness/api/pricing')).toEqual([
+        { path: '/harness/api/pricing', body: null },
+      ])
+      expect(observed.filter(call => call.path === '/harness/api/user/self')).toEqual([
+        { path: '/harness/api/user/self', authorization: 'Bearer access-user', body: null },
+      ])
+      release.resolve(undefined)
+      const response = await reading
+      expect(response.status).toBe(200)
+      const result = object(await response.json())
+      expect(result).toMatchObject({ ok: true, group: 'default', source: 'newapi-pricing' })
+      const image = object(result.payload).image
+      expect(Array.isArray(image) && image.map(model => object(model).id)).toEqual(['gpt-image-2'])
+      expect(calls.slice(before).filter(call => /\/v1\/(?:images|videos|video|uploads)\//u.test(call.path))).toEqual([])
+    } finally { release.resolve(undefined); await reading }
+  })
+
   it.each(['interrupted', 'timeout', 'disk-full', 'collision'] as const)(
     'contains a legacy material %s failure, preserves existing files and keeps the Host available', async (failure) => {
       const { base, stateDir } = await boot(undefined, false, false, undefined, { timeoutMs: 200 }, undefined, true)
@@ -632,6 +682,12 @@ describe('deployed Harness API through the real product Loader', () => {
 
   it('exposes safe platform-failure narration and unknown-outcome recovery on both native media tools', async () => {
     await boot()
+    expect(context!.tools.get('generate_image')?.output.schema).toMatchObject({ properties: {
+      job_id: { type: 'string' }, elapsed_ms: { type: 'number' },
+      phase_timings: { type: 'array', items: { type: 'object', properties: {
+        stage: { type: 'string' }, duration_ms: { type: 'number' },
+      } } },
+    } })
     for (const name of ['generate_image', 'generate_video']) {
       const tool = context!.tools.schemas().find(tool => tool.name === name)
       expect(tool?.description).toContain('safe Simplified Chinese summary')
@@ -1937,9 +1993,7 @@ describe('deployed Harness API through the real product Loader', () => {
     const result = { plan_id: String(retained.id), operation_id: String(object(retained.tasks[0]).id) }
     const submission = calls.filter(call => call.path === '/harness/toapis/v1/images/generations')
     expect(submission).toHaveLength(1)
-    expect(object((await requestImage({ name: 'generate_image', arguments: { model, prompt: '再次生成', plan_id: result.plan_id, shot_id: 'shot_1' },
-      agent, callId: ToolCallId('blocked-paid-retry'), signal: new AbortController().signal })).value))
-      .toMatchObject({ status: 'failed', code: 'CREATIVE_SUBMISSION_UNKNOWN' })
+    expect(object((await replayLastImage(agent)).value)).toMatchObject({ status: 'existing', ...result })
     upstreamGate = undefined
     const args = { plan_id: result.plan_id, operation_id: result.operation_id }
     if (entry === 'tool') {
@@ -2463,7 +2517,7 @@ describe('deployed Harness API through the real product Loader', () => {
     imageResponse = 'disconnect'
     expect(await call('generate_image', args)).toMatchObject({ status: 'unknown', code: 'IMAGE_SUBMISSION_UNKNOWN', submission_state: 'unknown' })
     const count = calls.filter(call => call.path.includes('/v1/images/')).length
-    expect(await call('generate_image', args)).toMatchObject({ status: 'failed', code: 'CREATIVE_SUBMISSION_UNKNOWN' })
+    expect(object((await replayLastImage(agent)).value)).toMatchObject({ status: 'existing', plan_id: plan.plan_id })
     expect(calls.filter(call => call.path.includes('/v1/images/'))).toHaveLength(count)
     expect(await listing()).toMatchObject({ status: 'unknown',
       assets: [{ id: 'portrait', status: 'unknown', outputs: [{ kind: 'image' }, { kind: 'image' }] }, { id: 'voice' }],
@@ -2505,7 +2559,7 @@ describe('deployed Harness API through the real product Loader', () => {
     imageResponse = { data: [{ b64_json: Buffer.from('saved image').toString('base64') }] }
     vi.spyOn(CreativeStore.prototype, 'finish').mockRejectedValueOnce(new Error('private finish diagnostic'))
     const unconfirmed = await call('generate_image', { prompt: '保留生成结果', model: 'gpt-image-2' })
-    expect(unconfirmed).toMatchObject({ status: 'failed', code: 'CREATIVE_OUTCOME_UNKNOWN' })
+    expect(unconfirmed).toMatchObject({ status: 'unknown', code: 'CREATIVE_OUTCOME_UNKNOWN' })
     expect(JSON.stringify(unconfirmed)).not.toContain('private finish diagnostic')
     const submissions = calls.filter(call => call.path === '/harness/v1/images/generations').length
     vi.spyOn(CreativeStore.prototype, 'begin').mockRejectedValueOnce(new Error('private preflight diagnostic'))
@@ -4835,13 +4889,19 @@ describe('deployed Harness API through the real product Loader', () => {
     expect(response.status).toBe(200)
     const body = object(await response.json())
     const failure = { reason, stage: 'account-read', ...status === undefined ? {} : { status } }
-    expect(body).toMatchObject({ ok: false, code: 'ACCOUNT_UNAVAILABLE', signedIn: true, liveness: 'unknown', failure,
+    const code = status === 403 ? 'ACCOUNT_ACCESS_DENIED' : reason === 'timeout' ? 'ACCOUNT_TIMEOUT'
+      : reason === 'rate_limited' ? 'ACCOUNT_RATE_LIMITED' : reason === 'network' ? 'ACCOUNT_NETWORK_ERROR'
+        : reason === 'protocol' ? 'ACCOUNT_INVALID_RESPONSE' : 'ACCOUNT_UNAVAILABLE'
+    expect(body).toMatchObject({ ok: false, code, signedIn: true, liveness: 'unknown', failure,
       payload: { signedIn: true, liveness: 'unknown', failure } })
+    if (status !== undefined) expect(body.httpStatus).toBe(status)
     expect(Object.keys(object(body.failure)).sort()).toEqual(Object.keys(failure).sort())
     expect(JSON.stringify(body)).not.toMatch(/private-upstream|must-not-leak|access-user|sk-owned-relay|refresh-one/u)
     expect(await readFile(join(stateDir, 'session.json'), 'utf8')).toBe(original)
     selfReply = undefined
-    expect(await (await fetch(base + '/api/session')).json()).toMatchObject({ ok: true, signedIn: true, liveness: 'verified' })
+    await vi.waitFor(async () => {
+      expect(await (await fetch(base + '/api/session')).json()).toMatchObject({ ok: true, signedIn: true, liveness: 'verified' })
+    })
     expect(creations).toBe(0)
   })
 
@@ -4854,7 +4914,8 @@ describe('deployed Harness API through the real product Loader', () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(Date.now() + 16 * 60_000)
     const result = object(await (await fetch(base + '/api/session')).json())
-    expect(result).toMatchObject({ ok: false, code: 'ACCOUNT_UNAVAILABLE', signedIn: true, liveness: 'unknown',
+    const code = status === 408 ? 'ACCOUNT_TIMEOUT' : status === 429 ? 'ACCOUNT_RATE_LIMITED' : 'ACCOUNT_UNAVAILABLE'
+    expect(result).toMatchObject({ ok: false, code, signedIn: true, liveness: 'unknown',
       failure: { reason, stage: 'renewal', status } })
     expect(await readFile(join(stateDir, 'session.json'), 'utf8')).toBe(original)
     expect(refreshes).toBe(1)
@@ -5005,7 +5066,9 @@ describe('deployed Harness API through the real product Loader', () => {
     } finally {
       releaseRefresh?.()
     }
-    expect(object(await (await pending).json()).balance).toBeNull()
+    const cancelled = object(await (await pending).json())
+    expect(cancelled).toMatchObject({ ok: false, code: 'ACCOUNT_CHANGED' })
+    expect(cancelled).not.toHaveProperty('balance')
     expect(await (await fetch(base + '/api/session')).json()).toMatchObject({ signedIn: false })
     expect(await context?.credentials.resolve(relayRef)).toBeUndefined()
     expect(await chat()).toMatchObject({ kind: 'error', failure: { code: 'MISSING_CREDENTIAL' } })

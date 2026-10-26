@@ -112,14 +112,14 @@ describe('readAccountUsage', () => {
   it.each(['/api/user/self', '/api/log/self', '/api/status'])('preserves denied reads at %s without disclosing upstream messages', async (path) => {
     mockSource({ [path]: new Response('{"message":"log:read secret"}', { status: 403 }) })
     const result = await readAccountUsage(options())
-    expect(result).toMatchObject({ ok: false, code: 'USAGE_ACCESS_DENIED' })
+    expect(result).toMatchObject({ ok: false, code: 'USAGE_ACCESS_REQUIRED' })
     expect(JSON.stringify(result)).not.toMatch(/log:read|secret/u)
     expect(result).not.toHaveProperty('payload')
   })
 
   it.each([
     { success: true, data: { quota_per_unit: 0, usd_exchange_rate: 7.3 } },
-    { success: true, data: { quota_per_unit: 500_000 } }, new Error('unreachable'),
+    { success: true, data: { quota_per_unit: 500_000 } },
   ])('does not guess conversion settings when status is unavailable: %j', async (status) => {
     mockSource({ '/api/status': status })
     expect(await readAccountUsage(options())).toMatchObject({ ok: false, code: 'USAGE_CONVERSION_UNAVAILABLE' })
@@ -142,7 +142,7 @@ describe('readAccountUsage', () => {
     expect(result).not.toHaveProperty('payload')
   })
 
-  it.each(['repeated-page', 'missing-row', 'changing-total', 'duplicate-request', 'failed-second-page'])('refuses partial or unstable pagination: %s', async (mode) => {
+  it.each(['repeated-page', 'missing-row', 'changing-total', 'failed-second-page'])('refuses partial or unstable pagination: %s', async (mode) => {
     const first = Array.from({ length: 100 }, (_, index) => ({ ...usage, id: index + 1, request_id: `request-${String(index)}` }))
     mockSource({}, [], (page) => {
       if (page === 1) return { success: true, data: { page, page_size: 100, total: 101, items: first } }
@@ -150,11 +150,32 @@ describe('readAccountUsage', () => {
       return { success: true, data: {
         page: mode === 'repeated-page' ? 1 : page, page_size: 100,
         total: mode === 'changing-total' ? 102 : 101,
-        items: mode === 'missing-row' ? [] : [{ ...usage, id: 101, request_id: mode === 'duplicate-request' ? 'request-0' : 'last-request' }],
+        items: mode === 'missing-row' ? [] : [{ ...usage, id: 101, request_id: 'last-request' }],
       } }
     })
     const result = await readAccountUsage(options())
     expect(result).toMatchObject({ ok: false, code: mode === 'failed-second-page' ? 'USAGE_UNAVAILABLE' : 'USAGE_INVALID_DATA' })
     expect(result).not.toHaveProperty('payload')
+  })
+})
+
+
+describe('usage failures and repeated request adjustments', () => {
+  it('counts separate billing rows sharing the same request id, including across pages', async () => {
+    const logs = Array.from({ length: 101 }, (_, index) => ({ ...usage, id: index + 1 }))
+    mockSource({}, logs)
+    expect(await readAccountUsage(options())).toMatchObject({ ok: true, payload: {
+      rows: [{ billingRecords: 101, consumedPoints: 101 * 0.0146 }],
+    } })
+  })
+  it.each([
+    [401, 'SESSION_REQUIRED'], [403, 'USAGE_ACCESS_REQUIRED'], [429, 'USAGE_RATE_LIMITED'], [504, 'USAGE_TIMEOUT'],
+  ])('preserves status and Retry-After for HTTP %s', async (status, code) => {
+    mockSource({ '/api/user/self': new Response(null, { status, headers: { 'retry-after': '12' } }) })
+    expect(await readAccountUsage(options())).toMatchObject({ ok: false, code, httpStatus: status, retryAfterSeconds: 12 })
+  })
+  it('reports a conversion transport failure as network rather than a missing rate', async () => {
+    mockSource({ '/api/status': new Error('offline') })
+    expect(await readAccountUsage(options())).toMatchObject({ ok: false, code: 'USAGE_NETWORK_ERROR' })
   })
 })

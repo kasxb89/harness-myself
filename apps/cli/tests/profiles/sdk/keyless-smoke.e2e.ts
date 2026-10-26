@@ -430,6 +430,7 @@ async function officeFixture(root: string, pythonOnly: boolean) {
   if (paths.nodePackages !== undefined) await mkdir(paths.nodePackages, { recursive: true })
   await writeFile(join(source, 'runtime.json'), JSON.stringify(manifest))
   await cp(join(repoRoot, 'packages/skill/skill-office/assets'), join(root, 'resources', 'office-skills'), { recursive: true })
+  await cp(join(repoRoot, 'packages/skill/skill-office/lib/render-cache.js'), join(root, 'resources', 'office-skills', 'scripts', 'render-cache.mjs'))
   return { source, paths }
 }
 

@@ -9,6 +9,10 @@ Follow an explicit user or applicable AGENTS.md requirement for an environment o
 
 Keep scripts, working files, and outputs in the task workspace. The runtime and skill directory are shared read-only resources. Save to a new workbook unless the user requests an in-place edit.
 
+When `workbook_create` is available and covers a new ordinary file, prefer it to writing an authoring script. Supply content once; it locates the bundled runtime and performs structural checks. Follow the remaining visual or formula checks indicated by its result, then present the final file. Custom layouts, existing-file edits, templates, unsupported features, and large local datasets keep the programmable workflow below; do not reject those requests merely because the structured tool does not cover them.
+
+For supported existing-file edits, use `office_inspect` then `office_patch` with its exact `source_sha256`. It preserves unrelated package parts and publishes a new file. A compatibility warning or unsupported operation means continue the programmable workflow below rather than refuse the user’s request. A changed source requires a fresh inspection; do not overwrite or blindly retry against stale indices.
+
 ## Read and modify
 
 Use `openpyxl` for existing XLSX workbooks and targeted cell or style changes. Load with `data_only=False` when formulas must survive. Inspect sheet names, the affected cell types, formulas, styles, merged ranges, and referenced ranges before editing. Check the saved file by reopening it, including unchanged content that the request requires preserving.
@@ -59,10 +63,10 @@ A successful command or image read does not prove that a preview contains workbo
 
 Use the bundled LibreOffice binaries unless the user explicitly asks not to use them. Without that explicit opt-out, never search for or invoke system LibreOffice, `soffice`, an application-installed binary, or a downloaded replacement. If the bundled CLI is unavailable or fails, report that failure instead of substituting another executable.
 
-When recalculation, a requested export, or visual inspection is needed, use the `libreofficeKit.node` and `libreofficeKit.cli` absolute paths supplied in the loaded skill's **Installed LibreOffice Kit** section. Run Node with the CLI entry as its first argument, then `capabilities --json` once. For the bundled runtime, these paths work from the task directory; do not search PATH, guess a package directory, use `npx`, or install a renderer. Quote each path separately; PowerShell also requires the `&` invocation operator. The examples below use `<node>` and `<cli>` for those two returned paths. For worksheet rendering, select an exact sheet name and the relevant cell range:
+When recalculation, a requested export, or visual inspection is needed, use the `libreofficeKit.node` and `libreofficeKit.cli` absolute paths supplied in the loaded skill's **Installed LibreOffice Kit** section. Run Node with the CLI entry as its first argument, then `capabilities --json` once. For the bundled runtime, these paths work from the task directory; do not search PATH, guess a package directory, use `npx`, or install a renderer. Quote each path separately; PowerShell also requires the `&` invocation operator. The examples below use `<node>`, `<cli>`, `<render-wrapper>`, and `<render-api>` for the returned absolute paths. Rendering uses the fixed wrapper with `--api`, batches the selected pages or range into one converter call, and reuses a preview only when saved bytes, engine settings, and a verified complete font inventory match. Without that verified inventory it still renders once and does not persistently reuse images. For worksheet rendering, select an exact sheet name and the relevant cell range:
 
 ```sh
-"<node>" "<cli>" render --input report.xlsx --output-dir preview-v1 --sheet Summary --range A1:D20 --dpi 144
+"<node>" "<render-wrapper>" --api "<render-api>" --cli "<cli>" --input report.xlsx --output-dir preview-v1 --sheet Summary --range A1:D20 --dpi 144
 ```
 
 For a user-requested PDF export, use `"<node>" "<cli>" convert --input report.xlsx --output report.pdf`. PDF conversion is not a fallback for failed visual QA.

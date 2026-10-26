@@ -1,0 +1,5 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`balance read recovery > keeps the last account balance visible when the real failed summary contains payload null 1`] = `"余额退出登录登录后会记录软件上线、在线常驻及前台使用状态，用于服务运行统计；这些统计不包含输入、聊天正文、屏幕或本地文件路径暂时无法刷新账号数据，请稍后重试积分余额刷新1,234积分显示上次成功读取的余额，当前余额尚未确认账号+86 138 0013 8000去充值使用量统计2026-10-20 — 2026-10-26 · 北京时间今日近 7 天近 30 天筛选统计模型全部模型刷新统计用量统计暂不可用，请稍后重试重试"`;
+
+exports[`balance read recovery > shows an explicit initial balance failure instead of treating payload null as loaded money 1`] = `"余额退出登录登录后会记录软件上线、在线常驻及前台使用状态，用于服务运行统计；这些统计不包含输入、聊天正文、屏幕或本地文件路径暂时无法刷新账号数据，请稍后重试积分余额刷新—积分账号+86 138 0013 8000去充值使用量统计2026-10-20 — 2026-10-26 · 北京时间今日近 7 天近 30 天筛选统计模型全部模型刷新统计用量统计暂不可用，请稍后重试重试"`;

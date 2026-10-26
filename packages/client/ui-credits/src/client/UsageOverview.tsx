@@ -1,6 +1,8 @@
 /** Account-scoped usage queries, period filters and the balance page's analysis. */
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { appPath, Button, IconRefreshOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Button, IconRefreshOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
+import { get } from './api.ts'
+import { creditsReadFailure, creditsRetrySeconds, type CreditsReadFailure } from './read-failure.ts'
 import { UsageCharts } from './UsageCharts.tsx'
 import { aggregateUsage, getUsageWindow, parseUsagePayload, type UsagePayload, type UsageRange } from './usage-analytics.ts'
 import css from './UsageOverview.module.css'
@@ -12,13 +14,23 @@ type Translate = (key: string, values?: Record<string, string>) => string
  * @param props - localized copy and the account's current points-to-yuan rate.
  * @returns period controls, reported totals, charts and their query states.
  */
-export function UsageOverview({ t, creditsPerYuan }: { t: Translate; creditsPerYuan: number }): ReactNode {
+export function UsageOverview({ t, creditsPerYuan, accountId }: {
+  t: Translate
+  creditsPerYuan: number
+  accountId?: string
+}): ReactNode {
   const [range, setRange] = useState<UsageRange>('7d')
   const [revision, setRevision] = useState(0)
   const [selectedModel, setSelectedModel] = useState<string | null>(null)
-  const [payload, setPayload] = useState<UsagePayload | null>(null)
+  const [storedPayload, setPayload] = useState<UsagePayload | null>(null)
+  const [payloadAccount, setPayloadAccount] = useState(accountId)
+  const previousAccount = useRef(accountId)
+  const payload = payloadAccount === accountId ? storedPayload : null
   const [loading, setLoading] = useState(true)
-  const [failure, setFailure] = useState<'unavailable' | 'auth' | 'access' | 'failed' | null>(null)
+  const [failure, setFailure] = useState<CreditsReadFailure | null>(null)
+  const [retrySeconds, setRetrySeconds] = useState(0)
+  const retryDeadline = useRef(0)
+  const pendingRead = useRef(false)
   const window = useMemo(() => getUsageWindow(range), [range, revision])
   const analysis = useMemo(() => payload === null ? null : aggregateUsage(payload, selectedModel), [payload, selectedModel])
   const locale = t('usage.locale')
@@ -38,37 +50,56 @@ export function UsageOverview({ t, creditsPerYuan }: { t: Translate; creditsPerY
     const controller = new AbortController()
     let active = true
     setLoading(true)
+    pendingRead.current = true
     setFailure(null)
-    setPayload(previous => previous?.start === window.start ? previous : null)
+    const sameAccount = previousAccount.current === accountId
+    previousAccount.current = accountId
+    if (!sameAccount) retryDeadline.current = 0
+    setPayload(previous => sameAccount && previous?.start === window.start ? previous : null)
+    setPayloadAccount(accountId)
     const read = async (): Promise<void> => {
+      let received = false
       try {
         const query = new URLSearchParams({ start: String(window.start), end: String(window.end) })
-        const response = await fetch(appPath(`/credits/api/usage?${query.toString()}`), {
-          headers: { accept: 'application/json' }, signal: controller.signal,
-        })
-        const answer: unknown = await response.json()
+        const answer = await get<unknown>(`/credits/api/usage?${query.toString()}`, controller.signal)
+        received = true
         if (!active) return
-        if (answer === null || typeof answer !== 'object' || !('ok' in answer) || answer.ok !== true || !response.ok) {
-          const code = answer !== null && typeof answer === 'object' && 'code' in answer ? answer.code : null
-          setFailure(code === 'SESSION_REQUIRED' || code === 'SESSION_INVALID' ? 'auth'
-            : code === 'USAGE_ACCESS_DENIED' ? 'access'
-              : code === 'USAGE_UNAVAILABLE' || code === 'USAGE_CONVERSION_UNAVAILABLE' || response.status === 404 ? 'unavailable' : 'failed')
+        if (!answer.ok) {
+          const next = creditsReadFailure(answer, 'USAGE_UNAVAILABLE')
+          retryDeadline.current = next.retryAt ?? 0
+          setFailure(next)
           return
         }
-        if (!('payload' in answer)) { setFailure('failed'); return }
+        if (accountId !== undefined && answer.account !== undefined && answer.account?.id !== accountId) {
+          setFailure(creditsReadFailure({ code: 'ACCOUNT_CHANGED' }, 'ACCOUNT_CHANGED'))
+          return
+        }
         const next = parseUsagePayload(answer.payload)
-        if (next.start !== window.start || next.end !== window.end) { setFailure('failed'); return }
+        if (next.start !== window.start || next.end !== window.end) throw new Error('Mismatched usage window')
         aggregateUsage(next, null)
+        retryDeadline.current = 0
         setPayload(next)
-      } catch {
-        if (active) setFailure('failed')
+      } catch (error) {
+        if (active) setFailure(creditsReadFailure(received ? undefined : error,
+          received ? 'USAGE_INVALID_RESPONSE' : 'USAGE_UNAVAILABLE'))
       } finally {
-        if (active) setLoading(false)
+        if (active) { pendingRead.current = false; setLoading(false) }
       }
     }
     void read()
-    return () => { active = false; controller.abort() }
-  }, [window])
+    return () => { active = false; pendingRead.current = false; controller.abort() }
+  }, [accountId, window])
+
+  useEffect(() => {
+    const tick = (): void => { setRetrySeconds(creditsRetrySeconds(failure)) }
+    tick()
+    if (creditsRetrySeconds(failure) === 0) return undefined
+    const timer = setInterval(() => {
+      tick()
+      if (creditsRetrySeconds(failure) === 0) clearInterval(timer)
+    }, 1000)
+    return () => { clearInterval(timer) }
+  }, [failure])
 
   const formatCount = (value: number): string => countFormat.format(value)
   const formatPoints = (value: number): string => (value > 0 && value < 0.000001 || value >= 1e15)
@@ -81,11 +112,17 @@ export function UsageOverview({ t, creditsPerYuan }: { t: Translate; creditsPerY
     return t('yuanInline', { amount: new Intl.NumberFormat(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(amount) })
   }
   const selectRange = (next: UsageRange): void => {
-    if (next === range) return
+    if (next === range || retryDeadline.current > performance.now()) return
     setPayload(null)
     setFailure(null)
     setLoading(true)
     setRange(next)
+  }
+  const refresh = (): void => {
+    if (pendingRead.current || retryDeadline.current > performance.now()) return
+    pendingRead.current = true
+    setLoading(true)
+    setRevision(value => value + 1)
   }
   const modelOptions = analysis?.availableModels ?? []
   const visibleModels = selectedModel !== null && !modelOptions.includes(selectedModel)
@@ -102,7 +139,8 @@ export function UsageOverview({ t, creditsPerYuan }: { t: Translate; creditsPerY
           <div className={css.ranges} role="group" aria-label={t('usage.period')}>
             {(['today', '7d', '30d'] as const).map(value => (
               <button key={value} type="button" className={range === value ? css.rangeActive : css.range}
-                aria-pressed={range === value} onClick={() => { selectRange(value) }}>{t(`usage.range.${value}`)}</button>
+                aria-pressed={range === value} disabled={retrySeconds > 0}
+                onClick={() => { selectRange(value) }}>{t(`usage.range.${value}`)}</button>
             ))}
           </div>
           <label className={css.modelFilter}>
@@ -113,15 +151,16 @@ export function UsageOverview({ t, creditsPerYuan }: { t: Translate; creditsPerY
               {visibleModels.map(model => <option key={model} value={`model:${model}`}>{model || t('usage.unknownModel')}</option>)}
             </select>
           </label>
-          <Button size="sm" variant="ghost" icon={<IconRefreshOutlineRegular />} disabled={loading}
-            onClick={() => { setRevision(value => value + 1) }}>{t('usage.refresh')}</Button>
+          <Button size="sm" variant="ghost" icon={<IconRefreshOutlineRegular />} disabled={loading || retrySeconds > 0}
+            onClick={refresh}>{t('usage.refresh')}</Button>
         </div>
       </div>
 
       {failure !== null && (
         <div className={css.error} role="alert">
-          <span>{t(`usage.error.${failure}`)}</span>
-          <Button size="sm" variant="ghost" disabled={loading} onClick={() => { setRevision(value => value + 1) }}>{t('usage.retry')}</Button>
+          <span>{t(`usage.error.${failure.kind}`)}</span>
+          {retrySeconds > 0 && <span>{t('usage.error.retryAfter', { seconds: String(retrySeconds) })}</span>}
+          <Button size="sm" variant="ghost" disabled={loading || retrySeconds > 0} onClick={refresh}>{t('usage.retry')}</Button>
         </div>
       )}
       {loading && payload === null && (
@@ -148,6 +187,7 @@ export function UsageOverview({ t, creditsPerYuan }: { t: Translate; creditsPerY
             </article>
           </div>
           <div className={css.freshness}>
+            {failure !== null && <span>{t('usage.stale')}</span>}
             <span>{t('usage.updatedAt', { time: timeFormat.format(new Date(payload.asOf)) })}</span>
             <span>{payload.delayMinutes === 0 ? t('usage.billingFreshness')
               : t('usage.delay', { minutes: String(payload.delayMinutes) })}</span>

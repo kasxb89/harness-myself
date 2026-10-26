@@ -9,6 +9,8 @@ export interface SessionFailure {
     | 'protocol' | 'identity_mismatch' | 'renewal_unavailable' | 'storage'
   readonly stage: SessionFailureStage
   readonly status?: number
+  /** Server-directed wait retained without publishing a remote response body. */
+  readonly retryAfterSeconds?: number
 }
 
 /**

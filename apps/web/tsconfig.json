@@ -27,6 +27,7 @@
     "tests/profile-process.ts",
     "tests/session-relay.e2e.ts",
     "tests/image-task-recovery.e2e.ts",
+    "tests/credits-read-recovery.e2e.ts",
     "tests/collapse-timing.e2e.ts",
     "tests/chat-flow-layout.e2e.ts",
     "tests/skillhub-store.e2e.ts",

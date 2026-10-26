@@ -18,6 +18,7 @@ it('loads Desktop Office CLI paths and removes them on disposal', async () => {
   try {
     const assets = join(root, 'runtime', 'office-skills')
     await cp(new URL('../../../packages/skill/skill-office/assets/', import.meta.url), assets, { recursive: true })
+    await writeFile(join(assets, 'scripts', 'render-cache.mjs'), 'export const renderOfficeBatch = () => {}\n')
     const nodeDirectory = join(root, 'runtime', 'primary-runtime', 'dependencies', 'node', 'bin')
     await mkdir(nodeDirectory, { recursive: true })
     await cp(process.execPath, join(nodeDirectory, process.platform === 'win32' ? 'node.exe' : 'node'))

@@ -141,6 +141,20 @@ it.each([500, 503])('keeps login and recovers HTTP %i without an immediate repea
   expect(request).toHaveBeenCalledTimes(2)
 })
 
+it.each([429, 503])('retains HTTP %i Retry-After seconds and dates in safe renewal diagnostics', async (status) => {
+  for (const header of ['45', 'Thu, 22 Oct 2026 00:00:45 GMT']) {
+    const request = vi.fn(async () => new Response(null, { status,
+      headers: { 'retry-after': header, date: 'Thu, 22 Oct 2026 00:00:00 GMT' } }))
+    const app = await fixture(onTestFinished, request)
+    expect(await app.renewal.refresh(app.previous)).toBeNull()
+    expect(app.renewal.lastFailure(app.previous)).toEqual({ reason: status === 429 ? 'rate_limited' : 'upstream_unavailable',
+      stage: 'renewal', status, retryAfterSeconds: 45 })
+    expect(await app.store.read()).toEqual(app.previous)
+    expect(await app.renewal.refresh(app.previous)).toBeNull()
+    expect(request).toHaveBeenCalledTimes(1)
+  }
+})
+
 it.each(['network', 'timeout', 'protocol', 'identity_mismatch', 'upstream_rejected', '408', '429', '503'] as const)
 ('observes safe renewal failure %s only for its credential epoch and clears it after recovery', async (mode) => {
   const request = vi.fn(async (): Promise<Response> => {

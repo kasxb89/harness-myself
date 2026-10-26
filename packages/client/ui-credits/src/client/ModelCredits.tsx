@@ -100,6 +100,7 @@ function ModelCredits({ sessionId, turn, running, revision, useCreditsSession, o
   const currentReading = reading?.key === key ? reading : undefined
   const usage = currentReading?.usage
   const failure = currentReading?.failure
+  const consumptionOnly = usage?.amountBasis === 'consumption-logs'
   const status = running || usage === undefined ? 'pending' : usage?.status ?? 'unavailable'
   const label = t(turn === undefined ? 'chatUsage.session' : 'chatUsage.turn')
   const value = status === 'settled' && usage?.status === 'settled'
@@ -112,7 +113,7 @@ function ModelCredits({ sessionId, turn, running, revision, useCreditsSession, o
 
   return <>
     <span className={css.control}>
-      <Tooltip label={t('chatUsage.details')} portal side="top">
+      <Tooltip label={consumptionOnly ? `${t('chatUsage.details')}：${t('chatUsage.consumptionOnly')}` : t('chatUsage.details')} portal side="top">
         <button type="button" className={css.pill} data-composer-stat={turn === undefined ? 'usage' : undefined}
           aria-label={`${label}：${value}`} aria-haspopup="dialog" aria-expanded={open}
           onClick={() => { setDetails(identity) }}>
@@ -129,6 +130,7 @@ function ModelCredits({ sessionId, turn, running, revision, useCreditsSession, o
         {status === 'settled' && <Button size="sm" variant="primary" onClick={() => { setDetails(null); openBalance() }}>{t('chatUsage.allUsage')}</Button>}
       </>}>
       <p className={css.amount}>{value}</p>
+      {consumptionOnly && <p className={css.note}>{t('chatUsage.consumptionOnly')}</p>}
       <p className={css.note}>{t('chatUsage.scope')}</p>
       {failureText !== undefined && <p className={css.note}>{failureText}</p>}
       {failureText === undefined && status !== 'settled' && <p className={css.note}>{t(status === 'pending' ? 'chatUsage.pendingHint' : 'chatUsage.unavailableHint')}</p>}

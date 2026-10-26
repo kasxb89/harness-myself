@@ -1,0 +1,120 @@
+// @vitest-environment jsdom
+/** Failed balance reads through the product composition and real shared account store. */
+import { afterEach, beforeEach, describe, expect, vi } from 'vitest'
+import { act, cleanup, fireEvent, render, waitFor, within } from '@testing-library/react'
+import { createClientTest, webApp } from '@deepseek-ai/dsh-client-test-runtime/src/assembly/index.ts'
+import { CreditsPage } from '../src/client/CreditsPage.tsx'
+import { createCreditsSessionSource, refreshBalance, refreshCredits, signOutCredits } from '../src/client/session-store.ts'
+import { zh, type CreditsKey } from '../src/client/locales.ts'
+
+const productIt = createClientTest({ roster: webApp.closure(['@deepseek-ai/dsh-client-ui-credits']) }, { mount: true })
+let accountId = 0
+let summary: () => Promise<Response>
+let fetcher = vi.fn<typeof fetch>()
+const t = (key: string, values?: Record<string, string>): string => {
+  let text: string = zh[key as CreditsKey] ?? key
+  for (const [name, value] of Object.entries(values ?? {})) text = text.replaceAll(`{${name}}`, value)
+  return text
+}
+const pathOf = (input: RequestInfo | URL): string => typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+const wallet = (view: ReturnType<typeof render>) => within(view.getByRole('region', { name: zh.balance }))
+
+async function mountPage() {
+  await refreshCredits(undefined, true)
+  const props = { t, openRecharge: vi.fn(), completeSignIn: vi.fn() } as Parameters<typeof CreditsPage>[0]
+  const view = render(<CreditsPage {...props} />)
+  await act(async () => {})
+  return view
+}
+
+beforeEach(() => {
+  vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-10-26T12:00:00Z'))
+  accountId++
+  summary = async () => Response.json({ ok: true, payload: { balance_points: 1234 } })
+  fetcher = vi.fn<typeof fetch>(async (input) => {
+    const path = pathOf(input)
+    if (path === '/credits/api/session') return Response.json({ ok: true, payload: {
+      signedIn: true, creditsPerYuan: 1000, account: { id: String(accountId), phone: '+8613800138000' },
+    } })
+    if (path === '/credits/api/summary') return await summary()
+    if (path === '/credits/api/session/logout') return Response.json({ ok: true })
+    if (path.startsWith('/credits/api/usage?')) return Response.json({ ok: false, code: 'USAGE_UNAVAILABLE', payload: null })
+    throw new Error(`Unexpected fixture route: ${path}`)
+  })
+  vi.stubGlobal('fetch', fetcher)
+})
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
+
+describe('balance read recovery', () => {
+  productIt('shows an explicit initial balance failure instead of treating payload null as loaded money', async () => {
+    summary = async () => Response.json({ ok: false, code: 'BALANCE_UNAVAILABLE', payload: null })
+    const view = await mountPage()
+    expect(wallet(view).getByText('—')).toBeTruthy()
+    expect(view.getByText(zh['read.error.unavailable'])).toBeTruthy()
+    expect(createCreditsSessionSource().getSnapshot().failure).toBe('BALANCE_UNAVAILABLE')
+    expect(view.queryByText('0')).toBeNull()
+    expect(view.container.textContent).toMatchSnapshot()
+  })
+
+  productIt('keeps the last account balance visible when the real failed summary contains payload null', async () => {
+    const view = await mountPage()
+    expect(wallet(view).getByText('1,234')).toBeTruthy()
+    summary = async () => Response.json({ ok: false, code: 'BALANCE_UNAVAILABLE', payload: null })
+    fireEvent.click(wallet(view).getByRole('button', { name: zh.refresh }))
+    await waitFor(() => { expect(view.getByText(zh.balanceStale)).toBeTruthy() })
+    expect(wallet(view).getByText('1,234')).toBeTruthy()
+    expect(view.getByText(zh['read.error.unavailable'])).toBeTruthy()
+    expect(createCreditsSessionSource().getSnapshot().session?.signedIn).toBe(true)
+    expect(view.container.textContent).toMatchSnapshot()
+  })
+
+  productIt('discloses a 429 cooldown and blocks repeated manual balance reads', async () => {
+    const view = await mountPage()
+    summary = async () => Response.json({ ok: false, code: 'BALANCE_RATE_LIMITED', httpStatus: 429, retryAfterSeconds: 30, payload: null })
+    fireEvent.click(wallet(view).getByRole('button', { name: zh.refresh }))
+    await waitFor(() => { expect(view.getByText(zh['read.error.rateLimited'])).toBeTruthy() })
+    expect(view.getByText(t('read.retryAfter', { seconds: '30' }))).toBeTruthy()
+    const reads = fetcher.mock.calls.filter(([input]) => pathOf(input) === '/credits/api/summary').length
+    const button = wallet(view).getByRole('button', { name: zh.refresh })
+    expect(button.hasAttribute('disabled')).toBe(true)
+    fireEvent.click(button); fireEvent.click(button)
+    await act(async () => { await refreshBalance() })
+    expect(fetcher.mock.calls.filter(([input]) => pathOf(input) === '/credits/api/summary')).toHaveLength(reads)
+    expect(wallet(view).getByText('1,234')).toBeTruthy()
+  })
+
+  productIt('keeps A money on a cross-window B reply and refreshes the current identity only after the user retries', async () => {
+    const view = await mountPage()
+    const previous = String(accountId)
+    const changed = String(accountId + 1)
+    summary = async () => Response.json({ ok: true, account: { id: changed }, payload: { balance_points: 9999 } })
+    fireEvent.click(wallet(view).getByRole('button', { name: zh.refresh }))
+    await waitFor(() => { expect(view.getByText(zh['read.error.accountChanged'])).toBeTruthy() })
+    expect(wallet(view).getByText('1,234')).toBeTruthy()
+    expect(view.queryByText('9,999')).toBeNull()
+    expect(createCreditsSessionSource().getSnapshot().session?.account?.id).toBe(previous)
+    const sessions = fetcher.mock.calls.filter(([input]) => pathOf(input) === '/credits/api/session').length
+    accountId++
+    fireEvent.click(wallet(view).getByRole('button', { name: zh.refresh }))
+    await waitFor(() => { expect(wallet(view).getByText('9,999')).toBeTruthy() })
+    expect(createCreditsSessionSource().getSnapshot().session?.account?.id).toBe(changed)
+    expect(fetcher.mock.calls.filter(([input]) => pathOf(input) === '/credits/api/session')).toHaveLength(sessions + 1)
+    expect(view.queryByText(zh['read.error.accountChanged'])).toBeNull()
+  })
+
+  productIt('does not restore a signed-out account or its balance when an earlier read finally completes', async () => {
+    const view = await mountPage()
+    const late = Promise.withResolvers<Response>()
+    summary = async () => late.promise
+    let reading: Promise<void> | undefined
+    act(() => { reading = refreshBalance() })
+    await act(async () => { await signOutCredits() })
+    await act(async () => {
+      late.resolve(Response.json({ ok: true, payload: { balance_points: 9999 } }))
+      await reading
+    })
+    expect(view.queryByRole('region', { name: zh.balance })).toBeNull()
+    expect(view.queryByText('9,999')).toBeNull()
+    expect(createCreditsSessionSource().getSnapshot().balance).toBeNull()
+  })
+})

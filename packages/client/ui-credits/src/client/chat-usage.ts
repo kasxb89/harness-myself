@@ -10,11 +10,14 @@ export interface ChatUsageQuery {
   readonly turn?: number
 }
 
-/** Verified model-request accounting; only fully settled readings carry points. */
+/** Account-owned reply-model readings; optional amount and settlement fields distinguish recorded consumption from final settlement. */
 export type ChatUsage = {
   readonly accountId: string
   readonly settledRequests: number
   readonly totalRequests: number
+  readonly amountBasis?: 'consumption-logs'
+  readonly settlementStatus?: 'unknown'
+  readonly refundStatus?: 'unknown'
 } & ({ readonly status: 'settled'; readonly points: number } | { readonly status: 'pending' | 'unavailable' })
 
 /** Safe failure categories support concise retry and sign-in guidance without exposing diagnostics. */
@@ -57,7 +60,11 @@ export async function readChatUsage(query: ChatUsageQuery, signal: AbortSignal):
       || !count(data.settledRequests) || !count(data.totalRequests) || data.settledRequests > data.totalRequests) {
       return { ok: false, reason: 'unavailable' }
     }
-    const shared = { accountId: data.accountId, settledRequests: data.settledRequests, totalRequests: data.totalRequests }
+    const shared: Omit<ChatUsage, 'status' | 'points'> = { accountId: data.accountId, settledRequests: data.settledRequests, totalRequests: data.totalRequests,
+      ...data.amountBasis === 'consumption-logs' ? { amountBasis: data.amountBasis } : {},
+      ...data.settlementStatus === 'unknown' ? { settlementStatus: data.settlementStatus } : {},
+      ...data.refundStatus === 'unknown' ? { refundStatus: data.refundStatus } : {},
+    }
     if (data.status === 'settled') {
       if (!points(data.points) || data.totalRequests === 0 || data.settledRequests !== data.totalRequests) return { ok: false, reason: 'unavailable' }
       return { ok: true, usage: { ...shared, status: 'settled', points: data.points } }

@@ -13,6 +13,6 @@
 .row { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .slider { flex: 1 1 auto; width: 0; min-width: 48px; height: 24px; margin: 0; cursor: pointer; accent-color: var(--dsw-alias-state-business-primary); }
 .slider:disabled { cursor: default; }
-.slider:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary); outline-offset: 2px; border-radius: 3px; }
+.slider:focus-visible { outline: 2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary)); outline-offset: 2px; border-radius: 3px; }
 .time { flex: 0 0 auto; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .error { display: block; margin-top: 4px; font-size: 12px; color: var(--dsw-alias-label-error); }

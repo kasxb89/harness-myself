@@ -2,7 +2,7 @@
 
 import { execFileSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { cp } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
@@ -195,11 +195,15 @@ export async function unpackPrimaryRuntimeWheel(archive: string, destination: st
  * Copy the skill package's complete asset tree to ordinary filesystem resources.
  * @param source - The package's assets directory.
  * @param destination - External Office skill resource directory.
- * @returns Resolves after replacing the external assets with the complete package tree.
+ * @param renderApi - Optional independently bundled renderer; required when the assets include its wrapper.
+ * @returns Resolves after copying assets and the standalone renderer outside any application archive.
  */
-export async function prepareOfficeSkillAssets(source: string, destination: string): Promise<void> {
+export async function prepareOfficeSkillAssets(source: string, destination: string, renderApi?: string): Promise<void> {
+  const renderer = existsSync(join(source, 'scripts', 'render_office.mjs'))
+    ? readFileSync(renderApi ?? join(dirname(source), 'lib', 'render-cache.js')) : undefined
   rmSync(destination, { recursive: true, force: true })
   await cp(source, destination, { recursive: true, dereference: true })
+  if (renderer !== undefined) writeFileSync(join(destination, 'scripts', 'render-cache.mjs'), renderer)
 }
 
 /** A locked interpreter and wheel target. */

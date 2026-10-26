@@ -25,6 +25,14 @@ describe('chat model credit transport', () => {
     expect(Object.fromEntries(url.searchParams)).toEqual({ session_id: 'chat / a', account_id: 'account-a', turn: '1' })
     expect(init).toMatchObject({ credentials: 'same-origin', cache: 'no-store', signal: controller.signal })
   })
+  it('preserves consumption-log amount fields without claiming a known refund or final settlement', async () => {
+    vi.stubGlobal('fetch', async () => Response.json(response({
+      amountBasis: 'consumption-logs', settlementStatus: 'unknown', refundStatus: 'unknown',
+    })))
+    expect(await readChatUsage(query, new AbortController().signal)).toMatchObject({ ok: true, usage: {
+      status: 'settled', points: 0.123456, amountBasis: 'consumption-logs', settlementStatus: 'unknown', refundStatus: 'unknown',
+    } })
+  })
   it('omits turn for the current conversation and accepts a genuine settled zero', async () => {
     const fetcher = vi.fn<typeof fetch>(async () => Response.json(response({ points: 0 })))
     vi.stubGlobal('fetch', fetcher)

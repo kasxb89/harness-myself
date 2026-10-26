@@ -1,6 +1,7 @@
 /** Read-only account usage aggregated from the signed-in user's billing logs. */
 
-import { apiUrl } from './api-url.ts'
+import { createHash } from 'node:crypto'
+import { AccountReadError, accountGetRequest, readAccountResponse, type AccountGetRequest, type AccountReadScheduler } from './account-read.ts'
 
 /** Inclusive Unix-second window selected by the client in its display timezone. */
 export interface UsageWindow {
@@ -27,7 +28,9 @@ export interface UsagePayload extends UsageWindow {
 /** An unavailable read never supplies partial data or a fabricated zero. */
 export interface UsageFailure {
   readonly ok: false
-  readonly code: 'INVALID_REQUEST' | 'USAGE_UNAVAILABLE' | 'USAGE_ACCESS_DENIED' | 'USAGE_IDENTITY_MISMATCH' | 'USAGE_INVALID_DATA' | 'USAGE_CONVERSION_UNAVAILABLE'
+  readonly code: 'INVALID_REQUEST' | 'USAGE_UNAVAILABLE' | 'USAGE_ACCESS_DENIED' | 'USAGE_IDENTITY_MISMATCH' | 'USAGE_INVALID_DATA' | 'USAGE_CONVERSION_UNAVAILABLE' | 'SESSION_REQUIRED' | 'USAGE_ACCESS_REQUIRED' | 'USAGE_RATE_LIMITED' | 'USAGE_NETWORK_ERROR' | 'USAGE_TIMEOUT' | 'USAGE_INVALID_RESPONSE'
+  readonly httpStatus?: number
+  readonly retryAfterSeconds?: number
   readonly message: string
 }
 
@@ -37,6 +40,12 @@ export interface UsageReadOptions extends UsageWindow {
   readonly timeoutMs: number
   readonly account: { readonly id: string; readonly phone: string }
   readonly upstreamToken: string | undefined
+  /** Stable login epoch; distinct logins never share account results. */
+  readonly identity?: string
+  /** Caller-authorized GET transport; refresh is owned by that caller. */
+  readonly request?: AccountGetRequest
+  readonly scheduler?: AccountReadScheduler
+  readonly signal?: AbortSignal
 }
 
 /**
@@ -79,21 +88,25 @@ function validOther(value: string): boolean {
   }
 }
 
-interface UsageSourceResponse {
-  readonly status: number
-  readonly body: Record<string, unknown> | null
-}
-
 function positiveId(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
 }
 
-async function readJson(options: UsageReadOptions, path: string, token?: string): Promise<UsageSourceResponse> {
-  const response = await fetch(apiUrl(options.baseUrl, path), {
-    headers: { accept: 'application/json', ...token === undefined ? {} : { authorization: `Bearer ${token}` } },
-    signal: AbortSignal.timeout(options.timeoutMs), redirect: 'error',
-  })
-  return { status: response.status, body: response.ok ? record(await response.json()) : null }
+/**
+ * Classify usage read failures without disclosing bodies, exceptions or credentials.
+ * @param error - Typed GET failure retaining safe status and retry facts.
+ * @returns Localized usage failure without a fabricated zero or partial amount.
+ */
+export function usageReadFailure(error: AccountReadError): UsageFailure {
+  return { ok: false, code: error.reason === 'auth' ? 'SESSION_REQUIRED' : error.reason === 'access' ? 'USAGE_ACCESS_REQUIRED'
+    : error.reason === 'rate_limited' ? 'USAGE_RATE_LIMITED' : error.reason === 'network' ? 'USAGE_NETWORK_ERROR'
+      : error.reason === 'timeout' ? 'USAGE_TIMEOUT' : error.reason === 'protocol' ? 'USAGE_INVALID_RESPONSE' : 'USAGE_UNAVAILABLE',
+  message: error.reason === 'rate_limited' ? '用量读取暂时受限，请稍后重试。'
+    : error.reason === 'auth' ? '请重新登录后查看使用量。' : error.reason === 'access' ? '当前账号未获得统计读取权限。'
+      : error.reason === 'network' ? '连接暂不可用，请检查网络后重试。' : error.reason === 'timeout' ? '用量读取超时，请稍后重试。'
+        : error.reason === 'protocol' ? '用量响应格式异常，请稍后重试。' : '用量暂时无法读取，请稍后重试。',
+  ...error.httpStatus === undefined ? {} : { httpStatus: error.httpStatus },
+  ...error.retryAfterSeconds === undefined ? {} : { retryAfterSeconds: error.retryAfterSeconds } }
 }
 
 function unavailable(): UsageFailure {
@@ -108,15 +121,22 @@ function unavailable(): UsageFailure {
 export async function readAccountUsage(options: UsageReadOptions): Promise<{ ok: true; payload: UsagePayload } | UsageFailure> {
   const id = /^\d+$/.test(options.account.id) ? Number(options.account.id) : Number.NaN
   if (!positiveId(id) || options.upstreamToken === undefined || options.upstreamToken === '') return unavailable()
-  let accessDenied = false
-  const unreadable = (): UsageFailure => accessDenied
-    ? { ok: false, code: 'USAGE_ACCESS_DENIED', message: '统计读取暂未开通，请联系管理员，或重新登录后重试。' }
-    : unavailable()
+  const signal = options.signal ?? new AbortController().signal
+  const transport = options.request ?? accountGetRequest(options.baseUrl, options.upstreamToken)
+  const request: AccountGetRequest = async (path, authenticated, activeSignal) => await transport(path, authenticated,
+    AbortSignal.any([activeSignal, AbortSignal.timeout(options.timeoutMs)]))
+  const scope = options.identity ?? JSON.stringify([options.baseUrl, options.account.id, createHash('sha256').update(options.upstreamToken).digest('hex')])
+  const unreadable = (): UsageFailure => unavailable()
+  const failure = (error: unknown): UsageFailure => {
+    if (signal.aborted || error instanceof AccountReadError && error.reason === 'cancelled') throw error
+    return error instanceof AccountReadError ? usageReadFailure(error) : unavailable()
+  }
   const invalid: UsageFailure = { ok: false, code: 'USAGE_INVALID_DATA', message: '使用量数据不完整或格式异常，请稍后重试。' }
   const read = async (path: string, token?: string): Promise<Record<string, unknown> | null> => {
-    const response = await readJson(options, path, token)
-    if (response.status === 403) accessDenied = true
-    return response.body
+    const authenticated = token !== undefined
+    const response = options.scheduler === undefined ? await readAccountResponse(request, path, authenticated, signal)
+      : await options.scheduler.read({ scope, path, authenticated, signal, request })
+    return response.body ?? null
   }
 
   let pointsPerQuota: number
@@ -127,8 +147,8 @@ export async function readAccountUsage(options: UsageReadOptions): Promise<{ ok:
     if (account.id !== id) {
       return { ok: false, code: 'USAGE_IDENTITY_MISMATCH', message: '使用量账号校验失败，请退出后重新登录。' }
     }
-  } catch (_unavailableIdentity: unknown) {
-    return unreadable()
+  } catch (error: unknown) {
+    return failure(error)
   }
   try {
     const status = await read('/api/status')
@@ -142,14 +162,12 @@ export async function readAccountUsage(options: UsageReadOptions): Promise<{ ok:
     }
     pointsPerQuota = exchangeRate * 1000 / quotaPerUnit
     if (!Number.isFinite(pointsPerQuota) || pointsPerQuota <= 0) throw new Error('conversion unavailable')
-  } catch (_unavailableConversion: unknown) {
-    const failure = unreadable()
-    if (failure.code === 'USAGE_ACCESS_DENIED') return failure
+  } catch (error: unknown) {
+    if (error instanceof AccountReadError || signal.aborted) return failure(error)
     return { ok: false, code: 'USAGE_CONVERSION_UNAVAILABLE', message: '积分换算配置暂不可用，请稍后重试。' }
   }
 
   const groups = new Map<string, { timestamp: number; model: string; billingRecords: number; quota: number; totalTokens: number }>()
-  const requestIds = new Set<string>()
   let total: number | undefined
   let consumed = 0
   try {
@@ -176,10 +194,6 @@ export async function readAccountUsage(options: UsageReadOptions): Promise<{ ok:
         if (!validOther(row.other)) return invalid
         if (row.request_id !== undefined) {
           if (typeof row.request_id !== 'string') return invalid
-          if (row.request_id !== '') {
-            if (requestIds.has(row.request_id)) return invalid
-            requestIds.add(row.request_id)
-          }
         }
         const timestamp = Math.floor(row.created_at / 3600) * 3600
         const groupKey = JSON.stringify([timestamp, row.model_name])
@@ -193,8 +207,8 @@ export async function readAccountUsage(options: UsageReadOptions): Promise<{ ok:
       consumed += data.items.length
       if (consumed === total) break
     }
-  } catch (_unreadableLogs: unknown) {
-    return unreadable()
+  } catch (error: unknown) {
+    return failure(error)
   }
   const rows: UsageRow[] = []
   for (const { quota, ...group } of groups.values()) {

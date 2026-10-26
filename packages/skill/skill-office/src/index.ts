@@ -9,6 +9,10 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { BUNDLED_SKILL_RANK, type SkillCandidate, type SkillProvider } from '@deepseek-ai/dsh-skill'
 import { parse as parseYaml } from 'yaml'
+import { registerOfficeCreation } from './creation-tools.ts'
+import type { OfficeCreationConfig } from './types.ts'
+
+export { renderOfficeBatch, invalidateOfficeRenderCache } from './render-cache.ts'
 
 const SKILL_NAMES = ['office-docx', 'office-pptx', 'office-xlsx'] as const
 
@@ -20,13 +24,29 @@ export interface Config {
   node?: string
   /** Absolute LibreOffice Kit CLI entry; false explicitly disables CLI access. */
   cli?: string | false
+  /** Standalone render-cache module outside application archives; defaults to the packaged public entry. */
+  renderApi?: string
+  /** Optional structured creation tools; Desktop supplies its bundled runtime. */
+  creation?: false | (Pick<OfficeCreationConfig, 'source'> & Partial<Omit<OfficeCreationConfig, 'source'>>)
 }
+
+const CreationConfig: z<Pick<OfficeCreationConfig, 'source'> & Partial<Omit<OfficeCreationConfig, 'source'>>, OfficeCreationConfig> = z.object({
+  source: z.string().min(1).required(), root: z.string().min(1), enabled: z.boolean().default(true),
+  timeoutMs: z.number().min(1).default(120_000), maxInputBytes: z.natural().min(1).default(2_097_152),
+  maxItems: z.natural().min(1).default(1_000_000), maxOutputBytes: z.natural().min(1).default(131_072),
+  maxCells: z.natural().min(1).default(1_000_000),
+  maxFileBytes: z.natural().min(1).default(52_428_800), maxArchiveEntries: z.natural().min(1).default(10_000),
+  maxUncompressedBytes: z.natural().min(1).default(262_144_000),
+  maxInspectItems: z.natural().min(1).default(200), maxPreviewChars: z.natural().min(1).default(1000),
+})
 
 /** Validated resource configuration. */
 export const Config: z<Config> = z.object({
   assetRoot: z.string().min(1),
   node: z.string().min(1),
   cli: z.union([z.string().min(1), z.const(false)]),
+  renderApi: z.string().min(1),
+  creation: z.union([z.const(false), CreationConfig]).default(false),
 })
 
 /** Cordis plugin identity. */
@@ -44,10 +64,14 @@ function parseSkill(raw: string, path: string): { description: string; content: 
   return { description, content: raw.slice(frontmatter[0].length).trim() }
 }
 
-function officeRuntime(config: Config): string {
+function officeRuntime(config: Config, assetRoot: string): string {
   if (config.cli === false) return '\n\nLibreOffice Kit is disabled in this deployment.'
-  if (config.node === undefined && (isSea() || process.versions.electron !== undefined)) {
+  const packagedApplication = isSea() || process.versions.electron !== undefined
+  if (config.node === undefined && packagedApplication) {
     throw new Error('skill-office: packaged applications must supply a standalone Node executable')
+  }
+  if (config.renderApi === undefined && packagedApplication) {
+    throw new Error('skill-office: packaged applications must supply a standalone renderApi outside application archives')
   }
   const node = config.node ?? process.execPath
   let cli = config.cli
@@ -58,7 +82,11 @@ function officeRuntime(config: Config): string {
   for (const path of [node, cli]) {
     if (!isAbsolute(path) || !statSync(path).isFile()) throw new Error(`skill-office: expected an absolute executable file: ${path}`)
   }
-  return `\n\n## Installed LibreOffice Kit\n\nUse these absolute paths for every LibreOffice Kit command. Pass the CLI entry as the first argument to Node.\n\n${JSON.stringify({ libreofficeKit: { node, cli } }, undefined, 2)}`
+  const renderWrapper = join(assetRoot, 'scripts', 'render_office.mjs')
+  const renderApi = config.renderApi ?? fileURLToPath(new URL('../lib/render-cache.js', import.meta.url))
+  if (!isAbsolute(renderApi)) throw new Error('skill-office: renderApi must be an absolute file path')
+  if (config.renderApi !== undefined && !statSync(renderApi).isFile()) throw new Error('skill-office: renderApi must be a standalone file')
+  return `\n\n## Installed LibreOffice Kit\n\nUse these absolute paths for every LibreOffice Kit command. For rendering, pass renderWrapper to Node and renderApi with --api; other operations use the CLI entry.\n\n${JSON.stringify({ libreofficeKit: { node, cli, renderWrapper, renderApi } }, undefined, 2)}`
 }
 
 /**
@@ -72,7 +100,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   if (!statSync(join(assetRoot, 'scripts', 'check_office.py')).isFile()) {
     throw new Error('skill-office: assets must contain scripts/check_office.py')
   }
-  const runtime = officeRuntime(config)
+  const runtime = officeRuntime(config, assetRoot)
   const candidates: SkillCandidate[] = SKILL_NAMES.map((skillName) => {
     const directory = join(assetRoot, skillName)
     const path = join(directory, 'SKILL.md')
@@ -94,4 +122,13 @@ export function apply(ctx: Context, config: Config = {}): void {
     },
   }
   ctx.skills.registerProvider(() => provider)
+  if (config.creation !== undefined && config.creation !== false) {
+    const creation = CreationConfig(config.creation)
+    if (!isAbsolute(creation.source) || (creation.root !== undefined && !isAbsolute(creation.root))) throw new Error('Office creation runtime paths must be absolute')
+    if (creation.enabled) ctx.inject(['tools', 'shell', 'workingDirectory', 'sandboxPolicy'], (scope) => {
+      const node = config.node ?? process.execPath
+      const cli = config.cli === false ? undefined : config.cli ?? join(dirname(fileURLToPath(import.meta.resolve('@deepseek-ai/libreoffice-kit/package.json'))), 'lib', 'cli.js')
+      registerOfficeCreation(scope, creation, assetRoot, { node, ...cli === undefined ? {} : { cli } })
+    })
+  }
 }

@@ -98,6 +98,7 @@ describe('usage HTTP routes through the real Loader', () => {
     expect(result.headers.get('cache-control')).toBe('no-store')
     expect(await result.json()).toMatchObject({
       ok: true,
+      account: { id: '7' },
       payload: { start, end, delayMinutes: 0, rows: [{ timestamp: start, model: 'chat-model', billingRecords: 1, consumedPoints: 0.146, totalTokens: 125 }] },
     })
     expect(upstreamCalls).toEqual(['/harness/api/user/self', '/harness/api/status', '/harness/api/log/self'])

@@ -19,6 +19,21 @@
     },
     {
       "path": "../skill"
+    },
+    {
+      "path": "../../core/tools"
+    },
+    {
+      "path": "../../shell/shell"
+    },
+    {
+      "path": "../../session/working-directory"
+    },
+    {
+      "path": "../../sandbox/sandbox-policy"
+    },
+    {
+      "path": "../tool-workspace-dependencies"
     }
   ]
 }

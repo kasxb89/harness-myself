@@ -3,7 +3,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const api = vi.hoisted(() => ({
-  get: vi.fn<(path: string, signal?: AbortSignal) => Promise<{ payload?: unknown }>>(),
+  get: vi.fn<(path: string, signal?: AbortSignal) => Promise<{
+    ok: boolean
+    payload?: unknown
+    account?: { id: string } | null
+    code?: string
+    httpStatus?: number
+    retryAfterSeconds?: number
+    sessionInvalid?: boolean
+  }>>(),
   post: vi.fn<() => Promise<void>>(),
 }))
 vi.mock('../src/client/api.ts', () => ({ ...api, newKey: () => 'logout-test' }))
@@ -17,12 +25,12 @@ beforeEach(() => {
   api.post.mockReset().mockResolvedValue()
   vi.useFakeTimers()
 })
-afterEach(() => { vi.useRealTimers() })
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
 
 describe('injected credits session source', () => {
   it('changes the account epoch only on identity transitions, including logout and return', async () => {
     let id = 'a'
-    api.get.mockImplementation(async path => ({ payload: path.endsWith('/session') ? account(id) : balance(1234) }))
+    api.get.mockImplementation(async path => ({ ok: true, payload: path.endsWith('/session') ? account(id) : balance(1234) }))
     const { createCreditsSessionSource, refreshCredits, signOutCredits } = await import('../src/client/session-store.ts')
     const source = createCreditsSessionSource()
     await refreshCredits()
@@ -39,7 +47,7 @@ describe('injected credits session source', () => {
   })
 
   it('reports an unavailable background read while retaining the last verified account', async () => {
-    api.get.mockImplementation(async path => ({ payload: path.endsWith('/session') ? account('a') : balance(1234) }))
+    api.get.mockImplementation(async path => ({ ok: true, payload: path.endsWith('/session') ? account('a') : balance(1234) }))
     const { createCreditsSessionSource } = await import('../src/client/session-store.ts')
     const source = createCreditsSessionSource(), stop = source.subscribe(() => {})
     try {
@@ -57,14 +65,14 @@ describe('injected credits session source', () => {
   })
 
   it('aborts the final background read and contains a response arriving after release', async () => {
-    const read = Promise.withResolvers<{ payload?: unknown }>()
+    const read = Promise.withResolvers<{ ok: boolean; payload?: unknown }>()
     api.get.mockReturnValueOnce(read.promise)
     const { createCreditsSessionSource } = await import('../src/client/session-store.ts')
     const source = createCreditsSessionSource(), listener = vi.fn()
     const stop = source.subscribe(listener)
     const signal = api.get.mock.calls[0]?.[1]
     stop()
-    read.resolve({ payload: account('late') })
+    read.resolve({ ok: true, payload: account('late') })
     await vi.advanceTimersByTimeAsync(0)
     expect(signal?.aborted).toBe(true)
     expect(listener).not.toHaveBeenCalled()
@@ -72,7 +80,7 @@ describe('injected credits session source', () => {
   })
 
   it('shares the existing snapshot and stops its heartbeat after the final observer leaves', async () => {
-    api.get.mockImplementation(async path => ({ payload: path.endsWith('/session') ? account('a') : balance(1234) }))
+    api.get.mockImplementation(async path => ({ ok: true, payload: path.endsWith('/session') ? account('a') : balance(1234) }))
     const { createCreditsSessionSource } = await import('../src/client/session-store.ts')
     const source = createCreditsSessionSource()
     const first = vi.fn(), second = vi.fn()
@@ -96,7 +104,7 @@ describe('injected credits session source', () => {
   })
 
   it('clears observers before logout settles and rejects an older signed-in session read', async () => {
-    const read = Promise.withResolvers<{ payload?: unknown }>()
+    const read = Promise.withResolvers<{ ok: boolean; payload?: unknown }>()
     const logout = Promise.withResolvers<undefined>()
     api.get.mockReturnValueOnce(read.promise)
     api.post.mockReturnValueOnce(logout.promise)
@@ -107,12 +115,12 @@ describe('injected credits session source', () => {
     try {
       expect(source.getSnapshot().session?.signedIn).toBe(false)
       expect(listener).toHaveBeenCalled()
-      read.resolve({ payload: account('old') })
+      read.resolve({ ok: true, payload: account('old') })
       await vi.advanceTimersByTimeAsync(0)
       expect(source.getSnapshot().session?.signedIn).toBe(false)
       expect(api.get).toHaveBeenCalledTimes(1)
     } finally {
-      read.resolve({ payload: account('old') })
+      read.resolve({ ok: true, payload: account('old') })
       logout.resolve(undefined)
       await operation
       stop()
@@ -120,26 +128,131 @@ describe('injected credits session source', () => {
   })
 
   it('does not publish an old account balance after a different session is read', async () => {
-    const oldBalance = Promise.withResolvers<{ payload?: unknown }>()
+    const oldBalance = Promise.withResolvers<{ ok: boolean; payload?: unknown }>()
     api.get.mockImplementation(async (path) => {
-      if (!path.endsWith('/session')) return { payload: balance(9000) }
-      return { payload: account('b') }
+      if (!path.endsWith('/session')) return { ok: true, payload: balance(9000) }
+      return { ok: true, payload: account('b') }
     })
-    api.get.mockResolvedValueOnce({ payload: account('a') }).mockReturnValueOnce(oldBalance.promise)
+    api.get.mockResolvedValueOnce({ ok: true, payload: account('a') }).mockReturnValueOnce(oldBalance.promise)
     const { createCreditsSessionSource, refreshCredits } = await import('../src/client/session-store.ts')
     const source = createCreditsSessionSource(), stop = source.subscribe(() => {})
     try {
       await vi.advanceTimersByTimeAsync(0)
       expect(source.getSnapshot().session?.account?.id).toBe('a')
       await refreshCredits()
-      oldBalance.resolve({ payload: balance(1) })
+      oldBalance.resolve({ ok: true, payload: balance(1) })
       await vi.advanceTimersByTimeAsync(0)
       expect(source.getSnapshot().session?.account?.id).toBe('b')
       expect(source.getSnapshot().balance?.balance_points).toBe(9000)
     } finally {
-      oldBalance.resolve({ payload: balance(1) })
+      oldBalance.resolve({ ok: true, payload: balance(1) })
       await vi.advanceTimersByTimeAsync(0)
       stop()
     }
+  })
+
+  it('retains a successful balance and login when a failed envelope contains payload null', async () => {
+    api.get.mockImplementation(async path => ({ ok: true, payload: path.endsWith('/session') ? account('a') : balance(1234) }))
+    const { createCreditsSessionSource, refreshCredits, refreshBalance } = await import('../src/client/session-store.ts')
+    const source = createCreditsSessionSource()
+    await refreshCredits()
+    const epoch = source.getSnapshot().accountEpoch
+    api.get.mockResolvedValueOnce({ ok: false, code: 'BALANCE_UNAVAILABLE', payload: null })
+    await refreshBalance()
+    expect(source.getSnapshot()).toMatchObject({ accountEpoch: epoch, session: account('a'), balance: balance(1234),
+      failure: 'BALANCE_UNAVAILABLE', readFailure: { kind: 'unavailable' }, refreshing: false })
+    api.get.mockResolvedValueOnce({ ok: false, code: 'ACCOUNT_NETWORK_ERROR', payload: null })
+    await refreshCredits()
+    expect(source.getSnapshot()).toMatchObject({ accountEpoch: epoch, session: account('a'), balance: balance(1234),
+      readFailure: { kind: 'network' } })
+  })
+
+  it.each([
+    [{ ok: false, code: 'SESSION_REQUIRED', httpStatus: 401, sessionInvalid: true }, 'auth'],
+    [{ ok: false, code: 'BALANCE_ACCESS_REQUIRED', httpStatus: 403 }, 'access'],
+    [{ ok: true, payload: null }, 'invalid'],
+  ])('never signs out or replaces the balance after an unsuccessful read: %j', async (failure, kind) => {
+    api.get.mockImplementation(async path => ({ ok: true, payload: path.endsWith('/session') ? account('a') : balance(1234) }))
+    const { createCreditsSessionSource, refreshCredits, refreshBalance } = await import('../src/client/session-store.ts')
+    const source = createCreditsSessionSource()
+    await refreshCredits()
+    api.get.mockResolvedValueOnce(failure)
+    await refreshBalance()
+    expect(source.getSnapshot()).toMatchObject({ session: account('a'), balance: balance(1234), readFailure: { kind } })
+  })
+
+  it('shares balance reads and honors a 429 cooldown before accepting another manual read', async () => {
+    let monotonic = 1000
+    vi.spyOn(performance, 'now').mockImplementation(() => monotonic)
+    api.get.mockImplementation(async path => ({ ok: true, payload: path.endsWith('/session') ? account('a') : balance(1234) }))
+    const { createCreditsSessionSource, refreshCredits, refreshBalance } = await import('../src/client/session-store.ts')
+    const source = createCreditsSessionSource()
+    await refreshCredits()
+    const read = Promise.withResolvers<{ ok: boolean; code: string; httpStatus: number; retryAfterSeconds: number; payload: null }>()
+    api.get.mockReturnValueOnce(read.promise)
+    const first = refreshBalance(), second = refreshBalance()
+    expect(api.get).toHaveBeenCalledTimes(3)
+    read.resolve({ ok: false, code: 'BALANCE_RATE_LIMITED', httpStatus: 429, retryAfterSeconds: 30, payload: null })
+    await Promise.all([first, second])
+    expect(source.getSnapshot()).toMatchObject({ balance: balance(1234), readFailure: { kind: 'rateLimited', retryAfterSeconds: 30 } })
+    await refreshBalance()
+    await refreshCredits()
+    expect(api.get).toHaveBeenCalledTimes(3)
+    vi.setSystemTime(new Date('2000-01-01'))
+    monotonic += 30_000
+    await refreshBalance()
+    expect(api.get).toHaveBeenCalledTimes(4)
+    expect(source.getSnapshot().readFailure).toBeNull()
+  })
+
+  it.each([{ id: 'b' }, null])('retains A when a successful summary identifies another current account: %j', async (owner) => {
+    api.get.mockImplementation(async path => ({ ok: true, payload: path.endsWith('/session') ? account('a') : balance(1234) }))
+    const { createCreditsSessionSource, refreshCredits, refreshBalance } = await import('../src/client/session-store.ts')
+    const source = createCreditsSessionSource()
+    await refreshCredits()
+    const epoch = source.getSnapshot().accountEpoch
+    const before = api.get.mock.calls.length
+    api.get.mockResolvedValueOnce({ ok: true, account: owner, payload: balance(9999) })
+    await refreshBalance()
+    expect(source.getSnapshot()).toMatchObject({ accountEpoch: epoch, session: account('a'), balance: balance(1234),
+      failure: 'ACCOUNT_CHANGED', readFailure: { kind: 'accountChanged' }, refreshing: false })
+    expect(api.get).toHaveBeenCalledTimes(before + 1)
+    api.get.mockResolvedValueOnce({ ok: true, payload: account('b') })
+      .mockResolvedValueOnce({ ok: true, account: { id: 'b' }, payload: balance(4567) })
+    await refreshCredits()
+    expect(source.getSnapshot()).toMatchObject({ session: account('b'), balance: balance(4567), failure: null, readFailure: null })
+  })
+
+  it('accepts the observed account and preserves compatibility with older summaries without an account field', async () => {
+    api.get.mockImplementation(async path => ({ ok: true, payload: path.endsWith('/session') ? account('a') : balance(1234) }))
+    const { createCreditsSessionSource, refreshCredits, refreshBalance } = await import('../src/client/session-store.ts')
+    const source = createCreditsSessionSource()
+    await refreshCredits()
+    api.get.mockResolvedValueOnce({ ok: true, account: { id: 'a' }, payload: balance(4567) })
+    await refreshBalance()
+    expect(source.getSnapshot().balance?.balance_points).toBe(4567)
+    api.get.mockResolvedValueOnce({ ok: true, payload: balance(8910) })
+    await refreshBalance()
+    expect(source.getSnapshot()).toMatchObject({ session: account('a'), balance: balance(8910), failure: null })
+  })
+
+  it('clears the old account balance immediately on an identity change and ignores a late logged-out balance', async () => {
+    api.get.mockImplementation(async path => ({ ok: true, payload: path.endsWith('/session') ? account('a') : balance(1234) }))
+    const { createCreditsSessionSource, refreshCredits, signOutCredits, refreshBalance } = await import('../src/client/session-store.ts')
+    const source = createCreditsSessionSource()
+    await refreshCredits()
+    const next = Promise.withResolvers<{ ok: boolean; payload: unknown }>()
+    api.get.mockResolvedValueOnce({ ok: true, payload: account('b') }).mockReturnValueOnce(next.promise)
+    const changed = refreshCredits()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(source.getSnapshot().session?.account?.id).toBe('b')
+    expect(source.getSnapshot().balance).toBeNull()
+    await signOutCredits()
+    next.resolve({ ok: true, payload: balance(1) })
+    await changed
+    expect(source.getSnapshot()).toMatchObject({ session: { signedIn: false }, balance: null, refreshing: false })
+    api.get.mockResolvedValueOnce({ ok: false, code: 'BALANCE_RATE_LIMITED', httpStatus: 429 })
+    await refreshBalance()
+    expect(source.getSnapshot().session?.signedIn).toBe(false)
   })
 })

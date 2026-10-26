@@ -6,6 +6,7 @@ import { withFileLock } from '@deepseek-ai/dsh-atomic-write'
 import { z } from 'zod'
 import { writePrivateState } from './private-state-file.ts'
 import { sessionBodyFailure, sessionHttpFailure, sessionTransportFailure, type SessionFailure } from './session-failure.ts'
+import { accountRetryAfter } from './account-read.ts'
 
 /** Masked account facts retained by the private account session. */
 export interface StoredAccount {
@@ -100,6 +101,13 @@ function refreshCookie(response: Response): string | undefined {
 /** A rejected HTTP status remains authoritative even when its unread body failed. */
 async function discard(response: Response): Promise<void> {
   try { await response.body?.cancel() } catch (_unreadableRejectedBody: unknown) { /* The caller owns the status decision. */ }
+}
+
+/** Keep the observed renewal status and its server-directed wait without reading an error body. */
+function responseFailure(response: Response): SessionFailure {
+  const retryAfterSeconds = accountRetryAfter(response.headers)
+  return { ...sessionHttpFailure(response.status, 'renewal'),
+    ...retryAfterSeconds === undefined ? {} : { retryAfterSeconds } }
 }
 
 /** One session file's renewal exchange and recovery timers, shared with other local Hosts. */
@@ -313,7 +321,7 @@ export class SessionRefresh {
       ]))
       if (this.isStopped()) { await discard(response); return null }
       if (response.status === 401) {
-        this.noteFailure(previous, sessionHttpFailure(response.status, 'renewal'))
+        this.noteFailure(previous, responseFailure(response))
         this.rejectedAccess.add(this.accessFingerprint(previous))
         await discard(response)
         if (this.isStopped()) return null
@@ -323,7 +331,7 @@ export class SessionRefresh {
         return null
       }
       if (response.status === 429) {
-        this.noteFailure(previous, sessionHttpFailure(response.status, 'renewal'))
+        this.noteFailure(previous, responseFailure(response))
         await discard(response)
         if (this.isStopped()) return null
         const next: RenewalState = { ...pending, uncertainUntil: state.uncertainUntil,
@@ -339,7 +347,7 @@ export class SessionRefresh {
         return null
       }
       if (!response.ok) {
-        failure = sessionHttpFailure(response.status, 'renewal')
+        failure = responseFailure(response)
         await discard(response); throw new Error('Account renewal temporarily unavailable')
       }
       phase = 'decode'

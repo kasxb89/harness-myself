@@ -6,7 +6,7 @@
  * `@deepseek-ai/dsh-credits-index`; the session and the balance come from the
  * shared store, so the two pages cannot disagree about either.
  */
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   Button, IconChecklistOutlineRegular, IconChevronRightOutlineRegular, IconPlusOutlineRegular,
   IconRefreshOutlineRegular, IconShieldOutlineRegular, IconUserOutlineRegular, Input,
@@ -18,6 +18,7 @@ import { CreditsPanelIcon } from './CreditsPanelIcon.tsx'
 import { UsageOverview } from './UsageOverview.tsx'
 import { cx } from './class-names.ts'
 import { refreshBalance, refreshCredits, signOutCredits, useCreditsSnapshot } from './session-store.ts'
+import { creditsReadFailure, creditsRetrySeconds } from './read-failure.ts'
 import css from './CreditsPage.module.css'
 
 /** What the plugin injects into the balance page. */
@@ -44,10 +45,13 @@ interface SessionResponse {
 
 export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected): ReactNode {
   const { t, openRecharge, completeSignIn } = props
-  const { session, balance, loaded, failure: readFailure } = useCreditsSnapshot()
+  const { session, balance, loaded, accountEpoch, failure: readFailure, readFailure: readDetail, refreshing } = useCreditsSnapshot()
   const [notice, setNotice] = useState<string | null>(null)
   const [failure, setFailure] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const currentReadFailure = useMemo(() => readDetail ?? (readFailure === null ? null
+    : creditsReadFailure({ code: readFailure }, 'ACCOUNT_UNAVAILABLE')), [readDetail, readFailure])
+  const [readRetrySeconds, setReadRetrySeconds] = useState(0)
 
   // Login flow
   const [phone, setPhone] = useState('+86')
@@ -74,6 +78,17 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected): 
   const accountPhone = session?.account?.phone.replace(/^(\+86)(1\d{2})(\d{4})(\d{4})$/, '$1 $2 $3 $4') ?? '—'
   const recoveryAvailable = session?.phoneRecoveryAvailable !== false
   const validPhone = /^\+861[3-9]\d{9}$/.test(phone)
+
+  useEffect(() => {
+    const tick = (): void => { setReadRetrySeconds(creditsRetrySeconds(currentReadFailure)) }
+    tick()
+    if (creditsRetrySeconds(currentReadFailure) === 0) return undefined
+    const timer = setInterval(() => {
+      tick()
+      if (creditsRetrySeconds(currentReadFailure) === 0) clearInterval(timer)
+    }, 1000)
+    return () => { clearInterval(timer) }
+  }, [currentReadFailure])
 
   useEffect(() => {
     if (!loaded || signedIn || recovered.current) return
@@ -205,7 +220,7 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected): 
         setVerifyUntil(0)
         challengeKey.current = null
         verifyKey.current = null
-        await refreshCredits()
+        await refreshCredits(undefined, true)
         completeSignIn()
       } else {
         setFailure(t(phoneFailureKey(answer.code, 'verify')))
@@ -247,7 +262,7 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected): 
         challengeKey.current = null; verifyKey.current = null
         setResendUntil(0); setVerifyUntil(0)
         setNotice(t('signedIn'))
-        await refreshCredits()
+        await refreshCredits(undefined, true)
         completeSignIn()
       } else {
         setFailure(t(phoneFailureKey(answer.code, 'verify')))
@@ -293,11 +308,18 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected): 
       <p className={css.hint}>{t('activityNotice')}</p>
 
       {signedIn && failure !== null && <p className={css.banner} data-tone="error" role="alert">{failure}</p>}
-      {readFailure === 'ACCOUNT_UNAVAILABLE' && <p className={css.banner} data-tone="error" role="alert">{t('accountReadFailed')}</p>}
+      {currentReadFailure !== null && <div className={css.banner} data-tone="error" role="alert">
+        <span>{t(`read.error.${currentReadFailure.kind}`)}</span>
+        {readRetrySeconds > 0 && <span> {t('read.retryAfter', { seconds: String(readRetrySeconds) })}</span>}
+        {signedIn && currentReadFailure.kind === 'auth' && <Button size="sm" variant="ghost" disabled={busy}
+          onClick={() => { void signOut() }}>{t('goSignIn')}</Button>}
+        {loaded && session === null && <Button size="sm" variant="ghost" disabled={busy || refreshing || readRetrySeconds > 0}
+          onClick={() => { void refreshCredits() }}>{t('refresh')}</Button>}
+      </div>}
       {signedIn && notice !== null && <p className={css.banner} data-tone="success" role="status">{notice}</p>}
       {!loaded && <p className={css.hint}>{t('loading')}</p>}
 
-      {loaded && !signedIn && (
+      {loaded && session?.signedIn === false && (
         <section className={css.signInCard} aria-label={t('loginTitle')}>
           <div className={css.signInLayout}>
             <div className={css.signInIntro}>
@@ -407,8 +429,8 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected): 
                 size="sm"
                 variant="ghost"
                 icon={<IconRefreshOutlineRegular />}
-                onClick={() => { void refreshBalance() }}
-                disabled={busy}
+                onClick={() => { void (currentReadFailure?.kind === 'accountChanged' ? refreshCredits() : refreshBalance()) }}
+                disabled={busy || refreshing || readRetrySeconds > 0}
               >
                 {t('refresh')}
               </Button>
@@ -419,6 +441,7 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected): 
                   <span className={css.amount}>{balance === null ? '—' : grouped(balance.balance_points)}</span>
                   <span className={css.amountUnit}>{t('points')}</span>
                 </p>
+                {currentReadFailure !== null && balance !== null && <p className={css.hint}>{t('balanceStale')}</p>}
               </div>
               <div className={css.walletActions}>
                 <div className={css.walletAccount}>
@@ -440,7 +463,8 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected): 
               </div>
             </div>
           </section>
-          <UsageOverview key={session.account?.id ?? session.account?.phone ?? 'current'} t={t} creditsPerYuan={creditsPerYuan} />
+          <UsageOverview key={`${session.account?.id ?? session.account?.phone ?? 'current'}:${String(accountEpoch)}`}
+            t={t} creditsPerYuan={creditsPerYuan} {...session.account === undefined ? {} : { accountId: session.account.id }} />
         </>
       )}
     </div>

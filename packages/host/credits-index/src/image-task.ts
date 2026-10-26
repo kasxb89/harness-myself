@@ -9,6 +9,7 @@ import {
 } from './media-submission-receipt.ts'
 import type { ArtifactOrigin } from '@deepseek-ai/dsh-artifacts-index'
 import { creationTaskActivity } from './creation-activity.ts'
+import { transferMedia } from './media-transfer.ts'
 import type { CreationActivityOutcome, CreationTaskObserver } from './creation-activity.ts'
 
 /** Billing and provider-task facts remain independent of local waiting or saving. */
@@ -27,6 +28,8 @@ export interface ImageTaskOutcome {
 
 /** Provider operations are supplied by the account-bound Host and never retried as submissions. */
 export interface ImageTaskOptions {
+  /** Configured independent save/download limit; omitted callers retain serial behavior. */
+  readonly downloadConcurrency?: number
   /** Content-free local phases; an end notification does not cancel accepted upstream work. */
   readonly activity?: CreationTaskObserver
   readonly origin?: ArtifactOrigin
@@ -121,13 +124,19 @@ export async function executeImageTask(options: ImageTaskOptions): Promise<Image
   const save = async (value: Record<string, unknown> | undefined): Promise<void> => {
     const previousPhase = phase
     phase = 'saving'
-    for (const item of items(value)) {
-      signal.throwIfAborted()
-      const entry = record(item)
-      if (entry === undefined) continue
-      activity.stage('saving')
-      const path = await options.save(entry, saved.length, signal)
-      if (path !== undefined) saved.push(path)
+    const offset = saved.length
+    const completed = new Map<number, string>()
+    try {
+      await transferMedia(items(value), options.downloadConcurrency ?? 1, signal, async (item, index, transferSignal) => {
+        transferSignal.throwIfAborted()
+        const entry = record(item)
+        if (entry === undefined) return
+        activity.stage('saving')
+        const path = await options.save(entry, offset + index, transferSignal)
+        if (path !== undefined) completed.set(index, path)
+      })
+    } finally {
+      saved.push(...[...completed].sort(([a], [b]) => a - b).map(([, path]) => path))
     }
     phase = previousPhase
   }

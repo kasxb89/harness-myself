@@ -38,7 +38,11 @@ kind: "package-reference"
 | 字段 | 默认值 | 含义 |
 |---|---|---|
 | `source` | 必填 | 含 `runtime.json` 与 `dependencies/` 的 payload 绝对目录。 |
-| `root` | 未设置 | Harness home 下的绝对安装目录。设置时首次调用把 payload 复制过去，`runtime.json` 不变则复用；未设置时校验后原地使用，不复制。 |
+| `root` | 未设置 | Harness home 下的绝对安装目录。设置时在旁侧 `<root>.payloads/` 安装稳定依赖代，锁定依赖相同则跨载体版本复用；无 digest 的旧清单保留固定目录。未设置时校验后原地使用。 |
+| `lockWaitMs` | `30000` | 等待其它安装者的最长时间，不使其所有权过期。 |
+| `lockPollMs` | `100` | 等待安装所有权时的检查间隔。 |
+
+带 digest 的代身份包含平台、架构、payload digest、解释器与包管理器版本，以及排序后的官方 Python 分发版本。`desktopVersion` 记录载体，不使相同依赖失效。每个 Host 首次准备均检查载体和已安装解释器／库入口；缺失或格式错误的本地入口通过暂存和原子发布修复。这是入口验证，不是全部安装文件的实时哈希审计。旧代和前代目录保留供运行中的应用使用，不自动清理。原子发布的私有 PID 所有权目录协调多个 Host；只有确认原进程不存在才回收，不能按时间取走仍存活进程的锁。若回收进程自身在移走旧锁前退出，会报告中断回收并要求检查，避免删除未经确认的新活锁。
 
 ### payload 布局
 
@@ -60,7 +64,7 @@ kind: "package-reference"
 <details>
 <summary>实现细节——点击展开</summary>
 
-`readPrimaryRuntime` 与构建冒烟检查共用 `parsePrimaryRuntime`。它校验扁平清单，拒绝归一化后重名的分发包。旧 `components` 元数据在内存中归一化，并保留旧格式的一致性校验；旧分发包版本表缺失时转换为空表。混用顶层与旧组件版本字段会被拒绝。读取不改写元数据，归一化后等价的清单可复用已安装产物。`workspaceDependencyPaths` 推导各平台的条目路径。`installPrimaryRuntime` 复制到暂存目录、要求声明的解释器和脚本为文件、库路径为目录、再换入正式位置，失败时保留旧树；`resolvePrimaryRuntime` 做同样的校验但不复制。工具在插件生命周期内记住首次成功的结果。
+`readPrimaryRuntime` 与构建冒烟检查共用 `parsePrimaryRuntime`。它校验扁平清单，拒绝归一化后重名的分发包。旧 `components` 元数据在内存中归一化，并保留旧格式的一致性校验；旧分发包版本表缺失时转换为空表。混用顶层与旧组件版本字段会被拒绝。读取不改写元数据，归一化后等价的清单可复用已安装产物。`workspaceDependencyPaths` 推导各平台的条目路径。`installPrimaryRuntime` 复制到暂存目录、要求声明的解释器和脚本为文件、库路径为目录、再原子发布并保留旧树；`resolvePrimaryRuntime` 做同样的校验但不复制。工具在插件生命周期内记住首次成功的结果。
 
 | 文件 | 职责 |
 |---|---|
@@ -113,6 +117,7 @@ kind: "package-reference"
 
 <a id="known-limitations-and-deferred-work"></a>
 
+- 回收进程若在移走已退出安装者的锁之前死亡，工具会报告中断回收并保留锁待检查。该极端中断不自动修复；它属于本地工具失败，不终止客户端。
 - Linux 目标需要 glibc；尚未锁定 musl payload。
 - Windows 上原地使用的 payload 须在载体里已可执行；原地模式不修复权限。
 

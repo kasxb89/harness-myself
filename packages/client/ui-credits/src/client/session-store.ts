@@ -10,6 +10,7 @@ import { useEffect, useSyncExternalStore } from 'react'
 import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-store'
 import { get, newKey, post } from './api.ts'
 import type { PhoneRecovery } from './phone-sign-in.ts'
+import { creditsReadFailure, creditsRetrySeconds, type CreditsReadFailure } from './read-failure.ts'
 
 /** The signed-in account as the session route reports it. */
 export interface SessionInfo {
@@ -25,7 +26,7 @@ export interface SessionInfo {
 /** One balance read. */
 export interface BalanceResponse {
   readonly balance_points: number
-  readonly as_of: string
+  readonly as_of?: string
 }
 
 /** What the pages observe. */
@@ -40,17 +41,24 @@ export interface CreditsSnapshot {
   readonly loaded: boolean
   /** Last read failure, cleared by a successful read. */
   readonly failure: string | null
+  /** Safe read classification; a failed refresh retains this account's last successful balance. */
+  readonly readFailure?: CreditsReadFailure | null
+  /** One current-account balance request is in progress. */
+  readonly refreshing?: boolean
 }
 
 const UNSIGNED: SessionInfo = { signedIn: false, creditsPerYuan: 1000 }
 const HEARTBEAT_MS = 60_000
 
-let snapshot: CreditsSnapshot = { accountEpoch: 0, session: null, balance: null, loaded: false, failure: null }
+let snapshot: CreditsSnapshot = { accountEpoch: 0, session: null, balance: null,
+  loaded: false, failure: null, readFailure: null, refreshing: false }
 const listeners = new Set<() => void>()
 let heartbeats = 0
 let heartbeat: ReturnType<typeof setInterval> | null = null
 let sessionReadGeneration = 0
 let heartbeatRead: AbortController | undefined
+let balanceReadGeneration = 0
+let balanceRead: { epoch: number; signal?: AbortSignal; promise: Promise<void> } | undefined
 
 const subscribe = (listener: () => void): (() => void) => {
   listeners.add(listener)
@@ -61,7 +69,8 @@ const subscribe = (listener: () => void): (() => void) => {
 function publish(next: Partial<CreditsSnapshot>): void {
   const identity = (session: SessionInfo | null): string | null => session?.signedIn === true ? session.account?.id ?? null : null
   const changed = next.session !== undefined && identity(next.session) !== identity(snapshot.session)
-  snapshot = { ...snapshot, ...next, accountEpoch: snapshot.accountEpoch + Number(changed) }
+  snapshot = { ...snapshot, ...changed ? { balance: null, failure: null, readFailure: null, refreshing: false } : {},
+    ...next, accountEpoch: snapshot.accountEpoch + Number(changed) }
   for (const listener of listeners) listener()
 }
 
@@ -70,37 +79,94 @@ function publish(next: Partial<CreditsSnapshot>): void {
  * @param signal - optional owner cancellation.
  */
 export async function refreshBalance(signal?: AbortSignal): Promise<void> {
-  const session = snapshot.session
-  const answer = await get<BalanceResponse>('/credits/api/summary', signal)
-  if (signal?.aborted === true || snapshot.session !== session) return
-  if (answer.sessionInvalid === true) {
-    publish({ session: { ...UNSIGNED, creditsPerYuan: snapshot.session?.creditsPerYuan ?? 1000 }, balance: null })
-    return
-  }
-  if (answer.payload !== undefined) publish({ balance: answer.payload, failure: null })
-  else if (answer.code !== null && answer.code !== undefined) publish({ failure: answer.message ?? answer.code })
+  if (signal?.aborted === true || snapshot.session?.signedIn !== true || creditsRetrySeconds(snapshot.readFailure) > 0) return
+  const epoch = snapshot.accountEpoch
+  const accountId = snapshot.session.account?.id
+  if (balanceRead?.epoch === epoch && balanceRead.signal?.aborted !== true) return balanceRead.promise
+  const generation = ++balanceReadGeneration
+  const current = (): boolean => signal?.aborted !== true && generation === balanceReadGeneration && snapshot.accountEpoch === epoch
+  publish({ refreshing: true })
+  const operation = (async () => {
+    try {
+      const answer = await get<BalanceResponse | null>('/credits/api/summary', signal)
+      if (!current()) return
+      if (!answer.ok || answer.sessionInvalid === true) {
+        const failure = creditsReadFailure(answer.sessionInvalid === true ? { code: 'SESSION_INVALID' } : answer, 'BALANCE_UNAVAILABLE')
+        publish({ failure: failure.code, readFailure: failure })
+        return
+      }
+      if (answer.payload == null || typeof answer.payload.balance_points !== 'number'
+        || !Number.isFinite(answer.payload.balance_points) || answer.payload.balance_points < 0) {
+        const failure = creditsReadFailure(undefined, 'BALANCE_INVALID_RESPONSE')
+        publish({ failure: failure.code, readFailure: failure })
+        return
+      }
+      if (answer.account !== undefined && answer.account?.id !== accountId) {
+        const failure = creditsReadFailure({ code: 'ACCOUNT_CHANGED' }, 'ACCOUNT_CHANGED')
+        publish({ failure: failure.code, readFailure: failure })
+        return
+      }
+      publish({ balance: answer.payload, failure: null, readFailure: null })
+    } catch (error) {
+      if (!current()) return
+      const failure = creditsReadFailure(error, 'BALANCE_UNAVAILABLE')
+      publish({ failure: failure.code, readFailure: failure })
+    } finally {
+      if (generation === balanceReadGeneration && snapshot.accountEpoch === epoch) publish({ refreshing: false })
+    }
+  })()
+  const read = { epoch, ...signal === undefined ? {} : { signal }, promise: operation }
+  balanceRead = read
+  try { await operation } finally { if (balanceRead === read) balanceRead = undefined }
 }
 
 /**
  * Re-read the session itself, not only the balance: a sign-in completed outside
  * these pages (the login API, another window) must reach them.
  * @param signal - optional owner cancellation.
+ * @param afterSignIn - An explicit completed sign-in may replace the prior login's cooldown.
  */
-export async function refreshCredits(signal?: AbortSignal): Promise<void> {
+export async function refreshCredits(signal?: AbortSignal, afterSignIn = false): Promise<void> {
+  if (signal?.aborted === true || !afterSignIn && creditsRetrySeconds(snapshot.readFailure) > 0) return
   const generation = ++sessionReadGeneration
-  const answer = await get<SessionInfo>('/credits/api/session', signal)
-  if (signal?.aborted === true || generation !== sessionReadGeneration) return
-  const info = answer.payload ?? UNSIGNED
-  publish({ session: info, loaded: true, failure: null })
-  if (info.signedIn) await refreshBalance(signal)
-  else publish({ balance: null })
+  if (afterSignIn) {
+    balanceReadGeneration += 1
+    publish({ session: null, balance: null, loaded: false, failure: null, readFailure: null, refreshing: false })
+  }
+  const current = (): boolean => signal?.aborted !== true && generation === sessionReadGeneration
+  try {
+    const answer = await get<SessionInfo | null>('/credits/api/session', signal)
+    if (!current()) return
+    if (!answer.ok) {
+      const failure = creditsReadFailure(answer, 'ACCOUNT_UNAVAILABLE')
+      publish({ loaded: true, failure: failure.code, readFailure: failure })
+      return
+    }
+    const info = answer.payload
+    if (info == null || typeof info.signedIn !== 'boolean' || typeof info.creditsPerYuan !== 'number'
+      || !Number.isFinite(info.creditsPerYuan) || info.creditsPerYuan <= 0
+      || info.signedIn && (typeof info.account?.id !== 'string' || info.account.id === '' || typeof info.account.phone !== 'string')) {
+      const failure = creditsReadFailure(undefined, 'ACCOUNT_INVALID_RESPONSE')
+      publish({ loaded: true, failure: failure.code, readFailure: failure })
+      return
+    }
+    publish({ session: info, loaded: true, ...afterSignIn ? { failure: null, readFailure: null } : {} })
+    if (info.signedIn) await refreshBalance(signal)
+    else publish({ balance: null, failure: null, readFailure: null })
+  } catch (error) {
+    if (!current()) return
+    const failure = creditsReadFailure(error, 'ACCOUNT_UNAVAILABLE')
+    publish({ loaded: true, failure: failure.code, readFailure: failure })
+  }
 }
 
 /** Sign out: revoke on the platform, clear locally. */
 export async function signOutCredits(): Promise<void> {
   sessionReadGeneration += 1
+  balanceReadGeneration += 1
   heartbeatRead?.abort()
-  publish({ session: { ...UNSIGNED, creditsPerYuan: snapshot.session?.creditsPerYuan ?? 1000 }, balance: null })
+  publish({ session: { ...UNSIGNED, creditsPerYuan: snapshot.session?.creditsPerYuan ?? 1000 }, balance: null,
+    failure: null, readFailure: null, refreshing: false })
   try {
     await post('/credits/api/session/logout', { idempotencyKey: newKey('logout') })
   } catch (_error) {
@@ -117,7 +183,7 @@ function retainHeartbeat(): void {
   heartbeats += 1
   if (heartbeat !== null) return
   const refresh = (): void => {
-    heartbeatRead?.abort()
+    if (heartbeatRead !== undefined) return
     const controller = new AbortController()
     heartbeatRead = controller
     const pending = refreshCredits(controller.signal)

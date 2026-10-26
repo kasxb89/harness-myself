@@ -38,7 +38,11 @@ Mount the plugin beside the tool registry with the payload directory. Configurat
 | Field | Default | Meaning |
 |---|---|---|
 | `source` | required | Absolute payload directory carrying `runtime.json` and `dependencies/`. |
-| `root` | unset | Absolute installation directory under the Harness home. Set: the payload is copied there on the first call and reused while `runtime.json` is unchanged. Unset: the payload is validated and used in place; nothing is copied. |
+| `root` | unset | Absolute installation directory under the Harness home. Set: install a stable dependency generation beneath the sibling `<root>.payloads/`; matching locked dependencies are reused across carrier versions. Legacy manifests without a digest retain the fixed directory. Unset: validate and use the payload in place. |
+| `lockWaitMs` | `30000` | Maximum wait for another installer; never expires its ownership. |
+| `lockPollMs` | `100` | Poll interval while another installer owns preparation. |
+
+Digest-bearing generation identity includes the platform, architecture, payload digest, interpreter/package-manager versions, and sorted official Python distribution versions. `desktopVersion` records the carrier and does not invalidate matching dependencies. Every first preparation validates the carrier and installed executable/library entries. Missing or malformed local entries are repaired through an atomic staged publication. This is entry validation, not a complete installed-file hash audit. Old generations and previous trees remain available to running applications; automatic cleanup is not performed. A private, atomically published PID-owned lock serializes independent Hosts; only a confirmed dead process can be recovered, and a live stalled owner is never displaced by elapsed time. If the recovery process itself dies before retiring the lock, preparation reports the interrupted recovery for inspection instead of deleting an unverified live lock.
 
 ### Payload layout
 
@@ -60,7 +64,7 @@ A container can copy both directories into an immutable image layer and set `DSH
 <details>
 <summary>Implementation internals — click to expand</summary>
 
-`readPrimaryRuntime` and build smoke checks share `parsePrimaryRuntime`. It validates the flat manifest and rejects duplicate normalized distribution names. Legacy `components` metadata is normalized in memory, retaining its consistency checks; a missing legacy distribution map becomes empty. Mixed flat and legacy version fields are rejected. Reads do not rewrite metadata, and equivalent normalized manifests can reuse an installed payload. `workspaceDependencyPaths` derives the platform-specific entries. `installPrimaryRuntime` copies into a staging directory, requires declared interpreters and scripts to be files and package roots to be directories, and swaps it into place while retaining the previous tree on failure; `resolvePrimaryRuntime` verifies the same entries without copying. The tool memoizes the first successful preparation for the plugin's lifetime.
+`readPrimaryRuntime` and build smoke checks share `parsePrimaryRuntime`. It validates the flat manifest and rejects duplicate normalized distribution names. Legacy `components` metadata is normalized in memory, retaining its consistency checks; a missing legacy distribution map becomes empty. Mixed flat and legacy version fields are rejected. Reads do not rewrite metadata, and equivalent normalized manifests can reuse an installed payload. `workspaceDependencyPaths` derives the platform-specific entries. `installPrimaryRuntime` copies into a staging directory, requires declared interpreters and scripts to be files and package roots to be directories, and publishes it atomically while retaining previous trees; `resolvePrimaryRuntime` verifies the same entries without copying. The tool memoizes the first successful preparation for the plugin's lifetime.
 
 | File | Responsibility |
 |---|---|
@@ -113,6 +117,7 @@ Append-only tool result in the turn history; no prompt section is added.
 
 <a id="known-limitations-and-deferred-work"></a>
 
+- If a recovery process dies before retiring a dead installer’s lock, the tool stops with an interrupted-recovery diagnostic and preserves the lock for inspection. This rare recovery interruption is not automatically repaired; it is a local tool failure and does not terminate the client.
 - Linux targets require glibc; musl payloads are not locked.
 - Windows payloads used in place must already be executable from their carrier; the in-place mode performs no permission repair.
 

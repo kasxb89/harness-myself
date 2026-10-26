@@ -131,7 +131,11 @@ it('copies complete Office resources outside the application archive and removes
       await mkdir(join(source, name))
       await writeFile(join(source, name, 'SKILL.md'), `# ${name}\n`)
     }
+    await writeFile(join(source, 'scripts', 'render_office.mjs'), '// standalone runner\n')
+    await mkdir(join(source, '..', 'lib'))
+    await writeFile(join(source, '..', 'lib', 'render-cache.js'), 'export const renderOfficeBatch = () => true\n')
     await prepareOfficeSkillAssets(source, destination)
+    expect(await readFile(join(destination, 'scripts', 'render-cache.mjs'), 'utf8')).toContain('renderOfficeBatch')
     await writeFile(join(destination, 'obsolete.py'), 'old helper')
     await prepareOfficeSkillAssets(source, destination)
     for (const name of ['office-docx', 'office-pptx', 'office-xlsx']) {

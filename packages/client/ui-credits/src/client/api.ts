@@ -11,7 +11,11 @@ export interface Envelope<T> {
   readonly retryAfterSeconds?: number | null
   readonly sessionInvalid?: boolean
   readonly payload?: T
+  /** Successful account reads may name their owner; older Hosts omit this field. */
+  readonly account?: { readonly id: string } | null
   readonly status?: number
+  readonly httpStatus?: number
+  readonly failure?: { readonly code?: string; readonly httpStatus?: number; readonly retryAfterSeconds?: number }
 }
 
 /**
@@ -46,7 +50,23 @@ export async function get<T>(path: string, signal?: AbortSignal): Promise<Envelo
     headers: { accept: 'application/json' },
     ...(signal === undefined ? {} : { signal }),
   })
-  return await response.json() as Envelope<T>
+  let answer: Envelope<T>
+  try {
+    const value: unknown = await response.json()
+    answer = value !== null && typeof value === 'object' && 'ok' in value && typeof value.ok === 'boolean'
+      ? value as Envelope<T> : { ok: false, code: 'INVALID_RESPONSE' }
+  }
+  catch (error) {
+    if (response.ok) throw error
+    answer = { ok: false }
+  }
+  const retryHeader = response.headers.get('retry-after')
+  const date = Date.parse(response.headers.get('date') ?? '')
+  const retryDate = retryHeader === null ? Number.NaN : Date.parse(retryHeader)
+  const retryAfterSeconds = retryHeader === null ? undefined : /^\d+$/u.test(retryHeader) ? Number(retryHeader)
+    : Number.isFinite(retryDate) ? Math.max(0, Math.ceil((retryDate - (Number.isFinite(date) ? date : Date.now())) / 1000)) : undefined
+  return { ...answer, ok: response.ok && answer.ok, httpStatus: answer.httpStatus ?? response.status,
+    ...answer.retryAfterSeconds !== undefined || retryAfterSeconds === undefined ? {} : { retryAfterSeconds } }
 }
 
 /**

@@ -14,3 +14,14 @@ it('keeps account reads and mutations beneath the document public mount', async 
     '/mount/credits/api/session', '/mount/credits/api/summary', '/mount/credits/api/session/logout',
   ])
 })
+
+it.each(['30', 'Mon, 26 Oct 2026 12:00:30 GMT'])('retains empty-body 429 metadata for account cooldowns: %s', async (retryAfter) => {
+  vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => new Response('', { status: 429,
+    headers: { 'retry-after': retryAfter, date: 'Mon, 26 Oct 2026 12:00:00 GMT' } })))
+  expect(await get('/credits/api/summary')).toMatchObject({ ok: false, httpStatus: 429, retryAfterSeconds: 30 })
+})
+
+it('does not treat a null response body as a successful account read', async () => {
+  vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => Response.json(null)))
+  expect(await get('/credits/api/session')).toMatchObject({ ok: false, code: 'INVALID_RESPONSE', httpStatus: 200 })
+})

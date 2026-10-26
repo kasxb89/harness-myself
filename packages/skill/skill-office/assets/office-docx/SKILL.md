@@ -9,6 +9,10 @@ Use `python-docx` for DOCX creation and ordinary edits. Follow an explicit user 
 
 Keep source scripts, intermediate files, and final documents in the task workspace; the runtime and this skill directory are read-only resources. Use the user's requested language and preserve an existing document's design unless a redesign is requested.
 
+When `word_create` is available and covers a new ordinary file, prefer it to writing an authoring script. Supply content once; it locates the bundled runtime and performs structural checks. Follow the remaining visual or formula checks indicated by its result, then present the final file. Custom layouts, existing-file edits, templates, unsupported features, and large local datasets keep the programmable workflow below; do not reject those requests merely because the structured tool does not cover them.
+
+For supported existing-file edits, use `office_inspect` then `office_patch` with its exact `source_sha256`. It preserves unrelated package parts and publishes a new file. A compatibility warning or unsupported operation means continue the programmable workflow below rather than refuse the user’s request. A changed source requires a fresh inspection; do not overwrite or blindly retry against stale indices.
+
 ## Create and edit
 
 For existing files, inspect paragraphs, runs, tables, sections, headers, and footers before changing the affected content. Save to a new file unless the user requests an in-place edit. Replacing a paragraph's `.text` destroys its run formatting; change the relevant runs when formatting must survive. Reconstructing the whole document can lose features outside python-docx's supported editing API.
@@ -43,10 +47,10 @@ Render for a requested image/PDF deliverable or an actionable layout check. Befo
 
 Use the bundled LibreOffice binaries unless the user explicitly asks not to use them. Without that explicit opt-out, never search for or invoke system LibreOffice, `soffice`, an application-installed binary, or a downloaded replacement. If the bundled CLI is unavailable or fails, report that failure instead of substituting another executable.
 
-Use the `libreofficeKit.node` and `libreofficeKit.cli` absolute paths supplied in the loaded skill's **Installed LibreOffice Kit** section. Run Node with the CLI entry as its first argument, then `capabilities --json` once. For the bundled runtime, these paths work from the task directory; do not search PATH, guess a package directory, use `npx`, or install a renderer. Quote each path separately; PowerShell also requires the `&` invocation operator. The examples below use `<node>` and `<cli>` for those two returned paths. Direct rendering avoids an intermediate PDF:
+Use the `libreofficeKit.node` and `libreofficeKit.cli` absolute paths supplied in the loaded skill's **Installed LibreOffice Kit** section. Run Node with the CLI entry as its first argument, then `capabilities --json` once. For the bundled runtime, these paths work from the task directory; do not search PATH, guess a package directory, use `npx`, or install a renderer. Quote each path separately; PowerShell also requires the `&` invocation operator. The examples below use `<node>`, `<cli>`, `<render-wrapper>`, and `<render-api>` for the returned absolute paths. Rendering uses the fixed wrapper with `--api`, batches the selected pages or range into one converter call, and reuses a preview only when saved bytes, engine settings, and a verified complete font inventory match. Without that verified inventory it still renders once and does not persistently reuse images. Direct rendering avoids an intermediate PDF:
 
 ```sh
-"<node>" "<cli>" render --input report.docx --output-dir preview-v1 --pages 1,3 --dpi 144
+"<node>" "<render-wrapper>" --api "<render-api>" --cli "<cli>" --input report.docx --output-dir preview-v1 --pages 1,3 --dpi 144
 "<node>" "<cli>" convert --input report.docx --output report.pdf
 ```
 

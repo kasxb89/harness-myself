@@ -76,6 +76,7 @@ describe('bundled Office skills', () => {
       expect(loaded?.resourceBase).toEqual({ kind: 'directory', path: join(external, 'office-xlsx') })
       const raw = await readFile(join(external, 'office-xlsx', 'SKILL.md'), 'utf8')
       expect(loaded?.content).toContain(raw.slice(raw.indexOf('\n---\n') + 5).trim())
+      expect(loaded?.content).toContain(JSON.stringify(join(external, 'scripts', 'render_office.mjs')))
     } finally {
       await ctx.fiber.dispose()
       await rm(root, { recursive: true, force: true })
@@ -134,7 +135,7 @@ it('rejects unavailable CLI and Node paths before exposing an executable command
   const ctx = new Context()
   try {
     await ctx.plugin(SkillRegistry)
-    for (const config of [{ node: 'node' }, { cli: 'cli.js' }, { node: root }, { cli: root }, { cli: join(root, 'missing.js') }]) {
+    for (const config of [{ node: 'node' }, { cli: 'cli.js' }, { renderApi: 'render-cache.js' }, { node: root }, { cli: root }, { cli: join(root, 'missing.js') }]) {
       expect(() => { SkillOffice.apply(ctx, config) }).toThrow()
       expect(await ctx.skills.list()).toEqual([])
     }
@@ -169,6 +170,9 @@ it('executes capabilities using only paths returned by the loaded skill from a s
 
 it('requires standalone Node in Electron and SEA, while permitting explicit CLI opt-out', async () => {
   const ctx = new Context()
+  const root = await mkdtemp(join(tmpdir(), 'office-standalone-'))
+  const renderApi = join(root, 'render-cache.mjs')
+  await writeFile(renderApi, 'export {};')
   const original = Object.getOwnPropertyDescriptor(process.versions, 'electron')
   try {
     await ctx.plugin(SkillRegistry)
@@ -180,12 +184,14 @@ it('requires standalone Node in Electron and SEA, while permitting explicit CLI 
     const fiber = await ctx.plugin(SkillOffice, { cli: false })
     expect((await ctx.skills.get('office-docx'))?.content).toContain('disabled in this deployment')
     await fiber.dispose()
-    await ctx.plugin(SkillOffice, { node: process.execPath })
+    expect(() => { SkillOffice.apply(ctx, { node: process.execPath }) }).toThrow('standalone renderApi')
+    await ctx.plugin(SkillOffice, { node: process.execPath, renderApi })
     expect((await ctx.skills.get('office-docx'))?.content).toContain(JSON.stringify(process.execPath))
   } finally {
     vi.mocked(isSea).mockReturnValue(false)
     if (original === undefined) Reflect.deleteProperty(process.versions, 'electron')
     else Object.defineProperty(process.versions, 'electron', original)
     await ctx.fiber.dispose()
+    await rm(root, { recursive: true, force: true })
   }
 })

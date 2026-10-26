@@ -22,18 +22,18 @@ function requestUrl(input: RequestInfo | URL | undefined): string {
   return typeof input === 'string' ? input : input instanceof URL ? input.href : input?.url ?? ''
 }
 
-function reply(input: RequestInfo | URL, data: readonly UsageRow[] = rows, delayMinutes = 0): Response {
+function reply(input: RequestInfo | URL, data: readonly UsageRow[] = rows, delayMinutes = 0, accountId?: string | null): Response {
   const query = new URL(requestUrl(input), 'http://localhost').searchParams
   const start = Number(query.get('start'))
   const end = Number(query.get('end'))
-  return Response.json({ ok: true, payload: {
+  return Response.json({ ok: true, ...accountId === undefined ? {} : { account: accountId === null ? null : { id: accountId } }, payload: {
     rows: data.filter(row => row.timestamp >= start && row.timestamp <= end),
     start, end, asOf: new Date(now).toISOString(), delayMinutes,
   } })
 }
 
 beforeEach(() => { vi.spyOn(Date, 'now').mockReturnValue(now) })
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
 describe('balance usage overview', () => {
   it('uses the Shanghai reporting window and filters every chart and total by model without a new request', async () => {
@@ -140,5 +140,87 @@ describe('balance usage overview', () => {
     await waitFor(() => { expect(view.getByRole('alert').textContent).toContain('使用量读取失败') })
     expect(view.queryByRole('article')).toBeNull()
     expect(view.queryByRole('img')).toBeNull()
+  })
+
+  it('retains successful statistics on 429 and disables refresh and period changes until Retry-After expires', async () => {
+    let monotonic = 1000
+    vi.spyOn(performance, 'now').mockImplementation(() => monotonic)
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockImplementationOnce(async input => reply(input))
+      .mockResolvedValueOnce(Response.json({ ok: false, code: 'USAGE_RATE_LIMITED', httpStatus: 429, retryAfterSeconds: 2, payload: null }))
+      .mockImplementation(async input => reply(input))
+    vi.stubGlobal('fetch', fetchMock)
+    const view = render(<UsageOverview t={t} creditsPerYuan={1000} />)
+    await view.findByRole('article', { name: '消费积分' })
+    fireEvent.click(view.getByRole('button', { name: '刷新统计' }))
+    expect((await view.findByRole('alert')).textContent).toContain('统计读取过于频繁')
+    expect(view.getByText('请等待 2 秒后再刷新')).toBeTruthy()
+    expect(view.getByText(zh['usage.stale'])).toBeTruthy()
+    expect(within(view.getByRole('article', { name: '消费积分' })).getByText('1,800.5')).toBeTruthy()
+    for (const label of ['刷新统计', '重试', '今日']) {
+      const button = view.getByRole('button', { name: label })
+      expect(button.hasAttribute('disabled')).toBe(true)
+      fireEvent.click(button)
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    // Changing the system clock cannot shorten the monotonic retry deadline.
+    vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2000-01-01'))
+    monotonic += 2000
+    await waitFor(() => { expect(view.getByRole('button', { name: '重试' }).hasAttribute('disabled')).toBe(false) }, { timeout: 1500 })
+    fireEvent.click(view.getByRole('button', { name: '重试' }))
+    await waitFor(() => { expect(view.queryByRole('alert')).toBeNull() })
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it.each(['b', null])('rejects another response account without replacing A statistics: %s', async (owner) => {
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockImplementationOnce(async input => reply(input, rows, 0, 'a'))
+      .mockImplementation(async input => reply(input, [rows[1]], 0, owner))
+    vi.stubGlobal('fetch', fetchMock)
+    const view = render(<UsageOverview t={t} creditsPerYuan={1000} accountId="a" />)
+    await view.findByRole('article', { name: '消费积分' })
+    fireEvent.click(view.getByRole('button', { name: '刷新统计' }))
+    expect((await view.findByRole('alert')).textContent).toContain(zh['usage.error.accountChanged'])
+    expect(within(view.getByRole('article', { name: '消费积分' })).getByText('1,800.5')).toBeTruthy()
+    expect(view.getByText(zh['usage.stale'])).toBeTruthy()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it.each(['a', undefined])('accepts an owned response or a legacy Host without account metadata: %s', async (owner) => {
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL) => reply(input, rows, 0, owner))
+    const view = render(<UsageOverview t={t} creditsPerYuan={1000} accountId="a" />)
+    expect(await view.findByRole('article', { name: '消费积分' })).toBeTruthy()
+    expect(view.queryByRole('alert')).toBeNull()
+  })
+
+  it('hides prior account statistics immediately when the caller observes a different identity', async () => {
+    const pending = Promise.withResolvers<Response>()
+    let inputB: RequestInfo | URL = ''
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>()
+      .mockImplementationOnce(async input => reply(input, rows, 0, 'a'))
+      .mockImplementation((input) => { inputB = input; return pending.promise }))
+    const view = render(<UsageOverview t={t} creditsPerYuan={1000} accountId="a" />)
+    await view.findByRole('article', { name: '消费积分' })
+    view.rerender(<UsageOverview t={t} creditsPerYuan={1000} accountId="b" />)
+    expect(view.queryByRole('article', { name: '消费积分' })).toBeNull()
+    await act(async () => { pending.resolve(reply(inputB, [rows[1]], 0, 'b')) })
+    expect(within(await view.findByRole('article', { name: '消费积分' })).getByText('600.5')).toBeTruthy()
+  })
+
+  it.each([
+    [new TypeError('private connection diagnostic'), zh['usage.error.network']],
+    [new DOMException('private timeout diagnostic', 'TimeoutError'), zh['usage.error.timeout']],
+  ])('classifies a local read failure without blaming the server or discarding statistics: %s', async (error, message) => {
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockImplementationOnce(async input => reply(input))
+      .mockRejectedValueOnce(error)
+    vi.stubGlobal('fetch', fetchMock)
+    const view = render(<UsageOverview t={t} creditsPerYuan={1000} />)
+    await view.findByRole('article', { name: '消费积分' })
+    fireEvent.click(view.getByRole('button', { name: '刷新统计' }))
+    expect((await view.findByRole('alert')).textContent).toContain(message)
+    expect(view.container.textContent).not.toContain('private')
+    expect(view.getByText(zh['usage.stale'])).toBeTruthy()
+    expect(within(view.getByRole('article', { name: '消费积分' })).getByText('1,800.5')).toBeTruthy()
   })
 })

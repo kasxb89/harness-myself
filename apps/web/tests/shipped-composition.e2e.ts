@@ -493,6 +493,9 @@ const EXPECTED_TOOLS = [
   'schedule_list',
   'schedule_update',
   'send_message',
+  'session_list',
+  'session_read',
+  'session_send_message',
   'skill',
   'subagent',
   'subagent_fork',
@@ -507,11 +510,13 @@ const EXPECTED_TOOLS = [
 
 /**
  * Product Host registrations are inherited by the default agent: Credits
- * supplies eleven creation/media tools, Univer supplies fourteen, and the IM,
+ * supplies fifteen creation/media tools, Univer supplies fourteen, and the IM,
  * plugin finder, iVideo, and working-directory Hosts each supply one.
  * Native computer-use tools remain an explicit scaffold opt-in.
  */
 const EXPECTED_HOST_TOOLS = [
+  'append_video_works',
+  'cancel_video_project',
   'dsh_im_return_file',
   'edit_video',
   'find_dsh_plugin',
@@ -520,7 +525,9 @@ const EXPECTED_HOST_TOOLS = [
   'generate_video_project',
   'get_creation_plan',
   'ipollowork_video_validate',
+  'list_image_models',
   'list_video_models',
+  'prepare_video_works',
   'query_image_task',
   'query_video_task',
   'resume_video_project',

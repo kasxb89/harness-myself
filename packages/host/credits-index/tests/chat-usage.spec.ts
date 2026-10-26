@@ -91,6 +91,7 @@ describe('exact-request settled chat points', () => {
     })
     const results = ['one', 'two', 'three', 'four', 'five', 'six'].map(run)
     const duplicate = run('one')
+    await Promise.resolve()
     expect(started).toEqual(['one', 'two'])
     held.resolve({ ok: true, quota: 100 })
     expect(await Promise.all([...results, duplicate])).toEqual(Array.from({ length: 7 }, () => ({ ok: true, quota: 100 })))
@@ -154,6 +155,65 @@ describe('exact-request settled chat points', () => {
   })
   it('contains denied access and diagnostic text', async () => {
     source({ '/api/log/self': new Response('upstream secret error', { status: 403 }) })
-    expect(await readChatUsage(options())).toEqual({ ok: false, code: 'CHAT_USAGE_ACCESS_DENIED' })
+    expect(await readChatUsage(options())).toEqual({ ok: false, code: 'CHAT_USAGE_ACCESS_DENIED', httpStatus: 403 })
+  })
+})
+
+
+describe('receipt reuse across history views', () => {
+  it('does not re-read 500 settled receipts after the short context cache expires', async () => {
+    let now = 0
+    const ledger = new ChatUsageLedger({ ttlMs: 10, settledTtlMs: 3_600_000, concurrency: 2, now: () => now })
+    const { fetcher } = source()
+    const input = { ...options(), ledger, identity: 'api-account-login-epoch', selection: { complete: true,
+      requests: Array.from({ length: 500 }, (_, index) => ({ ...request, requestId: ProviderRequestId(`receipt-${index}`) })) } }
+    expect(await readChatUsage(input)).toMatchObject({ ok: true, payload: { settledRequests: 500, status: 'settled' } })
+    expect(fetcher).toHaveBeenCalledTimes(502)
+    now = 20
+    vi.spyOn(Date, 'now').mockReturnValue(1)
+    expect(await readChatUsage(input)).toMatchObject({ ok: true, payload: { settledRequests: 500 } })
+    expect(fetcher).toHaveBeenCalledTimes(504)
+    ledger.clear()
+    expect(await readChatUsage({ ...input, identity: 'new-login-epoch' })).toMatchObject({ ok: true, payload: { settledRequests: 500 } })
+    expect(fetcher).toHaveBeenCalledTimes(1006)
+  })
+  it('briefly caches pending and failures, then permits confirmed settlement or adjustment', async () => {
+    let now = 0, calls = 0
+    const ledger = new ChatUsageLedger({ ttlMs: 10, pendingTtlMs: 50, failureCooldownMs: 100,
+      settledTtlMs: 1000, concurrency: 1, now: () => now })
+    const read = async () => { calls++; return { ok: true as const, quota: calls === 1 ? undefined : 10 } }
+    expect(await ledger.read('receipt', read)).toMatchObject({ quota: undefined })
+    now = 49
+    await ledger.read('receipt', read)
+    expect(calls).toBe(1)
+    now = 50
+    expect(await ledger.read('receipt', read)).toMatchObject({ quota: 10 })
+    now = 1049
+    await ledger.read('receipt', read)
+    expect(calls).toBe(2)
+    now = 1050
+    await ledger.read('receipt', read)
+    expect(calls).toBe(3)
+    let failures = 0
+    const limited = async () => { failures++; return { ok: false as const, code: 'CHAT_USAGE_RATE_LIMITED' as const, retryAfterSeconds: 1 } }
+    await ledger.read('limited', limited)
+    now += 999
+    await ledger.read('limited', limited)
+    expect(failures).toBe(1)
+    now++
+    await ledger.read('limited', limited)
+    expect(failures).toBe(2)
+  })
+  it('cancels queued ledger admission without spending a receipt request', async () => {
+    const ledger = new ChatUsageLedger({ ttlMs: 10, concurrency: 1 })
+    const held = Promise.withResolvers<{ ok: true; quota: number }>()
+    const first = ledger.read('first', async () => await held.promise)
+    const controller = new AbortController(), read = vi.fn(async () => ({ ok: true as const, quota: 1 }))
+    const queued = ledger.read('second', read, controller.signal).catch((error: unknown) => error)
+    controller.abort()
+    expect(await queued).toMatchObject({ reason: 'cancelled' })
+    held.resolve({ ok: true, quota: 1 })
+    await first
+    expect(read).not.toHaveBeenCalled()
   })
 })

@@ -102,6 +102,7 @@ describe.skipIf(!existsSync(builtHost))('built Desktop welcome flow', () => {
         target: 'mac-x64',
       })
       cpSync(join(repository, 'packages/skill/skill-office/assets'), join(root, 'runtime/office-skills'), { recursive: true })
+      cpSync(join(repository, 'packages/skill/skill-office/lib/render-cache.js'), join(root, 'runtime/office-skills/scripts/render-cache.mjs'))
       const nodeBin = join(root, 'runtime/primary-runtime/dependencies/node/bin')
       mkdirSync(nodeBin, { recursive: true })
       cpSync(process.execPath, join(nodeBin, process.platform === 'win32' ? 'node.exe' : 'node'))

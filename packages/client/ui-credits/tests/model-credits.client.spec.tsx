@@ -43,6 +43,7 @@ describe('model credit controls', () => {
     expect(view.container.textContent).not.toMatch(/token|tok\/s|配额/i)
     fireEvent.click(pill)
     expect(view.getByRole('dialog').textContent).toContain(copy['chatUsage.scope'])
+    expect(view.getByRole('dialog').textContent).not.toContain(copy['chatUsage.consumptionOnly'])
     expect(copy['chatUsage.scope']).toContain(locale === 'zh' ? '上下文整理及自动标题' : 'context compaction, automatic titles')
     expect(copy['chatUsage.session']).toBe(locale === 'zh' ? '当前会话回复积分' : 'Current chat reply credits')
     expect(copy['chatUsage.turn']).toBe(locale === 'zh' ? '本轮回复积分' : 'This turn’s reply credits')
@@ -51,6 +52,17 @@ describe('model credit controls', () => {
     expect(f.openBalance).toHaveBeenCalledOnce()
     expect(view.queryByRole('dialog')).toBeNull()
   })
+  it.each(['zh', 'en'] as const)('identifies consumption logs without implying a final net settlement (%s)', async (locale) => {
+    vi.stubGlobal('fetch', async () => receipt(0.125, {
+      amountBasis: 'consumption-logs', settlementStatus: 'unknown', refundStatus: 'unknown',
+    }))
+    const f = fixture(locale), copy = locale === 'zh' ? zh : en
+    const view = render(<SessionModelCredits {...f.props} />)
+    await flush()
+    fireEvent.click(view.getByRole('button', { name: `${copy['chatUsage.session']}：${copy['chatUsage.points'].replace('{points}', '0.125')}` }))
+    expect(view.getByRole('dialog').textContent).toContain(copy['chatUsage.consumptionOnly'])
+  })
+
   it('uses the owning turn number, not a node sequence, and never rounds a positive charge into zero', async () => {
     const fetcher = vi.fn<typeof fetch>(async () => receipt(0.0000001))
     vi.stubGlobal('fetch', fetcher)
