@@ -17,7 +17,7 @@ from urllib.parse import unquote
 
 sys.dont_write_bytecode = True
 from lxml import etree as ET
-from create_office import name_for
+from create_office import name_for, configure_standard_streams
 
 NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
       "p": "http://schemas.openxmlformats.org/presentationml/2006/main",
@@ -244,17 +244,19 @@ def number_format(package, cell, number):
     package.save_xml("xl/styles.xml", styles)
 
 
-def edit_cell(package, tree, operation):
-    from openpyxl.utils.cell import coordinate_from_string, column_index_from_string, range_boundaries
-    coordinate = operation["cell"].upper()
+def cell_coordinates(coordinate):
+    from openpyxl.utils.cell import coordinate_from_string, column_index_from_string
+    coordinate = coordinate.upper()
     column, row_number = coordinate_from_string(coordinate)
     col_number = column_index_from_string(column)
     if not 1 <= row_number <= 1048576 or col_number > 16384:
         raise ValueError("cell is outside Excel worksheet coordinates")
-    for merged in tree.findall("s:mergeCells/s:mergeCell", NS):
-        left, top, right, bottom = range_boundaries(merged.get("ref"))
-        if left <= col_number <= right and top <= row_number <= bottom and (col_number, row_number) != (left, top):
-            raise ValueError("a merged cell must be edited through its top-left cell")
+    return coordinate, col_number, row_number
+
+
+def worksheet_cell(tree, coordinate):
+    from openpyxl.utils.cell import coordinate_from_string, column_index_from_string
+    coordinate, col_number, row_number = cell_coordinates(coordinate)
     data = tree.find("s:sheetData", NS)
     row = next((node for node in data if int(node.get("r")) == row_number), None)
     if row is None:
@@ -272,6 +274,34 @@ def edit_cell(package, tree, operation):
             cell.set("s", inherited)
         row.append(cell)
         row[:] = sorted(row, key=lambda node: column_index_from_string(coordinate_from_string(node.get("r"))[0]))
+    return cell
+
+
+def range_cells(reference, maximum):
+    from openpyxl.utils.cell import get_column_letter, range_boundaries
+    left, top, right, bottom = range_boundaries(reference)
+    if None in (left, top, right, bottom) or not 1 <= left <= right <= 16384 or not 1 <= top <= bottom <= 1048576:
+        raise ValueError("formula result range is outside Excel worksheet coordinates")
+    if (right-left+1)*(bottom-top+1) > maximum:
+        raise ValueError("formula result range exceeds the configured cell budget")
+    return {f"{get_column_letter(column)}{row}" for row in range(top, bottom+1) for column in range(left, right+1)}
+
+
+def edit_cell(package, tree, operation):
+    from openpyxl.utils.cell import range_boundaries
+    coordinate, col_number, row_number = cell_coordinates(operation["cell"])
+    for merged in tree.findall("s:mergeCells/s:mergeCell", NS):
+        left, top, right, bottom = range_boundaries(merged.get("ref"))
+        if left <= col_number <= right and top <= row_number <= bottom and (col_number, row_number) != (left, top):
+            raise ValueError("a merged cell must be edited through its top-left cell")
+    if any(key in operation for key in ("value", "formula")):
+        for anchor in tree.findall("s:sheetData/s:row/s:c", NS):
+            formula = anchor.find("s:f", NS)
+            if formula is not None and formula.get("t") == "array":
+                left, top, right, bottom = range_boundaries(formula.get("ref", anchor.get("r")))
+                if left <= col_number <= right and top <= row_number <= bottom:
+                    raise ValueError("this cell belongs to an array result; edit its inputs or use the programmable workflow to replace the whole formula group")
+    cell = worksheet_cell(tree, coordinate)
     original = cell.find("s:f", NS)
     if original is not None and original.get("t") in ("shared", "array", "dataTable") and any(key in operation for key in ("value", "formula")):
         raise ValueError("editing a shared or array formula group requires the programmable workflow")
@@ -304,6 +334,201 @@ def edit_cell(package, tree, operation):
         left, top, right, bottom = range_boundaries(dimension.get("ref", "A1"))
         from openpyxl.utils.cell import get_column_letter
         dimension.set("ref", f"{get_column_letter(min(left, col_number))}{min(top, row_number)}:{get_column_letter(max(right, col_number))}{max(bottom, row_number)}")
+
+
+def copy_formula_cache(package, fresh, cell, calculated, name, payload):
+    """Copy values from the calculation engine without copying its rewritten styles, formulas, or objects."""
+    for node in list(cell):
+        if node.tag in (q("s", "v"), q("s", "is")):
+            cell.remove(node)
+    cell.attrib.pop("t", None)
+    if calculated is None:
+        return
+    cached_type = calculated.get("t")
+    cached_value = calculated.find("s:v", NS)
+    if cached_type == "e":
+        package.formula_error_count += 1
+        if len(package.formula_errors) < payload["max_inspect_items"]:
+            package.formula_errors.append({"sheet": name[:payload["max_preview_chars"]], "cell": cell.get("r"), "value": calculated.findtext("s:v", default="", namespaces=NS)[:payload["max_preview_chars"]]})
+    if cached_type in ("s", "inlineStr"):
+        if cached_type == "s":
+            shared = fresh.xml("xl/sharedStrings.xml")
+            cached_text = text_of(shared[int(cached_value.text)].findall(".//s:t", NS))
+        else:
+            cached_text = text_of(calculated.findall("s:is//s:t", NS))
+        cell.set("t", "str")
+        ET.SubElement(cell, q("s", "v")).text = cached_text
+    else:
+        if cached_type is not None:
+            cell.set("t", cached_type)
+        for node in calculated:
+            if node.tag in (q("s", "v"), q("s", "is")):
+                cell.append(copy.deepcopy(node))
+
+
+def merge_formula_caches(package, fresh, tree, calculated_tree, name, payload):
+    original = {node.get("r"): node for node in tree.findall("s:sheetData/s:row/s:c", NS)}
+    calculated = {node.get("r"): node for node in calculated_tree.findall("s:sheetData/s:row/s:c", NS)}
+    formulas = {coordinate for coordinate, node in original.items() if node.find("s:f", NS) is not None}
+    current_results, previous_results = set(), set()
+    previous_size, current_size = 0, 0
+    for coordinate in sorted(formulas):
+        formula = original[coordinate].find("s:f", NS)
+        computed = calculated.get(coordinate)
+        if computed is None or computed.find("s:f", NS) is None:
+            raise ValueError("recalculation did not preserve a formula cell")
+        if computed.find("s:v", NS) is None and computed.get("t") not in ("str", "inlineStr"):
+            raise ValueError("recalculation did not return a usable formula cache")
+        next_formula = computed.find("s:f", NS)
+        if formula.get("t") == "array":
+            members = range_cells(formula.get("ref", coordinate), payload["max_cells"])
+            previous_size += len(members)
+            if previous_size > payload["max_cells"]:
+                raise ValueError("formula caches exceed the configured cell budget")
+            previous_results.update(members)
+        if next_formula.get("t") == "array":
+            reference = next_formula.get("ref", coordinate)
+            members = range_cells(reference, payload["max_cells"])
+            current_size += len(members)
+            if current_size > payload["max_cells"]:
+                raise ValueError("formula caches exceed the configured cell budget")
+            current_results.update(members)
+            formula.set("t", "array")
+            formula.set("ref", reference)
+        elif formula.get("t") == "array":
+            formula.set("ref", coordinate)
+    targets = formulas | previous_results | current_results
+    if len(targets) > payload["max_cells"]:
+        raise ValueError("formula caches exceed the configured cell budget")
+    for coordinate in targets:
+        value = calculated.get(coordinate) if coordinate in formulas or coordinate in current_results else None
+        if coordinate not in original and value is None:
+            continue
+        cell = original.get(coordinate)
+        if cell is None:
+            cell = worksheet_cell(tree, coordinate)
+        copy_formula_cache(package, fresh, cell, value, name, payload)
+    from openpyxl.utils.cell import get_column_letter
+    dimension = tree.find("s:dimension", NS)
+    if dimension is not None:
+        coordinates = [cell_coordinates(coordinate)[1:] for coordinate in original.keys() | targets]
+        if coordinates:
+            dimension.set("ref", f"{get_column_letter(min(column for column, row in coordinates))}{min(row for column, row in coordinates)}:{get_column_letter(max(column for column, row in coordinates))}{max(row for column, row in coordinates)}")
+
+
+def calculation_copy(package):
+    duplicate = copy.copy(package)
+    duplicate.changed = dict(package.changed)
+    return duplicate
+
+
+def calculate_file(source, destination, payload):
+    if not payload.get("node") or not payload.get("cli"):
+        raise ValueError("genuine formula recalculation requires the bundled LibreOffice Kit")
+    process = subprocess.run([payload["node"], payload["cli"], "recalculate", "--input", str(source), "--output", str(destination)], capture_output=True, timeout=payload["timeout_ms"]/1000)
+    if process.returncode:
+        raise ValueError("formula recalculation failed; original source is unchanged")
+    return Package(destination, payload)
+
+
+def dynamic_formula(package, cell):
+    """Only explicit XLDAPR cell metadata permits resizing; ordinary CSE arrays keep their fixed ref."""
+    marker = cell.get("cm")
+    if marker is None or "xl/metadata.xml" not in package.parts:
+        return False
+    metadata = package.xml("xl/metadata.xml")
+    entries = metadata.findall("s:cellMetadata/s:bk", NS)
+    types = metadata.findall("s:metadataTypes/s:metadataType", NS)
+    index = int(marker)-1
+    if not 0 <= index < len(entries):
+        raise ValueError("dynamic formula metadata is incomplete; original source is unchanged")
+    for reference in entries[index].findall("s:rc", NS):
+        kind = int(reference.get("t"))-1
+        if not 0 <= kind < len(types) or types[kind].get("name") != "XLDAPR":
+            continue
+        future = next((node for node in metadata.findall("s:futureMetadata", NS) if node.get("name") == "XLDAPR"), None)
+        records = [] if future is None else future.findall("s:bk", NS)
+        entry = int(reference.get("v"))
+        if not 0 <= entry < len(records):
+            raise ValueError("dynamic formula metadata is incomplete; original source is unchanged")
+        return any(node.get("fDynamic") in ("1", "true") for node in records[entry].xpath(".//*[local-name()='dynamicArrayProperties']"))
+    return False
+
+
+def measured_dynamic_range(package, name, part, coordinate, payload, scratch, label):
+    from decimal import Decimal
+    from openpyxl.utils.cell import get_column_letter
+    probe = calculation_copy(package)
+    tree = probe.xml(part)
+    anchor = worksheet_cell(tree, coordinate)
+    formula = anchor.find("s:f", NS)
+    if formula is None or not formula.text:
+        raise ValueError("dynamic formula cannot be evaluated; use Excel to recalculate the unchanged source")
+    expression = formula.text
+    if formula.get("ref") is not None:
+        cells = {cell.get("r"): cell for cell in tree.findall("s:sheetData/s:row/s:c", NS)}
+        for follower in range_cells(formula.get("ref"), payload["max_cells"])-{coordinate}:
+            node = cells.get(follower)
+            if node is not None:
+                for cached in list(node):
+                    if cached.tag in (q("s", "v"), q("s", "is")):
+                        node.remove(cached)
+                node.attrib.pop("t", None)
+    formula.attrib.clear()
+    # One exact integer carries both dimensions: Excel has at most 16384 columns.
+    formula.text = f"ROWS({expression})*16385+COLUMNS({expression})"
+    probe.save_xml(part, tree)
+    source, destination = scratch / (label+".xlsx"), scratch / (label+"-calculated.xlsx")
+    probe.write(source)
+    calculated = calculate_file(source, destination, payload)
+    cell = worksheet_cell(calculated.xml(dict(document_parts(calculated))[name]), coordinate)
+    value = cell.findtext("s:v", namespaces=NS)
+    if cell.get("t") not in (None, "n") or value is None:
+        raise ValueError("dynamic result size could not be confirmed; use Excel to recalculate the unchanged source")
+    number = Decimal(value)
+    if not number.is_finite() or number != number.to_integral_value():
+        raise ValueError("dynamic result size could not be confirmed; original source is unchanged")
+    rows, columns = divmod(int(number), 16385)
+    if rows < 1 or not 1 <= columns <= 16384:
+        raise ValueError("dynamic result size is outside Excel worksheet coordinates")
+    _, column, row = cell_coordinates(coordinate)
+    reference = f"{coordinate}:{get_column_letter(column+columns-1)}{row+rows-1}"
+    range_cells(reference, payload["max_cells"])
+    return reference
+
+
+def prepare_dynamic_calculation(package, payload, scratch):
+    targets = []
+    for name, part in document_parts(package):
+        for cell in package.xml(part).findall("s:sheetData/s:row/s:c", NS):
+            if cell.find("s:f", NS) is not None and dynamic_formula(package, cell):
+                targets.append((name, part, cell.get("r")))
+    calculation = calculation_copy(package)
+    measured = []
+    for index, (name, part, coordinate) in enumerate(targets):
+        reference = measured_dynamic_range(package, name, part, coordinate, payload, scratch, f"size-{index}")
+        tree = calculation.xml(part)
+        anchor = worksheet_cell(tree, coordinate)
+        formula = anchor.find("s:f", NS)
+        old = range_cells(formula.get("ref", coordinate), payload["max_cells"])
+        new = range_cells(reference, payload["max_cells"])
+        cells = {cell.get("r"): cell for cell in tree.findall("s:sheetData/s:row/s:c", NS)}
+        for target in new-old:
+            existing = cells.get(target)
+            if existing is not None and any(node.tag in (q("s", "f"), q("s", "v"), q("s", "is")) for node in existing):
+                raise ValueError(f"dynamic result conflicts with an existing cell ({name}!{target}); original source is unchanged")
+        for target in old-new:
+            existing = cells.get(target)
+            if existing is not None:
+                for cached in list(existing):
+                    if cached.tag in (q("s", "v"), q("s", "is")):
+                        existing.remove(cached)
+                existing.attrib.pop("t", None)
+        formula.set("ref", reference)
+        formula.set("t", "array")
+        calculation.save_xml(part, tree)
+        measured.append((name, part, coordinate, reference))
+    return calculation, measured
 
 
 def patch(package, spec, payload, scratch):
@@ -354,54 +579,21 @@ def patch(package, spec, payload, scratch):
             if node.get("Type", "").endswith("/calcChain"):
                 tree.remove(node)
         package.save_xml(relations, tree)
-    package.write(output)
+    calculation, dynamic = prepare_dynamic_calculation(package, payload, scratch) if kind == "xlsx" and any("value" in item or "formula" in item for item in spec["operations"]) else (package, [])
+    calculation.write(output)
     recalculated = False
     if kind == "xlsx" and any("value" in item or "formula" in item for item in spec["operations"]):
         formula_parts = [(name, part) for name, part in document_parts(package) if package.xml(part).find(".//s:f", NS) is not None]
         if formula_parts:
-            if not payload.get("node") or not payload.get("cli"):
-                raise ValueError("genuine formula recalculation requires the bundled LibreOffice Kit")
             calculated = scratch / "calculated.xlsx"
-            process = subprocess.run([payload["node"], payload["cli"], "recalculate", "--input", str(output), "--output", str(calculated)], capture_output=True, text=True, timeout=payload["timeout_ms"]/1000)
-            if process.returncode:
-                raise ValueError("formula recalculation failed; original source is unchanged")
-            fresh = Package(calculated, payload)
+            fresh = calculate_file(output, calculated, payload)
             fresh_parts = dict(document_parts(fresh))
+            for index, (name, part, coordinate, reference) in enumerate(dynamic):
+                if measured_dynamic_range(fresh, name, fresh_parts[name], coordinate, payload, scratch, f"confirmed-size-{index}") != reference:
+                    raise ValueError("dynamic formula dependencies changed result size; use Excel to recalculate the unchanged source")
             for name, part in formula_parts:
                 tree = package.xml(part)
-                calculated_cells = {node.get("r"): node for node in fresh.xml(fresh_parts[name]).findall("s:sheetData/s:row/s:c", NS)}
-                for cell in tree.findall("s:sheetData/s:row/s:c", NS):
-                    if cell.find("s:f", NS) is None:
-                        continue
-                    calculated_cell = calculated_cells.get(cell.get("r"))
-                    if calculated_cell is None:
-                        raise ValueError("recalculation did not return a formula cell")
-                    cached_type = calculated_cell.get("t")
-                    cached_value = calculated_cell.find("s:v", NS)
-                    if cached_value is None and cached_type not in ("str", "inlineStr"):
-                        raise ValueError("recalculation did not return a usable formula cache")
-                    if calculated_cell.get("t") == "e":
-                        package.formula_error_count += 1
-                        if len(package.formula_errors) < payload["max_inspect_items"]:
-                            package.formula_errors.append({"sheet": name[:payload["max_preview_chars"]], "cell": cell.get("r"), "value": calculated_cell.findtext("s:v", default="", namespaces=NS)[:payload["max_preview_chars"]]})
-                    for node in list(cell):
-                        if node.tag in (q("s", "v"), q("s", "is")):
-                            cell.remove(node)
-                    cell.attrib.pop("t", None)
-                    if cached_type in ("s", "inlineStr"):
-                        if cached_type == "s":
-                            shared = fresh.xml("xl/sharedStrings.xml")
-                            cached_text = text_of(shared[int(cached_value.text)].findall(".//s:t", NS))
-                        else:
-                            cached_text = text_of(calculated_cell.findall("s:is//s:t", NS))
-                        cell.set("t", "str")
-                        ET.SubElement(cell, q("s", "v")).text = cached_text
-                    else:
-                        if cached_type is not None:
-                            cell.set("t", cached_type)
-                        for node in calculated_cell:
-                            if node.tag in (q("s", "v"), q("s", "is")):
-                                cell.append(copy.deepcopy(node))
+                merge_formula_caches(package, fresh, tree, fresh.xml(fresh_parts[name]), name, payload)
                 package.save_xml(part, tree)
             output = scratch / "verified.xlsx"
             package.write(output)
@@ -456,6 +648,7 @@ def main():
 
 
 if __name__ == "__main__":
+    configure_standard_streams()
     try:
         main()
     except Exception as error:

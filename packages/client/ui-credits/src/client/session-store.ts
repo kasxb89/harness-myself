@@ -17,6 +17,8 @@ export interface SessionInfo {
   readonly signedIn: boolean
   readonly creditsPerYuan: number
   readonly account?: { readonly id: string; readonly phone: string }
+  /** Stable login scope supplied by the Host; absent on older read-only-compatible Hosts. */
+  readonly accountOwner?: string
   readonly expiresAt?: string
   readonly statePath?: string
   readonly phoneRecoveryAvailable?: boolean
@@ -67,7 +69,8 @@ const subscribe = (listener: () => void): (() => void) => {
 
 /** Replace the snapshot and wake every reader. */
 function publish(next: Partial<CreditsSnapshot>): void {
-  const identity = (session: SessionInfo | null): string | null => session?.signedIn === true ? session.account?.id ?? null : null
+  const identity = (session: SessionInfo | null): string | null => session?.signedIn === true
+    ? JSON.stringify([session.account?.id ?? null, session.accountOwner ?? null]) : null
   const changed = next.session !== undefined && identity(next.session) !== identity(snapshot.session)
   snapshot = { ...snapshot, ...changed ? { balance: null, failure: null, readFailure: null, refreshing: false } : {},
     ...next, accountEpoch: snapshot.accountEpoch + Number(changed) }
@@ -82,6 +85,7 @@ export async function refreshBalance(signal?: AbortSignal): Promise<void> {
   if (signal?.aborted === true || snapshot.session?.signedIn !== true || creditsRetrySeconds(snapshot.readFailure) > 0) return
   const epoch = snapshot.accountEpoch
   const accountId = snapshot.session.account?.id
+  const accountOwner = snapshot.session.accountOwner
   if (balanceRead?.epoch === epoch && balanceRead.signal?.aborted !== true) return balanceRead.promise
   const generation = ++balanceReadGeneration
   const current = (): boolean => signal?.aborted !== true && generation === balanceReadGeneration && snapshot.accountEpoch === epoch
@@ -101,7 +105,8 @@ export async function refreshBalance(signal?: AbortSignal): Promise<void> {
         publish({ failure: failure.code, readFailure: failure })
         return
       }
-      if (answer.account !== undefined && answer.account?.id !== accountId) {
+      if (answer.account !== undefined && answer.account?.id !== accountId
+        || answer.accountOwner !== undefined && answer.accountOwner !== accountOwner) {
         const failure = creditsReadFailure({ code: 'ACCOUNT_CHANGED' }, 'ACCOUNT_CHANGED')
         publish({ failure: failure.code, readFailure: failure })
         return
@@ -125,9 +130,10 @@ export async function refreshBalance(signal?: AbortSignal): Promise<void> {
  * these pages (the login API, another window) must reach them.
  * @param signal - optional owner cancellation.
  * @param afterSignIn - An explicit completed sign-in may replace the prior login's cooldown.
+ * @returns True only when this invocation verified and retained the current session; a cooldown or failed read returns false.
  */
-export async function refreshCredits(signal?: AbortSignal, afterSignIn = false): Promise<void> {
-  if (signal?.aborted === true || !afterSignIn && creditsRetrySeconds(snapshot.readFailure) > 0) return
+export async function refreshCredits(signal?: AbortSignal, afterSignIn = false): Promise<boolean> {
+  if (signal?.aborted === true || !afterSignIn && creditsRetrySeconds(snapshot.readFailure) > 0) return false
   const generation = ++sessionReadGeneration
   if (afterSignIn) {
     balanceReadGeneration += 1
@@ -136,27 +142,30 @@ export async function refreshCredits(signal?: AbortSignal, afterSignIn = false):
   const current = (): boolean => signal?.aborted !== true && generation === sessionReadGeneration
   try {
     const answer = await get<SessionInfo | null>('/credits/api/session', signal)
-    if (!current()) return
+    if (!current()) return false
     if (!answer.ok) {
       const failure = creditsReadFailure(answer, 'ACCOUNT_UNAVAILABLE')
       publish({ loaded: true, failure: failure.code, readFailure: failure })
-      return
+      return false
     }
     const info = answer.payload
     if (info == null || typeof info.signedIn !== 'boolean' || typeof info.creditsPerYuan !== 'number'
       || !Number.isFinite(info.creditsPerYuan) || info.creditsPerYuan <= 0
+      || info.accountOwner !== undefined && (typeof info.accountOwner !== 'string' || !/^[a-f0-9]{64}$/u.test(info.accountOwner))
       || info.signedIn && (typeof info.account?.id !== 'string' || info.account.id === '' || typeof info.account.phone !== 'string')) {
       const failure = creditsReadFailure(undefined, 'ACCOUNT_INVALID_RESPONSE')
       publish({ loaded: true, failure: failure.code, readFailure: failure })
-      return
+      return false
     }
     publish({ session: info, loaded: true, ...afterSignIn ? { failure: null, readFailure: null } : {} })
     if (info.signedIn) await refreshBalance(signal)
     else publish({ balance: null, failure: null, readFailure: null })
+    return current() && snapshot.session === info
   } catch (error) {
-    if (!current()) return
+    if (!current()) return false
     const failure = creditsReadFailure(error, 'ACCOUNT_UNAVAILABLE')
     publish({ loaded: true, failure: failure.code, readFailure: failure })
+    return false
   }
 }
 
@@ -213,6 +222,12 @@ function releaseHeartbeat(): void {
   heartbeatCleanup?.()
   heartbeatCleanup = null
 }
+
+/**
+ * Read the current immutable snapshot inside an account-bound user action; render code uses the shared hook.
+ * @returns The current account identity, epoch, confirmed balance and read state.
+ */
+export function readCreditsSnapshot(): CreditsSnapshot { return snapshot }
 
 /**
  * Expose the existing account snapshot to injected client consumers.

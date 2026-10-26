@@ -116,7 +116,9 @@ function task(value: unknown, sessionId: SessionId, projectId: string): value is
     && (value.imageReceipt === undefined || submissionReceipt(value.imageReceipt, sessionId))
     && (value.videoReceipt === undefined || submissionReceipt(value.videoReceipt, sessionId))
     && (value.canQuery === undefined || typeof value.canQuery === 'boolean')
-    && (value.canQuery !== true || record(receipt) && receiptId(receipt.taskId))
+    && (value.recovery === undefined || value.recovery === 'image-result' && value.imageReceipt !== undefined
+      && value.videoReceipt === undefined && record(receipt) && receipt.taskId === undefined)
+    && (value.canQuery !== true || record(receipt) && (receiptId(receipt.taskId) || value.recovery === 'image-result'))
     && Array.isArray(value.outputs) && value.outputs.every(item => output(item, sessionId, projectId))
 }
 function project(value: unknown, sessionId: SessionId): value is CreativeProjectView {

@@ -429,7 +429,7 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected): 
                 size="sm"
                 variant="ghost"
                 icon={<IconRefreshOutlineRegular />}
-                onClick={() => { void (currentReadFailure?.kind === 'accountChanged' ? refreshCredits() : refreshBalance()) }}
+                onClick={() => { void (currentReadFailure?.kind === 'accountChanged' || currentReadFailure?.kind === 'sessionRefresh' ? refreshCredits() : refreshBalance()) }}
                 disabled={busy || refreshing || readRetrySeconds > 0}
               >
                 {t('refresh')}
@@ -464,7 +464,8 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected): 
             </div>
           </section>
           <UsageOverview key={`${session.account?.id ?? session.account?.phone ?? 'current'}:${String(accountEpoch)}`}
-            t={t} creditsPerYuan={creditsPerYuan} {...session.account === undefined ? {} : { accountId: session.account.id }} />
+            t={t} creditsPerYuan={creditsPerYuan} {...session.account === undefined ? {} : { accountId: session.account.id }}
+            {...session.accountOwner === undefined ? {} : { accountOwner: session.accountOwner }} />
         </>
       )}
     </div>

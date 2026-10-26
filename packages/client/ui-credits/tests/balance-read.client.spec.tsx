@@ -46,6 +46,49 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
 describe('balance read recovery', () => {
+  for (const transition of ['account id', 'login owner'] as const) {
+    productIt(`revalidates the shared session on usage retry after a cross-window ${transition} change`, async () => {
+      let hostId = String(accountId), owner = 'a'.repeat(64), consumed = 100
+      const fallback = fetcher.getMockImplementation()!
+      fetcher.mockImplementation(async (input, init) => {
+        const path = pathOf(input)
+        if (path === '/credits/api/session') return Response.json({ ok: true, payload: {
+          signedIn: true, creditsPerYuan: 1000, account: { id: hostId, phone: 'fixture account' }, accountOwner: owner,
+        } })
+        if (path === '/credits/api/summary') return Response.json({ ok: true, account: { id: hostId }, accountOwner: owner,
+          payload: { balance_points: consumed === 100 ? 1234 : 9999 } })
+        if (path.startsWith('/credits/api/usage?')) {
+          const query = new URL(path, 'http://localhost').searchParams
+          const start = Number(query.get('start')), end = Number(query.get('end'))
+          return Response.json({ ok: true, account: { id: hostId }, accountOwner: owner, payload: {
+            start, end, asOf: new Date(Date.now()).toISOString(), delayMinutes: 0,
+            rows: [{ timestamp: end, model: 'fixture-model', billingRecords: 1, consumedPoints: consumed, totalTokens: 1 }],
+          } })
+        }
+        return await fallback(input, init)
+      })
+      const view = await mountPage()
+      const usage = () => within(view.getByRole('region', { name: zh['usage.title'] }))
+      await waitFor(() => { expect(within(usage().getByRole('article', { name: zh['usage.consumed'] })).getByText('100')).toBeTruthy() })
+      if (transition === 'account id') hostId = String(accountId + 1)
+      owner = 'b'.repeat(64); consumed = 200
+      fireEvent.click(usage().getByRole('button', { name: zh['usage.refresh'] }))
+      await waitFor(() => { expect(usage().getByRole('alert').textContent).toContain(zh['usage.error.accountChanged']) })
+      expect(within(usage().getByRole('article', { name: zh['usage.consumed'] })).queryByText('200')).toBeNull()
+      const sessions = fetcher.mock.calls.filter(([input]) => pathOf(input) === '/credits/api/session').length
+      const previousEpoch = createCreditsSessionSource().getSnapshot().accountEpoch
+      fireEvent.click(usage().getByRole('button', { name: zh['usage.retry'] }))
+      await waitFor(() => { expect(within(usage().getByRole('article', { name: zh['usage.consumed'] })).getByText('200')).toBeTruthy() })
+      expect(fetcher.mock.calls.filter(([input]) => pathOf(input) === '/credits/api/session')).toHaveLength(sessions + 1)
+      expect(createCreditsSessionSource().getSnapshot().accountEpoch).toBe(previousEpoch + 1)
+      expect(createCreditsSessionSource().getSnapshot().session?.account?.id).toBe(hostId)
+      expect(createCreditsSessionSource().getSnapshot().session?.accountOwner).toBe(owner)
+      expect(wallet(view).getByText('9,999')).toBeTruthy()
+      expect(usage().queryByRole('alert')).toBeNull()
+      expect(fetcher.mock.calls.every(([input]) => !pathOf(input).includes('/recharge/'))).toBe(true)
+    })
+  }
+
   productIt('shows an explicit initial balance failure instead of treating payload null as loaded money', async () => {
     summary = async () => Response.json({ ok: false, code: 'BALANCE_UNAVAILABLE', payload: null })
     const view = await mountPage()

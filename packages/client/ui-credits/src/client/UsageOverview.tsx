@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Button, IconRefreshOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import { get } from './api.ts'
+import { readCreditsSnapshot, refreshCredits } from './session-store.ts'
 import { creditsReadFailure, creditsRetrySeconds, type CreditsReadFailure } from './read-failure.ts'
 import { UsageCharts } from './UsageCharts.tsx'
 import { aggregateUsage, getUsageWindow, parseUsagePayload, type UsagePayload, type UsageRange } from './usage-analytics.ts'
@@ -14,18 +15,25 @@ type Translate = (key: string, values?: Record<string, string>) => string
  * @param props - localized copy and the account's current points-to-yuan rate.
  * @returns period controls, reported totals, charts and their query states.
  */
-export function UsageOverview({ t, creditsPerYuan, accountId }: {
+export function UsageOverview({ t, creditsPerYuan, accountId, accountOwner }: {
   t: Translate
   creditsPerYuan: number
   accountId?: string
+  accountOwner?: string
 }): ReactNode {
+  const accountScope = JSON.stringify([accountId ?? null, accountOwner ?? null])
+  const mounted = useRef(true)
+  const latestScope = useRef(accountScope)
+  latestScope.current = accountScope
+  const needsSessionRefresh = useRef(false)
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
   const [range, setRange] = useState<UsageRange>('7d')
   const [revision, setRevision] = useState(0)
   const [selectedModel, setSelectedModel] = useState<string | null>(null)
   const [storedPayload, setPayload] = useState<UsagePayload | null>(null)
-  const [payloadAccount, setPayloadAccount] = useState(accountId)
-  const previousAccount = useRef(accountId)
-  const payload = payloadAccount === accountId ? storedPayload : null
+  const [payloadAccount, setPayloadAccount] = useState(accountScope)
+  const previousAccount = useRef(accountScope)
+  const payload = payloadAccount === accountScope ? storedPayload : null
   const [loading, setLoading] = useState(true)
   const [failure, setFailure] = useState<CreditsReadFailure | null>(null)
   const [retrySeconds, setRetrySeconds] = useState(0)
@@ -52,11 +60,11 @@ export function UsageOverview({ t, creditsPerYuan, accountId }: {
     setLoading(true)
     pendingRead.current = true
     setFailure(null)
-    const sameAccount = previousAccount.current === accountId
-    previousAccount.current = accountId
-    if (!sameAccount) retryDeadline.current = 0
+    const sameAccount = previousAccount.current === accountScope
+    previousAccount.current = accountScope
+    if (!sameAccount) { retryDeadline.current = 0; needsSessionRefresh.current = false }
     setPayload(previous => sameAccount && previous?.start === window.start ? previous : null)
-    setPayloadAccount(accountId)
+    setPayloadAccount(accountScope)
     const read = async (): Promise<void> => {
       let received = false
       try {
@@ -67,10 +75,13 @@ export function UsageOverview({ t, creditsPerYuan, accountId }: {
         if (!answer.ok) {
           const next = creditsReadFailure(answer, 'USAGE_UNAVAILABLE')
           retryDeadline.current = next.retryAt ?? 0
+          if (next.kind === 'accountChanged' || next.kind === 'sessionRefresh') needsSessionRefresh.current = true
           setFailure(next)
           return
         }
-        if (accountId !== undefined && answer.account !== undefined && answer.account?.id !== accountId) {
+        if (accountId !== undefined && (answer.account !== undefined && answer.account?.id !== accountId
+          || answer.accountOwner !== undefined && answer.accountOwner !== accountOwner)) {
+          needsSessionRefresh.current = true
           setFailure(creditsReadFailure({ code: 'ACCOUNT_CHANGED' }, 'ACCOUNT_CHANGED'))
           return
         }
@@ -78,6 +89,7 @@ export function UsageOverview({ t, creditsPerYuan, accountId }: {
         if (next.start !== window.start || next.end !== window.end) throw new Error('Mismatched usage window')
         aggregateUsage(next, null)
         retryDeadline.current = 0
+        needsSessionRefresh.current = false
         setPayload(next)
       } catch (error) {
         if (active) setFailure(creditsReadFailure(received ? undefined : error,
@@ -88,7 +100,7 @@ export function UsageOverview({ t, creditsPerYuan, accountId }: {
     }
     void read()
     return () => { active = false; pendingRead.current = false; controller.abort() }
-  }, [accountId, window])
+  }, [accountId, accountOwner, accountScope, window])
 
   useEffect(() => {
     const tick = (): void => { setRetrySeconds(creditsRetrySeconds(failure)) }
@@ -122,6 +134,28 @@ export function UsageOverview({ t, creditsPerYuan, accountId }: {
     if (pendingRead.current || retryDeadline.current > performance.now()) return
     pendingRead.current = true
     setLoading(true)
+    if (needsSessionRefresh.current) {
+      const scope = accountScope
+      let restarted = false
+      void refreshCredits().then((verified) => {
+        if (!mounted.current || latestScope.current !== scope) return
+        const latest = readCreditsSnapshot()
+        if (!verified) {
+          const next = latest.readFailure ?? creditsReadFailure(undefined, 'ACCOUNT_UNAVAILABLE')
+          retryDeadline.current = next.retryAt ?? 0
+          setFailure(next)
+          return
+        }
+        const owner = latest.session?.signedIn === true ? latest.session : null
+        if (accountId !== undefined && (owner?.account?.id !== accountId || owner.accountOwner !== accountOwner)) return
+        needsSessionRefresh.current = false
+        restarted = true
+        setRevision(value => value + 1)
+      }).finally(() => {
+        if (!restarted && mounted.current && latestScope.current === scope) { pendingRead.current = false; setLoading(false) }
+      })
+      return
+    }
     setRevision(value => value + 1)
   }
   const modelOptions = analysis?.availableModels ?? []

@@ -47,7 +47,7 @@ beforeEach(() => {
     accountEpoch: 0, loaded: true, failure: null, balance: null,
     session: { signedIn: false, creditsPerYuan: 1000 },
   })
-  vi.mocked(refreshCredits).mockResolvedValue(undefined)
+  vi.mocked(refreshCredits).mockResolvedValue(true)
 })
 
 afterEach(() => {
@@ -127,7 +127,7 @@ describe('balance phone sign-in', () => {
   ])('completes a successful sign-in $label', async ({ bonus }) => {
     let finish: ((response: Response) => void) | undefined
     let finishRefresh: (() => void) | undefined
-    vi.mocked(refreshCredits).mockImplementationOnce(() => new Promise<void>((resolve) => { finishRefresh = resolve }))
+    vi.mocked(refreshCredits).mockImplementationOnce(() => new Promise<boolean>((resolve) => { finishRefresh = () => { resolve(true) } }))
     const completeSignIn = vi.fn()
     const fetchMock = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(Response.json(challenge))

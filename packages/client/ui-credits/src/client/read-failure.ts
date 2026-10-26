@@ -1,6 +1,6 @@
 /** Safe read failures and monotonic retry deadlines shared by account views. */
 export interface CreditsReadFailure {
-  readonly kind: 'accountChanged' | 'network' | 'timeout' | 'auth' | 'access' | 'rateLimited' | 'service' | 'invalid' | 'unavailable' | 'failed'
+  readonly kind: 'sessionRefresh' | 'accountChanged' | 'network' | 'timeout' | 'auth' | 'access' | 'rateLimited' | 'service' | 'invalid' | 'unavailable' | 'failed'
   readonly code: string
   readonly httpStatus?: number
   readonly retryAfterSeconds?: number
@@ -27,7 +27,7 @@ export function creditsReadFailure(value: unknown, fallback: string, status?: nu
   const httpStatus = typeof declaredStatus === 'number' ? declaredStatus : undefined
   const seconds = detail?.retryAfterSeconds ?? envelope?.retryAfterSeconds
   const retryAfterSeconds = typeof seconds === 'number' && Number.isFinite(seconds) && seconds >= 0 ? seconds : undefined
-  const kind: CreditsReadFailure['kind'] = code === 'ACCOUNT_CHANGED' ? 'accountChanged' : httpStatus === 429 || /(?:RATE_LIMITED|HTTP_429)$/u.test(code) || code === '429' ? 'rateLimited'
+  const kind: CreditsReadFailure['kind'] = code === 'SESSION_REFRESH_REQUIRED' ? 'sessionRefresh' : code === 'ACCOUNT_CHANGED' ? 'accountChanged' : httpStatus === 429 || /(?:RATE_LIMITED|HTTP_429)$/u.test(code) || code === '429' ? 'rateLimited'
     : httpStatus === 401 || ['SESSION_REQUIRED', 'SESSION_INVALID', 'AUTH_TOKEN_EXPIRED', 'ACCOUNT_AUTH_REQUIRED', 'BALANCE_AUTH_REQUIRED'].includes(code) ? 'auth'
       : httpStatus === 403 || /(?:ACCESS_DENIED|ACCESS_REQUIRED|FORBIDDEN)$/u.test(code) ? 'access'
         : httpStatus === 408 || httpStatus === 504 || /TIMEOUT$/u.test(code) || value instanceof DOMException && value.name === 'TimeoutError' ? 'timeout'

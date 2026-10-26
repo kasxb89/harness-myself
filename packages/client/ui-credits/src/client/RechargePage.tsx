@@ -10,12 +10,13 @@ import {
   type TagTone,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import { get, grouped, post, secondsUntil } from './api.ts'
+import { get, grouped, post, secondsUntil, type Envelope } from './api.ts'
 import { cx } from './class-names.ts'
 import { CreditsPanelIcon } from './CreditsPanelIcon.tsx'
 import { QUICK_AMOUNTS_YUAN } from './recharge-amounts.ts'
 import { clearRechargeRequest, useRechargeRequest } from './recharge-request.ts'
-import { refreshBalance, refreshCredits, useCreditsSnapshot } from './session-store.ts'
+import { readCreditsSnapshot, refreshBalance, refreshCredits, useCreditsSnapshot, type CreditsSnapshot } from './session-store.ts'
+import { creditsReadFailure, creditsRetrySeconds, type CreditsReadFailure } from './read-failure.ts'
 import css from './CreditsPage.module.css'
 
 /** What the plugin injects into the top-up page. */
@@ -26,7 +27,10 @@ export interface RechargePageInjected {
   readonly openBalance: () => void
 }
 
+interface RechargeOwner { readonly id: string; readonly login: string; readonly epoch: number }
+
 interface OrderCreated {
+  readonly owner: RechargeOwner
   readonly merchant_order_no: string
   readonly amount_cents: number
   readonly points: number
@@ -46,11 +50,25 @@ const MAX_AMOUNT_YUAN = 100_000
 
 interface PaymentOperation {
   readonly controller: AbortController
+  readonly owner: RechargeOwner
+  phase: 'checking' | 'creating' | 'polling' | 'stopped'
   timer: ReturnType<typeof setTimeout> | null
 }
 
-function isActive(active: PaymentOperation): boolean {
-  return !active.controller.signal.aborted
+function ownerOf(snapshot: CreditsSnapshot): RechargeOwner | undefined {
+  const session = snapshot.session
+  if (session?.signedIn !== true || session.account?.id === undefined || session.accountOwner === undefined
+    || !/^[a-f0-9]{64}$/u.test(session.accountOwner)) return undefined
+  return { id: session.account.id, login: session.accountOwner, epoch: snapshot.accountEpoch }
+}
+
+function ownerMatches(owner: RechargeOwner, snapshot: CreditsSnapshot): boolean {
+  const current = ownerOf(snapshot)
+  return current?.id === owner.id && current.login === owner.login && current.epoch === owner.epoch
+}
+
+function responseMatchesOwner(answer: Envelope<unknown>, owner: RechargeOwner): boolean {
+  return answer.account?.id === owner.id && answer.accountOwner === owner.login
 }
 
 /** The tag palette matching one order's terminal or in-flight state. */
@@ -63,15 +81,19 @@ function statusTone(status: OrderStatus['status']): TagTone {
 
 export function RechargePage(props: PropsRuntime<'main'> & RechargePageInjected): ReactNode {
   const { t, openBalance } = props
-  const { session, balance, loaded, failure: balanceFailure } = useCreditsSnapshot()
+  const snapshot = useCreditsSnapshot()
+  const { session, balance, loaded, failure: balanceFailure, readFailure, refreshing, accountEpoch } = snapshot
   const [notice, setNotice] = useState<string | null>(null)
   const [failure, setFailure] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [ownerFailure, setOwnerFailure] = useState<'changed' | 'missing' | null>(null)
+  const [paymentFailure, setPaymentFailure] = useState<CreditsReadFailure | null>(null)
+  const [retrySeconds, setRetrySeconds] = useState(0)
 
   /* The page opens on the cheapest preset, so the summary and the confirm
    * button already mean something before the operator touches anything. */
   const [amountYuan, setAmountYuan] = useState(String(QUICK_AMOUNTS_YUAN[0]))
-  const [order, setOrder] = useState<OrderCreated | null>(null)
+  const [storedOrder, setOrder] = useState<OrderCreated | null>(null)
   const [orderState, setOrderState] = useState<OrderStatus | null>(null)
   const [polling, setPolling] = useState(false)
   const [copied, setCopied] = useState(false)
@@ -82,6 +104,18 @@ export function RechargePage(props: PropsRuntime<'main'> & RechargePageInjected)
 
   const creditsPerYuan = session?.creditsPerYuan ?? 1000
   const signedIn = session?.signedIn === true
+  const identityBlocked = ownerOf(snapshot) === undefined || ownerFailure !== null
+    || readFailure?.kind === 'accountChanged' || readFailure?.kind === 'sessionRefresh' || readFailure?.kind === 'auth'
+  const order = storedOrder !== null && !identityBlocked && ownerMatches(storedOrder.owner, snapshot) ? storedOrder : null
+  const cooldown = useCallback((): number => Math.max(creditsRetrySeconds(readCreditsSnapshot().readFailure),
+    creditsRetrySeconds(paymentFailure)), [paymentFailure])
+  useEffect(() => {
+    const tick = (): void => { setRetrySeconds(cooldown()) }
+    tick()
+    if (cooldown() === 0) return undefined
+    const timer = setInterval(() => { tick(); if (cooldown() === 0) clearInterval(timer) }, 1000)
+    return () => { clearInterval(timer) }
+  }, [cooldown, readFailure])
 
   /** The sidebar's top-up entry hands this page its amount. */
   useEffect(() => {
@@ -100,23 +134,44 @@ export function RechargePage(props: PropsRuntime<'main'> & RechargePageInjected)
     operation.current = null
   }, [])
 
-  const startOperation = useCallback((): PaymentOperation => {
+  const startOperation = useCallback((owner: RechargeOwner, phase: PaymentOperation['phase']): PaymentOperation => {
     cancelOperation()
-    const next = { controller: new AbortController(), timer: null }
+    const next: PaymentOperation = { controller: new AbortController(), owner, phase, timer: null }
     operation.current = next
     return next
   }, [cancelOperation])
 
+  const isActive = useCallback((active: PaymentOperation): boolean => operation.current === active
+    && !active.controller.signal.aborted && ownerMatches(active.owner, readCreditsSnapshot()), [])
+  const clearPayment = useCallback(() => {
+    cancelOperation(); setOrder(null); setOrderState(null); setPolling(false); setBusy(false)
+  }, [cancelOperation])
   const accountId = session?.account?.id
+  const accountOwner = session?.accountOwner
   useEffect(() => {
-    setOrder(null)
-    setOrderState(null)
-    setPolling(false)
-    setBusy(false)
+    clearPayment()
+    setOwnerFailure(null)
     setFailure(null)
     setNotice(null)
     return cancelOperation
-  }, [accountId, signedIn, cancelOperation])
+  }, [accountEpoch, accountId, accountOwner, signedIn, cancelOperation, clearPayment])
+
+  useEffect(() => { if (identityBlocked) clearPayment() }, [identityBlocked, clearPayment])
+
+  const refreshAccount = useCallback(async (): Promise<void> => {
+    if (cooldown() > 0 || busy) return
+    clearPayment(); setFailure(null); setNotice(null); setBusy(true)
+    try {
+      const verified = await refreshCredits()
+      const current = readCreditsSnapshot()
+      if (!verified) { setFailure(t('rechargeAccountUnconfirmed')); return }
+      setOwnerFailure(ownerOf(current) === undefined ? 'missing' : null)
+    } finally { setBusy(false) }
+  }, [busy, clearPayment, cooldown, t])
+
+  const failOwnership = useCallback((missing: boolean) => {
+    clearPayment(); setOwnerFailure(missing ? 'missing' : 'changed')
+  }, [clearPayment])
 
   useEffect(() => () => {
     if (copiedTimer.current !== null) clearTimeout(copiedTimer.current)
@@ -124,25 +179,33 @@ export function RechargePage(props: PropsRuntime<'main'> & RechargePageInjected)
 
   /** Late reads belong only to their active operation, never a replacement order. */
   const pollOrder = useCallback(async (orderNo: string, attempt: number, active: PaymentOperation): Promise<void> => {
+    if (!isActive(active) || cooldown() > 0) { if (isActive(active)) setPolling(false); return }
     try {
+      const query = new URLSearchParams({ outTradeNo: orderNo, expected_account_id: active.owner.id,
+        expected_account_owner: active.owner.login })
       const answer = await get<{ status: string; points: number }>(
-        `/credits/api/recharge/wechat/order?outTradeNo=${encodeURIComponent(orderNo)}`,
+        `/credits/api/recharge/wechat/order?${query.toString()}`,
         active.controller.signal,
       )
       if (!isActive(active)) return
-      if (answer.sessionInvalid === true) {
+      if (answer.code === 'ACCOUNT_CHANGED' || answer.code === 'SESSION_REFRESH_REQUIRED') {
+        failOwnership(answer.code === 'SESSION_REFRESH_REQUIRED'); return
+      }
+      if (answer.sessionInvalid === true || answer.httpStatus === 401) {
         setFailure(t('rechargeSessionExpired'))
         setPolling(false)
-        cancelOperation()
-        await refreshCredits()
+        failOwnership(false)
         return
       }
       const remote = answer.payload
       if (!answer.ok || remote === undefined) {
+        setPaymentFailure(creditsReadFailure(answer, 'RECHARGE_UNAVAILABLE'))
+        active.phase = 'stopped'
         setFailure(t('rechargePollFailed'))
         setPolling(false)
         return
       }
+      if (!responseMatchesOwner(answer, active.owner)) { failOwnership(answer.accountOwner === undefined); return }
       const status: OrderStatus = {
         status: remote.status === 'success' ? 'succeeded'
           : remote.status === 'failed' ? 'failed'
@@ -151,6 +214,7 @@ export function RechargePage(props: PropsRuntime<'main'> & RechargePageInjected)
         points: remote.points,
         failure_code: null,
       }
+      active.phase = status.status === 'pending' ? 'polling' : 'stopped'
       setOrderState(status)
       if (status.status === 'succeeded') {
         setPolling(false)
@@ -190,7 +254,7 @@ export function RechargePage(props: PropsRuntime<'main'> & RechargePageInjected)
       // The failed read does not establish whether payment completed.
       void error
     }
-  }, [cancelOperation, t])
+  }, [cooldown, failOwnership, isActive, t])
 
   const stopPolling = useCallback(() => {
     cancelOperation()
@@ -199,15 +263,18 @@ export function RechargePage(props: PropsRuntime<'main'> & RechargePageInjected)
   }, [cancelOperation, t])
 
   const resumePolling = useCallback(() => {
-    if (order === null) return
+    if (order === null || cooldown() > 0 || !ownerMatches(order.owner, readCreditsSnapshot())) return
     setFailure(null)
     setNotice(null)
     setPolling(true)
-    void pollOrder(order.merchant_order_no, 0, startOperation())
-  }, [order, pollOrder, startOperation])
+    void pollOrder(order.merchant_order_no, 0, startOperation(order.owner, 'polling'))
+  }, [cooldown, order, pollOrder, startOperation])
 
   /** A create failure is never retried automatically because its outcome may be unknown. */
   const createOrder = useCallback(async () => {
+    if (cooldown() > 0 || identityBlocked || operation.current?.phase === 'checking' || operation.current?.phase === 'creating') return
+    const observed = ownerOf(snapshot)
+    if (observed === undefined || !ownerMatches(observed, readCreditsSnapshot())) { failOwnership(observed === undefined); return }
     setFailure(null)
     setNotice(null)
     const amount = Number(amountYuan)
@@ -219,20 +286,39 @@ export function RechargePage(props: PropsRuntime<'main'> & RechargePageInjected)
       setFailure(t('errAmountRange', { min: String(MIN_AMOUNT_YUAN), max: String(MAX_AMOUNT_YUAN) }))
       return
     }
-    const active = startOperation()
+    const active = startOperation(observed, 'checking')
     setPolling(false)
     setBusy(true)
     try {
+      const verified = await refreshCredits(active.controller.signal)
+      if (!isActive(active)) return
+      if (!verified || cooldown() > 0) {
+        active.phase = 'stopped'
+        setOrder(null); setOrderState(null)
+        setFailure(t('rechargeAccountUnconfirmed'))
+        return
+      }
+      const latest = readCreditsSnapshot()
+      if (!ownerMatches(observed, latest) || latest.readFailure?.kind === 'accountChanged'
+        || latest.readFailure?.kind === 'sessionRefresh' || latest.readFailure?.kind === 'auth') { failOwnership(false); return }
+      active.phase = 'creating'
       const answer = await post<{
         outTradeNo: string | null
         amount: number
         points: number
         expiresAt: number | null
         qrCodeDataUrl: string | null
-      }>('/credits/api/recharge/wechat', { amount }, active.controller.signal)
+      }>('/credits/api/recharge/wechat', { amount, expected_account_id: observed.id,
+        expected_account_owner: observed.login }, active.controller.signal)
       if (!isActive(active)) return
+      if (answer.code === 'ACCOUNT_CHANGED' || answer.code === 'SESSION_REFRESH_REQUIRED') {
+        failOwnership(answer.code === 'SESSION_REFRESH_REQUIRED'); return
+      }
       if (answer.ok && answer.payload !== undefined && answer.payload.outTradeNo !== null) {
+        if (!responseMatchesOwner(answer, observed)) { failOwnership(answer.accountOwner === undefined); return }
+        active.phase = 'polling'
         setOrder({
+          owner: observed,
           merchant_order_no: answer.payload.outTradeNo,
           amount_cents: answer.payload.amount * 100,
           points: answer.payload.points,
@@ -244,17 +330,20 @@ export function RechargePage(props: PropsRuntime<'main'> & RechargePageInjected)
         setCopied(false)
         void pollOrder(answer.payload.outTradeNo, 0, active)
       } else {
+        active.phase = 'stopped'
+        setPaymentFailure(creditsReadFailure(answer, 'RECHARGE_UNAVAILABLE'))
         setFailure(t('rechargeCreateFailed'))
       }
     } catch (error) {
       if (!isActive(active)) return
+      active.phase = 'stopped'
       setFailure(t('rechargeCreateFailed'))
       // No second create is safe until the user checks the existing order.
       void error
     } finally {
       if (isActive(active)) setBusy(false)
     }
-  }, [amountYuan, pollOrder, startOperation, t])
+  }, [amountYuan, cooldown, failOwnership, identityBlocked, isActive, pollOrder, snapshot, startOperation, t])
 
   /** Copy the order number the platform's support flow asks for. */
   const copyOrderNo = useCallback((orderNo: string) => {
@@ -269,8 +358,11 @@ export function RechargePage(props: PropsRuntime<'main'> & RechargePageInjected)
   const amount = Number(amountYuan)
   const pointsPreview = Number.isSafeInteger(amount) && amount > 0 ? amount * creditsPerYuan : null
   const orderExpiry = order === null ? 0 : secondsUntil(order.expires_at)
-  const failureMessage = failure
-    ?? (orderState?.status === 'succeeded' && balanceFailure !== null ? t('rechargeBalanceFailed') : null)
+  const identityMessage = ownerFailure === 'changed' || readFailure?.kind === 'accountChanged' ? t('rechargeAccountChanged')
+    : identityBlocked ? t('rechargeIdentityRequired') : null
+  const failureMessage = identityMessage ?? failure
+    ?? (balanceFailure === null ? null : orderState?.status === 'succeeded' ? t('rechargeBalanceFailed')
+      : t(`read.error.${readFailure?.kind ?? 'unavailable'}`))
 
   return (
     <div className={css.page}>
@@ -278,7 +370,12 @@ export function RechargePage(props: PropsRuntime<'main'> & RechargePageInjected)
         <h1 className={css.rechargeTitle}>{t('rechargePageTitle')}</h1>
       </header>
 
-      {failureMessage !== null && <p className={css.banner} data-tone="error" role="alert">{failureMessage}</p>}
+      {failureMessage !== null && <div className={css.banner} data-tone="error">
+        <span role="alert">{failureMessage}</span>
+        {signedIn && <Button size="sm" variant="ghost" disabled={busy || refreshing || retrySeconds > 0}
+          onClick={() => { void refreshAccount() }}>{t('rechargeRefreshAccount')}</Button>}
+      </div>}
+      {retrySeconds > 0 && <p className={css.hint}>{t('read.retryAfter', { seconds: String(retrySeconds) })}</p>}
       {notice !== null && <p className={css.banner} data-tone="success" role="status">{notice}</p>}
       {!loaded && <p className={css.hint}>{t('loading')}</p>}
 
@@ -311,11 +408,12 @@ export function RechargePage(props: PropsRuntime<'main'> & RechargePageInjected)
                 variant="ghost"
                 icon={<IconRefreshOutlineRegular />}
                 aria-label={t('refresh')}
-                onClick={() => { void refreshBalance() }}
-                disabled={busy}
+                onClick={() => { void refreshAccount() }}
+                disabled={busy || refreshing || retrySeconds > 0}
               />
             </div>
 
+            <p className={css.hint}>{t('rechargeAccountLabel', { account: session.account?.phone ?? '—' })}</p>
             <h2 className={css.sectionTitle}>
               <CreditsPanelIcon size={18} />
               {t('selectAmount')}
@@ -372,7 +470,7 @@ export function RechargePage(props: PropsRuntime<'main'> & RechargePageInjected)
               className={css.payButton}
               variant="primary"
               onClick={() => { void createOrder() }}
-              disabled={busy}
+              disabled={busy || identityBlocked || retrySeconds > 0}
             >
               {t('confirmPay')}
             </Button>
@@ -415,7 +513,7 @@ export function RechargePage(props: PropsRuntime<'main'> & RechargePageInjected)
                   </div>
                   {polling && <p className={css.hint}>{t('polling')}</p>}
                   {(orderState === null || orderState.status === 'pending' || orderState.status === 'unknown') && (
-                    <Button size="sm" variant="ghost" disabled={busy} onClick={polling ? stopPolling : resumePolling}>
+                    <Button size="sm" variant="ghost" disabled={busy || retrySeconds > 0} onClick={polling ? stopPolling : resumePolling}>
                       {polling ? t('stopPolling') : t('checkPayment')}
                     </Button>
                   )}

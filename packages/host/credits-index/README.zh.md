@@ -33,6 +33,8 @@ kind: "package-reference"
 
 `GET /credits/api/session` 保留现有的 `ok`、`code`、`signedIn` 和 `liveness` 字段。已存登录暂时无法确认访问权限时，仍返回 `ACCOUNT_UNAVAILABLE`、`signedIn: true`、`liveness: 'unknown'`；这是可恢复的账号读取结果，不代表访问已验证，也不是文档非法。可选字段 `failure: { reason, stage, status? }` 同时出现在顶层和 `payload`。reason 区分 `network`、`timeout`、`rate_limited`、`upstream_unavailable`、`upstream_rejected`、`protocol`、`identity_mismatch`、`renewal_unavailable` 和 `storage`；stage 为 `account-read` 或 `renewal`，仅实际收到 HTTP 响应时包含 status。续期诊断仅保存在内存，并绑定精确的凭据代次；未在本 Host 观测的共享冷却使用 `renewal_unavailable`。这些字段不包含凭据、远端正文或异常文字。临时错误保留登录及有界续期策略；已确认的续期终态 401 会立即返回未登录，即使它发生在实时账号读取过程中。本地锁或写入失败阻止无效登录清理时，返回可恢复的存储错误；清理成功前持续阻止受保护请求。
 
+成功的已登录会话返回 `payload.accountOwner`，顶层也返回相同值：绑定后端、账号和本地登录的 64 位小写十六进制不透明指纹。它不是认证凭据，也不是订单幂等键。同一本地登录内续期上游 access token 不改变该归属。成功的余额、用量和充值响应在顶层包含 `account: { id }` 与 `accountOwner`，供界面拒绝其他窗口替换登录后返回的数据，避免发布其数值。旧 Host 的普通读取可省略归属元数据；财务操作必须提供。
+
 续期按 HTTP 429 与 `Retry-After` 判断限流，不要求 JSON 正文，兼容旧版空响应。有效的秒数或 HTTP 日期均按要求等待；临时 HTTP 500/503 及传输故障保留登录，并使用有界指数退避。Cookie 轮换未确认时，只在 API 的 30 秒恢复窗口及配置重试次数内重试旧 cookie。任一限制耗尽后仍保留已存登录，但恢复需要新确认的 cookie 或重新登录，不再重放旧 cookie。这项恢复绝不重试图片、视频或 AI 帮写的生成 POST。
 
 `refreshRetryBaseDelayMs` 默认为 1000，`refreshRetryMaxDelayMs` 默认为 60000；两者接受 1 至 2,147,483,647 的整数毫秒，最大值不得小于基础值。有效的服务端 `Retry-After` 可以超过本地退避上限，客户端不缩短它。`refreshRecoveryRetryLimit` 默认为 2，接受 0 至 5 的整数，限制轮换未确认后的额外兑换次数。服务端 30 秒恢复窗口不是可配置的客户端超时。
@@ -61,9 +63,9 @@ status 中独立的同级字段 `client_model_presentation` 采用 `{ schema_ver
 
 ### 充值
 
-`POST /credits/api/recharge/wechat` 接受以元为单位的整数 `amount`，使用当前账号的 access token 创建一笔 Native 订单。响应提供 `outTradeNo`、`amount`、换算后的 `points`、`expiresAt` 和 `qrCodeDataUrl`；原始 quota 不是积分。提交订单前必须取得当前状态参数进行换算。下单结果未知时会明确报告，不自动再创建一笔订单。
+`POST /credits/api/recharge/wechat` 接受 `{ amount, expected_account_id, expected_account_owner }`，其中 `amount` 为以元为单位的整数。调用方从用户确认金额时展示的已核对会话捕获两个归属字段。字段缺失或格式异常返回 `SESSION_REFRESH_REQUIRED`；当前账号或登录不同则在创建订单前返回 `ACCOUNT_CHANGED`。Host 使用捕获账号的 access token，在读取换算参数后、收到订单响应后和生成二维码后再次核对身份，不替换为当前的新账号。发送后发生切换时，原账号可能已有订单；调用方应核对原订单，不要重提。成功响应提供 `outTradeNo`、`amount`、换算后的 `points`、`expiresAt` 和 `qrCodeDataUrl`，归属字段位于响应封装顶层；原始 quota 不是积分。这些归属检查不对下单请求去重。下单结果未知时会明确报告，不自动再创建一笔订单。
 
-`GET /credits/api/recharge/wechat/order?outTradeNo=...` 查询同一账号的订单。Host 原样转发后端状态，不设置别名，并附加换算后的积分。客户端将未知状态报告为待人工核对，不宣称支付成功。支付回调直接进入部署 API，由其负责给账号入账；产品仅在确认支付后刷新实时余额。
+`GET /credits/api/recharge/wechat/order?outTradeNo=...&expected_account_id=...&expected_account_owner=...` 在查询捕获的订单前和返回结果前执行相同的归属检查。Host 原样转发后端状态，不设置别名，并附加换算后的积分。创建和查单保留实际收到的 HTTP 429 与 `Retry-After`，包括空正文响应；调用方必须遵守返回的冷却时间。客户端将未知状态报告为待人工核对，不宣称支付成功。支付回调直接进入部署 API，由其负责给账号入账；产品仅在确认支付后刷新实时余额。
 
 ### 使用量分析
 
@@ -123,6 +125,8 @@ Host 认证的 `GET /credits/api/customer-support` 独立于产品登录，从�
 
 媒体定价与当前账号组并行读取。`mediaCatalogCacheTtlMs` 将定价复用限制在 30 秒以内；no-store/no-cache 和 Vary:* 禁止复用，请求头、登录和 API 作用域防止串用，每次查询另行检查账号权限。参考图全部校验后才有界上传（`imageUploadConcurrency` 默认 2）。下载使用 `imageDownloadConcurrency`（3），保留输入顺序并遵守 `imageDownloadMaxBytes`；失败后已保存的原图仍可恢复。这些本地限制不提高网关生成并发，也不保价。
 
+`imageDownloadMaxBytes` 默认限制每张解码图片或下载为 67,108,864 字节，可配置为 1,024 至 536,870,912。`imageResponseMaxBytes` 独立限制每次流式图片 JSON 响应和留存结果批次，默认 134,217,728 字节，可配置为 1,024 至 1,073,741,824。完整结果校验先于内联解码与文件保存；内联数据的编码体积计入批次预算。这些字节预算不设定图片尺寸或提供方生成容量。
+
 生成操作保留宿主指定的 `source`：已记录的工具调用为 `chat`，手动表单为 `ai-creation`。已确认的聊天任务不阻止 AI 创作，AI 创作的未结提交不消耗聊天请求的视频作品次数。两个入口共享账号并发容量。每个可信聊天生成请求创建独立操作，即使复用计划或提示词，先前运行中或未知的操作也不锁住新请求。旧操作保留缺失来源和原回执。旧视频项目编号或工具调用来源可以确认聊天归属；其余未知旧任务继续保留面板保护。两个入口都不根据标题或提示词猜测归属。
 
 技能注册服务可用时，内置 `yunshu-video-director` 技能使用 [cinematic-director](https://github.com/wuwangzhang1216/DirectorSKILL) 与 [video-storyboard-gen](https://github.com/anyhui/video-storyboard-gen-skill) 的精简摘录和适配内容，指导剧情、走位、连续性、参考素材重构、分镜、对白及字幕。[固定来源及适配说明](third-party-notices/sources.json) 和两份完整 MIT 许可随包分发。生成时不运行社区脚本，也不加载整套参考库。简单单片描述直接调用 `generate_video_project` 并使用 Host 的真实默认参数，不增加目录或编导技能的模型往返；复杂时间轴和编导任务使用目录及技能。旧 `generate_video` 保持兼容。明确的剧情或连续人物创作使用显式计划，长视频仍使用该原生项目工具。原生工具负责校验、提交、轮询、下载、剪辑、发布和恢复。画面切换不必各自生成一段计费视频。不强制额外生成参考图、多个备选稿或单独请求规划模型；工作流程不能控制上游渲染耗时。
@@ -149,7 +153,9 @@ Host 将普通文生图、图生图的新产物标为“成图”，图片计划
 
 图片工具提交另保留私有 `image-invocations` 领取记录，键由后端、账号、登录指纹、聊天／工作区及 Host 捕获的真人来源／根调用／子调用坐标组成。原子排他发布只允许一个竞争者领取，生成前先提交原创作计划与操作关联。并发或重启后的同次调用返回原坐标；关联前崩溃会保留未知的占位，不能据此重新 POST。独立真人请求及分别要求的工具调用即使提示词相同，也保持独立。记录不含提示词或凭据，不提供释放未知生成后重试的入口。
 
-单次图片与视频生成在后续轮询前持久保存原相对路由、模型、后端指纹、请求和任务编号，以及可用的生成来源。本地执行器仍在等待时，排队、处理中保持生成中；执行器停止后，原任务转为可查询的未知状态。临时查询、下载或保存失败时保留已受理任务。校验账号、聊天及工作区归属的 `POST /credits/api/creative/image/recover` 与 `/video/recover` 只恢复原任务 GET 查询，不再发送生成 POST。对应 `query_image_task` 和 `query_video_task` 工具可列出未确认回执，或查询准确的原操作。没有任务编号时保留未知状态，后端变化时拒绝查询，同一恢复操作互斥，确认终态前阻止重复付费提交。图片使用 `imageSubmitTimeoutMs`（180000）、`imageTaskTimeoutMs`（600000）、`imagePollIntervalMs`（2000）和 `imageQueryRetryLimit`（2）；视频对应配置默认为 180000、900000、6000 和 2。即使显式配置更低，视频提交等待也不低于 180000 毫秒。查询同时受 `timeoutMs` 限制；重试预算不重试生成提交。
+单次图片与视频生成在后续轮询前持久保存原相对路由、模型、后端指纹、请求和任务编号，以及可用的生成来源。本地执行器仍在等待时，排队、处理中保持生成中；执行器停止后，保留任务变为未知，原任务或图片结果可恢复时允许恢复。临时查询、下载或保存失败时保留已受理任务。校验账号、聊天及工作区归属的 `POST /credits/api/creative/image/recover` 与 `/video/recover` 只恢复留存结果或原任务 GET 查询，不再发送生成 POST。对应 `query_image_task` 和 `query_video_task` 工具可列出未确认回执，或恢复准确的原操作。没有任务编号且没有留存图片结果时保留未知状态；后端变化时拒绝恢复，同一恢复操作互斥，确认终态前阻止重复付费提交。图片使用 `imageSubmitTimeoutMs`（180000）、`imageTaskTimeoutMs`（600000）、`imagePollIntervalMs`（2000）和 `imageQueryRetryLimit`（2）；视频对应配置默认为 180000、900000、6000 和 2。即使显式配置更低，视频提交等待也不低于 180000 毫秒。查询同时受 `timeoutMs` 限制；重试预算不重试生成提交。
+
+对于已有归属、但没有任务编号的同步图片响应，Host 在下载或发布文件前，将校验完整的 URL 或内联图片数据私密保存在 `stateDir/image-results`。操作记录只保存不透明的 `image-result` 引用，签名 URL 和内联数据不会进入浏览器任务投影。保存失败或重启后，明确恢复会加载同一结果，按文件大小和 SHA-256 核对保存检查点，仅继续保存缺失或变化的产物，不再次发起生成 POST，也不查询提供方任务 GET。签名 URL 过期、私有来源缺失或结果发布被打断时，明确保持不可用，不因此授权重新生成。没有归属操作或留存结果的旧版裸调用不保证重启后恢复。检查点覆盖已经保存并登记的文件，不是同时涵盖产物、创作记录与结果清单的原子事务；几次写入之间中断，可能留下尚未写入检查点的文件。恢复尽可能复用已核对的登记产物，但不保证所有崩溃位置都只产生一份物理文件。
 
 聊天视频生成归属原始人类请求。创作需求接受普通口语和礼貌请求，未指定数量时默认一条成片；明确指定数量时保留要求的总量。时长、机位切换和模型数量不增加作品次数。状态查询、检查、取消、继续原项目以及无法识别的需求不授予生成次数。模型填写的计划、改版和质量检查不能增加额度。用户的普通确认与参数补充继续同一请求；用户明确修改成片总量时修订该上限，之前已安排的作品继续计入其中。`generate_video` 与 `generate_video_project` 跨计划共享持久计数；一个项目只占一次尝试，不按内部片段数量计数。超额尝试在上游提交前拒绝。已关联项目的查询与恢复保留原任务。仅有准备记录、没有获准操作、已受理任务或已保存产物的项目，不能通过恢复获得生成许可。计划及镜头编号描述内容，不是提交身份。私有操作在提交前保存原始人类消息、根工具调用事件序号，以及独立原生或 PTC 调用编号；旧记录使用日志中匹配的操作或项目编号核对。无法归属的旧任务保留原有未知状态，不占用后续人类请求的作品次数；准确的原提交仍禁止重放。提供方调用编号可以跨消息或步骤复用，已记录的调用序号区分这些提交。后台项目返回本次请求尚待安排的作品数量，仅在明确要求的作品全部准入后结束聊天回合；并发不会扩大这个数量。
 

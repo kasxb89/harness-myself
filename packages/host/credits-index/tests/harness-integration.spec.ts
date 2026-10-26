@@ -77,6 +77,7 @@ let videoQueryReply: unknown
 const videoSubmitReplies: { status: number; body: unknown; headers?: Record<string, string> }[] = []
 const mediaWireReplies: { method: string; path: string; status: number; body: unknown }[] = []
 let videoQuoteSamples: readonly { request: unknown; response: Record<string, unknown>; http_status: number }[] = []
+let restartProduct: (() => Promise<string>) | undefined
 let imageResponse: unknown
 let imageTaskStatus: string | undefined
 let imageTaskHttpStatus = 200
@@ -105,6 +106,7 @@ afterEach(async () => {
   releaseModels?.()
   await context?.fiber.dispose()
   context = undefined
+  restartProduct = undefined
   if (upstream !== undefined) await new Promise<void>((resolve, reject) => {
     upstream?.close((error) => { if (error === undefined) resolve(); else reject(error) })
     upstream?.closeAllConnections()
@@ -365,46 +367,55 @@ async function boot(
       } }), 'fixture browser launch authentication')
     } }],
   ])
-  context = new Context()
-  context.baseUrl = pathToFileURL(directory).href + '/'
-  await context.plugin(Loader)
-  context.loader.builtins.include = Include
-  context.loader.internal = {
-    version: 'v2',
-    loadCache: new Map(),
-    async import(...[specifier]: Parameters<ModuleLoaderV2['import']>) {
-      if (!modules.has(specifier)) throw new Error(`Unexpected module: ${specifier}`)
-      return modules.get(specifier)
-    },
-  } as NonNullable<typeof context.loader.internal>
-  const entries = [
-    { name: '@deepseek-ai/dsh-host-webserver', config: { host: '127.0.0.1', port: 0 } },
-    { name: '@deepseek-ai/dsh-tools' }, { name: '@deepseek-ai/dsh-system-prompt' },
-    { name: '@deepseek-ai/dsh-session-projection' },
-    { name: '@deepseek-ai/dsh-agent' }, { name: '@deepseek-ai/dsh-user-questions' },
-    ...videoJobs ? [{ name: '@deepseek-ai/dsh-jobs-local' }, { name: '@deepseek-ai/dsh-tool-jobs' }] : [],
-    { name: '@deepseek-ai/dsh-fs-local', config: { cwd: directory } },
-    { name: '@deepseek-ai/dsh-attachment-local', config: { dshHome: join(directory, 'attachment-home') } },
-    { name: '@deepseek-ai/dsh-credentials-local', config: { path: join(directory, 'credentials.yaml'), dshHome: directory, watch: false } },
-    ...authenticatedHost ? [{ name: '@deepseek-ai/dsh-session' }, { name: '@deepseek-ai/dsh-client-connection' }, { name: 'fixture-auth-index' }] : [],
-    { name: '@deepseek-ai/dsh-llm' },
-    ...defaultSelection === undefined ? [] : [{ name: '@deepseek-ai/dsh-agent-default-model', config: defaultSelection }],
-    { name: '@deepseek-ai/dsh-llm-pi-ai', config: { providers: {
-      'yunshu-local': { api: 'openai-completions', baseURL: api + '/v1', apiKeyEnv: relayRef, models },
-      'other-provider': { api: 'openai-completions', baseURL: 'https://synthetic.invalid/v1', models: [{ id: 'other-chat' }] },
-    } } },
-    ...managedOutput ? [{ name: '@deepseek-ai/dsh-artifacts-index', config: {
-      defaultOutputDirectory: join(directory, 'selected-output'), stateDirectory: join(directory, 'artifact-settings'), roots: [join(stateDir, 'media')],
-    } }] : [],
-    { name: '@deepseek-ai/dsh-credits-index', config: { stateDir, newApiBaseUrl: api, relayTokenEnv: relayRef,
-      accountReadMinIntervalMs: 0, accountReadFailureCooldownMs: 1, mediaCatalogCacheTtlMs: 0,
-      ...legacyPlatform ? { baseUrl: api } : {}, ...creditsConfig } },
-  ]
-  const configuration = join(directory, 'cordis.yml')
-  await writeFile(configuration, JSON.stringify(entries))
-  await profileComposition(context, directory, configuration, profileName)
-  expect([...context.loader.entries()].filter(entry => entry.fiber === undefined && !entry.disabled)).toEqual([])
-  return { base: `http://127.0.0.1:${String(context.webServer.port)}/credits`, api, stateDir }
+  const fixtureDirectory = directory
+  const mount = async (): Promise<string> => {
+    context = new Context()
+    context.baseUrl = pathToFileURL(fixtureDirectory).href + '/'
+    await context.plugin(Loader)
+    context.loader.builtins.include = Include
+    context.loader.internal = {
+      version: 'v2',
+      loadCache: new Map(),
+      async import(...[specifier]: Parameters<ModuleLoaderV2['import']>) {
+        if (!modules.has(specifier)) throw new Error(`Unexpected module: ${specifier}`)
+        return modules.get(specifier)
+      },
+    } as NonNullable<typeof context.loader.internal>
+    const entries = [
+      { name: '@deepseek-ai/dsh-host-webserver', config: { host: '127.0.0.1', port: 0 } },
+      { name: '@deepseek-ai/dsh-tools' }, { name: '@deepseek-ai/dsh-system-prompt' },
+      { name: '@deepseek-ai/dsh-session-projection' },
+      { name: '@deepseek-ai/dsh-agent' }, { name: '@deepseek-ai/dsh-user-questions' },
+      ...videoJobs ? [{ name: '@deepseek-ai/dsh-jobs-local' }, { name: '@deepseek-ai/dsh-tool-jobs' }] : [],
+      { name: '@deepseek-ai/dsh-fs-local', config: { cwd: fixtureDirectory } },
+      { name: '@deepseek-ai/dsh-attachment-local', config: { dshHome: join(fixtureDirectory, 'attachment-home') } },
+      { name: '@deepseek-ai/dsh-credentials-local', config: { path: join(fixtureDirectory, 'credentials.yaml'), dshHome: fixtureDirectory, watch: false } },
+      ...authenticatedHost ? [{ name: '@deepseek-ai/dsh-session' }, { name: '@deepseek-ai/dsh-client-connection' }, { name: 'fixture-auth-index' }] : [],
+      { name: '@deepseek-ai/dsh-llm' },
+      ...defaultSelection === undefined ? [] : [{ name: '@deepseek-ai/dsh-agent-default-model', config: defaultSelection }],
+      { name: '@deepseek-ai/dsh-llm-pi-ai', config: { providers: {
+        'yunshu-local': { api: 'openai-completions', baseURL: api + '/v1', apiKeyEnv: relayRef, models },
+        'other-provider': { api: 'openai-completions', baseURL: 'https://synthetic.invalid/v1', models: [{ id: 'other-chat' }] },
+      } } },
+      ...managedOutput ? [{ name: '@deepseek-ai/dsh-artifacts-index', config: {
+        defaultOutputDirectory: join(fixtureDirectory, 'selected-output'), stateDirectory: join(fixtureDirectory, 'artifact-settings'), roots: [join(stateDir, 'media')],
+      } }] : [],
+      { name: '@deepseek-ai/dsh-credits-index', config: { stateDir, newApiBaseUrl: api, relayTokenEnv: relayRef,
+        accountReadMinIntervalMs: 0, accountReadFailureCooldownMs: 1, mediaCatalogCacheTtlMs: 0,
+        ...legacyPlatform ? { baseUrl: api } : {}, ...creditsConfig } },
+    ]
+    const configuration = join(fixtureDirectory, 'cordis.yml')
+    await writeFile(configuration, JSON.stringify(entries))
+    await profileComposition(context, fixtureDirectory, configuration, profileName)
+    expect([...context.loader.entries()].filter(entry => entry.fiber === undefined && !entry.disabled)).toEqual([])
+    return `http://127.0.0.1:${String(context.webServer.port)}/credits`
+  }
+  restartProduct = async () => {
+    await context?.fiber.dispose()
+    videoAgents.clear()
+    return await mount()
+  }
+  return { base: await mount(), api, stateDir }
 }
 
 async function post(base: string, path: string, body: object, cookie?: string): Promise<Record<string, unknown>> {
@@ -442,6 +453,27 @@ async function signIn(base: string): Promise<void> {
   const login = await post(base, '/api/session/verify', { challengeId: payload.challenge_id, code: '123456', idempotencyKey: 'login-one' })
   expect(login.ok).toBe(true)
   expect(JSON.stringify(login)).not.toMatch(/sk-owned|access-user|refresh-one/)
+}
+
+/** Observe the same account identity a real financial page captures before its request. */
+async function rechargeExpectation(base: string): Promise<{ expected_account_id: string; expected_account_owner: string }> {
+  const response = object(await (await fetch(base + '/api/session')).json())
+  const payload = object(response.payload)
+  const id = object(payload.account).id
+  const owner = payload.accountOwner
+  if (typeof id !== 'string' || typeof owner !== 'string' || !/^[a-f\d]{64}$/u.test(owner)) throw new Error('Missing observed account owner')
+  return { expected_account_id: id, expected_account_owner: owner }
+}
+
+/** Another window can change the shared login without first updating this renderer. */
+async function replaceFinancialLogin(stateDir: string, accountId = '8'): Promise<void> {
+  const path = join(stateDir, 'session.json')
+  const current = object(JSON.parse(await readFile(path, 'utf8')))
+  await writeFile(path, JSON.stringify({ ...current, token: 'replacement-product-login',
+    account: { ...object(current.account), id: accountId },
+    upstream: { ...object(current.upstream), token: 'replacement-access' } }), { mode: 0o600 })
+  access = 'replacement-access'
+  selfId = Number(accountId)
 }
 
 async function chat(): Promise<FinishReason> {
@@ -1803,7 +1835,7 @@ describe('deployed Harness API through the real product Loader', () => {
       const result = object((await requestImage({ name: 'generate_image', arguments: {
         model: 'gpt-image-2', prompt: '保持人物身份，改成夜晚', reference_images: [reference],
       }, agent, callId: ToolCallId(`chat-image-${String(index)}`), signal: new AbortController().signal })).value)
-      expect(result).toMatchObject({ status: 'succeeded', paths: [expect.any(String)] })
+      expect(result, JSON.stringify(result)).toMatchObject({ status: 'succeeded', paths: [expect.any(String)] })
       expect(await readFile(String(result.path))).toEqual(png)
       const edit = calls.filter(call => call.path === '/harness/v1/images/edits').at(-1)
       expect(edit?.authorization).toBe('Bearer sk-owned-relay')
@@ -2011,6 +2043,72 @@ describe('deployed Harness API through the real product Loader', () => {
     expect(calls.filter(call => call.path === '/harness/toapis/v1/images/generations')).toHaveLength(1)
     expect(calls.filter(call => call.path.endsWith('/fixture-image-task')).length).toBeGreaterThanOrEqual(2)
     expect(context!.tools.schemas().find(tool => tool.name === 'query_image_task')).toMatchSnapshot('GET-only retained image query tool')
+  })
+
+  it.each(['create', 'poll'] as const)('preserves header-only recharge %s rate limits without creating another order', async (entry) => {
+    const { base } = await boot()
+    await signIn(base)
+    const expected = await rechargeExpectation(base)
+    upstreamGate = async (path, response) => {
+      if (path === (entry === 'create' ? '/harness/api/user/wechat/native' : '/harness/api/user/wechat/order')) {
+        response.writeHead(429, { 'Retry-After': '3' }); response.end()
+      }
+    }
+    const result = entry === 'create' ? await post(base, '/api/recharge/wechat', { amount: 1, ...expected })
+      : object(await (await fetch(base + '/api/recharge/wechat/order?' + new URLSearchParams({ outTradeNo: 'existing-order', ...expected }).toString())).json())
+    expect(result).toMatchObject({ ok: false, httpStatus: 429, retryAfterSeconds: 3,
+      code: entry === 'create' ? 'RECHARGE_RATE_LIMITED' : 'ORDER_RATE_LIMITED' })
+    expect(creations).toBe(0)
+  })
+
+  it.each(['panel', 'tool'] as const)('saves the original synchronous image after a Host restart through %s without another generation', async (entry) => {
+    const started = await boot(undefined, true, true)
+    let base = started.base
+    let cookie = await hostCookie(base)
+    await signIn(base)
+    const model = 'gpt-image-2'
+    pricingRows = [{ model_name: model, supported_endpoint_types: ['image-generation'] }]
+    const png = await sharp({ create: { width: 2, height: 2, channels: 3, background: '#bbccdd' } }).png().toBuffer()
+    imageResponse = { data: [{ b64_json: png.toString('base64') }] }
+    const agent = videoAgent(started.stateDir)
+    context!.sessions.create(SessionId(agent.id), { meta: { cwd: started.stateDir } })
+    const storage = context!.get('artifactStorage')
+    if (storage === undefined) throw new Error('Expected managed image output')
+    vi.spyOn(storage, 'write').mockRejectedValueOnce(new Error('fixture local disk temporarily unavailable'))
+    const submitted = entry === 'tool'
+      ? object((await requestImage({ name: 'generate_image', arguments: { model, prompt: '保留同步原图' },
+        agent, callId: ToolCallId('sync-image-save-failure'), signal: new AbortController().signal })).value)
+      : await post(base, '/api/image/generate', { session_id: agent.id, account_id: '7', model, prompt: '保留同步原图' }, cookie)
+    expect(submitted).toMatchObject(entry === 'tool' ? { status: 'pending' } : { ok: false })
+    expect(calls.filter(call => call.path === '/harness/v1/images/generations')).toHaveLength(1)
+    const query = { plan_id: String(submitted.plan_id), operation_id: String(submitted.operation_id) }
+    expect(query.plan_id).not.toBe('undefined')
+    const original = await readFile(join(started.stateDir, 'creative-projects', query.plan_id, 'project.json'), 'utf8')
+    expect(original).toContain('imageResultRef')
+    expect(original).not.toContain(png.toString('base64'))
+    if (restartProduct === undefined) throw new Error('Missing restart fixture')
+    base = await restartProduct()
+    cookie = await hostCookie(base)
+    const list = async () => projects(object(await (await fetch(base + '/api/creative/projects?session_id=' + agent.id, { headers: { cookie } })).json()))
+    const retained = await list()
+    expect(retained).toMatchObject([{ id: query.plan_id, tasks: [{ id: query.operation_id, status: 'unknown', canQuery: true, recovery: 'image-result' }] }])
+    expect(JSON.stringify(retained)).not.toMatch(/imageResultRef|b64_json|ir_[a-f\d]{64}/u)
+    const currentAgent = videoAgent(started.stateDir)
+    context!.sessions.create(SessionId(agent.id), { meta: { cwd: started.stateDir } })
+    if (entry === 'tool') {
+      const recovered = object((await context!.tools.execute({ name: 'query_image_task', arguments: query,
+        agent: currentAgent, callId: ToolCallId('save-original-sync-image'), signal: new AbortController().signal })).value)
+      expect(recovered).toMatchObject({ status: 'succeeded' })
+      expect(await readFile(String(recovered.path))).toEqual(png)
+    } else {
+      const response = await fetch(base + '/api/creative/image/recover', { method: 'POST', headers: { cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({ session_id: agent.id, project_id: query.plan_id, operation_id: query.operation_id }) })
+      expect(response.status).toBe(202)
+      expect(await response.json()).toMatchObject({ ok: true })
+    }
+    await vi.waitFor(async () => { expect(await list()).toMatchObject([{ status: 'completed', tasks: [{ canQuery: false }], outputs: [{ kind: 'image' }] }]) })
+    expect(calls.filter(call => call.path === '/harness/v1/images/generations')).toHaveLength(1)
+    expect(calls.filter(call => call.path.includes('fixture-image-task'))).toHaveLength(0)
   })
 
   it('atomically retains an accepted image receipt after its first persistence callback fails and recovers with GET only', async () => {
@@ -4833,13 +4931,100 @@ describe('deployed Harness API through the real product Loader', () => {
     await signIn(base)
     expect(await post(base, '/api/recharge/wechat', { amount: 1.5 })).toMatchObject({ ok: false, code: 'INVALID_REQUEST' })
     expect(creations).toBe(0)
-    const created = await post(base, '/api/recharge/wechat', { amount: 1 })
+    const expected = await rechargeExpectation(base)
+    const created = await post(base, '/api/recharge/wechat', { amount: 1, ...expected })
     expect(created).toMatchObject({ ok: true, payload: { outTradeNo: 'order-one', amount: 1, points: 1000 } })
     expect(object(created.payload).qrCodeDataUrl).toMatch(/^data:image\/png;base64,/u)
     expect(calls.find(call => call.path.endsWith('/wechat/native'))).toMatchObject({ authorization: 'Bearer access-user', body: { amount: 1 } })
-    const order: unknown = await (await fetch(base + '/api/recharge/wechat/order?outTradeNo=order-one')).json()
+    const order: unknown = await (await fetch(base + '/api/recharge/wechat/order?' + new URLSearchParams({ outTradeNo: 'order-one', ...expected }))).json()
     expect(order).toMatchObject({ ok: true, payload: { status: 'pending', amount: 1, points: 1000 } })
     expect(calls.some(call => call.path.endsWith('/wechat/order?out_trade_no=order-one'))).toBe(true)
+  })
+
+  it('refuses missing or mismatched financial owners before any upstream order operation', async () => {
+    const { base } = await boot()
+    await signIn(base)
+    const expected = await rechargeExpectation(base)
+    for (const fields of [{}, { ...expected, expected_account_id: '8' },
+      { ...expected, expected_account_owner: '0'.repeat(64) }]) {
+      expect(await post(base, '/api/recharge/wechat', { amount: 1, ...fields })).toMatchObject({
+        ok: false, code: Object.keys(fields).length === 0 ? 'SESSION_REFRESH_REQUIRED' : 'ACCOUNT_CHANGED',
+      })
+      const query = new URLSearchParams({ outTradeNo: 'order-one', ...fields })
+      expect(await (await fetch(base + '/api/recharge/wechat/order?' + query)).json()).toMatchObject({
+        ok: false, code: Object.keys(fields).length === 0 ? 'SESSION_REFRESH_REQUIRED' : 'ACCOUNT_CHANGED',
+      })
+    }
+    expect(creations).toBe(0)
+    expect(calls.some(call => /\/api\/user\/wechat\//u.test(call.path))).toBe(false)
+  })
+
+  it.each(['7', '8'])('refuses the old financial owner after another login for account %s', async (id) => {
+    const { base, stateDir } = await boot()
+    await signIn(base)
+    const prior = await rechargeExpectation(base)
+    await replaceFinancialLogin(stateDir, id)
+    expect(await post(base, '/api/recharge/wechat', { amount: 1, ...prior })).toMatchObject({ ok: false, code: 'ACCOUNT_CHANGED' })
+    expect(await (await fetch(base + '/api/recharge/wechat/order?' + new URLSearchParams({ outTradeNo: 'order-one', ...prior }))).json())
+      .toMatchObject({ ok: false, code: 'ACCOUNT_CHANGED' })
+    expect(creations).toBe(0)
+    const current = await rechargeExpectation(base)
+    expect(current.expected_account_id).toBe(id)
+    expect(current.expected_account_owner).not.toBe(prior.expected_account_owner)
+    expect(await post(base, '/api/recharge/wechat', { amount: 1, ...current })).toMatchObject({ ok: true,
+      account: { id }, accountOwner: current.expected_account_owner })
+    expect(creations).toBe(1)
+  })
+
+  it('does not dispatch a financial order when the login changes during conversion lookup', async () => {
+    const { base, stateDir } = await boot()
+    await signIn(base)
+    const expected = await rechargeExpectation(base)
+    const started = Promise.withResolvers<undefined>()
+    const release = Promise.withResolvers<undefined>()
+    releaseUpstreamGate = () => { release.resolve(undefined) }
+    upstreamGate = async (path) => {
+      if (path !== '/harness/api/status') return
+      started.resolve(undefined)
+      await release.promise
+    }
+    const pending = post(base, '/api/recharge/wechat', { amount: 1, ...expected })
+    try {
+      await started.promise
+      await replaceFinancialLogin(stateDir)
+    } finally { release.resolve(undefined) }
+    expect(await pending).toMatchObject({ ok: false, code: 'ACCOUNT_CHANGED' })
+    expect(creations).toBe(0)
+    expect(calls.some(call => call.path.endsWith('/wechat/native'))).toBe(false)
+  })
+
+  it.each(['create', 'poll'])('does not return an old account order after %s finishes under another login', async (phase) => {
+    const { base, stateDir } = await boot()
+    await signIn(base)
+    const expected = await rechargeExpectation(base)
+    const started = Promise.withResolvers<undefined>()
+    const release = Promise.withResolvers<undefined>()
+    releaseUpstreamGate = () => { release.resolve(undefined) }
+    upstreamGate = async (path, response) => {
+      if (path !== '/harness/api/user/wechat/' + (phase === 'create' ? 'native' : 'order')) return
+      if (phase === 'create') creations++
+      started.resolve(undefined)
+      await release.promise
+      response.setHeader('content-type', 'application/json')
+      response.end(JSON.stringify({ success: true, data: { out_trade_no: 'order-one', amount: 1, quota: 68_493,
+        status: 'pending', code_url: 'weixin://wxpay/bizpayurl?pr=fixture', expires_at: Math.floor(Date.now() / 1000) + 300 } }))
+    }
+    const pending = phase === 'create' ? post(base, '/api/recharge/wechat', { amount: 1, ...expected })
+      : fetch(base + '/api/recharge/wechat/order?' + new URLSearchParams({ outTradeNo: 'order-one', ...expected })).then(async response => object(await response.json()))
+    try {
+      await started.promise
+      await replaceFinancialLogin(stateDir)
+    } finally { release.resolve(undefined) }
+    const result = await pending
+    expect(result).toMatchObject({ ok: false, code: 'ACCOUNT_CHANGED' })
+    expect(result.payload).toBeUndefined()
+    expect(creations).toBe(phase === 'create' ? 1 : 0)
+    expect(calls.filter(call => call.path.endsWith('/wechat/native'))).toHaveLength(phase === 'create' ? 1 : 0)
   })
 
   it('renews idle Desktop presence through the Host timer without renderer account reads', async () => {
@@ -5045,8 +5230,9 @@ describe('deployed Harness API through the real product Loader', () => {
   it('does not submit an order without valid live conversion parameters', async () => {
     const { base } = await boot()
     await signIn(base)
+    const expected = await rechargeExpectation(base)
     quotaPerUnit = 0
-    expect(await post(base, '/api/recharge/wechat', { amount: 1 })).toMatchObject({ ok: false })
+    expect(await post(base, '/api/recharge/wechat', { amount: 1, ...expected })).toMatchObject({ ok: false, code: 'BALANCE_UNAVAILABLE' })
     expect(creations).toBe(0)
   })
 

@@ -15,6 +15,12 @@ import uuid
 sys.dont_write_bytecode = True
 
 
+def configure_standard_streams():
+    """Use the Host's UTF-8 JSON protocol even when redirected Windows pipes use an ANSI locale."""
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        stream.reconfigure(encoding="utf-8", errors="backslashreplace" if stream is sys.stderr else "strict")
+
+
 def text(value, label="text"):
     if not isinstance(value, str):
         raise ValueError(f"{label} must be text")
@@ -214,7 +220,7 @@ def recalculate(path, payload, spec, scratch):
     if not payload.get("node") or not payload.get("cli"):
         raise ValueError("formula recalculation requires the bundled LibreOffice Kit; use the programmable workflow if unavailable")
     output = scratch / "recalculated.xlsx"
-    result = subprocess.run([payload["node"], payload["cli"], "recalculate", "--input", str(path), "--output", str(output)], capture_output=True, text=True, timeout=payload["timeout_ms"] / 1000)
+    result = subprocess.run([payload["node"], payload["cli"], "recalculate", "--input", str(path), "--output", str(output)], capture_output=True, timeout=payload["timeout_ms"] / 1000)
     if result.returncode:
         raise ValueError("bundled formula recalculation failed; no calculated values are being claimed")
     from openpyxl import load_workbook
@@ -265,6 +271,7 @@ def main():
 
 
 if __name__ == "__main__":
+    configure_standard_streams()
     try:
         main()
     except Exception as error:

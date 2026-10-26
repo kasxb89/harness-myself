@@ -912,7 +912,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-credits-index`
 
 - `inject`: `webServer` · `tools`
-- `source`: [`packages/host/credits-index/src/index.ts:112`](../packages/host/credits-index/src/index.ts)
+- `source`: [`packages/host/credits-index/src/index.ts:113`](../packages/host/credits-index/src/index.ts)
 
 ```ts config-catalog
 /** Plugin config: platform origin, display rate, and where the session file lives. */
@@ -993,6 +993,8 @@ export interface Config {
   imageDownloadConcurrency?: number
   /** Complete per-image response byte limit. */
   imageDownloadMaxBytes?: number
+  /** Complete encoded image response byte limit before JSON parsing or inline decoding. */
+  imageResponseMaxBytes?: number
   /** Short-lived whole-view cache; settled receipts have their own longer lifetime. */
   chatUsageCacheTtlMs?: number
   /** Maximum simultaneous exact-request ledger reads shared by all chat views. */

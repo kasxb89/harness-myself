@@ -8,6 +8,7 @@ import { basename, extname, isAbsolute, join, resolve } from 'node:path'
 import type { Branded } from '@deepseek-ai/dsh-brand'
 import type { ArtifactImageRole } from '@deepseek-ai/dsh-artifacts-index'
 import type { CreativeAsset, CreativeCharacter, CreativeImageReceipt, CreativeVideoReceipt, CreativeKind, CreativeOutput, CreativeOutputId, CreativePlanChange, CreativeProjectId, CreativeProjectView, CreativeShotPlan, CreativeShotView, CreativeSource, CreativeStatus, CreativeTaskView } from './creative-types.ts'
+import type { ImageResultRef } from './image-result-store.ts'
 import type { VideoProjectId, VideoProjectManifest, VideoProjectRead } from './video-project.ts'
 import type { VideoWorkId, VideoWorkLink } from './video-work-store.ts'
 import type { VideoProjectIdentity } from './video-project-types.ts'
@@ -77,6 +78,7 @@ interface Operation {
   requestGrant?: VideoRequestGrant
   workId?: VideoWorkId
   imageInvocationId?: string
+  imageResultRef?: ImageResultRef
 }
 
 /** Private JSON v1. Existing video manifests and Session data remain unchanged. */
@@ -190,6 +192,10 @@ function parseImageInvocationId(value: unknown): string {
   return id
 }
 function operationId(value: unknown): CreativeOperationId { const id = identifier(value); if (!id.startsWith('op_')) invalid(); return id as CreativeOperationId }
+function imageResultRef(value: unknown): ImageResultRef {
+  if (typeof value !== 'string' || !/^ir_[a-f0-9]{64}$/u.test(value)) return invalid()
+  return value as ImageResultRef
+}
 function outputId(value: unknown): CreativeOutputId { const id = identifier(value); if (!id.startsWith('out_') && !id.startsWith('op_')) invalid(); return id as CreativeOutputId }
 function list<T>(value: unknown, parse: (item: unknown) => T, maximum: number): T[] {
   if (!Array.isArray(value) || value.length > maximum) return invalid()
@@ -408,6 +414,7 @@ function parseRecord(value: unknown): CreativeRecord {
       ...requestGrant === undefined ? {} : { requestGrant },
       ...item.workId === undefined ? {} : { workId: parseVideoWorkId(item.workId) },
       ...item.imageInvocationId === undefined ? {} : { imageInvocationId: parseImageInvocationId(item.imageInvocationId) },
+      ...item.imageResultRef === undefined ? {} : { imageResultRef: imageResultRef(item.imageResultRef) },
       ...item.videoProjectId === undefined ? {} : { videoProjectId: text(item.videoProjectId, 128) },
       ...item.model === undefined ? {} : { model: text(item.model, 256) },
       ...item.errorCode === undefined ? {} : { errorCode: identifier(item.errorCode) },
@@ -423,6 +430,8 @@ function parseRecord(value: unknown): CreativeRecord {
     || plan.kind !== 'image' && item.assetId === undefined || item.videoProjectId !== undefined
     || item.videoReceipt !== undefined || item.workId !== undefined || item.requestGrant !== undefined))) return invalid()
   unique(operations.flatMap(item => item.imageInvocationId === undefined ? [] : [item.imageInvocationId]))
+  if (operations.some(item => item.imageResultRef !== undefined && (item.imageReceipt === undefined
+    || item.videoProjectId !== undefined || item.videoReceipt !== undefined))) return invalid()
   if (operations.some(item => item.videoReceipt !== undefined && (plan.kind !== 'video' || item.videoProjectId !== undefined || item.assetId !== undefined))) return invalid()
   if (operations.some(item => item.assetId === undefined
     ? item.shotIds.length === 0 || item.shotIds.some(id => !plan.shots.some(shot => shot.id === id))
@@ -941,15 +950,39 @@ export class CreativeStore {
   }
 
   /**
-   * Claim one retained image task for query-only recovery under the same account, chat and workspace.
+   * Link a private original-result record before its manifest is committed for save-only recovery.
+   * @param operation - Active Host-owned image invocation with its retained submission receipt.
+   * @param reference - Opaque result identity; source URLs and bytes never enter this record or its public views.
+   * @returns Resolves after the private association is durable.
+   */
+  imageResult(operation: CreativeOperation, reference: ImageResultRef): Promise<void> {
+    return this.queue(async () => {
+      await this.current(operation.owner)
+      const record = await this.read(operation.projectId, operation.owner)
+      if (record.owner.workspaceRoot !== operation.owner.workspaceRoot) throw new CreativeError('CREATIVE_ACCESS_DENIED', 404, '该创作项目不属于当前工作区。')
+      const found = record.operations.find(item => item.id === operation.operationId)
+      if (found === undefined || !this.active.has(found.id) || found.imageReceipt === undefined
+        || found.videoProjectId !== undefined || found.videoReceipt !== undefined) return invalid()
+      const ref = imageResultRef(reference)
+      if (found.imageResultRef !== undefined && found.imageResultRef !== ref) {
+        throw new CreativeError('CREATIVE_IMAGE_RESULT_CONFLICT', 409, '原图片结果已关联，不能替换成另一份结果；请继续保存原图。')
+      }
+      found.imageResultRef = ref
+      found.status = 'saving'
+      await this.persist(record)
+    })
+  }
+
+  /**
+   * Claim an original image task or retained result for recovery without another generation.
    * @param owner - Current login with the project's original workspace.
    * @param id - Explicit creation project id; no latest-project inference occurs.
-   * @param invocationId - Exact retained invocation to query without calling begin or posting again.
-   * @returns The exclusively live original invocation, purpose derived from its unchanged plan/material, and nonsecret receipt.
+   * @param invocationId - Exact retained invocation to query or save without calling begin or posting again.
+   * @returns Exclusively active original invocation, receipt, and any private original-result reference.
    */
   resumeImage(
     owner: CreativeOwner, id: string, invocationId: string,
-  ): Promise<{ operation: CreativeOperation; receipt: CreativeImageReceipt }> {
+  ): Promise<{ operation: CreativeOperation; receipt: CreativeImageReceipt; imageResultRef?: ImageResultRef }> {
     return this.queue(async () => {
       await this.current(owner)
       const record = await this.read(id, owner)
@@ -957,7 +990,9 @@ export class CreativeStore {
       const found = record.operations.find(item => item.id === operationId(invocationId))
       if (found === undefined || found.videoProjectId !== undefined) return invalid()
       if (this.active.has(found.id)) throw new CreativeError('CREATIVE_SHOT_RUNNING', 409, '原图片任务正在处理，请等待当前查询完成。')
-      if (found.imageReceipt?.taskId === undefined) throw new CreativeError('CREATIVE_IMAGE_TASK_UNCONFIRMED', 409, '原图片提交尚无可查询任务编号，请保留请求编号并核对；不会重新提交生成。')
+      if (found.imageReceipt === undefined || found.imageReceipt.taskId === undefined && found.imageResultRef === undefined) {
+        throw new CreativeError('CREATIVE_IMAGE_TASK_UNCONFIRMED', 409, '原图片提交尚无可查询任务编号或可恢复的原图结果，请保留请求编号并核对；不会重新提交生成。')
+      }
       if (found.status === 'completed' || found.status === 'failed' || found.status === 'cancelled') {
         throw new CreativeError('CREATIVE_IMAGE_TASK_SETTLED', 409, '原图片任务已明确结束，请查看保留的结果。')
       }
@@ -969,7 +1004,8 @@ export class CreativeStore {
       const operation = { projectId: record.id, operationId: found.id, owner, ...imageRole === undefined ? {} : { imageRole },
         outputNaming: operationOutputNaming(record, found, 'image') }
       this.activate(operation, 'image')
-      return { operation, receipt: { ...found.imageReceipt } }
+      return { operation, receipt: { ...found.imageReceipt },
+        ...found.imageResultRef === undefined ? {} : { imageResultRef: found.imageResultRef } }
     })
   }
 
@@ -1305,7 +1341,10 @@ export class CreativeStore {
         ...errorCode === undefined ? {} : { errorCode },
         ...operation.imageReceipt === undefined ? {} : {
           imageReceipt: { ...operation.imageReceipt },
-          canQuery: operation.imageReceipt.taskId !== undefined && !this.active.has(operation.id)
+          ...operation.imageResultRef === undefined || operation.imageReceipt.taskId !== undefined
+            ? {} : { recovery: 'image-result' as const },
+          canQuery: (operation.imageReceipt.taskId !== undefined || operation.imageResultRef !== undefined)
+            && !this.active.has(operation.id)
             && state !== 'completed' && state !== 'failed' && state !== 'cancelled',
         },
         ...operation.videoReceipt === undefined ? {} : {

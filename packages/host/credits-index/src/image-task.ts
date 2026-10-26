@@ -9,7 +9,8 @@ import {
 } from './media-submission-receipt.ts'
 import type { ArtifactOrigin } from '@deepseek-ai/dsh-artifacts-index'
 import { creationTaskActivity } from './creation-activity.ts'
-import { transferMedia } from './media-transfer.ts'
+import { transferMedia, readMediaBytes, MediaTransferLimitError } from './media-transfer.ts'
+import { validateImageResultItems, type ImageResultItem, type ImageRetainedResult } from './image-result-store.ts'
 import type { CreationActivityOutcome, CreationTaskObserver } from './creation-activity.ts'
 
 /** Billing and provider-task facts remain independent of local waiting or saving. */
@@ -24,12 +25,18 @@ export interface ImageTaskOutcome {
   readonly taskId?: string
   readonly path?: string
   readonly paths?: readonly string[]
+  /** Valid image sources were received; this says nothing about final billing or completed local saves. */
+  readonly resultReceived?: true
 }
 
 /** Provider operations are supplied by the account-bound Host and never retried as submissions. */
 export interface ImageTaskOptions {
   /** Configured independent save/download limit; omitted callers retain serial behavior. */
   readonly downloadConcurrency?: number
+  /** Complete HTTP JSON body bound, enforced while reading before parsing or inline decoding. */
+  readonly responseMaxBytes?: number
+  /** Per-image decoded inline byte bound, checked before Buffer.from can allocate. */
+  readonly imageMaxBytes?: number
   /** Content-free local phases; an end notification does not cancel accepted upstream work. */
   readonly activity?: CreationTaskObserver
   readonly origin?: ArtifactOrigin
@@ -47,7 +54,13 @@ export interface ImageTaskOptions {
   /** Final synchronous login check after receipt persistence and immediately before dispatch. */
   readonly beforeSubmit?: () => void
   readonly received?: (receipt: CreativeImageReceipt) => Promise<void>
+  /** Private original sources must be durably retained before any dependent save. */
+  readonly receivedResult?: (items: readonly ImageResultItem[], receipt: CreativeImageReceipt) => Promise<void>
+  /** Commit a verified save checkpoint using the stable provider result index. */
+  readonly savedResult?: (index: number, path: string) => Promise<void>
   readonly resumeReceipt?: CreativeImageReceipt
+  /** Private, owner-verified sources permit save-only recovery even without a provider task id. */
+  readonly resumeResult?: ImageRetainedResult
   readonly submit: (signal: AbortSignal) => Promise<Response>
   /** Canonical reads select only the Host-owned /v1/tasks path, never a response-supplied URL. */
   readonly read: (taskId: string, signal: AbortSignal, canonical?: boolean) => Promise<Response>
@@ -75,30 +88,32 @@ function status(value: Record<string, unknown> | undefined): string | undefined 
 }
 
 /**
- * Submit at most once, persist every available receipt before dependent work, and recover only by GET.
+ * Submit at most once; recover through original task GETs or private retained sources without resubmitting.
  * @param options - Account-owned HTTP, persistence and save operations with complete time budgets.
  * @returns Saved outputs or a safe outcome retaining task identity and possible billing after cancellation or failure.
  */
 export async function executeImageTask(options: ImageTaskOptions): Promise<ImageTaskOutcome> {
   const activity = creationTaskActivity(options.activity)
   let activityOutcome: CreationActivityOutcome = 'unknown'
-  let receipt = options.resumeReceipt
+  let receipt = options.resumeReceipt ?? options.resumeResult?.receipt
   let canonicalRead = receipt?.taskId?.startsWith('task_') === true
   let sent = receipt !== undefined
-  const saved: string[] = []
+  const saved = new Map(options.resumeResult?.saved.map(item => [item.index, item.path]))
+  let resultReceived = options.resumeResult !== undefined
   let unreadResponse: Response | undefined
-  let phase: 'preparing' | 'submitting' | 'querying' | 'saving' | 'receipt' = 'preparing'
+  let phase: 'preparing' | 'submitting' | 'querying' | 'saving' | 'receipt' | 'result' | 'response' = 'preparing'
   const currentPhase = (): typeof phase => phase
   const outcome = (submissionState: ImageTaskOutcome['submissionState'], code?: string, message?: string): ImageTaskOutcome => {
     activityOutcome = submissionState === 'completed' ? 'completed' : submissionState === 'failed' ? 'failed'
       : submissionState === 'not-submitted' ? 'stopped' : 'unknown'
     if (activityOutcome === 'unknown') activity.stage('unknown')
+    const paths = [...saved].sort(([a], [b]) => a - b).map(([, path]) => path)
     return {
       ok: submissionState === 'completed', submissionState, model: receipt?.model ?? options.model,
       ...code === undefined ? {} : { code }, ...message === undefined ? {} : { message },
       ...receipt === undefined ? {} : { imageReceipt: receipt, ...receipt.taskId === undefined ? {} : { taskId: receipt.taskId },
         ...receipt.requestId === undefined ? {} : { requestId: receipt.requestId } },
-      ...saved.length === 0 ? {} : { path: saved[0], paths: [...saved] },
+      ...paths.length === 0 ? {} : { path: paths[0], paths }, ...resultReceived ? { resultReceived: true as const } : {},
     }
   }
   if (receipt !== undefined && receipt.backendFingerprint !== options.backendFingerprint) {
@@ -106,7 +121,7 @@ export async function executeImageTask(options: ImageTaskOptions): Promise<Image
     activity.end(activityOutcome)
     return result
   }
-  if (receipt !== undefined && receipt.taskId === undefined) {
+  if (receipt !== undefined && receipt.taskId === undefined && options.resumeResult === undefined) {
     const result = outcome('unknown', 'IMAGE_SUBMISSION_UNKNOWN', '原提交尚无可查询的任务回执，请先核对原任务与计费；不会重新提交生成。')
     activity.end(activityOutcome)
     return result
@@ -121,23 +136,23 @@ export async function executeImageTask(options: ImageTaskOptions): Promise<Image
     phase = previousPhase
     if (next.phase === 'accepted') activity.stage('accepted')
   }
-  const save = async (value: Record<string, unknown> | undefined): Promise<void> => {
+  const saveItems = async (values: readonly unknown[], retain = true): Promise<void> => {
+    if (values.length === 0) return
     const previousPhase = phase
+    phase = 'result'
+    const sources = validateImageResultItems(values, options.imageMaxBytes, options.responseMaxBytes)
+    resultReceived = true
+    if (retain) await options.receivedResult?.(sources, currentReceipt())
     phase = 'saving'
-    const offset = saved.length
-    const completed = new Map<number, string>()
-    try {
-      await transferMedia(items(value), options.downloadConcurrency ?? 1, signal, async (item, index, transferSignal) => {
+    await transferMedia(sources.map((item, index) => ({ item, index })).filter(entry => !saved.has(entry.index)),
+      options.downloadConcurrency ?? 1, signal, async ({ item, index }, _pendingIndex, transferSignal) => {
         transferSignal.throwIfAborted()
-        const entry = record(item)
-        if (entry === undefined) return
         activity.stage('saving')
-        const path = await options.save(entry, offset + index, transferSignal)
-        if (path !== undefined) completed.set(index, path)
+        const path = await options.save(item, index, transferSignal)
+        if (path === undefined) throw new VideoProjectError('IMAGE_DOWNLOAD_UNAVAILABLE', '原图片尚未保存，请继续保存原结果；无需重新生成。')
+        saved.set(index, path)
+        await options.savedResult?.(index, path)
       })
-    } finally {
-      saved.push(...[...completed].sort(([a], [b]) => a - b).map(([, path]) => path))
-    }
     phase = previousPhase
   }
   const currentReceipt = (): CreativeImageReceipt => {
@@ -153,6 +168,10 @@ export async function executeImageTask(options: ImageTaskOptions): Promise<Image
     signal.throwIfAborted()
     await options.prepare?.(signal)
     signal.throwIfAborted()
+    if (options.resumeResult !== undefined && receipt?.taskId === undefined) {
+      await saveItems(options.resumeResult.items, false)
+      return await complete()
+    }
     if (receipt === undefined) {
       await options.submitting?.()
       signal.throwIfAborted()
@@ -168,7 +187,8 @@ export async function executeImageTask(options: ImageTaskOptions): Promise<Image
       unreadResponse = response
       const requestId = identifier(response.headers.get('x-oneapi-request-id')) ?? identifier(response.headers.get('x-request-id'))
       if (requestId !== undefined) await persist({ ...currentReceipt(), requestId })
-      const text = await response.text()
+      phase = 'response'
+      const text = (await readMediaBytes(response, options.responseMaxBytes ?? 134_217_728, requestSignal)).toString('utf8')
       unreadResponse = undefined
       let body: Record<string, unknown> | undefined
       try { body = record(JSON.parse(text)) }
@@ -200,8 +220,8 @@ export async function executeImageTask(options: ImageTaskOptions): Promise<Image
         }
         return outcome('unknown', 'IMAGE_SUBMISSION_UNKNOWN', '生成提交结果和计费状态尚未确认，请先核对原任务；不会重新提交。')
       }
-      if (!uncertain) await save(body)
-      if (saved.length > 0) return await complete()
+      if (!uncertain) await saveItems(items(body))
+      if (saved.size > 0) return await complete()
     }
     const acceptedTaskId = currentReceipt().taskId
     if (acceptedTaskId === undefined) return outcome('unknown', 'NO_TASK_ID', '提交已发出，但未取得可查询的任务回执，请先核对原任务与计费；不会重新生成。')
@@ -219,7 +239,7 @@ export async function executeImageTask(options: ImageTaskOptions): Promise<Image
         const querySignal = AbortSignal.any([signal, AbortSignal.timeout(options.queryTimeoutMs)])
         response = canonicalRead || currentReceipt().route === '/v1/tasks'
           ? await options.read(acceptedTaskId, querySignal, true) : await options.read(acceptedTaskId, querySignal)
-        const text = await response.text()
+        const text = (await readMediaBytes(response, options.responseMaxBytes ?? 134_217_728, querySignal)).toString('utf8')
         if (!response.ok) {
           if (response.status !== 408 && response.status !== 429 && response.status < 500) {
             return outcome('pending', 'IMAGE_QUERY_UNAVAILABLE', '原任务已受理，当前无法读取状态，请稍后查询原任务；不会重新生成。')
@@ -230,6 +250,8 @@ export async function executeImageTask(options: ImageTaskOptions): Promise<Image
         if (body === undefined) throw new Error('Image task query invalid')
       } catch (error) {
         if (signal.aborted) throw error
+        if (error instanceof MediaTransferLimitError) return outcome('pending', 'IMAGE_RESPONSE_TOO_LARGE',
+          '原任务已受理，但查询结果超过当前读取资源上限；请保留原任务，不要重新生成。')
         failures += 1
         if (failures > options.queryRetryLimit) return outcome('pending', 'IMAGE_QUERY_UNAVAILABLE', '原任务已受理，暂时无法读取状态，请稍后查询原任务；不会重新生成。')
         continue
@@ -249,7 +271,7 @@ export async function executeImageTask(options: ImageTaskOptions): Promise<Image
         && (failed || ['queued', 'pending', 'unknown', 'not_start', 'created', 'submitted'].includes(taskStatus ?? ''))) {
         const querySignal = AbortSignal.any([signal, AbortSignal.timeout(options.queryTimeoutMs)])
         const canonical = await options.read(acceptedTaskId, querySignal, true)
-        const text = await canonical.text()
+        const text = (await readMediaBytes(canonical, options.responseMaxBytes ?? 134_217_728, querySignal)).toString('utf8')
         let original: unknown
         try { original = JSON.parse(text) } catch (_invalidOriginalTask: unknown) { /* Keep the original receipt unresolved. */ }
         const proof = mediaSubmissionQueryRejection(currentReceipt().model, 'image', canonical.status, original, acceptedTaskId)
@@ -270,8 +292,8 @@ export async function executeImageTask(options: ImageTaskOptions): Promise<Image
       }
       if (['queued', 'pending', 'not_start', 'created', 'submitted', 'in_queue'].includes(taskStatus ?? '')) activity.stage('queued')
       else if (['running', 'processing', 'in_progress', 'generating'].includes(taskStatus ?? '')) activity.stage('generating')
-      await save(body)
-      if (saved.length > 0) return await complete()
+      await saveItems(items(body))
+      if (saved.size > 0) return await complete()
       if (['completed', 'success', 'succeed', 'succeeded'].includes(taskStatus ?? '')) {
         return outcome('pending', 'IMAGE_RESULT_UNAVAILABLE', '原任务已完成，产物暂未取回，请继续查询原任务并保存；无需重新生成。')
       }
@@ -279,13 +301,25 @@ export async function executeImageTask(options: ImageTaskOptions): Promise<Image
   } catch (error) {
     if (!sent) return outcome('not-submitted', currentPhase() === 'receipt' ? 'IMAGE_RECEIPT_UNAVAILABLE' : error instanceof VideoProjectError ? error.code
       : signal.aborted ? 'ABORTED' : 'IMAGE_PREPARATION_FAILED', '生成尚未提交，当前操作已停止。')
+    if (resultReceived) {
+      const code = currentPhase() === 'result' ? 'IMAGE_RESULT_PERSISTENCE_UNAVAILABLE'
+        : currentPhase() === 'receipt' ? 'IMAGE_RECEIPT_UNAVAILABLE'
+          : budget.aborted ? 'IMAGE_TASK_TIMEOUT' : options.signal.aborted ? 'IMAGE_WAIT_STOPPED'
+            : error instanceof VideoProjectError ? error.code : currentPhase() === 'preparing' ? 'IMAGE_PREPARATION_FAILED'
+              : currentPhase() === 'querying' ? 'IMAGE_QUERY_UNAVAILABLE' : 'IMAGE_DOWNLOAD_UNAVAILABLE'
+      return outcome('pending', code, '原图片结果已收到，但本地保存尚未完成；请继续保存原结果，不要重新生成。')
+    }
     if (receipt?.taskId !== undefined) {
-      const code = currentPhase() === 'receipt' ? 'IMAGE_RECEIPT_UNAVAILABLE' : budget.aborted ? 'IMAGE_TASK_TIMEOUT'
-        : options.signal.aborted ? 'IMAGE_WAIT_STOPPED' : error instanceof VideoProjectError ? error.code
-          : currentPhase() === 'saving' ? 'IMAGE_DOWNLOAD_UNAVAILABLE' : currentPhase() === 'preparing' ? 'IMAGE_PREPARATION_FAILED' : 'IMAGE_QUERY_UNAVAILABLE'
+      const code = error instanceof MediaTransferLimitError ? 'IMAGE_RESPONSE_TOO_LARGE'
+        : currentPhase() === 'result' ? 'IMAGE_RESULT_INVALID'
+          : currentPhase() === 'receipt' ? 'IMAGE_RECEIPT_UNAVAILABLE' : budget.aborted ? 'IMAGE_TASK_TIMEOUT'
+            : options.signal.aborted ? 'IMAGE_WAIT_STOPPED' : error instanceof VideoProjectError ? error.code
+              : currentPhase() === 'saving' ? 'IMAGE_DOWNLOAD_UNAVAILABLE' : currentPhase() === 'preparing' ? 'IMAGE_PREPARATION_FAILED' : 'IMAGE_QUERY_UNAVAILABLE'
       return outcome('pending', code, '原任务已受理，当前等待或保存已停止；上游仍可能继续运行和计费，请查询原任务，不要重新生成。')
     }
-    return outcome('unknown', 'IMAGE_SUBMISSION_UNKNOWN', '生成提交结果和计费状态尚未确认，请先核对原任务；不会重新提交。')
+    return outcome('unknown', error instanceof MediaTransferLimitError ? 'IMAGE_RESPONSE_TOO_LARGE'
+      : currentPhase() === 'result' ? 'IMAGE_RESULT_INVALID' : 'IMAGE_SUBMISSION_UNKNOWN',
+    '生成提交结果和计费状态尚未确认，请先核对原任务；不会重新提交。')
   } finally {
     if (unreadResponse?.body !== null && unreadResponse?.body !== undefined) {
       try { await unreadResponse.body.cancel() }

@@ -6,12 +6,13 @@ import { createClientTest, webApp } from '@deepseek-ai/dsh-client-test-runtime/s
 import type { MainPanelId } from '@deepseek-ai/dsh-client-ui-layout/client'
 import { RechargePage } from '../src/client/RechargePage.tsx'
 import { en, zh, type CreditsKey } from '../src/client/locales.ts'
-import { refreshCredits } from '../src/client/session-store.ts'
+import { refreshBalance, refreshCredits } from '../src/client/session-store.ts'
 
 const SELF = '@deepseek-ai/dsh-client-ui-credits'
 const productIt = createClientTest({ roster: webApp.closure([SELF, '@deepseek-ai/dsh-client-ui-chat']) }, { mount: true })
 const qr = 'data:image/png;base64,aGVsbG8='
 let accountId = 'account-a'
+let loginOwner: string | undefined = 'a'.repeat(64)
 let summaryReads = 0
 let orderNumber = 0
 let balanceUnavailable = false
@@ -24,12 +25,14 @@ const t = (key: string, values?: Record<string, string>): string => {
   for (const [name, value] of Object.entries(values ?? {})) text = text.replaceAll(`{${name}}`, value)
   return text
 }
-const created = (id = 'order-1', amount = 1, points = 1000): Response => Response.json({ ok: true, payload: {
-  outTradeNo: id, amount, points, quota: 68493, expiresAt: null, qrCodeDataUrl: qr,
-} })
-const orderStatus = (state = 'pending', points = 1000): Response => Response.json({ ok: true, payload: {
-  status: state, points, quota: 68493,
-} })
+const created = (id = 'order-1', amount = 1, points = 1000): Response => Response.json({ ok: true,
+  account: { id: accountId }, accountOwner: loginOwner, payload: {
+    outTradeNo: id, amount, points, quota: 68493, expiresAt: null, qrCodeDataUrl: qr,
+  } })
+const orderStatus = (state = 'pending', points = 1000): Response => Response.json({ ok: true,
+  account: { id: accountId }, accountOwner: loginOwner, payload: {
+    status: state, points, quota: 68493,
+  } })
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -58,6 +61,7 @@ const paymentRequests = () => fetcher.mock.calls.filter(([input]) => requestPath
 
 beforeEach(() => {
   accountId = 'account-a'
+  loginOwner = 'a'.repeat(64)
   summaryReads = 0
   orderNumber = 0
   balanceUnavailable = false
@@ -66,12 +70,14 @@ beforeEach(() => {
   fetcher = vi.fn<typeof fetch>(async (input, init) => {
     const path = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
     if (path === '/credits/api/session') return Response.json({ ok: true, payload: {
-      signedIn: true, creditsPerYuan: 1000, account: { id: accountId, phone: '+8613800138000' },
+      signedIn: true, creditsPerYuan: 1000, accountOwner: loginOwner,
+      account: { id: accountId, phone: accountId === 'account-a' ? '+8613800138000' : '+8613900139000' },
     } })
     if (path === '/credits/api/summary') {
       summaryReads += 1
       if (balanceUnavailable) return Response.json({ ok: false, code: 'BALANCE_UNAVAILABLE' })
-      return Response.json({ ok: true, payload: { balance_points: 2345, as_of: '2026-10-16T04:00:00Z' } })
+      return Response.json({ ok: true, account: { id: accountId }, accountOwner: loginOwner,
+        payload: { balance_points: 2345, as_of: '2026-10-16T04:00:00Z' } })
     }
     if (path === '/credits/api/recharge/wechat') return await create(init)
     if (path.startsWith('/credits/api/recharge/wechat/order?')) return await status(path, init)
@@ -91,7 +97,7 @@ describe('WeChat top-up page', () => {
     const view = await mountPage()
     create = async (init) => {
       expect(init?.method).toBe('POST')
-      expect(init?.body).toBe('{"amount":1}')
+      expect(init?.body).toBe(JSON.stringify({ amount: 1, expected_account_id: 'account-a', expected_account_owner: 'a'.repeat(64) }))
       return created()
     }
     await pay()
@@ -131,8 +137,8 @@ describe('WeChat top-up page', () => {
     expect(summaryReads).toBe(beforeRefresh + 1)
     expect(paymentRequests().map(([path]) => requestPath(path))).toEqual([
       '/credits/api/recharge/wechat',
-      '/credits/api/recharge/wechat/order?outTradeNo=order-1',
-      '/credits/api/recharge/wechat/order?outTradeNo=order-1',
+      `/credits/api/recharge/wechat/order?outTradeNo=order-1&expected_account_id=account-a&expected_account_owner=${'a'.repeat(64)}`,
+      `/credits/api/recharge/wechat/order?outTradeNo=order-1&expected_account_id=account-a&expected_account_owner=${'a'.repeat(64)}`,
     ])
   })
 
@@ -147,7 +153,7 @@ describe('WeChat top-up page', () => {
     expect(screen.queryByRole('button', { name: zh.checkPayment })).toBeNull()
     await act(async () => { await vi.advanceTimersByTimeAsync(10_000) })
     expect(paymentRequests()).toHaveLength(2)
-    expect(summaryReads).toBe(beforeRefresh + (state === 'success' ? 1 : 0))
+    expect(summaryReads).toBe(beforeRefresh + 1 + (state === 'success' ? 1 : 0))
   })
 
   it.each(['succeeded', 'closed', 'processing', 'future_state'])(
@@ -164,7 +170,7 @@ describe('WeChat top-up page', () => {
       expect(screen.getByRole('button', { name: zh.checkPayment })).toBeTruthy()
       await act(async () => { await vi.advanceTimersByTimeAsync(10_000) })
       expect(paymentRequests()).toHaveLength(2)
-      expect(summaryReads).toBe(beforeRefresh)
+      expect(summaryReads).toBe(beforeRefresh + 1)
     },
   )
 
@@ -295,6 +301,127 @@ describe('WeChat top-up page', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(10_000) })
     expect(summaryReads).toBe(beforeRefresh)
     expect(paymentRequests()).toHaveLength(2)
+  })
+
+  it('blocks a cross-window balance mismatch and refreshes the displayed account before another explicit charge', async () => {
+    await mountPage()
+    accountId = 'account-b'; loginOwner = 'b'.repeat(64)
+    await act(async () => { await refreshBalance() })
+    expect(screen.getByRole('alert').textContent).toBe(zh.rechargeAccountChanged)
+    expect(screen.getByRole('button', { name: zh.confirmPay }).hasAttribute('disabled')).toBe(true)
+    await pay('30')
+    expect(paymentRequests()).toHaveLength(0)
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: zh.rechargeRefreshAccount })) })
+    expect(screen.getByText(t('rechargeAccountLabel', { account: '+8613900139000' }))).toBeTruthy()
+    expect(screen.queryByRole('alert')).toBeNull()
+    await pay('30')
+    expect(paymentRequests()[0]?.[1]?.body).toBe(JSON.stringify({ amount: 30,
+      expected_account_id: 'account-b', expected_account_owner: 'b'.repeat(64) }))
+    expect(screen.getByRole('img', { name: zh.qrAlt })).toBeTruthy()
+  })
+
+  it('does not turn an A click into a B charge when preflight discovers an external sign-in', async () => {
+    await mountPage()
+    await pay()
+    accountId = 'account-b'; loginOwner = 'b'.repeat(64)
+    await pay('30')
+    expect(paymentRequests().filter(([, init]) => init?.method === 'POST')).toHaveLength(1)
+    expect(screen.queryByRole('img', { name: zh.qrAlt })).toBeNull()
+    expect(screen.queryByText('order-1')).toBeNull()
+    expect(screen.getByText(t('rechargeAccountLabel', { account: '+8613900139000' }))).toBeTruthy()
+    await pay('30')
+    expect(paymentRequests().filter(([, init]) => init?.method === 'POST')).toHaveLength(2)
+    expect(paymentRequests().findLast(([, init]) => init?.method === 'POST')?.[1]?.body)
+      .toBe(JSON.stringify({ amount: 30, expected_account_id: 'account-b', expected_account_owner: 'b'.repeat(64) }))
+  })
+
+  it('invalidates an old create even when the account id is unchanged after a new login', async () => {
+    await mountPage()
+    const pending = deferred<Response>()
+    create = () => pending.promise
+    await pay()
+    const signal = paymentRequests()[0]?.[1]?.signal
+    loginOwner = 'b'.repeat(64)
+    await act(async () => { await refreshCredits() })
+    expect(signal?.aborted).toBe(true)
+    await act(async () => { pending.resolve(created()) })
+    expect(paymentRequests()).toHaveLength(1)
+    expect(screen.queryByRole('img', { name: zh.qrAlt })).toBeNull()
+    expect(screen.queryByText('order-1')).toBeNull()
+  })
+
+  it('keeps the current QR across a same-login token refresh but clears it on an owner mismatch reply', async () => {
+    await mountPage()
+    await pay()
+    await act(async () => { await refreshCredits() })
+    expect(screen.getByRole('img', { name: zh.qrAlt })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: zh.stopPolling }))
+    status = async () => Response.json({ ok: false, code: 'ACCOUNT_CHANGED' })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: zh.checkPayment })) })
+    expect(screen.getByRole('alert').textContent).toBe(zh.rechargeAccountChanged)
+    expect(screen.queryByRole('img', { name: zh.qrAlt })).toBeNull()
+    expect(screen.getByRole('button', { name: zh.confirmPay }).hasAttribute('disabled')).toBe(true)
+  })
+
+  it('rejects a create result for another login without displaying or polling its QR', async () => {
+    await mountPage()
+    create = async () => Response.json({ ok: true, account: { id: 'account-b' }, accountOwner: 'b'.repeat(64),
+      payload: { outTradeNo: 'foreign-order', amount: 1, points: 1000, expiresAt: null, qrCodeDataUrl: qr } })
+    await pay()
+    expect(screen.getByRole('alert').textContent).toBe(zh.rechargeAccountChanged)
+    expect(paymentRequests()).toHaveLength(1)
+    expect(screen.queryByRole('img', { name: zh.qrAlt })).toBeNull()
+  })
+
+  it.each(['ACCOUNT_CHANGED', 'SESSION_REFRESH_REQUIRED'] as const)(
+    'requires a fresh explicit action after the host refuses ownership with %s', async (code) => {
+      await mountPage()
+      create = async () => Response.json({ ok: false, code })
+      await pay()
+      expect(screen.getByRole('alert').textContent).toBe(code === 'ACCOUNT_CHANGED'
+        ? zh.rechargeAccountChanged : zh.rechargeIdentityRequired)
+      expect(screen.getByRole('button', { name: zh.confirmPay }).hasAttribute('disabled')).toBe(true)
+      expect(paymentRequests()).toHaveLength(1)
+      create = async () => created()
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: zh.rechargeRefreshAccount })) })
+      expect(paymentRequests()).toHaveLength(1)
+      await pay()
+      expect(screen.getByRole('img', { name: zh.qrAlt })).toBeTruthy()
+    },
+  )
+
+  it('allows legacy balance reads but requires a verified login owner before financial operations', async () => {
+    loginOwner = undefined
+    await mountPage()
+    expect(screen.getByText('2,345')).toBeTruthy()
+    expect(screen.getByRole('alert').textContent).toBe(zh.rechargeIdentityRequired)
+    expect(screen.getByRole('button', { name: zh.confirmPay }).hasAttribute('disabled')).toBe(true)
+    await pay()
+    expect(paymentRequests()).toHaveLength(0)
+    loginOwner = 'a'.repeat(64)
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: zh.rechargeRefreshAccount })) })
+    await pay()
+    expect(screen.getByRole('img', { name: zh.qrAlt })).toBeTruthy()
+  })
+
+  it('honors a header-only create 429 without automatic retries or a manual refresh bypass', async () => {
+    vi.useFakeTimers()
+    await mountPage()
+    create = async () => new Response(null, { status: 429, headers: { 'Retry-After': '12' } })
+    await pay()
+    expect(screen.getByText(t('read.retryAfter', { seconds: '12' }))).toBeTruthy()
+    const before = fetcher.mock.calls.length
+    expect(screen.getByRole('button', { name: zh.confirmPay }).hasAttribute('disabled')).toBe(true)
+    expect(screen.getByRole('button', { name: zh.rechargeRefreshAccount }).hasAttribute('disabled')).toBe(true)
+    await pay('30')
+    await act(async () => { await vi.advanceTimersByTimeAsync(11_000) })
+    expect(fetcher.mock.calls).toHaveLength(before)
+    create = async () => created('after-cooldown', 30, 30_000)
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+    expect(paymentRequests()).toHaveLength(1)
+    await pay('30')
+    expect(paymentRequests().filter(([, init]) => init?.method === 'POST')).toHaveLength(2)
+    expect(screen.getByText('after-cooldown')).toBeTruthy()
   })
 })
 

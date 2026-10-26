@@ -57,6 +57,58 @@ function fixture(initial: Partial<CreativeSnapshot> = {}, english = false) {
 }
 
 describe('chat creation sidebar', () => {
+  it.each([false, true])('continues saving a retained synchronous result without generation or a task query (English: %s)', async (english) => {
+    const copy = english ? en : zh
+    const image = { id: 'out1' as CreativeOutputId, kind: 'image' as const, name: 'already-saved.png', url: mediaUrl() }
+    const original = { id: 'op_saved_result', status: 'unknown' as const, shotIds: ['s1'], completedShots: 0, totalShots: 1,
+      outputs: [image], canQuery: true, recovery: 'image-result' as const,
+      imageReceipt: { route: '/v1/images/generations', model: 'image-model', phase: 'submitting' as const,
+        requestId: 'sync-original-request', backendFingerprint: 'a'.repeat(64) } }
+    const data = project({ kind: 'image', status: 'unknown', outputs: [image], tasks: [original] })
+    const h = fixture({ projects: [data] }, english)
+    fireEvent.click(screen.getByRole('tab', { name: copy['section.images'] }))
+    expect(screen.getByText(copy['tasks.resultReadyToSave'])).toBeTruthy()
+    expect(screen.queryByText(copy['tasks.unknownNoReceipt'])).toBeNull()
+    expect(screen.queryByRole('button', { name: copy['tasks.queryOriginal'] })).toBeNull()
+    expect(screen.getByText('sync-original-request')).toBeTruthy()
+    const pending = Promise.withResolvers<Awaited<ReturnType<CreativeBodyProps['recover']>>>()
+    h.props.recover.mockImplementationOnce(() => pending.promise)
+    fireEvent.click(screen.getByRole('button', { name: copy['tasks.saveOriginal'] }))
+    const saving = screen.getByRole('button', { name: copy['tasks.savingOriginal'] })
+    expect(saving.hasAttribute('disabled')).toBe(true)
+    fireEvent.click(saving)
+    expect(h.props.recover).toHaveBeenCalledExactlyOnceWith(data.id, original.id, expect.any(AbortSignal))
+    expect(h.inputActions.submit).not.toHaveBeenCalled()
+    expect(h.inputActions.insertText).not.toHaveBeenCalled()
+    expect(h.inputActions.setDraft).not.toHaveBeenCalled()
+    await act(async () => { pending.resolve({ ok: false, code: 'unavailable' }) })
+    expect(screen.getByRole('alert').textContent).toBe(copy['tasks.saveFailed'])
+    expect(screen.queryByText(copy['tasks.queryFailed'])).toBeNull()
+    expect(screen.getByRole('button', { name: copy['tasks.saveOriginal'] }).hasAttribute('disabled')).toBe(false)
+    expect(h.view.container.textContent).toContain(copy['tasks.outputCount'].replace('{count}', '1'))
+    expect(h.view.container.textContent).not.toMatch(/imageResultRef|b64_json|signature=/u)
+  })
+
+  it('cancels only the local retained-image save when its task view unmounts', async () => {
+    const data = project({ kind: 'image', status: 'unknown', tasks: [{ id: 'op_saved_result', status: 'unknown',
+      shotIds: ['s1'], completedShots: 0, totalShots: 1, outputs: [], canQuery: true, recovery: 'image-result',
+      imageReceipt: { route: '/v1/images/generations', model: 'image-model', phase: 'submitting',
+        requestId: 'sync-original-request', backendFingerprint: 'a'.repeat(64) } }] })
+    const h = fixture({ projects: [data] })
+    fireEvent.click(screen.getByRole('tab', { name: zh['section.images'] }))
+    const pending = Promise.withResolvers<Awaited<ReturnType<CreativeBodyProps['recover']>>>()
+    h.props.recover.mockImplementationOnce(() => pending.promise)
+    fireEvent.click(screen.getByRole('button', { name: zh['tasks.saveOriginal'] }))
+    const signal = h.props.recover.mock.calls[0]?.[2]
+    expect(signal?.aborted).toBe(false)
+    h.view.unmount()
+    expect(signal?.aborted).toBe(true)
+    await act(async () => { pending.resolve({ ok: false, code: 'unavailable' }) })
+    expect(h.props.recover).toHaveBeenCalledOnce()
+    expect(h.inputActions.submit).not.toHaveBeenCalled()
+    expect(h.inputActions.insertText).not.toHaveBeenCalled()
+  })
+
   it.each([
     { english: false, kind: 'image' as const }, { english: true, kind: 'image' as const },
     { english: false, kind: 'video' as const }, { english: true, kind: 'video' as const },

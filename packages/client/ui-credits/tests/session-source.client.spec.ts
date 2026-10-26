@@ -7,6 +7,7 @@ const api = vi.hoisted(() => ({
     ok: boolean
     payload?: unknown
     account?: { id: string } | null
+    accountOwner?: string | null
     code?: string
     httpStatus?: number
     retryAfterSeconds?: number
@@ -28,6 +29,22 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
 
 describe('injected credits session source', () => {
+  it('advances the epoch for a new login of the same account but not a token refresh', async () => {
+    let owner = 'a'.repeat(64)
+    api.get.mockImplementation(async path => ({ ok: true,
+      payload: path.endsWith('/session') ? { ...account('same'), accountOwner: owner } : balance(1234) }))
+    const { createCreditsSessionSource, refreshCredits } = await import('../src/client/session-store.ts')
+    const source = createCreditsSessionSource()
+    await refreshCredits()
+    const epoch = source.getSnapshot().accountEpoch
+    await refreshCredits()
+    expect(source.getSnapshot().accountEpoch).toBe(epoch)
+    owner = 'b'.repeat(64)
+    await refreshCredits()
+    expect(source.getSnapshot().accountEpoch).toBe(epoch + 1)
+    expect(source.getSnapshot().session?.accountOwner).toBe(owner)
+  })
+
   it('changes the account epoch only on identity transitions, including logout and return', async () => {
     let id = 'a'
     api.get.mockImplementation(async path => ({ ok: true, payload: path.endsWith('/session') ? account(id) : balance(1234) }))

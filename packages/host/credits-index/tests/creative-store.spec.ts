@@ -10,6 +10,7 @@ import type { VideoGenerationIntent } from '../src/video-generation-intent.ts'
 import type { CreationOperationActivity } from '../src/creation-activity.ts'
 import { VideoWorkStore } from '../src/video-work-store.ts'
 import { ImageInvocationStore } from '../src/image-invocation.ts'
+import { ImageResultStore, type ImageResultRef } from '../src/image-result-store.ts'
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>()
@@ -990,6 +991,113 @@ describe('trusted independent chat image submissions', () => {
 })
 
 describe('retained image receipts and query-only recovery', () => {
+  it('recovers a no-task-id original result after restart and sign-in without exposing its private reference or sources', async () => {
+    const { store, owner, options, file, setLive } = await fixture()
+    const operation = await store.begin(owner, { kind: 'image', prompt: 'original sync image', shots: [{ prompt: 'original sync image' }] })
+    await store.receipt(operation, submittingImage)
+    const results = new ImageResultStore({ directory: join(owner.workspaceRoot, 'private-image-results'), current: options.current })
+    const sourceUrl = 'https://images.example/original.png?signature=private-source-signature'
+    const sourceInline = Buffer.from('private original image bytes').toString('base64')
+    const reference = await results.retain({ owner, operationId: operation.operationId,
+      backendFingerprint: submittingImage.backendFingerprint }, submittingImage, [{ url: sourceUrl }, { b64_json: sourceInline }],
+    ref => store.imageResult(operation, ref))
+    await store.saved(operation, await file('partial-sync.png'), 'image')
+    await store.finish(operation, { status: 'unknown', errorCode: 'IMAGE_DOWNLOAD_UNAVAILABLE' })
+    const path = join(options.directory, operation.projectId, 'project.json')
+    const raw = await readFile(path, 'utf8')
+    expect(raw).toContain(reference)
+    expect(raw).not.toContain(sourceUrl)
+    expect(raw).not.toContain(sourceInline)
+    const restarted = new CreativeStore(options)
+    const published = await restarted.projects(owner)
+    expect(published[0]?.tasks[0]).toMatchObject({ id: operation.operationId, status: 'unknown',
+      recovery: 'image-result', canQuery: true, imageReceipt: { phase: 'submitting', requestId: 'req-original' },
+      outputs: [{ name: 'partial-sync.png' }] })
+    expect(published[0]?.tasks[0]?.imageReceipt).not.toHaveProperty('taskId')
+    expect(JSON.stringify(published)).not.toMatch(/imageResultRef|ir_[a-f0-9]{64}|private-source-signature|b64_json/u)
+    await expect(restarted.resumeImage({ ...owner, sessionId: 'another-chat' }, operation.projectId, operation.operationId))
+      .rejects.toMatchObject({ code: 'CREATIVE_ACCESS_DENIED' })
+    await expect(restarted.resumeImage({ ...owner, workspaceRoot: join(owner.workspaceRoot, 'another') },
+      operation.projectId, operation.operationId)).rejects.toMatchObject({ code: 'CREATIVE_ACCESS_DENIED' })
+    const otherOwner = { ...owner, accountId: 'another-account', sessionFingerprint: 'another-login' }
+    setLive(otherOwner)
+    await expect(restarted.resumeImage(otherOwner, operation.projectId, operation.operationId))
+      .rejects.toMatchObject({ code: 'CREATIVE_ACCESS_DENIED' })
+    const newOwner = { ...owner, sessionFingerprint: 'new-login-for-original-account' }
+    setLive(newOwner)
+    const recovered = await restarted.resumeImage(newOwner, operation.projectId, operation.operationId)
+    expect(recovered).toMatchObject({ operation: { projectId: operation.projectId, operationId: operation.operationId, owner: newOwner },
+      receipt: submittingImage, imageResultRef: reference })
+    expect((await restarted.projects(newOwner))[0]?.tasks[0]).toMatchObject({ canQuery: false, recovery: 'image-result' })
+    const restored = await new ImageResultStore({ directory: join(owner.workspaceRoot, 'private-image-results'), current: options.current })
+      .load({ owner: newOwner, operationId: operation.operationId, backendFingerprint: submittingImage.backendFingerprint }, reference)
+    expect(restored.items).toEqual([{ url: sourceUrl }, { b64_json: sourceInline }])
+    await restarted.receipt(recovered.operation, { ...submittingImage, phase: 'completed' })
+    await restarted.finish(recovered.operation, { status: 'completed', paths: [await file('remaining-sync.png')], kind: 'image' })
+    const final = (await restarted.projects(newOwner))[0]
+    expect(final?.tasks).toHaveLength(1)
+    expect(final?.tasks[0]).toMatchObject({ id: operation.operationId, status: 'completed', canQuery: false })
+    expect(final?.outputs.map(item => item.name).sort()).toEqual(['partial-sync.png', 'remaining-sync.png'])
+    expect(JSON.stringify(final)).not.toContain(reference)
+  })
+
+  it('rejects result linking from another workspace, chat, account or expired login without changing the operation', async () => {
+    const { store, owner, options, setLive } = await fixture()
+    const operation = await store.begin(owner, { kind: 'image', prompt: 'one', shots: [{ prompt: 'one' }] })
+    await store.receipt(operation, submittingImage)
+    const path = join(options.directory, operation.projectId, 'project.json')
+    const before = await readFile(path, 'utf8')
+    const reference = `ir_${'a'.repeat(64)}` as ImageResultRef
+    for (const changed of [{ ...owner, workspaceRoot: join(owner.workspaceRoot, 'another-workspace') },
+      { ...owner, sessionId: 'another-chat' }]) {
+      await expect(store.imageResult({ ...operation, owner: changed }, reference))
+        .rejects.toMatchObject({ code: 'CREATIVE_ACCESS_DENIED' })
+    }
+    const other = { ...owner, accountId: 'another-account', sessionFingerprint: 'another-login' }
+    setLive(other)
+    await expect(store.imageResult({ ...operation, owner: other }, reference)).rejects.toMatchObject({ code: 'CREATIVE_ACCESS_DENIED' })
+    setLive({ ...owner, sessionFingerprint: 'renewed-login' })
+    await expect(store.imageResult(operation, reference)).rejects.toMatchObject({ code: 'CREATIVE_ACCOUNT_CHANGED' })
+    expect(await readFile(path, 'utf8')).toBe(before)
+  })
+
+  it('links only one original result after a receipt and rejects replacement or a released invocation', async () => {
+    const { store, owner, options } = await fixture()
+    const operation = await store.begin(owner, { kind: 'image', prompt: 'one', shots: [{ prompt: 'one' }] })
+    const reference = `ir_${'a'.repeat(64)}` as ImageResultRef
+    await expect(store.imageResult(operation, reference)).rejects.toMatchObject({ code: 'CREATIVE_INVALID' })
+    await store.receipt(operation, submittingImage)
+    await expect(store.imageResult(operation, '../private-result' as ImageResultRef)).rejects.toMatchObject({ code: 'CREATIVE_INVALID' })
+    await store.imageResult(operation, reference)
+    const path = join(options.directory, operation.projectId, 'project.json')
+    const before = await readFile(path, 'utf8')
+    await expect(store.imageResult(operation, `ir_${'b'.repeat(64)}` as ImageResultRef))
+      .rejects.toMatchObject({ code: 'CREATIVE_IMAGE_RESULT_CONFLICT' })
+    store.release(operation)
+    await expect(store.imageResult(operation, reference)).rejects.toMatchObject({ code: 'CREATIVE_INVALID' })
+    expect(await readFile(path, 'utf8')).toBe(before)
+  })
+
+  it.each(['malformed-reference', 'missing-receipt', 'video-receipt'] as const)(
+    'rejects damaged private result linkage instead of treating it as a new submission: %s', async (damage) => {
+      const { store, owner, options } = await fixture()
+      const operation = await store.begin(owner, { kind: 'image', prompt: 'one', shots: [{ prompt: 'one' }] })
+      await store.receipt(operation, submittingImage)
+      await store.imageResult(operation, `ir_${'a'.repeat(64)}` as ImageResultRef)
+      store.release(operation)
+      const path = join(options.directory, operation.projectId, 'project.json')
+      const raw = JSON.parse(await readFile(path, 'utf8')) as { operations: Record<string, unknown>[] }
+      const retained = raw.operations[0]!
+      if (damage === 'malformed-reference') retained.imageResultRef = 'https://private.example/result?token=secret'
+      else if (damage === 'missing-receipt') delete retained.imageReceipt
+      else retained.videoReceipt = acceptedImage
+      await writeFile(path, JSON.stringify(raw))
+      const before = await readFile(path, 'utf8')
+      await expect(new CreativeStore(options).projects(owner)).rejects.toMatchObject({ code: 'CREATIVE_INVALID' })
+      expect(await readFile(path, 'utf8')).toBe(before)
+    },
+  )
+
   it('keeps original generating locations across recovery and refuses changed or cross-chat receipt sources', async () => {
     const { store, owner, options } = await fixture()
     const operation = await store.begin(owner, { kind: 'image', prompt: 'one', shots: [{ prompt: 'one' }] })

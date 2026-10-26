@@ -133,6 +133,8 @@ export interface CreativeTaskView {
   readonly videoReceipt?: CreativeVideoReceipt
   /** Querying the original task is available without another paid submission. */
   readonly canQuery?: boolean
+  /** The original synchronous images can be saved locally without a provider task id. */
+  readonly recovery?: 'image-result'
   readonly completedShots: number
   readonly totalShots: number
 }

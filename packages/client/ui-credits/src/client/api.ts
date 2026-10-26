@@ -13,6 +13,8 @@ export interface Envelope<T> {
   readonly payload?: T
   /** Successful account reads may name their owner; older Hosts omit this field. */
   readonly account?: { readonly id: string } | null
+  /** Opaque login scope for owner-bound operations; never an authentication credential. */
+  readonly accountOwner?: string | null
   readonly status?: number
   readonly httpStatus?: number
   readonly failure?: { readonly code?: string; readonly httpStatus?: number; readonly retryAfterSeconds?: number }
@@ -35,7 +37,7 @@ export async function post<T>(
     body: JSON.stringify(body),
     ...(signal === undefined ? {} : { signal }),
   })
-  return await response.json() as Envelope<T>
+  return await readEnvelope<T>(response)
 }
 
 /**
@@ -50,6 +52,10 @@ export async function get<T>(path: string, signal?: AbortSignal): Promise<Envelo
     headers: { accept: 'application/json' },
     ...(signal === undefined ? {} : { signal }),
   })
+  return await readEnvelope<T>(response)
+}
+
+async function readEnvelope<T>(response: Response): Promise<Envelope<T>> {
   let answer: Envelope<T>
   try {
     const value: unknown = await response.json()

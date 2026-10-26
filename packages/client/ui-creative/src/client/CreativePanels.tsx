@@ -154,11 +154,12 @@ function TaskCard({ task, order, project, kind, visible, recover, t }: {
         aria-label={t('tasks.progress', { completed: task.completedShots, total: task.totalShots })} />}
       {publicationFailed ? <p className={css.notice} role="alert">{t('artifactPublishFailed')}</p>
         : task.status === 'failed' && <p className={css.hint}>{failureText} {t('tasks.failed')}</p>}
-      {task.status === 'unknown' && <p className={css.notice}>{t(receipt?.phase === 'accepted'
+      {task.status === 'unknown' && <p className={css.notice}>{t(task.recovery === 'image-result' ? 'tasks.resultReadyToSave' : receipt?.phase === 'accepted'
         ? 'tasks.acceptedUnconfirmed' : receipt?.phase === 'completed' ? 'tasks.resultUnsaved' : 'tasks.unknownNoReceipt')}</p>}
       {task.canQuery === true && <div className={css.actions}><Button variant="outline" size="sm" disabled={querying}
-        onClick={() => { void recoverOriginal() }}>{t(querying ? 'tasks.querying' : 'tasks.queryOriginal')}</Button></div>}
-      {queryFailed && <p className={css.notice} role="alert">{t('tasks.queryFailed')}</p>}
+        onClick={() => { void recoverOriginal() }}>{t(task.recovery === 'image-result'
+          ? querying ? 'tasks.savingOriginal' : 'tasks.saveOriginal' : querying ? 'tasks.querying' : 'tasks.queryOriginal')}</Button></div>}
+      {queryFailed && <p className={css.notice} role="alert">{t(task.recovery === 'image-result' ? 'tasks.saveFailed' : 'tasks.queryFailed')}</p>}
       <details className={css.details} onToggle={(event) => { setExpanded(event.currentTarget.open) }}>
         <summary>{t('details')}</summary>
         <p className={css.caption}>{task.model ?? receipt?.model ?? t('notSpecified')}</p><code className={css.caption}>{task.id}</code>

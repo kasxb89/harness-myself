@@ -24,6 +24,47 @@ afterEach(async () => {
 })
 
 describe('original image query transport', () => {
+  it.each(['submitting', 'completed'] as const)(
+    'accepts owner-projected %s save-only recovery without inventing a provider task id or sending source data', async (phase) => {
+      const original = { id: 'op_saved_result', status: 'unknown' as const, shotIds: ['s1'], completedShots: 0, totalShots: 1,
+        outputs: [], imageReceipt: { route: receipt.route, model: receipt.model, phase,
+          requestId: receipt.requestId, backendFingerprint: receipt.backendFingerprint }, canQuery: true, recovery: 'image-result' as const }
+      const data = project({ kind: 'image', status: 'unknown', tasks: [original] })
+      const wire = payload([data])
+      const fetcher = vi.fn<typeof fetch>(async () => Response.json({ ok: true, payload: wire }, { status: 202 }))
+      vi.stubGlobal('fetch', fetcher)
+      expect(await readCreativeProjects(SESSION, new AbortController().signal)).toEqual({ ok: true, payload: wire })
+      const signal = new AbortController().signal
+      expect(await recoverCreativeImage({ sessionId: SESSION, projectId: data.id, operationId: original.id }, signal))
+        .toEqual({ ok: true, payload: wire })
+      expect(fetcher).toHaveBeenLastCalledWith('/credits/api/creative/image/recover', expect.objectContaining({
+        method: 'POST', signal, body: JSON.stringify({ session_id: SESSION, project_id: data.id, operation_id: original.id }),
+      }))
+      expect(JSON.stringify(fetcher.mock.calls)).not.toMatch(/task_id|prompt|b64_json|imageResultRef|signature=/u)
+      expect(original.imageReceipt).not.toHaveProperty('taskId')
+      expect(fetcher).toHaveBeenCalledTimes(2)
+    },
+  )
+
+  it.each([
+    { recovery: 'invented-mode' },
+    { recovery: 'image-result', imageReceipt: undefined },
+    { recovery: 'image-result', imageReceipt: { ...receipt, phase: 'submitting' } },
+    { recovery: 'image-result', imageReceipt: { ...receipt, taskId: undefined } },
+    { recovery: 'image-result', imageReceipt: undefined, videoReceipt },
+    { recovery: 'image-result', videoReceipt },
+    { recovery: undefined },
+  ])('rejects an unproven or inconsistent no-task-id save action: %j', async (change) => {
+    const noTask = { route: receipt.route, model: receipt.model, phase: 'submitting', requestId: receipt.requestId,
+      backendFingerprint: receipt.backendFingerprint }
+    const original = { ...task, imageReceipt: noTask, canQuery: true, ...change }
+    const fetcher = vi.fn<typeof fetch>(async () => Response.json({ ok: true,
+      payload: { accountId: 'account-a', projects: [{ ...retained, tasks: [original] }] } }))
+    vi.stubGlobal('fetch', fetcher)
+    expect(await readCreativeProjects(SESSION, new AbortController().signal)).toEqual({ ok: false, code: 'invalid' })
+    expect(fetcher).toHaveBeenCalledOnce()
+  })
+
   it.each(['image', 'video'] as const)('retains the exact generating origin on the %s receipt', async (kind) => {
     const origin = { sessionId: SESSION, turn: 3, eventSeq: 21, toolCallId: 'call_origin' }
     const original = kind === 'image' ? { ...task, imageReceipt: { ...receipt, origin } }

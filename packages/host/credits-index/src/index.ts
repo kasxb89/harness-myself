@@ -51,7 +51,7 @@ import { readCustomerSupport } from './customer-support.ts'
 import { ClientToolErrorReporter, type ClientToolErrorAccount } from './client-tool-errors.ts'
 import { parseUsageWindow, readAccountUsage } from './usage.ts'
 import { ChatUsageReader, parseChatUsageQuery } from './chat-usage-reader.ts'
-import { AccountReadScheduler, AccountReadError, type AccountGetRequest } from './account-read.ts'
+import { AccountReadScheduler, AccountReadError, accountRetryAfter, type AccountGetRequest } from './account-read.ts'
 import { chatReceiptProjection, selectChatReceipts } from './chat-usage-projection.ts'
 export type { ChatReceiptState } from './chat-usage-projection.ts'
 import { assistPrompt, parsePromptAssist, promptAssistFailure } from './prompt-assist.ts'
@@ -70,6 +70,7 @@ import { artifactOriginOf, captureMediaOutput, type CapturedMediaOutput } from '
 import { mediaFilename, type MediaFilenameOptions } from './media-filename.ts'
 import { executeImageTask } from './image-task.ts'
 import { ImageInvocationStore } from './image-invocation.ts'
+import { ImageResultStore, type ImageResultRef } from './image-result-store.ts'
 import { ImageJobs } from './image-jobs.ts'
 import { GenerationPerformance } from './generation-performance.ts'
 import { MediaCatalogCache, MediaCatalogReadError } from './media-catalog-cache.ts'
@@ -186,6 +187,8 @@ export interface Config {
   imageDownloadConcurrency?: number
   /** Complete per-image response byte limit. */
   imageDownloadMaxBytes?: number
+  /** Complete encoded image response byte limit before JSON parsing or inline decoding. */
+  imageResponseMaxBytes?: number
   /** Short-lived whole-view cache; settled receipts have their own longer lifetime. */
   chatUsageCacheTtlMs?: number
   /** Maximum simultaneous exact-request ledger reads shared by all chat views. */
@@ -266,6 +269,7 @@ export const Config: z<Config> = z.object({
   imageUploadConcurrency: z.number().step(1).min(1).max(8).default(2),
   imageDownloadConcurrency: z.number().step(1).min(1).max(8).default(3),
   imageDownloadMaxBytes: z.number().step(1).min(1024).max(536_870_912).default(67_108_864),
+  imageResponseMaxBytes: z.number().step(1).min(1024).max(1_073_741_824).default(134_217_728),
   chatUsageCacheTtlMs: z.number().step(1).min(1).max(60_000).default(5000),
   chatUsageConcurrency: z.number().step(1).min(1).max(8).default(4),
   chatUsageSettledTtlMs: z.number().step(1).min(1).max(86_400_000).default(3_600_000),
@@ -861,6 +865,23 @@ export function apply(ctx: Context, config: Config): void {
   /** Last-good status belongs to this exact backend, account and local login, including shared-file changes. */
   const productOwner = (session: StoredSession): string =>
     createHash('sha256').update(JSON.stringify([apiBaseUrl, session.backendBaseUrl, session.account.id, session.token])).digest('hex')
+  /** A renderer's financial action belongs to the login it actually observed, never the Host's replacement login. */
+  const rechargeOwnerFailure = (session: StoredSession, accountId: unknown, owner: unknown):
+    { ok: false; code: 'SESSION_REFRESH_REQUIRED' | 'ACCOUNT_CHANGED'; message: string } | undefined => {
+    if (typeof accountId !== 'string' || accountId === '' || typeof owner !== 'string' || !/^[a-f\d]{64}$/u.test(owner)) {
+      return { ok: false, code: 'SESSION_REFRESH_REQUIRED', message: '请先刷新当前登录账号，再确认充值；尚未创建订单。' }
+    }
+    if (accountId !== session.account.id || owner !== productOwner(session)) {
+      return { ok: false, code: 'ACCOUNT_CHANGED', message: '登录账号已变化，请核对当前账号后再操作；本次未向新账号提交订单。' }
+    }
+    return undefined
+  }
+  /** Recheck a captured login after every awaited financial dependency and before publishing its order. */
+  const rechargeOwnerCurrent = async (session: StoredSession, version: number): Promise<boolean> => {
+    const current = await store.read()
+    return version === identityVersion && current?.token !== undefined && current.token === session.token
+      && current.account.id === session.account.id && productOwner(current) === productOwner(session)
+  }
   ctx.on('llm/stream', (options, next) => {
     const session = store.peek()
     if (session?.token === undefined || options.provider !== resolved.chatProviderRoute) return next()
@@ -1562,6 +1583,7 @@ export function apply(ctx: Context, config: Config): void {
     activity?: CreationTaskObserver,
     naming?: Omit<MediaFilenameOptions, 'extension'>,
     progress?: (stage: string) => void,
+    originalResult?: { operation: CreativeOperation; reference?: ImageResultRef },
   ): Promise<MediaOutcome & { paths?: readonly string[]; mode?: string }> => {
     const outputImageRole = resumeReceipt === undefined ? imageRole ?? 'final' : imageRole
     const imageEpoch = identityVersion
@@ -1582,11 +1604,17 @@ export function apply(ctx: Context, config: Config): void {
       return ownedKey
     }
     const backendFingerprint = createHash('sha256').update(apiBaseUrl).digest('hex')
+    const resultScope = originalResult === undefined ? undefined : { owner: originalResult.operation.owner,
+      operationId: originalResult.operation.operationId, backendFingerprint }
+    let retainedResultRef = originalResult?.reference
     const execute = async (
       model: string, route: string, mode: string, format: string | null,
       submit: (requestSignal: AbortSignal) => Promise<Response>,
     ): Promise<MediaOutcome & { paths?: readonly string[]; mode?: string }> => {
       let output: CapturedMediaOutput | undefined
+      const resumeResult = resumeReceipt !== undefined && resumeReceipt.taskId === undefined
+        && resultScope !== undefined && retainedResultRef !== undefined
+        ? await imageResults.load(resultScope, retainedResultRef) : undefined
       const result = await executeImageTask({
         ...activity === undefined ? {} : { activity },
         model, route, backendFingerprint, signal, submit, ...origin === undefined ? {} : { origin },
@@ -1598,6 +1626,7 @@ export function apply(ctx: Context, config: Config): void {
         queryTimeoutMs: resolved.timeoutMs, pollIntervalMs: resolved.imagePollIntervalMs,
         queryRetryLimit: resolved.imageQueryRetryLimit,
         downloadConcurrency: resolved.imageDownloadConcurrency,
+        imageMaxBytes: resolved.imageDownloadMaxBytes, responseMaxBytes: resolved.imageResponseMaxBytes,
         submitting: async () => {
           submitKey = await imageKey()
           await submitting?.()
@@ -1606,6 +1635,17 @@ export function apply(ctx: Context, config: Config): void {
         beforeSubmit: assertImageCurrent,
         ...received === undefined ? {} : { received },
         ...resumeReceipt === undefined ? {} : { resumeReceipt },
+        ...resumeResult === undefined ? {} : { resumeResult },
+        receivedResult: async (items, receipt) => {
+          if (resultScope === undefined || originalResult === undefined || receipt.taskId !== undefined) return
+          retainedResultRef = await imageResults.retain(resultScope, receipt, items,
+            ref => creative.imageResult(originalResult.operation, ref))
+        },
+        savedResult: async (index, path) => {
+          if (resultScope !== undefined && retainedResultRef !== undefined) {
+            await imageResults.saved(resultScope, retainedResultRef, index, path)
+          }
+        },
         read: async (taskId, requestSignal, canonical) => {
           const ownedKey = await imageKey()
           assertImageCurrent()
@@ -2557,6 +2597,8 @@ export function apply(ctx: Context, config: Config): void {
   }
   const videoWorks = new VideoWorkStore({ directory: join(stateDir, 'video-work-requests'), current: creativeIdentity })
   const imageInvocations = new ImageInvocationStore({ directory: join(stateDir, 'image-invocations'), apiBaseUrl, current: creativeIdentity })
+  const imageResults = new ImageResultStore({ directory: join(stateDir, 'image-results'), current: creativeIdentity,
+    maxImageBytes: resolved.imageDownloadMaxBytes, maxResponseBytes: resolved.imageResponseMaxBytes })
   const creative = new CreativeStore({
     directory: join(stateDir, 'creative-projects'), current: creativeIdentity,
     activity: (event) => { generationCreation.operation(event) },
@@ -2674,7 +2716,8 @@ export function apply(ctx: Context, config: Config): void {
       const outcome = await runImageGeneration(await key(), {}, signal,
         path => creative.saved(operation, path, 'image'), undefined,
         next => creative.receipt(operation, next), receipt, bytes => creative.matchImageOutput(operation, bytes), key, receipt.origin,
-        operation.imageRole, generationCreation.task(operation, 'image'), operation.outputNaming)
+        operation.imageRole, generationCreation.task(operation, 'image'), operation.outputNaming, undefined,
+        { operation, ...retained.imageResultRef === undefined ? {} : { reference: retained.imageResultRef } })
       await creative.finish(operation, { kind: 'image', status: outcome.ok ? 'completed' : imageCreativeStatus(outcome, signal),
         ...outcome.imageReceipt === undefined ? {} : { imageReceipt: outcome.imageReceipt },
         ...outcome.submissionState === 'not-submitted' ? { notSubmitted: true } : {},
@@ -3047,6 +3090,7 @@ export function apply(ctx: Context, config: Config): void {
             ...result?.failure === undefined ? {} : readFailureFields('ACCOUNT', result.failure),
             creditsPerYuan: resolved.creditsPerYuan,
             account,
+            accountOwner: productOwner(session),
             expiresAt: session.expiresAt,
             statePath: store.path,
             // The panels read the `payload` envelope, so the same facts ship
@@ -3057,6 +3101,7 @@ export function apply(ctx: Context, config: Config): void {
               ...result?.failure === undefined ? {} : readFailureFields('ACCOUNT', result.failure),
               creditsPerYuan: resolved.creditsPerYuan,
               account,
+              accountOwner: productOwner(session),
               expiresAt: session.expiresAt,
             },
           })
@@ -3344,7 +3389,7 @@ export function apply(ctx: Context, config: Config): void {
               signal: AbortSignal.any([connection.signal, accountReadLife.signal]),
               account: live.account, upstreamToken: live.upstream?.token })
             if (!response.destroyed) json(response, 200, await current()
-              ? { ...outcome, ...outcome.ok ? { account: { id: live.account.id } } : {} }
+              ? { ...outcome, ...outcome.ok ? { account: { id: live.account.id }, accountOwner: productOwner(live) } : {} }
               : { ok: false, code: 'ACCOUNT_CHANGED' })
           } catch (error: unknown) {
             if (!response.destroyed) json(response, 200, await current()
@@ -3385,7 +3430,7 @@ export function apply(ctx: Context, config: Config): void {
             }
             const converted = convertQuota(self.quota, rate)
             json(response, 200, { ok: true, source: 'newapi-account', signedIn: true,
-              creditsPerYuan: resolved.creditsPerYuan, account: { ...live.account, group: self.group },
+              creditsPerYuan: resolved.creditsPerYuan, account: { ...live.account, group: self.group }, accountOwner: productOwner(live),
               balance: { credits: converted.points, yuan: converted.yuan },
               payload: { balance_points: converted.points, yuan: converted.yuan, source: 'newapi-account' } })
           } catch (error: unknown) {
@@ -3448,6 +3493,7 @@ export function apply(ctx: Context, config: Config): void {
         }
 
         if (route === '/api/recharge/wechat' && method === 'POST') {
+          const version = identityVersion
           const session = await liveSession()
           if (session?.upstream?.token === undefined) { sessionExpired(response); return }
           const body = await readJson(request)
@@ -3455,9 +3501,14 @@ export function apply(ctx: Context, config: Config): void {
           if (typeof amount !== 'number' || !Number.isInteger(amount) || amount < 1 || amount > 100_000) {
             json(response, 200, { ok: false, code: 'INVALID_REQUEST', message: '金额需为 1–100000 的整数（元）' }); return
           }
+          const ownerFailure = rechargeOwnerFailure(session, body.expected_account_id, body.expected_account_owner)
+          if (ownerFailure !== undefined) { json(response, 200, ownerFailure); return }
           let rate: { quotaPerUnit: number; usdExchangeRate: number }
           try { rate = await readQuotaRate() } catch {
             json(response, 200, { ok: false, code: 'BALANCE_UNAVAILABLE', message: '无法读取积分换算参数，尚未创建订单。' }); return
+          }
+          if (!await rechargeOwnerCurrent(session, version)) {
+            json(response, 200, { ok: false, code: 'ACCOUNT_CHANGED', message: '登录账号已变化，尚未创建本次订单。' }); return
           }
           let created: Response
           try {
@@ -3472,9 +3523,15 @@ export function apply(ctx: Context, config: Config): void {
             message?: unknown
             data?: { out_trade_no?: unknown; code_url?: unknown; expires_at?: unknown; quota?: unknown; amount?: unknown }
           } | null
+          if (!await rechargeOwnerCurrent(session, version)) {
+            json(response, 200, { ok: false, code: 'ACCOUNT_CHANGED', message: '登录账号已变化，已发送订单的结果不在当前账号展示，请回原账号核对，勿重复下单。' }); return
+          }
           if (!created.ok || payload?.success !== true) {
+            const retryAfterSeconds = accountRetryAfter(created.headers)
             json(response, 200, { ok: false, code: created.status === 429 ? 'RECHARGE_RATE_LIMITED' : created.status >= 500 || payload === null
               ? 'RECHARGE_OUTCOME_UNKNOWN' : 'RECHARGE_FAILED',
+            httpStatus: created.status,
+            ...retryAfterSeconds === undefined ? {} : { retryAfterSeconds },
             message: typeof payload?.message === 'string' ? payload.message : '下单结果未确认，请先核对订单，勿重复提交。' }); return
           }
           const order = payload.data
@@ -3489,34 +3546,54 @@ export function apply(ctx: Context, config: Config): void {
             json(response, 200, { ok: false, code: 'RECHARGE_QR_UNAVAILABLE', message: '二维码生成失败，请核对已有订单，勿重复下单。',
               payload: { outTradeNo: order.out_trade_no } }); return
           }
-          json(response, 200, { ok: true, payload: { outTradeNo: order.out_trade_no, amount: order.amount,
-            points: convertQuota(order.quota, rate).points, expiresAt: order.expires_at, qrCodeDataUrl } })
+          if (!await rechargeOwnerCurrent(session, version)) {
+            json(response, 200, { ok: false, code: 'ACCOUNT_CHANGED', message: '登录账号已变化，请回原账号核对已有订单，勿重复下单。' }); return
+          }
+          json(response, 200, { ok: true, account: { id: session.account.id }, accountOwner: productOwner(session),
+            payload: { outTradeNo: order.out_trade_no, amount: order.amount,
+              points: convertQuota(order.quota, rate).points, expiresAt: order.expires_at, qrCodeDataUrl } })
           return
         }
 
         if (route === '/api/recharge/wechat/order' && method === 'GET') {
+          const version = identityVersion
           const session = await liveSession()
           if (session?.upstream?.token === undefined) { sessionExpired(response); return }
           const orderNo = url.searchParams.get('outTradeNo')
           if (orderNo === null || orderNo === '') {
             json(response, 200, { ok: false, code: 'INVALID_REQUEST', message: 'outTradeNo 必填' }); return
           }
+          const ownerFailure = rechargeOwnerFailure(session, url.searchParams.get('expected_account_id'), url.searchParams.get('expected_account_owner'))
+          if (ownerFailure !== undefined) { json(response, 200, ownerFailure); return }
           try {
             const [polled, rate] = await Promise.all([
               accountFetch(session, `/api/user/wechat/order?out_trade_no=${encodeURIComponent(orderNo)}`, { headers: { accept: 'application/json' } }),
               readQuotaRate(),
             ])
-            const payload = await polled.json() as { success?: unknown; message?: unknown; data?: Record<string, unknown> } | null
+            const payload = await polled.json().catch(() => null) as {
+              success?: unknown
+              message?: unknown
+              data?: Record<string, unknown>
+            } | null
+            if (!await rechargeOwnerCurrent(session, version)) {
+              json(response, 200, { ok: false, code: 'ACCOUNT_CHANGED', message: '登录账号已变化，请回原账号核对订单状态。' }); return
+            }
             const order = payload?.data
             if (!polled.ok || payload?.success !== true || order?.out_trade_no !== orderNo || typeof order.status !== 'string'
               || typeof order.amount !== 'number' || !Number.isFinite(order.amount) || order.amount <= 0
               || typeof order.quota !== 'number' || !Number.isFinite(order.quota) || order.quota < 0) {
-              json(response, 200, { ok: false, code: 'ORDER_QUERY_FAILED', message: '无法读取订单状态，请稍后重试。' }); return
+              const retryAfterSeconds = accountRetryAfter(polled.headers)
+              json(response, 200, { ok: false, code: polled.status === 429 ? 'ORDER_RATE_LIMITED' : 'ORDER_QUERY_FAILED',
+                httpStatus: polled.status, ...retryAfterSeconds === undefined ? {} : { retryAfterSeconds },
+                message: '无法读取订单状态，请稍后重试。' }); return
             }
-            json(response, 200, { ok: true, payload: { ...order, status: order.status, amount: order.amount,
-              points: convertQuota(order.quota, rate).points } })
+            json(response, 200, { ok: true, account: { id: session.account.id }, accountOwner: productOwner(session),
+              payload: { ...order, status: order.status, amount: order.amount,
+                points: convertQuota(order.quota, rate).points } })
           } catch {
-            json(response, 200, { ok: false, code: 'ORDER_QUERY_FAILED', message: '无法读取订单状态，请稍后重试。' })
+            const changed = !await rechargeOwnerCurrent(session, version)
+            json(response, 200, { ok: false, code: changed ? 'ACCOUNT_CHANGED' : 'ORDER_QUERY_FAILED',
+              message: changed ? '登录账号已变化，请回原账号核对订单状态。' : '无法读取订单状态，请稍后重试。' })
           }
           return
         }
@@ -3698,7 +3775,8 @@ export function apply(ctx: Context, config: Config): void {
                       await binding.key()
                       await creative.dispatched(operation)
                     }, receipt => creative.receipt(operation, receipt), undefined, undefined, () => binding.key(),
-                    undefined, operation.imageRole, generationCreation.task(operation, 'image'), operation.outputNaming))
+                    undefined, operation.imageRole, generationCreation.task(operation, 'image'), operation.outputNaming, undefined,
+                    { operation }))
               } finally { panelImageAdmissions.delete(admission) }
             }
           }
@@ -4470,7 +4548,7 @@ export function apply(ctx: Context, config: Config): void {
   ctx.tools.register(defineTool({
     name: 'generate_image',
     isConcurrencySafe: () => true,
-    description: 'Generate images or edit reference images through the signed-in account relay and save every result into the artifacts directory. Quick completions return paths; longer operations return a background job_id with original plan_id and operation_id. Use job_output at measured intervals for progress and completion, then present the real paths. job_kill stops local waiting; accepted upstream work may continue billing. Never resubmit to wait for a background result. For pending or unknown results, never resubmit this tool: use query_image_task with the original plan_id and operation_id when a task_id was received. Without a task_id, retain the unknown outcome and reconcile the original request before any paid retry. For image-to-image requests, pass the current-chat user attachment or an authorized workspace image in reference_images. Use list_image_models when the requested model or image controls need checking; preserve its exact model ids, size strings, independent resolution tiers and count/reference limits. Ask the user to choose a model only when their request requires that choice.' + MEDIA_FAILURE_GUIDANCE,
+    description: 'Generate images or edit reference images through the signed-in account relay and save every result into the artifacts directory. Quick completions return paths; longer operations return a background job_id with original plan_id and operation_id. Use job_output at measured intervals for progress and completion, then present the real paths. job_kill stops local waiting; accepted upstream work may continue billing. Never resubmit to wait for a background result. For pending or unknown results, never resubmit this tool: use query_image_task with the original plan_id and operation_id to query an accepted task or save a retained synchronous result without generating again. The task listing marks recoverable records with can_query. If neither an original task id nor a retained result is available, keep the unknown outcome and reconcile the original request before any paid retry. For image-to-image requests, pass the current-chat user attachment or an authorized workspace image in reference_images. Use list_image_models when the requested model or image controls need checking; preserve its exact model ids, size strings, independent resolution tiers and count/reference limits. Ask the user to choose a model only when their request requires that choice.' + MEDIA_FAILURE_GUIDANCE,
     parameters: {
       plan_id: { type: 'string', description: 'Explicit update_creation_plan id for this generation. Also provide exactly one of shot_id or asset_id.' },
       shot_id: { type: 'string', description: 'Exact shot id in the explicit plan; never guess a latest project.' },
@@ -4564,7 +4642,8 @@ export function apply(ctx: Context, config: Config): void {
                 await creative.dispatched(creation)
                 submission.started = true
               }, receipt => creative.receipt(creation, receipt), undefined, undefined, () => binding.key(), artifactOriginOf(exec),
-              creation.imageRole, (event) => { observe(event); if (event.type === 'stage') progress(event.stage) }, creation.outputNaming, progress)
+              creation.imageRole, (event) => { observe(event); if (event.type === 'stage') progress(event.stage) }, creation.outputNaming, progress,
+              { operation: creation })
               const paths = [...outcome.paths ?? []]
               await creative.finish(creation, { status: outcome.ok ? 'completed' : imageCreativeStatus(outcome, jobSignal), paths, kind: 'image',
                 ...outcome.imageReceipt === undefined ? {} : { imageReceipt: outcome.imageReceipt },
@@ -4602,7 +4681,7 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.tools.register(defineTool({
     name: 'query_image_task',
-    description: 'Without operation_id, list unresolved image invocations owned by this account and chat (optionally filter by plan_id) to recover original ids after interruption or restart. With both original plan_id and operation_id, query that accepted task and save completed outputs. This only reads retained tasks; it never submits another generation or accepts a caller-supplied remote URL or task id. If the original submission has no task id, retain its unknown outcome and reconcile the original request instead of generating again.' + MEDIA_FAILURE_GUIDANCE,
+    description: 'Without operation_id, list unresolved image invocations owned by this account and chat (optionally filter by plan_id) to recover original ids after interruption or restart. With both original plan_id and operation_id, query that accepted task or continue saving a privately retained synchronous image result, including results without a task id. This only reads original retained work; it never submits another generation or accepts a caller-supplied remote URL or task id. can_query indicates that original-task recovery or original-result saving is available. Without either original task identity or a retained result, keep the unknown outcome and reconcile the original request instead of generating again.' + MEDIA_FAILURE_GUIDANCE,
     parameters: {
       plan_id: { type: 'string', description: 'Original retained creation plan id; required when querying one operation.' },
       operation_id: { type: 'string', description: 'Original generation operation id. Omit to list unresolved receipts without starting queries.' },
@@ -4639,7 +4718,7 @@ export function apply(ctx: Context, config: Config): void {
             })))
           await binding.key()
           if (tasks.length > 100) return { status: 'failed', code: 'CREATIVE_TASK_LIST_TOO_LARGE', message: '未确认任务较多，请提供原计划编号缩小查询范围。' }
-          return { status: 'listed', tasks, message: '已列出本聊天未确认的原任务。仅带任务编号的记录可继续查询；本次未提交生成。' }
+          return { status: 'listed', tasks, message: '已列出本聊天未完成的原任务。can_query 为 true 的记录可查询原任务或继续保存原图；本次未提交生成。' }
         }
         if (args.plan_id === undefined) throw new CreativeError('CREATIVE_INVALID', 400, '查询原任务需要计划编号与原操作编号；请先列出现有回执。')
         const retained = await creative.resumeImage(creativeOwner(exec, binding.identity), args.plan_id, args.operation_id)
@@ -4703,7 +4782,7 @@ export function apply(ctx: Context, config: Config): void {
             })))
           await binding.key()
           if (tasks.length > 100) return { status: 'failed', code: 'CREATIVE_TASK_LIST_TOO_LARGE', message: '未确认任务较多，请提供原计划编号缩小查询范围。' }
-          return { status: 'listed', tasks, message: '已列出本聊天未确认的原任务。仅带任务编号的记录可继续查询；本次未提交生成。' }
+          return { status: 'listed', tasks, message: '已列出本聊天未确认的视频原任务。can_query 为 true 的记录可继续查询原视频任务；本次未提交生成。' }
         }
         if (args.plan_id === undefined) throw new CreativeError('CREATIVE_INVALID', 400, '查询原任务需要计划编号与原操作编号；请先列出现有回执。')
         const retained = await creative.resumeVideoTask(creativeOwner(exec, binding.identity), args.plan_id, args.operation_id)
