@@ -109,6 +109,8 @@ export class ReactLoopAgent implements Agent {
 
   /** Whether this loop instance has appended its initial/resume request anchor. */
   private requestHeaderLogged = false
+  /** Explicit output intent for this instance while the recorded controls remain its temporarily bounded result. */
+  private boundedOutputProposal: { readonly header: EpochHeader; readonly maxTokens: number } | undefined
   /** Surface generation at attachment or the preceding built request. */
   private requestSurfaceGeneration: number
   private readonly runtimeContext: RuntimeContextProjection
@@ -407,7 +409,7 @@ export class ReactLoopAgent implements Agent {
     const renderedPrompt = renderPrompt(assembly)
     let firstAttempt = true
     while (true) {
-      const { config, preparedCall } = await this.prepareRequest(turn, step, signal)
+      const { config, preparedCall, proposedMaxTokens } = await this.prepareRequest(turn, step, signal)
       const currentContext = this.loopCtx.systemPrompt.refreshContext(assembly, assembleContextFor(this, signal))
       const sections = renderContextSections(currentContext)
       const context = this.runtimeContext.project(joinContextSections(sections), sections)
@@ -439,7 +441,8 @@ export class ReactLoopAgent implements Agent {
         this.session.append('user/message', context, { surfaceOp: 'append' })
       }
       firstAttempt = false
-      const request = this.buildRequest(config, preparedCall, assembly.tools, { turn, step }, startsRequestSeries, signal)
+      const request = this.buildRequest(config, preparedCall, assembly.tools, { turn, step },
+        startsRequestSeries, signal, proposedMaxTokens)
       const live = new AssistantStreamAttempt(
         this.session.id,
         ++this.assistantAttemptCounter,
@@ -565,7 +568,7 @@ export class ReactLoopAgent implements Agent {
     turn: number,
     step: number,
     signal: AbortSignal,
-  ): Promise<{ config: LlmCallConfig; preparedCall?: PreparedLlmCall }> {
+  ): Promise<{ config: LlmCallConfig; preparedCall?: PreparedLlmCall; proposedMaxTokens: number | undefined }> {
     const { session } = this
 
     // A loop instance starts from its declared route, restoring only an explicit
@@ -580,10 +583,14 @@ export class ReactLoopAgent implements Agent {
       : undefined
     const reasoningEffort = this.options.reasoningEffort ?? persistedReasoningEffort
     const maxTokens = this.options.maxTokens
+    const retainedOutput = this.boundedOutputProposal
+    const inherited = this.requestHeaderLogged && persistedHeader !== undefined ? requestProposal(persistedHeader) : undefined
+    const proposed = inherited !== undefined && retainedOutput !== undefined && retainedOutput.header === persistedHeader
+      ? { ...inherited, maxTokens: retainedOutput.maxTokens } : inherited
     const seedConfig = deepFreeze(structuredClone(
       this.requestHeaderLogged
         // oxlint-disable-next-line typescript/no-non-null-assertion -- the instance logged the header it now folds
-        ? requestProposal(persistedHeader!)
+        ? proposed!
         : {
           ...route,
           ...reasoningEffort === undefined ? {} : { reasoningEffort },
@@ -609,7 +616,7 @@ export class ReactLoopAgent implements Agent {
       config = proposedConfig
     }
     signal.throwIfAborted()
-    return { config, ...preparedCall === undefined ? {} : { preparedCall } }
+    return { config, proposedMaxTokens: proposedConfig.maxTokens, ...preparedCall === undefined ? {} : { preparedCall } }
   }
 
   /** Log the resolved envelope and derive a frozen request from the admitted surface. */
@@ -620,6 +627,7 @@ export class ReactLoopAgent implements Agent {
     position: { turn: number; step: number },
     startsRequestSeries: boolean,
     signal: AbortSignal,
+    proposedMaxTokens: number | undefined,
   ): GenerateOptions {
     const { session } = this
     const surfaceGeneration = session.surface.contentGeneration
@@ -649,6 +657,9 @@ export class ReactLoopAgent implements Agent {
     } else if (startsSeries) {
       this.session.append('request/header', { header, reason: 'series' })
     }
+    const loggedHeader = session.requestHeader()
+    this.boundedOutputProposal = proposedMaxTokens !== undefined && proposedMaxTokens !== config.maxTokens && loggedHeader !== undefined
+      ? { header: loggedHeader, maxTokens: proposedMaxTokens } : undefined
     if (baseline !== undefined && headerSeq !== undefined) {
       const previousNames = new Set(baseline.tools?.map(tool => tool.name))
       const currentNames = new Set(tools.map(tool => tool.name))

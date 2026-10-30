@@ -12,6 +12,10 @@ export const DEFAULT_CHAT_VIDEO_RESOLUTION = '768P'
 export interface VideoModelCandidate {
   readonly model: string
   readonly resolution?: string
+  readonly quality?: string
+  readonly ratio?: string
+  readonly size?: string
+  readonly mode?: string
   readonly durations: readonly number[]
 }
 
@@ -50,7 +54,6 @@ export function videoModelQuoteSegment(request: Readonly<Record<string, unknown>
     return { id, parameters: { seconds: request.seconds, size: request.size, gen_type: request.gen_type, n: request.n },
       reference_counts: counts }
   }
-  if (request.model !== DEFAULT_CHAT_VIDEO_MODEL) throw quoteUnavailable()
   const metadata = request.metadata !== null && typeof request.metadata === 'object' && !Array.isArray(request.metadata)
     ? request.metadata as Record<string, unknown> : {}
   let images = 0
@@ -69,6 +72,30 @@ export function videoModelQuoteSegment(request: Readonly<Record<string, unknown>
       else if (content.type === 'video_url' || content.type === 'audio_url') throw new VideoQuoteUnsupportedError()
       else if (content.type !== 'text') throw quoteUnavailable()
     }
+  }
+  if (request.model !== DEFAULT_CHAT_VIDEO_MODEL) {
+    // Private references are counted, never copied into the quotation. Video
+    // and audio input usage still requires a provider-specific measured contract.
+    if (metadata.reference_video !== undefined || metadata.reference_audio !== undefined) throw new VideoQuoteUnsupportedError()
+    if (request.images !== undefined) {
+      if (!Array.isArray(request.images) || request.images.some(value => typeof value !== 'string' || value === '')) throw quoteUnavailable()
+      // Generic serializers may repeat named first/last frames as `images`.
+      images += request.images.filter(value => value !== metadata.first_frame_image && value !== metadata.last_frame_image).length
+    }
+    const parameters: Record<string, unknown> = {}
+    for (const field of ['seconds', 'size', 'resolution', 'ratio', 'aspect_ratio', 'quality', 'mode', 'seed', 'generate_audio']) {
+      const value = request[field]
+      if (value === undefined) continue
+      if (typeof value === 'number' ? !Number.isFinite(value)
+        : typeof value !== 'boolean' && (typeof value !== 'string' || value.length === 0 || value.length > 128)) throw quoteUnavailable()
+      parameters[field] = value
+    }
+    if (typeof parameters.seconds !== 'number' || !Number.isSafeInteger(parameters.seconds) || parameters.seconds < 1) throw quoteUnavailable()
+    const fields = Object.fromEntries(['resolution', 'ratio', 'generate_audio', 'seed']
+      .filter(field => metadata[field] !== undefined).map(field => [field, metadata[field]]))
+    if (Object.values(fields).some(value => !['string', 'number', 'boolean'].includes(typeof value))) throw quoteUnavailable()
+    if (Object.keys(fields).length > 0) parameters.metadata = fields
+    return { id, parameters, reference_counts: { images, videos: 0, audios: 0 } }
   }
   const fields = Object.fromEntries(['resolution', 'ratio'].filter(field => metadata[field] !== undefined)
     .map(field => [field, metadata[field]]))
@@ -229,7 +256,9 @@ export function chatVideoResolution(
 }
 
 const quoteSchema = z.object({
-  model: z.string().min(1), resolution: z.string().min(1).optional(), durations: z.array(z.number().int().positive()).min(1),
+  model: z.string().min(1), resolution: z.string().min(1).optional(),
+  quality: z.string().min(1).optional(), mode: z.string().min(1).optional(),
+  ratio: z.string().min(1).optional(), size: z.string().min(1).optional(), durations: z.array(z.number().int().positive()).min(1),
   accountId: z.string().min(1), workCount: z.number().int().positive(),
   estimatedAmount: z.string().max(128).regex(/^(?:0|[1-9]\d*)(?:\.\d+)?$/u), currency: z.enum(['CNY', 'USD']),
   accountBinding: z.string().min(1), specificationKey: z.string().min(1),
@@ -238,6 +267,7 @@ const quoteSchema = z.object({
 
 function sameCandidate(left: VideoModelCandidate, right: VideoModelCandidate): boolean {
   return left.model === right.model && left.resolution === right.resolution
+    && left.quality === right.quality && left.mode === right.mode && left.ratio === right.ratio && left.size === right.size
     && left.durations.length === right.durations.length
     && left.durations.every((duration, index) => duration === right.durations[index])
 }
@@ -344,7 +374,7 @@ export async function chooseChatVideoModel(options: VideoModelChoiceOptions): Pr
       options: [
         ...baselineLabel === undefined ? [] : [{ label: baselineLabel, description: options.baselineRequiresReplan === true
           ? '按 H3 的合法片段估算；现有分镜需要重新规划，选择后本次不提交生成。' : '使用 H3 的已核实规格和本次总价。' }],
-        { label: targetLabel, description: `使用所选型号${target.resolution === undefined ? '' : ` · ${target.resolution}`}。` },
+        { label: targetLabel, description: `使用所选型号${target.resolution === undefined ? '' : ` · ${target.resolution}`}${target.quality === undefined ? '' : ` · ${target.quality}`}${target.mode === undefined ? '' : ` · ${target.mode}`}。` },
         { label: cancelLabel, description: '不提交本次生成。' },
       ], multiSelect: false,
     }], options.signal) } catch (error) {

@@ -19,6 +19,8 @@ import { SessionId, SessionSeq } from '@deepseek-ai/dsh-session/types'
 import { ToolCallId } from '@deepseek-ai/dsh-llm/brand'
 import type { VideoProjectActivity } from '../src/creation-activity.ts'
 import { MAX_MEDIA_FILENAME_BYTES } from '../src/media-filename.ts'
+import { catalogFromPricing, type VideoParams } from '../src/media.ts'
+import { videoSpecificationDurations } from '../src/media-request-specification.ts'
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>()
@@ -1512,7 +1514,7 @@ describe('durable account-bound video projects', () => {
     const manifest = await prepareVideoProject(fixture.options,
       { prompt: 'A synthetic clip', totalDurationSeconds: 30, resolution: '2K' },
       'chat-one', fixture.workspace, fixture.provider, fixture.editor, fixture.signal)
-    expect(model).toHaveBeenCalledWith(undefined, fixture.signal, '2K')
+    expect(model).toHaveBeenCalledWith(undefined, fixture.signal, '2K', undefined, undefined, undefined, undefined)
     expect(manifest.segments.map(segment => segment.durationSeconds)).toEqual([15, 15])
     expect(fixture.submitted).toBe(0)
   })
@@ -2147,5 +2149,106 @@ describe('durable account-bound video projects', () => {
     damaged.segments = [{ index: 1, durationSeconds: 15, prompt: '杯子', request: null, status: 'pending' }]
     await writeFile(path, JSON.stringify(damaged))
     await expect(readVideoProject(fixture.options, manifest.id, 'chat-one', fixture.workspace, fixture.provider.identity)).rejects.toMatchObject({ code: 'INVALID_RECORD' })
+  })
+})
+
+describe('retained complete paid video specifications', () => {
+  it('plans two native mini clips, persists their quality/mode and resumes those exact requests', async () => {
+    const f = await setup([5, 10])
+    const [capability] = catalogFromPricing([{ model_name: 'example-video', kind: 'video', parameters: { oneOf: [
+      { properties: { resolution: { const: '720p' }, quality: { const: 'mini' }, mode: { const: 'std' }, seconds: { const: 5 } } },
+      { properties: { resolution: { const: '720p' }, quality: { const: 'fast' }, mode: { const: 'pro' }, seconds: { const: 10 } } },
+    ] } }], null)
+    if (capability === undefined) throw new Error('Expected published video specifications')
+    const model = vi.spyOn(f.provider, 'model').mockImplementation(async (id, _signal, resolution, quality, mode) => ({
+      id: id ?? capability.id,
+      durations: videoSpecificationDurations(capability.params as VideoParams, {
+        ...resolution === undefined ? {} : { resolution }, ...quality === undefined ? {} : { quality },
+        ...mode === undefined ? {} : { mode },
+      }),
+    }))
+    const build = vi.spyOn(f.provider, 'build').mockImplementation(async (input, id, prompt, durationSeconds) => ({
+      model: id, prompt, durationSeconds,
+      ...input.resolution === undefined ? {} : { resolution: input.resolution },
+      ...input.quality === undefined ? {} : { quality: input.quality }, ...input.mode === undefined ? {} : { mode: input.mode },
+    }))
+    const mini: VideoProjectInput = { model: capability.id, prompt: '完整质量分镜测试', totalDurationSeconds: 10,
+      resolution: '720p', quality: 'mini', mode: 'std' }
+    const prepared = await prepareVideoProject(f.options, mini, 'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    expect(model).toHaveBeenCalledWith(capability.id, f.signal, '720p', 'mini', 'std', undefined, undefined)
+    expect(prepared.segments.map(segment => segment.durationSeconds)).toEqual([5, 5])
+    expect(build.mock.calls.map(call => ({ quality: call[0].quality, mode: call[0].mode, duration: call[3] })))
+      .toEqual([{ quality: 'mini', mode: 'std', duration: 5 }, { quality: 'mini', mode: 'std', duration: 5 }])
+    const restored = await readVideoProject(f.options, prepared.id, 'chat-one', f.workspace, f.provider.identity)
+    expect(restored.input).toMatchObject({ quality: 'mini', mode: 'std', resolution: '720p' })
+    expect(restored.segments.map(segment => segment.request)).toEqual(prepared.segments.map(segment => segment.request))
+    const submit = vi.spyOn(f.provider, 'submit')
+    expect((await runVideoProject(f.options, restored, f.provider, f.editor, f.job, f.signal)).status).toBe('completed')
+    expect(submit.mock.calls.map(call => call[0])).toEqual(restored.segments.map(segment => segment.request))
+    expect(submit.mock.calls).toHaveLength(2)
+    const completed = await readVideoProject(f.options, prepared.id, 'chat-one', f.workspace, f.provider.identity)
+    expect(completed.input).toMatchObject({ quality: 'mini', mode: 'std' })
+    expect((await runVideoProject(f.options, completed, f.provider, f.editor, f.job, f.signal)).status).toBe('completed')
+    expect(submit.mock.calls).toHaveLength(2)
+    const fast = await prepareVideoProject(f.options, { ...mini, quality: 'fast', mode: 'pro' },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    expect(fast.segments.map(segment => segment.durationSeconds)).toEqual([10])
+    expect(fast.segments[0]!.request).toMatchObject({ quality: 'fast', mode: 'pro', durationSeconds: 10 })
+  })
+
+  it('plans and recovers portrait clips using their exact size instead of another aspect ratio duration', async () => {
+    const f = await setup([5, 10])
+    const [capability] = catalogFromPricing([{ model_name: 'example-video', kind: 'video', parameters: { oneOf: [
+      { properties: { resolution: { const: '720p' }, quality: { const: 'std' }, ratio: { const: '9:16' },
+        size: { const: '720x1280' }, seconds: { const: 5 } } },
+      { properties: { resolution: { const: '720p' }, quality: { const: 'std' }, ratio: { const: '16:9' },
+        size: { const: '1280x720' }, seconds: { const: 10 } } },
+      { properties: { resolution: { const: '720p' }, quality: { const: 'std' }, ratio: { const: '9:16' },
+        size: { const: '1080x1920' }, seconds: { const: 10 } } },
+    ] } }], null)
+    if (capability === undefined) throw new Error('Expected complete video specifications')
+    const model = vi.spyOn(f.provider, 'model').mockImplementation(async (id, _signal, resolution, quality, mode, ratio, size) => ({
+      id: id ?? capability.id,
+      durations: videoSpecificationDurations(capability.params as VideoParams, {
+        ...resolution === undefined ? {} : { resolution }, ...quality === undefined ? {} : { quality },
+        ...mode === undefined ? {} : { mode }, ...ratio === undefined ? {} : { ratio }, ...size === undefined ? {} : { size },
+      }),
+    }))
+    vi.spyOn(f.provider, 'build').mockImplementation(async (input, id, prompt, durationSeconds) => ({
+      model: id, prompt, durationSeconds,
+      ...input.resolution === undefined ? {} : { resolution: input.resolution },
+      ...input.quality === undefined ? {} : { quality: input.quality },
+      ...input.ratio === undefined ? {} : { ratio: input.ratio }, ...input.size === undefined ? {} : { size: input.size },
+    }))
+    const input: VideoProjectInput = { model: capability.id, prompt: '竖屏规格测试', totalDurationSeconds: 10,
+      resolution: '720p', quality: 'std', ratio: '9:16', size: '720x1280' }
+    const prepared = await prepareVideoProject(f.options, input, 'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    expect(model).toHaveBeenCalledWith(capability.id, f.signal, '720p', 'std', undefined, '9:16', '720x1280')
+    expect(prepared.segments.map(segment => segment.durationSeconds)).toEqual([5, 5])
+    const restored = await readVideoProject(f.options, prepared.id, 'chat-one', f.workspace, f.provider.identity)
+    expect(restored.input).toMatchObject({ resolution: '720p', quality: 'std', ratio: '9:16', size: '720x1280' })
+    expect(restored.segments.map(segment => segment.request)).toEqual(prepared.segments.map(segment => segment.request))
+    const submit = vi.spyOn(f.provider, 'submit')
+    expect((await runVideoProject(f.options, restored, f.provider, f.editor, f.job, f.signal)).status).toBe('completed')
+    expect(submit.mock.calls.map(call => call[0])).toEqual(restored.segments.map(segment => segment.request))
+    expect(f.submitted).toBe(2)
+    const completed = await readVideoProject(f.options, prepared.id, 'chat-one', f.workspace, f.provider.identity)
+    expect(completed.input).toMatchObject({ ratio: '9:16', size: '720x1280' })
+    expect((await runVideoProject(f.options, completed, f.provider, f.editor, f.job, f.signal)).status).toBe('completed')
+    expect(f.submitted).toBe(2)
+    const largerPortrait = await prepareVideoProject(f.options, { ...input, size: '1080x1920' },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    expect(largerPortrait.segments.map(segment => segment.durationSeconds)).toEqual([10])
+  })
+
+  it('refuses malformed retained quality, mode or size before resuming any generation', async () => {
+    const f = await setup([5])
+    const prepared = await prepareVideoProject(f.options, { prompt: '保留参数', totalDurationSeconds: 5, quality: 'mini', mode: 'std' },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    for (const changed of [{ quality: 42 }, { mode: false }, { size: 42 }]) {
+      await writeFile(join(f.options.stateDirectory, prepared.id, 'manifest.json'), JSON.stringify({ ...prepared, input: { ...prepared.input, ...changed } }))
+      await expect(readVideoProject(f.options, prepared.id, 'chat-one', f.workspace, f.provider.identity)).rejects.toMatchObject({ code: 'INVALID_RECORD' })
+    }
+    expect(f.submitted).toBe(0)
   })
 })

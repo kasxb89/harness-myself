@@ -88,6 +88,70 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); cleanup(); vi.unstubAllGlobals() })
 
 describe('image creation workspace', () => {
+  it('shows the audio tab only when the live media catalog has audio models', async () => {
+    let audio = false
+    const original = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation(async (input, init) => input === '/credits/api/media/catalog'
+      ? json({ ok: true, payload: { image: models, audio: audio ? [{ id: 'tts-model' }] : [] } })
+      : await original(input, init))
+    const { props } = makeProps()
+    const openAudio = vi.fn()
+    render(<ImagePage {...props} openAudio={openAudio} />)
+    await ready()
+    expect(screen.queryByRole('tab', { name: zh['tab.audio'] })).toBeNull()
+    audio = true
+    fireEvent.focus(window)
+    fireEvent.click(await screen.findByRole('tab', { name: zh['tab.audio'] }))
+    expect(openAudio).toHaveBeenCalledOnce()
+    expect(fetchMock.mock.calls.some(([url]) => url === '/credits/api/image/generate')).toBe(false)
+  })
+
+  it('selects complete image specifications without mixing quality and resolution', async () => {
+    const original = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation(async (input, init) => input === '/credits/api/media/catalog'
+      ? json({ ok: true, payload: { image: [{ id: 'ycapi-image', displayName: 'Complete image model',
+        params: { sizes: ['1024x1024'], resolutions: ['1k', '2k'], qualities: ['pro', 'max'],
+          maxCount: 1, maxEdits: 0, backgrounds: [], formats: [], moderations: [], seed: false,
+          specifications: [{ size: '1024x1024', resolution: '1k', quality: 'pro' },
+            { size: '1024x1024', resolution: '2k', quality: 'max' }] } }] } })
+      : await original(input, init))
+    const { props, store } = makeProps()
+    store.actions.patch({ count: 4, resolution: '2k', quality: 'pro' })
+    store.actions.appendReference({ assetId: 'ma_writing', name: 'writing.png', url: 'blob:writing', bytes: 1 })
+    render(<ImagePage {...props} />)
+    await screen.findByRole('option', { name: 'Complete image model' })
+    expect(screen.queryByRole('combobox', { name: zh.quality })).toBeNull()
+    expect(screen.queryByRole('combobox', { name: zh.resolution })).toBeNull()
+    expect(screen.queryByRole('combobox', { name: zh.count })).toBeNull()
+    expect(screen.getByText(zh.generationTextOnly, { exact: false })).toBeTruthy()
+    fireEvent.change(screen.getByRole('combobox', { name: zh.specification }), { target: { value: '1' } })
+    expect(store.getSnapshot()).toMatchObject({ size: '1024x1024', resolution: '2k', quality: 'max', count: 1 })
+    expect(store.getSnapshot().references).toHaveLength(1)
+    fireEvent.change(screen.getByRole('textbox', { name: zh.prompt }), { target: { value: 'A complete specification' } })
+    await waitFor(() => { expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', false) })
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    await screen.findByText(zh.done)
+    expect(requestBody(fetchMock.mock.calls.find(([url]) => url === '/credits/api/image/generate'))).toMatchObject({
+      model: 'ycapi-image', size: '1024x1024', resolution: '2k', quality: 'max', count: 1, references: [],
+    })
+    expect({ options: screen.getAllByRole('option').map(item => item.textContent),
+      submitted: requestBody(fetchMock.mock.calls.find(([url]) => url === '/credits/api/image/generate')) }).toMatchSnapshot()
+  })
+
+  it('pauses image submission when the declared complete specification list is empty', async () => {
+    const original = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation(async (input, init) => input === '/credits/api/media/catalog'
+      ? json({ ok: true, payload: { image: [{ ...models[0], params: { ...models[0]!.params, specifications: [] } }] } })
+      : await original(input, init))
+    const { props } = makeProps()
+    render(<ImagePage {...props} />)
+    await ready()
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', zh.settingsUnavailable)
+    fireEvent.change(screen.getByRole('textbox', { name: zh.prompt }), { target: { value: 'Do not guess another offer' } })
+    expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', true)
+    expect(fetchMock.mock.calls.some(([url]) => url === '/credits/api/image/generate')).toBe(false)
+  })
+
   it.each(['text', 'reference'] as const)('shows every live image ratio independently of its tier and submits both in %s mode', async (mode) => {
     const sizes = ['1:1', '3:2', '2:3', '4:3', '3:4', '5:4', '4:5', '16:9', '9:16', '2:1', '1:2', '21:9', '9:21']
     const original = fetchMock.getMockImplementation()!

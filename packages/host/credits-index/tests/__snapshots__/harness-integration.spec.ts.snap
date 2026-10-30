@@ -408,6 +408,24 @@ exports[`deployed Harness API through the real product Loader > requires login f
             },
             "type": "array",
           },
+          "specifications": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "quality": {
+                  "type": "string",
+                },
+                "resolution": {
+                  "type": "string",
+                },
+                "size": {
+                  "type": "string",
+                },
+              },
+              "type": "object",
+            },
+            "type": "array",
+          },
         },
         "type": "object",
       },

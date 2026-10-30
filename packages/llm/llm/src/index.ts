@@ -802,6 +802,14 @@ export class LlmRuntime extends TypertRemoteService {
         'INVALID_MODEL_MAX_TOKENS',
       )
     }
+    const maxOutputTokens = resolved.maxOutputTokens
+    if (maxOutputTokens !== undefined && (!Number.isSafeInteger(maxOutputTokens) || maxOutputTokens <= 0
+      || context !== undefined && maxOutputTokens > context.contextWindow)) {
+      throw new LlmError(
+        `adapter returned invalid output capacity for provider "${provider}" model "${model}"`,
+        'INVALID_MODEL_MAX_TOKENS',
+      )
+    }
     const info: LlmResolvedModelInfo = {
       provider,
       id: model,
@@ -809,7 +817,9 @@ export class LlmRuntime extends TypertRemoteService {
       ...resolved.description === undefined ? {} : { description: resolved.description },
       ...inputModalities === undefined ? {} : { inputModalities },
       ...context === undefined ? {} : { context: { contextWindow: context.contextWindow } },
-      ...defaultMaxTokens === undefined ? {} : { defaultMaxTokens },
+      ...defaultMaxTokens === undefined ? {} : { defaultMaxTokens: maxOutputTokens === undefined
+        ? defaultMaxTokens : Math.min(defaultMaxTokens, maxOutputTokens) },
+      ...maxOutputTokens === undefined ? {} : { maxOutputTokens },
       ...resolved.systemPromptUpdate === undefined ? {} : { systemPromptUpdate: resolved.systemPromptUpdate },
       ...resolved.toolUpdate === undefined ? {} : { toolUpdate: resolved.toolUpdate },
     }
@@ -861,12 +871,13 @@ export class LlmRuntime extends TypertRemoteService {
   /**
    * Validate a conversation call config against its exact model capability and
    * materialize adapter-configured defaults. Unsupported explicit efforts
-   * reject before provider I/O; no clamping or aliasing is performed. This
-   * standalone query does not bind a later dispatch; use {@link prepareCall}
+   * reject before provider I/O. Output budgets are capped only when the exact
+   * model declares a hard output limit. This standalone query does not bind
+   * a later dispatch; use {@link prepareCall}
    * when logging and streaming must share one adapter registration.
    * @param config - provider/model route and optional request controls.
    * @param signal - optional cancellation for adapter-owned capability lookup.
-   * @returns a detached config only when a default must be materialized.
+   * @returns the input config when unchanged, or a detached config with resolved controls.
    */
   async resolveCallConfig(config: LlmCallConfig, signal?: AbortSignal): Promise<LlmCallConfig> {
     return (await this.resolveCallFor(this.registration(config.provider), config, signal)).config
@@ -889,9 +900,16 @@ export class LlmRuntime extends TypertRemoteService {
     const defaulted = config.maxTokens === undefined && info.defaultMaxTokens !== undefined
       ? { ...config, maxTokens: info.defaultMaxTokens }
       : config
+    let bounded = defaulted
+    if (info.maxOutputTokens !== undefined && defaulted.maxTokens !== undefined) {
+      if (!Number.isSafeInteger(defaulted.maxTokens) || defaulted.maxTokens <= 0) {
+        throw new LlmError('maxTokens must be a positive safe integer', 'INVALID_MAX_TOKENS')
+      }
+      if (defaulted.maxTokens > info.maxOutputTokens) bounded = { ...defaulted, maxTokens: info.maxOutputTokens }
+    }
     const reasoning = info.reasoning
-    const requested = defaulted.reasoningEffort
-    let resolvedConfig = defaulted
+    const requested = bounded.reasoningEffort
+    let resolvedConfig = bounded
     if (reasoning === undefined) {
       if (requested !== undefined) {
         throw new LlmError(
@@ -908,7 +926,7 @@ export class LlmRuntime extends TypertRemoteService {
             'UNSUPPORTED_REASONING_EFFORT',
           )
         }
-        if (requested !== effective) resolvedConfig = { ...defaulted, reasoningEffort: effective }
+        if (requested !== effective) resolvedConfig = { ...bounded, reasoningEffort: effective }
       }
     }
     return {
@@ -1041,6 +1059,7 @@ export class LlmRuntime extends TypertRemoteService {
   private async * adapterStream(
     options: GenerateOptions,
     prepared?: PreparedDispatch,
+    observeConfig?: (config: Readonly<LlmCallConfig>) => void,
   ): AsyncGenerator<StreamChunk> {
     let iterator: AsyncIterator<StreamChunk>
     try {
@@ -1092,6 +1111,13 @@ export class LlmRuntime extends TypertRemoteService {
         }
         if (Object.isFrozen(resolvedOptions)) deepFreeze(projectedOptions)
       }
+      observeConfig?.(deepFreeze({
+        provider: resolvedConfig.provider, model: resolvedConfig.model,
+        ...resolvedConfig.reasoningEffort === undefined ? {} : { reasoningEffort: resolvedConfig.reasoningEffort },
+        ...resolvedConfig.temperature === undefined ? {} : { temperature: resolvedConfig.temperature },
+        ...resolvedConfig.maxTokens === undefined ? {} : { maxTokens: resolvedConfig.maxTokens },
+        ...resolvedConfig.stop === undefined ? {} : { stop: [...resolvedConfig.stop] },
+      }))
       const stream = dispatch(this.forAdapter(projectedOptions, adapter))
       iterator = stream[Symbol.asyncIterator]()
     } catch (error: unknown) {
@@ -1138,21 +1164,25 @@ export class LlmRuntime extends TypertRemoteService {
    * finish chunks; middleware, nested-call, cleanup, and consumer failures
    * remain thrown.
    * @param options - the full request; `options.provider` selects the adapter.
+   * @param observeConfig - Optional synchronous observer of detached, frozen controls after middleware routing
+   * and exact-model limits, before adapter dispatch. It is not called for a middleware-only result.
+   * Observer errors become terminal failures before provider I/O; provider window protection may further lower its wire budget.
    * @returns the chunk stream, possibly wrapped by `llm/stream` listeners.
    */
-  stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
-    return this.streamWithRegistration(options)
+  stream(options: GenerateOptions, observeConfig?: (config: Readonly<LlmCallConfig>) => void): AsyncIterable<StreamChunk> {
+    return this.streamWithRegistration(options, undefined, observeConfig)
   }
 
   private streamWithRegistration(
     options: GenerateOptions,
     prepared?: PreparedDispatch,
+    observeConfig?: (config: Readonly<LlmCallConfig>) => void,
   ): AsyncIterable<StreamChunk> {
     return this.ctx.waterfall(
       this,
       'llm/stream',
       options,
-      () => this.adapterStream(options, prepared),
+      () => this.adapterStream(options, prepared, observeConfig),
     )
   }
 }

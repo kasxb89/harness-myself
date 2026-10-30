@@ -43,6 +43,7 @@ import {
   LlmAdapter,
   LlmError,
   ReasoningEffortId,
+  CONTEXT_WINDOW_EXCEEDED_CODE,
 } from '@deepseek-ai/dsh-llm'
 import type {
   GenerateOptions,
@@ -59,6 +60,9 @@ import type {
 import type { AttachmentStore, ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { idleWatchdog, timeoutOf } from '@deepseek-ai/dsh-timeout'
 import type { ResolvedPiAiProviderProfile } from './config.ts'
+import { MANAGED_RESPONSES_MIN_OUTPUT_TOKENS, MAX_CAPACITY_TOKENS } from './catalog.ts'
+import { clampMaxTokensToContext } from '@earendil-works/pi-ai/api/simple-options'
+import { normalizeContext } from '@earendil-works/pi-ai/utils/transcript'
 import { toPiContext } from './context.ts'
 import { conversationUpdates, createModels, getSupportedThinkingLevels } from './models.ts'
 import { toStreamChunks } from './stream.ts'
@@ -317,16 +321,18 @@ export class PiAiAdapter extends LlmAdapter {
     const profile = this.profileOf(snapshot, provider)
     const resolvedModel = this.modelOf(snapshot, provider, model)
     const defaultLevel = describableReasoningLevel(resolvedModel, profile.reasoning)
-    // Only a cap the deployment configured is a request default; the
-    // catalog's `maxTokens` sizes the model and stops there.
-    const configuredMaxTokens = profile.configuredMaxTokens.get(model)
+    const maxOutputTokens = profile.managedMaxTokens.get(model)
+    // Publish the default the SDK will choose so prepared requests can log it.
+    // Installed-catalog and fallback capabilities alone remain provider-owned defaults.
+    const defaultMaxTokens = profile.configuredMaxTokens.get(model) ?? maxOutputTokens
     return {
       provider,
       id: model,
       name: resolvedModel.name,
       inputModalities: [...resolvedModel.input],
       context: { contextWindow: resolvedModel.contextWindow },
-      ...configuredMaxTokens === undefined ? {} : { defaultMaxTokens: configuredMaxTokens },
+      ...defaultMaxTokens === undefined ? {} : { defaultMaxTokens },
+      ...maxOutputTokens === undefined ? {} : { maxOutputTokens },
       ...reasoningInfo(resolvedModel, defaultLevel),
       ...conversationUpdates(resolvedModel),
     }
@@ -351,6 +357,10 @@ export class PiAiAdapter extends LlmAdapter {
     if (options.stop !== undefined) {
       throw new LlmError('llm-pi-ai does not support GenerateOptions.stop', 'UNSUPPORTED_OPTION')
     }
+    if (options.maxTokens !== undefined && (!Number.isSafeInteger(options.maxTokens)
+      || options.maxTokens < 1 || options.maxTokens > MAX_CAPACITY_TOKENS)) {
+      throw new LlmError(`maxTokens must be a positive integer no greater than ${MAX_CAPACITY_TOKENS}`, 'INVALID_REQUEST')
+    }
     // One capture per stream call, taken before any await: the profile, the
     // model descriptor, and the collection all come from the same immutable
     // snapshot, and the credential freezes with them. A configuration change
@@ -358,6 +368,13 @@ export class PiAiAdapter extends LlmAdapter {
     // the one it started with and the next call picks up the new one.
     const profile = this.profileOf(snapshot, options.provider)
     const model = this.modelOf(snapshot, options.provider, options.model)
+    const maxOutputTokens = profile.managedMaxTokens.get(options.model)
+    const maxTokens = options.maxTokens === undefined ? undefined
+      : Math.min(options.maxTokens, maxOutputTokens ?? options.maxTokens)
+    if (maxOutputTokens !== undefined && model.api === 'openai-responses'
+      && maxTokens !== undefined && maxTokens < MANAGED_RESPONSES_MIN_OUTPUT_TOKENS) {
+      throw new LlmError(`Responses cannot honor an output budget below ${MANAGED_RESPONSES_MIN_OUTPUT_TOKENS} tokens`, 'INVALID_REQUEST')
+    }
     let receipt: GatewayReceipt | undefined
     const gatewayState = { balanceRejected: false, requestTimeout: false }
     const captureReceipt = (headers: Headers): void => { receipt = gatewayReceipt(model.baseUrl, headers) }
@@ -381,6 +398,10 @@ export class PiAiAdapter extends LlmAdapter {
       options.reasoningEffort ?? profile.reasoning,
     )
     const apiKey = await this.config.resolveApiKey(options.provider, profile)
+    if (maxOutputTokens !== undefined && model.api === 'openai-responses' && model.provider === 'openai'
+      && model.baseUrl === 'https://api.openai.com/v1' && (apiKey === undefined || !apiKey.startsWith('sk-'))) {
+      throw new LlmError('Managed Responses output limits require an explicit OpenAI API key; ChatGPT sign-in omits the output limit', 'UNSUPPORTED_OPTION')
+    }
 
     const consumer = new AbortController()
     const upstream = options.signal === undefined
@@ -412,10 +433,14 @@ export class PiAiAdapter extends LlmAdapter {
             maxBytes: profile.requestImageMaxBytes,
           },
         }, onReplayDegrade)
+      if (maxOutputTokens !== undefined && model.api === 'openai-responses'
+        && clampMaxTokensToContext(model, normalizeContext(context), maxTokens ?? model.maxTokens) < MANAGED_RESPONSES_MIN_OUTPUT_TOKENS) {
+        throw new LlmError('The current Responses history leaves less than the minimum output budget', CONTEXT_WINDOW_EXCEEDED_CODE)
+      }
       const events = snapshot.models.streamSimple(model, context, {
         ...profileOptions(profile, reasoning, apiKey),
         ...options.temperature === undefined ? {} : { temperature: options.temperature },
-        ...options.maxTokens === undefined ? {} : { maxTokens: options.maxTokens },
+        ...maxTokens === undefined ? {} : { maxTokens },
         ...options.sessionId === undefined ? {} : { sessionId: String(options.sessionId) },
         signal: watchdog.signal,
         ...requestFetch === undefined ? {} : { fetch: requestFetch },

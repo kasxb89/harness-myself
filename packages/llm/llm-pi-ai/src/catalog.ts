@@ -13,6 +13,8 @@
  */
 
 import { builtinProviders, getAllBuiltinModels, getBuiltinModels } from '@earendil-works/pi-ai/providers/all'
+import { clampMaxTokensToContext } from '@earendil-works/pi-ai/api/simple-options'
+import { normalizeContext } from '@earendil-works/pi-ai/utils/transcript'
 import type { BuiltinProvider } from '@earendil-works/pi-ai/providers/all'
 import type {
   AnthropicMessagesCompat,
@@ -36,6 +38,22 @@ import type {
  * reports spend — so this is the absence of a fact, not a configurable rate.
  */
 const NO_COST: ModelCost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+
+/** Positive signed-32-bit token counts supported by the managed model-limit protocol. */
+export const MAX_CAPACITY_TOKENS = 2_147_483_647
+
+/** Responses wire requests cannot honor an output budget below the SDK's sixteen-token minimum. */
+export const MANAGED_RESPONSES_MIN_OUTPUT_TOKENS = 16
+
+/** Public model limits synchronized for one account and complete backend address. */
+export interface PiAiManagedModelLimits {
+  /** Opaque account/backend scope; only an exact match with the provider's active scope applies. */
+  scope: string
+  /** Account-authorized maximum combined request and response context, before smaller manual restrictions. */
+  contextWindow?: number
+  /** Account-authorized output ceiling, before smaller manual restrictions and SDK context headroom. */
+  maxTokens?: number
+}
 
 /** One request modality a pi-ai model may accept. */
 export type PiAiModality = Model<Api>['input'][number]
@@ -614,6 +632,8 @@ export interface PiAiModelProfile {
    * default on its own.
    */
   maxTokens?: number
+  /** Account/backend-scoped live limits; separate from manual overrides so an increase can take effect. */
+  managedLimits?: PiAiManagedModelLimits
   /**
    * Request modalities this model accepts. Absent — or empty, which describes
    * a model that accepts nothing and so states no answer either — keeps the
@@ -667,6 +687,8 @@ export interface RouteCatalogRequest {
   defaultMaxTokens: number
   /** Modalities for a model neither the entry nor the catalog declares. */
   defaultInput: Model<Api>['input']
+  /** Active account/backend scope for applying synchronized model limits. */
+  managedLimitsScope?: string
 }
 
 /** An expected configuration failure that stored-catalog reads may retain for repair. */
@@ -843,6 +865,8 @@ export interface RouteCatalog {
    * picked, so only an explicit configuration lands here.
    */
   configuredMaxTokens: ReadonlyMap<string, number>
+  /** Effective hard output ceilings from current account/backend declarations, including smaller manual limits. */
+  managedMaxTokens: ReadonlyMap<string, number>
 }
 
 /**
@@ -908,6 +932,7 @@ export function resolveRouteModels(
   assertOfferedCompatFields(provider, 'route', request.compat)
   const seen = new Set<string>()
   const configuredMaxTokens = new Map<string, number>()
+  const managedMaxTokens = new Map<string, number>()
   const resolveEntry = (entry: PiAiModelProfile): Model<Api> => {
     assertOfferedCompatFields(provider, `model "${entry.id}"`, entry.compat)
     if (entry.id.length === 0) invalid(provider, 'has a model with an empty id')
@@ -927,18 +952,29 @@ export function resolveRouteModels(
     // discloses nothing but ids still yields a serviceable route. The fallback
     // is a guess by construction, which is why it is a configurable route field
     // rather than a constant buried here.
-    const contextWindow = entry.contextWindow ?? base?.contextWindow ?? request.defaultContextWindow
-    if (!Number.isInteger(contextWindow) || contextWindow <= 0) {
-      invalid(provider, `model "${entry.id}" contextWindow must be a positive integer`)
+    const managed = request.managedLimitsScope !== undefined && request.managedLimitsScope !== ''
+      && entry.managedLimits?.scope === request.managedLimitsScope ? entry.managedLimits : undefined
+    for (const [field, value] of [
+      ['contextWindow', entry.contextWindow], ['maxTokens', entry.maxTokens],
+      ['managedLimits.contextWindow', managed?.contextWindow], ['managedLimits.maxTokens', managed?.maxTokens],
+    ] as const) {
+      if (value !== undefined && (!Number.isSafeInteger(value) || value < 1 || value > MAX_CAPACITY_TOKENS)) {
+        invalid(provider, `model "${entry.id}" ${field} must be a positive integer no greater than ${MAX_CAPACITY_TOKENS}`)
+      }
     }
-    const maxTokens = entry.maxTokens ?? base?.maxTokens ?? request.defaultMaxTokens
-    if (!Number.isInteger(maxTokens) || maxTokens <= 0) {
-      invalid(provider, `model "${entry.id}" maxTokens must be a positive integer`)
+    const contextWindow = managed?.contextWindow === undefined
+      ? entry.contextWindow ?? base?.contextWindow ?? request.defaultContextWindow
+      : Math.min(managed.contextWindow, entry.contextWindow ?? managed.contextWindow)
+    if (!Number.isSafeInteger(contextWindow) || contextWindow <= 0 || contextWindow > MAX_CAPACITY_TOKENS) {
+      invalid(provider, `model "${entry.id}" contextWindow must be a positive integer no greater than ${MAX_CAPACITY_TOKENS}`)
     }
-    // Only a value the profile named is a deployment choice; the catalog's is
-    // the model's capability and stays out of request defaults.
-    if (entry.maxTokens !== undefined) configuredMaxTokens.set(entry.id, entry.maxTokens)
-    return {
+    const maxTokens = managed?.maxTokens === undefined
+      ? entry.maxTokens ?? base?.maxTokens ?? request.defaultMaxTokens
+      : Math.min(managed.maxTokens, entry.maxTokens ?? managed.maxTokens, contextWindow)
+    if (!Number.isSafeInteger(maxTokens) || maxTokens <= 0 || maxTokens > MAX_CAPACITY_TOKENS) {
+      invalid(provider, `model "${entry.id}" maxTokens must be a positive integer no greater than ${MAX_CAPACITY_TOKENS}`)
+    }
+    const model: Model<Api> = {
       // The installed entry lays the floor, and the fields below override it.
       // Enumerating instead would silently drop every `Model` field this
       // package does not model — reasoning-level spellings, compatibility
@@ -957,6 +993,27 @@ export function resolveRouteModels(
       ...resolveModelReasoning(provider, entry, base),
       ...resolveModelCompat(provider, entry, request.compat, base, api),
     }
+    // The SDK reserves input/context headroom even for an empty request.
+    // Materialize that ceiling once so metadata, defaults and thinking budgets agree.
+    if (managed?.maxTokens !== undefined) {
+      if (model.api !== 'openai-completions' && model.api !== 'openai-responses') {
+        invalid(provider, `model "${entry.id}" managed output limits are not supported by protocol "${model.api}"`)
+      }
+      model.maxTokens = clampMaxTokensToContext(model, normalizeContext({ messages: [] }), model.maxTokens)
+      if (model.api === 'openai-responses') {
+        if (model.compat !== undefined && 'supportsMaxOutputTokens' in model.compat && !model.compat.supportsMaxOutputTokens) {
+          invalid(provider, `model "${entry.id}" managed output limits require Responses max_output_tokens support`)
+        }
+        if (model.maxTokens < MANAGED_RESPONSES_MIN_OUTPUT_TOKENS) {
+          invalid(provider, `model "${entry.id}" managed output limit is below the Responses minimum of ${MANAGED_RESPONSES_MIN_OUTPUT_TOKENS}`)
+        }
+      }
+      managedMaxTokens.set(entry.id, model.maxTokens)
+    }
+    // Only a value the profile named is a deployment choice; the catalog's is
+    // the model's capability and stays out of request defaults.
+    if (entry.maxTokens !== undefined) configuredMaxTokens.set(entry.id, model.maxTokens)
+    return model
   }
   const models: Model<Api>[] = []
   for (const entry of entries) {
@@ -982,5 +1039,5 @@ export function resolveRouteModels(
     invalid(provider, `sets compat "${field}", but no model on the route speaks a protocol that takes it;`
       + ` it exists on ${takers.join(', ')}`)
   }
-  return { models: serviceableModels, configuredMaxTokens, modelErrors }
+  return { models: serviceableModels, configuredMaxTokens, managedMaxTokens, modelErrors }
 }

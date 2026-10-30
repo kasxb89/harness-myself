@@ -46,8 +46,14 @@ export interface VideoProjectInput {
   model?: string
   /** Validated by the selected provider model. */
   resolution?: string
+  /** Exact native size when the complete published specification distinguishes it from resolution. */
+  size?: string
   /** Validated by the selected provider model. */
   ratio?: string
+  /** Exact published quality tier, retained in the native request and its quote. */
+  quality?: string
+  /** Exact published vendor mode, independent from quality. */
+  mode?: string
   /** Requested audio state; fixed native audio is accepted without inventing a provider switch. */
   audio?: boolean
   /** Existing uploaded first/last-frame ids or workspace image paths. */
@@ -95,9 +101,15 @@ export interface VideoProjectProvider {
    * @param model - Explicit user-selected model, or undefined for account selection.
    * @param signal - Cancels model lookup.
    * @param resolution - Explicit output resolution whose duration menu governs planning.
+   * @param quality - Exact quality tier whose native clips are being planned.
+   * @param mode - Optional independent vendor mode.
+   * @param ratio - Requested aspect ratio whose native duration menu governs planning.
+   * @param size - Exact native size when distinct from resolution.
    * @returns Model id and supported whole-second durations.
    */
-  model(model: string | undefined, signal: AbortSignal, resolution?: string): Promise<{
+  model(
+    model: string | undefined, signal: AbortSignal, resolution?: string, quality?: string, mode?: string, ratio?: string, size?: string,
+  ): Promise<{
     id: string
     durations: readonly number[]
     defaultDuration?: number

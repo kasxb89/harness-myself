@@ -347,6 +347,113 @@ describe('request stability across the loop', () => {
     expect(headers.map(event => event.data.header.adapterDefaults)).toEqual([undefined, undefined])
   })
 
+  it.each(['model-switch', 'live-increase'] as const)('restores explicit output intent after a temporary hard cap with %s', async (change) => {
+    let cap = 8192
+    const adapter = new class extends MockAdapter {
+      override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
+        return Promise.resolve({ provider, id: model, name: model, defaultMaxTokens: 4096,
+          maxOutputTokens: model === 'large' ? 131072 : cap })
+      }
+    }([textResponse('small result'), textResponse('larger result')])
+    const ctx = await harness(adapter)
+    const owner = await ctx.agentLoop.create(SessionId(`explicit-clamp-${change}`), {
+      provider: 'mock', model: 'small', maxTokens: 65536,
+    })
+    ctx.on('agent/request', async ({ turn }, next) => {
+      const proposal = await next()
+      return turn === 2 && change === 'model-switch' ? { ...proposal, model: 'large' } : proposal
+    })
+    send(owner, 'first')
+    await waitForIdle(ctx, owner)
+    cap = 131072
+    send(owner, 'second')
+    await waitForIdle(ctx, owner)
+    expect(adapter.requests.map(request => request.maxTokens)).toEqual([8192, 65536])
+    const headers = owner.session.snapshotEvents().filter(event => event.type === 'request/header')
+    expect(headers.map(event => event.data.header.config.maxTokens)).toEqual([8192, 65536])
+    expect(headers.every(event => event.data.header.adapterDefaults?.maxTokens !== true)).toBe(true)
+  })
+
+  it.each(['smaller', 'clear'] as const)('honors middleware that replaces temporarily bounded output intent with %s', async (change) => {
+    let cap = 8192
+    const adapter = new class extends MockAdapter {
+      override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
+        return Promise.resolve({ provider, id: model, name: model, defaultMaxTokens: 4096, maxOutputTokens: cap })
+      }
+    }([textResponse('first'), textResponse('second'), textResponse('third')])
+    const ctx = await harness(adapter)
+    const owner = await ctx.agentLoop.create(SessionId(`explicit-clamp-replace-${change}`), {
+      provider: 'mock', model: 'model', maxTokens: 65536,
+    })
+    ctx.on('agent/request', async ({ turn }, next) => {
+      const proposal = { ...await next() }
+      if (turn === 2) {
+        if (change === 'smaller') proposal.maxTokens = 2048
+        else delete proposal.maxTokens
+      }
+      return proposal
+    })
+    send(owner, 'first')
+    await waitForIdle(ctx, owner)
+    cap = 131072
+    send(owner, 'second')
+    await waitForIdle(ctx, owner)
+    send(owner, 'third')
+    await waitForIdle(ctx, owner)
+    const expected = change === 'smaller' ? 2048 : 4096
+    expect(adapter.requests.map(request => request.maxTokens)).toEqual([8192, expected, expected])
+    const headers = owner.session.snapshotEvents().filter(event => event.type === 'request/header')
+    expect(headers.at(-1)?.data.header.adapterDefaults?.maxTokens).toBe(change === 'clear' ? true : undefined)
+  })
+
+  it.each([65536, 2048, undefined])('seeds a resumed instance from AgentOptions maxTokens=%s after an old clamp', async (maxTokens) => {
+    const adapter = new class extends MockAdapter {
+      override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
+        return Promise.resolve({ provider, id: model, name: model, defaultMaxTokens: 4096, maxOutputTokens: 8192 })
+      }
+    }([textResponse('bounded')])
+    const ctx = await harness(adapter)
+    const owner = await ctx.agentLoop.create(SessionId(`explicit-before-resume-${String(maxTokens)}`), {
+      provider: 'mock', model: 'model', maxTokens: 65536,
+    })
+    send(owner, 'first')
+    await waitForIdle(ctx, owner)
+    const resumedAdapter = new class extends MockAdapter {
+      override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
+        return Promise.resolve({ provider, id: model, name: model, defaultMaxTokens: 4096, maxOutputTokens: 131072 })
+      }
+    }([textResponse('resumed')])
+    const resumedCtx = await harness(resumedAdapter)
+    const resumed = await resumedCtx.agents.create({
+      sessionId: SessionId(`explicit-after-resume-${String(maxTokens)}`), seed: structuredClone(owner.session.snapshotEvents()),
+      agentOptions: { provider: 'mock', model: 'model', ...maxTokens === undefined ? {} : { maxTokens } },
+    })
+    send(resumed.agent, 'resume')
+    await waitForIdle(resumedCtx, resumed.agent)
+    expect(resumedAdapter.requests[0]?.maxTokens).toBe(maxTokens ?? 4096)
+    expect(resumed.agent.session.requestHeader()?.adapterDefaults?.maxTokens).toBe(maxTokens === undefined ? true : undefined)
+  })
+
+  it('continues to re-resolve adapter defaults after a hard output limit changes', async () => {
+    let output = 65536
+    let cap = 8192
+    const adapter = new class extends MockAdapter {
+      override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
+        return Promise.resolve({ provider, id: model, name: model, defaultMaxTokens: output, maxOutputTokens: cap })
+      }
+    }([textResponse('first'), textResponse('second')])
+    const ctx = await harness(adapter)
+    const owner = await ctx.agentLoop.create(SessionId('default-clamp-live'), { provider: 'mock', model: 'model' })
+    send(owner, 'first')
+    await waitForIdle(ctx, owner)
+    output = 32768; cap = 131072
+    send(owner, 'second')
+    await waitForIdle(ctx, owner)
+    expect(adapter.requests.map(request => request.maxTokens)).toEqual([8192, 32768])
+    expect(owner.session.snapshotEvents().filter(event => event.type === 'request/header')
+      .map(event => event.data.header.adapterDefaults?.maxTokens)).toEqual([true, true])
+  })
+
   it('keeps exact-model resolution, request logging, and dispatch on one adapter registration', async () => {
     const ctx = new Context()
     await ctx.plugin(LlmRuntime)

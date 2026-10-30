@@ -246,6 +246,9 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
       shot_durations_seconds: { type: 'array', items: { type: 'number' }, description: 'Exact model-supported whole seconds per clip, in shot_ids or shot_prompts order. Their sum must equal total_duration_seconds. When omitted for an explicit creation plan, use its saved shot durations; do not silently change timeline timing.' },
       model: { type: 'string', description: 'Defaults to MiniMax-H3 at 768P unless the human explicitly requested another resolution. Preserve an explicitly requested model; any non-H3 selection requires a current full-price estimate and a real human model choice before generation. Model arguments never approve that change.' },
       resolution: { type: 'string' }, ratio: { type: 'string' },
+      size: { type: 'string', description: 'Exact native output size from the complete published specification, when distinct from resolution.' },
+      quality: { type: 'string', description: 'Exact quality tier from the complete published specification; used for both quote and submission.' },
+      mode: { type: 'string', description: 'Published vendor mode, only when supported.' },
       audio: { type: 'boolean', description: 'Optional requested audio state from list_video_models, not a capability probe. Sent as a switch only when the chosen model declares one; fixed native audio accepts only its declared state. No switch does not mean silent output; an undeclared audio state remains unknown. Do not blindly send true, and do not promise speech, lip-sync, subtitles or silence without checking the media.' },
       frame_images: { type: 'array', items: { type: 'string' }, description: 'Existing uploaded ma_ first/last frame ids or workspace image paths. For a user-supplied chat attachment outside the workspace, first copy the read-authorized attachment into the workspace with existing file tools and pass its copied path.' },
       reference_images: { type: 'array', items: { type: 'string' }, description: 'Shared uploaded ma_ subject/style image ids or workspace image paths used by every shot. With plan_id, each shot’s saved image materials and character references are added only to that shot; do not duplicate unrelated character references here. For a user-supplied chat attachment outside the workspace, first copy the read-authorized attachment into the workspace with existing file tools and pass its copied path.' },
@@ -294,7 +297,7 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
             throw new VideoProjectError('INVALID_DURATION', '已有创作计划或分镜时须提供明确总时长；尚未提交生成。')
           }
           const original = provider
-          const selected = await original.model(model, signal, resolution)
+          const selected = await original.model(model, signal, resolution, args.quality, args.mode, args.ratio, args.size)
           if (selected.id !== model) {
             throw new VideoProjectError('VIDEO_MODEL_UNAVAILABLE', '所选视频型号与服务返回不一致，尚未提交生成；请重新选择型号。')
           }
@@ -317,11 +320,13 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
               if (original.parallelism === undefined) return 1
               return await original.parallelism(id, preparedSignal)
             },
-            model: async (id, preparedSignal, resolution) => {
+            model: async (id, preparedSignal, resolution, quality, mode, ratio, size) => {
               preparedSignal.throwIfAborted()
               await original.assertCurrent()
-              return id === selected.id && resolution === chatVideoResolution(args.resolution, selected.id,
-                videoIntent.requestedResolution) ? selected : await original.model(id, preparedSignal, resolution)
+              return id === selected.id && quality === args.quality && mode === args.mode && ratio === args.ratio && size === args.size
+                && resolution === chatVideoResolution(args.resolution, selected.id,
+                  videoIntent.requestedResolution) ? selected
+                : await original.model(id, preparedSignal, resolution, quality, mode, ratio, size)
             },
             build: (...values) => original.build(...values), submit: (...values) => original.submit(...values),
             check: (...values) => original.check(...values), download: (...values) => original.download(...values),
@@ -344,7 +349,10 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
           ...args.shot_durations_seconds === undefined ? {} : { shotDurations: args.shot_durations_seconds },
           model,
           ...resolution === undefined ? {} : { resolution },
+          ...args.size === undefined ? {} : { size: args.size },
           ...args.ratio === undefined ? {} : { ratio: args.ratio },
+          ...args.quality === undefined ? {} : { quality: args.quality },
+          ...args.mode === undefined ? {} : { mode: args.mode },
           ...args.audio === undefined ? {} : { audio: args.audio },
           ...args.frame_images === undefined ? {} : { frameImages: await images(args.frame_images) },
           ...args.reference_images === undefined ? {} : { referenceImages: await images(args.reference_images) },

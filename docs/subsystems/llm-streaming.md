@@ -566,8 +566,10 @@ interface LlmModelReasoningInfo {
 interface LlmResolvedModelInfo extends LlmModelInfo {
   /** Provider-owned context capacity when known. */
   context?: LlmModelContext
-  /** Adapter-configured per-request output cap materialized when callers omit one. */
+  /** Adapter-configured output-token default used only when the caller omits one; maxOutputTokens is the separate hard ceiling. */
   defaultMaxTokens?: number
+  /** Current provider-declared output ceiling; every request, including an explicit override, must remain within it. */
+  maxOutputTokens?: number
   /** Adapter-owned selectable reasoning levels when exposed. */
   reasoning?: LlmModelReasoningInfo
   /** Declared mid-conversation system prompt handling; absent means only a leading system message is read. */
@@ -802,7 +804,9 @@ The [wire reference](../deepseek-llm-api-wire-extensions.md) defines the exact r
 
 ## Service and provider contracts
 
-`LlmAdapter` is the provider contract: subclass, implement `stream()`, and register one adapter instance with `ctx.llm.registerAdapter(providers, adapter)`. `GenerateOptions.provider` selects the registered adapter; `GenerateOptions.model` is passed to that adapter and need not be registered at lifecycle start. Duplicate provider routes fail atomically. Optional `providerRetryPolicy()` is captured per route with normal defaults, while `providerInfo()` and asynchronous `listModels()` feed `LlmRuntime.listProviders()` / `listModels()` with detached selector metadata. That catalog is advisory rather than a request whitelist: the adapter remains authoritative and may accept unlisted model ids. One asynchronous `resolveModel()` query returns exact model identity plus optional correctness-sensitive context capacity, an adapter-configured `defaultMaxTokens`, and ordered model-owned reasoning ids with an optional deployment default; absent fields mean unavailable metadata or provider-owned behavior, not invalid catalog membership. The resolver receives optional cancellation and must settle promptly after abort. `LlmRuntime.resolveModelInfo()` validates and detaches the aggregate. At the final adapter boundary, `resolveCallConfig()` materializes the output default only when `maxTokens` is absent and validates and materializes reasoning, so direct calls cannot bypass either configured behavior; direct dispatch captures one registration before awaiting that resolution. The agent loop instead uses `prepareCall()` to keep the same registration across model resolution, durable header logging, and dispatch, retain detached context metadata from that exact lookup, and report which config fields the adapter defaulted. Adapter lookup happens at the terminal continuation of the `llm/stream` waterfall, so a listener may short-circuit the call or route a mutable one-shot request before lookup. AgentLoop observes a request attempt once the outer waterfall returns a stream handle; that limited boundary does not prove a lazy terminal adapter was constructed or began provider I/O. The `block-start` / `block-end` `index` correlation and the assembler together mean an adapter only has to emit well-formed chunks — block reassembly is not each adapter's problem. [architecture.md](../architecture.md#turn-flow) shows where `ctx.llm.stream()` and the `llm/stream` waterfall sit in one turn.
+`LlmAdapter` is the provider contract: subclass, implement `stream()`, and register one adapter instance with `ctx.llm.registerAdapter(providers, adapter)`. `GenerateOptions.provider` selects the registered adapter; `GenerateOptions.model` is passed to that adapter and need not be registered at lifecycle start. Duplicate provider routes fail atomically. Optional `providerRetryPolicy()` is captured per route with normal defaults, while `providerInfo()` and asynchronous `listModels()` feed `LlmRuntime.listProviders()` / `listModels()` with detached selector metadata. That catalog is advisory rather than a request whitelist: the adapter remains authoritative and may accept unlisted model ids. One asynchronous `resolveModel()` query returns exact model identity plus optional correctness-sensitive context capacity, an adapter-configured `defaultMaxTokens`, a separate optional hard ceiling `maxOutputTokens`, and ordered model-owned reasoning ids with an optional deployment default; absent fields mean unavailable metadata or provider-owned behavior, not invalid catalog membership. The resolver receives optional cancellation and must settle promptly after abort. `LlmRuntime.resolveModelInfo()` validates and detaches the aggregate. At the final adapter boundary, `resolveCallConfig()` materializes the output default only when `maxTokens` is absent, caps explicit or defaulted output budgets to any declared hard ceiling, and validates and materializes reasoning, so direct calls cannot bypass either configured behavior; direct dispatch captures one registration before awaiting that resolution. The agent loop instead uses `prepareCall()` to keep the same registration across model resolution, durable header logging, and dispatch, retain detached context metadata from that exact lookup, and report which config fields the adapter defaulted. Adapter lookup happens at the terminal continuation of the `llm/stream` waterfall, so a listener may short-circuit the call or route a mutable one-shot request before lookup. AgentLoop observes a request attempt once the outer waterfall returns a stream handle; that limited boundary does not prove a lazy terminal adapter was constructed or began provider I/O. The `block-start` / `block-end` `index` correlation and the assembler together mean an adapter only has to emit well-formed chunks — block reassembly is not each adapter's problem. [architecture.md](../architecture.md#turn-flow) shows where `ctx.llm.stream()` and the `llm/stream` waterfall sit in one turn.
+
+Auxiliary calls can use `stream(options, observeConfig)` to record detached, frozen controls after middleware routing and model-limit resolution, before adapter dispatch. The synchronous observer is skipped for a middleware-only result; an observer failure ends the stream before provider I/O. The recorded output budget is a ceiling: an adapter may further reduce the wire budget to leave room for the actual input history.
 
 ```ts type-equiv
 /** One model call whose config and adapter registration were resolved together. */
@@ -959,9 +963,11 @@ refreshModels(baseURL: string): Promise<readonly string[]>
 /**
  * Resolve the current signed-in account after checking its backend and expiry.
  * @param baseURL - Exact model API root being requested.
- * @returns The current relay key, or undefined when no live session authorizes the request.
+ * @param expectedModelLimitsScope - Optional account/backend binding captured with prepared model limits;
+ * a changed account must refuse it, while ordinary same-account credential renewal keeps it valid.
+ * @returns The current relay key, or undefined when no live session authorizes this exact request scope.
  */
-resolveRelayKey(baseURL: string): Promise<string | undefined>
+resolveRelayKey(baseURL: string, expectedModelLimitsScope?: string): Promise<string | undefined>
 ```
 
 Source: [`packages/llm/llm-pi-ai/src/harness-account.ts`](../../packages/llm/llm-pi-ai/src/harness-account.ts)
@@ -1088,12 +1094,13 @@ async resolveModelInfo( provider: string, model: string, signal?: AbortSignal, )
 /**
  * Validate a conversation call config against its exact model capability and
  * materialize adapter-configured defaults. Unsupported explicit efforts
- * reject before provider I/O; no clamping or aliasing is performed. This
- * standalone query does not bind a later dispatch; use {@link prepareCall}
+ * reject before provider I/O. Output budgets are capped only when the exact
+ * model declares a hard output limit. This standalone query does not bind
+ * a later dispatch; use {@link prepareCall}
  * when logging and streaming must share one adapter registration.
  * @param config - provider/model route and optional request controls.
  * @param signal - optional cancellation for adapter-owned capability lookup.
- * @returns a detached config only when a default must be materialized.
+ * @returns the input config when unchanged, or a detached config with resolved controls.
  */
 async resolveCallConfig(config: LlmCallConfig, signal?: AbortSignal): Promise<LlmCallConfig>
 
@@ -1120,9 +1127,12 @@ async prepareCall( config: LlmCallConfig, signal?: AbortSignal, configure?: Conf
  * finish chunks; middleware, nested-call, cleanup, and consumer failures
  * remain thrown.
  * @param options - the full request; `options.provider` selects the adapter.
+ * @param observeConfig - Optional synchronous observer of detached, frozen controls after middleware routing
+ * and exact-model limits, before adapter dispatch. It is not called for a middleware-only result.
+ * Observer errors become terminal failures before provider I/O; provider window protection may further lower its wire budget.
  * @returns the chunk stream, possibly wrapped by `llm/stream` listeners.
  */
-stream(options: GenerateOptions): AsyncIterable<StreamChunk>
+stream(options: GenerateOptions, observeConfig?: (config: Readonly<LlmCallConfig>) => void): AsyncIterable<StreamChunk>
 ```
 
 Types: [FileAttachmentRef](attachment.md)

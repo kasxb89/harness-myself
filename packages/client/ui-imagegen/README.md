@@ -23,6 +23,10 @@ Create images from an editable prompt and model-supported references, with publi
 <a id="use-this-package"></a>
 ## Use this package
 
+The Audio tab appears only when the account media catalog includes audio models; selecting it opens the audio workspace without generating media.
+
+When a model publishes complete specifications, one selection sets quality, resolution and size together. Only a listed combination can be submitted; an empty list pauses generation. Models without complete specifications retain their existing parameter controls. Image materials remain available for AI writing, and text-only generation sends no image references.
+
 API calls, template media and artifact previews retain the application public mount through [`appPath`](../ui-primitives/README.md#use-this-package); local blob previews retain their original URLs.
 
 Use the image mode of the desktop AI creation workspace to prepare a prompt, choose the model's accepted inputs, and explicitly submit generation.
@@ -43,7 +47,7 @@ Original-task admission blocks only paid generation. Users may prepare models, r
 
 Saved works come from the artifact index across current and retained output roots, including custom directories and Windows paths. Manage their directory, names and recoverable deletion in the [Artifacts page](../ui-artifacts/README.md); the creation grid does not rewrite previous chat links.
 
-Select a workspace chat before generating. The request captures that exact chat and signed-in account, retaining a project with the prompt, material references, task and saved images. AI creation contains only the image and video tabs; open [Creation](../ui-creative/README.md) in the chat's right sidebar to manage its timeline, characters, materials and tasks. Artifact previews and reference reuse retain the originating workspace coordinate, including when different mounts contain the same path.
+Select a workspace chat before generating. The request captures that exact chat and signed-in account, retaining a project with the prompt, material references, task and saved images. AI creation includes image and video tabs and shows Audio when the account media catalog publishes an audio model; open [Creation](../ui-creative/README.md) in the chat's right sidebar to manage its timeline, characters, materials and tasks. Artifact previews and reference reuse retain the originating workspace coordinate, including when different mounts contain the same path.
 
 Generation and model-catalog failures use the observed failure code or HTTP status to distinguish network interruptions, timeouts, invalid inputs, permissions, explicit busy responses, service failures, model-service failures and local storage failures. Unknown failures leave the cause unconfirmed. Fetch transport failures ask users to check their network, VPN or proxy; arbitrary exceptions do not imply a network or server cause. Sign-in and product-credit failures keep their recovery actions; each rejected image keeps its filename and a safe format, size or conversion reason. The Host's three local reference validation/upload failures also retain their safe filename, reason and confirmation that generation was not submitted. Other response messages and codes are not rendered. Unknown or accepted generation outcomes retain original-task recovery, and failed paid requests are not automatically resubmitted.
 

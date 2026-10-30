@@ -11,6 +11,7 @@
     { "path": "../store" },
     { "path": "../ui-conversation/tsconfig.client.json" },
     { "path": "../ui-credits" },
+    { "path": "../ui-layout" },
     { "path": "../ui-primitives" },
     { "path": "../ui-renderer" },
     { "path": "../ui-session" },

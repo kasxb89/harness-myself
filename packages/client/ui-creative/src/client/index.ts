@@ -8,12 +8,14 @@ import type {} from '@deepseek-ai/dsh-client-ui-credits/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-session/client'
+import type { MainPanelId } from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import { IconSparkleRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import { readCreativeProjects } from './api.ts'
 import { CreativeController } from './controller.ts'
 import { CreativeBody, CreativeTitle, type CreativeInjected } from './CreativeBody.tsx'
+import { AudioPage, type AudioPageInjected } from './AudioPage.tsx'
 import { CreativeDraftNotice, type CreativeDraftNoticeInjected } from './CreativeDraftNotice.tsx'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { en, NS, zh, type CreativeKey } from './locales.ts'
@@ -25,7 +27,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   }
 }
 
-/** Read cadence only; this plugin never issues paid generation requests. */
+/** Read cadence for project supervision; speech generation requires explicit price confirmation. */
 export interface Config {
   /** Visible active-project refresh interval in milliseconds. */
   pollIntervalMs?: number
@@ -35,7 +37,7 @@ export interface Config {
 export const Config: z<Config> = z.object({ pollIntervalMs: z.natural().min(500).max(60_000).default(2000) })
 
 /** Client dependencies provide the ordinary tab, account and Session lifetimes. */
-export const inject = ['slots', 'locale', 'sidebarRightTabs', 'sidebarRight', 'uiSession', 'sessions', 'creditsSession']
+export const inject = ['slots', 'locale', 'sidebarRightTabs', 'sidebarRight', 'uiSession', 'sessions', 'creditsSession', 'layout']
 
 const ID = '@deepseek-ai/dsh-client-ui-creative'
 const KIND = 'creative'
@@ -57,6 +59,14 @@ export function apply(ctx: Context, config: Config): void {
   })
   ctx.effect(() => () => controller.dispose(), 'ui-creative: supervised reads')
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-creative: dictionaries')
+  ctx.effect(() => ctx.slots.inject('main', () => ctx.slots.register({
+    name: 'main', key: 'audiogen' as MainPanelId, locale: NS,
+    inject: (): AudioPageInjected => ({
+      hooks: { creationSession: ctx.uiSession.adapter.current, creditsSession: ctx.creditsSession },
+      openImage: () => { ctx.layout.selectPanel('imagegen' as MainPanelId) },
+      openVideo: () => { ctx.layout.selectPanel('videogen' as MainPanelId) },
+    }),
+  }, AudioPage)), 'ui-creative: audio creation panel')
   ctx.effect(() => ctx.sidebarRightTabs.register({
     id: ID, kind: KIND, priority: 'builtin', title: () => t('title'),
     guide: [{ id: KIND, order: 25, title: () => t('title'), description: () => t('guide.description'), icon: IconSparkleRegular }],

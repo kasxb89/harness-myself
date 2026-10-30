@@ -39,6 +39,7 @@ import { SessionRefresh, type StoredAccount, type StoredSession } from './sessio
 import { sessionTransportFailure, type SessionFailure } from './session-failure.ts'
 import { PhoneAuthState, type PhoneDeliveryStatus } from './phone-auth-state.ts'
 import { parseClientModelConfigStatus, parseClientModelPresentationStatus } from './client-model-config.ts'
+import { mergeProductModelLimits, productModelLimitsScope, readProductModelLimits, type ProductModelLimits } from './model-limits.ts'
 import { orderProductModels, preferredProductModel, productModelDisplaySignature,
   type ProductModelDisplayMap, type ProductModelPresentation } from './model-presentation.ts'
 import { ClientActivitySessions, parseClientActivity, readClientActivityAcknowledgement, type ClientActivitySample } from './client-activity.ts'
@@ -51,6 +52,7 @@ import { readCustomerSupport } from './customer-support.ts'
 import { ClientToolErrorReporter, type ClientToolErrorAccount } from './client-tool-errors.ts'
 import { parseUsageWindow, readAccountUsage } from './usage.ts'
 import { ChatUsageReader, parseChatUsageQuery } from './chat-usage-reader.ts'
+import { isAccountBalanceRejectionText } from './account-balance.ts'
 import { AccountReadScheduler, AccountReadError, accountRetryAfter, type AccountGetRequest } from './account-read.ts'
 import { chatReceiptProjection, selectChatReceipts } from './chat-usage-projection.ts'
 export type { ChatReceiptState } from './chat-usage-projection.ts'
@@ -68,6 +70,10 @@ import { videoSubmission, type VideoReferenceSnapshot } from './video-submission
 import { bindVideoAccount } from './video-project-account.ts'
 import { artifactOriginOf, captureMediaOutput, type CapturedMediaOutput } from './media-output.ts'
 import { mediaFilename, type MediaFilenameOptions } from './media-filename.ts'
+import { resolveMediaSpecification, videoSpecificationDurations } from './media-request-specification.ts'
+import { parseAudioQuote, readAudioTask, submitAudio, validateAudioRequest,
+  type AudioExecutionResult, type AudioQuote, type AudioRequest, type AudioReceipt } from './audio-generation.ts'
+import { AudioSubmissions, type AudioOwner, type AudioSubmission } from './audio-submissions.ts'
 import { executeImageTask } from './image-task.ts'
 import { ImageInvocationStore } from './image-invocation.ts'
 import { ImageResultStore, type ImageResultRef } from './image-result-store.ts'
@@ -93,6 +99,7 @@ import { readChatImageReference } from './chat-image-references.ts'
 import { normalizeReferenceImage, ReferenceImageError, REFERENCE_IMAGE_INPUT_LIMIT } from './reference-image.ts'
 import {
   catalogFromPricing,
+  declaredModelKind,
   mediaModelIds,
   pickModel,
   videoDurations,
@@ -1026,37 +1033,45 @@ export function apply(ctx: Context, config: Config): void {
     chat: string[]
     image: string[]
     video: string[]
+    audio: string[]
+    limits: ReadonlyMap<string, ProductModelLimits>
   }> => {
     const owned = await accountKey(session)
-    if ('reason' in owned) return { ok: false, ...noCredential(owned.reason), chat: [], image: [], video: [] }
+    if ('reason' in owned) return { ok: false, ...noCredential(owned.reason), chat: [], image: [], video: [], audio: [], limits: new Map() }
     const key = owned.key
     try {
       const response = await apiFetch('/v1/models', {
         headers: { authorization: `Bearer ${key}`, accept: 'application/json' },
         signal: signal ?? AbortSignal.timeout(resolved.timeoutMs),
       })
-      if (!response.ok) return { ok: false, code: `HTTP_${String(response.status)}`, message: 'new-api 模型列表不可用', chat: [], image: [], video: [] }
+      if (!response.ok) return { ok: false, code: `HTTP_${String(response.status)}`, message: 'new-api 模型列表不可用', chat: [], image: [], video: [], audio: [], limits: new Map() }
       const payload: unknown = await response.json()
       const data = payload !== null && typeof payload === 'object' && 'data' in payload ? payload.data : undefined
-      if (!Array.isArray(data)) return { ok: false, code: 'MODEL_CATALOG_INVALID', message: '模型列表格式无效', chat: [], image: [], video: [] }
+      if (!Array.isArray(data)) return { ok: false, code: 'MODEL_CATALOG_INVALID', message: '模型列表格式无效', chat: [], image: [], video: [], audio: [], limits: new Map() }
       const chat: string[] = []
       const image: string[] = []
       const video: string[] = []
+      const audio: string[] = []
+      const limits = new Map<string, ProductModelLimits>()
       for (const entry of Array.isArray(data) ? data : []) {
         if (entry === null || typeof entry !== 'object') continue
         const record = entry as Record<string, unknown>
         const id = typeof record.id === 'string' ? record.id : null
         if (id === null) continue
-        const endpoints = Array.isArray(record.supported_endpoint_types)
-          ? record.supported_endpoint_types.filter((value): value is string => typeof value === 'string')
-          : []
-        if (endpoints.includes('image') || endpoints.includes('image-generation')) image.push(id)
-        else if (endpoints.some(endpoint => ['video', 'video-generation', 'openai-video'].includes(endpoint))) video.push(id)
-        else chat.push(id)
+        const declared = declaredModelKind(record)
+        if (declared === null) continue
+        const kind = declared ?? (/(?:^|[-_.])tts(?:$|[-_.])/iu.test(id) ? 'audio' : 'chat')
+        if (kind === 'image') image.push(id)
+        else if (kind === 'video') video.push(id)
+        else if (kind === 'audio') audio.push(id)
+        else {
+          chat.push(id)
+          limits.set(id, readProductModelLimits(record))
+        }
       }
-      return { ok: true, chat, image, video }
+      return { ok: true, chat, image, video, audio, limits }
     } catch (error) {
-      return { ok: false, code: 'TRANSPORT', message: error instanceof Error ? error.message : String(error), chat: [], image: [], video: [] }
+      return { ok: false, code: 'TRANSPORT', message: error instanceof Error ? error.message : String(error), chat: [], image: [], video: [], audio: [], limits: new Map() }
     }
   }
 
@@ -1381,7 +1396,7 @@ export function apply(ctx: Context, config: Config): void {
     body: Record<string, unknown>,
   ): Promise<{ ok: true; request: Record<string, unknown> } | { ok: false; code: string; message: string }> => {
     const params = model.params as VideoParams
-    for (const field of ['resolution', 'ratio', 'mode']) {
+    for (const field of ['size', 'resolution', 'ratio', 'mode', 'quality']) {
       if (body[field] !== undefined && (typeof body[field] !== 'string' || body[field].trim() === '')) {
         return { ok: false, code: 'INVALID_REQUEST', message: `${field} 需要是有效的模型参数；尚未提交生成` }
       }
@@ -1392,26 +1407,46 @@ export function apply(ctx: Context, config: Config): void {
     if (body.audio !== undefined && typeof body.audio !== 'boolean') {
       return { ok: false, code: 'INVALID_REQUEST', message: '音频开关需要是布尔值；尚未提交生成' }
     }
+    if (body.durationSeconds !== undefined && (typeof body.durationSeconds !== 'number' || !Number.isSafeInteger(body.durationSeconds))) {
+      return { ok: false, code: 'DURATION_NOT_SUPPORTED', message: '视频时长需要是合法整数；尚未提交生成。' }
+    }
     const prompt = readString(body, 'prompt') ?? ''
-    const resolution = readString(body, 'resolution')
+    if (body.size !== undefined && params.specifications === undefined) {
+      return { ok: false, code: 'PARAMETER_NOT_SUPPORTED', message: '请使用当前模型目录公布的分辨率；尚未提交生成。' }
+    }
+    const complete = resolveMediaSpecification(params.specifications, {
+      ...typeof body.size !== 'string' ? {} : { size: body.size },
+      ...typeof body.resolution !== 'string' ? {} : { resolution: body.resolution },
+      ...typeof body.durationSeconds !== 'number' ? {} : { seconds: body.durationSeconds },
+      ...typeof body.ratio !== 'string' ? {} : { ratio: body.ratio },
+      ...typeof body.quality !== 'string' ? {} : { quality: body.quality },
+      ...typeof body.mode !== 'string' ? {} : { mode: body.mode },
+    })
+    if (!complete.ok) return complete
+    const specification = complete.specification
+    const resolution = specification.resolution ?? null
     if (resolution !== null && !params.resolutions.includes(resolution)) {
       return { ok: false, code: 'RESOLUTION_NOT_SUPPORTED', message: `${model.id} 的分辨率可选：${params.resolutions.join('、')}` }
     }
     const durations = videoDurations(params, resolution)
-    const duration = body.durationSeconds === undefined
+    const duration = specification.seconds === undefined
       ? params.defaultDuration !== undefined && durations.includes(params.defaultDuration) ? params.defaultDuration : durations[0]
-      : body.durationSeconds
+      : specification.seconds
     if (typeof duration !== 'number' || !Number.isSafeInteger(duration) || !durations.includes(duration)) {
       return { ok: false, code: 'DURATION_NOT_SUPPORTED', message: `${model.id} 当前分辨率的时长可选：${durations.join('、') || '无'} 秒，请选择受支持的分辨率和时长` }
     }
-    let ratio = readString(body, 'ratio')
+    let ratio = specification.ratio ?? null
     if (ratio !== null && model.source !== 'plugin:blackrxai-video' && !params.ratios.includes(ratio)) {
       return { ok: false, code: 'RATIO_NOT_SUPPORTED', message: `${model.id} 的画面比例可选：${params.ratios.join('、')}` }
     }
     // Quality tiers, seed and the audio switch exist only where the vendor's
     // own route reads them; everything else is refused by name rather than
     // silently dropped on the floor.
-    const mode = readString(body, 'mode')
+    const mode = specification.mode ?? null
+    const quality = specification.quality ?? null
+    if (quality !== null && !(params.qualities ?? []).includes(quality)) {
+      return { ok: false, code: 'QUALITY_NOT_SUPPORTED', message: `${model.id} 的质量档位可选：${(params.qualities ?? []).join('、') || '无'}；尚未提交生成。` }
+    }
     if (mode !== null && model.source !== 'plugin:blackrxai-video' && !params.modes.includes(mode)) {
       return { ok: false, code: 'MODE_NOT_SUPPORTED', message: params.modes.length === 0
         ? `${model.id} 不支持档位参数，请移除 mode 后重试；尚未提交生成`
@@ -1547,9 +1582,11 @@ export function apply(ctx: Context, config: Config): void {
       // Both spellings travel: plugins read `duration` or `seconds`, and
       // `resolution` or `size`, and each ignores the one it does not know.
       seconds: duration,
-      ...resolution === null ? {} : { resolution, size: resolution },
+      ...resolution === null ? {} : { resolution, size: specification.size ?? resolution },
+      ...specification.size === undefined || resolution !== null ? {} : { size: specification.size },
       ...ratio === null ? {} : { ratio, aspect_ratio: ratio },
       ...mode === null || params.modes.length === 0 ? {} : { mode },
+      ...quality === null ? {} : { quality },
       ...seed === null ? {} : { seed },
       ...audio === null || !params.audioToggle ? {} : { generate_audio: audio },
       ...Object.keys(metadata).length === 0 ? {} : { metadata },
@@ -1722,32 +1759,44 @@ export function apply(ctx: Context, config: Config): void {
         if (unsupported !== undefined) return { ok: false, submissionState: 'not-submitted', model, code: 'PARAMETER_NOT_SUPPORTED',
           message: `${model} 不支持 ${unsupported}，请使用目录公布的 size 比例和 resolution 档位；尚未提交生成` }
       }
-      const resolution = typeof body.resolution === 'string' ? body.resolution.toLowerCase() : undefined
+      for (const field of ['size', 'resolution', 'quality', 'background', 'format', 'moderation']) {
+        if (body[field] !== undefined && (typeof body[field] !== 'string' || body[field].trim() === '')) {
+          return { ok: false, submissionState: 'not-submitted', code: field === 'size' ? 'SIZE_NOT_SUPPORTED' : field === 'resolution' ? 'RESOLUTION_NOT_SUPPORTED' : 'INVALID_REQUEST',
+            message: `${field} 需要是有效的模型参数；尚未提交生成。` }
+        }
+      }
+      const complete = resolveMediaSpecification(params.specifications, {
+        ...typeof body.size !== 'string' ? {} : { size: body.size },
+        ...typeof body.resolution !== 'string' ? {} : { resolution: internalImage ? body.resolution.toLowerCase() : body.resolution },
+        ...typeof body.quality !== 'string' ? {} : { quality: body.quality },
+      })
+      if (!complete.ok) return { ...complete, submissionState: 'not-submitted' }
+      const resolution = complete.specification.resolution
       if (body.resolution !== undefined && (resolution === undefined || !(params.resolutions ?? []).includes(resolution))) {
         return { ok: false, submissionState: 'not-submitted', code: 'RESOLUTION_NOT_SUPPORTED',
           message: `${model} 的分辨率可选：${(params.resolutions ?? []).join('、') || '无'}` }
       }
-      const size = readString(body, 'size')
+      const size = complete.specification.size ?? null
       if (internalImage && body.size !== undefined && (size === null || !params.sizes.includes(size))
         || size !== null && params.sizes.length > 0 && !params.sizes.includes(size)) {
         return { ok: false, submissionState: 'not-submitted', code: 'SIZE_NOT_SUPPORTED', message: `${model} 不支持 ${size}，可选：${params.sizes.join('、')}` }
       }
-      const quality = internalImage ? null : readString(body, 'quality')
-      if (quality !== null && params.qualities.length > 0 && !params.qualities.includes(quality)) {
+      const quality = internalImage ? null : complete.specification.quality ?? null
+      if (quality !== null && !params.qualities.includes(quality)) {
         return { ok: false, submissionState: 'not-submitted', code: 'QUALITY_NOT_SUPPORTED', message: `${model} 不支持 ${quality}，可选：${params.qualities.join('、')}` }
       }
       // Every optional field below is "not sent" unless the caller chose one, so
       // a model that has never heard of `background` is never asked about it.
       const background = internalImage ? null : readString(body, 'background')
-      if (background !== null && params.backgrounds.length > 0 && !params.backgrounds.includes(background)) {
+      if (background !== null && !params.backgrounds.includes(background)) {
         return { ok: false, submissionState: 'not-submitted', code: 'BACKGROUND_NOT_SUPPORTED', message: `${model} 不支持背景 ${background}，可选：${params.backgrounds.join('、')}` }
       }
       const format = internalImage ? null : readString(body, 'format')
-      if (format !== null && params.formats.length > 0 && !params.formats.includes(format)) {
+      if (format !== null && !params.formats.includes(format)) {
         return { ok: false, submissionState: 'not-submitted', code: 'FORMAT_NOT_SUPPORTED', message: `${model} 不支持输出格式 ${format}，可选：${params.formats.join('、')}` }
       }
       const moderation = internalImage ? null : readString(body, 'moderation')
-      if (moderation !== null && params.moderations.length > 0 && !params.moderations.includes(moderation)) {
+      if (moderation !== null && !params.moderations.includes(moderation)) {
         return { ok: false, submissionState: 'not-submitted', code: 'MODERATION_NOT_SUPPORTED', message: `${model} 不支持审核级别 ${moderation}，可选：${params.moderations.join('、')}` }
       }
       const rawCompression = !internalImage && typeof body.compression === 'number' ? Math.round(body.compression) : null
@@ -1767,7 +1816,7 @@ export function apply(ctx: Context, config: Config): void {
         return { ok: false, submissionState: 'not-submitted', code: 'COUNT_NOT_SUPPORTED', message: `${model} 一次可出 1–${String(params.maxCount)} 张` }
       }
       const references = referenceIds(body.references)
-      if (internalImage && body.references !== undefined && (!Array.isArray(body.references)
+      if (body.references !== undefined && (!Array.isArray(body.references)
         || references.length !== body.references.length)) {
         return { ok: false, submissionState: 'not-submitted', model, code: 'IMAGE_REFERENCE_INVALID', message: '参考图编号无效，请重新添加图片；尚未提交生成。' }
       }
@@ -1926,6 +1975,34 @@ export function apply(ctx: Context, config: Config): void {
       releaseImage?.()
     }
   }
+
+  const audioSubmissions = new AudioSubmissions(join(stateDir, 'audio'))
+  const audioQuotes = new Map<string, {
+    owner: AudioOwner
+    request: AudioRequest
+    quote: AudioQuote
+    epoch: number
+    expiresMonotonic: number
+  }>()
+  const audioRunning = new Set<string>()
+  const audioOperations = new Set<Promise<void>>()
+  const audioLife = new AbortController()
+  ctx.effect(() => async () => {
+    audioLife.abort()
+    await Promise.allSettled([...audioOperations])
+  }, 'credits-index: speech execution lifetime')
+  /** UI-safe original attempt coordinates; private text and authentication stay in the Host. */
+  const audioView = (record: AudioSubmission): Record<string, unknown> => ({
+    submissionId: record.id, model: record.request.model, status: record.status,
+    ...record.taskId === undefined ? {} : { taskId: record.taskId },
+    ...record.code === undefined ? {} : { code: record.code },
+    ...record.filename === undefined ? {} : { filename: record.filename },
+    ...record.status !== 'completed' ? {} : { mediaUrl:
+      `/credits/api/audio/content?session_id=${encodeURIComponent(record.owner.sessionId)}&submission_id=${record.id}` },
+  })
+  const speechParameters = (body: Record<string, unknown>): Record<string, unknown> => Object.fromEntries(
+    ['model', 'input', 'voice', 'response_format', 'speed', 'instructions'].filter(field => body[field] !== undefined)
+      .map(field => [field, body[field]]))
 
   /** Cookie rotation and logout declare the backend origin, without its deployment path. */
   const declaredOrigin = { origin: new URL(apiBaseUrl).origin }
@@ -2351,11 +2428,12 @@ export function apply(ctx: Context, config: Config): void {
     }))
   }
 
-  /** Preserve model overrides while filling missing inputs; empty live catalogs mask old configuration. */
+  /** Preserve manual settings and refresh owner-bound capacities; report a changed provider configuration. */
   const writeProductModels = async (
     ids: readonly string[] | undefined,
     defaults: ReadonlyMap<string, readonly string[]> = new Map(),
-  ): Promise<void> => {
+    managed?: { scope: string; limits?: ReadonlyMap<string, ProductModelLimits> },
+  ): Promise<boolean> => {
     const settings = ctx.get('settings') as {
       describe?: (options?: { redactSecrets?: boolean }) => { ns: string; value?: unknown; revision?: number }[]
       replace?: (ns: string, section: object, expectedRevision?: number) => Promise<void>
@@ -2383,20 +2461,26 @@ export function apply(ctx: Context, config: Config): void {
     const models = ids === undefined || ids.length === 0 ? configured : ids.map((id) => {
       const currentModel = previous.get(id) ?? { id }
       const input = defaults.get(id)
-      return Array.isArray(currentModel.input) && currentModel.input.length > 0 || input === undefined
+      const withInputs = Array.isArray(currentModel.input) && currentModel.input.length > 0 || input === undefined
         ? currentModel
         : { ...currentModel, input: [...input] }
+      const limits = managed === undefined ? undefined
+        : mergeProductModelLimits(currentModel.managedLimits, managed.limits?.get(id), managed.scope)
+      return limits === undefined ? withInputs : { ...withInputs, managedLimits: limits }
     })
     // Strict provider writes require a nonempty custom catalog. The live
     // account's first discovered IDs carry the route migration in that case.
-    if (models.length === 0) return
+    if (models.length === 0) return false
     const sameModels = JSON.stringify(configured) === JSON.stringify(models)
     if (sameModels && current.baseURL === baseURL && current.api === api && current.apiKeyEnv === resolved.relayTokenEnv
-      && JSON.stringify(current.compat) === JSON.stringify(compat)) return
+      && current.managedLimitsScope === managed?.scope && JSON.stringify(current.compat) === JSON.stringify(compat)) return false
+    const { managedLimitsScope: _previousManagedScope, ...currentRoute } = current
     await settings.replace(resolved.chatSettingsNamespace, { providers: { ...providers,
-      [route]: { ...current, baseURL, api, apiKeyEnv: resolved.relayTokenEnv, compat,
+      [route]: { ...currentRoute, baseURL, api, apiKeyEnv: resolved.relayTokenEnv, compat,
+        ...managed === undefined ? {} : { managedLimitsScope: managed.scope },
         ...ids === undefined || ids.length === 0 ? {} : { models } },
     } }, descriptor?.revision)
+    return true
   }
 
   /** A fresh catalog is committed only for the login that requested it. */
@@ -2417,6 +2501,7 @@ export function apply(ctx: Context, config: Config): void {
       throw new Error('请先登录产品账号，再读取可用模型。')
     }
     const ownerToken = session.token
+    const limitsScope = productModelLimitsScope(apiBaseUrl, session.account.id)
     if (modelCatalogFlight?.version === version && modelCatalogFlight.token === ownerToken) return await modelCatalogFlight.promise
     invalidateModelCatalog()
     const controller = new AbortController()
@@ -2429,7 +2514,7 @@ export function apply(ctx: Context, config: Config): void {
           || !Number.isFinite(Date.parse(current.expiresAt))
           || Date.parse(current.expiresAt) <= Date.now()) throw new Error('登录账号已变化，请重新读取模型列表。')
       }
-      await mutateSession(async () => { await currentIdentity(); await writeProductModels(undefined) })
+      await mutateSession(async () => { await currentIdentity(); await writeProductModels(undefined, undefined, { scope: limitsScope }) })
       const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(resolved.timeoutMs)])
       const discovered = await readNewApiModels(session, signal)
       if (!discovered.ok) throw new Error('无法读取当前账号模型列表，请稍后重试。')
@@ -2439,6 +2524,11 @@ export function apply(ctx: Context, config: Config): void {
       const body = await pricing.json() as { data?: unknown }
       if (!Array.isArray(body.data)) throw new Error('模型类型列表无效，请稍后重试。')
       for (const id of mediaModelIds(body.data)) media.add(id)
+      const pricingRows: readonly unknown[] = body.data
+      for (const row of pricingRows) {
+        if (row !== null && typeof row === 'object' && 'model_name' in row
+          && typeof row.model_name === 'string' && declaredModelKind(row) === null) media.add(row.model_name)
+      }
       const chatIds = discovered.chat.filter(id => id !== '' && !media.has(id))
       const defaults = await installedModelInputs(chatIds, signal)
       const owner = productOwner(session)
@@ -2474,7 +2564,7 @@ export function apply(ctx: Context, config: Config): void {
         const previousDefault = ctx.get('agentDefaultModel')?.currentSelection()
         const previousIds = productCatalog?.version === version && productCatalog.owner === owner ? productCatalog.ids : undefined
         const previousDisplay = productModelDisplaySignature(previousIds ?? [], productModelDisplays)
-        await writeProductModels(ids, defaults)
+        const changed = await writeProductModels(ids, defaults, { scope: limitsScope, limits: discovered.limits })
         await currentIdentity()
         productModelPresentation = presentation
         productModelDisplays = displays
@@ -2485,7 +2575,7 @@ export function apply(ctx: Context, config: Config): void {
         if (previousDefault?.provider !== nextDefault?.provider || previousDefault?.model !== nextDefault?.model
           || previousDefault?.reasoningEffort !== nextDefault?.reasoningEffort || previousIds === undefined
           || previousIds.length !== ids.length || previousIds.some((id, index) => id !== ids[index])
-          || previousDisplay !== productModelDisplaySignature(ids, displays)) {
+          || previousDisplay !== productModelDisplaySignature(ids, displays) || changed) {
           notifyModelCatalogChanged()
         }
       })
@@ -2504,15 +2594,19 @@ export function apply(ctx: Context, config: Config): void {
   const harnessAccount: HarnessAccount = {
     provider: resolved.chatProviderRoute,
     refreshModels: baseURL => refreshProductModels(baseURL),
-    async resolveRelayKey(baseURL) {
+    async resolveRelayKey(baseURL, expectedModelLimitsScope) {
       if (baseURL.replace(/\/+$/u, '') !== apiUrl(apiBaseUrl, '/v1')) return undefined
       await sessionMutations
       const version = identityVersion
       const session = await liveSession()
       await sessionMutations
       const current = await store.read()
-      if (version !== identityVersion || session?.token === undefined || current?.token !== session.token) return undefined
-      const key = session.relay?.key
+      const bound = current?.backendBaseUrl ?? (isLoopbackOrigin(apiBaseUrl) ? apiBaseUrl : undefined)
+      if (version !== identityVersion || session?.token === undefined || current?.token !== session.token
+        || current.account.id !== session.account.id || bound !== apiBaseUrl) return undefined
+      if (expectedModelLimitsScope !== undefined
+        && expectedModelLimitsScope !== productModelLimitsScope(apiBaseUrl, current.account.id)) return undefined
+      const key = current.relay?.key
       return typeof key === 'string' && /^sk-\S+$/u.test(key) ? key : undefined
     },
   }
@@ -3718,9 +3812,227 @@ export function apply(ctx: Context, config: Config): void {
               group: catalog.group,
               image: catalog.models.filter(model => model.kind === 'image'),
               video: catalog.models.filter(model => model.kind === 'video'),
+              audio: catalog.models.filter(model => model.kind === 'audio'),
             },
           })
           return
+        }
+
+        if (route.startsWith('/api/audio/')) {
+          const binding = await bindCurrentVideoAccount()
+          if (route === '/api/audio/models' && method === 'GET') {
+            const [live, catalog] = await Promise.all([readNewApiModels(), readMediaCatalog()])
+            await binding.key()
+            const allowed = new Set([...live.chat, ...live.image, ...live.video, ...live.audio])
+            json(response, 200, { ok: live.ok && catalog.ok, accountId: binding.identity.accountId,
+              models: catalog.models.filter(model => model.kind === 'audio' && allowed.has(model.id)) })
+            return
+          }
+          const body = method === 'GET' || method === 'HEAD'
+            ? Object.fromEntries(url.searchParams.entries()) : await readJson(request)
+          // Audio has no legacy unassociated generation contract.
+          const owner = creativePanelOwner(ctx, request, route === '/api/audio/content'
+            ? { ...body, account_id: binding.identity.accountId } : body, binding.identity)
+          if (owner === undefined) throw new CreativeError('CREATIVE_SESSION_INVALID', 400, '请先选择工作区聊天，再开始创作。')
+          const audioOwner: AudioOwner = { accountId: owner.accountId, sessionId: owner.sessionId,
+            backend: createHash('sha256').update(apiBaseUrl).digest('hex') }
+          const epoch = identityVersion
+          const assertAudioCurrent = async (): Promise<string> => {
+            if (epoch !== identityVersion) throw new CreativeError('CREATIVE_ACCOUNT_CHANGED', 409, '登录状态已变化，请查询原任务；不会重新生成。')
+            return binding.key()
+          }
+          if (route === '/api/audio/submissions' && method === 'GET') {
+            const submissions = await audioSubmissions.list(audioOwner)
+            await assertAudioCurrent()
+            json(response, 200, { ok: true, submissions: submissions.map(audioView) })
+            return
+          }
+          const submissionId = typeof body.submission_id === 'string' ? body.submission_id : ''
+          if (route === '/api/audio/content' && (method === 'GET' || method === 'HEAD')) {
+            const original = await audioSubmissions.read(audioOwner, submissionId)
+            const bytes = original === undefined ? undefined : await audioSubmissions.content(original)
+            await assertAudioCurrent()
+            if (original === undefined || bytes === undefined) { json(response, 404, { ok: false, code: 'AUDIO_RESULT_UNAVAILABLE' }); return }
+            response.writeHead(200, { 'content-type': original.request.response_format === 'wav' ? 'audio/wav' : 'audio/mpeg',
+              'content-length': String(bytes.length), 'cache-control': 'private, no-store', 'x-content-type-options': 'nosniff',
+              'content-disposition': `inline; filename="audio.${original.request.response_format}"; filename*=UTF-8''${encodeURIComponent(original.filename ?? 'audio')}` })
+            response.end(method === 'HEAD' ? undefined : bytes)
+            return
+          }
+          const signal = AbortSignal.any([audioLife.signal, AbortSignal.timeout(Math.max(resolved.timeoutMs, 90_000))])
+          if (route === '/api/audio/quote' && method === 'POST' || route === '/api/audio/generate' && method === 'POST') {
+            if (route === '/api/audio/generate') {
+              const original = await audioSubmissions.read(audioOwner, submissionId)
+              if (original !== undefined) {
+                if (JSON.stringify(speechParameters(body)) !== JSON.stringify(speechParameters({ ...original.request }))) {
+                  json(response, 409, { ok: false, code: 'AUDIO_INVALID_REQUEST' }); return
+                }
+                await assertAudioCurrent()
+                json(response, 200, { ok: true, ...audioView(original) }); return
+              }
+            }
+            const [live, catalog] = await Promise.all([readNewApiModels(undefined, signal), readMediaCatalog(signal)])
+            const capability = catalog.models.find(model => model.kind === 'audio' && model.id === body.model
+              && [...live.chat, ...live.image, ...live.video, ...live.audio].includes(model.id))
+            const parameters = capability === undefined ? null : validateAudioRequest(speechParameters(body), capability)
+            if (!live.ok || !catalog.ok || parameters === null) { json(response, 200, { ok: false, code: 'AUDIO_NOT_READY' }); return }
+            if (route === '/api/audio/quote') {
+              let quote: AudioQuote | null = null
+              let quoteFailure = 'AUDIO_RESPONSE_INVALID'
+              try {
+                const key = await assertAudioCurrent()
+                const result = await apiFetch('/v1/audio/quote', { method: 'POST', headers: {
+                  authorization: `Bearer ${key}`, 'content-type': 'application/json', accept: 'application/json',
+                }, body: JSON.stringify(parameters), signal: AbortSignal.any([signal, AbortSignal.timeout(resolved.timeoutMs)]) })
+                const bytes = await readMediaBytes(result, 65_536, signal)
+                if (result.ok) quote = parseAudioQuote(JSON.parse(bytes.toString('utf8')), { request: parameters })
+                else quoteFailure = isAccountBalanceRejectionText(bytes.toString('utf8'), result.status) ? 'AUDIO_BALANCE'
+                  : result.status === 429 ? 'AUDIO_BUSY'
+                    : result.status === 408 || result.status === 504 ? 'AUDIO_TIMEOUT'
+                      : result.status === 401 || result.status === 403 ? 'AUDIO_PERMISSION'
+                        : result.status === 400 || result.status === 422 ? 'AUDIO_INVALID_REQUEST'
+                          : result.status === 404 || result.status === 501 ? 'AUDIO_NOT_READY' : 'AUDIO_UNAVAILABLE'
+              } catch (error) {
+                quoteFailure = error instanceof Error && error.name === 'TimeoutError' ? 'AUDIO_TIMEOUT'
+                  : audioLife.signal.aborted ? 'AUDIO_CANCELLED'
+                    : error instanceof TypeError ? 'AUDIO_NETWORK' : 'AUDIO_RESPONSE_INVALID'
+              }
+              await assertAudioCurrent()
+              if (quote === null) { json(response, 200, { ok: false, code: quoteFailure }); return }
+              for (const [id, previous] of audioQuotes) {
+                if (previous.quote.expires_at * 1000 <= Date.now() || previous.epoch !== epoch
+                  || performance.now() >= previous.expiresMonotonic) audioQuotes.delete(id)
+              }
+              if (audioQuotes.size >= 128) { json(response, 429, { ok: false, code: 'AUDIO_BUSY' }); return }
+              audioQuotes.set(quote.quote_id, { owner: audioOwner, request: parameters, quote, epoch,
+                expiresMonotonic: performance.now() + Math.min(60_000, quote.expires_at * 1000 - Date.now()) })
+              json(response, 200, { ok: true, quote }); return
+            }
+            const quoted = typeof body.quote_id === 'string' ? audioQuotes.get(body.quote_id) : undefined
+            if (quoted === undefined || quoted.epoch !== epoch || performance.now() >= quoted.expiresMonotonic
+              || quoted.owner.accountId !== audioOwner.accountId
+              || quoted.owner.sessionId !== audioOwner.sessionId || quoted.owner.backend !== audioOwner.backend
+              || parseAudioQuote(quoted.quote, { request: parameters, accountBinding: quoted.quote.account_binding }) === null) {
+              json(response, 200, { ok: false, code: 'AUDIO_QUOTE_EXPIRED' }); return
+            }
+            const output = await captureMediaOutput(ctx.get('artifactStorage'), join(stateDir, 'media'), signal)
+            await assertAudioCurrent()
+            if (audioQuotes.get(quoted.quote.quote_id) !== quoted || performance.now() >= quoted.expiresMonotonic
+              || parseAudioQuote(quoted.quote, { request: parameters }) === null) {
+              json(response, 200, { ok: false, code: 'AUDIO_QUOTE_EXPIRED' }); return
+            }
+            audioQuotes.delete(quoted.quote.quote_id)
+            const claimed = await audioSubmissions.claim(audioOwner, submissionId, parameters, quoted.quote)
+            if (!claimed.created) { await assertAudioCurrent(); json(response, 200, { ok: true, ...audioView(claimed.record) }); return }
+            const key = `${audioOwner.backend}:${audioOwner.accountId}:${submissionId}`
+            audioRunning.add(key)
+            let finishAudio = (): void => {}
+            const audioDone = new Promise<void>((resolve) => { finishAudio = resolve })
+            audioOperations.add(audioDone)
+            let retained = claimed.record
+            const dispatch = { sent: false, notSentCode: 'AUDIO_PERMISSION' }
+            try {
+              const outcome = await submitAudio({ request: parameters, signal, maxBytes: 32 * 1024 * 1024,
+                received: async (receipt: AudioReceipt) => {
+                  retained = { ...retained, ...receipt.taskId === undefined ? {} : { taskId: receipt.taskId, status: 'pending' },
+                    ...retained.requestId !== undefined || receipt.requestId === undefined ? {} : { requestId: receipt.requestId } }
+                  await audioSubmissions.update(retained)
+                },
+                submit: async (value, requestSignal) => {
+                  const relayKey = await assertAudioCurrent()
+                  if (performance.now() >= quoted.expiresMonotonic || parseAudioQuote(quoted.quote, { request: parameters }) === null) {
+                    dispatch.notSentCode = 'AUDIO_QUOTE_EXPIRED'
+                    throw new Error('Audio quote expired before submission')
+                  }
+                  dispatch.sent = true
+                  return apiFetch('/v1/audio/speech', { method: 'POST', headers: { authorization: `Bearer ${relayKey}`,
+                    'content-type': 'application/json', 'idempotency-key': submissionId, 'x-oneapi-request-id': submissionId,
+                  }, body: JSON.stringify({ ...value, quote_id: quoted.quote.quote_id }), signal: requestSignal })
+                } })
+              if (outcome.status === 'completed') {
+                const filename = mediaFilename({ role: 'audio', prompt: parameters.input, extension: outcome.format })
+                retained = await audioSubmissions.save({ ...retained, code: 'AUDIO_SAVE_PENDING' }, outcome.bytes, filename)
+                try {
+                  await assertAudioCurrent(); await output.write(filename, outcome.bytes)
+                  delete retained.code
+                  await audioSubmissions.update(retained)
+                }
+                catch { retained = { ...retained, code: 'AUDIO_SAVE_PENDING' }; await audioSubmissions.update(retained) }
+              } else {
+                retained = { ...retained, status: dispatch.sent ? outcome.status : 'failed',
+                  ...!dispatch.sent ? { code: dispatch.notSentCode } : outcome.code === undefined ? {} : { code: outcome.code },
+                  ...'taskId' in outcome ? { taskId: outcome.taskId } : {},
+                  ...'requestId' in outcome ? { requestId: outcome.requestId } : {} }
+                await audioSubmissions.update(retained)
+              }
+              await assertAudioCurrent()
+              json(response, 200, { ok: true, ...audioView(retained) })
+            } finally { audioRunning.delete(key); finishAudio(); audioOperations.delete(audioDone) }
+            return
+          }
+          if (route === '/api/audio/recover' && method === 'POST') {
+            let original = await audioSubmissions.read(audioOwner, submissionId)
+            if (original === undefined) { json(response, 404, { ok: false, code: 'AUDIO_RESULT_UNAVAILABLE' }); return }
+            const running = `${audioOwner.backend}:${audioOwner.accountId}:${submissionId}`
+            if (original.status === 'completed' && original.code === 'AUDIO_SAVE_PENDING') {
+              if (audioRunning.has(running)) {
+                await assertAudioCurrent()
+                json(response, 200, { ok: true, ...audioView(original) }); return
+              }
+              audioRunning.add(running)
+              let finishSaving = (): void => {}
+              const savingDone = new Promise<void>((resolve) => { finishSaving = resolve })
+              audioOperations.add(savingDone)
+              try {
+                const bytes = await audioSubmissions.content(original)
+                if (bytes === undefined) { json(response, 200, { ok: false, code: 'AUDIO_RESULT_UNAVAILABLE' }); return }
+                try {
+                  const output = await captureMediaOutput(ctx.get('artifactStorage'), join(stateDir, 'media'), signal)
+                  const filename = mediaFilename({ role: 'audio', prompt: original.request.input, extension: original.request.response_format })
+                  await assertAudioCurrent()
+                  await output.write(filename, bytes)
+                  original = { ...original, filename }
+                  delete original.code
+                  await audioSubmissions.update(original)
+                } catch { /* The private original remains playable and retryable without upstream submission. */ }
+                await assertAudioCurrent()
+                json(response, 200, { ok: true, ...audioView(original) }); return
+              } finally { audioRunning.delete(running); finishSaving(); audioOperations.delete(savingDone) }
+            }
+            if (original.status !== 'completed' && original.status !== 'failed' && original.taskId !== undefined && !audioRunning.has(running)) {
+              audioRunning.add(running)
+              let finishAudio = (): void => {}
+              const audioDone = new Promise<void>((resolve) => { finishAudio = resolve })
+              audioOperations.add(audioDone)
+              try {
+                const outcome: AudioExecutionResult = await readAudioTask(original.taskId, { request: original.request, signal,
+                  maxBytes: 32 * 1024 * 1024, received: async (receipt: AudioReceipt) => {
+                    if (original === undefined) throw new Error('Original audio record disappeared')
+                    original = { ...original, ...receipt.taskId === undefined ? {} : { taskId: receipt.taskId } }
+                    await audioSubmissions.update(original)
+                  }, read: async (taskId, requestSignal) => apiFetch(`/v1/tasks/${encodeURIComponent(taskId)}`, {
+                    headers: { authorization: `Bearer ${await assertAudioCurrent()}`, accept: 'application/json, audio/wav, audio/mpeg' }, signal: requestSignal,
+                  }) })
+                if (outcome.status === 'completed') {
+                  const output = await captureMediaOutput(ctx.get('artifactStorage'), join(stateDir, 'media'), signal)
+                  const filename = mediaFilename({ role: 'audio', prompt: original.request.input, extension: outcome.format })
+                  original = await audioSubmissions.save({ ...original, code: 'AUDIO_SAVE_PENDING' }, outcome.bytes, filename)
+                  try {
+                    await assertAudioCurrent(); await output.write(filename, outcome.bytes)
+                    delete original.code
+                    await audioSubmissions.update(original)
+                  }
+                  catch { original = { ...original, code: 'AUDIO_SAVE_PENDING' }; await audioSubmissions.update(original) }
+                } else {
+                  original = { ...original, status: outcome.status, ...outcome.code === undefined ? {} : { code: outcome.code } }
+                  await audioSubmissions.update(original)
+                }
+              } finally { audioRunning.delete(running); finishAudio(); audioOperations.delete(audioDone) }
+            }
+            await assertAudioCurrent()
+            json(response, 200, { ok: true, ...audioView(original) }); return
+          }
+          json(response, 404, { ok: false, code: 'NOT_FOUND' }); return
         }
 
         if (route === '/api/image/pricing' && method === 'GET') {
@@ -4169,6 +4481,17 @@ export function apply(ctx: Context, config: Config): void {
         if (error instanceof CreativeError) {
           json(response, error.status, { ok: false, code: error.code, message: error.message }); return
         }
+        if (route.startsWith('/api/audio/')) {
+          const storage = error instanceof VideoProjectError && error.code.startsWith('ARTIFACT_')
+            || error !== null && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
+            && ['EISDIR', 'ENOSPC', 'EIO', 'EACCES', 'EPERM', 'EROFS'].includes(error.code)
+          const permission = error instanceof VideoProjectError
+            && ['VIDEO_ACCOUNT_REQUIRED', 'VIDEO_ACCOUNT_CHANGED', 'AUTH_REQUIRED'].includes(error.code)
+          json(response, 200, { ok: false, code: storage ? 'AUDIO_LOCAL_STORAGE' : permission ? 'AUDIO_PERMISSION'
+            : error instanceof SyntaxError ? 'AUDIO_INVALID_REQUEST' : 'AUDIO_UNAVAILABLE',
+          message: storage ? '本地音频记录或产物暂时无法保存，请检查磁盘空间和目录权限；保留原提交编号，无需重新生成。'
+            : '音频操作暂未完成，请保留原提交编号并查询原任务；不要重复生成。' }); return
+        }
         json(response, 200, {
           ok: false,
           code: error instanceof Error && error.message === 'ACCOUNT_UNAVAILABLE' ? 'ACCOUNT_UNAVAILABLE' : 'TRANSPORT',
@@ -4232,12 +4555,18 @@ export function apply(ctx: Context, config: Config): void {
       if (capability === undefined) throw new CreativeError('VIDEO_MODEL_UNAVAILABLE', 409,
         '所选视频型号当前不可用，尚未提交生成；请查看当前可用型号。')
       const params = capability.params as VideoParams
-      resolution ??= capability.source === 'plugin:blackrxai-video' ? params.resolutions[0] : undefined
+      resolution ??= capability.source === 'plugin:blackrxai-video' || params.specifications !== undefined
+        ? params.resolutions[0] : undefined
+      const ratio = input.ratio ?? (params.specifications === undefined ? undefined : params.ratios[0])
+      const size = model === targetModel ? input.size : undefined
       if (resolution !== undefined && !params.resolutions.includes(resolution)) {
         throw new CreativeError('RESOLUTION_NOT_SUPPORTED', 409,
           '所选型号不支持请求的分辨率，尚未提交生成；请按当前型号规格重新选择。')
       }
-      const menu = videoDurations(params, resolution ?? null)
+      const menu = videoSpecificationDurations(params, { ...resolution === undefined ? {} : { resolution },
+        ...ratio === undefined ? {} : { ratio }, ...size === undefined ? {} : { size },
+        ...model !== targetModel || input.quality === undefined ? {} : { quality: input.quality },
+        ...model !== targetModel || input.mode === undefined ? {} : { mode: input.mode } })
       let durations = input.shotDurations ?? planVideoDurations(input.totalDurationSeconds, menu, resolved.videoProjectMaxSegments)
       if (allowReplan && (durations.some(duration => !menu.includes(duration))
         || input.shotPrompts !== undefined && input.shotPrompts.length !== durations.length)) {
@@ -4249,7 +4578,10 @@ export function apply(ctx: Context, config: Config): void {
         throw new CreativeError('DURATION_NOT_SUPPORTED', 409,
           '所选型号与本次分镜时长不兼容，尚未提交生成；请保留用户时长并重新规划。')
       }
-      return { model, ...resolution === undefined ? {} : { resolution }, durations: [...durations] }
+      return { model, ...resolution === undefined ? {} : { resolution },
+        ...ratio === undefined ? {} : { ratio }, ...size === undefined ? {} : { size },
+        ...model !== targetModel || input.quality === undefined ? {} : { quality: input.quality },
+        ...model !== targetModel || input.mode === undefined ? {} : { mode: input.mode }, durations: [...durations] }
     }
     const targetModel = intent.requestedModel ?? input.model ?? DEFAULT_CHAT_VIDEO_MODEL
     const target = candidate(targetModel, chatVideoResolution(input.resolution, targetModel, intent.requestedResolution))
@@ -4284,7 +4616,10 @@ export function apply(ctx: Context, config: Config): void {
           const built = await buildVideoRequest(capability, {
             prompt: input.shotPrompts?.[index] ?? input.prompt, durationSeconds,
             ...value.resolution === undefined ? {} : { resolution: value.resolution },
-            ...input.ratio === undefined ? {} : { ratio: input.ratio }, ...input.audio === undefined ? {} : { audio: input.audio },
+            ...value.ratio === undefined ? {} : { ratio: value.ratio },
+            ...value.size === undefined ? {} : { size: value.size },
+            ...value.quality === undefined ? {} : { quality: value.quality },
+            ...value.mode === undefined ? {} : { mode: value.mode }, ...input.audio === undefined ? {} : { audio: input.audio },
             frameImages: await normalize(input.frameImages, 'image'),
             referenceImages: await normalize(shot.referenceImages, 'image'),
             referenceVideos: await normalize(shot.referenceVideos, 'video'), referenceAudios: await normalize(shot.referenceAudios, 'audio'),
@@ -4330,8 +4665,32 @@ export function apply(ctx: Context, config: Config): void {
     if (selected === baseline && baselinePlan.requiresReplan) throw new CreativeError('CREATIVE_VIDEO_MODEL_CHOICE_UNAVAILABLE', 409,
       '已选择 H3，但原分镜时长与 H3 不兼容，本次未提交生成；请明确按 H3 重新规划，保留原定成片时长。')
     await assertCurrent()
-    return { input: { ...input, model: selected.model,
-      ...selected.resolution === undefined ? {} : { resolution: selected.resolution } }, async beforeSubmit(signal) {
+    const selectedInput = { ...input }
+    delete selectedInput.quality
+    delete selectedInput.mode
+    delete selectedInput.resolution
+    delete selectedInput.ratio
+    delete selectedInput.size
+    const selectedCapability = catalog.models.find(model => model.id === selected.model && model.kind === 'video')
+    const specifications = (selectedCapability?.params as VideoParams | undefined)?.specifications
+    const fixed = { ...selected }
+    if (specifications !== undefined) {
+      const prepared = await prepareQuoteSegments(selected)
+      for (const field of ['quality', 'mode', 'resolution', 'ratio', 'size'] as const) {
+        if (!specifications.some(specification => specification[field] !== undefined)) continue
+        const values = new Set(prepared.map(segment => segment.parameters[field]))
+        const [value] = values
+        if (values.size !== 1 || typeof value !== 'string') throw new CreativeError('SPECIFICATION_REQUIRED', 409,
+          '本次分镜需要统一的完整规格，请明确分辨率、比例和质量档位；尚未提交生成。')
+        fixed[field] = value
+      }
+    }
+    return { input: { ...selectedInput, model: selected.model,
+      ...fixed.quality === undefined ? {} : { quality: fixed.quality },
+      ...fixed.mode === undefined ? {} : { mode: fixed.mode },
+      ...fixed.ratio === undefined ? {} : { ratio: fixed.ratio },
+      ...fixed.size === undefined ? {} : { size: fixed.size },
+      ...fixed.resolution === undefined ? {} : { resolution: fixed.resolution } }, async beforeSubmit(signal) {
       signal.throwIfAborted()
       if (videoModelChoiceCancelled(exec)) throw new CreativeError('USER_CANCELLED', 409,
         '你已取消本次视频生成，未提交新的模型请求；需要生成时请明确发送新的生成要求。')
@@ -4429,7 +4788,7 @@ export function apply(ctx: Context, config: Config): void {
             }
             return catalog.projectParallelism?.get(id) ?? DEFAULT_VIDEO_PROJECT_PARALLELISM
           },
-          model: async (id, signal, resolution) => {
+          model: async (id, signal, resolution, quality, mode, ratio, size) => {
             const [ids, catalog] = await Promise.all([relay.modelIds(signal), readMediaCatalog(signal)])
             const allowed = new Set(ids)
             signal.throwIfAborted()
@@ -4438,8 +4797,10 @@ export function apply(ctx: Context, config: Config): void {
             if (selected === null) throw new VideoProjectError('VIDEO_MODEL_UNAVAILABLE', '当前登录账户没有可用的所选视频模型，请检查后台模型配置')
             models.set(selected.id, selected)
             const params = selected.params as VideoParams
-            return { id: selected.id, durations: videoDurations(params, resolution ?? null),
-              ...params.defaultDuration === undefined ? {} : { defaultDuration: params.defaultDuration } }
+            return { id: selected.id, durations: videoSpecificationDurations(params, {
+              ...resolution === undefined ? {} : { resolution }, ...quality === undefined ? {} : { quality },
+              ...mode === undefined ? {} : { mode }, ...ratio === undefined ? {} : { ratio }, ...size === undefined ? {} : { size } }),
+            ...params.defaultDuration === undefined ? {} : { defaultDuration: params.defaultDuration } }
           },
           build: async (input, model, prompt, durationSeconds, signal): Promise<VideoProjectRequest> => {
             await binding.key()
@@ -4455,6 +4816,9 @@ export function apply(ctx: Context, config: Config): void {
               prompt, durationSeconds,
               ...input.resolution === undefined ? {} : { resolution: input.resolution },
               ...input.ratio === undefined ? {} : { ratio: input.ratio },
+              ...input.size === undefined ? {} : { size: input.size },
+              ...input.quality === undefined ? {} : { quality: input.quality },
+              ...input.mode === undefined ? {} : { mode: input.mode },
               ...input.audio === undefined ? {} : { audio: input.audio },
               frameImages: await normalize(input.frameImages, 'image'), referenceImages: await normalize(input.referenceImages, 'image'),
               referenceVideos: await normalize(input.referenceVideos, 'video'),
@@ -4496,6 +4860,9 @@ export function apply(ctx: Context, config: Config): void {
         backgrounds: { type: 'array', items: { type: 'string' } },
         formats: { type: 'array', items: { type: 'string' } },
         moderations: { type: 'array', items: { type: 'string' } }, seed: { type: 'boolean' },
+        specifications: { type: 'array', items: { type: 'object', properties: {
+          size: { type: 'string' }, resolution: { type: 'string' }, quality: { type: 'string' },
+        }, additionalProperties: false } },
       }, additionalProperties: false } },
     }, additionalProperties: false }, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] },
     presentCall: () => ({ card: 'generic', title: '读取图片模型与参数', kind: 'read' }),
@@ -4523,12 +4890,15 @@ export function apply(ctx: Context, config: Config): void {
         const models = catalog.models.filter(model => model.kind === 'image' && allowed.has(model.id)).map((model) => {
           const params = model.params as ImageParams
           return { id: model.id, display_name: model.displayName, parameters_verified: model.verified,
-            sizes: model.verified || model.notes.includes('sizes') ? [...params.sizes] : [],
+            sizes: model.verified || model.notes.includes('sizes') || model.notes.includes('specifications') ? [...params.sizes] : [],
             ...params.resolutions === undefined ? {} : { resolutions: [...params.resolutions] },
             max_count: params.maxCount, max_reference_images: params.maxEdits,
-            qualities: model.verified ? [...params.qualities] : [], backgrounds: model.verified ? [...params.backgrounds] : [],
-            formats: model.verified ? [...params.formats] : [], moderations: model.verified ? [...params.moderations] : [],
-            seed: model.verified && params.seed }
+            qualities: model.verified || model.notes.includes('qualities') ? [...params.qualities] : [],
+            backgrounds: model.verified || model.notes.includes('backgrounds') ? [...params.backgrounds] : [],
+            formats: model.verified || model.notes.includes('formats') ? [...params.formats] : [],
+            moderations: model.verified || model.notes.includes('moderations') ? [...params.moderations] : [],
+            ...params.specifications === undefined ? {} : { specifications: params.specifications.map(value => ({ ...value })) },
+            seed: (model.verified || model.notes.includes('seed')) && params.seed }
         })
         return { status: 'listed', models, message: models.length === 0 ? '当前账号没有可用的图片模型；尚未提交生成。'
           : '按精确型号和已声明参数生成；空菜单不提供可选规格，未验证型号的数量限制仅为客户端保守限制。尚未提交生成。' }
@@ -4836,7 +5206,9 @@ export function apply(ctx: Context, config: Config): void {
             max_reference_images: params.maxReferenceImages, max_reference_videos: params.maxReferenceVideos,
             max_reference_audios: params.maxReferenceAudios, mix_frames_and_references: params.mixFramesAndReferences,
             audio_output: params.audioOutput ?? (params.audio ? 'supported' : 'unsupported'), audio_toggle: params.audioToggle,
-            modes: [...params.modes], seed: params.seed }
+            modes: [...params.modes], seed: params.seed,
+            ...params.qualities === undefined ? {} : { qualities: [...params.qualities] },
+            ...params.specifications === undefined ? {} : { specifications: params.specifications.map(value => ({ ...value })) } }
         })
         return { status: 'listed', models, message: '按当前参数规划生成片段；一个片段可含多个镜头切换。无独立音频开关不代表成片必定无声，未声明的音频能力不能保证对白。' }
       } catch (_error) { return { status: 'failed', code: 'VIDEO_MODELS_UNAVAILABLE', message: '暂时无法读取视频模型，请确认登录后重试；尚未提交生成。' } }
@@ -4854,6 +5226,9 @@ export function apply(ctx: Context, config: Config): void {
       model: { type: 'string', description: 'Defaults to MiniMax-H3 at 768P unless the human explicitly requested another resolution. A non-H3 model requires a current full-price estimate and a real human model selection before generation; model arguments never approve that change.' },
       duration_seconds: { type: 'number', description: 'Clip length in seconds; only values the chosen model declares are accepted.' },
       resolution: { type: 'string', description: 'Output resolution such as 768P or 2K, when the model offers choices.' },
+      size: { type: 'string', description: 'Exact native size from a complete specification, when distinct from resolution.' },
+      quality: { type: 'string', description: 'Exact quality tier from the selected complete specification; preserve it for quote and generation.' },
+      mode: { type: 'string', description: 'Optional published vendor mode, distinct from quality.' },
       ratio: { type: 'string', description: 'Aspect ratio such as 16:9 or 9:16; adaptive inherits it from the reference media.' },
       audio: { type: 'boolean', description: 'Optional requested audio state. Sent as a switch only when the chosen model declares one; fixed native audio accepts only its declared state. An audio stream does not verify dialogue, lip-sync or subtitles.' },
       frame_images: { type: 'array', items: { type: 'string' }, description: 'Optional stored ids (ma_…) used as first/last frame.' },
@@ -4938,6 +5313,9 @@ export function apply(ctx: Context, config: Config): void {
           ...durationSeconds === undefined ? {} : { durationSeconds },
           ...requestedResolution === undefined ? {} : { resolution: requestedResolution },
           ...args.ratio === undefined ? {} : { ratio: args.ratio },
+          ...args.size === undefined ? {} : { size: args.size },
+          ...args.quality === undefined ? {} : { quality: args.quality },
+          ...args.mode === undefined ? {} : { mode: args.mode },
           ...args.audio === undefined ? {} : { audio: args.audio },
           ...args.frame_images === undefined ? {} : { frameImages: await images(args.frame_images) },
           ...args.reference_images === undefined ? {} : { referenceImages: await images(args.reference_images) },
@@ -4952,10 +5330,14 @@ export function apply(ctx: Context, config: Config): void {
         const choice = await selectChatVideoModel({ ...requestInput, totalDurationSeconds: duration,
           model: capability.model.id, shotDurations: [duration] }, exec, binding.identity, async () => { await binding.key() })
         const selection = choice.input
-        if (selection.model !== capability.model.id || selection.resolution !== requestedResolution) {
+        if (selection.model !== capability.model.id || selection.resolution !== requestedResolution
+          || selection.quality !== args.quality || selection.mode !== args.mode
+          || selection.ratio !== args.ratio || selection.size !== args.size) {
           capability = await capabilityFor('video', selection.model ?? DEFAULT_CHAT_VIDEO_MODEL, exec.signal)
           if (!capability.ok) return { status: 'failed', code: capability.code, message: capability.message }
-          built = await buildVideoRequest(capability.model, { ...requestInput, resolution: selection.resolution })
+          built = await buildVideoRequest(capability.model, { ...requestInput,
+            resolution: selection.resolution, quality: selection.quality, mode: selection.mode,
+            ratio: selection.ratio, size: selection.size })
           if (!built.ok) return { status: 'failed', code: built.code, model: capability.model.id, message: built.message }
         }
         exec.signal.throwIfAborted()

@@ -82,6 +82,7 @@ export { Config } from './config.ts'
 export type {
   Options,
   PiAiCompatProfile,
+  PiAiManagedModelLimits,
   PiAiModality,
   PiAiModelOverride,
   PiAiModelProfile,
@@ -188,17 +189,21 @@ export function apply(ctx: Context, config: Config): void {
     return provider === 'yunshu-local' || (provider !== undefined && ctx.get('harnessAccount')?.provider === provider)
       || target?.hostname === '8.133.202.230'
   }
-  const resolveProductKey = async (baseURL: string | undefined): Promise<string> => {
+  const resolveProductKey = async (baseURL: string | undefined, expectedModelLimitsScope?: string): Promise<string> => {
     const account = ctx.get('harnessAccount')
-    const key = baseURL === undefined ? undefined : await account?.resolveRelayKey(baseURL)
+    const key = baseURL === undefined ? undefined : expectedModelLimitsScope === undefined
+      ? await account?.resolveRelayKey(baseURL) : await account?.resolveRelayKey(baseURL, expectedModelLimitsScope)
     if (key !== undefined) return assertUsableApiKey(key, 'llm-pi-ai', credentialRef('YUNSHU_RELAY_TOKEN'))
+    if (expectedModelLimitsScope !== undefined) {
+      throw new LlmError('The product account changed or signed out after preparation; refresh the models and start a new request', 'ABORTED')
+    }
     throw new LlmError('Sign in to the product account before using its model relay', 'MISSING_CREDENTIAL')
   }
   const resolveApiKey = async (
     provider: string,
     profile: ResolvedPiAiProviderProfile,
   ): Promise<string | undefined> => {
-    if (requiresProductAccount(provider, profile.baseURL)) return await resolveProductKey(profile.baseURL)
+    if (requiresProductAccount(provider, profile.baseURL)) return await resolveProductKey(profile.baseURL, profile.managedLimitsScope)
     const ref = profile.apiKeyEnv
     // Only a profile that names no credential at all defers to pi-ai's
     // provider-native discovery. Once one is named, a miss must fail loud:

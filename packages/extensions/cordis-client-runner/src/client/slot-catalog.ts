@@ -1888,6 +1888,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
       'client-ui-agent-preset EmployeePage',
       'client-ui-artifacts ArtifactsMain',
       'client-ui-conversation ConversationPanel key \'conversation\'',
+      'client-ui-creative AudioPage',
       'client-ui-credits CreditsPage',
       'client-ui-credits RechargePage',
       'client-ui-imagegen ImagePage',

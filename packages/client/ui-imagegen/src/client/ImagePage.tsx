@@ -17,6 +17,7 @@ import css from './ImagePage.module.css'
 export interface ImagegenInjected {
   readonly t: (key: string, values?: Record<string, string>) => string
   readonly openVideo: () => void
+  readonly openAudio?: () => void
   readonly readDraft: () => ImageDraft
   readonly createReferencePreview: (file: File) => string
   readonly releaseReferencePreview: (url: string) => void
@@ -45,10 +46,18 @@ interface SessionInfo {
   readonly account?: { readonly id?: string | number } | null
 }
 interface Balance { readonly balance_points: number }
+interface ImageSpecification {
+  readonly size?: string
+  readonly resolution?: string
+  readonly ratio?: string
+  readonly quality?: string
+}
+
 interface ImageModel {
   readonly id: string
   readonly displayName: string
   readonly params: {
+    readonly specifications?: readonly ImageSpecification[]
     readonly sizes: readonly string[]
     readonly resolutions?: readonly string[]
     readonly maxCount: number
@@ -60,7 +69,7 @@ interface ImageModel {
     readonly seed: boolean
   }
 }
-interface Catalog { readonly image: readonly ImageModel[] }
+interface Catalog { readonly image: readonly ImageModel[]; readonly audio?: readonly { readonly id: string }[] }
 interface ArtifactLocation {
   readonly path: string
   readonly workspaceId?: string
@@ -152,7 +161,7 @@ function fileIdentity(file: ArtifactLocation): string { return JSON.stringify([f
  * @returns the image creation workspace.
  */
 export function ImagePage(props: ImagePageProps): ReactNode {
-  const { t, openVideo, createReferencePreview, releaseReferencePreview, readDraft, actions } = props
+  const { t, openVideo, openAudio, createReferencePreview, releaseReferencePreview, readDraft, actions } = props
   const draft = props.useStore(state => state)
   const sessionId = props.useCreationSession(binding => binding.key)
   const {
@@ -178,6 +187,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
   const originalQuery = useRef<AbortController | null>(null)
   const [creditsPerYuan, setCreditsPerYuan] = useState(1000)
   const [balance, setBalance] = useState<number | null>(null)
+  const [audioAvailable, setAudioAvailable] = useState(false)
   const [models, setModels] = useState<readonly ImageModel[]>([])
   const [modelsError, setModelsError] = useState<string | null>(null)
   const [stateError, setStateError] = useState(false)
@@ -210,6 +220,12 @@ export function ImagePage(props: ImagePageProps): ReactNode {
 
   const model = useMemo(() => models.find(entry => entry.id === modelId) ?? models[0] ?? null, [modelId, models])
   const params = model?.params ?? null
+  const specifications = params?.specifications
+  const specificationIndex = specifications?.findIndex(item => (item.size ?? item.ratio ?? '') === size
+    && (item.resolution ?? '') === resolution && (item.quality ?? '') === quality) ?? -1
+  const settingsInvalid = specifications !== undefined && specifications.length === 0
+  const specificationLabel = (item: ImageSpecification): string => [item.size ?? item.ratio, item.resolution, item.quality]
+    .filter(value => value !== undefined && value !== '').join(' · ')
   const maxEdits = params?.maxEdits ?? 0
   const isSignedIn = signedIn === true && !sessionInvalid
   const ownsReferences = isSignedIn && accountIdentity !== null && draft.referenceAccountId === accountIdentity
@@ -248,6 +264,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
       }
       const items = answer.payload.image
       setModels(items)
+      setAudioAvailable((answer.payload.audio?.length ?? 0) > 0)
       setModelsError(items.length === 0 ? t('noModels') : null)
     } catch (error) {
       // Catalog errors leave the last readable model choices visible.
@@ -384,11 +401,16 @@ export function ImagePage(props: ImagePageProps): ReactNode {
   useEffect(() => {
     if (params === null || model === null) return
     const current = readDraft()
+    const specification = params.specifications?.find(item => (item.size ?? item.ratio ?? '') === current.size
+      && (item.resolution ?? '') === current.resolution && (item.quality ?? '') === current.quality) ?? params.specifications?.[0]
     actions.patch({
       modelId: model.id,
-      size: params.sizes.includes(current.size) ? current.size : params.sizes[0] ?? '',
-      resolution: params.resolutions?.includes(current.resolution) === true ? current.resolution : params.resolutions?.[0] ?? '',
-      quality: params.qualities.includes(current.quality) ? current.quality : '',
+      size: params.specifications !== undefined ? specification?.size ?? specification?.ratio ?? ''
+        : params.sizes.includes(current.size) ? current.size : params.sizes[0] ?? '',
+      resolution: params.specifications !== undefined ? specification?.resolution ?? ''
+        : params.resolutions?.includes(current.resolution) === true ? current.resolution : params.resolutions?.[0] ?? '',
+      quality: params.specifications !== undefined ? specification?.quality ?? ''
+        : params.qualities.includes(current.quality) ? current.quality : '',
       background: params.backgrounds.includes(current.background) ? current.background : '',
       format: params.formats.includes(current.format) ? current.format : '',
       moderation: params.moderations.includes(current.moderation) ? current.moderation : '',
@@ -539,6 +561,9 @@ export function ImagePage(props: ImagePageProps): ReactNode {
     if (selected === undefined) return
     const accepted = selected.params
     if (current.prompt.trim() === '') { setFailure(t('promptRequired')); promptField.current?.focus(); return }
+    const specification = accepted.specifications?.find(item => (item.size ?? item.ratio ?? '') === current.size
+      && (item.resolution ?? '') === current.resolution && (item.quality ?? '') === current.quality)
+    if (accepted.specifications !== undefined && specification === undefined) { setFailure(t('settingsUnavailable')); return }
     if (accepted.seed && current.seed.trim() !== '' && !Number.isSafeInteger(Number(current.seed))) {
       setFailure(t('seedInvalid')); return
     }
@@ -569,9 +594,9 @@ export function ImagePage(props: ImagePageProps): ReactNode {
       const answer = await post<{ path: string; paths?: readonly string[] }>('/credits/api/image/generate', {
         session_id: sessionId, account_id: accountIdentity,
         prompt: current.prompt.trim(), model: selected.id, count: Math.max(1, Math.min(current.count, accepted.maxCount)),
-        ...accepted.sizes.includes(current.size) ? { size: current.size } : {},
-        ...accepted.resolutions?.includes(current.resolution) === true ? { resolution: current.resolution } : {},
-        ...accepted.qualities.includes(current.quality) ? { quality: current.quality } : {},
+        ...(specification !== undefined ? current.size !== '' : accepted.sizes.includes(current.size)) ? { size: current.size } : {},
+        ...(specification !== undefined ? current.resolution !== '' : accepted.resolutions?.includes(current.resolution) === true) ? { resolution: current.resolution } : {},
+        ...(specification !== undefined ? current.quality !== '' : accepted.qualities.includes(current.quality)) ? { quality: current.quality } : {},
         ...accepted.backgrounds.includes(current.background) ? { background: current.background } : {},
         ...accepted.formats.includes(current.format) ? { format: current.format } : {},
         ...accepted.moderations.includes(current.moderation) ? { moderation: current.moderation } : {},
@@ -630,8 +655,9 @@ export function ImagePage(props: ImagePageProps): ReactNode {
             items={[
               { value: 'image', label: t('tab.image'), id: 'gen-mode-image', panelId: 'imagegen' },
               { value: 'video', label: t('tab.video'), id: 'gen-mode-video', panelId: 'videogen' },
+              ...audioAvailable && openAudio !== undefined ? [{ value: 'audio', label: t('tab.audio'), id: 'gen-mode-audio', panelId: 'audiogen' }] : [],
             ]}
-            value="image" onChange={(next) => { if (next === 'video') openVideo() }} label={t('mode.label')}
+            value="image" onChange={(next) => { if (next === 'video') openVideo(); else if (next === 'audio') openAudio?.() }} label={t('mode.label')}
           />
           {isSignedIn && balance !== null && <span className={css.balance}>{t('balance', { points: balance.toLocaleString(), yuan: (balance / creditsPerYuan).toFixed(2) })}</span>}
         </header>
@@ -721,7 +747,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
             <span className={css.mode}>{maxEdits === 0 || references.length === 0 ? t('modeGenerate') : t('modeEdit', { count: String(Math.min(references.length, maxEdits)) })}</span>
             <Tooltip label={originalSubmission !== null ? t('originalLocked') : running ? t('runningShort') : t('submit')} side="top" portal>
               <button type="button" className={css.send} aria-label={running ? t('runningShort') : t('submit')}
-                disabled={submissionLocked || model === null || !isSignedIn || sessionId === undefined || prompt.trim() === ''}
+                disabled={submissionLocked || model === null || !isSignedIn || sessionId === undefined || prompt.trim() === '' || settingsInvalid}
                 onClick={() => { void generate() }}>
                 {running ? <span className={css.spinner} /> : <IconSendOutlineRegular size={19} />}
               </button>
@@ -729,12 +755,21 @@ export function ImagePage(props: ImagePageProps): ReactNode {
           </div>
           {params !== null && <div className={css.parameters} role="group" aria-label={t('parameters')}>
             <p className={css.parameterTitle}>{t('parameters')}</p>
-            {(params.resolutions?.length ?? 0) > 0 && <label className={css.field}><span>{t('resolution')}</span><select className={css.select} aria-label={t('resolution')} value={resolution} disabled={locked}
+            {specifications !== undefined && <label className={css.field}><span>{t('specification')}</span>
+              <select className={css.select} aria-label={t('specification')} value={specificationIndex} disabled={locked || settingsInvalid}
+                onChange={(event) => {
+                  const item = specifications[Number(event.target.value)]
+                  if (item !== undefined) actions.patch({ size: item.size ?? item.ratio ?? '', resolution: item.resolution ?? '', quality: item.quality ?? '', message: null })
+                }}>
+                {specifications.map((item, index) => <option key={index} value={index}>{specificationLabel(item)}</option>)}
+              </select></label>}
+            {settingsInvalid && <p className={css.parameterHint} role="alert">{t('settingsUnavailable')}</p>}
+            {specifications === undefined && (params.resolutions?.length ?? 0) > 0 && <label className={css.field}><span>{t('resolution')}</span><select className={css.select} aria-label={t('resolution')} value={resolution} disabled={locked}
               onChange={(event) => { actions.patch({ resolution: event.target.value }) }}>
               {params.resolutions?.map(value => <option key={value} value={value}>{value.toUpperCase()}</option>)}
             </select></label>}
 
-            {params.sizes.length > 0 && <label className={css.field}><span>{t('ratio')}</span><select className={css.select} value={size} disabled={locked}
+            {specifications === undefined && params.sizes.length > 0 && <label className={css.field}><span>{t('ratio')}</span><select className={css.select} value={size} disabled={locked}
               onChange={(event) => { actions.patch({ size: event.target.value }) }}>{params.sizes.map(value => <option key={value} value={value}>{value === 'auto' ? t('sizeAuto') : value}</option>)}</select></label>}
             {params.maxCount > 1 && <label className={css.field}><span>{t('count')}</span><select className={css.select} value={count} disabled={locked}
               onChange={(event) => { actions.patch({ count: Number(event.target.value) }) }}>
@@ -745,7 +780,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
               { key: 'background', values: params.backgrounds, value: background },
               { key: 'format', values: params.formats, value: format },
               { key: 'moderation', values: params.moderations, value: moderation },
-            ] as const).filter(field => field.values.length > 0).map(field => <label className={css.field} key={field.key}>
+            ] as const).filter(field => field.values.length > 0 && (specifications === undefined || field.key !== 'quality')).map(field => <label className={css.field} key={field.key}>
               <span>{t(field.key)}</span><select className={css.select} value={field.value} disabled={locked}
                 onChange={(event) => { actions.patch({ [field.key]: event.target.value }) }}><option value="">{t('inherit')}</option>
                 {field.values.map(value => <option key={value} value={value}>{field.key === 'background' && ['auto', 'transparent', 'opaque'].includes(value) ? t(`bg_${value}`) : value}</option>)}

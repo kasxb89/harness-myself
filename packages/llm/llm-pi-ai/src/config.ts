@@ -28,6 +28,7 @@ import {
   MAX_TOKENS_FIELDS,
   MODALITIES,
   PiAiCatalogError,
+  MAX_CAPACITY_TOKENS,
   resolveRouteModels,
   SUPPORTED_THINKING_FORMATS,
   THINKING_LEVELS,
@@ -38,6 +39,7 @@ import type {
   PiAiModality,
   PiAiModelOverride,
   PiAiModelProfile,
+  PiAiManagedModelLimits,
   PiAiReasoningEfforts,
   RouteCatalog,
 } from './catalog.ts'
@@ -84,6 +86,7 @@ export type {
   PiAiModality,
   PiAiModelOverride,
   PiAiModelProfile,
+  PiAiManagedModelLimits,
   PiAiReasoningEfforts,
   PiAiThinkingFormat,
 } from './catalog.ts'
@@ -117,6 +120,8 @@ export interface PiAiProviderProfile {
    * model the catalog does not describe is refused rather than skipped.
    */
   modelOverrides?: Record<string, PiAiModelOverride>
+  /** Active account/backend scope; synchronized limits from other scopes remain inactive. */
+  managedLimitsScope?: string
   /**
    * pi-ai wire-compatibility switches defaulting every model on this route
    * whose protocol declares them; each model's own `compat` overrides per
@@ -216,6 +221,8 @@ export interface ResolvedPiAiProviderProfile
    * own, so a catalog capability must not appear here.
    */
   configuredMaxTokens: ReadonlyMap<string, number>
+  /** Current synchronized hard output ceilings after applying smaller explicit manual limits. */
+  managedMaxTokens: ReadonlyMap<string, number>
 }
 
 /** Plugin configuration: the provider routes this instance owns. */
@@ -300,10 +307,18 @@ const reasoningEfforts = z.dict(
 ) as unknown as z<PiAiReasoningEfforts>
 
 /** The fields a `models` entry and a `modelOverrides` value share; only the id's home differs. */
+const managedModelLimits: z<PiAiManagedModelLimits> = z.object({
+  scope: z.string().min(1).max(512).required(),
+  contextWindow: z.number().step(1).min(1).max(MAX_CAPACITY_TOKENS),
+  maxTokens: z.number().step(1).min(1).max(MAX_CAPACITY_TOKENS),
+})
+
 const modelFields = {
   name: z.string(),
   contextWindow: z.number().step(1).min(1),
   maxTokens: z.number().step(1).min(1),
+  // A union keeps omission absent rather than materializing an object without its required scope.
+  managedLimits: z.union([managedModelLimits]),
   // No explicit default, unlike the route's `defaultInput`: schemastery
   // materializes `[]` for an absent array, and resolution reads that as "no
   // answer here" so the catalog entry below still applies.
@@ -328,6 +343,7 @@ const profile = z.object({
   displayName: z.string(),
   api: z.union(supportedProtocols()),
   baseURL: z.string(),
+  managedLimitsScope: z.string().min(1).max(512),
   models: z.array(modelProfile),
   modelOverrides: z.dict(modelOverride),
   compat: compatProfile,
@@ -470,6 +486,7 @@ export function resolveProfiles(
         ...source.models === undefined ? {} : { models: source.models },
         ...source.modelOverrides === undefined ? {} : { modelOverrides: source.modelOverrides },
         ...source.compat === undefined ? {} : { compat: source.compat },
+        ...source.managedLimitsScope === undefined ? {} : { managedLimitsScope: source.managedLimitsScope },
         defaultInput,
         defaultContextWindow: source.defaultContextWindow ?? DEFAULT_CONTEXT_WINDOW,
         defaultMaxTokens: source.defaultMaxTokens ?? DEFAULT_MAX_TOKENS,
@@ -501,6 +518,7 @@ export function resolveProfiles(
       ...rest.headers === undefined ? {} : { headers: { ...rest.headers } },
       ...rest.thinkingBudgets === undefined ? {} : { thinkingBudgets: { ...rest.thinkingBudgets } },
       configuredMaxTokens: catalog?.configuredMaxTokens ?? new Map(),
+      managedMaxTokens: catalog?.managedMaxTokens ?? new Map(),
       modelErrors: catalog?.modelErrors ?? new Map(),
       ...piProvider === undefined ? {} : { piProvider },
       ...catalogError === undefined ? {} : { catalogError },

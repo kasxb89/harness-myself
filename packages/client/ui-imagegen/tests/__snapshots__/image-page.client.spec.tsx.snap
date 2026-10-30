@@ -1,0 +1,22 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`image creation workspace > selects complete image specifications without mixing quality and resolution 1`] = `
+{
+  "options": [
+    "Complete image model",
+    "1024x1024 · 1k · pro",
+    "1024x1024 · 2k · max",
+  ],
+  "submitted": {
+    "account_id": "account-a",
+    "count": 1,
+    "model": "ycapi-image",
+    "prompt": "A complete specification",
+    "quality": "max",
+    "references": [],
+    "resolution": "2k",
+    "session_id": "session-a",
+    "size": "1024x1024",
+  },
+}
+`;

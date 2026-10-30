@@ -13,7 +13,7 @@ import {
   resolveTargetPolicy,
 } from '@deepseek-ai/dsh-compaction-basic/src/config.ts'
 import type { CompactionResult } from '@deepseek-ai/dsh-compaction'
-import LlmRuntime, { createUserMessage, ToolCallId, CONTEXT_WINDOW_EXCEEDED_CODE, createSystemMessage, createToolResultMessage, LlmAdapter , createMessage } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { LlmError, ReasoningEffortId, createUserMessage, ToolCallId, CONTEXT_WINDOW_EXCEEDED_CODE, createSystemMessage, createToolResultMessage, LlmAdapter , createMessage } from '@deepseek-ai/dsh-llm'
 import type { ContextFormed } from '@deepseek-ai/dsh-llm'
 import type {
   ContentBlock,
@@ -313,10 +313,12 @@ describe('compact configuration and defaults', () => {
     expect(resolved).toEqual({
       thresholdRatio: 0.8,
       headroomTokens: 65_536,
+      headroomTokensDefaulted: true,
       retainRatio: 0.16,
       summarizationProvider: '',
       summarizationModel: '',
       maxTokens: 65_536,
+      maxTokensDefaulted: true,
       compactionRetries: 1,
       maxOverflowRetries: 1,
       modelPolicies: [],
@@ -1551,6 +1553,96 @@ describe('default one-shot summarizer', () => {
     expect(output.model).toBe('routed')
     expect(adapter.lastOptions?.provider).toBe('routed')
     expect(adapter.lastOptions?.model).toBe('routed')
+  })
+
+  it('does not carry an initial route reasoning default or hard cap into a rerouted summary', async () => {
+    const { ctx, compact, adapter } = await summarizerHarness([{ type: 'text', text: 'unused' }])
+    vi.spyOn(adapter, 'resolveModel').mockImplementation((provider, model) => Promise.resolve({ provider, id: model, name: model,
+      context: { contextWindow: 32768 }, defaultMaxTokens: 4096, maxOutputTokens: 4096,
+      reasoning: { efforts: [{ id: ReasoningEffortId('high'), name: 'High' }], defaultEffort: ReasoningEffortId('high') },
+    }))
+    const routed = new class extends ScriptedAdapter {
+      override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
+        return Promise.resolve({ provider, id: model, name: model, maxOutputTokens: 8192 })
+      }
+    }([{ type: 'text', text: 'routed summary' }])
+    ctx.llm.registerAdapter(['routed'], routed)
+    ctx.on('llm/stream', (options, next) => {
+      options.provider = 'routed'; options.model = 'routed'
+      return next()
+    })
+    const result = await compact.runSummarize(promptInput('history'), agent(conversation(1), MODEL), SIGNAL)
+    expect(routed.lastOptions?.reasoningEffort).toBeUndefined()
+    expect(routed.lastOptions?.maxTokens).toBe(5734)
+    expect(result).toMatchObject({ provider: 'routed', model: 'routed', maxTokens: 5734 })
+  })
+
+  it.each([true, false])('keeps metadata pre-read failure separate from final routed dispatch (reroute=%s)', async (reroute) => {
+    const { ctx, compact, adapter } = await summarizerHarness([{ type: 'text', text: 'must not dispatch' }])
+    vi.spyOn(adapter, 'resolveModel').mockRejectedValue(new LlmError('original model is unavailable', 'MODEL_UNAVAILABLE'))
+    const routed = new ScriptedAdapter([{ type: 'text', text: 'healthy summary' }])
+    ctx.llm.registerAdapter(['healthy'], routed)
+    if (reroute) ctx.on('llm/stream', (options, next) => {
+      options.provider = 'healthy'; options.model = 'healthy'
+      return next()
+    })
+    const operation = compact.runSummarize(promptInput('history'), agent(conversation(1), MODEL), SIGNAL)
+    if (reroute) {
+      await expect(operation).resolves.toMatchObject({ provider: 'healthy', model: 'healthy' })
+      expect(routed.lastOptions).toBeDefined()
+    } else {
+      await expect(operation).rejects.toMatchObject({ code: 'MODEL_UNAVAILABLE' })
+      expect(routed.lastOptions).toBeUndefined()
+    }
+    expect(adapter.lastOptions).toBeUndefined()
+  })
+
+  it('propagates cancellation during optional metadata pre-reading without stream dispatch', async () => {
+    const { compact, adapter } = await summarizerHarness([{ type: 'text', text: 'must not dispatch' }])
+    const abort = new AbortController()
+    const reason = new Error('cancelled while reading metadata')
+    vi.spyOn(adapter, 'resolveModel').mockImplementation(() => { abort.abort(reason); return Promise.reject(reason) })
+    await expect(compact.runSummarize(promptInput('history'), agent(conversation(1), MODEL), abort.signal)).rejects.toBe(reason)
+    expect(adapter.lastOptions).toBeUndefined()
+  })
+
+  it('keeps auxiliary middleware routing available when the proposed target has no adapter', async () => {
+    const { ctx, compact, adapter } = await summarizerHarness([{ type: 'text', text: 'routed summary' }], undefined, 'routed')
+    ctx.on('llm/stream', (options, next) => {
+      options.provider = 'routed'; options.model = 'routed'
+      return next()
+    })
+    const session = Session.create(SessionId('middleware-summary-route'))
+    session.append('turn/start', { turn: 1 })
+    const result = await compact.runSummarize(promptInput('history'), agent(session, 'unregistered'), SIGNAL)
+    expect(adapter.lastOptions?.provider).toBe('routed')
+    expect(result).toMatchObject({ provider: 'routed', model: 'routed' })
+  })
+
+  it('records the final rerouted model output cap instead of the initial summary budget', async () => {
+    const { ctx, compact } = await summarizerHarness([{ type: 'text', text: 'unused' }], undefined, MODEL, {
+      auto: false, maxTokens: 65536,
+    })
+    const routedAdapter = new class extends ScriptedAdapter {
+      override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
+        return Promise.resolve({ provider, id: model, name: model, context: { contextWindow: 32768 },
+          defaultMaxTokens: 4096, maxOutputTokens: 8192 })
+      }
+    }([{ type: 'text', text: 'bounded routed summary' }])
+    ctx.llm.registerAdapter(['bounded-route'], routedAdapter)
+    ctx.on('llm/stream', (options, next) => {
+      options.provider = 'bounded-route'
+      options.model = 'bounded-model'
+      return next()
+    })
+    const session = conversation(3, 'large history '.repeat(500))
+    const nodes = session.surface.nodes
+    await compact.compactRegion(nodes[0]!, nodes[3]!, agent(session, MODEL), SIGNAL)
+    expect(routedAdapter.lastOptions?.maxTokens).toBe(8192)
+    expect(session.snapshotEvents().findLast(event => event.type === 'compaction/summary')?.data).toMatchObject({
+      provider: 'bounded-route', model: 'bounded-model', maxTokens: 8192,
+      summary: [{ type: 'text', text: 'bounded routed summary' }],
+    })
   })
 
   it('records the model actually dispatched after one-shot stream routing', async () => {

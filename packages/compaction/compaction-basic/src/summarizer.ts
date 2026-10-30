@@ -8,15 +8,15 @@ import type { Context } from '@deepseek-ai/cordis'
 import { contentHasImage, BlockAssembler, LlmError } from '@deepseek-ai/dsh-llm'
 import { deepFreeze } from '@deepseek-ai/dsh-util-values'
 import type {
-  ContentBlock, FinishReason, GenerateOptions, Message, RequestMessage, TokenUsage, ToolSchema,
+  ContentBlock, FinishReason, GenerateOptions, LlmCallConfig, Message, RequestMessage, TokenUsage, ToolSchema,
 } from '@deepseek-ai/dsh-llm'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { ResolvedTargetPolicy } from './types.ts'
+import { reservedCompletionTokens, resolvedHeadroomTokens } from './request-budget.ts'
 
-interface SummaryConfig {
-  readonly summarizationProvider: string
-  readonly summarizationModel: string
-  readonly maxTokens: number
-}
+type SummaryConfig = Pick<ResolvedTargetPolicy,
+  'summarizationProvider' | 'summarizationModel' | 'maxTokens' | 'maxTokensDefaulted'
+  | 'headroomTokens' | 'headroomTokensDefaulted' | 'thresholdRatio'>
 
 /** Tags wrapping the structured summary inside the landed checkpoint node. */
 const SUMMARY_OPEN_TAG = '<compacted-summary>'
@@ -149,18 +149,35 @@ export async function summarizeWithLlm(
       content: [{ type: 'text', text: COMPACTION_INSTRUCTION }],
     }),
   ]
+  let proposedMaxTokens = config.maxTokens
+  if (config.maxTokensDefaulted === true) {
+    try {
+      await ctx.llm.prepareCall({ ...target, maxTokens: proposedMaxTokens }, signal, (controls, model) => {
+        proposedMaxTokens = model.context === undefined ? config.headroomTokens : resolvedHeadroomTokens(config,
+          model.context.contextWindow - reservedCompletionTokens(agent.session.requestHeader(), model))
+        return { ...controls, maxTokens: proposedMaxTokens }
+      })
+    } catch (error) {
+      signal?.throwIfAborted()
+      if (error instanceof LlmError && error.code === 'ABORTED' || error instanceof Error && error.name === 'AbortError') throw error
+      // Budget pre-reading is optional; final stream routing owns model validation and dispatch failures.
+      proposedMaxTokens = config.maxTokens
+    }
+  }
   const options: GenerateOptions = {
-    provider: target.provider,
-    model: target.model,
+    ...target,
+    maxTokens: proposedMaxTokens,
     messages,
     toolHistory: agent.session.toolHistory(),
     ...input.tools === undefined ? {} : { tools: [...input.tools] },
-    maxTokens: config.maxTokens,
     sessionId: agent.session.id,
     purpose: 'compaction',
     ...signal === undefined ? {} : { signal },
   }
-  for await (const chunk of ctx.llm.stream(options)) assembler.push(chunk)
+  let dispatchedConfig: Readonly<LlmCallConfig> | undefined
+  for await (const chunk of ctx.llm.stream(options, (config: Readonly<LlmCallConfig>) => { dispatchedConfig = config })) {
+    assembler.push(chunk)
+  }
   const error = finishError(assembler.finish)
   if (error !== undefined) throw error
 
@@ -169,13 +186,14 @@ export async function summarizeWithLlm(
   if (!summary.some(block => block.text.trim().length > 0)) {
     throw new Error('summarization produced no text summary content')
   }
+  const dispatched = dispatchedConfig ?? options
   return {
     summary,
     rawOutput,
     llmStreamCall: true,
-    provider: options.provider,
-    model: options.model,
-    maxTokens: config.maxTokens,
+    provider: dispatched.provider,
+    model: dispatched.model,
+    ...dispatched.maxTokens === undefined ? {} : { maxTokens: dispatched.maxTokens },
     ...(assembler.usage === undefined ? {} : { usage: assembler.usage }),
   }
 }

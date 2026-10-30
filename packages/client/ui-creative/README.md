@@ -25,6 +25,8 @@ Manage image and video projects in the chat's right sidebar, including works ini
 
 API calls and rendered media retain the application public mount through [`appPath`](../ui-primitives/README.md#use-this-package); ownership checks still validate the canonical Host paths.
 
+When public model discovery declares speech models, **Audio** is available in the main AI creation modes. Choose a model-specific voice and file format, enter the text and supported optional voice direction or speed, then request a free estimate. Generation requires a second click displaying the quoted amount. Editing parameters, changing the account or chat, and quote expiry discard the estimate. Each confirmation creates one independent audio task; pending work does not block another request. Original-task checks never submit generation again. Saved files play with ordinary audio controls and can be downloaded. When the audio is retained but output-directory saving is pending, playback and download remain available, and **Save to the output directory again** saves that original file without a provider request, generation or additional charge.
+
 Open **Creation** in the chat's existing right sidebar. Each chat retains its selected project and shot, including projects associated with that chat by AI creation. The first actual project opens its sidebar tab once; later progress does not reopen a tab you closed. Characters, materials, shots and tasks have separate sections, with longer directions folded into details.
 
 The thumbnail timeline shows planned start and end times. Select a shot to inspect it, move it earlier or later, and edit its title, duration, camera, scene, action, prompt, dialogue, subtitles and character/material associations. Character and material cards support search, creation and editing; material uploads retain a real local reference identifier. Saving is free and checks the plan revision. A conflicting edit preserves the form and asks for refresh; running linked items cannot be rewritten. Requested timing and the latest submitted duration are separate facts.
@@ -80,7 +82,7 @@ The authoritative Credits account observable owns sign-in state. Account changes
 
 #### What the model sees
 
-Viewing, refreshing, querying an original image task, free field edits, uploads and downloading files make no model request. AI revisions and shot redo insert localized text, exact plan/member identifiers and the user's directions into the normal chat draft. The model sees these after the user sends them; the draft requests `get_creation_plan`, preservation of unrelated members and existing native generation/editing tools. Timeline and reference changes become model input through the logged plan read rather than a hidden message.
+Viewing, refreshing, querying an original image task, free field edits, uploads and downloading files make no model request. Explicit audio generation sends only the entered speech text and supported voice parameters to the chosen speech model after price confirmation; it does not include chat history or create a hidden chat message. AI revisions and shot redo insert localized text, exact plan/member identifiers and the user's directions into the normal chat draft. The model sees these after the user sends them; the draft requests `get_creation_plan`, preservation of unrelated members and existing native generation/editing tools. Timeline and reference changes become model input through the logged plan read rather than a hidden message.
 
 #### Token effect
 
@@ -96,6 +98,7 @@ The ordinary conversation submission owns caching. Reading progress and previewi
 
 The sidebar displays retained project facts and real files, with these limits:
 
+- Speech generation stays unavailable until the public model declares verified voices, formats, text limits and the speech execution/quote protocol. Catalog names or private administrator previews alone do not enable it. An unknown result does not establish a refund, and a missing original task id prevents recovery without another authorized source.
 - Earlier conversations without registered creation plans show no reconstructed storyboard; prose is not parsed to invent one.
 - An unknown image submission without a retained task identifier or complete owned image result cannot be recovered here; a request identifier alone does not authorize resubmission.
 - Reference directions do not guarantee that a provider preserves character appearance, spoken dialogue or lip timing.

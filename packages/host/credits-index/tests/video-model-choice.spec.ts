@@ -28,6 +28,19 @@ function fixture(extra: Partial<VideoModelChoiceOptions> = {}) {
 }
 
 describe('chat video defaults', () => {
+  it('quotes complete generic specifications without including prompts or reference bytes', () => {
+    expect(videoModelQuoteSegment({ model: 'ycapi-seedance-2-0-official', prompt: 'private text',
+      seconds: 5, duration: 5, resolution: '720p', size: '720p', ratio: '16:9', aspect_ratio: '16:9', quality: 'fast',
+      metadata: { first_frame_image: 'data:image/png;base64,private', ratio: '16:9' },
+      images: ['data:image/png;base64,private'],
+    }, 0)).toEqual({ id: 'clip-1', parameters: { seconds: 5, resolution: '720p', size: '720p',
+      ratio: '16:9', aspect_ratio: '16:9', quality: 'fast', metadata: { ratio: '16:9' } },
+    reference_counts: { images: 1, videos: 0, audios: 0 } })
+  })
+  it('does not guess the price of generic reference video or audio usage', () => {
+    expect(() => videoModelQuoteSegment({ model: 'generic', seconds: 5, metadata: { reference_video: ['private'] } }, 0))
+      .toThrow(expect.objectContaining({ code: 'CREATIVE_VIDEO_QUOTE_UNAVAILABLE' }))
+  })
   it('uses H3 768P unless the original human requested a different resolution', () => {
     expect(chatVideoResolution(undefined, 'MiniMax-H3')).toBe('768P')
     expect(chatVideoResolution('2K', 'MiniMax-H3')).toBe('768P')

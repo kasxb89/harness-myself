@@ -11,6 +11,16 @@ import { contentFixture } from '../../ui-imagegen/tests/content-fixture.client.t
 import { videoSpec, VIDEO_MODELS } from '../../../host/credits-index/src/model-parameters.ts'
 
 const params = {
+  strictReferences: undefined as boolean | undefined,
+  specifications: undefined as readonly {
+    size?: string
+    resolution?: string
+    seconds?: number
+    ratio?: string
+    quality?: string
+    mode?: string
+  }[] | undefined,
+  qualities: undefined as readonly string[] | undefined,
   defaultDuration: undefined as number | undefined,
   durationByResolution: undefined as Readonly<Record<string, readonly number[]>> | undefined,
   frameRatios: undefined as readonly string[] | undefined,
@@ -87,6 +97,112 @@ beforeEach(() => { vi.useRealTimers(); sessionAccountId = 'account-a'; chatSessi
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 describe('video composer', () => {
+  it('opens the audio workspace only after an audio model appears in the live catalog', async () => {
+    const { props } = setup()
+    const openAudio = vi.fn()
+    let audio = false
+    const original = fetcher.getMockImplementation()!
+    fetcher.mockImplementation(async (input, init) => {
+      const response = await original(input, init)
+      if (input !== '/credits/api/media/catalog') return response
+      const data = await response.json() as { ok: boolean; payload: { video: unknown[]; audio?: { id: string }[] } }
+      return json({ ...data, payload: { ...data.payload, audio: audio ? [{ id: 'tts-model' }] : [] } })
+    })
+    render(<VideoPage {...props} openAudio={openAudio} />)
+    await ready()
+    expect(screen.queryByRole('tab', { name: zh['tab.audio'] })).toBeNull()
+    audio = true
+    fireEvent.focus(window)
+    fireEvent.click(await screen.findByRole('tab', { name: zh['tab.audio'] }))
+    expect(openAudio).toHaveBeenCalledOnce()
+  })
+
+  it('sends supported video references without AI-writing-only images for an explicit live restriction', async () => {
+    const { mount, task, store } = setup({ strictReferences: true, frameSlots: 0, maxReferenceImages: 0,
+      maxReferenceVideos: 1, maxReferenceAudios: 0 })
+    store.actions.patch({ workflow: 'reference', slots: {
+      image: [{ assetId: 'ma_image', url: 'blob:image', name: 'writing.png', bytes: 1 }],
+      video: [{ assetId: 'ma_video', url: 'blob:video', name: 'motion.mp4', bytes: 1 }], audio: [],
+    } })
+    mount()
+    await ready()
+    writePrompt()
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    await waitFor(() => { expect(task).toHaveBeenCalledOnce() })
+    expect(store.getSnapshot().slots.image).toHaveLength(1)
+    expect(requestBody(task.mock.calls[0]?.[0])).toMatchObject({ referenceImages: [], referenceVideos: ['ma_video'] })
+  })
+
+  it('shows whole video offers and submits the selected quality with its own duration and resolution', async () => {
+    const specifications = [
+      { resolution: '720p', seconds: 5, ratio: '16:9', quality: 'mini' },
+      { resolution: '720p', seconds: 5, ratio: '16:9', quality: 'fast' },
+      { resolution: '1080p', seconds: 10, ratio: '16:9', quality: 'standard' },
+    ]
+    const { mount, task, store } = setup({ specifications, qualities: ['mini', 'fast', 'standard'],
+      frameSlots: 0, maxReferenceImages: 0, maxReferenceVideos: 0, maxReferenceAudios: 0,
+      modes: [], audio: false, audioToggle: false, seed: false }, 'ycapi-video')
+    mount()
+    await ready()
+    const settings = screen.getByRole('group', { name: zh.settings })
+    expect(within(settings).queryByRole('group', { name: zh.resolution })).toBeNull()
+    expect(within(settings).queryByRole('group', { name: zh.duration })).toBeNull()
+    expect(within(settings).queryByRole('group', { name: zh.quality })).toBeNull()
+    const offers = within(settings).getByRole('group', { name: zh.specification })
+    expect(within(offers).getAllByRole('button')).toHaveLength(3)
+    fireEvent.click(within(offers).getByRole('button', { name: '16:9 · 720p · 5 秒 · fast' }))
+    expect(store.getSnapshot()).toMatchObject({ resolution: '720p', duration: 5, ratio: '16:9', quality: 'fast' })
+    writePrompt()
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    await waitFor(() => { expect(task).toHaveBeenCalledOnce() })
+    expect(requestBody(task.mock.calls[0]?.[0])).toMatchObject({ model: 'ycapi-video', quality: 'fast',
+      resolution: '720p', durationSeconds: 5, ratio: '16:9', frameImages: [], referenceImages: [], referenceVideos: [], referenceAudios: [] })
+    expect({ offers: within(offers).getAllByRole('button').map(item => item.textContent),
+      submitted: requestBody(task.mock.calls[0]?.[0]) }).toMatchSnapshot()
+  })
+
+  it('offers declared quality tiers even when the model uses independent parameter menus', async () => {
+    const { mount, task } = setup({ qualities: ['fast', 'pro'] })
+    mount()
+    await ready()
+    fireEvent.click(within(screen.getByRole('group', { name: zh.quality })).getByRole('button', { name: 'pro' }))
+    writePrompt()
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    await waitFor(() => { expect(task).toHaveBeenCalledOnce() })
+    expect(requestBody(task.mock.calls[0]?.[0])).toMatchObject({ quality: 'pro' })
+  })
+
+  it('clears unsupported video, audio and frame references while retaining image materials for AI writing', async () => {
+    const { mount, task, props, store } = setup({ strictReferences: true, frameSlots: 0, maxReferenceImages: 0,
+      maxReferenceVideos: 0, maxReferenceAudios: 0 })
+    const image = { assetId: 'ma_image', url: 'blob:image', name: 'image.png', bytes: 1 }
+    store.actions.patch({ workflow: 'reference', firstFrame: image, lastFrame: image,
+      slots: { image: [image], video: [{ assetId: 'ma_video', url: 'blob:video', name: 'video.mp4', bytes: 1 }],
+        audio: [{ assetId: 'ma_audio', url: 'blob:audio', name: 'audio.wav', bytes: 1 }] } })
+    mount()
+    await ready()
+    expect(store.getSnapshot()).toMatchObject({ firstFrame: null, lastFrame: null, workflow: 'text',
+      slots: { image: [image], video: [], audio: [] } })
+    expect(props.releasePreview).toHaveBeenCalledWith('blob:video')
+    expect(props.releasePreview).toHaveBeenCalledWith('blob:audio')
+    expect(props.releasePreview).not.toHaveBeenCalledWith('blob:image')
+    writePrompt()
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    await waitFor(() => { expect(task).toHaveBeenCalledOnce() })
+    expect(requestBody(task.mock.calls[0]?.[0])).toMatchObject({
+      frameImages: [], referenceImages: [], referenceVideos: [], referenceAudios: [],
+    })
+  })
+
+  it('keeps video generation disabled when the live complete specification list is empty', async () => {
+    const { mount, task } = setup({ specifications: [] })
+    mount()
+    await ready()
+    writePrompt()
+    expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', true)
+    expect(task).not.toHaveBeenCalled()
+  })
+
   it.each(Object.entries(VIDEO_MODELS).filter(([id, spec]) => id === 'MiniMax-H3' || spec.source === 'plugin:blackrxai-video'))(
     'shows every declared duration and size and submits the selected values for %s', async (id, spec) => {
       const { mount, task } = setup({ durations: [...spec.durations], defaultDuration: spec.defaultDuration,

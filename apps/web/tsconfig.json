@@ -126,6 +126,7 @@
     "tests/creative-sidebar.e2e.ts",
     "tests/creation-composer-layout.e2e.ts",
     "tests/creation-video-controls.e2e.ts",
+    "tests/ai-creation-specifications.e2e.ts",
     "tests/image-reference-upload.e2e.ts",
     "tests/developer-tools-settings.e2e.ts",
     "tests/models-settings.e2e.ts",

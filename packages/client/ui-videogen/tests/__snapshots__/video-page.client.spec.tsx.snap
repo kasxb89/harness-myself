@@ -10,4 +10,28 @@ exports[`video composer > retains an invalid seed 9007199254740992 and stops bef
 
 exports[`video composer > retains an invalid seed not-a-seed and stops before generation 1`] = `"随机种子需要是有效的整数"`;
 
+exports[`video composer > shows whole video offers and submits the selected quality with its own duration and resolution 1`] = `
+{
+  "offers": [
+    "16:9 · 720p · 5 秒 · mini",
+    "16:9 · 720p · 5 秒 · fast",
+    "16:9 · 1080p · 10 秒 · standard",
+  ],
+  "submitted": {
+    "account_id": "account-a",
+    "durationSeconds": 5,
+    "frameImages": [],
+    "model": "ycapi-video",
+    "prompt": "A continuous tracking shot",
+    "quality": "fast",
+    "ratio": "16:9",
+    "referenceAudios": [],
+    "referenceImages": [],
+    "referenceVideos": [],
+    "resolution": "720p",
+    "session_id": "session-a",
+  },
+}
+`;
+
 exports[`video composer > uses resolution-specific duration menus and visibly corrects a previously selected duration 1`] = `"画面比例16:9横屏9:16竖屏分辨率480p768p1080p2K时长5 秒15 秒音轨为视频生成声音开档位normalpro随机种子"`;

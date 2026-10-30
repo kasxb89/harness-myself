@@ -5,6 +5,10 @@ export const NS = 'videogen'
 
 /** Simplified Chinese copy for the video composer. */
 export const zh = {
+  'quality': '质量',
+  'materialsAdjusted': '已按当前模型更新参考素材，图片素材仍可用于 AI 帮写',
+  'specification': '完整规格',
+  'specificationHint': '以下为可用的完整组合，切换会同时更新质量、尺寸和时长',
   'playback.seek': '播放进度',
   'playback.waiting': '读取视频时长后可拖动播放',
   'playback.failed': '暂时无法跳转播放位置，请等待视频加载后重试',
@@ -39,6 +43,7 @@ export const zh = {
   'tab.image': '图片',
   'mode.label': '创作模式',
   'tab.video': '视频',
+  'tab.audio': '音频',
   'title': 'AI 创作',
   'sessionRequired': '请先在聊天中选择或新建会话，生成的项目和产物会关联到该会话',
   'signedOut': '先在「额度」里用手机号登录，这里就能生成视频了。',
@@ -221,6 +226,10 @@ export const zh = {
 
 /** English copy for every video composer translation key. */
 export const en: Record<keyof typeof zh, string> = {
+  'quality': 'Quality',
+  'materialsAdjusted': 'References were adjusted for this model. Image materials remain available for AI writing.',
+  'specification': 'Complete specification',
+  'specificationHint': 'Choose a complete combination. Quality, size and duration change together.',
   'playback.seek': 'Playback position',
   'playback.waiting': 'Seeking is available after the video duration loads',
   'playback.failed': 'This position could not be reached. Wait for the video to load and retry.',
@@ -255,6 +264,7 @@ export const en: Record<keyof typeof zh, string> = {
   'tab.image': 'Images',
   'mode.label': 'Creation mode',
   'tab.video': 'Videos',
+  'tab.audio': 'Audio',
   'title': 'Create',
   'sessionRequired': 'Select or create a conversation in Chat first. Projects and outputs will be linked to it.',
   'signedOut': 'Sign in with your phone in Credits first; video generation unlocks here.',

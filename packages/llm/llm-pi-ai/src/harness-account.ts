@@ -14,9 +14,11 @@ export interface HarnessAccount {
   /**
    * Resolve the current signed-in account after checking its backend and expiry.
    * @param baseURL - Exact model API root being requested.
-   * @returns The current relay key, or undefined when no live session authorizes the request.
+   * @param expectedModelLimitsScope - Optional account/backend binding captured with prepared model limits;
+   * a changed account must refuse it, while ordinary same-account credential renewal keeps it valid.
+   * @returns The current relay key, or undefined when no live session authorizes this exact request scope.
    */
-  resolveRelayKey(baseURL: string): Promise<string | undefined>
+  resolveRelayKey(baseURL: string, expectedModelLimitsScope?: string): Promise<string | undefined>
 }
 
 declare module '@deepseek-ai/cordis' {

@@ -1,0 +1,4 @@
+.page { height: 100%; min-height: 0; overflow: auto; box-sizing: border-box; padding: 24px 32px 48px; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-layer-1); }
+.content { display: flex; flex-direction: column; gap: 20px; max-width: 1120px; margin: 0 auto; }
+.header { display: flex; align-items: center; gap: 24px; min-height: 36px; flex-wrap: wrap; }
+.title { margin: 0; font-size: 22px; font-weight: 500; }

@@ -40,6 +40,10 @@ exports[`video tools through Loader, real tool registry and jobs runtime > regis
         },
         "type": "array",
       },
+      "mode": {
+        "description": "Optional published vendor mode, distinct from quality.",
+        "type": "string",
+      },
       "model": {
         "description": "Defaults to MiniMax-H3 at 768P unless the human explicitly requested another resolution. A non-H3 model requires a current full-price estimate and a real human model selection before generation; model arguments never approve that change.",
         "type": "string",
@@ -50,6 +54,10 @@ exports[`video tools through Loader, real tool registry and jobs runtime > regis
       },
       "prompt": {
         "description": "What the video should show. Before calling, script user-delegated narrative or dialogue scenes with stable character ids, language, brief exact lines and their timing, identifying on-screen speakers versus narration; preserve user-supplied wording. Do not reduce a story requiring voices to a music montage. Respect silent/no-dialogue requests and do not add dialogue or subtitles to unrelated nonverbal videos. Include requested lip-sync and subtitle requirements. These request native model generation, not separate speech, lip-sync or subtitle processing; verify the rendered result before claiming they are met.",
+        "type": "string",
+      },
+      "quality": {
+        "description": "Exact quality tier from the selected complete specification; preserve it for quote and generation.",
         "type": "string",
       },
       "ratio": {
@@ -83,6 +91,10 @@ exports[`video tools through Loader, real tool registry and jobs runtime > regis
       },
       "shot_id": {
         "description": "Exact shot id in the explicit plan; never guess a latest project.",
+        "type": "string",
+      },
+      "size": {
+        "description": "Exact native size from a complete specification, when distinct from resolution.",
         "type": "string",
       },
       "work_id": {
@@ -145,6 +157,10 @@ exports[`video tools through Loader, real tool registry and jobs runtime > regis
           },
           "type": "array",
         },
+        "mode": {
+          "description": "Published vendor mode, only when supported.",
+          "type": "string",
+        },
         "model": {
           "description": "Defaults to MiniMax-H3 at 768P unless the human explicitly requested another resolution. Preserve an explicitly requested model; any non-H3 selection requires a current full-price estimate and a real human model choice before generation. Model arguments never approve that change.",
           "type": "string",
@@ -155,6 +171,10 @@ exports[`video tools through Loader, real tool registry and jobs runtime > regis
         },
         "prompt": {
           "description": "The complete video brief, visual continuity, story, and desired editing. Before calling, script user-delegated narrative or dialogue scenes with stable character ids, language and brief exact lines, identifying on-screen speakers versus narration; preserve user-supplied wording. Assign each line and its timing to a shot in shot_prompts. Do not reduce a story requiring voices to a music montage. Respect silent/no-dialogue requests and do not add dialogue or subtitles to unrelated nonverbal videos. Include requested lip-sync and subtitle requirements. These request native model generation, not separate speech, lip-sync or subtitle processing; verify the rendered result before claiming they are met.",
+          "type": "string",
+        },
+        "quality": {
+          "description": "Exact quality tier from the complete published specification; used for both quote and submission.",
           "type": "string",
         },
         "ratio": {
@@ -204,6 +224,10 @@ exports[`video tools through Loader, real tool registry and jobs runtime > regis
             "type": "string",
           },
           "type": "array",
+        },
+        "size": {
+          "description": "Exact native output size from the complete published specification, when distinct from resolution.",
+          "type": "string",
         },
         "total_duration_seconds": {
           "description": "Desired final length in whole seconds; this may exceed the model single-clip limit. For a simple single clip with no plan or explicit shot arrays, omit to use the selected model’s actual default duration. The Host reads the real catalog itself; no separate list_video_models call is needed. Required for explicit plans and shot arrays; never omit a user-specified duration.",

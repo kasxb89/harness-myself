@@ -59,23 +59,23 @@ kind: "package-reference"
 
 ### 调整压缩开始的时机
 
-所有设置都可选。设上下文窗口为 `W`、生效请求输出上限为 `O`、余量为 `B`，默认触发阈值为 `floor(min(W × 0.8, W − O − B))`，其中 `B = 65,536` tokens。逐字保留的近期历史预算仍为 `W − O` 的 16%。下表列出全部设置；生成的[配置目录](../../../docs/config-catalog.zh.md#deepseek-aidsh-compaction-basic)还包含字段类型。
+所有设置都可选。设上下文窗口为 `W`、生效请求输出上限为 `O`、余量为 `B`，默认触发阈值为 `floor(min(W × 0.8, W − O − B))`，未设置余量时，`B = min(65536, max(1, floor((W − O) × (1 − thresholdRatio))))`。使用现有阈值比例预留剩余预算，保留原默认 64K 作为上限。逐字保留的近期历史预算仍为 `W − O` 的 16%。下表列出全部设置；生成的[配置目录](../../../docs/config-catalog.zh.md#deepseek-aidsh-compaction-basic)还包含字段类型。
 
 | 字段 | 默认值 | 含义 |
 |---|---|---|
 | `thresholdRatio` | `0.8` | 用于 `floor(min(W × thresholdRatio, W − O − headroomTokens))` 的窗口比例。 |
-| `headroomTokens` | `65536` | 路由请求输出预留之外的额外压力余量；必须为非负整数。 |
+| `headroomTokens` | 自适应，最多 `65536` | 路由请求输出预留之外的额外压力余量；显式非负整数保持原值，未设置时随当前可用窗口缩放。 |
 | `retainRatio` | `0.16` | 以 `W − O` 的一部分表示逐字保留的近期对话；与 `retainTokens` 互斥。 |
 | `retainTokens` | — | 逐字保留的近期对话绝对预算；与 `retainRatio` 互斥，并且必须低于已解析阈值。 |
 | `summarizationProvider` | `''` | 与 `summarizationModel` 一起设置；空对使用最新已路由请求目标，再回退到 `AgentOptions` 对。 |
 | `summarizationModel` | `''` | 与 `summarizationProvider` 一起设置；空对使用最新已路由请求目标，再回退到 `AgentOptions` 对。 |
-| `maxTokens` | `headroomTokens`（`65536`） | 正数摘要输出上限，包含提供方计入的推理 token。显式模型上限覆盖显式全局上限；否则跟随解析后的余量。 |
+| `maxTokens` | 解析后的 `headroomTokens` | 正数摘要输出上限，包含提供方计入的推理 token。显式模型上限覆盖显式全局上限；否则跟随解析后的余量。 |
 | `compactionRetries` | `1` | 压力仍高于阈值时，在首次压缩后进行的额外尝试次数。 |
 | `maxOverflowRetries` | `1` | 已确认上下文窗口溢出后的最大重试次数；`0` 只禁用恢复。 |
 | `modelPolicies` | `[]` | 针对个别模型路由的精确 `{ provider, model, ...partialPolicy }` 覆盖。 |
 | `auto` | `true` | 启用自动压缩与溢出恢复；设为 `false` 则仅手动执行。 |
 
-配置错误会快速失败：未知设置、重复的按模型覆盖、无效 token 数、两种保留形式同时出现，或保留比例不小于阈值比例，都会在加载时拒绝插件。模型首次使用时，`W − O − B` 必须为正，且解析出的保留预算必须低于触发阈值。余量为零时，必须在全局或对应模型策略中显式设置正数 `maxTokens`。小窗口部署必须配置适合其容量的余量；降低 `thresholdRatio` 可以提早压缩。
+配置错误会快速失败：未知设置、重复的按模型覆盖、无效 token 数、两种保留形式同时出现，或保留比例不小于阈值比例，都会在加载时拒绝插件。模型首次使用时，`W − O − B` 必须为正，且解析出的保留预算必须低于触发阈值。余量为零时，必须在全局或对应模型策略中显式设置正数 `maxTokens`。未设置的余量会适应较小窗口。显式余量仍必须适合已声明容量；降低 `thresholdRatio` 可以提早压缩。
 
 ### 压缩运行时会发生什么
 
@@ -126,7 +126,7 @@ kind: "package-reference"
 
 ### 配置解析
 
-`resolveConfig` 验证并分离默认值，`resolveTargetPolicy` 合并精确的提供方／模型覆盖，`resolveCompactSpec` 要求显式传入适配器容量与路由请求的输出预留，以解析触发阈值和保留预算。预留取自生效信封的 `maxTokens`，否则回退到适配器默认值，再回退到零。策略解析绝不咨询模型发现（`listModels()`）；只有持久路由的容量才重要。
+`resolveConfig` 验证并分离默认值，`resolveTargetPolicy` 合并精确的提供方／模型覆盖，`resolveCompactSpec` 要求显式传入适配器容量与路由请求的输出预留，以解析触发阈值和保留预算。显式或旧版信封的 `maxTokens` 提供输出预留，并受当前硬输出上限约束。适配器默认值标记使用当前模型默认值，而不是之前记录的数值；没有默认值时使用硬上限，再回退到零。每次压力检查都重新读取模型容量与默认值。策略解析绝不咨询模型发现（`listModels()`）；只有持久路由的容量才重要。
 
 ### 源码地图
 
@@ -134,7 +134,8 @@ kind: "package-reference"
 |---|---|
 | [`src/index.ts`](src/index.ts) | 插件入口：`BasicCompactionEngine`、自动 listener、入口点分发 |
 | [`src/region.ts`](src/region.ts) | 保留选择与共享的先记录标记压缩事务 |
-| [`src/summarizer.ts`](src/summarizer.ts) | 默认 `ctx.llm.stream()` 摘要、检查点框定、安全摘要投影 |
+| [`src/request-budget.ts`](src/request-budget.ts) | 当前输出预留与仅默认余量的缩放 |
+| [`src/summarizer.ts`](src/summarizer.ts) | 准备预算、观察实际派发、检查点框定、安全摘要投影 |
 | [`src/config.ts`](src/config.ts) | 加载时验证与路由模型策略解析 |
 | [`src/types.ts`](src/types.ts) | `BasicCompactionConfig` 与已解析策略词汇 |
 
@@ -226,7 +227,7 @@ Rules:
 
 #### Token 影响
 
-这是一次独立模型调用：输入是已回放会话前缀加固定指令，输出受 `maxTokens` 限制。收敛重试可能多次支付这项成本。
+这是一次独立模型调用：输入是已回放会话前缀加固定指令，输出受 `maxTokens` 限制。准备阶段根据当前模型元数据计算默认摘要余量。流式路由继续可用；最终派发报告已解析的路由与输出上限，摘要直接保存该结果，不再次查询元数据猜测。 如果可选的默认预算元数据读取在路由前失败，则继续使用已校验的策略上限作为提议；最终路由校验失败与取消仍按原规则使操作失败。收敛重试可能多次支付这项成本。
 
 #### KV Cache 影响
 

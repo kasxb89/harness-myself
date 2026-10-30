@@ -28,6 +28,7 @@ import {
   selectCompactableRange,
 } from './region.ts'
 import { summarizeWithLlm } from './summarizer.ts'
+import { reservedCompletionTokens } from './request-budget.ts'
 import type { SummarizationInput, SummaryResult } from './summarizer.ts'
 import type {
   BasicCompactionConfig,
@@ -54,17 +55,6 @@ function routedTarget(
     return undefined
   }
   return { provider: config.provider, model: config.model }
-}
-
-/**
- * Output tokens the routed request reserves, which the provider charges to the
- * same window as the prompt. The effective envelope's own cap wins; otherwise
- * the adapter's per-request default, which the adapter materializes when that
- * envelope omits one. No declared cap means no reservation.
- */
-function reservedCompletionTokens(agent: Agent, defaultMaxTokens: number | undefined): number {
-  const configured = agent.session.requestHeader()?.config.maxTokens
-  return configured ?? defaultMaxTokens ?? 0
 }
 
 /** Resolve the conversation target used to select an optional policy override. */
@@ -314,7 +304,7 @@ export class BasicCompactionEngine extends CompactionEngine {
     const spec = resolveCompactSpec(
       policy,
       info.context.contextWindow,
-      reservedCompletionTokens(agent, info.defaultMaxTokens),
+      reservedCompletionTokens(agent.session.requestHeader(), info),
     )
     if (measurement.totalTokens < spec.thresholdTokens) return null
 

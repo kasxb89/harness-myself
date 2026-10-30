@@ -1315,10 +1315,10 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'Current model IDs after configuration is synchronized; empty hides every old model. Unavailable or changed accounts reject.',
       },
       {
-        signature: 'resolveRelayKey(baseURL: string): Promise<string | undefined>',
+        signature: 'resolveRelayKey(baseURL: string, expectedModelLimitsScope?: string): Promise<string | undefined>',
         description: 'Resolve the current signed-in account after checking its backend and expiry.',
-        parameters: [{ name: 'baseURL', description: 'Exact model API root being requested.' }],
-        returns: 'The current relay key, or undefined when no live session authorizes the request.',
+        parameters: [{ name: 'baseURL', description: 'Exact model API root being requested.' }, { name: 'expectedModelLimitsScope', description: 'Optional account/backend binding captured with prepared model limits; a changed account must refuse it, while ordinary same-account credential renewal keeps it valid.' }],
+        returns: 'The current relay key, or undefined when no live session authorizes this exact request scope.',
       },
     ],
   },
@@ -1551,9 +1551,9 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
       },
       {
         signature: 'async resolveCallConfig(config: LlmCallConfig, signal?: AbortSignal): Promise<LlmCallConfig>',
-        description: 'Validate a conversation call config against its exact model capability and materialize adapter-configured defaults. Unsupported explicit efforts reject before provider I/O; no clamping or aliasing is performed. This standalone query does not bind a later dispatch; use prepareCall when logging and streaming must share one adapter registration.',
+        description: 'Validate a conversation call config against its exact model capability and materialize adapter-configured defaults. Unsupported explicit efforts reject before provider I/O. Output budgets are capped only when the exact model declares a hard output limit. This standalone query does not bind a later dispatch; use prepareCall when logging and streaming must share one adapter registration.',
         parameters: [{ name: 'config', description: 'provider/model route and optional request controls.' }, { name: 'signal', description: 'optional cancellation for adapter-owned capability lookup.' }],
-        returns: 'a detached config only when a default must be materialized.',
+        returns: 'the input config when unchanged, or a detached config with resolved controls.',
       },
       {
         signature: 'async prepareCall( config: LlmCallConfig, signal?: AbortSignal, configure?: ConfigureCall, ): Promise<PreparedLlmCall>',
@@ -1562,9 +1562,9 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'a prepared config and its registration-bound stream entry point.',
       },
       {
-        signature: 'stream(options: GenerateOptions): AsyncIterable<StreamChunk>',
+        signature: 'stream(options: GenerateOptions, observeConfig?: (config: Readonly<LlmCallConfig>) => void): AsyncIterable<StreamChunk>',
         description: 'Stream one model call as raw chunks (token-level deltas). Replay state is retained only when the same adapter instance owns its historical provider and the target provider. Final adapter selection remains fixed through asynchronous exact-model resolution and dispatch. Adapter selection, dispatch, and iteration failures become terminal `error` or `aborted` finish chunks; middleware, nested-call, cleanup, and consumer failures remain thrown.',
-        parameters: [{ name: 'options', description: 'the full request; `options.provider` selects the adapter.' }],
+        parameters: [{ name: 'options', description: 'the full request; `options.provider` selects the adapter.' }, { name: 'observeConfig', description: 'Optional synchronous observer of detached, frozen controls after middleware routing and exact-model limits, before adapter dispatch. It is not called for a middleware-only result. Observer errors become terminal failures before provider I/O; provider window protection may further lower its wire budget.' }],
         returns: 'the chunk stream, possibly wrapped by `llm/stream` listeners.',
       },
     ],
@@ -5976,7 +5976,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'LlmResolvedModelInfo',
-    declaration: 'export interface LlmResolvedModelInfo extends LlmModelInfo {\n    context?: LlmModelContext;\n    defaultMaxTokens?: number;\n    reasoning?: LlmModelReasoningInfo;\n    systemPromptUpdate?: SystemPromptUpdate;\n    toolUpdate?: ToolUpdate;\n}',
+    declaration: 'export interface LlmResolvedModelInfo extends LlmModelInfo {\n    context?: LlmModelContext;\n    defaultMaxTokens?: number;\n    maxOutputTokens?: number;\n    reasoning?: LlmModelReasoningInfo;\n    systemPromptUpdate?: SystemPromptUpdate;\n    toolUpdate?: ToolUpdate;\n}',
   },
   {
     name: 'LlmRuntime',

@@ -512,7 +512,7 @@ function parseManifest(value: unknown): VideoProjectManifest {
     throw new VideoProjectError('INVALID_RECORD', '已完成的视频项目缺少真实成片信息，无法作为成功结果交付。')
   }
   if (input.audio !== undefined && typeof input.audio !== 'boolean') throw new VideoProjectError('INVALID_RECORD', '视频项目音轨设置损坏，已停止操作。')
-  const optionalInput = Object.fromEntries(['model', 'resolution', 'ratio', 'title'].flatMap(key => input[key] === undefined ? [] : [[key, text(input, key)]]))
+  const optionalInput = Object.fromEntries(['model', 'resolution', 'size', 'ratio', 'quality', 'mode', 'title'].flatMap(key => input[key] === undefined ? [] : [[key, text(input, key)]]))
   const parsedInput: VideoProjectInput = {
     prompt: text(input, 'prompt'), totalDurationSeconds: positive(input, 'totalDurationSeconds'), ...optionalInput,
     ...shotControls(input),
@@ -632,7 +632,7 @@ export async function prepareVideoProject(
     throw new VideoProjectError('ARTIFACT_DESTINATION_UNAVAILABLE', '产物保存目录不可写，请在产物页检查保存位置后重试；尚未提交生成。', { cause })
   }
   await provider.assertCurrent()
-  const model = await provider.model(input.model, signal, input.resolution)
+  const model = await provider.model(input.model, signal, input.resolution, input.quality, input.mode, input.ratio, input.size)
   const durations = input.shotDurations === undefined
     ? planVideoDurations(input.totalDurationSeconds, model.durations, options.maxSegments) : [...input.shotDurations]
   if (input.shotDurations !== undefined && durations.some(duration => !model.durations.includes(duration))) {

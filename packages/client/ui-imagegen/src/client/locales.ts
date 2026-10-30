@@ -5,6 +5,9 @@ export const NS = 'imagegen'
 
 /** Simplified Chinese image-workspace copy. */
 export const zh = {
+  'specification': '完整规格',
+  'specificationHint': '以下为可用的完整组合，切换会同时更新质量和尺寸',
+  'settingsUnavailable': '当前模型暂无可用规格，请刷新模型后重试',
   'panel': 'AI 创作',
   'composer': '图片创作工作台',
   'parameters': '图片规格',
@@ -77,6 +80,7 @@ export const zh = {
   'tab.image': '图片',
   'mode.label': '创作模式',
   'tab.video': '视频',
+  'tab.audio': '音频',
   'title': 'AI 创作',
   'sessionRequired': '请先在聊天中选择或新建会话，生成的项目和产物会关联到该会话',
   'signedOut': '先在「额度」里用手机号登录，这里就能生成图片了。',
@@ -145,6 +149,9 @@ export const zh = {
 
 /** English image-workspace copy with the same keys as Chinese. */
 export const en: Record<keyof typeof zh, string> = {
+  'specification': 'Complete specification',
+  'specificationHint': 'Choose a complete combination. Quality and size change together.',
+  'settingsUnavailable': 'No specifications are available. Refresh the models and try again.',
   'panel': 'Create',
   'composer': 'Image creation workspace',
   'parameters': 'Image specifications',
@@ -217,6 +224,7 @@ export const en: Record<keyof typeof zh, string> = {
   'tab.image': 'Images',
   'mode.label': 'Creation mode',
   'tab.video': 'Videos',
+  'tab.audio': 'Audio',
   'title': 'Create',
   'sessionRequired': 'Select or create a conversation in Chat first. Projects and outputs will be linked to it.',
   'signedOut': 'Sign in with your phone in Credits first; generation unlocks here.',

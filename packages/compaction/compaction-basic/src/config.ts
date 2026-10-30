@@ -6,6 +6,7 @@
 
 import type { LlmCallConfig } from '@deepseek-ai/dsh-llm'
 import { deepFreeze } from '@deepseek-ai/dsh-util-values'
+import { resolvedHeadroomTokens } from './request-budget.ts'
 import type {
   BasicCompactionConfig,
   CompactionPolicyConfig,
@@ -82,7 +83,10 @@ export function resolveConfig(config: BasicCompactionConfig = {}): ResolvedConfi
   for (const [index, policy] of modelPolicies.entries()) {
     if (policy.maxTokens === undefined && config.maxTokens === undefined
       && policy.headroomTokens !== undefined) {
-      policy.maxTokens = policy.headroomTokens
+      assertPositiveInteger(
+        `BasicCompactionConfig: modelPolicies[${index}].maxTokens (from headroomTokens)`,
+        policy.headroomTokens,
+      )
     }
     assertPositiveInteger(
       `BasicCompactionConfig: modelPolicies[${index}].maxTokens (explicit or from headroomTokens)`,
@@ -98,10 +102,12 @@ export function resolveConfig(config: BasicCompactionConfig = {}): ResolvedConfi
   return deepFreeze({
     thresholdRatio,
     headroomTokens,
+    ...config.headroomTokens === undefined ? { headroomTokensDefaulted: true as const } : {},
     ...retention,
     summarizationProvider: config.summarizationProvider ?? '',
     summarizationModel: config.summarizationModel ?? '',
     maxTokens,
+    ...config.maxTokens === undefined ? { maxTokensDefaulted: true as const } : {},
     compactionRetries: config.compactionRetries ?? 1,
     maxOverflowRetries: config.maxOverflowRetries ?? 1,
     modelPolicies,
@@ -129,10 +135,14 @@ export function resolveTargetPolicy(
     target: { provider: target.provider, model: target.model },
     thresholdRatio: override?.thresholdRatio ?? config.thresholdRatio,
     headroomTokens: override?.headroomTokens ?? config.headroomTokens,
+    ...override?.headroomTokens === undefined && config.headroomTokensDefaulted === true
+      ? { headroomTokensDefaulted: true as const } : {},
     ...resolveRetention(override ?? {}, inheritedRetention),
     summarizationProvider: override?.summarizationProvider ?? config.summarizationProvider,
     summarizationModel: override?.summarizationModel ?? config.summarizationModel,
-    maxTokens: override?.maxTokens ?? config.maxTokens,
+    maxTokens: override?.maxTokens ?? (override?.headroomTokens !== undefined && config.maxTokensDefaulted === true
+      ? override.headroomTokens : config.maxTokens),
+    ...override?.maxTokens === undefined && config.maxTokensDefaulted === true ? { maxTokensDefaulted: true as const } : {},
     compactionRetries: override?.compactionRetries ?? config.compactionRetries,
     maxOverflowRetries: override?.maxOverflowRetries ?? config.maxOverflowRetries,
   })
@@ -178,12 +188,13 @@ export function resolveCompactSpec(
       + "the adapter model's contextWindow above the effective request maxTokens",
     )
   }
-  const pressureBudgetTokens = messageBudgetTokens - policy.headroomTokens
+  const headroomTokens = resolvedHeadroomTokens(policy, messageBudgetTokens)
+  const pressureBudgetTokens = messageBudgetTokens - headroomTokens
   if (pressureBudgetTokens <= 0) {
     throw new TargetPressureConfigError(
       targetKey,
       `compaction-basic: ${targetKey} reserves ${reservedCompletionTokens} completion tokens `
-      + `and ${policy.headroomTokens} headroom tokens of its ${contextWindow}-token context `
+      + `and ${headroomTokens} headroom tokens of its ${contextWindow}-token context `
       + 'window, leaving no pressure budget; reduce the effective request maxTokens or '
       + 'compaction headroomTokens, or configure a larger adapter model contextWindow',
     )
@@ -210,7 +221,7 @@ export function resolveCompactSpec(
     retainTokens,
     summarizationProvider: policy.summarizationProvider,
     summarizationModel: policy.summarizationModel,
-    maxTokens: policy.maxTokens,
+    maxTokens: policy.maxTokensDefaulted === true ? headroomTokens : policy.maxTokens,
     compactionRetries: policy.compactionRetries,
     maxOverflowRetries: policy.maxOverflowRetries,
   })

@@ -25,6 +25,8 @@ export interface VideoDraft {
   prompt: string
   duration: number
   resolution: string
+  size: string
+  quality: string
   ratio: string
   mode: string
   seed: string
@@ -68,7 +70,7 @@ type DraftActions = {
 export function createVideoDraftStore(): EngineStoreHandle<VideoDraft, DraftActions> {
   return defineStore({
     init: (): VideoDraft => ({
-      modelId: '', prompt: '', duration: 0, resolution: '', ratio: '', mode: '', seed: '', audio: true,
+      modelId: '', prompt: '', duration: 0, resolution: '', size: '', quality: '', ratio: '', mode: '', seed: '', audio: true,
       workflow: 'text', frameWorkflowSelection: null, firstFrame: null, lastFrame: null, slots: { image: [], video: [], audio: [] },
       category: 'all', uploading: null, phase: 'idle', startedAt: 0, message: null, failure: null, result: null,
       uploadFailures: [], unsettled: {},

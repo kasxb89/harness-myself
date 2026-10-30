@@ -208,6 +208,7 @@
     "apps/web/tests/creative-sidebar.e2e.ts",
     "apps/web/tests/creation-composer-layout.e2e.ts",
     "apps/web/tests/creation-video-controls.e2e.ts",
+    "apps/web/tests/ai-creation-specifications.e2e.ts",
     "apps/web/tests/image-reference-upload.e2e.ts",
     "apps/web/tests/sidebar-terminal.e2e.ts",
     "apps/web/tests/chat-scroll-fixture.ts",

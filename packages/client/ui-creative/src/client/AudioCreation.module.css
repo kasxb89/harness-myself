@@ -1,0 +1,15 @@
+.root { flex-shrink: 0; margin: 0 14px 12px; border: 0.5px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-md); max-height: 60%; overflow: auto; }
+.root summary { cursor: pointer; padding: 10px 12px; font-weight: 500; }
+.body { display: flex; flex-direction: column; gap: 12px; padding: 0 12px 12px; }
+.field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.input, .number { box-sizing: border-box; width: 100%; padding: 8px; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-base); border: 0.5px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-sm); font: inherit; }
+.input { min-height: 90px; resize: vertical; }
+.options, .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.options > * { flex: 1; }
+.notice, .hint, .task p { margin: 0; line-height: 1.6; overflow-wrap: anywhere; }
+.hint { color: var(--dsw-alias-label-secondary); font-size: 12px; }
+.history { display: flex; flex-direction: column; gap: 10px; }
+.history h3 { margin: 0; font-size: 13px; font-weight: 500; }
+.task { display: flex; flex-direction: column; gap: 8px; border-top: 0.5px solid var(--dsw-alias-border-l3); padding-top: 10px; }
+.task audio { width: 100%; }
+.download { color: var(--dsw-alias-link); text-decoration: none; font-size: 12px; }

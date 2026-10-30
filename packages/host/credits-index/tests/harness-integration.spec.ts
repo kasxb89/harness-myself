@@ -81,7 +81,7 @@ let restartProduct: (() => Promise<string>) | undefined
 let imageResponse: unknown
 let imageTaskStatus: string | undefined
 let imageTaskHttpStatus = 200
-const internalUploadResponses: { status: number; body?: unknown; disconnect?: boolean }[] = []
+const internalUploadResponses: { status: number; body?: unknown; disconnect?: boolean; matchFile?: Buffer }[] = []
 let relayKey = 'sk-owned-relay'
 let upstreamGate: ((path: string, response: ServerResponse) => Promise<void>) | undefined
 let releaseUpstreamGate: (() => void) | undefined
@@ -246,7 +246,8 @@ async function boot(
       if (url.pathname === '/harness/api/pricing') { answer(pricingRows); return }
       if (url.pathname === '/harness/v1/uploads/images') {
         if (request.headers.authorization !== `Bearer ${relayKey}`) { response.writeHead(403); response.end('{}'); return }
-        const upload = internalUploadResponses.shift()
+        const match = internalUploadResponses.findIndex(reply => reply.matchFile === undefined || bytes.includes(reply.matchFile))
+        const upload = match === -1 ? undefined : internalUploadResponses.splice(match, 1)[0]
         if (upload?.disconnect === true) { response.destroy(); return }
         response.writeHead(upload?.status ?? 500)
         response.end(JSON.stringify(upload?.body ?? {})); return
@@ -1862,12 +1863,14 @@ describe('deployed Harness API through the real product Loader', () => {
     imageResponse = { data: [{ b64_json: png.toString('base64') }] }
     const sources = [
       await uploadImage(base, cookie, '妈妈参考.png', png),
-      await uploadImage(base, cookie, '孩子参考.jpg', await sharp(png).jpeg().toBuffer()),
+      await uploadImage(base, cookie, '孩子参考.jpg',
+        await sharp({ create: { width: 2, height: 2, channels: 3, background: '#cc8866' } }).jpeg().toBuffer()),
     ]
     const urls = ['https://files.toapis.cn/uploads/first.png', 'https://files.toapis.com/uploads/second.jpg']
-    internalUploadResponses.push(...sources.map((asset, index) => ({ status: 200, body: { success: true, data: {
-      id: `upload_${String(index)}`, url: urls[index], mime_type: asset.contentType, size: asset.sizeBytes,
-    } } })))
+    for (const [index, asset] of sources.entries()) internalUploadResponses.push({ status: 200,
+      matchFile: await readFile(join(stateDir, 'refs', String(asset.filename))), body: { success: true, data: {
+        id: `upload_${String(index)}`, url: urls[index], mime_type: asset.contentType, size: asset.sizeBytes,
+      } } })
     const references = sources.map(asset => String(asset.assetId))
     const prompt = '保留妈妈和孩子的外貌，换成温暖的客厅'
     let saved: string
@@ -1893,12 +1896,15 @@ describe('deployed Harness API through the real product Loader', () => {
       '/harness/toapis/v1/images/generations', '/harness/toapis/v1/images/generations/fixture-image-task',
     ])
     expect(requests.every(call => call.authorization === 'Bearer sk-owned-relay')).toBe(true)
-    for (const [index, request] of requests.slice(0, 2).entries()) {
-      const multipart = Buffer.from(String(object(request.body).multipart), 'base64')
+    for (const asset of sources) {
+      const bytes = await readFile(join(stateDir, 'refs', String(asset.filename)))
+      const uploaded = requests.slice(0, 2).find(request => Buffer.from(String(object(request.body).multipart), 'base64').includes(bytes))
+      expect(uploaded).toBeDefined()
+      const multipart = Buffer.from(String(object(uploaded?.body).multipart), 'base64')
       expect(multipart.toString()).toContain('name="model"\r\n\r\nyunshu-internal-gpt-image-2')
       expect(multipart.toString()).toContain('name="file"; filename="reference.')
-      expect(multipart.toString()).toContain(`Content-Type: ${String(sources[index]!.contentType)}`)
-      expect(multipart.includes(await readFile(join(stateDir, 'refs', String(sources[index]!.filename))))).toBe(true)
+      expect(multipart.toString()).toContain(`Content-Type: ${String(asset.contentType)}`)
+      expect(multipart.includes(bytes)).toBe(true)
     }
     expect(requests[2]!.body).toEqual({ model, prompt, n: 1, reference_images: urls })
     expect(calls.some(call => call.path === '/harness/v1/images/edits' || call.path === '/harness/v1/images/generations')).toBe(false)

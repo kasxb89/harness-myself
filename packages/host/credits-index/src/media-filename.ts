@@ -8,14 +8,14 @@ export const MAX_MEDIA_FILENAME_BYTES = 180
 export interface MediaFilenameOptions {
   readonly title?: string
   readonly prompt?: string
-  readonly role: 'image' | 'reference-image' | 'shot-image' | 'video' | 'shot' | 'final' | 'edited-video'
+  readonly role: 'audio' | 'image' | 'reference-image' | 'shot-image' | 'video' | 'shot' | 'final' | 'edited-video'
   readonly extension: string
   /** Human-facing sequence number, starting at one. */
   readonly index?: number
 }
 
 const labels: Record<MediaFilenameOptions['role'], string> = {
-  image: '成图', 'reference-image': '参考图', 'shot-image': '分镜图',
+  audio: '配音', image: '成图', 'reference-image': '参考图', 'shot-image': '分镜图',
   video: '视频', shot: '分镜', final: '成片', 'edited-video': '剪辑视频',
 }
 

@@ -44,6 +44,7 @@ export function apply(ctx: ClientContext): void {
     hooks: { creationContent: ctx.creationContent, locale: ctx.locale, creationSession: ctx.uiSession.adapter.current },
     refreshContent: () => { void ctx.creationContent.refresh() },
     t: (key, values) => t(key as Parameters<typeof t>[0], values),
+    openAudio: () => { ctx.layout.selectPanel('audiogen' as MainPanelId) },
     openVideo: () => { ctx.layout.selectPanel(VIDEO_PANEL_ID) },
     createReferencePreview: (file) => {
       const url = URL.createObjectURL(file)

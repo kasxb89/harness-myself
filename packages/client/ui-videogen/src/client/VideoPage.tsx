@@ -16,11 +16,21 @@ import css from './VideoPage.module.css'
 export interface VideogenInjected {
   readonly t: (key: VideogenKey, values?: Record<string, string>) => string
   readonly openImage: () => void
+  readonly openAudio?: () => void
   readonly createPreview: (file: File) => string
   readonly releasePreview: (url: string) => void
   readonly readDraft: () => VideoDraft
   readonly refreshContent: () => void
   readonly hooks: { readonly creationContent: Context['creationContent']; readonly locale: Context['locale']; readonly creationSession: HostObservable<StandardSourceBinding> }
+}
+
+interface VideoSpecification {
+  readonly size?: string
+  readonly resolution?: string
+  readonly seconds?: number
+  readonly ratio?: string
+  readonly quality?: string
+  readonly mode?: string
 }
 
 /** Parameter menus supplied by the existing media catalog. */
@@ -30,6 +40,9 @@ interface VideoModel {
   readonly verified: boolean
   readonly source: string
   readonly params: {
+    readonly strictReferences?: boolean
+    readonly specifications?: readonly VideoSpecification[]
+    readonly qualities?: readonly string[]
     readonly durations: readonly number[]
     readonly defaultDuration?: number
     readonly durationByResolution?: Readonly<Record<string, readonly number[]>>
@@ -47,7 +60,7 @@ interface VideoModel {
     readonly seed: boolean
   }
 }
-interface Catalog { readonly video: readonly VideoModel[] }
+interface Catalog { readonly video: readonly VideoModel[]; readonly audio?: readonly { readonly id: string }[] }
 interface SessionInfo {
   readonly signedIn: boolean
   readonly creditsPerYuan: number
@@ -113,10 +126,10 @@ const fileIdentity = (file: ArtifactLocation): string => JSON.stringify([file.wo
  * @returns the video creation page.
  */
 export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & PropsStore<ReturnType<typeof createVideoDraftStore>> & InjectFace<VideogenInjected>): ReactNode {
-  const { t, openImage, actions, createPreview, releasePreview, readDraft } = props
+  const { t, openImage, openAudio, actions, createPreview, releasePreview, readDraft } = props
   const draft = props.useStore(state => state)
   const sessionId = props.useCreationSession(binding => binding.key)
-  const { prompt, modelId, resolution, ratio, mode, seed, audio, firstFrame, lastFrame, slots,
+  const { prompt, modelId, resolution, quality, size, ratio, mode, seed, audio, firstFrame, lastFrame, slots,
     phase, uploading, failure, uploadFailures, message, result } = draft
   const [signedIn, setSignedIn] = useState<boolean | null>(null)
   const [accountIdentity, setAccountIdentity] = useState<string | null>(null)
@@ -128,6 +141,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
   const setFailure = useCallback((failure: string | null): void => { actions.patch({ failure }) }, [actions])
   const [creditsPerYuan, setCreditsPerYuan] = useState(1000)
   const [balance, setBalance] = useState<number | null>(null)
+  const [audioAvailable, setAudioAvailable] = useState(false)
   const [models, setModels] = useState<readonly VideoModel[]>([])
   const [modelsError, setModelsError] = useState<string | null>(null)
   const [stateError, setStateError] = useState(false)
@@ -184,15 +198,22 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
   if (params !== null && params.maxReferenceImages + params.maxReferenceVideos + params.maxReferenceAudios > 0) workflows.push('reference')
   const workflow = workflows.includes(draft.workflow) ? draft.workflow
     : draft.workflow === 'image' && workflows.includes('reference') ? 'reference' : 'text'
-  const selectedResolution = params?.resolutions.includes(resolution) === true ? resolution : params?.resolutions[0] ?? ''
+  const specifications = params?.specifications
+  const selectedSpecification = specifications?.find(item => (item.resolution ?? '') === resolution
+    && (item.size ?? '') === size && (item.quality ?? '') === quality && (item.ratio ?? '') === ratio
+    && (item.mode ?? '') === mode && (item.seconds ?? 0) === draft.duration) ?? specifications?.[0]
+  const selectedResolution = specifications !== undefined ? selectedSpecification?.resolution ?? ''
+    : params?.resolutions.includes(resolution) === true ? resolution : params?.resolutions[0] ?? ''
   const durations = params?.durationByResolution === undefined ? params?.durations ?? []
     : Object.hasOwn(params.durationByResolution, selectedResolution) ? params.durationByResolution[selectedResolution] ?? [] : []
   const preferredDuration = params?.defaultDuration
-  const duration = durations.includes(draft.duration) ? draft.duration
-    : preferredDuration !== undefined && durations.includes(preferredDuration) ? preferredDuration : durations[0] ?? 0
+  const duration = specifications !== undefined ? selectedSpecification?.seconds ?? 0
+    : durations.includes(draft.duration) ? draft.duration
+      : preferredDuration !== undefined && durations.includes(preferredDuration) ? preferredDuration : durations[0] ?? 0
   const frameImages = workflow === 'frames' ? [firstFrame, lastFrame]
     : workflow === 'image' && (params?.frameSlots ?? 0) > 0 ? [firstFrame] : []
-  const referenceImages = workflow === 'reference' || workflow === 'image' && params?.frameSlots === 0 ? slots.image : []
+  const referenceImages = params?.strictReferences === true && params.maxReferenceImages === 0 ? []
+    : workflow === 'reference' || workflow === 'image' && params?.frameSlots === 0 ? slots.image : []
   const referenceVideos = workflow === 'reference' ? slots.video : []
   const referenceAudios = workflow === 'reference' ? slots.audio : []
   const hasVisualMedia = frameImages.some(item => item !== null)
@@ -204,8 +225,16 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
     ? params.ratios.filter(value => params.frameRatios?.includes(value)) : params?.ratios ?? []
   const frameRatiosUnavailable = frameWorkflow && params?.frameRatios !== undefined && ratioMenu.length === 0
   const allowedRatios = ratioMenu.filter(value => value !== 'adaptive' || hasVisualMedia || frameWorkflow && params?.frameRatios !== undefined)
-  const selectedRatio = allowedRatios.includes(ratio) ? ratio : allowedRatios[0] ?? ''
-  const selectedMode = params?.modes.includes(mode) === true ? mode : params?.modes[0] ?? ''
+  const selectedRatio = specifications !== undefined ? selectedSpecification?.ratio ?? ''
+    : allowedRatios.includes(ratio) ? ratio : allowedRatios[0] ?? ''
+  const selectedMode = specifications !== undefined ? selectedSpecification?.mode ?? ''
+    : params?.modes.includes(mode) === true ? mode : params?.modes[0] ?? ''
+  const selectedQuality = specifications !== undefined ? selectedSpecification?.quality ?? ''
+    : params?.qualities?.includes(quality) === true ? quality : params?.qualities?.[0] ?? ''
+  const selectedSize = specifications !== undefined ? selectedSpecification?.size ?? '' : ''
+  const specificationLabel = (item: VideoSpecification): string => [item.ratio, item.resolution, item.size,
+    item.seconds === undefined ? undefined : t('seconds', { n: String(item.seconds) }), item.quality, item.mode]
+    .filter(value => value !== undefined && value !== '').join(' · ')
   const ratioLabel = selectedRatio === 'adaptive' ? t('ratioAdaptive') : selectedRatio
   const settingsValues = { ratio: ratioLabel, resolution: selectedResolution, duration: String(duration) }
   const settingsSummaryKey = selectedRatio === '' ? 'settingsSizeSummary' : 'settingsSummary'
@@ -217,7 +246,9 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
   const overReferenceLimit = referenceImages.length > (params?.maxReferenceImages ?? 0)
     || referenceVideos.length > (params?.maxReferenceVideos ?? 0)
     || referenceAudios.length > (params?.maxReferenceAudios ?? 0)
-  const settingsInvalid = params !== null && (frameRatiosUnavailable || durations.length === 0 || params.ratios.length > 0 && selectedRatio === '')
+  const settingsInvalid = params !== null && (specifications !== undefined ? selectedSpecification === undefined
+    || duration === 0 || frameWorkflow && !allowedRatios.includes(selectedRatio)
+    : frameRatiosUnavailable || durations.length === 0 || params.ratios.length > 0 && selectedRatio === '')
   const requestReferenceBytes = [...new Map([...frameImages, ...referenceImages, ...referenceVideos, ...referenceAudios]
     .filter((item): item is Reference => item !== null).map(item => [item.assetId, item])).values()]
     .reduce((total, item) => total + item.bytes, 0)
@@ -231,13 +262,16 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
     if (current.resolution !== selectedResolution) updates.resolution = selectedResolution
     if (current.ratio !== selectedRatio) updates.ratio = selectedRatio
     if (current.mode !== selectedMode) updates.mode = selectedMode
+    if (current.quality !== selectedQuality) updates.quality = selectedQuality
+    if (current.size !== selectedSize) updates.size = selectedSize
     if (Object.keys(updates).length === 0) return
     const changedSelection = current.duration !== 0 || current.resolution !== '' || current.ratio !== ''
     actions.patch({ ...updates, ...(changedSelection && !settingsInvalid ? { message: t('settingsAdjusted', {
       ratio: selectedRatio === 'adaptive' ? t('ratioAdaptive') : selectedRatio,
       resolution: selectedResolution, duration: String(duration),
     }) } : settingsInvalid ? { message: null } : {}) })
-  }, [actions, duration, locked, mode, params, readDraft, selectedMode, selectedRatio, selectedResolution, settingsInvalid, t])
+  }, [actions, duration, locked, mode, params, readDraft, selectedMode, selectedQuality, selectedSize,
+    selectedRatio, selectedResolution, settingsInvalid, t])
 
   useEffect(() => {
     if (locked || signedIn !== true || params === null || accountIdentity === null) return
@@ -254,6 +288,24 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
   }, [accountIdentity, actions, draft.frameWorkflowSelection, draft.modelId, draft.referenceEpoch, draft.workflow,
     firstFrame, locked, model?.id, params, readDraft, signedIn, slots.image, workflow])
 
+  useEffect(() => {
+    if (params?.strictReferences !== true || locked) return
+    const current = readDraft()
+    const video = current.slots.video.slice(0, params.maxReferenceVideos)
+    const audio = current.slots.audio.slice(0, params.maxReferenceAudios)
+    const removed = [...current.slots.video.slice(video.length), ...current.slots.audio.slice(audio.length)]
+    const firstFrame = params.frameSlots > 0 ? current.firstFrame : null
+    const lastFrame = params.frameSlots > 1 ? current.lastFrame : null
+    if (removed.length === 0 && firstFrame === current.firstFrame && lastFrame === current.lastFrame) return
+    for (const reference of removed) releasePreview(reference.url)
+    for (const reference of [current.firstFrame, current.lastFrame]) {
+      if (reference !== null && reference !== firstFrame && reference !== lastFrame
+        && !current.slots.image.some(item => item.assetId === reference.assetId)) releasePreview(reference.url)
+    }
+    actions.patch({ slots: { ...current.slots, video, audio }, firstFrame, lastFrame,
+      workflow, message: t('materialsAdjusted') })
+  }, [actions, locked, params, readDraft, releasePreview, t, workflow])
+
   const assistReferences = useMemo(() => {
     if (accountIdentity === null || draft.referenceAccountId !== accountIdentity || signedIn !== true) return []
     return [...new Set([firstFrame, lastFrame, ...slots.image]
@@ -262,8 +314,8 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
   const assistReferenceLimitExceeded = assistReferences.length > 9
   const assistGeneration = useMemo(() => ({
     model: model?.id ?? '', workflow, duration: String(duration), resolution: selectedResolution,
-    ratio: selectedRatio, mode: selectedMode,
-  }), [model, workflow, duration, selectedResolution, selectedRatio, selectedMode])
+    ratio: selectedRatio, mode: selectedMode, quality: selectedQuality, size: selectedSize,
+  }), [model, workflow, duration, selectedResolution, selectedRatio, selectedMode, selectedQuality, selectedSize])
 
   const loadModels = useCallback(async (): Promise<void> => {
     const answer = await requestJson<Catalog>('/credits/api/media/catalog')
@@ -273,6 +325,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
     }
     setModelsError(null)
     setModels(answer.payload.video)
+    setAudioAvailable((answer.payload.audio?.length ?? 0) > 0)
   }, [t])
 
   const loadBalance = useCallback(async (): Promise<void> => {
@@ -602,6 +655,8 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
           ...(selectedResolution === '' ? {} : { resolution: selectedResolution }),
           ...(selectedRatio === '' ? {} : { ratio: selectedRatio }),
           ...(selectedMode === '' ? {} : { mode: selectedMode }),
+          ...(selectedQuality === '' ? {} : { quality: selectedQuality }),
+          ...(selectedSize === '' ? {} : { size: selectedSize }),
           ...(params.seed && seed.trim() !== '' && Number.isSafeInteger(Number(seed)) ? { seed: Number(seed) } : {}),
           ...(params.audioToggle ? { audio } : {}),
           frameImages: frames.filter((item): item is Reference => item !== null).map(item => item.assetId),
@@ -639,7 +694,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
     hasReferences, isReferenceCurrent, readDraft, sessionId,
     duration, settingsInvalid, overReferenceLimit, referenceBytesExceeded,
     referenceImages, referenceVideos, referenceAudios,
-    selectedResolution, selectedRatio, selectedMode, seed, audio, t, loadBalance, loadHistory])
+    selectedResolution, selectedRatio, selectedMode, selectedQuality, selectedSize, seed, audio, t, loadBalance, loadHistory])
 
   const frameField = (which: 'first' | 'last'): ReactNode => {
     const reference = which === 'first' ? firstFrame : lastFrame
@@ -732,7 +787,8 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
       <SegmentedTabs className={css.modeTabs} items={[
         { value: 'image', label: t('tab.image'), id: 'gen-mode-image', panelId: 'imagegen' },
         { value: 'video', label: t('tab.video'), id: 'gen-mode-video', panelId: 'videogen' },
-      ]} value="video" onChange={(next) => { if (next === 'image') openImage() }} label={t('mode.label')} />
+        ...audioAvailable && openAudio !== undefined ? [{ value: 'audio', label: t('tab.audio'), id: 'gen-mode-audio', panelId: 'audiogen' }] : [],
+      ]} value="video" onChange={(next) => { if (next === 'image') openImage(); else if (next === 'audio') openAudio?.() }} label={t('mode.label')} />
       {balance !== null && <span className={css.balance}>{t('balance', { points: balance.toLocaleString(), yuan: (balance / creditsPerYuan).toFixed(2) })}</span>}
     </header>
 
@@ -790,9 +846,10 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
             if (signedIn !== true || accountIdentity === null || current.referenceAccountId !== accountIdentity
               || current.referenceEpoch !== draft.referenceEpoch || current.uploading !== null || current.phase === 'running'
               || current.prompt !== expectedPrompt || JSON.stringify([current.modelId, current.workflow, current.duration,
-              current.resolution, current.ratio, current.mode, current.seed, current.audio, current.firstFrame,
+              current.resolution, current.ratio, current.mode, current.quality, current.size, current.seed, current.audio,
+              current.firstFrame,
               current.lastFrame, current.slots]) !== JSON.stringify([modelId, draft.workflow, draft.duration,
-              resolution, ratio, mode, seed, audio, firstFrame, lastFrame, slots])) return false
+              resolution, ratio, mode, quality, size, seed, audio, firstFrame, lastFrame, slots])) return false
             actions.patch({ prompt: value, failure: null, message: null })
             promptField.current?.focus()
             return true
@@ -811,12 +868,19 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
           <section className={css.settings} aria-label={t('settings')}>
             <div className={css.settingsTrigger} aria-label={params === null || settingsInvalid ? t('settingsUnavailable') : t(settingsTriggerKey, settingsValues)}>
               <span className={css.settingsTitle}><IconSettingsOutlineRegular size={16} /><span>{t('settings')}</span></span>
-              <span className={css.settingsValues} aria-hidden="true">{params === null || settingsInvalid ? t('settingsUnavailable') : <>{selectedRatio !== '' && <span>{ratioLabel}</span>}<span>{selectedResolution}</span><span>{t('secondsCompact', { n: String(duration) })}</span></>}</span>
+              <span className={css.settingsValues} aria-hidden="true">{params === null || settingsInvalid ? t('settingsUnavailable') : <>{selectedRatio !== '' && <span>{ratioLabel}</span>}<span>{selectedResolution}</span><span>{t('secondsCompact', { n: String(duration) })}</span>{selectedQuality !== '' && <span>{selectedQuality}</span>}</>}</span>
             </div>
             <div className={css.settingsPanel}>
               <div className={css.settingsHeading}><div><h3>{t('settings')}</h3><p>{t('settingsHint')}</p></div><span className={css.settingsOverview}>{settingsInvalid ? t('settingsUnavailable') : t(settingsSummaryKey, settingsValues)}</span></div>
               <fieldset className={css.settingsBody} aria-label={t('settings')} disabled={locked}>
-                {params !== null && ratioMenu.length > 0 && <fieldset className={css.settingsGroup}><legend>{t('ratio')}</legend>
+                {specifications !== undefined && <fieldset className={css.settingsGroup}><legend>{t('specification')}</legend>
+                  <p className={css.hint}>{t('specificationHint')}</p>
+                  <div className={css.optionGrid}>{specifications.map((item, index) => <button key={index} type="button"
+                    aria-pressed={item === selectedSpecification} className={css.parameterOption}
+                    onClick={() => { actions.patch({ size: item.size ?? '', resolution: item.resolution ?? '', duration: item.seconds ?? 0,
+                      ratio: item.ratio ?? '', quality: item.quality ?? '', mode: item.mode ?? '', message: null }) }}>
+                    {specificationLabel(item)}</button>)}</div></fieldset>}
+                {specifications === undefined && params !== null && ratioMenu.length > 0 && <fieldset className={css.settingsGroup}><legend>{t('ratio')}</legend>
                   <div className={css.ratioGrid}>{ratioMenu.map((value) => {
                     const [width = 1, height = 1] = value === 'adaptive' ? [4, 3] : value.split(':').map(Number)
                     const scale = Math.min(30 / width, 24 / height)
@@ -830,14 +894,14 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
                       <span className={css.ratioValue}>{value === 'adaptive' ? t('ratioAdaptive') : value}</span><span className={css.ratioCaption}>{t(value === 'adaptive' ? 'ratioAdaptiveCaption' : category)}</span>
                     </button>
                   })}</div></fieldset>}
-                {ratioMenu.includes('adaptive') && !hasVisualMedia
+                {specifications === undefined && ratioMenu.includes('adaptive') && !hasVisualMedia
                   && <p className={css.hint}>{t('adaptiveNeedsVisual')}</p>}
-                {params !== null && params.resolutions.length > 0 && <fieldset className={css.settingsGroup}><legend>{t('resolution')}</legend>
+                {specifications === undefined && params !== null && params.resolutions.length > 0 && <fieldset className={css.settingsGroup}><legend>{t('resolution')}</legend>
                   <div className={css.optionGrid}>{params.resolutions.map(value => <button key={value} type="button" aria-pressed={selectedResolution === value}
                     className={css.parameterOption} onClick={() => { actions.patch({ resolution: value, message: null }) }}>
                     {value}</button>,
                   )}</div></fieldset>}
-                {params !== null && durations.length > 0 && <fieldset className={css.settingsGroup}><legend>{t('duration')}</legend>
+                {specifications === undefined && params !== null && durations.length > 0 && <fieldset className={css.settingsGroup}><legend>{t('duration')}</legend>
                   <div className={css.durationGrid}>{durations.map(value => <button key={value} type="button" aria-pressed={duration === value}
                     className={css.parameterOption} onClick={() => { actions.patch({ duration: value, message: null }) }}>{t('seconds', { n: String(value) })}</button>)}</div></fieldset>}
                 {params !== null && <div className={css.audioRow}><div><span className={css.audioTitle}>{t('audio')}</span>
@@ -845,9 +909,13 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
                 <div className={css.audioState}><span aria-hidden={params.audioToggle}>{t(params.audioOutput === 'unknown' ? 'audioUnknown' : (params.audioToggle ? audio : params.audio) ? 'on' : 'off')}</span>
                   {params.audioToggle && <Switch checked={audio} onChange={(value) => { actions.patch({ audio: value }) }} label={t('audio')} disabled={locked} className={css.audioSwitch} />}
                 </div></div>}
-                {params !== null && params.modes.length > 0 && <fieldset className={css.settingsGroup}><legend>{t('mode')}</legend>
+                {specifications === undefined && params !== null && params.modes.length > 0 && <fieldset className={css.settingsGroup}><legend>{t('mode')}</legend>
                   <div className={css.optionGrid}>{params.modes.map(value => <button key={value} type="button" aria-pressed={selectedMode === value}
                     className={css.parameterOption} onClick={() => { actions.patch({ mode: value }) }}>{value}</button>)}</div></fieldset>}
+                {specifications === undefined && (params?.qualities?.length ?? 0) > 0 && <fieldset className={css.settingsGroup}><legend>{t('quality')}</legend>
+                  <div className={css.optionGrid}>{params?.qualities?.map(value => <button key={value} type="button"
+                    aria-pressed={selectedQuality === value} className={css.parameterOption}
+                    onClick={() => { actions.patch({ quality: value, message: null }) }}>{value}</button>)}</div></fieldset>}
                 {params?.seed === true && <label className={css.field}><span className={css.label}>{t('seed')}</span><input className={css.seed} inputMode="numeric" value={seed}
                   placeholder={t('seedHint')} onChange={(event) => { actions.patch({ seed: event.target.value.replace(/[^0-9]/g, '') }) }} /></label>}
               </fieldset>

@@ -1,5 +1,5 @@
 /**
- * Media capabilities: which image and video models a deployment serves, and
+ * Media capabilities: which image, video, and speech models a deployment serves, and
  * what each one accepts.
  *
  * Two sources are merged, in this order:
@@ -24,11 +24,37 @@
 
 import { imageSpec, videoSpec, type ImageSpec, type VideoSpec } from './model-parameters.ts'
 
-/** The two deliverable kinds the panels generate. */
-export type MediaKind = 'image' | 'video'
+/** Deliverable kinds separated from conversational models. */
+export type MediaKind = 'image' | 'video' | 'audio'
+
+/** One complete published combination; no price or upstream routing data is retained. */
+export interface MediaSpecification {
+  readonly size?: string
+  readonly resolution?: string
+  readonly seconds?: number
+  readonly ratio?: string
+  readonly quality?: string
+  readonly mode?: string
+}
+
+/** The declared speech-generation parameters; absent execution keeps generation unavailable. */
+export interface AudioParams {
+  readonly voices: readonly string[]
+  readonly formats: readonly string[]
+  readonly maxCharacters: number
+  readonly speedRange?: { readonly minimum: number; readonly maximum: number }
+  readonly instructions: boolean
+  readonly execution?: {
+    readonly protocol: 'openai-speech-v1'
+    readonly quoteRoute: '/v1/audio/quote'
+    readonly taskRoute: '/v1/tasks'
+  }
+}
 
 /** What an image model accepts. */
 export interface ImageParams {
+  /** Complete legal combinations, when the deployment publishes alternatives. Empty disables submission. */
+  readonly specifications?: readonly MediaSpecification[]
   /** Output sizes or aspect ratios in the request's own spelling, e.g. `1024x1024` or `16:9`. */
   readonly sizes: readonly string[]
   /** Named resolution tiers; absent for image routes without this field. */
@@ -37,6 +63,8 @@ export interface ImageParams {
   readonly maxCount: number
   /** Largest number of reference images an edit may carry; 0 disables edits. */
   readonly maxEdits: number
+  /** True when a live reference-input limit was declared, including a zero limit. */
+  readonly strictReferences?: boolean
   /** Optional quality values; empty means the model has no such knob. */
   readonly qualities: readonly string[]
   /** Background modes the model accepts; empty means the field is not offered. */
@@ -51,6 +79,12 @@ export interface ImageParams {
 
 /** What a video model accepts. */
 export interface VideoParams {
+  /** True when live frame or reference-input limits were declared, including zero limits. */
+  readonly strictReferences?: boolean
+  /** Complete legal combinations, when the deployment publishes alternatives. Empty disables submission. */
+  readonly specifications?: readonly MediaSpecification[]
+  /** Quality values are independent from the legacy vendor mode. */
+  readonly qualities?: readonly string[]
   /** Duration values the model allows, in seconds. */
   readonly durations: readonly number[]
   /** Preferred initial value, present only while allowed by the live menu. */
@@ -108,7 +142,7 @@ export interface ModelCapability {
    * task back at `<route>/<task_id>`.
    */
   readonly route: string
-  readonly params: ImageParams | VideoParams
+  readonly params: ImageParams | VideoParams | AudioParams
   /** True when the parameter surface came from a plugin or a vendor reference. */
   readonly verified: boolean
   /** Where the surface came from, e.g. `plugin:hailuo`, `docs:openai`. */
@@ -160,6 +194,7 @@ function durationMenu(value: unknown): number[] | null {
   if (multiple <= 0) return null
   if (field.enum !== undefined && !Array.isArray(field.enum)) return null
   let menu: number[]
+  if (typeof field.const === 'number' && field.enum === undefined) return durationMenu({ ...field, const: undefined, enum: [field.const] })
   if (Array.isArray(field.enum)) {
     if (field.enum.length === 0 || field.enum.length > 3600
       || field.enum.some(item => typeof item !== 'number' || !Number.isSafeInteger(item) || item < 1 || item > 3600)) return null
@@ -173,6 +208,7 @@ function durationMenu(value: unknown): number[] | null {
     menu = range(first, last)
   }
   return menu.filter((seconds) => {
+    if (field.const !== undefined && field.const !== seconds) return false
     const quotient = seconds / multiple
     return seconds >= minimum && seconds <= maximum && seconds > exclusiveMinimum && seconds < exclusiveMaximum
       && Number.isFinite(quotient) && Math.abs(quotient - Math.round(quotient)) <= Number.EPSILON * Math.abs(quotient) * 4
@@ -204,10 +240,161 @@ function declaredStringMenu(schema: unknown, name: string): string[] | null {
   if (field.enum !== undefined) {
     if (!Array.isArray(field.enum) || field.enum.length > 64
       || field.enum.some(value => typeof value !== 'string' || value === '' || value.length > 64 || value.trim() !== value)) return null
-    const menu = stringList(field.enum)
+    const menu = [...new Set(stringList(field.enum))]
     return constant === null ? menu : menu.filter(value => value === constant)
   }
   return constant === null ? null : [constant]
+}
+
+/** A declared upper bound can remove an inherited capability, including with zero. */
+function declaredLimit(schema: unknown, names: readonly string[], collection: boolean): number | null {
+  const fields = parameterFields(schema)
+  for (const name of names) {
+    if (fields === null || !Object.hasOwn(fields, name)) continue
+    const value = fields[name]
+    if (value === false) return 0
+    const field = objectRecord(value)
+    if (field === null) return 0
+    const upper = field[collection ? 'maxItems' : 'maximum']
+    const menu = field.enum
+    if (menu !== undefined && !Array.isArray(menu)) return 0
+    if (field.const !== undefined && (typeof field.const !== 'number' || !Number.isSafeInteger(field.const) || field.const < 0 || field.const > 128)) return 0
+    if (Array.isArray(menu)) {
+      const values: unknown[] = menu
+      if (!values.every((item): item is number => typeof item === 'number' && Number.isSafeInteger(item) && item >= 0 && item <= 128)) return 0
+      const largest = Math.max(0, ...values)
+      return typeof upper === 'number' && Number.isSafeInteger(upper) && upper >= 0 && upper <= 128 ? Math.min(largest, upper) : largest
+    }
+    if (typeof field.const === 'number' && Number.isSafeInteger(field.const) && field.const >= 0 && field.const <= 128) {
+      return typeof upper === 'number' && Number.isSafeInteger(upper) && upper >= 0 && upper <= 128 ? Math.min(field.const, upper) : field.const
+    }
+    if (typeof upper === 'number' && Number.isSafeInteger(upper) && upper >= 0 && upper <= 128) return upper
+    if (upper !== undefined || field.const !== undefined) return 0
+  }
+  return null
+}
+
+/** A present false schema, false const, or empty enum removes the corresponding control. */
+function declaredSwitch(schema: unknown, names: readonly string[]): boolean | null {
+  const fields = parameterFields(schema)
+  for (const name of names) {
+    if (fields === null || !Object.hasOwn(fields, name)) continue
+    const value = fields[name]
+    if (typeof value === 'boolean') return value
+    const field = objectRecord(value)
+    if (field === null) return false
+    if (field.const === false || Array.isArray(field.enum) && (field.enum.length === 0 || !field.enum.includes(true) && (field.type === 'boolean' || field.enum.every(value => typeof value === 'boolean')))) return false
+    return true
+  }
+  return null
+}
+
+/** Explicit, unusable menus must not restore a family-specific default. */
+function liveStringMenu(schema: unknown, names: readonly string[]): string[] | null {
+  const fields = parameterFields(schema)
+  for (const name of names) {
+    if (fields !== null && Object.hasOwn(fields, name)) return declaredStringMenu(schema, name) ?? []
+  }
+  return null
+}
+
+const SPECIFICATION_FIELDS = ['size', 'resolution', 'seconds', 'ratio', 'quality', 'mode'] as const
+
+type SpecificationField = typeof SPECIFICATION_FIELDS[number]
+
+/** Read one branch value and its parent restrictions without broadening either. */
+function specificationMenu(schema: unknown, parent: unknown, name: SpecificationField): readonly (string | number)[] | null | false {
+  const aliases = name === 'seconds' ? ['seconds', 'duration'] : name === 'ratio' ? ['ratio', 'aspect_ratio'] : [name]
+  const branchFields = parameterFields(schema)
+  const parentFields = parameterFields(parent)
+  const branchName = aliases.find(alias => branchFields !== null && Object.hasOwn(branchFields, alias))
+  const parentName = aliases.find(alias => parentFields !== null && Object.hasOwn(parentFields, alias))
+  if (branchName === undefined && parentName === undefined) return null
+  if (name === 'seconds') {
+    const declared = branchName === undefined ? durationMenu(parentFields?.[parentName ?? '']) : durationMenu(branchFields?.[branchName])
+    if (declared === null) return false
+    if (parentName === undefined || branchName === undefined) return declared
+    const allowed = durationMenu({ ...objectRecord(parentFields?.[parentName]), enum: declared })
+    return allowed ?? false
+  }
+  const branch = branchName === undefined ? null : declaredStringMenu(schema, branchName)
+  const parentField = parentName === undefined ? null : objectRecord(parentFields?.[parentName])
+  const parentConstrained = parentName !== undefined && (parentField === null || Object.hasOwn(parentField, 'enum') || Object.hasOwn(parentField, 'const'))
+  const global = parentConstrained ? declaredStringMenu(parent, parentName) : null
+  if (branchName !== undefined && branch === null || parentConstrained && global === null) return false
+  if (branch === null && global === null) return false
+  return branch === null ? global : global === null ? branch : branch.filter(value => global.includes(value))
+}
+
+/** Bounded alternatives preserve quality/resolution/duration relationships instead of flattening them. */
+function declaredSpecifications(schema: unknown, kind: 'image' | 'video'): readonly MediaSpecification[] | undefined {
+  const record = objectRecord(schema)
+  if (record === null || !Object.hasOwn(record, 'oneOf')) return undefined
+  const branches = record.oneOf
+  const complete = kind === 'image' || Array.isArray(branches) && branches.some((branch) => {
+    const fields = parameterFields(branch)
+    return ['size', 'quality', 'mode', 'ratio', 'aspect_ratio'].some(name => fields !== null && Object.hasOwn(fields, name))
+  }) || ['size', 'quality', 'mode', 'ratio', 'aspect_ratio'].some(name => Object.hasOwn(parameterFields(schema) ?? {}, name))
+  // Legacy resolution/duration alternatives retain their existing parser and partial-declaration behavior.
+  if (!complete) return undefined
+  if (!Array.isArray(branches) || branches.length === 0 || branches.length > 128) return []
+  const dimensions = SPECIFICATION_FIELDS.filter((name) => {
+    const aliases = name === 'seconds' ? ['seconds', 'duration'] : name === 'ratio' ? ['ratio', 'aspect_ratio'] : [name]
+    if (branches.some(branch => aliases.some(alias => Object.hasOwn(parameterFields(branch) ?? {}, alias)))) return true
+    const parent = parameterFields(schema)
+    const declared = aliases.find(alias => parent !== null && Object.hasOwn(parent, alias))
+    if (declared === undefined) return false
+    const field = parent?.[declared]
+    const values = objectRecord(field)?.enum
+    const disabled = field === false || Array.isArray(values) && values.length === 0
+    return !disabled || stringList(record.required).includes(declared)
+  })
+  if (dimensions.length === 0) return []
+  const matches = new Map<string, { specification: MediaSpecification; count: number }>()
+  for (const branch of branches) {
+    let combinations: Record<string, string | number>[] = [{}]
+    for (const name of dimensions) {
+      const menu = specificationMenu(branch, schema, name)
+      if (menu === null || menu === false || combinations.length * menu.length > 128) return []
+      combinations = combinations.flatMap(previous => menu.map(value => ({ ...previous, [name]: value })))
+    }
+    if (matches.size + combinations.length > 128) return []
+    for (const combination of combinations) {
+      let specification: MediaSpecification = {
+        ...typeof combination.size === 'string' ? { size: combination.size } : {},
+        ...typeof combination.resolution === 'string' ? { resolution: combination.resolution } : {},
+        ...typeof combination.seconds === 'number' ? { seconds: combination.seconds } : {},
+        ...typeof combination.ratio === 'string' ? { ratio: combination.ratio } : {},
+        ...typeof combination.quality === 'string' ? { quality: combination.quality } : {},
+        ...typeof combination.mode === 'string' ? { mode: combination.mode } : {},
+      }
+      if (kind === 'video' && specification.seconds === undefined) return []
+      if (kind === 'image') {
+        if (specification.mode !== undefined || specification.seconds !== undefined
+          || specification.size !== undefined && specification.ratio !== undefined && specification.size !== specification.ratio) return []
+        const { ratio, ...image } = specification
+        specification = ratio === undefined ? image : { ...image, size: image.size ?? ratio }
+      }
+      const key = JSON.stringify(specification)
+      const prior = matches.get(key)
+      matches.set(key, { specification, count: (prior?.count ?? 0) + 1 })
+    }
+  }
+  return [...matches.values()].filter(value => value.count === 1).map(value => value.specification)
+}
+
+/** Distinct string values in a complete published specification menu. */
+function specificationStrings(specifications: readonly MediaSpecification[], field: Exclude<SpecificationField, 'seconds'>): string[] {
+  return [...new Set(specifications.flatMap((specification) => {
+    const value = specification[field]
+    return value === undefined ? [] : [value]
+  }))]
+}
+
+/** Sorted, distinct native duration values in a complete specification menu. */
+function specificationSeconds(specifications: readonly MediaSpecification[]): number[] {
+  return [...new Set(specifications.flatMap(value => value.seconds === undefined ? [] : [value.seconds]))]
+    .sort((left, right) => left - right)
 }
 
 /** Standard oneOf branches pair explicit resolutions with bounded duration menus. */
@@ -272,7 +459,8 @@ function imageParams(spec: ImageSpec, schema: unknown, parameters: unknown, exam
   source: string
   notes: string[]
 } {
-  const explicitSizes = declaredStringMenu(parameters, 'size')
+  const specifications = declaredSpecifications(parameters, 'image')
+  const explicitSizes = liveStringMenu(parameters, ['size'])
   const declared = explicitSizes ?? schemaEnum(schema, 'size').concat(schemaEnum(schema, 'sizes'))
   const notes: string[] = []
   let source = spec.source
@@ -284,21 +472,39 @@ function imageParams(spec: ImageSpec, schema: unknown, parameters: unknown, exam
   }
   // Input-image billing tells us an edit route exists even before the table does.
   const billedEdits = maxExampleValue(examples, 'input_images')
-  const maxEdits = spec.maxEdits > 0 || billedEdits === null ? spec.maxEdits : billedEdits
-  const explicitResolutions = declaredStringMenu(parameters, 'resolution')
+  const maxEdits = declaredLimit(parameters, ['reference_images', 'images', 'input_images'], true)
+    ?? (spec.maxEdits > 0 || billedEdits === null ? spec.maxEdits : billedEdits)
+  const explicitResolutions = liveStringMenu(parameters, ['resolution'])
   const resolutions = explicitResolutions ?? schemaEnum(schema, 'resolution')
   const outputResolutions = explicitResolutions !== null || resolutions.length > 0 ? resolutions : spec.resolutions
+  const qualities = liveStringMenu(parameters, ['quality'])
+  const backgrounds = liveStringMenu(parameters, ['background'])
+  const formats = liveStringMenu(parameters, ['output_format', 'format'])
+  const moderations = liveStringMenu(parameters, ['moderation'])
+  const seed = declaredSwitch(parameters, ['seed'])
+  for (const [field, menu] of Object.entries({ qualities, backgrounds, formats, moderations })) {
+    if (menu !== null) notes.push(field)
+  }
+  if (seed !== null) notes.push('seed')
+  if (specifications !== undefined) {
+    notes.push('specifications')
+    if (qualities === null && specifications.some(value => value.quality !== undefined)) notes.push('qualities')
+  }
   return {
     params: {
-      sizes,
-      ...outputResolutions === undefined ? {} : { resolutions: outputResolutions },
-      maxCount: spec.maxCount,
+      sizes: specifications === undefined ? sizes : specificationStrings(specifications, 'size'),
+      ...specifications === undefined ? {} : { specifications },
+      ...outputResolutions === undefined && specifications === undefined ? {} : {
+        resolutions: specifications === undefined ? outputResolutions : specificationStrings(specifications, 'resolution'),
+      },
+      maxCount: declaredLimit(parameters, ['n', 'count'], false) ?? spec.maxCount,
       maxEdits,
-      qualities: spec.qualities,
-      backgrounds: spec.backgrounds,
-      formats: spec.formats,
-      moderations: spec.moderations,
-      seed: spec.seed,
+      ...['reference_images', 'images', 'input_images'].some(name => Object.hasOwn(parameterFields(parameters) ?? {}, name)) ? { strictReferences: true } : {},
+      qualities: qualities ?? (specifications === undefined ? spec.qualities : specificationStrings(specifications, 'quality')),
+      backgrounds: backgrounds ?? spec.backgrounds,
+      formats: formats ?? spec.formats,
+      moderations: moderations ?? spec.moderations,
+      seed: seed ?? spec.seed,
     },
     verified: isVerified(spec.source),
     source,
@@ -314,15 +520,17 @@ function videoParams(spec: VideoSpec, schema: unknown, parameters: unknown): {
   notes: string[]
 } {
   const notes: string[] = []
-  const parameterResolutions = declaredStringMenu(parameters, 'resolution')
+  const specifications = declaredSpecifications(parameters, 'video')
+  if (specifications !== undefined) notes.push('specifications')
+  const parameterResolutions = liveStringMenu(parameters, ['resolution'])
   const parameterDurations = declaredDurations(parameters)
   const parameterCombinations = resolutionDurations(parameters)
   const hasParameterDurations = parameterDurations !== null || parameterCombinations !== null
   const declaredResolutions = parameterResolutions
     ?? (parameterCombinations === null ? declaredStringMenu(schema, 'resolution') : Object.keys(parameterCombinations))
-  const declaredRatios = declaredStringMenu(parameters, 'ratio') ?? declaredStringMenu(parameters, 'aspect_ratio')
+  const declaredRatios = liveStringMenu(parameters, ['ratio', 'aspect_ratio'])
     ?? declaredStringMenu(schema, 'ratio') ?? declaredStringMenu(schema, 'aspect_ratio')
-  const ratios = declaredRatios ?? spec.ratios
+  let ratios = declaredRatios ?? spec.ratios
   let resolutions = declaredResolutions ?? spec.resolutions
   if (declaredResolutions !== null) notes.push('resolutions')
   const declared = hasParameterDurations ? parameterDurations : declaredDurations(schema)
@@ -346,7 +554,26 @@ function videoParams(spec: VideoSpec, schema: unknown, parameters: unknown): {
     notes.push('durationByResolution')
   }
   if (declaredResolutions?.length === 0) durations = []
+  if (specifications !== undefined) {
+    resolutions = specificationStrings(specifications, 'resolution')
+    durations = specificationSeconds(specifications)
+    const explicitRatios = specificationStrings(specifications, 'ratio')
+    if (explicitRatios.length > 0 || specifications.length === 0) ratios = explicitRatios
+    durationByResolution = resolutions.length === 0 ? undefined : Object.fromEntries(resolutions.map(resolution => [
+      resolution, specificationSeconds(specifications.filter(value => value.resolution === resolution)),
+    ]))
+  }
+  const frames = declaredLimit(parameters, ['frame_images'], true) ?? spec.frames
+  const referenceImages = declaredLimit(parameters, ['reference_images', 'images', 'input_images'], true) ?? spec.referenceImages
+  const referenceVideos = declaredLimit(parameters, ['reference_videos'], true) ?? spec.referenceVideos
+  const referenceAudios = declaredLimit(parameters, ['reference_audios'], true) ?? spec.referenceAudios
+  const audio = declaredSwitch(parameters, ['audio', 'audio_output']) ?? spec.audio
   const params: VideoParams = {
+    ...specifications === undefined ? {} : { specifications },
+    ...['frame_images', 'reference_images', 'images', 'input_images', 'reference_videos', 'reference_audios'].some(name => Object.hasOwn(parameterFields(parameters) ?? {}, name)) ? { strictReferences: true } : {},
+    ...liveStringMenu(parameters, ['quality']) === null && specifications === undefined ? {} : {
+      qualities: liveStringMenu(parameters, ['quality']) ?? [...new Set(specifications?.flatMap(value => value.quality === undefined ? [] : [value.quality]) ?? [])],
+    },
     durations,
     ...spec.defaultDuration !== undefined && durations.includes(spec.defaultDuration) ? { defaultDuration: spec.defaultDuration } : {},
     ...durationByResolution === undefined ? {} : { durationByResolution },
@@ -355,22 +582,81 @@ function videoParams(spec: VideoSpec, schema: unknown, parameters: unknown): {
     resolutions,
     ratios,
     ...spec.frameRatios === undefined ? {} : { frameRatios: spec.frameRatios.filter(value => ratios.includes(value)) },
-    maxFrameImages: spec.frames,
-    maxReferenceImages: spec.referenceImages,
-    maxReferenceVideos: spec.referenceVideos,
-    maxReferenceAudios: spec.referenceAudios,
-    frameSlots: spec.frames,
-    audio: spec.audio,
-    ...spec.audioOutput === undefined ? {} : { audioOutput: spec.audioOutput },
-    audioToggle: spec.audioToggle,
-    watermark: false,
-    modes: spec.modes,
-    seed: spec.seed,
-    mixFramesAndReferences: spec.frames === 0 || spec.referenceImages + spec.referenceVideos + spec.referenceAudios === 0
+    maxFrameImages: frames,
+    maxReferenceImages: referenceImages,
+    maxReferenceVideos: referenceVideos,
+    maxReferenceAudios: referenceAudios,
+    frameSlots: frames,
+    audio,
+    ...declaredSwitch(parameters, ['audio', 'audio_output']) === null
+      ? spec.audioOutput === undefined ? {} : { audioOutput: spec.audioOutput }
+      : { audioOutput: audio ? 'supported' : 'unsupported' },
+    audioToggle: declaredSwitch(parameters, ['generate_audio']) ?? spec.audioToggle,
+    watermark: declaredSwitch(parameters, ['watermark']) ?? false,
+    modes: liveStringMenu(parameters, ['mode']) ?? (specifications === undefined ? spec.modes : specificationStrings(specifications, 'mode')),
+    seed: declaredSwitch(parameters, ['seed']) ?? spec.seed,
+    mixFramesAndReferences: declaredSwitch(parameters, ['mix_frames_and_references']) ?? (frames === 0 || referenceImages + referenceVideos + referenceAudios === 0
       ? true
-      : spec.source !== 'plugin:hailuo' && spec.source !== 'plugin:doubao',
+      : spec.source !== 'plugin:hailuo' && spec.source !== 'plugin:doubao'),
   }
   return { params, verified: isVerified(spec.source), source: spec.source, notes }
+}
+
+/**
+ * Read explicit public model classification before applying legacy name heuristics.
+ * @param value - Untrusted public model or pricing record.
+ * @returns Declared kind, undefined when absent, or null for an invalid/conflicting declaration.
+ */
+export function declaredModelKind(value: unknown): 'chat' | MediaKind | null | undefined {
+  const record = objectRecord(value)
+  if (record === null) return undefined
+  let result: 'chat' | MediaKind | undefined
+  for (const field of ['kind', 'modality']) {
+    if (!Object.hasOwn(record, field)) continue
+    const candidate = record[field] === 'text' ? 'chat' : record[field]
+    if (candidate !== 'chat' && candidate !== 'image' && candidate !== 'video' && candidate !== 'audio') return null
+    if (result !== undefined && candidate !== result) return null
+    result = candidate
+  }
+  if (result !== undefined) return result
+  const endpoints = stringList(record.supported_endpoint_types)
+  const kinds = new Set<'chat' | MediaKind>()
+  for (const endpoint of endpoints) {
+    if (/video/i.test(endpoint)) kinds.add('video')
+    else if (/image/i.test(endpoint)) kinds.add('image')
+    else if (/audio|speech|tts/i.test(endpoint)) kinds.add('audio')
+    else if (['chat', 'text', 'openai-chat', 'chat-completions'].includes(endpoint)) kinds.add('chat')
+  }
+  return kinds.size > 1 ? null : [...kinds][0]
+}
+
+/** Speech has no family-derived voices, output formats, or execution permission. */
+function audioParams(parameters: unknown): { params: AudioParams; verified: boolean; source: string; notes: string[] } {
+  const fields = parameterFields(parameters)
+  const input = objectRecord(fields?.input) ?? objectRecord(fields?.text)
+  const maximum = input?.maxLength
+  const maxCharacters = typeof maximum === 'number' && Number.isSafeInteger(maximum) && maximum > 0 && maximum <= 100_000 ? maximum : 0
+  const speed = objectRecord(fields?.speed)
+  const minimum = speed?.minimum
+  const upper = speed?.maximum
+  const speedRange = typeof minimum === 'number' && typeof upper === 'number' && Number.isFinite(minimum) && Number.isFinite(upper)
+    && minimum > 0 && upper >= minimum && upper <= 10 ? { minimum, maximum: upper } : undefined
+  const execution = objectRecord(objectRecord(parameters)?.x_client_audio_execution)
+  const permitted = execution?.protocol === 'openai-speech-v1' && execution.quoteRoute === '/v1/audio/quote' && execution.taskRoute === '/v1/tasks'
+    && Object.keys(execution).length === 3
+  return {
+    params: {
+      voices: liveStringMenu(parameters, ['voice']) ?? [],
+      formats: liveStringMenu(parameters, ['response_format', 'format']) ?? [],
+      maxCharacters,
+      ...speedRange === undefined ? {} : { speedRange },
+      instructions: declaredSwitch(parameters, ['instructions']) ?? false,
+      ...permitted ? { execution: { protocol: 'openai-speech-v1', quoteRoute: '/v1/audio/quote', taskRoute: '/v1/tasks' } } : {},
+    },
+    verified: permitted,
+    source: 'newapi',
+    notes: ['audio'],
+  }
 }
 
 /**
@@ -383,7 +669,10 @@ function videoParams(spec: VideoSpec, schema: unknown, parameters: unknown): {
  * knows, and what the model is called — and a chat model, which matches none of
  * them, stays out.
  */
-function mediaKind(id: string, endpoints: readonly string[], fields: readonly string[]): MediaKind | null {
+function mediaKind(id: string, endpoints: readonly string[], fields: readonly string[], record: unknown): MediaKind | null {
+  const declared = declaredModelKind(record)
+  if (declared !== undefined) return declared === 'chat' ? null : declared
+  if (/(?:^|[-_])tts(?:$|[-_])|(?:^|[-_])speech(?:$|[-_])/i.test(id)) return 'audio'
   let video = 0
   let image = 0
   if (endpoints.some(endpoint => endpoint.includes('video'))) video += 4
@@ -392,7 +681,8 @@ function mediaKind(id: string, endpoints: readonly string[], fields: readonly st
   if (fields.includes('image_count')) image += 1
   if (videoSpec(id).source !== 'fallback') video += 4
   if (imageSpec(id).source !== 'fallback') image += 4
-  if (/video|hailuo|kling|jimeng|sora|veo|vidu|wan[0-9.]*[-_]|minimax|runway|luma|pika|seedance|pixverse|ltx|mochi|cogvideo/i.test(id)) {
+  if (/video|hailuo|kling|jimeng|sora|veo|vidu|wan[0-9.]*[-_]|minimax[-_]?h[0-9]|minimax.*(?:t2v|i2v|video)/i.test(id)
+    || /runway|luma|pika|seedance|pixverse|ltx|mochi|cogvideo/i.test(id)) {
     video += 2
   }
   if (/image|dall-?e|flux|seedream|banana|imagen|kolors|cogview|ideogram|recraft|^sd|sdxl/i.test(id)) image += 2
@@ -420,12 +710,12 @@ export function catalogFromPricing(rows: readonly unknown[], userGroup: string |
     if (record === null || id === null) continue
     const endpoints = stringList(record.supported_endpoint_types)
     const fields = schemaFields(record.billing_usage_schema)
-    const kind = mediaKind(id, endpoints, fields)
+    const kind = mediaKind(id, endpoints, fields, record)
     if (kind === null) continue
     const groups = stringList(record.enable_groups)
     if (userGroup !== null && groups.length > 0 && !groups.includes(userGroup)) continue
     const examples = Array.isArray(record.billing_usage_examples) ? record.billing_usage_examples : []
-    const built = kind === 'video'
+    const built = kind === 'audio' ? audioParams(record.parameters) : kind === 'video'
       ? videoParams(videoSpec(id), record.billing_usage_schema, record.parameters)
       : imageParams(imageSpec(id), record.billing_usage_schema, record.parameters, examples)
     // A row that names its own route wins; otherwise the built-in table for
@@ -434,7 +724,7 @@ export function catalogFromPricing(rows: readonly unknown[], userGroup: string |
     const route = declaredRoute
       ?? (kind === 'image' ? IMAGE_ROUTES[id] : undefined)
       ?? (kind === 'video' && id === 'MiniMax-H3' ? '/v1/video/generations' : undefined)
-      ?? (kind === 'image' ? '/v1/images/generations' : '/v1/videos')
+      ?? (kind === 'image' ? '/v1/images/generations' : kind === 'video' ? '/v1/videos' : '/v1/audio/speech')
     catalog.push({
       id,
       kind,
@@ -464,7 +754,7 @@ const IMAGE_ROUTES: Record<string, string> = {
 /**
  * Every model of one kind in a catalog.
  * @param catalog - Parsed media capabilities.
- * @param kind - Image or video generation.
+ * @param kind - Requested media generation kind.
  * @returns Matching models in their original order.
  */
 export function modelsOfKind(catalog: readonly ModelCapability[], kind: MediaKind): ModelCapability[] {
@@ -489,7 +779,7 @@ export function mediaModelIds(rows: readonly unknown[]): string[] {
     const id = typeof record?.model_name === 'string' ? record.model_name : null
     if (record === null || id === null) continue
     const endpoints = stringList(record.supported_endpoint_types)
-    if (mediaKind(id, endpoints, schemaFields(record.billing_usage_schema)) !== null) ids.push(id)
+    if (mediaKind(id, endpoints, schemaFields(record.billing_usage_schema), record) !== null) ids.push(id)
   }
   return ids
 }
