@@ -193,8 +193,10 @@ export async function signOutCredits(timeoutMs: number): Promise<'signed-out' | 
     } catch (_unknownRevocation: unknown) {
       // The local Host may have committed logout before its reply was lost.
     }
-    const answer = await get<SessionInfo | null>('/credits/api/session', signal)
-    if (!answer.ok || answer.payload == null || answer.payload.signedIn !== false) throw new Error('LOGOUT_UNCONFIRMED')
+    const answer = await get<unknown>('/credits/api/session', signal)
+    const info = answer.payload
+    if (!answer.ok || info === null || typeof info !== 'object' || !('signedIn' in info)
+      || info.signedIn !== false) throw new Error('LOGOUT_UNCONFIRMED')
     publish({ session: { ...UNSIGNED, creditsPerYuan: snapshot.session?.creditsPerYuan ?? 1000 }, balance: null,
       loaded: true, failure: null, readFailure: null, refreshing: false })
     return revoked ? 'signed-out' : 'local-only'

@@ -41,18 +41,20 @@ describe('confirmed local logout', () => {
       expect(source.getSnapshot()).toMatchObject({ session: { signedIn: false }, balance: null, failure: null })
     } finally { pending.resolve({ ok: true }); stop() }
   })
-  it.each(['transport', 'refused'] as const)('keeps recovery available when logout is %s and the Host still has the login', async mode => {
+  it.each(['transport', 'refused'] as const)('keeps recovery available when logout is %s and the Host still has the login', async (mode) => {
     const store = await import('../src/client/session-store.ts')
     await store.refreshCredits()
     const before = store.readCreditsSnapshot()
     if (mode === 'transport') api.post.mockRejectedValueOnce(new TypeError('fixture disconnect'))
     else api.post.mockResolvedValueOnce({ ok: false })
     await expect(store.signOutCredits(20_000)).rejects.toThrow('LOGOUT_UNCONFIRMED')
-    expect(store.readCreditsSnapshot()).toMatchObject({ session: before.session, balance: before.balance, accountEpoch: before.accountEpoch })
+    expect(store.readCreditsSnapshot()).toMatchObject({
+      session: before.session, balance: before.balance, accountEpoch: before.accountEpoch,
+    })
     api.get.mockResolvedValueOnce(unsigned)
     expect(await store.signOutCredits(20_000)).toBe('signed-out')
   })
-  it.each(['transport', 'refused'] as const)('accepts confirmed local logout after %s while reporting server revocation as unknown', async mode => {
+  it.each(['transport', 'refused'] as const)('confirms local logout after %s while keeping server revocation unknown', async (mode) => {
     const store = await import('../src/client/session-store.ts')
     await store.refreshCredits()
     if (mode === 'transport') api.post.mockRejectedValueOnce(new TypeError('fixture reply lost'))
@@ -74,11 +76,18 @@ describe('confirmed local logout', () => {
     expect(api.post).toHaveBeenCalledTimes(1)
     expect(store.readCreditsSnapshot().session?.signedIn).toBe(true)
   })
+  it.each([{}, { signedIn: 0 }, { signedIn: 'false' }])('refuses malformed signed-out data %j', async (payload) => {
+    const store = await import('../src/client/session-store.ts')
+    await store.refreshCredits()
+    api.get.mockResolvedValueOnce({ ok: true, payload })
+    await expect(store.signOutCredits(20_000)).rejects.toThrow('LOGOUT_UNCONFIRMED')
+    expect(store.readCreditsSnapshot().session?.signedIn).toBe(true)
+  })
   it('rejects an unconfirmed read after the shared operation deadline', async () => {
     const store = await import('../src/client/session-store.ts')
     await store.refreshCredits()
     api.post.mockImplementationOnce(async (_path, _body, signal) => await new Promise((_resolve, reject) => {
-      signal?.addEventListener('abort', () => { reject(signal.reason) }, { once: true })
+      signal?.addEventListener('abort', () => { reject(new DOMException('Fixture logout timed out', 'TimeoutError')) }, { once: true })
     }))
     api.get.mockImplementationOnce(async (_path, signal) => { signal?.throwIfAborted(); return unsigned })
     const operation = store.signOutCredits(1000)

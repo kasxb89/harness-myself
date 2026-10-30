@@ -4936,7 +4936,7 @@ describe('deployed Harness API through the real product Loader', () => {
     expect(created).toMatchObject({ ok: true, payload: { outTradeNo: 'order-one', amount: 1, points: 1000 } })
     expect(object(created.payload).qrCodeDataUrl).toMatch(/^data:image\/png;base64,/u)
     expect(calls.find(call => call.path.endsWith('/wechat/native'))).toMatchObject({ authorization: 'Bearer access-user', body: { amount: 1 } })
-    const order: unknown = await (await fetch(base + '/api/recharge/wechat/order?' + new URLSearchParams({ outTradeNo: 'order-one', ...expected }))).json()
+    const order: unknown = await (await fetch(base + '/api/recharge/wechat/order?' + new URLSearchParams({ outTradeNo: 'order-one', ...expected }).toString())).json()
     expect(order).toMatchObject({ ok: true, payload: { status: 'pending', amount: 1, points: 1000 } })
     expect(calls.some(call => call.path.endsWith('/wechat/order?out_trade_no=order-one'))).toBe(true)
   })
@@ -4951,7 +4951,7 @@ describe('deployed Harness API through the real product Loader', () => {
         ok: false, code: Object.keys(fields).length === 0 ? 'SESSION_REFRESH_REQUIRED' : 'ACCOUNT_CHANGED',
       })
       const query = new URLSearchParams({ outTradeNo: 'order-one', ...fields })
-      expect(await (await fetch(base + '/api/recharge/wechat/order?' + query)).json()).toMatchObject({
+      expect(await (await fetch(base + '/api/recharge/wechat/order?' + query.toString())).json()).toMatchObject({
         ok: false, code: Object.keys(fields).length === 0 ? 'SESSION_REFRESH_REQUIRED' : 'ACCOUNT_CHANGED',
       })
     }
@@ -4965,7 +4965,7 @@ describe('deployed Harness API through the real product Loader', () => {
     const prior = await rechargeExpectation(base)
     await replaceFinancialLogin(stateDir, id)
     expect(await post(base, '/api/recharge/wechat', { amount: 1, ...prior })).toMatchObject({ ok: false, code: 'ACCOUNT_CHANGED' })
-    expect(await (await fetch(base + '/api/recharge/wechat/order?' + new URLSearchParams({ outTradeNo: 'order-one', ...prior }))).json())
+    expect(await (await fetch(base + '/api/recharge/wechat/order?' + new URLSearchParams({ outTradeNo: 'order-one', ...prior }).toString())).json())
       .toMatchObject({ ok: false, code: 'ACCOUNT_CHANGED' })
     expect(creations).toBe(0)
     const current = await rechargeExpectation(base)
@@ -5015,7 +5015,7 @@ describe('deployed Harness API through the real product Loader', () => {
         status: 'pending', code_url: 'weixin://wxpay/bizpayurl?pr=fixture', expires_at: Math.floor(Date.now() / 1000) + 300 } }))
     }
     const pending = phase === 'create' ? post(base, '/api/recharge/wechat', { amount: 1, ...expected })
-      : fetch(base + '/api/recharge/wechat/order?' + new URLSearchParams({ outTradeNo: 'order-one', ...expected })).then(async response => object(await response.json()))
+      : fetch(base + '/api/recharge/wechat/order?' + new URLSearchParams({ outTradeNo: 'order-one', ...expected }).toString()).then(async response => object(await response.json()))
     try {
       await started.promise
       await replaceFinancialLogin(stateDir)
