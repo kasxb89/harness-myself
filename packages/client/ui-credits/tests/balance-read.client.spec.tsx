@@ -9,6 +9,10 @@ import { zh, type CreditsKey } from '../src/client/locales.ts'
 
 const productIt = createClientTest({ roster: webApp.closure(['@deepseek-ai/dsh-client-ui-credits']) }, { mount: true })
 let accountId = 0
+let signedIn = true
+let sessionUnavailable = false
+let logoutRefused = false
+let revokeUnknown = false
 let summary: () => Promise<Response>
 let fetcher = vi.fn<typeof fetch>()
 const t = (key: string, values?: Record<string, string>): string => {
@@ -21,7 +25,7 @@ const wallet = (view: ReturnType<typeof render>) => within(view.getByRole('regio
 
 async function mountPage() {
   await refreshCredits(undefined, true)
-  const props = { t, openRecharge: vi.fn(), completeSignIn: vi.fn() } as Parameters<typeof CreditsPage>[0]
+  const props = { t, openRecharge: vi.fn(), signOutTimeoutMs: 20_000, completeSignIn: vi.fn() } as Parameters<typeof CreditsPage>[0]
   const view = render(<CreditsPage {...props} />)
   await act(async () => {})
   return view
@@ -29,15 +33,21 @@ async function mountPage() {
 
 beforeEach(() => {
   vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-10-26T12:00:00Z'))
-  accountId++
+  accountId++; signedIn = true; sessionUnavailable = false; logoutRefused = false; revokeUnknown = false
   summary = async () => Response.json({ ok: true, payload: { balance_points: 1234 } })
   fetcher = vi.fn<typeof fetch>(async (input) => {
     const path = pathOf(input)
+    if (path === '/credits/api/session' && signedIn && sessionUnavailable) return Response.json({ ok: false,
+      code: 'ACCOUNT_NETWORK_ERROR', signedIn: true, liveness: 'unknown', failure: { reason: 'network', stage: 'account-read' },
+      payload: { signedIn: true, creditsPerYuan: 1000, account: { id: String(accountId), phone: 'fixture' } } })
     if (path === '/credits/api/session') return Response.json({ ok: true, payload: {
-      signedIn: true, creditsPerYuan: 1000, account: { id: String(accountId), phone: '+8613800138000' },
+      signedIn, creditsPerYuan: 1000, ...signedIn ? { account: { id: String(accountId), phone: '+8613800138000' } } : {},
     } })
     if (path === '/credits/api/summary') return await summary()
-    if (path === '/credits/api/session/logout') return Response.json({ ok: true })
+    if (path === '/credits/api/session/logout') {
+      if (logoutRefused) return Response.json({ ok: false })
+      signedIn = false; return Response.json({ ok: !revokeUnknown })
+    }
     if (path.startsWith('/credits/api/usage?')) return Response.json({ ok: false, code: 'USAGE_UNAVAILABLE', payload: null })
     throw new Error(`Unexpected fixture route: ${path}`)
   })
@@ -46,6 +56,39 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
 describe('balance read recovery', () => {
+  productIt('keeps logout available for an unverified stored login and confirms local logout before showing the phone form', async () => {
+    sessionUnavailable = true
+    const view = await mountPage()
+    expect(createCreditsSessionSource().getSnapshot().session).toBeNull()
+    expect(view.getByText(zh['read.error.network'])).toBeTruthy()
+    expect(view.queryByRole('region', { name: zh.balance })).toBeNull()
+    fireEvent.click(view.getByRole('button', { name: zh.signOut }))
+    await waitFor(() => { expect(createCreditsSessionSource().getSnapshot().session?.signedIn).toBe(false) })
+    expect(view.getByRole('region', { name: zh.loginTitle })).toBeTruthy()
+    expect(fetcher.mock.calls.some(([input]) => /challenge|verify|recharge|generat/u.test(pathOf(input)))).toBe(false)
+  })
+
+  productIt('preserves retryable logout and shows failure instead of success when the Host still retains the login', async () => {
+    sessionUnavailable = true; logoutRefused = true
+    const view = await mountPage()
+    fireEvent.click(view.getByRole('button', { name: zh.signOut }))
+    await waitFor(() => { expect(view.getByText(zh.signOutFailed)).toBeTruthy() })
+    expect(view.getByRole('button', { name: zh.signOut }).hasAttribute('disabled')).toBe(false)
+    expect(view.queryByText(zh.signedOut)).toBeNull()
+    expect(createCreditsSessionSource().getSnapshot().session).toBeNull()
+    logoutRefused = false
+    fireEvent.click(view.getByRole('button', { name: zh.signOut }))
+    await waitFor(() => { expect(createCreditsSessionSource().getSnapshot().session?.signedIn).toBe(false) })
+  })
+
+  productIt('reports local logout separately when server revocation is unconfirmed', async () => {
+    sessionUnavailable = true; revokeUnknown = true
+    const view = await mountPage()
+    fireEvent.click(view.getByRole('button', { name: zh.signOut }))
+    await waitFor(() => { expect(view.getByText(zh.signedOutLocal)).toBeTruthy() })
+    expect(view.queryByRole('button', { name: zh.signOut })).toBeNull()
+  })
+
   for (const transition of ['account id', 'login owner'] as const) {
     productIt(`revalidates the shared session on usage retry after a cross-window ${transition} change`, async () => {
       let hostId = String(accountId), owner = 'a'.repeat(64), consumed = 100
@@ -151,7 +194,7 @@ describe('balance read recovery', () => {
     summary = async () => late.promise
     let reading: Promise<void> | undefined
     act(() => { reading = refreshBalance() })
-    await act(async () => { await signOutCredits() })
+    await act(async () => { await signOutCredits(20_000) })
     await act(async () => {
       late.resolve(Response.json({ ok: true, payload: { balance_points: 9999 } }))
       await reading

@@ -17,7 +17,7 @@ const t = (key: string, values?: Record<string, string>): string => {
 }
 const footer = { wide: true, label: '共享余额', rechargeLabel: zh.goRecharge, customLabel: zh.customAmount,
   open: vi.fn(), openRecharge: vi.fn() } as Parameters<typeof FooterAction>[0]
-const page = { t, openRecharge: vi.fn(), completeSignIn: vi.fn() } as Parameters<typeof CreditsPage>[0]
+const page = { t, openRecharge: vi.fn(), signOutTimeoutMs: 20_000, completeSignIn: vi.fn() } as Parameters<typeof CreditsPage>[0]
 let identity = 0
 let summary: () => Promise<Response>
 let fetcher = vi.fn<typeof fetch>()

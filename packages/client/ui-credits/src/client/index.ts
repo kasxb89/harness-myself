@@ -46,21 +46,24 @@ export const RECHARGE_PANEL_ID = 'recharge' as MainPanelId
  * layout service the footer row uses to open its page. */
 export const inject = ['slots', 'locale', 'layout']
 
-/** Deadline for read-only reply-credit statistics, independent of model generation. */
+/** Deadlines for account operations and read-only reply-credit statistics. */
 export interface Config {
   /** Client read timeout in milliseconds; configure above the owning Host's statistics timeout. */
   chatUsageReadTimeoutMs?: number
+  /** Total client timeout for logout and confirmation that local credentials were cleared. */
+  signOutTimeoutMs?: number
 }
 
-/** Validate the reply-credit read deadline before activating the UI. */
+/** Validate account-operation deadlines before activating the UI. */
 export const Config: z<Config> = z.object({
   chatUsageReadTimeoutMs: z.natural().min(1000).max(120_000).default(20_000),
+  signOutTimeoutMs: z.natural().min(1000).max(120_000).default(20_000),
 })
 
 /**
  * Client plugin body: register the dictionaries, the sidebar entry, and the page.
  * @param ctx - client root context.
- * @param config - Loader-validated reply-credit read settings.
+ * @param config - Loader-validated account-operation deadlines.
  */
 export function apply(ctx: ClientContext, config: Config = {}): void {
   const resolved = Config(config) as Required<Config>
@@ -92,6 +95,7 @@ export function apply(ctx: ClientContext, config: Config = {}): void {
     inject: () => guide,
   }, WorkspaceGuideToast))
   const face: CreditsPageInjected & RechargePageInjected = {
+    signOutTimeoutMs: resolved.signOutTimeoutMs,
     t: (key, values) => t(key as Parameters<typeof t>[0], values),
     openRecharge: () => { ctx.layout.selectPanel(RECHARGE_PANEL_ID) },
     openBalance: () => { ctx.layout.selectPanel(PANEL_ID) },

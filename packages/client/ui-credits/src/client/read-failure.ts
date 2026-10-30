@@ -22,8 +22,8 @@ function record(value: unknown): Record<string, unknown> | undefined {
 export function creditsReadFailure(value: unknown, fallback: string, status?: number): CreditsReadFailure {
   const envelope = record(value)
   const detail = record(envelope?.failure) ?? envelope
-  const code = typeof detail?.code === 'string' ? detail.code : fallback
-  const declaredStatus = detail?.httpStatus ?? envelope?.httpStatus ?? envelope?.status ?? status
+  const code = typeof detail?.code === 'string' ? detail.code : typeof envelope?.code === 'string' ? envelope.code : fallback
+  const declaredStatus = detail?.httpStatus ?? detail?.status ?? envelope?.httpStatus ?? envelope?.status ?? status
   const httpStatus = typeof declaredStatus === 'number' ? declaredStatus : undefined
   const seconds = detail?.retryAfterSeconds ?? envelope?.retryAfterSeconds
   const retryAfterSeconds = typeof seconds === 'number' && Number.isFinite(seconds) && seconds >= 0 ? seconds : undefined

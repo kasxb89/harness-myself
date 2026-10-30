@@ -29,6 +29,8 @@ export interface CreditsPageInjected {
   readonly openRecharge: () => void
   /** Return to the current Conversation after this form completes phone sign-in. */
   readonly completeSignIn: () => void
+  /** Total deadline for logout and local-state confirmation. */
+  readonly signOutTimeoutMs: number
 }
 
 interface ChallengeResponse {
@@ -44,7 +46,7 @@ interface SessionResponse {
 }
 
 export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected): ReactNode {
-  const { t, openRecharge, completeSignIn } = props
+  const { t, openRecharge, completeSignIn, signOutTimeoutMs } = props
   const { session, balance, loaded, accountEpoch, failure: readFailure, readFailure: readDetail, refreshing } = useCreditsSnapshot()
   const [notice, setNotice] = useState<string | null>(null)
   const [failure, setFailure] = useState<string | null>(null)
@@ -75,6 +77,7 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected): 
 
   const creditsPerYuan = session?.creditsPerYuan ?? 1000
   const signedIn = session?.signedIn === true
+  const canSignOut = signedIn || loaded && session === null && currentReadFailure !== null
   const accountPhone = session?.account?.phone.replace(/^(\+86)(1\d{2})(\d{4})(\d{4})$/, '$1 $2 $3 $4') ?? '—'
   const recoveryAvailable = session?.phoneRecoveryAvailable !== false
   const validPhone = /^\+861[3-9]\d{9}$/.test(phone)
@@ -281,19 +284,23 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected): 
   /** Sign out: revoke on the platform, clear locally, return to the form. */
   const signOut = useCallback(async () => {
     setBusy(true)
+    setFailure(null)
+    setNotice(null)
     try {
-      await signOutCredits()
+      const outcome = await signOutCredits(signOutTimeoutMs)
+      setNotice(t(outcome === 'local-only' ? 'signedOutLocal' : 'signedOut'))
+    } catch (_unconfirmedLogout: unknown) {
+      setFailure(t('signOutFailed'))
     } finally {
       setBusy(false)
-      setNotice(t('signedOut'))
     }
-  }, [t])
+  }, [signOutTimeoutMs, t])
 
   return (
     <div className={cx(css.page, css.balancePage)}>
       <header className={css.header}>
         <h1 className={css.title}>{t('title')}</h1>
-        {signedIn && (
+        {canSignOut && (
           <Button
             className={css.headerAction}
             size="sm"
@@ -307,7 +314,7 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected): 
       </header>
       <p className={css.hint}>{t('activityNotice')}</p>
 
-      {signedIn && failure !== null && <p className={css.banner} data-tone="error" role="alert">{failure}</p>}
+      {canSignOut && failure !== null && <p className={css.banner} data-tone="error" role="alert">{failure}</p>}
       {currentReadFailure !== null && <div className={css.banner} data-tone="error" role="alert">
         <span>{t(`read.error.${currentReadFailure.kind}`)}</span>
         {readRetrySeconds > 0 && <span> {t('read.retryAfter', { seconds: String(readRetrySeconds) })}</span>}

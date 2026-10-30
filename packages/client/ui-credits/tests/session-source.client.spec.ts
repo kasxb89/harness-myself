@@ -13,7 +13,7 @@ const api = vi.hoisted(() => ({
     retryAfterSeconds?: number
     sessionInvalid?: boolean
   }>>(),
-  post: vi.fn<() => Promise<void>>(),
+  post: vi.fn<() => Promise<{ ok: boolean }>>(),
 }))
 vi.mock('../src/client/api.ts', () => ({ ...api, newKey: () => 'logout-test' }))
 
@@ -23,7 +23,7 @@ const balance = (points: number) => ({ balance_points: points, as_of: '2026-10-1
 beforeEach(() => {
   vi.resetModules()
   api.get.mockReset()
-  api.post.mockReset().mockResolvedValue()
+  api.post.mockReset().mockResolvedValue({ ok: true })
   vi.useFakeTimers()
 })
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
@@ -57,7 +57,8 @@ describe('injected credits session source', () => {
     id = 'b'
     await refreshCredits()
     expect(source.getSnapshot().accountEpoch).toBe(2)
-    await signOutCredits()
+    api.get.mockResolvedValueOnce({ ok: true, payload: { signedIn: false, creditsPerYuan: 1000 } })
+    await signOutCredits(20_000)
     expect(source.getSnapshot().accountEpoch).toBe(3)
     await refreshCredits()
     expect(source.getSnapshot().accountEpoch).toBe(4)
@@ -120,25 +121,26 @@ describe('injected credits session source', () => {
     expect(api.get).toHaveBeenCalledTimes(calls)
   })
 
-  it('clears observers before logout settles and rejects an older signed-in session read', async () => {
+  it('invalidates older reads while awaiting confirmed local logout', async () => {
     const read = Promise.withResolvers<{ ok: boolean; payload?: unknown }>()
-    const logout = Promise.withResolvers<undefined>()
+    const logout = Promise.withResolvers<{ ok: boolean }>()
     api.get.mockReturnValueOnce(read.promise)
     api.post.mockReturnValueOnce(logout.promise)
     const { createCreditsSessionSource, signOutCredits } = await import('../src/client/session-store.ts')
     const source = createCreditsSessionSource(), listener = vi.fn()
     const stop = source.subscribe(listener)
-    const operation = signOutCredits()
+    const operation = signOutCredits(20_000)
     try {
-      expect(source.getSnapshot().session?.signedIn).toBe(false)
+      expect(source.getSnapshot().session).toBeNull()
       expect(listener).toHaveBeenCalled()
       read.resolve({ ok: true, payload: account('old') })
       await vi.advanceTimersByTimeAsync(0)
-      expect(source.getSnapshot().session?.signedIn).toBe(false)
+      expect(source.getSnapshot().session).toBeNull()
       expect(api.get).toHaveBeenCalledTimes(1)
     } finally {
       read.resolve({ ok: true, payload: account('old') })
-      logout.resolve(undefined)
+      api.get.mockResolvedValueOnce({ ok: true, payload: { signedIn: false, creditsPerYuan: 1000 } })
+      logout.resolve({ ok: true })
       await operation
       stop()
     }
@@ -264,7 +266,8 @@ describe('injected credits session source', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(source.getSnapshot().session?.account?.id).toBe('b')
     expect(source.getSnapshot().balance).toBeNull()
-    await signOutCredits()
+    api.get.mockResolvedValueOnce({ ok: true, payload: { signedIn: false, creditsPerYuan: 1000 } })
+    await signOutCredits(20_000)
     next.resolve({ ok: true, payload: balance(1) })
     await changed
     expect(source.getSnapshot()).toMatchObject({ session: { signedIn: false }, balance: null, refreshing: false })

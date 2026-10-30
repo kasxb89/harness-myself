@@ -30,7 +30,7 @@ const challenge = {
 
 function renderSignIn(completeSignIn = vi.fn()) {
   // The form does not read any of the renderer's global standard seats.
-  const props = { t, openRecharge: vi.fn(), completeSignIn } as Parameters<typeof CreditsPage>[0]
+  const props = { t, openRecharge: vi.fn(), signOutTimeoutMs: 20_000, completeSignIn } as Parameters<typeof CreditsPage>[0]
   const view = render(<CreditsPage {...props} />)
   return { ...view, rerenderPage: () => { view.rerender(<CreditsPage {...props} />) } }
 }

@@ -61,6 +61,7 @@ let sessionReadGeneration = 0
 let heartbeatRead: AbortController | undefined
 let balanceReadGeneration = 0
 let balanceRead: { epoch: number; signal?: AbortSignal; promise: Promise<void> } | undefined
+let signOutRead: Promise<'signed-out' | 'local-only'> | undefined
 
 const subscribe = (listener: () => void): (() => void) => {
   listeners.add(listener)
@@ -82,6 +83,7 @@ function publish(next: Partial<CreditsSnapshot>): void {
  * @param signal - optional owner cancellation.
  */
 export async function refreshBalance(signal?: AbortSignal): Promise<void> {
+  if (signOutRead !== undefined) return
   if (signal?.aborted === true || snapshot.session?.signedIn !== true || creditsRetrySeconds(snapshot.readFailure) > 0) return
   const epoch = snapshot.accountEpoch
   const accountId = snapshot.session.account?.id
@@ -133,6 +135,7 @@ export async function refreshBalance(signal?: AbortSignal): Promise<void> {
  * @returns True only when this invocation verified and retained the current session; a cooldown or failed read returns false.
  */
 export async function refreshCredits(signal?: AbortSignal, afterSignIn = false): Promise<boolean> {
+  if (signOutRead !== undefined) return false
   if (signal?.aborted === true || !afterSignIn && creditsRetrySeconds(snapshot.readFailure) > 0) return false
   const generation = ++sessionReadGeneration
   if (afterSignIn) {
@@ -169,18 +172,36 @@ export async function refreshCredits(signal?: AbortSignal, afterSignIn = false):
   }
 }
 
-/** Sign out: revoke on the platform, clear locally. */
-export async function signOutCredits(): Promise<void> {
+/**
+ * Request logout and confirm the local Host no longer has a login before clearing observers.
+ * @param timeoutMs - Total deadline for the logout request and local-state confirmation.
+ * @returns Whether platform revocation was confirmed or only local logout was confirmed.
+ * @throws When the local signed-out state cannot be confirmed; the current snapshot remains available for recovery.
+ */
+export async function signOutCredits(timeoutMs: number): Promise<'signed-out' | 'local-only'> {
+  if (signOutRead !== undefined) return await signOutRead
   sessionReadGeneration += 1
   balanceReadGeneration += 1
+  balanceRead = undefined
   heartbeatRead?.abort()
-  publish({ session: { ...UNSIGNED, creditsPerYuan: snapshot.session?.creditsPerYuan ?? 1000 }, balance: null,
-    failure: null, readFailure: null, refreshing: false })
-  try {
-    await post('/credits/api/session/logout', { idempotencyKey: newKey('logout') })
-  } catch (_error) {
-    // Locally cleared regardless; 503 does not prove the revoke did not happen.
-  }
+  const signal = AbortSignal.timeout(timeoutMs)
+  const operation = (async (): Promise<'signed-out' | 'local-only'> => {
+    let revoked = false
+    try {
+      const answer = await post('/credits/api/session/logout', { idempotencyKey: newKey('logout') }, signal)
+      revoked = answer.ok
+    } catch (_unknownRevocation: unknown) {
+      // The local Host may have committed logout before its reply was lost.
+    }
+    const answer = await get<SessionInfo | null>('/credits/api/session', signal)
+    if (!answer.ok || answer.payload == null || answer.payload.signedIn !== false) throw new Error('LOGOUT_UNCONFIRMED')
+    publish({ session: { ...UNSIGNED, creditsPerYuan: snapshot.session?.creditsPerYuan ?? 1000 }, balance: null,
+      loaded: true, failure: null, readFailure: null, refreshing: false })
+    return revoked ? 'signed-out' : 'local-only'
+  })()
+  signOutRead = operation
+  publish({ refreshing: false })
+  try { return await operation } finally { if (signOutRead === operation) signOutRead = undefined }
 }
 
 /**

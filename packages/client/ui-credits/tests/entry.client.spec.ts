@@ -15,9 +15,11 @@ import type { BalanceNoticeInjected } from '../src/client/BalanceNotice.tsx'
 const roots: Context[] = []
 const existingPanel = 'existing-panel' as MainPanelId
 
-it('validates the configurable statistics deadline independently from generation settings', () => {
-  expect(Config({})).toEqual({ chatUsageReadTimeoutMs: 20_000 })
-  expect(Config({ chatUsageReadTimeoutMs: 30_000 })).toEqual({ chatUsageReadTimeoutMs: 30_000 })
+it('validates the configurable statistics and sign-out deadlines independently from generation settings', () => {
+  expect(Config({})).toEqual({ chatUsageReadTimeoutMs: 20_000, signOutTimeoutMs: 20_000 })
+  expect(Config({ chatUsageReadTimeoutMs: 30_000 })).toEqual({ chatUsageReadTimeoutMs: 30_000, signOutTimeoutMs: 20_000 })
+  expect(Config({ signOutTimeoutMs: 30_000 })).toEqual({ chatUsageReadTimeoutMs: 20_000, signOutTimeoutMs: 30_000 })
+  for (const signOutTimeoutMs of [0, 999, 120_001, 2000.5, Number.NaN]) expect(() => Config({ signOutTimeoutMs })).toThrow()
   for (const chatUsageReadTimeoutMs of [0, 999, 120_001, 2000.5, Number.NaN]) {
     expect(() => Config({ chatUsageReadTimeoutMs })).toThrow()
   }
