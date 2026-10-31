@@ -835,6 +835,28 @@ describe('deployed Harness API through the real product Loader', () => {
     }
   })
 
+  it('shows a proven image funding failure through the real chat tool and suppresses replay of that submission', async () => {
+    const { base, stateDir } = await boot(undefined, false, true)
+    await signIn(base)
+    const fixture = mediaContract.find(entry => entry.method === 'POST' && entry.http_status === 429 && entry.response.media_kind === 'image')
+    if (fixture === undefined) throw new Error('Expected complete original image proof')
+    const model = fixture.response.model
+    relayModels.push({ id: model, object: 'model', supported_endpoint_types: ['image-generation'] })
+    pricingRows = [{ model_name: model, supported_endpoint_types: ['image-generation'] }]
+    mediaWireReplies.push({ method: 'POST', path: '/toapis/v1/images/generations', status: 402,
+      body: { ...fixture.response, code: 'insufficient_user_quota' } })
+    const agent = videoAgent(stateDir, 'funding-proof-image')
+    const input = { name: 'generate_image', agent, callId: ToolCallId('funding-proof-image'),
+      arguments: { model, prompt: '一杯热茶' }, signal: new AbortController().signal }
+    const result = object((await requestImage(input)).value)
+    expect(result).toMatchObject({ status: 'failed', code: 'INSUFFICIENT_BALANCE', submission_state: 'failed',
+      task_id: fixture.response.id, request_id: 'media-wire-request' })
+    expect(result.message).toMatch(/余额不足.*充值.*未发送至上游且未扣费/u)
+    expect(object((await replayLastImage(agent)).value)).toMatchObject({ status: 'existing',
+      plan_id: result.plan_id, operation_id: result.operation_id })
+    expect(calls.filter(call => call.path === '/harness/toapis/v1/images/generations')).toHaveLength(1)
+  })
+
   it.each([
     { entry: 'panel', reply: notSentContract.notCharged }, { entry: 'chat', reply: notSentContract.notCharged },
     { entry: 'panel', reply: notSentContract.refunded }, { entry: 'chat', reply: notSentContract.refunded },

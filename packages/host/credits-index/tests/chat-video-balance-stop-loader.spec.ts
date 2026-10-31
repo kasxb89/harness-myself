@@ -29,6 +29,9 @@ import type { VideoProjectOptions, VideoProjectProvider } from '../src/video-pro
 import { captureChatVideoBalanceStop } from '../src/chat-video-balance-stop.ts'
 import { deriveReplayScript, parseSessionLog } from '@deepseek-ai/dsh-llm-replay'
 import { redactSessionSnapshotIds, normalizeSessionSnapshot } from '@deepseek-ai/dsh-session-snapshot'
+import { executeImageTask } from '../src/image-task.ts'
+import { submitAudio } from '../src/audio-generation.ts'
+import mediaContract from './fixtures/media-submission-api-contract-v3.json' with { type: 'json' }
 import { eventLines, toHeaderLine } from '@deepseek-ai/dsh-session-persistence-jsonl/src/format.ts'
 
 const scope = 'a'.repeat(64)
@@ -105,6 +108,42 @@ async function boot(script: StreamChunk[][], ptc = false) {
     inner.effect(() => inner.llm.registerAdapter(['fixture'], adapter))
     registerVideoGenerationIntent(inner)
     registerVideoProjectTools(inner, options)
+    inner.tools.register(defineTool({
+      name: 'media_balance_fixture', description: 'Exercise actual image and speech funding results',
+      parameters: { kind: { type: 'string', enum: ['image', 'audio'], required: true } },
+      output: { schema: { type: 'object', additionalProperties: true },
+        render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] },
+      async execute(args, exec) {
+        if (args.kind === 'audio') {
+          const result = await submitAudio({ request: { model: 'fixture-speech', input: '海边日落', voice: 'calm', response_format: 'wav' },
+            signal: exec.signal, maxBytes: 65_536,
+            submit: async () => Response.json({ code: 'insufficient_user_quota' }, { status: 402,
+              headers: { 'x-request-id': 'original-audio-request' } }),
+          })
+          if (result.status === 'completed') throw new Error('A funding-rejected speech request cannot return audio bytes')
+          return { ...result }
+        }
+        const fixture = mediaContract.find(entry => entry.method === 'POST' && entry.http_status === 429 && entry.response.media_kind === 'image')
+        if (fixture === undefined) throw new Error('Expected complete original image receipt')
+        const result = await executeImageTask({ model: fixture.response.model, route: '/toapis/v1/images/generations',
+          backendFingerprint: scope, signal: exec.signal, submitTimeoutMs: 1000, taskTimeoutMs: 2000,
+          queryTimeoutMs: 1000, pollIntervalMs: 1, queryRetryLimit: 0,
+          submit: async () => Response.json({ ...fixture.response, code: 'insufficient_user_quota' }, {
+            status: 402, headers: { 'x-request-id': 'original-image-request' },
+          }),
+          read: async () => { throw new Error('A proven unsent image has no pending query') },
+          save: async () => { throw new Error('A rejected image has no completed output') },
+        })
+        if (result.submissionState !== 'failed' || result.imageReceipt === undefined
+          || result.code === undefined || result.message === undefined) throw new Error('Expected original image funding failure')
+        const { origin, ...receipt } = result.imageReceipt
+        return { ok: result.ok, submissionState: result.submissionState, model: result.model, code: result.code, message: result.message,
+          imageReceipt: { ...receipt, ...origin === undefined ? {} : { origin: { ...origin } } },
+          ...result.taskId === undefined ? {} : { taskId: result.taskId },
+          ...result.requestId === undefined ? {} : { requestId: result.requestId },
+        }
+      },
+    }))
     inner.tools.register(defineTool({
       name: 'balance_receipt_fixture', description: 'Supply a normalized unknown submission receipt', parameters: {},
       output: { schema: { type: 'object', additionalProperties: false, properties: {
@@ -276,6 +315,52 @@ describe('balance failure through Loader, Agent, video tools and jobs', () => {
       ? [{ content: message.content, isError: message.isError }] : [])
     expect(modelResults(restored)).toEqual(modelResults(expected))
     expect(deriveReplayScript(restoredEvents)).toHaveLength(1)
+    expect(recordedSession(saved, f.workspace)).toBe(selected)
+  })
+
+  it('replays recorded image and speech funding results with their original recovery facts', async () => {
+    const file = new URL('./expected/media-balance-feedback/session.v4.jsonl', import.meta.url)
+    const humanText = '生成一张海边日落图片，并朗读这段文字'
+    if (process.env.DSH_SNAPSHOT === 'record') {
+      const image = toolCallResponse('image', 'media_balance_fixture', { kind: 'image' })
+        .filter(chunk => chunk.type !== 'finish' && chunk.type !== 'usage')
+      const speech = toolCallResponse('speech', 'media_balance_fixture', { kind: 'audio' })
+        .map(chunk => 'index' in chunk ? { ...chunk, index: 1 } : chunk)
+      const fixture = await boot([[...image, ...speech], textResponse('余额不足，请充值；原请求记录已经保留。')])
+      const capture = await fixture.create('record-media-balance')
+      fixture.send(capture, humanText)
+      await capture.whenIdle()
+      await mkdir(new URL('./expected/media-balance-feedback/', import.meta.url), { recursive: true })
+      await writeFile(file, recordedSession(serializedSession(capture), fixture.workspace))
+    }
+    const selected = await readFile(file, 'utf8')
+    const events = parseSessionLog(selected)
+    const script = deriveReplayScript(events).map((entry) => {
+      if (entry.kind !== 'chunks') throw new Error('Expected recorded image and speech streams')
+      return entry.chunks
+    })
+    expect(script).toHaveLength(2)
+    const f = await boot(script)
+    const agent = await f.create('replay-media-balance')
+    f.send(agent, humanText)
+    await agent.whenIdle()
+    expect(f.adapter.requests).toHaveLength(2)
+    const observed = agent.session.snapshotEvents().filter(event => event.type === 'tool/result')
+    expect(observed).toHaveLength(2)
+    const contents = observed.map(event => event.data.message.content)
+    expect(JSON.stringify(contents[0])).toContain('INSUFFICIENT_BALANCE')
+    expect(JSON.stringify(contents[0])).toContain('余额不足，请充值')
+    expect(JSON.stringify(contents[0])).toContain('未发送至上游且未扣费')
+    expect(JSON.stringify(contents[1])).toContain('AUDIO_BALANCE')
+    expect(JSON.stringify(contents[1])).toContain('unknown')
+    const actualFile = join(f.directory, 'media-session.v4.jsonl')
+    await writeFile(actualFile, serializedSession(agent))
+    const saved = await readFile(actualFile, 'utf8')
+    const restored = Session.create(SessionId('restored-media-balance'), parseSessionLog(saved))
+    const expected = Session.create(SessionId('selected-media-balance'), events)
+    const toolMessages = (session: Session) => session.deriveMessages().flatMap(message => message.role === 'tool'
+      ? [{ content: message.content, isError: message.isError }] : [])
+    expect(toolMessages(restored)).toEqual(toolMessages(expected))
     expect(recordedSession(saved, f.workspace)).toBe(selected)
   })
 

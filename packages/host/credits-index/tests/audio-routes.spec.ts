@@ -38,6 +38,7 @@ const rows = [{ model_name: speechId, kind: 'audio', parameters: {
 let userId = 7
 let pending = false
 let completedTask = false
+let speechBalanceStatus: 402 | 403 | undefined
 let quotes = 0
 let quoteReply: 'normal' | 'busy' | 'disconnect' | 'malformed' = 'normal'
 let context: Context | undefined
@@ -76,7 +77,7 @@ afterEach(async () => {
 })
 
 async function boot(managedOutput = false) {
-  userId = 7; pending = false; completedTask = false; quotes = 0; quoteReply = 'normal'
+  userId = 7; pending = false; completedTask = false; speechBalanceStatus = undefined; quotes = 0; quoteReply = 'normal'
   directory = await mkdtemp(join(tmpdir(), 'dsh-audio-routes-'))
   const root = directory
   upstream = createServer((request, response) => {
@@ -124,6 +125,10 @@ async function boot(managedOutput = false) {
       }
       if (path === '/harness/v1/audio/speech') {
         expect(request.headers.authorization).toBe('Bearer sk-fixture-relay')
+        if (speechBalanceStatus !== undefined) {
+          response.writeHead(speechBalanceStatus)
+          response.end(JSON.stringify({ code: 'insufficient_user_quota' })); return
+        }
         if (pending) { response.writeHead(202); response.end(JSON.stringify({ task_id: 'task_audio_original', model: speechId, status: 'queued' })); return }
         if (completedTask) {
           response.setHeader('x-request-id', 'known-audio-request')
@@ -239,6 +244,23 @@ async function boot(managedOutput = false) {
 }
 
 describe('speech through the real authenticated Host Loader', () => {
+  it.each([402, 403] as const)('retains an HTTP%s speech balance failure and does not submit the same UUID again', async (status) => {
+    const { base, cookie, accountId } = await boot()
+    speechBalanceStatus = status
+    const body = { account_id: accountId, session_id: sessionId, ...request }
+    const estimate = await post(base, '/api/audio/quote', body, cookie)
+    const id = randomUUID()
+    const input = { ...body, quote_id: object(estimate.quote).quote_id, submission_id: id }
+    expect(await post(base, '/api/audio/generate', input, cookie))
+      .toMatchObject({ status: 'unknown', code: 'AUDIO_BALANCE', submissionId: id })
+    expect(await post(base, '/api/audio/generate', input, cookie))
+      .toMatchObject({ status: 'unknown', code: 'AUDIO_BALANCE', submissionId: id })
+    expect(calls.filter(call => call.path === '/harness/v1/audio/speech')).toHaveLength(1)
+    expect(calls.filter(call => call.path.startsWith('/harness/v1/tasks/'))).toHaveLength(0)
+    const listed = await get(base, `/api/audio/submissions?session_id=${sessionId}&account_id=${accountId}`, cookie)
+    expect(listed.submissions).toMatchObject([{ status: 'unknown', code: 'AUDIO_BALANCE', submissionId: id }])
+  })
+
   it('recovers the checkpointed original task after a completed response cannot enter the private cache', async () => {
     const { base, cookie, accountId, root, api } = await boot()
     completedTask = true

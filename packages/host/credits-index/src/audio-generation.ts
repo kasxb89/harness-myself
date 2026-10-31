@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto'
 import type { AudioParams, ModelCapability } from './media.ts'
 import { readMediaBytes, MediaTransferLimitError } from './media-transfer.ts'
-import { isAccountBalanceRejectionText } from './account-balance.ts'
+import { accountBalanceFailure, isAccountBalanceRejectionText } from './account-balance.ts'
 
 /** Complete speech parameters; one request produces one audio file. */
 export interface AudioRequest {
@@ -165,10 +165,10 @@ async function responseResult(response: Response, request: AudioRequest, signal:
   if (identifier(requestId)) await observe(observation, { requestId })
   const retained = observation.receipt
   if (!response.ok) {
-    if (response.status === 403) {
+    if (response.status === 402 || response.status === 403) {
       const errorBody = await readMediaBytes(response, Math.min(maxBytes, 64 * 1024), signal)
       return { status: 'unknown', ...retained, code: isAccountBalanceRejectionText(errorBody.toString('utf8'), response.status)
-        ? 'AUDIO_BALANCE' : 'AUDIO_PERMISSION' }
+        ? 'AUDIO_BALANCE' : response.status === 403 ? 'AUDIO_PERMISSION' : 'AUDIO_UNAVAILABLE' }
     }
     await response.body?.cancel()
     return { status: 'unknown', ...retained, code: response.status === 429 ? 'AUDIO_BUSY'
@@ -192,7 +192,8 @@ async function responseResult(response: Response, request: AudioRequest, signal:
   if (task !== undefined) await observe(observation, { taskId: task })
   const identity = observation.receipt
   if (taskValue?.status === 'failed' || taskValue?.status === 'cancelled') {
-    return { status: 'failed', ...identity, code: 'AUDIO_TASK_FAILED', billing: 'unknown' }
+    return { status: 'failed', ...identity,
+      code: accountBalanceFailure(taskValue.failure_code) === undefined ? 'AUDIO_TASK_FAILED' : 'AUDIO_BALANCE', billing: 'unknown' }
   }
   const result = record(record(taskValue?.result)?.audio)
   if (taskValue?.status === 'completed' && result !== null && result.format === request.response_format

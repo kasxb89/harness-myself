@@ -98,6 +98,39 @@ describe('speech dispatch and original-task recovery', () => {
         submit: async () => Response.json(body, { status }) })).toEqual({ status: 'unknown', code })
     }
   })
+  it.each([402, 403])('preserves account balance and original coordinates on HTTP%s speech submission and reads', async (status) => {
+    const body = { error: { code: 'insufficient_user_quota', type: 'new_api_error' } }
+    const submit = vi.fn(async () => Response.json(body, { status, headers: { 'x-request-id': 'balance-request' } }))
+    expect(await submitAudio({ request, signal: signal(), maxBytes: 1024, submit }))
+      .toEqual({ status: 'unknown', requestId: 'balance-request', code: 'AUDIO_BALANCE' })
+    expect(submit).toHaveBeenCalledOnce()
+    const read = vi.fn(async () => Response.json(body, { status }))
+    expect(await readAudioTask('original-speech-task', { request, signal: signal(), maxBytes: 1024, read }))
+      .toEqual({ status: 'unknown', taskId: 'original-speech-task', code: 'AUDIO_BALANCE' })
+    expect(read).toHaveBeenCalledExactlyOnceWith('original-speech-task', expect.any(AbortSignal))
+  })
+  it('keeps a terminal speech balance reason separate from unconfirmed billing and provider quotas', async () => {
+    for (const [failureCode, expectedCode] of [['insufficient_user_quota', 'AUDIO_BALANCE'],
+      ['insufficient_quota', 'AUDIO_TASK_FAILED'], ['insufficient_token_quota', 'AUDIO_TASK_FAILED']] as const) {
+      const read = vi.fn(async () => Response.json({ task_id: 'original-speech-task', model: request.model,
+        status: 'failed', failure_code: failureCode, failure_reason: 'private provider detail' }))
+      expect(await readAudioTask('original-speech-task', { request, signal: signal(), maxBytes: 1024, read }))
+        .toEqual({ status: 'failed', taskId: 'original-speech-task', code: expectedCode, billing: 'unknown' })
+      expect(read).toHaveBeenCalledOnce()
+    }
+  })
+  it.each([402, 403])('does not turn token, provider, prose or network faults into balance on HTTP%s', async (status) => {
+    for (const body of [{ code: 'insufficient_token_quota' }, { code: 'insufficient_quota' },
+      { error: { code: 'insufficient_user_quota', type: 'upstream_error' } }, { message: 'insufficient_user_quota' }]) {
+      const result = await submitAudio({ request, signal: signal(), maxBytes: 1024,
+        submit: async () => Response.json(body, { status }) })
+      expect(result).toMatchObject({ status: 'unknown' })
+      expect(result).not.toHaveProperty('code', 'AUDIO_BALANCE')
+    }
+    expect(await submitAudio({ request, signal: signal(), maxBytes: 1024,
+      submit: async () => { throw new TypeError('insufficient_user_quota') } }))
+      .toEqual({ status: 'unknown', code: 'AUDIO_NETWORK' })
+  })
   it('retains known paid-task coordinates when completed audio is malformed', async () => {
     const received = vi.fn(async (_receipt: AudioReceipt) => {})
     const result = await submitAudio({ request, signal: signal(), maxBytes: 1024, received,

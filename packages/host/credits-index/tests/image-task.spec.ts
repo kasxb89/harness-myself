@@ -86,6 +86,127 @@ describe('image task execution and read-only recovery', () => {
     expect(input.save).not.toHaveBeenCalled()
   })
 
+  it.each([402, 403])('keeps funding and the proven not-sent image facts separate on HTTP%s', async (status) => {
+    const input = options({ submit: vi.fn(async () => json({ ...capacity.response, code: 'insufficient_user_quota' }, status)) })
+    const result = await executeImageTask(input)
+    expect(result).toMatchObject({ submissionState: 'failed', taskId: originalId, code: 'INSUFFICIENT_BALANCE',
+      imageReceipt: { phase: 'submitting', taskId: originalId } })
+    expect(result.message).toContain('余额不足，请充值')
+    expect(result.message).toContain('未发送至上游且未扣费')
+    expect(input.submit).toHaveBeenCalledOnce()
+    expect(input.read).not.toHaveBeenCalled()
+    expect(input.save).not.toHaveBeenCalled()
+  })
+
+  it('recovers the original canonical image balance failure without another submission', async () => {
+    const input = options({ resumeReceipt: { ...receipt, taskId: originalId },
+      read: vi.fn(async () => json({ ...canonical.response, failure_code: 'insufficient_user_quota',
+        failure_reason: 'private original error' })) })
+    const result = await executeImageTask(input)
+    expect(result).toMatchObject({ submissionState: 'failed', taskId: originalId, code: 'INSUFFICIENT_BALANCE' })
+    expect(result.message).toContain('余额不足，请充值')
+    expect(result.message).toContain('未发送至上游且未扣费')
+    expect(JSON.stringify(result)).not.toContain('private original error')
+    expect(input.read).toHaveBeenCalledExactlyOnceWith(originalId, expect.any(AbortSignal), true)
+    expect(input.submit).not.toHaveBeenCalled()
+  })
+
+  it('retains unknown image billing when a failed canonical task has only a safe balance reason', async () => {
+    const input = options({ resumeReceipt: { ...receipt, taskId: originalId },
+      read: vi.fn(async () => json({ id: originalId, task_id: originalId, status: 'FAILURE', failure_code: 'insufficient_user_quota' })) })
+    const result = await executeImageTask(input)
+    expect(result).toMatchObject({ submissionState: 'pending', taskId: originalId, code: 'INSUFFICIENT_BALANCE' })
+    expect(result.message).toContain('余额不足，请充值')
+    expect(result.message).not.toMatch(/未扣费|退款已确认/u)
+    expect(input.submit).not.toHaveBeenCalled()
+    expect(input.save).not.toHaveBeenCalled()
+  })
+
+  it.each([402, 403])('retains an accepted image identity and balance on HTTP%s status-read failure', async (status) => {
+    const input = options({ resumeReceipt: receipt,
+      read: vi.fn(async () => json({ code: 'insufficient_user_quota' }, status)) })
+    const result = await executeImageTask(input)
+    expect(result).toMatchObject({ submissionState: 'pending', taskId: receipt.taskId, code: 'INSUFFICIENT_BALANCE' })
+    expect(result.message).toContain('余额不足，请充值')
+    expect(input.submit).not.toHaveBeenCalled()
+  })
+
+  it('keeps an accepted image funding failure pending without inventing billing facts', async () => {
+    const input = options({ submit: vi.fn(async () => json({ task_id: receipt.taskId, code: 'insufficient_user_quota' }, 402)) })
+    const result = await executeImageTask(input)
+    expect(result).toMatchObject({ submissionState: 'pending', taskId: receipt.taskId, code: 'INSUFFICIENT_BALANCE',
+      imageReceipt: { phase: 'accepted' } })
+    expect(result.message).toContain('余额不足，请充值')
+    expect(result.message).not.toMatch(/未扣费|退款已确认/u)
+    expect(input.submit).toHaveBeenCalledOnce()
+    expect(input.read).not.toHaveBeenCalled()
+  })
+
+  it.each([402, 403])('keeps funding visible when a legacy image failure requires an HTTP%s canonical funding read', async (httpStatus) => {
+    const input = options({ resumeReceipt: receipt,
+      read: vi.fn(async (_id: string, _signal: AbortSignal, canonicalRead?: boolean) => canonicalRead === true
+        ? json({ code: 'insufficient_user_quota' }, httpStatus) : json({ id: receipt.taskId, status: 'FAILURE' })) })
+    const result = await executeImageTask(input)
+    expect(result).toMatchObject({ submissionState: 'pending', taskId: receipt.taskId, code: 'INSUFFICIENT_BALANCE' })
+    expect(result.message).toContain('余额不足，请充值')
+    expect(result.message).not.toMatch(/未扣费|退款已确认/u)
+    expect(input.read).toHaveBeenCalledTimes(2)
+    expect(input.submit).not.toHaveBeenCalled()
+  })
+
+  it.each([404, 500])('does not classify an HTTP%s canonical failure body as image account funding', async (httpStatus) => {
+    const input = options({ resumeReceipt: receipt,
+      read: vi.fn(async (_id: string, _signal: AbortSignal, canonicalRead?: boolean) => canonicalRead === true
+        ? json({ id: receipt.taskId, status: 'FAILURE', failure_code: 'insufficient_user_quota' }, httpStatus)
+        : json({ id: receipt.taskId, status: 'FAILURE' })) })
+    const result = await executeImageTask(input)
+    expect(result).toMatchObject({ submissionState: 'pending', taskId: receipt.taskId, code: 'IMAGE_STATUS_INVALID' })
+    expect(result.message).not.toContain('余额不足')
+    expect(input.submit).not.toHaveBeenCalled()
+    expect(input.read).toHaveBeenCalledTimes(2)
+  })
+
+  it('retains a safe funding reason on a successful legacy canonical failed-task projection', async () => {
+    const input = options({ resumeReceipt: receipt,
+      read: vi.fn(async (_id: string, _signal: AbortSignal, canonicalRead?: boolean) => canonicalRead === true
+        ? json({ id: receipt.taskId, status: 'FAILURE', failure_code: 'insufficient_user_quota' })
+        : json({ id: receipt.taskId, status: 'FAILURE' })) })
+    const result = await executeImageTask(input)
+    expect(result).toMatchObject({ submissionState: 'pending', taskId: receipt.taskId, code: 'INSUFFICIENT_BALANCE' })
+    expect(result.message).toContain('余额不足，请充值')
+    expect(result.message).not.toMatch(/未扣费|退款已确认/u)
+    expect(input.submit).not.toHaveBeenCalled()
+  })
+
+  it('does not promote a nonfailed legacy canonical projection to an image funding failure', async () => {
+    const input = options({ resumeReceipt: receipt,
+      read: vi.fn(async (_id: string, _signal: AbortSignal, canonicalRead?: boolean) => canonicalRead === true
+        ? json({ id: receipt.taskId, status: 'RUNNING', failure_code: 'insufficient_user_quota' })
+        : json({ id: receipt.taskId, status: 'FAILURE' })) })
+    const result = await executeImageTask(input)
+    expect(result).toMatchObject({ submissionState: 'pending', taskId: receipt.taskId, code: 'IMAGE_STATUS_INVALID' })
+    expect(result.message).not.toContain('余额不足')
+    expect(input.submit).not.toHaveBeenCalled()
+  })
+
+  it('does not treat a provider-owned balance envelope as the product image account', async () => {
+    const input = options({ submit: vi.fn(async () => json({ ...capacity.response, code: 'insufficient_user_quota',
+      error: { code: 'insufficient_user_quota', type: 'upstream_error' } }, 403)) })
+    const result = await executeImageTask(input)
+    expect(result.code).not.toBe('INSUFFICIENT_BALANCE')
+    expect(result.message).not.toContain('余额不足')
+  })
+
+  it.each(['insufficient_token_quota', 'insufficient_quota'])('does not call %s an image account balance failure', async (code) => {
+    const input = options({ submit: vi.fn(async () => json({ ...capacity.response, code }, 403)) })
+    const result = await executeImageTask(input)
+    expect(result).toMatchObject({ submissionState: 'failed', code })
+    expect(result.message).not.toContain('余额不足')
+    const query = options({ resumeReceipt: { ...receipt, taskId: originalId },
+      read: vi.fn(async () => json({ ...canonical.response, failure_code: code })) })
+    expect(await executeImageTask(query)).toMatchObject({ submissionState: 'failed', code: 'MEDIA_SUBMISSION_NOT_SENT' })
+  })
+
   it('prefers the canonical original task over a retained platform task native failure projection', async () => {
     const input = options({ resumeReceipt: { ...receipt, taskId: originalId },
       read: vi.fn(async (_taskId: string, _signal: AbortSignal, canonicalRead?: boolean) => canonicalRead === true
