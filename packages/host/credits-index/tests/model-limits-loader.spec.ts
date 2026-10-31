@@ -478,3 +478,33 @@ describe('unchanged execution metadata after real settings normalization', () =>
     expect((await context!.llm.resolveModelInfo('yunshu-local', first)).textCapabilities?.maxInputTokens).toBe(24000)
   })
 })
+
+
+describe('version2 metadata survives real schema normalization without refresh loops', () => {
+  it.each(['enum', 'boolean', 'empty', 'unverified', 'vision-outage-mapping', 'empty-mapping'])('retains exact optional fields for %s and emits no no-op events', async (kind) => {
+    const declaration = { schema_version: 2, revision: 'loop-v2-' + kind, checked_at: '2026-10-31T00:00:00Z',
+      tools: true, vision: kind !== 'vision-outage-mapping', reasoning: true, stream: true, max_input_tokens: 32000,
+      verification: { tools: kind === 'unverified' ? 'unverified' : 'supported', vision: kind === 'vision-outage-mapping' ? 'unverified' : 'supported', reasoning: 'supported' },
+      input_modalities: kind === 'vision-outage-mapping' ? ['text'] : ['text', 'image'],
+      tools_config: { protocol: 'openai-chat', roundtrip_verified: true, verified_tool_choices: ['auto'], parallel_calls: 'unverified' },
+      vision_config: { verified_transports: ['data_url'], verified_mime_types: ['image/png'], billing: 'input_tokens',
+        ...kind === 'vision-outage-mapping' ? { operational_status: 'temporarily_unavailable', operational_reason: 'Temporary image outage.' } : {} },
+      ...kind === 'empty-mapping' ? { reasoning_control_mapping: {} } : {},
+      ...kind === 'vision-outage-mapping' ? { reasoning_control_mapping: { enable_thinking_with_effort: true, omit_effort_on_none: true } } : {},
+      reasoning_mode: kind === 'empty' ? 'automatic' : 'configurable',
+      reasoning_controls: { type: 'object', properties: kind === 'enum' ? { reasoning_effort: { type: 'string', enum: ['none', 'high'] } }
+        : kind === 'empty' ? {} : { enable_thinking: { type: 'boolean' } }, additionalProperties: false },
+      reasoning_omit_behavior: 'provider_default', operational_status: 'available' }
+    catalog = [{ id: first, context_window: 1000000, max_output_tokens: 8192, parameters: { 'x-text-capabilities': declaration } }]
+    const { base, refresh } = await boot()
+    await signIn(base); await refresh()
+    const initial = context!.settings.describe({ redactSecrets: true }).find(row => row.ns === 'llm-pi-ai')!.revision
+    const changed = vi.fn()
+    context!.on('api-session/model-catalog-changed', changed)
+    const before = structuredClone(configuredRoute())
+    for (let count = 0; count < 4; count++) await refresh()
+    expect(configuredRoute()).toEqual(before)
+    expect(context!.settings.describe({ redactSecrets: true }).find(row => row.ns === 'llm-pi-ai')!.revision).toBe(initial)
+    expect(changed).not.toHaveBeenCalled()
+  })
+})

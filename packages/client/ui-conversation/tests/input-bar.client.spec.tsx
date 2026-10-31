@@ -139,9 +139,12 @@ function bench(over?: BenchOptions) {
     actx: SCTX,
     defaultSink: sink,
     unsupportedModelInputNotice: () => zh['error.modelInputUnsupported'],
+    unavailableModelNotice: () => zh['error.modelRouteUnavailable'],
+    unavailableModelImageNotice: () => zh['error.modelImageUnavailable'],
+    hasImageAttachments: ids => ids.some(id => over?.attachments?.find(value => value.id === id)?.kind === 'image'),
     modelAttachmentsSupported: (ids, capabilities) => ids.every((id) => {
       const attachment = over?.attachments?.find(value => value.id === id)
-      return attachment?.kind === 'image' ? capabilities.vision !== false : capabilities.tools !== false
+      return attachment?.kind === 'image' ? capabilities.visionUnavailable !== true && capabilities.vision !== false : capabilities.tools !== false
     }),
     commandAttachments: { serialize: () => Promise.resolve([]), release: () => {}, unsupportedNotice: (token: string) => `${token.trim()} attachments-unsupported` },
     inbox: createSnapshotStore<InboxState>({
@@ -617,7 +620,7 @@ describe('image draft rail', () => {
       error: new RemoteError('session/attachment-invalid', 'raw wire text', { reason }),
     })
     const model = bench({ promptError: attachmentError('MODEL_DOES_NOT_SUPPORT_IMAGES') })
-    expect(model.view.getByRole('alert').textContent).toContain('当前模型不支持图片，请切换支持图片的模型')
+    expect(model.view.getByRole('alert').textContent).toContain(zh['image.modelUnsupported'])
     cleanup()
     const unknown = bench({ promptError: attachmentError('ATTACHMENT_NOT_REFERENCED') })
     expect(unknown.view.getByRole('alert').textContent).toContain('服务器繁忙，请稍后重试')
@@ -631,7 +634,7 @@ describe('image draft rail', () => {
         }),
       },
     })
-    expect(subagent.view.getByRole('alert').textContent).toContain('当前模型不支持图片，请切换支持图片的模型')
+    expect(subagent.view.getByRole('alert').textContent).toContain(zh['image.modelUnsupported'])
     cleanup()
     const other = bench({
       promptError: { op: 'send', error: new RemoteError('gateway/internal', 'boom', {}) },
@@ -1979,6 +1982,79 @@ describe('explicit model input controls preserve the composer draft', () => {
     expect(b.shell.snapshot.draft).toBe('@report.txt')
     expect(b.shell.snapshot.occurrences).toEqual([])
     expect(b.shell.notices.getSnapshot()?.text).toBe(zh['error.modelInputUnsupported'])
+  })
+
+  it('keeps unverified capabilities usable and channel outages separate while preserving the draft', () => {
+    const b = bench({ draft: '保留草稿继续尝试' })
+    act(() => { b.shell.setModelCapabilities({ verification: { tools: 'unverified', vision: 'unverified', reasoning: 'unverified' }, available: true }) })
+    expect(b.button.disabled).toBe(false)
+    expect(b.view.getByRole('status').textContent).toBe(zh['input.modelVerificationPending'])
+    act(() => { b.shell.setModelCapabilities({ available: false }) })
+    expect(b.button.disabled).toBe(true)
+    fireEvent.keyDown(b.textarea, { key: 'Enter' })
+    expect(b.sink).not.toHaveBeenCalled()
+    expect(b.shell.snapshot.draft).toBe('保留草稿继续尝试')
+    expect(b.view.getByRole('status').textContent).toBe(zh['error.modelRouteUnavailable'])
+    expect(b.view.queryByText(zh['error.serverBusy'])).toBeNull()
+    act(() => { b.shell.setModelCapabilities({ available: true }) })
+    expect(b.button.disabled).toBe(false)
+    fireEvent.click(b.button)
+    expect(b.sink).toHaveBeenCalledWith('保留草稿继续尝试', [], 'queue', expect.any(AbortSignal))
+  })
+
+  it('blocks temporary image intake from paste and picker while preserving text and permitting generic files', async () => {
+    const addFiles = vi.fn(() => null)
+    const b = bench({ addFiles })
+    act(() => { b.shell.setModelCapabilities({ available: true, tools: true, visionUnavailable: true,
+      visionUnavailableReason: 'synthetic feature outage', verification: { tools: 'supported', vision: 'unverified', reasoning: 'unverified' } }) })
+    const image = new File([Uint8Array.of(1)], 'temporary.png', { type: 'image/png' })
+    fireEvent.paste(b.textarea, { clipboardData: {
+      items: [{ kind: 'file', getAsFile: () => image }], getData: () => '图片暂不可用也要保留这段文字',
+    } })
+    await vi.waitFor(() => { expect(b.shell.snapshot.draft).toBe('图片暂不可用也要保留这段文字') })
+    act(() => { attachmentOwner(b.slotCalls).onAddFiles([image]) })
+    expect(addFiles).not.toHaveBeenCalled()
+    expect(b.view.getAllByText(zh['error.modelImageUnavailable']).length).toBeGreaterThan(0)
+    expect(b.view.queryByText(zh['error.modelInputUnsupported'])).toBeNull()
+    const file = new File(['report'], 'report.txt', { type: 'text/plain' })
+    act(() => { attachmentOwner(b.slotCalls).onAddFiles([file]) })
+    expect(addFiles).toHaveBeenCalledWith([file], undefined)
+    expect(b.button.disabled).toBe(false)
+    fireEvent.click(b.button)
+    expect(b.sink).toHaveBeenCalledWith('图片暂不可用也要保留这段文字', [], 'queue', expect.any(AbortSignal))
+  })
+
+  it('keeps an existing image and file during a partial outage and sends the file after image removal', () => {
+    const image = { kind: 'image' as const, id: 'partial-image' as DraftAttachmentId,
+      file: new File([Uint8Array.of(1)], 'pixel.png', { type: 'image/png' }), previewUrl: 'blob:partial' }
+    const file = { kind: 'file' as const, id: 'partial-file' as DraftAttachmentId,
+      file: new File(['report'], 'report.txt', { type: 'text/plain' }) }
+    const b = bench({ draft: '保留两个现有附件', attachments: [image, file], fileUploads: {
+      [file.id]: { status: 'ready', receiptId: 'partial-receipt' as never, file: { kind: 'file' } as never },
+    } })
+    act(() => { b.shell.setModelCapabilities({ available: true, tools: true, vision: false, visionUnavailable: true,
+      visionUnavailableReason: 'synthetic image entry failure', inputModalities: ['text'] }) })
+    expect(b.button.disabled).toBe(true)
+    fireEvent.keyDown(b.textarea, { key: 'Enter' })
+    expect(b.sink).not.toHaveBeenCalled()
+    expect(b.shell.snapshot.draft).toBe('保留两个现有附件')
+    expect(b.shell.snapshot.attachmentIds).toEqual([image.id, file.id])
+    expect(b.view.getByRole('status').textContent).toBe(zh['error.modelImageUnavailable'])
+    act(() => { b.shell.submit() })
+    expect(b.shell.notices.getSnapshot()?.text).toBe(zh['error.modelImageUnavailable'])
+    act(() => { b.shell.removeAttachment(image.id) })
+    expect(b.button.disabled).toBe(false)
+    fireEvent.click(b.button)
+    expect(b.sink).toHaveBeenCalledWith('保留两个现有附件', [file.id], 'queue', expect.any(AbortSignal))
+  })
+
+  it('renders typed feature outage copy without relabeling it as unsupported', () => {
+    const b = bench({ draft: '保留待发送图片说明', promptError: { op: 'send', error: new RemoteError('session/model-capability-invalid', 'private partial failure',
+      { reason: 'MODEL_CAPABILITY_INPUT_UNAVAILABLE' }) } })
+    expect(b.view.getByText(zh['error.modelImageUnavailable'])).toBeTruthy()
+    expect(b.view.queryByText(zh['error.modelInputUnsupported'])).toBeNull()
+    expect(b.view.queryByText(zh['error.modelRouteUnavailable'])).toBeNull()
+    expect(b.shell.snapshot.draft).toBe('保留待发送图片说明')
   })
 
   it('shows the typed capability-history refusal without server-busy copy or draft loss', () => {

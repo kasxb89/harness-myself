@@ -80,8 +80,13 @@ export const InputBar = memo(function InputBar({
   )
   const empty = draft.trim() === '' && attachments.length === 0
   const inputCapabilities = input?.modelCapabilities
+  const routeUnavailable = inputCapabilities?.available === false
+  const verificationPending = inputCapabilities?.verification !== undefined
+    && Object.values(inputCapabilities.verification).some(value => value === 'unverified')
   const noFiles = inputCapabilities?.tools === false
-  const noImages = inputCapabilities?.vision === false
+  const imageUnavailable = inputCapabilities?.visionUnavailable === true
+  const unavailableImageAttachments = imageUnavailable && attachments.some(value => value.kind === 'image')
+  const noImages = imageUnavailable || inputCapabilities?.vision === false
     || inputCapabilities?.inputModalities !== undefined && !inputCapabilities.inputModalities.includes('image')
   const unsupportedAttachments = attachments.some(value => value.kind === 'file' ? noFiles : noImages)
     || noFiles && input?.occurrences.some(value => value.appearance === 'file' || value.appearance === 'folder') === true
@@ -119,10 +124,12 @@ export const InputBar = memo(function InputBar({
       const key = ({
         'MODEL_CAPABILITY_HISTORY_UNSUPPORTED': 'error.modelHistoryUnsupported',
         'MODEL_CAPABILITY_INPUT_UNSUPPORTED': 'error.modelInputUnsupported',
+        'MODEL_CAPABILITY_INPUT_UNAVAILABLE': 'error.modelImageUnavailable',
         'MODEL_CAPABILITY_TOOLS_UNSUPPORTED': 'error.modelToolsUnsupported',
         'MODEL_CAPABILITIES_CHANGED': 'error.modelCapabilitiesChanged',
         'MODEL_CAPABILITY_REASONING_UNSUPPORTED': 'error.modelReasoningUnsupported',
         'MODEL_CAPABILITY_STREAM_UNSUPPORTED': 'error.modelStreamUnsupported',
+        'MODEL_ROUTE_UNAVAILABLE': 'error.modelRouteUnavailable',
       } as const)[error.details.reason]
       showToast(t(key))
       return
@@ -230,6 +237,7 @@ export const InputBar = memo(function InputBar({
   const intakeFiles = useCallback((files: readonly File[], directories?: ReadonlySet<File>): void => {
     if (locked || machineBusy || (subagent !== null && !continuable) || addFiles === undefined || files.length === 0) return
     const rejected = ((): string | null => {
+      if (imageUnavailable && files.some(file => isImageMediaType(file.type) && directories?.has(file) !== true)) return t('error.modelImageUnavailable')
       if (files.some(file => isImageMediaType(file.type) && directories?.has(file) !== true ? noImages : noFiles)) return t('error.modelInputUnsupported')
       // Child prompts support images, but not generic file receipts or the
       // Desktop path-reference fallback. Refuse mixed batches before intake.
@@ -255,7 +263,7 @@ export const InputBar = memo(function InputBar({
       return addFiles(files, directories)
     })()
     if (rejected !== null) showToast(rejected)
-  }, [locked, machineBusy, subagent, continuable, addFiles, attachments, imageLimits, noFiles, noImages, showToast, t])
+  }, [locked, machineBusy, subagent, continuable, addFiles, attachments, imageLimits, noFiles, noImages, imageUnavailable, showToast, t])
 
   const canAcceptDrop = (subagent === null || continuable) && !locked && !machineBusy && addFiles !== undefined
 
@@ -341,7 +349,8 @@ export const InputBar = memo(function InputBar({
   // exposes Stop independently.
   const primaryStops = running && subagent === null && (empty || blocked !== undefined)
   // Disabled native buttons may omit mouseleave; their tooltip must close from state.
-  const primaryDisabled = primaryStops ? stop === undefined : empty || disabled || machineBusy || uploadsPending || unsupportedAttachments
+  const primaryDisabled = primaryStops ? stop === undefined
+    : empty || disabled || machineBusy || uploadsPending || unsupportedAttachments || routeUnavailable
   const interruptible = running && continuable
   const primarySubmitMode = resolveSubmitMode(busyEnter, running, 'enter', steeringAvailable)
   const plainMessageDraft = !empty && input?.phase === 'plain' && !draft.trimStart().startsWith('/')
@@ -357,7 +366,7 @@ export const InputBar = memo(function InputBar({
     }
     if (keyboard === undefined) return // absent machine: the button is disabled
     /* v8 ignore next -- defensive: the primary button is disabled for empty, disabled, and pending-upload states. */
-    if (!empty && !disabled && !machineBusy && !uploadsPending && !unsupportedAttachments) keyboard.submit(primarySubmitMode, 'click')
+    if (!empty && !disabled && !machineBusy && !uploadsPending && !unsupportedAttachments && !routeUnavailable) keyboard.submit(primarySubmitMode, 'click')
   }
 
   // Claim ghost hint: rendered by CSS as generated content after the last
@@ -401,9 +410,11 @@ export const InputBar = memo(function InputBar({
           onDone={dismissToast}
         />
       )}
-      {(unsupportedAttachments || notice?.level === 'info') && (
+      {(routeUnavailable || unsupportedAttachments || imageUnavailable || verificationPending || notice?.level === 'info') && (
         <div className={css.notice} role="status">
-          {unsupportedAttachments ? t('error.modelInputUnsupported') : notice?.text}
+          {routeUnavailable ? t('error.modelRouteUnavailable') : unavailableImageAttachments ? t('error.modelImageUnavailable')
+            : unsupportedAttachments ? t('error.modelInputUnsupported') : notice?.level === 'info' ? notice.text
+              : imageUnavailable ? t('input.modelImageTemporarilyUnavailable') : t('input.modelVerificationPending')}
         </div>
       )}
       {/* Trigger clicks land on the card, not the editor: the toolbar row's

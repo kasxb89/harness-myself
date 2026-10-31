@@ -39,6 +39,7 @@ import type {
 } from '@earendil-works/pi-ai'
 import {
   attributionHeaders,
+  cloneTextCapabilities, effectiveTextCapability, textCapabilityImageAvailable, textCapabilityRouteAvailable,
   contentHasImage,
   LlmAdapter,
   LlmError,
@@ -49,6 +50,7 @@ import type {
   GenerateOptions,
   ImageAttachmentAccess,
   LlmModelInfo,
+  LlmTextCapabilities,
   LlmProviderInfo,
   LlmResolvedModelInfo,
   PreparedAdapterCall,
@@ -220,6 +222,45 @@ function reasoningInfo(
   }
 }
 
+/** Convert exactly the gateway's declared controls into selectable, opaque effort ids. */
+function gatewayReasoningInfo(capabilities: LlmTextCapabilities): Pick<LlmResolvedModelInfo, 'reasoning'> | Record<string, never> {
+  if (capabilities.reasoningMode !== 'configurable') return {}
+  const fields = capabilities.reasoningControls?.properties
+  if (fields?.reasoning_effort !== undefined) {
+    const field = fields.reasoning_effort
+    return { reasoning: { efforts: field.enum.map(id => ({ id: ReasoningEffortId(id), name: id })) } }
+  }
+  if (fields?.enable_thinking !== undefined) {
+    return { reasoning: { efforts: [{ id: ReasoningEffortId('on'), name: 'On' }, { id: ReasoningEffortId('off'), name: 'Off' }] } }
+  }
+  return {}
+}
+
+/** Map a validated selection to the exact public gateway request field. */
+function gatewayReasoningPayload(
+  capabilities: LlmTextCapabilities, selected: ReasoningEffortIdType | undefined,
+): Record<string, string | boolean> {
+  if (selected === undefined) return {}
+  if (capabilities.reasoningMode !== 'configurable') throw new LlmError(
+    '当前渠道没有可配置推理选项，请使用自动模式。', 'MODEL_CAPABILITY_REASONING_UNSUPPORTED')
+  const properties = capabilities.reasoningControls?.properties
+  if (properties?.reasoning_effort?.enum.includes(selected)) return { reasoning_effort: selected }
+  if (properties?.enable_thinking !== undefined && (selected === 'on' || selected === 'off')) {
+    return { enable_thinking: selected === 'on' }
+  }
+  throw new LlmError('所选推理参数不属于当前渠道的可用值。', 'UNSUPPORTED_REASONING_EFFORT')
+}
+
+/** Exact SDK payload rewrite restricted to the two gateway-declared reasoning fields. */
+function gatewayPayloadHook(controls: Readonly<Record<string, string | boolean>>): (payload: unknown) => unknown {
+  return (payload) => {
+    if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) throw new LlmError('Invalid SDK reasoning payload', 'INVALID_REQUEST')
+    const record = payload as Record<string, unknown>
+    const { reasoning_effort: _effort, enable_thinking: _thinking, ...body } = record
+    return { ...body, ...controls }
+  }
+}
+
 /** Merge deployment headers while removing case-insensitive attribution collisions. */
 function requestHeaders(headers: Readonly<Record<string, string>> | undefined): Record<string, string> {
   const attribution = attributionHeaders()
@@ -304,7 +345,7 @@ export class PiAiAdapter extends LlmAdapter {
           id: model.id,
           name: model.name,
           inputModalities: [...model.input],
-          ...textCapabilities === undefined ? {} : { textCapabilities: { ...textCapabilities } },
+          ...textCapabilities === undefined ? {} : { textCapabilities: cloneTextCapabilities(textCapabilities) },
         }
       })
     })
@@ -325,7 +366,7 @@ export class PiAiAdapter extends LlmAdapter {
     const profile = this.profileOf(snapshot, provider)
     const resolvedModel = this.modelOf(snapshot, provider, model)
     const textCapabilities = profile.textCapabilities.get(model)
-    const defaultLevel = describableReasoningLevel(resolvedModel, textCapabilities?.reasoning === false ? 'off' : profile.reasoning)
+    const defaultLevel = describableReasoningLevel(resolvedModel, effectiveTextCapability(textCapabilities, 'reasoning') === false ? 'off' : profile.reasoning)
     const maxOutputTokens = profile.managedMaxTokens.get(model)
     // Publish the default the SDK will choose so prepared requests can log it.
     // Installed-catalog and fallback capabilities alone remain provider-owned defaults.
@@ -335,11 +376,11 @@ export class PiAiAdapter extends LlmAdapter {
       id: model,
       name: resolvedModel.name,
       inputModalities: [...resolvedModel.input],
-      ...textCapabilities === undefined ? {} : { textCapabilities: { ...textCapabilities } },
+      ...textCapabilities === undefined ? {} : { textCapabilities: cloneTextCapabilities(textCapabilities) },
       context: { contextWindow: resolvedModel.contextWindow },
       ...defaultMaxTokens === undefined ? {} : { defaultMaxTokens },
       ...maxOutputTokens === undefined ? {} : { maxOutputTokens },
-      ...reasoningInfo(resolvedModel, defaultLevel),
+      ...textCapabilities?.schemaVersion === 2 ? gatewayReasoningInfo(textCapabilities) : reasoningInfo(resolvedModel, defaultLevel),
       ...conversationUpdates(resolvedModel),
     }
   }
@@ -381,20 +422,25 @@ export class PiAiAdapter extends LlmAdapter {
     const model = textCapabilities === undefined ? declaredModel : { ...declaredModel,
       contextWindow: Math.min(declaredModel.contextWindow, textCapabilities.maxInputTokens + (maxTokens ?? declaredModel.maxTokens)),
     }
+    if (!textCapabilityRouteAvailable(textCapabilities)) throw new LlmError(
+      '当前渠道暂不可用，请稍后重试或切换模型。', 'MODEL_ROUTE_UNAVAILABLE')
     if (textCapabilities !== undefined) {
+      if (!textCapabilityImageAvailable(textCapabilities)
+        && options.messages.some(message => contentHasImage(message.content))) throw new LlmError(
+        '当前渠道的图片输入暂不可用，请稍后重试或切换模型。', 'MODEL_CAPABILITY_INPUT_UNAVAILABLE')
       if (!textCapabilities.stream) throw new LlmError('This gateway model does not support the streaming adapter', 'MODEL_CAPABILITY_STREAM_UNSUPPORTED')
-      if (!textCapabilities.tools && (options.tools?.length ?? 0) > 0) {
+      if (effectiveTextCapability(textCapabilities, 'tools') === false && (options.tools?.length ?? 0) > 0) {
         throw new LlmError('This gateway model does not support tool declarations; choose a tool-capable model', 'MODEL_CAPABILITY_TOOLS_UNSUPPORTED')
       }
-      if (!textCapabilities.tools && options.messages.some(message => message.role === 'tool'
+      if (effectiveTextCapability(textCapabilities, 'tools') === false && options.messages.some(message => message.role === 'tool'
         || message.content.some(block => block.type === 'tool-call' || block.type === 'tool-addition' || block.type === 'tool-removal'))) {
         throw new LlmError('This gateway model cannot continue tool history; choose a tool-capable model or start a plain text chat', 'MODEL_CAPABILITY_HISTORY_UNSUPPORTED')
       }
-      if (options.messages.some(message => !textCapabilities.vision && contentHasImage(message.content)
+      if (options.messages.some(message => effectiveTextCapability(textCapabilities, 'vision') === false && contentHasImage(message.content)
         || message.content.some(block => block.type === 'file'))) {
         throw new LlmError('This gateway route rejects the image or unprojected file input', 'MODEL_CAPABILITY_INPUT_UNSUPPORTED')
       }
-      if (!textCapabilities.reasoning && options.reasoningEffort !== undefined
+      if (effectiveTextCapability(textCapabilities, 'reasoning') === false && options.reasoningEffort !== undefined
         && options.reasoningEffort !== 'off' && options.reasoningEffort !== 'none') {
         throw new LlmError('This gateway model does not support reasoning controls', 'MODEL_CAPABILITY_REASONING_UNSUPPORTED')
       }
@@ -421,9 +467,11 @@ export class PiAiAdapter extends LlmAdapter {
     const request = needsPlaceholder
       ? { ...options, tools: [ANTHROPIC_TOOL_UPDATE_PLACEHOLDER, ...tools] }
       : options
-    const reasoning = resolveReasoningLevel(
+    const gatewayControls = textCapabilities?.schemaVersion === 2
+      ? gatewayReasoningPayload(textCapabilities, options.reasoningEffort) : undefined
+    const reasoning = gatewayControls !== undefined ? undefined : resolveReasoningLevel(
       model,
-      textCapabilities?.reasoning === false ? 'off' : options.reasoningEffort ?? profile.reasoning,
+      effectiveTextCapability(textCapabilities, 'reasoning') === false ? 'off' : options.reasoningEffort ?? profile.reasoning,
     )
     const apiKey = await this.config.resolveApiKey(options.provider, profile)
     if (maxOutputTokens !== undefined && model.api === 'openai-responses' && model.provider === 'openai'
@@ -467,6 +515,7 @@ export class PiAiAdapter extends LlmAdapter {
       }
       const events = snapshot.models.streamSimple(model, context, {
         ...profileOptions(profile, reasoning, apiKey),
+        ...gatewayControls === undefined ? {} : { onPayload: gatewayPayloadHook(gatewayControls) },
         ...options.temperature === undefined ? {} : { temperature: options.temperature },
         ...maxTokens === undefined ? {} : { maxTokens },
         ...options.sessionId === undefined ? {} : { sessionId: String(options.sessionId) },

@@ -117,9 +117,12 @@ export class InputHub implements SessionInputResolver {
         })
       },
       unsupportedModelInputNotice: () => this.t('error.modelInputUnsupported'),
+      unavailableModelNotice: () => this.t('error.modelRouteUnavailable'),
+      unavailableModelImageNotice: () => this.t('error.modelImageUnavailable'),
+      hasImageAttachments: ids => this.conversation().resolveDraftAttachments(ids).some(value => value.kind === 'image'),
       modelAttachmentsSupported: (ids, capabilities) => this.conversation().resolveDraftAttachments(ids).every(value => value.kind === 'file'
         ? capabilities.tools !== false
-        : capabilities.vision !== false && (capabilities.inputModalities === undefined || capabilities.inputModalities.includes('image'))),
+        : capabilities.visionUnavailable !== true && capabilities.vision !== false && (capabilities.inputModalities === undefined || capabilities.inputModalities.includes('image'))),
       messageSubmitted: (submission) => { reportMessageSubmission(this.rootCtx, submission) },
       inputTriggers: () => this.controller(actx),
       popup: () => this.popup(actx),

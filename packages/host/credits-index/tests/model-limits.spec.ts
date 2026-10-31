@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { effectiveTextCapability, textCapabilityImageAvailable } from '@deepseek-ai/dsh-llm'
 import { mergeProductModelLimits, productModelLimitsScope, readProductModelLimits } from '../src/model-limits.ts'
 
 describe('product model token capacities', () => {
@@ -64,5 +65,76 @@ describe('explicit gateway text execution declarations', () => {
     expect(readProductModelLimits({ parameters: {} })).toEqual({})
     expect(readProductModelLimits({ parameters: null })).toEqual({})
     expect(readProductModelLimits({ parameters: 'legacy metadata' })).toEqual({})
+  })
+})
+
+
+describe('version2 fixed-route capability facts', () => {
+  const wire = { schema_version: 2, revision: 'fixture-v2', checked_at: '2026-10-31T00:00:00Z', tools: true, vision: true,
+    reasoning: true, stream: true, max_input_tokens: 32000,
+    verification: { tools: 'supported', vision: 'supported', reasoning: 'supported' }, input_modalities: ['text', 'image'],
+    tools_config: { protocol: 'openai-chat', roundtrip_verified: true, verified_tool_choices: ['auto'], parallel_calls: 'unverified' },
+    vision_config: { verified_transports: ['data_url'], verified_mime_types: ['image/png'], billing: 'input_tokens' },
+    reasoning_mode: 'configurable', reasoning_controls: { type: 'object', properties: { enable_thinking: { type: 'boolean', default: false } }, additionalProperties: false },
+    reasoning_omit_behavior: 'provider_default', operational_status: 'available' }
+  const read = (value: unknown) => readProductModelLimits({ parameters: { 'x-text-capabilities': value } })
+  it('replaces legacy all-false with explicit facts, image input and exact controls', () => {
+    const incoming = read(wire)
+    const old = { scope: 'same', textCapabilities: { tools: false, vision: false, reasoning: false, stream: true, maxInputTokens: 32000 } }
+    const result = mergeProductModelLimits(old, incoming, 'same')
+    expect(result?.textCapabilities).toMatchObject({ schemaVersion: 2, revision: 'fixture-v2', inputModalities: ['text', 'image'],
+      reasoningControls: { properties: { enable_thinking: { type: 'boolean', default: false } } } })
+    expect(effectiveTextCapability(result?.textCapabilities, 'tools')).toBe(true)
+    expect(mergeProductModelLimits(result, undefined, 'same')).toEqual(result)
+    expect(mergeProductModelLimits(result, undefined, 'other')).toBeUndefined()
+    expect(mergeProductModelLimits(result, {}, 'same')).toBeUndefined()
+  })
+  it('keeps unverified separate from unsupported and detaches nested schemas', () => {
+    const input = structuredClone(wire)
+    input.tools = false; input.verification.tools = 'unverified'
+    const incoming = read(input)
+    expect(effectiveTextCapability(incoming.textCapabilities, 'tools')).toBeUndefined()
+    input.reasoning_controls.properties.enable_thinking.default = true
+    input.vision_config.verified_mime_types.push('image/jpeg')
+    expect(incoming.textCapabilities?.visionConfig?.verifiedMimeTypes).toEqual(['image/png'])
+    expect(incoming.textCapabilities?.reasoningControls?.properties.enable_thinking?.default).toBe(false)
+    expect(effectiveTextCapability(read({ ...wire, tools: false, verification: { ...wire.verification, tools: 'unsupported' } }).textCapabilities, 'tools')).toBe(false)
+  })
+  it('retains localized image outages and gateway-only reasoning mappings on pending reads', () => {
+    const incoming = read({ ...wire, vision: false, input_modalities: ['text'],
+      verification: { ...wire.verification, vision: 'unverified' },
+      vision_config: { ...wire.vision_config, operational_status: 'temporarily_unavailable', operational_reason: 'Image input is temporarily unavailable.' },
+      reasoning_control_mapping: { enable_thinking_with_effort: true, omit_effort_on_none: true } })
+    const value = incoming.textCapabilities
+    expect(value).toMatchObject({ operationalStatus: 'available', vision: false, verification: { vision: 'unverified' },
+      visionConfig: { operationalStatus: 'temporarily_unavailable', operationalReason: 'Image input is temporarily unavailable.' },
+      reasoningControlMapping: { enableThinkingWithEffort: true, omitEffortOnNone: true } })
+    expect(effectiveTextCapability(value, 'vision')).toBeUndefined()
+    expect(effectiveTextCapability(value, 'tools')).toBe(true)
+    expect(textCapabilityImageAvailable(value)).toBe(false)
+    const saved = mergeProductModelLimits(undefined, incoming, 'same')
+    expect(mergeProductModelLimits(saved, undefined, 'same')).toEqual(saved)
+    saved!.textCapabilities!.reasoningControlMapping!.omitEffortOnNone = false
+    expect(value?.reasoningControlMapping?.omitEffortOnNone).toBe(true)
+  })
+  it('retains an explicitly empty reasoning mapping without inventing companion fields', () => {
+    const incoming = read({ ...wire, reasoning_control_mapping: {} })
+    expect(incoming.textCapabilities?.reasoningControlMapping).toEqual({})
+    const saved = mergeProductModelLimits(undefined, incoming, 'same')
+    expect(mergeProductModelLimits(saved, undefined, 'same')).toEqual(saved)
+  })
+  it.each([
+    { reasoning_control_mapping: { enable_thinking_with_effort: false, omit_effort_on_none: true } },
+    { reasoning_control_mapping: { enable_thinking_with_effort: true } },
+    { reasoning_control_mapping: { enable_thinking_with_effort: true, omit_effort_on_none: false, model: 'override' } },
+    { vision_config: { ...wire.vision_config, operational_status: 'unsupported' } },
+    { vision_config: { ...wire.vision_config, operational_reason: 123 } },
+  ])('rejects malformed localized outage or native mapping $reasoning_control_mapping', (delta) => {
+    expect(() => read({ ...wire, ...delta })).toThrow(/version2/)
+  })
+  it('rejects controls that could overwrite reserved request fields', () => {
+    expect(() => read({ ...wire, reasoning_controls: { type: 'object', properties: { model: { type: 'string', enum: ['evil'] } }, additionalProperties: false } })).toThrow(/version2/)
+    expect(() => read({ ...wire, verification: { tools: 'unverified' } })).toThrow(/version2/)
+    expect(() => read({ ...wire, reasoning_omit_behavior: 'always_off' })).toThrow(/version2/)
   })
 })

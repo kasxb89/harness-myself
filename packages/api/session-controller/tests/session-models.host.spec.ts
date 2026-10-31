@@ -13,7 +13,7 @@ import AttachmentStore from '@deepseek-ai/dsh-attachment'
 import LlmRuntime, { createAssistantMessage, LlmAdapter, ReasoningEffortId, ToolCallId } from '@deepseek-ai/dsh-llm'
 import type {
   GenerateOptions, LlmCallConfig, LlmCallConfigAdapterDefaults, LlmModelInfo,
-  LlmModelReasoningInfo, LlmProviderInfo, LlmResolvedModelInfo, StreamChunk,
+  LlmModelReasoningInfo, LlmProviderInfo, LlmResolvedModelInfo, LlmTextCapabilities, StreamChunk,
   UserMessage,
 } from '@deepseek-ai/dsh-llm'
 import SessionStore from '@deepseek-ai/dsh-session'
@@ -1003,6 +1003,122 @@ describe('declared model execution capability admission', () => {
       expect(result).toMatchObject({ ok: false, error: { code: 'session/model-capability-invalid',
         details: { reason: 'MODEL_CAPABILITY_INPUT_UNSUPPORTED' } } })
       expect(f.followup).not.toHaveBeenCalled()
+    } finally { await f.ctx.fiber.dispose() }
+  })
+})
+
+
+describe('version2 model route facts and selection recovery', () => {
+  const unknown: LlmTextCapabilities = { schemaVersion: 2, revision: 'route-revision', tools: false, vision: false, reasoning: false,
+    stream: true, maxInputTokens: 32000, verification: { tools: 'unverified', vision: 'unverified', reasoning: 'unverified' },
+    reasoningMode: 'unknown', inputModalities: ['text', 'image'], operationalStatus: 'available' }
+  async function v2Harness(capabilities: LlmTextCapabilities, savedEffort?: ReasoningEffortId) {
+    const f = await harness({ provider: 'v2', model: 'route', ...savedEffort === undefined ? {} : { reasoningEffort: savedEffort } })
+    const requests: GenerateOptions[] = []
+    f.ctx.llm.registerAdapter(['v2'], new class extends CatalogAdapter {
+      override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
+        return Promise.resolve({ provider, id: model, name: model, textCapabilities: capabilities,
+          inputModalities: capabilities.inputModalities ?? ['text'],
+          ...capabilities.reasoningMode === 'configurable' ? { reasoning: REASONING } : {} })
+      }
+      override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+        requests.push(options)
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      }
+    }('V2', [{ provider: 'v2', id: 'route', name: 'Route' }]))
+    const followup = vi.fn()
+    Object.assign(f.agent, { followup })
+    const remote = createSessionTestRemote(f.ctx, { defaultModelSelection: () => ({ provider: 'v2', model: 'route' }), cwd: '/tmp' })
+    return { ...f, remote, followup, requests }
+  }
+
+  it('publishes explicit unverified facts without inheriting the old all-false execution denial', async () => {
+    const f = await v2Harness(unknown)
+    try {
+      f.agent.session.append('assistant/message', { turn: 1, step: 1, stream: [], message: createAssistantMessage({
+        source: { provider: 'old', model: 'tools' }, content: [{ type: 'tool-call', id: ToolCallId('kept-call'), name: 'read', arguments: '{}' }],
+      }) }, { surfaceOp: 'append' })
+      const before = f.agent.session.snapshotEvents()
+      const catalog = await buildModelCatalog(f.ctx)
+      const model = catalog.groups.find(group => group.id === 'v2')?.models[0]
+      expect(model).toMatchObject({ textCapabilities: unknown, inputModalities: ['text', 'image'], executionCapabilities: { available: true } })
+      expect(model?.executionCapabilities).not.toHaveProperty('tools')
+      expect(model?.executionCapabilities).not.toHaveProperty('vision')
+      const result = await f.remote.prompt(promptRequest({ sessionId: f.sessionId, mode: 'queue', content: [{ type: 'text', text: '继续之前的独立请求' }] }))
+      expect(result).toMatchObject({ ok: true })
+      expect(f.followup).toHaveBeenCalledOnce()
+      expect(f.agent.session.snapshotEvents()).toEqual(before)
+      if (model?.textCapabilities?.verification === undefined) throw new Error('Expected detached verification')
+      model.textCapabilities.verification.tools = 'unsupported'
+      expect(unknown.verification?.tools).toBe('unverified')
+    } finally { await f.ctx.fiber.dispose() }
+  })
+
+  it('reports a fixed-route outage before enqueue rather than calling unverified facts unsupported', async () => {
+    const f = await v2Harness({ ...unknown, operationalStatus: 'fixed_lane_unavailable', operationalReason: 'current fixed route unavailable' })
+    try {
+      const result = await f.remote.prompt(promptRequest({ sessionId: f.sessionId, mode: 'queue', content: [{ type: 'text', text: '保留输入' }] }))
+      expect(result).toMatchObject({ ok: false, error: { code: 'session/model-capability-invalid', details: { reason: 'MODEL_ROUTE_UNAVAILABLE' } } })
+      expect(f.followup).not.toHaveBeenCalled()
+      expect(f.requests).toEqual([])
+    } finally { await f.ctx.fiber.dispose() }
+  })
+
+  it('projects an image-only outage and its detached mapping while admitting text with tool history', async () => {
+    const partial: LlmTextCapabilities = { ...unknown, tools: true, vision: false,
+      verification: { tools: 'supported', vision: 'unverified', reasoning: 'unverified' },
+      visionConfig: { verifiedTransports: [], verifiedMimeTypes: [], billing: 'input_tokens',
+        operationalStatus: 'temporarily_unavailable', operationalReason: 'synthetic image entry failure' },
+      reasoningControlMapping: { enableThinkingWithEffort: true, omitEffortOnNone: true } }
+    const f = await v2Harness(partial)
+    try {
+      const catalog = await buildModelCatalog(f.ctx)
+      const model = catalog.groups.find(group => group.id === 'v2')?.models[0]
+      expect(model?.executionCapabilities).toEqual({ available: true, tools: true, vision: false,
+        visionUnavailable: true, visionUnavailableReason: 'synthetic image entry failure' })
+      expect(model?.textCapabilities?.verification?.vision).toBe('unverified')
+      if (model?.textCapabilities?.reasoningControlMapping === undefined) throw new Error('Expected detached mapping')
+      model.textCapabilities.reasoningControlMapping.omitEffortOnNone = false
+      expect(partial.reasoningControlMapping?.omitEffortOnNone).toBe(true)
+      const before = f.agent.session.snapshotEvents()
+      const refused = await f.remote.prompt(promptRequest({ sessionId: f.sessionId, mode: 'queue', content: [
+        { type: 'text', text: '保留图片说明' }, { type: 'image', mediaType: 'image/png', data: 'AQ==' },
+      ] }))
+      expect(refused).toMatchObject({ ok: false, error: { code: 'session/model-capability-invalid',
+        details: { reason: 'MODEL_CAPABILITY_INPUT_UNAVAILABLE' } } })
+      expect(f.followup).not.toHaveBeenCalled()
+      expect(f.agent.session.snapshotEvents()).toEqual(before)
+      f.agent.session.append('assistant/message', { turn: 1, step: 1, stream: [], message: createAssistantMessage({
+        source: { provider: 'prior', model: 'tool-route' },
+        content: [{ type: 'tool-call', id: ToolCallId('preserved-partial-tool'), name: 'read', arguments: '{}' }],
+      }) }, { surfaceOp: 'append' })
+      const accepted = await f.remote.prompt(promptRequest({ sessionId: f.sessionId, mode: 'queue', content: [{ type: 'text', text: '文字与工具继续正常使用' }] }))
+      expect(accepted).toMatchObject({ ok: true })
+      expect(f.followup).toHaveBeenCalledOnce()
+    } finally { await f.ctx.fiber.dispose() }
+  })
+
+  it('resets a stale saved High through the real same-model RPC and dispatches without the hidden setting', async () => {
+    const disabled: LlmTextCapabilities = { ...unknown, verification: { tools: 'unverified', vision: 'unverified', reasoning: 'unsupported' }, reasoningMode: 'unsupported' }
+    const f = await v2Harness(disabled, ReasoningEffortId('high'))
+    try {
+      const before = f.agent.session.snapshotEvents()
+      const streamCurrent = () => {
+        const selected = currentSelection(f.ctx, f.sessionId)
+        return f.ctx.llm.stream({ provider: selected.provider, model: selected.model, messages: [], maxTokens: 123,
+          ...selected.reasoningEffort === undefined ? {} : { reasoningEffort: ReasoningEffortId(selected.reasoningEffort) } })
+      }
+      const invalid: StreamChunk[] = []
+      for await (const chunk of streamCurrent()) invalid.push(chunk)
+      expect(invalid).toMatchObject([{ type: 'finish', reason: { kind: 'error', failure: { code: 'MODEL_CAPABILITY_REASONING_UNSUPPORTED' } } }])
+      expect(f.requests).toEqual([])
+      expect(await f.remote.selectModel({ sessionId: f.sessionId, provider: 'v2', model: 'route' })).toMatchObject({ ok: true, value: { selected: { provider: 'v2', model: 'route' } } })
+      expect(currentSelection(f.ctx, f.sessionId)).not.toHaveProperty('reasoningEffort')
+      for await (const _chunk of streamCurrent()) { /* Actual adapter dispatch records the recovered controls. */ }
+      expect(f.requests).toHaveLength(1)
+      expect(f.requests[0]?.reasoningEffort).toBeUndefined()
+      expect(f.requests[0]?.maxTokens).toBe(123)
+      expect(f.agent.session.snapshotEvents().slice(0, before.length)).toEqual(before)
     } finally { await f.ctx.fiber.dispose() }
   })
 })

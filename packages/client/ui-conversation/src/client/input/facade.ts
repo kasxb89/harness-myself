@@ -65,6 +65,12 @@ export interface SessionInputDeps {
   ): Promise<SubmitOutcome>
   /** @returns Localized refusal for files or references unsupported by the selected model. */
   unsupportedModelInputNotice?: () => string
+  /** @returns Localized current-route outage notice; input drafts remain editable. */
+  unavailableModelNotice?: () => string
+  /** @returns Localized feature-only image outage notice. */
+  unavailableModelImageNotice?: () => string
+  /** @param ids - Draft identities. @returns Whether any draft is an image. */
+  hasImageAttachments?: (ids: readonly DraftAttachmentId[]) => boolean
   /**
    * Verify runtime attachment kinds without discarding browser-owned drafts.
    * @param ids - Draft attachment identities in input order.
@@ -155,8 +161,9 @@ export class SessionInputShell implements SessionInput {
     this.publish()
   }
 
-  private refuseModelInput(): void {
-    const notice = this.deps.unsupportedModelInputNotice
+  private refuseModelInput(ids: readonly DraftAttachmentId[] = this.attachmentIds): void {
+    const imageUnavailable = this.modelCapabilities?.visionUnavailable === true && this.deps.hasImageAttachments?.(ids) === true
+    const notice = imageUnavailable ? this.deps.unavailableModelImageNotice : this.deps.unsupportedModelInputNotice
     if (notice === undefined) throw new Error('Missing model-input refusal presentation')
     this.notify('error', notice())
   }
@@ -289,7 +296,7 @@ export class SessionInputShell implements SessionInput {
   /** Append ordered attachment ids unless an admission transaction is locked. */
   addAttachments(ids: readonly DraftAttachmentId[]): boolean {
     if (this.modelCapabilities !== undefined && this.deps.modelAttachmentsSupported?.(ids, this.modelCapabilities) === false) {
-      this.refuseModelInput()
+      this.refuseModelInput(ids)
       return false
     }
     if (this.snapshot.phase === 'adjudicating' || this.snapshot.phase === 'submitting') return false
@@ -308,7 +315,7 @@ export class SessionInputShell implements SessionInput {
   addFiles(references: readonly ReferenceInsert[], ids: readonly DraftAttachmentId[]): boolean {
     if (this.modelCapabilities !== undefined && (this.modelCapabilities.tools === false && references.length > 0
       || ids.length > 0 && this.deps.modelAttachmentsSupported?.(ids, this.modelCapabilities) === false)) {
-      this.refuseModelInput()
+      this.refuseModelInput(ids)
       return false
     }
     if (this.snapshot.phase === 'adjudicating' || this.snapshot.phase === 'submitting') return false
@@ -375,6 +382,12 @@ export class SessionInputShell implements SessionInput {
    */
   submit(mode: InputSubmitMode = 'queue', source?: 'click' | 'enter'): void {
     if (this.disposed) return
+    if (this.modelCapabilities?.available === false) {
+      const notice = this.deps.unavailableModelNotice
+      if (notice === undefined) throw new Error('Missing model-route refusal presentation')
+      this.notify('error', notice())
+      return
+    }
     if (this.modelCapabilities !== undefined && (this.modelCapabilities.tools === false
       && this.projection.occurrences.some(value => value.appearance === 'file' || value.appearance === 'folder')
       || this.attachmentIds.length > 0 && this.deps.modelAttachmentsSupported?.(this.attachmentIds, this.modelCapabilities) === false)) {
@@ -519,7 +532,7 @@ export class SessionInputShell implements SessionInput {
    */
   insertReference(ref: ReferenceInsert, span: TokenSpan): boolean {
     if (this.modelCapabilities?.tools === false && (ref.appearance === 'file' || ref.appearance === 'folder')) {
-      this.refuseModelInput()
+      this.refuseModelInput([])
       return false
     }
     const phase = this.core.state.phase

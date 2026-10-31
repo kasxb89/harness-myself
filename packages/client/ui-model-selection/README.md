@@ -13,7 +13,9 @@ Desktop product events use the optional [product analytics service](../product-a
 
 The Web GUI lets users switch the model and reasoning effort for an existing session through either the `/model` popup or the composer's model control. Both surfaces present the same provider-grouped choices, and the selected model determines the available effort names and default. A complete selection applies to the next request; a running step keeps the model and effort it started with. An unavailable selection remains saved; request execution reports missing credentials or an unavailable model.
 
-Both selection entries retain explicit `textCapabilities` and `inputModalities` from the shared catalog. Capability limits remain visible when administrator descriptions are empty; declared no-reasoning models show neither effort choices nor a retained effort caption. The selected row publishes session-scoped input controls to Conversation without locking text entry. Undeclared legacy models retain their existing behavior.
+Both selection entries retain exact-route verification facts, normalized execution eligibility and input modalities from one shared catalog. Supported, unsupported, pending verification and a temporarily unavailable route have distinct copy, unaffected by administrator descriptions. Version1 false values are labeled as disabled configuration rather than native model incapability. Configurable reasoning choices use the Host-provided IDs; Auto omits controls, while automatic or always-on modes do not invent an Off option. A saved effort no longer advertised remains visible with a reachable same-model Default reset instead of being silently hidden. Session-scoped input controls preserve drafts and attachments; undeclared legacy models retain their existing behavior.
+
+An image-entry outage adds a distinct image-temporarily-unavailable notice beside the pending vision fact in both pickers. It does not mark the model unsupported or unavailable as a whole, and its scoped input bridge keeps text and file tools usable.
 
 ## Table of Contents
 

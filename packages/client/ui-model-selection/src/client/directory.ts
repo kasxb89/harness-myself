@@ -172,9 +172,11 @@ export class ModelDirectory {
     const projected = modelSelectionProjection(this.projected.getSnapshot())
     const intended = projected?.next ?? catalog.value?.default
     const model = catalog.value?.groups.find(group => group.id === intended?.provider)?.models.find(value => value.id === intended?.model)
-    const reasoningDisabled = model?.textCapabilities?.reasoning === false
+    const reasoningDisabled = model?.executionCapabilities?.reasoning === false
+      || model?.textCapabilities?.schemaVersion !== 2 && model?.textCapabilities?.reasoning === false
+      || model?.textCapabilities?.schemaVersion === 2 && model.textCapabilities.reasoningMode !== 'configurable'
     const reasoning = intended === undefined || reasoningDisabled ? undefined : this.catalog.reasoningFor(intended)
-    const effort = reasoningDisabled ? undefined : intended?.reasoningEffort ?? reasoning?.defaultEffort
+    const effort = intended?.reasoningEffort ?? reasoning?.defaultEffort
     const retainedEffort = effort === undefined ? undefined
       : reasoning?.efforts.find(level => level.id === effort)?.name ?? effort
     if (catalog.status !== 'ready' || catalog.value === null || projected === undefined) {
@@ -194,7 +196,7 @@ export class ModelDirectory {
     const routable = catalog.value.groups.some(group => group.id === selection.provider
       && group.models.some(model => model.id === selection.model))
     this.store.set({
-      current: reasoningDisabled ? { provider: selection.provider, model: selection.model } : selection,
+      current: selection,
       ...retainedEffort === undefined ? {} : { retainedEffort },
       routable,
       groups: catalog.value.groups,

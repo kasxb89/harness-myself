@@ -36,6 +36,7 @@ import type { ConfigureCall, LlmCallConfig, LlmCallConfigAdapterDefaults } from 
 import { HarnessError, INVALID_CREDENTIAL_CODE } from './error.ts'
 import { normalizeLlmFailure } from './adapter-failure.ts'
 import { normalizeApiKey } from './api-key.ts'
+import { cloneTextCapabilities, effectiveTextCapability, textCapabilityImageAvailable, textCapabilityRouteAvailable } from './capabilities.ts'
 import {
   contentHasFile, contentHasImage, fileHandleText, projectFilesToText, projectImagesForTextModel, projectToolUpdates,
 } from './content.ts'
@@ -46,6 +47,7 @@ export * from './brand.ts'
 export * from './error.ts'
 export * from './api-key.ts'
 export * from './types.ts'
+export * from './capabilities.ts'
 export * from './content.ts'
 export * from './assistant-stream.ts'
 export * from './message.ts'
@@ -716,7 +718,7 @@ export class LlmRuntime extends TypertRemoteService {
         id: model.id,
         name: model.name,
         ...model.description === undefined ? {} : { description: model.description },
-        ...model.textCapabilities === undefined ? {} : { textCapabilities: { ...model.textCapabilities } },
+        ...model.textCapabilities === undefined ? {} : { textCapabilities: cloneTextCapabilities(model.textCapabilities) },
         ...inputModalities === undefined ? {} : { inputModalities },
       }
     })
@@ -816,7 +818,7 @@ export class LlmRuntime extends TypertRemoteService {
       id: model,
       name: resolved.name,
       ...resolved.description === undefined ? {} : { description: resolved.description },
-      ...resolved.textCapabilities === undefined ? {} : { textCapabilities: { ...resolved.textCapabilities } },
+      ...resolved.textCapabilities === undefined ? {} : { textCapabilities: cloneTextCapabilities(resolved.textCapabilities) },
       ...inputModalities === undefined ? {} : { inputModalities },
       ...context === undefined ? {} : { context: { contextWindow: context.contextWindow } },
       ...defaultMaxTokens === undefined ? {} : { defaultMaxTokens: maxOutputTokens === undefined
@@ -899,6 +901,8 @@ export class LlmRuntime extends TypertRemoteService {
     config: LlmCallConfig,
     info: LlmResolvedModelInfo,
   ): { config: LlmCallConfig; context?: LlmModelContext; modelInfo: LlmResolvedModelInfo } {
+    if (!textCapabilityRouteAvailable(info.textCapabilities)) throw new LlmError(
+      '当前渠道暂不可用，请稍后重试或切换模型。', 'MODEL_ROUTE_UNAVAILABLE')
     const defaulted = config.maxTokens === undefined && info.defaultMaxTokens !== undefined
       ? { ...config, maxTokens: info.defaultMaxTokens }
       : config
@@ -914,12 +918,12 @@ export class LlmRuntime extends TypertRemoteService {
     let resolvedConfig = bounded
     if (reasoning === undefined) {
       if (requested !== undefined) {
-        if (info.textCapabilities?.reasoning === false && (requested === 'off' || requested === 'none')) {
+        if (effectiveTextCapability(info.textCapabilities, 'reasoning') === false && (requested === 'off' || requested === 'none')) {
           const { reasoningEffort: _disabledReasoning, ...withoutReasoning } = bounded
           resolvedConfig = withoutReasoning
         } else throw new LlmError(
           `provider "${config.provider}" model "${config.model}" does not support reasoning effort "${requested}"`,
-          info.textCapabilities?.reasoning === false ? 'MODEL_CAPABILITY_REASONING_UNSUPPORTED' : 'UNSUPPORTED_REASONING_EFFORT',
+          effectiveTextCapability(info.textCapabilities, 'reasoning') === false ? 'MODEL_CAPABILITY_REASONING_UNSUPPORTED' : 'UNSUPPORTED_REASONING_EFFORT',
         )
       }
     } else {
@@ -1099,12 +1103,17 @@ export class LlmRuntime extends TypertRemoteService {
           ? deepFreeze({ ...options, ...resolvedConfig })
           : { ...options, ...resolvedConfig }
       const capabilities = modelInfo.textCapabilities
+      if (!textCapabilityRouteAvailable(capabilities)) throw new LlmError(
+        '当前渠道暂不可用，请稍后重试或切换模型。', 'MODEL_ROUTE_UNAVAILABLE')
       if (capabilities !== undefined) {
+        if (!textCapabilityImageAvailable(capabilities)
+          && resolvedOptions.messages.some(message => contentHasImage(message.content))) throw new LlmError(
+          '当前渠道的图片输入暂不可用，请稍后重试或切换模型。', 'MODEL_CAPABILITY_INPUT_UNAVAILABLE')
         if (resolvedOptions.messages.some(message =>
-          !capabilities.vision && contentHasImage(message.content)
-          || !capabilities.tools && contentHasFile(message.content))) throw new LlmError(
+          effectiveTextCapability(capabilities, 'vision') === false && contentHasImage(message.content)
+          || effectiveTextCapability(capabilities, 'tools') === false && contentHasFile(message.content))) throw new LlmError(
           '当前模型不支持图片或文件输入，请切换模型或提供纯文本。', 'MODEL_CAPABILITY_INPUT_UNSUPPORTED')
-        if (!capabilities.tools) {
+        if (effectiveTextCapability(capabilities, 'tools') === false) {
           if (resolvedOptions.tools !== undefined && resolvedOptions.tools.length > 0) throw new LlmError(
             '当前模型不支持工具执行，请切换支持工具的模型。', 'MODEL_CAPABILITY_TOOLS_UNSUPPORTED')
           const loop = isAgentLoopRequest(options)

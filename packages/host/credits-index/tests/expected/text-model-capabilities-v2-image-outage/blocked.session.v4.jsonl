@@ -1,0 +1,5 @@
+{"type":"session","version":4,"id":"{{session:1}}","createdAt":0,"isSeeded":false,"delegationDepth":0}
+{"type":"agent/inbox/spliced","data":{"target":"next-turn","start":0,"inserted":[{"source":{"kind":"user"},"content":[{"type":"text","text":"Inspect this image."},{"type":"image","attachment":{"attachmentId":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","mediaType":"image/png","bytes":1,"width":1,"height":1}}],"role":"user","id":"{{message:1}}"}]}}
+{"type":"turn/start","data":{"turn":1}}
+{"type":"agent/inbox/spliced","data":{"target":"next-turn","start":0,"removedCount":1,"inserted":[]}}
+{"type":"turn/end","data":{"turn":1,"reason":{"kind":"error","error":{"message":"当前渠道的图片输入暂不可用，请稍后重试或切换模型。","code":"MODEL_CAPABILITY_INPUT_UNAVAILABLE"}}}}

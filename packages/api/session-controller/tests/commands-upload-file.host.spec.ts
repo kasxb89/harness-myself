@@ -173,6 +173,21 @@ describe('Session file uploads', () => {
     ])
   })
 
+  it('admits a real staged file receipt while only the image entry is temporarily unavailable', async () => {
+    const { ctx, controller, uploads, agent, followup, saveImages } = await uploadHarness()
+    vi.spyOn(ctx.llm, 'resolveModelInfo').mockResolvedValue({ provider: 'fixture', id: 'fixture-model', name: 'Fixture',
+      inputModalities: ['text'], textCapabilities: { schemaVersion: 2, tools: true, vision: false, reasoning: true, stream: true, maxInputTokens: 32000,
+        verification: { tools: 'supported', vision: 'unverified', reasoning: 'unverified' }, operationalStatus: 'available',
+        visionConfig: { verifiedTransports: [], verifiedMimeTypes: [], billing: 'input_tokens', operationalStatus: 'temporarily_unavailable' } } })
+    const receipt = await uploads.upload(agent, { data: 'AAAA', name: 'partial-outage-report.pdf' }, new AbortController().signal)
+    await controller.prompt(promptRequest([{ type: 'file', receiptId: receipt.receiptId }, { type: 'text', text: 'Read the staged file' }]))
+    expect(followup).toHaveBeenCalledOnce()
+    expect((followup.mock.calls[0]?.[0] as UserMessage).content).toEqual([
+      { type: 'file', attachment: receipt.file }, { type: 'text', text: 'Read the staged file' },
+    ])
+    expect(saveImages).not.toHaveBeenCalled()
+  })
+
   it('stages a bounded byte stream and forwards cancellation to storage', async () => {
     const { controller, uploads, followup, saveFileStream } = await uploadHarness()
     const abort = new AbortController()

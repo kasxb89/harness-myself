@@ -3,7 +3,7 @@
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type {} from '@deepseek-ai/dsh-settings'
-import type { LlmModelInfo } from '@deepseek-ai/dsh-llm'
+import { cloneTextCapabilities, effectiveTextCapability, textCapabilityImageAvailable, textCapabilityRouteAvailable, type LlmModelInfo } from '@deepseek-ai/dsh-llm'
 import type { Context } from '@deepseek-ai/cordis'
 import type {
   ModelCatalog,
@@ -28,7 +28,13 @@ export async function buildModelCatalog(
       const entries = await Promise.all(models.map(async (model) => {
         const resolved = await ctx.llm.resolveModelInfo(provider.id, model.id)
         const presentation = ctx.waterfall('api-session/model-presentation', provider.id, model.id, () => undefined)
-        const reasoning: ModelReasoning | undefined = resolved.reasoning === undefined || resolved.textCapabilities?.reasoning === false
+        const tools = effectiveTextCapability(resolved.textCapabilities, 'tools')
+        const imageAvailable = textCapabilityImageAvailable(resolved.textCapabilities)
+        const vision = imageAvailable ? effectiveTextCapability(resolved.textCapabilities, 'vision') : false
+        const visionUnavailableReason = resolved.textCapabilities?.visionConfig?.operationalReason
+        const reasoningAllowed = effectiveTextCapability(resolved.textCapabilities, 'reasoning')
+        const reasoning: ModelReasoning | undefined = resolved.reasoning === undefined || effectiveTextCapability(resolved.textCapabilities, 'reasoning') === false
+          || resolved.textCapabilities?.schemaVersion === 2 && resolved.textCapabilities.reasoningMode !== 'configurable'
           ? undefined
           : {
             efforts: resolved.reasoning.efforts.map(effort => ({
@@ -50,7 +56,19 @@ export async function buildModelCatalog(
           } },
           ...(reasoning === undefined ? {} : { reasoning }),
           ...resolved.inputModalities === undefined ? {} : { inputModalities: [...resolved.inputModalities] },
-          ...resolved.textCapabilities === undefined ? {} : { textCapabilities: { ...resolved.textCapabilities } },
+          ...resolved.textCapabilities === undefined ? {} : {
+            textCapabilities: cloneTextCapabilities(resolved.textCapabilities),
+            executionCapabilities: {
+              available: textCapabilityRouteAvailable(resolved.textCapabilities),
+              ...tools === undefined ? {} : { tools },
+              ...vision === undefined ? {} : { vision },
+              ...imageAvailable ? {} : {
+                visionUnavailable: true,
+                ...visionUnavailableReason === undefined ? {} : { visionUnavailableReason },
+              },
+              ...reasoningAllowed === undefined ? {} : { reasoning: reasoningAllowed },
+            },
+          },
         }
       }))
       return {

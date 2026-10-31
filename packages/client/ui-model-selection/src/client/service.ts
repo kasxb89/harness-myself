@@ -99,8 +99,12 @@ export class ModelDirectoryResolver extends Service {
         const group = state.groups.find(value => value.id === state.current?.provider)
         const model = group?.models.find(value => value.id === state.current?.model)
         const declared = model?.textCapabilities !== undefined || model?.inputModalities !== undefined
-        scope.emit('conversation/input-model-capabilities', !declared ? undefined : {
-          ...model.textCapabilities === undefined ? {} : { tools: model.textCapabilities.tools, vision: model.textCapabilities.vision },
+        const legacy = model?.textCapabilities === undefined || model.textCapabilities.schemaVersion === 2 ? {}
+          : { tools: model.textCapabilities.tools, vision: model.textCapabilities.vision }
+        scope.emit(scope, 'conversation/input-model-capabilities', !declared ? undefined : {
+          ...model.executionCapabilities ?? legacy,
+          ...model.textCapabilities?.verification === undefined ? {} : { verification: { ...model.textCapabilities.verification } },
+          ...model.textCapabilities?.revision === undefined ? {} : { revision: model.textCapabilities.revision },
           ...model.inputModalities === undefined ? {} : { inputModalities: [...model.inputModalities] },
         })
       }
@@ -109,7 +113,7 @@ export class ModelDirectoryResolver extends Service {
         const off = directory.store.subscribe(publish)
         return () => {
           off()
-          scope.emit('conversation/input-model-capabilities', undefined)
+          scope.emit(scope, 'conversation/input-model-capabilities', undefined)
         }
       }, 'ui-model-selection: input capabilities')
     })

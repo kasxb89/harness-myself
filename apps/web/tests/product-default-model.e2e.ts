@@ -10,9 +10,32 @@ import { expect, it, onTestFinished } from 'vitest'
 import { launchWebScaffold, watchConsole } from './scaffold.ts'
 import { ZH_BROWSER_LOCALE, connectFreshWorkspaceZh } from './support.ts'
 
-it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash', 'yunshu-flash-configured', 'ycapi-text-only'])(
+it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash', 'yunshu-flash-configured', 'ycapi-text-only', 'ycapi-capabilities-v2'])(
   'selects the deployment default %s after first sign-in without opening the model menu', async (scenario) => {
     const plainText = scenario === 'ycapi-text-only'
+    const capabilityV2 = scenario === 'ycapi-capabilities-v2'
+    const v2Peers = ['capabilities-pending', 'capabilities-unavailable', 'capabilities-automatic', 'capabilities-image-unavailable']
+    const v2Declaration = (id: string) => {
+      const pending = id === 'capabilities-pending' || id === 'capabilities-unavailable'
+      const automatic = id === 'capabilities-automatic'
+      const partial = id === 'capabilities-image-unavailable'
+      const unavailable = id === 'capabilities-unavailable'
+      return { schema_version: 2, revision: 'synthetic-capability-v2', checked_at: '2026-10-31T00:00:00Z',
+        tools: !unavailable && !automatic, vision: !unavailable && !automatic && !partial, reasoning: !unavailable,
+        stream: true, max_input_tokens: 32000,
+        verification: { tools: pending ? 'unverified' : automatic ? 'unsupported' : 'supported',
+          vision: pending || partial ? 'unverified' : automatic ? 'unsupported' : 'supported', reasoning: pending ? 'unverified' : 'supported' },
+        input_modalities: automatic || partial || unavailable ? ['text'] : ['text', 'image'],
+        tools_config: { protocol: 'openai-chat', roundtrip_verified: !pending && !automatic,
+          verified_tool_choices: !pending && !automatic ? ['auto'] : [], parallel_calls: 'unverified' },
+        vision_config: { verified_transports: !pending && !automatic && !partial ? ['data_url'] : [],
+          verified_mime_types: !pending && !automatic && !partial ? ['image/png', 'image/webp'] : [], billing: 'input_tokens',
+          ...partial ? { operational_status: 'temporarily_unavailable', operational_reason: 'Synthetic image entry failure' } : {} },
+        reasoning_mode: pending ? 'unknown' : automatic ? 'always_on' : 'configurable',
+        reasoning_controls: { type: 'object', properties: pending || automatic ? {} : { enable_thinking: { type: 'boolean', default: false } }, additionalProperties: false },
+        reasoning_omit_behavior: 'provider_default', reasoning_control_mapping: {}, operational_status: unavailable ? 'fixed_lane_unavailable' : 'available',
+        ...unavailable ? { operational_reason: 'Synthetic fixed route is unavailable' } : {} }
+    }
     const configured = scenario === 'yunshu-flash-configured'
     const preferred = configured ? 'yunshu-flash' : scenario
     const badge = configured ? '旗舰模型介绍由后台配置，适合内容创作和编程，可按任务选择使用'.padEnd(32, '。') : '旗舰模型'
@@ -63,8 +86,11 @@ it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash', 'yunshu-flash-conf
           if (request.headers.authorization !== 'Bearer sk-synthetic-relay') {
             response.writeHead(403); response.end('{}'); return
           }
-          response.end(JSON.stringify({ data: ['deepseek-v4-flash', 'deepseek-flash', 'yunshu-flash', 'deepseek-v4-pro', 'catalog-unknown', ...plainText ? [preferred] : []].map(id =>
-            ({ id, object: 'model', supported_endpoint_types: ['openai'], ...id !== 'ycapi-text-only' ? {} : {
+          response.end(JSON.stringify({ data: ['deepseek-v4-flash', 'deepseek-flash', 'yunshu-flash', 'deepseek-v4-pro', 'catalog-unknown', ...plainText ? [preferred] : [], ...capabilityV2 ? [preferred, ...v2Peers] : []].map(id =>
+            ({ id, object: 'model', supported_endpoint_types: ['openai'], ...capabilityV2 && (id === preferred || v2Peers.includes(id)) ? {
+              kind: 'text', input_modalities: v2Declaration(id).input_modalities, context_window: 1000000, max_output_tokens: 8192,
+              parameters: { 'x-text-capabilities': v2Declaration(id) },
+            } : id !== 'ycapi-text-only' ? {} : {
               kind: 'text', input_modalities: ['text'], context_window: 32768, max_output_tokens: 8192, parameters: {
                 'x-text-capabilities': { tools: false, vision: false, reasoning: false, stream: true, max_input_tokens: 32768 },
               },
@@ -149,7 +175,7 @@ it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash', 'yunshu-flash-conf
       await page.getByRole('textbox', { name: '验证码', exact: true }).fill('123456')
       const started = performance.now()
       await page.getByRole('button', { name: '登录', exact: true }).click()
-      await expect.poll(() => trigger.textContent(), { timeout: 10_000 }).toBe(preferred)
+      await expect.poll(() => trigger.textContent(), { timeout: 10_000 }).toBe(capabilityV2 ? `${preferred}自动（渠道默认）` : preferred)
       const elapsedMs = performance.now() - started
       // No menu-opening gesture or 60-second sync is allowed to repair the first display.
       expect(elapsedMs).toBeLessThan(10_000)
@@ -161,13 +187,31 @@ it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash', 'yunshu-flash-conf
       expect(await modelMenu.getByRole('menuitemradio', { name: preferred, exact: true }).getAttribute('aria-checked')).toBe('true')
       if (plainText) {
         const row = modelMenu.getByRole('menuitemradio', { name: preferred, exact: true })
-        await expect.poll(() => row.textContent()).toContain('纯文本对话')
-        expect(await row.textContent()).toContain('不支持工具调用')
+        await expect.poll(() => row.textContent()).toContain('当前渠道为文本配置')
+        expect(await row.textContent()).toContain('当前渠道未启用工具')
         expect(await row.textContent()).toContain('32,768')
         expect(await trigger.textContent()).not.toContain('High')
         for (const theme of ['dark', 'light'] as const) {
           await page.emulateMedia({ colorScheme: theme })
           await page.screenshot({ path: join(evidence, `text-capabilities-${theme}.png`), animations: 'disabled' })
+        }
+      }
+      if (capabilityV2) {
+        const supported = modelMenu.getByRole('menuitemradio', { name: preferred, exact: true })
+        expect(await supported.textContent()).toContain('工具：已核实支持')
+        expect(await supported.textContent()).toContain('识图：已核实支持')
+        const pending = modelMenu.getByRole('menuitemradio', { name: 'capabilities-pending', exact: true })
+        expect(await pending.textContent()).toContain('工具：待核实')
+        expect(await pending.textContent()).not.toContain('不支持')
+        expect(await modelMenu.getByRole('menuitemradio', { name: 'capabilities-unavailable', exact: true }).textContent()).toContain('当前渠道暂不可用')
+        expect(await modelMenu.getByRole('menuitemradio', { name: 'capabilities-automatic', exact: true }).textContent()).toContain('自动推理（不可关闭）')
+        const partial = modelMenu.getByRole('menuitemradio', { name: 'capabilities-image-unavailable', exact: true })
+        expect(await partial.textContent()).toContain('图片输入暂不可用')
+        expect(await partial.textContent()).toContain('识图：待核实')
+        expect(await partial.textContent()).not.toContain('识图：当前渠道不支持')
+        for (const theme of ['dark', 'light'] as const) {
+          await page.emulateMedia({ colorScheme: theme })
+          await page.screenshot({ path: join(evidence, `capabilities-v2-${theme}.png`), animations: 'disabled' })
         }
       }
       if (preferred === 'yunshu-flash') {
@@ -244,7 +288,7 @@ it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash', 'yunshu-flash-conf
         await page.getByRole('button', { name: '添加文件或调用指令', exact: true }).click()
         await page.getByRole('option', { name: /^模型/u }).click()
         const commandMenu = page.locator('[aria-label="/model 选项"]')
-        await commandMenu.getByText(/纯文本对话/u).waitFor()
+        await commandMenu.getByText(/当前渠道为文本配置/u).waitFor()
         expect(await commandMenu.innerText()).toContain('32,768')
         await page.keyboard.press('Escape')
         await composer.evaluate((element) => {
@@ -254,8 +298,19 @@ it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash', 'yunshu-flash-conf
           element.dispatchEvent(new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }))
         })
         await expect.poll(() => composer.innerText()).toContain('保留图片同时粘贴的文字')
-        await page.getByText('此模型不支持图片或文件，请移除附件或切换模型；文字草稿已保留', { exact: true }).waitFor()
+        await page.getByText('当前渠道未开放所需的图片或文件能力，请移除附件或切换模型；文字草稿已保留', { exact: true }).waitFor()
         expect(modelRequests).toHaveLength(0)
+      }
+      if (capabilityV2) {
+        await page.getByRole('button', { name: '添加文件或调用指令', exact: true }).click()
+        await page.getByRole('option', { name: /^模型/u }).click()
+        const commandMenu = page.locator('[aria-label="/model 选项"]')
+        await commandMenu.getByRole('option').filter({ hasText: 'capabilities-pending' }).getByText(/工具：待核实/u).waitFor()
+        expect(await commandMenu.innerText()).toContain('自动推理（不可关闭）')
+        const partial = commandMenu.getByRole('option').filter({ hasText: 'capabilities-image-unavailable' })
+        expect(await partial.innerText()).toContain('图片输入暂不可用')
+        expect(await partial.innerText()).toContain('识图：待核实')
+        await page.keyboard.press('Escape')
       }
       const settled = scaffold.whenTurnSettled()
       await composer.fill('Synthetic chat parameter check')
@@ -288,10 +343,83 @@ it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash', 'yunshu-flash-conf
         }) }, { surfaceOp: 'append' })
         await composer.fill('工具历史被拒绝后也要保留这段草稿')
         await composer.press('Enter')
-        await page.getByText('此模型不支持当前聊天的工具记录，请切换支持工具的模型，或新建纯文本聊天；草稿已保留', { exact: true }).waitFor()
+        await page.getByText('当前渠道未开放此聊天所需的工具能力，请切换支持工具的模型，或新建纯文本聊天；草稿已保留', { exact: true }).waitFor()
         await expect.poll(() => composer.innerText()).toContain('工具历史被拒绝后也要保留这段草稿')
         expect(modelRequests).toHaveLength(1)
         await page.screenshot({ path: join(evidence, 'text-history-draft-preserved.png'), animations: 'disabled' })
+      }
+      if (capabilityV2) {
+        const metadata = await scaffold.ctx.llm.resolveModelInfo('yunshu-local', preferred)
+        const off = metadata.reasoning?.efforts.find(value => value.id === 'off')
+        if (off === undefined) throw new Error('Expected exact boolean Off reasoning control')
+        await composer.fill('Synthetic actual image with explicit thinking off')
+        await composer.evaluate((element) => {
+          const data = new DataTransfer()
+          const png = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='), value => value.charCodeAt(0))
+          data.items.add(new File([png], 'capability.png', { type: 'image/png' }))
+          element.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }))
+        })
+        const retainedImage = page.getByRole('button', { name: '移除图片 capability.png', exact: true })
+        await retainedImage.waitFor()
+        await trigger.click()
+        await page.getByRole('menuitem', { name: /^模型/u }).click()
+        await page.getByRole('menuitemradio', { name: 'capabilities-image-unavailable', exact: true }).click()
+        await expect.poll(() => trigger.textContent()).toBe('capabilities-image-unavailable自动（渠道默认）')
+        await page.getByText('当前渠道图片输入暂不可用，请移除图片、稍后重试或切换模型；草稿及已有附件已保留', { exact: true }).waitFor()
+        const send = page.getByRole('button', { name: '发送消息', exact: true })
+        expect(await send.isDisabled()).toBe(true)
+        await composer.press('Enter')
+        expect(modelRequests).toHaveLength(1)
+        expect(await composer.innerText()).toBe('Synthetic actual image with explicit thinking off')
+        expect(await retainedImage.count()).toBe(1)
+        await page.screenshot({ path: join(evidence, 'capabilities-v2-partial-image-draft.png'), animations: 'disabled' })
+        await trigger.click()
+        await page.getByRole('menuitem', { name: /^模型/u }).click()
+        await page.getByRole('menuitemradio', { name: preferred, exact: true }).click()
+        await expect.poll(() => trigger.textContent()).toBe(`${preferred}自动（渠道默认）`)
+        await trigger.click()
+        await page.getByRole('menuitem', { name: /^推理等级/u }).click()
+        await page.getByRole('menuitemradio', { name: off.name, exact: true }).click()
+        await expect.poll(() => trigger.textContent()).toContain(off.name)
+        expect(await send.isDisabled()).toBe(false)
+        const imageSettled = scaffold.whenTurnSettled()
+        await composer.press('Enter')
+        expect(await imageSettled).toBe(sessionId)
+        await expect.poll(() => modelRequests.length).toBe(2)
+        const imageWire = modelRequests[1]!.body
+        await writeFile(join(evidence, 'capabilities-v2-wire-image.json'), JSON.stringify({ synthetic: true, modelRequests }, null, 2) + '\n')
+        expect(imageWire['enable_thinking']).toBe(false)
+        expect(imageWire).not.toHaveProperty('reasoning_effort')
+        const messages = imageWire['messages']
+        if (!Array.isArray(messages)) throw new Error('Expected actual image request messages')
+        const imageUrls = messages.flatMap((message: { content?: unknown }) => !Array.isArray(message.content) ? []
+          : message.content.flatMap((part: { type?: string; image_url?: { url?: string } }) => part.type === 'image_url'
+            && typeof part.image_url?.url === 'string' ? [part.image_url.url] : []))
+        expect(imageUrls).toHaveLength(1)
+        const imageUrl = imageUrls[0]!
+        expect(imageUrl).toMatch(/^data:image\/webp;base64,/u)
+        const dimensions = await page.evaluate(async (url) => {
+          const response = await fetch(url)
+          const bitmap = await createImageBitmap(await response.blob())
+          const result = { width: bitmap.width, height: bitmap.height }
+          bitmap.close()
+          return result
+        }, imageUrl)
+        expect(dimensions).toEqual({ width: 1, height: 1 })
+        expect(session?.requestHeader()?.config.reasoningEffort).toBe('off')
+        await trigger.click()
+        await page.getByRole('menuitem', { name: /^推理等级/u }).click()
+        await page.getByRole('menuitemradio', { name: '自动（渠道默认）', exact: true }).click()
+        const autoSettled = scaffold.whenTurnSettled()
+        await composer.fill('Synthetic explicit Auto must omit all reasoning fields')
+        await composer.press('Enter')
+        expect(await autoSettled).toBe(sessionId)
+        await expect.poll(() => modelRequests.length).toBe(3)
+        expect(modelRequests[2]!.body).not.toHaveProperty('enable_thinking')
+        expect(modelRequests[2]!.body).not.toHaveProperty('reasoning_effort')
+        expect(session?.requestHeader()?.config.reasoningEffort).toBeUndefined()
+        await writeFile(join(evidence, 'capabilities-v2-wire-complete.json'), JSON.stringify({ synthetic: true, dimensions, modelRequests }, null, 2) + '\n')
+        await page.screenshot({ path: join(evidence, 'capabilities-v2-image-and-auto.png'), animations: 'disabled' })
       }
       if (preferred === 'yunshu-flash') {
         const followupSettled = scaffold.whenTurnSettled()
@@ -319,6 +447,8 @@ it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash', 'yunshu-flash-conf
           stream: wire['stream'], stream_options: wire['stream_options'],
           forbiddenFieldsAbsent: true, toolsPresent: !plainText },
         historicalReasoningReplayChecked: preferred === 'yunshu-flash',
+        capabilityV2, v2BooleanOffAndAutoWireChecked: capabilityV2, actualImageDataURLChecked: capabilityV2,
+        partialImageOutageDraftPreserved: capabilityV2,
         requestHeader: session?.requestHeader()?.config,
         realSMS: 0, realUpstreamCalls: 0, guidanceChecked: preferred === 'yunshu-flash', pageErrors: tripwire.pageErrors, errors }, null, 2) + '\n')
     } catch (error) {

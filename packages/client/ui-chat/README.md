@@ -12,7 +12,9 @@ Desktop product events use the optional [product analytics service](../product-a
 
 Use this package to render a browser chat from recorded Session conversations, including historical images, localized actions, and restored scroll position. Work-details modes control reasoning previews and process visibility without hiding final answers; Verbose keeps completed-turn process rows visible. Local transcript and steering submissions appear immediately, remain in their original surface, and disappear atomically when authoritative Session records arrive, while queued submissions stay outside Chat. The package does not assemble or modify model requests.
 
-Terminal and retry rows localize the stable `MODEL_CAPABILITY_*` and `MODEL_CAPABILITIES_CHANGED` failures separately from network or server errors. Tool-history incompatibility directs users to a tool-capable model or a new text-only chat; raw provider diagnostics are not used as routing rules.
+Terminal and retry rows localize stable capability and route-unavailable failures separately from network or server errors. Copy identifies the current channel restriction without claiming an unverified native model limitation. Tool-history incompatibility preserves the original messages and directs users to a compatible route or a separate text chat; raw provider diagnostics are not routing rules.
+
+Terminal `MODEL_CAPABILITY_INPUT_UNAVAILABLE` failures explain a temporary image-entry outage and preserve the original message and attachments; they do not become capability-unsupported or whole-route failures.
 
 ## Table of Contents
 

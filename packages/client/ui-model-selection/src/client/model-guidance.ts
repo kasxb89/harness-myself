@@ -35,10 +35,21 @@ export function modelGuidance(
   const badge = model.presentation?.badge ?? inherited.badge
   const description = model.presentation?.description ?? inherited.detail
   const capabilities = model.textCapabilities
+  const verified = capabilities?.schemaVersion === 2
+    ? capabilities.verification ?? { tools: 'unverified' as const, vision: 'unverified' as const, reasoning: 'unverified' as const }
+    : undefined
+  const capabilityFacts = verified === undefined ? [] : [
+    t(`guidance.tools.${verified.tools}`), t(`guidance.vision.${verified.vision}`), t(`guidance.reasoning.${verified.reasoning}`),
+    ...capabilities?.reasoningMode === 'always_on' ? [t('guidance.reasoningAlwaysOn')] : [],
+    ...capabilities?.reasoningMode === 'automatic' ? [t('guidance.reasoningAutomatic')] : [],
+    ...capabilities?.operationalStatus === 'fixed_lane_unavailable' ? [t('guidance.routeUnavailable')] : [],
+    ...capabilities?.visionConfig?.operationalStatus === 'temporarily_unavailable' ? [t('guidance.visionTemporarilyUnavailable')] : [],
+  ]
   const constraints = capabilities === undefined ? [] : [
-    ...!capabilities.tools && !capabilities.vision ? [t('guidance.textOnly')] : [],
-    ...!capabilities.tools ? [t('guidance.noTools')] : [],
-    ...!capabilities.vision ? [t('guidance.noVision')] : [],
+    ...capabilityFacts,
+    ...verified === undefined && !capabilities.tools && !capabilities.vision ? [t('guidance.textOnly')] : [],
+    ...verified === undefined && !capabilities.tools ? [t('guidance.noTools')] : [],
+    ...verified === undefined && !capabilities.vision ? [t('guidance.noVision')] : [],
     t('guidance.inputLimit', { tokens: capabilities.maxInputTokens.toLocaleString('en-US') }),
   ]
   const detail = [description, ...constraints].filter(value => value !== undefined && value !== '').join(' · ')

@@ -12,7 +12,9 @@ kind: "package-reference"
 
 `@deepseek-ai/dsh-api-session-controller` 拥有 Host 的 `ctx.sessionController` 服务，以及生成的 Client `session`、`skills` 和 `fileReferences` Remote namespace。它提供 Session 生命周期与历史、Host generation 模型目录、人工后台任务终止、工作区路径打开、用户可调用 skill（技能）发现和 Agent（智能体）范围的文件引用。当 Client 需要按 Session 寻址的操作时，请通过 API Gateway 使用它。
 
-普通模型目录独立于展示文字透传适配器明确声明的 `inputModalities` 与 `textCapabilities`。输入入队前按真实所选路由和完整的 Session 消息检查：明确的纯文本模型遇到既有工具消息／调用，或不支持的图片、文件内容时，返回 `session/model-capability-invalid` 及稳定的 `details.reason`。原历史记录保留，新纯文字请求正常入队。未声明能力的旧模型保持原路径，包括由执行阶段报告路由失败的已不可用历史提供方。
+普通模型目录独立于展示文字透传已分离的能力事实与归一化执行资格。版本2保留精确渠道逐项支持、不支持、待核实状态，待核实不会变成输入拒绝。已知渠道不可用使用独立的 `MODEL_ROUTE_UNAVAILABLE`，不混同能力不兼容。输入入队前检查当前工具历史与图片、文件内容，不删除原消息；同模型选择可通过普通选择 RPC 清除不兼容的已保存推理设置。未声明能力的旧模型保留原行为。
+
+图片入口临时故障与待核实的识图事实、整条渠道不可用保持独立。目录携带 `visionUnavailable` 及原因；图片在存储前以 `MODEL_CAPABILITY_INPUT_UNAVAILABLE` 拒绝，文字、工具历史和已暂存的文件凭据继续走原有路径。网关推理控制映射元数据独立复制，不转成浏览器额外发送的参数。
 
 ## 目录
 

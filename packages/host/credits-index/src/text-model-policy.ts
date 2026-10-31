@@ -1,10 +1,11 @@
 /** Account-bound text-model capabilities applied before prompt admission and tool dispatch. @module */
+import { isDeepStrictEqual } from 'node:util'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { isAgentLoopRequest, LlmError, type LlmTextCapabilities, type RequestMessage } from '@deepseek-ai/dsh-llm'
+import { cloneTextCapabilities, effectiveTextCapability, textCapabilityImageAvailable, textCapabilityRouteAvailable, isAgentLoopRequest, LlmError, type LlmTextCapabilities, type RequestMessage } from '@deepseek-ai/dsh-llm'
 
 const capabilityContextName = 'product-model-capabilities'
-const toolDenial = '当前模型不支持工具执行；请切换到支持工具的模型后重试。'
+const toolDenial = '当前渠道不可执行工具；请切换到可用的模型后重试。'
 
 interface CapturedPolicy {
   readonly provider: string
@@ -19,9 +20,6 @@ export interface ProductTextModelPolicyOptions {
   readonly revision: () => number
 }
 
-function capabilityFingerprint(value: LlmTextCapabilities | undefined): string {
-  return value === undefined ? '' : JSON.stringify([value.tools, value.vision, value.reasoning, value.stream, value.maxInputTokens])
-}
 
 function hasToolHistory(messages: readonly RequestMessage[]): boolean {
   return messages.some(message => message.role === 'tool'
@@ -29,19 +27,32 @@ function hasToolHistory(messages: readonly RequestMessage[]): boolean {
 }
 
 function hasUnsupportedBinaryInput(messages: readonly RequestMessage[], capabilities: LlmTextCapabilities): boolean {
-  return messages.some(message => message.content.some(block => block.type === 'image' && !capabilities.vision
-    || block.type === 'file' && !capabilities.tools))
+  return messages.some(message => message.content.some(block => block.type === 'image' && effectiveTextCapability(capabilities, 'vision') === false
+    || block.type === 'file' && effectiveTextCapability(capabilities, 'tools') === false))
 }
 
 function capabilityNotice(value: LlmTextCapabilities): string {
+  if (value.schemaVersion === 2) {
+    const facts = [`Gateway input ceiling: ${String(value.maxInputTokens)} tokens.`]
+    for (const feature of ['tools', 'vision', 'reasoning'] as const) {
+      const status = value.verification?.[feature] ?? 'unverified'
+      facts.push(`This route's ${feature} verification: ${status}.`)
+      if (status === 'unverified') facts.push(`Do not describe ${feature} as unsupported or verified; evidence is pending.`)
+      if (effectiveTextCapability(value, feature) === false) facts.push(`${feature} execution is unavailable on this route; suggest a compatible route when needed.`)
+    }
+    if (value.reasoningMode === 'always_on' || value.reasoningMode === 'automatic') facts.push('Reasoning is automatic; no on/off or effort setting is offered.')
+    if (!textCapabilityImageAvailable(value)) facts.push('Image input is temporarily unavailable on this route; text, tools and file handles remain independently available. This is not evidence that the model lacks vision.')
+    if (!textCapabilityRouteAvailable(value)) facts.push('The fixed route is temporarily unavailable; this does not establish missing model capabilities.')
+    return facts.join('\n')
+  }
   const facts = [`Gateway input ceiling: ${String(value.maxInputTokens)} tokens.`]
-  if (!value.tools && !value.vision) facts.push('This model supports text conversation only.')
-  if (!value.tools) facts.push('Tools, file operations and artifact generation are unavailable for this model. '
+  if (!value.tools && !value.vision) facts.push('This gateway currently permits text conversation only; these legacy flags describe execution policy, not verified native support.')
+  if (!value.tools) facts.push('Tools, file operations and artifact generation are disabled on this gateway route. '
     + 'When the user requests an operation requiring tools, explain briefly that they can switch to a tool-capable model. '
     + 'Do not claim to have executed tools or produced files.')
   if (!value.vision) facts.push(value.tools ? 'Image input is unavailable; do not claim to have inspected images.'
     : 'Image and file input is unavailable; do not claim to have inspected attachments.')
-  if (!value.reasoning) facts.push('Configurable reasoning is unavailable for this model.')
+  if (!value.reasoning) facts.push('Configurable reasoning is disabled on this gateway route.')
   return facts.join('\n')
 }
 
@@ -52,8 +63,12 @@ function changed(): LlmError {
 function assertSupportedInput(policy: CapturedPolicy, history: readonly RequestMessage[], incoming: readonly RequestMessage[]): void {
   const capabilities = policy.capabilities
   if (capabilities === undefined) return
-  if (!capabilities.tools && hasToolHistory(history)) throw new LlmError(
-    '当前聊天包含工具记录，所选模型仅支持文本对话；请切换到支持工具的模型，或新建纯文本聊天。原记录已保留。',
+  if (!textCapabilityRouteAvailable(capabilities)) throw new LlmError(
+    '当前渠道暂不可用，请稍后重试或切换模型。', 'MODEL_ROUTE_UNAVAILABLE')
+  if (!textCapabilityImageAvailable(capabilities) && [...history, ...incoming].some(message => message.content.some(block => block.type === 'image'))) throw new LlmError(
+    '当前渠道的图片输入暂不可用，请稍后重试或切换模型。', 'MODEL_CAPABILITY_INPUT_UNAVAILABLE')
+  if (effectiveTextCapability(capabilities, 'tools') === false && hasToolHistory(history)) throw new LlmError(
+    '当前聊天包含工具记录，而所选渠道未开放工具调用；请切换可用模型，或新建纯文本聊天。原记录已保留。',
     'MODEL_CAPABILITY_HISTORY_UNSUPPORTED',
   )
   if (hasUnsupportedBinaryInput(history, capabilities) || hasUnsupportedBinaryInput(incoming, capabilities)) throw new LlmError(
@@ -102,7 +117,7 @@ export function registerProductTextModelPolicy(ctx: Context, options: ProductTex
       const revision = options.revision()
       const resolved = await metadata(provider, model, context.signal)
       if (revision !== options.revision() || !active && resolved !== undefined) throw changed()
-      const capabilities = resolved === undefined ? undefined : { ...resolved }
+      const capabilities = resolved === undefined ? undefined : cloneTextCapabilities(resolved)
       policies.set(agent, { provider, model, revision, ...capabilities === undefined ? {} : { capabilities } })
       if (capabilities === undefined) {
         const contexts = assembled.contexts.filter(context => context.name !== capabilityContextName)
@@ -110,8 +125,8 @@ export function registerProductTextModelPolicy(ctx: Context, options: ProductTex
       }
       return {
         ...assembled,
-        tools: capabilities.tools ? assembled.tools : [],
-        sections: capabilities.tools ? assembled.sections : assembled.sections.filter(section =>
+        tools: effectiveTextCapability(capabilities, 'tools') === false ? [] : assembled.tools,
+        sections: effectiveTextCapability(capabilities, 'tools') !== false ? assembled.sections : assembled.sections.filter(section =>
           section.name !== 'tools:sdk' && section.name !== 'tools:ptc-only'),
         contexts: [...assembled.contexts.filter(context => context.name !== capabilityContextName),
           { name: capabilityContextName, text: capabilityNotice(capabilities), interpolate: false }],
@@ -137,8 +152,8 @@ export function registerProductTextModelPolicy(ctx: Context, options: ProductTex
       if (captured.capabilities === undefined && current === undefined) return config
       if (!active || captured.provider !== config.provider || captured.model !== config.model
         || captured.revision !== options.revision()
-        || capabilityFingerprint(captured.capabilities) !== capabilityFingerprint(current)) throw changed()
-      if (current?.reasoning === false && config.reasoningEffort !== undefined
+        || !isDeepStrictEqual(captured.capabilities, current)) throw changed()
+      if (effectiveTextCapability(current, 'reasoning') === false && config.reasoningEffort !== undefined
         && config.reasoningEffort !== 'off' && config.reasoningEffort !== 'none') throw new LlmError(
         '当前模型不支持推理档位，请关闭推理选项或切换模型。', 'MODEL_CAPABILITY_REASONING_UNSUPPORTED')
       return config
@@ -154,15 +169,16 @@ export function registerProductTextModelPolicy(ctx: Context, options: ProductTex
       if (captured?.capabilities === undefined && current === undefined) { yield* next(); return }
       if (!active || captured === undefined || captured.provider !== request.provider || captured.model !== request.model
         || captured.revision !== options.revision()
-        || capabilityFingerprint(captured.capabilities) !== capabilityFingerprint(current)) throw changed()
+        || !isDeepStrictEqual(captured.capabilities, current)) throw changed()
       assertSupportedInput(captured, request.messages, [])
-      if (current?.tools === false && request.tools !== undefined && request.tools.length > 0) throw new LlmError(
+      if (effectiveTextCapability(current, 'tools') === false && request.tools !== undefined && request.tools.length > 0) throw new LlmError(
         toolDenial, 'MODEL_CAPABILITY_TOOLS_UNSUPPORTED')
       yield* next()
     }, { prepend: true })
 
     const deniesExecution = (agent: Agent | undefined): boolean => agent !== undefined
-      && policies.get(agent)?.capabilities?.tools === false
+      && (effectiveTextCapability(policies.get(agent)?.capabilities, 'tools') === false
+        || !textCapabilityRouteAvailable(policies.get(agent)?.capabilities))
     policyCtx.on('tools/pre-execute', async (execution, next) => {
       const decision = await next()
       if (!deniesExecution(execution.agent) || decision.kind === 'cancel' || decision.kind === 'deny') return decision

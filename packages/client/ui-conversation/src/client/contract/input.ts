@@ -140,7 +140,14 @@ export interface InputTriggerController {
 export interface InputModelCapabilities {
   readonly tools?: boolean
   readonly vision?: boolean
+  readonly visionUnavailable?: boolean
+  readonly visionUnavailableReason?: string
+  readonly reasoning?: boolean
   readonly inputModalities?: readonly string[]
+  /** Per-feature channel evidence, independent of execution eligibility. */
+  readonly verification?: Readonly<Record<'tools' | 'vision' | 'reasoning', 'supported' | 'unsupported' | 'unverified'>>
+  readonly available?: boolean
+  readonly revision?: string
 }
 
 declare module '@deepseek-ai/cordis' {

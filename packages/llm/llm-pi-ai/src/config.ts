@@ -316,6 +316,24 @@ const managedModelLimits: z<PiAiManagedModelLimits> = z.object({
   textCapabilities: z.union([z.object({
     tools: z.boolean().required(), vision: z.boolean().required(), reasoning: z.boolean().required(), stream: z.boolean().required(),
     maxInputTokens: z.number().step(1).min(1).max(MAX_CAPACITY_TOKENS).required(),
+    schemaVersion: z.union([z.const(2)]), revision: z.string(), checkedAt: z.string(),
+    verification: z.union([z.object({ tools: z.union(['supported', 'unsupported', 'unverified']).required(),
+      vision: z.union(['supported', 'unsupported', 'unverified']).required(), reasoning: z.union(['supported', 'unsupported', 'unverified']).required() })]),
+    inputModalities: z.union([z.array(z.union(['text', 'image']))]),
+    toolsConfig: z.union([z.object({ protocol: z.const('openai-chat').required(), roundtripVerified: z.boolean().required(),
+      verifiedToolChoices: z.array(z.string()).required(), parallelCalls: z.union(['supported', 'unsupported', 'unverified']).required() })]),
+    visionConfig: z.union([z.object({ verifiedTransports: z.array(z.string()).required(),
+      verifiedMimeTypes: z.array(z.string()).required(), billing: z.string().required(),
+      operationalStatus: z.union([z.const('temporarily_unavailable')]), operationalReason: z.string() })]),
+    reasoningMode: z.union(['configurable', 'always_on', 'automatic', 'unsupported', 'unknown']),
+    reasoningControls: z.union([z.object({ type: z.const('object').required(), properties: z.object({
+      reasoning_effort: z.union([z.object({ type: z.const('string').required(), enum: z.array(z.string()).required(), default: z.string() })]),
+      enable_thinking: z.union([z.object({ type: z.const('boolean').required(), default: z.union([z.boolean()]) })]),
+    }).required(), additionalProperties: z.const(false).required() })]),
+    reasoningControlMapping: z.union([z.object({
+      enableThinkingWithEffort: z.union([z.const(true)]), omitEffortOnNone: z.union([z.boolean()]),
+    })]),
+    reasoningOmitBehavior: z.union([z.const('provider_default')]), operationalStatus: z.union(['available', 'fixed_lane_unavailable']), operationalReason: z.string(),
   })]),
 })
 

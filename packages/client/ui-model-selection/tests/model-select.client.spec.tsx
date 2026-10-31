@@ -1077,21 +1077,89 @@ it('restores the account model name after login without changing the saved route
 })
 
 
-describe('declared plain-text model guidance', () => {
-  it('keeps capability copy visible under an empty admin description and suppresses an old High effort', () => {
+describe('declared model capability guidance', () => {
+  it('keeps legacy policy copy visible and lets the user reset a saved High on the same model', async () => {
     const directory = createSnapshotStore(state({ current: { provider: 'plain', model: 'plain', reasoningEffort: 'high' },
       retainedEffort: 'High', groups: [{ id: 'plain', name: 'Plain', models: [{ id: 'plain', name: 'Plain Model',
         presentation: { description: '' }, reasoning, inputModalities: ['text'],
         textCapabilities: { tools: false, vision: false, reasoning: false, stream: true, maxInputTokens: 32768 } }] }] }))
-    render(<ModelSelect locked={false} available directory={directory} load={vi.fn()} select={vi.fn()} t={t} />)
-    const trigger = screen.getByRole('button', { name: '选择模型，当前 Plain Model' })
-    expect(trigger.textContent).not.toContain('High')
+    const select = vi.fn(async () => ({ ok: true as const, value: undefined }))
+    render(<ModelSelect locked={false} available directory={directory} load={vi.fn()} select={select} t={t} />)
+    const trigger = screen.getByRole('button', { name: /选择模型，当前 Plain Model/ })
+    expect(trigger.textContent).toContain('high')
     fireEvent.click(trigger)
-    expect(screen.queryByRole('menuitem', { name: /推理等级/ })).toBeNull()
+    fireEvent.click(screen.getByRole('menuitem', { name: /推理等级/ }))
+    expect(screen.queryByRole('menuitemradio', { name: 'High' })).toBeNull()
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Default' }))
+    await waitFor(() => { expect(select).toHaveBeenCalledWith({ provider: 'plain', model: 'plain' }) })
+    fireEvent.click(trigger)
     fireEvent.click(screen.getByRole('menuitem', { name: /模型/ }))
     const row = screen.getByRole('menuitemradio', { name: 'Plain Model' })
-    expect(row.textContent).toContain('纯文本对话')
-    expect(row.textContent).toContain('不支持工具调用')
+    expect(row.textContent).toContain(zh['guidance.textOnly'])
+    expect(row.textContent).toContain(zh['guidance.noTools'])
     expect(row.textContent).toContain('32,768')
+  })
+
+  it('renders distinct per-route support, unverified and unavailable facts without inventing reasoning choices', () => {
+    const directory = createSnapshotStore(state({ current: { provider: 'v2', model: 'mixed' }, groups: [{ id: 'v2', name: 'V2', models: [{
+      id: 'mixed', name: 'Mixed', presentation: { description: '' }, reasoning,
+      textCapabilities: { schemaVersion: 2, revision: 'probe-v1', tools: false, vision: true, reasoning: true,
+        stream: true, maxInputTokens: 32000, verification: { tools: 'unverified', vision: 'supported', reasoning: 'supported' },
+        operationalStatus: 'fixed_lane_unavailable', reasoningMode: 'always_on' },
+      executionCapabilities: { available: false, vision: true, reasoning: true },
+    }] }] }))
+    render(<ModelSelect locked={false} available directory={directory} load={vi.fn()} select={vi.fn()} t={t} />)
+    fireEvent.click(screen.getByRole('button', { name: /选择模型，当前 Mixed/ }))
+    expect(screen.queryByRole('menuitem', { name: /推理等级/ })).toBeNull()
+    fireEvent.click(screen.getByRole('menuitem', { name: /模型/ }))
+    const row = screen.getByRole('menuitemradio', { name: 'Mixed' })
+    expect(row.textContent).toContain(zh['guidance.tools.unverified'])
+    expect(row.textContent).toContain(zh['guidance.vision.supported'])
+    expect(row.textContent).toContain(zh['guidance.reasoningAlwaysOn'])
+    expect(row.textContent).toContain(zh['guidance.routeUnavailable'])
+    expect(row.textContent).not.toContain(zh['guidance.noTools'])
+    expect(row.textContent).not.toContain(zh['guidance.tools.unsupported'])
+  })
+
+  it('shows an image-only temporary outage independently from unverified facts and whole-route availability', () => {
+    const directory = createSnapshotStore(state({ current: { provider: 'v2', model: 'partial' }, groups: [{ id: 'v2', name: 'V2', models: [{
+      id: 'partial', name: 'Partial', textCapabilities: { schemaVersion: 2, tools: true, vision: false, reasoning: true, stream: true, maxInputTokens: 32000,
+        verification: { tools: 'supported', vision: 'unverified', reasoning: 'unverified' }, operationalStatus: 'available',
+        visionConfig: { verifiedTransports: [], verifiedMimeTypes: [], billing: 'input_tokens', operationalStatus: 'temporarily_unavailable' } },
+      executionCapabilities: { available: true, tools: true, vision: false, visionUnavailable: true },
+    }] }] }))
+    render(<ModelSelect locked={false} available directory={directory} load={vi.fn()} select={vi.fn()} t={t} />)
+    fireEvent.click(screen.getByRole('button', { name: /选择模型，当前 Partial/ }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /模型/ }))
+    const row = screen.getByRole('menuitemradio', { name: 'Partial' })
+    expect(row.textContent).toContain(zh['guidance.visionTemporarilyUnavailable'])
+    expect(row.textContent).toContain(zh['guidance.vision.unverified'])
+    expect(row.textContent).not.toContain(zh['guidance.vision.unsupported'])
+    expect(row.textContent).not.toContain(zh['guidance.routeUnavailable'])
+  })
+
+  it('shows an independent route outage when selecting a model fails', async () => {
+    const directory = createSnapshotStore(state({ groups: [{ id: 'new', name: 'New', models: [{ id: 'offline', name: 'Offline' }] }] }))
+    const select = vi.fn(async () => ({ ok: false as const, error: new RemoteError('session/model-capability-invalid', 'private route details', { reason: 'MODEL_ROUTE_UNAVAILABLE' as const }) }))
+    render(<ModelSelect locked={false} available directory={directory} load={vi.fn()} select={select} t={t} />)
+    fireEvent.click(screen.getByRole('button', { name: '请选择模型' }))
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Offline' }))
+    await waitFor(() => { expect(screen.getByText(zh['error.routeUnavailable'])).toBeTruthy() })
+    expect(screen.queryByText(zh['error.action'])).toBeNull()
+  })
+
+  it('passes boolean-control opaque on/off IDs to selection unchanged', async () => {
+    const directory = createSnapshotStore(state({ current: { provider: 'v2', model: 'boolean', reasoningEffort: 'on' }, groups: [{ id: 'v2', name: 'V2', models: [{
+      id: 'boolean', name: 'Boolean', reasoning: { efforts: [{ id: 'on', name: 'On' }, { id: 'off', name: 'Off' }], defaultEffort: 'off' },
+      textCapabilities: { schemaVersion: 2, tools: true, vision: false, reasoning: true, stream: true, maxInputTokens: 32000,
+        verification: { tools: 'supported', vision: 'unsupported', reasoning: 'supported' }, reasoningMode: 'configurable' },
+      executionCapabilities: { available: true, tools: true, vision: false, reasoning: true },
+    }] }] }))
+    const select = vi.fn(async () => ({ ok: true as const, value: undefined }))
+    render(<ModelSelect locked={false} available directory={directory} load={vi.fn()} select={select} t={t} />)
+    fireEvent.click(screen.getByRole('button', { name: /选择模型，当前 Boolean/ }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /推理等级/ }))
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Off' }))
+    await waitFor(() => { expect(select).toHaveBeenCalledWith({ provider: 'v2', model: 'boolean', reasoningEffort: 'off' }) })
   })
 })

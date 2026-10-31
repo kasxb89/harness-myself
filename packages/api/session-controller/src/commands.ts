@@ -12,7 +12,8 @@ import type {
 import type { FileUploadReceiptId } from '@deepseek-ai/dsh-client-file-upload/types'
 import type {} from '@deepseek-ai/dsh-client-file-upload'
 import {
-  ReasoningEffortId, assistantStreamChunks, createUserMessage, freezeMessage,
+  LlmError, ReasoningEffortId, assistantStreamChunks, createUserMessage, freezeMessage,
+  effectiveTextCapability, textCapabilityImageAvailable, textCapabilityRouteAvailable,
 } from '@deepseek-ai/dsh-llm'
 import type { MessageSource } from '@deepseek-ai/dsh-llm'
 import { buildForkSeed } from '@deepseek-ai/dsh-session/fork'
@@ -176,6 +177,9 @@ export class SessionCommandController {
         return { selected: { ...selected } }
       } catch (error) {
         if (remoteErrorOf(error) !== undefined) throw error
+        if (error instanceof LlmError && error.code === 'MODEL_ROUTE_UNAVAILABLE') throw new RemoteError(
+          'session/model-capability-invalid', '当前模型渠道暂不可用，请切换模型。', { reason: 'MODEL_ROUTE_UNAVAILABLE' },
+        )
         throw new RemoteError(
           'session/model-unavailable',
           error instanceof Error ? error.message : String(error),
@@ -341,14 +345,21 @@ export class SessionCommandController {
           ? await this.ctx.llm.resolveModelInfo(current.provider, current.model) : undefined
         const capabilities = model?.textCapabilities
         if (capabilities !== undefined) {
-          if (!capabilities.tools && agent.session.deriveMessages().some(message => message.role === 'tool'
+          if (!textCapabilityRouteAvailable(capabilities)) throw new RemoteError(
+            'session/model-capability-invalid', '当前模型渠道暂不可用，请切换模型；文字草稿已保留。', { reason: 'MODEL_ROUTE_UNAVAILABLE' },
+          )
+          if (hasImage && !textCapabilityImageAvailable(capabilities)) throw new RemoteError(
+            'session/model-capability-invalid', '当前渠道图片输入暂不可用，请稍后重试或切换模型；草稿及已有附件已保留。',
+            { reason: 'MODEL_CAPABILITY_INPUT_UNAVAILABLE' },
+          )
+          if (effectiveTextCapability(capabilities, 'tools') === false && agent.session.deriveMessages().some(message => message.role === 'tool'
             || message.role === 'assistant' && message.content.some(part => part.type === 'tool-call'))) {
-            throw new RemoteError('session/model-capability-invalid', '当前模型不支持此聊天已有的工具记录，请切换支持工具的模型，或新建纯文本聊天。',
+            throw new RemoteError('session/model-capability-invalid', '当前模型渠道未开放此聊天所需的工具能力，请切换支持工具的模型，或新建纯文本聊天。',
               { reason: 'MODEL_CAPABILITY_HISTORY_UNSUPPORTED' })
           }
-          if (request.content.some(part => part.type === 'image' && !capabilities.vision
-            || part.type === 'file' && !capabilities.tools)) {
-            throw new RemoteError('session/model-capability-invalid', '当前模型不支持图片或文件，请移除附件或切换模型；文字草稿已保留。',
+          if (request.content.some(part => part.type === 'image' && effectiveTextCapability(capabilities, 'vision') === false
+            || part.type === 'file' && effectiveTextCapability(capabilities, 'tools') === false)) {
+            throw new RemoteError('session/model-capability-invalid', '当前模型渠道未开放所需的图片或文件能力，请移除附件或切换模型；文字草稿已保留。',
               { reason: 'MODEL_CAPABILITY_INPUT_UNSUPPORTED' })
           }
         }

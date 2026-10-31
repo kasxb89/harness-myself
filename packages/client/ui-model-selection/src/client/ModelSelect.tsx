@@ -99,7 +99,8 @@ export function ModelSelect(
       selection: {
         provider: group.id,
         model: model.id,
-        ...model.textCapabilities?.reasoning === false || model.reasoning?.defaultEffort === undefined
+        ...model.executionCapabilities?.reasoning === false || model.reasoning?.defaultEffort === undefined
+          || model.textCapabilities?.schemaVersion === 2 && model.textCapabilities.reasoningMode !== 'configurable'
           ? {}
           : { reasoningEffort: model.reasoning.defaultEffort },
       } satisfies ModelSelection,
@@ -118,28 +119,37 @@ export function ModelSelect(
     ? -1
     : choices.findIndex(c => c.selection.provider === state.current?.provider && c.selection.model === state.current.model)
   const currentChoice = choices[selectedIndex]
-  const reasoningDisabled = currentChoice?.model.textCapabilities?.reasoning === false
+  const currentCapabilities = currentChoice?.model.textCapabilities
+  const reasoningDisabled = currentChoice?.model.executionCapabilities?.reasoning === false
+    || currentCapabilities?.schemaVersion !== 2 && currentCapabilities?.reasoning === false
+    || currentCapabilities?.schemaVersion === 2 && currentCapabilities.reasoningMode !== 'configurable'
   const reasoning = reasoningDisabled ? undefined : currentChoice?.model.reasoning
   const effectiveEffort = state.current?.reasoningEffort ?? reasoning?.defaultEffort
-  const effortLabel = currentChoice === undefined || reasoningDisabled
-    ? undefined
-    : reasoning === undefined
-      ? state.retainedEffort
-      : effectiveEffort === undefined
-        ? t('effort.providerDefault')
-        : reasoning.efforts.find(level => level.id === effectiveEffort)?.name ?? effectiveEffort
+  const defaultEffortLabel = t(currentCapabilities?.schemaVersion === 2 ? 'effort.providerAuto' : 'effort.providerDefault')
+  const savedEffortUnadvertised = state.current?.reasoningEffort !== undefined
+    && currentChoice !== undefined && (reasoning === undefined
+      || !reasoning.efforts.some(value => value.id === state.current?.reasoningEffort))
+  const effortLabel = savedEffortUnadvertised
+    ? t('effort.savedUnadvertised', { effort: state.current?.reasoningEffort ?? '' })
+    : currentChoice === undefined || reasoningDisabled
+      ? undefined
+      : reasoning === undefined
+        ? state.retainedEffort
+        : effectiveEffort === undefined
+          ? defaultEffortLabel
+          : reasoning.efforts.find(level => level.id === effectiveEffort)?.name ?? effectiveEffort
   const effortChoices = useMemo<readonly EffortChoice[]>(() => reasoning === undefined
-    ? []
+    ? savedEffortUnadvertised ? [{ key: 'provider-default', effort: undefined, label: defaultEffortLabel }] : []
     : [
-      ...reasoning.defaultEffort === undefined
-        ? [{ key: 'provider-default', effort: undefined, label: t('effort.providerDefault') }]
+      ...savedEffortUnadvertised || reasoning.defaultEffort === undefined
+        ? [{ key: 'provider-default', effort: undefined, label: defaultEffortLabel }]
         : [],
       ...reasoning.efforts.map((effort: ModelReasoningEffort) => ({
         key: `effort:${effort.id}`,
         effort: effort.id,
         label: effort.name,
       })),
-    ], [reasoning, t])
+    ], [reasoning, savedEffortUnadvertised, defaultEffortLabel])
   const { pending } = state
   const busy = pending !== null
 
@@ -381,7 +391,8 @@ export function ModelSelect(
       seq: toastSeq.current,
       text: error.code === 'session/writer-held'
         ? t('error.sessionInUse')
-        : t('error.action'),
+        : error.code === 'session/model-capability-invalid' && error.details.reason === 'MODEL_ROUTE_UNAVAILABLE'
+          ? t('error.routeUnavailable') : t('error.action'),
     })
   }
 
@@ -394,7 +405,8 @@ export function ModelSelect(
   }
 
   const choose = (selection: ModelSelection): void => {
-    if (state.current?.provider === selection.provider && state.current.model === selection.model) {
+    if (state.current?.provider === selection.provider && state.current.model === selection.model
+      && !savedEffortUnadvertised) {
       closeAfterSelection()
       return
     }
@@ -508,7 +520,7 @@ export function ModelSelect(
                 <span className={css.cellValue}>{modelLabel}</span>
                 <IconChevronRightOutlineRegular className={css.cellChevron} />
               </button>
-              {reasoning !== undefined && (
+              {(reasoning !== undefined || savedEffortUnadvertised) && (
                 <button ref={itemRef()} type="button" role="menuitem" className={css.cell} onClick={() => { drill('effort') }}>
                   <span className={css.cellLabel}>{t('menu.effort')}</span>
                   <span className={css.cellValue}>{effortLabel}</span>
@@ -624,7 +636,7 @@ export function ModelSelect(
 
           {pane === 'effort' && (
             <>
-              <div className={css.guidance}>{t('guidance.effort')}</div>
+              <div className={css.guidance}>{t(savedEffortUnadvertised ? 'guidance.resetEffort' : 'guidance.effort')}</div>
               {effortChoices.length === 0
                 ? <div className={css.empty}>{t('empty.efforts')}</div>
                 : effortChoices.map(level => (

@@ -510,6 +510,28 @@ interface LlmConfigurableProvider {
 ```
 
 ```ts type-equiv
+/** Gateway capability features whose factual verification is independent of eligibility. */
+type LlmTextCapability = 'tools' | 'vision' | 'reasoning'
+```
+
+```ts type-equiv
+/** Evidence result for one exact currently serving route. */
+type LlmCapabilityVerification = 'supported' | 'unsupported' | 'unverified'
+```
+
+```ts type-equiv
+/** Supported reasoning request schema; reserved request fields cannot be declared. */
+interface LlmReasoningControls {
+  type: 'object'
+  properties: {
+    reasoning_effort?: { type: 'string'; enum: string[]; default?: string }
+    enable_thinking?: { type: 'boolean'; default?: boolean }
+  }
+  additionalProperties: false
+}
+```
+
+```ts type-equiv
 /** Current gateway execution declarations; these do not establish native model maxima. */
 interface LlmTextCapabilities {
   /** Whether this route accepts tool declarations and tool history. */
@@ -522,8 +544,43 @@ interface LlmTextCapabilities {
   stream: boolean
   /** Gateway input-token ceiling, separate from the native combined window. */
   maxInputTokens: number
+  /** Version2 separates observed support from the legacy execution booleans. */
+  schemaVersion?: 2
+  /** Immutable, non-secret evidence revision for the current route. */
+  revision?: string
+  /** Time of the gateway's capability evidence. */
+  checkedAt?: string
+  /** Per-feature fixed-route evidence; unverified is not a denial. */
+  verification?: Record<LlmTextCapability, LlmCapabilityVerification>
+  /** Allowed request modalities, independent from native model family names. */
+  inputModalities?: ModelModality[]
+  /** Verified tool protocol and exercised options. */
+  toolsConfig?: { protocol: 'openai-chat'; roundtripVerified: boolean; verifiedToolChoices: string[]; parallelCalls: LlmCapabilityVerification }
+  /** Precisely exercised image transports and MIME types, without inventing unknown limits. */
+  visionConfig?: {
+    verifiedTransports: string[]
+    verifiedMimeTypes: string[]
+    billing: string
+    operationalStatus?: 'temporarily_unavailable'
+    operationalReason?: string
+  }
+  /** Whether reasoning has selectable controls, is automatic, or is not yet known. */
+  reasoningMode?: 'configurable' | 'always_on' | 'automatic' | 'unsupported' | 'unknown'
+  /** Exact permitted request fields; omission never invents an off parameter. */
+  reasoningControls?: LlmReasoningControls
+  /** Meaning of omitting all reasoning controls, as declared by the gateway. */
+  reasoningOmitBehavior?: 'provider_default'
+  /** Gateway-owned native mapping; the client still sends only the declared effort field. */
+  reasoningControlMapping?: { enableThinkingWithEffort?: true; omitEffortOnNone?: boolean }
+  /** Route availability is separate from vendor capability facts. */
+  operationalStatus?: 'available' | 'fixed_lane_unavailable'
+  /** Safe route-unavailability explanation, without private routing details. */
+  operationalReason?: string
+
 }
 ```
+
+版本2将渠道执行资格、逐项能力证据和运行可用状态分开。`unsupported` 表示已确认的负面结果；`unverified` 不构成拒绝依据。`reasoningControls` 描述准确的请求字段，`provider_default` 表示自动模式省略这些字段，并不表示已关闭推理。`visionConfig` 记录该渠道实际核实过的运输方式和 MIME 类型。 图片入口的运行暂停与已确认不支持图片的事实分开，文字和文件工具仍可用。`reasoningControlMapping` 记录由 API 负责的供应商参数转换，客户端仍只发送所选的规范化控制项。
 
 ```ts type-equiv
 /** One adapter-discovered model; catalog membership is advisory, not request validation. */

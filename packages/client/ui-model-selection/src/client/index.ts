@@ -89,9 +89,11 @@ function selectionOf(state: ModelDirectoryState, id: string): ModelSelection | u
     for (const model of group.models) {
       if (rowId(group.id, model.id) !== id) continue
       const sameRoute = state.current?.provider === group.id && state.current.model === model.id
-      const reasoningEffort = model.textCapabilities?.reasoning === false ? undefined : sameRoute
-        ? state.current?.reasoningEffort ?? model.reasoning?.defaultEffort
-        : model.reasoning?.defaultEffort
+      const saved = state.current?.reasoningEffort
+      const supported = model.executionCapabilities?.reasoning !== false
+        && (model.textCapabilities?.schemaVersion === 2 ? model.textCapabilities.reasoningMode === 'configurable' : model.textCapabilities?.reasoning !== false)
+      const reasoningEffort = !supported ? undefined : sameRoute && saved !== undefined
+        && model.reasoning?.efforts.some(effort => effort.id === saved) === true ? saved : model.reasoning?.defaultEffort
       return {
         provider: group.id,
         model: model.id,
@@ -160,6 +162,7 @@ export function apply(ctx: ClientContext): void {
           const result = await directory.select(selection)
           if (!result.ok) {
             if (result.error.code === 'session/writer-held') throw new Error(t('error.sessionInUse'))
+            if (result.error.code === 'session/model-capability-invalid' && result.error.details.reason === 'MODEL_ROUTE_UNAVAILABLE') throw new Error(t('error.routeUnavailable'))
             throw new Error(t('error.action'), { cause: result.error })
           }
         },

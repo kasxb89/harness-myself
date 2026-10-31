@@ -726,3 +726,76 @@ it('clears published input controls when model selection unloads while the Sessi
     await scope.fiber.dispose()
   } finally { await b.ctx.fiber.dispose() }
 })
+
+
+it('replaces legacy false controls with scoped V2 unverified facts and actual image modalities', async () => {
+  const b = await bench()
+  try {
+    const first = b.mint('v2-first')
+    const second = b.mint('v2-second')
+    const d1 = b.ctx.modelDirectories.directoryFor(sid('v2-first'))
+    const d2 = b.ctx.modelDirectories.directoryFor(sid('v2-second'))
+    b.setGroups([{ id: 'deepseek-official', name: 'Routes', models: [
+      { id: 'deepseek-v4-flash', name: 'Current', inputModalities: ['text'], textCapabilities: {
+        tools: false, vision: false, reasoning: false, stream: true, maxInputTokens: 32000,
+      } }, { id: 'legacy', name: 'Legacy' },
+    ] }])
+    await d1.reload()
+    await d2.select({ provider: 'deepseek-official', model: 'legacy' })
+    await vi.waitFor(() => { expect(b.modelInputOf('v2-first')).toEqual({ tools: false, vision: false, inputModalities: ['text'] }) })
+    const verification = { tools: 'unverified', vision: 'unverified', reasoning: 'unverified' } as const
+    b.setGroups([{ id: 'deepseek-official', name: 'Routes', models: [
+      { id: 'deepseek-v4-flash', name: 'Current', inputModalities: ['text', 'image'], executionCapabilities: { available: true },
+        textCapabilities: { schemaVersion: 2, revision: 'v2-proof', tools: false, vision: false, reasoning: false,
+          stream: true, maxInputTokens: 32000, verification, reasoningMode: 'unknown', operationalStatus: 'available' } },
+      { id: 'legacy', name: 'Legacy' },
+    ] }])
+    await d1.reload()
+    await vi.waitFor(() => {
+      expect(b.modelInputOf('v2-first')).toEqual({ available: true, verification, revision: 'v2-proof', inputModalities: ['text', 'image'] })
+    })
+    expect(b.modelInputOf('v2-second')).toBeUndefined()
+    const rows = await b.popup().options(projection('v2-first'), new AbortController().signal)
+    const current = rows.find(row => row.id.includes('deepseek-v4-flash'))
+    expect(current?.detail).toContain(zh['guidance.tools.unverified'])
+    expect(current?.detail).not.toContain(zh['guidance.tools.unsupported'])
+    await b.fiber.dispose()
+    expect(b.modelInputOf('v2-first')).toBeUndefined()
+    await first.fiber.dispose()
+    await second.fiber.dispose()
+  } finally { await b.ctx.fiber.dispose() }
+})
+
+
+it('bridges an image-only temporary outage per Session without disabling tools or sibling inputs', async () => {
+  const b = await bench()
+  try {
+    const first = b.mint('partial-first')
+    const second = b.mint('partial-second')
+    const d1 = b.ctx.modelDirectories.directoryFor(sid('partial-first'))
+    const d2 = b.ctx.modelDirectories.directoryFor(sid('partial-second'))
+    const verification = { tools: 'supported', vision: 'unverified', reasoning: 'unverified' } as const
+    b.setGroups([{ id: 'deepseek-official', name: 'Routes', models: [
+      { id: 'deepseek-v4-flash', name: 'Partial', inputModalities: ['text'],
+        executionCapabilities: { available: true, tools: true, vision: false, visionUnavailable: true, visionUnavailableReason: 'synthetic feature outage' },
+        textCapabilities: { schemaVersion: 2, tools: true, vision: false, reasoning: true, stream: true, maxInputTokens: 32000,
+          verification, operationalStatus: 'available', visionConfig: { verifiedTransports: [], verifiedMimeTypes: [], billing: 'input_tokens',
+            operationalStatus: 'temporarily_unavailable', operationalReason: 'synthetic feature outage' } } },
+      { id: 'legacy', name: 'Legacy' },
+    ] }])
+    await d1.reload()
+    await d2.select({ provider: 'deepseek-official', model: 'legacy' })
+    await vi.waitFor(() => {
+      expect(b.modelInputOf('partial-first')).toEqual({ available: true, tools: true, vision: false, visionUnavailable: true,
+        visionUnavailableReason: 'synthetic feature outage', verification, inputModalities: ['text'] })
+    })
+    expect(b.modelInputOf('partial-second')).toBeUndefined()
+    const options = await b.popup().options(projection('partial-first'), new AbortController().signal)
+    const row = options.find(value => value.id.includes('deepseek-v4-flash'))
+    expect(row?.detail).toContain(zh['guidance.visionTemporarilyUnavailable'])
+    expect(row?.detail).toContain(zh['guidance.vision.unverified'])
+    expect(row?.detail).not.toContain(zh['guidance.vision.unsupported'])
+    await first.fiber.dispose()
+    await second.fiber.dispose()
+  } finally { await b.ctx.fiber.dispose() }
+})

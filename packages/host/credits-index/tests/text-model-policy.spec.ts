@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import Loader, { type ModuleLoaderV2 } from '@deepseek-ai/cordis-plugin-loader'
 import Include from '@deepseek-ai/cordis-plugin-include'
-import LlmRuntime, { createUserMessage, ReasoningEffortId, ToolCallId, type LlmResolvedModelInfo, type StreamChunk } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { createUserMessage, ReasoningEffortId, ToolCallId, type LlmTextCapabilities, type LlmResolvedModelInfo, type StreamChunk } from '@deepseek-ai/dsh-llm'
 import SessionStore, { Session, SessionId } from '@deepseek-ai/dsh-session'
 import SessionProjections from '@deepseek-ai/dsh-session-projection'
 import AgentRegistry, { installModelSelection, type Agent, type ModelSelectionRef } from '@deepseek-ai/dsh-agent'
@@ -24,6 +24,13 @@ import { eventLines, toHeaderLine } from '@deepseek-ai/dsh-session-persistence-j
 import { registerProductTextModelPolicy } from '../src/text-model-policy.ts'
 
 const capabilities = { tools: false, vision: false, reasoning: false, stream: true, maxInputTokens: 32_000 }
+const verifiedCapabilities: LlmTextCapabilities = { ...capabilities, tools: true, vision: true, reasoning: true,
+  schemaVersion: 2, revision: 'recorded-fixed-route-v2', checkedAt: '2026-10-31T00:00:00Z',
+  verification: { tools: 'supported', vision: 'supported', reasoning: 'supported' }, inputModalities: ['text', 'image'],
+  toolsConfig: { protocol: 'openai-chat', roundtripVerified: true, verifiedToolChoices: ['auto'], parallelCalls: 'unverified' },
+  visionConfig: { verifiedTransports: ['data_url'], verifiedMimeTypes: ['image/png'], billing: 'input_tokens' },
+  reasoningMode: 'automatic', reasoningControls: { type: 'object', properties: {}, additionalProperties: false },
+  reasoningOmitBehavior: 'provider_default', operationalStatus: 'available' }
 const resources: { ctx: Context; directory: string }[] = []
 afterEach(async () => {
   for (const { ctx, directory } of resources.splice(0).reverse()) {
@@ -38,10 +45,13 @@ class DeclaredAdapter extends MockAdapter {
     await this.gate?.(model)
     return { provider, id: model, name: model, context: { contextWindow: 1_000_000 },
       maxOutputTokens: 8192, defaultMaxTokens: 8192,
-      ...model === 'full' ? {} : { textCapabilities: { ...capabilities,
-        ...model === 'file-tools' ? { tools: true } : {},
-        ...model === 'vision-only' ? { vision: true } : {},
-        ...model === 'no-stream' ? { stream: false } : {} } } }
+      ...model === 'verified-v2' ? { textCapabilities: structuredClone(verifiedCapabilities) }
+        : model === 'unverified-v2' ? { textCapabilities: { ...structuredClone(verifiedCapabilities), tools: false, vision: false, reasoning: false,
+          verification: { tools: 'unverified', vision: 'unverified', reasoning: 'unverified' } } }
+          : model === 'full' ? {} : { textCapabilities: { ...capabilities,
+            ...model === 'file-tools' ? { tools: true } : {},
+            ...model === 'vision-only' ? { vision: true } : {},
+            ...model === 'no-stream' ? { stream: false } : {} } } }
   }
 }
 
@@ -115,7 +125,7 @@ function outcomeCode(agent: Agent): string | undefined {
 }
 function noticeCount(agent: Agent): number {
   const snapshot = agent.session.deriveMessages().findLast(message => message.role === 'user' && message.source.kind === 'runtime-context')
-  return snapshot?.content.filter(block => block.type === 'text' && block.text.includes('This model supports text conversation only.')).length ?? 0
+  return snapshot?.content.filter(block => block.type === 'text' && block.text.includes('This gateway currently permits text conversation only;')).length ?? 0
 }
 function serializedSession(agent: Agent): string {
   return JSON.stringify(toHeaderLine(agent.session.header)) + '\n' + eventLines(agent.session.snapshotEvents())
@@ -140,7 +150,7 @@ describe('declared text capabilities through the real Loader and Agent policy', 
     expect(outcomeCode(agent)).toBeUndefined()
     expect(f.adapter.requests).toHaveLength(1)
     expect(f.adapter.requests[0]!.tools ?? []).toEqual([])
-    expect(JSON.stringify(f.adapter.requests[0]!.messages)).toContain('This model supports text conversation only.')
+    expect(JSON.stringify(f.adapter.requests[0]!.messages)).toContain('This gateway currently permits text conversation only;')
     expect(noticeCount(agent)).toBe(1)
     expect(JSON.stringify(f.adapter.requests[0]!.messages)).toContain('32000')
     const assembly = await f.ctx.systemPrompt.assemble({ agent, scope: agent })
@@ -150,7 +160,7 @@ describe('declared text capabilities through the real Loader and Agent policy', 
     const result = await f.ctx.tools.execute({ agent, callId: ToolCallId('forced'), name,
       arguments: ptc ? { code: 'await tools.danger({})' } : {}, signal: new AbortController().signal })
     expect(result.isError).toBe(true)
-    expect(JSON.stringify(result.content)).toContain('当前模型不支持工具执行')
+    expect(JSON.stringify(result.content)).toContain('当前渠道不可执行工具')
     expect(f.bodies).toBe(0)
     expect(scopedBodies).toBe(0)
   })
@@ -366,4 +376,51 @@ describe('declared text capabilities through the real Loader and Agent policy', 
     expect(restored.deriveMessages().filter(message => message.role === 'assistant')).toHaveLength(2)
     expect(normalizedSession(serialized, f.workspace)).toBe(expected)
   })
+  it.each([false, true])('keeps verified and unverified native/PTC tools eligible (ptc=%s)', async (ptc) => {
+    const f = await boot([textResponse('能力状态已记录。'), textResponse('未核实不能视为不支持。')], { ptc })
+    const agent = await f.create('v2-native-ptc-' + String(ptc), 'verified-v2')
+    f.send(agent); await agent.whenIdle()
+    selection(agent).current = { provider: 'fixture', model: 'unverified-v2' }
+    f.send(agent); await agent.whenIdle()
+    expect(f.adapter.requests.every(request => (request.tools?.length ?? 0) > 0)).toBe(true)
+    const result = await f.ctx.tools.execute({ agent, callId: ToolCallId('v2-permitted'), name: ptc ? 'run_code' : 'danger',
+      arguments: ptc ? { description: 'Run the pure capability fixture.', code: 'return 1' } : {}, signal: new AbortController().signal })
+    expect(result.isError).not.toBe(true)
+    if (ptc) {
+      const runtime = f.ctx.ptcRuntime
+      if (!(runtime instanceof BindingRuntime)) throw new Error('Expected fixture PTC runtime')
+      expect(runtime.calls).toBe(1)
+    }
+    else expect(f.bodies).toBe(1)
+    expect(JSON.stringify(agent.session.deriveMessages())).toContain('verification: unverified')
+  })
+
+  it('replays the recorded version2 tool call, result and follow-up without dropping history', async () => {
+    const path = new URL('./expected/text-model-capabilities-v2/session.v4.jsonl', import.meta.url)
+    const run = async (script: StreamChunk[][]) => {
+      const f = await boot(script)
+      const agent = await f.create('record-capabilities-v2', 'verified-v2')
+      f.send(agent, '调用danger工具后告诉我结果。'); await agent.whenIdle()
+      expect(f.bodies).toBe(1)
+      expect(f.adapter.requests).toHaveLength(2)
+      expect(f.adapter.requests.every(request => (request.tools?.length ?? 0) > 0)).toBe(true)
+      expect(f.adapter.requests[1]?.messages.some(message => message.role === 'tool')).toBe(true)
+      return { f, agent }
+    }
+    if (process.env.DSH_SNAPSHOT === 'record') {
+      const { f, agent } = await run([toolCallResponse('v2-danger-call', 'danger', {}), textResponse('工具返回ran。')])
+      await mkdir(new URL('./expected/text-model-capabilities-v2/', import.meta.url), { recursive: true })
+      await writeFile(path, normalizedSession(serializedSession(agent), f.workspace))
+    }
+    const expected = await readFile(path, 'utf8')
+    const script = deriveReplayScript(parseSessionLog(expected)).map((entry) => {
+      if (entry.kind !== 'chunks') throw new Error('Expected recorded model stream')
+      return entry.chunks
+    })
+    const { f, agent } = await run(script)
+    expect(normalizedSession(serializedSession(agent), f.workspace)).toBe(expected)
+    const restored = Session.create(SessionId('restored-capabilities-v2'), parseSessionLog(serializedSession(agent)))
+    expect(restored.deriveMessages().some(message => message.role === 'tool')).toBe(true)
+  })
+
 })

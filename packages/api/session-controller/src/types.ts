@@ -132,6 +132,17 @@ export interface ModelReasoning {
   readonly defaultEffort?: string
 }
 
+/** Effective admission controls, separately projected from capability verification facts. */
+export interface ModelExecutionCapabilities {
+  readonly tools?: boolean
+  readonly vision?: boolean
+  /** Feature-level operational refusal, independent of vision verification facts. */
+  readonly visionUnavailable?: boolean
+  readonly visionUnavailableReason?: string
+  readonly reasoning?: boolean
+  readonly available: boolean
+}
+
 /** One model displayed inside its provider group. */
 export interface ModelCatalogModel {
   readonly id: string
@@ -147,6 +158,8 @@ export interface ModelCatalogModel {
   readonly inputModalities?: LlmModelInfo['inputModalities']
   /** Effective declared text execution controls, independent of display text. */
   readonly textCapabilities?: LlmTextCapabilities
+  /** Normalized execution controls; unverified facts do not become negative booleans. */
+  readonly executionCapabilities?: ModelExecutionCapabilities
 }
 
 /** One provider and its successfully loaded model catalog. */
@@ -231,9 +244,9 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
       readonly existingPreset?: string
     }
     'session/attachment-invalid': { readonly reason: string }
-    'session/model-capability-invalid': { readonly reason: 'MODEL_CAPABILITY_HISTORY_UNSUPPORTED' | 'MODEL_CAPABILITY_INPUT_UNSUPPORTED'
+    'session/model-capability-invalid': { readonly reason: 'MODEL_CAPABILITY_HISTORY_UNSUPPORTED' | 'MODEL_CAPABILITY_INPUT_UNSUPPORTED' | 'MODEL_CAPABILITY_INPUT_UNAVAILABLE'
       | 'MODEL_CAPABILITY_TOOLS_UNSUPPORTED' | 'MODEL_CAPABILITIES_CHANGED' | 'MODEL_CAPABILITY_REASONING_UNSUPPORTED'
-      | 'MODEL_CAPABILITY_STREAM_UNSUPPORTED' }
+      | 'MODEL_CAPABILITY_STREAM_UNSUPPORTED' | 'MODEL_ROUTE_UNAVAILABLE' }
     'session/queue-item-not-found': { readonly itemId: MessageId }
     'session/steer-unavailable': { readonly itemId: MessageId }
     'session/title-invalid': { readonly sessionId: SessionId }

@@ -11,7 +11,9 @@ class RecordingAdapter extends LlmAdapter {
   override async resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
     return { provider, id: model, name: model, inputModalities: model === 'vision-only' ? ['text', 'image'] : ['text'],
       ...model === 'legacy' ? {} : { textCapabilities: {
-        tools: model === 'file-tools', vision: model === 'vision-only', reasoning: false, stream: true, maxInputTokens: 32000,
+        tools: model === 'file-tools' || model === 'image-outage', vision: model === 'vision-only', reasoning: false, stream: true, maxInputTokens: 32000,
+        ...model === 'image-outage' ? { schemaVersion: 2 as const, verification: { tools: 'supported' as const, vision: 'unverified' as const, reasoning: 'unsupported' as const },
+          visionConfig: { verifiedTransports: [], verifiedMimeTypes: [], billing: 'input_tokens', operationalStatus: 'temporarily_unavailable' as const } } : {},
       } } }
   }
   override async * stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
@@ -64,6 +66,25 @@ describe('declared capabilities before generic request projection', () => {
     ])
     expect(original.content[0]?.type).toBe(kind)
     expect(adapter.requests).toHaveLength(0)
+  })
+
+  it('rejects localized image outages before text-only projection on direct, prepared and marked calls while allowing file handles', async () => {
+    const { ctx, adapter } = await fixture()
+    const original = binary('image')
+    const prepared = await ctx.llm.prepareCall({ provider: 'projection', model: 'image-outage' })
+    for (const result of [
+      await chunks(ctx.llm.stream({ ...request([original]), model: 'image-outage' })),
+      await chunks(prepared.stream({ ...prepared.config, messages: [original] })),
+      await chunks(ctx.llm.stream(markAgentLoopRequest({ ...request([original]), model: 'image-outage' }))),
+    ]) expect(result).toMatchObject([{ type: 'finish', reason: { kind: 'error', failure: { code: 'MODEL_CAPABILITY_INPUT_UNAVAILABLE' } } }])
+    expect(original.content[0]?.type).toBe('image')
+    expect(adapter.requests).toHaveLength(0)
+    const allowed = await ctx.llm.prepareCall({ provider: 'projection', model: 'image-outage' })
+    expect(await chunks(allowed.stream({ ...allowed.config, messages: [binary('file')], tools: [tool] })))
+      .toMatchObject([{ type: 'finish', reason: { kind: 'stop' } }])
+    expect(adapter.requests).toHaveLength(1)
+    expect(adapter.requests[0]?.tools).toEqual([tool])
+    expect(adapter.requests[0]?.messages[0]?.content[0]).toMatchObject({ type: 'text' })
   })
 
   it.each([false, true])('rejects current definitions and actual tool history regardless of loop marker=%s', async (loop) => {

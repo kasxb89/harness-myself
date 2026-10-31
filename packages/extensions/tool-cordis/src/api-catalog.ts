@@ -5935,6 +5935,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface LlmCallControls {\n    reasoningEffort?: ReasoningEffortId;\n    temperature?: number;\n    maxTokens?: number;\n    stop?: string[];\n}',
   },
   {
+    name: 'LlmCapabilityVerification',
+    declaration: 'export type LlmCapabilityVerification = \'supported\' | \'unsupported\' | \'unverified\';',
+  },
+  {
     name: 'LlmConfigurableProvider',
     declaration: 'export interface LlmConfigurableProvider {\n    provider: string;\n    displayName: string;\n    settingsNs: string;\n    settingsPath: readonly string[];\n    declared?: boolean;\n    error?: string;\n}',
   },
@@ -5975,6 +5979,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface LlmProviderInfo {\n    id: string;\n    name: string;\n}',
   },
   {
+    name: 'LlmReasoningControls',
+    declaration: 'export interface LlmReasoningControls {\n    type: \'object\';\n    properties: {\n        reasoning_effort?: {\n            type: \'string\';\n            enum: string[];\n            default?: string;\n        };\n        enable_thinking?: {\n            type: \'boolean\';\n            default?: boolean;\n        };\n    };\n    additionalProperties: false;\n}',
+  },
+  {
     name: 'LlmReasoningEffortInfo',
     declaration: 'export interface LlmReasoningEffortInfo {\n    id: ReasoningEffortId;\n    name: string;\n    description?: string;\n}',
   },
@@ -5988,7 +5996,11 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'LlmTextCapabilities',
-    declaration: 'export interface LlmTextCapabilities {\n    tools: boolean;\n    vision: boolean;\n    reasoning: boolean;\n    stream: boolean;\n    maxInputTokens: number;\n}',
+    declaration: 'export interface LlmTextCapabilities {\n    tools: boolean;\n    vision: boolean;\n    reasoning: boolean;\n    stream: boolean;\n    maxInputTokens: number;\n    schemaVersion?: 2;\n    revision?: string;\n    checkedAt?: string;\n    verification?: Record<LlmTextCapability, LlmCapabilityVerification>;\n    inputModalities?: ModelModality[];\n    toolsConfig?: {\n        protocol: \'openai-chat\';\n        roundtripVerified: boolean;\n        verifiedToolChoices: string[];\n        parallelCalls: LlmCapabilityVerification;\n    };\n    visionConfig?: {\n        verifiedTransports: string[];\n        verifiedMimeTypes: string[];\n        billing: string;\n        operationalStatus?: \'temporarily_unavailable\';\n        operationalReason?: string;\n    };\n    reasoningMode?: \'configurable\' | \'always_on\' | \'automatic\' | \'unsupported\' | \'unknown\';\n    reasoningControls?: LlmReasoningControls;\n    reasoningOmitBehavior?: \'provider_default\';\n    reasoningControlMapping?: {\n        enableThinkingWithEffort?: true;\n        omitEffortOnNone?: boolean;\n    };\n    operationalStatus?: \'available\' | \'fixed_lane_unavailable\';\n    operationalReason?: string;\n}',
+  },
+  {
+    name: 'LlmTextCapability',
+    declaration: 'export type LlmTextCapability = \'tools\' | \'vision\' | \'reasoning\';',
   },
   {
     name: 'LocalAtInput',
@@ -6168,7 +6180,11 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ModelCatalogModel',
-    declaration: 'export interface ModelCatalogModel {\n    readonly id: string;\n    readonly name: string;\n    readonly description?: string;\n    readonly presentation?: {\n        readonly description?: string;\n        readonly badge?: string;\n    };\n    readonly reasoning?: ModelReasoning;\n    readonly inputModalities?: LlmModelInfo[\'inputModalities\'];\n    readonly textCapabilities?: LlmTextCapabilities;\n}',
+    declaration: 'export interface ModelCatalogModel {\n    readonly id: string;\n    readonly name: string;\n    readonly description?: string;\n    readonly presentation?: {\n        readonly description?: string;\n        readonly badge?: string;\n    };\n    readonly reasoning?: ModelReasoning;\n    readonly inputModalities?: LlmModelInfo[\'inputModalities\'];\n    readonly textCapabilities?: LlmTextCapabilities;\n    readonly executionCapabilities?: ModelExecutionCapabilities;\n}',
+  },
+  {
+    name: 'ModelExecutionCapabilities',
+    declaration: 'export interface ModelExecutionCapabilities {\n    readonly tools?: boolean;\n    readonly vision?: boolean;\n    readonly visionUnavailable?: boolean;\n    readonly visionUnavailableReason?: string;\n    readonly reasoning?: boolean;\n    readonly available: boolean;\n}',
   },
   {
     name: 'ModelMessageSource',

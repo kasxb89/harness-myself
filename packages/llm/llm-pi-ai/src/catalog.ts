@@ -12,7 +12,7 @@
  * @module dsh-llm-pi-ai/catalog
  */
 
-import type { LlmTextCapabilities } from '@deepseek-ai/dsh-llm'
+import { cloneTextCapabilities, effectiveTextCapability, type LlmTextCapabilities } from '@deepseek-ai/dsh-llm'
 import { builtinProviders, getAllBuiltinModels, getBuiltinModels } from '@earendil-works/pi-ai/providers/all'
 import { clampMaxTokensToContext } from '@earendil-works/pi-ai/api/simple-options'
 import { normalizeContext } from '@earendil-works/pi-ai/utils/transcript'
@@ -992,12 +992,16 @@ export function resolveRouteModels(
       api,
       provider,
       baseUrl,
-      input: managed?.textCapabilities?.vision === false ? ['text'] : declaredInput(entry.input) ?? base?.input ?? [...request.defaultInput],
+      input: managed?.textCapabilities?.schemaVersion === 2 && managed.textCapabilities.inputModalities !== undefined
+        ? [...managed.textCapabilities.inputModalities]
+        : effectiveTextCapability(managed?.textCapabilities, 'vision') === false ? ['text']
+          : declaredInput(entry.input) ?? base?.input ?? [...request.defaultInput],
       cost: base?.cost ?? NO_COST,
       contextWindow,
       maxTokens,
       ...resolveModelReasoning(provider,
-        managed?.textCapabilities?.reasoning === false ? { ...entry, reasoningEfforts: false } : entry, base),
+        managed?.textCapabilities?.schemaVersion === 2 || effectiveTextCapability(managed?.textCapabilities, 'reasoning') === false
+          ? { ...entry, reasoningEfforts: false } : entry, base),
       ...resolveModelCompat(provider, entry, request.compat, base, api),
     }
     // The SDK reserves input/context headroom even for an empty request.
@@ -1020,7 +1024,7 @@ export function resolveRouteModels(
     // Only a value the profile named is a deployment choice; the catalog's is
     // the model's capability and stays out of request defaults.
     if (managed?.textCapabilities !== undefined) {
-      textCapabilities.set(entry.id, { ...managed.textCapabilities })
+      textCapabilities.set(entry.id, cloneTextCapabilities(managed.textCapabilities))
       model.contextWindow = Math.min(model.contextWindow, managed.textCapabilities.maxInputTokens + model.maxTokens)
     }
     if (entry.maxTokens !== undefined) configuredMaxTokens.set(entry.id, model.maxTokens)

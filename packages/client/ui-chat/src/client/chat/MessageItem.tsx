@@ -54,10 +54,12 @@ function failureMessage(
   switch (code) {
     case 'MODEL_CAPABILITY_HISTORY_UNSUPPORTED': return t('message.failure.modelHistoryUnsupported')
     case 'MODEL_CAPABILITY_INPUT_UNSUPPORTED': return t('message.failure.modelInputUnsupported')
+    case 'MODEL_CAPABILITY_INPUT_UNAVAILABLE': return t('message.failure.modelImageUnavailable')
     case 'MODEL_CAPABILITY_TOOLS_UNSUPPORTED': return t('message.failure.modelToolsUnsupported')
     case 'MODEL_CAPABILITIES_CHANGED': return t('message.failure.modelCapabilitiesChanged')
     case 'MODEL_CAPABILITY_REASONING_UNSUPPORTED': return t('message.failure.modelReasoningUnsupported')
     case 'MODEL_CAPABILITY_STREAM_UNSUPPORTED': return t('message.failure.modelStreamUnsupported')
+    case 'MODEL_ROUTE_UNAVAILABLE': return t('message.failure.modelRouteUnavailable')
   }
   switch (productFailureKind(code)) {
     case 'signed-out': return t('message.failure.accountSignedOut')

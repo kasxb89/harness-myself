@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import Schema from '@deepseek-ai/schemastery'
-import { AttachmentId } from '@deepseek-ai/dsh-attachment'
-import { createAssistantMessage, createUserMessage, ReasoningEffortId, ToolCallId } from '@deepseek-ai/dsh-llm'
+import { Context } from '@deepseek-ai/cordis'
+import { AttachmentId, AttachmentStore, ImageVariantId, type ImageAttachmentRef, type RequestImageAttachment, type ImageRequestTarget } from '@deepseek-ai/dsh-attachment'
+import { createAssistantMessage, createUserMessage, ReasoningEffortId, ToolCallId, type LlmTextCapabilities } from '@deepseek-ai/dsh-llm'
 import { PiAiAdapter } from '../src/adapter.ts'
 import { Config, resolveProfiles, type PiAiProviderProfile } from '../src/config.ts'
 import { MAX_CAPACITY_TOKENS, type PiAiModelProfile } from '../src/catalog.ts'
@@ -275,5 +276,117 @@ describe('text-only gateway attachment refusal', () => {
       }).rejects.toMatchObject({ code: 'MODEL_CAPABILITY_INPUT_UNSUPPORTED' })
     }
     expect(calls).toEqual([])
+  })
+})
+
+
+describe('version2 gateway capabilities through the actual SDK', () => {
+  const capabilities: LlmTextCapabilities = { tools: true, vision: true, reasoning: true, stream: true, maxInputTokens: 32000,
+    schemaVersion: 2, revision: 'v2-test', checkedAt: '2026-10-31T00:00:00Z',
+    verification: { tools: 'supported', vision: 'supported', reasoning: 'supported' }, inputModalities: ['text', 'image'],
+    toolsConfig: { protocol: 'openai-chat', roundtripVerified: true, verifiedToolChoices: ['auto'], parallelCalls: 'unverified' },
+    visionConfig: { verifiedTransports: ['data_url'], verifiedMimeTypes: ['image/png'], billing: 'input_tokens' },
+    reasoningMode: 'configurable', reasoningControls: { type: 'object', properties: { enable_thinking: { type: 'boolean', default: false } }, additionalProperties: false },
+    reasoningOmitBehavior: 'provider_default', operationalStatus: 'available' }
+  const profile = (value: LlmTextCapabilities): PiAiProviderProfile => ({ ...base, models: [{ ...model('v2-opaque', 1000000, 8192), maxTokens: 2048,
+    managedLimits: { scope, contextWindow: 1000000, maxTokens: 8192, textCapabilities: value } }] })
+  it('positively publishes image support and preserves complete nested metadata through Settings schema', async () => {
+    const config = Config({ providers: { [provider]: profile(capabilities) } }).providers.get()
+    expect(config[provider]?.models?.[0]?.managedLimits?.textCapabilities).toMatchObject(capabilities)
+    const emptyMapping = { ...capabilities, reasoningControlMapping: {} }
+    const emptyMappingConfig = Config({ providers: { [provider]: profile(emptyMapping) } }).providers.get()
+    expect(emptyMappingConfig[provider]?.models?.[0]?.managedLimits?.textCapabilities).toEqual(emptyMapping)
+    const { adapter } = adapterFor(profile(capabilities))
+    const info = await adapter.resolveModel(provider, 'v2-opaque')
+    expect(info).toMatchObject({ inputModalities: ['text', 'image'], defaultMaxTokens: 2048,
+      textCapabilities: { verification: capabilities.verification, reasoningControls: capabilities.reasoningControls } })
+    expect(info.reasoning?.efforts.map(effort => effort.id)).toEqual(['on', 'off'])
+    info.textCapabilities!.reasoningControls!.properties.enable_thinking!.default = true
+    expect((await adapter.resolveModel(provider, 'v2-opaque')).textCapabilities?.reasoningControls?.properties.enable_thinking?.default).toBe(false)
+  })
+  it.each(['on', 'off', undefined])('sends boolean %s exactly, including false instead of omission', async (selected) => {
+    const calls = memoryRequests(), { adapter } = adapterFor(profile(capabilities))
+    for await (const _chunk of adapter.stream({ provider, model: 'v2-opaque', messages: [], maxTokens: 1024,
+      ...selected === undefined ? {} : { reasoningEffort: ReasoningEffortId(selected) } })) { /* Capture actual serialized request. */ }
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.max_tokens).toBe(1024)
+    expect(calls[0]).not.toHaveProperty('reasoning_effort')
+    if (selected === undefined) expect(calls[0]).not.toHaveProperty('enable_thinking')
+    else expect(calls[0]?.enable_thinking).toBe(selected === 'on')
+  })
+  it.each(['none', 'high', undefined])('sends exact declared string effort %s without relying on built-in model names', async (selected) => {
+    const value: LlmTextCapabilities = { ...capabilities, reasoningControlMapping: { enableThinkingWithEffort: true, omitEffortOnNone: true }, reasoningControls: { type: 'object', properties: {
+      reasoning_effort: { type: 'string', enum: ['none', 'high'] } }, additionalProperties: false } }
+    const calls = memoryRequests(), { adapter } = adapterFor(profile(value))
+    for await (const _chunk of adapter.stream({ provider, model: 'v2-opaque', messages: [],
+      ...selected === undefined ? {} : { reasoningEffort: ReasoningEffortId(selected) } })) { /* Inspect wire. */ }
+    expect(calls[0]?.reasoning_effort).toBe(selected)
+    if (selected === undefined) expect(calls[0]).not.toHaveProperty('reasoning_effort')
+    expect(calls[0]).not.toHaveProperty('enable_thinking')
+    expect(calls[0]).not.toHaveProperty('reasoning_control_mapping')
+  })
+  it('keeps a localized image outage visible and rejects image bytes before SDK projection without disabling text or tools', async () => {
+    const value: LlmTextCapabilities = { ...capabilities, vision: false, inputModalities: ['text'],
+      verification: { ...capabilities.verification!, vision: 'unverified' }, visionConfig: { ...capabilities.visionConfig!,
+        operationalStatus: 'temporarily_unavailable', operationalReason: 'Temporary image outage.' } }
+    const config = Config({ providers: { [provider]: profile(value) } }).providers.get()
+    expect(config[provider]?.models?.[0]?.managedLimits?.textCapabilities).toEqual(value)
+    const calls = memoryRequests(), { adapter } = adapterFor(profile(value))
+    const metadata = await adapter.resolveModel(provider, 'v2-opaque')
+    expect(metadata.inputModalities).toEqual(['text'])
+    expect(metadata.textCapabilities?.verification?.vision).toBe('unverified')
+    const original = createUserMessage({ source: { kind: 'user' }, content: [{ type: 'image', attachment: {
+      attachmentId: AttachmentId('f'.repeat(64)), mediaType: 'image/png', bytes: 1, width: 1, height: 1 } }] })
+    await expect((async () => {
+      for await (const _chunk of adapter.stream({ provider, model: 'v2-opaque', messages: [original] })) { /* Must reject first. */ }
+    })()).rejects.toMatchObject({ code: 'MODEL_CAPABILITY_INPUT_UNAVAILABLE' })
+    expect(original.content[0]?.type).toBe('image')
+    expect(calls).toHaveLength(0)
+    await drain(adapter, 'v2-opaque')
+    expect(calls).toHaveLength(1)
+    expect(metadata.textCapabilities?.tools).toBe(true)
+  })
+  it('passes actual PNG bytes through the attachment reader and SDK for a custom image-capable public id', async () => {
+    const calls = memoryRequests()
+    const data = Uint8Array.from(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jQZkAAAAASUVORK5CYII=', 'base64'))
+    const ref: ImageAttachmentRef = { attachmentId: AttachmentId('d'.repeat(64)), mediaType: 'image/png', bytes: data.byteLength, width: 1, height: 1 }
+    let reads = 0
+    class FixtureImages extends AttachmentStore {
+      readonly imageLimits = { maxImageBytes: 1024, maxImagesPerMessage: 1, maxMessageImageBytes: 1024,
+        maxImagePixels: 1, maxImageDimension: 1, mediaTypes: ['image/png' as const] }
+      async validateImage() { throw new Error('read-only fixture') }
+      async saveImage(): Promise<ImageAttachmentRef> { throw new Error('read-only fixture') }
+      async readImage() { return { ref, data } }
+      override async readImageRequest(_ref: ImageAttachmentRef, _target: ImageRequestTarget): Promise<RequestImageAttachment> {
+        reads += 1
+        return { variantId: ImageVariantId('e'.repeat(64)), attachment: ref, data, mediaType: 'image/png', bytes: data.byteLength,
+          width: 1, height: 1, depth: 'uchar', space: 'srgb', hasAlpha: true }
+      }
+    }
+    const ctx = new Context()
+    try {
+      await ctx.plugin(FixtureImages)
+      const profiles = resolveProfiles({ [provider]: profile(capabilities) })
+      const adapter = new PiAiAdapter({ profiles: () => profiles, resolveApiKey: async () => 'synthetic-key',
+        auth: memoryAuth(), resolveAttachments: () => ctx.attachments })
+      for await (const _chunk of adapter.stream({ provider, model: 'v2-opaque', messages: [createUserMessage({
+        source: { kind: 'user' }, content: [{ type: 'text', text: 'Read the attached pixel.' }, { type: 'image', attachment: ref }],
+      })] })) { /* Real attachment -> Pi context -> SDK HTTP serialization. */ }
+      expect(reads).toBe(1)
+      expect(calls).toHaveLength(1)
+      expect(JSON.stringify(calls[0]?.messages)).toContain('data:image/png;base64,' + Buffer.from(data).toString('base64'))
+      expect(JSON.stringify(calls[0]?.messages)).not.toContain('[image omitted')
+    } finally { await ctx.fiber.dispose() }
+  })
+
+  it('does not offer false off/high controls for automatic reasoning and refuses explicit unavailable routes', async () => {
+    const calls = memoryRequests(), { adapter, update } = adapterFor(profile({ ...capabilities, reasoningMode: 'always_on' }))
+    expect((await adapter.resolveModel(provider, 'v2-opaque')).reasoning).toBeUndefined()
+    await drain(adapter, 'v2-opaque')
+    expect(calls[0]).not.toHaveProperty('reasoning_effort')
+    expect(calls[0]).not.toHaveProperty('enable_thinking')
+    update(profile({ ...capabilities, operationalStatus: 'fixed_lane_unavailable', operationalReason: 'Temporary test route outage' }))
+    await expect(drain(adapter, 'v2-opaque')).rejects.toMatchObject({ code: 'MODEL_ROUTE_UNAVAILABLE' })
+    expect(calls).toHaveLength(1)
   })
 })
