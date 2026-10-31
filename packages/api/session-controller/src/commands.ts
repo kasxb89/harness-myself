@@ -342,7 +342,13 @@ export class SessionCommandController {
       try {
         const current = this.agents.selectionFor(agent).current
         const model = hasImage || this.ctx.llm.listProviders().some(provider => provider.id === current.provider)
-          ? await this.ctx.llm.resolveModelInfo(current.provider, current.model) : undefined
+          ? await this.ctx.llm.resolveModelInfo(current.provider, current.model).catch((error: unknown) => {
+            if (error instanceof LlmError && error.code === 'UNKNOWN_MODEL') {
+              throw new RemoteError('session/model-unavailable', 'Select an available model before sending a message.',
+                { provider: current.provider, model: current.model, reason: 'UNKNOWN_MODEL' })
+            }
+            throw error
+          }) : undefined
         const capabilities = model?.textCapabilities
         if (capabilities !== undefined) {
           if (!textCapabilityRouteAvailable(capabilities)) throw new RemoteError(

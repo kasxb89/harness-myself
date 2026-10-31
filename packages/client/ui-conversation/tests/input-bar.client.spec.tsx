@@ -1739,6 +1739,29 @@ describe('insertText (scoped event body)', () => {
 })
 
 describe('strips and variants', () => {
+  it.each([zh, en])('keeps a confirmed unknown-model draft and its image and file while asking for reselection', (dictionary) => {
+    const image = { kind: 'image' as const, id: 'removed-model-image' as DraftAttachmentId,
+      file: new File([Uint8Array.of(137, 80, 78, 71)], 'retained.png', { type: 'image/png' }), previewUrl: 'blob:retained' }
+    const file = { kind: 'file' as const, id: 'removed-model-file' as DraftAttachmentId,
+      file: new File(['retained file bytes'], 'retained.txt', { type: 'text/plain' }) }
+    const b = bench({ draft: 'retain my draft', attachments: [image, file],
+      promptError: { op: 'send', error: new RemoteError('session/model-unavailable', 'private unknown-model diagnostic',
+        { provider: 'product', model: 'removed', reason: 'UNKNOWN_MODEL' }) },
+      t: makeTranslate(dictionary, commonZh),
+    })
+    expect(b.view.getByRole('alert').textContent).toBe(dictionary['error.modelUnavailable'])
+    expect(b.shell.snapshot.draft).toBe('retain my draft')
+    expect(b.shell.snapshot.attachmentIds).toEqual([image.id, file.id])
+    expect(b.sink).not.toHaveBeenCalled()
+  })
+
+  it('does not classify a generic model-catalog failure as a confirmed unknown model', () => {
+    const b = bench({ promptError: { op: 'send', error: new RemoteError('session/model-unavailable', 'catalog offline',
+      { provider: 'product', model: 'custom' }) } })
+    expect(b.view.getByRole('alert').textContent).toBe(zh['error.serverBusy'])
+    expect(b.view.queryByText(zh['error.modelUnavailable'])).toBeNull()
+  })
+
   it.each([zh, en])('shows localized guidance when another writer owns the Session', (dictionary) => {
     const send = bench({
       promptError: {

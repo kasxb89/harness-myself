@@ -120,6 +120,10 @@ export const InputBar = memo(function InputBar({
   useEffect(() => {
     if (promptError === null) return
     const { error } = promptError
+    if (error.code === 'session/model-unavailable' && error.details.reason === 'UNKNOWN_MODEL') {
+      showToast(t('error.modelUnavailable'))
+      return
+    }
     if (error.code === 'session/model-capability-invalid') {
       const key = ({
         'MODEL_CAPABILITY_HISTORY_UNSUPPORTED': 'error.modelHistoryUnsupported',

@@ -345,6 +345,30 @@ describe('ModelSelect reasoning effort', () => {
     expect(screen.queryByRole('group', { name: '模型与推理等级' })).toBeNull()
   })
 
+  it.each([zh, en])('asks for manual selection without replacing a saved unlisted model', (dictionary) => {
+    const saved = { provider: 'deepseek-official', model: 'unlisted-custom' }
+    const directory = createSnapshotStore(state({ current: saved, routable: false }))
+    const select = vi.fn()
+    render(<ModelSelect locked={false} available directory={directory} load={vi.fn()} select={select}
+      t={makeTranslate(dictionary, commonZh)} />)
+    fireEvent.click(screen.getByRole('button', { name: dictionary['trigger.selectAria'] }))
+    expect(screen.getByRole('note').textContent).toBe(dictionary['warning.savedSelectionUnlisted'])
+    expect(screen.getByRole('menuitemradio', { name: 'DeepSeek-V4-Flash' })).toBeTruthy()
+    expect(directory.getSnapshot().current).toEqual(saved)
+    expect(select).not.toHaveBeenCalled()
+  })
+
+  it.each(['loading', 'error', 'provider-error', 'unresolved'] as const)('does not label a %s as a missing saved selection', (kind) => {
+    const directory = createSnapshotStore(state({ routable: kind === 'unresolved' ? null : false,
+      current: { provider: 'deepseek-official', model: 'unlisted-custom' },
+      status: kind === 'loading' || kind === 'error' ? kind : 'ready',
+      ...kind === 'provider-error' ? { failures: [{ id: 'deepseek-official', name: 'DeepSeek', message: 'temporary read failure' }] } : {},
+    }))
+    render(<ModelSelect locked={false} available directory={directory} load={vi.fn()} select={vi.fn()} t={t} />)
+    fireEvent.click(screen.getByRole('button', { name: kind === 'loading' ? zh['trigger.loading'] : zh['trigger.selectAria'] }))
+    expect(screen.queryByRole('note')).toBeNull()
+  })
+
   it.each([null, state().current])('shows loading until the catalog and Session projection are both ready (%j)', async (current) => {
     const directory = createSnapshotStore<ModelDirectoryState>(state({
       current,

@@ -11,7 +11,7 @@ Desktop product events use the optional [product analytics service](../product-a
 
 ## Summary
 
-The Web GUI lets users switch the model and reasoning effort for an existing session through either the `/model` popup or the composer's model control. Both surfaces present the same provider-grouped choices, and the selected model determines the available effort names and default. A complete selection applies to the next request; a running step keeps the model and effort it started with. An unavailable selection remains saved; request execution reports missing credentials or an unavailable model.
+The Web GUI lets users switch the model and reasoning effort for an existing session through either the `/model` popup or the composer's model control. Both surfaces present the same provider-grouped choices, and the selected model determines the available effort names and default. A complete selection applies to the next request; a running step keeps the model and effort it started with. Unavailable selections remain saved; confirmed unknown models require manual reselection.
 
 Both selection entries retain exact-route verification facts, normalized execution eligibility and input modalities from one shared catalog. Supported, unsupported, pending verification and a temporarily unavailable route have distinct copy, unaffected by administrator descriptions. Version1 false values are labeled as disabled configuration rather than native model incapability. Configurable reasoning choices use the Host-provided IDs; Auto omits controls, while automatic or always-on modes do not invent an Off option. A saved effort no longer advertised remains visible with a reachable same-model Default reset instead of being silently hidden. Session-scoped input controls preserve drafts and attachments; undeclared legacy models retain their existing behavior.
 
@@ -59,7 +59,7 @@ The composer replaces the model and effort text with the Models icon when the ex
 
 ### Unroutable sessions
 
-Catalog availability does not block sending with a saved selection; request execution reports missing credentials or unavailable models. Refreshes and refresh failures retain the last displayed selection and groups. A Host reset clears that display. Sign-out hides the account provider from the picker while preserving the saved provider/model ID and reasoning effort. Signing in restores the catalog name when that model is available again. Existing session logs remain unchanged.
+Catalog availability does not block sending with a saved selection. A successfully refreshed list that omits the saved model asks the user to select manually; a failed provider read keeps its separate retry guidance. No refresh replaces the model or sends a prompt. A confirmed unknown-model refusal asks for reselection while preserving the draft and attachments; missing credentials and other resolution failures retain their own classification. Refreshes and refresh failures retain the last displayed selection and groups. A Host reset clears that display. Sign-out hides the account provider from the picker while preserving the saved provider/model ID and reasoning effort. Signing in restores the catalog name when that model is available again. Existing session logs remain unchanged.
 
 ### Selection failures
 

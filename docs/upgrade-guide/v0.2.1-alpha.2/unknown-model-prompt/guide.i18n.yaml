@@ -1,0 +1,16 @@
+# Bilingual-pair consistency record for guide.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write docs/upgrade-guide/v0.2.1-alpha.2/unknown-model-prompt/guide.md
+/:
+  en: beafb2afa9360570
+  zh: 7df58ed94624484e
+/unknown-model-prompts-require-explicit-model-selection:
+  en: 0a16401d17bbf60c
+  zh: 7ffd7f80d8e87fcd
+/unknown-model-prompts-require-explicit-model-selection/change:
+  en: 11987f5826d0616f
+  zh: 9574f99d404565d8
+/unknown-model-prompts-require-explicit-model-selection/migration:
+  en: 3ac7ac8a05eaebef
+  zh: b32bc1d4fc7bb424

@@ -118,6 +118,8 @@ export function ModelSelect(
     ? -1
     : choices.findIndex(c => c.selection.provider === state.current?.provider && c.selection.model === state.current.model)
   const currentChoice = choices[selectedIndex]
+  const savedSelectionUnlisted = state.status === 'ready' && state.routable === false && state.current !== null
+    && !state.failures.some(failure => failure.id === state.current?.provider)
   const currentCapabilities = currentChoice?.model.textCapabilities
   const reasoningDisabled = !reasoningControlsAllowed(currentChoice?.model)
   const reasoning = selectableModelReasoning(currentChoice?.model)
@@ -510,6 +512,9 @@ export function ModelSelect(
               <button type="button" className={css.retry} onClick={reload}>{t('retry')}</button>
             </div>
           ))}
+          {savedSelectionUnlisted && (
+            <div className={css.warning} role="note">{t('warning.savedSelectionUnlisted')}</div>
+          )}
           {pane === 'root' && (
             <>
               <button ref={itemRef()} type="button" role="menuitem" className={css.cell} onClick={() => { drill('model') }}>

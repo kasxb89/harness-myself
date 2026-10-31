@@ -10,10 +10,12 @@ import { expect, it, onTestFinished } from 'vitest'
 import { launchWebScaffold, watchConsole } from './scaffold.ts'
 import { ZH_BROWSER_LOCALE, connectFreshWorkspaceZh } from './support.ts'
 
-it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash', 'yunshu-flash-configured', 'ycapi-text-only', 'ycapi-capabilities-v2'])(
+it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash', 'yunshu-flash-configured', 'ycapi-text-only', 'ycapi-capabilities-v2', 'ycapi-model-removed'])(
   'selects the deployment default %s after first sign-in without opening the model menu', async (scenario) => {
     const plainText = scenario === 'ycapi-text-only'
     const capabilityV2 = scenario === 'ycapi-capabilities-v2'
+    const modelRemoval = scenario === 'ycapi-model-removed'
+    let catalogReduced = false
     const v2Peers = ['capabilities-pending', 'capabilities-unavailable', 'capabilities-automatic', 'capabilities-image-unavailable', 'capabilities-always-on-effort']
     const v2Declaration = (id: string) => {
       const pending = id === 'capabilities-pending' || id === 'capabilities-unavailable'
@@ -67,7 +69,7 @@ it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash', 'yunshu-flash-conf
         const answer = (data: object | null): void => { response.end(JSON.stringify({ success: true, data })) }
         if (path === '/harness/api/status') {
           answer({ quota_per_unit: 500_000, usd_exchange_rate: 7.3,
-            client_model_config: { schema_version: 1, default_chat_model: preferred,
+            client_model_config: { schema_version: 1, default_chat_model: catalogReduced ? 'capabilities-always-on-effort' : preferred,
               model_order: ['deepseek-flash', 'deepseek-v4-flash'] },
             ...configured ? { client_model_presentation: { schema_version: 1, models: {
               'yunshu-flash': { description, badge },
@@ -88,8 +90,10 @@ it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash', 'yunshu-flash-conf
           if (request.headers.authorization !== 'Bearer sk-synthetic-relay') {
             response.writeHead(403); response.end('{}'); return
           }
-          response.end(JSON.stringify({ data: ['deepseek-v4-flash', 'deepseek-flash', 'yunshu-flash', 'deepseek-v4-pro', 'catalog-unknown', ...plainText ? [preferred] : [], ...capabilityV2 ? [preferred, ...v2Peers] : []].map(id =>
-            ({ id, object: 'model', supported_endpoint_types: ['openai'], ...capabilityV2 && (id === preferred || v2Peers.includes(id)) ? {
+          const ids = modelRemoval ? [...catalogReduced ? [] : [preferred], 'capabilities-always-on-effort']
+            : ['deepseek-v4-flash', 'deepseek-flash', 'yunshu-flash', 'deepseek-v4-pro', 'catalog-unknown', ...plainText ? [preferred] : [], ...capabilityV2 ? [preferred, ...v2Peers] : []]
+          response.end(JSON.stringify({ data: ids.map(id =>
+            ({ id, object: 'model', supported_endpoint_types: ['openai'], ...(capabilityV2 || modelRemoval) && (id === preferred || v2Peers.includes(id)) ? {
               kind: 'text', input_modalities: v2Declaration(id).input_modalities, context_window: 1000000, max_output_tokens: 8192,
               parameters: { 'x-text-capabilities': v2Declaration(id) },
             } : id !== 'ycapi-text-only' ? {} : {
@@ -177,7 +181,7 @@ it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash', 'yunshu-flash-conf
       await page.getByRole('textbox', { name: '验证码', exact: true }).fill('123456')
       const started = performance.now()
       await page.getByRole('button', { name: '登录', exact: true }).click()
-      await expect.poll(() => trigger.textContent(), { timeout: 10_000 }).toBe(capabilityV2 ? `${preferred}自动（渠道默认）` : preferred)
+      await expect.poll(() => trigger.textContent(), { timeout: 10_000 }).toBe(capabilityV2 || modelRemoval ? `${preferred}自动（渠道默认）` : preferred)
       const elapsedMs = performance.now() - started
       // No menu-opening gesture or 60-second sync is allowed to repair the first display.
       expect(elapsedMs).toBeLessThan(10_000)
@@ -322,6 +326,15 @@ it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash', 'yunshu-flash-conf
         await page.keyboard.press('Escape')
       }
       const settled = scaffold.whenTurnSettled()
+      if (modelRemoval) {
+        const value = scaffold.ctx.settings.describe({ redactSecrets: true }).find(row => row.ns === 'llm-pi-ai')?.value as {
+          providers?: Record<string, { models?: readonly { id: string }[] }>
+        } | undefined
+        const models = value?.providers?.['yunshu-local']?.models
+        if (models === undefined) throw new Error('Expected the real product provider models')
+        await scaffold.ctx.settings.mutate('llm-pi-ai', [{ op: 'set', path: ['providers', 'yunshu-local', 'models'],
+          value: models.map(model => ({ ...model, maxTokens: 123 })) }])
+      }
       await composer.fill('Synthetic chat parameter check')
       await composer.press('Enter')
       const sessionId = await settled
@@ -344,6 +357,62 @@ it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash', 'yunshu-flash-conf
         expect(wire).not.toHaveProperty(field)
       }
       expect(wire).not.toHaveProperty('tool_choice')
+      if (modelRemoval) {
+        expect(wire['max_tokens']).toBe(123)
+        const draft = 'Preserve this draft, PNG, and file until I explicitly choose and send'
+        const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64')
+        await composer.fill(draft)
+        await page.locator('input[type="file"]').setInputFiles([
+          { name: 'retained.png', mimeType: 'image/png', buffer: png },
+          { name: 'retained.txt', mimeType: 'text/plain', buffer: Buffer.from('retained original file bytes') },
+        ])
+        const image = page.getByRole('button', { name: '移除图片 retained.png', exact: true })
+        await image.waitFor()
+        await page.getByTitle('retained.txt', { exact: true }).waitFor()
+        const rail = page.getByRole('group', { name: '待发送附件', exact: true })
+        const send = page.getByRole('button', { name: '发送消息', exact: true })
+        await expect.poll(() => send.isDisabled()).toBe(false)
+        catalogReduced = true
+        await scaffold.ctx.llm.listModels('yunshu-local')
+        await expect(scaffold.ctx.llm.resolveModelInfo('yunshu-local', preferred)).rejects.toMatchObject({ code: 'UNKNOWN_MODEL' })
+        await expect.poll(() => trigger.textContent()).toBe('请选择模型')
+        expect(session?.requestHeader()?.config.model).toBe(preferred)
+        await send.click()
+        await page.getByText('当前型号不可用，请重新选择；草稿和附件已保留', { exact: true }).waitFor()
+        expect(modelRequests).toHaveLength(1)
+        expect(await composer.innerText()).toBe(draft)
+        expect(await image.count()).toBe(1)
+        expect(await rail.locator(':scope > *').count()).toBe(2)
+        expect(session?.requestHeader()?.config.model).toBe(preferred)
+        await page.screenshot({ path: join(evidence, 'removed-model-draft-retained.png'), animations: 'disabled' })
+        await trigger.click()
+        await page.getByText('已保存的型号不在当前可选列表，请手动选择', { exact: true }).waitFor()
+        expect(await page.getByRole('menuitemradio', { name: preferred, exact: true }).count()).toBe(0)
+        await page.screenshot({ path: join(evidence, 'removed-model-manual-selection.png'), animations: 'disabled' })
+        await page.getByRole('menuitemradio', { name: 'capabilities-always-on-effort', exact: true }).click()
+        await expect.poll(() => trigger.textContent()).toContain('capabilities-always-on-effort')
+        expect(modelRequests).toHaveLength(1)
+        expect(await composer.innerText()).toBe(draft)
+        expect(await rail.locator(':scope > *').count()).toBe(2)
+        const retrySettled = scaffold.whenTurnSettled()
+        await send.click()
+        expect(await retrySettled).toBe(sessionId)
+        expect(modelRequests).toHaveLength(2)
+        expect(modelRequests[1]?.body).toMatchObject({ model: 'capabilities-always-on-effort', max_tokens: 123 })
+        expect(session?.requestHeader()?.config.model).toBe('capabilities-always-on-effort')
+        const fresh = await scaffold.ctx.sessionController.create({ cwd: scaffold.workspaceCwd })
+        const freshSession = scaffold.ctx.sessions.get(fresh.sessionId)
+        if (freshSession === undefined) throw new Error('Expected the new blank Session')
+        const freshSelection = scaffold.ctx.sessionProjections.snapshot(freshSession).values.modelSelection?.next
+          ?? scaffold.ctx.agentDefaultModel.currentSelection()
+        expect(freshSelection).toMatchObject({ provider: 'yunshu-local', model: 'capabilities-always-on-effort' })
+        await writeFile(join(evidence, 'removed-model-result.json'), JSON.stringify({ syntheticLoopbackOnly: true,
+          removed: preferred, fallback: 'capabilities-always-on-effort', modelPostsBeforeRemoval: 1,
+          modelPostsAfterRefusal: 1, modelPostsAfterManualSelection: 1, modelPostsAfterExplicitRetry: 2,
+          retainedDraft: draft, retainedAttachments: ['retained.png', 'retained.txt'], manualMaxTokens: 123,
+          freshSelection, modelRequests }, null, 2) + '\n')
+        await page.screenshot({ path: join(evidence, 'removed-model-explicit-retry.png'), animations: 'disabled' })
+      }
       if (plainText) {
         if (session === undefined) throw new Error('Expected the real text-only Session')
         session.append('assistant/message', { turn: 1, step: 1, stream: [], message: createAssistantMessage({

@@ -10,7 +10,7 @@ import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry, { agentEvents } from '@deepseek-ai/dsh-agent'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import AttachmentStore from '@deepseek-ai/dsh-attachment'
-import LlmRuntime, { createAssistantMessage, LlmAdapter, ReasoningEffortId, ToolCallId } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { createAssistantMessage, LlmAdapter, LlmError, ReasoningEffortId, ToolCallId } from '@deepseek-ai/dsh-llm'
 import type {
   GenerateOptions, LlmCallConfig, LlmCallConfigAdapterDefaults, LlmModelInfo,
   LlmModelReasoningInfo, LlmProviderInfo, LlmResolvedModelInfo, LlmTextCapabilities, StreamChunk,
@@ -785,7 +785,7 @@ describe('Web session model selection', () => {
     await ctx.fiber.dispose()
   })
 
-  it('admits a removed model without changing its saved selection', async () => {
+  it('admits a resolvable unlisted custom model without changing its saved selection', async () => {
     const { ctx, sessionId, agent } = await harness({ provider: 'deepseek-official', model: 'removed-model' })
     const remote = createSessionTestRemote(ctx, {
       defaultModelSelection: () => ({ provider: 'deepseek-official', model: 'deepseek-chat' }), cwd: '/tmp',
@@ -799,6 +799,65 @@ describe('Web session model selection', () => {
     expect(agent.session.snapshotEvents()).toEqual(events)
     expect(currentSelection(ctx, sessionId)).toMatchObject({ provider: 'deepseek-official', model: 'removed-model' })
     await ctx.fiber.dispose()
+  })
+
+  it('rejects a deleted exact model before attachment admission and only sends after explicit reselection', async () => {
+    const { ctx, sessionId, agent } = await harness()
+    let removed = false
+    ctx.llm.registerAdapter(['changing'], new class extends CatalogAdapter {
+      override listModels(): Promise<readonly LlmModelInfo[]> {
+        return Promise.resolve((removed ? ['retained'] : ['removed', 'retained']).map(id => ({ provider: 'changing', id, name: id })))
+      }
+      override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
+        if (removed && model === 'removed') return Promise.reject(new LlmError('private removed-model diagnostic', 'UNKNOWN_MODEL'))
+        return super.resolveModel(provider, model)
+      }
+    }('Changing', []))
+    const followup = vi.fn()
+    Object.assign(agent, { followup })
+    const remote = createSessionTestRemote(ctx, {
+      defaultModelSelection: () => ({ provider: 'deepseek-official', model: 'deepseek-chat' }), cwd: '/tmp',
+    })
+    try {
+      expectValue(await remote.selectModel({ sessionId, provider: 'changing', model: 'removed' }))
+      removed = true
+      const before = agent.session.snapshotEvents()
+      const content: SessionPromptRequest['content'] = [
+        { type: 'text', text: 'keep the draft and attachments' },
+        { type: 'image', mediaType: 'image/png', data: 'AQ==' },
+        { type: 'file', receiptId: 'not-admitted-file' as FileUploadReceiptId },
+      ]
+      expect(await remote.prompt(promptRequest({ sessionId, mode: 'queue', content }))).toMatchObject({
+        ok: false, error: { code: 'session/model-unavailable', details: { provider: 'changing', model: 'removed', reason: 'UNKNOWN_MODEL' } },
+      })
+      expect(followup).not.toHaveBeenCalled()
+      expect(agent.session.snapshotEvents()).toEqual(before)
+      expect(currentSelection(ctx, sessionId)).toMatchObject({ provider: 'changing', model: 'removed' })
+      expectValue(await remote.selectModel({ sessionId, provider: 'changing', model: 'retained' }))
+      expect(followup).not.toHaveBeenCalled()
+      expectValue(await remote.prompt(promptRequest({ sessionId, mode: 'queue', content: [{ type: 'text', text: 'explicit retry' }] })))
+      expect(followup).toHaveBeenCalledOnce()
+    } finally { await ctx.fiber.dispose() }
+  })
+
+  it.each([
+    new Error('catalog temporarily offline'),
+    new LlmError('credential temporarily absent', 'MISSING_CREDENTIAL'),
+    Object.assign(new Error('not a typed LlmError'), { code: 'UNKNOWN_MODEL' }),
+  ])('keeps other resolution failures distinct from confirmed unknown models: %s', async (failure) => {
+    const { ctx, sessionId, agent } = await harness({ provider: 'temporarily-broken', model: 'custom' })
+    ctx.llm.registerAdapter(['temporarily-broken'], new CatalogAdapter('Temporary', [], undefined, failure))
+    const followup = vi.fn()
+    Object.assign(agent, { followup })
+    const remote = createSessionTestRemote(ctx, {
+      defaultModelSelection: () => ({ provider: 'deepseek-official', model: 'deepseek-chat' }), cwd: '/tmp',
+    })
+    try {
+      expect(await remote.prompt(promptRequest({ sessionId, mode: 'queue', content: [{ type: 'text', text: 'keep me' }] })))
+        .toMatchObject({ ok: false, error: { code: 'session/agent-busy' } })
+      expect(followup).not.toHaveBeenCalled()
+      expect(currentSelection(ctx, sessionId)).toMatchObject({ provider: 'temporarily-broken', model: 'custom' })
+    } finally { await ctx.fiber.dispose() }
   })
 
   it('serves a session and its catalog when the stored default names a route that is gone', async () => {
