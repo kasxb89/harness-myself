@@ -1,0 +1,26 @@
+{
+  "olderFailure": {
+    "humanSources": ["user", "user-question-reply"],
+    "tools": ["ask_user_question", "generate_video_project", "job_output"],
+    "turns": ["completed", "completed"],
+    "actionRequired": {
+      "code": "INSUFFICIENT_BALANCE",
+      "scope": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "originalHuman": true,
+      "replyHuman": false
+    },
+    "assistantText": ["已读取原任务，可以继续本次要求。"]
+  },
+  "sameReplyFailure": {
+    "humanSources": ["user", "user-question-reply", "tool-jobs"],
+    "tools": ["ask_user_question", "generate_video_project", "job_output"],
+    "turns": ["completed", "completed", "completed"],
+    "actionRequired": {
+      "code": "INSUFFICIENT_BALANCE",
+      "scope": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "originalHuman": false,
+      "replyHuman": true
+    },
+    "assistantText": ["等待你的确认。"]
+  }
+}

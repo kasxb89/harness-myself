@@ -1,6 +1,7 @@
 /** Model tools for durable long-video generation and sandboxed local editing. @module */
 
 import { randomUUID } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
@@ -22,6 +23,7 @@ import { VIDEO_REQUEST_GUIDANCE } from './creation-workflows.ts'
 import type { VideoWorkBatch, VideoWorkClaim } from './video-work-store.ts'
 import { appendChatVideoWorks, claimChatVideoWork, existingVideoWorkResult, prepareChatVideoWorks, settleVideoWorkPreparation } from './video-work-execution.ts'
 import { captureChatVideoBalanceStop, type ChatVideoBalanceStop } from './chat-video-balance-stop.ts'
+import { videoSubmissionRevision } from './video-balance-retry.ts'
 
 declare module '@deepseek-ai/dsh-jobs/view' {
   interface JobKindMap {
@@ -133,9 +135,11 @@ function statusOf(manifest: VideoProjectManifest, running: boolean): VideoToolRe
     ...manifest.failureCode === undefined ? {} : { code: manifest.failureCode },
     message: running ? '项目正在后台处理，你可以继续聊天；job_output 只读取当前进度，job_kill 停止本地工作和后续提交。'
       : manifest.status === 'completed' ? '视频已保存，请调用 present 展示 final_path，并在回复中提供产物链接。'
-        : manifest.failureCode === 'VIDEO_TASK_OBSERVATION_TIMEOUT' || manifest.failureCode === 'VIDEO_TASK_OBSERVATION_UNAVAILABLE'
-          ? '本地查询暂时中断，上游任务状态尚待核实，不代表生成失败；可继续按已保留的原任务编号恢复查询，不会重新提交。'
-          : '这是保留的项目记录；重启不会自动恢复后台任务。可显式调用 resume_video_project 读取已知任务并继续；未知提交绝不会自动重提。',
+        : manifest.failureCode === 'INSUFFICIENT_BALANCE'
+          ? '原视频余额不足。充值后在当前聊天明确继续或重试，并复用此 project_id 调用 resume_video_project；只有完整回执确认未提交上游的片段才会新建尝试，已保存片段保留，已受理或未知任务只查询原编号。'
+          : manifest.failureCode === 'VIDEO_TASK_OBSERVATION_TIMEOUT' || manifest.failureCode === 'VIDEO_TASK_OBSERVATION_UNAVAILABLE'
+            ? '本地查询暂时中断，上游任务状态尚待核实，不代表生成失败；可继续按已保留的原任务编号恢复查询，不会重新提交。'
+            : '这是保留的项目记录；重启不会自动恢复后台任务。可显式调用 resume_video_project 读取已知任务并继续；未知提交绝不会自动重提。',
   }
 }
 
@@ -423,7 +427,7 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
           },
         }
         const manifest = await prepareVideoProject(options, input, session.id, workspaceRoot,
-          provider, editor, signal, artifactOriginOf(exec))
+          provider, editor, signal, artifactOriginOf(exec), videoSubmissionRevision(source))
         await beforeSubmit(signal)
         creation = await options.creative.begin(creativeOwner(exec, provider.identity), {
           source: 'chat',
@@ -564,7 +568,7 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
 
   ctx.tools.register(defineTool({
     name: 'resume_video_project',
-    description: 'Explicitly continue a retained project for the same account, workspace, and chat. Reuse saved clips and query already known provider task ids before submitting any remaining never-submitted clips. Unknown or failed clips block new submissions, while other already accepted task ids remain recoverable for download. Never repeat unknown or failed submissions, and refuse a second live run. Local cancellation cannot cancel already accepted upstream billing.',
+    description: 'Explicitly continue a retained project for the same account, workspace, and chat. After the user recharges and sends a new real reply asking to continue or retry, reuse this original project_id: the Host can create a new attempt only for a complete gateway-confirmed funding rejection that never reached upstream. Old attempts and saved clips remain retained. Known original task ids are checked first. Accepted or unknown submissions are never repeated, and other failed clips continue to block new submissions. Do not create another work merely to retry the same finished video. Refuse a second live run. Local cancellation cannot cancel already accepted upstream billing.',
     parameters: { project_id: { type: 'string', required: true } }, output,
     presentCall: args => ({ card: 'generic', title: '继续视频项目', kind: 'edit', content: [{ type: 'text', text: args.project_id }] }),
     async execute(args, exec): Promise<VideoToolResult> {
@@ -579,12 +583,34 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
         balanceStop = captureChatVideoBalanceStop(exec, options.accountScope?.(originalProvider.identity))
         const manifest = await readVideoProject(options, args.project_id, session.id, workspaceRoot, originalProvider.identity)
         if (manifest.status === 'completed') return statusOf(manifest, false)
+        const revision = videoSubmissionRevision(videoGenerationIntentOf(exec))
+        const afterRevision = await options.creative?.videoProjectRevision(creativeOwner(exec, originalProvider.identity), manifest.id)
+        let approval: { beforeSubmit?: (signal: AbortSignal) => Promise<void> } | undefined
+        let approvalFailure: { error: unknown } | undefined
+        if (revision !== undefined && manifest.segments.some(segment => segment.status === 'pending' || segment.balanceRejection !== undefined
+          || manifest.failureCode === 'INSUFFICIENT_BALANCE')) {
+          try {
+            if (options.chatModelChoice !== undefined) {
+              const choice = await options.chatModelChoice(manifest.input, exec, originalProvider)
+              if (!isDeepStrictEqual({ ...choice.input, model: choice.input.model ?? manifest.model },
+                { ...manifest.input, model: manifest.model })) throw new CreativeError('CREATIVE_VIDEO_QUOTE_CHANGED', 409,
+                '本次选择与原视频规格不同，尚未提交新的生成；请确认调整原计划后再生成。')
+              approval = choice
+            } else if (manifest.model !== DEFAULT_CHAT_VIDEO_MODEL) throw new CreativeError('CREATIVE_VIDEO_MODEL_CHOICE_UNAVAILABLE', 409,
+              '恢复其他视频型号前需要重新核实报价并由你选择；尚未提交新的生成。')
+          } catch (error) { approvalFailure = { error } }
+        }
         const provider: VideoProjectProvider = {
           identity: originalProvider.identity, assertCurrent: () => originalProvider.assertCurrent(),
           get submissionMode() { return originalProvider.submissionMode },
           get pollIntervalMs() { return originalProvider.pollIntervalMs },
-          ...originalProvider.prepareSubmissions === undefined ? {} : {
-            prepareSubmissions: (...values) => originalProvider.prepareSubmissions?.(...values) ?? Promise.resolve(),
+          async prepareSubmissions(...values) {
+            if (approvalFailure !== undefined) {
+              const error = approvalFailure.error
+              if (error instanceof CreativeError) throw new VideoProjectError(error.code, error.message, { cause: error })
+              throw error
+            }
+            await originalProvider.prepareSubmissions?.(...values)
           },
           ...originalProvider.cancel === undefined ? {} : {
             cancel: (...values) => originalProvider.cancel?.(...values) ?? Promise.resolve({ canceled: false }),
@@ -595,11 +621,15 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
             parallelism: (...values) => originalProvider.parallelism?.(...values) ?? Promise.resolve(1),
           },
           async submit(request, submitSignal, submission) {
-            if (manifest.model !== DEFAULT_CHAT_VIDEO_MODEL || request.model !== DEFAULT_CHAT_VIDEO_MODEL) {
+            if ((manifest.model !== DEFAULT_CHAT_VIDEO_MODEL || request.model !== DEFAULT_CHAT_VIDEO_MODEL) && approval === undefined) {
               throw new VideoSubmissionRejection(
                 'CREATIVE_VIDEO_MODEL_CHOICE_UNAVAILABLE',
                 '原项目没有当前有效的型号与报价确认，未提交新的生成；已受理任务仍可查询和保存，请重新确认后再新增生成。',
                 'not_submitted')
+            }
+            try { await approval?.beforeSubmit?.(submitSignal) } catch (error) {
+              if (error instanceof CreativeError || error instanceof VideoProjectError) throw new VideoSubmissionRejection(error.code, error.message, 'not_submitted')
+              throw new VideoSubmissionRejection('CREATIVE_VIDEO_MODEL_CHOICE_UNAVAILABLE', '提交前未能重新确认原型号报价，尚未提交新的生成。', 'not_submitted')
             }
             return originalProvider.submit(request, submitSignal, submission)
           },
@@ -616,7 +646,8 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
           throw new VideoProjectError('PROJECT_CANCELLED', '该恢复请求开始后项目已被取消，未启动新的本地任务；请查看原项目状态。')
         }
         const jobId = start(exec, 'video-project', `继续 ${String(manifest.input.totalDurationSeconds)} 秒视频`, async (job, signal) => {
-          try { return await runVideoProject(runOptions(linked, session, workspaceRoot), manifest, provider, editor, job, signal) }
+          try { return await runVideoProject(runOptions(linked, session, workspaceRoot), manifest, provider, editor, job, signal,
+            revision === undefined ? undefined : { revision, ...afterRevision === undefined ? {} : { afterRevision } }) }
           finally { if (linked !== undefined) options.creative?.release(linked) }
         }, manifest.id, undefined, balanceStop)
         exec.concludeTurn()

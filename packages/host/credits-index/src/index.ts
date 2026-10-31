@@ -71,6 +71,7 @@ import { DEFAULT_VIDEO_PROJECT_PARALLELISM, videoProjectParallelism } from './vi
 import { videoSubmission, type VideoReferenceSnapshot } from './video-submission.ts'
 import { bindVideoAccount } from './video-project-account.ts'
 import { captureChatVideoBalanceStop } from './chat-video-balance-stop.ts'
+import type { VideoBalanceRejection } from './video-balance-retry.ts'
 import { artifactOriginOf, captureMediaOutput, type CapturedMediaOutput } from './media-output.ts'
 import { mediaFilename, type MediaFilenameOptions } from './media-filename.ts'
 import { resolveMediaSpecification, videoSpecificationDurations } from './media-request-specification.ts'
@@ -1295,6 +1296,7 @@ export function apply(ctx: Context, config: Config): void {
     readonly videoReceipt?: CreativeVideoReceipt | undefined
     readonly submissionState?: 'not-submitted' | 'pending' | 'unknown' | 'failed' | 'completed' | undefined
     readonly path?: string | undefined
+    readonly balanceRejection?: VideoBalanceRejection
   }
 
   /**
@@ -2870,6 +2872,7 @@ export function apply(ctx: Context, config: Config): void {
         generationCreation.task(operation, 'video'), operation.outputNaming)
       await creative.finish(operation, { kind: 'video', status: outcome.ok ? 'completed' : imageCreativeStatus(outcome, signal),
         ...outcome.videoReceipt === undefined ? {} : { videoReceipt: outcome.videoReceipt },
+        ...outcome.balanceRejection === undefined ? {} : { videoBalanceRejection: outcome.balanceRejection },
         paths: outcome.path === undefined ? [] : [outcome.path], ...outcome.code === undefined ? {} : { errorCode: outcome.code } })
       return outcome
     } catch (error) {
@@ -5301,6 +5304,7 @@ export function apply(ctx: Context, config: Config): void {
       let operation: CreativeOperation | undefined
       let workClaim: VideoWorkClaim | undefined
       let balanceStop: ReturnType<typeof captureChatVideoBalanceStop> | undefined
+      let retry: { planId: string; operationId: string; proof: VideoBalanceRejection } | undefined
       try {
         const binding = await bindCurrentVideoAccount()
         balanceStop = captureChatVideoBalanceStop(exec, videoBalanceScope(binding.identity))
@@ -5311,14 +5315,46 @@ export function apply(ctx: Context, config: Config): void {
         const owner = creativeOwner(exec, binding.identity)
         const source = videoGenerationIntentOf(exec)
         const reservation = await claimChatVideoWork(videoWorks, creative, owner, source, args.work_id)
-        if (reservation.kind === 'existing') return existingVideoWorkResult(reservation)
-        const work = reservation.claim
-        workClaim = work
-        const videoIntent = await creative.preflightVideoWorkCount(owner, source, {
+        if (reservation.kind === 'existing') {
+          const link = reservation.work.link
+          if (link === undefined || link.videoProjectId !== undefined) return existingVideoWorkResult(reservation)
+          const retained = await creative.videoWorkRetryState(owner, link.projectId, link.operationId)
+          let proof = retained.balanceRejection
+          if (retained.receipt !== undefined && retained.receipt.backendFingerprint !== createHash('sha256').update(apiBaseUrl).digest('hex')) {
+            return { ...existingVideoWorkResult(reservation), operation_id: retained.operationId,
+              message: '原视频所属服务已变化，请恢复原服务后核对任务；本次没有重新生成。' }
+          }
+          if ((retained.status === 'failed' || retained.status === 'unknown') && retained.receipt?.taskId !== undefined
+            && (proof !== undefined || retained.fundingRejected)) {
+            if (exec.agent === undefined) throw new CreativeError('AGENT_REQUIRED', 409, '请在原聊天继续视频。')
+            const provider = await projectOptions.acquireProvider(owner.workspaceRoot, exec.agent.session)
+            try { await provider.check(retained.receipt.taskId, { model: retained.receipt.model }, exec.signal); proof = undefined }
+            catch (error) {
+              if (error instanceof VideoSubmissionRejection && error.submissionState === 'not_submitted' && !error.upstreamSubmitted
+                && error.taskId === retained.receipt.taskId) {
+                // A legacy GET can omit the funding code; a retained funding proof still owns the classification.
+                if (error.code === 'INSUFFICIENT_BALANCE' || proof !== undefined || retained.fundingRejected) proof = {
+                  code: 'INSUFFICIENT_BALANCE', submissionState: 'not_submitted', taskId: error.taskId,
+                }
+              } else throw error
+            }
+          }
+          if (proof === undefined) return { ...existingVideoWorkResult(reservation), operation_id: retained.operationId }
+          if (args.plan_id !== undefined && args.plan_id !== link.projectId) throw new CreativeError('CREATIVE_SHOT_MISMATCH', 409,
+            '重试同一作品时请保留原计划编号，尚未重新提交。')
+          retry = { planId: link.projectId, operationId: retained.operationId, proof }
+        }
+        const work = reservation.kind === 'claimed' ? reservation.claim : {
+          workId: reservation.work.workId, requestId: reservation.batch.requestId,
+        }
+        if (reservation.kind === 'claimed') workClaim = reservation.claim
+        const videoIntent = retry === undefined ? await creative.preflightVideoWorkCount(owner, source, {
           videoWorkId: work.workId,
           ...args.plan_id === undefined ? {} : { planId: args.plan_id },
           ...args.shot_id === undefined ? {} : { shotIds: [args.shot_id] },
-        })
+        }) : source
+        if (videoIntent === undefined) throw new CreativeError('CREATIVE_VIDEO_SOURCE_UNAVAILABLE', 409,
+          '请在当前聊天明确继续或重试原视频，尚未提交新的生成。')
         const requestedDuration = args.plan_id === undefined ? videoIntent.requestedDurationSeconds : undefined
         if (requestedDuration !== undefined && args.duration_seconds !== undefined && requestedDuration !== args.duration_seconds) {
           throw new CreativeError('CREATIVE_VIDEO_INTENT_UNAVAILABLE', 409,
@@ -5384,8 +5420,13 @@ export function apply(ctx: Context, config: Config): void {
         }
         exec.signal.throwIfAborted()
         await choice.beforeSubmit(exec.signal)
-        operation = await creative.begin(owner, { kind: 'video', source: 'chat', model: capability.model.id, prompt: args.prompt, shots: [{ prompt: args.prompt, ...durationSeconds === undefined ? {} : { durationSeconds } }], ...args.plan_id === undefined ? {} : { planId: args.plan_id }, ...args.shot_id === undefined ? {} : { shotIds: [args.shot_id] }, videoIntent, videoWorkId: work.workId })
-        await videoWorks.attach(work, { projectId: operation.projectId, operationId: operation.operationId })
+        operation = retry === undefined
+          ? await creative.begin(owner, { kind: 'video', source: 'chat', model: capability.model.id, prompt: args.prompt, shots: [{ prompt: args.prompt, ...durationSeconds === undefined ? {} : { durationSeconds } }], ...args.plan_id === undefined ? {} : { planId: args.plan_id }, ...args.shot_id === undefined ? {} : { shotIds: [args.shot_id] }, videoIntent, videoWorkId: work.workId })
+          : await creative.beginVideoWorkRetry(owner, retry.planId, retry.operationId, videoIntent,
+            { prompt: args.prompt, model: capability.model.id }, retry.proof)
+        if (workClaim !== undefined) {
+          await videoWorks.attach(workClaim, { projectId: operation.projectId, operationId: operation.operationId })
+        }
         const creation = operation
         const outcome = await runVideoTask(await binding.key(), capability.model.route, built.request, exec.signal,
           async () => { await binding.key(); await creative.dispatched(creation) },
@@ -5400,6 +5441,7 @@ export function apply(ctx: Context, config: Config): void {
         await creative.finish(operation, { status: outcome.ok ? 'completed' : imageCreativeStatus(outcome, exec.signal), kind: 'video',
           ...outcome.submissionState === 'not-submitted' ? { notSubmitted: true } : {},
           ...outcome.videoReceipt === undefined ? {} : { videoReceipt: outcome.videoReceipt },
+          ...outcome.balanceRejection === undefined ? {} : { videoBalanceRejection: outcome.balanceRejection },
           ...outcome.path === undefined ? {} : { paths: [outcome.path] },
           ...outcome.code === undefined ? {} : { errorCode: outcome.code } })
         const pending = [...await videoWorks.pending(owner, work.workId)]
@@ -5414,7 +5456,8 @@ export function apply(ctx: Context, config: Config): void {
             model: capability.model.id,
             task_id: outcome.taskId ?? '',
             ...outcome.code === undefined ? {} : { code: outcome.code },
-            message: outcome.message ?? outcome.code ?? '生成失败',
+            message: (outcome.message ?? outcome.code ?? '生成失败') + (outcome.balanceRejection === undefined ? ''
+              : ' 充值后在当前聊天明确继续或重试，复用此 work_id 调用 generate_video；原任务与计费记录保留，查询原任务不会重新生成。'),
           })
         }
         if (outcome.path !== undefined && exec.agent !== undefined) {

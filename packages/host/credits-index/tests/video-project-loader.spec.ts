@@ -24,7 +24,8 @@ import { registerVideoProjectTools } from '../src/video-project-tools.ts'
 import { VideoWorkStore } from '../src/video-work-store.ts'
 import type { VideoProjectInput, VideoProjectOptions, VideoProjectProvider } from '../src/video-project-types.ts'
 import type { VideoEditor } from '../src/video-edit.ts'
-import { CreativeStore } from '../src/creative-store.ts'
+import { CreativeError, CreativeStore } from '../src/creative-store.ts'
+import { VideoSubmissionRejection } from '../src/video-submission-result.ts'
 import { registerCreativeTools } from '../src/creative-tools.ts'
 import { readVideoProject } from '../src/video-project.ts'
 import { registerVideoGenerationIntent } from '../src/video-generation-intent.ts'
@@ -178,6 +179,55 @@ function json(value: unknown): Record<string, unknown> {
 }
 
 describe('video tools through Loader, real tool registry and jobs runtime', () => {
+  it('resumes a parsed planned H3 video when current model selection preserves values but reorders specification fields', async () => {
+    const f = await boot()
+    const submit = vi.spyOn(f.provider, 'submit').mockRejectedValueOnce(new VideoSubmissionRejection(
+      'INSUFFICIENT_BALANCE', '余额不足，请充值', 'not_submitted'))
+    f.options.chatModelChoice = async (input) => {
+      const selected = { ...input }
+      delete selected.resolution
+      if (input.resolution !== undefined) selected.resolution = input.resolution
+      return { input: selected }
+    }
+    const started = json((await f.call('generate_video_project', { prompt: '原计划视频', model: 'MiniMax-H3',
+      resolution: '768P', total_duration_seconds: 5, shot_prompts: ['原分镜'], shot_durations_seconds: [5] })).value)
+    await vi.waitFor(() => { expect(f.ctx.jobs.get(JobId(String(started.job_id)), f.agent.id).status).toBe('failed') })
+    f.nextHuman('充值好了，继续原来的作品')
+    const resumed = json((await f.call('resume_video_project', { project_id: started.project_id })).value)
+    expect(resumed.status).toBe('background')
+    await vi.waitFor(() => { expect(f.ctx.jobs.get(JobId(String(resumed.job_id)), f.agent.id).status).toBe('completed') })
+    expect(submit).toHaveBeenCalledTimes(2)
+    expect(resumed.project_id).toBe(started.project_id)
+  })
+
+  it('keeps accepted original clips recoverable when current new-generation model approval is unavailable', async () => {
+    const f = await boot()
+    f.setPending(true)
+    const started = json((await f.call('generate_video_project', { prompt: '保留原视频', total_duration_seconds: 10,
+      shot_prompts: ['已受理分镜', '余额不足分镜'], shot_durations_seconds: [5, 5] })).value)
+    await vi.waitFor(() => { expect(f.requests).toHaveLength(2) })
+    f.ctx.jobs.kill(JobId(String(started.job_id)), f.agent.id)
+    await vi.waitFor(() => { expect(f.ctx.jobs.get(JobId(String(started.job_id)), f.agent.id).status).toBe('killed') })
+    const manifest = await readVideoProject(f.options, String(started.project_id), f.agent.id, f.workspace, f.provider.identity)
+    Object.assign(manifest.segments[1]!, { status: 'failed', taskId: 'original-unsent',
+      balanceRejection: { code: 'INSUFFICIENT_BALANCE', submissionState: 'not_submitted', taskId: 'original-unsent' } })
+    manifest.status = 'failed'
+    manifest.failureCode = 'INSUFFICIENT_BALANCE'
+    await writeFile(join(f.stateDirectory, manifest.id, 'manifest.json'), JSON.stringify(manifest))
+    vi.spyOn(f.provider, 'check').mockImplementation(async (taskId) => {
+      if (taskId === 'original-unsent') throw new VideoSubmissionRejection('INSUFFICIENT_BALANCE', '完整未提交回执', 'not_submitted', taskId)
+      return { status: 'succeeded' }
+    })
+    f.options.chatModelChoice = async () => { throw new CreativeError('CREATIVE_VIDEO_QUOTE_UNAVAILABLE', 409, '当前报价不可用') }
+    f.nextHuman('充值完成，继续原作品')
+    const resumed = json((await f.call('resume_video_project', { project_id: manifest.id })).value)
+    expect(resumed.status).toBe('background')
+    await vi.waitFor(() => { expect(f.ctx.jobs.get(JobId(String(resumed.job_id)), f.agent.id).status).toBe('failed') })
+    const retained = await readVideoProject(f.options, manifest.id, f.agent.id, f.workspace, f.provider.identity)
+    expect(retained.segments[0]?.status).toBe('saved')
+    expect(retained.failureCode).toBe('CREATIVE_VIDEO_QUOTE_UNAVAILABLE')
+    expect(f.requests).toHaveLength(2)
+  })
   it('cannot append works without a later real human revision', async () => {
     const f = await boot()
     const initial = json((await f.call('prepare_video_works', {})).value)

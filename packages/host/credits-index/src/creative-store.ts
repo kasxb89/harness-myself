@@ -17,6 +17,8 @@ import { parseVideoRequestGrant, type VideoGenerationIntent, type VideoRequestGr
 import { notifyCreationActivity } from './creation-activity.ts'
 import type { CreationOperationActivity } from './creation-activity.ts'
 import type { MediaFilenameOptions } from './media-filename.ts'
+import { isLaterVideoSubmissionRevision, parseVideoBalanceRejection, parseVideoSubmissionRevision, videoSubmissionRevision,
+  type VideoBalanceRejection, type VideoSubmissionRevision } from './video-balance-retry.ts'
 
 /** Fixed complete-record and collection bounds for untrusted JSON and directory reads. */
 const MAX_BYTES = 2 * 1024 * 1024
@@ -79,6 +81,9 @@ interface Operation {
   workId?: VideoWorkId
   imageInvocationId?: string
   imageResultRef?: ImageResultRef
+  videoRevision?: VideoSubmissionRevision
+  videoBalanceRejection?: VideoBalanceRejection
+  retryOf?: CreativeOperationId
 }
 
 /** Private JSON v1. Existing video manifests and Session data remain unchanged. */
@@ -418,6 +423,11 @@ function parseRecord(value: unknown): CreativeRecord {
       ...item.videoProjectId === undefined ? {} : { videoProjectId: text(item.videoProjectId, 128) },
       ...item.model === undefined ? {} : { model: text(item.model, 256) },
       ...item.errorCode === undefined ? {} : { errorCode: identifier(item.errorCode) },
+      ...item.videoRevision === undefined ? {} : { videoRevision: parseVideoSubmissionRevision(item.videoRevision) ?? invalid() },
+      ...item.videoBalanceRejection === undefined ? {} : {
+        videoBalanceRejection: parseVideoBalanceRejection(item.videoBalanceRejection) ?? invalid(),
+      },
+      ...item.retryOf === undefined ? {} : { retryOf: operationId(item.retryOf) },
     }
   }, MAX_OPERATIONS)
   const plan = parseCreativePlan(source)
@@ -433,6 +443,12 @@ function parseRecord(value: unknown): CreativeRecord {
   if (operations.some(item => item.imageResultRef !== undefined && (item.imageReceipt === undefined
     || item.videoProjectId !== undefined || item.videoReceipt !== undefined))) return invalid()
   if (operations.some(item => item.videoReceipt !== undefined && (plan.kind !== 'video' || item.videoProjectId !== undefined || item.assetId !== undefined))) return invalid()
+  if (operations.some(item => (item.videoRevision !== undefined || item.retryOf !== undefined)
+    && (plan.kind !== 'video' || item.source === 'ai-creation' || item.assetId !== undefined)
+    || item.videoBalanceRejection !== undefined && (plan.kind !== 'video' || item.assetId !== undefined || item.status !== 'failed'
+      || item.videoBalanceRejection.taskId !== item.videoReceipt?.taskId)
+    || item.retryOf !== undefined && !operations.some(previous => previous.id === item.retryOf
+      && previous.workId === item.workId && previous.id !== item.id))) return invalid()
   if (operations.some(item => item.assetId === undefined
     ? item.shotIds.length === 0 || item.shotIds.some(id => !plan.shots.some(shot => shot.id === id))
     : item.shotIds.length > 0 || !plan.assets.some(asset => asset.id === item.assetId && asset.kind === 'image'))) return invalid()
@@ -766,7 +782,7 @@ export class CreativeStore {
           ...rootCallSeq === undefined ? {} : { rootCallSeq } }
         if (rejectDuplicate && (legacyRoot ? prior.callId === intent.grant.rootCallId
           && sameSubmission({ ...priorSubmission, callId: intent.grant.callId }) : sameSubmission(priorSubmission))) duplicate()
-        if (prior.messageId === intent.grant.messageId
+        if (operation.retryOf === undefined && prior.messageId === intent.grant.messageId
           && (operation.requestGrant === undefined || operation.requestGrant.sourceSeq === intent.grant.sourceSeq)) {
           links.push({ projectId: record.id, operationId: operation.id,
             ...operation.videoProjectId === undefined ? {} : { videoProjectId: operation.videoProjectId as VideoProjectId } })
@@ -897,10 +913,12 @@ export class CreativeStore {
       const shotIds = input.assetId === undefined ? [...input.shotIds ?? record.shots.map(shot => shot.id)] : []
       unique(shotIds)
       const id = operationId(`op_${randomUUID()}`)
+      const videoRevision = input.kind === 'video' ? videoSubmissionRevision(input.videoIntent) : undefined
       record.owner = owner
       const invocation: Operation = { id, ...input.source === undefined ? {} : { source: input.source }, prompt: text(input.prompt), shotIds, ...input.assetId === undefined ? {} : { assetId: input.assetId }, status: 'running', outputs: [], ...input.videoProjectId === undefined ? {} : { videoProjectId: input.videoProjectId }, ...input.model === undefined ? {} : { model: text(input.model, 256) },
         ...input.kind !== 'video' || input.videoIntent === undefined ? {} : { requestGrant: { ...input.videoIntent.grant } },
         ...videoWorkId === undefined ? {} : { workId: videoWorkId },
+        ...videoRevision === undefined ? {} : { videoRevision },
         ...imageInvocationId === undefined ? {} : { imageInvocationId } }
       record.operations.push(invocation)
       if (Buffer.byteLength(JSON.stringify(record)) > MAX_BYTES / 2) throw new CreativeError('CREATIVE_LIMIT', 400, '项目记录已接近上限，请新建项目；尚未提交生成。')
@@ -1166,6 +1184,8 @@ export class CreativeStore {
     /** Final settlement atomically retains any receipt whose earlier standalone write was interrupted. */
     imageReceipt?: CreativeImageReceipt
     videoReceipt?: CreativeVideoReceipt
+    /** Complete executor-validated proof that this funding-rejected attempt never reached upstream. */
+    videoBalanceRejection?: VideoBalanceRejection
   }): Promise<void> {
     return this.queue(async () => {
       try {
@@ -1209,6 +1229,12 @@ export class CreativeStore {
         }
         found.status = outcome.status === 'cancelled' && (found.submissionStarted === true || found.imageReceipt !== undefined || found.videoReceipt !== undefined)
           ? 'unknown' : outcome.status
+        if (outcome.videoBalanceRejection !== undefined) {
+          const rejected = parseVideoBalanceRejection(outcome.videoBalanceRejection) ?? invalid()
+          if (record.kind !== 'video' || found.videoProjectId !== undefined
+            || found.status !== 'failed' || rejected.taskId !== found.videoReceipt?.taskId) return invalid()
+          found.videoBalanceRejection = rejected
+        }
         found.outputs.push(...outputs)
         if (outcome.errorCode !== undefined) found.errorCode = outcome.errorCode
         else if (found.status === 'completed') delete found.errorCode
@@ -1222,6 +1248,100 @@ export class CreativeStore {
    * @param operation - Original generation invocation whose process-local activity ends.
    */
   release(operation: CreativeOperation): void { this.deactivate(operation) }
+
+  /**
+   * @param owner - Exact current account, chat and workspace.
+   * @param videoProjectId - Original owned project.
+   * @returns Its last real submission source for legacy manifest recovery.
+   */
+  async videoProjectRevision(owner: CreativeOwner, videoProjectId: string): Promise<VideoSubmissionRevision | undefined> {
+    await this.serial
+    await this.current(owner)
+    for (const id of await readdir(await this.root())) {
+      if (!/^cp_[a-f0-9-]{36}$/u.test(id)) continue
+      let record: CreativeRecord
+      try { record = await this.read(id, owner, owner.workspaceRoot) }
+      catch (error) { if (error instanceof CreativeError && error.code === 'CREATIVE_ACCESS_DENIED') continue; throw error }
+      const operation = record.operations.find(item => item.videoProjectId === videoProjectId)
+      if (operation !== undefined) return operation.videoRevision ?? (operation.requestGrant === undefined ? undefined
+        : { messageId: operation.requestGrant.messageId, seq: operation.requestGrant.sourceSeq })
+    }
+    return undefined
+  }
+
+  /**
+   * @param owner - Exact current account, chat and workspace.
+   * @param id - Original plan.
+   * @param invocationId - Work-linked original invocation.
+   * @returns Latest attempt without activating it or submitting generation.
+   */
+  async videoWorkRetryState(owner: CreativeOwner, id: string, invocationId: string): Promise<{
+    operationId: CreativeOperationId
+    receipt?: CreativeVideoReceipt
+    balanceRejection?: VideoBalanceRejection
+    status: CreativeStatus
+    fundingRejected: boolean
+  }> {
+    await this.serial
+    await this.current(owner)
+    const record = await this.read(id, owner, owner.workspaceRoot)
+    const original = record.operations.find(item => item.id === operationId(invocationId))
+    if (record.kind !== 'video' || original?.workId === undefined || original.videoProjectId !== undefined) return invalid()
+    const latest = record.operations.filter(item => item.workId === original.workId).at(-1) ?? invalid()
+    if (this.active.has(latest.id)) throw new CreativeError('CREATIVE_SHOT_RUNNING', 409, '原视频任务正在处理，请查看已有任务。')
+    return { operationId: latest.id, status: latest.status, fundingRejected: latest.errorCode === 'INSUFFICIENT_BALANCE',
+      ...latest.videoReceipt === undefined ? {} : { receipt: { ...latest.videoReceipt } },
+      ...latest.videoBalanceRejection === undefined ? {} : { balanceRejection: { ...latest.videoBalanceRejection } } }
+  }
+
+  /**
+   * Atomically append one later human-authorized attempt to a proven unsubmitted funding-rejected work.
+   * @param owner - Exact current account, chat and workspace.
+   * @param id - Original plan, retained with all previous attempts.
+   * @param invocationId - Latest attempt observed before any read-only verification.
+   * @param intent - Host-captured current real human input.
+   * @param input - Current explicit prompt and model, prepared without submitting generation.
+   * @param verified - Optional fresh complete original-task rejection, never tool-supplied JSON.
+   * @returns Exclusively active new attempt; the original work link and receipts remain unchanged.
+   */
+  beginVideoWorkRetry(owner: CreativeOwner, id: string, invocationId: string, intent: VideoGenerationIntent | undefined,
+    input: { prompt: string; model: string }, verified?: VideoBalanceRejection): Promise<CreativeOperation> {
+    return this.queue(async () => {
+      await this.current(owner)
+      const record = await this.read(id, owner, owner.workspaceRoot)
+      const previous = record.operations.find(item => item.id === operationId(invocationId))
+      if (record.kind !== 'video' || previous?.workId === undefined || previous.videoProjectId !== undefined
+        || record.operations.filter(item => item.workId === previous.workId).at(-1)?.id !== previous.id
+        || this.active.has(previous.id)) throw new CreativeError('CREATIVE_SHOT_RUNNING', 409, '该作品已有后续任务，请查看已有任务，不会重复提交。')
+      const rejected = previous.videoBalanceRejection ?? verified
+      if (rejected === undefined || rejected.taskId !== previous.videoReceipt?.taskId
+        || previous.status !== 'failed' && previous.status !== 'unknown' || previous.outputs.length !== 0) {
+        throw new CreativeError('CREATIVE_VIDEO_TASK_UNCONFIRMED', 409, '原视频尚未确认未提交上游，请继续核对原任务，不会重新生成。')
+      }
+      const revision = videoSubmissionRevision(intent)
+      const prior = previous.videoRevision ?? (previous.requestGrant === undefined ? undefined
+        : { messageId: previous.requestGrant.messageId, seq: previous.requestGrant.sourceSeq })
+      if (revision === undefined || !isLaterVideoSubmissionRevision(revision, prior)) {
+        throw new CreativeError('VIDEO_BALANCE_RETRY_CONFIRMATION_REQUIRED', 409, '原视频因余额不足未提交上游。充值后请在当前聊天发送“继续生成”或“重试”，本次未重复提交。')
+      }
+      if (record.operations.length >= MAX_OPERATIONS) throw new CreativeError('CREATIVE_LIMIT', 400, '该作品重试记录已满，请联系支持，尚未提交生成。')
+      previous.status = 'failed'
+      previous.videoBalanceRejection = { ...rejected }
+      previous.errorCode = 'INSUFFICIENT_BALANCE'
+      const next: Operation = { id: operationId(`op_${randomUUID()}`), source: 'chat', prompt: text(input.prompt),
+        model: text(input.model, 256), shotIds: [...previous.shotIds], status: 'running', outputs: [],
+        workId: previous.workId, retryOf: previous.id, videoRevision: { ...revision },
+        ...previous.requestGrant === undefined ? {} : { requestGrant: { ...previous.requestGrant } } }
+      record.operations.push(next)
+      record.owner = owner
+      if (Buffer.byteLength(JSON.stringify(record)) > MAX_BYTES / 2) throw new CreativeError('CREATIVE_LIMIT', 400, '项目记录已接近上限，请联系支持，尚未提交生成。')
+      await this.persist(record)
+      const operation = { projectId: record.id, operationId: next.id, owner,
+        outputNaming: operationOutputNaming(record, next, 'video') }
+      this.activate(operation, 'video')
+      return operation
+    })
+  }
 
   /**
    * Reattach an explicitly resumed retained video to its original creation record.

@@ -81,14 +81,15 @@ function publish(next: Partial<CreditsSnapshot>): void {
 /**
  * Read the current balance.
  * @param signal - optional owner cancellation.
+ * @param afterPayment - Start a new read after confirmed payment instead of sharing an earlier read; server cooldowns still apply.
  */
-export async function refreshBalance(signal?: AbortSignal): Promise<void> {
+export async function refreshBalance(signal?: AbortSignal, afterPayment = false): Promise<void> {
   if (signOutRead !== undefined) return
   if (signal?.aborted === true || snapshot.session?.signedIn !== true || creditsRetrySeconds(snapshot.readFailure) > 0) return
   const epoch = snapshot.accountEpoch
   const accountId = snapshot.session.account?.id
   const accountOwner = snapshot.session.accountOwner
-  if (balanceRead?.epoch === epoch && balanceRead.signal?.aborted !== true) return balanceRead.promise
+  if (!afterPayment && balanceRead?.epoch === epoch && balanceRead.signal?.aborted !== true) return balanceRead.promise
   const generation = ++balanceReadGeneration
   const current = (): boolean => signal?.aborted !== true && generation === balanceReadGeneration && snapshot.accountEpoch === epoch
   publish({ refreshing: true })

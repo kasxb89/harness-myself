@@ -12,6 +12,8 @@ A conversational request can exceed a video model's clip limit. Joining several 
 
 The credits host plans against the current account's actual model durations and saves the exact ordered requests before dispatch. A private project binds them to the account, calling chat, and workspace. Each submission is recorded before sending and each returned task identifier before polling. Explicit recovery queries known tasks and reuses saved clips; a submission without a persisted identifier remains an unknown charge and is never automatically repeated. The [package reference](../../../../packages/host/credits-index/README.md#video-projects) owns limits and operational semantics.
 
+A funding rejection can settle before any upstream submission. The project retains that verified distinction and every attempt instead of turning all failed clips into permanent blockers. A later logged human retry can create a new admission identity within the same work after original-task proofs and current request approval are checked. Accepted and unknown attempts remain query-only; payment confirmation and status reads never authorize generation.
+
 The existing jobs service owns live execution. Separate project records own recovery, without changing the agent loop or Session format. Bundled media executables run through session filesystem and process policy; a real encode in the selected output tree succeeds before paid dispatch. Only independently inspected output becomes a final artifact.
 
 The same ownership rule protects structured image and video creation plans. Explicit plan and shot identifiers join character and material descriptions to actual operations; the [creation sidebar](../../../../packages/client/ui-creative/README.md) reads those retained records and video manifests. Saved files and extracted frames are exposed through checked media identifiers, while dialogue and subtitle instructions remain unverified requirements. Refreshing a display never resumes or repeats a paid task.
@@ -21,6 +23,8 @@ The same ownership rule protects structured image and video creation plans. Expl
 **Ask the model to issue independent clip calls and shell commands.** That leaves partial billing and recovery implicit and depends on ambient tools being installed.
 
 **Retry every interrupted submission.** An interrupted response can follow an accepted, billable task. Repeating it risks duplicate charges.
+
+**Make every failure permanent.** This prevents duplicate charges but also strands a work after a confirmed unsubmitted balance rejection. Retaining proof and a later human revision permits a bounded new attempt without discarding the original operation.
 
 **Treat a retained record as a running job.** A saved manifest cannot establish that an executor survived a restart or that its output exists.
 

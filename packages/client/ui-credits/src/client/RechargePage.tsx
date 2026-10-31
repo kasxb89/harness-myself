@@ -220,7 +220,7 @@ export function RechargePage(props: PropsRuntime<'main'> & RechargePageInjected)
         setPolling(false)
         setNotice(t('rechargeSucceeded', { points: grouped(status.points) }))
         try {
-          await refreshBalance()
+          await refreshBalance(undefined, true)
         } catch (error) {
           if (isActive(active)) setFailure(t('rechargeBalanceFailed'))
           // The confirmed payment remains successful when its balance read fails.

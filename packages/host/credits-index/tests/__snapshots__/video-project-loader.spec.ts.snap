@@ -260,7 +260,7 @@ exports[`video tools through Loader, real tool registry and jobs runtime > regis
     },
   },
   {
-    "description": "Explicitly continue a retained project for the same account, workspace, and chat. Reuse saved clips and query already known provider task ids before submitting any remaining never-submitted clips. Unknown or failed clips block new submissions, while other already accepted task ids remain recoverable for download. Never repeat unknown or failed submissions, and refuse a second live run. Local cancellation cannot cancel already accepted upstream billing.",
+    "description": "Explicitly continue a retained project for the same account, workspace, and chat. After the user recharges and sends a new real reply asking to continue or retry, reuse this original project_id: the Host can create a new attempt only for a complete gateway-confirmed funding rejection that never reached upstream. Old attempts and saved clips remain retained. Known original task ids are checked first. Accepted or unknown submissions are never repeated, and other failed clips continue to block new submissions. Do not create another work merely to retry the same finished video. Refuse a second live run. Local cancellation cannot cancel already accepted upstream billing.",
     "name": "resume_video_project",
     "parameters": {
       "properties": {

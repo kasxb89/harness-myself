@@ -90,7 +90,7 @@ export function captureChatVideoBalanceStop(exec: ToolRunContext, scope?: string
       const original = outcomeResult(value.result)
       const retained = retain(original ?? {})
       const jobActionRequired = { ...actionRequired,
-        ...intent === undefined ? {} : { requestSeq: SessionSeq(intent.grant.sourceSeq) } }
+        ...revision === undefined ? {} : { requestSeq: SessionSeq(revision) } }
       return { ...value, actionRequired: jobActionRequired,
         ...original === undefined ? {} : { result: JSON.stringify({ ...original, actionRequired: retained.actionRequired }) } }
     },

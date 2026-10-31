@@ -10,6 +10,7 @@ import {
 } from './video-submission-result.ts'
 import { creationTaskActivity } from './creation-activity.ts'
 import type { CreationActivityOutcome, CreationTaskObserver } from './creation-activity.ts'
+import type { VideoBalanceRejection } from './video-balance-retry.ts'
 
 /** Local waiting never implies that an accepted remote task stopped. */
 export interface VideoTaskOutcome {
@@ -22,6 +23,8 @@ export interface VideoTaskOutcome {
   taskId?: string
   requestId?: string
   path?: string
+  /** Complete gateway refusal, or local validation before fetch; never inferred from an error code alone. */
+  balanceRejection?: VideoBalanceRejection
 }
 
 /** Account-owned I/O boundaries; only submit may create a billable request. */
@@ -112,6 +115,7 @@ export async function executeVideoTask(options: VideoTaskOptions): Promise<Video
   let foreground: AbortSignal | undefined
   let waitingSignal = signal
   let lastProgress: 'queued' | 'generating' | undefined
+  let balanceRejection: VideoBalanceRejection | undefined
   const outcome = (submissionState: VideoTaskOutcome['submissionState'], code?: string, message?: string): VideoTaskOutcome => {
     activityOutcome = submissionState === 'completed' ? 'completed' : submissionState === 'failed' ? 'failed'
       : submissionState === 'not-submitted' ? 'stopped' : 'unknown'
@@ -119,6 +123,7 @@ export async function executeVideoTask(options: VideoTaskOptions): Promise<Video
     return {
       ok: submissionState === 'completed', submissionState, model: receipt?.model ?? options.model,
       ...code === undefined ? {} : { code }, ...message === undefined ? {} : { message },
+      ...balanceRejection === undefined ? {} : { balanceRejection },
       ...receipt === undefined ? {} : { videoReceipt: receipt, ...receipt.taskId === undefined ? {} : { taskId: receipt.taskId },
         ...receipt.requestId === undefined ? {} : { requestId: receipt.requestId } }, ...path === undefined ? {} : { path },
     }
@@ -200,6 +205,10 @@ export async function executeVideoTask(options: VideoTaskOptions): Promise<Video
       const taskId = marked ? mediaSubmissionTaskId(options.model, 'video', body) : uncertain ? canonicalId
         : identifier(body?.task_id) ?? identifier(body?.id) ?? identifier(nested?.task_id) ?? identifier(nested?.id)
       const rejection = h3SubmissionRejection(options.model, response.status, body)
+      if (rejection?.code === 'INSUFFICIENT_BALANCE' && rejection.submissionState === 'not_submitted' && !rejection.upstreamSubmitted) {
+        balanceRejection = { code: 'INSUFFICIENT_BALANCE', submissionState: 'not_submitted',
+          ...rejection.taskId === undefined ? {} : { taskId: rejection.taskId } }
+      }
       if (rejection?.submissionState === 'not_submitted' && rejection.taskId !== undefined) {
         await persist({ ...currentReceipt(), taskId: rejection.taskId })
         return outcome('failed', rejection.code, rejection.message)
@@ -249,6 +258,9 @@ export async function executeVideoTask(options: VideoTaskOptions): Promise<Video
       try { body = record(JSON.parse(text)) } catch (_invalidResponse: unknown) { /* Retain acceptance and stop uncertain polling. */ }
       waitingSignal.throwIfAborted()
       const rejection = h3SubmissionQueryRejection(currentReceipt().model, response.status, body, taskId)
+      if (rejection?.code === 'INSUFFICIENT_BALANCE' && rejection.submissionState === 'not_submitted' && !rejection.upstreamSubmitted) {
+        balanceRejection = { code: 'INSUFFICIENT_BALANCE', submissionState: 'not_submitted', taskId }
+      }
       if (rejection !== undefined) return outcome('failed', rejection.code, rejection.message)
       const terminal = h3ProviderTerminalRejection(currentReceipt().model, response.status, body, taskId)
       if (terminal !== undefined) return outcome('failed', terminal.code === 'INSUFFICIENT_BALANCE' ? terminal.code : 'TASK_FAILED', terminal.message)
@@ -283,6 +295,10 @@ export async function executeVideoTask(options: VideoTaskOptions): Promise<Video
       activity.stage(nextProgress)
     }
   } catch (_stopped: unknown) {
+    if (!sent && _stopped instanceof VideoSubmissionRejection && _stopped.code === 'INSUFFICIENT_BALANCE'
+      && _stopped.submissionState === 'not_submitted') {
+      balanceRejection = { code: 'INSUFFICIENT_BALANCE', submissionState: 'not_submitted' }
+    }
     if (!sent && _stopped instanceof VideoSubmissionRejection) return outcome('not-submitted', _stopped.code, _stopped.message)
     if (!sent) return outcome('not-submitted', 'VIDEO_PREPARATION_FAILED', '视频尚未提交，请检查素材或保存位置。')
     if (receipt?.taskId !== undefined && foreground?.aborted && !budget.aborted && !options.signal.aborted && currentPhase() === 'querying') {

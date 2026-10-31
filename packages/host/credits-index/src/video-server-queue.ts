@@ -5,6 +5,7 @@ import type { VideoProjectAttemptId } from './video-project.ts'
 import type { VideoProjectRequest, VideoProjectSubmission } from './video-project-types.ts'
 import { apiUrl, normalizeApiBaseUrl } from './api-url.ts'
 import { accountBalanceFailure, isAccountBalanceRejection, type AccountBalanceFailure } from './account-balance.ts'
+import { VideoSubmissionRejection } from './video-submission-result.ts'
 
 const BODY_LIMIT = 65_536
 const STATUS_LIMIT = 1_048_576
@@ -246,6 +247,15 @@ function item(value: unknown, queueId: string, request: VideoProjectRequest): Vi
     ...failure === undefined ? {} : { failure } }
 }
 
+/** Only the gateway's complete pre-enqueue refusal establishes that no queue, reservation or charge exists. */
+function fundingAdmissionRejected(value: unknown, status: number): boolean {
+  const body = object(value)
+  return body !== undefined && isAccountBalanceRejection(body, status) && body.accepted === false
+    && body.submission_state === 'not_submitted' && body.retryable === false && body.resubmittable === true
+    && body.charged === false && body.reserved === false
+    && Object.keys(body).every(key => ['error', 'accepted', 'submission_state', 'retryable', 'resubmittable', 'charged', 'reserved'].includes(key))
+}
+
 function createQueueClient(options: VideoServerQueueOptions) {
   const origin = normalizeApiBaseUrl(options.origin)
   const transport = options.fetch ?? globalThis.fetch
@@ -311,6 +321,9 @@ function createQueueClient(options: VideoServerQueueOptions) {
         const result = await fetchJson(CAPABILITY.create_path, 'POST', operationSignal,
           JSON.stringify({ schema_version: 1, queue_id: queueId, operation_id: submission.attemptId, count: 1, request }), true,
           () => { dispatch.started = true })
+        if (fundingAdmissionRejected(result.value, result.status)) {
+          throw new VideoSubmissionRejection('INSUFFICIENT_BALANCE', '余额不足，请充值；本次未入队、未提交上游且未扣费，充值后可在当前聊天明确重试。', 'not_submitted')
+        }
         if (result.status !== 200 && result.status !== 202) {
           const failure = isAccountBalanceRejection(result.value, result.status) ? accountBalanceFailure('insufficient_user_quota') : undefined
           if (failure !== undefined) throw new VideoServerQueueError(failure.code, failure.message, queueId, failure)
@@ -318,6 +331,7 @@ function createQueueClient(options: VideoServerQueueOptions) {
         }
         return observe(result.value, queueId, request)
       } catch (error) {
+        if (error instanceof VideoSubmissionRejection) throw error
         let failure = error instanceof VideoServerQueueError ? error.failure : undefined
         if (!dispatch.started) throw new VideoServerQueueError('VIDEO_QUEUE_SUBMISSION_NOT_STARTED',
           '视频尚未发送，请检查当前登录和连接后再恢复原项目；本次没有提交新的生成请求。')

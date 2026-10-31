@@ -97,7 +97,7 @@ export function existingVideoWorkResult(result: Extract<VideoWorkClaimResult, { 
     message: result.work.state === 'cancelled' ? '这个作品已取消，未重新提交。另做作品时请按新的用户请求准备作品编号。'
       : result.work.link === undefined ? '这个作品已有准备登记，本次未创建第二份任务或重复提交。请先核对原调用；若客户端已重启或原调用已中断，这条准备记录不会自动重跑，请由用户另行发起新的创作请求。'
         : result.work.link.videoProjectId === undefined
-          ? '这个作品已有原始生成记录，未重复提交。请用原 plan_id 和 operation_id 调用 query_video_task 核对。'
+          ? '这个作品已有原始生成记录，未重复提交。请用原 plan_id 和 operation_id 调用 query_video_task 核对；若完整回执已确认因余额不足未提交上游，用户充值后明确重试时，复用同一 work_id 调用 generate_video。查询原任务不会重新生成。'
           : '这个作品已有原始视频项目，未重复提交。请用原 project_id 调用 video_project_status 或 resume_video_project。' }
 }
 

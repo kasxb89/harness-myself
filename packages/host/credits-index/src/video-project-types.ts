@@ -150,6 +150,8 @@ export interface VideoProjectProvider {
     status: 'queued' | 'running' | 'succeeded' | 'failed'
     code?: string
     message?: string
+    /** Complete original queue response confirms whether this failed item reached the provider. */
+    submissionState?: 'not_submitted' | 'accepted'
   }>
   /**
    * Cancel an original server queue item only when the gateway confirms it was never dispatched.

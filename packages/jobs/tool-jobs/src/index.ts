@@ -39,6 +39,8 @@ declare module '@deepseek-ai/dsh-session-projection/types' {
 export const name = 'tool-jobs'
 export const inject = ['tools', 'jobs', 'systemPrompt']
 
+const HUMAN_INPUT_KINDS: ReadonlySet<string> = new Set(['user', 'user-question-reply'])
+
 /**
  * How an uncollected completion reaches an owner that is already idle: `wakeup`
  * opens a turn for it, `quiet` leaves it pending until something else wakes the
@@ -215,9 +217,10 @@ function concludesActionRead(exec: ToolExecution, action: JobActionRequired): bo
 export function apply(ctx: Context, config: Config): void {
   ctx.inject(['sessionProjections'], (inner) => {
     inner.sessionProjections.register({
-      key: 'toolJobHumanInput', stateVersion: 1, stateSchema: zod.number().int().nonnegative().nullable(),
+      key: 'toolJobHumanInput', stateVersion: 2, stateSchema: zod.number().int().nonnegative().nullable(),
       init: () => null,
-      apply: (latest, event) => event.type === 'user/message' && event.data.source.kind === 'user' ? event.seq : latest,
+      apply: (latest, event) => event.type === 'user/message'
+        && HUMAN_INPUT_KINDS.has(event.data.source.kind) ? event.seq : latest,
     })
   })
   const waitDefault = config.waitTimeoutMs ?? 30_000

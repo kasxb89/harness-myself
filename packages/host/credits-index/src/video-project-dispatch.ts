@@ -1,6 +1,7 @@
 /** Select one project admission transport while recovering every original task by its fixed identity. @module */
 import type { VideoProjectProvider, VideoProjectRequest } from './video-project-types.ts'
 import { VideoRelayError, type VideoProjectRelay } from './video-project-provider.ts'
+import { VideoSubmissionRejection } from './video-submission-result.ts'
 import {
   bindVideoServerQueueRecovery, discoverVideoServerQueue, VideoServerQueueError,
   type VideoServerQueue, type VideoServerQueueItem, type VideoServerQueueOptions,
@@ -95,7 +96,22 @@ export function createVideoProjectDispatch(options: VideoProjectDispatchOptions)
       if (item.state === 'queued' || item.state === 'dispatching') return { status: 'queued' }
       if (item.state === 'running') return { status: 'running' }
       if (item.state === 'succeeded') return { status: 'succeeded' }
-      if (item.state === 'failed' && item.failure !== undefined) return { status: 'failed', ...item.failure }
+      if (item.state === 'failed' && item.failure !== undefined) {
+        if (item.submissionState === 'not_submitted' && item.gatewayTaskId !== '') {
+          try {
+            await options.relay.check(item.gatewayTaskId, '/v1/tasks', signal,
+              typeof request.model === 'string' ? request.model : undefined)
+          } catch (error) {
+            if (error instanceof VideoSubmissionRejection && error.submissionState === 'not_submitted' && !error.upstreamSubmitted
+              && error.taskId === item.gatewayTaskId) {
+              throw new VideoSubmissionRejection(item.failure.code,
+                `${item.failure.message}。原任务已确认未提交上游；充值后可在当前聊天明确重试，原记录保留。`, 'not_submitted', taskId)
+            }
+            throw error
+          }
+        }
+        return { status: 'failed', ...item.failure }
+      }
       return { status: 'failed', message: item.state === 'canceled' ? '原队列任务已在发送上游前取消。' : '原视频任务已由服务器确认未完成；保留原任务记录。' }
     },
     async cancel(taskId, request, signal) {

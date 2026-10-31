@@ -1135,6 +1135,38 @@ describe('deployed Harness API through the real product Loader', () => {
     expect(submissions()).toHaveLength(3)
   })
 
+  it('retries the same ordinary video work after recharge using a fresh exact original-task proof and a new operation', async () => {
+    const { base, stateDir } = await boot(undefined, false, true, undefined, { videoChatWaitMs: 1, videoPollIntervalMs: 1 })
+    await signIn(base)
+    pricingRows = [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }]
+    const agent = videoAgent(stateDir, 'recharged-same-ordinary-work')
+    context!.sessions.create(SessionId(agent.id), { meta: { cwd: stateDir } })
+    const input = { name: 'generate_video', agent, callId: ToolCallId('same-work-funding'),
+      arguments: { prompt: 'The same original cup', model: 'MiniMax-H3', duration_seconds: 4 }, signal: new AbortController().signal }
+    const taskId = 'fixture-video-task'
+    videoSubmitReplies.push({ status: 403, body: { ...notSentContract.notCharged.body, id: taskId, task_id: taskId } })
+    const first = object((await requestVideo(input)).value)
+    expect(first).toMatchObject({ status: 'failed', code: 'INSUFFICIENT_BALANCE', task_id: taskId })
+    expect(first.message).toContain('复用此 work_id')
+    balanceQuota = 1_000_000
+    humanVideoRequest(agent, '充值完成，继续同一条原视频')
+    videoQueryReply = { task_id: taskId, status: 'FAILURE', submission_receipt: {
+      ...notSentContract.receipt, id: taskId, task_id: taskId, recovery: { method: 'GET', path: `/v1/tasks/${taskId}` },
+    } }
+    videoSubmitReplies.push({ status: 200, body: { id: 'task_fixture' } })
+    const resumed = object((await continueVideo({ ...input, arguments: { ...input.arguments, work_id: first.work_id } })).value)
+    expect(resumed.status).toBe('pending')
+    expect(resumed.work_id).toBe(first.work_id)
+    expect(resumed.plan_id).toBe(first.plan_id)
+    expect(resumed.operation_id).not.toBe(first.operation_id)
+    const submitCalls = calls.filter(call => call.path === '/harness/v1/video/generations')
+    expect(submitCalls).toHaveLength(2)
+    expect(calls.some(call => call.path === `/harness/v1/tasks/${taskId}`)).toBe(true)
+    const duplicate = object((await continueVideo({ ...input, arguments: { ...input.arguments, work_id: first.work_id } })).value)
+    expect(duplicate).toMatchObject({ status: 'existing', operation_id: resumed.operation_id })
+    expect(calls.filter(call => call.path === '/harness/v1/video/generations')).toHaveLength(2)
+  })
+
   it.each([false, true])('retains video balance failure without blocking a newer request: %s', async (newerRequest) => {
     const { base, stateDir } = await boot(undefined, false, true, undefined,
       { videoChatWaitMs: 1, videoChatQueryWaitMs: 1000, videoPollIntervalMs: 1 })

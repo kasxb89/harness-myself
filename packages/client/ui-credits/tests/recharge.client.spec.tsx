@@ -185,6 +185,42 @@ describe('WeChat top-up page', () => {
     expect(screen.getByText('2,345')).toBeTruthy()
   })
 
+  it('shows the post-payment balance before an earlier refresh finishes and never restores that old balance', async () => {
+    await mountPage()
+    await pay()
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: zh.stopPolling })) })
+    const earlier = deferred<Response>()
+    fetcher.mockImplementationOnce(async (input) => {
+      expect(requestPath(input)).toBe('/credits/api/summary')
+      summaryReads += 1
+      return await earlier.promise
+    })
+    let oldRead: Promise<void> | undefined
+    act(() => { oldRead = refreshBalance() })
+    fetcher.mockImplementationOnce(async (input) => {
+      expect(requestPath(input)).toContain('/credits/api/recharge/wechat/order?')
+      return orderStatus('success')
+    }).mockImplementationOnce(async (input) => {
+      expect(requestPath(input)).toBe('/credits/api/summary')
+      summaryReads += 1
+      return Response.json({ ok: true, account: { id: accountId }, accountOwner: loginOwner,
+        payload: { balance_points: 3345 } })
+    })
+    try {
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: zh.checkPayment })) })
+      expect(screen.getByRole('status').textContent).toBe(t('rechargeSucceeded', { points: '1,000' }))
+      expect(screen.getByText('3,345')).toBeTruthy()
+      expect(paymentRequests()).toHaveLength(3)
+    } finally {
+      await act(async () => {
+        earlier.resolve(Response.json({ ok: true, account: { id: accountId }, accountOwner: loginOwner,
+          payload: { balance_points: 0 } }))
+        await oldRead
+      })
+    }
+    expect(screen.getByText('3,345')).toBeTruthy()
+  })
+
   it('aborts the active HTTP status request when checks are stopped', async () => {
     await mountPage()
     status = async (_path, init) => await new Promise<Response>((_resolve, reject) => {

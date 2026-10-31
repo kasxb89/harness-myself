@@ -91,6 +91,33 @@ async function fixture(handler?: (call: Call, index: number) => Response | Promi
   return { ...upstream, key, options, queue }
 }
 
+const fundingRefusal = {
+  error: { code: 'insufficient_user_quota', type: 'new_api_error', message: 'private gateway diagnostic' },
+  accepted: false, submission_state: 'not_submitted', retryable: false, resubmittable: true, charged: false, reserved: false,
+}
+
+it('retains a complete pre-enqueue funding refusal without inventing an accepted queue id or reading a nonexistent item', async () => {
+  const f = await fixture(() => response(fundingRefusal, 403))
+  await expect(f.queue.submit(REQUEST, SUBMISSION, freshSignal())).rejects.toMatchObject({
+    code: 'INSUFFICIENT_BALANCE', submissionState: 'not_submitted', taskId: undefined,
+  })
+  expect(f.calls.map(call => call.method)).toEqual(['GET', 'POST'])
+})
+
+it.each(['accepted', 'submission_state', 'retryable', 'resubmittable', 'charged', 'reserved'])
+('keeps an incomplete pre-enqueue refusal unknown when %s is absent', async (missing) => {
+  const body = Object.fromEntries(Object.entries(fundingRefusal).filter(([key]) => key !== missing))
+  const f = await fixture(call => call.method === 'POST' ? response(body, 403) : response({ error: { code: 'not_found' } }, 404))
+  await expect(f.queue.submit(REQUEST, SUBMISSION, freshSignal())).rejects.toMatchObject({ code: 'INSUFFICIENT_BALANCE', queueId: QUEUE })
+  expect(f.calls.map(call => call.method)).toEqual(['GET', 'POST', 'GET'])
+})
+
+it('does not turn token quota into a recharging retry proof', async () => {
+  const f = await fixture(call => call.method === 'POST' ? response({ ...fundingRefusal,
+    error: { ...fundingRefusal.error, code: 'pre_consume_token_quota_failed' } }, 403) : response({}, 404))
+  await expect(f.queue.submit(REQUEST, SUBMISSION, freshSignal())).rejects.toMatchObject({ code: 'VIDEO_QUEUE_SUBMISSION_UNKNOWN', queueId: QUEUE })
+})
+
 const servers: Server[] = []
 afterEach(async () => {
   await Promise.all(servers.splice(0).map(server => new Promise<void>((resolve, reject) => {

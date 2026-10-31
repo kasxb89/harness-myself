@@ -11,7 +11,7 @@ import type { VideoProjectInput, VideoProjectOptions, VideoProjectProvider, Vide
 import { VideoRelayError } from '../src/video-project-provider.ts'
 import type { VideoProjectRelay } from '../src/video-project-provider.ts'
 import { createVideoProjectDispatch } from '../src/video-project-dispatch.ts'
-import { h3SubmissionQueryRejection, h3SubmissionRejection } from '../src/video-submission-result.ts'
+import { h3SubmissionQueryRejection, h3SubmissionRejection, VideoSubmissionRejection } from '../src/video-submission-result.ts'
 import notSentContract from './fixtures/h3-not-sent-contract.json' with { type: 'json' }
 import mediaContract from './fixtures/media-submission-api-contract-v3.json' with { type: 'json' }
 import type { ArtifactOrigin, ArtifactPublishRequest } from '@deepseek-ai/dsh-artifacts-index'
@@ -102,6 +102,85 @@ async function setup(durations = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]) {
     set currentAccount(value: boolean) { currentAccount = value }, set runningTask(value: string) { runningTask = value },
   }
 }
+
+describe('explicit same-work funding retries', () => {
+  const original = { messageId: 'original-human', seq: 1 }
+  const later = { messageId: 'recharged-human', seq: 20 }
+
+  it('retains the original attempt and accepts one later human retry without unlocking same-submit replay', async () => {
+    const f = await setup([4])
+    const submit = vi.spyOn(f.provider, 'submit').mockRejectedValueOnce(new VideoSubmissionRejection(
+      'INSUFFICIENT_BALANCE', '余额不足，请充值', 'not_submitted'))
+    const manifest = await prepareVideoProject(f.options, { prompt: 'Same finished work', totalDurationSeconds: 4 },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal, undefined, original)
+    expect((await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal)).detail).toBe('INSUFFICIENT_BALANCE')
+    const firstAttempt = manifest.segments[0]?.attemptId
+    expect((await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal)).detail).toBe('PROVIDER_TASK_FAILED')
+    expect((await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal, { revision: original })).detail)
+      .toBe('VIDEO_BALANCE_RETRY_CONFIRMATION_REQUIRED')
+    expect(submit).toHaveBeenCalledOnce()
+    expect((await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal, { revision: later })).status).toBe('completed')
+    expect(manifest.submissionRevision).toEqual(later)
+    expect(manifest.segments[0]?.attemptId).not.toBe(firstAttempt)
+    expect(manifest.segments[0]?.previousAttempts).toEqual([{ attemptId: firstAttempt,
+      balanceRejection: { code: 'INSUFFICIENT_BALANCE', submissionState: 'not_submitted' } }])
+    expect(submit).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps a balance reason without a complete unsent receipt unknown after a later recharge reply', async () => {
+    const f = await setup([4])
+    const submit = vi.spyOn(f.provider, 'submit').mockRejectedValue(new VideoRelayError('INSUFFICIENT_BALANCE', '余额不足，请充值'))
+    const manifest = await prepareVideoProject(f.options, { prompt: 'Original uncertain attempt', totalDurationSeconds: 4 },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal, undefined, original)
+    await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal)
+    expect((await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal, { revision: later })).detail).toBe('SUBMISSION_UNKNOWN')
+    expect(submit).toHaveBeenCalledOnce()
+    expect(manifest.segments[0]?.previousAttempts).toBeUndefined()
+  })
+
+  it('saves an accepted peer when the original failed funding proof cannot be read', async () => {
+    const f = await setup([4])
+    const manifest = await prepareVideoProject(f.options, { prompt: 'Retain accepted peer', totalDurationSeconds: 8 },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal, undefined, original)
+    Object.assign(manifest.segments[0]!, { status: 'failed', taskId: 'old-unsent',
+      balanceRejection: { code: 'INSUFFICIENT_BALANCE', submissionState: 'not_submitted', taskId: 'old-unsent' } })
+    Object.assign(manifest.segments[1]!, { status: 'running', taskId: 'accepted-peer' })
+    manifest.failureCode = 'INSUFFICIENT_BALANCE'
+    manifest.status = 'failed'
+    await writeFile(join(f.options.stateDirectory, manifest.id, 'manifest.json'), JSON.stringify(manifest))
+    const submit = vi.spyOn(f.provider, 'submit')
+    vi.spyOn(f.provider, 'check').mockImplementation(async (taskId) => {
+      if (taskId === 'old-unsent') throw new VideoRelayError('VIDEO_READ_UNAVAILABLE', '原任务暂时不可读')
+      return { status: 'succeeded' }
+    })
+    vi.spyOn(f.provider, 'download').mockImplementation(async (_task, _request, path) => { await writeFile(path, '4') })
+    const result = await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal, { revision: later })
+    expect(result.detail).toBe('VIDEO_READ_UNAVAILABLE')
+    expect(manifest.segments[1]?.status).toBe('saved')
+    expect(manifest.segments[0]?.taskId).toBe('old-unsent')
+    expect(submit).not.toHaveBeenCalled()
+  })
+
+  it.each([1, 2])('inherits a legacy funding category only for an unambiguous original failure, failed clips=%s', async (count) => {
+    const f = await setup([4])
+    const manifest = await prepareVideoProject(f.options, { prompt: 'Legacy original work', totalDurationSeconds: 4 * count },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    for (const segment of manifest.segments) Object.assign(segment, { status: 'failed', taskId: `original-${String(segment.index)}` })
+    manifest.failureCode = 'INSUFFICIENT_BALANCE'
+    manifest.status = 'failed'
+    await writeFile(join(f.options.stateDirectory, manifest.id, 'manifest.json'), JSON.stringify(manifest))
+    const check = f.provider.check.bind(f.provider)
+    vi.spyOn(f.provider, 'check').mockImplementation(async (taskId, request, signal) => {
+      if (taskId.startsWith('original-')) throw new VideoSubmissionRejection('H3_SUBMISSION_NOT_SENT', '完整未发送回执', 'not_submitted', taskId)
+      return check(taskId, request, signal)
+    })
+    const submit = vi.spyOn(f.provider, 'submit')
+    const result = await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal,
+      { revision: later, afterRevision: original })
+    expect(result.status).toBe(count === 1 ? 'completed' : 'failed')
+    expect(submit).toHaveBeenCalledTimes(count === 1 ? 1 : 0)
+  })
+})
 
 describe('readable video output names', () => {
   it('retains local plan and shot titles without sending them to the provider or replacing same-title files', async () => {

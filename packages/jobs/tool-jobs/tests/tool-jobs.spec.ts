@@ -46,6 +46,7 @@ async function setup(config: ToolJobs.Config = {}, registry: RegistryConfig = {}
 interface FakeDelivery {
   inject?: (...args: unknown[]) => void
   followup?: (...args: unknown[]) => void
+  session?: Session
   /** Defaults to `running`, the lane that never wakes, so notice-content tests pin one lane. */
   status?: 'idle' | 'running'
 }
@@ -63,7 +64,7 @@ async function fakeAgent(ctx: Context, sessionId: string, delivery: FakeDelivery
     inject: delivery.inject ?? (() => {}),
     followup: delivery.followup ?? (() => {}),
     status: delivery.status ?? 'running',
-    session: { id, header: { version: 0, id, createdAt: 0 } },
+    session: delivery.session ?? { id, header: { version: 0, id, createdAt: 0 } },
   } as unknown as Agent
   agentRegistryDisposers.set(agent, await ctx.agents.register(agent))
   agentScopeFibers.set(agent, scopeFiber)
@@ -316,6 +317,34 @@ describe('job_output', () => {
       expect(again).toMatchObject({ concludesTurn: true, meta: { jobId: id, actionRequired } })
       expect(text(again)).not.toContain(original)
       expect(ctx.jobs.list(owner.id)[0]?.actionRequired).toEqual(actionRequired)
+    } finally { await ctx.fiber.dispose() }
+  })
+
+  it('lets a later question reply read an old action failure while stopping a failure from that same reply', async () => {
+    const { ctx } = await setup()
+    await ctx.plugin(SessionProjections)
+    const session = Session.create(SessionId('question-reply-owner'))
+    const owner = await fakeAgent(ctx, session.id, { session })
+    const original = session.append('user/message', createUserMessage({ source: { kind: 'user' },
+      content: [{ type: 'text', text: 'generate the video' }] }), { surfaceOp: 'append' })
+    const old = producer({ owner: owner.id })
+    try {
+      const oldId = ctx.jobs.start(old.spec)
+      old.settle({ status: 'failed', detail: 'INSUFFICIENT_BALANCE',
+        actionRequired: { code: 'INSUFFICIENT_BALANCE', requestSeq: original.seq } })
+      await vi.waitFor(() => { expect(ctx.jobs.get(oldId, owner.id).status).toBe('failed') })
+      expect(await call(ctx, 'job_output', { job_id: oldId }, owner)).toMatchObject({ concludesTurn: true })
+      const reply = session.append('user/message', createUserMessage({
+        source: { kind: 'user-question-reply', callId: ToolCallId('confirm-recharged'), outcome: 'answered' },
+        content: [{ type: 'text', text: 'funding restored; continue' }],
+      }), { surfaceOp: 'append' })
+      expect((await call(ctx, 'job_output', { job_id: oldId }, owner)).concludesTurn).toBeUndefined()
+      const current = producer({ owner: owner.id })
+      const currentId = ctx.jobs.start(current.spec)
+      current.settle({ status: 'failed', detail: 'INSUFFICIENT_BALANCE',
+        actionRequired: { code: 'INSUFFICIENT_BALANCE', requestSeq: reply.seq } })
+      await vi.waitFor(() => { expect(ctx.jobs.get(currentId, owner.id).status).toBe('failed') })
+      expect(await call(ctx, 'job_output', { job_id: currentId }, owner)).toMatchObject({ concludesTurn: true })
     } finally { await ctx.fiber.dispose() }
   })
 
@@ -806,8 +835,10 @@ describe('completion notices across scoped mounts', () => {
       expect(ctx.sessionProjections.stateOf(session, 'toolJobHumanInput')).toBe(human.seq)
       await second.dispose()
       expect(ctx.sessionProjections.stateOf(session, 'toolJobHumanInput')).toBeUndefined()
-      const newer = session.append('user/message', createUserMessage({ source: { kind: 'user' },
-        content: [{ type: 'text', text: 'new independent request' }] }), { surfaceOp: 'append' })
+      const newer = session.append('user/message', createUserMessage({
+        source: { kind: 'user-question-reply', callId: ToolCallId('late-confirmation'), outcome: 'answered' },
+        content: [{ type: 'text', text: 'new human confirmation' }],
+      }), { surfaceOp: 'append' })
       const reloaded = await standingA.ctx.plugin(ToolJobs)
       expect(ctx.sessionProjections.stateOf(session, 'toolJobHumanInput')).toBe(newer.seq)
       await reloaded.dispose()

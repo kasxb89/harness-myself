@@ -224,6 +224,53 @@ describe('injected credits session source', () => {
     expect(source.getSnapshot().readFailure).toBeNull()
   })
 
+  it('starts a post-payment read and ignores an earlier balance response arriving last', async () => {
+    api.get.mockImplementation(async path => ({ ok: true, payload: path.endsWith('/session') ? account('a') : balance(1234) }))
+    const { createCreditsSessionSource, refreshCredits, refreshBalance } = await import('../src/client/session-store.ts')
+    const source = createCreditsSessionSource()
+    await refreshCredits()
+    const earlier = Promise.withResolvers<{ ok: boolean; payload: unknown }>()
+    const paid = Promise.withResolvers<{ ok: boolean; payload: unknown }>()
+    api.get.mockReturnValueOnce(earlier.promise).mockReturnValueOnce(paid.promise)
+    const oldRead = refreshBalance()
+    const afterPayment = refreshBalance(undefined, true)
+    expect(api.get).toHaveBeenCalledTimes(4)
+    paid.resolve({ ok: true, payload: balance(2234) })
+    await afterPayment
+    expect(source.getSnapshot()).toMatchObject({ balance: balance(2234), readFailure: null, refreshing: false })
+    earlier.resolve({ ok: true, payload: balance(0) })
+    await oldRead
+    expect(source.getSnapshot()).toMatchObject({ balance: balance(2234), readFailure: null, refreshing: false })
+  })
+
+  it('retains the last verified balance when the post-payment read fails without accepting an older response', async () => {
+    api.get.mockImplementation(async path => ({ ok: true, payload: path.endsWith('/session') ? account('a') : balance(1234) }))
+    const { createCreditsSessionSource, refreshCredits, refreshBalance } = await import('../src/client/session-store.ts')
+    const source = createCreditsSessionSource()
+    await refreshCredits()
+    const earlier = Promise.withResolvers<{ ok: boolean; payload: unknown }>()
+    api.get.mockReturnValueOnce(earlier.promise).mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    const oldRead = refreshBalance()
+    await refreshBalance(undefined, true)
+    expect(source.getSnapshot()).toMatchObject({ balance: balance(1234), readFailure: { kind: 'network' }, refreshing: false })
+    earlier.resolve({ ok: true, payload: balance(0) })
+    await oldRead
+    expect(source.getSnapshot()).toMatchObject({ balance: balance(1234), readFailure: { kind: 'network' }, refreshing: false })
+  })
+
+  it('keeps a server cooldown for a post-payment refresh', async () => {
+    api.get.mockImplementation(async path => ({ ok: true, payload: path.endsWith('/session') ? account('a') : balance(1234) }))
+    const { createCreditsSessionSource, refreshCredits, refreshBalance } = await import('../src/client/session-store.ts')
+    const source = createCreditsSessionSource()
+    await refreshCredits()
+    api.get.mockResolvedValueOnce({ ok: false, code: 'BALANCE_RATE_LIMITED', httpStatus: 429, retryAfterSeconds: 30 })
+    await refreshBalance()
+    const beforePayment = api.get.mock.calls.length
+    await refreshBalance(undefined, true)
+    expect(api.get).toHaveBeenCalledTimes(beforePayment)
+    expect(source.getSnapshot()).toMatchObject({ balance: balance(1234), readFailure: { kind: 'rateLimited' } })
+  })
+
   it.each([{ id: 'b' }, null])('retains A when a successful summary identifies another current account: %j', async (owner) => {
     api.get.mockImplementation(async path => ({ ok: true, payload: path.endsWith('/session') ? account('a') : balance(1234) }))
     const { createCreditsSessionSource, refreshCredits, refreshBalance } = await import('../src/client/session-store.ts')

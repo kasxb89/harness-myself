@@ -19,6 +19,8 @@ import { creationTaskActivity, notifyCreationActivity } from './creation-activit
 import { mediaFilename, MAX_MEDIA_FILENAME_BYTES, type MediaFilenameOptions } from './media-filename.ts'
 import type { CreationActivityOutcome } from './creation-activity.ts'
 import type { VideoProjectIdentity, VideoProjectInput, VideoProjectOptions, VideoProjectProvider, VideoProjectRequest, VideoRequestValue } from './video-project-types.ts'
+import { isLaterVideoSubmissionRevision, parseVideoBalanceRejection, parseVideoSubmissionRevision,
+  type VideoBalanceRejection, type VideoSubmissionRevision } from './video-balance-retry.ts'
 
 /** Complete private-record parser limit, including prompt and per-clip metadata. */
 const MAX_MANIFEST_BYTES = 64 * 1024 * 1024
@@ -103,12 +105,18 @@ export interface VideoProjectSegment {
   path?: string
   /** Artifact-library copy; the private original remains available for resume and composition. */
   publishedPath?: string
+  /** Verified funding refusal, retained independently from a generic failed or unknown outcome. */
+  balanceRejection?: VideoBalanceRejection
+  /** Original refused attempts remain available after an explicitly authorized later attempt. */
+  previousAttempts?: { attemptId?: VideoProjectAttemptId; taskId?: string; balanceRejection: VideoBalanceRejection }[]
 }
 
 /** Versioned private project state, never used as an in-memory jobs substitute. */
 export interface VideoProjectManifest {
   /** Private-record parser version. */
   version: 1
+  /** Latest real human input consumed by a submission or an explicit funding retry. */
+  submissionRevision?: VideoSubmissionRevision
   /** Immutable project identifier. */
   id: VideoProjectId
   /** Agent session owning this record. */
@@ -538,12 +546,30 @@ function parseManifest(value: unknown): VideoProjectManifest {
     if (status !== 'pending' && status !== 'submitting' && status !== 'running' && status !== 'saved' && status !== 'failed' && status !== 'unknown') throw new VideoProjectError('INVALID_RECORD', '视频片段状态无效，已停止操作。')
     const request = requestValue(segment.request)
     if (request === null || typeof request !== 'object' || Array.isArray(request)) throw new VideoProjectError('INVALID_RECORD', '视频片段请求无效，已停止操作。')
+    const balanceRejection = segment.balanceRejection === undefined ? undefined : parseVideoBalanceRejection(segment.balanceRejection)
+    if (segment.balanceRejection !== undefined && balanceRejection === undefined
+      || balanceRejection !== undefined && (status !== 'failed' || balanceRejection.taskId !== segment.taskId)) {
+      throw new VideoProjectError('INVALID_RECORD', '视频余额拒绝记录无法核对，已停止操作。')
+    }
+    const previousAttempts = segment.previousAttempts === undefined ? undefined : (() => {
+      if (!Array.isArray(segment.previousAttempts) || segment.previousAttempts.length > 256) throw new VideoProjectError('INVALID_RECORD', '视频重试记录无效，已停止操作。')
+      return segment.previousAttempts.map((value) => {
+        const previous = record(value)
+        const rejected = parseVideoBalanceRejection(previous.balanceRejection)
+        if (rejected === undefined || rejected.taskId !== previous.taskId) throw new VideoProjectError('INVALID_RECORD', '视频重试记录无法核对，已停止操作。')
+        return { balanceRejection: rejected,
+          ...previous.attemptId === undefined ? {} : { attemptId: videoAttemptId(previous.attemptId) },
+          ...previous.taskId === undefined ? {} : { taskId: text(previous, 'taskId') } }
+      })
+    })()
     return {
       index: positive(segment, 'index'), durationSeconds: positive(segment, 'durationSeconds'), prompt: text(segment, 'prompt'), request, status,
       ...segment.attemptId === undefined ? {} : { attemptId: videoAttemptId(segment.attemptId) },
       ...segment.taskId === undefined ? {} : { taskId: text(segment, 'taskId') },
       ...segment.path === undefined ? {} : { path: text(segment, 'path') },
       ...segment.publishedPath === undefined ? {} : { publishedPath: text(segment, 'publishedPath') },
+      ...balanceRejection === undefined ? {} : { balanceRejection },
+      ...previousAttempts === undefined ? {} : { previousAttempts },
     }
   })
   const attempts = segments.flatMap(segment => segment.attemptId === undefined ? [] : [segment.attemptId])
@@ -564,6 +590,8 @@ function parseManifest(value: unknown): VideoProjectManifest {
   }
   const origin = parseArtifactOrigin(source.origin, text(source, 'ownerSessionId'))
   if (origin === null) throw new VideoProjectError('INVALID_RECORD', '视频项目生成来源损坏，已停止操作。')
+  const submissionRevision = source.submissionRevision === undefined ? undefined : parseVideoSubmissionRevision(source.submissionRevision)
+  if (source.submissionRevision !== undefined && submissionRevision === undefined) throw new VideoProjectError('INVALID_RECORD', '视频提交来源损坏，已停止操作。')
   return {
     version: 1, id: projectId(text(source, 'id')), ownerSessionId: text(source, 'ownerSessionId'), workspaceRoot: text(source, 'workspaceRoot'),
     identity: { accountId: text(identity, 'accountId'), sessionFingerprint: text(identity, 'sessionFingerprint') }, input: parsedInput,
@@ -575,6 +603,7 @@ function parseManifest(value: unknown): VideoProjectManifest {
     ...source.finalPath === undefined ? {} : { finalPath: text(source, 'finalPath') },
     ...source.finalDurationSeconds === undefined ? {} : { finalDurationSeconds: positive(source, 'finalDurationSeconds') },
     ...source.failureCode === undefined ? {} : { failureCode: text(source, 'failureCode') },
+    ...submissionRevision === undefined ? {} : { submissionRevision },
   }
 }
 
@@ -608,12 +637,13 @@ export async function readVideoProject(
  * @param editor - session-bound local editor.
  * @param signal - foreground preparation cancellation.
  * @param origin - Exact generating tool location captured before preparing paid work.
+ * @param submissionRevision - Host-captured real human input owning the first submission.
  * @returns prepared record containing the exact generation plan and requests.
  */
 export async function prepareVideoProject(
   options: VideoProjectOptions, input: VideoProjectInput, ownerSessionId: string, workspaceRoot: string,
   provider: VideoProjectProvider, editor: VideoEditor, signal: AbortSignal,
-  origin?: ArtifactOrigin,
+  origin?: ArtifactOrigin, submissionRevision?: VideoSubmissionRevision,
 ): Promise<VideoProjectManifest> {
   const capturedOrigin = origin === undefined ? undefined : Object.freeze({ ...origin })
   validateInput(input, options.maxTotalSeconds)
@@ -666,6 +696,7 @@ export async function prepareVideoProject(
   }
   const manifest: VideoProjectManifest = {
     version: 1, id, ownerSessionId, workspaceRoot, identity: { ...provider.identity }, input, model: model.id,
+    ...submissionRevision === undefined ? {} : { submissionRevision: { ...submissionRevision } },
     status: 'prepared', segments, outputDirectory,
     ...publicationDirectory === undefined ? {} : { publicationDirectory },
     ...capturedOrigin === undefined ? {} : { origin: capturedOrigin },
@@ -703,7 +734,7 @@ function savedPath(segment: VideoProjectSegment): string {
 /** A failed status read owns only the task whose response established it. */
 class VideoProjectTaskFailure extends VideoProjectError {
   /** @param taskId - Original failed task. @param failure - Safe provider-owned summary, without raw upstream content. */
-  constructor(readonly taskId: string, failure?: { code?: string; message?: string }) {
+  constructor(readonly taskId: string, readonly failure?: { code?: string; message?: string; submissionState?: 'not_submitted' | 'accepted' }) {
     super(failure?.code ?? 'PROVIDER_TASK_FAILED', failure?.message
       ?? '上游视频片段生成失败；已生成的其他片段保留，未重新提交任务。')
   }
@@ -827,6 +858,72 @@ function projectActivity(options: VideoProjectOptions, manifest: VideoProjectMan
   })
 }
 
+/** Host-captured authorization for a later funding retry; model arguments cannot create it. */
+export interface VideoProjectBalanceRetry {
+  revision: VideoSubmissionRevision
+  /** Original operation's source for manifests written before submission revisions were retained. */
+  afterRevision?: VideoSubmissionRevision
+}
+
+/** Preserve every old attempt while admitting only gateway-proven unsubmitted funding failures. */
+async function prepareBalanceRetry(
+  options: VideoProjectOptions, manifest: VideoProjectManifest, provider: VideoProjectProvider,
+  retry: VideoProjectBalanceRetry, signal: AbortSignal,
+): Promise<void> {
+  const legacyFundingIsUnambiguous = manifest.failureCode === 'INSUFFICIENT_BALANCE'
+    && manifest.segments.filter(segment => segment.status === 'failed' || segment.status === 'unknown'
+      || segment.status === 'submitting').length === 1
+  const candidates = manifest.segments.filter(segment => segment.balanceRejection !== undefined
+    || manifest.failureCode === 'INSUFFICIENT_BALANCE' && (segment.status === 'failed' || segment.status === 'unknown')
+      && segment.taskId !== undefined)
+  if (candidates.length === 0) return
+  for (const segment of candidates) {
+    if (segment.taskId === undefined) continue
+    await provider.assertCurrent()
+    signal.throwIfAborted()
+    let rejection: VideoBalanceRejection | undefined
+    try {
+      const state = await provider.check(segment.taskId, segment.request, signal)
+      if (state.status === 'failed' && state.code === 'INSUFFICIENT_BALANCE' && state.submissionState === 'not_submitted') {
+        rejection = { code: 'INSUFFICIENT_BALANCE', submissionState: 'not_submitted', taskId: segment.taskId }
+      }
+    } catch (error) {
+      if (!(error instanceof VideoSubmissionRejection) || (error.code !== 'INSUFFICIENT_BALANCE'
+        && segment.balanceRejection === undefined && !legacyFundingIsUnambiguous)
+        || error.submissionState !== 'not_submitted' || error.upstreamSubmitted || error.taskId !== segment.taskId) throw error
+      rejection = { code: 'INSUFFICIENT_BALANCE', submissionState: 'not_submitted', taskId: segment.taskId }
+    }
+    if (rejection === undefined) {
+      throw new VideoProjectError('SUBMISSION_UNKNOWN', '原任务尚未确认未提交上游，请继续核对原任务；本次没有重新生成。')
+    }
+    segment.status = 'failed'
+    segment.balanceRejection = rejection
+  }
+  const eligible = candidates.filter(segment => segment.balanceRejection !== undefined)
+  if (eligible.length === 0) return
+  if (!isLaterVideoSubmissionRevision(retry.revision, manifest.submissionRevision ?? retry.afterRevision)) {
+    throw new VideoProjectError('VIDEO_BALANCE_RETRY_CONFIRMATION_REQUIRED', '原视频因余额不足未提交上游。充值后请在当前聊天发送“继续生成”或“重试”，本次未重复提交。')
+  }
+  if (eligible.some(segment => (segment.previousAttempts?.length ?? 0) >= 256)) {
+    throw new VideoProjectError('VIDEO_BALANCE_RETRY_LIMIT', '该作品重试记录已满，请保留原任务并联系支持，尚未重新提交。')
+  }
+  for (const segment of eligible) {
+    const rejection = segment.balanceRejection
+    if (rejection === undefined) continue
+    segment.previousAttempts = [...segment.previousAttempts ?? [], { balanceRejection: rejection,
+      ...segment.attemptId === undefined ? {} : { attemptId: segment.attemptId },
+      ...segment.taskId === undefined ? {} : { taskId: segment.taskId } }]
+    segment.attemptId = videoAttemptId(randomUUID())
+    segment.status = 'pending'
+    delete segment.taskId
+    delete segment.balanceRejection
+  }
+  manifest.submissionRevision = { ...retry.revision }
+  await provider.assertCurrent()
+  signal.throwIfAborted()
+  await persist(options, manifest)
+}
+
 /**
  * Run or explicitly resume a durable project; never retry an unknown submission.
  * @param options - configuration and private record storage.
@@ -835,11 +932,12 @@ function projectActivity(options: VideoProjectOptions, manifest: VideoProjectMan
  * @param editor - initiating session's sandbox-aware local editor.
  * @param job - registered job output and progress writer.
  * @param signal - job-owned cancellation, not the completed tool call's signal.
+ * @param retry - Optional later real human input authorizing a proven unsubmitted funding retry.
  * @returns a non-rejecting terminal outcome after all owned work has stopped.
  */
 export async function runVideoProject(
   options: VideoProjectOptions, manifest: VideoProjectManifest, provider: VideoProjectProvider, editor: VideoEditor,
-  job: JobHandle, signal: AbortSignal,
+  job: JobHandle, signal: AbortSignal, retry?: VideoProjectBalanceRetry,
 ): Promise<JobOutcome> {
   const key = join(options.stateDirectory, manifest.id)
   for (;;) {
@@ -867,7 +965,16 @@ export async function runVideoProject(
         final_path: manifest.finalPath, duration_seconds: manifest.finalDurationSeconds,
         clip_paths: manifest.segments.map(segment => segment.publishedPath ?? savedPath(segment)) }) }
     }
-    const outcome = await executeVideoProject(options, manifest, provider, editor, job, signal, progress, activity)
+    let retryFailure: { error: unknown } | undefined
+    if (retry !== undefined) {
+      try { await prepareBalanceRetry(options, manifest, provider, retry, signal) }
+      catch (error) {
+        if (signal.aborted || !manifest.segments.some(segment => segment.taskId !== undefined
+          && (segment.status === 'running' || segment.status === 'unknown' || segment.status === 'submitting'))) throw error
+        retryFailure = { error }
+      }
+    }
+    const outcome = await executeVideoProject(options, manifest, provider, editor, job, signal, progress, activity, retryFailure)
     activityOutcome = outcome.status === 'completed' ? 'completed'
       : manifest.segments.some(segment => segmentActivityOutcome(segment) === 'unknown') ? 'unknown'
         : outcome.status === 'killed' ? 'stopped' : 'failed'
@@ -961,6 +1068,10 @@ async function executeVideoSegments(
         if (error instanceof VideoSubmissionRejection) {
           segment.status = 'failed'
           if (error.taskId !== undefined) segment.taskId = error.taskId
+          if (error.code === 'INSUFFICIENT_BALANCE' && error.submissionState === 'not_submitted' && !error.upstreamSubmitted) {
+            segment.balanceRejection = { code: 'INSUFFICIENT_BALANCE', submissionState: 'not_submitted',
+              ...error.taskId === undefined ? {} : { taskId: error.taskId } }
+          }
           unsettled.delete(segment.index)
           throw error
         }
@@ -1001,6 +1112,10 @@ async function executeVideoSegments(
       // Peer cancellation can carry another clip's rejection as its abort reason.
       if ((error instanceof VideoSubmissionRejection || error instanceof VideoProjectTaskFailure) && error.taskId === segment.taskId) {
         segment.status = 'failed'
+        if (error.code === 'INSUFFICIENT_BALANCE' && (error instanceof VideoSubmissionRejection
+          ? !error.upstreamSubmitted && error.submissionState === 'not_submitted' : error.failure?.submissionState === 'not_submitted')) {
+          segment.balanceRejection = { code: 'INSUFFICIENT_BALANCE', submissionState: 'not_submitted', taskId: error.taskId }
+        }
         unsettled.delete(segment.index)
       }
       throw error
@@ -1076,6 +1191,7 @@ async function executeVideoSegments(
 async function executeVideoProject(
   options: VideoProjectOptions, manifest: VideoProjectManifest, provider: VideoProjectProvider, editor: VideoEditor,
   job: JobHandle, signal: AbortSignal, progress: VideoProjectProgress, activity: ReturnType<typeof creationTaskActivity>,
+  retryFailure?: { error: unknown },
 ): Promise<JobOutcome> {
   const unsettled = new Set(manifest.segments.filter(segment =>
     segment.status === 'unknown' || segment.status === 'submitting' || segment.status === 'running').map(segment => segment.index))
@@ -1095,9 +1211,10 @@ async function executeVideoProject(
         : manifest.segments.some(segment => segment.status === 'failed')
           ? new VideoProjectError('PROVIDER_TASK_FAILED', '项目中有失败的上游任务，已生成片段保留；其余已知任务仍可查询保存，请使用 edit_video 编辑已保存片段，或明确创建新项目。')
           : undefined
-    const blocked = blockingFailure()
+    const blocking = blockingFailure()
+    const blocked = retryFailure ?? (blocking === undefined ? undefined : { error: blocking })
     if (blocked !== undefined && !manifest.segments.some(segment => segment.taskId !== undefined
-      && (segment.status === 'running' || segment.status === 'unknown' || segment.status === 'submitting'))) throw blocked
+      && (segment.status === 'running' || segment.status === 'unknown' || segment.status === 'submitting'))) throw blocked.error
     await editor.preflight(signal, manifest.outputDirectory)
     manifest.identity = { ...provider.identity }
     manifest.status = 'running'
@@ -1108,6 +1225,7 @@ async function executeVideoProject(
       await executeVideoSegments(options, manifest, provider, editor, job, signal, unsettled, blocked !== undefined, progress)
     }
     if (blocked !== undefined && manifest.segments.some(segment => segment.status !== 'saved')) {
+      if (retryFailure !== undefined) throw retryFailure.error
       const remaining = blockingFailure()
       if (remaining !== undefined) throw remaining
       throw new VideoProjectError('VIDEO_PROJECT_RESUME_REQUIRED',

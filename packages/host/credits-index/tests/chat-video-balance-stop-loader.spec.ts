@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import Loader, { type ModuleLoaderV2 } from '@deepseek-ai/cordis-plugin-loader'
 import Include from '@deepseek-ai/cordis-plugin-include'
-import LlmRuntime, { createUserMessage, type StreamChunk } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { createUserMessage, ToolCallId, type StreamChunk } from '@deepseek-ai/dsh-llm'
 import SessionStore, { Session, SessionId } from '@deepseek-ai/dsh-session'
 import SessionProjections from '@deepseek-ai/dsh-session-projection'
 import AgentRegistry, { type Agent } from '@deepseek-ai/dsh-agent'
@@ -17,6 +17,8 @@ import LocalFS from '@deepseek-ai/dsh-fs-local'
 import WorkingDirectory from '@deepseek-ai/dsh-working-directory'
 import LocalJobs from '@deepseek-ai/dsh-jobs-local'
 import * as JobTools from '@deepseek-ai/dsh-tool-jobs'
+import UserQuestions from '@deepseek-ai/dsh-user-questions'
+import * as AskUser from '@deepseek-ai/dsh-tool-ask-user'
 import { MockAdapter, textResponse, toolCallResponse } from '../../../core/agent-loop/tests/mock-adapter.ts'
 import { PtcRuntime, type PtcRunRequest, type PtcRunSpec } from '@deepseek-ai/dsh-ptc-runtime'
 import { CreativeError, CreativeStore } from '../src/creative-store.ts'
@@ -33,6 +35,8 @@ import { executeImageTask } from '../src/image-task.ts'
 import { submitAudio } from '../src/audio-generation.ts'
 import mediaContract from './fixtures/media-submission-api-contract-v3.json' with { type: 'json' }
 import { eventLines, toHeaderLine } from '@deepseek-ai/dsh-session-persistence-jsonl/src/format.ts'
+import type { JobActionRequired } from '@deepseek-ai/dsh-jobs'
+import questionBalanceExpected from './expected/question-balance-continuation.json' with { type: 'json' }
 
 const scope = 'a'.repeat(64)
 const prompt = { prompt: '海边日落', total_duration_seconds: 5 }
@@ -61,7 +65,7 @@ class BindingRuntime extends PtcRuntime {
   }
 }
 
-async function boot(script: StreamChunk[][], ptc = false) {
+async function boot(script: StreamChunk[][], ptc = false, questions = false) {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-video-balance-loader-'))
   const ctx = new Context()
   resources.push({ ctx, directory })
@@ -168,12 +172,15 @@ async function boot(script: StreamChunk[][], ptc = false) {
     ['system-prompt', SystemPrompt], ['tools', Tools], ['jobs', LocalJobs], ['job-tools', JobTools],
     ['agent-loop', AgentLoop], ['fixture', Fixture], ['binding-runtime', BindingRuntime],
     ['fs', LocalFS], ['working-directory', WorkingDirectory],
+    ['user-questions', UserQuestions], ['ask-user', AskUser],
   ])
   const config = join(directory, 'cordis.yml')
   await writeFile(config, ['- name: sessions', '- name: projections', '- name: agents', '- name: llm', '- name: system-prompt',
     '- name: fs', '- name: working-directory',
     '- name: tools', ...ptc ? ['  config:', '    mode: ptc', '- name: binding-runtime'] : [],
-    '- name: jobs', '- name: job-tools', '- name: agent-loop', '  config:', '    agents: []', '- name: fixture', '',
+    '- name: jobs', '- name: job-tools',
+    ...questions ? ['- name: user-questions', '- name: ask-user', '  config:', '    mode: timed', '    timeout: 1'] : [],
+    '- name: agent-loop', '  config:', '    agents: []', '- name: fixture', '',
   ].join('\n'))
   ctx.baseUrl = pathToFileURL(directory).href + '/'
   await ctx.plugin(Loader)
@@ -215,6 +222,24 @@ function recordedSession(raw: string, workspace: string): string {
   const typed = redactSessionSnapshotIds([raw])[0]
   if (typed === undefined) throw new Error('Missing captured Session')
   return normalizeSessionSnapshot(typed, { sessionIds: [], cwd: workspace }, { identityMode: 'preserve' })
+}
+
+/** Project the recorded human and job relationships without random work ids or temporary paths. */
+function questionBalanceSession(session: Session, action: JobActionRequired | undefined) {
+  const events = session.snapshotEvents()
+  const inputs = events.filter(event => event.type === 'user/message').filter(event =>
+    event.data.source.kind === 'user' || event.data.source.kind === 'user-question-reply' || event.data.source.kind === 'tool-jobs')
+  const original = inputs.find(event => event.data.source.kind === 'user')
+  const reply = inputs.find(event => event.data.source.kind === 'user-question-reply')
+  return {
+    humanSources: inputs.map(event => event.data.source.kind),
+    tools: events.filter(event => event.type === 'tool/call').map(event => event.data.name),
+    turns: events.filter(event => event.type === 'turn/end').map(event => event.data.reason.kind),
+    actionRequired: { code: action?.code, scope: action?.scope,
+      originalHuman: action?.requestSeq === original?.seq, replyHuman: action?.requestSeq === reply?.seq },
+    assistantText: session.deriveMessages().flatMap(message => message.role === 'assistant'
+      ? message.content.flatMap(block => block.type === 'text' ? [block.text] : []) : []),
+  }
 }
 
 describe('balance failure through Loader, Agent, video tools and jobs', () => {
@@ -455,6 +480,69 @@ describe('balance failure through Loader, Agent, video tools and jobs', () => {
     expect(users).toHaveLength(2)
     const ends = agent.session.snapshotEvents().filter(event => event.type === 'turn/end')
     expect(ends.map(event => event.type === 'turn/end' ? event.data.reason.kind : '')).toEqual(['completed', 'completed'])
+  })
+
+  it('lets a real later confirmation read an old funding failure without ending the confirmation turn', async () => {
+    const question = { questions: [{ id: 'continue', question: '充值后继续当前要求吗？', options: [{ label: '继续' }] }] }
+    const f = await boot([batchResponse('ask_user_question', question),
+      toolCallResponse('read-old', 'job_output', { job_id: 'video-project-1' }),
+      textResponse('已读取原任务，可以继续本次要求。')], false, true)
+    f.failInJob()
+    const agent = await f.create('late-confirmation')
+    f.send(agent)
+    await agent.whenIdle()
+    await vi.waitFor(() => { expect(f.ctx.jobs.list(agent.id)[0]).toMatchObject({ status: 'failed',
+      actionRequired: { code: 'INSUFFICIENT_BALANCE' } }) })
+    f.allow()
+    expect(f.ctx.userQuestions.answer(agent, ToolCallId('one'), {
+      answers: [{ id: 'continue', selected: ['继续'] }],
+    })).toBe(true)
+    await agent.whenIdle()
+    expect(f.adapter.requests).toHaveLength(3)
+    expect(f.preflights).toBe(1)
+    expect(f.submissions).toBe(1)
+    const users = agent.session.snapshotEvents().filter(event => event.type === 'user/message')
+    const original = users.find(event => event.data.source.kind === 'user')
+    const reply = users.find(event => event.data.source.kind === 'user-question-reply')
+    expect(reply?.seq).toBeGreaterThan(original?.seq ?? -1)
+    expect(f.ctx.jobs.list(agent.id)[0]?.actionRequired?.requestSeq).toBe(original?.seq)
+    expect(agent.session.deriveMessages().at(-1)).toMatchObject({ role: 'assistant',
+      content: [{ type: 'text', text: '已读取原任务，可以继续本次要求。' }] })
+    const restored = Session.create(SessionId('restored-late-confirmation'), parseSessionLog(serializedSession(agent)))
+    expect(restored.deriveMessages()).toEqual(agent.session.deriveMessages())
+    expect(questionBalanceSession(restored, f.ctx.jobs.list(agent.id)[0]?.actionRequired)).toEqual(questionBalanceExpected.olderFailure)
+  })
+
+  it('binds a funding failure from a real confirmation to that reply and stops its repeated read', async () => {
+    const question = { questions: [{ id: 'generate', question: '按当前参数生成视频吗？', options: [{ label: '生成' }] }] }
+    const f = await boot([toolCallResponse('confirm', 'ask_user_question', question), textResponse('等待你的确认。'),
+      toolCallResponse('after-confirmation', 'generate_video_project', prompt),
+      toolCallResponse('same-reply-read', 'job_output', { job_id: 'video-project-1' })], false, true)
+    f.failInJob()
+    const agent = await f.create('same-confirmation')
+    f.send(agent)
+    await agent.whenIdle()
+    expect(f.ctx.userQuestions.answer(agent, ToolCallId('confirm'), {
+      answers: [{ id: 'generate', selected: ['生成'] }],
+    })).toBe(true)
+    await agent.whenIdle()
+    await vi.waitFor(() => { expect(f.ctx.jobs.list(agent.id)[0]?.status).toBe('failed') })
+    const users = agent.session.snapshotEvents().filter(event => event.type === 'user/message')
+    const original = users.find(event => event.data.source.kind === 'user')
+    const reply = users.find(event => event.data.source.kind === 'user-question-reply')
+    expect(reply?.seq).toBeGreaterThan(original?.seq ?? -1)
+    expect(f.ctx.jobs.list(agent.id)[0]?.actionRequired?.requestSeq).toBe(reply?.seq)
+    agent.followup(createUserMessage({ source: { kind: 'tool-jobs', form: 'notice', summary: 'Read original task' },
+      content: [{ type: 'text', text: '查看原任务' }] }))
+    await agent.whenIdle()
+    expect(f.adapter.requests).toHaveLength(4)
+    expect(f.preflights).toBe(1)
+    expect(f.submissions).toBe(1)
+    expect(agent.session.snapshotEvents().filter(event => event.type === 'turn/end').map(event => event.data.reason.kind))
+      .toEqual(['completed', 'completed', 'completed'])
+    const restored = Session.create(SessionId('restored-same-confirmation'), parseSessionLog(serializedSession(agent)))
+    expect(restored.deriveMessages()).toEqual(agent.session.deriveMessages())
+    expect(questionBalanceSession(restored, f.ctx.jobs.list(agent.id)[0]?.actionRequired)).toEqual(questionBalanceExpected.sameReplyFailure)
   })
 
   it('does not stop model recovery for unrelated structured tool failures', async () => {

@@ -4,6 +4,7 @@ import { createVideoProjectDispatch } from '../src/video-project-dispatch.ts'
 import type { VideoProjectAttemptId } from '../src/video-project.ts'
 import type { VideoProjectRequest, VideoProjectSubmission } from '../src/video-project-types.ts'
 import type { VideoProjectRelay } from '../src/video-project-provider.ts'
+import { VideoSubmissionRejection } from '../src/video-submission-result.ts'
 
 const attempt = '11111111-1111-4111-8111-111111111111'
 const queueId = `vq_${attempt}`
@@ -48,6 +49,16 @@ function fixture(handler?: (call: Call) => Response | Promise<Response>) {
 }
 
 describe('video project gateway dispatch', () => {
+  it('requires the original task financial proof before upgrading a failed queue funding category to unsent', async () => {
+    const body = receipt('failed', 'not_submitted')
+    const f = fixture(() => response({ ...body, data: { ...body.data, failure_code: 'insufficient_user_quota' } }))
+    f.relay.check.mockRejectedValue(new VideoSubmissionRejection('H3_SUBMISSION_NOT_SENT', '完整未发送回执', 'not_submitted', gatewayId))
+    await expect(f.dispatch.check(queueId, request, signal())).rejects.toMatchObject({ code: 'INSUFFICIENT_BALANCE',
+      submissionState: 'not_submitted', taskId: queueId })
+    expect(f.relay.check).toHaveBeenCalledExactlyOnceWith(gatewayId, '/v1/tasks', expect.any(AbortSignal), 'MiniMax-H3')
+    expect(f.relay.submit).not.toHaveBeenCalled()
+  })
+
   it.each(['not_submitted', 'accepted'])('preserves a failed queue funding category independently of submission=%s', async (submitted) => {
     const body = receipt('failed', submitted)
     const f = fixture(() => response({ ...body, data: { ...body.data,

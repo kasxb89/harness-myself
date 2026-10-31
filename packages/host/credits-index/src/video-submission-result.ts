@@ -11,10 +11,11 @@ export class VideoSubmissionRejection extends Error {
    * @param message - Gateway-owned outcome summary without upstream response content.
    * @param submissionState - Confirmed non-acceptance, including a settled upstream refusal, or a definitively failed task.
    * @param taskId - Original platform task, absent when admission created no task.
+   * @param upstreamSubmitted - Distinguishes a received supplier refusal from a request never dispatched upstream.
    */
   constructor(
     readonly code: string, message: string,
-    readonly submissionState: 'not_submitted' | 'failed', readonly taskId?: string,
+    readonly submissionState: 'not_submitted' | 'failed', readonly taskId?: string, readonly upstreamSubmitted = false,
   ) { super(message); this.name = 'VideoSubmissionRejection' }
 }
 
@@ -71,7 +72,7 @@ export function h3SubmissionQueryRejection(
     if (proof === undefined) return undefined
     const balance = accountBalanceFailure(record(value)?.failure_code ?? record(record(value)?.data)?.failure_code)
     return new VideoSubmissionRejection(balance?.code ?? proof.code,
-      (balance === undefined ? '' : `${balance.message}。`) + mediaSubmissionMessage(proof), 'not_submitted', proof.taskId)
+      (balance === undefined ? '' : `${balance.message}。`) + mediaSubmissionMessage(proof), 'not_submitted', proof.taskId, proof.upstreamSubmitted)
   }
   const body = record(value)
   if (model !== 'MiniMax-H3' || httpStatus !== 200 || body === undefined || !identifier(taskId)) return undefined
@@ -139,7 +140,7 @@ export function h3SubmissionRejection(model: unknown, httpStatus: number, value:
     if (proof === undefined) return undefined
     const balance = accountBalanceFailure(proof.code)
     return new VideoSubmissionRejection(balance?.code ?? proof.code,
-      (balance === undefined ? '' : `${balance.message}。`) + mediaSubmissionMessage(proof), 'not_submitted', proof.taskId)
+      (balance === undefined ? '' : `${balance.message}。`) + mediaSubmissionMessage(proof), 'not_submitted', proof.taskId, proof.upstreamSubmitted)
   }
   if (model !== 'MiniMax-H3' || value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
   const body = value as Record<string, unknown>

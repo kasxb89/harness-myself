@@ -633,6 +633,81 @@ async function fixture(activity?: (event: CreationOperationActivity) => void) {
   }
 }
 
+describe('same-work ordinary video funding retries', () => {
+  it.each(['ai-creation', undefined] as const)('retains a query-only funding proof for an original %s video', async (source) => {
+    const f = await fixture()
+    const first = await f.store.begin(f.owner, { kind: 'video', prompt: 'Original non-chat video',
+      shots: [{ prompt: 'One original clip' }], ...source === undefined ? {} : { source } })
+    const receipt: CreativeVideoReceipt = { model: 'MiniMax-H3', route: '/v1/videos', phase: 'accepted',
+      backendFingerprint: 'b'.repeat(64), taskId: 'original-non-chat-task' }
+    await f.store.videoReceipt(first, receipt)
+    await f.store.finish(first, { kind: 'video', status: 'unknown', videoReceipt: receipt })
+    const resumed = await f.store.resumeVideoTask(f.owner, first.projectId, first.operationId)
+    await f.store.finish(resumed.operation, { kind: 'video', status: 'failed', videoReceipt: receipt,
+      errorCode: 'INSUFFICIENT_BALANCE', videoBalanceRejection: {
+        code: 'INSUFFICIENT_BALANCE', submissionState: 'not_submitted', taskId: 'original-non-chat-task',
+      } })
+    const projects = await new CreativeStore(f.options).projects(f.owner)
+    expect(projects[0]?.tasks).toMatchObject([{ id: first.operationId, status: 'failed', errorCode: 'INSUFFICIENT_BALANCE' }])
+    expect(projects[0]?.tasks).toHaveLength(1)
+    await expect(f.store.beginVideoWorkRetry(f.owner, first.projectId, first.operationId,
+      { ...intent(), humanRevision: { messageId: 'later', seq: 20 } }, { prompt: 'Same video', model: 'MiniMax-H3' }))
+      .rejects.toMatchObject({ code: 'CREATIVE_SHOT_RUNNING' })
+  })
+
+  it('appends one later human attempt, preserves its original work link and rejects replay after restart', async () => {
+    const f = await fixture()
+    const source = intent()
+    const works = new VideoWorkStore({ directory: join(root!, 'works'), current: f.options.current })
+    const claim = await works.claim(f.owner, source.grant)
+    if (claim.kind !== 'claimed') throw new Error('Expected one prepared work')
+    const first = await f.store.begin(f.owner, { kind: 'video', source: 'chat', prompt: 'Original video',
+      shots: [{ prompt: 'Original video' }], videoIntent: source, videoWorkId: claim.work.workId })
+    await works.attach(claim.claim, { projectId: first.projectId, operationId: first.operationId })
+    const rejected = { code: 'INSUFFICIENT_BALANCE' as const, submissionState: 'not_submitted' as const }
+    await f.store.finish(first, { kind: 'video', status: 'failed', notSubmitted: true,
+      errorCode: 'INSUFFICIENT_BALANCE', videoBalanceRejection: rejected })
+    await expect(f.store.beginVideoWorkRetry(f.owner, first.projectId, first.operationId, source,
+      { prompt: 'Original video', model: 'MiniMax-H3' })).rejects.toMatchObject({ code: 'VIDEO_BALANCE_RETRY_CONFIRMATION_REQUIRED' })
+    const later = { ...source, humanRevision: { messageId: 'recharged-human', seq: 20 } }
+    const competing = await Promise.allSettled([1, 2].map(() => f.store.beginVideoWorkRetry(f.owner,
+      first.projectId, first.operationId, later, { prompt: 'Original video', model: 'MiniMax-H3' })))
+    expect(competing.filter(item => item.status === 'fulfilled')).toHaveLength(1)
+    const second = competing.find(item => item.status === 'fulfilled')
+    if (second?.status !== 'fulfilled') throw new Error('Expected one retry operation')
+    expect(second.value.operationId).not.toBe(first.operationId)
+    await f.store.finish(second.value, { kind: 'video', status: 'failed', notSubmitted: true,
+      errorCode: 'INSUFFICIENT_BALANCE', videoBalanceRejection: rejected })
+    const restarted = new CreativeStore(f.options)
+    const retained = await restarted.videoWorkRetryState(f.owner, first.projectId, first.operationId)
+    expect(retained).toMatchObject({ operationId: second.value.operationId, fundingRejected: true, balanceRejection: rejected })
+    const originalLinks = await restarted.videoWorkLinks(f.owner, later)
+    expect(originalLinks).toEqual([{ projectId: first.projectId, operationId: first.operationId }])
+    expect((await works.prepare(f.owner, source.grant, 1, originalLinks, later.humanRevision)).works).toHaveLength(1)
+    await expect(restarted.beginVideoWorkRetry(f.owner, first.projectId, second.value.operationId, later,
+      { prompt: 'Original video', model: 'MiniMax-H3' })).rejects.toMatchObject({ code: 'VIDEO_BALANCE_RETRY_CONFIRMATION_REQUIRED' })
+    const work = await works.claim(f.owner, source.grant, claim.work.workId)
+    expect(work).toMatchObject({ kind: 'existing', work: { link: { operationId: first.operationId } } })
+    const record: unknown = JSON.parse(await readFile(
+      join(f.options.directory, first.projectId, 'project.json'), 'utf8'))
+    expect(record).toMatchObject({ operations: [{ id: first.operationId }, { id: second.value.operationId, retryOf: first.operationId }] })
+  })
+
+  it('does not turn an exact funding code without a complete unsent proof into retry permission', async () => {
+    const f = await fixture()
+    const source = intent()
+    const works = new VideoWorkStore({ directory: join(root!, 'works'), current: f.options.current })
+    const claim = await works.claim(f.owner, source.grant)
+    if (claim.kind !== 'claimed') throw new Error('Expected prepared work')
+    const first = await f.store.begin(f.owner, { kind: 'video', source: 'chat', prompt: 'Original video',
+      shots: [{ prompt: 'Original video' }], videoIntent: source, videoWorkId: claim.work.workId })
+    await f.store.finish(first, { kind: 'video', status: 'unknown', errorCode: 'INSUFFICIENT_BALANCE' })
+    await expect(f.store.beginVideoWorkRetry(f.owner, first.projectId, first.operationId,
+      { ...source, humanRevision: { messageId: 'later', seq: 20 } }, { prompt: 'Original video', model: 'MiniMax-H3' }))
+      .rejects.toMatchObject({ code: 'CREATIVE_VIDEO_TASK_UNCONFIRMED' })
+  })
+})
+
 describe('process-live creation operations', () => {
   it('observes only committed begin, explicit resume and final release rather than retained running records', async () => {
     const events: CreationOperationActivity[] = []
