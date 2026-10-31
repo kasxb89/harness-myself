@@ -38,8 +38,13 @@ export function modelGuidance(
   const verified = capabilities?.schemaVersion === 2
     ? capabilities.verification ?? { tools: 'unverified' as const, vision: 'unverified' as const, reasoning: 'unverified' as const }
     : undefined
+  const toolFacts = verified === undefined ? [] : verified.tools === 'supported'
+    && capabilities?.toolsConfig?.verifiedToolChoices.includes('auto') !== true
+    ? [t(capabilities?.toolsConfig?.verifiedToolChoices.includes('named') === true ? 'guidance.tools.namedVerified' : 'guidance.tools.supported'),
+      t('guidance.tools.autoUnverified')]
+    : [t(`guidance.tools.${verified.tools}`)]
   const capabilityFacts = verified === undefined ? [] : [
-    t(`guidance.tools.${verified.tools}`), t(`guidance.vision.${verified.vision}`), t(`guidance.reasoning.${verified.reasoning}`),
+    ...toolFacts, t(`guidance.vision.${verified.vision}`), t(`guidance.reasoning.${verified.reasoning}`),
     ...capabilities?.reasoningMode === 'always_on' ? [t('guidance.reasoningAlwaysOn')] : [],
     ...capabilities?.reasoningMode === 'automatic' ? [t('guidance.reasoningAutomatic')] : [],
     ...capabilities?.operationalStatus === 'fixed_lane_unavailable' ? [t('guidance.routeUnavailable')] : [],

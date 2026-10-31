@@ -13,6 +13,7 @@ import type { RemoteResult, TypertClientRemote } from '@deepseek-ai/dsh-typert-p
 import type { ObservableSnapshot, SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { ModelCatalogDirectory } from './catalog.ts'
+import { selectableModelReasoning } from './reasoning-controls.ts'
 
 /** Directory snapshot both entries render from. */
 export interface ModelDirectoryState {
@@ -172,10 +173,8 @@ export class ModelDirectory {
     const projected = modelSelectionProjection(this.projected.getSnapshot())
     const intended = projected?.next ?? catalog.value?.default
     const model = catalog.value?.groups.find(group => group.id === intended?.provider)?.models.find(value => value.id === intended?.model)
-    const reasoningDisabled = model?.executionCapabilities?.reasoning === false
-      || model?.textCapabilities?.schemaVersion !== 2 && model?.textCapabilities?.reasoning === false
-      || model?.textCapabilities?.schemaVersion === 2 && model.textCapabilities.reasoningMode !== 'configurable'
-    const reasoning = intended === undefined || reasoningDisabled ? undefined : this.catalog.reasoningFor(intended)
+    const reasoning = intended === undefined ? undefined : model === undefined
+      ? this.catalog.reasoningFor(intended) : selectableModelReasoning(model)
     const effort = intended?.reasoningEffort ?? reasoning?.defaultEffort
     const retainedEffort = effort === undefined ? undefined
       : reasoning?.efforts.find(level => level.id === effort)?.name ?? effort

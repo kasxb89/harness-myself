@@ -40,7 +40,8 @@ function capabilityNotice(value: LlmTextCapabilities): string {
       if (status === 'unverified') facts.push(`Do not describe ${feature} as unsupported or verified; evidence is pending.`)
       if (effectiveTextCapability(value, feature) === false) facts.push(`${feature} execution is unavailable on this route; suggest a compatible route when needed.`)
     }
-    if (value.reasoningMode === 'always_on' || value.reasoningMode === 'automatic') facts.push('Reasoning is automatic; no on/off or effort setting is offered.')
+    if (value.reasoningMode === 'always_on') facts.push('Reasoning is always on; no off control is offered. Declared effort settings only adjust strength. Auto omits all reasoning controls.')
+    if (value.reasoningMode === 'automatic') facts.push('Reasoning is automatic; no on/off or effort setting is offered.')
     if (!textCapabilityImageAvailable(value)) facts.push('Image input is temporarily unavailable on this route; text, tools and file handles remain independently available. This is not evidence that the model lacks vision.')
     if (!textCapabilityRouteAvailable(value)) facts.push('The fixed route is temporarily unavailable; this does not establish missing model capabilities.')
     return facts.join('\n')

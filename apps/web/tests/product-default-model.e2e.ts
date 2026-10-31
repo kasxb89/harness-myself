@@ -14,11 +14,12 @@ it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash', 'yunshu-flash-conf
   'selects the deployment default %s after first sign-in without opening the model menu', async (scenario) => {
     const plainText = scenario === 'ycapi-text-only'
     const capabilityV2 = scenario === 'ycapi-capabilities-v2'
-    const v2Peers = ['capabilities-pending', 'capabilities-unavailable', 'capabilities-automatic', 'capabilities-image-unavailable']
+    const v2Peers = ['capabilities-pending', 'capabilities-unavailable', 'capabilities-automatic', 'capabilities-image-unavailable', 'capabilities-always-on-effort']
     const v2Declaration = (id: string) => {
       const pending = id === 'capabilities-pending' || id === 'capabilities-unavailable'
       const automatic = id === 'capabilities-automatic'
       const partial = id === 'capabilities-image-unavailable'
+      const alwaysEffort = id === 'capabilities-always-on-effort'
       const unavailable = id === 'capabilities-unavailable'
       return { schema_version: 2, revision: 'synthetic-capability-v2', checked_at: '2026-10-31T00:00:00Z',
         tools: !unavailable && !automatic, vision: !unavailable && !automatic && !partial, reasoning: !unavailable,
@@ -27,12 +28,13 @@ it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash', 'yunshu-flash-conf
           vision: pending || partial ? 'unverified' : automatic ? 'unsupported' : 'supported', reasoning: pending ? 'unverified' : 'supported' },
         input_modalities: automatic || partial || unavailable ? ['text'] : ['text', 'image'],
         tools_config: { protocol: 'openai-chat', roundtrip_verified: !pending && !automatic,
-          verified_tool_choices: !pending && !automatic ? ['auto'] : [], parallel_calls: 'unverified' },
+          verified_tool_choices: !pending && !automatic ? alwaysEffort ? ['named'] : ['auto'] : [], parallel_calls: 'unverified' },
         vision_config: { verified_transports: !pending && !automatic && !partial ? ['data_url'] : [],
           verified_mime_types: !pending && !automatic && !partial ? ['image/png', 'image/webp'] : [], billing: 'input_tokens',
           ...partial ? { operational_status: 'temporarily_unavailable', operational_reason: 'Synthetic image entry failure' } : {} },
-        reasoning_mode: pending ? 'unknown' : automatic ? 'always_on' : 'configurable',
-        reasoning_controls: { type: 'object', properties: pending || automatic ? {} : { enable_thinking: { type: 'boolean', default: false } }, additionalProperties: false },
+        reasoning_mode: pending ? 'unknown' : automatic || alwaysEffort ? 'always_on' : 'configurable',
+        reasoning_controls: { type: 'object', properties: pending || automatic ? {} : alwaysEffort ? { reasoning_effort: { type: 'string', enum: ['low', 'high'] } }
+          : { enable_thinking: { type: 'boolean', default: false } }, additionalProperties: false },
         reasoning_omit_behavior: 'provider_default', reasoning_control_mapping: {}, operational_status: unavailable ? 'fixed_lane_unavailable' : 'available',
         ...unavailable ? { operational_reason: 'Synthetic fixed route is unavailable' } : {} }
     }
@@ -204,11 +206,15 @@ it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash', 'yunshu-flash-conf
         expect(await pending.textContent()).toContain('工具：待核实')
         expect(await pending.textContent()).not.toContain('不支持')
         expect(await modelMenu.getByRole('menuitemradio', { name: 'capabilities-unavailable', exact: true }).textContent()).toContain('当前渠道暂不可用')
-        expect(await modelMenu.getByRole('menuitemradio', { name: 'capabilities-automatic', exact: true }).textContent()).toContain('自动推理（不可关闭）')
+        expect(await modelMenu.getByRole('menuitemradio', { name: 'capabilities-automatic', exact: true }).textContent()).toContain('始终推理（不可关闭）')
         const partial = modelMenu.getByRole('menuitemradio', { name: 'capabilities-image-unavailable', exact: true })
         expect(await partial.textContent()).toContain('图片输入暂不可用')
         expect(await partial.textContent()).toContain('识图：待核实')
         expect(await partial.textContent()).not.toContain('识图：当前渠道不支持')
+        const always = modelMenu.getByRole('menuitemradio', { name: 'capabilities-always-on-effort', exact: true })
+        expect(await always.textContent()).toContain('始终推理（不可关闭）')
+        expect(await always.textContent()).toContain('指定工具：已核实')
+        expect(await always.textContent()).toContain('工具自动选择：待核实')
         for (const theme of ['dark', 'light'] as const) {
           await page.emulateMedia({ colorScheme: theme })
           await page.screenshot({ path: join(evidence, `capabilities-v2-${theme}.png`), animations: 'disabled' })
@@ -306,10 +312,13 @@ it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash', 'yunshu-flash-conf
         await page.getByRole('option', { name: /^模型/u }).click()
         const commandMenu = page.locator('[aria-label="/model 选项"]')
         await commandMenu.getByRole('option').filter({ hasText: 'capabilities-pending' }).getByText(/工具：待核实/u).waitFor()
-        expect(await commandMenu.innerText()).toContain('自动推理（不可关闭）')
+        expect(await commandMenu.innerText()).toContain('始终推理（不可关闭）')
         const partial = commandMenu.getByRole('option').filter({ hasText: 'capabilities-image-unavailable' })
         expect(await partial.innerText()).toContain('图片输入暂不可用')
         expect(await partial.innerText()).toContain('识图：待核实')
+        const always = commandMenu.getByRole('option').filter({ hasText: 'capabilities-always-on-effort' })
+        expect(await always.innerText()).toContain('指定工具：已核实')
+        expect(await always.innerText()).toContain('工具自动选择：待核实')
         await page.keyboard.press('Escape')
       }
       const settled = scaffold.whenTurnSettled()
@@ -420,6 +429,47 @@ it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash', 'yunshu-flash-conf
         expect(session?.requestHeader()?.config.reasoningEffort).toBeUndefined()
         await writeFile(join(evidence, 'capabilities-v2-wire-complete.json'), JSON.stringify({ synthetic: true, dimensions, modelRequests }, null, 2) + '\n')
         await page.screenshot({ path: join(evidence, 'capabilities-v2-image-and-auto.png'), animations: 'disabled' })
+
+        const alwaysModel = 'capabilities-always-on-effort'
+        const alwaysMetadata = await scaffold.ctx.llm.resolveModelInfo('yunshu-local', alwaysModel)
+        const high = alwaysMetadata.reasoning?.efforts.find(value => value.id === 'high')
+        if (high === undefined) throw new Error('Expected exact always-on effort enum')
+        await trigger.click()
+        await page.getByRole('menuitem', { name: /^模型/u }).click()
+        await page.getByRole('menuitemradio', { name: alwaysModel, exact: true }).click()
+        await expect.poll(() => trigger.textContent()).toBe(`${alwaysModel}自动（渠道默认）`)
+        await trigger.click()
+        await page.getByRole('menuitem', { name: /^推理等级/u }).click()
+        const effortMenu = page.getByRole('menu', { name: '模型与推理等级', exact: true })
+        expect(await effortMenu.getByRole('menuitemradio', { name: 'Off', exact: true }).count()).toBe(0)
+        expect(await effortMenu.getByRole('menuitemradio', { name: 'none', exact: true }).count()).toBe(0)
+        await page.screenshot({ path: join(evidence, 'capabilities-v2-always-on-strength.png'), animations: 'disabled' })
+        await effortMenu.getByRole('menuitemradio', { name: high.name, exact: true }).click()
+        const strengthSettled = scaffold.whenTurnSettled()
+        await composer.fill('Synthetic always-on high strength with normal automatic tool choice')
+        await composer.press('Enter')
+        expect(await strengthSettled).toBe(sessionId)
+        await expect.poll(() => modelRequests.length).toBe(4)
+        expect(modelRequests[3]!.body).toMatchObject({ model: alwaysModel, reasoning_effort: 'high', max_tokens: 8192 })
+        expect(modelRequests[3]!.body).not.toHaveProperty('enable_thinking')
+        expect(modelRequests[3]!.body).not.toHaveProperty('tool_choice')
+        expect(session?.requestHeader()?.config.reasoningEffort).toBe('high')
+        await trigger.click()
+        await page.getByRole('menuitem', { name: /^推理等级/u }).click()
+        await page.getByRole('menuitemradio', { name: '自动（渠道默认）', exact: true }).click()
+        const strengthAutoSettled = scaffold.whenTurnSettled()
+        await composer.fill('Synthetic always-on Auto omits effort without turning reasoning off')
+        await composer.press('Enter')
+        expect(await strengthAutoSettled).toBe(sessionId)
+        await expect.poll(() => modelRequests.length).toBe(5)
+        expect(modelRequests[4]!.body).toMatchObject({ model: alwaysModel, max_tokens: 8192 })
+        expect(modelRequests[4]!.body).not.toHaveProperty('reasoning_effort')
+        expect(modelRequests[4]!.body).not.toHaveProperty('enable_thinking')
+        expect(modelRequests[4]!.body).not.toHaveProperty('tool_choice')
+        expect(session?.requestHeader()?.config.reasoningEffort).toBeUndefined()
+        await writeFile(join(evidence, 'capabilities-v2-always-on-wire-complete.json'), JSON.stringify({ synthetic: true, dimensions, modelRequests }, null, 2) + '\n')
+        await page.screenshot({ path: join(evidence, 'capabilities-v2-always-on-auto.png'), animations: 'disabled' })
+
       }
       if (preferred === 'yunshu-flash') {
         const followupSettled = scaffold.whenTurnSettled()
@@ -448,7 +498,8 @@ it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash', 'yunshu-flash-conf
           forbiddenFieldsAbsent: true, toolsPresent: !plainText },
         historicalReasoningReplayChecked: preferred === 'yunshu-flash',
         capabilityV2, v2BooleanOffAndAutoWireChecked: capabilityV2, actualImageDataURLChecked: capabilityV2,
-        partialImageOutageDraftPreserved: capabilityV2,
+        partialImageOutageDraftPreserved: capabilityV2, alwaysOnEffortAndAutoChecked: capabilityV2,
+        namedOnlyToolEvidenceChecked: capabilityV2,
         requestHeader: session?.requestHeader()?.config,
         realSMS: 0, realUpstreamCalls: 0, guidanceChecked: preferred === 'yunshu-flash', pageErrors: tripwire.pageErrors, errors }, null, 2) + '\n')
     } catch (error) {

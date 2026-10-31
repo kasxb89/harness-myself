@@ -17,6 +17,8 @@ Both selection entries retain exact-route verification facts, normalized executi
 
 An image-entry outage adds a distinct image-temporarily-unavailable notice beside the pending vision fact in both pickers. It does not mark the model unsupported or unavailable as a whole, and its scoped input bridge keeps text and file tools usable.
 
+An always-on model with a declared nonempty effort enum exposes those strengths and Auto while retaining its always-on notice. Models without usable controls keep no selector, and saved incompatible settings retain an explicit reset path. Named-tool verification is shown separately from automatic tool selection; when auto is not verified, its copy stays pending without blocking ordinary tool use or forcing a named choice.
+
 ## Table of Contents
 
 - [Use this package](#use-this-package)

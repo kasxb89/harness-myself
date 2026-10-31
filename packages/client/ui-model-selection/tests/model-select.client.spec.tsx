@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
-import { RemoteError } from '@deepseek-ai/dsh-client-test-runtime'
+import { makeTranslate, RemoteError } from '@deepseek-ai/dsh-client-test-runtime'
 import { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { ModelCatalog, ModelSelection } from '@deepseek-ai/dsh-api-remotes/client'
 import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
@@ -1146,6 +1146,45 @@ describe('declared model capability guidance', () => {
     fireEvent.click(screen.getByRole('menuitemradio', { name: 'Offline' }))
     await waitFor(() => { expect(screen.getByText(zh['error.routeUnavailable'])).toBeTruthy() })
     expect(screen.queryByText(zh['error.action'])).toBeNull()
+  })
+
+  it('offers always-on declared effort strengths and Auto without adding Off or materializing its schema default', async () => {
+    const directory = createSnapshotStore(state({ current: { provider: 'v2', model: 'always', reasoningEffort: 'low' }, groups: [{ id: 'v2', name: 'V2', models: [{
+      id: 'always', name: 'Always', reasoning: { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }, { id: 'off', name: 'Off' }], defaultEffort: 'high' },
+      textCapabilities: { schemaVersion: 2, tools: true, vision: true, reasoning: true, stream: true, maxInputTokens: 32000,
+        verification: { tools: 'supported', vision: 'supported', reasoning: 'unverified' }, reasoningMode: 'always_on',
+        reasoningControls: { type: 'object', properties: { reasoning_effort: { type: 'string', enum: ['low', 'high'], default: 'high' } }, additionalProperties: false } },
+      executionCapabilities: { available: true, tools: true, vision: true },
+    }] }] }))
+    const select = vi.fn(async () => ({ ok: true as const, value: undefined }))
+    render(<ModelSelect locked={false} available directory={directory} load={vi.fn()} select={select} t={t} />)
+    fireEvent.click(screen.getByRole('button', { name: /选择模型，当前 Always/ }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /推理等级/ }))
+    expect(screen.queryByRole('menuitemradio', { name: 'Off' })).toBeNull()
+    expect(screen.queryByRole('menuitemradio', { name: 'none' })).toBeNull()
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'High' }))
+    await waitFor(() => { expect(select).toHaveBeenCalledWith({ provider: 'v2', model: 'always', reasoningEffort: 'high' }) })
+    fireEvent.click(screen.getByRole('button', { name: /选择模型，当前 Always/ }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /推理等级/ }))
+    fireEvent.click(screen.getByRole('menuitemradio', { name: zh['effort.providerAuto'] }))
+    await waitFor(() => { expect(select).toHaveBeenLastCalledWith({ provider: 'v2', model: 'always' }) })
+  })
+
+  it.each(['zh', 'en'] as const)('distinguishes named-only tool evidence from automatic selection (%s)', (locale) => {
+    const messages = locale === 'zh' ? zh : en
+    const translate: ComponentProps<typeof ModelSelect>['t'] = makeTranslate(messages, commonZh)
+    const directory = createSnapshotStore(state({ current: { provider: 'v2', model: 'named' }, groups: [{ id: 'v2', name: 'V2', models: [{
+      id: 'named', name: 'Named', textCapabilities: { schemaVersion: 2, tools: true, vision: true, reasoning: true, stream: true, maxInputTokens: 32000,
+        verification: { tools: 'supported', vision: 'supported', reasoning: 'unverified' },
+        toolsConfig: { protocol: 'openai-chat', roundtripVerified: true, verifiedToolChoices: ['named'], parallelCalls: 'unverified' } },
+    }] }] }))
+    render(<ModelSelect locked={false} available directory={directory} load={vi.fn()} select={vi.fn()} t={translate} />)
+    fireEvent.click(screen.getByRole('button', { name: /Named/ }))
+    fireEvent.click(screen.getByRole('menuitem', { name: `${messages['menu.model']}Named` }))
+    const row = screen.getByRole('menuitemradio', { name: 'Named' })
+    expect(row.textContent).toContain(messages['guidance.tools.namedVerified'])
+    expect(row.textContent).toContain(messages['guidance.tools.autoUnverified'])
+    expect(row.textContent).not.toContain(messages['guidance.tools.unsupported'])
   })
 
   it('passes boolean-control opaque on/off IDs to selection unchanged', async () => {

@@ -224,13 +224,15 @@ function reasoningInfo(
 
 /** Convert exactly the gateway's declared controls into selectable, opaque effort ids. */
 function gatewayReasoningInfo(capabilities: LlmTextCapabilities): Pick<LlmResolvedModelInfo, 'reasoning'> | Record<string, never> {
-  if (capabilities.reasoningMode !== 'configurable') return {}
+  const alwaysOn = capabilities.reasoningMode === 'always_on'
+  if (capabilities.reasoningMode !== 'configurable' && !alwaysOn) return {}
   const fields = capabilities.reasoningControls?.properties
   if (fields?.reasoning_effort !== undefined) {
     const field = fields.reasoning_effort
-    return { reasoning: { efforts: field.enum.map(id => ({ id: ReasoningEffortId(id), name: id })) } }
+    const values = field.enum.filter(id => !alwaysOn || id !== 'none' && id !== 'off')
+    return values.length === 0 ? {} : { reasoning: { efforts: values.map(id => ({ id: ReasoningEffortId(id), name: id })) } }
   }
-  if (fields?.enable_thinking !== undefined) {
+  if (!alwaysOn && fields?.enable_thinking !== undefined) {
     return { reasoning: { efforts: [{ id: ReasoningEffortId('on'), name: 'On' }, { id: ReasoningEffortId('off'), name: 'Off' }] } }
   }
   return {}
@@ -241,11 +243,14 @@ function gatewayReasoningPayload(
   capabilities: LlmTextCapabilities, selected: ReasoningEffortIdType | undefined,
 ): Record<string, string | boolean> {
   if (selected === undefined) return {}
-  if (capabilities.reasoningMode !== 'configurable') throw new LlmError(
+  const alwaysOn = capabilities.reasoningMode === 'always_on'
+  if (capabilities.reasoningMode !== 'configurable' && !alwaysOn) throw new LlmError(
     '当前渠道没有可配置推理选项，请使用自动模式。', 'MODEL_CAPABILITY_REASONING_UNSUPPORTED')
   const properties = capabilities.reasoningControls?.properties
-  if (properties?.reasoning_effort?.enum.includes(selected)) return { reasoning_effort: selected }
-  if (properties?.enable_thinking !== undefined && (selected === 'on' || selected === 'off')) {
+  if (properties?.reasoning_effort?.enum.includes(selected) && (!alwaysOn || selected !== 'none' && selected !== 'off')) {
+    return { reasoning_effort: selected }
+  }
+  if (!alwaysOn && properties?.enable_thinking !== undefined && (selected === 'on' || selected === 'off')) {
     return { enable_thinking: selected === 'on' }
   }
   throw new LlmError('所选推理参数不属于当前渠道的可用值。', 'UNSUPPORTED_REASONING_EFFORT')

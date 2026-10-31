@@ -91,7 +91,7 @@ const configure = (maxTokens: number): ConfigureCall =>
 
 可选的 `textCapabilities` 表示当前网关的执行策略，不代表模型原生最大值。预备请求的上下文上限还受渠道输入上限与本次已填默认值、已收紧输出预算之和约束，因此降低输出预算不会扩大允许的输入。既有 token 计量仍是估计值；实际输入 token 校验由网关负责。存在显式声明时，图片引用要求 `vision`，文件句柄要求 `tools`，两者独立判断；校验在任何占位符或句柄投影之前检查原始输入。
 
-第二版声明把核实事实与执行资格分开。待核实不新增禁止，也不表示已确认支持；旧版 false 仍表示部署策略。effectiveTextCapability() 统一解析这些决定；固定渠道不可用则单独返回 MODEL_ROUTE_UNAVAILABLE。捕获前会分离嵌套控制项、证据与输入模态。 visionConfig.operationalStatus 为 temporarily_unavailable 时，只以 MODEL_CAPABILITY_INPUT_UNAVAILABLE 拒绝图片输入；核实状态仍为待核实，文字、工具和文件句柄保留各自的执行资格。可选的 reasoningControlMapping 属于网关映射元数据：客户端只发送选定的 reasoning_effort，由网关转换原生开关及 none；自动选项仍省略全部控制项。
+第二版声明把核实事实与执行资格分开。待核实不新增禁止，也不表示已确认支持；旧版 false 仍表示部署策略。effectiveTextCapability() 统一解析这些决定；固定渠道不可用则单独返回 MODEL_ROUTE_UNAVAILABLE。捕获前会分离嵌套控制项、证据与输入模态。 visionConfig.operationalStatus 为 temporarily_unavailable 时，只以 MODEL_CAPABILITY_INPUT_UNAVAILABLE 拒绝图片输入；核实状态仍为待核实，文字、工具和文件句柄保留各自的执行资格。可选的 reasoningControlMapping 属于网关映射元数据：客户端只发送选定的 reasoning_effort，由网关转换原生开关及 none；自动选项仍省略全部控制项。 始终开启推理的模型可提供声明的 reasoning_effort 强度枚举及自动选项，不提供 none/off 或布尔开关；没有可用强度模式时保持自动。同一模型切回自动会清除先前档位并省略全部推理控制项，包括模式默认值。
 - **不展开即读取内嵌 Assistant 流**——`assistantStreamFirstTokenTime`（首 token）、`assistantStreamHasVisibleContent`（任一可见内容）与 `assistantStreamHasVisibleText`（任一可见文本）通过可提前退出的扫描直接从紧凑记录得出结果；`lastAssistantStreamChunk` 反向扫描到某一类型的最后一个原始 chunk，`assistantStreamChunks` 与 `joinAssistantStreamText` 扫描整个流，`assembleAssistantStream` 向 `BlockAssembler` 每个 run 喂一段拼接 delta，blocks／usage／replayState 与逐成员展开相同。`runFirstTokenTime` 与 `runFirstVisibleTime` 对单个打包 run 做提前退出扫描，`isTokenDelta`、`isVisibleChunk` 与 `chunkHasVisibleText` 定义单个 chunk 的 token 与可见性规则。`expandAssistantStream` 仍是持久边界读取记录的校验路径；它不被记忆化，因为保留的展开在事件生命周期内约花费紧凑流的十倍内存。
 
 ### 失败与恢复

@@ -33,19 +33,20 @@ export async function buildModelCatalog(
         const vision = imageAvailable ? effectiveTextCapability(resolved.textCapabilities, 'vision') : false
         const visionUnavailableReason = resolved.textCapabilities?.visionConfig?.operationalReason
         const reasoningAllowed = effectiveTextCapability(resolved.textCapabilities, 'reasoning')
-        const reasoning: ModelReasoning | undefined = resolved.reasoning === undefined || effectiveTextCapability(resolved.textCapabilities, 'reasoning') === false
-          || resolved.textCapabilities?.schemaVersion === 2 && resolved.textCapabilities.reasoningMode !== 'configurable'
-          ? undefined
-          : {
-            efforts: resolved.reasoning.efforts.map(effort => ({
-              id: effort.id,
-              name: effort.name,
-              ...(effort.description === undefined ? {} : { description: effort.description }),
-            })),
-            ...(resolved.reasoning.defaultEffort === undefined
-              ? {}
-              : { defaultEffort: resolved.reasoning.defaultEffort }),
-          }
+        const capabilities = resolved.textCapabilities
+        const alwaysOn = capabilities?.schemaVersion === 2 && capabilities.reasoningMode === 'always_on'
+        const declaredEfforts = alwaysOn ? capabilities.reasoningControls?.properties.reasoning_effort?.enum ?? [] : undefined
+        const allowedReasoningMode = capabilities?.schemaVersion !== 2 || capabilities.reasoningMode === 'configurable'
+          || alwaysOn && declaredEfforts !== undefined && declaredEfforts.length > 0
+        const efforts = reasoningAllowed === false || !allowedReasoningMode ? undefined
+          : resolved.reasoning?.efforts.filter(effort => declaredEfforts === undefined || declaredEfforts.includes(effort.id))
+        const defaultEffort = capabilities?.schemaVersion === 2 ? undefined : resolved.reasoning?.defaultEffort
+        const reasoning: ModelReasoning | undefined = efforts === undefined || alwaysOn && efforts.length === 0 ? undefined : {
+          efforts: efforts.map(effort => ({ id: effort.id, name: effort.name,
+            ...effort.description === undefined ? {} : { description: effort.description },
+          })),
+          ...defaultEffort === undefined ? {} : { defaultEffort },
+        }
         return {
           id: model.id,
           name: model.name,

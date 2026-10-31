@@ -16,6 +16,8 @@ Ordinary model catalogs forward detached capability facts and normalized executi
 
 A temporary image-entry outage stays separate from unverified vision facts and whole-route availability. The catalog carries `visionUnavailable` and its reason; prompt admission reports `MODEL_CAPABILITY_INPUT_UNAVAILABLE` for images before storing them, while text, tool history and staged file receipts keep their ordinary path. Gateway reasoning-control mapping metadata is cloned without becoming an extra browser request parameter.
 
+Always-on reasoning may still expose a nonempty declared effort enum. The catalog preserves those exact strength IDs, omits a default choice, and leaves Auto as omission; it does not add Off or a boolean switch. Tool support facts and the precisely verified tool-choice modes remain separate metadata.
+
 ## Table of Contents
 
 - [Use this package](#use-this-package)

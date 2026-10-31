@@ -246,6 +246,53 @@ describe('version2 positive capability through actual product composition', () =
       expect(normalized).toBe(await readFile(path, 'utf8'))
     }
   })
+  it('records and replays always-on high through the real Loader and tool round, then resets the same model to Auto', async () => {
+    const declared = { ...wire, reasoning_mode: 'always_on', reasoning_control_mapping: {},
+      reasoning_controls: { type: 'object', properties: { reasoning_effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'], default: 'high' } },
+        additionalProperties: false } }
+    const f = await boot({ declaration: declared, toolRound: true })
+    const metadata = await f.ctx.llm.resolveModelInfo('yunshu-local', plain)
+    expect(metadata.reasoning?.efforts.map(effort => effort.id)).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+    expect(metadata.reasoning).not.toHaveProperty('defaultEffort')
+    await expect(f.ctx.llm.resolveCallConfig({ provider: 'yunshu-local', model: plain, reasoningEffort: ReasoningEffortId('off') }))
+      .rejects.toMatchObject({ code: 'UNSUPPORTED_REASONING_EFFORT' })
+    let executions = 0
+    f.ctx.effect(() => f.ctx.tools.register(defineTool({ name: 'capability_echo', description: 'Return the always-on capture probe.', parameters: {},
+      output: { schema: { type: 'string' }, render: (_args, result) => [{ type: 'text', text: result }] },
+      async execute() { executions += 1; return 'always-on-echo-4826' },
+    })))
+    const agent = await f.create('v2-always-on-high-auto', plain, 2048)
+    const selection: ModelSelectionRef = { current: { provider: 'yunshu-local', model: plain, reasoningEffort: ReasoningEffortId('high') },
+      assembled: undefined }
+    installModelSelection(agent.ctx, selection)
+    f.send(agent, 'Call capability_echo once at the selected effort and report the result.')
+    await agent.whenIdle()
+    expect(executions).toBe(1)
+    expect(f.calls).toHaveLength(2)
+    for (const request of f.calls) {
+      expect(request.reasoning_effort).toBe('high')
+      expect(request).not.toHaveProperty('enable_thinking')
+      expect(request.max_tokens).toBe(2048)
+    }
+    expect(JSON.stringify(f.calls[1]?.messages)).toContain('always-on-echo-4826')
+    expect(JSON.stringify(f.calls[0]?.messages)).toContain('Reasoning is always on; no off control is offered.')
+    selection.current = { provider: 'yunshu-local', model: plain }
+    f.send(agent, 'Continue with Auto on the same model.')
+    await agent.whenIdle()
+    expect(f.calls).toHaveLength(3)
+    expect(f.calls[2]).not.toHaveProperty('reasoning_effort')
+    expect(f.calls[2]).not.toHaveProperty('enable_thinking')
+    expect(f.calls[2]?.max_tokens).toBe(2048)
+    expect(agent.session.deriveMessages().some(message => message.role === 'tool')).toBe(true)
+    const raw = JSON.stringify(toHeaderLine(agent.session.header)) + '\n' + eventLines(agent.session.snapshotEvents())
+    const redacted = redactSessionSnapshotIds([raw])[0]
+    if (redacted === undefined) throw new Error('Missing always-on Agent snapshot')
+    const normalized = normalizeSessionSnapshot(redacted, { sessionIds: [], cwd: f.directory }, { identityMode: 'preserve' })
+    const destination = new URL('./expected/text-model-capabilities-v2-always-on-effort/', import.meta.url)
+    const path = new URL('session.v4.jsonl', destination)
+    if (process.env.DSH_SNAPSHOT === 'record') { await mkdir(destination, { recursive: true }); await writeFile(path, normalized) }
+    expect(normalized).toBe(await readFile(path, 'utf8'))
+  })
   it('keeps unverified features eligible and Auto omitted even when the schema declares a provider default', async () => {
     const f = await boot({ declaration: { ...wire, tools: false,
       verification: { tools: 'unverified', vision: 'unverified', reasoning: 'unverified' } } })

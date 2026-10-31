@@ -102,7 +102,7 @@ profile 的 `models` 列表会替换而非扩展路由的已安装目录；每�
 
 第一版策略中，账号绑定的 `managedLimits.textCapabilities` 声明约束此路由的工具、视觉、推理、流式能力和输入 token 上限。`vision: false` 将模型输入限定为文本；`reasoning: false` 禁用配置中的推理默认值，不丢弃已有推理回放。显式不兼容的工具、工具历史、附件、推理控制或非流式路由会在提供方 I/O 前以 `MODEL_CAPABILITY_*` 码失败。适配器不会通过删除声明或历史让请求勉强通过。实际上下文取原生／手工窗口与渠道输入上限加输出预算的较小值；这是请求预算，不是新的原生硬件容量。
 
-第二版的 inputModalities 会正向配置自定义型号 ID。可配置推理只提供声明的字符串值或布尔开关；SDK 精确发送 reasoning_effort 或 enable_thinking，包括显式 false。即使模式定义了默认值，自动选项仍省略这两个字段；自动推理与始终开启模式不会伪造关闭开关。用户更小的输出预算保持不变。 visionConfig.operationalStatus 为 temporarily_unavailable 时，只以 MODEL_CAPABILITY_INPUT_UNAVAILABLE 拒绝图片输入；核实状态仍为待核实，文字、工具和文件句柄保留各自的执行资格。可选的 reasoningControlMapping 属于网关映射元数据：客户端只发送选定的 reasoning_effort，由网关转换原生开关及 none；自动选项仍省略全部控制项。
+第二版的 inputModalities 会正向配置自定义型号 ID。可配置推理只提供声明的字符串值或布尔开关；SDK 精确发送 reasoning_effort 或 enable_thinking，包括显式 false。即使模式定义了默认值，自动选项仍省略这两个字段；自动推理与始终开启模式不会伪造关闭开关。用户更小的输出预算保持不变。 visionConfig.operationalStatus 为 temporarily_unavailable 时，只以 MODEL_CAPABILITY_INPUT_UNAVAILABLE 拒绝图片输入；核实状态仍为待核实，文字、工具和文件句柄保留各自的执行资格。可选的 reasoningControlMapping 属于网关映射元数据：客户端只发送选定的 reasoning_effort，由网关转换原生开关及 none；自动选项仍省略全部控制项。 始终开启推理的模型可提供声明的 reasoning_effort 强度枚举及自动选项，不提供 none/off 或布尔开关；没有可用强度模式时保持自动。同一模型切回自动会清除先前档位并省略全部推理控制项，包括模式默认值。
 
 ### 带推理（reasoning）与协议兼容运行
 

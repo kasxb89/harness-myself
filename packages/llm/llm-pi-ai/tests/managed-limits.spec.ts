@@ -325,6 +325,56 @@ describe('version2 gateway capabilities through the actual SDK', () => {
     expect(calls[0]).not.toHaveProperty('enable_thinking')
     expect(calls[0]).not.toHaveProperty('reasoning_control_mapping')
   })
+  it.each([
+    { values: ['low', 'medium', 'high', 'xhigh', 'max'] },
+    { values: ['low', 'medium', 'high'] },
+    { values: ['low', 'medium', 'high', 'xhigh'] },
+  ])('offers and serializes the exact always-on effort schema $values without a default or off', async ({ values }) => {
+    const value: LlmTextCapabilities = { ...capabilities, reasoningMode: 'always_on',
+      verification: { ...capabilities.verification!, reasoning: values.length === 3 ? 'unverified' : 'supported' },
+      reasoningControls: { type: 'object', properties: { reasoning_effort: { type: 'string', enum: values, default: 'high' } },
+        additionalProperties: false } }
+    const calls = memoryRequests(), { adapter } = adapterFor(profile(value))
+    const info = await adapter.resolveModel(provider, 'v2-opaque')
+    expect(info.reasoning?.efforts.map(effort => effort.id)).toEqual(values)
+    expect(info.reasoning).not.toHaveProperty('defaultEffort')
+    for (const selected of [...values, undefined]) {
+      for await (const _chunk of adapter.stream({ provider, model: 'v2-opaque', messages: [], maxTokens: 1024,
+        ...selected === undefined ? {} : { reasoningEffort: ReasoningEffortId(selected) } })) { /* Inspect actual SDK wire. */ }
+      const body = calls.at(-1)
+      expect(body?.max_tokens).toBe(1024)
+      expect(body).not.toHaveProperty('enable_thinking')
+      if (selected === undefined) expect(body).not.toHaveProperty('reasoning_effort')
+      else expect(body?.reasoning_effort).toBe(selected)
+    }
+    expect(calls).toHaveLength(values.length + 1)
+  })
+  it('keeps always-on off/none unavailable and retains captured controls independently of later schemas', async () => {
+    const value: LlmTextCapabilities = { ...capabilities, reasoningMode: 'always_on',
+      reasoningControls: { type: 'object', properties: { reasoning_effort: { type: 'string', enum: ['none', 'off', 'low', 'high'] } },
+        additionalProperties: false } }
+    const calls = memoryRequests(), { adapter, update } = adapterFor(profile(value))
+    expect((await adapter.resolveModel(provider, 'v2-opaque')).reasoning?.efforts.map(effort => effort.id)).toEqual(['low', 'high'])
+    for (const selected of ['none', 'off']) await expect((async () => {
+      for await (const _chunk of adapter.stream({ provider, model: 'v2-opaque', messages: [],
+        reasoningEffort: ReasoningEffortId(selected) })) { /* Must reject without I/O. */ }
+    })()).rejects.toMatchObject({ code: 'UNSUPPORTED_REASONING_EFFORT' })
+    expect(calls).toHaveLength(0)
+    const prepared = await adapter.prepareCall(provider, 'v2-opaque')
+    prepared.model.textCapabilities!.reasoningControls!.properties.reasoning_effort!.enum.push('invented')
+    await expect((async () => {
+      for await (const _chunk of prepared.stream({ provider, model: 'v2-opaque', messages: [],
+        reasoningEffort: ReasoningEffortId('invented') })) { /* Public metadata must not change the captured declaration. */ }
+    })()).rejects.toMatchObject({ code: 'UNSUPPORTED_REASONING_EFFORT' })
+    expect(calls).toHaveLength(0)
+    update(profile({ ...value, reasoningControls: { type: 'object', properties: {}, additionalProperties: false } }))
+    for await (const _chunk of prepared.stream({ provider, model: 'v2-opaque', messages: [], reasoningEffort: ReasoningEffortId('high') })) { /* Frozen route. */ }
+    expect(calls[0]?.reasoning_effort).toBe('high')
+    expect((await adapter.resolveModel(provider, 'v2-opaque')).reasoning).toBeUndefined()
+    await drain(adapter, 'v2-opaque')
+    expect(calls[1]).not.toHaveProperty('reasoning_effort')
+    expect(calls[1]).not.toHaveProperty('enable_thinking')
+  })
   it('keeps a localized image outage visible and rejects image bytes before SDK projection without disabling text or tools', async () => {
     const value: LlmTextCapabilities = { ...capabilities, vision: false, inputModalities: ['text'],
       verification: { ...capabilities.verification!, vision: 'unverified' }, visionConfig: { ...capabilities.visionConfig!,

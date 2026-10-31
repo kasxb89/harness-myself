@@ -30,6 +30,7 @@ import { ModelSelect } from './ModelSelect.tsx'
 import { en, zh, type ModelKey } from './locales.ts'
 import { orderModelProviders } from './provider-order.ts'
 import { modelGuidance } from './model-guidance.ts'
+import { selectableModelReasoning } from './reasoning-controls.ts'
 
 export { ModelDirectory } from './directory.ts'
 export type { ModelDirectoryState } from './directory.ts'
@@ -90,10 +91,9 @@ function selectionOf(state: ModelDirectoryState, id: string): ModelSelection | u
       if (rowId(group.id, model.id) !== id) continue
       const sameRoute = state.current?.provider === group.id && state.current.model === model.id
       const saved = state.current?.reasoningEffort
-      const supported = model.executionCapabilities?.reasoning !== false
-        && (model.textCapabilities?.schemaVersion === 2 ? model.textCapabilities.reasoningMode === 'configurable' : model.textCapabilities?.reasoning !== false)
-      const reasoningEffort = !supported ? undefined : sameRoute && saved !== undefined
-        && model.reasoning?.efforts.some(effort => effort.id === saved) === true ? saved : model.reasoning?.defaultEffort
+      const reasoning = selectableModelReasoning(model)
+      const reasoningEffort = sameRoute && saved !== undefined
+        && reasoning?.efforts.some(effort => effort.id === saved) === true ? saved : reasoning?.defaultEffort
       return {
         provider: group.id,
         model: model.id,

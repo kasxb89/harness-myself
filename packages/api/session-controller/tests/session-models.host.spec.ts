@@ -1019,7 +1019,10 @@ describe('version2 model route facts and selection recovery', () => {
       override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
         return Promise.resolve({ provider, id: model, name: model, textCapabilities: capabilities,
           inputModalities: capabilities.inputModalities ?? ['text'],
-          ...capabilities.reasoningMode === 'configurable' ? { reasoning: REASONING } : {} })
+          ...capabilities.reasoningMode === 'configurable' ? { reasoning: REASONING } : capabilities.reasoningMode === 'always_on'
+            && capabilities.reasoningControls?.properties.reasoning_effort !== undefined ? { reasoning: {
+              efforts: capabilities.reasoningControls.properties.reasoning_effort.enum.map(id => ({ id: ReasoningEffortId(id), name: id })),
+            } } : {} })
       }
       override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
         requests.push(options)
@@ -1095,6 +1098,29 @@ describe('version2 model route facts and selection recovery', () => {
       const accepted = await f.remote.prompt(promptRequest({ sessionId: f.sessionId, mode: 'queue', content: [{ type: 'text', text: '文字与工具继续正常使用' }] }))
       expect(accepted).toMatchObject({ ok: true })
       expect(f.followup).toHaveBeenCalledOnce()
+    } finally { await f.ctx.fiber.dispose() }
+  })
+
+  it('preserves always-on enum choices through catalog, durable RPC selection and a small-budget dispatch', async () => {
+    const capabilities: LlmTextCapabilities = { ...unknown, reasoning: true, reasoningMode: 'always_on',
+      reasoningControls: { type: 'object', properties: { reasoning_effort: { type: 'string', enum: ['low', 'high'], default: 'low' } }, additionalProperties: false } }
+    const f = await v2Harness(capabilities)
+    try {
+      const catalog = await buildModelCatalog(f.ctx)
+      const model = catalog.groups.find(group => group.id === 'v2')?.models[0]
+      expect(model?.reasoning?.efforts.map(value => value.id)).toEqual(['low', 'high'])
+      expect(model?.reasoning).not.toHaveProperty('defaultEffort')
+      const select = await f.remote.selectModel({ sessionId: f.sessionId, provider: 'v2', model: 'route', reasoningEffort: 'high' })
+      expect(select).toMatchObject({ ok: true })
+      expect(currentSelection(f.ctx, f.sessionId)?.reasoningEffort).toBe('high')
+      for await (const _chunk of f.ctx.llm.stream({ provider: 'v2', model: 'route', messages: [], maxTokens: 123,
+        reasoningEffort: ReasoningEffortId('high') })) { /* Verify the actual prepared adapter call. */ }
+      expect(f.requests.at(-1)).toMatchObject({ reasoningEffort: 'high', maxTokens: 123 })
+      expect(await f.remote.selectModel({ sessionId: f.sessionId, provider: 'v2', model: 'route' })).toMatchObject({ ok: true })
+      expect(currentSelection(f.ctx, f.sessionId)).not.toHaveProperty('reasoningEffort')
+      for await (const _chunk of f.ctx.llm.stream({ provider: 'v2', model: 'route', messages: [], maxTokens: 123 })) { /* Auto stays omitted. */ }
+      expect(f.requests.at(-1)?.reasoningEffort).toBeUndefined()
+      expect(f.requests.at(-1)?.maxTokens).toBe(123)
     } finally { await f.ctx.fiber.dispose() }
   })
 

@@ -580,7 +580,7 @@ interface LlmTextCapabilities {
 }
 ```
 
-版本2将渠道执行资格、逐项能力证据和运行可用状态分开。`unsupported` 表示已确认的负面结果；`unverified` 不构成拒绝依据。`reasoningControls` 描述准确的请求字段，`provider_default` 表示自动模式省略这些字段，并不表示已关闭推理。`visionConfig` 记录该渠道实际核实过的运输方式和 MIME 类型。 图片入口的运行暂停与已确认不支持图片的事实分开，文字和文件工具仍可用。`reasoningControlMapping` 记录由 API 负责的供应商参数转换，客户端仍只发送所选的规范化控制项。
+版本2将渠道执行资格、逐项能力证据和运行可用状态分开。`unsupported` 表示已确认的负面结果；`unverified` 不构成拒绝依据。`reasoningControls` 描述准确的请求字段，`provider_default` 表示自动模式省略这些字段，并不表示已关闭推理。`always_on` 渠道可以提供已声明的强度枚举，而不提供关闭选项。工具选择方式的核实仅限于所列方式；指定工具成功不表示自动选择已经通过。`visionConfig` 记录该渠道实际核实过的运输方式和 MIME 类型。图片入口的运行暂停与已确认不支持图片的事实分开，文字和文件工具仍可用。`reasoningControlMapping` 记录由 API 负责的供应商参数转换，客户端仍只发送所选的规范化控制项。
 
 ```ts type-equiv
 /** One adapter-discovered model; catalog membership is advisory, not request validation. */

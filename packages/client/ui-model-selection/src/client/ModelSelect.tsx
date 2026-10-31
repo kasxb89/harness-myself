@@ -42,6 +42,7 @@ import type { ModelSelectInjected } from './slots.ts'
 import css from './ModelSelect.module.css'
 import { orderModelProviders } from './provider-order.ts'
 import { modelGuidance } from './model-guidance.ts'
+import { reasoningControlsAllowed, selectableModelReasoning } from './reasoning-controls.ts'
 
 /** Which pane the dropdown shows: the two-row root or one drilled-in list. */
 type Pane = 'root' | 'model' | 'effort'
@@ -93,18 +94,16 @@ export function ModelSelect(
 
   const groups = useMemo(() => orderModelProviders(state.groups), [state.groups])
   const choices = useMemo(() => groups.flatMap(group =>
-    group.models.map(model => ({
-      group,
-      model,
-      selection: {
-        provider: group.id,
-        model: model.id,
-        ...model.executionCapabilities?.reasoning === false || model.reasoning?.defaultEffort === undefined
-          || model.textCapabilities?.schemaVersion === 2 && model.textCapabilities.reasoningMode !== 'configurable'
-          ? {}
-          : { reasoningEffort: model.reasoning.defaultEffort },
-      } satisfies ModelSelection,
-    }))), [groups])
+    group.models.map((model) => {
+      const defaultEffort = selectableModelReasoning(model)?.defaultEffort
+      return {
+        group,
+        model,
+        selection: { provider: group.id, model: model.id,
+          ...defaultEffort === undefined ? {} : { reasoningEffort: defaultEffort },
+        } satisfies ModelSelection,
+      }
+    })), [groups])
   const showSearch = choices.length > 4
   const filteredGroups = useMemo(() => groups.map(group => ({
     ...group, models: rankByName(group.models, showSearch ? query.trim() : ''),
@@ -120,10 +119,8 @@ export function ModelSelect(
     : choices.findIndex(c => c.selection.provider === state.current?.provider && c.selection.model === state.current.model)
   const currentChoice = choices[selectedIndex]
   const currentCapabilities = currentChoice?.model.textCapabilities
-  const reasoningDisabled = currentChoice?.model.executionCapabilities?.reasoning === false
-    || currentCapabilities?.schemaVersion !== 2 && currentCapabilities?.reasoning === false
-    || currentCapabilities?.schemaVersion === 2 && currentCapabilities.reasoningMode !== 'configurable'
-  const reasoning = reasoningDisabled ? undefined : currentChoice?.model.reasoning
+  const reasoningDisabled = !reasoningControlsAllowed(currentChoice?.model)
+  const reasoning = selectableModelReasoning(currentChoice?.model)
   const effectiveEffort = state.current?.reasoningEffort ?? reasoning?.defaultEffort
   const defaultEffortLabel = t(currentCapabilities?.schemaVersion === 2 ? 'effort.providerAuto' : 'effort.providerDefault')
   const savedEffortUnadvertised = state.current?.reasoningEffort !== undefined

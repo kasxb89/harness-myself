@@ -799,3 +799,36 @@ it('bridges an image-only temporary outage per Session without disabling tools o
     await second.fiber.dispose()
   } finally { await b.ctx.fiber.dispose() }
 })
+
+
+it('retains always-on enum strength through the shared directory and /model while marking automatic tool selection unverified', async () => {
+  const b = await bench()
+  try {
+    const live = b.mint('always-strength')
+    const selected = { provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: 'high' }
+    b.setProjected(sid('always-strength'), { lastUsed: selected, next: selected })
+    b.setGroups([{ id: 'deepseek-official', name: 'Routes', models: [{ id: 'deepseek-v4-flash', name: 'Always',
+      reasoning: { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }], defaultEffort: 'low' },
+      textCapabilities: { schemaVersion: 2, tools: true, vision: true, reasoning: true, stream: true, maxInputTokens: 32000,
+        verification: { tools: 'supported', vision: 'supported', reasoning: 'unverified' }, reasoningMode: 'always_on',
+        reasoningControls: { type: 'object', properties: { reasoning_effort: { type: 'string', enum: ['low', 'high'] } }, additionalProperties: false },
+        toolsConfig: { protocol: 'openai-chat', roundtripVerified: true, verifiedToolChoices: ['named'], parallelCalls: 'unverified' } },
+      executionCapabilities: { available: true, tools: true, vision: true },
+    }] }])
+    const directory = b.ctx.modelDirectories.directoryFor(sid('always-strength'))
+    await directory.reload()
+    expect(directory.store.getSnapshot().retainedEffort).toBe('High')
+    const options = await b.popup().options(projection('always-strength'), new AbortController().signal)
+    const row = options.find(value => value.id.includes('deepseek-v4-flash'))
+    if (row === undefined) throw new Error('Expected always-on route option')
+    expect(row.detail).toContain(zh['guidance.reasoningAlwaysOn'])
+    expect(row.detail).toContain(zh['guidance.tools.namedVerified'])
+    expect(row.detail).toContain(zh['guidance.tools.autoUnverified'])
+    await b.popup().onSelect(row, projection('always-strength'))
+    expect(b.hostCurrent()).toEqual(selected)
+    await directory.select({ provider: selected.provider, model: selected.model })
+    expect(directory.store.getSnapshot().current).toEqual({ provider: selected.provider, model: selected.model })
+    expect(directory.store.getSnapshot().retainedEffort).toBeUndefined()
+    await live.fiber.dispose()
+  } finally { await b.ctx.fiber.dispose() }
+})

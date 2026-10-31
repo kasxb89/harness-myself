@@ -574,7 +574,7 @@ interface LlmTextCapabilities {
 }
 ```
 
-Version2 separates route execution eligibility, per-feature evidence and operational availability. `unsupported` is a confirmed negative result; `unverified` does not establish a denial. `reasoningControls` describes exact request fields, while `provider_default` means that Auto omits those fields and does not assert that reasoning is disabled. `visionConfig` records the transports and MIME types actually exercised for the route. Its operational suspension is separate from an unsupported vision fact and leaves text and file tools available. `reasoningControlMapping` records API-owned supplier translation; clients still send only the selected normalized control.
+Version2 separates route execution eligibility, per-feature evidence and operational availability. `unsupported` is a confirmed negative result; `unverified` does not establish a denial. `reasoningControls` describes exact request fields, while `provider_default` means that Auto omits those fields and does not assert that reasoning is disabled. An `always_on` route can expose a declared effort enum without offering Off. Tool-choice verification applies only to the listed choices; a named-tool success does not establish automatic selection. `visionConfig` records the transports and MIME types actually exercised for the route. Its operational suspension is separate from an unsupported vision fact and leaves text and file tools available. `reasoningControlMapping` records API-owned supplier translation; clients still send only the selected normalized control.
 
 ```ts type-equiv
 /** One adapter-discovered model; catalog membership is advisory, not request validation. */
