@@ -1243,6 +1243,11 @@
     },
     {
       "doc": "docs/subsystems/jobs.md",
+      "symbol": "JobActionRequired",
+      "source": "packages/jobs/jobs/src/view.ts"
+    },
+    {
+      "doc": "docs/subsystems/jobs.md",
       "symbol": "JobOutcome",
       "source": "packages/jobs/jobs/src/types.ts"
     },

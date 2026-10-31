@@ -838,7 +838,7 @@ describe('deployed Harness API through the real product Loader', () => {
   it.each([
     { entry: 'panel', reply: notSentContract.notCharged }, { entry: 'chat', reply: notSentContract.notCharged },
     { entry: 'panel', reply: notSentContract.refunded }, { entry: 'chat', reply: notSentContract.refunded },
-  ])('settles an exact unsent H3 ledger proof through $entry with original business code and task identity', async ({ entry, reply }) => {
+  ])('settles an exact unsent H3 ledger proof through $entry with an actionable business code and original task identity', async ({ entry, reply }) => {
     const { base, stateDir } = await boot(undefined, false, true)
     const cookie = await hostCookie(base)
     await signIn(base)
@@ -852,9 +852,11 @@ describe('deployed Harness API through the real product Loader', () => {
       : await post(base, '/api/video/tasks?source=newapi-generate', {
         session_id: sessionId, account_id: '7', prompt: 'A synthetic clip', model: 'MiniMax-H3', durationSeconds: 4,
       }, cookie)
-    expect(denied).toMatchObject({ code: reply.body.code, submission_state: 'failed', task_id: reply.body.id, request_id: 'unsent-host-request' })
+    const code = reply.body.code === 'insufficient_user_quota' ? 'INSUFFICIENT_BALANCE' : reply.body.code
+    expect(denied).toMatchObject({ code, submission_state: 'failed', task_id: reply.body.id, request_id: 'unsent-host-request' })
+    if (code === 'INSUFFICIENT_BALANCE') expect(denied.message).toMatch(/余额不足.*充值/u)
     const retained = projects(object(await (await fetch(base + `/api/creative/projects?session_id=${sessionId}`, { headers: { cookie } })).json()))[0]!
-    expect(retained).toMatchObject({ status: 'failed', tasks: [{ status: 'failed', errorCode: reply.body.code,
+    expect(retained).toMatchObject({ status: 'failed', tasks: [{ status: 'failed', errorCode: code,
       videoReceipt: { phase: 'submitting', taskId: reply.body.id, requestId: 'unsent-host-request' }, canQuery: false }] })
     expect(calls.filter(call => call.path === '/harness/v1/video/generations')).toHaveLength(1)
     expect(calls.some(call => call.path.startsWith('/harness/v1/tasks/'))).toBe(false)
@@ -1081,6 +1083,89 @@ describe('deployed Harness API through the real product Loader', () => {
     expect(calls.filter(call => call.path === '/harness/v1/tasks/task_fixture')).toHaveLength(2)
   })
 
+  it('ends the funded video attempt with a recharge action and admits independent human requests', async () => {
+    const { base, stateDir } = await boot(undefined, false, true, undefined, { videoChatWaitMs: 1, videoPollIntervalMs: 1 })
+    await signIn(base)
+    const account = await rechargeExpectation(base)
+    pricingRows = [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }]
+    const agent = videoAgent(stateDir, 'balance-rejected-chat')
+    context!.sessions.create(SessionId(agent.id), { meta: { cwd: stateDir } })
+    const input = { name: 'generate_video', agent, callId: ToolCallId('balance-rejected-video'),
+      arguments: { prompt: 'A cup in sunlight', model: 'MiniMax-H3', duration_seconds: 4 },
+      signal: new AbortController().signal }
+    videoSubmitReplies.push({ status: notSentContract.notCharged.httpStatus, body: notSentContract.notCharged.body })
+    const first = await requestVideo(input)
+    expect(first).toMatchObject({ isError: false, concludesTurn: true, value: {
+      status: 'failed', code: 'INSUFFICIENT_BALANCE', submission_state: 'failed',
+      actionRequired: { code: 'INSUFFICIENT_BALANCE', scope: account.expected_account_owner },
+    } })
+    expect(object(first.value).message).toMatch(/余额不足.*充值/u)
+    expect(await continueVideo({ ...input, arguments: { ...input.arguments, prompt: 'A revised cup prompt' } }))
+      .toMatchObject({ isError: false, concludesTurn: true, value: { code: 'INSUFFICIENT_BALANCE' } })
+    const submissions = () => calls.filter(call => call.path === '/harness/v1/video/generations')
+    expect(submissions()).toHaveLength(1)
+    videoTaskStatus = 'RUNNING'
+    const other = videoAgent(stateDir, 'balance-independent-chat')
+    context!.sessions.create(SessionId(other.id), { meta: { cwd: stateDir } })
+    expect(object((await requestVideo({ ...input, agent: other })).value))
+      .toMatchObject({ status: 'pending' })
+    expect(object((await requestVideo(input)).value)).toMatchObject({ status: 'pending' })
+    expect(submissions()).toHaveLength(3)
+  })
+
+  it.each([false, true])('retains video balance failure without blocking a newer request: %s', async (newerRequest) => {
+    const { base, stateDir } = await boot(undefined, false, true, undefined,
+      { videoChatWaitMs: 1, videoChatQueryWaitMs: 1000, videoPollIntervalMs: 1 })
+    await signIn(base)
+    const account = await rechargeExpectation(base)
+    const agent = videoAgent(stateDir, 'retained-video-balance')
+    context!.sessions.create(SessionId(agent.id), { meta: { cwd: stateDir } })
+    pricingRows = [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }]
+    videoTaskStatus = 'RUNNING'
+    const original = object((await requestVideo({ name: 'generate_video', agent,
+      callId: ToolCallId('retained-balance-submit'), arguments: { prompt: 'One cup video', duration_seconds: 4 },
+      signal: new AbortController().signal })).value)
+    expect(original).toMatchObject({ status: 'pending', task_id: 'fixture-video-task' })
+    videoQueryReply = { task_id: 'fixture-video-task', status: 'UNKNOWN', failure_code: 'insufficient_user_quota',
+      fail_reason: 'private gateway detail', submission_receipt: {
+        ...notSentContract.receipt, id: 'fixture-video-task', task_id: 'fixture-video-task',
+        recovery: { method: 'GET', path: '/v1/tasks/fixture-video-task' },
+      } }
+    if (newerRequest) humanVideoRequest(agent, '生成另一条独立视频。')
+    const queryId = ToolCallId('retained-balance-read')
+    const queryArgs = { plan_id: original.plan_id, operation_id: original.operation_id }
+    const call = agent.session.append('tool/call', { turn: 1, step: 1, callId: queryId,
+      name: 'query_video_task', arguments: JSON.stringify(queryArgs) })
+    const outcome = await context!.tools.execute({ name: 'query_video_task', agent,
+      callId: queryId, arguments: queryArgs,
+      signal: new AbortController().signal })
+    agent.session.append('tool/result', { turn: 1, step: 1,
+      message: createToolResultMessage({ callId: queryId, isError: outcome.isError, content: outcome.content }),
+    }, { surfaceOp: 'append', sourceEventSeqs: [call.seq] })
+    expect(outcome).toMatchObject({ isError: false, value: {
+      status: 'failed', task_id: 'fixture-video-task', code: 'INSUFFICIENT_BALANCE',
+    } })
+    if (newerRequest) {
+      expect(outcome).not.toHaveProperty('concludesTurn')
+      expect(object(outcome.value)).not.toHaveProperty('actionRequired')
+      videoQueryReply = undefined
+      expect(object((await continueVideo({ name: 'generate_video', agent,
+        callId: ToolCallId('independent-after-old-query'), arguments: { prompt: 'A different cup video', duration_seconds: 4 },
+        signal: new AbortController().signal })).value)).toMatchObject({ status: 'pending' })
+    } else {
+      expect(outcome).toMatchObject({ concludesTurn: true, value: {
+        actionRequired: { code: 'INSUFFICIENT_BALANCE', scope: account.expected_account_owner },
+      } })
+      expect(await continueVideo({ name: 'generate_video', agent, callId: ToolCallId('same-source-after-query'),
+        arguments: { prompt: 'A revised cup video', duration_seconds: 4 }, signal: new AbortController().signal }))
+        .toMatchObject({ isError: false, concludesTurn: true, value: {
+          code: 'INSUFFICIENT_BALANCE', task_id: original.task_id, paths: [],
+        } })
+    }
+    expect(JSON.stringify(outcome)).not.toContain('private gateway detail')
+    expect(calls.filter(call => call.path === '/harness/v1/video/generations')).toHaveLength(newerRequest ? 2 : 1)
+  })
+
   it.each(['panel', 'chat'] as const)('preserves exact single-video funding rejection through %s without resubmitting an unconfirmed plan', async (entry) => {
     const { base, stateDir } = await boot(undefined, true, true)
     const cookie = await hostCookie(base)
@@ -1115,7 +1200,7 @@ describe('deployed Harness API through the real product Loader', () => {
       if (expected === 'INSUFFICIENT_BALANCE') {
         expect(result.message).toBe('余额不足，请充值；提交结果尚未确认，请先检查已有任务，不要重复提交。')
         if (entry === 'chat') {
-          expect(await execute({ plan_id: project.id, shot_id: 'shot_1' })).toMatchObject({ status: 'existing',
+          expect(await execute({ plan_id: project.id, shot_id: 'shot_1' })).toMatchObject({ status: 'unknown', code: 'INSUFFICIENT_BALANCE',
             plan_id: result.plan_id, operation_id: result.operation_id, work_id: result.work_id })
         } else {
           expect(await post(base, '/api/video/tasks?source=newapi-generate', {

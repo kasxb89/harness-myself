@@ -24,6 +24,9 @@
       "path": "../../core/agent"
     },
     {
+      "path": "../../session/session-projection"
+    },
+    {
       "path": "../../core/system-prompt"
     },
     {

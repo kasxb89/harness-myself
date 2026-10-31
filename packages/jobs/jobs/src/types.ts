@@ -7,10 +7,10 @@
 
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { JobId } from './brand.ts'
-import type { JobChannel, JobChunk, JobKind, JobView } from './view.ts'
+import type { JobActionRequired, JobChannel, JobChunk, JobKind, JobView } from './view.ts'
 
 export { JobId } from './brand.ts'
-export type { JobChannel, JobChunk, JobKind, JobKindMap, JobStatus, JobView } from './view.ts'
+export type { JobActionRequired, JobChannel, JobChunk, JobKind, JobKindMap, JobStatus, JobView } from './view.ts'
 
 /** Terminal result supplied by a producer through {@link JobHooks.done}. */
 export interface JobOutcome {
@@ -28,6 +28,8 @@ export interface JobOutcome {
    * the stream; this is handed out once by the model's next {@link JobRegistry.read}.
    */
   result?: string
+  /** Only a failed outcome may require user action and suppress automatic model continuation. */
+  actionRequired?: JobActionRequired
 }
 
 /** One incremental read from a {@link JobOutputSource}. */

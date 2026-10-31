@@ -4,7 +4,7 @@ import { link, lstat, open, realpath, unlink } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, sep } from 'node:path'
 import type { VideoProjectRequest } from './video-project-types.ts'
 import { apiUrl, normalizeApiBaseUrl } from './api-url.ts'
-import { isAccountBalanceRejection } from './account-balance.ts'
+import { accountBalanceFailure, isAccountBalanceRejection } from './account-balance.ts'
 import { videoSubmission } from './video-submission.ts'
 import { hasMediaSubmissionReceipt, mediaSubmissionTaskId, hasMediaSubmissionUnknown, mediaSubmissionUnknownTaskId } from './media-submission-receipt.ts'
 import {
@@ -56,7 +56,11 @@ export interface VideoProjectRelay {
    * @param signal - Cancels polling.
    * @returns Normalized upstream status, preserving accepted queue admission separately from generation.
    */
-  check(taskId: string, route: string, signal: AbortSignal, model?: string): Promise<{ status: 'queued' | 'running' | 'succeeded' | 'failed'; message?: string }>
+  check(taskId: string, route: string, signal: AbortSignal, model?: string): Promise<{
+    status: 'queued' | 'running' | 'succeeded' | 'failed'
+    code?: string
+    message?: string
+  }>
   /** @param taskId - Completed task. @param destination - New private clip path. @param signal - Cancels transfer. */
   download(taskId: string, destination: string, signal: AbortSignal): Promise<void>
 }
@@ -154,8 +158,12 @@ export function createVideoProjectRelay(options: VideoRelayOptions): VideoProjec
             taskId === undefined ? undefined : { taskId })
         }
         balanceRejected = isAccountBalanceRejection(rejection, response.status)
+      } else if (response.status === 402 || response.status === 403) {
+        try { balanceRejected = isAccountBalanceRejection(await jsonBody(response), response.status) }
+        catch (_unreadableRejection: unknown) { /* Unreadable account replies do not establish a funding failure. */ }
       } else await response.body?.cancel().catch((_closedBody: unknown) => { /* No upstream error body is exposed or retained. */ })
-      if (balanceRejected) throw new VideoRelayError('INSUFFICIENT_BALANCE', '余额不足，请充值')
+      if (balanceRejected) throw new VideoRelayError('INSUFFICIENT_BALANCE', body === undefined
+        ? '余额不足，请充值；原视频状态尚未确认，请继续查询原任务，不要重新生成。' : '余额不足，请充值')
       if (body !== undefined && response.status === 429) {
         throw new VideoRelayError('VIDEO_SUBMIT_BUSY', '视频服务繁忙，提交结果尚未确认，请先核对原任务，不要重新提交。')
       }
@@ -195,7 +203,11 @@ export function createVideoProjectRelay(options: VideoRelayOptions): VideoProjec
       }
       return { taskId }
     },
-    async check(taskId: string, route: string, signal: AbortSignal, model?: string): Promise<{ status: 'queued' | 'running' | 'succeeded' | 'failed'; message?: string }> {
+    async check(taskId: string, route: string, signal: AbortSignal, model?: string): Promise<{
+      status: 'queued' | 'running' | 'succeeded' | 'failed'
+      code?: string
+      message?: string
+    }> {
       const canonical = model === 'MiniMax-H3' || taskId.startsWith('task_')
       let response = await request((canonical ? '/v1/tasks' : route) + '/' + validTask(taskId), signal, undefined, options.timeoutMs, canonical)
       if (canonical && response.status === 404 && route !== '/v1/tasks') {
@@ -218,7 +230,11 @@ export function createVideoProjectRelay(options: VideoRelayOptions): VideoProjec
       const status = (text(value, 'task_status') ?? text(value, 'status') ?? text(nested, 'task_status') ?? text(nested, 'status'))?.toLowerCase()
       if (['succeed', 'succeeded', 'success', 'completed'].includes(status ?? '')) return { status: 'succeeded' }
       if (['failed', 'failure', 'fail', 'error', 'cancelled', 'canceled'].includes(status ?? '')) {
-        if (model === 'MiniMax-H3') throw new VideoRelayError('VIDEO_STATUS_INVALID', '原视频失败状态尚无完整提交与计费证明，请保留原任务编号继续核对，不要重新生成。')
+        const balance = accountBalanceFailure(value.failure_code ?? nested?.failure_code)
+        if (model === 'MiniMax-H3') throw new VideoRelayError(balance?.code ?? 'VIDEO_STATUS_INVALID',
+          (balance === undefined ? '' : `${balance.message}；`)
+            + '原视频失败状态尚无完整提交与计费证明，请保留原任务编号继续核对，不要重新生成。')
+        if (balance !== undefined) return { status: 'failed', ...balance }
         return { status: 'failed', message: '上游视频任务未完成，已保留项目和已生成片段' }
       }
       if (['not_start', 'pending', 'queued', 'in_queue', 'created', 'submitted'].includes(status ?? '')) return { status: 'queued' }

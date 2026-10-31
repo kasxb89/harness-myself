@@ -9,6 +9,7 @@ import { act, screen } from '@testing-library/react'
 import { SlotTestRuntime, stubConfigForm, usePinnedBrowserLanguages } from '@deepseek-ai/dsh-client-test-runtime'
 import { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client'
 import type { SessionLiveEventEntry, SessionReference } from '@deepseek-ai/dsh-api-session-controller/client'
+import { ToolCallId, createToolResultMessage } from '@deepseek-ai/dsh-llm'
 import type { SessionId, SessionSeq } from '@deepseek-ai/dsh-session/types'
 import type { WorkspaceId } from '@deepseek-ai/dsh-workspace/types'
 import {
@@ -252,4 +253,108 @@ describe('frame-wide quota notices', () => {
     await b.runtime.sessions.appendEvent(SID, quotaEntry(1, 'ACCOUNT_QUOTA'))
     expect(notice.getSnapshot()).toBe(published)
   })
+})
+
+
+describe('confirmed media balance notices', () => {
+  const call = (seq: number, id: string): SessionLiveEventEntry => ({ type: 'event', event: {
+    type: 'tool/call', seq: seq as SessionSeq, time: seq,
+    data: { turn: 1, step: 1, callId: ToolCallId(id), name: 'generate_video', arguments: '{}' },
+  } })
+  const result = (seq: number, id: string, scope: string, workId = 'work-1'): SessionLiveEventEntry => ({ type: 'event', event: {
+    type: 'tool/result', seq: seq as SessionSeq, time: seq, surfaceOp: 'append', data: { turn: 1, step: 1,
+      message: createToolResultMessage({ callId: ToolCallId(id), isError: false, content: [{ type: 'text',
+        text: JSON.stringify({ status: 'failed', work_id: workId,
+          actionRequired: { code: 'INSUFFICIENT_BALANCE', scope } }) }] }),
+    },
+  } })
+
+  it('announces live tool balance failure even when the Agent completes and deduplicates the same work', async () => {
+    const b = await bench()
+    await attach(b.runtime, b.sourceDescriptor)
+    b.runtime.ctx.quotaNotices.registerBalanceScope(scope => scope === 'login-a')
+    const face = noticeFace(b.runtime)
+    await b.runtime.sessions.appendEvent(SID, call(0, 'first'))
+    await b.runtime.sessions.appendEvent(SID, result(1, 'first', 'login-a'))
+    await b.runtime.sessions.appendEvent(SID, { type: 'event', event: { type: 'turn/end', seq: 2 as SessionSeq, time: 2,
+      data: { turn: 1, reason: { kind: 'completed' } } } })
+    expect(face.hooks.notice.getSnapshot()).toMatchObject({ code: 'INSUFFICIENT_BALANCE', scope: 'login-a' })
+    face.dismissNotice()
+    await b.runtime.sessions.appendEvent(SID, call(3, 'repeat'))
+    await b.runtime.sessions.appendEvent(SID, result(4, 'repeat', 'login-a'))
+    expect(face.hooks.notice.getSnapshot()).toBeNull()
+    await b.runtime.sessions.appendEvent(SID, call(5, 'different'))
+    await b.runtime.sessions.appendEvent(SID, result(6, 'different', 'login-a', 'work-2'))
+    expect(face.hooks.notice.getSnapshot()).toMatchObject({ code: 'INSUFFICIENT_BALANCE' })
+  })
+
+  it('rejects another login scope, unscoped failures and historical replacements', async () => {
+    const b = await bench()
+    await attach(b.runtime, b.sourceDescriptor)
+    b.runtime.ctx.quotaNotices.registerBalanceScope(scope => scope === 'login-b')
+    const notice = noticeFace(b.runtime).hooks.notice
+    await b.runtime.sessions.appendEvent(SID, call(0, 'old'))
+    await b.runtime.sessions.appendEvent(SID, result(1, 'old', 'login-a'))
+    await b.runtime.sessions.appendEvent(SID, call(2, 'unscoped'))
+    await b.runtime.sessions.appendEvent(SID, result(3, 'unscoped', ''))
+    expect(notice.getSnapshot()).toBeNull()
+    await b.runtime.sessions.replaceEvents(SID, [call(4, 'history'), result(5, 'history', 'login-b')])
+    expect(notice.getSnapshot()).toBeNull()
+  })
+
+  it('shares one job key with a terminal roster notification and rejects stale-account metadata', async () => {
+    const b = await bench()
+    await attach(b.runtime, b.sourceDescriptor)
+    let scope = 'login-a'
+    b.runtime.ctx.quotaNotices.registerBalanceScope(value => value === scope)
+    const face = noticeFace(b.runtime)
+    const event = result(0, 'job', 'ignored')
+    if (event.type !== 'event' || event.event.type !== 'tool/result') throw new Error('Expected tool result fixture')
+    const metadata = { jobId: 'video-project-1', actionRequired: { code: 'INSUFFICIENT_BALANCE', scope: 'login-a' } }
+    await b.runtime.sessions.appendEvent(SID, { ...event, event: { ...event.event, data: { ...event.event.data, meta: metadata } } })
+    expect(face.hooks.notice.getSnapshot()).toMatchObject({ code: 'INSUFFICIENT_BALANCE', scope: 'login-a' })
+    face.dismissNotice()
+    expect(b.runtime.ctx.quotaNotices.publishBalance({ scope: 'login-a', key: 'job:video-project-1' })).toBe(false)
+    scope = 'login-b'
+    expect(b.runtime.ctx.quotaNotices.publishBalance({ scope: 'login-a', key: 'job:new-old-job' })).toBe(false)
+    expect(face.hooks.notice.getSnapshot()).toBeNull()
+  })
+})
+
+
+it('announces named PTC media results and never guesses from outer run_code JSON', async () => {
+  const b = await bench()
+  await attach(b.runtime, b.sourceDescriptor)
+  b.runtime.ctx.quotaNotices.registerBalanceScope(scope => scope === 'login-a')
+  const face = noticeFace(b.runtime)
+  const action = JSON.stringify({ status: 'failed', work_id: 'ptc-work',
+    actionRequired: { code: 'INSUFFICIENT_BALANCE', scope: 'login-a' } })
+  await b.runtime.sessions.appendEvent(SID, { type: 'event', event: { type: 'tool/call', seq: 0 as SessionSeq, time: 0,
+    data: { turn: 1, step: 1, callId: ToolCallId('outer'), name: 'run_code', arguments: '{}' } } })
+  await b.runtime.sessions.appendEvent(SID, { type: 'event', event: { type: 'tool/result', seq: 1 as SessionSeq, time: 1,
+    surfaceOp: 'append', data: { turn: 1, step: 1, message: createToolResultMessage({ callId: ToolCallId('outer'), isError: false,
+      content: [{ type: 'text', text: action }] }) } } })
+  expect(face.hooks.notice.getSnapshot()).toBeNull()
+  await b.runtime.sessions.appendEvent(SID, { type: 'event', event: { type: 'tool/ptc-dispatch', seq: 2 as SessionSeq, time: 2,
+    data: { rootCallId: ToolCallId('outer'), parentCallId: ToolCallId('outer'), subCallId: ToolCallId('inner'),
+      name: 'generate_video', arguments: {}, isError: false, content: [{ type: 'text', text: action }] } } })
+  expect(face.hooks.notice.getSnapshot()).toMatchObject({ code: 'INSUFFICIENT_BALANCE', scope: 'login-a' })
+  face.dismissNotice()
+  expect(b.runtime.ctx.quotaNotices.publishBalance({ scope: 'login-a', key: 'submission:ptc-work' })).toBe(false)
+})
+
+
+it('correlates a coalesced terminal job with its later live start acknowledgement', async () => {
+  const b = await bench()
+  await attach(b.runtime, b.sourceDescriptor)
+  b.runtime.ctx.quotaNotices.registerBalanceScope(scope => scope === 'login-a')
+  const notice = noticeFace(b.runtime).hooks.notice
+  b.runtime.ctx.quotaNotices.observeBalanceJob({ scope: 'login-a', key: 'job:fast-video' }, false)
+  expect(notice.getSnapshot()).toBeNull()
+  await b.runtime.sessions.appendEvent(SID, { type: 'event', event: { type: 'tool/call', seq: 0 as SessionSeq, time: 0,
+    data: { turn: 1, step: 1, callId: ToolCallId('fast'), name: 'generate_video_project', arguments: '{}' } } })
+  await b.runtime.sessions.appendEvent(SID, { type: 'event', event: { type: 'tool/result', seq: 1 as SessionSeq, time: 1,
+    surfaceOp: 'append', data: { turn: 1, step: 1, message: createToolResultMessage({ callId: ToolCallId('fast'), isError: false,
+      content: [{ type: 'text', text: '{"status":"background","job_id":"fast-video"}' }] }) } } })
+  expect(notice.getSnapshot()).toMatchObject({ code: 'INSUFFICIENT_BALANCE', scope: 'login-a' })
 })

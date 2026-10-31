@@ -6,7 +6,8 @@ import ToolRuntime from '@deepseek-ai/dsh-tools'
 import AgentRegistry, { emitAgentEvent } from '@deepseek-ai/dsh-agent'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import { SessionId } from '@deepseek-ai/dsh-session'
+import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import SessionProjections from '@deepseek-ai/dsh-session-projection'
 import { bindScopeParent, createScope, scopeOf } from '@deepseek-ai/dsh-scope'
 import { JobId } from '@deepseek-ai/dsh-jobs'
 import LocalJobRegistry from '@deepseek-ai/dsh-jobs-local'
@@ -292,6 +293,45 @@ describe('tool-jobs setup', () => {
 })
 
 describe('job_output', () => {
+  it('keeps user-action failure visible without waking or injecting the model, and concludes every explicit read', async () => {
+    const { ctx } = await setup()
+    const followup = vi.fn()
+    const inject = vi.fn()
+    const owner = await fakeAgent(ctx, 'balance-owner', { status: 'idle', followup, inject })
+    const p = producer({ owner: owner.id, readMode: 'background' })
+    try {
+      const id = ctx.jobs.start(p.spec)
+      const actionRequired = { code: 'INSUFFICIENT_BALANCE', scope: 'account-scope' }
+      const original = JSON.stringify({ status: 'failed', code: actionRequired.code, project_id: 'original-project' })
+      p.settle({ status: 'failed', detail: actionRequired.code, result: original, actionRequired })
+      await vi.waitFor(() => { expect(ctx.jobs.get(id, owner.id).status).toBe('failed') })
+      expect(followup).not.toHaveBeenCalled()
+      expect(inject).not.toHaveBeenCalled()
+      const read = await call(ctx, 'job_output', { job_id: id, wait: true }, owner)
+      expect(read).toMatchObject({ isError: false, concludesTurn: true,
+        value: { job: { status: 'failed', detail: actionRequired.code, actionRequired } },
+        meta: { jobId: id, actionRequired } })
+      expect(text(read)).toContain(original)
+      const again = await call(ctx, 'job_output', { job_id: id }, owner)
+      expect(again).toMatchObject({ concludesTurn: true, meta: { jobId: id, actionRequired } })
+      expect(text(again)).not.toContain(original)
+      expect(ctx.jobs.list(owner.id)[0]?.actionRequired).toEqual(actionRequired)
+    } finally { await ctx.fiber.dispose() }
+  })
+
+  it('keeps ordinary failed-job completion delivery and follow-up reads unchanged', async () => {
+    const { ctx } = await setup()
+    const followup = vi.fn()
+    const owner = await fakeAgent(ctx, 'ordinary-failure', { status: 'idle', followup })
+    const p = producer({ owner: owner.id })
+    try {
+      const id = ctx.jobs.start(p.spec)
+      p.settle({ status: 'failed', detail: 'unrelated failure' })
+      await vi.waitFor(() => { expect(followup).toHaveBeenCalledOnce() })
+      expect(await call(ctx, 'job_output', { job_id: id }, owner)).not.toHaveProperty('concludesTurn')
+    } finally { await ctx.fiber.dispose() }
+  })
+
   it.each([false, true].flatMap(wait => [undefined, true, false].map(policy => ({ wait, policy }))))(
     'returns background output immediately with wait=$wait and conclude policy=$policy', async ({ wait, policy }) => {
       const { ctx } = await setup()
@@ -744,6 +784,37 @@ describe('tool-owned UI presentation (presentCall)', () => {
 })
 
 describe('completion notices across scoped mounts', () => {
+  it('shares the human-input fold across mounts, removes it at final disposal and rebuilds it after reload', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(ToolRuntime)
+    await ctx.plugin(AgentRegistry)
+    await ctx.plugin(LocalJobRegistry)
+    await ctx.plugin(SessionProjections)
+    const standingA = createScope(ctx, {})
+    const standingB = createScope(ctx, {})
+    const first = await standingA.ctx.plugin(ToolJobs)
+    const second = await standingB.ctx.plugin(ToolJobs)
+    const session = Session.create(SessionId('shared-human-input'))
+    try {
+      const human = session.append('user/message', createUserMessage({ source: { kind: 'user' },
+        content: [{ type: 'text', text: 'original request' }] }), { surfaceOp: 'append' })
+      session.append('user/message', createUserMessage({ source: { kind: 'tool-jobs', form: 'notice', summary: 'old job' },
+        content: [{ type: 'text', text: 'background notice' }] }), { surfaceOp: 'append' })
+      expect(ctx.sessionProjections.stateOf(session, 'toolJobHumanInput')).toBe(human.seq)
+      await first.dispose()
+      expect(ctx.sessionProjections.stateOf(session, 'toolJobHumanInput')).toBe(human.seq)
+      await second.dispose()
+      expect(ctx.sessionProjections.stateOf(session, 'toolJobHumanInput')).toBeUndefined()
+      const newer = session.append('user/message', createUserMessage({ source: { kind: 'user' },
+        content: [{ type: 'text', text: 'new independent request' }] }), { surfaceOp: 'append' })
+      const reloaded = await standingA.ctx.plugin(ToolJobs)
+      expect(ctx.sessionProjections.stateOf(session, 'toolJobHumanInput')).toBe(newer.seq)
+      await reloaded.dispose()
+      expect(ctx.sessionProjections.stateOf(session, 'toolJobHumanInput')).toBeUndefined()
+    } finally { await ctx.fiber.dispose() }
+  })
+
   /**
    * Two agent presets mounting `tool-jobs` over ONE host registry: each mount
    * subscribes with `{ owners: 'scope' }`, which the registry files into the

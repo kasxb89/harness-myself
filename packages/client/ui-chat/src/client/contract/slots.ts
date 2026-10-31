@@ -66,6 +66,8 @@ export type QuotaNoticeCode = 'QUOTA' | 'ACCOUNT_QUOTA' | 'INSUFFICIENT_BALANCE'
 
 /** The notice on display; `seq` keys remounts so an unretained later notice restarts its transient display. */
 export interface QuotaNoticeState {
+  /** Confirmed product-login owner; absent for legacy terminal-turn notices. */
+  readonly scope?: string
   /** Stable failure code retained in the Session log. */
   code: QuotaNoticeCode
   /** Per-publication sequence; the host keys its surface by it. */
@@ -88,6 +90,8 @@ export interface ReasoningContentInput extends ReasoningBodyOwnerProps {
 
 /** Owner currency of one quota notice offered to the frame-wide chain. */
 export interface QuotaNoticeOwnerProps {
+  /** Producer login scope for product balance notices; never displayed. */
+  readonly scope?: string
   /** Stable failure code retained in the Session log. */
   code: QuotaNoticeCode
   /** Provider-neutral notice copy in the active locale. */

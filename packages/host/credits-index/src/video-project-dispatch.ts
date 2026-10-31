@@ -62,8 +62,9 @@ export function createVideoProjectDispatch(options: VideoProjectDispatchOptions)
           throw new VideoRelayError('VIDEO_SUBMIT_NOT_STARTED', error.message, { cause: error })
         }
         if (error instanceof VideoServerQueueError && error.queueId !== undefined) {
-          throw new VideoRelayError('VIDEO_SUBMIT_UNKNOWN',
-            '原视频排队回执尚未确认，已保留原队列编号；请继续查询原项目，不要重新生成。', { taskId: error.queueId, cause: error })
+          throw new VideoRelayError(error.failure?.code ?? 'VIDEO_SUBMIT_UNKNOWN',
+            (error.failure === undefined ? '' : `${error.failure.message}；`)
+              + '原视频排队回执尚未确认，已保留原队列编号；请继续查询原项目，不要重新生成。', { taskId: error.queueId, cause: error })
         }
         throw error
       }
@@ -79,18 +80,22 @@ export function createVideoProjectDispatch(options: VideoProjectDispatchOptions)
       try { item = await (queue ?? recovery).read(taskId, request, signal) }
       catch (error) {
         if (error instanceof VideoServerQueueError) {
-          throw new VideoRelayError(error.code === 'VIDEO_QUEUE_READ_UNAVAILABLE' ? 'VIDEO_READ_UNAVAILABLE' : 'VIDEO_STATUS_INVALID',
-            '原视频队列状态暂未确认；请保留原编号继续查询，不要重新生成。', { taskId, cause: error })
+          throw new VideoRelayError(error.failure?.code
+            ?? (error.code === 'VIDEO_QUEUE_READ_UNAVAILABLE' ? 'VIDEO_READ_UNAVAILABLE' : 'VIDEO_STATUS_INVALID'),
+          (error.failure === undefined ? '' : `${error.failure.message}；`)
+            + '原视频队列状态暂未确认；请保留原编号继续查询，不要重新生成。', { taskId, cause: error })
         }
         throw error
       }
       if (item.observationTimedOut || item.submissionState === 'unknown' || item.state === 'unknown') {
-        throw new VideoRelayError('VIDEO_READ_UNAVAILABLE',
-          '原视频任务仍需核对，状态查询超时不代表生成失败；请保留原编号，不要重新生成。', { taskId })
+        throw new VideoRelayError(item.failure?.code ?? 'VIDEO_READ_UNAVAILABLE',
+          (item.failure === undefined ? '' : `${item.failure.message}；`)
+            + '原视频任务仍需核对，状态查询超时不代表生成失败；请保留原编号，不要重新生成。', { taskId })
       }
       if (item.state === 'queued' || item.state === 'dispatching') return { status: 'queued' }
       if (item.state === 'running') return { status: 'running' }
       if (item.state === 'succeeded') return { status: 'succeeded' }
+      if (item.state === 'failed' && item.failure !== undefined) return { status: 'failed', ...item.failure }
       return { status: 'failed', message: item.state === 'canceled' ? '原队列任务已在发送上游前取消。' : '原视频任务已由服务器确认未完成；保留原任务记录。' }
     },
     async cancel(taskId, request, signal) {

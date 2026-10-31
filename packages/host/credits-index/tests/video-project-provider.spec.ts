@@ -141,6 +141,29 @@ describe('account-bound video relay requests', () => {
     expect(f.calls.map(call => [call.method, call.path])).toEqual([['POST', uncertain.path], ['GET', unknownGet.path]])
   })
 
+  it.each([402, 403])('reports exact gateway funding at HTTP%s without an inferred settlement', async (status) => {
+    const f = await fixture((_request, response) => { response.statusCode = status; json(response, {
+      error: { code: 'insufficient_user_quota', type: 'new_api_error', message: 'private diagnostic' },
+    }) })
+    const error = await rejection(f.relay.submit({ model: 'MiniMax-H3' }, '/v1/video/generations', signal()))
+    expect(error).toMatchObject({ code: 'INSUFFICIENT_BALANCE', message: '余额不足，请充值' })
+    expect(error).not.toHaveProperty('submissionState')
+    expect(f.calls.map(call => call.method)).toEqual(['POST'])
+  })
+
+  it.each(['insufficient_user_quota', 'pre_consume_token_quota_failed', 'insufficient_quota'])
+  ('uses only safe funding identity on an original terminal task: %s', async (failureCode) => {
+    const taskId = 'original-task'
+    const f = await fixture((_request, response) => { json(response, { task_id: taskId, status: 'failed',
+      failure_code: failureCode, failure_reason: 'private insufficient balance' }) })
+    const result = await f.relay.check(taskId, '/v1/videos', signal(), 'other-video')
+    expect(result.status).toBe('failed')
+    if (failureCode === 'insufficient_user_quota') expect(result).toMatchObject({ code: 'INSUFFICIENT_BALANCE', message: '余额不足，请充值' })
+    else expect(result).not.toHaveProperty('code')
+    expect(JSON.stringify(result)).not.toContain('private')
+    expect(f.calls.map(call => call.method)).toEqual(['GET'])
+  })
+
   it.each([
     { upstream_submitted: true }, { schema_version: undefined }, { model: 'other-model' }, { media_kind: 'image' },
     { task_id: 'another-task' }, { billing_state: 'refunded', refund_confirmed: false }, { resubmittable: false },
@@ -214,7 +237,8 @@ describe('account-bound video relay requests', () => {
     'binds actual API POST business failure $name without repeating generation', async ({ body, http_status: httpStatus }) => {
       const f = await fixture((_request, response) => { response.statusCode = httpStatus; json(response, body) })
       await expect(f.relay.submit({ model: 'MiniMax-H3' }, '/v1/video/generations', signal())).rejects.toMatchObject({
-        code: body.code, taskId: body.task_id, submissionState: 'not_submitted',
+        code: body.code === 'insufficient_user_quota' ? 'INSUFFICIENT_BALANCE' : body.code,
+        taskId: body.task_id, submissionState: 'not_submitted',
       })
       expect(f.calls.map(call => call.method)).toEqual(['POST'])
     },
@@ -223,7 +247,9 @@ describe('account-bound video relay requests', () => {
   it.each([notSentContract.notCharged, notSentContract.refunded])('preserves unsent HTTP $httpStatus business rejection and original id through actual local HTTP', async ({ httpStatus, body }) => {
     const f = await fixture((_request, response) => { response.statusCode = httpStatus; json(response, body) })
     const error = await rejection(f.relay.submit({ model: 'MiniMax-H3' }, '/v1/video/generations', signal()))
-    expect(error).toMatchObject({ code: body.code, submissionState: 'not_submitted', taskId: body.id })
+    expect(error).toMatchObject({ code: body.code === 'insufficient_user_quota' ? 'INSUFFICIENT_BALANCE' : body.code,
+      submissionState: 'not_submitted', taskId: body.id })
+    if (body.code === 'insufficient_user_quota') expect(error.message).toContain('余额不足，请充值')
     expect(error.message).not.toContain('private')
     expect(f.calls.map(call => call.method)).toEqual(['POST'])
   })

@@ -6,7 +6,7 @@
  * @module @deepseek-ai/dsh-tool-jobs/render
  */
 
-import type { JobChunk, JobView } from '@deepseek-ai/dsh-jobs/view'
+import type { JobActionRequired, JobChunk, JobView } from '@deepseek-ai/dsh-jobs/view'
 
 /** Job state safe for model-authored programs; ownership and offsets are omitted. */
 export interface PublicJobSnapshot {
@@ -16,6 +16,8 @@ export interface PublicJobSnapshot {
   status: JobView['status']
   /** The live progress line while running, the terminal reason once settled. */
   detail?: string
+  /** Producer-confirmed terminal failure requiring user action. */
+  actionRequired?: JobActionRequired
   startedAt: number
   finishedAt?: number
 }
@@ -43,6 +45,7 @@ export function publicJob(job: JobView): PublicJobSnapshot {
     label: job.label,
     status: job.status,
     ...detail !== undefined ? { detail } : {},
+    ...job.actionRequired === undefined ? {} : { actionRequired: { ...job.actionRequired } },
     startedAt: job.startedAt,
     ...job.finishedAt !== undefined ? { finishedAt: job.finishedAt } : {},
   }

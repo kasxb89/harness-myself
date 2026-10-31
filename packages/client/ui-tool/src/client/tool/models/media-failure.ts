@@ -14,7 +14,7 @@ const UNKNOWN_OUTCOME_CODES = new Set([
   'PROJECT_STORAGE_FAILED', 'TIMEOUT', 'TRANSPORT', 'NO_TASK_ID',
 ])
 
-type MediaFailure = ProductFailureKind | 'unknown-outcome' | 'accepted-pending' | 'accepted-queued'
+type MediaFailure = ProductFailureKind | 'balance-unknown-outcome' | 'unknown-outcome' | 'accepted-pending' | 'accepted-queued'
   | 'model-parameters' | 'plan-parameters' | 'video-count-limit' | 'video-intent-unavailable'
   | 'video-quote-unavailable' | 'video-quote-changed' | 'video-choice-unavailable'
 
@@ -50,7 +50,10 @@ function videoIntentFailure(toolName: string, code: unknown): 'video-count-limit
  * @returns A safe failure category, or null for confirmed success, ordinary in-flight and unrelated calls.
  */
 export function mediaFailure(toolName: string, block: ToolCallBlock): MediaFailure | null {
-  if (!MEDIA_TOOLS.has(toolName) || !('kind' in block)) return null
+  if (!('kind' in block)) return null
+  if (toolName === 'job_output' && record(block.meta) && record(block.meta.actionRequired)
+    && block.meta.actionRequired.code === 'INSUFFICIENT_BALANCE') return 'insufficient-credits'
+  if (!MEDIA_TOOLS.has(toolName)) return null
   if (block.isError && block.error?.name === 'AutoReviewDeniedError' && block.error.code === 'AUTO_REVIEW_DENIED') return null
   if (block.isError && typeof block.error?.code === 'string' && UNKNOWN_OUTCOME_CODES.has(block.error.code)) return 'unknown-outcome'
   for (const content of block.content) {
@@ -58,8 +61,9 @@ export function mediaFailure(toolName: string, block: ToolCallBlock): MediaFailu
     let value: unknown
     try { value = JSON.parse(content.text) } catch (_error) { continue }
     if (!record(value)) continue
+    const balance = record(value.actionRequired) && value.actionRequired.code === 'INSUFFICIENT_BALANCE'
     if (value.status === 'unauthorized') return 'sign-in'
-    if (value.submission_state === 'unknown') return 'unknown-outcome'
+    if (value.submission_state === 'unknown') return balance ? 'balance-unknown-outcome' : 'unknown-outcome'
     if (value.code === 'VIDEO_QUEUE_WAITING' && value.submission_state === 'pending'
       && typeof value.task_id === 'string' && value.task_id.trim() !== '') return 'accepted-queued'
     if (value.code === 'VIDEO_TASK_TIMEOUT' && Array.isArray(value.task_ids)
@@ -73,6 +77,7 @@ export function mediaFailure(toolName: string, block: ToolCallBlock): MediaFailu
     if ((value.status === 'failed' || value.status === 'running' || value.ok === false)
       && typeof value.code === 'string' && UNKNOWN_OUTCOME_CODES.has(value.code)) return 'unknown-outcome'
     if (value.status === 'failed' || value.ok === false) {
+      if (balance) return 'insufficient-credits'
       const intentFailure = videoIntentFailure(toolName, value.code)
       if (intentFailure !== null) return intentFailure
       if (planParameterFailure(toolName, value.code)) return 'plan-parameters'

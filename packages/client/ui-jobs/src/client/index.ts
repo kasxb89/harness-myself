@@ -6,6 +6,8 @@
  */
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type { JobId } from '@deepseek-ai/dsh-jobs/brand'
+import type {} from '@deepseek-ai/dsh-client-ui-chat/client'
+import { watchBalanceFailures } from './balance-watch.ts'
 import { JobListAction } from './JobListAction.tsx'
 import type { JobListInjected } from './JobListAction.tsx'
 import type {} from '@deepseek-ai/dsh-api-job-controller/client'
@@ -31,6 +33,10 @@ export const inject = ['jobs', 'slots', 'locale']
  * @param ctx - client root context.
  */
 export function apply(ctx: ClientContext): void {
+  ctx.inject(['quotaNotices'], (scope) => {
+    scope.effect(() => watchBalanceFailures(scope.jobs.state, scope.quotaNotices),
+      'ui-jobs: live product balance failures')
+  })
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-jobs: dictionaries')
   ctx.slots.inject(
     'conversation.session.header.actions',

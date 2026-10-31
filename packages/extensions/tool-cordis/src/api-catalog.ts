@@ -5771,6 +5771,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface InvokeRemoteRequest {\n    readonly namespace: string;\n    readonly method: string;\n    readonly args: Readonly<Record<string, unknown>>;\n    readonly uplink?: AsyncIterable<unknown>;\n    readonly peer?: PeerScope;\n    readonly signal?: AbortSignal;\n}',
   },
   {
+    name: 'JobActionRequired',
+    declaration: 'export interface JobActionRequired {\n    readonly code: string;\n    readonly scope?: string;\n    readonly requestSeq?: SessionSeq;\n}',
+  },
+  {
     name: 'JobAppendOptions',
     declaration: 'export interface JobAppendOptions {\n    channel?: JobChannel;\n    gapBefore?: true;\n}',
   },
@@ -5844,7 +5848,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'JobOutcome',
-    declaration: 'export interface JobOutcome {\n    status: \'completed\' | \'killed\' | \'failed\';\n    detail?: string;\n    result?: string;\n}',
+    declaration: 'export interface JobOutcome {\n    status: \'completed\' | \'killed\' | \'failed\';\n    detail?: string;\n    result?: string;\n    actionRequired?: JobActionRequired;\n}',
   },
   {
     name: 'JobOutputRead',
@@ -5876,7 +5880,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'JobView',
-    declaration: 'export interface JobView {\n    readonly id: JobId;\n    readonly kind: string;\n    readonly label: string;\n    readonly owner?: SessionId;\n    readonly outputLimitBytes?: number;\n    readonly readMode?: \'background\';\n    readonly status: JobStatus;\n    readonly progress?: string;\n    readonly detail?: string;\n    readonly startedAt: number;\n    readonly finishedAt?: number;\n    readonly output: {\n        readonly total: number;\n        readonly earliest: number;\n        readonly spillPaths?: readonly string[];\n    };\n}',
+    declaration: 'export interface JobView {\n    readonly id: JobId;\n    readonly kind: string;\n    readonly label: string;\n    readonly owner?: SessionId;\n    readonly outputLimitBytes?: number;\n    readonly readMode?: \'background\';\n    readonly status: JobStatus;\n    readonly progress?: string;\n    readonly detail?: string;\n    readonly actionRequired?: JobActionRequired;\n    readonly startedAt: number;\n    readonly finishedAt?: number;\n    readonly output: {\n        readonly total: number;\n        readonly earliest: number;\n        readonly spillPaths?: readonly string[];\n    };\n}',
   },
   {
     name: 'JsonSchemaNode',

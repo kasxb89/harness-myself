@@ -68,6 +68,7 @@ import { createVideoProjectDispatch } from './video-project-dispatch.ts'
 import { DEFAULT_VIDEO_PROJECT_PARALLELISM, videoProjectParallelism } from './video-concurrency.ts'
 import { videoSubmission, type VideoReferenceSnapshot } from './video-submission.ts'
 import { bindVideoAccount } from './video-project-account.ts'
+import { captureChatVideoBalanceStop } from './chat-video-balance-stop.ts'
 import { artifactOriginOf, captureMediaOutput, type CapturedMediaOutput } from './media-output.ts'
 import { mediaFilename, type MediaFilenameOptions } from './media-filename.ts'
 import { resolveMediaSpecification, videoSpecificationDurations } from './media-request-specification.ts'
@@ -872,6 +873,13 @@ export function apply(ctx: Context, config: Config): void {
   /** Last-good status belongs to this exact backend, account and local login, including shared-file changes. */
   const productOwner = (session: StoredSession): string =>
     createHash('sha256').update(JSON.stringify([apiBaseUrl, session.backendBaseUrl, session.account.id, session.token])).digest('hex')
+  /** A late generation failure may offer recharge only to its initiating product login. */
+  const videoBalanceScope = (identity: VideoProjectIdentity): string | undefined => {
+    const session = store.peek()
+    return session?.token !== undefined && session.account.id === identity.accountId
+      && createHash('sha256').update(session.token).digest('hex') === identity.sessionFingerprint
+      ? productOwner(session) : undefined
+  }
   /** A renderer's financial action belongs to the login it actually observed, never the Host's replacement login. */
   const rechargeOwnerFailure = (session: StoredSession, accountId: unknown, owner: unknown):
     { ok: false; code: 'SESSION_REFRESH_REQUIRED' | 'ACCOUNT_CHANGED'; message: string } | undefined => {
@@ -4708,6 +4716,7 @@ export function apply(ctx: Context, config: Config): void {
     projectOptions = {
       creative,
       videoWorks,
+      accountScope: videoBalanceScope,
       activity: (event) => { generationCreation.project(event) },
       chatModelChoice: async (input, exec, provider) => {
         return selectChatVideoModel(input, exec, provider.identity, () => provider.assertCurrent())
@@ -5126,6 +5135,9 @@ export function apply(ctx: Context, config: Config): void {
           submission_state: { type: 'string' }, task_id: { type: 'string' }, request_id: { type: 'string' },
           path: { type: 'string' }, paths: { type: 'array', items: { type: 'string' } },
           model: { type: 'string' }, code: { type: 'string' }, message: { type: 'string' },
+          actionRequired: { type: 'object', properties: {
+            code: { type: 'string', required: true }, scope: { type: 'string' },
+          }, additionalProperties: false },
           tasks: { type: 'array', items: { type: 'object', properties: {
             plan_id: { type: 'string' }, operation_id: { type: 'string' }, status: { type: 'string' },
             can_query: { type: 'boolean' }, task_id: { type: 'string' }, request_id: { type: 'string' },
@@ -5156,8 +5168,13 @@ export function apply(ctx: Context, config: Config): void {
         }
         if (args.plan_id === undefined) throw new CreativeError('CREATIVE_INVALID', 400, '查询原任务需要计划编号与原操作编号；请先列出现有回执。')
         const retained = await creative.resumeVideoTask(creativeOwner(exec, binding.identity), args.plan_id, args.operation_id)
+        const currentRequest = videoGenerationIntentOf(exec)?.grant
+        const sameRequest = retained.requestGrant !== undefined && currentRequest !== undefined
+          && retained.requestGrant.messageId === currentRequest.messageId
+          && retained.requestGrant.sourceSeq === currentRequest.sourceSeq
+        const balanceStop = sameRequest ? captureChatVideoBalanceStop(exec, videoBalanceScope(binding.identity)) : undefined
         const outcome = await runRetainedVideo(retained, () => binding.key(), exec.signal, resolved.videoChatQueryWaitMs)
-        return {
+        const result = {
           status: outcome.ok ? 'succeeded' : outcome.submissionState === 'pending' ? 'pending' : outcome.submissionState === 'unknown' ? 'unknown' : 'failed',
           plan_id: retained.operation.projectId, operation_id: retained.operation.operationId,
           submission_state: outcome.submissionState ?? 'pending', model: outcome.model ?? retained.receipt.model,
@@ -5167,6 +5184,7 @@ export function apply(ctx: Context, config: Config): void {
           ...outcome.path === undefined ? {} : { path: outcome.path },
           paths: [...outcome.path === undefined ? [] : [outcome.path]], message: outcome.message ?? (outcome.ok ? '原任务视频已保存。' : '原任务已受理，暂未确认结果；可继续查询原任务，请勿重新生成。'),
         }
+        return balanceStop?.result(result) ?? result
       } catch (error) {
         return error instanceof CreativeError || error instanceof VideoProjectError
           ? { status: 'failed', code: error.code, message: error.message }
@@ -5247,7 +5265,21 @@ export function apply(ctx: Context, config: Config): void {
           plan_id: { type: 'string' },
           operation_id: { type: 'string' }, request_id: { type: 'string' }, submission_state: { type: 'string' },
           work_id: { type: 'string' }, work_request_id: { type: 'string' }, project_id: { type: 'string' },
+          job_id: { type: 'string' }, final_path: { type: 'string' }, duration_seconds: { type: 'number' },
+          paths: { type: 'array', items: { type: 'string' } },
+          plan_seconds: { type: 'array', items: { type: 'number' } },
+          clip_paths: { type: 'array', items: { type: 'string' } },
+          task_ids: { type: 'array', items: { type: 'string' } },
+          cancelled_task_ids: { type: 'array', items: { type: 'string' } },
+          unconfirmed_task_ids: { type: 'array', items: { type: 'string' } }, local_stopped: { type: 'boolean' },
+          works: { type: 'array', items: { type: 'object', properties: {
+            work_id: { type: 'string', required: true }, index: { type: 'number', required: true }, state: { type: 'string', required: true },
+            plan_id: { type: 'string' }, operation_id: { type: 'string' }, project_id: { type: 'string' },
+          }, additionalProperties: false } },
           pending_work_ids: { type: 'array', items: { type: 'string' } }, remaining_works: { type: 'number' },
+          actionRequired: { type: 'object', properties: {
+            code: { type: 'string', required: true }, scope: { type: 'string' },
+          }, additionalProperties: false },
           code: { type: 'string' },
           message: { type: 'string' },
         },
@@ -5262,8 +5294,12 @@ export function apply(ctx: Context, config: Config): void {
       if ('error' in relay) return { status: 'failed', message: relay.error }
       let operation: CreativeOperation | undefined
       let workClaim: VideoWorkClaim | undefined
+      let balanceStop: ReturnType<typeof captureChatVideoBalanceStop> | undefined
       try {
         const binding = await bindCurrentVideoAccount()
+        balanceStop = captureChatVideoBalanceStop(exec, videoBalanceScope(binding.identity))
+        const stopped = balanceStop.stopped()
+        if (stopped !== undefined) return stopped
         if (videoModelChoiceCancelled(exec)) throw new CreativeError('USER_CANCELLED', 409,
           '你已取消本次视频生成，未提交新的模型请求；需要生成时请明确发送新的生成要求。')
         const owner = creativeOwner(exec, binding.identity)
@@ -5364,7 +5400,7 @@ export function apply(ctx: Context, config: Config): void {
         const workFields = { work_id: work.workId, work_request_id: work.requestId,
           pending_work_ids: pending, remaining_works: pending.length }
         if (!outcome.ok) {
-          return {
+          return balanceStop.result({
             ...workFields,
             status: outcome.submissionState === 'pending' ? 'pending' : outcome.submissionState === 'unknown' ? 'unknown' : 'failed',
             plan_id: operation.projectId, operation_id: operation.operationId, submission_state: outcome.submissionState ?? 'unknown',
@@ -5373,7 +5409,7 @@ export function apply(ctx: Context, config: Config): void {
             task_id: outcome.taskId ?? '',
             ...outcome.code === undefined ? {} : { code: outcome.code },
             message: outcome.message ?? outcome.code ?? '生成失败',
-          }
+          })
         }
         if (outcome.path !== undefined && exec.agent !== undefined) {
           const savedPath = outcome.path
@@ -5400,7 +5436,12 @@ export function apply(ctx: Context, config: Config): void {
         if (workClaim !== undefined && error instanceof CreativeError && error.code === 'USER_CANCELLED') {
           await settleVideoWorkPreparation(videoWorks, workClaim, true)
         }
-        if (error instanceof VideoProjectError || error instanceof CreativeError) return { status: 'failed', code: error.code, message: error.message }
+        if (error instanceof VideoProjectError || error instanceof CreativeError) {
+          const failure = { status: 'failed', code: error.code, message: error.message,
+            ...error.code === 'INSUFFICIENT_BALANCE' && workClaim !== undefined
+              ? { work_id: workClaim.workId, work_request_id: workClaim.requestId } : {} }
+          return balanceStop?.result(failure) ?? failure
+        }
         throw error
       } finally {
         if (operation === undefined && workClaim !== undefined) await settleVideoWorkPreparation(videoWorks, workClaim)

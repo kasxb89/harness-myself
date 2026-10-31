@@ -12,6 +12,16 @@ if (terminal === undefined || typeof terminal.body.task_id !== 'string') throw n
 const terminalTaskId = terminal.body.task_id
 
 describe('strict H3 submission settlement proofs', () => {
+  it('adds a safe recharge reason to an original never-sent GET proof without replacing its settlement facts', () => {
+    const taskId = notSentContract.receipt.id
+    const result = h3SubmissionQueryRejection('MiniMax-H3', 200, { task_id: taskId, status: 'FAILURE',
+      submission_receipt: notSentContract.receipt, failure_code: 'insufficient_user_quota', failure_reason: 'private detail' }, taskId)
+    expect(result).toMatchObject({ code: 'INSUFFICIENT_BALANCE', taskId, submissionState: 'not_submitted' })
+    expect(result?.message).toContain('余额不足，请充值')
+    expect(result?.message).toContain('未发送至上游且未扣费')
+    expect(result?.message).not.toContain('private')
+  })
+
   it('recognizes the actual provider terminal without claiming a refund or permitting another submission', () => {
     expect(h3ProviderTerminalRejection('MiniMax-H3', terminal.http_status, terminal.body, terminalTaskId))
       .toMatchObject({ code: 'PROVIDER_TASK_FAILED', submissionState: 'failed', taskId: terminalTaskId })
@@ -43,7 +53,9 @@ describe('strict H3 submission settlement proofs', () => {
 
   it.each([notSentContract.notCharged, notSentContract.refunded])('retains business code and original platform id for an unsent HTTP $httpStatus attempt', ({ httpStatus, body }) => {
     const rejection = h3SubmissionRejection('MiniMax-H3', httpStatus, body)
-    expect(rejection).toMatchObject({ code: body.code, submissionState: 'not_submitted', taskId: body.id })
+    expect(rejection).toMatchObject({ code: body.code === 'insufficient_user_quota' ? 'INSUFFICIENT_BALANCE' : body.code,
+      submissionState: 'not_submitted', taskId: body.id })
+    if (body.code === 'insufficient_user_quota') expect(rejection?.message).toContain('余额不足，请充值')
     expect(rejection?.message).not.toContain('private')
   })
 

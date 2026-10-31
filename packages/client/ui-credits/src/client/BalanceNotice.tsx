@@ -23,8 +23,9 @@ export function BalanceNotice({ matched, openRecharge, useCreditsSession, t }: P
   if (original.current.identity === undefined && identity !== undefined) {
     original.current = { identity, epoch: snapshot.accountEpoch }
   }
-  const changed = original.current.identity !== undefined
-    && (identity !== original.current.identity || snapshot.accountEpoch !== original.current.epoch)
+  const changed = matched.scope !== undefined && matched.scope !== snapshot.session?.accountOwner
+    || original.current.identity !== undefined
+      && (identity !== original.current.identity || snapshot.accountEpoch !== original.current.epoch)
   useEffect(() => { if (changed) matched.dismiss() }, [changed, matched.dismiss])
   if (changed) return null
   return <Modal open title={t('balanceInsufficient')} closeLabel={t('close')} onClose={matched.dismiss}

@@ -93,6 +93,7 @@ interface TrackedJob {
   state: ProducerState
   /** Terminal reason; a recorded kill reason is merged in at settlement. */
   detail: string | undefined
+  actionRequired: JobView['actionRequired']
   result: string | undefined
   startedAt: number
   finishedAt: number | undefined
@@ -257,6 +258,7 @@ export class LocalJobRegistry extends JobRegistry {
       resultDelivered: false,
       state,
       detail: undefined,
+      actionRequired: undefined,
       result: undefined,
       startedAt: Date.now(),
       finishedAt: undefined,
@@ -431,6 +433,7 @@ export class LocalJobRegistry extends JobRegistry {
       status: job.status,
       ...job.state.progress !== undefined ? { progress: job.state.progress } : {},
       ...job.detail !== undefined ? { detail: job.detail } : {},
+      ...job.actionRequired === undefined ? {} : { actionRequired: { ...job.actionRequired } },
       startedAt: job.startedAt,
       ...job.finishedAt !== undefined ? { finishedAt: job.finishedAt } : {},
       output: {
@@ -599,6 +602,8 @@ export class LocalJobRegistry extends JobRegistry {
     }
     job.state.progress = undefined
     job.result = outcome.result
+    job.actionRequired = outcome.status === 'failed' && outcome.actionRequired !== undefined
+      ? { ...outcome.actionRequired } : undefined
     job.finishedAt = Date.now()
     // Settlement ends the stream: trim to the settled cap before any observer
     // reads the terminal projection, but never below the bytes the model

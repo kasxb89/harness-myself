@@ -103,6 +103,8 @@ Auto 拒绝优先于按工具名选择的专门视图。其通用行保留调用
 
 terminal model 使用浏览器安全入口 `@deepseek-ai/dsh-spill-policy/notice` 的 `hasSpillNotice`，而非独立的 UI 匹配规则。[spill-policy README](../../spill/spill-policy/README.zh.md#shared-notice-ownership) 负责提示文本的格式化与识别。该检查保守地选择通用输出；匹配的文本无法证明其来源，回放也不改变已记录的结果字节。
 
+`job_output` 上由生产方确认的余额元数据会渲染本地化失败摘要，不依赖模型转述，也不展示不透明登录作用域。余额拒绝与提交结果未知同时存在时，会保留充值和查询原任务的提示，不声称已经退款或是否扣费。
+
 ### 声明的可选能力
 
 本包声明可选的 `UserQuestionPanels` 能力；`ui-user-questions` 提供它。`reveal(sessionId, callId)` 打开可回答的面板，`review(sessionId, callId, record)` 以只读方式打开已记录的答案。行通过 `ctx.get('userQuestionPanels')` 读取此能力；未组合问题 UI 时仍保留文本记录。

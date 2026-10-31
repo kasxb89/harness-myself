@@ -6,7 +6,7 @@
  * @module @deepseek-ai/dsh-jobs/view
  */
 
-import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import type { SessionId, SessionSeq } from '@deepseek-ai/dsh-session/types'
 // Type-only: the Workspace registry's archive-admission family map this seam merges `job` into.
 import type {} from '@deepseek-ai/dsh-workspace/types'
 import type { JobId } from './brand.ts'
@@ -17,6 +17,16 @@ import type { JobId } from './brand.ts'
  * {@link JobView.detail}.
  */
 export type JobStatus = 'running' | 'stopping' | 'completed' | 'killed' | 'failed'
+
+/** Producer-confirmed failure that needs user action instead of automatic continuation. */
+export interface JobActionRequired {
+  /** Stable producer-owned failure code; never inferred from display text. */
+  readonly code: string
+  /** Optional non-secret account scope used by the receiving application. */
+  readonly scope?: string
+  /** Original human input event; a later real human input keeps explicit reads non-terminal. */
+  readonly requestSeq?: SessionSeq
+}
 
 declare module '@deepseek-ai/dsh-workspace/types' {
   interface SessionActivityKindMap {
@@ -84,6 +94,8 @@ export interface JobView {
   readonly progress?: string
   /** Terminal reason (`exit code: 3`); a recorded kill reason is merged in. */
   readonly detail?: string
+  /** Failed outcome needing user action; completion must not automatically wake the model. */
+  readonly actionRequired?: JobActionRequired
   /** Epoch ms when the job was registered. */
   readonly startedAt: number
   /** Epoch ms when the job settled; absent while live. */

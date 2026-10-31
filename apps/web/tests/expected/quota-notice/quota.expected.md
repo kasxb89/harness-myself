@@ -1,1 +1,1 @@
-- status: This turn failedThe server is busy. Please try again later.
+- status: This turn failedThe operation did not complete; the cause is unconfirmed. Check the status first.

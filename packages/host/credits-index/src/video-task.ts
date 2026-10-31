@@ -2,7 +2,7 @@
 import { setTimeout as delay } from 'node:timers/promises'
 import type { ArtifactOrigin } from '@deepseek-ai/dsh-artifacts-index'
 import type { CreativeVideoReceipt } from './creative-types.ts'
-import { isAccountBalanceRejectionText } from './account-balance.ts'
+import { accountBalanceFailure, isAccountBalanceRejectionText } from './account-balance.ts'
 import { hasMediaSubmissionReceipt, mediaSubmissionTaskId, hasMediaSubmissionUnknown, mediaSubmissionUnknownTaskId } from './media-submission-receipt.ts'
 import {
   h3SubmissionRejection, h3SubmissionQueryRejection, hasH3SubmissionReceipt, h3ProviderTerminalRejection, hasH3ProviderTerminal,
@@ -217,8 +217,9 @@ export async function executeVideoTask(options: VideoTaskOptions): Promise<Video
       if (uncertain && canonicalId === undefined) return outcome('unknown', 'VIDEO_SUBMISSION_UNKNOWN',
         '视频提交结果尚未确认，请先核对原任务与计费，不要重复生成。')
       if (!response.ok) {
-        if (taskId !== undefined) return outcome('pending', 'VIDEO_QUERY_PENDING', '原视频任务已受理，请继续查询原任务，不要重复生成。')
         const balance = isAccountBalanceRejectionText(text, response.status)
+        if (taskId !== undefined) return outcome('pending', balance ? 'INSUFFICIENT_BALANCE' : 'VIDEO_QUERY_PENDING',
+          (balance ? '余额不足，请充值；' : '') + '原视频任务已受理，请继续查询原任务，不要重复生成。')
         if (balance) return outcome('unknown', 'INSUFFICIENT_BALANCE', '余额不足，请充值；提交结果尚未确认，请先检查已有任务，不要重复提交。')
         return options.model !== 'MiniMax-H3' && response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429
           ? outcome('failed', `HTTP_${String(response.status)}`, '视频请求未被接受，请检查登录状态、素材和模型要求。')
@@ -241,22 +242,29 @@ export async function executeVideoTask(options: VideoTaskOptions): Promise<Video
       const reply = await read(taskId)
       if (reply === undefined) return outcome('pending', 'VIDEO_QUERY_UNAVAILABLE', '原视频已受理，当前无法读取状态；请稍后查询原任务，不要重复生成。')
       const { response, text } = reply
-      if (!response.ok) return outcome('pending', 'VIDEO_QUERY_UNAVAILABLE', '原视频已受理，当前无法读取状态；请稍后查询原任务，不要重复生成。')
+      if (!response.ok) return isAccountBalanceRejectionText(text, response.status)
+        ? outcome('pending', 'INSUFFICIENT_BALANCE', '余额不足，请充值；原视频状态尚未确认，请继续查询原任务，不要重复生成。')
+        : outcome('pending', 'VIDEO_QUERY_UNAVAILABLE', '原视频已受理，当前无法读取状态；请稍后查询原任务，不要重复生成。')
       let body: Record<string, unknown> | undefined
       try { body = record(JSON.parse(text)) } catch (_invalidResponse: unknown) { /* Retain acceptance and stop uncertain polling. */ }
       waitingSignal.throwIfAborted()
       const rejection = h3SubmissionQueryRejection(currentReceipt().model, response.status, body, taskId)
       if (rejection !== undefined) return outcome('failed', rejection.code, rejection.message)
       const terminal = h3ProviderTerminalRejection(currentReceipt().model, response.status, body, taskId)
-      if (terminal !== undefined) return outcome('failed', 'TASK_FAILED', terminal.message)
+      if (terminal !== undefined) return outcome('failed', terminal.code === 'INSUFFICIENT_BALANCE' ? terminal.code : 'TASK_FAILED', terminal.message)
       if (hasMediaSubmissionReceipt(body) || hasMediaSubmissionUnknown(body) || currentReceipt().model === 'MiniMax-H3' && (hasH3SubmissionReceipt(body) || hasH3ProviderTerminal(body))) {
         return outcome('pending', 'VIDEO_STATUS_INVALID', '原视频回执尚未通过完整核对，请保留原任务编号，不要重新生成。')
       }
       const state = status(body)
       if (['failed', 'failure', 'fail', 'error', 'cancelled', 'canceled'].includes(state ?? '')) {
+        const balance = accountBalanceFailure(body?.failure_code ?? record(body?.data)?.failure_code)
         if (currentReceipt().model === 'MiniMax-H3') {
+          if (balance !== undefined) return outcome('pending', balance.code,
+            `${balance.message}；原视频失败状态尚待完整核对，请保留原任务编号继续查询，不要重新生成。`)
           return outcome('pending', 'VIDEO_STATUS_INVALID', '原视频失败状态尚无完整提交与计费证明，请保留原任务编号继续核对，不要重新生成。')
         }
+        if (balance !== undefined) return outcome('failed', balance.code,
+          `${balance.message}；原视频任务已结束且未成功，请检查原任务和计费记录。`)
         return outcome('failed', 'TASK_FAILED', '原视频任务已结束且未成功，请检查原任务和计费记录。')
       }
       if (['succeed', 'succeeded', 'success', 'completed'].includes(state ?? '')) {

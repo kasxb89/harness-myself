@@ -48,6 +48,34 @@ function fixture(handler?: (call: Call) => Response | Promise<Response>) {
 }
 
 describe('video project gateway dispatch', () => {
+  it.each(['not_submitted', 'accepted'])('preserves a failed queue funding category independently of submission=%s', async (submitted) => {
+    const body = receipt('failed', submitted)
+    const f = fixture(() => response({ ...body, data: { ...body.data,
+      failure_code: 'insufficient_user_quota', failure_reason: 'private gateway raw diagnostic' } }))
+    expect(await f.dispatch.check(queueId, request, signal())).toEqual({ status: 'failed',
+      code: 'INSUFFICIENT_BALANCE', message: '余额不足，请充值' })
+    expect(f.relay.submit).not.toHaveBeenCalled()
+    expect(f.calls.map(call => call.method)).toEqual(['GET'])
+  })
+
+  it('retains funding reason and original queue identity when admission and its GET remain unresolved', async () => {
+    const f = fixture(call => call.path.endsWith('/api/status') ? response({ data: { video_queue: capability } })
+      : call.method === 'POST' ? response({ code: 'insufficient_user_quota' }, 403) : response({ code: 'not_found' }, 404))
+    await f.dispatch.prepareSubmissions([request], signal())
+    await expect(f.dispatch.submit(request, signal(), submission)).rejects.toMatchObject({ code: 'INSUFFICIENT_BALANCE',
+      taskId: queueId, message: '余额不足，请充值；原视频排队回执尚未确认，已保留原队列编号；请继续查询原项目，不要重新生成。' })
+    expect(f.calls.map(call => call.method)).toEqual(['GET', 'POST', 'GET'])
+    expect(f.relay.submit).not.toHaveBeenCalled()
+  })
+
+  it('keeps unknown queue funding failure unresolved instead of asserting a terminal or refund', async () => {
+    const body = receipt('unknown', 'unknown')
+    const f = fixture(() => response({ ...body, data: { ...body.data, failure_code: 'insufficient_user_quota' } }))
+    await expect(f.dispatch.check(queueId, request, signal())).rejects.toMatchObject({ code: 'INSUFFICIENT_BALANCE',
+      taskId: queueId, message: '余额不足，请充值；原视频任务仍需核对，状态查询超时不代表生成失败；请保留原编号，不要重新生成。' })
+    expect(f.relay.submit).not.toHaveBeenCalled()
+  })
+
   it('uses the unchanged legacy request only when new queue capability is explicitly absent', async () => {
     const f = fixture(() => response({ data: {} }))
     await f.dispatch.prepareSubmissions([request], signal())

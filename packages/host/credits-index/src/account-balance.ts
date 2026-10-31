@@ -4,6 +4,21 @@ function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined
 }
 
+/** A confirmed product-account funding failure, independent of task acceptance or settlement. */
+export interface AccountBalanceFailure {
+  readonly code: 'INSUFFICIENT_BALANCE'
+  readonly message: string
+}
+
+/**
+ * Map only the account gateway's declared funding code, never provider or token quotas.
+ * @param code - Machine code from a validated account-owned gateway response.
+ * @returns A safe recharge summary, without asserting submission or billing state.
+ */
+export function accountBalanceFailure(code: unknown): AccountBalanceFailure | undefined {
+  return code === 'insufficient_user_quota' ? { code: 'INSUFFICIENT_BALANCE', message: '余额不足，请充值' } : undefined
+}
+
 /**
  * Recognize the configured new-api gateway's own user-funding rejection.
  * @param value - Decoded error response from the account-owned API request.
@@ -11,7 +26,7 @@ function record(value: unknown): Record<string, unknown> | undefined {
  * @returns Whether the user can resolve this rejection by recharging their product account.
  */
 export function isAccountBalanceRejection(value: unknown, status: number): boolean {
-  if (status !== 403) return false
+  if (status !== 403 && status !== 402) return false
   const body = record(value)
   const error = record(body?.error)
   // Native task replies carry the gateway code at the root; Images and Chat

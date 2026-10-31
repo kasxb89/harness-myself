@@ -33,6 +33,8 @@ A producer registers work with a kind and a one-line label; the registry returns
 
 A producer may select `readMode: 'background'` for immediate live model reads. The [job controls](../tool-jobs/README.md#use-this-package) conclude that turn by default; `backgroundReadConcludesTurn: false` keeps the turn available for further requested work. This runtime policy uses the same owner fence as reads and stays out of public job projections. Registry waits and completion events are unchanged; omitting `readMode` keeps ordinary bounded model waits.
 
+A producer-confirmed failed outcome may carry `actionRequired: { code, scope?, requestSeq? }`. The stable code and optional non-secret application account scope remain in job views; job controls suppress automatic model completion notices. Explicit reads conclude the original request; when `requestSeq` identifies its original human input, later real human input keeps its own continuation. Detail and the original result remain available, and other jobs or later user input continue normally.
+
 A producer streams output by naming pull sources on its spec — non-consuming offset readers the registry pumps at its own cadence — or by pushing chunks through the `JobHandle` its starter receives; both land in the job's bounded ring, where `stdout` and `stderr` chunks reach the model and `log` chunks reach observers only. Observers read retained chunks at absolute byte offsets and are signaled on advancement; the settlement that ends the job also ends the stream, and `updateProgress` publishes a live progress line into every projection until then. Observation is invisible to the model: `readAt` consumes nothing and never touches notice state.
 
 ### The ownership boundary

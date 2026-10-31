@@ -65,6 +65,8 @@ kind: "package-reference"
 
 聊天新报告 `INSUFFICIENT_BALANCE` 时，本包接管现有额度通知插槽，显示本地化的“余额不足，请充值”和“去充值”按钮，按钮进入同一个充值页。切换或退出已观察账号会关闭通知。DeepSeek 的 `ACCOUNT_QUOTA` 通知继续由原功能负责；渠道及供应商额度错误不会触发云枢充值提醒。
 
+媒体工具和后台任务的产品余额提示必须与当前登录的 `accountOwner` 精确匹配。缺失或过期的登录作用域不能打开充值弹窗，已记录的失败原因仍然显示。弹窗在渲染时及账号变更后都会重新校验作用域。
+
 <a id="understand-the-implementation"></a>
 ## 理解实现
 

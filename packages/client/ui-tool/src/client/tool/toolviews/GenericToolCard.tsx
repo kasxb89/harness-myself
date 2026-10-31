@@ -45,6 +45,7 @@ const MEDIA_FAILURE_KEYS = {
   'insufficient-credits': 'error.creditsRequired',
   'cancelled': 'error.cancelled',
   'unknown-outcome': 'error.mediaOutcomeUnknown',
+  'balance-unknown-outcome': 'error.balanceOutcomeUnknown',
   'network': 'error.networkFailure',
   'timeout': 'error.requestTimeout',
   'invalid-input': 'error.invalidInput',

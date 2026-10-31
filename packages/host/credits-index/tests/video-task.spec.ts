@@ -191,10 +191,12 @@ describe('single-submission video task receipts', () => {
     const submit = vi.fn(async () => json(body, httpStatus, { 'x-oneapi-request-id': 'unsent-request', 'x-new-api-task-id': 'untrusted-header-id' }))
     const f = fixture({ model: 'MiniMax-H3', submit })
     const result = await executeVideoTask(f.options)
-    expect(result).toMatchObject({ ok: false, submissionState: 'failed', code: body.code, taskId: body.id,
+    expect(result).toMatchObject({ ok: false, submissionState: 'failed',
+      code: body.code === 'insufficient_user_quota' ? 'INSUFFICIENT_BALANCE' : body.code, taskId: body.id,
       requestId: 'unsent-request', videoReceipt: { phase: 'submitting', taskId: body.id } })
     expect(f.receipts.at(-1)).toMatchObject({ phase: 'submitting', taskId: body.id, requestId: 'unsent-request' })
     expect(result.message).not.toMatch(/private|untrusted/iu)
+    if (body.code === 'insufficient_user_quota') expect(result.message).toContain('余额不足，请充值')
     expect(submit).toHaveBeenCalledOnce()
     expect(f.read).not.toHaveBeenCalled()
     expect(f.save).not.toHaveBeenCalled()
@@ -361,10 +363,52 @@ describe('single-submission video task receipts', () => {
     expect(f.submit).not.toHaveBeenCalled()
   })
 
-  it('preserves uncertainty when the gateway funding rejection may occur after acceptance', async () => {
-    const f = fixture({ submit: vi.fn(async () => json({ error: { code: 'insufficient_user_quota', type: 'new_api_error' } }, 403)) })
-    expect(await executeVideoTask(f.options)).toMatchObject({ ok: false, submissionState: 'unknown', code: 'INSUFFICIENT_BALANCE' })
+  it.each([402, 403])('preserves funding reason and submission uncertainty at HTTP%s', async (status) => {
+    const submit = vi.fn(async () => json({ error: { code: 'insufficient_user_quota', type: 'new_api_error' } }, status))
+    const f = fixture({ submit })
+    expect(await executeVideoTask(f.options)).toMatchObject({ ok: false, submissionState: 'unknown', code: 'INSUFFICIENT_BALANCE',
+      message: '余额不足，请充值；提交结果尚未确认，请先检查已有任务，不要重复提交。' })
+    expect(submit).toHaveBeenCalledOnce()
     expect(f.read).not.toHaveBeenCalled()
+  })
+
+  it('keeps a known task pending while reporting a gateway funding rejection', async () => {
+    const submit = vi.fn(async () => json({ task_id: 'known-original', code: 'insufficient_user_quota' }, 403))
+    const f = fixture({ submit })
+    expect(await executeVideoTask(f.options)).toMatchObject({ submissionState: 'pending', taskId: 'known-original',
+      code: 'INSUFFICIENT_BALANCE', message: '余额不足，请充值；原视频任务已受理，请继续查询原任务，不要重复生成。' })
+    expect(submit).toHaveBeenCalledOnce()
+  })
+
+  it.each([true, false])('reports funding independently from H3 terminal proof=%s', async (proven) => {
+    const receipt = { ...accepted, model: 'MiniMax-H3' }
+    const read = vi.fn(async () => json({ task_id: receipt.taskId, status: 'failed',
+      ...proven ? { provider_terminal_confirmed: true } : {}, failure_code: 'insufficient_user_quota',
+      failure_reason: 'private gateway diagnostic', fail_reason: 'private vendor reason' }))
+    const f = fixture({ resumeReceipt: receipt, read })
+    const result = await executeVideoTask(f.options)
+    expect(result).toMatchObject({ submissionState: proven ? 'failed' : 'pending', code: 'INSUFFICIENT_BALANCE',
+      taskId: receipt.taskId })
+    expect(result.message).toContain('余额不足，请充值')
+    expect(JSON.stringify(result)).not.toContain('private')
+    expect(f.submit).not.toHaveBeenCalled()
+    expect(f.save).not.toHaveBeenCalled()
+  })
+
+  it.each(['insufficient_user_quota', 'pre_consume_token_quota_failed', 'insufficient_quota'])
+  ('maps only the gateway funding code on an original terminal task: %s', async (code) => {
+    const f = fixture({ resumeReceipt: accepted, read: vi.fn(async () => json({ task_id: accepted.taskId, status: 'failed',
+      failure_code: code, failure_reason: 'private raw insufficient balance' })) })
+    expect(await executeVideoTask(f.options)).toMatchObject({ submissionState: 'failed',
+      code: code === 'insufficient_user_quota' ? 'INSUFFICIENT_BALANCE' : 'TASK_FAILED' })
+    expect(f.submit).not.toHaveBeenCalled()
+  })
+
+  it('retains an accepted task when its status read reports funding failure', async () => {
+    const f = fixture({ resumeReceipt: accepted, read: vi.fn(async () => json({ code: 'insufficient_user_quota' }, 402)) })
+    expect(await executeVideoTask(f.options)).toMatchObject({ submissionState: 'pending', taskId: accepted.taskId,
+      code: 'INSUFFICIENT_BALANCE', message: '余额不足，请充值；原视频状态尚未确认，请继续查询原任务，不要重复生成。' })
+    expect(f.submit).not.toHaveBeenCalled()
   })
 })
 

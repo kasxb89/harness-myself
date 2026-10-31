@@ -33,6 +33,8 @@ kind: "package-reference"
 
 生产方可选择 `readMode: 'background'`，让运行中任务的模型读取立即返回。[任务控制工具](../tool-jobs/README.zh.md#use-this-package) 默认结束该轮次；`backgroundReadConcludesTurn: false` 则保留当前轮次，继续完成用户要求的其它工作。这一运行时策略沿用读取的拥有者权限限制，不进入公开任务投影。注册表等待与完成事件不变；省略 `readMode` 时保留普通的有界模型等待。
 
+生产方确认需要用户操作的失败结果可携带 `actionRequired: { code, scope?, requestSeq? }`。稳定错误码和可选的非秘密应用账号归属保留在任务投影中；任务控制工具不再自动通知模型继续处理。显式读取会结束原请求；若 `requestSeq` 指向原始真人输入，之后的新真人输入仍可继续自己的请求。原始详情与结果仍可查看，其它任务和后续用户输入正常继续。
+
 生产方通过在 spec 上声明拉取源——由注册表按自己的节奏泵送的非消耗偏移读取器——或经 starter 收到的 `JobHandle` 推送块来流式输出；二者都落入该 job 的有界环，其中 `stdout` 与 `stderr` 块到达模型，`log` 块只到达观察者。观察者按绝对字节偏移读取保留块并在推进时收到信号；结束 job 的结算同时封流，在此之前 `updateProgress` 把实时进度行发布进每个投影。观测对模型不可见：`readAt` 不消耗任何东西，也从不触碰通知状态。
 
 ### 归属边界

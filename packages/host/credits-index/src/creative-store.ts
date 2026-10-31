@@ -1035,11 +1035,11 @@ export class CreativeStore {
    * @param owner - Current login for the original account, chat and workspace.
    * @param id - Explicit original creation project.
    * @param invocationId - Explicit original operation; no new operation is allocated.
-   * @returns Exclusively live original operation and its retained task identity.
+   * @returns Exclusively live original operation, retained task identity, and original chat request when recorded.
    */
   resumeVideoTask(
     owner: CreativeOwner, id: string, invocationId: string,
-  ): Promise<{ operation: CreativeOperation; receipt: CreativeVideoReceipt }> {
+  ): Promise<{ operation: CreativeOperation; receipt: CreativeVideoReceipt; requestGrant?: VideoRequestGrant }> {
     return this.queue(async () => {
       await this.current(owner)
       const record = await this.read(id, owner)
@@ -1055,7 +1055,8 @@ export class CreativeStore {
       await this.persist(record)
       const operation = { projectId: record.id, operationId: found.id, owner, outputNaming: operationOutputNaming(record, found, 'video') }
       this.activate(operation, 'video')
-      return { operation, receipt: { ...found.videoReceipt } }
+      return { operation, receipt: { ...found.videoReceipt },
+        ...found.requestGrant === undefined ? {} : { requestGrant: { ...found.requestGrant } } }
     })
   }
 

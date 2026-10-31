@@ -35,6 +35,8 @@ Progress preserves every producer-supplied line as plain text below the row cont
 
 Running job rows also carry a two-press stop control: the first press arms it, the confirming press within three seconds calls `ctx.jobs.kill`, and the row converges through the roster stream (`stopping`, then the settled section, whose detail carries `cancelled by the user`). The kill claims nothing in the model's notice ledger, so the owning agent still receives the standard completion notice — the model is told the user stopped its task rather than left to infer it ([reference](../../jobs/tool-jobs/README.md)). The settled section folds behind its count while live work exists and can be cleared client-side.
 
+A producer-confirmed product balance failure retains localized balance copy in the row. A failed job requests the shared login-scoped recharge notice only after a running-to-failed transition or an explicit live media-start acknowledgement of that job. Acknowledgements and terminal rosters may arrive in either order, so a fast failure coalesced into the first roster is retained until correlated; unrelated failed history does not raise a notice. Job and tool-result notifications use the same job key.
+
 ### The expanded panel
 
 Expanding an observable row opens that job's output observation stream from `ctx.jobs` (installed by `dsh-api-job-controller`) into an embedded terminal panel. The panel copies the command (not the output), wraps commands and output lines in full, scrolls its output inside a fixed height instead of folding, and draws no run-state dot of its own — the row above carries the state. Retention gaps and stream interruptions render as notices above the panel.

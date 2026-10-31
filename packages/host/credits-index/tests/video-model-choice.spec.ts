@@ -6,6 +6,7 @@ import { chooseChatVideoModel, chatVideoResolution, parseVideoModelQuote, readVi
 import earlyApiQuote from './fixtures/video-quote-early.json' with { type: 'json' }
 import h3ApiQuote from './fixtures/video-quote-h3.json' with { type: 'json' }
 import sd25ApiQuote from './fixtures/video-quote-sd25.json' with { type: 'json' }
+import { CreativeError } from '../src/creative-store.ts'
 
 const baseline = { model: 'MiniMax-H3', resolution: '768P', durations: [15, 15] }
 const target = { model: 'other-video', resolution: '1280x720', durations: [15, 15] }
@@ -255,6 +256,33 @@ describe('price-informed video model selection', () => {
 })
 
 describe('actual gateway quote contract', () => {
+  it.each([402, 403])('preserves a confirmed product funding rejection through HTTP%s and model selection', async (status) => {
+    const request = h3ApiQuote.request
+    const candidate = { model: request.model, durations: [15] }
+    const transport = vi.fn(async () => Response.json({ error: {
+      code: 'insufficient_user_quota', type: 'new_api_error', message: 'private gateway diagnostic',
+    } }, { status }))
+    await expect(readVideoModelQuote({ request, candidate, accountId: 'local-account',
+      signal: new AbortController().signal, transport })).rejects.toMatchObject({ code: 'INSUFFICIENT_BALANCE',
+      message: '余额不足，请充值；本次仅查询报价，尚未提交生成。' })
+    const state = fixture({ quote: async () => { throw new CreativeError('INSUFFICIENT_BALANCE', status,
+      '余额不足，请充值；本次仅查询报价，尚未提交生成。') } })
+    await expect(chooseChatVideoModel(state.options)).rejects.toMatchObject({ code: 'INSUFFICIENT_BALANCE',
+      message: '余额不足，请充值；本次仅查询报价，尚未提交生成。' })
+    expect(state.ask).not.toHaveBeenCalled()
+    expect(transport).toHaveBeenCalledOnce()
+  })
+
+  it('keeps provider and token quota failures separate from product funding during quotation', async () => {
+    for (const code of ['pre_consume_token_quota_failed', 'insufficient_quota', 'QUOTA']) {
+      await expect(readVideoModelQuote({ request: h3ApiQuote.request,
+        candidate: { model: h3ApiQuote.request.model, durations: [15] }, accountId: 'local-account',
+        signal: new AbortController().signal, transport: async () => Response.json({ error: {
+          code, type: 'new_api_error', message: 'private insufficient balance',
+        } }, { status: 403 }) })).rejects.toMatchObject({ code: 'CREATIVE_VIDEO_QUOTE_UNAVAILABLE' })
+    }
+  })
+
   it('binds the unmodified multi-spec actual handler response without claiming production prices', () => {
     const request = earlyApiQuote.request
     const candidate = { model: request.model, durations: [5, 8] }

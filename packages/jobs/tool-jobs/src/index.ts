@@ -10,13 +10,15 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
+import { z as zod } from 'zod'
 import { boundContextSummary, createUserMessage, type ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { ContextFormed } from '@deepseek-ai/dsh-llm'
 import { TextRetainer } from '@deepseek-ai/dsh-output-retention'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { GenericCallView, ToolDefinition, ToolExecution } from '@deepseek-ai/dsh-tools'
 import { JobId } from '@deepseek-ai/dsh-jobs'
-import type { JobView, JobRead } from '@deepseek-ai/dsh-jobs'
+import type { JobActionRequired, JobView, JobRead } from '@deepseek-ai/dsh-jobs'
+import type {} from '@deepseek-ai/dsh-session-projection'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent'
 import { publicJob, renderModelDelta, statusLine } from './render.ts'
@@ -24,6 +26,13 @@ import type { PublicJobSnapshot } from './render.ts'
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
     'tool-jobs': { kind: 'tool-jobs' } & ContextFormed
+  }
+}
+
+declare module '@deepseek-ai/dsh-session-projection/types' {
+  interface SessionProjectionStateMap {
+    /** Latest committed real human input sequence for sequence-bound terminal reads. */
+    toolJobHumanInput: number | null
   }
 }
 
@@ -77,6 +86,10 @@ const PUBLIC_JOB_SCHEMA = {
       enum: ['running', 'stopping', 'completed', 'killed', 'failed'],
     },
     detail: { type: 'string' },
+    actionRequired: { type: 'object', additionalProperties: false, properties: {
+      code: { type: 'string', required: true }, scope: { type: 'string' },
+      requestSeq: { type: 'integer' },
+    } },
     startedAt: { type: 'integer', required: true },
     finishedAt: { type: 'integer' },
   },
@@ -188,7 +201,25 @@ function readBody(read: JobRead): { text: string; job: PublicJobSnapshot } {
   return { text, job: publicJob(read.job) }
 }
 
+/** Later real human input owns its own continuation even when it first inspects an older failed job. */
+function concludesActionRead(exec: ToolExecution, action: JobActionRequired): boolean {
+  const session = exec.agent?.session
+  if (session === undefined || action.requestSeq === undefined) return true
+  const projections = exec.agent?.ctx.get('sessionProjections')
+  if (projections === undefined) throw new Error('tool-jobs: requestSeq requires sessionProjections')
+  const latestHuman = projections.stateOf(session, 'toolJobHumanInput')
+  if (latestHuman === undefined) throw new Error('tool-jobs: human input projection is unavailable')
+  return latestHuman === null || latestHuman <= action.requestSeq
+}
+
 export function apply(ctx: Context, config: Config): void {
+  ctx.inject(['sessionProjections'], (inner) => {
+    inner.sessionProjections.register({
+      key: 'toolJobHumanInput', stateVersion: 1, stateSchema: zod.number().int().nonnegative().nullable(),
+      init: () => null,
+      apply: (latest, event) => event.type === 'user/message' && event.data.source.kind === 'user' ? event.seq : latest,
+    })
+  })
   const waitDefault = config.waitTimeoutMs ?? 30_000
   const waitCap = config.maxWaitTimeoutMs ?? 600_000
   const delivery = config.completionDelivery ?? 'wakeup'
@@ -274,6 +305,8 @@ export function apply(ctx: Context, config: Config): void {
       return
     }
     if (event.type !== 'settled') return
+    // The application observes the retained failure directly; a model turn cannot resolve it.
+    if (event.job.actionRequired !== undefined) return
     const delivered = killedByModel.delete(event.job.id) || event.awaited
     if (delivered || event.cause === 'teardown' || event.job.owner === undefined) return
     // The destination is the agent registered for the owner session now. An
@@ -332,6 +365,8 @@ export function apply(ctx: Context, config: Config): void {
         const separator = body.endsWith('\n') ? '' : '\n'
         return [{ type: 'text', text: `${body}${separator}${statusLine(value.job)}` }]
       },
+      presentationMeta: (_args, value) => ({ jobId: value.job.id,
+        ...value.job.actionRequired === undefined ? {} : { actionRequired: { ...value.job.actionRequired } } }),
     },
     async execute(args, exec) {
       const id = validateJobId(args.job_id)
@@ -344,6 +379,7 @@ export function apply(ctx: Context, config: Config): void {
         await jobs.wait(id, Math.min(args.timeout_ms ?? waitDefault, waitCap), exec.agent?.id, exec.signal)
       }
       const read = jobs.read(id, exec.agent?.id)
+      if (read.job.actionRequired !== undefined && concludesActionRead(exec, read.job.actionRequired)) exec.concludeTurn()
       if (read.job.readMode === 'background' && (read.job.status === 'running' || read.job.status === 'stopping')
         && jobs.backgroundReadConcludesTurn(id, exec.agent?.id)) exec.concludeTurn()
       return readBody(read)

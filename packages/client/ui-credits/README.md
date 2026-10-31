@@ -65,6 +65,8 @@ Choosing an example inserts plain text at the captured selection's end, preserve
 
 For a newly reported `INSUFFICIENT_BALANCE` chat failure, this package claims the existing quota-notice slot and shows a localized balance warning with a Top up action leading to the same recharge panel. Changing or signing out of the observed account dismisses the notice. The separate DeepSeek `ACCOUNT_QUOTA` notice retains its original owner; channel and provider quota errors cannot open this product recharge warning.
 
+Product balance notices from media tools and background jobs require an exact match with the current signed-in `accountOwner`. Missing or stale login scopes cannot open the recharge dialog; recorded failure reasons remain visible. The dialog rechecks scope on render as well as account changes.
+
 <a id="understand-the-implementation"></a>
 ## Understand the implementation
 

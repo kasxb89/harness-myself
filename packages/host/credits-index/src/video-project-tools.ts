@@ -5,7 +5,7 @@ import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
-import type { JobHandle, JobId, JobOutcome } from '@deepseek-ai/dsh-jobs'
+import type { JobActionRequired, JobHandle, JobId, JobOutcome } from '@deepseek-ai/dsh-jobs'
 import type { Session } from '@deepseek-ai/dsh-session'
 import { prepareVideoProject, publishVideoOutput, readVideoProject, recoverVideoProjectOutputs, resolveVideoOutputDirectory, runVideoProject, videoProjectFailure, VideoProjectError } from './video-project.ts'
 import type { VideoProjectManifest } from './video-project.ts'
@@ -21,6 +21,7 @@ import { mediaFilename } from './media-filename.ts'
 import { VIDEO_REQUEST_GUIDANCE } from './creation-workflows.ts'
 import type { VideoWorkBatch, VideoWorkClaim } from './video-work-store.ts'
 import { appendChatVideoWorks, claimChatVideoWork, existingVideoWorkResult, prepareChatVideoWorks, settleVideoWorkPreparation } from './video-work-execution.ts'
+import { captureChatVideoBalanceStop, type ChatVideoBalanceStop } from './chat-video-balance-stop.ts'
 
 declare module '@deepseek-ai/dsh-jobs/view' {
   interface JobKindMap {
@@ -38,6 +39,7 @@ interface VideoToolResult {
   project_id?: string
   job_id?: string
   code?: string
+  actionRequired?: JobActionRequired
   plan_seconds?: number[]
   clip_paths?: string[]
   task_ids?: string[]
@@ -51,6 +53,12 @@ interface VideoToolResult {
   work_id?: string
   work_request_id?: string
   operation_id?: string
+  path?: string
+  paths?: string[]
+  model?: string
+  task_id?: string
+  request_id?: string
+  submission_state?: string
   pending_work_ids?: string[]
   works?: { work_id: string; index: number; state: string; plan_id?: string; operation_id?: string; project_id?: string }[]
 }
@@ -61,6 +69,12 @@ const output = {
     type: 'object', properties: {
       status: { type: 'string', required: true }, message: { type: 'string', required: true },
       project_id: { type: 'string' }, job_id: { type: 'string' }, code: { type: 'string' },
+      path: { type: 'string' }, model: { type: 'string' }, task_id: { type: 'string' },
+      paths: { type: 'array', items: { type: 'string' } },
+      request_id: { type: 'string' }, submission_state: { type: 'string' },
+      actionRequired: { type: 'object', additionalProperties: false, properties: {
+        code: { type: 'string', required: true }, scope: { type: 'string' },
+      } },
       plan_seconds: { type: 'array', items: { type: 'number' } }, clip_paths: { type: 'array', items: { type: 'string' } },
       task_ids: { type: 'array', items: { type: 'string' } }, final_path: { type: 'string' }, duration_seconds: { type: 'number' },
       cancelled_task_ids: { type: 'array', items: { type: 'string' } }, unconfirmed_task_ids: { type: 'array', items: { type: 'string' } },
@@ -76,6 +90,10 @@ const output = {
     }, additionalProperties: false,
   },
   render: (_args: unknown, value: VideoToolResult) => [{ type: 'text' as const, text: JSON.stringify(value) }],
+  presentationMeta: (_args: unknown, value: VideoToolResult) => ({
+    ...value.job_id === undefined ? {} : { jobId: value.job_id },
+    ...value.actionRequired === undefined ? {} : { actionRequired: { ...value.actionRequired } },
+  }),
 } as const
 
 /** Preserve only safe declared failures; infrastructure messages may contain secrets. */
@@ -155,7 +173,7 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
   }, 'video project operations')
 
   /** Allocate the cancellation lifetime only after jobs admission succeeds. */
-  function start(exec: ToolRunContext, kind: 'video-project' | 'video-edit', label: string, run: (job: JobHandle, signal: AbortSignal) => Promise<JobOutcome>, project?: string, backgroundReadConcludesTurn?: false): string {
+  function start(exec: ToolRunContext, kind: 'video-project' | 'video-edit', label: string, run: (job: JobHandle, signal: AbortSignal) => Promise<JobOutcome>, project?: string, backgroundReadConcludesTurn?: false, balanceStop?: ChatVideoBalanceStop): string {
     exec.signal.throwIfAborted()
     lifetime.signal.throwIfAborted()
     const agent = exec.agent
@@ -170,7 +188,10 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
         ...backgroundReadConcludesTurn === undefined ? {} : { backgroundReadConcludesTurn },
         run: (job) => {
           const abort = new AbortController()
-          const operation = { abort, done: run(job, abort.signal).catch((error: unknown): JobOutcome => ({ status: 'failed', detail: 'VIDEO_OPERATION_FAILED', result: JSON.stringify(failure(error)) })) }
+          const operation = { abort, done: run(job, abort.signal).catch((error: unknown): JobOutcome => {
+            const value = failure(error)
+            return { status: 'failed', detail: value.code ?? 'VIDEO_OPERATION_FAILED', result: JSON.stringify(value) }
+          }).then(value => balanceStop?.outcome(value) ?? value) }
           operation.done = operation.done.finally(() => {
             operations.delete(operation)
             const active = project === undefined ? undefined : activeProjects.get(project)
@@ -260,6 +281,7 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
     async execute(args, exec): Promise<VideoToolResult> {
       let creation: CreativeOperation | undefined
       let workClaim: VideoWorkClaim | undefined
+      let balanceStop: ChatVideoBalanceStop | undefined
       try {
         const { workspaceRoot, session } = caller(exec)
         if (videoModelChoiceCancelled(exec)) throw new CreativeError('USER_CANCELLED', 409,
@@ -269,6 +291,9 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
         const signal = AbortSignal.any([exec.signal, lifetime.signal])
         signal.throwIfAborted()
         let provider = await options.acquireProvider(workspaceRoot, session)
+        balanceStop = captureChatVideoBalanceStop(exec, options.accountScope?.(provider.identity))
+        const stopped = balanceStop.stopped()
+        if (stopped !== undefined) return stopped
         const owner = creativeOwner(exec, provider.identity)
         const source = videoGenerationIntentOf(exec)
         const reservation = await claimChatVideoWork(options.videoWorks, options.creative, owner, source, args.work_id)
@@ -419,7 +444,7 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
         const jobId = start(exec, 'video-project', `${String(input.totalDurationSeconds)} 秒视频`, async (job, signal) => {
           try { return await runVideoProject(runOptions(linked, session, workspaceRoot), manifest, provider, runEditor, job, signal) }
           finally { options.creative?.release(linked) }
-        }, manifest.id, remaining > 0 ? false : undefined)
+        }, manifest.id, remaining > 0 ? false : undefined, balanceStop)
         if (remaining === 0) exec.concludeTurn()
         return { status: 'background', job_id: jobId, project_id: manifest.id, plan_id: creation.projectId,
           work_id: work.workId, work_request_id: work.requestId, operation_id: creation.operationId, pending_work_ids: pending,
@@ -430,7 +455,10 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
         if (workClaim !== undefined && error instanceof CreativeError && error.code === 'USER_CANCELLED') {
           if (options.videoWorks !== undefined) await settleVideoWorkPreparation(options.videoWorks, workClaim, true)
         }
-        return failure(error)
+        const value = failure(error)
+        const result = value.code === 'INSUFFICIENT_BALANCE' && workClaim !== undefined
+          ? { ...value, work_id: workClaim.workId, work_request_id: workClaim.requestId } : value
+        return (balanceStop ?? captureChatVideoBalanceStop(exec)).result(result)
       } finally {
         if (creation === undefined && workClaim !== undefined && options.videoWorks !== undefined) {
           await settleVideoWorkPreparation(options.videoWorks, workClaim)
@@ -541,12 +569,14 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
     presentCall: args => ({ card: 'generic', title: '继续视频项目', kind: 'edit', content: [{ type: 'text', text: args.project_id }] }),
     async execute(args, exec): Promise<VideoToolResult> {
       let creation: CreativeOperation | undefined
+      let balanceStop: ChatVideoBalanceStop | undefined
       const cancellationEpoch = cancellationEpochs.get(args.project_id) ?? 0
       try {
         const { workspaceRoot, session } = caller(exec)
         const signal = AbortSignal.any([exec.signal, lifetime.signal])
         signal.throwIfAborted()
         const originalProvider = await options.acquireProvider(workspaceRoot, session)
+        balanceStop = captureChatVideoBalanceStop(exec, options.accountScope?.(originalProvider.identity))
         const manifest = await readVideoProject(options, args.project_id, session.id, workspaceRoot, originalProvider.identity)
         if (manifest.status === 'completed') return statusOf(manifest, false)
         const provider: VideoProjectProvider = {
@@ -588,10 +618,13 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
         const jobId = start(exec, 'video-project', `继续 ${String(manifest.input.totalDurationSeconds)} 秒视频`, async (job, signal) => {
           try { return await runVideoProject(runOptions(linked, session, workspaceRoot), manifest, provider, editor, job, signal) }
           finally { if (linked !== undefined) options.creative?.release(linked) }
-        }, manifest.id)
+        }, manifest.id, undefined, balanceStop)
         exec.concludeTurn()
         return { status: 'background', project_id: manifest.id, job_id: jobId, plan_seconds: manifest.segments.map(segment => segment.durationSeconds), message: '已在后台读取原任务和已保存片段，你可以继续聊天；完成后会通知。未知提交不会重新计费提交。' }
-      } catch (error) { if (creation !== undefined) options.creative?.release(creation); return failure(error) }
+      } catch (error) {
+        if (creation !== undefined) options.creative?.release(creation)
+        return (balanceStop ?? captureChatVideoBalanceStop(exec)).result(failure(error))
+      }
     },
   }))
 

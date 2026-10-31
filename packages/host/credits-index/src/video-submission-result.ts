@@ -2,6 +2,7 @@
 import {
   hasMediaSubmissionReceipt, mediaSubmissionRejection, mediaSubmissionQueryRejection, mediaSubmissionMessage,
 } from './media-submission-receipt.ts'
+import { accountBalanceFailure } from './account-balance.ts'
 
 /** A gateway-confirmed terminal attempt; it never authorizes automatic resubmission. */
 export class VideoSubmissionRejection extends Error {
@@ -35,9 +36,12 @@ function notSent(value: Record<string, unknown>, code: unknown): VideoSubmission
     || value.billing_state === 'not_charged' && value.refund_confirmed !== undefined && value.refund_confirmed !== false) return undefined
   if (code !== undefined && (typeof code !== 'string' || !/^[A-Za-z][A-Za-z0-9_:-]{0,127}$/u.test(code)
     || /^(?:sk-|nap_)/iu.test(code))) return undefined
-  return new VideoSubmissionRejection(typeof code === 'string' ? code : 'H3_SUBMISSION_NOT_SENT',
-    value.billing_state === 'refunded' ? '原视频请求未发送至上游，退款已确认；原任务记录保留，不会自动重新生成。'
-      : '原视频请求未发送至上游且未扣费；原任务记录保留，不会自动重新生成。', 'not_submitted', value.id)
+  const balance = accountBalanceFailure(code)
+  const settlement = value.billing_state === 'refunded'
+    ? '原视频请求未发送至上游，退款已确认；原任务记录保留，不会自动重新生成。'
+    : '原视频请求未发送至上游且未扣费；原任务记录保留，不会自动重新生成。'
+  return new VideoSubmissionRejection(balance?.code ?? (typeof code === 'string' ? code : 'H3_SUBMISSION_NOT_SENT'),
+    balance === undefined ? settlement : `${balance.message}。${settlement}`, 'not_submitted', value.id)
 }
 
 /**
@@ -64,7 +68,10 @@ export function h3SubmissionQueryRejection(
 ): VideoSubmissionRejection | undefined {
   if (hasMediaSubmissionReceipt(value)) {
     const proof = mediaSubmissionQueryRejection(model, 'video', httpStatus, value, taskId)
-    return proof === undefined ? undefined : new VideoSubmissionRejection(proof.code, mediaSubmissionMessage(proof), 'not_submitted', proof.taskId)
+    if (proof === undefined) return undefined
+    const balance = accountBalanceFailure(record(value)?.failure_code ?? record(record(value)?.data)?.failure_code)
+    return new VideoSubmissionRejection(balance?.code ?? proof.code,
+      (balance === undefined ? '' : `${balance.message}。`) + mediaSubmissionMessage(proof), 'not_submitted', proof.taskId)
   }
   const body = record(value)
   if (model !== 'MiniMax-H3' || httpStatus !== 200 || body === undefined || !identifier(taskId)) return undefined
@@ -76,7 +83,7 @@ export function h3SubmissionQueryRejection(
     || ['id', 'task_id'].some(key => container[key] !== undefined && container[key] !== taskId))) return undefined
   const proof = record(proofs[0]?.submission_receipt)
   if (proof === undefined || proof.id !== taskId || proof.task_id !== taskId) return undefined
-  return notSent(proof, proof.code)
+  return notSent(proof, proof.code ?? body.failure_code ?? nested?.failure_code)
 }
 
 /**
@@ -113,8 +120,10 @@ export function h3ProviderTerminalRejection(
     || states.some(state => typeof state !== 'string' || !['failed', 'failure', 'fail', 'error', 'cancelled', 'canceled'].includes(state.toLowerCase()))
     || containers.some(container => Object.hasOwn(container, 'submission_receipt') || container.resubmittable === true
       || container.object !== undefined && container.object !== 'video')) return undefined
-  return new VideoSubmissionRejection('PROVIDER_TASK_FAILED',
-    '上游原视频任务已明确结束且未成功；该终态不代表退款已确认，不会自动重新生成。', 'failed', taskId)
+  const balance = accountBalanceFailure(body.failure_code ?? nested?.failure_code)
+  return new VideoSubmissionRejection(balance?.code ?? 'PROVIDER_TASK_FAILED',
+    (balance === undefined ? '' : `${balance.message}。`)
+      + '上游原视频任务已明确结束且未成功；该终态不代表退款已确认，不会自动重新生成。', 'failed', taskId)
 }
 
 /**
@@ -127,7 +136,10 @@ export function h3ProviderTerminalRejection(
 export function h3SubmissionRejection(model: unknown, httpStatus: number, value: unknown): VideoSubmissionRejection | undefined {
   if (hasMediaSubmissionReceipt(value)) {
     const proof = mediaSubmissionRejection(model, 'video', httpStatus, value)
-    return proof === undefined ? undefined : new VideoSubmissionRejection(proof.code, mediaSubmissionMessage(proof), 'not_submitted', proof.taskId)
+    if (proof === undefined) return undefined
+    const balance = accountBalanceFailure(proof.code)
+    return new VideoSubmissionRejection(balance?.code ?? proof.code,
+      (balance === undefined ? '' : `${balance.message}。`) + mediaSubmissionMessage(proof), 'not_submitted', proof.taskId)
   }
   if (model !== 'MiniMax-H3' || value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
   const body = value as Record<string, unknown>

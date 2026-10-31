@@ -22,6 +22,7 @@ import type { RetryPolicyConfig } from '@deepseek-ai/dsh-llm'
 import { deriveReplayScript, parseSessionLog } from '@deepseek-ai/dsh-llm-replay'
 import type { ReplayEntry, ReplayOverrideDoc } from '@deepseek-ai/dsh-llm-replay'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import { ToolCallId, createAssistantMessage, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import {
   assertFixtureInventory, captureExpandedTurnProcessAria, captureStableAria,
   compareOrRefreshGolden, fixtureUserPrompts,
@@ -247,6 +248,77 @@ describe('web e2e: live-turn interactions (cancel / error / retry)', () => {
     expect(tripwire.warnings).toEqual([])
   }, 120_000)
 
+  it.skipIf(MODE === 'record')('offers recharge for a live video tool rejection after a completed turn', async () => {
+    const accountOwner = 'a'.repeat(64)
+    await launch(() => ({ patches: [] }), undefined, async (prepared) => {
+      const local = new URL(scaffold!.baseUrl).origin
+      await prepared.route(url => url.origin === local && [
+        '/credits/api/session', '/credits/api/summary', '/credits/api/chat-usage',
+      ].includes(url.pathname), async (route) => {
+        const url = new URL(route.request().url())
+        const payload = url.pathname === '/credits/api/session'
+          ? { signedIn: true, accountOwner, account: { id: 'balance-fixture', phone: 'fixture' }, creditsPerYuan: 1000 }
+          : url.pathname === '/credits/api/summary' ? { balance_points: 0, as_of: '2026-01-15T04:00:00Z' }
+            : { scope: 'chat-model', accountId: 'balance-fixture', status: 'unavailable', settledRequests: 0, totalRequests: 0 }
+        await route.fulfill({ json: { ok: true, payload } })
+      })
+    })
+    onTestFailed(() => saveFailureShot(page, 'web-e2e-video-balance-action'))
+    const { settled } = await sendPrompt()
+    const sessionId = await settled
+    const refreshed = page.waitForResponse(response => response.url() === `${scaffold!.baseUrl}/credits/api/session`)
+    await page.evaluate(() => { window.dispatchEvent(new Event('focus')) })
+    expect(await (await refreshed).json()).toMatchObject({ payload: { signedIn: true, accountOwner } })
+    await page.evaluate(() => new Promise<void>((resolve) => {
+      requestAnimationFrame(() => { requestAnimationFrame(() => { resolve() }) })
+    }))
+    const agent = scaffold!.ctx.agents.get(sessionId)
+    if (agent === undefined) throw new Error('Expected the live browser chat Agent')
+    let turn = 1
+    const publish = (workId: string, scope = accountOwner): void => {
+      turn += 1
+      const callId = ToolCallId(`video-balance-${String(turn)}`)
+      const args = JSON.stringify({ prompt: 'One requested video', duration_seconds: 15 })
+      agent.session.append('turn/start', { turn })
+      agent.session.append('user/message', createUserMessage({ source: { kind: 'user' },
+        content: [{ type: 'text', text: 'Generate one video.' }] }), { surfaceOp: 'append' })
+      agent.session.append('step/start', { turn, step: 1 })
+      agent.session.append('assistant/message', { turn, step: 1, stream: [],
+        message: createAssistantMessage({ source: { provider: 'fixture', model: 'fixture' },
+          content: [{ type: 'tool-call', id: callId, name: 'generate_video', arguments: args }] }) }, { surfaceOp: 'append' })
+      const call = agent.session.append('tool/call', { turn, step: 1, callId, name: 'generate_video', arguments: args })
+      agent.session.append('tool/result', { turn, step: 1,
+        message: createToolResultMessage({ callId, isError: false, content: [{ type: 'text', text: JSON.stringify({
+          status: 'unknown', submission_state: 'unknown', code: 'INSUFFICIENT_BALANCE', work_id: workId,
+          message: '余额不足，请充值；提交结果尚未确认，请先检查已有任务，不要重复提交。',
+          actionRequired: { code: 'INSUFFICIENT_BALANCE', scope },
+        }) }] }) }, { surfaceOp: 'append', sourceEventSeqs: [call.seq] })
+      agent.session.append('step/end', { turn, step: 1 })
+      agent.session.append('turn/end', { turn, reason: { kind: 'completed' } })
+    }
+    const dialog = page.getByRole('dialog', { name: 'Insufficient balance. Please top up.', exact: true })
+    publish('original-video')
+    await dialog.waitFor({ timeout: 10_000 })
+    await expect.poll(() => dialog.getByRole('button', { name: 'Top up', exact: true }).isEnabled()).toBe(true)
+    await dialog.getByRole('button', { name: 'Close', exact: true }).last().click()
+    await dialog.waitFor({ state: 'hidden' })
+    publish('original-video')
+    publish('old-account-video', 'b'.repeat(64))
+    await page.locator('[data-turn-process="4"]').waitFor()
+    await page.evaluate(() => new Promise<void>((resolve) => {
+      requestAnimationFrame(() => { requestAnimationFrame(() => { resolve() }) })
+    }))
+    expect(await dialog.count()).toBe(0)
+    publish('new-video')
+    await dialog.waitFor({ timeout: 10_000 })
+    await dialog.getByRole('button', { name: 'Top up', exact: true }).click()
+    await page.getByRole('heading', { name: 'Credit top-up', exact: true }).waitFor()
+    expect(await dialog.count()).toBe(0)
+    expect(sessionEvents.filter(event => event.type === 'turn/end' && event.data.reason.kind === 'error')).toHaveLength(0)
+    expect(tripwire.pageErrors).toEqual([])
+    expect(tripwire.warnings).toEqual([])
+  }, 120_000)
+
   it.skipIf(MODE === 'record').each(['QUOTA', 'ACCOUNT_QUOTA', 'INSUFFICIENT_BALANCE'])(
     'retains a %s failure with its product notice policy after history reloads', async (code) => {
       await launch(() => ({
@@ -255,7 +327,7 @@ describe('web e2e: live-turn interactions (cancel / error / retry)', () => {
       onTestFailed(() => saveFailureShot(page, `web-e2e-quota-${code}`))
       const { settled } = await sendPrompt()
       await settled
-      const copy = code === 'QUOTA' ? 'The server is busy. Please try again later.'
+      const copy = code === 'QUOTA' ? 'The operation did not complete; the cause is unconfirmed. Check the status first.'
         : code === 'INSUFFICIENT_BALANCE' ? 'Insufficient balance. Please top up.' : 'Request quota exhausted.'
       const notice = page.getByRole('alert').filter({ hasText: code === 'QUOTA' ? 'Request quota exhausted.' : copy })
       if (code === 'INSUFFICIENT_BALANCE') {

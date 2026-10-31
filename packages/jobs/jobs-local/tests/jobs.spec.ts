@@ -115,6 +115,28 @@ async function harness(config: JobsConfig = {}) {
   return ctx
 }
 
+describe('user-action failures', () => {
+  it('retains a detached action marker only for a failed terminal outcome', async () => {
+    const ctx = await harness()
+    const p = producer()
+    const completed = producer()
+    try {
+      const id = ctx.jobs.start(p.spec)
+      const completeId = ctx.jobs.start(completed.spec)
+      const actionRequired = { code: 'INSUFFICIENT_BALANCE', scope: 'account-scope' }
+      p.settle({ status: 'failed', detail: 'INSUFFICIENT_BALANCE', result: 'original result', actionRequired })
+      completed.settle({ status: 'completed', actionRequired })
+      await vi.waitFor(() => { expect(ctx.jobs.get(id).status).toBe('failed') })
+      actionRequired.scope = 'mutated producer value'
+      const view = ctx.jobs.get(id)
+      expect(view.actionRequired).toEqual({ code: 'INSUFFICIENT_BALANCE', scope: 'account-scope' })
+      expect(ctx.jobs.read(id).result).toBe('original result')
+      expect(ctx.jobs.get(completeId).actionRequired).toBeUndefined()
+      expect(ctx.jobs.list().find(job => job.id === id)?.actionRequired).toEqual(view.actionRequired)
+    } finally { await ctx.fiber.dispose() }
+  })
+})
+
 /** Collect events matching `filter`; `types` narrows what is recorded. */
 function collect(ctx: Context, filter: JobEventFilter = { owners: 'all' }, types?: JobEvent['type'][]): JobEvent[] {
   const seen: JobEvent[] = []

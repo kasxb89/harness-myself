@@ -103,6 +103,8 @@ Terminal prompt labels use recorded result `cwd`. Older successful root shell ca
 
 The terminal model uses `hasSpillNotice` from the browser-safe `@deepseek-ai/dsh-spill-policy/notice` entry, not an independent UI pattern. The [spill-policy README](../../spill/spill-policy/README.md#shared-notice-ownership) owns notice formatting and recognition. This check conservatively selects generic output; matching text cannot authenticate its source, and replay leaves recorded result bytes untouched.
 
+Producer-confirmed balance metadata on `job_output` renders a localized failure summary without depending on model prose or exposing the opaque login scope. A balance rejection with an unknown submission result retains both the recharge guidance and the instruction to check the original task; it makes no claim about refunds or whether charging occurred.
+
 ### Declared optional capabilities
 
 This package declares the optional `UserQuestionPanels` capability; `ui-user-questions` provides it. `reveal(sessionId, callId)` opens an answerable panel, and `review(sessionId, callId, record)` opens recorded answers read-only. The row reads the capability through `ctx.get('userQuestionPanels')` and keeps its transcript when no question UI is composed.

@@ -34,6 +34,7 @@ import { registerChatNodeRenderers } from './chat/register-node-renderers.ts'
 import { ActivityPill } from './chat/StatsPills.tsx'
 import { registerConversationNodes } from './conversation-nodes/register.ts'
 import { QuotaNoticeHost } from './chat/QuotaNoticeHost.tsx'
+import { createQuotaNotices, toolBackgroundJob, toolBalanceNotice } from './quota-notices.ts'
 import { en, NS, zh } from './locale.ts'
 import { TranscriptViewRow, type TranscriptViewRowInjected } from './settings/TranscriptViewRow.tsx'
 import { createChatStore } from './stores.ts'
@@ -87,6 +88,12 @@ export function apply(ctx: Context): void {
   // issued for: one arriving after a dismissal or a later acquisition leaves
   // that newer hold alone.
   const quotaNoticeHolds = new Set<symbol>()
+  const quotaNotices = createQuotaNotices((scope) => {
+    if (quotaNoticeHolds.size > 0) return false
+    quotaNotice.set({ code: 'INSUFFICIENT_BALANCE', scope, seq: ++quotaNoticeSeq })
+    return true
+  })
+  ctx.provide('quotaNotices', quotaNotices)
   const chatSources = new WeakMap<SessionBinding, ObservableSnapshot<ChatSnapshot>>()
   const quotaSubscriptions = new Set<() => Promise<void>>()
   ctx.effect(() => async () => {
@@ -99,10 +106,27 @@ export function apply(ctx: Context): void {
       // replacement or paging never does, because an old failure scrolling
       // back into view is not news.
       const dispose = binding.ctx.effect(() => {
+        const calls = new Map<string, string>()
         const stop = binding.eventSource.subscribe(() => {
           const { change } = binding.eventSource.getSnapshot()
           if (change.kind !== 'append') return
           for (const { event } of change.entries) {
+            if (event.type === 'tool/call') calls.set(String(event.data.callId), event.data.name)
+            if (event.type === 'tool/result') {
+              const callId = String(event.data.message.source.callId)
+              const toolName = calls.get(callId)
+              const jobId = toolBackgroundJob(event, toolName)
+              if (jobId !== undefined) quotaNotices.registerLiveJob(jobId)
+              const notice = toolBalanceNotice(event, toolName, String(binding.sessionId))
+              calls.delete(callId)
+              if (notice !== undefined) quotaNotices.publishBalance(notice)
+            }
+            if (event.type === 'tool/ptc-dispatch') {
+              const jobId = toolBackgroundJob(event, undefined)
+              if (jobId !== undefined) quotaNotices.registerLiveJob(jobId)
+              const notice = toolBalanceNotice(event, undefined, String(binding.sessionId))
+              if (notice !== undefined) quotaNotices.publishBalance(notice)
+            }
             if (event.type !== 'turn/end' || event.data.reason.kind !== 'error') continue
             const { code } = event.data.reason.error
             if (quotaNoticeHolds.size > 0 || (code !== 'ACCOUNT_QUOTA' && code !== 'INSUFFICIENT_BALANCE')) continue

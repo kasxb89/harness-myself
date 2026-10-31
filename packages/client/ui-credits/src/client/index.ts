@@ -68,6 +68,12 @@ export const Config: z<Config> = z.object({
 export function apply(ctx: ClientContext, config: Config = {}): void {
   const resolved = Config(config) as Required<Config>
   ctx.provide('creditsSession', createCreditsSessionSource())
+  ctx.inject(['quotaNotices'], (scope) => {
+    scope.effect(() => scope.quotaNotices.registerBalanceScope((owner) => {
+      const session = scope.creditsSession.getSnapshot().session
+      return session?.signedIn === true && session.accountOwner === owner
+    }), 'ui-credits: product balance scope')
+  })
   const t = ctx.locale.bind(NS)
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-credits: dictionaries')
   ctx.slots.inject('shell.quota-notice', () => ctx.slots.register({

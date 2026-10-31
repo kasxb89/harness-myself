@@ -856,6 +856,36 @@ describe('bounded parallel video generation', { timeout: 15_000 }, () => {
 })
 
 describe('explicit timeline execution', () => {
+  it('retains original queue coordinates and funding reason when submit recovery is still unknown', async () => {
+    const f = await setup()
+    const manifest = await f.prepare()
+    const taskId = 'vq_11111111-1111-4111-8111-111111111111'
+    const submit = vi.spyOn(f.provider, 'submit').mockRejectedValue(new VideoRelayError('INSUFFICIENT_BALANCE',
+      '余额不足，请充值；原排队回执尚未确认，不要重新生成。', { taskId }))
+    const outcome = await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal)
+    expect(outcome).toMatchObject({ status: 'failed', detail: 'INSUFFICIENT_BALANCE' })
+    expect(JSON.parse(outcome.result ?? '')).toMatchObject({ code: 'INSUFFICIENT_BALANCE', task_ids: [taskId] })
+    expect(outcome.result).toContain('余额不足，请充值')
+    const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+    expect(retained.segments[0]).toMatchObject({ status: 'unknown', taskId })
+    expect(submit).toHaveBeenCalledOnce()
+  })
+
+  it('publishes the safe original-task funding failure in durable state and background output', async () => {
+    const f = await setup()
+    const manifest = await f.prepare()
+    vi.spyOn(f.provider, 'check').mockResolvedValue({ status: 'failed', code: 'INSUFFICIENT_BALANCE', message: '余额不足，请充值' })
+    const outcome = await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal)
+    expect(outcome).toMatchObject({ status: 'failed', detail: 'INSUFFICIENT_BALANCE' })
+    expect(JSON.parse(outcome.result ?? '')).toMatchObject({ code: 'INSUFFICIENT_BALANCE' })
+    expect(outcome.result).toContain('余额不足，请充值')
+    expect(f.output.join('')).toContain('余额不足，请充值')
+    const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+    expect(retained).toMatchObject({ failureCode: 'INSUFFICIENT_BALANCE' })
+    expect(retained.segments[0]?.status).toBe('failed')
+    expect(f.submitted).toBe(1)
+  })
+
   it('shows the user funding rejection while preserving the unknown-submission barrier and saved work', async () => {
     const f = await setup()
     const manifest = await f.prepare()

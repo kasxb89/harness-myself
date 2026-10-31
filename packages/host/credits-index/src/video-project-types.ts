@@ -146,7 +146,11 @@ export interface VideoProjectProvider {
    * @param signal - Cancels this read.
    * @returns Current terminal, accepted-but-queued, or generating task state.
    */
-  check(taskId: string, request: VideoProjectRequest, signal: AbortSignal): Promise<{ status: 'queued' | 'running' | 'succeeded' | 'failed'; message?: string }>
+  check(taskId: string, request: VideoProjectRequest, signal: AbortSignal): Promise<{
+    status: 'queued' | 'running' | 'succeeded' | 'failed'
+    code?: string
+    message?: string
+  }>
   /**
    * Cancel an original server queue item only when the gateway confirms it was never dispatched.
    * @param taskId - Original persisted queue identity, never a new generation request.
@@ -168,6 +172,8 @@ export interface VideoProjectProvider {
 
 /** Deployment choices supplied by the owning credits plugin configuration. */
 export interface VideoProjectOptions {
+  /** Resolve the captured product login's non-secret UI scope without accepting another account's identity. */
+  accountScope?(identity: VideoProjectIdentity): string | undefined
   /** Observe only process-live project and clip phases; observer failure never changes execution. */
   activity?(this: void, event: VideoProjectActivity): void
   /** Resolve and approve a chat-only model change before preparing any billable project. */

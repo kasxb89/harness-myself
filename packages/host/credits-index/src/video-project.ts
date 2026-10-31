@@ -702,9 +702,10 @@ function savedPath(segment: VideoProjectSegment): string {
 
 /** A failed status read owns only the task whose response established it. */
 class VideoProjectTaskFailure extends VideoProjectError {
-  /** @param taskId - Original task whose status query returned failed. */
-  constructor(readonly taskId: string) {
-    super('PROVIDER_TASK_FAILED', '上游视频片段生成失败；已生成的其他片段保留，未重新提交任务。')
+  /** @param taskId - Original failed task. @param failure - Safe provider-owned summary, without raw upstream content. */
+  constructor(readonly taskId: string, failure?: { code?: string; message?: string }) {
+    super(failure?.code ?? 'PROVIDER_TASK_FAILED', failure?.message
+      ?? '上游视频片段生成失败；已生成的其他片段保留，未重新提交任务。')
   }
 }
 
@@ -743,7 +744,7 @@ async function waitForTask(
     }
     failures = 0
     if (state.status === 'succeeded') return
-    if (state.status === 'failed') throw new VideoProjectTaskFailure(taskId)
+    if (state.status === 'failed') throw new VideoProjectTaskFailure(taskId, state)
     await progress(state.status, elapsed())
     await delay(Math.max(options.pollIntervalMs, provider.pollIntervalMs ?? 0), undefined, { signal })
   }
@@ -965,7 +966,7 @@ async function executeVideoSegments(
         }
         segment.status = 'unknown'
         activity.stage('unknown')
-        if (error instanceof VideoRelayError && error.code === 'VIDEO_SUBMIT_UNKNOWN' && error.taskId !== undefined) segment.taskId = error.taskId
+        if (error instanceof VideoRelayError && error.taskId !== undefined) segment.taskId = error.taskId
         if (error instanceof VideoRelayError && error.code === 'INSUFFICIENT_BALANCE') throw error
         if (error instanceof VideoRelayError && error.code === 'VIDEO_SUBMIT_BUSY') {
           throw new VideoProjectError('SUBMISSION_UNKNOWN', error.message, { cause: error })

@@ -15,6 +15,7 @@ export function QuotaNoticeHost({ useNotice, dismissNotice, keepNoticeOpen, rend
   const notice = useNotice(current => current)
   if (notice === null) return null
   const owner: QuotaNoticeOwnerProps = {
+    ...notice.scope === undefined ? {} : { scope: notice.scope },
     code: notice.code, message: t(notice.code === 'INSUFFICIENT_BALANCE' ? 'message.failure.balance' : 'message.failure.quota'), dismiss: dismissNotice, keepOpen: keepNoticeOpen,
   }
   return (

@@ -212,7 +212,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
     ],
     replaceRisk: 'none',
     example: 'return {\n  inject: [\'slots\'],\n  apply(ctx) {\n    ctx.slots.inject(\'conversation.chat.assistant-actions\', () => ctx.slots.register(\n      { name: \'conversation.chat.assistant-actions\', id: \'my-entry\', order: 100, label: \'My entry\' },\n      () => React.createElement(\'div\', null, \'hello\'),\n    ))\n  },\n}',
-    source: 'packages/client/ui-chat/src/client/contract/slots.ts:414',
+    source: 'packages/client/ui-chat/src/client/contract/slots.ts:418',
   },
   {
     key: 'conversation.chat.commandview',
@@ -260,7 +260,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
     occupants: [],
     replaceRisk: 'none',
     example: 'return {\n  inject: [\'slots\'],\n  apply(ctx) {\n    ctx.slots.inject(\'conversation.chat.commandview\', () => ctx.slots.register(\n      { name: \'conversation.chat.commandview\', key: \'<one key the owner dispatches>\' },\n      () => React.createElement(\'div\', null, \'hello\'),\n    ))\n  },\n}',
-    source: 'packages/client/ui-chat/src/client/contract/slots.ts:396',
+    source: 'packages/client/ui-chat/src/client/contract/slots.ts:400',
   },
   {
     key: 'conversation.chat.flow',
@@ -303,7 +303,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
     ],
     replaceRisk: 'shadows-shipped-ui',
     example: 'return {\n  inject: [\'slots\'],\n  apply(ctx) {\n    ctx.slots.inject(\'conversation.chat.flow\', () => ctx.slots.register(\n      { name: \'conversation.chat.flow\' },\n      () => React.createElement(\'div\', null, \'hello\'),\n    ))\n  },\n}',
-    source: 'packages/client/ui-chat/src/client/contract/slots.ts:365',
+    source: 'packages/client/ui-chat/src/client/contract/slots.ts:369',
   },
   {
     key: 'conversation.chat.node',
@@ -374,7 +374,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
     ],
     replaceRisk: 'shadows-shipped-ui',
     example: 'return {\n  inject: [\'slots\'],\n  apply(ctx) {\n    ctx.slots.inject(\'conversation.chat.node\', () => ctx.slots.register(\n      { name: \'conversation.chat.node\', key: \'<one key the owner dispatches>\' },\n      () => React.createElement(\'div\', null, \'hello\'),\n    ))\n  },\n}',
-    source: 'packages/client/ui-chat/src/client/contract/slots.ts:377',
+    source: 'packages/client/ui-chat/src/client/contract/slots.ts:381',
   },
   {
     key: 'conversation.chat.reasoning.body',
@@ -416,7 +416,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
     ],
     replaceRisk: 'shadows-shipped-ui',
     example: 'return {\n  inject: [\'slots\'],\n  apply(ctx) {\n    ctx.slots.inject(\'conversation.chat.reasoning.body\', () => ctx.slots.register(\n      { name: \'conversation.chat.reasoning.body\' },\n      () => React.createElement(\'div\', null, \'hello\'),\n    ))\n  },\n}',
-    source: 'packages/client/ui-chat/src/client/contract/slots.ts:402',
+    source: 'packages/client/ui-chat/src/client/contract/slots.ts:406',
   },
   {
     key: 'conversation.chat.turnTail',
@@ -479,7 +479,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
     ],
     replaceRisk: 'none',
     example: 'return {\n  inject: [\'slots\'],\n  apply(ctx) {\n    ctx.slots.inject(\'conversation.chat.turnTail\', () => ctx.slots.register(\n      { name: \'conversation.chat.turnTail\', id: \'my-entry\', order: 100, label: \'My entry\' },\n      () => React.createElement(\'div\', null, \'hello\'),\n    ))\n  },\n}',
-    source: 'packages/client/ui-chat/src/client/contract/slots.ts:408',
+    source: 'packages/client/ui-chat/src/client/contract/slots.ts:412',
   },
   {
     key: 'conversation.composer',
@@ -1296,7 +1296,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
     ],
     replaceRisk: 'shadows-shipped-ui',
     example: 'return {\n  inject: [\'slots\'],\n  apply(ctx) {\n    ctx.slots.inject(\'conversation.message.images\', () => ctx.slots.register(\n      { name: \'conversation.message.images\' },\n      () => React.createElement(\'div\', null, \'hello\'),\n    ))\n  },\n}',
-    source: 'packages/client/ui-chat/src/client/contract/slots.ts:390',
+    source: 'packages/client/ui-chat/src/client/contract/slots.ts:394',
   },
   {
     key: 'conversation.plan-review.actions',
@@ -3052,7 +3052,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
       },
     ],
     ownerProps: [
-      '/** Owner currency of one quota notice offered to the frame-wide chain. */\nexport interface QuotaNoticeOwnerProps {\n  /** Stable failure code retained in the Session log. */\n  code: QuotaNoticeCode\n  /** Provider-neutral notice copy in the active locale. */\n  message: string\n  /** Take the notice down. */\n  dismiss: () => void\n  /**\n   * Prevent later quota failures from replacing this notice. Dismissal clears\n   * all holds; releasing the last hold resumes future notices without replay.\n   * Callers must release on unmount.\n   * @returns idempotent release that cannot clear another hold.\n   */\n  keepOpen: () => () => void\n}',
+      '/** Owner currency of one quota notice offered to the frame-wide chain. */\nexport interface QuotaNoticeOwnerProps {\n  /** Producer login scope for product balance notices; never displayed. */\n  readonly scope?: string\n  /** Stable failure code retained in the Session log. */\n  code: QuotaNoticeCode\n  /** Provider-neutral notice copy in the active locale. */\n  message: string\n  /** Take the notice down. */\n  dismiss: () => void\n  /**\n   * Prevent later quota failures from replacing this notice. Dismissal clears\n   * all holds; releasing the last hold resumes future notices without replay.\n   * Callers must release on unmount.\n   * @returns idempotent release that cannot clear another hold.\n   */\n  keepOpen: () => () => void\n}',
     ],
     ownerPropsReferences: [
       'QuotaNoticeCode',
@@ -3076,7 +3076,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
     ],
     replaceRisk: 'none',
     example: 'return {\n  inject: [\'slots\'],\n  apply(ctx) {\n    ctx.slots.inject(\'shell.quota-notice\', () => ctx.slots.register(\n      { name: \'shell.quota-notice\', select: owner => null },\n      () => React.createElement(\'div\', null, \'hello\'),\n    ))\n  },\n}',
-    source: 'packages/client/ui-chat/src/client/contract/slots.ts:422',
+    source: 'packages/client/ui-chat/src/client/contract/slots.ts:426',
   },
   {
     key: 'sidebar',

@@ -11,8 +11,10 @@ import {
   classifyTool, formatToolBody, resultText, toolRowModel,
 } from '../src/client/tool/models/tool-call-model.ts'
 import { ToolRow } from '../src/client/tool/components/ToolRow.tsx'
+import { DetailsRow } from '../src/client/tool/toolviews/details-row.tsx'
 import { GenericToolCard, type GenericToolCardProps } from '../src/client/tool/toolviews/GenericToolCard.tsx'
 import { en, zh } from '@deepseek-ai/dsh-client-ui-conversation/src/client/locales.ts'
+import { SessionId } from '@deepseek-ai/dsh-session/types'
 import { PartialArguments } from '@deepseek-ai/dsh-util-values'
 
 afterEach(() => {
@@ -40,6 +42,11 @@ const result = (over?: Partial<ToolResultNode>): ToolResultNode => {
     content: [], isError: false, subCalls: [], ...over,
   }
 }
+
+const props = (toolName: string, block: StartedToolCall | ToolResultNode): GenericToolCardProps => ({
+  loadImage: vi.fn(() => Promise.reject(new Error('not used'))),
+  useDisclosure, callId: 'c1', toolName, ...('kind' in block ? { phase: 'result' as const, block: block } : { phase: block.phase, block: block }), openFile: vi.fn(), t,
+})
 
 describe('tool-call-model', () => {
   it('classifies known tools and falls back to others', () => {
@@ -557,10 +564,6 @@ describe('ToolRow', () => {
 })
 
 describe('GenericToolCard', () => {
-  const props = (toolName: string, block: StartedToolCall | ToolResultNode): GenericToolCardProps => ({
-    loadImage: vi.fn(() => Promise.reject(new Error('not used'))),
-    useDisclosure, callId: 'c1', toolName, ...('kind' in block ? { phase: 'result' as const, block: block } : { phase: block.phase, block: block }), openFile: vi.fn(), t,
-  })
 
   it.each([
     'generate_image', 'generate_video', 'generate_video_project', 'edit_video', 'assemble_video',
@@ -1030,5 +1033,41 @@ describe('GenericToolCard', () => {
     ))).toBe(false)
     expect(view.queryByText('Tool execution rejected by user')).toBeNull()
     expect(view.queryByText(/"path"/)).toBeNull()
+  })
+})
+
+
+describe('confirmed video balance feedback', () => {
+  it('shows producer-confirmed background job balance failure without relying on model prose', async () => {
+    const block = result({ call: { name: 'job_output', argsRaw: '{"job_id":"video-project-1"}' },
+      content: [{ type: 'text', text: 'private diagnostic\n[status: failed, internal reason]' }],
+      meta: { jobId: 'video-project-1', actionRequired: { code: 'INSUFFICIENT_BALANCE', scope: 'old-login' } } })
+    const unusedStandard = (): never => { throw new Error('Unexpected standard hook in tool leaf fixture') }
+    const row: Parameters<typeof DetailsRow>[0] = {
+      phase: 'result', block, callId: block.callId, toolName: 'job_output', t, useDisclosure,
+      loadImage: vi.fn(() => Promise.reject(new Error('Image loading is not used'))), openFile: vi.fn(),
+      sessionId: SessionId('tool-balance'), useSession: unusedStandard, useProjection: unusedStandard,
+      useConversation: unusedStandard, useInput: unusedStandard, useChat: unusedStandard, useTrajectory: unusedStandard,
+      useSessions: unusedStandard, useSessionStatus: unusedStandard, useSessionRetainInfo: unusedStandard,
+      usePanelInfo: unusedStandard, useWorkspaces: unusedStandard, useResource: unusedStandard,
+      inputActions: { captureInsertion: unusedStandard, insertText: unusedStandard, setDraft: unusedStandard,
+        persistDraft: unusedStandard, addAttachments: unusedStandard, removeAttachment: unusedStandard,
+        pruneAttachments: unusedStandard, submit: unusedStandard },
+    }
+    const view = render(<DetailsRow {...row} />)
+    expect(view.getByText(zh['error.creditsRequired'])).toBeTruthy()
+    expect(view.container.textContent).not.toContain('private diagnostic')
+    expect(view.container.textContent).not.toContain('old-login')
+    await expect(`${view.container.textContent}\n`).toMatchFileSnapshot('./expected/job-balance-zh.txt')
+    expect(view.queryByRole('button', { name: '去充值' })).toBeNull()
+  })
+
+  it('keeps unknown submission guidance alongside confirmed balance rejection', () => {
+    const block = result({ call: { name: 'generate_video', argsRaw: '{}' }, content: [{ type: 'text',
+      text: JSON.stringify({ status: 'failed', submission_state: 'unknown',
+        actionRequired: { code: 'INSUFFICIENT_BALANCE', scope: 'login' } }) }] })
+    const view = render(<GenericToolCard {...props('generate_video', block)} />)
+    expect(view.getByText(zh['error.balanceOutcomeUnknown'])).toBeTruthy()
+    expect(view.container.textContent).not.toMatch(/退款|未扣费/u)
   })
 })

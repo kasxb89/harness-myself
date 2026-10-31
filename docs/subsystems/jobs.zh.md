@@ -119,6 +119,18 @@ interface JobHooks {
 ```
 
 ```ts type-equiv
+/** Producer-confirmed failure that needs user action instead of automatic continuation. */
+interface JobActionRequired {
+  /** Stable producer-owned failure code; never inferred from display text. */
+  readonly code: string
+  /** Optional non-secret account scope used by the receiving application. */
+  readonly scope?: string
+  /** Original human input event; a later real human input keeps explicit reads non-terminal. */
+  readonly requestSeq?: SessionSeq
+}
+```
+
+```ts type-equiv
 /** Terminal result supplied by a producer through {@link JobHooks.done}. */
 interface JobOutcome {
   /** How the job ended: finished (`completed`), cancelled (`killed`), or broke (`failed`). */
@@ -135,6 +147,8 @@ interface JobOutcome {
    * the stream; this is handed out once by the model's next {@link JobRegistry.read}.
    */
   result?: string
+  /** Only a failed outcome may require user action and suppress automatic model continuation. */
+  actionRequired?: JobActionRequired
 }
 ```
 
@@ -245,6 +259,8 @@ interface JobView {
   readonly progress?: string
   /** Terminal reason (`exit code: 3`); a recorded kill reason is merged in. */
   readonly detail?: string
+  /** Failed outcome needing user action; completion must not automatically wake the model. */
+  readonly actionRequired?: JobActionRequired
   /** Epoch ms when the job was registered. */
   readonly startedAt: number
   /** Epoch ms when the job settled; absent while live. */

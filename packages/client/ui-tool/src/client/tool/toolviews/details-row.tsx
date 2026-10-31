@@ -12,6 +12,7 @@ import { CONVERSATION_NS as NS } from '../../locale.ts'
 import { ToolRow } from '../components/ToolRow.tsx'
 import { detailsCardModel } from '../models/details-card-model.ts'
 import { parsedToolCall } from '../models/raw-tool-call.ts'
+import { mediaFailure } from '../models/media-failure.ts'
 import { toolRowModel } from '../models/tool-call-model.ts'
 
 type DetailsRowProps = ToolCallViewProps & PropsLocale<'conversation'>
@@ -45,6 +46,8 @@ function detailIcon(toolName: string) {
  */
 export function DetailsRow({ toolName, block, cwd, home, openFile, inspect, useDisclosure, t }: DetailsRowProps) {
   const model = toolRowModel(toolName, block, cwd, home)
+  const balance = mediaFailure(toolName, block) === 'insufficient-credits'
+  const balanceText = balance ? t('error.creditsRequired') : null
   const locale = document.documentElement.lang
   const details = useMemo(() => detailsCardModel(block, t, locale), [block, t, locale])
   const operation = toolName === 'lsp' ? parsedToolCall(block)?.args.operation : undefined
@@ -59,13 +62,13 @@ export function DetailsRow({ toolName, block, cwd, home, openFile, inspect, useD
       toolName={toolName}
       icon={detailIcon(toolName)}
       title={t(titleKey)}
-      summary={details?.summary ?? details?.items[0]?.title ?? details?.empty ?? model.summary}
-      details={details}
-      bodyRaw={model.bodyRaw}
-      output={model.output}
-      errorSummary={model.errorSummary}
-      state={model.state}
-      inspect={inspect}
+      summary={balanceText ?? details?.summary ?? details?.items[0]?.title ?? details?.empty ?? model.summary}
+      details={balance ? null : details}
+      bodyRaw={balance ? null : model.bodyRaw}
+      output={balanceText ?? model.output}
+      errorSummary={balanceText ?? model.errorSummary}
+      state={balance ? 'error' : model.state}
+      inspect={balance ? undefined : inspect}
       onOpenFile={openFile}
     />
   )

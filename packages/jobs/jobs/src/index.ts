@@ -16,6 +16,7 @@ import type { JobEvents, JobId, JobOutputRead, JobRead, JobSpec, JobView } from 
 
 export { JobId } from './types.ts'
 export type {
+  JobActionRequired,
   JobAppendOptions,
   JobChannel,
   JobChunk,

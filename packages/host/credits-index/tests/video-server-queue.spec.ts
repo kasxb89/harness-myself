@@ -241,6 +241,38 @@ describe('single original server video admission', () => {
 })
 
 describe('original queue observation and safe cancellation', () => {
+  it.each(['error_code', 'failure_code'])('retains gateway funding category from %s without raw diagnostics', async (field) => {
+    const body = receipt('failed', 'not_submitted')
+    const f = await fixture(() => response({ ...body, data: { ...body.data, [field]: 'insufficient_user_quota',
+      failure_reason: 'private vendor details and credential' } }))
+    const result = await f.queue.read(QUEUE, REQUEST, freshSignal())
+    expect(result).toMatchObject({ state: 'failed', submissionState: 'not_submitted',
+      failure: { code: 'INSUFFICIENT_BALANCE', message: '余额不足，请充值' } })
+    expect(JSON.stringify(result)).not.toContain('private')
+    expect(f.calls.filter(call => call.method === 'POST')).toHaveLength(0)
+  })
+
+  it.each(['pre_consume_token_quota_failed', 'insufficient_quota', 'QUOTA', ''])
+  ('does not infer funding from raw reason or legacy error when the public failure code is %s', async (failureCode) => {
+    const body = receipt('failed', 'not_submitted')
+    const f = await fixture(() => response({ ...body, data: { ...body.data, error_code: 'insufficient_user_quota',
+      failure_code: failureCode, failure_reason: '余额不足，请充值 private vendor details' } }))
+    expect(await f.queue.read(QUEUE, REQUEST, freshSignal())).not.toHaveProperty('failure')
+  })
+
+  it.each([402, 403])('recovers original GET after a funding HTTP%s without another POST or a false non-submission claim', async (status) => {
+    const f = await fixture(call => call.method === 'POST'
+      ? response({ code: 'insufficient_user_quota', message: 'private diagnostic' }, status)
+      : response({ code: 'not_found' }, 404))
+    const error = await f.queue.submit(REQUEST, SUBMISSION, freshSignal()).catch((error: unknown) => error)
+    expect(error).toMatchObject({ code: 'INSUFFICIENT_BALANCE', queueId: QUEUE,
+      failure: { code: 'INSUFFICIENT_BALANCE' },
+      message: '余额不足，请充值；视频排队受理结果尚未确认；请保留原队列编号，仅查询原队列，不要重新生成。' })
+    expect(String(error)).toContain('余额不足，请充值')
+    expect(String(error)).not.toContain('private')
+    expect(f.calls.map(call => call.method)).toEqual(['GET', 'POST', 'GET'])
+  })
+
   it.each([
     { state: 'queued', submission: 'not_submitted', timedOut: false },
     { state: 'dispatching', submission: 'dispatching', timedOut: false },

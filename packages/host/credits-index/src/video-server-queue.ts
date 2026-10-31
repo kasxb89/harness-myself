@@ -4,6 +4,7 @@ import type { Branded } from '@deepseek-ai/dsh-brand'
 import type { VideoProjectAttemptId } from './video-project.ts'
 import type { VideoProjectRequest, VideoProjectSubmission } from './video-project-types.ts'
 import { apiUrl, normalizeApiBaseUrl } from './api-url.ts'
+import { accountBalanceFailure, isAccountBalanceRejection, type AccountBalanceFailure } from './account-balance.ts'
 
 const BODY_LIMIT = 65_536
 const STATUS_LIMIT = 1_048_576
@@ -38,12 +39,19 @@ export interface VideoServerQueueItem {
   readonly observationTimedOut: boolean
   readonly createdAt: number
   readonly updatedAt: number
+  /** Confirmed funding category only; raw failure_reason and provider diagnostics are not retained. */
+  readonly failure?: AccountBalanceFailure
 }
 
 /** Safe queue errors retain only a stable original queue ID, never an upstream message or credential. */
 export class VideoServerQueueError extends Error {
-  /** @param code - Stable queue failure. @param message - Safe summary and recovery action. @param queueId - Original queue identity. */
-  constructor(readonly code: string, message: string, readonly queueId?: string) {
+  /**
+   * @param code - Stable queue failure.
+   * @param message - Safe summary and recovery action.
+   * @param queueId - Original queue identity.
+   * @param failure - Safe funding category, independent of queue acceptance.
+   */
+  constructor(readonly code: string, message: string, readonly queueId?: string, readonly failure?: AccountBalanceFailure) {
     super(message); this.name = 'VideoServerQueueError'
   }
 }
@@ -214,8 +222,11 @@ function item(value: unknown, queueId: string, request: VideoProjectRequest): Vi
     || Object.keys(source).some(key => !['schema_version', 'object', 'accepted', 'data', 'cancelable',
       'observation_timed_out', 'recovery'].includes(key))
     || data.error_code !== undefined && (typeof data.error_code !== 'string' || !/^[A-Za-z][A-Za-z0-9_:-]{0,127}$/u.test(data.error_code))
+    || data.failure_code !== undefined && (typeof data.failure_code !== 'string'
+      || data.failure_code !== '' && !/^[A-Za-z][A-Za-z0-9_:-]{0,127}$/u.test(data.failure_code))
+    || data.failure_reason !== undefined && (typeof data.failure_reason !== 'string' || data.failure_reason.length > 4096)
     || Object.keys(data).some(key => !['id', 'operation_id', 'model', 'count', 'duration_seconds', 'task_id', 'state',
-      'submission_state', 'error_code', 'created_at', 'updated_at'].includes(key))) throw invalid(queueId)
+      'submission_state', 'error_code', 'failure_code', 'failure_reason', 'created_at', 'updated_at'].includes(key))) throw invalid(queueId)
   const state = states.find(state => state === data.state)
   const submissionState = submissions.find(state => state === data.submission_state)
   if (state === undefined || submissionState === undefined) throw invalid(queueId)
@@ -228,9 +239,11 @@ function item(value: unknown, queueId: string, request: VideoProjectRequest): Vi
     || state === 'unknown' && submissionState !== 'unknown'
     || state !== 'queued' && source.cancelable
     || source.observation_timed_out && state !== 'dispatching' && state !== 'unknown') throw invalid(queueId)
+  const failure = accountBalanceFailure(data.failure_code ?? data.error_code)
   return { queueId: queueId as VideoServerQueueId, operationId: attempt, model: String(data.model), count: 1, durationSeconds: seconds,
     gatewayTaskId: data.task_id, state, submissionState, cancelable: source.cancelable,
-    observationTimedOut: source.observation_timed_out, createdAt: Number(data.created_at), updatedAt: Number(data.updated_at) }
+    observationTimedOut: source.observation_timed_out, createdAt: Number(data.created_at), updatedAt: Number(data.updated_at),
+    ...failure === undefined ? {} : { failure } }
 }
 
 function createQueueClient(options: VideoServerQueueOptions) {
@@ -271,7 +284,12 @@ function createQueueClient(options: VideoServerQueueOptions) {
       if (result.status === 408 || result.status === 429 || result.status >= 500) {
         throw new VideoServerQueueError('VIDEO_QUEUE_READ_UNAVAILABLE', '原视频队列状态暂不可用，请保留队列编号稍后继续查询；不会重新提交。', queueId)
       }
-      if (result.status !== 200) throw invalid(queueId)
+      if (result.status !== 200) {
+        const failure = isAccountBalanceRejection(result.value, result.status) ? accountBalanceFailure('insufficient_user_quota') : undefined
+        if (failure !== undefined) throw new VideoServerQueueError(failure.code,
+          `${failure.message}；原视频队列状态尚未确认，请保留原编号继续查询，不要重新生成。`, queueId, failure)
+        throw invalid(queueId)
+      }
       return observe(result.value, queueId, request)
     } catch (error) {
       operationSignal.throwIfAborted()
@@ -293,17 +311,25 @@ function createQueueClient(options: VideoServerQueueOptions) {
         const result = await fetchJson(CAPABILITY.create_path, 'POST', operationSignal,
           JSON.stringify({ schema_version: 1, queue_id: queueId, operation_id: submission.attemptId, count: 1, request }), true,
           () => { dispatch.started = true })
-        if (result.status !== 200 && result.status !== 202) throw invalid(queueId)
+        if (result.status !== 200 && result.status !== 202) {
+          const failure = isAccountBalanceRejection(result.value, result.status) ? accountBalanceFailure('insufficient_user_quota') : undefined
+          if (failure !== undefined) throw new VideoServerQueueError(failure.code, failure.message, queueId, failure)
+          throw invalid(queueId)
+        }
         return observe(result.value, queueId, request)
       } catch (error) {
-        void error
+        let failure = error instanceof VideoServerQueueError ? error.failure : undefined
         if (!dispatch.started) throw new VideoServerQueueError('VIDEO_QUEUE_SUBMISSION_NOT_STARTED',
           '视频尚未发送，请检查当前登录和连接后再恢复原项目；本次没有提交新的生成请求。')
         if (!operationSignal.aborted) {
           try { return await read(queueId, request, operationSignal) }
-          catch (_unconfirmedOriginal: unknown) { /* Only the original queue GET may recover a missing acknowledgement. */ }
+          catch (unconfirmedOriginal: unknown) {
+            if (failure === undefined && unconfirmedOriginal instanceof VideoServerQueueError) failure = unconfirmedOriginal.failure
+          }
         }
-        throw new VideoServerQueueError('VIDEO_QUEUE_SUBMISSION_UNKNOWN', '视频排队受理结果尚未确认；请保留原队列编号，仅查询原队列，不要重新生成。', queueId)
+        throw new VideoServerQueueError(failure?.code ?? 'VIDEO_QUEUE_SUBMISSION_UNKNOWN',
+          (failure === undefined ? '' : `${failure.message}；`)
+            + '视频排队受理结果尚未确认；请保留原队列编号，仅查询原队列，不要重新生成。', queueId, failure)
       }
     },
     read,

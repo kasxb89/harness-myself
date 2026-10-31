@@ -560,3 +560,12 @@ describe('JobListAction human kill', () => {
     expect(document.querySelector('[data-kill-state]')).toBeNull()
   })
 })
+
+
+it('retains confirmed product balance copy without exposing a prior login scope or provider detail', () => {
+  render(<JobListAction {...props([job({ status: 'failed', detail: 'private upstream diagnostic',
+    actionRequired: { code: 'INSUFFICIENT_BALANCE', scope: 'old-login-owner' } })])} />)
+  openList()
+  expect(screen.getByText(zh.balanceRequired)).toBeTruthy()
+  expect(document.body.textContent).not.toMatch(/private upstream diagnostic|old-login-owner/u)
+})

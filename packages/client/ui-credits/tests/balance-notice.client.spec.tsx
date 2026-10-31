@@ -44,3 +44,20 @@ describe('product balance notice', () => {
     expect(openRecharge).not.toHaveBeenCalled()
   })
 })
+
+
+function unusedStandard(): never { throw new Error('Unexpected global hook in balance leaf fixture') }
+
+it('does not offer another login scope a recharge action, even for the same account id', () => {
+  const identity = createSnapshotStore({ ...account(), session: { ...account().session!, accountOwner: 'new-login' } })
+  const dismiss = vi.fn(), openRecharge = vi.fn()
+  const matched = { code: 'INSUFFICIENT_BALANCE' as const, scope: 'old-login',
+    message: 'safe', dismiss, keepOpen: () => () => {} }
+  const view = render(<BalanceNotice {...matched} matched={matched} openRecharge={openRecharge}
+    useCreditsSession={bindSnapshotSelector(identity)} t={makeTranslate(zh)} usePanelInfo={unusedStandard}
+    useSessions={unusedStandard} useSessionStatus={unusedStandard} useSessionRetainInfo={unusedStandard}
+    useWorkspaces={unusedStandard} useResource={unusedStandard} />)
+  expect(view.queryByRole('dialog')).toBeNull()
+  expect(dismiss).toHaveBeenCalledOnce()
+  expect(openRecharge).not.toHaveBeenCalled()
+})

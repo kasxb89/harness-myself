@@ -193,7 +193,7 @@ function JobItem({ job, view, expanded, now, onToggle, kill, t }: {
 }) {
   const live = isLive(job)
   const status = statusLabel(job.status, t)
-  const detail = job.detail
+  const detail = job.actionRequired?.code === 'INSUFFICIENT_BALANCE' ? t('balanceRequired') : job.detail
   const observable = isObservable(job)
   const labels = useMemo(() => terminalLabels(t), [t])
   const elapsed = live ? now - job.startedAt : (job.finishedAt ?? job.startedAt) - job.startedAt

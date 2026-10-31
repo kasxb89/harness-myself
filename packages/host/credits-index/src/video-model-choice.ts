@@ -2,6 +2,7 @@
 import type { AskUserQuestionAnswer, AskUserQuestionItem } from '@deepseek-ai/dsh-user-questions/types'
 import { z } from 'zod'
 import { CreativeError } from './creative-store.ts'
+import { isAccountBalanceRejection } from './account-balance.ts'
 
 /** Exact account model and output tier used for an unspecified chat video. */
 export const DEFAULT_CHAT_VIDEO_MODEL = 'MiniMax-H3'
@@ -204,6 +205,8 @@ export async function readVideoModelQuote(input: {
   let body: unknown
   try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch (_invalidBody) { throw quoteUnavailable() }
   if (!response.ok) {
+    if (isAccountBalanceRejection(body, response.status)) throw new CreativeError('INSUFFICIENT_BALANCE', response.status,
+      '余额不足，请充值；本次仅查询报价，尚未提交生成。')
     const unavailable = z.object({ error: z.object({ type: z.literal('video_quote_error'), code: z.literal('quote_unavailable'),
       message: z.string() }).strict() }).strict().safeParse(body)
     if (response.status === 422 && unavailable.success) return undefined
@@ -348,8 +351,9 @@ export async function chooseChatVideoModel(options: VideoModelChoiceOptions): Pr
         throw quoteUnavailable()
       }
       return [baseline, target]
-    } catch (_error) {
+    } catch (error) {
       options.signal.throwIfAborted()
+      if (error instanceof CreativeError && error.code === 'INSUFFICIENT_BALANCE') throw error
       throw quoteUnavailable()
     }
   }
