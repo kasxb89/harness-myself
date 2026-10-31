@@ -1075,3 +1075,23 @@ it('restores the account model name after login without changing the saved route
   expect(screen.getByRole('button', { name: /选择模型，当前/ }).textContent).toBe('DeepSeek FlashHigh')
   expect(directory.getSnapshot().current).toEqual(selected)
 })
+
+
+describe('declared plain-text model guidance', () => {
+  it('keeps capability copy visible under an empty admin description and suppresses an old High effort', () => {
+    const directory = createSnapshotStore(state({ current: { provider: 'plain', model: 'plain', reasoningEffort: 'high' },
+      retainedEffort: 'High', groups: [{ id: 'plain', name: 'Plain', models: [{ id: 'plain', name: 'Plain Model',
+        presentation: { description: '' }, reasoning, inputModalities: ['text'],
+        textCapabilities: { tools: false, vision: false, reasoning: false, stream: true, maxInputTokens: 32768 } }] }] }))
+    render(<ModelSelect locked={false} available directory={directory} load={vi.fn()} select={vi.fn()} t={t} />)
+    const trigger = screen.getByRole('button', { name: '选择模型，当前 Plain Model' })
+    expect(trigger.textContent).not.toContain('High')
+    fireEvent.click(trigger)
+    expect(screen.queryByRole('menuitem', { name: /推理等级/ })).toBeNull()
+    fireEvent.click(screen.getByRole('menuitem', { name: /模型/ }))
+    const row = screen.getByRole('menuitemradio', { name: 'Plain Model' })
+    expect(row.textContent).toContain('纯文本对话')
+    expect(row.textContent).toContain('不支持工具调用')
+    expect(row.textContent).toContain('32,768')
+  })
+})

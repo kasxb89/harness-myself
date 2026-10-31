@@ -41,3 +41,28 @@ describe('product model token capacities', () => {
     expect(mergeProductModelLimits([], undefined, first)).toBeUndefined()
   })
 })
+
+
+describe('explicit gateway text execution declarations', () => {
+  const wire = { tools: false, vision: false, reasoning: false, stream: true, max_input_tokens: 32000 }
+  const expected = { tools: false, vision: false, reasoning: false, stream: true, maxInputTokens: 32000 }
+  it('maps complete snake-case declarations without confusing the native window and input ceiling', () => {
+    expect(readProductModelLimits({ context_window: 1000000, max_output_tokens: 8192,
+      parameters: { 'x-text-capabilities': wire } }))
+      .toEqual({ contextWindow: 1000000, maxTokens: 8192, textCapabilities: expected })
+  })
+  it.each([null, [], {}, { ...wire, tools: 'false' }, { ...wire, max_input_tokens: 0 },
+    { ...wire, max_input_tokens: '32000' }, { ...wire, max_input_tokens: 1.5 }])('refuses an incomplete or malformed declaration %#', (declaration) => {
+    expect(() => readProductModelLimits({ parameters: { 'x-text-capabilities': declaration } })).toThrow(/text execution declaration/)
+  })
+  it('retains current metadata while a listing is pending, clears an explicitly omitted declaration, and rejects account transfer', () => {
+    const previous = { scope: 'a', contextWindow: 1000000, maxTokens: 8192, textCapabilities: expected }
+    expect(mergeProductModelLimits(previous, undefined, 'a')).toEqual(previous)
+    expect(mergeProductModelLimits(previous, {}, 'a')).toEqual({ scope: 'a', contextWindow: 1000000, maxTokens: 8192 })
+    expect(mergeProductModelLimits(previous, {}, 'b')).toBeUndefined()
+    expect(mergeProductModelLimits({ scope: 'a', textCapabilities: expected }, {}, 'a')).toBeUndefined()
+    expect(readProductModelLimits({ parameters: {} })).toEqual({})
+    expect(readProductModelLimits({ parameters: null })).toEqual({})
+    expect(readProductModelLimits({ parameters: 'legacy metadata' })).toEqual({})
+  })
+})

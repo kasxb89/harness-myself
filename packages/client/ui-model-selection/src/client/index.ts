@@ -89,7 +89,7 @@ function selectionOf(state: ModelDirectoryState, id: string): ModelSelection | u
     for (const model of group.models) {
       if (rowId(group.id, model.id) !== id) continue
       const sameRoute = state.current?.provider === group.id && state.current.model === model.id
-      const reasoningEffort = sameRoute
+      const reasoningEffort = model.textCapabilities?.reasoning === false ? undefined : sameRoute
         ? state.current?.reasoningEffort ?? model.reasoning?.defaultEffort
         : model.reasoning?.defaultEffort
       return {

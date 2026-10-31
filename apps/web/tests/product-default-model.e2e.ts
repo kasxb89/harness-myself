@@ -5,12 +5,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright'
+import { createAssistantMessage, ToolCallId } from '@deepseek-ai/dsh-llm'
 import { expect, it, onTestFinished } from 'vitest'
 import { launchWebScaffold, watchConsole } from './scaffold.ts'
 import { ZH_BROWSER_LOCALE, connectFreshWorkspaceZh } from './support.ts'
 
-it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash', 'yunshu-flash-configured'])(
+it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash', 'yunshu-flash-configured', 'ycapi-text-only'])(
   'selects the deployment default %s after first sign-in without opening the model menu', async (scenario) => {
+    const plainText = scenario === 'ycapi-text-only'
     const configured = scenario === 'yunshu-flash-configured'
     const preferred = configured ? 'yunshu-flash' : scenario
     const badge = configured ? '旗舰模型介绍由后台配置，适合内容创作和编程，可按任务选择使用'.padEnd(32, '。') : '旗舰模型'
@@ -61,8 +63,12 @@ it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash', 'yunshu-flash-conf
           if (request.headers.authorization !== 'Bearer sk-synthetic-relay') {
             response.writeHead(403); response.end('{}'); return
           }
-          response.end(JSON.stringify({ data: ['deepseek-v4-flash', 'deepseek-flash', 'yunshu-flash', 'deepseek-v4-pro', 'catalog-unknown'].map(id =>
-            ({ id, object: 'model', supported_endpoint_types: ['openai'] })) })); return
+          response.end(JSON.stringify({ data: ['deepseek-v4-flash', 'deepseek-flash', 'yunshu-flash', 'deepseek-v4-pro', 'catalog-unknown', ...plainText ? [preferred] : []].map(id =>
+            ({ id, object: 'model', supported_endpoint_types: ['openai'], ...id !== 'ycapi-text-only' ? {} : {
+              kind: 'text', input_modalities: ['text'], context_window: 32768, max_output_tokens: 8192, parameters: {
+                'x-text-capabilities': { tools: false, vision: false, reasoning: false, stream: true, max_input_tokens: 32768 },
+              },
+            } })) })); return
         }
         if (path === '/harness/v1/chat/completions') {
           if (request.headers.authorization !== 'Bearer sk-synthetic-relay') {
@@ -153,6 +159,17 @@ it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash', 'yunshu-flash-conf
       const modelMenu = page.getByRole('group', { name: '模型与推理等级', exact: true })
       await modelMenu.getByRole('menuitemradio', { name: preferred, exact: true }).waitFor()
       expect(await modelMenu.getByRole('menuitemradio', { name: preferred, exact: true }).getAttribute('aria-checked')).toBe('true')
+      if (plainText) {
+        const row = modelMenu.getByRole('menuitemradio', { name: preferred, exact: true })
+        await expect.poll(() => row.textContent()).toContain('纯文本对话')
+        expect(await row.textContent()).toContain('不支持工具调用')
+        expect(await row.textContent()).toContain('32,768')
+        expect(await trigger.textContent()).not.toContain('High')
+        for (const theme of ['dark', 'light'] as const) {
+          await page.emulateMedia({ colorScheme: theme })
+          await page.screenshot({ path: join(evidence, `text-capabilities-${theme}.png`), animations: 'disabled' })
+        }
+      }
       if (preferred === 'yunshu-flash') {
         const flagship = modelMenu.getByRole('menuitemradio', { name: 'yunshu-flash', exact: true })
         await flagship.getByText(badge, { exact: true }).waitFor()
@@ -223,6 +240,23 @@ it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash', 'yunshu-flash-conf
         await page.keyboard.press('Escape')
       }
       const composer = page.locator('[data-composer-input][contenteditable="true"]').last()
+      if (plainText) {
+        await page.getByRole('button', { name: '添加文件或调用指令', exact: true }).click()
+        await page.getByRole('option', { name: /^模型/u }).click()
+        const commandMenu = page.locator('[aria-label="/model 选项"]')
+        await commandMenu.getByText(/纯文本对话/u).waitFor()
+        expect(await commandMenu.innerText()).toContain('32,768')
+        await page.keyboard.press('Escape')
+        await composer.evaluate((element) => {
+          const clipboardData = new DataTransfer()
+          clipboardData.items.add(new File([new Uint8Array([137, 80, 78, 71])], 'blocked.png', { type: 'image/png' }))
+          clipboardData.setData('text/plain', '保留图片同时粘贴的文字')
+          element.dispatchEvent(new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }))
+        })
+        await expect.poll(() => composer.innerText()).toContain('保留图片同时粘贴的文字')
+        await page.getByText('此模型不支持图片或文件，请移除附件或切换模型；文字草稿已保留', { exact: true }).waitFor()
+        expect(modelRequests).toHaveLength(0)
+      }
       const settled = scaffold.whenTurnSettled()
       await composer.fill('Synthetic chat parameter check')
       await composer.press('Enter')
@@ -240,11 +274,25 @@ it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash', 'yunshu-flash-conf
         expect.objectContaining({ role: 'system' }),
         expect.objectContaining({ role: 'user', content: 'Synthetic chat parameter check' }),
       ]))
-      expect(wire['tools']).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'function' })]))
+      if (plainText) expect(wire).not.toHaveProperty('tools')
+      else expect(wire['tools']).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'function' })]))
       for (const field of ['store', 'max_completion_tokens', 'temperature', 'top_p', 'thinking', 'reasoning_effort', 'enable_thinking']) {
         expect(wire).not.toHaveProperty(field)
       }
       expect(wire).not.toHaveProperty('tool_choice')
+      if (plainText) {
+        if (session === undefined) throw new Error('Expected the real text-only Session')
+        session.append('assistant/message', { turn: 1, step: 1, stream: [], message: createAssistantMessage({
+          source: { provider: 'legacy-fixture', model: 'tool-capable' },
+          content: [{ type: 'tool-call', id: ToolCallId('historical-tool'), name: 'historical-fixture', arguments: '{}' }],
+        }) }, { surfaceOp: 'append' })
+        await composer.fill('工具历史被拒绝后也要保留这段草稿')
+        await composer.press('Enter')
+        await page.getByText('此模型不支持当前聊天的工具记录，请切换支持工具的模型，或新建纯文本聊天；草稿已保留', { exact: true }).waitFor()
+        await expect.poll(() => composer.innerText()).toContain('工具历史被拒绝后也要保留这段草稿')
+        expect(modelRequests).toHaveLength(1)
+        await page.screenshot({ path: join(evidence, 'text-history-draft-preserved.png'), animations: 'disabled' })
+      }
       if (preferred === 'yunshu-flash') {
         const followupSettled = scaffold.whenTurnSettled()
         await composer.fill('Synthetic follow-up parameter check')
@@ -269,7 +317,7 @@ it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash', 'yunshu-flash-conf
       await writeFile(join(evidence, 'result.json'), JSON.stringify({ preferred, configured, badge, description, elapsedMs, requests,
         modelCalls: modelRequests.length, modelRequest: { model: wire['model'], max_tokens: wire['max_tokens'],
           stream: wire['stream'], stream_options: wire['stream_options'],
-          forbiddenFieldsAbsent: true, toolsPresent: true },
+          forbiddenFieldsAbsent: true, toolsPresent: !plainText },
         historicalReasoningReplayChecked: preferred === 'yunshu-flash',
         requestHeader: session?.requestHeader()?.config,
         realSMS: 0, realUpstreamCalls: 0, guidanceChecked: preferred === 'yunshu-flash', pageErrors: tripwire.pageErrors, errors }, null, 2) + '\n')

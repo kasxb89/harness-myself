@@ -33,9 +33,17 @@ export function modelGuidance(
 ): ModelGuidance {
   const inherited = inheritedGuidance(provider, model, t)
   const badge = model.presentation?.badge ?? inherited.badge
-  const detail = model.presentation?.description ?? inherited.detail
+  const description = model.presentation?.description ?? inherited.detail
+  const capabilities = model.textCapabilities
+  const constraints = capabilities === undefined ? [] : [
+    ...!capabilities.tools && !capabilities.vision ? [t('guidance.textOnly')] : [],
+    ...!capabilities.tools ? [t('guidance.noTools')] : [],
+    ...!capabilities.vision ? [t('guidance.noVision')] : [],
+    t('guidance.inputLimit', { tokens: capabilities.maxInputTokens.toLocaleString('en-US') }),
+  ]
+  const detail = [description, ...constraints].filter(value => value !== undefined && value !== '').join(' · ')
   return {
     ...badge === undefined || badge === '' ? {} : { badge },
-    ...detail === undefined || detail === '' ? {} : { detail },
+    ...detail === '' ? {} : { detail },
   }
 }

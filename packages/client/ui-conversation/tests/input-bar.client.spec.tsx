@@ -138,6 +138,11 @@ function bench(over?: BenchOptions) {
   const shell = new SessionInputShell({
     actx: SCTX,
     defaultSink: sink,
+    unsupportedModelInputNotice: () => zh['error.modelInputUnsupported'],
+    modelAttachmentsSupported: (ids, capabilities) => ids.every((id) => {
+      const attachment = over?.attachments?.find(value => value.id === id)
+      return attachment?.kind === 'image' ? capabilities.vision !== false : capabilities.tools !== false
+    }),
     commandAttachments: { serialize: () => Promise.resolve([]), release: () => {}, unsupportedNotice: (token: string) => `${token.trim()} attachments-unsupported` },
     inbox: createSnapshotStore<InboxState>({
       'next-turn': over?.queue ?? [],
@@ -1921,4 +1926,66 @@ it('places context usage below the composer and hides it until the activity clos
   fireEvent.click(view.getByRole('button', { name: '上下文已用 25%' }))
   expect(view.getByRole('dialog', { name: '上下文已用' })).toBeTruthy()
   expect(view.getByRole('button', { name: '发送消息' })).toBeTruthy()
+})
+
+
+describe('explicit model input controls preserve the composer draft', () => {
+  it('sends ordinary text and video-language requests without disabling the text editor', () => {
+    const b = bench({ draft: '帮我生成一条视频的文案' })
+    act(() => { b.shell.setModelCapabilities({ tools: false, vision: false, inputModalities: ['text'] }) })
+    expect(b.textarea.getAttribute('aria-disabled')).not.toBe('true')
+    fireEvent.click(b.button)
+    expect(b.sink).toHaveBeenCalledWith('帮我生成一条视频的文案', [], 'queue', expect.any(AbortSignal))
+  })
+
+  it('rejects an image from a mixed paste while retaining its text and later dropped files', async () => {
+    const addFiles = vi.fn(() => null)
+    const b = bench({ addFiles })
+    act(() => { b.shell.setModelCapabilities({ tools: false, vision: false }) })
+    const image = new File([Uint8Array.of(1)], 'pixel.png', { type: 'image/png' })
+    fireEvent.paste(b.textarea, { clipboardData: {
+      items: [{ kind: 'file', getAsFile: () => image }], getData: () => '保留同次粘贴的文字',
+    } })
+    await vi.waitFor(() => { expect(b.shell.snapshot.draft).toBe('保留同次粘贴的文字') })
+    act(() => { attachmentOwner(b.slotCalls).onAddFiles([new File(['x'], 'report.txt', { type: 'text/plain' })]) })
+    expect(addFiles).not.toHaveBeenCalled()
+    expect(b.shell.snapshot.attachmentIds).toEqual([])
+    expect(b.view.getByText(zh['error.modelInputUnsupported'])).toBeTruthy()
+  })
+
+  it('keeps existing images and text visible after a pure-text switch, then permits sending after removal', () => {
+    const attachment = { kind: 'image' as const, id: 'model-switch-image' as DraftAttachmentId,
+      file: new File([Uint8Array.of(1)], 'pixel.png', { type: 'image/png' }), previewUrl: 'blob:pixel' }
+    const b = bench({ draft: '不要丢掉我的草稿', attachments: [attachment] })
+    act(() => { b.shell.setModelCapabilities({ tools: false, vision: false }) })
+    expect(b.button.disabled).toBe(true)
+    fireEvent.keyDown(b.textarea, { key: 'Enter' })
+    expect(b.sink).not.toHaveBeenCalled()
+    expect(b.shell.snapshot.draft).toBe('不要丢掉我的草稿')
+    expect(b.shell.snapshot.attachmentIds).toEqual([attachment.id])
+    expect(b.view.getByRole('status').textContent).toBe(zh['error.modelInputUnsupported'])
+    act(() => { b.shell.removeAttachment(attachment.id) })
+    expect(b.button.disabled).toBe(false)
+    fireEvent.click(b.button)
+    expect(b.sink).toHaveBeenCalledWith('不要丢掉我的草稿', [], 'queue', expect.any(AbortSignal))
+  })
+
+  it('refuses a desktop file chip without modifying its original typed path', () => {
+    const b = bench({ draft: '@report.txt' })
+    act(() => { b.shell.setModelCapabilities({ tools: false, vision: false }) })
+    const result = b.shell.insertReference({ source: 'reference', ref: '@report.txt', label: 'report.txt',
+      appearance: 'file', clipboardText: '@report.txt' }, { start: 0, end: 11, draftRev: b.shell.snapshot.draftRev })
+    expect(result).toBe(false)
+    expect(b.shell.snapshot.draft).toBe('@report.txt')
+    expect(b.shell.snapshot.occurrences).toEqual([])
+    expect(b.shell.notices.getSnapshot()?.text).toBe(zh['error.modelInputUnsupported'])
+  })
+
+  it('shows the typed capability-history refusal without server-busy copy or draft loss', () => {
+    const b = bench({ draft: '保留待发送文字', promptError: { op: 'send', error: new RemoteError('session/model-capability-invalid', 'private failure',
+      { reason: 'MODEL_CAPABILITY_HISTORY_UNSUPPORTED' }) } })
+    expect(b.view.getByText(zh['error.modelHistoryUnsupported'])).toBeTruthy()
+    expect(b.view.queryByText(zh['error.serverBusy'])).toBeNull()
+    expect(b.shell.snapshot.draft).toBe('保留待发送文字')
+  })
 })

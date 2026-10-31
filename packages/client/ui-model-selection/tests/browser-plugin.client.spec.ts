@@ -10,7 +10,7 @@
  */
 import { Context } from '@deepseek-ai/cordis'
 import { describe, expect, it, vi } from 'vitest'
-import { createScope } from '@deepseek-ai/dsh-api-session-controller/client'
+import { createScope, scopeOf } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client'
 import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-store'
@@ -107,7 +107,14 @@ async function bench(locale: 'zh' | 'en' = 'zh') {
   const remote = Object.assign(new TestRemote(ctx), { session: sessionRemote })
   ctx.reflect.provide('remote.session', sessionRemote)
   const blocks = new Map<SessionId, { reason: string } | undefined>()
+  const modelInputs = new Map<SessionId, unknown>()
   ctx.provide('conversation', {
+    input: { for: (scope: Context) => {
+      const id = scopeOf(scope)
+      if (id === undefined) throw new Error('Expected known Session scope')
+      scope.on('conversation/input-model-capabilities', (value) => { modelInputs.set(id, value) })
+      return {} as never
+    } },
     blocks: {
       set: (id: SessionId, block: { reason: string } | undefined) => { blocks.set(id, block) },
     },
@@ -198,6 +205,7 @@ async function bench(locale: 'zh' | 'en' = 'zh') {
     setCatalogFailure: (next: boolean) => { catalogFailure = next },
     setRoutable: (next: boolean) => { routable = next },
     blockOf: (key: string) => blocks.get(sid(key)),
+    modelInputOf: (key: string) => modelInputs.get(sid(key)),
   }
 }
 
@@ -681,4 +689,40 @@ it.each([false, true])('reports accepted switches with blank=%s and no refused s
     await face.select({ provider: 'deepseek-official', model: 'deepseek-v4-flash' })
     expect(b.track).not.toHaveBeenCalled()
   } finally { await scope.fiber.dispose(); await b.ctx.fiber.dispose() }
+})
+
+
+it('pushes exact selected-model input controls to the existing Session scope and clears them for a legacy model', async () => {
+  const b = await bench()
+  try {
+    const scope = b.mint('capability-input')
+    const capabilities = { tools: false, vision: false, reasoning: false, stream: true, maxInputTokens: 32768 }
+    b.setGroups([{ id: 'deepseek-official', name: 'Plain', models: [
+      { id: 'deepseek-v4-flash', name: 'Plain', inputModalities: ['text'], textCapabilities: capabilities },
+      { id: 'legacy', name: 'Legacy' },
+    ] }])
+    const directory = b.ctx.modelDirectories.directoryFor(sid('capability-input'))
+    await directory.reload()
+    await vi.waitFor(() => {
+      expect(b.modelInputOf('capability-input')).toEqual({ tools: false, vision: false, inputModalities: ['text'] })
+    })
+    await directory.select({ provider: 'deepseek-official', model: 'legacy' })
+    await vi.waitFor(() => { expect(b.modelInputOf('capability-input')).toBeUndefined() })
+    await scope.fiber.dispose()
+  } finally { await b.ctx.fiber.dispose() }
+})
+
+it('clears published input controls when model selection unloads while the Session remains', async () => {
+  const b = await bench()
+  try {
+    const scope = b.mint('capability-unload')
+    b.setGroups([{ id: 'deepseek-official', name: 'Plain', models: [{ id: 'deepseek-v4-flash', name: 'Plain',
+      textCapabilities: { tools: false, vision: false, reasoning: false, stream: true, maxInputTokens: 32768 } }] }])
+    const directory = b.ctx.modelDirectories.directoryFor(sid('capability-unload'))
+    await directory.reload()
+    await vi.waitFor(() => { expect(b.modelInputOf('capability-unload')).toEqual({ tools: false, vision: false }) })
+    await b.fiber.dispose()
+    expect(b.modelInputOf('capability-unload')).toBeUndefined()
+    await scope.fiber.dispose()
+  } finally { await b.ctx.fiber.dispose() }
 })

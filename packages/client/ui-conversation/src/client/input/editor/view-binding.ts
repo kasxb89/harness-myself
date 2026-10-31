@@ -16,6 +16,7 @@ interface DraftViewGate {
   busyEnter: BusyEnterBehavior
   intakeFiles: (files: readonly File[], directories?: ReadonlySet<File>) => void
   uploadsPending: boolean
+  unsupportedAttachments?: boolean
   showToast: (text: string) => void
   t: ComposerBarProps['t']
   canAcceptDrop: boolean
@@ -123,6 +124,10 @@ export function installDraftKeymap(
       // steers every still-pending queued message into the running turn.
       if (accelerated && g.canSteerQueue) {
         keyboard.steerQueue()
+        return
+      }
+      if (g.unsupportedAttachments) {
+        g.showToast(g.t('error.modelInputUnsupported'))
         return
       }
       if (g.uploadsPending) {

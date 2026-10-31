@@ -499,6 +499,10 @@ export function apply(ctx: Context, config: Config = Config({})): void {
       return {
         keyboard: shell,
         addFiles: (files, directories = new Set()) => {
+          const capabilities = shell.snapshot.modelCapabilities
+          if (files.some(file => isImageMediaType(file.type) && !directories.has(file)
+            ? capabilities?.vision === false || capabilities?.inputModalities !== undefined && !capabilities.inputModalities.includes('image')
+            : capabilities?.tools === false)) return t('error.modelInputUnsupported')
           if (sessions.binding(sessionId) === undefined) return t('file.sessionUnavailable')
           if (shell.snapshot.phase === 'adjudicating' || shell.snapshot.phase === 'submitting') {
             return t('attachment.dropBlocked')

@@ -336,10 +336,24 @@ export class SessionCommandController {
     const hasImage = request.content.some(part => part.type === 'image')
     const admit = async (): Promise<SessionPromptValue> => {
       try {
+        const current = this.agents.selectionFor(agent).current
+        const model = hasImage || this.ctx.llm.listProviders().some(provider => provider.id === current.provider)
+          ? await this.ctx.llm.resolveModelInfo(current.provider, current.model) : undefined
+        const capabilities = model?.textCapabilities
+        if (capabilities !== undefined) {
+          if (!capabilities.tools && agent.session.deriveMessages().some(message => message.role === 'tool'
+            || message.role === 'assistant' && message.content.some(part => part.type === 'tool-call'))) {
+            throw new RemoteError('session/model-capability-invalid', '当前模型不支持此聊天已有的工具记录，请切换支持工具的模型，或新建纯文本聊天。',
+              { reason: 'MODEL_CAPABILITY_HISTORY_UNSUPPORTED' })
+          }
+          if (request.content.some(part => part.type === 'image' && !capabilities.vision
+            || part.type === 'file' && !capabilities.tools)) {
+            throw new RemoteError('session/model-capability-invalid', '当前模型不支持图片或文件，请移除附件或切换模型；文字草稿已保留。',
+              { reason: 'MODEL_CAPABILITY_INPUT_UNSUPPORTED' })
+          }
+        }
         if (hasImage) {
-          const current = this.agents.selectionFor(agent).current
-          const model = await this.ctx.llm.resolveModelInfo(current.provider, current.model)
-          if (model.inputModalities !== undefined && !model.inputModalities.includes('image')) {
+          if (model?.inputModalities !== undefined && !model.inputModalities.includes('image')) {
             throw new RemoteError(
               'session/attachment-invalid',
               `Model "${current.model}" does not support image input.`,

@@ -718,6 +718,13 @@ export function catalogFromPricing(rows: readonly unknown[], userGroup: string |
     const built = kind === 'audio' ? audioParams(record.parameters) : kind === 'video'
       ? videoParams(videoSpec(id), record.billing_usage_schema, record.parameters)
       : imageParams(imageSpec(id), record.billing_usage_schema, record.parameters, examples)
+    const plugin = objectRecord(objectRecord(record.parameters)?.['x-task-plugin'])
+    const explicitPlugin = plugin?.key === 'ycapi' && plugin.api_version === 1 && Object.keys(plugin).length === 3
+      && typeof plugin.version === 'string' && /^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/u.test(plugin.version)
+      && plugin.version.length <= 128
+    const completeParameters = 'execution' in built.params
+      || 'specifications' in built.params && built.params.specifications.length > 0
+    const pluginDeclared = explicitPlugin && completeParameters
     // A row that names its own route wins; otherwise the built-in table for
     // plugin-served models, and the host protocol path for everything else.
     const declaredRoute = typeof record.route === 'string' && record.route.startsWith('/') ? record.route : null
@@ -733,8 +740,8 @@ export function catalogFromPricing(rows: readonly unknown[], userGroup: string |
       groups,
       route,
       params: built.params,
-      verified: built.verified,
-      source: built.source,
+      verified: pluginDeclared || built.verified,
+      source: pluginDeclared ? 'plugin:ycapi' : built.source,
       notes: built.notes,
     })
   }

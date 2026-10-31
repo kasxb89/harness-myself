@@ -13,6 +13,8 @@ kind: "package-reference"
 
 `ui-conversation` 拥有与 target 无关的 Conversation 组装和共享浏览器 shell。它消费 Session Controller 的 `SessionEventLikeEntry` feed，通过 `ctx.uiConversation` 暴露不依赖 React 的注册表与逐 Session binding，并通过 `ctx.uiSession` 提供 `useConversation`、`useInput` 和 `inputActions` 标准 props。它还拥有按会话的持久化图片 URL 缓存：`ctx.uiConversation.imageUrl(sessionId, attachment)` 为每个附件解析一个经会话授权的浏览器 URL，并随 Session binding 释放而撤销，因此所有 Conversation target 共享一次 `session.attachment` 读取。Chat 等具体 target 位于独立包，由各自包注册 Definition、快照 builder、View 和 renderer。
 
+作用于当前 Session 的 `conversation/input-model-capabilities` 事件将明确的所选模型限制发布到 `InputState.modelCapabilities`。不支持的文件选择、混合图片粘贴、文件拖放和桌面文件／文件夹引用会保留草稿并显示本地化提示。切换为纯文本模型时保留已有附件和引用，持续提示移除素材或切换兼容模型，并停止发送。普通文字仍可编辑和发送，不匹配自然语言或创作意图。明确的 `session/model-capability-invalid` 输入错误保留被拒绝的草稿，并说明模型与历史记录的兼容问题。
+
 ## 目录
 
 - [Conversation 组装](#conversation-assembly)

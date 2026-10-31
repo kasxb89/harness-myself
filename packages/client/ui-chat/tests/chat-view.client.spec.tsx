@@ -2387,6 +2387,12 @@ describe('ChatView', () => {
     ['TRANSPORT', 'message.failure.networkFailure'], ['HTTP_408', 'message.failure.requestTimeout'],
     ['HTTP_503', 'message.failure.serviceUnavailable'], ['HTTP_403', 'message.failure.permissionDenied'],
     ['PRIVATE_CODE', 'message.failure.operationFailed'],
+    ['MODEL_CAPABILITY_HISTORY_UNSUPPORTED', 'message.failure.modelHistoryUnsupported'],
+    ['MODEL_CAPABILITY_INPUT_UNSUPPORTED', 'message.failure.modelInputUnsupported'],
+    ['MODEL_CAPABILITY_TOOLS_UNSUPPORTED', 'message.failure.modelToolsUnsupported'],
+    ['MODEL_CAPABILITIES_CHANGED', 'message.failure.modelCapabilitiesChanged'],
+    ['MODEL_CAPABILITY_REASONING_UNSUPPORTED', 'message.failure.modelReasoningUnsupported'],
+    ['MODEL_CAPABILITY_STREAM_UNSUPPORTED', 'message.failure.modelStreamUnsupported'],
   ] as const)('keeps terminal and retry %s failures separate from server-busy narration', (code, key) => {
     const failure = { code, message: 'private failure details' }
     const h = makeHarness({ nodes: [user(1, 'try'), { ...retry(2), failure }, { ...turnError(3), ...failure }] })

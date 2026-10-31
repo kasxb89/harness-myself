@@ -364,3 +364,117 @@ describe('product model capacities through the real Host Loader and HTTP listing
     expect(await capacity(first)).toEqual({ contextWindow: 65536, maxOutputTokens: undefined, defaultMaxTokens: 4096 })
   })
 })
+
+
+describe('gateway text declarations through real Host model synchronization', () => {
+  const declaration = { tools: false, vision: false, reasoning: false, stream: true, max_input_tokens: 32000 }
+  it('syncs scoped capabilities, output-aware input room, explicit removal and account replacement', async () => {
+    catalog = [{ id: first, context_window: 1000000, max_output_tokens: 8192,
+      parameters: { 'x-text-capabilities': declaration } }, { id: second, context_window: 65536, max_output_tokens: 4096 }]
+    const { base, refresh } = await boot([{ id: first, input: ['text', 'image'] }, { id: second }])
+    await signIn(base)
+    await refresh()
+    const info = await context!.llm.resolveModelInfo('yunshu-local', first)
+    expect(info).toMatchObject({ textCapabilities: { maxInputTokens: 32000, tools: false, vision: false },
+      inputModalities: ['text'], context: { contextWindow: 40192 }, maxOutputTokens: 8192 })
+    const small = await context!.llm.prepareCall({ provider: 'yunshu-local', model: first, maxTokens: 2048 })
+    expect(small.context?.contextWindow).toBe(34048)
+    expect((await context!.llm.resolveModelInfo('yunshu-local', second)).textCapabilities).toBeUndefined()
+    expect((await context!.llm.listModels('yunshu-local')).find(model => model.id === first)?.textCapabilities?.tools).toBe(false)
+    catalog = [{ id: first, context_window: 1000000, max_output_tokens: 8192 }]
+    await refresh()
+    expect((await context!.llm.resolveModelInfo('yunshu-local', first)).textCapabilities).toBeUndefined()
+    expect((await context!.llm.resolveModelInfo('yunshu-local', first)).inputModalities).toEqual(['text', 'image'])
+    catalog = [{ id: first, context_window: 1000000, max_output_tokens: 8192, parameters: { 'x-text-capabilities': declaration } }]
+    await refresh()
+    expect((await post(base, '/api/session/logout', {})).ok).toBe(true)
+    loginAccount = 8
+    catalog = [{ id: first }]
+    await signIn(base)
+    await refresh()
+    expect((await context!.llm.resolveModelInfo('yunshu-local', first)).textCapabilities).toBeUndefined()
+  })
+  it('does not replace a valid capability declaration with a malformed successful response', async () => {
+    catalog = [{ id: first, context_window: 1000000, max_output_tokens: 8192, parameters: { 'x-text-capabilities': declaration } }]
+    const { base, refresh } = await boot()
+    await signIn(base)
+    await refresh()
+    catalog = [{ id: first, parameters: { 'x-text-capabilities': { tools: true } } }]
+    await expect(refresh()).rejects.toThrow()
+    expect((await context!.llm.resolveModelInfo('yunshu-local', first)).textCapabilities?.tools).toBe(false)
+  })
+})
+
+
+describe('unchanged execution metadata after real settings normalization', () => {
+  const declaration = { tools: false, vision: false, reasoning: false, stream: true, max_input_tokens: 32000 }
+  it('does not rewrite normalized capabilities or emit catalog/adapters changes on repeated reads', async () => {
+    catalog = [{ id: first, context_window: 1000000, max_output_tokens: 8192,
+      parameters: { 'x-text-capabilities': declaration } }, { id: second, context_window: 65536, max_output_tokens: 4096 }]
+    const { base, refresh } = await boot()
+    await signIn(base)
+    await refresh()
+    const descriptor = () => context!.settings.describe({ redactSecrets: true }).find(row => row.ns === 'llm-pi-ai')!
+    const initialRevision = descriptor().revision
+    expect(typeof initialRevision).toBe('number')
+    const settingsChanged = vi.fn()
+    context!.on('settings/document-updated', (ns) => { if (ns === 'llm-pi-ai') settingsChanged() })
+    const catalogChanged = vi.fn()
+    context!.on('api-session/model-catalog-changed', catalogChanged)
+    const adaptersChanged = vi.fn()
+    context!.on('llm/adapters-updated', adaptersChanged)
+    const before = requests.length
+    for (let count = 0; count < 6; count++) await refresh()
+    expect(descriptor().revision).toBe(initialRevision)
+    expect(settingsChanged).not.toHaveBeenCalled()
+    expect(catalogChanged).not.toHaveBeenCalled()
+    expect(adaptersChanged).not.toHaveBeenCalled()
+    expect(requests.slice(before).filter(row => row.path === '/harness/v1/models')).toHaveLength(6)
+    expect(requests.slice(before).filter(row => row.path === '/harness/api/pricing')).toHaveLength(6)
+    expect(requests.slice(before).filter(row => row.path === '/harness/api/status')).toHaveLength(6)
+    catalog = [catalog[1]!, catalog[0]!]
+    await refresh()
+    expect(catalogChanged).toHaveBeenCalledTimes(1)
+    const reorderedModels = configuredRoute().models
+    expect(Array.isArray(reorderedModels) ? reorderedModels.map(entry => object(entry).id) : undefined).toEqual([second, first])
+    const changedRevision = descriptor().revision
+    const changedSettingsCount = settingsChanged.mock.calls.length
+    const changedAdaptersCount = adaptersChanged.mock.calls.length
+    await refresh()
+    expect(descriptor().revision).toBe(changedRevision)
+    expect(settingsChanged).toHaveBeenCalledTimes(changedSettingsCount)
+    expect(adaptersChanged).toHaveBeenCalledTimes(changedAdaptersCount)
+    expect(catalogChanged).toHaveBeenCalledTimes(1)
+  })
+  it('settles one real model change and the consumer refresh it triggers without a feedback loop', async () => {
+    catalog = [{ id: first, context_window: 1000000, max_output_tokens: 8192,
+      parameters: { 'x-text-capabilities': declaration } }]
+    const { base, refresh } = await boot()
+    await signIn(base)
+    await refresh()
+    let consumerRefreshes = 0
+    let feedback = Promise.resolve()
+    const changed = vi.fn()
+    context!.on('api-session/model-catalog-changed', () => {
+      changed()
+      // Bound a broken feedback chain so the regression fails without hanging the process.
+      if (consumerRefreshes < 4) {
+        consumerRefreshes++
+        feedback = feedback.then(async () => { await refresh() })
+      }
+    })
+    catalog = [{ id: first, context_window: 1000000, max_output_tokens: 8192,
+      parameters: { 'x-text-capabilities': { ...declaration, max_input_tokens: 24000 } } }]
+    const before = requests.length
+    await refresh()
+    for (let count = 0; count < 6; count++) {
+      const pending = feedback
+      await pending
+      if (pending === feedback) break
+    }
+    expect(changed).toHaveBeenCalledTimes(1)
+    expect(consumerRefreshes).toBe(1)
+    expect(requests.slice(before).filter(row => row.path === '/harness/v1/models')).toHaveLength(2)
+    expect((await context!.llm.resolveModelInfo('yunshu-local', first)).textCapabilities?.maxInputTokens).toBe(24000)
+  })
+})

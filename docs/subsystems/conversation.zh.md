@@ -271,6 +271,12 @@ Assembler 会记录这项依赖。如果后续 older prepend 带来了更近的�
 
 `publication` 控制发生 State 变更后何时物化。结构或 terminal 变化使用 `immediate`，高频可见 delta 使用 `animation-frame`，只为后续发布积累 State 时使用 `none`。引擎按日志顺序应用每条 scalar update，并用一次 batch update 应用一个 packed run；该选项只合并视图发布频率。
 
+## 所选模型的输入控制
+
+仅存在于 Client、以 Session 为作用域的 parallel 事件 `conversation/input-model-capabilities(capabilities)` 发布所选模型显式声明的输入控制。[`InputModelCapabilities`](../../packages/client/ui-conversation/src/client/contract/input.ts) 值携带可选的 `tools`、`vision` 与 `inputModalities`；`undefined` 清除声明并保留旧有输入行为。模型选择桥接为自身 Session 发布更新，并在销毁时清除这些控制。
+
+输入 facade 通过 `InputState.modelCapabilities` 暴露控制，不锁定文字输入或清除草稿。不支持的附件仍保留，用户可以移除或切换模型后使用；输入框拒绝发送不兼容的内容。[输入所有者](../../packages/client/ui-conversation/README.zh.md)说明附件入口与草稿恢复。
+
 ## 验证要求
 
 添加聚焦测试，证明以下结果：

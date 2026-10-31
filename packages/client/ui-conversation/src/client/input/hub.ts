@@ -47,6 +47,7 @@ interface ConversationAttachmentFace {
     mode: InputSubmitMode,
     signal?: AbortSignal,
   ): Promise<SubmitOutcome>
+  resolveDraftAttachments(attachmentIds: readonly DraftAttachmentId[]): readonly { readonly kind: 'image' | 'file' }[]
   serializeDraftAttachments(attachmentIds: readonly DraftAttachmentId[]): Promise<DraftAttachmentSerializationResult>
   releaseDraftAttachment(id: DraftAttachmentId): void
 }
@@ -115,6 +116,10 @@ export class InputHub implements SessionInputResolver {
           running: state.running,
         })
       },
+      unsupportedModelInputNotice: () => this.t('error.modelInputUnsupported'),
+      modelAttachmentsSupported: (ids, capabilities) => this.conversation().resolveDraftAttachments(ids).every(value => value.kind === 'file'
+        ? capabilities.tools !== false
+        : capabilities.vision !== false && (capabilities.inputModalities === undefined || capabilities.inputModalities.includes('image'))),
       messageSubmitted: (submission) => { reportMessageSubmission(this.rootCtx, submission) },
       inputTriggers: () => this.controller(actx),
       popup: () => this.popup(actx),
@@ -144,6 +149,7 @@ export class InputHub implements SessionInputResolver {
     // scope fiber (nothing here outlives the scope).
     actx.effect(() => {
       const offs = [
+        actx.on('conversation/input-model-capabilities', (capabilities) => { shell.setModelCapabilities(capabilities) }),
         actx.on('slash/input-begin-command', req =>
           shell.beginCommand(req.claim, req.span) ? true : undefined),
         actx.on('slash/input-insert-reference', req =>

@@ -223,6 +223,8 @@ export interface ResolvedPiAiProviderProfile
   configuredMaxTokens: ReadonlyMap<string, number>
   /** Current synchronized hard output ceilings after applying smaller explicit manual limits. */
   managedMaxTokens: ReadonlyMap<string, number>
+  /** Active account-bound gateway text execution declarations. */
+  textCapabilities: RouteCatalog['textCapabilities']
 }
 
 /** Plugin configuration: the provider routes this instance owns. */
@@ -311,6 +313,10 @@ const managedModelLimits: z<PiAiManagedModelLimits> = z.object({
   scope: z.string().min(1).max(512).required(),
   contextWindow: z.number().step(1).min(1).max(MAX_CAPACITY_TOKENS),
   maxTokens: z.number().step(1).min(1).max(MAX_CAPACITY_TOKENS),
+  textCapabilities: z.union([z.object({
+    tools: z.boolean().required(), vision: z.boolean().required(), reasoning: z.boolean().required(), stream: z.boolean().required(),
+    maxInputTokens: z.number().step(1).min(1).max(MAX_CAPACITY_TOKENS).required(),
+  })]),
 })
 
 const modelFields = {
@@ -519,6 +525,7 @@ export function resolveProfiles(
       ...rest.thinkingBudgets === undefined ? {} : { thinkingBudgets: { ...rest.thinkingBudgets } },
       configuredMaxTokens: catalog?.configuredMaxTokens ?? new Map(),
       managedMaxTokens: catalog?.managedMaxTokens ?? new Map(),
+      textCapabilities: catalog?.textCapabilities ?? new Map(),
       modelErrors: catalog?.modelErrors ?? new Map(),
       ...piProvider === undefined ? {} : { piProvider },
       ...catalogError === undefined ? {} : { catalogError },

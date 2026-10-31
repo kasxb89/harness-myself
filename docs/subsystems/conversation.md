@@ -271,6 +271,12 @@ With `D` registered Definitions, one incoming scalar event or packed run perform
 
 `publication` controls when changed State is materialized. Use `immediate` for structural or terminal changes, `animation-frame` for high-frequency visible deltas, and `none` when the State change feeds only a later publication. The engine applies every scalar update in log order and every packed run in one batch update; cadence only coalesces view publication.
 
+## Selected model input controls
+
+The Client-only, Session-scoped parallel event `conversation/input-model-capabilities(capabilities)` publishes the selected model's explicit input controls. Its [`InputModelCapabilities`](../../packages/client/ui-conversation/src/client/contract/input.ts) value carries optional `tools`, `vision`, and `inputModalities`; `undefined` clears the declaration and preserves legacy input behavior. The model-selection bridge publishes updates for its own Session and clears them when it is disposed.
+
+The input facade exposes the controls as `InputState.modelCapabilities` without locking text entry or clearing the draft. Unsupported attachments remain available to remove or use after switching models; the composer refuses an incompatible send. [The input owner](../../packages/client/ui-conversation/README.md) describes attachment entry and draft recovery.
+
 ## Verification obligations
 
 Add focused tests that establish these outcomes:

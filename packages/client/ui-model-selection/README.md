@@ -13,6 +13,8 @@ Desktop product events use the optional [product analytics service](../product-a
 
 The Web GUI lets users switch the model and reasoning effort for an existing session through either the `/model` popup or the composer's model control. Both surfaces present the same provider-grouped choices, and the selected model determines the available effort names and default. A complete selection applies to the next request; a running step keeps the model and effort it started with. An unavailable selection remains saved; request execution reports missing credentials or an unavailable model.
 
+Both selection entries retain explicit `textCapabilities` and `inputModalities` from the shared catalog. Capability limits remain visible when administrator descriptions are empty; declared no-reasoning models show neither effort choices nor a retained effort caption. The selected row publishes session-scoped input controls to Conversation without locking text entry. Undeclared legacy models retain their existing behavior.
+
 ## Table of Contents
 
 - [Use this package](#use-this-package)

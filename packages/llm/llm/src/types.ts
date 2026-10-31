@@ -326,6 +326,20 @@ export interface LlmDiscoveredModel {
   inputModalities?: readonly ModelModality[]
 }
 
+/** Current gateway execution declarations; these do not establish native model maxima. */
+export interface LlmTextCapabilities {
+  /** Whether this route accepts tool declarations and tool history. */
+  tools: boolean
+  /** Whether this route accepts image input. */
+  vision: boolean
+  /** Whether this route accepts optional reasoning controls. */
+  reasoning: boolean
+  /** Whether this route supports streaming responses. */
+  stream: boolean
+  /** Gateway input-token ceiling, separate from the native combined window. */
+  maxInputTokens: number
+}
+
 /** One adapter-discovered model; catalog membership is advisory, not request validation. */
 export interface LlmModelInfo {
   /** Provider route that owns this model entry. */
@@ -336,6 +350,8 @@ export interface LlmModelInfo {
   name: string
   /** Optional user-facing distinction from otherwise similar models. */
   description?: string
+  /** Current gateway text execution declarations; absent preserves provider behavior. */
+  textCapabilities?: LlmTextCapabilities
   /** Accepted request modalities; absent means unknown, while an explicit omission is negative capability. */
   inputModalities?: readonly ModelModality[]
 }

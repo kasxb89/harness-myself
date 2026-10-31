@@ -12,6 +12,8 @@ Desktop analytics follows the [product collection policy](../../client/product-a
 
 `@deepseek-ai/dsh-api-session-controller` owns the Host `ctx.sessionController` service and the generated Client `session`, `skills`, and `fileReferences` Remote namespaces. It serves Session lifecycle and history, the Host-generation model catalog, human background-job kill, workspace-path opening, user-invocable skill discovery, and Agent-scoped file references. Use it through API Gateway when a Client needs operations addressed by a Session.
 
+The ordinary model catalog forwards adapter-declared `inputModalities` and `textCapabilities` independently of display-only presentation. Prompt admission checks the actual selected route and complete derived Session messages before enqueueing: declared text-only models reject prior tool messages/calls and unsupported image/file parts with `session/model-capability-invalid` and a stable `details.reason`. It preserves original history and admits ordinary new text-only prompts. Undeclared legacy models keep their existing path, including unavailable saved providers whose execution reports their routing failure later.
+
 ## Table of Contents
 
 - [Use this package](#use-this-package)

@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
+import Schema from '@deepseek-ai/schemastery'
+import { AttachmentId } from '@deepseek-ai/dsh-attachment'
+import { createAssistantMessage, createUserMessage, ReasoningEffortId, ToolCallId } from '@deepseek-ai/dsh-llm'
 import { PiAiAdapter } from '../src/adapter.ts'
 import { Config, resolveProfiles, type PiAiProviderProfile } from '../src/config.ts'
 import { MAX_CAPACITY_TOKENS, type PiAiModelProfile } from '../src/catalog.ts'
@@ -176,6 +178,102 @@ describe('account-scoped managed capacities', () => {
     await expect(async () => {
       for await (const _chunk of adapter.stream({ provider: 'openai', model: 'managed-openai', messages: [] })) { /* No request is allowed. */ }
     }).rejects.toMatchObject({ code: 'UNSUPPORTED_OPTION' })
+    expect(calls).toEqual([])
+  })
+})
+
+
+describe('account-bound gateway text execution', () => {
+  const capabilities = { tools: false, vision: false, reasoning: false, stream: true, maxInputTokens: 32000 }
+  const plain = { ...model('plain', 1000000, 8192), input: ['text', 'image'] as ('text' | 'image')[],
+    reasoningEfforts: { off: null, high: 'high' }, managedLimits: { scope, contextWindow: 1000000, maxTokens: 8192, textCapabilities: capabilities } }
+  it('publishes narrower gateway input while retaining scope-controlled removal and manual output', async () => {
+    const { adapter, update } = adapterFor({ ...base, models: [plain] })
+    expect(await adapter.resolveModel(provider, 'plain')).toMatchObject({ textCapabilities: capabilities,
+      context: { contextWindow: 40192 }, inputModalities: ['text'], defaultMaxTokens: 8192 })
+    expect(await adapter.resolveModel(provider, 'plain')).not.toHaveProperty('reasoning')
+    expect((await adapter.listModels(provider))[0]?.textCapabilities).toEqual(capabilities)
+    update({ ...base, models: [{ ...plain, maxTokens: 2048 }] })
+    expect(await adapter.resolveModel(provider, 'plain')).toMatchObject({ context: { contextWindow: 34048 }, defaultMaxTokens: 2048 })
+    update({ ...base, managedLimitsScope: 'other', models: [plain] })
+    expect(await adapter.resolveModel(provider, 'plain')).not.toHaveProperty('textCapabilities')
+    expect((await adapter.resolveModel(provider, 'plain')).inputModalities).toEqual(['text', 'image'])
+    update({ ...base, models: [{ ...plain, managedLimits: { scope, contextWindow: 1000000, maxTokens: 8192 } }] })
+    expect(await adapter.resolveModel(provider, 'plain')).toMatchObject({ context: { contextWindow: 1000000 }, inputModalities: ['text', 'image'] })
+    expect(await adapter.resolveModel(provider, 'plain')).not.toHaveProperty('textCapabilities')
+  })
+  it('does not silently drop explicit tool declarations or historical tool results before the SDK', async () => {
+    const calls = memoryRequests()
+    const { adapter } = adapterFor({ ...base, models: [plain] })
+    const tool = { name: 'lookup', description: 'fixture lookup', parameters: { type: 'object' as const, properties: {} } }
+    await expect(async () => {
+      for await (const _chunk of adapter.stream({ provider, model: 'plain', messages: [], tools: [tool] })) { /* No dispatch is permitted. */ }
+    }).rejects.toMatchObject({ code: 'MODEL_CAPABILITY_TOOLS_UNSUPPORTED' })
+    const history = [createAssistantMessage({ source: { provider, model: 'plain' },
+      content: [{ type: 'tool-call', id: ToolCallId('call-plain'), name: 'lookup', arguments: '{}' }] })]
+    await expect(async () => {
+      for await (const _chunk of adapter.stream({ provider, model: 'plain', messages: history })) { /* Retain original history and fail before dispatch. */ }
+    }).rejects.toMatchObject({ code: 'MODEL_CAPABILITY_HISTORY_UNSUPPORTED' })
+    expect(calls).toEqual([])
+  })
+  it('suppresses a configured reasoning default, refuses explicit reasoning and does not discard reasoning history', async () => {
+    const calls = memoryRequests()
+    const { adapter } = adapterFor({ ...base, reasoning: 'high', models: [plain] })
+    await drain(adapter, 'plain')
+    expect(calls[0]).not.toHaveProperty('reasoning_effort')
+    await expect(async () => {
+      for await (const _chunk of adapter.stream({ provider, model: 'plain', messages: [], reasoningEffort: ReasoningEffortId('high') })) { /* No incompatible wire. */ }
+    }).rejects.toMatchObject({ code: 'MODEL_CAPABILITY_REASONING_UNSUPPORTED' })
+    const history = [createAssistantMessage({ source: { provider, model: 'plain' }, content: [{ type: 'reasoning', text: 'retained reasoning' }, { type: 'text', text: 'answer' }] })]
+    for await (const _chunk of adapter.stream({ provider, model: 'plain', messages: history })) { /* Existing codec owns reasoning replay. */ }
+    expect(calls).toHaveLength(2)
+    expect(calls[1]).not.toHaveProperty('reasoning_effort')
+    expect(JSON.stringify(calls[1])).toContain('retained reasoning')
+  })
+  it('rejects a non-streaming declaration and malformed persisted declarations', async () => {
+    const calls = memoryRequests()
+    const { adapter } = adapterFor({ ...base, models: [{ ...plain,
+      managedLimits: { ...plain.managedLimits, textCapabilities: { ...capabilities, stream: false } } }] })
+    await expect(drain(adapter, 'plain')).rejects.toMatchObject({ code: 'MODEL_CAPABILITY_STREAM_UNSUPPORTED' })
+    expect(calls).toEqual([])
+    expect(() => Schema.resolve({ providers: { [provider]: { ...base, models: [{ id: 'broken', managedLimits: { scope,
+      textCapabilities: { tools: false } } }] } } }, Config, {})).toThrow()
+  })
+})
+
+
+describe('text-only gateway attachment refusal', () => {
+  it.each([{ tools: true, vision: false }, { tools: false, vision: true }])('never dispatches unprojected native files for %j', async (declared) => {
+    const calls = memoryRequests()
+    const { adapter } = adapterFor({ ...base, models: [{ ...model('native-file', 1000000, 8192),
+      managedLimits: { scope, contextWindow: 1000000, maxTokens: 8192,
+        textCapabilities: { ...declared, reasoning: false, stream: true, maxInputTokens: 32000 } } }] })
+    await expect(async () => {
+      for await (const _chunk of adapter.stream({ provider, model: 'native-file', messages: [createUserMessage({
+        source: { kind: 'user' }, content: [{ type: 'file', attachment: {
+          attachmentId: AttachmentId('c'.repeat(64)), name: 'notes.txt', bytes: 1,
+        } }],
+      })] })) { /* Files must pass through the owning runtime's handle projection. */ }
+    }).rejects.toMatchObject({ code: 'MODEL_CAPABILITY_INPUT_UNSUPPORTED' })
+    expect(calls).toEqual([])
+  })
+
+  it('rejects image and file references before reading attachments or dispatching', async () => {
+    const calls = memoryRequests()
+    const { adapter } = adapterFor({ ...base, models: [{ ...model('plain-input', 1000000, 8192),
+      managedLimits: { scope, contextWindow: 1000000, maxTokens: 8192,
+        textCapabilities: { tools: false, vision: false, reasoning: false, stream: true, maxInputTokens: 32000 } } }] })
+    const id = AttachmentId(`sha256:${'a'.repeat(64)}`)
+    for (const block of [
+      { type: 'image' as const, attachment: { attachmentId: id, mediaType: 'image/png' as const, bytes: 1, width: 1, height: 1 } },
+      { type: 'file' as const, attachment: { attachmentId: id, name: 'fixture.txt', bytes: 1 } },
+    ]) {
+      await expect(async () => {
+        for await (const _chunk of adapter.stream({ provider, model: 'plain-input', messages: [createUserMessage({
+          source: { kind: 'user' }, content: [block],
+        })] })) { /* No attachment reader or upstream call. */ }
+      }).rejects.toMatchObject({ code: 'MODEL_CAPABILITY_INPUT_UNSUPPORTED' })
+    }
     expect(calls).toEqual([])
   })
 })

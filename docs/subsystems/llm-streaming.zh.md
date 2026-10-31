@@ -510,6 +510,22 @@ interface LlmConfigurableProvider {
 ```
 
 ```ts type-equiv
+/** Current gateway execution declarations; these do not establish native model maxima. */
+interface LlmTextCapabilities {
+  /** Whether this route accepts tool declarations and tool history. */
+  tools: boolean
+  /** Whether this route accepts image input. */
+  vision: boolean
+  /** Whether this route accepts optional reasoning controls. */
+  reasoning: boolean
+  /** Whether this route supports streaming responses. */
+  stream: boolean
+  /** Gateway input-token ceiling, separate from the native combined window. */
+  maxInputTokens: number
+}
+```
+
+```ts type-equiv
 /** One adapter-discovered model; catalog membership is advisory, not request validation. */
 interface LlmModelInfo {
   /** Provider route that owns this model entry. */
@@ -520,6 +536,8 @@ interface LlmModelInfo {
   name: string
   /** Optional user-facing distinction from otherwise similar models. */
   description?: string
+  /** Current gateway text execution declarations; absent preserves provider behavior. */
+  textCapabilities?: LlmTextCapabilities
   /** Accepted request modalities; absent means unknown, while an explicit omission is negative capability. */
   inputModalities?: readonly ModelModality[]
 }

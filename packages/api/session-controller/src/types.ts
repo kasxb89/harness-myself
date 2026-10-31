@@ -6,7 +6,7 @@ import type {
 } from '@deepseek-ai/dsh-attachment'
 import type { Branded } from '@deepseek-ai/dsh-brand'
 import type { LlmAttemptId, MessageId } from '@deepseek-ai/dsh-llm/brand'
-import type { TextBlock } from '@deepseek-ai/dsh-llm'
+import type { LlmModelInfo, LlmTextCapabilities, TextBlock } from '@deepseek-ai/dsh-llm'
 import type { SessionId, SessionSeqCursor } from '@deepseek-ai/dsh-session/types'
 import type { SessionProjectionMap } from '@deepseek-ai/dsh-session-projection/types'
 import type { JsonValue } from '@deepseek-ai/dsh-util-values'
@@ -143,6 +143,10 @@ export interface ModelCatalogModel {
     readonly badge?: string
   }
   readonly reasoning?: ModelReasoning
+  /** Explicit adapter input modalities; omission retains legacy intake behavior. */
+  readonly inputModalities?: LlmModelInfo['inputModalities']
+  /** Effective declared text execution controls, independent of display text. */
+  readonly textCapabilities?: LlmTextCapabilities
 }
 
 /** One provider and its successfully loaded model catalog. */
@@ -227,6 +231,9 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
       readonly existingPreset?: string
     }
     'session/attachment-invalid': { readonly reason: string }
+    'session/model-capability-invalid': { readonly reason: 'MODEL_CAPABILITY_HISTORY_UNSUPPORTED' | 'MODEL_CAPABILITY_INPUT_UNSUPPORTED'
+      | 'MODEL_CAPABILITY_TOOLS_UNSUPPORTED' | 'MODEL_CAPABILITIES_CHANGED' | 'MODEL_CAPABILITY_REASONING_UNSUPPORTED'
+      | 'MODEL_CAPABILITY_STREAM_UNSUPPORTED' }
     'session/queue-item-not-found': { readonly itemId: MessageId }
     'session/steer-unavailable': { readonly itemId: MessageId }
     'session/title-invalid': { readonly sessionId: SessionId }

@@ -136,8 +136,21 @@ export interface InputTriggerController {
   toggleSource(source: string, hit: InputTriggerHit): void
 }
 
+/** Explicit live model input controls; omitted metadata preserves legacy behavior. */
+export interface InputModelCapabilities {
+  readonly tools?: boolean
+  readonly vision?: boolean
+  readonly inputModalities?: readonly string[]
+}
+
 declare module '@deepseek-ai/cordis' {
   interface Events {
+    /**
+     * Publish the selected model's explicit input controls without locking text entry.
+     * @param capabilities - Live controls, or undefined for an undeclared legacy model.
+     * @mode parallel
+     */
+    'conversation/input-model-capabilities'(capabilities: InputModelCapabilities | undefined): void
     /**
      * Claim a command token for the scoped input machine.
      * @param request - command claim and span.
@@ -284,6 +297,8 @@ export type ConsumeTokenGuard = ConsumeTokenRequest['guard']
 export interface InputState {
   /** Clipboard-text projection of the editor document (chips expanded to their clipboard form). */
   readonly draft: string
+  /** Selected model controls independent of the draft and composer availability. */
+  readonly modelCapabilities?: InputModelCapabilities
   /** Ordered runtime-only attachment ids; browser objects stay in ConversationController. */
   readonly attachmentIds: readonly DraftAttachmentId[]
   /** Monotonic editor revision (span CAS compares against this). */

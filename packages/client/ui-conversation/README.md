@@ -13,6 +13,8 @@ Desktop product events use the optional [product analytics service](../product-a
 
 `ui-conversation` owns target-neutral Conversation assembly and the shared browser shell. It consumes Session Controller `SessionEventLikeEntry` feeds, exposes React-free registries and per-Session bindings through `ctx.uiConversation`, and contributes the `useConversation`, `useInput`, and `inputActions` standard props through `ctx.uiSession`. It also owns the per-session durable image URL cache: `ctx.uiConversation.imageUrl(sessionId, attachment)` resolves one session-authorized browser URL per attachment and revokes it with the Session binding, so every Conversation target shares one `session.attachment` read. Concrete targets such as Chat are separate packages that register their own Definitions, snapshot builders, Views, and renderers.
 
+The scoped `conversation/input-model-capabilities` event publishes explicit selected-model controls into `InputState.modelCapabilities`. Unsupported file picking, mixed image paste, file drops and Desktop file/folder references preserve the draft and show localized guidance. Switching to a text-only model retains existing attachments and reference chips, displays a persistent notice, and stops submission until they are removed or a compatible model is selected. Ordinary text remains editable and sendable; no language or creation-intent matching is performed. Typed `session/model-capability-invalid` prompt errors preserve the rejected draft and explain model/history compatibility.
+
 ## Table of Contents
 
 - [Conversation assembly](#conversation-assembly)

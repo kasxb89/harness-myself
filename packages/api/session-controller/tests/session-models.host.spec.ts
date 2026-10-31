@@ -10,7 +10,7 @@ import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry, { agentEvents } from '@deepseek-ai/dsh-agent'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import AttachmentStore from '@deepseek-ai/dsh-attachment'
-import LlmRuntime, { LlmAdapter, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { createAssistantMessage, LlmAdapter, ReasoningEffortId, ToolCallId } from '@deepseek-ai/dsh-llm'
 import type {
   GenerateOptions, LlmCallConfig, LlmCallConfigAdapterDefaults, LlmModelInfo,
   LlmModelReasoningInfo, LlmProviderInfo, LlmResolvedModelInfo, StreamChunk,
@@ -18,6 +18,7 @@ import type {
 } from '@deepseek-ai/dsh-llm'
 import SessionStore from '@deepseek-ai/dsh-session'
 import type { SessionId } from '@deepseek-ai/dsh-session'
+import type { FileUploadReceiptId } from '@deepseek-ai/dsh-client-file-upload/types'
 import type { SessionPromptRequest, SessionRequestId } from '../src/types.ts'
 import { ApiSessionAgentController } from '../src/agent.ts'
 import { buildModelCatalog, hasProviderApiKey } from '../src/catalog.ts'
@@ -940,4 +941,68 @@ it.each([new Error('catalog disconnected'), 'catalog disconnected'])('reports ca
     await expect(modelAvailable(ctx, { provider: 'deepseek-official', model: 'deepseek-chat' }))
       .rejects.toMatchObject({ code: 'session/model-unavailable', message: 'catalog disconnected' })
   } finally { read.mockRestore(); await ctx.fiber.dispose() }
+})
+
+
+describe('declared model execution capability admission', () => {
+  const capabilities = { tools: false, vision: false, reasoning: false, stream: true, maxInputTokens: 32768 }
+  async function plainHarness() {
+    const f = await harness()
+    f.ctx.llm.registerAdapter(['plain'], new class extends CatalogAdapter {
+      override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
+        return Promise.resolve({ provider, id: model, name: model, inputModalities: ['text'], textCapabilities: capabilities,
+          reasoning: REASONING })
+      }
+    }('Plain', [{ provider: 'plain', id: 'plain-model', name: 'Plain Model' }]))
+    const followup = vi.fn()
+    Object.assign(f.agent, { followup })
+    const remote = createSessionTestRemote(f.ctx, {
+      defaultModelSelection: () => ({ provider: 'plain', model: 'plain-model' }), cwd: '/tmp',
+    })
+    return { ...f, followup, remote }
+  }
+
+  it('publishes live capabilities independently of presentation and admits a new plain text prompt', async () => {
+    const f = await plainHarness()
+    try {
+      const catalog = await buildModelCatalog(f.ctx)
+      expect(catalog.groups.find(group => group.id === 'plain')?.models[0])
+        .toMatchObject({ inputModalities: ['text'], textCapabilities: capabilities })
+      expect(catalog.groups.find(group => group.id === 'plain')?.models[0]?.reasoning).toBeUndefined()
+      expect(await f.remote.prompt(promptRequest({ sessionId: f.sessionId, mode: 'queue',
+        content: [{ type: 'text', text: '给我讲讲视频创作的方法' }] })))
+        .toMatchObject({ ok: true, value: { accepted: true } })
+      expect(f.followup).toHaveBeenCalledOnce()
+    } finally { await f.ctx.fiber.dispose() }
+  })
+
+  it('refuses complete prior tool history before enqueue while preserving its recorded data', async () => {
+    const f = await plainHarness()
+    try {
+      f.agent.session.append('assistant/message', { turn: 1, step: 1, stream: [], message: createAssistantMessage({
+        source: { provider: 'legacy-fixture', model: 'tool-capable' },
+        content: [{ type: 'tool-call', id: ToolCallId('old-call'), name: 'read', arguments: '{}' }],
+      }) }, { surfaceOp: 'append' })
+      const before = f.agent.session.snapshotEvents()
+      const result = await f.remote.prompt(promptRequest({ sessionId: f.sessionId, mode: 'queue', content: [{ type: 'text', text: '新的纯文本草稿' }] }))
+      expect(result).toMatchObject({ ok: false, error: { code: 'session/model-capability-invalid',
+        details: { reason: 'MODEL_CAPABILITY_HISTORY_UNSUPPORTED' } } })
+      expect(f.followup).not.toHaveBeenCalled()
+      expect(f.agent.session.snapshotEvents()).toEqual(before)
+    } finally { await f.ctx.fiber.dispose() }
+  })
+
+  it.each(['image', 'file'] as const)('rejects a %s before storing or binding it to a plain text request', async (kind) => {
+    const f = await plainHarness()
+    try {
+      const result = await f.remote.prompt(promptRequest({ sessionId: f.sessionId, mode: 'queue', content: [
+        { type: 'text', text: '保留说明' }, ...kind === 'image'
+          ? [{ type: 'image' as const, mediaType: 'image/png' as const, data: 'AQ==' }]
+          : [{ type: 'file' as const, receiptId: 'unsupported-file' as FileUploadReceiptId }],
+      ] }))
+      expect(result).toMatchObject({ ok: false, error: { code: 'session/model-capability-invalid',
+        details: { reason: 'MODEL_CAPABILITY_INPUT_UNSUPPORTED' } } })
+      expect(f.followup).not.toHaveBeenCalled()
+    } finally { await f.ctx.fiber.dispose() }
+  })
 })

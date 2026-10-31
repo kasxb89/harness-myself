@@ -99,7 +99,7 @@ export function ModelSelect(
       selection: {
         provider: group.id,
         model: model.id,
-        ...model.reasoning?.defaultEffort === undefined
+        ...model.textCapabilities?.reasoning === false || model.reasoning?.defaultEffort === undefined
           ? {}
           : { reasoningEffort: model.reasoning.defaultEffort },
       } satisfies ModelSelection,
@@ -118,9 +118,10 @@ export function ModelSelect(
     ? -1
     : choices.findIndex(c => c.selection.provider === state.current?.provider && c.selection.model === state.current.model)
   const currentChoice = choices[selectedIndex]
-  const reasoning = currentChoice?.model.reasoning
+  const reasoningDisabled = currentChoice?.model.textCapabilities?.reasoning === false
+  const reasoning = reasoningDisabled ? undefined : currentChoice?.model.reasoning
   const effectiveEffort = state.current?.reasoningEffort ?? reasoning?.defaultEffort
-  const effortLabel = currentChoice === undefined
+  const effortLabel = currentChoice === undefined || reasoningDisabled
     ? undefined
     : reasoning === undefined
       ? state.retainedEffort

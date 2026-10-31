@@ -12,6 +12,7 @@
  * @module dsh-llm-pi-ai/catalog
  */
 
+import type { LlmTextCapabilities } from '@deepseek-ai/dsh-llm'
 import { builtinProviders, getAllBuiltinModels, getBuiltinModels } from '@earendil-works/pi-ai/providers/all'
 import { clampMaxTokensToContext } from '@earendil-works/pi-ai/api/simple-options'
 import { normalizeContext } from '@earendil-works/pi-ai/utils/transcript'
@@ -53,6 +54,8 @@ export interface PiAiManagedModelLimits {
   contextWindow?: number
   /** Account-authorized output ceiling, before smaller manual restrictions and SDK context headroom. */
   maxTokens?: number
+  /** Gateway execution declarations for this exact account/backend scope. */
+  textCapabilities?: LlmTextCapabilities
 }
 
 /** One request modality a pi-ai model may accept. */
@@ -867,6 +870,8 @@ export interface RouteCatalog {
   configuredMaxTokens: ReadonlyMap<string, number>
   /** Effective hard output ceilings from current account/backend declarations, including smaller manual limits. */
   managedMaxTokens: ReadonlyMap<string, number>
+  /** Active gateway execution declarations, indexed by exact model id. */
+  textCapabilities: ReadonlyMap<string, LlmTextCapabilities>
 }
 
 /**
@@ -933,6 +938,7 @@ export function resolveRouteModels(
   const seen = new Set<string>()
   const configuredMaxTokens = new Map<string, number>()
   const managedMaxTokens = new Map<string, number>()
+  const textCapabilities = new Map<string, LlmTextCapabilities>()
   const resolveEntry = (entry: PiAiModelProfile): Model<Api> => {
     assertOfferedCompatFields(provider, `model "${entry.id}"`, entry.compat)
     if (entry.id.length === 0) invalid(provider, 'has a model with an empty id')
@@ -986,11 +992,12 @@ export function resolveRouteModels(
       api,
       provider,
       baseUrl,
-      input: declaredInput(entry.input) ?? base?.input ?? [...request.defaultInput],
+      input: managed?.textCapabilities?.vision === false ? ['text'] : declaredInput(entry.input) ?? base?.input ?? [...request.defaultInput],
       cost: base?.cost ?? NO_COST,
       contextWindow,
       maxTokens,
-      ...resolveModelReasoning(provider, entry, base),
+      ...resolveModelReasoning(provider,
+        managed?.textCapabilities?.reasoning === false ? { ...entry, reasoningEfforts: false } : entry, base),
       ...resolveModelCompat(provider, entry, request.compat, base, api),
     }
     // The SDK reserves input/context headroom even for an empty request.
@@ -1012,6 +1019,10 @@ export function resolveRouteModels(
     }
     // Only a value the profile named is a deployment choice; the catalog's is
     // the model's capability and stays out of request defaults.
+    if (managed?.textCapabilities !== undefined) {
+      textCapabilities.set(entry.id, { ...managed.textCapabilities })
+      model.contextWindow = Math.min(model.contextWindow, managed.textCapabilities.maxInputTokens + model.maxTokens)
+    }
     if (entry.maxTokens !== undefined) configuredMaxTokens.set(entry.id, model.maxTokens)
     return model
   }
@@ -1039,5 +1050,5 @@ export function resolveRouteModels(
     invalid(provider, `sets compat "${field}", but no model on the route speaks a protocol that takes it;`
       + ` it exists on ${takers.join(', ')}`)
   }
-  return { models: serviceableModels, configuredMaxTokens, managedMaxTokens, modelErrors }
+  return { models: serviceableModels, configuredMaxTokens, managedMaxTokens, textCapabilities, modelErrors }
 }

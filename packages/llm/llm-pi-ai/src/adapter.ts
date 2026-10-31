@@ -296,13 +296,17 @@ export class PiAiAdapter extends LlmAdapter {
     const allowed = await this.config.beforeListModels?.(provider)
     return await Promise.resolve().then(() => {
       const snapshot = this.current()
-      this.profileOf(snapshot, provider)
-      return snapshot.models.getModels(provider).filter(model => allowed === undefined || allowed.includes(model.id)).map(model => ({
-        provider,
-        id: model.id,
-        name: model.name,
-        inputModalities: [...model.input],
-      }))
+      const profile = this.profileOf(snapshot, provider)
+      return snapshot.models.getModels(provider).filter(model => allowed === undefined || allowed.includes(model.id)).map((model) => {
+        const textCapabilities = profile.textCapabilities.get(model.id)
+        return {
+          provider,
+          id: model.id,
+          name: model.name,
+          inputModalities: [...model.input],
+          ...textCapabilities === undefined ? {} : { textCapabilities: { ...textCapabilities } },
+        }
+      })
     })
   }
 
@@ -320,7 +324,8 @@ export class PiAiAdapter extends LlmAdapter {
   private modelInfo(snapshot: PiAiSnapshot, provider: string, model: string): LlmResolvedModelInfo {
     const profile = this.profileOf(snapshot, provider)
     const resolvedModel = this.modelOf(snapshot, provider, model)
-    const defaultLevel = describableReasoningLevel(resolvedModel, profile.reasoning)
+    const textCapabilities = profile.textCapabilities.get(model)
+    const defaultLevel = describableReasoningLevel(resolvedModel, textCapabilities?.reasoning === false ? 'off' : profile.reasoning)
     const maxOutputTokens = profile.managedMaxTokens.get(model)
     // Publish the default the SDK will choose so prepared requests can log it.
     // Installed-catalog and fallback capabilities alone remain provider-owned defaults.
@@ -330,6 +335,7 @@ export class PiAiAdapter extends LlmAdapter {
       id: model,
       name: resolvedModel.name,
       inputModalities: [...resolvedModel.input],
+      ...textCapabilities === undefined ? {} : { textCapabilities: { ...textCapabilities } },
       context: { contextWindow: resolvedModel.contextWindow },
       ...defaultMaxTokens === undefined ? {} : { defaultMaxTokens },
       ...maxOutputTokens === undefined ? {} : { maxOutputTokens },
@@ -367,10 +373,32 @@ export class PiAiAdapter extends LlmAdapter {
     // mid-request builds a separate snapshot, so this request finishes under
     // the one it started with and the next call picks up the new one.
     const profile = this.profileOf(snapshot, options.provider)
-    const model = this.modelOf(snapshot, options.provider, options.model)
+    const declaredModel = this.modelOf(snapshot, options.provider, options.model)
+    const textCapabilities = profile.textCapabilities.get(options.model)
     const maxOutputTokens = profile.managedMaxTokens.get(options.model)
     const maxTokens = options.maxTokens === undefined ? undefined
       : Math.min(options.maxTokens, maxOutputTokens ?? options.maxTokens)
+    const model = textCapabilities === undefined ? declaredModel : { ...declaredModel,
+      contextWindow: Math.min(declaredModel.contextWindow, textCapabilities.maxInputTokens + (maxTokens ?? declaredModel.maxTokens)),
+    }
+    if (textCapabilities !== undefined) {
+      if (!textCapabilities.stream) throw new LlmError('This gateway model does not support the streaming adapter', 'MODEL_CAPABILITY_STREAM_UNSUPPORTED')
+      if (!textCapabilities.tools && (options.tools?.length ?? 0) > 0) {
+        throw new LlmError('This gateway model does not support tool declarations; choose a tool-capable model', 'MODEL_CAPABILITY_TOOLS_UNSUPPORTED')
+      }
+      if (!textCapabilities.tools && options.messages.some(message => message.role === 'tool'
+        || message.content.some(block => block.type === 'tool-call' || block.type === 'tool-addition' || block.type === 'tool-removal'))) {
+        throw new LlmError('This gateway model cannot continue tool history; choose a tool-capable model or start a plain text chat', 'MODEL_CAPABILITY_HISTORY_UNSUPPORTED')
+      }
+      if (options.messages.some(message => !textCapabilities.vision && contentHasImage(message.content)
+        || message.content.some(block => block.type === 'file'))) {
+        throw new LlmError('This gateway route rejects the image or unprojected file input', 'MODEL_CAPABILITY_INPUT_UNSUPPORTED')
+      }
+      if (!textCapabilities.reasoning && options.reasoningEffort !== undefined
+        && options.reasoningEffort !== 'off' && options.reasoningEffort !== 'none') {
+        throw new LlmError('This gateway model does not support reasoning controls', 'MODEL_CAPABILITY_REASONING_UNSUPPORTED')
+      }
+    }
     if (maxOutputTokens !== undefined && model.api === 'openai-responses'
       && maxTokens !== undefined && maxTokens < MANAGED_RESPONSES_MIN_OUTPUT_TOKENS) {
       throw new LlmError(`Responses cannot honor an output budget below ${MANAGED_RESPONSES_MIN_OUTPUT_TOKENS} tokens`, 'INVALID_REQUEST')
@@ -395,7 +423,7 @@ export class PiAiAdapter extends LlmAdapter {
       : options
     const reasoning = resolveReasoningLevel(
       model,
-      options.reasoningEffort ?? profile.reasoning,
+      textCapabilities?.reasoning === false ? 'off' : options.reasoningEffort ?? profile.reasoning,
     )
     const apiKey = await this.config.resolveApiKey(options.provider, profile)
     if (maxOutputTokens !== undefined && model.api === 'openai-responses' && model.provider === 'openai'

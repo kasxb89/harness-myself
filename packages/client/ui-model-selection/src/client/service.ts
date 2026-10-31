@@ -13,8 +13,9 @@
  * per-session singleton with no global layer to merge.
  */
 import type {} from '@deepseek-ai/dsh-client-product-analytics/client'
+import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { Service } from '@deepseek-ai/cordis'
-import type { Context } from '@deepseek-ai/cordis'
+import type { Context, Fiber } from '@deepseek-ai/cordis'
 import type { SessionBinding } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { WeakMapWithValues } from '@deepseek-ai/dsh-util-values'
@@ -31,13 +32,15 @@ declare module '@deepseek-ai/cordis' {
 interface LiveState {
   /** Directories keyed by Client binding, removed by their scope disposer. */
   readonly directories: WeakMapWithValues<SessionBinding, ModelDirectory>
+  /** Session-owned input bridges joined when the model service unloads. */
+  readonly inputBridges: Set<Fiber>
 }
 
 /** The `ctx.modelDirectories` session model-selection service. */
 export class ModelDirectoryResolver extends Service {
   static inject = ['sessions', 'remote', 'remote.session']
 
-  private readonly live: LiveState = { directories: new WeakMapWithValues() }
+  private readonly live: LiveState = { directories: new WeakMapWithValues(), inputBridges: new Set() }
   private readonly catalog: ModelCatalogDirectory
 
   /**
@@ -46,6 +49,12 @@ export class ModelDirectoryResolver extends Service {
   constructor(ctx: Context) {
     super(ctx, 'modelDirectories')
     this.catalog = new ModelCatalogDirectory(ctx)
+    ctx.effect(() => async () => {
+      await Promise.all([...this.live.inputBridges].map(bridge => bridge.dispose()))
+      this.live.inputBridges.clear()
+      for (const directory of this.live.directories.values) directory.dispose()
+      this.live.directories.clear()
+    }, 'ui-model-selection: directory and input bridge lifetime')
     void this.catalog.load().catch(() => { /* selectors expose the shared error */ })
     ctx.on('connection/reset', () => {
       this.catalog.resetGeneration()
@@ -83,7 +92,30 @@ export class ModelDirectoryResolver extends Service {
       (name, attributes) => this.ctx.get('productAnalytics')?.track(name, attributes),
     )
     live.directories.set(binding, directory)
+    const inputBridge = actx.inject(['conversation'], (scope) => {
+      scope.conversation.input.for(scope)
+      const publish = (): void => {
+        const state = directory.store.getSnapshot()
+        const group = state.groups.find(value => value.id === state.current?.provider)
+        const model = group?.models.find(value => value.id === state.current?.model)
+        const declared = model?.textCapabilities !== undefined || model?.inputModalities !== undefined
+        scope.emit('conversation/input-model-capabilities', !declared ? undefined : {
+          ...model.textCapabilities === undefined ? {} : { tools: model.textCapabilities.tools, vision: model.textCapabilities.vision },
+          ...model.inputModalities === undefined ? {} : { inputModalities: [...model.inputModalities] },
+        })
+      }
+      scope.effect(() => {
+        publish()
+        const off = directory.store.subscribe(publish)
+        return () => {
+          off()
+          scope.emit('conversation/input-model-capabilities', undefined)
+        }
+      }, 'ui-model-selection: input capabilities')
+    })
+    live.inputBridges.add(inputBridge)
     actx.effect(() => () => {
+      live.inputBridges.delete(inputBridge)
       directory.dispose()
       live.directories.delete(binding)
     }, 'ui-model-selection: session directory')

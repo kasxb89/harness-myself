@@ -118,3 +118,31 @@ describe('exact-model output capacity before logging and dispatch', () => {
     expect(adapter.requests).toEqual([])
   })
 })
+
+
+describe('gateway input ceiling beside the native model context', () => {
+  it('detaches declared execution metadata and binds input room after the actual output selection', async () => {
+    const { ctx, adapter } = await fixture()
+    const textCapabilities = { tools: false, vision: false, reasoning: false, stream: true, maxInputTokens: 32000 }
+    adapter.models.set('plain', { context: { contextWindow: 1000000 }, defaultMaxTokens: 8192, maxOutputTokens: 8192, textCapabilities })
+    const metadata = await ctx.llm.resolveModelInfo('capacity', 'plain')
+    expect(metadata.textCapabilities).toEqual(textCapabilities)
+    expect(metadata.textCapabilities).not.toBe(textCapabilities)
+    const normal = await ctx.llm.prepareCall({ provider: 'capacity', model: 'plain' })
+    const small = await ctx.llm.prepareCall({ provider: 'capacity', model: 'plain', maxTokens: 2048 })
+    const excess = await ctx.llm.prepareCall({ provider: 'capacity', model: 'plain', maxTokens: 32768 })
+    for (const effort of ['off', 'none']) {
+      expect((await ctx.llm.prepareCall({ provider: 'capacity', model: 'plain', reasoningEffort: ReasoningEffortId(effort) })).config.reasoningEffort).toBeUndefined()
+    }
+    await expect(ctx.llm.prepareCall({ provider: 'capacity', model: 'plain', reasoningEffort: ReasoningEffortId('high') }))
+      .rejects.toMatchObject({ code: 'MODEL_CAPABILITY_REASONING_UNSUPPORTED' })
+    expect(normal.context?.contextWindow).toBe(40192)
+    expect(small.context?.contextWindow).toBe(34048)
+    expect(excess.context?.contextWindow).toBe(40192)
+    expect(normal.context!.contextWindow - normal.config.maxTokens!).toBe(32000)
+    expect(small.context!.contextWindow - small.config.maxTokens!).toBe(32000)
+    adapter.models.set('plain', { context: { contextWindow: 16000 }, defaultMaxTokens: 8192, maxOutputTokens: 8192, textCapabilities })
+    expect((await ctx.llm.prepareCall({ provider: 'capacity', model: 'plain' })).context?.contextWindow).toBe(16000)
+    expect(normal.context?.contextWindow).toBe(40192)
+  })
+})

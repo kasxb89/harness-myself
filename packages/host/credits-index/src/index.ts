@@ -16,6 +16,7 @@ import { addAbortSignal } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { request as httpsRequest } from 'node:https'
 import { request as httpRequest } from 'node:http'
+import { isDeepStrictEqual } from 'node:util'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type { ModelSelection } from '@deepseek-ai/dsh-agent'
@@ -39,7 +40,8 @@ import { SessionRefresh, type StoredAccount, type StoredSession } from './sessio
 import { sessionTransportFailure, type SessionFailure } from './session-failure.ts'
 import { PhoneAuthState, type PhoneDeliveryStatus } from './phone-auth-state.ts'
 import { parseClientModelConfigStatus, parseClientModelPresentationStatus } from './client-model-config.ts'
-import { mergeProductModelLimits, productModelLimitsScope, readProductModelLimits, type ProductModelLimits } from './model-limits.ts'
+import { ProductModelCapabilitiesError, mergeProductModelLimits, productModelLimitsScope, readProductModelLimits, type ProductModelLimits } from './model-limits.ts'
+import { registerProductTextModelPolicy } from './text-model-policy.ts'
 import { orderProductModels, preferredProductModel, productModelDisplaySignature,
   type ProductModelDisplayMap, type ProductModelPresentation } from './model-presentation.ts'
 import { ClientActivitySessions, parseClientActivity, readClientActivityAcknowledgement, type ClientActivitySample } from './client-activity.ts'
@@ -865,6 +867,7 @@ export function apply(ctx: Context, config: Config): void {
   ctx.effect(() => () => { imageLife.abort() }, 'credits-index: image execution lifetime')
   const relayRef = credentialRef(resolved.relayTokenEnv)
   let identityVersion = 0
+  registerProductTextModelPolicy(ctx, { revision: () => identityVersion })
   let blockedGenerationEpoch: string | undefined
   let refreshGenerationActivity: () => void = () => undefined
   let productModelPresentation: ProductModelPresentation = { defaultChatModel: null, modelOrder: [] }
@@ -1079,7 +1082,7 @@ export function apply(ctx: Context, config: Config): void {
       }
       return { ok: true, chat, image, video, audio, limits }
     } catch (error) {
-      return { ok: false, code: 'TRANSPORT', message: error instanceof Error ? error.message : String(error), chat: [], image: [], video: [], audio: [], limits: new Map() }
+      return { ok: false, code: error instanceof ProductModelCapabilitiesError ? 'MODEL_CATALOG_INVALID' : 'TRANSPORT', message: error instanceof Error ? error.message : String(error), chat: [], image: [], video: [], audio: [], limits: new Map() }
     }
   }
 
@@ -2436,7 +2439,7 @@ export function apply(ctx: Context, config: Config): void {
     }))
   }
 
-  /** Preserve manual settings and refresh owner-bound capacities; report a changed provider configuration. */
+  /** Synchronize owner-bound metadata and preserve manual settings; report only semantic changes, including model array order. */
   const writeProductModels = async (
     ids: readonly string[] | undefined,
     defaults: ReadonlyMap<string, readonly string[]> = new Map(),
@@ -2474,14 +2477,17 @@ export function apply(ctx: Context, config: Config): void {
         : { ...currentModel, input: [...input] }
       const limits = managed === undefined ? undefined
         : mergeProductModelLimits(currentModel.managedLimits, managed.limits?.get(id), managed.scope)
-      return limits === undefined ? withInputs : { ...withInputs, managedLimits: limits }
+      if (managed === undefined) return withInputs
+      if (limits !== undefined) return { ...withInputs, managedLimits: limits }
+      const { managedLimits: _previousManagedLimits, ...withoutManagedLimits } = withInputs
+      return withoutManagedLimits
     })
     // Strict provider writes require a nonempty custom catalog. The live
     // account's first discovered IDs carry the route migration in that case.
     if (models.length === 0) return false
-    const sameModels = JSON.stringify(configured) === JSON.stringify(models)
+    const sameModels = isDeepStrictEqual(configured, models)
     if (sameModels && current.baseURL === baseURL && current.api === api && current.apiKeyEnv === resolved.relayTokenEnv
-      && current.managedLimitsScope === managed?.scope && JSON.stringify(current.compat) === JSON.stringify(compat)) return false
+      && current.managedLimitsScope === managed?.scope && isDeepStrictEqual(current.compat, compat)) return false
     const { managedLimitsScope: _previousManagedScope, ...currentRoute } = current
     await settings.replace(resolved.chatSettingsNamespace, { providers: { ...providers,
       [route]: { ...currentRoute, baseURL, api, apiKeyEnv: resolved.relayTokenEnv, compat,

@@ -305,3 +305,40 @@ describe('explicit live video parameters', () => {
     expect(params.maxDuration).toBe(15)
   })
 })
+
+describe('explicit gateway task-plugin capability source', () => {
+  const marker = { key: 'ycapi', version: '1.0.0', api_version: 1 }
+  const imageParameters = { properties: { n: { enum: [1] }, reference_images: { maxItems: 0 } },
+    oneOf: [{ properties: { size: { const: '1:1' }, resolution: { const: '1K' } } }] }
+
+  it('attributes complete image, video and audio parameters to the declared plugin without an ID prefix', () => {
+    const rows = [
+      { model_name: 'opaque-picture', kind: 'image', parameters: { ...imageParameters, 'x-task-plugin': marker } },
+      { model_name: 'opaque-motion', kind: 'video', parameters: { 'x-task-plugin': marker,
+        properties: { frame_images: { maxItems: 0 } },
+        oneOf: [{ properties: { seconds: { const: 5 }, resolution: { const: '720p' }, ratio: { const: '16:9' } } }] } },
+      { model_name: 'opaque-voice', kind: 'audio', parameters: { 'x-task-plugin': marker,
+        input: { maxLength: 100 }, voice: { enum: ['calm'] }, response_format: { enum: ['wav'] },
+        x_client_audio_execution: { protocol: 'openai-speech-v1', quoteRoute: '/v1/audio/quote', taskRoute: '/v1/tasks' } } },
+    ]
+    expect(catalogFromPricing(rows, null).map(model => ({ id: model.id, source: model.source, verified: model.verified }))).toEqual(
+      rows.map(row => ({ id: row.model_name, source: 'plugin:ycapi', verified: true })),
+    )
+  })
+
+  it('retains legacy source attribution when the plugin is absent, malformed or its parameters are incomplete', () => {
+    for (const plugin of [undefined, { ...marker, key: 'different' }, { ...marker, api_version: 2 },
+      { ...marker, version: 'unversioned' }, { ...marker, extra: true }]) {
+      const [model] = catalogFromPricing([{ model_name: 'opaque-picture', kind: 'image',
+        parameters: { ...imageParameters, ...plugin === undefined ? {} : { 'x-task-plugin': plugin } } }], null)
+      expect(model?.source).not.toBe('plugin:ycapi')
+      expect(model?.verified).toBe(false)
+    }
+    for (const kind of ['image', 'video', 'audio']) {
+      const [model] = catalogFromPricing([{ model_name: 'incomplete-generator', kind,
+        parameters: { 'x-task-plugin': marker, oneOf: [] } }], null)
+      expect(model?.source).not.toBe('plugin:ycapi')
+      expect(model?.verified).toBe(false)
+    }
+  })
+})

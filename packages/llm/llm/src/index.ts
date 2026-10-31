@@ -31,7 +31,7 @@ import { freezeMessage } from './message.ts'
 import { resolveRetryPolicy } from './retry-policy.ts'
 import type { ResolvedRetryPolicy } from './retry-policy.ts'
 import type { ProviderRequestId } from './brand.ts'
-import { callConfigEquals } from './call-config.ts'
+import { callConfigEquals, isAgentLoopRequest } from './call-config.ts'
 import type { ConfigureCall, LlmCallConfig, LlmCallConfigAdapterDefaults } from './call-config.ts'
 import { HarnessError, INVALID_CREDENTIAL_CODE } from './error.ts'
 import { normalizeLlmFailure } from './adapter-failure.ts'
@@ -716,6 +716,7 @@ export class LlmRuntime extends TypertRemoteService {
         id: model.id,
         name: model.name,
         ...model.description === undefined ? {} : { description: model.description },
+        ...model.textCapabilities === undefined ? {} : { textCapabilities: { ...model.textCapabilities } },
         ...inputModalities === undefined ? {} : { inputModalities },
       }
     })
@@ -815,6 +816,7 @@ export class LlmRuntime extends TypertRemoteService {
       id: model,
       name: resolved.name,
       ...resolved.description === undefined ? {} : { description: resolved.description },
+      ...resolved.textCapabilities === undefined ? {} : { textCapabilities: { ...resolved.textCapabilities } },
       ...inputModalities === undefined ? {} : { inputModalities },
       ...context === undefined ? {} : { context: { contextWindow: context.contextWindow } },
       ...defaultMaxTokens === undefined ? {} : { defaultMaxTokens: maxOutputTokens === undefined
@@ -912,9 +914,12 @@ export class LlmRuntime extends TypertRemoteService {
     let resolvedConfig = bounded
     if (reasoning === undefined) {
       if (requested !== undefined) {
-        throw new LlmError(
+        if (info.textCapabilities?.reasoning === false && (requested === 'off' || requested === 'none')) {
+          const { reasoningEffort: _disabledReasoning, ...withoutReasoning } = bounded
+          resolvedConfig = withoutReasoning
+        } else throw new LlmError(
           `provider "${config.provider}" model "${config.model}" does not support reasoning effort "${requested}"`,
-          'UNSUPPORTED_REASONING_EFFORT',
+          info.textCapabilities?.reasoning === false ? 'MODEL_CAPABILITY_REASONING_UNSUPPORTED' : 'UNSUPPORTED_REASONING_EFFORT',
         )
       }
     } else {
@@ -931,7 +936,11 @@ export class LlmRuntime extends TypertRemoteService {
     }
     return {
       config: resolvedConfig,
-      ...info.context === undefined ? {} : { context: info.context },
+      ...info.context === undefined ? {} : { context: {
+        contextWindow: info.textCapabilities === undefined ? info.context.contextWindow
+          : Math.min(info.context.contextWindow, info.textCapabilities.maxInputTokens
+            + (resolvedConfig.maxTokens ?? info.maxOutputTokens ?? 0)),
+      } },
       modelInfo: info,
     }
   }
@@ -1089,6 +1098,26 @@ export class LlmRuntime extends TypertRemoteService {
         : Object.isFrozen(options)
           ? deepFreeze({ ...options, ...resolvedConfig })
           : { ...options, ...resolvedConfig }
+      const capabilities = modelInfo.textCapabilities
+      if (capabilities !== undefined) {
+        if (resolvedOptions.messages.some(message =>
+          !capabilities.vision && contentHasImage(message.content)
+          || !capabilities.tools && contentHasFile(message.content))) throw new LlmError(
+          '当前模型不支持图片或文件输入，请切换模型或提供纯文本。', 'MODEL_CAPABILITY_INPUT_UNSUPPORTED')
+        if (!capabilities.tools) {
+          if (resolvedOptions.tools !== undefined && resolvedOptions.tools.length > 0) throw new LlmError(
+            '当前模型不支持工具执行，请切换支持工具的模型。', 'MODEL_CAPABILITY_TOOLS_UNSUPPORTED')
+          const loop = isAgentLoopRequest(options)
+          const unsupportedHistory = resolvedOptions.messages.some(message => message.role === 'tool'
+            || message.role === 'assistant' && message.content.some(block => block.type === 'tool-call')
+            || (!loop || message.role !== 'developer') && message.content.some(block =>
+              block.type === 'tool-addition' || block.type === 'tool-removal'))
+          const explicitHistory = !loop && resolvedOptions.toolHistory !== undefined
+            && (resolvedOptions.toolHistory.tools.length > 0 || resolvedOptions.toolHistory.updates.length > 0)
+          if (unsupportedHistory || explicitHistory) throw new LlmError(
+            '当前模型不支持工具记录，请切换模型或提供纯文本历史。', 'MODEL_CAPABILITY_HISTORY_UNSUPPORTED')
+        }
+      }
       // Files are never dispatched natively: every route receives handle text.
       let projectedMessages: readonly RequestMessage[] = resolvedOptions.messages
       if (projectedMessages.some(message => contentHasFile(message.content))) {

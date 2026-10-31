@@ -28,7 +28,7 @@ export async function buildModelCatalog(
       const entries = await Promise.all(models.map(async (model) => {
         const resolved = await ctx.llm.resolveModelInfo(provider.id, model.id)
         const presentation = ctx.waterfall('api-session/model-presentation', provider.id, model.id, () => undefined)
-        const reasoning: ModelReasoning | undefined = resolved.reasoning === undefined
+        const reasoning: ModelReasoning | undefined = resolved.reasoning === undefined || resolved.textCapabilities?.reasoning === false
           ? undefined
           : {
             efforts: resolved.reasoning.efforts.map(effort => ({
@@ -49,6 +49,8 @@ export async function buildModelCatalog(
             ...presentation.badge === undefined ? {} : { badge: presentation.badge },
           } },
           ...(reasoning === undefined ? {} : { reasoning }),
+          ...resolved.inputModalities === undefined ? {} : { inputModalities: [...resolved.inputModalities] },
+          ...resolved.textCapabilities === undefined ? {} : { textCapabilities: { ...resolved.textCapabilities } },
         }
       }))
       return {

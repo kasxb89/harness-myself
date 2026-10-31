@@ -16,7 +16,7 @@ import {
 import type { LexicalEditor } from 'lexical'
 import type {
   CommandClaim, ConsumeTokenRequest, DraftAttachmentId, DraftInitializationOptions, DraftInitializationResult,
-  InputActions, InputEffect, InputNotice, InputState, InputTriggerController,
+  InputActions, InputEffect, InputModelCapabilities, InputNotice, InputState, InputTriggerController,
   SessionInput, SubmitAttempt, SubmitAttachment, SubmitOutcome,
 } from '../contract/input.ts'
 import type {
@@ -63,6 +63,15 @@ export interface SessionInputDeps {
     mode: InputSubmitMode,
     signal: AbortSignal,
   ): Promise<SubmitOutcome>
+  /** @returns Localized refusal for files or references unsupported by the selected model. */
+  unsupportedModelInputNotice?: () => string
+  /**
+   * Verify runtime attachment kinds without discarding browser-owned drafts.
+   * @param ids - Draft attachment identities in input order.
+   * @param capabilities - Current explicit selected-model input controls.
+   * @returns Whether all referenced drafts are compatible.
+   */
+  modelAttachmentsSupported?: (ids: readonly DraftAttachmentId[], capabilities: InputModelCapabilities) => boolean
   /** Command-plane attachment plumbing (the hub owns the conversation face and the copy). */
   commandAttachments: {
     /** Resolve ordered draft ids to wire payloads without sending them; rejects when an id no longer resolves. */
@@ -133,6 +142,23 @@ export class SessionInputShell implements SessionInput {
     removeAttachment: (id) => { this.removeAttachment(id) },
     pruneAttachments: (ids) => { this.pruneAttachments(ids) },
     submit: () => { this.submit('queue') },
+  }
+
+  private modelCapabilities: InputModelCapabilities | undefined
+
+  /**
+   * Publish live selected-model controls while preserving every draft occurrence.
+   * @param capabilities - Explicit controls, or undefined for an undeclared model.
+   */
+  setModelCapabilities(capabilities: InputModelCapabilities | undefined): void {
+    this.modelCapabilities = capabilities
+    this.publish()
+  }
+
+  private refuseModelInput(): void {
+    const notice = this.deps.unsupportedModelInputNotice
+    if (notice === undefined) throw new Error('Missing model-input refusal presentation')
+    this.notify('error', notice())
   }
 
   private readonly core = new SubmitMachine()
@@ -262,6 +288,10 @@ export class SessionInputShell implements SessionInput {
 
   /** Append ordered attachment ids unless an admission transaction is locked. */
   addAttachments(ids: readonly DraftAttachmentId[]): boolean {
+    if (this.modelCapabilities !== undefined && this.deps.modelAttachmentsSupported?.(ids, this.modelCapabilities) === false) {
+      this.refuseModelInput()
+      return false
+    }
     if (this.snapshot.phase === 'adjudicating' || this.snapshot.phase === 'submitting') return false
     if (ids.length === 0) return true
     this.attachmentIds = [...this.attachmentIds, ...ids]
@@ -276,6 +306,11 @@ export class SessionInputShell implements SessionInput {
    * @returns false when admission is locked or the editor refuses the insertion.
    */
   addFiles(references: readonly ReferenceInsert[], ids: readonly DraftAttachmentId[]): boolean {
+    if (this.modelCapabilities !== undefined && (this.modelCapabilities.tools === false && references.length > 0
+      || ids.length > 0 && this.deps.modelAttachmentsSupported?.(ids, this.modelCapabilities) === false)) {
+      this.refuseModelInput()
+      return false
+    }
     if (this.snapshot.phase === 'adjudicating' || this.snapshot.phase === 'submitting') return false
     if (!this.draftEditor.insertFileReferences(references)) return false
     this.attachmentIds = [...this.attachmentIds, ...ids]
@@ -340,6 +375,12 @@ export class SessionInputShell implements SessionInput {
    */
   submit(mode: InputSubmitMode = 'queue', source?: 'click' | 'enter'): void {
     if (this.disposed) return
+    if (this.modelCapabilities !== undefined && (this.modelCapabilities.tools === false
+      && this.projection.occurrences.some(value => value.appearance === 'file' || value.appearance === 'folder')
+      || this.attachmentIds.length > 0 && this.deps.modelAttachmentsSupported?.(this.attachmentIds, this.modelCapabilities) === false)) {
+      this.refuseModelInput()
+      return
+    }
     const timestamp = Date.now()
     let state: MessageSubmissionState | undefined
     if (this.snapshot.phase === 'plain' && (this.snapshot.draft.trim() !== '' || this.attachmentIds.length > 0)) {
@@ -477,6 +518,10 @@ export class SessionInputShell implements SessionInput {
    * @returns whether the edit applied.
    */
   insertReference(ref: ReferenceInsert, span: TokenSpan): boolean {
+    if (this.modelCapabilities?.tools === false && (ref.appearance === 'file' || ref.appearance === 'folder')) {
+      this.refuseModelInput()
+      return false
+    }
     const phase = this.core.state.phase
     if (phase !== 'plain' && phase !== 'claimed') return false
     if (span.draftRev !== this.rev) return false
@@ -891,6 +936,7 @@ export class SessionInputShell implements SessionInput {
     const core = this.core.state
     return {
       draft: this.projection.clipboardText,
+      ...this.modelCapabilities === undefined ? {} : { modelCapabilities: this.modelCapabilities },
       attachmentIds: this.attachmentIds,
       draftRev: this.rev,
       phase: core.phase,
