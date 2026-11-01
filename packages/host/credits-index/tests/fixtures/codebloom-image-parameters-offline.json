@@ -1,0 +1,683 @@
+[
+  {
+    "model_name": "codebloom-grok-imagine-image-2.0",
+    "kind": "image",
+    "enable_groups": [
+      "default"
+    ],
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {
+        "aspect_ratio": false,
+        "background": false,
+        "format": false,
+        "image": false,
+        "mask": false,
+        "moderation": false,
+        "n": {
+          "default": 1,
+          "enum": [
+            1
+          ],
+          "type": "integer"
+        },
+        "output_format": false,
+        "quality": false,
+        "reference_images": {
+          "maxItems": 0,
+          "type": "array"
+        },
+        "resolution": false,
+        "response_format": {
+          "default": "url",
+          "enum": [
+            "url",
+            "b64_json"
+          ],
+          "type": "string"
+        },
+        "seed": false,
+        "size": false
+      },
+      "type": "object",
+      "x-model-kind": "image",
+      "x-reference-limits": {
+        "audios": 0,
+        "counts_include_files_and_urls": true,
+        "images": 0,
+        "videos": 0
+      },
+      "x-task-plugin": {
+        "api_version": 1,
+        "key": "codebloom-image",
+        "version": "1.0.0"
+      }
+    },
+    "retail_price_rows": [
+      {
+        "direction": "request",
+        "params": {
+          "mode": "text-to-image",
+          "output_count_requested_in_prompt": 1
+        },
+        "retail_cny": "0.25",
+        "unit": "CNY / request"
+      }
+    ]
+  },
+  {
+    "model_name": "codebloom-grok-imagine-image",
+    "kind": "image",
+    "enable_groups": [
+      "default"
+    ],
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {
+        "aspect_ratio": false,
+        "background": false,
+        "format": false,
+        "image": false,
+        "mask": false,
+        "moderation": false,
+        "n": {
+          "default": 1,
+          "enum": [
+            1
+          ],
+          "type": "integer"
+        },
+        "output_format": false,
+        "quality": false,
+        "reference_images": {
+          "maxItems": 0,
+          "type": "array"
+        },
+        "resolution": false,
+        "response_format": {
+          "default": "url",
+          "enum": [
+            "url",
+            "b64_json"
+          ],
+          "type": "string"
+        },
+        "seed": false,
+        "size": false
+      },
+      "type": "object",
+      "x-model-kind": "image",
+      "x-reference-limits": {
+        "audios": 0,
+        "counts_include_files_and_urls": true,
+        "images": 0,
+        "videos": 0
+      },
+      "x-task-plugin": {
+        "api_version": 1,
+        "key": "codebloom-image",
+        "version": "1.0.0"
+      }
+    },
+    "retail_price_rows": [
+      {
+        "direction": "request",
+        "params": {
+          "mode": "text-to-image",
+          "output_count_requested_in_prompt": 1
+        },
+        "retail_cny": "0.2125",
+        "unit": "CNY / request"
+      }
+    ]
+  },
+  {
+    "model_name": "codebloom-gemini-3.1-flash-image-preview",
+    "kind": "image",
+    "enable_groups": [
+      "default"
+    ],
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {
+        "aspect_ratio": false,
+        "background": false,
+        "format": false,
+        "image": false,
+        "mask": false,
+        "moderation": false,
+        "n": {
+          "default": 1,
+          "enum": [
+            1
+          ],
+          "type": "integer"
+        },
+        "output_format": false,
+        "quality": false,
+        "reference_images": {
+          "maxItems": 0,
+          "type": "array"
+        },
+        "resolution": false,
+        "response_format": {
+          "default": "url",
+          "enum": [
+            "url",
+            "b64_json"
+          ],
+          "type": "string"
+        },
+        "seed": false,
+        "size": false
+      },
+      "type": "object",
+      "x-model-kind": "image",
+      "x-reference-limits": {
+        "audios": 0,
+        "counts_include_files_and_urls": true,
+        "images": 0,
+        "videos": 0
+      },
+      "x-task-plugin": {
+        "api_version": 1,
+        "key": "codebloom-image",
+        "version": "1.0.0"
+      }
+    },
+    "retail_price_rows": [
+      {
+        "direction": "request",
+        "params": {
+          "mode": "text-to-image",
+          "output_count_requested_in_prompt": 1
+        },
+        "retail_cny": "0.25",
+        "unit": "CNY / request"
+      }
+    ]
+  },
+  {
+    "model_name": "codebloom-nano-banana-2",
+    "kind": "image",
+    "enable_groups": [
+      "default"
+    ],
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {
+        "aspect_ratio": false,
+        "background": false,
+        "format": false,
+        "image": false,
+        "mask": false,
+        "moderation": false,
+        "n": {
+          "default": 1,
+          "enum": [
+            1
+          ],
+          "type": "integer"
+        },
+        "output_format": false,
+        "quality": false,
+        "reference_images": {
+          "maxItems": 0,
+          "type": "array"
+        },
+        "resolution": false,
+        "response_format": {
+          "default": "url",
+          "enum": [
+            "url",
+            "b64_json"
+          ],
+          "type": "string"
+        },
+        "seed": false,
+        "size": false
+      },
+      "type": "object",
+      "x-model-kind": "image",
+      "x-reference-limits": {
+        "audios": 0,
+        "counts_include_files_and_urls": true,
+        "images": 0,
+        "videos": 0
+      },
+      "x-task-plugin": {
+        "api_version": 1,
+        "key": "codebloom-image",
+        "version": "1.0.0"
+      }
+    },
+    "retail_price_rows": [
+      {
+        "direction": "request",
+        "params": {
+          "mode": "text-to-image",
+          "output_count_requested_in_prompt": 1
+        },
+        "retail_cny": "0.2125",
+        "unit": "CNY / request"
+      }
+    ]
+  },
+  {
+    "model_name": "codebloom-gpt-image-2.5-sunburst",
+    "kind": "image",
+    "enable_groups": [
+      "default"
+    ],
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {
+        "aspect_ratio": false,
+        "background": false,
+        "format": false,
+        "image": false,
+        "mask": false,
+        "moderation": false,
+        "n": {
+          "default": 1,
+          "enum": [
+            1
+          ],
+          "type": "integer"
+        },
+        "output_format": false,
+        "quality": false,
+        "reference_images": {
+          "maxItems": 0,
+          "type": "array"
+        },
+        "resolution": false,
+        "response_format": {
+          "default": "url",
+          "enum": [
+            "url",
+            "b64_json"
+          ],
+          "type": "string"
+        },
+        "seed": false,
+        "size": {
+          "default": "1024x1024",
+          "enum": [
+            "1024x1024"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object",
+      "x-model-kind": "image",
+      "x-reference-limits": {
+        "audios": 0,
+        "counts_include_files_and_urls": true,
+        "images": 0,
+        "videos": 0
+      },
+      "x-task-plugin": {
+        "api_version": 1,
+        "key": "codebloom-image",
+        "version": "1.0.0"
+      }
+    },
+    "retail_price_rows": [
+      {
+        "direction": "image",
+        "params": {
+          "mode": "text-to-image",
+          "n": 1,
+          "size": "1024x1024"
+        },
+        "retail_cny": "0.175",
+        "unit": "CNY / image"
+      }
+    ]
+  },
+  {
+    "model_name": "codebloom-gemini-nano-banana-2.1",
+    "kind": "image",
+    "enable_groups": [
+      "default"
+    ],
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {
+        "aspect_ratio": false,
+        "background": false,
+        "format": false,
+        "image": false,
+        "mask": false,
+        "moderation": false,
+        "n": {
+          "default": 1,
+          "enum": [
+            1
+          ],
+          "type": "integer"
+        },
+        "output_format": false,
+        "quality": false,
+        "reference_images": {
+          "maxItems": 0,
+          "type": "array"
+        },
+        "resolution": false,
+        "response_format": {
+          "default": "url",
+          "enum": [
+            "url",
+            "b64_json"
+          ],
+          "type": "string"
+        },
+        "seed": false,
+        "size": false
+      },
+      "type": "object",
+      "x-model-kind": "image",
+      "x-reference-limits": {
+        "audios": 0,
+        "counts_include_files_and_urls": true,
+        "images": 0,
+        "videos": 0
+      },
+      "x-task-plugin": {
+        "api_version": 1,
+        "key": "codebloom-image",
+        "version": "1.0.0"
+      }
+    },
+    "retail_price_rows": [
+      {
+        "direction": "request",
+        "params": {
+          "mode": "text-to-image",
+          "output_count_requested_in_prompt": 1
+        },
+        "retail_cny": "0.325",
+        "unit": "CNY / request"
+      }
+    ]
+  },
+  {
+    "model_name": "codebloom-gpt-image-2.5-flare",
+    "kind": "image",
+    "enable_groups": [
+      "default"
+    ],
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {
+        "aspect_ratio": false,
+        "background": false,
+        "format": false,
+        "image": false,
+        "mask": false,
+        "moderation": false,
+        "n": {
+          "default": 1,
+          "enum": [
+            1
+          ],
+          "type": "integer"
+        },
+        "output_format": false,
+        "quality": false,
+        "reference_images": {
+          "maxItems": 0,
+          "type": "array"
+        },
+        "resolution": false,
+        "response_format": {
+          "default": "url",
+          "enum": [
+            "url",
+            "b64_json"
+          ],
+          "type": "string"
+        },
+        "seed": false,
+        "size": {
+          "default": "1024x1024",
+          "enum": [
+            "1024x1024"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object",
+      "x-model-kind": "image",
+      "x-reference-limits": {
+        "audios": 0,
+        "counts_include_files_and_urls": true,
+        "images": 0,
+        "videos": 0
+      },
+      "x-task-plugin": {
+        "api_version": 1,
+        "key": "codebloom-image",
+        "version": "1.0.0"
+      }
+    },
+    "retail_price_rows": [
+      {
+        "direction": "image",
+        "params": {
+          "mode": "text-to-image",
+          "n": 1,
+          "size": "1024x1024"
+        },
+        "retail_cny": "0.175",
+        "unit": "CNY / image"
+      }
+    ]
+  },
+  {
+    "model_name": "codebloom-gpt-image-2k",
+    "kind": "image",
+    "enable_groups": [
+      "default"
+    ],
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {
+        "aspect_ratio": false,
+        "background": false,
+        "format": false,
+        "image": false,
+        "mask": false,
+        "moderation": false,
+        "n": {
+          "default": 1,
+          "enum": [
+            1
+          ],
+          "type": "integer"
+        },
+        "output_format": false,
+        "quality": false,
+        "reference_images": {
+          "maxItems": 0,
+          "type": "array"
+        },
+        "resolution": false,
+        "response_format": {
+          "default": "url",
+          "enum": [
+            "url",
+            "b64_json"
+          ],
+          "type": "string"
+        },
+        "seed": false,
+        "size": {
+          "default": "1024x1024",
+          "enum": [
+            "1024x1024"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object",
+      "x-model-kind": "image",
+      "x-reference-limits": {
+        "audios": 0,
+        "counts_include_files_and_urls": true,
+        "images": 0,
+        "videos": 0
+      },
+      "x-task-plugin": {
+        "api_version": 1,
+        "key": "codebloom-image",
+        "version": "1.0.0"
+      }
+    },
+    "retail_price_rows": [
+      {
+        "direction": "image",
+        "params": {
+          "mode": "text-to-image",
+          "n": 1,
+          "size": "1024x1024"
+        },
+        "retail_cny": "0.2125",
+        "unit": "CNY / image"
+      }
+    ]
+  },
+  {
+    "model_name": "codebloom-nano-banana-pro",
+    "kind": "image",
+    "enable_groups": [
+      "default"
+    ],
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {
+        "aspect_ratio": false,
+        "background": false,
+        "format": false,
+        "image": false,
+        "mask": false,
+        "moderation": false,
+        "n": {
+          "default": 1,
+          "enum": [
+            1
+          ],
+          "type": "integer"
+        },
+        "output_format": false,
+        "quality": false,
+        "reference_images": {
+          "maxItems": 0,
+          "type": "array"
+        },
+        "resolution": false,
+        "response_format": {
+          "default": "url",
+          "enum": [
+            "url",
+            "b64_json"
+          ],
+          "type": "string"
+        },
+        "seed": false,
+        "size": false
+      },
+      "type": "object",
+      "x-model-kind": "image",
+      "x-reference-limits": {
+        "audios": 0,
+        "counts_include_files_and_urls": true,
+        "images": 0,
+        "videos": 0
+      },
+      "x-task-plugin": {
+        "api_version": 1,
+        "key": "codebloom-image",
+        "version": "1.0.0"
+      }
+    },
+    "retail_price_rows": [
+      {
+        "direction": "request",
+        "params": {
+          "mode": "text-to-image",
+          "output_count_requested_in_prompt": 1
+        },
+        "retail_cny": "0.325",
+        "unit": "CNY / request"
+      }
+    ]
+  },
+  {
+    "model_name": "codebloom-gemini-3-pro-image-preview",
+    "kind": "image",
+    "enable_groups": [
+      "default"
+    ],
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {
+        "aspect_ratio": false,
+        "background": false,
+        "format": false,
+        "image": false,
+        "mask": false,
+        "moderation": false,
+        "n": {
+          "default": 1,
+          "enum": [
+            1
+          ],
+          "type": "integer"
+        },
+        "output_format": false,
+        "quality": false,
+        "reference_images": {
+          "maxItems": 0,
+          "type": "array"
+        },
+        "resolution": false,
+        "response_format": {
+          "default": "url",
+          "enum": [
+            "url",
+            "b64_json"
+          ],
+          "type": "string"
+        },
+        "seed": false,
+        "size": false
+      },
+      "type": "object",
+      "x-model-kind": "image",
+      "x-reference-limits": {
+        "audios": 0,
+        "counts_include_files_and_urls": true,
+        "images": 0,
+        "videos": 0
+      },
+      "x-task-plugin": {
+        "api_version": 1,
+        "key": "codebloom-image",
+        "version": "1.0.0"
+      }
+    },
+    "retail_price_rows": [
+      {
+        "direction": "request",
+        "params": {
+          "mode": "text-to-image",
+          "output_count_requested_in_prompt": 1
+        },
+        "retail_cny": "0.25",
+        "unit": "CNY / request"
+      }
+    ]
+  }
+]

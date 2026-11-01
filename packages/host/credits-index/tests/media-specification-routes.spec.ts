@@ -17,6 +17,7 @@ import LlmRuntime from '@deepseek-ai/dsh-llm'
 import * as LlmPiAi from '@deepseek-ai/dsh-llm-pi-ai'
 import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
 import * as Credits from '../src/index.ts'
+import candidateImages from './fixtures/codebloom-image-parameters-offline.json' with { type: 'json' }
 import { profileComposition } from '../../../settings/settings/tests/profile-composition.ts'
 
 const reference = credentialRef('MEDIA_SPECIFICATION_SYNTHETIC_RELAY')
@@ -65,7 +66,8 @@ afterEach(async () => {
   calls.length = 0
 })
 
-async function boot(visibleModels: readonly string[] = rows.map(row => row.model_name), authenticated = true) {
+async function boot(visibleModels: readonly string[] = rows.map(row => row.model_name), authenticated = true,
+  pricingRows: readonly { readonly model_name: string }[] = rows) {
   directory = await mkdtemp(join(tmpdir(), 'dsh-media-specifications-'))
   const root = directory
   upstream = createServer((request, response) => {
@@ -90,11 +92,11 @@ async function boot(visibleModels: readonly string[] = rows.map(row => row.model
           relay_key: 'sk-fixture-relay', relay_key_id: 9, session: { sid: 'fixture-session', current: true }, user: { id: 7, username: 'fixture', quota: 1000000 } }); return
       }
       if (path === '/harness/api/user/self') { answer({ id: 7, username: 'fixture', group: 'default', quota: 1000000 }); return }
-      if (path === '/harness/api/pricing') { answer(rows); return }
+      if (path === '/harness/api/pricing') { answer(pricingRows); return }
       if (path === '/harness/api/client-activity/heartbeat') { answer({ server_time: Math.floor(Date.now() / 1000), heartbeat_interval_seconds: 30, online_timeout_seconds: 90 }); return }
       if (path === '/harness/v1/models') {
         expect(request.headers.authorization).toBe('Bearer sk-fixture-relay')
-        response.end(JSON.stringify({ data: rows.filter(row => visibleModels.includes(row.model_name))
+        response.end(JSON.stringify({ data: pricingRows.filter(row => visibleModels.includes(row.model_name))
           .map(row => ({ id: row.model_name, supported_endpoint_types: ['openai'] })) })); return
       }
       if (path === '/harness/v1/images/generations') {
@@ -219,5 +221,76 @@ describe('complete media specifications through the shipped Host Loader', () => 
   it('keeps speech and invalid pricing classifications out of the agent model picker', async () => {
     await boot()
     expect((await context!.llm.listModels('yunshu-local')).map(model => model.id)).toEqual(['ycapi-minimax-m3'])
+  })
+})
+
+
+async function recordImageSizeCase(name: string, result: object): Promise<void> {
+  const output = process.env.DSH_MEDIA_SIZE_AUDIT_OUTPUT_DIR
+  if (output !== undefined) await writeFile(join(output, name + '.json'), JSON.stringify(result, null, 2) + '\n')
+}
+
+const candidateIds = candidateImages.map(row => row.model_name)
+const noSizeCandidates = candidateImages.filter(row => row.parameters.properties.size === false)
+
+describe('explicit image size declarations through the shipped Host Loader', () => {
+  it.for(noSizeCandidates)('$model_name refuses an explicit size when its live declaration disables sizes', async (row) => {
+    const base = await boot(candidateIds, true, candidateImages)
+    const result = await post(base, '/api/image/generate', { model: row.model_name, prompt: 'One synthetic image', size: '1024x1024' })
+    const submitted = calls.filter(call => call.path === '/harness/v1/images/generations')
+    await recordImageSizeCase(row.model_name + '-blocked-size', { model: row.model_name, result, submitted })
+    expect(result).toMatchObject({ ok: false, code: 'SIZE_NOT_SUPPORTED', submission_state: 'not-submitted' })
+    expect(submitted).toEqual([])
+  })
+
+  it.for(candidateImages)('$model_name submits only its declared image parameters', async (row) => {
+    const base = await boot(candidateIds, true, candidateImages)
+    const supportsSize = row.parameters.properties.size !== false
+    const body = { model: row.model_name, prompt: 'One synthetic image', ...supportsSize ? { size: '1024x1024' } : {} }
+    const rejected: { extra: object; result: Record<string, unknown> }[] = []
+    for (const [extra, code] of [
+      [{ quality: 'high' }, 'QUALITY_NOT_SUPPORTED'], [{ format: 'png' }, 'FORMAT_NOT_SUPPORTED'],
+      [{ resolution: '2k' }, 'RESOLUTION_NOT_SUPPORTED'], [{ count: 2 }, 'COUNT_NOT_SUPPORTED'],
+      [{ references: ['ma_synthetic'] }, 'REFERENCES_NOT_SUPPORTED'],
+    ] as const) {
+      const result = await post(base, '/api/image/generate', { ...body, ...extra })
+      expect(result).toMatchObject({ ok: false, code, submission_state: 'not-submitted' })
+      rejected.push({ extra, result })
+    }
+    if (supportsSize) {
+      const result = await post(base, '/api/image/generate', { ...body, size: '2048x2048' })
+      expect(result).toMatchObject({ ok: false, code: 'SIZE_NOT_SUPPORTED', submission_state: 'not-submitted' })
+      rejected.push({ extra: { size: '2048x2048' }, result })
+    }
+    expect(calls.filter(call => call.path === '/harness/v1/images/generations')).toEqual([])
+    const result = await post(base, '/api/image/generate', body)
+    expect(result).toMatchObject({ ok: true })
+    const submitted = calls.filter(call => call.path === '/harness/v1/images/generations')
+    expect(submitted).toEqual([{ path: '/harness/v1/images/generations', body: {
+      model: row.model_name, prompt: body.prompt, n: 1, response_format: 'b64_json', ...supportsSize ? { size: '1024x1024' } : {},
+    } }])
+    await recordImageSizeCase(row.model_name + '-parameters', { model: row.model_name, result, rejected, submitted })
+  })
+
+  it('keeps an undeclared legacy size menu compatible with an explicit size', async () => {
+    const model = 'legacy-image-provider'
+    const legacy = [{ model_name: model, kind: 'image', parameters: { properties: {
+      n: { enum: [1] }, reference_images: { maxItems: 0 },
+    } } }]
+    const base = await boot([model], true, legacy)
+    const catalog = object(object(await (await fetch(base + '/api/media/catalog')).json()).payload)
+    if (!Array.isArray(catalog.image)) throw new Error('Expected image catalog')
+    expect(catalog.image).toHaveLength(1)
+    const capability = object(catalog.image[0])
+    expect(capability.id).toBe(model)
+    expect(object(capability.params).sizes).toEqual([])
+    expect(capability.notes).toEqual([])
+    const result = await post(base, '/api/image/generate', { model, prompt: 'One synthetic legacy image', size: '640x480' })
+    expect(result).toMatchObject({ ok: true })
+    const submitted = calls.filter(call => call.path === '/harness/v1/images/generations')
+    expect(submitted).toEqual([{ path: '/harness/v1/images/generations', body: {
+      model, prompt: 'One synthetic legacy image', n: 1, response_format: 'b64_json', size: '640x480',
+    } }])
+    await recordImageSizeCase('legacy-undeclared-size', { model, result, submitted })
   })
 })

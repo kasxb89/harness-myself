@@ -1914,8 +1914,9 @@ export function apply(ctx: Context, config: Config): void {
           message: `${model} 的分辨率可选：${(params.resolutions ?? []).join('、') || '无'}` }
       }
       const size = complete.specification.size ?? null
+      const constrainedSizes = params.sizes.length > 0 || capability.model.notes.includes('sizes')
       if (internalImage && body.size !== undefined && (size === null || !params.sizes.includes(size))
-        || size !== null && params.sizes.length > 0 && !params.sizes.includes(size)) {
+        || size !== null && constrainedSizes && !params.sizes.includes(size)) {
         return { ok: false, submissionState: 'not-submitted', code: 'SIZE_NOT_SUPPORTED', message: `${model} 不支持 ${size}，可选：${params.sizes.join('、')}` }
       }
       const quality = internalImage ? null : complete.specification.quality ?? null
