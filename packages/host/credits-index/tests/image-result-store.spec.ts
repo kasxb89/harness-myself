@@ -7,6 +7,7 @@ import { ImageResultStore, validateImageResultItems, type ImageResultScope, type
 import { executeImageTask, type ImageTaskOptions } from '../src/image-task.ts'
 import type { CreativeImageReceipt } from '../src/creative-types.ts'
 import type { CreativeOperationId, CreativeOwner } from '../src/creative-store.ts'
+import { imageServerTaskId } from '../src/image-server-task.ts'
 
 const directories: string[] = []
 afterEach(async () => { await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))) })
@@ -52,6 +53,16 @@ async function fixture() {
 }
 
 describe('private original image results', () => {
+  it('keeps local sources for a server-only receipt across private result-store restart', async () => {
+    const f = await fixture(), serverTaskId = imageServerTaskId('task_codebloom_http_fixture')
+    if (serverTaskId === undefined) throw new Error('Expected server fixture identity')
+    const received = { ...receipt, phase: 'accepted' as const, serverTaskId }
+    const ref = await f.store.retain(f.scope, received, [inline])
+    const restored = await new ImageResultStore(f.config).load(f.scope, ref)
+    expect(restored.receipt).toEqual(received)
+    expect(restored.items).toEqual([inline])
+    expect(restored.receipt).not.toHaveProperty('taskId')
+  })
   it('retains synchronous URL and inline sources before saving, then recovers only the unsaved index after restart', async () => {
     const f = await fixture()
     const first = f.input()

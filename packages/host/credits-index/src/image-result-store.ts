@@ -8,6 +8,7 @@ import type { Branded } from '@deepseek-ai/dsh-brand'
 import { CreativeError, type CreativeOperationId, type CreativeOwner } from './creative-store.ts'
 import type { CreativeImageReceipt } from './creative-types.ts'
 import type { VideoProjectIdentity } from './video-project-types.ts'
+import { imageServerTaskId } from './image-server-task.ts'
 import { parseArtifactOrigin } from './artifact-origin.ts'
 
 const MANIFEST_BYTES = 1_048_576
@@ -116,12 +117,14 @@ function receiptValue(value: unknown, scope: ScopeRecord): CreativeImageReceipt 
   }
   const taskId = item.taskId === undefined ? undefined : id(item.taskId)
   const requestId = item.requestId === undefined ? undefined : id(item.requestId)
-  if (phase === 'accepted' && taskId === undefined) return invalid()
+  const serverTaskId = item.serverTaskId === undefined ? undefined : imageServerTaskId(item.serverTaskId)
+  if (item.serverTaskId !== undefined && serverTaskId === undefined
+    || phase === 'accepted' && taskId === undefined && serverTaskId === undefined) return invalid()
   const origin = parseArtifactOrigin(item.origin, scope.sessionId)
   if (origin === null) return invalid()
   return { route, model, phase, backendFingerprint: scope.backendFingerprint,
     ...taskId === undefined ? {} : { taskId }, ...requestId === undefined ? {} : { requestId },
-    ...origin === undefined ? {} : { origin } }
+    ...origin === undefined ? {} : { origin }, ...serverTaskId === undefined ? {} : { serverTaskId } }
 }
 
 /** Private immutable sources plus mutable, hash-verified local save checkpoints. */

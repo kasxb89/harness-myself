@@ -94,6 +94,7 @@ import { GenerationPerformance } from './generation-performance.ts'
 import { MediaCatalogCache, MediaCatalogReadError } from './media-catalog-cache.ts'
 import { transferMedia, readMediaBytes, MediaTransferLimitError } from './media-transfer.ts'
 import { ImageConcurrency, imageConcurrencyCeiling } from './image-concurrency.ts'
+import { imageServerArtifactUrl, imageServerResultRecovery, loadImageRecoverySources } from './image-server-recovery.ts'
 import { executeVideoTask } from './video-task.ts'
 import type { CreativeImageReceipt, CreativeVideoReceipt, CreativeTaskView } from './creative-types.ts'
 import type { VideoProjectIdentity, VideoProjectInput, VideoProjectOptions, VideoProjectRequest, VideoRequestValue } from './video-project-types.ts'
@@ -1122,6 +1123,7 @@ export function apply(ctx: Context, config: Config): void {
     models: ModelCapability[]
     projectParallelism?: ReadonlyMap<string, number>
     imageCeilings?: ReadonlyMap<string, number | undefined>
+    imageServerRecovery?: ReadonlySet<string>
     preferencePrices?: ReadonlyMap<string, MediaPreferencePricing>
   }> => {
     let group: string | null = null
@@ -1155,6 +1157,8 @@ export function apply(ctx: Context, config: Config): void {
         .map(model => [model.id, videoProjectParallelism(rows, model.id)]))
       const imageCeilings = new Map(models.filter(model => model.kind === 'image')
         .map(model => [model.id, imageConcurrencyCeiling(rows, model.id)]))
+      const imageServerRecovery = new Set(models.filter(model => model.kind === 'image'
+        && imageServerResultRecovery(rows, model.id)).map(model => model.id))
       let preferencePrices: ReadonlyMap<string, MediaPreferencePricing> | undefined
       if (includePublicUnitPrices) {
         try { preferencePrices = mediaPreferencePrices(rows, models, resolved.creditsPerYuan) }
@@ -1163,7 +1167,7 @@ export function apply(ctx: Context, config: Config): void {
           preferencePrices = new Map()
         }
       }
-      return { ok: true, group, models, projectParallelism, imageCeilings,
+      return { ok: true, group, models, projectParallelism, imageCeilings, imageServerRecovery,
         ...preferencePrices === undefined ? {} : { preferencePrices } }
     } catch (error) {
       return {
@@ -1383,7 +1387,7 @@ export function apply(ctx: Context, config: Config): void {
     kind: 'image' | 'video',
     id: string | null,
     signal?: AbortSignal,
-  ): Promise<{ ok: true; model: ModelCapability; imageCeiling?: number }
+  ): Promise<{ ok: true; model: ModelCapability; imageCeiling?: number; serverResultRecovery?: boolean }
     | { ok: false; code: string; message: string; catalog: ModelCapability[] }> => {
     const catalog = await readMediaCatalog(signal)
     if (!catalog.ok) return { ok: false, code: catalog.code ?? 'CATALOG_FAILED', message: catalog.message ?? '模型表不可用', catalog: [] }
@@ -1400,7 +1404,8 @@ export function apply(ctx: Context, config: Config): void {
       }
     }
     const imageCeiling = kind === 'image' ? catalog.imageCeilings?.get(model.id) : undefined
-    return { ok: true, model, ...imageCeiling === undefined ? {} : { imageCeiling } }
+    return { ok: true, model, ...imageCeiling === undefined ? {} : { imageCeiling },
+      ...kind !== 'image' ? {} : { serverResultRecovery: catalog.imageServerRecovery?.has(model.id) === true } }
   }
 
   /** What one media generation produced, in the shape both callers report. */
@@ -1410,6 +1415,7 @@ export function apply(ctx: Context, config: Config): void {
     readonly message?: string | undefined
     readonly model?: string | undefined
     readonly taskId?: string | undefined
+    readonly serverTaskId?: string | undefined
     readonly requestId?: string | undefined
     readonly imageReceipt?: CreativeImageReceipt | undefined
     readonly videoReceipt?: CreativeVideoReceipt | undefined
@@ -1781,17 +1787,22 @@ export function apply(ctx: Context, config: Config): void {
     const resultScope = originalResult === undefined ? undefined : { owner: originalResult.operation.owner,
       operationId: originalResult.operation.operationId, backendFingerprint }
     let retainedResultRef = originalResult?.reference
+    let serverResultRecovery = resumeReceipt?.serverTaskId !== undefined
     const execute = async (
-      model: string, route: string, mode: string, format: string | null,
+      model: string, route: string, mode: string,
       submit: (requestSignal: AbortSignal) => Promise<Response>,
     ): Promise<MediaOutcome & { paths?: readonly string[]; mode?: string }> => {
       let output: CapturedMediaOutput | undefined
-      const resumeResult = resumeReceipt !== undefined && resumeReceipt.taskId === undefined
-        && resultScope !== undefined && retainedResultRef !== undefined
-        ? await imageResults.load(resultScope, retainedResultRef) : undefined
+      const sourceReference = retainedResultRef
+      const recoverySources = resumeReceipt !== undefined && resumeReceipt.taskId === undefined
+        && resultScope !== undefined && sourceReference !== undefined
+        ? await loadImageRecoverySources(() => imageResults.load(resultScope, sourceReference), resumeReceipt.serverTaskId) : undefined
+      const resumeResult = recoverySources?.kind === 'local' ? recoverySources.result : undefined
+      const localResultUnavailable = recoverySources?.kind === 'server'
       const result = await executeImageTask({
         ...activity === undefined ? {} : { activity },
         model, route, backendFingerprint, signal, submit, ...origin === undefined ? {} : { origin },
+        serverResultRecovery,
         prepare: async (operationSignal) => {
           output = await captureMediaOutput(ctx.get('artifactStorage'), join(stateDir, 'media'), operationSignal,
             resumeReceipt === undefined ? origin : resumeReceipt.origin, undefined, outputImageRole)
@@ -1811,12 +1822,12 @@ export function apply(ctx: Context, config: Config): void {
         ...resumeReceipt === undefined ? {} : { resumeReceipt },
         ...resumeResult === undefined ? {} : { resumeResult },
         receivedResult: async (items, receipt) => {
-          if (resultScope === undefined || originalResult === undefined || receipt.taskId !== undefined) return
+          if (localResultUnavailable || resultScope === undefined || originalResult === undefined || receipt.taskId !== undefined) return
           retainedResultRef = await imageResults.retain(resultScope, receipt, items,
             ref => creative.imageResult(originalResult.operation, ref))
         },
         savedResult: async (index, path) => {
-          if (resultScope !== undefined && retainedResultRef !== undefined) {
+          if (!localResultUnavailable && resultScope !== undefined && retainedResultRef !== undefined) {
             await imageResults.saved(resultScope, retainedResultRef, index, path)
           }
         },
@@ -1836,6 +1847,23 @@ export function apply(ctx: Context, config: Config): void {
             headers: { authorization: `Bearer ${fallbackKey}`, accept: 'application/json' }, signal: requestSignal,
           })
         },
+        readServerTask: async (taskId, requestSignal) => {
+          const ownedKey = await imageKey()
+          assertImageCurrent()
+          requestSignal.throwIfAborted()
+          return apiFetch(`/v1/tasks/${encodeURIComponent(taskId)}`, {
+            headers: { authorization: `Bearer ${ownedKey}`, accept: 'application/json' }, signal: requestSignal,
+          })
+        },
+        readArtifacts: async (taskId, requestSignal) => {
+          const ownedKey = await imageKey()
+          assertImageCurrent()
+          requestSignal.throwIfAborted()
+          return apiFetch(`/v1/tasks/${encodeURIComponent(taskId)}/artifacts`, {
+            headers: { authorization: `Bearer ${ownedKey}`, accept: 'application/json' }, signal: requestSignal,
+          })
+        },
+        resolveArtifactUrl: (taskId, key, url) => imageServerArtifactUrl(apiBaseUrl, taskId, key, url),
         save: async (entry, index, operationSignal) => {
           await imageKey()
           assertImageCurrent()
@@ -1852,13 +1880,15 @@ export function apply(ctx: Context, config: Config): void {
           } else return undefined
           if (bytes.length > resolved.imageDownloadMaxBytes) throw new MediaTransferLimitError()
           if (bytes.length === 0) throw new VideoProjectError('IMAGE_DOWNLOAD_UNAVAILABLE', '原图片内容尚未取回，请继续查询原任务并保存；无需重新生成。')
+          const mediaType = [...ALLOWED_ASSET_TYPES].find(type => referenceSignature(bytes, type))
+          if (mediaType === undefined) throw new VideoProjectError('IMAGE_RESULT_INVALID',
+            '原任务返回的内容尚不能确认为有效图片，请保留原任务继续查询；不会重新生成。')
           const previous = await reuseSavedOutput?.(bytes)
           await imageKey()
           assertImageCurrent()
           operationSignal.throwIfAborted()
           if (previous !== undefined) return previous
-          const suffix = format === 'jpeg' || bytes[0] === 255 && bytes[1] === 216 ? 'jpg'
-            : format === 'webp' || bytes.toString('ascii', 0, 4) === 'RIFF' ? 'webp' : 'png'
+          const suffix = mediaType === 'image/jpeg' ? 'jpg' : mediaType === 'image/webp' ? 'webp' : 'png'
           const filename = mediaFilename({ ...naming, prompt: naming?.prompt ?? readString(body, 'prompt') ?? '',
             role: naming?.role ?? (outputImageRole === 'storyboard' ? 'shot-image' : 'image'), extension: suffix, index: naming?.index ?? index + 1 })
           if (output === undefined) throw new Error('Image output destination was not prepared')
@@ -1873,7 +1903,7 @@ export function apply(ctx: Context, config: Config): void {
       imageAccount = await bindCurrentVideoAccount()
       if (await imageKey() !== key) throw new VideoProjectError('IMAGE_ACCOUNT_CHANGED', '登录状态已变化，尚未提交本次图片生成。')
       if (resumeReceipt !== undefined) {
-        return await execute(resumeReceipt.model, resumeReceipt.route, 'recover', null, () => Promise.reject(new Error('Image recovery cannot submit a generation')))
+        return await execute(resumeReceipt.model, resumeReceipt.route, 'recover', () => Promise.reject(new Error('Image recovery cannot submit a generation')))
       }
       signal.throwIfAborted()
       const prompt = readString(body, 'prompt')
@@ -1889,6 +1919,7 @@ export function apply(ctx: Context, config: Config): void {
       }
       const params = capability.model.params as ImageParams
       const model = capability.model.id
+      serverResultRecovery = capability.serverResultRecovery === true
       const internalImage = model === 'yunshu-internal-gpt-image-2'
       if (internalImage) {
         const unsupported = ['quality', 'background', 'format', 'compression', 'moderation', 'seed', 'output_format', 'output_compression', 'aspect_ratio']
@@ -2099,11 +2130,12 @@ export function apply(ctx: Context, config: Config): void {
       progress?.('local-queue')
       releaseImage = await imageExecutions.acquire(model, capability.imageCeiling, signal, imageEpoch)
       signal.throwIfAborted()
-      return await execute(model, capability.model.route, references.length === 0 ? 'generate' : 'edit', format, submit)
+      return await execute(model, capability.model.route, references.length === 0 ? 'generate' : 'edit', submit)
     } catch (error) {
       return { ok: false, submissionState: resumeReceipt === undefined ? 'not-submitted' : 'pending',
         ...resumeReceipt === undefined ? {} : { imageReceipt: resumeReceipt, model: resumeReceipt.model,
           ...resumeReceipt.taskId === undefined ? {} : { taskId: resumeReceipt.taskId },
+          ...resumeReceipt.serverTaskId === undefined ? {} : { serverTaskId: resumeReceipt.serverTaskId },
           ...resumeReceipt.requestId === undefined ? {} : { requestId: resumeReceipt.requestId } },
         code: error instanceof VideoProjectError || error instanceof CreativeError ? error.code
           : error instanceof MediaTransferLimitError ? 'IMAGE_DOWNLOAD_TOO_LARGE' : signal.aborted ? 'ABORTED' : 'IMAGE_PREPARATION_FAILED',
@@ -2934,12 +2966,14 @@ export function apply(ctx: Context, config: Config): void {
       const task = [...project.tasks].reverse().find(task => protectsPanelSubmission(task) && ['unknown', 'running', 'saving'].includes(task.status))
       if (task === undefined) continue
       const receipt = task.imageReceipt
+      const taskId = receipt?.serverTaskId ?? receipt?.taskId
       return { ok: false, planId: project.id, operationId: task.id,
-        submissionState: receipt?.taskId === undefined ? 'unknown' : 'pending', code: 'CREATIVE_SUBMISSION_UNKNOWN',
+        submissionState: taskId === undefined ? 'unknown' : 'pending', code: 'CREATIVE_SUBMISSION_UNKNOWN',
         ...receipt === undefined ? {} : { imageReceipt: receipt, model: receipt.model,
           ...receipt.taskId === undefined ? {} : { taskId: receipt.taskId },
+          ...receipt.serverTaskId === undefined ? {} : { serverTaskId: receipt.serverTaskId },
           ...receipt.requestId === undefined ? {} : { requestId: receipt.requestId } },
-        message: receipt?.taskId === undefined
+        message: taskId === undefined
           ? '此聊天已有结果未确认的图片提交，请先核对原任务与计费，不要再次生成。'
           : '此聊天已有受理的图片任务，请查询原任务并保存结果，不要再次生成。' }
     }
@@ -4421,7 +4455,7 @@ export function apply(ctx: Context, config: Config): void {
             code: outcome.code ?? null,
             message: outcome.message ?? null,
             submission_state: outcome.submissionState ?? null,
-            task_id: outcome.taskId ?? null,
+            task_id: outcome.serverTaskId ?? outcome.taskId ?? null,
             request_id: outcome.requestId ?? null,
             plan_id: outcome.planId ?? null,
             operation_id: outcome.operationId ?? null,
@@ -5392,8 +5426,9 @@ export function apply(ctx: Context, config: Config): void {
               await creative.finish(creation, { status: outcome.ok ? 'completed' : imageCreativeStatus(outcome, jobSignal), paths, kind: 'image',
                 ...outcome.imageReceipt === undefined ? {} : { imageReceipt: outcome.imageReceipt },
                 ...outcome.submissionState === 'not-submitted' ? { notSubmitted: true } : {}, ...outcome.code === undefined ? {} : { errorCode: outcome.code } })
+              const taskId = outcome.serverTaskId ?? outcome.taskId
               const receipt = { operation_id: creation.operationId, submission_state: outcome.submissionState ?? 'not-submitted',
-                ...outcome.taskId === undefined ? {} : { task_id: outcome.taskId },
+                ...taskId === undefined ? {} : { task_id: taskId },
                 ...outcome.requestId === undefined ? {} : { request_id: outcome.requestId } }
               if (!outcome.ok) return { status: outcome.submissionState === 'pending' ? 'pending' : outcome.submissionState === 'unknown' ? 'unknown' : 'failed',
                 plan_id: creation.projectId, ...receipt, model: outcome.model ?? '', ...outcome.code === undefined ? {} : { code: outcome.code }, message: outcome.message ?? outcome.code ?? '生成失败' }
@@ -5455,11 +5490,12 @@ export function apply(ctx: Context, config: Config): void {
           const projects = await creative.projects(owner)
           const tasks = projects.filter(project => args.plan_id === undefined || project.id === args.plan_id)
             .flatMap(project => project.tasks.filter(task => ['unknown', 'running', 'saving'].includes(task.status)
-              && (project.kind === 'image' || task.imageReceipt !== undefined)).map(task => ({
-              plan_id: project.id, operation_id: task.id, status: task.status, can_query: task.canQuery === true,
-              ...task.imageReceipt?.taskId === undefined ? {} : { task_id: task.imageReceipt.taskId },
-              ...task.imageReceipt?.requestId === undefined ? {} : { request_id: task.imageReceipt.requestId },
-            })))
+              && (project.kind === 'image' || task.imageReceipt !== undefined)).map((task) => {
+              const taskId = task.imageReceipt?.serverTaskId ?? task.imageReceipt?.taskId
+              return { plan_id: project.id, operation_id: task.id, status: task.status, can_query: task.canQuery === true,
+                ...taskId === undefined ? {} : { task_id: taskId },
+                ...task.imageReceipt?.requestId === undefined ? {} : { request_id: task.imageReceipt.requestId } }
+            }))
           await binding.key()
           if (tasks.length > 100) return { status: 'failed', code: 'CREATIVE_TASK_LIST_TOO_LARGE', message: '未确认任务较多，请提供原计划编号缩小查询范围。' }
           return { status: 'listed', tasks, message: '已列出本聊天未完成的原任务。can_query 为 true 的记录可查询原任务或继续保存原图；本次未提交生成。' }
@@ -5467,11 +5503,12 @@ export function apply(ctx: Context, config: Config): void {
         if (args.plan_id === undefined) throw new CreativeError('CREATIVE_INVALID', 400, '查询原任务需要计划编号与原操作编号；请先列出现有回执。')
         const retained = await creative.resumeImage(creativeOwner(exec, binding.identity), args.plan_id, args.operation_id)
         const outcome = await runRetainedImage(retained, () => binding.key(), exec.signal)
+        const taskId = outcome.serverTaskId ?? outcome.taskId
         return {
           status: outcome.ok ? 'succeeded' : outcome.submissionState === 'pending' ? 'pending' : outcome.submissionState === 'unknown' ? 'unknown' : 'failed',
           plan_id: retained.operation.projectId, operation_id: retained.operation.operationId,
           submission_state: outcome.submissionState ?? 'pending', model: outcome.model ?? retained.receipt.model,
-          ...outcome.taskId === undefined ? {} : { task_id: outcome.taskId },
+          ...taskId === undefined ? {} : { task_id: taskId },
           ...outcome.requestId === undefined ? {} : { request_id: outcome.requestId },
           ...outcome.code === undefined ? {} : { code: outcome.code },
           ...outcome.path === undefined ? {} : { path: outcome.path },

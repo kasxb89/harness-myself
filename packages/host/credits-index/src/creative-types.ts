@@ -7,6 +7,8 @@ import type { ArtifactOrigin } from '@deepseek-ai/dsh-artifacts-index/types'
 export type CreativeProjectId = Branded<'CreativeProjectId'>
 /** Owner-issued opaque saved-output identifier. */
 export type CreativeOutputId = Branded<'CreativeOutputId'>
+/** Server-issued identity of a retained image result, distinct from a provider task. */
+export type CreativeImageServerTaskId = Branded<'CreativeImageServerTaskId'>
 
 /** Requested output category. */
 export type CreativeKind = 'image' | 'video'
@@ -23,6 +25,8 @@ export interface CreativeSubmissionReceipt {
   readonly model: string
   readonly phase: 'submitting' | 'accepted' | 'completed'
   readonly taskId?: string
+  /** Present only after an explicitly supported server result receipt was received. */
+  readonly serverTaskId?: CreativeImageServerTaskId
   readonly requestId?: string
   readonly backendFingerprint: string
   readonly origin?: ArtifactOrigin

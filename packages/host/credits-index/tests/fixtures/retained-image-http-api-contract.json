@@ -1,0 +1,303 @@
+{
+  "cases": [
+    {
+      "identity": "owner",
+      "name": "synchronous_images_success",
+      "request": {
+        "body": {
+          "model": "codebloom-gpt-image-2k",
+          "n": 1,
+          "prompt": "a synthetic fixture image",
+          "response_format": "url",
+          "size": "1024x1024"
+        },
+        "headers": {
+          "Authorization": "Bearer <OWNER_RELAY_KEY>",
+          "Content-Type": "application/json"
+        },
+        "method": "POST",
+        "path": "/v1/images/generations"
+      },
+      "response": {
+        "body": {
+          "created": 1793564337,
+          "data": [
+            {
+              "url": "https://gateway.example/harness/v1/tasks/task_codebloom_http_fixture/artifacts/image-1/content?access=REDACTED_CAPABILITY"
+            }
+          ]
+        },
+        "headers": {
+          "Content-Type": [
+            "application/json; charset=utf-8"
+          ],
+          "X-New-Api-Task-Id": [
+            "task_codebloom_http_fixture"
+          ]
+        },
+        "status": 200
+      }
+    },
+    {
+      "identity": "owner",
+      "name": "owner_task_status",
+      "request": {
+        "body": null,
+        "headers": {
+          "Authorization": "Bearer <OWNER_RELAY_KEY>"
+        },
+        "method": "GET",
+        "path": "/v1/tasks/task_codebloom_http_fixture"
+      },
+      "response": {
+        "body": {
+          "created_at": 1793564337,
+          "fail_reason": "",
+          "finished_at": 1793564337,
+          "model": "codebloom-gpt-image-2k",
+          "platform": "codebloom-image",
+          "progress": "100%",
+          "status": "SUCCESS",
+          "task_id": "task_codebloom_http_fixture"
+        },
+        "headers": {
+          "Cache-Control": [
+            "private, no-store"
+          ],
+          "Content-Type": [
+            "application/json; charset=utf-8"
+          ]
+        },
+        "status": 200
+      }
+    },
+    {
+      "identity": "owner",
+      "name": "owner_artifact_manifest",
+      "request": {
+        "body": null,
+        "headers": {
+          "Authorization": "Bearer <OWNER_RELAY_KEY>"
+        },
+        "method": "GET",
+        "path": "/v1/tasks/task_codebloom_http_fixture/artifacts"
+      },
+      "response": {
+        "body": {
+          "artifacts": [
+            {
+              "content_url": "https://gateway.example/harness/v1/tasks/task_codebloom_http_fixture/artifacts/image-1/content?access=REDACTED_CAPABILITY",
+              "key": "image-1",
+              "type": "image"
+            }
+          ],
+          "task_id": "task_codebloom_http_fixture"
+        },
+        "headers": {
+          "Cache-Control": [
+            "private, no-store"
+          ],
+          "Content-Type": [
+            "application/json; charset=utf-8"
+          ]
+        },
+        "status": 200
+      }
+    },
+    {
+      "identity": "owner",
+      "name": "owner_artifact_content",
+      "request": {
+        "body": null,
+        "headers": {
+          "Authorization": "Bearer <OWNER_RELAY_KEY>"
+        },
+        "method": "GET",
+        "path": "/v1/tasks/task_codebloom_http_fixture/artifacts/image-1/content"
+      },
+      "response": {
+        "body_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jN1kAAAAASUVORK5CYII=",
+        "body_bytes": 68,
+        "body_sha256": "e64f5d29dbac07b00b16610af0df95ed904cfc8e9bf74ccfee0eb036c9f843dd",
+        "headers": {
+          "Cache-Control": [
+            "private, no-store"
+          ],
+          "Content-Length": [
+            "68"
+          ],
+          "Content-Security-Policy": [
+            "sandbox; default-src 'none'"
+          ],
+          "Content-Type": [
+            "image/png"
+          ],
+          "Referrer-Policy": [
+            "no-referrer"
+          ],
+          "X-Content-Type-Options": [
+            "nosniff"
+          ]
+        },
+        "status": 200
+      }
+    },
+    {
+      "identity": "other",
+      "name": "other_owner_task_not_found",
+      "request": {
+        "body": null,
+        "headers": {
+          "Authorization": "Bearer <OTHER_RELAY_KEY>"
+        },
+        "method": "GET",
+        "path": "/v1/tasks/task_codebloom_http_fixture"
+      },
+      "response": {
+        "body": {
+          "error": {
+            "message": "Task not found",
+            "type": "invalid_request_error"
+          }
+        },
+        "headers": {
+          "Cache-Control": [
+            "private, no-store"
+          ],
+          "Content-Type": [
+            "application/json; charset=utf-8"
+          ]
+        },
+        "status": 404
+      }
+    },
+    {
+      "identity": "other",
+      "name": "other_owner_artifacts_not_found",
+      "request": {
+        "body": null,
+        "headers": {
+          "Authorization": "Bearer <OTHER_RELAY_KEY>"
+        },
+        "method": "GET",
+        "path": "/v1/tasks/task_codebloom_http_fixture/artifacts"
+      },
+      "response": {
+        "body": {
+          "error": {
+            "code": "artifact_not_found",
+            "message": "Task or artifact not found",
+            "type": "artifact_not_found"
+          }
+        },
+        "headers": {
+          "Cache-Control": [
+            "private, no-store"
+          ],
+          "Content-Type": [
+            "application/json; charset=utf-8"
+          ]
+        },
+        "status": 404
+      }
+    },
+    {
+      "identity": "other",
+      "name": "other_owner_artifact_content_not_found",
+      "request": {
+        "body": null,
+        "headers": {
+          "Authorization": "Bearer <OTHER_RELAY_KEY>"
+        },
+        "method": "GET",
+        "path": "/v1/tasks/task_codebloom_http_fixture/artifacts/image-1/content"
+      },
+      "response": {
+        "body": {
+          "error": {
+            "code": "artifact_not_found",
+            "message": "Task or artifact not found",
+            "type": "artifact_not_found"
+          }
+        },
+        "headers": {
+          "Cache-Control": [
+            "private, no-store"
+          ],
+          "Content-Type": [
+            "application/json; charset=utf-8"
+          ]
+        },
+        "status": 404
+      }
+    }
+  ],
+  "database": "sqlite",
+  "redactions": [
+    "Authorization replaced by role placeholders",
+    "artifact access query value replaced by REDACTED_CAPABILITY"
+  ],
+  "retention_contract": {
+    "artifact_bytes_locally_persisted": false,
+    "client_metadata_has_generic_retention_marker": false,
+    "client_opt_in": {
+      "do_not_generalize_task_id_header": true,
+      "requires_response_task_id_header": true,
+      "x-task-plugin": {
+        "api_version": 1,
+        "key": "codebloom-image",
+        "version": "1.0.0"
+      }
+    },
+    "client_should_save_image_locally": true,
+    "plugin_key": "codebloom-image",
+    "protocol": "openai_image",
+    "recovery": "GET task status, then GET artifact manifest/content",
+    "requires_explicit_protocol_opt_in": true,
+    "retainResult": true,
+    "retainResult_scope": "server plugin protocol claim only; not a general ClientParameters marker",
+    "retained_payload": "normalized result URL/artifact metadata",
+    "task_body_contains_image_result": false,
+    "task_id_header": "X-New-Api-Task-Id"
+  },
+  "scope": {
+    "artifact_content_transport": "intercepted in memory; no Authorization/X-Api-Key/Cookie forwarded",
+    "candidate_models_remain_unavailable": true,
+    "external_network_requests": 0,
+    "legacy_toapis": "Existing Toapis async route and client local save/cache/recovery remain unchanged; do not apply CodeBloom opt-in handling to it.",
+    "ownership_scope": "404 samples use ordinary relay credentials without a valid artifact capability. Existing signed capability URLs retain their separate possession-based access semantics.",
+    "paid_generations": 0,
+    "production_access": 0,
+    "production_activation_gate_bypassed_only_in_test_dependency": true,
+    "supplier_completed_result": "synthetic response injected at the existing test submit dependency; actual CodeBloom parser, host persistence, renderer, TokenAuth and GET handlers executed"
+  },
+  "source_files_sha256": {
+    "controller/codebloom_protocol_test.go": "c3faacadd3e52ad54a2f915540efa32869a2ee70777d7e487edef2f0ab700656",
+    "controller/codebloom_retained_http_test.go": "884285ac05457a8012af59e0ccf84ad0feb78f49b50a6747e045a155a1bf891d",
+    "controller/plugin_protocol_image.go": "d2db4cf92b1b1a772f22d7468ee414d987f4b668cde7721c962c14fa6cc86309",
+    "controller/plugin_protocol_test.go": "b5aeb0682322686c67b85666ef294df209269e014578c4286b8d79fcbcc406fe",
+    "controller/relay.go": "bd6ff2a9863bf3294d1f164153cde24650432b71ed6ec30df989c02a00459e6c",
+    "controller/relay_task_plugin_test.go": "0f6a36b214a78a680105b0258e41cc3150c86f3d092ce522167fdb6bab91a51c",
+    "controller/task.go": "f0f2abb2fca8dc2044ada90b4ffb08e5feab2925a265581bb2a34ec1289685c9",
+    "controller/video_proxy.go": "fa9c3e6100a8ef4b31b7410df9645fe9b9002f99c145f2339e5ec29f88012e4e",
+    "deploy/instance/toapis-image-plugin.js": "f841de42549c70ded83443691516e11018d147f50533846bb7ea905cf2bd5a95",
+    "middleware/auth.go": "4b4bc6c1e33ce609e015c8ed11efa8d292ddbb4b87521ab5e09ee4541e8fc958",
+    "pkg/jsplugin/registry.go": "17e012c001fb2ef89fd9406771a0edd264313dac3a864b4c732bcd439dc61701",
+    "pkg/jsplugin/routing.go": "5cde7cf4f5f0493a6678911eb1c5af575b9c657d9a09894826196a92960bacfd",
+    "plugins/tasks/codebloom-image/plugin.js": "ebdd6381087d3a915d9fb78ed0cac766978c6753664604eea305013962510880",
+    "service/task_artifact_access.go": "4ae6b15f4355921765fd5a8a69a75d0cf54520126b5dd2c9b663021293b03ef9",
+    "service/task_artifact_store.go": "ed610524d5fc28fb9f4e8d75fd9214fdff3c5aaf7c551839d2c8a3a84dc630af"
+  },
+  "status": "LOCAL_REAL_HANDLER_HTTP_FIXTURES_VERIFIED",
+  "verification_date": "2026-11-02",
+  "verification": {
+    "log": "retained-image-http-fixtures-contract-final.log",
+    "top_level": 1,
+    "including_subtests": 1,
+    "http_samples": 7,
+    "status": "SQLITE_PASS",
+    "test": "TestCodeBloomRetainedImageHTTPFixturesDatabase",
+    "generator_environment": "TEST_RETAINED_IMAGE_HTTP_FIXTURES=<absolute-output-path>",
+    "database_environment": "TEST_MODEL_PROFIT_DIALECT; TEST_MYSQL_DSN or TEST_POSTGRES_DSN for optional isolated three-DB replay"
+  }
+}

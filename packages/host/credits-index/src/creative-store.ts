@@ -12,6 +12,7 @@ import type { ImageResultRef } from './image-result-store.ts'
 import type { VideoProjectId, VideoProjectManifest, VideoProjectRead } from './video-project.ts'
 import type { VideoWorkId, VideoWorkLink } from './video-work-store.ts'
 import type { VideoProjectIdentity } from './video-project-types.ts'
+import { imageServerTaskId } from './image-server-task.ts'
 import { parseArtifactOrigin } from './artifact-origin.ts'
 import { parseVideoRequestGrant, type VideoGenerationIntent, type VideoRequestGrant } from './video-generation-intent.ts'
 import { notifyCreationActivity } from './creation-activity.ts'
@@ -214,7 +215,7 @@ function status(value: unknown): CreativeStatus {
 }
 
 /** Validate receipt fields before retaining or reading a private creation record. */
-function imageReceipt(value: unknown, sessionId?: string): CreativeImageReceipt {
+function imageReceipt(value: unknown, sessionId?: string, category: CreativeKind = 'image'): CreativeImageReceipt {
   const item = object(value)
   const route = text(item.route, 512)
   const model = text(item.model, 256)
@@ -232,25 +233,30 @@ function imageReceipt(value: unknown, sessionId?: string): CreativeImageReceipt 
     || phase !== 'submitting' && phase !== 'accepted' && phase !== 'completed') return invalid()
   const taskId = item.taskId === undefined ? undefined : receiptId(item.taskId)
   const requestId = item.requestId === undefined ? undefined : receiptId(item.requestId)
-  if (phase === 'accepted' && taskId === undefined) return invalid()
+  const serverTaskId = item.serverTaskId === undefined ? undefined : imageServerTaskId(item.serverTaskId)
+  if (item.serverTaskId !== undefined && (serverTaskId === undefined || category !== 'image')
+    || phase === 'accepted' && taskId === undefined && serverTaskId === undefined) return invalid()
   const origin = parseArtifactOrigin(item.origin, sessionId)
   if (origin === null) return invalid()
   return { route, model, phase, backendFingerprint: fingerprint,
     ...origin === undefined ? {} : { origin },
-    ...taskId === undefined ? {} : { taskId }, ...requestId === undefined ? {} : { requestId } }
+    ...taskId === undefined ? {} : { taskId }, ...requestId === undefined ? {} : { requestId },
+    ...serverTaskId === undefined ? {} : { serverTaskId } }
 }
 function mergeImageReceipt(prior: CreativeImageReceipt | undefined, value: CreativeImageReceipt, category: CreativeKind = 'image'): CreativeImageReceipt {
-  const incoming = imageReceipt(value)
+  const incoming = imageReceipt(value, undefined, category)
   const order = { submitting: 0, accepted: 1, completed: 2 }
   if (prior !== undefined && (prior.route !== incoming.route || prior.model !== incoming.model
     || prior.backendFingerprint !== incoming.backendFingerprint || order[incoming.phase] < order[prior.phase]
     || prior.taskId !== undefined && incoming.taskId !== undefined && prior.taskId !== incoming.taskId
+    || prior.serverTaskId !== undefined && incoming.serverTaskId !== undefined && prior.serverTaskId !== incoming.serverTaskId
     || prior.requestId !== undefined && incoming.requestId !== undefined && prior.requestId !== incoming.requestId
     || JSON.stringify(prior.origin) !== JSON.stringify(incoming.origin))) {
     throw new CreativeError(category === 'image' ? 'CREATIVE_IMAGE_RECEIPT_CONFLICT' : 'CREATIVE_VIDEO_RECEIPT_CONFLICT', 409,
       category === 'image' ? '原图片任务的回执不能替换，请保留原任务编号后核对。' : '原视频任务的回执不能替换，请保留原任务编号后核对。')
   }
   return { ...incoming, ...prior?.taskId !== undefined ? { taskId: prior.taskId } : {},
+    ...prior?.serverTaskId !== undefined ? { serverTaskId: prior.serverTaskId } : {},
     ...prior?.requestId !== undefined ? { requestId: prior.requestId } : {} }
 }
 function kind(value: unknown): CreativeKind { return value === 'image' || value === 'video' ? value : invalid() }
@@ -415,7 +421,7 @@ function parseRecord(value: unknown): CreativeRecord {
       ...item.assetId === undefined ? {} : { assetId: identifier(item.assetId) },
       ...item.submissionStarted === undefined ? {} : { submissionStarted: item.submissionStarted },
       ...item.imageReceipt === undefined ? {} : { imageReceipt: imageReceipt(item.imageReceipt, identifier(owner.sessionId)) },
-      ...item.videoReceipt === undefined ? {} : { videoReceipt: imageReceipt(item.videoReceipt, identifier(owner.sessionId)) },
+      ...item.videoReceipt === undefined ? {} : { videoReceipt: imageReceipt(item.videoReceipt, identifier(owner.sessionId), 'video') },
       ...requestGrant === undefined ? {} : { requestGrant },
       ...item.workId === undefined ? {} : { workId: parseVideoWorkId(item.workId) },
       ...item.imageInvocationId === undefined ? {} : { imageInvocationId: parseImageInvocationId(item.imageInvocationId) },
@@ -1008,7 +1014,8 @@ export class CreativeStore {
       const found = record.operations.find(item => item.id === operationId(invocationId))
       if (found === undefined || found.videoProjectId !== undefined) return invalid()
       if (this.active.has(found.id)) throw new CreativeError('CREATIVE_SHOT_RUNNING', 409, '原图片任务正在处理，请等待当前查询完成。')
-      if (found.imageReceipt === undefined || found.imageReceipt.taskId === undefined && found.imageResultRef === undefined) {
+      if (found.imageReceipt === undefined || found.imageReceipt.taskId === undefined
+        && found.imageReceipt.serverTaskId === undefined && found.imageResultRef === undefined) {
         throw new CreativeError('CREATIVE_IMAGE_TASK_UNCONFIRMED', 409, '原图片提交尚无可查询任务编号或可恢复的原图结果，请保留请求编号并核对；不会重新提交生成。')
       }
       if (found.status === 'completed' || found.status === 'failed' || found.status === 'cancelled') {
@@ -1203,14 +1210,14 @@ export class CreativeStore {
         if (outcome.videoReceipt !== undefined) {
           if (!this.active.has(found.id) || record.kind !== 'video' || found.videoProjectId !== undefined
             || found.assetId !== undefined || found.imageReceipt !== undefined) invalid()
-          found.videoReceipt = mergeImageReceipt(found.videoReceipt, imageReceipt(outcome.videoReceipt, operation.owner.sessionId), 'video')
+          found.videoReceipt = mergeImageReceipt(found.videoReceipt, imageReceipt(outcome.videoReceipt, operation.owner.sessionId, 'video'), 'video')
           found.submissionStarted = true
           found.model = found.videoReceipt.model
         }
         if (outcome.notSubmitted === true) {
           const receipt = found.imageReceipt ?? found.videoReceipt
           if (!this.active.has(found.id) || found.videoProjectId !== undefined || found.outputs.length !== 0
-            || receipt !== undefined && (receipt.phase !== 'submitting' || receipt.taskId !== undefined || receipt.requestId !== undefined)) {
+            || receipt !== undefined && (receipt.phase !== 'submitting' || receipt.taskId !== undefined || receipt.serverTaskId !== undefined || receipt.requestId !== undefined)) {
             throw new CreativeError(found.videoReceipt === undefined ? 'CREATIVE_IMAGE_RECEIPT_CONFLICT' : 'CREATIVE_VIDEO_RECEIPT_CONFLICT', 409,
               found.videoReceipt === undefined ? '原图片任务已有提交证据，不能将其改为未提交；请核对原任务。' : '原视频任务已有提交证据，不能将其改为未提交；请核对原任务。')
           }
@@ -1466,7 +1473,8 @@ export class CreativeStore {
           imageReceipt: { ...operation.imageReceipt },
           ...operation.imageResultRef === undefined || operation.imageReceipt.taskId !== undefined
             ? {} : { recovery: 'image-result' as const },
-          canQuery: (operation.imageReceipt.taskId !== undefined || operation.imageResultRef !== undefined)
+          canQuery: (operation.imageReceipt.taskId !== undefined || operation.imageReceipt.serverTaskId !== undefined
+            || operation.imageResultRef !== undefined)
             && !this.active.has(operation.id)
             && state !== 'completed' && state !== 'failed' && state !== 'cancelled',
         },

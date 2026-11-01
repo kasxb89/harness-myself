@@ -11,6 +11,7 @@ import type { CreationOperationActivity } from '../src/creation-activity.ts'
 import { VideoWorkStore } from '../src/video-work-store.ts'
 import { ImageInvocationStore } from '../src/image-invocation.ts'
 import { ImageResultStore, type ImageResultRef } from '../src/image-result-store.ts'
+import { imageServerTaskId } from '../src/image-server-task.ts'
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>()
@@ -34,6 +35,29 @@ const plan = (kind: 'image' | 'video' = 'image'): CreativePlan => ({
   characters: [{ id: 'S1', name: '小雨', appearance: '黑色长发', clothing: '红围巾', personality: '安静', voice: '轻柔中文女声', referenceAssetIds: ['portrait'] }],
   assets: [{ id: 'portrait', name: '人物参考', kind: 'image', role: '身份参考', description: '固定人物外形', sourcePathOrAssetId: 'ma_portrait' }],
   shots: [{ id: 'departure', order: 1, title: '车站道别', durationSeconds: 5, camera: '侧面近景，缓慢推近', scene: '雨夜站台', action: '轻声道别', prompt: '女孩在站台上轻声说再见', dialogue: 'S1 1–3秒：“明天见。”', subtitles: '1–3秒：明天见。', characterIds: ['S1'], assetIds: ['portrait'] }],
+})
+
+it('retains original image server identity across store restart and rejects its replacement', async () => {
+  const { store, owner, options } = await fixture()
+  const serverTaskId = imageServerTaskId('task_codebloom_http_fixture')
+  const otherId = imageServerTaskId('task_another')
+  if (serverTaskId === undefined || otherId === undefined) throw new Error('Expected admitted fixture identities')
+  const operation = await store.begin(owner, { kind: 'image', prompt: 'one retained result', shots: [{ prompt: 'one retained result' }] })
+  const received = { model: 'codebloom-gpt-image-2k', route: '/v1/images/generations',
+    phase: 'accepted' as const, backendFingerprint: 'a'.repeat(64), serverTaskId }
+  await store.receipt(operation, received)
+  await store.finish(operation, { status: 'unknown' })
+  store.release(operation)
+  const restarted = new CreativeStore(options)
+  const task = (await restarted.projects(owner))[0]?.tasks[0]
+  expect(task).toMatchObject({ canQuery: true, imageReceipt: received })
+  expect(task?.imageReceipt).not.toHaveProperty('taskId')
+  await expect(restarted.resumeImage({ ...owner, sessionId: 'another-chat' }, operation.projectId, operation.operationId))
+    .rejects.toMatchObject({ code: 'CREATIVE_ACCESS_DENIED' })
+  const resumed = await restarted.resumeImage(owner, operation.projectId, operation.operationId)
+  expect(resumed.receipt).toEqual(received)
+  await expect(restarted.receipt(resumed.operation, { ...received, serverTaskId: otherId }))
+    .rejects.toMatchObject({ code: 'CREATIVE_IMAGE_RECEIPT_CONFLICT' })
 })
 
 function intent(messageId = 'human-1', callId = 'call-1', maxWorks = 1, rootCallSeq?: number): VideoGenerationIntent {

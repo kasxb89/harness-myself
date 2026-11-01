@@ -7,6 +7,73 @@ afterEach(() => { vi.unstubAllGlobals() })
 const SESSION = 'session-a' as SessionId
 
 describe('creative project transport', () => {
+  const serverId = 'task_codebloom_http_fixture'
+  const originalImage = { route: '/v1/images/generations', model: 'codebloom-gpt-image-2k', phase: 'accepted',
+    backendFingerprint: 'a'.repeat(64), serverTaskId: serverId }
+  const pendingTask = { id: 'retained-image', status: 'unknown', shotIds: [], completedShots: 0,
+    totalShots: 0, outputs: [], canQuery: true }
+  const taskPayload = (value: object) => ({ accountId: 'account-a', projects: [{ ...project(), tasks: [value] }] })
+
+  it.each([undefined, 'image-result'])('accepts an original server image receipt with local recovery=%s', async (recovery) => {
+    const payload = taskPayload({ ...pendingTask, imageReceipt: originalImage, ...recovery === undefined ? {} : { recovery } })
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ ok: true, payload })))
+    expect(await readCreativeProjects(SESSION, new AbortController().signal)).toEqual({ ok: true, payload })
+  })
+
+  it('accepts the original provider identity and generating origin beside the separate server image identity', async () => {
+    const payload = taskPayload({ ...pendingTask, imageReceipt: { ...originalImage, taskId: 'provider-original',
+      requestId: 'original-request', origin: { sessionId: SESSION, turn: 3, eventSeq: 5, toolCallId: 'image-call' } } })
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ ok: true, payload })))
+    expect(await readCreativeProjects(SESSION, new AbortController().signal)).toEqual({ ok: true, payload })
+  })
+
+  it.each([undefined, null, false, 5, '', 'task_', 'task_..', 'task_abc/../other', 'task_abc?access=secret',
+    'https://gateway.example/task_abc', 'sk-private-credential', 'nap_private-credential',
+    ' task_abc', 'task_abc\n', 'task_a'.concat('a'.repeat(251))])(
+    'refuses a missing or invalid server-only image identity: %j', async (serverTaskId) => {
+      const payload = taskPayload({ ...pendingTask, imageReceipt: { ...originalImage, serverTaskId } })
+      vi.stubGlobal('fetch', vi.fn(async () => Response.json({ ok: true, payload })))
+      expect(await readCreativeProjects(SESSION, new AbortController().signal)).toEqual({ ok: false, code: 'invalid' })
+    },
+  )
+
+  it('accepts a bounded 256-character server image identity', async () => {
+    const payload = taskPayload({ ...pendingTask, imageReceipt: { ...originalImage, serverTaskId: 'task_a'.concat('a'.repeat(250)) } })
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ ok: true, payload })))
+    expect(await readCreativeProjects(SESSION, new AbortController().signal)).toEqual({ ok: true, payload })
+  })
+
+  it.each([null, 'https://gateway.example/task_abc', 'task_abc/../other'])(
+    'rejects an invalid server field even when the provider identity is valid: %j', async (serverTaskId) => {
+      const payload = taskPayload({ ...pendingTask, imageReceipt: { ...originalImage, taskId: 'provider-original', serverTaskId } })
+      vi.stubGlobal('fetch', vi.fn(async () => Response.json({ ok: true, payload })))
+      expect(await readCreativeProjects(SESSION, new AbortController().signal)).toEqual({ ok: false, code: 'invalid' })
+    },
+  )
+
+  it.each([undefined, 'provider-original'])('does not admit image server identity on a video receipt with provider=%s', async (taskId) => {
+    const payload = taskPayload({ ...pendingTask, videoReceipt: { ...originalImage, route: '/v1/videos',
+      ...taskId === undefined ? {} : { taskId } } })
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ ok: true, payload })))
+    expect(await readCreativeProjects(SESSION, new AbortController().signal)).toEqual({ ok: false, code: 'invalid' })
+  })
+
+  it.each([
+    { requestId: 'sk-private-credential' }, { taskId: 'https://gateway.example/task-original' },
+    { backendFingerprint: 'private-path' }, { origin: { sessionId: 'another-session', turn: 3 } },
+  ])('retains existing image receipt restrictions with the server identity: %j', async (change) => {
+    const payload = taskPayload({ ...pendingTask, imageReceipt: { ...originalImage, ...change } })
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ ok: true, payload })))
+    expect(await readCreativeProjects(SESSION, new AbortController().signal)).toEqual({ ok: false, code: 'invalid' })
+  })
+
+  it.each(['image', 'video'])('preserves an accepted original provider-only %s receipt', async (kind) => {
+    const { serverTaskId: _serverTaskId, ...receipt } = originalImage
+    const payload = taskPayload({ ...pendingTask, [kind === 'image' ? 'imageReceipt' : 'videoReceipt']: { ...receipt, taskId: 'provider-original' } })
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ ok: true, payload })))
+    expect(await readCreativeProjects(SESSION, new AbortController().signal)).toEqual({ ok: true, payload })
+  })
+
   it.each([undefined, 'chat', 'ai-creation'])('retains optional trusted generation entry: %s', async (source) => {
     const task = { id: 'task', status: 'unknown', shotIds: [], completedShots: 0, totalShots: 0, outputs: [],
       ...source === undefined ? {} : { source } }

@@ -89,7 +89,10 @@ function receiptId(value: unknown): value is string {
   return typeof value === 'string' && value.length <= 256 && /^[A-Za-z0-9][A-Za-z0-9._:-]*$/u.test(value)
     && !/^(?:sk-|nap_)/iu.test(value)
 }
-function submissionReceipt(value: unknown, sessionId: SessionId): value is CreativeSubmissionReceipt {
+function imageServerReceiptId(value: unknown): value is string {
+  return typeof value === 'string' && /^task_[A-Za-z0-9][A-Za-z0-9._:-]{0,250}$/u.test(value)
+}
+function submissionReceipt(value: unknown, sessionId: SessionId, allowImageServer = false): value is CreativeSubmissionReceipt {
   return record(value) && typeof value.route === 'string' && value.route.length <= 512
     && /^\/[A-Za-z0-9._~-]+(?:\/[A-Za-z0-9._~-]+)*$/u.test(value.route)
     && !value.route.split('/').some(part => part === '.' || part === '..')
@@ -98,8 +101,9 @@ function submissionReceipt(value: unknown, sessionId: SessionId): value is Creat
     && typeof value.backendFingerprint === 'string' && /^[a-f0-9]{64}$/u.test(value.backendFingerprint)
     && typeof value.phase === 'string' && ['submitting', 'accepted', 'completed'].includes(value.phase)
     && (value.taskId === undefined || receiptId(value.taskId))
+    && (value.serverTaskId === undefined || allowImageServer && imageServerReceiptId(value.serverTaskId))
     && (value.requestId === undefined || receiptId(value.requestId))
-    && (value.phase !== 'accepted' || receiptId(value.taskId))
+    && (value.phase !== 'accepted' || receiptId(value.taskId) || allowImageServer && imageServerReceiptId(value.serverTaskId))
     && (value.origin === undefined || record(value.origin) && value.origin.sessionId === sessionId
       && count(value.origin.turn)
       && (value.origin.eventSeq === undefined || count(value.origin.eventSeq))
@@ -113,12 +117,13 @@ function task(value: unknown, sessionId: SessionId, projectId: string): value is
     && count(value.completedShots) && count(value.totalShots) && value.completedShots <= value.totalShots
     && ['assetId', 'model', 'videoProjectId', 'errorCode'].every(key => value[key] === undefined || text(value[key]))
     && (value.imageReceipt === undefined || value.videoReceipt === undefined)
-    && (value.imageReceipt === undefined || submissionReceipt(value.imageReceipt, sessionId))
+    && (value.imageReceipt === undefined || submissionReceipt(value.imageReceipt, sessionId, true))
     && (value.videoReceipt === undefined || submissionReceipt(value.videoReceipt, sessionId))
     && (value.canQuery === undefined || typeof value.canQuery === 'boolean')
     && (value.recovery === undefined || value.recovery === 'image-result' && value.imageReceipt !== undefined
       && value.videoReceipt === undefined && record(receipt) && receipt.taskId === undefined)
-    && (value.canQuery !== true || record(receipt) && (receiptId(receipt.taskId) || value.recovery === 'image-result'))
+    && (value.canQuery !== true || record(receipt) && (receiptId(receipt.taskId)
+      || value.imageReceipt !== undefined && imageServerReceiptId(receipt.serverTaskId) || value.recovery === 'image-result'))
     && Array.isArray(value.outputs) && value.outputs.every(item => output(item, sessionId, projectId))
 }
 function project(value: unknown, sessionId: SessionId): value is CreativeProjectView {

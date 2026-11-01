@@ -1,9 +1,11 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises'
 import { createServer, type Server } from 'node:http'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { extname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
+import sharp from 'sharp'
 import { Context } from '@deepseek-ai/cordis'
 import Loader, { type ModuleLoaderV2 } from '@deepseek-ai/cordis-plugin-loader'
 import Include from '@deepseek-ai/cordis-plugin-include'
@@ -17,6 +19,9 @@ import LlmRuntime from '@deepseek-ai/dsh-llm'
 import * as LlmPiAi from '@deepseek-ai/dsh-llm-pi-ai'
 import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
 import * as Credits from '../src/index.ts'
+import { CreativeStore } from '../src/creative-store.ts'
+import { ImageResultStore, type ImageResultRef } from '../src/image-result-store.ts'
+import { imageServerTaskId } from '../src/image-server-task.ts'
 import candidateImages from './fixtures/codebloom-image-parameters-offline.json' with { type: 'json' }
 import { profileComposition } from '../../../settings/settings/tests/profile-composition.ts'
 
@@ -46,12 +51,21 @@ let context: Context | undefined
 let upstream: Server | undefined
 let directory: string | undefined
 const calls: { path: string; body: Record<string, unknown> }[] = []
+const imageWireCalls: { method: string; path: string; authorization: string | undefined }[] = []
+const retainedTaskId = 'task_codebloom_http_fixture'
+const retainedTaskPath = `/harness/v1/tasks/${retainedTaskId}`
+interface RetainedImageFixture {
+  readonly body: 'truncated' | 'complete'
+  readonly bytes?: Buffer
+  readonly manifest?: 'wrong-task' | 'wrong-key' | 'wrong-prefix'
+  readonly existingModel?: string
+}
 function object(value: unknown): Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error('Expected object')
   return value as Record<string, unknown>
 }
-async function post(base: string, path: string, body: object) {
-  return object(await (await fetch(base + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })).json())
+async function post(base: string, path: string, body: object, headers: Record<string, string> = {}) {
+  return object(await (await fetch(base + path, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) })).json())
 }
 afterEach(async () => {
   await context?.fiber.dispose()
@@ -64,12 +78,16 @@ afterEach(async () => {
   if (directory !== undefined) await rm(directory, { recursive: true, force: true })
   directory = undefined
   calls.length = 0
+  imageWireCalls.length = 0
 })
 
 async function boot(visibleModels: readonly string[] = rows.map(row => row.model_name), authenticated = true,
-  pricingRows: readonly { readonly model_name: string }[] = rows) {
+  pricingRows: readonly { readonly model_name: string }[] = rows, retainedImage?: RetainedImageFixture) {
   directory = await mkdtemp(join(tmpdir(), 'dsh-media-specifications-'))
   const root = directory
+  const pngBytes = await sharp({ create: { width: 1, height: 1, channels: 3, background: '#ffffff' } }).png().toBuffer()
+  let api = '', generatedModel = retainedImage?.existingModel ?? ''
+  const contentUrl = () => `${api}/v1/tasks/${retainedTaskId}/artifacts/image-1/content?access=synthetic-content-capability`
   upstream = createServer((request, response) => {
     void (async () => {
       const chunks: Buffer[] = []
@@ -77,6 +95,7 @@ async function boot(visibleModels: readonly string[] = rows.map(row => row.model
       const body = chunks.length === 0 ? {} : object(JSON.parse(Buffer.concat(chunks).toString('utf8')))
       const path = new URL(request.url ?? '/', 'http://127.0.0.1').pathname
       calls.push({ path, body })
+      imageWireCalls.push({ method: request.method ?? '', path, authorization: request.headers.authorization })
       response.setHeader('content-type', 'application/json')
       const answer = (data: unknown) => response.end(JSON.stringify({ success: true, data }))
       if (path === '/harness/api/status') {
@@ -99,9 +118,34 @@ async function boot(visibleModels: readonly string[] = rows.map(row => row.model
         response.end(JSON.stringify({ data: pricingRows.filter(row => visibleModels.includes(row.model_name))
           .map(row => ({ id: row.model_name, supported_endpoint_types: ['openai'] })) })); return
       }
-      if (path === '/harness/v1/images/generations') {
+      if (retainedImage !== undefined && path === retainedTaskPath) {
+        response.end(JSON.stringify({ task_id: retainedTaskId, model: generatedModel, status: 'SUCCESS' })); return
+      }
+      if (retainedImage !== undefined && path === `${retainedTaskPath}/artifacts`) {
+        response.end(JSON.stringify({ task_id: retainedImage.manifest === 'wrong-task' ? 'task_another' : retainedTaskId,
+          artifacts: [{ key: retainedImage.manifest === 'wrong-key' ? 'image-2' : 'image-1', type: 'image',
+            content_url: retainedImage.manifest === 'wrong-prefix' ? contentUrl().replace('/harness/', '/other-prefix/') : contentUrl() }] })); return
+      }
+      if (retainedImage !== undefined && path === `${retainedTaskPath}/artifacts/image-1/content`) {
+        expect(request.url).toBe(`${retainedTaskPath}/artifacts/image-1/content?access=synthetic-content-capability`)
+        response.setHeader('content-type', 'image/png')
+        response.end(retainedImage.bytes ?? pngBytes); return
+      }
+      if (path === '/harness/v1/images/generations' || path === '/harness/toapis/v1/images/generations') {
         expect(request.headers.authorization).toBe('Bearer sk-fixture-relay')
-        response.end(JSON.stringify({ data: [{ b64_json: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a8R8AAAAASUVORK5CYII=' }] })); return
+        if (retainedImage !== undefined) {
+          generatedModel = String(body.model)
+          response.setHeader('x-new-api-task-id', retainedTaskId)
+          response.setHeader('x-oneapi-request-id', 'retained-fixture-request')
+          if (retainedImage.body === 'truncated') {
+            response.setHeader('content-length', 512)
+            response.setHeader('connection', 'close')
+            response.flushHeaders()
+            response.end('{"data":['); return
+          }
+          response.end(JSON.stringify({ data: [{ url: contentUrl() }] })); return
+        }
+        response.end(JSON.stringify({ data: [{ b64_json: pngBytes.toString('base64') }] })); return
       }
       if (path === '/harness/v1/videos') {
         expect(request.headers.authorization).toBe('Bearer sk-fixture-relay')
@@ -113,7 +157,7 @@ async function boot(visibleModels: readonly string[] = rows.map(row => row.model
   await new Promise<void>(resolve => upstream!.listen(0, '127.0.0.1', resolve))
   const address = upstream.address()
   if (address === null || typeof address === 'string') throw new Error('Expected listener')
-  const api = `http://127.0.0.1:${address.port}/harness`
+  api = `http://127.0.0.1:${address.port}/harness`
   const modules = new Map<string, unknown>([
     ['@deepseek-ai/dsh-host-webserver', WebServer], ['@deepseek-ai/dsh-tools', Tools],
     ['@deepseek-ai/dsh-client-connection', Connection],
@@ -143,7 +187,8 @@ async function boot(visibleModels: readonly string[] = rows.map(row => row.model
       api: 'openai-completions', baseURL: api + '/v1', apiKeyEnv: reference, models: [{ id: 'ycapi-minimax-m3' }],
     } } } },
     { name: '@deepseek-ai/dsh-credits-index', config: { stateDir: join(root, 'credits'), newApiBaseUrl: api,
-      relayTokenEnv: reference, accountReadMinIntervalMs: 0, accountReadFailureCooldownMs: 1, mediaCatalogCacheTtlMs: 0 } },
+      relayTokenEnv: reference, accountReadMinIntervalMs: 0, accountReadFailureCooldownMs: 1, mediaCatalogCacheTtlMs: 0,
+      ...retainedImage === undefined ? {} : { imagePollIntervalMs: 1 } } },
   ]))
   await profileComposition(context, root, configuration)
   expect([...context.loader.entries()].filter(entry => entry.fiber === undefined && !entry.disabled)).toEqual([])
@@ -292,5 +337,229 @@ describe('explicit image size declarations through the shipped Host Loader', () 
       model, prompt: 'One synthetic legacy image', n: 1, response_format: 'b64_json', size: '640x480',
     } }])
     await recordImageSizeCase('legacy-undeclared-size', { model, result, submitted })
+  })
+})
+
+function retainedCandidate() {
+  const row = noSizeCandidates[0]
+  if (row === undefined) throw new Error('Expected a reviewed prompt-only image candidate')
+  return row
+}
+
+async function publishedImageFiles(): Promise<string[]> {
+  if (directory === undefined) throw new Error('Expected current Host directory')
+  try {
+    return (await readdir(join(directory, 'credits', 'media'), { recursive: true }))
+      .filter(name => /\.(?:png|jpe?g|webp)$/iu.test(name))
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return []
+    throw error
+  }
+}
+
+async function recordRecoveryRoute(name: string, result: object,
+  evidence?: { readonly savedPath: string; readonly facts: object }): Promise<void> {
+  const output = process.env.DSH_IMAGE_RECOVERY_ROUTE_AUDIT_DIR
+  if (output === undefined) return
+  await mkdir(output, { recursive: true })
+  const path = object(result).payload
+  const savedPath = evidence?.savedPath ?? (path === null || typeof path !== 'object' || Array.isArray(path) ? undefined : object(path).path)
+  let savedImage: { file: string; bytes: number; sha256: string } | undefined
+  if (typeof savedPath === 'string') {
+    const bytes = await readFile(savedPath)
+    const file = name + extname(savedPath)
+    await copyFile(savedPath, join(output, file))
+    savedImage = { file, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') }
+  }
+  await writeFile(join(output, name + '.json'), JSON.stringify({ result, calls,
+    wire: imageWireCalls.map(call => ({ method: call.method, path: call.path,
+      credential: call.authorization === 'Bearer sk-fixture-relay' ? 'synthetic-owner-relay' : call.authorization === undefined ? 'none' : 'unexpected' })),
+    publishedImageFiles: await publishedImageFiles(),
+    ...savedImage === undefined ? {} : { savedImage },
+    ...evidence === undefined ? {} : { evidence: evidence.facts },
+    scope: 'Real Host Loader and loopback HTTP/file IO; synthetic metadata/account/access placeholder; positive images locally encoded by sharp, not the API68B signature fixture. No provider or actual HMAC verification.' }, null, 2) + '\n')
+}
+
+describe('retained image recovery through the shipped Host HTTP and file IO', () => {
+  it('recovers a truncated opted-in response through only the original task, manifest and signed image', async () => {
+    const row = retainedCandidate()
+    const pngBytes = await sharp({ create: { width: 1, height: 1, channels: 3, background: '#ffffff' } }).png().toBuffer()
+    const base = await boot([row.model_name], true, [row], { body: 'truncated', bytes: pngBytes })
+    const result = await post(base, '/api/image/generate', { model: row.model_name, prompt: 'One synthetic retained image' })
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true, submission_state: 'completed', task_id: retainedTaskId })
+    const path = object(result.payload).path
+    if (typeof path !== 'string') throw new Error('Expected saved original image path')
+    const saved = await readFile(path)
+    expect(saved).toEqual(pngBytes)
+    const decoded = await sharp(saved).raw().toBuffer({ resolveWithObject: true })
+    expect(decoded.info).toMatchObject({ width: 1, height: 1, channels: 3 })
+    expect(decoded.data).toEqual(Buffer.from([255, 255, 255]))
+    expect(calls.filter(call => call.path === '/harness/v1/images/generations')).toHaveLength(1)
+    expect(imageWireCalls.filter(call => call.path.startsWith(retainedTaskPath))).toEqual([
+      { method: 'GET', path: retainedTaskPath, authorization: 'Bearer sk-fixture-relay' },
+      { method: 'GET', path: `${retainedTaskPath}/artifacts`, authorization: 'Bearer sk-fixture-relay' },
+      { method: 'GET', path: `${retainedTaskPath}/artifacts/image-1/content`, authorization: undefined },
+    ])
+    expect(await publishedImageFiles()).toHaveLength(1)
+    await recordRecoveryRoute('truncated-original-result', result)
+  })
+
+  it('recovers an original server task through Host when its linked private manifest cannot be read', async () => {
+    const row = retainedCandidate()
+    const pngBytes = await sharp({ create: { width: 1, height: 1, channels: 3, background: '#ffffff' } }).png().toBuffer()
+    const base = await boot([row.model_name], true, [row], { body: 'complete', bytes: pngBytes, existingModel: row.model_name })
+    const active = context, root = directory, address = upstream?.address()
+    if (active === undefined || root === undefined || address === undefined || address === null || typeof address === 'string') {
+      throw new Error('Expected current Host, private directory and loopback listener')
+    }
+    const login = new URL(active.connection.authenticatedUrl(new URL(base).origin))
+    const authorization: Record<string, string> = {}
+    active.connection.authorizeIndex({ method: 'GET', url: login.pathname + login.search, headers: { host: login.host } }, {
+      writeHead(_status, values) { Object.assign(authorization, values) }, end() {},
+    })
+    const cookie = authorization['set-cookie']?.split(';')[0]
+    if (cookie === undefined) throw new Error('Expected authenticated Host cookie')
+    const owner = { accountId: '7', sessionFingerprint: createHash('sha256').update('fixture-access').digest('hex'),
+      sessionId: 'original-image-chat', workspaceRoot: await realpath(root) }
+    const current = async () => ({ accountId: owner.accountId, sessionFingerprint: owner.sessionFingerprint })
+    const projectsDirectory = join(root, 'credits', 'creative-projects')
+    const storeOptions = { directory: projectsDirectory, current, video: async () => { throw new Error('No video in this proof') } }
+    const creative = new CreativeStore(storeOptions)
+    const operation = await creative.begin(owner, { kind: 'image', prompt: 'One original retained image', shots: [{ prompt: 'One original retained image' }] })
+    const serverTaskId = imageServerTaskId(retainedTaskId)
+    if (serverTaskId === undefined) throw new Error('Expected synthetic original server task ID')
+    const receipt = { model: row.model_name, route: '/v1/images/generations', phase: 'accepted' as const, serverTaskId,
+      backendFingerprint: createHash('sha256').update(`http://127.0.0.1:${address.port}/harness`).digest('hex') }
+    await creative.receipt(operation, receipt)
+    const resultDirectory = join(root, 'credits', 'image-results')
+    const images = new ImageResultStore({ directory: resultDirectory, current })
+    const scope = { owner, operationId: operation.operationId, backendFingerprint: receipt.backendFingerprint }
+    let linkedReference: ImageResultRef | undefined
+    await expect(images.retain(scope, receipt, [{ url: `http://127.0.0.1:${address.port}/old-private-source.png` }], async (ref) => {
+      linkedReference = ref
+      await creative.imageResult(operation, ref)
+      // Inject an actual local atomic-publication failure after the original reference is committed.
+      await mkdir(join(resultDirectory, ref, 'manifest.json'))
+    })).rejects.toMatchObject({ code: 'IMAGE_RESULT_PERSISTENCE_UNAVAILABLE' })
+    if (linkedReference === undefined) throw new Error('Expected the independently persisted original result reference')
+    const privateManifest = join(resultDirectory, linkedReference, 'manifest.json')
+    await rm(privateManifest, { recursive: true })
+    await expect(images.load(scope, linkedReference)).rejects.toMatchObject({ code: 'IMAGE_RESULT_UNAVAILABLE' })
+    await creative.finish(operation, { status: 'unknown' })
+    creative.release(operation)
+    const restored = new CreativeStore(storeOptions)
+    const retained = await restored.resumeImage(owner, operation.projectId, operation.operationId)
+    expect(retained).toMatchObject({ receipt, imageResultRef: linkedReference })
+    restored.release(retained.operation)
+
+    const recovering = await post(base, '/api/creative/image/recover', { session_id: owner.sessionId,
+      project_id: operation.projectId, operation_id: operation.operationId }, { cookie })
+    expect(recovering, JSON.stringify(recovering)).toMatchObject({ ok: true })
+    let completed: Record<string, unknown> = {}
+    await expect.poll(async () => {
+      completed = object(await (await fetch(base + '/api/creative/projects?session_id=' + owner.sessionId, { headers: { cookie } })).json())
+      const projects = object(completed.payload).projects
+      if (!Array.isArray(projects)) throw new Error('Expected projects from the actual Host route')
+      const project = projects.map(object).find(value => value.id === operation.projectId)
+      const tasks = project?.tasks
+      if (!Array.isArray(tasks)) throw new Error('Expected original project tasks')
+      return tasks.map(object).find(value => value.id === operation.operationId)?.status
+    }).toBe('completed')
+    const projectPath = join(projectsDirectory, operation.projectId, 'project.json')
+    const record = object(JSON.parse(await readFile(projectPath, 'utf8')))
+    const operations = record.operations
+    if (!Array.isArray(operations)) throw new Error('Expected durable original operation')
+    expect(operations).toHaveLength(1)
+    const original = operations.map(object).find(value => value.id === operation.operationId)
+    expect(original).toMatchObject({ status: 'completed', imageResultRef: linkedReference, imageReceipt: { serverTaskId } })
+    if (!Array.isArray(original?.outputs)) throw new Error('Expected original saved output')
+    expect(original.outputs).toHaveLength(1)
+    const savedPath = original.outputs.map(object)[0]?.path
+    if (typeof savedPath !== 'string') throw new Error('Expected actual recovered image file')
+    const saved = await readFile(savedPath)
+    expect(saved).toEqual(pngBytes)
+    expect((await sharp(saved).raw().toBuffer({ resolveWithObject: true })).info).toMatchObject({ width: 1, height: 1, channels: 3 })
+    await expect(readFile(privateManifest)).rejects.toMatchObject({ code: 'ENOENT' })
+    expect((await readdir(resultDirectory)).filter(name => /^ir_[a-f0-9]{64}$/u.test(name))).toEqual([linkedReference])
+    expect(imageWireCalls.filter(call => call.method === 'POST' && call.path.endsWith('/images/generations'))).toEqual([])
+    expect(imageWireCalls.filter(call => call.path.startsWith(retainedTaskPath))).toEqual([
+      { method: 'GET', path: retainedTaskPath, authorization: 'Bearer sk-fixture-relay' },
+      { method: 'GET', path: `${retainedTaskPath}/artifacts`, authorization: 'Bearer sk-fixture-relay' },
+      { method: 'GET', path: `${retainedTaskPath}/artifacts/image-1/content`, authorization: undefined },
+    ])
+    expect(calls.filter(call => call.path === '/old-private-source.png')).toEqual([])
+    expect(await publishedImageFiles()).toHaveLength(1)
+    expect(JSON.stringify(completed)).not.toContain(linkedReference)
+    await recordRecoveryRoute('missing-private-manifest', completed, { savedPath, facts: { recovering, originalReferencePreserved: true,
+      source: 'Actual CreativeStore/ImageResultStore local atomic-publication fault; original synthetic server receipt seeded before Host query.',
+      manifestStillMissing: true, noReplacementReference: true, originalServerTaskId: serverTaskId } })
+  })
+
+  it.for(['html', 'json'])('does not publish HTTP200 %s error bytes as a recovered image', async (kind) => {
+    const row = retainedCandidate()
+    const bytes = Buffer.from(kind === 'html' ? '<!doctype html><p>Synthetic CDN error</p>' : '{"error":"Synthetic CDN error"}')
+    const base = await boot([row.model_name], true, [row], { body: 'truncated', bytes })
+    const result = await post(base, '/api/image/generate', { model: row.model_name, prompt: 'One synthetic retained image' })
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: false, submission_state: 'pending',
+      task_id: retainedTaskId, code: 'IMAGE_RESULT_INVALID' })
+    expect(result.payload).toBeNull()
+    expect(calls.filter(call => call.path === '/harness/v1/images/generations')).toHaveLength(1)
+    expect(imageWireCalls.filter(call => call.path === `${retainedTaskPath}/artifacts/image-1/content`))
+      .toEqual([{ method: 'GET', path: `${retainedTaskPath}/artifacts/image-1/content`, authorization: undefined }])
+    expect(await publishedImageFiles()).toEqual([])
+    await recordRecoveryRoute('non-image-' + kind, result)
+  })
+
+  it.for(['wrong-task', 'wrong-key', 'wrong-prefix'] as const)('rejects the %s manifest without downloading or generating again', async (manifest) => {
+    const row = retainedCandidate()
+    const base = await boot([row.model_name], true, [row], { body: 'truncated', manifest })
+    const result = await post(base, '/api/image/generate', { model: row.model_name, prompt: 'One synthetic retained image' })
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: false, submission_state: 'pending', task_id: retainedTaskId })
+    expect(calls.filter(call => call.path === '/harness/v1/images/generations')).toHaveLength(1)
+    expect(imageWireCalls.filter(call => call.path.startsWith(retainedTaskPath))).toEqual([
+      { method: 'GET', path: retainedTaskPath, authorization: 'Bearer sk-fixture-relay' },
+      { method: 'GET', path: `${retainedTaskPath}/artifacts`, authorization: 'Bearer sk-fixture-relay' },
+    ])
+    expect(imageWireCalls.filter(call => call.path.startsWith('/other-prefix/'))).toEqual([])
+    expect(await publishedImageFiles()).toEqual([])
+    await recordRecoveryRoute(manifest, result)
+  })
+
+  it.for(['missing-marker', 'unsupported-version', 'toapis'] as const)('ignores a task header for %s and preserves the unknown single submission', async (mode) => {
+    const original = retainedCandidate()
+    const model = mode === 'toapis' ? 'yunshu-internal-gpt-image-2' : original.model_name
+    const parameters = { ...original.parameters, 'x-task-plugin': mode === 'missing-marker' ? undefined
+      : { key: mode === 'toapis' ? 'toapis' : 'codebloom-image', version: mode === 'toapis' ? '1.2.1' : '1.0.1', api_version: 1 } }
+    const row = { ...original, model_name: model, parameters,
+      ...mode === 'toapis' ? { route: '/toapis/v1/images/generations' } : {} }
+    const base = await boot([model], true, [row], { body: 'truncated' })
+    const result = await post(base, '/api/image/generate', { model, prompt: 'One synthetic image' })
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: false, submission_state: 'unknown', task_id: null })
+    expect(imageWireCalls.filter(call => call.method === 'POST'
+      && (call.path === '/harness/v1/images/generations' || call.path === '/harness/toapis/v1/images/generations'))).toHaveLength(1)
+    expect(imageWireCalls.filter(call => call.path.startsWith(retainedTaskPath))).toEqual([])
+    expect(await publishedImageFiles()).toEqual([])
+    await recordRecoveryRoute(mode, result)
+  })
+
+  it.for(['png', 'jpeg', 'webp'] as const)('preserves a valid legacy Toapis %s result with an unrelated task header', async (format) => {
+    const bytes = await sharp({ create: { width: 1, height: 1, channels: 3, background: '#ffffff' } }).toFormat(format).toBuffer()
+    const original = retainedCandidate(), model = 'yunshu-internal-gpt-image-2'
+    const row = { ...original, model_name: model, route: '/toapis/v1/images/generations',
+      parameters: { ...original.parameters, 'x-task-plugin': { key: 'toapis', version: '1.2.1', api_version: 1 } } }
+    const base = await boot([model], true, [row], { body: 'complete', bytes })
+    const result = await post(base, '/api/image/generate', { model, prompt: 'One synthetic legacy image' })
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true, submission_state: 'completed', task_id: null })
+    const path = object(result.payload).path
+    if (typeof path !== 'string') throw new Error('Expected saved legacy image path')
+    const saved = await readFile(path)
+    expect(saved).toEqual(bytes)
+    const decoded = await sharp(saved).raw().toBuffer({ resolveWithObject: true })
+    expect(decoded.info).toMatchObject({ width: 1, height: 1, channels: 3 })
+    expect(path.endsWith(format === 'jpeg' ? '.jpg' : '.' + format)).toBe(true)
+    expect(imageWireCalls.filter(call => call.path === '/harness/toapis/v1/images/generations')).toHaveLength(1)
+    expect(imageWireCalls.filter(call => call.path === retainedTaskPath || call.path === `${retainedTaskPath}/artifacts`)).toEqual([])
+    expect(await publishedImageFiles()).toHaveLength(1)
+    await recordRecoveryRoute('legacy-valid-' + format, result)
   })
 })
