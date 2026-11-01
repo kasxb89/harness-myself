@@ -33,6 +33,8 @@ Global panels occupy the root-scoped `main` keyed slot; `conversation` is the re
 
 The single root-scoped `shell.bottom` slot spans the full width below the three columns. Its occupant controls its own height and visibility; the columns shrink by that height, and empty content reserves no space. Main-panel navigation preserves the bottom component. Column resize handles stop above it, while `shell.overlay` covers the whole frame. The default composition leaves this slot empty.
 
+The single root-scoped `shell.top` slot reserves a full-width row above the columns. Empty content reserves no space; a visible occupant reduces their available height without changing the bottom row. On macOS outside native fullscreen the occupied row clears the fixed window-control band. Windows keeps its existing caption clearance. Column resize handles span only the column row.
+
 <a id="window-chrome-seat"></a>
 ### Window-chrome seat
 

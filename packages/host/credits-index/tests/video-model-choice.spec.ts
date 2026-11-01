@@ -44,7 +44,7 @@ describe('chat video defaults', () => {
   })
   it('uses H3 768P unless the original human requested a different resolution', () => {
     expect(chatVideoResolution(undefined, 'MiniMax-H3')).toBe('768P')
-    expect(chatVideoResolution('2K', 'MiniMax-H3')).toBe('768P')
+    expect(chatVideoResolution('2K', 'MiniMax-H3')).toBe('2K')
     expect(chatVideoResolution('2K', 'MiniMax-H3', '2K')).toBe('2K')
     expect(chatVideoResolution(undefined, 'MiniMax-H3', '768k')).toBe('768P')
     expect(chatVideoResolution('768k', 'other-video')).toBe('768P')

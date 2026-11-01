@@ -1,11 +1,13 @@
-/** Human selection before a chat workflow may charge a non-default video model. @module */
+/** Price-informed human selection for non-H3 video generation, independent of deployment defaults. @module */
 import type { AskUserQuestionAnswer, AskUserQuestionItem } from '@deepseek-ai/dsh-user-questions/types'
 import { z } from 'zod'
 import { CreativeError } from './creative-store.ts'
 import { isAccountBalanceRejection } from './account-balance.ts'
 
-/** Exact account model and output tier used for an unspecified chat video. */
-export const DEFAULT_CHAT_VIDEO_MODEL = 'MiniMax-H3'
+/** Exact native identity used for H3 serialization and its existing quote-confirmation exception. */
+export const H3_VIDEO_MODEL = 'MiniMax-H3'
+/** Legacy fallback only when the backend has no configured video default. */
+export const DEFAULT_CHAT_VIDEO_MODEL = H3_VIDEO_MODEL
 /** H3's actual published tier; the human shorthand “768k” denotes this tier. */
 export const DEFAULT_CHAT_VIDEO_RESOLUTION = '768P'
 
@@ -74,7 +76,7 @@ export function videoModelQuoteSegment(request: Readonly<Record<string, unknown>
       else if (content.type !== 'text') throw quoteUnavailable()
     }
   }
-  if (request.model !== DEFAULT_CHAT_VIDEO_MODEL) {
+  if (request.model !== H3_VIDEO_MODEL) {
     // Private references are counted, never copied into the quotation. Video
     // and audio input usage still requires a provider-specific measured contract.
     if (metadata.reference_video !== undefined || metadata.reference_audio !== undefined) throw new VideoQuoteUnsupportedError()
@@ -254,7 +256,7 @@ export interface VideoModelChoiceOptions {
 export function chatVideoResolution(
   resolution: string | undefined, model: string, requestedResolution?: string,
 ): string | undefined {
-  const selected = requestedResolution ?? (model === DEFAULT_CHAT_VIDEO_MODEL ? DEFAULT_CHAT_VIDEO_RESOLUTION : resolution)
+  const selected = requestedResolution ?? resolution ?? (model === H3_VIDEO_MODEL ? DEFAULT_CHAT_VIDEO_RESOLUTION : undefined)
   return selected !== undefined && /^768[pk]$/iu.test(selected.trim()) ? DEFAULT_CHAT_VIDEO_RESOLUTION : selected
 }
 
@@ -330,8 +332,8 @@ export async function chooseChatVideoModel(options: VideoModelChoiceOptions): Pr
     if (candidate.model.trim() === '' || candidate.durations.length === 0
       || candidate.durations.some(duration => !Number.isSafeInteger(duration) || duration < 1)) throw quoteUnavailable()
   }
-  if (options.target.model === DEFAULT_CHAT_VIDEO_MODEL) return options.target
-  if (options.baseline !== undefined && options.baseline.model !== DEFAULT_CHAT_VIDEO_MODEL) throw quoteUnavailable()
+  if (options.target.model === H3_VIDEO_MODEL) return options.target
+  if (options.baseline !== undefined && options.baseline.model !== H3_VIDEO_MODEL) throw quoteUnavailable()
   if (options.quote === undefined) throw quoteUnavailable()
   const ask = options.ask
   if (ask === undefined) throw new CreativeError('CREATIVE_VIDEO_MODEL_CHOICE_UNAVAILABLE', 409,

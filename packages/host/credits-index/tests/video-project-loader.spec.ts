@@ -28,6 +28,7 @@ import { CreativeError, CreativeStore } from '../src/creative-store.ts'
 import { VideoSubmissionRejection } from '../src/video-submission-result.ts'
 import { registerCreativeTools } from '../src/creative-tools.ts'
 import { readVideoProject } from '../src/video-project.ts'
+import actualMediaDefaultsStatus from './fixtures/announcement-banner-api/status.json' with { type: 'json' }
 import { registerVideoGenerationIntent } from '../src/video-generation-intent.ts'
 
 let context: Context | undefined
@@ -36,12 +37,34 @@ let directory: string | undefined
 afterEach(async () => {
   await context?.fiber.dispose()
   context = undefined
+  vi.unstubAllGlobals()
   if (directory !== undefined) await rm(directory, { recursive: true, force: true })
   directory = undefined
 })
 
+function stubMediaDefaultsStatus(statusResponse: unknown, extraPricing: Record<string, unknown>[] = []) {
+  const attempted: string[] = []
+  vi.stubGlobal('fetch', vi.fn<typeof fetch>(async (input, init) => {
+    const path = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url).pathname
+    if (init?.method === 'POST') attempted.push(path)
+    if (path === '/harness/api/status') return Response.json(statusResponse)
+    if (path === '/harness/api/user/self') return Response.json({ success: true, data: { id: 7, group: 'default', quota: 500_000 } })
+    if (path === '/harness/api/pricing') return Response.json({ success: true, data: [
+      { model_name: 'yunshu-internal-gpt-image-2', supported_endpoint_types: ['image-generation'] },
+      { model_name: 'MiniMax-H3', supported_endpoint_types: ['video-generation'] }, ...extraPricing,
+    ] })
+    if (path === '/harness/v1/models') return Response.json({ data: [
+      { id: 'yunshu-internal-gpt-image-2', supported_endpoint_types: ['image-generation'] },
+      { id: 'MiniMax-H3', supported_endpoint_types: ['video-generation'] },
+      ...extraPricing.map(row => ({ id: row.model_name, supported_endpoint_types: ['video-generation'] })),
+    ] })
+    return Response.json({ success: false }, { status: 404 })
+  }))
+  return attempted
+}
+
 async function boot(production = false, workspaceIncludesState = false, managedOutput = false,
-  humanText = '生成一个完整视频，按所选模型的实际时长生成分镜并合成。') {
+  humanText = '生成一个完整视频，按所选模型的实际时长生成分镜并合成。', phoneSession = false) {
   directory = await mkdtemp(join(tmpdir(), 'dsh-video-tools-loader-'))
   const workspace = workspaceIncludesState ? directory : join(directory, 'workspace')
   await mkdir(workspace, { recursive: true })
@@ -95,13 +118,20 @@ async function boot(production = false, workspaceIncludesState = false, managedO
     ['video-fixture', VideoFixture], ['credits', Credits], ['webserver', WebServer], ['artifacts', Artifacts],
     ['session-projections', SessionProjectionRegistry],
   ])
+  if (phoneSession) {
+    await mkdir(join(directory, 'credits'))
+    await writeFile(join(directory, 'credits', 'session.json'), JSON.stringify({ token: 'private-local-session',
+      expiresAt: '9999-01-01T00:00:00.000Z', account: { id: '7', phone: 'fixture' },
+      upstream: { token: 'private-access', refresh: 'private-refresh', expiresAt: '9999-01-01T00:00:00.000Z' },
+      relay: { key: 'sk-private-relay' } }))
+  }
   const path = join(directory, 'cordis.yml')
   await writeFile(path, [
     '- name: system-prompt', '- name: tools', '- name: agents', '- name: jobs', '- name: job-tools', '- name: session-projections',
     ...production ? ['- name: skills'] : [],
     ...production || managedOutput ? ['- name: webserver', '  config:', "    host: '127.0.0.1'", '    port: 0'] : [],
     ...managedOutput ? ['- name: artifacts', '  config:', `    defaultOutputDirectory: '${join(directory, 'selected-output')}'`, `    stateDirectory: '${join(directory, 'artifact-settings')}'`] : [],
-    ...production ? ['- name: credits', '  config:', `    stateDir: '${join(directory, 'credits')}'`] : ['- name: video-fixture'], '',
+    ...production ? ['- name: credits', '  config:', `    stateDir: '${join(directory, 'credits')}'`, "    newApiBaseUrl: 'http://127.0.0.1:32127/harness'"] : ['- name: video-fixture'], '',
   ].join('\n'))
   context = new Context()
   context.baseUrl = pathToFileURL(directory).href + '/'
@@ -238,6 +268,71 @@ describe('video tools through Loader, real tool registry and jobs runtime', () =
     expect(retained.works).toEqual(initial.works)
     expect(f.requests).toEqual([])
     expect(await f.creative.projects({ ...f.provider.identity, sessionId: f.agent.id })).toEqual([])
+  })
+
+  it('captures a configured default for a new project while explicit and retained models stay authoritative', async () => {
+    const f = await boot(false, false, false, '生成一个5秒视频')
+    let configured = 'configured-video'
+    const defaultModel = vi.fn(async () => configured)
+    f.options.defaultModel = defaultModel
+    f.provider.model = async id => ({ id: id ?? 'MiniMax-H3', durations: [5] })
+    f.options.chatModelChoice = async input => ({ input })
+    const started = json((await f.call('generate_video_project', { prompt: '新视频', total_duration_seconds: 5 })).value)
+    expect(started.status).toBe('background')
+    await vi.waitFor(() => { expect(f.ctx.jobs.get(JobId(String(started.job_id)), f.agent.id).status).toBe('completed') })
+    expect(f.inputs[0]).toMatchObject({ model: 'configured-video' })
+    expect(f.inputs[0]?.resolution).toBeUndefined()
+    expect(defaultModel).toHaveBeenCalledTimes(1)
+    configured = 'replacement-video'
+    const manifest = await readVideoProject(f.options, String(started.project_id), f.agent.id, f.workspace, f.provider.identity)
+    expect(manifest.model).toBe('configured-video')
+    f.nextHuman('再独立生成一个5秒视频，用MiniMax-H3，2K')
+    const explicit = json((await f.call('generate_video_project', { prompt: '新明确要求', model: 'MiniMax-H3',
+      resolution: '2K', total_duration_seconds: 5 })).value)
+    expect(explicit.status).toBe('background')
+    await vi.waitFor(() => { expect(f.ctx.jobs.get(JobId(String(explicit.job_id)), f.agent.id).status).toBe('completed') })
+    expect(f.inputs[1]).toMatchObject({ model: 'MiniMax-H3', resolution: '2K' })
+    expect(defaultModel).toHaveBeenCalledTimes(1)
+  })
+
+  it('exposes actual API media defaults through the real Host tool catalog without generating', async () => {
+    const attempted = stubMediaDefaultsStatus(actualMediaDefaultsStatus)
+    const f = await boot(true, false, false, '查看可用模型', true)
+    expect(json((await f.call('list_video_models', {})).value)).toMatchObject({ status: 'listed',
+      default_model_id: 'MiniMax-H3', default_configured: true, default_available: true })
+    expect(json((await f.call('list_image_models', {})).value)).toMatchObject({ status: 'listed',
+      default_model_id: 'yunshu-internal-gpt-image-2', default_configured: true, default_available: true })
+    expect(attempted).toEqual([])
+  })
+
+  it('does not apply H3 resolution or select a paid variant for an unspecified non-H3 backend default', async () => {
+    const attempted = stubMediaDefaultsStatus({ success: true, data: { client_media_defaults: {
+      schema_version: 1, default_image_model: '', default_video_model: 'configured-video',
+    } } }, [{ model_name: 'configured-video', kind: 'video', parameters: { oneOf: [
+      { properties: { resolution: { const: '720p' }, seconds: { const: 5 }, quality: { const: 'mini' }, ratio: { const: '16:9' } } },
+      { properties: { resolution: { const: '1080p' }, seconds: { const: 5 }, quality: { const: 'pro' }, ratio: { const: '16:9' } } },
+    ] } }])
+    const f = await boot(true, false, false, '生成一个5秒视频', true)
+    const result = json((await f.call('generate_video', { prompt: '不暗选规格', duration_seconds: 5 })).value)
+    expect(result).toMatchObject({ status: 'failed', code: 'SPECIFICATION_REQUIRED', model: 'configured-video' })
+    expect(attempted).toEqual([])
+  })
+
+  it('reads real Host defaults independently of chat sync and refuses unavailable configured models before generation', async () => {
+    const attempted = stubMediaDefaultsStatus({ success: true, data: {
+      client_media_defaults: { schema_version: 1, default_image_model: 'missing-image', default_video_model: 'missing-video' },
+    } })
+    const f = await boot(true, false, false, '生成一个5秒视频', true)
+    const listed = json((await f.call('list_video_models', {})).value)
+    expect(listed).toMatchObject({ status: 'listed', default_model_id: 'missing-video', default_configured: true, default_available: false })
+    const result = json((await f.call('generate_video', { prompt: '后台默认视频', duration_seconds: 5 })).value)
+    expect(result).toMatchObject({ status: 'failed', code: 'DEFAULT_MEDIA_MODEL_UNAVAILABLE' })
+    expect(attempted).toEqual([])
+    const imageListed = json((await f.call('list_image_models', {})).value)
+    expect(imageListed).toMatchObject({ status: 'listed', default_model_id: 'missing-image', default_configured: true, default_available: false })
+    const image = json((await f.call('generate_image', { prompt: '后台默认图片' })).value)
+    expect(image).toMatchObject({ status: 'failed', code: 'DEFAULT_MEDIA_MODEL_UNAVAILABLE' })
+    expect(attempted).toEqual([])
   })
 
   it('claims one default work when two real registry executions reach provider acquisition together', async () => {

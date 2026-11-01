@@ -2,6 +2,11 @@
 
 /** Simplified Chinese dictionary (the key-set source of truth). */
 export const zh = {
+  'banner.region': '顶部公告',
+  'banner.previous': '上一条公告',
+  'banner.next': '下一条公告',
+  'banner.position': '第 {current} 条，共 {total} 条公告',
+  'banner.dismiss': '关闭顶部公告',
   'trigger': '设置',
   'shortcut.open': '打开设置',
   'announcements.title': '公告',
@@ -80,6 +85,11 @@ export type SettingsKey = keyof typeof zh
 
 /** English dictionary, checked complete against the zh key set. */
 export const en = {
+  'banner.region': 'Top announcements',
+  'banner.previous': 'Previous announcement',
+  'banner.next': 'Next announcement',
+  'banner.position': 'Announcement {current} of {total}',
+  'banner.dismiss': 'Dismiss top announcements',
   'trigger': 'Settings',
   'shortcut.open': 'Open settings',
   'announcements.title': 'Announcements',

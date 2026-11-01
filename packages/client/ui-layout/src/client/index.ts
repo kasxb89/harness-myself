@@ -86,6 +86,13 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
      */
     'rightbar': { kind: 'single'; scope: 'root'; owner: RightbarOwnerProps }
     /**
+     * Occupy the full-width row above the columns with root-scoped content.
+     * It receives no owner props or Session binding. Registering replaces the
+     * existing occupant; no content reserves no height. The frame keeps native
+     * window controls clear and preserves this seat during main navigation.
+     */
+    'shell.top': { kind: 'single'; scope: 'root' }
+    /**
      * Full-width bottom content below all three columns. Its rendered height
      * reduces the columns' available height; empty content reserves no space.
      * The occupant owns its height, visibility, and controls. It receives no
@@ -182,6 +189,7 @@ export function apply(ctx: ClientContext): void {
         'sidebar': { kind: 'single', scope: 'root' },
         'main': { kind: 'keyed', scope: 'root' },
         'rightbar': { kind: 'single', scope: 'root' },
+        'shell.top': { kind: 'single', scope: 'root' },
         'shell.bottom': { kind: 'single', scope: 'root' },
         'shell.overlay': { kind: 'list', scope: 'root' },
         'shell.leading': { kind: 'single', scope: 'root' },

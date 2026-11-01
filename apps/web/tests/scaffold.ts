@@ -579,6 +579,10 @@ export async function launchWebScaffold(options: LaunchOptions = {}): Promise<We
     ...options.profile?.hmr === false ? [{ id: 'hmr', disabled: true }] : [],
     { id: 'session-log-deepseek', config: { enabled: false } },
     { id: 'ui-plugin-manager', config: { registryProbeEnabled: false } },
+    // Automatic deployment notices must not contact the shipped production API.
+    // Integration cases replace this complete row with their own loopback service.
+    { id: 'credits-index', config: { newApiBaseUrl: 'http://127.0.0.1:9', baseUrl: '', bridgeBaseUrl: '',
+      stateDir: join(workspaceCwd, '.credits') } },
     ...mode === 'record' || options.deepSeekMissingCredential === true
       ? []
       : [{ id: 'agent-default-model', config: { provider: 'deepseek-official', model: 'deepseek-v4-flash' } }],

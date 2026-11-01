@@ -24,6 +24,7 @@
   "exclude": [
     "tests/onboarding-survey.e2e.ts",
     "tests/configurable-onboarding-survey.e2e.ts",
+    "tests/announcement-banner.e2e.ts",
     "tests/skin-market-scroll.e2e.ts",
     "tests/recharge-price-comparison.e2e.ts",
     "tests/creation-entry-isolation.e2e.ts",

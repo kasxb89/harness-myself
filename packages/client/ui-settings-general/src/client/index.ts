@@ -21,6 +21,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-session/client'
+import type {} from '@deepseek-ai/dsh-client-ui-credits/client'
 import type {
   SettingsOnboardingStep, SettingsRootInjected, SettingsSectionRow,
 } from './shell-contract.ts'
@@ -30,6 +31,8 @@ import { SettingsRoot } from './SettingsRoot.tsx'
 import { DesktopUpdateBadge } from './DesktopUpdateIndicator.tsx'
 import { DesktopUpdateCheckFooter, type DesktopUpdateCheckInjected } from './DesktopUpdateCheck.tsx'
 import { Announcements } from './Announcements.tsx'
+import { TopAnnouncementBanner } from './TopAnnouncementBanner.tsx'
+import { createAnnouncementBannerController, createAnnouncementDismissalStore } from './announcement-banner-store.ts'
 import { readAnnouncements } from './announcement-reader.ts'
 import { CustomerSupport } from './CustomerSupport.tsx'
 import { readCustomerSupport } from './customer-support-reader.ts'
@@ -136,6 +139,13 @@ export function apply(ctx: ClientContext): void {
       inject: desktopUpdateCheckInjected,
     }, DesktopUpdateCheckFooter))
   }
+  ctx.inject(['creditsSession'], (scope) => {
+    const banner = createAnnouncementBannerController(scope.creditsSession)
+    scope.effect(() => banner.start(), 'ui-settings-general: top announcement lifecycle')
+    scope.slots.inject('shell.top', () => scope.slots.register({
+      name: 'shell.top', locale: NS, store: createAnnouncementDismissalStore(), inject: () => ({ hooks: banner.hooks }),
+    }, TopAnnouncementBanner))
+  })
   ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
     name: 'sidebar.footer.action', id: 'announcements', order: 21, locale: NS,
     inject: () => ({ readAnnouncements, hooks: { announcementLocale: ctx.locale } }),

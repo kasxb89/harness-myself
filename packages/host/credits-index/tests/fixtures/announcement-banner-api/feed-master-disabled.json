@@ -1,0 +1,12 @@
+{
+  "data": {
+    "announcements": [],
+    "announcements_enabled": false,
+    "content_format": "plain_text",
+    "schema_version": 1,
+    "top_banner_enabled": true,
+    "updated_at": "2026-11-01T13:14:43.471376Z"
+  },
+  "message": "",
+  "success": true
+}

@@ -1,0 +1,31 @@
+{
+  "data": {
+    "announcements": [
+      {
+        "content": "更新公告",
+        "extra": "note",
+        "id": 1,
+        "publishDate": "2026-10-23T01:02:03Z",
+        "title": "更新公告",
+        "type": "warning",
+        "updatedAt": "2026-11-01T13:14:43.464446Z"
+      },
+      {
+        "content": "第二条公告",
+        "extra": "note",
+        "id": 2,
+        "publishDate": "2026-10-23T01:02:03Z",
+        "title": "第二条公告",
+        "type": "warning",
+        "updatedAt": null
+      }
+    ],
+    "announcements_enabled": true,
+    "content_format": "plain_text",
+    "schema_version": 1,
+    "top_banner_enabled": true,
+    "updated_at": "2026-11-01T13:14:43.464446Z"
+  },
+  "message": "",
+  "success": true
+}

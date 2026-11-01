@@ -178,9 +178,11 @@ export interface VideoProjectOptions {
   accountScope?(identity: VideoProjectIdentity): string | undefined
   /** Observe only process-live project and clip phases; observer failure never changes execution. */
   activity?(this: void, event: VideoProjectActivity): void
+  /** Read the current account’s deployment default only for a new request without an explicit model. */
+  defaultModel?(signal: AbortSignal): Promise<string>
   /** Resolve and approve a chat-only model change before preparing any billable project. */
   chatModelChoice?(
-    input: VideoProjectInput, exec: ToolRunContext, provider: VideoProjectProvider,
+    input: VideoProjectInput, exec: ToolRunContext, provider: VideoProjectProvider, defaultedModel?: boolean,
   ): Promise<{ input: VideoProjectInput; beforeSubmit?: (signal: AbortSignal) => Promise<void> }>
   /** Observe a terminal local workflow failure without affecting generation or persisted state. */
   failed?(manifest: import('./video-project.ts').VideoProjectManifest, code: string): void

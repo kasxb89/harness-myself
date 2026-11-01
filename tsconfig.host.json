@@ -10,6 +10,7 @@
   "include": [
     "apps/web/tests/onboarding-survey.e2e.ts",
     "apps/web/tests/configurable-onboarding-survey.e2e.ts",
+    "apps/web/tests/announcement-banner.e2e.ts",
     "apps/web/tests/skin-market-scroll.e2e.ts",
     "apps/web/tests/recharge-price-comparison.e2e.ts",
     "apps/web/tests/creation-entry-isolation.e2e.ts",

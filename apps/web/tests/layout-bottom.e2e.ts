@@ -17,7 +17,7 @@ async function geometry(page: Page) {
       bottom: rect(bottom), main: rect(main), sidebar: rect(sidebar),
       rightbar: rect(document.querySelector('[data-rightbar-col]')!),
       overlay: rect(document.querySelector('[data-shell-overlay]')!),
-      handles: [...document.querySelectorAll('[data-side]')].map(rect),
+      handles: [...bottom.parentElement!.querySelectorAll(':scope > [data-side]')].map(rect),
       pageHeight: document.documentElement.scrollHeight,
     }
   })

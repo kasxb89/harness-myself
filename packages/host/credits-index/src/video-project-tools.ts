@@ -269,7 +269,7 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
       total_duration_seconds: { type: 'number', description: 'Desired final length in whole seconds; this may exceed the model single-clip limit. For a simple single clip with no plan or explicit shot arrays, omit to use the selected model’s actual default duration. The Host reads the real catalog itself; no separate list_video_models call is needed. Required for explicit plans and shot arrays; never omit a user-specified duration.' },
       shot_prompts: { type: 'array', items: { type: 'string' }, description: 'Exact shot briefs, one per planned clip. With plan_id and shot_ids, omit to use each saved shot’s scene, camera, action, prompt, exact dialogue/subtitles and associated character definitions without another model call. Explicit values remain verbatim. Otherwise allocate delegated narrative lines and timing to stable speakers, distinguishing on-screen speech from narration. Respect silent/no-dialogue requests.' },
       shot_durations_seconds: { type: 'array', items: { type: 'number' }, description: 'Exact model-supported whole seconds per clip, in shot_ids or shot_prompts order. Their sum must equal total_duration_seconds. When omitted for an explicit creation plan, use its saved shot durations; do not silently change timeline timing.' },
-      model: { type: 'string', description: 'Defaults to MiniMax-H3 at 768P unless the human explicitly requested another resolution. Preserve an explicitly requested model; any non-H3 selection requires a current full-price estimate and a real human model choice before generation. Model arguments never approve that change.' },
+      model: { type: 'string', description: 'When omitted, the Host uses the backend-configured video model for this account; an older or unset configuration retains MiniMax-H3. Only actual H3 defaults to 768P without a specified tier. Preserve an explicitly requested model; any non-H3 selection requires a current full-price estimate and a real human model choice before generation. Model arguments never approve that change.' },
       resolution: { type: 'string' }, ratio: { type: 'string' },
       size: { type: 'string', description: 'Exact native output size from the complete published specification, when distinct from resolution.' },
       quality: { type: 'string', description: 'Exact quality tier from the complete published specification; used for both quote and submission.' },
@@ -318,7 +318,8 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
           }
           duration = videoIntent.requestedDurationSeconds
         }
-        let model = videoIntent.requestedModel ?? args.model ?? DEFAULT_CHAT_VIDEO_MODEL
+        const defaultedModel = videoIntent.requestedModel === undefined && args.model === undefined
+        let model = videoIntent.requestedModel ?? args.model ?? await options.defaultModel?.(signal) ?? DEFAULT_CHAT_VIDEO_MODEL
         const resolution = chatVideoResolution(args.resolution, model, videoIntent.requestedResolution)
         if (duration === undefined) {
           if (args.plan_id !== undefined || args.shot_ids !== undefined
@@ -393,7 +394,7 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
             '当前无法核实所选视频型号的价格并展示选择，尚未提交生成；请稍后查看报价。')
         }
         const choice = options.chatModelChoice === undefined ? { input: plannedInput }
-          : await options.chatModelChoice(plannedInput, exec, provider)
+          : await options.chatModelChoice(plannedInput, exec, provider, defaultedModel)
         const input = choice.input
         const originalProvider = provider
         const beforeSubmit = async (submitSignal: AbortSignal): Promise<void> => {
@@ -591,7 +592,7 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
           || manifest.failureCode === 'INSUFFICIENT_BALANCE')) {
           try {
             if (options.chatModelChoice !== undefined) {
-              const choice = await options.chatModelChoice(manifest.input, exec, originalProvider)
+              const choice = await options.chatModelChoice({ ...manifest.input, model: manifest.model }, exec, originalProvider, false)
               if (!isDeepStrictEqual({ ...choice.input, model: choice.input.model ?? manifest.model },
                 { ...manifest.input, model: manifest.model })) throw new CreativeError('CREATIVE_VIDEO_QUOTE_CHANGED', 409,
                 '本次选择与原视频规格不同，尚未提交新的生成；请确认调整原计划后再生成。')

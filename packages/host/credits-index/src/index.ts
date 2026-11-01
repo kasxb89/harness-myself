@@ -39,6 +39,8 @@ import { writePrivateState } from './private-state-file.ts'
 import { SessionRefresh, type StoredAccount, type StoredSession } from './session-refresh.ts'
 import { sessionTransportFailure, type SessionFailure } from './session-failure.ts'
 import { PhoneAuthState, type PhoneDeliveryStatus } from './phone-auth-state.ts'
+import { MediaDefaultsCache, mediaDefaultSelection, requireMediaDefault, type MediaDefaultSelection } from './media-defaults.ts'
+import { readAnnouncementBanner } from './announcement-banner.ts'
 import { parseClientModelConfigStatus, parseClientModelPresentationStatus } from './client-model-config.ts'
 import { ProductModelCapabilitiesError, mergeProductModelLimits, productModelLimitsScope, readProductModelLimits, type ProductModelLimits } from './model-limits.ts'
 import { registerProductTextModelPolicy } from './text-model-policy.ts'
@@ -863,6 +865,7 @@ export function apply(ctx: Context, config: Config): void {
   const store = new SessionStore(ctx, join(stateDir, 'session.json'))
   const imageExecutions = new ImageConcurrency(resolved.imageConcurrency)
   const mediaCatalogCache = new MediaCatalogCache(resolved.mediaCatalogCacheTtlMs)
+  const mediaDefaultsCache = new MediaDefaultsCache(resolved.mediaCatalogCacheTtlMs)
   const generationPerformance = new GenerationPerformance(resolved.generationPerformanceMaxRecords)
   const imageJobs = new ImageJobs(ctx, resolved.imageForegroundWaitMs)
   ctx.effect(() => () => imageJobs.dispose(), 'credits-index: owned image background execution')
@@ -1268,6 +1271,34 @@ export function apply(ctx: Context, config: Config): void {
     return id
   }
 
+  /** Capture one public default separately from chat-model synchronization and before any generation. */
+  const readMediaDefault = async (kind: 'image' | 'video', signal?: AbortSignal,
+    suppliedCatalog?: readonly ModelCapability[]): Promise<MediaDefaultSelection> => {
+    const version = identityVersion
+    const session = await liveSession()
+    if (session?.token === undefined) throw new CreativeError('SESSION_REQUIRED', 409, '请先登录后读取默认模型；尚未提交生成。')
+    const owner = productOwner(session)
+    const current = async (): Promise<void> => {
+      const latest = await store.read()
+      if (version !== identityVersion || latest?.token === undefined || productOwner(latest) !== owner) {
+        throw new CreativeError('ACCOUNT_CHANGED', 409, '登录账号已变化，请重新读取默认模型；尚未提交生成。')
+      }
+    }
+    const life = AbortSignal.any([publicStatusLife.signal, ...signal === undefined ? [] : [signal],
+      AbortSignal.timeout(resolved.timeoutMs)])
+    const [defaults, visible, catalog] = await Promise.all([
+      mediaDefaultsCache.read(JSON.stringify([apiBaseUrl, owner, version]),
+        () => apiFetch('/api/status', { headers: { accept: 'application/json' }, signal: life }), life, current),
+      readNewApiModels(session, life),
+      suppliedCatalog === undefined ? readMediaCatalog(life) : Promise.resolve({ ok: true, models: suppliedCatalog }),
+    ])
+    await current()
+    life.throwIfAborted()
+    if (!visible.ok || !catalog.ok) throw new CreativeError('DEFAULT_MEDIA_MODEL_UNAVAILABLE', 409,
+      '暂时无法核对默认模型的当前账号权限；尚未提交生成。请重新读取模型目录后重试。')
+    return mediaDefaultSelection(defaults, kind, catalog.models, new Set([...visible.chat, ...visible.image, ...visible.video]))
+  }
+
   /** One published media capability, or a readable catalog lookup failure. */
   const capabilityFor = async (
     kind: 'image' | 'video',
@@ -1277,6 +1308,7 @@ export function apply(ctx: Context, config: Config): void {
     | { ok: false; code: string; message: string; catalog: ModelCapability[] }> => {
     const catalog = await readMediaCatalog(signal)
     if (!catalog.ok) return { ok: false, code: catalog.code ?? 'CATALOG_FAILED', message: catalog.message ?? '模型表不可用', catalog: [] }
+    if (id === null) id = requireMediaDefault(await readMediaDefault(kind, signal, catalog.models))
     const model = pickModel(catalog.models, kind, id)
     if (model === null) {
       return {
@@ -1988,10 +2020,12 @@ export function apply(ctx: Context, config: Config): void {
         ...resumeReceipt === undefined ? {} : { imageReceipt: resumeReceipt, model: resumeReceipt.model,
           ...resumeReceipt.taskId === undefined ? {} : { taskId: resumeReceipt.taskId },
           ...resumeReceipt.requestId === undefined ? {} : { requestId: resumeReceipt.requestId } },
-        code: error instanceof VideoProjectError ? error.code : error instanceof MediaTransferLimitError ? 'IMAGE_DOWNLOAD_TOO_LARGE' : signal.aborted ? 'ABORTED' : 'IMAGE_PREPARATION_FAILED',
-        message: error instanceof VideoProjectError ? error.message : error instanceof MediaTransferLimitError
-          ? '原图片超过当前下载大小上限，未覆盖任何文件；请保留原任务查询，无需重新生成。' : resumeReceipt === undefined ? '生成准备未完成，尚未提交生成，请检查素材与保存位置。'
-            : '原任务的查询或保存暂未完成，请检查原任务；不会重新生成。' }
+        code: error instanceof VideoProjectError || error instanceof CreativeError ? error.code
+          : error instanceof MediaTransferLimitError ? 'IMAGE_DOWNLOAD_TOO_LARGE' : signal.aborted ? 'ABORTED' : 'IMAGE_PREPARATION_FAILED',
+        message: error instanceof VideoProjectError || error instanceof CreativeError ? error.message
+          : error instanceof MediaTransferLimitError
+            ? '原图片超过当前下载大小上限，未覆盖任何文件；请保留原任务查询，无需重新生成。' : resumeReceipt === undefined ? '生成准备未完成，尚未提交生成，请检查素材与保存位置。'
+              : '原任务的查询或保存暂未完成，请检查原任务；不会重新生成。' }
     } finally {
       releaseImage?.()
     }
@@ -2128,6 +2162,7 @@ export function apply(ctx: Context, config: Config): void {
         chatUsage.reset()
         accountReads.reset()
         mediaCatalogCache.clear()
+        mediaDefaultsCache.clear()
         generationPerformance.clear()
         const committed = identityVersion
         invalidateModelCatalog()
@@ -2179,6 +2214,7 @@ export function apply(ctx: Context, config: Config): void {
       chatUsage.reset()
       accountReads.reset()
       mediaCatalogCache.clear()
+      mediaDefaultsCache.clear()
       generationPerformance.clear()
       invalidateModelCatalog()
       await store.clear()
@@ -3027,6 +3063,30 @@ export function apply(ctx: Context, config: Config): void {
           try { await operation } finally { publicStatusReads.delete(operation); response.off('close', disconnected) }
           return
         }
+        if (route === '/api/announcement-banner') {
+          const connection = ctx.get('connection')
+          const rejected = connection === undefined ? 403 : connection.requestRejection(request)
+          if (rejected !== undefined) { json(response, rejected, { ok: false, code: 'ANNOUNCEMENT_BANNER_HOST_AUTH_REQUIRED' }); return }
+          if (method !== 'GET') { json(response, 405, { ok: false, code: 'METHOD_NOT_ALLOWED' }); return }
+          const lifetime = new AbortController()
+          const disconnected = (): void => { lifetime.abort() }
+          response.once('close', disconnected)
+          const version = identityVersion
+          const signal = AbortSignal.any([publicStatusLife.signal, lifetime.signal, AbortSignal.timeout(resolved.timeoutMs)])
+          const operation = (async (): Promise<void> => {
+            const outcome = await readAnnouncementBanner(async readSignal => await apiFetch('/api/client-announcements', {
+              signal: readSignal, headers: { accept: 'application/json' },
+            }), signal, apiBaseUrl)
+            if (lifetime.signal.aborted || response.destroyed) return
+            json(response, 200, version !== identityVersion ? { ok: false, code: 'ACCOUNT_CHANGED' } : outcome)
+          })().catch((_unavailable: unknown) => {
+            if (!lifetime.signal.aborted && !response.destroyed) json(response, 200,
+              { ok: false, code: version !== identityVersion ? 'ACCOUNT_CHANGED' : 'ANNOUNCEMENT_BANNER_UNAVAILABLE' })
+          })
+          publicStatusReads.add(operation)
+          try { await operation } finally { publicStatusReads.delete(operation); response.off('close', disconnected) }
+          return
+        }
         if (route === '/api/customer-support' || route === '/api/announcements') {
           const support = route === '/api/customer-support'
           const connection = ctx.get('connection')
@@ -3508,6 +3568,7 @@ export function apply(ctx: Context, config: Config): void {
           chatUsage.reset()
           accountReads.reset()
           mediaCatalogCache.clear()
+          mediaDefaultsCache.clear()
           generationPerformance.clear()
           await stopActivity(previous?.token)
           invalidateModelCatalog()
@@ -4670,6 +4731,7 @@ export function apply(ctx: Context, config: Config): void {
   /** Resolve both chat entry points against the same catalog and real human selection. */
   const selectChatVideoModel = async (
     input: VideoProjectInput, exec: ToolRunContext, identity: VideoProjectIdentity, assertCurrent: () => Promise<void>,
+    defaultedModel = false,
   ): Promise<{ input: VideoProjectInput; beforeSubmit: (signal: AbortSignal) => Promise<void> }> => {
     if (videoModelChoiceCancelled(exec)) throw new CreativeError('USER_CANCELLED', 409,
       '你已取消本次视频生成，未提交新的模型请求；需要生成时请明确发送新的生成要求。')
@@ -4684,9 +4746,10 @@ export function apply(ctx: Context, config: Config): void {
       if (capability === undefined) throw new CreativeError('VIDEO_MODEL_UNAVAILABLE', 409,
         '所选视频型号当前不可用，尚未提交生成；请查看当前可用型号。')
       const params = capability.params as VideoParams
-      resolution ??= capability.source === 'plugin:blackrxai-video' || params.specifications !== undefined
+      const implicitConfigured = defaultedModel && model === targetModel && model !== DEFAULT_CHAT_VIDEO_MODEL
+      if (!implicitConfigured) resolution ??= capability.source === 'plugin:blackrxai-video' || params.specifications !== undefined
         ? params.resolutions[0] : undefined
-      const ratio = input.ratio ?? (params.specifications === undefined ? undefined : params.ratios[0])
+      const ratio = input.ratio ?? (implicitConfigured || params.specifications === undefined ? undefined : params.ratios[0])
       const size = model === targetModel ? input.size : undefined
       if (resolution !== undefined && !params.resolutions.includes(resolution)) {
         throw new CreativeError('RESOLUTION_NOT_SUPPORTED', 409,
@@ -4712,7 +4775,7 @@ export function apply(ctx: Context, config: Config): void {
         ...model !== targetModel || input.quality === undefined ? {} : { quality: input.quality },
         ...model !== targetModel || input.mode === undefined ? {} : { mode: input.mode }, durations: [...durations] }
     }
-    const targetModel = intent.requestedModel ?? input.model ?? DEFAULT_CHAT_VIDEO_MODEL
+    const targetModel = intent.requestedModel ?? input.model ?? requireMediaDefault(await readMediaDefault('video', exec.signal)) ?? DEFAULT_CHAT_VIDEO_MODEL
     const target = candidate(targetModel, chatVideoResolution(input.resolution, targetModel, intent.requestedResolution))
     let baseline: VideoModelCandidate | undefined = target
     const baselineUnsupported = (error: unknown): boolean => error instanceof VideoQuoteUnsupportedError
@@ -4839,8 +4902,9 @@ export function apply(ctx: Context, config: Config): void {
       videoWorks,
       accountScope: videoBalanceScope,
       activity: (event) => { generationCreation.project(event) },
-      chatModelChoice: async (input, exec, provider) => {
-        return selectChatVideoModel(input, exec, provider.identity, () => provider.assertCurrent())
+      defaultModel: async signal => requireMediaDefault(await readMediaDefault('video', signal)) ?? DEFAULT_CHAT_VIDEO_MODEL,
+      chatModelChoice: async (input, exec, provider, defaultedModel) => {
+        return selectChatVideoModel(input, exec, provider.identity, () => provider.assertCurrent(), defaultedModel)
       },
       failed: (manifest, code) => { clientErrors.submit('generate_video_project', { model: manifest.model },
         { status: 'failed', code }, {}, manifest.identity.accountId) },
@@ -4981,6 +5045,8 @@ export function apply(ctx: Context, config: Config): void {
     isConcurrencySafe: () => true,
     output: { schema: { type: 'object', properties: {
       status: { type: 'string' }, code: { type: 'string' }, message: { type: 'string' },
+      default_model_id: { type: 'string' }, default_configured: { type: 'boolean' },
+      default_available: { type: 'boolean' }, default_error_code: { type: 'string' },
       models: { type: 'array', items: { type: 'object', properties: {
         id: { type: 'string' }, display_name: { type: 'string' }, parameters_verified: { type: 'boolean' },
         sizes: { type: 'array', items: { type: 'string' } },
@@ -5030,7 +5096,20 @@ export function apply(ctx: Context, config: Config): void {
             ...params.specifications === undefined ? {} : { specifications: params.specifications.map(value => ({ ...value })) },
             seed: (model.verified || model.notes.includes('seed')) && params.seed }
         })
-        return { status: 'listed', models, message: models.length === 0 ? '当前账号没有可用的图片模型；尚未提交生成。'
+        let defaultMetadata: {
+          default_model_id?: string
+          default_configured?: boolean
+          default_available?: boolean
+          default_error_code?: string
+        }
+        try {
+          const selected = await readMediaDefault('image', signal, catalog.models)
+          defaultMetadata = { ...selected.model === null ? {} : { default_model_id: selected.model },
+            default_configured: selected.configured, default_available: selected.available }
+        } catch (error) { defaultMetadata = { default_error_code: error instanceof CreativeError ? error.code : 'DEFAULT_MEDIA_CONFIG_UNAVAILABLE' } }
+        await binding.key()
+        exec.signal.throwIfAborted()
+        return { status: 'listed', models, ...defaultMetadata, message: models.length === 0 ? '当前账号没有可用的图片模型；尚未提交生成。'
           : '按精确型号和已声明参数生成；空菜单不提供可选规格，未验证型号的数量限制仅为客户端保守限制。尚未提交生成。' }
       } catch (error) {
         if (error instanceof VideoProjectError && error.code === 'VIDEO_ACCOUNT_REQUIRED') {
@@ -5054,7 +5133,7 @@ export function apply(ctx: Context, config: Config): void {
       shot_id: { type: 'string', description: 'Exact shot id in the explicit plan; never guess a latest project.' },
       asset_id: { type: 'string', description: 'Exact image asset id in plan_id, including a video plan. Mutually exclusive with shot_id. Creates or reconstructs this source asset, not a finished shot.' },
       prompt: { type: 'string', required: true, description: 'What the image should show.' },
-      model: { type: 'string', description: 'Optional image model id such as gpt-image-2. Defaults to the first image model the deployment serves for this account.' },
+      model: { type: 'string', description: 'Optional image model id such as gpt-image-2. When omitted, the Host uses the backend-configured image default for this account; an older or unset configuration retains the account’s first available image model.' },
       size: { type: 'string', description: 'Optional output size from the selected model’s published menu. yunshu-internal-gpt-image-2 accepts aspect-ratio strings only when its live catalog declares them, never pixel dimensions; use resolution for its independent 1k, 2k or 4k tier. An undeclared value is refused before generation.' },
       resolution: { type: 'string', description: 'Optional named output tier, only when declared by the chosen model. yunshu-internal-gpt-image-2 accepts 1k, 2k or 4k and defaults to 1k; this is independent from pixel size.' },
       count: { type: 'number', description: 'How many images to render, within max_count returned by list_image_models; do not infer a model’s batch limit.' },
@@ -5320,6 +5399,8 @@ export function apply(ctx: Context, config: Config): void {
     parameters: {},
     output: { schema: { type: 'object', properties: {
       status: { type: 'string' }, code: { type: 'string' }, message: { type: 'string' },
+      default_model_id: { type: 'string' }, default_configured: { type: 'boolean' },
+      default_available: { type: 'boolean' }, default_error_code: { type: 'string' },
       models: { type: 'array', items: { type: 'object', additionalProperties: true } },
     }, additionalProperties: false }, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] },
     presentCall: () => ({ card: 'generic', title: '读取视频模型与参数', kind: 'read' }),
@@ -5349,7 +5430,20 @@ export function apply(ctx: Context, config: Config): void {
             ...params.qualities === undefined ? {} : { qualities: [...params.qualities] },
             ...params.specifications === undefined ? {} : { specifications: params.specifications.map(value => ({ ...value })) } }
         })
-        return { status: 'listed', models, message: '按当前参数规划生成片段；一个片段可含多个镜头切换。无独立音频开关不代表成片必定无声，未声明的音频能力不能保证对白。' }
+        let defaultMetadata: {
+          default_model_id?: string
+          default_configured?: boolean
+          default_available?: boolean
+          default_error_code?: string
+        }
+        try {
+          const selected = await readMediaDefault('video', exec.signal, catalog.models)
+          defaultMetadata = { ...selected.model === null ? {} : { default_model_id: selected.model },
+            default_configured: selected.configured, default_available: selected.available }
+        } catch (error) { defaultMetadata = { default_error_code: error instanceof CreativeError ? error.code : 'DEFAULT_MEDIA_CONFIG_UNAVAILABLE' } }
+        await binding.key()
+        exec.signal.throwIfAborted()
+        return { status: 'listed', models, ...defaultMetadata, message: '按当前参数规划生成片段；一个片段可含多个镜头切换。无独立音频开关不代表成片必定无声，未声明的音频能力不能保证对白。' }
       } catch (_error) { return { status: 'failed', code: 'VIDEO_MODELS_UNAVAILABLE', message: '暂时无法读取视频模型，请确认登录后重试；尚未提交生成。' } }
     },
   }))
@@ -5362,7 +5456,7 @@ export function apply(ctx: Context, config: Config): void {
       plan_id: { type: 'string', description: 'Explicit update_creation_plan id for this generation. Also provide shot_id.' },
       shot_id: { type: 'string', description: 'Exact shot id in the explicit plan; never guess a latest project.' },
       prompt: { type: 'string', required: true, description: 'What the video should show. Before calling, script user-delegated narrative or dialogue scenes with stable character ids, language, brief exact lines and their timing, identifying on-screen speakers versus narration; preserve user-supplied wording. Do not reduce a story requiring voices to a music montage. Respect silent/no-dialogue requests and do not add dialogue or subtitles to unrelated nonverbal videos. Include requested lip-sync and subtitle requirements. These request native model generation, not separate speech, lip-sync or subtitle processing; verify the rendered result before claiming they are met.' },
-      model: { type: 'string', description: 'Defaults to MiniMax-H3 at 768P unless the human explicitly requested another resolution. A non-H3 model requires a current full-price estimate and a real human model selection before generation; model arguments never approve that change.' },
+      model: { type: 'string', description: 'When omitted, use the backend-configured video model for this account; an older or unset configuration retains MiniMax-H3. Only actual H3 defaults to 768P when no resolution is given. A non-H3 model requires a current full-price estimate and a real human model selection before generation; model arguments never approve that change.' },
       duration_seconds: { type: 'number', description: 'Clip length in seconds; only values the chosen model declares are accepted.' },
       resolution: { type: 'string', description: 'Output resolution such as 768P or 2K, when the model offers choices.' },
       size: { type: 'string', description: 'Exact native size from a complete specification, when distinct from resolution.' },
@@ -5416,7 +5510,7 @@ export function apply(ctx: Context, config: Config): void {
       let operation: CreativeOperation | undefined
       let workClaim: VideoWorkClaim | undefined
       let balanceStop: ReturnType<typeof captureChatVideoBalanceStop> | undefined
-      let retry: { planId: string; operationId: string; proof: VideoBalanceRejection } | undefined
+      let retry: { planId: string; operationId: string; model?: string; proof: VideoBalanceRejection } | undefined
       try {
         const binding = await bindCurrentVideoAccount()
         balanceStop = captureChatVideoBalanceStop(exec, videoBalanceScope(binding.identity))
@@ -5454,7 +5548,9 @@ export function apply(ctx: Context, config: Config): void {
           if (proof === undefined) return { ...existingVideoWorkResult(reservation), operation_id: retained.operationId }
           if (args.plan_id !== undefined && args.plan_id !== link.projectId) throw new CreativeError('CREATIVE_SHOT_MISMATCH', 409,
             '重试同一作品时请保留原计划编号，尚未重新提交。')
-          retry = { planId: link.projectId, operationId: retained.operationId, proof }
+          const retainedModel = retained.model ?? retained.receipt?.model
+          retry = { planId: link.projectId, operationId: retained.operationId, proof,
+            ...retainedModel === undefined ? {} : { model: retainedModel } }
         }
         const work = reservation.kind === 'claimed' ? reservation.claim : {
           workId: reservation.work.workId, requestId: reservation.batch.requestId,
@@ -5473,7 +5569,10 @@ export function apply(ctx: Context, config: Config): void {
             '视频时长与用户明确要求不一致，尚未提交生成；请保持用户要求的每条成片时长。')
         }
         const durationSeconds = args.duration_seconds ?? requestedDuration
-        const requestedModel = videoIntent.requestedModel ?? args.model ?? DEFAULT_CHAT_VIDEO_MODEL
+        const defaultedModel = retry === undefined && videoIntent.requestedModel === undefined && args.model === undefined
+        const requestedModel = videoIntent.requestedModel ?? args.model ?? retry?.model
+          ?? (retry === undefined ? requireMediaDefault(await readMediaDefault('video', exec.signal)) : DEFAULT_CHAT_VIDEO_MODEL)
+          ?? DEFAULT_CHAT_VIDEO_MODEL
         const requestedResolution = chatVideoResolution(args.resolution, requestedModel, videoIntent.requestedResolution)
         let capability = await capabilityFor('video', requestedModel)
         if (!capability.ok) return { status: 'failed', code: capability.code, message: capability.message }
@@ -5518,7 +5617,8 @@ export function apply(ctx: Context, config: Config): void {
         if (typeof duration !== 'number') throw new CreativeError('DURATION_NOT_SUPPORTED', 409,
           '当前视频时长无法核实，尚未提交生成；请明确视频时长。')
         const choice = await selectChatVideoModel({ ...requestInput, totalDurationSeconds: duration,
-          model: capability.model.id, shotDurations: [duration] }, exec, binding.identity, async () => { await binding.key() })
+          model: capability.model.id, shotDurations: [duration] }, exec, binding.identity,
+        async () => { await binding.key() }, defaultedModel)
         const selection = choice.input
         if (selection.model !== capability.model.id || selection.resolution !== requestedResolution
           || selection.quality !== args.quality || selection.mode !== args.mode

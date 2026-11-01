@@ -1277,6 +1277,7 @@ export class CreativeStore {
    */
   async videoWorkRetryState(owner: CreativeOwner, id: string, invocationId: string): Promise<{
     operationId: CreativeOperationId
+    model?: string
     receipt?: CreativeVideoReceipt
     balanceRejection?: VideoBalanceRejection
     status: CreativeStatus
@@ -1289,7 +1290,8 @@ export class CreativeStore {
     if (record.kind !== 'video' || original?.workId === undefined || original.videoProjectId !== undefined) return invalid()
     const latest = record.operations.filter(item => item.workId === original.workId).at(-1) ?? invalid()
     if (this.active.has(latest.id)) throw new CreativeError('CREATIVE_SHOT_RUNNING', 409, '原视频任务正在处理，请查看已有任务。')
-    return { operationId: latest.id, status: latest.status, fundingRejected: latest.errorCode === 'INSUFFICIENT_BALANCE',
+    return { operationId: latest.id, status: latest.status,
+      ...latest.model === undefined ? {} : { model: latest.model }, fundingRejected: latest.errorCode === 'INSUFFICIENT_BALANCE',
       ...latest.videoReceipt === undefined ? {} : { receipt: { ...latest.videoReceipt } },
       ...latest.videoBalanceRejection === undefined ? {} : { balanceRejection: { ...latest.videoBalanceRejection } } }
   }

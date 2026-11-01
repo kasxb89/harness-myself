@@ -5493,6 +5493,9 @@ importers:
       '@deepseek-ai/dsh-client-connection':
         specifier: workspace:*
         version: link:../connection
+      '@deepseek-ai/dsh-client-ui-credits':
+        specifier: workspace:*
+        version: link:../ui-credits
       '@deepseek-ai/dsh-client-locale':
         specifier: workspace:*
         version: link:../locale

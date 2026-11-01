@@ -45,7 +45,7 @@ exports[`video tools through Loader, real tool registry and jobs runtime > regis
         "type": "string",
       },
       "model": {
-        "description": "Defaults to MiniMax-H3 at 768P unless the human explicitly requested another resolution. A non-H3 model requires a current full-price estimate and a real human model selection before generation; model arguments never approve that change.",
+        "description": "When omitted, use the backend-configured video model for this account; an older or unset configuration retains MiniMax-H3. Only actual H3 defaults to 768P when no resolution is given. A non-H3 model requires a current full-price estimate and a real human model selection before generation; model arguments never approve that change.",
         "type": "string",
       },
       "plan_id": {
@@ -162,7 +162,7 @@ exports[`video tools through Loader, real tool registry and jobs runtime > regis
           "type": "string",
         },
         "model": {
-          "description": "Defaults to MiniMax-H3 at 768P unless the human explicitly requested another resolution. Preserve an explicitly requested model; any non-H3 selection requires a current full-price estimate and a real human model choice before generation. Model arguments never approve that change.",
+          "description": "When omitted, the Host uses the backend-configured video model for this account; an older or unset configuration retains MiniMax-H3. Only actual H3 defaults to 768P without a specified tier. Preserve an explicitly requested model; any non-H3 selection requires a current full-price estimate and a real human model choice before generation. Model arguments never approve that change.",
           "type": "string",
         },
         "plan_id": {

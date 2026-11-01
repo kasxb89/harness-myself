@@ -87,3 +87,29 @@ export function parseClientModelPresentationStatus(body: unknown): ProductModelD
   }
   return Object.fromEntries<ProductModelDisplay>(output)
 }
+
+/** Non-sensitive deployment defaults for new image and video requests. */
+export interface ClientMediaDefaults {
+  readonly defaultImageModel: string | null
+  readonly defaultVideoModel: string | null
+}
+
+/**
+ * Decode media defaults independently of the unchanged three-field chat preferences.
+ * @param body - Public status JSON from the captured backend.
+ * @returns Configured exact IDs, or absence for a server predating media defaults.
+ * @throws {ClientModelConfigError} when a present media-default document is invalid.
+ */
+export function parseClientMediaDefaultsStatus(body: unknown): ClientMediaDefaults | undefined {
+  const status = object(body)
+  if (status.success !== true) throw new ClientModelConfigError()
+  const data = object(status.data)
+  if (!Object.hasOwn(data, 'client_media_defaults')) return undefined
+  const config = object(data.client_media_defaults)
+  const fields = ['schema_version', 'default_image_model', 'default_video_model']
+  if (config.schema_version !== 1 || Object.keys(config).length !== fields.length
+    || fields.some(field => !Object.hasOwn(config, field))) throw new ClientModelConfigError()
+  const image = modelId(config.default_image_model, true)
+  const video = modelId(config.default_video_model, true)
+  return { defaultImageModel: image === '' ? null : image, defaultVideoModel: video === '' ? null : video }
+}
