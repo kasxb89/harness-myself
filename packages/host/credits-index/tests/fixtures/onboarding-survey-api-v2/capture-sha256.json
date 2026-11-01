@@ -1,0 +1,10 @@
+{
+  "pending.json": "38feb3216a809db03f2ba0cd38e36dabc592f702d69bb22b3ee6eb56983361ff",
+  "deferred.json": "d04912b8097ccaf730ac28f2665e02053a91e763559630c6a98c03c5dbfe4b94",
+  "submitted.json": "de4a24f708d49b1f16296256f972481702ddfd7f8dae7e16a9d3c9f3cc2d3c11",
+  "not-eligible.json": "cad1aa9d81aa46694b277bd776ce7c88a052c4177efe4119c283d80b13e6471a",
+  "stale-config.json": "58603046cb13cf11f399ad28c58cb72b0411366f716f1a84dcd3d6ccc3ae832f",
+  "config-changed-pending.json": "ff1325adeb3e31768c6ad3720f25cdc1ca04e4f85835547032e973b6f04fc309",
+  "config-changed-submitted.json": "de4a24f708d49b1f16296256f972481702ddfd7f8dae7e16a9d3c9f3cc2d3c11",
+  "legacy-submitted.json": "b4fcc5d463e2e01ca58a6f8bc14a38bf510beac142f439dbe75662097657e3af"
+}

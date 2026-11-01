@@ -52,7 +52,7 @@ import type { CreationTaskObserver } from './creation-activity.ts'
 import { readAnnouncements } from './announcements.ts'
 import { readPriceComparisons } from './price-comparisons.ts'
 import { readCustomerSupport } from './customer-support.ts'
-import { parseSurveyRequest, readOnboardingSurvey } from './onboarding-survey.ts'
+import { ONBOARDING_SURVEY_RESPONSE_LIMIT, parseSurveyRequest, readOnboardingSurvey } from './onboarding-survey.ts'
 import { ClientToolErrorReporter, type ClientToolErrorAccount } from './client-tool-errors.ts'
 import { parseUsageWindow, readAccountUsage } from './usage.ts'
 import { ChatUsageReader, parseChatUsageQuery } from './chat-usage-reader.ts'
@@ -2972,14 +2972,15 @@ export function apply(ctx: Context, config: Config): void {
               return
             }
             const outcome = await readOnboardingSurvey(async () => await accountFetch(session,
-              defer ? '/api/user/onboarding-survey/defer' : '/api/user/onboarding-survey', {
+              defer ? '/api/user/onboarding-survey/defer'
+                : method === 'GET' ? '/api/user/onboarding-survey?schema_version=2' : '/api/user/onboarding-survey', {
                 method, signal, headers: { accept: 'application/json', ...body === undefined ? {} : { 'content-type': 'application/json' } },
                 ...body === undefined ? {} : { body },
               }), signal)
             if (lifetime.signal.aborted || response.destroyed) return
             const result = !await rechargeOwnerCurrent(session, version) ? { ok: false, code: 'ACCOUNT_CHANGED' }
               : { ...outcome, ...outcome.ok ? { account: { id: session.account.id }, accountOwner: productOwner(session) } : {} }
-            json(response, 200, Buffer.byteLength(JSON.stringify(result), 'utf8') > 32 * 1024
+            json(response, 200, Buffer.byteLength(JSON.stringify(result), 'utf8') > ONBOARDING_SURVEY_RESPONSE_LIMIT
               ? { ok: false, code: 'SURVEY_INVALID_RESPONSE' } : result)
           })().catch((error: unknown) => {
             if (!lifetime.signal.aborted && !response.destroyed) {

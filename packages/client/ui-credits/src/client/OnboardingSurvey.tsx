@@ -34,20 +34,28 @@ export function OnboardingSurvey(props: PropsRuntime<'shell.overlay'> & Shared) 
   const data = state.data
   if (!state.open || state.owner === null || data === null || !data.eligible || data.status === 'submitted') return null
   const length = surveyNoteLength(state.notes)
-  const invalid = state.selected.length === 0 || length > data.max_notes_length
+  const invalid = state.selected.length === 0 || state.unavailableOptions.length > 0
+    || state.selected.length > data.max_selections || length > data.max_notes_length
+  const english = t('survey.locale') === 'en-US'
   return <Modal open title={t('survey.title')} description={t('survey.description')} closeLabel={t('survey.later')}
     onClose={dismissSurvey} className={cx(css.dialog)} contentClassName={cx(css.content)} footer={<>
       <Button variant="outline" onClick={dismissSurvey}>{t('survey.later')}</Button>
       <Button variant="primary" disabled={state.busy || state.uncertain || invalid || cooldown > 0} onClick={submitSurvey}>
-        {t(state.busy ? 'survey.submitting' : 'survey.submit')}
+        {t(state.busy ? 'survey.submitting' : state.configurationChanged ? 'survey.reviewSubmit' : 'survey.submit')}
       </Button>
     </>}>
     <fieldset className={css.choices} disabled={state.busy || state.uncertain}>
       <legend className={css.legend}>{t('survey.choose')}</legend>
       {data.options.map(option => <Checkbox key={option.id} checked={state.selected.includes(option.id)}
-        onChange={(checked) => { selectSurveyOption(option.id, checked) }} label={t(`survey.option.${option.id}`)}
+        onChange={(checked) => { selectSurveyOption(option.id, checked) }} label={english ? option.label_en : option.label}
         disabled={!state.selected.includes(option.id) && state.selected.length >= data.max_selections} />)}
     </fieldset>
+    {state.configurationChanged && <p className={css.failure} role="status">{t('survey.configurationChanged')}</p>}
+    {state.unavailableOptions.length > 0 && <fieldset className={cx(css.choices, css.unavailable)} disabled={state.busy || state.uncertain}>
+      <legend className={css.legend}>{t('survey.unavailableChoices')}</legend>
+      {state.unavailableOptions.map(option => <Checkbox key={option.id} checked
+        onChange={(checked) => { selectSurveyOption(option.id, checked) }} label={english ? option.label_en : option.label} />)}
+    </fieldset>}
     <label className={css.notesLabel}>
       <span>{t('survey.notes')}</span>
       <textarea className={css.notes} value={state.notes} disabled={state.busy || state.uncertain}
@@ -56,7 +64,8 @@ export function OnboardingSurvey(props: PropsRuntime<'shell.overlay'> & Shared) 
     </label>
     <p className={css.hint}>{t('survey.count', { count: String(length), max: String(data.max_notes_length) })}</p>
     {state.failure !== null && <div className={css.failure} role="status">
-      <span>{t(state.uncertain ? 'survey.unconfirmed' : `survey.error.${state.failure.kind}`)}</span>
+      <span>{t(state.uncertain ? state.configurationChanged ? 'survey.configurationUnconfirmed' : 'survey.unconfirmed'
+        : `survey.error.${state.failure.kind}`)}</span>
       <Button size="sm" variant="ghost" disabled={state.busy || cooldown > 0} onClick={retrySurvey}>{t('survey.refresh')}</Button>
       {cooldown > 0 && <span>{t('read.retryAfter', { seconds: String(cooldown) })}</span>}
     </div>}

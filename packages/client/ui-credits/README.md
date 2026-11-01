@@ -47,6 +47,8 @@ The recharge page optionally shows dated, same-specification model prices agains
 
 Only a current account's server-confirmed pending enrollment opens the use-case survey after phone registration. Existing accounts, deferred surveys and submitted surveys do not open automatically. Users can select multiple scenarios and optionally add up to 1,000 Unicode characters. Later closes the dialog without blocking the product, and a wallet entry resumes a deferred questionnaire. Submitted surveys remain complete across devices according to the API record; the client never infers new registration from local first use or a bonus.
 
+The survey helps users get more from the product. The API configures up to 64 scenarios, their order and their Chinese and English labels; no client release is needed to change them. A configuration change preserves the draft and visibly retains unavailable choices until users remove them. Only another explicit reviewed submission sends the current revision. Completed answers retain their submitted configuration, and older APIs keep their original nine-option survey.
+
 A root-owned controller outlives the sign-in page and clears drafts and late responses when account ownership changes. An unconfirmed submission first queries the current account's canonical survey; if that read also fails, it keeps the exact draft locked until an explicit recheck. Closing that dialog retains a working wallet entry and does not repeat the submission. An older Host or API without survey support leaves ordinary sign-in and use available.
 
 ### Usage analytics

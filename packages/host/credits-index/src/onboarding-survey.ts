@@ -2,21 +2,21 @@
 import { accountRetryAfter } from './account-read.ts'
 import { sessionTransportFailure, type SessionFailure } from './session-failure.ts'
 
-/** Stable scenario identifiers of the product-use-v1 questionnaire. */
-export const SURVEY_OPTION_IDS = ['daily_qa', 'office_writing', 'coding', 'study_research', 'image_design',
+/** Fixed identifiers accepted only by the legacy schema-one API. */
+export const LEGACY_SURVEY_OPTION_IDS = ['daily_qa', 'office_writing', 'coding', 'study_research', 'image_design',
   'video_creation', 'ecommerce_marketing', 'automation', 'other'] as const
-export type SurveyOptionId = typeof SURVEY_OPTION_IDS[number]
-const identifiers: ReadonlySet<string> = new Set(SURVEY_OPTION_IDS)
-const BODY_LIMIT = 32 * 1024
+/** Configured stable identifier; labels and order are owned by the API. */
+export type SurveyOptionId = string
+const legacyIdentifiers: ReadonlySet<string> = new Set(LEGACY_SURVEY_OPTION_IDS)
+/** Bounded UTF-8 response, including sixty-four configured bilingual choices and public owner guards. */
+export const ONBOARDING_SURVEY_RESPONSE_LIMIT = 128 * 1024
 
 /** Only public questionnaire fields are allowed into the renderer. */
-export interface OnboardingSurvey {
-  readonly schema_version: 1
+interface SurveyFields {
   readonly survey_id: 'product-use-v1'
   readonly eligible: boolean
   readonly status: 'not_eligible' | 'pending' | 'deferred' | 'submitted'
   readonly options: readonly { readonly id: SurveyOptionId; readonly label: string; readonly label_en: string }[]
-  readonly max_selections: 9
   readonly max_notes_length: 1000
   readonly selected_option_ids: readonly SurveyOptionId[]
   readonly notes: string
@@ -25,10 +25,15 @@ export interface OnboardingSurvey {
   readonly deferred_at: number
 }
 
+/** The API's configured questionnaire or an exact legacy fallback, without private account fields. */
+export type OnboardingSurvey = SurveyFields & ({ readonly schema_version: 1; readonly max_selections: 9 }
+  | { readonly schema_version: 2; readonly config_revision: string; readonly max_selections: number })
+
 /** Explicit answer or defer request; account coordinates are consumed by the Host, never forwarded. */
 export interface SurveyRequest {
-  readonly schema_version: 1
+  readonly schema_version: 1 | 2
   readonly survey_id: 'product-use-v1'
+  readonly config_revision?: string
   readonly selected_option_ids?: readonly SurveyOptionId[]
   readonly notes?: string
 }
@@ -48,16 +53,28 @@ export type OnboardingSurveyResult = {
 function object(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined
 }
-function label(value: unknown): value is string {
-  return typeof value === 'string' && value.length > 0 && value.length <= 256 && !/[\u0000-\u001f\u007f]/u.test(value)
+function label(value: unknown, schema: 1 | 2, maximum: number): value is string {
+  return typeof value === 'string' && value.length > 0
+    && (schema === 1 ? value.length <= 256 : Array.from(value).length <= maximum)
+    && !(schema === 1 ? /[\u0000-\u001f\u007f]/u : /[\u0000-\u001f\u007f-\u009f]/u).test(value)
 }
 function note(value: unknown): value is string {
   return typeof value === 'string' && Array.from(value).length <= 1000 && !/[\u0000\u000b\u000c]/u.test(value)
 }
-function choices(value: unknown, required: boolean): SurveyOptionId[] | undefined {
-  if (!Array.isArray(value) || value.length > 9 || required && value.length === 0
-    || value.some(item => typeof item !== 'string' || !identifiers.has(item)) || new Set(value).size !== value.length) return undefined
-  return SURVEY_OPTION_IDS.filter(id => value.includes(id))
+function optionId(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-z][a-z0-9_]{0,47}$/u.test(value)
+}
+function revision(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value)
+}
+function choices(value: unknown, required: boolean, schema: 1 | 2): SurveyOptionId[] | undefined {
+  if (!Array.isArray(value) || value.length > (schema === 1 ? 9 : 64) || required && value.length === 0) return undefined
+  const selected: string[] = []
+  for (const item of value) {
+    if (!optionId(item) || schema === 1 && !legacyIdentifiers.has(item) || selected.includes(item)) return undefined
+    selected.push(item)
+  }
+  return schema === 1 ? LEGACY_SURVEY_OPTION_IDS.filter(id => selected.includes(id)) : selected
 }
 function timestamp(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
@@ -70,29 +87,37 @@ function timestamp(value: unknown): value is number {
  */
 export function parseOnboardingSurvey(value: unknown): OnboardingSurvey | undefined {
   const data = object(value)
-  if (data?.schema_version !== 1 || data.survey_id !== 'product-use-v1' || typeof data.eligible !== 'boolean'
+  const schema = data?.schema_version
+  if (data === undefined || schema !== 1 && schema !== 2 || data.survey_id !== 'product-use-v1' || typeof data.eligible !== 'boolean'
     || typeof data.status !== 'string' || !['not_eligible', 'pending', 'deferred', 'submitted'].includes(data.status)
-    || data.max_selections !== 9 || data.max_notes_length !== 1000 || !Array.isArray(data.options) || data.options.length !== 9
+    || data.max_notes_length !== 1000 || !Array.isArray(data.options)
+    || (schema === 1 ? data.options.length !== 9 || data.max_selections !== 9
+      : data.options.length < 1 || data.options.length > 64 || data.max_selections !== data.options.length
+        || !revision(data.config_revision))
     || !note(data.notes) || !timestamp(data.registered_at) || !timestamp(data.submitted_at)
     || !timestamp(data.deferred_at)) return undefined
   const options: OnboardingSurvey['options'][number][] = []
   for (const raw of data.options) {
     const item = object(raw)
-    if (typeof item?.id !== 'string' || !identifiers.has(item.id) || !label(item.label) || !label(item.label_en)
+    if (item === undefined || !optionId(item.id) || schema === 1 && !legacyIdentifiers.has(item.id)
+      || !label(item.label, schema, 80) || !label(item.label_en, schema, 160)
       || options.some(option => option.id === item.id)) return undefined
-    options.push({ id: item.id as SurveyOptionId, label: item.label, label_en: item.label_en })
+    options.push({ id: item.id, label: item.label, label_en: item.label_en })
   }
-  const selected = choices(data.selected_option_ids, data.status === 'submitted')
+  const selected = choices(data.selected_option_ids, data.status === 'submitted', schema)
   if (selected === undefined || !data.eligible && (data.status !== 'not_eligible' || data.registered_at !== 0)
+    || schema === 2 && selected.some(id => !options.some(option => option.id === id))
     || data.eligible && (data.status === 'not_eligible' || data.registered_at === 0)
     || data.status === 'submitted' && data.submitted_at === 0
     || data.status !== 'submitted' && (data.submitted_at !== 0 || selected.length !== 0 || data.notes !== '')
     || data.status === 'deferred' && data.deferred_at === 0
     || (data.status === 'pending' || data.status === 'not_eligible') && data.deferred_at !== 0) return undefined
-  return { schema_version: 1, survey_id: 'product-use-v1', eligible: data.eligible,
-    status: data.status as OnboardingSurvey['status'], options, max_selections: 9, max_notes_length: 1000,
+  const fields: SurveyFields = { survey_id: 'product-use-v1', eligible: data.eligible,
+    status: data.status as OnboardingSurvey['status'], options, max_notes_length: 1000,
     selected_option_ids: selected, notes: data.notes, registered_at: data.registered_at,
     submitted_at: data.submitted_at, deferred_at: data.deferred_at }
+  return schema === 1 ? { ...fields, schema_version: 1, max_selections: 9 }
+    : { ...fields, schema_version: 2, config_revision: data.config_revision as string, max_selections: options.length }
 }
 
 /**
@@ -103,15 +128,19 @@ export function parseOnboardingSurvey(value: unknown): OnboardingSurvey | undefi
  */
 export function parseSurveyRequest(value: unknown, defer: boolean): SurveyRequest | undefined {
   const data = object(value)
+  const schema = data?.schema_version
   const allowed = ['schema_version', 'survey_id', 'expected_account_id', 'expected_account_owner',
-    ...defer ? [] : ['selected_option_ids', 'notes']]
-  if (data?.schema_version !== 1 || data.survey_id !== 'product-use-v1' || Object.keys(data).some(key => !allowed.includes(key))) return undefined
-  if (defer) return { schema_version: 1, survey_id: 'product-use-v1' }
-  const selected = choices(data.selected_option_ids, true)
+    ...defer ? [] : ['selected_option_ids', 'notes', ...schema === 2 ? ['config_revision'] : []]]
+  if (data === undefined || schema !== 1 && schema !== 2 || data.survey_id !== 'product-use-v1'
+    || Object.keys(data).some(key => !allowed.includes(key))) return undefined
+  if (defer) return { schema_version: schema, survey_id: 'product-use-v1' }
+  if (schema === 2 && !revision(data.config_revision)) return undefined
+  const selected = choices(data.selected_option_ids, true, schema)
   const notes = typeof data.notes === 'string'
     ? data.notes.replace(/\r\n/gu, '\n').replace(/^\p{White_Space}+|\p{White_Space}+$/gu, '') : data.notes
   if (selected === undefined || notes !== undefined && !note(notes)) return undefined
-  return { schema_version: 1, survey_id: 'product-use-v1', selected_option_ids: selected,
+  return { schema_version: schema, survey_id: 'product-use-v1', selected_option_ids: selected,
+    ...schema === 2 ? { config_revision: data.config_revision as string } : {},
     ...typeof notes === 'string' ? { notes } : {} }
 }
 
@@ -156,7 +185,7 @@ export async function readOnboardingSurvey(send: () => Promise<Response>, signal
         signal.throwIfAborted()
         if (part.done) break
         size += part.value.byteLength
-        if (size > BODY_LIMIT) return failure('SURVEY_INVALID_RESPONSE', status)
+        if (size > ONBOARDING_SURVEY_RESPONSE_LIMIT) return failure('SURVEY_INVALID_RESPONSE', status)
         chunks.push(part.value)
       }
       try { decoded = JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch { return failure('SURVEY_INVALID_RESPONSE', status) }
@@ -167,7 +196,7 @@ export async function readOnboardingSurvey(send: () => Promise<Response>, signal
       return survey === undefined ? failure('SURVEY_INVALID_RESPONSE', status) : { ok: true, payload: survey }
     }
     const expected = new Map<number, readonly string[]>([[400, ['SURVEY_INVALID_REQUEST']], [403, ['SURVEY_NOT_ELIGIBLE']],
-      [409, ['SURVEY_ALREADY_SUBMITTED']], [503, ['SURVEY_UNAVAILABLE']]])
+      [409, ['SURVEY_ALREADY_SUBMITTED', 'SURVEY_CONFIG_CHANGED']], [503, ['SURVEY_UNAVAILABLE']]])
     const code = typeof body?.code === 'string' && expected.get(status)?.includes(body.code) === true ? body.code
       : status === 401 ? 'SURVEY_AUTH_REQUIRED' : status === 403 ? 'SURVEY_ACCESS_DENIED'
         : status === 429 ? 'SURVEY_RATE_LIMITED' : status === 408 || status === 504 ? 'SURVEY_TIMEOUT'

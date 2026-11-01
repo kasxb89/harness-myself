@@ -123,7 +123,9 @@ Host 认证的 `GET /credits/api/customer-support` 独立于产品登录，从�
 
 ### 账号使用场景问卷
 
-经 Host 鉴权的 `GET /credits/api/onboarding-survey` 从 `/api/user/onboarding-survey` 读取当前账号的版本化问卷。只有 API 登记记录能够证明新手机号注册资格；本地首次登录、注册奖励和未完成的 MFA 验证都不会产生资格。成功响应包含已校验的公开问卷及捕获的 `account.id`、`accountOwner`。同路由的显式 `POST` 提交稳定选项 ID 和选填备注；`POST /credits/api/onboarding-survey/defer` 暂缓提醒，不阻挡产品使用。两种写入均要求渲染器提供预期账号 ID 和归属，Host 本地检查后不向 API 转发这些保护字段；账号身份只取当前已认证会话。备注统一换行及首尾空白，限制为 1000 个 Unicode 字符，选项顺序规范化；提交重放及冲突以 API 为准。Host 不自动修改问卷，不指定任意目标账号，响应限制为 32 KiB，断开或卸载时停止，并丢弃登录变化后的迟到结果。旧 API 返回 `SURVEY_UNSUPPORTED`；网络、超时、限流、认证与业务失败分别保留，问卷故障本身不会撤销登录。
+经 Host 鉴权的 `GET /credits/api/onboarding-survey` 从 `/api/user/onboarding-survey?schema_version=2` 请求当前账号的 schema-two 问卷。API 提供一至六十四个启用选项的稳定 ID、双语标签、展示顺序及不透明的 `config_revision`；Host 保留该顺序，仅投影声明的公开字段。已提交响应保留原选项标签快照及修订版本。精确的九选项 schema-one 响应仍可作为旧版兼容。只有 API 登记记录能够证明新手机号注册资格；本地首次登录、注册奖励和未完成的 MFA 验证都不会产生资格。成功响应包含捕获的 `account.id`、`accountOwner`。
+
+同路由的显式 `POST` 提交稳定选项 ID 和选填备注；schema-two 答案携带展示时的修订版本，不在本地重排 ID。`POST /credits/api/onboarding-survey/defer` 仅携带 schema 和问卷 ID，不带修订版本，暂缓提醒且不阻挡产品使用。两种写入均要求渲染器提供预期账号 ID 和归属，Host 本地检查后不向 API 转发这些保护字段；账号身份只取当前已认证会话。备注统一换行及首尾空白，限制为 1000 个 Unicode 字符。提交重放及冲突以 API 为准；`SURVEY_CONFIG_CHANGED` 要求重新读取后由用户明确提交新答案，不能自动重提。Host 不自动修改问卷，不指定任意目标账号，响应限制为 128 KiB，断开或卸载时停止，并丢弃登录变化后的迟到结果。不支持问卷的 API 返回 `SURVEY_UNSUPPORTED`；网络、超时、限流、认证与业务失败分别保留，问卷故障本身不会撤销登录。
 
 ### 实时生成活动
 

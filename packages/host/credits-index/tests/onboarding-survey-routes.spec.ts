@@ -19,16 +19,23 @@ import deferred from './fixtures/onboarding-survey-api/deferred.json' with { typ
 import submitted from './fixtures/onboarding-survey-api/submitted.json' with { type: 'json' }
 import ineligible from './fixtures/onboarding-survey-api/not-eligible.json' with { type: 'json' }
 import conflict from './fixtures/onboarding-survey-api/different-answer-conflict.json' with { type: 'json' }
+import configuredPending from './fixtures/onboarding-survey-api-v2/pending.json' with { type: 'json' }
+import configuredDeferred from './fixtures/onboarding-survey-api-v2/deferred.json' with { type: 'json' }
+import configuredSubmitted from './fixtures/onboarding-survey-api-v2/submitted.json' with { type: 'json' }
+import configuredIneligible from './fixtures/onboarding-survey-api-v2/not-eligible.json' with { type: 'json' }
+import changedPending from './fixtures/onboarding-survey-api-v2/config-changed-pending.json' with { type: 'json' }
+import legacySubmitted from './fixtures/onboarding-survey-api-v2/legacy-submitted.json' with { type: 'json' }
+import staleConfiguration from './fixtures/onboarding-survey-api-v2/stale-config.json' with { type: 'json' }
 
 const resources: (() => Promise<void>)[] = []
 afterEach(async () => { for (const close of resources.splice(0).reverse()) await close() })
 
-async function boot() {
+async function boot(schema: 1 | 2 = 1) {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-survey-host-'))
   resources.push(async () => { await rm(directory, { recursive: true, force: true }) })
   const calls: { method: string; path: string; authorization?: string; cookie?: string; body: unknown }[] = []
-  let mode: 'fixture' | 'ineligible' | '503' | '429' | '404' | 'invalid' | 'redirect' | 'network' | 'held' = 'fixture'
-  let state: object = pending
+  let mode: 'fixture' | 'ineligible' | '503' | '429' | '404' | 'invalid' | 'redirect' | 'network' | 'held' | 'config-changed' = 'fixture'
+  let state: object = schema === 2 ? configuredPending : pending
   let entered = Promise.withResolvers<ServerResponse>()
   let closed = Promise.withResolvers<undefined>()
   const server = createServer((request, response) => {
@@ -53,13 +60,16 @@ async function boot() {
       }
       response.setHeader('content-type', 'application/json')
       if (mode === 'invalid') { response.end(JSON.stringify({ success: true, data: {} })); return }
-      if (mode === 'ineligible') { response.end(JSON.stringify(ineligible)); return }
-      if (path === '/harness/api/user/onboarding-survey/defer') state = deferred
+      if (mode === 'ineligible') { response.end(JSON.stringify(schema === 2 ? configuredIneligible : ineligible)); return }
+      if (mode === 'config-changed' && request.method === 'POST') {
+        response.writeHead(409); response.end(JSON.stringify(staleConfiguration)); return
+      }
+      if (path === '/harness/api/user/onboarding-survey/defer') state = schema === 2 ? configuredDeferred : deferred
       else if (path === '/harness/api/user/onboarding-survey' && request.method === 'POST') {
         if (state === submitted && text.includes('different')) {
           response.writeHead(409); response.end(JSON.stringify(conflict)); return
         }
-        state = submitted
+        state = schema === 2 ? configuredSubmitted : submitted
       }
       response.end(JSON.stringify(state))
     })().catch(() => { response.destroy() })
@@ -118,7 +128,8 @@ async function boot() {
   })
   const hold = () => { mode = 'held'; entered = Promise.withResolvers<ServerResponse>(); closed = Promise.withResolvers<undefined>() }
   return { context, base, cookie, read, post, calls, hold,
-    setMode: (value: typeof mode) => { mode = value }, entered: () => entered.promise, closed: () => closed.promise }
+    setMode: (value: typeof mode) => { mode = value }, setSurvey: (value: object) => { state = value },
+    entered: () => entered.promise, closed: () => closed.promise }
 }
 
 it('binds current-user survey reads and explicit writes to the observed owner without changing the login', async () => {
@@ -128,6 +139,7 @@ it('binds current-user survey reads and explicit writes to the observed owner wi
   expect(f.calls).toHaveLength(0)
   const first = await (await f.read()).json() as { accountOwner: string; payload: unknown }
   expect(first).toMatchObject({ account: { id: '7' }, payload: pending.data })
+  expect(f.calls[0]).toMatchObject({ method: 'GET', path: '/harness/api/user/onboarding-survey?schema_version=2' })
   expect(first.accountOwner).toMatch(/^[a-f0-9]{64}$/u)
   const guard = { expected_account_id: '7', expected_account_owner: first.accountOwner }
   const identity = { schema_version: 1, survey_id: 'product-use-v1' }
@@ -158,6 +170,71 @@ it('binds current-user survey reads and explicit writes to the observed owner wi
   const session = await (await fetch(f.base + '/credits/api/session', { headers: { cookie: f.cookie } })).json() as { payload?: { signedIn?: boolean } }
   expect(session.payload?.signedIn).toBe(true)
   expect(f.calls.some(call => /forbidden-redirect|recharge|generations/u.test(call.path))).toBe(false)
+})
+
+it('carries configured IDs and revisions through the real Host without automatically replaying a stale answer', async () => {
+  const f = await boot(2)
+  const first = await (await f.read()).json() as { accountOwner: string; payload: unknown }
+  expect(first).toMatchObject({ payload: configuredPending.data })
+  expect(f.calls[0]?.path).toBe('/harness/api/user/onboarding-survey?schema_version=2')
+  const guard = { expected_account_id: '7', expected_account_owner: first.accountOwner }
+  const identity = { schema_version: 2, survey_id: 'product-use-v1' }
+  const firstAnswer = { ...identity, config_revision: configuredPending.data.config_revision,
+    selected_option_ids: ['code_debugging', 'daily_qa'], notes: '保留我的备注' }
+  const beforeInvalid = f.calls.length
+  expect(await (await f.post({ ...identity, ...guard, selected_option_ids: ['daily_qa'] })).json())
+    .toMatchObject({ code: 'SURVEY_INVALID_REQUEST' })
+  expect(f.calls).toHaveLength(beforeInvalid)
+  f.setSurvey(changedPending)
+  f.setMode('config-changed')
+  const stale = await (await f.post({ ...firstAnswer, ...guard })).json() as object
+  expect(stale).toMatchObject({ ok: false, code: 'SURVEY_CONFIG_CHANGED', httpStatus: 409 })
+  expect(stale).not.toHaveProperty('payload')
+  expect(f.calls).toHaveLength(beforeInvalid + 1)
+  expect(f.calls.at(-1)?.body).toEqual(firstAnswer)
+  expect(await (await f.read()).json()).toMatchObject({ payload: changedPending.data })
+  expect(changedPending.data.options.map(option => option.id)).not.toContain('code_debugging')
+  expect(changedPending.data.options.map(option => option.id)).toContain('custom_research')
+  expect(changedPending.data.options.find(option => option.id === 'daily_qa')?.label)
+    .not.toBe(configuredPending.data.options.find(option => option.id === 'daily_qa')?.label)
+  f.setMode('fixture')
+  const nextAnswer = { ...identity, config_revision: changedPending.data.config_revision,
+    selected_option_ids: ['custom_research', 'daily_qa'], notes: '保留我的备注' }
+  expect(await (await f.post({ ...nextAnswer, ...guard })).json()).toMatchObject({ payload: configuredSubmitted.data })
+  expect(f.calls.at(-1)?.body).toEqual(nextAnswer)
+  expect(await (await f.read()).json()).toMatchObject({ payload: configuredSubmitted.data })
+  expect(configuredSubmitted.data.config_revision).not.toBe(configuredDeferred.data.config_revision)
+  expect(configuredSubmitted.data.options.map(option => option.id)).toContain('daily_qa')
+  expect(configuredDeferred.data.options.map(option => option.id)).not.toContain('daily_qa')
+  expect(f.calls.filter(call => call.method === 'POST')).toHaveLength(2)
+  expect(f.calls.every(call => call.authorization === 'Bearer private-access-token' && call.cookie === undefined)).toBe(true)
+})
+
+it('keeps schema-two deferral revision-free and reads the actual legacy submitted snapshot', async () => {
+  const f = await boot(2)
+  const first = await (await f.read()).json() as { accountOwner: string }
+  const identity = { schema_version: 2, survey_id: 'product-use-v1' }
+  const guard = { expected_account_id: '7', expected_account_owner: first.accountOwner }
+  expect(await (await f.post({ ...identity, ...guard }, true)).json()).toMatchObject({ payload: configuredDeferred.data })
+  expect(f.calls.at(-1)?.body).toEqual(identity)
+  f.setSurvey(legacySubmitted)
+  expect(await (await f.read()).json()).toMatchObject({ payload: legacySubmitted.data })
+  expect(legacySubmitted.data.selected_option_ids).toEqual(['coding'])
+  expect(legacySubmitted.data.options).toHaveLength(9)
+  f.setMode('ineligible')
+  expect(await (await f.read()).json()).toMatchObject({ payload: configuredIneligible.data })
+})
+
+it('retains a complete configured sixty-four-choice response through both Host response bounds', async () => {
+  const f = await boot(2)
+  const data = { ...configuredPending.data, max_selections: 64,
+    options: Array.from({ length: 64 }, (_unused, index) => ({ id: `a${String(index).padStart(47, '0')}`,
+      label: '🌱'.repeat(80), label_en: '🌱'.repeat(160) })) }
+  const response = { success: true, data }
+  expect(Buffer.byteLength(JSON.stringify(response))).toBeGreaterThan(64 * 1024)
+  f.setSurvey(response)
+  expect(await (await f.read()).json()).toMatchObject({ ok: true, payload: data })
+  expect(f.calls).toHaveLength(1)
 })
 
 it('cancels survey reads on timeout, peer disconnect and plugin disposal without retrying a mutation', async () => {

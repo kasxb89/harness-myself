@@ -3,7 +3,7 @@ import { defineStore, type ObservableSnapshot } from '@deepseek-ai/dsh-client-st
 import { get, post } from './api.ts'
 import { creditsReadFailure, creditsRetrySeconds, type CreditsReadFailure } from './read-failure.ts'
 import type { CreditsSnapshot } from './session-store.ts'
-import { parseSurvey, SURVEY_ID, surveyNoteLength, type SurveyData, type SurveyOption } from './onboarding-survey.ts'
+import { parseSurvey, SURVEY_ID, surveyNoteLength, type SurveyData, type SurveyChoice } from './onboarding-survey.ts'
 
 export interface SurveyOwner { readonly id: string; readonly scope: string; readonly epoch: number }
 export interface OnboardingSurveyState {
@@ -11,7 +11,9 @@ export interface OnboardingSurveyState {
   readonly data: SurveyData | null
   readonly open: boolean
   readonly busy: boolean
-  readonly selected: readonly SurveyOption[]
+  readonly selected: readonly string[]
+  readonly unavailableOptions: readonly SurveyChoice[]
+  readonly configurationChanged: boolean
   readonly notes: string
   readonly failure: CreditsReadFailure | null
   readonly uncertain: boolean
@@ -21,7 +23,7 @@ export interface OnboardingSurveyInjected {
   readonly hooks: { readonly onboardingSurvey: ObservableSnapshot<OnboardingSurveyState> }
   readonly openSurvey: () => void
   readonly dismissSurvey: () => void
-  readonly selectSurveyOption: (option: SurveyOption, checked: boolean) => void
+  readonly selectSurveyOption: (option: string, checked: boolean) => void
   readonly setSurveyNotes: (notes: string) => void
   readonly submitSurvey: () => void
   readonly retrySurvey: () => void
@@ -35,6 +37,10 @@ function ownerOf(snapshot: CreditsSnapshot): SurveyOwner | null {
 }
 function same(left: SurveyOwner | null, right: SurveyOwner | null): boolean {
   return left?.id === right?.id && left?.scope === right?.scope && left?.epoch === right?.epoch
+}
+function sameConfiguration(left: SurveyData, right: SurveyData): boolean {
+  return left.schema_version === 1 ? right.schema_version === 1
+    : right.schema_version === 2 && left.config_revision === right.config_revision
 }
 class SurveyOperationError extends Error {
   readonly failure: CreditsReadFailure
@@ -58,7 +64,8 @@ export function createOnboardingSurvey(
   source: ObservableSnapshot<CreditsSnapshot>,
 ): OnboardingSurveyInjected & { start: () => () => void } {
   const initial = (): OnboardingSurveyState => ({ owner: null, data: null, open: false, busy: false,
-    selected: [], notes: '', failure: null, uncertain: false, notice: false })
+    selected: [], unavailableOptions: [], configurationChanged: false,
+    notes: '', failure: null, uncertain: false, notice: false })
   const view = defineStore({ init: initial, actions: {
     replace: (draft, state: OnboardingSurveyState) => { Object.assign(draft, state) },
     patch: (draft, state: Partial<OnboardingSurveyState>) => { Object.assign(draft, state) },
@@ -87,8 +94,16 @@ export function createOnboardingSurvey(
     const eligible = data.eligible && (data.status === 'pending' || data.status === 'deferred')
     const automatic = data.status === 'pending' && !autoShown
     if (automatic) autoShown = true
+    const previousOptions = [...state.data?.options ?? [], ...state.unavailableOptions]
+    const unavailableOptions = state.selected.flatMap((id) => {
+      if (data.options.some(option => option.id === id)) return []
+      const previous = previousOptions.find(option => option.id === id)
+      return previous === undefined ? [] : [previous]
+    })
     view.actions.patch({ data, open: eligible && (manual || state.open || automatic), uncertain: false,
-      ...data.status === 'submitted' ? { selected: [], notes: '' } : {}, failure: null })
+      unavailableOptions, configurationChanged: state.configurationChanged
+        || state.data !== null && !sameConfiguration(state.data, data),
+      ...data.status === 'submitted' ? { selected: [], unavailableOptions: [], notes: '', configurationChanged: false } : {}, failure: null })
   }
   const perform = (kind: 'read' | 'submit' | 'defer', manual = false): void => {
     const state = view.getSnapshot(), owner = state.owner
@@ -96,6 +111,7 @@ export function createOnboardingSurvey(
     const data = state.data
     if (kind !== 'read' && (data === null || !data.eligible || data.status === 'submitted' || data.status === 'not_eligible')) return
     if (kind === 'submit' && (state.uncertain || state.selected.length === 0 || state.selected.length > (data?.max_selections ?? 0)
+      || state.selected.some(id => !data?.options.some(option => option.id === id))
       || surveyNoteLength(state.notes) > (data?.max_notes_length ?? 0))) return
     const controller = new AbortController()
     active = controller
@@ -103,7 +119,8 @@ export function createOnboardingSurvey(
     const run = async (): Promise<void> => {
       try {
         if (kind === 'read') { apply(await transport(owner, controller, 'GET'), manual); return }
-        const body = { schema_version: 1, survey_id: SURVEY_ID,
+        const body = { schema_version: data?.schema_version, survey_id: SURVEY_ID,
+          ...kind === 'submit' && data?.schema_version === 2 ? { config_revision: data.config_revision } : {},
           ...kind === 'submit' ? { selected_option_ids: [...state.selected], notes: state.notes } : {} }
         try {
           const result = await transport(owner, controller, 'POST', body, kind === 'defer')
@@ -118,6 +135,8 @@ export function createOnboardingSurvey(
           if (failure.code === 'SURVEY_NOT_ELIGIBLE' || failure.code === 'SURVEY_UNSUPPORTED') {
             view.actions.patch({ data: null, open: false, failure: null }); return
           }
+          const configurationChanged = failure.code === 'SURVEY_CONFIG_CHANGED'
+          if (configurationChanged) view.actions.patch({ configurationChanged: true })
           // The canonical read resolves a lost acknowledgement without blindly repeating a write.
           try {
             const result = await transport(owner, controller, 'GET')
@@ -127,6 +146,7 @@ export function createOnboardingSurvey(
               return
             }
             if (kind === 'defer' && result.status === 'deferred') return
+            if (configurationChanged) return
           } catch (_unconfirmed: unknown) { /* Keep this owner's exact draft for an explicit retry. */ }
           view.actions.patch({ failure: failureOf(error), uncertain: kind === 'submit' })
         }
@@ -173,9 +193,11 @@ export function createOnboardingSurvey(
     },
     selectSurveyOption: (option, checked) => {
       const state = view.getSnapshot()
-      if (state.busy || state.uncertain || !state.data?.options.some(item => item.id === option)) return
+      if (state.busy || state.uncertain || !(state.data?.options.some(item => item.id === option)
+        || !checked && state.unavailableOptions.some(item => item.id === option))) return
       const selected = checked ? [...new Set([...state.selected, option])] : state.selected.filter(item => item !== option)
-      if (selected.length <= state.data.max_selections) view.actions.patch({ selected, uncertain: false })
+      if (!checked || selected.length <= (state.data?.max_selections ?? 0)) view.actions.patch({ selected,
+        unavailableOptions: state.unavailableOptions.filter(item => selected.includes(item.id)), uncertain: false })
     },
     setSurveyNotes: (notes) => { if (!view.getSnapshot().busy && !view.getSnapshot().uncertain) view.actions.patch({ notes }) },
     submitSurvey: () => { perform('submit') },
