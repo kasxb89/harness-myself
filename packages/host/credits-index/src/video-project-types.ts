@@ -194,6 +194,7 @@ export interface VideoProjectOptions {
   /** Resolve and approve a chat-only model change before preparing any billable project. */
   chatModelChoice?(
     input: VideoProjectInput, exec: ToolRunContext, provider: VideoProjectProvider, defaultedModel?: boolean,
+    defaultClipSeconds?: number,
   ): Promise<{ input: VideoProjectInput; beforeSubmit?: (signal: AbortSignal) => Promise<void> }>
   /** Observe a terminal local workflow failure without affecting generation or persisted state. */
   failed?(manifest: import('./video-project.ts').VideoProjectManifest, code: string): void

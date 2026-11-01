@@ -312,7 +312,13 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
             ...args.plan_id === undefined ? {} : { planId: args.plan_id },
             ...args.shot_ids === undefined ? {} : { shotIds: args.shot_ids },
           })
-        if (options.requestSelection !== undefined) args = await options.requestSelection(args, exec)
+        let defaultClipSeconds: number | undefined
+        if (options.requestSelection !== undefined) {
+          const selected = await options.requestSelection(args, exec)
+          args = selected
+          const seconds = 'seconds' in selected ? selected.seconds : undefined
+          if (typeof seconds === 'number') defaultClipSeconds = seconds
+        }
         let duration = args.total_duration_seconds
         if (videoIntent.requestedDurationSeconds !== undefined) {
           if (duration !== undefined && duration !== videoIntent.requestedDurationSeconds) {
@@ -396,12 +402,18 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
           ...args.reference_videos === undefined ? {} : { referenceVideos: args.reference_videos },
           ...args.reference_audios === undefined ? {} : { referenceAudios: args.reference_audios },
         }, args.plan_id, args.shot_ids)
+        if (plannedInput.shotDurations === undefined && defaultClipSeconds === undefined && args.plan_id !== undefined) {
+          const selection = await options.requestSelection?.({ ...args, plan_id: undefined }, exec)
+          if (selection !== undefined && selection.model === plannedInput.model && 'seconds' in selection && typeof selection.seconds === 'number') {
+            defaultClipSeconds = selection.seconds
+          }
+        }
         if (plannedInput.model !== DEFAULT_CHAT_VIDEO_MODEL && options.chatModelChoice === undefined) {
           throw new CreativeError('CREATIVE_VIDEO_QUOTE_UNAVAILABLE', 409,
             '当前无法核实所选视频型号的价格并展示选择，尚未提交生成；请稍后查看报价。')
         }
         const choice = options.chatModelChoice === undefined ? { input: plannedInput }
-          : await options.chatModelChoice(plannedInput, exec, provider, defaultedModel)
+          : await options.chatModelChoice(plannedInput, exec, provider, defaultedModel, defaultClipSeconds)
         const input = choice.input
         const originalProvider = provider
         const beforeSubmit = async (submitSignal: AbortSignal): Promise<void> => {
@@ -435,7 +447,8 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
           },
         }
         const manifest = await prepareVideoProject(options, input, session.id, workspaceRoot,
-          provider, editor, signal, artifactOriginOf(exec), videoSubmissionRevision(source))
+          provider, editor, signal, artifactOriginOf(exec), videoSubmissionRevision(source),
+          input.model === plannedInput.model ? defaultClipSeconds : undefined)
         await beforeSubmit(signal)
         creation = await options.creative.begin(creativeOwner(exec, provider.identity), {
           source: 'chat',

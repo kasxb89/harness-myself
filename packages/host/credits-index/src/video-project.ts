@@ -167,15 +167,22 @@ function retryablePublicationFailure(error: unknown): boolean {
 }
 
 /**
- * Plan the smallest number of accepted upstream durations, then minimize excess seconds.
+ * Plan the fewest accepted clips within the captured clip default, then minimize excess seconds.
  * @param totalSeconds - positive whole final seconds.
  * @param durations - actual provider duration menu.
  * @param maxSegments - configured paid-request cap.
+ * @param defaultClipSeconds - Captured default for automatically planned clips; explicit timelines use their own durations.
  * @returns longest-first planned clip durations; final composition trims any surplus.
  */
-export function planVideoDurations(totalSeconds: number, durations: readonly number[], maxSegments: number): number[] {
+export function planVideoDurations(
+  totalSeconds: number, durations: readonly number[], maxSegments: number, defaultClipSeconds?: number,
+): number[] {
   if (!Number.isSafeInteger(totalSeconds) || totalSeconds < 1) throw new VideoProjectError('INVALID_DURATION', '视频总时长必须是正整数秒。')
-  const menu = [...new Set(durations)].sort((a, b) => b - a)
+  if (defaultClipSeconds !== undefined && (!Number.isSafeInteger(defaultClipSeconds) || defaultClipSeconds < 1
+    || !durations.includes(defaultClipSeconds))) {
+    throw new VideoProjectError('DURATION_NOT_SUPPORTED', '当前型号规格不支持默认单段时长，请重新选择视频偏好；尚未提交生成。')
+  }
+  const menu = [...new Set(defaultClipSeconds === undefined ? durations : [defaultClipSeconds])].sort((a, b) => b - a)
   if (menu.length === 0 || menu.some(value => !Number.isSafeInteger(value) || value < 1 || value > 86_400)) {
     throw new VideoProjectError('DURATION_MENU_UNAVAILABLE', '当前模型没有有效的时长选项，请选择其他视频模型。')
   }
@@ -642,12 +649,13 @@ export async function readVideoProject(
  * @param signal - foreground preparation cancellation.
  * @param origin - Exact generating tool location captured before preparing paid work.
  * @param submissionRevision - Host-captured real human input owning the first submission.
+ * @param defaultClipSeconds - Request-captured default for automatic planning; never replaces explicit shot durations.
  * @returns prepared record containing the exact generation plan and requests.
  */
 export async function prepareVideoProject(
   options: VideoProjectOptions, input: VideoProjectInput, ownerSessionId: string, workspaceRoot: string,
   provider: VideoProjectProvider, editor: VideoEditor, signal: AbortSignal,
-  origin?: ArtifactOrigin, submissionRevision?: VideoSubmissionRevision,
+  origin?: ArtifactOrigin, submissionRevision?: VideoSubmissionRevision, defaultClipSeconds?: number,
 ): Promise<VideoProjectManifest> {
   const capturedOrigin = origin === undefined ? undefined : Object.freeze({ ...origin })
   validateInput(input, options.maxTotalSeconds)
@@ -668,7 +676,7 @@ export async function prepareVideoProject(
   await provider.assertCurrent()
   const model = await provider.model(input.model, signal, input.resolution, input.quality, input.mode, input.ratio, input.size)
   const durations = input.shotDurations === undefined
-    ? planVideoDurations(input.totalDurationSeconds, model.durations, options.maxSegments) : [...input.shotDurations]
+    ? planVideoDurations(input.totalDurationSeconds, model.durations, options.maxSegments, defaultClipSeconds) : [...input.shotDurations]
   if (input.shotDurations !== undefined && durations.some(duration => !model.durations.includes(duration))) {
     throw new VideoProjectError('SHOT_DURATION_UNSUPPORTED', `当前模型不支持时间轴中的分镜时长，请从 ${model.durations.join('、')} 秒中选择；尚未提交生成。`)
   }

@@ -1,4 +1,5 @@
 import { constants } from 'node:fs'
+import { once } from 'node:events'
 import { copyFile, mkdtemp, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, win32 } from 'node:path'
@@ -35,6 +36,23 @@ function ownConcurrentRun<T>(running: Promise<T>, release: () => void): Promise<
   concurrentRuns.add(close)
   void running.then(() => concurrentRuns.delete(close), () => concurrentRuns.delete(close))
   return running
+}
+
+/** Await observed fixture milestones under the test's existing cancellation deadline. */
+function observedPhases(signal: AbortSignal) {
+  const target = new EventTarget()
+  const reached = new Set<string>()
+  return {
+    mark(name: string): void {
+      if (reached.has(name)) return
+      reached.add(name)
+      target.dispatchEvent(new Event(name))
+    },
+    async wait(name: string): Promise<void> {
+      signal.throwIfAborted()
+      if (!reached.has(name)) await once(target, name, { signal })
+    },
+  }
 }
 
 afterEach(async () => {
@@ -254,6 +272,27 @@ describe('readable video output names', () => {
 })
 
 describe('minimum-request video duration planning', () => {
+  it('uses a captured clip default without changing the final length or accepting an unsupported duration', () => {
+    expect(planVideoDurations(20, [5, 10], 32, 5)).toEqual([5, 5, 5, 5])
+    expect(planVideoDurations(21, [5, 10], 32, 5)).toEqual([5, 5, 5, 5, 5])
+    expect(planVideoDurations(120, [5, 10], 32, 5)).toEqual(Array.from({ length: 24 }, () => 5))
+    expect(planVideoDurations(20, [5, 10], 32)).toEqual([10, 10])
+    expect(() => planVideoDurations(20, [10], 32, 5)).toThrow('默认单段时长')
+  })
+
+  it('keeps explicit shot timing ahead of an unused clip default and persists only the resulting plan', async () => {
+    const f = await setup([5, 10])
+    const input: VideoProjectInput = { prompt: 'A timed sequence', totalDurationSeconds: 15, shotDurations: [5, 10] }
+    const explicit = await prepareVideoProject(f.options, input, 'chat-one', f.workspace, f.provider, f.editor, f.signal,
+      undefined, undefined, 99)
+    expect(explicit.segments.map(segment => segment.durationSeconds)).toEqual([5, 10])
+    expect(explicit.input).toEqual(input)
+    const automatic = await prepareVideoProject(f.options, { prompt: 'A twenty second sequence', totalDurationSeconds: 20 },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal, undefined, undefined, 5)
+    expect(automatic.segments.map(segment => segment.durationSeconds)).toEqual([5, 5, 5, 5])
+    expect(automatic.input).toEqual({ prompt: 'A twenty second sequence', totalDurationSeconds: 20 })
+  })
+
   it('observes eight distinct clips under one project and keeps queue, generation, saving and editing separate', async () => {
     const f = await setup([15])
     f.options.maxConcurrentSegments = 4
@@ -575,7 +614,7 @@ describe('bounded parallel video generation', { timeout: 15_000 }, () => {
     expect(check.mock.calls.map(([id]) => id)).toEqual(['task-1', 'task-1'])
   })
 
-  it('keeps every clip visible through independent queue, generation, saving, editing and terminal updates', async () => {
+  it('keeps every clip visible through independent queue, generation, saving, editing and terminal updates', async ({ signal: testSignal }) => {
     const f = await setup([4])
     f.options.maxConcurrentSegments = 2
     f.provider.parallelism = async () => 2
@@ -604,23 +643,34 @@ describe('bounded parallel video generation', { timeout: 15_000 }, () => {
     let now = 1000
     const clock = vi.spyOn(performance, 'now').mockImplementation(() => now)
     const latest = () => f.events.filter(value => value.startsWith('视频项目：')).at(-1)
+    const phases = observedPhases(testSignal)
+    const updateProgress = f.job.updateProgress.bind(f.job)
+    const progress = vi.spyOn(f.job, 'updateProgress').mockImplementation((value) => {
+      updateProgress(value)
+      if (value.includes('分镜 2/4 生成中，已等待 0 秒')) phases.mark('initial')
+      if (value.includes('分镜 2/4 生成中，已等待 5 秒')) phases.mark('elapsed')
+      if (value.includes('分镜 3/4 排队中，已等待 0 秒')) phases.mark('next-queued')
+    })
     const release = (): void => { states.clear(); releaseSave.resolve(undefined); releaseEdit.resolve(undefined) }
     const running = ownConcurrentRun(runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal), release)
     try {
-      await vi.waitFor(() => { expect(latest()).toContain('分镜 2/4 生成中，已等待 0 秒') })
+      await phases.wait('initial')
+      expect(latest()).toContain('分镜 2/4 生成中，已等待 0 秒')
       expect(latest()).toBe([
         '视频项目：生成分镜 · 已保存 0/4 段',
         '分镜 1/4 排队中，已等待 0 秒', '分镜 2/4 生成中，已等待 0 秒', '分镜 3/4 尚未提交', '分镜 4/4 尚未提交',
       ].join('\n'))
       now = 6000
-      await vi.waitFor(() => { expect(latest()).toContain('分镜 2/4 生成中，已等待 5 秒') })
+      await phases.wait('elapsed')
+      expect(latest()).toContain('分镜 2/4 生成中，已等待 5 秒')
       states.set('task-1', 'succeeded')
       await saving.promise
       expect(latest()).toContain('分镜 1/4 上游已完成，正在保存')
       expect(latest()).toContain('分镜 2/4 生成中，已等待 5 秒')
       expect(f.submitted).toBe(2)
       releaseSave.resolve(undefined)
-      await vi.waitFor(() => { expect(latest()).toContain('分镜 3/4 排队中，已等待 0 秒') })
+      await phases.wait('next-queued')
+      expect(latest()).toContain('分镜 3/4 排队中，已等待 0 秒')
       expect(latest()).toContain('已保存 1/4 段\n分镜 1/4 已保存')
       expect(latest()).toContain('分镜 2/4 生成中，已等待 5 秒')
       expect(latest()).toContain('分镜 4/4 尚未提交')
@@ -636,17 +686,19 @@ describe('bounded parallel video generation', { timeout: 15_000 }, () => {
       expect(f.output.filter(value => value.startsWith('视频项目：'))).toEqual([terminal + '\n'])
       expect(f.output.join('')).not.toContain('排队中')
       expect(f.submitted).toBe(4)
-    } finally { release(); await running; clock.mockRestore() }
+    } finally {
+      try { release(); await running } finally { clock.mockRestore(); progress.mockRestore() }
+    }
   })
 
-  it.each([
+  it.for([
     { grant: undefined, local: undefined, expected: 4 },
     { grant: 1, local: undefined, expected: 1 },
     { grant: 2, local: undefined, expected: 2 },
     { grant: 16, local: undefined, expected: 16 },
     { grant: 16, local: 4, expected: 4 },
     { grant: 16, local: 2, expected: 2 },
-  ])('schedules $expected clips from pool $grant and explicit local ceiling $local', async ({ grant, local, expected }) => {
+  ])('schedules $expected clips from pool $grant and explicit local ceiling $local', async ({ grant, local, expected }, { signal: testSignal }) => {
     const f = await setup([10])
     if (local === undefined) delete f.options.maxConcurrentSegments
     else f.options.maxConcurrentSegments = local
@@ -656,9 +708,11 @@ describe('bounded parallel video generation', { timeout: 15_000 }, () => {
     const release = Promise.withResolvers<undefined>()
     const checking = new Set<string>()
     let peak = 0
-    vi.spyOn(f.provider, 'check').mockImplementation(async (id) => {
+    const phases = observedPhases(testSignal)
+    const check = vi.spyOn(f.provider, 'check').mockImplementation(async (id) => {
       checking.add(id)
       peak = Math.max(peak, checking.size)
+      if (checking.size === expected) phases.mark('first-wave')
       await release.promise
       checking.delete(id)
       return { status: 'succeeded' }
@@ -667,14 +721,17 @@ describe('bounded parallel video generation', { timeout: 15_000 }, () => {
       release.resolve(undefined)
     })
     try {
-      await vi.waitFor(() => { expect(checking.size).toBe(expected) })
+      await phases.wait('first-wave')
+      expect(checking.size).toBe(expected)
       expect(f.submitted).toBe(expected)
-    } finally { release.resolve(undefined); await running }
+    } finally {
+      try { release.resolve(undefined); await running } finally { check.mockRestore() }
+    }
     expect(peak).toBe(expected)
     expect(f.submitted).toBe(16)
   })
 
-  it('runs independent 120-second clips concurrently within the local limit and composes timeline order', async () => {
+  it('runs independent 120-second clips concurrently within the local limit and composes timeline order', async ({ signal: testSignal }) => {
     const f = await setup([15])
     f.options.maxConcurrentSegments = 4
     f.provider.parallelism = async () => 16
@@ -683,9 +740,12 @@ describe('bounded parallel video generation', { timeout: 15_000 }, () => {
     const gates = Array.from({ length: 8 }, () => Promise.withResolvers<undefined>())
     const checking = new Set<string>()
     let peak = 0
-    vi.spyOn(f.provider, 'check').mockImplementation(async (id) => {
+    const phases = observedPhases(testSignal)
+    const check = vi.spyOn(f.provider, 'check').mockImplementation(async (id) => {
       checking.add(id)
       peak = Math.max(peak, checking.size)
+      if (checking.size === 4) phases.mark('first-wave')
+      phases.mark(id)
       await gates[Number(id.slice(5)) - 1]!.promise
       checking.delete(id)
       return { status: 'succeeded' }
@@ -695,12 +755,15 @@ describe('bounded parallel video generation', { timeout: 15_000 }, () => {
       for (const gate of gates) gate.resolve(undefined)
     })
     try {
-      await vi.waitFor(() => { expect(checking.size).toBe(4) })
+      await phases.wait('first-wave')
+      expect(checking.size).toBe(4)
       expect(f.submitted).toBe(4)
       gates[3]!.resolve(undefined)
-      await vi.waitFor(() => { expect(f.submitted).toBe(5) })
+      await phases.wait('task-5')
+      expect(f.submitted).toBe(5)
       gates[2]!.resolve(undefined)
-      await vi.waitFor(() => { expect(f.submitted).toBe(6) })
+      await phases.wait('task-6')
+      expect(f.submitted).toBe(6)
       for (const gate of gates) gate.resolve(undefined)
       expect((await running).status).toBe('completed')
       expect(peak).toBe(4)
@@ -712,8 +775,10 @@ describe('bounded parallel video generation', { timeout: 15_000 }, () => {
       expect(retained.segments.map(segment => segment.status)).toEqual(Array.from({ length: 8 }, () => 'saved'))
       expect(retained.segments.map(segment => segment.taskId)).toEqual(Array.from({ length: 8 }, (_, index) => `task-${String(index + 1)}`))
     } finally {
-      for (const gate of gates) gate.resolve(undefined)
-      await running
+      try {
+        for (const gate of gates) gate.resolve(undefined)
+        await running
+      } finally { check.mockRestore() }
     }
   })
 

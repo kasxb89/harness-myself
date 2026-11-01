@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { catalogFromPricing, declaredModelKind, mediaModelIds, type AudioParams, type ImageParams, type VideoParams } from '../src/media.ts'
+import currentPricing from './fixtures/official-price-comparison-api.json' with { type: 'json' }
 
 function capability(id: string, kind: 'image' | 'video' | 'audio', parameters: unknown) {
   const [model] = catalogFromPricing([{ model_name: id, kind, parameters }], null)
@@ -57,6 +58,45 @@ describe('explicit public model classification', () => {
 })
 
 describe('live limits override inherited image capabilities', () => {
+  it.each(['ycapi-doubao-seedream-5-0-pro', 'ycapi-flux-kontext'])('does not offer undeclared output formats for the closed published %s schema', (id) => {
+    const model = catalogFromPricing(currentPricing.data, 'default').find(model => model.id === id)
+    expect(model?.source).toBe('plugin:ycapi')
+    expect(model?.params).toMatchObject({ formats: [], backgrounds: [], moderations: [], seed: false, maxCount: 1, maxEdits: 0 })
+  })
+
+  it('keeps unspecified optional controls absent in a complete closed plugin schema', () => {
+    const model = capability('ycapi-flux-kontext', 'image', {
+      type: 'object', additionalProperties: false, 'x-task-plugin': { key: 'ycapi', api_version: 1, version: '1.0.0' },
+      oneOf: [{ properties: { size: { const: '1024x1024' } } }],
+    })
+    expect(model.source).toBe('plugin:ycapi')
+    expect(model.params).toMatchObject({ specifications: [{ size: '1024x1024' }], maxCount: 1, maxEdits: 0,
+      strictReferences: true, qualities: [], backgrounds: [], formats: [], moderations: [], seed: false })
+  })
+
+  it('uses explicitly published optional controls in a complete closed plugin schema', () => {
+    const model = capability('ycapi-flux-kontext', 'image', {
+      type: 'object', additionalProperties: false, 'x-task-plugin': { key: 'ycapi', api_version: 1, version: '1.0.0' },
+      properties: { format: { enum: ['webp'] }, background: { enum: ['transparent'] }, moderation: { enum: ['low'] },
+        seed: { type: 'integer' }, n: { enum: [1, 2] }, reference_images: { maxItems: 1 } },
+      oneOf: [{ properties: { size: { const: '1024x1024' }, quality: { const: 'pro' } } }],
+    })
+    expect(model.params).toMatchObject({ qualities: ['pro'], formats: ['webp'], backgrounds: ['transparent'],
+      moderations: ['low'], seed: true, maxCount: 2, maxEdits: 1 })
+  })
+
+  it.each([
+    { additionalProperties: true, 'x-task-plugin': { key: 'ycapi', api_version: 1, version: '1.0.0' },
+      oneOf: [{ properties: { size: { const: '1024x1024' } } }] },
+    { additionalProperties: false, 'x-task-plugin': { key: 'ycapi', api_version: 1, version: '1.0.0' } },
+    { additionalProperties: false, 'x-task-plugin': { key: 'other', api_version: 1, version: '1.0.0' },
+      oneOf: [{ properties: { size: { const: '1024x1024' } } }] },
+  ])('preserves legacy family controls without a complete closed known-plugin declaration: %j', (parameters) => {
+    expect(capability('ycapi-flux-kontext', 'image', parameters).params).toMatchObject({
+      formats: ['png', 'jpeg'], maxCount: 4, maxEdits: 4, seed: true,
+    })
+  })
+
   it('disables unsupported image count, edits, seed and formats despite Google family defaults', () => {
     const model = capability('ycapi-gemini-3.1-flash-image', 'image', { properties: {
       n: { type: 'integer', enum: [1], maximum: 1 }, reference_images: { type: 'array', maxItems: 0 },

@@ -1316,12 +1316,13 @@ export function apply(ctx: Context, config: Config): void {
     life.throwIfAborted()
     if (!visible.ok || !catalog.ok) throw new CreativeError('DEFAULT_MEDIA_MODEL_UNAVAILABLE', 409,
       '暂时无法核对默认模型的当前账号权限；尚未提交生成。请重新读取模型目录后重试。')
-    return mediaDefaultSelection(defaults, kind, catalog.models, new Set(visible[kind]))
+    return mediaDefaultSelection(defaults, kind, catalog.models,
+      new Set([...visible.chat, ...visible.image, ...visible.video, ...visible.audio]))
   }
 
   /** Read pricing first so older endpoint caches have complete model declarations before authorization. */
-  const readPreferenceCatalog = async (session: StoredSession, signal?: AbortSignal,
-    publicUnitPrices?: Map<string, MediaPreferencePricing>): Promise<ModelCapability[]> => {
+  const readAuthorizedMediaCatalog = async (session: StoredSession, signal?: AbortSignal,
+    publicUnitPrices?: Map<string, MediaPreferencePricing>) => {
     const owner = productOwner(session)
     const epoch = identityVersion
     const catalog = await readMediaCatalog(signal, publicUnitPrices !== undefined)
@@ -1331,14 +1332,20 @@ export function apply(ctx: Context, config: Config): void {
       throw new CreativeError('ACCOUNT_CHANGED', 409, '登录状态已变化，请重新读取模型目录。')
     }
     if (!catalog.ok || !visible.ok) throw new CreativeError('MODEL_CATALOG_UNAVAILABLE', 409,
-      '当前无法读取账号可用的图片和视频模型，请稍后重试；尚未提交生成。')
-    const models = catalog.models.filter(model => model.kind === 'image' && visible.image.includes(model.id)
-      || model.kind === 'video' && visible.video.includes(model.id))
+      '当前无法读取账号可用的创作模型，请稍后重试；尚未提交生成。')
+    const allowed = new Set([...visible.chat, ...visible.image, ...visible.video, ...visible.audio])
+    const models = catalog.models.filter(model => allowed.has(model.id))
     if (publicUnitPrices !== undefined) for (const model of models) {
       const price = catalog.preferencePrices?.get(model.id)
       if (price !== undefined) publicUnitPrices.set(model.id, price)
     }
-    return models
+    return { ...catalog, models }
+  }
+
+  const readPreferenceCatalog = async (session: StoredSession, signal?: AbortSignal,
+    publicUnitPrices?: Map<string, MediaPreferencePricing>): Promise<ModelCapability[]> => {
+    const catalog = await readAuthorizedMediaCatalog(session, signal, publicUnitPrices)
+    return catalog.models.filter(model => model.kind === 'image' || model.kind === 'video')
   }
 
   /** Apply only this exact human request's captured choices; recovery calls do not enter here. */
@@ -4111,10 +4118,9 @@ export function apply(ctx: Context, config: Config): void {
         }
 
         if (route === '/api/media/catalog' && method === 'GET') {
-          // The panels render one dropdown per kind from this answer, so it
-          // ships the declared parameter menus too; account access and billing
-          // remain the server's responsibility when generation is submitted.
-          const catalog = await readMediaCatalog()
+          // Signed-in panels use the same account-authorized directory as chat preferences.
+          const session = await store.read()
+          const catalog = session?.token === undefined ? await readMediaCatalog() : await readAuthorizedMediaCatalog(session)
           json(response, 200, {
             ok: catalog.ok,
             code: catalog.code ?? null,
@@ -4855,7 +4861,7 @@ export function apply(ctx: Context, config: Config): void {
   /** Resolve both chat entry points against the same catalog and real human selection. */
   const selectChatVideoModel = async (
     input: VideoProjectInput, exec: ToolRunContext, identity: VideoProjectIdentity, assertCurrent: () => Promise<void>,
-    defaultedModel = false,
+    defaultedModel = false, defaultClipSeconds?: number,
   ): Promise<{ input: VideoProjectInput; beforeSubmit: (signal: AbortSignal) => Promise<void> }> => {
     if (videoModelChoiceCancelled(exec)) throw new CreativeError('USER_CANCELLED', 409,
       '你已取消本次视频生成，未提交新的模型请求；需要生成时请明确发送新的生成要求。')
@@ -4883,10 +4889,12 @@ export function apply(ctx: Context, config: Config): void {
         ...ratio === undefined ? {} : { ratio }, ...size === undefined ? {} : { size },
         ...model !== targetModel || input.quality === undefined ? {} : { quality: input.quality },
         ...model !== targetModel || input.mode === undefined ? {} : { mode: input.mode } })
-      let durations = input.shotDurations ?? planVideoDurations(input.totalDurationSeconds, menu, resolved.videoProjectMaxSegments)
+      const clipDefault = model === targetModel ? defaultClipSeconds : undefined
+      let durations = input.shotDurations
+        ?? planVideoDurations(input.totalDurationSeconds, menu, resolved.videoProjectMaxSegments, clipDefault)
       if (allowReplan && (durations.some(duration => !menu.includes(duration))
         || input.shotPrompts !== undefined && input.shotPrompts.length !== durations.length)) {
-        durations = planVideoDurations(input.totalDurationSeconds, menu, resolved.videoProjectMaxSegments)
+        durations = planVideoDurations(input.totalDurationSeconds, menu, resolved.videoProjectMaxSegments, clipDefault)
         baselinePlan.requiresReplan = true
       }
       if (durations.length === 0 || durations.some(duration => !menu.includes(duration))
@@ -5030,8 +5038,8 @@ export function apply(ctx: Context, config: Config): void {
       activity: (event) => { generationCreation.project(event) },
       defaultModel: async signal => requireMediaDefault(await readMediaDefault('video', signal)) ?? DEFAULT_CHAT_VIDEO_MODEL,
       requestSelection: async (args, exec) => resolveChatMediaSelection(exec, 'video', args, { videoProject: true }),
-      chatModelChoice: async (input, exec, provider, defaultedModel) => {
-        return selectChatVideoModel(input, exec, provider.identity, () => provider.assertCurrent(), defaultedModel)
+      chatModelChoice: async (input, exec, provider, defaultedModel, defaultClipSeconds) => {
+        return selectChatVideoModel(input, exec, provider.identity, () => provider.assertCurrent(), defaultedModel, defaultClipSeconds)
       },
       failed: (manifest, code) => { clientErrors.submit('generate_video_project', { model: manifest.model },
         { status: 'failed', code }, {}, manifest.identity.accountId) },

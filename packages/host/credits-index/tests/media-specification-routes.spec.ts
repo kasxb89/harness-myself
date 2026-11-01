@@ -10,6 +10,7 @@ import Include from '@deepseek-ai/cordis-plugin-include'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { LocalCredentialProvider } from '@deepseek-ai/dsh-credentials-local'
 import WebServer from '@deepseek-ai/dsh-host-webserver'
+import * as Connection from '@deepseek-ai/dsh-client-connection'
 import Tools from '@deepseek-ai/dsh-tools'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
@@ -64,7 +65,7 @@ afterEach(async () => {
   calls.length = 0
 })
 
-async function boot() {
+async function boot(visibleModels: readonly string[] = rows.map(row => row.model_name), authenticated = true) {
   directory = await mkdtemp(join(tmpdir(), 'dsh-media-specifications-'))
   const root = directory
   upstream = createServer((request, response) => {
@@ -76,7 +77,10 @@ async function boot() {
       calls.push({ path, body })
       response.setHeader('content-type', 'application/json')
       const answer = (data: unknown) => response.end(JSON.stringify({ success: true, data }))
-      if (path === '/harness/api/status') { answer({ quota_per_unit: 500000, usd_exchange_rate: 7.3 }); return }
+      if (path === '/harness/api/status') {
+        answer({ quota_per_unit: 500000, usd_exchange_rate: 7.3,
+          client_media_defaults: { schema_version: 1, default_image_model: imageId, default_video_model: videoId } }); return
+      }
       if (path === '/harness/api/user/phone/challenge') {
         answer({ challenge_id: '+8613800000000', delivery_status: 'accepted', expires_at: Math.floor(Date.now() / 1000) + 300, resend_after_seconds: 60, expires_in_minutes: 5 }); return
       }
@@ -90,7 +94,8 @@ async function boot() {
       if (path === '/harness/api/client-activity/heartbeat') { answer({ server_time: Math.floor(Date.now() / 1000), heartbeat_interval_seconds: 30, online_timeout_seconds: 90 }); return }
       if (path === '/harness/v1/models') {
         expect(request.headers.authorization).toBe('Bearer sk-fixture-relay')
-        response.end(JSON.stringify({ data: rows.map(row => ({ id: row.model_name, supported_endpoint_types: ['openai'] })) })); return
+        response.end(JSON.stringify({ data: rows.filter(row => visibleModels.includes(row.model_name))
+          .map(row => ({ id: row.model_name, supported_endpoint_types: ['openai'] })) })); return
       }
       if (path === '/harness/v1/images/generations') {
         expect(request.headers.authorization).toBe('Bearer sk-fixture-relay')
@@ -109,6 +114,7 @@ async function boot() {
   const api = `http://127.0.0.1:${address.port}/harness`
   const modules = new Map<string, unknown>([
     ['@deepseek-ai/dsh-host-webserver', WebServer], ['@deepseek-ai/dsh-tools', Tools],
+    ['@deepseek-ai/dsh-client-connection', Connection],
     ['@deepseek-ai/dsh-system-prompt', SystemPrompt], ['@deepseek-ai/dsh-credentials-local', LocalCredentialProvider],
     ['@deepseek-ai/dsh-llm', LlmRuntime], ['@deepseek-ai/dsh-llm-pi-ai', LlmPiAi],
     ['@deepseek-ai/dsh-fs-local', LocalFileSystem], ['@deepseek-ai/dsh-credits-index', Credits],
@@ -126,6 +132,7 @@ async function boot() {
   const configuration = join(root, 'cordis.yml')
   await writeFile(configuration, JSON.stringify([
     { name: '@deepseek-ai/dsh-host-webserver', config: { host: '127.0.0.1', port: 0 } },
+    { name: '@deepseek-ai/dsh-client-connection' },
     { name: '@deepseek-ai/dsh-tools' }, { name: '@deepseek-ai/dsh-system-prompt' },
     { name: '@deepseek-ai/dsh-fs-local', config: { cwd: root } },
     { name: '@deepseek-ai/dsh-credentials-local', config: { path: join(root, 'credentials.yaml'), dshHome: root, watch: false } },
@@ -139,6 +146,7 @@ async function boot() {
   await profileComposition(context, root, configuration)
   expect([...context.loader.entries()].filter(entry => entry.fiber === undefined && !entry.disabled)).toEqual([])
   const base = `http://127.0.0.1:${context.webServer.port}/credits`
+  if (!authenticated) return base
   const challenge = await post(base, '/api/session/challenge', { phone: '+8613800000000', idempotencyKey: 'challenge' })
   expect(challenge.ok).toBe(true)
   expect((await post(base, '/api/session/verify', { challengeId: object(challenge.payload).challenge_id, code: '123456', idempotencyKey: 'login' })).ok).toBe(true)
@@ -146,6 +154,42 @@ async function boot() {
 }
 
 describe('complete media specifications through the shipped Host Loader', () => {
+  it('limits signed-in creation menus to the account relay model directory without submitting generation', async () => {
+    const base = await boot([imageId])
+    const current = object(await (await fetch(base + '/api/media/catalog')).json())
+    expect(current.ok).toBe(true)
+    const catalog = object(current.payload)
+    expect(catalog.image).toEqual([expect.objectContaining({ id: imageId })])
+    expect(catalog.video).toEqual([])
+    expect(catalog.audio).toEqual([])
+    const active = context
+    if (active === undefined) throw new Error('Expected current Host')
+    const login = new URL(active.connection.authenticatedUrl(new URL(base).origin))
+    const headers: Record<string, string> = {}
+    active.connection.authorizeIndex({ method: 'GET', url: login.pathname + login.search, headers: { host: login.host } }, {
+      writeHead(_status, values) { Object.assign(headers, values) }, end() {},
+    })
+    const cookie = headers['set-cookie']?.split(';')[0]
+    if (cookie === undefined) throw new Error('Expected authenticated Host cookie')
+    const preference = object(await (await fetch(base + '/api/media/preferences/catalog', { headers: { cookie } })).json())
+    expect(preference, JSON.stringify(preference)).toMatchObject({ ok: true })
+    const defaults = object(object(preference.payload).defaults)
+    expect(defaults.image).toMatchObject({ model: imageId, configured: true, available: true })
+    expect(defaults.video).toMatchObject({ model: videoId, configured: true, available: false })
+    expect(calls.filter(call => call.path === '/harness/v1/models').length).toBeGreaterThan(0)
+    expect(calls.filter(call => call.path === '/harness/v1/images/generations' || call.path === '/harness/v1/videos')).toEqual([])
+  })
+
+  it('keeps unsigned public draft menus available without reading a relay model list', async () => {
+    const base = await boot([], false)
+    const current = object(await (await fetch(base + '/api/media/catalog')).json())
+    expect(current.ok).toBe(true)
+    const catalog = object(current.payload)
+    expect(catalog.image).toEqual([expect.objectContaining({ id: imageId })])
+    expect(catalog.video).toEqual([expect.objectContaining({ id: videoId })])
+    expect(calls.filter(call => call.path === '/harness/v1/models')).toEqual([])
+  })
+
   it('submits exactly one declared image with its quality/resolution and blocks count or reference escalation', async () => {
     const base = await boot()
     const body = { model: imageId, prompt: 'A synthetic test image', size: '1024x1024', resolution: '1k', quality: 'pro' }

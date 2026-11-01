@@ -16,6 +16,8 @@
  *
  * A live declaration always beats the table: if the deployment says a model's
  * resolutions are `768P, 2K`, that is the menu, whatever the table believes.
+ * Complete, closed task-plugin schemas do not inherit optional controls that
+ * the plugin has not published.
  * Pricing does not establish account authorization or billing availability;
  * the server validates both when a generation is submitted.
  *
@@ -326,10 +328,63 @@ function specificationMenu(schema: unknown, parent: unknown, name: Specification
   return branch === null ? global : global === null ? branch : branch.filter(value => global.includes(value))
 }
 
+/** Legacy resolution/seconds alternatives may share an independent finite ratio menu. */
+function hasIndependentResolutionAlternatives(schema: unknown): boolean {
+  const record = objectRecord(schema)
+  const fields = objectRecord(record?.properties)
+  if (record === null || fields === null || record.type !== 'object' || Object.hasOwn(record, 'x-task-plugin')
+    || Object.keys(record).some(key => !['type', 'properties', 'required', 'oneOf'].includes(key) && !key.startsWith('x-'))
+    || Object.keys(fields).some(key => !['resolution', 'seconds', 'ratio', 'context_ir_enabled', 'fast_mode'].includes(key))) return false
+  const required = record.required
+  if (required !== undefined && (!Array.isArray(required)
+    || !required.every(key => typeof key === 'string' && ['resolution', 'seconds', 'ratio'].includes(key)))) return false
+  const resolutions = declaredStringMenu(schema, 'resolution')
+  const ratios = declaredStringMenu(schema, 'ratio')
+  const durations = declaredDurations(schema)
+  const branches = record.oneOf
+  if (resolutions === null || resolutions.length === 0 || ratios === null || ratios.length === 0
+    || durations === null || durations.length === 0 || !Array.isArray(branches)
+    || branches.length === 0 || branches.length > 64) return false
+  const stringKeys = ['type', 'enum', 'const', 'default']
+  const secondsKeys = [...stringKeys, 'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf']
+  for (const name of ['resolution', 'ratio', 'seconds']) {
+    const field = objectRecord(fields[name])
+    const keys = name === 'seconds' ? secondsKeys : stringKeys
+    const type = name === 'seconds' ? 'integer' : 'string'
+    if (field === null || Object.keys(field).some(key => !keys.includes(key))
+      || field.type !== undefined && field.type !== type) return false
+  }
+  const covered = new Set<string>()
+  for (const branch of branches) {
+    const alternative = objectRecord(branch)
+    const properties = objectRecord(alternative?.properties)
+    if (alternative === null || properties === null || Object.keys(alternative).some(key => !['properties', 'required'].includes(key))
+      || Object.keys(properties).some(key => !['resolution', 'seconds'].includes(key))) return false
+    const mandatory = alternative.required
+    if (mandatory !== undefined && (!Array.isArray(mandatory)
+      || !mandatory.every(key => typeof key === 'string' && ['resolution', 'seconds'].includes(key)))) return false
+    const resolutionField = objectRecord(properties.resolution)
+    const secondsField = objectRecord(properties.seconds)
+    if (resolutionField === null || secondsField === null || Object.keys(resolutionField).some(key => !stringKeys.includes(key))
+      || Object.keys(secondsField).some(key => !secondsKeys.includes(key))
+      || resolutionField.type !== undefined && resolutionField.type !== 'string'
+      || secondsField.type !== undefined && secondsField.type !== 'integer') return false
+    const menu = declaredStringMenu(branch, 'resolution')
+    const seconds = declaredDurations(branch)
+    if (menu === null || menu.length === 0 || seconds === null || !seconds.some(value => durations.includes(value))) return false
+    for (const resolution of menu) {
+      if (!resolutions.includes(resolution) || covered.has(resolution)) return false
+      covered.add(resolution)
+    }
+  }
+  return covered.size === resolutions.length
+}
+
 /** Bounded alternatives preserve quality/resolution/duration relationships instead of flattening them. */
 function declaredSpecifications(schema: unknown, kind: 'image' | 'video'): readonly MediaSpecification[] | undefined {
   const record = objectRecord(schema)
   if (record === null || !Object.hasOwn(record, 'oneOf')) return undefined
+  if (kind === 'video' && hasIndependentResolutionAlternatives(schema)) return undefined
   const branches = record.oneOf
   const complete = kind === 'image' || Array.isArray(branches) && branches.some((branch) => {
     const fields = parameterFields(branch)
@@ -452,6 +507,14 @@ function isVerified(source: string): boolean {
   return source.startsWith('plugin:') || source.startsWith('docs:')
 }
 
+/** The recognized task-plugin marker identifies its published parameter schema. */
+function declaredTaskPlugin(parameters: unknown): boolean {
+  const plugin = objectRecord(objectRecord(parameters)?.['x-task-plugin'])
+  return plugin?.key === 'ycapi' && plugin.api_version === 1 && Object.keys(plugin).length === 3
+    && typeof plugin.version === 'string' && /^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/u.test(plugin.version)
+    && plugin.version.length <= 128
+}
+
 /** The image menu: the table's surface, with the deployment's own enum on top. */
 function imageParams(spec: ImageSpec, schema: unknown, parameters: unknown, examples: readonly unknown[]): {
   params: ImageParams
@@ -460,6 +523,8 @@ function imageParams(spec: ImageSpec, schema: unknown, parameters: unknown, exam
   notes: string[]
 } {
   const specifications = declaredSpecifications(parameters, 'image')
+  const closedPlugin = declaredTaskPlugin(parameters) && objectRecord(parameters)?.additionalProperties === false
+    && specifications !== undefined && specifications.length > 0
   const explicitSizes = liveStringMenu(parameters, ['size'])
   const declared = explicitSizes ?? schemaEnum(schema, 'size').concat(schemaEnum(schema, 'sizes'))
   const notes: string[] = []
@@ -473,7 +538,7 @@ function imageParams(spec: ImageSpec, schema: unknown, parameters: unknown, exam
   // Input-image billing tells us an edit route exists even before the table does.
   const billedEdits = maxExampleValue(examples, 'input_images')
   const maxEdits = declaredLimit(parameters, ['reference_images', 'images', 'input_images'], true)
-    ?? (spec.maxEdits > 0 || billedEdits === null ? spec.maxEdits : billedEdits)
+    ?? (closedPlugin ? 0 : spec.maxEdits > 0 || billedEdits === null ? spec.maxEdits : billedEdits)
   const explicitResolutions = liveStringMenu(parameters, ['resolution'])
   const resolutions = explicitResolutions ?? schemaEnum(schema, 'resolution')
   const outputResolutions = explicitResolutions !== null || resolutions.length > 0 ? resolutions : spec.resolutions
@@ -482,6 +547,8 @@ function imageParams(spec: ImageSpec, schema: unknown, parameters: unknown, exam
   const formats = liveStringMenu(parameters, ['output_format', 'format'])
   const moderations = liveStringMenu(parameters, ['moderation'])
   const seed = declaredSwitch(parameters, ['seed'])
+  const strictReferences = closedPlugin || ['reference_images', 'images', 'input_images']
+    .some(name => Object.hasOwn(parameterFields(parameters) ?? {}, name))
   for (const [field, menu] of Object.entries({ qualities, backgrounds, formats, moderations })) {
     if (menu !== null) notes.push(field)
   }
@@ -497,14 +564,14 @@ function imageParams(spec: ImageSpec, schema: unknown, parameters: unknown, exam
       ...outputResolutions === undefined && specifications === undefined ? {} : {
         resolutions: specifications === undefined ? outputResolutions : specificationStrings(specifications, 'resolution'),
       },
-      maxCount: declaredLimit(parameters, ['n', 'count'], false) ?? spec.maxCount,
+      maxCount: declaredLimit(parameters, ['n', 'count'], false) ?? (closedPlugin ? 1 : spec.maxCount),
       maxEdits,
-      ...['reference_images', 'images', 'input_images'].some(name => Object.hasOwn(parameterFields(parameters) ?? {}, name)) ? { strictReferences: true } : {},
+      ...strictReferences ? { strictReferences: true } : {},
       qualities: qualities ?? (specifications === undefined ? spec.qualities : specificationStrings(specifications, 'quality')),
-      backgrounds: backgrounds ?? spec.backgrounds,
-      formats: formats ?? spec.formats,
-      moderations: moderations ?? spec.moderations,
-      seed: seed ?? spec.seed,
+      backgrounds: backgrounds ?? (closedPlugin ? [] : spec.backgrounds),
+      formats: formats ?? (closedPlugin ? [] : spec.formats),
+      moderations: moderations ?? (closedPlugin ? [] : spec.moderations),
+      seed: seed ?? (closedPlugin ? false : spec.seed),
     },
     verified: isVerified(spec.source),
     source,
@@ -718,10 +785,7 @@ export function catalogFromPricing(rows: readonly unknown[], userGroup: string |
     const built = kind === 'audio' ? audioParams(record.parameters) : kind === 'video'
       ? videoParams(videoSpec(id), record.billing_usage_schema, record.parameters)
       : imageParams(imageSpec(id), record.billing_usage_schema, record.parameters, examples)
-    const plugin = objectRecord(objectRecord(record.parameters)?.['x-task-plugin'])
-    const explicitPlugin = plugin?.key === 'ycapi' && plugin.api_version === 1 && Object.keys(plugin).length === 3
-      && typeof plugin.version === 'string' && /^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/u.test(plugin.version)
-      && plugin.version.length <= 128
+    const explicitPlugin = declaredTaskPlugin(record.parameters)
     const completeParameters = 'execution' in built.params
       || 'specifications' in built.params && built.params.specifications.length > 0
     const pluginDeclared = explicitPlugin && completeParameters
