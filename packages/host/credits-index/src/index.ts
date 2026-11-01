@@ -50,6 +50,7 @@ import { attachGenerationActivityRuntime } from './generation-activity-runtime.t
 import { GenerationActivityCreation } from './generation-activity-creation.ts'
 import type { CreationTaskObserver } from './creation-activity.ts'
 import { readAnnouncements } from './announcements.ts'
+import { readPriceComparisons } from './price-comparisons.ts'
 import { readCustomerSupport } from './customer-support.ts'
 import { ClientToolErrorReporter, type ClientToolErrorAccount } from './client-tool-errors.ts'
 import { parseUsageWindow, readAccountUsage } from './usage.ts'
@@ -2915,6 +2916,40 @@ export function apply(ctx: Context, config: Config): void {
 
 
       try {
+        if (route === '/api/price-comparisons') {
+          const connection = ctx.get('connection')
+          const rejected = connection === undefined ? 403 : connection.requestRejection(request)
+          if (rejected !== undefined) { json(response, rejected, { ok: false, code: 'PRICE_COMPARISONS_HOST_AUTH_REQUIRED' }); return }
+          if (method !== 'GET') { json(response, 405, { ok: false, code: 'METHOD_NOT_ALLOWED' }); return }
+          const lifetime = new AbortController()
+          const disconnected = (): void => { lifetime.abort() }
+          response.once('close', disconnected)
+          const version = identityVersion
+          const signal = AbortSignal.any([publicStatusLife.signal, lifetime.signal, AbortSignal.timeout(resolved.timeoutMs)])
+          const operation = (async (): Promise<void> => {
+            const session = await store.read()
+            const owner = session?.token === undefined ? undefined : productOwner(session)
+            const outcome = await readPriceComparisons(async readSignal => await apiFetch('/api/pricing', {
+              signal: readSignal, headers: { accept: 'application/json' },
+            }), signal)
+            const current = await store.read()
+            const currentOwner = current?.token === undefined ? undefined : productOwner(current)
+            if (lifetime.signal.aborted || response.destroyed) return
+            const result = version !== identityVersion || currentOwner !== owner ? { ok: false, code: 'ACCOUNT_CHANGED' }
+              : signal.aborted ? { ok: false, code: 'PRICE_COMPARISONS_NETWORK' }
+                : { ...outcome, ...outcome.ok && session !== null && owner !== undefined
+                  ? { account: { id: session.account.id }, accountOwner: owner } : {} }
+            json(response, 200, Buffer.byteLength(JSON.stringify(result), 'utf8') > 1_048_576
+              ? { ok: false, code: 'PRICE_COMPARISONS_INVALID' } : result)
+          })().catch((_unavailable: unknown) => {
+            if (!lifetime.signal.aborted && !response.destroyed) {
+              json(response, 200, { ok: false, code: version !== identityVersion ? 'ACCOUNT_CHANGED' : 'PRICE_COMPARISONS_UNAVAILABLE' })
+            }
+          })
+          publicStatusReads.add(operation)
+          try { await operation } finally { publicStatusReads.delete(operation); response.off('close', disconnected) }
+          return
+        }
         if (route === '/api/customer-support' || route === '/api/announcements') {
           const support = route === '/api/customer-support'
           const connection = ctx.get('connection')

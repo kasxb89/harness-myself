@@ -13,6 +13,7 @@ import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { get, grouped, post, secondsUntil, type Envelope } from './api.ts'
 import { cx } from './class-names.ts'
 import { CreditsPanelIcon } from './CreditsPanelIcon.tsx'
+import { PriceComparison } from './PriceComparison.tsx'
 import { QUICK_AMOUNTS_YUAN } from './recharge-amounts.ts'
 import { clearRechargeRequest, useRechargeRequest } from './recharge-request.ts'
 import { readCreditsSnapshot, refreshBalance, refreshCredits, useCreditsSnapshot, type CreditsSnapshot } from './session-store.ts'
@@ -523,6 +524,8 @@ export function RechargePage(props: PropsRuntime<'main'> & RechargePageInjected)
           </section>
         </div>
       )}
+      {signedIn && session.account?.id !== undefined && session.accountOwner !== undefined && <PriceComparison
+        accountId={session.account.id} accountOwner={session.accountOwner} accountEpoch={accountEpoch} t={t} />}
     </div>
   )
 }

@@ -1,0 +1,19 @@
+# Bilingual-pair consistency record for 2026-11-01-default-price-comparisons.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-11-01-default-price-comparisons.md
+/agent-note-compare-dated-default-model-prices-without-changing-billing:
+  en: b0ba634c938b7a1f
+  zh: bc3b3b0e6ae1d389
+/agent-note-compare-dated-default-model-prices-without-changing-billing/problem:
+  en: 64cc37f25506d5df
+  zh: cd7dbbd66b975568
+/agent-note-compare-dated-default-model-prices-without-changing-billing/decision:
+  en: 7c0e4956c45c88bc
+  zh: 1f7828919364b2d2
+/agent-note-compare-dated-default-model-prices-without-changing-billing/alternatives-considered:
+  en: d7fd11f5de374166
+  zh: b7786e07edc23c9f
+/agent-note-compare-dated-default-model-prices-without-changing-billing/consequences:
+  en: b2dcb8c990a2286c
+  zh: d702171f3abe9787

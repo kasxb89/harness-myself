@@ -69,6 +69,7 @@ beforeEach(() => {
   status = async () => orderStatus()
   fetcher = vi.fn<typeof fetch>(async (input, init) => {
     const path = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    if (path === '/credits/api/price-comparisons') return Response.json({ ok: true, payload: { basis: 'default', models: [] } })
     if (path === '/credits/api/session') return Response.json({ ok: true, payload: {
       signedIn: true, creditsPerYuan: 1000, accountOwner: loginOwner,
       account: { id: accountId, phone: accountId === 'account-a' ? '+8613800138000' : '+8613900139000' },

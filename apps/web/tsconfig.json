@@ -22,6 +22,7 @@
   // this client-registered project must not also hold them (one program
   // cannot see both sides of the cordis Context merges).
   "exclude": [
+    "tests/recharge-price-comparison.e2e.ts",
     "tests/creation-entry-isolation.e2e.ts",
     "tests/independent-generation-requests.e2e.ts",
     "tests/profile-process.ts",
