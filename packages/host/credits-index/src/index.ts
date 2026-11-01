@@ -298,7 +298,7 @@ export const Config: z<Config> = z.object({
   accountReadConcurrency: z.number().step(1).min(1).max(8).default(2),
   videoProjectMaxSeconds: z.natural().min(1).default(300),
   videoProjectMaxSegments: z.natural().min(1).max(32).default(32),
-  videoProjectConcurrency: z.natural().min(1).max(16),
+  videoProjectConcurrency: z.natural().min(1).max(64),
   videoProjectPollIntervalMs: z.natural().min(1).default(6000),
   videoProjectTaskTimeoutMs: z.natural().min(1).default(900_000),
   videoProjectDownloadMaxBytes: z.natural().min(12).default(536_870_912),

@@ -52,12 +52,15 @@ const ffmpeg = runtimeRoot === undefined ? undefined : join(runtimeRoot, 'bin', 
 const ffprobe = runtimeRoot === undefined ? undefined : join(runtimeRoot, 'bin', process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe')
 const available = ffmpeg !== undefined && ffprobe !== undefined && existsSync(ffmpeg) && existsSync(ffprobe)
 const cases = [
-  { name: 'actual-catalog-five-second-preference', fiveOnly: false, ceiling: undefined, expectedPeak: 4 },
-  { name: 'synthetic-five-only-contract-ceiling-two', fiveOnly: true, ceiling: 2, expectedPeak: 2 },
+  { name: 'actual-catalog-five-second-preference', fiveOnly: false, ceiling: undefined, localCeiling: undefined, expectedPeak: 4, totalSeconds: 20 },
+  { name: 'synthetic-five-only-contract-ceiling-two', fiveOnly: true, ceiling: 2, localCeiling: undefined, expectedPeak: 2, totalSeconds: 20 },
+  { name: 'actual-catalog-twenty-slot-pool', fiveOnly: false, ceiling: 20, localCeiling: undefined, expectedPeak: 20, totalSeconds: 120 },
+  { name: 'actual-catalog-twenty-slot-pool-local-six', fiveOnly: false, ceiling: 20, localCeiling: 6, expectedPeak: 6, totalSeconds: 120 },
 ] as const
 
-it.skipIf(!available).each(cases)('$name generates four five-second clips under its declared concurrency and joins one 20-second work', async ({ name, fiveOnly, ceiling, expectedPeak }) => {
+it.skipIf(!available).each(cases)('$name generates $totalSeconds seconds under its declared concurrency and joins one work', async ({ name, fiveOnly, ceiling, localCeiling, expectedPeak, totalSeconds }) => {
   if (runtimeRoot === undefined || ffmpeg === undefined || ffprobe === undefined) throw new Error('Set the prepared native FFmpeg runtime')
+  const planSeconds = Array.from({ length: totalSeconds / 5 }, () => 5)
   const directory = await realpath(await mkdtemp(join(tmpdir(), 'dsh-video-five-second-compose-')))
   const ctx = new Context(), source = createServer()
   onTestFinished(async () => {
@@ -123,7 +126,8 @@ it.skipIf(!available).each(cases)('$name generates four five-second clips under 
     }
     if (path === '/v1/videos' && request.method === 'POST') {
       const duration = Number(body?.seconds), index = tasks.size
-      const media = samples.get(duration)?.[index]
+      const availableSamples = samples.get(duration)
+      const media = availableSamples?.[index % availableSamples.length]
       if (body?.model !== modelId || media === undefined || request.headers.authorization !== 'Bearer sk-fixture-five-seconds') {
         response.statusCode = 400; answer({ error: 'Unsupported native model, duration or account' }); return
       }
@@ -161,6 +165,7 @@ it.skipIf(!available).each(cases)('$name generates four five-second clips under 
     '- name: sandbox', '- name: working-directory', '  config:', `    defaultDirectory: '${workspace}'`,
     '- name: webserver', '  config:', "    host: '127.0.0.1'", '    port: 0', '- name: credits', '  config:',
     `    stateDir: '${stateDir}'`, `    newApiBaseUrl: '${origin}'`, `    videoRuntimeRoot: '${runtimeRoot}'`, '    timeoutMs: 5000',
+    ...localCeiling === undefined ? [] : [`    videoProjectConcurrency: ${String(localCeiling)}`],
     '    videoProjectPollIntervalMs: 10', '    videoProjectTaskTimeoutMs: 30000', '    videoEditTimeoutMs: 60000', '    videoEditFps: 10', '',
   ].join('\n'))
   const modules = new Map<string, unknown>([
@@ -194,7 +199,7 @@ it.skipIf(!available).each(cases)('$name generates four five-second clips under 
   })
   session.append('turn/start', { turn: 1 })
   const requestId = brandString<SessionRequestId>(`request-${name}`)
-  const human = createUserMessage({ source: { kind: 'user', rpcId: requestId }, content: [{ type: 'text', text: '生成一条20秒的风景视频。' }] })
+  const human = createUserMessage({ source: { kind: 'user', rpcId: requestId }, content: [{ type: 'text', text: `生成一条${String(totalSeconds)}秒的风景视频。` }] })
   await ctx.waterfall('session/prompt-admission', { agent, requestId, message: human,
     inputContext: { credits_media_preferences: { scope, revision: saved.revision, accountOwner: owner } } }, async () => {})
   session.append('user/message', human, { surfaceOp: 'append' })
@@ -205,10 +210,10 @@ it.skipIf(!available).each(cases)('$name generates four five-second clips under 
     session.append('tool/result', { turn: 1, step, message: createToolResultMessage({ callId, content: result.content, isError: result.isError }) },
       { surfaceOp: 'append', sourceEventSeqs: [logged.seq] }); return result
   }
-  const start = await execute('generate_video_project', { prompt: '风景随季节变化，镜头自然衔接', total_duration_seconds: 20 }, 1)
+  const start = await execute('generate_video_project', { prompt: '风景随季节变化，镜头自然衔接', total_duration_seconds: totalSeconds }, 1)
   expect(start.isError, JSON.stringify(start.value)).toBe(false)
   const started = object(start.value)
-  expect(started, JSON.stringify(started)).toMatchObject({ status: 'background', plan_seconds: [5, 5, 5, 5] })
+  expect(started, JSON.stringify(started)).toMatchObject({ status: 'background', plan_seconds: planSeconds })
   const jobId = JobId(text(started.job_id))
   await vi.waitFor(() => { expect(['completed', 'failed', 'killed']).toContain(ctx.jobs.get(jobId, agent.id).status) }, { timeout: 60_000, interval: 20 })
   expect(ctx.jobs.get(jobId, agent.id).status).toBe('completed')
@@ -216,19 +221,19 @@ it.skipIf(!available).each(cases)('$name generates four five-second clips under 
   const finalLine = text(object(collected.value).text).split('\n').filter(line => line.startsWith('{')).at(-1)
   if (finalLine === undefined) throw new Error('Expected terminal output')
   const completed = object(JSON.parse(finalLine)), finalPath = text(completed.final_path)
-  expect(completed).toMatchObject({ status: 'succeeded', duration_seconds: 20 })
+  expect(completed).toMatchObject({ status: 'succeeded', duration_seconds: totalSeconds })
   expect((await stat(finalPath)).isFile()).toBe(true)
   const probe = object(JSON.parse(execFileSync(ffprobe, ['-v', 'error', '-show_entries', 'format=duration:stream=codec_type,width,height', '-of', 'json', finalPath], { encoding: 'utf8', timeout: 30_000 })))
-  expect(Number(object(probe.format).duration)).toBeCloseTo(20, 1)
+  expect(Number(object(probe.format).duration)).toBeCloseTo(totalSeconds, 1)
   const posts = calls.filter(call => call.method === 'POST' && call.path === '/v1/videos')
-  expect(posts).toHaveLength(4); expect(posts.map(call => call.body?.seconds)).toEqual([5, 5, 5, 5])
+  expect(posts).toHaveLength(planSeconds.length); expect(posts.map(call => call.body?.seconds)).toEqual(planSeconds)
   const quoteRequests = calls.filter(call => call.method === 'POST' && call.path === '/v1/video/quote')
   expect(quoteRequests.length).toBeGreaterThan(0)
   const quoteSummaries = quoteRequests.map((call) => {
     expect(call.body).toMatchObject({ model: modelId, works_count: 1 })
     const segments = call.body?.segments
     if (!Array.isArray(segments)) throw new Error('Expected quoted segments')
-    expect(segments).toHaveLength(4)
+    expect(segments).toHaveLength(planSeconds.length)
     return segments.map((value) => {
       const parameters = object(object(value).parameters)
       expect(parameters.seconds).toBe(5)
@@ -241,7 +246,7 @@ it.skipIf(!available).each(cases)('$name generates four five-second clips under 
   const manifest = object(JSON.parse(await readFile(join(stateDir, 'video-projects', text(started.project_id), 'manifest.json'), 'utf8')))
   const segments = manifest.segments
   if (!Array.isArray(segments)) throw new Error('Expected durable project segments')
-  expect(segments).toHaveLength(4)
+  expect(segments).toHaveLength(planSeconds.length)
   const clipHashes = []
   for (const value of segments) {
     const segment = object(value), path = text(segment.path), bytes = await readFile(path)
@@ -253,16 +258,16 @@ it.skipIf(!available).each(cases)('$name generates four five-second clips under 
   expect(creation.operations).toHaveLength(1)
   const finishedWork = object(creation.operations[0])
   expect(finishedWork.videoProjectId).toBe(started.project_id)
-  expect(finishedWork.outputs).toHaveLength(5)
+  expect(finishedWork.outputs).toHaveLength(planSeconds.length + 1)
   expect(started).toMatchObject({ pending_work_ids: [], remaining_works: 0 })
   const selection = ctx.sessionProjections.stateOf(session, 'mediaRequestSelections')?.selections[requestId]
   expect(selection).toMatchObject({ requestId, state: 'selected', video: saved.video })
   if (process.env.DSH_MEDIA_AUDIT_OUTPUT_DIR !== undefined) {
     const out = join(process.env.DSH_MEDIA_AUDIT_OUTPUT_DIR, name); await mkdir(out, { recursive: true })
-    await copyFile(finalPath, join(out, 'final-20s.mp4'))
+    await copyFile(finalPath, join(out, `final-${String(totalSeconds)}s.mp4`))
     for (const [index, value] of segments.entries()) await copyFile(text(object(value).path), join(out, `clip-${String(index + 1)}-5s.mp4`))
     await writeFile(join(out, 'evidence.json'), JSON.stringify({ scope: fiveOnly ? 'Synthetic restricted five-only capability, not an actual deployed model' : 'Unmodified actual public model and specification fixture; synthetic provider/account',
-      savedPreference: saved.video, selection, started, posts, quoteSummaries, peakInFlight, ceiling: ceiling ?? 'local default4', probe, finalHash: digest(await readFile(finalPath)),
-      clipHashes, finishedWorkOperationCount: creation.operations.length, publishedOutputCount: 5, questions, calls, nativeRuntime: runtimeRoot, finalFilename: basename(finalPath), realUpstreamCalls: 0, paidCalls: 0 }, null, 2) + '\n')
+      savedPreference: saved.video, selection, started, posts, quoteSummaries, peakInFlight, ceiling: ceiling ?? 'local default4', localCeiling, totalSeconds, probe, finalHash: digest(await readFile(finalPath)),
+      clipHashes, finishedWorkOperationCount: creation.operations.length, publishedOutputCount: planSeconds.length + 1, questions, calls, nativeRuntime: runtimeRoot, finalFilename: basename(finalPath), realUpstreamCalls: 0, paidCalls: 0 }, null, 2) + '\n')
   }
 }, 90_000)

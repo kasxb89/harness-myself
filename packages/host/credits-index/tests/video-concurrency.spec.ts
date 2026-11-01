@@ -9,7 +9,7 @@ function row(hint: unknown, model = 'MiniMax-H3'): object {
 }
 
 describe('enforced video project concurrency hints', () => {
-  it.each([1, 2, 4, 16])('accepts the declared shared-pool ceiling %s without treating it as free slots', (maximum) => {
+  it.each([1, 2, 4, 16, 20, 64])('accepts the declared shared-pool ceiling %s without treating it as free slots', (maximum) => {
     expect(videoProjectParallelism([row({ ...declared, max_parallelism: maximum })], 'MiniMax-H3')).toBe(maximum)
   })
 
@@ -22,7 +22,7 @@ describe('enforced video project concurrency hints', () => {
     { ...declared, atomic_admission: false }, { ...declared, atomic_admission: 'true' },
     { ...declared, model: 'minimax-h3' }, { ...declared, scope: 'account' },
     { ...declared, reservation: true }, { ...declared, reservation: undefined },
-    ...[0, -1, 1.5, 17, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1, '16']
+    ...[0, -1, 1.5, 65, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1, '64']
       .map(max_parallelism => ({ ...declared, max_parallelism })),
   ])('uses the local default for an absent or invalid declaration: %j', (hint) => {
     expect(videoProjectParallelism([row(hint)], 'MiniMax-H3')).toBe(4)
@@ -50,5 +50,13 @@ describe('enforced video project concurrency hints', () => {
     const model = 'sd2.5-720p-x2'
     expect(videoProjectParallelism([row({ ...declared, model, max_parallelism: 2 }, model),
       row({ ...declared, model, max_parallelism: 16 }, model)], model)).toBe(2)
+  })
+
+  it('reads a changed ceiling for its exact model without assigning it to other models', () => {
+    const model = 'ycapi-grok-imagine-video'
+    expect(videoProjectParallelism([row({ ...declared, model, max_parallelism: 20 }, model)], model)).toBe(20)
+    expect(videoProjectParallelism([row({ ...declared, model, max_parallelism: 2 }, model)], model)).toBe(2)
+    expect(videoProjectParallelism([row({ ...declared, model, max_parallelism: 20 }, model)], 'other-video')).toBe(4)
+    expect(videoProjectParallelism([], model)).toBe(4)
   })
 })

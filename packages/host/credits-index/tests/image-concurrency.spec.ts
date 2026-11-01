@@ -13,8 +13,11 @@ describe('independent image execution concurrency', () => {
     expect(Config({}).imageConcurrency).toBeUndefined()
     expect(Config({}).videoProjectConcurrency).toBeUndefined()
     expect(Config({ imageConcurrency: 2 })).toMatchObject({ imageConcurrency: 2 })
+    expect(Config({ videoProjectConcurrency: 20 })).toMatchObject({ videoProjectConcurrency: 20 })
+    expect(Config({ videoProjectConcurrency: 64 })).toMatchObject({ videoProjectConcurrency: 64 })
     for (const invalid of [0, -1, 1.2, 65, Number.NaN, Number.POSITIVE_INFINITY]) {
       expect(() => Config({ imageConcurrency: invalid })).toThrow()
+      expect(() => Config({ videoProjectConcurrency: invalid })).toThrow()
       expect(() => new ImageConcurrency(invalid)).toThrow()
     }
   })
@@ -72,6 +75,35 @@ describe('independent image execution concurrency', () => {
     const releases = await Promise.all(Array.from({ length: 40 }, async () => scheduler.acquire('image-model', 40, signal())))
     const admitted = vi.fn()
     const queued = scheduler.acquire('image-model', 40, signal()).then((release) => { admitted(); return release })
+    await Promise.resolve()
+    expect(admitted).not.toHaveBeenCalled()
+    releases[0]!()
+    const release = await queued
+    expect(admitted).toHaveBeenCalledOnce()
+    releases.forEach((done) => { done() })
+    release()
+  })
+
+  it('shares twenty declared executions across image models and queues the twenty-first', async () => {
+    const scheduler = new ImageConcurrency()
+    const releases = await Promise.all(Array.from({ length: 20 }, async (_, index) =>
+      scheduler.acquire(index % 2 === 0 ? 'first-image-model' : 'second-image-model', 20, signal())))
+    const admitted = vi.fn()
+    const queued = scheduler.acquire('second-image-model', 20, signal()).then((release) => { admitted(); return release })
+    await Promise.resolve()
+    expect(admitted).not.toHaveBeenCalled()
+    releases[0]!()
+    const release = await queued
+    expect(admitted).toHaveBeenCalledOnce()
+    releases.forEach((done) => { done() })
+    release()
+  })
+
+  it('keeps an explicit local six-slot ceiling below a declared twenty-slot pool', async () => {
+    const scheduler = new ImageConcurrency(6)
+    const releases = await Promise.all(Array.from({ length: 6 }, async () => scheduler.acquire('image-model', 20, signal())))
+    const admitted = vi.fn()
+    const queued = scheduler.acquire('image-model', 20, signal()).then((release) => { admitted(); return release })
     await Promise.resolve()
     expect(admitted).not.toHaveBeenCalled()
     releases[0]!()
@@ -197,7 +229,7 @@ describe('independent image execution concurrency', () => {
 })
 
 describe('exact image model concurrency declarations', () => {
-  it.each([1, 2, 10, 16, 64])('reads the declared ceiling %s without inferring free slots', (maximum) => {
+  it.each([1, 2, 10, 16, 20, 64])('reads the declared ceiling %s without inferring free slots', (maximum) => {
     expect(imageConcurrencyCeiling([row({ ...declared, max_parallelism: maximum })], 'image-model')).toBe(maximum)
   })
 

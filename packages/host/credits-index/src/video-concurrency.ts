@@ -11,7 +11,7 @@ function object(value: unknown): Record<string, unknown> | undefined {
  * Read one exact model's enforced ceiling, otherwise use the local video default.
  * @param rows - Current pricing rows from the configured gateway, before model-menu projection.
  * @param model - Exact authorized video model whose project is being scheduled.
- * @returns A positive ceiling at most sixteen; this is never a free-slot or reservation count.
+ * @returns A positive ceiling at most sixty-four; this is never a free-slot or reservation count.
  */
 export function videoProjectParallelism(rows: readonly unknown[], model: string): number {
   if (model.length === 0) return DEFAULT_VIDEO_PROJECT_PARALLELISM
@@ -22,7 +22,7 @@ export function videoProjectParallelism(rows: readonly unknown[], model: string)
     const maximum = hint?.max_parallelism
     if (hint?.schema !== 1 || hint.atomic_admission !== true || hint.model !== model
       || hint.scope !== 'shared_account_pool' || hint.reservation !== false
-      || typeof maximum !== 'number' || !Number.isSafeInteger(maximum) || maximum < 1 || maximum > 16) return []
+      || typeof maximum !== 'number' || !Number.isSafeInteger(maximum) || maximum < 1 || maximum > 64) return []
     return [maximum]
   })
   if (matches.length === 1 && ceilings.length === 1) return ceilings[0] ?? DEFAULT_VIDEO_PROJECT_PARALLELISM
