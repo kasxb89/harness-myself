@@ -71,16 +71,18 @@ it('returns ordinary text prompt context immediately while the preference restor
   expect(await ctx.waterfall('conversation/prompt-context', request, () => Promise.resolve({}))).toEqual({})
   expect(fetcher.mock.calls.some(([url]) => pathOf(url).includes('/catalog'))).toBe(false)
 })
-it('keeps acknowledged prompt metadata immediately available while the background directory remains pending', async () => {
-  const { ctx, fetcher } = await fixture('catalog')
+it('keeps acknowledged prompt metadata immediately available while an explicitly opened directory remains pending', async () => {
+  const { ctx, fetcher, controller } = await fixture('catalog')
+  void controller.loadCatalog()
   await vi.waitFor(() => { expect(fetcher.mock.calls.some(([url]) => pathOf(url).endsWith('/media/preferences/catalog'))).toBe(true) })
   const request = { sessionId: 'new-chat' as PropsRuntime<'conversation.input.right'>['sessionId'], mode: 'queue' as const }
   expect(await ctx.waterfall('conversation/prompt-context', request, () => Promise.resolve({}))).toEqual({
     credits_media_preferences: { scope: preference.scope, revision: preference.revision, accountOwner: owner },
   })
 })
-it('does not delay ordinary text while default-model unit prices are loading in the background', async () => {
-  const { ctx, fetcher } = await fixture('catalog', true)
+it('does not delay ordinary text while explicitly opened default-model unit prices are loading', async () => {
+  const { ctx, fetcher, controller } = await fixture('catalog', true)
+  void controller.loadCatalog()
   await vi.waitFor(() => { expect(fetcher.mock.calls.some(([url]) => pathOf(url).endsWith('/media/preferences/catalog'))).toBe(true) })
   const request = { sessionId: 'new-chat' as PropsRuntime<'conversation.input.right'>['sessionId'], mode: 'queue' as const }
   expect(await ctx.waterfall('conversation/prompt-context', request, () => Promise.resolve({}))).toEqual({})
@@ -98,7 +100,7 @@ it('captures the prior revision before a slow sibling provider while later submi
     return { sibling: { retained: true } }
   })
   await vi.waitFor(() => { expect(entered).toBe(true) })
-  expect(await controller.savePreference('video', { model: 'h3', parameters: { resolution: '2K' } })).toBe(true)
+  expect(await controller.savePreferences({ image: null, video: { model: 'h3', parameters: { resolution: '2K' } } })).toBe(true)
   expect(controller.promptHint()?.revision).toBe('d'.repeat(64))
   if (resume === undefined) throw new Error('Missing sibling provider continuation')
   resume()

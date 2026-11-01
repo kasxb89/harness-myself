@@ -30,8 +30,11 @@ function fixture(saved: Partial<MediaPreferences> = {}, available = true, englis
   const videoModel = { ...video }
   if (!unitPrices) { delete imageModel.pricing; delete videoModel.pricing }
   let prefs: MediaPreferences = { schema_version: 1, scope: 'b'.repeat(64), revision: 'c'.repeat(64), image: null, video: null, ...saved }
-  const account: CreditsSnapshot = { loaded: true, accountEpoch: 1, failure: null, balance: null, session: { signedIn: true, creditsPerYuan: 1000, account: { id: '7', phone: 'fixture' }, accountOwner: 'a'.repeat(64) } }
-  const source = { getSnapshot: () => account, subscribe: () => () => {} }
+  let account: CreditsSnapshot = { loaded: true, accountEpoch: 1, failure: null, balance: null, session: { signedIn: true, creditsPerYuan: 1000, account: { id: '7', phone: 'fixture' }, accountOwner: 'a'.repeat(64) } }
+  const listeners = new Set<() => void>()
+  const source = { getSnapshot: () => account, subscribe: (listener: () => void) => {
+    listeners.add(listener); return () => { listeners.delete(listener) }
+  } }
   let fail = false
   const transport = vi.fn<typeof requestPreferences>(async (operation, _signal, body) => {
     if (operation === 'save') {
@@ -50,97 +53,160 @@ function fixture(saved: Partial<MediaPreferences> = {}, available = true, englis
     for (const [name, value] of Object.entries(values ?? {})) text = text.replaceAll(`{${name}}`, String(value))
     return text
   }
-  const props = { useMediaPreferences, loadCatalog: controller.loadCatalog, savePreference: controller.savePreference, available,
+  const props = { useMediaPreferences, loadCatalog: controller.loadCatalog,
+    savePreference: controller.savePreference, savePreferences: controller.savePreferences, available,
     useSession: (selector: (snapshot: { removed: boolean }) => unknown) => selector({ removed: false }),
     t } as Parameters<typeof ChatMediaPreferences>[0]
   render(<ChatMediaPreferences {...props} />)
-  return { controller, transport, setFailure: (value: boolean) => { fail = value } }
+  return { controller, transport, setFailure: (value: boolean) => { fail = value },
+    setCanonical: (value: MediaPreferences) => { prefs = value },
+    signOut: () => {
+      account = { ...account, accountEpoch: account.accountEpoch + 1, session: { signedIn: false, creditsPerYuan: 1000 } }
+      for (const listener of listeners) listener()
+    },
+  }
 }
-async function open(kind: 'image' | 'video') {
-  await act(async () => { fireEvent.click(await screen.findByRole('button', { name: zh[kind === 'image' ? 'media.imageTitle' : 'media.videoTitle'] })) })
-  return await screen.findByRole('dialog', { name: zh[kind === 'image' ? 'media.imageTitle' : 'media.videoTitle'] })
+async function open(kind: 'image' | 'video' = 'image') {
+  await act(async () => { fireEvent.click(await screen.findByRole('button', { name: zh['media.entryAria'] })) })
+  const dialog = await screen.findByRole('dialog', { name: zh['media.title'] })
+  fireEvent.click(within(dialog).getByRole('tab', { name: zh[kind === 'image' ? 'media.image' : 'media.video'] }))
+  return dialog
 }
+const saves = (transport: ReturnType<typeof fixture>['transport']) => transport.mock.calls.filter(([operation]) => operation === 'save')
 
-describe('chat media preference editors', () => {
-  it('searches available models, exposes supported parameters and saves a reviewed selection', async () => {
+describe('compact chat media preferences', () => {
+  it('adds one settings button and does not read the remote catalog or show model prices before opening it', async () => {
     const f = fixture()
-    const dialog = await open('image')
-    expect(screen.getByRole('button', { name: zh['media.imageTitle'] }).textContent).toContain('约 250–375 积分/张')
-    expect(within(dialog).getByRole('button', { name: 'Picture One picture-one' }).textContent).toContain('约 250–375 积分/张')
+    const entry = await screen.findByRole('button', { name: zh['media.entryAria'] })
+    await act(async () => { await Promise.resolve() })
+    expect(screen.getAllByRole('button')).toHaveLength(1)
+    expect(entry.textContent).toBe(zh['media.entry'])
+    expect(entry.textContent).not.toMatch(/积分|Picture|Video/u)
+    expect(f.transport.mock.calls.map(([operation]) => operation)).toEqual(['read'])
+    expect(screen.queryByRole('tooltip')).toBeNull()
+    expect({ entry: entry.textContent, aria: entry.getAttribute('aria-label'), buttons: screen.getAllByRole('button').length }).toMatchSnapshot()
+  })
+
+  it('preserves both tab drafts and saves the image and video selections in one acknowledged write', async () => {
+    const f = fixture()
+    const dialog = await open()
     fireEvent.change(within(dialog).getByRole('textbox', { name: zh['media.search'] }), { target: { value: 'picture' } })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Picture One picture-one' }))
     fireEvent.change(within(dialog).getByRole('combobox', { name: zh['media.param.size'] }), { target: { value: JSON.stringify('1536x1024') } })
     fireEvent.change(within(dialog).getByRole('combobox', { name: zh['media.param.quality'] }), { target: { value: JSON.stringify('high') } })
-    expect(within(dialog).queryByRole('combobox', { name: zh['media.param.seconds'] })).toBeNull()
-    expect({
-      title: within(dialog).getByText(zh['media.imageTitle']).textContent,
-      guidance: within(dialog).getByText(zh['media.description']).textContent,
-      parameters: within(dialog).getAllByRole('combobox').map(control => ({
-        name: control.getAttribute('aria-label'), options: control.textContent, value: (control as HTMLSelectElement).value,
-      })),
-      count: within(dialog).getByRole('spinbutton', { name: zh['media.param.count'] }).getAttribute('placeholder'),
-      selected: within(dialog).getByRole('button', { name: 'Picture One picture-one' }).getAttribute('aria-pressed'),
-      price: within(dialog).getByText('当前参数参考单价：约 375 积分/张').textContent,
-    }).toMatchSnapshot()
-    await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: zh['media.save'] })) })
-    expect(screen.queryByRole('dialog')).toBeNull()
-    expect(screen.getByRole('button', { name: zh['media.imageTitle'] }).textContent).toContain('Picture One')
-    expect(screen.getByRole('button', { name: zh['media.imageTitle'] }).textContent).toContain('约 375 积分/张')
-    fireEvent.mouseEnter(screen.getByRole('button', { name: zh['media.imageTitle'] }))
-    expect(screen.getByRole('tooltip', { hidden: true }).textContent).toContain(zh['media.price.note'])
-    expect(screen.getByRole('tooltip', { hidden: true }).textContent).toContain('约 375 积分/张')
-    fireEvent.mouseLeave(screen.getByRole('button', { name: zh['media.imageTitle'] }))
-    expect(f.transport.mock.calls.find(([operation]) => operation === 'save')?.[2]).toMatchObject({ image: { model: image.id, parameters: { size: '1536x1024', quality: 'high' } }, video: null })
-  })
-  it('links video specifications and labels durations as a single clip', async () => {
-    fixture()
-    const dialog = await open('video')
-    expect(screen.getByRole('button', { name: zh['media.videoTitle'] }).textContent).toContain('约 125–250 积分/秒')
+    expect(within(dialog).getAllByText('约 375 积分/张').length).toBeGreaterThan(0)
+    fireEvent.click(within(dialog).getByRole('tab', { name: zh['media.video'] }))
     fireEvent.click(within(dialog).getByRole('button', { name: 'Video One video-one' }))
     fireEvent.change(within(dialog).getByRole('combobox', { name: zh['media.param.resolution'] }), { target: { value: JSON.stringify('2K') } })
-    const seconds = within(dialog).getByRole('combobox', { name: zh['media.param.seconds'] })
-    expect(seconds.textContent).not.toContain('15')
-    expect(seconds.textContent).toContain('5')
-    expect(within(dialog).getByText('当前参数参考单价：约 250 积分/秒')).toBeDefined()
-    expect(within(dialog).getByRole('button', { name: 'Video One video-one' }).textContent).toContain('约 250 积分/秒')
-    expect(screen.getByRole('button', { name: zh['media.videoTitle'] }).textContent).toContain('约 125–250 积分/秒')
-    expect(within(dialog).getByText(zh['media.videoHint'])).toBeDefined()
-    expect(within(dialog).getByRole('combobox', { name: zh['media.param.audio'] })).toBeDefined()
+    expect(within(dialog).getAllByText('约 250 积分/秒').length).toBeGreaterThan(0)
+    expect(within(dialog).getByRole('combobox', { name: zh['media.param.seconds'] }).textContent).not.toContain('15')
+    fireEvent.click(within(dialog).getByRole('tab', { name: zh['media.image'] }))
+    expect(within(dialog).getByRole<HTMLSelectElement>('combobox', { name: zh['media.param.size'] }).value).toBe(JSON.stringify('1536x1024'))
+    expect(within(dialog).getByRole<HTMLSelectElement>('combobox', { name: zh['media.param.quality'] }).value).toBe(JSON.stringify('high'))
+    expect({ tabs: within(dialog).getAllByRole('tab').map(tab => tab.textContent), note: within(dialog).getByText(zh['media.price.note']).textContent,
+      price: within(dialog).getAllByText('约 375 积分/张').map(value => value.textContent),
+      parameters: within(dialog).getAllByRole('combobox').map(value => value.getAttribute('aria-label')) }).toMatchSnapshot()
+    await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: zh['media.save'] })) })
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(saves(f.transport)).toHaveLength(1)
+    expect(saves(f.transport)[0]?.[2]).toMatchObject({ image: { model: image.id, parameters: { size: '1536x1024', quality: 'high' } },
+      video: { model: video.id, parameters: { resolution: '2K' } } })
+    expect(f.controller.promptHint()?.revision).toBe('d'.repeat(64))
+    expect(screen.getByRole('button', { name: zh['media.entryAria'] }).textContent).toBe(zh['media.entry'])
+  })
+
+  it('cancels both unsaved tab drafts without changing preferences and closes with Escape', async () => {
+    const f = fixture()
+    const dialog = await open()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Picture One picture-one' }))
+    fireEvent.click(within(dialog).getByRole('tab', { name: zh['media.video'] }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Video One video-one' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: zh['media.cancel'] }))
+    expect(saves(f.transport)).toHaveLength(0)
+    expect(f.controller.hooks.mediaPreferences.getSnapshot().saved).toMatchObject({ image: null, video: null })
+    const reopened = await open('video')
+    expect(within(reopened).getByRole('button', { name: /跟随平台默认/u }).getAttribute('aria-pressed')).toBe('true')
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(screen.queryByRole('dialog')).toBeNull()
   })
-  it('retains drafts and the saved composer label on CAS conflict, then resets an unavailable choice explicitly', async () => {
-    const f = fixture({ video: { model: 'retired-model', parameters: { resolution: '4K' } } })
-    const dialog = await open('video')
-    expect(within(dialog).getAllByText(/retired-model/u).length).toBeGreaterThan(0)
-    expect(within(dialog).getByRole('button', { name: zh['media.save'] }).hasAttribute('disabled')).toBe(true)
+
+  it('allows saving another kind and resetting while unchanged unavailable choices remain preserved', async () => {
+    const oldVideo = { model: 'retired-video', parameters: { resolution: '4K' } }
+    const f = fixture({ image: { model: 'retired-image', parameters: {} }, video: oldVideo })
+    const dialog = await open()
+    expect(within(dialog).getByRole('tab', { name: zh['media.video'] }).textContent).toContain(zh['media.unavailableShort'])
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Picture One picture-one' }))
+    expect(within(dialog).getByRole('button', { name: zh['media.save'] }).hasAttribute('disabled')).toBe(false)
+    await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: zh['media.save'] })) })
+    expect(saves(f.transport)[0]?.[2]).toMatchObject({ image: { model: image.id, parameters: {} }, video: oldVideo })
+    const reopened = await open('video')
+    expect(within(reopened).getByText('retired-video 当前不可用')).toBeDefined()
+    fireEvent.click(within(reopened).getByRole('button', { name: /跟随平台默认/u }))
+    await act(async () => { fireEvent.click(within(reopened).getByRole('button', { name: zh['media.save'] })) })
+    expect(f.controller.hooks.mediaPreferences.getSnapshot().saved?.video).toBeNull()
+  })
+
+  it('blocks only changed invalid parameters and keeps the other tab draft until they are corrected', async () => {
+    const f = fixture()
+    const dialog = await open()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Picture One picture-one' }))
+    fireEvent.change(within(dialog).getByRole('spinbutton', { name: zh['media.param.seed'] }), { target: { value: '1.5' } })
+    fireEvent.click(within(dialog).getByRole('tab', { name: zh['media.video'] }))
     fireEvent.click(within(dialog).getByRole('button', { name: 'Video One video-one' }))
+    expect(within(dialog).getByRole('tab', { name: zh['media.image'] }).textContent).toContain(zh['media.needsAdjustment'])
+    expect(within(dialog).getByRole('alert').textContent).toContain('请调整图片参数')
+    expect(within(dialog).getByRole('button', { name: zh['media.save'] }).hasAttribute('disabled')).toBe(true)
+    fireEvent.click(within(dialog).getByRole('tab', { name: zh['media.image'] }))
+    fireEvent.change(within(dialog).getByRole('spinbutton', { name: zh['media.param.seed'] }), { target: { value: '2' } })
+    await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: zh['media.save'] })) })
+    expect(saves(f.transport)[0]?.[2]).toMatchObject({ image: { model: image.id, parameters: { seed: 2 } },
+      video: { model: video.id, parameters: {} } })
+  })
+
+  it('retains both drafts on conflict and merges only an unedited kind after an explicit catalog recheck', async () => {
+    const f = fixture()
+    const dialog = await open()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Picture One picture-one' }))
     f.setFailure(true)
     await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: zh['media.save'] })) })
     expect(within(dialog).getByRole('alert').textContent).toContain(zh['media.error.conflict'])
-    expect(within(dialog).getByRole('button', { name: 'Video One video-one' }).getAttribute('aria-pressed')).toBe('true')
-    expect(screen.getByRole('button', { name: zh['media.videoTitle'] }).textContent).toContain(zh['media.unavailableShort'])
+    f.setCanonical({ schema_version: 1, scope: 'b'.repeat(64), revision: 'e'.repeat(64), image: null,
+      video: { model: video.id, parameters: { resolution: '2K' } } })
     await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: zh['media.retry'] })) })
+    expect(within(dialog).getByRole('button', { name: 'Picture One picture-one' }).getAttribute('aria-pressed')).toBe('true')
     f.setFailure(false)
-    fireEvent.click(within(dialog).getByRole('button', { name: /跟随平台默认/u }))
     await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: zh['media.save'] })) })
-    expect(f.controller.hooks.mediaPreferences.getSnapshot().saved?.video).toBeNull()
+    expect(saves(f.transport)[1]?.[2]).toMatchObject({ expected_revision: 'e'.repeat(64), image: { model: image.id, parameters: {} },
+      video: { model: video.id, parameters: { resolution: '2K' } } })
   })
-  it('allows choosing and saving a model while an older Host has no reliable unit price', async () => {
+
+  it('compares scalar parameters by meaning rather than insertion order', async () => {
+    const f = fixture({ image: { model: image.id, parameters: { size: '1024x1024', quality: 'standard' } } })
+    const dialog = await open()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Picture One picture-one' }))
+    fireEvent.change(within(dialog).getByRole('combobox', { name: zh['media.param.quality'] }), { target: { value: JSON.stringify('standard') } })
+    fireEvent.change(within(dialog).getByRole('combobox', { name: zh['media.param.size'] }), { target: { value: JSON.stringify('1024x1024') } })
+    expect(within(dialog).getByRole('button', { name: zh['media.save'] }).hasAttribute('disabled')).toBe(true)
+    expect(saves(f.transport)).toHaveLength(0)
+  })
+
+  it('allows model-only choices without a reliable price and discards the editor on sign-out', async () => {
     const f = fixture({}, true, false, false)
     const dialog = await open('video')
-    expect(screen.getByRole('button', { name: zh['media.videoTitle'] }).textContent).toContain('积分/秒待核价')
-    expect(within(dialog).getByRole('button', { name: 'Video One video-one' }).textContent).toContain('积分/秒待核价')
+    expect(within(dialog).getAllByText('积分/秒待核价').length).toBeGreaterThan(0)
     fireEvent.click(within(dialog).getByRole('button', { name: 'Video One video-one' }))
-    await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: zh['media.save'] })) })
-    expect(f.controller.hooks.mediaPreferences.getSnapshot().saved?.video?.model).toBe(video.id)
+    expect(within(dialog).getByRole('button', { name: zh['media.save'] }).hasAttribute('disabled')).toBe(false)
+    await act(async () => { f.signOut() })
     expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.queryByRole('button', { name: zh['media.entryAria'] })).toBeNull()
+    expect(saves(f.transport)).toHaveLength(0)
   })
-  it('does not show selectors on addressed subagents and uses English locale chrome', async () => {
+
+  it('hides addressed-subagent controls and uses English chrome', async () => {
     fixture({}, false)
     expect(screen.queryByRole('button')).toBeNull()
     cleanup()
     fixture({}, true, true)
-    expect(await screen.findByRole('button', { name: en['media.imageTitle'] })).toBeDefined()
+    expect(await screen.findByRole('button', { name: en['media.entryAria'] })).toHaveProperty('textContent', en['media.entry'])
   })
 })

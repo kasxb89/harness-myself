@@ -1,31 +1,31 @@
-/* Composer controls and a viewport-bounded shared-material editor. */
-.controls { display: inline-flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 4px; max-width: 100%; min-width: 0; }
-.trigger { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: min(340px, calc(100vw - 48px)); border: 0; border-radius: 8px; background: transparent; padding: 4px 7px; color: var(--dsw-alias-label-secondary); cursor: pointer; font: inherit; font-size: 12px; line-height: 20px; }
+/* One compact toolbar entry; model rows keep their height inside the scrollable editor. */
+.trigger { display: inline-flex; flex: none; align-items: center; gap: 3px; width: 72px; max-width: 72px; box-sizing: border-box; border: 0; border-radius: 8px; background: transparent; padding: 4px; color: var(--dsw-alias-label-secondary); cursor: pointer; font: inherit; font-size: 11px; line-height: 20px; white-space: nowrap; }
+.trigger > svg { flex: none; }
+.trigger > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .trigger:hover, .trigger[aria-expanded='true'] { background: var(--dsw-alias-interactive-bg-hover); }
 .trigger:disabled { cursor: default; opacity: .5; }
-.kind { flex: none; }
-.summary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.panel { position: fixed; z-index: 1100; width: min(420px, calc(100vw - 24px)); max-height: min(640px, calc(100dvh - 48px - var(--dsh-frame-top-clearance, 0px))); display: flex; flex-direction: column; overflow: hidden; padding: 0; color: var(--dsw-alias-label-primary); font-size: 13px; }
-.header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; flex: none; }
-.body { overflow: auto; min-height: 0; padding: 0 12px 12px; display: flex; flex-direction: column; gap: 10px; }
-.note { color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 18px; margin: 0; overflow-wrap: anywhere; }
-.warning { color: var(--dsw-alias-label-primary); background: var(--dsw-alias-interactive-bg-hover); border-radius: 8px; padding: 8px; margin: 0; font-size: 12px; overflow-wrap: anywhere; }
-.warning p { margin: 0 0 6px; }
+.panel { position: fixed; z-index: 1100; width: min(380px, calc(100vw - 24px)); max-height: min(600px, calc(100dvh - 48px - var(--dsh-frame-top-clearance, 0px))); display: flex; flex-direction: column; overflow: hidden; padding: 0; color: var(--dsw-alias-label-primary); font-size: 13px; }
+.header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 12px 4px; flex: none; }
+.header strong { font-weight: 500; }
+.tabs { flex: none; margin: 4px 12px 8px; }
+.tabLabel { display: inline-flex; align-items: center; gap: 4px; }
+.tabLabel small { font-size: 10px; color: var(--dsw-alias-label-secondary); }
+.dirty { color: var(--dsw-alias-label-secondary); }
+.body { overflow: auto; min-height: 0; padding: 0 12px 12px; display: flex; flex-direction: column; gap: 8px; }
+.note { color: var(--dsw-alias-label-secondary); font-size: 11px; line-height: 16px; margin: 0; overflow-wrap: anywhere; }
+.warning { color: var(--dsw-alias-label-primary); background: var(--dsw-alias-interactive-bg-hover); border-radius: 8px; padding: 8px; margin: 0; font-size: 12px; overflow-wrap: anywhere; display: flex; align-items: center; justify-content: space-between; gap: 6px; }
 .models { flex: none; max-height: 184px; overflow: auto; display: flex; flex-direction: column; gap: 3px; }
 .model { flex: none; display: flex; flex-direction: column; align-items: flex-start; gap: 3px; padding: 8px; border: 0; border-radius: 8px; background: transparent; color: inherit; font: inherit; text-align: start; cursor: pointer; overflow-wrap: anywhere; }
 .model small { color: var(--dsw-alias-label-secondary); font-size: 11px; }
 .model:hover, .model[aria-pressed='true'] { background: var(--dsw-alias-interactive-bg-hover); }
 .model[aria-pressed='true'] { outline: 1px solid var(--dsw-alias-label-tertiary); outline-offset: -1px; }
-.parameters { display: flex; flex-direction: column; gap: 9px; }
-.parameters h4 { font-size: 13px; margin: 2px 0 0; }
-.field { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: center; gap: 12px; }
-.field select { min-width: 0; max-width: 100%; background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); border: 0; border-radius: 6px; padding: 6px; font: inherit; }
-.footer { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border-top: 1px solid var(--dsw-alias-label-quaternary); }
-
-.header strong { font-weight: 500; }
-
-.price { flex: none; max-width: min(250px, calc(100vw - 100px)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-variant-numeric: tabular-nums; }
-.trigger > svg { flex: none; }
+.price { flex: none; max-width: min(240px, calc(100vw - 100px)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-variant-numeric: tabular-nums; }
 .modelLine { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; max-width: 100%; }
 .modelLine > span:first-child { overflow-wrap: anywhere; }
 .currentPrice { margin: 0; color: var(--dsw-alias-label-primary); font-size: 12px; line-height: 18px; font-variant-numeric: tabular-nums; }
+.parameters { display: flex; flex-direction: column; gap: 8px; }
+.field { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: center; gap: 12px; }
+.field select { min-width: 0; max-width: 100%; background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); border: 0; border-radius: 6px; padding: 6px; font: inherit; }
+.footer { flex: none; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--dsw-alias-label-quaternary); }
+.actions { display: flex; gap: 4px; margin-inline-start: auto; }
+.invalid { flex-basis: 100%; font-size: 12px; color: var(--dsw-alias-label-primary); margin: 0; }

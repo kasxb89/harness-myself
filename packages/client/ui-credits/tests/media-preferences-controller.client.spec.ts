@@ -55,7 +55,7 @@ describe('root composer preference lifetime', () => {
     completes[1]?.({ ok: true, reply: other }); await settle()
     const save = root.savePreference('image', { model: 'picture', parameters: {} })
     account.set({ ...account.getSnapshot(), accountEpoch: 3, session: { signedIn: false, creditsPerYuan: 1000 } })
-    completes[3]?.({ ok: true, reply: { ...other, preferences: { ...other.preferences, image: { model: 'picture', parameters: {} } } } })
+    completes[2]?.({ ok: true, reply: { ...other, preferences: { ...other.preferences, image: { model: 'picture', parameters: {} } } } })
     expect(await save).toBe(false)
     expect(root.hooks.mediaPreferences.getSnapshot()).toMatchObject({ identity: null, saved: null, catalog: null })
     stop()
@@ -70,14 +70,14 @@ describe('restored personal model display', () => {
   defaults: { image: { model: null, configured: false, available: false },
     video: { model: 'ycapi-video-one', configured: true, available: true } } }
 
-  it('restores saved metadata first, then coalesces a background directory read for the friendly name', async () => {
+  it('restores local metadata without a directory read and coalesces an explicit editor directory read', async () => {
     let finish: ((value: Awaited<ReturnType<typeof requestPreferences>>) => void) | undefined
     const transport = vi.fn<typeof requestPreferences>(async operation => operation === 'catalog'
       ? new Promise((resolve) => { finish = resolve }) : { ok: true, reply: personal })
     const root = createMediaPreferences(source(), 20_000, transport)
     const stop = root.start(); await settle()
-    expect(transport.mock.calls.map(([operation]) => operation)).toEqual(['read', 'catalog'])
-    expect(root.hooks.mediaPreferences.getSnapshot()).toMatchObject({ saved: personal.preferences, catalog: null, loading: true })
+    expect(transport.mock.calls.map(([operation]) => operation)).toEqual(['read'])
+    expect(root.hooks.mediaPreferences.getSnapshot()).toMatchObject({ saved: personal.preferences, catalog: null, loading: false })
     expect(root.promptHint()).toEqual({ scope: personal.preferences.scope, revision: personal.preferences.revision, accountOwner: owner })
     const first = root.loadCatalog()
     const second = root.loadCatalog()
@@ -90,29 +90,22 @@ describe('restored personal model display', () => {
     stop()
   })
 
-  it('reads the directory once in the background for platform defaults without delaying text metadata', async () => {
-    let signal: AbortSignal | undefined
-    const transport = vi.fn<typeof requestPreferences>(async (operation, ownerSignal) => {
-      if (operation === 'catalog') {
-        signal = ownerSignal
-        return new Promise(() => {})
-      }
-      return { ok: true, reply: initial }
-    })
+  it('does not read a remote directory while unopened and platform defaults do not delay text metadata', async () => {
+    const transport = vi.fn<typeof requestPreferences>(async () => ({ ok: true, reply: initial }))
     const root = createMediaPreferences(source(), 20_000, transport)
     const stop = root.start(); await settle()
-    expect(transport.mock.calls.map(([operation]) => operation)).toEqual(['read', 'catalog'])
+    expect(transport.mock.calls.map(([operation]) => operation)).toEqual(['read'])
     expect(root.promptHint()).toBeUndefined()
-    expect(root.hooks.mediaPreferences.getSnapshot()).toMatchObject({ saved: initial.preferences, catalog: null, loading: true })
+    expect(root.hooks.mediaPreferences.getSnapshot()).toMatchObject({ saved: initial.preferences, catalog: null, loading: false })
     stop()
-    expect(signal?.aborted).toBe(true)
   })
 
-  it('retains confirmed metadata when the background directory fails without blocking later text context', async () => {
+  it('retains confirmed metadata when an explicit directory read fails without blocking later text context', async () => {
     const transport = vi.fn<typeof requestPreferences>(async operation => operation === 'catalog'
       ? { ok: false, failure: 'network' } : { ok: true, reply: personal })
     const root = createMediaPreferences(source(), 20_000, transport)
     const stop = root.start(); await settle()
+    await root.loadCatalog()
     expect(root.hooks.mediaPreferences.getSnapshot()).toMatchObject({ saved: personal.preferences, failure: 'network' })
     expect(root.promptHint()).toEqual({ scope: personal.preferences.scope, revision: personal.preferences.revision, accountOwner: owner })
     stop()
@@ -138,6 +131,8 @@ describe('restored personal model display', () => {
     })
     const root = createMediaPreferences(account, 20_000, transport)
     const stop = root.start(); await settle()
+    void root.loadCatalog()
+    await settle()
     expect(transport.mock.calls.map(([operation]) => operation)).toEqual(['read', 'catalog'])
     account.set({ ...account.getSnapshot(), accountEpoch: 2,
       session: { signedIn: true, creditsPerYuan: 1000, account: { id: '8', phone: 'other' }, accountOwner: other.accountOwner } })
@@ -146,7 +141,7 @@ describe('restored personal model display', () => {
     finish?.({ ok: true, reply: { ...personal, catalog: directory } }); await settle()
     expect(root.hooks.mediaPreferences.getSnapshot()).toMatchObject({ saved: other.preferences, catalog: null, loading: false })
     expect(root.promptHint()).toBeUndefined()
-    expect(transport.mock.calls.filter(([operation]) => operation === 'catalog')).toHaveLength(2)
+    expect(transport.mock.calls.filter(([operation]) => operation === 'catalog')).toHaveLength(1)
     stop()
   })
 
@@ -174,6 +169,8 @@ describe('restored personal model display', () => {
     })
     const root = createMediaPreferences(source(), 20_000, transport)
     const stop = root.start(); await settle()
+    void root.loadCatalog()
+    await settle()
     expect(transport.mock.calls.map(([operation]) => operation)).toEqual(['read', 'catalog'])
     expect(await root.savePreference('video', personal.preferences.video)).toBe(true)
     expect(signal?.aborted).toBe(true)
@@ -184,4 +181,25 @@ describe('restored personal model display', () => {
     expect(root.promptHint()?.revision).toBe(updated.preferences.revision)
     stop()
   })
+})
+
+it('saves both reviewed kinds with one CAS and publishes them only after acknowledgement', async () => {
+  let finish: ((value: Awaited<ReturnType<typeof requestPreferences>>) => void) | undefined
+  const choices = { image: { model: 'picture', parameters: { size: '1:1' } }, video: { model: 'h3', parameters: { resolution: '768P' } } }
+  const transport = vi.fn<typeof requestPreferences>(async operation => operation === 'save'
+    ? new Promise((resolve) => { finish = resolve }) : { ok: true, reply: initial })
+  const root = createMediaPreferences(source(), 20_000, transport)
+  const stop = root.start(); await settle()
+  const pending = root.savePreferences(choices)
+  expect(root.hooks.mediaPreferences.getSnapshot().saved).toEqual(initial.preferences)
+  expect(root.promptHint()).toBeUndefined()
+  expect(transport.mock.calls.filter(([operation]) => operation === 'save')).toHaveLength(1)
+  expect(transport.mock.calls.find(([operation]) => operation === 'save')?.[2]).toMatchObject({
+    schema_version: 1, expected_account_owner: owner, expected_revision: initial.preferences.revision, ...choices,
+  })
+  finish?.({ ok: true, reply: { ...initial, preferences: { ...initial.preferences, revision: 'f'.repeat(64), ...choices } } })
+  expect(await pending).toBe(true)
+  expect(root.hooks.mediaPreferences.getSnapshot().saved).toMatchObject(choices)
+  expect(root.promptHint()?.revision).toBe('f'.repeat(64))
+  stop()
 })

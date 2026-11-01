@@ -112,49 +112,66 @@ it('saves personal image and video defaults, restores them after reload and mark
   const evidence = await mkdtemp(join(evidenceBase, 'chat-media-preferences-'))
   await page.goto(scaffold.authenticatedUrl, { waitUntil: 'load' })
   await connectFreshWorkspaceZh(page, scaffold.workspaceCwd)
-  for (const [kind, title] of [['image', '图片生成偏好'], ['video', '视频生成偏好']] as const) {
+  const settings = page.getByRole('button', { name: '图片/视频默认偏好', exact: true })
+  expect(await settings.count()).toBe(1)
+  expect(await page.getByRole('button', { name: '图片生成偏好', exact: true }).count()).toBe(0)
+  expect(await page.getByRole('button', { name: '视频生成偏好', exact: true }).count()).toBe(0)
+  await settings.click()
+  const editor = page.getByRole('dialog', { name: '创作偏好', exact: true })
+  const draftPrices: { image?: string; video?: string } = {}
+  for (const [kind, tab] of [['image', '图片'], ['video', '视频']] as const) {
     const candidate = chosen[kind]
     const unit = kind === 'image' ? '积分/张' : '积分/秒'
     expect(candidate.pricing?.credits_per_yuan).toBe('1250')
     for (const row of candidate.pricing?.rows ?? []) {
       expect(expectedPoints[candidate.id]?.some(point => point.points === row.points)).toBe(true)
     }
-    await page.getByRole('button', { name: title, exact: true }).click()
-    const dialog = page.getByRole('dialog', { name: title, exact: true })
-    await dialog.getByRole('textbox', { name: '搜索型号', exact: true }).fill(candidate.id)
-    await dialog.getByRole('button', { name: `${candidate.displayName} ${candidate.id}`, exact: true }).click()
-    expect(await dialog.getByRole('button', { name: `${candidate.displayName} ${candidate.id}`, exact: true }).innerText()).toContain(unit)
+    await editor.getByRole('tab', { name: tab, exact: true }).click()
+    await editor.getByRole('textbox', { name: '搜索型号', exact: true }).fill(candidate.id)
+    const model = editor.getByRole('button', { name: `${candidate.displayName} ${candidate.id}`, exact: true })
+    await model.click()
+    expect(await model.innerText()).toContain(unit)
     const spec = candidate.params.specifications?.[0]
-    for (const [field, label] of [['size', '尺寸'], ['resolution', '分辨率'], ['ratio', '画幅'], ['seconds', '默认单段时长'], ['quality', '质量'], ['mode', '生成模式']] as const) {
+    for (const [field, label] of [['size', '尺寸'], ['resolution', '分辨率'], ['ratio', '画幅'],
+      ['seconds', '单段时长'], ['quality', '质量'], ['mode', '模式']] as const) {
       if (spec?.[field] === undefined) continue
-      const select = dialog.getByRole('combobox', { name: label, exact: true })
+      const select = editor.getByRole('combobox', { name: label, exact: true })
       if (await select.count() > 0 && await select.isEnabled()) await select.selectOption(JSON.stringify(spec[field]))
     }
-    await expect.poll(() => dialog.getByRole('button', { name: '保存偏好', exact: true }).isEnabled(), { timeout: 10_000 }).toBe(true)
-    const draftPrice = await dialog.getByRole('status').filter({ hasText: unit }).innerText()
+    await expect.poll(() => editor.getByRole('button', { name: '保存', exact: true }).isEnabled(), { timeout: 10_000 }).toBe(true)
+    const draftPrice = await editor.getByRole('status').filter({ hasText: unit }).innerText()
     expect(draftPrice).not.toContain('待核价')
+    draftPrices[kind] = draftPrice
     await page.screenshot({ path: join(evidence, `${kind}-light.png`), animations: 'disabled' })
-    const save = page.waitForResponse(response => new URL(response.url()).pathname === '/credits/api/media/preferences' && response.request().method() === 'PUT')
-    await dialog.getByRole('button', { name: '保存偏好', exact: true }).click()
-    const savedResponse = await save
-    expect(savedResponse.ok()).toBe(true)
-    const acknowledged = await savedResponse.json() as { payload: MediaPreferencesCatalog }
-    await dialog.waitFor({ state: 'detached' })
-    expect(await page.getByRole('button', { name: title, exact: true }).innerText()).toContain(candidate.displayName)
-    expect(await page.getByRole('button', { name: title, exact: true }).innerText()).toContain(unit)
-    const fields = acknowledged.payload[kind]!.parameters
+  }
+  await editor.getByRole('tab', { name: '图片', exact: true }).click()
+  expect(await editor.getByRole('button', { name: `${chosen.image.displayName} ${chosen.image.id}`, exact: true })
+    .getAttribute('aria-pressed')).toBe('true')
+  const beforeSave = await (await scaffold.hostFetch('/credits/api/media/preferences')).json() as { payload: MediaPreferencesCatalog }
+  expect(beforeSave.payload.image).toBe(null); expect(beforeSave.payload.video).toBe(null)
+  const save = page.waitForResponse(response => new URL(response.url()).pathname === '/credits/api/media/preferences'
+    && response.request().method() === 'PUT')
+  await editor.getByRole('button', { name: '保存', exact: true }).click()
+  expect((await save).ok()).toBe(true)
+  await editor.waitFor({ state: 'detached' })
+  const saved = await (await scaffold.hostFetch('/credits/api/media/preferences')).json() as { payload: MediaPreferencesCatalog }
+  expect(saved.payload.image?.model).toBe(chosen.image.id)
+  expect(saved.payload.video?.model).toBe(chosen.video.id)
+  for (const kind of ['image', 'video'] as const) {
+    const candidate = chosen[kind], fields = saved.payload[kind]!.parameters
     const matches = candidate.pricing!.rows.filter(row => Object.entries(fields).every(([field, value]) =>
       row.parameters[field] === undefined || row.parameters[field] === value))
     const displays = new Set(matches.flatMap(row =>
       expectedPoints[candidate.id]?.filter(point => point.points === row.points).map(point => point.display) ?? []))
+    const draftPrice = draftPrices[kind]!
     const displayedNumbers = draftPrice.match(/[0-9][0-9,]*(?:\.[0-9]+)?/gu) ?? []
     expect(displayedNumbers.length).toBeGreaterThan(0)
     for (const amount of displayedNumbers) expect(displays.has(amount)).toBe(true)
-    priceWitnesses.push({ kind, model: candidate.id, unit, parameters: fields, draftPrice, displayedNumbers })
+    priceWitnesses.push({ kind, model: candidate.id, parameters: fields, draftPrice, displayedNumbers })
   }
-  const saved = await (await scaffold.hostFetch('/credits/api/media/preferences')).json() as { payload: MediaPreferencesCatalog }
-  expect(saved.payload.image?.model).toBe(chosen.image.id)
-  expect(saved.payload.video?.model).toBe(chosen.video.id)
+  const textModel = page.getByRole('button', { name: /^(?:请选择模型|选择模型)/u })
+  expect(await textModel.evaluate(element => element.closest('[data-model-compact]') === null)).toBe(true)
+  expect((await settings.boundingBox())!.width).toBeLessThanOrEqual(90)
   const settled = scaffold.whenTurnSettled(30_000)
   const composer = page.locator('[data-composer-input][contenteditable="true"]').last()
   await composer.fill('生成一张蓝色圆形的图片，使用我保存的默认参数')
@@ -172,15 +189,23 @@ it('saves personal image and video defaults, restores them after reload and mark
   expect(selection.image).toEqual(saved.payload.image)
   expect(selection.video).toEqual(saved.payload.video)
   await page.reload({ waitUntil: 'load' })
-  await expect.poll(() => page.getByRole('button', { name: '视频生成偏好', exact: true }).innerText(), { timeout: 10_000 }).toContain(chosen.video.displayName)
+  await settings.waitFor()
+  await settings.click()
+  const restored = page.getByRole('dialog', { name: '创作偏好', exact: true })
+  await restored.getByRole('tab', { name: '视频', exact: true }).click()
+  await expect.poll(() => restored.getByRole('button', { name: `${chosen.video.displayName} ${chosen.video.id}`, exact: true })
+    .getAttribute('aria-pressed'), { timeout: 10_000 }).toBe('true')
+  await restored.getByRole('button', { name: '取消', exact: true }).click()
+  await restored.waitFor({ state: 'detached' })
   const collapsePreview = page.getByRole('button', { name: '收起右侧边栏', exact: true })
   if (await collapsePreview.count() > 0) await collapsePreview.click()
   await page.screenshot({ path: join(evidence, 'composer-saved.png'), animations: 'disabled' })
   const geometry: unknown[] = []
   for (const [theme, width] of [['dark', 1440], ['light', 580]] as const) {
     await page.emulateMedia({ colorScheme: theme }); await page.setViewportSize({ width, height: 900 })
-    await page.getByRole('button', { name: '视频生成偏好', exact: true }).click()
-    const dialog = page.getByRole('dialog', { name: '视频生成偏好', exact: true }); await dialog.waitFor()
+    await settings.click()
+    const dialog = page.getByRole('dialog', { name: '创作偏好', exact: true }); await dialog.waitFor()
+    await dialog.getByRole('tab', { name: '视频', exact: true }).click()
     await expect.poll(() => dialog.evaluate(element => getComputedStyle(element).visibility), { timeout: 10_000 }).toBe('visible')
     const rect = await dialog.boundingBox()
     expect(rect).not.toBe(null)
@@ -192,11 +217,12 @@ it('saves personal image and video defaults, restores them after reload and mark
     if (width === 580) await page.screenshot({ path: join(evidence, 'composer-580-closed.png'), animations: 'disabled' })
   }
   hidden = saved.payload.video!.model
-  await page.getByRole('button', { name: '视频生成偏好', exact: true }).click()
-  const dialog = page.getByRole('dialog', { name: '视频生成偏好', exact: true })
+  await settings.click()
+  const dialog = page.getByRole('dialog', { name: '创作偏好', exact: true })
+  await dialog.getByRole('tab', { name: '视频', exact: true }).click()
   await expect.poll(() => dialog.innerText(), { timeout: 10_000 }).toContain('不可用')
   await dialog.getByRole('button').filter({ hasText: '跟随平台默认' }).click()
-  await dialog.getByRole('button', { name: '保存偏好', exact: true }).click(); await dialog.waitFor({ state: 'detached' })
+  await dialog.getByRole('button', { name: '保存', exact: true }).click(); await dialog.waitFor({ state: 'detached' })
   const reset = await (await scaffold.hostFetch('/credits/api/media/preferences')).json() as { payload: MediaPreferencesCatalog }
   expect(reset.payload.video).toBe(null); expect(reset.payload.image).toEqual(saved.payload.image)
   expect(forbidden).toEqual([]); expect(tripwire.pageErrors).toEqual([])

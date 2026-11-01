@@ -14,11 +14,19 @@ export interface MediaPreferenceView {
 }
 /** The metadata admitted with the next ordinary user submission. */
 export interface MediaPreferenceHint { readonly scope: string; readonly revision: string; readonly accountOwner: string }
+/** The two selections reviewed together in the compact editor. */
+export interface MediaPreferenceChoices { readonly image: MediaSelection | null; readonly video: MediaSelection | null }
 /** Account-owned transport callbacks and view source injected into the slot. */
 export interface MediaPreferencesInjected {
   readonly hooks: { readonly mediaPreferences: ObservableSnapshot<MediaPreferenceView> }
-  /** Load the authorized directory after restoring preferences or an explicit open or retry. */
+  /** Load the authorized directory only after an explicit open or retry. */
   readonly loadCatalog: () => Promise<void>
+  /**
+   * Save both reviewed kinds with one owner- and revision-checked write.
+   * @param choices - Complete editor draft.
+   * @returns True after the Host acknowledges both selections.
+   */
+  readonly savePreferences: (choices: MediaPreferenceChoices) => Promise<boolean>
   /**
    * Save one kind with the last confirmed revision.
    * @param kind - Selector being edited.
@@ -75,14 +83,11 @@ export function createMediaPreferences(source: ObservableSnapshot<CreditsSnapsho
     read = controller
     const key = generation
     const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(timeoutMs)])
-    let restoreCatalog = false
     publish({ loading: true, failure: null })
     try {
-      const accepted = accept(await request(catalog ? 'catalog' : 'read', signal), key, controller.signal, catalog)
-      restoreCatalog = !catalog && accepted
+      accept(await request(catalog ? 'catalog' : 'read', signal), key, controller.signal, catalog)
     }
     finally { if (current(key, controller.signal)) publish({ loading: false }); if (read === controller) read = undefined }
-    if (restoreCatalog && current(key, controller.signal)) void loadCatalog()
   }
   const loadCatalog = (): Promise<void> => {
     if (catalogPending !== undefined) return catalogPending
@@ -103,21 +108,27 @@ export function createMediaPreferences(source: ObservableSnapshot<CreditsSnapsho
       saved: null, catalog: null, loading: false, saving: false, failure: null })
     if (next !== null) void operation(false)
   }
+  const savePreferences = async (choices: MediaPreferenceChoices): Promise<boolean> => {
+    const state = view.getSnapshot()
+    if (!active || login === null || state.saved === null || state.saving) return false
+    read?.abort(); read = undefined; catalogPending = undefined
+    const controller = new AbortController()
+    write = controller
+    const key = generation
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(timeoutMs)])
+    const body = { schema_version: 1, expected_account_owner: login.owner, expected_revision: state.saved.revision,
+      image: choices.image, video: choices.video }
+    publish({ saving: true, loading: false, failure: null })
+    try { return accept(await request('save', signal, body), key, controller.signal, false) }
+    finally { if (current(key, controller.signal)) publish({ saving: false }); if (write === controller) write = undefined }
+  }
   return {
-    hooks: { mediaPreferences: view }, loadCatalog,
+    hooks: { mediaPreferences: view }, loadCatalog, savePreferences,
     savePreference: async (kind, selection) => {
-      const state = view.getSnapshot()
-      if (!active || login === null || state.saved === null || state.saving) return false
-      read?.abort(); read = undefined; catalogPending = undefined
-      const controller = new AbortController()
-      write = controller
-      const key = generation
-      const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(timeoutMs)])
-      const body = { schema_version: 1, expected_account_owner: login.owner, expected_revision: state.saved.revision,
-        image: kind === 'image' ? selection : state.saved.image, video: kind === 'video' ? selection : state.saved.video }
-      publish({ saving: true, loading: false, failure: null })
-      try { return accept(await request('save', signal, body), key, controller.signal, false) }
-      finally { if (current(key, controller.signal)) publish({ saving: false }); if (write === controller) write = undefined }
+      const saved = view.getSnapshot().saved
+      if (saved === null) return false
+      return savePreferences({ image: kind === 'image' ? selection : saved.image,
+        video: kind === 'video' ? selection : saved.video })
     },
     promptHint: () => {
       const saved = view.getSnapshot().saved

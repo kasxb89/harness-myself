@@ -89,6 +89,7 @@ export function apply(ctx: ClientContext, config: Config = {}): void {
     scope.slots.inject('conversation.input.right', () => scope.slots.register({
       name: 'conversation.input.right', id: 'media-preferences', order: 20, locale: NS,
       inject: sessionId => ({ hooks: media.hooks, loadCatalog: media.loadCatalog, savePreference: media.savePreference,
+        savePreferences: media.savePreferences,
         available: scope.sessions.subagentAddress(sessionId) === undefined }),
     }, ChatMediaPreferences))
   })
