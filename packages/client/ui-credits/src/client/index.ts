@@ -21,6 +21,8 @@ import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-store'
 import { createCreditsSessionSource, type CreditsSnapshot } from './session-store.ts'
 import { SessionModelCredits, TurnModelCredits, type ModelCreditsInjected } from './ModelCredits.tsx'
 import { BalanceNotice, type BalanceNoticeInjected } from './BalanceNotice.tsx'
+import { createOnboardingSurvey } from './onboarding-survey-store.ts'
+import { OnboardingSurvey, OnboardingSurveyEntry } from './OnboardingSurvey.tsx'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -91,6 +93,14 @@ export function apply(ctx: ClientContext, config: Config = {}): void {
   ctx.slots.inject('conversation.chat.turnTail', () => ctx.slots.register({
     name: 'conversation.chat.turnTail', id: 'model-credits', order: 10, locale: NS, inject: modelCredits,
   }, TurnModelCredits))
+  const { start: startSurvey, ...survey } = createOnboardingSurvey(ctx.creditsSession)
+  ctx.effect(() => startSurvey(), 'ui-credits: onboarding survey lifecycle')
+  ctx.slots.inject('shell.overlay', () => ctx.slots.register({
+    name: 'shell.overlay', id: 'onboarding-survey', locale: NS, inject: () => survey,
+  }, OnboardingSurvey))
+  ctx.slots.inject('credits.onboarding-entry', () => ctx.slots.register({
+    name: 'credits.onboarding-entry', locale: NS, inject: () => survey,
+  }, OnboardingSurveyEntry))
   const guide = createWorkspaceGuide()
   ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
     name: 'conversation.input.dock', id: 'workspace-guide', order: 100, locale: NS,
@@ -114,6 +124,7 @@ export function apply(ctx: ClientContext, config: Config = {}): void {
       name: 'main',
       key: PANEL_ID,
       locale: NS,
+      children: { 'credits.onboarding-entry': { kind: 'single', scope: 'root' } },
       inject: (): CreditsPageInjected => face,
     }, CreditsPage)
     // Consume the native welcome's launch request once, after its page exists.

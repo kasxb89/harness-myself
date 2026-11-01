@@ -11,7 +11,7 @@ import {
   Button, IconChecklistOutlineRegular, IconChevronRightOutlineRegular, IconPlusOutlineRegular,
   IconRefreshOutlineRegular, IconShieldOutlineRegular, IconUserOutlineRegular, Input,
 } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import type { PropsRenderSlots, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { grouped, newPhoneKey, post } from './api.ts'
 import { phoneFailureKey } from './phone-sign-in.ts'
 import { CreditsPanelIcon } from './CreditsPanelIcon.tsx'
@@ -45,7 +45,7 @@ interface SessionResponse {
   readonly registration_bonus?: { readonly status: string; readonly points: number }
 }
 
-export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected): ReactNode {
+export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected & PropsRenderSlots<'credits.onboarding-entry'>): ReactNode {
   const { t, openRecharge, completeSignIn, signOutTimeoutMs } = props
   const { session, balance, loaded, accountEpoch, failure: readFailure, readFailure: readDetail, refreshing } = useCreditsSnapshot()
   const [notice, setNotice] = useState<string | null>(null)
@@ -313,6 +313,7 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected): 
         )}
       </header>
       <p className={css.hint}>{t('activityNotice')}</p>
+      {signedIn && props.renderSlot('credits.onboarding-entry', {})}
 
       {canSignOut && failure !== null && <p className={css.banner} data-tone="error" role="alert">{failure}</p>}
       {currentReadFailure !== null && <div className={css.banner} data-tone="error" role="alert">

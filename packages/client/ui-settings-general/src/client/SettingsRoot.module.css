@@ -9,6 +9,7 @@
 }
 
 .sectionTabs {
+  flex: none;
   margin-bottom: 20px;
   max-width: 440px;
 }
@@ -238,6 +239,18 @@
   min-height: 0;
   padding: 0 24px 24px;
   overflow-y: auto;
+}
+
+/* The market owns scrolling and pagination inside its height-bound viewport. */
+.marketOptions {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.marketSection {
+  flex: 1;
+  min-height: 0;
 }
 
 /* Visually-hidden text seat (close button accessible name from slot content). */

@@ -1,0 +1,19 @@
+# Bilingual-pair consistency record for 2026-11-01-server-owned-registration-surveys.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-11-01-server-owned-registration-surveys.md
+/agent-note-bind-registration-surveys-to-server-owned-enrollment:
+  en: 1f2ab4a45aae9aed
+  zh: 912c3e74937cbb34
+/agent-note-bind-registration-surveys-to-server-owned-enrollment/problem:
+  en: d29ab311c601062c
+  zh: 0833cbb759174eed
+/agent-note-bind-registration-surveys-to-server-owned-enrollment/decision:
+  en: 0c4f9bf5da0baa87
+  zh: 0638f714efb75934
+/agent-note-bind-registration-surveys-to-server-owned-enrollment/alternatives-considered:
+  en: d542d75fa515081a
+  zh: 779df72c683e6538
+/agent-note-bind-registration-surveys-to-server-owned-enrollment/consequences:
+  en: 36927d4bf13ad036
+  zh: 2a3602ae57bc6e68

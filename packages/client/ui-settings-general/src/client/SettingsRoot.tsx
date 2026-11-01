@@ -103,11 +103,12 @@ function SettingsPanel({ rows, renderSlot, activeId, onSelect, onClose }: PanelP
               <span className={css.hiddenLabel}>{renderSlot('settings.close', {})}</span>
             </button>
           </div>
-          <div className={css.options}>
+          <div className={clsx(css.options, active === 'skin-market' && css.marketOptions)}>
             {tabs.length > 1 && firstTab !== undefined && active !== undefined && <SegmentedTabs
               className={css.sectionTabs} items={[firstTab, ...tabItems.slice(1)]} value={active}
               onChange={onSelect} label={rows.find(row => row.id === parentId)?.label ?? firstTab.label} />}
-            <div id={`${sectionId}-panel`} role={tabs.length > 1 ? 'tabpanel' : undefined}
+            <div className={active === 'skin-market' ? css.marketSection : undefined}
+              id={`${sectionId}-panel`} role={tabs.length > 1 ? 'tabpanel' : undefined}
               aria-labelledby={tabs.length > 1 ? `${sectionId}-${active}` : undefined}>
               {active !== undefined && renderSlot('settings.section', { close: onClose }, { only: active })}
             </div>

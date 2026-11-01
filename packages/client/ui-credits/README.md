@@ -43,6 +43,12 @@ The displayed account and its verified login owner bind every new order and stat
 
 The recharge page optionally shows dated, same-specification model prices against official references supplied by the configured Host. Comparisons use default platform prices, not the selected recharge amount or a promise of the current account's final price. Input and output remain separate, and video prices use seconds. Users can expand the model and specification details, source, conditions and check date; decimal arithmetic rounds discount claims conservatively. Missing official metadata and older Hosts produce no promotional claim. Account changes discard late reads, and an unavailable comparison offers a local retry without affecting payment or generation.
 
+### Registration survey
+
+Only a current account's server-confirmed pending enrollment opens the use-case survey after phone registration. Existing accounts, deferred surveys and submitted surveys do not open automatically. Users can select multiple scenarios and optionally add up to 1,000 Unicode characters. Later closes the dialog without blocking the product, and a wallet entry resumes a deferred questionnaire. Submitted surveys remain complete across devices according to the API record; the client never infers new registration from local first use or a bonus.
+
+A root-owned controller outlives the sign-in page and clears drafts and late responses when account ownership changes. An unconfirmed submission first queries the current account's canonical survey; if that read also fails, it keeps the exact draft locked until an explicit recheck. Closing that dialog retains a working wallet entry and does not repeat the submission. An older Host or API without survey support leaves ordinary sign-in and use available.
+
 ### Usage analytics
 
 Today, seven-day and thirty-day periods use Asia/Shanghai calendar days through the query time. A model filter applies to the consumption, billing-record and token totals, daily trend, model ranking and equivalent detail tables. A failed refresh keeps the last successful values for the same period and marks them as an earlier reading. Rate-limit responses show the server's retry delay and disable refresh and period changes until it expires. Changing the period clears the previous values while loading. Account changes unmount the previous account's analysis, and late responses cannot replace the current selection.

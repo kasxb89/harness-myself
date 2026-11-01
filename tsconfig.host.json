@@ -8,6 +8,8 @@
     "rewriteRelativeImportExtensions": false
   },
   "include": [
+    "apps/web/tests/onboarding-survey.e2e.ts",
+    "apps/web/tests/skin-market-scroll.e2e.ts",
     "apps/web/tests/recharge-price-comparison.e2e.ts",
     "apps/web/tests/creation-entry-isolation.e2e.ts",
     "apps/web/tests/independent-generation-requests.e2e.ts",

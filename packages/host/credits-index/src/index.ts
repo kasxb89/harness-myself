@@ -52,6 +52,7 @@ import type { CreationTaskObserver } from './creation-activity.ts'
 import { readAnnouncements } from './announcements.ts'
 import { readPriceComparisons } from './price-comparisons.ts'
 import { readCustomerSupport } from './customer-support.ts'
+import { parseSurveyRequest, readOnboardingSurvey } from './onboarding-survey.ts'
 import { ClientToolErrorReporter, type ClientToolErrorAccount } from './client-tool-errors.ts'
 import { parseUsageWindow, readAccountUsage } from './usage.ts'
 import { ChatUsageReader, parseChatUsageQuery } from './chat-usage-reader.ts'
@@ -979,6 +980,12 @@ export function apply(ctx: Context, config: Config): void {
     publicStatusLife.abort()
     await Promise.allSettled([...publicStatusReads])
   }, 'credits-index: public status presentation reads')
+  const surveyLife = new AbortController()
+  const surveyOperations = new Set<Promise<void>>()
+  ctx.effect(() => async () => {
+    surveyLife.abort()
+    await Promise.allSettled([...surveyOperations])
+  }, 'credits-index: account-owned onboarding survey')
   /** Launcher facts identify Desktop video traffic for diagnostics, never authorization. */
   const videoClientSource = (): 'desktop' | undefined => ctx.get('profileContext')?.name === 'desktop' ? 'desktop' : undefined
   const videoClientHeaders = (): Record<string, string> => videoClientSource() === 'desktop' ? { 'x-yunshu-client': 'desktop' } : {}
@@ -2916,6 +2923,75 @@ export function apply(ctx: Context, config: Config): void {
 
 
       try {
+        if (route === '/api/onboarding-survey' || route === '/api/onboarding-survey/defer') {
+          const connection = ctx.get('connection')
+          const rejected = connection === undefined ? 403 : connection.requestRejection(request)
+          if (rejected !== undefined) { json(response, rejected, { ok: false, code: 'SURVEY_HOST_AUTH_REQUIRED' }); return }
+          const defer = route.endsWith('/defer')
+          if (defer ? method !== 'POST' : method !== 'GET' && method !== 'POST') {
+            json(response, 405, { ok: false, code: 'METHOD_NOT_ALLOWED' }); return
+          }
+          const lifetime = new AbortController()
+          const disconnected = (): void => { lifetime.abort() }
+          const hasDisconnected = (): boolean => lifetime.signal.aborted || response.destroyed
+          response.once('close', disconnected)
+          const version = identityVersion
+          const signal = AbortSignal.any([surveyLife.signal, lifetime.signal, AbortSignal.timeout(resolved.timeoutMs)])
+          const operation = (async (): Promise<void> => {
+            const session = await liveSession()
+            if (hasDisconnected()) return
+            if (signal.aborted) {
+              json(response, 200, { ok: false, code: signal.reason instanceof DOMException && signal.reason.name === 'TimeoutError'
+                ? 'SURVEY_TIMEOUT' : 'SURVEY_NETWORK_ERROR' }); return
+            }
+            if (session?.upstream?.token === undefined) {
+              json(response, 200, { ok: false, code: 'SURVEY_AUTH_REQUIRED', httpStatus: 401 }); return
+            }
+            let body: string | undefined
+            if (method === 'POST') {
+              addAbortSignal(signal, request)
+              let input: Record<string, unknown>
+              try { input = await readJson(request) }
+              catch (_invalidRequest: unknown) {
+                if (!response.destroyed) json(response, 200, { ok: false, code: 'SURVEY_INVALID_REQUEST', httpStatus: 400 })
+                return
+              }
+              if (typeof input.expected_account_id !== 'string' || typeof input.expected_account_owner !== 'string'
+                || !/^[a-f\d]{64}$/u.test(input.expected_account_owner)) {
+                json(response, 200, { ok: false, code: 'SESSION_REFRESH_REQUIRED' }); return
+              }
+              if (input.expected_account_id !== session.account.id || input.expected_account_owner !== productOwner(session)) {
+                json(response, 200, { ok: false, code: 'ACCOUNT_CHANGED' }); return
+              }
+              const selected = parseSurveyRequest(input, defer)
+              if (selected === undefined) { json(response, 200, { ok: false, code: 'SURVEY_INVALID_REQUEST', httpStatus: 400 }); return }
+              body = JSON.stringify(selected)
+            }
+            if (!await rechargeOwnerCurrent(session, version)) {
+              if (!response.destroyed) json(response, 200, { ok: false, code: 'ACCOUNT_CHANGED' })
+              return
+            }
+            const outcome = await readOnboardingSurvey(async () => await accountFetch(session,
+              defer ? '/api/user/onboarding-survey/defer' : '/api/user/onboarding-survey', {
+                method, signal, headers: { accept: 'application/json', ...body === undefined ? {} : { 'content-type': 'application/json' } },
+                ...body === undefined ? {} : { body },
+              }), signal)
+            if (lifetime.signal.aborted || response.destroyed) return
+            const result = !await rechargeOwnerCurrent(session, version) ? { ok: false, code: 'ACCOUNT_CHANGED' }
+              : { ...outcome, ...outcome.ok ? { account: { id: session.account.id }, accountOwner: productOwner(session) } : {} }
+            json(response, 200, Buffer.byteLength(JSON.stringify(result), 'utf8') > 32 * 1024
+              ? { ok: false, code: 'SURVEY_INVALID_RESPONSE' } : result)
+          })().catch((error: unknown) => {
+            if (!lifetime.signal.aborted && !response.destroyed) {
+              const failure = accountReadFailure(signal.aborted ? signal.reason : error)
+              json(response, 200, version !== identityVersion ? { ok: false, code: 'ACCOUNT_CHANGED' }
+                : { ok: false, code: failure.reason === 'timeout' ? 'SURVEY_TIMEOUT' : 'SURVEY_NETWORK_ERROR', failure })
+            }
+          })
+          surveyOperations.add(operation)
+          try { await operation } finally { surveyOperations.delete(operation); response.off('close', disconnected) }
+          return
+        }
         if (route === '/api/price-comparisons') {
           const connection = ctx.get('connection')
           const rejected = connection === undefined ? 403 : connection.requestRejection(request)

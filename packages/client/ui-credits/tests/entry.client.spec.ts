@@ -168,7 +168,7 @@ describe('Credits launch entry', () => {
     const frame = await b.declare()
     expect(b.slots.entries('sidebar.footer.action')).toHaveLength(1)
     expect(b.slots.entries('conversation.input.dock').map(entry => entry.options.id)).toEqual(['workspace-guide'])
-    expect(b.slots.entries('shell.overlay').map(entry => entry.options.id)).toEqual(['workspace-guide-notice'])
+    expect(b.slots.entries('shell.overlay').map(entry => entry.options.id)).toEqual(['onboarding-survey', 'workspace-guide-notice'])
     expect(b.ctx.locale.bind('credits')('panel')).not.toBe('panel')
 
     await credits.dispose()

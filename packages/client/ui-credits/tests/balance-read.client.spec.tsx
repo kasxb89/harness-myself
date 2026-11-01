@@ -25,7 +25,8 @@ const wallet = (view: ReturnType<typeof render>) => within(view.getByRole('regio
 
 async function mountPage() {
   await refreshCredits(undefined, true)
-  const props = { t, openRecharge: vi.fn(), signOutTimeoutMs: 20_000, completeSignIn: vi.fn() } as Parameters<typeof CreditsPage>[0]
+  const props = { t, renderSlot: () => null, openRecharge: vi.fn(), signOutTimeoutMs: 20_000,
+    completeSignIn: vi.fn() } as Parameters<typeof CreditsPage>[0]
   const view = render(<CreditsPage {...props} />)
   await act(async () => {})
   return view

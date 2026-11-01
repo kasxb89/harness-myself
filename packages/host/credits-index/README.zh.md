@@ -121,6 +121,10 @@ Host 认证的 `GET /credits/api/customer-support` 独立于产品登录，从�
 
 经 Host 鉴权的 `GET /credits/api/price-comparisons` 读取匿名 `/api/pricing`，仅公开包含完整同单位 `official_reference` 元信息的默认零售价行。结果为 `{ ok: true, payload: { basis: 'default', models } }`；已登录响应还包含捕获的账号 ID 与 `accountOwner`。公开字段包括模型标识、标量规格、分别的输入输出方向、精确十进制价格、官方型号、来源、条件、汇率及核对日期；供应商成本、lane、计费表达式和其它 API 字段均排除。视频按人民币每秒展示。这些是公开默认报价，不代表账号调整后的报价或充值折扣。旧 API 缺少依据时不生成对比。无效行被省略；传输失败、不可用及文档无效保持为安全读取错误。完整输入和输出分别限制为 1 MiB。读取不发送产品凭据、不跟随重定向，在断开或卸载时停止，拒绝登录周期变化后的结果，不缓存对比数据。充值页只展示对比，不提交付款或生成。
 
+### 账号使用场景问卷
+
+经 Host 鉴权的 `GET /credits/api/onboarding-survey` 从 `/api/user/onboarding-survey` 读取当前账号的版本化问卷。只有 API 登记记录能够证明新手机号注册资格；本地首次登录、注册奖励和未完成的 MFA 验证都不会产生资格。成功响应包含已校验的公开问卷及捕获的 `account.id`、`accountOwner`。同路由的显式 `POST` 提交稳定选项 ID 和选填备注；`POST /credits/api/onboarding-survey/defer` 暂缓提醒，不阻挡产品使用。两种写入均要求渲染器提供预期账号 ID 和归属，Host 本地检查后不向 API 转发这些保护字段；账号身份只取当前已认证会话。备注统一换行及首尾空白，限制为 1000 个 Unicode 字符，选项顺序规范化；提交重放及冲突以 API 为准。Host 不自动修改问卷，不指定任意目标账号，响应限制为 32 KiB，断开或卸载时停止，并丢弃登录变化后的迟到结果。旧 API 返回 `SURVEY_UNSUPPORTED`；网络、超时、限流、认证与业务失败分别保留，问卷故障本身不会撤销登录。
+
 ### 实时生成活动
 
 经 Host 鉴权的 `GET /credits/api/generation-performance` 提供当前登录的有界进程内计时：实际模型尝试耗时、首个非空思考与正文分别耗时、所选推理设置、工具执行耗时。不保留请求、结果、思考正文、本地路径或凭据，不修改模型参数，也不把并行区间相加冒充端到端时间。`generationPerformanceMaxRecords` 限制内存记录数量；设为零关闭采集。
