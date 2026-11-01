@@ -90,8 +90,21 @@ it('shows dated same-specification discounts through Host HTTP without creating 
   expect(await comparison.innerText()).toContain('默认报价')
   expect(await comparison.innerText()).toContain('实际以提交时报价为准')
   expect(await comparison.innerText()).toContain('折')
+  const summaryBounds = await comparison.boundingBox()
+  expect(summaryBounds?.width).toBeGreaterThan(950)
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  await page.getByRole('heading', { name: '积分充值', exact: true }).scrollIntoViewIfNeeded()
+  await page.screenshot({ path: join(evidence, 'light-page.png'), animations: 'disabled' })
   await comparison.scrollIntoViewIfNeeded()
   await page.screenshot({ path: join(evidence, 'light-summary.png'), animations: 'disabled' })
+  await page.emulateMedia({ colorScheme: 'dark' })
+  await page.screenshot({ path: join(evidence, 'dark-summary.png'), animations: 'disabled' })
+  await page.emulateMedia({ colorScheme: 'light' })
+  await page.setViewportSize({ width: 580, height: 1100 })
+  await comparison.scrollIntoViewIfNeeded()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  await page.screenshot({ path: join(evidence, 'light-580-summary.png'), animations: 'disabled' })
+  await page.setViewportSize({ width: 1440, height: 1100 })
   await comparison.getByRole('button', { name: '查看型号与规格', exact: true }).click()
   const category = comparison.getByRole('group', { name: '模型类别', exact: true })
   await category.getByRole('button', { name: '聊天', exact: true }).click()
@@ -99,7 +112,12 @@ it('shows dated same-specification discounts through Host HTTP without creating 
   const textModel = payload.payload.models.find(model => model.kind === 'text')
   if (textModel === undefined) throw new Error('Actual reference fixture requires a retained chat model')
   await search.fill(textModel.id)
-  expect(await comparison.getByRole('article').count()).toBeGreaterThan(0)
+  expect(await comparison.getByRole('article').count()).toBe(1)
+  const singleModelBounds = await comparison.getByRole('article').evaluate(element => ({
+    width: element.getBoundingClientRect().width,
+    available: element.parentElement!.getBoundingClientRect().width,
+  }))
+  expect(Math.abs(singleModelBounds.available - singleModelBounds.width)).toBeLessThan(2)
   expect(await comparison.innerText()).toContain('输入')
   expect(await comparison.innerText()).toContain('输出')
   expect(await comparison.innerText()).toContain('2026-10-31')
@@ -135,6 +153,6 @@ it('shows dated same-specification discounts through Host HTTP without creating 
   expect(requests.filter(request => request.path === '/harness/api/pricing').every(request => !request.privateHeaders)).toBe(true)
   expect(tripwire.pageErrors).toEqual([])
   await writeFile(join(evidence, 'evidence.json'), JSON.stringify({ apiFixture: 'official-price-comparison-api.json',
-    clientModelCount: 43, priceRowCount: 113, forbidden, requests, pageErrors: tripwire.pageErrors,
+    clientModelCount: 43, priceRowCount: 113, summaryBounds, singleModelBounds, forbidden, requests, pageErrors: tripwire.pageErrors,
   }, null, 2) + '\n')
 }, 120_000)

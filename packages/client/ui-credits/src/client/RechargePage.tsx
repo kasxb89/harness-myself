@@ -19,6 +19,7 @@ import { clearRechargeRequest, useRechargeRequest } from './recharge-request.ts'
 import { readCreditsSnapshot, refreshBalance, refreshCredits, useCreditsSnapshot, type CreditsSnapshot } from './session-store.ts'
 import { creditsReadFailure, creditsRetrySeconds, type CreditsReadFailure } from './read-failure.ts'
 import css from './CreditsPage.module.css'
+import rechargeCss from './RechargePage.module.css'
 
 /** What the plugin injects into the top-up page. */
 export interface RechargePageInjected {
@@ -366,8 +367,9 @@ export function RechargePage(props: PropsRuntime<'main'> & RechargePageInjected)
       : t(`read.error.${readFailure?.kind ?? 'unavailable'}`))
 
   return (
-    <div className={css.page}>
-      <header className={css.header}>
+    <div className={cx(css.page, rechargeCss.page)}>
+      <header className={cx(css.header, rechargeCss.header)}>
+        <span className={rechargeCss.titleIcon}><CreditsPanelIcon size={24} /></span>
         <h1 className={css.rechargeTitle}>{t('rechargePageTitle')}</h1>
       </header>
 
@@ -393,89 +395,95 @@ export function RechargePage(props: PropsRuntime<'main'> & RechargePageInjected)
       )}
 
       {signedIn && (
-        <div className={css.rechargeLayout}>
-          <section className={css.card}>
-            {/* Balance row: what is left, with the same refresh the balance page
+        <div className={cx(css.rechargeLayout, rechargeCss.layout)}>
+          <section className={cx(css.card, rechargeCss.card)}>
+            <div className={rechargeCss.paymentLayout}><div className={rechargeCss.account}>
+              {/* Balance row: what is left, with the same refresh the balance page
               offers — the number decides the amount below it. */}
-            <div className={css.balanceRow}>
-              <CreditsPanelIcon size={16} />
-              <span className={css.balanceRowLabel}>{t('currentPoints')}</span>
-              <span className={css.balanceRowValue}>
-                {balance === null ? '—' : grouped(balance.balance_points)}
-              </span>
-              <span className={css.balanceRowUnit}>{t('points')}</span>
-              <Button
-                size="sm"
-                variant="ghost"
-                icon={<IconRefreshOutlineRegular />}
-                aria-label={t('refresh')}
-                onClick={() => { void refreshAccount() }}
-                disabled={busy || refreshing || retrySeconds > 0}
-              />
-            </div>
-
-            <p className={css.hint}>{t('rechargeAccountLabel', { account: session.account?.phone ?? '—' })}</p>
-            <h2 className={css.sectionTitle}>
-              <CreditsPanelIcon size={18} />
-              {t('selectAmount')}
-            </h2>
-            <div className={css.amountGrid}>
-              {QUICK_AMOUNTS_YUAN.map(value => (
-                <button
-                  key={value}
-                  type="button"
-                  className={amountYuan === String(value) ? cx(css.amountCard, css.amountCardActive) : css.amountCard}
-                  aria-pressed={amountYuan === String(value)}
-                  onClick={() => { setAmountYuan(String(value)) }}
-                >
-                  {t('amountOption', { amount: grouped(value) })}
-                </button>
-              ))}
-              <label className={cx(
-                css.amountCard,
-                css.amountCustom,
-                amountYuan !== '' && !QUICK_AMOUNTS_YUAN.some(value => String(value) === amountYuan)
-                  ? css.amountCardActive
-                  : '',
-              )}>
-                <Input
-                  ref={amountInput}
-                  className={cx(css.customInput)}
-                  /* A preset already names its own card, so the free-amount field
-                   only carries what the operator typed itself. */
-                  value={QUICK_AMOUNTS_YUAN.some(value => String(value) === amountYuan) ? '' : amountYuan}
-                  inputMode="numeric"
-                  aria-label={t('customAmount')}
-                  placeholder={t('custom')}
-                  onChange={(event) => { setAmountYuan(event.target.value) }}
-                />
-              </label>
-            </div>
-            <p className={css.hint}>
-              {t('rateHint', { points: grouped(10 * creditsPerYuan) })}
-              {' · '}
-              {t('rechargeRange', { min: grouped(MIN_AMOUNT_YUAN), max: grouped(MAX_AMOUNT_YUAN) })}
-            </p>
-
-            <div className={css.payRow}>
-              <span className={css.payAmount}>
-                {t('payAmount')}：¥{pointsPreview === null ? '0.00' : Number(amountYuan).toFixed(2)}
-              </span>
-              {pointsPreview !== null && (
-                <span className={css.payGain}>
-                  {t('willGet')} <strong className={css.payGainValue}>{grouped(pointsPreview)}</strong> {t('points')}
+              <div className={cx(css.balanceRow, rechargeCss.balance)}>
+                <CreditsPanelIcon size={16} />
+                <span className={css.balanceRowLabel}>{t('currentPoints')}</span>
+                <span className={rechargeCss.balanceAmount}><span className={cx(css.balanceRowValue, rechargeCss.balanceValue)}>
+                  {balance === null ? '—' : grouped(balance.balance_points)}
                 </span>
-              )}
-            </div>
-            <Button
-              className={css.payButton}
-              variant="primary"
-              onClick={() => { void createOrder() }}
-              disabled={busy || identityBlocked || retrySeconds > 0}
-            >
-              {t('confirmPay')}
-            </Button>
+                <span className={css.balanceRowUnit}>{t('points')}</span></span>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  icon={<IconRefreshOutlineRegular />}
+                  aria-label={t('refresh')}
+                  onClick={() => { void refreshAccount() }}
+                  disabled={busy || refreshing || retrySeconds > 0}
+                />
+              </div>
 
+              <p className={css.hint}>{t('rechargeAccountLabel', { account: session.account?.phone ?? '—' })}</p>
+            </div><div className={rechargeCss.form}>
+              <h2 className={css.sectionTitle}>
+                <CreditsPanelIcon size={18} />
+                {t('selectAmount')}
+              </h2>
+              <div className={cx(css.amountGrid, rechargeCss.amountGrid)}>
+                {QUICK_AMOUNTS_YUAN.map(value => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={amountYuan === String(value)
+                      ? cx(css.amountCard, rechargeCss.amountCard, css.amountCardActive, rechargeCss.amountActive)
+                      : cx(css.amountCard, rechargeCss.amountCard)}
+                    aria-pressed={amountYuan === String(value)}
+                    onClick={() => { setAmountYuan(String(value)) }}
+                  >
+                    {t('amountOption', { amount: grouped(value) })}
+                  </button>
+                ))}
+                <label className={cx(
+                  css.amountCard,
+                  css.amountCustom,
+                  rechargeCss.amountCard,
+                  amountYuan !== '' && !QUICK_AMOUNTS_YUAN.some(value => String(value) === amountYuan)
+                    ? cx(css.amountCardActive, rechargeCss.amountActive)
+                    : '',
+                )}>
+                  <Input
+                    ref={amountInput}
+                    className={cx(css.customInput)}
+                    /* A preset already names its own card, so the free-amount field
+                   only carries what the operator typed itself. */
+                    value={QUICK_AMOUNTS_YUAN.some(value => String(value) === amountYuan) ? '' : amountYuan}
+                    inputMode="numeric"
+                    aria-label={t('customAmount')}
+                    placeholder={t('custom')}
+                    onChange={(event) => { setAmountYuan(event.target.value) }}
+                  />
+                </label>
+              </div>
+              <p className={css.hint}>
+                {t('rateHint', { points: grouped(10 * creditsPerYuan) })}
+                {' · '}
+                {t('rechargeRange', { min: grouped(MIN_AMOUNT_YUAN), max: grouped(MAX_AMOUNT_YUAN) })}
+              </p>
+
+              <div className={cx(css.payRow, rechargeCss.payRow)}>
+                <span className={css.payAmount}>
+                  {t('payAmount')}：¥{pointsPreview === null ? '0.00' : Number(amountYuan).toFixed(2)}
+                </span>
+                {pointsPreview !== null && (
+                  <span className={css.payGain}>
+                    {t('willGet')} <strong className={css.payGainValue}>{grouped(pointsPreview)}</strong> {t('points')}
+                  </span>
+                )}
+              </div>
+              <Button
+                className={cx(css.payButton, rechargeCss.payButton)}
+                variant="primary"
+                onClick={() => { void createOrder() }}
+                disabled={busy || identityBlocked || retrySeconds > 0}
+              >
+                {t('confirmPay')}
+              </Button>
+
+            </div></div>
             {order !== null && (
               <div className={css.order}>
                 {order.qrCodeDataUrl != null

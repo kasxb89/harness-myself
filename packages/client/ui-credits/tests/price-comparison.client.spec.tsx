@@ -75,6 +75,29 @@ describe('recharge model reference card', () => {
     expect(fetcher.mock.calls[0]?.[1]?.method).toBeUndefined()
   })
 
+  it('groups actual reference models by category and opens the chosen category without another request', async () => {
+    const data = payload()
+    data.models.push({ ...data.models[0]!, id: 'gpt-fixture-two', name: 'GPT Fixture Two' })
+    fetcher.mockResolvedValueOnce(Response.json({ ok: true, account: { id: 'a' }, accountOwner: owner, payload: data }))
+    render(<PriceComparison {...props} />)
+    const region = await card()
+    const chat = within(region).getByRole('button', { name: t('comparison.openCategory', { kind: '聊天', count: '2' }) })
+    const video = within(region).getByRole('button', { name: t('comparison.openCategory', { kind: '视频', count: '1' }) })
+    expect(chat.textContent).toContain('2 款型号')
+    expect(chat.textContent).toContain('GPT Fixture')
+    expect(chat.textContent).not.toContain('GPT Fixture Two')
+    expect(video.textContent).toContain('¥0.2')
+    expect(video.textContent).toContain('官方参考价 ¥0.4')
+    expect(video.textContent).toContain('时长 5 秒')
+    expect(within(region).queryByRole('button', { name: /查看图片/u })).toBeNull()
+    fireEvent.click(video)
+    expect(within(region).getAllByRole('article')).toHaveLength(1)
+    expect(within(region).getByRole('heading', { name: 'Video Fixture' })).toBeTruthy()
+    expect(within(region).queryByRole('heading', { name: 'GPT Fixture' })).toBeNull()
+    expect(within(region).getByRole('button', { name: '视频' }).getAttribute('aria-pressed')).toBe('true')
+    expect(fetcher).toHaveBeenCalledOnce()
+  })
+
   it.each([
     ['text-to-image', '文生图'], ['image-to-video', '图生视频'], ['image-to-image', '图生图'], ['commercial-mode', 'commercial-mode'],
   ])('localizes native mode %s while retaining unrelated reference limitations', async (mode, label) => {

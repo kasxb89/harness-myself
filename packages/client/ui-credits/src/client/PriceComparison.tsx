@@ -1,6 +1,6 @@
 /** Dated model-price references are independent from the top-up amount and payment lifecycle. */
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { Button, Input, Tag } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, Input, Tag, IconSparkleRegular, IconNewChatOutlineRegular, IconPlayOutlineRegular, IconMicrophoneOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import { get, type Envelope } from './api.ts'
 import { comparisonDiscount, comparisonModels, type ComparisonKind, type ComparisonModel, type ComparisonRow } from './price-comparisons.ts'
 import { creditsReadFailure, creditsRetrySeconds, type CreditsReadFailure } from './read-failure.ts'
@@ -53,6 +53,13 @@ function specification(row: ComparisonRow, t: PriceComparisonProps['t']): string
   if (row.direction !== undefined) fields.unshift(t(`comparison.direction.${row.direction}`))
   return fields.length === 0 ? t('comparison.standard') : fields.join(' · ')
 }
+/** Decorative shared glyphs distinguish the public reference categories. */
+function CategoryIcon({ kind }: { readonly kind: ComparisonKind }): ReactNode {
+  const Icon = { text: IconNewChatOutlineRegular, image: IconSparkleRegular,
+    video: IconPlayOutlineRegular, audio: IconMicrophoneOutlineRegular }[kind]
+  return <Icon size={20} />
+}
+
 function Discount({ row, t }: { readonly row: ComparisonRow; readonly t: PriceComparisonProps['t'] }): ReactNode {
   const discount = comparisonDiscount(row)
   return discount.kind === 'lower'
@@ -65,8 +72,8 @@ function PriceRow({ row, t }: { readonly row: ComparisonRow; readonly t: PriceCo
   return <div className={css.row}>
     <div className={css.specification}>{specification(row, t)}</div>
     <dl className={css.prices}>
-      <div><dt>{t('comparison.retail')}</dt><dd>¥{row.retail_cny}</dd></div>
-      <div><dt>{t('comparison.official')}</dt><dd>¥{reference.official_cny}</dd></div>
+      <div className={css.retail}><dt>{t('comparison.retail')}</dt><dd>¥{row.retail_cny}</dd></div>
+      <div className={css.official}><dt>{t('comparison.official')}</dt><dd>¥{reference.official_cny}</dd></div>
       <div className={css.comparison}><dt>{t('comparison.ratio')}</dt><dd><Discount row={row} t={t} /></dd></div>
     </dl>
     <p className={css.note}>{t('comparison.unit', { unit: unitLabel(row.unit, t) })}</p>
@@ -148,16 +155,15 @@ export function PriceComparison({ accountId, accountOwner, accountEpoch, t }: Pr
 
   const models = active?.models ?? []
   if (models.length === 0 && active?.failure == null) return null
-  const example = models[0]
-  const sample = example?.rows[0]
   const expanded = opened === owner
   const search = query.trim().toLocaleLowerCase()
   const visible = models.filter(model => (filter === 'all' || model.kind === filter)
     && `${model.id} ${model.name} ${model.rows.map(row => row.official_reference.model).join(' ')}`.toLocaleLowerCase().includes(search))
   return <section className={css.card} aria-label={t('comparison.title')}>
-    <div className={css.header}><h2>{t('comparison.title')}</h2>
-      {models.length > 0 && <Button size="sm" variant="ghost" aria-expanded={expanded}
-        onClick={() => { setOpened(expanded ? null : owner) }}>{t(expanded ? 'comparison.collapse' : 'comparison.expand')}</Button>}
+    <div className={css.header}><div className={css.heading}><span className={css.headingIcon}><IconSparkleRegular size={20} /></span>
+      <h2>{t('comparison.title')}</h2></div>
+    {models.length > 0 && <Button size="sm" variant="ghost" aria-expanded={expanded}
+      onClick={() => { setOpened(expanded ? null : owner) }}>{t(expanded ? 'comparison.collapse' : 'comparison.expand')}</Button>}
     </div>
     <p className={css.note}>{t('comparison.basis')}</p>
     {models.some(model => model.kind === 'text') && <p className={css.note}>{t('comparison.textBasis')}</p>}
@@ -168,24 +174,38 @@ export function PriceComparison({ accountId, accountOwner, accountEpoch, t }: Pr
         onClick={() => { setRefresh(value => value + 1) }}>{t('comparison.retry')}</Button>
       {retrySeconds > 0 && <span>{t('read.retryAfter', { seconds: String(retrySeconds) })}</span>}
     </div>}
-    {!expanded && example !== undefined && sample !== undefined && <div className={css.example}>
-      <div><span className={css.modelName}>{example.name}</span><span className={css.note}>{specification(sample, t)}</span></div>
-      <Discount row={sample} t={t} />
-      <span className={css.note}>{t('comparison.example', { retail: sample.retail_cny,
-        official: sample.official_reference.official_cny, unit: unitLabel(sample.unit, t),
-        date: sample.official_reference.checked_at })}</span>
+    {!expanded && <div className={css.overview}>
+      {kinds.filter(kind => kind !== 'all').map((kind) => {
+        const categoryModels = models.filter(model => model.kind === kind)
+        const example = categoryModels[0], sample = example?.rows[0]
+        if (example === undefined || sample === undefined) return null
+        return <button key={kind} type="button" className={css.categoryCard} data-kind={kind}
+          aria-label={t('comparison.openCategory', { kind: t(`comparison.kind.${kind}`), count: String(categoryModels.length) })}
+          onClick={() => { setFilter(kind); setQuery(''); setOpened(owner) }}>
+          <span className={css.categoryHeader}><span className={css.categoryIcon}><CategoryIcon kind={kind} /></span>
+            <span className={css.categoryName}>{t(`comparison.kind.${kind}`)}</span>
+            <span className={css.categoryCount}>{t('comparison.modelCount', { count: String(categoryModels.length) })}</span></span>
+          <span className={css.sampleModel}>{example.name}</span>
+          <span className={css.sampleSpec}>{specification(sample, t)}</span>
+          <span className={css.samplePrice}><strong>¥{sample.retail_cny}</strong><span>{unitLabel(sample.unit, t)}</span></span>
+          <span className={css.sampleOfficial}>{t('comparison.official')} ¥{sample.official_reference.official_cny}</span>
+          <Discount row={sample} t={t} />
+          <span className={css.sampleDate}>{t('comparison.checked', { date: sample.official_reference.checked_at })}</span>
+        </button>
+      })}
     </div>}
     {expanded && <>
-      <div className={css.filters} role="group" aria-label={t('comparison.category')}>
+      <div className={css.toolbar}><div className={css.filters} role="group" aria-label={t('comparison.category')}>
         {kinds.map(kind => <Button key={kind} size="sm" variant={filter === kind ? 'outline' : 'ghost'}
-          aria-pressed={filter === kind} onClick={() => { setFilter(kind) }}>{t(`comparison.kind.${kind}`)}</Button>)}
+          data-kind={kind} aria-pressed={filter === kind} onClick={() => { setFilter(kind) }}>{t(`comparison.kind.${kind}`)}</Button>)}
       </div>
       <Input value={query} aria-label={t('comparison.search')} placeholder={t('comparison.search')}
-        onChange={(event) => { setQuery(event.target.value) }} />
+        onChange={(event) => { setQuery(event.target.value) }} /></div>
       <div className={css.models}>
         {visible.length === 0 && <p className={css.note}>{t('comparison.empty')}</p>}
-        {visible.map(model => <article key={model.id} className={css.model}>
-          <h3>{model.name}</h3>
+        {visible.map(model => <article key={model.id} className={css.model} data-kind={model.kind}>
+          <div className={css.modelHeader}><span className={css.categoryIcon}><CategoryIcon kind={model.kind} /></span>
+            <h3>{model.name}</h3><span className={css.modelKind}>{t(`comparison.kind.${model.kind}`)}</span></div>
           {model.rows.map((row, index) => <PriceRow key={index} row={row} t={t} />)}
         </article>)}
       </div>
