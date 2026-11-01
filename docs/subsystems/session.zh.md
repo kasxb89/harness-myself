@@ -830,6 +830,43 @@ interface PluginRecord {
 | `PeerSessionSendValue` | `accepted` 收件状态、精确目标与 `messageId`、投递方式以及是否为原提交的重复调用。受理不代表已处理或已回复。 |
 | `PeerSessionErrorCode` | 区分不可用调用方、缺少真人授权或同意、目标或大小不合法、写入冲突，以及持久化未确认或不可用。 |
 
+<a id="prompt-input-context"></a>
+
+## 提示词输入上下文
+
+普通 Session 提示词可以携带按命名空间划分的 JSON 提示，供本地 Host 准入使用。控制器会在等待 `session/prompt-admission` 前校验并分离完整对象，不会把提示加入用户内容或模型上下文。已受理的请求标识跳过监听器，并发重试共享一次准入，准入失败后可以使用同一标识重试。不同请求不会等待彼此的元数据处理或上游生成。插件校验自己的命名空间，在调用 `next()` 前记录持久业务决策，并且不等待模型或工具执行。
+
+```ts type-equiv
+/** Namespaced, JSON-only input hints for Host admission; never implicit model input. */
+type SessionPromptInputContext = Readonly<Record<string, JsonValue>>
+```
+
+```ts type-equiv
+/** One prepared human prompt before it enters the Agent inbox. */
+interface SessionPromptAdmission {
+  readonly agent: Agent
+  readonly requestId: SessionRequestId
+  readonly message: UserMessage
+  /** Detached, bounded hints. Each consumer independently validates its namespace. */
+  readonly inputContext?: SessionPromptInputContext
+}
+```
+
+```ts type-equiv
+/** Session prompt request. */
+interface SessionPromptRequest {
+  /** Client-minted identity persisted on the exact accepted user message. */
+  readonly requestId: SessionRequestId
+  readonly sessionId: SessionId
+  readonly mode: 'queue' | 'steer'
+  /** At least one non-whitespace text part or attachment. */
+  readonly content: readonly PromptContentPart[]
+  readonly clientTimeZone?: string
+  /** Optional admission-only namespaces; at most 16 KiB, depth 8, and 1,024 JSON values. */
+  readonly inputContext?: SessionPromptInputContext
+}
+```
+
 <!-- BEGIN GENERATED cordis-surface (gen-cordis-catalog.ts) — do not edit between markers -->
 
 <a id="cordis-surface"></a>
@@ -1471,4 +1508,24 @@ Awaited parallel durability checkpoint: every listener runs and the caller await
 Types: [Scoped](scope.zh.md)
 
 Source: [`packages/core/session/src/index.ts`](../../packages/core/session/src/index.ts)
+
+<a id="sessionprompt-admission--waterfall"></a>
+
+#### `session/prompt-admission` — waterfall
+
+Validate and capture plugin-owned prompt metadata before inbox acceptance. Accepted request retries skip this event. Failed admissions may retry with the same identity. Listeners must delegate and complete local work without waiting for model or tool execution.
+
+```ts cordis-catalog
+/**
+ * Validate and capture plugin-owned prompt metadata before inbox acceptance.
+ * Accepted request retries skip this event. Failed admissions may retry with the same identity.
+ * Listeners must delegate and complete local work without waiting for model or tool execution.
+ * @mode waterfall
+ * @param admission - Prepared message, exact request identity, and detached input hints.
+ * @param next - Await the remaining admission listeners.
+ */
+'session/prompt-admission'(admission: SessionPromptAdmission, next: () => Promise<void>): Promise<void>
+```
+
+Source: [`packages/api/session-controller/src/types.ts`](../../packages/api/session-controller/src/types.ts)
 <!-- END GENERATED cordis-surface -->

@@ -89,6 +89,10 @@ exports[`video tools through Loader, real tool registry and jobs runtime > regis
         "description": "Output resolution such as 768P or 2K, when the model offers choices.",
         "type": "string",
       },
+      "seed": {
+        "description": "Safe integer random seed, only when declared by the selected model.",
+        "type": "number",
+      },
       "shot_id": {
         "description": "Exact shot id in the explicit plan; never guess a latest project.",
         "type": "string",
@@ -96,6 +100,10 @@ exports[`video tools through Loader, real tool registry and jobs runtime > regis
       "size": {
         "description": "Exact native size from a complete specification, when distinct from resolution.",
         "type": "string",
+      },
+      "watermark": {
+        "description": "Watermark switch, only when declared by the selected model.",
+        "type": "boolean",
       },
       "work_id": {
         "description": "Existing work_id from prepare_video_works or an earlier generation result. Reuse it for the same finished work across tool calls and confirmations. Omission selects the current request’s first default work; it never creates another version of that work. For several works, prepare the complete count first and use each returned work_id once.",
@@ -162,7 +170,7 @@ exports[`video tools through Loader, real tool registry and jobs runtime > regis
           "type": "string",
         },
         "model": {
-          "description": "When omitted, the Host uses the backend-configured video model for this account; an older or unset configuration retains MiniMax-H3. Only actual H3 defaults to 768P without a specified tier. Preserve an explicitly requested model; any non-H3 selection requires a current full-price estimate and a real human model choice before generation. Model arguments never approve that change.",
+          "description": "The current human request overrides the frozen personal video preference, then the backend-configured video model for this account; an older or unset configuration retains MiniMax-H3. Only actual H3 defaults to 768P without a specified tier. Preserve an explicitly requested model; any non-H3 selection requires a current full-price estimate and a real human model choice before generation. Model arguments never approve that change.",
           "type": "string",
         },
         "plan_id": {
@@ -204,6 +212,10 @@ exports[`video tools through Loader, real tool registry and jobs runtime > regis
         "resolution": {
           "type": "string",
         },
+        "seed": {
+          "description": "Safe integer random seed, only when declared by the selected model.",
+          "type": "number",
+        },
         "shot_durations_seconds": {
           "description": "Exact model-supported whole seconds per clip, in shot_ids or shot_prompts order. Their sum must equal total_duration_seconds. When omitted for an explicit creation plan, use its saved shot durations; do not silently change timeline timing.",
           "items": {
@@ -232,6 +244,10 @@ exports[`video tools through Loader, real tool registry and jobs runtime > regis
         "total_duration_seconds": {
           "description": "Desired final length in whole seconds; this may exceed the model single-clip limit. For a simple single clip with no plan or explicit shot arrays, omit to use the selected model’s actual default duration. The Host reads the real catalog itself; no separate list_video_models call is needed. Required for explicit plans and shot arrays; never omit a user-specified duration.",
           "type": "number",
+        },
+        "watermark": {
+          "description": "Watermark switch, only when declared by the selected model.",
+          "type": "boolean",
         },
         "work_id": {
           "description": "Existing work_id from prepare_video_works or an earlier result. Reuse it for the same finished work across retries, confirmations and parameter corrections. Omission uses the current human request’s first default work. For several finished works, prepare their count first and pass each returned work_id; do not create new work ids to retry an unknown submission.",

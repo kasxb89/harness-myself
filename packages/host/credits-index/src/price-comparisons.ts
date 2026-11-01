@@ -50,7 +50,12 @@ const record = (value: unknown): Record<string, unknown> | undefined =>
   value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined
 const text = (value: unknown, maximum: number): value is string => typeof value === 'string'
   && value.length > 0 && value.length <= maximum && value === value.trim() && !/[\u0000-\u001f\u007f]/u.test(value)
-const decimal = (value: unknown): value is string => typeof value === 'string'
+/**
+ * Validate the bounded positive decimal spelling shared by public reference prices.
+ * @param value - Untrusted public retail or conversion value.
+ * @returns Whether exact decimal arithmetic can consume it without exponent or zero-price inference.
+ */
+export const isPositiveRetailDecimal = (value: unknown): value is string => typeof value === 'string'
   && value.length <= 64 && /^(?:0|[1-9]\d{0,17})(?:\.\d{1,24})?$/u.test(value) && /[1-9]/u.test(value)
 
 /** Calendar validation rejects dates which Date.parse would silently normalize. */
@@ -87,15 +92,15 @@ function priceRow(value: unknown, kind: PriceComparisonModel['kind']): PriceComp
   if (row === undefined || official === undefined) return undefined
   const unit = kind === 'video' ? 'CNY / second' : kind === 'image' ? 'CNY / image' : 'CNY / million tokens'
   const params = parameters(row.params)
-  if (params === undefined || row.unit !== unit || !decimal(row.retail_cny)
+  if (params === undefined || row.unit !== unit || !isPositiveRetailDecimal(row.retail_cny)
     || official.schema_version !== 1 || official.currency !== 'CNY'
     || official.source_currency !== 'USD' && official.source_currency !== 'CNY'
-    || official.unit !== row.unit || !decimal(official.official_cny) || !text(official.model, 191)
+    || official.unit !== row.unit || !isPositiveRetailDecimal(official.official_cny) || !text(official.model, 191)
     || !sourceUrl(official.source_url) || !checkedDate(official.checked_at)
     || official.conditions !== '' && !text(official.conditions, 4096)
-    || official.source_currency === 'USD' && !decimal(official.usd_cny)
-    || row.retail_total_cny !== undefined && !decimal(row.retail_total_cny)
-    || official.official_total_cny !== undefined && !decimal(official.official_total_cny)
+    || official.source_currency === 'USD' && !isPositiveRetailDecimal(official.usd_cny)
+    || row.retail_total_cny !== undefined && !isPositiveRetailDecimal(row.retail_total_cny)
+    || official.official_total_cny !== undefined && !isPositiveRetailDecimal(official.official_total_cny)
     || (kind === 'text' || kind === 'audio') && row.direction !== 'input' && row.direction !== 'output'
     || (kind === 'image' || kind === 'video') && row.direction !== undefined) return undefined
   return { params, retail_cny: row.retail_cny, unit,

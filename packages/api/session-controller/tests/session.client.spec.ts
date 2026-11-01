@@ -600,6 +600,15 @@ describe('prompt and cancel errors', () => {
     ])
   })
 
+  it('transports namespaced admission hints separately from exact user content', async ({ mock, start }) => {
+    const session = await sessionBench(mock, start, SID)
+    const inputContext = { plugin: { revision: 'selected' } }
+    await session.prompt([{ type: 'text', text: 'generate' }], 'queue', undefined, undefined, inputContext)
+    expect(mock.log.requests('session/prompt')).toMatchObject([{
+      sessionId: SID, content: [{ type: 'text', text: 'generate' }], inputContext,
+    }])
+  })
+
   it('publishes the first-prompt lifecycle synchronously before the Remote settles', async ({ mock, start }) => {
     const session = await sessionBench(mock, start, SID)
     session.handleBlank(true)

@@ -34,6 +34,8 @@ kind: "package-reference"
 <a id="use-this-package"></a>
 ## 使用本包
 
+提示词元数据通过等待式 [`session/prompt-admission`](../../../docs/subsystems/session.zh.md#prompt-input-context) 事件在收件箱受理前处理。仅用于准入的 `inputContext` 是分离后的 JSON，完整 UTF-8 大小上限为 16 KiB、深度为 8、值数量为 1,024；无效形状在入队前失败。命名空间键匹配 `[a-z][a-z0-9_./-]{0,63}`；原型键、访问器、隐藏属性及非 JSON 值会被拒绝。同一请求的并发调用共享一次准入，已受理重试跳过元数据采集，不同请求保持独立。插件各自校验命名空间，通过自己的持久事件记录影响模型或计费的选择。
+
 共享模型目录可以为已有提供方／模型行携带可选纯文本 `presentation.description` 与 `presentation.badge`。同步 waterfall `api-session/model-presentation` 通过 `next` 组合这些字段；字段缺失时继承，空字符串清除原有界面文字。它不能发布或路由模型、改变能力或修改 Session 数据。拥有者在提交展示变化后发出 `api-session/model-catalog-changed`，客户端据此重建目录。
 
 历史页与 follow opening 快照为每个持久 Session 事件携带一条 `{ type: 'event', event: SessionWireEvent }` record。Client 把每条已接受 record 保留为一个持久 `SessionEventLikeEntry`；Assistant token 边界保留在 `assistant/message` 或 `assistant/attempt` 的紧凑流内。工具参数、结果内容、失败信息和 `tool/result.data.meta` 原样通过；控制器不解析工具定义、不运行展示转换器，也不附加 UI 数据。

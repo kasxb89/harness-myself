@@ -27,7 +27,7 @@ async function bench(maxConcurrentFileUploads = 2) {
     return session.uploadFile(...args)
   }
   const prompt = vi.fn((
-    _content?: unknown, _mode?: unknown, _signal?: AbortSignal, _rpcId?: string,
+    _content?: unknown, _mode?: unknown, _signal?: AbortSignal, _rpcId?: string, _inputContext?: unknown,
   ) => Promise.resolve({ ok: true as const, value: { accepted: true as const } }))
   const updateQueue = vi.fn(() => Promise.resolve({ ok: true as const, value: { accepted: true as const } }))
   const cancel = vi.fn(() => Promise.resolve({ ok: true as const, value: { accepted: true as const } }))
@@ -509,6 +509,49 @@ describe('sendSession submission echo', () => {
     }
     return { ...b, beginSubmission, begun: begun.promise, abandon, retire, revoked, restore }
   }
+
+  it('collects root prompt providers for the first message before a composer mounts and removes disposed providers', async () => {
+    const b = await echoBench()
+    try {
+      const session = b.runtime.sessions.binding('s1')!.session
+      const seen = vi.fn()
+      const fiber = b.runtime.ctx.plugin((ctx: Context) => {
+        ctx.on('conversation/prompt-context', async (request, next) => {
+          seen(request)
+          return { ...await next(), plugin_a: { revision: 'one' } }
+        })
+        ctx.on('conversation/prompt-context', async (_request, next) => ({ ...await next(), plugin_b: 'two' }))
+      })
+      await fiber.await()
+      await expect(b.root.sendSession(session, 'first', [], 'steer')).resolves.toEqual({ kind: 'success' })
+      expect(seen).toHaveBeenCalledWith({ sessionId: session.sessionId, mode: 'steer' })
+      expect(b.prompt).toHaveBeenLastCalledWith([{ type: 'text', text: 'first' }], 'steer', undefined,
+        'req-echo', { plugin_a: { revision: 'one' }, plugin_b: 'two' })
+      await b.scoped.send('ordinary')
+      expect(b.prompt).toHaveBeenLastCalledWith([{ type: 'text', text: 'ordinary' }], 'queue', undefined,
+        undefined, { plugin_a: { revision: 'one' }, plugin_b: 'two' })
+      await fiber.dispose()
+      await b.root.sendSession(session, 'after disposal', [], 'queue')
+      expect(b.prompt).toHaveBeenLastCalledWith([{ type: 'text', text: 'after disposal' }], 'queue', undefined, 'req-echo')
+    } finally {
+      b.restore()
+      await b.runtime.dispose()
+    }
+  })
+
+  it('abandons the local echo and preserves the draft when prompt context collection rejects', async () => {
+    const b = await echoBench()
+    try {
+      b.runtime.ctx.on('conversation/prompt-context', async () => { throw new Error('account changed') })
+      await expect(b.root.sendSession(b.runtime.sessions.binding('s1')!.session, 'keep draft', [], 'queue'))
+        .rejects.toThrow('account changed')
+      expect(b.abandon).toHaveBeenCalledOnce()
+      expect(b.prompt).not.toHaveBeenCalled()
+    } finally {
+      b.restore()
+      await b.runtime.dispose()
+    }
+  })
 
   it('registers the echo before serialization and prompts with its identity', async () => {
     const b = await echoBench()

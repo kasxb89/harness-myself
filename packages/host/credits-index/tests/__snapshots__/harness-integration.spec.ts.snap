@@ -10,12 +10,24 @@ exports[`deployed Harness API through the real product Loader > edits current-ch
         "description": "Exact image asset id in plan_id, including a video plan. Mutually exclusive with shot_id. Creates or reconstructs this source asset, not a finished shot.",
         "type": "string",
       },
+      "background": {
+        "description": "Published image background mode.",
+        "type": "string",
+      },
       "count": {
         "description": "How many images to render, within max_count returned by list_image_models; do not infer a model’s batch limit.",
         "type": "number",
       },
+      "format": {
+        "description": "Published output container format.",
+        "type": "string",
+      },
       "model": {
-        "description": "Optional image model id such as gpt-image-2. Defaults to the first image model the deployment serves for this account.",
+        "description": "Optional image model id such as gpt-image-2. The current human request overrides the frozen personal image preference, then the backend-configured image default for this account; an older or unset configuration retains the account’s first available image model.",
+        "type": "string",
+      },
+      "moderation": {
+        "description": "Published moderation setting.",
         "type": "string",
       },
       "plan_id": {
@@ -24,6 +36,10 @@ exports[`deployed Harness API through the real product Loader > edits current-ch
       },
       "prompt": {
         "description": "What the image should show.",
+        "type": "string",
+      },
+      "quality": {
+        "description": "Exact published image quality, only when declared by the selected model.",
         "type": "string",
       },
       "reference_images": {
@@ -36,6 +52,10 @@ exports[`deployed Harness API through the real product Loader > edits current-ch
       "resolution": {
         "description": "Optional named output tier, only when declared by the chosen model. yunshu-internal-gpt-image-2 accepts 1k, 2k or 4k and defaults to 1k; this is independent from pixel size.",
         "type": "string",
+      },
+      "seed": {
+        "description": "Safe integer random seed, only for a model declaring this control.",
+        "type": "number",
       },
       "shot_id": {
         "description": "Exact shot id in the explicit plan; never guess a latest project.",
@@ -56,6 +76,10 @@ exports[`deployed Harness API through the real product Loader > edits current-ch
 
 exports[`deployed Harness API through the real product Loader > exposes account-filtered image controls with exact live sizes and separate resolution tiers > account image controls 1`] = `
 {
+  "default_available": true,
+  "default_configured": false,
+  "default_model_id": "gpt-image-2",
+  "default_source": "legacy",
   "message": "按精确型号和已声明参数生成；空菜单不提供可选规格，未验证型号的数量限制仅为客户端保守限制。尚未提交生成。",
   "models": [
     {
@@ -117,7 +141,7 @@ exports[`deployed Harness API through the real product Loader > exposes account-
 exports[`deployed Harness API through the real product Loader > exposes account-filtered image controls with exact live sizes and separate resolution tiers > image controls model result 1`] = `
 [
   {
-    "text": "{"status":"listed","models":[{"id":"gpt-image-2","display_name":"gpt-image-2","parameters_verified":true,"sizes":["1536x1024"],"max_count":4,"max_reference_images":16,"qualities":["auto","low","medium","high"],"backgrounds":["auto","transparent","opaque"],"formats":["png","jpeg","webp"],"moderations":["auto","low"],"seed":false},{"id":"yunshu-internal-gpt-image-2","display_name":"精确图片型号","parameters_verified":true,"sizes":["16:9","9:16"],"resolutions":["2k","4k"],"max_count":1,"max_reference_images":6,"qualities":[],"backgrounds":[],"formats":[],"moderations":[],"seed":false}],"message":"按精确型号和已声明参数生成；空菜单不提供可选规格，未验证型号的数量限制仅为客户端保守限制。尚未提交生成。"}",
+    "text": "{"status":"listed","models":[{"id":"gpt-image-2","display_name":"gpt-image-2","parameters_verified":true,"sizes":["1536x1024"],"max_count":4,"max_reference_images":16,"qualities":["auto","low","medium","high"],"backgrounds":["auto","transparent","opaque"],"formats":["png","jpeg","webp"],"moderations":["auto","low"],"seed":false},{"id":"yunshu-internal-gpt-image-2","display_name":"精确图片型号","parameters_verified":true,"sizes":["16:9","9:16"],"resolutions":["2k","4k"],"max_count":1,"max_reference_images":6,"qualities":[],"backgrounds":[],"formats":[],"moderations":[],"seed":false}],"default_model_id":"gpt-image-2","default_configured":false,"default_available":true,"default_source":"legacy","message":"按精确型号和已声明参数生成；空菜单不提供可选规格，未验证型号的数量限制仅为客户端保守限制。尚未提交生成。"}",
     "type": "text",
   },
 ]
@@ -129,6 +153,10 @@ exports[`deployed Harness API through the real product Loader > exposes safe pla
 
 exports[`deployed Harness API through the real product Loader > leaves unsupported old-catalog image menus empty and unknown image controls unconfirmed > old and unknown image controls 1`] = `
 {
+  "default_available": true,
+  "default_configured": false,
+  "default_model_id": "yunshu-internal-gpt-image-2",
+  "default_source": "legacy",
   "message": "按精确型号和已声明参数生成；空菜单不提供可选规格，未验证型号的数量限制仅为客户端保守限制。尚未提交生成。",
   "models": [
     {
@@ -347,6 +375,21 @@ exports[`deployed Harness API through the real product Loader > requires login f
     "code": {
       "type": "string",
     },
+    "default_available": {
+      "type": "boolean",
+    },
+    "default_configured": {
+      "type": "boolean",
+    },
+    "default_error_code": {
+      "type": "string",
+    },
+    "default_model_id": {
+      "type": "string",
+    },
+    "default_source": {
+      "type": "string",
+    },
     "message": {
       "type": "string",
     },
@@ -430,6 +473,10 @@ exports[`deployed Harness API through the real product Loader > requires login f
         "type": "object",
       },
       "type": "array",
+    },
+    "selected_parameters": {
+      "additionalProperties": true,
+      "type": "object",
     },
     "status": {
       "type": "string",

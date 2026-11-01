@@ -274,6 +274,7 @@ export const EVENT_SCOPE_PAGE: Record<string, string> = {
 export const EVENT_WALK_EXEMPTIONS: Record<string, string> = {
   'command/executed': 'client-face local command acknowledgment — packages/client/ui-commands/README.md owns the API',
   'connection/reset': 'client-face transport signal — packages/api/session-controller/README.md owns the API',
+  'conversation/prompt-context': 'client-face awaited prompt metadata collection — docs/subsystems/conversation.md#prompt-input-context owns the API',
   'conversation/input-model-capabilities': 'client-face selected-model input controls — docs/subsystems/conversation.md#selected-model-input-controls owns the API',
   'locale/change': 'client-face locale switch signal — packages/client/locale/README.md owns the API',
   'skills/catalog-invalidated': 'client-face skill reference cache invalidation — packages/client/ui-skill/README.md owns the API',
@@ -438,6 +439,9 @@ export const LINK_MAP: Readonly<Record<string, string>> = {
   SessionModelsRequest: 'session.md',
   SessionPage: 'session.md',
   SessionPageRequest: 'session.md',
+  ConversationPromptContextRequest: 'conversation.md',
+  SessionPromptAdmission: 'session.md',
+  SessionPromptInputContext: 'session.md',
   SessionPromptRequest: 'session.md',
   SessionPromptValue: 'session.md',
   SessionRenameRequest: 'session.md',

@@ -246,8 +246,7 @@
   line-clamp: 2;
 }
 
-/* Toolbar: attach + Plan + Read-only on the left; model + send on the right
-   (figma Input_Bottom chrome). */
+/* The toolbar wraps leading tools and trailing model choices and actions. */
 .row {
   display: flex;
   flex-wrap: wrap;
@@ -292,11 +291,10 @@
 
 .trailing {
   flex: none;
-  /* Wrap keeps the left mode chips and the right controls apart when the card
-     runs out of row width: the trailing group (model + send) moves to its own
-     line instead of the left group shrinking until its chip overlaps the
-     model trigger (external:107). The auto margin re-anchors it right on the
-     wrapped line; on a single line space-between already pins it right. */
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  max-width: 100%;
+  /* Keep contributed selectors inside the card and right-aligned on wrapped rows. */
   margin-left: auto;
   gap: 12px;
 }
@@ -410,7 +408,15 @@
   cursor: pointer;
 }
 
-.standardControls { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.standardControls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  min-width: 0;
+  max-width: 100%;
+}
 .tools[hidden], .standardControls[hidden] { display: none; }
 .trailingActive { flex: 1; margin-left: 0; }
 .activity { display: flex; align-items: center; flex: none; }

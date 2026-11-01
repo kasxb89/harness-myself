@@ -520,6 +520,8 @@ function parseManifest(value: unknown): VideoProjectManifest {
     throw new VideoProjectError('INVALID_RECORD', '已完成的视频项目缺少真实成片信息，无法作为成功结果交付。')
   }
   if (input.audio !== undefined && typeof input.audio !== 'boolean') throw new VideoProjectError('INVALID_RECORD', '视频项目音轨设置损坏，已停止操作。')
+  if (input.watermark !== undefined && typeof input.watermark !== 'boolean'
+    || input.seed !== undefined && (typeof input.seed !== 'number' || !Number.isSafeInteger(input.seed))) throw new VideoProjectError('INVALID_RECORD', '视频项目参数记录损坏，已停止操作。')
   const optionalInput = Object.fromEntries(['model', 'resolution', 'size', 'ratio', 'quality', 'mode', 'title'].flatMap(key => input[key] === undefined ? [] : [[key, text(input, key)]]))
   const parsedInput: VideoProjectInput = {
     prompt: text(input, 'prompt'), totalDurationSeconds: positive(input, 'totalDurationSeconds'), ...optionalInput,
@@ -531,6 +533,8 @@ function parseManifest(value: unknown): VideoProjectManifest {
     ...input.referenceVideos === undefined ? {} : { referenceVideos: strings(input, 'referenceVideos') },
     ...input.referenceAudios === undefined ? {} : { referenceAudios: strings(input, 'referenceAudios') },
     ...input.audio === undefined ? {} : { audio: input.audio },
+    ...input.seed === undefined ? {} : { seed: input.seed },
+    ...input.watermark === undefined ? {} : { watermark: input.watermark },
   }
   if (parsedInput.title !== undefined && (parsedInput.title.trim() === '' || parsedInput.title.length > 256)
     || parsedInput.shotTitles !== undefined && (parsedInput.shotTitles.length !== source.segments.length

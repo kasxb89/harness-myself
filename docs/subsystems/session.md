@@ -826,6 +826,41 @@ The Host-only peer methods operate on ordinary local-operator chats. Their reque
 | `PeerSessionSendValue` | `accepted` inbox status, exact target and `messageId`, delivery, and whether the original submission was a duplicate. Acceptance does not mean processing or a reply. |
 | `PeerSessionErrorCode` | Distinguishes unavailable callers, missing human authority or consent, invalid targets or sizes, writer conflicts, and unconfirmed or unavailable durability. |
 
+## Prompt input context
+
+Ordinary Session prompts accept optional namespaced JSON hints for local Host admission. The controller validates and detaches the complete object before awaiting `session/prompt-admission`; it never adds hints to user content or model context. Accepted request identities bypass listeners, concurrent retries share one admission, and a failed admission can retry with the same identity. Different requests do not wait for each other’s metadata or for upstream generation. Plugins validate their own namespaces, capture durable business decisions before calling `next()`, and finish without waiting for model or tool execution.
+
+```ts type-equiv
+/** Namespaced, JSON-only input hints for Host admission; never implicit model input. */
+type SessionPromptInputContext = Readonly<Record<string, JsonValue>>
+```
+
+```ts type-equiv
+/** One prepared human prompt before it enters the Agent inbox. */
+interface SessionPromptAdmission {
+  readonly agent: Agent
+  readonly requestId: SessionRequestId
+  readonly message: UserMessage
+  /** Detached, bounded hints. Each consumer independently validates its namespace. */
+  readonly inputContext?: SessionPromptInputContext
+}
+```
+
+```ts type-equiv
+/** Session prompt request. */
+interface SessionPromptRequest {
+  /** Client-minted identity persisted on the exact accepted user message. */
+  readonly requestId: SessionRequestId
+  readonly sessionId: SessionId
+  readonly mode: 'queue' | 'steer'
+  /** At least one non-whitespace text part or attachment. */
+  readonly content: readonly PromptContentPart[]
+  readonly clientTimeZone?: string
+  /** Optional admission-only namespaces; at most 16 KiB, depth 8, and 1,024 JSON values. */
+  readonly inputContext?: SessionPromptInputContext
+}
+```
+
 <!-- BEGIN GENERATED cordis-surface (gen-cordis-catalog.ts) — do not edit between markers -->
 
 <a id="cordis-surface"></a>
@@ -1467,4 +1502,24 @@ Awaited parallel durability checkpoint: every listener runs and the caller await
 Types: [Scoped](scope.md)
 
 Source: [`packages/core/session/src/index.ts`](../../packages/core/session/src/index.ts)
+
+<a id="sessionprompt-admission--waterfall"></a>
+
+#### `session/prompt-admission` — waterfall
+
+Validate and capture plugin-owned prompt metadata before inbox acceptance. Accepted request retries skip this event. Failed admissions may retry with the same identity. Listeners must delegate and complete local work without waiting for model or tool execution.
+
+```ts cordis-catalog
+/**
+ * Validate and capture plugin-owned prompt metadata before inbox acceptance.
+ * Accepted request retries skip this event. Failed admissions may retry with the same identity.
+ * Listeners must delegate and complete local work without waiting for model or tool execution.
+ * @mode waterfall
+ * @param admission - Prepared message, exact request identity, and detached input hints.
+ * @param next - Await the remaining admission listeners.
+ */
+'session/prompt-admission'(admission: SessionPromptAdmission, next: () => Promise<void>): Promise<void>
+```
+
+Source: [`packages/api/session-controller/src/types.ts`](../../packages/api/session-controller/src/types.ts)
 <!-- END GENERATED cordis-surface -->

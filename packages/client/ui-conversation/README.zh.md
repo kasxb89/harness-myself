@@ -162,6 +162,8 @@ selector 必须是 owner currency 的纯函数。非 null 返回值作为 `match
 
 `conversation.input.activity` 在模型选择器与发送按钮之间承载一个控件。其 `onActiveChange` 回调将控件展开至整条工具栏并隐藏普通辅助控件和上下文用量按钮，同时保留编辑器与提交按钮。关闭活动后恢复这些控件，上下文详情保持关闭。首页输入框下方没有内容时，该区域保持收起。占用者在卸载时释放展开状态，并拥有活动专属反馈。
 
+服务通过等待式 [`conversation/prompt-context`](../../../docs/subsystems/conversation.zh.md#prompt-input-context) waterfall 为普通发送及新聊天首次提交收集按命名空间划分的提示。提供方在插件生命周期内注册，保留 `await next()` 的命名空间，并返回 JSON 准入元数据，不拼接提示词文本。提供方失败时保留草稿。子代理续接使用独立协议。
+
 <a id="model-experience"></a>
 ## 模型体验
 

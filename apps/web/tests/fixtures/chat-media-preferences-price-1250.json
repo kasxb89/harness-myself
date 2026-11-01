@@ -1,0 +1,803 @@
+{
+  "source": "Actual public API retail_price_rows × synthetic configured 1250 credits/CNY; Python Decimal independent of Host and Client implementation",
+  "source_sha256": "d3f794f382dc19d6650898f3e089325d82a6aa343798e96463e9653c6a91e615",
+  "credits_per_yuan": "1250",
+  "models": {
+    "ycapi-grok-imagine-video": [
+      {
+        "points": "181.875",
+        "display": "181.875",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "5",
+          "mode": "text-to-video",
+          "resolution": "480p"
+        }
+      },
+      {
+        "points": "181.875",
+        "display": "181.875",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "10",
+          "mode": "text-to-video",
+          "resolution": "480p"
+        }
+      },
+      {
+        "points": "204.625",
+        "display": "204.625",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "5",
+          "mode": "text-to-video",
+          "resolution": "720p"
+        }
+      },
+      {
+        "points": "204.625",
+        "display": "204.625",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "10",
+          "mode": "text-to-video",
+          "resolution": "720p"
+        }
+      }
+    ],
+    "ycapi-gemini-nano-banana-2.1-image": [
+      {
+        "points": "224.12",
+        "display": "224.12",
+        "unit": "CNY / image",
+        "params": {
+          "aspect_ratio": "1:1",
+          "count": 1,
+          "mode": "text-to-image",
+          "size": "1K"
+        }
+      },
+      {
+        "points": "224.12",
+        "display": "224.12",
+        "unit": "CNY / image",
+        "params": {
+          "aspect_ratio": "1:1",
+          "count": 1,
+          "mode": "text-to-image",
+          "size": "2K"
+        }
+      },
+      {
+        "points": "224.12",
+        "display": "224.12",
+        "unit": "CNY / image",
+        "params": {
+          "aspect_ratio": "1:1",
+          "count": 1,
+          "mode": "text-to-image",
+          "size": "4K"
+        }
+      }
+    ],
+    "ycapi-doubao-seedream-5-0-pro": [
+      {
+        "points": "248.9",
+        "display": "248.9",
+        "unit": "CNY / image",
+        "params": {
+          "count": 1,
+          "mode": "text-to-image",
+          "resolution": "1k",
+          "size": "1:1"
+        }
+      },
+      {
+        "points": "248.9",
+        "display": "248.9",
+        "unit": "CNY / image",
+        "params": {
+          "count": 1,
+          "mode": "text-to-image",
+          "resolution": "2k",
+          "size": "1:1"
+        }
+      }
+    ],
+    "ycapi-gemini-3-pro-image": [
+      {
+        "points": "248.9",
+        "display": "248.9",
+        "unit": "CNY / image",
+        "params": {
+          "aspect_ratio": "1:1",
+          "count": 1,
+          "mode": "text-to-image",
+          "size": "1K"
+        }
+      },
+      {
+        "points": "257.16",
+        "display": "257.16",
+        "unit": "CNY / image",
+        "params": {
+          "aspect_ratio": "1:1",
+          "count": 1,
+          "mode": "text-to-image",
+          "size": "2K"
+        }
+      },
+      {
+        "points": "290.2",
+        "display": "290.2",
+        "unit": "CNY / image",
+        "params": {
+          "aspect_ratio": "1:1",
+          "count": 1,
+          "mode": "text-to-image",
+          "size": "4K"
+        }
+      }
+    ],
+    "ycapi-minimax-h3": [
+      {
+        "points": "556.533",
+        "display": "556.533",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "5",
+          "mode": "text-to-video",
+          "resolution": "2k"
+        }
+      },
+      {
+        "points": "510.897875",
+        "display": "510.897875",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "10",
+          "mode": "text-to-video",
+          "resolution": "2k"
+        }
+      },
+      {
+        "points": "227.375",
+        "display": "227.375",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "5",
+          "mode": "text-to-video",
+          "resolution": "768p"
+        }
+      },
+      {
+        "points": "227.375",
+        "display": "227.375",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "10",
+          "mode": "text-to-video",
+          "resolution": "768p"
+        }
+      }
+    ],
+    "ycapi-grok-imagine-video-special": [
+      {
+        "points": "238.75",
+        "display": "238.75",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "10",
+          "mode": "text-to-video",
+          "resolution": "720p"
+        }
+      }
+    ],
+    "ycapi-kling-image-o3": [
+      {
+        "points": "228.25",
+        "display": "228.25",
+        "unit": "CNY / image",
+        "params": {
+          "aspect_ratio": "1:1",
+          "count": 1,
+          "mode": "text-to-image",
+          "size": "1K"
+        }
+      },
+      {
+        "points": "228.25",
+        "display": "228.25",
+        "unit": "CNY / image",
+        "params": {
+          "aspect_ratio": "1:1",
+          "count": 1,
+          "mode": "text-to-image",
+          "size": "2K"
+        }
+      },
+      {
+        "points": "228.25",
+        "display": "228.25",
+        "unit": "CNY / image",
+        "params": {
+          "aspect_ratio": "1:1",
+          "count": 1,
+          "mode": "text-to-image",
+          "size": "4K"
+        }
+      }
+    ],
+    "ycapi-omni-flash-1-1": [
+      {
+        "points": "254.675",
+        "display": "254.675",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "10",
+          "mode": "text-to-video",
+          "resolution": "1080p"
+        }
+      },
+      {
+        "points": "241.025",
+        "display": "241.025",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "10",
+          "mode": "text-to-video",
+          "resolution": "720p"
+        }
+      }
+    ],
+    "ycapi-grok-imagine-image": [
+      {
+        "points": "143.585",
+        "display": "143.585",
+        "unit": "CNY / image",
+        "params": {
+          "count": 1,
+          "mode": "text-to-image",
+          "size": "1:1"
+        }
+      }
+    ],
+    "ycapi-seedance-2-0-promo": [
+      {
+        "points": "2172.5",
+        "display": "2,172.5",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "5",
+          "mode": "text-to-video",
+          "quality": "标准",
+          "resolution": "1080p"
+        }
+      },
+      {
+        "points": "1831.25",
+        "display": "1,831.25",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "10",
+          "mode": "text-to-video",
+          "quality": "标准",
+          "resolution": "1080p"
+        }
+      },
+      {
+        "points": "557.25",
+        "display": "557.25",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "5",
+          "mode": "text-to-video",
+          "quality": "标准",
+          "resolution": "480p"
+        }
+      },
+      {
+        "points": "557.25",
+        "display": "557.25",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "10",
+          "mode": "text-to-video",
+          "quality": "标准",
+          "resolution": "480p"
+        }
+      },
+      {
+        "points": "3765",
+        "display": "3,765",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "5",
+          "mode": "text-to-video",
+          "quality": "标准",
+          "resolution": "4k"
+        }
+      },
+      {
+        "points": "3765",
+        "display": "3,765",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "10",
+          "mode": "text-to-video",
+          "quality": "标准",
+          "resolution": "4k"
+        }
+      },
+      {
+        "points": "524.7175",
+        "display": "524.7175",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "5",
+          "mode": "text-to-video",
+          "quality": "mini",
+          "resolution": "720p"
+        }
+      },
+      {
+        "points": "489",
+        "display": "489",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "10",
+          "mode": "text-to-video",
+          "quality": "mini",
+          "resolution": "720p"
+        }
+      },
+      {
+        "points": "580",
+        "display": "580",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "5",
+          "mode": "text-to-video",
+          "quality": "标准",
+          "resolution": "720p"
+        }
+      },
+      {
+        "points": "352.5",
+        "display": "352.5",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "10",
+          "mode": "text-to-video",
+          "quality": "标准",
+          "resolution": "720p"
+        }
+      }
+    ],
+    "ycapi-seedance-2-5": [
+      {
+        "points": "2855",
+        "display": "2,855",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "5",
+          "mode": "text-to-video",
+          "resolution": "1080p"
+        }
+      },
+      {
+        "points": "2855",
+        "display": "2,855",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "10",
+          "mode": "text-to-video",
+          "resolution": "1080p"
+        }
+      }
+    ],
+    "ycapi-flux-kontext": [
+      {
+        "points": "248.9",
+        "display": "248.9",
+        "unit": "CNY / image",
+        "params": {
+          "count": 1,
+          "mode": "text-to-image",
+          "quality": "max",
+          "size": "1:1"
+        }
+      },
+      {
+        "points": "181.7875",
+        "display": "181.7875",
+        "unit": "CNY / image",
+        "params": {
+          "count": 1,
+          "mode": "text-to-image",
+          "quality": "pro",
+          "size": "1:1"
+        }
+      }
+    ],
+    "ycapi-gemini-3.1-flash-image": [
+      {
+        "points": "238.9775",
+        "display": "238.9775",
+        "unit": "CNY / image",
+        "params": {
+          "aspect_ratio": "1:1",
+          "count": 1,
+          "mode": "text-to-image",
+          "size": "0.5K",
+          "thinking_level": "minimal"
+        }
+      },
+      {
+        "points": "207.6",
+        "display": "207.6",
+        "unit": "CNY / image",
+        "params": {
+          "aspect_ratio": "1:1",
+          "count": 1,
+          "mode": "text-to-image",
+          "size": "1K",
+          "thinking_level": "minimal"
+        }
+      },
+      {
+        "points": "207.6",
+        "display": "207.6",
+        "unit": "CNY / image",
+        "params": {
+          "aspect_ratio": "1:1",
+          "count": 1,
+          "mode": "text-to-image",
+          "size": "2K",
+          "thinking_level": "minimal"
+        }
+      },
+      {
+        "points": "248.9",
+        "display": "248.9",
+        "unit": "CNY / image",
+        "params": {
+          "aspect_ratio": "1:1",
+          "count": 1,
+          "mode": "text-to-image",
+          "size": "4K",
+          "thinking_level": "minimal"
+        }
+      }
+    ],
+    "ycapi-grok-imagine-1.5": [
+      {
+        "points": "329.75",
+        "display": "329.75",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "10",
+          "mode": "text-to-video",
+          "resolution": "1080p"
+        }
+      },
+      {
+        "points": "216",
+        "display": "216",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "10",
+          "mode": "text-to-video",
+          "resolution": "480p"
+        }
+      },
+      {
+        "points": "193.25",
+        "display": "193.25",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "10",
+          "mode": "text-to-video",
+          "resolution": "720p"
+        }
+      }
+    ],
+    "ycapi-seedance-2-0-official": [
+      {
+        "points": "2707.6635",
+        "display": "2,707.6635",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "5",
+          "mode": "text-to-video",
+          "quality": "标准",
+          "resolution": "1080p"
+        }
+      },
+      {
+        "points": "2707.663625",
+        "display": "2,707.663625",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "10",
+          "mode": "text-to-video",
+          "quality": "标准",
+          "resolution": "1080p"
+        }
+      },
+      {
+        "points": "285.133",
+        "display": "285.133",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "5",
+          "mode": "text-to-video",
+          "quality": "mini",
+          "resolution": "480p"
+        }
+      },
+      {
+        "points": "285.133",
+        "display": "285.133",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "10",
+          "mode": "text-to-video",
+          "quality": "mini",
+          "resolution": "480p"
+        }
+      },
+      {
+        "points": "909",
+        "display": "909",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "5",
+          "mode": "text-to-video",
+          "quality": "fast",
+          "resolution": "720p"
+        }
+      },
+      {
+        "points": "909",
+        "display": "909",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "10",
+          "mode": "text-to-video",
+          "quality": "fast",
+          "resolution": "720p"
+        }
+      },
+      {
+        "points": "469.372",
+        "display": "469.372",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "5",
+          "mode": "text-to-video",
+          "quality": "mini",
+          "resolution": "720p"
+        }
+      },
+      {
+        "points": "469.372",
+        "display": "469.372",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "10",
+          "mode": "text-to-video",
+          "quality": "mini",
+          "resolution": "720p"
+        }
+      },
+      {
+        "points": "1203",
+        "display": "1,203",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "5",
+          "mode": "text-to-video",
+          "quality": "标准",
+          "resolution": "720p"
+        }
+      },
+      {
+        "points": "1203",
+        "display": "1,203",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "10",
+          "mode": "text-to-video",
+          "quality": "标准",
+          "resolution": "720p"
+        }
+      }
+    ],
+    "ycapi-gemini-3.1-flash-lite-image": [
+      {
+        "points": "186.95",
+        "display": "186.95",
+        "unit": "CNY / image",
+        "params": {
+          "aspect_ratio": "1:1",
+          "count": 1,
+          "mode": "text-to-image",
+          "size": "1K"
+        }
+      }
+    ],
+    "ycapi-kling-v4": [
+      {
+        "points": "1444.5",
+        "display": "1,444.5",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "5",
+          "mode": "text-to-video",
+          "resolution": "1080p"
+        }
+      },
+      {
+        "points": "1444.5",
+        "display": "1,444.5",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "10",
+          "mode": "text-to-video",
+          "resolution": "1080p"
+        }
+      },
+      {
+        "points": "1035",
+        "display": "1,035",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "5",
+          "mode": "text-to-video",
+          "resolution": "720p"
+        }
+      },
+      {
+        "points": "1035",
+        "display": "1,035",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "10",
+          "mode": "text-to-video",
+          "resolution": "720p"
+        }
+      }
+    ],
+    "ycapi-seedance-2-5-promo": [
+      {
+        "points": "4045.88825",
+        "display": "4,045.88825",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "5",
+          "mode": "text-to-video",
+          "resolution": "1080p"
+        }
+      },
+      {
+        "points": "4045.888125",
+        "display": "4,045.888125",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "10",
+          "mode": "text-to-video",
+          "resolution": "1080p"
+        }
+      },
+      {
+        "points": "1665",
+        "display": "1,665",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "5",
+          "mode": "text-to-video",
+          "resolution": "720p"
+        }
+      },
+      {
+        "points": "1665",
+        "display": "1,665",
+        "unit": "CNY / second",
+        "params": {
+          "aspect_ratio": "16:9",
+          "count": 1,
+          "duration": "10",
+          "mode": "text-to-video",
+          "resolution": "720p"
+        }
+      }
+    ]
+  }
+}

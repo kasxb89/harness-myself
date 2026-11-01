@@ -1,3 +1,4 @@
+import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
 import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import { createInboxStub } from '@deepseek-ai/dsh-agent-loop-testkit'
@@ -493,5 +494,98 @@ describe('Session file uploads', () => {
         code: 'gateway/internal',
         message: 'failed to store file upload: Error: disk unavailable',
       })
+  })
+})
+
+describe('Session prompt metadata admission', () => {
+  it('awaits metadata before enqueueing, singleflights one request, and accepts retries without rereading', async () => {
+    const { ctx, controller, agent, followup } = await uploadHarness()
+    followup.mockImplementation((message: UserMessage) => { agent.inbox.append('next-turn', message) })
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const seen = vi.fn()
+    ctx.on('session/prompt-admission', async (admission, next) => {
+      seen(admission)
+      await gate
+      await next()
+    })
+    const request = { ...promptRequest([{ type: 'text' as const, text: 'one video' }]),
+      inputContext: { plugin: { revision: 'first' } } }
+    const first = controller.prompt(request)
+    await vi.waitFor(() => { expect(seen).toHaveBeenCalledOnce() })
+    const duplicate = controller.prompt({ ...request, inputContext: { plugin: { revision: 'changed' } } })
+    expect(followup).not.toHaveBeenCalled()
+    expect(seen.mock.calls[0]?.[0]).toMatchObject({ agent, requestId: request.requestId,
+      message: { content: [{ type: 'text', text: 'one video' }], source: { rpcId: request.requestId } },
+      inputContext: { plugin: { revision: 'first' } } })
+    release()
+    await expect(Promise.all([first, duplicate])).resolves.toEqual([{ accepted: true }, { accepted: true }])
+    expect(followup).toHaveBeenCalledOnce()
+    await expect(controller.prompt({ ...request, inputContext: { plugin: { revision: 'third' } } }))
+      .resolves.toEqual({ accepted: true })
+    expect(seen).toHaveBeenCalledOnce()
+  })
+
+  it('keeps independent requests moving while another admission is pending', async () => {
+    const { ctx, controller, agent, followup } = await uploadHarness()
+    followup.mockImplementation((message: UserMessage) => { agent.inbox.append('next-turn', message) })
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const seen = vi.fn()
+    ctx.on('session/prompt-admission', async (admission, next) => {
+      seen(admission.requestId)
+      if (admission.requestId === 'req-1') await gate
+      await next()
+    })
+    const request = promptRequest([{ type: 'text', text: 'generate' }])
+    const first = controller.prompt(request)
+    await vi.waitFor(() => { expect(seen).toHaveBeenCalledWith('req-1') })
+    await expect(controller.prompt({ ...request, requestId: 'req-2' as SessionRequestId }))
+      .resolves.toEqual({ accepted: true })
+    expect(followup).toHaveBeenCalledOnce()
+    release()
+    await first
+    expect(followup).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not enqueue rejected metadata and permits the same request to retry', async () => {
+    const { ctx, controller, followup } = await uploadHarness()
+    const failure = new RemoteError('gateway/bad-request', 'selection changed', {})
+    let attempts = 0
+    ctx.on('session/prompt-admission', async (_admission, next) => {
+      if (++attempts === 1) throw failure
+      await next()
+    })
+    const request = promptRequest([{ type: 'text', text: 'generate' }])
+    await expect(controller.prompt(request)).rejects.toBe(failure)
+    expect(followup).not.toHaveBeenCalled()
+    await expect(controller.prompt(request)).resolves.toEqual({ accepted: true })
+    expect(attempts).toBe(2)
+    expect(followup).toHaveBeenCalledOnce()
+  })
+
+  it('rejects unsafe context through the prompt executor before metadata listeners or enqueue', async () => {
+    const { ctx, controller, followup } = await uploadHarness()
+    const seen = vi.fn()
+    ctx.on('session/prompt-admission', async (_admission, next) => { seen(); await next() })
+    await expect(controller.prompt({ ...promptRequest([{ type: 'text', text: 'generate' }]),
+      inputContext: JSON.parse('{"plugin":{"__proto__":{"polluted":true}}}') as never }))
+      .rejects.toMatchObject({ code: 'gateway/bad-request' })
+    expect(seen).not.toHaveBeenCalled()
+    expect(followup).not.toHaveBeenCalled()
+  })
+
+  it('removes an admission listener when its plugin is disposed', async () => {
+    const { ctx, controller } = await uploadHarness()
+    const seen = vi.fn()
+    const fiber = ctx.plugin((pluginCtx: Context) => {
+      pluginCtx.on('session/prompt-admission', async (_admission, next) => { seen(); await next() })
+    })
+    await fiber.await()
+    await controller.prompt(promptRequest([{ type: 'text', text: 'first' }]))
+    expect(seen).toHaveBeenCalledOnce()
+    await fiber.dispose()
+    await controller.prompt({ ...promptRequest([{ type: 'text', text: 'next' }]), requestId: 'req-2' as SessionRequestId })
+    expect(seen).toHaveBeenCalledOnce()
   })
 })

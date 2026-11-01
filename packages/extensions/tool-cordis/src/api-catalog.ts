@@ -4451,6 +4451,14 @@ export const EVENT_API: readonly EventApiEntry[] = [
     parameters: [{ name: 'session', description: 'the session whose buffered events must reach durable storage.' }],
   },
   {
+    name: 'session/prompt-admission',
+    mode: 'waterfall',
+    signature: '\'session/prompt-admission\'(admission: SessionPromptAdmission, next: () => Promise<void>): Promise<void>',
+    summary: 'Validate and capture plugin-owned prompt metadata before inbox acceptance.',
+    description: 'Validate and capture plugin-owned prompt metadata before inbox acceptance. Accepted request retries skip this event. Failed admissions may retry with the same identity. Listeners must delegate and complete local work without waiting for model or tool execution.',
+    parameters: [{ name: 'admission', description: 'Prepared message, exact request identity, and detached input hints.' }, { name: 'next', description: 'Await the remaining admission listeners.' }],
+  },
+  {
     name: 'settings/document-updated',
     mode: 'emit',
     signature: '\'settings/document-updated\'(ns: SettingsNamespace, revision: number): void',
@@ -7267,8 +7275,16 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export type SessionProjectionValues = Partial<SessionProjectionMap> & Readonly<Record<string, SessionProjectionValue>>;',
   },
   {
+    name: 'SessionPromptAdmission',
+    declaration: 'export interface SessionPromptAdmission {\n    readonly agent: Agent;\n    readonly requestId: SessionRequestId;\n    readonly message: UserMessage;\n    readonly inputContext?: SessionPromptInputContext;\n}',
+  },
+  {
+    name: 'SessionPromptInputContext',
+    declaration: 'export type SessionPromptInputContext = Readonly<Record<string, JsonValue>>;',
+  },
+  {
     name: 'SessionPromptRequest',
-    declaration: 'export interface SessionPromptRequest {\n    readonly requestId: SessionRequestId;\n    readonly sessionId: SessionId;\n    readonly mode: \'queue\' | \'steer\';\n    readonly content: readonly PromptContentPart[];\n    readonly clientTimeZone?: string;\n}',
+    declaration: 'export interface SessionPromptRequest {\n    readonly requestId: SessionRequestId;\n    readonly sessionId: SessionId;\n    readonly mode: \'queue\' | \'steer\';\n    readonly content: readonly PromptContentPart[];\n    readonly clientTimeZone?: string;\n    readonly inputContext?: SessionPromptInputContext;\n}',
   },
   {
     name: 'SessionPromptValue',

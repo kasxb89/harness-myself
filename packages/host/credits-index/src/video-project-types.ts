@@ -56,6 +56,10 @@ export interface VideoProjectInput {
   mode?: string
   /** Requested audio state; fixed native audio is accepted without inventing a provider switch. */
   audio?: boolean
+  /** Explicit deterministic seed when declared by the chosen model. */
+  seed?: number
+  /** Explicit watermark control when declared by the chosen model. */
+  watermark?: boolean
   /** Existing uploaded first/last-frame ids or workspace image paths. */
   frameImages?: readonly string[]
   /** Existing uploaded subject/style ids or workspace image paths. */
@@ -180,6 +184,13 @@ export interface VideoProjectOptions {
   activity?(this: void, event: VideoProjectActivity): void
   /** Read the current account’s deployment default only for a new request without an explicit model. */
   defaultModel?(signal: AbortSignal): Promise<string>
+  /**
+   * Resolve a new native or PTC request before defaults and planning.
+   * @param args - Current tool controls, excluding accepted task recovery.
+   * @param exec - Exact real-human execution attribution.
+   * @returns Controls with the captured personal defaults and current human overrides applied.
+   */
+  requestSelection?<T extends Readonly<Record<string, unknown>>>(args: T, exec: ToolRunContext): Promise<T & { readonly model?: string }>
   /** Resolve and approve a chat-only model change before preparing any billable project. */
   chatModelChoice?(
     input: VideoProjectInput, exec: ToolRunContext, provider: VideoProjectProvider, defaultedModel?: boolean,

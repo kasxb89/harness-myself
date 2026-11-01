@@ -277,6 +277,20 @@ Assembler 会记录这项依赖。如果后续 older prepend 带来了更近的�
 
 输入 facade 通过 `InputState.modelCapabilities` 暴露控制，不锁定文字输入或清除草稿。不支持的附件仍保留，用户可以移除或切换模型后使用；输入框拒绝发送不兼容的内容。[输入所有者](../../packages/client/ui-conversation/README.zh.md)说明附件入口与草稿恢复。
 
+<a id="prompt-input-context"></a>
+
+## 提示词输入上下文
+
+仅限客户端的异步 waterfall `conversation/prompt-context(request, next)` 在 Conversation 服务提交普通 Session 消息前收集准入提示，包括欢迎页的第一条消息。根插件注册不依赖输入框挂载。提供方等待 `next()`，返回 `SessionPromptInputContext` 时保留其他命名空间；空对象保持原有提示词调用。收集失败会撤销本地回显并保留草稿附件。提示通过 `SessionPromptRequest.inputContext` 传输，不修改用户文本。按地址发送的子代理续接保留独立协议，不携带这些提示。
+
+```ts type-equiv
+/** Target of a prompt about to leave the Conversation orchestration service. */
+interface ConversationPromptContextRequest {
+  readonly sessionId: SessionId
+  readonly mode: InputSubmitMode
+}
+```
+
 ## 验证要求
 
 添加聚焦测试，证明以下结果：

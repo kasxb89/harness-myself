@@ -86,7 +86,7 @@ export function videoModelQuoteSegment(request: Readonly<Record<string, unknown>
       images += request.images.filter(value => value !== metadata.first_frame_image && value !== metadata.last_frame_image).length
     }
     const parameters: Record<string, unknown> = {}
-    for (const field of ['seconds', 'size', 'resolution', 'ratio', 'aspect_ratio', 'quality', 'mode', 'seed', 'generate_audio']) {
+    for (const field of ['seconds', 'size', 'resolution', 'ratio', 'aspect_ratio', 'quality', 'mode', 'seed', 'generate_audio', 'watermark']) {
       const value = request[field]
       if (value === undefined) continue
       if (typeof value === 'number' ? !Number.isFinite(value)
@@ -94,7 +94,7 @@ export function videoModelQuoteSegment(request: Readonly<Record<string, unknown>
       parameters[field] = value
     }
     if (typeof parameters.seconds !== 'number' || !Number.isSafeInteger(parameters.seconds) || parameters.seconds < 1) throw quoteUnavailable()
-    const fields = Object.fromEntries(['resolution', 'ratio', 'generate_audio', 'seed']
+    const fields = Object.fromEntries(['resolution', 'ratio', 'generate_audio', 'seed', 'watermark']
       .filter(field => metadata[field] !== undefined).map(field => [field, metadata[field]]))
     if (Object.values(fields).some(value => !['string', 'number', 'boolean'].includes(typeof value))) throw quoteUnavailable()
     if (Object.keys(fields).length > 0) parameters.metadata = fields

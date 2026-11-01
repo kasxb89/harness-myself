@@ -24,13 +24,35 @@ import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type {
   ComposerAttachment, ComposerFileAttachment, ComposerImageAttachment, DraftFileUpload,
 } from './contract/slots.ts'
-import type { QueueAction } from '@deepseek-ai/dsh-api-session-controller/types'
+import type { QueueAction, SessionPromptInputContext } from '@deepseek-ai/dsh-api-session-controller/types'
 import type { MessageId } from '@deepseek-ai/dsh-llm/brand'
 import type { ComposerBlocks } from './contract/composer-blocks.ts'
 import type {
   DraftAttachmentId, DraftAttachmentSerializationResult, SessionInputResolver, SubmitAttachment, SubmitOutcome,
 } from './contract/input.ts'
 import type { InputSubmitMode } from './contract/composer-submission.ts'
+
+/** Target of a prompt about to leave the Conversation orchestration service. */
+export interface ConversationPromptContextRequest {
+  readonly sessionId: SessionId
+  readonly mode: InputSubmitMode
+}
+
+declare module '@deepseek-ai/cordis' {
+  interface Events {
+    /**
+     * Collect namespaced Host admission hints for a submission, including the first new-chat message.
+     * Register on the plugin Context rather than a mounted input component. Hints never alter prompt text.
+     * @mode waterfall
+     * @param request - Target Session and delivery mode.
+     * @param next - Collect the other providers; preserve their namespaces in the result.
+     * @returns JSON-only hints, independently validated by the Host.
+     */
+    'conversation/prompt-context'(
+      request: ConversationPromptContextRequest, next: () => Promise<SessionPromptInputContext>,
+    ): Promise<SessionPromptInputContext>
+  }
+}
 
 /**
  * The outward conversation face (`ctx.conversation`): the scope-addressed
@@ -208,7 +230,10 @@ export class ConversationController extends Service implements IConversation {
    */
   async send(text: string): Promise<void> {
     const session = this.scopedSession('send')
-    const result = await session.prompt([{ type: 'text', text }], 'queue')
+    const inputContext = await this.promptInputContext(session.sessionId, 'queue')
+    const content = [{ type: 'text' as const, text }]
+    const result = await (inputContext === undefined ? session.prompt(content, 'queue')
+      : session.prompt(content, 'queue', undefined, undefined, inputContext))
     if (!result.ok) throw new Error(`conversation.send failed: ${result.error.code}: ${result.error.message}`)
   }
 
@@ -265,7 +290,9 @@ export class ConversationController extends Service implements IConversation {
     if (snapshot.subagent !== null) {
       const uploaded = await serializeAttachments()
       const content = [...uploaded, ...(text === '' ? [] : [{ type: 'text' as const, text }])]
-      const result = await session.prompt(content, mode, signal)
+      const inputContext = await this.promptInputContext(session.sessionId, mode)
+      const result = await (inputContext === undefined ? session.prompt(content, mode, signal)
+        : session.prompt(content, mode, signal, undefined, inputContext))
       return result.ok ? { kind: 'success' } : { kind: 'error' }
     }
     let finishRetirement: ((retirement: PendingSubmissionRetirement) => void) | undefined
@@ -282,18 +309,26 @@ export class ConversationController extends Service implements IConversation {
       },
     })
     let content: Parameters<SessionFace['prompt']>[0]
+    let inputContext: SessionPromptInputContext | undefined
     try {
       await nextPaint()
+      inputContext = await this.promptInputContext(session.sessionId, mode)
       const uploaded = await serializeAttachments()
       content = [...uploaded, ...(text === '' ? [] : [{ type: 'text' as const, text }])]
     } catch (error) {
       submission.abandon()
       throw error
     }
-    const result = await session.prompt(content, mode, signal, submission.requestId)
+    const result = await (inputContext === undefined ? session.prompt(content, mode, signal, submission.requestId)
+      : session.prompt(content, mode, signal, submission.requestId, inputContext))
     if (!result.ok) return { kind: 'error' }
     if (retirement !== undefined && (await retirement).reason !== 'observed') return { kind: 'error' }
     return { kind: 'success' }
+  }
+
+  private async promptInputContext(sessionId: SessionId, mode: InputSubmitMode): Promise<SessionPromptInputContext | undefined> {
+    const result = await this.ctx.waterfall('conversation/prompt-context', { sessionId, mode }, () => Promise.resolve({}))
+    return Object.keys(result).length === 0 ? undefined : result
   }
 
   /**

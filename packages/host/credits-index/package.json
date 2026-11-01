@@ -12,6 +12,7 @@
       "default": "./lib/index.js"
     },
     "./src/*": "./src/*",
+    "./media-preferences-types": { "types": "./lib/types/media-preferences-types.d.ts" },
     "./creative-types": { "types": "./lib/types/creative-types.d.ts" },
     "./package.json": "./package.json"
   },

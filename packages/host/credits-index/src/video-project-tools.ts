@@ -269,11 +269,13 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
       total_duration_seconds: { type: 'number', description: 'Desired final length in whole seconds; this may exceed the model single-clip limit. For a simple single clip with no plan or explicit shot arrays, omit to use the selected model’s actual default duration. The Host reads the real catalog itself; no separate list_video_models call is needed. Required for explicit plans and shot arrays; never omit a user-specified duration.' },
       shot_prompts: { type: 'array', items: { type: 'string' }, description: 'Exact shot briefs, one per planned clip. With plan_id and shot_ids, omit to use each saved shot’s scene, camera, action, prompt, exact dialogue/subtitles and associated character definitions without another model call. Explicit values remain verbatim. Otherwise allocate delegated narrative lines and timing to stable speakers, distinguishing on-screen speech from narration. Respect silent/no-dialogue requests.' },
       shot_durations_seconds: { type: 'array', items: { type: 'number' }, description: 'Exact model-supported whole seconds per clip, in shot_ids or shot_prompts order. Their sum must equal total_duration_seconds. When omitted for an explicit creation plan, use its saved shot durations; do not silently change timeline timing.' },
-      model: { type: 'string', description: 'When omitted, the Host uses the backend-configured video model for this account; an older or unset configuration retains MiniMax-H3. Only actual H3 defaults to 768P without a specified tier. Preserve an explicitly requested model; any non-H3 selection requires a current full-price estimate and a real human model choice before generation. Model arguments never approve that change.' },
+      model: { type: 'string', description: 'The current human request overrides the frozen personal video preference, then the backend-configured video model for this account; an older or unset configuration retains MiniMax-H3. Only actual H3 defaults to 768P without a specified tier. Preserve an explicitly requested model; any non-H3 selection requires a current full-price estimate and a real human model choice before generation. Model arguments never approve that change.' },
       resolution: { type: 'string' }, ratio: { type: 'string' },
       size: { type: 'string', description: 'Exact native output size from the complete published specification, when distinct from resolution.' },
       quality: { type: 'string', description: 'Exact quality tier from the complete published specification; used for both quote and submission.' },
       mode: { type: 'string', description: 'Published vendor mode, only when supported.' },
+      seed: { type: 'number', description: 'Safe integer random seed, only when declared by the selected model.' },
+      watermark: { type: 'boolean', description: 'Watermark switch, only when declared by the selected model.' },
       audio: { type: 'boolean', description: 'Optional requested audio state from list_video_models, not a capability probe. Sent as a switch only when the chosen model declares one; fixed native audio accepts only its declared state. No switch does not mean silent output; an undeclared audio state remains unknown. Do not blindly send true, and do not promise speech, lip-sync, subtitles or silence without checking the media.' },
       frame_images: { type: 'array', items: { type: 'string' }, description: 'Existing uploaded ma_ first/last frame ids or workspace image paths. For a user-supplied chat attachment outside the workspace, first copy the read-authorized attachment into the workspace with existing file tools and pass its copied path.' },
       reference_images: { type: 'array', items: { type: 'string' }, description: 'Shared uploaded ma_ subject/style image ids or workspace image paths used by every shot. With plan_id, each shot’s saved image materials and character references are added only to that shot; do not duplicate unrelated character references here. For a user-supplied chat attachment outside the workspace, first copy the read-authorized attachment into the workspace with existing file tools and pass its copied path.' },
@@ -310,6 +312,7 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
             ...args.plan_id === undefined ? {} : { planId: args.plan_id },
             ...args.shot_ids === undefined ? {} : { shotIds: args.shot_ids },
           })
+        if (options.requestSelection !== undefined) args = await options.requestSelection(args, exec)
         let duration = args.total_duration_seconds
         if (videoIntent.requestedDurationSeconds !== undefined) {
           if (duration !== undefined && duration !== videoIntent.requestedDurationSeconds) {
@@ -331,7 +334,9 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
           if (selected.id !== model) {
             throw new VideoProjectError('VIDEO_MODEL_UNAVAILABLE', '所选视频型号与服务返回不一致，尚未提交生成；请重新选择型号。')
           }
-          duration = selected.defaultDuration ?? selected.durations[0]
+          const preference = await options.requestSelection?.({}, exec)
+          const preferredSeconds = preference !== undefined && 'seconds' in preference ? preference.seconds : undefined
+          duration = typeof preferredSeconds === 'number' ? preferredSeconds : selected.defaultDuration ?? selected.durations[0]
           if (duration === undefined || !Number.isSafeInteger(duration) || !selected.durations.includes(duration) || duration < 1) {
             throw new VideoProjectError('DURATION_MENU_UNAVAILABLE', '当前模型没有合法的默认时长，请选择视频时长后重试；尚未提交生成。')
           }
@@ -384,6 +389,8 @@ export function registerVideoProjectTools(ctx: Context, options: VideoProjectOpt
           ...args.quality === undefined ? {} : { quality: args.quality },
           ...args.mode === undefined ? {} : { mode: args.mode },
           ...args.audio === undefined ? {} : { audio: args.audio },
+          ...args.seed === undefined ? {} : { seed: args.seed },
+          ...args.watermark === undefined ? {} : { watermark: args.watermark },
           ...args.frame_images === undefined ? {} : { frameImages: await images(args.frame_images) },
           ...args.reference_images === undefined ? {} : { referenceImages: await images(args.reference_images) },
           ...args.reference_videos === undefined ? {} : { referenceVideos: args.reference_videos },

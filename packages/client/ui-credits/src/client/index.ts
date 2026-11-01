@@ -23,6 +23,8 @@ import { SessionModelCredits, TurnModelCredits, type ModelCreditsInjected } from
 import { BalanceNotice, type BalanceNoticeInjected } from './BalanceNotice.tsx'
 import { createOnboardingSurvey } from './onboarding-survey-store.ts'
 import { OnboardingSurvey, OnboardingSurveyEntry } from './OnboardingSurvey.tsx'
+import { ChatMediaPreferences } from './ChatMediaPreferences.tsx'
+import { createMediaPreferences } from './media-preferences-controller.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -75,6 +77,20 @@ export function apply(ctx: ClientContext, config: Config = {}): void {
       const session = scope.creditsSession.getSnapshot().session
       return session?.signedIn === true && session.accountOwner === owner
     }), 'ui-credits: product balance scope')
+  })
+  const media = createMediaPreferences(ctx.creditsSession, resolved.chatUsageReadTimeoutMs)
+  ctx.effect(() => media.start(), 'ui-credits: chat media preference lifecycle')
+  ctx.on('conversation/prompt-context', async (_request, next) => {
+    const hint = media.promptHint()
+    const inherited = await next()
+    return hint === undefined ? inherited : { ...inherited, credits_media_preferences: { ...hint } }
+  })
+  ctx.inject(['sessions'], (scope) => {
+    scope.slots.inject('conversation.input.right', () => scope.slots.register({
+      name: 'conversation.input.right', id: 'media-preferences', order: 20, locale: NS,
+      inject: sessionId => ({ hooks: media.hooks, loadCatalog: media.loadCatalog, savePreference: media.savePreference,
+        available: scope.sessions.subagentAddress(sessionId) === undefined }),
+    }, ChatMediaPreferences))
   })
   const t = ctx.locale.bind(NS)
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-credits: dictionaries')

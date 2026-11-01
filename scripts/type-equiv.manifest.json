@@ -2431,6 +2431,26 @@
       "doc": "docs/subsystems/llm-streaming.md",
       "symbol": "LlmTextCapabilities",
       "source": "packages/llm/llm/src/types.ts"
+    },
+    {
+      "doc": "docs/subsystems/session.md",
+      "symbol": "SessionPromptInputContext",
+      "source": "packages/api/session-controller/src/types.ts"
+    },
+    {
+      "doc": "docs/subsystems/session.md",
+      "symbol": "SessionPromptAdmission",
+      "source": "packages/api/session-controller/src/types.ts"
+    },
+    {
+      "doc": "docs/subsystems/session.md",
+      "symbol": "SessionPromptRequest",
+      "source": "packages/api/session-controller/src/types.ts"
+    },
+    {
+      "doc": "docs/subsystems/conversation.md",
+      "symbol": "ConversationPromptContextRequest",
+      "source": "packages/client/ui-conversation/src/client/service.ts"
     }
   ]
 }

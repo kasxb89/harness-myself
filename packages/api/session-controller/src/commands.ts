@@ -1,5 +1,6 @@
 /** Session commands whose activation policy is explicit at each Remote method. */
 
+import { admitPromptInputContext } from './prompt-input-context.ts'
 import { modelAvailable } from './catalog.ts'
 import { randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
@@ -87,6 +88,7 @@ function latestCompletedPrefixBoundary(events: readonly SessionEvent[]): Session
 
 /** Implements Session business commands delegated by the Session Controller Remote service. */
 export class SessionCommandController {
+  private readonly promptAdmissions = new WeakMap<Agent, Map<SessionRequestId, Promise<SessionPromptValue>>>()
   /**
    * @param ctx - Host context carrying Agent, model, attachment, title, and Workspace services.
    * @param agents - sole owner of create, resume, and Session-local model selection.
@@ -338,6 +340,7 @@ export class SessionCommandController {
       ...(clientTimeZone === undefined ? {} : { clientTimeZone }),
     }
     const hasImage = request.content.some(part => part.type === 'image')
+    let inputContext: ReturnType<typeof admitPromptInputContext>
     const admit = async (): Promise<SessionPromptValue> => {
       try {
         const current = this.agents.selectionFor(agent).current
@@ -391,6 +394,14 @@ export class SessionCommandController {
             { sessionId: agent.id },
           )
         }
+        await this.ctx.waterfall('session/prompt-admission', {
+          agent, requestId: request.requestId, message,
+          ...(inputContext === undefined ? {} : { inputContext }),
+        }, () => Promise.resolve())
+        if (this.ctx.agents.get(agent.id) !== agent) {
+          throw new RemoteError('session/not-found', `session "${agent.id}" was disposed during prompt admission`,
+            { sessionId: agent.id })
+        }
         using binding = this.ctx.fileUploads.bindPrompt(agent, admission.receiptIds, request.requestId)
         if (request.mode === 'steer') agent.steer(message)
         else agent.followup(message)
@@ -404,7 +415,24 @@ export class SessionCommandController {
       }
       return { accepted: true }
     }
-    return hasImage ? this.agents.serializeImageAdmission(agent, admit) : admit()
+    let pending = this.promptAdmissions.get(agent)
+    if (pending === undefined) {
+      pending = new Map()
+      this.promptAdmissions.set(agent, pending)
+    }
+    const existing = pending.get(request.requestId)
+    if (existing !== undefined) return existing
+    const operation = Promise.resolve().then(async () => {
+      if (hasPromptRequest(agent, request.requestId)) return { accepted: true } as const
+      inputContext = admitPromptInputContext(request.inputContext)
+      return hasImage ? this.agents.serializeImageAdmission(agent, admit) : admit()
+    })
+    pending.set(request.requestId, operation)
+    try {
+      return await operation
+    } finally {
+      pending.delete(request.requestId)
+    }
   }
 
   private async requireModel(selection: Pick<AgentModelSelection, 'provider' | 'model'>): Promise<void> {

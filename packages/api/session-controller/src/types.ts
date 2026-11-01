@@ -1,4 +1,6 @@
 /** Browser-safe request, result, and lifecycle vocabulary for the Session Remote service. */
+import type { Agent } from '@deepseek-ai/dsh-agent/types'
+import type { UserMessage } from '@deepseek-ai/dsh-llm/types'
 import type { NativeFileApplication } from '@deepseek-ai/dsh-native-command/types'
 
 import type {
@@ -359,6 +361,18 @@ export interface SessionForkValue {
   readonly sessionId: SessionId
 }
 
+/** Namespaced, JSON-only input hints for Host admission; never implicit model input. */
+export type SessionPromptInputContext = Readonly<Record<string, JsonValue>>
+
+/** One prepared human prompt before it enters the Agent inbox. */
+export interface SessionPromptAdmission {
+  readonly agent: Agent
+  readonly requestId: SessionRequestId
+  readonly message: UserMessage
+  /** Detached, bounded hints. Each consumer independently validates its namespace. */
+  readonly inputContext?: SessionPromptInputContext
+}
+
 /** Session prompt request. */
 export interface SessionPromptRequest {
   /** Client-minted identity persisted on the exact accepted user message. */
@@ -368,6 +382,8 @@ export interface SessionPromptRequest {
   /** At least one non-whitespace text part or attachment. */
   readonly content: readonly PromptContentPart[]
   readonly clientTimeZone?: string
+  /** Optional admission-only namespaces; at most 16 KiB, depth 8, and 1,024 JSON values. */
+  readonly inputContext?: SessionPromptInputContext
 }
 
 /** Receipt after one prompt enters the target Agent inbox. */
@@ -615,6 +631,15 @@ export type SessionControlFrame =
 
 declare module '@deepseek-ai/cordis' {
   interface Events {
+    /**
+     * Validate and capture plugin-owned prompt metadata before inbox acceptance.
+     * Accepted request retries skip this event. Failed admissions may retry with the same identity.
+     * Listeners must delegate and complete local work without waiting for model or tool execution.
+     * @mode waterfall
+     * @param admission - Prepared message, exact request identity, and detached input hints.
+     * @param next - Await the remaining admission listeners.
+     */
+    'session/prompt-admission'(admission: SessionPromptAdmission, next: () => Promise<void>): Promise<void>
     /**
      * A Session became visible or its Agent was created or disposed.
      * Consumers upsert the summary and replace its current running and availability state.

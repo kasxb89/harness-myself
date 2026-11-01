@@ -98,6 +98,52 @@ function fixed(value: bigint, places: number): string {
   return (raw.slice(0, -places) + '.' + raw.slice(-places)).replace(/\.?0+$/u, '')
 }
 
+/** Exact extrema in account points, before display rounding. */
+export interface CreditUnitRange { readonly minimum: string; readonly maximum: string }
+
+/**
+ * Validate exact decimal point prices after the Host's currency conversion.
+ * @param value - Untrusted point price.
+ * @returns Whether the value is a bounded nonnegative decimal string; numeric zero alone does not establish free generation.
+ */
+export function publicPointsDecimal(value: unknown): value is string {
+  return typeof value === 'string' && /^(?:0|[1-9]\d{0,35})(?:\.\d{1,48})?$/u.test(value)
+}
+
+/**
+ * Compare exact per-unit point prices already converted by the Host.
+ * @param prices - Verified positive points per image or points per second; free-generation evidence is not supplied here.
+ * @returns Exact minimum and maximum, or absence when no reliable prices are available.
+ */
+export function creditUnitRange(prices: readonly string[]): CreditUnitRange | undefined {
+  if (prices.length === 0 || !prices.every(value => publicPointsDecimal(value) && /[1-9]/u.test(value))) return undefined
+  const values = prices.map(coefficient)
+  const scale = Math.max(...values.map(value => value.scale))
+  const normalized = values.map(value => value.integer * 10n ** BigInt(scale - value.scale))
+  const minimum = normalized.reduce((left, right) => left < right ? left : right)
+  const maximum = normalized.reduce((left, right) => left > right ? left : right)
+  const format = (value: bigint): string => scale === 0 ? value.toString() : fixed(value, scale)
+  return { minimum: format(minimum), maximum: format(maximum) }
+}
+
+/**
+ * Format a decimal point amount without converting it to a floating-point number.
+ * @param value - Exact nonnegative point amount.
+ * @param locale - Product locale used for digit grouping.
+ * @returns A compact amount with at most six decimal places, rounded upward so a positive price never appears free.
+ */
+export function formatCreditUnitPrice(value: string, locale: string): string {
+  const amount = coefficient(value)
+  const places = Math.min(6, amount.scale)
+  const divisor = 10n ** BigInt(amount.scale - places)
+  const rounded = (amount.integer + divisor - 1n) / divisor
+  const text = places === 0 ? rounded.toString() : fixed(rounded, places)
+  const [whole = '0', fraction] = text.split('.')
+  const grouped = new Intl.NumberFormat(locale, { maximumFractionDigits: 0 }).format(BigInt(whole))
+  const separator = new Intl.NumberFormat(locale).formatToParts(1.1).find(part => part.type === 'decimal')?.value ?? '.'
+  return fraction === undefined ? grouped : `${grouped}${separator}${fraction}`
+}
+
 /**
  * Compare exact decimal prices without rounding positive prices to free or savings to 100%.
  * @param row - Validated prices for one direction and complete specification.

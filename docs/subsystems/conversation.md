@@ -277,6 +277,18 @@ The Client-only, Session-scoped parallel event `conversation/input-model-capabil
 
 The input facade exposes the controls as `InputState.modelCapabilities` without locking text entry or clearing the draft. Unsupported attachments remain available to remove or use after switching models; the composer refuses an incompatible send. [The input owner](../../packages/client/ui-conversation/README.md) describes attachment entry and draft recovery.
 
+## Prompt input context
+
+The awaited Client-only waterfall `conversation/prompt-context(request, next)` collects admission hints in the Conversation service before ordinary Session submission, including the first welcome-page message. Root plugin registrations do not depend on a mounted composer. Providers await `next()` and preserve its namespaces when returning a `SessionPromptInputContext`; an empty object preserves the legacy prompt call. Collection failure abandons the local echo and preserves draft attachments. Hints travel in `SessionPromptRequest.inputContext` without modifying user text. Addressed subagent continuations retain their separate protocol and do not carry these hints.
+
+```ts type-equiv
+/** Target of a prompt about to leave the Conversation orchestration service. */
+interface ConversationPromptContextRequest {
+  readonly sessionId: SessionId
+  readonly mode: InputSubmitMode
+}
+```
+
 ## Verification obligations
 
 Add focused tests that establish these outcomes:

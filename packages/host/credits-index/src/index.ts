@@ -40,6 +40,10 @@ import { SessionRefresh, type StoredAccount, type StoredSession } from './sessio
 import { sessionTransportFailure, type SessionFailure } from './session-failure.ts'
 import { PhoneAuthState, type PhoneDeliveryStatus } from './phone-auth-state.ts'
 import { MediaDefaultsCache, mediaDefaultSelection, requireMediaDefault, type MediaDefaultSelection } from './media-defaults.ts'
+import { MediaPreferencesStore, mediaPreferencesScope } from './media-preferences.ts'
+import { registerMediaRequestSelection, resolveMediaRequestSelection, needsMediaRequestSelectionCatalog, type MediaRequestSelectionContext } from './media-request-selection.ts'
+import { mediaPreferencePrices } from './media-preference-pricing.ts'
+import type { MediaPreferenceModel, MediaPreferencePricing } from './media-preferences-types.ts'
 import { readAnnouncementBanner } from './announcement-banner.ts'
 import { parseClientModelConfigStatus, parseClientModelPresentationStatus } from './client-model-config.ts'
 import { ProductModelCapabilitiesError, mergeProductModelLimits, productModelLimitsScope, readProductModelLimits, type ProductModelLimits } from './model-limits.ts'
@@ -866,6 +870,7 @@ export function apply(ctx: Context, config: Config): void {
   const imageExecutions = new ImageConcurrency(resolved.imageConcurrency)
   const mediaCatalogCache = new MediaCatalogCache(resolved.mediaCatalogCacheTtlMs)
   const mediaDefaultsCache = new MediaDefaultsCache(resolved.mediaCatalogCacheTtlMs)
+  const mediaPreferences = new MediaPreferencesStore(join(stateDir, 'media-preferences'))
   const generationPerformance = new GenerationPerformance(resolved.generationPerformanceMaxRecords)
   const imageJobs = new ImageJobs(ctx, resolved.imageForegroundWaitMs)
   ctx.effect(() => () => imageJobs.dispose(), 'credits-index: owned image background execution')
@@ -882,6 +887,11 @@ export function apply(ctx: Context, config: Config): void {
   /** Last-good status belongs to this exact backend, account and local login, including shared-file changes. */
   const productOwner = (session: StoredSession): string =>
     createHash('sha256').update(JSON.stringify([apiBaseUrl, session.backendBaseUrl, session.account.id, session.token])).digest('hex')
+  registerMediaRequestSelection(ctx, mediaPreferences, async () => {
+    const session = await store.read()
+    return session?.token === undefined ? undefined
+      : { scope: mediaPreferencesScope(apiBaseUrl, session.account.id), owner: productOwner(session) }
+  })
   /** A late generation failure may offer recharge only to its initiating product login. */
   const videoBalanceScope = (identity: VideoProjectIdentity): string | undefined => {
     const session = store.peek()
@@ -1104,7 +1114,7 @@ export function apply(ctx: Context, config: Config): void {
    * channel on the new-api side and its declared image and video models appear
    * in the panels. Submission still validates account access and billing.
    */
-  const readMediaCatalog = async (signal?: AbortSignal): Promise<{
+  const readMediaCatalog = async (signal?: AbortSignal, includePublicUnitPrices = false): Promise<{
     ok: boolean
     code?: string
     message?: string
@@ -1112,6 +1122,7 @@ export function apply(ctx: Context, config: Config): void {
     models: ModelCapability[]
     projectParallelism?: ReadonlyMap<string, number>
     imageCeilings?: ReadonlyMap<string, number | undefined>
+    preferencePrices?: ReadonlyMap<string, MediaPreferencePricing>
   }> => {
     let group: string | null = null
     try {
@@ -1144,7 +1155,16 @@ export function apply(ctx: Context, config: Config): void {
         .map(model => [model.id, videoProjectParallelism(rows, model.id)]))
       const imageCeilings = new Map(models.filter(model => model.kind === 'image')
         .map(model => [model.id, imageConcurrencyCeiling(rows, model.id)]))
-      return { ok: true, group, models, projectParallelism, imageCeilings }
+      let preferencePrices: ReadonlyMap<string, MediaPreferencePricing> | undefined
+      if (includePublicUnitPrices) {
+        try { preferencePrices = mediaPreferencePrices(rows, models, resolved.creditsPerYuan) }
+        catch (_invalidOptionalPublicPriceMetadata: unknown) {
+          // Price display failure cannot remove models or change generation authorization.
+          preferencePrices = new Map()
+        }
+      }
+      return { ok: true, group, models, projectParallelism, imageCeilings,
+        ...preferencePrices === undefined ? {} : { preferencePrices } }
     } catch (error) {
       return {
         ok: false,
@@ -1286,17 +1306,69 @@ export function apply(ctx: Context, config: Config): void {
     }
     const life = AbortSignal.any([publicStatusLife.signal, ...signal === undefined ? [] : [signal],
       AbortSignal.timeout(resolved.timeoutMs)])
-    const [defaults, visible, catalog] = await Promise.all([
+    const catalog = suppliedCatalog === undefined ? await readMediaCatalog(life) : { ok: true, models: suppliedCatalog }
+    const [defaults, visible] = await Promise.all([
       mediaDefaultsCache.read(JSON.stringify([apiBaseUrl, owner, version]),
         () => apiFetch('/api/status', { headers: { accept: 'application/json' }, signal: life }), life, current),
       readNewApiModels(session, life),
-      suppliedCatalog === undefined ? readMediaCatalog(life) : Promise.resolve({ ok: true, models: suppliedCatalog }),
     ])
     await current()
     life.throwIfAborted()
     if (!visible.ok || !catalog.ok) throw new CreativeError('DEFAULT_MEDIA_MODEL_UNAVAILABLE', 409,
       '暂时无法核对默认模型的当前账号权限；尚未提交生成。请重新读取模型目录后重试。')
-    return mediaDefaultSelection(defaults, kind, catalog.models, new Set([...visible.chat, ...visible.image, ...visible.video]))
+    return mediaDefaultSelection(defaults, kind, catalog.models, new Set(visible[kind]))
+  }
+
+  /** Read pricing first so older endpoint caches have complete model declarations before authorization. */
+  const readPreferenceCatalog = async (session: StoredSession, signal?: AbortSignal,
+    publicUnitPrices?: Map<string, MediaPreferencePricing>): Promise<ModelCapability[]> => {
+    const owner = productOwner(session)
+    const epoch = identityVersion
+    const catalog = await readMediaCatalog(signal, publicUnitPrices !== undefined)
+    const visible = await readNewApiModels(session, signal)
+    const latest = await store.read()
+    if (epoch !== identityVersion || latest?.token === undefined || productOwner(latest) !== owner) {
+      throw new CreativeError('ACCOUNT_CHANGED', 409, '登录状态已变化，请重新读取模型目录。')
+    }
+    if (!catalog.ok || !visible.ok) throw new CreativeError('MODEL_CATALOG_UNAVAILABLE', 409,
+      '当前无法读取账号可用的图片和视频模型，请稍后重试；尚未提交生成。')
+    const models = catalog.models.filter(model => model.kind === 'image' && visible.image.includes(model.id)
+      || model.kind === 'video' && visible.video.includes(model.id))
+    if (publicUnitPrices !== undefined) for (const model of models) {
+      const price = catalog.preferencePrices?.get(model.id)
+      if (price !== undefined) publicUnitPrices.set(model.id, price)
+    }
+    return models
+  }
+
+  /** Apply only this exact human request's captured choices; recovery calls do not enter here. */
+  const resolveChatMediaSelection = async <T extends Readonly<Record<string, unknown>>>(
+    exec: ToolRunContext, kind: 'image' | 'video', args: T, context?: MediaRequestSelectionContext,
+  ): Promise<T & { readonly model?: string }> => {
+    const needed = await needsMediaRequestSelectionCatalog(exec, kind, async () => {
+      const local = await store.read()
+      return local?.token === undefined ? undefined : mediaPreferencesScope(apiBaseUrl, local.account.id)
+    })
+    if (!needed) return args
+    const session = await liveSession()
+    if (session?.token === undefined) throw new CreativeError('UNAUTHORIZED', 409, '请先登录后生成。')
+    const models = await readPreferenceCatalog(session, exec.signal)
+    if (kind === 'video' && context?.videoProject === true) {
+      let plannedDurations = Array.isArray(args.shot_durations_seconds)
+        && args.shot_durations_seconds.every(value => typeof value === 'number' && Number.isSafeInteger(value) && value > 0)
+        ? args.shot_durations_seconds as number[] : undefined
+      if (plannedDurations === undefined && typeof args.plan_id === 'string') {
+        const binding = await bindCurrentVideoAccount()
+        const plan = await creative.plan(creativeOwner(exec, binding.identity), args.plan_id)
+        const requested = Array.isArray(args.shot_ids) ? new Set(args.shot_ids) : undefined
+        const shots = plan.shots.filter(shot => requested === undefined || requested.has(shot.id))
+        if (shots.length > 0 && shots.every(shot => typeof shot.durationSeconds === 'number' && Number.isSafeInteger(shot.durationSeconds))) {
+          plannedDurations = shots.flatMap(shot => shot.durationSeconds === undefined ? [] : [shot.durationSeconds])
+        }
+      }
+      context = { ...context, ...plannedDurations === undefined ? {} : { plannedDurations } }
+    }
+    return resolveMediaRequestSelection(exec, kind, args, models, mediaPreferencesScope(apiBaseUrl, session.account.id), context)
   }
 
   /** One published media capability, or a readable catalog lookup failure. */
@@ -1463,6 +1535,9 @@ export function apply(ctx: Context, config: Config): void {
     if (body.durationSeconds !== undefined && (typeof body.durationSeconds !== 'number' || !Number.isSafeInteger(body.durationSeconds))) {
       return { ok: false, code: 'DURATION_NOT_SUPPORTED', message: '视频时长需要是合法整数；尚未提交生成。' }
     }
+    if (body.watermark !== undefined && (typeof body.watermark !== 'boolean' || !params.watermark)) {
+      return { ok: false, code: 'PARAMETER_NOT_SUPPORTED', message: '当前型号不支持该水印开关；尚未提交生成。' }
+    }
     const prompt = readString(body, 'prompt') ?? ''
     if (body.size !== undefined && params.specifications === undefined) {
       return { ok: false, code: 'PARAMETER_NOT_SUPPORTED', message: '请使用当前模型目录公布的分辨率；尚未提交生成。' }
@@ -1606,6 +1681,7 @@ export function apply(ctx: Context, config: Config): void {
       if (resolution !== null && params.resolutions.includes(resolution)) metadata.resolution = resolution
       if (audio !== null && params.audioToggle) metadata.generate_audio = audio
       if (seed !== null && params.seed) metadata.seed = seed
+      if (typeof body.watermark === 'boolean' && params.watermark) metadata.watermark = body.watermark
     }
     // Ark reads ordered frame roles inside content; other gateway plugins
     // read named first/last frames alongside positional images.
@@ -1642,6 +1718,7 @@ export function apply(ctx: Context, config: Config): void {
       ...quality === null ? {} : { quality },
       ...seed === null ? {} : { seed },
       ...audio === null || !params.audioToggle ? {} : { generate_audio: audio },
+      ...typeof body.watermark !== 'boolean' || !params.watermark ? {} : { watermark: body.watermark },
       ...Object.keys(metadata).length === 0 ? {} : { metadata },
       ...ark || frameUrls.length === 0 ? {} : { images: frameUrls },
     }
@@ -3986,6 +4063,53 @@ export function apply(ctx: Context, config: Config): void {
           return
         }
 
+        if (route === '/api/media/preferences' || route === '/api/media/preferences/catalog') {
+          const connection = ctx.get('connection')
+          const rejected = connection === undefined ? 403 : connection.requestRejection(request)
+          if (rejected !== undefined) { json(response, rejected, { ok: false, code: 'MEDIA_PREFERENCES_HOST_AUTH_REQUIRED' }); return }
+          if (method !== 'GET' && (method !== 'PUT' || route.endsWith('/catalog'))) {
+            json(response, 405, { ok: false, code: 'METHOD_NOT_ALLOWED' }); return
+          }
+          try {
+            const session = await liveSession()
+            if (session?.token === undefined) throw new CreativeError('UNAUTHORIZED', 401, '请先登录后选择图片和视频模型。')
+            const owner = productOwner(session)
+            const epoch = identityVersion
+            const scope = mediaPreferencesScope(apiBaseUrl, session.account.id)
+            const assertCurrent = async (): Promise<void> => {
+              const latest = await store.read()
+              if (epoch !== identityVersion || latest?.token === undefined || productOwner(latest) !== owner) {
+                throw new CreativeError('ACCOUNT_CHANGED', 409, '登录状态已变化，请刷新后重新选择。')
+              }
+            }
+            const publicUnitPrices = route.endsWith('/catalog') ? new Map<string, MediaPreferencePricing>() : undefined
+            const models = method === 'PUT' || route.endsWith('/catalog')
+              ? await readPreferenceCatalog(session, undefined, publicUnitPrices) : undefined
+            const preferences = method === 'PUT'
+              ? await mediaPreferences.save(scope, owner, await readJson(request), models ?? [], assertCurrent)
+              : await mediaPreferences.read(scope)
+            const publicModel = (model: ModelCapability): MediaPreferenceModel => {
+              const pricing = publicUnitPrices?.get(model.id)
+              return { id: model.id, displayName: model.displayName,
+                verified: model.verified, source: model.source, notes: model.notes,
+                ...pricing === undefined ? {} : { pricing },
+                ...model.kind === 'image' ? { kind: 'image', params: model.params as ImageParams }
+                  : { kind: 'video', params: model.params as VideoParams } }
+            }
+            const extra = route.endsWith('/catalog') && models !== undefined ? { catalog: {
+              image: models.filter(model => model.kind === 'image').map(publicModel),
+              video: models.filter(model => model.kind === 'video').map(publicModel),
+            }, defaults: { image: await readMediaDefault('image', undefined, models), video: await readMediaDefault('video', undefined, models) } } : {}
+            await assertCurrent()
+            json(response, 200, { ok: true, account: { id: session.account.id }, accountOwner: owner,
+              payload: { ...preferences, ...extra } })
+          } catch (error) {
+            json(response, 200, { ok: false, code: error instanceof CreativeError ? error.code : 'MEDIA_PREFERENCES_UNAVAILABLE',
+              message: error instanceof CreativeError ? error.message : '图片和视频偏好暂不可用，请稍后重试。' })
+          }
+          return
+        }
+
         if (route === '/api/media/catalog' && method === 'GET') {
           // The panels render one dropdown per kind from this answer, so it
           // ships the declared parameter menus too; account access and billing
@@ -4812,6 +4936,8 @@ export function apply(ctx: Context, config: Config): void {
             ...value.size === undefined ? {} : { size: value.size },
             ...value.quality === undefined ? {} : { quality: value.quality },
             ...value.mode === undefined ? {} : { mode: value.mode }, ...input.audio === undefined ? {} : { audio: input.audio },
+            ...input.seed === undefined ? {} : { seed: input.seed },
+            ...input.watermark === undefined ? {} : { watermark: input.watermark },
             frameImages: await normalize(input.frameImages, 'image'),
             referenceImages: await normalize(shot.referenceImages, 'image'),
             referenceVideos: await normalize(shot.referenceVideos, 'video'), referenceAudios: await normalize(shot.referenceAudios, 'audio'),
@@ -4903,6 +5029,7 @@ export function apply(ctx: Context, config: Config): void {
       accountScope: videoBalanceScope,
       activity: (event) => { generationCreation.project(event) },
       defaultModel: async signal => requireMediaDefault(await readMediaDefault('video', signal)) ?? DEFAULT_CHAT_VIDEO_MODEL,
+      requestSelection: async (args, exec) => resolveChatMediaSelection(exec, 'video', args, { videoProject: true }),
       chatModelChoice: async (input, exec, provider, defaultedModel) => {
         return selectChatVideoModel(input, exec, provider.identity, () => provider.assertCurrent(), defaultedModel)
       },
@@ -5014,6 +5141,8 @@ export function apply(ctx: Context, config: Config): void {
               ...input.quality === undefined ? {} : { quality: input.quality },
               ...input.mode === undefined ? {} : { mode: input.mode },
               ...input.audio === undefined ? {} : { audio: input.audio },
+              ...input.seed === undefined ? {} : { seed: input.seed },
+              ...input.watermark === undefined ? {} : { watermark: input.watermark },
               frameImages: await normalize(input.frameImages, 'image'), referenceImages: await normalize(input.referenceImages, 'image'),
               referenceVideos: await normalize(input.referenceVideos, 'video'),
               referenceAudios: await normalize(input.referenceAudios, 'audio'),
@@ -5047,6 +5176,7 @@ export function apply(ctx: Context, config: Config): void {
       status: { type: 'string' }, code: { type: 'string' }, message: { type: 'string' },
       default_model_id: { type: 'string' }, default_configured: { type: 'boolean' },
       default_available: { type: 'boolean' }, default_error_code: { type: 'string' },
+      default_source: { type: 'string' }, selected_parameters: { type: 'object', additionalProperties: true },
       models: { type: 'array', items: { type: 'object', properties: {
         id: { type: 'string' }, display_name: { type: 'string' }, parameters_verified: { type: 'boolean' },
         sizes: { type: 'array', items: { type: 'string' } },
@@ -5067,7 +5197,8 @@ export function apply(ctx: Context, config: Config): void {
         const binding = await bindCurrentVideoAccount()
         const session = await liveSession()
         const signal = AbortSignal.any([exec.signal, AbortSignal.timeout(resolved.timeoutMs)])
-        const [catalog, visible] = await Promise.all([readMediaCatalog(signal), readNewApiModels(session ?? undefined, signal)])
+        const catalog = await readMediaCatalog(signal)
+        const visible = await readNewApiModels(session ?? undefined, signal)
         await binding.key()
         exec.signal.throwIfAborted()
         if (!catalog.ok || !visible.ok) {
@@ -5082,7 +5213,7 @@ export function apply(ctx: Context, config: Config): void {
           if (code === 'TRANSPORT') return { status: 'failed', code: 'IMAGE_MODELS_TRANSPORT', message: '连接中断或读取超时，暂未取得完整图片模型目录；请稍后重试，尚未提交生成。' }
           return { status: 'failed', code: 'IMAGE_MODELS_UNAVAILABLE', message: '图片模型目录暂不可用，请稍后重试；尚未提交生成。' }
         }
-        const allowed = new Set([...visible.chat, ...visible.image, ...visible.video])
+        const allowed = new Set(visible.image)
         const models = catalog.models.filter(model => model.kind === 'image' && allowed.has(model.id)).map((model) => {
           const params = model.params as ImageParams
           return { id: model.id, display_name: model.displayName, parameters_verified: model.verified,
@@ -5101,11 +5232,23 @@ export function apply(ctx: Context, config: Config): void {
           default_configured?: boolean
           default_available?: boolean
           default_error_code?: string
+          default_source?: string
+          selected_parameters?: Record<string, string | number | boolean>
         }
         try {
-          const selected = await readMediaDefault('image', signal, catalog.models)
-          defaultMetadata = { ...selected.model === null ? {} : { default_model_id: selected.model },
-            default_configured: selected.configured, default_available: selected.available }
+          const preferred = resolveMediaRequestSelection(exec, 'image', {},
+            catalog.models.filter(model => model.kind === 'image' && visible.image.includes(model.id)),
+            mediaPreferencesScope(apiBaseUrl, binding.identity.accountId))
+          if (preferred.model !== undefined) {
+            const { model, ...parameters } = preferred
+            defaultMetadata = { default_model_id: model, default_configured: true,
+              default_available: models.some(value => value.id === model), default_source: 'personal', selected_parameters: parameters }
+          } else {
+            const selected = await readMediaDefault('image', signal, catalog.models)
+            defaultMetadata = { ...selected.model === null ? {} : { default_model_id: selected.model },
+              default_configured: selected.configured, default_available: selected.available,
+              default_source: selected.configured ? 'platform' : 'legacy' }
+          }
         } catch (error) { defaultMetadata = { default_error_code: error instanceof CreativeError ? error.code : 'DEFAULT_MEDIA_CONFIG_UNAVAILABLE' } }
         await binding.key()
         exec.signal.throwIfAborted()
@@ -5133,10 +5276,15 @@ export function apply(ctx: Context, config: Config): void {
       shot_id: { type: 'string', description: 'Exact shot id in the explicit plan; never guess a latest project.' },
       asset_id: { type: 'string', description: 'Exact image asset id in plan_id, including a video plan. Mutually exclusive with shot_id. Creates or reconstructs this source asset, not a finished shot.' },
       prompt: { type: 'string', required: true, description: 'What the image should show.' },
-      model: { type: 'string', description: 'Optional image model id such as gpt-image-2. When omitted, the Host uses the backend-configured image default for this account; an older or unset configuration retains the account’s first available image model.' },
+      model: { type: 'string', description: 'Optional image model id such as gpt-image-2. The current human request overrides the frozen personal image preference, then the backend-configured image default for this account; an older or unset configuration retains the account’s first available image model.' },
       size: { type: 'string', description: 'Optional output size from the selected model’s published menu. yunshu-internal-gpt-image-2 accepts aspect-ratio strings only when its live catalog declares them, never pixel dimensions; use resolution for its independent 1k, 2k or 4k tier. An undeclared value is refused before generation.' },
       resolution: { type: 'string', description: 'Optional named output tier, only when declared by the chosen model. yunshu-internal-gpt-image-2 accepts 1k, 2k or 4k and defaults to 1k; this is independent from pixel size.' },
       count: { type: 'number', description: 'How many images to render, within max_count returned by list_image_models; do not infer a model’s batch limit.' },
+      quality: { type: 'string', description: 'Exact published image quality, only when declared by the selected model.' },
+      background: { type: 'string', description: 'Published image background mode.' },
+      format: { type: 'string', description: 'Published output container format.' },
+      moderation: { type: 'string', description: 'Published moderation setting.' },
+      seed: { type: 'number', description: 'Safe integer random seed, only for a model declaring this control.' },
       reference_images: { type: 'array', items: { type: 'string' }, description: 'Reference images for editing: current-chat user image attachment ids or their exact read-only paths, readable PNG/JPEG/WebP files inside the current workspace, uploaded ma_ ids, or real generated image output ids/paths owned by the same explicit plan_id. Other-chat attachments, unrelated local paths and URLs are refused.' },
     },
     output: {
@@ -5184,6 +5332,9 @@ export function apply(ctx: Context, config: Config): void {
           message: invocation.view.link === undefined
             ? '本次提交已有准备登记，尚未重复生成；请核对原调用。独立的新请求可继续生成。'
             : '本次提交已有原任务，尚未重复生成；请用原 plan_id 和 operation_id 查询或恢复。' }
+        const planKind = args.plan_id === undefined ? undefined : (await creative.plan(owner, args.plan_id)).kind
+        args = await resolveChatMediaSelection(exec, 'image', args,
+          planKind === undefined ? undefined : { auxiliaryImage: planKind === 'video' })
         const references: string[] = []
         const referenceCache = new Map<string, string>()
         for (const value of args.reference_images ?? []) {
@@ -5215,6 +5366,11 @@ export function apply(ctx: Context, config: Config): void {
                 ...args.size === undefined ? {} : { size: args.size },
                 ...args.resolution === undefined ? {} : { resolution: args.resolution },
                 ...args.count === undefined ? {} : { count: args.count },
+                ...args.quality === undefined ? {} : { quality: args.quality },
+                ...args.background === undefined ? {} : { background: args.background },
+                ...args.format === undefined ? {} : { format: args.format },
+                ...args.moderation === undefined ? {} : { moderation: args.moderation },
+                ...args.seed === undefined ? {} : { seed: args.seed },
                 ...args.reference_images === undefined ? {} : { references },
               }, jobSignal, path => creative.saved(creation, path, 'image'), async () => {
                 await binding.key()
@@ -5401,6 +5557,7 @@ export function apply(ctx: Context, config: Config): void {
       status: { type: 'string' }, code: { type: 'string' }, message: { type: 'string' },
       default_model_id: { type: 'string' }, default_configured: { type: 'boolean' },
       default_available: { type: 'boolean' }, default_error_code: { type: 'string' },
+      default_source: { type: 'string' }, selected_parameters: { type: 'object', additionalProperties: true },
       models: { type: 'array', items: { type: 'object', additionalProperties: true } },
     }, additionalProperties: false }, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] },
     presentCall: () => ({ card: 'generic', title: '读取视频模型与参数', kind: 'read' }),
@@ -5408,11 +5565,12 @@ export function apply(ctx: Context, config: Config): void {
       try {
         const binding = await bindCurrentVideoAccount()
         const session = await liveSession()
-        const [catalog, visible] = await Promise.all([readMediaCatalog(exec.signal), readNewApiModels(session ?? undefined, exec.signal)])
+        const catalog = await readMediaCatalog(exec.signal)
+        const visible = await readNewApiModels(session ?? undefined, exec.signal)
         await binding.key()
         exec.signal.throwIfAborted()
         if (!catalog.ok || !visible.ok) return { status: 'failed', code: 'VIDEO_MODELS_UNAVAILABLE', message: '暂时无法读取当前账号的视频模型，请稍后重试；尚未提交生成。' }
-        const allowed = new Set([...visible.chat, ...visible.image, ...visible.video])
+        const allowed = new Set(visible.video)
         const models = catalog.models.filter(model => model.kind === 'video' && allowed.has(model.id)).map((model) => {
           const params = model.params as VideoParams
           return { id: model.id, display_name: model.displayName, durations: [...params.durations],
@@ -5435,11 +5593,23 @@ export function apply(ctx: Context, config: Config): void {
           default_configured?: boolean
           default_available?: boolean
           default_error_code?: string
+          default_source?: string
+          selected_parameters?: Record<string, string | number | boolean>
         }
         try {
-          const selected = await readMediaDefault('video', exec.signal, catalog.models)
-          defaultMetadata = { ...selected.model === null ? {} : { default_model_id: selected.model },
-            default_configured: selected.configured, default_available: selected.available }
+          const preferred = resolveMediaRequestSelection(exec, 'video', {},
+            catalog.models.filter(model => model.kind === 'video' && visible.video.includes(model.id)),
+            mediaPreferencesScope(apiBaseUrl, binding.identity.accountId))
+          if (preferred.model !== undefined) {
+            const { model, ...parameters } = preferred
+            defaultMetadata = { default_model_id: model, default_configured: true,
+              default_available: models.some(value => value.id === model), default_source: 'personal', selected_parameters: parameters }
+          } else {
+            const selected = await readMediaDefault('video', exec.signal, catalog.models)
+            defaultMetadata = { ...selected.model === null ? {} : { default_model_id: selected.model },
+              default_configured: selected.configured, default_available: selected.available,
+              default_source: selected.configured ? 'platform' : 'legacy' }
+          }
         } catch (error) { defaultMetadata = { default_error_code: error instanceof CreativeError ? error.code : 'DEFAULT_MEDIA_CONFIG_UNAVAILABLE' } }
         await binding.key()
         exec.signal.throwIfAborted()
@@ -5463,6 +5633,8 @@ export function apply(ctx: Context, config: Config): void {
       quality: { type: 'string', description: 'Exact quality tier from the selected complete specification; preserve it for quote and generation.' },
       mode: { type: 'string', description: 'Optional published vendor mode, distinct from quality.' },
       ratio: { type: 'string', description: 'Aspect ratio such as 16:9 or 9:16; adaptive inherits it from the reference media.' },
+      seed: { type: 'number', description: 'Safe integer random seed, only when declared by the selected model.' },
+      watermark: { type: 'boolean', description: 'Watermark switch, only when declared by the selected model.' },
       audio: { type: 'boolean', description: 'Optional requested audio state. Sent as a switch only when the chosen model declares one; fixed native audio accepts only its declared state. An audio stream does not verify dialogue, lip-sync or subtitles.' },
       frame_images: { type: 'array', items: { type: 'string' }, description: 'Optional stored ids (ma_…) used as first/last frame.' },
       reference_images: { type: 'array', items: { type: 'string' }, description: 'Optional stored ids (ma_…) used as multimodal subject/style references, when the model supports them.' },
@@ -5563,6 +5735,12 @@ export function apply(ctx: Context, config: Config): void {
         }) : source
         if (videoIntent === undefined) throw new CreativeError('CREATIVE_VIDEO_SOURCE_UNAVAILABLE', 409,
           '请在当前聊天明确继续或重试原视频，尚未提交新的生成。')
+        if (retry === undefined) {
+          const selected = await resolveChatMediaSelection(exec, 'video', { ...args,
+            ...args.duration_seconds === undefined ? {} : { seconds: args.duration_seconds } })
+          args = { ...selected,
+            ...typeof selected.seconds !== 'number' || videoIntent.requestedDurationSeconds !== undefined ? {} : { duration_seconds: selected.seconds } }
+        }
         const requestedDuration = args.plan_id === undefined ? videoIntent.requestedDurationSeconds : undefined
         if (requestedDuration !== undefined && args.duration_seconds !== undefined && requestedDuration !== args.duration_seconds) {
           throw new CreativeError('CREATIVE_VIDEO_INTENT_UNAVAILABLE', 409,
@@ -5606,6 +5784,8 @@ export function apply(ctx: Context, config: Config): void {
           ...args.quality === undefined ? {} : { quality: args.quality },
           ...args.mode === undefined ? {} : { mode: args.mode },
           ...args.audio === undefined ? {} : { audio: args.audio },
+          ...args.seed === undefined ? {} : { seed: args.seed },
+          ...args.watermark === undefined ? {} : { watermark: args.watermark },
           ...args.frame_images === undefined ? {} : { frameImages: await images(args.frame_images) },
           ...args.reference_images === undefined ? {} : { referenceImages: await images(args.reference_images) },
           ...args.reference_videos === undefined ? {} : { referenceVideos },

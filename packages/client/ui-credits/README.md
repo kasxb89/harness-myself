@@ -67,6 +67,16 @@ A precise amount appears only when the current read confirms every recorded requ
 
 The visible Refresh credits action and turn completion initiate reads; pending receipts with no confirmed bills get at most three follow-up reads. Other incomplete readings and failed or rate-limited reads require manual refresh. The client `chatUsageReadTimeoutMs` defaults to 20,000 ms and accepts 1,000–120,000 ms. Configure it above the owning Host's statistics deadline and network overhead; the Host defaults to 15,000 ms but deployments configure their own limit. Account changes, logout and closing the control abort reads and discard late results. The shared account snapshot’s in-memory epoch changes on identity transitions, including signing back into the same account, but stays stable during ordinary balance refreshes.
 
+### Chat media preferences
+
+The ordinary chat composer offers independent image and video model selectors. The Host supplies only enabled models available to the signed-in account, with the model’s declared parameter menus and complete valid specifications. Users can search models, save static parameters, or follow the platform default. Reference files remain attached to individual requests. Video duration is a default clip duration; a long video still follows its shot plan.
+
+A private Host store preserves each account’s choices for its configured deployment across restarts. Restoring a signed-in account’s local preferences starts a background authorized-directory read for display names, availability and reference unit prices, including platform defaults. The composer updates its saved label only after an owner- and revision-checked save succeeds. Failed or conflicting saves retain the draft for an explicit recheck and retry. Account changes clear old choices and discard late replies. A disabled model or invalid specification remains visibly unavailable until the user chooses again or resets; the client never silently replaces it. Addressed subagent input does not show these controls.
+
+Each ordinary submission captures the acknowledged settings metadata before its request is admitted. Explicit model and parameter requests in that message take priority; otherwise personal settings precede platform defaults. Changing preferences affects later requests, while running and accepted generation keeps its original settings. Saving preferences does not replace per-work video quotes or human confirmation, and ordinary text submission does not wait for a media catalog or balance request.
+
+The composer buttons, model rows and current parameter selection show estimated points per image or per second. The Host converts published retail prices with its configured point rate; the client compares the resulting decimal strings exactly and displays at most six decimal places, rounding upward. Complete valid specification prices produce one value or a range. Partial coverage, unknown reference-input conditions or missing selected pricing dimensions show a starting value. Missing, malformed, wrong-unit or unsupported zero prices show Price pending while model selection and ordinary text remain available. These default public prices do not include an account-specific discount, establish a request total or authorize generation; the actual specification and account quote determine the charge.
+
 ### Workspace guide
 
 The signed-in conversation composer has a lightweight Workspace examples entry. It opens only at the user's request and explains natural-language video planning, generation within each model's clip limit, and trimming and joining generated or uploaded clips. This reference dialog is separate from the AI's request-specific clarification questions in chat. Escape, backdrop and close dismiss it. Only one examples dialog can be open across the client root's mounted conversations; changing accounts or releasing the composer closes it. Its state stays in memory, with no account acknowledgement or first-visit behavior.
@@ -101,7 +111,7 @@ The [client entry](src/client/index.ts) connects the account panels and workspac
 
 #### What the model sees
 
-This package adds no tools or model calls. Reads from `/credits/api/usage` do not enter model input. Workspace examples remain unsent draft text until the user sends them through the ordinary conversation input.
+This package adds no tools or model calls. Reads from `/credits/api/usage` do not enter model input. Workspace examples remain unsent draft text until the user sends them through the ordinary conversation input. Saved media preference metadata accompanies ordinary prompt admission; the Credits host owns durable selection snapshots and their generation-tool use.
 
 #### Token effect
 

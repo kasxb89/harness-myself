@@ -17,6 +17,7 @@ import type {
   SessionAssistantStreamBaseline,
   SessionProjectionBaseline,
   SessionRequestId,
+  SessionPromptInputContext,
 } from '../../types.ts'
 import type {
   BeginSubmissionInput, PendingSubmissionRetirement, SessionFace, SubmissionHandle,
@@ -249,6 +250,7 @@ export class Session implements SessionFace {
    * @param mode - queue appends after the current turn; steer interrupts it.
    * @param signal - optional caller cancellation for the complete admission round-trip.
    * @param requestId - identity from {@link beginSubmission}; a failed identified prompt retires its echo.
+   * @param inputContext - Admission-only hints for ordinary Sessions; subagent continuation has no input-context protocol.
    * @returns the prompt result (also mirrored into promptError on failure).
    */
   async prompt(
@@ -256,6 +258,7 @@ export class Session implements SessionFace {
     mode: 'queue' | 'steer',
     signal?: AbortSignal,
     requestId?: SessionRequestId,
+    inputContext?: SessionPromptInputContext,
   ): Promise<RemoteResult<{ accepted: true }>> {
     this.promptError = null
     this.lastAgentError = null
@@ -274,6 +277,7 @@ export class Session implements SessionFace {
         mode,
         content,
         clientTimeZone,
+        ...(inputContext === undefined ? {} : { inputContext }),
       }, signal)
     } else if (content.some(part => part.type === 'file')) {
       result = {

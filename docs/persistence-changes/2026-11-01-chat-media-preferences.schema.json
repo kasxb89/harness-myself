@@ -1,0 +1,220 @@
+{
+  "formatVersion": 2,
+  "roots": [
+    {
+      "key": "event:media/request-selection",
+      "kind": "event",
+      "event": "media/request-selection",
+      "surface": false,
+      "digest": "398f876feef88e9156a9fb896dacf0c9fa6e6ed6fefa43ad532377b10440dd96",
+      "schema": {
+        "root": 0,
+        "nodes": [
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "data",
+                "type": 1,
+                "optional": false
+              },
+              {
+                "name": "ignorable",
+                "type": 19,
+                "optional": true
+              },
+              {
+                "name": "seq",
+                "type": 16,
+                "optional": false
+              },
+              {
+                "name": "time",
+                "type": 16,
+                "optional": false
+              },
+              {
+                "name": "type",
+                "type": 20,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "union",
+            "types": [
+              2,
+              10
+            ]
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "code",
+                "type": 3,
+                "optional": false
+              },
+              {
+                "name": "requestId",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "schema_version",
+                "type": 8,
+                "optional": false
+              },
+              {
+                "name": "state",
+                "type": 9,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "union",
+            "types": [
+              4,
+              5,
+              6
+            ]
+          },
+          {
+            "kind": "literal",
+            "value": "ACCOUNT_CHANGED"
+          },
+          {
+            "kind": "literal",
+            "value": "MEDIA_PREFERENCES_CONFLICT"
+          },
+          {
+            "kind": "literal",
+            "value": "MEDIA_PREFERENCES_UNAVAILABLE"
+          },
+          {
+            "kind": "primitive",
+            "type": "string"
+          },
+          {
+            "kind": "literal",
+            "value": 1
+          },
+          {
+            "kind": "literal",
+            "value": "unavailable"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "image",
+                "type": 11,
+                "optional": false
+              },
+              {
+                "name": "requestId",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "revision",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "schema_version",
+                "type": 8,
+                "optional": false
+              },
+              {
+                "name": "scope",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "state",
+                "type": 18,
+                "optional": false
+              },
+              {
+                "name": "video",
+                "type": 11,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "union",
+            "types": [
+              12,
+              17
+            ]
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "model",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "parameters",
+                "type": 13,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "object",
+            "properties": [],
+            "indices": [
+              {
+                "key": 7,
+                "value": 14
+              }
+            ]
+          },
+          {
+            "kind": "union",
+            "types": [
+              7,
+              15,
+              16
+            ]
+          },
+          {
+            "kind": "primitive",
+            "type": "boolean"
+          },
+          {
+            "kind": "primitive",
+            "type": "number"
+          },
+          {
+            "kind": "primitive",
+            "type": "null"
+          },
+          {
+            "kind": "literal",
+            "value": "selected"
+          },
+          {
+            "kind": "literal",
+            "value": true
+          },
+          {
+            "kind": "literal",
+            "value": "media/request-selection"
+          }
+        ]
+      }
+    }
+  ],
+  "types": []
+}

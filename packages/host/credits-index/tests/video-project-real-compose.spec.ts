@@ -98,7 +98,11 @@ it.skipIf(!available)('generates 15 + 15 + 10 seconds with the signed-in key and
       const path = new URL(request.url ?? '/', 'http://127.0.0.1').pathname
       calls.push({ path, method: request.method ?? 'GET', authorization: request.headers.authorization, body })
       response.setHeader('content-type', 'application/json')
-      if (path === '/v1/models') {
+      if (path === '/api/status') {
+        response.end(JSON.stringify({ success: true, data: {} }))
+      } else if (path === '/api/user/self') {
+        response.end(JSON.stringify({ success: true, data: { id: 7, group: 'default', quota: 1000000 } }))
+      } else if (path === '/v1/models') {
         response.end(JSON.stringify({ data: [{ id: 'MiniMax-H3', supported_endpoint_types: ['video-generation'] },
           { id: 'gpt-image-2', supported_endpoint_types: ['image-generation'] }] }))
       } else if (path === '/api/pricing') {
@@ -200,7 +204,10 @@ it.skipIf(!available)('generates 15 + 15 + 10 seconds with the signed-in key and
   await writeFile(wrongReference, sources[0]!.bytes)
   const invalid = await execute('real-video-invalid-reference', 'generate_video_project',
     { prompt: '参考这个画面制作短片', total_duration_seconds: 40, frame_images: [wrongReference] })
-  expect(object(invalid.value)).toMatchObject({ status: 'failed', code: 'VIDEO_REFERENCE_INVALID' })
+  expect(object(invalid.value), JSON.stringify(invalid.value)).toMatchObject({ status: 'failed', code: 'VIDEO_REFERENCE_INVALID' })
+  expect(calls.filter(call => call.path === '/api/pricing')).toHaveLength(1)
+  // Original deployment-default and provider-eligibility reads remain; absent personal choices add no directory read.
+  expect(calls.filter(call => call.path === '/v1/models')).toHaveLength(2)
   expect(calls.filter(call => call.method === 'POST')).toEqual([])
   expect(ctx.jobs.list(agent.id)).toEqual([])
   const referenceVideos = [join(workspace, 'shot-one.mp4'), join(workspace, 'shot-two.mp4')]

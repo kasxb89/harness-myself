@@ -1,0 +1,33 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`chat media preference editors > searches available models, exposes supported parameters and saves a reviewed selection 1`] = `
+{
+  "count": "固定：1",
+  "guidance": "保存后用于以后的聊天生成；本次消息明确指定的型号和参数优先。",
+  "parameters": [
+    {
+      "name": "尺寸",
+      "options": "生成时确定1024x10241536x1024",
+      "value": ""1536x1024"",
+    },
+    {
+      "name": "质量",
+      "options": "生成时确定standardhigh",
+      "value": ""high"",
+    },
+    {
+      "name": "背景",
+      "options": "固定：autoauto",
+      "value": "",
+    },
+    {
+      "name": "图片格式",
+      "options": "生成时确定pngjpeg",
+      "value": "",
+    },
+  ],
+  "price": "当前参数参考单价：约 375 积分/张",
+  "selected": "true",
+  "title": "图片生成偏好",
+}
+`;
