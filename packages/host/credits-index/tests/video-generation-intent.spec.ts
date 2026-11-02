@@ -36,7 +36,8 @@ describe('optional human video parameter hints', () => {
   })
 
   it.each([
-    ['生成768k视频', '768P'], ['用H3生成一条768P视频', '768P'], ['生成2K视频', '2K'],
+    ['生成768k视频', '768K'], ['用H3生成一条768P视频', '768P'], ['生成2K视频', '2K'],
+    ['用ycapi-minimax-h3生成768k视频', '768K'],
     ['生成1280×720视频', '1280x720'], ['生成15秒视频', undefined],
     ['生成2K视频，不要字幕', '2K'], ['不要2K，生成768P视频', '768P'],
     ['生成768P或者2K视频', undefined], ['生成“2K”视频', undefined],
@@ -48,6 +49,10 @@ describe('optional human video parameter hints', () => {
   it.each([
     ['生成15秒视频，使用 video-sd25-480p。', 'video-sd25-480p'],
     ['用H3生成15秒视频', 'MiniMax-H3'], ['H3 15秒视频', 'MiniMax-H3'],
+    ['用mt-MiniMax-H3生成15秒视频', 'MiniMax-H3'], ['用MT-MINIMAX-H3生成15秒视频', 'MiniMax-H3'],
+    ['mt-MiniMax-H3 15秒视频', 'MiniMax-H3'], ['使用ycapi-minimax-h3生成10秒视频', 'ycapi-minimax-h3'],
+    ['用mt-MiniMax-H3-extra生成视频', 'mt-MiniMax-H3-extra'],
+    ['用MiniMax-H3-unverified生成视频', 'MiniMax-H3-unverified'],
     ['Generate a video using video-sd25-480p.', 'video-sd25-480p'],
     ['生成15秒视频，不用 video-sd25-480p', undefined], ['使用两个模型', undefined],
     ['使用H3，改用 bt-seedance-2.0', undefined],

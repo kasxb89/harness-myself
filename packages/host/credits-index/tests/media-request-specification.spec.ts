@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { resolveMediaSpecification, videoSpecificationDurations } from '../src/media-request-specification.ts'
+import { canonicalMediaSpecification, resolveMediaSpecification, videoSpecificationDurations } from '../src/media-request-specification.ts'
 
 import { catalogFromPricing, type VideoParams } from '../src/media.ts'
 
@@ -26,6 +26,23 @@ describe('complete public media specifications', () => {
       .toEqual({ ok: true, specification: { resolution: '768P', seconds: 15 } })
     expect(resolveMediaSpecification([], {})).toMatchObject({ ok: false, code: 'SPECIFICATION_NOT_SUPPORTED' })
   })
+  it('uses uniquely equivalent catalog enum spelling without changing requested dimensions', () => {
+    expect(resolveMediaSpecification(menu, { resolution: '1080P', seconds: 10, quality: 'STANDARD' }))
+      .toEqual({ ok: true, specification: menu[2] })
+    expect(canonicalMediaSpecification(menu, { resolution: '1080P', seconds: 5, quality: 'standard', ratio: '9:16' }))
+      .toEqual({ resolution: '1080p', seconds: 5, quality: 'standard', ratio: '9:16' })
+    expect(resolveMediaSpecification(menu, { resolution: '1080P', seconds: 5, quality: 'STANDARD' }))
+      .toMatchObject({ ok: false, code: 'SPECIFICATION_NOT_SUPPORTED' })
+  })
+  it('does not merge distinct published variants that differ only in case', () => {
+    const ambiguous = [{ resolution: '720p', quality: 'fast', seconds: 5 },
+      { resolution: '720p', quality: 'FAST', seconds: 10 }]
+    expect(canonicalMediaSpecification(ambiguous, { quality: 'Fast' })).toEqual({ quality: 'Fast' })
+    expect(resolveMediaSpecification(ambiguous, { quality: 'Fast' }))
+      .toMatchObject({ ok: false, code: 'SPECIFICATION_NOT_SUPPORTED' })
+    expect(resolveMediaSpecification(ambiguous, { quality: 'FAST' }))
+      .toEqual({ ok: true, specification: ambiguous[1] })
+  })
 })
 
 describe('planning native durations for the chosen paid variant', () => {
@@ -46,12 +63,14 @@ describe('planning native durations for the chosen paid variant', () => {
     expect(videoSpecificationDurations(capability, { resolution: '1080p', quality: 'fast', mode: 'pro' })).toEqual([15])
     expect(videoSpecificationDurations(capability, { resolution: '720p', quality: 'fast', mode: 'std' })).toEqual([])
     expect(videoSpecificationDurations(capability, { resolution: '4k' })).toEqual([])
+    expect(videoSpecificationDurations(capability, { resolution: '720P', quality: 'MINI', mode: 'STD' })).toEqual([5])
   })
   it('retains independent legacy duration menus when no complete specifications exist', () => {
     const legacy = params({ oneOf: [{ properties: { resolution: { const: '720p' }, seconds: { enum: [5, 10] } } }] })
     expect(legacy.specifications).toBeUndefined()
     expect(videoSpecificationDurations(legacy, { resolution: '720p' })).toEqual([5, 10])
     expect(videoSpecificationDurations(legacy, { resolution: '1080p' })).toEqual([])
+    expect(videoSpecificationDurations(legacy, { resolution: '720P' })).toEqual([5, 10])
   })
   it('keeps portrait and native-size duration menus separate when quality and resolution are equal', () => {
     const capability = params({ oneOf: [

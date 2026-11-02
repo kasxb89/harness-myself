@@ -41,7 +41,7 @@ import { sessionTransportFailure, type SessionFailure } from './session-failure.
 import { PhoneAuthState, type PhoneDeliveryStatus } from './phone-auth-state.ts'
 import { MediaDefaultsCache, mediaDefaultSelection, requireMediaDefault, type MediaDefaultSelection } from './media-defaults.ts'
 import { MediaPreferencesStore, mediaPreferencesScope } from './media-preferences.ts'
-import { registerMediaRequestSelection, resolveMediaRequestSelection, needsMediaRequestSelectionCatalog, type MediaRequestSelectionContext } from './media-request-selection.ts'
+import { registerMediaRequestSelection, canonicalMediaModelId, canonicalMediaRequestParameters, mediaRequestModelChoiceOf, resolveMediaRequestSelection, needsMediaRequestSelectionCatalog, type MediaRequestSelectionContext } from './media-request-selection.ts'
 import { mediaPreferencePrices } from './media-preference-pricing.ts'
 import type { MediaPreferenceModel, MediaPreferencePricing } from './media-preferences-types.ts'
 import { readAnnouncementBanner } from './announcement-banner.ts'
@@ -1324,6 +1324,46 @@ export function apply(ctx: Context, config: Config): void {
       new Set([...visible.chat, ...visible.image, ...visible.video, ...visible.audio]))
   }
 
+  /** Preserve the selected identity even when its complete output specification still needs a choice. */
+  const listedMediaDefault = async (
+    exec: ToolRunContext, kind: 'image' | 'video', models: readonly ModelCapability[],
+    accountId: string, signal: AbortSignal,
+  ): Promise<{
+    default_model_id?: string
+    default_configured?: boolean
+    default_available?: boolean
+    default_error_code?: string
+    default_error_message?: string
+    default_source?: string
+    selected_parameters?: Record<string, string | number | boolean>
+  }> => {
+    let metadata: {
+      default_model_id?: string
+      default_configured?: boolean
+      default_available?: boolean
+      default_source?: string
+      selected_parameters?: Record<string, string | number | boolean>
+    } = {}
+    try {
+      const scope = mediaPreferencesScope(apiBaseUrl, accountId)
+      const choice = mediaRequestModelChoiceOf(exec, kind, models, scope)
+      if (choice !== undefined) {
+        metadata = { default_model_id: choice.model, default_configured: true,
+          default_available: models.some(model => model.kind === kind && model.id === choice.model),
+          default_source: choice.source, selected_parameters: { ...choice.parameters } }
+        const { model: _model, ...parameters } = resolveMediaRequestSelection(exec, kind, {}, models, scope)
+        return { ...metadata, selected_parameters: parameters }
+      }
+      const selected = await readMediaDefault(kind, signal, models)
+      return { ...selected.model === null ? {} : { default_model_id: selected.model },
+        default_configured: selected.configured, default_available: selected.available,
+        default_source: selected.configured ? 'platform' : 'legacy' }
+    } catch (error) {
+      return { ...metadata, default_error_code: error instanceof CreativeError ? error.code : 'DEFAULT_MEDIA_CONFIG_UNAVAILABLE',
+        default_error_message: error instanceof CreativeError ? error.message : '暂时无法确认默认模型，请重新读取当前目录；尚未提交生成。' }
+    }
+  }
+
   /** Read pricing first so older endpoint caches have complete model declarations before authorization. */
   const readAuthorizedMediaCatalog = async (session: StoredSession, signal?: AbortSignal,
     publicUnitPrices?: Map<string, MediaPreferencePricing>) => {
@@ -1356,11 +1396,12 @@ export function apply(ctx: Context, config: Config): void {
   const resolveChatMediaSelection = async <T extends Readonly<Record<string, unknown>>>(
     exec: ToolRunContext, kind: 'image' | 'video', args: T, context?: MediaRequestSelectionContext,
   ): Promise<T & { readonly model?: string }> => {
+    const requested = typeof args.model === 'string' ? { ...args, model: canonicalMediaModelId(kind, args.model) } : args
     const needed = await needsMediaRequestSelectionCatalog(exec, kind, async () => {
       const local = await store.read()
       return local?.token === undefined ? undefined : mediaPreferencesScope(apiBaseUrl, local.account.id)
     })
-    if (!needed) return args
+    if (!needed) return requested
     const session = await liveSession()
     if (session?.token === undefined) throw new CreativeError('UNAUTHORIZED', 409, '请先登录后生成。')
     const models = await readPreferenceCatalog(session, exec.signal)
@@ -1379,7 +1420,7 @@ export function apply(ctx: Context, config: Config): void {
       }
       context = { ...context, ...plannedDurations === undefined ? {} : { plannedDurations } }
     }
-    return resolveMediaRequestSelection(exec, kind, args, models, mediaPreferencesScope(apiBaseUrl, session.account.id), context)
+    return resolveMediaRequestSelection(exec, kind, requested, models, mediaPreferencesScope(apiBaseUrl, session.account.id), context)
   }
 
   /** One published media capability, or a readable catalog lookup failure. */
@@ -1534,6 +1575,7 @@ export function apply(ctx: Context, config: Config): void {
     body: Record<string, unknown>,
   ): Promise<{ ok: true; request: Record<string, unknown> } | { ok: false; code: string; message: string }> => {
     const params = model.params as VideoParams
+    body = canonicalMediaRequestParameters(model, body)
     for (const field of ['size', 'resolution', 'ratio', 'mode', 'quality']) {
       if (body[field] !== undefined && (typeof body[field] !== 'string' || body[field].trim() === '')) {
         return { ok: false, code: 'INVALID_REQUEST', message: `${field} 需要是有效的模型参数；尚未提交生成` }
@@ -1918,6 +1960,7 @@ export function apply(ctx: Context, config: Config): void {
         }
       }
       const params = capability.model.params as ImageParams
+      body = canonicalMediaRequestParameters(capability.model, body)
       const model = capability.model.id
       serverResultRecovery = capability.serverResultRecovery === true
       const internalImage = model === 'yunshu-internal-gpt-image-2'
@@ -4914,16 +4957,24 @@ export function apply(ctx: Context, config: Config): void {
       const implicitConfigured = defaultedModel && model === targetModel && model !== DEFAULT_CHAT_VIDEO_MODEL
       if (!implicitConfigured) resolution ??= capability.source === 'plugin:blackrxai-video' || params.specifications !== undefined
         ? params.resolutions[0] : undefined
-      const ratio = input.ratio ?? (implicitConfigured || params.specifications === undefined ? undefined : params.ratios[0])
-      const size = model === targetModel ? input.size : undefined
+      let ratio = input.ratio ?? (implicitConfigured || params.specifications === undefined ? undefined : params.ratios[0])
+      let size = model === targetModel ? input.size : undefined
+      let quality = model === targetModel ? input.quality : undefined
+      let mode = model === targetModel ? input.mode : undefined
+      const canonical = canonicalMediaRequestParameters(capability, { resolution, ratio, size, quality, mode })
+      resolution = typeof canonical.resolution === 'string' ? canonical.resolution : resolution
+      ratio = typeof canonical.ratio === 'string' ? canonical.ratio : ratio
+      size = typeof canonical.size === 'string' ? canonical.size : size
+      quality = typeof canonical.quality === 'string' ? canonical.quality : quality
+      mode = typeof canonical.mode === 'string' ? canonical.mode : mode
       if (resolution !== undefined && !params.resolutions.includes(resolution)) {
         throw new CreativeError('RESOLUTION_NOT_SUPPORTED', 409,
           '所选型号不支持请求的分辨率，尚未提交生成；请按当前型号规格重新选择。')
       }
       const menu = videoSpecificationDurations(params, { ...resolution === undefined ? {} : { resolution },
         ...ratio === undefined ? {} : { ratio }, ...size === undefined ? {} : { size },
-        ...model !== targetModel || input.quality === undefined ? {} : { quality: input.quality },
-        ...model !== targetModel || input.mode === undefined ? {} : { mode: input.mode } })
+        ...quality === undefined ? {} : { quality },
+        ...mode === undefined ? {} : { mode } })
       const clipDefault = model === targetModel ? defaultClipSeconds : undefined
       let durations = input.shotDurations
         ?? planVideoDurations(input.totalDurationSeconds, menu, resolved.videoProjectMaxSegments, clipDefault)
@@ -4939,10 +4990,11 @@ export function apply(ctx: Context, config: Config): void {
       }
       return { model, ...resolution === undefined ? {} : { resolution },
         ...ratio === undefined ? {} : { ratio }, ...size === undefined ? {} : { size },
-        ...model !== targetModel || input.quality === undefined ? {} : { quality: input.quality },
-        ...model !== targetModel || input.mode === undefined ? {} : { mode: input.mode }, durations: [...durations] }
+        ...quality === undefined ? {} : { quality },
+        ...mode === undefined ? {} : { mode }, durations: [...durations] }
     }
-    const targetModel = intent.requestedModel ?? input.model ?? requireMediaDefault(await readMediaDefault('video', exec.signal)) ?? DEFAULT_CHAT_VIDEO_MODEL
+    const targetModel = canonicalMediaModelId('video', intent.requestedModel ?? input.model
+      ?? requireMediaDefault(await readMediaDefault('video', exec.signal)) ?? DEFAULT_CHAT_VIDEO_MODEL)
     const target = candidate(targetModel, chatVideoResolution(input.resolution, targetModel, intent.requestedResolution))
     let baseline: VideoModelCandidate | undefined = target
     const baselineUnsupported = (error: unknown): boolean => error instanceof VideoQuoteUnsupportedError
@@ -5212,13 +5264,13 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.tools.register(defineTool({
     name: 'list_image_models',
-    description: 'Read the signed-in account’s available image models and current Host-validated generation controls without submitting images or charging for generation. Read when an exact image model, size, aspect ratio, resolution, count or reference-image limit is needed. Use exact ids and the size strings as returned, including aspect-ratio strings; resolution is a separate field. Empty menus and omitted fields offer no optional choice. Unverified model limits are conservative local limits, not confirmed upstream capabilities. Only pass controls declared by generate_image; this catalog also describes controls available to AI Creation. Listing does not reserve capacity, estimate prices or authorize a generation.',
+    description: 'Read the signed-in account’s available image models and current Host-validated generation controls without submitting images or charging for generation. Read when an exact image model, size, aspect ratio, resolution, count or reference-image limit is needed. Use exact ids and the size strings as returned, including aspect-ratio strings; resolution is a separate field. Empty menus and omitted fields offer no optional choice. Unverified model limits are conservative local limits, not confirmed upstream capabilities. Only pass controls declared by generate_image; this catalog also describes controls available to AI Creation. Read default_model_id, default_source and selected_parameters before choosing a model or static controls. A default_error_code with an available model means complete its selection from that same model’s declared specifications; it does not authorize a different model. Listing does not reserve capacity, estimate prices or authorize a generation.',
     parameters: {},
     isConcurrencySafe: () => true,
     output: { schema: { type: 'object', properties: {
       status: { type: 'string' }, code: { type: 'string' }, message: { type: 'string' },
       default_model_id: { type: 'string' }, default_configured: { type: 'boolean' },
-      default_available: { type: 'boolean' }, default_error_code: { type: 'string' },
+      default_available: { type: 'boolean' }, default_error_code: { type: 'string' }, default_error_message: { type: 'string' },
       default_source: { type: 'string' }, selected_parameters: { type: 'object', additionalProperties: true },
       models: { type: 'array', items: { type: 'object', properties: {
         id: { type: 'string' }, display_name: { type: 'string' }, parameters_verified: { type: 'boolean' },
@@ -5270,29 +5322,9 @@ export function apply(ctx: Context, config: Config): void {
             ...params.specifications === undefined ? {} : { specifications: params.specifications.map(value => ({ ...value })) },
             seed: (model.verified || model.notes.includes('seed')) && params.seed }
         })
-        let defaultMetadata: {
-          default_model_id?: string
-          default_configured?: boolean
-          default_available?: boolean
-          default_error_code?: string
-          default_source?: string
-          selected_parameters?: Record<string, string | number | boolean>
-        }
-        try {
-          const preferred = resolveMediaRequestSelection(exec, 'image', {},
-            catalog.models.filter(model => model.kind === 'image' && visible.image.includes(model.id)),
-            mediaPreferencesScope(apiBaseUrl, binding.identity.accountId))
-          if (preferred.model !== undefined) {
-            const { model, ...parameters } = preferred
-            defaultMetadata = { default_model_id: model, default_configured: true,
-              default_available: models.some(value => value.id === model), default_source: 'personal', selected_parameters: parameters }
-          } else {
-            const selected = await readMediaDefault('image', signal, catalog.models)
-            defaultMetadata = { ...selected.model === null ? {} : { default_model_id: selected.model },
-              default_configured: selected.configured, default_available: selected.available,
-              default_source: selected.configured ? 'platform' : 'legacy' }
-          }
-        } catch (error) { defaultMetadata = { default_error_code: error instanceof CreativeError ? error.code : 'DEFAULT_MEDIA_CONFIG_UNAVAILABLE' } }
+        const defaultMetadata = await listedMediaDefault(exec, 'image',
+          catalog.models.filter(model => model.kind === 'image' && visible.image.includes(model.id)),
+          binding.identity.accountId, exec.signal)
         await binding.key()
         exec.signal.throwIfAborted()
         return { status: 'listed', models, ...defaultMetadata, message: models.length === 0 ? '当前账号没有可用的图片模型；尚未提交生成。'
@@ -5597,12 +5629,12 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.tools.register(defineTool({
     name: 'list_video_models',
-    description: 'Read the signed-in account’s current video models and exact generation parameters without submitting or charging for generation. Call when planning explicit model controls or paid clip lengths. A simple single-clip request can directly call generate_video_project without total_duration_seconds: the Host resolves actual model defaults in the same call. Use exact ids, durations by resolution, size strings, reference limits and audio_output; do not infer audio from a missing switch or use display names as ids. This catalog does not report live upstream capacity. For queued work use the background generate_video_project workflow, including one clip.',
+    description: 'Read the signed-in account’s current video models and exact generation parameters without submitting or charging for generation. Call when planning explicit model controls or paid clip lengths. A simple single-clip request can directly call generate_video_project without total_duration_seconds: the Host resolves actual model defaults in the same call. Use exact ids, durations by resolution, size strings, reference limits and audio_output; do not infer audio from a missing switch or use display names as ids. Read default_model_id, default_source and selected_parameters before planning. Preserve that selected model unless the human chooses another one; a tool model argument alone cannot override a saved choice. If default_error_code reports an incomplete specification, use the returned selected model and its own specifications, not another model’s duration or resolution menu. Distinct ids such as MiniMax-H3 and ycapi-minimax-h3 are different channels, not interchangeable aliases. This catalog does not report live upstream capacity. For queued work use the background generate_video_project workflow, including one clip.',
     parameters: {},
     output: { schema: { type: 'object', properties: {
       status: { type: 'string' }, code: { type: 'string' }, message: { type: 'string' },
       default_model_id: { type: 'string' }, default_configured: { type: 'boolean' },
-      default_available: { type: 'boolean' }, default_error_code: { type: 'string' },
+      default_available: { type: 'boolean' }, default_error_code: { type: 'string' }, default_error_message: { type: 'string' },
       default_source: { type: 'string' }, selected_parameters: { type: 'object', additionalProperties: true },
       models: { type: 'array', items: { type: 'object', additionalProperties: true } },
     }, additionalProperties: false }, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] },
@@ -5634,29 +5666,9 @@ export function apply(ctx: Context, config: Config): void {
             ...params.qualities === undefined ? {} : { qualities: [...params.qualities] },
             ...params.specifications === undefined ? {} : { specifications: params.specifications.map(value => ({ ...value })) } }
         })
-        let defaultMetadata: {
-          default_model_id?: string
-          default_configured?: boolean
-          default_available?: boolean
-          default_error_code?: string
-          default_source?: string
-          selected_parameters?: Record<string, string | number | boolean>
-        }
-        try {
-          const preferred = resolveMediaRequestSelection(exec, 'video', {},
-            catalog.models.filter(model => model.kind === 'video' && visible.video.includes(model.id)),
-            mediaPreferencesScope(apiBaseUrl, binding.identity.accountId))
-          if (preferred.model !== undefined) {
-            const { model, ...parameters } = preferred
-            defaultMetadata = { default_model_id: model, default_configured: true,
-              default_available: models.some(value => value.id === model), default_source: 'personal', selected_parameters: parameters }
-          } else {
-            const selected = await readMediaDefault('video', exec.signal, catalog.models)
-            defaultMetadata = { ...selected.model === null ? {} : { default_model_id: selected.model },
-              default_configured: selected.configured, default_available: selected.available,
-              default_source: selected.configured ? 'platform' : 'legacy' }
-          }
-        } catch (error) { defaultMetadata = { default_error_code: error instanceof CreativeError ? error.code : 'DEFAULT_MEDIA_CONFIG_UNAVAILABLE' } }
+        const defaultMetadata = await listedMediaDefault(exec, 'video',
+          catalog.models.filter(model => model.kind === 'video' && visible.video.includes(model.id)),
+          binding.identity.accountId, exec.signal)
         await binding.key()
         exec.signal.throwIfAborted()
         return { status: 'listed', models, ...defaultMetadata, message: '按当前参数规划生成片段；一个片段可含多个镜头切换。无独立音频开关不代表成片必定无声，未声明的音频能力不能保证对白。' }
@@ -5794,9 +5806,9 @@ export function apply(ctx: Context, config: Config): void {
         }
         const durationSeconds = args.duration_seconds ?? requestedDuration
         const defaultedModel = retry === undefined && videoIntent.requestedModel === undefined && args.model === undefined
-        const requestedModel = videoIntent.requestedModel ?? args.model ?? retry?.model
+        const requestedModel = canonicalMediaModelId('video', videoIntent.requestedModel ?? args.model ?? retry?.model
           ?? (retry === undefined ? requireMediaDefault(await readMediaDefault('video', exec.signal)) : DEFAULT_CHAT_VIDEO_MODEL)
-          ?? DEFAULT_CHAT_VIDEO_MODEL
+          ?? DEFAULT_CHAT_VIDEO_MODEL)
         const requestedResolution = chatVideoResolution(args.resolution, requestedModel, videoIntent.requestedResolution)
         let capability = await capabilityFor('video', requestedModel)
         if (!capability.ok) return { status: 'failed', code: capability.code, message: capability.message }

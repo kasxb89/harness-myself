@@ -24,12 +24,14 @@ const video: PreferenceModel = { id: 'video-one', kind: 'video', displayName: 'V
       { parameters: { resolution: '768P', seconds: 15, ratio: '16:9', count: 1 }, points: '125', input: 'unspecified' },
       { parameters: { resolution: '2K', seconds: 5, ratio: '9:16', count: 1 }, points: '250', input: 'unspecified' },
     ] } }
-function fixture(saved: Partial<MediaPreferences> = {}, available = true, english = false, unitPrices = true) {
+function fixture(saved: Partial<MediaPreferences> = {}, available = true, english = false, unitPrices = true,
+  extraImages: readonly PreferenceModel[] = []) {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
   const imageModel = { ...image }
   const videoModel = { ...video }
   if (!unitPrices) { delete imageModel.pricing; delete videoModel.pricing }
   let prefs: MediaPreferences = { schema_version: 1, scope: 'b'.repeat(64), revision: 'c'.repeat(64), image: null, video: null, ...saved }
+  let identity = { id: '7', owner: 'a'.repeat(64) }
   let account: CreditsSnapshot = { loaded: true, accountEpoch: 1, failure: null, balance: null, session: { signedIn: true, creditsPerYuan: 1000, account: { id: '7', phone: 'fixture' }, accountOwner: 'a'.repeat(64) } }
   const listeners = new Set<() => void>()
   const source = { getSnapshot: () => account, subscribe: (listener: () => void) => {
@@ -41,8 +43,8 @@ function fixture(saved: Partial<MediaPreferences> = {}, available = true, englis
       if (fail) return { ok: false, failure: 'conflict' }
       prefs = { ...prefs, revision: 'd'.repeat(64), image: body?.image as MediaPreferences['image'], video: body?.video as MediaPreferences['video'] }
     }
-    return { ok: true, reply: { accountId: '7', accountOwner: 'a'.repeat(64), preferences: prefs,
-      ...operation === 'catalog' ? { catalog: { image: [imageModel], video: [videoModel], defaults: { image: { model: image.id, configured: true, available: true }, video: { model: video.id, configured: true, available: true } } } } : {} } }
+    return { ok: true, reply: { accountId: identity.id, accountOwner: identity.owner, preferences: prefs,
+      ...operation === 'catalog' ? { catalog: { image: [imageModel, ...extraImages], video: [videoModel], defaults: { image: { model: image.id, configured: true, available: true }, video: { model: video.id, configured: true, available: true } } } } : {} } }
   })
   const controller = createMediaPreferences(source, 20_000, transport)
   stops.push(controller.start())
@@ -60,6 +62,13 @@ function fixture(saved: Partial<MediaPreferences> = {}, available = true, englis
   render(<ChatMediaPreferences {...props} />)
   return { controller, transport, setFailure: (value: boolean) => { fail = value },
     setCanonical: (value: MediaPreferences) => { prefs = value },
+    switchAccount: (next: Partial<MediaPreferences> = {}) => {
+      identity = { id: '8', owner: 'e'.repeat(64) }
+      prefs = { schema_version: 1, scope: 'f'.repeat(64), revision: '9'.repeat(64), image: null, video: null, ...next }
+      account = { ...account, accountEpoch: account.accountEpoch + 1,
+        session: { signedIn: true, creditsPerYuan: 1000, account: { id: identity.id, phone: 'other' }, accountOwner: identity.owner } }
+      for (const listener of listeners) listener()
+    },
     signOut: () => {
       account = { ...account, accountEpoch: account.accountEpoch + 1, session: { signedIn: false, creditsPerYuan: 1000 } }
       for (const listener of listeners) listener()
@@ -183,10 +192,65 @@ describe('compact chat media preferences', () => {
   it('compares scalar parameters by meaning rather than insertion order', async () => {
     const f = fixture({ image: { model: image.id, parameters: { size: '1024x1024', quality: 'standard' } } })
     const dialog = await open()
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Picture One picture-one' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: zh['media.clearParameters'] }))
     fireEvent.change(within(dialog).getByRole('combobox', { name: zh['media.param.quality'] }), { target: { value: JSON.stringify('standard') } })
     fireEvent.change(within(dialog).getByRole('combobox', { name: zh['media.param.size'] }), { target: { value: JSON.stringify('1024x1024') } })
     expect(within(dialog).getByRole('button', { name: zh['media.save'] }).hasAttribute('disabled')).toBe(true)
+    expect(saves(f.transport)).toHaveLength(0)
+  })
+
+  it('preserves saved and edited parameters when the selected model is clicked again', async () => {
+    const f = fixture({ image: { model: image.id, parameters: { size: '1536x1024', quality: 'high' } } })
+    const dialog = await open()
+    const current = within(dialog).getByRole('button', { name: 'Picture One picture-one' })
+    fireEvent.click(current)
+    expect(within(dialog).getByRole<HTMLSelectElement>('combobox', { name: zh['media.param.size'] }).value).toBe(JSON.stringify('1536x1024'))
+    expect(within(dialog).getByRole<HTMLSelectElement>('combobox', { name: zh['media.param.quality'] }).value).toBe(JSON.stringify('high'))
+    expect(within(dialog).getByRole('button', { name: zh['media.save'] }).hasAttribute('disabled')).toBe(true)
+    fireEvent.change(within(dialog).getByRole('combobox', { name: zh['media.param.quality'] }), { target: { value: JSON.stringify('standard') } })
+    fireEvent.click(current)
+    expect(within(dialog).getByRole<HTMLSelectElement>('combobox', { name: zh['media.param.quality'] }).value).toBe(JSON.stringify('standard'))
+    expect(within(dialog).getByRole('button', { name: zh['media.save'] }).hasAttribute('disabled')).toBe(false)
+    await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: zh['media.save'] })) })
+    const reopened = await open()
+    expect(within(reopened).getByRole<HTMLSelectElement>('combobox', { name: zh['media.param.size'] }).value).toBe(JSON.stringify('1536x1024'))
+    expect(within(reopened).getByRole<HTMLSelectElement>('combobox', { name: zh['media.param.quality'] }).value).toBe(JSON.stringify('standard'))
+    expect(saves(f.transport)[0]?.[2]).toMatchObject({ image: { model: image.id, parameters: { size: '1536x1024', quality: 'standard' } } })
+    fireEvent.click(within(reopened).getByRole('button', { name: zh['media.clearParameters'] }))
+    expect(within(reopened).getByRole<HTMLSelectElement>('combobox', { name: zh['media.param.size'] }).value).toBe('')
+  })
+
+  it('clears prior-model parameters and preserves a one-image default-only choice after reopening', async () => {
+    const onlyDefault: PreferenceModel = { id: 'ys-image-default', displayName: 'Default Image', kind: 'image',
+      verified: false, source: 'fixture', notes: [], params: { sizes: [], resolutions: [], qualities: [], backgrounds: [],
+        formats: [], moderations: [], maxCount: 1, seed: false } }
+    const f = fixture({ image: { model: image.id, parameters: { size: '1536x1024', quality: 'high', seed: 4 } } }, true, false, true, [onlyDefault])
+    const dialog = await open()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Default Image ys-image-default' }))
+    expect(within(dialog).queryByRole('combobox')).toBeNull()
+    expect(within(dialog).queryByRole('spinbutton', { name: zh['media.param.seed'] })).toBeNull()
+    expect(within(dialog).getByRole('spinbutton', { name: zh['media.param.count'] }).hasAttribute('disabled')).toBe(true)
+    expect(dialog.querySelector('input[type="file"]')).toBeNull()
+    await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: zh['media.save'] })) })
+    expect(saves(f.transport)[0]?.[2]).toMatchObject({ image: { model: onlyDefault.id, parameters: {} } })
+    const reopened = await open()
+    expect(within(reopened).getByRole('button', { name: 'Default Image ys-image-default' }).getAttribute('aria-pressed')).toBe('true')
+    expect(within(reopened).queryByRole('combobox')).toBeNull()
+    expect(within(reopened).getByRole('spinbutton', { name: zh['media.param.count'] }).hasAttribute('disabled')).toBe(true)
+    expect(within(reopened).getByRole('button', { name: zh['media.save'] }).hasAttribute('disabled')).toBe(true)
+  })
+
+  it('discards an open draft when the account identity changes', async () => {
+    const f = fixture()
+    const dialog = await open()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Picture One picture-one' }))
+    fireEvent.change(within(dialog).getByRole('combobox', { name: zh['media.param.quality'] }), { target: { value: JSON.stringify('high') } })
+    await act(async () => { f.switchAccount() })
+    expect(screen.queryByRole('dialog')).toBeNull()
+    const reopened = await open()
+    expect(within(reopened).getByRole('button', { name: /跟随平台默认/u }).getAttribute('aria-pressed')).toBe('true')
+    expect(within(reopened).queryByRole('combobox')).toBeNull()
+    expect(f.controller.promptHint()).toBeUndefined()
     expect(saves(f.transport)).toHaveLength(0)
   })
 

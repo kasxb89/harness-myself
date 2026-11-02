@@ -384,6 +384,9 @@ exports[`deployed Harness API through the real product Loader > requires login f
     "default_error_code": {
       "type": "string",
     },
+    "default_error_message": {
+      "type": "string",
+    },
     "default_model_id": {
       "type": "string",
     },
@@ -488,7 +491,7 @@ exports[`deployed Harness API through the real product Loader > requires login f
 
 exports[`deployed Harness API through the real product Loader > requires login for image model discovery and unregisters its visible schema when unloaded > image catalog tool schema 1`] = `
 {
-  "description": "Read the signed-in account’s available image models and current Host-validated generation controls without submitting images or charging for generation. Read when an exact image model, size, aspect ratio, resolution, count or reference-image limit is needed. Use exact ids and the size strings as returned, including aspect-ratio strings; resolution is a separate field. Empty menus and omitted fields offer no optional choice. Unverified model limits are conservative local limits, not confirmed upstream capabilities. Only pass controls declared by generate_image; this catalog also describes controls available to AI Creation. Listing does not reserve capacity, estimate prices or authorize a generation.",
+  "description": "Read the signed-in account’s available image models and current Host-validated generation controls without submitting images or charging for generation. Read when an exact image model, size, aspect ratio, resolution, count or reference-image limit is needed. Use exact ids and the size strings as returned, including aspect-ratio strings; resolution is a separate field. Empty menus and omitted fields offer no optional choice. Unverified model limits are conservative local limits, not confirmed upstream capabilities. Only pass controls declared by generate_image; this catalog also describes controls available to AI Creation. Read default_model_id, default_source and selected_parameters before choosing a model or static controls. A default_error_code with an available model means complete its selection from that same model’s declared specifications; it does not authorize a different model. Listing does not reserve capacity, estimate prices or authorize a generation.",
   "name": "list_image_models",
   "parameters": {
     "properties": {},

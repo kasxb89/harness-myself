@@ -22,6 +22,7 @@ const runtimeRoot = process.env.DSH_VIDEO_TEST_RUNTIME_ROOT
 const ffmpeg = runtimeRoot === undefined ? undefined : join(runtimeRoot, 'bin', process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg')
 const available = ffmpeg !== undefined && existsSync(ffmpeg)
 const accountId = 'creative-browser-qa'
+const disabledBannerPayload = { enabled: false, scope: '0'.repeat(64), revision: '1'.repeat(64), announcements: [] }
 
 /** Real encoded QA color bars and extracted frames, never a substituted user screenshot. */
 async function fixtureMedia(directory: string): Promise<{ video: Buffer; png: Buffer; secondPng: Buffer }> {
@@ -169,7 +170,9 @@ describe('web e2e: direct creation uploads and accepted task recovery', () => {
           const request = route.request()
           const url = new URL(request.url())
           const json = async (payload: unknown): Promise<void> => route.fulfill({ status: 200, json: { ok: true, payload } })
-          if (url.pathname === '/credits/api/session') {
+          if (url.pathname === '/credits/api/announcement-banner' && request.method() === 'GET') {
+            await json(disabledBannerPayload)
+          } else if (url.pathname === '/credits/api/session') {
             await json({ signedIn: true, creditsPerYuan: 1000, account: { id: accountId, phone: '+8613800000000' } })
           } else if (url.pathname === '/credits/api/summary') {
             await json({ balance_points: 20000, as_of: new Date().toISOString() })
@@ -409,7 +412,9 @@ describe.skipIf(!available)('web e2e: chat creation and independent generation p
           const request = route.request()
           const url = new URL(request.url())
           const json = async (payload: unknown): Promise<void> => route.fulfill({ status: 200, json: { ok: true, payload } })
-          if (url.pathname === '/credits/api/session' && request.method() === 'GET') {
+          if (url.pathname === '/credits/api/announcement-banner' && request.method() === 'GET') {
+            await json(disabledBannerPayload)
+          } else if (url.pathname === '/credits/api/session' && request.method() === 'GET') {
             await json({ signedIn, creditsPerYuan: 1000, ...signedIn ? { account: { id: accountId, phone: '+8613800000000' } } : {} })
           } else if (url.pathname === '/credits/api/summary') {
             await json({ balance_points: 20000, as_of: new Date().toISOString() })

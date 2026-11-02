@@ -342,3 +342,18 @@ describe('explicit gateway task-plugin capability source', () => {
     }
   })
 })
+
+
+it('distinguishes the direct H3 display name without changing canonical or YC model ids', () => {
+  const rows = [
+    { model_name: 'MiniMax-H3', display_name: 'MiniMax-H3' },
+    { model_name: 'ycapi-minimax-h3', display_name: 'MiniMax H3' },
+    { model_name: 'another-video', display_name: 'Vendor model' },
+  ].map(row => ({ ...row, supported_endpoint_types: ['openai-video'] }))
+  const catalog = catalogFromPricing(rows, null)
+  expect(catalog.map(({ id, displayName }) => ({ id, displayName }))).toEqual([
+    { id: 'MiniMax-H3', displayName: 'mt-MiniMax-H3' },
+    { id: 'ycapi-minimax-h3', displayName: 'MiniMax H3' },
+    { id: 'another-video', displayName: 'Vendor model' },
+  ])
+})

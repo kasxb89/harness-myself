@@ -14,6 +14,7 @@ import { launchWebScaffold, watchConsole } from './scaffold.ts'
 import { connectFreshWorkspaceZh, ZH_BROWSER_LOCALE } from './support.ts'
 
 const ACCOUNT = 'creation-specifications-qa'
+const disabledBannerPayload = { enabled: false, scope: '0'.repeat(64), revision: '1'.repeat(64), announcements: [] }
 const imageModel: ModelCapability = { id: 'ycapi-image-qa', displayName: '图片完整规格', kind: 'image',
   groups: [], route: '/v1/images/generations', verified: true, source: 'newapi', notes: [],
   params: { sizes: ['1024x1024'], resolutions: ['1k', '2k'], maxCount: 1, maxEdits: 0,
@@ -88,7 +89,8 @@ it('keeps complete image/video specifications and speech confirmation usable in 
       await page.route('**/credits/api/**', async (route) => {
         const request = route.request(), url = new URL(request.url())
         const json = async (payload: object): Promise<void> => route.fulfill({ status: 200, json: { ok: true, payload } })
-        if (url.pathname === '/credits/api/session') await json({ signedIn: true, creditsPerYuan: 1000, account: { id: ACCOUNT, phone: '+86 130 0000 0000' } })
+        if (url.pathname === '/credits/api/announcement-banner' && request.method() === 'GET') await json(disabledBannerPayload)
+        else if (url.pathname === '/credits/api/session') await json({ signedIn: true, creditsPerYuan: 1000, account: { id: ACCOUNT, phone: '+86 130 0000 0000' } })
         else if (url.pathname === '/credits/api/summary') await json({ balance_points: 10000 })
         else if (url.pathname === '/credits/api/media/catalog') await json({ image: [imageModel], video: [videoModel], audio: [audioModel] })
         else if (url.pathname === '/credits/api/creation/content') await json({ schemaVersion: 1, revision: 'specifications-qa',
@@ -352,7 +354,8 @@ it('checks all authorized media catalog specifications through the built creatio
     const request = route.request(), url = new URL(request.url())
     const json = async (payload: object): Promise<void> => route.fulfill({ status: 200, json: { ok: true, payload } })
     try {
-      if (url.pathname === '/credits/api/creation/content') await json({ schemaVersion: 1, revision: 'catalog-matrix', image: emptyMode, video: emptyMode })
+      if (url.pathname === '/credits/api/announcement-banner' && request.method() === 'GET') await json(disabledBannerPayload)
+      else if (url.pathname === '/credits/api/creation/content') await json({ schemaVersion: 1, revision: 'catalog-matrix', image: emptyMode, video: emptyMode })
       else if (url.pathname === '/credits/api/creative/projects') await json({ accountId: '7', projects: [] })
       else if (url.pathname === '/credits/api/image/submissions' || url.pathname === '/credits/api/video/submissions') await json({ submissions: [] })
       else if (url.pathname === '/credits/api/audio/submissions') await route.fulfill({ status: 200, json: { ok: true, submissions: [] } })

@@ -60,6 +60,10 @@ export function productFailureKind(code: unknown): ProductFailureKind {
     case 'MIX_NOT_SUPPORTED':
     case 'MODE_NOT_SUPPORTED':
     case 'SEED_NOT_SUPPORTED':
+    case 'SPECIFICATION_NOT_SUPPORTED':
+    case 'SPECIFICATION_REQUIRED':
+    case 'MEDIA_PARAMETERS_INVALID':
+    case 'MEDIA_MODEL_MISMATCH':
     case 'VIDEO_EDIT_INVALID_INPUT':
     case 'IMAGE_INVALID':
     case 'IMAGE_TOO_LARGE':

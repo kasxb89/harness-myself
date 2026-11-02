@@ -12,7 +12,9 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import Tools, { defineContentToolFixture, type ToolRunContext } from '@deepseek-ai/dsh-tools'
 import SessionProjections from '@deepseek-ai/dsh-session-projection'
 import { MediaPreferencesStore, mediaPreferencesScope } from '../src/media-preferences.ts'
-import { registerMediaRequestSelection, resolveMediaRequestSelection, needsMediaRequestSelectionCatalog, type MediaRequestSelectionContext } from '../src/media-request-selection.ts'
+import { CreativeError } from '../src/creative-store.ts'
+import { registerMediaRequestSelection, resolveMediaRequestSelection, needsMediaRequestSelectionCatalog, mediaRequestModelChoiceOf,
+  canonicalMediaModelId, canonicalMediaRequestParameters, type MediaRequestSelectionContext } from '../src/media-request-selection.ts'
 import { registerVideoGenerationIntent } from '../src/video-generation-intent.ts'
 import type { MediaPreferenceSelection } from '../src/media-preferences-types.ts'
 import { preferenceModels } from './media-preferences.fixture.ts'
@@ -58,20 +60,29 @@ async function fixture() {
     return message
   }
   const selections: Record<string, unknown>[] = []
+  const choices: ReturnType<typeof mediaRequestModelChoiceOf>[] = []
+  const failures: CreativeError[] = []
   let liveModels = preferenceModels
   let pending: Promise<void> | undefined
   let callerFields: Record<string, unknown> = {}
   let auxiliaryImage: boolean | undefined
   let videoProject: MediaRequestSelectionContext | undefined
   let executionScope = scope
+  let inspectLegacySelection = false
   let catalogReads = 0
   const inspect = async (exec: ToolRunContext) => {
     const kind = exec.name === 'image' ? 'image' : 'video'
-    const args = { model: kind === 'image' ? 'image-a' : 'MiniMax-H3', ...callerFields }
+    const args = { ...callerFields }
     const needed = await needsMediaRequestSelectionCatalog(exec, kind, async () => executionScope)
     if (needed) catalogReads += 1
-    selections.push(needed ? resolveMediaRequestSelection(exec, kind, args, liveModels, executionScope,
-      { ...videoProject, ...auxiliaryImage === undefined ? {} : { auxiliaryImage } }) : args)
+    if (needed) choices.push(mediaRequestModelChoiceOf(exec, kind, liveModels, executionScope))
+    try {
+      selections.push(needed || inspectLegacySelection ? resolveMediaRequestSelection(exec, kind, args, liveModels, executionScope,
+        { ...videoProject, ...auxiliaryImage === undefined ? {} : { auxiliaryImage } }) : args)
+    } catch (error) {
+      if (error instanceof CreativeError) failures.push(error)
+      throw error
+    }
     await pending
     return []
   }
@@ -90,12 +101,13 @@ async function fixture() {
     return ctx.tools.execute({ agent, signal: new AbortController().signal, callId, name, arguments: {} })
   }
   session.append('turn/start', { turn: 1 })
-  return { ctx, directory, store, scope, session, agent, selections, save, admit, execute,
+  return { ctx, directory, store, scope, session, agent, selections, choices, failures, save, admit, execute,
     setModels: (models: typeof liveModels) => { liveModels = models }, setOwner: (value?: string) => { owner = value },
     setPending: (value: Promise<void> | undefined) => { pending = value },
     setCallerFields: (value: Record<string, unknown>) => { callerFields = value },
     setAuxiliary: (value: boolean) => { auxiliaryImage = value },
     setExecutionScope: (value: string) => { executionScope = value },
+    inspectLegacy: () => { inspectLegacySelection = true },
     catalogReads: () => catalogReads,
     setProject: (value: MediaRequestSelectionContext) => { videoProject = value } }
 }
@@ -194,6 +206,58 @@ describe('per-RPC personal media snapshots through native and nested execution',
     expect(result.isError).toBe(true)
     expect(JSON.stringify(result.content)).toContain('完整规格')
     expect(f.selections).toEqual([])
+    expect(f.choices).toEqual([{ model: 'video-b', parameters: {}, source: 'personal' }])
+    expect(f.failures[0]?.code).toBe('SPECIFICATION_REQUIRED')
+  })
+
+  it('reports the effective saved model before interpreting another model\'s tool parameters', async () => {
+    const f = await fixture()
+    await f.save(null, { model: 'video-b', parameters: {} })
+    f.setCallerFields({ model: 'MiniMax-H3', resolution: '768P', ratio: '9:16' })
+    f.setProject({ videoProject: true, plannedDurations: [30, 30] })
+    f.session.append('user/message', await f.admit('different-tool-model', '生成一分钟视频'), { surfaceOp: 'append' })
+    const result = await f.execute('video')
+    expect(result.isError).toBe(true)
+    expect(JSON.stringify(result.content)).toContain('当前请求选择的模型为 video-b')
+    expect(JSON.stringify(result.content)).toContain('本次尚未提交生成')
+    expect(f.selections).toEqual([])
+    expect(f.choices).toEqual([{ model: 'video-b', parameters: {}, source: 'personal' }])
+    expect(f.failures[0]?.code).toBe('MEDIA_MODEL_MISMATCH')
+  })
+
+  it('uses an explicit real human H3 selection and canonical resolution instead of saved non-H3 parameters', async () => {
+    const f = await fixture()
+    await f.save(null, { model: 'video-b', parameters: { resolution: '1080P', seconds: 10, ratio: '16:9' } })
+    f.setCallerFields({ model: 'MiniMax-H3', resolution: '768p', ratio: '9:16' })
+    f.setProject({ videoProject: true, plannedDurations: [15, 15] })
+    f.session.append('user/message', await f.admit('human-h3', '用H3生成竖屏视频，9:16，768p'), { surfaceOp: 'append' })
+    await f.execute('video')
+    expect(f.selections).toEqual([{ model: 'MiniMax-H3', resolution: '768P', ratio: '9:16' }])
+    expect(f.choices[0]).toMatchObject({ model: 'MiniMax-H3', source: 'human' })
+  })
+
+  it('canonicalizes tool enum spelling for the same selected model without changing planned timing', async () => {
+    const f = await fixture()
+    await f.save(null, { model: 'video-b', parameters: {} })
+    f.setCallerFields({ model: 'video-b', resolution: '1080p', ratio: '16:9', shot_durations_seconds: [10, 10] })
+    f.setProject({ videoProject: true, plannedDurations: [10, 10] })
+    f.session.append('user/message', await f.admit('same-model-spelling', '生成20秒视频'), { surfaceOp: 'append' })
+    await f.execute('video')
+    expect(f.selections).toEqual([{ model: 'video-b', resolution: '1080P', ratio: '16:9', shot_durations_seconds: [10, 10] }])
+  })
+
+  it('accepts only the exact direct-H3 display alias while retaining its canonical submission id', async () => {
+    const f = await fixture()
+    await f.save(null, { model: 'video-b', parameters: {} })
+    f.setCallerFields({ model: 'mt-MiniMax-H3', resolution: '768p' })
+    f.session.append('user/message', await f.admit('direct-h3-alias', '用mt-MiniMax-H3生成15秒视频'), { surfaceOp: 'append' })
+    await f.execute('video')
+    expect(f.selections.at(-1)).toMatchObject({ model: 'MiniMax-H3', resolution: '768P', seconds: 15 })
+    f.setCallerFields({ model: 'mt-unrelated' })
+    f.session.append('user/message', await f.admit('unrelated-prefix', '生成视频'), { surfaceOp: 'append' })
+    const result = await f.execute('video')
+    expect(result.isError).toBe(true)
+    expect(f.selections).toHaveLength(1)
   })
 
   it('lets current human count, sound, watermark and seed override saved defaults', async () => {
@@ -315,6 +379,7 @@ describe('per-RPC personal media snapshots through native and nested execution',
 
   it('keeps account isolation for the platform-following modality without extra directory reads and tolerates token renewal', async () => {
     const f = await fixture()
+    f.setCallerFields({ model: 'image-a' })
     await f.save(null, { model: 'video-b', parameters: { resolution: '1080P', seconds: 10, ratio: '16:9' } })
     const message = await f.admit('other-kind')
     f.session.append('user/message', message, { surfaceOp: 'append' })
@@ -331,10 +396,49 @@ describe('per-RPC personal media snapshots through native and nested execution',
 
   it('leaves legacy no-preference requests unchanged and writes no required event for ordinary text', async () => {
     const f = await fixture()
+    f.setCallerFields({ model: 'MiniMax-H3' })
     f.session.append('user/message', await f.admit('legacy'), { surfaceOp: 'append' })
     await f.execute('video')
     expect(f.selections).toEqual([{ model: 'MiniMax-H3' }])
     expect(f.ctx.sessionProjections.stateOf(f.session, 'mediaRequestSelections')?.selections).toEqual({})
     expect(f.catalogReads()).toBe(0)
+  })
+
+  it('normalizes only the exact direct-H3 tool alias without a captured preference', async () => {
+    const f = await fixture()
+    f.inspectLegacy()
+    f.setCallerFields({ model: 'mt-MiniMax-H3' })
+    f.session.append('user/message', await f.admit('legacy-alias'), { surfaceOp: 'append' })
+    await f.execute('video')
+    f.setCallerFields({ model: 'ycapi-minimax-h3' })
+    f.session.append('user/message', await f.admit('legacy-yc'), { surfaceOp: 'append' })
+    await f.execute('video')
+    expect(f.selections).toEqual([{ model: 'MiniMax-H3' }, { model: 'ycapi-minimax-h3' }])
+  })
+
+  it('normalizes legacy tool controls only from the supplied selected model declaration', async () => {
+    const f = await fixture()
+    f.inspectLegacy()
+    f.setCallerFields({ model: 'video-b', resolution: '1080p', seconds: 10 })
+    f.session.append('user/message', await f.admit('legacy-spec-spelling'), { surfaceOp: 'append' })
+    await f.execute('video')
+    expect(f.selections).toEqual([{ model: 'video-b', resolution: '1080P', seconds: 10 }])
+    expect(canonicalMediaModelId('video', 'mt-MiniMax-H3')).toBe('MiniMax-H3')
+    expect(canonicalMediaModelId('video', 'ycapi-minimax-h3')).toBe('ycapi-minimax-h3')
+    expect(canonicalMediaModelId('image', 'mt-MiniMax-H3')).toBe('mt-MiniMax-H3')
+    expect(canonicalMediaRequestParameters(undefined, { resolution: '1080p' })).toEqual({ resolution: '1080p' })
+  })
+
+  it.each(['MiniMax-H3', 'video-b'])('resolves human H3 768k shorthand over the %s preference', async (preferredModel) => {
+    const f = await fixture()
+    await f.save(null, { model: preferredModel, parameters: {} })
+    f.setCallerFields({ model: 'MiniMax-H3', resolution: '768k' })
+    f.session.append('user/message', await f.admit('human-h3-shorthand', '用H3生成一条768k视频'), { surfaceOp: 'append' })
+    await f.execute('video')
+    expect(f.selections.at(-1)).toMatchObject({ model: 'MiniMax-H3', resolution: '768P' })
+    const h3 = preferenceModels.find(model => model.id === 'MiniMax-H3')
+    if (h3 === undefined) throw new Error('Expected direct H3 fixture')
+    expect(canonicalMediaRequestParameters({ ...h3, id: 'ycapi-minimax-h3' }, { resolution: '768K' }))
+      .toEqual({ resolution: '768K' })
   })
 })

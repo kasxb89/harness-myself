@@ -1,6 +1,6 @@
 /** Dated model-price references are independent from the top-up amount and payment lifecycle. */
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { Button, Input, Tag, IconSparkleRegular, IconNewChatOutlineRegular, IconPlayOutlineRegular, IconMicrophoneOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, Input, Modal, Tag, IconSparkleRegular, IconNewChatOutlineRegular, IconPlayOutlineRegular, IconMicrophoneOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import { get, type Envelope } from './api.ts'
 import { comparisonDiscount, comparisonModels, type ComparisonKind, type ComparisonModel, type ComparisonRow } from './price-comparisons.ts'
 import { creditsReadFailure, creditsRetrySeconds, type CreditsReadFailure } from './read-failure.ts'
@@ -96,7 +96,7 @@ function PriceRow({ row, t }: { readonly row: ComparisonRow; readonly t: PriceCo
 /**
  * Read public comparisons for the displayed login without affecting recharge or generation.
  * @param props - Current account coordinates and the plugin's typed locale seat.
- * @returns A collapsible comparison card; unsupported or unverified data stays absent.
+ * @returns A scrollable model-card grid with same-specification details in a modal; unverified data stays absent.
  */
 export function PriceComparison({ accountId, accountOwner, accountEpoch, t }: PriceComparisonProps): ReactNode {
   const owner = JSON.stringify([accountId, accountOwner, accountEpoch])
@@ -104,7 +104,7 @@ export function PriceComparison({ accountId, accountOwner, accountEpoch, t }: Pr
   current.current = owner
   const [reading, setReading] = useState<Reading | null>(null)
   const [refresh, setRefresh] = useState(0)
-  const [opened, setOpened] = useState<string | null>(null)
+  const [selected, setSelected] = useState<{ readonly owner: string; readonly id: string } | null>(null)
   const [filter, setFilter] = useState<'all' | ComparisonKind>('all')
   const [query, setQuery] = useState('')
   const [retrySeconds, setRetrySeconds] = useState(0)
@@ -155,15 +155,14 @@ export function PriceComparison({ accountId, accountOwner, accountEpoch, t }: Pr
 
   const models = active?.models ?? []
   if (models.length === 0 && active?.failure == null) return null
-  const expanded = opened === owner
+  const selectedModel = selected?.owner === owner ? models.find(model => model.id === selected.id) : undefined
   const search = query.trim().toLocaleLowerCase()
   const visible = models.filter(model => (filter === 'all' || model.kind === filter)
     && `${model.id} ${model.name} ${model.rows.map(row => row.official_reference.model).join(' ')}`.toLocaleLowerCase().includes(search))
   return <section className={css.card} aria-label={t('comparison.title')}>
     <div className={css.header}><div className={css.heading}><span className={css.headingIcon}><IconSparkleRegular size={20} /></span>
       <h2>{t('comparison.title')}</h2></div>
-    {models.length > 0 && <Button size="sm" variant="ghost" aria-expanded={expanded}
-      onClick={() => { setOpened(expanded ? null : owner) }}>{t(expanded ? 'comparison.collapse' : 'comparison.expand')}</Button>}
+    {models.length > 0 && <span className={css.note}>{t('comparison.modelCount', { count: String(models.length) })}</span>}
     </div>
     <p className={css.note}>{t('comparison.basis')}</p>
     {models.some(model => model.kind === 'text') && <p className={css.note}>{t('comparison.textBasis')}</p>}
@@ -174,41 +173,44 @@ export function PriceComparison({ accountId, accountOwner, accountEpoch, t }: Pr
         onClick={() => { setRefresh(value => value + 1) }}>{t('comparison.retry')}</Button>
       {retrySeconds > 0 && <span>{t('read.retryAfter', { seconds: String(retrySeconds) })}</span>}
     </div>}
-    {!expanded && <div className={css.overview}>
-      {kinds.filter(kind => kind !== 'all').map((kind) => {
-        const categoryModels = models.filter(model => model.kind === kind)
-        const example = categoryModels[0], sample = example?.rows[0]
-        if (example === undefined || sample === undefined) return null
-        return <button key={kind} type="button" className={css.categoryCard} data-kind={kind}
-          aria-label={t('comparison.openCategory', { kind: t(`comparison.kind.${kind}`), count: String(categoryModels.length) })}
-          onClick={() => { setFilter(kind); setQuery(''); setOpened(owner) }}>
-          <span className={css.categoryHeader}><span className={css.categoryIcon}><CategoryIcon kind={kind} /></span>
-            <span className={css.categoryName}>{t(`comparison.kind.${kind}`)}</span>
-            <span className={css.categoryCount}>{t('comparison.modelCount', { count: String(categoryModels.length) })}</span></span>
-          <span className={css.sampleModel}>{example.name}</span>
-          <span className={css.sampleSpec}>{specification(sample, t)}</span>
-          <span className={css.samplePrice}><strong>¥{sample.retail_cny}</strong><span>{unitLabel(sample.unit, t)}</span></span>
-          <span className={css.sampleOfficial}>{t('comparison.official')} ¥{sample.official_reference.official_cny}</span>
-          <Discount row={sample} t={t} />
-          <span className={css.sampleDate}>{t('comparison.checked', { date: sample.official_reference.checked_at })}</span>
-        </button>
-      })}
-    </div>}
-    {expanded && <>
+    {models.length > 0 && <>
       <div className={css.toolbar}><div className={css.filters} role="group" aria-label={t('comparison.category')}>
         {kinds.map(kind => <Button key={kind} size="sm" variant={filter === kind ? 'outline' : 'ghost'}
           data-kind={kind} aria-pressed={filter === kind} onClick={() => { setFilter(kind) }}>{t(`comparison.kind.${kind}`)}</Button>)}
       </div>
       <Input value={query} aria-label={t('comparison.search')} placeholder={t('comparison.search')}
         onChange={(event) => { setQuery(event.target.value) }} /></div>
-      <div className={css.models}>
-        {visible.length === 0 && <p className={css.note}>{t('comparison.empty')}</p>}
-        {visible.map(model => <article key={model.id} className={css.model} data-kind={model.kind}>
-          <div className={css.modelHeader}><span className={css.categoryIcon}><CategoryIcon kind={model.kind} /></span>
-            <h3>{model.name}</h3><span className={css.modelKind}>{t(`comparison.kind.${model.kind}`)}</span></div>
-          {model.rows.map((row, index) => <PriceRow key={index} row={row} t={t} />)}
-        </article>)}
+      <div className={css.modelsViewport} role="region" aria-label={t('comparison.modelList')} tabIndex={0}>
+        <div className={css.models}>
+          {visible.length === 0 && <p className={css.empty}>{t('comparison.empty')}</p>}
+          {visible.map((model) => {
+            const sample = model.rows[0]
+            if (sample === undefined) return null
+            return <button key={model.id} type="button" className={css.modelCard} data-kind={model.kind}
+              aria-label={t('comparison.openModel', { model: model.name })} aria-haspopup="dialog"
+              onClick={() => { setSelected({ owner, id: model.id }) }}>
+              <span className={css.modelHeader}><span className={css.categoryIcon}><CategoryIcon kind={model.kind} /></span>
+                <span className={css.modelKind}>{t(`comparison.kind.${model.kind}`)}</span></span>
+              <span className={css.sampleModel}>{model.name}</span>
+              <span className={css.sampleSpec}>{specification(sample, t)}</span>
+              <span className={css.samplePrice}><strong>¥{sample.retail_cny}</strong><span>{unitLabel(sample.unit, t)}</span></span>
+              <span className={css.sampleOfficial}>{t('comparison.official')} ¥{sample.official_reference.official_cny}</span>
+              <Discount row={sample} t={t} />
+              <span className={css.viewDetails}>{t('comparison.viewPrices')} · {t('comparison.rowCount', { count: String(model.rows.length) })}</span>
+            </button>
+          })}
+        </div>
       </div>
     </>}
+    {selectedModel !== undefined && <Modal open title={t('comparison.detailsTitle', { model: selectedModel.name })}
+      closeLabel={t('comparison.closeDetails')} onClose={() => { setSelected(null) }}
+      className={css.detailDialog ?? ''} contentClassName={css.detailContent ?? ''}
+      footer={<Button size="sm" variant="outline" onClick={() => { setSelected(null) }}>{t('comparison.done')}</Button>}>
+      <div className={css.detailRows} data-kind={selectedModel.kind}>
+        <p className={css.note}>{t('comparison.basis')}</p>
+        {selectedModel.kind === 'text' && <p className={css.note}>{t('comparison.textBasis')}</p>}
+        {selectedModel.rows.map((row, index) => <PriceRow key={index} row={row} t={t} />)}
+      </div>
+    </Modal>}
   </section>
 }

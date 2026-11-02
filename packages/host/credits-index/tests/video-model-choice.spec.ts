@@ -47,7 +47,9 @@ describe('chat video defaults', () => {
     expect(chatVideoResolution('2K', 'MiniMax-H3')).toBe('2K')
     expect(chatVideoResolution('2K', 'MiniMax-H3', '2K')).toBe('2K')
     expect(chatVideoResolution(undefined, 'MiniMax-H3', '768k')).toBe('768P')
-    expect(chatVideoResolution('768k', 'other-video')).toBe('768P')
+    expect(chatVideoResolution('768k', 'other-video')).toBe('768k')
+    expect(chatVideoResolution('768p', 'ycapi-minimax-h3')).toBe('768p')
+    expect(chatVideoResolution('1080P', 'ycapi-seedance-2-0-official')).toBe('1080P')
     expect(chatVideoResolution('1280x720', 'other-video')).toBe('1280x720')
   })
 

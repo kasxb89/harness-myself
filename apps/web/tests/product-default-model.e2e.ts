@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright'
 import { createAssistantMessage, ToolCallId } from '@deepseek-ai/dsh-llm'
 import { expect, it, onTestFinished } from 'vitest'
+import disabledBannerFeed from '../../../packages/host/credits-index/tests/fixtures/announcement-banner-api/feed-banner-disabled.json' with { type: 'json' }
+import notEligibleSurvey from '../../../packages/host/credits-index/tests/fixtures/onboarding-survey-api/not-eligible.json' with { type: 'json' }
 import { launchWebScaffold, watchConsole } from './scaffold.ts'
 import { ZH_BROWSER_LOCALE, connectFreshWorkspaceZh } from './support.ts'
 
@@ -67,6 +69,12 @@ it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash', 'yunshu-flash-conf
         requests.push(path)
         response.setHeader('content-type', 'application/json')
         const answer = (data: object | null): void => { response.end(JSON.stringify({ success: true, data })) }
+        if (path === '/harness/api/client-announcements' && request.method === 'GET') {
+          response.end(JSON.stringify(disabledBannerFeed)); return
+        }
+        if (path === '/harness/api/user/onboarding-survey' && request.method === 'GET') {
+          response.end(JSON.stringify(notEligibleSurvey)); return
+        }
         if (path === '/harness/api/status') {
           answer({ quota_per_unit: 500_000, usd_exchange_rate: 7.3,
             client_model_config: { schema_version: 1, default_chat_model: catalogReduced ? 'capabilities-always-on-effort' : preferred,

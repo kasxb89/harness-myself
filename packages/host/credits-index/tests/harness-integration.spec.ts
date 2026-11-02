@@ -2831,7 +2831,8 @@ describe('deployed Harness API through the real product Loader', () => {
     const before = object(await (await fetch(query, { headers: { cookie } })).json())
     expect(object(before.payload).projects).toMatchObject([{ id: plan.plan_id, status: 'planned', outputs: [], characters: [{ name: '小雨' }] }])
     pricingRows = [{ model_name: 'gpt-image-2', supported_endpoint_types: ['image-generation'] }]
-    imageResponse = { data: [{ b64_json: Buffer.from('actual generated image').toString('base64') }] }
+    const imageBytes = await sharp({ create: { width: 4, height: 3, channels: 4, background: '#cc5522' } }).png().toBuffer()
+    imageResponse = { data: [{ b64_json: imageBytes.toString('base64') }] }
     const generated = object((await requestImage({ callId: ToolCallId('planned-image'), name: 'generate_image', agent, signal: new AbortController().signal, arguments: {
       prompt: '红围巾女孩的侧脸', model: 'gpt-image-2', plan_id: plan.plan_id, shot_id: 'portrait',
     } })).value)
@@ -2847,10 +2848,12 @@ describe('deployed Harness API through the real product Loader', () => {
     if (!Array.isArray(outputs)) throw new Error('Expected real saved outputs')
     const url = object(outputs[0]).url
     if (typeof url !== 'string') throw new Error('Expected controlled output URL')
-    expect(await (await fetch(origin + url, { headers: { cookie } })).text()).toBe('actual generated image')
+    const savedImage = Buffer.from(await (await fetch(origin + url, { headers: { cookie } })).arrayBuffer())
+    expect(savedImage).toEqual(imageBytes)
+    expect(await sharp(savedImage).metadata()).toMatchObject({ format: 'png', width: 4, height: 3 })
     const range = await fetch(origin + url, { headers: { cookie, range: 'bytes=0-5' } })
-    expect(range.status).toBe(206); expect(await range.text()).toBe('actual')
-    expect((await fetch(origin + url, { method: 'HEAD', headers: { cookie } })).headers.get('content-length')).toBe('22')
+    expect(range.status).toBe(206); expect(Buffer.from(await range.arrayBuffer())).toEqual(imageBytes.subarray(0, 6))
+    expect((await fetch(origin + url, { method: 'HEAD', headers: { cookie } })).headers.get('content-length')).toBe(String(imageBytes.length))
     expect((await fetch(origin + url)).status).toBe(401)
     expect((await fetch(origin + url.replace('reference-audio-chat', 'other-chat'), { headers: { cookie } })).status).toBe(404)
     expect(object(object(await (await fetch(base + '/api/creative/projects?session_id=other-chat', { headers: { cookie } })).json()).payload).projects).toEqual([])
@@ -2877,7 +2880,8 @@ describe('deployed Harness API through the real product Loader', () => {
       { model_name: 'gpt-image-2', supported_endpoint_types: ['image-generation'] },
       { model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] },
     ]
-    imageResponse = { data: [{ b64_json: Buffer.from('managed image bytes').toString('base64') }] }
+    const imageBytes = await sharp({ create: { width: 4, height: 3, channels: 4, background: '#2255cc' } }).png().toBuffer()
+    imageResponse = { data: [{ b64_json: imageBytes.toString('base64') }] }
     const storage = context!.get('artifactStorage')
     expect(storage).toBeDefined()
     const destination = await storage!.capture(new AbortController().signal)
@@ -2890,14 +2894,15 @@ describe('deployed Harness API through the real product Loader', () => {
     const chatImage = object(image.value)
     expect(chatImage, JSON.stringify(chatImage)).toMatchObject({ status: 'succeeded' })
     expect(String(chatImage.path).startsWith(destination.directory)).toBe(true)
-    expect(await readFile(String(chatImage.path), 'utf8')).toBe('managed image bytes')
+    expect(await readFile(String(chatImage.path))).toEqual(imageBytes)
+    expect(await sharp(await readFile(String(chatImage.path))).metadata()).toMatchObject({ format: 'png', width: 4, height: 3 })
     expect(basename(String(chatImage.path))).toMatch(/^A white cup-成图-01-[a-f0-9-]{36}\.png$/u)
     const created = await post(base, '/api/image/generate', { prompt: 'A white cup', model: 'gpt-image-2' })
     expect(created.ok).toBe(true)
     expect(String(object(created.payload).path).startsWith(destination.directory)).toBe(true)
-    expect(await readFile(String(object(created.payload).path), 'utf8')).toBe('managed image bytes')
+    expect(await readFile(String(object(created.payload).path))).toEqual(imageBytes)
     expect(object(created.payload).path).not.toBe(chatImage.path)
-    expect(await readFile(String(chatImage.path), 'utf8')).toBe('managed image bytes')
+    expect(await readFile(String(chatImage.path))).toEqual(imageBytes)
     videoTaskStatus = 'completed'
     const video = await requestVideo({
       callId: ToolCallId('managed-video'), name: 'generate_video', arguments: { prompt: 'A cup in sunlight', model: 'MiniMax-H3', duration_seconds: 4 }, signal: new AbortController().signal,
@@ -2973,9 +2978,13 @@ describe('deployed Harness API through the real product Loader', () => {
     }
     pricingRows = [{ model_name: 'gpt-image-2', supported_endpoint_types: ['image-generation'] },
       { model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }]
-    imageResponse = { data: [{ b64_json: Buffer.from('library generated image').toString('base64') }] }
+    const imageBytes = await sharp({ create: { width: 4, height: 3, channels: 4, background: '#22cc55' } }).png().toBuffer()
+    imageResponse = { data: [{ b64_json: imageBytes.toString('base64') }] }
     const image = object((await requestImage({ callId: ToolCallId('library-image'), name: 'generate_image',
       arguments: { prompt: '人物参考图', model: 'gpt-image-2' }, agent, signal })).value)
+    expect(image).toMatchObject({ status: 'succeeded' })
+    expect(await readFile(String(image.path))).toEqual(imageBytes)
+    expect(await sharp(await readFile(String(image.path))).metadata()).toMatchObject({ format: 'png', width: 4, height: 3 })
     const completed = await generate()
     expect(completed.outcome.status, JSON.stringify(completed.outcome)).toBe('completed')
     const expected = [image.path, ...completed.manifest.segments.map(segment => segment.publishedPath), completed.manifest.finalPath]

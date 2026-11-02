@@ -6,7 +6,7 @@ import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
 import { z } from 'zod'
 import { CreativeError } from './creative-store.ts'
 import type { ImageParams, MediaSpecification, ModelCapability, VideoParams } from './media.ts'
-import { resolveMediaSpecification } from './media-request-specification.ts'
+import { canonicalMediaSpecification, resolveMediaSpecification } from './media-request-specification.ts'
 import { validateMediaPreference, type MediaPreferencesStore } from './media-preferences.ts'
 import type { MediaRequestSelection } from './media-preferences-types.ts'
 import { humanVideoDurationSeconds, videoGenerationIntentOf } from './video-generation-intent.ts'
@@ -114,7 +114,7 @@ function humanFields(
   })
   const value = clauses.join('，')
   const selected = models.filter(model => model.kind === kind && [model.id, model.displayName,
-    ...model.id === 'MiniMax-H3' ? ['H3'] : []].some((name) => {
+    ...model.id === 'MiniMax-H3' ? ['H3', 'mt-MiniMax-H3'] : []].some((name) => {
     let start = value.toLowerCase().indexOf(name.toLowerCase())
     while (start !== -1) {
       const before = value.slice(0, start)
@@ -206,34 +206,132 @@ export interface MediaRequestSelectionContext {
   readonly plannedDurations?: readonly number[]
 }
 
+interface RequestChoiceInputs {
+  readonly snapshot: MediaRequestSelection
+  readonly human: HumanInput
+  readonly revision?: HumanInput | undefined
+  readonly explicitModel?: string | undefined
+  readonly parameters: Record<string, string | number | boolean>
+}
+
+/**
+ * Preserve submitted model identities while accepting the direct-H3 public display alias.
+ * @param kind - Requested media modality.
+ * @param id - Exact caller-supplied public model identifier or display alias.
+ * @returns The original id, or the canonical direct-H3 id for its one video alias.
+ */
+export function canonicalMediaModelId(kind: 'image' | 'video', id: string): string {
+  return kind === 'video' && id === 'mt-MiniMax-H3' ? 'MiniMax-H3' : id
+}
+
+function requestChoiceInputsOf(
+  exec: ToolExecution, kind: 'image' | 'video', models: readonly ModelCapability[],
+): RequestChoiceInputs | undefined {
+  const intent = videoGenerationIntentOf(exec)
+  const state = exec.agent?.ctx.get('sessionProjections')?.stateOf(exec.agent.session, 'mediaRequestSelections')
+  if (intent === undefined || state === undefined) return undefined
+  const human = state.humans.find(value => value.seq === intent.grant.sourceSeq)
+  const snapshot = human?.requestId === undefined ? undefined : state.selections[human.requestId]
+  if (snapshot === undefined || human === undefined) return undefined
+  const revision = intent.humanRevision === undefined ? undefined : state.humans.find(value => value.seq === intent.humanRevision?.seq)
+  const original = humanFields(human.text, kind, models)
+  const latest = revision === undefined ? original : humanFields(revision.text, kind, models)
+  const requestedModel = kind === 'video' ? intent.requestedModel ?? latest.model ?? original.model : latest.model ?? original.model
+  const explicitModel = requestedModel === undefined ? undefined : canonicalMediaModelId(kind, requestedModel)
+  const parameters = { ...original.parameters, ...latest.parameters }
+  if (kind === 'video' && intent.requestedResolution !== undefined) parameters.resolution = intent.requestedResolution
+  return { snapshot, human, revision, explicitModel, parameters }
+}
+
+/** The effective request model remains observable even before its complete specification is chosen. */
+export interface MediaRequestModelChoice {
+  readonly model: string
+  readonly parameters: Readonly<Record<string, string | number | boolean>>
+  readonly source: 'human' | 'personal'
+}
+
+function modelChoiceOf(inputs: RequestChoiceInputs, kind: 'image' | 'video', scope: string): MediaRequestModelChoice | undefined {
+  const { snapshot, explicitModel, parameters } = inputs
+  if (snapshot.state === 'unavailable') {
+    if (explicitModel !== undefined && snapshot.code !== 'ACCOUNT_CHANGED') return { model: explicitModel, parameters, source: 'human' }
+    throw new CreativeError(snapshot.code, 409, '本次提交的图片或视频偏好暂时无法确认，请刷新偏好后重新提出生成要求；本次未提交生成。')
+  }
+  if (snapshot.scope !== scope) throw new CreativeError('ACCOUNT_CHANGED', 409, '本次生成所属账号已变化，请核对原账号；尚未提交生成。')
+  const preference = snapshot[kind]
+  const model = explicitModel ?? preference?.model
+  if (model === undefined) return undefined
+  return { model, parameters: { ...preference?.model === model ? preference.parameters : {}, ...parameters },
+    source: explicitModel === undefined ? 'personal' : 'human' }
+}
+
+/**
+ * Read the effective human or saved model without requiring a complete paid specification.
+ * @param exec - Exact logged native or PTC execution.
+ * @param kind - Requested media modality.
+ * @param models - Current-account authorized models used to identify real human model names.
+ * @param scope - Current stable backend/account scope.
+ * @returns The captured choice, or undefined when this request follows the platform default.
+ */
+export function mediaRequestModelChoiceOf(
+  exec: ToolExecution, kind: 'image' | 'video', models: readonly ModelCapability[], scope: string,
+): MediaRequestModelChoice | undefined {
+  const inputs = requestChoiceInputsOf(exec, kind, models)
+  return inputs === undefined ? undefined : modelChoiceOf(inputs, kind, scope)
+}
+
+/**
+ * Normalize unique catalog enum spellings and direct H3's declared 768k shorthand.
+ * @param capability - The actual selected model; an absent declaration cannot normalize parameters.
+ * @param values - Caller fields; unrelated controls and unsupported values remain unchanged.
+ * @returns Caller fields with declared equivalents normalized; other models never inherit H3 shorthand.
+ */
+export function canonicalMediaRequestParameters(
+  capability: ModelCapability | undefined, values: Readonly<Record<string, unknown>>,
+): Record<string, unknown> {
+  if (capability === undefined || capability.kind === 'audio') return { ...values }
+  const params = capability.params as ImageParams | VideoParams
+  const directH3Resolution = capability.kind === 'video' && capability.id === 'MiniMax-H3'
+    && typeof values.resolution === 'string' && /^768k$/iu.test(values.resolution)
+    ? params.resolutions?.find(value => value.toLowerCase() === '768p') : undefined
+  const controls = directH3Resolution === undefined ? values : { ...values, resolution: directH3Resolution }
+  const menu = params.specifications ?? [
+    ...(params.resolutions ?? []).map(resolution => ({ resolution })),
+    ...('sizes' in params ? params.sizes.map(size => ({ size })) : []),
+    ...('ratios' in params ? params.ratios.map(ratio => ({ ratio })) : []),
+    ...('modes' in params ? params.modes.map(mode => ({ mode })) : []),
+    ...(params.qualities ?? []).map(quality => ({ quality })),
+  ]
+  return { ...controls, ...canonicalMediaSpecification(menu, controls) }
+}
+
 /**
  * Apply captured preferences only to the exact native/PTC human request, before new paid work.
+ * A contradictory tool model is rejected before interpreting that model's specification.
  * @param exec - Opaque attributed execution, never a model-supplied source.
  * @param kind - Requested media modality.
  * @param args - Static controls using catalog field names, with unrelated caller fields preserved.
  * @param models - Same-modality pricing/relay-authorized models.
  * @param scope - Current stable backend/account scope.
  * @param context - Host-resolved auxiliary image role from the owning creation plan.
- * @returns Human-overridden frozen preferences, or unchanged arguments for legacy requests.
+ * @returns Human-overridden preferences, or caller controls with declared equivalent enum spellings.
  */
 export function resolveMediaRequestSelection<T extends Readonly<Record<string, unknown>>>(
   exec: ToolExecution, kind: 'image' | 'video', args: T, models: readonly ModelCapability[], scope: string,
   context?: MediaRequestSelectionContext,
 ): T & { readonly model?: string } {
-  const intent = videoGenerationIntentOf(exec)
-  const state = exec.agent?.ctx.get('sessionProjections')?.stateOf(exec.agent.session, 'mediaRequestSelections')
-  if (intent === undefined || state === undefined) return args
-  const human = state.humans.find(value => value.seq === intent.grant.sourceSeq)
-  const snapshot = human?.requestId === undefined ? undefined : state.selections[human.requestId]
-  if (snapshot === undefined || human === undefined) return args
-  const revision = intent.humanRevision === undefined ? undefined : state.humans.find(value => value.seq === intent.humanRevision?.seq)
-  const original = humanFields(human.text, kind, models)
-  const latest = revision === undefined ? original : humanFields(revision.text, kind, models)
-  const explicitModel = kind === 'video' ? intent.requestedModel ?? latest.model ?? original.model : latest.model ?? original.model
-  const explicit = { ...original.parameters, ...latest.parameters }
-  if (kind === 'video' && intent.requestedResolution !== undefined) explicit.resolution = intent.requestedResolution
-  const preferredModel = snapshot.state === 'selected' ? snapshot[kind]?.model : undefined
-  const selectedCapability = models.find(model => model.kind === kind && model.id === (explicitModel ?? preferredModel))
+  const namedArgs = typeof args.model === 'string' ? { ...args, model: canonicalMediaModelId(kind, args.model) } : args
+  const inputs = requestChoiceInputsOf(exec, kind, models)
+  if (inputs === undefined) return canonicalMediaRequestParameters(
+    models.find(model => model.kind === kind && model.id === namedArgs.model), namedArgs) as T & { readonly model?: string }
+  const { snapshot, human, revision, explicitModel } = inputs
+  const choice = modelChoiceOf(inputs, kind, scope)
+  const selectedCapability = models.find(model => model.kind === kind && model.id === (choice?.model ?? namedArgs.model))
+  if (choice !== undefined && selectedCapability !== undefined && typeof namedArgs.model === 'string' && namedArgs.model !== choice.model) {
+    throw new CreativeError('MEDIA_MODEL_MISMATCH', 409,
+      `当前请求选择的模型为 ${selectedCapability.id}，与工具指定的模型不一致。请读取当前模型选择，并使用该模型的规格重新提交；本次尚未提交生成。`)
+  }
+  const explicit = canonicalMediaRequestParameters(selectedCapability, inputs.parameters) as Record<string, string | number | boolean>
+  const requestArgs = canonicalMediaRequestParameters(selectedCapability, namedArgs)
   const instruction = [human.text, revision?.text ?? ''].join('，')
     .replaceAll(/"[^"\n]*"|“[^”\n]*”|`[^`\n]*`/gu, '')
   const affirmative = instruction.split(/[，,。；;\n]/u)
@@ -245,7 +343,7 @@ export function resolveMediaRequestSelection<T extends Readonly<Record<string, u
     const aliases = referenceInput && !textInput ? ['image-to-video', 'image_to_video', 'i2v', 'reference-to-video', 'reference_to_video']
       : textInput && !referenceInput ? ['text-to-video', 'text_to_video', 't2v'] : []
     const supported = params.modes.filter(mode => aliases.includes(mode.toLowerCase()))
-    if (typeof args.mode === 'string' && supported.includes(args.mode)) explicit.mode = args.mode
+    if (typeof requestArgs.mode === 'string' && supported.includes(requestArgs.mode)) explicit.mode = requestArgs.mode
     else if (supported.length === 1 && supported[0] !== undefined) explicit.mode = supported[0]
   }
   if (selectedCapability !== undefined && kind === 'image' && 'backgrounds' in selectedCapability.params) {
@@ -278,27 +376,23 @@ export function resolveMediaRequestSelection<T extends Readonly<Record<string, u
     }
   }
 
-  if (snapshot.state === 'unavailable') {
-    if (explicitModel !== undefined && snapshot.code !== 'ACCOUNT_CHANGED') {
-      validateMediaPreference(kind, { model: explicitModel, parameters: explicit }, models)
-      return { ...args, model: explicitModel, ...explicit }
-    }
-    throw new CreativeError(snapshot.code, 409, '本次提交的图片或视频偏好暂时无法确认，请刷新偏好后重新提出生成要求；本次未提交生成。')
-  }
-  if (snapshot.scope !== scope) throw new CreativeError('ACCOUNT_CHANGED', 409, '本次生成所属账号已变化，请核对原账号；尚未提交生成。')
-  const preference = snapshot[kind]
+  const preference = snapshot.state === 'selected' ? snapshot[kind] : null
   if (preference === null || explicitModel !== undefined && explicitModel !== preference.model) {
     if (explicitModel !== undefined) validateMediaPreference(kind, { model: explicitModel, parameters: explicit }, models)
-    return { ...args, ...explicitModel === undefined ? {} : { model: explicitModel }, ...explicit }
+    return {
+      ...requestArgs, ...explicitModel === undefined ? {} : { model: explicitModel }, ...explicit,
+    } as T & { readonly model?: string }
   }
-  let normalized: Record<string, string | number | boolean> = { ...preference.parameters, ...explicit }
+  let normalized = canonicalMediaRequestParameters(
+    selectedCapability, { ...preference.parameters, ...explicit },
+  ) as Record<string, string | number | boolean>
   const plannedVideo = context?.videoProject === true && (context.plannedDurations !== undefined || args.plan_id !== undefined)
   if (plannedVideo) delete normalized.seconds
   if (auxiliaryImage || imageTotal !== undefined && explicit.count === undefined) delete normalized.count
   const model = explicitModel ?? preference.model
   const capability = models.find(value => value.kind === kind && value.id === model)
   const specifications = (capability?.params as ImageParams | VideoParams | undefined)?.specifications
-  let effectiveArgs: Record<string, unknown> = { ...args }
+  let effectiveArgs: Record<string, unknown> = requestArgs
   if (specifications !== undefined) {
     const fields = ['size', 'resolution', 'seconds', 'ratio', 'quality', 'mode'] as const
     const matches = (specification: MediaSpecification, values: Readonly<Record<string, unknown>>): boolean => fields.every(field =>

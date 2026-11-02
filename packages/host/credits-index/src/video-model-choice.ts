@@ -257,7 +257,8 @@ export function chatVideoResolution(
   resolution: string | undefined, model: string, requestedResolution?: string,
 ): string | undefined {
   const selected = requestedResolution ?? resolution ?? (model === H3_VIDEO_MODEL ? DEFAULT_CHAT_VIDEO_RESOLUTION : undefined)
-  return selected !== undefined && /^768[pk]$/iu.test(selected.trim()) ? DEFAULT_CHAT_VIDEO_RESOLUTION : selected
+  return model === H3_VIDEO_MODEL && selected !== undefined && /^768[pk]$/iu.test(selected.trim())
+    ? DEFAULT_CHAT_VIDEO_RESOLUTION : selected
 }
 
 const quoteSchema = z.object({

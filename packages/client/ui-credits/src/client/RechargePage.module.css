@@ -5,7 +5,7 @@
   padding: 30px 32px 40px;
   background: radial-gradient(ellipse at 92% 0, color-mix(in srgb, var(--dsw-alias-state-business-primary) 6%, transparent), transparent 50%), var(--dsw-alias-bg-layer-1);
 }
-.page > * { box-sizing: border-box; width: 100%; max-width: 1160px; margin-inline: auto; }
+.page > * { flex-shrink: 0; box-sizing: border-box; width: 100%; max-width: 1160px; margin-inline: auto; }
 .header { gap: 12px; max-width: 1160px; }
 .titleIcon { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 42px; height: 42px; color: color-mix(in srgb, var(--dsw-alias-state-business-primary) 75%, var(--dsw-alias-label-primary)); background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 15%, transparent); border-radius: var(--dsw-radius-lg); }
 .layout { width: 100%; max-width: 1160px; }

@@ -832,6 +832,56 @@ describe('GenericToolCard', () => {
     expect(view.container.textContent).not.toContain(code)
   })
 
+  it.each(['zh', 'en'] as const)('distinguishes specification and model-selection failures without revealing diagnostics (%s)', async (language) => {
+    const dictionary = language === 'en' ? en : zh
+    const cases = [
+      ['SPECIFICATION_NOT_SUPPORTED', 'error.mediaSpecificationUnsupported'],
+      ['SPECIFICATION_REQUIRED', 'error.mediaSpecificationRequired'],
+      ['MEDIA_PARAMETERS_INVALID', 'error.mediaParametersInvalid'],
+      ['MEDIA_MODEL_MISMATCH', 'error.mediaModelMismatch'],
+    ] as const
+    const recorded: string[] = []
+    for (const [code, key] of cases) {
+      for (const thrown of [false, true]) {
+        const name = 'generate_video_project'
+        const diagnostic = 'private upstream reason https://private.invalid/?key=secret C:/private/request.json'
+        const content = [{ type: 'text' as const, text: thrown ? diagnostic : JSON.stringify({ status: 'failed', code, message: diagnostic }) }]
+        const block = result({ call: { name, argsRaw: '{"prompt":"private prompt"}' }, content,
+          isError: thrown, ...thrown ? { error: { name: 'CreativeError', code } } : {} })
+        const inspect = vi.fn()
+        const view = render(<GenericToolCard {...props(name, block)} inspect={inspect} t={makeTranslate(dictionary, commonZh)} />)
+        expect(view.getByText(dictionary[key])).toBeTruthy()
+        expect(view.queryByText(dictionary['error.operationFailed'])).toBeNull()
+        expect(view.queryByText(dictionary['error.serviceUnavailable'])).toBeNull()
+        fireEvent.click(view.getByRole('button'))
+        expect(view.getAllByText(dictionary[key])).toHaveLength(2)
+        expect(view.getAllByRole('button')).toHaveLength(1)
+        expect(view.container.textContent).not.toMatch(/private|secret|C:\/|SPECIFICATION_|MEDIA_/u)
+        expect(inspect).not.toHaveBeenCalled()
+        expect(block.content).toBe(content)
+        expect(block.isError).toBe(thrown)
+        if (!thrown) recorded.push(view.container.textContent ?? '')
+        cleanup()
+      }
+    }
+    await expect(`${recorded.join('\n')}\n`).toMatchFileSnapshot(language === 'en'
+      ? './expected/media-specification-failures-en.txt' : './expected/media-specification-failures-zh.txt')
+  })
+
+  it.each(['SPECIFICATION_NOT_SUPPORTED', 'SPECIFICATION_REQUIRED', 'MEDIA_PARAMETERS_INVALID', 'MEDIA_MODEL_MISMATCH'])(
+    'keeps an unconfirmed submission ahead of a nested %s parameter failure', (code) => {
+      const content = [{ type: 'text' as const, text: JSON.stringify({ status: 'failed', code, message: 'private parameter detail' }) }]
+      const block = result({ call: { name: 'generate_video_project', argsRaw: '{}' }, content,
+        isError: true, error: { name: 'VideoProjectError', code: 'SUBMISSION_UNKNOWN' } })
+      const view = render(<GenericToolCard {...props('generate_video_project', block)} />)
+      expect(view.getByText(zh['error.mediaOutcomeUnknown'])).toBeTruthy()
+      expect(view.queryByText(zh['error.mediaModelMismatch'])).toBeNull()
+      expect(view.queryByText(zh['error.mediaSpecificationUnsupported'])).toBeNull()
+      expect(view.container.textContent).not.toContain('private parameter detail')
+      expect(block.content).toBe(content)
+    },
+  )
+
   it.each(['generate_image', 'query_image_task'])('keeps unknown %s submission and preflight rejection distinct', (name) => {
     const text = JSON.stringify({ status: 'failed', submission_state: 'unknown', code: 'IMAGE_SUBMISSION_UNKNOWN' })
     const block = result({ call: { name, argsRaw: '{}' }, content: [{ type: 'text', text }] })

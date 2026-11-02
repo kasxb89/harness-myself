@@ -23,6 +23,8 @@ describe('product failure presentation', () => {
     ['VIDEO_QUERY_TIMEOUT', 'timeout'], ['IMAGE_SUBMIT_TIMEOUT', 'timeout'],
     ['INVALID_REQUEST', 'invalid-input'], ['INVALID_ARGUMENT', 'invalid-input'], ['INVALID_ARGS', 'invalid-input'],
     ['VIDEO_EDIT_INVALID_INPUT', 'invalid-input'], ['RATIO_NOT_SUPPORTED', 'invalid-input'],
+    ['SPECIFICATION_NOT_SUPPORTED', 'invalid-input'], ['SPECIFICATION_REQUIRED', 'invalid-input'],
+    ['MEDIA_PARAMETERS_INVALID', 'invalid-input'], ['MEDIA_MODEL_MISMATCH', 'invalid-input'],
     ['HTTP_400', 'invalid-input'], ['HTTP_413', 'invalid-input'], ['HTTP_415', 'invalid-input'],
     ['IMAGE_INPUT_TOO_LARGE', 'invalid-input'], ['IMAGE_FORMAT_UNSUPPORTED', 'invalid-input'],
     ['IMAGE_EMPTY', 'invalid-input'], ['HTTP_403', 'forbidden'], ['HTTP_429', 'busy'],
@@ -44,7 +46,7 @@ describe('product failure presentation', () => {
 
   it.each(['INVALID_ARGS_EXTRA', 'INSUFFICIENT_USER_QUOTA_EXTRA', 'INSUFFICIENT_TOKEN_QUOTA_EXTRA', 'CREATIVE_INVALID',
     'media_account_capacity_exhausted_EXTRA', ' media_account_capacity_exhausted', 'H3_UPSTREAM_AUTH_REJECTED\n',
-    'insufficient_user_quota_extra'])(
+    'insufficient_user_quota_extra', 'SPECIFICATION_REQUIRED_EXTRA', 'MEDIA_MODEL_MISMATCH\n'])(
     'keeps unrelated or extended code %s unconfirmed', (code) => {
       expect(productFailureKind(code)).toBe('unknown')
     },

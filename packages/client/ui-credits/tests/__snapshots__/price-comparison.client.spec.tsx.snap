@@ -1,0 +1,3 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`recharge model reference card > keeps model summaries compact and opens independent input/output details in a modal 1`] = `"模型价格对比2 款型号以下为默认报价对比，实际以提交时报价为准；充值金额不改变模型折扣聊天按官方标准非缓存价对比全部聊天图片视频音频聊天GPT Fixture输入¥1元 / 百万 Token官方参考价 ¥2约 5 折约省 50%查看价格 · 2 档规格视频Video Fixture时长 5 秒 · 模式 文生视频 · 分辨率 720p¥0.2元 / 秒官方参考价 ¥0.4约 5 折约省 50%查看价格 · 1 档规格"`;

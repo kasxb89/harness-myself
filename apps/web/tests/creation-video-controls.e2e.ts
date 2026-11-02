@@ -9,6 +9,7 @@ import { launchWebScaffold, watchConsole } from './scaffold.ts'
 import { connectFreshWorkspaceZh, ZH_BROWSER_LOCALE } from './support.ts'
 
 const ACCOUNT = 'video-controls-qa'
+const disabledBannerPayload = { enabled: false, scope: '0'.repeat(64), revision: '1'.repeat(64), announcements: [] }
 const MODEL_ID = 'lec-mj-seedance-2-5-cd-720p'
 const MODEL_LABEL = 'Seedance 2.5 · 720p · 30秒（线路1）'
 const TEMPLATE_TITLE = '手冲咖啡时刻'
@@ -49,7 +50,8 @@ it.each(['no-session', 'unknown', 'pending', 'read-failed'] as const)(
         await page.route('**/credits/api/**', async (route) => {
           const request = route.request(), url = new URL(request.url())
           const json = async (payload: object): Promise<void> => route.fulfill({ status: 200, json: { ok: true, payload } })
-          if (url.pathname === '/credits/api/session') {
+          if (url.pathname === '/credits/api/announcement-banner' && request.method() === 'GET') await json(disabledBannerPayload)
+          else if (url.pathname === '/credits/api/session') {
             await json({ signedIn: true, creditsPerYuan: 1000, account: { id: ACCOUNT } })
           } else if (url.pathname === '/credits/api/summary') await json({ balance_points: 10000 })
           else if (url.pathname === '/credits/api/media/catalog') {
@@ -188,11 +190,13 @@ it.each(['no-session', 'unknown', 'pending', 'read-failed'] as const)(
           }
           if (admission === 'no-session') {
             await model.click()
-            await page.getByRole('menuitem', { name: 'MiniMax-H3', exact: true }).click()
+            await page.getByRole('menuitem', { name: 'mt-MiniMax-H3', exact: true }).click()
+            const referenceWorkflow = videos.getByRole('button', { name: '参考素材', exact: true })
+            await referenceWorkflow.click()
+            expect(await referenceWorkflow.getAttribute('aria-pressed')).toBe('true')
             await videos.getByText(/^可上传 MP4\/MOV 参考视频/).waitFor()
             const input = videos.getByLabel('添加素材', { exact: true })
             expect(await input.getAttribute('accept')).toContain('video/mp4')
-            await videos.getByRole('button', { name: '参考素材', exact: true }).click()
             const buffer = await readFile(fileURLToPath(new URL('./fixtures/sidebar-media/preview.mp4', import.meta.url)))
             await input.setInputFiles({ name: '参考视频.mp4', mimeType: 'video/mp4', buffer })
             await videos.getByLabel('预览参考视频 参考视频.mp4', { exact: true }).waitFor()

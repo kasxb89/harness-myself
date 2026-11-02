@@ -14,8 +14,12 @@ const UNKNOWN_OUTCOME_CODES = new Set([
   'PROJECT_STORAGE_FAILED', 'TIMEOUT', 'TRANSPORT', 'NO_TASK_ID',
 ])
 
-type MediaFailure = ProductFailureKind | 'balance-unknown-outcome' | 'unknown-outcome' | 'accepted-pending' | 'accepted-queued'
-  | 'model-parameters' | 'plan-parameters' | 'video-count-limit' | 'video-intent-unavailable'
+type MediaParameterFailure = 'model-parameters' | 'specification-unsupported' | 'specification-required'
+  | 'media-parameters-invalid' | 'media-model-mismatch'
+
+type MediaFailure = ProductFailureKind | MediaParameterFailure
+  | 'balance-unknown-outcome' | 'unknown-outcome' | 'accepted-pending' | 'accepted-queued'
+  | 'plan-parameters' | 'video-count-limit' | 'video-intent-unavailable'
   | 'video-quote-unavailable' | 'video-quote-changed' | 'video-choice-unavailable'
 
 const PARAMETER_FAILURES = new Set([
@@ -23,6 +27,16 @@ const PARAMETER_FAILURES = new Set([
   'AUDIO_NOT_SUPPORTED', 'RESOLUTION_NOT_SUPPORTED', 'RATIO_NOT_SUPPORTED', 'PARAMETER_NOT_SUPPORTED',
   'REFERENCES_NOT_SUPPORTED', 'MIX_NOT_SUPPORTED', 'MODE_NOT_SUPPORTED', 'SEED_NOT_SUPPORTED',
 ])
+
+function parameterFailure(code: unknown): MediaParameterFailure | null {
+  switch (code) {
+    case 'SPECIFICATION_NOT_SUPPORTED': return 'specification-unsupported'
+    case 'SPECIFICATION_REQUIRED': return 'specification-required'
+    case 'MEDIA_PARAMETERS_INVALID': return 'media-parameters-invalid'
+    case 'MEDIA_MODEL_MISMATCH': return 'media-model-mismatch'
+    default: return typeof code === 'string' && PARAMETER_FAILURES.has(code) ? 'model-parameters' : null
+  }
+}
 
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -81,7 +95,8 @@ export function mediaFailure(toolName: string, block: ToolCallBlock): MediaFailu
       const intentFailure = videoIntentFailure(toolName, value.code)
       if (intentFailure !== null) return intentFailure
       if (planParameterFailure(toolName, value.code)) return 'plan-parameters'
-      if (typeof value.code === 'string' && PARAMETER_FAILURES.has(value.code)) return 'model-parameters'
+      const parameters = parameterFailure(value.code)
+      if (parameters !== null) return parameters
       return value.code === 'AUTH_REQUIRED' ? 'sign-in' : productFailureKind(value.code)
     }
   }
@@ -90,5 +105,9 @@ export function mediaFailure(toolName: string, block: ToolCallBlock): MediaFailu
     if (intentFailure !== null) return intentFailure
   }
   if (block.isError && planParameterFailure(toolName, block.error?.code)) return 'plan-parameters'
+  if (block.isError) {
+    const parameters = parameterFailure(block.error?.code)
+    if (parameters !== null) return parameters
+  }
   return block.isError ? productFailureKind(block.error?.code) : null
 }

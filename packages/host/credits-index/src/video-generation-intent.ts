@@ -141,7 +141,7 @@ export function humanVideoDurationSeconds(text: string): number | undefined {
 /**
  * Read a single affirmative tier in a human video request without retaining its text.
  * @param text - Original human text, never the model's selected parameters.
- * @returns Canonical tier, or absence for negated, quoted, or conflicting specifications.
+ * @returns Normalized tier spelling without model-specific shorthand, or absence for conflicting specifications.
  */
 export function humanVideoResolution(text: string): string | undefined {
   const value = text.normalize('NFKC')
@@ -150,8 +150,7 @@ export function humanVideoResolution(text: string): string | undefined {
     .split(/[，,。；;\n]/u).filter(clause => !/不要|不需|无需|不用|(?<!分)别|勿|而非|不是/u.test(clause)).join(' ')
   const pattern = /(?<![a-z0-9._/-])(?:\d+[pk]|\d+\s*[x×]\s*\d+)(?![a-z0-9._/-])/giu
   const tiers = [...affirmative.matchAll(pattern)]
-    .map(match => /^768[pk]$/iu.test(match[0]) ? '768P'
-      : match[0].replaceAll(/\s+/gu, '').toUpperCase().replace(/[X×]/u, 'x'))
+    .map(match => match[0].replaceAll(/\s+/gu, '').toUpperCase().replace(/[X×]/u, 'x'))
   const first = tiers[0]
   return first !== undefined && tiers.every(tier => tier === first) ? first : undefined
 }
@@ -166,15 +165,15 @@ export function humanVideoModel(text: string): string | undefined {
   if (humanVideoGenerationBlocked(value)) return undefined
   const clauses = value.replaceAll(/"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|「[^」]*」|『[^』]*』|`[^`]*`/gu, '')
     .split(/[，,。；;\n]/u).filter(clause => !/不要|不需|无需|不用|(?<!分)别|勿|而非|不是/u.test(clause))
-  const model = '(?:MiniMax-H3|H3|[a-z][a-z0-9._/-]*[0-9._/-][a-z0-9._/-]*)'
-  const pattern = new RegExp(`(?:使用|采用|选择|换成|改用|用|\\b(?:use|using|model)\\s*:?\\s+)\\s*(${model})`, 'giu')
+  const model = '(?:mt-MiniMax-H3|MiniMax-H3|H3|[a-z][a-z0-9._/-]*[0-9._/-][a-z0-9._/-]*)'
+  const pattern = new RegExp(`(?:使用|采用|选择|换成|改用|用|\\b(?:use|using|model)\\s*:?\\s+)\\s*(${model})(?![a-z0-9._/-])`, 'giu')
   const values = clauses.flatMap(clause => [...clause.matchAll(pattern)]
     .flatMap(match => match[1] === undefined ? [] : [match[1].replace(/[.]+$/u, '')]))
-  if (/^(?:MiniMax-H3|H3)\s/iu.test(value)) values.push('MiniMax-H3')
-  if (clauses.some(clause => new RegExp(`(?<![a-z0-9._/-])(?:MiniMax-H3|H3)\\s*${VIDEO_NOUN}`, 'iu').test(clause))) {
+  if (/^(?:mt-MiniMax-H3|MiniMax-H3|H3)\s/iu.test(value)) values.push('MiniMax-H3')
+  if (clauses.some(clause => new RegExp(`(?<![a-z0-9._/-])(?:mt-MiniMax-H3|MiniMax-H3|H3)\\s*${VIDEO_NOUN}`, 'iu').test(clause))) {
     values.push('MiniMax-H3')
   }
-  const models = values.map(id => /^(?:MiniMax-H3|H3)$/iu.test(id) ? 'MiniMax-H3' : id)
+  const models = values.map(id => /^(?:mt-MiniMax-H3|MiniMax-H3|H3)$/iu.test(id) ? 'MiniMax-H3' : id)
   const first = models[0]
   return first !== undefined && models.every(id => id === first) ? first : undefined
 }

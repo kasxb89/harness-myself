@@ -151,7 +151,7 @@ function MediaPreferenceEditor({ useMediaPreferences, loadCatalog, savePreferenc
           {models.filter(model => `${model.displayName} ${model.id}`.toLowerCase().includes(search[kind].toLowerCase().trim())).map((model, index) =>
             <button key={model.id} type="button" className={css.model} aria-label={`${model.displayName} ${model.id}`}
               aria-describedby={`${titleId}-price-${index}`} aria-pressed={selection?.model === model.id} disabled={state.saving}
-              onClick={() => { choose({ model: model.id, parameters: {} }) }}>
+              onClick={() => { if (selection?.model !== model.id) choose({ model: model.id, parameters: {} }) }}>
               <span className={css.modelLine}><span>{model.displayName}</span><span className={css.price} id={`${titleId}-price-${index}`}>
                 {priceLabel(mediaPreferencePrice(model, selection?.model === model.id ? selection.parameters : {}), kind, t)}
               </span></span><small>{model.id}</small>
