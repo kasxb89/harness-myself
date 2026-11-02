@@ -51,6 +51,8 @@ kind: "package-reference"
 
 每次列出产品路由模型前，先等待当前账号的 `harnessAccount.refreshModels` 结果。Host 使用该账号的 relay key 读取 `/v1/models`，排除已声明的媒体生成模型，并在适配器读取配置前同步非空聊天结果。并发读取共享同一次操作。成功返回空列表时不展示任何聊天模型，即使旧 profile 仍保留配置；读取不可用时返回目录失败，不把旧模型显示为当前可用。其他提供方路由保留原有的列表行为。
 
+`/v1/models` 中非空的 `display_name` 用作聊天名称，适用于新模型，以及尚未命名或名称仍等于 ID 的旧条目。其他已配置名称保留，包括之前保存的网关名称；后台后续改名不会覆盖这些名称。选择与请求始终使用原始模型 ID。名称缺失、空白或不是字符串时保留现有名称。
+
 同一次刷新通过 `GET <base>/api/status` 读取 `data.client_model_config`，字段为 `schema_version: 1`、`default_chat_model` 和 `model_order`。明确排序的模型优先展示；未指定排序的聊天模型保留 `/v1/models` 原有顺序。旧后端可以省略该配置，此时不应用后台偏好；读取失败或配置畸形时保留上次有效偏好。读取这些偏好不发起模型请求，也不扩大模型权限。
 
 status 中独立的同级字段 `client_model_presentation` 采用 `{ schema_version: 1, models: { [exactModelId]: { description?, badge? } } }`。两个可选纯文本字段分别覆盖两个模型选择器的说明和标签：缺失时继承本地说明，`""` 隐藏对应字段。最多接受 256 个型号，精确 ID 最多 255 个 UTF-8 字节，说明最多 500 个 UTF-16 单元，单行标签最多 32 个。说明保留换行；标签拒绝 LF、CR、NEL、LS 和 PS。未知字段、null 或畸形条目使展示文档整体无效，但不影响有效的排序和默认偏好；读取失败时两份文档各自保留上次有效值。缺少展示字段或空映射会清除旧覆写。上次有效值绑定精确后端、账号和本地登录 token，包括另一个共享会话文件的 Host 提交的变化；同一次登录内续期上游 access token 则保留这些值。仅当前授权的聊天 ID、且属于配置产品提供方时，通过 `api-session/model-presentation` 获得展示文字；其他路由继续委托原处理器。仅展示变化也会发出 `api-session/model-catalog-changed`。文字不改变路由、能力、价格、模型 ID 或模型请求。

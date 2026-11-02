@@ -183,6 +183,62 @@ async function capacity(id: string) {
   return { contextWindow: model.context?.contextWindow, maxOutputTokens: model.maxOutputTokens, defaultMaxTokens: model.defaultMaxTokens }
 }
 
+describe('gateway display names through real Host model synchronization', () => {
+  it('shows gateway display names for new and ID-only entries while preserving manual names and request IDs', async () => {
+    const fresh = 'ys-fixture-new'
+    catalog = [{ id: first, display_name: 'qq-Fixture One' },
+      { id: second, display_name: 'qq-Fixture Two' }, { id: fresh, display_name: 'qq-Fixture New' }]
+    const { base, refresh } = await boot([{ id: first, name: first }, { id: second, name: 'My own label' }])
+    await signIn(base)
+    await refresh()
+    expect(configuredRoute().models).toMatchObject([
+      { id: first, name: 'qq-Fixture One' }, { id: second, name: 'My own label' }, { id: fresh, name: 'qq-Fixture New' },
+    ])
+    const models = await context!.llm.listModels('yunshu-local')
+    expect(models.map(model => ({ id: model.id, name: model.name }))).toEqual([
+      { id: first, name: 'qq-Fixture One' }, { id: second, name: 'My own label' }, { id: fresh, name: 'qq-Fixture New' },
+    ])
+    expect(requests.filter(request => request.path === '/harness/v1/chat/completions')).toHaveLength(0)
+    const prepared = await context!.llm.prepareCall({ provider: 'yunshu-local', model: fresh })
+    for await (const _chunk of prepared.stream({ ...prepared.config, messages: [] })) { /* Drain the local fixture response. */ }
+    expect(requests.filter(request => request.path === '/harness/v1/chat/completions').map(request => request.body?.model)).toEqual([fresh])
+  })
+
+  it('keeps synchronized names across restart and does not rewrite or notify on unchanged listings', async () => {
+    catalog = [{ id: first }]
+    const { base, refresh, restart } = await boot([{ id: first }])
+    await signIn(base)
+    await refresh()
+    const revision = () => context!.settings.describe({ redactSecrets: true }).find(row => row.ns === 'llm-pi-ai')!.revision
+    const changed = vi.fn()
+    context!.on('api-session/model-catalog-changed', changed)
+    catalog = [{ id: first, display_name: 'qq-Fixture One' }]
+    await refresh()
+    expect(changed).toHaveBeenCalledTimes(1)
+    const before = revision()
+    await refresh()
+    expect(revision()).toBe(before)
+    expect(changed).toHaveBeenCalledTimes(1)
+    expect(requests.filter(request => request.path === '/harness/v1/chat/completions')).toHaveLength(0)
+    await restart()
+    await refresh()
+    expect((await context!.llm.resolveModelInfo('yunshu-local', first)).name).toBe('qq-Fixture One')
+  })
+
+  it('ignores absent, blank and malformed remote labels without replacing existing names', async () => {
+    catalog = [{ id: first, display_name: 'qq-Fixture One' }, { id: second, display_name: '  ' }]
+    const { base, refresh } = await boot([{ id: first }, { id: second }])
+    await signIn(base)
+    await refresh()
+    for (const display_name of [undefined, '', '  ', null, 42, { name: 'invalid' }]) {
+      catalog = [{ id: first, display_name }, { id: second, display_name }]
+      await refresh()
+      expect((await context!.llm.resolveModelInfo('yunshu-local', first)).name).toBe('qq-Fixture One')
+      expect((await context!.llm.resolveModelInfo('yunshu-local', second)).name).toBe(second)
+    }
+  })
+})
+
 describe('product model capacities through the real Host Loader and HTTP listing', () => {
   it('keeps an expected model scope valid through same-account access-token renewal', async () => {
     catalog = [{ id: first, context_window: 32768, max_output_tokens: 8192 }]

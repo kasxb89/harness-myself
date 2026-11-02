@@ -1069,24 +1069,26 @@ export function apply(ctx: Context, config: Config): void {
     video: string[]
     audio: string[]
     limits: ReadonlyMap<string, ProductModelLimits>
+    names: ReadonlyMap<string, string>
   }> => {
     const owned = await accountKey(session)
-    if ('reason' in owned) return { ok: false, ...noCredential(owned.reason), chat: [], image: [], video: [], audio: [], limits: new Map() }
+    if ('reason' in owned) return { ok: false, ...noCredential(owned.reason), chat: [], image: [], video: [], audio: [], limits: new Map(), names: new Map() }
     const key = owned.key
     try {
       const response = await apiFetch('/v1/models', {
         headers: { authorization: `Bearer ${key}`, accept: 'application/json' },
         signal: signal ?? AbortSignal.timeout(resolved.timeoutMs),
       })
-      if (!response.ok) return { ok: false, code: `HTTP_${String(response.status)}`, message: 'new-api 模型列表不可用', chat: [], image: [], video: [], audio: [], limits: new Map() }
+      if (!response.ok) return { ok: false, code: `HTTP_${String(response.status)}`, message: 'new-api 模型列表不可用', chat: [], image: [], video: [], audio: [], limits: new Map(), names: new Map() }
       const payload: unknown = await response.json()
       const data = payload !== null && typeof payload === 'object' && 'data' in payload ? payload.data : undefined
-      if (!Array.isArray(data)) return { ok: false, code: 'MODEL_CATALOG_INVALID', message: '模型列表格式无效', chat: [], image: [], video: [], audio: [], limits: new Map() }
+      if (!Array.isArray(data)) return { ok: false, code: 'MODEL_CATALOG_INVALID', message: '模型列表格式无效', chat: [], image: [], video: [], audio: [], limits: new Map(), names: new Map() }
       const chat: string[] = []
       const image: string[] = []
       const video: string[] = []
       const audio: string[] = []
       const limits = new Map<string, ProductModelLimits>()
+      const names = new Map<string, string>()
       for (const entry of Array.isArray(data) ? data : []) {
         if (entry === null || typeof entry !== 'object') continue
         const record = entry as Record<string, unknown>
@@ -1101,11 +1103,13 @@ export function apply(ctx: Context, config: Config): void {
         else {
           chat.push(id)
           limits.set(id, readProductModelLimits(record))
+          const name = typeof record.display_name === 'string' ? record.display_name.trim() : ''
+          if (name !== '') names.set(id, name)
         }
       }
-      return { ok: true, chat, image, video, audio, limits }
+      return { ok: true, chat, image, video, audio, limits, names }
     } catch (error) {
-      return { ok: false, code: error instanceof ProductModelCapabilitiesError ? 'MODEL_CATALOG_INVALID' : 'TRANSPORT', message: error instanceof Error ? error.message : String(error), chat: [], image: [], video: [], audio: [], limits: new Map() }
+      return { ok: false, code: error instanceof ProductModelCapabilitiesError ? 'MODEL_CATALOG_INVALID' : 'TRANSPORT', message: error instanceof Error ? error.message : String(error), chat: [], image: [], video: [], audio: [], limits: new Map(), names: new Map() }
     }
   }
 
@@ -2649,7 +2653,7 @@ export function apply(ctx: Context, config: Config): void {
   const writeProductModels = async (
     ids: readonly string[] | undefined,
     defaults: ReadonlyMap<string, readonly string[]> = new Map(),
-    managed?: { scope: string; limits?: ReadonlyMap<string, ProductModelLimits> },
+    managed?: { scope: string; limits?: ReadonlyMap<string, ProductModelLimits>; names?: ReadonlyMap<string, string> },
   ): Promise<boolean> => {
     const settings = ctx.get('settings') as {
       describe?: (options?: { redactSecrets?: boolean }) => { ns: string; value?: unknown; revision?: number }[]
@@ -2677,10 +2681,14 @@ export function apply(ctx: Context, config: Config): void {
     }
     const models = ids === undefined || ids.length === 0 ? configured : ids.map((id) => {
       const currentModel = previous.get(id) ?? { id }
+      const name = managed?.names?.get(id)
+      const withName = name !== undefined && (currentModel.name === undefined || currentModel.name === id)
+        ? { ...currentModel, name }
+        : currentModel
       const input = defaults.get(id)
-      const withInputs = Array.isArray(currentModel.input) && currentModel.input.length > 0 || input === undefined
-        ? currentModel
-        : { ...currentModel, input: [...input] }
+      const withInputs = Array.isArray(withName.input) && withName.input.length > 0 || input === undefined
+        ? withName
+        : { ...withName, input: [...input] }
       const limits = managed === undefined ? undefined
         : mergeProductModelLimits(currentModel.managedLimits, managed.limits?.get(id), managed.scope)
       if (managed === undefined) return withInputs
@@ -2784,7 +2792,7 @@ export function apply(ctx: Context, config: Config): void {
         const previousDefault = ctx.get('agentDefaultModel')?.currentSelection()
         const previousIds = productCatalog?.version === version && productCatalog.owner === owner ? productCatalog.ids : undefined
         const previousDisplay = productModelDisplaySignature(previousIds ?? [], productModelDisplays)
-        const changed = await writeProductModels(ids, defaults, { scope: limitsScope, limits: discovered.limits })
+        const changed = await writeProductModels(ids, defaults, { scope: limitsScope, limits: discovered.limits, names: discovered.names })
         await currentIdentity()
         productModelPresentation = presentation
         productModelDisplays = displays
