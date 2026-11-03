@@ -437,7 +437,7 @@ describe('minimum-request video duration planning', () => {
       'chat-one', f.workspace, f.provider, f.editor, f.signal)
     const outcome = await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal)
     expect(outcome).toMatchObject({ status: 'failed', detail: code })
-    expect(outcome.result).not.toContain('可能继续运行并计费')
+    expect(outcome.result).not.toContain('平台任务尚未全部核实')
     const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
     expect(retained.segments[0]?.status).toBe('failed')
     expect(retained.segments[0]?.taskId).toBe(taskId)
@@ -538,7 +538,7 @@ describe('minimum-request video duration planning', () => {
     const submit = vi.spyOn(f.provider, 'submit')
     const outcome = await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal)
     expect(outcome).toMatchObject({ status: 'failed', detail: 'H3_SUBMISSION_NOT_SENT' })
-    expect(outcome.result).not.toContain('可能继续运行并计费')
+    expect(outcome.result).not.toContain('平台任务尚未全部核实')
     expect(manifest.segments[0]).toMatchObject({ status: 'failed', taskId: 'task-1' })
     expect(check).toHaveBeenCalledOnce()
     expect(submit).not.toHaveBeenCalled()
@@ -1039,7 +1039,7 @@ describe('explicit timeline execution', () => {
     const result = JSON.parse(outcome.result ?? '') as { code: string; message: string }
     expect(result.code).toBe('INSUFFICIENT_BALANCE')
     expect(result.message).toContain('余额不足，请充值')
-    expect(result.message).toContain('可能继续运行并计费')
+    expect(result.message).toContain('平台任务尚未全部核实')
     const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
     expect(retained.segments[0]?.status).toBe('unknown')
     expect(retained.failureCode).toBe('INSUFFICIENT_BALANCE')
@@ -1888,7 +1888,7 @@ describe('durable account-bound video projects', () => {
     expect(retained.segments.map(segment => segment.status)).toEqual(['pending', 'pending'])
     expect(retained.segments.map(segment => segment.attemptId)).toEqual(originalAttempts)
     expect(retained.segments.every(segment => segment.taskId === undefined)).toBe(true)
-    expect(f.output.join('')).not.toContain('可能继续运行并计费')
+    expect(f.output.join('')).not.toContain('平台任务尚未全部核实')
     expect(f.submitted).toBe(0)
     submit.mockRestore()
     expect(await runVideoProject(f.options, retained, f.provider, f.editor, f.job, f.signal)).toMatchObject({ status: 'completed' })
@@ -2041,6 +2041,66 @@ describe('durable account-bound video projects', () => {
       .toMatchObject({ status: 'failed', detail: 'ACCOUNT_CHANGED' })
     expect(check).toHaveBeenCalledOnce()
     expect(f.submitted).toBe(1)
+  })
+
+  it('keeps an unknown queue submission distinct from a failed status query and resumes only its original id', async () => {
+    const f = await setup([4])
+    Object.defineProperty(f.provider, 'submissionMode', { value: 'queued' })
+    f.options.queryRetryLimit = 1
+    const originalSubmit = f.provider.submit.bind(f.provider)
+    const submit = vi.spyOn(f.provider, 'submit').mockImplementation(async (...args) => ({
+      ...await originalSubmit(...args), submissionState: 'unknown',
+    }))
+    const check = vi.spyOn(f.provider, 'check').mockRejectedValue(new VideoRelayError(
+      'VIDEO_SUBMISSION_UNCONFIRMED', '提交状态未确认，费用待核'))
+    const stages: VideoProjectActivity[] = []
+    f.options.activity = event => stages.push(event)
+    const manifest = await prepareVideoProject(f.options, { prompt: 'one original uncertain queue task', totalDurationSeconds: 4 },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    const outcome = await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal)
+    expect(outcome).toMatchObject({ status: 'failed', detail: 'VIDEO_TASK_SUBMISSION_UNCONFIRMED' })
+    expect(JSON.parse(outcome.result ?? '{}')).toMatchObject({ status: 'pending', task_ids: ['task-1'] })
+    expect(check).not.toHaveBeenCalled()
+    expect(submit).toHaveBeenCalledOnce()
+    const text = f.output.join('')
+    expect(text).toContain('提交状态未确认，保留原任务，费用待核')
+    expect(text).not.toContain('已受理')
+    expect(text).not.toContain('已提交的上游任务')
+    expect(text).not.toContain('状态查询暂不可用')
+    expect(stages.filter(event => event.type === 'stage').map(event => event.stage)).not.toContain('accepted')
+    const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+    expect(retained).toMatchObject({ status: 'running', failureCode: 'VIDEO_TASK_SUBMISSION_UNCONFIRMED' })
+    expect(retained.segments[0]).toMatchObject({ status: 'unknown', taskId: 'task-1' })
+    expect(await runVideoProject(f.options, retained, f.provider, f.editor, f.job, f.signal))
+      .toMatchObject({ status: 'failed', detail: 'VIDEO_TASK_SUBMISSION_UNCONFIRMED' })
+    expect(check).toHaveBeenCalledTimes(2)
+    check.mockResolvedValue({ status: 'succeeded' })
+    expect(await runVideoProject(f.options, retained, f.provider, f.editor, f.job, f.signal)).toMatchObject({ status: 'completed' })
+    expect(check.mock.calls.map(([id]) => id)).toEqual(['task-1', 'task-1', 'task-1'])
+    expect(submit).toHaveBeenCalledOnce()
+  })
+
+  it('keeps pending clips unsubmitted when an unknown original id is resumed with more workers', async () => {
+    const f = await setup([4])
+    Object.defineProperty(f.provider, 'submissionMode', { value: 'queued' })
+    const originalSubmit = f.provider.submit.bind(f.provider)
+    const submit = vi.spyOn(f.provider, 'submit').mockImplementation(async (...args) => ({
+      ...await originalSubmit(...args), submissionState: 'unknown',
+    }))
+    const check = vi.spyOn(f.provider, 'check').mockRejectedValue(new VideoRelayError(
+      'VIDEO_SUBMISSION_UNCONFIRMED', '提交状态未确认，费用待核'))
+    const manifest = await prepareVideoProject(f.options, { prompt: 'retain unknown with unsubmitted clips', totalDurationSeconds: 12 },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    expect(await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal))
+      .toMatchObject({ detail: 'VIDEO_TASK_SUBMISSION_UNCONFIRMED' })
+    const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+    expect(retained.segments.map(segment => segment.status)).toEqual(['unknown', 'pending', 'pending'])
+    f.options.maxConcurrentSegments = 4
+    expect(await runVideoProject(f.options, retained, f.provider, f.editor, f.job, f.signal))
+      .toMatchObject({ detail: 'VIDEO_TASK_SUBMISSION_UNCONFIRMED' })
+    expect(check.mock.calls.map(([id]) => id)).toEqual(['task-1'])
+    expect(submit).toHaveBeenCalledOnce()
+    expect(retained.segments.map(segment => segment.status)).toEqual(['unknown', 'pending', 'pending'])
   })
 
   it('admits every authorized clip durably before observing an opt-in server queue', async () => {
@@ -2264,7 +2324,7 @@ describe('durable account-bound video projects', () => {
     fixture.provider.check = async (...args) => { const result = await check(...args); abort.abort(); return result }
     const outcome = await runVideoProject(fixture.options, manifest, fixture.provider, fixture.editor, fixture.job, abort.signal)
     expect(outcome.status).toBe('killed')
-    expect(outcome.result).toContain('可能继续运行并计费')
+    expect(outcome.result).toContain('平台任务尚未全部核实')
     expect(fixture.submitted).toBe(1)
     const retained = await readVideoProject(fixture.options, manifest.id, 'chat-one', fixture.workspace, fixture.provider.identity)
     fixture.runningTask = ''

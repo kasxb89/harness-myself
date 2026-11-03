@@ -47,11 +47,11 @@ export interface VideoProjectRelay {
    * @param body - Exact prepared generation request; private snapshots are serialized as multipart files.
    * @param route - Selected model's generation path.
    * @param signal - Cancels dispatch.
-   * @returns Accepted upstream task identifier.
+   * @returns Original platform task identifier, retaining an explicitly unconfirmed submission outcome.
    */
-  submit(body: VideoProjectRequest, route: string, signal: AbortSignal): Promise<{ taskId: string }>
+  submit(body: VideoProjectRequest, route: string, signal: AbortSignal): Promise<{ taskId: string; submissionState?: 'unknown' }>
   /**
-   * @param taskId - Previously accepted task.
+   * @param taskId - Original platform task identifier.
    * @param route - Original model's generation path.
    * @param signal - Cancels polling.
    * @returns Normalized upstream status, preserving accepted queue admission separately from generation.
@@ -183,7 +183,7 @@ export function createVideoProjectRelay(options: VideoRelayOptions): VideoProjec
         return id === undefined || id.length === 0 || id.length > 256 ? [] : [id]
       })
     },
-    async submit(body: VideoProjectRequest, route: string, signal: AbortSignal): Promise<{ taskId: string }> {
+    async submit(body: VideoProjectRequest, route: string, signal: AbortSignal): Promise<{ taskId: string; submissionState?: 'unknown' }> {
       const response = await request(route, signal, body, options.submitTimeoutMs ?? Math.max(options.timeoutMs, 180_000))
       const value = await jsonBody(response)
       if (hasMediaSubmissionReceipt(value)) {
@@ -194,7 +194,7 @@ export function createVideoProjectRelay(options: VideoRelayOptions): VideoProjec
       if (hasMediaSubmissionUnknown(value)) {
         const taskId = mediaSubmissionUnknownTaskId(body.model, 'video', response.status, value)
         if (taskId === undefined) throw new VideoRelayError('VIDEO_SUBMIT_UNKNOWN', '视频提交回执无法完整核对，请保留已有记录，不要重新生成。')
-        return { taskId }
+        return { taskId, submissionState: 'unknown' }
       }
       const nested = record(value.data)
       const taskId = text(value, 'task_id') ?? text(value, 'id') ?? text(nested, 'task_id') ?? text(nested, 'id')
@@ -210,9 +210,11 @@ export function createVideoProjectRelay(options: VideoRelayOptions): VideoProjec
     }> {
       const canonical = model === 'MiniMax-H3' || taskId.startsWith('task_')
       let response = await request((canonical ? '/v1/tasks' : route) + '/' + validTask(taskId), signal, undefined, options.timeoutMs, canonical)
+      let canonicalResponse = canonical
       if (canonical && response.status === 404 && route !== '/v1/tasks') {
         await response.body?.cancel()
         response = await request(route + '/' + validTask(taskId), signal)
+        canonicalResponse = false
       }
       if (response.status !== 200) {
         await response.body?.cancel()
@@ -227,6 +229,23 @@ export function createVideoProjectRelay(options: VideoRelayOptions): VideoProjec
         throw new VideoRelayError('VIDEO_STATUS_INVALID', '原视频回执尚未通过完整核对，请保留原任务编号，不要重新生成。')
       }
       const nested = record(value.data)
+      const error = record(value.error)
+      if (canonicalResponse && value.status === 'UNKNOWN') {
+        if (/^task_[A-Za-z0-9]{32}$/u.test(taskId) && value.id === taskId && value.task_id === taskId
+          && typeof model === 'string' && value.model === model && value.media_kind === 'video'
+          && (value.data === undefined || value.data === null || nested !== undefined)
+          && (value.error === undefined || value.error === null || error !== undefined)
+          && [value, nested, error].every(container => container === undefined
+            || ['id', 'task_id'].every(key => container[key] === undefined || container[key] === taskId)
+              && (container.model === undefined || container.model === model)
+              && (container.media_kind === undefined || container.media_kind === 'video')
+              && !['submission_receipt', 'provider_terminal_confirmed'].some(key => Object.hasOwn(container, key))
+              && ['status', 'task_status'].every(key => container[key] === undefined || container[key] === 'UNKNOWN'))) {
+          throw new VideoRelayError('VIDEO_SUBMISSION_UNCONFIRMED',
+            '视频提交状态未确认，已保留原平台任务编号，费用待核；请继续查询原项目，不要重新提交。', { taskId })
+        }
+        throw new VideoRelayError('VIDEO_STATUS_INVALID', '视频任务回执与原任务不一致，已保留原编号；请核对原记录，不要重新生成。')
+      }
       const status = (text(value, 'task_status') ?? text(value, 'status') ?? text(nested, 'task_status') ?? text(nested, 'status'))?.toLowerCase()
       if (['succeed', 'succeeded', 'success', 'completed'].includes(status ?? '')) return { status: 'succeeded' }
       if (['failed', 'failure', 'fail', 'error', 'cancelled', 'canceled'].includes(status ?? '')) {

@@ -99,7 +99,7 @@ export interface VideoProjectSegment {
   attemptId?: VideoProjectAttemptId
   /** submitting without a task id is an unknown outcome and cannot be retried. */
   status: 'pending' | 'submitting' | 'running' | 'saved' | 'failed' | 'unknown'
-  /** Present only after the provider identifies its accepted task. */
+  /** Original platform or queue task identity; presence alone does not establish provider acceptance. */
   taskId?: string
   /** Private local original retained after a successful probe. */
   path?: string
@@ -755,7 +755,7 @@ class VideoProjectTaskFailure extends VideoProjectError {
 /** Keep local waiting cancellation-owned instead of sleeping after a killed job. */
 async function waitForTask(
   options: VideoProjectOptions, provider: VideoProjectProvider, segment: VideoProjectSegment,
-  progress: (status: 'queued' | 'running' | 'retrying', seconds: number) => void | Promise<void>, signal: AbortSignal,
+  progress: (status: 'queued' | 'running' | 'retrying' | 'unconfirmed', seconds: number) => void | Promise<void>, signal: AbortSignal,
 ): Promise<void> {
   const taskId = segment.taskId
   if (taskId === undefined) throw new VideoProjectError('INVALID_RECORD', '视频任务编号缺失，已停止操作。')
@@ -772,14 +772,18 @@ async function waitForTask(
     catch (cause) {
       signal.throwIfAborted()
       const timedOut = deadline.aborted
-      const transient = timedOut || cause instanceof VideoRelayError
+      const unconfirmed = cause instanceof VideoRelayError && cause.code === 'VIDEO_SUBMISSION_UNCONFIRMED'
+      const transient = unconfirmed || timedOut || cause instanceof VideoRelayError
         && (cause.code === 'VIDEO_READ_UNAVAILABLE' || cause.code === 'VIDEO_READ_RETRYABLE')
       if (!transient) throw cause
+      if (unconfirmed) await progress('unconfirmed', elapsed())
       if (failures >= (options.queryRetryLimit ?? 0)) {
+        if (unconfirmed) throw new VideoProjectError('VIDEO_TASK_SUBMISSION_UNCONFIRMED',
+          '提交状态未确认，已暂停核对并保留原平台任务编号，费用待核。请继续查询原项目，不要重新提交。', { cause })
         throw new VideoProjectError(timedOut ? 'VIDEO_TASK_OBSERVATION_TIMEOUT' : 'VIDEO_TASK_OBSERVATION_UNAVAILABLE',
           '原视频任务的状态查询暂不可用，已暂停查询并保留原任务编号；这不代表生成失败。请继续查询原项目，不要重新提交。', { cause })
       }
-      await progress('retrying', elapsed())
+      if (!unconfirmed) await progress('retrying', elapsed())
       const retryInterval = Math.max(options.pollIntervalMs, provider.pollIntervalMs ?? 0) * 2 ** failures
       await delay(Math.min(retryInterval, options.taskTimeoutMs), undefined, { signal })
       failures += 1
@@ -798,7 +802,7 @@ function segmentProgress(segment: VideoProjectSegment, stopped: boolean): string
   switch (segment.status) {
     case 'pending': return '尚未提交'
     case 'submitting': return '提交结果待确认，请核对原任务'
-    case 'running': return stopped ? '查询已暂停，保留原任务' : '已受理，等待查询'
+    case 'running': return stopped ? '查询已暂停，保留原任务' : '平台任务已记录，等待核对'
     case 'saved': return '已保存'
     case 'failed': return '失败'
     case 'unknown': return '提交结果待确认，勿重新提交'
@@ -809,6 +813,7 @@ function segmentProgress(segment: VideoProjectSegment, stopped: boolean): string
 function videoProjectProgress(manifest: VideoProjectManifest, job: JobHandle) {
   const observations = new Map<number, string>()
   const upstreamCompleted = new Set<number>()
+  const unconfirmed = new Set<number>()
   let stage = '准备分镜'
   let previous: string | undefined
   const render = (): string => {
@@ -824,10 +829,23 @@ function videoProjectProgress(manifest: VideoProjectManifest, job: JobHandle) {
     job.updateProgress(value)
   }
   const stopped = (segment: VideoProjectSegment): string => segment.status === 'running' && upstreamCompleted.has(segment.index)
-    ? '上游已完成，保存未完成' : segmentProgress(segment, true)
+    ? '上游已完成，保存未完成' : (segment.status === 'running' || segment.status === 'unknown') && unconfirmed.has(segment.index)
+      ? '提交状态未确认，保留原任务，费用待核' : segmentProgress(segment, true)
   return {
     stage(value: string): void { stage = value; emit() },
-    segment(segment: VideoProjectSegment, value: string): void { observations.set(segment.index, value); emit() },
+    segment(segment: VideoProjectSegment, value: string): void {
+      unconfirmed.delete(segment.index); observations.set(segment.index, value); emit()
+    },
+    waiting(segment: VideoProjectSegment): void {
+      observations.set(segment.index, unconfirmed.has(segment.index)
+        ? '提交状态未确认，保留原任务，费用待核' : '平台任务已记录，等待核对')
+      emit()
+    },
+    unconfirmed(segment: VideoProjectSegment): void {
+      unconfirmed.add(segment.index)
+      observations.set(segment.index, '提交状态未确认，保留原任务，费用待核')
+      emit()
+    },
     saving(segment: VideoProjectSegment): void {
       upstreamCompleted.add(segment.index)
       observations.set(segment.index, '上游已完成，正在保存')
@@ -1045,8 +1063,9 @@ async function executeVideoSegments(
     submissionOnly = false): Promise<void> => {
     const clipSignal = AbortSignal.any([signal, AbortSignal.timeout(options.taskTimeoutMs)])
     const observation = AbortSignal.any([signal, stop.signal])
-    progress.segment(segment, segment.taskId === undefined ? '准备提交，尚未提交' : '已受理，等待查询')
-    if (segment.taskId !== undefined) activity.stage(segment.status === 'unknown' || segment.status === 'submitting' ? 'unknown' : 'accepted')
+    if (segment.taskId === undefined) progress.segment(segment, '准备提交，尚未提交')
+    else progress.waiting(segment)
+    if (segment.taskId !== undefined) activity.stage('unknown')
     if (segment.taskId === undefined) {
       await validatePublication(options, manifest.publicationDirectory, clipSignal)
       await provider.assertCurrent()
@@ -1064,7 +1083,7 @@ async function executeVideoSegments(
       unsettled.add(segment.index)
       progress.segment(segment, '提交中')
       activity.stage('submitting')
-      let task: { taskId: string }
+      let task: Awaited<ReturnType<VideoProjectProvider['submit']>>
       try {
         const attemptId = segment.attemptId
         if (attemptId === undefined) throw new VideoProjectError('INVALID_RECORD', '视频片段提交标识缺失，已停止操作。')
@@ -1102,22 +1121,29 @@ async function executeVideoSegments(
         throw new VideoProjectError('SUBMISSION_UNKNOWN', '上游未返回可查询的视频任务编号，可能已计费；已停止后续生成，请先在后台核对。')
       }
       segment.taskId = task.taskId
-      segment.status = 'running'
+      segment.status = task.submissionState === 'unknown' ? 'unknown' : 'running'
       await persist(options, manifest)
-      activity.stage('accepted')
-      progress.segment(segment, '已受理，等待查询')
-      job.append(`分镜 ${String(segment.index)} 已提交，任务 ${task.taskId}。\n`)
+      activity.stage(task.submissionState === 'unknown' ? 'unknown' : 'accepted')
+      if (task.submissionState === 'unknown') progress.unconfirmed(segment)
+      else progress.segment(segment, '平台任务已记录，等待核对')
+      job.append(`分镜 ${String(segment.index)} ${task.taskId.startsWith('vq_') ? '平台队列' : '平台任务'}编号 ${task.taskId} 已记录。\n`)
+      if (task.submissionState === 'unknown') throw new VideoProjectError('VIDEO_TASK_SUBMISSION_UNCONFIRMED',
+        '提交状态未确认，已保留原平台任务编号，费用待核。请继续查询原项目，不要重新提交。')
     }
     if (submissionOnly) return
     // Never cancel another in-flight POST merely because one peer failed.
     if (stop.signal.aborted) return
     try { await waitForTask(options, provider, segment, async (status, seconds) => {
-      if (status !== 'retrying' && segment.status !== 'running') {
+      if (status !== 'retrying' && status !== 'unconfirmed' && segment.status !== 'running') {
         segment.status = 'running'
         await persist(options, manifest)
       }
-      activity.stage(status === 'retrying' ? 'unknown' : status === 'queued' ? 'queued' : 'generating')
-      progress.segment(segment, status === 'retrying' ? '状态查询暂不可用，正在重试原任务'
+      activity.stage(status === 'retrying' || status === 'unconfirmed' ? 'unknown' : status === 'queued' ? 'queued' : 'generating')
+      if (status === 'unconfirmed') {
+        if (segment.status !== 'unknown') { segment.status = 'unknown'; await persist(options, manifest) }
+        progress.unconfirmed(segment)
+      }
+      else progress.segment(segment, status === 'retrying' ? '状态查询暂不可用，正在重试原任务'
         : `${status === 'queued' ? '排队中' : '生成中'}，已等待 ${String(seconds)} 秒`)
     }, observation) }
     catch (error) {
@@ -1185,7 +1211,7 @@ async function executeVideoSegments(
     await runWorkers(true)
     cursor = 0
     if (failure === undefined && !signal.aborted) {
-      progress.stage('跟踪已受理分镜')
+      progress.stage('核对原平台分镜任务')
       await runWorkers()
     }
   } else await runWorkers()
@@ -1283,12 +1309,13 @@ async function executeVideoProject(
   } catch (error) {
     const reported = videoProjectFailure(error)
     const observationPaused = reported.code === 'VIDEO_TASK_OBSERVATION_TIMEOUT' || reported.code === 'VIDEO_TASK_OBSERVATION_UNAVAILABLE'
+      || reported.code === 'VIDEO_TASK_SUBMISSION_UNCONFIRMED'
     manifest.status = signal.aborted ? 'cancelled' : observationPaused ? 'running' : 'failed'
     manifest.failureCode = signal.aborted ? 'CANCELLED' : reported.code
     try { options.failed?.(manifest, manifest.failureCode) }
     catch (_unavailableObserver: unknown) { /* Diagnostics never replace the retained workflow outcome. */ }
     const message = signal.aborted ? '视频项目已停止，已保存的片段保留。' : reported.message
-    const warning = unsettled.size > 0 ? ' 已提交的上游任务无法由本地取消，可能继续运行并计费。' : ''
+    const warning = unsettled.size > 0 ? ' 平台任务尚未全部核实；本地停止不代表上游已停止，费用待核。' : ''
     try { await persist(options, manifest) }
     catch (storageError) {
       // Storage failure is independently reported; its raw path/error is not model-visible.

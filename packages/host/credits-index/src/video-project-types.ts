@@ -140,12 +140,12 @@ export interface VideoProjectProvider {
    * @param request - Exact prepared request.
    * @param signal - Cancels the submission; cancellation does not establish whether it was accepted.
    * @param submission - Persisted clip identity for an opt-in idempotent gateway admission.
-   * @returns Stable accepted task id, including a gateway queue task when explicitly supported.
+   * @returns Original platform task id, including a gateway queue task; explicit uncertainty does not establish provider acceptance.
    */
-  submit(request: VideoProjectRequest, signal: AbortSignal, submission?: VideoProjectSubmission): Promise<{ taskId: string }>
+  submit(request: VideoProjectRequest, signal: AbortSignal, submission?: VideoProjectSubmission): Promise<{ taskId: string; submissionState?: 'unknown' }>
   /**
    * Read only a previously persisted task id. No method may submit from here.
-   * @param taskId - Previously accepted upstream task.
+   * @param taskId - Original platform or queue task identifier.
    * @param request - Original request identifying its provider route.
    * @param signal - Cancels this read.
    * @returns Current terminal, accepted-but-queued, or generating task state.

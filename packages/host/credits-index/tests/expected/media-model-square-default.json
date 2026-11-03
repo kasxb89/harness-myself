@@ -1,0 +1,35 @@
+{
+  "model": "image-a",
+  "source": "personal",
+  "selected_parameters": {
+    "count": 1,
+    "size": "1:1",
+    "resolution": "1k"
+  },
+  "models": [
+    {
+      "id": "image-a",
+      "display_name": "image-a",
+      "parameters_verified": false,
+      "sizes": [
+        "1:1"
+      ],
+      "resolutions": [
+        "1k"
+      ],
+      "max_count": 1,
+      "max_reference_images": 0,
+      "qualities": [],
+      "backgrounds": [],
+      "formats": [],
+      "moderations": [],
+      "specifications": [
+        {
+          "size": "1:1",
+          "resolution": "1k"
+        }
+      ],
+      "seed": false
+    }
+  ]
+}

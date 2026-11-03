@@ -21,6 +21,7 @@ import WebServer from '@deepseek-ai/dsh-host-webserver'
 import * as Artifacts from '@deepseek-ai/dsh-artifacts-index'
 import * as Credits from '../src/index.ts'
 import { registerVideoProjectTools } from '../src/video-project-tools.ts'
+import { VideoRelayError } from '../src/video-project-provider.ts'
 import { VideoWorkStore } from '../src/video-work-store.ts'
 import type { VideoProjectInput, VideoProjectOptions, VideoProjectProvider } from '../src/video-project-types.ts'
 import type { VideoEditor } from '../src/video-edit.ts'
@@ -209,6 +210,42 @@ function json(value: unknown): Record<string, unknown> {
 }
 
 describe('video tools through Loader, real tool registry and jobs runtime', () => {
+  it('reports unconfirmed submission and pending fees through retained job output and original-project recovery', async () => {
+    const f = await boot()
+    Object.defineProperty(f.provider, 'submissionMode', { value: 'queued' })
+    const originalSubmit = f.provider.submit.bind(f.provider)
+    const submit = vi.spyOn(f.provider, 'submit').mockImplementation(async (...args) => ({
+      ...await originalSubmit(...args), submissionState: 'unknown',
+    }))
+    const check = vi.spyOn(f.provider, 'check').mockRejectedValue(new VideoRelayError(
+      'VIDEO_SUBMISSION_UNCONFIRMED', '提交状态未确认，费用待核'))
+    const created = json((await f.call('generate_video_project', { prompt: '保留同一个平台任务', total_duration_seconds: 10 })).value)
+    await vi.waitFor(() => { expect(f.ctx.jobs.get(JobId(String(created.job_id)), f.agent.id).status).toBe('failed') })
+    const output = await f.call('job_output', { job_id: created.job_id, wait: true, timeout_ms: 600_000 })
+    const text = JSON.stringify(output.content)
+    expect(text).toContain('提交状态未确认，保留原任务，费用待核')
+    expect(text).not.toContain('已受理')
+    expect(text).not.toContain('已提交的上游任务')
+    expect(text).not.toContain('状态查询暂不可用')
+    const retained = json((await f.call('video_project_status', { project_id: created.project_id })).value)
+    expect({ code: retained.code, message: retained.message }).toMatchInlineSnapshot(`
+      {
+        "code": "VIDEO_TASK_SUBMISSION_UNCONFIRMED",
+        "message": "提交状态未确认，已保留原平台任务编号，费用待核；可继续查询原项目，不会重新提交，也尚未确认退款。",
+      }
+    `)
+    expect(retained.task_ids).toEqual(['task-1'])
+    expect(submit).toHaveBeenCalledOnce()
+    f.nextHuman('继续查询刚才的原项目')
+    check.mockResolvedValue({ status: 'succeeded' })
+    const resumed = json((await f.call('resume_video_project', { project_id: created.project_id })).value)
+    await vi.waitFor(() => { expect(f.ctx.jobs.get(JobId(String(resumed.job_id)), f.agent.id).status).toBe('completed') })
+    await f.call('job_output', { job_id: resumed.job_id, wait: true, timeout_ms: 600_000 })
+    expect(json((await f.call('video_project_status', { project_id: created.project_id })).value).status).toBe('completed')
+    expect(check.mock.calls.map(([id]) => id)).toEqual(['task-1'])
+    expect(submit).toHaveBeenCalledOnce()
+  })
+
   it('resumes a parsed planned H3 video when current model selection preserves values but reorders specification fields', async () => {
     const f = await boot()
     const submit = vi.spyOn(f.provider, 'submit').mockRejectedValueOnce(new VideoSubmissionRejection(
@@ -1125,7 +1162,7 @@ describe('video tools through Loader, real tool registry and jobs runtime', () =
     expect(killed.isError).toBe(false)
     await vi.waitFor(() =>{  expect(fixture.ctx.jobs.get(jobId, fixture.agent.id).status).toBe('killed') })
     expect(fixture.requests).toHaveLength(3)
-    expect(fixture.ctx.jobs.read(jobId, fixture.agent.id).result).toContain('可能继续运行并计费')
+    expect(fixture.ctx.jobs.read(jobId, fixture.agent.id).result).toContain('平台任务尚未全部核实')
   })
 
   it('unregisters every contribution and cancels owned work when the Loader entry is disposed', async () => {

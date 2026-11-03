@@ -57,6 +57,9 @@ export function createVideoProjectDispatch(options: VideoProjectDispatchOptions)
       }
       try {
         const item = await queue.submit(request, submission, signal)
+        if (item.submissionState === 'unknown' || item.state === 'unknown') {
+          return { taskId: item.queueId, submissionState: 'unknown' }
+        }
         return { taskId: item.queueId }
       } catch (error) {
         if (error instanceof VideoServerQueueError && error.code === 'VIDEO_QUEUE_SUBMISSION_NOT_STARTED') {
@@ -88,7 +91,12 @@ export function createVideoProjectDispatch(options: VideoProjectDispatchOptions)
         }
         throw error
       }
-      if (item.observationTimedOut || item.submissionState === 'unknown' || item.state === 'unknown') {
+      if (item.submissionState === 'unknown' || item.state === 'unknown') {
+        throw new VideoRelayError('VIDEO_SUBMISSION_UNCONFIRMED',
+          (item.failure === undefined ? '' : `${item.failure.message}；`)
+            + '视频提交状态未确认，已保留原平台队列编号，费用待核；请继续查询原项目，不要重新提交。', { taskId })
+      }
+      if (item.observationTimedOut) {
         throw new VideoRelayError(item.failure?.code ?? 'VIDEO_READ_UNAVAILABLE',
           (item.failure === undefined ? '' : `${item.failure.message}；`)
             + '原视频任务仍需核对，状态查询超时不代表生成失败；请保留原编号，不要重新生成。', { taskId })

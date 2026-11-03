@@ -138,9 +138,11 @@ function statusOf(manifest: VideoProjectManifest, running: boolean): VideoToolRe
       : manifest.status === 'completed' ? '视频已保存，请调用 present 展示 final_path，并在回复中提供产物链接。'
         : manifest.failureCode === 'INSUFFICIENT_BALANCE'
           ? '原视频余额不足。充值后在当前聊天明确继续或重试，并复用此 project_id 调用 resume_video_project；只有完整回执确认未提交上游的片段才会新建尝试，已保存片段保留，已受理或未知任务只查询原编号。'
-          : manifest.failureCode === 'VIDEO_TASK_OBSERVATION_TIMEOUT' || manifest.failureCode === 'VIDEO_TASK_OBSERVATION_UNAVAILABLE'
-            ? '本地查询暂时中断，上游任务状态尚待核实，不代表生成失败；可继续按已保留的原任务编号恢复查询，不会重新提交。'
-            : '这是保留的项目记录；重启不会自动恢复后台任务。可显式调用 resume_video_project 读取已知任务并继续；未知提交绝不会自动重提。',
+          : manifest.failureCode === 'VIDEO_TASK_SUBMISSION_UNCONFIRMED'
+            ? '提交状态未确认，已保留原平台任务编号，费用待核；可继续查询原项目，不会重新提交，也尚未确认退款。'
+            : manifest.failureCode === 'VIDEO_TASK_OBSERVATION_TIMEOUT' || manifest.failureCode === 'VIDEO_TASK_OBSERVATION_UNAVAILABLE'
+              ? '本地查询暂时中断，平台任务状态尚待核实，不代表生成失败；可继续按已保留的原任务编号恢复查询，不会重新提交。'
+              : '这是保留的项目记录；重启不会自动恢复后台任务。可显式调用 resume_video_project 读取已知任务并继续；未知提交绝不会自动重提。',
   }
 }
 

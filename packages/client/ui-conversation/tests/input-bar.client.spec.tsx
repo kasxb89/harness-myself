@@ -2011,7 +2011,7 @@ describe('explicit model input controls preserve the composer draft', () => {
     const b = bench({ draft: '保留草稿继续尝试' })
     act(() => { b.shell.setModelCapabilities({ verification: { tools: 'unverified', vision: 'unverified', reasoning: 'unverified' }, available: true }) })
     expect(b.button.disabled).toBe(false)
-    expect(b.view.getByRole('status').textContent).toBe(zh['input.modelVerificationPending'])
+    expect(b.view.queryByRole('status')).toBeNull()
     act(() => { b.shell.setModelCapabilities({ available: false }) })
     expect(b.button.disabled).toBe(true)
     fireEvent.keyDown(b.textarea, { key: 'Enter' })

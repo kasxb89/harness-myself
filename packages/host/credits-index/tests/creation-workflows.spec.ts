@@ -22,6 +22,8 @@ it('publishes shared community direction and an optional H3 skill and removes bo
   expect(skill?.content).toContain(VIDEO_DIRECTOR_PROMPT)
   expect(skill?.content).toContain(CREATION_LANGUAGE_GUIDANCE)
   expect(skill?.content).toContain(VIDEO_REQUEST_GUIDANCE)
+  expect(skill?.content).toContain('Saved choices and a control with only one supported value are not missing preferences')
+  expect(skill?.content).toContain('If a model supports only 1:1, do not offer other ratios')
   expect(skill?.content).toContain(COMMUNITY_VIDEO_DIRECTION)
   expect(skill?.content).not.toContain(MINIMAX_H3_PROMPT_GUIDANCE)
   await expect(`${skill?.content}\n`).toMatchFileSnapshot('./expected/video-director-skill.md')

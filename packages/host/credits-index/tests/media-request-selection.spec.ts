@@ -147,8 +147,34 @@ describe('per-RPC personal media snapshots through native and nested execution',
     f.session.append('user/message', message, { surfaceOp: 'append' })
     await f.execute('image')
     await f.execute('video')
-    expect(f.selections[0]).toMatchObject({ model: 'image-a', size: '16:9' })
+    expect(f.selections[0]).toEqual({ model: 'image-a', size: '16:9', resolution: '2k' })
+    expect(f.choices[0]).toEqual({ model: 'image-a', parameters: { size: '16:9', resolution: '2k' }, source: 'human' })
     expect(f.selections[1]).toMatchObject({ model: 'MiniMax-H3', resolution: '768P' })
+  })
+
+  it('keeps the saved square image specification when only the agent supplies another ratio and resolution', async () => {
+    const f = await fixture()
+    await f.save({ model: 'image-a', parameters: { size: '1:1', resolution: '1k' } }, null)
+    f.setCallerFields({ size: '3:4', resolution: '2k' })
+    f.session.append('user/message', await f.admit('saved-square-image', '生成春天风景图片'), { surfaceOp: 'append' })
+    const result = await f.execute('image')
+    expect(result.isError).not.toBe(true)
+    expect(f.failures).toEqual([])
+    expect(f.selections).toEqual([{ model: 'image-a', size: '1:1', resolution: '1k' }])
+    expect(f.choices).toEqual([{ model: 'image-a', parameters: { size: '1:1', resolution: '1k' }, source: 'personal' }])
+  })
+
+  it('rejects a real human unsupported image ratio instead of silently using the saved square specification', async () => {
+    const f = await fixture()
+    await f.save({ model: 'image-a', parameters: { size: '1:1', resolution: '1k' } }, null)
+    f.setCallerFields({ size: '1:1', resolution: '1k' })
+    f.session.append('user/message', await f.admit('unsupported-human-image-ratio', '生成3:4比例的春天风景图片'),
+      { surfaceOp: 'append' })
+    const result = await f.execute('image')
+    expect(result.isError).toBe(true)
+    expect(f.selections).toEqual([])
+    expect(f.failures[0]?.code).toBe('SPECIFICATION_NOT_SUPPORTED')
+    expect(JSON.stringify(result.content)).toContain('用户本次明确要求的规格')
   })
 
   it('does not let one unresponsive generation block the next request capture', async () => {

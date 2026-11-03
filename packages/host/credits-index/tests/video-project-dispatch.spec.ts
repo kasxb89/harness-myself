@@ -82,8 +82,8 @@ describe('video project gateway dispatch', () => {
   it('keeps unknown queue funding failure unresolved instead of asserting a terminal or refund', async () => {
     const body = receipt('unknown', 'unknown')
     const f = fixture(() => response({ ...body, data: { ...body.data, failure_code: 'insufficient_user_quota' } }))
-    await expect(f.dispatch.check(queueId, request, signal())).rejects.toMatchObject({ code: 'INSUFFICIENT_BALANCE',
-      taskId: queueId, message: '余额不足，请充值；原视频任务仍需核对，状态查询超时不代表生成失败；请保留原编号，不要重新生成。' })
+    await expect(f.dispatch.check(queueId, request, signal())).rejects.toMatchObject({ code: 'VIDEO_SUBMISSION_UNCONFIRMED',
+      taskId: queueId, message: '余额不足，请充值；视频提交状态未确认，已保留原平台队列编号，费用待核；请继续查询原项目，不要重新提交。' })
     expect(f.relay.submit).not.toHaveBeenCalled()
   })
 
@@ -140,9 +140,32 @@ describe('video project gateway dispatch', () => {
     expect(f.dispatch.pollIntervalMs).toBe(15000)
   })
 
-  it.each([false, true])('keeps an uncertain server dispatch pending when observationTimedOut=%s', async (timedOut) => {
+  it.each(['dispatching', 'unknown'])('retains the unknown %s submission outcome and original queue identity without another POST', async (state) => {
+    const f = fixture(call => response(call.path.endsWith('/api/status')
+      ? { data: { video_queue: capability } } : receipt(state, 'unknown')))
+    await f.dispatch.prepareSubmissions([request], signal())
+    expect(await f.dispatch.submit(request, signal(), submission)).toEqual({ taskId: queueId, submissionState: 'unknown' })
+    await expect(f.dispatch.check(queueId, request, signal())).rejects.toMatchObject({
+      code: 'VIDEO_SUBMISSION_UNCONFIRMED', taskId: queueId,
+      message: '视频提交状态未确认，已保留原平台队列编号，费用待核；请继续查询原项目，不要重新提交。',
+    })
+    expect(f.calls.map(call => [call.method, call.path])).toEqual([
+      ['GET', '/harness/api/status'], ['POST', '/harness/v1/video/queue'], ['GET', `/harness/v1/video/queue/${queueId}`],
+    ])
+    expect(f.relay.submit).not.toHaveBeenCalled()
+  })
+
+  it.each([false, true])('distinguishes a confirmed unknown submission from query unavailability when observationTimedOut=%s', async (timedOut) => {
     const f = fixture(() => response(receipt('dispatching', 'unknown', timedOut)))
+    await expect(f.dispatch.check(queueId, request, signal())).rejects.toMatchObject({ code: 'VIDEO_SUBMISSION_UNCONFIRMED', taskId: queueId })
+    expect(f.calls.map(call => call.method)).toEqual(['GET'])
+    expect(f.relay.submit).not.toHaveBeenCalled()
+  })
+
+  it('retains observation timeout as query unavailability when dispatch has no unknown submission outcome', async () => {
+    const f = fixture(() => response(receipt('dispatching', 'dispatching', true)))
     await expect(f.dispatch.check(queueId, request, signal())).rejects.toMatchObject({ code: 'VIDEO_READ_UNAVAILABLE', taskId: queueId })
+    expect(f.calls.map(call => call.method)).toEqual(['GET'])
     expect(f.relay.submit).not.toHaveBeenCalled()
   })
 

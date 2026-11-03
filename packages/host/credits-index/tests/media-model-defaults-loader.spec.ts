@@ -46,7 +46,7 @@ afterEach(async () => {
   vi.unstubAllGlobals()
 })
 
-async function fixture(savedPreferences = true) {
+async function fixture(savedPreferences = true, squareOnly = false) {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-model-defaults-loader-'))
   cleanup.push(() => rm(directory, { recursive: true, force: true }))
   const stateDir = join(directory, 'credits')
@@ -57,12 +57,16 @@ async function fixture(savedPreferences = true) {
     relay: { key: 'fixture-relay' } }))
   const base = 'http://127.0.0.1:32127/harness'
   const preferences = new MediaPreferencesStore(join(stateDir, 'media-preferences'))
+  const rows = squareOnly ? pricing.map(row => row.model_name === 'image-a' ? { ...row, parameters: {
+    size: { enum: ['1:1'] }, resolution: { enum: ['1k'] },
+    oneOf: [{ size: { const: '1:1' }, resolution: { const: '1k' } }],
+  } } : row) : pricing
   const scope = mediaPreferencesScope(base, '7')
   const initial = await preferences.read(scope)
   if (savedPreferences) await preferences.save(scope, 'a'.repeat(64), { schema_version: 1, expected_account_owner: 'a'.repeat(64),
     expected_revision: initial.revision, image: { model: 'image-a', parameters: {} },
-    video: { model: video, parameters: {} } }, catalogFromPricing(pricing, null), async () => {})
-  let visible = pricing.map(row => row.model_name)
+    video: { model: video, parameters: {} } }, catalogFromPricing(rows, null), async () => {})
+  let visible = rows.map(row => row.model_name)
   const posts: string[] = []
   const submissions: unknown[] = []
   const quotes: unknown[] = []
@@ -86,8 +90,8 @@ async function fixture(savedPreferences = true) {
     } })
     if (url.pathname === '/harness/api/user/self') return Response.json({ success: true,
       data: { id: 7, group: 'default', quota: 500000 } })
-    if (url.pathname === '/harness/api/pricing') return Response.json({ success: true, data: pricing })
-    if (url.pathname === '/harness/v1/models') return Response.json({ data: pricing.filter(row => visible.includes(row.model_name))
+    if (url.pathname === '/harness/api/pricing') return Response.json({ success: true, data: rows })
+    if (url.pathname === '/harness/v1/models') return Response.json({ data: rows.filter(row => visible.includes(row.model_name))
       .map(row => ({ id: row.model_name, supported_endpoint_types: row.supported_endpoint_types })) })
     return Response.json({ success: false }, { status: 404 })
   }))
@@ -144,6 +148,27 @@ async function fixture(savedPreferences = true) {
   }
   return { ctx, agent, human, call, posts, submissions, quotes, hideSavedModel: () => { visible = visible.filter(id => id !== video) } }
 }
+
+it('projects the sole square specification as already selected without asking for an invented ratio', async () => {
+  const f = await fixture(true, true)
+  await f.human('生成一张柔和光线的头像')
+  const listed = await f.call('list_image_models', {})
+  expect(listed).toMatchObject({ default_model_id: 'image-a', default_source: 'personal',
+    default_available: true, selected_parameters: { size: '1:1', resolution: '1k' } })
+  expect(listed.default_error_code).toBeUndefined()
+  expect(listed.models).toEqual([expect.objectContaining({ id: 'image-a', sizes: ['1:1'], resolutions: ['1k'],
+    specifications: [{ size: '1:1', resolution: '1k' }] })])
+  for (const name of ['list_image_models', 'list_video_models']) {
+    const description = f.ctx.tools.schemas().find(tool => tool.name === name)?.description
+    expect(description).toContain('Before asking about')
+    expect(description).toContain('a single supported value needs no question')
+    expect(description).toContain('never a generic ratio menu')
+  }
+  expect(f.posts).toEqual([])
+  await expect(JSON.stringify({ model: listed.default_model_id, source: listed.default_source,
+    selected_parameters: listed.selected_parameters, models: listed.models }, null, 2) + '\n')
+    .toMatchFileSnapshot('./expected/media-model-square-default.json')
+})
 
 it('keeps model-only saved choices visible, then corrects the unsubmitted request using that same model', async () => {
   const f = await fixture()

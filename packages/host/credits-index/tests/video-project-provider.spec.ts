@@ -136,9 +136,42 @@ describe('account-bound video relay requests', () => {
       response.statusCode = entry.http_status
       json(response, entry.response)
     })
-    expect(await f.relay.submit({ model: uncertain.response.model }, uncertain.path, signal())).toEqual({ taskId })
-    await expect(f.relay.check(taskId, '/v1/videos', signal(), uncertain.response.model)).rejects.toMatchObject({ code: 'VIDEO_STATUS_INVALID' })
+    expect(await f.relay.submit({ model: uncertain.response.model }, uncertain.path, signal())).toEqual({ taskId, submissionState: 'unknown' })
+    const error = await rejection(f.relay.check(taskId, '/v1/videos', signal(), uncertain.response.model))
+    expect(error).toMatchObject({
+      code: 'VIDEO_SUBMISSION_UNCONFIRMED', taskId,
+      message: '视频提交状态未确认，已保留原平台任务编号，费用待核；请继续查询原项目，不要重新提交。',
+    })
+    expect(error).not.toHaveProperty('billingState')
+    expect(error).not.toHaveProperty('refundConfirmed')
     expect(f.calls.map(call => [call.method, call.path])).toEqual([['POST', uncertain.path], ['GET', unknownGet.path]])
+  })
+
+  it.each([
+    { id: 'task_11111111111111111111111111111111' },
+    { task_id: 'task_11111111111111111111111111111111' },
+    { model: 'another-model' },
+    { model: undefined },
+    { media_kind: 'image' },
+    { task_status: 'SUCCESS' },
+    { data: { id: 'task_11111111111111111111111111111111' } },
+    { data: { task_id: 'task_11111111111111111111111111111111' } },
+    { data: { model: 'another-model' } },
+    { data: { media_kind: 'image' } },
+    { data: { status: 'SUCCESS' } },
+    { error: { id: 'task_11111111111111111111111111111111' } },
+    { error: { model: 'another-model' } },
+    { media_submission_receipt: { schema_version: 0 } },
+    { submission_receipt: { schema_version: 0 } },
+    { data: { provider_terminal_confirmed: true } },
+    { error: { submission_receipt: { schema_version: 0 } } },
+    { error: { code: 'media_submission_unknown' } },
+  ])('does not confirm canonical UNKNOWN for conflicting original task fields: %j', async (changes) => {
+    const taskId = unknownGet.response.id
+    if (typeof taskId !== 'string') throw new Error('Actual uncertainty fixture must retain its original task ID')
+    const f = await fixture((_request, response) => { json(response, { ...unknownGet.response, ...changes }) })
+    await expect(f.relay.check(taskId, '/v1/videos', signal(), unknownGet.response.model)).rejects.toMatchObject({ code: 'VIDEO_STATUS_INVALID' })
+    expect(f.calls.map(call => [call.method, call.path])).toEqual([['GET', unknownGet.path]])
   })
 
   it.each([402, 403])('reports exact gateway funding at HTTP%s without an inferred settlement', async (status) => {

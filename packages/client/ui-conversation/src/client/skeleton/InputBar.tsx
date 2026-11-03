@@ -81,8 +81,6 @@ export const InputBar = memo(function InputBar({
   const empty = draft.trim() === '' && attachments.length === 0
   const inputCapabilities = input?.modelCapabilities
   const routeUnavailable = inputCapabilities?.available === false
-  const verificationPending = inputCapabilities?.verification !== undefined
-    && Object.values(inputCapabilities.verification).some(value => value === 'unverified')
   const noFiles = inputCapabilities?.tools === false
   const imageUnavailable = inputCapabilities?.visionUnavailable === true
   const unavailableImageAttachments = imageUnavailable && attachments.some(value => value.kind === 'image')
@@ -414,11 +412,11 @@ export const InputBar = memo(function InputBar({
           onDone={dismissToast}
         />
       )}
-      {(routeUnavailable || unsupportedAttachments || imageUnavailable || verificationPending || notice?.level === 'info') && (
+      {(routeUnavailable || unsupportedAttachments || imageUnavailable || notice?.level === 'info') && (
         <div className={css.notice} role="status">
           {routeUnavailable ? t('error.modelRouteUnavailable') : unavailableImageAttachments ? t('error.modelImageUnavailable')
             : unsupportedAttachments ? t('error.modelInputUnsupported') : notice?.level === 'info' ? notice.text
-              : imageUnavailable ? t('input.modelImageTemporarilyUnavailable') : t('input.modelVerificationPending')}
+              : t('input.modelImageTemporarilyUnavailable')}
         </div>
       )}
       {/* Trigger clicks land on the card, not the editor: the toolbar row's
