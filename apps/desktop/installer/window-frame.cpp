@@ -14,6 +14,7 @@
 #include "extract.h"
 #include "extract-report.h"
 #include "uninstall-data.h"
+#include "upgrade-shutdown.h"
 
 using namespace Gdiplus;
 
@@ -81,6 +82,17 @@ extern "C" __declspec(dllexport) int __cdecl InstallerFindProcess(LPCWSTR execut
     if (!present && GetLastError() != ERROR_NO_MORE_FILES) result = -1;
     CloseHandle(snapshot);
     return result;
+}
+
+// Ask only the exact target application to quit through its normal confirmation and cleanup.
+extern "C" __declspec(dllexport) void __cdecl InstallerRequestShutdown(LPCWSTR executable) {
+    upgrade_shutdown::RequestShutdown(executable);
+}
+
+// Returns 0 while any observable executable under the target installation remains, 1 when absent,
+// or -1 when enumeration or the same-named application's identity cannot be established.
+extern "C" __declspec(dllexport) int __cdecl InstallerFindInstallationProcess(LPCWSTR executable) {
+    return upgrade_shutdown::FindInstallationProcess(executable);
 }
 
 struct ProgressPage {

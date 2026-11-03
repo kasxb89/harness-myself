@@ -23,9 +23,6 @@ ManifestDPIAware true
     !include "${INSTALLER_SOURCE_DIR}\theme.nsh"
     !include "${INSTALLER_SOURCE_DIR}\pages.nsh"
     !include "${INSTALLER_SOURCE_DIR}\lifecycle.nsh"
-    Function InstallerCheckAppRunning
-      !insertmacro customCheckAppRunning
-    FunctionEnd
   !endif
 !macroend
 
@@ -66,7 +63,6 @@ ManifestDPIAware true
   File "/oname=$PLUGINSDIR\brand-dark.bmp" "${INSTALLER_BUILD_DIR}\brand-dark.bmp"
   File "/oname=$PLUGINSDIR\brand-dark-2x.bmp" "${INSTALLER_BUILD_DIR}\brand-dark-2x.bmp"
   File "/oname=$PLUGINSDIR\window-frame.dll" "${INSTALLER_BUILD_DIR}\window-frame.dll"
-  Call InstallerCheckAppRunning
   ${If} ${Silent}
     Call InstallerPreflight
     ${If} $InstallerError != ""
@@ -165,31 +161,48 @@ ManifestDPIAware true
 !macroend
 
 !macro customCheckAppRunning
+  !define /ifndef DSH_SHUTDOWN_WAIT_ITERATIONS 240
   !ifdef BUILD_UNINSTALLER
     InitPluginsDir
     File "/oname=$PLUGINSDIR\window-frame.dll" "${INSTALLER_BUILD_DIR}\window-frame.dll"
   !endif
-  System::Call '$PLUGINSDIR\window-frame.dll::InstallerFindProcess(w "$INSTDIR\${APP_EXECUTABLE_FILENAME}") i.R0 ?c'
+  ; The CHECK_APP_RUNNING insertion in installSection executes after payload staging. Opening an
+  ; installer or failing extraction must not close a working application before the user installs.
+  System::Call '$PLUGINSDIR\window-frame.dll::InstallerFindInstallationProcess(w "$INSTDIR\${APP_EXECUTABLE_FILENAME}") i.R0 ?c'
   ${If} $R0 == 0
-    ${If} ${isUpdated}
+    ${DoWhile} $R0 == 0
+      DetailPrint "$(INSTALLER_CLOSING)"
+      System::Call '$PLUGINSDIR\window-frame.dll::InstallerRequestShutdown(w "$INSTDIR\${APP_EXECUTABLE_FILENAME}") ?c'
       StrCpy $R1 0
       ${DoWhile} $R0 == 0
         Sleep 250
-        System::Call '$PLUGINSDIR\window-frame.dll::InstallerFindProcess(w "$INSTDIR\${APP_EXECUTABLE_FILENAME}") i.R0 ?c'
+        System::Call '$PLUGINSDIR\window-frame.dll::InstallerFindInstallationProcess(w "$INSTDIR\${APP_EXECUTABLE_FILENAME}") i.R0 ?c'
         IntOp $R1 $R1 + 1
-        ${If} $R1 >= 40
+        ${If} $R1 >= ${DSH_SHUTDOWN_WAIT_ITERATIONS}
           ${ExitDo}
         ${EndIf}
       ${Loop}
-    ${EndIf}
-    ${If} $R0 == 0
-      MessageBox MB_OK|MB_ICONINFORMATION "$(INSTALLER_RUNNING)" /SD IDOK
-      SetErrorLevel 2
-      Quit
-    ${EndIf}
+      ${If} $R0 == 0
+        StrCpy $R2 2
+        ${IfNot} ${Silent}
+          ; MB_RETRYCANCEL | MB_ICONINFORMATION. No relative jump can skip directory cleanup.
+          System::Call 'user32::MessageBoxW(p $HWNDPARENT, w "$(INSTALLER_RUNNING)", w "$(^SetupCaption)", i 0x45) i.R2'
+        ${EndIf}
+        ${If} $R2 != 4
+          !ifndef BUILD_UNINSTALLER
+            Call dshCleanupDirectories
+          !endif
+          SetErrorLevel 2
+          Quit
+        ${EndIf}
+      ${EndIf}
+    ${Loop}
   ${EndIf}
   ${If} $R0 < 0
     MessageBox MB_OK|MB_ICONEXCLAMATION "$(INSTALLER_UI_ERROR)" /SD IDOK
+    !ifndef BUILD_UNINSTALLER
+      Call dshCleanupDirectories
+    !endif
     SetErrorLevel 2
     Quit
   ${EndIf}

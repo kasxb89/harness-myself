@@ -5,6 +5,7 @@ Var dshNewDirectory
 Var dshOldDirectory
 Var dshOldMoved
 Var dshNewMoved
+Var dshDirectoryError
 
 !macro dshExtractPayload FILE
   !ifmacrodef customInstallerExtract
@@ -98,10 +99,14 @@ Function dshPromoteDirectories
   !endif
   ; SetOutPath opens a directory handle; release it before either rename.
   SetOutPath $PLUGINSDIR
+  StrCpy $dshDirectoryError 0
   ClearErrors
   ${If} ${FileExists} "$dshFinalDirectory\*.*"
     Rename $dshFinalDirectory $dshOldDirectory
     ${If} ${Errors}
+      System::Call 'kernel32::GetLastError() i.s'
+      Pop $dshDirectoryError
+      DetailPrint "Directory replacement could not move the existing installation: $dshFinalDirectory (Windows error $dshDirectoryError)"
       Call dshRollbackDirectories
       SetErrors
       Return
@@ -114,6 +119,9 @@ Function dshPromoteDirectories
   ClearErrors
   Rename $dshNewDirectory $dshFinalDirectory
   ${If} ${Errors}
+    System::Call 'kernel32::GetLastError() i.s'
+    Pop $dshDirectoryError
+    DetailPrint "Directory replacement could not promote the staged installation: $dshFinalDirectory (Windows error $dshDirectoryError)"
     Call dshRollbackDirectories
     SetErrors
     Return
