@@ -11,11 +11,7 @@ kind: "package-reference"
 
 ## 概述
 
-`ui-conversation` 拥有与 target 无关的 Conversation 组装和共享浏览器 shell。它消费 Session Controller 的 `SessionEventLikeEntry` feed，通过 `ctx.uiConversation` 暴露不依赖 React 的注册表与逐 Session binding，并通过 `ctx.uiSession` 提供 `useConversation`、`useInput` 和 `inputActions` 标准 props。它还拥有按会话的持久化图片 URL 缓存：`ctx.uiConversation.imageUrl(sessionId, attachment)` 为每个附件解析一个经会话授权的浏览器 URL，并随 Session binding 释放而撤销，因此所有 Conversation target 共享一次 `session.attachment` 读取。Chat 等具体 target 位于独立包，由各自包注册 Definition、快照 builder、View 和 renderer。
-
-作用于当前 Session 的 `conversation/input-model-capabilities` 事件将归一化执行控制、逐项核实状态和渠道可用性发布到 `InputState.modelCapabilities`。待核实不锁定输入或删除附件，也不额外显示通用提示行。确认不兼容的文件、图片和桌面引用保留草稿并说明当前渠道限制；渠道不可用独立阻止发送，但保留编辑和切换模型入口。更换模型后既有附件仍可见。明确的模型能力错误保留被拒绝的草稿，并区分渠道不可用与输入、历史不兼容；不匹配自然语言意图或数量。
-
-图片入口的局部故障使用独立的暂不可用文案，拦截图片粘贴、选取和提交。已有图片附件和文字草稿保留；移除图片后，文字及已暂存文件恢复发送。局部故障标志及原因按会话隔离，与整条渠道可用性和能力核实事实分开。
+您可以编写消息、保留草稿，并切换可用的 Conversation 视图。切换模型后，已有附件仍然可见。已确认的输入限制会说明发送前需要调整的内容，图片暂时不可用时也会保留草稿。移除受影响的图片后，您可以发送剩余文字及已暂存文件。
 
 ## 目录
 
@@ -30,6 +26,12 @@ kind: "package-reference"
 
 <a id="conversation-assembly"></a>
 ## Conversation 组装
+
+`ui-conversation` 拥有与 target 无关的 Conversation 组装和共享浏览器 shell。它消费 Session Controller 的 `SessionEventLikeEntry` feed，通过 `ctx.uiConversation` 暴露不依赖 React 的注册表与逐 Session binding，并通过 `ctx.uiSession` 提供 `useConversation`、`useInput` 和 `inputActions` 标准 props。它还拥有按会话的持久化图片 URL 缓存：`ctx.uiConversation.imageUrl(sessionId, attachment)` 为每个附件解析一个经会话授权的浏览器 URL，并随 Session binding 释放而撤销，因此所有 Conversation target 共享一次 `session.attachment` 读取。Chat 等具体 target 位于独立包，由各自包注册 Definition、快照 builder、View 和 renderer。
+
+作用于当前 Session 的 `conversation/input-model-capabilities` 事件将归一化执行控制、逐项核实状态和渠道可用性发布到 `InputState.modelCapabilities`。待核实不锁定输入或删除附件，也不额外显示通用提示行。确认不兼容的文件、图片和桌面引用保留草稿并说明当前渠道限制；渠道不可用独立阻止发送，但保留编辑和切换模型入口。更换模型后既有附件仍可见。明确的模型能力错误保留被拒绝的草稿，并区分渠道不可用与输入、历史不兼容；不匹配自然语言意图或数量。
+
+图片入口的局部故障使用独立的暂不可用文案，拦截图片粘贴、选取和提交。已有图片附件和文字草稿保留；移除图片后，文字及已暂存文件恢复发送。局部故障标志及原因按会话隔离，与整条渠道可用性和能力核实事实分开。
 
 `UiConversation.events` 是 event Definition 的唯一 registry，`UiConversation.views` 是 target snapshot builder 的唯一 registry。两者都拒绝重复 key、保持注册顺序、返回幂等 disposer，并在 contribution roster 变化时重建现有 binding。`UiConversation.binding(bindingOrSessionId)` 为当前 Session Controller binding 返回 identity 稳定的 Conversation binding，不会另开事件源。 View Definition 可以声明 `toolCallFocus`，将工具调用 id 转换为自身的焦点标识。仅当此目标拥有可见的 View 条目时，Conversation 才提供 Inspect 回调；Chat 直接使用回调，不选择目标。
 

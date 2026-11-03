@@ -83,6 +83,7 @@ vi.mock('electron', () => ({
     static getAllWindows() { return [] }
     once(name: string, callback: () => void) { if (name === 'ready-to-show') this.ready = callback; return this }
     on() { return this }
+    readonly hookWindowMessage = vi.fn()
     isDestroyed() { return false }
     isMinimized() { return false }
     restore = vi.fn()

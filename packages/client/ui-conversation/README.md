@@ -11,11 +11,7 @@ Desktop product events use the optional [product analytics service](../product-a
 
 ## Summary
 
-`ui-conversation` owns target-neutral Conversation assembly and the shared browser shell. It consumes Session Controller `SessionEventLikeEntry` feeds, exposes React-free registries and per-Session bindings through `ctx.uiConversation`, and contributes the `useConversation`, `useInput`, and `inputActions` standard props through `ctx.uiSession`. It also owns the per-session durable image URL cache: `ctx.uiConversation.imageUrl(sessionId, attachment)` resolves one session-authorized browser URL per attachment and revokes it with the Session binding, so every Conversation target shares one `session.attachment` read. Concrete targets such as Chat are separate packages that register their own Definitions, snapshot builders, Views, and renderers.
-
-The Session-scoped `conversation/input-model-capabilities` event publishes normalized execution controls, per-feature verification and route availability into `InputState.modelCapabilities`. Unverified facts do not lock input, erase attachments or add a generic composer notice. Confirmed incompatible files, images and Desktop references preserve the draft and explain current-route restrictions; an unavailable route independently blocks submission while allowing editing and model selection. Existing attachments remain visible across model changes. Typed model-capability errors preserve rejected drafts and distinguish unavailable routes from unsupported inputs and history; no natural-language intent or quantity matching is performed.
-
-Feature-level image outages reject image paste, picking and submission with dedicated temporary-unavailability copy. Existing image attachments and text remain in the draft; removing the image restores Send for text and staged files. The feature outage flag and reason are scoped independently from whole-route availability and capability verification.
+You can compose messages, retain drafts and switch between available Conversation views. Existing attachments remain visible when you change models. Confirmed input restrictions explain what must change before sending, and temporary image outages preserve the draft. You can remove affected images to send the remaining text and staged files.
 
 ## Table of Contents
 
@@ -30,6 +26,12 @@ Feature-level image outages reject image paste, picking and submission with dedi
 
 <a id="conversation-assembly"></a>
 ## Conversation assembly
+
+`ui-conversation` owns target-neutral Conversation assembly and the shared browser shell. It consumes Session Controller `SessionEventLikeEntry` feeds, exposes React-free registries and per-Session bindings through `ctx.uiConversation`, and contributes the `useConversation`, `useInput`, and `inputActions` standard props through `ctx.uiSession`. It also owns the per-session durable image URL cache: `ctx.uiConversation.imageUrl(sessionId, attachment)` resolves one session-authorized browser URL per attachment and revokes it with the Session binding, so every Conversation target shares one `session.attachment` read. Concrete targets such as Chat are separate packages that register their own Definitions, snapshot builders, Views, and renderers.
+
+The Session-scoped `conversation/input-model-capabilities` event publishes normalized execution controls, per-feature verification and route availability into `InputState.modelCapabilities`. Unverified facts do not lock input, erase attachments or add a generic composer notice. Confirmed incompatible files, images and Desktop references preserve the draft and explain current-route restrictions; an unavailable route independently blocks submission while allowing editing and model selection. Existing attachments remain visible across model changes. Typed model-capability errors preserve rejected drafts and distinguish unavailable routes from unsupported inputs and history; no natural-language intent or quantity matching is performed.
+
+Feature-level image outages reject image paste, picking and submission with dedicated temporary-unavailability copy. Existing image attachments and text remain in the draft; removing the image restores Send for text and staged files. The feature outage flag and reason are scoped independently from whole-route availability and capability verification.
 
 `UiConversation.events` is the single registry for event Definitions, and `UiConversation.views` is the single registry for target snapshot builders. Both registries reject duplicate keys, preserve registration order, return idempotent disposers, and rebuild existing bindings when their contribution roster changes. `UiConversation.binding(bindingOrSessionId)` returns one identity-stable Conversation binding for the current Session Controller binding. It does not open another event source. A View Definition may declare `toolCallFocus` to translate a tool-call id into its focus identity. Conversation supplies an Inspect callback only while such a target has a visible View entry; Chat consumes this callback without selecting a target.
 
