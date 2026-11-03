@@ -52,4 +52,10 @@ describe('local installer shutdown entry', () => {
     const init = script.slice(script.indexOf('!macro customInit'), script.indexOf('!macro customInstallMode'))
     expect(init).not.toContain('Call InstallerCheckAppRunning')
   })
+
+  it('does not leave a dead shutdown function for the strict production NSIS compiler', () => {
+    const script = readFileSync(new URL('../scripts/installer.nsh', import.meta.url), 'utf8')
+    expect(script).not.toContain('Function InstallerCheckAppRunning')
+    expect(script).toContain('!macro customCheckAppRunning')
+  })
 })

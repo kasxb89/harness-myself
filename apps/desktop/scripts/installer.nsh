@@ -23,9 +23,6 @@ ManifestDPIAware true
     !include "${INSTALLER_SOURCE_DIR}\theme.nsh"
     !include "${INSTALLER_SOURCE_DIR}\pages.nsh"
     !include "${INSTALLER_SOURCE_DIR}\lifecycle.nsh"
-    Function InstallerCheckAppRunning
-      !insertmacro customCheckAppRunning
-    FunctionEnd
   !endif
 !macroend
 
