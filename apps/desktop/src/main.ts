@@ -62,6 +62,7 @@ import { DesktopBrowserGuests } from './browser-guests.ts'
 import { installDesktopShortcuts } from './keyboard.ts'
 import { DesktopUpdateOverlays } from './update-overlay.ts'
 import { DesktopQuitConfirmation } from './quit-confirmation.ts'
+import { DesktopInstallerShutdown } from './installer-shutdown.ts'
 import { DesktopTray } from './tray.ts'
 import { DesktopBackgroundNotice } from './background-notice.ts'
 import { DesktopClientActivity } from './client-activity.ts'
@@ -74,6 +75,7 @@ let shuttingDown = false
  * development restart command. The installer handoff has its own before-quit branch.
  */
 let skipQuitConfirmation = false
+const installerShutdown = new DesktopInstallerShutdown(() => { app.quit() })
 let windowsLanguage: string | undefined
 /**
  * Whether the backend has reached ready: false until the first ready, back to
@@ -106,7 +108,7 @@ const recovery = new DesktopFatalRecovery({
     console.info('Desktop profile recovery completed:', { profilePatchBackup: backupPath ?? null, homePatch: 'unchanged' })
   },
   exit: () => { quitWithoutConfirmation() },
-  restart: () => { app.relaunch(); quitWithoutConfirmation() },
+  restart: () => { if (!installerShutdown.pending) { app.relaunch(); quitWithoutConfirmation() } },
   writeReport: (error, source) => persistCrashReport(error, source),
 })
 
@@ -1059,7 +1061,7 @@ async function main(): Promise<void> {
       { type: 'separator' as const },
       { label: currentDesktopLocale().messages.reloadPageMenu, role: 'reload' as const },
       { label: currentDesktopLocale().messages.restartAppHostMenu, click: () => {
-        if (quitting) return
+        if (quitting || installerShutdown.pending) return
         app.relaunch()
         quitWithoutConfirmation()
       } },
@@ -1164,6 +1166,7 @@ async function main(): Promise<void> {
   }
   const createMainWindow = (): BrowserWindow => {
     const window = createWindow(appPreload, false, true)
+    installerShutdown.bind(window)
     mainWindow = window
     browserGuests.bind(window, (guest, name) => shortcuts.attachGuest(window, guest, name))
     shortcuts.attach(window)
@@ -1408,6 +1411,7 @@ async function main(): Promise<void> {
     void quitConfirmation.confirm().then((approved) => {
       if (quitting || shellInstallerOwnsQuit) return
       if (approved) { finishQuit(); return }
+      installerShutdown.cancel()
       // A quit that started from closing the welcome window destroyed it; a cancelled quit needs it back.
       if (!enteredWorkspace && !recovery.active) void showWelcome().catch((error: unknown) => { reportFatal(error, 'main') })
     }).catch((error: unknown) => { console.error(error); if (!quitting && !shellInstallerOwnsQuit) finishQuit() })

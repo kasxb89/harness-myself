@@ -50,7 +50,6 @@ Function InstallerBeforeInstall
         SetErrorLevel 2
         Quit
     ${EndIf}
-    Call InstallerCheckAppRunning
 FunctionEnd
 
 Function InstallerProgressShow

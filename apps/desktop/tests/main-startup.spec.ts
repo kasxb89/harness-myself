@@ -14,6 +14,7 @@ import { WELCOME_IPC } from '../src/welcome-api.ts'
 import { DesktopHostFatalError, DesktopHostUncleanExitError } from '../src/host-process.ts'
 import { en, zh } from '../src/locale.ts'
 import { DesktopUpdatePreparationError } from '../src/update-error.ts'
+import { DESKTOP_INSTALLER_SHUTDOWN_MAGIC, DESKTOP_INSTALLER_SHUTDOWN_MESSAGE } from '../src/installer-shutdown.ts'
 import { writeCrashReport } from '../src/crash-report.ts'
 import type { UpdateDialogOptions } from '../src/update-dialog.ts'
 
@@ -105,6 +106,7 @@ const harness = await vi.hoisted(async () => {
     readonly setTitleBarOverlay = vi.fn()
     readonly setVibrancy = vi.fn()
     readonly setBackgroundColor = vi.fn()
+    readonly hookWindowMessage = vi.fn()
     constructor(readonly options: { show: boolean; modal?: boolean }) {
       super(); if (windowFailure !== undefined) throw windowFailure; windows.push(this)
     }
@@ -1462,6 +1464,39 @@ describe('desktop main startup', () => {
     await host.stopping.promise
     host.exited.resolve()
     await harness.quitCompleted.promise
+  })
+
+  it('routes a hidden-window installer request through task confirmation, suppresses relaunch, and allows retry after cancellation', async () => {
+    harness.app.isPackaged = false
+    const host = await readyWorkspace()
+    const window = harness.windows[0]!
+    const binding = window.hookWindowMessage.mock.calls.find(call => call[0] === DESKTOP_INSTALLER_SHUTDOWN_MESSAGE)
+    expect(binding).toBeDefined()
+    const receive = binding![1] as (w: Buffer, l: Buffer) => void
+    const magic = Buffer.alloc(8), version = Buffer.alloc(8)
+    magic.writeUInt32LE(DESKTOP_INSTALLER_SHUTDOWN_MAGIC)
+    version.writeUInt32LE(1)
+    const pending = Promise.withResolvers<Electron.MessageBoxReturnValue>()
+    host.inspectQuit.mockResolvedValue({ activeTasks: true, scheduledTasks: false })
+    harness.dialog.showMessageBox.mockReturnValue(pending.promise)
+    window.visible = false
+    receive(magic, version)
+    receive(magic, version)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(harness.dialog.showMessageBox).toHaveBeenCalledOnce()
+    const restart = applicationMenuItems().find(item => item.label === en.restartAppHostMenu)!
+    ;(restart as { click: () => void }).click()
+    expect(harness.app.relaunch).not.toHaveBeenCalled()
+    pending.resolve({ response: 1, checkboxChecked: false })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(host.stop).not.toHaveBeenCalled()
+    expect(window.hide).not.toHaveBeenCalled()
+    harness.dialog.showMessageBox.mockResolvedValue({ response: 0, checkboxChecked: false })
+    receive(magic, version)
+    await host.stopping.promise
+    host.exited.resolve()
+    await harness.quitCompleted.promise
+    expect(harness.dialog.showMessageBox).toHaveBeenCalledTimes(2)
   })
 
   it('asks before quitting when the Host reports interruptible work and cancels without stopping anything', async () => {
