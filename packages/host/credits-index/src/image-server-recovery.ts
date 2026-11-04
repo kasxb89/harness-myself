@@ -27,7 +27,7 @@ function object(value: unknown): Record<string, unknown> | undefined {
 }
 
 /**
- * Accept only one exact image model with the reviewed retained-result protocol.
+ * Accept only exact image models with reviewed retained-result protocols.
  * @param rows - Current gateway pricing records, before menu projection.
  * @param model - Exact model selected by the account-bound image request.
  * @returns Whether new submissions may retain the gateway's result task header.
@@ -40,10 +40,26 @@ export function imageServerResultRecovery(rows: readonly unknown[], model: strin
   const parameters = object(row?.parameters)
   const plugin = object(parameters?.['x-task-plugin'])
   const kind = row?.kind ?? parameters?.['x-model-kind']
+  const support = object(parameters?.['x-image-receipt-recovery'])
+  const ycapiReady = support !== undefined && Object.keys(support).length === 3 && support.schema_version === 1
+    && support.submit_model_metadata === true && support.original_task_artifacts === true
+  const supportedPlugin = plugin !== undefined && Object.keys(plugin).length === 3 && plugin.api_version === 1
+    && plugin.version === '1.0.0' && (plugin.key === 'codebloom-image' || plugin.key === 'ycapi')
   return kind === 'image' && (parameters?.['x-model-kind'] === undefined || parameters['x-model-kind'] === 'image')
     && (row?.route === undefined || row.route === '/v1/images/generations')
-    && plugin !== undefined && Object.keys(plugin).length === 3
-    && plugin.key === 'codebloom-image' && plugin.version === '1.0.0' && plugin.api_version === 1
+    && supportedPlugin && (plugin?.key !== 'ycapi' || ycapiReady)
+}
+
+/**
+ * Stop new YCAPI image submissions until the gateway declares the corrected receipt handling.
+ * @param rows - Current gateway pricing records before menu projection.
+ * @param model - Exact account-selected image model.
+ * @returns Whether submission must stop before a potentially paid request; original-task recovery remains available.
+ */
+export function imageServerSubmissionRequiresUpdate(rows: readonly unknown[], model: string): boolean {
+  const ycapi = rows.map(object).some(row => row?.model_name === model
+    && object(object(row.parameters)?.['x-task-plugin'])?.key === 'ycapi')
+  return ycapi && !imageServerResultRecovery(rows, model)
 }
 
 /**

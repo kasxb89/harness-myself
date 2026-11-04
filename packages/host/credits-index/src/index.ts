@@ -94,7 +94,7 @@ import { GenerationPerformance } from './generation-performance.ts'
 import { MediaCatalogCache, MediaCatalogReadError } from './media-catalog-cache.ts'
 import { transferMedia, readMediaBytes, MediaTransferLimitError } from './media-transfer.ts'
 import { ImageConcurrency, imageConcurrencyCeiling } from './image-concurrency.ts'
-import { imageServerArtifactUrl, imageServerResultRecovery, loadImageRecoverySources } from './image-server-recovery.ts'
+import { imageServerArtifactUrl, imageServerResultRecovery, imageServerSubmissionRequiresUpdate, loadImageRecoverySources } from './image-server-recovery.ts'
 import { executeVideoTask } from './video-task.ts'
 import type { CreativeImageReceipt, CreativeVideoReceipt, CreativeTaskView } from './creative-types.ts'
 import type { VideoProjectIdentity, VideoProjectInput, VideoProjectOptions, VideoProjectRequest, VideoRequestValue } from './video-project-types.ts'
@@ -1128,6 +1128,7 @@ export function apply(ctx: Context, config: Config): void {
     projectParallelism?: ReadonlyMap<string, number>
     imageCeilings?: ReadonlyMap<string, number | undefined>
     imageServerRecovery?: ReadonlySet<string>
+    imageServerUpdateRequired?: ReadonlySet<string>
     preferencePrices?: ReadonlyMap<string, MediaPreferencePricing>
   }> => {
     let group: string | null = null
@@ -1163,6 +1164,8 @@ export function apply(ctx: Context, config: Config): void {
         .map(model => [model.id, imageConcurrencyCeiling(rows, model.id)]))
       const imageServerRecovery = new Set(models.filter(model => model.kind === 'image'
         && imageServerResultRecovery(rows, model.id)).map(model => model.id))
+      const imageServerUpdateRequired = new Set(models.filter(model => model.kind === 'image'
+        && imageServerSubmissionRequiresUpdate(rows, model.id)).map(model => model.id))
       let preferencePrices: ReadonlyMap<string, MediaPreferencePricing> | undefined
       if (includePublicUnitPrices) {
         try { preferencePrices = mediaPreferencePrices(rows, models, resolved.creditsPerYuan) }
@@ -1171,7 +1174,7 @@ export function apply(ctx: Context, config: Config): void {
           preferencePrices = new Map()
         }
       }
-      return { ok: true, group, models, projectParallelism, imageCeilings, imageServerRecovery,
+      return { ok: true, group, models, projectParallelism, imageCeilings, imageServerRecovery, imageServerUpdateRequired,
         ...preferencePrices === undefined ? {} : { preferencePrices } }
     } catch (error) {
       return {
@@ -1447,6 +1450,10 @@ export function apply(ctx: Context, config: Config): void {
           : `模型 ${id} 不在你的分组（${catalog.group ?? '未知'}）可用范围内`,
         catalog: catalog.models,
       }
+    }
+    if (kind === 'image' && catalog.imageServerUpdateRequired?.has(model.id) === true) {
+      return { ok: false, code: 'IMAGE_SERVER_UPDATE_REQUIRED',
+        message: '当前服务端尚未支持此模型的图片回执恢复，暂未提交且不会扣费；请稍后重试或选择其他图片模型。', catalog: catalog.models }
     }
     const imageCeiling = kind === 'image' ? catalog.imageCeilings?.get(model.id) : undefined
     return { ok: true, model, ...imageCeiling === undefined ? {} : { imageCeiling },

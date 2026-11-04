@@ -55,6 +55,28 @@ describe('opted-in original server image results', () => {
     expect(input.read).not.toHaveBeenCalled()
   })
 
+  it('keeps polling the same retained task while its state is unknown', async () => {
+    let reads = 0
+    const input = { ...options(), submit: vi.fn(async () => truncated()),
+      readServerTask: vi.fn(async () => ++reads === 1
+        ? Response.json({ task_id: serverId, model, status: 'UNKNOWN' })
+        : response('owner_task_status')) }
+    expect(await executeImageTask(input)).toMatchObject({ submissionState: 'completed', serverTaskId: serverId })
+    expect(input.readServerTask).toHaveBeenCalledTimes(2)
+    expect(input.readArtifacts).toHaveBeenCalledOnce()
+    expect(input.submit).toHaveBeenCalledOnce()
+  })
+
+  it('recovers a server task header from an HTTP error response without resubmitting', async () => {
+    const input = { ...options(), submit: vi.fn(async () => new Response('temporary gateway error', {
+      status: 502, headers: { 'X-New-Api-Task-Id': serverId },
+    })) }
+    expect(await executeImageTask(input)).toMatchObject({ submissionState: 'completed', serverTaskId: serverId })
+    expect(input.readServerTask).toHaveBeenCalledOnce()
+    expect(input.readArtifacts).toHaveBeenCalledOnce()
+    expect(input.submit).toHaveBeenCalledOnce()
+  })
+
   it('resumes a serialized original server receipt without requiring a current model opt-in', async () => {
     const input = { ...options(), serverResultRecovery: false,
       resumeReceipt: JSON.parse(JSON.stringify({ route: '/v1/images/generations', model, backendFingerprint: fingerprint,

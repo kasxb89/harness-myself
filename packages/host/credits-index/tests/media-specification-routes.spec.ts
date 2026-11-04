@@ -14,6 +14,7 @@ import { LocalCredentialProvider } from '@deepseek-ai/dsh-credentials-local'
 import WebServer from '@deepseek-ai/dsh-host-webserver'
 import * as Connection from '@deepseek-ai/dsh-client-connection'
 import Tools from '@deepseek-ai/dsh-tools'
+import { SessionId, SessionStore } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
 import * as LlmPiAi from '@deepseek-ai/dsh-llm-pi-ai'
@@ -55,10 +56,11 @@ const imageWireCalls: { method: string; path: string; authorization: string | un
 const retainedTaskId = 'task_codebloom_http_fixture'
 const retainedTaskPath = `/harness/v1/tasks/${retainedTaskId}`
 interface RetainedImageFixture {
-  readonly body: 'truncated' | 'complete'
+  readonly body: 'truncated' | 'complete' | 'gateway-error'
   readonly bytes?: Buffer
   readonly manifest?: 'wrong-task' | 'wrong-key' | 'wrong-prefix'
   readonly existingModel?: string
+  readonly unknownReads?: number
 }
 function object(value: unknown): Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error('Expected object')
@@ -86,7 +88,7 @@ async function boot(visibleModels: readonly string[] = rows.map(row => row.model
   directory = await mkdtemp(join(tmpdir(), 'dsh-media-specifications-'))
   const root = directory
   const pngBytes = await sharp({ create: { width: 1, height: 1, channels: 3, background: '#ffffff' } }).png().toBuffer()
-  let api = '', generatedModel = retainedImage?.existingModel ?? ''
+  let api = '', generatedModel = retainedImage?.existingModel ?? '', taskReads = 0
   const contentUrl = () => `${api}/v1/tasks/${retainedTaskId}/artifacts/image-1/content?access=synthetic-content-capability`
   upstream = createServer((request, response) => {
     void (async () => {
@@ -119,7 +121,9 @@ async function boot(visibleModels: readonly string[] = rows.map(row => row.model
           .map(row => ({ id: row.model_name, supported_endpoint_types: ['openai'] })) })); return
       }
       if (retainedImage !== undefined && path === retainedTaskPath) {
-        response.end(JSON.stringify({ task_id: retainedTaskId, model: generatedModel, status: 'SUCCESS' })); return
+        taskReads += 1
+        response.end(JSON.stringify({ task_id: retainedTaskId, model: generatedModel,
+          status: taskReads <= (retainedImage.unknownReads ?? 0) ? 'UNKNOWN' : 'SUCCESS' })); return
       }
       if (retainedImage !== undefined && path === `${retainedTaskPath}/artifacts`) {
         response.end(JSON.stringify({ task_id: retainedImage.manifest === 'wrong-task' ? 'task_another' : retainedTaskId,
@@ -137,6 +141,10 @@ async function boot(visibleModels: readonly string[] = rows.map(row => row.model
           generatedModel = String(body.model)
           response.setHeader('x-new-api-task-id', retainedTaskId)
           response.setHeader('x-oneapi-request-id', 'retained-fixture-request')
+          if (retainedImage.body === 'gateway-error') {
+            response.writeHead(502)
+            response.end(JSON.stringify({ error: { message: 'Synthetic interrupted gateway response' } })); return
+          }
           if (retainedImage.body === 'truncated') {
             response.setHeader('content-length', 512)
             response.setHeader('connection', 'close')
@@ -164,6 +172,7 @@ async function boot(visibleModels: readonly string[] = rows.map(row => row.model
     ['@deepseek-ai/dsh-system-prompt', SystemPrompt], ['@deepseek-ai/dsh-credentials-local', LocalCredentialProvider],
     ['@deepseek-ai/dsh-llm', LlmRuntime], ['@deepseek-ai/dsh-llm-pi-ai', LlmPiAi],
     ['@deepseek-ai/dsh-fs-local', LocalFileSystem], ['@deepseek-ai/dsh-credits-index', Credits],
+    ['@deepseek-ai/dsh-session', SessionStore],
   ])
   context = new Context()
   context.baseUrl = pathToFileURL(root).href + '/'
@@ -180,6 +189,7 @@ async function boot(visibleModels: readonly string[] = rows.map(row => row.model
     { name: '@deepseek-ai/dsh-host-webserver', config: { host: '127.0.0.1', port: 0 } },
     { name: '@deepseek-ai/dsh-client-connection' },
     { name: '@deepseek-ai/dsh-tools' }, { name: '@deepseek-ai/dsh-system-prompt' },
+    { name: '@deepseek-ai/dsh-session' },
     { name: '@deepseek-ai/dsh-fs-local', config: { cwd: root } },
     { name: '@deepseek-ai/dsh-credentials-local', config: { path: join(root, 'credentials.yaml'), dshHome: root, watch: false } },
     { name: '@deepseek-ai/dsh-llm' },
@@ -377,10 +387,70 @@ async function recordRecoveryRoute(name: string, result: object,
     publishedImageFiles: await publishedImageFiles(),
     ...savedImage === undefined ? {} : { savedImage },
     ...evidence === undefined ? {} : { evidence: evidence.facts },
-    scope: 'Real Host Loader and loopback HTTP/file IO; synthetic metadata/account/access placeholder; positive images locally encoded by sharp, not the API68B signature fixture. No provider or actual HMAC verification.' }, null, 2) + '\n')
+    scope: 'Real Host Loader and loopback HTTP/file IO; synthetic metadata/account/access placeholder; image bytes supplied by the fixture. No provider POST or actual HMAC verification in this test.' }, null, 2) + '\n')
 }
 
 describe('retained image recovery through the shipped Host HTTP and file IO', () => {
+  it('publishes a YCAPI result in the client project after an accepted gateway error and temporary unknown status', async () => {
+    const original = retainedCandidate(), sessionId = 'ycapi-recovered-image-chat'
+    const row = { ...original, model_name: 'ycapi-flux-kontext', parameters: { ...original.parameters,
+      'x-task-plugin': { key: 'ycapi', version: '1.0.0', api_version: 1 },
+      'x-image-receipt-recovery': { schema_version: 1, submit_model_metadata: true, original_task_artifacts: true } } }
+    const inputImage = process.env.DSH_IMAGE_RECOVERY_INPUT_IMAGE
+    const pngBytes = inputImage === undefined
+      ? await sharp({ create: { width: 2, height: 2, channels: 3, background: '#12aabb' } }).png().toBuffer()
+      : await readFile(inputImage)
+    const inputMetadata = await sharp(pngBytes).metadata()
+    const base = await boot([row.model_name], true, [row], { body: 'gateway-error', bytes: pngBytes, unknownReads: 1 })
+    const active = context, root = directory
+    if (active === undefined || root === undefined) throw new Error('Expected active Host and isolated files')
+    active.sessions.create(SessionId(sessionId), { meta: { cwd: await realpath(root) } })
+    const login = new URL(active.connection.authenticatedUrl(new URL(base).origin)), headers: Record<string, string> = {}
+    active.connection.authorizeIndex({ method: 'GET', url: login.pathname + login.search, headers: { host: login.host } }, {
+      writeHead(_status, values) { Object.assign(headers, values) }, end() {},
+    })
+    const cookie = headers['set-cookie']?.split(';')[0]
+    if (cookie === undefined) throw new Error('Expected authenticated Host cookie')
+    const result = await post(base, '/api/image/generate', { session_id: sessionId, account_id: '7', model: row.model_name,
+      prompt: 'One synthetic YCAPI recovery image' }, { cookie })
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true, submission_state: 'completed', task_id: retainedTaskId })
+    const projects = object(object(await (await fetch(base + '/api/creative/projects?session_id=' + sessionId,
+      { headers: { cookie } })).json()).payload).projects
+    if (!Array.isArray(projects)) throw new Error('Expected client project projection')
+    const project = projects.map(object).find(value => value.id === result.plan_id)
+    expect(project).toMatchObject({ kind: 'image', tasks: [expect.objectContaining({ id: result.operation_id, status: 'completed' })] })
+    if (!Array.isArray(project?.outputs)) throw new Error('Expected visible recovered image output')
+    expect(project.outputs).toHaveLength(1)
+    const output = object(project.outputs[0])
+    if (typeof output.url !== 'string') throw new Error('Expected authenticated client preview URL')
+    const preview = await fetch(new URL(output.url, base), { headers: { cookie } })
+    expect(preview.status).toBe(200)
+    const previewBytes = Buffer.from(await preview.arrayBuffer())
+    expect(previewBytes).toEqual(pngBytes)
+    expect((await sharp(previewBytes).metadata())).toMatchObject({ width: inputMetadata.width, height: inputMetadata.height, format: 'png' })
+    const owner = { accountId: '7', sessionFingerprint: createHash('sha256').update('fixture-access').digest('hex'),
+      sessionId, workspaceRoot: await realpath(root) }
+    const restored = new CreativeStore({ directory: join(root, 'credits', 'creative-projects'),
+      current: async () => owner, video: async () => { throw new Error('No video in image recovery') } })
+    expect((await restored.projects(owner))[0]).toMatchObject({ id: result.plan_id,
+      outputs: [expect.objectContaining({ kind: 'image' })], tasks: [expect.objectContaining({ status: 'completed' })] })
+    expect(imageWireCalls.filter(call => call.method === 'POST' && call.path.endsWith('/images/generations'))).toHaveLength(1)
+    expect(imageWireCalls.filter(call => call.path === retainedTaskPath)).toHaveLength(2)
+    expect(imageWireCalls.filter(call => call.path === `${retainedTaskPath}/artifacts`)).toHaveLength(1)
+    await recordRecoveryRoute('ycapi-gateway-error-client-preview', result)
+  })
+
+  it('stops a YCAPI image on the current older gateway before a paid submission', async () => {
+    const original = retainedCandidate()
+    const row = { ...original, model_name: 'ycapi-flux-kontext', parameters: { ...original.parameters,
+      'x-task-plugin': { key: 'ycapi', version: '1.0.0', api_version: 1 } } }
+    const base = await boot([row.model_name], true, [row])
+    const result = await post(base, '/api/image/generate', { model: row.model_name, prompt: 'Do not submit this image' })
+    expect(result).toMatchObject({ ok: false, code: 'IMAGE_SERVER_UPDATE_REQUIRED', submission_state: 'not-submitted' })
+    expect(calls.filter(call => call.path.endsWith('/images/generations'))).toEqual([])
+    expect(await publishedImageFiles()).toEqual([])
+  })
+
   it('recovers a truncated opted-in response through only the original task, manifest and signed image', async () => {
     const row = retainedCandidate()
     const pngBytes = await sharp({ create: { width: 1, height: 1, channels: 3, background: '#ffffff' } }).png().toBuffer()

@@ -6,11 +6,15 @@ import { describe, expect, it, onTestFinished } from 'vitest'
 import type { CreativeOperationId } from '../src/creative-store.ts'
 import { ImageResultStore, type ImageResultRef } from '../src/image-result-store.ts'
 import { imageServerTaskId } from '../src/image-server-task.ts'
-import { imageServerArtifactUrl, imageServerResultRecovery, loadImageRecoverySources } from '../src/image-server-recovery.ts'
+import { imageServerArtifactUrl, imageServerResultRecovery, imageServerSubmissionRequiresUpdate, loadImageRecoverySources } from '../src/image-server-recovery.ts'
 
 const model = 'fixture-retained-image'
 const plugin = { key: 'codebloom-image', version: '1.0.0', api_version: 1 }
+const ycapiPlugin = { key: 'ycapi', version: '1.0.0', api_version: 1 }
+const recovery = { schema_version: 1, submit_model_metadata: true, original_task_artifacts: true }
 const row = (marker: unknown = plugin) => ({ model_name: model, kind: 'image', parameters: { 'x-task-plugin': marker } })
+const ycapiRow = (support: unknown) => ({ ...row(ycapiPlugin), parameters: { 'x-task-plugin': ycapiPlugin,
+  'x-image-receipt-recovery': support } })
 
 it('allows a retained server task to recover after its linked local manifest was not published', async () => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'image-source-fallback-')))
@@ -29,13 +33,27 @@ it('allows a retained server task to recover after its linked local manifest was
 describe('exact retained image declarations', () => {
   it('selects one exact reviewed model without relying on its name', () => {
     expect(imageServerResultRecovery([row()], model)).toBe(true)
+    expect(imageServerResultRecovery([ycapiRow(recovery)], model)).toBe(true)
     expect(imageServerResultRecovery([row()], 'codebloom-unlisted')).toBe(false)
     expect(imageServerResultRecovery([row(), row()], model)).toBe(false)
     expect(imageServerResultRecovery([row()], '')).toBe(false)
   })
-  it.for([undefined, null, [], {}, { ...plugin, key: 'toapis' }, { ...plugin, key: 'ycapi' },
+  it('blocks a new YCAPI submission on an older gateway while allowing the declared corrected protocol', () => {
+    expect(imageServerSubmissionRequiresUpdate([row(ycapiPlugin)], model)).toBe(true)
+    expect(imageServerSubmissionRequiresUpdate([ycapiRow(recovery)], model)).toBe(false)
+    expect(imageServerSubmissionRequiresUpdate([row()], model)).toBe(false)
+    expect(imageServerSubmissionRequiresUpdate([ycapiRow(recovery), row(ycapiPlugin)], model)).toBe(true)
+  })
+  it.for([undefined, null, {}, { ...recovery, schema_version: 2 }, { ...recovery, submit_model_metadata: false },
+    { ...recovery, original_task_artifacts: false }, { ...recovery, unreviewed: true }])(
+    'does not submit through an absent or invalid YCAPI receipt declaration %#', (support) => {
+      expect(imageServerResultRecovery([ycapiRow(support)], model)).toBe(false)
+      expect(imageServerSubmissionRequiresUpdate([ycapiRow(support)], model)).toBe(true)
+    },
+  )
+  it.for([undefined, null, [], {}, { ...plugin, key: 'toapis' },
     { ...plugin, version: '1.0.1' }, { ...plugin, api_version: '1' }, { ...plugin, api_version: 2 },
-    { ...plugin, retain: true }])('does not opt into another or incomplete declaration %#', (marker) => {
+    { ...plugin, retain: true }, { ...ycapiPlugin, version: '1.0.1' }, { ...ycapiPlugin, api_version: 2 }])('does not opt into another or incomplete declaration %#', (marker) => {
     const entry = marker === undefined ? { model_name: model, kind: 'image', parameters: {} } : row(marker)
     expect(imageServerResultRecovery([entry], model)).toBe(false)
   })

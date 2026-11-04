@@ -207,6 +207,10 @@ export async function executeImageTask(options: ImageTaskOptions): Promise<Image
         if (['queued', 'pending', 'not_start', 'created', 'submitted', 'in_queue'].includes(state ?? '')) {
           activity.stage('queued'); failures = 0; continue
         }
+        if (state === 'unknown') {
+          failures = 0
+          continue
+        }
         if (['running', 'processing', 'in_progress', 'generating'].includes(state ?? '')) {
           activity.stage('generating'); failures = 0; continue
         }
@@ -319,6 +323,9 @@ export async function executeImageTask(options: ImageTaskOptions): Promise<Image
         canonicalRead = marked || canonicalId !== undefined
         await persist({ ...currentReceipt(), taskId: acceptedId, phase: 'accepted' })
       }
+      if (currentReceipt().serverTaskId !== undefined && (marked || uncertain && canonicalId === undefined)) {
+        return await recoverServerResult()
+      }
       if (marked) return outcome(acceptedId === undefined ? 'unknown' : 'pending',
         acceptedId === undefined ? 'IMAGE_SUBMISSION_UNKNOWN' : 'IMAGE_STATUS_INVALID',
         '原图片回执尚未通过完整核对，请保留已有任务与计费记录，不要重新生成。')
@@ -326,8 +333,7 @@ export async function executeImageTask(options: ImageTaskOptions): Promise<Image
         '生成提交结果和计费状态尚未确认，请先核对原任务；不会重新提交。')
       if (!response.ok) {
         const balance = isAccountBalanceRejectionText(text, response.status)
-        if (currentReceipt().serverTaskId !== undefined) return outcome('pending', 'IMAGE_QUERY_PENDING',
-          '原图片回执已保留，提交响应尚未完整核对，请继续查询原任务；不会重新生成。')
+        if (currentReceipt().serverTaskId !== undefined) return await recoverServerResult()
         if (acceptedId !== undefined) return outcome('pending', balance ? 'INSUFFICIENT_BALANCE' : 'IMAGE_QUERY_PENDING',
           (balance ? '余额不足，请充值；' : '') + '原生成任务已受理，暂时无法确认结果，请查询原任务；不会重新生成。')
         if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
