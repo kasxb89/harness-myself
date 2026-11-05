@@ -2689,12 +2689,17 @@ export function apply(ctx: Context, config: Config): void {
     const models = ids === undefined || ids.length === 0 ? configured : ids.map((id) => {
       const currentModel = previous.get(id) ?? { id }
       const name = managed?.names?.get(id)
-      // Migrate the exact old gateway label already stored by released clients.
-      const isLegacyFlashLabel = id === 'ys-deepseek-v4.1-flash-1017'
-        && currentModel.name === 'qq-deepseek-v4.1-flash-1017' && name === 'yunshu-flash'
-      const withName = name !== undefined && (currentModel.name === undefined || currentModel.name === id || isLegacyFlashLabel)
-        ? { ...currentModel, name }
-        : currentModel
+      const withName = { ...currentModel }
+      if (name !== undefined) {
+        // Older clients stored gateway labels in the same field as manual names.
+        const isLegacyFlashLabel = id === 'ys-deepseek-v4.1-flash-1017'
+          && currentModel.name === 'qq-deepseek-v4.1-flash-1017' && name === 'yunshu-flash'
+        if (currentModel.gatewayDisplayName === undefined
+          && (currentModel.name === id || currentModel.name === name || isLegacyFlashLabel)) {
+          delete withName.name
+        }
+        withName.gatewayDisplayName = name
+      }
       const input = defaults.get(id)
       const withInputs = Array.isArray(withName.input) && withName.input.length > 0 || input === undefined
         ? withName

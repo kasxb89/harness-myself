@@ -339,6 +339,7 @@ const managedModelLimits: z<PiAiManagedModelLimits> = z.object({
 
 const modelFields = {
   name: z.string(),
+  gatewayDisplayName: z.string(),
   contextWindow: z.number().step(1).min(1),
   maxTokens: z.number().step(1).min(1),
   // A union keeps omission absent rather than materializing an object without its required scope.

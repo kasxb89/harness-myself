@@ -51,7 +51,7 @@ kind: "package-reference"
 
 每次列出产品路由模型前，先等待当前账号的 `harnessAccount.refreshModels` 结果。Host 使用该账号的 relay key 读取 `/v1/models`，排除已声明的媒体生成模型，并在适配器读取配置前同步非空聊天结果。并发读取共享同一次操作。成功返回空列表时不展示任何聊天模型，即使旧 profile 仍保留配置；读取不可用时返回目录失败，不把旧模型显示为当前可用。其他提供方路由保留原有的列表行为。
 
-`/v1/models` 中非空的 `display_name` 用作聊天名称，适用于新模型，以及尚未命名或名称仍等于 ID 的旧条目。对于 `ys-deepseek-v4.1-flash-1017`，网关返回 `yunshu-flash` 时会替换已保存的旧网关名称 `qq-deepseek-v4.1-flash-1017`。其他已配置名称按原值保留。选择与请求始终使用原始模型 ID。名称缺失、空白或不是字符串时保留现有名称。
+每次刷新都从 `/v1/models` 读取非空的 `display_name` 作为网关名称。手工配置的名称优先，选择与请求始终使用原始模型 ID。旧条目首次同步到有效网关名称时，若已保存名称等于 ID 或当前网关名称，则转为由网关管理。对于 `ys-deepseek-v4.1-flash-1017`，网关返回 `yunshu-flash` 时也会接管已保存的旧网关名称 `qq-deepseek-v4.1-flash-1017`。其他旧名称按原值保留。网关名称缺失、空白或类型错误时保留上一次有效值。
 
 同一次刷新通过 `GET <base>/api/status` 读取 `data.client_model_config`，字段为 `schema_version: 1`、`default_chat_model` 和 `model_order`。明确排序的模型优先展示；未指定排序的聊天模型保留 `/v1/models` 原有顺序。旧后端可以省略该配置，此时不应用后台偏好；读取失败或配置畸形时保留上次有效偏好。读取这些偏好不发起模型请求，也不扩大模型权限。
 

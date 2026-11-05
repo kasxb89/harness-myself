@@ -624,8 +624,10 @@ function assertOfferedCompatFields(
 export interface PiAiModelProfile {
   /** Model id sent to the provider and accepted by {@link GenerateOptions.model}. */
   id: string
-  /** Display name for selectors; defaults to the catalog name, then the id. */
+  /** Explicit display name for selectors. */
   name?: string
+  /** Label synchronized from the gateway. An explicit name takes precedence. */
+  gatewayDisplayName?: string
   /** Maximum combined request and response context in tokens. */
   contextWindow?: number
   /**
@@ -988,7 +990,7 @@ export function resolveRouteModels(
       // never enumerate.
       ...base,
       id: entry.id,
-      name: entry.name ?? base?.name ?? entry.id,
+      name: entry.name ?? entry.gatewayDisplayName ?? base?.name ?? entry.id,
       api,
       provider,
       baseUrl,

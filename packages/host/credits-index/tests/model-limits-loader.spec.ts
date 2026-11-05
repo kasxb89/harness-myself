@@ -192,11 +192,19 @@ describe('gateway display names through real Host model synchronization', () => 
     await signIn(base)
     await refresh()
     expect(configuredRoute().models).toMatchObject([
-      { id: first, name: 'qq-Fixture One' }, { id: second, name: 'My own label' }, { id: fresh, name: 'qq-Fixture New' },
+      { id: first, gatewayDisplayName: 'qq-Fixture One' },
+      { id: second, name: 'My own label', gatewayDisplayName: 'qq-Fixture Two' },
+      { id: fresh, gatewayDisplayName: 'qq-Fixture New' },
     ])
     const models = await context!.llm.listModels('yunshu-local')
     expect(models.map(model => ({ id: model.id, name: model.name }))).toEqual([
       { id: first, name: 'qq-Fixture One' }, { id: second, name: 'My own label' }, { id: fresh, name: 'qq-Fixture New' },
+    ])
+    catalog = [{ id: first, display_name: 'Gateway One' }, { id: second, display_name: 'Gateway Two' },
+      { id: fresh, display_name: 'Gateway New' }]
+    await refresh()
+    expect((await context!.llm.listModels('yunshu-local')).map(model => ({ id: model.id, name: model.name }))).toEqual([
+      { id: first, name: 'Gateway One' }, { id: second, name: 'My own label' }, { id: fresh, name: 'Gateway New' },
     ])
     expect(requests.filter(request => request.path === '/harness/v1/chat/completions')).toHaveLength(0)
     const prepared = await context!.llm.prepareCall({ provider: 'yunshu-local', model: fresh })
@@ -205,14 +213,14 @@ describe('gateway display names through real Host model synchronization', () => 
   })
 
   it('keeps synchronized names across restart and does not rewrite or notify on unchanged listings', async () => {
-    catalog = [{ id: first }]
-    const { base, refresh, restart } = await boot([{ id: first }])
+    catalog = [{ id: first, display_name: 'qq-Fixture One' }]
+    const { base, refresh, restart } = await boot([{ id: first, name: 'qq-Fixture One' }])
     await signIn(base)
     await refresh()
     const revision = () => context!.settings.describe({ redactSecrets: true }).find(row => row.ns === 'llm-pi-ai')!.revision
     const changed = vi.fn()
     context!.on('api-session/model-catalog-changed', changed)
-    catalog = [{ id: first, display_name: 'qq-Fixture One' }]
+    catalog = [{ id: first, display_name: 'Gateway One' }]
     await refresh()
     expect(changed).toHaveBeenCalledTimes(1)
     const before = revision()
@@ -221,8 +229,10 @@ describe('gateway display names through real Host model synchronization', () => 
     expect(changed).toHaveBeenCalledTimes(1)
     expect(requests.filter(request => request.path === '/harness/v1/chat/completions')).toHaveLength(0)
     await restart()
+    expect((await context!.llm.resolveModelInfo('yunshu-local', first)).name).toBe('Gateway One')
+    catalog = [{ id: first, display_name: 'Renamed after restart' }]
     await refresh()
-    expect((await context!.llm.resolveModelInfo('yunshu-local', first)).name).toBe('qq-Fixture One')
+    expect((await context!.llm.resolveModelInfo('yunshu-local', first)).name).toBe('Renamed after restart')
   })
 
   it.each([
@@ -230,19 +240,12 @@ describe('gateway display names through real Host model synchronization', () => 
     ['My own label', 'My own label'],
   ])('refreshes the published Yunshu Flash label from %s to %s', async (savedName, expectedName) => {
     const id = 'ys-deepseek-v4.1-flash-1017'
-    catalog = [{ id, display_name: 'qq-deepseek-v4.1-flash-1017' }]
+    catalog = [{ id, display_name: 'yunshu-flash' }]
     const { base, refresh } = await boot([{ id, name: savedName }])
     await signIn(base)
     await refresh()
-    expect((await context!.llm.resolveModelInfo('yunshu-local', id)).name).toBe(savedName)
-
-    const changed = vi.fn()
-    context!.on('api-session/model-catalog-changed', changed)
-    catalog = [{ id, display_name: 'yunshu-flash' }]
-    await refresh()
     const models = await context!.llm.listModels('yunshu-local')
     expect(models.map(model => ({ id: model.id, name: model.name }))).toEqual([{ id, name: expectedName }])
-    expect(changed).toHaveBeenCalledTimes(savedName === expectedName ? 0 : 1)
     expect(requests.filter(request => request.path === '/harness/v1/chat/completions')).toHaveLength(0)
   })
 
