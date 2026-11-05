@@ -225,6 +225,27 @@ describe('gateway display names through real Host model synchronization', () => 
     expect((await context!.llm.resolveModelInfo('yunshu-local', first)).name).toBe('qq-Fixture One')
   })
 
+  it.each([
+    ['qq-deepseek-v4.1-flash-1017', 'yunshu-flash'],
+    ['My own label', 'My own label'],
+  ])('refreshes the published Yunshu Flash label from %s to %s', async (savedName, expectedName) => {
+    const id = 'ys-deepseek-v4.1-flash-1017'
+    catalog = [{ id, display_name: 'qq-deepseek-v4.1-flash-1017' }]
+    const { base, refresh } = await boot([{ id, name: savedName }])
+    await signIn(base)
+    await refresh()
+    expect((await context!.llm.resolveModelInfo('yunshu-local', id)).name).toBe(savedName)
+
+    const changed = vi.fn()
+    context!.on('api-session/model-catalog-changed', changed)
+    catalog = [{ id, display_name: 'yunshu-flash' }]
+    await refresh()
+    const models = await context!.llm.listModels('yunshu-local')
+    expect(models.map(model => ({ id: model.id, name: model.name }))).toEqual([{ id, name: expectedName }])
+    expect(changed).toHaveBeenCalledTimes(savedName === expectedName ? 0 : 1)
+    expect(requests.filter(request => request.path === '/harness/v1/chat/completions')).toHaveLength(0)
+  })
+
   it('ignores absent, blank and malformed remote labels without replacing existing names', async () => {
     catalog = [{ id: first, display_name: 'qq-Fixture One' }, { id: second, display_name: '  ' }]
     const { base, refresh } = await boot([{ id: first }, { id: second }])
