@@ -912,7 +912,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-credits-index`
 
 - `inject`: `webServer` · `tools`
-- `source`: [`packages/host/credits-index/src/index.ts:123`](../packages/host/credits-index/src/index.ts)
+- `source`: [`packages/host/credits-index/src/index.ts:133`](../packages/host/credits-index/src/index.ts)
 
 ```ts config-catalog
 /** Plugin config: platform origin, display rate, and where the session file lives. */
@@ -2103,8 +2103,10 @@ export interface PiAiProviderProfile {
 export interface PiAiModelProfile {
   /** Model id sent to the provider and accepted by {@link GenerateOptions.model}. */
   id: string
-  /** Display name for selectors; defaults to the catalog name, then the id. */
+  /** Explicit display name for selectors. */
   name?: string
+  /** Label synchronized from the gateway. An explicit name takes precedence. */
+  gatewayDisplayName?: string
   /** Maximum combined request and response context in tokens. */
   contextWindow?: number
   /**
@@ -2418,7 +2420,7 @@ export interface LspLocalServerConfig {
 ## `@deepseek-ai/dsh-mcp-client`
 
 - `inject`: `tools`
-- `source`: [`packages/mcp/mcp-client/src/index.ts:104`](../packages/mcp/mcp-client/src/index.ts)
+- `source`: [`packages/mcp/mcp-client/src/index.ts:111`](../packages/mcp/mcp-client/src/index.ts)
 
 ```ts config-catalog
 /** Configuration for one stdio or Streamable HTTP MCP server. */
@@ -2450,6 +2452,8 @@ export interface StdioConfig {
   maxInstructionBytes?: number
   /** Automatic reconnect policy after a lost connection; omission uses the defaults. */
   reconnect?: ReconnectConfig
+  /** Opt in to user-approved text sampling during MCP calls. */
+  sampling?: boolean
 }
 
 /** Config for connecting to an MCP server over Streamable HTTP (SSE). */
@@ -2466,6 +2470,8 @@ export interface StreamableHttpConfig {
   url: string
   /** Additional headers attached to MCP requests. */
   headers: Record<string, string>
+  /** Browser OAuth for an explicitly trusted authorization origin. */
+  oauth?: OAuthConfig
   /** Timeout per tool call or resource request in milliseconds. */
   toolCallTimeoutMs: number
   /** Fail plugin activation when the initial connection or tool synchronization fails. */
@@ -2474,6 +2480,8 @@ export interface StreamableHttpConfig {
   maxInstructionBytes?: number
   /** Automatic reconnect policy after a lost connection; omission uses the defaults. */
   reconnect?: ReconnectConfig
+  /** Opt in to user-approved text sampling during MCP calls. */
+  sampling?: boolean
 }
 
 /** Automatic reconnect policy for one MCP server connection. */
@@ -2486,6 +2494,18 @@ export interface ReconnectConfig {
   maxDelayMs?: number
   /** Consecutive failed attempts per outage before giving up for good (default 10). */
   maxAttempts?: number
+}
+
+/** Trust boundary and optional registration information for an HTTP server. */
+export interface OAuthConfig {
+  /** Exact trusted authorization server origin, including scheme and optional port. */
+  authorizationOrigin: string
+  /** Optional pre-registered public client identifier. */
+  clientId?: string
+  /** Optional HTTPS Client ID Metadata Document URL. */
+  clientMetadataUrl?: string
+  /** Optional fixed loopback port required by a registered redirect URI. */
+  redirectPort?: number
 }
 ```
 <!-- END GENERATED config-catalog:@deepseek-ai/dsh-mcp-client -->
@@ -4069,7 +4089,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-tool-jobs`
 
 - `inject`: `tools` · `jobs` · `systemPrompt`
-- `source`: [`packages/jobs/tool-jobs/src/index.ts:50`](../packages/jobs/tool-jobs/src/index.ts)
+- `source`: [`packages/jobs/tool-jobs/src/index.ts:52`](../packages/jobs/tool-jobs/src/index.ts)
 
 ```ts config-catalog
 /** Configures bounded `job_output` waits and completion-notice delivery. */

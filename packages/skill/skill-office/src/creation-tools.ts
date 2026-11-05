@@ -129,7 +129,7 @@ export function registerOfficeCreation(
   }
   ctx.tools.register(defineTool({
     name: 'word_create',
-    description: 'Create an editable Word document in one call with native headings, paragraphs, tables, and local images. Uses bundled libraries and structural checks. For complex designs, templates, tracked edits, or existing documents use the Office skill and programmable tools. When visual_check_required is true, follow the skill layout checks before present.',
+    description: 'Use this directly for an ordinary new editable Word document. Send the content once using native headings, paragraphs, tables, and local images. The tool already performs structural checks. Skip separate setup and structural checks for this path. For complex designs, templates, tracked edits, or existing documents use the Office skill and programmable tools. When visual_check_required is true, follow the skill layout checks before present.',
     parameters: {
       title: { type: 'string', required: true }, font: { type: 'string' },
       blocks: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: {
@@ -144,7 +144,7 @@ export function registerOfficeCreation(
   }))
   ctx.tools.register(defineTool({
     name: 'slides_create',
-    description: 'Create a 16:9 editable PowerPoint deck in one call using native text, tables, charts, notes, and local images. Each slide supports body text plus one image/table/chart. Keep custom layouts and existing-deck edits in the programmable Office workflow. Inspect new-deck layout using the Office skill before present.',
+    description: 'Use this directly for an ordinary new 16:9 editable PowerPoint deck. Send the complete deck in one call using native text, tables, charts, notes, and local images. Each slide supports body text plus one image, table, or chart. Structural checks are included. Keep custom layouts and existing-deck edits in the programmable Office workflow. Inspect new-deck layout using the Office skill before present.',
     parameters: {
       title: { type: 'string', required: true },
       slides: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: {
@@ -165,7 +165,7 @@ export function registerOfficeCreation(
   }))
   ctx.tools.register(defineTool({
     name: 'workbook_create',
-    description: 'Create an editable Excel workbook in one call with typed data, header styles, widths, number formats, and explicit formulas. Formulas are genuinely recalculated with bundled LibreOffice and checked; data strings beginning = stay text. Complex workbooks, large local data, charts, and existing-file edits remain available through the programmable Office skill.',
+    description: 'Use this directly for an ordinary new editable Excel workbook with typed data, header styles, widths, number formats, and explicit formulas. Send the complete workbook in one call. Formulas are recalculated with bundled LibreOffice and checked; data strings beginning = stay text. Complex workbooks, large local data, charts, and existing-file edits remain available through the programmable Office skill.',
     parameters: {
       title: { type: 'string', required: true },
       sheets: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: {

@@ -48,7 +48,7 @@ Agent（智能体）可以加载 Word、PowerPoint 和 Excel 工作流，默认�
 
 ### 结构化创建
 
-Desktop 传入 `creation: { source, root, enabled: true }` 后提供 `word_create`、`slides_create`、`workbook_create`、`office_inspect` 和 `office_patch`。工具通过原有会话工作目录、权限策略和 shell 执行通道调用内置 Python，不需模型编写代码或安装依赖。新文件使用语义标题和完整 UUID，结构检查完成后才发布，不能覆盖已有文件。创建支持原生可编辑 Word 块、PowerPoint 文字／表格／图表／备注，以及 Excel 类型化数据／样式／公式。复杂排版、模板、高级修改、新工作簿图表和大型本地数据仍走可编程技能流程。
+Desktop 传入 `creation: { source, root, enabled: true }` 后提供 `word_create`、`slides_create`、`workbook_create`、`office_inspect` 和 `office_patch`。工具通过原有会话工作目录、权限策略和 shell 执行通道调用内置 Python，不需模型编写代码或安装依赖。常规新建直接调用一次结构化工具。压缩包成员只需读取一次，纯数据工作簿写入新行时无需重扫前面的单元格。新文件使用语义标题和完整 UUID，结构检查完成后才发布，不能覆盖已有文件。创建支持原生可编辑 Word 块、PowerPoint 文字／表格／图表／备注，以及 Excel 类型化数据／样式／公式。复杂排版、模板、高级修改、新工作簿图表和大型本地数据仍走可编程技能流程。
 
 存在 creation 段时 `creation.enabled` 默认 true；未配置则不启用。`source` 必填，`root` 可选。可调默认值为 `timeoutMs: 120000`、`maxInputBytes: 2097152`、`maxItems: 1000000`、`maxCells: 1000000`、`maxOutputBytes: 131072`；仍受原 shell 时限上限约束。显式 Excel 公式通过内置 CLI 真正重算整个工作簿，并检查公式保留和非空、非错误缓存结果。数据中的等号开头字符串保持文本。重算失败不能声称已有计算值。
 

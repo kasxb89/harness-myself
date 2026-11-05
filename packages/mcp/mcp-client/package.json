@@ -40,7 +40,8 @@
   "dependencies": {
     "@deepseek-ai/schemastery": "workspace:~",
     "@modelcontextprotocol/client": "2.2.0",
-    "@deepseek-ai/dsh-util-values": "workspace:*"
+    "@deepseek-ai/dsh-util-values": "workspace:*",
+    "@deepseek-ai/dsh-credentials": "workspace:*"
   },
   "devDependencies": {
     "@deepseek-ai/dsh-attachment": "workspace:*",

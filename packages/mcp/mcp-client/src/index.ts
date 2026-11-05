@@ -19,6 +19,7 @@ import { scopeOf } from '@deepseek-ai/dsh-scope'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import { DEFAULT_MAX_INSTRUCTION_BYTES, RECONNECT_DEFAULTS, resolveReconnectPolicy, startConnection } from './connection.ts'
 import type { ReconnectConfig } from './connection.ts'
+import type { OAuthConfig } from './oauth.ts'
 import { registerServerContext } from './server-context.ts'
 // Side-effect type import: declaration-merges `ctx.tools` onto Context.
 import type {} from '@deepseek-ai/dsh-tools'
@@ -74,6 +75,8 @@ export interface StdioConfig {
   maxInstructionBytes?: number
   /** Automatic reconnect policy after a lost connection; omission uses the defaults. */
   reconnect?: ReconnectConfig
+  /** Opt in to user-approved text sampling during MCP calls. */
+  sampling?: boolean
 }
 
 /** Config for connecting to an MCP server over Streamable HTTP (SSE). */
@@ -90,6 +93,8 @@ export interface StreamableHttpConfig {
   url: string
   /** Additional headers attached to MCP requests. */
   headers: Record<string, string>
+  /** Browser OAuth for an explicitly trusted authorization origin. */
+  oauth?: OAuthConfig
   /** Timeout per tool call or resource request in milliseconds. */
   toolCallTimeoutMs: number
   /** Fail plugin activation when the initial connection or tool synchronization fails. */
@@ -98,6 +103,8 @@ export interface StreamableHttpConfig {
   maxInstructionBytes?: number
   /** Automatic reconnect policy after a lost connection; omission uses the defaults. */
   reconnect?: ReconnectConfig
+  /** Opt in to user-approved text sampling during MCP calls. */
+  sampling?: boolean
 }
 
 /** Configuration for one stdio or Streamable HTTP MCP server. */
@@ -128,16 +135,24 @@ export const Config = z.union([
     failOnStartupError: z.boolean().default(false),
     maxInstructionBytes: z.number().step(1).min(1).default(DEFAULT_MAX_INSTRUCTION_BYTES),
     reconnect: Reconnect,
+    sampling: z.boolean().default(false),
   }),
   z.object({
     transport: z.const('streamable-http'),
     serverName: z.string().required().pattern(SERVER_NAME_PATTERN),
     url: z.string().required(),
     headers: z.dict(String).default({}),
+    oauth: z.object({
+      authorizationOrigin: z.string().required(),
+      clientId: z.string().min(1),
+      clientMetadataUrl: z.string().min(1),
+      redirectPort: z.number().step(1).min(1024).max(65535),
+    }),
     toolCallTimeoutMs: z.number().default(DEFAULT_TOOL_CALL_TIMEOUT_MS),
     failOnStartupError: z.boolean().default(false),
     maxInstructionBytes: z.number().step(1).min(1).default(DEFAULT_MAX_INSTRUCTION_BYTES),
     reconnect: Reconnect,
+    sampling: z.boolean().default(false),
   }),
 ]) as z<ConfigInput, Config>
 

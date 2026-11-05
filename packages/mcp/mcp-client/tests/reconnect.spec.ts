@@ -34,6 +34,7 @@ const { mockConnect, mockClose, mockListTools, mockCallTool, mockSetNotification
     listResources = async () => ({ resources: [] })
     listTools = mockListTools
     callTool = mockCallTool
+    setNotificationHandler = mockSetNotificationHandler
     constructor(_info: unknown, options: { listChanged: { tools: { onChanged: () => void } } }) {
       instances.push(this)
       mockSetNotificationHandler('notifications/tools/list_changed', options.listChanged.tools.onChanged)

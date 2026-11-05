@@ -9,7 +9,7 @@ kind: "package-reference"
 
 ## 概述
 
-`dsh-mcp-resources` 让模型发现和读取已配置 MCP 服务器提供的文档。随附 profile 在调用方作用域中配置了服务器时，自动提供三个共享工具。每个工具都要求显式指定服务器名称，并且仅在调用时读取内容。资源文本进入对话历史；二进制载荷仍可供程序化调用方访问，并以说明文字呈现给模型。
+`dsh-mcp-resources` 让模型发现和读取已配置 MCP 服务器提供的文档。随附 profile 在调用方作用域中配置了服务器时，自动提供共享工具。每个工具都要求显式指定服务器名称，并且仅在调用时读取内容。资源文本进入对话历史；二进制载荷仍可供程序化调用方访问，并以说明文字呈现给模型。
 
 ## 目录
 
@@ -31,11 +31,13 @@ kind: "package-reference"
 
 通过[客户端配置](../mcp-client/README.zh.md#use-this-package)在目标作用域中添加服务器。本包没有配置字段。
 
-调用方没有已配置 MCP 服务器时，在 native 或 PTC 模式下都看不到 MCP 提示词文本或资源工具。配置服务器后会启用三个共享资源工具，包括由其他提供方挂载客户端的服务器，以及没有工具或指令的服务器。只要客户端条目保持激活，连接失败就不会移除共享工具；资源调用会报告连接错误。
+调用方没有已配置 MCP 服务器时，在 native 或 PTC 模式下都看不到 MCP 提示词文本或资源工具。配置服务器后会启用共享资源工具，包括由其他提供方挂载客户端的服务器，以及没有工具或指令的服务器。只要客户端条目保持激活，连接失败就不会移除共享工具；资源调用会报告连接错误。
 
 ### 发现与读取
 
 挂载系统提示词组装服务时，提示词列出调用 agent 可见的服务器名称。将其中一个名称作为 `server` 调用 `list_mcp_resources` 或 `list_mcp_resource_templates`。未提供游标时，MCP SDK 收集服务器的全部分页；显式提供游标时返回一页；将其中的 `nextCursor` 原样作为 `cursor` 传入，以请求下一页。使用相同的 `server` 名称和显式 `uri`，通过 `read_mcp_resource` 读取已列出的 URI 或展开后的模板。
+
+使用 `list_mcp_prompts` 浏览模板，选择后通过 `get_mcp_prompt` 提交参数并确认授权。支持资源订阅的服务器可用 `subscribe_mcp_resource` 跟踪变更，通过 `mcp_resource_subscription_status` 查询当前会话收到的更新次数。再次读取资源获取最新内容，结束后使用 `unsubscribe_mcp_resource`。
 
 每个操作都在调用 agent 的作用域中解析服务器。缺少服务器参数或服务器不可用时，会在派发前失败。连接所有者负责请求取消、超时与恢复；失败的请求仍表现为失败的工具调用。
 
@@ -87,11 +89,11 @@ kind: "package-reference"
 
 #### 模型看到什么
 
-[生成的工具 schema](../../../docs/tool-catalog.zh.md#deepseek-aidsh-mcp-resources)定义了调用方可见的所有已配置服务器共享的三个工具。没有这类服务器时，native schema、PTC 声明与绑定以及服务器名称提示词均不存在。激活的客户端连接、断开或重试时，这些共享工具定义保持不变。挂载系统提示词装配且存在可见提供方时，`MCP resource servers` 段落显示 `Use list_mcp_resources, list_mcp_resource_templates, or read_mcp_resource with one of these names as the server argument: <JSON array>.` 名称来自同一作用域注册表，包括既没有工具也没有指令的服务器。注册表为空时不贡献该段落。
+[生成的工具 schema](../../../docs/tool-catalog.zh.md#deepseek-aidsh-mcp-resources)定义了调用方可见的所有已配置服务器共享的工具。没有这类服务器时，native schema、PTC 声明与绑定以及服务器名称提示词均不存在。激活的客户端连接、断开或重试时，这些共享工具定义保持不变。挂载系统提示词装配且存在可见提供方时，`MCP resource servers` 段落显示 `Use the MCP resource, subscription, and prompt tools with one of these names as the server argument: <JSON array>.` 名称来自同一作用域注册表，包括既没有工具也没有指令的服务器。注册表为空时不贡献该段落。
 
 #### Token 影响
 
-没有调用方可见的已配置服务器时，本包不增加工具或提示词 token。否则，三个共享定义带来固定的 schema 开销，服务器名称段落增加按序排列的可见名称 JSON 列表。资源列表和文档仅在操作返回后增加内容。
+没有调用方可见的已配置服务器时，本包不增加工具或提示词 token。否则，共享定义带来固定的 schema 开销，服务器名称段落增加按序排列的可见名称 JSON 列表。资源列表和文档仅在操作返回后增加内容。
 
 #### KV Cache 影响
 
@@ -119,7 +121,7 @@ kind: "package-reference"
 
 - 不具备 MCP `resources` 能力的已配置服务器仍会出现在服务器名称提示词中，并保持共享资源工具可用。SDK 返回空的资源列表与模板列表；不受支持的读取会失败。
 - `tools.restrict()` 在注册过滤条件时检查全局或祖先作用域提供的名称。引用这些作用域中不存在的资源工具名称会报未知工具错误。注册在调用方自身作用域中的资源工具不受 allow/deny 掩码过滤。
-- 不支持资源订阅与更新通知；再次调用列表或读取工具以获取当前内容。
+- 订阅随连接结束而清除。重连后可重新订阅，读取仍返回最新内容。
 - 二进制资源不会投影为原生图片或音频。程序化调用方保留其规范 base64 值。
 - 调用方必须提供服务器名称。共享工具不会聚合不同服务器；分页遵循 MCP SDK。
 

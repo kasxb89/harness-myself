@@ -9,7 +9,10 @@ import { bindScopeParent, createScope, type Scope } from '@deepseek-ai/dsh-scope
 import { PtcRuntime, type PtcRunRequest, type PtcRunResult, type PtcRunSpec } from '@deepseek-ai/dsh-ptc-runtime'
 import McpResources, { type McpResourceProvider } from '../src/index.ts'
 
-const resourceToolNames = ['list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource']
+const resourceToolNames = [
+  'list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource', 'list_mcp_prompts', 'get_mcp_prompt',
+  'subscribe_mcp_resource', 'unsubscribe_mcp_resource', 'mcp_resource_subscription_status',
+]
 
 class BindingProbe extends PtcRuntime {
   readonly language = 'typescript'

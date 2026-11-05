@@ -103,7 +103,7 @@ def related_xml(part: str, reference: str, links: dict[str, str], xml: dict[str,
     return xml[target]
 
 
-def inspect_docx(xml: dict[str, ET.Element]) -> tuple[dict, str]:
+def inspect_docx(xml: dict[str, ET.Element], collect_text: bool = True) -> tuple[dict, str]:
     part = "word/document.xml"
     root = xml[part]
     w = namespace(root, W_NAMESPACES, part)
@@ -144,11 +144,11 @@ def inspect_docx(xml: dict[str, ET.Element]) -> tuple[dict, str]:
             tree = related_xml(part, reference, links, xml)
             text_parts.extend(note for note in tree.findall(f"{w}{kind}") if note.get(f"{w}id") in references)
     text = "\n".join("".join(node.text or "" for node in paragraph.iter(f"{w}t")) for tree in text_parts
-                     for paragraph in tree.iter(f"{w}p"))
+                     for paragraph in tree.iter(f"{w}p")) if collect_text else ""
     return {"paragraphs": len(list(body.iter(f"{w}p"))), "tables": tables, "sections": sections}, text
 
 
-def inspect_pptx(xml: dict[str, ET.Element]) -> tuple[dict, str]:
+def inspect_pptx(xml: dict[str, ET.Element], collect_text: bool = True) -> tuple[dict, str]:
     part = "ppt/presentation.xml"
     links = relationships(part, xml)
     root = xml[part]
@@ -158,12 +158,13 @@ def inspect_pptx(xml: dict[str, ET.Element]) -> tuple[dict, str]:
     for slide in slides:
         reference = relationship_id(slide, part)
         tree = related_xml(part, reference, links, xml)
-        texts.append("\n".join("".join(node.text or "" for node in iter_namespaces(paragraph, A_NAMESPACES, "t"))
-                               for paragraph in iter_namespaces(tree, A_NAMESPACES, "p")))
+        if collect_text:
+            texts.append("\n".join("".join(node.text or "" for node in iter_namespaces(paragraph, A_NAMESPACES, "t"))
+                                   for paragraph in iter_namespaces(tree, A_NAMESPACES, "p")))
     return {"slides": len(slides)}, "\n".join(texts)
 
 
-def inspect_xlsx(xml: dict[str, ET.Element]) -> tuple[dict, str]:
+def inspect_xlsx(xml: dict[str, ET.Element], collect_text: bool = True) -> tuple[dict, str]:
     part = "xl/workbook.xml"
     links = relationships(part, xml)
     root = xml[part]
@@ -192,25 +193,34 @@ def inspect_xlsx(xml: dict[str, ET.Element]) -> tuple[dict, str]:
                     raise ValueError(f"{location}: invalid shared string index {value!r}") from error
                 if not 0 <= index < len(shared_strings):
                     raise ValueError(f"{location}: shared string index out of range: {index}")
-                texts.append(shared_strings[index])
-        texts.extend("".join(node.text or "" for node in cell.iter(f"{sheet_s}t")) for cell in cells)
-        texts.extend(cell.findtext(f"{sheet_s}v", "") for cell in cells if cell.get("t") == "str")
-        texts.append(sheet.attrib["name"])
+                if collect_text:
+                    texts.append(shared_strings[index])
+        if collect_text:
+            texts.extend("".join(node.text or "" for node in cell.iter(f"{sheet_s}t")) for cell in cells)
+            texts.extend(cell.findtext(f"{sheet_s}v", "") for cell in cells if cell.get("t") == "str")
+            texts.append(sheet.attrib["name"])
     return {"sheets": sheets, "formulas_evaluated": False}, "\n".join(texts)
 
 
-def inspect(path: Path) -> tuple[dict, str]:
+def inspect(path: Path, *, collect_text: bool = True) -> tuple[dict, str]:
     """Validate package members and relationships before inspecting the main part."""
     main, content_type = MAIN_PARTS[path.suffix.lower()]
     with zipfile.ZipFile(path) as archive:
-        members = archive.namelist()
-        if len(members) != len(set(members)):
+        names = archive.namelist()
+        members = set(names)
+        if len(names) != len(members):
             raise ValueError("ZIP contains duplicate member names")
-        corrupt = archive.testzip()
-        if corrupt is not None:
-            raise ValueError(f"ZIP member failed its CRC check: {corrupt}")
-        xml = {name: ET.fromstring(archive.read(name)) for name in members
-               if name.endswith((".xml", ".rels"))}
+        xml = {}
+        for name in names:
+            try:
+                with archive.open(name) as part:
+                    if name.endswith((".xml", ".rels")):
+                        xml[name] = ET.fromstring(part.read())
+                    else:
+                        while part.read(1024 * 1024):
+                            pass
+            except zipfile.BadZipFile as error:
+                raise ValueError(f"ZIP member failed its CRC check: {name}") from error
     if main not in xml:
         raise ValueError(f"missing main part: {main}")
     types = xml.get("[Content_Types].xml")
@@ -228,10 +238,10 @@ def inspect(path: Path) -> tuple[dict, str]:
             if target not in members:
                 raise ValueError(f"{name} references missing package member: {target}")
     if path.suffix.lower() == ".docx":
-        return inspect_docx(xml)
+        return inspect_docx(xml, collect_text)
     if path.suffix.lower() == ".pptx":
-        return inspect_pptx(xml)
-    return inspect_xlsx(xml)
+        return inspect_pptx(xml, collect_text)
+    return inspect_xlsx(xml, collect_text)
 
 
 def main() -> int:
@@ -250,7 +260,7 @@ def main() -> int:
     checks = []
     summary = {}
     try:
-        summary, text = inspect(args.input)
+        summary, text = inspect(args.input, collect_text=bool(args.contains))
         checks.append({"id": "package", "status": "pass"})
         for required in args.contains:
             checks.append({"id": "contains", "status": "pass" if required in text else "fail", "text": required})
