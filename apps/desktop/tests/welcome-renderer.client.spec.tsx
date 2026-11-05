@@ -137,6 +137,22 @@ describe('desktop product welcome', () => {
     expect(screen.queryByRole('alert')).toBeNull()
   })
 
+  it('checks for a recovered session without requiring another click', async () => {
+    vi.useFakeTimers()
+    const view = mount('en')
+    view.api.recoveryState.mockResolvedValue({ kind: 'unavailable', reason: 'network' })
+    await act(async () => { view.api.onAccountState.mock.calls[0]![0]({
+      status: 'credential-stored', attempt: null, links: { usageUrl: '', topUpUrl: '' },
+    }) })
+    view.api.retrySession.mockResolvedValueOnce({ kind: 'unavailable', reason: 'timeout' })
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
+    expect(screen.getByRole('status').textContent).toContain(view.api.messages.welcomeSessionTimeout)
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
+    expect(screen.queryByRole('status')).toBeNull()
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+    expect(view.api.retrySession).toHaveBeenCalledTimes(2)
+  })
+
   it.each(['zh-CN', 'en'])('keeps an unavailable login visible with one retry and a separate sign-in action: %s', async (language) => {
     const view = mount(language)
     view.api.recoveryState.mockResolvedValue({ kind: 'unavailable', reason: 'network' })

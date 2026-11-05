@@ -239,6 +239,9 @@ async function boot(
         response.setHeader('set-cookie', 'new_api_refresh=refresh-two; HttpOnly; Path=/harness/api/user/auth')
         answer({ access_token: access, access_expires_at: Math.floor(Date.now() / 1000) + 900, user: { id: 7 } }); return
       }
+      if (url.pathname === '/harness/api/user/auth/refresh/recoverable') {
+        response.writeHead(404); response.end(); return
+      }
       if (url.pathname === '/harness/api/user/auth/logout') { answer(null); return }
       if (url.pathname === '/harness/api/client-activity/heartbeat') {
         answer({ server_time: Math.floor(Date.now() / 1000), heartbeat_interval_seconds: 30, online_timeout_seconds: 90 }); return

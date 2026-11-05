@@ -2407,6 +2407,10 @@ export function apply(ctx: Context, config: Config): void {
       method: 'POST', headers: { cookie: `new_api_refresh=${cookie}`, ...declaredOrigin,
         'content-type': 'application/json', accept: 'application/json' }, body: '{}', signal,
     }),
+    fetchRecoverable: async (cookie, proof, signal) => await apiFetch('/api/user/auth/refresh/recoverable', {
+      method: 'POST', headers: { cookie: `new_api_refresh=${cookie}`, ...declaredOrigin, 'X-Yunshu-Refresh-Attempt': proof,
+        'content-type': 'application/json', accept: 'application/json' }, body: '{}', signal,
+    }),
     unauthorized: invalidateSession,
     unavailable: (reason) => { ctx.logger.warn(reason === 'recovery-exhausted'
       ? 'Account renewal could not confirm a rotating cookie; keeping the login without replaying the old cookie. Sign in again to recover.'

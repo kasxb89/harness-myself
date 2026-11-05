@@ -43,6 +43,21 @@ export function Welcome({ api }: { api: WelcomeApi }) {
     return () => { mounted.current = false; stop() }
   }, [api, m.welcomeTitle])
 
+  useEffect(() => {
+    if (session.kind !== 'unavailable') return
+    let active = true
+    let pending = false
+    const timer = window.setInterval(() => {
+      if (pending || busyRef.current) return
+      pending = true
+      void api.retrySession().then((value) => {
+        if (active) setSession(value)
+      }).catch(() => { /* Keep the recovery view while the Host is unavailable. */ })
+        .finally(() => { pending = false })
+    }, 15_000)
+    return () => { active = false; window.clearInterval(timer) }
+  }, [api, session.kind])
+
   async function retrySession() {
     if (busyRef.current) return
     busyRef.current = true

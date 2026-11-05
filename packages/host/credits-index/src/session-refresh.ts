@@ -1,5 +1,5 @@
 /** Shared account renewal, cooldown and rotating-cookie recovery ownership. */
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { mkdir, readFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { withFileLock } from '@deepseek-ai/dsh-atomic-write'
@@ -40,6 +40,8 @@ const State = z.object({
   recoveryAttempts: z.number().int().nonnegative(),
   terminal: z.boolean(),
   accessRejected: z.boolean(),
+  recoveryProof: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
+  legacy: z.literal(true).optional(),
 }).strict()
 type RenewalState = z.infer<typeof State>
 
@@ -58,6 +60,7 @@ interface RefreshOptions {
   readonly version: () => number
   readonly mutate: <T>(operation: () => Promise<T>) => Promise<T>
   readonly fetch: (cookie: string, signal: AbortSignal) => Promise<Response>
+  readonly fetchRecoverable?: (cookie: string, proof: string, signal: AbortSignal) => Promise<Response>
   readonly unauthorized: (session: StoredSession, version: number) => Promise<boolean>
   readonly unavailable: (reason: 'temporary' | 'storage' | 'recovery-exhausted') => void
   readonly now?: () => number
@@ -108,6 +111,16 @@ function responseFailure(response: Response): SessionFailure {
   const retryAfterSeconds = accountRetryAfter(response.headers)
   return { ...sessionHttpFailure(response.status, 'renewal'),
     ...retryAfterSeconds === undefined ? {} : { retryAfterSeconds } }
+}
+
+/** A proxy's 401 page is not a revocation from the account service. */
+async function isConfirmedRefreshRejection(response: Response): Promise<boolean> {
+  if (!response.headers.get('content-type')?.toLowerCase().startsWith('application/json')) return false
+  try {
+    const body: unknown = await response.json()
+    return body !== null && typeof body === 'object' && 'success' in body && body.success === false && 'code' in body
+      && (body.code === 'AUTH_UNAUTHORIZED' || body.code === 'AUTH_SESSION_REVOKED')
+  } catch (_unavailableRejectionBody: unknown) { return false }
 }
 
 /** One session file's renewal exchange and recovery timers, shared with other local Hosts. */
@@ -294,6 +307,7 @@ export class SessionRefresh {
     const state = await this.readState(fingerprint)
     if (this.isStopped()) return null
     if (state.terminal) { await this.options.unauthorized(previous, version); return null }
+    if (Date.parse(previous.expiresAt) <= this.now()) return null
     if (state.retryAt > this.now()) {
       if (this.lastFailure(previous) === undefined) this.noteFailure(previous, { reason: 'renewal_unavailable', stage: 'renewal' })
       this.schedule(previous, state); return null
@@ -306,26 +320,40 @@ export class SessionRefresh {
       return null
     }
     const started = this.now()
-    const pending: RenewalState = { ...state, uncertainUntil: state.uncertainUntil ?? started + REFRESH_RECOVERY_WINDOW_MS,
+    const fetchRecoverable = this.options.fetchRecoverable
+    const proof = fetchRecoverable !== undefined && state.legacy !== true && state.uncertainUntil === null
+      ? state.recoveryProof ?? randomBytes(32).toString('hex') : undefined
+    const pending: RenewalState = { ...state, recoveryProof: proof,
+      uncertainUntil: proof === undefined ? state.uncertainUntil ?? started + REFRESH_RECOVERY_WINDOW_MS : null,
       recoveryAttempts: state.recoveryAttempts + 1, retryAt: started + this.options.retryBaseDelayMs }
     // Persist uncertainty before dispatch so another Host cannot replay after a crash.
     await this.save(pending)
     if (this.isStopped()) return null
     let response: Response | undefined
     let failure: SessionFailure | undefined
+    let terminalResponse = false
     let phase: 'fetch' | 'decode' | 'commit' = 'fetch'
     try {
-      const remaining = Math.max(1, (pending.uncertainUntil ?? started) - this.now())
-      response = await this.options.fetch(previous.upstream?.refresh ?? '', AbortSignal.any([
+      const remaining = pending.uncertainUntil === null ? this.options.timeoutMs : Math.max(1, pending.uncertainUntil - this.now())
+      const signal = AbortSignal.any([
         this.life.signal, AbortSignal.timeout(Math.min(this.options.timeoutMs, remaining)),
-      ]))
+      ])
+      const cookie = previous.upstream?.refresh ?? ''
+      response = proof === undefined || fetchRecoverable === undefined
+        ? await this.options.fetch(cookie, signal) : await fetchRecoverable(cookie, proof, signal)
       if (this.isStopped()) { await discard(response); return null }
-      if (response.status === 401) {
+      if (response.status === 404 && proof !== undefined && state.recoveryProof === undefined) {
+        await discard(response)
+        await this.save({ ...state, legacy: true })
+        return await this.exchange(previous, version, fingerprint)
+      }
+      if (response.status === 401 && (proof === undefined || await isConfirmedRefreshRejection(response))) {
+        terminalResponse = true
         this.noteFailure(previous, responseFailure(response))
         this.rejectedAccess.add(this.accessFingerprint(previous))
         await discard(response)
         if (this.isStopped()) return null
-        await this.save({ ...pending, terminal: true })
+        await this.save({ ...pending, terminal: true, recoveryProof: undefined })
         if (this.isStopped()) return null
         await this.options.unauthorized(previous, version)
         return null
@@ -347,7 +375,7 @@ export class SessionRefresh {
         return null
       }
       if (!response.ok) {
-        failure = responseFailure(response)
+        failure = response.status === 401 ? { reason: 'protocol', stage: 'renewal' } : responseFailure(response)
         await discard(response); throw new Error('Account renewal temporarily unavailable')
       }
       phase = 'decode'
@@ -371,6 +399,10 @@ export class SessionRefresh {
         throw new Error('Account renewal response was not confirmed')
       }
       const rotated = refreshCookie(response)
+      if (proof !== undefined && rotated === undefined) {
+        failure = { reason: 'protocol', stage: 'renewal', status: response.status }
+        throw new Error('Account renewal returned no rotated cookie')
+      }
       const candidate: StoredSession = { ...previous, backendBaseUrl: this.options.baseUrl,
         upstream: { token: data.access_token, refresh: rotated ?? previous.upstream?.refresh,
           expiresAt: new Date(expiry * 1000).toISOString() } }
@@ -385,17 +417,18 @@ export class SessionRefresh {
       })
       if (committed !== null) await this.save({ ...pending, failures: 0, retryAt: 0, recoveryAttempts: 0,
         fingerprint: this.fingerprint(committed), accessRejected: false,
+        recoveryProof: undefined, legacy: undefined,
         uncertainUntil: rotated === undefined ? pending.uncertainUntil : null })
       if (committed !== null) this.rejectedAccess.delete(this.accessFingerprint(previous))
       if (committed !== null) this.observedFailure = undefined
       return committed
     } catch (error: unknown) {
       if (this.isStopped()) return null
-      this.noteFailure(previous, response?.status === 401 ? { reason: 'storage', stage: 'renewal', status: 401 }
+      this.noteFailure(previous, terminalResponse ? { reason: 'storage', stage: 'renewal', status: 401 }
         : failure ?? (phase === 'commit' ? { reason: 'storage', stage: 'renewal' }
           : phase === 'decode' && response !== undefined ? sessionBodyFailure(error, 'renewal', response.status)
             : sessionTransportFailure(error, 'renewal')))
-      if (response?.status === 401) {
+      if (terminalResponse) {
         this.localCooldowns.set(fingerprint, this.now() + this.options.retryMaxDelayMs)
         this.options.unavailable('storage')
         return null
@@ -417,10 +450,11 @@ export class SessionRefresh {
   }
 
   private schedule(previous: StoredSession, state: RenewalState): void {
-    if (this.life.signal.aborted || state.terminal || state.uncertainUntil === null
-      || state.recoveryAttempts > this.options.recoveryRetryLimit || state.retryAt >= state.uncertainUntil
-      || state.uncertainUntil <= this.now() || this.timers.has(state.fingerprint)) return
-    const delay = Math.max(1, state.retryAt - this.now())
+    if (this.life.signal.aborted || state.terminal || this.timers.has(state.fingerprint)) return
+    const until = state.recoveryProof === undefined ? state.uncertainUntil : Date.parse(previous.expiresAt)
+    if (until === null || !Number.isFinite(until) || until <= this.now() || state.retryAt >= until
+      || state.recoveryProof === undefined && state.recoveryAttempts > this.options.recoveryRetryLimit) return
+    const delay = Math.min(2_147_483_647, Math.max(1, state.retryAt - this.now()))
     const timer = setTimeout(() => {
       this.timers.delete(state.fingerprint)
       void this.refresh(previous).catch((_failedBackgroundRenewal: unknown) => {

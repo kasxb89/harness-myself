@@ -99,7 +99,8 @@ async function boot(models: readonly Record<string, unknown>[] = [{ id: first },
         const id = Number(request.headers.authorization?.replace(/^Bearer fixture-(?:access|renewed)-/u, ''))
         answer({ id, username: 'fixture', group: 'default', quota: 1000000 }); return
       }
-      if (path === '/harness/api/user/auth/refresh') {
+      if (path === '/harness/api/user/auth/refresh/recoverable') {
+        expect(request.headers['x-yunshu-refresh-attempt']).toMatch(/^[a-f0-9]{64}$/u)
         response.setHeader('set-cookie', 'new_api_refresh=synthetic-rotated; HttpOnly; Path=/harness/api/user/auth')
         answer({ access_token: `fixture-renewed-${loginAccount}`, access_expires_at: Math.floor(Date.now() / 1000) + 900,
           user: { id: loginAccount } }); return
@@ -274,7 +275,7 @@ describe('product model capacities through the real Host Loader and HTTP listing
     try {
       expect(await context!.harnessAccount.resolveRelayKey(api + '/v1', scope)).toBe('sk-fixture-relay-7')
     } finally { clock.mockRestore() }
-    expect(requests.filter(request => request.path === '/harness/api/user/auth/refresh')).toHaveLength(1)
+    expect(requests.filter(request => request.path === '/harness/api/user/auth/refresh/recoverable')).toHaveLength(1)
     expect(configuredRoute().managedLimitsScope).toBe(scope)
     expect(await capacity(first)).toEqual({ contextWindow: 32768, maxOutputTokens: 8192, defaultMaxTokens: 8192 })
     expect(requests.filter(request => request.path === '/harness/v1/chat/completions')).toHaveLength(0)

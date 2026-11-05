@@ -31,15 +31,15 @@ kind: "package-reference"
 
 手机验证码与登录使用配置根地址下的 `/api/user/phone/challenge` 和 `/api/user/phone/login`。登录返回短期管理凭据 `access_token`、轮换的 refresh cookie 和账号专属 `relay_key`，模型请求仅使用该 relay key。Host 私密保存这些凭据，将会话绑定至后端根地址，并在管理凭据临近过期时等待同一次共享续期完成。续期和退出声明后端 Origin。Host 通过实时 `harnessAccount` 为产品模型路由授权；已存凭据或环境变量引用不能替代有效会话。退出会立即移除这项授权；并发的旧续期不能恢复它。将已存会话切换到另一后端时，需要重新手机登录。
 
-共享同一会话文件的 Host 通过文件锁协调续期与会话修改。持久化续期状态在协作 Host 间共享冷却和访问凭据拒绝记录；旧版客户端不参与这些锁。明确收到 HTTP 401 的 access token 即使尚未到期也不再复用。续期收到终态 HTTP 401 时，只清除原先捕获的账号与凭据代次。晚到的成功或拒绝响应不能覆盖新登录或清除其凭据。dispose（资源释放）取消恢复计时器和 HTTP 工作，再等待续期与拒绝状态写入结束。释放后完成的读盘或 HTTP 响应不能发起续期或清除登录。后台故障报告若抛错，则通过独立警告报告恢复失败，不包含凭据。
+共享同一会话文件的 Host 通过文件锁协调续期与会话修改。持久化续期状态在协作 Host 间共享冷却和访问凭据拒绝记录；旧版客户端不参与这些锁。明确收到 HTTP 401 的 access token 即使尚未到期也不再复用。账号服务明确拒绝续期时，只清除原先捕获的账号与凭据代次。恢复端点收到无法识别的 HTTP 401 时保留登录。晚到的成功或拒绝响应不能覆盖新登录或清除其凭据。dispose（资源释放）取消恢复计时器和 HTTP 工作，再等待续期与拒绝状态写入结束。释放后完成的读盘或 HTTP 响应不能发起续期或清除登录。后台故障报告若抛错，则通过独立警告报告恢复失败，不包含凭据。
 
 `GET /credits/api/session` 保留现有的 `ok`、`code`、`signedIn` 和 `liveness` 字段。已存登录暂时无法确认访问权限时，仍返回 `ACCOUNT_UNAVAILABLE`、`signedIn: true`、`liveness: 'unknown'`；这是可恢复的账号读取结果，不代表访问已验证，也不是文档非法。可选字段 `failure: { reason, stage, status? }` 同时出现在顶层和 `payload`。reason 区分 `network`、`timeout`、`rate_limited`、`upstream_unavailable`、`upstream_rejected`、`protocol`、`identity_mismatch`、`renewal_unavailable` 和 `storage`；stage 为 `account-read` 或 `renewal`，仅实际收到 HTTP 响应时包含 status。续期诊断仅保存在内存，并绑定精确的凭据代次；未在本 Host 观测的共享冷却使用 `renewal_unavailable`。这些字段不包含凭据、远端正文或异常文字。临时错误保留登录及有界续期策略；已确认的续期终态 401 会立即返回未登录，即使它发生在实时账号读取过程中。本地锁或写入失败阻止无效登录清理时，返回可恢复的存储错误；清理成功前持续阻止受保护请求。
 
 成功的已登录会话返回 `payload.accountOwner`，顶层也返回相同值：绑定后端、账号和本地登录的 64 位小写十六进制不透明指纹。它不是认证凭据，也不是订单幂等键。同一本地登录内续期上游 access token 不改变该归属。成功的余额、用量和充值响应在顶层包含 `account: { id }` 与 `accountOwner`，供界面拒绝其他窗口替换登录后返回的数据，避免发布其数值。旧 Host 的普通读取可省略归属元数据；财务操作必须提供。
 
-续期按 HTTP 429 与 `Retry-After` 判断限流，不要求 JSON 正文，兼容旧版空响应。有效的秒数或 HTTP 日期均按要求等待；临时 HTTP 500/503 及传输故障保留登录，并使用有界指数退避。Cookie 轮换未确认时，只在 API 的 30 秒恢复窗口及配置重试次数内重试旧 cookie。任一限制耗尽后仍保留已存登录，但恢复需要新确认的 cookie 或重新登录，不再重放旧 cookie。这项恢复绝不重试图片、视频或 AI 帮写的生成 POST。
+续期按 HTTP 429 与 `Retry-After` 判断限流，不要求 JSON 正文，兼容旧版空响应。有效的秒数或 HTTP 日期均按要求等待；临时 HTTP 500/503 及传输故障保留登录，并使用有界指数退避。Host 调用 `/api/user/auth/refresh/recoverable` 前私密保存随机凭证。短暂停机或 Host 重启后，原会话有效期内继续使用同一 cookie 和凭证重试。如果服务端已轮换 cookie，同一凭证可找回这次轮换的结果。欢迎页无法确认已存登录时会自动复查。首次请求恢复端点收到 HTTP 404 时可回退。旧版续期仍受 30 秒窗口和配置次数限制。重试仅用于登录续期。
 
-`refreshRetryBaseDelayMs` 默认为 1000，`refreshRetryMaxDelayMs` 默认为 60000；两者接受 1 至 2,147,483,647 的整数毫秒，最大值不得小于基础值。有效的服务端 `Retry-After` 可以超过本地退避上限，客户端不缩短它。`refreshRecoveryRetryLimit` 默认为 2，接受 0 至 5 的整数，限制轮换未确认后的额外兑换次数。服务端 30 秒恢复窗口不是可配置的客户端超时。
+`refreshRetryBaseDelayMs` 默认为 1000，`refreshRetryMaxDelayMs` 默认为 60000；两者接受 1 至 2,147,483,647 的整数毫秒，最大值不得小于基础值。有效的服务端 `Retry-After` 可以超过本地退避上限，客户端不缩短它。`refreshRecoveryRetryLimit` 默认为 2，接受 0 至 5 的整数，限制旧版续期在轮换未确认后的额外兑换次数。服务端 30 秒恢复窗口不是可配置的客户端超时。
 
 手机号请求透传 `idempotency_key`，兑换还透传不透明的 `challenge_id`。发出请求前，Host 将独立的短信和兑换请求标识原子保存到私有文件，并绑定完整后端根路径和手机号。恢复记录保留参数指纹、验证请求标识、服务端有效期和冷却时间，不包含验证码或会话凭据。验证码过期后清理验证请求记录，但结果未确认的兑换继续保留原提交时间、请求标识和手机号绑定，直至完成确认；成功回执的回放期限由 API 判断。未登录时，`/credits/api/session` 返回非秘密的待处理恢复字段；`/credits/api/session/phone-recovery` 只读同一状态，不发出短信请求。发送结果不明或仍在处理时只能查询原短信请求。只有 `delivery_status: not_sent` 能确认未发送，允许用户明确重新请求时使用新请求标识。不可用响应缺少该回执时，保留原请求标识并提示发送结果未确认。稳定错误码选择安全提示，上游原始错误不向用户显示。只有账户、访问令牌有效期、中转凭据和同源刷新 cookie 均有效的登录结果才会提交。失败、不完整和待安全验证的结果保留既有会话，迟到结果不能撤销退出操作。Host 按 `method` 与 `available` 读取 API 方法项；只有明确可用的 `2fa` 流程通过同源安全验证端点完成，流程凭据仅留在 Host。此既有端点没有新增重放保证：结果不明时停止该流程并要求重新短信认证。
 

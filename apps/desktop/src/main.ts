@@ -437,7 +437,8 @@ async function main(): Promise<void> {
   let welcomeGeneration = 0
   let sessionRetry: Promise<WelcomeRecoveryState> | undefined
   const activity = new DesktopClientActivity(process.platform === 'win32' ? 'win32' : process.platform === 'darwin' ? 'darwin' : 'linux',
-    desktopClientVersion(), () => BrowserWindow.getFocusedWindow() !== null && powerMonitor.getSystemIdleState(60) === 'active')
+    app.isPackaged ? app.getVersion() : desktopClientVersion(),
+    () => BrowserWindow.getFocusedWindow() !== null && powerMonitor.getSystemIdleState(60) === 'active')
   app.on('browser-window-focus', () => { activity.changed() })
   app.on('browser-window-blur', () => { activity.changed() })
   powerMonitor.on('lock-screen', () => { activity.setLocked(true) })
@@ -1307,7 +1308,7 @@ async function main(): Promise<void> {
     })().finally(() => { openingWelcome = undefined })
     return openingWelcome
   }
-  const openInitialWindow = async (): Promise<void> => {
+  const openInitialWindow = async (fromWelcome = false): Promise<void> => {
     if (isMandatory()) { mandatoryUI?.focus(); return }
     if (quitting || recovery.active) return
     const generation = welcomeGeneration
@@ -1320,7 +1321,7 @@ async function main(): Promise<void> {
     if (state.sessionIssue !== undefined || (!enteredWorkspace && needsWelcome({ loggedIn: state.loggedIn, hasApiKey: state.hasApiKey }))) {
       // A later login must retain its own activation policy instead of replaying startup focus.
       raiseAfterUpdate = false
-      await showWelcome()
+      if (!fromWelcome || welcomeWindow === undefined || welcomeWindow.isDestroyed()) await showWelcome()
     } else {
       await enterWorkspace()
     }
@@ -1331,7 +1332,7 @@ async function main(): Promise<void> {
     const owner = welcomeBackend
     const retry = (async () => {
       try {
-        await openInitialWindow()
+        await openInitialWindow(true)
         return welcomeRecovery
       } catch (error) {
         if (isQuitting() || welcomeGeneration !== generation || welcomeBackend !== owner) return welcomeRecovery

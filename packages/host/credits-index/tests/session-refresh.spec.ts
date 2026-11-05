@@ -25,7 +25,10 @@ function success(now: number, id = 7, cookie = 'sid.secret-two'): Response {
 }
 
 async function fixture(onFinished: (cleanup: () => Promise<void>) => void,
-  fetch: (cookie: string, signal: AbortSignal) => Promise<Response>, options: { retries?: number } = {}) {
+  fetch: (cookie: string, signal: AbortSignal) => Promise<Response>, options: {
+    retries?: number
+    fetchRecoverable?: (cookie: string, proof: string, signal: AbortSignal) => Promise<Response>
+  } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-session-refresh-'))
   const renewals: SessionRefresh[] = []
   onFinished(async () => {
@@ -55,7 +58,8 @@ async function fixture(onFinished: (cleanup: () => Promise<void>) => void,
   const reasons: string[] = []
   const settings = { baseUrl: previous.backendBaseUrl!, timeoutMs: 15_000, retryBaseDelayMs: 1000,
     retryMaxDelayMs: 60_000, recoveryRetryLimit: options.retries ?? 2, store, now: () => now, version: () => version,
-    mutate, fetch, unavailable: (reason: string) => { reasons.push(reason) },
+    mutate, fetch, ...options.fetchRecoverable === undefined ? {} : { fetchRecoverable: options.fetchRecoverable },
+    unavailable: (reason: string) => { reasons.push(reason) },
     unauthorized: async (captured: StoredSession, capturedVersion: number) => await mutate(async () => {
       const current = await store.read()
       if (version !== capturedVersion || current === null || current.token !== captured.token
@@ -73,6 +77,46 @@ async function fixture(onFinished: (cleanup: () => Promise<void>) => void,
     fork: () => { const next = new SessionRefresh(settings); renewals.push(next); return next },
   }
 }
+
+it('resumes the same recoverable refresh after downtime and a Host restart', async ({ onTestFinished }) => {
+  const legacy = vi.fn(async () => new Response(null, { status: 500 }))
+  const recoverable = vi.fn(async (_cookie: string, _proof: string): Promise<Response> => new Response(null, { status: 504 }))
+  const app = await fixture(onTestFinished, legacy, { fetchRecoverable: recoverable, retries: 0 })
+  expect(await app.renewal.refresh(app.previous)).toBeNull()
+  const [cookie, proof] = recoverable.mock.calls[0]!
+  expect(proof).toMatch(/^[a-f0-9]{64}$/u)
+  await app.renewal.dispose()
+  app.advance(120_000)
+  const restarted = app.fork()
+  recoverable.mockResolvedValueOnce(new Response('<html>Temporary gateway response</html>', { status: 401 }))
+  expect(await restarted.refresh(app.previous)).toBeNull()
+  expect(await app.store.read()).toEqual(app.previous)
+  app.advance(120_000)
+  recoverable.mockResolvedValueOnce(success(app.now()))
+  const restored = await restarted.refresh(app.previous)
+  expect(restored?.upstream?.refresh).toBe('sid.secret-two')
+  expect(restored?.token).toBe(app.previous.token)
+  expect(recoverable.mock.calls.map(([sentCookie, sentProof]) => [sentCookie, sentProof]))
+    .toEqual([[cookie, proof], [cookie, proof], [cookie, proof]])
+  expect(legacy).not.toHaveBeenCalled()
+})
+
+it('clears a recoverable login only after the account service confirms rejection', async ({ onTestFinished }) => {
+  const app = await fixture(onTestFinished, async () => new Response(null, { status: 500 }), {
+    fetchRecoverable: async () => Response.json({ success: false, code: 'AUTH_SESSION_REVOKED' }, { status: 401 }),
+  })
+  expect(await app.renewal.refresh(app.previous)).toBeNull()
+  expect(await app.store.read()).toBeNull()
+})
+
+it('uses the legacy refresh endpoint when the first recoverable request returns 404', async ({ onTestFinished }) => {
+  const legacy = vi.fn(async (): Promise<Response> => success(app.now()))
+  const recoverable = vi.fn(async () => new Response(null, { status: 404 }))
+  const app: Awaited<ReturnType<typeof fixture>> = await fixture(onTestFinished, legacy, { fetchRecoverable: recoverable })
+  expect((await app.renewal.refresh(app.previous))?.upstream?.refresh).toBe('sid.secret-two')
+  expect(recoverable).toHaveBeenCalledOnce()
+  expect(legacy).toHaveBeenCalledOnce()
+})
 
 it.each(['17', ' 17 ', 'Thu, 22 Oct 2026 00:00:17 GMT'])(
   'honors Retry-After %s without a response body', (header) => {

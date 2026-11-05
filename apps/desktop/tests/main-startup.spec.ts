@@ -487,9 +487,12 @@ afterEach(async () => {
 
 describe('desktop main startup', () => {
   it('keeps one native activity reporter through tray hiding and excludes idle, locked and suspended foreground time', async () => {
+    vi.spyOn(harness.app, 'getVersion').mockReturnValue('1.2.3.20261106.1')
     const host = await readyForUpdate()
     await vi.advanceTimersByTimeAsync(0)
-    expect(harness.activity.mock.calls[0]?.[0]).toMatchObject({ event: 'start', foreground: true, platform: 'win32' })
+    expect(harness.activity.mock.calls[0]?.[0]).toMatchObject({
+      event: 'start', foreground: true, platform: 'win32', app_version: '1.2.3.20261106.1',
+    })
     expect(harness.powerMonitor.getSystemIdleState).toHaveBeenCalledWith(60)
     harness.powerMonitor.getSystemIdleState.mockReturnValue('idle')
     await vi.advanceTimersByTimeAsync(5000)
