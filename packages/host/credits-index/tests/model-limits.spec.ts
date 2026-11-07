@@ -22,12 +22,14 @@ describe('product model token capacities', () => {
   it('updates increases and decreases independently while retaining omitted fields for the same owner', () => {
     const previous = { scope: 'account-a', contextWindow: 32768, maxTokens: 4096 }
     expect(mergeProductModelLimits(previous, { contextWindow: 1_048_576, maxTokens: 384_000 }, 'account-a'))
-      .toEqual({ scope: 'account-a', contextWindow: 1_048_576, maxTokens: 384_000 })
+      .toEqual({ scope: 'account-a', authoritative: true, contextWindow: 1_048_576, maxTokens: 384_000 })
     expect(mergeProductModelLimits(previous, { contextWindow: 16384, maxTokens: 2048 }, 'account-a'))
-      .toEqual({ scope: 'account-a', contextWindow: 16384, maxTokens: 2048 })
+      .toEqual({ scope: 'account-a', authoritative: true, contextWindow: 16384, maxTokens: 2048 })
     expect(mergeProductModelLimits(previous, { maxTokens: 8192 }, 'account-a'))
-      .toEqual({ scope: 'account-a', contextWindow: 32768, maxTokens: 8192 })
-    expect(mergeProductModelLimits(previous, undefined, 'account-a')).toEqual(previous)
+      .toEqual({ scope: 'account-a', authoritative: true, contextWindow: 32768, maxTokens: 8192 })
+    expect(mergeProductModelLimits(previous, undefined, 'account-a')).toEqual({ ...previous, authoritative: true })
+    expect(mergeProductModelLimits({ ...previous, authoritative: true }, {}, 'account-a'))
+      .toEqual({ ...previous, authoritative: true })
   })
 
   it('never adopts the previous backend or account capacities', () => {
@@ -36,9 +38,10 @@ describe('product model token capacities', () => {
     expect(productModelLimitsScope('https://gateway.example/harness', '7')).toBe(first)
     expect(productModelLimitsScope('https://gateway.example/other', '7')).not.toBe(first)
     expect(productModelLimitsScope('https://gateway.example/harness', '8')).not.toBe(first)
-    expect(mergeProductModelLimits({ scope: first, contextWindow: 32768, maxTokens: 4096 }, {}, 'another'))
+    expect(mergeProductModelLimits({ scope: first, authoritative: true, contextWindow: 32768, maxTokens: 4096 }, {}, 'another'))
       .toBeUndefined()
-    expect(mergeProductModelLimits(null, { maxTokens: 2048 }, first)).toEqual({ scope: first, maxTokens: 2048 })
+    expect(mergeProductModelLimits(null, { maxTokens: 2048 }, first)).toEqual({ scope: first, authoritative: true, maxTokens: 2048 })
+    expect(mergeProductModelLimits({ scope: first, authoritative: true }, {}, 'another')).toBeUndefined()
     expect(mergeProductModelLimits([], undefined, first)).toBeUndefined()
   })
 })
@@ -57,9 +60,9 @@ describe('explicit gateway text execution declarations', () => {
     expect(() => readProductModelLimits({ parameters: { 'x-text-capabilities': declaration } })).toThrow(/text execution declaration/)
   })
   it('retains current metadata while a listing is pending, clears an explicitly omitted declaration, and rejects account transfer', () => {
-    const previous = { scope: 'a', contextWindow: 1000000, maxTokens: 8192, textCapabilities: expected }
+    const previous = { scope: 'a', authoritative: true, contextWindow: 1000000, maxTokens: 8192, textCapabilities: expected }
     expect(mergeProductModelLimits(previous, undefined, 'a')).toEqual(previous)
-    expect(mergeProductModelLimits(previous, {}, 'a')).toEqual({ scope: 'a', contextWindow: 1000000, maxTokens: 8192 })
+    expect(mergeProductModelLimits(previous, {}, 'a')).toEqual({ scope: 'a', authoritative: true, contextWindow: 1000000, maxTokens: 8192 })
     expect(mergeProductModelLimits(previous, {}, 'b')).toBeUndefined()
     expect(mergeProductModelLimits({ scope: 'a', textCapabilities: expected }, {}, 'a')).toBeUndefined()
     expect(readProductModelLimits({ parameters: {} })).toEqual({})

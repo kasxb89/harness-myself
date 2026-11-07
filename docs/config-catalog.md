@@ -912,7 +912,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-credits-index`
 
 - `inject`: `webServer` · `tools`
-- `source`: [`packages/host/credits-index/src/index.ts:123`](../packages/host/credits-index/src/index.ts)
+- `source`: [`packages/host/credits-index/src/index.ts:133`](../packages/host/credits-index/src/index.ts)
 
 ```ts config-catalog
 /** Plugin config: platform origin, display rate, and where the session file lives. */
@@ -2103,8 +2103,10 @@ export interface PiAiProviderProfile {
 export interface PiAiModelProfile {
   /** Model id sent to the provider and accepted by {@link GenerateOptions.model}. */
   id: string
-  /** Display name for selectors; defaults to the catalog name, then the id. */
+  /** Explicit display name for selectors. */
   name?: string
+  /** Label synchronized from the gateway. An explicit name takes precedence. */
+  gatewayDisplayName?: string
   /** Maximum combined request and response context in tokens. */
   contextWindow?: number
   /**
@@ -2248,9 +2250,11 @@ export type PiAiModality = Model<Api>['input'][number]
 export interface PiAiManagedModelLimits {
   /** Opaque account/backend scope; only an exact match with the provider's active scope applies. */
   scope: string
-  /** Account-authorized maximum combined request and response context, before smaller manual restrictions. */
+  /** Use declared capacities ahead of model-level manual overrides; request budgets remain independently bounded. */
+  authoritative?: boolean
+  /** Account-authorized maximum combined request and response context. */
   contextWindow?: number
-  /** Account-authorized output ceiling, before smaller manual restrictions and SDK context headroom. */
+  /** Account-authorized output ceiling, before SDK context headroom. */
   maxTokens?: number
   /** Gateway execution declarations for this exact account/backend scope. */
   textCapabilities?: LlmTextCapabilities
@@ -4069,7 +4073,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-tool-jobs`
 
 - `inject`: `tools` · `jobs` · `systemPrompt`
-- `source`: [`packages/jobs/tool-jobs/src/index.ts:50`](../packages/jobs/tool-jobs/src/index.ts)
+- `source`: [`packages/jobs/tool-jobs/src/index.ts:52`](../packages/jobs/tool-jobs/src/index.ts)
 
 ```ts config-catalog
 /** Configures bounded `job_output` waits and completion-notice delivery. */

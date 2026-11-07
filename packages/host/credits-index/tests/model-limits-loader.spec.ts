@@ -350,22 +350,66 @@ describe('product model capacities through the real Host Loader and HTTP listing
     expect(explicit.session.snapshotEvents().filter(event => event.type === 'assistant/message')).toHaveLength(1)
   })
 
-  it('applies distinct exact model capacities without overwriting a smaller manual setting', async () => {
+  it('uses each product model’s backend capacities while retaining stored manual fields', async () => {
     catalog = [{ id: first, context_window: 1_048_576, max_output_tokens: 384_000 },
       { id: second, context_window: 32768, max_output_tokens: 8192 }]
     const { base, api, refresh } = await boot([{ id: first, contextWindow: 65536, maxTokens: 2048 }, { id: second }])
     await signIn(base)
     await refresh()
-    expect(await capacity(first)).toEqual({ contextWindow: 65536, maxOutputTokens: 2048, defaultMaxTokens: 2048 })
+    expect(await capacity(first)).toEqual({ contextWindow: 1_048_576, maxOutputTokens: 384_000, defaultMaxTokens: 384_000 })
     expect(await capacity(second)).toEqual({ contextWindow: 32768, maxOutputTokens: 8192, defaultMaxTokens: 8192 })
     const route = configuredRoute()
     expect(route.managedLimitsScope).toBe(productModelLimitsScope(api, '7'))
     expect(route.models).toMatchObject([
       { id: first, contextWindow: 65536, maxTokens: 2048,
-        managedLimits: { scope: route.managedLimitsScope, contextWindow: 1_048_576, maxTokens: 384_000 } },
-      { id: second, managedLimits: { scope: route.managedLimitsScope, contextWindow: 32768, maxTokens: 8192 } },
+        managedLimits: { scope: route.managedLimitsScope, authoritative: true, contextWindow: 1_048_576, maxTokens: 384_000 } },
+      { id: second, managedLimits: { scope: route.managedLimitsScope, authoritative: true, contextWindow: 32768, maxTokens: 8192 } },
     ])
     expect(requests.some(request => request.path.includes('chat/completions'))).toBe(false)
+  })
+
+  it('refreshes backend capacities for an existing chat with old manual limits and preserves explicit smaller requests', async () => {
+    catalog = [{ id: first }]
+    const { base, refresh } = await boot([{ id: first, contextWindow: 65536, maxTokens: 2048 }], true)
+    await signIn(base)
+    await refresh()
+    expect(object((configuredRoute().models as object[])[0])).not.toHaveProperty('managedLimits')
+    const agent = await context!.agentLoop.create(SessionId('platform-capacity-existing-chat'), { provider: 'yunshu-local', model: first })
+    const observations: object[] = []
+    const send = async (stage: string) => {
+      agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: stage }] }))
+      await agent.whenIdle()
+      const wire = requests.filter(request => request.path === '/harness/v1/chat/completions').at(-1)?.body
+      const header = agent.session.requestHeader()
+      observations.push({ stage, capacity: await capacity(first), maxTokens: header?.config.maxTokens,
+        adapterDefaults: header?.adapterDefaults, wire: { model: wire?.model, max_tokens: wire?.max_tokens } })
+    }
+    await send('Before the gateway declares capacities')
+    catalog = [{ id: first, context_window: 32768, max_output_tokens: 8192 }]
+    await refresh()
+    await send('After the first verified capacities')
+    catalog = [{ id: first, context_window: 1_048_576, max_output_tokens: 384_000 }]
+    await refresh()
+    await send('After the gateway raises capacities')
+    catalog = [{ id: first, context_window: 0, max_output_tokens: '4096' }]
+    await refresh()
+    await send('After invalid capacities retain the last verified values')
+    catalog = [{ id: first, context_window: 32768, max_output_tokens: 4096 }]
+    await refresh()
+    await send('After the gateway lowers capacities')
+    const explicit = await context!.agentLoop.create(SessionId('platform-capacity-explicit-small'), {
+      provider: 'yunshu-local', model: first, maxTokens: 512,
+    })
+    explicit.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'Use the smaller explicit request budget' }] }))
+    await explicit.whenIdle()
+    expect(explicit.session.requestHeader()?.config.maxTokens).toBe(512)
+    expect(requests.filter(request => request.path === '/harness/v1/chat/completions').map(request => request.body?.max_tokens))
+      .toEqual([2048, 8192, 384_000, 384_000, 4096, 512])
+    expect(agent.session.snapshotEvents().filter(event => event.type === 'assistant/message')).toHaveLength(5)
+    expect(configuredRoute().models).toMatchObject([{ id: first, contextWindow: 65536, maxTokens: 2048,
+      managedLimits: { authoritative: true, contextWindow: 32768, maxTokens: 4096 } }])
+    await expect(JSON.stringify(observations, null, 2) + '\n')
+      .toMatchFileSnapshot('./expected/platform-chat-capacity.json')
   })
 
   it('refreshes increases and decreases without retaining an automatic value as a manual cap', async () => {
@@ -430,6 +474,8 @@ describe('product model capacities through the real Host Loader and HTTP listing
     await signIn(base)
     await refresh()
     expect(configuredRoute().managedLimitsScope).not.toBe(previousScope)
+    expect(configuredRoute().models).toMatchObject([{ id: first }])
+    expect(object((configuredRoute().models as object[])[0])).not.toHaveProperty('managedLimits')
     expect(await capacity(first)).toMatchObject({ contextWindow: 262144, maxOutputTokens: undefined, defaultMaxTokens: undefined })
     catalog = [{ id: first, context_window: 16384, max_output_tokens: 2048 }]
     await refresh()
@@ -439,7 +485,7 @@ describe('product model capacities through the real Host Loader and HTTP listing
   it('masks retained metadata from another backend while preserving explicit manual limits', async () => {
     catalog = [{ id: first }]
     const { base, refresh } = await boot([{ id: first, contextWindow: 65536, maxTokens: 4096,
-      managedLimits: { scope: productModelLimitsScope('https://another.example/harness', '7'), contextWindow: 8192, maxTokens: 1024 } }])
+      managedLimits: { scope: productModelLimitsScope('https://another.example/harness', '7'), authoritative: true, contextWindow: 8192, maxTokens: 1024 } }])
     await signIn(base)
     await refresh()
     expect(await capacity(first)).toEqual({ contextWindow: 65536, maxOutputTokens: undefined, defaultMaxTokens: 4096 })

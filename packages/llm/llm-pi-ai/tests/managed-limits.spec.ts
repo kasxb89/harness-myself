@@ -82,6 +82,36 @@ describe('account-scoped managed capacities', () => {
     await drain(adapter, 'manual', 512)
     expect(calls.map(call => call.max_tokens)).toEqual([2048, 512])
   })
+  it('applies explicitly authoritative capacities while retaining smaller per-request budgets', async () => {
+    const calls = memoryRequests()
+    const declared = { ...model('platform', 1_048_576, 393_216), contextWindow: 65_536, maxTokens: 2048 }
+    const profile = { ...base, models: [{ ...declared, managedLimits: { ...declared.managedLimits, scope, authoritative: true } }] }
+    const configured = Config({ providers: { [provider]: profile } }).providers.get()
+    expect(configured[provider]?.models?.[0]?.managedLimits?.authoritative).toBe(true)
+    const { adapter, update } = adapterFor(profile)
+    expect(await adapter.resolveModel(provider, 'platform')).toMatchObject({
+      context: { contextWindow: 1_048_576 }, defaultMaxTokens: 393_216, maxOutputTokens: 393_216,
+    })
+    await drain(adapter, 'platform')
+    await drain(adapter, 'platform', 512)
+    update({ ...profile, managedLimitsScope: 'another-account' })
+    expect(await adapter.resolveModel(provider, 'platform')).toMatchObject({ context: { contextWindow: 65_536 }, defaultMaxTokens: 2048 })
+    expect(await adapter.resolveModel(provider, 'platform')).not.toHaveProperty('maxOutputTokens')
+    await drain(adapter, 'platform')
+    expect(calls.map(call => call.max_tokens)).toEqual([393_216, 512, 2048])
+    expect(JSON.stringify(calls)).not.toMatch(/managedLimits|authoritative|backend-account-a/)
+  })
+  it.each([
+    [{ contextWindow: 1_048_576 }, { contextWindow: 1_048_576, defaultMaxTokens: 2048, maxOutputTokens: undefined }],
+    [{ maxTokens: 8192 }, { contextWindow: 65_536, defaultMaxTokens: 8192, maxOutputTokens: 8192 }],
+    [{}, { contextWindow: 65_536, defaultMaxTokens: 2048, maxOutputTokens: undefined }],
+  ])('keeps manual fallback for capacities the authoritative declaration omits %#', async (capacities, expected) => {
+    const { adapter } = adapterFor({ ...base, models: [{ id: 'partial', contextWindow: 65_536, maxTokens: 2048,
+      managedLimits: { scope, authoritative: true, ...capacities } }] })
+    const info = await adapter.resolveModel(provider, 'partial')
+    expect({ contextWindow: info.context?.contextWindow, defaultMaxTokens: info.defaultMaxTokens, maxOutputTokens: info.maxOutputTokens })
+      .toEqual(expected)
+  })
   it('tightens a larger manual default and bounds a partially refreshed output by the effective context', async () => {
     const calls = memoryRequests()
     const { adapter } = adapterFor({ ...base, models: [{ ...model('refreshing', 8192, 393_216), maxTokens: 400_000 }] })

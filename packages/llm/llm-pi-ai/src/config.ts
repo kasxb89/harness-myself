@@ -311,6 +311,7 @@ const reasoningEfforts = z.dict(
 /** The fields a `models` entry and a `modelOverrides` value share; only the id's home differs. */
 const managedModelLimits: z<PiAiManagedModelLimits> = z.object({
   scope: z.string().min(1).max(512).required(),
+  authoritative: z.union([z.boolean()]),
   contextWindow: z.number().step(1).min(1).max(MAX_CAPACITY_TOKENS),
   maxTokens: z.number().step(1).min(1).max(MAX_CAPACITY_TOKENS),
   textCapabilities: z.union([z.object({

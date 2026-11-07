@@ -50,9 +50,11 @@ export const MANAGED_RESPONSES_MIN_OUTPUT_TOKENS = 16
 export interface PiAiManagedModelLimits {
   /** Opaque account/backend scope; only an exact match with the provider's active scope applies. */
   scope: string
-  /** Account-authorized maximum combined request and response context, before smaller manual restrictions. */
+  /** Use declared capacities ahead of model-level manual overrides; request budgets remain independently bounded. */
+  authoritative?: boolean
+  /** Account-authorized maximum combined request and response context. */
   contextWindow?: number
-  /** Account-authorized output ceiling, before smaller manual restrictions and SDK context headroom. */
+  /** Account-authorized output ceiling, before SDK context headroom. */
   maxTokens?: number
   /** Gateway execution declarations for this exact account/backend scope. */
   textCapabilities?: LlmTextCapabilities
@@ -970,15 +972,19 @@ export function resolveRouteModels(
         invalid(provider, `model "${entry.id}" ${field} must be a positive integer no greater than ${MAX_CAPACITY_TOKENS}`)
       }
     }
+    const manualContextWindow = managed?.authoritative === true && managed.contextWindow !== undefined
+      ? undefined : entry.contextWindow
+    const manualMaxTokens = managed?.authoritative === true && managed.maxTokens !== undefined
+      ? undefined : entry.maxTokens
     const contextWindow = managed?.contextWindow === undefined
-      ? entry.contextWindow ?? base?.contextWindow ?? request.defaultContextWindow
-      : Math.min(managed.contextWindow, entry.contextWindow ?? managed.contextWindow)
+      ? manualContextWindow ?? base?.contextWindow ?? request.defaultContextWindow
+      : Math.min(managed.contextWindow, manualContextWindow ?? managed.contextWindow)
     if (!Number.isSafeInteger(contextWindow) || contextWindow <= 0 || contextWindow > MAX_CAPACITY_TOKENS) {
       invalid(provider, `model "${entry.id}" contextWindow must be a positive integer no greater than ${MAX_CAPACITY_TOKENS}`)
     }
     const maxTokens = managed?.maxTokens === undefined
-      ? entry.maxTokens ?? base?.maxTokens ?? request.defaultMaxTokens
-      : Math.min(managed.maxTokens, entry.maxTokens ?? managed.maxTokens, contextWindow)
+      ? manualMaxTokens ?? base?.maxTokens ?? request.defaultMaxTokens
+      : Math.min(managed.maxTokens, manualMaxTokens ?? managed.maxTokens, contextWindow)
     if (!Number.isSafeInteger(maxTokens) || maxTokens <= 0 || maxTokens > MAX_CAPACITY_TOKENS) {
       invalid(provider, `model "${entry.id}" maxTokens must be a positive integer no greater than ${MAX_CAPACITY_TOKENS}`)
     }

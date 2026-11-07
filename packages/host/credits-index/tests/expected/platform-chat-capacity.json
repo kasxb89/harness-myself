@@ -1,0 +1,81 @@
+[
+  {
+    "stage": "Before the gateway declares capacities",
+    "capacity": {
+      "contextWindow": 65536,
+      "defaultMaxTokens": 2048
+    },
+    "maxTokens": 2048,
+    "adapterDefaults": {
+      "maxTokens": true
+    },
+    "wire": {
+      "model": "fixture-capacity-one",
+      "max_tokens": 2048
+    }
+  },
+  {
+    "stage": "After the first verified capacities",
+    "capacity": {
+      "contextWindow": 32768,
+      "maxOutputTokens": 8192,
+      "defaultMaxTokens": 8192
+    },
+    "maxTokens": 8192,
+    "adapterDefaults": {
+      "maxTokens": true
+    },
+    "wire": {
+      "model": "fixture-capacity-one",
+      "max_tokens": 8192
+    }
+  },
+  {
+    "stage": "After the gateway raises capacities",
+    "capacity": {
+      "contextWindow": 1048576,
+      "maxOutputTokens": 384000,
+      "defaultMaxTokens": 384000
+    },
+    "maxTokens": 384000,
+    "adapterDefaults": {
+      "maxTokens": true
+    },
+    "wire": {
+      "model": "fixture-capacity-one",
+      "max_tokens": 384000
+    }
+  },
+  {
+    "stage": "After invalid capacities retain the last verified values",
+    "capacity": {
+      "contextWindow": 1048576,
+      "maxOutputTokens": 384000,
+      "defaultMaxTokens": 384000
+    },
+    "maxTokens": 384000,
+    "adapterDefaults": {
+      "maxTokens": true
+    },
+    "wire": {
+      "model": "fixture-capacity-one",
+      "max_tokens": 384000
+    }
+  },
+  {
+    "stage": "After the gateway lowers capacities",
+    "capacity": {
+      "contextWindow": 32768,
+      "maxOutputTokens": 4096,
+      "defaultMaxTokens": 4096
+    },
+    "maxTokens": 4096,
+    "adapterDefaults": {
+      "maxTokens": true
+    },
+    "wire": {
+      "model": "fixture-capacity-one",
+      "max_tokens": 4096
+    }
+  }
+]

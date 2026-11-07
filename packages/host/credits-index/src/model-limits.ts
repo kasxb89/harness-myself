@@ -16,6 +16,8 @@ export interface ProductModelLimits {
 export interface ManagedModelLimits extends ProductModelLimits {
   /** Non-secret fingerprint of the complete backend root and account id. */
   scope: string
+  /** Product gateway capacities take precedence over model-level manual overrides. */
+  authoritative?: boolean
 }
 
 /** A token capacity fits the gateway's positive signed 32-bit count. */
@@ -192,6 +194,7 @@ export function mergeProductModelLimits(
         : retainedCapabilities } })
     : incoming?.textCapabilities
   return contextWindow === undefined && maxTokens === undefined && textCapabilities === undefined ? undefined
-    : { scope, ...textCapabilities === undefined ? {} : { textCapabilities: cloneTextCapabilities(textCapabilities) },
+    : { scope, ...contextWindow === undefined && maxTokens === undefined ? {} : { authoritative: true },
+      ...textCapabilities === undefined ? {} : { textCapabilities: cloneTextCapabilities(textCapabilities) },
       ...contextWindow === undefined ? {} : { contextWindow }, ...maxTokens === undefined ? {} : { maxTokens } }
 }
