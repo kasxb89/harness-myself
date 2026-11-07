@@ -14,9 +14,12 @@ import type { JsonValue } from '@deepseek-ai/dsh-util-values'
  * @returns attributed text with binary payload descriptions.
  */
 export function renderResourceResult(server: string, value: JsonValue): ContentBlock[] {
-  const rendered = JSON.stringify(value, (key, item: unknown) => {
+  const rendered = JSON.stringify(value, function (this: { type?: unknown }, key, item: unknown) {
     if (key === 'blob' && typeof item === 'string') {
       return `[binary resource: ${item.length} base64 characters; available to programmatic callers]`
+    }
+    if (key === 'data' && typeof item === 'string' && (this.type === 'image' || this.type === 'audio')) {
+      return `[binary content: ${item.length} base64 characters; available to programmatic callers]`
     }
     return item
   })

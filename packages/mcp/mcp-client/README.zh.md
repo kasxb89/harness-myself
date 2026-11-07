@@ -9,7 +9,7 @@ kind: "package-reference"
 
 ## 概述
 
-`dsh-mcp-client` 让模型使用外部 MCP（Model Context Protocol）服务器的工具与资源。每台服务器配置一条记录；其工具使用 `mcp__github__create_issue` 这样的名称。默认不启用任何服务器。随附 profile 已提供[共享资源发现与读取](../mcp-resources/README.zh.md)。调用方作用域为空时，不添加 MCP 工具或提示词文本。服务器指令作为字面文本加入已记录的系统提示词；MCP 提示词模板不受支持。缓慢或崩溃的服务器可能延迟启动，或让调用失败直至恢复。
+`dsh-mcp-client` 让模型使用外部 MCP（Model Context Protocol）服务器的工具与资源。每台服务器配置一条记录；其工具使用 `mcp__github__create_issue` 这样的名称。默认不启用任何服务器。随附 profile 已提供[共享资源发现与读取](../mcp-resources/README.zh.md)。调用方作用域为空时，不添加 MCP 工具或提示词文本。服务器指令作为字面文本加入已记录的系统提示词。提示模板由用户选择并授权读取。缓慢或崩溃的服务器可能延迟启动，或让调用失败直至恢复。
 
 ## 目录
 
@@ -69,6 +69,10 @@ kind: "package-reference"
 生成的[配置目录](../../../docs/config-catalog.zh.md#deepseek-aidsh-mcp-client)是每个受支持字段的穷尽式真源。
 
 启动后，服务器的工具会以 `mcp__<serverName>__<tool>` 形式出现——试着用一条提示词调用其中一个。如果初始连接失败，harness 仍会启动，但该服务器的工具不会出现，并会记录一条错误。设置 `failOnStartupError: true` 会拒绝插件激活；[app-boot 的启动策略](../../boot/app-boot/README.zh.md)仍允许可选 MCP 配置项失败，而不中止 harness。
+
+HTTP 服务器可通过 `oauth.authorizationOrigin` 指定信任的 OAuth 发行方来源。首次遇到 OAuth 401 时自动打开系统浏览器，完成 PKCE 回调后重新连接。已授权的令牌通过本地凭据服务保存，支持自动刷新。客户端可动态注册，也可指定 `oauth.clientId` 或 `oauth.clientMetadataUrl`。服务要求固定回调端口时设置 `oauth.redirectPort`，回调路径为 `/mcp/oauth/callback`。OAuth 使用 HTTPS，本机开发服务可使用 `http://127.0.0.1`。
+
+每个服务器可通过 `sampling: true` 启用采样。生成前会显示请求并征得同意，结果发给服务器前再次确认。模型调用可能消耗积分。资源订阅和提示模板操作见[共享 MCP 工具](../mcp-resources/README.zh.md)。
 
 ### 工具命名与共存
 
@@ -205,8 +209,8 @@ SDK 通过旧版通知或现代协议订阅接收工具列表变化。监督器�
 
 这些限制说明你无法用本插件做什么、以及何时需要运维注意。它们是当前包约束，不是与其他 MCP 客户端的对比，也不是任务积压。
 
-- **资源按需读取**——随附 profile 提供[共享资源服务](../mcp-resources/README.zh.md)；资源订阅与 MCP 提示词模板不受支持。
-- **启动与发现超时继承自 MCP SDK**——插件不暴露单独的连接或发现超时。协商与发现使用 SDK 默认的 60 秒请求超时；发现也使用 SDK 的页数上限。插件卸载先关闭传输以中断待处理的启动请求，再等待清理。
+- **采样范围**——只支持文本。一个父调用最多触发一次采样，采用该会话当前的模型，最多 512 个输出 Token。并发调用无法确认归属时拒绝。
+- **启动与发现超时继承自 MCP SDK**——插件不暴露单独的连接或发现超时。普通连接的协商与发现使用 SDK 默认的 60 秒请求超时；发现也使用 SDK 的页数上限。插件卸载先关闭传输以中断待处理的启动请求，再等待清理。
 - **重连处理协商失败与传输关闭**——初始探测失败或 stdio 子进程崩溃都会使用配置的重连预算。HTTP 建立连接后，请求失败使用 SDK 传输的恢复机制，而非重新创建连接。
 - **图片是唯一的持久丰富结果桥接**——PNG、JPEG、WebP 与 GIF 在确切能力得到证明后进入 Native 上下文。音频与嵌入资源载荷仍只存在于执行局部并带明确诊断，资源链接只以文本保留名称与 URI。
 - **无效的协议结果或输出 schema 由 SDK 拒绝**——桥接器不接受旧式 `toolResult` 替代结果，也不绕过已声明的 schema 校验。
@@ -223,7 +227,6 @@ SDK 通过旧版通知或现代协议订阅接收工具列表变化。监督器�
 - 公开名称算法是由测试固定的 v1 约定；发布后更改会破坏会话历史与权限规则。
 - 由 DSH 显式拥有的连接与发现超时是开放的探索方向；SDK 的 60 秒默认值约束着启动请求。
 - Streamable HTTP 的重连归属仍未决定：按请求重试是 SDK 行为，supervisor 也可以拥有 HTTP 世代。
-- MCP 提示词模板需要独立的用户选择和模板调用机制。
 - 固定的 MCP SDK 仍在演化；上游破坏性变更需要更新桥接。
 
 </details>

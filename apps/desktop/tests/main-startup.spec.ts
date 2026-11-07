@@ -165,7 +165,7 @@ const harness = await vi.hoisted(async () => {
     whenReady: () => Promise.resolve(),
     getLocale: (): string => 'en-US',
     getPreferredSystemLanguages: () => ['en-US'],
-    getVersion: () => '1.0.0',
+    getVersion: (): string => '1.0.0',
     getAppPath: (): string => 'desktop-test-app',
     setAppLogsPath: vi.fn(),
     setName: vi.fn((name: string) => { app.name = name }),

@@ -2422,7 +2422,7 @@ export interface LspLocalServerConfig {
 ## `@deepseek-ai/dsh-mcp-client`
 
 - `inject`: `tools`
-- `source`: [`packages/mcp/mcp-client/src/index.ts:104`](../packages/mcp/mcp-client/src/index.ts)
+- `source`: [`packages/mcp/mcp-client/src/index.ts:111`](../packages/mcp/mcp-client/src/index.ts)
 
 ```ts config-catalog
 /** Configuration for one stdio or Streamable HTTP MCP server. */
@@ -2454,6 +2454,8 @@ export interface StdioConfig {
   maxInstructionBytes?: number
   /** Automatic reconnect policy after a lost connection; omission uses the defaults. */
   reconnect?: ReconnectConfig
+  /** Opt in to user-approved text sampling during MCP calls. */
+  sampling?: boolean
 }
 
 /** Config for connecting to an MCP server over Streamable HTTP (SSE). */
@@ -2470,6 +2472,8 @@ export interface StreamableHttpConfig {
   url: string
   /** Additional headers attached to MCP requests. */
   headers: Record<string, string>
+  /** Browser OAuth for an explicitly trusted authorization origin. */
+  oauth?: OAuthConfig
   /** Timeout per tool call or resource request in milliseconds. */
   toolCallTimeoutMs: number
   /** Fail plugin activation when the initial connection or tool synchronization fails. */
@@ -2478,6 +2482,8 @@ export interface StreamableHttpConfig {
   maxInstructionBytes?: number
   /** Automatic reconnect policy after a lost connection; omission uses the defaults. */
   reconnect?: ReconnectConfig
+  /** Opt in to user-approved text sampling during MCP calls. */
+  sampling?: boolean
 }
 
 /** Automatic reconnect policy for one MCP server connection. */
@@ -2490,6 +2496,18 @@ export interface ReconnectConfig {
   maxDelayMs?: number
   /** Consecutive failed attempts per outage before giving up for good (default 10). */
   maxAttempts?: number
+}
+
+/** Trust boundary and optional registration information for an HTTP server. */
+export interface OAuthConfig {
+  /** Exact trusted authorization server origin, including scheme and optional port. */
+  authorizationOrigin: string
+  /** Optional pre-registered public client identifier. */
+  clientId?: string
+  /** Optional HTTPS Client ID Metadata Document URL. */
+  clientMetadataUrl?: string
+  /** Optional fixed loopback port required by a registered redirect URI. */
+  redirectPort?: number
 }
 ```
 <!-- END GENERATED config-catalog:@deepseek-ai/dsh-mcp-client -->

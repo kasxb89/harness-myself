@@ -30,6 +30,7 @@ export interface ToolBridgeOptions {
   registrationFailure: 'contain' | 'throw'
   serverName: string
   toolCallTimeoutMs: number
+  aroundCall?<T>(execution: ToolExecution, call: () => Promise<T>): Promise<T>
 }
 
 /** State for one sync generation: the current set of disposers keyed by public name. */
@@ -135,10 +136,13 @@ export async function syncTools(
       inputSchema: tool.inputSchema,
       outputSchema: tool.outputSchema,
       taskRequired: tool.execution?.taskSupport === 'required',
-      call: (args, execution) => client.callTool(
-        { name: tool.name, arguments: args },
-        { signal: execution.signal, timeout: opts.toolCallTimeoutMs, toolDefinition: tool },
-      ),
+      call: (args, execution) => {
+        const call = () => client.callTool(
+          { name: tool.name, arguments: args },
+          { signal: execution.signal, timeout: opts.toolCallTimeoutMs, toolDefinition: tool },
+        )
+        return opts.aroundCall ? opts.aroundCall(execution, call) : call()
+      },
     }))
   }
 

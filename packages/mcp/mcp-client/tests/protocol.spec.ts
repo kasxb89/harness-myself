@@ -4,9 +4,10 @@ import { z } from 'zod'
 import { describe, expect, it, onTestFinished, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { InMemoryTransport, type Transport } from '@modelcontextprotocol/client'
-import { McpServer } from '@modelcontextprotocol/server'
+import { inputRequired, inputResponse, McpServer, type CreateMessageResult } from '@modelcontextprotocol/server'
 import { serveStdio } from '@modelcontextprotocol/server/stdio'
-import { ToolCallId } from '@deepseek-ai/dsh-llm'
+import { ToolCallId, type GenerateOptions, type LlmRuntime } from '@deepseek-ai/dsh-llm'
+import type { ToolExecution } from '@deepseek-ai/dsh-tools'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import McpResources from '@deepseek-ai/dsh-mcp-resources'
@@ -21,14 +22,17 @@ const config: Config = {
   toolCallTimeoutMs: 60_000, failOnStartupError: true,
 }
 
-async function connect(server: McpServer, options?: { resources: true }): Promise<Context> {
+async function connect(
+  server: McpServer, options?: { resources?: true; sampling?: true; configure?: (ctx: Context) => void },
+): Promise<Context> {
   const ctx = new Context()
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRuntime)
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   const serving = serveStdio(() => server, { transport: serverTransport })
   mockTransport.mockReturnValue(clientTransport)
-  const connection = startConnection(ctx, config, resolveReconnectPolicy({ enabled: false }, 'fixture'))
+  options?.configure?.(ctx)
+  const connection = startConnection(ctx, { ...config, ...options?.sampling && { sampling: true } }, resolveReconnectPolicy({ enabled: false }, 'fixture'))
   onTestFinished(async () => {
     await connection.dispose()
     await serving.close()
@@ -60,7 +64,9 @@ describe('modern MCP connections', () => {
     const ctx = await connect(server, { resources: true })
     const names = ctx.tools.schemas().map(tool => tool.name)
     expect(names.toSorted()).toEqual([
-      'list_mcp_resource_templates', 'list_mcp_resources', 'mcp__fixture__ping', 'read_mcp_resource',
+      'get_mcp_prompt', 'list_mcp_prompts', 'list_mcp_resource_templates', 'list_mcp_resources',
+      'mcp__fixture__ping', 'mcp_resource_subscription_status', 'read_mcp_resource',
+      'subscribe_mcp_resource', 'unsubscribe_mcp_resource',
     ])
     for (const [name, expected] of [
       ['list_mcp_resources', { resources: [] }],
@@ -117,6 +123,99 @@ describe('modern MCP connections', () => {
       callId: ToolCallId('read-resource'), signal: new AbortController().signal,
     })
     expect(read).toMatchObject({ isError: false, value: { contents: [{ uri: 'memo://readme', text: 'memo' }] } })
+  })
+
+  it('discovers prompt templates and sends their arguments only after approval', async () => {
+    const server = new McpServer({ name: 'prompts', version: '1' })
+    const render = vi.fn(({ topic }: { topic: string }) => ({
+      messages: [{ role: 'user' as const, content: { type: 'text' as const, text: `Discuss ${topic}` } }],
+    }))
+    server.registerPrompt('review', { argsSchema: z.object({ topic: z.string() }) }, render)
+    const approve = vi.fn().mockResolvedValueOnce('rejected').mockResolvedValueOnce('allowed-once')
+    const ctx = await connect(server, {
+      resources: true, configure: (inner) => { inner.provide('approval', { request: approve } as never) },
+    })
+    const agent = { session: { id: 'prompt-owner' } } as ToolExecution['agent']
+    const run = (name: string, args: object) => ctx.tools.execute({
+      name, arguments: { server: 'fixture', ...args }, ...(agent === undefined ? {} : { agent }),
+      callId: ToolCallId(name), signal: new AbortController().signal,
+    })
+    const list = await run('list_mcp_prompts', {})
+    expect(list, JSON.stringify(list)).toMatchObject({
+      isError: false, value: { prompts: [{ name: 'review', arguments: [{ name: 'topic', required: true }] }] },
+    })
+    const args = { name: 'review', arguments: { topic: 'Office' } }
+    expect((await run('get_mcp_prompt', args)).isError).toBe(true)
+    expect(render).not.toHaveBeenCalled()
+    expect(await run('get_mcp_prompt', args)).toMatchObject({
+      isError: false, value: { messages: [{ content: { text: 'Discuss Office' } }] },
+    })
+  })
+
+  it('tracks modern resource subscriptions per chat and receives actual update notifications', async () => {
+    const server = new McpServer({ name: 'subscription', version: '1' }, { capabilities: { resources: { subscribe: true } } })
+    server.registerResource('memo', 'memo://readme', {}, async () => ({ contents: [{ uri: 'memo://readme', text: 'memo' }] }))
+    const ctx = await connect(server, { resources: true })
+    const run = (name: string, id: string) => ctx.tools.execute({
+      name, arguments: { server: 'fixture', uri: 'memo://readme' },
+      agent: { session: { id } } as NonNullable<ToolExecution['agent']>,
+      callId: ToolCallId(name), signal: new AbortController().signal,
+    })
+    expect(await run('subscribe_mcp_resource', 'first')).toMatchObject({ isError: false, value: { subscribed: true, updates: 0 } })
+    expect(await run('mcp_resource_subscription_status', 'second')).toMatchObject({ isError: false, value: { subscribed: false } })
+    await server.server.sendResourceUpdated({ uri: 'memo://readme' })
+    await vi.waitFor(async () => {
+      expect(await run('mcp_resource_subscription_status', 'first')).toMatchObject({ isError: false, value: { subscribed: true, updates: 1 } })
+    })
+    expect(await run('subscribe_mcp_resource', 'second')).toMatchObject({ isError: false, value: { subscribed: true, updates: 0 } })
+    expect(await run('unsubscribe_mcp_resource', 'first')).toMatchObject({ isError: false, value: { subscribed: false } })
+    expect(await run('unsubscribe_mcp_resource', 'second')).toMatchObject({ isError: false, value: { subscribed: false } })
+  })
+
+  it('asks before running sampling on the active model and before sharing the result', async () => {
+    const server = new McpServer({ name: 'sampling', version: '1' })
+    server.registerTool('sample', { inputSchema: z.object({}) }, async (_args, ctx) => {
+      const response = inputResponse(ctx.mcpReq.inputResponses, 'sample')
+      if (response.kind !== 'sampling') return inputRequired({
+        inputRequests: {
+          sample: inputRequired.createMessage({
+            messages: [{ role: 'user', content: { type: 'text', text: 'Summarize this' } }], maxTokens: 2000,
+          }),
+        },
+      })
+      // oxlint-disable-next-line typescript/no-deprecated -- this fixture exercises the modern embedded sampling response.
+      const sampled = response.result as CreateMessageResult
+      return { content: Array.isArray(sampled.content) ? sampled.content : [sampled.content] }
+    })
+    const approve = vi.fn().mockResolvedValueOnce('rejected').mockResolvedValueOnce('allowed-once').mockResolvedValueOnce('allowed-once')
+    const stream = vi.fn(async function* (_options: GenerateOptions) {
+      yield { type: 'block-end', index: 0, block: { type: 'text', text: 'Local summary' } } as const
+      yield { type: 'finish', reason: { kind: 'stop' } } as const
+    })
+    const ctx = await connect(server, {
+      sampling: true, configure: (inner) => {
+        inner.provide('approval', { request: approve } as never)
+        inner.provide('llm', { stream } as unknown as LlmRuntime)
+      },
+    })
+    const agent = {
+      session: { id: 'sampling-owner', requestHeader: () => undefined }, options: { provider: 'fixture', model: 'selected-model' },
+    } as unknown as NonNullable<ToolExecution['agent']>
+    const run = () => ctx.tools.execute({
+      name: 'mcp__fixture__sample', arguments: {}, agent,
+      callId: ToolCallId('sample'), signal: new AbortController().signal,
+    })
+    expect((await run()).isError).toBe(true)
+    expect(stream).not.toHaveBeenCalled()
+    const result = await run()
+    expect(result, JSON.stringify(result)).toMatchObject({
+      isError: false, value: { content: [{ type: 'text', text: 'Local summary' }] },
+    })
+    expect(stream).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      provider: 'fixture', model: 'selected-model', maxTokens: 512,
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'Summarize this' }] }],
+    }))
+    expect(approve).toHaveBeenCalledTimes(3)
   })
 
   it('updates tools through the SDK modern list-change subscription', async () => {

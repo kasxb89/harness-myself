@@ -17,10 +17,13 @@
 
 import { Client, type Transport } from '@modelcontextprotocol/client'
 import type { Context } from '@deepseek-ai/cordis'
-import { assertNever, type JsonValue } from '@deepseek-ai/dsh-util-values'
+import type { JsonValue } from '@deepseek-ai/dsh-util-values'
+import { createSampling } from './sampling.ts'
+import { resourceSubscriptions } from './subscriptions.ts'
 import type { ServerContext } from './server-context.ts'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import { createTransport } from './transport.ts'
+import { createOAuth } from './oauth.ts'
 import { syncTools } from './tools.ts'
 import type { ToolBridgeOptions, ToolDisposers } from './tools.ts'
 import type { Config } from './index.ts'
@@ -115,6 +118,11 @@ export interface ConnectionHandle extends ServerContext {
   dispose(): Promise<void>
 }
 
+/** Match HTTP/stdio JSON semantics for optional fields returned by the SDK. */
+function wireJson(value: unknown): JsonValue {
+  return JSON.parse(JSON.stringify(value)) as JsonValue
+}
+
 /**
  * Start the supervised connection for one MCP server and keep it alive per
  * the reconnect policy.
@@ -127,10 +135,15 @@ export interface ConnectionHandle extends ServerContext {
 export function startConnection(ctx: Context, config: Config, policy: ResolvedReconnectPolicy): ConnectionHandle {
   const label = `mcp-client(${config.serverName})`
   const incompleteDisposalMessage = `${label}: transport closure could not be confirmed during disposal — server shutdown may be incomplete`
+  const lifetime = new AbortController()
+  const oauth = config.transport === 'streamable-http' && config.oauth ? createOAuth(ctx, config, lifetime.signal) : undefined
+  const sampling = config.sampling ? createSampling(ctx, config.serverName) : undefined
+  let subscriptions: ReturnType<typeof resourceSubscriptions> | undefined
   const opts: ToolBridgeOptions = {
     registrationFailure: 'contain',
     serverName: config.serverName,
     toolCallTimeoutMs: config.toolCallTimeoutMs,
+    ...sampling && { aroundCall: sampling.aroundCall },
   }
   // The initial sync uses 'throw' when failOnStartupError is configured, so
   // a registration conflict propagates to the startup-await path. Re-syncs
@@ -180,6 +193,8 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
   function generationDown(generation: Client): void {
     if (!isCurrent(generation)) return
     client = undefined
+    subscriptions = undefined
+    sampling?.reset()
     closeClient = undefined
     scheduleReconnect()
   }
@@ -258,7 +273,7 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
     const generation = new Client(
       { name: 'dsh-mcp-client', version: '0.0.1' },
       {
-        capabilities: {},
+        capabilities: sampling ? { sampling: {} } : {},
         versionNegotiation: { mode: 'auto' },
         listChanged: {
           tools: {
@@ -269,6 +284,11 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
         },
       },
     )
+    if (sampling) generation.setRequestHandler('sampling/createMessage', (request, handler) => {
+      if (!isCurrent(generation)) throw new Error('MCP sampling connection has closed')
+      return sampling.sample(request.params, handler.mcpReq.signal)
+    })
+    subscriptions = resourceSubscriptions(generation)
     const closed: PromiseWithResolvers<void> = Promise.withResolvers()
     let attemptSettled = false
     let closeObserved = false
@@ -304,8 +324,8 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
     }
     let instructions: string
     try {
-      transport = createTransport(config)
-      await generation.connect(transport)
+      transport = oauth ? createTransport(config, oauth) : createTransport(config)
+      await generation.connect(transport, oauth ? { timeout: 180_000, signal: lifetime.signal } : undefined)
       if (hasClosed()) {
         attemptSettled = true
         generationDown(generation)
@@ -368,25 +388,44 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
         const generation = client
         if (!generation || connectedAt === undefined) throw new Error(`${label}: server is disconnected`)
         const options = { signal: exec.signal, timeout: config.toolCallTimeoutMs }
+        const run = <T>(call: () => Promise<T>) => sampling ? sampling.aroundCall(exec, call) : call()
         switch (request.method) {
           case 'resources/list':
-            return await generation.listResources(
+            return wireJson(await generation.listResources(
               request.cursor === undefined ? undefined : { cursor: request.cursor }, options,
-            ) as JsonValue
+            ))
           case 'resources/templates/list':
-            return await generation.listResourceTemplates(
+            return wireJson(await generation.listResourceTemplates(
               request.cursor === undefined ? undefined : { cursor: request.cursor }, options,
-            ) as JsonValue
+            ))
           case 'resources/read':
-            return await generation.readResource({ uri: request.uri }, options) as JsonValue
-          /* v8 ignore next 2 -- resource requests are the closed, typed tool operation union */
+            return wireJson(await run(() => generation.readResource({ uri: request.uri }, { ...options, cacheMode: 'bypass' })))
+          case 'prompts/list':
+            return wireJson(await generation.listPrompts(
+              request.cursor === undefined ? undefined : { cursor: request.cursor }, { ...options, cacheMode: 'refresh' },
+            ))
+          case 'prompts/get': {
+            const approval = ctx.get('approval')
+            if (!approval || !exec.agent || await approval.request({
+              agent: exec.agent, toolName: exec.name, callId: exec.callId, signal: exec.signal,
+              reason: `Load prompt "${request.name}" from MCP server "${config.serverName}". The supplied arguments will be sent to that server.`,
+            }) !== 'allowed-once') throw new Error('The MCP prompt was not approved')
+            exec.signal.throwIfAborted()
+            if (!isCurrent(generation)) throw new Error(`${label}: server is disconnected`)
+            return wireJson(await run(() => generation.getPrompt({
+              name: request.name,
+              ...request.arguments === undefined ? {} : { arguments: request.arguments },
+            }, options)))
+          }
           default:
-            return assertNever(request)
+            if (!subscriptions) throw new Error(`${label}: server is disconnected`)
+            return subscriptions.request(request.method, request.uri, exec, options)
         }
       },
     },
     async dispose(): Promise<void> {
       disposed = true
+      lifetime.abort()
       serverInstructions = ''
       if (reconnectTimer !== undefined) {
         clearTimeout(reconnectTimer)
@@ -394,6 +433,8 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
       }
       const close = closeClient
       client = undefined
+      subscriptions = undefined
+      sampling?.reset()
       closeClient = undefined
       if (close !== undefined && !await close()) {
         ctx.logger.error(incompleteDisposalMessage)

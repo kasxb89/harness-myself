@@ -20,7 +20,9 @@ declare module '@deepseek-ai/cordis' {
 /** One supported resource operation, with server-owned cursors and URIs. */
 export type McpResourceRequest =
   | { method: 'resources/list' | 'resources/templates/list'; cursor?: string }
-  | { method: 'resources/read'; uri: string }
+  | { method: 'resources/read' | 'resources/subscribe' | 'resources/unsubscribe' | 'resources/subscription/status'; uri: string }
+  | { method: 'prompts/list'; cursor?: string }
+  | { method: 'prompts/get'; name: string; arguments?: Record<string, string> }
 
 /** One configured server's resource access, owned by its MCP connection plugin. */
 export interface McpResourceProvider {
@@ -43,7 +45,7 @@ class ResourceLayer implements ScopeLayer {
   }
 }
 
-/** Scoped resource access plus three tools shared by configured MCP servers. */
+/** Scoped resource and prompt access shared by configured MCP servers. */
 export class McpResourceRuntime extends Service {
   /** Tool registry required by the resource consumer. */
   static inject = ['tools']
@@ -64,7 +66,7 @@ export class McpResourceRuntime extends Service {
         text: ({ scope }) => {
           const names = [...this.layers.merge(scope, layer => layer.servers).keys()].sort()
           return names.length === 0 ? '' : '## MCP resource servers\n\n'
-            + 'Use list_mcp_resources, list_mcp_resource_templates, or read_mcp_resource with one of these names '
+            + 'Use the MCP resource, subscription, and prompt tools with one of these names '
             + `as the server argument: ${JSON.stringify(names)}.`
         },
       })

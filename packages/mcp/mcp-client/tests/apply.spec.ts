@@ -28,6 +28,7 @@ const { mockConnect, mockClose, mockListTools, mockCallTool, mockSetNotification
     close = mockClose
     listTools = mockListTools
     callTool = mockCallTool
+    setNotificationHandler = mockSetNotificationHandler
     constructor(_info: unknown, options: { listChanged: { tools: { onChanged: () => void } } }) {
       mockSetNotificationHandler('notifications/tools/list_changed', options.listChanged.tools.onChanged)
     }

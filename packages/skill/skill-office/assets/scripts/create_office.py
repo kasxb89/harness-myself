@@ -159,14 +159,14 @@ def workbook(spec, destination, max_cells):
         sheet = book.create_sheet(name)
         if len(entry.get("rows", [])) > 1048576 or any(len(row) > 16384 for row in entry.get("rows", [])):
             raise ValueError("data is outside Excel worksheet coordinates")
-        for row in entry.get("rows", []):
+        for row_index, row in enumerate(entry.get("rows", []), start=1):
             touched += len(row)
             if touched > max_cells:
                 raise ValueError("worksheet exceeds its configured cell budget; use the programmable workflow for large local data")
             sheet.append(row)
-            for cell in sheet[sheet.max_row]:
-                if isinstance(cell.value, str) and cell.value.startswith("="):
-                    cell.data_type = "s"  # Data remains text; formulas use the explicit formulas field.
+            for column_index, value in enumerate(row, start=1):
+                if isinstance(value, str) and value.startswith("="):
+                    sheet.cell(row_index, column_index).data_type = "s"  # Formulas use the explicit formulas field.
         if entry.get("header", True) and sheet.max_row:
             for cell in sheet[1]:
                 cell.font = Font(bold=True, color="FFFFFF")
@@ -201,7 +201,7 @@ def workbook(spec, destination, max_cells):
                 for cell in row:
                     cell.number_format = item["format"]
     book.save(destination)
-    reopened = load_workbook(destination, data_only=False)
+    reopened = load_workbook(destination, data_only=False, read_only=formulas == 0)
     try:
         if reopened.sheetnames != [entry["name"] for entry in spec["sheets"]]:
             raise ValueError("saved worksheet names differ from the request")
@@ -260,7 +260,7 @@ def main():
         module_spec = importlib.util.spec_from_file_location("office_structure", Path(__file__).with_name("check_office.py"))
         checker = importlib.util.module_from_spec(module_spec)
         module_spec.loader.exec_module(checker)
-        checker.inspect(source)
+        checker.inspect(source, collect_text=False)
         destination = root / (name_for(title) + "." + kind)
         # The checked file becomes visible atomically and can never overwrite an existing file.
         os.chmod(source, 0o600)
