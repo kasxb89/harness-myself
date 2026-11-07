@@ -11,12 +11,20 @@ export interface VideoBalanceRejection {
   readonly taskId?: string
 }
 
-/** @param intent - Logged execution attribution. @returns Its current real human revision, when available. */
+/**
+ * Resolve the captured human revision, falling back to the intent's logged grant.
+ * @param intent - Logged execution attribution.
+ * @returns Its current real human revision, or undefined without an intent.
+ */
 export function videoSubmissionRevision(intent: VideoGenerationIntent | undefined): VideoSubmissionRevision | undefined {
   return intent === undefined ? undefined : intent.humanRevision ?? { messageId: intent.grant.messageId, seq: intent.grant.sourceSeq }
 }
 
-/** @param value - Durable JSON field. @returns Validated real-human coordinates, or absence for invalid data. */
+/**
+ * Validate persisted human message and sequence coordinates.
+ * @param value - Durable JSON field.
+ * @returns Validated coordinates, or undefined for invalid data.
+ */
 export function parseVideoSubmissionRevision(value: unknown): VideoSubmissionRevision | undefined {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
   const item = value as Record<string, unknown>
@@ -26,7 +34,11 @@ export function parseVideoSubmissionRevision(value: unknown): VideoSubmissionRev
   return { messageId: item.messageId, seq: item.seq }
 }
 
-/** @param value - Durable JSON field. @returns Validated safe rejection facts, or absence for invalid data. */
+/**
+ * Validate persisted facts for an unsubmitted insufficient-balance rejection.
+ * @param value - Durable JSON field.
+ * @returns Validated rejection facts, or undefined for invalid data.
+ */
 export function parseVideoBalanceRejection(value: unknown): VideoBalanceRejection | undefined {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
   const item = value as Record<string, unknown>
@@ -39,6 +51,7 @@ export function parseVideoBalanceRejection(value: unknown): VideoBalanceRejectio
 }
 
 /**
+ * Require a greater sequence and a different message identifier than the previous revision.
  * @param current - Captured new human input.
  * @param previous - Original or last consumed human input.
  * @returns Whether this is a later independent reply.

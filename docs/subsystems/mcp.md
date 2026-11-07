@@ -77,7 +77,9 @@ The connection provider receives one operation and the original tool execution, 
 /** One supported resource operation, with server-owned cursors and URIs. */
 type McpResourceRequest =
   | { method: 'resources/list' | 'resources/templates/list'; cursor?: string }
-  | { method: 'resources/read'; uri: string }
+  | { method: 'resources/read' | 'resources/subscribe' | 'resources/unsubscribe' | 'resources/subscription/status'; uri: string }
+  | { method: 'prompts/list'; cursor?: string }
+  | { method: 'prompts/get'; name: string; arguments?: Record<string, string> }
 ```
 
 ```ts type-equiv
@@ -98,7 +100,7 @@ interface McpResourceProvider {
 <a id="limits"></a>
 ## Limits
 
-MCP prompt templates, human-input elicitation, task-based execution, and resource subscriptions are unsupported. Resource tools require a caller-visible configured server; binary resources remain programmatic data with text descriptions for the model. Servers without a tools capability connect with an empty tool set. Connection and discovery timeouts follow the SDK; the client has no separate settings for them.
+MCP human-input elicitation and task-based execution are unsupported. Resource tools require a caller-visible configured server; binary resources remain programmatic data with text descriptions for the model. Servers without a tools capability connect with an empty tool set. Connection and discovery timeouts follow the SDK; the client has no separate settings for them.
 
 -----
 
@@ -123,7 +125,7 @@ Generated from source by `scripts/gen-cordis-catalog.ts` (verified fresh by `pnp
 
 ### `ctx.mcpResources` — `McpResourceRuntime`
 
-Scoped resource access plus three tools shared by configured MCP servers.
+Scoped resource and prompt access shared by configured MCP servers.
 
 ```ts cordis-catalog
 /**

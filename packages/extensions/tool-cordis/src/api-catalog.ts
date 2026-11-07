@@ -1590,8 +1590,8 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
   },
   {
     key: 'mcpResources',
-    summary: 'Scoped resource access plus three tools shared by configured MCP servers.',
-    description: 'Scoped resource access plus three tools shared by configured MCP servers.',
+    summary: 'Scoped resource and prompt access shared by configured MCP servers.',
+    description: 'Scoped resource and prompt access shared by configured MCP servers.',
     methods: [
       {
         signature: 'register(server: string, provider: McpResourceProvider): () => void',
@@ -6080,7 +6080,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'McpResourceRequest',
-    declaration: 'export type McpResourceRequest = {\n    method: \'resources/list\' | \'resources/templates/list\';\n    cursor?: string;\n} | {\n    method: \'resources/read\';\n    uri: string;\n};',
+    declaration: 'export type McpResourceRequest = {\n    method: \'resources/list\' | \'resources/templates/list\';\n    cursor?: string;\n} | {\n    method: \'resources/read\' | \'resources/subscribe\' | \'resources/unsubscribe\' | \'resources/subscription/status\';\n    uri: string;\n} | {\n    method: \'prompts/list\';\n    cursor?: string;\n} | {\n    method: \'prompts/get\';\n    name: string;\n    arguments?: Record<string, string>;\n};',
   },
   {
     name: 'Message',

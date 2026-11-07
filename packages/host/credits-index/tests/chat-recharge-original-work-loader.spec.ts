@@ -94,7 +94,7 @@ async function boot(transport: 'direct' | 'queue' | 'queue-dispatched') {
               submission_state: 'not_submitted', upstream_submitted: false, retryable: false,
               resubmittable: true, billing_state: 'not_charged' } }, taskId)
           if (failure === undefined) throw new Error('Canonical task GET requires complete original unsent proof')
-          // The real canonical GET may omit the original funding code; queue provenance retains it.
+          // The real canonical GET may omit the original funding code; the stored queue rejection retains it.
           throw failure
         },
         download: async (_task, destination) => { await writeFile(destination, 'keyless video fixture') } },

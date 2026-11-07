@@ -77,7 +77,9 @@ stdio 和 Streamable HTTP 都使用官方 SDK 的协商、发现、协议校验�
 /** One supported resource operation, with server-owned cursors and URIs. */
 type McpResourceRequest =
   | { method: 'resources/list' | 'resources/templates/list'; cursor?: string }
-  | { method: 'resources/read'; uri: string }
+  | { method: 'resources/read' | 'resources/subscribe' | 'resources/unsubscribe' | 'resources/subscription/status'; uri: string }
+  | { method: 'prompts/list'; cursor?: string }
+  | { method: 'prompts/get'; name: string; arguments?: Record<string, string> }
 ```
 
 ```ts type-equiv
@@ -98,7 +100,7 @@ interface McpResourceProvider {
 <a id="limits"></a>
 ## 限制
 
-不支持 MCP 提示词模板、人工输入征询、基于任务的执行和资源订阅。资源工具需要调用方可见的已配置服务器；二进制资源保留为程序化数据，模型接收其文本描述。没有工具能力的服务器以空工具集连接。连接和发现超时遵循 SDK；客户端没有对应的独立设置。
+不支持 MCP 人工输入征询和基于任务的执行。资源工具需要调用方可见的已配置服务器；二进制资源保留为程序化数据，模型接收其文本描述。没有工具能力的服务器以空工具集连接。连接和发现超时遵循 SDK；客户端没有对应的独立设置。
 
 -----
 
@@ -123,7 +125,7 @@ Generated from source by `scripts/gen-cordis-catalog.ts` (verified fresh by `pnp
 
 ### `ctx.mcpResources` — `McpResourceRuntime`
 
-Scoped resource access plus three tools shared by configured MCP servers.
+Scoped resource and prompt access shared by configured MCP servers.
 
 ```ts cordis-catalog
 /**

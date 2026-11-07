@@ -10,13 +10,7 @@ Desktop analytics follows the [product collection policy](../../client/product-a
 
 ## Summary
 
-`@deepseek-ai/dsh-api-session-controller` owns the Host `ctx.sessionController` service and the generated Client `session`, `skills`, and `fileReferences` Remote namespaces. It serves Session lifecycle and history, the Host-generation model catalog, human background-job kill, workspace-path opening, user-invocable skill discovery, and Agent-scoped file references. Use it through API Gateway when a Client needs operations addressed by a Session.
-
-Ordinary model catalogs forward detached capability facts and normalized execution eligibility independently of display text. Version2 preserves supported, unsupported and unverified results per exact route; unverified booleans do not become admission denials. Known route outages use `MODEL_ROUTE_UNAVAILABLE`, distinct from capability incompatibility. Prompt admission validates active tool history and image/file inputs without deleting messages; same-model selection can clear a saved incompatible reasoning setting through the ordinary selection RPC. Undeclared legacy models retain their existing behavior.
-
-A temporary image-entry outage stays separate from unverified vision facts and whole-route availability. The catalog carries `visionUnavailable` and its reason; prompt admission reports `MODEL_CAPABILITY_INPUT_UNAVAILABLE` for images before storing them, while text, tool history and staged file receipts keep their ordinary path. Gateway reasoning-control mapping metadata is cloned without becoming an extra browser request parameter.
-
-Always-on reasoning may still expose a nonempty declared effort enum. The catalog preserves those exact strength IDs, omits a default choice, and leaves Auto as omission; it does not add Off or a boolean switch. Tool support facts and the precisely verified tool-choice modes remain separate metadata.
+Use this package through API Gateway to create, resume, prompt, and inspect Sessions from a Client. Clients can read history and live state, choose models, stop background jobs, open workspace paths, discover skills, and use Agent-scoped file references. Individual endpoints define their activation policy.
 
 ## Table of Contents
 
@@ -33,6 +27,14 @@ Always-on reasoning may still expose a nonempty declared effort enum. The catalo
 
 <a id="use-this-package"></a>
 ## Use this package
+
+`@deepseek-ai/dsh-api-session-controller` owns the Host `ctx.sessionController` service and the generated Client `session`, `skills`, and `fileReferences` Remote namespaces. It serves Session lifecycle and history, the Host-generation model catalog, human background-job kill, workspace-path opening, user-invocable skill discovery, and Agent-scoped file references. Use it through API Gateway when a Client needs operations addressed by a Session.
+
+Ordinary model catalogs forward detached capability facts and normalized execution eligibility independently of display text. Version2 preserves supported, unsupported and unverified results per exact route; unverified booleans do not become admission denials. Known route outages use `MODEL_ROUTE_UNAVAILABLE`, distinct from capability incompatibility. Prompt admission validates active tool history and image/file inputs without deleting messages; same-model selection can clear a saved incompatible reasoning setting through the ordinary selection RPC. Undeclared legacy models retain their existing behavior.
+
+A temporary image-entry outage stays separate from unverified vision facts and whole-route availability. The catalog carries `visionUnavailable` and its reason; prompt admission reports `MODEL_CAPABILITY_INPUT_UNAVAILABLE` for images before storing them, while text, tool history and staged file receipts keep their ordinary path. Gateway reasoning-control mapping metadata is cloned without becoming an extra browser request parameter.
+
+Always-on reasoning may still expose a nonempty declared effort enum. The catalog preserves those exact strength IDs, omits a default choice, and leaves Auto as omission; it does not add Off or a boolean switch. Tool support facts and the precisely verified tool-choice modes remain separate metadata.
 
 Prompt metadata uses the awaited [`session/prompt-admission`](../../../docs/subsystems/session.md#prompt-input-context) event before inbox acceptance. Admission-only `inputContext` is detached JSON with a complete 16 KiB UTF-8 limit, depth 8 and 1,024 values; invalid shapes fail without enqueueing. Namespace keys match `[a-z][a-z0-9_./-]{0,63}`; prototype keys, accessors, hidden properties and non-JSON values are rejected. Same-request concurrent calls share one admission; accepted retries skip metadata capture. Distinct requests remain independent. Each plugin validates its namespace and records any model-visible or financial choice through its own durable event.
 

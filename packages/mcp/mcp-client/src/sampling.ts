@@ -7,7 +7,17 @@ import type { CreateMessageRequest, CreateMessageResult } from '@modelcontextpro
 const MAX_INPUT_BYTES = 8_192
 const MAX_OUTPUT_TOKENS = 512
 
-export function createSampling(ctx: Context, server: string) {
+/**
+ * Create bounded text sampling that requires one active MCP call and approval before generation and result sharing.
+ * @param ctx - Context providing the approval and language model services.
+ * @param server - Server name included in approval prompts and sampling message metadata.
+ * @returns Sampling handler with active-call tracking and reset commands.
+ */
+export function createSampling(ctx: Context, server: string): {
+  reset: () => void
+  aroundCall<T>(this: void, exec: ToolExecution, call: () => Promise<T>): Promise<T>
+  sample(params: CreateMessageRequest['params'], requestSignal: AbortSignal): Promise<CreateMessageResult>
+} {
   const active = new Map<ToolExecution, { used: boolean }>()
   return {
     reset: () => { active.clear() },

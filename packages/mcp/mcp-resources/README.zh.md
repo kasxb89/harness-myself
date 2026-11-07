@@ -37,7 +37,7 @@ kind: "package-reference"
 
 挂载系统提示词组装服务时，提示词列出调用 agent 可见的服务器名称。将其中一个名称作为 `server` 调用 `list_mcp_resources` 或 `list_mcp_resource_templates`。未提供游标时，MCP SDK 收集服务器的全部分页；显式提供游标时返回一页；将其中的 `nextCursor` 原样作为 `cursor` 传入，以请求下一页。使用相同的 `server` 名称和显式 `uri`，通过 `read_mcp_resource` 读取已列出的 URI 或展开后的模板。
 
-使用 `list_mcp_prompts` 浏览模板，选择后通过 `get_mcp_prompt` 提交参数并确认授权。支持资源订阅的服务器可用 `subscribe_mcp_resource` 跟踪变更，通过 `mcp_resource_subscription_status` 查询当前会话收到的更新次数。再次读取资源获取最新内容，结束后使用 `unsubscribe_mcp_resource`。
+使用 `list_mcp_prompts` 浏览模板，获得批准后再通过 `get_mcp_prompt` 为所选模板提交参数。支持资源订阅的服务器可用 `subscribe_mcp_resource` 跟踪变更，通过 `mcp_resource_subscription_status` 查询当前会话收到的更新次数。再次读取资源获取最新内容，结束后使用 `unsubscribe_mcp_resource`。
 
 每个操作都在调用 agent 的作用域中解析服务器。缺少服务器参数或服务器不可用时，会在派发前失败。连接所有者负责请求取消、超时与恢复；失败的请求仍表现为失败的工具调用。
 

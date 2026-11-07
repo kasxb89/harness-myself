@@ -1,7 +1,9 @@
 /** Server-owned registration eligibility and versioned, configurable questionnaire data. @module */
 export const SURVEY_ID = 'product-use-v1'
+/** Fixed option identifiers accepted by schema version 1. */
 export const LEGACY_SURVEY_OPTIONS = ['daily_qa', 'office_writing', 'coding', 'study_research', 'image_design',
   'video_creation', 'ecommerce_marketing', 'automation', 'other'] as const
+/** Stable option identifier with Chinese and English display labels. */
 export interface SurveyChoice { readonly id: string; readonly label: string; readonly label_en: string }
 interface SurveyFields {
   readonly survey_id: typeof SURVEY_ID
@@ -16,11 +18,16 @@ interface SurveyFields {
   readonly submitted_at: number
   readonly deferred_at: number
 }
+/** Supported survey data; configurable schema version 2 also identifies its configuration revision. */
 export type SurveyData = SurveyFields & ({ readonly schema_version: 1 } | {
   readonly schema_version: 2
   readonly config_revision: string
 })
-/** @param text - User-entered note. @returns Unicode scalar count, including one per emoji. */
+/**
+ * Count Unicode code points in a survey note.
+ * @param text - User-entered note.
+ * @returns Code point count used by the survey note limit.
+ */
 export function surveyNoteLength(text: string): number { return Array.from(text).length }
 function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined
@@ -29,7 +36,11 @@ function text(value: unknown, configurable: boolean, max: number): value is stri
   return typeof value === 'string' && value.length > 0 && (configurable ? surveyNoteLength(value) <= max : value.length <= 256)
     && !(configurable ? /[\u0000-\u001f\u007f-\u009f]/u : /[\u0000-\u001f\u007f]/u).test(value)
 }
-/** @param value - Untrusted Host payload. @returns A supported survey; invalid data never implies enrollment. */
+/**
+ * Validate Host survey data and retain supported public fields.
+ * @param value - Untrusted Host payload.
+ * @returns A supported survey, or undefined for invalid data.
+ */
 export function parseSurvey(value: unknown): SurveyData | undefined {
   const body = record(value)
   if (body === undefined || body.schema_version !== 1 && body.schema_version !== 2) return undefined

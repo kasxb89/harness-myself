@@ -12,10 +12,6 @@ Desktop product events use the optional [product analytics service](../product-a
 
 Use this package to render a browser chat from recorded Session conversations, including historical images, localized actions, and restored scroll position. Work-details modes control reasoning previews and process visibility without hiding final answers; Verbose keeps completed-turn process rows visible. Local transcript and steering submissions appear immediately, remain in their original surface, and disappear atomically when authoritative Session records arrive, while queued submissions stay outside Chat. The package does not assemble or modify model requests.
 
-Terminal and retry rows localize stable capability and route-unavailable failures separately from network or server errors. Copy identifies the current channel restriction without claiming an unverified native model limitation. Tool-history incompatibility preserves the original messages and directs users to a compatible route or a separate text chat; raw provider diagnostics are not routing rules.
-
-Terminal `MODEL_CAPABILITY_INPUT_UNAVAILABLE` failures explain a temporary image-entry outage and preserve the original message and attachments; they do not become capability-unsupported or whole-route failures.
-
 ## Table of Contents
 
 - [Reference previews](#reference-previews)
@@ -54,6 +50,10 @@ Terminal model failures and retry details show localized recovery text without r
 
 <a id="command-and-failure-rows"></a>
 ## Command and failure rows
+
+Terminal and retry rows localize stable capability and route-unavailable failures separately from network or server errors. Copy identifies the current channel restriction without claiming an unverified native model limitation. Tool-history incompatibility preserves the original messages and directs users to a compatible route or a separate text chat; raw provider diagnostics are not routing rules.
+
+Terminal `MODEL_CAPABILITY_INPUT_UNAVAILABLE` failures explain a temporary image-entry outage and preserve the original message and attachments; they do not become capability-unsupported or whole-route failures.
 
 The display-only quota-notice contract also accepts `INSUFFICIENT_BALANCE` for a confirmed product user funding rejection. Its persistent row uses localized balance copy; a live append offers the existing chain to the product recharge owner. It remains distinct from DeepSeek `ACCOUNT_QUOTA` and generic upstream `QUOTA`, with no new Session event schema or replay format.
 

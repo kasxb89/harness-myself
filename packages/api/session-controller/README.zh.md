@@ -10,13 +10,7 @@ kind: "package-reference"
 
 ## 概述
 
-`@deepseek-ai/dsh-api-session-controller` 拥有 Host 的 `ctx.sessionController` 服务，以及生成的 Client `session`、`skills` 和 `fileReferences` Remote namespace。它提供 Session 生命周期与历史、Host generation 模型目录、人工后台任务终止、工作区路径打开、用户可调用 skill（技能）发现和 Agent（智能体）范围的文件引用。当 Client 需要按 Session 寻址的操作时，请通过 API Gateway 使用它。
-
-普通模型目录独立于展示文字透传已分离的能力事实与归一化执行资格。版本2保留精确渠道逐项支持、不支持、待核实状态，待核实不会变成输入拒绝。已知渠道不可用使用独立的 `MODEL_ROUTE_UNAVAILABLE`，不混同能力不兼容。输入入队前检查当前工具历史与图片、文件内容，不删除原消息；同模型选择可通过普通选择 RPC 清除不兼容的已保存推理设置。未声明能力的旧模型保留原行为。
-
-图片入口临时故障与待核实的识图事实、整条渠道不可用保持独立。目录携带 `visionUnavailable` 及原因；图片在存储前以 `MODEL_CAPABILITY_INPUT_UNAVAILABLE` 拒绝，文字、工具历史和已暂存的文件凭据继续走原有路径。网关推理控制映射元数据独立复制，不转成浏览器额外发送的参数。
-
-始终推理的模型仍可提供非空的强度枚举。目录保留准确的强度 ID，不设置默认选项，Auto 继续表示省略参数；不添加 Off 或开关。工具支持事实与已核实的工具选择方式作为独立元数据保留。
+使用本包，可让 Client 通过 API Gateway 创建、恢复、提交提示词并检查 Session。Client 可以读取历史和实时状态、选择模型、终止后台任务、打开工作区路径、发现 skill（技能）并使用 Agent（智能体）范围的文件引用。各端点分别定义自身的激活策略。
 
 ## 目录
 
@@ -33,6 +27,14 @@ kind: "package-reference"
 
 <a id="use-this-package"></a>
 ## 使用本包
+
+`@deepseek-ai/dsh-api-session-controller` 拥有 Host 的 `ctx.sessionController` 服务，以及生成的 Client `session`、`skills` 和 `fileReferences` Remote namespace。它提供 Session 生命周期与历史、Host generation 模型目录、人工后台任务终止、工作区路径打开、用户可调用 skill 发现和 Agent 范围的文件引用。当 Client 需要按 Session 寻址的操作时，请通过 API Gateway 使用它。
+
+普通模型目录独立于展示文字透传已分离的能力事实与归一化执行资格。版本2保留精确渠道逐项支持、不支持、待核实状态，待核实不会变成输入拒绝。已知渠道不可用使用独立的 `MODEL_ROUTE_UNAVAILABLE`，不混同能力不兼容。输入入队前检查当前工具历史与图片、文件内容，不删除原消息；同模型选择可通过普通选择 RPC 清除不兼容的已保存推理设置。未声明能力的旧模型保留原行为。
+
+图片入口临时故障与待核实的识图事实、整条渠道不可用保持独立。目录携带 `visionUnavailable` 及原因；图片在存储前以 `MODEL_CAPABILITY_INPUT_UNAVAILABLE` 拒绝，文字、工具历史和已暂存的文件凭据继续走原有路径。网关推理控制映射元数据独立复制，不转成浏览器额外发送的参数。
+
+始终推理的模型仍可提供非空的强度枚举。目录保留准确的强度 ID，不设置默认选项，Auto 继续表示省略参数；不添加 Off 或开关。工具支持事实与已核实的工具选择方式作为独立元数据保留。
 
 提示词元数据通过等待式 [`session/prompt-admission`](../../../docs/subsystems/session.zh.md#prompt-input-context) 事件在收件箱受理前处理。仅用于准入的 `inputContext` 是分离后的 JSON，完整 UTF-8 大小上限为 16 KiB、深度为 8、值数量为 1,024；无效形状在入队前失败。命名空间键匹配 `[a-z][a-z0-9_./-]{0,63}`；原型键、访问器、隐藏属性及非 JSON 值会被拒绝。同一请求的并发调用共享一次准入，已受理重试跳过元数据采集，不同请求保持独立。插件各自校验命名空间，通过自己的持久事件记录影响模型或计费的选择。
 

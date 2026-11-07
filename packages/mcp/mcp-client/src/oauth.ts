@@ -30,6 +30,7 @@ const exec = promisify(execFile)
 const callbackPath = '/mcp/oauth/callback'
 const loopback = '127.0.0.1'
 
+/** Opens authorization URLs with the operating system browser and a scrubbed child environment. */
 export const oauthBrowser = {
   async open(url: URL, signal: AbortSignal): Promise<void> {
     const argv = process.platform === 'win32'
@@ -105,7 +106,13 @@ interface Grant {
   tokens?: StoredOAuthTokens
 }
 
-/** Create one credential owner shared by this server's reconnect generations. */
+/**
+ * Create one credential owner shared by this server's reconnect generations.
+ * @param ctx - Context providing optional persisted credentials.
+ * @param server - HTTP server configuration with its trusted OAuth origin and client settings.
+ * @param lifetime - Connection lifetime that cancels authorization when closed.
+ * @returns Token reader and unauthorized-response handler for this server.
+ */
 export function createOAuth(ctx: Context, server: StreamableHttpConfig, lifetime: AbortSignal): AuthProvider {
   const config = server.oauth
   if (!config) throw new Error('MCP OAuth configuration is missing')

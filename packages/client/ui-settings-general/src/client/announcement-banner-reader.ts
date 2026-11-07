@@ -1,6 +1,7 @@
 /** Public banner data read from the same-origin Host, never from an upstream address. @module */
 import { appPath } from '@deepseek-ai/dsh-client-ui-primitives'
 
+/** Public announcement fields retained after validating the Host response. */
 export interface BannerAnnouncement {
   readonly id: number
   readonly title: string
@@ -10,12 +11,14 @@ export interface BannerAnnouncement {
   readonly type: string
   readonly extra: string
 }
+/** Validated feed with deployment scope and revision used for local dismissal preferences. */
 export interface AnnouncementBannerData {
   readonly enabled: boolean
   readonly scope: string
   readonly revision: string
   readonly announcements: readonly BannerAnnouncement[]
 }
+/** Successful public feed read or a contained unavailable result. */
 export type AnnouncementBannerRead = { readonly ok: true; readonly payload: AnnouncementBannerData }
   | { readonly ok: false }
 const hash = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value)
@@ -23,7 +26,11 @@ const text = (value: unknown, maximum: number): value is string => typeof value 
 const object = (value: unknown): Record<string, unknown> | undefined => value !== null && typeof value === 'object' && !Array.isArray(value)
   ? value as Record<string, unknown> : undefined
 
-/** @param value - Untrusted Host payload. @returns Detached public fields or no data when malformed. */
+/**
+ * Validate a public feed and omit announcements when the feed is disabled.
+ * @param value - Untrusted Host payload.
+ * @returns Detached public fields, or undefined when malformed.
+ */
 export function parseAnnouncementBanner(value: unknown): AnnouncementBannerData | undefined {
   const body = object(value)
   if (typeof body?.enabled !== 'boolean' || !hash(body.scope) || !hash(body.revision)
@@ -43,7 +50,11 @@ export function parseAnnouncementBanner(value: unknown): AnnouncementBannerData 
     announcements: body.enabled ? announcements : [] }
 }
 
-/** @param signal - Current account and plugin lifetime. @returns Safe public data; errors never block the application. */
+/**
+ * Fetch the same-origin public feed while containing transport and payload failures.
+ * @param signal - Current account and plugin lifetime.
+ * @returns Validated feed data, or an unavailable result for failed or invalid responses.
+ */
 export async function readAnnouncementBanner(signal: AbortSignal): Promise<AnnouncementBannerRead> {
   try {
     const response = await fetch(appPath('/credits/api/announcement-banner'), {

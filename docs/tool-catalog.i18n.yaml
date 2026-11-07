@@ -9,8 +9,8 @@
   en: 6cc2cd9ced70bb09
   zh: 1c0e6cb4ba2ed637
 /tool-schema-catalog/tool-package-map:
-  en: 21229077c080db22
-  zh: cf5dbe5b4278db0c
+  en: 13a84c53de6febd3
+  zh: 2568a40c6500e38c
 /tool-schema-catalog/deepseek-ai-dsh-plugin-manager:
   en: e0143916bb634762
   zh: e0143916bb634762
@@ -20,15 +20,30 @@
 /tool-schema-catalog/deepseek-ai-dsh-mcp-resources:
   en: dd78bd55ec83a539
   zh: dd78bd55ec83a539
+/tool-schema-catalog/deepseek-ai-dsh-mcp-resources/get-mcp-prompt:
+  en: 9d1154027cef293b
+  zh: ba2556b8a24bdeaf
+/tool-schema-catalog/deepseek-ai-dsh-mcp-resources/list-mcp-prompts:
+  en: e8fd1e5bbed6dd35
+  zh: c99aac57321e9608
 /tool-schema-catalog/deepseek-ai-dsh-mcp-resources/list-mcp-resource-templates:
   en: 96275ece9d040944
   zh: 1fa9744642601ece
 /tool-schema-catalog/deepseek-ai-dsh-mcp-resources/list-mcp-resources:
   en: bf4236607199d61e
   zh: 82f4f749dcabc89f
+/tool-schema-catalog/deepseek-ai-dsh-mcp-resources/mcp-resource-subscription-status:
+  en: 98b18303982edac9
+  zh: c105b59c6035ba31
 /tool-schema-catalog/deepseek-ai-dsh-mcp-resources/read-mcp-resource:
-  en: 5d92c07fa062734f
-  zh: 2d6f0cb8116cf567
+  en: fba8577910bfd3c0
+  zh: fa0c4e66363a8477
+/tool-schema-catalog/deepseek-ai-dsh-mcp-resources/subscribe-mcp-resource:
+  en: 28e32d440e6f162e
+  zh: 4cb9f1e37c7795c1
+/tool-schema-catalog/deepseek-ai-dsh-mcp-resources/unsubscribe-mcp-resource:
+  en: 535088eb1b6db24c
+  zh: 50977524ac335775
 /tool-schema-catalog/deepseek-ai-dsh-experimental-browser-use-stagehand-native:
   en: 19e7df8d692b4375
   zh: 19e7df8d692b4375

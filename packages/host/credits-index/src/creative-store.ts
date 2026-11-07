@@ -1257,6 +1257,7 @@ export class CreativeStore {
   release(operation: CreativeOperation): void { this.deactivate(operation) }
 
   /**
+   * Find the recorded human submission revision for an owned video project.
    * @param owner - Exact current account, chat and workspace.
    * @param videoProjectId - Original owned project.
    * @returns Its last real submission source for legacy manifest recovery.
@@ -1277,6 +1278,7 @@ export class CreativeStore {
   }
 
   /**
+   * Read the latest inactive attempt linked to the original video work.
    * @param owner - Exact current account, chat and workspace.
    * @param id - Original plan.
    * @param invocationId - Work-linked original invocation.

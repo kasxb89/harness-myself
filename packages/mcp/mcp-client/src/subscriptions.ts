@@ -4,7 +4,17 @@ import type { ToolExecution } from '@deepseek-ai/dsh-tools'
 
 const MAX_SUBSCRIPTIONS = 128
 
-export function resourceSubscriptions(client: Client) {
+/**
+ * Track session-owned resource subscriptions and update counts for one client connection.
+ * @param client - Connected MCP client whose resource notifications and subscription requests are managed.
+ * @returns Subscribe, unsubscribe, and status handler with bounded per-connection ownership.
+ */
+export function resourceSubscriptions(client: Client): {
+  request(
+    method: 'resources/subscribe' | 'resources/unsubscribe' | 'resources/subscription/status',
+    uri: string, exec: ToolExecution, options: RequestOptions,
+  ): Promise<{ subscribed: boolean; updates: number }>
+} {
   interface Subscription {
     owners: Map<string, number>
     updates: number

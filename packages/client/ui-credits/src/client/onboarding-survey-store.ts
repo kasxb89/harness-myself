@@ -5,7 +5,9 @@ import { creditsReadFailure, creditsRetrySeconds, type CreditsReadFailure } from
 import type { CreditsSnapshot } from './session-store.ts'
 import { parseSurvey, SURVEY_ID, surveyNoteLength, type SurveyData, type SurveyChoice } from './onboarding-survey.ts'
 
+/** Account identity and snapshot epoch used to invalidate survey operations and drafts. */
 export interface SurveyOwner { readonly id: string; readonly scope: string; readonly epoch: number }
+/** Survey data, draft, and interaction state for the current account. */
 export interface OnboardingSurveyState {
   readonly owner: SurveyOwner | null
   readonly data: SurveyData | null
@@ -19,6 +21,7 @@ export interface OnboardingSurveyState {
   readonly uncertain: boolean
   readonly notice: boolean
 }
+/** Observable survey state and account-scoped dialog commands supplied to UI entries. */
 export interface OnboardingSurveyInjected {
   readonly hooks: { readonly onboardingSurvey: ObservableSnapshot<OnboardingSurveyState> }
   readonly openSurvey: () => void

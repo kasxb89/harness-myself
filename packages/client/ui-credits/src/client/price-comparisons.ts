@@ -74,7 +74,11 @@ function rowOf(value: unknown, kind: ComparisonKind): ComparisonRow | undefined 
       ...typeof reference.official_total_cny === 'string' ? { official_total_cny: reference.official_total_cny } : {} } }
 }
 
-/** @param value - Unknown local Host payload. @returns Only complete, same-unit reference comparisons; old APIs yield no marketing. */
+/**
+ * Select validated reference comparisons from a default-price Host payload.
+ * @param value - Unknown local Host payload.
+ * @returns Models with complete, same-unit comparison rows; unsupported payloads yield an empty list.
+ */
 export function comparisonModels(value: unknown): readonly ComparisonModel[] {
   const payload = object(value)
   if (payload?.basis !== 'default' || !Array.isArray(payload.models) || payload.models.length > 256) return []

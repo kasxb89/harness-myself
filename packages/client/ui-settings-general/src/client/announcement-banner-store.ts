@@ -17,7 +17,10 @@ type DismissalActions = { dismiss: (draft: DismissalState, viewer: string, revis
 const validViewer = (value: string): boolean => /^[a-f0-9]{64}:/u.test(value) && value.length <= 512
 const validRevision = (value: string): boolean => /^[a-f0-9]{64}$/u.test(value)
 
-/** @returns A bounded local preference store; no announcement content or authentication fields are persisted. */
+/**
+ * Create a bounded store of dismissed feed revisions per viewer.
+ * @returns Local viewing preferences without announcement content or authentication fields.
+ */
 export function createAnnouncementDismissalStore(): EngineStoreHandle<DismissalState, DismissalActions> {
   return defineStore({
     init: (): DismissalState => ({ schemaVersion: 1, byViewer: {} }),
@@ -34,6 +37,7 @@ export function createAnnouncementDismissalStore(): EngineStoreHandle<DismissalS
 }
 
 /**
+ * Check whether a viewer explicitly dismissed the current feed revision.
  * @param value - Persisted viewing preference.
  * @param viewer - Deployment and stable account identity.
  * @param revision - Current feed version.
@@ -43,10 +47,12 @@ export function isBannerDismissed(value: unknown, viewer: string, revision: stri
   return storedDismissals(value).some(([key, item]) => key === viewer && item === revision)
 }
 
+/** Current account identifier and latest successfully read public feed. */
 export interface AnnouncementBannerView {
   readonly account: string
   readonly data: AnnouncementBannerData | null
 }
+/** Observable announcement view supplied to root UI entries. */
 export interface AnnouncementBannerInjected {
   readonly hooks: { readonly announcementBanner: ObservableSnapshot<AnnouncementBannerView> }
 }
