@@ -16,6 +16,7 @@ const MAX_OUTPUT_TOKENS = 512
 export function createSampling(ctx: Context, server: string): {
   reset: () => void
   aroundCall<T>(this: void, exec: ToolExecution, call: () => Promise<T>): Promise<T>
+  // oxlint-disable-next-line typescript/no-deprecated -- both supported wire revisions retain these SDK sampling request and result types.
   sample(params: CreateMessageRequest['params'], requestSignal: AbortSignal): Promise<CreateMessageResult>
 } {
   const active = new Map<ToolExecution, { used: boolean }>()
