@@ -102,12 +102,15 @@ async function collectHelp(): Promise<HelpPage[]> {
   for (const name of ['NODE_OPTIONS', 'FORCE_COLOR']) Reflect.deleteProperty(environment, name)
   try {
     return await collectCliHelp(async (args) => {
-      const { stdout, stderr } = await execFileAsync(process.execPath, [
+      const execution = execFileAsync(process.execPath, [
         '--import', 'tsx/esm', 'apps/cli/src/bin.ts', ...args, '--help',
       ], {
         cwd: root, env: environment, encoding: 'utf8', timeout: 30_000,
         killSignal: 'SIGKILL', maxBuffer: 2 * 1024 * 1024,
       })
+      // Help consumes no input; close the pipe so Windows can finish natural shutdown.
+      execution.child.stdin?.end()
+      const { stdout, stderr } = await execution
       if (stderr !== '') throw new Error(`${['dsh', ...args].join(' ')} --help wrote diagnostics: ${stderr}`)
       return stdout
     }, Object.keys(PROFILE_TEMPLATES))

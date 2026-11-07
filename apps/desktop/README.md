@@ -198,6 +198,8 @@ The 600 × 700 welcome window follows system light and dark appearance, with nat
 
 ## Package
 
+For the opt-in Windows x64 to Mac ARM64/Intel local ZIP pipeline, see [scripts/MAC-CROSS-WINDOWS.md](scripts/MAC-CROSS-WINDOWS.md). Target execution on a Mac remains required before either cross-built artifact can pass acceptance.
+
 <a id="release-versions"></a>
 
 ### Release versions

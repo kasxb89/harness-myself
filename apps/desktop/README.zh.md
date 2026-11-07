@@ -200,6 +200,8 @@ Desktop 启动后通过已认证 Host 的 `/credits/api/session` 读取产品登
 
 ## 打包
 
+Windows x64 到 Mac ARM64／Intel 的可选本地 ZIP 打包流程见 [scripts/MAC-CROSS-WINDOWS.md](scripts/MAC-CROSS-WINDOWS.md)。两个架构的产物都必须在 Mac 上完成实际运行验收，才能通过验收。
+
 <a id="release-versions"></a>
 
 ### 发布版本

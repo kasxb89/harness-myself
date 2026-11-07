@@ -4,7 +4,8 @@ import { packagingStep } from './packaging-step.mjs'
 import { spawn } from 'node:child_process'
 import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { delimiter, join, relative, resolve } from 'node:path'
+import { createRequire } from 'node:module'
+import { delimiter, dirname, join, relative, resolve } from 'node:path'
 import { desktopNodeEnvironment } from '../src/node-environment.ts'
 import { createRuntimeProjectMetadata } from '../src/project-manager.ts'
 import { DESKTOP_HOST_PROTOCOL_VERSION } from '../src/host-protocol.ts'
@@ -42,8 +43,15 @@ const BUILD_ROOT = mkdtempSync(join(tmpdir(), 'dsh-desktop-runtime-'))
 const RUNTIME_ROOT = BUILD_PATHS.runtime
 const PNPM_BUILD_STATE = BUILD_PATHS.dshPnpm
 const PACKAGE_SET_ROOT = BUILD_PATHS.packageSet
-const NODE = join(BUILD_PATHS.electron, process.platform === 'win32' ? 'electron.exe' : 'Electron.app/Contents/MacOS/Electron')
-const PNPM = join(RUNTIME_ROOT, 'primary-runtime', 'dependencies', 'pnpm', 'bin', 'pnpm.mjs')
+const CROSS_MACOS = process.argv.includes('--cross-macos')
+const TARGET = desktopTargetPlatform(resolveDesktopBuildTarget())
+if (CROSS_MACOS && (process.platform !== 'win32' || TARGET.platform !== 'darwin')) {
+  throw new Error('desktop cross runtime: explicit Windows to macOS preparation is required')
+}
+const NODE = CROSS_MACOS ? process.execPath
+  : join(BUILD_PATHS.electron, process.platform === 'win32' ? 'electron.exe' : 'Electron.app/Contents/MacOS/Electron')
+const PNPM = CROSS_MACOS ? join(dirname(createRequire(import.meta.url).resolve('pnpm')), 'bin', 'pnpm.mjs')
+  : join(RUNTIME_ROOT, 'primary-runtime', 'dependencies', 'pnpm', 'bin', 'pnpm.mjs')
 
 function manifestVersion(path: string, subject: string): string {
   const manifest = JSON.parse(readFileSync(path, 'utf8')) as { version?: unknown }
@@ -82,6 +90,7 @@ function runPnpm(args: readonly string[], cache: DesktopDependencyCache): Promis
       `--config.userconfig=${userConfig}`,
       command,
       ...commandArgs,
+      ...(CROSS_MACOS ? ['--ignore-scripts'] : []),
     ], {
       cwd: BUILD_ROOT,
       env: {
@@ -91,8 +100,8 @@ function runPnpm(args: readonly string[], cache: DesktopDependencyCache): Promis
         NPM_CONFIG_REGISTRY: cache.registry,
         NPM_CONFIG_STORE_DIR: cache.store,
         NPM_CONFIG_USERCONFIG: userConfig,
-        ...desktopNodeEnvironment(NODE, join(RUNTIME_ROOT, 'bin'), {}),
-        PATH: `${join(RUNTIME_ROOT, 'bin')}${delimiter}${process.env.PATH ?? ''}`,
+        ...(CROSS_MACOS ? {} : desktopNodeEnvironment(NODE, join(RUNTIME_ROOT, 'bin'), {})),
+        PATH: CROSS_MACOS ? process.env.PATH : `${join(RUNTIME_ROOT, 'bin')}${delimiter}${process.env.PATH ?? ''}`,
         XDG_CACHE_HOME: cache.metadata,
         XDG_CONFIG_HOME: config,
         XDG_STATE_HOME: join(PNPM_BUILD_STATE, 'state'),
@@ -125,7 +134,14 @@ async function main(): Promise<void> {
       createRuntimeProjectMetadata(BUILD_ROOT, release)
       const repositoryRoot = resolve(APP_ROOT, '..', '..')
       const dependencies = prepareRuntimeDependencies(BUILD_ROOT, repositoryRoot)
-      return { dependencies, patches: prepareRuntimePatches(BUILD_ROOT, repositoryRoot) }
+      const patches = prepareRuntimePatches(BUILD_ROOT, repositoryRoot)
+      if (CROSS_MACOS) {
+        const path = join(BUILD_ROOT, 'pnpm-workspace.yaml')
+        const yaml = await import('js-yaml')
+        const settings = yaml.load(readFileSync(path, 'utf8')) as Record<string, unknown>
+        writeFileSync(path, yaml.dump({ ...settings, supportedArchitectures: { os: ['darwin'], cpu: [TARGET.arch] } }))
+      }
+      return { dependencies, patches }
     })
     await packagingStep(process.env.DSH_DESKTOP_PACKAGING_RUN_DIR, 'runtime:lockfile', () => runPnpm(['install', '--lockfile-only'], cache))
     verifyRuntimeDependencies(BUILD_ROOT, dependencies)
@@ -137,7 +153,7 @@ async function main(): Promise<void> {
     await packagingStep(process.env.DSH_DESKTOP_PACKAGING_RUN_DIR, 'runtime:install', () => runPnpm(['install', '--prod', '--frozen-lockfile', '--trust-lockfile'], cache))
     const packageSet = readDesktopCorePackageSet(BUILD_ROOT, release.version)
     const targetName = resolveDesktopBuildTarget()
-    const target = { platform: process.platform, arch: desktopTargetPlatform(targetName).arch }
+    const target = { platform: desktopTargetPlatform(targetName).platform, arch: desktopTargetPlatform(targetName).arch }
     const modules = join(BUILD_ROOT, 'node_modules')
     const officeManifest = JSON.parse(readFileSync(join(modules, '@deepseek-ai/libreoffice-kit/package.json'), 'utf8'))
     const officeEngine = selectOfficeEngine(officeManifest, target)
@@ -168,6 +184,9 @@ async function main(): Promise<void> {
     await packagingStep(process.env.DSH_DESKTOP_PACKAGING_RUN_DIR, 'runtime:primary-smoke', async () => smokePrimaryRuntime(join(RUNTIME_ROOT, 'primary-runtime')))
     await packagingStep(process.env.DSH_DESKTOP_PACKAGING_RUN_DIR, 'runtime:write-descriptor', async () => writeDesktopRuntime(DSH_OUTPUT_ROOT, release, packageSet.packages.map(entry => entry.name), target))
     const descriptor = await packagingStep(process.env.DSH_DESKTOP_PACKAGING_RUN_DIR, 'runtime:verify-before-smoke', () => verifyDesktopRuntime(DSH_OUTPUT_ROOT, release.version, target))
+    if (CROSS_MACOS && !process.argv.includes('--defer-runtime-smoke')) {
+      throw new Error('desktop cross runtime: target execution checks must be deferred to an actual macOS acceptance host')
+    }
     if (!process.argv.includes('--defer-runtime-smoke')) {
       await packagingStep(process.env.DSH_DESKTOP_PACKAGING_RUN_DIR, 'runtime:smoke', () => smokePreparedRuntime(DSH_OUTPUT_ROOT, NODE, RUNTIME_ROOT, descriptor))
       await packagingStep(process.env.DSH_DESKTOP_PACKAGING_RUN_DIR, 'runtime:verify-after-smoke', () => verifyDesktopRuntime(DSH_OUTPUT_ROOT, release.version, target))
