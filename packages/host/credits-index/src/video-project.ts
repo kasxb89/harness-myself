@@ -1275,7 +1275,7 @@ async function executeVideoProject(
       result = { path: manifest.composedPath, durationSeconds: manifest.composedDurationSeconds }
     } else {
       result = await editor.compose({
-        clips: manifest.segments.map(segment => ({ path: savedPath(segment) })),
+        clips: manifest.segments.map(segment => ({ path: savedPath(segment), endSeconds: segment.durationSeconds })),
         outputPath: join(manifest.outputDirectory, mediaFilename({
           ...manifest.input.title === undefined ? {} : { title: manifest.input.title },
           prompt: manifest.input.prompt, role: 'final', extension: 'mp4',

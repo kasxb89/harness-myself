@@ -1,0 +1,10 @@
+version: 1
+scenario: video-project-clip-boundary
+profile: web
+composition: video-project-clip-boundary
+recording: authored
+header:
+  class: video-project-clip-boundary
+  pin: true
+workspace:
+  final: true

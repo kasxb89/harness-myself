@@ -28,7 +28,7 @@ import * as JobTools from '@deepseek-ai/dsh-tool-jobs'
 import Tools from '@deepseek-ai/dsh-tools'
 import UserQuestions, { type AskUserQuestionItem } from '@deepseek-ai/dsh-user-questions'
 import WorkingDirectory from '@deepseek-ai/dsh-working-directory'
-import { expect, it, onTestFinished, vi } from 'vitest'
+import { expect, it, onTestFailed, onTestFinished, vi, type TestContext } from 'vitest'
 import * as Credits from '../src/index.ts'
 import { catalogFromPricing } from '../src/media.ts'
 import { MediaPreferencesStore, mediaPreferencesScope } from '../src/media-preferences.ts'
@@ -52,23 +52,27 @@ const ffmpeg = runtimeRoot === undefined ? undefined : join(runtimeRoot, 'bin', 
 const ffprobe = runtimeRoot === undefined ? undefined : join(runtimeRoot, 'bin', process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe')
 const available = ffmpeg !== undefined && ffprobe !== undefined && existsSync(ffmpeg) && existsSync(ffprobe)
 const cases = [
-  { name: 'synthetic-fifteen-second-maximum', fiveOnly: false, fifteenSeconds: true, ceiling: undefined, localCeiling: undefined, expectedPeak: 1, totalSeconds: 15 },
-  { name: 'actual-catalog-single-native-clip', fiveOnly: false, fifteenSeconds: false, ceiling: undefined, localCeiling: undefined, expectedPeak: 1, totalSeconds: 10 },
-  { name: 'actual-catalog-five-second-preference', fiveOnly: false, fifteenSeconds: false, ceiling: undefined, localCeiling: undefined, expectedPeak: 2, totalSeconds: 20 },
-  { name: 'synthetic-five-only-contract-ceiling-two', fiveOnly: true, fifteenSeconds: false, ceiling: 2, localCeiling: undefined, expectedPeak: 2, totalSeconds: 20 },
-  { name: 'actual-catalog-twenty-slot-pool', fiveOnly: false, fifteenSeconds: false, ceiling: 20, localCeiling: undefined, expectedPeak: 12, totalSeconds: 120 },
-  { name: 'actual-catalog-twenty-slot-pool-local-six', fiveOnly: false, fifteenSeconds: false, ceiling: 20, localCeiling: 6, expectedPeak: 6, totalSeconds: 120 },
+  { name: 'synthetic-fifteen-second-maximum', fiveOnly: false, fifteenSeconds: true, paddingSeconds: 0, ceiling: undefined, localCeiling: undefined, expectedPeak: 1, totalSeconds: 15 },
+  { name: 'actual-catalog-single-native-clip', fiveOnly: false, fifteenSeconds: false, paddingSeconds: 0, ceiling: undefined, localCeiling: undefined, expectedPeak: 1, totalSeconds: 10 },
+  { name: 'actual-catalog-five-second-preference', fiveOnly: false, fifteenSeconds: false, paddingSeconds: 0, ceiling: undefined, localCeiling: undefined, expectedPeak: 2, totalSeconds: 20 },
+  { name: 'actual-catalog-provider-tail-padding', fiveOnly: false, fifteenSeconds: false, paddingSeconds: 0.7, ceiling: undefined, localCeiling: undefined, expectedPeak: 2, totalSeconds: 20 },
+  { name: 'synthetic-five-only-contract-ceiling-two', fiveOnly: true, fifteenSeconds: false, paddingSeconds: 0, ceiling: 2, localCeiling: undefined, expectedPeak: 2, totalSeconds: 20 },
+  { name: 'actual-catalog-twenty-slot-pool', fiveOnly: false, fifteenSeconds: false, paddingSeconds: 0, ceiling: 20, localCeiling: undefined, expectedPeak: 12, totalSeconds: 120 },
+  { name: 'actual-catalog-twenty-slot-pool-local-six', fiveOnly: false, fifteenSeconds: false, paddingSeconds: 0, ceiling: 20, localCeiling: 6, expectedPeak: 6, totalSeconds: 120 },
 ] as const
 
-it.skipIf(!available).each(cases)('$name generates $totalSeconds seconds under its declared concurrency and joins one work', async ({ name, fiveOnly, fifteenSeconds, ceiling, localCeiling, expectedPeak, totalSeconds }) => {
+it.skipIf(!available).for(cases)('$name generates $totalSeconds seconds under its declared concurrency and joins one work', { timeout: 90_000 }, async ({ name, fiveOnly, fifteenSeconds, paddingSeconds, ceiling, localCeiling, expectedPeak, totalSeconds }: typeof cases[number], { signal: testSignal }: TestContext) => {
   if (runtimeRoot === undefined || ffmpeg === undefined || ffprobe === undefined) throw new Error('Set the prepared native FFmpeg runtime')
   const clipSeconds = fiveOnly ? 5 : fifteenSeconds ? 15 : 10
   const planSeconds = Array.from({ length: totalSeconds / clipSeconds }, () => clipSeconds)
   const directory = await realpath(await mkdtemp(join(tmpdir(), 'dsh-video-five-second-compose-')))
   const ctx = new Context(), source = createServer()
+  let cleanupObservation = () => {}
   onTestFinished(async () => {
-    try { await ctx.fiber.dispose() } finally {
-      try { await close(source) } finally { await rm(directory, { recursive: true, force: true }) }
+    try { cleanupObservation() } finally {
+      try { await ctx.fiber.dispose() } finally {
+        try { await close(source) } finally { await rm(directory, { recursive: true, force: true }) }
+      }
     }
   })
   const workspace = join(directory, 'workspace'), stateDir = join(directory, 'credits'), fixtureDir = join(directory, 'fixtures')
@@ -112,7 +116,10 @@ it.skipIf(!available).each(cases)('$name generates $totalSeconds seconds under i
     for (const [index, color] of ['red', 'green', 'blue', 'yellow'].entries()) {
       const path = join(fixtureDir, `${String(duration)}-${String(index)}.mp4`)
       execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-nostdin', '-n', '-f', 'lavfi', '-i',
-        `color=c=${color}:s=160x120:r=10:d=${String(duration)}`, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', path], { timeout: 30_000 })
+        `color=c=${color}:s=160x120:r=10:d=${String(duration + paddingSeconds)}`,
+        ...paddingSeconds === 0 ? [] : ['-vf',
+          `drawbox=color=white:t=fill:enable='gte(t,${String(duration - 0.5)})*lt(t,${String(duration)})',drawbox=color=magenta:t=fill:enable='gte(t,${String(duration)})'`],
+        '-c:v', 'libx264', '-pix_fmt', 'yuv420p', path], { timeout: 30_000 })
       const bytes = await readFile(path); list.push({ path, bytes, hash: digest(bytes) })
     }
     samples.set(duration, list)
@@ -199,6 +206,17 @@ it.skipIf(!available).each(cases)('$name generates $totalSeconds seconds under i
   } } as NonNullable<typeof ctx.loader.internal>
   await ctx.loader.create({ name: 'cordis:include', config: { path: pathToFileURL(configPath).href } }); await ctx.loader.await()
   expect([...ctx.loader.entries()].filter(entry => entry.fiber === undefined && !entry.disabled)).toEqual([])
+  const processes: { tool: string; startedAt: number; endedAt?: number; state: string; outcome?: object }[] = []
+  const spawn = ctx.subprocess.spawn.bind(ctx.subprocess)
+  const processSpy = vi.spyOn(ctx.subprocess, 'spawn').mockImplementation((spec) => {
+    const observation = { tool: basename(spec.argv[0] ?? ''), startedAt: Date.now(), state: 'running' }
+    processes.push(observation)
+    const handle = spawn(spec)
+    void handle.done.then(outcome => Object.assign(observation, { state: 'settled', endedAt: Date.now(), outcome }),
+      () => Object.assign(observation, { state: 'rejected', endedAt: Date.now() }))
+    return handle
+  })
+  onTestFinished(() => { processSpy.mockRestore() })
   const sessionId = SessionId(`five-seconds-${name}`), session = Session.create(sessionId, [], {
     version: SESSION_FORMAT_VERSION, id: sessionId, createdAt: 0, isSeeded: false, cwd: workspace,
   })
@@ -234,7 +252,41 @@ it.skipIf(!available).each(cases)('$name generates $totalSeconds seconds under i
   const started = object(start.value)
   expect(started, JSON.stringify(started)).toMatchObject({ status: 'background', plan_seconds: planSeconds })
   const jobId = JobId(text(started.job_id))
-  await vi.waitFor(() => { expect(['completed', 'failed', 'killed']).toContain(ctx.jobs.get(jobId, agent.id).status) }, { timeout: 60_000, interval: 20 })
+  let abortedObservation: object | undefined
+  onTestFailed(async () => {
+    if (process.env.DSH_MEDIA_AUDIT_OUTPUT_DIR !== undefined) {
+      const out = join(process.env.DSH_MEDIA_AUDIT_OUTPUT_DIR, name); await mkdir(out, { recursive: true })
+      const retained = object(JSON.parse(await readFile(join(stateDir, 'video-projects', text(started.project_id), 'manifest.json'), 'utf8')))
+      await writeFile(join(out, 'terminal-wait-failure.json'), JSON.stringify({ job: ctx.jobs.get(jobId, agent.id),
+        output: ctx.jobs.readAt(jobId, 0, agent.id), expectedPeak, peakInFlight, nativePostCount: tasks.size,
+        inFlight: [...inFlight], segments: retained.segments, processes, calls, abortedObservation }, null, 2) + '\n')
+    }
+  })
+  await new Promise<void>((resolve, reject) => {
+    let settled = false
+    let unsubscribe = () => {}
+    const detach = () => { unsubscribe(); testSignal.removeEventListener('abort', cancel) }
+    const complete = () => {
+      if (settled) return
+      settled = true; detach(); resolve()
+    }
+    const cancel = () => {
+      if (settled) return
+      abortedObservation = { job: ctx.jobs.get(jobId, agent.id), processes: processes.map(process => ({ ...process })) }
+      settled = true; detach()
+      const reason: unknown = testSignal.reason
+      try { ctx.jobs.kill(jobId, agent.id, 'test-lane-cancelled') } finally {
+        reject(reason instanceof Error ? reason : new Error('Owned test finished before its video job settled', { cause: reason }))
+      }
+    }
+    cleanupObservation = () => { if (settled) detach(); else cancel() }
+    unsubscribe = ctx.jobs.events.subscribe({ owner: agent.id }, (event) => {
+      if (event.type === 'settled' && event.job.id === jobId) complete()
+    })
+    testSignal.addEventListener('abort', cancel, { once: true })
+    if (['completed', 'failed', 'killed'].includes(ctx.jobs.get(jobId, agent.id).status)) complete()
+    else if (testSignal.aborted) cancel()
+  })
   expect(ctx.jobs.get(jobId, agent.id).status).toBe('completed')
   const collected = await execute('job_output', { job_id: jobId }, 2)
   const finalLine = text(object(collected.value).text).split('\n').filter(line => line.startsWith('{')).at(-1)
@@ -268,6 +320,45 @@ it.skipIf(!available).each(cases)('$name generates $totalSeconds seconds under i
   const segments = manifest.segments
   if (!Array.isArray(segments)) throw new Error('Expected durable project segments')
   expect(segments).toHaveLength(planSeconds.length)
+  const frame = (source: string, seconds: number) => execFileSync(ffmpeg, [
+    '-hide_banner', '-loglevel', 'error', '-nostdin', '-ss', String(seconds), '-i', source,
+    '-frames:v', '1', '-vf', 'scale=1:1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1',
+  ], { timeout: 30_000 })
+  if (paddingSeconds > 0) {
+    const second = object(segments[1]), path = text(second.path)
+    const nativeDurations = segments.map((value, index) => {
+      const segment = object(value)
+      const duration = object(JSON.parse(execFileSync(ffprobe, ['-v', 'error', '-show_entries', 'format=duration',
+        '-of', 'json', text(segment.path)], { encoding: 'utf8', timeout: 30_000 })))
+      const nativeDuration = Number(object(duration.format).duration)
+      expect(nativeDuration).toBeCloseTo(planSeconds[index]! + paddingSeconds, 1)
+      return nativeDuration
+    })
+    for (const value of segments) {
+      const segment = object(value), native = tasks.get(text(segment.taskId))
+      if (native === undefined) throw new Error('Expected retained original task')
+      expect(digest(await readFile(text(segment.path)))).toBe(native.media.hash)
+    }
+    const checkpoints = [{ name: 'second-clip-start', sourceSeconds: 0.2, finalSeconds: planSeconds[0]! + 0.2 },
+      { name: 'second-clip-planned-tail', sourceSeconds: planSeconds[1]! - 0.2, finalSeconds: totalSeconds - 0.2 }]
+      .map(checkpoint => ({ ...checkpoint, expectedRgb: [...frame(path, checkpoint.sourceSeconds)],
+        actualRgb: [...frame(finalPath, checkpoint.finalSeconds)] }))
+    if (process.env.DSH_MEDIA_AUDIT_OUTPUT_DIR !== undefined) {
+      const out = join(process.env.DSH_MEDIA_AUDIT_OUTPUT_DIR, name); await mkdir(out, { recursive: true })
+      await copyFile(finalPath, join(out, 'final-boundary-audit.mp4'))
+      for (const [index, value] of segments.entries()) {
+        await copyFile(text(object(value).path), join(out, `original-padded-${String(index + 1)}.mp4`))
+      }
+      await writeFile(join(out, 'tail-frame-evidence.json'), JSON.stringify({ planSeconds, nativeDurations, paddingSeconds,
+        finalDurationSeconds: Number(object(probe.format).duration), checkpoints, posts, realUpstreamCalls: 0, paidCalls: 0 }, null, 2) + '\n')
+    }
+    for (const checkpoint of checkpoints) {
+      expect(checkpoint.expectedRgb).toHaveLength(3); expect(checkpoint.actualRgb).toHaveLength(3)
+      for (let channel = 0; channel < 3; channel += 1) {
+        expect(Math.abs(checkpoint.actualRgb[channel]! - checkpoint.expectedRgb[channel]!), checkpoint.name).toBeLessThanOrEqual(4)
+      }
+    }
+  }
   const clipHashes = []
   let elapsedSeconds = 0
   for (const [index, value] of segments.entries()) {
@@ -278,10 +369,6 @@ it.skipIf(!available).each(cases)('$name generates $totalSeconds seconds under i
     const native = tasks.get(text(segment.taskId))
     if (native === undefined) throw new Error('Every saved clip must belong to its original submitted task')
     expect(digest(bytes)).toBe(native.media.hash)
-    const frame = (source: string, seconds: number) => execFileSync(ffmpeg, [
-      '-hide_banner', '-loglevel', 'error', '-nostdin', '-ss', String(seconds), '-i', source,
-      '-frames:v', '1', '-vf', 'scale=1:1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1',
-    ], { timeout: 30_000 })
     const expectedColor = frame(path, durationSeconds / 2)
     const finalColor = frame(finalPath, elapsedSeconds + durationSeconds / 2)
     expect(expectedColor).toHaveLength(3); expect(finalColor).toHaveLength(3)
@@ -309,4 +396,4 @@ it.skipIf(!available).each(cases)('$name generates $totalSeconds seconds under i
     savedPreference: saved.video, selection, started, posts, quoteSummaries, peakInFlight, ceiling: ceiling ?? 'local default4', localCeiling, totalSeconds, probe, finalHash: digest(await readFile(finalPath)),
     clipHashes, finishedWorkOperationCount: creation.operations.length, publishedOutputCount: planSeconds.length + 1, questions, calls, nativeRuntime: runtimeRoot, finalFilename: basename(finalPath), realUpstreamCalls: 0, paidCalls: 0 }, null, 2) + '\n')
   }
-}, 90_000)
+})

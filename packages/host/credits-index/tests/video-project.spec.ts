@@ -121,6 +121,29 @@ async function setup(durations = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]) {
   }
 }
 
+it('bounds every original clip by its planned end on initial and recovered composition', async () => {
+  const f = await setup([10, 30])
+  vi.spyOn(f.provider, 'download').mockImplementation(async (_taskId, request, path) => {
+    await writeFile(path, String(Number(request.durationSeconds) + 0.7))
+  })
+  const originalCompose = f.editor.compose.bind(f.editor)
+  const compose = vi.spyOn(f.editor, 'compose').mockRejectedValueOnce(new Error('local composition interrupted'))
+    .mockImplementationOnce(originalCompose)
+  const manifest = await f.prepare()
+  expect(manifest.segments.map(segment => segment.durationSeconds)).toEqual([30, 10])
+  expect((await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal)).status).toBe('failed')
+  expect(f.submitted).toBe(2)
+  const recovered = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+  expect((await runVideoProject(f.options, recovered, f.provider, f.editor, f.job, f.signal)).status).toBe('completed')
+  expect(f.submitted).toBe(2)
+  expect(compose).toHaveBeenCalledTimes(2)
+  for (const [request] of compose.mock.calls) {
+    expect(request.clips).toEqual(manifest.segments.map(segment => ({ path: segment.path, endSeconds: segment.durationSeconds })))
+    expect(request.totalDurationSeconds).toBe(40)
+  }
+  expect(await Promise.all(manifest.segments.map(segment => readFile(segment.path!, 'utf8')))).toEqual(['30.7', '10.7'])
+})
+
 describe('explicit same-work funding retries', () => {
   const original = { messageId: 'original-human', seq: 1 }
   const later = { messageId: 'recharged-human', seq: 20 }
