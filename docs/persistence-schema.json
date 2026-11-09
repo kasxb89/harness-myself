@@ -23505,7 +23505,7 @@
         "packages/host/credits-index/src/media-preferences-types.ts#MediaPreferenceSelection"
       ],
       "sources": [
-        "packages/host/credits-index/src/media-preferences-types.ts:6"
+        "packages/host/credits-index/src/media-preferences-types.ts:7"
       ]
     },
     {
@@ -23944,7 +23944,7 @@
         "packages/host/credits-index/src/media-preferences-types.ts#MediaRequestSelection"
       ],
       "sources": [
-        "packages/host/credits-index/src/media-preferences-types.ts:56"
+        "packages/host/credits-index/src/media-preferences-types.ts:60"
       ]
     },
     {

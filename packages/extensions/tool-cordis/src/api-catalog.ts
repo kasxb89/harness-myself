@@ -1320,6 +1320,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         parameters: [{ name: 'baseURL', description: 'Exact model API root being requested.' }, { name: 'expectedModelLimitsScope', description: 'Optional account/backend binding captured with prepared model limits; a changed account must refuse it, while ordinary same-account credential renewal keeps it valid.' }],
         returns: 'The current relay key, or undefined when no live session authorizes this exact request scope.',
       },
+      {
+        signature: 'authorizeModelConfig?(request: HarnessModelConfigRequest): Promise<boolean>',
+        description: 'Authorize one prepared version and original capacity pair against the current owned directory.',
+        parameters: [{ name: 'request', description: 'Exact backend, account scope, model and authoritative metadata captured before overrides.' }],
+        returns: 'True only while this same live account and complete published declaration still match.',
+      },
     ],
   },
   {
@@ -5655,6 +5661,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface GrantRecord {\n    readonly kind: \'grant\';\n    readonly payload: unknown;\n}',
   },
   {
+    name: 'HarnessModelConfigRequest',
+    declaration: 'export interface HarnessModelConfigRequest {\n    readonly baseURL: string;\n    readonly model: string;\n    readonly scope: string;\n    readonly modelConfigVersion: Branded<\'ModelConfigVersion\'>;\n    readonly contextWindow: number;\n    readonly maxTokens: number;\n}',
+  },
+  {
     name: 'HookBudget',
     declaration: 'export interface HookBudget {\n    readonly ms: number;\n    readonly remainingMs: number;\n}',
   },
@@ -6205,6 +6215,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'ModelCatalogModel',
     declaration: 'export interface ModelCatalogModel {\n    readonly id: string;\n    readonly name: string;\n    readonly description?: string;\n    readonly presentation?: {\n        readonly description?: string;\n        readonly badge?: string;\n    };\n    readonly reasoning?: ModelReasoning;\n    readonly inputModalities?: LlmModelInfo[\'inputModalities\'];\n    readonly textCapabilities?: LlmTextCapabilities;\n    readonly executionCapabilities?: ModelExecutionCapabilities;\n    readonly limits?: LlmModelLimits;\n    readonly limitSettings?: {\n        readonly settingsNs: string;\n        readonly settingsPath: readonly string[];\n    };\n}',
+  },
+  {
+    name: 'ModelConfigVersion',
+    declaration: 'export type ModelConfigVersion = Branded<\'ModelConfigVersion\'>;',
   },
   {
     name: 'ModelExecutionCapabilities',

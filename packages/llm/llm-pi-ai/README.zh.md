@@ -103,6 +103,8 @@ profile 的 `models` 列表会替换而非扩展路由的已安装目录；每�
 
 公开账号模型目录可以单独同步 `managedLimits: {scope, contextWindow?, maxTokens?}`，不会覆盖手工字段。提供方的 `managedLimitsScope` 必须与模型 scope 完全匹配；其他账号或后端遗留的限制不生效。当前声明替换未知型号及已安装目录的容量猜测，增大和缩小都能生效，同步声明设置 `authoritative: true` 时，其对应的容量优先于模型级手工值，缺失字段继续采用手工回退。其他声明仍受较小手工容量限制。较小的逐次请求 `maxTokens` 预算继续生效。当前模型的输出预算提供 SDK 默认值，并由预备请求元数据记录。另行发布的 `maxOutputTokens` 也约束显式覆盖。受管理的输出上限保留 pi-ai 的空上下文安全余量；已有历史还可能使 SDK 发出更小的实际请求预算。受管理的输出硬上限仅适用于适配器已核验序列化的 Chat Completions 与 Responses。受管理 Responses 会拒绝禁用输出限制字段、低于十六个 token 的预算、上下文余量不足，以及会省略该字段的官方 OpenAI 登录方式。其他原生协议在没有受管理输出声明时保留原有行为。预备的产品请求会将已捕获的模型限制 scope 交给实时凭据解析；切换账号会在提供方 I/O 前中止旧请求，同账号正常续期仍然有效，新目录查询使用当前账号且不要求旧 scope。Token 数必须是正的 32 位有符号整数。没有适用的受管理输出声明时，模型保留原请求行为。
 
+可选的 `managedLimits.modelConfigVersion` 属于同一精确型号、账号 scope 与原始有效容量组合。预备的 Chat Completions 调用先共同捕获这些数据，再应用较小的个人预算。实时 `HarnessAccount.authorizeModelConfig` 必须在传输前立即确认该快照；仅有 profile 字段不授予发送版本请求头的权限。网关只经受约束且可信的账号路由收到 `X-Yunshu-Model-Config-Version`。配置过期以 `MODEL_CONFIG_CHANGED` 停止，不授予文本模型重选或自动重发许可。成功回显缺失或冲突产生 `MODEL_CONFIG_CONFIRMATION_UNAVAILABLE`；请求可能已经计费，不能自动重复。仅更新模型目录时也会刷新运行时注册的实际重试策略，避免原有的始终重试策略重复发送尚未确认的新版本 POST。旧版无版本路由保留原请求行为。
+
 用户明确选择单独保存在路由级 `modelLimitOverrides[modelId] = {scope, contextWindow?, maxTokens?}` 字典中。每条记录至少提供一个正整数 token 数，并同时匹配提供方当前 scope 和模型的受管理 scope。有效值取用户选择、当前平台上限和 SDK 上下文余量允许值的较小值；保存的原始选择不改写，平台以后提高上限时可恢复用户要求。目录同步和模型临时下架保留此字典。删除该记录恢复动态平台限制，不重新启用已被权威声明覆盖的旧模型级数值。解析结果的 `limits` 分别提供有效容量、已知平台上限和当前原始选择；未知平台上限保持缺席。
 
 第一版策略中，账号绑定的 `managedLimits.textCapabilities` 声明约束此路由的工具、视觉、推理、流式能力和输入 token 上限。`vision: false` 将模型输入限定为文本；`reasoning: false` 禁用配置中的推理默认值，不丢弃已有推理回放。显式不兼容的工具、工具历史、附件、推理控制或非流式路由会在提供方 I/O 前以 `MODEL_CAPABILITY_*` 码失败。适配器不会通过删除声明或历史让请求勉强通过。实际上下文取原生／手工窗口与渠道输入上限加输出预算的较小值；这是请求预算，不是新的原生硬件容量。

@@ -11,7 +11,7 @@ English | [中文](guide.zh.md)
 
 The product account model synchronizer marks verified `context_window` and `max_output_tokens` capacities with local `managedLimits.authoritative: true`. These capacities take precedence over saved model-level `contextWindow` and `maxTokens`, including smaller values saved by older clients. Changes apply to subsequent requests in existing conversations after the model catalog refreshes. Explicit smaller request budgets and SDK context headroom continue to limit each request.
 
-The marker requires the same backend and account scope. Missing or invalid fields retain that owner's last verified capacities. A capacity the backend has never declared retains its existing fallback. Provider routes outside the product account synchronizer keep their existing manual-capacity behavior.
+The marker requires the same backend and account scope. Legacy unversioned directories retain that owner's last verified capacities when fields are missing or invalid. A versioned model requires its complete verified effective context/output counts from the same publication; incomplete or crossed metadata stops the update rather than borrowing another value. A capacity the backend has never declared retains its existing fallback. Provider routes outside the product account synchronizer keep their existing manual-capacity behavior.
 
 ## Migration
 

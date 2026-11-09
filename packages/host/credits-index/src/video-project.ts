@@ -13,12 +13,14 @@ import { parseArtifactOrigin } from './artifact-origin.ts'
 import { VideoEditError, type VideoEditor } from './video-edit.ts'
 import { VideoRelayError } from './video-project-provider.ts'
 import { VideoSubmissionRejection } from './video-submission-result.ts'
+import { readModelConfigVersion, type ModelConfigVersion } from './model-config-version.ts'
+import { MediaModelConfigRejection, mediaModelConfigRejectionMessage, type MediaModelConfigRejectionCode } from './media-model-config-result.ts'
 import { DEFAULT_VIDEO_PROJECT_PARALLELISM } from './video-concurrency.ts'
 import { videoShotInput } from './video-shot-references.ts'
 import { creationTaskActivity, notifyCreationActivity } from './creation-activity.ts'
 import { mediaFilename, MAX_MEDIA_FILENAME_BYTES, type MediaFilenameOptions } from './media-filename.ts'
 import type { CreationActivityOutcome } from './creation-activity.ts'
-import type { VideoProjectIdentity, VideoProjectInput, VideoProjectOptions, VideoProjectProvider, VideoProjectRequest, VideoRequestValue } from './video-project-types.ts'
+import type { VideoModelConfigSnapshot, VideoProjectIdentity, VideoProjectInput, VideoProjectOptions, VideoProjectProvider, VideoProjectRequest, VideoRequestValue } from './video-project-types.ts'
 import { isLaterVideoSubmissionRevision, parseVideoBalanceRejection, parseVideoSubmissionRevision,
   type VideoBalanceRejection, type VideoSubmissionRevision } from './video-balance-retry.ts'
 
@@ -58,7 +60,8 @@ export class VideoProjectError extends Error {
  * @returns Stable failure code and an actionable summary without raw exception data.
  */
 export function videoProjectFailure(error: unknown): { code: string; message: string } {
-  if (error instanceof VideoProjectError || error instanceof VideoRelayError || error instanceof VideoSubmissionRejection) {
+  if (error instanceof VideoProjectError || error instanceof VideoRelayError || error instanceof VideoSubmissionRejection
+    || error instanceof MediaModelConfigRejection) {
     return { code: error.code, message: error.message }
   }
   if (error instanceof VideoEditError) {
@@ -107,6 +110,10 @@ export interface VideoProjectSegment {
   publishedPath?: string
   /** Verified funding refusal, retained independently from a generic failed or unknown outcome. */
   balanceRejection?: VideoBalanceRejection
+  /** Failed remains an admission barrier for legacy readers; this marker grants no retry permission. */
+  configRejection?: { code: MediaModelConfigRejectionCode; requestId: string }
+  /** Version reported by the original acknowledgement, separate from the prepared project version. */
+  acknowledgedModelConfigVersion?: ModelConfigVersion
   /** Original refused attempts remain available after an explicitly authorized later attempt. */
   previousAttempts?: { attemptId?: VideoProjectAttemptId; taskId?: string; balanceRejection: VideoBalanceRejection }[]
 }
@@ -114,7 +121,7 @@ export interface VideoProjectSegment {
 /** Versioned private project state, never used as an in-memory jobs substitute. */
 export interface VideoProjectManifest {
   /** Private-record parser version. */
-  version: 1
+  version: 1 | 2
   /** Latest real human input consumed by a submission or an explicit funding retry. */
   submissionRevision?: VideoSubmissionRevision
   /** Immutable project identifier. */
@@ -129,6 +136,8 @@ export interface VideoProjectManifest {
   input: VideoProjectInput
   /** Resolved provider model. */
   model: string
+  /** One original model-row version shared by every prepared native request; absent in legacy records. */
+  modelConfigVersion?: ModelConfigVersion
   /** Operation state persisted at each externally meaningful step. */
   status: 'prepared' | 'running' | 'editing' | 'completed' | 'failed' | 'cancelled'
   /** Plan and reusable generation results. */
@@ -232,6 +241,11 @@ export function resolveVideoOutputDirectory(
 
 /** Restrict retained prompt and reference input before persisting provider requests. */
 function validateInput(input: VideoProjectInput, maxTotalSeconds: number): void {
+  if (input.modelConfigSnapshot !== undefined) {
+    const snapshot = parseConfigSnapshot(input.modelConfigSnapshot)
+    if (input.model !== undefined && snapshot.model !== input.model) throw new VideoProjectError('MODEL_CONFIG_CHANGED',
+      '模型配置快照与所选型号不一致，尚未提交生成；请重新读取当前型号后明确操作。')
+  }
   if (input.prompt.trim() === '' || input.prompt.length > MAX_PROMPT_LENGTH) throw new VideoProjectError('INVALID_PROMPT', '请提供 1 至 7000 字符的视频说明。')
   if (input.title !== undefined && (input.title.trim() === '' || input.title.length > 256)
     || input.shotTitles?.some(title => title.trim() === '' || title.length > 256)) {
@@ -447,6 +461,34 @@ function record(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>
 }
 
+/** Optional private metadata never upgrades a legacy record to a fresh model version. */
+function savedConfigVersion(value: unknown): ModelConfigVersion | undefined {
+  if (value === undefined) return undefined
+  try { return readModelConfigVersion({ model_config_version: value }) } catch (_invalidVersion: unknown) {
+    throw new VideoProjectError('INVALID_RECORD', '视频模型配置版本损坏，已停止操作。')
+  }
+}
+
+function parseConfigSnapshot(value: unknown): VideoModelConfigSnapshot {
+  const source = record(value), model = text(source, 'model')
+  if (model.trim() !== model || model.length > 191 || /[\u0000-\u0020\u007f]/u.test(model)
+    || Object.keys(source).some(key => key !== 'model' && key !== 'modelConfigVersion')) {
+    throw new VideoProjectError('INVALID_RECORD', '视频模型配置快照损坏，已停止操作。')
+  }
+  const modelConfigVersion = savedConfigVersion(source.modelConfigVersion)
+  return Object.freeze({ model, ...modelConfigVersion === undefined ? {} : { modelConfigVersion } })
+}
+
+function parseConfigRejection(value: unknown): NonNullable<VideoProjectSegment['configRejection']> {
+  const source = record(value)
+  if ((source.code !== 'MODEL_CONFIG_CHANGED' && source.code !== 'MODEL_PARAMETERS_INVALID')
+    || typeof source.requestId !== 'string' || source.requestId.length > 256 || !/^[A-Za-z0-9_-]+$/u.test(source.requestId)
+    || Object.keys(source).some(key => key !== 'code' && key !== 'requestId')) {
+    throw new VideoProjectError('INVALID_RECORD', '视频配置拒绝记录损坏，已停止操作。')
+  }
+  return { code: source.code, requestId: source.requestId }
+}
+
 /** Accept only the UUID form issued for individual clip attempts. */
 function videoAttemptId(value: unknown): VideoProjectAttemptId {
   if (typeof value !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u.test(value)) {
@@ -515,7 +557,8 @@ function parseManifest(value: unknown): VideoProjectManifest {
   const source = record(value)
   const identity = record(source.identity)
   const input = record(source.input)
-  if (source.version !== 1 || !Array.isArray(source.segments) || source.segments.length > 1024) throw new VideoProjectError('INVALID_RECORD', '不支持该视频项目记录，已停止操作。')
+  const version = source.version
+  if ((version !== 1 && version !== 2) || !Array.isArray(source.segments) || source.segments.length > 1024) throw new VideoProjectError('INVALID_RECORD', '不支持该视频项目记录，已停止操作。')
   const status = source.status
   if (status !== 'prepared' && status !== 'running' && status !== 'editing' && status !== 'completed' && status !== 'failed' && status !== 'cancelled') throw new VideoProjectError('INVALID_RECORD', '视频项目状态无效，已停止操作。')
   if (status === 'completed' && (source.finalPath === undefined || source.finalDurationSeconds === undefined)) {
@@ -537,6 +580,18 @@ function parseManifest(value: unknown): VideoProjectManifest {
     ...input.audio === undefined ? {} : { audio: input.audio },
     ...input.seed === undefined ? {} : { seed: input.seed },
     ...input.watermark === undefined ? {} : { watermark: input.watermark },
+    ...input.modelConfigSnapshot === undefined ? {} : { modelConfigSnapshot: parseConfigSnapshot(input.modelConfigSnapshot) },
+  }
+  const modelConfigVersion = savedConfigVersion(source.modelConfigVersion)
+  const model = text(source, 'model')
+  if (version === 2 && parsedInput.modelConfigSnapshot === undefined) throw new VideoProjectError('INVALID_RECORD',
+    '新版视频项目缺少原始模型配置快照，已停止操作。')
+  if (version === 1 && (parsedInput.modelConfigSnapshot !== undefined || modelConfigVersion !== undefined)) {
+    throw new VideoProjectError('INVALID_RECORD', '视频项目格式与模型配置快照不一致，已停止操作。')
+  }
+  if (parsedInput.modelConfigSnapshot !== undefined && (parsedInput.modelConfigSnapshot.model !== model
+    || parsedInput.modelConfigSnapshot.modelConfigVersion !== modelConfigVersion)) {
+    throw new VideoProjectError('INVALID_RECORD', '视频模型配置快照与原记录不一致，已停止操作。')
   }
   if (parsedInput.title !== undefined && (parsedInput.title.trim() === '' || parsedInput.title.length > 256)
     || parsedInput.shotTitles !== undefined && (parsedInput.shotTitles.length !== source.segments.length
@@ -553,6 +608,13 @@ function parseManifest(value: unknown): VideoProjectManifest {
     const request = requestValue(segment.request)
     if (request === null || typeof request !== 'object' || Array.isArray(request)) throw new VideoProjectError('INVALID_RECORD', '视频片段请求无效，已停止操作。')
     const balanceRejection = segment.balanceRejection === undefined ? undefined : parseVideoBalanceRejection(segment.balanceRejection)
+    const configRejection = segment.configRejection === undefined ? undefined : parseConfigRejection(segment.configRejection)
+    const acknowledgedModelConfigVersion = savedConfigVersion(segment.acknowledgedModelConfigVersion)
+    if (configRejection !== undefined && (status !== 'failed' || segment.taskId !== undefined || balanceRejection !== undefined)
+      || acknowledgedModelConfigVersion !== undefined && segment.taskId === undefined
+      || (modelConfigVersion !== undefined || parsedInput.modelConfigSnapshot !== undefined) && request.model !== model) {
+      throw new VideoProjectError('INVALID_RECORD', '视频配置快照或未提交拒绝记录与原任务不一致，已停止操作。')
+    }
     if (segment.balanceRejection !== undefined && balanceRejection === undefined
       || balanceRejection !== undefined && (status !== 'failed' || balanceRejection.taskId !== segment.taskId)) {
       throw new VideoProjectError('INVALID_RECORD', '视频余额拒绝记录无法核对，已停止操作。')
@@ -575,6 +637,8 @@ function parseManifest(value: unknown): VideoProjectManifest {
       ...segment.path === undefined ? {} : { path: text(segment, 'path') },
       ...segment.publishedPath === undefined ? {} : { publishedPath: text(segment, 'publishedPath') },
       ...balanceRejection === undefined ? {} : { balanceRejection },
+      ...configRejection === undefined ? {} : { configRejection },
+      ...acknowledgedModelConfigVersion === undefined ? {} : { acknowledgedModelConfigVersion },
       ...previousAttempts === undefined ? {} : { previousAttempts },
     }
   })
@@ -599,9 +663,9 @@ function parseManifest(value: unknown): VideoProjectManifest {
   const submissionRevision = source.submissionRevision === undefined ? undefined : parseVideoSubmissionRevision(source.submissionRevision)
   if (source.submissionRevision !== undefined && submissionRevision === undefined) throw new VideoProjectError('INVALID_RECORD', '视频提交来源损坏，已停止操作。')
   return {
-    version: 1, id: projectId(text(source, 'id')), ownerSessionId: text(source, 'ownerSessionId'), workspaceRoot: text(source, 'workspaceRoot'),
+    version, id: projectId(text(source, 'id')), ownerSessionId: text(source, 'ownerSessionId'), workspaceRoot: text(source, 'workspaceRoot'),
     identity: { accountId: text(identity, 'accountId'), sessionFingerprint: text(identity, 'sessionFingerprint') }, input: parsedInput,
-    model: text(source, 'model'), status, segments, outputDirectory: text(source, 'outputDirectory'),
+    model, ...modelConfigVersion === undefined ? {} : { modelConfigVersion }, status, segments, outputDirectory: text(source, 'outputDirectory'),
     ...source.publicationDirectory === undefined ? {} : { publicationDirectory: source.publicationDirectory },
     ...origin === undefined ? {} : { origin },
     ...source.composedPath === undefined ? {} : { composedPath: source.composedPath, composedDurationSeconds: positive(source, 'composedDurationSeconds') },
@@ -653,6 +717,7 @@ export async function prepareVideoProject(
 ): Promise<VideoProjectManifest> {
   const capturedOrigin = origin === undefined ? undefined : Object.freeze({ ...origin })
   validateInput(input, options.maxTotalSeconds)
+  const expectedSnapshot = input.modelConfigSnapshot === undefined ? undefined : parseConfigSnapshot(input.modelConfigSnapshot)
   if (input.shotDurations !== undefined) {
     if (input.shotDurations.length > options.maxSegments) throw new VideoProjectError('TOO_MANY_SEGMENTS', '分镜数量超过当前项目上限，尚未提交生成。')
     if (input.shotDurations.reduce((sum, value) => sum + value, 0) !== input.totalDurationSeconds) {
@@ -668,7 +733,16 @@ export async function prepareVideoProject(
     throw new VideoProjectError('ARTIFACT_DESTINATION_UNAVAILABLE', '产物保存目录不可写，请在产物页检查保存位置后重试；尚未提交生成。', { cause })
   }
   await provider.assertCurrent()
-  const model = await provider.model(input.model, signal, input.resolution, input.quality, input.mode, input.ratio, input.size)
+  const model = await (expectedSnapshot === undefined
+    ? provider.model(input.model, signal, input.resolution, input.quality, input.mode, input.ratio, input.size)
+    : provider.model(input.model, signal, input.resolution, input.quality, input.mode, input.ratio, input.size, expectedSnapshot))
+  const modelConfigVersion = savedConfigVersion(model.modelConfigVersion)
+  if (expectedSnapshot !== undefined && (model.id !== expectedSnapshot.model
+    || modelConfigVersion !== expectedSnapshot.modelConfigVersion)) {
+    throw new VideoProjectError('MODEL_CONFIG_CHANGED', mediaModelConfigRejectionMessage('MODEL_CONFIG_CHANGED'))
+  }
+  const resolvedSnapshot = expectedSnapshot ?? Object.freeze({ model: model.id,
+    ...modelConfigVersion === undefined ? {} : { modelConfigVersion } })
   const durations = input.shotDurations === undefined
     ? planVideoDurations(input.totalDurationSeconds, model.durations, options.maxSegments) : [...input.shotDurations]
   if (input.shotDurations !== undefined && durations.some(duration => !model.durations.includes(duration))) {
@@ -698,10 +772,14 @@ export async function prepareVideoProject(
     signal.throwIfAborted()
     const requestInput = videoShotInput(generationInput, index)
     const request = await provider.build(requestInput, model.id, prompt, durationSeconds, signal)
+    if (request.model !== model.id) throw new VideoProjectError('MODEL_CONFIG_CHANGED',
+      '准备的视频请求与所选模型快照不一致，尚未提交生成。')
     segments.push({ index: index + 1, durationSeconds, prompt, request, status: 'pending', attemptId: videoAttemptId(randomUUID()) })
   }
   const manifest: VideoProjectManifest = {
-    version: 1, id, ownerSessionId, workspaceRoot, identity: { ...provider.identity }, input, model: model.id,
+    version: 2, id, ownerSessionId, workspaceRoot, identity: { ...provider.identity },
+    input: { ...input, modelConfigSnapshot: resolvedSnapshot }, model: model.id,
+    ...modelConfigVersion === undefined ? {} : { modelConfigVersion },
     ...submissionRevision === undefined ? {} : { submissionRevision: { ...submissionRevision } },
     status: 'prepared', segments, outputDirectory,
     ...publicationDirectory === undefined ? {} : { publicationDirectory },
@@ -1052,6 +1130,7 @@ async function executeVideoSegments(
   for (const task of tasks) task.activity.stage('preparing')
   const stop = new AbortController()
   let failure: { error: unknown } | undefined
+  const configurationStop = { active: false }
   let cursor = 0
   const execute = async (segment: VideoProjectSegment, activity: ReturnType<typeof creationTaskActivity>,
     submissionOnly = false): Promise<void> => {
@@ -1081,9 +1160,18 @@ async function executeVideoSegments(
       try {
         const attemptId = segment.attemptId
         if (attemptId === undefined) throw new VideoProjectError('INVALID_RECORD', '视频片段提交标识缺失，已停止操作。')
-        task = await provider.submit(segment.request, clipSignal, { attemptId, durationSeconds: segment.durationSeconds, count: 1 })
+        task = await provider.submit(segment.request, clipSignal, { attemptId, durationSeconds: segment.durationSeconds, count: 1,
+          ...manifest.modelConfigVersion === undefined ? {} : { modelConfigVersion: manifest.modelConfigVersion } })
       }
       catch (error) {
+        if (error instanceof MediaModelConfigRejection && error.binding.model === manifest.model
+          && error.binding.accountId === manifest.identity.accountId && error.binding.modelConfigVersion === manifest.modelConfigVersion) {
+          segment.status = 'failed'
+          segment.configRejection = { code: error.code === 'MODEL_CONFIG_CHANGED' ? 'MODEL_CONFIG_CHANGED' : 'MODEL_PARAMETERS_INVALID',
+            requestId: error.requestId }
+          unsettled.delete(segment.index)
+          throw error
+        }
         if (error instanceof VideoRelayError && error.code === 'VIDEO_SUBMIT_NOT_STARTED') {
           segment.status = 'pending'
           unsettled.delete(segment.index)
@@ -1115,6 +1203,9 @@ async function executeVideoSegments(
         throw new VideoProjectError('SUBMISSION_UNKNOWN', '上游未返回可查询的视频任务编号，可能已计费；已停止后续生成，请先在后台核对。')
       }
       segment.taskId = task.taskId
+      if (task.acknowledgedModelConfigVersion !== undefined) {
+        segment.acknowledgedModelConfigVersion = task.acknowledgedModelConfigVersion
+      }
       segment.status = task.submissionState === 'unknown' ? 'unknown' : 'running'
       await persist(options, manifest)
       activity.stage(task.submissionState === 'unknown' ? 'unknown' : 'accepted')
@@ -1178,9 +1269,16 @@ async function executeVideoSegments(
       const task = tasks[cursor++]
       if (task === undefined) return
       const { segment, activity } = task
+      if (configurationStop.active && segment.taskId === undefined) continue
       try { await execute(segment, activity, submissionOnly) }
       catch (error) {
         progress.stopped(segment)
+        if (error instanceof MediaModelConfigRejection) {
+          configurationStop.active = true
+          failure ??= { error }
+          progress.stage('模型配置已变化，停止新增请求并核对已受理分镜')
+          return
+        }
         if (failure === undefined) {
           failure = { error }
           progress.stage('正在停止，保留已有结果')
@@ -1204,7 +1302,7 @@ async function executeVideoSegments(
     progress.stage('提交分镜至服务端等待队列')
     await runWorkers(true)
     cursor = 0
-    if (failure === undefined && !signal.aborted) {
+    if ((failure === undefined || configurationStop.active) && !signal.aborted) {
       progress.stage('核对原平台分镜任务')
       await runWorkers()
     }
@@ -1237,12 +1335,18 @@ async function executeVideoProject(
       await editor.probe(savedPath(segment), signal)
       await publishSegment(options, manifest, segment, signal)
     }
-    const blockingFailure = (): VideoProjectError | undefined =>
-      manifest.segments.some(segment => segment.status === 'unknown' || segment.status === 'submitting')
+    const blockingFailure = (): VideoProjectError | undefined => {
+      const configRejection = manifest.segments.find(segment => segment.status === 'failed'
+        && segment.configRejection !== undefined)?.configRejection
+      if (configRejection !== undefined) {
+        return new VideoProjectError(configRejection.code, mediaModelConfigRejectionMessage(configRejection.code))
+      }
+      return manifest.segments.some(segment => segment.status === 'unknown' || segment.status === 'submitting')
         ? new VideoProjectError('SUBMISSION_UNKNOWN', '有一次视频提交结果未知，可能已计费。已知任务仍可查询保存；请先在后台核对未知提交，系统不会自动重提。')
         : manifest.segments.some(segment => segment.status === 'failed')
           ? new VideoProjectError('PROVIDER_TASK_FAILED', '项目中有失败的上游任务，已生成片段保留；其余已知任务仍可查询保存，请使用 edit_video 编辑已保存片段，或明确创建新项目。')
           : undefined
+    }
     const blocking = blockingFailure()
     const blocked = retryFailure ?? (blocking === undefined ? undefined : { error: blocking })
     if (blocked !== undefined && !manifest.segments.some(segment => segment.taskId !== undefined

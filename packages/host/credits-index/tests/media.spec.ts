@@ -1,6 +1,29 @@
 import { describe, expect, it } from 'vitest'
 import { catalogFromPricing, videoDurations, type VideoParams } from '../src/media.ts'
 
+describe('per-row model configuration identity', () => {
+  const rows = [
+    { model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] },
+    { model_name: 'yunshu-internal-gpt-image-2', supported_endpoint_types: ['image-generation'] },
+  ]
+
+  it.each(rows)('retains the exact $model_name version without changing its parameter menu', (row) => {
+    const legacy = catalogFromPricing([row], null)[0]!
+    const version = 'a'.repeat(64)
+    const modern = catalogFromPricing([{ ...row, model_config_version: version }], null)[0]!
+    expect(legacy).not.toHaveProperty('modelConfigVersion')
+    expect(modern).toEqual({ ...legacy, modelConfigVersion: version })
+    expect(modern.params).toEqual(legacy.params)
+  })
+
+  it.each([null, undefined, '', 'A'.repeat(64), 'a'.repeat(63), 42])('rejects an explicitly malformed row version %s', (version) => {
+    for (const row of rows) {
+      expect(() => catalogFromPricing([{ ...row, model_config_version: version }], null))
+        .toThrow(expect.objectContaining({ code: 'MODEL_CONFIG_VERSION_INVALID' }))
+    }
+  })
+})
+
 describe('internal image capability', () => {
   it('offers six references on the internal task route without granting edits to text-only models', () => {
     const catalog = catalogFromPricing([

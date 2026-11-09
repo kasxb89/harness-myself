@@ -1005,6 +1005,26 @@ declare abstract class LlmAdapter {
 
 `ContentBlockType` (the key set the `index`-correlated blocks carry) derives from [`ContentBlockMap`](#content-blocks-and-messages) above.
 
+<a id="published-model-authorization"></a>
+
+## Published model authorization
+
+`HarnessModelConfigRequest` binds one prepared model version to its exact backend, account scope, and original published context/output pair before personal overrides. The live account owner checks the complete request immediately before transmission. Provider-profile values alone do not authorize the version header; a Host without `authorizeModelConfig` refuses versioned requests. The [pi-ai package](../../packages/llm/llm-pi-ai/README.md) owns transport and failure behavior.
+
+Source: [`packages/llm/llm-pi-ai/src/harness-account.ts`](../../packages/llm/llm-pi-ai/src/harness-account.ts)
+
+```ts type-equiv
+/** Prepared authoritative model metadata requiring the live account owner's approval. */
+interface HarnessModelConfigRequest {
+  readonly baseURL: string
+  readonly model: string
+  readonly scope: string
+  readonly modelConfigVersion: Branded<'ModelConfigVersion'>
+  readonly contextWindow: number
+  readonly maxTokens: number
+}
+```
+
 <!-- BEGIN GENERATED cordis-surface (gen-cordis-catalog.ts) — do not edit between markers -->
 
 <a id="cordis-surface"></a>
@@ -1063,6 +1083,13 @@ refreshModels(baseURL: string): Promise<readonly string[]>
  * @returns The current relay key, or undefined when no live session authorizes this exact request scope.
  */
 resolveRelayKey(baseURL: string, expectedModelLimitsScope?: string): Promise<string | undefined>
+
+/**
+ * Authorize one prepared version and original capacity pair against the current owned directory.
+ * @param request - Exact backend, account scope, model and authoritative metadata captured before overrides.
+ * @returns True only while this same live account and complete published declaration still match.
+ */
+authorizeModelConfig?(request: HarnessModelConfigRequest): Promise<boolean>
 ```
 
 Source: [`packages/llm/llm-pi-ai/src/harness-account.ts`](../../packages/llm/llm-pi-ai/src/harness-account.ts)

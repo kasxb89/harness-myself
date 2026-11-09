@@ -13,6 +13,11 @@
     },
     {
       "doc": "docs/subsystems/llm-streaming.md",
+      "symbol": "HarnessModelConfigRequest",
+      "source": "packages/llm/llm-pi-ai/src/harness-account.ts"
+    },
+    {
+      "doc": "docs/subsystems/llm-streaming.md",
       "symbol": "AssistantProviderMetadata",
       "source": "packages/llm/llm/src/message.ts"
     },

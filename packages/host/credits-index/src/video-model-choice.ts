@@ -3,6 +3,8 @@ import type { AskUserQuestionAnswer, AskUserQuestionItem } from '@deepseek-ai/ds
 import { z } from 'zod'
 import { CreativeError } from './creative-store.ts'
 import { isAccountBalanceRejection } from './account-balance.ts'
+import type { ModelConfigVersion } from './model-config-version.ts'
+import { mediaModelConfigRejection, type MediaModelConfigBinding } from './media-model-config-result.ts'
 
 /** Exact native identity used for H3 serialization and its existing quote-confirmation exception. */
 export const H3_VIDEO_MODEL = 'MiniMax-H3'
@@ -14,6 +16,7 @@ export const DEFAULT_CHAT_VIDEO_RESOLUTION = '768P'
 /** Prepared, validated paid clip plan for one finished work, before any submission. */
 export interface VideoModelCandidate {
   readonly model: string
+  readonly modelConfigVersion?: ModelConfigVersion
   readonly resolution?: string
   readonly quality?: string
   readonly ratio?: string
@@ -122,6 +125,7 @@ const gatewayQuoteSchema = z.object({
   estimated_one_work: decimalSchema, estimated_total: decimalSchema, pricing_revision: z.string().min(1).max(256),
   created_at: z.number().int().positive(), expires_at: z.number().int().positive(),
   estimate_only: z.literal(true), charged: z.literal(false), submitted: z.literal(false), reserved: z.literal(false),
+  model_config_version: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
 }).strict()
 
 /** Native workload sent to the free, authenticated quote route. */
@@ -153,6 +157,8 @@ export function parseVideoModelQuote(
   const parsed = gatewayQuoteSchema.safeParse(value)
   if (!parsed.success) throw quoteUnavailable()
   const quote = parsed.data
+  if (quote.model_config_version !== candidate.modelConfigVersion) throw new CreativeError('MODEL_CONFIG_CHANGED', 409,
+    '报价的模型配置与所选目录不一致，尚未提交生成；请刷新配置并明确重新操作，不会自动换型或重发。')
   if (quote.model !== candidate.model || quote.model !== request.model || quote.works_count !== request.works_count
     || quote.segments.length !== request.segments.length || quote.segments.length !== candidate.durations.length
     || quote.expires_at - quote.created_at !== 60
@@ -185,11 +191,15 @@ export async function readVideoModelQuote(input: {
   readonly candidate: VideoModelCandidate
   readonly accountId: string
   readonly signal: AbortSignal
-  readonly transport: (request: VideoQuoteRequest, signal: AbortSignal) => Promise<Response>
+  readonly binding?: MediaModelConfigBinding
+  readonly transport: (request: VideoQuoteRequest, signal: AbortSignal, modelConfigVersion?: ModelConfigVersion) => Promise<Response>
   readonly now?: () => number
 }): Promise<VideoModelQuote | undefined> {
   if (Buffer.byteLength(JSON.stringify(input.request)) > 65_536) throw quoteUnavailable()
-  const response = await input.transport(input.request, input.signal)
+  if (input.binding !== undefined && (input.binding.model !== input.candidate.model || input.binding.accountId !== input.accountId
+    || input.binding.modelConfigVersion !== input.candidate.modelConfigVersion)) throw quoteUnavailable()
+  const response = await (input.candidate.modelConfigVersion === undefined ? input.transport(input.request, input.signal)
+    : input.transport(input.request, input.signal, input.candidate.modelConfigVersion))
   if (response.body === null) throw quoteUnavailable()
   const reader = response.body.getReader()
   const chunks: Uint8Array[] = []
@@ -207,6 +217,8 @@ export async function readVideoModelQuote(input: {
   let body: unknown
   try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch (_invalidBody) { throw quoteUnavailable() }
   if (!response.ok) {
+    const configRejection = input.binding === undefined ? undefined : mediaModelConfigRejection(response, body, input.binding)
+    if (configRejection !== undefined) throw configRejection
     if (isAccountBalanceRejection(body, response.status)) throw new CreativeError('INSUFFICIENT_BALANCE', response.status,
       '余额不足，请充值；本次仅查询报价，尚未提交生成。')
     const unavailable = z.object({ error: z.object({ type: z.literal('video_quote_error'), code: z.literal('quote_unavailable'),
@@ -263,6 +275,7 @@ export function chatVideoResolution(
 
 const quoteSchema = z.object({
   model: z.string().min(1), resolution: z.string().min(1).optional(),
+  modelConfigVersion: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
   quality: z.string().min(1).optional(), mode: z.string().min(1).optional(),
   ratio: z.string().min(1).optional(), size: z.string().min(1).optional(), durations: z.array(z.number().int().positive()).min(1),
   accountId: z.string().min(1), workCount: z.number().int().positive(),
@@ -273,6 +286,7 @@ const quoteSchema = z.object({
 
 function sameCandidate(left: VideoModelCandidate, right: VideoModelCandidate): boolean {
   return left.model === right.model && left.resolution === right.resolution
+    && left.modelConfigVersion === right.modelConfigVersion
     && left.quality === right.quality && left.mode === right.mode && left.ratio === right.ratio && left.size === right.size
     && left.durations.length === right.durations.length
     && left.durations.every((duration, index) => duration === right.durations[index])

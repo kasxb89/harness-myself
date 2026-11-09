@@ -912,7 +912,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-credits-index`
 
 - `inject`: `webServer` · `tools`
-- `source`: [`packages/host/credits-index/src/index.ts:133`](../packages/host/credits-index/src/index.ts)
+- `source`: [`packages/host/credits-index/src/index.ts:136`](../packages/host/credits-index/src/index.ts)
 
 ```ts config-catalog
 /** Plugin config: platform origin, display rate, and where the session file lives. */
@@ -1989,8 +1989,8 @@ export interface Config extends ProtocolConfig {
 ## `@deepseek-ai/dsh-llm-pi-ai`
 
 - `inject`: `llm`
-- `refs`: `Api` (`@earendil-works/pi-ai`) · `CacheRetention` (`@earendil-works/pi-ai`) · [`LlmTextCapabilities`](../packages/llm/llm/src/index.ts) · `Model` (`@earendil-works/pi-ai`) · `ModelThinkingLevel` (`@earendil-works/pi-ai`) · `OpenAICompletionsCompat` (`@earendil-works/pi-ai`) · [`RetryPolicyConfig`](../packages/llm/llm/src/index.ts) · `ThinkingBudgets` (`@earendil-works/pi-ai`) · `Transport` (`@earendil-works/pi-ai`) · `Volatile` (`@deepseek-ai/cordis`)
-- `source`: [`packages/llm/llm-pi-ai/src/config.ts:237`](../packages/llm/llm-pi-ai/src/config.ts)
+- `refs`: `Api` (`@earendil-works/pi-ai`) · [`Branded`](../packages/util/brand/src/index.ts) · `CacheRetention` (`@earendil-works/pi-ai`) · [`LlmTextCapabilities`](../packages/llm/llm/src/index.ts) · `Model` (`@earendil-works/pi-ai`) · `ModelThinkingLevel` (`@earendil-works/pi-ai`) · `OpenAICompletionsCompat` (`@earendil-works/pi-ai`) · [`RetryPolicyConfig`](../packages/llm/llm/src/index.ts) · `ThinkingBudgets` (`@earendil-works/pi-ai`) · `Transport` (`@earendil-works/pi-ai`) · `Volatile` (`@deepseek-ai/cordis`)
+- `source`: [`packages/llm/llm-pi-ai/src/config.ts:240`](../packages/llm/llm-pi-ai/src/config.ts)
 
 ```ts config-catalog
 /** Plugin configuration: the provider routes this instance owns. */
@@ -2262,6 +2262,8 @@ export type PiAiModality = Model<Api>['input'][number]
 export interface PiAiManagedModelLimits {
   /** Opaque account/backend scope; only an exact match with the provider's active scope applies. */
   scope: string
+  /** Published model configuration version; its original capacity pair is indivisible. */
+  modelConfigVersion?: Branded<'ModelConfigVersion'>
   /** Use declared capacities ahead of model-level manual overrides; request budgets remain independently bounded. */
   authoritative?: boolean
   /** Account-authorized maximum combined request and response context. */

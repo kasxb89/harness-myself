@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { effectiveTextCapability, textCapabilityImageAvailable } from '@deepseek-ai/dsh-llm'
 import { mergeProductModelLimits, productModelLimitsScope, readProductModelLimits } from '../src/model-limits.ts'
+import { readModelConfigVersion } from '../src/model-config-version.ts'
 
 describe('product model token capacities', () => {
   it('reads only explicit numeric limits and rejects inconsistent paired limits', () => {
@@ -43,6 +44,52 @@ describe('product model token capacities', () => {
     expect(mergeProductModelLimits(null, { maxTokens: 2048 }, first)).toEqual({ scope: first, authoritative: true, maxTokens: 2048 })
     expect(mergeProductModelLimits({ scope: first, authoritative: true }, {}, 'another')).toBeUndefined()
     expect(mergeProductModelLimits([], undefined, first)).toBeUndefined()
+  })
+})
+
+describe('versioned complete text capacities', () => {
+  const first = readModelConfigVersion({ model_config_version: 'a'.repeat(64) })!
+  const second = readModelConfigVersion({ model_config_version: 'b'.repeat(64) })!
+  const previous = { scope: 'same-account', authoritative: true, modelConfigVersion: first,
+    contextWindow: 131072, maxTokens: 32768 }
+
+  it('captures one version with its complete explicit capacity pair', () => {
+    expect(readProductModelLimits({ model_config_version: first, context_window: 32768, max_output_tokens: 8192 }))
+      .toEqual({ modelConfigVersion: first, contextWindow: 32768, maxTokens: 8192 })
+  })
+
+  it.each([{}, { context_window: 32768 }, { max_output_tokens: 8192 },
+    { context_window: 8192, max_output_tokens: 16384 }, { context_window: '32768', max_output_tokens: 8192 },
+    { context_window: 32768, max_output_tokens: 0 }, { context_window: 2_147_483_648, max_output_tokens: 8192 }])(
+    'rejects a versioned row without a complete valid pair %#', (fields) => {
+      expect(() => readProductModelLimits({ model_config_version: first, ...fields })).toThrow(/complete valid pair/u)
+    },
+  )
+
+  it('atomically replaces both capacities with their new version instead of borrowing an old field', () => {
+    expect(mergeProductModelLimits(previous,
+      { modelConfigVersion: second, contextWindow: 8192, maxTokens: 2048 }, previous.scope))
+      .toEqual({ scope: previous.scope, authoritative: true, modelConfigVersion: second, contextWindow: 8192, maxTokens: 2048 })
+    expect(() => mergeProductModelLimits(previous, { modelConfigVersion: second, contextWindow: 8192 }, previous.scope))
+      .toThrow(/complete valid pair/u)
+    expect(() => mergeProductModelLimits(previous, { modelConfigVersion: second, maxTokens: 2048 }, previous.scope))
+      .toThrow(/complete valid pair/u)
+  })
+
+  it('retains a complete version only for a pending read by the same account', () => {
+    expect(mergeProductModelLimits(previous, undefined, previous.scope)).toEqual(previous)
+    expect(mergeProductModelLimits(previous, undefined, 'different-account')).toBeUndefined()
+    expect(() => mergeProductModelLimits({ ...previous, maxTokens: 262144 }, undefined, previous.scope))
+      .toThrow(/complete valid pair/u)
+  })
+
+  it('clears an omitted version after a successful legacy listing without changing legacy field retention', () => {
+    expect(mergeProductModelLimits(previous, {}, previous.scope)).toEqual({ scope: previous.scope,
+      authoritative: true, contextWindow: 131072, maxTokens: 32768 })
+    expect(mergeProductModelLimits(previous, { maxTokens: 4096 }, previous.scope)).toEqual({ scope: previous.scope,
+      authoritative: true, contextWindow: 131072, maxTokens: 4096 })
+    expect(mergeProductModelLimits(previous, { contextWindow: 32768, maxTokens: 8192 }, 'different-account'))
+      .toEqual({ scope: 'different-account', authoritative: true, contextWindow: 32768, maxTokens: 8192 })
   })
 })
 

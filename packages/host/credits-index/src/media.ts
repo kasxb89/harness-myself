@@ -25,6 +25,7 @@
  */
 
 import { imageSpec, videoSpec, type ImageSpec, type VideoSpec } from './model-parameters.ts'
+import { readModelConfigVersion, type ModelConfigVersion } from './model-config-version.ts'
 
 /** Deliverable kinds separated from conversational models. */
 export type MediaKind = 'image' | 'video' | 'audio'
@@ -139,6 +140,8 @@ export interface VideoParams {
 /** One model and its published parameters, as the panels need them. */
 export interface ModelCapability {
   readonly id: string
+  /** Published configuration pinned independently from account authority and personal preferences. */
+  readonly modelConfigVersion?: ModelConfigVersion
   readonly kind: MediaKind
   readonly displayName: string
   /** Groups allowed to call it; empty means the deployment did not say. */
@@ -809,6 +812,7 @@ export function catalogFromPricing(rows: readonly unknown[], userGroup: string |
     if (kind === null) continue
     const groups = stringList(record.enable_groups)
     if (userGroup !== null && groups.length > 0 && !groups.includes(userGroup)) continue
+    const modelConfigVersion = readModelConfigVersion(record)
     const examples = Array.isArray(record.billing_usage_examples) ? record.billing_usage_examples : []
     const built = kind === 'audio' ? audioParams(record.parameters) : kind === 'video'
       ? videoParams(videoSpec(id), record.billing_usage_schema, record.parameters)
@@ -826,6 +830,7 @@ export function catalogFromPricing(rows: readonly unknown[], userGroup: string |
       ?? (kind === 'image' ? '/v1/images/generations' : kind === 'video' ? '/v1/videos' : '/v1/audio/speech')
     catalog.push({
       id,
+      ...modelConfigVersion === undefined ? {} : { modelConfigVersion },
       kind,
       displayName: id === 'MiniMax-H3' ? 'mt-MiniMax-H3'
         : typeof record.display_name === 'string' && record.display_name.trim() !== '' ? record.display_name : id,

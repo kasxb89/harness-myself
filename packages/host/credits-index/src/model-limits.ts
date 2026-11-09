@@ -1,9 +1,12 @@
 /** Account-bound capacities disclosed by the product model endpoint. */
 import { createHash } from 'node:crypto'
 import { cloneTextCapabilities, type LlmTextCapabilities, type LlmReasoningControls, type LlmCapabilityVerification } from '@deepseek-ai/dsh-llm'
+import { readModelConfigVersion, type ModelConfigVersion } from './model-config-version.ts'
 
 /** Current capacity and execution declarations for one exact public model id. */
 export interface ProductModelLimits {
+  /** Published configuration version owning the complete capacity pair. */
+  modelConfigVersion?: ModelConfigVersion
   /** Maximum combined request and response window. */
   contextWindow?: number
   /** Explicit execution declarations from this account’s current gateway directory. */
@@ -120,18 +123,24 @@ function readTextCapabilities(record: Readonly<Record<string, unknown>>): LlmTex
 }
 
 /**
- * Read the public endpoint's explicit capacity fields without inferring aliases.
+ * Read explicit capacity fields without aliases; versioned rows require one complete valid pair.
  * @param record - one untrusted model-list entry.
  * @returns valid numeric capacities and any complete execution declaration.
  * @throws {ProductModelCapabilitiesError} When an explicit execution declaration is malformed.
  */
 export function readProductModelLimits(record: Readonly<Record<string, unknown>>): ProductModelLimits {
+  const modelConfigVersion = readModelConfigVersion(record)
   const textCapabilities = readTextCapabilities(record)
   const declared = textCapabilities === undefined ? {} : { textCapabilities }
   const contextWindow = tokenCapacity(record.context_window)
   const maxTokens = tokenCapacity(record.max_output_tokens)
+  if (modelConfigVersion !== undefined
+    && (contextWindow === undefined || maxTokens === undefined || maxTokens > contextWindow)) {
+    throw new ProductModelCapabilitiesError('Versioned gateway text capacities require a complete valid pair')
+  }
   if (contextWindow !== undefined && maxTokens !== undefined && maxTokens > contextWindow) return declared
-  return { ...declared, ...contextWindow === undefined ? {} : { contextWindow }, ...maxTokens === undefined ? {} : { maxTokens } }
+  return { ...declared, ...modelConfigVersion === undefined ? {} : { modelConfigVersion },
+    ...contextWindow === undefined ? {} : { contextWindow }, ...maxTokens === undefined ? {} : { maxTokens } }
 }
 
 /**
@@ -146,6 +155,7 @@ export function productModelLimitsScope(baseUrl: string, accountId: string): str
 
 /**
  * Refresh same-owner capacities and replace execution policy only after a successful listing.
+ * A version and its capacity pair replace atomically; only a pending read retains the old version.
  * @param previous - the model's previously persisted managed metadata.
  * @param incoming - successful fields; an empty object clears execution policy, while undefined retains it during a pending read.
  * @param scope - current backend and account binding.
@@ -159,8 +169,18 @@ export function mergeProductModelLimits(
   const record = previous !== null && typeof previous === 'object' && !Array.isArray(previous)
     ? previous as Record<string, unknown> : undefined
   const retained = record?.scope === scope ? record : undefined
-  const contextWindow = incoming?.contextWindow ?? tokenCapacity(retained?.contextWindow)
-  const maxTokens = incoming?.maxTokens ?? tokenCapacity(retained?.maxTokens)
+  const modelConfigVersion = incoming === undefined && retained !== undefined && Object.hasOwn(retained, 'modelConfigVersion')
+    ? readModelConfigVersion({ model_config_version: retained.modelConfigVersion }) : incoming?.modelConfigVersion
+  const contextWindow = modelConfigVersion === undefined
+    ? incoming?.contextWindow ?? tokenCapacity(retained?.contextWindow)
+    : tokenCapacity(incoming === undefined ? retained?.contextWindow : incoming.contextWindow)
+  const maxTokens = modelConfigVersion === undefined
+    ? incoming?.maxTokens ?? tokenCapacity(retained?.maxTokens)
+    : tokenCapacity(incoming === undefined ? retained?.maxTokens : incoming.maxTokens)
+  if (modelConfigVersion !== undefined
+    && (contextWindow === undefined || maxTokens === undefined || maxTokens > contextWindow)) {
+    throw new ProductModelCapabilitiesError('Versioned gateway text capacities require a complete valid pair')
+  }
   const retainedCapabilities = retained?.textCapabilities
   const textCapabilities = incoming === undefined && retainedCapabilities !== undefined
     ? readTextCapabilities({ parameters: { 'x-text-capabilities':
@@ -195,6 +215,7 @@ export function mergeProductModelLimits(
     : incoming?.textCapabilities
   return contextWindow === undefined && maxTokens === undefined && textCapabilities === undefined ? undefined
     : { scope, ...contextWindow === undefined && maxTokens === undefined ? {} : { authoritative: true },
+      ...modelConfigVersion === undefined ? {} : { modelConfigVersion },
       ...textCapabilities === undefined ? {} : { textCapabilities: cloneTextCapabilities(textCapabilities) },
       ...contextWindow === undefined ? {} : { contextWindow }, ...maxTokens === undefined ? {} : { maxTokens } }
 }

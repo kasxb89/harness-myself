@@ -13,6 +13,7 @@
  */
 
 import { cloneTextCapabilities, effectiveTextCapability, type LlmModelLimits, type LlmTextCapabilities } from '@deepseek-ai/dsh-llm'
+import type { Branded } from '@deepseek-ai/dsh-brand'
 import { builtinProviders, getAllBuiltinModels, getBuiltinModels } from '@earendil-works/pi-ai/providers/all'
 import { clampMaxTokensToContext } from '@earendil-works/pi-ai/api/simple-options'
 import { normalizeContext } from '@earendil-works/pi-ai/utils/transcript'
@@ -50,6 +51,8 @@ export const MANAGED_RESPONSES_MIN_OUTPUT_TOKENS = 16
 export interface PiAiManagedModelLimits {
   /** Opaque account/backend scope; only an exact match with the provider's active scope applies. */
   scope: string
+  /** Published model configuration version; its original capacity pair is indivisible. */
+  modelConfigVersion?: Branded<'ModelConfigVersion'>
   /** Use declared capacities ahead of model-level manual overrides; request budgets remain independently bounded. */
   authoritative?: boolean
   /** Account-authorized maximum combined request and response context. */
@@ -58,6 +61,14 @@ export interface PiAiManagedModelLimits {
   maxTokens?: number
   /** Gateway execution declarations for this exact account/backend scope. */
   textCapabilities?: LlmTextCapabilities
+}
+
+/** Original managed metadata retained independently of SDK headroom and personal budgets. */
+export interface PiAiModelConfigSnapshot {
+  readonly scope: string
+  readonly modelConfigVersion: Branded<'ModelConfigVersion'>
+  readonly contextWindow: number
+  readonly maxTokens: number
 }
 
 /** Explicit user capacities for one model on one managed account/backend. */
@@ -890,6 +901,8 @@ export interface RouteCatalog {
   textCapabilities: ReadonlyMap<string, LlmTextCapabilities>
   /** Effective, platform, and unclamped explicit capacities for settings consumers. */
   limits: ReadonlyMap<string, LlmModelLimits>
+  /** Complete versioned declarations before headroom and smaller user preferences. */
+  modelConfigurations: ReadonlyMap<string, PiAiModelConfigSnapshot>
 }
 
 /**
@@ -971,6 +984,7 @@ export function resolveRouteModels(
   const managedMaxTokens = new Map<string, number>()
   const textCapabilities = new Map<string, LlmTextCapabilities>()
   const limits = new Map<string, LlmModelLimits>()
+  const modelConfigurations = new Map<string, PiAiModelConfigSnapshot>()
   const resolveEntry = (entry: PiAiModelProfile): Model<Api> => {
     assertOfferedCompatFields(provider, `model "${entry.id}"`, entry.compat)
     if (entry.id.length === 0) invalid(provider, 'has a model with an empty id')
@@ -992,6 +1006,16 @@ export function resolveRouteModels(
     // rather than a constant buried here.
     const managed = request.managedLimitsScope !== undefined && request.managedLimitsScope !== ''
       && entry.managedLimits?.scope === request.managedLimitsScope ? entry.managedLimits : undefined
+    if (managed?.modelConfigVersion !== undefined) {
+      if (!/^[a-f0-9]{64}$/u.test(managed.modelConfigVersion)
+        || managed.contextWindow === undefined || managed.maxTokens === undefined
+        || !Number.isSafeInteger(managed.contextWindow) || managed.contextWindow < 1 || managed.contextWindow > MAX_CAPACITY_TOKENS
+        || !Number.isSafeInteger(managed.maxTokens) || managed.maxTokens < 1 || managed.maxTokens > managed.contextWindow) {
+        invalid(provider, `model "${entry.id}" has an invalid versioned managed capacity pair`)
+      }
+      modelConfigurations.set(entry.id, Object.freeze({ scope: managed.scope, modelConfigVersion: managed.modelConfigVersion,
+        contextWindow: managed.contextWindow, maxTokens: managed.maxTokens }))
+    }
     for (const [field, value] of [
       ['contextWindow', entry.contextWindow], ['maxTokens', entry.maxTokens],
       ['managedLimits.contextWindow', managed?.contextWindow], ['managedLimits.maxTokens', managed?.maxTokens],
@@ -1116,5 +1140,5 @@ export function resolveRouteModels(
     invalid(provider, `sets compat "${field}", but no model on the route speaks a protocol that takes it;`
       + ` it exists on ${takers.join(', ')}`)
   }
-  return { models: serviceableModels, configuredMaxTokens, managedMaxTokens, textCapabilities, limits, modelErrors }
+  return { models: serviceableModels, configuredMaxTokens, managedMaxTokens, textCapabilities, limits, modelConfigurations, modelErrors }
 }

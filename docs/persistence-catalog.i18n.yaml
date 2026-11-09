@@ -132,8 +132,8 @@
   en: 2073ffafa8462730
   zh: 2073ffafa8462730
 /session-persistence-event-catalog/events/media/media-request-selection-log-only:
-  en: a83ea119e1eae99b
-  zh: fcafafc4a49d3370
+  en: c186dda3fe44218d
+  zh: 6a63b9eed85ce32b
 /session-persistence-event-catalog/events/model:
   en: 9edf4ef31e60e880
   zh: 9edf4ef31e60e880
@@ -1107,11 +1107,11 @@
   en: e82183734e1d6e02
   zh: 321adad5d9d71d9e
 /session-persistence-event-catalog/resolved-persistence-types/mediapreferenceselection:
-  en: 5bcc6718388c68d1
-  zh: 09ffbb59ebecf541
+  en: 9c28605c2e3e741c
+  zh: dbb0544197eceef4
 /session-persistence-event-catalog/resolved-persistence-types/mediarequestselection:
-  en: 7537251a78ffbdf0
-  zh: 03c3f82baccc5328
+  en: 9c27b46c560b4a1d
+  zh: 17db5f7cfd1cad42
 /session-persistence-event-catalog/resolved-persistence-types/message:
   en: e478c640a9c17a4f
   zh: b4c6a4930a3789a1

@@ -8,11 +8,23 @@ import { REPO_ROOT } from './support.ts'
 
 type RpcResult<T> = { ok: true; value: T } | { ok: false; error: { code: string; message: string } }
 
-export async function startProfileWeb(root: string, workspace: string, overlay: string, environment: NodeJS.ProcessEnv = {}) {
+/**
+ * Launch the shipped Web profile with owner-scoped state and public authentication.
+ * @param root - Isolated scenario root.
+ * @param workspace - Initial process working directory.
+ * @param overlay - Scenario's primary Loader patch.
+ * @param environment - Additional process environment.
+ * @param additionalPatches - Ordered Loader patches, preserving all existing callers when omitted.
+ * @returns The owned lifecycle, authenticated public RPC client and read-only captured process output.
+ */
+export async function startProfileWeb(
+  root: string, workspace: string, overlay: string, environment: NodeJS.ProcessEnv = {}, additionalPatches: readonly string[] = [],
+) {
   const launch = resolveExampleLaunch({
     srcBin: join(REPO_ROOT, 'apps/cli/src/bin.ts'), sourceImport: 'tsx/esm',
     tsconfigPath: join(REPO_ROOT, 'tsconfig.json'),
-    configArgs: ['--profile', 'web', '--patch', overlay, '--host', '127.0.0.1', '--port', '0', '--no-open'],
+    configArgs: ['--profile', 'web', '--patch', overlay, ...additionalPatches.flatMap(path => ['--patch', path]),
+      '--host', '127.0.0.1', '--port', '0', '--no-open'],
     env: {
       DSH_HOME: join(root, 'home'), DSH_AGENTS_HOME: join(root, 'agents'),
       DSH_BUNDLED_SKILL_DIR: join(root, 'bundled-skills'), DSH_TELEMETRY_DISABLED: '1',
@@ -57,7 +69,7 @@ export async function startProfileWeb(root: string, workspace: string, overlay: 
       if (!result.ok) throw new Error(`${endpoint}: ${result.error.code}: ${result.error.message}`)
       return result.value
     }
-    return { stop, remote, cookie, webUrl: new URL(authenticatedUrl).origin }
+    return { stop, remote, cookie, webUrl: new URL(authenticatedUrl).origin, output: (): string => output }
   } catch (error) {
     try { await stop() }
     catch (cleanupError) { throw new AggregateError([error, cleanupError], `Web profile startup failed; cleanup also failed.\n${output}`) }

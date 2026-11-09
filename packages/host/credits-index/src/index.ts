@@ -46,6 +46,9 @@ import { mediaPreferencePrices } from './media-preference-pricing.ts'
 import type { MediaPreferenceModel, MediaPreferencePricing } from './media-preferences-types.ts'
 import { readAnnouncementBanner } from './announcement-banner.ts'
 import { parseClientModelConfigStatus, parseClientModelPresentationStatus } from './client-model-config.ts'
+import type { MediaModelConfigBinding } from './media-model-config-result.ts'
+import { readModelConfigRevision, ModelConfigVersionError, modelConfigVersionHeaders, type ModelConfigRevision, type ModelConfigVersion } from './model-config-version.ts'
+import { assertModelCatalogConsistent, modelCatalogVersions, ModelCatalogChangedError } from './model-catalog-consistency.ts'
 import { ProductModelCapabilitiesError, mergeProductModelLimits, productModelLimitsScope, readProductModelLimits, type ProductModelLimits } from './model-limits.ts'
 import { registerProductTextModelPolicy } from './text-model-policy.ts'
 import { orderProductModels, preferredProductModel, productModelDisplaySignature,
@@ -932,7 +935,13 @@ export function apply(ctx: Context, config: Config): void {
     if (session?.token === undefined) return await next()
     return await generationPerformance.tool(productOwner(session), exec.name, next)
   })
-  let productCatalog: { version: number; owner: string; ids: readonly string[]; selection: ModelSelection | undefined } | undefined
+  let productCatalog: {
+    version: number
+    owner: string
+    ids: readonly string[]
+    limits: ReadonlyMap<string, ProductModelLimits>
+    selection: ModelSelection | undefined
+  } | undefined
   const productCatalogCurrent = (): boolean => {
     const session = store.peek()
     return session !== null && session !== undefined && productCatalog?.version === identityVersion
@@ -1074,6 +1083,8 @@ export function apply(ctx: Context, config: Config): void {
     audio: string[]
     limits: ReadonlyMap<string, ProductModelLimits>
     names: ReadonlyMap<string, string>
+    versions?: ReadonlyMap<string, ModelConfigVersion | undefined>
+    modelConfigRevision?: ModelConfigRevision
   }> => {
     const owned = await accountKey(session)
     if ('reason' in owned) return { ok: false, ...noCredential(owned.reason), chat: [], image: [], video: [], audio: [], limits: new Map(), names: new Map() }
@@ -1087,6 +1098,8 @@ export function apply(ctx: Context, config: Config): void {
       const payload: unknown = await response.json()
       const data = payload !== null && typeof payload === 'object' && 'data' in payload ? payload.data : undefined
       if (!Array.isArray(data)) return { ok: false, code: 'MODEL_CATALOG_INVALID', message: '模型列表格式无效', chat: [], image: [], video: [], audio: [], limits: new Map(), names: new Map() }
+      const modelConfigRevision = readModelConfigRevision(payload as Record<string, unknown>)
+      const versions = modelCatalogVersions(data, 'id')
       const chat: string[] = []
       const image: string[] = []
       const video: string[] = []
@@ -1111,9 +1124,11 @@ export function apply(ctx: Context, config: Config): void {
           if (name !== '') names.set(id, name)
         }
       }
-      return { ok: true, chat, image, video, audio, limits, names }
+      return { ok: true, chat, image, video, audio, limits, names, versions,
+        ...modelConfigRevision === undefined ? {} : { modelConfigRevision } }
     } catch (error) {
-      return { ok: false, code: error instanceof ProductModelCapabilitiesError ? 'MODEL_CATALOG_INVALID' : 'TRANSPORT', message: error instanceof Error ? error.message : String(error), chat: [], image: [], video: [], audio: [], limits: new Map(), names: new Map() }
+      return { ok: false, code: error instanceof ProductModelCapabilitiesError || error instanceof ModelConfigVersionError
+        || error instanceof ModelCatalogChangedError ? 'MODEL_CATALOG_INVALID' : 'TRANSPORT', message: error instanceof Error ? error.message : String(error), chat: [], image: [], video: [], audio: [], limits: new Map(), names: new Map() }
     }
   }
 
@@ -1129,6 +1144,8 @@ export function apply(ctx: Context, config: Config): void {
     message?: string
     group: string | null
     models: ModelCapability[]
+    rows?: readonly unknown[]
+    modelConfigRevision?: ModelConfigRevision
     projectParallelism?: ReadonlyMap<string, number>
     imageCeilings?: ReadonlyMap<string, number | undefined>
     imageServerRecovery?: ReadonlySet<string>
@@ -1141,9 +1158,9 @@ export function apply(ctx: Context, config: Config): void {
       const session = await liveSession()
       const owner = session === null ? 'signed-out' : productOwner(session)
       const headers = { accept: 'application/json' }
-      const [self, rows] = await Promise.all([
+      const [self, snapshot] = await Promise.all([
         session === null ? Promise.resolve(null) : readSelf(session),
-        mediaCatalogCache.read(JSON.stringify([apiBaseUrl, owner, epoch]), headers,
+        mediaCatalogCache.snapshot(JSON.stringify([apiBaseUrl, owner, epoch]), headers,
           () => apiFetch('/api/pricing', { headers,
             signal: signal === undefined ? AbortSignal.timeout(resolved.timeoutMs)
               : AbortSignal.any([signal, AbortSignal.timeout(resolved.timeoutMs)]),
@@ -1156,6 +1173,7 @@ export function apply(ctx: Context, config: Config): void {
       if (session !== null && self === null) return { ok: false, code: 'ACCOUNT_UNAVAILABLE',
         message: '暂时无法核对账号的模型权限，请稍后重试；尚未提交生成。', group, models: [] }
       group = self?.group ?? null
+      const { rows, modelConfigRevision } = snapshot
       const order = new Map(productModelPresentation.modelOrder.map((id, index) => [id, index]))
       const last = order.size
       const models = catalogFromPricing(rows, group).toSorted((left, right) =>
@@ -1178,12 +1196,15 @@ export function apply(ctx: Context, config: Config): void {
           preferencePrices = new Map()
         }
       }
-      return { ok: true, group, models, projectParallelism, imageCeilings, imageServerRecovery, imageServerUpdateRequired,
+      return { ok: true, group, models, rows,
+        ...modelConfigRevision === undefined ? {} : { modelConfigRevision },
+        projectParallelism, imageCeilings, imageServerRecovery, imageServerUpdateRequired,
         ...preferencePrices === undefined ? {} : { preferencePrices } }
     } catch (error) {
       return {
         ok: false,
-        code: error instanceof MediaCatalogReadError ? error.code : signal?.aborted === true ? 'ABORTED' : 'TRANSPORT',
+        code: error instanceof MediaCatalogReadError || error instanceof ModelConfigVersionError ? error.code
+          : signal?.aborted === true ? 'ABORTED' : 'TRANSPORT',
         message: '暂时无法读取模型目录，请检查连接后重试；尚未提交生成。',
         group,
         models: [],
@@ -1381,8 +1402,22 @@ export function apply(ctx: Context, config: Config): void {
     publicUnitPrices?: Map<string, MediaPreferencePricing>) => {
     const owner = productOwner(session)
     const epoch = identityVersion
-    const catalog = await readMediaCatalog(signal, publicUnitPrices !== undefined)
-    const visible = await readNewApiModels(session, signal)
+    let catalog = await readMediaCatalog(signal, publicUnitPrices !== undefined)
+    let visible = await readNewApiModels(session, signal)
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      if (!catalog.ok || !visible.ok) break
+      try {
+        assertModelCatalogConsistent(visible.versions ?? new Map(), catalog.rows ?? [], visible.limits)
+        break
+      } catch (error) {
+        if (!(error instanceof ModelCatalogChangedError) || attempt === 1) {
+          throw new CreativeError('MODEL_CONFIG_CHANGED', 409, '模型配置已变化，请刷新当前目录后重新发起；尚未提交生成。')
+        }
+        mediaCatalogCache.clear()
+        catalog = await readMediaCatalog(signal, publicUnitPrices !== undefined)
+        visible = await readNewApiModels(session, signal)
+      }
+    }
     const latest = await store.read()
     if (epoch !== identityVersion || latest?.token === undefined || productOwner(latest) !== owner) {
       throw new CreativeError('ACCOUNT_CHANGED', 409, '登录状态已变化，请重新读取模型目录。')
@@ -1442,7 +1477,13 @@ export function apply(ctx: Context, config: Config): void {
     signal?: AbortSignal,
   ): Promise<{ ok: true; model: ModelCapability; imageCeiling?: number; serverResultRecovery?: boolean }
     | { ok: false; code: string; message: string; catalog: ModelCapability[] }> => {
-    const catalog = await readMediaCatalog(signal)
+    const session = await liveSession()
+    let catalog: Awaited<ReturnType<typeof readMediaCatalog>>
+    try { catalog = session?.token === undefined ? await readMediaCatalog(signal) : await readAuthorizedMediaCatalog(session, signal) }
+    catch (error) {
+      return { ok: false, code: error instanceof CreativeError ? error.code : 'MODEL_CATALOG_UNAVAILABLE',
+        message: error instanceof CreativeError ? error.message : '当前无法核对模型配置，请刷新后重试；尚未提交生成。', catalog: [] }
+    }
     if (!catalog.ok) return { ok: false, code: catalog.code ?? 'CATALOG_FAILED', message: catalog.message ?? '模型表不可用', catalog: [] }
     if (id === null) id = requireMediaDefault(await readMediaDefault(kind, signal, catalog.models))
     const model = pickModel(catalog.models, kind, id)
@@ -1481,6 +1522,12 @@ export function apply(ctx: Context, config: Config): void {
     readonly balanceRejection?: VideoBalanceRejection
   }
 
+  /** A gateway refusal may be unsubmitted upstream while its local HTTP receipt must remain immutable. */
+  const mediaDispatchNotStarted = (outcome: MediaOutcome): boolean => outcome.submissionState === 'not-submitted'
+    && [outcome.imageReceipt, outcome.videoReceipt].every(receipt => receipt === undefined
+      || receipt.phase === 'submitting' && receipt.taskId === undefined
+      && receipt.serverTaskId === undefined && receipt.requestId === undefined)
+
   /**
    * Submit one prepared video job to the configured API and wait for its file.
    * The server's task plugin maps the prepared fields to its selected upstream.
@@ -1495,11 +1542,13 @@ export function apply(ctx: Context, config: Config): void {
     beforeSubmit?: (signal: AbortSignal) => Promise<void>,
     activity?: CreationTaskObserver,
     naming?: Omit<MediaFilenameOptions, 'extension'>,
+    modelConfigBinding?: MediaModelConfigBinding,
   ): Promise<MediaOutcome> => {
     let output: CapturedMediaOutput | undefined
     let submitKey = key
     let preparedSubmission: ReturnType<typeof videoSubmission> | undefined
     return executeVideoTask({
+      ...modelConfigBinding === undefined ? {} : { modelConfigBinding },
       ...activity === undefined ? {} : { activity },
       ...origin === undefined ? {} : { origin },
       model: resumeReceipt?.model ?? readString(request, 'model') ?? '', route,
@@ -1518,7 +1567,7 @@ export function apply(ctx: Context, config: Config): void {
       submit: async (operationSignal) => {
         operationSignal.throwIfAborted()
         const submission = preparedSubmission ?? videoSubmission(request)
-        return apiFetch(route, { method: 'POST', headers: { authorization: `Bearer ${submitKey}`, accept: 'application/json', ...submission.headers, ...videoClientHeaders() }, body: submission.body, signal: operationSignal })
+        return apiFetch(route, { method: 'POST', headers: { authorization: `Bearer ${submitKey}`, accept: 'application/json', ...submission.headers, ...videoClientHeaders(), ...modelConfigVersionHeaders(modelConfigBinding?.modelConfigVersion) }, body: submission.body, signal: operationSignal })
       },
       read: async (taskId, operationSignal, canonical) => {
         const ownedKey = await currentKey?.() ?? key
@@ -1846,6 +1895,7 @@ export function apply(ctx: Context, config: Config): void {
       operationId: originalResult.operation.operationId, backendFingerprint }
     let retainedResultRef = originalResult?.reference
     let serverResultRecovery = resumeReceipt?.serverTaskId !== undefined
+    let imageModelConfigBinding: MediaModelConfigBinding | undefined
     const execute = async (
       model: string, route: string, mode: string,
       submit: (requestSignal: AbortSignal) => Promise<Response>,
@@ -1858,6 +1908,7 @@ export function apply(ctx: Context, config: Config): void {
       const resumeResult = recoverySources?.kind === 'local' ? recoverySources.result : undefined
       const localResultUnavailable = recoverySources?.kind === 'server'
       const result = await executeImageTask({
+        ...imageModelConfigBinding === undefined ? {} : { modelConfigBinding: imageModelConfigBinding },
         ...activity === undefined ? {} : { activity },
         model, route, backendFingerprint, signal, submit, ...origin === undefined ? {} : { origin },
         serverResultRecovery,
@@ -1978,6 +2029,10 @@ export function apply(ctx: Context, config: Config): void {
       const params = capability.model.params as ImageParams
       body = canonicalMediaRequestParameters(capability.model, body)
       const model = capability.model.id
+      imageModelConfigBinding = { url: apiUrl(apiBaseUrl, capability.model.route === '/v1/images/generations'
+        && referenceIds(body.references).length > 0 ? '/v1/images/edits' : capability.model.route), method: 'POST',
+      model, accountId: imageAccount.identity.accountId,
+      ...capability.model.modelConfigVersion === undefined ? {} : { modelConfigVersion: capability.model.modelConfigVersion } }
       serverResultRecovery = capability.serverResultRecovery === true
       const internalImage = model === 'yunshu-internal-gpt-image-2'
       if (internalImage) {
@@ -2062,6 +2117,7 @@ export function apply(ctx: Context, config: Config): void {
         if (!edit.ok) return { ...edit, submissionState: 'not-submitted', model }
       }
       const headers = { 'content-type': 'application/json', accept: 'application/json',
+        ...modelConfigVersionHeaders(capability.model.modelConfigVersion),
         ...params.asyncSubmit === true && serverResultRecovery ? { prefer: 'respond-async' } : {} }
       /** The optional knobs, spelled the way both the relay and the vendors read them. */
       const extras: Record<string, unknown> = {
@@ -2195,6 +2251,7 @@ export function apply(ctx: Context, config: Config): void {
         requestSignal.throwIfAborted()
         return apiFetch('/v1/images/edits', {
           method: 'POST', headers: { authorization: `Bearer ${submitKey}`, accept: 'application/json',
+            ...modelConfigVersionHeaders(capability.model.modelConfigVersion),
             ...params.asyncSubmit === true && serverResultRecovery ? { prefer: 'respond-async' } : {} }, body: editForm, signal: requestSignal,
         })
       }
@@ -2781,15 +2838,27 @@ export function apply(ctx: Context, config: Config): void {
       }
       await mutateSession(async () => { await currentIdentity(); await writeProductModels(undefined, undefined, { scope: limitsScope }) })
       const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(resolved.timeoutMs)])
-      const discovered = await readNewApiModels(session, signal)
-      if (!discovered.ok) throw new Error('无法读取当前账号模型列表，请稍后重试。')
-      const media = new Set<string>()
-      const pricing = await apiFetch('/api/pricing', { headers: { accept: 'application/json' }, signal })
-      if (!pricing.ok) throw new Error('无法核对聊天模型类型，请稍后重试。')
-      const body = await pricing.json() as { data?: unknown }
-      if (!Array.isArray(body.data)) throw new Error('模型类型列表无效，请稍后重试。')
-      for (const id of mediaModelIds(body.data)) media.add(id)
-      const pricingRows: readonly unknown[] = body.data
+      let discovered = await readNewApiModels(session, signal)
+      let pricingRows: readonly unknown[] = []
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        if (!discovered.ok) throw new Error('无法读取当前账号模型列表，请稍后重试。')
+        const pricing = await apiFetch('/api/pricing', { headers: { accept: 'application/json' }, signal })
+        if (!pricing.ok) throw new Error('无法核对聊天模型类型，请稍后重试。')
+        const body: unknown = await pricing.json()
+        if (body === null || typeof body !== 'object' || !('data' in body) || !Array.isArray(body.data)) {
+          throw new Error('模型类型列表无效，请稍后重试。')
+        }
+        readModelConfigRevision(body)
+        pricingRows = body.data
+        try {
+          assertModelCatalogConsistent(discovered.versions ?? new Map(), pricingRows, discovered.limits)
+          break
+        } catch (error) {
+          if (!(error instanceof ModelCatalogChangedError) || attempt === 1) throw error
+          discovered = await readNewApiModels(session, signal)
+        }
+      }
+      const media = new Set(mediaModelIds(pricingRows))
       for (const row of pricingRows) {
         if (row !== null && typeof row === 'object' && 'model_name' in row
           && typeof row.model_name === 'string' && declaredModelKind(row) === null) media.add(row.model_name)
@@ -2834,7 +2903,7 @@ export function apply(ctx: Context, config: Config): void {
         productModelPresentation = presentation
         productModelDisplays = displays
         productModelOwner = owner
-        productCatalog = { version, owner, ids,
+        productCatalog = { version, owner, ids, limits: new Map(discovered.limits),
           selection: preferred === undefined ? undefined : { provider: resolved.chatProviderRoute, model: preferred } }
         const nextDefault = ctx.get('agentDefaultModel')?.currentSelection()
         if (previousDefault?.provider !== nextDefault?.provider || previousDefault?.model !== nextDefault?.model
@@ -2859,6 +2928,17 @@ export function apply(ctx: Context, config: Config): void {
   const harnessAccount: HarnessAccount = {
     provider: resolved.chatProviderRoute,
     refreshModels: baseURL => refreshProductModels(baseURL),
+    async authorizeModelConfig(request) {
+      if (request.baseURL.replace(/\/+$/u, '') !== apiUrl(apiBaseUrl, '/v1')) return false
+      if (await harnessAccount.resolveRelayKey(request.baseURL, request.scope) === undefined) return false
+      const session = await store.read()
+      if (session === null || !productCatalogCurrent() || productCatalog === undefined
+        || !productCatalog.ids.includes(request.model)
+        || request.scope !== productModelLimitsScope(apiBaseUrl, session.account.id)) return false
+      const limits = productCatalog.limits.get(request.model)
+      return limits?.modelConfigVersion === request.modelConfigVersion
+        && limits.contextWindow === request.contextWindow && limits.maxTokens === request.maxTokens
+    },
     async resolveRelayKey(baseURL, expectedModelLimitsScope) {
       if (baseURL.replace(/\/+$/u, '') !== apiUrl(apiBaseUrl, '/v1')) return undefined
       await sessionMutations
@@ -3027,7 +3107,7 @@ export function apply(ctx: Context, config: Config): void {
         await creative.finish(operation, { kind, paths,
           ...kind === 'image' && outcome.imageReceipt !== undefined ? { imageReceipt: outcome.imageReceipt } : {},
           ...kind === 'video' && outcome.videoReceipt !== undefined ? { videoReceipt: outcome.videoReceipt } : {},
-          ...outcome.submissionState === 'not-submitted' ? { notSubmitted: true } : {}, status: outcome.ok ? 'completed'
+          ...mediaDispatchNotStarted(outcome) ? { notSubmitted: true } : {}, status: outcome.ok ? 'completed'
             : imageCreativeStatus(outcome, panelLife.signal),
           ...outcome.code === undefined ? {} : { errorCode: outcome.code } })
         return { ...outcome, planId, operationId: operation.operationId }
@@ -3081,7 +3161,7 @@ export function apply(ctx: Context, config: Config): void {
         { operation, ...retained.imageResultRef === undefined ? {} : { reference: retained.imageResultRef } })
       await creative.finish(operation, { kind: 'image', status: outcome.ok ? 'completed' : imageCreativeStatus(outcome, signal),
         ...outcome.imageReceipt === undefined ? {} : { imageReceipt: outcome.imageReceipt },
-        ...outcome.submissionState === 'not-submitted' ? { notSubmitted: true } : {},
+        ...mediaDispatchNotStarted(outcome) ? { notSubmitted: true } : {},
         paths: outcome.paths ?? [], ...outcome.code === undefined ? {} : { errorCode: outcome.code } })
       return outcome
     } catch (error) {
@@ -4222,6 +4302,7 @@ export function apply(ctx: Context, config: Config): void {
               const pricing = publicUnitPrices?.get(model.id)
               return { id: model.id, displayName: model.displayName,
                 verified: model.verified, source: model.source, notes: model.notes,
+                ...model.modelConfigVersion === undefined ? {} : { modelConfigVersion: model.modelConfigVersion },
                 ...pricing === undefined ? {} : { pricing },
                 ...model.kind === 'image' ? { kind: 'image', params: model.params as ImageParams }
                   : { kind: 'video', params: model.params as VideoParams } }
@@ -4664,14 +4745,20 @@ export function apply(ctx: Context, config: Config): void {
               json(response, 200, { ok: false, code: built.code, message: built.message })
               return
             }
-            const binding = body.session_id === undefined && body.account_id === undefined ? undefined : await bindCurrentVideoAccount()
+            const taskBinding = await bindCurrentVideoAccount()
+            const generationModelConfigBinding: MediaModelConfigBinding = {
+              url: apiUrl(apiBaseUrl, capability.model.route), method: 'POST', model: capability.model.id,
+              accountId: taskBinding.identity.accountId,
+              ...capability.model.modelConfigVersion === undefined ? {} : { modelConfigVersion: capability.model.modelConfigVersion },
+            }
+            const binding = body.session_id === undefined && body.account_id === undefined ? undefined : taskBinding
             const owner = binding === undefined ? undefined : creativePanelOwner(ctx, request, body, binding.identity)
             let outcome: MediaOutcome & { planId?: string; operationId?: string }
             if (owner === undefined || binding === undefined) {
               if (capability.model.source === 'plugin:blackrxai-video') throw new CreativeError('CREATIVE_SESSION_INVALID', 400, '请在当前聊天中生成视频，以便保存原任务回执。')
               outcome = await runVideoTask(key, capability.model.route, built.request, undefined,
-                undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-                generationCreation.task(undefined, 'video'))
+                undefined, undefined, undefined, () => taskBinding.key(), undefined, undefined, undefined, undefined, undefined,
+                generationCreation.task(undefined, 'video'), undefined, generationModelConfigBinding)
             } else {
               const admission = `${owner.accountId}:${owner.sessionId}`
               if (panelVideoAdmissions.has(admission)) outcome = await pendingPanelVideo(owner) ?? { ok: false, submissionState: 'unknown', code: 'CREATIVE_SHOT_RUNNING', message: '此聊天的视频提交正在处理，请查询原任务，不要再次生成。' }
@@ -4683,7 +4770,7 @@ export function apply(ctx: Context, config: Config): void {
                       async () => { await binding.key(); await creative.dispatched(operation) },
                       receipt => creative.videoReceipt(operation, receipt), undefined, () => binding.key(),
                       path => creative.saved(operation, path, 'video'), undefined, undefined, undefined, undefined,
-                      generationCreation.task(operation, 'video'), operation.outputNaming))
+                      generationCreation.task(operation, 'video'), operation.outputNaming, generationModelConfigBinding))
                 } finally { panelVideoAdmissions.delete(admission) }
               }
             }
@@ -4722,7 +4809,7 @@ export function apply(ctx: Context, config: Config): void {
             const submission = videoSubmission(built.request)
             const created = await apiFetch(capability.model.route, {
               method: 'POST',
-              headers: { authorization: `Bearer ${key}`, accept: 'application/json', ...submission.headers, ...videoClientHeaders() },
+              headers: { authorization: `Bearer ${key}`, accept: 'application/json', ...submission.headers, ...videoClientHeaders(), ...modelConfigVersionHeaders(capability.model.modelConfigVersion) },
               body: submission.body,
               signal: AbortSignal.timeout(Math.max(resolved.timeoutMs, 180_000)),
             })
@@ -4991,7 +5078,9 @@ export function apply(ctx: Context, config: Config): void {
     const intent = videoGenerationIntentOf(exec)
     if (intent === undefined) throw new CreativeError('CREATIVE_VIDEO_INTENT_UNAVAILABLE', 409,
       '无法确认本次新增视频的请求，尚未提交生成；请明确提出需要生成的视频及数量。')
-    const catalog = await readMediaCatalog(exec.signal)
+    const selectedSession = await liveSession()
+    if (selectedSession?.token === undefined) throw new CreativeError('AUTH_REQUIRED', 401, '请先登录再选择视频模型。')
+    const catalog = await readAuthorizedMediaCatalog(selectedSession, exec.signal)
     if (!catalog.ok) throw new CreativeError('VIDEO_MODELS_UNAVAILABLE', 409, '当前无法读取视频型号，尚未提交生成。')
     const baselinePlan = { requiresReplan: false }
     const candidate = (model: string, resolution: string | undefined, allowReplan = false): VideoModelCandidate => {
@@ -5035,7 +5124,8 @@ export function apply(ctx: Context, config: Config): void {
       return { model, ...resolution === undefined ? {} : { resolution },
         ...ratio === undefined ? {} : { ratio }, ...size === undefined ? {} : { size },
         ...quality === undefined ? {} : { quality },
-        ...mode === undefined ? {} : { mode }, durations: [...durations] }
+        ...mode === undefined ? {} : { mode }, durations: [...durations],
+        ...capability.modelConfigVersion === undefined ? {} : { modelConfigVersion: capability.modelConfigVersion } }
     }
     const targetModel = canonicalMediaModelId('video', intent.requestedModel ?? input.model
       ?? requireMediaDefault(await readMediaDefault('video', exec.signal)) ?? DEFAULT_CHAT_VIDEO_MODEL)
@@ -5101,8 +5191,10 @@ export function apply(ctx: Context, config: Config): void {
       quote: async (value, workCount, signal) => {
         const segments = await prepareQuoteSegments(value)
         return readVideoModelQuote({ candidate: value, accountId: identity.accountId, signal,
+          binding: { url: apiUrl(apiBaseUrl, '/v1/video/quote'), method: 'POST', model: value.model, accountId: identity.accountId,
+            ...value.modelConfigVersion === undefined ? {} : { modelConfigVersion: value.modelConfigVersion } },
           request: { model: value.model, works_count: workCount, segments },
-          transport: async (request, requestSignal) => {
+          transport: async (request, requestSignal, modelConfigVersion) => {
             await assertCurrent()
             const current = await bindCurrentVideoAccount()
             if (current.identity.accountId !== identity.accountId || current.identity.sessionFingerprint !== identity.sessionFingerprint) {
@@ -5111,6 +5203,7 @@ export function apply(ctx: Context, config: Config): void {
             const key = await current.key()
             return apiFetch('/v1/video/quote', { method: 'POST', headers: {
               authorization: `Bearer ${key}`, 'content-type': 'application/json', accept: 'application/json',
+              ...modelConfigVersionHeaders(modelConfigVersion),
             }, body: JSON.stringify(request), signal: AbortSignal.any([requestSignal, AbortSignal.timeout(resolved.timeoutMs)]) })
           },
         })
@@ -5143,6 +5236,8 @@ export function apply(ctx: Context, config: Config): void {
       }
     }
     return { input: { ...selectedInput, model: selected.model,
+      modelConfigSnapshot: { model: selected.model,
+        ...selected.modelConfigVersion === undefined ? {} : { modelConfigVersion: selected.modelConfigVersion } },
       ...fixed.quality === undefined ? {} : { quality: fixed.quality },
       ...fixed.mode === undefined ? {} : { mode: fixed.mode },
       ...fixed.ratio === undefined ? {} : { ratio: fixed.ratio },
@@ -5203,7 +5298,7 @@ export function apply(ctx: Context, config: Config): void {
           origin: apiBaseUrl, timeoutMs: resolved.timeoutMs, submitTimeoutMs: Math.max(resolved.timeoutMs, 180_000),
           downloadTimeoutMs: Math.max(resolved.timeoutMs, 300_000),
           maxDownloadBytes: resolved.videoProjectDownloadMaxBytes, cacheRoot: projectState, key: () => binding.key(),
-          clientSource: videoClientSource(),
+          clientSource: videoClientSource(), accountId: binding.identity.accountId,
         })
         const models = new Map<string, ModelCapability>()
         /** Resolve the saved model again when resuming a project with a fresh provider. */
@@ -5217,7 +5312,8 @@ export function apply(ctx: Context, config: Config): void {
           return capability.model.route
         }
         const dispatch = createVideoProjectDispatch({ relay,
-          queue: { origin: apiBaseUrl, timeoutMs: resolved.timeoutMs, key: () => binding.key(), clientSource: videoClientSource() },
+          queue: { origin: apiBaseUrl, timeoutMs: resolved.timeoutMs, key: () => binding.key(),
+            clientSource: videoClientSource(), accountId: binding.identity.accountId },
           route: requestRoute })
         const references = new Map<string, string>()
         let preparedBytes = 0
@@ -5248,19 +5344,28 @@ export function apply(ctx: Context, config: Config): void {
             }
             return catalog.projectParallelism?.get(id) ?? DEFAULT_VIDEO_PROJECT_PARALLELISM
           },
-          model: async (id, signal, resolution, quality, mode, ratio, size) => {
-            const [ids, catalog] = await Promise.all([relay.modelIds(signal), readMediaCatalog(signal)])
-            const allowed = new Set(ids)
+          model: async (id, signal, resolution, quality, mode, ratio, size, expectedSnapshot) => {
+            await binding.key()
+            const session = await liveSession()
+            if (session?.token === undefined) throw new VideoProjectError('AUTH_REQUIRED', '请先登录产品账号。')
+            const catalog = await readAuthorizedMediaCatalog(session, signal)
             signal.throwIfAborted()
+            await binding.key()
             if (!catalog.ok) throw new VideoProjectError('VIDEO_MODELS_UNAVAILABLE', '无法读取视频模型参数，请稍后重试')
-            const selected = pickModel(catalog.models.filter(model => allowed.has(model.id)), 'video', id ?? null)
+            const selected = pickModel(catalog.models, 'video', id ?? null)
             if (selected === null) throw new VideoProjectError('VIDEO_MODEL_UNAVAILABLE', '当前登录账户没有可用的所选视频模型，请检查后台模型配置')
+            if (expectedSnapshot !== undefined && (expectedSnapshot.model !== selected.id
+              || expectedSnapshot.modelConfigVersion !== selected.modelConfigVersion)) {
+              throw new VideoProjectError('MODEL_CONFIG_CHANGED', '模型配置已更新，请刷新目录后明确重新发起；尚未提交生成。')
+            }
             models.set(selected.id, selected)
             const params = selected.params as VideoParams
-            return { id: selected.id, durations: videoSpecificationDurations(params, {
-              ...resolution === undefined ? {} : { resolution }, ...quality === undefined ? {} : { quality },
-              ...mode === undefined ? {} : { mode }, ...ratio === undefined ? {} : { ratio }, ...size === undefined ? {} : { size } }),
-            ...params.defaultDuration === undefined ? {} : { defaultDuration: params.defaultDuration } }
+            return { id: selected.id,
+              ...selected.modelConfigVersion === undefined ? {} : { modelConfigVersion: selected.modelConfigVersion },
+              durations: videoSpecificationDurations(params, {
+                ...resolution === undefined ? {} : { resolution }, ...quality === undefined ? {} : { quality },
+                ...mode === undefined ? {} : { mode }, ...ratio === undefined ? {} : { ratio }, ...size === undefined ? {} : { size } }),
+              ...params.defaultDuration === undefined ? {} : { defaultDuration: params.defaultDuration } }
           },
           build: async (input, model, prompt, durationSeconds, signal): Promise<VideoProjectRequest> => {
             await binding.key()
@@ -5508,7 +5613,8 @@ export function apply(ctx: Context, config: Config): void {
               const paths = [...outcome.paths ?? []]
               await creative.finish(creation, { status: outcome.ok ? 'completed' : imageCreativeStatus(outcome, jobSignal), paths, kind: 'image',
                 ...outcome.imageReceipt === undefined ? {} : { imageReceipt: outcome.imageReceipt },
-                ...outcome.submissionState === 'not-submitted' ? { notSubmitted: true } : {}, ...outcome.code === undefined ? {} : { errorCode: outcome.code } })
+                ...mediaDispatchNotStarted(outcome) ? { notSubmitted: true } : {},
+                ...outcome.code === undefined ? {} : { errorCode: outcome.code } })
               const taskId = outcome.serverTaskId ?? outcome.taskId
               const receipt = { operation_id: creation.operationId, submission_state: outcome.submissionState ?? 'not-submitted',
                 ...taskId === undefined ? {} : { task_id: taskId },
@@ -5909,7 +6015,12 @@ export function apply(ctx: Context, config: Config): void {
           model: capability.model.id, shotDurations: [duration] }, exec, binding.identity,
         async () => { await binding.key() }, defaultedModel)
         const selection = choice.input
-        if (selection.model !== capability.model.id || selection.resolution !== requestedResolution
+        const snapshot = selection.modelConfigSnapshot
+        if (snapshot === undefined || snapshot.model !== selection.model) {
+          throw new CreativeError('MODEL_CONFIG_CHANGED', 409, '本次模型配置尚未完整确认，请刷新目录后重新发起；尚未提交生成。')
+        }
+        if (selection.model !== capability.model.id || snapshot.modelConfigVersion !== capability.model.modelConfigVersion
+          || selection.resolution !== requestedResolution
           || selection.quality !== args.quality || selection.mode !== args.mode
           || selection.ratio !== args.ratio || selection.size !== args.size) {
           capability = await capabilityFor('video', selection.model ?? DEFAULT_CHAT_VIDEO_MODEL, exec.signal)
@@ -5918,6 +6029,9 @@ export function apply(ctx: Context, config: Config): void {
             resolution: selection.resolution, quality: selection.quality, mode: selection.mode,
             ratio: selection.ratio, size: selection.size })
           if (!built.ok) return { status: 'failed', code: built.code, model: capability.model.id, message: built.message }
+        }
+        if (snapshot.model !== capability.model.id || snapshot.modelConfigVersion !== capability.model.modelConfigVersion) {
+          throw new CreativeError('MODEL_CONFIG_CHANGED', 409, '模型配置已更新，请刷新目录后明确重新发起；尚未提交生成。')
         }
         exec.signal.throwIfAborted()
         await choice.beforeSubmit(exec.signal)
@@ -5938,9 +6052,13 @@ export function apply(ctx: Context, config: Config): void {
               throw new VideoSubmissionRejection('CREATIVE_VIDEO_MODEL_CHOICE_UNAVAILABLE',
                 '提交前的型号与报价确认未完成，未提交新的生成；请重新确认。', 'not_submitted')
             }
-          }, generationCreation.task(creation, 'video'), creation.outputNaming)
+          }, generationCreation.task(creation, 'video'), creation.outputNaming, {
+            url: apiUrl(apiBaseUrl, capability.model.route), method: 'POST', model: capability.model.id,
+            accountId: binding.identity.accountId,
+            ...snapshot.modelConfigVersion === undefined ? {} : { modelConfigVersion: snapshot.modelConfigVersion },
+          })
         await creative.finish(operation, { status: outcome.ok ? 'completed' : imageCreativeStatus(outcome, exec.signal), kind: 'video',
-          ...outcome.submissionState === 'not-submitted' ? { notSubmitted: true } : {},
+          ...mediaDispatchNotStarted(outcome) ? { notSubmitted: true } : {},
           ...outcome.videoReceipt === undefined ? {} : { videoReceipt: outcome.videoReceipt },
           ...outcome.balanceRejection === undefined ? {} : { videoBalanceRejection: outcome.balanceRejection },
           ...outcome.path === undefined ? {} : { paths: [outcome.path] },

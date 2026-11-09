@@ -5,6 +5,7 @@ import type { VideoProjectAttemptId } from '../src/video-project.ts'
 import type { VideoProjectRequest, VideoProjectSubmission } from '../src/video-project-types.ts'
 import type { VideoProjectRelay } from '../src/video-project-provider.ts'
 import { VideoSubmissionRejection } from '../src/video-submission-result.ts'
+import { readModelConfigVersion } from '../src/model-config-version.ts'
 
 const attempt = '11111111-1111-4111-8111-111111111111'
 const queueId = `vq_${attempt}`
@@ -49,6 +50,31 @@ function fixture(handler?: (call: Call) => Response | Promise<Response>) {
 }
 
 describe('video project gateway dispatch', () => {
+  const versionA = readModelConfigVersion({ model_config_version: 'a'.repeat(64) })!
+  const versionB = readModelConfigVersion({ model_config_version: 'b'.repeat(64) })!
+
+  it('passes trusted modern metadata separately to the legacy native relay without changing its result', async () => {
+    const f = fixture(() => response({ data: {} }))
+    await f.dispatch.prepareSubmissions([request], signal())
+    f.relay.submit.mockResolvedValue({ taskId: gatewayId, submissionState: 'unknown', acknowledgedModelConfigVersion: versionA })
+    expect(await f.dispatch.submit(request, signal(), { ...submission, modelConfigVersion: versionB }))
+      .toEqual({ taskId: gatewayId, submissionState: 'unknown', acknowledgedModelConfigVersion: versionA })
+    expect(f.relay.submit).toHaveBeenCalledExactlyOnceWith(request, '/v1/videos', expect.any(AbortSignal), versionB)
+    expect(f.calls.map(call => call.method)).toEqual(['GET'])
+  })
+
+  it('retains original queue version A as unconfirmed when an idempotent replay was requested with version B', async () => {
+    const body = receipt()
+    const f = fixture(call => call.path.endsWith('/api/status') ? response({ data: { video_queue: capability } })
+      : response({ ...body, data: { ...body.data, model_config_version: versionA } }))
+    await f.dispatch.prepareSubmissions([request], signal())
+    expect(await f.dispatch.submit(request, signal(), { ...submission, modelConfigVersion: versionB }))
+      .toEqual({ taskId: queueId, submissionState: 'unknown', acknowledgedModelConfigVersion: versionA })
+    expect(f.calls.map(call => call.method)).toEqual(['GET', 'POST'])
+    expect(f.relay.submit).not.toHaveBeenCalled()
+    expect(JSON.parse(f.calls[1]!.body!)).toEqual({ schema_version: 1, queue_id: queueId, operation_id: attempt, count: 1, request })
+  })
+
   it('requires the original task financial proof before upgrading a failed queue funding category to unsent', async () => {
     const body = receipt('failed', 'not_submitted')
     const f = fixture(() => response({ ...body, data: { ...body.data, failure_code: 'insufficient_user_quota' } }))
@@ -178,11 +204,24 @@ describe('video project gateway dispatch', () => {
     expect(f.calls).toEqual([])
   })
 
-  it('retains the legacy route fallback for noncanonical provider task IDs', async () => {
+  it('defers a noncanonical original task route until the relay explicitly needs its legacy fallback', async () => {
     const f = fixture()
     await f.dispatch.check('task_legacy-provider', request, signal())
+    expect(f.route).not.toHaveBeenCalled()
+    const route = f.relay.check.mock.calls[0]?.[1]
+    if (typeof route !== 'function') throw new Error('Original raw task recovery requires a lazy legacy route')
+    expect(await route()).toBe('/v1/videos')
     expect(f.route).toHaveBeenCalledExactlyOnceWith(request)
-    expect(f.relay.check).toHaveBeenCalledExactlyOnceWith('task_legacy-provider', '/v1/videos', expect.any(AbortSignal), request.model)
+  })
+
+  it('does not let the current new-work catalog block a raw accepted task read', async () => {
+    const f = fixture()
+    f.route.mockRejectedValue(new Error('The model is no longer available for new submissions'))
+    expect(await f.dispatch.check('original-raw-task', { ...request, model: 'retired-video' }, signal())).toEqual({ status: 'running' })
+    expect(f.route).not.toHaveBeenCalled()
+    expect(f.relay.check).toHaveBeenCalledExactlyOnceWith('original-raw-task', expect.any(Function), expect.any(AbortSignal), 'retired-video')
+    expect(f.relay.submit).not.toHaveBeenCalled()
+    expect(f.calls).toEqual([])
   })
 
   it('downloads only the verified original gateway task through the existing bounded relay', async () => {

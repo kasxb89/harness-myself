@@ -9,6 +9,7 @@ import {
   VideoSubmissionRejection,
 } from './video-submission-result.ts'
 import { creationTaskActivity } from './creation-activity.ts'
+import { mediaModelConfigRejection, matchesModelConfigAcceptance, type MediaModelConfigBinding } from './media-model-config-result.ts'
 import type { CreationActivityOutcome, CreationTaskObserver } from './creation-activity.ts'
 import type { VideoBalanceRejection } from './video-balance-retry.ts'
 
@@ -29,6 +30,8 @@ export interface VideoTaskOutcome {
 
 /** Account-owned I/O boundaries; only submit may create a billable request. */
 export interface VideoTaskOptions {
+  /** Trusted original POST scope; never used for poll-only recovery or model reselection. */
+  readonly modelConfigBinding?: MediaModelConfigBinding
   /** Content-free local phases; ending local observation does not stop an accepted remote task. */
   activity?: CreationTaskObserver
   origin?: ArtifactOrigin
@@ -199,6 +202,9 @@ export async function executeVideoTask(options: VideoTaskOptions): Promise<Video
       let body: Record<string, unknown> | undefined
       try { body = record(JSON.parse(text)) } catch (_invalidResponse: unknown) { /* An unreadable response cannot disprove acceptance. */ }
       const nested = record(body?.data)
+      const configRejection = options.modelConfigBinding === undefined ? undefined
+        : mediaModelConfigRejection(response, body, options.modelConfigBinding)
+      if (configRejection !== undefined) return outcome('not-submitted', configRejection.code, configRejection.message)
       const marked = hasMediaSubmissionReceipt(body)
       const uncertain = hasMediaSubmissionUnknown(body)
       const canonicalId = uncertain ? mediaSubmissionUnknownTaskId(options.model, 'video', response.status, body) : undefined
@@ -214,9 +220,13 @@ export async function executeVideoTask(options: VideoTaskOptions): Promise<Video
         return outcome('failed', rejection.code, rejection.message)
       }
       if (taskId !== undefined) {
-        canonicalRead = marked || canonicalId !== undefined
+        canonicalRead = marked || canonicalId !== undefined || taskId.startsWith('task_')
         await persist({ ...currentReceipt(), taskId, phase: 'accepted' })
         lastProgress = progress(status(body))
+      }
+      if (response.ok && !matchesModelConfigAcceptance(response, options.modelConfigBinding?.modelConfigVersion)) {
+        return outcome(taskId === undefined ? 'unknown' : 'pending', 'MODEL_CONFIG_CONFIRMATION_UNAVAILABLE',
+          '提交已发出，但尚无法确认受理的模型配置版本；请保留原任务查询，不要重复生成。')
       }
       // This HTTP attempt occurred: "not-submitted" is reserved for preparation before dispatch.
       if (rejection !== undefined) return outcome('failed', rejection.code, rejection.message)

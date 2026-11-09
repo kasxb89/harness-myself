@@ -8,6 +8,15 @@ import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import type { VideoProjectActivity } from './creation-activity.ts'
 import type { VideoProjectAttemptId } from './video-project.ts'
 import type { VideoWorkStore } from './video-work-store.ts'
+import type { ModelConfigVersion } from './model-config-version.ts'
+
+/** Captured model-row identity; an existing object without a version pins legacy absence. */
+export interface VideoModelConfigSnapshot {
+  /** Exact account-visible model whose row was selected. */
+  readonly model: string
+  /** Captured row version; omission inside this snapshot pins legacy absence. */
+  readonly modelConfigVersion?: ModelConfigVersion
+}
 
 /** Credential-free JSON fields retained before the single submission attempt. */
 export type VideoRequestValue = string | number | boolean | null | VideoRequestValue[] | { [key: string]: VideoRequestValue }
@@ -44,6 +53,8 @@ export interface VideoProjectInput {
   shotReferenceAudios?: readonly (readonly string[])[]
   /** Account-visible model id; omission lets the provider select. */
   model?: string
+  /** Trusted Host selection metadata, never accepted as a model-facing tool control. */
+  modelConfigSnapshot?: VideoModelConfigSnapshot
   /** Validated by the selected provider model. */
   resolution?: string
   /** Exact native size when the complete published specification distinguishes it from resolution. */
@@ -78,6 +89,15 @@ export interface VideoProjectSubmission {
   readonly durationSeconds: number
   /** One billable clip request; a multi-clip project still represents one final work. */
   readonly count: 1
+  /** Original model configuration, sent only as a gateway header. */
+  readonly modelConfigVersion?: ModelConfigVersion
+}
+
+/** Original task coordinates and separately reported configuration metadata; neither permits replay. */
+export interface VideoProjectSubmissionResult {
+  readonly taskId: string
+  readonly submissionState?: 'unknown'
+  readonly acknowledgedModelConfigVersion?: ModelConfigVersion
 }
 
 /** One live account-bound relay adapter, captured without storing its key. */
@@ -109,14 +129,17 @@ export interface VideoProjectProvider {
    * @param mode - Optional independent vendor mode.
    * @param ratio - Requested aspect ratio whose native duration menu governs planning.
    * @param size - Exact native size when distinct from resolution.
+   * @param expectedSnapshot - Exact quoted row version or captured legacy absence, when selected earlier by the Host.
    * @returns Model id and supported whole-second durations.
    */
   model(
     model: string | undefined, signal: AbortSignal, resolution?: string, quality?: string, mode?: string, ratio?: string, size?: string,
+    expectedSnapshot?: VideoModelConfigSnapshot,
   ): Promise<{
     id: string
     durations: readonly number[]
     defaultDuration?: number
+    modelConfigVersion?: ModelConfigVersion
   }>
   /**
    * Validate and materialize one request without making a paid submission.
@@ -142,7 +165,7 @@ export interface VideoProjectProvider {
    * @param submission - Persisted clip identity for an opt-in idempotent gateway admission.
    * @returns Original platform task id, including a gateway queue task; explicit uncertainty does not establish provider acceptance.
    */
-  submit(request: VideoProjectRequest, signal: AbortSignal, submission?: VideoProjectSubmission): Promise<{ taskId: string; submissionState?: 'unknown' }>
+  submit(request: VideoProjectRequest, signal: AbortSignal, submission?: VideoProjectSubmission): Promise<VideoProjectSubmissionResult>
   /**
    * Read only a previously persisted task id. No method may submit from here.
    * @param taskId - Original platform or queue task identifier.

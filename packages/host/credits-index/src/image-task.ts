@@ -10,6 +10,7 @@ import {
 } from './media-submission-receipt.ts'
 import type { ArtifactOrigin } from '@deepseek-ai/dsh-artifacts-index'
 import { creationTaskActivity } from './creation-activity.ts'
+import { mediaModelConfigRejection, matchesModelConfigAcceptance, type MediaModelConfigBinding } from './media-model-config-result.ts'
 import { transferMedia, readMediaBytes, MediaTransferLimitError } from './media-transfer.ts'
 import { validateImageResultItems, type ImageResultItem, type ImageRetainedResult } from './image-result-store.ts'
 import type { CreationActivityOutcome, CreationTaskObserver } from './creation-activity.ts'
@@ -33,6 +34,8 @@ export interface ImageTaskOutcome {
 
 /** Provider operations are supplied by the account-bound Host and never retried as submissions. */
 export interface ImageTaskOptions {
+  /** Trusted original POST scope; never used for poll-only recovery or model reselection. */
+  readonly modelConfigBinding?: MediaModelConfigBinding
   /** Configured independent save/download limit; omitted callers retain serial behavior. */
   readonly downloadConcurrency?: number
   /** Complete HTTP JSON body bound, enforced while reading before parsing or inline decoding. */
@@ -305,6 +308,9 @@ export async function executeImageTask(options: ImageTaskOptions): Promise<Image
       let body: Record<string, unknown> | undefined
       try { body = record(JSON.parse(text)) }
       catch (_invalidReply: unknown) { /* An unreadable reply cannot establish that the paid submission was rejected. */ }
+      const configRejection = options.modelConfigBinding === undefined ? undefined
+        : mediaModelConfigRejection(response, body, options.modelConfigBinding)
+      if (configRejection !== undefined) return outcome('not-submitted', configRejection.code, configRejection.message)
       const marked = hasMediaSubmissionReceipt(body)
       const uncertain = hasMediaSubmissionUnknown(body)
       const canonicalId = uncertain ? mediaSubmissionUnknownTaskId(options.model, 'image', response.status, body) : undefined
@@ -320,8 +326,17 @@ export async function executeImageTask(options: ImageTaskOptions): Promise<Image
           (balance ? '余额不足，请充值；' : '') + mediaSubmissionMessage(rejection))
       }
       if (acceptedId !== undefined) {
-        canonicalRead = marked || canonicalId !== undefined
+        canonicalRead = marked || canonicalId !== undefined || acceptedId.startsWith('task_')
         await persist({ ...currentReceipt(), taskId: acceptedId, phase: 'accepted' })
+      }
+      if (response.ok && !matchesModelConfigAcceptance(response, options.modelConfigBinding?.modelConfigVersion)) {
+        const sources = validateImageResultItems(items(body), options.imageMaxBytes)
+        if (sources.length > 0) {
+          resultReceived = true
+          await options.receivedResult?.(sources, currentReceipt())
+        }
+        return outcome(acceptedId === undefined && currentReceipt().serverTaskId === undefined ? 'unknown' : 'pending',
+          'MODEL_CONFIG_CONFIRMATION_UNAVAILABLE', '提交已发出，但尚无法确认受理的模型配置版本；请保留原任务查询，不要重复生成。')
       }
       if (currentReceipt().serverTaskId !== undefined && (marked || uncertain && canonicalId === undefined)) {
         return await recoverServerResult()

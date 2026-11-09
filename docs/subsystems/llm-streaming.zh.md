@@ -1011,6 +1011,26 @@ declare abstract class LlmAdapter {
 
 `ContentBlockType`（带 `index` 关联的块所携带的键集合）从上文的 [`ContentBlockMap`](#content-blocks-and-messages) 派生。
 
+<a id="published-model-authorization"></a>
+
+## 已发布模型授权
+
+`HarnessModelConfigRequest` 将一个已预备的模型版本绑定到确切后端、账号 scope，以及应用个人覆盖前的原始已发布上下文/输出组合。实时账号所有者在发送前立即核对完整请求。仅有提供方 profile 字段不能授权版本请求头；没有 `authorizeModelConfig` 的 Host 会拒绝带版本的请求。[pi-ai 包](../../packages/llm/llm-pi-ai/README.zh.md)定义传输与失败行为。
+
+Source: [`packages/llm/llm-pi-ai/src/harness-account.ts`](../../packages/llm/llm-pi-ai/src/harness-account.ts)
+
+```ts type-equiv
+/** Prepared authoritative model metadata requiring the live account owner's approval. */
+interface HarnessModelConfigRequest {
+  readonly baseURL: string
+  readonly model: string
+  readonly scope: string
+  readonly modelConfigVersion: Branded<'ModelConfigVersion'>
+  readonly contextWindow: number
+  readonly maxTokens: number
+}
+```
+
 <!-- BEGIN GENERATED cordis-surface (gen-cordis-catalog.ts) — do not edit between markers -->
 
 <a id="cordis-surface"></a>
@@ -1069,6 +1089,13 @@ refreshModels(baseURL: string): Promise<readonly string[]>
  * @returns The current relay key, or undefined when no live session authorizes this exact request scope.
  */
 resolveRelayKey(baseURL: string, expectedModelLimitsScope?: string): Promise<string | undefined>
+
+/**
+ * Authorize one prepared version and original capacity pair against the current owned directory.
+ * @param request - Exact backend, account scope, model and authoritative metadata captured before overrides.
+ * @returns True only while this same live account and complete published declaration still match.
+ */
+authorizeModelConfig?(request: HarnessModelConfigRequest): Promise<boolean>
 ```
 
 Source: [`packages/llm/llm-pi-ai/src/harness-account.ts`](../../packages/llm/llm-pi-ai/src/harness-account.ts)

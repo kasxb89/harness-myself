@@ -1,0 +1,48 @@
+{
+  "capture": {
+    "source": "Actual base35405 v1 writer with synthetic provider/editor; no HTTP or billed task",
+    "writerSha256": "af95db4bcf10f58b40f15dc62ceb1c939b0fa54db391429a3cf87548a857176d",
+    "originalRoot": "/var/folders/gr/bgwgc8sn5t36sdnlv7cmw30w0000gn/T/dsh-unified-actual-v1-writer-wRN8kl",
+    "originalManifestSha256": "1302ddeb25f2471166e69e4031abe3504cd71dbfc5087d59204d314dc87c3f05",
+    "syntheticCreates": 1,
+    "realUpstreamCalls": 0,
+    "paidCalls": 0,
+    "pathToken": "{{fixtureRoot}}"
+  },
+  "manifest": {
+    "version": 1,
+    "id": "vp_0a38804d-c863-45f0-9d29-ce0ba32a279e",
+    "ownerSessionId": "legacy-unified-session",
+    "workspaceRoot": "{{fixtureRoot}}/workspace",
+    "identity": {
+      "accountId": "7",
+      "sessionFingerprint": "synthetic-v1-login"
+    },
+    "input": {
+      "prompt": "Local v1 accepted work",
+      "totalDurationSeconds": 5,
+      "model": "MiniMax-H3"
+    },
+    "model": "MiniMax-H3",
+    "status": "cancelled",
+    "segments": [
+      {
+        "index": 1,
+        "durationSeconds": 5,
+        "prompt": "全局剧情与约束（保留原文，仅作全片上下文）：\nLocal v1 accepted work\n\n当前分镜 1/1，本片时长 5 秒：\n按主说明有序推进当前片段，承接前镜并自然过渡到后镜，不从头重复全片剧情。\n\n仅执行当前分镜的剧情、动作与分配台词；其他分镜只作上下文，不要在每段复述整篇或重复其他镜头的对白。\n\n保持主体、风格、色彩与前后分镜连贯。\n\n仅当主说明或当前分镜明确要求对白、演唱或旁白时才生成人声；尊重静音、无对白、无旁白和关闭音轨的要求，不强行配音。\n\n同一发声角色跨分镜固定使用同一个说话人标识（S1、S2），保持身份、音色与语言一致；不为从未发声的角色添加说话人标识。\n\n只朗读本镜分配的台词，逐字保留用户原文、标点和语言，不改写、不翻译、不补造台词。\n\n镜内人物发声时，其嘴部开合跟随对应语音；其他未说话角色不跟口型。画外旁白发声时，对应画内角色嘴唇保持闭合，不作说话口型。\n\n对白、环境声与背景配乐分别安排；仅执行用户要求的声音，音乐不能替代或盖过用户要求的对白。\n\n仅在主说明或当前分镜明确要求字幕时显示本镜对应字幕，并按发声时序同步；逐字保留原文和标点，不擅自添加或翻译字幕。\n\nMiniMax-H3 原生音画表达：integrated_multimodal_description 描述本镜画面、动作和对白；overall_soundscape 只描述环境与非语言声音；non_diegetic_music 只描述背景配乐。\n\n仅对本镜明确要求发声的原句使用 <d>[原语言]原句</d>，中文台词使用 <d>[Chinese]原句</d>；原句与标点逐字保留，已有标签不重复包裹。说话人标识、动作和语气放在 <d> 外。\n\n画外旁白使用 says in an off-screen voiceover，并在对应 <d> 后明确画内角色嘴唇保持闭合；需要显示的字幕用英文双引号括起原文，不翻译。",
+        "request": {
+          "model": "MiniMax-H3",
+          "prompt": "全局剧情与约束（保留原文，仅作全片上下文）：\nLocal v1 accepted work\n\n当前分镜 1/1，本片时长 5 秒：\n按主说明有序推进当前片段，承接前镜并自然过渡到后镜，不从头重复全片剧情。\n\n仅执行当前分镜的剧情、动作与分配台词；其他分镜只作上下文，不要在每段复述整篇或重复其他镜头的对白。\n\n保持主体、风格、色彩与前后分镜连贯。\n\n仅当主说明或当前分镜明确要求对白、演唱或旁白时才生成人声；尊重静音、无对白、无旁白和关闭音轨的要求，不强行配音。\n\n同一发声角色跨分镜固定使用同一个说话人标识（S1、S2），保持身份、音色与语言一致；不为从未发声的角色添加说话人标识。\n\n只朗读本镜分配的台词，逐字保留用户原文、标点和语言，不改写、不翻译、不补造台词。\n\n镜内人物发声时，其嘴部开合跟随对应语音；其他未说话角色不跟口型。画外旁白发声时，对应画内角色嘴唇保持闭合，不作说话口型。\n\n对白、环境声与背景配乐分别安排；仅执行用户要求的声音，音乐不能替代或盖过用户要求的对白。\n\n仅在主说明或当前分镜明确要求字幕时显示本镜对应字幕，并按发声时序同步；逐字保留原文和标点，不擅自添加或翻译字幕。\n\nMiniMax-H3 原生音画表达：integrated_multimodal_description 描述本镜画面、动作和对白；overall_soundscape 只描述环境与非语言声音；non_diegetic_music 只描述背景配乐。\n\n仅对本镜明确要求发声的原句使用 <d>[原语言]原句</d>，中文台词使用 <d>[Chinese]原句</d>；原句与标点逐字保留，已有标签不重复包裹。说话人标识、动作和语气放在 <d> 外。\n\n画外旁白使用 says in an off-screen voiceover，并在对应 <d> 后明确画内角色嘴唇保持闭合；需要显示的字幕用英文双引号括起原文，不翻译。",
+          "seconds": 5,
+          "duration": 5
+        },
+        "status": "running",
+        "attemptId": "acb359dc-ac18-4d33-815c-0639e6e46ee8",
+        "taskId": "task_original_local_v1_fixture"
+      }
+    ],
+    "outputDirectory": "{{fixtureRoot}}/workspace/renders/vp_0a38804d-c863-45f0-9d29-ce0ba32a279e",
+    "updatedAt": "2026-11-09T15:23:02.395Z",
+    "failureCode": "CANCELLED"
+  }
+}

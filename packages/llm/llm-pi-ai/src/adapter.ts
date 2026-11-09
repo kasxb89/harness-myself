@@ -70,6 +70,7 @@ import { toPiContext } from './context.ts'
 import { conversationUpdates, createModels, getSupportedThinkingLevels } from './models.ts'
 import { toStreamChunks } from './stream.ts'
 import { harnessBalanceRejected, harnessFetch } from './harness-fetch.ts'
+import type { HarnessModelConfigRequest } from './harness-account.ts'
 import { gatewayReceipt, withGatewayReceipt, type GatewayReceipt } from './gateway-receipt.ts'
 
 /**
@@ -105,6 +106,8 @@ export interface PiAiAdapterOptions {
    * `MISSING_CREDENTIAL` rather than falling back.
    */
   resolveApiKey: (provider: string, profile: ResolvedPiAiProviderProfile) => Promise<string | undefined>
+  /** Live Host-owned authorization; persisted provider settings cannot supply this callback. */
+  authorizeModelConfig?: (provider: string, request: HarnessModelConfigRequest) => Promise<boolean>
   /**
    * How every collection this adapter builds resolves auth the request-level
    * `apiKey` override does not cover. Required rather than optional: a
@@ -271,6 +274,7 @@ function gatewayPayloadHook(controls: Readonly<Record<string, string | boolean>>
 function requestHeaders(headers: Readonly<Record<string, string>> | undefined): Record<string, string> {
   const attribution = attributionHeaders()
   const reserved = new Set(Object.keys(attribution).map(name => name.toLowerCase()))
+  reserved.add('x-yunshu-model-config-version')
   return {
     ...Object.fromEntries(Object.entries(headers ?? {}).filter(([name]) => !reserved.has(name.toLowerCase()))),
     ...attribution,
@@ -338,7 +342,7 @@ export class PiAiAdapter extends LlmAdapter {
   override providerRetryPolicy(provider: string): ResolvedRetryPolicy | undefined {
     const profile = this.current().profiles.get(provider)
     if (profile === undefined) return undefined
-    if (profile.baseURL !== undefined && harnessFetch(profile.baseURL) !== undefined) {
+    if (profile.modelConfigurations.size > 0 || profile.baseURL !== undefined && harnessFetch(profile.baseURL) !== undefined) {
       return { ...profile.retryPolicy, mode: 'normal', maxRetries: 0, retryableCodes: [] }
     }
     return profile.retryPolicy
@@ -406,7 +410,13 @@ export class PiAiAdapter extends LlmAdapter {
     const snapshot = this.current()
     return Promise.resolve({
       model: this.modelInfo(snapshot, provider, model),
-      stream: options => this.streamWithSnapshot(options, snapshot),
+      stream: (options) => {
+        if (snapshot.profiles.get(provider)?.modelConfigurations.has(model)
+          && (options.provider !== provider || options.model !== model)) {
+          throw new LlmError('Prepared model configuration cannot authorize another model or provider', 'MODEL_CONFIG_CHANGED')
+        }
+        return this.streamWithSnapshot(options, snapshot)
+      },
     })
   }
 
@@ -472,18 +482,12 @@ export class PiAiAdapter extends LlmAdapter {
       requestTimeout: boolean
       status: number | undefined
       textReselection: LlmTextReselectionProof | undefined
+      modelConfigFailure: LlmError | undefined
     } = {
-      balanceRejected: false, requestTimeout: false, status: undefined, textReselection: undefined,
+      balanceRejected: false, requestTimeout: false, status: undefined, textReselection: undefined, modelConfigFailure: undefined,
     }
     let hasOutput = false
     const captureReceipt = (headers: Headers): void => { receipt = gatewayReceipt(model.baseUrl, headers) }
-    const requestFetch = harnessFetch(model.baseUrl, async (response, proof) => {
-      captureReceipt(response.headers)
-      gatewayState.status = response.status
-      gatewayState.textReselection = proof
-      gatewayState.requestTimeout = response.status === 408
-      gatewayState.balanceRejected = await harnessBalanceRejected(response)
-    }, profile.managedLimitsScope === undefined ? undefined : { model: options.model, managedScope: profile.managedLimitsScope })
     const rejectedWithoutSubmission = (proof: LlmTextReselectionProof): LlmError => new LlmError(
       '当前模型暂不可用，请稍后重试或切换模型。', 'MODEL_UNAVAILABLE_NOT_SUBMITTED', {
         ...gatewayState.status === undefined ? {} : { status: gatewayState.status },
@@ -507,6 +511,27 @@ export class PiAiAdapter extends LlmAdapter {
       effectiveTextCapability(textCapabilities, 'reasoning') === false ? 'off' : options.reasoningEffort ?? profile.reasoning,
     )
     const apiKey = await this.config.resolveApiKey(options.provider, profile)
+    const modelConfiguration = profile.modelConfigurations.get(options.model)
+    const authorizedConfig: HarnessModelConfigRequest | undefined = modelConfiguration === undefined ? undefined
+      : Object.freeze({ baseURL: model.baseUrl, model: options.model, ...modelConfiguration })
+    const guardedFetch = harnessFetch(model.baseUrl, async (response, proof) => {
+      captureReceipt(response.headers)
+      gatewayState.status = response.status
+      gatewayState.textReselection = proof
+      gatewayState.requestTimeout = response.status === 408
+      gatewayState.balanceRejected = await harnessBalanceRejected(response)
+    }, profile.managedLimitsScope === undefined ? undefined : { model: options.model, managedScope: profile.managedLimitsScope },
+    authorizedConfig, authorizedConfig === undefined ? undefined
+      : async () => await this.config.authorizeModelConfig?.(options.provider, authorizedConfig) === true)
+    const requestFetch: typeof globalThis.fetch | undefined = guardedFetch === undefined ? undefined : async (input, init) => {
+      try { return await guardedFetch(input, init) }
+      catch (error) {
+        if (error instanceof LlmError && ['MODEL_CONFIG_CHANGED', 'MODEL_CONFIG_CONFIRMATION_UNAVAILABLE'].includes(error.code)) {
+          gatewayState.modelConfigFailure = error
+        }
+        throw error
+      }
+    }
     if (maxOutputTokens !== undefined && model.api === 'openai-responses' && model.provider === 'openai'
       && model.baseUrl === 'https://api.openai.com/v1' && (apiKey === undefined || !apiKey.startsWith('sk-'))) {
       throw new LlmError('Managed Responses output limits require an explicit OpenAI API key; ChatGPT sign-in omits the output limit', 'UNSUPPORTED_OPTION')
@@ -570,10 +595,13 @@ export class PiAiAdapter extends LlmAdapter {
           }
           const chunk = result.value
           // pi-ai synthesizes all-zero usage even for an HTTP rejection.
-          if (chunk.type === 'usage' && gatewayState.textReselection !== undefined && !hasOutput
+          if (chunk.type === 'usage' && (gatewayState.textReselection !== undefined || gatewayState.modelConfigFailure !== undefined) && !hasOutput
             && Object.values(chunk.usage).every(value => value === 0)) continue
           if (chunk.type !== 'finish') hasOutput = true
-          if (chunk.type === 'finish' && chunk.reason.kind === 'error' && gatewayState.textReselection !== undefined
+          if (chunk.type === 'finish' && chunk.reason.kind === 'error' && gatewayState.modelConfigFailure !== undefined
+            && !options.signal?.aborted && !watchdog.signal.aborted) {
+            yield withGatewayReceipt({ ...chunk, reason: { kind: 'error', failure: gatewayState.modelConfigFailure.failure } }, receipt)
+          } else if (chunk.type === 'finish' && chunk.reason.kind === 'error' && gatewayState.textReselection !== undefined
             && !hasOutput && !options.signal?.aborted && !watchdog.signal.aborted) {
             yield withGatewayReceipt({ ...chunk, reason: { kind: 'error', failure: rejectedWithoutSubmission(gatewayState.textReselection).failure } }, receipt)
           } else if (chunk.type === 'finish' && chunk.reason.kind === 'error' && gatewayState.requestTimeout && !options.signal?.aborted) {
@@ -596,7 +624,9 @@ export class PiAiAdapter extends LlmAdapter {
       }
     } catch (error: unknown) {
       let failure: LlmError
-      if (gatewayState.textReselection !== undefined && !hasOutput && !options.signal?.aborted && !watchdog.signal.aborted) {
+      if (gatewayState.modelConfigFailure !== undefined && !options.signal?.aborted && !watchdog.signal.aborted) {
+        failure = gatewayState.modelConfigFailure
+      } else if (gatewayState.textReselection !== undefined && !hasOutput && !options.signal?.aborted && !watchdog.signal.aborted) {
         failure = rejectedWithoutSubmission(gatewayState.textReselection)
       } else if (gatewayState.requestTimeout && !options.signal?.aborted) {
         failure = new LlmError('请求超时，提交状态未确认。请检查网络或减少图片后手动重试。', 'HTTP_REQUEST_TIMEOUT', { status: 408, cause: error })

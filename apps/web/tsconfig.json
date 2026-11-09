@@ -50,6 +50,7 @@
     "tests/video-project-progress.e2e.ts",
     "tests/video-background-chat.e2e.ts",
     "tests/video-project-clip-boundary.e2e.ts",
+    "tests/unified-model-config.e2e.ts",
     "tests/video-shot-references.e2e.ts",
     "tests/creation-plan-h3-receipts.e2e.ts",
     "tests/video-generation-intent.e2e.ts",

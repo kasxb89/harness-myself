@@ -13,6 +13,7 @@
  * @module dsh-llm-pi-ai/config
  */
 import type { Volatile } from '@deepseek-ai/cordis'
+import { brandString, type Branded } from '@deepseek-ai/dsh-brand'
 
 import type { CacheRetention, ChatTemplateKwargValue, ModelThinkingLevel, Provider, ThinkingBudgets, Transport } from '@earendil-works/pi-ai'
 import z from '@deepseek-ai/schemastery'
@@ -231,6 +232,8 @@ export interface ResolvedPiAiProviderProfile
   textCapabilities: RouteCatalog['textCapabilities']
   /** Settings metadata sharing the same effective capacities used for requests. */
   limits: RouteCatalog['limits']
+  /** Original version/capacity metadata captured with this immutable profile. */
+  modelConfigurations: RouteCatalog['modelConfigurations']
 }
 
 /** Plugin configuration: the provider routes this instance owns. */
@@ -317,6 +320,7 @@ const reasoningEfforts = z.dict(
 /** The fields a `models` entry and a `modelOverrides` value share; only the id's home differs. */
 const managedModelLimits: z<PiAiManagedModelLimits> = z.object({
   scope: z.string().min(1).max(512).required(),
+  modelConfigVersion: z.transform(z.string().pattern(/^[a-f0-9]{64}$/u), brandString<Branded<'ModelConfigVersion'>>),
   authoritative: z.union([z.boolean()]),
   contextWindow: z.number().step(1).min(1).max(MAX_CAPACITY_TOKENS),
   maxTokens: z.number().step(1).min(1).max(MAX_CAPACITY_TOKENS),
@@ -561,6 +565,7 @@ export function resolveProfiles(
       managedMaxTokens: catalog?.managedMaxTokens ?? new Map(),
       textCapabilities: catalog?.textCapabilities ?? new Map(),
       limits: catalog?.limits ?? new Map(),
+      modelConfigurations: catalog?.modelConfigurations ?? new Map(),
       modelErrors: catalog?.modelErrors ?? new Map(),
       ...piProvider === undefined ? {} : { piProvider },
       ...catalogError === undefined ? {} : { catalogError },

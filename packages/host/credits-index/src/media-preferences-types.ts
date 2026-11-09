@@ -1,6 +1,7 @@
 /** Browser-safe personal media choices, separate from platform access and financial approval. @module */
 import type { ImageParams, VideoParams } from './media.ts'
 import type { MediaDefaultSelection } from './media-defaults.ts'
+import type { ModelConfigRevision, ModelConfigVersion } from './model-config-version.ts'
 
 /** Static public controls; reference media, prompts and secrets are never preferences. */
 export interface MediaPreferenceSelection {
@@ -39,6 +40,7 @@ export interface MediaPreferencePricing {
 /** Current-account public parameter menus, without private routing or costs. */
 export type MediaPreferenceModel = {
   readonly id: string
+  readonly modelConfigVersion?: ModelConfigVersion
   readonly displayName: string
   readonly verified: boolean
   readonly source: string
@@ -48,6 +50,8 @@ export type MediaPreferenceModel = {
 
 /** Authorized directory and deployment defaults returned with saved preferences. */
 export interface MediaPreferencesCatalog extends MediaPreferences {
+  /** Directory publication revision, separate from the saved preference CAS revision. */
+  readonly modelConfigRevision?: ModelConfigRevision
   readonly catalog: { readonly image: readonly MediaPreferenceModel[]; readonly video: readonly MediaPreferenceModel[] }
   readonly defaults: { readonly image: MediaDefaultSelection; readonly video: MediaDefaultSelection }
 }

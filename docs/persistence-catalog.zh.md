@@ -665,7 +665,7 @@ export type SessionEvent<T extends SessionEventType = SessionEventType> = {
 'media/request-selection': MediaRequestSelection
 ```
 
-来源：[`packages/host/credits-index/src/media-preferences-types.ts:70`](../packages/host/credits-index/src/media-preferences-types.ts)
+来源：[`packages/host/credits-index/src/media-preferences-types.ts:74`](../packages/host/credits-index/src/media-preferences-types.ts)
 
 ### `model/*`
 
@@ -4008,7 +4008,7 @@ SHA-256: `72094f0065c441a20046500688cefaf1f3471967f152a5f394356ae7cc9cf16d`
 
 SHA-256: `4715df2e2ba3075ab5a1e9d6c99cb5cda264f6d20ff5fc9c0ab3535f7003be5c`
 
-来源：[`packages/host/credits-index/src/media-preferences-types.ts:6`](../packages/host/credits-index/src/media-preferences-types.ts)
+来源：[`packages/host/credits-index/src/media-preferences-types.ts:7`](../packages/host/credits-index/src/media-preferences-types.ts)
 
 | 属性 | 存在性 | 类型 |
 |---|---|---|
@@ -4025,7 +4025,7 @@ SHA-256: `4715df2e2ba3075ab5a1e9d6c99cb5cda264f6d20ff5fc9c0ab3535f7003be5c`
 
 SHA-256: `5fa6e2d8a20ab274b9beb2a91241fc3dc10c73999f6c85195c2221d66b23f6ce`
 
-来源：[`packages/host/credits-index/src/media-preferences-types.ts:56`](../packages/host/credits-index/src/media-preferences-types.ts)
+来源：[`packages/host/credits-index/src/media-preferences-types.ts:60`](../packages/host/credits-index/src/media-preferences-types.ts)
 
 以下类型之一：
 

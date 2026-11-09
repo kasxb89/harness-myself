@@ -2,10 +2,12 @@
 import { randomBytes } from 'node:crypto'
 import { link, lstat, open, realpath, unlink } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, sep } from 'node:path'
-import type { VideoProjectRequest } from './video-project-types.ts'
+import type { VideoProjectRequest, VideoProjectSubmissionResult } from './video-project-types.ts'
 import { apiUrl, normalizeApiBaseUrl } from './api-url.ts'
 import { accountBalanceFailure, isAccountBalanceRejection } from './account-balance.ts'
 import { videoSubmission } from './video-submission.ts'
+import { modelConfigVersionHeaders, type ModelConfigVersion } from './model-config-version.ts'
+import { mediaModelConfigRejection, matchesModelConfigAcceptance, readModelConfigAcceptanceVersion } from './media-model-config-result.ts'
 import { hasMediaSubmissionReceipt, mediaSubmissionTaskId, hasMediaSubmissionUnknown, mediaSubmissionUnknownTaskId } from './media-submission-receipt.ts'
 import {
   h3SubmissionRejection, h3SubmissionQueryRejection, hasH3SubmissionReceipt, h3ProviderTerminalRejection, hasH3ProviderTerminal,
@@ -33,6 +35,8 @@ export interface VideoRelayOptions {
   maxDownloadBytes: number
   /** Host-owned private project cache; downloads never write directly into the workspace. */
   cacheRoot: string
+  /** Captured account used to bind exact pre-billing model-configuration refusals. */
+  accountId?: string
   /** Launcher-derived video traffic label, absent outside Desktop; it grants no authority. */
   clientSource?: 'desktop' | undefined
   /** Recheck the original account/login before every request. */
@@ -47,16 +51,19 @@ export interface VideoProjectRelay {
    * @param body - Exact prepared generation request; private snapshots are serialized as multipart files.
    * @param route - Selected model's generation path.
    * @param signal - Cancels dispatch.
+   * @param modelConfigVersion - Trusted prepared model version, sent only as a gateway header.
    * @returns Original platform task identifier, retaining an explicitly unconfirmed submission outcome.
    */
-  submit(body: VideoProjectRequest, route: string, signal: AbortSignal): Promise<{ taskId: string; submissionState?: 'unknown' }>
+  submit(
+    body: VideoProjectRequest, route: string, signal: AbortSignal, modelConfigVersion?: ModelConfigVersion,
+  ): Promise<VideoProjectSubmissionResult>
   /**
    * @param taskId - Original platform task identifier.
-   * @param route - Original model's generation path.
+   * @param route - Original generation path, or its lazy compatibility resolver used only after canonical task GET returns 404.
    * @param signal - Cancels polling.
    * @returns Normalized upstream status, preserving accepted queue admission separately from generation.
    */
-  check(taskId: string, route: string, signal: AbortSignal, model?: string): Promise<{
+  check(taskId: string, route: string | (() => Promise<string>), signal: AbortSignal, model?: string): Promise<{
     status: 'queued' | 'running' | 'succeeded' | 'failed'
     code?: string
     message?: string
@@ -124,17 +131,21 @@ export function createVideoProjectRelay(options: VideoRelayOptions): VideoProjec
   const baseUrl = baseOf(options.origin)
   async function request(
     path: string, signal: AbortSignal, body?: VideoProjectRequest, timeoutMs = options.timeoutMs, allowNotFound = false,
+    modelConfigVersion?: ModelConfigVersion,
   ): Promise<Response> {
     signal.throwIfAborted()
     const key = await options.key()
     signal.throwIfAborted()
     const submission = body === undefined ? undefined : videoSubmission(body)
+    if (body !== undefined && ['model_config_version', 'model_config_revision', 'modelConfigVersion', 'modelConfigSnapshot']
+      .some(key => Object.hasOwn(body, key))) throw new VideoRelayError('VIDEO_REQUEST_INVALID', '视频配置版本只能由宿主作为请求头发送，尚未提交生成。')
     let response: Response
     try {
       response = await fetch(apiUrl(baseUrl, path), {
         method: body === undefined ? 'GET' : 'POST',
         headers: { authorization: 'Bearer ' + key, accept: body === undefined && path.endsWith('/content') ? 'video/mp4' : 'application/json',
-          ...submission?.headers, ...options.clientSource === undefined || path === '/v1/models' ? {} : { 'x-yunshu-client': options.clientSource } },
+          ...submission?.headers, ...modelConfigVersionHeaders(body === undefined ? undefined : modelConfigVersion),
+          ...options.clientSource === undefined || path === '/v1/models' ? {} : { 'x-yunshu-client': options.clientSource } },
         ...(submission === undefined ? {} : { body: submission.body }),
         redirect: 'error', signal: AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]),
       })
@@ -150,6 +161,10 @@ export function createVideoProjectRelay(options: VideoRelayOptions): VideoProjec
         let rejection: Record<string, unknown> | undefined
         try { rejection = await jsonBody(response) }
         catch (_unreadableRejection: unknown) { /* An invalid response cannot establish whose balance is exhausted. */ }
+        const configRejection = options.accountId === undefined || typeof body.model !== 'string' ? undefined
+          : mediaModelConfigRejection(response, rejection, { url: apiUrl(baseUrl, path), method: 'POST', model: body.model,
+            accountId: options.accountId, ...modelConfigVersion === undefined ? {} : { modelConfigVersion } })
+        if (configRejection !== undefined) throw configRejection
         const settled = h3SubmissionRejection(body.model, response.status, rejection)
         if (settled !== undefined) throw settled
         if (hasMediaSubmissionReceipt(rejection)) {
@@ -183,9 +198,14 @@ export function createVideoProjectRelay(options: VideoRelayOptions): VideoProjec
         return id === undefined || id.length === 0 || id.length > 256 ? [] : [id]
       })
     },
-    async submit(body: VideoProjectRequest, route: string, signal: AbortSignal): Promise<{ taskId: string; submissionState?: 'unknown' }> {
-      const response = await request(route, signal, body, options.submitTimeoutMs ?? Math.max(options.timeoutMs, 180_000))
+    async submit(
+      body: VideoProjectRequest, route: string, signal: AbortSignal, modelConfigVersion?: ModelConfigVersion,
+    ): Promise<VideoProjectSubmissionResult> {
+      const response = await request(route, signal, body,
+        options.submitTimeoutMs ?? Math.max(options.timeoutMs, 180_000), false, modelConfigVersion)
       const value = await jsonBody(response)
+      const acknowledgedModelConfigVersion = modelConfigVersion === undefined ? undefined : readModelConfigAcceptanceVersion(response)
+      const acknowledged = acknowledgedModelConfigVersion === undefined ? {} : { acknowledgedModelConfigVersion }
       if (hasMediaSubmissionReceipt(value)) {
         const taskId = mediaSubmissionTaskId(body.model, 'video', value)
         throw new VideoRelayError('VIDEO_SUBMIT_UNKNOWN', '原视频回执尚未通过完整核对，请保留已有任务与计费记录，不要重新生成。',
@@ -194,27 +214,32 @@ export function createVideoProjectRelay(options: VideoRelayOptions): VideoProjec
       if (hasMediaSubmissionUnknown(value)) {
         const taskId = mediaSubmissionUnknownTaskId(body.model, 'video', response.status, value)
         if (taskId === undefined) throw new VideoRelayError('VIDEO_SUBMIT_UNKNOWN', '视频提交回执无法完整核对，请保留已有记录，不要重新生成。')
-        return { taskId, submissionState: 'unknown' }
+        return { taskId, submissionState: 'unknown', ...acknowledged }
       }
       const nested = record(value.data)
       const taskId = text(value, 'task_id') ?? text(value, 'id') ?? text(nested, 'task_id') ?? text(nested, 'id')
       if (taskId === undefined || !isTaskId(taskId)) {
         throw new VideoRelayError('VIDEO_SUBMIT_UNKNOWN', '视频已提交但未获得有效任务标识，可能已计费；请勿直接重新生成')
       }
-      return { taskId }
+      return { taskId, ...acknowledged,
+        ...matchesModelConfigAcceptance(response, modelConfigVersion) ? {} : { submissionState: 'unknown' as const } }
     },
-    async check(taskId: string, route: string, signal: AbortSignal, model?: string): Promise<{
+    async check(taskId: string, route: string | (() => Promise<string>), signal: AbortSignal, model?: string): Promise<{
       status: 'queued' | 'running' | 'succeeded' | 'failed'
       code?: string
       message?: string
     }> {
-      const canonical = model === 'MiniMax-H3' || taskId.startsWith('task_')
-      let response = await request((canonical ? '/v1/tasks' : route) + '/' + validTask(taskId), signal, undefined, options.timeoutMs, canonical)
+      const canonical = typeof route === 'function' || model === 'MiniMax-H3' || taskId.startsWith('task_')
+      const initialRoute = typeof route === 'function' || canonical ? '/v1/tasks' : route
+      let response = await request(initialRoute + '/' + validTask(taskId), signal, undefined, options.timeoutMs, canonical)
       let canonicalResponse = canonical
       if (canonical && response.status === 404 && route !== '/v1/tasks') {
         await response.body?.cancel()
-        response = await request(route + '/' + validTask(taskId), signal)
-        canonicalResponse = false
+        const compatibilityRoute = typeof route === 'function' ? await route() : route
+        if (compatibilityRoute !== '/v1/tasks') {
+          response = await request(compatibilityRoute + '/' + validTask(taskId), signal)
+          canonicalResponse = false
+        }
       }
       if (response.status !== 200) {
         await response.body?.cancel()
