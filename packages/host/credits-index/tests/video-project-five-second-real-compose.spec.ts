@@ -1,4 +1,4 @@
-/** Current catalog and synthetic five-only contracts through the real relay, admission and FFmpeg. */
+/** Current catalog and synthetic duration contracts through the real relay, admission and FFmpeg. */
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
@@ -52,15 +52,18 @@ const ffmpeg = runtimeRoot === undefined ? undefined : join(runtimeRoot, 'bin', 
 const ffprobe = runtimeRoot === undefined ? undefined : join(runtimeRoot, 'bin', process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe')
 const available = ffmpeg !== undefined && ffprobe !== undefined && existsSync(ffmpeg) && existsSync(ffprobe)
 const cases = [
-  { name: 'actual-catalog-five-second-preference', fiveOnly: false, ceiling: undefined, localCeiling: undefined, expectedPeak: 4, totalSeconds: 20 },
-  { name: 'synthetic-five-only-contract-ceiling-two', fiveOnly: true, ceiling: 2, localCeiling: undefined, expectedPeak: 2, totalSeconds: 20 },
-  { name: 'actual-catalog-twenty-slot-pool', fiveOnly: false, ceiling: 20, localCeiling: undefined, expectedPeak: 20, totalSeconds: 120 },
-  { name: 'actual-catalog-twenty-slot-pool-local-six', fiveOnly: false, ceiling: 20, localCeiling: 6, expectedPeak: 6, totalSeconds: 120 },
+  { name: 'synthetic-fifteen-second-maximum', fiveOnly: false, fifteenSeconds: true, ceiling: undefined, localCeiling: undefined, expectedPeak: 1, totalSeconds: 15 },
+  { name: 'actual-catalog-single-native-clip', fiveOnly: false, fifteenSeconds: false, ceiling: undefined, localCeiling: undefined, expectedPeak: 1, totalSeconds: 10 },
+  { name: 'actual-catalog-five-second-preference', fiveOnly: false, fifteenSeconds: false, ceiling: undefined, localCeiling: undefined, expectedPeak: 2, totalSeconds: 20 },
+  { name: 'synthetic-five-only-contract-ceiling-two', fiveOnly: true, fifteenSeconds: false, ceiling: 2, localCeiling: undefined, expectedPeak: 2, totalSeconds: 20 },
+  { name: 'actual-catalog-twenty-slot-pool', fiveOnly: false, fifteenSeconds: false, ceiling: 20, localCeiling: undefined, expectedPeak: 12, totalSeconds: 120 },
+  { name: 'actual-catalog-twenty-slot-pool-local-six', fiveOnly: false, fifteenSeconds: false, ceiling: 20, localCeiling: 6, expectedPeak: 6, totalSeconds: 120 },
 ] as const
 
-it.skipIf(!available).each(cases)('$name generates $totalSeconds seconds under its declared concurrency and joins one work', async ({ name, fiveOnly, ceiling, localCeiling, expectedPeak, totalSeconds }) => {
+it.skipIf(!available).each(cases)('$name generates $totalSeconds seconds under its declared concurrency and joins one work', async ({ name, fiveOnly, fifteenSeconds, ceiling, localCeiling, expectedPeak, totalSeconds }) => {
   if (runtimeRoot === undefined || ffmpeg === undefined || ffprobe === undefined) throw new Error('Set the prepared native FFmpeg runtime')
-  const planSeconds = Array.from({ length: totalSeconds / 5 }, () => 5)
+  const clipSeconds = fiveOnly ? 5 : fifteenSeconds ? 15 : 10
+  const planSeconds = Array.from({ length: totalSeconds / clipSeconds }, () => clipSeconds)
   const directory = await realpath(await mkdtemp(join(tmpdir(), 'dsh-video-five-second-compose-')))
   const ctx = new Context(), source = createServer()
   onTestFinished(async () => {
@@ -82,13 +85,29 @@ it.skipIf(!available).each(cases)('$name generates $totalSeconds seconds under i
       && (object(object(object(value).properties).seconds).enum as unknown[]).includes(5))
     row.retail_price_rows = (row.retail_price_rows as unknown[]).filter(value => String(object(object(value).params).duration) === '5')
   }
+  if (fifteenSeconds) {
+    const combinations = parameters.oneOf
+    if (!Array.isArray(combinations)) throw new Error('Expected complete specifications')
+    const specifications = combinations.map((value: unknown) => object(value))
+    const extended = specifications.flatMap((specification) => {
+      const properties = object(specification.properties), seconds = object(properties.seconds)
+      if (!Array.isArray(seconds.enum) || !seconds.enum.includes(10)) return []
+      return [{ ...specification, properties: { ...properties, seconds: { ...seconds, enum: [15] } } }]
+    })
+    parameters.oneOf = [...specifications, ...extended]
+    const priceRows = row.retail_price_rows as unknown[]
+    row.retail_price_rows = [...priceRows, ...priceRows.flatMap((value) => {
+      const price = object(value), params = object(price.params)
+      return String(params.duration) === '10' ? [{ ...price, params: { ...params, duration: 15 } }] : []
+    })]
+  }
   if (ceiling !== undefined) parameters['x-client-concurrency'] = { schema: 1, atomic_admission: true,
     max_parallelism: ceiling, model: modelId, scope: 'shared_account_pool', reservation: false }
   const catalog = catalogFromPricing([row], 'default')
   const model = catalog[0]
   if (model?.kind !== 'video') throw new Error('Video capability was not projected')
   const samples = new Map<number, { path: string; bytes: Buffer; hash: string }[]>()
-  for (const duration of [5]) {
+  for (const duration of fiveOnly ? [5] : fifteenSeconds ? [5, 10, 15] : [5, 10]) {
     const list = []
     for (const [index, color] of ['red', 'green', 'blue', 'yellow'].entries()) {
       const path = join(fixtureDir, `${String(duration)}-${String(index)}.mp4`)
@@ -99,7 +118,7 @@ it.skipIf(!available).each(cases)('$name generates $totalSeconds seconds under i
     samples.set(duration, list)
   }
   const calls: RequestRecord[] = [], questions: AskUserQuestionItem[][] = []
-  const tasks = new Map<string, { media: { path: string; bytes: Buffer; hash: string }; readyAt: number }>()
+  const tasks = new Map<string, { media: { path: string; bytes: Buffer; hash: string } }>()
   const inFlight = new Set<string>(); let peakInFlight = 0
   source.on('request', (request, response) => { void (async () => {
     const chunks: Buffer[] = []; for await (const chunk of request) if (Buffer.isBuffer(chunk)) chunks.push(chunk)
@@ -132,14 +151,14 @@ it.skipIf(!available).each(cases)('$name generates $totalSeconds seconds under i
         response.statusCode = 400; answer({ error: 'Unsupported native model, duration or account' }); return
       }
       const taskId = `five-sec-task-${String(index + 1)}`
-      tasks.set(taskId, { media, readyAt: Date.now() + 250 }); inFlight.add(taskId); peakInFlight = Math.max(peakInFlight, inFlight.size)
+      tasks.set(taskId, { media }); inFlight.add(taskId); peakInFlight = Math.max(peakInFlight, inFlight.size)
       answer({ id: taskId, status: 'queued' }); return
     }
     const match = /^\/v1\/(?:videos|tasks)\/(five-sec-task-\d+)(\/content)?$/u.exec(path)
     const task = match?.[1] === undefined ? undefined : tasks.get(match[1])
     if (task !== undefined) {
       if (match?.[2] === '/content') { response.setHeader('content-type', 'video/mp4'); response.end(task.media.bytes); return }
-      if (tasks.size < expectedPeak || Date.now() < task.readyAt) { answer({ id: match?.[1], status: 'in_progress' }); return }
+      if (tasks.size < expectedPeak) { answer({ id: match?.[1], status: 'in_progress' }); return }
       inFlight.delete(match?.[1] ?? ''); answer({ id: match?.[1], status: 'completed' }); return
     }
     response.statusCode = 404; answer({ error: { code: 'not_found' } })
@@ -234,24 +253,42 @@ it.skipIf(!available).each(cases)('$name generates $totalSeconds seconds under i
     const segments = call.body?.segments
     if (!Array.isArray(segments)) throw new Error('Expected quoted segments')
     expect(segments).toHaveLength(planSeconds.length)
-    return segments.map((value) => {
+    return segments.map((value, index) => {
       const parameters = object(object(value).parameters)
-      expect(parameters.seconds).toBe(5)
-      if (parameters.duration !== undefined) expect(Number(parameters.duration)).toBe(5)
+      expect(parameters.seconds).toBe(planSeconds[index])
+      if (parameters.duration !== undefined) expect(Number(parameters.duration)).toBe(planSeconds[index])
       return { seconds: parameters.seconds, duration: parameters.duration ?? null }
     })
   })
-  for (const call of posts) if (call.body?.duration !== undefined) expect(Number(call.body.duration)).toBe(5)
+  for (const [index, call] of posts.entries()) {
+    if (call.body?.duration !== undefined) expect(Number(call.body.duration)).toBe(planSeconds[index])
+  }
   expect(questions).toHaveLength(1); expect(peakInFlight).toBe(expectedPeak)
   const manifest = object(JSON.parse(await readFile(join(stateDir, 'video-projects', text(started.project_id), 'manifest.json'), 'utf8')))
   const segments = manifest.segments
   if (!Array.isArray(segments)) throw new Error('Expected durable project segments')
   expect(segments).toHaveLength(planSeconds.length)
   const clipHashes = []
-  for (const value of segments) {
+  let elapsedSeconds = 0
+  for (const [index, value] of segments.entries()) {
     const segment = object(value), path = text(segment.path), bytes = await readFile(path)
-    expect(segment).toMatchObject({ status: 'saved', durationSeconds: 5 }); clipHashes.push(digest(bytes))
-    expect([...samples.get(5)!.values()].some(sample => sample.hash === digest(bytes))).toBe(true)
+    const durationSeconds = planSeconds[index]
+    if (durationSeconds === undefined) throw new Error('Expected one planned duration for every saved segment')
+    expect(segment).toMatchObject({ status: 'saved', durationSeconds }); clipHashes.push(digest(bytes))
+    const native = tasks.get(text(segment.taskId))
+    if (native === undefined) throw new Error('Every saved clip must belong to its original submitted task')
+    expect(digest(bytes)).toBe(native.media.hash)
+    const frame = (source: string, seconds: number) => execFileSync(ffmpeg, [
+      '-hide_banner', '-loglevel', 'error', '-nostdin', '-ss', String(seconds), '-i', source,
+      '-frames:v', '1', '-vf', 'scale=1:1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1',
+    ], { timeout: 30_000 })
+    const expectedColor = frame(path, durationSeconds / 2)
+    const finalColor = frame(finalPath, elapsedSeconds + durationSeconds / 2)
+    expect(expectedColor).toHaveLength(3); expect(finalColor).toHaveLength(3)
+    for (let channel = 0; channel < 3; channel += 1) {
+      expect(Math.abs(finalColor[channel]! - expectedColor[channel]!)).toBeLessThanOrEqual(4)
+    }
+    elapsedSeconds += durationSeconds
   }
   const creation = object(JSON.parse(await readFile(join(stateDir, 'creative-projects', text(started.plan_id), 'project.json'), 'utf8')))
   if (!Array.isArray(creation.operations)) throw new Error('Expected one finished-work operation')
@@ -265,9 +302,11 @@ it.skipIf(!available).each(cases)('$name generates $totalSeconds seconds under i
   if (process.env.DSH_MEDIA_AUDIT_OUTPUT_DIR !== undefined) {
     const out = join(process.env.DSH_MEDIA_AUDIT_OUTPUT_DIR, name); await mkdir(out, { recursive: true })
     await copyFile(finalPath, join(out, `final-${String(totalSeconds)}s.mp4`))
-    for (const [index, value] of segments.entries()) await copyFile(text(object(value).path), join(out, `clip-${String(index + 1)}-5s.mp4`))
-    await writeFile(join(out, 'evidence.json'), JSON.stringify({ scope: fiveOnly ? 'Synthetic restricted five-only capability, not an actual deployed model' : 'Unmodified actual public model and specification fixture; synthetic provider/account',
-      savedPreference: saved.video, selection, started, posts, quoteSummaries, peakInFlight, ceiling: ceiling ?? 'local default4', localCeiling, totalSeconds, probe, finalHash: digest(await readFile(finalPath)),
-      clipHashes, finishedWorkOperationCount: creation.operations.length, publishedOutputCount: planSeconds.length + 1, questions, calls, nativeRuntime: runtimeRoot, finalFilename: basename(finalPath), realUpstreamCalls: 0, paidCalls: 0 }, null, 2) + '\n')
+    for (const [index, value] of segments.entries()) await copyFile(text(object(value).path), join(out, `clip-${String(index + 1)}-${String(planSeconds[index])}s.mp4`))
+    await writeFile(join(out, 'evidence.json'), JSON.stringify({ scope: fiveOnly ? 'Synthetic restricted five-only capability, not an actual deployed model'
+      : fifteenSeconds ? 'Synthetic extended fifteen-second capability, not an actual deployed model'
+        : 'Unmodified actual public model and specification fixture; synthetic provider/account',
+    savedPreference: saved.video, selection, started, posts, quoteSummaries, peakInFlight, ceiling: ceiling ?? 'local default4', localCeiling, totalSeconds, probe, finalHash: digest(await readFile(finalPath)),
+    clipHashes, finishedWorkOperationCount: creation.operations.length, publishedOutputCount: planSeconds.length + 1, questions, calls, nativeRuntime: runtimeRoot, finalFilename: basename(finalPath), realUpstreamCalls: 0, paidCalls: 0 }, null, 2) + '\n')
   }
 }, 90_000)

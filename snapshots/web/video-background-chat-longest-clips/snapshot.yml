@@ -1,0 +1,10 @@
+version: 1
+scenario: video-background-chat-longest-clips
+profile: web
+composition: video-background-chat-longest-clips
+recording: authored
+header:
+  class: video-background-chat-longest-clips
+  pin: true
+workspace:
+  final: true

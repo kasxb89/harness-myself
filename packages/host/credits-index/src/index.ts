@@ -1362,7 +1362,8 @@ export function apply(ctx: Context, config: Config): void {
         metadata = { default_model_id: choice.model, default_configured: true,
           default_available: models.some(model => model.kind === kind && model.id === choice.model),
           default_source: choice.source, selected_parameters: { ...choice.parameters } }
-        const { model: _model, ...parameters } = resolveMediaRequestSelection(exec, kind, {}, models, scope)
+        const { model: _model, ...parameters } = resolveMediaRequestSelection(exec, kind, {}, models, scope,
+          kind === 'video' ? { videoProject: true } : undefined)
         return { ...metadata, selected_parameters: parameters }
       }
       const selected = await readMediaDefault(kind, signal, models)
@@ -4983,7 +4984,7 @@ export function apply(ctx: Context, config: Config): void {
   /** Resolve both chat entry points against the same catalog and real human selection. */
   const selectChatVideoModel = async (
     input: VideoProjectInput, exec: ToolRunContext, identity: VideoProjectIdentity, assertCurrent: () => Promise<void>,
-    defaultedModel = false, defaultClipSeconds?: number,
+    defaultedModel = false,
   ): Promise<{ input: VideoProjectInput; beforeSubmit: (signal: AbortSignal) => Promise<void> }> => {
     if (videoModelChoiceCancelled(exec)) throw new CreativeError('USER_CANCELLED', 409,
       '你已取消本次视频生成，未提交新的模型请求；需要生成时请明确发送新的生成要求。')
@@ -5019,12 +5020,11 @@ export function apply(ctx: Context, config: Config): void {
         ...ratio === undefined ? {} : { ratio }, ...size === undefined ? {} : { size },
         ...quality === undefined ? {} : { quality },
         ...mode === undefined ? {} : { mode } })
-      const clipDefault = model === targetModel ? defaultClipSeconds : undefined
       let durations = input.shotDurations
-        ?? planVideoDurations(input.totalDurationSeconds, menu, resolved.videoProjectMaxSegments, clipDefault)
+        ?? planVideoDurations(input.totalDurationSeconds, menu, resolved.videoProjectMaxSegments)
       if (allowReplan && (durations.some(duration => !menu.includes(duration))
         || input.shotPrompts !== undefined && input.shotPrompts.length !== durations.length)) {
-        durations = planVideoDurations(input.totalDurationSeconds, menu, resolved.videoProjectMaxSegments, clipDefault)
+        durations = planVideoDurations(input.totalDurationSeconds, menu, resolved.videoProjectMaxSegments)
         baselinePlan.requiresReplan = true
       }
       if (durations.length === 0 || durations.some(duration => !menu.includes(duration))
@@ -5169,8 +5169,8 @@ export function apply(ctx: Context, config: Config): void {
       activity: (event) => { generationCreation.project(event) },
       defaultModel: async signal => requireMediaDefault(await readMediaDefault('video', signal)) ?? DEFAULT_CHAT_VIDEO_MODEL,
       requestSelection: async (args, exec) => resolveChatMediaSelection(exec, 'video', args, { videoProject: true }),
-      chatModelChoice: async (input, exec, provider, defaultedModel, defaultClipSeconds) => {
-        return selectChatVideoModel(input, exec, provider.identity, () => provider.assertCurrent(), defaultedModel, defaultClipSeconds)
+      chatModelChoice: async (input, exec, provider, defaultedModel) => {
+        return selectChatVideoModel(input, exec, provider.identity, () => provider.assertCurrent(), defaultedModel)
       },
       failed: (manifest, code) => { clientErrors.submit('generate_video_project', { model: manifest.model },
         { status: 'failed', code }, {}, manifest.identity.accountId) },
@@ -5680,7 +5680,7 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.tools.register(defineTool({
     name: 'list_video_models',
-    description: 'Read the signed-in account’s current video models and exact generation parameters without submitting or charging for generation. Call when planning explicit model controls or paid clip lengths. A simple single-clip request can directly call generate_video_project without total_duration_seconds: the Host resolves actual model defaults in the same call. Use exact ids, durations by resolution, size strings, reference limits and audio_output; do not infer audio from a missing switch or use display names as ids. Read default_model_id, default_source and selected_parameters before planning. Preserve that selected model unless the human chooses another one; a tool model argument alone cannot override a saved choice. If default_error_code reports an incomplete specification, use the returned selected model and its own specifications, not another model’s duration or resolution menu. Distinct ids such as MiniMax-H3 and ycapi-minimax-h3 are different channels, not interchangeable aliases. Before asking about a video model or static parameters, read this listing. Saved selected_parameters already answer those choices; a single supported value needs no question. Offer only unresolved choices from the selected model’s compatible complete specifications, never a generic ratio menu. This catalog does not report live upstream capacity. For queued work use the background generate_video_project workflow, including one clip.',
+    description: 'Read the signed-in account’s current video models and exact generation parameters without submitting or charging for generation. Call when planning explicit model controls or paid clip lengths. A simple single-clip request can directly call generate_video_project without total_duration_seconds: the Host resolves actual model defaults in the same call. Use exact ids, durations by resolution, size strings, reference limits and audio_output; do not infer audio from a missing switch or use display names as ids. Read default_model_id, default_source and selected_parameters before planning. selected_parameters.seconds is a default single-clip length, not the largest clip this model supports. For a requested final duration, use every supported duration within the selected resolution, ratio, quality and mode, minimizing clip count before excess generated seconds; never split one supported 15-second work into three five-second clips just because the saved default is five. Preserve that selected model unless the human chooses another one; a tool model argument alone cannot override a saved choice. If default_error_code reports an incomplete specification, use the returned selected model and its own specifications, not another model’s duration or resolution menu. Distinct ids such as MiniMax-H3 and ycapi-minimax-h3 are different channels, not interchangeable aliases. Before asking about a video model or static parameters, read this listing. Saved selected_parameters already answer those choices; a single supported value needs no question. Offer only unresolved choices from the selected model’s compatible complete specifications, never a generic ratio menu. This catalog does not report live upstream capacity. For queued work use the background generate_video_project workflow, including one clip.',
     parameters: {},
     output: { schema: { type: 'object', properties: {
       status: { type: 'string' }, code: { type: 'string' }, message: { type: 'string' },

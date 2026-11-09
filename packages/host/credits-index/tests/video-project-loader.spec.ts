@@ -28,7 +28,7 @@ import type { VideoEditor } from '../src/video-edit.ts'
 import { CreativeError, CreativeStore } from '../src/creative-store.ts'
 import { VideoSubmissionRejection } from '../src/video-submission-result.ts'
 import { registerCreativeTools } from '../src/creative-tools.ts'
-import { readVideoProject } from '../src/video-project.ts'
+import { planVideoDurations, readVideoProject } from '../src/video-project.ts'
 import actualMediaDefaultsStatus from './fixtures/announcement-banner-api/status.json' with { type: 'json' }
 import { registerVideoGenerationIntent } from '../src/video-generation-intent.ts'
 
@@ -265,6 +265,55 @@ describe('video tools through Loader, real tool registry and jobs runtime', () =
     await vi.waitFor(() => { expect(f.ctx.jobs.get(JobId(String(resumed.job_id)), f.agent.id).status).toBe('completed') })
     expect(submit).toHaveBeenCalledTimes(2)
     expect(resumed.project_id).toBe(started.project_id)
+  })
+
+  it('quotes retained automatic five-second clips without replanning or repeating accepted and unknown submissions', async () => {
+    const f = await boot()
+    f.options.maxConcurrentSegments = 2
+    f.provider.model = async () => ({ id: 'MiniMax-H3', durations: [5] })
+    f.setPending(true)
+    const originalSubmit = f.provider.submit.bind(f.provider)
+    let submitted = 0
+    f.provider.submit = async (...args) => {
+      const attempt = ++submitted
+      const result = await originalSubmit(...args)
+      if (attempt === 2) throw new Error('Original submission response was lost')
+      return result
+    }
+    const started = json((await f.call('generate_video_project', { prompt: '保留原20秒项目', total_duration_seconds: 20 })).value)
+    await vi.waitFor(() => { expect(f.ctx.jobs.get(JobId(String(started.job_id)), f.agent.id).status).toBe('failed') })
+    const original = await readVideoProject(f.options, String(started.project_id), f.agent.id, f.workspace, f.provider.identity)
+    expect(original.input).not.toHaveProperty('shotDurations')
+    expect(original.segments.map(segment => segment.durationSeconds)).toEqual([5, 5, 5, 5])
+    expect(f.requests).toEqual([5, 5])
+    expect(original.segments[0]).toMatchObject({ status: 'running', taskId: 'task-1' })
+    expect(original.segments[1]).toMatchObject({ status: 'unknown' })
+    expect(original.segments[1]).not.toHaveProperty('taskId')
+
+    f.provider.model = async () => ({ id: 'MiniMax-H3', durations: [5, 10, 15] })
+    const quotes: VideoProjectInput[] = []
+    f.options.chatModelChoice = async (input) => {
+      quotes.push(structuredClone(input))
+      const durations = input.shotDurations ?? planVideoDurations(input.totalDurationSeconds, [5, 10, 15], f.options.maxSegments)
+      expect(durations).toEqual([5, 5, 5, 5])
+      return { input }
+    }
+    f.setPending(false)
+    const check = vi.spyOn(f.provider, 'check')
+    f.nextHuman('继续查询刚才的原20秒项目')
+    const resumed = json((await f.call('resume_video_project', { project_id: original.id })).value)
+    expect(resumed.status).toBe('background')
+    await vi.waitFor(() => { expect(f.ctx.jobs.get(JobId(String(resumed.job_id)), f.agent.id).status).toBe('failed') })
+    expect(quotes).toEqual([{ ...original.input, model: original.model, shotDurations: [5, 5, 5, 5] }])
+    expect(check.mock.calls.map(([id]) => id)).toEqual(['task-1'])
+    expect(f.requests).toEqual([5, 5])
+    const retained = await readVideoProject(f.options, original.id, f.agent.id, f.workspace, f.provider.identity)
+    expect(retained.input).toEqual(original.input)
+    expect(retained.input).not.toHaveProperty('shotDurations')
+    expect(retained.segments.map(segment => segment.durationSeconds)).toEqual([5, 5, 5, 5])
+    expect(retained.segments[0]).toMatchObject({ status: 'saved', taskId: 'task-1' })
+    expect(retained.segments[1]).toMatchObject({ status: 'unknown' })
+    expect(retained.failureCode).toBe('SUBMISSION_UNKNOWN')
   })
 
   it('keeps accepted original clips recoverable when current new-generation model approval is unavailable', async () => {

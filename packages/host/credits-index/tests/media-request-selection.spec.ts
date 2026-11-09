@@ -112,6 +112,16 @@ async function fixture() {
     setProject: (value: MediaRequestSelectionContext) => { videoProject = value } }
 }
 
+function sameTierVideoDurations(durations: readonly number[]) {
+  return preferenceModels.map((model) => {
+    if (model.id !== 'video-b' || !('durations' in model.params)) return model
+    return { ...model, params: { ...model.params, durations: [...durations], resolutions: ['720P'],
+      durationByResolution: { '720P': [...durations] },
+      specifications: durations.map(seconds => ({ seconds, resolution: '720P', ratio: '16:9' })),
+    } }
+  })
+}
+
 describe('per-RPC personal media snapshots through native and nested execution', () => {
   it('uses A for RPC1 and its PTC child even after B is saved, while RPC2 uses B', async () => {
     const f = await fixture()
@@ -234,6 +244,59 @@ describe('per-RPC personal media snapshots through native and nested execution',
     expect(f.selections).toEqual([])
     expect(f.choices).toEqual([{ model: 'video-b', parameters: {}, source: 'personal' }])
     expect(f.failures[0]?.code).toBe('SPECIFICATION_REQUIRED')
+  })
+
+  it.each([
+    { id: 'tool-total', human: '生成自然风景视频', args: { total_duration_seconds: 15 } },
+    { id: 'human-total', human: '生成15秒自然风景视频', args: {} },
+  ])('keeps saved five seconds out of timed project specifications: $id', async ({ id, human, args }) => {
+    const f = await fixture()
+    await f.save(null, { model: 'video-b', parameters: { seconds: 5, resolution: '720P', ratio: '16:9' } })
+    f.setModels(sameTierVideoDurations([5, 10, 15]))
+    f.setProject({ videoProject: true })
+    f.setCallerFields(args)
+    f.session.append('user/message', await f.admit(id, human), { surfaceOp: 'append' })
+    const result = await f.execute('video')
+    expect(result.isError).not.toBe(true)
+    expect(f.failures).toEqual([])
+    expect(f.selections.at(-1)).toMatchObject({ model: 'video-b', resolution: '720P', ratio: '16:9', ...args })
+    expect(f.selections.at(-1)).not.toHaveProperty('seconds')
+  })
+
+  it('keeps a five-second single-clip default when neither the human nor tool requested a final duration', async () => {
+    const f = await fixture()
+    await f.save(null, { model: 'video-b', parameters: { seconds: 5, resolution: '720P', ratio: '16:9' } })
+    f.setModels(sameTierVideoDurations([5, 10, 15]))
+    f.setProject({ videoProject: true })
+    f.session.append('user/message', await f.admit('native-short-default', '生成自然风景视频'), { surfaceOp: 'append' })
+    const result = await f.execute('video')
+    expect(result.isError).not.toBe(true)
+    expect(f.selections.at(-1)).toEqual({ model: 'video-b', seconds: 5, resolution: '720P', ratio: '16:9' })
+  })
+
+  it('uses the same selected tier when a timed project outlives its saved short duration', async () => {
+    const f = await fixture()
+    await f.save(null, { model: 'video-b', parameters: { seconds: 5, resolution: '720P', ratio: '16:9' } })
+    f.setProject({ videoProject: true })
+    f.setCallerFields({ total_duration_seconds: 20 })
+    f.session.append('user/message', await f.admit('tier-stays-native', '生成20秒视频'), { surfaceOp: 'append' })
+    const result = await f.execute('video')
+    expect(result.isError).not.toBe(true)
+    expect(f.selections.at(-1)).toEqual({ model: 'video-b', total_duration_seconds: 20, resolution: '720P', ratio: '16:9' })
+    expect(f.selections.at(-1)).not.toHaveProperty('seconds')
+  })
+
+  it('accepts a timed project after only the saved five-second option is withdrawn from the same native tier', async () => {
+    const f = await fixture()
+    await f.save(null, { model: 'video-b', parameters: { seconds: 5, resolution: '720P', ratio: '16:9' } })
+    f.setModels(sameTierVideoDurations([10, 15]))
+    f.setProject({ videoProject: true })
+    f.setCallerFields({ total_duration_seconds: 30 })
+    f.session.append('user/message', await f.admit('withdrawn-short-duration', '生成30秒视频'), { surfaceOp: 'append' })
+    const result = await f.execute('video')
+    expect(result.isError).not.toBe(true)
+    expect(f.failures).toEqual([])
+    expect(f.selections.at(-1)).toEqual({ model: 'video-b', total_duration_seconds: 30, resolution: '720P', ratio: '16:9' })
   })
 
   it('reports the effective saved model before interpreting another model\'s tool parameters', async () => {

@@ -272,25 +272,34 @@ describe('readable video output names', () => {
 })
 
 describe('minimum-request video duration planning', () => {
-  it('uses a captured clip default without changing the final length or accepting an unsupported duration', () => {
-    expect(planVideoDurations(20, [5, 10], 32, 5)).toEqual([5, 5, 5, 5])
-    expect(planVideoDurations(21, [5, 10], 32, 5)).toEqual([5, 5, 5, 5, 5])
-    expect(planVideoDurations(120, [5, 10], 32, 5)).toEqual(Array.from({ length: 24 }, () => 5))
-    expect(planVideoDurations(20, [5, 10], 32)).toEqual([10, 10])
-    expect(() => planVideoDurations(20, [10], 32, 5)).toThrow('默认单段时长')
+  it.each([
+    { total: 15, menu: [5, 10, 15], expected: [15] },
+    { total: 20, menu: [5, 10], expected: [10, 10] },
+    { total: 21, menu: [5, 10], expected: [10, 10, 5] },
+    { total: 40, menu: [5, 10, 15], expected: [15, 15, 10] },
+    { total: 60, menu: [5, 10, 15], expected: [15, 15, 15, 15] },
+    { total: 60, menu: [10, 15, 30], expected: [30, 30] },
+    { total: 10, menu: [5, 15], expected: [15] },
+    { total: 15, menu: [5], expected: [5, 5, 5] },
+    { total: 12, menu: [5, 9], expected: [9, 5] },
+  ])('uses the fewest native clips for $total seconds from $menu', ({ total, menu, expected }) => {
+    expect(planVideoDurations(total, menu, 32)).toEqual(expected)
   })
 
-  it('keeps explicit shot timing ahead of an unused clip default and persists only the resulting plan', async () => {
-    const f = await setup([5, 10])
+  it('fits the request cap with the longest native clips instead of reserving unnecessary short clips', () => {
+    expect(planVideoDurations(120, [5, 10], 12)).toEqual(Array.from({ length: 12 }, () => 10))
+  })
+
+  it('preserves explicit shot timing while automatic planning minimizes native clip count', async () => {
+    const f = await setup([5, 10, 15])
     const input: VideoProjectInput = { prompt: 'A timed sequence', totalDurationSeconds: 15, shotDurations: [5, 10] }
-    const explicit = await prepareVideoProject(f.options, input, 'chat-one', f.workspace, f.provider, f.editor, f.signal,
-      undefined, undefined, 99)
+    const explicit = await prepareVideoProject(f.options, input, 'chat-one', f.workspace, f.provider, f.editor, f.signal)
     expect(explicit.segments.map(segment => segment.durationSeconds)).toEqual([5, 10])
     expect(explicit.input).toEqual(input)
-    const automatic = await prepareVideoProject(f.options, { prompt: 'A twenty second sequence', totalDurationSeconds: 20 },
-      'chat-one', f.workspace, f.provider, f.editor, f.signal, undefined, undefined, 5)
-    expect(automatic.segments.map(segment => segment.durationSeconds)).toEqual([5, 5, 5, 5])
-    expect(automatic.input).toEqual({ prompt: 'A twenty second sequence', totalDurationSeconds: 20 })
+    const automatic = await prepareVideoProject(f.options, { prompt: 'A fifteen second sequence', totalDurationSeconds: 15 },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    expect(automatic.segments.map(segment => segment.durationSeconds)).toEqual([15])
+    expect(automatic.input).toEqual({ prompt: 'A fifteen second sequence', totalDurationSeconds: 15 })
   })
 
   it('observes eight distinct clips under one project and keeps queue, generation, saving and editing separate', async () => {
