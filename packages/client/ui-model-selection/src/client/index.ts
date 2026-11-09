@@ -6,7 +6,8 @@
  * durable model-selection projection, and submit through `session.selectModel`.
  * A switch made in either entry is what the other shows next. Failures
  * ride each entry's own retry surface (popup shell error/retry; seat menu
- * inline error) without forking the state. Addressed subagent sessions expose
+ * inline error) without forking the state. The Models settings page presents
+ * the same Host catalog read-only, independently of any Session. Addressed subagent sessions expose
  * neither entry because those Agent-bound RPCs would activate persisted
  * history outside the direct-parent continuation path.
  */
@@ -21,12 +22,15 @@ import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-session/client'
+// Type-only: the Models settings page owns the read-only catalog extension slot.
+import type {} from '@deepseek-ai/dsh-client-ui-settings-models/client'
 import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import { IconDataOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ModelDirectoryState } from './directory.ts'
 import { ModelDirectoryResolver } from './service.ts'
 import type { ModelSelectInjected } from './slots.ts'
 import { ModelSelect } from './ModelSelect.tsx'
+import { SettingsModelCatalog, type SettingsModelCatalogInjected } from './SettingsModelCatalog.tsx'
 import { en, zh, type ModelKey } from './locales.ts'
 import { orderModelProviders } from './provider-order.ts'
 import { modelGuidance } from './model-guidance.ts'
@@ -124,6 +128,19 @@ export function apply(ctx: ClientContext): void {
   const t = ctx.locale.bind(NS)
 
   ctx.plugin(ModelDirectoryResolver)
+
+  ctx.inject(['modelDirectories'], (scope: ClientContext) => {
+    const catalog = scope.modelDirectories.catalog
+    scope.slots.inject('settings.models.catalog', () => scope.slots.register({
+      name: 'settings.models.catalog',
+      id: 'available-models',
+      locale: NS,
+      inject: (): SettingsModelCatalogInjected => ({
+        hooks: { catalog: catalog.store },
+        reload: () => { void catalog.reload().catch(() => { /* the catalog view exposes the shared error */ }) },
+      }),
+    }, SettingsModelCatalog))
+  })
 
   // Entry 1: the /model popupSelect over the shared directory.
   ctx.inject(['commandUi', 'modelDirectories'], (scope: ClientContext) => {

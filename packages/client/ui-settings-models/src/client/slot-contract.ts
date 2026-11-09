@@ -1,5 +1,5 @@
 /**
- * Models-page extension slots — the two seats through which a plugin
+ * Models-page extension slots through which a plugin
  * distributed outside this repository adds UI to the Models settings section
  * without editing it.
  *
@@ -22,6 +22,8 @@ import type { ProviderDirectoryEntry } from './store.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface SlotMap {
+    /** Read-only model catalogs above the provider configuration rows. */
+    'settings.models.catalog': { kind: 'list'; scope: 'root'; owner: ModelsCatalogOwnerProps }
     /**
      * One provider card's adapter extension area, dispatched with
      * `entryKey = settingsNs` on every card that renders a directory row: a
@@ -39,6 +41,12 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
      */
     'settings.models.footer': { kind: 'list'; scope: 'root'; owner: ModelsFooterOwnerProps }
   }
+}
+
+/** Owner share of the model-catalog area, with no configuration access. */
+export interface ModelsCatalogOwnerProps {
+  /** Marker field: catalog owner props are intentionally empty. */
+  children?: never
 }
 
 /** Owner share of one provider-card extension occurrence. */

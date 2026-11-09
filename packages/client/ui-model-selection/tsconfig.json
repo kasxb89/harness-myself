@@ -39,6 +39,9 @@
       "path": "../ui-session"
     },
     {
+      "path": "../ui-settings-models"
+    },
+    {
       "path": "../ui-input-trigger"
     },
     {

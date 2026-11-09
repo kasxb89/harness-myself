@@ -11,6 +11,12 @@
 /** Simplified Chinese dictionary (the key-set source of truth). */
 export const zh = {
   'provider.account': '官方账号',
+  'catalog.title': '可用聊天模型',
+  'catalog.count': '共 {count} 个模型',
+  'catalog.loadedCount': '已读取 {count} 个模型',
+  'catalog.search': '搜索模型名称或 ID',
+  'catalog.refresh': '刷新',
+  'catalog.retry': '重试',
   'command.label': '模型',
   'command.description': '选择本会话使用的模型',
   'option.loadError': '模型列表暂时无法读取，请重试',
@@ -72,6 +78,12 @@ export type ModelKey = keyof typeof zh
 /** English dictionary, checked complete against the zh key set. */
 export const en = {
   'provider.account': 'Official account',
+  'catalog.title': 'Available chat models',
+  'catalog.count': 'Models: {count}',
+  'catalog.loadedCount': 'Models loaded: {count}',
+  'catalog.search': 'Search model names or IDs',
+  'catalog.refresh': 'Refresh',
+  'catalog.retry': 'Retry',
   'command.label': 'Model',
   'command.description': 'Select the model for this conversation',
   'option.loadError': 'The model list could not be loaded. Try again.',
