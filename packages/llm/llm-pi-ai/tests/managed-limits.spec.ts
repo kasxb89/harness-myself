@@ -45,6 +45,114 @@ async function drain(adapter: PiAiAdapter, id: string, maxTokens?: number): Prom
 }
 afterEach(() => { vi.unstubAllGlobals() })
 
+describe('explicit account-bound model capacity choices', () => {
+  const platform = (contextWindow = 1_048_576, maxTokens = 393_216): PiAiProviderProfile => ({
+    ...base,
+    models: [{ ...model('chosen', contextWindow, maxTokens), contextWindow: 32_768, maxTokens: 1024,
+      managedLimits: { scope, authoritative: true, contextWindow, maxTokens } }],
+  })
+
+  it('retains raw choices through platform decreases and restores them after increases, while reset restores dynamic limits', async () => {
+    const calls = memoryRequests()
+    const choices = { chosen: { scope, contextWindow: 262_144, maxTokens: 65_536 } }
+    const { adapter, update } = adapterFor({ ...platform(), modelLimitOverrides: choices })
+    expect(await adapter.resolveModel(provider, 'chosen')).toMatchObject({
+      context: { contextWindow: 262_144 }, defaultMaxTokens: 65_536, maxOutputTokens: 65_536,
+      limits: { contextWindow: 262_144, maxOutputTokens: 65_536, managedScope: scope,
+        platform: { contextWindow: 1_048_576, maxOutputTokens: 393_216 },
+        override: { contextWindow: 262_144, maxOutputTokens: 65_536 } },
+    })
+    const prepared = await adapter.prepareCall(provider, 'chosen')
+    update({ ...platform(32_768, 8192), modelLimitOverrides: choices })
+    expect((await adapter.resolveModel(provider, 'chosen')).limits).toMatchObject({
+      contextWindow: 32_768, maxOutputTokens: 8192,
+      platform: { contextWindow: 32_768, maxOutputTokens: 8192 },
+      override: { contextWindow: 262_144, maxOutputTokens: 65_536 },
+    })
+    await drain(adapter, 'chosen', 1_000_000)
+    for await (const _chunk of prepared.stream({ provider, model: 'chosen', messages: [] })) { /* Frozen pre-refresh choice. */ }
+    update({ ...platform(), modelLimitOverrides: choices })
+    await drain(adapter, 'chosen')
+    update(platform())
+    const reset = await adapter.resolveModel(provider, 'chosen')
+    expect(reset).toMatchObject({ context: { contextWindow: 1_048_576 }, maxOutputTokens: 393_216 })
+    expect(reset.limits).not.toHaveProperty('override')
+    await drain(adapter, 'chosen')
+    expect(calls.map(call => call.max_tokens)).toEqual([8192, 65_536, 65_536, 393_216])
+    expect(choices.chosen).toEqual({ scope, contextWindow: 262_144, maxTokens: 65_536 })
+    expect(JSON.stringify(calls)).not.toMatch(/modelLimitOverrides|backend-account-a/)
+  })
+
+  it('caps output by an explicit context-only choice and preserves the separately adjustable platform ceiling', async () => {
+    const calls = memoryRequests()
+    const { adapter } = adapterFor({ ...platform(), modelLimitOverrides: { chosen: { scope, contextWindow: 8192 } } })
+    expect(await adapter.resolveModel(provider, 'chosen')).toMatchObject({
+      context: { contextWindow: 8192 }, defaultMaxTokens: 4096, maxOutputTokens: 4096,
+      limits: { platform: { contextWindow: 1_048_576, maxOutputTokens: 393_216 }, override: { contextWindow: 8192 } },
+    })
+    await drain(adapter, 'chosen', 393_216)
+    expect(calls[0]?.max_tokens).toBe(4096)
+  })
+
+  it('includes the gateway input ceiling when an explicit output choice changes total request room', async () => {
+    const calls = memoryRequests()
+    const { adapter } = adapterFor({ ...base, models: [{ id: 'chosen', managedLimits: {
+      scope, authoritative: true, contextWindow: 1_048_576, maxTokens: 8192,
+      textCapabilities: { tools: false, vision: false, reasoning: false, stream: true, maxInputTokens: 32000 },
+    } }], modelLimitOverrides: { chosen: { scope, maxTokens: 1024 } } })
+    expect(await adapter.resolveModel(provider, 'chosen')).toMatchObject({
+      context: { contextWindow: 33024 }, maxOutputTokens: 1024,
+      limits: { contextWindow: 33024, platform: { contextWindow: 40192, maxOutputTokens: 8192 }, override: { maxOutputTokens: 1024 } },
+    })
+    await drain(adapter, 'chosen')
+    expect(calls[0]?.max_tokens).toBe(1024)
+  })
+
+  it('does not apply old-scope or unrelated-model choices and does not mutate the published metadata', async () => {
+    const current = platform()
+    const profile = { ...current, modelLimitOverrides: {
+      chosen: { scope: 'another-account', contextWindow: 8192, maxTokens: 1024 },
+      'temporarily-absent': { scope, maxTokens: 5000 },
+    } }
+    const configured = Config({ providers: { [provider]: profile } }).providers.get()
+    expect(configured[provider]?.modelLimitOverrides?.['temporarily-absent']?.maxTokens).toBe(5000)
+    const { adapter, update } = adapterFor(profile)
+    expect((await adapter.resolveModel(provider, 'chosen')).limits).not.toHaveProperty('override')
+    update({ ...current, modelLimitOverrides: { chosen: { scope, maxTokens: 2048 } } })
+    const info = await adapter.resolveModel(provider, 'chosen')
+    if (info.limits === undefined) throw new Error('Expected capacity metadata')
+    Object.assign(info.limits.platform, { maxOutputTokens: 1 })
+    Object.assign(info.limits.override!, { maxOutputTokens: 1 })
+    expect((await adapter.resolveModel(provider, 'chosen')).limits).toMatchObject({
+      maxOutputTokens: 2048, platform: { maxOutputTokens: 393_216 }, override: { maxOutputTokens: 2048 },
+    })
+    update({ ...current, managedLimitsScope: 'another-account', modelLimitOverrides: { chosen: { scope, maxTokens: 2048 } } })
+    expect((await adapter.resolveModel(provider, 'chosen')).limits).toMatchObject({ platform: {} })
+    expect((await adapter.resolveModel(provider, 'chosen')).limits).not.toHaveProperty('managedScope')
+  })
+
+  it.each([
+    { scope }, { scope: '', maxTokens: 10 }, { scope, maxTokens: 0 }, { scope, contextWindow: 1.5 },
+    { scope, maxTokens: MAX_CAPACITY_TOKENS + 1 },
+  ])('rejects invalid explicit choices before provider I/O: %j', (choice) => {
+    expect(() => resolveProfiles({ [provider]: { ...platform(), modelLimitOverrides: { chosen: choice } } })).toThrow()
+  })
+
+  it('rejects an explicit Responses budget below the supported minimum', () => {
+    expect(() => resolveProfiles({ [provider]: { ...platform(), api: 'openai-responses', compat: {},
+      modelLimitOverrides: { chosen: { scope, maxTokens: 15 } } } })).toThrow(/Responses minimum/)
+  })
+
+  it('reports the SDK’s effective one-token Completions result without removing a very small explicit context', async () => {
+    const { adapter } = adapterFor({ ...platform(), modelLimitOverrides: { chosen: { scope, contextWindow: 1 } } })
+    expect(await adapter.resolveModel(provider, 'chosen')).toMatchObject({
+      context: { contextWindow: 1 }, maxOutputTokens: 1,
+      limits: { contextWindow: 1, maxOutputTokens: 1, override: { contextWindow: 1 } },
+    })
+    expect((await adapter.listModels(provider)).map(model => model.id)).toContain('chosen')
+  })
+})
+
 describe('account-scoped managed capacities', () => {
   it('keeps absent managed declarations absent through the settings schema', () => {
     const options = Config({ providers: { [provider]: { ...base, models: [{ id: 'legacy' }] } } }).providers.get()

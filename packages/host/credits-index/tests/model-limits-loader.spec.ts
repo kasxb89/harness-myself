@@ -230,6 +230,7 @@ describe('gateway display names through real Host model synchronization', () => 
     expect(changed).toHaveBeenCalledTimes(1)
     expect(requests.filter(request => request.path === '/harness/v1/chat/completions')).toHaveLength(0)
     await restart()
+    await refresh()
     expect((await context!.llm.resolveModelInfo('yunshu-local', first)).name).toBe('Gateway One')
     catalog = [{ id: first, display_name: 'Renamed after restart' }]
     await refresh()
@@ -265,6 +266,86 @@ describe('gateway display names through real Host model synchronization', () => 
 })
 
 describe('product model capacities through the real Host Loader and HTTP listing', () => {
+  it('atomically refuses unsupported Responses choices through real settings writes and keeps the previous model usable', async () => {
+    catalog = [{ id: first, context_window: 65536, max_output_tokens: 8192 }]
+    const { base, api, refresh } = await boot([{ id: first }])
+    await signIn(base)
+    await refresh()
+    const settings = () => context!.settings.describe({ redactSecrets: true }).find(row => row.ns === 'llm-pi-ai')!
+    const route = 'responses-fixture'
+    const scope = productModelLimitsScope(api, '7')
+    await context!.settings.mutate('llm-pi-ai', [
+      { op: 'set', path: ['providers', route], value: { api: 'openai-responses', baseURL: api + '/v1',
+        managedLimitsScope: scope, models: [{ id: first, managedLimits: { scope, authoritative: true,
+          contextWindow: 65536, maxTokens: 8192 } }] } },
+    ], settings().revision)
+    const previous = settings()
+    const path = ['providers', route, 'modelLimitOverrides', first]
+    const resolved = () => context!.llm.resolveModelInfo(route, first)
+    for (const choice of [{ scope, maxTokens: 15 }, { scope, contextWindow: 1 }]) {
+      await expect(context!.settings.mutate('llm-pi-ai', [{ op: 'set', path, value: choice }], previous.revision)).rejects.toThrow()
+      expect(settings().revision).toBe(previous.revision)
+      expect(settings().value).toEqual(previous.value)
+      expect(await resolved()).toMatchObject({ context: { contextWindow: 65536 }, maxOutputTokens: 8192, defaultMaxTokens: 8192 })
+      expect((await context!.llm.listModels(route)).map(model => model.id)).toEqual([first])
+    }
+    await context!.settings.mutate('llm-pi-ai', [{ op: 'set', path, value: { scope, contextWindow: 8192, maxTokens: 16 } }], previous.revision)
+    expect(await resolved()).toMatchObject({ context: { contextWindow: 8192 }, maxOutputTokens: 16, defaultMaxTokens: 16 })
+    expect(requests.filter(request => request.path.includes('/chat/completions') || request.path.includes('/responses'))).toHaveLength(0)
+  })
+
+  it('persists explicit capacities through model refresh/removal/restart and never transfers them to a different account', async () => {
+    const published = { id: first, context_window: 1_048_576, max_output_tokens: 393_216 }
+    catalog = [published, { id: second, context_window: 65536, max_output_tokens: 16384 }]
+    const { base, api, refresh, restart } = await boot([{ id: first, contextWindow: 32768, maxTokens: 1024 }, { id: second }])
+    await signIn(base)
+    await refresh()
+    const scope = productModelLimitsScope(api, '7')
+    const owner = () => context!.waterfall('api-session/prompt-owner', () => undefined)
+    const initialOwner = owner()
+    expect(initialOwner).toEqual(expect.any(String))
+    const choice = { scope, contextWindow: 131072, maxTokens: 32768 }
+    const settings = () => context!.settings.describe({ redactSecrets: true }).find(row => row.ns === 'llm-pi-ai')!
+    const path = ['providers', 'yunshu-local', 'modelLimitOverrides', first]
+    await context!.settings.mutate('llm-pi-ai', [{ op: 'set', path, value: choice }], settings().revision)
+    expect(await capacity(first)).toEqual({ contextWindow: 131072, maxOutputTokens: 32768, defaultMaxTokens: 32768 })
+    const generate = async () => {
+      const prepared = await context!.llm.prepareCall({ provider: 'yunshu-local', model: first })
+      for await (const _chunk of prepared.stream({ ...prepared.config, messages: [] })) { /* Real SDK to the owned loopback fixture. */ }
+    }
+    await generate()
+    catalog = [{ ...published, context_window: 32768, max_output_tokens: 8192 }]
+    await refresh()
+    expect(configuredRoute().modelLimitOverrides).toEqual({ [first]: choice })
+    expect(await capacity(first)).toEqual({ contextWindow: 32768, maxOutputTokens: 8192, defaultMaxTokens: 8192 })
+    catalog = [{ id: second, context_window: 65536, max_output_tokens: 16384 }]
+    await refresh()
+    expect((await context!.llm.listModels('yunshu-local')).map(model => model.id)).not.toContain(first)
+    expect(configuredRoute().modelLimitOverrides).toEqual({ [first]: choice })
+    catalog = [published]
+    await refresh()
+    expect(owner()).toBe(initialOwner)
+    expect(await capacity(first)).toEqual({ contextWindow: 131072, maxOutputTokens: 32768, defaultMaxTokens: 32768 })
+    const restartedBase = await restart()
+    expect(configuredRoute().modelLimitOverrides).toEqual({ [first]: choice })
+    expect(await capacity(first)).toEqual({ contextWindow: 131072, maxOutputTokens: 32768, defaultMaxTokens: 32768 })
+    expect(owner()).toBe(initialOwner)
+    expect((await post(restartedBase, '/api/session/logout', {})).ok).toBe(true)
+    loginAccount = 8
+    await signIn(restartedBase)
+    await refresh()
+    expect(owner()).not.toBe(initialOwner)
+    expect(await capacity(first)).toEqual({ contextWindow: 1_048_576, maxOutputTokens: 393_216, defaultMaxTokens: 393_216 })
+    expect((await context!.llm.resolveModelInfo('yunshu-local', first)).limits).not.toHaveProperty('override')
+    expect(configuredRoute().modelLimitOverrides).toEqual({ [first]: choice })
+    await context!.settings.mutate('llm-pi-ai', [{ op: 'unset', path }], settings().revision)
+    expect(configuredRoute().modelLimitOverrides).toEqual({})
+    expect(await capacity(first)).toEqual({ contextWindow: 1_048_576, maxOutputTokens: 393_216, defaultMaxTokens: 393_216 })
+    await generate()
+    expect(requests.filter(request => request.path === '/harness/v1/chat/completions').map(request => request.body?.max_tokens))
+      .toEqual([32768, 393_216])
+  })
+
   it('keeps an expected model scope valid through same-account access-token renewal', async () => {
     catalog = [{ id: first, context_window: 32768, max_output_tokens: 8192 }]
     const { base, api, refresh } = await boot()

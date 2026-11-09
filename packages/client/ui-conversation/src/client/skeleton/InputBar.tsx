@@ -81,11 +81,13 @@ export const InputBar = memo(function InputBar({
   const empty = draft.trim() === '' && attachments.length === 0
   const inputCapabilities = input?.modelCapabilities
   const routeUnavailable = inputCapabilities?.available === false
-  const noFiles = inputCapabilities?.tools === false
-  const imageUnavailable = inputCapabilities?.visionUnavailable === true
+  // An unavailable route is resolved by the Host before admission. Its old
+  // input limits must not prevent the same draft reaching that decision.
+  const noFiles = !routeUnavailable && inputCapabilities?.tools === false
+  const imageUnavailable = !routeUnavailable && inputCapabilities?.visionUnavailable === true
   const unavailableImageAttachments = imageUnavailable && attachments.some(value => value.kind === 'image')
-  const noImages = imageUnavailable || inputCapabilities?.vision === false
-    || inputCapabilities?.inputModalities !== undefined && !inputCapabilities.inputModalities.includes('image')
+  const noImages = !routeUnavailable && (imageUnavailable || inputCapabilities?.vision === false
+    || inputCapabilities?.inputModalities !== undefined && !inputCapabilities.inputModalities.includes('image'))
   const unsupportedAttachments = attachments.some(value => value.kind === 'file' ? noFiles : noImages)
     || noFiles && input?.occurrences.some(value => value.appearance === 'file' || value.appearance === 'folder') === true
   const uploads = useFileUploads(snapshot => snapshot)
@@ -118,8 +120,13 @@ export const InputBar = memo(function InputBar({
   useEffect(() => {
     if (promptError === null) return
     const { error } = promptError
-    if (error.code === 'session/model-unavailable' && error.details.reason === 'UNKNOWN_MODEL') {
-      showToast(t('error.modelUnavailable'))
+    if (error.code === 'session/model-unavailable' && (error.details.reason === 'UNKNOWN_MODEL'
+      || error.details.reason === 'NO_AVAILABLE_MODEL')) {
+      showToast(t(error.details.reason === 'NO_AVAILABLE_MODEL' ? 'error.noAvailableModel' : 'error.modelUnavailable'))
+      return
+    }
+    if (error.code === 'session/provider-models-unavailable') {
+      showToast(t('error.modelCatalogUnavailable'))
       return
     }
     if (error.code === 'session/model-capability-invalid') {
@@ -352,7 +359,7 @@ export const InputBar = memo(function InputBar({
   const primaryStops = running && subagent === null && (empty || blocked !== undefined)
   // Disabled native buttons may omit mouseleave; their tooltip must close from state.
   const primaryDisabled = primaryStops ? stop === undefined
-    : empty || disabled || machineBusy || uploadsPending || unsupportedAttachments || routeUnavailable
+    : empty || disabled || machineBusy || uploadsPending || unsupportedAttachments
   const interruptible = running && continuable
   const primarySubmitMode = resolveSubmitMode(busyEnter, running, 'enter', steeringAvailable)
   const plainMessageDraft = !empty && input?.phase === 'plain' && !draft.trimStart().startsWith('/')
@@ -368,7 +375,7 @@ export const InputBar = memo(function InputBar({
     }
     if (keyboard === undefined) return // absent machine: the button is disabled
     /* v8 ignore next -- defensive: the primary button is disabled for empty, disabled, and pending-upload states. */
-    if (!empty && !disabled && !machineBusy && !uploadsPending && !unsupportedAttachments && !routeUnavailable) keyboard.submit(primarySubmitMode, 'click')
+    if (!empty && !disabled && !machineBusy && !uploadsPending && !unsupportedAttachments) keyboard.submit(primarySubmitMode, 'click')
   }
 
   // Claim ghost hint: rendered by CSS as generated content after the last
@@ -414,7 +421,7 @@ export const InputBar = memo(function InputBar({
       )}
       {(routeUnavailable || unsupportedAttachments || imageUnavailable || notice?.level === 'info') && (
         <div className={css.notice} role="status">
-          {routeUnavailable ? t('error.modelRouteUnavailable') : unavailableImageAttachments ? t('error.modelImageUnavailable')
+          {routeUnavailable ? t('input.modelFallback') : unavailableImageAttachments ? t('error.modelImageUnavailable')
             : unsupportedAttachments ? t('error.modelInputUnsupported') : notice?.level === 'info' ? notice.text
               : t('input.modelImageTemporarilyUnavailable')}
         </div>

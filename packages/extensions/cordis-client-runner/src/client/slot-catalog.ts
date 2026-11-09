@@ -2650,6 +2650,56 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
     source: 'packages/client/ui-settings/src/client/contract/slots.ts:17',
   },
   {
+    key: 'settings.models.catalog',
+    kind: 'list',
+    scope: 'root',
+    summary: 'Full model catalogs and model-specific parameter actions above the provider configuration rows.',
+    doc: 'Full model catalogs and model-specific parameter actions above the provider configuration rows.',
+    registerOptions: [
+      {
+        name: 'id',
+        requirement: 'required',
+        type: 'string',
+        doc: 'Your cell key. Use an id of your own: a fresh id is added beside the shipped entries, while reusing a shipped id puts you in THAT cell and replaces it. Owners that filter by id address you by it.',
+      },
+      {
+        name: 'order',
+        requirement: 'optional',
+        type: 'number',
+        doc: 'Position among the entries, ascending (default 0).',
+      },
+      {
+        name: 'label',
+        requirement: 'optional',
+        type: 'string | (() => string)',
+        doc: 'Display text where the owner projects one (nav rows, tabs). A thunk is re-read on every projection, so localized text follows the active locale without re-registering.',
+      },
+    ],
+    ownerProps: [
+      '/** Empty owner share; contributors obtain settings data and write authority through injected services. */\nexport interface ModelsCatalogOwnerProps {\n  /** Marker field: catalog owner props are intentionally empty. */\n  children?: never\n}',
+    ],
+    ownerPropsReferences: [],
+    standardProps: [
+      'useResource: UseResource',
+      'useWorkspaces: SnapshotSelectorHook<WorkspaceSnapshot>',
+      'usePanelInfo: UsePanelInfo',
+      'useSessions: UseSessions',
+      'useSessionStatus: UseSessionStatus',
+      'useSessionRetainInfo: UseSessionRetainInfo',
+      'useWorkspaces: SnapshotSelectorHook<WorkspaceSnapshot>',
+    ],
+    keyDomain: '',
+    hookContext: '',
+    slotInject: '',
+    declaredBy: 'an entry in \'settings.section\' (client-ui-settings-models), so it exists while that entry is mounted',
+    occupants: [
+      'client-ui-model-selection SettingsModelCatalog id \'available-models\'',
+    ],
+    replaceRisk: 'none',
+    example: 'return {\n  inject: [\'slots\'],\n  apply(ctx) {\n    ctx.slots.inject(\'settings.models.catalog\', () => ctx.slots.register(\n      { name: \'settings.models.catalog\', id: \'my-entry\', order: 100, label: \'My entry\' },\n      () => React.createElement(\'div\', null, \'hello\'),\n    ))\n  },\n}',
+    source: 'packages/client/ui-settings-models/src/client/slot-contract.ts:26',
+  },
+  {
     key: 'settings.models.footer',
     kind: 'list',
     scope: 'root',
@@ -2695,7 +2745,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
     occupants: [],
     replaceRisk: 'none',
     example: 'return {\n  inject: [\'slots\'],\n  apply(ctx) {\n    ctx.slots.inject(\'settings.models.footer\', () => ctx.slots.register(\n      { name: \'settings.models.footer\', id: \'my-entry\', order: 100, label: \'My entry\' },\n      () => React.createElement(\'div\', null, \'hello\'),\n    ))\n  },\n}',
-    source: 'packages/client/ui-settings-models/src/client/slot-contract.ts:40',
+    source: 'packages/client/ui-settings-models/src/client/slot-contract.ts:42',
   },
   {
     key: 'settings.models.provider-card',
@@ -2733,7 +2783,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
     occupants: [],
     replaceRisk: 'none',
     example: 'return {\n  inject: [\'slots\'],\n  apply(ctx) {\n    ctx.slots.inject(\'settings.models.provider-card\', () => ctx.slots.register(\n      { name: \'settings.models.provider-card\', key: \'<one key the owner dispatches>\' },\n      () => React.createElement(\'div\', null, \'hello\'),\n    ))\n  },\n}',
-    source: 'packages/client/ui-settings-models/src/client/slot-contract.ts:33',
+    source: 'packages/client/ui-settings-models/src/client/slot-contract.ts:35',
   },
   {
     key: 'settings.models.sign-in',
@@ -2762,7 +2812,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
     ],
     replaceRisk: 'shadows-shipped-ui',
     example: 'return {\n  inject: [\'slots\'],\n  apply(ctx) {\n    ctx.slots.inject(\'settings.models.sign-in\', () => ctx.slots.register(\n      { name: \'settings.models.sign-in\' },\n      () => React.createElement(\'div\', null, \'hello\'),\n    ))\n  },\n}',
-    source: 'packages/client/ui-settings-models/src/client/slot-contract.ts:35',
+    source: 'packages/client/ui-settings-models/src/client/slot-contract.ts:37',
   },
   {
     key: 'settings.onboarding',

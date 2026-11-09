@@ -98,6 +98,9 @@ importers:
       '@deepseek-ai/dsh-hooks-codex':
         specifier: workspace:*
         version: link:packages/experimental/hooks-codex
+      '@deepseek-ai/dsh-llm':
+        specifier: workspace:*
+        version: link:packages/llm/llm
       '@deepseek-ai/dsh-llm-replay':
         specifier: workspace:*
         version: link:packages/test-support/llm-replay
@@ -1555,6 +1558,9 @@ importers:
       '@deepseek-ai/dsh-subagent':
         specifier: workspace:*
         version: link:../../subagent/subagent
+      '@deepseek-ai/dsh-token-meter':
+        specifier: workspace:*
+        version: link:../../llm/token-meter
       '@deepseek-ai/dsh-typert-protocol':
         specifier: workspace:*
         version: link:../../typert/protocol
@@ -4682,6 +4688,9 @@ importers:
       '@deepseek-ai/dsh-client-ui-session':
         specifier: workspace:*
         version: link:../ui-session
+      '@deepseek-ai/dsh-client-ui-settings':
+        specifier: workspace:*
+        version: link:../ui-settings
       '@deepseek-ai/dsh-client-ui-settings-models':
         specifier: workspace:*
         version: link:../ui-settings-models
@@ -10904,6 +10913,9 @@ importers:
       '@deepseek-ai/dsh-llm-replay':
         specifier: workspace:*
         version: link:../../test-support/llm-replay
+      '@deepseek-ai/dsh-llm-retry':
+        specifier: workspace:*
+        version: link:../../llm/llm-retry
       '@deepseek-ai/dsh-ptc-runtime':
         specifier: workspace:*
         version: link:../../ptc-runtime/ptc-runtime
@@ -10946,6 +10958,9 @@ importers:
       '@deepseek-ai/dsh-system-prompt':
         specifier: workspace:*
         version: link:../../core/system-prompt
+      '@deepseek-ai/dsh-token-meter':
+        specifier: workspace:*
+        version: link:../../llm/token-meter
       '@deepseek-ai/dsh-tool-ask-user':
         specifier: workspace:*
         version: link:../../interaction/tool-ask-user

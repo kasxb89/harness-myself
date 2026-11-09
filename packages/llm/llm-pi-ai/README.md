@@ -35,7 +35,7 @@ Choose this adapter when the same composition serves several providers, when a r
 
 ### Configure provider routes
 
-Each profile may set a `retryPolicy`; omission uses normal mode with five retries. `apiKeyEnv` is a credential reference resolved per request through the harness credential seam, so no secret enters the configuration file; a reference that resolves to nothing fails the request with `MISSING_CREDENTIAL`. Omitting it leaves the route configured-but-keyless, which for an installed catalog route defers to pi-ai's provider-native ambient discovery.
+Each profile may set a `retryPolicy`; omission uses normal mode with five retries. Confined Harness routes instead force zero generic retries, including when the profile requests always mode. `apiKeyEnv` is a credential reference resolved per request through the harness credential seam, so no secret enters the configuration file; a reference that resolves to nothing fails the request with `MISSING_CREDENTIAL`. Omitting it leaves the route configured-but-keyless, which for an installed catalog route defers to pi-ai's provider-native ambient discovery.
 
 ```yaml
 - name: '@deepseek-ai/dsh-llm-pi-ai'
@@ -80,13 +80,14 @@ Each profile may set a `retryPolicy`; omission uses normal mode with five retrie
 | `baseURL` | catalog endpoint | Endpoint of every model on the route |
 | `models` | installed catalog | Replaces the route's catalog wholesale; each entry defaults from the installed model |
 | `modelOverrides` | none | Reshapes individual installed-catalog models without replacing the rest |
+| `modelLimitOverrides` | none | Explicit account-bound context/output choices, preserved independently of synchronized model entries |
 | `compat` | catalog detection | Wire-compatibility switches for unrecognized endpoints |
 | `defaultContextWindow` | `262,144` | Capacity fallback for undescribed models |
 | `defaultMaxTokens` | `32,768` | Output-cap fallback for undescribed models |
 | `requestImagePixelBudget` | `4,194,304` | Total-pixel budget for each deterministic request image |
 | `requestImageMaxBytes` | `1 MiB` | Encoded-byte target for each request image before base64 expansion |
 | `maxRequestImageBytes` | `20 MiB` | Aggregate base64 image-payload bound; a request whose retained images exceed it fails with `IMAGE_OFFLOAD_REQUIRED` |
-| `retryPolicy` | normal, 5 retries | Provider-owned retry policy executed by `dsh-llm-retry` |
+| `retryPolicy` | normal, 5 retries; Harness: 0 | Provider-owned retry policy executed by `dsh-llm-retry` |
 
 The generated [configuration catalog](../../../docs/config-catalog.md#deepseek-aidsh-llm-pi-ai) is the exhaustive source for every accepted field and its JSDoc.
 
@@ -101,6 +102,8 @@ A profile's `models` list replaces the route's installed catalog rather than ext
 Model labels resolve in order from the explicit `name`, the synchronized `gatewayDisplayName`, the installed catalog name, and the exact model ID. The ID identifies the model for selection and requests.
 
 Public account model catalogs can synchronize `managedLimits: {scope, contextWindow?, maxTokens?}` separately from manual fields. The provider's `managedLimitsScope` must match the model's scope exactly; stale limits from another account or backend are inactive. Current declarations replace unknown-model and installed-catalog capacity guesses, so both increases and decreases take effect. Smaller manual capacities still narrow them unless the synchronized declaration sets `authoritative: true`. An authoritative declaration replaces the corresponding model-level manual capacity while preserving manual fallback for an omitted field. Smaller per-request `maxTokens` budgets remain effective. The active model output budget supplies the SDK default, which prepared request metadata records. The separately published `maxOutputTokens` bounds explicit overrides too. Managed output ceilings also retain pi-ai's empty-context safety headroom; nonempty history can make the SDK send a smaller wire budget. Managed hard output limits are accepted only for Chat Completions and Responses, whose serialization is checked by the adapter. Managed Responses rejects disabled output-limit fields, budgets below sixteen tokens, insufficient context headroom, and official OpenAI sign-in modes that omit the field. Other native protocols retain their existing behavior without managed output declarations. Prepared product requests carry the captured model-limit scope into live credential resolution. Switching accounts aborts the old request before provider I/O; same-account credential renewal remains valid, and fresh discovery resolves the current account without requiring an old scope. Token counts must be positive signed-32-bit integers. Models without an applicable managed output declaration retain the existing request behavior.
+
+Explicit user choices live separately in the route-level `modelLimitOverrides[modelId] = {scope, contextWindow?, maxTokens?}` dictionary. An entry must supply at least one positive token count and match both the active provider scope and the model’s managed scope. It narrows the current platform ceilings, including SDK context headroom; stored values remain unclamped so a later platform increase restores the requested choice. Synchronization and temporary catalog removal retain the dictionary. Removing the entry restores dynamic platform limits and does not reactivate legacy model-level values overridden by an authoritative declaration. Resolved `limits` reports effective capacities, known platform ceilings and raw active choices separately; unknown platform ceilings stay absent.
 
 A version1 account-scoped `managedLimits.textCapabilities` declaration controls this route’s tools, vision, reasoning, streaming and input-token ceiling. `vision: false` supplies text-only model inputs; `reasoning: false` disables configured reasoning defaults without discarding existing reasoning replay. Explicit incompatible tools, tool history, attachments, reasoning controls or non-streaming routes fail before provider I/O with `MODEL_CAPABILITY_*` codes. The adapter does not remove declarations or history to make a request acceptable. Effective context uses the smaller native/manual window and gateway input ceiling plus output budget; it is a request budget, not a new native hardware capacity.
 
@@ -135,6 +138,8 @@ Changing `displayName`, `apiKeyEnv`, or `baseURL` without resolving the provider
 -----
 
 The confined production Harness transport recognizes HTTP 403 with the exact gateway `new_api_error` / `insufficient_user_quota` pair before the SDK flattens error fields. It emits the existing string failure identity `INSUFFICIENT_BALANCE` with safe copy, allowing the product to offer its recharge panel. It does not classify vendor quota text, token limits, another provider’s response or a bare 403 as product account exhaustion, and it never repeats the paid request. Original gateway request receipts remain attached when present.
+
+Confined Harness chat POSTs set `X-Yunshu-Text-Reselection: 1`, asking supporting servers to disable hidden retries and cross-model fallback within that HTTP attempt. Recovery permission is separate: only HTTP 400/503 with a complete `text_reselection` receipt bound to the exact request model and `X-Oneapi-Request-Id`, plus the prepared account scope, produces `MODEL_UNAVAILABLE_NOT_SUBMITTED`. The transport reads at most a 32 KiB error-body clone. Unknown body shapes still request single-attempt dispatch but grant no recovery permission; cancellation, output, nonzero usage, plain errors and other endpoints do not grant it. The adapter never changes the model or sends a second POST itself; the Host owns any separately validated reassembly.
 
 An observed Harness HTTP 408 finishes with `HTTP_REQUEST_TIMEOUT` and status `408`, independently of whether its body is empty, HTML or JSON. The default retry policy excludes this code because submission is unconfirmed; the caller must decide whether to retry manually. Its safe message omits gateway response text. A connection ending without an HTTP response retains its transport classification and is not inferred to be HTTP 408.
 

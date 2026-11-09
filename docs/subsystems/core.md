@@ -331,7 +331,7 @@ type PreStepDecision =
 
 ```ts type-equiv
 /** Action returned by a listener that owns model-request recovery. */
-type RequestErrorAction = { kind: 'retry' } | undefined
+type RequestErrorAction = { kind: 'retry'; reassemble?: true; signal?: AbortSignal } | undefined
 ```
 
 `agent/pre-step` is the only waterfall listener chain before request derivation. `agent/turn-stopping` runs when a turn has no tool or steering continuation, before one final steering drain.
@@ -1002,13 +1002,15 @@ Handle one failed model-request attempt before the loop retries or closes its st
  * @param payload.turn - the turn containing the failed request.
  * @param payload.step - the step containing the failed request attempt.
  * @param payload.provider - the provider selected for the failed request.
+ * @param payload.model - exact failed model when supplied by the shipping loop.
+ * @param payload.hasOutput - whether any content or usage was exposed; absent facts cannot authorize model reselection.
  * @param payload.failure - serializable facts normalized at the final adapter boundary.
  * @param payload.retryPolicy - the policy of the adapter registration that served the failed request.
  * @param payload.signal - the turn abort signal.
  * Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent.
  * @mode waterfall
  */
-'agent/request-error'(this: Scoped<Agent>, payload: { agent: Agent; turn: number; step: number; provider: string; failure: LlmFailure; retryPolicy: ResolvedRetryPolicy | undefined; signal: AbortSignal }, next: () => Promise<RequestErrorAction>): Promise<RequestErrorAction>
+'agent/request-error'(this: Scoped<Agent>, payload: { agent: Agent; turn: number; step: number; provider: string; model?: string; hasOutput?: boolean; failure: LlmFailure; retryPolicy: ResolvedRetryPolicy | undefined; signal: AbortSignal }, next: () => Promise<RequestErrorAction>): Promise<RequestErrorAction>
 ```
 
 Types: [LlmFailure](llm-streaming.md) · [ResolvedRetryPolicy](llm-streaming.md) · [Scoped](scope.md)

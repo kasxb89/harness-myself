@@ -22,7 +22,7 @@ import type { ProviderDirectoryEntry } from './store.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface SlotMap {
-    /** Read-only model catalogs above the provider configuration rows. */
+    /** Full model catalogs and model-specific parameter actions above the provider configuration rows. */
     'settings.models.catalog': { kind: 'list'; scope: 'root'; owner: ModelsCatalogOwnerProps }
     /**
      * One provider card's adapter extension area, dispatched with
@@ -43,7 +43,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   }
 }
 
-/** Owner share of the model-catalog area, with no configuration access. */
+/** Empty owner share; contributors obtain settings data and write authority through injected services. */
 export interface ModelsCatalogOwnerProps {
   /** Marker field: catalog owner props are intentionally empty. */
   children?: never

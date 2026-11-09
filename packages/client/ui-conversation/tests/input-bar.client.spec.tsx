@@ -1739,17 +1739,20 @@ describe('insertText (scoped event body)', () => {
 })
 
 describe('strips and variants', () => {
-  it.each([zh, en])('keeps a confirmed unknown-model draft and its image and file while asking for reselection', (dictionary) => {
+  it.each([zh, en].flatMap(dictionary => [
+    { dictionary, reason: 'UNKNOWN_MODEL' as const, message: dictionary['error.modelUnavailable'] },
+    { dictionary, reason: 'NO_AVAILABLE_MODEL' as const, message: dictionary['error.noAvailableModel'] },
+  ]))('keeps an unaccepted model-unavailable draft and attachments: $reason', ({ dictionary, reason, message }) => {
     const image = { kind: 'image' as const, id: 'removed-model-image' as DraftAttachmentId,
       file: new File([Uint8Array.of(137, 80, 78, 71)], 'retained.png', { type: 'image/png' }), previewUrl: 'blob:retained' }
     const file = { kind: 'file' as const, id: 'removed-model-file' as DraftAttachmentId,
       file: new File(['retained file bytes'], 'retained.txt', { type: 'text/plain' }) }
     const b = bench({ draft: 'retain my draft', attachments: [image, file],
       promptError: { op: 'send', error: new RemoteError('session/model-unavailable', 'private unknown-model diagnostic',
-        { provider: 'product', model: 'removed', reason: 'UNKNOWN_MODEL' }) },
+        { provider: 'product', model: 'removed', reason }) },
       t: makeTranslate(dictionary, commonZh),
     })
-    expect(b.view.getByRole('alert').textContent).toBe(dictionary['error.modelUnavailable'])
+    expect(b.view.getByRole('alert').textContent).toBe(message)
     expect(b.shell.snapshot.draft).toBe('retain my draft')
     expect(b.shell.snapshot.attachmentIds).toEqual([image.id, file.id])
     expect(b.sink).not.toHaveBeenCalled()
@@ -1760,6 +1763,17 @@ describe('strips and variants', () => {
       { provider: 'product', model: 'custom' }) } })
     expect(b.view.getByRole('alert').textContent).toBe(zh['error.serverBusy'])
     expect(b.view.queryByText(zh['error.modelUnavailable'])).toBeNull()
+  })
+
+  it.each([zh, en])('keeps a failed directory read distinct from no available models and server-busy copy', (dictionary) => {
+    const b = bench({ draft: 'keep this request', t: makeTranslate(dictionary, commonZh),
+      promptError: { op: 'send', error: new RemoteError('session/provider-models-unavailable', 'private directory diagnostic',
+        { provider: 'product' }) } })
+    expect(b.view.getByRole('alert').textContent).toBe(dictionary['error.modelCatalogUnavailable'])
+    expect(b.view.queryByText(dictionary['error.serverBusy'])).toBeNull()
+    expect(b.view.queryByText(dictionary['error.noAvailableModel'])).toBeNull()
+    expect(b.shell.snapshot.draft).toBe('keep this request')
+    expect(b.sink).not.toHaveBeenCalled()
   })
 
   it.each([zh, en])('shows localized guidance when another writer owns the Session', (dictionary) => {
@@ -2007,22 +2021,22 @@ describe('explicit model input controls preserve the composer draft', () => {
     expect(b.shell.notices.getSnapshot()?.text).toBe(zh['error.modelInputUnsupported'])
   })
 
-  it('keeps unverified capabilities usable and channel outages separate while preserving the draft', () => {
-    const b = bench({ draft: '保留草稿继续尝试' })
+  it.each(['enter', 'click'] as const)('sends the complete draft once to Host admission during a route outage via %s', (source) => {
+    const image = { kind: 'image' as const, id: 'fallback-image' as DraftAttachmentId,
+      file: new File([Uint8Array.of(1)], 'retained.png', { type: 'image/png' }), previewUrl: 'blob:fallback' }
+    const b = bench({ draft: '保留草稿继续尝试', attachments: [image] })
     act(() => { b.shell.setModelCapabilities({ verification: { tools: 'unverified', vision: 'unverified', reasoning: 'unverified' }, available: true }) })
     expect(b.button.disabled).toBe(false)
     expect(b.view.queryByRole('status')).toBeNull()
-    act(() => { b.shell.setModelCapabilities({ available: false }) })
-    expect(b.button.disabled).toBe(true)
-    fireEvent.keyDown(b.textarea, { key: 'Enter' })
-    expect(b.sink).not.toHaveBeenCalled()
-    expect(b.shell.snapshot.draft).toBe('保留草稿继续尝试')
-    expect(b.view.getByRole('status').textContent).toBe(zh['error.modelRouteUnavailable'])
-    expect(b.view.queryByText(zh['error.serverBusy'])).toBeNull()
-    act(() => { b.shell.setModelCapabilities({ available: true }) })
+    act(() => { b.shell.setModelCapabilities({ available: false, tools: false, vision: false, inputModalities: ['text'] }) })
     expect(b.button.disabled).toBe(false)
-    fireEvent.click(b.button)
-    expect(b.sink).toHaveBeenCalledWith('保留草稿继续尝试', [], 'queue', expect.any(AbortSignal))
+    expect(b.shell.snapshot.draft).toBe('保留草稿继续尝试')
+    expect(b.shell.snapshot.attachmentIds).toEqual([image.id])
+    expect(b.view.getByRole('status').textContent).toBe(zh['input.modelFallback'])
+    expect(b.view.queryByText(zh['error.serverBusy'])).toBeNull()
+    if (source === 'enter') fireEvent.keyDown(b.textarea, { key: 'Enter' })
+    else fireEvent.click(b.button)
+    expect(b.sink).toHaveBeenCalledExactlyOnceWith('保留草稿继续尝试', [image.id], 'queue', expect.any(AbortSignal))
   })
 
   it('blocks temporary image intake from paste and picker while preserving text and permitting generic files', async () => {
@@ -2045,6 +2059,23 @@ describe('explicit model input controls preserve the composer draft', () => {
     expect(b.button.disabled).toBe(false)
     fireEvent.click(b.button)
     expect(b.sink).toHaveBeenCalledWith('图片暂不可用也要保留这段文字', [], 'queue', expect.any(AbortSignal))
+  })
+
+  it('defers new image and file-reference compatibility to Host admission when the whole route is unavailable', () => {
+    const addFiles = vi.fn(() => null)
+    const b = bench({ draft: '@report.txt', addFiles })
+    act(() => { b.shell.setModelCapabilities({ available: false, tools: false, vision: false,
+      visionUnavailable: true, inputModalities: ['text'] }) })
+    const image = new File([Uint8Array.of(1)], 'fallback.png', { type: 'image/png' })
+    act(() => { attachmentOwner(b.slotCalls).onAddFiles([image]) })
+    expect(addFiles).toHaveBeenCalledExactlyOnceWith([image], undefined)
+    act(() => {
+      expect(b.shell.insertReference({ source: 'reference', ref: '@report.txt', label: 'report.txt',
+        appearance: 'file', clipboardText: '@report.txt' }, { start: 0, end: 11, draftRev: b.shell.snapshot.draftRev })).toBe(true)
+    })
+    expect(b.button.disabled).toBe(false)
+    expect(b.view.getByRole('status').textContent).toBe(zh['input.modelFallback'])
+    expect(b.view.queryByRole('alert')).toBeNull()
   })
 
   it('keeps an existing image and file during a partial outage and sends the file after image removal', () => {

@@ -1,0 +1,2789 @@
+{
+  "formatVersion": 2,
+  "roots": [
+    {
+      "key": "event:assistant/attempt",
+      "kind": "event",
+      "event": "assistant/attempt",
+      "surface": false,
+      "digest": "84cc09319a505381b842d2bb8d03e12330b7cb4a1259ab099ba209f806812b3a",
+      "schema": {
+        "root": 0,
+        "nodes": [
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "data",
+                "type": 1,
+                "optional": false
+              },
+              {
+                "name": "ignorable",
+                "type": 26,
+                "optional": true
+              },
+              {
+                "name": "seq",
+                "type": 2,
+                "optional": false
+              },
+              {
+                "name": "time",
+                "type": 2,
+                "optional": false
+              },
+              {
+                "name": "type",
+                "type": 78,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "step",
+                "type": 2,
+                "optional": false
+              },
+              {
+                "name": "stream",
+                "type": 3,
+                "optional": false
+              },
+              {
+                "name": "turn",
+                "type": 2,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "primitive",
+            "type": "number"
+          },
+          {
+            "kind": "array",
+            "element": 4
+          },
+          {
+            "kind": "union",
+            "types": [
+              5,
+              10,
+              74,
+              76
+            ]
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "args",
+                "type": 6,
+                "optional": false
+              },
+              {
+                "name": "dt",
+                "type": 8,
+                "optional": false
+              },
+              {
+                "name": "id",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "index",
+                "type": 2,
+                "optional": false
+              },
+              {
+                "name": "name",
+                "type": 7,
+                "optional": true
+              },
+              {
+                "name": "time0",
+                "type": 2,
+                "optional": false
+              },
+              {
+                "name": "type",
+                "type": 9,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "array",
+            "element": 7
+          },
+          {
+            "kind": "primitive",
+            "type": "string"
+          },
+          {
+            "kind": "array",
+            "element": 2
+          },
+          {
+            "kind": "literal",
+            "value": "tool-call-chunks"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "chunk",
+                "type": 11,
+                "optional": false
+              },
+              {
+                "name": "time",
+                "type": 2,
+                "optional": false
+              },
+              {
+                "name": "type",
+                "type": 73,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "union",
+            "types": [
+              12,
+              14,
+              41,
+              44,
+              46,
+              48,
+              70
+            ]
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "argumentsDelta",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "id",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "index",
+                "type": 2,
+                "optional": false
+              },
+              {
+                "name": "name",
+                "type": 7,
+                "optional": true
+              },
+              {
+                "name": "type",
+                "type": 13,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "tool-call-delta"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "block",
+                "type": 15,
+                "optional": false
+              },
+              {
+                "name": "index",
+                "type": 2,
+                "optional": false
+              },
+              {
+                "name": "type",
+                "type": 40,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "union",
+            "types": [
+              16,
+              18,
+              28,
+              31,
+              33,
+              35,
+              38
+            ]
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "arguments",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "id",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "name",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "type",
+                "type": 17,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "tool-call"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "attachment",
+                "type": 19,
+                "optional": false
+              },
+              {
+                "name": "offloaded",
+                "type": 26,
+                "optional": true
+              },
+              {
+                "name": "type",
+                "type": 27,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "attachmentId",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "bytes",
+                "type": 2,
+                "optional": false
+              },
+              {
+                "name": "height",
+                "type": 2,
+                "optional": false
+              },
+              {
+                "name": "mediaType",
+                "type": 20,
+                "optional": false
+              },
+              {
+                "name": "name",
+                "type": 7,
+                "optional": true
+              },
+              {
+                "name": "originalDimensions",
+                "type": 25,
+                "optional": true
+              },
+              {
+                "name": "width",
+                "type": 2,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "union",
+            "types": [
+              21,
+              22,
+              23,
+              24
+            ]
+          },
+          {
+            "kind": "literal",
+            "value": "image/gif"
+          },
+          {
+            "kind": "literal",
+            "value": "image/jpeg"
+          },
+          {
+            "kind": "literal",
+            "value": "image/png"
+          },
+          {
+            "kind": "literal",
+            "value": "image/webp"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "height",
+                "type": 2,
+                "optional": false
+              },
+              {
+                "name": "width",
+                "type": 2,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": true
+          },
+          {
+            "kind": "literal",
+            "value": "image"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "attachment",
+                "type": 29,
+                "optional": false
+              },
+              {
+                "name": "type",
+                "type": 30,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "attachmentId",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "bytes",
+                "type": 2,
+                "optional": false
+              },
+              {
+                "name": "name",
+                "type": 7,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "file"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "text",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "type",
+                "type": 32,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "reasoning"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "text",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "type",
+                "type": 34,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "text"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "tool",
+                "type": 36,
+                "optional": true
+              },
+              {
+                "name": "toolName",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "type",
+                "type": 37,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "primitive",
+            "type": "never"
+          },
+          {
+            "kind": "literal",
+            "value": "tool-addition"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "toolName",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "type",
+                "type": 39,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "tool-removal"
+          },
+          {
+            "kind": "literal",
+            "value": "block-end"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "blockType",
+                "type": 42,
+                "optional": false
+              },
+              {
+                "name": "index",
+                "type": 2,
+                "optional": false
+              },
+              {
+                "name": "type",
+                "type": 43,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "union",
+            "types": [
+              17,
+              27,
+              30,
+              32,
+              34,
+              37,
+              39
+            ]
+          },
+          {
+            "kind": "literal",
+            "value": "block-start"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "index",
+                "type": 2,
+                "optional": false
+              },
+              {
+                "name": "text",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "type",
+                "type": 45,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "reasoning-delta"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "index",
+                "type": 2,
+                "optional": false
+              },
+              {
+                "name": "text",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "type",
+                "type": 47,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "text-delta"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "reason",
+                "type": 49,
+                "optional": false
+              },
+              {
+                "name": "replayState",
+                "type": 66,
+                "optional": true
+              },
+              {
+                "name": "type",
+                "type": 69,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "union",
+            "types": [
+              50,
+              58,
+              60,
+              62,
+              64
+            ]
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "failure",
+                "type": 51,
+                "optional": false
+              },
+              {
+                "name": "kind",
+                "type": 57,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "code",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "message",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "offloadImages",
+                "type": 2,
+                "optional": true
+              },
+              {
+                "name": "providerRetryAfterMs",
+                "type": 2,
+                "optional": true
+              },
+              {
+                "name": "requestId",
+                "type": 7,
+                "optional": true
+              },
+              {
+                "name": "status",
+                "type": 2,
+                "optional": true
+              },
+              {
+                "name": "textReselection",
+                "type": 52,
+                "optional": true
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "billingReserved",
+                "type": 53,
+                "optional": false
+              },
+              {
+                "name": "managedScope",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "model",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "origin",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "reason",
+                "type": 54,
+                "optional": false
+              },
+              {
+                "name": "requestId",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "schemaVersion",
+                "type": 55,
+                "optional": false
+              },
+              {
+                "name": "submissionState",
+                "type": 56,
+                "optional": false
+              },
+              {
+                "name": "upstreamSubmitted",
+                "type": 53,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": false
+          },
+          {
+            "kind": "literal",
+            "value": "model_unavailable"
+          },
+          {
+            "kind": "literal",
+            "value": 1
+          },
+          {
+            "kind": "literal",
+            "value": "not_submitted"
+          },
+          {
+            "kind": "literal",
+            "value": "aborted"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "failure",
+                "type": 51,
+                "optional": false
+              },
+              {
+                "name": "kind",
+                "type": 59,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "error"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "kind",
+                "type": 61,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "max-tokens"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "kind",
+                "type": 63,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "stop"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "kind",
+                "type": 65,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "tool-calls"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "blocks",
+                "type": 67,
+                "optional": true
+              },
+              {
+                "name": "response",
+                "type": 68,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "array",
+            "element": 68
+          },
+          {
+            "kind": "opaque",
+            "reason": "unknown"
+          },
+          {
+            "kind": "literal",
+            "value": "finish"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "type",
+                "type": 71,
+                "optional": false
+              },
+              {
+                "name": "usage",
+                "type": 72,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "usage"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "cacheReadTokens",
+                "type": 2,
+                "optional": true
+              },
+              {
+                "name": "cacheWriteTokens",
+                "type": 2,
+                "optional": true
+              },
+              {
+                "name": "inputTokens",
+                "type": 2,
+                "optional": false
+              },
+              {
+                "name": "outputTokens",
+                "type": 2,
+                "optional": false
+              },
+              {
+                "name": "reasoningTokens",
+                "type": 2,
+                "optional": true
+              },
+              {
+                "name": "totalTokens",
+                "type": 2,
+                "optional": true
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "chunk"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "dt",
+                "type": 8,
+                "optional": false
+              },
+              {
+                "name": "index",
+                "type": 2,
+                "optional": false
+              },
+              {
+                "name": "texts",
+                "type": 6,
+                "optional": false
+              },
+              {
+                "name": "time0",
+                "type": 2,
+                "optional": false
+              },
+              {
+                "name": "type",
+                "type": 75,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "reasoning-chunks"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "dt",
+                "type": 8,
+                "optional": false
+              },
+              {
+                "name": "index",
+                "type": 2,
+                "optional": false
+              },
+              {
+                "name": "texts",
+                "type": 6,
+                "optional": false
+              },
+              {
+                "name": "time0",
+                "type": 2,
+                "optional": false
+              },
+              {
+                "name": "type",
+                "type": 77,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "text-chunks"
+          },
+          {
+            "kind": "literal",
+            "value": "assistant/attempt"
+          }
+        ]
+      }
+    },
+    {
+      "key": "event:assistant/message",
+      "kind": "event",
+      "event": "assistant/message",
+      "surface": true,
+      "digest": "161d69bce499c9478b51057eb3a15051b6ad3642c39b205f641e5c68156a4b0c",
+      "schema": {
+        "root": 0,
+        "nodes": [
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "data",
+                "type": 1,
+                "optional": false
+              },
+              {
+                "name": "ignorable",
+                "type": 2,
+                "optional": true
+              },
+              {
+                "name": "seq",
+                "type": 11,
+                "optional": false
+              },
+              {
+                "name": "surfaceOp",
+                "type": 83,
+                "optional": false
+              },
+              {
+                "name": "time",
+                "type": 11,
+                "optional": false
+              },
+              {
+                "name": "type",
+                "type": 87,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "interrupted",
+                "type": 2,
+                "optional": true
+              },
+              {
+                "name": "message",
+                "type": 3,
+                "optional": false
+              },
+              {
+                "name": "step",
+                "type": 11,
+                "optional": false
+              },
+              {
+                "name": "stream",
+                "type": 35,
+                "optional": false
+              },
+              {
+                "name": "turn",
+                "type": 11,
+                "optional": false
+              },
+              {
+                "name": "usage",
+                "type": 77,
+                "optional": true
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": true
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "content",
+                "type": 4,
+                "optional": false
+              },
+              {
+                "name": "id",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "role",
+                "type": 31,
+                "optional": false
+              },
+              {
+                "name": "source",
+                "type": 32,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "array",
+            "element": 5
+          },
+          {
+            "kind": "union",
+            "types": [
+              6,
+              9,
+              19,
+              22,
+              24,
+              26,
+              29
+            ]
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "arguments",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "id",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "name",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "type",
+                "type": 8,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "primitive",
+            "type": "string"
+          },
+          {
+            "kind": "literal",
+            "value": "tool-call"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "attachment",
+                "type": 10,
+                "optional": false
+              },
+              {
+                "name": "offloaded",
+                "type": 2,
+                "optional": true
+              },
+              {
+                "name": "type",
+                "type": 18,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "attachmentId",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "bytes",
+                "type": 11,
+                "optional": false
+              },
+              {
+                "name": "height",
+                "type": 11,
+                "optional": false
+              },
+              {
+                "name": "mediaType",
+                "type": 12,
+                "optional": false
+              },
+              {
+                "name": "name",
+                "type": 7,
+                "optional": true
+              },
+              {
+                "name": "originalDimensions",
+                "type": 17,
+                "optional": true
+              },
+              {
+                "name": "width",
+                "type": 11,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "primitive",
+            "type": "number"
+          },
+          {
+            "kind": "union",
+            "types": [
+              13,
+              14,
+              15,
+              16
+            ]
+          },
+          {
+            "kind": "literal",
+            "value": "image/webp"
+          },
+          {
+            "kind": "literal",
+            "value": "image/gif"
+          },
+          {
+            "kind": "literal",
+            "value": "image/jpeg"
+          },
+          {
+            "kind": "literal",
+            "value": "image/png"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "height",
+                "type": 11,
+                "optional": false
+              },
+              {
+                "name": "width",
+                "type": 11,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "image"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "attachment",
+                "type": 20,
+                "optional": false
+              },
+              {
+                "name": "type",
+                "type": 21,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "attachmentId",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "bytes",
+                "type": 11,
+                "optional": false
+              },
+              {
+                "name": "name",
+                "type": 7,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "file"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "text",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "type",
+                "type": 23,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "reasoning"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "text",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "type",
+                "type": 25,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "text"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "tool",
+                "type": 27,
+                "optional": true
+              },
+              {
+                "name": "toolName",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "type",
+                "type": 28,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "primitive",
+            "type": "never"
+          },
+          {
+            "kind": "literal",
+            "value": "tool-addition"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "toolName",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "type",
+                "type": 30,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "tool-removal"
+          },
+          {
+            "kind": "literal",
+            "value": "assistant"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "kind",
+                "type": 33,
+                "optional": false
+              },
+              {
+                "name": "model",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "provider",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "replayState",
+                "type": 34,
+                "optional": true
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "model"
+          },
+          {
+            "kind": "opaque",
+            "reason": "unknown"
+          },
+          {
+            "kind": "array",
+            "element": 36
+          },
+          {
+            "kind": "union",
+            "types": [
+              37,
+              41,
+              79,
+              81
+            ]
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "args",
+                "type": 38,
+                "optional": false
+              },
+              {
+                "name": "dt",
+                "type": 39,
+                "optional": false
+              },
+              {
+                "name": "id",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "index",
+                "type": 11,
+                "optional": false
+              },
+              {
+                "name": "name",
+                "type": 7,
+                "optional": true
+              },
+              {
+                "name": "time0",
+                "type": 11,
+                "optional": false
+              },
+              {
+                "name": "type",
+                "type": 40,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "array",
+            "element": 7
+          },
+          {
+            "kind": "array",
+            "element": 11
+          },
+          {
+            "kind": "literal",
+            "value": "tool-call-chunks"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "chunk",
+                "type": 42,
+                "optional": false
+              },
+              {
+                "name": "time",
+                "type": 11,
+                "optional": false
+              },
+              {
+                "name": "type",
+                "type": 78,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "union",
+            "types": [
+              43,
+              45,
+              47,
+              50,
+              52,
+              54,
+              75
+            ]
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "argumentsDelta",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "id",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "index",
+                "type": 11,
+                "optional": false
+              },
+              {
+                "name": "name",
+                "type": 7,
+                "optional": true
+              },
+              {
+                "name": "type",
+                "type": 44,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "tool-call-delta"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "block",
+                "type": 5,
+                "optional": false
+              },
+              {
+                "name": "index",
+                "type": 11,
+                "optional": false
+              },
+              {
+                "name": "type",
+                "type": 46,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "block-end"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "blockType",
+                "type": 48,
+                "optional": false
+              },
+              {
+                "name": "index",
+                "type": 11,
+                "optional": false
+              },
+              {
+                "name": "type",
+                "type": 49,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "union",
+            "types": [
+              8,
+              18,
+              21,
+              23,
+              25,
+              28,
+              30
+            ]
+          },
+          {
+            "kind": "literal",
+            "value": "block-start"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "index",
+                "type": 11,
+                "optional": false
+              },
+              {
+                "name": "text",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "type",
+                "type": 51,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "reasoning-delta"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "index",
+                "type": 11,
+                "optional": false
+              },
+              {
+                "name": "text",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "type",
+                "type": 53,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "text-delta"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "reason",
+                "type": 55,
+                "optional": false
+              },
+              {
+                "name": "replayState",
+                "type": 72,
+                "optional": true
+              },
+              {
+                "name": "type",
+                "type": 74,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "union",
+            "types": [
+              56,
+              64,
+              66,
+              68,
+              70
+            ]
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "failure",
+                "type": 57,
+                "optional": false
+              },
+              {
+                "name": "kind",
+                "type": 63,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "code",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "message",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "offloadImages",
+                "type": 11,
+                "optional": true
+              },
+              {
+                "name": "providerRetryAfterMs",
+                "type": 11,
+                "optional": true
+              },
+              {
+                "name": "requestId",
+                "type": 7,
+                "optional": true
+              },
+              {
+                "name": "status",
+                "type": 11,
+                "optional": true
+              },
+              {
+                "name": "textReselection",
+                "type": 58,
+                "optional": true
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "billingReserved",
+                "type": 59,
+                "optional": false
+              },
+              {
+                "name": "managedScope",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "model",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "origin",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "reason",
+                "type": 60,
+                "optional": false
+              },
+              {
+                "name": "requestId",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "schemaVersion",
+                "type": 61,
+                "optional": false
+              },
+              {
+                "name": "submissionState",
+                "type": 62,
+                "optional": false
+              },
+              {
+                "name": "upstreamSubmitted",
+                "type": 59,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": false
+          },
+          {
+            "kind": "literal",
+            "value": "model_unavailable"
+          },
+          {
+            "kind": "literal",
+            "value": 1
+          },
+          {
+            "kind": "literal",
+            "value": "not_submitted"
+          },
+          {
+            "kind": "literal",
+            "value": "aborted"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "failure",
+                "type": 57,
+                "optional": false
+              },
+              {
+                "name": "kind",
+                "type": 65,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "error"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "kind",
+                "type": 67,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "max-tokens"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "kind",
+                "type": 69,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "stop"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "kind",
+                "type": 71,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "tool-calls"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "blocks",
+                "type": 73,
+                "optional": true
+              },
+              {
+                "name": "response",
+                "type": 34,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "array",
+            "element": 34
+          },
+          {
+            "kind": "literal",
+            "value": "finish"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "type",
+                "type": 76,
+                "optional": false
+              },
+              {
+                "name": "usage",
+                "type": 77,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "usage"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "cacheReadTokens",
+                "type": 11,
+                "optional": true
+              },
+              {
+                "name": "cacheWriteTokens",
+                "type": 11,
+                "optional": true
+              },
+              {
+                "name": "inputTokens",
+                "type": 11,
+                "optional": false
+              },
+              {
+                "name": "outputTokens",
+                "type": 11,
+                "optional": false
+              },
+              {
+                "name": "reasoningTokens",
+                "type": 11,
+                "optional": true
+              },
+              {
+                "name": "totalTokens",
+                "type": 11,
+                "optional": true
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "chunk"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "dt",
+                "type": 39,
+                "optional": false
+              },
+              {
+                "name": "index",
+                "type": 11,
+                "optional": false
+              },
+              {
+                "name": "texts",
+                "type": 38,
+                "optional": false
+              },
+              {
+                "name": "time0",
+                "type": 11,
+                "optional": false
+              },
+              {
+                "name": "type",
+                "type": 80,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "reasoning-chunks"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "dt",
+                "type": 39,
+                "optional": false
+              },
+              {
+                "name": "index",
+                "type": 11,
+                "optional": false
+              },
+              {
+                "name": "texts",
+                "type": 38,
+                "optional": false
+              },
+              {
+                "name": "time0",
+                "type": 11,
+                "optional": false
+              },
+              {
+                "name": "type",
+                "type": 82,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "text-chunks"
+          },
+          {
+            "kind": "union",
+            "types": [
+              84,
+              86
+            ]
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "endSeq",
+                "type": 11,
+                "optional": false
+              },
+              {
+                "name": "op",
+                "type": 85,
+                "optional": false
+              },
+              {
+                "name": "startSeq",
+                "type": 11,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "replace"
+          },
+          {
+            "kind": "literal",
+            "value": "append"
+          },
+          {
+            "kind": "literal",
+            "value": "assistant/message"
+          }
+        ]
+      }
+    },
+    {
+      "key": "event:llm/retry",
+      "kind": "event",
+      "event": "llm/retry",
+      "surface": false,
+      "digest": "a83bfd204ab3bc6058ec57b16c3586a02affdf69749cdb523f1b3f97d19ef852",
+      "schema": {
+        "root": 0,
+        "nodes": [
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "data",
+                "type": 1,
+                "optional": false
+              },
+              {
+                "name": "ignorable",
+                "type": 14,
+                "optional": true
+              },
+              {
+                "name": "seq",
+                "type": 3,
+                "optional": false
+              },
+              {
+                "name": "time",
+                "type": 3,
+                "optional": false
+              },
+              {
+                "name": "type",
+                "type": 15,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "union",
+            "types": [
+              2,
+              12
+            ]
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "delayMs",
+                "type": 3,
+                "optional": false
+              },
+              {
+                "name": "failure",
+                "type": 4,
+                "optional": false
+              },
+              {
+                "name": "maxRetries",
+                "type": 3,
+                "optional": false
+              },
+              {
+                "name": "mode",
+                "type": 11,
+                "optional": false
+              },
+              {
+                "name": "policyKey",
+                "type": 5,
+                "optional": false
+              },
+              {
+                "name": "provider",
+                "type": 5,
+                "optional": false
+              },
+              {
+                "name": "retry",
+                "type": 3,
+                "optional": false
+              },
+              {
+                "name": "retryId",
+                "type": 5,
+                "optional": false
+              },
+              {
+                "name": "step",
+                "type": 3,
+                "optional": false
+              },
+              {
+                "name": "turn",
+                "type": 3,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "primitive",
+            "type": "number"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "code",
+                "type": 5,
+                "optional": false
+              },
+              {
+                "name": "message",
+                "type": 5,
+                "optional": false
+              },
+              {
+                "name": "offloadImages",
+                "type": 3,
+                "optional": true
+              },
+              {
+                "name": "providerRetryAfterMs",
+                "type": 3,
+                "optional": true
+              },
+              {
+                "name": "requestId",
+                "type": 5,
+                "optional": true
+              },
+              {
+                "name": "status",
+                "type": 3,
+                "optional": true
+              },
+              {
+                "name": "textReselection",
+                "type": 6,
+                "optional": true
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "primitive",
+            "type": "string"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "billingReserved",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "managedScope",
+                "type": 5,
+                "optional": false
+              },
+              {
+                "name": "model",
+                "type": 5,
+                "optional": false
+              },
+              {
+                "name": "origin",
+                "type": 5,
+                "optional": false
+              },
+              {
+                "name": "reason",
+                "type": 8,
+                "optional": false
+              },
+              {
+                "name": "requestId",
+                "type": 5,
+                "optional": false
+              },
+              {
+                "name": "schemaVersion",
+                "type": 9,
+                "optional": false
+              },
+              {
+                "name": "submissionState",
+                "type": 10,
+                "optional": false
+              },
+              {
+                "name": "upstreamSubmitted",
+                "type": 7,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": false
+          },
+          {
+            "kind": "literal",
+            "value": "model_unavailable"
+          },
+          {
+            "kind": "literal",
+            "value": 1
+          },
+          {
+            "kind": "literal",
+            "value": "not_submitted"
+          },
+          {
+            "kind": "literal",
+            "value": "normal"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "delayMs",
+                "type": 3,
+                "optional": false
+              },
+              {
+                "name": "failure",
+                "type": 4,
+                "optional": false
+              },
+              {
+                "name": "mode",
+                "type": 13,
+                "optional": false
+              },
+              {
+                "name": "policyKey",
+                "type": 5,
+                "optional": false
+              },
+              {
+                "name": "provider",
+                "type": 5,
+                "optional": false
+              },
+              {
+                "name": "retry",
+                "type": 3,
+                "optional": false
+              },
+              {
+                "name": "retryId",
+                "type": 5,
+                "optional": false
+              },
+              {
+                "name": "step",
+                "type": 3,
+                "optional": false
+              },
+              {
+                "name": "turn",
+                "type": 3,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "always"
+          },
+          {
+            "kind": "literal",
+            "value": true
+          },
+          {
+            "kind": "literal",
+            "value": "llm/retry"
+          }
+        ]
+      }
+    },
+    {
+      "key": "event:turn/end",
+      "kind": "event",
+      "event": "turn/end",
+      "surface": false,
+      "digest": "a19a35e70b1e457fd82d10f3d92639f8052007dcb5c7b23933c0d8a79f57341d",
+      "schema": {
+        "root": 0,
+        "nodes": [
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "data",
+                "type": 1,
+                "optional": false
+              },
+              {
+                "name": "ignorable",
+                "type": 36,
+                "optional": true
+              },
+              {
+                "name": "seq",
+                "type": 6,
+                "optional": false
+              },
+              {
+                "name": "time",
+                "type": 6,
+                "optional": false
+              },
+              {
+                "name": "type",
+                "type": 37,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "reason",
+                "type": 2,
+                "optional": false
+              },
+              {
+                "name": "turn",
+                "type": 6,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "union",
+            "types": [
+              3,
+              13,
+              26,
+              28,
+              30,
+              32,
+              34
+            ]
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "error",
+                "type": 4,
+                "optional": false
+              },
+              {
+                "name": "kind",
+                "type": 12,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "code",
+                "type": 5,
+                "optional": false
+              },
+              {
+                "name": "message",
+                "type": 5,
+                "optional": false
+              },
+              {
+                "name": "offloadImages",
+                "type": 6,
+                "optional": true
+              },
+              {
+                "name": "providerRetryAfterMs",
+                "type": 6,
+                "optional": true
+              },
+              {
+                "name": "requestId",
+                "type": 5,
+                "optional": true
+              },
+              {
+                "name": "status",
+                "type": 6,
+                "optional": true
+              },
+              {
+                "name": "textReselection",
+                "type": 7,
+                "optional": true
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "primitive",
+            "type": "string"
+          },
+          {
+            "kind": "primitive",
+            "type": "number"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "billingReserved",
+                "type": 8,
+                "optional": false
+              },
+              {
+                "name": "managedScope",
+                "type": 5,
+                "optional": false
+              },
+              {
+                "name": "model",
+                "type": 5,
+                "optional": false
+              },
+              {
+                "name": "origin",
+                "type": 5,
+                "optional": false
+              },
+              {
+                "name": "reason",
+                "type": 9,
+                "optional": false
+              },
+              {
+                "name": "requestId",
+                "type": 5,
+                "optional": false
+              },
+              {
+                "name": "schemaVersion",
+                "type": 10,
+                "optional": false
+              },
+              {
+                "name": "submissionState",
+                "type": 11,
+                "optional": false
+              },
+              {
+                "name": "upstreamSubmitted",
+                "type": 8,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": false
+          },
+          {
+            "kind": "literal",
+            "value": "model_unavailable"
+          },
+          {
+            "kind": "literal",
+            "value": 1
+          },
+          {
+            "kind": "literal",
+            "value": "not_submitted"
+          },
+          {
+            "kind": "literal",
+            "value": "error"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "kind",
+                "type": 14,
+                "optional": false
+              },
+              {
+                "name": "reason",
+                "type": 15,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "aborted"
+          },
+          {
+            "kind": "union",
+            "types": [
+              16,
+              18,
+              20,
+              22,
+              24
+            ]
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "kind",
+                "type": 17,
+                "optional": false
+              },
+              {
+                "name": "reason",
+                "type": 5,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "hook"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "kind",
+                "type": 19,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "parent"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "kind",
+                "type": 21,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "user"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "kind",
+                "type": 23,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "disposed"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "kind",
+                "type": 25,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "legacy"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "kind",
+                "type": 27,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "blocked"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "kind",
+                "type": 29,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "completed"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "kind",
+                "type": 31,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "forked"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "kind",
+                "type": 33,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "interrupted"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "kind",
+                "type": 35,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "max-tokens"
+          },
+          {
+            "kind": "literal",
+            "value": true
+          },
+          {
+            "kind": "literal",
+            "value": "turn/end"
+          }
+        ]
+      }
+    }
+  ],
+  "types": []
+}

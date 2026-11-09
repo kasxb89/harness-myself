@@ -90,3 +90,44 @@
 .notice p, .empty {
   margin: 0;
 }
+
+.identity {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.capacity {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.editorFields {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.editorField {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.limit {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.editorActions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+}

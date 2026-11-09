@@ -35,7 +35,7 @@ kind: "package-reference"
 
 ### 配置提供方路由
 
-每个 profile 都可以设置 `retryPolicy`；省略时使用 normal mode、最多重试五次。`apiKeyEnv` 是按请求经 harness 凭据 seam 解析的凭据引用，因此配置文件绝不包含密钥；解析为空的引用会让请求以 `MISSING_CREDENTIAL` 失败。省略它会让路由保持已配置但无密钥（configured-but-keyless）状态，对已安装目录路由而言即交由 pi-ai 提供方原生的环境发现。
+每个 profile 都可以设置 `retryPolicy`；省略时使用 normal mode、最多重试五次。受限 Harness 路由则强制零次通用重试，即使 profile 配置 always mode 也是如此。`apiKeyEnv` 是按请求经 harness 凭据 seam 解析的凭据引用，因此配置文件绝不包含密钥；解析为空的引用会让请求以 `MISSING_CREDENTIAL` 失败。省略它会让路由保持已配置但无密钥（configured-but-keyless）状态，对已安装目录路由而言即交由 pi-ai 提供方原生的环境发现。
 
 ```yaml
 - name: '@deepseek-ai/dsh-llm-pi-ai'
@@ -80,13 +80,14 @@ kind: "package-reference"
 | `baseURL` | 目录端点 | 路由上所有模型的端点 |
 | `models` | 已安装目录 | 整体替换路由目录；每个条目从已安装模型取默认值 |
 | `modelOverrides` | 无 | 重塑个别已安装目录模型，而不替换其余模型 |
+| `modelLimitOverrides` | 无 | 账号绑定的上下文／输出选择，与同步模型条目分开保留 |
 | `compat` | 目录检测 | 无法识别端点的协议兼容开关 |
 | `defaultContextWindow` | `262,144` | 未描述模型的容量回退 |
 | `defaultMaxTokens` | `32,768` | 未描述模型的输出上限回退 |
 | `requestImagePixelBudget` | `4,194,304` | 每张确定性请求图片的总像素预算 |
 | `requestImageMaxBytes` | `1 MiB` | 每张请求图片在 base64 扩展前的编码字节目标 |
 | `maxRequestImageBytes` | `20 MiB` | base64 图片载荷总上限，保留图片超过时请求以 `IMAGE_OFFLOAD_REQUIRED` 失败 |
-| `retryPolicy` | normal，5 次重试 | 由 `dsh-llm-retry` 执行的提供方自有重试策略 |
+| `retryPolicy` | normal，5 次重试；Harness：0 | 由 `dsh-llm-retry` 执行的提供方自有重试策略 |
 
 生成的[配置目录](../../../docs/config-catalog.zh.md#deepseek-aidsh-llm-pi-ai)是每个受支持字段及其 JSDoc 的穷尽式真源。
 
@@ -101,6 +102,8 @@ profile 的 `models` 列表会替换而非扩展路由的已安装目录；每�
 模型显示名称依次采用显式 `name`、同步的 `gatewayDisplayName`、已安装目录的名称和精确模型 ID。选择和请求通过模型 ID 识别模型。
 
 公开账号模型目录可以单独同步 `managedLimits: {scope, contextWindow?, maxTokens?}`，不会覆盖手工字段。提供方的 `managedLimitsScope` 必须与模型 scope 完全匹配；其他账号或后端遗留的限制不生效。当前声明替换未知型号及已安装目录的容量猜测，增大和缩小都能生效，同步声明设置 `authoritative: true` 时，其对应的容量优先于模型级手工值，缺失字段继续采用手工回退。其他声明仍受较小手工容量限制。较小的逐次请求 `maxTokens` 预算继续生效。当前模型的输出预算提供 SDK 默认值，并由预备请求元数据记录。另行发布的 `maxOutputTokens` 也约束显式覆盖。受管理的输出上限保留 pi-ai 的空上下文安全余量；已有历史还可能使 SDK 发出更小的实际请求预算。受管理的输出硬上限仅适用于适配器已核验序列化的 Chat Completions 与 Responses。受管理 Responses 会拒绝禁用输出限制字段、低于十六个 token 的预算、上下文余量不足，以及会省略该字段的官方 OpenAI 登录方式。其他原生协议在没有受管理输出声明时保留原有行为。预备的产品请求会将已捕获的模型限制 scope 交给实时凭据解析；切换账号会在提供方 I/O 前中止旧请求，同账号正常续期仍然有效，新目录查询使用当前账号且不要求旧 scope。Token 数必须是正的 32 位有符号整数。没有适用的受管理输出声明时，模型保留原请求行为。
+
+用户明确选择单独保存在路由级 `modelLimitOverrides[modelId] = {scope, contextWindow?, maxTokens?}` 字典中。每条记录至少提供一个正整数 token 数，并同时匹配提供方当前 scope 和模型的受管理 scope。有效值取用户选择、当前平台上限和 SDK 上下文余量允许值的较小值；保存的原始选择不改写，平台以后提高上限时可恢复用户要求。目录同步和模型临时下架保留此字典。删除该记录恢复动态平台限制，不重新启用已被权威声明覆盖的旧模型级数值。解析结果的 `limits` 分别提供有效容量、已知平台上限和当前原始选择；未知平台上限保持缺席。
 
 第一版策略中，账号绑定的 `managedLimits.textCapabilities` 声明约束此路由的工具、视觉、推理、流式能力和输入 token 上限。`vision: false` 将模型输入限定为文本；`reasoning: false` 禁用配置中的推理默认值，不丢弃已有推理回放。显式不兼容的工具、工具历史、附件、推理控制或非流式路由会在提供方 I/O 前以 `MODEL_CAPABILITY_*` 码失败。适配器不会通过删除声明或历史让请求勉强通过。实际上下文取原生／手工窗口与渠道输入上限加输出预算的较小值；这是请求预算，不是新的原生硬件容量。
 
@@ -135,6 +138,8 @@ Config 更新严格验证发生变化的 provider。初始加载将已存储的�
 -----
 
 受限的生产 Harness 传输在 SDK 扁平化错误字段之前，识别实际 HTTP 403 及网关精确组合 `new_api_error` / `insufficient_user_quota`，返回现有字符串错误身份 `INSUFFICIENT_BALANCE` 和安全提示，使产品可引导用户到充值页。供应商额度文字、令牌额度、其他提供方响应和普通 403 均不被认作产品用户余额不足，且不会重复付费请求。存在的网关请求回执继续保留。
+
+受限 Harness 的聊天 POST 会设置 `X-Yunshu-Text-Reselection: 1`，要求支持该协议的服务器禁止单次 HTTP 尝试内部的隐藏重试与跨型号 fallback。恢复权限单独判定：仅 HTTP 400/503 携带完整 `text_reselection` 证明、与精确请求型号和 `X-Oneapi-Request-Id` 绑定，且存在准备时账号 scope，才产生 `MODEL_UNAVAILABLE_NOT_SUBMITTED`。传输最多读取 32 KiB 的错误正文克隆。未知正文形状仍请求单次派发，但不授予恢复权限；取消、已有输出、非零用量、普通错误及其他端点均不授予。适配器不会自行更改型号或发送第二次 POST；独立验证后的重新组装由 Host 负责。
 
 实际收到 Harness HTTP 408 时，终止错误使用 `HTTP_REQUEST_TIMEOUT` 和状态 `408`，不受空正文、HTML 或 JSON 正文影响。因提交结果未确认，默认重试策略不包含此错误码，由调用方决定是否手动重试。安全提示不包含网关响应原文。连接未返回 HTTP 响应便结束时，保留其传输错误分类，不推断为 HTTP 408。
 

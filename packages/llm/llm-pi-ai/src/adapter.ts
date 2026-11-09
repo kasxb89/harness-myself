@@ -53,6 +53,7 @@ import type {
   LlmTextCapabilities,
   LlmProviderInfo,
   LlmResolvedModelInfo,
+  LlmTextReselectionProof,
   PreparedAdapterCall,
   ReasoningEffortId as ReasoningEffortIdType,
   ResolvedRetryPolicy,
@@ -335,7 +336,12 @@ export class PiAiAdapter extends LlmAdapter {
   }
 
   override providerRetryPolicy(provider: string): ResolvedRetryPolicy | undefined {
-    return this.current().profiles.get(provider)?.retryPolicy
+    const profile = this.current().profiles.get(provider)
+    if (profile === undefined) return undefined
+    if (profile.baseURL !== undefined && harnessFetch(profile.baseURL) !== undefined) {
+      return { ...profile.retryPolicy, mode: 'normal', maxRetries: 0, retryableCodes: [] }
+    }
+    return profile.retryPolicy
   }
 
   override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
@@ -373,6 +379,7 @@ export class PiAiAdapter extends LlmAdapter {
     const textCapabilities = profile.textCapabilities.get(model)
     const defaultLevel = describableReasoningLevel(resolvedModel, effectiveTextCapability(textCapabilities, 'reasoning') === false ? 'off' : profile.reasoning)
     const maxOutputTokens = profile.managedMaxTokens.get(model)
+    const limits = profile.limits.get(model)
     // Publish the default the SDK will choose so prepared requests can log it.
     // Installed-catalog and fallback capabilities alone remain provider-owned defaults.
     const defaultMaxTokens = profile.configuredMaxTokens.get(model) ?? maxOutputTokens
@@ -385,6 +392,11 @@ export class PiAiAdapter extends LlmAdapter {
       context: { contextWindow: resolvedModel.contextWindow },
       ...defaultMaxTokens === undefined ? {} : { defaultMaxTokens },
       ...maxOutputTokens === undefined ? {} : { maxOutputTokens },
+      ...limits === undefined ? {} : { limits: {
+        ...limits,
+        platform: { ...limits.platform },
+        ...limits.override === undefined ? {} : { override: { ...limits.override } },
+      } },
       ...textCapabilities?.schemaVersion === 2 ? gatewayReasoningInfo(textCapabilities) : reasoningInfo(resolvedModel, defaultLevel),
       ...conversationUpdates(resolvedModel),
     }
@@ -455,13 +467,29 @@ export class PiAiAdapter extends LlmAdapter {
       throw new LlmError(`Responses cannot honor an output budget below ${MANAGED_RESPONSES_MIN_OUTPUT_TOKENS} tokens`, 'INVALID_REQUEST')
     }
     let receipt: GatewayReceipt | undefined
-    const gatewayState = { balanceRejected: false, requestTimeout: false }
+    const gatewayState: {
+      balanceRejected: boolean
+      requestTimeout: boolean
+      status: number | undefined
+      textReselection: LlmTextReselectionProof | undefined
+    } = {
+      balanceRejected: false, requestTimeout: false, status: undefined, textReselection: undefined,
+    }
+    let hasOutput = false
     const captureReceipt = (headers: Headers): void => { receipt = gatewayReceipt(model.baseUrl, headers) }
-    const requestFetch = harnessFetch(model.baseUrl, async (response) => {
+    const requestFetch = harnessFetch(model.baseUrl, async (response, proof) => {
       captureReceipt(response.headers)
+      gatewayState.status = response.status
+      gatewayState.textReselection = proof
       gatewayState.requestTimeout = response.status === 408
       gatewayState.balanceRejected = await harnessBalanceRejected(response)
-    })
+    }, profile.managedLimitsScope === undefined ? undefined : { model: options.model, managedScope: profile.managedLimitsScope })
+    const rejectedWithoutSubmission = (proof: LlmTextReselectionProof): LlmError => new LlmError(
+      '当前模型暂不可用，请稍后重试或切换模型。', 'MODEL_UNAVAILABLE_NOT_SUBMITTED', {
+        ...gatewayState.status === undefined ? {} : { status: gatewayState.status },
+        requestId: proof.requestId, textReselection: proof,
+      },
+    )
     const updates = conversationUpdates(model)
     // pi-ai collapses Anthropic tool updates without an initially active declaration.
     const tools = options.tools ?? []
@@ -541,7 +569,14 @@ export class PiAiAdapter extends LlmAdapter {
             return
           }
           const chunk = result.value
-          if (chunk.type === 'finish' && chunk.reason.kind === 'error' && gatewayState.requestTimeout && !options.signal?.aborted) {
+          // pi-ai synthesizes all-zero usage even for an HTTP rejection.
+          if (chunk.type === 'usage' && gatewayState.textReselection !== undefined && !hasOutput
+            && Object.values(chunk.usage).every(value => value === 0)) continue
+          if (chunk.type !== 'finish') hasOutput = true
+          if (chunk.type === 'finish' && chunk.reason.kind === 'error' && gatewayState.textReselection !== undefined
+            && !hasOutput && !options.signal?.aborted && !watchdog.signal.aborted) {
+            yield withGatewayReceipt({ ...chunk, reason: { kind: 'error', failure: rejectedWithoutSubmission(gatewayState.textReselection).failure } }, receipt)
+          } else if (chunk.type === 'finish' && chunk.reason.kind === 'error' && gatewayState.requestTimeout && !options.signal?.aborted) {
             yield withGatewayReceipt({ ...chunk, reason: { kind: 'error', failure: {
               code: 'HTTP_REQUEST_TIMEOUT', status: 408,
               message: '请求超时，提交状态未确认。请检查网络或减少图片后手动重试。',
@@ -561,7 +596,9 @@ export class PiAiAdapter extends LlmAdapter {
       }
     } catch (error: unknown) {
       let failure: LlmError
-      if (gatewayState.requestTimeout && !options.signal?.aborted) {
+      if (gatewayState.textReselection !== undefined && !hasOutput && !options.signal?.aborted && !watchdog.signal.aborted) {
+        failure = rejectedWithoutSubmission(gatewayState.textReselection)
+      } else if (gatewayState.requestTimeout && !options.signal?.aborted) {
         failure = new LlmError('请求超时，提交状态未确认。请检查网络或减少图片后手动重试。', 'HTTP_REQUEST_TIMEOUT', { status: 408, cause: error })
       } else if (timeoutOf(watchdog.signal, 'LLM_STREAM_IDLE_TIMEOUT') !== undefined) {
         failure = new LlmError(`pi-ai stream idle timeout after ${streamIdleTimeoutMs}ms`, 'TIMEOUT', { cause: error })

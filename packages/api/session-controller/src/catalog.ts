@@ -22,11 +22,13 @@ export async function buildModelCatalog(
   defaultSelection?: ModelSelection,
 ): Promise<ModelCatalog> {
   const providers = ctx.llm.listProviders()
+  const configurable = new Map(ctx.llm.listConfigurableProviders().map(entry => [entry.provider, entry]))
   const catalog = await Promise.all(providers.map(async (provider) => {
     try {
       const models = await ctx.llm.listModels(provider.id)
       const entries = await Promise.all(models.map(async (model) => {
         const resolved = await ctx.llm.resolveModelInfo(provider.id, model.id)
+        const limitSettings = resolved.limits?.managedScope === undefined ? undefined : configurable.get(provider.id)
         const presentation = ctx.waterfall('api-session/model-presentation', provider.id, model.id, () => undefined)
         const tools = effectiveTextCapability(resolved.textCapabilities, 'tools')
         const imageAvailable = textCapabilityImageAvailable(resolved.textCapabilities)
@@ -56,6 +58,14 @@ export async function buildModelCatalog(
             ...presentation.badge === undefined ? {} : { badge: presentation.badge },
           } },
           ...(reasoning === undefined ? {} : { reasoning }),
+          ...resolved.limits === undefined ? {} : { limits: {
+            ...resolved.limits,
+            platform: { ...resolved.limits.platform },
+            ...resolved.limits.override === undefined ? {} : { override: { ...resolved.limits.override } },
+          } },
+          ...limitSettings === undefined ? {} : { limitSettings: {
+            settingsNs: limitSettings.settingsNs, settingsPath: [...limitSettings.settingsPath],
+          } },
           ...resolved.inputModalities === undefined ? {} : { inputModalities: [...resolved.inputModalities] },
           ...resolved.textCapabilities === undefined ? {} : {
             textCapabilities: cloneTextCapabilities(resolved.textCapabilities),

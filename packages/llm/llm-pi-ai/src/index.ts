@@ -83,6 +83,7 @@ export type {
   Options,
   PiAiCompatProfile,
   PiAiManagedModelLimits,
+  PiAiModelLimitOverride,
   PiAiModality,
   PiAiModelOverride,
   PiAiModelProfile,

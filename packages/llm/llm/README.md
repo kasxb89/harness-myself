@@ -98,6 +98,8 @@ Version2 declarations separate verification facts from execution eligibility. Un
 
 Every stream ends in exactly one terminal `finish` chunk: `{ kind: 'error', failure }` on failure, `{ kind: 'aborted', failure }` on cancellation. Failures carry stable codes such as `NO_ADAPTER`, `MISSING_CREDENTIAL`, `AUTH`, `RATE_LIMIT`, and `CONTEXT_WINDOW_EXCEEDED`; consumers route on the code, never on message text. `QUOTA` is provider-neutral exhaustion, while `ACCOUNT_QUOTA` is reserved for a first-party account balance that the current product can replenish. A request naming an unregistered provider fails with `NO_ADAPTER`, and a malformed credential fails with `INVALID_CREDENTIAL` instead of surfacing as an opaque fetch error. This service never re-runs a request: retrying is the job of `dsh-llm-retry` at the agent's failed-step extension point.
 
+Adapters can carry validated `textReselection` evidence on a `MODEL_UNAVAILABLE_NOT_SUBMITTED` failure. `LlmError` and failure normalization retain a detached, frozen receipt only when its model, account scope, HTTPS origin, zero-submission fields and request ID are valid, its HTTP status is 400 or 503, and its request ID matches the failure. Malformed carried evidence grants no recovery permission. The adapter still validates the server receipt and its HTTP request binding; an ordinary timeout, network failure or server error does not prove that nothing was submitted or billed.
+
 -----
 
 <a id="understand-the-implementation"></a>

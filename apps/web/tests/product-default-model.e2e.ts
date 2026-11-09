@@ -173,6 +173,12 @@ it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash', 'yunshu-flash-conf
     cleanup.browser = () => browser.close()
     const page = await browser.newPage({ locale: ZH_BROWSER_LOCALE, colorScheme: 'dark', reducedMotion: 'reduce', viewport: { width: 1440, height: 1000 } })
     const tripwire = watchConsole(page)
+    const promptResponses: unknown[] = []
+    page.on('response', (response) => {
+      if (new URL(response.url()).pathname !== '/api/session/prompt') return
+      void response.json().then((value: unknown) => { promptResponses.push(value) },
+        (error: unknown) => { promptResponses.push({ readError: String(error) }) })
+    })
     const evidenceRoot = fileURLToPath(new URL('../../../.artifacts/', import.meta.url))
     await mkdir(evidenceRoot, { recursive: true })
     const evidence = await mkdtemp(join(evidenceRoot, 'product-default-model-'))
@@ -340,8 +346,11 @@ it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash', 'yunshu-flash-conf
         } | undefined
         const models = value?.providers?.['yunshu-local']?.models
         if (models === undefined) throw new Error('Expected the real product provider models')
-        await scaffold.ctx.settings.mutate('llm-pi-ai', [{ op: 'set', path: ['providers', 'yunshu-local', 'models'],
-          value: models.map(model => ({ ...model, maxTokens: 123 })) }])
+        const limits = await scaffold.ctx.llm.resolveModelInfo('yunshu-local', preferred)
+        const scope = limits.limits?.managedScope
+        if (scope === undefined) throw new Error('Expected the signed-in product capacity scope')
+        await scaffold.ctx.settings.mutate('llm-pi-ai', [{ op: 'set', path: ['providers', 'yunshu-local', 'modelLimitOverrides'],
+          value: Object.fromEntries(models.map(model => [model.id, { scope, maxTokens: 123 }])) }])
       }
       await composer.fill('Synthetic chat parameter check')
       await composer.press('Enter')
@@ -367,7 +376,7 @@ it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash', 'yunshu-flash-conf
       expect(wire).not.toHaveProperty('tool_choice')
       if (modelRemoval) {
         expect(wire['max_tokens']).toBe(123)
-        const draft = 'Preserve this draft, PNG, and file until I explicitly choose and send'
+        const draft = 'Continue this request with its original PNG and file when the saved model is removed'
         const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64')
         await composer.fill(draft)
         await page.locator('input[type="file"]').setInputFiles([
@@ -385,29 +394,33 @@ it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash', 'yunshu-flash-conf
         await expect(scaffold.ctx.llm.resolveModelInfo('yunshu-local', preferred)).rejects.toMatchObject({ code: 'UNKNOWN_MODEL' })
         await expect.poll(() => trigger.textContent()).toBe('请选择模型')
         expect(session?.requestHeader()?.config.model).toBe(preferred)
-        await send.click()
-        await page.getByText('当前型号不可用，请重新选择；草稿和附件已保留', { exact: true }).waitFor()
         expect(modelRequests).toHaveLength(1)
         expect(await composer.innerText()).toBe(draft)
         expect(await image.count()).toBe(1)
         expect(await rail.locator(':scope > *').count()).toBe(2)
-        expect(session?.requestHeader()?.config.model).toBe(preferred)
-        await page.screenshot({ path: join(evidence, 'removed-model-draft-retained.png'), animations: 'disabled' })
-        await trigger.click()
-        await page.getByText('已保存的型号不在当前可选列表，请手动选择', { exact: true }).waitFor()
-        expect(await page.getByRole('menuitemradio', { name: preferred, exact: true }).count()).toBe(0)
-        await page.screenshot({ path: join(evidence, 'removed-model-manual-selection.png'), animations: 'disabled' })
-        await page.getByRole('menuitemradio', { name: 'capabilities-always-on-effort', exact: true }).click()
-        await expect.poll(() => trigger.textContent()).toContain('capabilities-always-on-effort')
-        expect(modelRequests).toHaveLength(1)
-        expect(await composer.innerText()).toBe(draft)
-        expect(await rail.locator(':scope > *').count()).toBe(2)
-        const retrySettled = scaffold.whenTurnSettled()
+        await expect.poll(() => send.isDisabled()).toBe(false)
+        await page.screenshot({ path: join(evidence, 'removed-model-before-send.png'), animations: 'disabled' })
+        const fallbackSettled = scaffold.whenTurnSettled()
         await send.click()
-        expect(await retrySettled).toBe(sessionId)
+        expect(await fallbackSettled).toBe(sessionId)
         expect(modelRequests).toHaveLength(2)
         expect(modelRequests[1]?.body).toMatchObject({ model: 'capabilities-always-on-effort', max_tokens: 123 })
         expect(session?.requestHeader()?.config.model).toBe('capabilities-always-on-effort')
+        await expect.poll(() => trigger.textContent()).toContain('capabilities-always-on-effort')
+        await expect.poll(() => composer.innerText()).toBe('')
+        expect(await rail.count()).toBe(0)
+        const accepted = session?.snapshotEvents().filter(event => event.type === 'user/message'
+          && event.data.source.kind === 'user' && event.data.content.some(part => part.type === 'text' && part.text === draft))
+        expect(accepted).toHaveLength(1)
+        const acceptedMessage = accepted?.[0]
+        if (acceptedMessage?.type !== 'user/message') throw new Error('Expected the original accepted human request')
+        const acceptedSource = acceptedMessage.data.source
+        const acceptedRequestId: unknown = 'rpcId' in acceptedSource ? acceptedSource.rpcId : undefined
+        if (acceptedSource.kind !== 'user' || typeof acceptedRequestId !== 'string' || acceptedRequestId === '') {
+          throw new Error('Expected the original human submission identity')
+        }
+        expect(acceptedMessage.data.content.filter(part => part.type === 'image')).toHaveLength(1)
+        expect(acceptedMessage.data.content.filter(part => part.type === 'file')).toHaveLength(1)
         const fresh = await scaffold.ctx.sessionController.create({ cwd: scaffold.workspaceCwd })
         const freshSession = scaffold.ctx.sessions.get(fresh.sessionId)
         if (freshSession === undefined) throw new Error('Expected the new blank Session')
@@ -416,10 +429,10 @@ it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash', 'yunshu-flash-conf
         expect(freshSelection).toMatchObject({ provider: 'yunshu-local', model: 'capabilities-always-on-effort' })
         await writeFile(join(evidence, 'removed-model-result.json'), JSON.stringify({ syntheticLoopbackOnly: true,
           removed: preferred, fallback: 'capabilities-always-on-effort', modelPostsBeforeRemoval: 1,
-          modelPostsAfterRefusal: 1, modelPostsAfterManualSelection: 1, modelPostsAfterExplicitRetry: 2,
-          retainedDraft: draft, retainedAttachments: ['retained.png', 'retained.txt'], manualMaxTokens: 123,
+          modelPostsAfterSingleSend: 2, automaticFallback: true, acceptedHumanRequests: accepted?.length,
+          originalPrompt: draft, retainedAttachments: ['retained.png', 'retained.txt'], manualMaxTokens: 123,
           freshSelection, modelRequests }, null, 2) + '\n')
-        await page.screenshot({ path: join(evidence, 'removed-model-explicit-retry.png'), animations: 'disabled' })
+        await page.screenshot({ path: join(evidence, 'removed-model-automatic-fallback.png'), animations: 'disabled' })
       }
       if (plainText) {
         if (session === undefined) throw new Error('Expected the real text-only Session')
@@ -581,7 +594,8 @@ it.each(['deepseek-flash', 'deepseek-v4-pro', 'yunshu-flash', 'yunshu-flash-conf
         realSMS: 0, realUpstreamCalls: 0, guidanceChecked: preferred === 'yunshu-flash', pageErrors: tripwire.pageErrors, errors }, null, 2) + '\n')
     } catch (error) {
       await page.screenshot({ path: join(evidence, 'failure.png'), animations: 'disabled' })
-      await writeFile(join(evidence, 'failure.json'), JSON.stringify({ errors, requests,
+      await writeFile(join(evidence, 'failure.json'), JSON.stringify({ errors, requests, promptResponses,
+        failure: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : String(error),
         pageErrors: tripwire.pageErrors, visible: await page.locator('body').innerText() }, null, 2) + '\n')
       throw error
     }

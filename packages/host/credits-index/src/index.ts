@@ -888,6 +888,10 @@ export function apply(ctx: Context, config: Config): void {
   /** Last-good status belongs to this exact backend, account and local login, including shared-file changes. */
   const productOwner = (session: StoredSession): string =>
     createHash('sha256').update(JSON.stringify([apiBaseUrl, session.backendBaseUrl, session.account.id, session.token])).digest('hex')
+  ctx.on('api-session/prompt-owner', () => {
+    const session = store.peek()
+    return session?.token === undefined ? 'signed-out' : productOwner(session)
+  })
   registerMediaRequestSelection(ctx, mediaPreferences, async () => {
     const session = await store.read()
     return session?.token === undefined ? undefined

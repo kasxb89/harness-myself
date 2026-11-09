@@ -101,6 +101,7 @@
     "@deepseek-ai/dsh-skill": "workspace:*",
     "@deepseek-ai/dsh-subagent": "workspace:*",
     "@deepseek-ai/dsh-typert-protocol": "workspace:*",
+    "@deepseek-ai/dsh-token-meter": "workspace:*",
     "@deepseek-ai/dsh-typert-registry": "workspace:*",
     "@deepseek-ai/dsh-util-time": "workspace:*",
     "@deepseek-ai/dsh-util-values": "workspace:*",
@@ -109,6 +110,7 @@
     "@deepseek-ai/dsh-working-directory": "workspace:*"
   },
   "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-token-meter": { "optional": true },
     "@deepseek-ai/dsh-session-persistence": {
       "optional": true
     },
@@ -156,6 +158,7 @@
     "@deepseek-ai/dsh-storage-json": "workspace:*",
     "@deepseek-ai/dsh-subagent": "workspace:*",
     "@deepseek-ai/dsh-typert-protocol": "workspace:*",
+    "@deepseek-ai/dsh-token-meter": "workspace:*",
     "@deepseek-ai/dsh-typert-registry": "workspace:*",
     "@deepseek-ai/dsh-util-crypto": "workspace:*",
     "@deepseek-ai/dsh-util-time": "workspace:*",

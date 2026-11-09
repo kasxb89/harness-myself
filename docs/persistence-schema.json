@@ -3506,7 +3506,7 @@
       "kind": "event",
       "event": "assistant/attempt",
       "surface": false,
-      "digest": "15d5dfdd822aa35e115afd74a8982825a493880457774e6850bc1520b50875e4",
+      "digest": "84cc09319a505381b842d2bb8d03e12330b7cb4a1259ab099ba209f806812b3a",
       "schema": {
         "root": 0,
         "nodes": [
@@ -3535,7 +3535,7 @@
               },
               {
                 "name": "type",
-                "type": 73,
+                "type": 78,
                 "optional": false
               }
             ],
@@ -3575,8 +3575,8 @@
             "types": [
               5,
               10,
-              69,
-              71
+              74,
+              76
             ]
           },
           {
@@ -3651,7 +3651,7 @@
               },
               {
                 "name": "type",
-                "type": 68,
+                "type": 73,
                 "optional": false
               }
             ],
@@ -3666,7 +3666,7 @@
               44,
               46,
               48,
-              65
+              70
             ]
           },
           {
@@ -4109,12 +4109,12 @@
               },
               {
                 "name": "replayState",
-                "type": 61,
+                "type": 66,
                 "optional": true
               },
               {
                 "name": "type",
-                "type": 64,
+                "type": 69,
                 "optional": false
               }
             ],
@@ -4124,10 +4124,10 @@
             "kind": "union",
             "types": [
               50,
-              53,
-              55,
-              57,
-              59
+              58,
+              60,
+              62,
+              64
             ]
           },
           {
@@ -4140,7 +4140,7 @@
               },
               {
                 "name": "kind",
-                "type": 52,
+                "type": 57,
                 "optional": false
               }
             ],
@@ -4178,9 +4178,81 @@
                 "name": "status",
                 "type": 2,
                 "optional": true
+              },
+              {
+                "name": "textReselection",
+                "type": 52,
+                "optional": true
               }
             ],
             "indices": []
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "billingReserved",
+                "type": 53,
+                "optional": false
+              },
+              {
+                "name": "managedScope",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "model",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "origin",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "reason",
+                "type": 54,
+                "optional": false
+              },
+              {
+                "name": "requestId",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "schemaVersion",
+                "type": 55,
+                "optional": false
+              },
+              {
+                "name": "submissionState",
+                "type": 56,
+                "optional": false
+              },
+              {
+                "name": "upstreamSubmitted",
+                "type": 53,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": false
+          },
+          {
+            "kind": "literal",
+            "value": "model_unavailable"
+          },
+          {
+            "kind": "literal",
+            "value": 1
+          },
+          {
+            "kind": "literal",
+            "value": "not_submitted"
           },
           {
             "kind": "literal",
@@ -4196,7 +4268,7 @@
               },
               {
                 "name": "kind",
-                "type": 54,
+                "type": 59,
                 "optional": false
               }
             ],
@@ -4211,7 +4283,7 @@
             "properties": [
               {
                 "name": "kind",
-                "type": 56,
+                "type": 61,
                 "optional": false
               }
             ],
@@ -4226,7 +4298,7 @@
             "properties": [
               {
                 "name": "kind",
-                "type": 58,
+                "type": 63,
                 "optional": false
               }
             ],
@@ -4241,7 +4313,7 @@
             "properties": [
               {
                 "name": "kind",
-                "type": 60,
+                "type": 65,
                 "optional": false
               }
             ],
@@ -4256,12 +4328,12 @@
             "properties": [
               {
                 "name": "blocks",
-                "type": 62,
+                "type": 67,
                 "optional": true
               },
               {
                 "name": "response",
-                "type": 63,
+                "type": 68,
                 "optional": false
               }
             ],
@@ -4269,7 +4341,7 @@
           },
           {
             "kind": "array",
-            "element": 63
+            "element": 68
           },
           {
             "kind": "opaque",
@@ -4284,12 +4356,12 @@
             "properties": [
               {
                 "name": "type",
-                "type": 66,
+                "type": 71,
                 "optional": false
               },
               {
                 "name": "usage",
-                "type": 67,
+                "type": 72,
                 "optional": false
               }
             ],
@@ -4364,7 +4436,7 @@
               },
               {
                 "name": "type",
-                "type": 70,
+                "type": 75,
                 "optional": false
               }
             ],
@@ -4399,7 +4471,7 @@
               },
               {
                 "name": "type",
-                "type": 72,
+                "type": 77,
                 "optional": false
               }
             ],
@@ -4421,7 +4493,7 @@
       "kind": "event",
       "event": "assistant/message",
       "surface": true,
-      "digest": "1033093edd0db80ff410e00830b523405e00bb0c7684948e531ff65095799625",
+      "digest": "161d69bce499c9478b51057eb3a15051b6ad3642c39b205f641e5c68156a4b0c",
       "schema": {
         "root": 0,
         "nodes": [
@@ -4445,7 +4517,7 @@
               },
               {
                 "name": "surfaceOp",
-                "type": 78,
+                "type": 83,
                 "optional": false
               },
               {
@@ -4455,7 +4527,7 @@
               },
               {
                 "name": "type",
-                "type": 82,
+                "type": 87,
                 "optional": false
               }
             ],
@@ -4491,7 +4563,7 @@
               },
               {
                 "name": "usage",
-                "type": 72,
+                "type": 77,
                 "optional": true
               }
             ],
@@ -4865,8 +4937,8 @@
             "types": [
               37,
               41,
-              74,
-              76
+              79,
+              81
             ]
           },
           {
@@ -4937,7 +5009,7 @@
               },
               {
                 "name": "type",
-                "type": 73,
+                "type": 78,
                 "optional": false
               }
             ],
@@ -4952,7 +5024,7 @@
               50,
               52,
               54,
-              70
+              75
             ]
           },
           {
@@ -5112,12 +5184,12 @@
               },
               {
                 "name": "replayState",
-                "type": 67,
+                "type": 72,
                 "optional": true
               },
               {
                 "name": "type",
-                "type": 69,
+                "type": 74,
                 "optional": false
               }
             ],
@@ -5127,10 +5199,10 @@
             "kind": "union",
             "types": [
               56,
-              59,
-              61,
-              63,
-              65
+              64,
+              66,
+              68,
+              70
             ]
           },
           {
@@ -5143,7 +5215,7 @@
               },
               {
                 "name": "kind",
-                "type": 58,
+                "type": 63,
                 "optional": false
               }
             ],
@@ -5181,9 +5253,81 @@
                 "name": "status",
                 "type": 11,
                 "optional": true
+              },
+              {
+                "name": "textReselection",
+                "type": 58,
+                "optional": true
               }
             ],
             "indices": []
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "billingReserved",
+                "type": 59,
+                "optional": false
+              },
+              {
+                "name": "managedScope",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "model",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "origin",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "reason",
+                "type": 60,
+                "optional": false
+              },
+              {
+                "name": "requestId",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "schemaVersion",
+                "type": 61,
+                "optional": false
+              },
+              {
+                "name": "submissionState",
+                "type": 62,
+                "optional": false
+              },
+              {
+                "name": "upstreamSubmitted",
+                "type": 59,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": false
+          },
+          {
+            "kind": "literal",
+            "value": "model_unavailable"
+          },
+          {
+            "kind": "literal",
+            "value": 1
+          },
+          {
+            "kind": "literal",
+            "value": "not_submitted"
           },
           {
             "kind": "literal",
@@ -5199,7 +5343,7 @@
               },
               {
                 "name": "kind",
-                "type": 60,
+                "type": 65,
                 "optional": false
               }
             ],
@@ -5214,7 +5358,7 @@
             "properties": [
               {
                 "name": "kind",
-                "type": 62,
+                "type": 67,
                 "optional": false
               }
             ],
@@ -5229,7 +5373,7 @@
             "properties": [
               {
                 "name": "kind",
-                "type": 64,
+                "type": 69,
                 "optional": false
               }
             ],
@@ -5244,7 +5388,7 @@
             "properties": [
               {
                 "name": "kind",
-                "type": 66,
+                "type": 71,
                 "optional": false
               }
             ],
@@ -5259,7 +5403,7 @@
             "properties": [
               {
                 "name": "blocks",
-                "type": 68,
+                "type": 73,
                 "optional": true
               },
               {
@@ -5283,12 +5427,12 @@
             "properties": [
               {
                 "name": "type",
-                "type": 71,
+                "type": 76,
                 "optional": false
               },
               {
                 "name": "usage",
-                "type": 72,
+                "type": 77,
                 "optional": false
               }
             ],
@@ -5363,7 +5507,7 @@
               },
               {
                 "name": "type",
-                "type": 75,
+                "type": 80,
                 "optional": false
               }
             ],
@@ -5398,7 +5542,7 @@
               },
               {
                 "name": "type",
-                "type": 77,
+                "type": 82,
                 "optional": false
               }
             ],
@@ -5411,8 +5555,8 @@
           {
             "kind": "union",
             "types": [
-              79,
-              81
+              84,
+              86
             ]
           },
           {
@@ -5425,7 +5569,7 @@
               },
               {
                 "name": "op",
-                "type": 80,
+                "type": 85,
                 "optional": false
               },
               {
@@ -10344,7 +10488,7 @@
       "kind": "event",
       "event": "llm/retry",
       "surface": false,
-      "digest": "525254db03b1d1e6b74cf55aced52817568331ac1f96c0818728910b6692e336",
+      "digest": "a83bfd204ab3bc6058ec57b16c3586a02affdf69749cdb523f1b3f97d19ef852",
       "schema": {
         "root": 0,
         "nodes": [
@@ -10358,7 +10502,7 @@
               },
               {
                 "name": "ignorable",
-                "type": 9,
+                "type": 14,
                 "optional": true
               },
               {
@@ -10373,7 +10517,7 @@
               },
               {
                 "name": "type",
-                "type": 10,
+                "type": 15,
                 "optional": false
               }
             ],
@@ -10383,7 +10527,7 @@
             "kind": "union",
             "types": [
               2,
-              7
+              12
             ]
           },
           {
@@ -10406,7 +10550,7 @@
               },
               {
                 "name": "mode",
-                "type": 6,
+                "type": 11,
                 "optional": false
               },
               {
@@ -10478,6 +10622,11 @@
                 "name": "status",
                 "type": 3,
                 "optional": true
+              },
+              {
+                "name": "textReselection",
+                "type": 6,
+                "optional": true
               }
             ],
             "indices": []
@@ -10485,6 +10634,73 @@
           {
             "kind": "primitive",
             "type": "string"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "billingReserved",
+                "type": 7,
+                "optional": false
+              },
+              {
+                "name": "managedScope",
+                "type": 5,
+                "optional": false
+              },
+              {
+                "name": "model",
+                "type": 5,
+                "optional": false
+              },
+              {
+                "name": "origin",
+                "type": 5,
+                "optional": false
+              },
+              {
+                "name": "reason",
+                "type": 8,
+                "optional": false
+              },
+              {
+                "name": "requestId",
+                "type": 5,
+                "optional": false
+              },
+              {
+                "name": "schemaVersion",
+                "type": 9,
+                "optional": false
+              },
+              {
+                "name": "submissionState",
+                "type": 10,
+                "optional": false
+              },
+              {
+                "name": "upstreamSubmitted",
+                "type": 7,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": false
+          },
+          {
+            "kind": "literal",
+            "value": "model_unavailable"
+          },
+          {
+            "kind": "literal",
+            "value": 1
+          },
+          {
+            "kind": "literal",
+            "value": "not_submitted"
           },
           {
             "kind": "literal",
@@ -10505,7 +10721,7 @@
               },
               {
                 "name": "mode",
-                "type": 8,
+                "type": 13,
                 "optional": false
               },
               {
@@ -18677,7 +18893,7 @@
       "kind": "event",
       "event": "turn/end",
       "surface": false,
-      "digest": "0f8512903d94f57a4748fa1a2092e64342856796684e6b8343db685b192745ce",
+      "digest": "a19a35e70b1e457fd82d10f3d92639f8052007dcb5c7b23933c0d8a79f57341d",
       "schema": {
         "root": 0,
         "nodes": [
@@ -18691,22 +18907,22 @@
               },
               {
                 "name": "ignorable",
-                "type": 31,
+                "type": 36,
                 "optional": true
               },
               {
                 "name": "seq",
-                "type": 16,
+                "type": 6,
                 "optional": false
               },
               {
                 "name": "time",
-                "type": 16,
+                "type": 6,
                 "optional": false
               },
               {
                 "name": "type",
-                "type": 32,
+                "type": 37,
                 "optional": false
               }
             ],
@@ -18722,7 +18938,7 @@
               },
               {
                 "name": "turn",
-                "type": 16,
+                "type": 6,
                 "optional": false
               }
             ],
@@ -18732,100 +18948,25 @@
             "kind": "union",
             "types": [
               3,
-              5,
-              7,
-              9,
-              11,
               13,
-              18
+              26,
+              28,
+              30,
+              32,
+              34
             ]
           },
           {
             "kind": "object",
             "properties": [
               {
-                "name": "kind",
-                "type": 4,
-                "optional": false
-              }
-            ],
-            "indices": []
-          },
-          {
-            "kind": "literal",
-            "value": "blocked"
-          },
-          {
-            "kind": "object",
-            "properties": [
-              {
-                "name": "kind",
-                "type": 6,
-                "optional": false
-              }
-            ],
-            "indices": []
-          },
-          {
-            "kind": "literal",
-            "value": "completed"
-          },
-          {
-            "kind": "object",
-            "properties": [
-              {
-                "name": "kind",
-                "type": 8,
-                "optional": false
-              }
-            ],
-            "indices": []
-          },
-          {
-            "kind": "literal",
-            "value": "forked"
-          },
-          {
-            "kind": "object",
-            "properties": [
-              {
-                "name": "kind",
-                "type": 10,
-                "optional": false
-              }
-            ],
-            "indices": []
-          },
-          {
-            "kind": "literal",
-            "value": "interrupted"
-          },
-          {
-            "kind": "object",
-            "properties": [
-              {
-                "name": "kind",
-                "type": 12,
-                "optional": false
-              }
-            ],
-            "indices": []
-          },
-          {
-            "kind": "literal",
-            "value": "max-tokens"
-          },
-          {
-            "kind": "object",
-            "properties": [
-              {
                 "name": "error",
-                "type": 14,
+                "type": 4,
                 "optional": false
               },
               {
                 "name": "kind",
-                "type": 17,
+                "type": 12,
                 "optional": false
               }
             ],
@@ -18836,32 +18977,37 @@
             "properties": [
               {
                 "name": "code",
-                "type": 15,
+                "type": 5,
                 "optional": false
               },
               {
                 "name": "message",
-                "type": 15,
+                "type": 5,
                 "optional": false
               },
               {
                 "name": "offloadImages",
-                "type": 16,
+                "type": 6,
                 "optional": true
               },
               {
                 "name": "providerRetryAfterMs",
-                "type": 16,
+                "type": 6,
                 "optional": true
               },
               {
                 "name": "requestId",
-                "type": 15,
+                "type": 5,
                 "optional": true
               },
               {
                 "name": "status",
-                "type": 16,
+                "type": 6,
+                "optional": true
+              },
+              {
+                "name": "textReselection",
+                "type": 7,
                 "optional": true
               }
             ],
@@ -18876,6 +19022,73 @@
             "type": "number"
           },
           {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "billingReserved",
+                "type": 8,
+                "optional": false
+              },
+              {
+                "name": "managedScope",
+                "type": 5,
+                "optional": false
+              },
+              {
+                "name": "model",
+                "type": 5,
+                "optional": false
+              },
+              {
+                "name": "origin",
+                "type": 5,
+                "optional": false
+              },
+              {
+                "name": "reason",
+                "type": 9,
+                "optional": false
+              },
+              {
+                "name": "requestId",
+                "type": 5,
+                "optional": false
+              },
+              {
+                "name": "schemaVersion",
+                "type": 10,
+                "optional": false
+              },
+              {
+                "name": "submissionState",
+                "type": 11,
+                "optional": false
+              },
+              {
+                "name": "upstreamSubmitted",
+                "type": 8,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": false
+          },
+          {
+            "kind": "literal",
+            "value": "model_unavailable"
+          },
+          {
+            "kind": "literal",
+            "value": 1
+          },
+          {
+            "kind": "literal",
+            "value": "not_submitted"
+          },
+          {
             "kind": "literal",
             "value": "error"
           },
@@ -18884,12 +19097,12 @@
             "properties": [
               {
                 "name": "kind",
-                "type": 19,
+                "type": 14,
                 "optional": false
               },
               {
                 "name": "reason",
-                "type": 20,
+                "type": 15,
                 "optional": false
               }
             ],
@@ -18902,11 +19115,11 @@
           {
             "kind": "union",
             "types": [
-              21,
-              23,
-              25,
-              27,
-              29
+              16,
+              18,
+              20,
+              22,
+              24
             ]
           },
           {
@@ -18914,12 +19127,12 @@
             "properties": [
               {
                 "name": "kind",
-                "type": 22,
+                "type": 17,
                 "optional": false
               },
               {
                 "name": "reason",
-                "type": 15,
+                "type": 5,
                 "optional": false
               }
             ],
@@ -18934,7 +19147,7 @@
             "properties": [
               {
                 "name": "kind",
-                "type": 24,
+                "type": 19,
                 "optional": false
               }
             ],
@@ -18949,7 +19162,7 @@
             "properties": [
               {
                 "name": "kind",
-                "type": 26,
+                "type": 21,
                 "optional": false
               }
             ],
@@ -18964,7 +19177,7 @@
             "properties": [
               {
                 "name": "kind",
-                "type": 28,
+                "type": 23,
                 "optional": false
               }
             ],
@@ -18979,7 +19192,7 @@
             "properties": [
               {
                 "name": "kind",
-                "type": 30,
+                "type": 25,
                 "optional": false
               }
             ],
@@ -18988,6 +19201,81 @@
           {
             "kind": "literal",
             "value": "legacy"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "kind",
+                "type": 27,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "blocked"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "kind",
+                "type": 29,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "completed"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "kind",
+                "type": 31,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "forked"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "kind",
+                "type": 33,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "interrupted"
+          },
+          {
+            "kind": "object",
+            "properties": [
+              {
+                "name": "kind",
+                "type": 35,
+                "optional": false
+              }
+            ],
+            "indices": []
+          },
+          {
+            "kind": "literal",
+            "value": "max-tokens"
           },
           {
             "kind": "literal",
@@ -22350,7 +22638,7 @@
         "packages/llm/llm/src/types.ts#ReplayEnvelope"
       ],
       "sources": [
-        "packages/llm/llm/src/types.ts:495"
+        "packages/llm/llm/src/types.ts:526"
       ]
     },
     {
@@ -22381,15 +22669,6 @@
     },
     {
       "digest": "0c4205180f75b9ee1e0d878bd9a9851628b5dc18448486389d9c5fdc3f1ccda3",
-      "schema": {
-        "root": 0,
-        "nodes": [
-          {
-            "kind": "literal",
-            "value": false
-          }
-        ]
-      },
       "names": [],
       "sources": []
     },
@@ -22428,17 +22707,12 @@
       ]
     },
     {
-      "digest": "0f8512903d94f57a4748fa1a2092e64342856796684e6b8343db685b192745ce",
+      "digest": "0fb2bc09cc1cbd3aca82478fba3a203270eef3d26e3f9e083f563ebd1cad1f94",
       "names": [],
       "sources": []
     },
     {
       "digest": "0fe52387f65052702ed9d7cd59db826468936595d1b3eec207e7a823adc719db",
-      "names": [],
-      "sources": []
-    },
-    {
-      "digest": "1033093edd0db80ff410e00830b523405e00bb0c7684948e531ff65095799625",
       "names": [],
       "sources": []
     },
@@ -22482,7 +22756,7 @@
         "packages/llm/llm/src/types.ts#ImageBlock"
       ],
       "sources": [
-        "packages/llm/llm/src/types.ts:79"
+        "packages/llm/llm/src/types.ts:96"
       ]
     },
     {
@@ -22528,7 +22802,7 @@
       "sources": []
     },
     {
-      "digest": "15d5dfdd822aa35e115afd74a8982825a493880457774e6850bc1520b50875e4",
+      "digest": "161d69bce499c9478b51057eb3a15051b6ad3642c39b205f641e5c68156a4b0c",
       "names": [],
       "sources": []
     },
@@ -22634,13 +22908,6 @@
       "sources": []
     },
     {
-      "digest": "1ccb56061942f5ccb0d30c9e4f2883b9d115ff906560029de637b61d3cde896d",
-      "names": [],
-      "sources": [
-        "packages/core/session/src/types.ts:341"
-      ]
-    },
-    {
       "digest": "1cde1bedde79c5e8a56aee9c05c8e0a579cf5bc611deb85b93fa331a16ca978f",
       "names": [
         "packages/compaction/compaction-image-offload/src/projection.ts#ImageOffloadTarget"
@@ -22658,7 +22925,7 @@
       "digest": "1d76406cbb2ddadb0dbbb51e9d8bc6cf678fed455cf8eb512f36f7c86d37a62f",
       "names": [],
       "sources": [
-        "packages/llm/llm/src/types.ts:157"
+        "packages/llm/llm/src/types.ts:174"
       ]
     },
     {
@@ -22839,7 +23106,7 @@
       "digest": "287211846beea1eccb5f9acee00d20388a38fcb2e95858fa2332d6f58529379a",
       "names": [],
       "sources": [
-        "packages/llm/llm/src/types.ts:158"
+        "packages/llm/llm/src/types.ts:175"
       ]
     },
     {
@@ -22871,7 +23138,7 @@
       "digest": "2abb711460e6238d851c30f3e4bdd87a2aa1887ee70575b3d3b7b25610673095",
       "names": [],
       "sources": [
-        "packages/llm/llm/src/types.ts:520"
+        "packages/llm/llm/src/types.ts:551"
       ]
     },
     {
@@ -22995,15 +23262,6 @@
       "sources": []
     },
     {
-      "digest": "33341aac09312300de5a178e6cc6f6544a4876f7f710cfea55eda473c8d329ef",
-      "names": [
-        "packages/llm/llm/src/assistant-stream.ts#AssistantStreamRecord"
-      ],
-      "sources": [
-        "packages/llm/llm/src/assistant-stream.ts:20"
-      ]
-    },
-    {
       "digest": "335e242de1fcc17b6ca920fc420d71bec2d76e53e37955c00948b65ab77f05c5",
       "names": [
         "packages/core/session/src/types.ts#SurfaceOp"
@@ -23038,16 +23296,16 @@
       "sources": []
     },
     {
-      "digest": "374fdd68aee5ff844e378c0cbdd961d247a0f22e4ade0bb03d800cd2a46a2b8b",
-      "names": [],
-      "sources": [
-        "packages/llm/llm-retry/src/types.ts:30"
-      ]
-    },
-    {
       "digest": "378f90f9f6022a0991928a1eaf7991094ea1920fe89a9248358a1da106e1a970",
       "names": [],
       "sources": []
+    },
+    {
+      "digest": "37a5cbb8303cb052c008abf632240286d34f6e0e611cbb61312735b0c7731576",
+      "names": [],
+      "sources": [
+        "packages/llm/llm/src/types.ts:555"
+      ]
     },
     {
       "digest": "37cbc9cf06d494cfe5c67f078af1605eacb8e4c2c853e9e26455b73de0ee7ccf",
@@ -23118,7 +23376,7 @@
       "digest": "3bec87f9e6ab3da03346f49923d3c51621debc0159df68605e543c3b2a026f90",
       "names": [],
       "sources": [
-        "packages/llm/llm/src/types.ts:518"
+        "packages/llm/llm/src/types.ts:549"
       ]
     },
     {
@@ -23177,6 +23435,11 @@
       "sources": []
     },
     {
+      "digest": "3fdd2f8767594c1f0ae2bb91d455bb13af8a4622693f1f25bcdeceae8cee8b7e",
+      "names": [],
+      "sources": []
+    },
+    {
       "digest": "3fdf9582c3b5597df104d32d97dab6c6ee3a93794f3034ec6ada6272404ea27f",
       "names": [
         "packages/schedule/schedule/src/types.ts#LegacyAfterScheduleRecord"
@@ -23211,7 +23474,7 @@
         "packages/llm/llm/src/types.ts#ToolRemovalBlock"
       ],
       "sources": [
-        "packages/llm/llm/src/types.ts:127"
+        "packages/llm/llm/src/types.ts:144"
       ]
     },
     {
@@ -23256,22 +23519,6 @@
       "digest": "47e5d84f1a93450a78c7f3954b43990d0f629af7c034a56313e5deb63e772c1b",
       "names": [],
       "sources": []
-    },
-    {
-      "digest": "47e9095591ae36e7c39ee62553097772f2bfa16304536a72dbbc3f691f605180",
-      "names": [
-        "packages/llm/llm/src/types.ts#StreamChunk"
-      ],
-      "sources": [
-        "packages/llm/llm/src/types.ts:517"
-      ]
-    },
-    {
-      "digest": "487b65c37bfedb8b72088c4107a0a90a6249701f6b26745f6d98f9b8a22b07c7",
-      "names": [],
-      "sources": [
-        "packages/llm/llm/src/assistant-stream.ts:44"
-      ]
     },
     {
       "digest": "48e5c9861f16ac07e78cb7b5ae9dabdf7bb85c58baed5a51b4ad275050ea58e3",
@@ -23375,7 +23622,7 @@
         "packages/workflow/workflow/src/types.ts#WorkflowRunId"
       ],
       "sources": [
-        "packages/api/session-controller/src/types.ts:444",
+        "packages/api/session-controller/src/types.ts:448",
         "packages/attachment/attachment/src/brand.ts:6",
         "packages/compaction/compaction/src/brand.ts:4",
         "packages/core/session/src/types.ts:20",
@@ -23416,7 +23663,7 @@
         "packages/llm/llm/src/types.ts#TextBlock"
       ],
       "sources": [
-        "packages/llm/llm/src/types.ts:62",
+        "packages/llm/llm/src/types.ts:79",
         "packages/web/web-search-deepseek/src/provider.ts:66"
       ]
     },
@@ -23476,11 +23723,6 @@
       ]
     },
     {
-      "digest": "525254db03b1d1e6b74cf55aced52817568331ac1f96c0818728910b6692e336",
-      "names": [],
-      "sources": []
-    },
-    {
       "digest": "529e0ccd0e34079ab4ff21ed87f810cee0388246263bf22e8aba5986b56fae05",
       "names": [],
       "sources": [
@@ -23517,13 +23759,6 @@
       "digest": "53cf1704ae0709c7678bcf070c83c619fc48ca1b5c173b74cfa8702f22a8e492",
       "names": [],
       "sources": []
-    },
-    {
-      "digest": "54f9276a1617d7c12594722c89cfe864bcbe4517e9a6f9c98bab14f199a135e0",
-      "names": [],
-      "sources": [
-        "packages/core/session/src/types.ts:355"
-      ]
     },
     {
       "digest": "557e148d30b79ee48645850832b30c717d7c3b64641deb5d6133b8b4e91ee0b8",
@@ -23568,15 +23803,6 @@
       "sources": []
     },
     {
-      "digest": "5808e36c95355f0e745201b5db1b6bcec4ebf5adb75d3e82d7d59cc89635ab80",
-      "names": [
-        "packages/llm/llm/src/types.ts#FinishReason"
-      ],
-      "sources": [
-        "packages/llm/llm/src/types.ts:165"
-      ]
-    },
-    {
       "digest": "587bb11da730e06aa52b62c087d217d6f8f22459b25f31cb9e1e1baf17944e5e",
       "names": [],
       "sources": []
@@ -23597,6 +23823,15 @@
       "sources": []
     },
     {
+      "digest": "5ac5b3d9bdc7aaecd9d50c8d0f5ec699888544f8849475767975da8de3491034",
+      "names": [
+        "packages/llm/llm/src/assistant-stream.ts#AssistantStreamRecord"
+      ],
+      "sources": [
+        "packages/llm/llm/src/assistant-stream.ts:20"
+      ]
+    },
+    {
       "digest": "5b232a9b9bfcc0fc6794dab7865bcf203a65785c5de5aa647a51228bff628413",
       "names": [],
       "sources": []
@@ -23613,6 +23848,13 @@
       "names": [],
       "sources": [
         "packages/interaction/commands/src/types.ts:112"
+      ]
+    },
+    {
+      "digest": "5ba840f6b2dc881c6f57c4629eba8b0c5b93832929bcb815e956c35637bdfd9f",
+      "names": [],
+      "sources": [
+        "packages/core/session/src/types.ts:341"
       ]
     },
     {
@@ -23683,15 +23925,6 @@
       "sources": []
     },
     {
-      "digest": "5f2117d1856a5ab43c28371faa978ebfaa48f8c7d734ea3fc94842210df83dca",
-      "names": [
-        "packages/llm/llm/src/types.ts#LlmFailure"
-      ],
-      "sources": [
-        "packages/llm/llm/src/types.ts:41"
-      ]
-    },
-    {
       "digest": "5f26a6c20b37632f8f57729d171c671def4683d994ac6257a8dffcd855101627",
       "names": [],
       "sources": []
@@ -23712,6 +23945,13 @@
       ],
       "sources": [
         "packages/host/credits-index/src/media-preferences-types.ts:56"
+      ]
+    },
+    {
+      "digest": "604710e77b12ad626eb6964a61ac4d8d4cff9883d917bb1c23d059f19bc657a6",
+      "names": [],
+      "sources": [
+        "packages/core/session/src/types.ts:212"
       ]
     },
     {
@@ -23743,6 +23983,15 @@
       "digest": "62ecb62dc0fe1b5e70217f8a80c39256a40ee3a1917be14e5ca899d20c35f7fd",
       "names": [],
       "sources": []
+    },
+    {
+      "digest": "6336d8de5fd66793441f9326fd39a01fcf9e7aa3572547a0ae3e4c232cfabb6d",
+      "names": [
+        "packages/llm/llm-retry/src/types.ts#LlmRetryEventData"
+      ],
+      "sources": [
+        "packages/llm/llm-retry/src/types.ts:16"
+      ]
     },
     {
       "digest": "6487b10ba7542f3c447b1e41a1c6a590b7bfafe0b9b66b49f34028da85bb970f",
@@ -23777,7 +24026,7 @@
         "packages/llm/llm/src/types.ts#ToolSchema"
       ],
       "sources": [
-        "packages/llm/llm/src/types.ts:538"
+        "packages/llm/llm/src/types.ts:569"
       ]
     },
     {
@@ -23819,10 +24068,10 @@
       "sources": []
     },
     {
-      "digest": "693f4952fb5565da96c06bace8924b098ac2fbc915fde0ff8019701183abc057",
+      "digest": "69332d093e8c85c3cbb7ad36fcd1c676fa9c8093a553f0b4f549e518d74a4ff2",
       "names": [],
       "sources": [
-        "packages/llm/llm/src/types.ts:161"
+        "packages/llm/llm-retry/src/types.ts:17"
       ]
     },
     {
@@ -23834,7 +24083,7 @@
       "digest": "6a4f72e2e179e17b922f2a9392c0e1c8f8c707f32494372454850a3eb184a6e7",
       "names": [],
       "sources": [
-        "packages/api/session-controller/src/types.ts:449"
+        "packages/api/session-controller/src/types.ts:453"
       ]
     },
     {
@@ -23984,6 +24233,15 @@
       ]
     },
     {
+      "digest": "72094f0065c441a20046500688cefaf1f3471967f152a5f394356ae7cc9cf16d",
+      "names": [
+        "packages/llm/llm/src/types.ts#LlmTextReselectionProof"
+      ],
+      "sources": [
+        "packages/llm/llm/src/types.ts:41"
+      ]
+    },
+    {
       "digest": "72ec79127a9c0d0241b1106a74cc2b24c81ce467170f1c3c93f7b71a9496d227",
       "names": [],
       "sources": []
@@ -24024,13 +24282,6 @@
       "sources": []
     },
     {
-      "digest": "79650cfa10aa3c52440328d85e8a25f0ffadc8d7efd784e3c0819d8bb74a1985",
-      "names": [],
-      "sources": [
-        "packages/core/session/src/types.ts:212"
-      ]
-    },
-    {
       "digest": "79ddc907312f97cf9553d4841e8b3fc937097bd8d97900a790efad3c05255e99",
       "names": [],
       "sources": [
@@ -24051,6 +24302,13 @@
       "digest": "7b1ce60193fa8b69292e5843858d9cee7dc565dcb40d33c136e5d7e8b8d4296a",
       "names": [],
       "sources": []
+    },
+    {
+      "digest": "7bb8bb64db095083ab457e51f13e0a7d17e9c60a87d3f24b1ca9d3a3415d5aa6",
+      "names": [],
+      "sources": [
+        "packages/llm/llm/src/assistant-stream.ts:44"
+      ]
     },
     {
       "digest": "7c6129b6961cf4b2a030f36c78d2b0a5be38617651a9b81322e054ee512bee06",
@@ -24090,7 +24348,7 @@
         "packages/llm/llm/src/types.ts#ContentBlockType"
       ],
       "sources": [
-        "packages/llm/llm/src/types.ts:148"
+        "packages/llm/llm/src/types.ts:165"
       ]
     },
     {
@@ -24137,7 +24395,7 @@
         "packages/llm/llm/src/types.ts#ContentBlock"
       ],
       "sources": [
-        "packages/llm/llm/src/types.ts:150"
+        "packages/llm/llm/src/types.ts:167"
       ]
     },
     {
@@ -24161,7 +24419,7 @@
         "packages/llm/llm/src/types.ts#ReasoningBlock"
       ],
       "sources": [
-        "packages/llm/llm/src/types.ts:68"
+        "packages/llm/llm/src/types.ts:85"
       ]
     },
     {
@@ -24190,6 +24448,15 @@
       "digest": "8338ee303e2bd448e9e6144069942f63e3cfd5868962bddc9347d7009e8919d6",
       "names": [],
       "sources": []
+    },
+    {
+      "digest": "833c632f264b2dfa297bbe5ee52771b50e3620a432a95a029765baf39c79af5b",
+      "names": [
+        "packages/llm/llm/src/types.ts#FinishReason"
+      ],
+      "sources": [
+        "packages/llm/llm/src/types.ts:182"
+      ]
     },
     {
       "digest": "83a665476a9ee9af05cb1fdded12dd647d1b97b491200d7f12ef1af7cdac4428",
@@ -24231,7 +24498,7 @@
       ]
     },
     {
-      "digest": "84bbfdce7d2eab5b0c53e72ff7406db856c8bfd621b965b72fd86598ba493bf7",
+      "digest": "84cc09319a505381b842d2bb8d03e12330b7cb4a1259ab099ba209f806812b3a",
       "names": [],
       "sources": []
     },
@@ -24297,7 +24564,16 @@
       "digest": "88a610b831be6d92612a464be5c7d0b88ec24d97bd299837bf74bf7672183c9a",
       "names": [],
       "sources": [
-        "packages/llm/llm/src/types.ts:521"
+        "packages/llm/llm/src/types.ts:552"
+      ]
+    },
+    {
+      "digest": "892c10ec1c47857449d82a1c5a9ce7810e09078a421d7537413d0731a3a5b8b0",
+      "names": [
+        "packages/core/session/src/types.ts#TurnEndReason"
+      ],
+      "sources": [
+        "packages/core/session/src/types.ts:232"
       ]
     },
     {
@@ -24361,19 +24637,19 @@
       "sources": []
     },
     {
-      "digest": "8e31bb958e9b015e6f8407eaade32217068159e816f3cc99c3ad76eb889732e0",
-      "names": [],
-      "sources": [
-        "packages/llm/llm/src/types.ts:160"
-      ]
-    },
-    {
       "digest": "8e611bf46821e5003a1605a73560a6f56388295149d449dfe2142d5ec335f29c",
       "names": [
         "packages/llm/llm/src/types.ts#ToolAdditionBlock"
       ],
       "sources": [
-        "packages/llm/llm/src/types.ts:115"
+        "packages/llm/llm/src/types.ts:132"
+      ]
+    },
+    {
+      "digest": "8e6d091eaf714bd6e8dad4421d4a469e650d7136760f39dbfb2b86ac3cac580d",
+      "names": [],
+      "sources": [
+        "packages/core/session/src/types.ts:355"
       ]
     },
     {
@@ -24464,7 +24740,7 @@
       "digest": "95080295115fbd83544520ba247b68a03790131f6a2eac323d388758cb542f65",
       "names": [],
       "sources": [
-        "packages/llm/llm/src/types.ts:519"
+        "packages/llm/llm/src/types.ts:550"
       ]
     },
     {
@@ -24644,16 +24920,14 @@
       "sources": []
     },
     {
-      "digest": "a2066bd52f61218ba15b758def2641cc6a8bd3d4a594a488ee4c65be356d7e39",
+      "digest": "a19a35e70b1e457fd82d10f3d92639f8052007dcb5c7b23933c0d8a79f57341d",
       "names": [],
       "sources": []
     },
     {
-      "digest": "a2b49331716ba0a7078b026d145306a70eae64b7313c3e6204bd931e75ec3bb1",
+      "digest": "a2066bd52f61218ba15b758def2641cc6a8bd3d4a594a488ee4c65be356d7e39",
       "names": [],
-      "sources": [
-        "packages/llm/llm/src/types.ts:524"
-      ]
+      "sources": []
     },
     {
       "digest": "a2be0f0cb59f0d4a06557d45847d1938aced238baa77a6da416e590b8b958553",
@@ -24722,6 +24996,11 @@
         "packages/core/session/src/types.ts:383",
         "packages/core/tools/src/types.ts:27"
       ]
+    },
+    {
+      "digest": "a83bfd204ab3bc6058ec57b16c3586a02affdf69749cdb523f1b3f97d19ef852",
+      "names": [],
+      "sources": []
     },
     {
       "digest": "a853902cfab417b8f08aa51ad6855fea46f34ed4588a74e47403035111d0fb86",
@@ -24802,7 +25081,7 @@
       "names": [],
       "sources": [
         "packages/core/session/src/types.ts:214",
-        "packages/llm/llm/src/types.ts:159"
+        "packages/llm/llm/src/types.ts:176"
       ]
     },
     {
@@ -24864,6 +25143,15 @@
       "digest": "af0750d32d97d47b12b7361a587db41894b17e04c9a805fe212f0114aa2248c7",
       "names": [],
       "sources": []
+    },
+    {
+      "digest": "af37d3d91bd0c4c426db26df798e05bb18f869771f39f86bbe4fba7a11e946ba",
+      "names": [
+        "packages/llm/llm/src/types.ts#LlmFailure"
+      ],
+      "sources": [
+        "packages/llm/llm/src/types.ts:56"
+      ]
     },
     {
       "digest": "af6e173f7be819bcd0a5c8d77918649c10ce761d8a184ff472f2e01ce64eb2e0",
@@ -25124,6 +25412,13 @@
       "sources": []
     },
     {
+      "digest": "bb0f14e459561235ab79664346771bddd23f9644b5ee826497e6d4f679a7176f",
+      "names": [],
+      "sources": [
+        "packages/llm/llm/src/types.ts:178"
+      ]
+    },
+    {
       "digest": "bb1ab3d08f49a9f3b265f844cd78d5c49813062a7b34b54904b426f85d0ff6e3",
       "names": [],
       "sources": []
@@ -25137,6 +25432,13 @@
       "digest": "bbc5696e3f13c758237b316e3cf08cda0b9fd51ffe672539883457769faa185d",
       "names": [],
       "sources": []
+    },
+    {
+      "digest": "bcd156c9d5b441b7800fa0902f94ed587391acd79505066237cc57317b77435d",
+      "names": [],
+      "sources": [
+        "packages/core/session/src/types.ts:297"
+      ]
     },
     {
       "digest": "bcf0caf62d964b2fcf5404bd5c909cfa9a21c3f3c96e6b7e36d9e33565223825",
@@ -25165,21 +25467,12 @@
       ]
     },
     {
-      "digest": "c170da8ab7c37635b10867b2571811d9e317ac3ec394e8ff8efe53f902fc41c1",
-      "names": [
-        "packages/llm/llm-retry/src/types.ts#LlmRetryEventData"
-      ],
-      "sources": [
-        "packages/llm/llm-retry/src/types.ts:16"
-      ]
-    },
-    {
       "digest": "c1f0f17b6493b85db6453bb30e01b208d703731b25bc1e68e5d4fc72eea9cdea",
       "names": [
         "packages/llm/llm/src/types.ts#ToolCallBlock"
       ],
       "sources": [
-        "packages/llm/llm/src/types.ts:105"
+        "packages/llm/llm/src/types.ts:122"
       ]
     },
     {
@@ -25236,6 +25529,11 @@
       "sources": [
         "packages/util/values/src/index.ts:4"
       ]
+    },
+    {
+      "digest": "c5d152129a54bb608b1168b6edac6d743f1ff356290c2d651c31f35de03176c3",
+      "names": [],
+      "sources": []
     },
     {
       "digest": "c748fb42c80a120038a8c587af80ec39924803c401364db11c8974d5bf6d0262",
@@ -25300,13 +25598,6 @@
       "sources": []
     },
     {
-      "digest": "cdee10e87dbed8440d8b6935888624884878efc7af95402e94171b29f173dced",
-      "names": [],
-      "sources": [
-        "packages/llm/llm-retry/src/types.ts:17"
-      ]
-    },
-    {
       "digest": "ce669e53401b14698ac3e5c0fa32353d503f34d95cc88619f6df5f282079aca6",
       "names": [],
       "sources": []
@@ -25348,7 +25639,7 @@
       "digest": "d4b739491689cc6bb13d07ffac1a32239875abda364c0d5edd8f74faf5e9c00d",
       "names": [],
       "sources": [
-        "packages/llm/llm/src/types.ts:522"
+        "packages/llm/llm/src/types.ts:553"
       ]
     },
     {
@@ -25385,6 +25676,15 @@
       "digest": "d85590a5675c6e2fd8164e5792a6cceac714605b8ac228adae5ee668facb1490",
       "names": [],
       "sources": []
+    },
+    {
+      "digest": "d8d00bfb61d06ee1f2cf73361f3ba9fe5207d697b7b168b3c32f43177e898b57",
+      "names": [
+        "packages/llm/llm/src/types.ts#StreamChunk"
+      ],
+      "sources": [
+        "packages/llm/llm/src/types.ts:548"
+      ]
     },
     {
       "digest": "d901c4f5e856591c3217af983caa15bba568d580700f0958bab56b88004eced9",
@@ -25474,6 +25774,13 @@
       "sources": []
     },
     {
+      "digest": "de10c49f51a9c3f5215b41910a07adc54fa88b931fbed4038635de94b47fd342",
+      "names": [],
+      "sources": [
+        "packages/llm/llm-retry/src/types.ts:30"
+      ]
+    },
+    {
       "digest": "de25352d2dc4196309bd84b5bac6319f6d5c898ea0e82bb5ae66c5738d0d426f",
       "names": [],
       "sources": []
@@ -25548,6 +25855,13 @@
       "sources": []
     },
     {
+      "digest": "e40a3b660f3fcd6de23c6ea9f84bb13028d5dc5e9e05b8368d1880c9ccc0b78f",
+      "names": [],
+      "sources": [
+        "packages/llm/llm/src/types.ts:177"
+      ]
+    },
+    {
       "digest": "e41bdebe246abe17154de7e7a1d81035437eee8d20e7f1edff0d91e2598ad828",
       "names": [],
       "sources": []
@@ -25561,13 +25875,6 @@
       "digest": "e438a9d4fb883b3e4a8d9fc8913aa1550ed50eb384bfbf943100a5605b537498",
       "names": [],
       "sources": []
-    },
-    {
-      "digest": "e481c46af3813e0010558e93f578b2986acd658404cec2d1679e3ac2a6c48654",
-      "names": [],
-      "sources": [
-        "packages/core/session/src/types.ts:297"
-      ]
     },
     {
       "digest": "e4c18e294232c3ba6c9f1999f168263cc55956147cfe4121720899be8e52edd1",
@@ -25725,15 +26032,6 @@
       ]
     },
     {
-      "digest": "f1687f982fa3d41ef29e159feed154ecd13af4dd209acaee16038f223f2e9402",
-      "names": [
-        "packages/core/session/src/types.ts#TurnEndReason"
-      ],
-      "sources": [
-        "packages/core/session/src/types.ts:232"
-      ]
-    },
-    {
       "digest": "f1996af2602e6f62b5ab179ca5c4af00d8753938b74cc6ef102de09e99e74a7e",
       "names": [],
       "sources": []
@@ -25751,7 +26049,7 @@
       "digest": "f1a96afe7503ac1817de769cd0ba13d9b80111c7034c50106b3344ecc14cc515",
       "names": [],
       "sources": [
-        "packages/llm/llm/src/types.ts:523"
+        "packages/llm/llm/src/types.ts:554"
       ]
     },
     {
@@ -25770,7 +26068,7 @@
         "packages/llm/llm/src/types.ts#FileBlock"
       ],
       "sources": [
-        "packages/llm/llm/src/types.ts:98"
+        "packages/llm/llm/src/types.ts:115"
       ]
     },
     {
@@ -25779,7 +26077,7 @@
         "packages/llm/llm/src/types.ts#SystemPromptUpdate"
       ],
       "sources": [
-        "packages/llm/llm/src/types.ts:459"
+        "packages/llm/llm/src/types.ts:488"
       ]
     },
     {
@@ -25956,7 +26254,7 @@
         "packages/llm/llm/src/types.ts#TokenUsage"
       ],
       "sources": [
-        "packages/llm/llm/src/types.ts:175"
+        "packages/llm/llm/src/types.ts:192"
       ]
     },
     {

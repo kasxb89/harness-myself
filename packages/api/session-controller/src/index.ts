@@ -26,6 +26,7 @@ import { SessionFileReferences } from './file-references.ts'
 import { ApiSessionList } from './list.ts'
 import { buildModelCatalog, hasProviderApiKey } from './catalog.ts'
 import { installModelSelectionProjection } from './model-selection-projection.ts'
+import { registerRequestModelRecovery } from './request-model-recovery.ts'
 import { SessionSkillCatalog } from './skill-catalog.ts'
 import { SessionMediaReferences } from './media-references.ts'
 import { ArchivedSessionGate } from './archived-session-gate.ts'
@@ -178,6 +179,7 @@ export class SessionController extends TypertRemoteService {
       maxResultBytes: resolved.peerResultBytes, maxMessageBytes: resolved.peerMessageBytes,
     })
     this.commands = new SessionCommandController(ctx, this.agents, process.cwd())
+    registerRequestModelRecovery(ctx, this.agents)
     ctx.effect(() => ctx.fileUploads.registerAgentResolver(async (sessionId) => {
       const result = await this.agents.resolveAgent(sessionId)
       if ('error' in result) throw result.error
@@ -556,7 +558,7 @@ export class SessionController extends TypertRemoteService {
   @Remote('prompt')
   prompt(request: SessionPromptRequest, signal: AbortSignal): Promise<SessionPromptValue> {
     signal.throwIfAborted()
-    return this.commands.prompt(request)
+    return this.commands.prompt(request, signal)
   }
 
   /**

@@ -6,6 +6,7 @@
 
 import { HarnessError } from './error.ts'
 import type { LlmFailure } from './types.ts'
+import { textReselectionSnapshot } from './text-reselection.ts'
 
 /**
  * Detach serializable provider facts from a value thrown by an adapter.
@@ -70,6 +71,9 @@ function failureSnapshot(value: unknown): LlmFailure | undefined {
     const providerRetryAfterMs = candidate.providerRetryAfterMs
     const requestId = candidate.requestId
     const offloadImages = candidate.offloadImages
+    const proof = textReselectionSnapshot(candidate.textReselection)
+    const textReselection = code === 'MODEL_UNAVAILABLE_NOT_SUBMITTED' && (status === 400 || status === 503)
+      && proof?.requestId === requestId ? proof : undefined
     if (typeof message !== 'string' || message.length === 0
       || typeof code !== 'string' || code.length === 0
       || (status !== undefined && (!Number.isInteger(status) || status < 100 || status > 599))
@@ -84,6 +88,7 @@ function failureSnapshot(value: unknown): LlmFailure | undefined {
       ...providerRetryAfterMs === undefined ? {} : { providerRetryAfterMs },
       ...requestId === undefined ? {} : { requestId },
       ...offloadImages === undefined ? {} : { offloadImages },
+      ...textReselection === undefined ? {} : { textReselection },
     })
   } catch (_sdkFailureGetter) {
     return undefined

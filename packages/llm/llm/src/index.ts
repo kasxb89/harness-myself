@@ -35,6 +35,7 @@ import { callConfigEquals, isAgentLoopRequest } from './call-config.ts'
 import type { ConfigureCall, LlmCallConfig, LlmCallConfigAdapterDefaults } from './call-config.ts'
 import { HarnessError, INVALID_CREDENTIAL_CODE } from './error.ts'
 import { normalizeLlmFailure } from './adapter-failure.ts'
+import { textReselectionSnapshot } from './text-reselection.ts'
 import { normalizeApiKey } from './api-key.ts'
 import { cloneTextCapabilities, effectiveTextCapability, textCapabilityImageAvailable, textCapabilityRouteAvailable } from './capabilities.ts'
 import {
@@ -89,6 +90,8 @@ export interface LlmErrorOptions extends ErrorOptions {
   requestId?: ProviderRequestId
   /** Positive count of additional oldest retained image occurrences to offload; only with `IMAGE_OFFLOAD_REQUIRED`. */
   offloadImages?: number
+  /** Adapter-validated zero-send proof bound to this failure's request id. */
+  textReselection?: LlmFailure['textReselection']
 }
 
 /**
@@ -119,6 +122,11 @@ export class LlmError extends HarnessError {
       && (typeof options.requestId !== 'string' || options.requestId.length === 0)) {
       throw new Error('LlmError requestId must be a non-empty string')
     }
+    const proof = textReselectionSnapshot(options?.textReselection)
+    if (options?.textReselection !== undefined && (proof === undefined || code !== 'MODEL_UNAVAILABLE_NOT_SUBMITTED'
+      || options.status !== 400 && options.status !== 503 || options.requestId !== proof.requestId)) {
+      throw new Error('LlmError textReselection requires valid zero-send evidence with matching status, code and requestId')
+    }
     super(message, code, options)
     this.name = 'LlmError'
     this.failure = Object.freeze({
@@ -128,6 +136,7 @@ export class LlmError extends HarnessError {
       ...options?.providerRetryAfterMs === undefined ? {} : { providerRetryAfterMs: options.providerRetryAfterMs },
       ...options?.requestId === undefined ? {} : { requestId: options.requestId },
       ...options?.offloadImages === undefined ? {} : { offloadImages: options.offloadImages },
+      ...proof === undefined ? {} : { textReselection: proof },
     })
   }
 }
@@ -813,6 +822,20 @@ export class LlmRuntime extends TypertRemoteService {
         'INVALID_MODEL_MAX_TOKENS',
       )
     }
+    const limits = resolved.limits
+    if (limits !== undefined) {
+      const capacities = [limits.contextWindow, limits.maxOutputTokens, limits.platform.contextWindow,
+        limits.platform.maxOutputTokens, limits.override?.contextWindow, limits.override?.maxOutputTokens]
+      if (capacities.some(value => value !== undefined && (!Number.isSafeInteger(value) || value <= 0))
+        || context !== undefined && limits.contextWindow !== context.contextWindow
+        || maxOutputTokens !== undefined && limits.maxOutputTokens !== maxOutputTokens
+        || limits.platform.contextWindow !== undefined && limits.contextWindow > limits.platform.contextWindow
+        || limits.platform.maxOutputTokens !== undefined && limits.maxOutputTokens > limits.platform.maxOutputTokens
+        || limits.managedScope !== undefined && (limits.managedScope.length === 0 || limits.managedScope.length > 512
+          || limits.platform.contextWindow === undefined || limits.platform.maxOutputTokens === undefined)) {
+        throw new LlmError(`adapter returned invalid settings capacities for provider "${provider}" model "${model}"`, 'INVALID_MODEL_INFO')
+      }
+    }
     const info: LlmResolvedModelInfo = {
       provider,
       id: model,
@@ -824,6 +847,11 @@ export class LlmRuntime extends TypertRemoteService {
       ...defaultMaxTokens === undefined ? {} : { defaultMaxTokens: maxOutputTokens === undefined
         ? defaultMaxTokens : Math.min(defaultMaxTokens, maxOutputTokens) },
       ...maxOutputTokens === undefined ? {} : { maxOutputTokens },
+      ...limits === undefined ? {} : { limits: {
+        ...limits,
+        platform: { ...limits.platform },
+        ...limits.override === undefined ? {} : { override: { ...limits.override } },
+      } },
       ...resolved.systemPromptUpdate === undefined ? {} : { systemPromptUpdate: resolved.systemPromptUpdate },
       ...resolved.toolUpdate === undefined ? {} : { toolUpdate: resolved.toolUpdate },
     }

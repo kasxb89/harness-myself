@@ -244,6 +244,8 @@ interface LlmFailure {
   readonly providerRetryAfterMs?: number
   /** Opaque provider-issued request identifier for diagnostics. */
   readonly requestId?: ProviderRequestId
+  /** Validated zero-send gateway evidence; absent leaves submission and billing effects unconfirmed. */
+  readonly textReselection?: LlmTextReselectionProof
   /**
    * With code `IMAGE_OFFLOAD_REQUIRED`: how many more of the oldest retained
    * image occurrences the route needs offloaded before the same request fits
@@ -610,6 +612,22 @@ interface LlmModelContext {
 }
 ```
 
+`LlmModelLimits` 区分有效请求容量、已知平台上限与用户原始选择。仅在两项平台容量均已明确时，`managedScope` 才标识当前账号／后端；缺席的平台字段不能解释为原厂容量声明。
+
+```ts type-equiv
+/** Effective capacities and the account-bound settings that may narrow them. */
+interface LlmModelLimits {
+  readonly contextWindow: number
+  readonly maxOutputTokens: number
+  /** Known platform ceilings before the explicit user choice; absent fields are not native-capacity claims. */
+  readonly platform: { readonly contextWindow?: number; readonly maxOutputTokens?: number }
+  /** Unclamped explicit choices for the active scope, retained across platform limit changes. */
+  readonly override?: { readonly contextWindow?: number; readonly maxOutputTokens?: number }
+  /** Present only when both platform capacities belong to this active managed account/backend. */
+  readonly managedScope?: string
+}
+```
+
 推理强度是另一项确切路由能力。核心为标识符添加品牌类型，但不枚举其值；每个适配器负责按强度递增排列的选项、显示名称与可选部署默认值。该顺序比较可选控制，不预测 token 用量、成本或延迟。
 
 ```ts type-equiv
@@ -651,6 +669,8 @@ interface LlmResolvedModelInfo extends LlmModelInfo {
   defaultMaxTokens?: number
   /** Current provider-declared output ceiling; every request, including an explicit override, must remain within it. */
   maxOutputTokens?: number
+  /** Current effective capacities, platform ceilings, and active explicit user choices. */
+  limits?: LlmModelLimits
   /** Adapter-owned selectable reasoning levels when exposed. */
   reasoning?: LlmModelReasoningInfo
   /** Declared mid-conversation system prompt handling; absent means only a leading system message is read. */

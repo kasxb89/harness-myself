@@ -3,7 +3,7 @@
 import { act, fireEvent, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, vi } from 'vitest'
 import { createClientTest, webApp } from '@deepseek-ai/dsh-client-test-runtime/src/assembly/index.ts'
-import type { ModelCatalog } from '@deepseek-ai/dsh-api-remotes/client'
+import type { ModelCatalog, SettingsNamespaceView } from '@deepseek-ai/dsh-api-remotes/client'
 import { en as settingsCopy } from '@deepseek-ai/dsh-client-ui-settings-models/src/client/locales.ts'
 import { en } from '../src/client/locales.ts'
 import { PRODUCT_TEXT_MODEL_IDS } from './fixtures/product-text-model-ids-20261109.ts'
@@ -23,7 +23,115 @@ function catalog(ids: readonly string[]): ModelCatalog {
   }
 }
 
+function capacityCatalog(override?: { contextWindow: number; maxOutputTokens: number }): ModelCatalog {
+  const base = catalog(PRODUCT_TEXT_MODEL_IDS)
+  return { ...base, default: { provider: 'yunshu-local', model: 'yunshu-flash' }, groups: base.groups.map(group => ({
+    ...group, models: group.models.map((model, index) => ({ ...model,
+      limits: { contextWindow: index === 0 && override !== undefined ? override.contextWindow : 1048576,
+        maxOutputTokens: index === 0 && override !== undefined ? override.maxOutputTokens : 384000,
+        platform: { contextWindow: 1048576, maxOutputTokens: 384000 }, managedScope: 'account-A',
+        ...index !== 0 || override === undefined ? {} : { override } },
+      limitSettings: { settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'yunshu-local'] },
+    })),
+  })) }
+}
+
+function capacityNamespace(revision: number, override?: { contextWindow: number; maxTokens: number }): SettingsNamespaceView {
+  const providers = { 'yunshu-local': {
+    // Historical fields must stay untouched and must not become the dialog's effective values.
+    models: [{ id: PRODUCT_TEXT_MODEL_IDS[0], contextWindow: 4096, maxTokens: 128 }],
+    modelLimitOverrides: override === undefined ? {} : { [PRODUCT_TEXT_MODEL_IDS[0]]: { scope: 'account-A', ...override } },
+  } }
+  return { ns: 'llm-pi-ai', revision, autoGenerate: true, applies: 'live', secrets: [],
+    value: { providers }, user: { providers }, base: { providers: {} },
+    schema: { uid: 0, refs: {
+      '0': { type: 'object', dict: { providers: 1 } }, '1': { type: 'dict', inner: 2 },
+      '2': { type: 'object', dict: { modelLimitOverrides: 3, models: 7 } },
+      '3': { type: 'dict', inner: 4 }, '4': { type: 'object', dict: { scope: 5, contextWindow: 6, maxTokens: 6 } },
+      '5': { type: 'string' }, '6': { type: 'number' }, '7': { type: 'array', inner: 8 },
+      '8': { type: 'object', dict: { id: 5, contextWindow: 6, maxTokens: 6 } },
+    } },
+  }
+}
+
 describe('Settings catalog real Loader composition', () => {
+  it('edits every dated product model through single-record CAS writes, raises a reduced value and resets to live platform limits', async ({ start, remote, mock }) => {
+    vi.stubGlobal('__DSH_MODELS_ONBOARDING__', { credentialOnboarding: false })
+    remote.llm.listProviders.mockResolvedValue({ ok: true, value: [] })
+    remote.llm.listConfigurableProviders.mockResolvedValue({ ok: true, value: [] })
+    let namespace = capacityNamespace(3, { contextWindow: 128000, maxTokens: 8192 })
+    let current = capacityCatalog({ contextWindow: 128000, maxOutputTokens: 8192 })
+    remote.settings.describe.mockImplementation(() => Promise.resolve({
+      ok: true, value: { writable: true, hasDocument: false, namespaces: [namespace] },
+    }))
+    remote.session.modelCatalog.mockImplementation(() => Promise.resolve({ ok: true, value: current }))
+    const client = await start()
+    await act(async () => { client.ctx.emit('ui-settings/open-section', 'models') })
+    await client.flush()
+    const card = within(screen.getByRole('region', { name: en['catalog.title'] }))
+    expect(card.getAllByRole('listitem').map(row => row.querySelector('code')?.textContent)).toEqual([...PRODUCT_TEXT_MODEL_IDS])
+    expect(card.getAllByRole('button', { name: /^Adjust parameters for /u })).toHaveLength(34)
+    const open = async () => {
+      await act(async () => { fireEvent.click(card.getByRole('button', { name: `Adjust parameters for Yunshu / Name ${PRODUCT_TEXT_MODEL_IDS[0]}` })) })
+      return within(screen.getByRole('dialog', { name: en['capacity.title'] }))
+    }
+    let editor = await open()
+    expect(editor.getByLabelText<HTMLInputElement>(en['capacity.contextWindow']).value).toBe('128000')
+    expect(editor.getByText('Platform maximum: 1048576 tokens')).toBeTruthy()
+    remote.settings.mutate.mockImplementationOnce(() => {
+      namespace = capacityNamespace(4, { contextWindow: 500000, maxTokens: 32000 })
+      current = capacityCatalog({ contextWindow: 500000, maxOutputTokens: 32000 })
+      return Promise.resolve({ ok: true, value: namespace })
+    })
+    await act(async () => {
+      fireEvent.change(editor.getByLabelText(en['capacity.contextWindow']), { target: { value: '500000' } })
+      fireEvent.change(editor.getByLabelText(en['capacity.maxTokens']), { target: { value: '32000' } })
+      fireEvent.click(editor.getByRole('button', { name: en['capacity.save'] }))
+    })
+    await client.flush()
+    expect(remote.settings.mutate).toHaveBeenNthCalledWith(1, 'llm-pi-ai', [{ op: 'set',
+      path: ['providers', 'yunshu-local', 'modelLimitOverrides', PRODUCT_TEXT_MODEL_IDS[0]],
+      value: { scope: 'account-A', contextWindow: 500000, maxTokens: 32000 },
+    }], 3)
+    expect(card.getByText('Effective: context 500000 · output 32000')).toBeTruthy()
+
+    editor = await open()
+    remote.settings.mutate.mockImplementationOnce(() => {
+      namespace = capacityNamespace(5, { contextWindow: 1048576, maxTokens: 384000 })
+      current = capacityCatalog({ contextWindow: 1048576, maxOutputTokens: 384000 })
+      return Promise.resolve({ ok: true, value: namespace })
+    })
+    await act(async () => {
+      fireEvent.change(editor.getByLabelText(en['capacity.contextWindow']), { target: { value: '1048576' } })
+      fireEvent.change(editor.getByLabelText(en['capacity.maxTokens']), { target: { value: '384000' } })
+      fireEvent.click(editor.getByRole('button', { name: en['capacity.save'] }))
+    })
+    await client.flush()
+    expect(remote.settings.mutate).toHaveBeenNthCalledWith(2, 'llm-pi-ai', [{ op: 'set',
+      path: ['providers', 'yunshu-local', 'modelLimitOverrides', PRODUCT_TEXT_MODEL_IDS[0]],
+      value: { scope: 'account-A', contextWindow: 1048576, maxTokens: 384000 },
+    }], 4)
+    editor = await open()
+    remote.settings.mutate.mockImplementationOnce(() => {
+      namespace = capacityNamespace(6)
+      current = capacityCatalog()
+      return Promise.resolve({ ok: true, value: namespace })
+    })
+    await act(async () => { fireEvent.click(editor.getByRole('button', { name: en['capacity.reset'] })) })
+    await client.flush()
+    expect(remote.settings.mutate).toHaveBeenNthCalledWith(3, 'llm-pi-ai', [{ op: 'unset',
+      path: ['providers', 'yunshu-local', 'modelLimitOverrides', PRODUCT_TEXT_MODEL_IDS[0]],
+    }], 5)
+    editor = await open()
+    expect(editor.getByLabelText<HTMLInputElement>(en['capacity.contextWindow']).value).toBe('')
+    expect(editor.getByLabelText<HTMLInputElement>(en['capacity.maxTokens']).value).toBe('')
+    expect(namespace.value).toEqual({ providers: { 'yunshu-local': {
+      models: [{ id: PRODUCT_TEXT_MODEL_IDS[0], contextWindow: 4096, maxTokens: 128 }], modelLimitOverrides: {},
+    } } })
+    expect(mock.log.calls('session/selectModel')).toEqual([])
+    expect(mock.log.calls('credentials/set')).toEqual([])
+  }, 60_000)
+
   it('shows the dated 34-model catalog while search, refresh and retry preserve an unsaved provider draft', async ({ start, remote, mock }) => {
     vi.stubGlobal('__DSH_MODELS_ONBOARDING__', { credentialOnboarding: false })
     remote.llm.listProviders.mockResolvedValue({ ok: true, value: [] })

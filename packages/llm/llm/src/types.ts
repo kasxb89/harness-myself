@@ -37,6 +37,21 @@ export type {
   UserMessage,
 } from './message.ts'
 
+/** Confined gateway evidence that this exact text request reached neither upstream nor billing reservation. */
+export interface LlmTextReselectionProof {
+  readonly schemaVersion: 1
+  readonly model: string
+  readonly requestId: ProviderRequestId
+  /** Actual confined HTTP origin; never read from the response JSON. */
+  readonly origin: string
+  /** Account-bound route scope captured from the prepared provider profile. */
+  readonly managedScope: string
+  readonly submissionState: 'not_submitted'
+  readonly upstreamSubmitted: false
+  readonly billingReserved: false
+  readonly reason: 'model_unavailable'
+}
+
 /** Serializable provider or transport failure facts; policy decides whether they are retryable. */
 export interface LlmFailure {
   /** Human-readable provider or transport failure. */
@@ -49,6 +64,8 @@ export interface LlmFailure {
   readonly providerRetryAfterMs?: number
   /** Opaque provider-issued request identifier for diagnostics. */
   readonly requestId?: ProviderRequestId
+  /** Validated zero-send gateway evidence; absent leaves submission and billing effects unconfirmed. */
+  readonly textReselection?: LlmTextReselectionProof
   /**
    * With code `IMAGE_OFFLOAD_REQUIRED`: how many more of the oldest retained
    * image occurrences the route needs offloaded before the same request fits
@@ -409,6 +426,18 @@ export interface LlmModelContext {
   contextWindow: number
 }
 
+/** Effective capacities and the account-bound settings that may narrow them. */
+export interface LlmModelLimits {
+  readonly contextWindow: number
+  readonly maxOutputTokens: number
+  /** Known platform ceilings before the explicit user choice; absent fields are not native-capacity claims. */
+  readonly platform: { readonly contextWindow?: number; readonly maxOutputTokens?: number }
+  /** Unclamped explicit choices for the active scope, retained across platform limit changes. */
+  readonly override?: { readonly contextWindow?: number; readonly maxOutputTokens?: number }
+  /** Present only when both platform capacities belong to this active managed account/backend. */
+  readonly managedScope?: string
+}
+
 /**
  * Request-image budget one exact image-capable route enforces over the
  * retained occurrences' exact request-version bytes; for the `base64`
@@ -477,6 +506,8 @@ export interface LlmResolvedModelInfo extends LlmModelInfo {
   defaultMaxTokens?: number
   /** Current provider-declared output ceiling; every request, including an explicit override, must remain within it. */
   maxOutputTokens?: number
+  /** Current effective capacities, platform ceilings, and active explicit user choices. */
+  limits?: LlmModelLimits
   /** Adapter-owned selectable reasoning levels when exposed. */
   reasoning?: LlmModelReasoningInfo
   /** Declared mid-conversation system prompt handling; absent means only a leading system message is read. */

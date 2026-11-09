@@ -38,6 +38,8 @@ SDK 场景会比对 `scripts/snapshots/python-sdk-single-exe/` 下已提交的�
 
 `scheduler-recovery/` 记录一个失败的工具轮次及后续完成的轮次。它保留原始的 `UNKNOWN` 轮次错误、第一个工具已完成的结果，以及其余调用的 `TOOL_OUTCOME_UNKNOWN` / `TOOL_NOT_STARTED` 结果。`sdk-snapshot` 和 `all` 包含此场景；`--scenario sdk-recovery` 单独运行它。
 
+`model-reselection/` 固定一条用户请求在受控模型失败后，重新组装一次并由第二个模型完成的过程。`--scenario sdk-model-reselection` 与 TypeScript 场景共享模型夹具，检查输出／上下文限制、工具声明和提示词的变化、原用户消息标识、可选失败元数据，以及 Python 结果、通知与持久事件的一致性。`all` 包含此场景。该模拟模型边界不验证网关证明的信任、计费或实时提供方可用性。
+
 `advanced`、`advanced-ptc` 与 `restart` 的比较按每份输入自身的 Session 代际匹配原生 delivery 限定值，包括 SDK 事件与通知。捕获的代际及其他 delivery 代际保留数值。每一侧的 Session 角色必须使用同一个代际，新日志必须标识当前写入器。未使用 `--update-snapshots` 时，比较不会写入文件。刷新只写入当前 writer 的输出，并保留更早的 Session 代际。
 
 可信拉取请求与 master 推送还会在各自选定的原生目标上运行 `--scenario sdk-live --installed-wheel`。该场景面向 `https://api.deepseek.com` 执行两个使用工具的轮次：立即检查已创建文件，将其内容替换为仅宿主知道的随机挑战值，并要求第二轮将变更后的内容复制到全新的回执文件，且不修改源文件。两个轮次都必须完成、返回独占一行的哨兵确认并由模型请求调用工具；确认可以位于解释之前或之后，文件通过外部逐字节比较验证。仓库密钥缺失时失败，而不是自行 skip。Fork 与 Dependabot 拉取请求会运行完整的 keyless 安装后 wheel 路径，但不会获得密钥。

@@ -1,0 +1,163 @@
+[
+  {
+    "provider": "deepseek-official",
+    "model": "deepseek-v4-flash",
+    "maxTokens": 32768,
+    "tools": [
+      "glob",
+      "read"
+    ],
+    "modelPrompt": "Current snapshot model: deepseek-v4-flash.",
+    "messages": [
+      {
+        "role": "system",
+        "content": "{{system}}"
+      },
+      {
+        "content": [
+          {
+            "type": "text",
+            "text": "Reply with exactly: SDK snapshot OK"
+          }
+        ],
+        "source": {
+          "kind": "user"
+        },
+        "role": "user",
+        "id": "{{messageId}}"
+      },
+      {
+        "content": [
+          {
+            "type": "text",
+            "text": "<system-reminder>\nThe following workspace instructions may be relevant to your work. Use them as guidance when applicable. More specific instructions take precedence over broader ones. They do not override system, developer, or direct user instructions.\n\nInstructions from: AGENTS.md\n\nFollow the user's requested task.\n\n</system-reminder>"
+          }
+        ],
+        "source": {
+          "kind": "agent-instructions",
+          "form": "instructions",
+          "baseline": true,
+          "baselineIdentity": "{\"projectRoot\":\"\",\"projectRootMarkers\":[\".git\"],\"maxBytes\":65536,\"maxSourceBytes\":1048576,\"instructionFileCandidates\":[\"AGENTS.md\",\"CLAUDE.md\"],\"localInstructionFileCandidates\":[\"AGENTS.local.md\",\"CLAUDE.local.md\"]}",
+          "changes": [
+            {
+              "action": "set",
+              "scope": ".\u0000AGENTS.md",
+              "path": "AGENTS.md",
+              "digest": "4c101b74beb38e7e69f6a16f09fa7aa8a816acb2"
+            }
+          ]
+        },
+        "role": "user",
+        "id": "{{messageId}}"
+      },
+      {
+        "content": [
+          {
+            "type": "text",
+            "text": "Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\nCurrent working directory: \"{{cwd}}\".\n\nCurrent DSH file policy: danger-full-access. The DSH file sandbox does not restrict file modifications by available operations.\n\nApproval prompts are disabled in this session: actions that require approval are rejected automatically — do not request sandbox escalation (do not set `sandbox_permissions`)."
+          }
+        ],
+        "source": {
+          "kind": "runtime-context",
+          "form": "snapshot",
+          "sections": [
+            {
+              "name": "working-directory:current",
+              "text": "Current working directory: \"{{cwd}}\"."
+            },
+            {
+              "name": "sandbox:policy",
+              "text": "Current DSH file policy: danger-full-access. The DSH file sandbox does not restrict file modifications by available operations."
+            },
+            {
+              "name": "approval:policy",
+              "text": "Approval prompts are disabled in this session: actions that require approval are rejected automatically — do not request sandbox escalation (do not set `sandbox_permissions`)."
+            }
+          ]
+        },
+        "role": "user",
+        "id": "{{messageId}}"
+      }
+    ]
+  },
+  {
+    "provider": "deepseek-official",
+    "model": "deepseek-v4-pro",
+    "maxTokens": 4096,
+    "tools": [
+      "read"
+    ],
+    "modelPrompt": "Current snapshot model: deepseek-v4-pro.",
+    "messages": [
+      {
+        "role": "system",
+        "content": "{{system}}"
+      },
+      {
+        "content": [
+          {
+            "type": "text",
+            "text": "Reply with exactly: SDK snapshot OK"
+          }
+        ],
+        "source": {
+          "kind": "user"
+        },
+        "role": "user",
+        "id": "{{messageId}}"
+      },
+      {
+        "content": [
+          {
+            "type": "text",
+            "text": "<system-reminder>\nThe following workspace instructions may be relevant to your work. Use them as guidance when applicable. More specific instructions take precedence over broader ones. They do not override system, developer, or direct user instructions.\n\nInstructions from: AGENTS.md\n\nFollow the user's requested task.\n\n</system-reminder>"
+          }
+        ],
+        "source": {
+          "kind": "agent-instructions",
+          "form": "instructions",
+          "baseline": true,
+          "baselineIdentity": "{\"projectRoot\":\"\",\"projectRootMarkers\":[\".git\"],\"maxBytes\":65536,\"maxSourceBytes\":1048576,\"instructionFileCandidates\":[\"AGENTS.md\",\"CLAUDE.md\"],\"localInstructionFileCandidates\":[\"AGENTS.local.md\",\"CLAUDE.local.md\"]}",
+          "changes": [
+            {
+              "action": "set",
+              "scope": ".\u0000AGENTS.md",
+              "path": "AGENTS.md",
+              "digest": "4c101b74beb38e7e69f6a16f09fa7aa8a816acb2"
+            }
+          ]
+        },
+        "role": "user",
+        "id": "{{messageId}}"
+      },
+      {
+        "content": [
+          {
+            "type": "text",
+            "text": "Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\nCurrent working directory: \"{{cwd}}\".\n\nCurrent DSH file policy: danger-full-access. The DSH file sandbox does not restrict file modifications by available operations.\n\nApproval prompts are disabled in this session: actions that require approval are rejected automatically — do not request sandbox escalation (do not set `sandbox_permissions`)."
+          }
+        ],
+        "source": {
+          "kind": "runtime-context",
+          "form": "snapshot",
+          "sections": [
+            {
+              "name": "working-directory:current",
+              "text": "Current working directory: \"{{cwd}}\"."
+            },
+            {
+              "name": "sandbox:policy",
+              "text": "Current DSH file policy: danger-full-access. The DSH file sandbox does not restrict file modifications by available operations."
+            },
+            {
+              "name": "approval:policy",
+              "text": "Approval prompts are disabled in this session: actions that require approval are rejected automatically — do not request sandbox escalation (do not set `sandbox_permissions`)."
+            }
+          ]
+        },
+        "role": "user",
+        "id": "{{messageId}}"
+      }
+    ]
+  }
+]

@@ -41,7 +41,7 @@ export class ModelDirectoryResolver extends Service {
   static inject = ['sessions', 'remote', 'remote.session']
 
   private readonly live: LiveState = { directories: new WeakMapWithValues(), inputBridges: new Set() }
-  /** Shared Host catalog used by session selectors and the read-only Settings directory. */
+  /** Shared Host catalog used by session selectors and the Settings directory. */
   readonly catalog: ModelCatalogDirectory
 
   /**

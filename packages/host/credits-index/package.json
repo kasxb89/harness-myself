@@ -55,6 +55,8 @@
     "@deepseek-ai/dsh-artifacts-index": "workspace:*"
   },
   "devDependencies": {
+    "@deepseek-ai/dsh-token-meter": "workspace:*",
+    "@deepseek-ai/dsh-llm-retry": "workspace:*",
     "@deepseek-ai/dsh-agent-loop": "workspace:*",
     "@deepseek-ai/dsh-subagent": "workspace:*",
     "@deepseek-ai/dsh-ptc-runtime-node": "workspace:*",

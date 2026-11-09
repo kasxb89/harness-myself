@@ -12,7 +12,7 @@
  * @module dsh-llm-pi-ai/catalog
  */
 
-import { cloneTextCapabilities, effectiveTextCapability, type LlmTextCapabilities } from '@deepseek-ai/dsh-llm'
+import { cloneTextCapabilities, effectiveTextCapability, type LlmModelLimits, type LlmTextCapabilities } from '@deepseek-ai/dsh-llm'
 import { builtinProviders, getAllBuiltinModels, getBuiltinModels } from '@earendil-works/pi-ai/providers/all'
 import { clampMaxTokensToContext } from '@earendil-works/pi-ai/api/simple-options'
 import { normalizeContext } from '@earendil-works/pi-ai/utils/transcript'
@@ -58,6 +58,16 @@ export interface PiAiManagedModelLimits {
   maxTokens?: number
   /** Gateway execution declarations for this exact account/backend scope. */
   textCapabilities?: LlmTextCapabilities
+}
+
+/** Explicit user capacities for one model on one managed account/backend. */
+export interface PiAiModelLimitOverride {
+  /** Exact managed account/backend scope that owns this preference. */
+  scope: string
+  /** Preferred context window in whole tokens, bounded by the current platform maximum. */
+  contextWindow?: number
+  /** Preferred output ceiling in whole tokens, bounded by the current platform maximum. */
+  maxTokens?: number
 }
 
 /** One request modality a pi-ai model may accept. */
@@ -696,6 +706,8 @@ export interface RouteCatalogRequest {
   defaultInput: Model<Api>['input']
   /** Active account/backend scope for applying synchronized model limits. */
   managedLimitsScope?: string
+  /** Explicit user choices retained independently of synchronized model membership. */
+  modelLimitOverrides?: Readonly<Record<string, PiAiModelLimitOverride>>
 }
 
 /** An expected configuration failure that stored-catalog reads may retain for repair. */
@@ -876,6 +888,8 @@ export interface RouteCatalog {
   managedMaxTokens: ReadonlyMap<string, number>
   /** Active gateway execution declarations, indexed by exact model id. */
   textCapabilities: ReadonlyMap<string, LlmTextCapabilities>
+  /** Effective, platform, and unclamped explicit capacities for settings consumers. */
+  limits: ReadonlyMap<string, LlmModelLimits>
 }
 
 /**
@@ -899,6 +913,19 @@ export function resolveRouteModels(
   // serve no request anyway, so both mean "serve the installed catalog".
   const configured = request.models ?? []
   const overrides = request.modelOverrides ?? {}
+  for (const [id, choice] of Object.entries(request.modelLimitOverrides ?? {})) {
+    if (id.length === 0 || typeof choice.scope !== 'string' || choice.scope.length === 0 || choice.scope.length > 512) {
+      invalid(provider, 'modelLimitOverrides must name a model and a nonempty account/backend scope of at most 512 characters')
+    }
+    if (choice.contextWindow === undefined && choice.maxTokens === undefined) {
+      invalid(provider, `modelLimitOverrides entry "${id}" must set contextWindow or maxTokens`)
+    }
+    for (const value of [choice.contextWindow, choice.maxTokens]) {
+      if (value !== undefined && (!Number.isSafeInteger(value) || value < 1 || value > MAX_CAPACITY_TOKENS)) {
+        invalid(provider, `modelLimitOverrides entry "${id}" capacities must be positive integers no greater than ${MAX_CAPACITY_TOKENS}`)
+      }
+    }
+  }
   const modelErrors = new Map<string, string>()
   // Writes reject missing referents. Stored overrides retain a diagnostic
   // after catalog removal rather than silently disappearing.
@@ -943,6 +970,7 @@ export function resolveRouteModels(
   const configuredMaxTokens = new Map<string, number>()
   const managedMaxTokens = new Map<string, number>()
   const textCapabilities = new Map<string, LlmTextCapabilities>()
+  const limits = new Map<string, LlmModelLimits>()
   const resolveEntry = (entry: PiAiModelProfile): Model<Api> => {
     assertOfferedCompatFields(provider, `model "${entry.id}"`, entry.compat)
     if (entry.id.length === 0) invalid(provider, 'has a model with an empty id')
@@ -1014,7 +1042,7 @@ export function resolveRouteModels(
     }
     // The SDK reserves input/context headroom even for an empty request.
     // Materialize that ceiling once so metadata, defaults and thinking budgets agree.
-    if (managed?.maxTokens !== undefined) {
+    const clampManagedOutput = (): void => {
       if (model.api !== 'openai-completions' && model.api !== 'openai-responses') {
         invalid(provider, `model "${entry.id}" managed output limits are not supported by protocol "${model.api}"`)
       }
@@ -1027,14 +1055,40 @@ export function resolveRouteModels(
           invalid(provider, `model "${entry.id}" managed output limit is below the Responses minimum of ${MANAGED_RESPONSES_MIN_OUTPUT_TOKENS}`)
         }
       }
-      managedMaxTokens.set(entry.id, model.maxTokens)
     }
+    if (managed?.maxTokens !== undefined) clampManagedOutput()
     // Only a value the profile named is a deployment choice; the catalog's is
     // the model's capability and stays out of request defaults.
     if (managed?.textCapabilities !== undefined) {
       textCapabilities.set(entry.id, cloneTextCapabilities(managed.textCapabilities))
       model.contextWindow = Math.min(model.contextWindow, managed.textCapabilities.maxInputTokens + model.maxTokens)
     }
+    const platformContextWindow = model.contextWindow
+    const platformMaxTokens = model.maxTokens
+    const candidate = request.modelLimitOverrides?.[entry.id]
+    const choice = managed !== undefined && candidate?.scope === managed.scope ? candidate : undefined
+    if (choice !== undefined) {
+      model.contextWindow = Math.min(model.contextWindow, choice.contextWindow ?? model.contextWindow)
+      model.maxTokens = Math.min(model.maxTokens, choice.maxTokens ?? model.maxTokens, model.contextWindow)
+      if (managed?.textCapabilities !== undefined) {
+        model.contextWindow = Math.min(model.contextWindow, managed.textCapabilities.maxInputTokens + model.maxTokens)
+      }
+      clampManagedOutput()
+    }
+    if (managed?.maxTokens !== undefined || choice !== undefined) managedMaxTokens.set(entry.id, model.maxTokens)
+    limits.set(entry.id, {
+      contextWindow: model.contextWindow,
+      maxOutputTokens: model.maxTokens,
+      platform: {
+        ...managed?.contextWindow === undefined ? {} : { contextWindow: platformContextWindow },
+        ...managed?.maxTokens === undefined ? {} : { maxOutputTokens: platformMaxTokens },
+      },
+      ...choice === undefined ? {} : { override: {
+        ...choice.contextWindow === undefined ? {} : { contextWindow: choice.contextWindow },
+        ...choice.maxTokens === undefined ? {} : { maxOutputTokens: choice.maxTokens },
+      } },
+      ...managed?.contextWindow === undefined || managed.maxTokens === undefined ? {} : { managedScope: managed.scope },
+    })
     if (entry.maxTokens !== undefined) configuredMaxTokens.set(entry.id, model.maxTokens)
     return model
   }
@@ -1062,5 +1116,5 @@ export function resolveRouteModels(
     invalid(provider, `sets compat "${field}", but no model on the route speaks a protocol that takes it;`
       + ` it exists on ${takers.join(', ')}`)
   }
-  return { models: serviceableModels, configuredMaxTokens, managedMaxTokens, textCapabilities, modelErrors }
+  return { models: serviceableModels, configuredMaxTokens, managedMaxTokens, textCapabilities, limits, modelErrors }
 }
