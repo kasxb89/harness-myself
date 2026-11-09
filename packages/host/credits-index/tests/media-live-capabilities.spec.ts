@@ -298,3 +298,25 @@ describe('declared speech capabilities', () => {
     expect(params.execution).toBeUndefined()
   })
 })
+
+describe('verified image-edit declarations', () => {
+  const edit = { schema_version: 1, max_reference_bytes: 5 * 1024 * 1024,
+    specifications: [{ properties: { size: { enum: ['1:1'] }, resolution: { enum: ['1K'] } } }],
+    reference_upload: { path: '/v1/uploads/images', origin: 'https://assets.token6688.com' } }
+  const parameters = { properties: { reference_images: { maxItems: 1 } }, 'x-image-edit': edit,
+    'x-task-plugin': { key: 'ycapi', version: '1.0.0', api_version: 1 },
+    'x-image-task-submit': { schema_version: 1, prefer: 'respond-async' } }
+  it('keeps the exact input byte bound, upload utility and reference-compatible output subset', () => {
+    expect(capability('ycapi-gemini-3.1-flash-image', 'image', parameters).params).toMatchObject({
+      maxEdits: 1, referenceMaxBytes: 5242880, referenceUpload: 'ycapi', asyncSubmit: true,
+      editSpecifications: [{ size: '1:1', resolution: '1K' }],
+    })
+  })
+  it.each([{ ...edit, max_reference_bytes: 0 }, { ...edit, max_reference_bytes: 100000000 },
+    { ...edit, specifications: [] }, { ...edit, reference_upload: { path: '/elsewhere', origin: 'https://assets.token6688.com' } },
+    { ...edit, reference_upload: { path: '/v1/uploads/images', origin: 'https://unrelated.example' } }])(
+    'blocks reference input before submission when the declared edit operation is malformed: %j', (invalid) => {
+      expect((capability('ycapi-flux-kontext', 'image', { ...parameters, 'x-image-edit': invalid }).params as ImageParams).maxEdits).toBe(0)
+    },
+  )
+})

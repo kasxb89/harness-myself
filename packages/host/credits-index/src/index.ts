@@ -2052,7 +2052,12 @@ export function apply(ctx: Context, config: Config): void {
             : `${model} 最多接受 ${String(params.maxEdits)} 张参考图`,
         }
       }
-      const headers = { 'content-type': 'application/json', accept: 'application/json' }
+      if (references.length > 0 && params.editSpecifications !== undefined) {
+        const edit = resolveMediaSpecification(params.editSpecifications, complete.specification)
+        if (!edit.ok) return { ...edit, submissionState: 'not-submitted', model }
+      }
+      const headers = { 'content-type': 'application/json', accept: 'application/json',
+        ...params.asyncSubmit === true && serverResultRecovery ? { prefer: 'respond-async' } : {} }
       /** The optional knobs, spelled the way both the relay and the vendors read them. */
       const extras: Record<string, unknown> = {
         ...size === null ? {} : { size },
@@ -2066,10 +2071,11 @@ export function apply(ctx: Context, config: Config): void {
       }
 
       const referenceUrls: string[] = []
-      if (internalImage && references.length > 0) {
+      const prepared: { bytes: Buffer; mediaType: string; filename: string }[] = []
+      if (references.length > 0) {
         progress?.('validating-references')
-        const prepared: { bytes: Buffer; mediaType: string; filename: string }[] = []
         const session = await liveSession()
+        const referenceMaxBytes = params.referenceMaxBytes ?? 10 * 1024 * 1024
         for (const [index, assetId] of references.entries()) {
           const file = await readReference(assetId)
           const filename = file === null ? `参考图 ${String(index + 1)}`
@@ -2078,13 +2084,15 @@ export function apply(ctx: Context, config: Config): void {
             : file.accountId !== undefined && file.accountId !== session?.account.id ? '不属于当前账号，请重新上传'
               : !ALLOWED_ASSET_TYPES.has(file.mediaType) ? '只支持 PNG、JPEG 或 WebP 图片'
                 : file.bytes.length === 0 ? '内容为空，请重新选择图片'
-                  : file.bytes.length > 10 * 1024 * 1024 ? '超过 10 MB，请缩小后重新上传'
+                  : file.bytes.length > referenceMaxBytes ? `超过 ${String(referenceMaxBytes / 1024 / 1024)} MB，请缩小后重新上传`
                     : !referenceSignature(file.bytes, file.mediaType) ? '内容与图片格式不匹配，请重新上传' : undefined
           if (file === null || invalid !== undefined) {
             return { ok: false, submissionState: 'not-submitted', model, code: 'IMAGE_REFERENCE_INVALID', message: `参考图「${filename}」${invalid ?? '不可读取'}；尚未提交生成。` }
           }
           prepared.push({ ...file, filename })
         }
+      }
+      if ((internalImage || params.referenceUpload === 'ycapi') && prepared.length > 0) {
         // Validate every local image before sending any bytes. Uploads have
         // no generation charge; only the later generation POST is dispatched.
         progress?.('uploading-references')
@@ -2131,8 +2139,10 @@ export function apply(ctx: Context, config: Config): void {
             if (remote !== null && remote.length <= 2048 && !/[\u0000-\u0020\u007f\\?#]/u.test(remote)) {
               try {
                 const url = new URL(remote)
-                validUrl = (url.origin === 'https://files.toapis.cn' || url.origin === 'https://files.toapis.com')
-                && url.pathname.startsWith('/uploads/') && url.pathname.length > '/uploads/'.length
+                validUrl = (params.referenceUpload === 'ycapi'
+                  ? url.origin === 'https://assets.token6688.com' && url.pathname.startsWith('/sha256/') && url.pathname.length > 70
+                  : (url.origin === 'https://files.toapis.cn' || url.origin === 'https://files.toapis.com')
+                    && url.pathname.startsWith('/uploads/') && url.pathname.length > '/uploads/'.length)
                 && url.username === '' && url.password === '' && url.search === '' && url.hash === ''
               } catch { validUrl = false }
             }
@@ -2146,15 +2156,13 @@ export function apply(ctx: Context, config: Config): void {
       }
 
       const editForm = new FormData()
-      if (capability.model.route === '/v1/images/generations' && references.length > 0) {
+      if (capability.model.route === '/v1/images/generations' && references.length > 0 && params.referenceUpload !== 'ycapi') {
         const form = editForm
         form.set('model', model)
         form.set('prompt', prompt)
         form.set('n', String(count))
         for (const [field, value] of Object.entries(extras)) form.set(field, String(value))
-        for (const assetId of references) {
-          const file = await readReference(assetId)
-          if (file === null) throw new VideoProjectError('IMAGE_REFERENCE_INVALID', '参考图已失效，请重新上传；尚未提交生成。')
+        for (const file of prepared) {
           const extension = file.mediaType === 'image/jpeg' ? 'jpg' : file.mediaType === 'image/webp' ? 'webp' : 'png'
           form.append('image[]', new Blob([new Uint8Array(file.bytes)], { type: file.mediaType }), `reference-${String(form.getAll('image[]').length + 1)}.${extension}`)
         }
@@ -2175,9 +2183,14 @@ export function apply(ctx: Context, config: Config): void {
           method: 'POST', headers: { ...headers, authorization: `Bearer ${submitKey}` },
           body: JSON.stringify({ model, prompt, n: count, response_format: 'b64_json', ...extras }), signal: requestSignal,
         })
+        if (params.referenceUpload === 'ycapi') return apiFetch('/v1/images/edits', {
+          method: 'POST', headers: { ...headers, authorization: `Bearer ${submitKey}` },
+          body: JSON.stringify({ model, prompt, n: count, ...extras, image: referenceUrls }), signal: requestSignal,
+        })
         requestSignal.throwIfAborted()
         return apiFetch('/v1/images/edits', {
-          method: 'POST', headers: { authorization: `Bearer ${submitKey}`, accept: 'application/json' }, body: editForm, signal: requestSignal,
+          method: 'POST', headers: { authorization: `Bearer ${submitKey}`, accept: 'application/json',
+            ...params.asyncSubmit === true && serverResultRecovery ? { prefer: 'respond-async' } : {} }, body: editForm, signal: requestSignal,
         })
       }
       assertImageCurrent()
@@ -5304,6 +5317,10 @@ export function apply(ctx: Context, config: Config): void {
         sizes: { type: 'array', items: { type: 'string' } },
         resolutions: { type: 'array', items: { type: 'string' } },
         max_count: { type: 'number' }, max_reference_images: { type: 'number' },
+        max_reference_bytes: { type: 'number' },
+        edit_specifications: { type: 'array', items: { type: 'object', properties: {
+          size: { type: 'string' }, resolution: { type: 'string' }, quality: { type: 'string' },
+        }, additionalProperties: false } },
         qualities: { type: 'array', items: { type: 'string' } },
         backgrounds: { type: 'array', items: { type: 'string' } },
         formats: { type: 'array', items: { type: 'string' } },
@@ -5342,6 +5359,9 @@ export function apply(ctx: Context, config: Config): void {
             sizes: model.verified || model.notes.includes('sizes') || model.notes.includes('specifications') ? [...params.sizes] : [],
             ...params.resolutions === undefined ? {} : { resolutions: [...params.resolutions] },
             max_count: params.maxCount, max_reference_images: params.maxEdits,
+            ...params.referenceMaxBytes === undefined ? {} : { max_reference_bytes: params.referenceMaxBytes },
+            ...params.editSpecifications === undefined ? {}
+              : { edit_specifications: params.editSpecifications.map(value => ({ ...value })) },
             qualities: model.verified || model.notes.includes('qualities') ? [...params.qualities] : [],
             backgrounds: model.verified || model.notes.includes('backgrounds') ? [...params.backgrounds] : [],
             formats: model.verified || model.notes.includes('formats') ? [...params.formats] : [],

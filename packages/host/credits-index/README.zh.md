@@ -141,6 +141,8 @@ Host 认证的 `GET /credits/api/customer-support` 独立于产品登录，从�
 
 ### 聊天创作计划
 
+图生图在上传或生成前遵守网关 `x-image-edit` 声明的单图字节上限和已验证规格。每张本地参考图均校验当前账号归属、MIME 签名和大小，并只读取一次图片字节。YCAPI 按声明先上传参考图，再把验证后的地址以 JSON 发到 `/v1/images/edits`；QQ 使用同一编辑接口的 multipart 上传。上传失败不会提交生成。网关声明 `x-image-task-submit` 时发送 `Prefer: respond-async`，先保存原任务回执再轮询。响应中断或下载失败只查询原任务和原产物，不重新提交生成。只有图片已解码并保存到本地后才报告完成，保留远端地址本身不代表完成。
+
 聊天图片生成最多等待 `imageForegroundWaitMs`（默认 3 秒）以直接返回快速结果，随后返回当前聊天拥有的后台任务及已登记的计划/操作坐标。`job_output` 展示实际准备、参考图上传、本地排队、上游受理生成及保存阶段；完成结果保留单调时钟阶段计时。本地取消不会宣称上游已取消。持久调用登记阻止同一已记录工具提交在并发或重启后重复 POST；新的来源/调用身份仍独立于之前结果未知的操作。
 
 媒体定价与当前账号组并行读取。`mediaCatalogCacheTtlMs` 将定价复用限制在 30 秒以内；no-store/no-cache 和 Vary:* 禁止复用，请求头、登录和 API 作用域防止串用，每次查询另行检查账号权限。参考图全部校验后才有界上传（`imageUploadConcurrency` 默认 2）。下载使用 `imageDownloadConcurrency`（3），保留输入顺序并遵守 `imageDownloadMaxBytes`；失败后已保存的原图仍可恢复。这些本地限制不提高网关生成并发，也不保价。
