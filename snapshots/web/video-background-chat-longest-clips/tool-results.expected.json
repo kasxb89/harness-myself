@@ -1,0 +1,112 @@
+{
+  "background-start-1": {
+    "status": "background",
+    "job_id": "video-project-1",
+    "project_id": "{{id:1001}}",
+    "plan_id": "{{id:1002}}",
+    "work_id": "{{videoWork:1}}",
+    "work_request_id": "{{videoWorkRequest:1}}",
+    "operation_id": "{{id:1003}}",
+    "pending_work_ids": [],
+    "remaining_works": 0,
+    "plan_seconds": [
+      10
+    ],
+    "message": "当前作品清单已全部安排，你可以继续发送其它指令，无需等待生成完成。视频项目已在后台开始。查询进度时读取 job_output 当前快照；完成后会通知并提供产物。停止本地任务不代表已取消上游任务或停止计费。"
+  },
+  "background-start-2": {
+    "status": "background",
+    "job_id": "video-project-2",
+    "project_id": "{{id:1004}}",
+    "plan_id": "{{id:1005}}",
+    "work_id": "{{videoWork:2}}",
+    "work_request_id": "{{videoWorkRequest:2}}",
+    "operation_id": "{{id:1006}}",
+    "pending_work_ids": [],
+    "remaining_works": 0,
+    "plan_seconds": [
+      10
+    ],
+    "message": "当前作品清单已全部安排，你可以继续发送其它指令，无需等待生成完成。视频项目已在后台开始。查询进度时读取 job_output 当前快照；完成后会通知并提供产物。停止本地任务不代表已取消上游任务或停止计费。"
+  },
+  "background-start-3": {
+    "status": "background",
+    "job_id": "video-project-3",
+    "project_id": "{{id:1007}}",
+    "plan_id": "{{id:1008}}",
+    "work_id": "{{videoWork:3}}",
+    "work_request_id": "{{videoWorkRequest:3}}",
+    "operation_id": "{{id:1009}}",
+    "pending_work_ids": [
+      "{{videoWork:4}}",
+      "{{videoWork:5}}"
+    ],
+    "remaining_works": 2,
+    "plan_seconds": [
+      10
+    ],
+    "message": "已准备的清单中还有 2 个作品尚未启动，请按用户最新要求选择所需的 pending_work_ids，不必等待先前作品完成，也不要为了清空清单多生成。视频项目已在后台开始。查询进度时读取 job_output 当前快照；完成后会通知并提供产物。停止本地任务不代表已取消上游任务或停止计费。"
+  },
+  "background-start-4": {
+    "status": "background",
+    "job_id": "video-project-4",
+    "project_id": "{{id:1010}}",
+    "plan_id": "{{id:1011}}",
+    "work_id": "{{videoWork:4}}",
+    "work_request_id": "{{videoWorkRequest:3}}",
+    "operation_id": "{{id:1012}}",
+    "pending_work_ids": [
+      "{{videoWork:5}}"
+    ],
+    "remaining_works": 1,
+    "plan_seconds": [
+      10
+    ],
+    "message": "已准备的清单中还有 1 个作品尚未启动，请按用户最新要求选择所需的 pending_work_ids，不必等待先前作品完成，也不要为了清空清单多生成。视频项目已在后台开始。查询进度时读取 job_output 当前快照；完成后会通知并提供产物。停止本地任务不代表已取消上游任务或停止计费。"
+  },
+  "background-start-5": {
+    "status": "background",
+    "job_id": "video-project-5",
+    "project_id": "{{id:1013}}",
+    "plan_id": "{{id:1014}}",
+    "work_id": "{{videoWork:5}}",
+    "work_request_id": "{{videoWorkRequest:3}}",
+    "operation_id": "{{id:1015}}",
+    "pending_work_ids": [],
+    "remaining_works": 0,
+    "plan_seconds": [
+      10
+    ],
+    "message": "当前作品清单已全部安排，你可以继续发送其它指令，无需等待生成完成。视频项目已在后台开始。查询进度时读取 job_output 当前快照；完成后会通知并提供产物。停止本地任务不代表已取消上游任务或停止计费。"
+  },
+  "background-start-6": {
+    "status": "background",
+    "job_id": "video-project-6",
+    "project_id": "{{id:1016}}",
+    "plan_id": "{{id:1017}}",
+    "work_id": "{{videoWork:6}}",
+    "work_request_id": "{{videoWorkRequest:4}}",
+    "operation_id": "{{id:1018}}",
+    "pending_work_ids": [],
+    "remaining_works": 0,
+    "plan_seconds": [
+      10
+    ],
+    "message": "当前作品清单已全部安排，你可以继续发送其它指令，无需等待生成完成。视频项目已在后台开始。查询进度时读取 job_output 当前快照；完成后会通知并提供产物。停止本地任务不代表已取消上游任务或停止计费。"
+  },
+  "background-start-7": {
+    "status": "background",
+    "job_id": "video-project-2",
+    "project_id": "{{id:1019}}",
+    "plan_id": "{{id:1020}}",
+    "work_id": "{{videoWork:7}}",
+    "work_request_id": "{{videoWorkRequest:5}}",
+    "operation_id": "{{id:1021}}",
+    "pending_work_ids": [],
+    "remaining_works": 0,
+    "plan_seconds": [
+      10
+    ],
+    "message": "当前作品清单已全部安排，你可以继续发送其它指令，无需等待生成完成。视频项目已在后台开始。查询进度时读取 job_output 当前快照；完成后会通知并提供产物。停止本地任务不代表已取消上游任务或停止计费。"
+  }
+}

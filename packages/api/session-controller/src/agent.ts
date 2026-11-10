@@ -66,6 +66,7 @@ export type ApiSessionAgentResult =
   | { readonly error: ApiSessionAgentError }
 
 type InstalledSelection = ModelSelectionRef & {
+  readonly revision: number
   current: AgentModelSelection
   consume(provider: string, model: string, reasoningEffort: string | undefined): boolean
 }
@@ -290,8 +291,10 @@ export class ApiSessionAgentController {
     let picked = projectionState.pending === null
       ? undefined
       : agentModelSelection(projectionState.pending)
+    let revision = 0
     const defaultModel = this.ctx.agentDefaultModel
     const selection: InstalledSelection = {
+      get revision(): number { return revision },
       get current(): AgentModelSelection {
         if (picked !== undefined) return picked
         const loggedHeader = agent.session.requestHeader()
@@ -310,6 +313,7 @@ export class ApiSessionAgentController {
       },
       set current(next: AgentModelSelection) {
         picked = next
+        revision++
       },
       consume(provider: string, model: string, reasoningEffort: string | undefined): boolean {
         if (picked?.provider !== provider
@@ -364,10 +368,10 @@ export class ApiSessionAgentController {
   /**
    * Serialize image admission and model selection for one Agent.
    * @param agent - live Agent that owns the serialization chain.
-   * @param operation - asynchronous operation admitted after prior work settles.
+   * @param operation - operation admitted after prior work settles.
    * @returns the operation result or rejection.
    */
-  serializeImageAdmission<Value>(agent: Agent, operation: () => Promise<Value>): Promise<Value> {
+  serializeImageAdmission<Value>(agent: Agent, operation: () => Value | Promise<Value>): Promise<Value> {
     const result = (this.imageAdmissionChains.get(agent) ?? Promise.resolve()).then(operation)
     this.imageAdmissionChains.set(agent, result.then(() => undefined, () => undefined))
     return result

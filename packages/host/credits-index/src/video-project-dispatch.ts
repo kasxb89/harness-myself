@@ -2,6 +2,7 @@
 import type { VideoProjectProvider, VideoProjectRequest } from './video-project-types.ts'
 import { VideoRelayError, type VideoProjectRelay } from './video-project-provider.ts'
 import { VideoSubmissionRejection } from './video-submission-result.ts'
+import { MediaModelConfigRejection } from './media-model-config-result.ts'
 import {
   bindVideoServerQueueRecovery, discoverVideoServerQueue, VideoServerQueueError,
   type VideoServerQueue, type VideoServerQueueItem, type VideoServerQueueOptions,
@@ -51,17 +52,24 @@ export function createVideoProjectDispatch(options: VideoProjectDispatchOptions)
     },
     async submit(request, signal, submission) {
       if (!prepared) throw new VideoRelayError('VIDEO_REQUEST_INVALID', '视频提交方式尚未核对，未提交新的生成请求。')
-      if (!eligible || queue === undefined) return options.relay.submit(request, await options.route(request), signal)
+      if (!eligible || queue === undefined) {
+        const route = await options.route(request)
+        return submission?.modelConfigVersion === undefined ? options.relay.submit(request, route, signal)
+          : options.relay.submit(request, route, signal, submission.modelConfigVersion)
+      }
       if (submission === undefined || !queue.supports(request, submission)) {
         throw new VideoRelayError('VIDEO_REQUEST_INVALID', '视频排队参数尚未核对，未提交新的生成请求。')
       }
       try {
         const item = await queue.submit(request, submission, signal)
-        if (item.submissionState === 'unknown' || item.state === 'unknown') {
-          return { taskId: item.queueId, submissionState: 'unknown' }
+        const acknowledged = submission.modelConfigVersion === undefined || item.modelConfigVersion === undefined ? {}
+          : { acknowledgedModelConfigVersion: item.modelConfigVersion }
+        if (item.submissionState === 'unknown' || item.state === 'unknown' || item.modelConfigAcceptanceUnconfirmed) {
+          return { taskId: item.queueId, submissionState: 'unknown', ...acknowledged }
         }
-        return { taskId: item.queueId }
+        return { taskId: item.queueId, ...acknowledged }
       } catch (error) {
+        if (error instanceof MediaModelConfigRejection) throw error
         if (error instanceof VideoServerQueueError && error.code === 'VIDEO_QUEUE_SUBMISSION_NOT_STARTED') {
           throw new VideoRelayError('VIDEO_SUBMIT_NOT_STARTED', error.message, { cause: error })
         }
@@ -76,7 +84,7 @@ export function createVideoProjectDispatch(options: VideoProjectDispatchOptions)
     async check(taskId, request, signal) {
       if (!taskId.startsWith('vq_')) {
         // A saved gateway task remains readable after its model disappears from the new-work catalog.
-        const route = /^task_[A-Za-z0-9]{32}$/u.test(taskId) ? '/v1/tasks' : await options.route(request)
+        const route = /^task_[A-Za-z0-9]{32}$/u.test(taskId) ? '/v1/tasks' : () => options.route(request)
         return options.relay.check(taskId, route, signal, typeof request.model === 'string' ? request.model : undefined)
       }
       recoveringQueue = true

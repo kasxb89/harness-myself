@@ -98,6 +98,8 @@ const configure = (maxTokens: number): ConfigureCall =>
 
 每个流都恰好以一个终止 `finish` 分片结束：失败为 `{ kind: 'error', failure }`，取消为 `{ kind: 'aborted', failure }`。失败携带稳定 code，如 `NO_ADAPTER`、`MISSING_CREDENTIAL`、`AUTH`、`RATE_LIMIT` 与 `CONTEXT_WINDOW_EXCEEDED`；消费方依据 code 路由，绝不解析消息文本。`QUOTA` 表示提供方中立的额度耗尽，`ACCOUNT_QUOTA` 专用于当前产品能够充值的第一方账号余额不足。点名未注册提供方的请求会以 `NO_ADAPTER` 失败，格式错误的凭据会以 `INVALID_CREDENTIAL` 失败，而不是表现为不透明的 fetch 错误。本服务从不自行重跑请求：重试是 `dsh-llm-retry` 在 agent 失败步骤扩展点上的职责。
 
+适配器可在 `MODEL_UNAVAILABLE_NOT_SUBMITTED` 失败中携带经过验证的 `textReselection` 证明。只有型号、账号 scope、HTTPS origin、零提交字段及请求 ID 有效、HTTP 状态为 400 或 503，且证明 ID 与失败 ID 一致时，`LlmError` 和失败归一化才会保留分离、冻结的证明。格式不合法的携带数据不授予恢复权限。适配器仍负责验证证明来源及其与 HTTP 请求的绑定；普通超时、网络失败或服务器错误不能证明请求未提交、未计费。
+
 -----
 
 <a id="understand-the-implementation"></a>

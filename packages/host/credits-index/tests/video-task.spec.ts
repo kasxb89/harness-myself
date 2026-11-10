@@ -29,6 +29,16 @@ function fixture(overrides: Partial<VideoTaskOptions> = {}) {
 }
 
 describe('single-submission video task receipts', () => {
+  it.each([{ id: 'task_' + 'A'.repeat(32), canonical: true }, { id: 'original-h3-upstream-id', canonical: undefined }])(
+    'polls a new alias receipt $id through the same path used on resume', async ({ id, canonical }) => {
+      const read = vi.fn(async (_id: string, _signal: AbortSignal, _canonical?: boolean) => json({ status: 'completed' }))
+      const f = fixture({ model: 'new-video-alias', submit: vi.fn(async () => json({ id })), read })
+      expect(await executeVideoTask(f.options)).toMatchObject({ ok: true, taskId: id })
+      expect(read.mock.calls[0]?.[0]).toBe(id)
+      expect(read.mock.calls[0]?.[2]).toBe(canonical)
+      expect(f.options.submit).toHaveBeenCalledOnce()
+    })
+
   it('observes distinct accepted, queued, generating and saving phases without adding submissions', async () => {
     const events: CreationTaskActivity[] = []
     const states = ['queued', 'running', 'completed']

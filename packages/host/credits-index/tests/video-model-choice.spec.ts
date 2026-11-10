@@ -7,6 +7,7 @@ import earlyApiQuote from './fixtures/video-quote-early.json' with { type: 'json
 import h3ApiQuote from './fixtures/video-quote-h3.json' with { type: 'json' }
 import sd25ApiQuote from './fixtures/video-quote-sd25.json' with { type: 'json' }
 import { CreativeError } from '../src/creative-store.ts'
+import { readModelConfigVersion } from '../src/model-config-version.ts'
 
 const baseline = { model: 'MiniMax-H3', resolution: '768P', durations: [15, 15] }
 const target = { model: 'other-video', resolution: '1280x720', durations: [15, 15] }
@@ -258,6 +259,48 @@ describe('price-informed video model selection', () => {
 })
 
 describe('actual gateway quote contract', () => {
+  const versionA = readModelConfigVersion({ model_config_version: 'a'.repeat(64) })!
+  const versionB = readModelConfigVersion({ model_config_version: 'b'.repeat(64) })!
+
+  it('binds the quote to the captured row version and keeps version out of native quote JSON', async () => {
+    const api = h3ApiQuote
+    const candidate = { model: api.request.model, durations: [15], modelConfigVersion: versionA }
+    const transport = vi.fn(async () => Response.json({ ...api.response, model_config_version: versionA }))
+    const quote = await readVideoModelQuote({ request: api.request, candidate, accountId: 'local-account',
+      signal: new AbortController().signal, transport, now: () => (api.response.created_at + 1) * 1000 })
+    expect(quote?.modelConfigVersion).toBe(versionA)
+    expect(transport).toHaveBeenCalledExactlyOnceWith(api.request, expect.any(AbortSignal), versionA)
+    expect(api.request).not.toHaveProperty('model_config_version')
+    expect(Object.keys(api.request).toSorted()).toEqual(['model', 'segments', 'works_count'])
+  })
+
+  it.each([
+    { captured: versionA, echoed: versionB }, { captured: versionA, echoed: undefined },
+    { captured: undefined, echoed: versionA },
+  ])('rejects mixed directory and quote snapshots captured=$captured echoed=$echoed', ({ captured, echoed }) => {
+    const api = h3ApiQuote
+    const candidate = { model: api.request.model, durations: [15], ...captured === undefined ? {} : { modelConfigVersion: captured } }
+    const value = { ...api.response, ...echoed === undefined ? {} : { model_config_version: echoed } }
+    expect(() => parseVideoModelQuote(value, api.request, candidate, 'local-account', (api.response.created_at + 1) * 1000))
+      .toThrow(expect.objectContaining({ code: 'MODEL_CONFIG_CHANGED' }))
+  })
+
+  it('requires the captured quote binding to match before invoking its transport', async () => {
+    const transport = vi.fn(async () => Response.json({ ...h3ApiQuote.response, model_config_version: versionA }))
+    await expect(readVideoModelQuote({ request: h3ApiQuote.request,
+      candidate: { model: h3ApiQuote.request.model, durations: [15], modelConfigVersion: versionA }, accountId: 'local-account',
+      binding: { url: 'https://synthetic.example/v1/video/quote', method: 'POST', model: h3ApiQuote.request.model,
+        accountId: 'different-account', modelConfigVersion: versionA },
+      signal: new AbortController().signal, transport })).rejects.toMatchObject({ code: 'CREATIVE_VIDEO_QUOTE_UNAVAILABLE' })
+    expect(transport).not.toHaveBeenCalled()
+  })
+
+  it.each([null, 'A'.repeat(64), 'a'.repeat(63)])('rejects malformed quote versions without treating them as legacy: %s', (version) => {
+    expect(() => parseVideoModelQuote({ ...h3ApiQuote.response, model_config_version: version }, h3ApiQuote.request,
+      { model: h3ApiQuote.request.model, durations: [15], modelConfigVersion: versionA }, 'local-account',
+      (h3ApiQuote.response.created_at + 1) * 1000)).toThrow(expect.objectContaining({ code: 'CREATIVE_VIDEO_QUOTE_UNAVAILABLE' }))
+  })
+
   it.each([402, 403])('preserves a confirmed product funding rejection through HTTP%s and model selection', async (status) => {
     const request = h3ApiQuote.request
     const candidate = { model: request.model, durations: [15] }

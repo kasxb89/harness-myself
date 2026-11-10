@@ -1320,6 +1320,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         parameters: [{ name: 'baseURL', description: 'Exact model API root being requested.' }, { name: 'expectedModelLimitsScope', description: 'Optional account/backend binding captured with prepared model limits; a changed account must refuse it, while ordinary same-account credential renewal keeps it valid.' }],
         returns: 'The current relay key, or undefined when no live session authorizes this exact request scope.',
       },
+      {
+        signature: 'authorizeModelConfig?(request: HarnessModelConfigRequest): Promise<boolean>',
+        description: 'Authorize one prepared version and original capacity pair against the current owned directory.',
+        parameters: [{ name: 'request', description: 'Exact backend, account scope, model and authoritative metadata captured before overrides.' }],
+        returns: 'True only while this same live account and complete published declaration still match.',
+      },
     ],
   },
   {
@@ -4069,7 +4075,7 @@ export const EVENT_API: readonly EventApiEntry[] = [
   {
     name: 'agent/request-error',
     mode: 'waterfall',
-    signature: '\'agent/request-error\'(this: Scoped<Agent>, payload: { agent: Agent; turn: number; step: number; provider: string; failure: LlmFailure; retryPolicy: ResolvedRetryPolicy | undefined; signal: AbortSignal }, next: () => Promise<RequestErrorAction>): Promise<RequestErrorAction>',
+    signature: '\'agent/request-error\'(this: Scoped<Agent>, payload: { agent: Agent; turn: number; step: number; provider: string; model?: string; hasOutput?: boolean; failure: LlmFailure; retryPolicy: ResolvedRetryPolicy | undefined; signal: AbortSignal }, next: () => Promise<RequestErrorAction>): Promise<RequestErrorAction>',
     summary: 'Handle one failed model-request attempt before the loop retries or closes its step.',
     description: 'Handle one failed model-request attempt before the loop retries or closes its step. A listener returns `{ kind: \'retry\' }` without calling `next()` when it owns recovery, or calls `next()` to delegate. The default `undefined` leaves the failure terminal.',
     parameters: [{ name: 'payload', description: '.signal - the turn abort signal. Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent.' }],
@@ -4129,6 +4135,14 @@ export const EVENT_API: readonly EventApiEntry[] = [
     summary: 'Supply display-only text for an already advertised exact provider/model row.',
     description: 'Supply display-only text for an already advertised exact provider/model row.',
     parameters: [{ name: 'provider', description: 'Registered provider route owning the row.' }, { name: 'model', description: 'Advertised model id; this event cannot add or rename a model.' }, { name: 'next', description: 'Delegate to the remaining presentation providers.' }],
+  },
+  {
+    name: 'api-session/prompt-owner',
+    mode: 'waterfall',
+    signature: '\'api-session/prompt-owner\'(next: () => string | undefined): string | undefined',
+    summary: 'Opaque local account epoch used to fence asynchronous prompt admission; never sent to a model or Client.',
+    description: 'Opaque local account epoch used to fence asynchronous prompt admission; never sent to a model or Client.',
+    parameters: [{ name: 'next', description: 'Other account owner contribution, or no account binding.' }],
   },
   {
     name: 'api-session/removed',
@@ -5647,6 +5661,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface GrantRecord {\n    readonly kind: \'grant\';\n    readonly payload: unknown;\n}',
   },
   {
+    name: 'HarnessModelConfigRequest',
+    declaration: 'export interface HarnessModelConfigRequest {\n    readonly baseURL: string;\n    readonly model: string;\n    readonly scope: string;\n    readonly modelConfigVersion: Branded<\'ModelConfigVersion\'>;\n    readonly contextWindow: number;\n    readonly maxTokens: number;\n}',
+  },
+  {
     name: 'HookBudget',
     declaration: 'export interface HookBudget {\n    readonly ms: number;\n    readonly remainingMs: number;\n}',
   },
@@ -5956,7 +5974,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'LlmFailure',
-    declaration: 'export interface LlmFailure {\n    readonly message: string;\n    readonly code: string;\n    readonly status?: number;\n    readonly providerRetryAfterMs?: number;\n    readonly requestId?: ProviderRequestId;\n    readonly offloadImages?: number;\n}',
+    declaration: 'export interface LlmFailure {\n    readonly message: string;\n    readonly code: string;\n    readonly status?: number;\n    readonly providerRetryAfterMs?: number;\n    readonly requestId?: ProviderRequestId;\n    readonly textReselection?: LlmTextReselectionProof;\n    readonly offloadImages?: number;\n}',
   },
   {
     name: 'LlmImageRequestPrice',
@@ -5979,6 +5997,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface LlmModelInfo {\n    provider: string;\n    id: string;\n    name: string;\n    description?: string;\n    textCapabilities?: LlmTextCapabilities;\n    inputModalities?: readonly ModelModality[];\n}',
   },
   {
+    name: 'LlmModelLimits',
+    declaration: 'export interface LlmModelLimits {\n    readonly contextWindow: number;\n    readonly maxOutputTokens: number;\n    readonly platform: {\n        readonly contextWindow?: number;\n        readonly maxOutputTokens?: number;\n    };\n    readonly override?: {\n        readonly contextWindow?: number;\n        readonly maxOutputTokens?: number;\n    };\n    readonly managedScope?: string;\n}',
+  },
+  {
     name: 'LlmModelReasoningInfo',
     declaration: 'export interface LlmModelReasoningInfo {\n    efforts: readonly LlmReasoningEffortInfo[];\n    defaultEffort?: ReasoningEffortId;\n}',
   },
@@ -5996,7 +6018,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'LlmResolvedModelInfo',
-    declaration: 'export interface LlmResolvedModelInfo extends LlmModelInfo {\n    context?: LlmModelContext;\n    defaultMaxTokens?: number;\n    maxOutputTokens?: number;\n    reasoning?: LlmModelReasoningInfo;\n    systemPromptUpdate?: SystemPromptUpdate;\n    toolUpdate?: ToolUpdate;\n}',
+    declaration: 'export interface LlmResolvedModelInfo extends LlmModelInfo {\n    context?: LlmModelContext;\n    defaultMaxTokens?: number;\n    maxOutputTokens?: number;\n    limits?: LlmModelLimits;\n    reasoning?: LlmModelReasoningInfo;\n    systemPromptUpdate?: SystemPromptUpdate;\n    toolUpdate?: ToolUpdate;\n}',
   },
   {
     name: 'LlmRuntime',
@@ -6009,6 +6031,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'LlmTextCapability',
     declaration: 'export type LlmTextCapability = \'tools\' | \'vision\' | \'reasoning\';',
+  },
+  {
+    name: 'LlmTextReselectionProof',
+    declaration: 'export interface LlmTextReselectionProof {\n    readonly schemaVersion: 1;\n    readonly model: string;\n    readonly requestId: ProviderRequestId;\n    readonly origin: string;\n    readonly managedScope: string;\n    readonly submissionState: \'not_submitted\';\n    readonly upstreamSubmitted: false;\n    readonly billingReserved: false;\n    readonly reason: \'model_unavailable\';\n}',
   },
   {
     name: 'LocalAtInput',
@@ -6188,7 +6214,11 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ModelCatalogModel',
-    declaration: 'export interface ModelCatalogModel {\n    readonly id: string;\n    readonly name: string;\n    readonly description?: string;\n    readonly presentation?: {\n        readonly description?: string;\n        readonly badge?: string;\n    };\n    readonly reasoning?: ModelReasoning;\n    readonly inputModalities?: LlmModelInfo[\'inputModalities\'];\n    readonly textCapabilities?: LlmTextCapabilities;\n    readonly executionCapabilities?: ModelExecutionCapabilities;\n}',
+    declaration: 'export interface ModelCatalogModel {\n    readonly id: string;\n    readonly name: string;\n    readonly description?: string;\n    readonly presentation?: {\n        readonly description?: string;\n        readonly badge?: string;\n    };\n    readonly reasoning?: ModelReasoning;\n    readonly inputModalities?: LlmModelInfo[\'inputModalities\'];\n    readonly textCapabilities?: LlmTextCapabilities;\n    readonly executionCapabilities?: ModelExecutionCapabilities;\n    readonly limits?: LlmModelLimits;\n    readonly limitSettings?: {\n        readonly settingsNs: string;\n        readonly settingsPath: readonly string[];\n    };\n}',
+  },
+  {
+    name: 'ModelConfigVersion',
+    declaration: 'export type ModelConfigVersion = Branded<\'ModelConfigVersion\'>;',
   },
   {
     name: 'ModelExecutionCapabilities',
@@ -6688,7 +6718,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'RequestErrorAction',
-    declaration: 'export type RequestErrorAction = {\n    kind: \'retry\';\n} | undefined;',
+    declaration: 'export type RequestErrorAction = {\n    kind: \'retry\';\n    reassemble?: true;\n    signal?: AbortSignal;\n} | undefined;',
   },
   {
     name: 'RequestHeaderReason',

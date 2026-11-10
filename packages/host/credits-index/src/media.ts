@@ -25,6 +25,7 @@
  */
 
 import { imageSpec, videoSpec, type ImageSpec, type VideoSpec } from './model-parameters.ts'
+import { readModelConfigVersion, type ModelConfigVersion } from './model-config-version.ts'
 
 /** Deliverable kinds separated from conversational models. */
 export type MediaKind = 'image' | 'video' | 'audio'
@@ -67,6 +68,14 @@ export interface ImageParams {
   readonly maxEdits: number
   /** True when a live reference-input limit was declared, including a zero limit. */
   readonly strictReferences?: boolean
+  /** Per-file input bound declared by the actual image-edit adapter. */
+  readonly referenceMaxBytes?: number
+  /** Reference-compatible subset of output combinations; absent keeps the legacy menu. */
+  readonly editSpecifications?: readonly MediaSpecification[]
+  /** Uploads references through the gateway's free, account-authorized file utility before editing. */
+  readonly referenceUpload?: 'ycapi'
+  /** An accepted task receipt precedes upstream rendering; queries never submit again. */
+  readonly asyncSubmit?: true
   /** Optional quality values; empty means the model has no such knob. */
   readonly qualities: readonly string[]
   /** Background modes the model accepts; empty means the field is not offered. */
@@ -131,6 +140,8 @@ export interface VideoParams {
 /** One model and its published parameters, as the panels need them. */
 export interface ModelCapability {
   readonly id: string
+  /** Published configuration pinned independently from account authority and personal preferences. */
+  readonly modelConfigVersion?: ModelConfigVersion
   readonly kind: MediaKind
   readonly displayName: string
   /** Groups allowed to call it; empty means the deployment did not say. */
@@ -537,8 +548,24 @@ function imageParams(spec: ImageSpec, schema: unknown, parameters: unknown, exam
   }
   // Input-image billing tells us an edit route exists even before the table does.
   const billedEdits = maxExampleValue(examples, 'input_images')
-  const maxEdits = declaredLimit(parameters, ['reference_images', 'images', 'input_images'], true)
+  let maxEdits = declaredLimit(parameters, ['reference_images', 'images', 'input_images'], true)
     ?? (closedPlugin ? 0 : spec.maxEdits > 0 || billedEdits === null ? spec.maxEdits : billedEdits)
+  const editDeclaration = objectRecord(parameters)?.['x-image-edit']
+  const edit = objectRecord(editDeclaration)
+  const editBytes = edit?.max_reference_bytes
+  const referenceMaxBytes = edit?.schema_version === 1 && typeof editBytes === 'number'
+    && Number.isSafeInteger(editBytes) && editBytes > 0 && editBytes <= 10 * 1024 * 1024 ? editBytes : undefined
+  const editSpecifications = edit?.specifications === undefined ? undefined
+    : declaredSpecifications({ oneOf: edit.specifications }, 'image')
+  const upload = objectRecord(edit?.reference_upload)
+  const referenceUpload = edit?.schema_version === 1 && upload?.path === '/v1/uploads/images'
+    && upload.origin === 'https://assets.token6688.com' ? 'ycapi' as const : undefined
+  const taskSubmit = objectRecord(objectRecord(parameters)?.['x-image-task-submit'])
+  const asyncSubmit = taskSubmit?.schema_version === 1 && taskSubmit.prefer === 'respond-async'
+    && objectRecord(objectRecord(parameters)?.['x-task-plugin'])?.key === 'ycapi'
+  if (editDeclaration !== undefined && (referenceMaxBytes === undefined
+    || edit?.specifications !== undefined && (editSpecifications === undefined || editSpecifications.length === 0)
+    || edit?.reference_upload !== undefined && referenceUpload === undefined)) maxEdits = 0
   const explicitResolutions = liveStringMenu(parameters, ['resolution'])
   const resolutions = explicitResolutions ?? schemaEnum(schema, 'resolution')
   const outputResolutions = explicitResolutions !== null || resolutions.length > 0 ? resolutions : spec.resolutions
@@ -566,6 +593,10 @@ function imageParams(spec: ImageSpec, schema: unknown, parameters: unknown, exam
       },
       maxCount: declaredLimit(parameters, ['n', 'count'], false) ?? (closedPlugin ? 1 : spec.maxCount),
       maxEdits,
+      ...referenceMaxBytes === undefined ? {} : { referenceMaxBytes },
+      ...editSpecifications === undefined ? {} : { editSpecifications },
+      ...referenceUpload === undefined ? {} : { referenceUpload },
+      ...asyncSubmit ? { asyncSubmit: true as const } : {},
       ...strictReferences ? { strictReferences: true } : {},
       qualities: qualities ?? (specifications === undefined ? spec.qualities : specificationStrings(specifications, 'quality')),
       backgrounds: backgrounds ?? (closedPlugin ? [] : spec.backgrounds),
@@ -781,6 +812,7 @@ export function catalogFromPricing(rows: readonly unknown[], userGroup: string |
     if (kind === null) continue
     const groups = stringList(record.enable_groups)
     if (userGroup !== null && groups.length > 0 && !groups.includes(userGroup)) continue
+    const modelConfigVersion = readModelConfigVersion(record)
     const examples = Array.isArray(record.billing_usage_examples) ? record.billing_usage_examples : []
     const built = kind === 'audio' ? audioParams(record.parameters) : kind === 'video'
       ? videoParams(videoSpec(id), record.billing_usage_schema, record.parameters)
@@ -798,6 +830,7 @@ export function catalogFromPricing(rows: readonly unknown[], userGroup: string |
       ?? (kind === 'image' ? '/v1/images/generations' : kind === 'video' ? '/v1/videos' : '/v1/audio/speech')
     catalog.push({
       id,
+      ...modelConfigVersion === undefined ? {} : { modelConfigVersion },
       kind,
       displayName: id === 'MiniMax-H3' ? 'mt-MiniMax-H3'
         : typeof record.display_name === 'string' && record.display_name.trim() !== '' ? record.display_name : id,

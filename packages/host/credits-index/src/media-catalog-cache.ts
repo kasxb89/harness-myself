@@ -1,6 +1,14 @@
 /** Login-scoped reuse of fresh reusable public pricing responses. @module */
 
-interface Entry { readonly expires: number; readonly rows: readonly unknown[] }
+import { readModelConfigRevision, type ModelConfigRevision } from './model-config-version.ts'
+
+/** Pricing rows and their publication revision are retained as one response. */
+export interface MediaCatalogSnapshot {
+  readonly rows: readonly unknown[]
+  readonly modelConfigRevision?: ModelConfigRevision
+}
+
+interface Entry { readonly expires: number; readonly snapshot: MediaCatalogSnapshot }
 
 /** Cache controls apply to decoded metadata only, never balances or generation authorization. */
 export class MediaCatalogCache {
@@ -22,12 +30,25 @@ export class MediaCatalogCache {
    * @returns Decoded pricing rows; failed and non-cacheable responses are never retained.
    */
   async read(scope: string, headers: HeadersInit, request: () => Promise<Response>, signal?: AbortSignal): Promise<readonly unknown[]> {
+    return (await this.snapshot(scope, headers, request, signal)).rows
+  }
+
+  /**
+   * Read rows together with the revision from their exact HTTP response.
+   * @param scope - Backend, account and login epoch without credentials.
+   * @param headers - Complete application request headers.
+   * @param request - Bounded metadata GET; never a generation request.
+   * @param signal - Cancellation for fresh and cached reads.
+   * @returns One immutable metadata envelope, including legacy revision absence.
+   */
+  async snapshot(scope: string, headers: HeadersInit, request: () => Promise<Response>,
+    signal?: AbortSignal): Promise<MediaCatalogSnapshot> {
     signal?.throwIfAborted()
     const key = JSON.stringify([scope, [...new Headers(headers)].sort(([a], [b]) => a.localeCompare(b))])
     const start = this.now()
     for (const [id, entry] of this.entries) if (entry.expires <= start) this.entries.delete(id)
     const cached = this.entries.get(key)
-    if (cached !== undefined) return cached.rows
+    if (cached !== undefined) return cached.snapshot
     const revision = this.revision
     const response = await request()
     if (!response.ok) {
@@ -40,6 +61,9 @@ export class MediaCatalogCache {
       throw new MediaCatalogReadError('MODEL_CATALOG_INVALID')
     }
     const rows: readonly unknown[] = body.data
+    const modelConfigRevision = readModelConfigRevision(body)
+    const snapshot: MediaCatalogSnapshot = Object.freeze({ rows,
+      ...modelConfigRevision === undefined ? {} : { modelConfigRevision } })
     const directives = (response.headers.get('cache-control') ?? '').toLowerCase().split(',').map(part => part.trim())
     const forbidden = directives.some(part => /^(?:no-store|no-cache)(?:$|=)/u.test(part))
       || response.headers.get('vary')?.split(',').some(part => part.trim() === '*') === true
@@ -55,9 +79,9 @@ export class MediaCatalogCache {
     // Include network and decoding time in freshness rather than extending a response's lifetime.
     if (!forbidden && ttl > 0 && revision === this.revision) {
       if (this.entries.size >= 64) this.entries.clear()
-      this.entries.set(key, { expires: start + ttl, rows })
+      this.entries.set(key, { expires: start + ttl, snapshot })
     }
-    return rows
+    return snapshot
   }
 }
 

@@ -105,6 +105,12 @@ function fixed(value: bigint, places: number): string {
 /** Exact extrema in account points, before display rounding. */
 export interface CreditUnitRange { readonly minimum: string; readonly maximum: string }
 
+/** An exact unit amount with optional per-row evidence for a zero retail price. */
+export interface CreditUnitPrice {
+  readonly points: string
+  readonly is_free?: true
+}
+
 /**
  * Validate exact decimal point prices after the Host's currency conversion.
  * @param value - Untrusted point price.
@@ -116,12 +122,14 @@ export function publicPointsDecimal(value: unknown): value is string {
 
 /**
  * Compare exact per-unit point prices already converted by the Host.
- * @param prices - Verified positive points per image or points per second; free-generation evidence is not supplied here.
+ * @param prices - Positive point strings or per-row amounts carrying explicit zero-price evidence.
  * @returns Exact minimum and maximum, or absence when no reliable prices are available.
  */
-export function creditUnitRange(prices: readonly string[]): CreditUnitRange | undefined {
-  if (prices.length === 0 || !prices.every(value => publicPointsDecimal(value) && /[1-9]/u.test(value))) return undefined
-  const values = prices.map(coefficient)
+export function creditUnitRange(prices: readonly (string | CreditUnitPrice)[]): CreditUnitRange | undefined {
+  const rows: readonly CreditUnitPrice[] = prices.map(value => typeof value === 'string' ? { points: value } : value)
+  if (rows.length === 0 || !rows.every(row => publicPointsDecimal(row.points)
+    && (row.is_free === true ? !/[1-9]/u.test(row.points) : /[1-9]/u.test(row.points)))) return undefined
+  const values = rows.map(row => coefficient(row.points))
   const scale = Math.max(...values.map(value => value.scale))
   const normalized = values.map(value => value.integer * 10n ** BigInt(scale - value.scale))
   const minimum = normalized.reduce((left, right) => left < right ? left : right)

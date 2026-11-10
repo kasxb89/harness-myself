@@ -1,0 +1,10 @@
+version: 1
+scenario: model-reselection
+profile: sdk
+composition: sdk-model-reselection
+recording: authored
+header:
+  class: sdk-model-reselection
+  pin: true
+  changes: 1
+  promptChanges: 1

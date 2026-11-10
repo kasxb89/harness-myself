@@ -295,7 +295,8 @@ export class SessionInputShell implements SessionInput {
 
   /** Append ordered attachment ids unless an admission transaction is locked. */
   addAttachments(ids: readonly DraftAttachmentId[]): boolean {
-    if (this.modelCapabilities !== undefined && this.deps.modelAttachmentsSupported?.(ids, this.modelCapabilities) === false) {
+    if (this.modelCapabilities !== undefined && this.modelCapabilities.available !== false
+      && this.deps.modelAttachmentsSupported?.(ids, this.modelCapabilities) === false) {
       this.refuseModelInput(ids)
       return false
     }
@@ -313,8 +314,9 @@ export class SessionInputShell implements SessionInput {
    * @returns false when admission is locked or the editor refuses the insertion.
    */
   addFiles(references: readonly ReferenceInsert[], ids: readonly DraftAttachmentId[]): boolean {
-    if (this.modelCapabilities !== undefined && (this.modelCapabilities.tools === false && references.length > 0
-      || ids.length > 0 && this.deps.modelAttachmentsSupported?.(ids, this.modelCapabilities) === false)) {
+    if (this.modelCapabilities !== undefined && this.modelCapabilities.available !== false
+      && (this.modelCapabilities.tools === false && references.length > 0
+        || ids.length > 0 && this.deps.modelAttachmentsSupported?.(ids, this.modelCapabilities) === false)) {
       this.refuseModelInput(ids)
       return false
     }
@@ -382,13 +384,9 @@ export class SessionInputShell implements SessionInput {
    */
   submit(mode: InputSubmitMode = 'queue', source?: 'click' | 'enter'): void {
     if (this.disposed) return
-    if (this.modelCapabilities?.available === false) {
-      const notice = this.deps.unavailableModelNotice
-      if (notice === undefined) throw new Error('Missing model-route refusal presentation')
-      this.notify('error', notice())
-      return
-    }
-    if (this.modelCapabilities !== undefined && (this.modelCapabilities.tools === false
+    // The Host may replace an unavailable route before accepting this one
+    // submission; keep its content intact and do not resend from the GUI.
+    if (this.modelCapabilities !== undefined && this.modelCapabilities.available !== false && (this.modelCapabilities.tools === false
       && this.projection.occurrences.some(value => value.appearance === 'file' || value.appearance === 'folder')
       || this.attachmentIds.length > 0 && this.deps.modelAttachmentsSupported?.(this.attachmentIds, this.modelCapabilities) === false)) {
       this.refuseModelInput()
@@ -531,7 +529,7 @@ export class SessionInputShell implements SessionInput {
    * @returns whether the edit applied.
    */
   insertReference(ref: ReferenceInsert, span: TokenSpan): boolean {
-    if (this.modelCapabilities?.tools === false && (ref.appearance === 'file' || ref.appearance === 'folder')) {
+    if (this.modelCapabilities?.available !== false && this.modelCapabilities?.tools === false && (ref.appearance === 'file' || ref.appearance === 'folder')) {
       this.refuseModelInput([])
       return false
     }

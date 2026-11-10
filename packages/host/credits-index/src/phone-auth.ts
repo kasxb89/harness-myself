@@ -69,11 +69,11 @@ export function phoneFailure(response: Response | null, body: PhoneApiBody, oper
     PHONE_INVALID_PARAMETERS: '登录信息不完整，请检查手机号和验证码。',
     PHONE_RATE_LIMITED: '操作过于频繁，请等待倒计时结束后重试。',
     PHONE_CHALLENGE_UNAVAILABLE: body.data?.delivery_status === 'not_sent'
-      ? '短信服务暂不可用，本次未发送。请稍后手动重新获取验证码。'
-      : '短信发送结果尚未确认；若已收到短信可直接输入验证码，否则请查询本次发送结果。',
-    PHONE_DELIVERY_UNKNOWN: '短信发送结果尚未确认；若已收到短信可直接输入验证码，否则请查询本次发送结果。',
-    PHONE_CHALLENGE_PENDING: '短信请求仍在处理中，请稍后查询本次发送结果。',
-    PHONE_CODE_INVALID_OR_EXPIRED: '验证码不正确或已过期，请检查短信或重新获取验证码。',
+      ? '验证码服务暂不可用，本次未发送。请稍后手动重新获取验证码。'
+      : '验证码发送结果尚未确认；若已收到验证码可直接输入，否则请查询本次请求结果。',
+    PHONE_DELIVERY_UNKNOWN: '验证码发送结果尚未确认；若已收到验证码可直接输入，否则请查询本次请求结果。',
+    PHONE_CHALLENGE_PENDING: '验证码请求仍在处理中，请稍后查询本次请求结果。',
+    PHONE_CODE_INVALID_OR_EXPIRED: '验证码不正确或已过期，请核对后重试或重新获取验证码。',
     PHONE_LOGIN_UNAVAILABLE: '登录服务暂不可用，请保留验证码并稍后重试本次登录。',
     PHONE_CHALLENGE_CONSUMED: '此登录已失效，请重新获取验证码。',
     PHONE_IDEMPOTENCY_CONFLICT: '本次请求与原内容不同，请使用原内容重试或修改验证码后重新登录。',
@@ -83,6 +83,6 @@ export function phoneFailure(response: Response | null, body: PhoneApiBody, oper
   if (code !== null && message !== undefined) return { ok: false, code, message,
     retryAfterSeconds: code === 'PHONE_RATE_LIMITED' ? retryAfterSeconds ?? 60 : retryAfterSeconds }
   return { ok: false, code: operation === 'challenge' ? 'PHONE_DELIVERY_UNKNOWN' : 'PHONE_LOGIN_UNAVAILABLE',
-    message: operation === 'challenge' ? '短信服务暂不可用或发送结果未确认，请稍后重试本次请求。'
+    message: operation === 'challenge' ? '验证码服务暂不可用或请求结果未确认，请稍后重试本次请求。'
       : '登录服务暂不可用或结果未确认，请保留验证码并稍后重试本次登录。', retryAfterSeconds }
 }

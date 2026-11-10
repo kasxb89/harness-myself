@@ -242,6 +242,8 @@ interface LlmFailure {
   readonly providerRetryAfterMs?: number
   /** Opaque provider-issued request identifier for diagnostics. */
   readonly requestId?: ProviderRequestId
+  /** Validated zero-send gateway evidence; absent leaves submission and billing effects unconfirmed. */
+  readonly textReselection?: LlmTextReselectionProof
   /**
    * With code `IMAGE_OFFLOAD_REQUIRED`: how many more of the oldest retained
    * image occurrences the route needs offloaded before the same request fits
@@ -604,6 +606,22 @@ interface LlmModelContext {
 }
 ```
 
+`LlmModelLimits` separates effective request capacities from known platform ceilings and raw user choices. `managedScope` identifies the active account/backend only when both platform capacities are known; absent platform fields must not be interpreted as native capacity declarations.
+
+```ts type-equiv
+/** Effective capacities and the account-bound settings that may narrow them. */
+interface LlmModelLimits {
+  readonly contextWindow: number
+  readonly maxOutputTokens: number
+  /** Known platform ceilings before the explicit user choice; absent fields are not native-capacity claims. */
+  readonly platform: { readonly contextWindow?: number; readonly maxOutputTokens?: number }
+  /** Unclamped explicit choices for the active scope, retained across platform limit changes. */
+  readonly override?: { readonly contextWindow?: number; readonly maxOutputTokens?: number }
+  /** Present only when both platform capacities belong to this active managed account/backend. */
+  readonly managedScope?: string
+}
+```
+
 Reasoning effort is another exact-route capability. The core brands identifiers but does not enumerate their values; each adapter owns the choices in increasing effort order, display names, and optional deployment default. Ordering compares selectable controls, not predicted token use, cost, or latency.
 
 ```ts type-equiv
@@ -645,6 +663,8 @@ interface LlmResolvedModelInfo extends LlmModelInfo {
   defaultMaxTokens?: number
   /** Current provider-declared output ceiling; every request, including an explicit override, must remain within it. */
   maxOutputTokens?: number
+  /** Current effective capacities, platform ceilings, and active explicit user choices. */
+  limits?: LlmModelLimits
   /** Adapter-owned selectable reasoning levels when exposed. */
   reasoning?: LlmModelReasoningInfo
   /** Declared mid-conversation system prompt handling; absent means only a leading system message is read. */
@@ -985,6 +1005,26 @@ declare abstract class LlmAdapter {
 
 `ContentBlockType` (the key set the `index`-correlated blocks carry) derives from [`ContentBlockMap`](#content-blocks-and-messages) above.
 
+<a id="published-model-authorization"></a>
+
+## Published model authorization
+
+`HarnessModelConfigRequest` binds one prepared model version to its exact backend, account scope, and original published context/output pair before personal overrides. The live account owner checks the complete request immediately before transmission. Provider-profile values alone do not authorize the version header; a Host without `authorizeModelConfig` refuses versioned requests. The [pi-ai package](../../packages/llm/llm-pi-ai/README.md) owns transport and failure behavior.
+
+Source: [`packages/llm/llm-pi-ai/src/harness-account.ts`](../../packages/llm/llm-pi-ai/src/harness-account.ts)
+
+```ts type-equiv
+/** Prepared authoritative model metadata requiring the live account owner's approval. */
+interface HarnessModelConfigRequest {
+  readonly baseURL: string
+  readonly model: string
+  readonly scope: string
+  readonly modelConfigVersion: Branded<'ModelConfigVersion'>
+  readonly contextWindow: number
+  readonly maxTokens: number
+}
+```
+
 <!-- BEGIN GENERATED cordis-surface (gen-cordis-catalog.ts) — do not edit between markers -->
 
 <a id="cordis-surface"></a>
@@ -1043,6 +1083,13 @@ refreshModels(baseURL: string): Promise<readonly string[]>
  * @returns The current relay key, or undefined when no live session authorizes this exact request scope.
  */
 resolveRelayKey(baseURL: string, expectedModelLimitsScope?: string): Promise<string | undefined>
+
+/**
+ * Authorize one prepared version and original capacity pair against the current owned directory.
+ * @param request - Exact backend, account scope, model and authoritative metadata captured before overrides.
+ * @returns True only while this same live account and complete published declaration still match.
+ */
+authorizeModelConfig?(request: HarnessModelConfigRequest): Promise<boolean>
 ```
 
 Source: [`packages/llm/llm-pi-ai/src/harness-account.ts`](../../packages/llm/llm-pi-ai/src/harness-account.ts)

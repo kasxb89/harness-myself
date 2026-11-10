@@ -1,5 +1,5 @@
 /** Authored, keyless image receipts survive persistence and render query-only recovery. */
-import { readFile } from 'node:fs/promises'
+import { copyFile, readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { chromium, type Browser, type Page } from 'playwright'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -27,6 +27,7 @@ describe.skipIf(MODE === 'record')('web e2e: retained image task recovery', () =
   beforeAll(async () => {
     fixture = await readFile(await selectedSessionFixture(FIXTURE), 'utf8')
     scaffold = await launchWebScaffold({})
+    await copyFile(`${SNAPSHOT_DIR}/reference.png`, `${scaffold.workspaceCwd}/reference.png`)
     await seedSession(scaffold, fixture, SEED_ID)
     browser = await chromium.launch()
     page = await newEnglishPage(browser)
@@ -67,7 +68,7 @@ describe.skipIf(MODE === 'record')('web e2e: retained image task recovery', () =
     expect(await page.locator('[data-tool="generate_image"]').count()).toBe(1)
     await compareOrRefreshGolden(`${SNAPSHOT_DIR}/ui.expected.md`,
       (await captureStableAria(page, '[class*="centerCol"]', scaffold.workspaceCwd)).split(SEED_ID).join('{{seededId}}'), MODE)
-    await assertFixtureInventory(SNAPSHOT_DIR, ['session.v4.jsonl', 'ui.expected.md'])
+    await assertFixtureInventory(SNAPSHOT_DIR, ['session.v4.jsonl', 'ui.expected.md', 'reference.png'])
     expect(tripwire.pageErrors).toEqual([])
     expect(tripwire.warnings).toEqual([])
   })
@@ -125,6 +126,9 @@ describe.skipIf(MODE === 'record')('web e2e: retained image task recovery', () =
         } else if (url.pathname === '/credits/api/chat-usage') {
           await json({ scope: 'chat-model', status: 'unavailable', settledRequests: 0, totalRequests: 0, accountId: account.id })
         } else if (url.pathname === '/credits/api/media/catalog') await json({ image: [], video: [] })
+        else if (url.pathname === '/credits/api/announcement-banner') {
+          await json({ enabled: false, scope: '0'.repeat(64), revision: '1'.repeat(64), announcements: [] })
+        }
         else if (url.pathname === '/credits/api/creation/content') {
           const mode = { title: { zh: '', en: '' }, description: { zh: '', en: '' },
             promptPlaceholder: { zh: '', en: '' }, categories: [], templates: [], presets: [] }

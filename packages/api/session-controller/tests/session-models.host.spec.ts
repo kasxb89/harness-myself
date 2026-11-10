@@ -801,7 +801,7 @@ describe('Web session model selection', () => {
     await ctx.fiber.dispose()
   })
 
-  it('rejects a deleted exact model before attachment admission and only sends after explicit reselection', async () => {
+  it('recovers a deleted exact model while retaining independent attachment validation before enqueue', async () => {
     const { ctx, sessionId, agent } = await harness()
     let removed = false
     ctx.llm.registerAdapter(['changing'], new class extends CatalogAdapter {
@@ -828,12 +828,13 @@ describe('Web session model selection', () => {
         { type: 'file', receiptId: 'not-admitted-file' as FileUploadReceiptId },
       ]
       expect(await remote.prompt(promptRequest({ sessionId, mode: 'queue', content }))).toMatchObject({
-        ok: false, error: { code: 'session/model-unavailable', details: { provider: 'changing', model: 'removed', reason: 'UNKNOWN_MODEL' } },
+        ok: false, error: { code: 'session/attachment-invalid', details: { reason: 'FILE_NOT_STAGED' } },
       })
       expect(followup).not.toHaveBeenCalled()
-      expect(agent.session.snapshotEvents()).toEqual(before)
-      expect(currentSelection(ctx, sessionId)).toMatchObject({ provider: 'changing', model: 'removed' })
-      expectValue(await remote.selectModel({ sessionId, provider: 'changing', model: 'retained' }))
+      expect(agent.session.snapshotEvents().slice(before.length)).toMatchObject([
+        { type: 'model/selection', data: { provider: 'deepseek-official', model: 'deepseek-chat' } },
+      ])
+      expect(currentSelection(ctx, sessionId)).toMatchObject({ provider: 'deepseek-official', model: 'deepseek-chat' })
       expect(followup).not.toHaveBeenCalled()
       expectValue(await remote.prompt(promptRequest({ sessionId, mode: 'queue', content: [{ type: 'text', text: 'explicit retry' }] })))
       expect(followup).toHaveBeenCalledOnce()
@@ -1116,11 +1117,11 @@ describe('version2 model route facts and selection recovery', () => {
     } finally { await f.ctx.fiber.dispose() }
   })
 
-  it('reports a fixed-route outage before enqueue rather than calling unverified facts unsupported', async () => {
+  it('reports no compatible available model before enqueue when the fixed route has no replacement', async () => {
     const f = await v2Harness({ ...unknown, operationalStatus: 'fixed_lane_unavailable', operationalReason: 'current fixed route unavailable' })
     try {
       const result = await f.remote.prompt(promptRequest({ sessionId: f.sessionId, mode: 'queue', content: [{ type: 'text', text: '保留输入' }] }))
-      expect(result).toMatchObject({ ok: false, error: { code: 'session/model-capability-invalid', details: { reason: 'MODEL_ROUTE_UNAVAILABLE' } } })
+      expect(result).toMatchObject({ ok: false, error: { code: 'session/model-unavailable', details: { reason: 'NO_AVAILABLE_MODEL' } } })
       expect(f.followup).not.toHaveBeenCalled()
       expect(f.requests).toEqual([])
     } finally { await f.ctx.fiber.dispose() }

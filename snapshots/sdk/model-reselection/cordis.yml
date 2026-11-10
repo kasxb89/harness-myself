@@ -1,0 +1,24 @@
+# The shipped SDK profile owns startup; this patch replaces only the model boundary.
+- id: skill-filesystem
+  name: '@deepseek-ai/dsh-skill-filesystem'
+  config:
+    includeDefaultRoots: false
+
+- id: llm-deepseek
+  disabled: true
+
+- id: plugin-package-inventory-deepseek
+  disabled: true
+
+- id: session-persistence-jsonl
+  name: '@deepseek-ai/dsh-session-persistence-jsonl'
+  config:
+    root: !!js dshHomePath('sessions')
+    compression: none
+
+- id: session-title-llm
+  disabled: true
+
+- insert:
+    - id: model-reselection-fixture
+      name: './model-reselection.mjs'

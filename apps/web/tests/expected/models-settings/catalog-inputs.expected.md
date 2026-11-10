@@ -12,6 +12,51 @@
   - button "关闭"
   - heading "模型" [level=2]
   - paragraph: 填入各提供商的 API 密钥即可使用其模型。
+  - region "可用聊天模型":
+    - heading "可用聊天模型" [level=3]
+    - text: 已读取 7 个模型
+    - button "重试"
+    - alert:
+      - paragraph: 云枢 的模型列表暂时无法读取，请重试
+    - searchbox "搜索模型名称或 ID"
+    - region "DeepSeek":
+      - heading "DeepSeek" [level=4]
+      - list:
+        - listitem:
+          - text: DeepSeek-V4-Flash
+          - code: deepseek-v4-flash
+        - listitem:
+          - text: DeepSeek-V4-Flash-Vision-Exp
+          - code: deepseek-v4-flash-vision-exp
+    - region "minimax-cn":
+      - heading "minimax-cn" [level=4]
+      - list:
+        - listitem:
+          - text: MiniMax-M2.7
+          - code: MiniMax-M2.7
+          - text: 当前有效：窗口 204800 · 输出 131072
+        - listitem:
+          - text: MiniMax-M2.7-highspeed
+          - code: MiniMax-M2.7-highspeed
+          - text: 当前有效：窗口 204800 · 输出 131072
+        - listitem:
+          - text: MiniMax-M3
+          - code: MiniMax-M3
+          - text: 当前有效：窗口 1000000 · 输出 512000
+    - region "Acme 网关":
+      - heading "Acme 网关" [level=4]
+      - list:
+        - listitem:
+          - text: acme-large
+          - code: acme-large
+          - text: 当前有效：窗口 262144 · 输出 32768
+    - region "openai":
+      - heading "openai" [level=4]
+      - list:
+        - listitem:
+          - text: GPT-6 Astra
+          - code: gpt-6-astra
+          - text: 当前有效：窗口 272000 · 输出 128000
   - list:
     - listitem:
       - text: minimax-cn

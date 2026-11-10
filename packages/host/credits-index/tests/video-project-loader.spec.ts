@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, relative } from 'node:path'
 import { tmpdir } from 'node:os'
+import { createServer, type Server } from 'node:http'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
@@ -28,17 +29,22 @@ import type { VideoEditor } from '../src/video-edit.ts'
 import { CreativeError, CreativeStore } from '../src/creative-store.ts'
 import { VideoSubmissionRejection } from '../src/video-submission-result.ts'
 import { registerCreativeTools } from '../src/creative-tools.ts'
-import { readVideoProject } from '../src/video-project.ts'
+import { planVideoDurations, readVideoProject } from '../src/video-project.ts'
 import actualMediaDefaultsStatus from './fixtures/announcement-banner-api/status.json' with { type: 'json' }
 import { registerVideoGenerationIntent } from '../src/video-generation-intent.ts'
 
 let context: Context | undefined
 let directory: string | undefined
+const nativeServers: Server[] = []
 
 afterEach(async () => {
   await context?.fiber.dispose()
   context = undefined
   vi.unstubAllGlobals()
+  await Promise.all(nativeServers.splice(0).map(server => new Promise<void>((resolve, reject) => {
+    server.close((error) => { if (error === undefined) resolve(); else reject(error) })
+    server.closeAllConnections()
+  })))
   if (directory !== undefined) await rm(directory, { recursive: true, force: true })
   directory = undefined
 })
@@ -65,7 +71,8 @@ function stubMediaDefaultsStatus(statusResponse: unknown, extraPricing: Record<s
 }
 
 async function boot(production = false, workspaceIncludesState = false, managedOutput = false,
-  humanText = '生成一个完整视频，按所选模型的实际时长生成分镜并合成。', phoneSession = false) {
+  humanText = '生成一个完整视频，按所选模型的实际时长生成分镜并合成。', phoneSession = false,
+  fixtureApi?: { readonly origin: string; readonly config?: readonly string[] }) {
   directory = await mkdtemp(join(tmpdir(), 'dsh-video-tools-loader-'))
   const workspace = workspaceIncludesState ? directory : join(directory, 'workspace')
   await mkdir(workspace, { recursive: true })
@@ -132,7 +139,8 @@ async function boot(production = false, workspaceIncludesState = false, managedO
     ...production ? ['- name: skills'] : [],
     ...production || managedOutput ? ['- name: webserver', '  config:', "    host: '127.0.0.1'", '    port: 0'] : [],
     ...managedOutput ? ['- name: artifacts', '  config:', `    defaultOutputDirectory: '${join(directory, 'selected-output')}'`, `    stateDirectory: '${join(directory, 'artifact-settings')}'`] : [],
-    ...production ? ['- name: credits', '  config:', `    stateDir: '${join(directory, 'credits')}'`, "    newApiBaseUrl: 'http://127.0.0.1:32127/harness'"] : ['- name: video-fixture'], '',
+    ...production ? ['- name: credits', '  config:', `    stateDir: '${join(directory, 'credits')}'`,
+      `    newApiBaseUrl: '${fixtureApi?.origin ?? 'http://127.0.0.1:32127/harness'}'`, ...fixtureApi?.config ?? []] : ['- name: video-fixture'], '',
   ].join('\n'))
   context = new Context()
   context.baseUrl = pathToFileURL(directory).href + '/'
@@ -209,6 +217,142 @@ function json(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>
 }
 
+async function nativeConfigFixture() {
+  const versionA = 'a'.repeat(64), versionB = 'b'.repeat(64)
+  const taskId = 'task_0123456789abcdef0123456789abcdef'
+  const calls: { path: string; method: string; version: string | string[] | undefined; body: unknown }[] = []
+  const pricingVersions: (string | undefined)[] = []
+  let active = false
+  let mode: 'same' | 'wrong-echo' | 'changed' | 'legacy-changed' | 'rejected' = 'same'
+  let latestVersion: string | undefined = versionA
+  const server = createServer((request, response) => {
+    void (async () => {
+      const chunks: Buffer[] = []
+      for await (const chunk of request) if (Buffer.isBuffer(chunk)) chunks.push(chunk)
+      const text = Buffer.concat(chunks).toString('utf8')
+      const path = request.url ?? '/', method = request.method ?? 'GET'
+      const body: unknown = text === '' ? undefined : JSON.parse(text)
+      calls.push({ path, method, version: request.headers['x-yunshu-model-config-version'], body })
+      response.setHeader('content-type', 'application/json')
+      response.setHeader('cache-control', 'no-store')
+      const answer = (value: unknown): void => { response.end(JSON.stringify(value)) }
+      if (path === '/harness/api/status') {
+        answer({ success: true, data: { client_media_defaults: { schema_version: 1,
+          default_image_model: '', default_video_model: 'MiniMax-H3' } } }); return
+      }
+      if (path === '/harness/api/user/self') {
+        answer({ success: true, data: { id: 7, group: 'default', quota: 500_000 } }); return
+      }
+      if (path === '/harness/api/pricing') {
+        if (active) {
+          const read = pricingVersions.length + 1
+          latestVersion = mode === 'changed' ? read === 2 ? versionA : versionB
+            : mode === 'legacy-changed' ? read === 2 ? undefined : versionB : versionA
+          pricingVersions.push(latestVersion)
+        }
+        answer({ success: true, data: [{ model_name: 'MiniMax-H3', supported_endpoint_types: ['video-generation'],
+          ...latestVersion === undefined ? {} : { model_config_version: latestVersion } }] }); return
+      }
+      if (path === '/harness/v1/models') {
+        answer({ data: [{ id: 'MiniMax-H3', supported_endpoint_types: ['video-generation'],
+          ...latestVersion === undefined ? {} : { model_config_version: latestVersion } }] }); return
+      }
+      if (path === '/harness/v1/video/generations' && method === 'POST') {
+        if (mode === 'rejected') {
+          response.statusCode = 400
+          response.setHeader('X-Yunshu-Model-Config-Result', 'rejected-before-billing')
+          response.setHeader('X-Oneapi-Request-Id', 'native-original-request')
+          answer({ accepted: false, charged: false, reserved: false, retryable: false, resubmittable: false,
+            submission_state: 'not_submitted', error: { code: 'model_config_changed', type: 'invalid_request_error', message: 'private diagnostic' } })
+          return
+        }
+        response.setHeader('X-Yunshu-Model-Config-Version', mode === 'wrong-echo' ? versionB : versionA)
+        answer({ id: taskId, task_id: taskId, model: 'MiniMax-H3', status: 'queued' }); return
+      }
+      if (path === '/harness/v1/tasks/' + taskId && method === 'GET') {
+        answer({ id: taskId, task_id: taskId, model: 'MiniMax-H3', media_kind: 'video', status: 'UNKNOWN' }); return
+      }
+      response.statusCode = 404
+      answer({ error: 'not found' })
+    })().catch((error: unknown) => { response.destroy(error instanceof Error ? error : undefined) })
+  })
+  nativeServers.push(server)
+  await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve) })
+  const address = server.address()
+  if (address === null || typeof address === 'string') throw new Error('Expected native fixture port')
+  return {
+    origin: `http://127.0.0.1:${String(address.port)}/harness`, versionA, versionB, taskId, calls, pricingVersions,
+    activate(value: typeof mode): void { mode = value; active = true; calls.length = 0; pricingVersions.length = 0 },
+  }
+}
+
+describe('public native video model configuration binding', () => {
+  it.each(['same', 'wrong-echo', 'rejected'] as const)('pins generate_video through the real Loader and HTTP transport: %s', async (mode) => {
+    const api = await nativeConfigFixture()
+    const f = await boot(true, false, false, '使用MiniMax-H3生成一个5秒768P视频', true,
+      { origin: api.origin, config: ['    mediaCatalogCacheTtlMs: 0'] })
+    await f.call('list_video_models', {})
+    api.activate(mode)
+    const result = json((await f.call('generate_video', { prompt: 'A quiet cup of tea', model: 'MiniMax-H3',
+      duration_seconds: 5, resolution: '768P' })).value)
+    const posts = api.calls.filter(call => call.method === 'POST' && call.path === '/harness/v1/video/generations')
+    expect(posts).toHaveLength(1)
+    expect(posts[0]?.version).toBe(api.versionA)
+    expect(posts[0]?.body).toEqual({ model: 'MiniMax-H3', prompt: 'A quiet cup of tea', duration: 5, seconds: 5,
+      resolution: '768P', size: '768P', metadata: { resolution: '768P' } })
+    expect(JSON.stringify(posts[0]?.body)).not.toContain('model_config_version')
+    expect(JSON.stringify(posts[0]?.body)).not.toContain(api.versionA)
+    const reads = api.calls.filter(call => call.method === 'GET' && call.path === '/harness/v1/tasks/' + api.taskId)
+    if (mode === 'rejected') {
+      expect(result).toMatchObject({ status: 'failed', submission_state: 'not-submitted', code: 'MODEL_CONFIG_CHANGED', task_id: '',
+        request_id: 'native-original-request' })
+      expect(reads).toHaveLength(0)
+      const planId = result.plan_id
+      if (typeof planId !== 'string') throw new Error('The rejected original operation must retain its plan')
+      const manifestPath = join(dirname(f.stateDirectory), 'credits', 'creative-projects', planId, 'project.json')
+      const readOperation = async (): Promise<Record<string, unknown>> => {
+        const record = json(JSON.parse(await readFile(manifestPath, 'utf8')))
+        if (!Array.isArray(record.operations) || record.operations.length !== 1) throw new Error('Expected one original operation')
+        return json(record.operations[0])
+      }
+      const original = await readOperation()
+      expect(original).toMatchObject({ id: result.operation_id, status: 'failed', submissionStarted: true, errorCode: 'MODEL_CONFIG_CHANGED',
+        videoReceipt: { model: 'MiniMax-H3', route: '/v1/video/generations', phase: 'submitting', requestId: 'native-original-request' } })
+      expect(json(original.videoReceipt)).not.toHaveProperty('taskId')
+      const queried = json((await f.call('query_video_task', { plan_id: planId, operation_id: result.operation_id })).value)
+      expect(queried).toMatchObject({ status: 'failed', code: 'CREATIVE_VIDEO_TASK_UNCONFIRMED' })
+      const duplicate = json((await f.call('generate_video', { work_id: result.work_id, prompt: 'A quiet cup of tea', model: 'MiniMax-H3',
+        duration_seconds: 5, resolution: '768P' })).value)
+      expect(duplicate).toMatchObject({ status: 'existing', work_id: result.work_id, plan_id: planId, operation_id: result.operation_id })
+      expect(await readOperation()).toEqual(original)
+      expect(api.calls.filter(call => call.method === 'POST' && call.path === '/harness/v1/video/generations')).toHaveLength(1)
+    } else {
+      expect(result).toMatchObject({ status: 'pending', task_id: api.taskId,
+        code: mode === 'wrong-echo' ? 'MODEL_CONFIG_CONFIRMATION_UNAVAILABLE' : 'VIDEO_STATUS_INVALID' })
+      expect(reads).toHaveLength(mode === 'wrong-echo' ? 0 : 1)
+      const listed = json((await f.call('query_video_task', {})).value)
+      expect(listed.tasks).toEqual([{ plan_id: result.plan_id, operation_id: result.operation_id,
+        status: 'unknown', can_query: true, task_id: api.taskId }])
+      const resumed = json((await f.call('query_video_task', { plan_id: result.plan_id, operation_id: result.operation_id })).value)
+      expect(resumed).toMatchObject({ status: 'pending', task_id: api.taskId, code: 'VIDEO_STATUS_INVALID' })
+      expect(api.calls.filter(call => call.method === 'POST' && call.path === '/harness/v1/video/generations')).toHaveLength(1)
+    }
+  })
+
+  it.each(['changed', 'legacy-changed'] as const)('refuses a new native POST across a directory snapshot change: %s', async (mode) => {
+    const api = await nativeConfigFixture()
+    const f = await boot(true, false, false, '使用MiniMax-H3生成一个5秒768P视频', true,
+      { origin: api.origin, config: ['    mediaCatalogCacheTtlMs: 0'] })
+    await f.call('list_video_models', {})
+    api.activate(mode)
+    const result = json((await f.call('generate_video', { prompt: 'A quiet cup of tea', model: 'MiniMax-H3',
+      duration_seconds: 5, resolution: '768P' })).value)
+    expect(result).toMatchObject({ status: 'failed', code: 'MODEL_CONFIG_CHANGED' })
+    expect(api.pricingVersions).toEqual([api.versionB, mode === 'changed' ? api.versionA : undefined, api.versionB])
+    expect(api.calls.filter(call => call.method === 'POST' && call.path === '/harness/v1/video/generations')).toEqual([])
+  })
+})
+
 describe('video tools through Loader, real tool registry and jobs runtime', () => {
   it('reports unconfirmed submission and pending fees through retained job output and original-project recovery', async () => {
     const f = await boot()
@@ -265,6 +409,55 @@ describe('video tools through Loader, real tool registry and jobs runtime', () =
     await vi.waitFor(() => { expect(f.ctx.jobs.get(JobId(String(resumed.job_id)), f.agent.id).status).toBe('completed') })
     expect(submit).toHaveBeenCalledTimes(2)
     expect(resumed.project_id).toBe(started.project_id)
+  })
+
+  it('quotes retained automatic five-second clips without replanning or repeating accepted and unknown submissions', async () => {
+    const f = await boot()
+    f.options.maxConcurrentSegments = 2
+    f.provider.model = async () => ({ id: 'MiniMax-H3', durations: [5] })
+    f.setPending(true)
+    const originalSubmit = f.provider.submit.bind(f.provider)
+    let submitted = 0
+    f.provider.submit = async (...args) => {
+      const attempt = ++submitted
+      const result = await originalSubmit(...args)
+      if (attempt === 2) throw new Error('Original submission response was lost')
+      return result
+    }
+    const started = json((await f.call('generate_video_project', { prompt: '保留原20秒项目', total_duration_seconds: 20 })).value)
+    await vi.waitFor(() => { expect(f.ctx.jobs.get(JobId(String(started.job_id)), f.agent.id).status).toBe('failed') })
+    const original = await readVideoProject(f.options, String(started.project_id), f.agent.id, f.workspace, f.provider.identity)
+    expect(original.input).not.toHaveProperty('shotDurations')
+    expect(original.segments.map(segment => segment.durationSeconds)).toEqual([5, 5, 5, 5])
+    expect(f.requests).toEqual([5, 5])
+    expect(original.segments[0]).toMatchObject({ status: 'running', taskId: 'task-1' })
+    expect(original.segments[1]).toMatchObject({ status: 'unknown' })
+    expect(original.segments[1]).not.toHaveProperty('taskId')
+
+    f.provider.model = async () => ({ id: 'MiniMax-H3', durations: [5, 10, 15] })
+    const quotes: VideoProjectInput[] = []
+    f.options.chatModelChoice = async (input) => {
+      quotes.push(structuredClone(input))
+      const durations = input.shotDurations ?? planVideoDurations(input.totalDurationSeconds, [5, 10, 15], f.options.maxSegments)
+      expect(durations).toEqual([5, 5, 5, 5])
+      return { input }
+    }
+    f.setPending(false)
+    const check = vi.spyOn(f.provider, 'check')
+    f.nextHuman('继续查询刚才的原20秒项目')
+    const resumed = json((await f.call('resume_video_project', { project_id: original.id })).value)
+    expect(resumed.status).toBe('background')
+    await vi.waitFor(() => { expect(f.ctx.jobs.get(JobId(String(resumed.job_id)), f.agent.id).status).toBe('failed') })
+    expect(quotes).toEqual([{ ...original.input, model: original.model, shotDurations: [5, 5, 5, 5] }])
+    expect(check.mock.calls.map(([id]) => id)).toEqual(['task-1'])
+    expect(f.requests).toEqual([5, 5])
+    const retained = await readVideoProject(f.options, original.id, f.agent.id, f.workspace, f.provider.identity)
+    expect(retained.input).toEqual(original.input)
+    expect(retained.input).not.toHaveProperty('shotDurations')
+    expect(retained.segments.map(segment => segment.durationSeconds)).toEqual([5, 5, 5, 5])
+    expect(retained.segments[0]).toMatchObject({ status: 'saved', taskId: 'task-1' })
+    expect(retained.segments[1]).toMatchObject({ status: 'unknown' })
+    expect(retained.failureCode).toBe('SUBMISSION_UNKNOWN')
   })
 
   it('keeps accepted original clips recoverable when current new-generation model approval is unavailable', async () => {

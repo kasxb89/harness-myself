@@ -1369,6 +1369,23 @@ Supply display-only text for an already advertised exact provider/model row.
 
 Source: [`packages/api/session-controller/src/types.ts`](../../packages/api/session-controller/src/types.ts)
 
+<a id="api-sessionprompt-owner--waterfall"></a>
+
+#### `api-session/prompt-owner` — waterfall
+
+Opaque local account epoch used to fence asynchronous prompt admission; never sent to a model or Client.
+
+```ts cordis-catalog
+/**
+ * Opaque local account epoch used to fence asynchronous prompt admission; never sent to a model or Client.
+ * @mode waterfall
+ * @param next - Other account owner contribution, or no account binding.
+ */
+'api-session/prompt-owner'(next: () => string | undefined): string | undefined
+```
+
+Source: [`packages/api/session-controller/src/types.ts`](../../packages/api/session-controller/src/types.ts)
+
 <a id="api-sessionremoved--emit"></a>
 
 #### `api-session/removed` — emit

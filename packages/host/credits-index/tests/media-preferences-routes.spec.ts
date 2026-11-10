@@ -33,7 +33,11 @@ afterEach(async () => {
   root = undefined
 })
 
-it.each(['list_image_models', 'list_video_models'])('initializes %s pricing before relay authorization, then saves only public choices', async (directoryTool) => {
+it.each([
+  { directoryTool: 'list_image_models', freePrice: false },
+  { directoryTool: 'list_video_models', freePrice: false },
+  { directoryTool: 'list_image_models', freePrice: true },
+])('initializes $directoryTool pricing (free=$freePrice) before relay authorization, then saves only public choices', async ({ directoryTool, freePrice }) => {
   const calls: { path: string; method: string }[] = []
   let visible = ['image-a', 'MiniMax-H3']
   let readPricing = false
@@ -51,7 +55,8 @@ it.each(['list_image_models', 'list_video_models'])('initializes %s pricing befo
         parameters: { size: { enum: ['1:1'] }, resolution: { enum: ['1k'] },
           oneOf: [{ size: { const: '1:1' }, resolution: { const: '1k' } }] },
         retail_price_rows: [{ params: { size: '1:1', resolution: '1k', count: 1, mode: 'text-to-image' },
-          retail_cny: '0.19912', unit: 'CNY / image', supplier_token: 'sk-private-price' }] },
+          retail_cny: freePrice ? '0' : '0.19912', unit: 'CNY / image', supplier_token: 'sk-private-price',
+          ...freePrice ? { is_free: true } : {} }] },
       { model_name: 'image-hidden', supported_endpoint_types: ['image-generation'] },
       { model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }]); return
     }
@@ -126,10 +131,11 @@ it.each(['list_image_models', 'list_video_models'])('initializes %s pricing befo
   expect(catalog.payload.catalog.video.map(model => model.id)).toEqual(['MiniMax-H3'])
   expect(catalog.payload.catalog.image[0]?.pricing).toEqual({ schema_version: 1, status: 'available', basis: 'default',
     source: 'public-retail', unit: 'points/image', credits_per_yuan: '1250', coverage: 'complete',
-    rows: [{ parameters: { size: '1:1', resolution: '1k', count: 1 }, points: '248.9', input: 'text' }] })
+    rows: [{ parameters: { size: '1:1', resolution: '1k', count: 1 }, points: freePrice ? '0' : '248.9', input: 'text',
+      ...freePrice ? { is_free: true } : {} }] })
   expect(catalog.payload.catalog.video[0]?.pricing)
     .toMatchObject({ status: 'unavailable', unit: 'points/second', rows: [] })
-  expect(JSON.stringify((await read<MediaPreferences>()).payload)).not.toMatch(/pricing|248\.9|retail|credits_per_yuan/u)
+  expect(JSON.stringify((await read<MediaPreferences>()).payload)).not.toMatch(/pricing|248\.9|retail|credits_per_yuan|is_free/u)
 
   expect(catalog.payload.defaults).toEqual({ image: { model: 'image-a', configured: true, available: true },
     video: { model: 'MiniMax-H3', configured: true, available: true } })
@@ -142,6 +148,7 @@ it.each(['list_image_models', 'list_video_models'])('initializes %s pricing befo
   const saved = await put(body)
   expect(saved.ok).toBe(true)
   expect(saved.payload.image).toEqual(body.image)
+  expect(JSON.stringify(saved.payload)).not.toMatch(/pricing|is_free|credits_per_yuan/u)
   expect(await put(body)).toMatchObject({ ok: false, code: 'MEDIA_PREFERENCES_CONFLICT' })
   expect(await put({ ...body, expected_revision: saved.payload.revision, expected_account_owner: 'b'.repeat(64) }))
     .toMatchObject({ ok: false, code: 'ACCOUNT_CHANGED' })

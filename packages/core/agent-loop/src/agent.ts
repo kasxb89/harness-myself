@@ -47,7 +47,14 @@ type Phase =
     lastTurn: number
     wakeRequested: boolean
   }
-  | { kind: 'running'; abort: AbortController; turn: number; step: number; wakeRequested: boolean }
+  | {
+    kind: 'running'
+    abort: AbortController
+    turn: number
+    step: number
+    wakeRequested: boolean
+    requestOwnerSubscriptions?: (() => void)[]
+  }
 
 type StepEndReason = Extract<TurnEndReason, { kind: 'completed' | 'max-tokens' }>
 
@@ -384,6 +391,8 @@ export class ReactLoopAgent implements Agent {
       }
       this.throwError(error)
     } finally {
+      for (const dispose of phase.requestOwnerSubscriptions ?? []) dispose()
+      delete phase.requestOwnerSubscriptions
       try {
         // oxlint-disable-next-line typescript/no-non-null-assertion -- every exit assigns a turn ending
         this.session.append('turn/end', { turn, reason: turnEnds! })
@@ -402,11 +411,13 @@ export class ReactLoopAgent implements Agent {
   private async step(decision: Extract<PreparedStep, { kind: 'enter' }>): Promise<StepEndReason | null> {
     /* v8 ignore next -- private callers establish the running phase before executing a step */
     if (this.phase.kind !== 'running') throw new Error(`agent "${this.id}": step outside running phase`)
-    const { turn, step, abort: { signal } } = this.phase
+    const phase = this.phase
+    const { turn, step, abort } = phase
+    const signal = abort.signal
     signal.throwIfAborted()
 
-    const { assembly } = decision
-    const renderedPrompt = renderPrompt(assembly)
+    let { assembly } = decision
+    let renderedPrompt = renderPrompt(assembly)
     let firstAttempt = true
     while (true) {
       const { config, preparedCall, proposedMaxTokens } = await this.prepareRequest(turn, step, signal)
@@ -516,6 +527,8 @@ export class ReactLoopAgent implements Agent {
               turn,
               step,
               provider: request.provider,
+              model: request.model,
+              hasOutput: live.hasOutput,
               failure: finish.failure,
               retryPolicy: preparedCall?.retryPolicy,
               signal,
@@ -525,6 +538,27 @@ export class ReactLoopAgent implements Agent {
           signal.throwIfAborted()
           if (action?.kind !== 'retry') {
             throw new LlmError(finish.failure.message, finish.failure.code, finish.failure)
+          }
+          if (action.reassemble === true) {
+            if (live.hasOutput) throw new LlmError(finish.failure.message, finish.failure.code, finish.failure)
+            if (action.signal !== undefined) {
+              // The recovered route remains owned by this live plugin for the
+              // rest of the turn, including tool continuations and their auth
+              // waits. Remove the subscription when the turn settles.
+              const ownerSignal = action.signal
+              const cancelOwner = (): void => { abort.abort({ kind: 'hook', reason: 'Request recovery owner disposed' } satisfies AgentCancelCause) }
+              ownerSignal.addEventListener('abort', cancelOwner, { once: true })
+              const subscriptions = phase.requestOwnerSubscriptions ??= []
+              subscriptions.push(() => { ownerSignal.removeEventListener('abort', cancelOwner) })
+              if (ownerSignal.aborted) cancelOwner()
+            }
+            signal.throwIfAborted()
+            // The failed attempt already admitted its human messages. Rebuild only
+            // prompt assembly; claiming the inbox or replaying pre-step would take
+            // ownership of independent input and repeat unrelated side effects.
+            assembly = await this.loopCtx.systemPrompt.assemble(assembleContextFor(this, signal))
+            signal.throwIfAborted()
+            renderedPrompt = renderPrompt(assembly)
           }
           continue
         }

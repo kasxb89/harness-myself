@@ -32,7 +32,7 @@ export function mediaPreferencePrice(model: PreferenceModel | undefined,
   const input = typeof parameters.mode === 'string' ? inputModes[parameters.mode.toLowerCase().replaceAll('_', '-')] : undefined
   const rows = legalRows.filter(row => (input === undefined || row.input === 'unspecified' || row.input === input)
     && Object.entries(row.parameters).every(([key, value]) => parameters[key] === undefined || parameters[key] === value))
-  const points = creditUnitRange(rows.map(row => row.points))
+  const points = creditUnitRange(rows)
   if (points === undefined) return { kind: 'unknown' }
   const unknownInput = input === undefined && rows.some(row => row.input !== 'unspecified')
   const unpricedSelection = Object.keys(parameters).some(key => key !== 'seed' && !(key === 'mode' && input !== undefined)

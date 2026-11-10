@@ -91,6 +91,11 @@ async function boot(handle: PhoneHandler) {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
   })).json() as Record<string, unknown>
   return { post, file, stored,
+    privateRecovery: async () => {
+      const names = (await readdir(stateDir)).filter(name => name.startsWith('phone-auth-'))
+      if (names.length !== 1) throw new Error('Expected one backend-bound phone recovery file')
+      return await readFile(join(stateDir, names[0]!), 'utf8')
+    },
     readRecovery: async () => await (await fetch(base + '/api/session/phone-recovery')).json() as Record<string, unknown>,
     restart: async () => { await context?.fiber.dispose(); base = await start() },
   }
@@ -99,6 +104,71 @@ async function boot(handle: PhoneHandler) {
 const bundle = { access_token: 'new-access', access_expires_at: 253402300799, relay_key: 'sk-new-relay',
   user: { id: 8, phone_e164: '+8613900000000' } }
 const loginRequest = { challengeId: '+8613900000000', code: '123456', idempotencyKey: 'fixture-login' }
+
+it.each([7, 15])('forwards both opaque and legacy phone challenges at the API-compatible %s-digit E.164 boundary', async (digits) => {
+  const phone = '+' + '1'.repeat(digits)
+  const calls: { path: string; body: Record<string, unknown> }[] = []
+  const f = await boot((path, body, response) => {
+    calls.push({ path, body })
+    if (path.endsWith('/challenge')) response.end(JSON.stringify({ success: true, data: {
+      challenge_id: 'opaque-boundary', delivery_status: 'accepted', expires_at: 253402300799, resend_after_seconds: 0,
+    } }))
+    else { response.statusCode = 503; response.end(JSON.stringify({ success: false, code: 'PHONE_LOGIN_UNAVAILABLE' })) }
+  })
+  expect(await f.post('challenge', { phone, idempotencyKey: 'boundary-challenge' }))
+    .toMatchObject({ ok: true, payload: { phone, challenge_id: 'opaque-boundary', delivery_status: 'accepted' } })
+  for (const challengeId of ['opaque-boundary', phone]) {
+    expect(await f.post('verify', { challengeId, code: '123456', idempotencyKey: 'boundary-login-' + challengeId }))
+      .toMatchObject({ ok: false, code: 'PHONE_LOGIN_UNAVAILABLE' })
+  }
+  expect(calls.map(call => call.body)).toEqual([
+    { phone_e164: phone, idempotency_key: 'boundary-challenge', contract_version: 2 },
+    { phone_e164: phone, challenge_id: 'opaque-boundary', code: '123456', idempotency_key: 'boundary-login-opaque-boundary', contract_version: 2 },
+    { phone_e164: phone, challenge_id: phone, code: '123456', idempotency_key: 'boundary-login-' + phone, contract_version: 2 },
+  ])
+  expect(await readFile(f.file, 'utf8')).toBe(f.stored)
+})
+
+it.each([6, 16])('rejects %s-digit phone challenges before upstream dispatch and keeps the existing account', async (digits) => {
+  let calls = 0
+  const f = await boot((_path, _body, response) => { calls += 1; response.end('{}') })
+  const phone = '+' + '1'.repeat(digits)
+  expect(await f.post('challenge', { phone, idempotencyKey: 'invalid-challenge' }))
+    .toMatchObject({ ok: false, code: 'PHONE_INVALID_PARAMETERS' })
+  expect(await f.post('verify', { challengeId: phone, code: '123456', idempotencyKey: 'invalid-login' }))
+    .toMatchObject({ ok: false, code: 'PHONE_CODE_INVALID_OR_EXPIRED' })
+  expect(calls).toBe(0)
+  expect(await readFile(f.file, 'utf8')).toBe(f.stored)
+})
+
+it('keeps independent international opaque challenges bound to their own phones and exchange keys', async () => {
+  const phones = ['+601100000001', '+819000000001', '+12025550123']
+  const logins: Record<string, unknown>[] = []
+  const f = await boot((path, body, response) => {
+    if (path.endsWith('/challenge')) {
+      const index = phones.indexOf(String(body.phone_e164))
+      response.end(JSON.stringify({ success: true, data: { challenge_id: `opaque-country-${String(index)}`,
+        delivery_status: 'accepted', expires_at: 253402300799, resend_after_seconds: 0 } }))
+    } else {
+      logins.push(body)
+      response.statusCode = 503
+      response.end(JSON.stringify({ success: false, code: 'PHONE_LOGIN_UNAVAILABLE' }))
+    }
+  })
+  await Promise.all(phones.map((phone, index) => f.post('challenge', { phone, idempotencyKey: `country-request-${String(index)}` })))
+  await f.restart()
+  expect(await f.post('verify', { challengeId: 'opaque-country-0', code: '123456', idempotencyKey: 'original-exchange' }))
+    .toMatchObject({ ok: false, code: 'PHONE_LOGIN_UNAVAILABLE' })
+  expect(await f.post('verify', { challengeId: 'opaque-country-1', code: '123456', idempotencyKey: 'original-exchange' }))
+    .toMatchObject({ ok: false, code: 'PHONE_IDEMPOTENCY_CONFLICT' })
+  expect(await f.post('verify', { challengeId: 'opaque-country-2', code: '654321', idempotencyKey: 'independent-exchange' }))
+    .toMatchObject({ ok: false, code: 'PHONE_LOGIN_UNAVAILABLE' })
+  expect(logins).toEqual([
+    { phone_e164: phones[0], challenge_id: 'opaque-country-0', code: '123456', idempotency_key: 'original-exchange', contract_version: 2 },
+    { phone_e164: phones[2], challenge_id: 'opaque-country-2', code: '654321', idempotency_key: 'independent-exchange', contract_version: 2 },
+  ])
+  expect(await readFile(f.file, 'utf8')).toBe(f.stored)
+})
 
 it('contains phone transport, malformed and incomplete login responses without changing an existing session', async () => {
   let mode = 'rate'
@@ -152,7 +222,10 @@ it('maps independent opaque challenges to their own phones and persists only the
     upstream: { token: 'new-access', refresh: 'recovered-refresh' }, relay: { key: 'sk-new-relay' } })
 })
 
-it('discards a login response that arrives after logout', async () => {
+it.each([
+  { kind: 'domestic six-digit', phone: '+8613900000000', code: '123456' },
+  { kind: 'overseas fixed sixteen-digit', phone: '+601100000001', code: '0001234567890123' },
+])('discards a delayed $kind login response after logout', async ({ phone, code }) => {
   let started: (() => void) | undefined
   const dispatched = new Promise<void>((resolve) => { started = resolve })
   const barrier = new Promise<void>((resolve) => { release = resolve })
@@ -162,7 +235,7 @@ it('discards a login response that arrives after logout', async () => {
     response.setHeader('set-cookie', 'new_api_refresh=delayed-refresh; HttpOnly')
     response.end(JSON.stringify({ success: true, data: bundle }))
   })
-  const login = post('verify', loginRequest)
+  const login = post('verify', { ...loginRequest, challengeId: phone, code })
   await dispatched
   await post('logout', {})
   release?.()
@@ -171,15 +244,20 @@ it('discards a login response that arrives after logout', async () => {
 })
 
 
-it('requires the existing MFA check without persisting a premature bundle', async () => {
-  const { post, file, stored } = await boot((_path, _body, response) => {
+it.each([
+  { kind: 'domestic six-digit', phone: '+8613900000000', code: '123456' },
+  { kind: 'overseas fixed sixteen-digit', phone: '+819000000001', code: '0001234567890123' },
+])('requires the existing MFA check after a $kind code without persisting a premature bundle', async ({ phone, code }) => {
+  const { post, file, stored } = await boot((_path, body, response) => {
+    expect(body).toEqual({ phone_e164: phone, code, challenge_id: phone,
+      idempotency_key: loginRequest.idempotencyKey, contract_version: 2 })
     response.setHeader('set-cookie', 'new_api_refresh=must-not-save; HttpOnly')
     response.end(JSON.stringify({ success: true, code: 'PHONE_LOGIN_VERIFICATION_REQUIRED', data: {
       ...bundle, require_verification: true, flow_token: 'private-mfa-flow',
       methods: [{ method: '2fa', available: true }], expires_at: 253402300799,
     } }))
   })
-  const reply = await post('verify', loginRequest)
+  const reply = await post('verify', { ...loginRequest, challengeId: phone, code })
   expect(reply).toMatchObject({ ok: false, code: 'PHONE_LOGIN_VERIFICATION_REQUIRED' })
   expect(JSON.stringify(reply)).not.toMatch(/private-mfa-flow|must-not-save|new-access|sk-new-relay/)
   expect(await readFile(file, 'utf8')).toBe(stored)
@@ -320,18 +398,24 @@ it('keeps an incomplete v2 challenge unconfirmed instead of manufacturing a phon
 })
 
 
-it('replays the same committed login after a lost response, OTP expiry and Host restart without another SMS', async () => {
+it.each([
+  { country: 'Malaysia', phone: '+601100000001', code: '123456' }, { country: 'Japan', phone: '+819000000001', code: '123456' },
+  { country: 'United States', phone: '+12025550123', code: '123456' }, { country: 'China', phone: '+8613900000000', code: '123456' },
+  { country: 'Malaysia fixed sixteen-digit', phone: '+601100000001', code: '0001234567890123' },
+  { country: 'Japan fixed sixteen-digit', phone: '+819000000001', code: '0001234567890123' },
+  { country: 'United States fixed sixteen-digit', phone: '+12025550123', code: '0001234567890123' },
+])('replays the original $country login after a lost response, challenge expiry and Host restart without another code request', async ({ phone, code }) => {
   let now = Date.UTC(2026, 9, 21, 12, 0, 0)
   vi.spyOn(Date, 'now').mockImplementation(() => now)
   const otpExpiry = now + 2000
-  let smsRequests = 0
+  let challengeRequests = 0
   let loginRequests = 0
   let createdSessions = 0
   let committed = false
   const apiReplies: Record<string, unknown>[] = []
-  const { post, file, stored, restart, readRecovery } = await boot((path, body, response) => {
+  const { post, file, stored, restart, readRecovery, privateRecovery } = await boot((path, body, response) => {
     if (path.endsWith('/challenge')) {
-      smsRequests += 1
+      challengeRequests += 1
       response.end(JSON.stringify({ success: true, data: { challenge_id: 'opaque-lost-success',
         delivery_status: 'accepted', expires_at: otpExpiry / 1000, resend_after_seconds: 0 } }))
       return
@@ -340,27 +424,91 @@ it('replays the same committed login after a lost response, OTP expiry and Host 
     apiReplies.push(body)
     if (!committed) { committed = true; createdSessions += 1; response.destroy(); return }
     response.setHeader('set-cookie', 'new_api_refresh=replayed-refresh; HttpOnly')
-    response.end(JSON.stringify({ success: true, data: { ...bundle, access_token: 'same-committed-session-access' } }))
+    response.end(JSON.stringify({ success: true, data: { ...bundle, user: { id: 8, phone_e164: phone },
+      access_token: 'same-committed-session-access' } }))
   })
-  await post('challenge', { phone: '+8613900000000', idempotencyKey: 'sms-once' })
+  expect(await post('challenge', { phone, idempotencyKey: 'sms-once' })).toMatchObject({ ok: true, payload: {
+    phone, challenge_id: 'opaque-lost-success', delivery_status: 'accepted',
+  } })
   now += 1900
-  const request = { ...loginRequest, challengeId: 'opaque-lost-success', idempotencyKey: 'same-exchange-key' }
+  const request = { ...loginRequest, challengeId: 'opaque-lost-success', code, idempotencyKey: 'same-exchange-key' }
   expect(await post('verify', request)).toMatchObject({ ok: false, code: 'PHONE_LOGIN_UNAVAILABLE' })
   expect(await readFile(file, 'utf8')).toBe(stored)
+  expect(await privateRecovery()).not.toContain(code)
   now += 4 * 60_000
   await restart()
   expect(await readRecovery()).toMatchObject({ ok: true, payload: {
-    phone: '+8613900000000', challengeId: 'opaque-lost-success', exchangeKey: 'same-exchange-key',
+    phone, challengeId: 'opaque-lost-success', challengeKey: null, exchangeKey: 'same-exchange-key',
     expiresAt: new Date(otpExpiry).toISOString(),
   } })
   expect(loginRequests).toBe(1)
-  expect(smsRequests).toBe(1)
+  expect(challengeRequests).toBe(1)
   expect(await post('verify', request)).toMatchObject({ ok: true, payload: { account: { id: '8' } } })
   expect(createdSessions).toBe(1)
   expect(loginRequests).toBe(2)
-  expect(smsRequests).toBe(1)
-  expect(apiReplies[1]).toEqual(apiReplies[0])
+  expect(challengeRequests).toBe(1)
+  expect(apiReplies).toEqual([0, 1].map(() => ({ phone_e164: phone, code,
+    challenge_id: 'opaque-lost-success', idempotency_key: 'same-exchange-key', contract_version: 2 })))
   expect(JSON.parse(await readFile(file, 'utf8'))).toMatchObject({
-    upstream: { token: 'same-committed-session-access', refresh: 'replayed-refresh' }, account: { id: '8' },
+    upstream: { token: 'same-committed-session-access', refresh: 'replayed-refresh' }, account: { id: '8', phone },
   })
+  expect(await privateRecovery()).not.toContain(code)
+})
+
+it('requests a new challenge after expiry while forwarding the same fixed sixteen-digit code unchanged', async () => {
+  let now = Date.UTC(2026, 10, 10, 10, 0, 0)
+  vi.spyOn(Date, 'now').mockImplementation(() => now)
+  const phone = '+601100000001', code = '0001234567890123'
+  const calls: { path: string; body: Record<string, unknown> }[] = []
+  let challenges = 0
+  const f = await boot((path, body, response) => {
+    calls.push({ path, body })
+    if (path.endsWith('/challenge')) {
+      challenges += 1
+      response.end(JSON.stringify({ success: true, data: { challenge_id: `fixed-challenge-${String(challenges)}`,
+        delivery_status: 'accepted', expires_at: (now + 1000) / 1000, resend_after_seconds: 0 } }))
+    } else {
+      response.setHeader('set-cookie', 'new_api_refresh=fixed-code-refresh; HttpOnly')
+      response.end(JSON.stringify({ success: true, data: { ...bundle, user: { id: 8, phone_e164: phone } } }))
+    }
+  })
+  expect(await f.post('challenge', { phone, idempotencyKey: 'first-challenge-request' })).toMatchObject({ ok: true })
+  expect(await f.post('verify', { challengeId: 'fixed-challenge-1', code, idempotencyKey: 'first-exchange' }))
+    .toMatchObject({ ok: true, payload: { account: { id: '8', phone } } })
+  now += 2000
+  await f.restart()
+  const originalSession = await readFile(f.file, 'utf8')
+  expect(await f.post('verify', { challengeId: 'fixed-challenge-1', code, idempotencyKey: 'expired-challenge-exchange' }))
+    .toMatchObject({ ok: false, code: 'PHONE_CODE_INVALID_OR_EXPIRED' })
+  expect(calls.filter(call => call.path.endsWith('/login'))).toHaveLength(1)
+  expect(await readFile(f.file, 'utf8')).toBe(originalSession)
+  expect(await f.post('challenge', { phone, idempotencyKey: 'new-challenge-request' }))
+    .toMatchObject({ ok: true, payload: { challenge_id: 'fixed-challenge-2' } })
+  expect(await f.post('verify', { challengeId: 'fixed-challenge-2', code, idempotencyKey: 'new-exchange' }))
+    .toMatchObject({ ok: true, payload: { account: { id: '8', phone } } })
+  expect(calls.filter(call => call.path.endsWith('/login')).map(call => call.body)).toEqual([
+    { phone_e164: phone, code, challenge_id: 'fixed-challenge-1', idempotency_key: 'first-exchange', contract_version: 2 },
+    { phone_e164: phone, code, challenge_id: 'fixed-challenge-2', idempotency_key: 'new-exchange', contract_version: 2 },
+  ])
+  expect(challenges).toBe(2)
+  expect(await f.privateRecovery()).not.toContain(code)
+})
+
+it('keeps an uncertain sixteen-digit exchange bound to its exact code after restart', async () => {
+  const phone = '+819000000001', code = '0001234567890123'
+  const logins: Record<string, unknown>[] = []
+  const f = await boot((_path, body, response) => {
+    logins.push(body)
+    response.statusCode = 503
+    response.end(JSON.stringify({ success: false, code: 'PHONE_LOGIN_UNAVAILABLE' }))
+  })
+  const request = { challengeId: phone, code, idempotencyKey: 'uncertain-fixed-code' }
+  expect(await f.post('verify', request)).toMatchObject({ ok: false, code: 'PHONE_LOGIN_UNAVAILABLE' })
+  await f.restart()
+  expect(await f.post('verify', { ...request, code: '0001234567890124' }))
+    .toMatchObject({ ok: false, code: 'PHONE_IDEMPOTENCY_CONFLICT' })
+  expect(logins).toEqual([{ phone_e164: phone, code, challenge_id: phone,
+    idempotency_key: request.idempotencyKey, contract_version: 2 }])
+  expect(await f.privateRecovery()).not.toContain(code)
+  expect(await readFile(f.file, 'utf8')).toBe(f.stored)
 })

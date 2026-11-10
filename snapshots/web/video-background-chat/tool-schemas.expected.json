@@ -1,6 +1,22 @@
 {
   "initial": [
     {
+      "name": "append_video_works",
+      "description": "Append concrete additional finished works only when a later real human answer explicitly increases an already prepared list. count is the ADDITIONAL number: an existing list of one changed to three needs count=2. Read the current works first. The Host binds this revision to the exact real answer captured for this execution; repeating it or changing tool-call ids cannot append twice. An answer already used to prepare the list cannot append another copy. Existing work ids, UNKNOWN submissions and operation ids remain unchanged. Use returned pending_work_ids for genuinely new works and query original existing works. Do not append for retries, quality review, parameter correction or concurrency. A new independent human message prepares its own list with prepare_video_works instead. This tool neither generates nor approves a model price; each new non-H3 work still requires its actual quote and human choice.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "number",
+            "description": "Positive whole number of ADDITIONAL finished works explicitly requested by the later real human answer, excluding all existing works. For a change from one to three, use two."
+          }
+        },
+        "required": [
+          "count"
+        ]
+      }
+    },
+    {
       "name": "ask_user_question",
       "description": "Ask the user a concise question when you need confirmation, a choice, or missing information before proceeding.",
       "parameters": {
@@ -241,7 +257,7 @@
     },
     {
       "name": "generate_image",
-      "description": "Generate images or edit reference images through the signed-in account relay, save every result into the artifacts directory, and return the paths. For pending or unknown results, never resubmit this tool: use query_image_task with the original plan_id and operation_id when a task_id was received. Without a task_id, retain the unknown outcome and reconcile the original request before any paid retry. For image-to-image requests, pass the current-chat user attachment or an authorized workspace image in reference_images. Use list_image_models when the requested model or image controls need checking; preserve its exact model ids, size strings, independent resolution tiers and count/reference limits. Ask the user to choose a model only when their request requires that choice. For failed operations, give users only a safe Simplified Chinese summary based on the observed failure category; connection failures and timeouts do not establish whether the cause is local, network, platform or upstream. Distinguish confirmed request or media validation, permission, rate limiting, service HTTP 5xx and upstream task failures; unknown causes remain unconfirmed; never repeat raw HTTP responses, diagnostic JSON, error codes, stacks, internal paths or credentials. Keep actionable guidance for confirmed sign-in, product-credit, file-validation and cancellation failures. When submission or billing outcome is unknown, check existing tasks and artifacts first; do not immediately retry or automatically resubmit. Preserve real tool results. This restriction does not prevent software or code diagnostics explicitly requested by the user.",
+      "description": "Generate images or edit reference images through the signed-in account relay and save every result into the artifacts directory. Quick completions return paths; longer operations return a background job_id with original plan_id and operation_id. Use job_output at measured intervals for progress and completion, then present the real paths. job_kill stops local waiting; accepted upstream work may continue billing. Never resubmit to wait for a background result. For pending or unknown results, never resubmit this tool: use query_image_task with the original plan_id and operation_id to query an accepted task or save a retained synchronous result without generating again. The task listing marks recoverable records with can_query. If neither an original task id nor a retained result is available, keep the unknown outcome and reconcile the original request before any paid retry. For image-to-image requests, pass the current-chat user attachment or an authorized workspace image in reference_images. Use list_image_models when the requested model or image controls need checking; preserve its exact model ids, size strings, independent resolution tiers and count/reference limits. Ask the user to choose a model only when their request requires that choice. For failed operations, give users only a safe Simplified Chinese summary based on the observed failure category; connection failures and timeouts do not establish whether the cause is local, network, platform or upstream. Distinguish confirmed request or media validation, permission, rate limiting, service HTTP 5xx and upstream task failures; unknown causes remain unconfirmed; never repeat raw HTTP responses, diagnostic JSON, error codes, stacks, internal paths or credentials. Keep actionable guidance for confirmed sign-in, product-credit, file-validation and cancellation failures. When submission or billing outcome is unknown, check existing tasks and artifacts first; do not immediately retry or automatically resubmit. Preserve real tool results. This restriction does not prevent software or code diagnostics explicitly requested by the user.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -263,7 +279,7 @@
           },
           "model": {
             "type": "string",
-            "description": "Optional image model id such as gpt-image-2. Defaults to the first image model the deployment serves for this account."
+            "description": "Optional image model id such as gpt-image-2. The current human request overrides the frozen personal image preference, then the backend-configured image default for this account; an older or unset configuration retains the account’s first available image model."
           },
           "size": {
             "type": "string",
@@ -276,6 +292,26 @@
           "count": {
             "type": "number",
             "description": "How many images to render, within max_count returned by list_image_models; do not infer a model’s batch limit."
+          },
+          "quality": {
+            "type": "string",
+            "description": "Exact published image quality, only when declared by the selected model."
+          },
+          "background": {
+            "type": "string",
+            "description": "Published image background mode."
+          },
+          "format": {
+            "type": "string",
+            "description": "Published output container format."
+          },
+          "moderation": {
+            "type": "string",
+            "description": "Published moderation setting."
+          },
+          "seed": {
+            "type": "number",
+            "description": "Safe integer random seed, only for a model declaring this control."
           },
           "reference_images": {
             "type": "array",
@@ -292,10 +328,14 @@
     },
     {
       "name": "generate_video",
-      "description": "Compatibility single-clip generation through the account relay. Read list_video_models first. Prefer generate_video_project for new video requests, including a single clip: its background job exposes queue and generation progress without holding chat open. Each independent human generation request defaults to one finished video, or its explicit work count. An earlier running or unknown submission does not block a separate human request, even with the same brief or plan; create independent work and retain the original task. Do not repeat the same submission. Progress checks and continuing the original task use its existing query or resume tools. Do not write submission, polling or download scripts or probe invalid paid durations. For story direction, character/reference continuity, dialogue or subtitles, use the yunshu-video-director skill. For a complete video such as 40 seconds or automatic assembly, always use generate_video_project; several camera beats may fit one clip. Accepted work that outlasts this foreground wait returns pending: query_video_task reads its original receipt without repeating that submission. Edit existing clips with edit_video. Only declared duration, resolution, ratio, frames and references are accepted. For failed operations, give users only a safe Simplified Chinese summary based on the observed failure category; connection failures and timeouts do not establish whether the cause is local, network, platform or upstream. Distinguish confirmed request or media validation, permission, rate limiting, service HTTP 5xx and upstream task failures; unknown causes remain unconfirmed; never repeat raw HTTP responses, diagnostic JSON, error codes, stacks, internal paths or credentials. Keep actionable guidance for confirmed sign-in, product-credit, file-validation and cancellation failures. When submission or billing outcome is unknown, check existing tasks and artifacts first; do not immediately retry or automatically resubmit. Preserve real tool results. This restriction does not prevent software or code diagnostics explicitly requested by the user.",
+      "description": "Compatibility single-clip generation through the account relay. Read list_video_models first. Prefer generate_video_project for new video requests, including a single clip: its background job exposes queue and generation progress without holding chat open. Default to one finished work. For several user-requested works, first prepare_video_works with their concrete count and pass a separate returned work_id for each work. Reuse work_id when confirming, correcting or retrying the same finished work: even a new tool-call id returns its original operation instead of another generation POST. A separate actual human request can prepare independent work even with the same brief or plan, while the original accepted or unknown work retains its own task. Natural-language intent and inferred total counts do not gate execution. Progress checks and continuing the original task use its existing query or resume tools. Do not write submission, polling or download scripts or probe invalid paid durations. For story direction, character/reference continuity, dialogue or subtitles, use the yunshu-video-director skill. For a complete video such as 40 seconds or automatic assembly, always use generate_video_project; several camera beats may fit one clip. Accepted work that outlasts this foreground wait returns pending: query_video_task reads its original receipt without repeating that submission. Edit existing clips with edit_video. Only declared duration, resolution, ratio, frames and references are accepted.结合完整对话理解创作意图，不要求用户使用固定句式或反复重述数量。未指定数量默认一条；用户明确需要几条成片，就先用 prepare_video_works 准备对应数量，再逐个使用返回的 work_id 生成。单条简单请求可以直接生成，Host 自动准备一个默认作品编号。作品编号用于同一成片的防重复，不是从用户措辞推算的权限额度。普通确认、修改参数和继续同一作品时复用已有 work_id；尚未提交时可以纠正参数，已提交或结果未知时只查询、恢复原任务，不通过换工具调用或重新准备编号再生成。台词、字幕和故事里的疑问或否定不代表取消。准备同一请求会返回原作品清单，不增加版本；若已准备清单后，用户在真实问题回答中明确增加数量，先核对已有清单，再用 append_video_works 追加缺少的条数（已有一条改为总共三条时追加两条），保留原 work_id 和未知任务。同一回答重复追加不会再次加片，不能把普通确认、查询或重试当作追加指令。非 H3 报价选择只批准当前一件作品，追加作品分别核对实际报价；用户另行发起独立新请求时可以准备新的清单，即使提示词或计划相同，也不受旧任务等待或未知影响。清单中的待办不是必须执行的订单；用户减少数量时只启动其仍要求的作品，未启动的多余编号可以保留，不能为了清空清单生成。不要为了填满并发、质量评价或修改计划自动增加收费作品。是否另做仍不明确时只简短确认，不把正常对话说成平台拒绝。 For failed operations, give users only a safe Simplified Chinese summary based on the observed failure category; connection failures and timeouts do not establish whether the cause is local, network, platform or upstream. Distinguish confirmed request or media validation, permission, rate limiting, service HTTP 5xx and upstream task failures; unknown causes remain unconfirmed; never repeat raw HTTP responses, diagnostic JSON, error codes, stacks, internal paths or credentials. Keep actionable guidance for confirmed sign-in, product-credit, file-validation and cancellation failures. When submission or billing outcome is unknown, check existing tasks and artifacts first; do not immediately retry or automatically resubmit. Preserve real tool results. This restriction does not prevent software or code diagnostics explicitly requested by the user.",
       "parameters": {
         "type": "object",
         "properties": {
+          "work_id": {
+            "type": "string",
+            "description": "Existing work_id from prepare_video_works or an earlier generation result. Reuse it for the same finished work across tool calls and confirmations. Omission selects the current request’s first default work; it never creates another version of that work. For several works, prepare the complete count first and use each returned work_id once."
+          },
           "plan_id": {
             "type": "string",
             "description": "Explicit update_creation_plan id for this generation. Also provide shot_id."
@@ -310,7 +350,7 @@
           },
           "model": {
             "type": "string",
-            "description": "Defaults to MiniMax-H3 at 768P unless the human explicitly requested another resolution. A non-H3 model requires a current full-price estimate and a real human model selection before generation; model arguments never approve that change."
+            "description": "When omitted, use the backend-configured video model for this account; an older or unset configuration retains MiniMax-H3. Only actual H3 defaults to 768P when no resolution is given. A non-H3 model requires a current full-price estimate and a real human model selection before generation; model arguments never approve that change."
           },
           "duration_seconds": {
             "type": "number",
@@ -320,9 +360,29 @@
             "type": "string",
             "description": "Output resolution such as 768P or 2K, when the model offers choices."
           },
+          "size": {
+            "type": "string",
+            "description": "Exact native size from a complete specification, when distinct from resolution."
+          },
+          "quality": {
+            "type": "string",
+            "description": "Exact quality tier from the selected complete specification; preserve it for quote and generation."
+          },
+          "mode": {
+            "type": "string",
+            "description": "Optional published vendor mode, distinct from quality."
+          },
           "ratio": {
             "type": "string",
             "description": "Aspect ratio such as 16:9 or 9:16; adaptive inherits it from the reference media."
+          },
+          "seed": {
+            "type": "number",
+            "description": "Safe integer random seed, only when declared by the selected model."
+          },
+          "watermark": {
+            "type": "boolean",
+            "description": "Watermark switch, only when declared by the selected model."
           },
           "audio": {
             "type": "boolean",
@@ -364,10 +424,14 @@
     },
     {
       "name": "generate_video_project",
-      "description": "Default fixed background workflow for every new chat video, including a single short clip and a finished video longer than one model clip. Each independent human generation request has its own allowance: default to one finished video, or the exact explicitly requested work count and parameters. This tool starts one finished work per invocation; its clips and gateway concurrency do not multiply that count. A previous running or unknown work never consumes a new human request’s allowance, even when both requests use the same chat, plan, or shots. Plans associate content, not submission identity. Only retries of the same invocation are duplicates. Query or resume the original project by its retained id rather than generating it again. If remaining_works is positive, continue arranging that many works in further tool steps without waiting for earlier jobs; stop after zero. For a simple single-clip brief without an explicit duration, call this tool directly with prompt and any requested model or references; omit total_duration_seconds so the Host resolves actual defaults in one call. Do not load directing skills, write a long storyboard or call list_video_models first for that simple case. For explicit timing or complex plans, read list_video_models for actual controls; never discover support by paid retries or silently replace an explicitly named model. Use the yunshu-video-director skill for story, character/reference continuity, dialogue and subtitles, then call this native workflow; do not write polling, download or assembly scripts or manually repeat generate_video for each visual cut. One paid clip can contain several camera beats. For requests such as a 40-second video, plan the fewest supported clips (for a 15-second limit: 15+15+10, or three 15-second clips trimmed to 40), generate independent clips with gateway-approved bounded parallelism using the signed-in account, then normalize, trim, and join them in timeline order. Without a valid gateway declaration, concurrency defaults to four clips. Respect verified pool capacity and any lower local or gateway ceiling. The API owns shared account capacity. Do not launch a separate agent or generation-tool call for every clip. For a catalog with H3 single clips limited to 4–15 seconds, 60 seconds means four 15-second clips, never one 30-second clip. All local tools and every request are checked before billing. Returns a background job_id and durable project_id; read job_output at measured intervals for queued/generating progress and call present on the completed final_path. A busy response without an accepted task id is unknown, not confirmed queue admission. Use job_kill when the user stops; accepted provider tasks may continue billing. A query deadline retains task ids for explicit resume, never a fresh submission. Never claim completion before the job reports a saved final_path. If a current user-supplied chat attachment is outside the workspace, first copy that read-authorized attachment into this workspace with the existing file tools, then pass the copied path; do not copy unrelated files.",
+      "description": "Default fixed background workflow for every new chat video, including a single short clip and a finished video longer than one model clip. Default to one finished work. For several user-requested works, first prepare_video_works with the concrete count and use each returned work_id once. This tool starts one finished work per invocation; clips and gateway concurrency never add works. Reuse work_id when continuing, correcting or retrying the same finished work. Its durable claim survives new tool-call ids and restarts; an existing work returns original task coordinates without a new generation POST. A new actual human request can prepare independent work even with the same prompt, plan or shots, and an earlier unknown task cannot block it. Natural-language phrasing and inferred work totals are not permission gates. pending_work_ids identifies concrete prepared works still available to start; start only those still requested by the user, without waiting for earlier jobs. If the user reduces the count, leave unwanted prepared works unstarted; never generate merely to empty this list. remaining_works counts that list, not a user allowance. Query or resume accepted and unknown original projects instead of generating again. For a simple single-clip brief without an explicit duration, call this tool directly with prompt and any requested model or references; omit total_duration_seconds so the Host resolves actual defaults in one call. Do not load directing skills, write a long storyboard or call list_video_models first for that simple case. For explicit timing or complex plans, read list_video_models for the effective default_model_id, selected_parameters and that model’s own actual controls before splitting clips. An incomplete-default error preserves its selected model; choose from that same model’s complete specifications rather than switching to H3. A model conflict requires correcting the unsubmitted selection, not trying alternative paid combinations. Never discover support by paid retries, inspect installed application archives for a creation request, or silently replace an explicitly named model. Use the yunshu-video-director skill for story, character/reference continuity, dialogue and subtitles, then call this native workflow; do not write polling, download or assembly scripts or manually repeat generate_video for each visual cut. One paid clip can contain several camera beats. A saved seconds preference chooses a single clip only when no final duration was requested; it never caps clip length for a timed project. With a requested total, use the full duration menu for the selected resolution, ratio, quality and mode: first minimize paid clips, then surplus seconds. A supported 15-second work is one 15-second clip even when the saved default is five seconds. For requests such as a 40-second video, plan the fewest supported clips (for a 15-second limit: 15+15+10, or three 15-second clips trimmed to 40), generate independent clips with gateway-approved bounded parallelism using the signed-in account, then normalize, trim, and join them in timeline order. Without a valid gateway declaration, concurrency defaults to four clips. Respect verified pool capacity and any lower local or gateway ceiling. The API owns shared account capacity. Do not launch a separate agent or generation-tool call for every clip. For a catalog with H3 single clips limited to 4–15 seconds, 60 seconds means four 15-second clips, never one 30-second clip. All local tools and every request are checked before billing. Returns a background job_id and durable project_id; read job_output at measured intervals for queued/generating progress and call present on the completed final_path. A busy response without an accepted task id is unknown, not confirmed queue admission. Use job_kill when the user stops; accepted provider tasks may continue billing. A query deadline retains task ids for explicit resume, never a fresh submission. Never claim completion before the job reports a saved final_path. If a current user-supplied chat attachment is outside the workspace, first copy that read-authorized attachment into this workspace with the existing file tools, then pass the copied path; do not copy unrelated files.结合完整对话理解创作意图，不要求用户使用固定句式或反复重述数量。未指定数量默认一条；用户明确需要几条成片，就先用 prepare_video_works 准备对应数量，再逐个使用返回的 work_id 生成。单条简单请求可以直接生成，Host 自动准备一个默认作品编号。作品编号用于同一成片的防重复，不是从用户措辞推算的权限额度。普通确认、修改参数和继续同一作品时复用已有 work_id；尚未提交时可以纠正参数，已提交或结果未知时只查询、恢复原任务，不通过换工具调用或重新准备编号再生成。台词、字幕和故事里的疑问或否定不代表取消。准备同一请求会返回原作品清单，不增加版本；若已准备清单后，用户在真实问题回答中明确增加数量，先核对已有清单，再用 append_video_works 追加缺少的条数（已有一条改为总共三条时追加两条），保留原 work_id 和未知任务。同一回答重复追加不会再次加片，不能把普通确认、查询或重试当作追加指令。非 H3 报价选择只批准当前一件作品，追加作品分别核对实际报价；用户另行发起独立新请求时可以准备新的清单，即使提示词或计划相同，也不受旧任务等待或未知影响。清单中的待办不是必须执行的订单；用户减少数量时只启动其仍要求的作品，未启动的多余编号可以保留，不能为了清空清单生成。不要为了填满并发、质量评价或修改计划自动增加收费作品。是否另做仍不明确时只简短确认，不把正常对话说成平台拒绝。",
       "parameters": {
         "type": "object",
         "properties": {
+          "work_id": {
+            "type": "string",
+            "description": "Existing work_id from prepare_video_works or an earlier result. Reuse it for the same finished work across retries, confirmations and parameter corrections. Omission uses the current human request’s first default work. For several finished works, prepare their count first and pass each returned work_id; do not create new work ids to retry an unknown submission."
+          },
           "plan_id": {
             "type": "string",
             "description": "Explicit update_creation_plan id. Also supply shot_ids in generation order."
@@ -396,20 +460,40 @@
           },
           "shot_durations_seconds": {
             "type": "array",
-            "description": "Exact model-supported whole seconds per clip, in shot_ids or shot_prompts order. Their sum must equal total_duration_seconds. When omitted for an explicit creation plan, use its saved shot durations; do not silently change timeline timing.",
+            "description": "Exact model-supported whole seconds per separately required clip, in shot_ids or shot_prompts order. Their sum must equal total_duration_seconds. Omit for ordinary automatic splitting: several visual cuts belong inside one clip prompt, not separate five-second entries. Use only for explicitly fixed clip timing or distinct shot-bound media. When omitted for an explicit creation plan, use its saved shot durations; do not silently change that timeline.",
             "items": {
               "type": "number"
             }
           },
           "model": {
             "type": "string",
-            "description": "Defaults to MiniMax-H3 at 768P unless the human explicitly requested another resolution. Preserve an explicitly requested model; any non-H3 selection requires a current full-price estimate and a real human model choice before generation. Model arguments never approve that change."
+            "description": "The current human request overrides the frozen personal video preference, then the backend-configured video model for this account; an older or unset configuration retains MiniMax-H3. Only actual H3 defaults to 768P without a specified tier. Preserve an explicitly requested model; any non-H3 selection requires a current full-price estimate and a real human model choice before generation. Model arguments never approve that change."
           },
           "resolution": {
             "type": "string"
           },
           "ratio": {
             "type": "string"
+          },
+          "size": {
+            "type": "string",
+            "description": "Exact native output size from the complete published specification, when distinct from resolution."
+          },
+          "quality": {
+            "type": "string",
+            "description": "Exact quality tier from the complete published specification; used for both quote and submission."
+          },
+          "mode": {
+            "type": "string",
+            "description": "Published vendor mode, only when supported."
+          },
+          "seed": {
+            "type": "number",
+            "description": "Safe integer random seed, only when declared by the selected model."
+          },
+          "watermark": {
+            "type": "boolean",
+            "description": "Watermark switch, only when declared by the selected model."
           },
           "audio": {
             "type": "boolean",
@@ -604,7 +688,7 @@
     },
     {
       "name": "list_image_models",
-      "description": "Read the signed-in account’s available image models and current Host-validated generation controls without submitting images or charging for generation. Read when an exact image model, size, aspect ratio, resolution, count or reference-image limit is needed. Use exact ids and the size strings as returned, including aspect-ratio strings; resolution is a separate field. Empty menus and omitted fields offer no optional choice. Unverified model limits are conservative local limits, not confirmed upstream capabilities. Only pass controls declared by generate_image; this catalog also describes controls available to AI Creation. Listing does not reserve capacity, estimate prices or authorize a generation.",
+      "description": "Read the signed-in account’s available image models and current Host-validated generation controls without submitting images or charging for generation. Read when an exact image model, size, aspect ratio, resolution, count or reference-image limit is needed. Use exact ids and the size strings as returned, including aspect-ratio strings; resolution is a separate field. Empty menus and omitted fields offer no optional choice. Unverified model limits are conservative local limits, not confirmed upstream capabilities. Only pass controls declared by generate_image; this catalog also describes controls available to AI Creation. Read default_model_id, default_source and selected_parameters before choosing a model or static controls. A default_error_code with an available model means complete its selection from that same model’s declared specifications; it does not authorize a different model. Before asking about an image model or static parameters, read this listing. Saved selected_parameters already answer those choices; a single supported value needs no question. Offer only unresolved choices from the selected model’s compatible complete specifications, never a generic ratio menu. Listing does not reserve capacity, estimate prices or authorize a generation.",
       "parameters": {
         "type": "object",
         "properties": {}
@@ -612,10 +696,23 @@
     },
     {
       "name": "list_video_models",
-      "description": "Read the signed-in account’s current video models and exact generation parameters without submitting or charging for generation. Call when planning explicit model controls or paid clip lengths. A simple single-clip request can directly call generate_video_project without total_duration_seconds: the Host resolves actual model defaults in the same call. Use exact ids, durations by resolution, size strings, reference limits and audio_output; do not infer audio from a missing switch or use display names as ids. This catalog does not report live upstream capacity. For queued work use the background generate_video_project workflow, including one clip.",
+      "description": "Read the signed-in account’s current video models and exact generation parameters without submitting or charging for generation. Call when planning explicit model controls or paid clip lengths. A simple single-clip request can directly call generate_video_project without total_duration_seconds: the Host resolves actual model defaults in the same call. Use exact ids, durations by resolution, size strings, reference limits and audio_output; do not infer audio from a missing switch or use display names as ids. Read default_model_id, default_source and selected_parameters before planning. selected_parameters.seconds is a default single-clip length, not the largest clip this model supports. For a requested final duration, use every supported duration within the selected resolution, ratio, quality and mode, minimizing clip count before excess generated seconds; never split one supported 15-second work into three five-second clips just because the saved default is five. Preserve that selected model unless the human chooses another one; a tool model argument alone cannot override a saved choice. If default_error_code reports an incomplete specification, use the returned selected model and its own specifications, not another model’s duration or resolution menu. Distinct ids such as MiniMax-H3 and ycapi-minimax-h3 are different channels, not interchangeable aliases. Before asking about a video model or static parameters, read this listing. Saved selected_parameters already answer those choices; a single supported value needs no question. Offer only unresolved choices from the selected model’s compatible complete specifications, never a generic ratio menu. This catalog does not report live upstream capacity. For queued work use the background generate_video_project workflow, including one clip.",
       "parameters": {
         "type": "object",
         "properties": {}
+      }
+    },
+    {
+      "name": "prepare_video_works",
+      "description": "Prepare concrete finished-video work ids without generation or billing. Omit count for one finished video. When the user requests several works, interpret the full conversation and prepare that complete count before starting any work, then pass a different returned work_id for each finished work. This is a concrete work list, not a language-based permission or quota. Repeating preparation under the same human source returns the original list even with another tool-call id; it never creates extra versions or resets a submitted work. Reuse existing work_id values for confirmations, parameter corrections, queries and recovery. A separate actual human request can prepare an independent list even with the same prompt or plan. Do not prepare again to retry an unknown submission; query its original operation or project. For a later real answer requesting additional works, use append_video_works with the missing count; do not reset existing identities. Only the Host assigns work identities.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "number",
+            "description": "Concrete positive whole number of finished works requested in the conversation. Defaults to one. Shot count, clip count and concurrency do not increase this value. Prepare the complete work list before generating its first work."
+          }
+        }
       }
     },
     {
@@ -653,7 +750,7 @@
     },
     {
       "name": "query_image_task",
-      "description": "Without operation_id, list unresolved image invocations owned by this account and chat (optionally filter by plan_id) to recover original ids after interruption or restart. With both original plan_id and operation_id, query that accepted task and save completed outputs. This only reads retained tasks; it never submits another generation or accepts a caller-supplied remote URL or task id. If the original submission has no task id, retain its unknown outcome and reconcile the original request instead of generating again. For failed operations, give users only a safe Simplified Chinese summary based on the observed failure category; connection failures and timeouts do not establish whether the cause is local, network, platform or upstream. Distinguish confirmed request or media validation, permission, rate limiting, service HTTP 5xx and upstream task failures; unknown causes remain unconfirmed; never repeat raw HTTP responses, diagnostic JSON, error codes, stacks, internal paths or credentials. Keep actionable guidance for confirmed sign-in, product-credit, file-validation and cancellation failures. When submission or billing outcome is unknown, check existing tasks and artifacts first; do not immediately retry or automatically resubmit. Preserve real tool results. This restriction does not prevent software or code diagnostics explicitly requested by the user.",
+      "description": "Without operation_id, list unresolved image invocations owned by this account and chat (optionally filter by plan_id) to recover original ids after interruption or restart. With both original plan_id and operation_id, query that accepted task or continue saving a privately retained synchronous image result, including results without a task id. This only reads original retained work; it never submits another generation or accepts a caller-supplied remote URL or task id. can_query indicates that original-task recovery or original-result saving is available. Without either original task identity or a retained result, keep the unknown outcome and reconcile the original request instead of generating again. For failed operations, give users only a safe Simplified Chinese summary based on the observed failure category; connection failures and timeouts do not establish whether the cause is local, network, platform or upstream. Distinguish confirmed request or media validation, permission, rate limiting, service HTTP 5xx and upstream task failures; unknown causes remain unconfirmed; never repeat raw HTTP responses, diagnostic JSON, error codes, stacks, internal paths or credentials. Keep actionable guidance for confirmed sign-in, product-credit, file-validation and cancellation failures. When submission or billing outcome is unknown, check existing tasks and artifacts first; do not immediately retry or automatically resubmit. Preserve real tool results. This restriction does not prevent software or code diagnostics explicitly requested by the user.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -727,7 +824,7 @@
     },
     {
       "name": "resume_video_project",
-      "description": "Explicitly continue a retained project for the same account, workspace, and chat. Reuse saved clips and query already known provider task ids before submitting any remaining never-submitted clips. Unknown or failed clips block new submissions, while other already accepted task ids remain recoverable for download. Never repeat unknown or failed submissions, and refuse a second live run. Local cancellation cannot cancel already accepted upstream billing.",
+      "description": "Explicitly continue a retained project for the same account, workspace, and chat. After the user recharges and sends a new real reply asking to continue or retry, reuse this original project_id: the Host can create a new attempt only for a complete gateway-confirmed funding rejection that never reached upstream. Old attempts and saved clips remain retained. Known original task ids are checked first. Accepted or unknown submissions are never repeated, and other failed clips continue to block new submissions. Do not create another work merely to retry the same finished video. Refuse a second live run. Local cancellation cannot cancel already accepted upstream billing.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -1596,6 +1693,22 @@
   "changes": [
     [
       {
+        "name": "append_video_works",
+        "description": "Append concrete additional finished works only when a later real human answer explicitly increases an already prepared list. count is the ADDITIONAL number: an existing list of one changed to three needs count=2. Read the current works first. The Host binds this revision to the exact real answer captured for this execution; repeating it or changing tool-call ids cannot append twice. An answer already used to prepare the list cannot append another copy. Existing work ids, UNKNOWN submissions and operation ids remain unchanged. Use returned pending_work_ids for genuinely new works and query original existing works. Do not append for retries, quality review, parameter correction or concurrency. A new independent human message prepares its own list with prepare_video_works instead. This tool neither generates nor approves a model price; each new non-H3 work still requires its actual quote and human choice.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "count": {
+              "type": "number",
+              "description": "Positive whole number of ADDITIONAL finished works explicitly requested by the later real human answer, excluding all existing works. For a change from one to three, use two."
+            }
+          },
+          "required": [
+            "count"
+          ]
+        }
+      },
+      {
         "name": "ask_user_question",
         "description": "Ask the user a concise question when you need confirmation, a choice, or missing information before proceeding.",
         "parameters": {
@@ -1836,7 +1949,7 @@
       },
       {
         "name": "generate_image",
-        "description": "Generate images or edit reference images through the signed-in account relay, save every result into the artifacts directory, and return the paths. For pending or unknown results, never resubmit this tool: use query_image_task with the original plan_id and operation_id when a task_id was received. Without a task_id, retain the unknown outcome and reconcile the original request before any paid retry. For image-to-image requests, pass the current-chat user attachment or an authorized workspace image in reference_images. Use list_image_models when the requested model or image controls need checking; preserve its exact model ids, size strings, independent resolution tiers and count/reference limits. Ask the user to choose a model only when their request requires that choice. For failed operations, give users only a safe Simplified Chinese summary based on the observed failure category; connection failures and timeouts do not establish whether the cause is local, network, platform or upstream. Distinguish confirmed request or media validation, permission, rate limiting, service HTTP 5xx and upstream task failures; unknown causes remain unconfirmed; never repeat raw HTTP responses, diagnostic JSON, error codes, stacks, internal paths or credentials. Keep actionable guidance for confirmed sign-in, product-credit, file-validation and cancellation failures. When submission or billing outcome is unknown, check existing tasks and artifacts first; do not immediately retry or automatically resubmit. Preserve real tool results. This restriction does not prevent software or code diagnostics explicitly requested by the user.",
+        "description": "Generate images or edit reference images through the signed-in account relay and save every result into the artifacts directory. Quick completions return paths; longer operations return a background job_id with original plan_id and operation_id. Use job_output at measured intervals for progress and completion, then present the real paths. job_kill stops local waiting; accepted upstream work may continue billing. Never resubmit to wait for a background result. For pending or unknown results, never resubmit this tool: use query_image_task with the original plan_id and operation_id to query an accepted task or save a retained synchronous result without generating again. The task listing marks recoverable records with can_query. If neither an original task id nor a retained result is available, keep the unknown outcome and reconcile the original request before any paid retry. For image-to-image requests, pass the current-chat user attachment or an authorized workspace image in reference_images. Use list_image_models when the requested model or image controls need checking; preserve its exact model ids, size strings, independent resolution tiers and count/reference limits. Ask the user to choose a model only when their request requires that choice. For failed operations, give users only a safe Simplified Chinese summary based on the observed failure category; connection failures and timeouts do not establish whether the cause is local, network, platform or upstream. Distinguish confirmed request or media validation, permission, rate limiting, service HTTP 5xx and upstream task failures; unknown causes remain unconfirmed; never repeat raw HTTP responses, diagnostic JSON, error codes, stacks, internal paths or credentials. Keep actionable guidance for confirmed sign-in, product-credit, file-validation and cancellation failures. When submission or billing outcome is unknown, check existing tasks and artifacts first; do not immediately retry or automatically resubmit. Preserve real tool results. This restriction does not prevent software or code diagnostics explicitly requested by the user.",
         "parameters": {
           "type": "object",
           "properties": {
@@ -1858,7 +1971,7 @@
             },
             "model": {
               "type": "string",
-              "description": "Optional image model id such as gpt-image-2. Defaults to the first image model the deployment serves for this account."
+              "description": "Optional image model id such as gpt-image-2. The current human request overrides the frozen personal image preference, then the backend-configured image default for this account; an older or unset configuration retains the account’s first available image model."
             },
             "size": {
               "type": "string",
@@ -1871,6 +1984,26 @@
             "count": {
               "type": "number",
               "description": "How many images to render, within max_count returned by list_image_models; do not infer a model’s batch limit."
+            },
+            "quality": {
+              "type": "string",
+              "description": "Exact published image quality, only when declared by the selected model."
+            },
+            "background": {
+              "type": "string",
+              "description": "Published image background mode."
+            },
+            "format": {
+              "type": "string",
+              "description": "Published output container format."
+            },
+            "moderation": {
+              "type": "string",
+              "description": "Published moderation setting."
+            },
+            "seed": {
+              "type": "number",
+              "description": "Safe integer random seed, only for a model declaring this control."
             },
             "reference_images": {
               "type": "array",
@@ -1887,10 +2020,14 @@
       },
       {
         "name": "generate_video",
-        "description": "Compatibility single-clip generation through the account relay. Read list_video_models first. Prefer generate_video_project for new video requests, including a single clip: its background job exposes queue and generation progress without holding chat open. Each independent human generation request defaults to one finished video, or its explicit work count. An earlier running or unknown submission does not block a separate human request, even with the same brief or plan; create independent work and retain the original task. Do not repeat the same submission. Progress checks and continuing the original task use its existing query or resume tools. Do not write submission, polling or download scripts or probe invalid paid durations. For story direction, character/reference continuity, dialogue or subtitles, use the yunshu-video-director skill. For a complete video such as 40 seconds or automatic assembly, always use generate_video_project; several camera beats may fit one clip. Accepted work that outlasts this foreground wait returns pending: query_video_task reads its original receipt without repeating that submission. Edit existing clips with edit_video. Only declared duration, resolution, ratio, frames and references are accepted. For failed operations, give users only a safe Simplified Chinese summary based on the observed failure category; connection failures and timeouts do not establish whether the cause is local, network, platform or upstream. Distinguish confirmed request or media validation, permission, rate limiting, service HTTP 5xx and upstream task failures; unknown causes remain unconfirmed; never repeat raw HTTP responses, diagnostic JSON, error codes, stacks, internal paths or credentials. Keep actionable guidance for confirmed sign-in, product-credit, file-validation and cancellation failures. When submission or billing outcome is unknown, check existing tasks and artifacts first; do not immediately retry or automatically resubmit. Preserve real tool results. This restriction does not prevent software or code diagnostics explicitly requested by the user.",
+        "description": "Compatibility single-clip generation through the account relay. Read list_video_models first. Prefer generate_video_project for new video requests, including a single clip: its background job exposes queue and generation progress without holding chat open. Default to one finished work. For several user-requested works, first prepare_video_works with their concrete count and pass a separate returned work_id for each work. Reuse work_id when confirming, correcting or retrying the same finished work: even a new tool-call id returns its original operation instead of another generation POST. A separate actual human request can prepare independent work even with the same brief or plan, while the original accepted or unknown work retains its own task. Natural-language intent and inferred total counts do not gate execution. Progress checks and continuing the original task use its existing query or resume tools. Do not write submission, polling or download scripts or probe invalid paid durations. For story direction, character/reference continuity, dialogue or subtitles, use the yunshu-video-director skill. For a complete video such as 40 seconds or automatic assembly, always use generate_video_project; several camera beats may fit one clip. Accepted work that outlasts this foreground wait returns pending: query_video_task reads its original receipt without repeating that submission. Edit existing clips with edit_video. Only declared duration, resolution, ratio, frames and references are accepted.结合完整对话理解创作意图，不要求用户使用固定句式或反复重述数量。未指定数量默认一条；用户明确需要几条成片，就先用 prepare_video_works 准备对应数量，再逐个使用返回的 work_id 生成。单条简单请求可以直接生成，Host 自动准备一个默认作品编号。作品编号用于同一成片的防重复，不是从用户措辞推算的权限额度。普通确认、修改参数和继续同一作品时复用已有 work_id；尚未提交时可以纠正参数，已提交或结果未知时只查询、恢复原任务，不通过换工具调用或重新准备编号再生成。台词、字幕和故事里的疑问或否定不代表取消。准备同一请求会返回原作品清单，不增加版本；若已准备清单后，用户在真实问题回答中明确增加数量，先核对已有清单，再用 append_video_works 追加缺少的条数（已有一条改为总共三条时追加两条），保留原 work_id 和未知任务。同一回答重复追加不会再次加片，不能把普通确认、查询或重试当作追加指令。非 H3 报价选择只批准当前一件作品，追加作品分别核对实际报价；用户另行发起独立新请求时可以准备新的清单，即使提示词或计划相同，也不受旧任务等待或未知影响。清单中的待办不是必须执行的订单；用户减少数量时只启动其仍要求的作品，未启动的多余编号可以保留，不能为了清空清单生成。不要为了填满并发、质量评价或修改计划自动增加收费作品。是否另做仍不明确时只简短确认，不把正常对话说成平台拒绝。 For failed operations, give users only a safe Simplified Chinese summary based on the observed failure category; connection failures and timeouts do not establish whether the cause is local, network, platform or upstream. Distinguish confirmed request or media validation, permission, rate limiting, service HTTP 5xx and upstream task failures; unknown causes remain unconfirmed; never repeat raw HTTP responses, diagnostic JSON, error codes, stacks, internal paths or credentials. Keep actionable guidance for confirmed sign-in, product-credit, file-validation and cancellation failures. When submission or billing outcome is unknown, check existing tasks and artifacts first; do not immediately retry or automatically resubmit. Preserve real tool results. This restriction does not prevent software or code diagnostics explicitly requested by the user.",
         "parameters": {
           "type": "object",
           "properties": {
+            "work_id": {
+              "type": "string",
+              "description": "Existing work_id from prepare_video_works or an earlier generation result. Reuse it for the same finished work across tool calls and confirmations. Omission selects the current request’s first default work; it never creates another version of that work. For several works, prepare the complete count first and use each returned work_id once."
+            },
             "plan_id": {
               "type": "string",
               "description": "Explicit update_creation_plan id for this generation. Also provide shot_id."
@@ -1905,7 +2042,7 @@
             },
             "model": {
               "type": "string",
-              "description": "Defaults to MiniMax-H3 at 768P unless the human explicitly requested another resolution. A non-H3 model requires a current full-price estimate and a real human model selection before generation; model arguments never approve that change."
+              "description": "When omitted, use the backend-configured video model for this account; an older or unset configuration retains MiniMax-H3. Only actual H3 defaults to 768P when no resolution is given. A non-H3 model requires a current full-price estimate and a real human model selection before generation; model arguments never approve that change."
             },
             "duration_seconds": {
               "type": "number",
@@ -1915,9 +2052,29 @@
               "type": "string",
               "description": "Output resolution such as 768P or 2K, when the model offers choices."
             },
+            "size": {
+              "type": "string",
+              "description": "Exact native size from a complete specification, when distinct from resolution."
+            },
+            "quality": {
+              "type": "string",
+              "description": "Exact quality tier from the selected complete specification; preserve it for quote and generation."
+            },
+            "mode": {
+              "type": "string",
+              "description": "Optional published vendor mode, distinct from quality."
+            },
             "ratio": {
               "type": "string",
               "description": "Aspect ratio such as 16:9 or 9:16; adaptive inherits it from the reference media."
+            },
+            "seed": {
+              "type": "number",
+              "description": "Safe integer random seed, only when declared by the selected model."
+            },
+            "watermark": {
+              "type": "boolean",
+              "description": "Watermark switch, only when declared by the selected model."
             },
             "audio": {
               "type": "boolean",
@@ -1959,10 +2116,14 @@
       },
       {
         "name": "generate_video_project",
-        "description": "Default fixed background workflow for every new chat video, including a single short clip and a finished video longer than one model clip. Each independent human generation request has its own allowance: default to one finished video, or the exact explicitly requested work count and parameters. This tool starts one finished work per invocation; its clips and gateway concurrency do not multiply that count. A previous running or unknown work never consumes a new human request’s allowance, even when both requests use the same chat, plan, or shots. Plans associate content, not submission identity. Only retries of the same invocation are duplicates. Query or resume the original project by its retained id rather than generating it again. If remaining_works is positive, continue arranging that many works in further tool steps without waiting for earlier jobs; stop after zero. For a simple single-clip brief without an explicit duration, call this tool directly with prompt and any requested model or references; omit total_duration_seconds so the Host resolves actual defaults in one call. Do not load directing skills, write a long storyboard or call list_video_models first for that simple case. For explicit timing or complex plans, read list_video_models for actual controls; never discover support by paid retries or silently replace an explicitly named model. Use the yunshu-video-director skill for story, character/reference continuity, dialogue and subtitles, then call this native workflow; do not write polling, download or assembly scripts or manually repeat generate_video for each visual cut. One paid clip can contain several camera beats. For requests such as a 40-second video, plan the fewest supported clips (for a 15-second limit: 15+15+10, or three 15-second clips trimmed to 40), generate independent clips with gateway-approved bounded parallelism using the signed-in account, then normalize, trim, and join them in timeline order. Without a valid gateway declaration, concurrency defaults to four clips. Respect verified pool capacity and any lower local or gateway ceiling. The API owns shared account capacity. Do not launch a separate agent or generation-tool call for every clip. For a catalog with H3 single clips limited to 4–15 seconds, 60 seconds means four 15-second clips, never one 30-second clip. All local tools and every request are checked before billing. Returns a background job_id and durable project_id; read job_output at measured intervals for queued/generating progress and call present on the completed final_path. A busy response without an accepted task id is unknown, not confirmed queue admission. Use job_kill when the user stops; accepted provider tasks may continue billing. A query deadline retains task ids for explicit resume, never a fresh submission. Never claim completion before the job reports a saved final_path. If a current user-supplied chat attachment is outside the workspace, first copy that read-authorized attachment into this workspace with the existing file tools, then pass the copied path; do not copy unrelated files.",
+        "description": "Default fixed background workflow for every new chat video, including a single short clip and a finished video longer than one model clip. Default to one finished work. For several user-requested works, first prepare_video_works with the concrete count and use each returned work_id once. This tool starts one finished work per invocation; clips and gateway concurrency never add works. Reuse work_id when continuing, correcting or retrying the same finished work. Its durable claim survives new tool-call ids and restarts; an existing work returns original task coordinates without a new generation POST. A new actual human request can prepare independent work even with the same prompt, plan or shots, and an earlier unknown task cannot block it. Natural-language phrasing and inferred work totals are not permission gates. pending_work_ids identifies concrete prepared works still available to start; start only those still requested by the user, without waiting for earlier jobs. If the user reduces the count, leave unwanted prepared works unstarted; never generate merely to empty this list. remaining_works counts that list, not a user allowance. Query or resume accepted and unknown original projects instead of generating again. For a simple single-clip brief without an explicit duration, call this tool directly with prompt and any requested model or references; omit total_duration_seconds so the Host resolves actual defaults in one call. Do not load directing skills, write a long storyboard or call list_video_models first for that simple case. For explicit timing or complex plans, read list_video_models for the effective default_model_id, selected_parameters and that model’s own actual controls before splitting clips. An incomplete-default error preserves its selected model; choose from that same model’s complete specifications rather than switching to H3. A model conflict requires correcting the unsubmitted selection, not trying alternative paid combinations. Never discover support by paid retries, inspect installed application archives for a creation request, or silently replace an explicitly named model. Use the yunshu-video-director skill for story, character/reference continuity, dialogue and subtitles, then call this native workflow; do not write polling, download or assembly scripts or manually repeat generate_video for each visual cut. One paid clip can contain several camera beats. A saved seconds preference chooses a single clip only when no final duration was requested; it never caps clip length for a timed project. With a requested total, use the full duration menu for the selected resolution, ratio, quality and mode: first minimize paid clips, then surplus seconds. A supported 15-second work is one 15-second clip even when the saved default is five seconds. For requests such as a 40-second video, plan the fewest supported clips (for a 15-second limit: 15+15+10, or three 15-second clips trimmed to 40), generate independent clips with gateway-approved bounded parallelism using the signed-in account, then normalize, trim, and join them in timeline order. Without a valid gateway declaration, concurrency defaults to four clips. Respect verified pool capacity and any lower local or gateway ceiling. The API owns shared account capacity. Do not launch a separate agent or generation-tool call for every clip. For a catalog with H3 single clips limited to 4–15 seconds, 60 seconds means four 15-second clips, never one 30-second clip. All local tools and every request are checked before billing. Returns a background job_id and durable project_id; read job_output at measured intervals for queued/generating progress and call present on the completed final_path. A busy response without an accepted task id is unknown, not confirmed queue admission. Use job_kill when the user stops; accepted provider tasks may continue billing. A query deadline retains task ids for explicit resume, never a fresh submission. Never claim completion before the job reports a saved final_path. If a current user-supplied chat attachment is outside the workspace, first copy that read-authorized attachment into this workspace with the existing file tools, then pass the copied path; do not copy unrelated files.结合完整对话理解创作意图，不要求用户使用固定句式或反复重述数量。未指定数量默认一条；用户明确需要几条成片，就先用 prepare_video_works 准备对应数量，再逐个使用返回的 work_id 生成。单条简单请求可以直接生成，Host 自动准备一个默认作品编号。作品编号用于同一成片的防重复，不是从用户措辞推算的权限额度。普通确认、修改参数和继续同一作品时复用已有 work_id；尚未提交时可以纠正参数，已提交或结果未知时只查询、恢复原任务，不通过换工具调用或重新准备编号再生成。台词、字幕和故事里的疑问或否定不代表取消。准备同一请求会返回原作品清单，不增加版本；若已准备清单后，用户在真实问题回答中明确增加数量，先核对已有清单，再用 append_video_works 追加缺少的条数（已有一条改为总共三条时追加两条），保留原 work_id 和未知任务。同一回答重复追加不会再次加片，不能把普通确认、查询或重试当作追加指令。非 H3 报价选择只批准当前一件作品，追加作品分别核对实际报价；用户另行发起独立新请求时可以准备新的清单，即使提示词或计划相同，也不受旧任务等待或未知影响。清单中的待办不是必须执行的订单；用户减少数量时只启动其仍要求的作品，未启动的多余编号可以保留，不能为了清空清单生成。不要为了填满并发、质量评价或修改计划自动增加收费作品。是否另做仍不明确时只简短确认，不把正常对话说成平台拒绝。",
         "parameters": {
           "type": "object",
           "properties": {
+            "work_id": {
+              "type": "string",
+              "description": "Existing work_id from prepare_video_works or an earlier result. Reuse it for the same finished work across retries, confirmations and parameter corrections. Omission uses the current human request’s first default work. For several finished works, prepare their count first and pass each returned work_id; do not create new work ids to retry an unknown submission."
+            },
             "plan_id": {
               "type": "string",
               "description": "Explicit update_creation_plan id. Also supply shot_ids in generation order."
@@ -1991,20 +2152,40 @@
             },
             "shot_durations_seconds": {
               "type": "array",
-              "description": "Exact model-supported whole seconds per clip, in shot_ids or shot_prompts order. Their sum must equal total_duration_seconds. When omitted for an explicit creation plan, use its saved shot durations; do not silently change timeline timing.",
+              "description": "Exact model-supported whole seconds per separately required clip, in shot_ids or shot_prompts order. Their sum must equal total_duration_seconds. Omit for ordinary automatic splitting: several visual cuts belong inside one clip prompt, not separate five-second entries. Use only for explicitly fixed clip timing or distinct shot-bound media. When omitted for an explicit creation plan, use its saved shot durations; do not silently change that timeline.",
               "items": {
                 "type": "number"
               }
             },
             "model": {
               "type": "string",
-              "description": "Defaults to MiniMax-H3 at 768P unless the human explicitly requested another resolution. Preserve an explicitly requested model; any non-H3 selection requires a current full-price estimate and a real human model choice before generation. Model arguments never approve that change."
+              "description": "The current human request overrides the frozen personal video preference, then the backend-configured video model for this account; an older or unset configuration retains MiniMax-H3. Only actual H3 defaults to 768P without a specified tier. Preserve an explicitly requested model; any non-H3 selection requires a current full-price estimate and a real human model choice before generation. Model arguments never approve that change."
             },
             "resolution": {
               "type": "string"
             },
             "ratio": {
               "type": "string"
+            },
+            "size": {
+              "type": "string",
+              "description": "Exact native output size from the complete published specification, when distinct from resolution."
+            },
+            "quality": {
+              "type": "string",
+              "description": "Exact quality tier from the complete published specification; used for both quote and submission."
+            },
+            "mode": {
+              "type": "string",
+              "description": "Published vendor mode, only when supported."
+            },
+            "seed": {
+              "type": "number",
+              "description": "Safe integer random seed, only when declared by the selected model."
+            },
+            "watermark": {
+              "type": "boolean",
+              "description": "Watermark switch, only when declared by the selected model."
             },
             "audio": {
               "type": "boolean",
@@ -2199,7 +2380,7 @@
       },
       {
         "name": "list_image_models",
-        "description": "Read the signed-in account’s available image models and current Host-validated generation controls without submitting images or charging for generation. Read when an exact image model, size, aspect ratio, resolution, count or reference-image limit is needed. Use exact ids and the size strings as returned, including aspect-ratio strings; resolution is a separate field. Empty menus and omitted fields offer no optional choice. Unverified model limits are conservative local limits, not confirmed upstream capabilities. Only pass controls declared by generate_image; this catalog also describes controls available to AI Creation. Listing does not reserve capacity, estimate prices or authorize a generation.",
+        "description": "Read the signed-in account’s available image models and current Host-validated generation controls without submitting images or charging for generation. Read when an exact image model, size, aspect ratio, resolution, count or reference-image limit is needed. Use exact ids and the size strings as returned, including aspect-ratio strings; resolution is a separate field. Empty menus and omitted fields offer no optional choice. Unverified model limits are conservative local limits, not confirmed upstream capabilities. Only pass controls declared by generate_image; this catalog also describes controls available to AI Creation. Read default_model_id, default_source and selected_parameters before choosing a model or static controls. A default_error_code with an available model means complete its selection from that same model’s declared specifications; it does not authorize a different model. Before asking about an image model or static parameters, read this listing. Saved selected_parameters already answer those choices; a single supported value needs no question. Offer only unresolved choices from the selected model’s compatible complete specifications, never a generic ratio menu. Listing does not reserve capacity, estimate prices or authorize a generation.",
         "parameters": {
           "type": "object",
           "properties": {}
@@ -2207,10 +2388,23 @@
       },
       {
         "name": "list_video_models",
-        "description": "Read the signed-in account’s current video models and exact generation parameters without submitting or charging for generation. Call when planning explicit model controls or paid clip lengths. A simple single-clip request can directly call generate_video_project without total_duration_seconds: the Host resolves actual model defaults in the same call. Use exact ids, durations by resolution, size strings, reference limits and audio_output; do not infer audio from a missing switch or use display names as ids. This catalog does not report live upstream capacity. For queued work use the background generate_video_project workflow, including one clip.",
+        "description": "Read the signed-in account’s current video models and exact generation parameters without submitting or charging for generation. Call when planning explicit model controls or paid clip lengths. A simple single-clip request can directly call generate_video_project without total_duration_seconds: the Host resolves actual model defaults in the same call. Use exact ids, durations by resolution, size strings, reference limits and audio_output; do not infer audio from a missing switch or use display names as ids. Read default_model_id, default_source and selected_parameters before planning. selected_parameters.seconds is a default single-clip length, not the largest clip this model supports. For a requested final duration, use every supported duration within the selected resolution, ratio, quality and mode, minimizing clip count before excess generated seconds; never split one supported 15-second work into three five-second clips just because the saved default is five. Preserve that selected model unless the human chooses another one; a tool model argument alone cannot override a saved choice. If default_error_code reports an incomplete specification, use the returned selected model and its own specifications, not another model’s duration or resolution menu. Distinct ids such as MiniMax-H3 and ycapi-minimax-h3 are different channels, not interchangeable aliases. Before asking about a video model or static parameters, read this listing. Saved selected_parameters already answer those choices; a single supported value needs no question. Offer only unresolved choices from the selected model’s compatible complete specifications, never a generic ratio menu. This catalog does not report live upstream capacity. For queued work use the background generate_video_project workflow, including one clip.",
         "parameters": {
           "type": "object",
           "properties": {}
+        }
+      },
+      {
+        "name": "prepare_video_works",
+        "description": "Prepare concrete finished-video work ids without generation or billing. Omit count for one finished video. When the user requests several works, interpret the full conversation and prepare that complete count before starting any work, then pass a different returned work_id for each finished work. This is a concrete work list, not a language-based permission or quota. Repeating preparation under the same human source returns the original list even with another tool-call id; it never creates extra versions or resets a submitted work. Reuse existing work_id values for confirmations, parameter corrections, queries and recovery. A separate actual human request can prepare an independent list even with the same prompt or plan. Do not prepare again to retry an unknown submission; query its original operation or project. For a later real answer requesting additional works, use append_video_works with the missing count; do not reset existing identities. Only the Host assigns work identities.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "count": {
+              "type": "number",
+              "description": "Concrete positive whole number of finished works requested in the conversation. Defaults to one. Shot count, clip count and concurrency do not increase this value. Prepare the complete work list before generating its first work."
+            }
+          }
         }
       },
       {
@@ -2248,7 +2442,7 @@
       },
       {
         "name": "query_image_task",
-        "description": "Without operation_id, list unresolved image invocations owned by this account and chat (optionally filter by plan_id) to recover original ids after interruption or restart. With both original plan_id and operation_id, query that accepted task and save completed outputs. This only reads retained tasks; it never submits another generation or accepts a caller-supplied remote URL or task id. If the original submission has no task id, retain its unknown outcome and reconcile the original request instead of generating again. For failed operations, give users only a safe Simplified Chinese summary based on the observed failure category; connection failures and timeouts do not establish whether the cause is local, network, platform or upstream. Distinguish confirmed request or media validation, permission, rate limiting, service HTTP 5xx and upstream task failures; unknown causes remain unconfirmed; never repeat raw HTTP responses, diagnostic JSON, error codes, stacks, internal paths or credentials. Keep actionable guidance for confirmed sign-in, product-credit, file-validation and cancellation failures. When submission or billing outcome is unknown, check existing tasks and artifacts first; do not immediately retry or automatically resubmit. Preserve real tool results. This restriction does not prevent software or code diagnostics explicitly requested by the user.",
+        "description": "Without operation_id, list unresolved image invocations owned by this account and chat (optionally filter by plan_id) to recover original ids after interruption or restart. With both original plan_id and operation_id, query that accepted task or continue saving a privately retained synchronous image result, including results without a task id. This only reads original retained work; it never submits another generation or accepts a caller-supplied remote URL or task id. can_query indicates that original-task recovery or original-result saving is available. Without either original task identity or a retained result, keep the unknown outcome and reconcile the original request instead of generating again. For failed operations, give users only a safe Simplified Chinese summary based on the observed failure category; connection failures and timeouts do not establish whether the cause is local, network, platform or upstream. Distinguish confirmed request or media validation, permission, rate limiting, service HTTP 5xx and upstream task failures; unknown causes remain unconfirmed; never repeat raw HTTP responses, diagnostic JSON, error codes, stacks, internal paths or credentials. Keep actionable guidance for confirmed sign-in, product-credit, file-validation and cancellation failures. When submission or billing outcome is unknown, check existing tasks and artifacts first; do not immediately retry or automatically resubmit. Preserve real tool results. This restriction does not prevent software or code diagnostics explicitly requested by the user.",
         "parameters": {
           "type": "object",
           "properties": {
@@ -2322,7 +2516,7 @@
       },
       {
         "name": "resume_video_project",
-        "description": "Explicitly continue a retained project for the same account, workspace, and chat. Reuse saved clips and query already known provider task ids before submitting any remaining never-submitted clips. Unknown or failed clips block new submissions, while other already accepted task ids remain recoverable for download. Never repeat unknown or failed submissions, and refuse a second live run. Local cancellation cannot cancel already accepted upstream billing.",
+        "description": "Explicitly continue a retained project for the same account, workspace, and chat. After the user recharges and sends a new real reply asking to continue or retry, reuse this original project_id: the Host can create a new attempt only for a complete gateway-confirmed funding rejection that never reached upstream. Old attempts and saved clips remain retained. Known original task ids are checked first. Accepted or unknown submissions are never repeated, and other failed clips continue to block new submissions. Do not create another work merely to retry the same finished video. Refuse a second live run. Local cancellation cannot cancel already accepted upstream billing.",
         "parameters": {
           "type": "object",
           "properties": {

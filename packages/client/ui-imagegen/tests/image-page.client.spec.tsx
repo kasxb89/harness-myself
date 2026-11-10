@@ -138,6 +138,35 @@ describe('image creation workspace', () => {
       submitted: requestBody(fetchMock.mock.calls.find(([url]) => url === '/credits/api/image/generate')) }).toMatchSnapshot()
   })
 
+  it('uses only qualified edit specifications when references are attached and restores generation choices after removal', async () => {
+    const specifications = ['1k', '2k', '4k'].map(resolution => ({ size: '1:1', resolution }))
+    const original = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation(async (input, init) => input === '/credits/api/media/catalog'
+      ? json({ ok: true, payload: { image: [{ ...models[0], params: { ...models[0]!.params,
+        maxEdits: 1, sizes: ['1:1'], specifications, editSpecifications: specifications.slice(0, 1) } }] } })
+      : await original(input, init))
+    const { props, store } = makeProps()
+    store.actions.patch({ size: '1:1', resolution: '4k' })
+    render(<ImagePage {...props} />)
+    await ready()
+    const selector = screen.getByRole('combobox', { name: zh.specification })
+    expect([...selector.querySelectorAll('option')].map(item => item.textContent)).toEqual(['1:1 · 1k', '1:1 · 2k', '1:1 · 4k'])
+    expect(store.getSnapshot().resolution).toBe('4k')
+    act(() => { store.actions.appendReference({ assetId: 'ma_edit', name: 'edit.png', url: 'blob:edit', bytes: 1 }) })
+    expect([...selector.querySelectorAll('option')].map(item => item.textContent)).toEqual(['1:1 · 1k'])
+    expect(store.getSnapshot().resolution).toBe('1k')
+    expect(fetchMock.mock.calls.some(([url]) => url === '/credits/api/image/generate')).toBe(false)
+    fireEvent.change(screen.getByRole('textbox', { name: zh.prompt }), { target: { value: 'Change the circle to purple' } })
+    await waitFor(() => { expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', false) })
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    await screen.findByText(zh.done)
+    expect(requestBody(fetchMock.mock.calls.find(([url]) => url === '/credits/api/image/generate'))).toMatchObject({
+      model: 'edit-model', size: '1:1', resolution: '1k', references: ['ma_edit'],
+    })
+    act(() => { store.actions.removeReference('ma_edit') })
+    expect(selector.querySelectorAll('option')).toHaveLength(3)
+  })
+
   it('pauses image submission when the declared complete specification list is empty', async () => {
     const original = fetchMock.getMockImplementation()!
     fetchMock.mockImplementation(async (input, init) => input === '/credits/api/media/catalog'

@@ -77,12 +77,13 @@ import type {} from './harness-account.ts'
 
 export { PiAiAdapter } from './adapter.ts'
 export type { PiAiAdapterOptions } from './adapter.ts'
-export type { HarnessAccount } from './harness-account.ts'
+export type { HarnessAccount, HarnessModelConfigRequest } from './harness-account.ts'
 export { Config } from './config.ts'
 export type {
   Options,
   PiAiCompatProfile,
   PiAiManagedModelLimits,
+  PiAiModelLimitOverride,
   PiAiModality,
   PiAiModelOverride,
   PiAiModelProfile,
@@ -104,7 +105,7 @@ const NS = 'llm-pi-ai'
  * Sorted by provider so a settings document that merely reorders its keys is
  * not mistaken for a route change.
  */
-function registrationFacts(profiles: ReadonlyMap<string, ResolvedPiAiProviderProfile>): unknown {
+function registrationFacts(profiles: ReadonlyMap<string, ResolvedPiAiProviderProfile>, adapter: PiAiAdapter): unknown {
   return [...profiles.entries()]
     // `displayName` rides along because the registry hands it to every selector
     // through `providerInfo()`: a rename that did not re-register would leave
@@ -112,7 +113,8 @@ function registrationFacts(profiles: ReadonlyMap<string, ResolvedPiAiProviderPro
     .map(([provider, profile]) => ({
       provider,
       displayName: profile.displayName,
-      retryPolicy: profile.retryPolicy,
+      // Managed versions can override an unchanged user policy when only model rows refresh.
+      retryPolicy: adapter.providerRetryPolicy(provider),
     }))
     .sort((left, right) => left.provider.localeCompare(right.provider))
 }
@@ -241,6 +243,10 @@ export function apply(ctx: Context, config: Config): void {
       return await account.refreshModels(profile.baseURL)
     },
     resolveApiKey,
+    authorizeModelConfig: async (provider, request) => {
+      const account = ctx.get('harnessAccount')
+      return account?.provider === provider && await account.authorizeModelConfig?.(request) === true
+    },
     auth,
     resolveAttachments: () => ctx.get('attachments'),
     resolveImageAccess: (attachments, ref) => resolveImageAttachmentAccess(
@@ -315,7 +321,7 @@ export function apply(ctx: Context, config: Config): void {
   let registration: AdapterRegistrationHandle | undefined
   let registeredFacts: unknown
   const ensureRegistrationFacts = (): void => {
-    const facts = registrationFacts(profiles())
+    const facts = registrationFacts(profiles(), adapter)
     if (deepEqualJson(facts, registeredFacts)) return
     // The registry captures the route set and each route's retry policy at
     // registration, so a change to either must re-register. The swap is

@@ -4,6 +4,8 @@ import { bindVideoServerQueueRecovery, discoverVideoServerQueue } from '../src/v
 import type { VideoServerQueue } from '../src/video-server-queue.ts'
 import type { VideoProjectAttemptId } from '../src/video-project.ts'
 import type { VideoProjectRequest, VideoProjectSubmission } from '../src/video-project-types.ts'
+import { readModelConfigVersion } from '../src/model-config-version.ts'
+import { MediaModelConfigRejection } from '../src/media-model-config-result.ts'
 
 const ATTEMPT = 'bc751f83-73b9-4c89-b756-e623b5ec7ab5' as VideoProjectAttemptId
 const QUEUE = `vq_${ATTEMPT}`
@@ -25,13 +27,14 @@ function receipt(state = 'queued', submissionState = 'not_submitted') {
 function response(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } })
 }
-interface Call { path: string; method: string; authorization: string | null; body: string | undefined }
+interface Call { path: string; method: string; authorization: string | null; body: string | undefined; modelConfigVersion?: string | null }
 function transport(handler?: (call: Call, index: number) => Response | Promise<Response>) {
   const calls: Call[] = []
   const fetch: typeof globalThis.fetch = async (input, init) => {
     const url = input instanceof Request ? input.url : input instanceof URL ? input.href : input
     const call: Call = { path: new URL(url).pathname, method: init?.method ?? 'GET',
-      authorization: new Headers(init?.headers).get('authorization'), body: typeof init?.body === 'string' ? init.body : undefined }
+      authorization: new Headers(init?.headers).get('authorization'), body: typeof init?.body === 'string' ? init.body : undefined,
+      modelConfigVersion: new Headers(init?.headers).get('X-Yunshu-Model-Config-Version') }
     calls.push(call)
     return handler === undefined ? response({ data: { video_queue: CAPABILITY } }) : handler(call, calls.length - 1)
   }
@@ -90,6 +93,57 @@ async function fixture(handler?: (call: Call, index: number) => Response | Promi
   if (queue === undefined) throw new Error('Fixture queue must be supported')
   return { ...upstream, key, options, queue }
 }
+
+describe('versioned queue admission and original acknowledgement identity', () => {
+  const versionA = readModelConfigVersion({ model_config_version: 'a'.repeat(64) })!
+  const versionB = readModelConfigVersion({ model_config_version: 'b'.repeat(64) })!
+
+  it.each([
+    { status: 202, expected: versionA, original: versionA, echo: versionA, unconfirmed: false },
+    { status: 202, expected: versionA, original: versionA, echo: undefined, unconfirmed: true },
+    { status: 202, expected: versionB, original: versionA, echo: versionB, unconfirmed: true },
+    { status: 200, expected: versionB, original: versionA, echo: undefined, unconfirmed: true },
+  ])('keeps queue coordinates for HTTP$status with original=$original, expected=$expected, echo=$echo', async (test) => {
+    const body = receipt()
+    const versioned = { ...body, data: { ...body.data, model_config_version: test.original } }
+    const f = await fixture((call) => {
+      const result = response(versioned, call.method === 'POST' ? test.status : 200)
+      if (test.echo !== undefined) result.headers.set('X-Yunshu-Model-Config-Version', test.echo)
+      return result
+    })
+    const item = await f.queue.submit(REQUEST, { ...SUBMISSION, modelConfigVersion: test.expected }, freshSignal())
+    expect(item.queueId).toBe(QUEUE)
+    expect(item.gatewayTaskId).toBe(body.data.task_id)
+    expect(item.modelConfigVersion).toBe(test.original)
+    expect(item.modelConfigAcceptanceUnconfirmed === true).toBe(test.unconfirmed)
+    expect(await f.queue.read(QUEUE, REQUEST, freshSignal())).toMatchObject({ queueId: QUEUE, modelConfigVersion: test.original })
+    expect(f.calls.map(call => call.method)).toEqual(['GET', 'POST', 'GET'])
+    expect(f.calls.map(call => call.modelConfigVersion)).toEqual([null, test.expected, null])
+    expect(JSON.parse(f.calls[1]!.body!)).toEqual({ schema_version: 1, queue_id: QUEUE, operation_id: ATTEMPT, count: 1, request: REQUEST })
+  })
+
+  it.each(['model_config_version', 'model_config_revision', 'modelConfigVersion', 'modelConfigSnapshot'])
+  ('refuses untrusted reserved metadata %s in queue native JSON before create', async (field) => {
+    const f = await fixture()
+    const request = { ...REQUEST, [field]: versionA }
+    expect(f.queue.supports(request, SUBMISSION)).toBe(false)
+    await expect(f.queue.submit(request, SUBMISSION, freshSignal())).rejects.toMatchObject({ code: 'VIDEO_QUEUE_REQUEST_UNSUPPORTED' })
+    expect(f.calls.map(call => call.method)).toEqual(['GET'])
+  })
+
+  it.each([versionA, versionB])('checks the original version after a lost POST acknowledgement and GET recovery: %s', async (original) => {
+    const body = receipt()
+    const f = await fixture((call) => {
+      if (call.method === 'POST') throw new Error('Synthetic lost ACK after queue acceptance')
+      return response({ ...body, data: { ...body.data, model_config_version: original } })
+    })
+    const item = await f.queue.submit(REQUEST, { ...SUBMISSION, modelConfigVersion: versionB }, freshSignal())
+    expect(item).toMatchObject({ queueId: QUEUE, gatewayTaskId: body.data.task_id, modelConfigVersion: original })
+    expect(item.modelConfigAcceptanceUnconfirmed === true).toBe(original !== versionB)
+    expect(f.calls.map(call => call.method)).toEqual(['GET', 'POST', 'GET'])
+    expect(f.calls.map(call => call.modelConfigVersion)).toEqual([null, versionB, null])
+  })
+})
 
 const fundingRefusal = {
   error: { code: 'insufficient_user_quota', type: 'new_api_error', message: 'private gateway diagnostic' },
@@ -495,4 +549,43 @@ it('uses a real loopback server for lost ACK, restart GET and original queue can
   expect(calls.filter(call => call.path === '/harness/v1/video/queue' && call.method === 'POST')).toHaveLength(1)
   expect(calls.filter(call => call.path.endsWith('/cancel') && call.method === 'POST')).toHaveLength(1)
   expect(calls.filter(call => call.authorization !== null).every(call => call.authorization === 'Bearer loopback-fixture-key')).toBe(true)
+})
+
+it('consumes an exact zero-admission configuration proof without recovery GET or another queue POST', async () => {
+  const calls: { method: string; path: string; version: string | string[] | undefined }[] = []
+  const version = readModelConfigVersion({ model_config_version: 'a'.repeat(64) })!
+  const server = createServer((request, outgoing) => {
+    calls.push({ method: request.method ?? 'GET', path: request.url ?? '/', version: request.headers['x-yunshu-model-config-version'] })
+    outgoing.setHeader('content-type', 'application/json')
+    if (request.url === '/harness/api/status') {
+      outgoing.end(JSON.stringify({ data: { video_queue: CAPABILITY } })); return
+    }
+    if (request.url === '/harness/v1/video/queue' && request.method === 'POST') {
+      outgoing.statusCode = 400
+      outgoing.setHeader('X-Yunshu-Model-Config-Result', 'rejected-before-billing')
+      outgoing.setHeader('X-Oneapi-Request-Id', 'original-queue-request')
+      outgoing.end(JSON.stringify({ accepted: false, charged: false, reserved: false, retryable: false, resubmittable: false,
+        submission_state: 'not_submitted', error: { code: 'model_config_changed', type: 'invalid_request_error', message: 'private detail' } }))
+      return
+    }
+    outgoing.statusCode = 500
+    outgoing.end(JSON.stringify({ error: 'Unexpected recovery or repeated submit' }))
+  })
+  servers.push(server)
+  await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve) })
+  const address = server.address()
+  if (address === null || typeof address === 'string') throw new Error('Expected loopback port')
+  const origin = `http://127.0.0.1:${String(address.port)}/harness`
+  const queue = await discoverVideoServerQueue({ origin, accountId: '7', timeoutMs: 1000, key: async () => 'synthetic-local-key' }, freshSignal())
+  if (queue === undefined) throw new Error('Queue required')
+  let failure: unknown
+  try { await queue.submit(REQUEST, { ...SUBMISSION, modelConfigVersion: version }, freshSignal()) } catch (error) { failure = error }
+  expect(failure).toBeInstanceOf(MediaModelConfigRejection)
+  expect(failure).toMatchObject({ code: 'MODEL_CONFIG_CHANGED', requestId: 'original-queue-request', submissionState: 'not_submitted',
+    binding: { url: origin + '/v1/video/queue', method: 'POST', model: 'example-video', accountId: '7', modelConfigVersion: version } })
+  expect(failure).not.toHaveProperty('queueId')
+  expect(calls).toEqual([
+    { method: 'GET', path: '/harness/api/status', version: undefined },
+    { method: 'POST', path: '/harness/v1/video/queue', version },
+  ])
 })

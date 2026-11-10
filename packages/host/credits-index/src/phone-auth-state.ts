@@ -1,9 +1,9 @@
-/** Private durable request identities for SMS dispatch and phone-session redemption. */
+/** Private durable request identities for verification-code requests and phone-session redemption. */
 import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { writePrivateState } from './private-state-file.ts'
 
-/** Provider acceptance observed for one SMS request. */
+/** Service acceptance observed for one verification-code request. */
 export type PhoneDeliveryStatus = 'sending' | 'unknown' | 'accepted' | 'not_sent'
 
 interface Challenge {

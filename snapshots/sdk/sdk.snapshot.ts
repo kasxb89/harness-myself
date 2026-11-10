@@ -126,6 +126,7 @@ interface SdkAssertions {
 }
 
 const SDK_ASSERTIONS: Readonly<Record<string, SdkAssertions>> = {
+  'model-reselection': { expectedFinalResponse: 'SDK snapshot OK' },
   'session-title-stability': { waitForProviderTitle: true },
   'dynamic-tool-updates': {
     expectedFinalResponse: 'DONE',
@@ -908,6 +909,28 @@ describe('TypeScript SDK snapshots over the jsonrpc runtime', () => {
         assertions.dshSdkChild !== undefined,
       )
       reconcileCatalogCreationTimes(ordered.map(log => log.content), 'validate')
+      if (scenario.name === 'model-reselection') {
+        const parent = ordered[0]
+        if (parent === undefined) throw new Error('model-reselection: no primary session')
+        const events = records(parent.content)
+        expect(events.filter(event => event.type === 'user/message'
+          && (event.data as JsonObject).source !== undefined
+          && ((event.data as JsonObject).source as JsonObject).kind === 'user')).toHaveLength(1)
+        expect(events.filter(event => event.type === 'step/start')).toHaveLength(1)
+        expect(events.filter(event => event.type === 'assistant/attempt')).toHaveLength(1)
+        const headers = events.filter(event => event.type === 'request/header')
+          .map(event => (event.data as JsonObject).header as JsonObject)
+        expect(headers.map(header => header.config)).toEqual([
+          { provider: 'deepseek-official', model: 'deepseek-v4-flash', maxTokens: 32768 },
+          { provider: 'deepseek-official', model: 'deepseek-v4-pro', maxTokens: 4096 },
+        ])
+        expect((headers[0]?.tools as JsonObject[]).map(tool => tool.name)).toEqual(['glob', 'read'])
+        expect((headers[1]?.tools as JsonObject[]).map(tool => tool.name)).toEqual(['read'])
+        expect(events.filter(event => event.type === 'request/context').map(event => event.data)).toEqual([
+          { provider: 'deepseek-official', model: 'deepseek-v4-flash', contextWindow: 1048576 },
+          { provider: 'deepseek-official', model: 'deepseek-v4-pro', contextWindow: 131072 },
+        ])
+      }
       const actualContext = contextOf(ordered, cwd)
       expect(logs.some(log => log.content.includes('llm-replay: script exhausted')), `${scenario.name}: replay script covers every model request`).toBe(false)
       if (scenario.name === 'subagent-dsh-sdk-diagnostic' || scenario.name === 'subagent-dsh-sdk-dynamic-route') {

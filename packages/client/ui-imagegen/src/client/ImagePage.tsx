@@ -58,6 +58,7 @@ interface ImageModel {
   readonly displayName: string
   readonly params: {
     readonly specifications?: readonly ImageSpecification[]
+    readonly editSpecifications?: readonly ImageSpecification[]
     readonly sizes: readonly string[]
     readonly resolutions?: readonly string[]
     readonly maxCount: number
@@ -70,6 +71,11 @@ interface ImageModel {
   }
 }
 interface Catalog { readonly image: readonly ImageModel[]; readonly audio?: readonly { readonly id: string }[] }
+
+function generationSpecifications(params: ImageModel['params'], referenceCount: number): readonly ImageSpecification[] | undefined {
+  return referenceCount > 0 && params.maxEdits > 0 && params.editSpecifications !== undefined
+    ? params.editSpecifications : params.specifications
+}
 interface ArtifactLocation {
   readonly path: string
   readonly workspaceId?: string
@@ -220,7 +226,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
 
   const model = useMemo(() => models.find(entry => entry.id === modelId) ?? models[0] ?? null, [modelId, models])
   const params = model?.params ?? null
-  const specifications = params?.specifications
+  const specifications = params === null ? undefined : generationSpecifications(params, references.length)
   const specificationIndex = specifications?.findIndex(item => (item.size ?? item.ratio ?? '') === size
     && (item.resolution ?? '') === resolution && (item.quality ?? '') === quality) ?? -1
   const settingsInvalid = specifications !== undefined && specifications.length === 0
@@ -401,15 +407,15 @@ export function ImagePage(props: ImagePageProps): ReactNode {
   useEffect(() => {
     if (params === null || model === null) return
     const current = readDraft()
-    const specification = params.specifications?.find(item => (item.size ?? item.ratio ?? '') === current.size
-      && (item.resolution ?? '') === current.resolution && (item.quality ?? '') === current.quality) ?? params.specifications?.[0]
+    const specification = specifications?.find(item => (item.size ?? item.ratio ?? '') === current.size
+      && (item.resolution ?? '') === current.resolution && (item.quality ?? '') === current.quality) ?? specifications?.[0]
     actions.patch({
       modelId: model.id,
-      size: params.specifications !== undefined ? specification?.size ?? specification?.ratio ?? ''
+      size: specifications !== undefined ? specification?.size ?? specification?.ratio ?? ''
         : params.sizes.includes(current.size) ? current.size : params.sizes[0] ?? '',
-      resolution: params.specifications !== undefined ? specification?.resolution ?? ''
+      resolution: specifications !== undefined ? specification?.resolution ?? ''
         : params.resolutions?.includes(current.resolution) === true ? current.resolution : params.resolutions?.[0] ?? '',
-      quality: params.specifications !== undefined ? specification?.quality ?? ''
+      quality: specifications !== undefined ? specification?.quality ?? ''
         : params.qualities.includes(current.quality) ? current.quality : '',
       background: params.backgrounds.includes(current.background) ? current.background : '',
       format: params.formats.includes(current.format) ? current.format : '',
@@ -417,7 +423,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
       count: Math.max(1, Math.min(current.count, params.maxCount)),
       seed: params.seed ? current.seed : '',
     })
-  }, [params, model, actions, releaseReferencePreview, readDraft, setMessage, t])
+  }, [params, model, specifications, actions, releaseReferencePreview, readDraft, setMessage, t])
 
   useEffect(() => {
     if (generationStartedAt === null) { void loadHistory(); return undefined }
@@ -561,9 +567,10 @@ export function ImagePage(props: ImagePageProps): ReactNode {
     if (selected === undefined) return
     const accepted = selected.params
     if (current.prompt.trim() === '') { setFailure(t('promptRequired')); promptField.current?.focus(); return }
-    const specification = accepted.specifications?.find(item => (item.size ?? item.ratio ?? '') === current.size
+    const acceptedSpecifications = generationSpecifications(accepted, current.references.length)
+    const specification = acceptedSpecifications?.find(item => (item.size ?? item.ratio ?? '') === current.size
       && (item.resolution ?? '') === current.resolution && (item.quality ?? '') === current.quality)
-    if (accepted.specifications !== undefined && specification === undefined) { setFailure(t('settingsUnavailable')); return }
+    if (acceptedSpecifications !== undefined && specification === undefined) { setFailure(t('settingsUnavailable')); return }
     if (accepted.seed && current.seed.trim() !== '' && !Number.isSafeInteger(Number(current.seed))) {
       setFailure(t('seedInvalid')); return
     }

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 /** Section, setup-card, and hand-written editor behavior over a scripted wire face. */
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import Schema from '@deepseek-ai/schemastery'
 import { Context } from '@deepseek-ai/cordis'
@@ -266,7 +267,7 @@ type RenderSlotCall = [name: string, owner: Record<string, unknown>, opts?: { en
 
 /** Child-slot dispatch stub: records every seat occurrence, renders nothing. */
 function stubRenderSlot() {
-  return vi.fn((..._call: RenderSlotCall) => null)
+  return vi.fn((..._call: RenderSlotCall): ReactNode => null)
 }
 
 /** The provider-card seat dispatches a stub recorded, as (route id, configured, keyConfigured, entryKey). */
@@ -626,10 +627,29 @@ describe('ModelsSection', () => {
     const cards = cardSeatCalls(renderSlot)
     expect(cards).toContainEqual(['openai', true, true, 'llm-pi-ai'])
     expect(cards).toContainEqual(['deepseek-official', true, false, 'llm-deepseek'])
+    expect(renderSlot.mock.calls.filter(call => call[0] === 'settings.models.catalog')).toEqual([
+      ['settings.models.catalog', {}],
+    ])
     // The footer seat renders once below the rows and the add controls.
     expect(renderSlot.mock.calls.filter(call => call[0] === 'settings.models.footer')).toEqual([
       ['settings.models.footer', {}],
     ])
+  })
+
+  it('keeps the available-model catalog visible when provider configuration cannot be read', async () => {
+    const { renderSlot, controller, face, mutate, set, unset } = await mountSection()
+    renderSlot.mockImplementation(name => name === 'settings.models.catalog'
+      ? <p>Available model catalog</p> : null)
+    await act(async () => { await controller.load() })
+    expect(screen.getByText('Available model catalog')).toBeTruthy()
+
+    face.llm.listProviders.mockResolvedValueOnce(remoteFail('directory unavailable', 'gateway/internal'))
+    await act(async () => { await controller.load() })
+    expect(screen.getByText('Available model catalog')).toBeTruthy()
+    expect(screen.getByText(`${en.loadFailed}: directory unavailable`)).toBeTruthy()
+    expect(mutate).not.toHaveBeenCalled()
+    expect(set).not.toHaveBeenCalled()
+    expect(unset).not.toHaveBeenCalled()
   })
 
   it('dispatches the provider-card seat inside the first-run setup card', async () => {

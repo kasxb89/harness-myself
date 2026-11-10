@@ -24,6 +24,16 @@ function options(changes: Partial<ImageTaskOptions> = {}): ImageTaskOptions {
 }
 
 describe('image task execution and read-only recovery', () => {
+  it.each([{ id: 'task_' + 'B'.repeat(32), canonical: true }, { id: 'original-image-upstream-id', canonical: undefined }])(
+    'polls a new image alias receipt $id through the same path used on resume', async ({ id, canonical }) => {
+      const read = vi.fn(async (_id: string, _signal: AbortSignal, _canonical?: boolean) => json({ status: 'succeeded', data: [image] }))
+      const input = options({ model: 'new-image-alias', submit: vi.fn(async () => json({ id })), read })
+      expect(await executeImageTask(input)).toMatchObject({ ok: true, taskId: id })
+      expect(read.mock.calls[0]?.[0]).toBe(id)
+      expect(read.mock.calls[0]?.[2]).toBe(canonical)
+      expect(input.submit).toHaveBeenCalledOnce()
+    })
+
   it('observes the original image queue, generation and actual saving without inventing a new task', async () => {
     const events: CreationTaskActivity[] = []
     const states = ['queued', 'running', 'succeeded']

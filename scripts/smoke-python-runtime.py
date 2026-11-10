@@ -143,6 +143,12 @@ RECOVERY_SNAPSHOT_DIRECTORY = (
     Path(__file__).resolve().parent / "snapshots" / "python-sdk-single-exe" / "scheduler-recovery"
 )
 RECOVERY_SNAPSHOT_FILENAMES = ("result.json", "requests.json", "session.v4.jsonl")
+MODEL_RESELECTION_PROMPT = "Reply with exactly: SDK snapshot OK"
+MODEL_RESELECTION_TEXT = "SDK snapshot OK"
+MODEL_RESELECTION_SESSION_ID = "model-reselection"
+MODEL_RESELECTION_MODELS = ("deepseek-v4-flash", "deepseek-v4-pro")
+MODEL_RESELECTION_SNAPSHOT_DIRECTORY = ADVANCED_SNAPSHOT_ROOT / "model-reselection"
+MODEL_RESELECTION_SNAPSHOT_FILENAMES = ("result.json", "requests.json", "session.v4.jsonl")
 MCP_SERVER_SCRIPT = """\
 import json
 import os
@@ -792,7 +798,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--scenario",
-        choices=("all", "sdk-default", "sdk-custom", "sdk-minimal", "sdk-minimal-in-history", "sdk-dynamic-tools", "sdk-fs-search", "sdk-spawn-node", "sdk-mcp", "sdk-snapshot", "sdk-recovery", "sdk-restart", "sdk-profile-plugin", "sdk-office", "sdk-authoring", "sdk-live", "runner", "direct"),
+        choices=("all", "sdk-default", "sdk-custom", "sdk-minimal", "sdk-minimal-in-history", "sdk-dynamic-tools", "sdk-fs-search", "sdk-spawn-node", "sdk-mcp", "sdk-snapshot", "sdk-recovery", "sdk-model-reselection", "sdk-restart", "sdk-profile-plugin", "sdk-office", "sdk-authoring", "sdk-live", "runner", "direct"),
         default="all",
     )
     parser.add_argument("--exe", type=Path)
@@ -811,10 +817,10 @@ def main() -> None:
         parser.error("--scenario sdk-profile-plugin requires --installed-wheel")
     if args.installed_wheel:
         args.exe = assert_installed_wheel_environment()
-    if args.scenario in {"all", "sdk-custom", "sdk-minimal", "sdk-minimal-in-history", "sdk-dynamic-tools", "sdk-fs-search", "sdk-spawn-node", "sdk-snapshot", "sdk-recovery", "sdk-restart", "sdk-office", "sdk-authoring", "runner", "direct"} and args.exe is None:
-        parser.error("--exe is required for custom, minimal, dynamic-tools, fs-search, spawn-node, snapshot, recovery, restart, office, runner, and direct scenarios")
-    if args.update_snapshots and args.scenario not in {"all", "sdk-minimal", "sdk-minimal-in-history", "sdk-dynamic-tools", "sdk-snapshot", "sdk-recovery", "sdk-restart", "sdk-authoring"}:
-        parser.error("--update-snapshots requires --scenario sdk-minimal, sdk-minimal-in-history, sdk-dynamic-tools, sdk-snapshot, sdk-recovery, sdk-restart, sdk-authoring, or all")
+    if args.scenario in {"all", "sdk-custom", "sdk-minimal", "sdk-minimal-in-history", "sdk-dynamic-tools", "sdk-fs-search", "sdk-spawn-node", "sdk-snapshot", "sdk-recovery", "sdk-model-reselection", "sdk-restart", "sdk-office", "sdk-authoring", "runner", "direct"} and args.exe is None:
+        parser.error("--exe is required for custom, minimal, dynamic-tools, fs-search, spawn-node, snapshot, recovery, model-reselection, restart, office, runner, and direct scenarios")
+    if args.update_snapshots and args.scenario not in {"all", "sdk-minimal", "sdk-minimal-in-history", "sdk-dynamic-tools", "sdk-snapshot", "sdk-recovery", "sdk-model-reselection", "sdk-restart", "sdk-authoring"}:
+        parser.error("--update-snapshots requires --scenario sdk-minimal, sdk-minimal-in-history, sdk-dynamic-tools, sdk-snapshot, sdk-recovery, sdk-model-reselection, sdk-restart, sdk-authoring, or all")
     if args.exe is not None and not args.exe.is_file():
         parser.error(f"runtime executable does not exist: {args.exe}")
 
@@ -835,6 +841,13 @@ def main() -> None:
     if args.scenario == "sdk-live":
         smoke_sdk_live()
         print("smoke-python-runtime: sdk-live passed")
+        return
+
+    if args.scenario in {"all", "sdk-model-reselection"}:
+        assert args.exe is not None
+        smoke_sdk_model_reselection(args.exe.resolve(), args.update_snapshots)
+    if args.scenario == "sdk-model-reselection":
+        print("smoke-python-runtime: sdk-model-reselection passed")
         return
 
     with MockModel() as model:
@@ -1849,6 +1862,120 @@ def smoke_sdk_scheduler_recovery(base_url: str, executable: Path, update_snapsho
         compare_snapshot_files(
             files, update_snapshots, RECOVERY_SNAPSHOT_DIRECTORY, RECOVERY_SNAPSHOT_FILENAMES,
         )
+
+
+def smoke_sdk_model_reselection(executable: Path, update_snapshots: bool) -> None:
+    """Project one safe, reassembled model switch through the public Python SDK and shipped profile."""
+    from deepseek_harness import DeepSeekHarness
+
+    shared = Path(__file__).resolve().parent.parent / "snapshots/sdk/model-reselection/cordis.yml"
+    with tempfile.TemporaryDirectory(prefix="dsh-sdk-model-reselection-") as temporary:
+        root = Path(temporary).resolve()
+        dsh_home = root / "home"
+        sessions = dsh_home / "sessions"
+        trace = root / "model-requests.json"
+        (root / "AGENTS.md").write_text("Follow the user's requested task.\n", encoding="utf-8")
+        patch = write_profile_patch(root, "model-reselection.patch.yml", sessions, [
+            {"id": "model-reselection-fixture", "config": {"traceFile": str(trace)}},
+            {"id": "session-log-deepseek", "config": {"enabled": False}},
+        ])
+        with DeepSeekHarness(
+            provider="deepseek-official", model=MODEL_RESELECTION_MODELS[0],
+            cwd=str(root), dsh_bin=str(executable), dsh_home=str(dsh_home), profile="sdk",
+            patches=(str(shared), str(patch)),
+            env={"DSH_PERMISSION_MODE": "danger-full-access", "DSH_TELEMETRY_DISABLED": "1"},
+            request_timeout_seconds=60,
+        ) as harness:
+            result = harness.run(MODEL_RESELECTION_PROMPT, session_id=MODEL_RESELECTION_SESSION_ID)
+
+        if result.finish_reason != "completed" or result.final_response != MODEL_RESELECTION_TEXT:
+            raise AssertionError(f"model reselection did not complete the original request: {result}")
+        requests = json.loads(trace.read_text(encoding="utf-8"))
+        if [request["model"] for request in requests] != list(MODEL_RESELECTION_MODELS):
+            raise AssertionError(f"model reselection duplicated or skipped a request: {requests}")
+        if [request["maxTokens"] for request in requests] != [32768, 4096]:
+            raise AssertionError(f"model reselection reused the old output budget: {requests}")
+        if [request["tools"] for request in requests] != [["glob", "read"], ["read"]]:
+            raise AssertionError(f"model reselection did not rebuild the tools: {requests}")
+        request_values = []
+        human_ids = []
+        for index, request in enumerate(requests):
+            messages = request["messages"]
+            human = [message for message in messages if message.get("role") == "user"
+                     and message_text(message.get("content")) == MODEL_RESELECTION_PROMPT]
+            if len(human) != 1:
+                raise AssertionError(f"model reselection repeated or lost the human message: {messages}")
+            human_ids.append(human[0].get("id"))
+            system = "\n".join(message_text(message.get("content")) for message in messages
+                               if message.get("role") == "system")
+            marker = f"Current snapshot model: {MODEL_RESELECTION_MODELS[index]}."
+            stale = f"Current snapshot model: {MODEL_RESELECTION_MODELS[1 - index]}."
+            if marker not in system or stale in system:
+                raise AssertionError(f"model reselection used the wrong assembled prompt: {system}")
+            request_values.append({
+                "provider": request["provider"], "model": request["model"],
+                "maxTokens": request["maxTokens"], "tools": request["tools"],
+                "modelPrompt": marker, "messages": restart_request_messages(request),
+            })
+
+        logs = read_session_logs(sessions)
+        if set(logs) != {result.session_id}:
+            raise AssertionError(f"model reselection created additional Sessions: {sorted(logs)}")
+        records = logs[result.session_id]
+        selected = {"turn/start", "step/start", "user/message", "request/header", "request/context",
+                    "developer/message", "assistant/attempt", "assistant/message", "step/end", "turn/end"}
+        events = [event for event in result.events if event.get("type") in selected]
+        notifications = [notification.payload["event"] for notification in result.notifications
+                         if notification.method == "session.event"
+                         and notification.payload.get("event", {}).get("type") in selected]
+        if notifications != events or [record for record in records if record.get("type") in selected] != events:
+            raise AssertionError("model reselection Python events, notifications and persistence disagree")
+        if any(sum(event.get("type") == name for event in events) != 1
+               for name in ("turn/start", "step/start", "step/end", "turn/end")):
+            raise AssertionError(f"model reselection reclaimed the turn or step: {events}")
+        human = [event for event in events if event.get("type") == "user/message"
+                 and event["data"].get("source", {}).get("kind") == "user"]
+        if len(human) != 1 or message_text(human[0]["data"].get("content")) != MODEL_RESELECTION_PROMPT:
+            raise AssertionError(f"model reselection persisted duplicate human messages: {human}")
+        if human_ids != [human[0]["data"]["id"]] * 2:
+            raise AssertionError(f"model reselection replaced the original human identity: {human_ids}")
+        headers = [event["data"]["header"] for event in events if event.get("type") == "request/header"]
+        if [(header["config"]["model"], header["config"]["maxTokens"]) for header in headers] != [
+            (MODEL_RESELECTION_MODELS[0], 32768), (MODEL_RESELECTION_MODELS[1], 4096),
+        ]:
+            raise AssertionError(f"model reselection headers did not follow the effective route: {headers}")
+        if [[tool["name"] for tool in header.get("tools", [])] for header in headers] != [["glob", "read"], ["read"]]:
+            raise AssertionError(f"model reselection published stale tool declarations: {headers}")
+        updates = [event["data"]["message"]["content"] for event in events if event.get("type") == "developer/message"]
+        if updates != [[{"type": "tool-removal", "toolName": "glob"}]]:
+            raise AssertionError(f"model reselection lost the public tool-removal projection: {updates}")
+        contexts = [event["data"] for event in events if event.get("type") == "request/context"]
+        if [(context["model"], context["contextWindow"]) for context in contexts] != [
+            (MODEL_RESELECTION_MODELS[0], 1048576), (MODEL_RESELECTION_MODELS[1], 131072),
+        ]:
+            raise AssertionError(f"model reselection kept stale context capacity: {contexts}")
+        attempts = [event for event in events if event.get("type") == "assistant/attempt"]
+        if len(attempts) != 1:
+            raise AssertionError(f"model reselection did not preserve exactly one failed attempt: {attempts}")
+        failure = attempts[0]["data"]["stream"][-1]["chunk"]["reason"]["failure"]
+        if failure.get("code") != "MODEL_UNAVAILABLE_NOT_SUBMITTED" or failure.get("textReselection", {}).get("billingReserved") is not False:
+            raise AssertionError(f"model reselection lost the optional failure proof: {failure}")
+        replacements = [*snapshot_directory_replacements(root, "{{cwd}}"), (result.session_id, "{{session}}")]
+        result_value = {
+            "session_id": result.session_id, "final_response": result.final_response,
+            "finish_reason": result.finish_reason, "events": result.events,
+            "notifications": [{"method": value.method, "payload": value.payload} for value in result.notifications],
+        }
+        content = render_jsonl(project_session_snapshot([
+            normalize_snapshot_value(record, replacements) for record in records
+        ]))
+        files = {
+            "result.json": json.dumps(normalize_snapshot_value(result_value, replacements), indent=2, ensure_ascii=False) + "\n",
+            "requests.json": json.dumps(normalize_snapshot_value(request_values, replacements), indent=2, ensure_ascii=False) + "\n",
+            snapshot_session_filename(0, session_header_version(content, "model reselection")): content,
+        }
+        compare_snapshot_files(files, update_snapshots, MODEL_RESELECTION_SNAPSHOT_DIRECTORY,
+                               MODEL_RESELECTION_SNAPSHOT_FILENAMES)
 
 
 def smoke_direct(base_url: str, executable: Path) -> None:

@@ -39,6 +39,12 @@
       "path": "../ui-session"
     },
     {
+      "path": "../ui-settings-models"
+    },
+    {
+      "path": "../ui-settings/tsconfig.client.json"
+    },
+    {
       "path": "../ui-input-trigger"
     },
     {

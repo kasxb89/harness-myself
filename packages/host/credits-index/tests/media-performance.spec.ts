@@ -13,6 +13,18 @@ function deferred<T>() {
 afterEach(() => { vi.restoreAllMocks() })
 
 describe('media catalog freshness and login isolation', () => {
+  it('retains each publication revision with its own rows and refuses malformed revisions', async () => {
+    const cache = new MediaCatalogCache(30_000)
+    const body = { model_config_revision: 'a'.repeat(64), data: [{ model_name: 'new-image' }] }
+    const request = vi.fn(async () => new Response(JSON.stringify(body)))
+    expect(await cache.snapshot('account', {}, request)).toEqual({ rows: body.data, modelConfigRevision: body.model_config_revision })
+    expect(await cache.read('account', {}, request)).toEqual(body.data)
+    expect(request).toHaveBeenCalledOnce()
+    cache.clear()
+    await expect(cache.snapshot('account', {}, async () => new Response(JSON.stringify({ ...body, model_config_revision: null }))))
+      .rejects.toMatchObject({ code: 'MODEL_CONFIG_VERSION_INVALID' })
+    expect((await cache.snapshot('account', {}, async () => pricing())).modelConfigRevision).toBeUndefined()
+  })
   it.each(['no-store', 'private, max-age=60, no-cache', 'no-cache="set-cookie"'])('never retains %s across calls', async (directive) => {
     const cache = new MediaCatalogCache(30_000)
     const request = vi.fn(async () => pricing({ 'cache-control': directive }))

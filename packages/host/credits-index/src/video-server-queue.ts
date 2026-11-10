@@ -6,6 +6,8 @@ import type { VideoProjectRequest, VideoProjectSubmission } from './video-projec
 import { apiUrl, normalizeApiBaseUrl } from './api-url.ts'
 import { accountBalanceFailure, isAccountBalanceRejection, type AccountBalanceFailure } from './account-balance.ts'
 import { VideoSubmissionRejection } from './video-submission-result.ts'
+import { readModelConfigVersion, modelConfigVersionHeaders, type ModelConfigVersion } from './model-config-version.ts'
+import { mediaModelConfigRejection, matchesModelConfigAcceptance, MediaModelConfigRejection } from './media-model-config-result.ts'
 
 const BODY_LIMIT = 65_536
 const STATUS_LIMIT = 1_048_576
@@ -40,6 +42,10 @@ export interface VideoServerQueueItem {
   readonly observationTimedOut: boolean
   readonly createdAt: number
   readonly updatedAt: number
+  /** Original row version persisted by the gateway, never a fresh catalog lookup. */
+  readonly modelConfigVersion?: ModelConfigVersion
+  /** A POST returned original coordinates but did not confirm the requested configuration version. */
+  readonly modelConfigAcceptanceUnconfirmed?: true
   /** Confirmed funding category only; raw failure_reason and provider diagnostics are not retained. */
   readonly failure?: AccountBalanceFailure
 }
@@ -63,6 +69,8 @@ export interface VideoServerQueueOptions {
   readonly origin: string
   /** Independent request and complete acknowledgement-read deadline. */
   readonly timeoutMs: number
+  /** Captured account for binding exact pre-billing model-configuration refusals. */
+  readonly accountId?: string
   /** Launcher-derived diagnostic source; never grants queue or model authority. */
   readonly clientSource?: 'desktop' | undefined
   /** Recheck current account/login and obtain its current relay key before each private request. */
@@ -149,6 +157,7 @@ function safeJson(value: unknown, depth = 0): boolean {
   return Object.entries(source).every(([key, child]) => {
     const normalized = key.toLowerCase().replaceAll(/[_-]/gu, '')
     if (key.startsWith('_') || normalized.includes('base64') || normalized === 'b64json'
+      || ['modelconfigversion', 'modelconfigrevision', 'modelconfigsnapshot'].includes(normalized)
       || ['authorization', 'apikey', 'bearer', 'token', 'headers', 'base64', 'files'].includes(normalized)) return false
     if (['n', 'count', 'videocount', 'batchsize'].includes(normalized) && child !== 1) return false
     if (normalized === 'url' && !referenceUrl(child)) return false
@@ -227,7 +236,7 @@ function item(value: unknown, queueId: string, request: VideoProjectRequest): Vi
       || data.failure_code !== '' && !/^[A-Za-z][A-Za-z0-9_:-]{0,127}$/u.test(data.failure_code))
     || data.failure_reason !== undefined && (typeof data.failure_reason !== 'string' || data.failure_reason.length > 4096)
     || Object.keys(data).some(key => !['id', 'operation_id', 'model', 'count', 'duration_seconds', 'task_id', 'state',
-      'submission_state', 'error_code', 'failure_code', 'failure_reason', 'created_at', 'updated_at'].includes(key))) throw invalid(queueId)
+      'submission_state', 'error_code', 'failure_code', 'failure_reason', 'created_at', 'updated_at', 'model_config_version'].includes(key))) throw invalid(queueId)
   const state = states.find(state => state === data.state)
   const submissionState = submissions.find(state => state === data.submission_state)
   if (state === undefined || submissionState === undefined) throw invalid(queueId)
@@ -241,10 +250,12 @@ function item(value: unknown, queueId: string, request: VideoProjectRequest): Vi
     || state !== 'queued' && source.cancelable
     || source.observation_timed_out && state !== 'dispatching' && state !== 'unknown') throw invalid(queueId)
   const failure = accountBalanceFailure(data.failure_code ?? data.error_code)
+  let modelConfigVersion: ModelConfigVersion | undefined
+  try { modelConfigVersion = readModelConfigVersion(data) } catch (_invalidVersion: unknown) { throw invalid(queueId) }
   return { queueId: queueId as VideoServerQueueId, operationId: attempt, model: String(data.model), count: 1, durationSeconds: seconds,
     gatewayTaskId: data.task_id, state, submissionState, cancelable: source.cancelable,
     observationTimedOut: source.observation_timed_out, createdAt: Number(data.created_at), updatedAt: Number(data.updated_at),
-    ...failure === undefined ? {} : { failure } }
+    ...failure === undefined ? {} : { failure }, ...modelConfigVersion === undefined ? {} : { modelConfigVersion } }
 }
 
 /** Only the gateway's complete pre-enqueue refusal establishes that no queue, reservation or charge exists. */
@@ -260,7 +271,7 @@ function createQueueClient(options: VideoServerQueueOptions) {
   const origin = normalizeApiBaseUrl(options.origin)
   const transport = options.fetch ?? globalThis.fetch
   const fetchJson = async (path: string, method: 'GET' | 'POST', operationSignal: AbortSignal, body?: string, privateRead = true,
-    started?: () => void) => {
+    started?: () => void, modelConfigVersion?: ModelConfigVersion) => {
     const requestSignal = AbortSignal.any([operationSignal, AbortSignal.timeout(options.timeoutMs)])
     requestSignal.throwIfAborted()
     const key = privateRead ? await options.key() : undefined
@@ -270,14 +281,15 @@ function createQueueClient(options: VideoServerQueueOptions) {
     const response = await transport(url, { method, redirect: 'error', signal: requestSignal,
       headers: { accept: 'application/json', ...key === undefined ? {} : { authorization: `Bearer ${key}` },
         ...!privateRead || options.clientSource === undefined ? {} : { 'x-yunshu-client': options.clientSource },
+        ...method === 'POST' && path === CAPABILITY.create_path ? modelConfigVersionHeaders(modelConfigVersion) : {},
         ...body === undefined ? {} : { 'content-type': 'application/json' } }, ...body === undefined ? {} : { body } })
     if (!privateRead && response.status === 404
       || privateRead && method === 'GET' && (response.status === 408 || response.status === 429 || response.status >= 500)) {
       await response.body?.cancel().catch((_closedBody: unknown) => { /* The original response status remains authoritative. */ })
-      return { status: response.status, value: undefined }
+      return { status: response.status, value: undefined, response }
     }
     const value = await json(response, requestSignal, privateRead ? BODY_LIMIT : STATUS_LIMIT)
-    return { status: response.status, value }
+    return { status: response.status, value, response }
   }
   const gatewayTasks = new Map<string, string>()
   const observe = (value: unknown, queueId: string, request: VideoProjectRequest): VideoServerQueueItem => {
@@ -314,13 +326,20 @@ function createQueueClient(options: VideoServerQueueOptions) {
       if (!prepared(request, submission)) {
         throw new VideoServerQueueError('VIDEO_QUEUE_REQUEST_UNSUPPORTED', '当前参考素材或视频参数不支持服务端排队，尚未提交；请使用已支持的上传素材或核对参数。')
       }
+      const model = request.model
+      if (typeof model !== 'string') throw new VideoServerQueueError('VIDEO_QUEUE_REQUEST_UNSUPPORTED', '视频请求缺少原始型号，尚未入队。')
       const queueId = `vq_${submission.attemptId}`
       const dispatch = { started: false }
       try {
         operationSignal.throwIfAborted()
         const result = await fetchJson(CAPABILITY.create_path, 'POST', operationSignal,
           JSON.stringify({ schema_version: 1, queue_id: queueId, operation_id: submission.attemptId, count: 1, request }), true,
-          () => { dispatch.started = true })
+          () => { dispatch.started = true }, submission.modelConfigVersion)
+        const configRejection = options.accountId === undefined ? undefined
+          : mediaModelConfigRejection(result.response, result.value, { url: apiUrl(origin, CAPABILITY.create_path),
+            method: 'POST', model, accountId: options.accountId,
+            ...submission.modelConfigVersion === undefined ? {} : { modelConfigVersion: submission.modelConfigVersion } })
+        if (configRejection !== undefined) throw configRejection
         if (fundingAdmissionRejected(result.value, result.status)) {
           throw new VideoSubmissionRejection('INSUFFICIENT_BALANCE', '余额不足，请充值；本次未入队、未提交上游且未扣费，充值后可在当前聊天明确重试。', 'not_submitted')
         }
@@ -329,14 +348,23 @@ function createQueueClient(options: VideoServerQueueOptions) {
           if (failure !== undefined) throw new VideoServerQueueError(failure.code, failure.message, queueId, failure)
           throw invalid(queueId)
         }
-        return observe(result.value, queueId, request)
+        const accepted = observe(result.value, queueId, request)
+        const unconfirmed = submission.modelConfigVersion !== undefined
+          && (!matchesModelConfigAcceptance(result.response, submission.modelConfigVersion)
+            || accepted.modelConfigVersion !== submission.modelConfigVersion)
+        return unconfirmed ? { ...accepted, modelConfigAcceptanceUnconfirmed: true } : accepted
       } catch (error) {
+        if (error instanceof MediaModelConfigRejection) throw error
         if (error instanceof VideoSubmissionRejection) throw error
         let failure = error instanceof VideoServerQueueError ? error.failure : undefined
         if (!dispatch.started) throw new VideoServerQueueError('VIDEO_QUEUE_SUBMISSION_NOT_STARTED',
           '视频尚未发送，请检查当前登录和连接后再恢复原项目；本次没有提交新的生成请求。')
         if (!operationSignal.aborted) {
-          try { return await read(queueId, request, operationSignal) }
+          try {
+            const original = await read(queueId, request, operationSignal)
+            return submission.modelConfigVersion !== undefined && original.modelConfigVersion !== submission.modelConfigVersion
+              ? { ...original, modelConfigAcceptanceUnconfirmed: true } : original
+          }
           catch (unconfirmedOriginal: unknown) {
             if (failure === undefined && unconfirmedOriginal instanceof VideoServerQueueError) failure = unconfirmedOriginal.failure
           }

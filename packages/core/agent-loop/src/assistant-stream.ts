@@ -20,6 +20,7 @@ export class AssistantStreamAttempt {
   private readonly assembler = new BlockAssembler()
   private index = 0
   private terminal = false
+  private outputStarted = false
   /** Attempt identity unique within this Agent lifecycle. */
   readonly attemptId: LlmAttemptId
 
@@ -58,6 +59,7 @@ export class AssistantStreamAttempt {
 
   /** Snapshot one chunk once, then feed durable compaction, assembly, and live publication. */
   push(chunk: StreamChunk): void {
+    if (chunk.type !== 'finish') this.outputStarted = true
     const timed = this.accumulator.push({ time: Date.now(), chunk })
     this.assembler.push(timed.chunk)
     this.emit({
@@ -127,6 +129,9 @@ export class AssistantStreamAttempt {
   get usage(): TokenUsage | undefined {
     return this.assembler.usage
   }
+
+  /** Any content framing, content delta or usage prevents a zero-output reselection. */
+  get hasOutput(): boolean { return this.outputStarted }
 
   /** Terminal reason, defaulting to stop when the stream omitted one. */
   get finish(): FinishReason {

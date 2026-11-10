@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises'
 import { createServer, type Server } from 'node:http'
 import { tmpdir } from 'node:os'
@@ -52,11 +53,11 @@ let context: Context | undefined
 let upstream: Server | undefined
 let directory: string | undefined
 const calls: { path: string; body: Record<string, unknown> }[] = []
-const imageWireCalls: { method: string; path: string; authorization: string | undefined }[] = []
+const imageWireCalls: { method: string; path: string; authorization: string | undefined; prefer?: string }[] = []
 const retainedTaskId = 'task_codebloom_http_fixture'
 const retainedTaskPath = `/harness/v1/tasks/${retainedTaskId}`
 interface RetainedImageFixture {
-  readonly body: 'truncated' | 'complete' | 'gateway-error'
+  readonly body: 'truncated' | 'complete' | 'gateway-error' | 'accepted'
   readonly bytes?: Buffer
   readonly manifest?: 'wrong-task' | 'wrong-key' | 'wrong-prefix'
   readonly existingModel?: string
@@ -94,10 +95,20 @@ async function boot(visibleModels: readonly string[] = rows.map(row => row.model
     void (async () => {
       const chunks: Buffer[] = []
       for await (const chunk of request) if (Buffer.isBuffer(chunk)) chunks.push(chunk)
-      const body = chunks.length === 0 ? {} : object(JSON.parse(Buffer.concat(chunks).toString('utf8')))
+      const raw = Buffer.concat(chunks)
+      let body: Record<string, unknown> = {}
+      if (request.headers['content-type']?.startsWith('multipart/form-data')) {
+        const form = await new Response(new Uint8Array(raw), { headers: { 'content-type': request.headers['content-type'] } }).formData()
+        for (const [name, value] of form.entries()) {
+          if (typeof value === 'string') body[name] = value
+          else body[name] = { type: value.type, size: value.size,
+            sha256: createHash('sha256').update(Buffer.from(await value.arrayBuffer())).digest('hex') }
+        }
+      } else if (raw.length > 0) body = object(JSON.parse(raw.toString('utf8')))
       const path = new URL(request.url ?? '/', 'http://127.0.0.1').pathname
       calls.push({ path, body })
-      imageWireCalls.push({ method: request.method ?? '', path, authorization: request.headers.authorization })
+      imageWireCalls.push({ method: request.method ?? '', path, authorization: request.headers.authorization,
+        ...typeof request.headers.prefer === 'string' ? { prefer: request.headers.prefer } : {} })
       response.setHeader('content-type', 'application/json')
       const answer = (data: unknown) => response.end(JSON.stringify({ success: true, data }))
       if (path === '/harness/api/status') {
@@ -120,6 +131,11 @@ async function boot(visibleModels: readonly string[] = rows.map(row => row.model
         response.end(JSON.stringify({ data: pricingRows.filter(row => visibleModels.includes(row.model_name))
           .map(row => ({ id: row.model_name, supported_endpoint_types: ['openai'] })) })); return
       }
+      if (path === '/harness/v1/uploads/images') {
+        const file = object(body.file)
+        answer({ id: 'file-synthetic-reference', url: 'https://assets.token6688.com/sha256/ab/' + 'c'.repeat(62) + '.png',
+          mime_type: file.type, size: file.size }); return
+      }
       if (retainedImage !== undefined && path === retainedTaskPath) {
         taskReads += 1
         response.end(JSON.stringify({ task_id: retainedTaskId, model: generatedModel,
@@ -135,12 +151,16 @@ async function boot(visibleModels: readonly string[] = rows.map(row => row.model
         response.setHeader('content-type', 'image/png')
         response.end(retainedImage.bytes ?? pngBytes); return
       }
-      if (path === '/harness/v1/images/generations' || path === '/harness/toapis/v1/images/generations') {
+      if (path === '/harness/v1/images/generations' || path === '/harness/toapis/v1/images/generations' || path === '/harness/v1/images/edits') {
         expect(request.headers.authorization).toBe('Bearer sk-fixture-relay')
         if (retainedImage !== undefined) {
           generatedModel = String(body.model)
           response.setHeader('x-new-api-task-id', retainedTaskId)
           response.setHeader('x-oneapi-request-id', 'retained-fixture-request')
+          if (retainedImage.body === 'accepted') {
+            response.writeHead(202)
+            response.end(JSON.stringify({ id: retainedTaskId, task_id: retainedTaskId, model: generatedModel, status: 'pending' })); return
+          }
           if (retainedImage.body === 'gateway-error') {
             response.writeHead(502)
             response.end(JSON.stringify({ error: { message: 'Synthetic interrupted gateway response' } })); return
@@ -631,5 +651,131 @@ describe('retained image recovery through the shipped Host HTTP and file IO', ()
     expect(imageWireCalls.filter(call => call.path === retainedTaskPath || call.path === `${retainedTaskPath}/artifacts`)).toEqual([])
     expect(await publishedImageFiles()).toHaveLength(1)
     await recordRecoveryRoute('legacy-valid-' + format, result)
+  })
+})
+
+describe('reference image edits through the shipped Host Loader', () => {
+  it.each(['ycapi', 'codebloom-image'] as const)('saves the original %s edit after a truncated response and submits only once', async (plugin) => {
+    const model = plugin === 'ycapi' ? 'ycapi-flux-kontext' : 'ys-gpt-image-2k'
+    const size = plugin === 'ycapi' ? '1:1' : '1024x1024'
+    const properties = { n: { enum: [1] }, reference_images: { maxItems: 1 }, size: { enum: [size] },
+      quality: false, resolution: false, output_format: false, background: false, moderation: false, seed: false }
+    const row = { model_name: model, kind: 'image', parameters: {
+      type: 'object', additionalProperties: false, properties, 'x-model-kind': 'image',
+      'x-task-plugin': { key: plugin, version: '1.0.0', api_version: 1 },
+      ...plugin !== 'ycapi' ? {} : { 'x-image-receipt-recovery': { schema_version: 1, submit_model_metadata: true, original_task_artifacts: true } },
+      'x-image-edit': { schema_version: 1, max_reference_bytes: 5 * 1024 * 1024,
+        specifications: [{ properties: { size: { enum: [size] } } }],
+        ...plugin !== 'ycapi' ? {} : { reference_upload: { path: '/v1/uploads/images', origin: 'https://assets.token6688.com' } } },
+    } }
+    const actual = process.env.DSH_IMAGE_EDIT_ORIGINAL_IMAGE
+    const bytes = actual === undefined ? await sharp({ create: { width: 8, height: 8, channels: 3, background: '#9922bb' } }).png().toBuffer() : await readFile(actual)
+    const referenceBytes = await sharp({ create: { width: 16, height: 16, channels: 3, background: '#ee2222' } }).png().toBuffer()
+    const base = await boot([model], true, [row], { body: 'truncated', bytes })
+    if (directory === undefined) throw new Error('Expected isolated Host directory')
+    const refs = join(directory, 'credits', 'refs')
+    await mkdir(refs, { recursive: true })
+    await writeFile(join(refs, 'ma_edit.png'), referenceBytes)
+    await writeFile(join(refs, 'ma_edit.png.json'), JSON.stringify({ mediaType: 'image/png', originalName: 'reference.png', accountId: '7' }))
+    const result = await post(base, '/api/image/generate', { model, prompt: 'Change only the red circle to purple', size, references: ['ma_edit'] })
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true, submission_state: 'completed', task_id: retainedTaskId })
+    const payload = object(result.payload)
+    if (typeof payload.path !== 'string') throw new Error('Expected published original image path')
+    expect(await readFile(payload.path)).toEqual(bytes)
+    expect((await sharp(await readFile(payload.path)).metadata()).width).toBe((await sharp(bytes).metadata()).width)
+    const edits = calls.filter(call => call.path === '/harness/v1/images/edits')
+    expect(edits).toHaveLength(1)
+    expect(calls.filter(call => call.path.endsWith('/images/generations'))).toHaveLength(0)
+    if (plugin === 'ycapi') {
+      expect(calls.filter(call => call.path === '/harness/v1/uploads/images')).toHaveLength(1)
+      expect(edits[0]?.body).toMatchObject({ model, n: 1, size, image: ['https://assets.token6688.com/sha256/ab/' + 'c'.repeat(62) + '.png'] })
+    } else {
+      expect(calls.filter(call => call.path === '/harness/v1/uploads/images')).toHaveLength(0)
+      expect(edits[0]?.body).toMatchObject({ model, n: '1', size, 'image[]': { type: 'image/png', size: referenceBytes.length,
+        sha256: createHash('sha256').update(referenceBytes).digest('hex') } })
+    }
+    expect(imageWireCalls.filter(call => call.path === retainedTaskPath)).toHaveLength(1)
+    expect(imageWireCalls.filter(call => call.path === `${retainedTaskPath}/artifacts`)).toHaveLength(1)
+    await recordRecoveryRoute(plugin + '-reference-edit-original-save', result)
+  })
+
+  it('blocks an unverified edit tier, oversized reference and another account before upload or generation', async () => {
+    const model = 'ycapi-gemini-3.1-flash-image'
+    const row = { model_name: model, kind: 'image', parameters: { properties: { reference_images: { maxItems: 1 }, n: { enum: [1] } },
+      'x-task-plugin': { key: 'ycapi', version: '1.0.0', api_version: 1 },
+      'x-image-receipt-recovery': { schema_version: 1, submit_model_metadata: true, original_task_artifacts: true },
+      oneOf: [{ properties: { size: { enum: ['1:1'] }, resolution: { enum: ['0.5K', '1K'] } } }],
+      'x-image-edit': { schema_version: 1, max_reference_bytes: 128,
+        specifications: [{ properties: { size: { enum: ['1:1'] }, resolution: { enum: ['1K'] } } }] } } }
+    const base = await boot([model], true, [row])
+    if (directory === undefined) throw new Error('Expected isolated Host directory')
+    const refs = join(directory, 'credits', 'refs')
+    await mkdir(refs, { recursive: true })
+    const input = { model, prompt: 'Edit the original reference', size: '1:1', resolution: '1K', references: ['ma_edit'] }
+    expect(await post(base, '/api/image/generate', { ...input, resolution: '0.5K' }))
+      .toMatchObject({ ok: false, code: 'SPECIFICATION_NOT_SUPPORTED', submission_state: 'not-submitted' })
+    const bytes = await sharp({ create: { width: 16, height: 16, channels: 3, background: '#ee2222' } }).png().toBuffer()
+    await writeFile(join(refs, 'ma_edit.png'), bytes)
+    await writeFile(join(refs, 'ma_edit.png.json'), JSON.stringify({ mediaType: 'image/png', accountId: 'another' }))
+    expect(await post(base, '/api/image/generate', input)).toMatchObject({ ok: false, code: 'IMAGE_REFERENCE_INVALID', submission_state: 'not-submitted' })
+    await writeFile(join(refs, 'ma_edit.png.json'), JSON.stringify({ mediaType: 'image/png', accountId: '7' }))
+    await writeFile(join(refs, 'ma_edit.png'), Buffer.concat([bytes, Buffer.alloc(129)]))
+    expect(await post(base, '/api/image/generate', input)).toMatchObject({ ok: false, code: 'IMAGE_REFERENCE_INVALID', submission_state: 'not-submitted' })
+    expect(calls.filter(call => call.path === '/harness/v1/uploads/images' || call.path === '/harness/v1/images/edits' || call.path.endsWith('/images/generations'))).toEqual([])
+  })
+})
+
+const observedEditManifest = process.env.DSH_IMAGE_EDIT_GATEWAY_REPORT
+const observedEditFixtures: Record<string, unknown>[] = observedEditManifest === undefined ? []
+  : (JSON.parse(readFileSync(observedEditManifest, 'utf8')) as unknown[]).map(object)
+
+describe('actual gateway image-edit declarations and original paid image bytes through the client', () => {
+  it.for(observedEditFixtures)('$label saves and exposes the original image without another submission', async (fixture) => {
+    const model = fixture.model_name, label = fixture.label, imagePath = fixture.image_path, referencePath = fixture.reference_path
+    if (typeof model !== 'string' || typeof label !== 'string' || typeof imagePath !== 'string' || typeof referencePath !== 'string') throw new Error('Invalid source-bound image fixture')
+    const original = await readFile(imagePath), reference = await readFile(referencePath)
+    const row = { model_name: model, kind: 'image', parameters: fixture.parameters }
+    const base = await boot([model], true, [row], { body: model.startsWith('ycapi-') ? 'accepted' : 'truncated', bytes: original })
+    const active = context, root = directory
+    if (active === undefined || root === undefined) throw new Error('Expected isolated client Host')
+    const sessionId = 'observed-image-edit-client'
+    active.sessions.create(SessionId(sessionId), { meta: { cwd: await realpath(root) } })
+    const login = new URL(active.connection.authenticatedUrl(new URL(base).origin)), headers: Record<string, string> = {}
+    active.connection.authorizeIndex({ method: 'GET', url: login.pathname + login.search, headers: { host: login.host } }, {
+      writeHead(_status, values) { Object.assign(headers, values) }, end() {},
+    })
+    const cookie = headers['set-cookie']?.split(';')[0]
+    if (cookie === undefined) throw new Error('Expected authenticated client cookie')
+    const refs = join(root, 'credits', 'refs')
+    await mkdir(refs, { recursive: true })
+    await writeFile(join(refs, 'ma_observed.png'), reference)
+    await writeFile(join(refs, 'ma_observed.png.json'), JSON.stringify({ mediaType: 'image/png', accountId: '7', originalName: 'reference.png' }))
+    const request = object(fixture.request)
+    const result = await post(base, '/api/image/generate', { session_id: sessionId, account_id: '7', model,
+      prompt: request.prompt, ...request.size === undefined ? {} : { size: request.size },
+      ...request.resolution === undefined ? {} : { resolution: request.resolution },
+      ...request.quality === undefined ? {} : { quality: request.quality }, count: 1, references: ['ma_observed'] }, { cookie })
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true, submission_state: 'completed', task_id: retainedTaskId })
+    const payload = object(result.payload)
+    if (typeof payload.path !== 'string') throw new Error('Expected saved original image path')
+    expect(createHash('sha256').update(await readFile(payload.path)).digest('hex')).toBe(fixture.image_sha256)
+    const listing = object(object(await (await fetch(base + '/api/creative/projects?session_id=' + sessionId, { headers: { cookie } })).json()).payload)
+    if (!Array.isArray(listing.projects)) throw new Error('Expected visible image project')
+    const project = listing.projects.map(object).find(project => project.id === result.plan_id)
+    expect(project).toMatchObject({ kind: 'image', tasks: [expect.objectContaining({ status: 'completed' })] })
+    if (!Array.isArray(project?.outputs) || project.outputs.length !== 1) throw new Error('Expected one visible original output')
+    const output = object(project.outputs[0])
+    if (typeof output.url !== 'string') throw new Error('Expected local image preview')
+    const preview = await fetch(new URL(output.url, base), { headers: { cookie } })
+    expect(preview.status).toBe(200)
+    const bytes = Buffer.from(await preview.arrayBuffer())
+    expect(createHash('sha256').update(bytes).digest('hex')).toBe(fixture.image_sha256)
+    expect((await sharp(bytes).metadata()).width).toBe((await sharp(original).metadata()).width)
+    const submissions = imageWireCalls.filter(call => call.method === 'POST' && (call.path.endsWith('/images/edits') || call.path.endsWith('/images/generations')))
+    expect(submissions).toHaveLength(1)
+    expect(submissions[0]?.path).toBe('/harness/v1/images/edits')
+    if (model.startsWith('ycapi-')) expect(submissions[0]?.prefer).toBe('respond-async')
+    expect(imageWireCalls.filter(call => call.path === retainedTaskPath)).toHaveLength(1)
+    await recordRecoveryRoute(label.replaceAll('/', '-'), result)
   })
 })

@@ -1,5 +1,6 @@
 import { constants } from 'node:fs'
 import { once } from 'node:events'
+import { createServer } from 'node:http'
 import { copyFile, mkdtemp, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, win32 } from 'node:path'
@@ -9,7 +10,7 @@ import type { JobHandle } from '@deepseek-ai/dsh-jobs'
 import type { VideoEditor } from '../src/video-edit.ts'
 import { planVideoDurations, prepareVideoProject, readVideoProject, recoverVideoProjectOutputs, resolveVideoOutputDirectory, runVideoProject, VideoProjectError } from '../src/video-project.ts'
 import type { VideoProjectInput, VideoProjectOptions, VideoProjectProvider, VideoProjectSubmission } from '../src/video-project-types.ts'
-import { VideoRelayError } from '../src/video-project-provider.ts'
+import { createVideoProjectRelay, VideoRelayError } from '../src/video-project-provider.ts'
 import type { VideoProjectRelay } from '../src/video-project-provider.ts'
 import { createVideoProjectDispatch } from '../src/video-project-dispatch.ts'
 import { h3SubmissionQueryRejection, h3SubmissionRejection, VideoSubmissionRejection } from '../src/video-submission-result.ts'
@@ -22,6 +23,8 @@ import type { VideoProjectActivity } from '../src/creation-activity.ts'
 import { MAX_MEDIA_FILENAME_BYTES } from '../src/media-filename.ts'
 import { catalogFromPricing, type VideoParams } from '../src/media.ts'
 import { videoSpecificationDurations } from '../src/media-request-specification.ts'
+import { readModelConfigVersion } from '../src/model-config-version.ts'
+import { MediaModelConfigRejection } from '../src/media-model-config-result.ts'
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>()
@@ -120,6 +123,272 @@ async function setup(durations = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]) {
     set currentAccount(value: boolean) { currentAccount = value }, set runningTask(value: string) { runningTask = value },
   }
 }
+
+it('bounds every original clip by its planned end on initial and recovered composition', async () => {
+  const f = await setup([10, 30])
+  vi.spyOn(f.provider, 'download').mockImplementation(async (_taskId, request, path) => {
+    await writeFile(path, String(Number(request.durationSeconds) + 0.7))
+  })
+  const originalCompose = f.editor.compose.bind(f.editor)
+  const compose = vi.spyOn(f.editor, 'compose').mockRejectedValueOnce(new Error('local composition interrupted'))
+    .mockImplementationOnce(originalCompose)
+  const manifest = await f.prepare()
+  expect(manifest.segments.map(segment => segment.durationSeconds)).toEqual([30, 10])
+  expect((await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal)).status).toBe('failed')
+  expect(f.submitted).toBe(2)
+  const recovered = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+  expect((await runVideoProject(f.options, recovered, f.provider, f.editor, f.job, f.signal)).status).toBe('completed')
+  expect(f.submitted).toBe(2)
+  expect(compose).toHaveBeenCalledTimes(2)
+  for (const [request] of compose.mock.calls) {
+    expect(request.clips).toEqual(manifest.segments.map(segment => ({ path: segment.path, endSeconds: segment.durationSeconds })))
+    expect(request.totalDurationSeconds).toBe(40)
+  }
+  expect(await Promise.all(manifest.segments.map(segment => readFile(segment.path!, 'utf8')))).toEqual(['30.7', '10.7'])
+})
+
+describe('durable model configuration snapshots', () => {
+  const versionA = readModelConfigVersion({ model_config_version: 'a'.repeat(64) })!
+  const versionB = readModelConfigVersion({ model_config_version: 'b'.repeat(64) })!
+
+  it('recovers and saves an original legacy raw task after its model is removed from the new-work catalog', async () => {
+    const f = await setup([10])
+    f.provider.model = async () => ({ id: 'MiniMax-H3', durations: [10] })
+    const manifest = await prepareVideoProject(f.options, { prompt: 'Original accepted work', totalDurationSeconds: 10 },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    const { modelConfigSnapshot: _snapshot, ...legacyInput } = manifest.input
+    manifest.version = 1
+    manifest.input = legacyInput
+    manifest.segments[0]!.taskId = 'original-raw-h3-id'
+    manifest.segments[0]!.status = 'running'
+    await writeFile(join(f.options.stateDirectory, manifest.id, 'manifest.json'), JSON.stringify(manifest))
+    const calls: { method: string; path: string }[] = []
+    const media = Buffer.from([0, 0, 0, 24, 102, 116, 121, 112, 105, 115, 111, 109, 0, 0, 0, 0, 105, 115, 111, 109, 109, 112, 52, 50])
+    const server = createServer((request, response) => {
+      calls.push({ method: request.method ?? 'GET', path: request.url ?? '/' })
+      if (request.method === 'GET' && request.url === '/v1/tasks/original-raw-h3-id') {
+        response.setHeader('content-type', 'application/json')
+        response.end(JSON.stringify({ status: 'SUCCESS' })); return
+      }
+      if (request.method === 'GET' && request.url === '/v1/videos/original-raw-h3-id/content') {
+        response.setHeader('content-type', 'video/mp4')
+        response.end(media); return
+      }
+      response.statusCode = 500
+      response.end('Unexpected request; original accepted work must never be submitted again')
+    })
+    await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve) })
+    try {
+      const address = server.address()
+      if (address === null || typeof address === 'string') throw new Error('Expected a fixture listener')
+      const origin = `http://127.0.0.1:${String(address.port)}`
+      const route = vi.fn(async () => { throw new Error('Original model is no longer advertised') })
+      const relay = createVideoProjectRelay({ origin, timeoutMs: 1000, maxDownloadBytes: 1024, cacheRoot: f.options.stateDirectory,
+        key: async () => 'synthetic-owned-key' })
+      const dispatch = createVideoProjectDispatch({ relay, route, queue: { origin, timeoutMs: 1000, key: async () => 'synthetic-owned-key' } })
+      f.provider.check = dispatch.check
+      f.provider.download = dispatch.download
+      const model = vi.spyOn(f.provider, 'model').mockRejectedValue(new Error('Do not reopen the current catalog'))
+      const submit = vi.spyOn(f.provider, 'submit').mockRejectedValue(new Error('Do not resubmit accepted work'))
+      vi.spyOn(f.editor, 'probe').mockResolvedValue({ durationSeconds: 10 })
+      expect((await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal)).status).toBe('completed')
+      const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+      expect(retained.version).toBe(1)
+      expect(retained.segments[0]).toMatchObject({ taskId: 'original-raw-h3-id', status: 'saved' })
+      expect(await readFile(retained.segments[0]!.path!)).toEqual(media)
+      expect(retained.input).not.toHaveProperty('modelConfigSnapshot')
+      expect(model).not.toHaveBeenCalled()
+      expect(route).not.toHaveBeenCalled()
+      expect(submit).not.toHaveBeenCalled()
+      expect(calls).toEqual([
+        { method: 'GET', path: '/v1/tasks/original-raw-h3-id' },
+        { method: 'GET', path: '/v1/videos/original-raw-h3-id/content' },
+      ])
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => { if (error === undefined) resolve(); else reject(error) })
+        server.closeAllConnections()
+      })
+    }
+  })
+
+  it('pins one catalogue version through preparation, persistence and trusted submission metadata', async () => {
+    const f = await setup([10])
+    const snapshot = { model: 'example-video', modelConfigVersion: versionA }
+    const model = vi.spyOn(f.provider, 'model').mockResolvedValue({ id: snapshot.model, durations: [10], modelConfigVersion: versionA })
+    const build = vi.spyOn(f.provider, 'build').mockImplementation(async (_input, selected, _prompt, durationSeconds) =>
+      ({ model: selected, prompt: 'Exact validated native prompt', durationSeconds }))
+    const submit = vi.spyOn(f.provider, 'submit')
+    const input = { prompt: 'Pinned original work', totalDurationSeconds: 20, modelConfigSnapshot: snapshot }
+    const manifest = await prepareVideoProject(f.options, input, 'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    expect(model.mock.calls[0]?.[7]).toEqual(snapshot)
+    expect(manifest.version).toBe(2)
+    expect(manifest.modelConfigVersion).toBe(versionA)
+    expect(manifest.input).toEqual(input)
+    expect(manifest.segments.map(segment => segment.request)).toEqual([
+      { model: 'example-video', prompt: 'Exact validated native prompt', durationSeconds: 10 },
+      { model: 'example-video', prompt: 'Exact validated native prompt', durationSeconds: 10 },
+    ])
+    expect(build.mock.calls.every(([, , prompt]) => prompt.includes('Pinned original work'))).toBe(true)
+    const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+    model.mockRejectedValue(new Error('An admitted project must not reselect from a newer catalogue'))
+    expect((await runVideoProject(f.options, retained, f.provider, f.editor, f.job, f.signal)).status).toBe('completed')
+    expect(model).toHaveBeenCalledOnce()
+    expect(submit).toHaveBeenCalledTimes(2)
+    for (const [request, , metadata] of submit.mock.calls) {
+      expect(request).not.toHaveProperty('model_config_version')
+      expect(request).not.toHaveProperty('modelConfigSnapshot')
+      expect(metadata?.modelConfigVersion).toBe(versionA)
+    }
+    const final = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+    expect(final.version).toBe(2)
+    expect(final.input.modelConfigSnapshot).toEqual(snapshot)
+  })
+
+  it.each([versionA, undefined])('rejects a changed catalogue before building or posting, captured version=%s', async (captured) => {
+    const f = await setup([10])
+    vi.spyOn(f.provider, 'model').mockResolvedValue({ id: 'example-video', durations: [10], modelConfigVersion: versionB })
+    const build = vi.spyOn(f.provider, 'build')
+    const submit = vi.spyOn(f.provider, 'submit')
+    const snapshot = { model: 'example-video', ...captured === undefined ? {} : { modelConfigVersion: captured } }
+    await expect(prepareVideoProject(f.options, { prompt: 'Do not mix versions', totalDurationSeconds: 10,
+      modelConfigSnapshot: snapshot }, 'chat-one', f.workspace, f.provider, f.editor, f.signal))
+      .rejects.toMatchObject({ code: 'MODEL_CONFIG_CHANGED' })
+    expect(build).not.toHaveBeenCalled()
+    expect(submit).not.toHaveBeenCalled()
+  })
+
+  it('retains actual legacy v1 absence through resume without fetching or adding a latest version', async () => {
+    const f = await setup([10])
+    const manifest = await prepareVideoProject(f.options, { prompt: 'Legacy saved work', totalDurationSeconds: 10 },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    const { modelConfigSnapshot: _snapshot, ...legacyInput } = manifest.input
+    const legacy = { ...manifest, version: 1, input: legacyInput }
+    const path = join(f.options.stateDirectory, manifest.id, 'manifest.json')
+    await writeFile(path, JSON.stringify(legacy))
+    const model = vi.spyOn(f.provider, 'model').mockRejectedValue(new Error('No fresh catalogue for an original project'))
+    const submit = vi.spyOn(f.provider, 'submit')
+    const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+    expect(retained.version).toBe(1)
+    expect(retained.input).toEqual(legacyInput)
+    expect((await runVideoProject(f.options, retained, f.provider, f.editor, f.job, f.signal)).status).toBe('completed')
+    expect(model).not.toHaveBeenCalled()
+    expect(submit).toHaveBeenCalledOnce()
+    expect(submit.mock.calls[0]?.[2]).not.toHaveProperty('modelConfigVersion')
+    const final = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+    expect(final.version).toBe(1)
+    expect(final).not.toHaveProperty('modelConfigVersion')
+    expect(final.input).not.toHaveProperty('modelConfigSnapshot')
+  })
+
+  it('rejects damaged v2 pins and refuses to disguise a new snapshot as a v1 manifest', async () => {
+    const f = await setup([10])
+    vi.spyOn(f.provider, 'model').mockResolvedValue({ id: 'example-video', durations: [10], modelConfigVersion: versionA })
+    const manifest = await prepareVideoProject(f.options, { prompt: 'Versioned work', totalDurationSeconds: 10 },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    const { modelConfigSnapshot: _snapshot, ...missingSnapshot } = manifest.input
+    const path = join(f.options.stateDirectory, manifest.id, 'manifest.json')
+    for (const damaged of [
+      { ...manifest, input: missingSnapshot }, { ...manifest, version: 1 },
+      { ...manifest, modelConfigVersion: versionB },
+      { ...manifest, modelConfigVersion: 'INVALID' },
+      { ...manifest, input: { ...manifest.input, modelConfigSnapshot: { model: 'different-model', modelConfigVersion: versionA } } },
+    ]) {
+      await writeFile(path, JSON.stringify(damaged))
+      await expect(readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity))
+        .rejects.toMatchObject({ code: 'INVALID_RECORD' })
+    }
+    expect(f.submitted).toBe(0)
+  })
+
+  it('stops unsent pending clips after a confirmed configuration rejection and keeps the failed admission barrier on resume', async () => {
+    const f = await setup([10])
+    vi.spyOn(f.provider, 'model').mockResolvedValue({ id: 'example-video', durations: [10], modelConfigVersion: versionA })
+    const submit = vi.spyOn(f.provider, 'submit').mockRejectedValue(new MediaModelConfigRejection('MODEL_CONFIG_CHANGED', {
+      url: 'https://synthetic.example/v1/videos', method: 'POST', model: 'example-video', accountId: '7', modelConfigVersion: versionA,
+    }, 'original-request-id'))
+    const manifest = await prepareVideoProject(f.options, { prompt: 'Three original clips', totalDurationSeconds: 30 },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    expect(await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal))
+      .toMatchObject({ status: 'failed', detail: 'MODEL_CONFIG_CHANGED' })
+    expect(manifest.segments.map(segment => segment.status)).toEqual(['failed', 'pending', 'pending'])
+    expect(manifest.segments[0]?.configRejection).toEqual({ code: 'MODEL_CONFIG_CHANGED', requestId: 'original-request-id' })
+    expect(manifest.segments[0]?.balanceRejection).toBeUndefined()
+    expect(submit).toHaveBeenCalledOnce()
+    const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+    expect(await runVideoProject(f.options, retained, f.provider, f.editor, f.job, f.signal,
+      { revision: { messageId: 'later-human', seq: 40 } })).toMatchObject({ status: 'failed', detail: 'MODEL_CONFIG_CHANGED' })
+    expect(submit).toHaveBeenCalledOnce()
+    // The established failed state, independently of the new proof marker, blocks an old reader's pending admission too.
+    delete retained.segments[0]!.configRejection
+    await writeFile(join(f.options.stateDirectory, manifest.id, 'manifest.json'), JSON.stringify(retained))
+    expect(await runVideoProject(f.options, retained, f.provider, f.editor, f.job, f.signal))
+      .toMatchObject({ status: 'failed', detail: 'PROVIDER_TASK_FAILED' })
+    expect(submit).toHaveBeenCalledOnce()
+  })
+
+  it('preserves an accepted original task and its differing acknowledgement version without another submission', async () => {
+    const f = await setup([10])
+    vi.spyOn(f.provider, 'model').mockResolvedValue({ id: 'example-video', durations: [10], modelConfigVersion: versionB })
+    const submit = vi.spyOn(f.provider, 'submit').mockResolvedValue({ taskId: 'original-accepted-task', submissionState: 'unknown',
+      acknowledgedModelConfigVersion: versionA })
+    const manifest = await prepareVideoProject(f.options, { prompt: 'Accepted work', totalDurationSeconds: 10 },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    expect((await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal)).status).toBe('failed')
+    expect(manifest.segments[0]).toMatchObject({ taskId: 'original-accepted-task', status: 'unknown', acknowledgedModelConfigVersion: versionA })
+    expect(manifest.modelConfigVersion).toBe(versionB)
+    const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+    vi.spyOn(f.provider, 'download').mockImplementation(async (_id, _request, path) => { await writeFile(path, '10') })
+    const check = vi.spyOn(f.provider, 'check')
+    expect((await runVideoProject(f.options, retained, f.provider, f.editor, f.job, f.signal)).status).toBe('completed')
+    expect(check).toHaveBeenCalledWith('original-accepted-task', expect.any(Object), expect.any(AbortSignal))
+    expect(submit).toHaveBeenCalledOnce()
+    expect(retained.segments[0]?.acknowledgedModelConfigVersion).toBe(versionA)
+    expect(retained.modelConfigVersion).toBe(versionB)
+  })
+
+  it('continues saving an already accepted concurrent task while stopping later unsent clips', async ({ signal }) => {
+    const f = await setup([10])
+    f.options.maxConcurrentSegments = 2
+    vi.spyOn(f.provider, 'model').mockResolvedValue({ id: 'example-video', durations: [10], modelConfigVersion: versionA })
+    const phases = observedPhases(signal)
+    const progress = f.job.updateProgress.bind(f.job)
+    f.job.updateProgress = (text) => {
+      progress(text)
+      if (text.includes('停止新增请求')) phases.mark('configuration-stopped')
+    }
+    const submit = vi.spyOn(f.provider, 'submit').mockResolvedValueOnce({ taskId: 'accepted-original-task' })
+      .mockImplementationOnce(async () => {
+        await phases.wait('original-task-query')
+        throw new MediaModelConfigRejection('MODEL_CONFIG_CHANGED', {
+          url: 'https://synthetic.example/v1/videos', method: 'POST', model: 'example-video', accountId: '7', modelConfigVersion: versionA,
+        }, 'second-request-refused')
+      }).mockRejectedValue(new Error('An unsent later clip must stay pending'))
+    const check = vi.spyOn(f.provider, 'check').mockImplementation(async (taskId) => {
+      expect(taskId).toBe('accepted-original-task')
+      phases.mark('original-task-query')
+      await phases.wait('configuration-stopped')
+      return { status: 'succeeded' }
+    })
+    vi.spyOn(f.provider, 'download').mockImplementation(async (taskId, _request, path) => {
+      expect(taskId).toBe('accepted-original-task')
+      await writeFile(path, '10')
+    })
+    const compose = vi.spyOn(f.editor, 'compose')
+    const manifest = await prepareVideoProject(f.options, { prompt: 'Independent paid clips', totalDurationSeconds: 30 },
+      'chat-one', f.workspace, f.provider, f.editor, signal)
+    expect(await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, signal))
+      .toMatchObject({ status: 'failed', detail: 'MODEL_CONFIG_CHANGED' })
+    expect(manifest.segments.map(segment => segment.status)).toEqual(['saved', 'failed', 'pending'])
+    expect(await readFile(manifest.segments[0]!.path!, 'utf8')).toBe('10')
+    expect(check).toHaveBeenCalledOnce()
+    expect(submit).toHaveBeenCalledTimes(2)
+    expect(compose).not.toHaveBeenCalled()
+    const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
+    expect((await runVideoProject(f.options, retained, f.provider, f.editor, f.job, signal)).detail).toBe('MODEL_CONFIG_CHANGED')
+    expect(submit).toHaveBeenCalledTimes(2)
+  })
+})
 
 describe('explicit same-work funding retries', () => {
   const original = { messageId: 'original-human', seq: 1 }
@@ -272,25 +541,35 @@ describe('readable video output names', () => {
 })
 
 describe('minimum-request video duration planning', () => {
-  it('uses a captured clip default without changing the final length or accepting an unsupported duration', () => {
-    expect(planVideoDurations(20, [5, 10], 32, 5)).toEqual([5, 5, 5, 5])
-    expect(planVideoDurations(21, [5, 10], 32, 5)).toEqual([5, 5, 5, 5, 5])
-    expect(planVideoDurations(120, [5, 10], 32, 5)).toEqual(Array.from({ length: 24 }, () => 5))
-    expect(planVideoDurations(20, [5, 10], 32)).toEqual([10, 10])
-    expect(() => planVideoDurations(20, [10], 32, 5)).toThrow('默认单段时长')
+  it.each([
+    { total: 15, menu: [5, 10, 15], expected: [15] },
+    { total: 20, menu: [5, 10], expected: [10, 10] },
+    { total: 21, menu: [5, 10], expected: [10, 10, 5] },
+    { total: 40, menu: [5, 10, 15], expected: [15, 15, 10] },
+    { total: 60, menu: [5, 10, 15], expected: [15, 15, 15, 15] },
+    { total: 60, menu: [10, 15, 30], expected: [30, 30] },
+    { total: 10, menu: [5, 15], expected: [15] },
+    { total: 15, menu: [5], expected: [5, 5, 5] },
+    { total: 12, menu: [5, 9], expected: [9, 5] },
+  ])('uses the fewest native clips for $total seconds from $menu', ({ total, menu, expected }) => {
+    expect(planVideoDurations(total, menu, 32)).toEqual(expected)
   })
 
-  it('keeps explicit shot timing ahead of an unused clip default and persists only the resulting plan', async () => {
-    const f = await setup([5, 10])
+  it('fits the request cap with the longest native clips instead of reserving unnecessary short clips', () => {
+    expect(planVideoDurations(120, [5, 10], 12)).toEqual(Array.from({ length: 12 }, () => 10))
+  })
+
+  it('preserves explicit shot timing while automatic planning minimizes native clip count', async () => {
+    const f = await setup([5, 10, 15])
     const input: VideoProjectInput = { prompt: 'A timed sequence', totalDurationSeconds: 15, shotDurations: [5, 10] }
-    const explicit = await prepareVideoProject(f.options, input, 'chat-one', f.workspace, f.provider, f.editor, f.signal,
-      undefined, undefined, 99)
+    const explicit = await prepareVideoProject(f.options, input, 'chat-one', f.workspace, f.provider, f.editor, f.signal)
     expect(explicit.segments.map(segment => segment.durationSeconds)).toEqual([5, 10])
-    expect(explicit.input).toEqual(input)
-    const automatic = await prepareVideoProject(f.options, { prompt: 'A twenty second sequence', totalDurationSeconds: 20 },
-      'chat-one', f.workspace, f.provider, f.editor, f.signal, undefined, undefined, 5)
-    expect(automatic.segments.map(segment => segment.durationSeconds)).toEqual([5, 5, 5, 5])
-    expect(automatic.input).toEqual({ prompt: 'A twenty second sequence', totalDurationSeconds: 20 })
+    expect(explicit.input).toEqual({ ...input, modelConfigSnapshot: { model: 'example-video' } })
+    const automatic = await prepareVideoProject(f.options, { prompt: 'A fifteen second sequence', totalDurationSeconds: 15 },
+      'chat-one', f.workspace, f.provider, f.editor, f.signal)
+    expect(automatic.segments.map(segment => segment.durationSeconds)).toEqual([15])
+    expect(automatic.input).toEqual({ prompt: 'A fifteen second sequence', totalDurationSeconds: 15,
+      modelConfigSnapshot: { model: 'example-video' } })
   })
 
   it('observes eight distinct clips under one project and keeps queue, generation, saving and editing separate', async () => {
@@ -1082,7 +1361,7 @@ describe('explicit timeline execution', () => {
     fixture.provider.check = async (...args) => { const state = await check(...args); abort.abort(); return state }
     expect((await runVideoProject(fixture.options, manifest, fixture.provider, fixture.editor, fixture.job, abort.signal)).status).toBe('killed')
     const retained = await readVideoProject(fixture.options, manifest.id, 'chat-one', fixture.workspace, fixture.provider.identity)
-    expect(retained.input).toEqual(input)
+    expect(retained.input).toEqual({ ...input, modelConfigSnapshot: { model: 'example-video' } })
     expect(retained.segments.map(segment => segment.request)).toEqual(manifest.segments.map(segment => segment.request))
     fixture.runningTask = ''
     fixture.provider.check = check
@@ -1572,7 +1851,7 @@ describe('durable account-bound video projects', () => {
       expect(manifest.segments[index]).toMatchObject({ prompt, request: { prompt, durationSeconds }, status: 'pending' })
     }
     const retained = await readVideoProject(fixture.options, manifest.id, 'chat-one', fixture.workspace, fixture.provider.identity)
-    expect(retained.input).toEqual(input)
+    expect(retained.input).toEqual({ ...input, modelConfigSnapshot: { model: 'example-video' } })
     expect(retained.segments.map(segment => segment.prompt)).toEqual(build.mock.calls.map(call => call[2]))
     expect(fixture.submitted).toBe(0)
   })
@@ -1659,7 +1938,7 @@ describe('durable account-bound video projects', () => {
     }
     const manifest = await prepareVideoProject(fixture.options, input, 'chat-one', fixture.workspace, fixture.provider, fixture.editor, fixture.signal)
     const retained = await readVideoProject(fixture.options, manifest.id, 'chat-one', fixture.workspace, fixture.provider.identity)
-    expect(retained.input).toEqual(input)
+    expect(retained.input).toEqual({ ...input, modelConfigSnapshot: { model: 'example-video' } })
     expect(retained.input.audio).toBe(audio)
     expect(retained.input.referenceAudios).toEqual(input.referenceAudios)
     expect(fixture.submitted).toBe(0)

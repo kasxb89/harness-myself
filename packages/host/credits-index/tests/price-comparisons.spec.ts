@@ -80,6 +80,20 @@ it('rejects incompatible media units and directions while preserving a valid nei
     payload: { basis: 'default', models: [] } })
 })
 
+it('does not extend a configured reference to another specification without its own evidence', () => {
+  const model = { model_name: 'configured-image', display_name: 'Configured image', kind: 'image', retail_price_rows: [
+    { params: { size: '1K', ratio: '1:1', count: 1 }, retail_cny: '0.2', unit: 'CNY / image',
+      official_reference: { schema_version: 1, currency: 'CNY', source_currency: 'CNY', official_cny: '0.4',
+        model: 'native-image', unit: 'CNY / image', source_url: 'https://official.example/image-pricing',
+        checked_at: '2026-11-11', conditions: 'One square image' } },
+    { params: { size: '2K', ratio: '16:9', count: 1 }, retail_cny: '0.3', unit: 'CNY / image' },
+  ] }
+  const result = parsePriceComparisons({ success: true, data: [model] })
+  expect(result).toEqual({ ok: true, payload: { basis: 'default', models: [
+    { id: model.model_name, name: model.display_name, kind: 'image', rows: [model.retail_price_rows[0]] },
+  ] } })
+})
+
 it('returns no comparison for an older API and safely refuses malformed, duplicate or oversized catalogs', () => {
   expect(parsePriceComparisons({ success: true, data: [{ model_name: 'legacy' }] })).toEqual({ ok: true,
     payload: { basis: 'default', models: [] } })
@@ -93,7 +107,8 @@ it('returns no comparison for an older API and safely refuses malformed, duplica
 it('contains observed network, status, malformed and complete-body failures without returning raw diagnostics', async () => {
   const signal = new AbortController().signal
   for (const [status, code] of [[404, 'PRICE_COMPARISONS_UNSUPPORTED'], [503, 'PRICE_COMPARISONS_UNAVAILABLE']] as const) {
-    expect(await readPriceComparisons(async () => new Response('secret', { status }), signal)).toEqual({ ok: false, code })
+    expect(await readPriceComparisons(async () => new Response('secret', { status }), signal)).toEqual({ ok: false, code,
+      ...status === 503 ? { httpStatus: 503 } : {} })
   }
   expect(await readPriceComparisons(async () => { throw new TypeError('private network details') }, signal))
     .toEqual({ ok: false, code: 'PRICE_COMPARISONS_NETWORK' })
@@ -104,4 +119,37 @@ it('contains observed network, status, malformed and complete-body failures with
   const aborted = AbortSignal.abort(new DOMException('deadline', 'TimeoutError'))
   expect(await readPriceComparisons(async () => { throw new Error('must not read') }, aborted))
     .toEqual({ ok: false, code: 'PRICE_COMPARISONS_NETWORK' })
+})
+
+it.each([
+  [429, '17', 17], [429, '0.5', 1], [429, 'Mon, 26 Oct 2026 10:00:45 GMT', 45],
+  [503, 'Mon, 26 Oct 2026 10:00:45 GMT', 45],
+] as const)('retains only HTTP %s cooldown facts from Retry-After %s', async (status, retry, seconds) => {
+  const result = await readPriceComparisons(async () => new Response('private upstream diagnostic', {
+    status, headers: { 'Retry-After': retry, Date: 'Mon, 26 Oct 2026 10:00:00 GMT',
+      'Set-Cookie': 'private-upstream-cookie', 'X-Private-Route': 'private-upstream-route' },
+  }), new AbortController().signal)
+  expect(result).toEqual({ ok: false, code: status === 429 ? 'PRICE_COMPARISONS_RATE_LIMITED' : 'PRICE_COMPARISONS_UNAVAILABLE',
+    httpStatus: status, retryAfterSeconds: seconds })
+  expect(JSON.stringify(result)).not.toContain('private')
+})
+
+it.each(['not-a-delay', 'NaN', 'Infinity', '9'.repeat(400), '9007199254741'])(
+  'omits untrusted or unsafe cooldown %s without guessing a replacement', async (retry) => {
+    expect(await readPriceComparisons(async () => new Response('private', { status: 429,
+      headers: { 'Retry-After': retry } }), new AbortController().signal))
+      .toEqual({ ok: false, code: 'PRICE_COMPARISONS_RATE_LIMITED', httpStatus: 429 })
+  },
+)
+
+it('does not copy cooldown headers from other statuses or successful pricing documents', async () => {
+  const signal = new AbortController().signal
+  for (const status of [401, 403, 500]) {
+    expect(await readPriceComparisons(async () => new Response('private', {
+      status, headers: { 'Retry-After': '45', Date: 'Mon, 26 Oct 2026 10:00:00 GMT', 'X-Private': 'private' },
+    }), signal)).toEqual({ ok: false, code: 'PRICE_COMPARISONS_UNAVAILABLE' })
+  }
+  expect(await readPriceComparisons(async () => Response.json({ success: true, data: [] }, {
+    headers: { 'Retry-After': '45' },
+  }), signal)).toEqual({ ok: true, payload: { basis: 'default', models: [] } })
 })

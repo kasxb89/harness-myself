@@ -8,7 +8,7 @@ import type {
 } from '@deepseek-ai/dsh-attachment'
 import type { Branded } from '@deepseek-ai/dsh-brand'
 import type { LlmAttemptId, MessageId } from '@deepseek-ai/dsh-llm/brand'
-import type { LlmModelInfo, LlmTextCapabilities, TextBlock } from '@deepseek-ai/dsh-llm'
+import type { LlmModelInfo, LlmModelLimits, LlmTextCapabilities, TextBlock } from '@deepseek-ai/dsh-llm'
 import type { SessionId, SessionSeqCursor } from '@deepseek-ai/dsh-session/types'
 import type { SessionProjectionMap } from '@deepseek-ai/dsh-session-projection/types'
 import type { JsonValue } from '@deepseek-ai/dsh-util-values'
@@ -162,6 +162,10 @@ export interface ModelCatalogModel {
   readonly textCapabilities?: LlmTextCapabilities
   /** Normalized execution controls; unverified facts do not become negative booleans. */
   readonly executionCapabilities?: ModelExecutionCapabilities
+  /** Effective capacities and separately retained platform ceilings and user choices. */
+  readonly limits?: LlmModelLimits
+  /** Existing settings owner for explicit limits; published only for the active managed scope. */
+  readonly limitSettings?: { readonly settingsNs: string; readonly settingsPath: readonly string[] }
 }
 
 /** One provider and its successfully loaded model catalog. */
@@ -229,7 +233,7 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
   interface RemoteErrorDetailsMap {
     'session/provider-credentials-unavailable': Record<string, never>
     'session/provider-models-unavailable': { readonly provider: string }
-    'session/model-unavailable': { readonly provider: string; readonly model: string; readonly reason?: 'UNKNOWN_MODEL' }
+    'session/model-unavailable': { readonly provider: string; readonly model: string; readonly reason?: 'UNKNOWN_MODEL' | 'NO_AVAILABLE_MODEL' }
     'session/conflict': {
       readonly sessionId: SessionId
       readonly requestedCwd: string
@@ -631,6 +635,12 @@ export type SessionControlFrame =
 
 declare module '@deepseek-ai/cordis' {
   interface Events {
+    /**
+     * Opaque local account epoch used to fence asynchronous prompt admission; never sent to a model or Client.
+     * @mode waterfall
+     * @param next - Other account owner contribution, or no account binding.
+     */
+    'api-session/prompt-owner'(next: () => string | undefined): string | undefined
     /**
      * Validate and capture plugin-owned prompt metadata before inbox acceptance.
      * Accepted request retries skip this event. Failed admissions may retry with the same identity.

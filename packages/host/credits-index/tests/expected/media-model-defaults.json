@@ -4,9 +4,11 @@
     "default_configured": true,
     "default_available": true,
     "default_source": "personal",
-    "selected_parameters": {},
-    "default_error_code": "SPECIFICATION_REQUIRED",
-    "default_error_message": "当前参数对应多个规格，请明确选择完整规格和质量档位；尚未提交生成。"
+    "selected_parameters": {
+      "resolution": "1080p",
+      "ratio": "16:9",
+      "quality": "standard"
+    }
   },
   "image": {
     "default_model_id": "image-a",

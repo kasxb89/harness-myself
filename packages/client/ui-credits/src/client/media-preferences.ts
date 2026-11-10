@@ -58,6 +58,8 @@ export interface PreferenceModel {
 export interface PreferencePricingRow {
   readonly parameters: Readonly<Record<string, PreferenceScalar>>
   readonly points: string
+  /** Per-row evidence for an exact zero retail price; it does not authorize generation. */
+  readonly is_free?: true
   readonly input: 'text' | 'reference' | 'unspecified'
 }
 /** Optional prices do not alter model authorization, saved preferences or request admission. */
@@ -133,9 +135,13 @@ function pricing(value: unknown, kind: PreferenceKind): PreferencePricing | unde
   const rows: PreferencePricingRow[] = []
   for (const row of value.rows) {
     if (!record(row) || !record(row.parameters) || Object.keys(row.parameters).length > 32
-      || !Object.values(row.parameters).every(scalar) || !publicPointsDecimal(row.points) || !/[1-9]/u.test(row.points)
+      || !Object.values(row.parameters).every(scalar) || !publicPointsDecimal(row.points)
+      || row.is_free !== undefined && typeof row.is_free !== 'boolean'
       || row.input !== 'text' && row.input !== 'reference' && row.input !== 'unspecified') return undefined
-    rows.push({ parameters: row.parameters as Record<string, PreferenceScalar>, points: row.points, input: row.input })
+    const free = row.is_free === true
+    if (free ? /[1-9]/u.test(row.points) : !/[1-9]/u.test(row.points)) return undefined
+    rows.push({ parameters: row.parameters as Record<string, PreferenceScalar>, points: row.points, input: row.input,
+      ...free ? { is_free: true as const } : {} })
   }
   if (value.status === 'available' && (rows.length === 0 || value.coverage === 'none' || value.credits_per_yuan === undefined)
     || value.status === 'unavailable' && (rows.length !== 0 || value.coverage !== 'none')) return undefined

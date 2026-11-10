@@ -1,0 +1,10 @@
+version: 1
+scenario: unified-model-config
+profile: web
+composition: unified-model-config
+recording: authored
+header:
+  class: unified-model-config
+  pin: true
+workspace:
+  final: true

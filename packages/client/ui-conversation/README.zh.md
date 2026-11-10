@@ -29,7 +29,7 @@ kind: "package-reference"
 
 `ui-conversation` 拥有与 target 无关的 Conversation 组装和共享浏览器 shell。它消费 Session Controller 的 `SessionEventLikeEntry` feed，通过 `ctx.uiConversation` 暴露不依赖 React 的注册表与逐 Session binding，并通过 `ctx.uiSession` 提供 `useConversation`、`useInput` 和 `inputActions` 标准 props。它还拥有按会话的持久化图片 URL 缓存：`ctx.uiConversation.imageUrl(sessionId, attachment)` 为每个附件解析一个经会话授权的浏览器 URL，并随 Session binding 释放而撤销，因此所有 Conversation target 共享一次 `session.attachment` 读取。Chat 等具体 target 位于独立包，由各自包注册 Definition、快照 builder、View 和 renderer。
 
-作用于当前 Session 的 `conversation/input-model-capabilities` 事件将归一化执行控制、逐项核实状态和渠道可用性发布到 `InputState.modelCapabilities`。待核实不锁定输入或删除附件，也不额外显示通用提示行。确认不兼容的文件、图片和桌面引用保留草稿并说明当前渠道限制；渠道不可用独立阻止发送，但保留编辑和切换模型入口。更换模型后既有附件仍可见。明确的模型能力错误保留被拒绝的草稿，并区分渠道不可用与输入、历史不兼容；不匹配自然语言意图或数量。
+作用于当前 Session 的 `conversation/input-model-capabilities` 事件将归一化执行控制、逐项核实状态和渠道可用性发布到 `InputState.modelCapabilities`。待核实不锁定输入或删除附件，也不额外显示通用提示行。确认不兼容的文件、图片和桌面引用保留草稿并说明当前渠道限制。渠道不可用时仍允许携带完整草稿和附件提交一次，由 Host 在受理前选择账号有权使用且兼容的模型。更换模型后既有附件仍可见。明确的模型能力错误保留被拒绝的草稿，并区分渠道不可用与输入、历史不兼容；不匹配自然语言意图或数量。
 
 图片入口的局部故障使用独立的暂不可用文案，拦截图片粘贴、选取和提交。已有图片附件和文字草稿保留；移除图片后，文字及已暂存文件恢复发送。局部故障标志及原因按会话隔离，与整条渠道可用性和能力核实事实分开。
 
@@ -110,7 +110,7 @@ Send 和 Stop 按钮禁用时不显示提示气泡，轮次结束后由 Stop 切
 
 在获得焦点的 Chat 或 Composer 中连续独立按下两次 Esc，可停止当前运行轮次并保留排队消息。间隔由 shortcuts 插件的 `stopSequenceMs` 配置决定，默认 500 ms。菜单、审批、模态层、终端、内嵌网页、输入法、重复按键，以及输入区域、Session 或轮次变化会清空序列。快捷键与 Stop 按钮调用同一作用域取消操作。插件将 Stop 注册为 `input` 展示分组中的固定操作。该注册使普通 Esc 不能分配给可编辑快捷键，并为 Stop 按钮的悬停和键盘聚焦提示提供 `Esc Esc` 序列。
 
-提示词拒绝与发送失败的诊断提示显示本地化繁忙文案，原始错误仍保留在所属 Session 或输入状态中。已知的会话占用、图片格式、能力与大小拒绝保留安全的恢复说明。精确确认型号不可用时，提示用户手动选择型号并保留草稿和附件；选择型号不会重新发送提示词。提示的展示分类区分操作诊断与本地化提示，不通过解析消息文本判断。Enter 裁决单独承载 source 自有的本地化拒绝，保留草稿与附件，不发起提交。
+提示词拒绝与发送失败的诊断提示显示本地化繁忙文案，原始错误仍保留在所属 Session 或输入状态中。已知的会话占用、图片格式、能力与大小拒绝保留安全的恢复说明。Host 未找到可用模型时，提示稍后重试并保留草稿和附件。GUI 不会重新发送失败或已经受理的请求。提示的展示分类区分操作诊断与本地化提示，不通过解析消息文本判断。Enter 裁决单独承载 source 自有的本地化拒绝，保留草稿与附件，不发起提交。
 
 <a id="temporary-composer-entries"></a>
 ## 临时 composer entry

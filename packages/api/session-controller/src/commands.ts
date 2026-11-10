@@ -1,6 +1,7 @@
 /** Session commands whose activation policy is explicit at each Remote method. */
 
 import { admitPromptInputContext } from './prompt-input-context.ts'
+import { awaitPromptModel, recoverPromptModel } from './prompt-model.ts'
 import { modelAvailable } from './catalog.ts'
 import { randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
@@ -14,7 +15,6 @@ import type { FileUploadReceiptId } from '@deepseek-ai/dsh-client-file-upload/ty
 import type {} from '@deepseek-ai/dsh-client-file-upload'
 import {
   LlmError, ReasoningEffortId, assistantStreamChunks, createUserMessage, freezeMessage,
-  effectiveTextCapability, textCapabilityImageAvailable, textCapabilityRouteAvailable,
 } from '@deepseek-ai/dsh-llm'
 import type { MessageSource } from '@deepseek-ai/dsh-llm'
 import { buildForkSeed } from '@deepseek-ai/dsh-session/fork'
@@ -89,6 +89,7 @@ function latestCompletedPrefixBoundary(events: readonly SessionEvent[]): Session
 /** Implements Session business commands delegated by the Session Controller Remote service. */
 export class SessionCommandController {
   private readonly promptAdmissions = new WeakMap<Agent, Map<SessionRequestId, Promise<SessionPromptValue>>>()
+  private credentialGeneration = 0
   /**
    * @param ctx - Host context carrying Agent, model, attachment, title, and Workspace services.
    * @param agents - sole owner of create, resume, and Session-local model selection.
@@ -98,7 +99,11 @@ export class SessionCommandController {
     private readonly ctx: Context,
     private readonly agents: ApiSessionAgentController,
     private readonly defaultCwd: string,
-  ) {}
+  ) {
+    const changed = (): void => { this.credentialGeneration++ }
+    ctx.on('credentials/record-updated', changed)
+    ctx.on('credentials/reference-updated', changed)
+  }
 
   /**
    * Create or idempotently adopt one ordinary Session.
@@ -312,9 +317,13 @@ export class SessionCommandController {
   /**
    * Reject empty content, then admit one prompt after Agent and attachment validation.
    * @param request - Session identity, prompt content, source metadata, and delivery mode.
+   * @param signal - caller cancellation through asynchronous preparation, before enqueue.
    * @returns acknowledgement that the Agent accepted the prompt.
    */
-  async prompt(request: SessionPromptRequest): Promise<SessionPromptValue> {
+  async prompt(request: SessionPromptRequest, signal?: AbortSignal): Promise<SessionPromptValue> {
+    signal?.throwIfAborted()
+    const generation = this.credentialGeneration
+    const owner = this.ctx.waterfall('api-session/prompt-owner', () => undefined)
     if (!hasPromptContent(request.content)) {
       throw new RemoteError(
         'gateway/bad-request',
@@ -343,44 +352,36 @@ export class SessionCommandController {
     let inputContext: ReturnType<typeof admitPromptInputContext>
     const admit = async (): Promise<SessionPromptValue> => {
       try {
-        const current = this.agents.selectionFor(agent).current
-        const model = hasImage || this.ctx.llm.listProviders().some(provider => provider.id === current.provider)
-          ? await this.ctx.llm.resolveModelInfo(current.provider, current.model).catch((error: unknown) => {
-            if (error instanceof LlmError && error.code === 'UNKNOWN_MODEL') {
-              throw new RemoteError('session/model-unavailable', 'Select an available model before sending a message.',
-                { provider: current.provider, model: current.model, reason: 'UNKNOWN_MODEL' })
+        const assertCurrent = (): void => {
+          signal?.throwIfAborted()
+          if (generation !== this.credentialGeneration || owner !== this.ctx.waterfall('api-session/prompt-owner', () => undefined)) throw new RemoteError('session/model-capability-invalid',
+            '模型目录或登录状态已变化，本次尚未发送；输入和附件已保留。', { reason: 'MODEL_CAPABILITIES_CHANGED' })
+        }
+        const prepareModel = async (): Promise<void> => {
+          while (true) {
+            assertCurrent()
+            const selection = this.agents.selectionFor(agent)
+            const current = selection.current
+            const revision = selection.revision
+            const replacement = await awaitPromptModel(recoverPromptModel(this.ctx, current, request.content,
+              agent.session.deriveMessages(), signal, assertCurrent), signal)
+            const commit = (): boolean => {
+              assertCurrent()
+              const latest = selection.current
+              if (revision !== selection.revision || latest.provider !== current.provider || latest.model !== current.model
+                || latest.reasoningEffort !== current.reasoningEffort) return false
+              if (replacement !== undefined) this.agents.selectForNextRequest(agent, replacement)
+              return true
             }
-            throw error
-          }) : undefined
-        const capabilities = model?.textCapabilities
-        if (capabilities !== undefined) {
-          if (!textCapabilityRouteAvailable(capabilities)) throw new RemoteError(
-            'session/model-capability-invalid', '当前模型渠道暂不可用，请切换模型；文字草稿已保留。', { reason: 'MODEL_ROUTE_UNAVAILABLE' },
-          )
-          if (hasImage && !textCapabilityImageAvailable(capabilities)) throw new RemoteError(
-            'session/model-capability-invalid', '当前渠道图片输入暂不可用，请稍后重试或切换模型；草稿及已有附件已保留。',
-            { reason: 'MODEL_CAPABILITY_INPUT_UNAVAILABLE' },
-          )
-          if (effectiveTextCapability(capabilities, 'tools') === false && agent.session.deriveMessages().some(message => message.role === 'tool'
-            || message.role === 'assistant' && message.content.some(part => part.type === 'tool-call'))) {
-            throw new RemoteError('session/model-capability-invalid', '当前模型渠道未开放此聊天所需的工具能力，请切换支持工具的模型，或新建纯文本聊天。',
-              { reason: 'MODEL_CAPABILITY_HISTORY_UNSUPPORTED' })
-          }
-          if (request.content.some(part => part.type === 'image' && effectiveTextCapability(capabilities, 'vision') === false
-            || part.type === 'file' && effectiveTextCapability(capabilities, 'tools') === false)) {
-            throw new RemoteError('session/model-capability-invalid', '当前模型渠道未开放所需的图片或文件能力，请移除附件或切换模型；文字草稿已保留。',
-              { reason: 'MODEL_CAPABILITY_INPUT_UNSUPPORTED' })
+            const committed = hasImage ? commit()
+              : await awaitPromptModel(this.agents.serializeImageAdmission(agent, commit), signal)
+            if (committed) return
+            // Another independent request or a manual choice won the short
+            // commit. Revalidate that current choice outside the lock before
+            // admitting this request's original message exactly once.
           }
         }
-        if (hasImage) {
-          if (model?.inputModalities !== undefined && !model.inputModalities.includes('image')) {
-            throw new RemoteError(
-              'session/attachment-invalid',
-              `Model "${current.model}" does not support image input.`,
-              { reason: 'MODEL_DOES_NOT_SUPPORT_IMAGES' },
-            )
-          }
-        }
+        await prepareModel()
         const admission = resolvePromptFileReceipts(
           request.content,
           receiptId => this.ctx.fileUploads.resolve(agent, receiptId),
@@ -402,11 +403,13 @@ export class SessionCommandController {
           throw new RemoteError('session/not-found', `session "${agent.id}" was disposed during prompt admission`,
             { sessionId: agent.id })
         }
+        assertCurrent()
         using binding = this.ctx.fileUploads.bindPrompt(agent, admission.receiptIds, request.requestId)
         if (request.mode === 'steer') agent.steer(message)
         else agent.followup(message)
         binding.commit()
       } catch (error) {
+        if (signal?.aborted === true) throw error
         if (remoteErrorOf(error) !== undefined) throw error
         if (error instanceof AttachmentError) {
           throw new RemoteError('session/attachment-invalid', error.message, { reason: error.code })
@@ -666,6 +669,9 @@ function hasPromptRequest(agent: Agent, requestId: SessionRequestId): boolean {
   if (agent.inbox.nextTurn.some(matches) || agent.inbox.nextStep.some(matches)) return true
   // oxlint-disable-next-line typescript/no-deprecated -- Existing Session history read; migration deferred.
   return agent.session.snapshotEvents().some((event) => {
+    // A claimed or later removed inbox entry is still evidence of this exact
+    // submission's original acceptance, including before user/message lands.
+    if (event.type === 'agent/inbox/spliced') return event.data.inserted.some(matches)
     if (event.type !== 'user/message') return false
     const source = event.data.source
     return source.kind === 'user' && 'rpcId' in source && source.rpcId === requestId

@@ -386,7 +386,8 @@ export function resolveMediaRequestSelection<T extends Readonly<Record<string, u
   let normalized = canonicalMediaRequestParameters(
     selectedCapability, { ...preference.parameters, ...explicit },
   ) as Record<string, string | number | boolean>
-  const plannedVideo = context?.videoProject === true && (context.plannedDurations !== undefined || args.plan_id !== undefined)
+  const plannedVideo = context?.videoProject === true && (context.plannedDurations !== undefined || args.plan_id !== undefined
+    || args.total_duration_seconds !== undefined || videoGenerationIntentOf(exec)?.requestedDurationSeconds !== undefined)
   if (plannedVideo) delete normalized.seconds
   if (auxiliaryImage || imageTotal !== undefined && explicit.count === undefined) delete normalized.count
   const model = explicitModel ?? preference.model

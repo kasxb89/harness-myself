@@ -22,14 +22,18 @@ import { createToolResultMessage, createUserMessage, ToolCallId } from '@deepsee
 import * as Credits from '../src/index.ts'
 import { catalogFromPricing } from '../src/media.ts'
 import { MediaPreferencesStore, mediaPreferencesScope } from '../src/media-preferences.ts'
+import type { MediaPreferenceSelection } from '../src/media-preferences-types.ts'
 
 const video = 'ycapi-seedance-2-0-official'
+function videoPricing(durations: readonly number[]) {
+  return { model_name: video, display_name: 'Seedance 2.0', supported_endpoint_types: ['openai-video'], parameters: {
+    oneOf: durations.map(seconds => ({ properties: { quality: { enum: ['standard'] }, ratio: { enum: ['16:9'] },
+      resolution: { enum: ['1080p'] }, seconds: { enum: [seconds] } } })),
+  } }
+}
 const pricing = [
   { model_name: 'MiniMax-H3', display_name: 'mt-MiniMax-H3', supported_endpoint_types: ['openai-video'] },
-  { model_name: video, display_name: 'Seedance 2.0', supported_endpoint_types: ['openai-video'], parameters: {
-    oneOf: [5, 10].map(seconds => ({ properties: { quality: { enum: ['standard'] }, ratio: { enum: ['16:9'] },
-      resolution: { enum: ['1080p'] }, seconds: { enum: [seconds] } } })),
-  } },
+  videoPricing([5, 10]),
   { model_name: 'ycapi-minimax-h3', supported_endpoint_types: ['openai-video'], parameters: {
     oneOf: ['768p', '2k'].flatMap(resolution => [5, 10].map(seconds => ({ properties: {
       ratio: { enum: ['16:9'] }, resolution: { enum: [resolution] }, seconds: { enum: [seconds] } } }))),
@@ -46,7 +50,8 @@ afterEach(async () => {
   vi.unstubAllGlobals()
 })
 
-async function fixture(savedPreferences = true, squareOnly = false) {
+async function fixture(savedPreferences = true, squareOnly = false,
+  videoParameters: MediaPreferenceSelection['parameters'] = {}, liveVideoDurations?: readonly number[]) {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-model-defaults-loader-'))
   cleanup.push(() => rm(directory, { recursive: true, force: true }))
   const stateDir = join(directory, 'credits')
@@ -65,15 +70,18 @@ async function fixture(savedPreferences = true, squareOnly = false) {
   const initial = await preferences.read(scope)
   if (savedPreferences) await preferences.save(scope, 'a'.repeat(64), { schema_version: 1, expected_account_owner: 'a'.repeat(64),
     expected_revision: initial.revision, image: { model: 'image-a', parameters: {} },
-    video: { model: video, parameters: {} } }, catalogFromPricing(rows, null), async () => {})
+    video: { model: video, parameters: videoParameters } }, catalogFromPricing(rows, null), async () => {})
   let visible = rows.map(row => row.model_name)
   const posts: string[] = []
   const submissions: unknown[] = []
   const quotes: unknown[] = []
+  let directoryReply: ((path: string) => Response | undefined) | undefined
   vi.stubGlobal('fetch', vi.fn<typeof fetch>(async (input, init) => {
     const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url)
     if (url.origin !== 'http://127.0.0.1:32127') throw new Error('Only the fixture relay is permitted')
     if (init?.method === 'POST') posts.push(url.pathname)
+    const overridden = directoryReply?.(url.pathname)
+    if (overridden !== undefined) return overridden
     if (url.pathname === '/harness/v1/video/quote') {
       if (typeof init?.body !== 'string') throw new Error('Expected fixture JSON quote')
       const quote: unknown = JSON.parse(init.body)
@@ -90,7 +98,8 @@ async function fixture(savedPreferences = true, squareOnly = false) {
     } })
     if (url.pathname === '/harness/api/user/self') return Response.json({ success: true,
       data: { id: 7, group: 'default', quota: 500000 } })
-    if (url.pathname === '/harness/api/pricing') return Response.json({ success: true, data: rows })
+    if (url.pathname === '/harness/api/pricing') return Response.json({ success: true,
+      data: liveVideoDurations === undefined ? rows : rows.map(row => row.model_name === video ? videoPricing(liveVideoDurations) : row) })
     if (url.pathname === '/harness/v1/models') return Response.json({ data: rows.filter(row => visible.includes(row.model_name))
       .map(row => ({ id: row.model_name, supported_endpoint_types: row.supported_endpoint_types })) })
     return Response.json({ success: false }, { status: 404 })
@@ -146,8 +155,68 @@ async function fixture(savedPreferences = true, squareOnly = false) {
     if (result.value === null || typeof result.value !== 'object' || Array.isArray(result.value)) throw new Error('Expected tool object')
     return result.value as Record<string, unknown>
   }
-  return { ctx, agent, human, call, posts, submissions, quotes, hideSavedModel: () => { visible = visible.filter(id => id !== video) } }
+  return { ctx, agent, human, call, posts, submissions, quotes, hideSavedModel: () => { visible = visible.filter(id => id !== video) },
+    setDirectoryReply: (reply: (path: string) => Response | undefined): void => { directoryReply = reply } }
 }
+
+it.each(['image', 'video'] as const)('rereads a changed %s listing pair before exposing its new controls', async (kind) => {
+  const f = await fixture(false)
+  let pricingReads = 0, modelReads = 0
+  const id = kind === 'image' ? 'image-a' : video
+  const endpoint = kind === 'image' ? 'image-generation' : 'openai-video'
+  f.setDirectoryReply((path) => {
+    if (path === '/harness/api/pricing') {
+      pricingReads += 1
+      const fresh = pricingReads > 1
+      const parameters = kind === 'image' ? { size: { enum: [fresh ? '16:9' : '1:1'] }, resolution: { enum: ['1k'] } }
+        : videoPricing([fresh ? 10 : 5]).parameters
+      return Response.json({ success: true, model_config_revision: '1'.repeat(64), data: [{ model_name: id,
+        supported_endpoint_types: [endpoint], model_config_version: (fresh ? 'b' : 'a').repeat(64), parameters }] },
+      { headers: { 'cache-control': 'private, max-age=30' } })
+    }
+    if (path === '/harness/v1/models') {
+      modelReads += 1
+      return Response.json({ model_config_revision: '2'.repeat(64), data: [{ id,
+        supported_endpoint_types: [endpoint], model_config_version: 'b'.repeat(64) }] })
+    }
+    return undefined
+  })
+  await f.human('读取当前可用的创作模型与规格')
+  const listed = await f.call(kind === 'image' ? 'list_image_models' : 'list_video_models', {})
+  expect(listed).toMatchObject({ status: 'listed', models: [{ id,
+    ...kind === 'image' ? { sizes: ['16:9'] } : { durations: [10] } }] })
+  expect(pricingReads).toBe(2)
+  // The platform-default lookup separately checks the current account's authorization.
+  expect(modelReads).toBe(3)
+  expect(f.posts).toEqual([])
+})
+
+it.each(['image', 'video'] as const)('stops a persistently inconsistent %s listing without exposing stale controls or generating', async (kind) => {
+  const f = await fixture(false)
+  let pricingReads = 0, modelReads = 0
+  const id = kind === 'image' ? 'image-a' : video
+  const endpoint = kind === 'image' ? 'image-generation' : 'openai-video'
+  f.setDirectoryReply((path) => {
+    if (path === '/harness/api/pricing') {
+      pricingReads += 1
+      return Response.json({ success: true, data: [{ model_name: id, supported_endpoint_types: [endpoint],
+        model_config_version: 'a'.repeat(64), parameters: kind === 'image'
+          ? { size: { enum: ['1:1'] } } : videoPricing([5]).parameters }] })
+    }
+    if (path === '/harness/v1/models') {
+      modelReads += 1
+      return Response.json({ data: [{ id, supported_endpoint_types: [endpoint], model_config_version: 'b'.repeat(64) }] })
+    }
+    return undefined
+  })
+  await f.human('读取当前可用的创作模型与规格')
+  const listed = await f.call(kind === 'image' ? 'list_image_models' : 'list_video_models', {})
+  expect(listed).toMatchObject({ status: 'failed', code: 'MODEL_CONFIG_CHANGED' })
+  expect(listed).not.toHaveProperty('models')
+  expect(pricingReads).toBe(2)
+  expect(modelReads).toBe(2)
+  expect(f.posts).toEqual([])
+})
 
 it('projects the sole square specification as already selected without asking for an invented ratio', async () => {
   const f = await fixture(true, true)
@@ -175,7 +244,9 @@ it('keeps model-only saved choices visible, then corrects the unsubmitted reques
   await f.human('生成一分钟视频')
   const videoList = await f.call('list_video_models', {})
   expect(videoList).toMatchObject({ status: 'listed', default_model_id: video, default_configured: true,
-    default_available: true, default_source: 'personal', selected_parameters: {}, default_error_code: 'SPECIFICATION_REQUIRED' })
+    default_available: true, default_source: 'personal',
+    selected_parameters: { quality: 'standard', resolution: '1080p', ratio: '16:9' } })
+  expect(videoList.default_error_code).toBeUndefined()
   const imageList = await f.call('list_image_models', {})
   expect(imageList).toMatchObject({ status: 'listed', default_model_id: 'image-a', default_available: true,
     default_source: 'personal', selected_parameters: {}, default_error_code: 'SPECIFICATION_REQUIRED' })
@@ -202,9 +273,33 @@ it.each(['用H3生成15秒视频，768P', '用mt-MiniMax-H3生成15秒视频，7
     const f = await fixture()
     await f.human(text)
     expect(await f.call('list_video_models', {})).toMatchObject({ status: 'listed', default_model_id: 'MiniMax-H3',
-      default_available: true, default_source: 'human', selected_parameters: { resolution: '768P', seconds: 15 } })
+      default_available: true, default_source: 'human', selected_parameters: { resolution: '768P' } })
     expect(f.posts).toEqual([])
   })
+
+it.each([false, true])('lists a timed project against its full native tier even when the saved five-second option is withdrawn: %s',
+  async (withdrawn) => {
+    const f = await fixture(true, false, { seconds: 5, quality: 'standard', resolution: '1080p', ratio: '16:9' },
+      withdrawn ? [10] : undefined)
+    await f.human('生成30秒自然风景视频')
+    const listed = await f.call('list_video_models', {})
+    expect(listed).toMatchObject({ default_model_id: video, default_available: true, default_source: 'personal',
+      selected_parameters: { quality: 'standard', resolution: '1080p', ratio: '16:9' } })
+    expect(listed.default_error_code).toBeUndefined()
+    expect(listed.selected_parameters).not.toHaveProperty('seconds')
+    expect(listed.models).toEqual(expect.arrayContaining([expect.objectContaining({ id: video, durations: withdrawn ? [10] : [5, 10] })]))
+    expect(f.posts).toEqual([])
+  })
+
+it('lists a saved five-second default for a new single clip without a requested final duration', async () => {
+  const f = await fixture(true, false, { seconds: 5, quality: 'standard', resolution: '1080p', ratio: '16:9' })
+  await f.human('生成自然风景视频')
+  const listed = await f.call('list_video_models', {})
+  expect(listed).toMatchObject({ default_model_id: video, default_available: true, default_source: 'personal',
+    selected_parameters: { seconds: 5, quality: 'standard', resolution: '1080p', ratio: '16:9' } })
+  expect(listed.default_error_code).toBeUndefined()
+  expect(f.posts).toEqual([])
+})
 
 it('retains a removed saved model identity while marking it unavailable', async () => {
   const f = await fixture()

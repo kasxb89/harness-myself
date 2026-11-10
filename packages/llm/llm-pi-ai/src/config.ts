@@ -13,6 +13,7 @@
  * @module dsh-llm-pi-ai/config
  */
 import type { Volatile } from '@deepseek-ai/cordis'
+import { brandString, type Branded } from '@deepseek-ai/dsh-brand'
 
 import type { CacheRetention, ChatTemplateKwargValue, ModelThinkingLevel, Provider, ThinkingBudgets, Transport } from '@earendil-works/pi-ai'
 import z from '@deepseek-ai/schemastery'
@@ -40,6 +41,7 @@ import type {
   PiAiModelOverride,
   PiAiModelProfile,
   PiAiManagedModelLimits,
+  PiAiModelLimitOverride,
   PiAiReasoningEfforts,
   RouteCatalog,
 } from './catalog.ts'
@@ -87,6 +89,7 @@ export type {
   PiAiModelOverride,
   PiAiModelProfile,
   PiAiManagedModelLimits,
+  PiAiModelLimitOverride,
   PiAiReasoningEfforts,
   PiAiThinkingFormat,
 } from './catalog.ts'
@@ -122,6 +125,8 @@ export interface PiAiProviderProfile {
   modelOverrides?: Record<string, PiAiModelOverride>
   /** Active account/backend scope; synchronized limits from other scopes remain inactive. */
   managedLimitsScope?: string
+  /** Explicit account-bound user capacities; unknown or temporarily removed model ids retain their choices. */
+  modelLimitOverrides?: Record<string, PiAiModelLimitOverride>
   /**
    * pi-ai wire-compatibility switches defaulting every model on this route
    * whose protocol declares them; each model's own `compat` overrides per
@@ -225,6 +230,10 @@ export interface ResolvedPiAiProviderProfile
   managedMaxTokens: ReadonlyMap<string, number>
   /** Active account-bound gateway text execution declarations. */
   textCapabilities: RouteCatalog['textCapabilities']
+  /** Settings metadata sharing the same effective capacities used for requests. */
+  limits: RouteCatalog['limits']
+  /** Original version/capacity metadata captured with this immutable profile. */
+  modelConfigurations: RouteCatalog['modelConfigurations']
 }
 
 /** Plugin configuration: the provider routes this instance owns. */
@@ -311,6 +320,7 @@ const reasoningEfforts = z.dict(
 /** The fields a `models` entry and a `modelOverrides` value share; only the id's home differs. */
 const managedModelLimits: z<PiAiManagedModelLimits> = z.object({
   scope: z.string().min(1).max(512).required(),
+  modelConfigVersion: z.transform(z.string().pattern(/^[a-f0-9]{64}$/u), brandString<Branded<'ModelConfigVersion'>>),
   authoritative: z.union([z.boolean()]),
   contextWindow: z.number().step(1).min(1).max(MAX_CAPACITY_TOKENS),
   maxTokens: z.number().step(1).min(1).max(MAX_CAPACITY_TOKENS),
@@ -364,12 +374,19 @@ const modelProfile: z<PiAiModelProfile> = z.object({
 /** A {@link modelProfile} whose id lives in the `modelOverrides` dict key. */
 const modelOverride: z<PiAiModelOverride> = z.object(modelFields)
 
+const modelLimitOverride: z<PiAiModelLimitOverride> = z.object({
+  scope: z.string().min(1).max(512).required(),
+  contextWindow: z.number().step(1).min(1).max(MAX_CAPACITY_TOKENS),
+  maxTokens: z.number().step(1).min(1).max(MAX_CAPACITY_TOKENS),
+})
+
 const profile = z.object({
   apiKeyEnv: z.string().role('credential-ref'),
   displayName: z.string(),
   api: z.union(supportedProtocols()),
   baseURL: z.string(),
   managedLimitsScope: z.string().min(1).max(512),
+  modelLimitOverrides: z.dict(modelLimitOverride),
   models: z.array(modelProfile),
   modelOverrides: z.dict(modelOverride),
   compat: compatProfile,
@@ -513,6 +530,7 @@ export function resolveProfiles(
         ...source.modelOverrides === undefined ? {} : { modelOverrides: source.modelOverrides },
         ...source.compat === undefined ? {} : { compat: source.compat },
         ...source.managedLimitsScope === undefined ? {} : { managedLimitsScope: source.managedLimitsScope },
+        ...source.modelLimitOverrides === undefined ? {} : { modelLimitOverrides: source.modelLimitOverrides },
         defaultInput,
         defaultContextWindow: source.defaultContextWindow ?? DEFAULT_CONTEXT_WINDOW,
         defaultMaxTokens: source.defaultMaxTokens ?? DEFAULT_MAX_TOKENS,
@@ -546,6 +564,8 @@ export function resolveProfiles(
       configuredMaxTokens: catalog?.configuredMaxTokens ?? new Map(),
       managedMaxTokens: catalog?.managedMaxTokens ?? new Map(),
       textCapabilities: catalog?.textCapabilities ?? new Map(),
+      limits: catalog?.limits ?? new Map(),
+      modelConfigurations: catalog?.modelConfigurations ?? new Map(),
       modelErrors: catalog?.modelErrors ?? new Map(),
       ...piProvider === undefined ? {} : { piProvider },
       ...catalogError === undefined ? {} : { catalogError },

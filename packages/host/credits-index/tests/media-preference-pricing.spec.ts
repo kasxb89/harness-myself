@@ -12,6 +12,64 @@ const video = (params: object = { resolution: '720P', seconds: 5, ratio: '16:9',
 const raw = (rows: readonly unknown[], kind: 'image' | 'video' = 'image') =>
   [{ model_name: kind === 'image' ? 'image-a' : 'video-b', kind, retail_price_rows: rows }]
 
+describe('explicit zero-price media references', () => {
+  it.each(['image', 'video'] as const)('retains exact free %s rows and their per-row proof', (kind) => {
+    const rows = kind === 'image'
+      ? [image(undefined, '0'), image({ size: '16:9', resolution: '2k', count: 1 }, '0')]
+      : [video(undefined, '0'), video({ resolution: '1080P', seconds: 10, ratio: '16:9', count: 1 }, '0')]
+    const marked = rows.map(row => ({ ...row, currency: 'CNY', is_free: true }))
+    const projected = mediaPreferencePrices(raw(marked, kind), preferenceModels, 1250)
+    expect(projected.get(kind === 'image' ? 'image-a' : 'video-b')).toMatchObject({
+      status: 'available', coverage: 'complete', unit: kind === 'image' ? 'points/image' : 'points/second',
+      rows: [{ points: '0', is_free: true }, { points: '0', is_free: true }],
+    })
+  })
+
+  it.each(['image', 'video'] as const)('keeps free and paid %s specifications in the same public table', (kind) => {
+    const free = { ...(kind === 'image' ? image(undefined, '0') : video(undefined, '0')), currency: 'CNY', is_free: true }
+    const paid = kind === 'image' ? image({ size: '16:9', resolution: '2k', count: 1 }, '0.25')
+      : video({ resolution: '1080P', seconds: 10, ratio: '16:9', count: 1 }, '0.25')
+    const projected = mediaPreferencePrices(raw([free, paid], kind), preferenceModels, 1250)
+    expect(projected.get(kind === 'image' ? 'image-a' : 'video-b')).toMatchObject({
+      status: 'available', coverage: 'complete', rows: [{ points: '0', is_free: true }, { points: '312.5' }],
+    })
+  })
+
+  it.each(['image', 'video'] as const)('rejects a contradictory free marker on a positive %s price', (kind) => {
+    const contradictory = { ...(kind === 'image' ? image() : video()), currency: 'CNY', is_free: true }
+    expect(mediaPreferencePrices(raw([contradictory], kind), preferenceModels, 1250)
+      .get(kind === 'image' ? 'image-a' : 'video-b'))
+      .toMatchObject({ status: 'unavailable', coverage: 'none', rows: [] })
+  })
+
+  it.each(['0', '0.00'])('accepts bounded declared zero %s without requiring redundant currency metadata', (amount) => {
+    expect(mediaPreferencePrices(raw([{ ...image(undefined, amount), is_free: true }]), preferenceModels, 1250)
+      .get('image-a')?.rows).toEqual([{ parameters: { size: '1:1', resolution: '1k', count: 1 },
+      points: '0', input: 'unspecified', is_free: true }])
+  })
+
+  it.each([
+    { retail_cny: '0' }, { retail_cny: '0', is_free: false }, { retail_cny: '0', is_free: 'true' },
+    { retail_cny: '0', is_free: null }, { retail_cny: 0, is_free: true },
+    { retail_cny: '00', is_free: true }, { retail_cny: '0e0', is_free: true },
+    { retail_cny: '0.' + '0'.repeat(25), is_free: true },
+    { retail_cny: '0', is_free: true, currency: 'USD' },
+    { retail_cny: '0', is_free: true, unit: 'CNY / second' },
+    { retail_cny: '0', is_free: true, params: { size: '1:1', resolution: '2k', count: 1 } },
+  ])('does not infer free use from incomplete or invalid declaration %j', (changed) => {
+    expect(mediaPreferencePrices(raw([{ ...image(), ...changed }]), preferenceModels, 1250).get('image-a'))
+      .toMatchObject({ status: 'unavailable', coverage: 'none', rows: [] })
+  })
+
+  it('retains explicit nonfree positive prices and does not bypass an invalid point conversion', () => {
+    const positive = mediaPreferencePrices(raw([{ ...image(), is_free: false }]), preferenceModels, 1250).get('image-a')
+    expect(positive?.rows[0]).toMatchObject({ points: '248.9' })
+    expect(positive?.rows[0]).not.toHaveProperty('is_free')
+    expect(mediaPreferencePrices(raw([{ ...image(undefined, '0'), is_free: true }]), preferenceModels, 0).get('image-a'))
+      .toMatchObject({ status: 'unavailable', coverage: 'none', rows: [] })
+  })
+})
+
 it('converts actual public image/video decimals with the configured rate and maps declared aliases to exact specifications', () => {
   const models = catalogFromPricing(fixture.data, null)
   const projected = mediaPreferencePrices(fixture.data, models, 1250)

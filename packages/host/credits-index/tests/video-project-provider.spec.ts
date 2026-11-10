@@ -9,6 +9,8 @@ import notSentContract from './fixtures/h3-not-sent-contract.json' with { type: 
 import apiContract from './fixtures/h3-unsent-api-contract.json' with { type: 'json' }
 import terminalContract from './fixtures/h3-terminal-api-contract.json' with { type: 'json' }
 import mediaContract from './fixtures/media-submission-api-contract-v3.json' with { type: 'json' }
+import { readModelConfigVersion } from '../src/model-config-version.ts'
+import { MediaModelConfigRejection } from '../src/media-model-config-result.ts'
 
 interface RecordedRequest {
   path: string
@@ -94,6 +96,103 @@ async function rejection(operation: Promise<unknown>): Promise<Error> {
 }
 
 describe('account-bound video relay requests', () => {
+  const versionA = readModelConfigVersion({ model_config_version: 'a'.repeat(64) })!
+  const versionB = readModelConfigVersion({ model_config_version: 'b'.repeat(64) })!
+
+  it('reads a persisted raw task before looking up a retired model route', async () => {
+    const f = await fixture((_request, response) => { json(response, { status: 'SUCCESS' }) })
+    const route = vi.fn(async () => { throw new Error('The original model is no longer advertised') })
+    expect(await f.relay.check('original-raw-task', route, signal(), 'retired-video')).toEqual({ status: 'succeeded' })
+    expect(route).not.toHaveBeenCalled()
+    expect(f.calls.map(call => [call.method, call.path])).toEqual([['GET', '/v1/tasks/original-raw-task']])
+  })
+
+  it('resolves a legacy route only after a definite canonical 404 and still queries the original raw ID', async () => {
+    const f = await fixture((_request, response, recorded) => {
+      response.statusCode = recorded.path.startsWith('/v1/tasks/') ? 404 : 200
+      json(response, { status: 'SUCCESS' })
+    })
+    const route = vi.fn(async () => '/v1/video/generations')
+    expect(await f.relay.check('original-raw-task', route, signal(), 'retired-video')).toEqual({ status: 'succeeded' })
+    expect(route).toHaveBeenCalledOnce()
+    expect(f.calls.map(call => [call.method, call.path])).toEqual([
+      ['GET', '/v1/tasks/original-raw-task'], ['GET', '/v1/video/generations/original-raw-task'],
+    ])
+  })
+
+  it('does not repeat the same canonical GET when a lazy legacy resolver returns the canonical route', async () => {
+    const f = await fixture((_request, response) => { response.statusCode = 404; json(response, { error: 'not found' }) })
+    const route = vi.fn(async () => '/v1/tasks')
+    await expect(f.relay.check('original-raw-task', route, signal(), 'retired-video')).rejects.toMatchObject({ code: 'VIDEO_READ_REJECTED' })
+    expect(route).toHaveBeenCalledOnce()
+    expect(f.calls.map(call => [call.method, call.path])).toEqual([['GET', '/v1/tasks/original-raw-task']])
+  })
+
+  it.each([401, 403, 429, 502])('does not query a live model directory or replay POST after canonical HTTP%s', async (status) => {
+    const f = await fixture((_request, response) => { response.statusCode = status; json(response, { error: 'unavailable' }) })
+    const route = vi.fn(async () => { throw new Error('Do not consult the live catalog') })
+    await expect(f.relay.check('original-raw-task', route, signal(), 'retired-video'))
+      .rejects.toMatchObject({ code: status === 429 || status >= 500 ? 'VIDEO_READ_RETRYABLE' : 'VIDEO_READ_REJECTED' })
+    expect(route).not.toHaveBeenCalled()
+    expect(f.calls.map(call => [call.method, call.path])).toEqual([['GET', '/v1/tasks/original-raw-task']])
+  })
+
+  it('does not fall back to the catalog after an original canonical transport failure', async () => {
+    const f = await fixture((_request, response) => { response.destroy() })
+    const route = vi.fn(async () => '/v1/videos')
+    await expect(f.relay.check('original-raw-task', route, signal(), 'retired-video')).rejects.toMatchObject({ code: 'VIDEO_READ_UNAVAILABLE' })
+    expect(route).not.toHaveBeenCalled()
+    expect(f.calls.map(call => [call.method, call.path])).toEqual([['GET', '/v1/tasks/original-raw-task']])
+  })
+
+  it.each([undefined, versionA, versionB])('keeps accepted native task identity when its configuration echo is %s', async (echo) => {
+    const versions: (string | string[] | undefined)[] = []
+    const f = await fixture((request, response) => {
+      versions.push(request.headers['x-yunshu-model-config-version'])
+      if (request.method === 'POST') {
+        if (echo !== undefined) response.setHeader('X-Yunshu-Model-Config-Version', echo)
+        json(response, { id: 'original-task', status: 'queued' })
+      } else json(response, { task_status: 'SUCCESS' })
+    }, { accountId: '7' })
+    const body = { model: 'example-video', seconds: 10, prompt: 'Original request' }
+    expect(await f.relay.submit(body, '/v1/videos', signal(), versionA)).toEqual({
+      taskId: 'original-task', ...echo === undefined ? {} : { acknowledgedModelConfigVersion: echo },
+      ...echo === versionA ? {} : { submissionState: 'unknown' },
+    })
+    expect(await f.relay.check('original-task', '/v1/videos', signal())).toEqual({ status: 'succeeded' })
+    expect(f.calls.map(call => [call.method, call.path])).toEqual([['POST', '/v1/videos'], ['GET', '/v1/videos/original-task']])
+    expect(f.calls[0]?.body).toBe(JSON.stringify(body))
+    expect(versions).toEqual([versionA, undefined])
+  })
+
+  it.each(['model_config_version', 'model_config_revision', 'modelConfigVersion', 'modelConfigSnapshot'])
+  ('does not trust reserved native body metadata %s as header authority', async (field) => {
+    const f = await fixture((_request, response) => { json(response, { id: 'must-not-submit' }) }, { accountId: '7' })
+    await expect(f.relay.submit({ model: 'example-video', seconds: 10, [field]: versionA }, '/v1/videos', signal()))
+      .rejects.toMatchObject({ code: 'VIDEO_REQUEST_INVALID' })
+    expect(f.calls).toHaveLength(0)
+  })
+
+  it.each(['model_config_changed', 'model_parameters_invalid'])('consumes bound %s refusal without polling or repeating POST', async (code) => {
+    const f = await fixture((_request, response) => {
+      response.statusCode = 400
+      response.setHeader('X-Yunshu-Model-Config-Result', 'rejected-before-billing')
+      response.setHeader('X-Oneapi-Request-Id', 'original-request-id')
+      // This diagnostic header is not acceptance when the complete refusal proves zero admission.
+      response.setHeader('X-New-Api-Task-Id', 'task_1234567890abcdefghijklmnopqrstuv')
+      json(response, { error: { code, type: 'invalid_request_error', message: 'private diagnostic' },
+        accepted: false, charged: false, reserved: false, retryable: false, resubmittable: false, submission_state: 'not_submitted' })
+    }, { accountId: '7' })
+    const error = await rejection(f.relay.submit({ model: 'example-video', seconds: 10 }, '/v1/videos', signal(), versionA))
+    expect(error).toBeInstanceOf(MediaModelConfigRejection)
+    expect(error).toMatchObject({ code: code.toUpperCase(), accepted: false, charged: false, reserved: false,
+      retryable: false, resubmittable: false, submissionState: 'not_submitted', requestId: 'original-request-id',
+      binding: { url: f.origin + '/v1/videos', method: 'POST', model: 'example-video', accountId: '7', modelConfigVersion: versionA } })
+    expect(f.calls.map(call => call.method)).toEqual(['POST'])
+    expect(error).not.toHaveProperty('taskId')
+    expect(error.message).not.toContain('private diagnostic')
+  })
+
   it.each([408, 429, 500, 502, 503, 401, 403])('classifies original-task GET HTTP %s without submitting or exposing its body', async (status) => {
     const f = await fixture((_request, response) => {
       response.statusCode = status

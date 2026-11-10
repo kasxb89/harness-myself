@@ -1,0 +1,398 @@
+{
+  "schemaVersion": 1,
+  "note": "Synthetic closed V4 reader-compatibility fixture. No live request, credentials, or billing operation is represented by this test.",
+  "header": {
+    "type": "session",
+    "version": 4,
+    "id": "text-reselection-persistence-fixture",
+    "createdAt": 1,
+    "isSeeded": false,
+    "delegationDepth": 0
+  },
+  "legacy": [
+    {
+      "type": "session/end-seed",
+      "data": {},
+      "seq": 0,
+      "time": 1
+    },
+    {
+      "type": "turn/start",
+      "data": {
+        "turn": 1
+      },
+      "seq": 1,
+      "time": 2
+    },
+    {
+      "type": "step/start",
+      "data": {
+        "turn": 1,
+        "step": 1
+      },
+      "seq": 2,
+      "time": 3
+    },
+    {
+      "type": "user/message",
+      "surfaceOp": "append",
+      "data": {
+        "id": "fixture-user",
+        "role": "user",
+        "source": {
+          "kind": "user"
+        },
+        "content": [
+          {
+            "type": "text",
+            "text": "A synthetic restoration-only request."
+          }
+        ]
+      },
+      "seq": 3,
+      "time": 4
+    },
+    {
+      "type": "request/header",
+      "data": {
+        "reason": "initial",
+        "header": {
+          "config": {
+            "provider": "mock",
+            "model": "fixture-text-model"
+          }
+        }
+      },
+      "seq": 4,
+      "time": 5
+    },
+    {
+      "type": "assistant/attempt",
+      "data": {
+        "turn": 1,
+        "step": 1,
+        "stream": [
+          {
+            "type": "chunk",
+            "time": 5,
+            "chunk": {
+              "type": "finish",
+              "reason": {
+                "kind": "error",
+                "failure": {
+                  "message": "Selected text model is temporarily unavailable.",
+                  "code": "MODEL_ROUTE_UNAVAILABLE",
+                  "status": 503,
+                  "requestId": "fixture-zero-send-request"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "seq": 5,
+      "time": 6
+    },
+    {
+      "type": "llm/retry",
+      "data": {
+        "turn": 1,
+        "step": 1,
+        "retryId": "fixture-retry",
+        "retry": 1,
+        "provider": "mock",
+        "policyKey": "fixture-policy",
+        "mode": "normal",
+        "maxRetries": 1,
+        "delayMs": 0,
+        "failure": {
+          "message": "Selected text model is temporarily unavailable.",
+          "code": "MODEL_ROUTE_UNAVAILABLE",
+          "status": 503,
+          "requestId": "fixture-zero-send-request"
+        }
+      },
+      "seq": 6,
+      "time": 7
+    },
+    {
+      "type": "assistant/message",
+      "surfaceOp": "append",
+      "data": {
+        "turn": 1,
+        "step": 1,
+        "stream": [
+          {
+            "type": "chunk",
+            "time": 5,
+            "chunk": {
+              "type": "finish",
+              "reason": {
+                "kind": "error",
+                "failure": {
+                  "message": "Selected text model is temporarily unavailable.",
+                  "code": "MODEL_ROUTE_UNAVAILABLE",
+                  "status": 503,
+                  "requestId": "fixture-zero-send-request"
+                }
+              }
+            }
+          }
+        ],
+        "message": {
+          "id": "fixture-assistant",
+          "role": "assistant",
+          "source": {
+            "kind": "model",
+            "provider": "mock",
+            "model": "fixture-text-model"
+          },
+          "content": []
+        }
+      },
+      "seq": 7,
+      "time": 8
+    },
+    {
+      "type": "step/end",
+      "data": {
+        "turn": 1,
+        "step": 1
+      },
+      "seq": 8,
+      "time": 9
+    },
+    {
+      "type": "turn/end",
+      "data": {
+        "turn": 1,
+        "reason": {
+          "kind": "error",
+          "error": {
+            "message": "Selected text model is temporarily unavailable.",
+            "code": "MODEL_ROUTE_UNAVAILABLE",
+            "status": 503,
+            "requestId": "fixture-zero-send-request"
+          }
+        }
+      },
+      "seq": 9,
+      "time": 10
+    }
+  ],
+  "zeroSend": [
+    {
+      "type": "session/end-seed",
+      "data": {},
+      "seq": 0,
+      "time": 1
+    },
+    {
+      "type": "turn/start",
+      "data": {
+        "turn": 1
+      },
+      "seq": 1,
+      "time": 2
+    },
+    {
+      "type": "step/start",
+      "data": {
+        "turn": 1,
+        "step": 1
+      },
+      "seq": 2,
+      "time": 3
+    },
+    {
+      "type": "user/message",
+      "surfaceOp": "append",
+      "data": {
+        "id": "fixture-user",
+        "role": "user",
+        "source": {
+          "kind": "user"
+        },
+        "content": [
+          {
+            "type": "text",
+            "text": "A synthetic restoration-only request."
+          }
+        ]
+      },
+      "seq": 3,
+      "time": 4
+    },
+    {
+      "type": "request/header",
+      "data": {
+        "reason": "initial",
+        "header": {
+          "config": {
+            "provider": "mock",
+            "model": "fixture-text-model"
+          }
+        }
+      },
+      "seq": 4,
+      "time": 5
+    },
+    {
+      "type": "assistant/attempt",
+      "data": {
+        "turn": 1,
+        "step": 1,
+        "stream": [
+          {
+            "type": "chunk",
+            "time": 5,
+            "chunk": {
+              "type": "finish",
+              "reason": {
+                "kind": "error",
+                "failure": {
+                  "message": "Selected text model is temporarily unavailable.",
+                  "code": "MODEL_ROUTE_UNAVAILABLE",
+                  "status": 503,
+                  "requestId": "fixture-zero-send-request",
+                  "textReselection": {
+                    "schemaVersion": 1,
+                    "model": "fixture-text-model",
+                    "requestId": "fixture-zero-send-request",
+                    "origin": "https://gateway.example.invalid",
+                    "managedScope": "fixture-account-backend",
+                    "submissionState": "not_submitted",
+                    "upstreamSubmitted": false,
+                    "billingReserved": false,
+                    "reason": "model_unavailable"
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "seq": 5,
+      "time": 6
+    },
+    {
+      "type": "llm/retry",
+      "data": {
+        "turn": 1,
+        "step": 1,
+        "retryId": "fixture-retry",
+        "retry": 1,
+        "provider": "mock",
+        "policyKey": "fixture-policy",
+        "mode": "normal",
+        "maxRetries": 1,
+        "delayMs": 0,
+        "failure": {
+          "message": "Selected text model is temporarily unavailable.",
+          "code": "MODEL_ROUTE_UNAVAILABLE",
+          "status": 503,
+          "requestId": "fixture-zero-send-request",
+          "textReselection": {
+            "schemaVersion": 1,
+            "model": "fixture-text-model",
+            "requestId": "fixture-zero-send-request",
+            "origin": "https://gateway.example.invalid",
+            "managedScope": "fixture-account-backend",
+            "submissionState": "not_submitted",
+            "upstreamSubmitted": false,
+            "billingReserved": false,
+            "reason": "model_unavailable"
+          }
+        }
+      },
+      "seq": 6,
+      "time": 7
+    },
+    {
+      "type": "assistant/message",
+      "surfaceOp": "append",
+      "data": {
+        "turn": 1,
+        "step": 1,
+        "stream": [
+          {
+            "type": "chunk",
+            "time": 5,
+            "chunk": {
+              "type": "finish",
+              "reason": {
+                "kind": "error",
+                "failure": {
+                  "message": "Selected text model is temporarily unavailable.",
+                  "code": "MODEL_ROUTE_UNAVAILABLE",
+                  "status": 503,
+                  "requestId": "fixture-zero-send-request",
+                  "textReselection": {
+                    "schemaVersion": 1,
+                    "model": "fixture-text-model",
+                    "requestId": "fixture-zero-send-request",
+                    "origin": "https://gateway.example.invalid",
+                    "managedScope": "fixture-account-backend",
+                    "submissionState": "not_submitted",
+                    "upstreamSubmitted": false,
+                    "billingReserved": false,
+                    "reason": "model_unavailable"
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "message": {
+          "id": "fixture-assistant",
+          "role": "assistant",
+          "source": {
+            "kind": "model",
+            "provider": "mock",
+            "model": "fixture-text-model"
+          },
+          "content": []
+        }
+      },
+      "seq": 7,
+      "time": 8
+    },
+    {
+      "type": "step/end",
+      "data": {
+        "turn": 1,
+        "step": 1
+      },
+      "seq": 8,
+      "time": 9
+    },
+    {
+      "type": "turn/end",
+      "data": {
+        "turn": 1,
+        "reason": {
+          "kind": "error",
+          "error": {
+            "message": "Selected text model is temporarily unavailable.",
+            "code": "MODEL_ROUTE_UNAVAILABLE",
+            "status": 503,
+            "requestId": "fixture-zero-send-request",
+            "textReselection": {
+              "schemaVersion": 1,
+              "model": "fixture-text-model",
+              "requestId": "fixture-zero-send-request",
+              "origin": "https://gateway.example.invalid",
+              "managedScope": "fixture-account-backend",
+              "submissionState": "not_submitted",
+              "upstreamSubmitted": false,
+              "billingReserved": false,
+              "reason": "model_unavailable"
+            }
+          }
+        }
+      },
+      "seq": 9,
+      "time": 10
+    }
+  ]
+}

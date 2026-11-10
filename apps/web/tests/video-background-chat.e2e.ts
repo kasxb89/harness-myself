@@ -1,6 +1,6 @@
 /** Native video jobs leave the chat available for independent queued and steering requests. */
 import { spawn } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
@@ -14,12 +14,14 @@ import {
   latestPersistedSessionPaths, normalizeSessionSnapshots, normalizedSystemPrompts, normalizedToolSchemas,
   redactSessionSnapshotIds, scrubSessionSnapshot, tokenizeSessionFixtureCwd,
 } from '@deepseek-ai/dsh-session-snapshot'
-import { expect, it } from 'vitest'
+import { expect, it, onTestFailed, onTestFinished } from 'vitest'
 import { fixtureUserPrompts, normalizeWebSessionVolatiles, webSnapshotMode } from './scaffold.ts'
 import { REPO_ROOT } from './support.ts'
 
-const SNAPSHOT_DIR = fileURLToPath(new URL('../../../snapshots/web/video-background-chat', import.meta.url))
-const FIXTURE = join(SNAPSHOT_DIR, 'session.v4.jsonl')
+const scenarios = [
+  { name: 'video-background-chat', savedFiveSecondPreference: false },
+  { name: 'video-background-chat-longest-clips', savedFiveSecondPreference: true },
+] as const
 const PROMPTS = [
   '来个10s视频', '来一个10秒视频', '只读第一条任务的进度一次，不要生成视频', '生成3个10秒视频',
   '只读第一条任务的进度一次，不要生成视频。读取后结束本轮等待。', '再来个10s视频',
@@ -122,28 +124,80 @@ function toolResults(raw: string): { name: string; callId: string; text: string 
   })
 }
 
-function firstProject(body: unknown): JsonRow {
+function modelToolResult(body: unknown, callId: string): JsonRow {
   const messages = record(body).messages as { content: { type: string; tool_use_id?: string; content?: unknown }[] }[]
   const result = messages.flatMap(message => Array.isArray(message.content) ? message.content : [])
-    .find(block => block.type === 'tool_result' && block.tool_use_id === 'background-start-1')
-  if (result === undefined) throw new Error('Expected the retained first background project result')
+    .find(block => block.type === 'tool_result' && block.tool_use_id === callId)
+  if (result === undefined) throw new Error(`Expected the retained result of ${callId}`)
   const text = typeof result.content === 'string' ? result.content
     : (result.content as { type: string; text?: string }[]).filter(block => block.type === 'text').map(block => block.text).join('')
   return record(JSON.parse(text))
 }
 
+function firstProject(body: unknown): JsonRow { return modelToolResult(body, 'background-start-1') }
+
+function preparedThreeWorks(body: unknown): string[] {
+  const prepared = modelToolResult(body, 'background-prepare-3')
+  expect(prepared.status).toBe('prepared')
+  const works = (prepared.works as unknown[]).map(record)
+  expect(works.map(work => work.index)).toEqual([1, 2, 3])
+  expect(works.map(work => work.state)).toEqual(['prepared', 'prepared', 'prepared'])
+  const ids = works.map(work => String(work.work_id))
+  expect(prepared.pending_work_ids).toEqual(ids)
+  expect(new Set(ids).size).toBe(3)
+  return ids
+}
+
+interface PreferenceIdentity {
+  readonly scope: string
+  readonly revision: string
+  readonly image: unknown
+  readonly video: unknown
+}
+
+function normalizePreferenceIdentity(raw: string, identity: PreferenceIdentity): string {
+  const events = rows(raw)
+  for (const event of events) {
+    if (event.type !== 'media/request-selection') continue
+    const selection = record(event.data)
+    if (selection.state !== 'selected' || selection.scope !== identity.scope || selection.revision !== identity.revision) {
+      throw new Error('Unexpected saved preference identity')
+    }
+    expect(selection.image).toEqual(identity.image)
+    expect(selection.video).toEqual(identity.video)
+    selection.scope = '{{mediaPreferenceScope}}'
+    selection.revision = '{{mediaPreferenceRevision}}'
+  }
+  return events.map(event => JSON.stringify(event)).join('\n') + '\n'
+}
+
 function normalizeOutput(raw: string): string {
   const identities = new Map<string, string>()
+  const requests = new Map<string, string>(), works = new Map<string, string>()
   for (const result of toolResults(raw)) {
-    if (!['generate_video_project', 'resume_video_project'].includes(result.name)) continue
+    if (!['generate_video_project', 'resume_video_project', 'prepare_video_works'].includes(result.name)) continue
     const value = record(JSON.parse(result.text))
-    for (const [key, prefix] of [['project_id', 'vp_'], ['plan_id', 'cp_']] as const) {
+    if (value.work_request_id !== undefined) {
+      const requestId = value.work_request_id
+      if (typeof requestId !== 'string' || !/^vr_[a-f0-9]{64}$/u.test(requestId)) throw new Error('Invalid work_request_id')
+      if (!requests.has(requestId)) requests.set(requestId, `{{videoWorkRequest:${String(requests.size + 1)}}}`)
+      const capturedWorks = [value.work_id, ...(value.pending_work_ids as unknown[] ?? []),
+        ...(value.works as unknown[] ?? []).map(work => record(work).work_id)].filter(work => work !== undefined)
+      for (const work of capturedWorks) {
+        if (typeof work !== 'string' || !/^vw_[a-f0-9]{64}_[1-9][0-9]*$/u.test(work)
+          || !work.startsWith(`vw_${requestId.slice(3)}_`)) throw new Error('Invalid work_id binding')
+        if (!works.has(work)) works.set(work, `{{videoWork:${String(works.size + 1)}}}`)
+      }
+    }
+    for (const [key, prefix] of [['project_id', 'vp_'], ['plan_id', 'cp_'], ['operation_id', 'op_']] as const) {
       const id = value[key]
-      if (key === 'plan_id' && id === undefined) continue
-      if (typeof id !== 'string' || !id.startsWith(prefix) || !/^[a-z]{2}_[a-f0-9-]{36}$/u.test(id)) throw new Error(`Invalid ${key}`)
+      if (id === undefined && (key !== 'project_id' || result.name === 'prepare_video_works')) continue
+      if (typeof id !== 'string' || !id.startsWith(prefix)
+        || !/^[a-z]{2}_[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/u.test(id)) throw new Error(`Invalid ${key}`)
       if (!identities.has(id)) identities.set(id, `{{id:${String(1001 + identities.size)}}}`)
     }
   }
+  for (const [id, token] of [...requests, ...works]) raw = raw.split(id).join(token)
   for (const [id, token] of identities) raw = raw.split(id).join(token)
   const events = rows(raw)
   const reads = new Set(events.filter(row => row.type === 'tool/call' && record(row.data).name === 'job_output')
@@ -161,17 +215,21 @@ function normalizeOutput(raw: string): string {
   return events.map(row => JSON.stringify(row)).join('\n') + '\n'
 }
 
-it.skipIf(!runtimeAvailable)('records independent native video requests while original jobs remain running (requires prepared DSH_VIDEO_TEST_RUNTIME_ROOT)', async (test) => {
+it.skipIf(!runtimeAvailable).each(scenarios)('$name records independent native video requests while original jobs remain running (requires prepared DSH_VIDEO_TEST_RUNTIME_ROOT)', async ({ name, savedFiveSecondPreference }) => {
+  const SNAPSHOT_DIR = fileURLToPath(new URL(`../../../snapshots/web/${name}`, import.meta.url))
+  const FIXTURE = join(SNAPSHOT_DIR, 'session.v4.jsonl')
   if (runtimeRoot === undefined) throw new Error('Provide the existing prepared FFmpeg runtime')
   const mode = webSnapshotMode()
   if (mode === 'record') throw new Error('This authored loopback scenario is captured only in refresh mode')
   const firstRecording = !existsSync(FIXTURE)
   if (firstRecording && mode !== 'refresh') throw new Error('Create this authored fixture with DSH_SNAPSHOT=refresh')
-  const script = firstRecording ? undefined : deriveReplayScript(parseSessionLog(await readFile(FIXTURE, 'utf8')))
+  // A current-writer owner records the authored public workflow in refresh;
+  // replay always derives model responses from that actual persisted Session.
+  const script = mode === 'refresh' ? undefined : deriveReplayScript(parseSessionLog(await readFile(FIXTURE, 'utf8')))
   if (!firstRecording) expect(fixtureUserPrompts(await readFile(FIXTURE, 'utf8'))).toEqual(PROMPTS)
   const root = await mkdtemp(join(tmpdir(), 'dsh-video-background-chat-'))
   const cleanup: { host?: () => Promise<void>; fixture?: () => Promise<void>; release?: () => void } = {}
-  test.onTestFinished(async () => {
+  onTestFinished(async () => {
     cleanup.release?.()
     try { await cleanup.host?.() }
     finally {
@@ -218,6 +276,7 @@ it.skipIf(!runtimeAvailable)('records independent native video requests while or
         expect(request.headers.authorization).toBe('Bearer sk-background-relay')
         const value = record(body)
         expect(value).toMatchObject({ duration: 10, seconds: 10 })
+        if (savedFiveSecondPreference) expect(value).toMatchObject({ resolution: '768P', ratio: '9:16', aspect_ratio: '9:16' })
         expect(posts.some(post => post.prompt === value.prompt), 'no original operation may be submitted twice').toBe(false)
         posts.push(value)
         if (posts.length > 7) throw new Error('Unexpected new paid work')
@@ -236,11 +295,20 @@ it.skipIf(!runtimeAvailable)('records independent native video requests while or
         const generate = (id: number) => ({ id: `background-start-${String(id)}`, name: 'generate_video_project',
           args: { model: 'MiniMax-H3', prompt: `Independent synthetic background frame ${String(id)}` } })
         if (script === undefined) {
-          if (attempt === 1 || attempt === 2 || attempt === 6 || attempt === 8) tools = [generate(attempt === 8 ? 7 : attempt)]
-          if (attempt === 3 || attempt === 5) tools = [{ id: `background-read-${String(attempt)}`, name: 'job_output',
-            args: { job_id: firstProject(body).job_id, wait: true, timeout_ms: 600000 } }]
-          if (attempt === 4) tools = [generate(3), generate(4), generate(5)]
-          if (attempt === 7) tools = [{ id: 'background-resume', name: 'resume_video_project', args: { project_id: firstProject(body).project_id } }]
+          if (attempt === 4) {
+            tools = [{ id: 'background-prepare-3', name: 'prepare_video_works', args: { count: 3 } }]
+          } else if (attempt === 5) {
+            tools = preparedThreeWorks(body).map((workId, index) => {
+              const tool = generate(index + 3)
+              return { ...tool, args: { ...tool.args, work_id: workId } }
+            })
+          } else {
+            const step = attempt > 5 ? attempt - 1 : attempt
+            if (step === 1 || step === 2 || step === 6 || step === 8) tools = [generate(step === 8 ? 7 : step)]
+            if (step === 3 || step === 5) tools = [{ id: `background-read-${String(step)}`, name: 'job_output',
+              args: { job_id: firstProject(body).job_id, wait: true, timeout_ms: 600000 } }]
+            if (step === 7) tools = [{ id: 'background-resume', name: 'resume_video_project', args: { project_id: firstProject(body).project_id } }]
+          }
         } else {
           const entry = script[attempt - 1]
           if (entry?.kind !== 'chunks') throw new Error('Expected a recorded native tool call')
@@ -250,11 +318,17 @@ it.skipIf(!runtimeAvailable)('records independent native video requests while or
             if (typeof args.project_id === 'string' && /^\{\{id:[1-9]\d*\}\}$/u.test(args.project_id)) {
               args.project_id = firstProject(body).project_id
             }
+            if (typeof args.work_id === 'string') {
+              expect(args.work_id).toMatch(/^\{\{videoWork:[1-9]\d*\}\}$/u)
+              const index = ['background-start-3', 'background-start-4', 'background-start-5'].indexOf(chunk.block.id)
+              if (index < 0) throw new Error('Unexpected prepared video work call')
+              args.work_id = preparedThreeWorks(body)[index]
+            }
             return [{ id: chunk.block.id, name: chunk.block.name, args }]
           })
         }
-        if (tools.length === 0 || attempt > 8) throw new Error(`Unexpected model continuation ${String(attempt)}`)
-        if (attempt === 3 || attempt === 5) {
+        if (tools.length === 0 || attempt > 9) throw new Error(`Unexpected model continuation ${String(attempt)}`)
+        if (attempt === 3 || attempt === 6) {
           heldRead = attempt
           await new Promise<void>((resolve) => { cleanup.release = resolve })
           delete cleanup.release
@@ -307,15 +381,58 @@ it.skipIf(!runtimeAvailable)('records independent native video requests while or
     if (!response.ok) throw new Error(`${path}: HTTP ${response.status}: ${await response.text()}`)
     return record(await response.json())
   }
-  expect(await post('/credits/api/session/challenge', { phone: '+8613800000000', idempotencyKey: 'background-challenge' })).toMatchObject({ ok: true })
-  expect(await post('/credits/api/session/verify', { challengeId: 'background-challenge', code: '123456', idempotencyKey: 'background-login' }))
-    .toMatchObject({ ok: true })
-  const { sessionId } = await host.remote<{ sessionId: string }>('session/create', { request: { cwd: workspace } })
   let lastRaw = ''
-  test.onTestFailed(() => {
+  onTestFailed(() => {
     console.error(JSON.stringify({ posts, queries, errors, modelRequests: modelRequests.length, host: host.diagnostics(),
       events: lastRaw === '' ? [] : rows(lastRaw).filter(row => ['assistant/message', 'assistant/attempt', 'tool/result', 'turn/end'].includes(String(row.type))) }, null, 2))
   })
+  expect(await post('/credits/api/session/challenge', { phone: '+8613800000000', idempotencyKey: 'background-challenge' })).toMatchObject({ ok: true })
+  expect(await post('/credits/api/session/verify', { challengeId: 'background-challenge', code: '123456', idempotencyKey: 'background-login' }))
+    .toMatchObject({ ok: true })
+  const preferencesUrl = new URL('/credits/api/media/preferences', host.webUrl)
+  const currentResponse = await fetch(preferencesUrl, { headers: { cookie: host.cookie }, signal: AbortSignal.timeout(10_000) })
+  expect(currentResponse.ok).toBe(true)
+  const current = record(await currentResponse.json())
+  expect(current.ok, JSON.stringify(current)).toBe(true)
+  let choices = record(current.payload)
+  const scope = createHash('sha256').update(JSON.stringify([`${origin}/harness`, '7'])).digest('hex')
+  expect(choices.scope).toBe(scope)
+  if (savedFiveSecondPreference) {
+    const savedResponse = await fetch(preferencesUrl, {
+      method: 'PUT', headers: { 'content-type': 'application/json', cookie: host.cookie },
+      body: JSON.stringify({ schema_version: 1, expected_account_owner: current.accountOwner,
+        expected_revision: choices.revision, image: null,
+        video: { model: 'MiniMax-H3', parameters: { seconds: 5, resolution: '768P', ratio: '9:16' } } }),
+      signal: AbortSignal.timeout(10_000),
+    })
+    expect(savedResponse.ok).toBe(true)
+    const saved = record(await savedResponse.json())
+    expect(saved.ok, JSON.stringify(saved)).toBe(true)
+    choices = record(saved.payload)
+    expect(choices.video).toEqual({ model: 'MiniMax-H3', parameters: { ratio: '9:16', resolution: '768P', seconds: 5 } })
+  } else {
+    expect(choices.video).toBeNull()
+  }
+  expect(choices.image).toBeNull()
+  expect(choices.scope).toBe(scope)
+  if (typeof choices.revision !== 'string' || !/^[a-f0-9]{64}$/u.test(choices.revision)) throw new Error('Expected current preference revision')
+  const preferenceIdentity: PreferenceIdentity = { scope, revision: choices.revision, image: choices.image, video: choices.video }
+  const readbackResponse = await fetch(preferencesUrl, { headers: { cookie: host.cookie }, signal: AbortSignal.timeout(10_000) })
+  expect(readbackResponse.ok).toBe(true)
+  const readback = record(await readbackResponse.json())
+  expect(readback.ok).toBe(true)
+  expect(readback.payload).toEqual(choices)
+  if (savedFiveSecondPreference) {
+    const frozen = { type: 'media/request-selection', data: { schema_version: 1, state: 'selected',
+      requestId: 'negative-control', scope, revision: choices.revision, image: choices.image, video: choices.video } }
+    for (const field of ['scope', 'revision'] as const) {
+      const wrongHash = preferenceIdentity[field] === '0'.repeat(64) ? '1'.repeat(64) : '0'.repeat(64)
+      const invalid = { ...frozen, data: { ...frozen.data, [field]: wrongHash } }
+      expect(() => normalizePreferenceIdentity(JSON.stringify(invalid) + '\n', preferenceIdentity))
+        .toThrow('Unexpected saved preference identity')
+    }
+  }
+  const { sessionId } = await host.remote<{ sessionId: string }>('session/create', { request: { cwd: workspace } })
   const prompt = async (index: number, delivery: 'queue' | 'steer' = 'queue') => {
     await host.remote('session/prompt', { request: { requestId: `background-human-${String(index + 1)}`, sessionId, mode: delivery,
       clientTimeZone: 'Asia/Shanghai', content: [{ type: 'text', text: PROMPTS[index] }] } })
@@ -345,7 +462,7 @@ it.skipIf(!runtimeAvailable)('records independent native video requests while or
   await expect.poll(() => posts.length, { timeout: 10000 }).toBe(5)
   expect(queries.filter(path => path.endsWith('-1'))).toHaveLength(1)
   await prompt(4)
-  await expect.poll(() => heldRead, { timeout: 10000 }).toBe(5)
+  await expect.poll(() => heldRead, { timeout: 10000 }).toBe(6)
   await prompt(5, 'steer')
   cleanup.release?.()
   await expect.poll(turns, { timeout: 30000 }).toBe(5)
@@ -389,6 +506,7 @@ it.skipIf(!runtimeAvailable)('records independent native video requests while or
   const output = toolResults(raw)
   expect(output.map(result => result.name)).toEqual([
     'generate_video_project', 'generate_video_project', 'job_output',
+    'prepare_video_works',
     'generate_video_project', 'generate_video_project', 'generate_video_project',
     'job_output', 'generate_video_project', 'resume_video_project', 'generate_video_project',
   ])
@@ -400,7 +518,7 @@ it.skipIf(!runtimeAvailable)('records independent native video requests while or
   expect(starts).toHaveLength(7)
   expect(new Set(starts.map(value => value.project_id)).size).toBe(7)
   for (const value of starts) expect(value).toMatchObject({ status: 'background', plan_seconds: [10] })
-  expect(modelRequests).toHaveLength(8)
+  expect(modelRequests).toHaveLength(9)
   expect(errors).toEqual([])
   await host.stop()
   const projectOrder = new Map(starts.map((value, index) => [`artifacts/videos/${String(value.project_id)}`, `artifacts/videos/project-${String(index + 1)}`]))
@@ -413,11 +531,19 @@ it.skipIf(!runtimeAvailable)('records independent native video requests while or
     return { path: entry.path.slice(0, -'/.empty'.length), kind: 'empty-directory' as const }
   })
   expect(actualWorkspace).toEqual(expectedWorkspace)
-  const normalizedRaw = normalizeOutput(normalizeWebSessionVolatiles(raw))
+  const frozenChoices = rows(raw).filter(event => event.type === 'media/request-selection')
+  expect(frozenChoices).toHaveLength(savedFiveSecondPreference ? PROMPTS.length : 0)
+  const humanRequestIds = PROMPTS.map((_prompt, index) => `background-human-${String(index + 1)}`)
+  const humans = rows(raw).filter(event => event.type === 'user/message' && record(record(event.data).source).kind === 'user')
+  expect(humans.map(event => record(record(event.data).source).rpcId))
+    .toEqual(humanRequestIds)
+  if (savedFiveSecondPreference) expect(frozenChoices.map(event => record(event.data).requestId)).toEqual(humanRequestIds)
+  const captured = normalizePreferenceIdentity(normalizeWebSessionVolatiles(raw), preferenceIdentity)
+  const normalizedRaw = normalizeOutput(captured)
   const canonicalStarts = Object.fromEntries(toolResults(normalizedRaw)
     .filter(result => result.name === 'generate_video_project')
     .map(result => [result.callId, record(JSON.parse(result.text))]))
-  const capturedResults = join(REPO_ROOT, '.artifacts/web-session-headers/video-background-chat')
+  const capturedResults = join(REPO_ROOT, '.artifacts/web-session-headers', name)
   await mkdir(capturedResults, { recursive: true })
   await writeFile(join(capturedResults, 'tool-results.expected.json'), JSON.stringify(canonicalStarts, null, 2) + '\n')
   const context = { sessionIds: [sessionId], cwd: workspace }
@@ -430,16 +556,17 @@ it.skipIf(!runtimeAvailable)('records independent native video requests while or
   const schemas = normalizedToolSchemas(normalizedRaw, context)
   const promptSidecar = formatSystemPromptSnapshot(prompts[0]!, prompts.slice(1))
   const schemaSidecar = formatToolSchemasSnapshot(schemas[0]!, schemas.slice(1))
-  if (firstRecording) {
+  if (mode === 'refresh') {
+    await writeFile(join(SNAPSHOT_DIR, 'tool-results.expected.json'), JSON.stringify(canonicalStarts, null, 2) + '\n')
     await writeFile(FIXTURE, redactSessionSnapshotIds([scrubSessionSnapshot(tokenizeSessionFixtureCwd(normalizedRaw))])[0]!)
   }
-  if (firstRecording || mode === 'refresh') {
+  if (mode === 'refresh') {
     await writeFile(join(SNAPSHOT_DIR, 'system-prompt.expected.md'), promptSidecar)
     await writeFile(join(SNAPSHOT_DIR, 'tool-schemas.expected.json'), schemaSidecar)
   }
   const expected = await readFile(FIXTURE, 'utf8')
-  // The immutable recording remains the replay input. This exact output
-  // golden records the later remaining-work contract without changing it.
+  // The recorded current-writer Session remains the replay input, and its
+  // exact result golden also checks the remaining-work relationship.
   const expectedStarts = record(JSON.parse(await readFile(join(SNAPSHOT_DIR, 'tool-results.expected.json'), 'utf8')))
   expect(Object.keys(expectedStarts)).toEqual(Array.from({ length: 7 }, (_value, index) => `background-start-${index + 1}`))
   expect(Object.values(expectedStarts).map(value => record(value).remaining_works)).toEqual([0, 0, 2, 1, 0, 0, 0])

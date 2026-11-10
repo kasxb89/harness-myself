@@ -244,7 +244,9 @@
 .signInFieldLabel { color: var(--dsw-alias-label-primary); font-size: 13px; line-height: 20px; }
 .phoneControl { display: flex; align-items: center; min-width: 0; height: 44px; border: 0.5px solid var(--dsw-alias-border-l4); border-radius: var(--dsw-radius-md); background: var(--dsw-alias-bg-layer-1); }
 .phoneControl:focus-within { border-color: var(--dsw-alias-state-business-primary); }
-.phonePrefix { flex: none; padding-inline: 12px; border-inline-end: 1px solid var(--dsw-alias-border-l2); color: var(--dsw-alias-label-secondary); font-size: 13px; line-height: 22px; font-variant-numeric: tabular-nums; }
+.phoneCountry { flex: none; width: 136px; max-width: 45%; height: 42px; padding-inline: 8px; border: 0; border-inline-end: 1px solid var(--dsw-alias-border-l2); border-radius: var(--dsw-radius-md) 0 0 var(--dsw-radius-md); background: transparent; color: var(--dsw-alias-label-primary); font-size: 12px; font-variant-numeric: tabular-nums; }
+.phoneCountry option { background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); }
+.phoneHint { margin: 0; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 20px; }
 .phoneInput { flex: 1; min-width: 0; height: 42px; padding-inline: 12px; border: 0; background: transparent; }
 .signInCodeRow { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .signInInput { flex: 1; min-width: 0; height: 44px; padding-inline: 12px; }

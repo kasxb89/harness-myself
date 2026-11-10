@@ -224,7 +224,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-api-session-controller`
 
 - `inject`: `agentDefaultModel` · `agents` · `attachments` · `fileUploads` · `fs` · `llm` · `sessions` · `sessionProjections` · `sessionQuery` · `typert` · `workspaceRegistry`
-- `source`: [`packages/api/session-controller/src/index.ts:87`](../packages/api/session-controller/src/index.ts)
+- `source`: [`packages/api/session-controller/src/index.ts:88`](../packages/api/session-controller/src/index.ts)
 
 ```ts config-catalog
 /** Session Controller deployment policy. */
@@ -914,7 +914,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-credits-index`
 
 - `inject`: `webServer` · `tools`
-- `source`: [`packages/host/credits-index/src/index.ts:133`](../packages/host/credits-index/src/index.ts)
+- `source`: [`packages/host/credits-index/src/index.ts:136`](../packages/host/credits-index/src/index.ts)
 
 ```ts config-catalog
 /** Plugin config: platform origin, display rate, and where the session file lives. */
@@ -1991,8 +1991,8 @@ export interface Config extends ProtocolConfig {
 ## `@deepseek-ai/dsh-llm-pi-ai`
 
 - `inject`: `llm`
-- `refs`: `Api` (`@earendil-works/pi-ai`) · `CacheRetention` (`@earendil-works/pi-ai`) · [`LlmTextCapabilities`](../packages/llm/llm/src/index.ts) · `Model` (`@earendil-works/pi-ai`) · `ModelThinkingLevel` (`@earendil-works/pi-ai`) · `OpenAICompletionsCompat` (`@earendil-works/pi-ai`) · [`RetryPolicyConfig`](../packages/llm/llm/src/index.ts) · `ThinkingBudgets` (`@earendil-works/pi-ai`) · `Transport` (`@earendil-works/pi-ai`) · `Volatile` (`@deepseek-ai/cordis`)
-- `source`: [`packages/llm/llm-pi-ai/src/config.ts:231`](../packages/llm/llm-pi-ai/src/config.ts)
+- `refs`: `Api` (`@earendil-works/pi-ai`) · [`Branded`](../packages/util/brand/src/index.ts) · `CacheRetention` (`@earendil-works/pi-ai`) · [`LlmTextCapabilities`](../packages/llm/llm/src/index.ts) · `Model` (`@earendil-works/pi-ai`) · `ModelThinkingLevel` (`@earendil-works/pi-ai`) · `OpenAICompletionsCompat` (`@earendil-works/pi-ai`) · [`RetryPolicyConfig`](../packages/llm/llm/src/index.ts) · `ThinkingBudgets` (`@earendil-works/pi-ai`) · `Transport` (`@earendil-works/pi-ai`) · `Volatile` (`@deepseek-ai/cordis`)
+- `source`: [`packages/llm/llm-pi-ai/src/config.ts:240`](../packages/llm/llm-pi-ai/src/config.ts)
 
 ```ts config-catalog
 /** Plugin configuration: the provider routes this instance owns. */
@@ -2036,6 +2036,8 @@ export interface PiAiProviderProfile {
   modelOverrides?: Record<string, PiAiModelOverride>
   /** Active account/backend scope; synchronized limits from other scopes remain inactive. */
   managedLimitsScope?: string
+  /** Explicit account-bound user capacities; unknown or temporarily removed model ids retain their choices. */
+  modelLimitOverrides?: Record<string, PiAiModelLimitOverride>
   /**
    * pi-ai wire-compatibility switches defaulting every model on this route
    * whose protocol declares them; each model's own `compat` overrides per
@@ -2153,6 +2155,16 @@ export interface PiAiModelProfile {
  */
 export type PiAiModelOverride = Omit<PiAiModelProfile, 'id'>
 
+/** Explicit user capacities for one model on one managed account/backend. */
+export interface PiAiModelLimitOverride {
+  /** Exact managed account/backend scope that owns this preference. */
+  scope: string
+  /** Preferred context window in whole tokens, bounded by the current platform maximum. */
+  contextWindow?: number
+  /** Preferred output ceiling in whole tokens, bounded by the current platform maximum. */
+  maxTokens?: number
+}
+
 /**
  * pi-ai wire-compatibility switches, set on the route (its models' default) or
  * per model (winning over the route, field by field).
@@ -2252,6 +2264,8 @@ export type PiAiModality = Model<Api>['input'][number]
 export interface PiAiManagedModelLimits {
   /** Opaque account/backend scope; only an exact match with the provider's active scope applies. */
   scope: string
+  /** Published model configuration version; its original capacity pair is indivisible. */
+  modelConfigVersion?: Branded<'ModelConfigVersion'>
   /** Use declared capacities ahead of model-level manual overrides; request budgets remain independently bounded. */
   authoritative?: boolean
   /** Account-authorized maximum combined request and response context. */
