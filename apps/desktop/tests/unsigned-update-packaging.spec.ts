@@ -23,6 +23,7 @@ it.each([
   const root = await mkdtemp(join(tmpdir(), 'yunshu-unsigned-update-'))
   try {
     const config = createElectronBuilderConfig({ DSH_DESKTOP_APP_ID: 'com.example.yunshu', DSH_DESKTOP_UNSIGNED: '1' }, platform, arch)
+    expect(config.asar).toBe(true)
     const metadata = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')) as {
       name: string
       version: string

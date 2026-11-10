@@ -67,6 +67,8 @@ export function createElectronBuilderConfig(
   if (resolvedPlatform === 'linux' && !privateLinux) {
     throw new Error('desktop package: Linux requires the dedicated private-package entry')
   }
+  const projectHomepage = privateLinux ? env.DSH_DESKTOP_PROJECT_URL?.trim() : undefined
+  if (privateLinux && !projectHomepage) throw new Error('desktop package: private Kylin packages require DSH_DESKTOP_PROJECT_URL')
   const packagesMacOS = targetPlatform === 'darwin' || (targetPlatform === undefined && hostPlatform === 'darwin')
   const packagesWindows = resolvedPlatform === 'win32'
   const unsignedUpdate = unsigned ? resolveUnsignedDesktopUpdateConfig(env, resolvedPlatform, resolvedArch) : undefined
@@ -115,7 +117,8 @@ export function createElectronBuilderConfig(
     protocols: [{ name: '云枢', schemes: ['dsh'] }],
     extraMetadata: {
       dshDesktopAppId: appId,
-      ...(privateLinux ? { dshDesktopPrivateDistribution: 'kylin-v10sp1-2503-x64' } : {}),
+      ...(privateLinux ? { dshDesktopPrivateDistribution: 'kylin-v10sp1-2503-x64', homepage: projectHomepage,
+        desktopName: 'yunshu-kylin.desktop' } : {}),
       ...(unsigned ? { dshDesktopUnsigned: true } : {}),
       ...(updateConfigOrigin === undefined ? {} : { dshDesktopUpdateConfigOrigin: updateConfigOrigin }),
       ...(policy === undefined ? {} : { dshMandatoryUpdatePolicy: policy }),
@@ -126,7 +129,7 @@ export function createElectronBuilderConfig(
     // Unsigned builds carry their own suffix so a shared file can never pass for a release artifact.
     artifactName: `yunshu-\${version}-\${os}-\${arch}${privateLinux ? '-kylin-v10sp1-2503' : unsigned ? '-unsigned' : ''}.\${ext}`,
     directories: { output: unsigned ? buildPaths.unsignedArtifacts : buildPaths.artifacts },
-    asar: true,
+    asar: !privateLinux,
     electronDist: buildPaths.electron,
     electronFuses: { runAsNode: true },
     beforeBuild: async () => {
@@ -254,7 +257,8 @@ export function createElectronBuilderConfig(
       icon: fileURLToPath(new URL('../resources/icon.png', import.meta.url)),
       category: 'Development',
       target: privateLinux ? ['deb', 'tar.gz'] : ['AppImage'],
-      ...(privateLinux ? { executableName: 'yunshu', maintainer: '云枢', vendor: '云枢' } : {}),
+      ...(privateLinux ? { executableName: 'yunshu', maintainer: '云枢', vendor: '云枢',
+        syncDesktopName: true, desktop: { entry: { Name: '云枢' } } } : {}),
     },
     ...(privateLinux ? { deb: { packageName: 'yunshu-kylin', depends: ['libc6 (>= 2.31)', 'libgtk-3-0', 'libnss3', 'libatk-bridge2.0-0',
       'libxss1', 'libasound2', 'libgbm1', 'libdrm2', 'libxshmfence1'], compression: 'gz', fpm: ['--deb-compression-level=1'] } } : {}),

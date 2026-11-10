@@ -10,6 +10,7 @@ import { readDesktopBuildCommit, resolveDesktopBuildCommit } from './desktop-bui
 import { verifyDesktopRuntime, readDesktopRuntime } from '../src/runtime-tree.ts'
 import { smokePreparedRuntime } from './smoke-prepared-runtime.ts'
 import { prepareKylinCompatibilityRuntime } from './prepare-kylin-compat.ts'
+import { createElectronBuilderConfig } from './electron-builder-config.mjs'
 
 const appRoot = resolve(import.meta.dirname, '..')
 const repository = resolve(appRoot, '../..')
@@ -38,8 +39,9 @@ async function main(): Promise<void> {
   const env: NodeJS.ProcessEnv = Object.fromEntries(Object.entries(process.env)
     .filter(([key]) => !/KEY|SECRET|TOKEN|PASSWORD|OSS|COS|APPLE|CSC_/iu.test(key)))
   Object.assign(env, { DSH_DESKTOP_TARGET_PLATFORM: 'linux', DSH_DESKTOP_TARGET_ARCH: 'x64',
-    DSH_DESKTOP_LINUX_PRIVATE: '1', DSH_DESKTOP_APP_ID: 'com.deepseek.harness',
+    DSH_DESKTOP_LINUX_PRIVATE: '1', DSH_DESKTOP_UNSIGNED: '0', DSH_DESKTOP_APP_ID: 'com.deepseek.harness',
     DSH_DESKTOP_BUILD_VERSION: version, DSH_TELEMETRY_DISABLED: '1', ELECTRON_BUILDER_COMPRESSION_LEVEL: '1' })
+  createElectronBuilderConfig(env)
   const source = resolveDesktopBuildCommit(process.env) ?? readDesktopBuildCommit(repository)
   Object.assign(env, {
     DSH_DESKTOP_BUILD_COMMIT: source.commit, DSH_DESKTOP_BUILD_DIRTY: source.dirty ? '1' : '0',
@@ -60,9 +62,10 @@ async function main(): Promise<void> {
     '--publish', 'never'], env, appRoot)
   const resources = join(paths.artifacts, 'linux-unpacked', 'resources')
   const executable = join(resources, 'runtime', 'kylin-compat', 'bin', 'node')
-  const descriptor = await verifyDesktopRuntime(paths.dsh, readDesktopRuntime(paths.dsh).release.version,
+  const packagedRuntime = join(resources, 'app', 'dsh')
+  const descriptor = await verifyDesktopRuntime(packagedRuntime, readDesktopRuntime(paths.dsh).release.version,
     { platform: 'linux', arch: 'x64' })
-  await smokePreparedRuntime(join(resources, 'app.asar', 'dsh'), executable, join(resources, 'runtime'), descriptor)
+  await smokePreparedRuntime(packagedRuntime, executable, join(resources, 'runtime'), descriptor)
   writeFileSync(join(paths.artifacts, 'kylin-private-release.json'), JSON.stringify({
     schemaVersion: 1, target: 'linux-x64', distribution: 'kylin-v10sp1-2503-x64', version,
     ...source, automaticUpdates: false, sharedFeedsModified: false,

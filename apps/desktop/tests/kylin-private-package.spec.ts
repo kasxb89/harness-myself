@@ -9,16 +9,19 @@ import { privateKylinHostExecutable } from '../src/kylin-runtime.ts'
 
 const privateEnv = { DSH_DESKTOP_APP_ID: 'com.example.yunshu', DSH_DESKTOP_LINUX_PRIVATE: '1',
   DSH_DESKTOP_TARGET_PLATFORM: 'linux', DSH_DESKTOP_TARGET_ARCH: 'x64',
-  DSH_DESKTOP_BUILD_VERSION: '0.2.1-alpha.2.20261110.1' }
+  DSH_DESKTOP_BUILD_VERSION: '0.2.1-alpha.2.20261110.1', DSH_DESKTOP_PROJECT_URL: 'https://example.test/kylin/install' }
 
 it('isolates Kylin output and omits all ordinary update and policy metadata', () => {
   const config = createElectronBuilderConfig(privateEnv, 'linux', 'x64')
   expect(config.publish).toBeNull()
+  expect(config.asar).toBe(false)
   expect(config.extraMetadata).toMatchObject({ dshDesktopPrivateDistribution: 'kylin-v10sp1-2503-x64' })
   expect(config.extraMetadata).not.toHaveProperty('dshDesktopUpdateConfigOrigin')
   expect(config.extraMetadata).not.toHaveProperty('dshMandatoryUpdatePolicy')
   expect(config.linux.target).toEqual(['deb', 'tar.gz'])
   expect(config.deb?.packageName).toBe('yunshu-kylin')
+  expect(config.extraMetadata.homepage).toBe(privateEnv.DSH_DESKTOP_PROJECT_URL)
+  expect(config.linux.desktop?.entry.Name).toBe('云枢')
   expect(config.artifactName).toContain('-kylin-v10sp1-2503.')
   for (const target of ['mac-arm64', 'mac-x64', 'win-x64'] as const) {
     expect(config.directories.output).not.toBe(desktopTargetBuildPaths(target).artifacts)
@@ -26,6 +29,8 @@ it('isolates Kylin output and omits all ordinary update and policy metadata', ()
 })
 
 it('requires the dedicated Linux mode and refuses mismatched platform or architecture', () => {
+  expect(() => createElectronBuilderConfig({ ...privateEnv, DSH_DESKTOP_PROJECT_URL: undefined }, 'linux', 'x64'))
+    .toThrow(/DSH_DESKTOP_PROJECT_URL/u)
   expect(() => createElectronBuilderConfig({ DSH_DESKTOP_APP_ID: 'com.example.yunshu' }, 'linux', 'x64'))
     .toThrow(/dedicated private/u)
   expect(() => createElectronBuilderConfig({ ...privateEnv, DSH_DESKTOP_TARGET_ARCH: 'arm64' }, 'linux', 'arm64'))

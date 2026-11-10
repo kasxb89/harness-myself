@@ -262,8 +262,11 @@ macOS arm64 命令要求 Apple Silicon。macOS x64 命令可以在 Intel macOS �
 客户专用银河麒麟 V10 SP1 2503 包以 Linux x64、glibc 2.31 为目标，在兼容的 Linux x64 构建环境中运行独立命令 `package:kylin:x64`，并提供经确认的完整构建版本。运行时和产物位于 `.desktop-build/targets/linux-x64/`，与普通发布目标隔离。
 
 ```sh
+DSH_DESKTOP_PROJECT_URL='<HTTPS project or installation guide URL>' \
 pnpm --dir apps/desktop run package:kylin:x64 --build-version 0.2.1-alpha.2.20261110.1
 ```
+
+构建前须设置 `DSH_DESKTOP_PROJECT_URL`，供 Debian 元数据记录项目或安装说明地址。专用 Linux 包使用 `resources/app/dsh` 目录载荷，并按运行时文件清单校验；所选 Electron 在中文安装前缀下无法解析 ASAR 路径。普通 macOS 与 Windows 仍启用原有 ASAR 打包。
 
 命令准备并验证完整运行时、包内 Host 与 Office 载荷后，记录带麒麟后缀的 DEB 和 tar.gz，不执行上传。专用包不包含自动更新服务来源和共用 feed 元数据；只有准确匹配的已安装麒麟包才关闭后台共用更新轮询，手动检查更新会提示该目标不受支持。Windows 与 macOS 的更新发现、安装和上传保持原行为。分发使用独立且带版本的麒麟 OSS 目录，通过 DEB 手动安装，不写入普通更新清单。兼容 glibc 的 Linux 冒烟验证与客户实际麒麟桌面验收分别记录。
 
