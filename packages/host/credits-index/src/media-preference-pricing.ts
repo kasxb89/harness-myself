@@ -3,7 +3,7 @@ import { isPositiveRetailDecimal } from './price-comparisons.ts'
 import { resolveMediaSpecification } from './media-request-specification.ts'
 import { validateMediaPreference } from './media-preferences.ts'
 import type { ImageParams, MediaSpecification, ModelCapability, VideoParams } from './media.ts'
-import type { MediaPreferencePriceRow, MediaPreferencePricing } from './media-preferences-types.ts'
+import type { MediaPreferencePriceRow, MediaPreferencePricing } from './media-preference-pricing-types.ts'
 
 const fields = ['size', 'resolution', 'seconds', 'ratio', 'quality', 'mode'] as const
 const allowed = new Set([...fields, 'duration', 'aspect_ratio', 'count', 'n', 'audio', 'generate_audio', 'seed', 'watermark',

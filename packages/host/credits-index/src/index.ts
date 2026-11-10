@@ -43,7 +43,7 @@ import { MediaDefaultsCache, mediaDefaultSelection, requireMediaDefault, type Me
 import { MediaPreferencesStore, mediaPreferencesScope } from './media-preferences.ts'
 import { registerMediaRequestSelection, canonicalMediaModelId, canonicalMediaRequestParameters, mediaRequestModelChoiceOf, resolveMediaRequestSelection, needsMediaRequestSelectionCatalog, type MediaRequestSelectionContext } from './media-request-selection.ts'
 import { mediaPreferencePrices } from './media-preference-pricing.ts'
-import type { MediaPreferenceModel, MediaPreferencePricing } from './media-preferences-types.ts'
+import type { MediaPreferenceModel, MediaPreferencePricing } from './media-preference-pricing-types.ts'
 import { readAnnouncementBanner } from './announcement-banner.ts'
 import { parseClientModelConfigStatus, parseClientModelPresentationStatus } from './client-model-config.ts'
 import type { MediaModelConfigBinding } from './media-model-config-result.ts'
