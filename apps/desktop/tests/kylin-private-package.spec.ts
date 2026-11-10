@@ -1,4 +1,5 @@
 /** Private Kylin packages keep every ordinary release and update authority separate. */
+import { join } from 'node:path'
 import { expect, it } from 'vitest'
 import { createElectronBuilderConfig } from '../scripts/electron-builder-config.mjs'
 import { desktopTargetBuildPaths } from '../scripts/desktop-build-paths.mjs'
@@ -43,7 +44,7 @@ it('disables shared-feed polling only for the exact installed private Kylin mani
 it('selects the isolated Host without replacing ordinary platform executables', () => {
   const manifest = { dshDesktopPrivateDistribution: 'kylin-v10sp1-2503-x64' }
   expect(privateKylinHostExecutable('/opt/app/yunshu', '/opt/app/resources', manifest, 'linux', 'x64'))
-    .toBe('/opt/app/resources/runtime/kylin-compat/bin/node')
+    .toBe(join('/opt/app/resources', 'runtime', 'kylin-compat', 'bin', 'node'))
   for (const platform of ['darwin', 'win32'] as const) {
     expect(privateKylinHostExecutable('/ordinary/electron', '/ordinary/resources', manifest, platform, 'x64')).toBe('/ordinary/electron')
   }
