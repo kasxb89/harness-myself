@@ -59,7 +59,7 @@ async function saveForm(page: Page, label: string): Promise<void> {
   for (const width of [1280, 390]) {
     await page.setViewportSize({ width, height: 1000 })
     await page.screenshot({ path: join(evidence, `${label}-${String(width)}.png`), animations: 'disabled',
-      mask: [page.getByRole('textbox', { name: '验证码', exact: true }), page.getByRole('textbox', { name: '安全验证码或备用码', exact: true })] })
+      mask: [page.getByLabel('验证码', { exact: true }), page.getByRole('textbox', { name: '安全验证码或备用码', exact: true })] })
     await writeFile(join(evidence, `${label}-${String(width)}.aria.txt`), await page.getByRole('region', { name: '手机号登录', exact: true }).ariaSnapshot())
   }
   await page.setViewportSize({ width: 1280, height: 1000 })
@@ -252,7 +252,7 @@ it('records a real shipped-profile hello Session independently of private phone 
       expect(await form.getByText('验证码已发送', { exact: true }).count()).toBe(0)
       expect(phonePosts.filter(post => post.route.endsWith('/challenge'))).toHaveLength(1)
       await saveForm(page, 'accepted-US')
-      await form.getByRole('textbox', { name: '验证码', exact: true }).fill(finalGrant.code)
+      await form.getByLabel('验证码', { exact: true }).fill(finalGrant.code)
       await form.getByRole('button', { name: '登录', exact: true }).click()
       await expect.poll(async () => {
         const response = await fetch(new URL('/credits/api/session', host.webUrl), { headers: { cookie: host.cookie } })
@@ -337,7 +337,7 @@ it('records a real shipped-profile hello Session independently of private phone 
         textPosts, phonePosts, phoneResponses, promptResponses, promptSubmissions, submitReady, errors,
       }, null, 2) + '\n')
       if (!page.isClosed()) await page.screenshot({ path: join(evidence, 'failure.png'),
-        mask: [page.getByRole('textbox', { name: '验证码', exact: true }), page.getByRole('textbox', { name: '安全验证码或备用码', exact: true })] })
+        mask: [page.getByLabel('验证码', { exact: true }), page.getByRole('textbox', { name: '安全验证码或备用码', exact: true })] })
     }
     throw error
   }

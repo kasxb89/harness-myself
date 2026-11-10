@@ -398,7 +398,8 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected & 
                 <span className={css.signInFieldLabel}>{t('code')}</span>
                 <div className={css.signInCodeRow}>
                   <Input className={cx(css.signInInput)} aria-label={t('code')}
-                    value={code} inputMode="numeric" autoComplete="one-time-code" maxLength={overseas ? 64 : 6}
+                    value={code} type={overseas ? 'password' : 'text'} inputMode="numeric"
+                    autoComplete={overseas ? 'off' : 'one-time-code'} maxLength={overseas ? 64 : 6}
                     disabled={busy} placeholder={phoneText('codePlaceholder')}
                     onChange={(event) => {
                       setCode(overseas ? event.target.value : event.target.value.replace(/\D/g, '').slice(0, 6))
