@@ -1,7 +1,7 @@
 import { officePackageDirectories } from '../../../scripts/libreoffice-packages.mjs'
 import { X509Certificate } from 'node:crypto'
 import { readFileSync } from 'node:fs'
-import { readFile } from 'node:fs/promises'
+import { readFile, symlink } from 'node:fs/promises'
 import { join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFile } from 'node:child_process'
@@ -204,6 +204,8 @@ export function createElectronBuilderConfig(
     afterPack: async context => {
       const { verifyDesktopRuntime } = await import('../lib/types/runtime-tree.js')
       const resourcesDir = context.packager.getResourcesDir(context.appOutDir)
+      // Keep the Host CLI's sibling-runtime contract in the private directory payload.
+      if (privateLinux) await symlink('../runtime', join(resourcesDir, 'app', 'runtime'), 'dir')
       if (resolvedPlatform === 'darwin' && unsigned) await buildUnsignedMacSwap(resourcesDir, resolvedArch)
       if (resolvedPlatform === 'darwin' && update !== undefined) {
         await writeMacOSAppUpdateConfig(resourcesDir, resolveMacOSAppUpdateFeed(context.packager.config.publish),
