@@ -22,6 +22,8 @@ export interface MediaPreferences {
 export interface MediaPreferencePriceRow {
   readonly parameters: Readonly<Record<string, string | number | boolean>>
   readonly points: string
+  /** The public retail row explicitly declares an exact zero unit price; display evidence only. */
+  readonly is_free?: true
   readonly input: 'text' | 'reference' | 'unspecified'
 }
 

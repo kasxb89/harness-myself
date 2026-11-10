@@ -26,6 +26,77 @@ function readPrice(value: unknown) {
   return { reply: decoded.reply, price: mediaPreferencePrice(decoded.reply.catalog?.video[0]) }
 }
 
+function readDeclaredPrice(kind: 'image' | 'video', rows: readonly unknown[]) {
+  const id = `${kind}-declared-price`
+  const model = { ...video, id, kind, params: kind === 'image' ? { sizes: ['1:1', '16:9'], maxCount: 1 } : video.params,
+    pricing: { ...pricing, unit: kind === 'image' ? 'points/image' : 'points/second', rows } }
+  const raw = envelope(model)
+  const value: unknown = { ...raw, payload: { ...raw.payload,
+    image: kind === 'image' ? { model: id, parameters: {} } : null,
+    video: kind === 'video' ? { model: id, parameters: {} } : null,
+    catalog: { image: kind === 'image' ? [model] : [], video: kind === 'video' ? [model] : [] },
+    defaults: { image: { model: null, configured: false, available: false },
+      video: { model: null, configured: false, available: false } },
+  } }
+  const decoded = decodePreferenceReply(value, true)
+  if (!decoded.ok) throw new Error('Display-price metadata must retain the model and selected identity')
+  const selected = decoded.reply.catalog?.[kind][0]
+  return { model: selected, selection: decoded.reply.preferences[kind], price: mediaPreferencePrice(selected) }
+}
+
+describe('explicit zero-price estimates from the Host envelope', () => {
+  const rowParameters = (kind: 'image' | 'video') => kind === 'image'
+    ? [{ size: '1:1', count: 1 }, { size: '16:9', count: 1 }]
+    : [{ ...firstSpec, count: 1 }, { ...secondSpec, count: 1 }]
+
+  it.each(['image', 'video'] as const)('decodes, summarizes and formats an exact free %s price', (kind) => {
+    const rows = rowParameters(kind).map(parameters => ({ parameters, points: '0', is_free: true, input: 'unspecified' }))
+    const result = readDeclaredPrice(kind, rows)
+    expect(result.model?.id).toBe(`${kind}-declared-price`)
+    expect(result.selection?.model).toBe(`${kind}-declared-price`)
+    expect(result.price).toEqual({ kind: 'exact', points: { minimum: '0', maximum: '0' } })
+    expect(result.model?.pricing?.rows).toMatchObject([{ points: '0', is_free: true }, { points: '0', is_free: true }])
+    if (result.price.kind === 'unknown') throw new Error('Declared free price is unavailable')
+    expect(formatCreditUnitPrice(result.price.points.minimum, 'en-US')).toBe('0')
+  })
+
+  it.each(['image', 'video'] as const)('decodes a %s interval containing both proved-free and paid specifications', (kind) => {
+    const parameters = rowParameters(kind)
+    const result = readDeclaredPrice(kind, [
+      { parameters: parameters[0], points: '0', is_free: true, input: 'unspecified' },
+      { parameters: parameters[1], points: '137.5', input: 'unspecified' },
+    ])
+    expect(result.price).toEqual({ kind: 'range', points: { minimum: '0', maximum: '137.5' } })
+    if (result.price.kind === 'unknown') throw new Error('Mixed free/paid price is unavailable')
+    expect(formatCreditUnitPrice(result.price.points.minimum, 'en-US')).toBe('0')
+    expect(formatCreditUnitPrice(result.price.points.maximum, 'en-US')).toBe('137.5')
+  })
+
+  it.each(['image', 'video'] as const)('keeps the %s model but rejects a free marker contradicting positive points', (kind) => {
+    const result = readDeclaredPrice(kind, [{ parameters: rowParameters(kind)[0], points: '137.5',
+      is_free: true, input: 'unspecified' }])
+    expect(result.model?.id).toBe(`${kind}-declared-price`)
+    expect(result.selection?.model).toBe(`${kind}-declared-price`)
+    expect(result.price).toEqual({ kind: 'unknown' })
+  })
+
+  it.each([undefined, false, null, 'true', 1])('requires a true per-row marker for zero points, not %j', (marker) => {
+    const result = readDeclaredPrice('image', [{ parameters: { size: '1:1', count: 1 }, points: '0',
+      is_free: marker, input: 'unspecified' }])
+    expect(result.model?.id).toBe('image-declared-price')
+    expect(result.price).toEqual({ kind: 'unknown' })
+  })
+
+  it('does not let one proved-free row authorize a different unmarked zero or change positive-price rules', () => {
+    expect(creditUnitRange([{ points: '0', is_free: true }, { points: '0' }])).toBeUndefined()
+    expect(creditUnitRange([{ points: '1', is_free: true }])).toBeUndefined()
+    const nonfree = readDeclaredPrice('image', [{ parameters: { size: '1:1', count: 1 }, points: '137.5',
+      is_free: false, input: 'unspecified' }])
+    expect(nonfree.price).toEqual({ kind: 'exact', points: { minimum: '137.5', maximum: '137.5' } })
+    expect(nonfree.model?.pricing?.rows[0]).not.toHaveProperty('is_free')
+  })
+})
+
 describe('public chat media unit estimates', () => {
   it('uses Host point decimals without multiplying by conversion rate, duration or work count', () => {
     expect(mediaPreferencePrice(video)).toEqual({ kind: 'range', points: { minimum: '137.5', maximum: '387.500000000000000001' } })
