@@ -36,7 +36,7 @@ import { claimDesktopSingleInstance } from './single-instance.ts'
 import { DesktopUpdateCoordinator } from './update-coordinator.ts'
 import { UnsignedMacUpdater, usesUnsignedMacUpdates } from './unsigned-mac-updater.ts'
 import { acknowledgeUnsignedMacInstall, type UnsignedMacInstallReceipt } from './unsigned-mac-install.ts'
-import { DesktopUpdateSourceError, resolveDesktopUpdateConfigOrigin, resolveDesktopUpdateSource } from './update-source.ts'
+import { DesktopUpdateSourceError, isPrivateKylinPackage, resolveDesktopUpdateConfigOrigin, resolveDesktopUpdateSource } from './update-source.ts'
 import { DesktopCommandManager } from './command-management.ts'
 import { serveWebDocument, authenticateWebHost, forwardWebRequest } from './web-document.ts'
 import { DesktopFatalRecovery } from './fatal-recovery.ts'
@@ -667,6 +667,7 @@ async function main(): Promise<void> {
   let updateManifestFailure: DesktopUpdateSourceError | undefined
   try { updateManifest = JSON.parse(await readFile(join(app.getAppPath(), 'package.json'), 'utf8')) }
   catch (cause) { updateManifestFailure = new DesktopUpdateSourceError('source-invalid', { cause }) }
+  const privateKylinPackage = isPrivateKylinPackage(app.isPackaged, updateManifest, process.platform, process.arch)
   const unsignedMacUpdater = usesUnsignedMacUpdates(updateManifest, app.isPackaged, process.platform) ? new UnsignedMacUpdater() : undefined
   const updates = new DesktopUpdateCoordinator(
     publishUpdate,
@@ -723,6 +724,7 @@ async function main(): Promise<void> {
     (success, reason) => { void track('desktop_upgrade_download_result', { is_success: success, ...reason === undefined ? {} : { error_reason: reason } }) },
     async () => {
       if (updateManifestFailure !== undefined) throw updateManifestFailure
+      if (privateKylinPackage) throw new DesktopUpdateSourceError('source-unsupported-target')
       return resolveDesktopUpdateSource({ origin: resolveDesktopUpdateConfigOrigin(app.isPackaged, updateManifest, process.env),
         platform: process.platform, arch: process.arch, allowLoopbackHttp: !app.isPackaged })
     },
@@ -1015,6 +1017,7 @@ async function main(): Promise<void> {
   }
 
   const automaticCheck = (): void => {
+    if (privateKylinPackage) return
     if (!quitting) void mandatoryPolicy?.check('foreground-or-resume').catch((error: unknown) => { console.error(error) })
     if (!quitting) void updateSchedule.check().catch((error: unknown) => { console.error(error) })
   }

@@ -251,9 +251,19 @@ pnpm run package:desktop:mac:x64
 pnpm run package:desktop:win:x64
 ```
 
-The macOS arm64 command requires Apple Silicon. The macOS x64 command runs on Intel macOS or Apple Silicon with Rosetta. The Windows x64 command requires Windows x64. Linux is not a supported Desktop release target.
+The macOS arm64 command requires Apple Silicon. The macOS x64 command runs on Intel macOS or Apple Silicon with Rosetta. The Windows x64 command requires Windows x64. Linux is available only through the separate private Kylin package below, not the ordinary release targets.
 
 Each target owns its packed package inputs, prepared runtime, package set, dsh tree, pnpm preparation state, unpacked application, update metadata, and final artifacts under `apps/desktop/.desktop-build/targets/<target>/`. The Electron archive cache remains shared under `.desktop-build/downloads` because every archive name includes its version, platform, and architecture and is verified before extraction. A target build never consumes another target's mutable preparation state.
+
+### Private Kylin x64 package
+
+The customer-specific Kylin V10 SP1 2503 package targets Linux x64 with glibc 2.31. Run `package:kylin:x64` on a compatible Linux x64 build host with the confirmed complete build version. Its resources and artifacts live under `.desktop-build/targets/linux-x64/`, independently of ordinary release targets.
+
+```sh
+pnpm --dir apps/desktop run package:kylin:x64 --build-version 0.2.1-alpha.2.20261110.1
+```
+
+The command prepares and verifies the complete runtime, packaged Host and Office payload before recording DEB and tar.gz artifacts with a Kylin suffix. It never publishes. Private packages omit automatic-update authority and shared feed metadata; only the exact installed Kylin manifest suppresses background shared-feed polling. Manual update checks report that the target is unsupported. Windows and macOS discovery, installation and uploads retain their existing behavior. Distribution uses a separate versioned Kylin OSS directory and manual DEB installation, without writing ordinary feeds. A glibc-compatible Linux smoke is separate from testing on the customer's actual Kylin desktop.
 
 ### Local macOS DMG without release signing
 

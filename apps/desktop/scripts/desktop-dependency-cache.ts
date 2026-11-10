@@ -6,7 +6,7 @@ import { homedir } from 'node:os'
 import { isAbsolute, join, parse, resolve } from 'node:path'
 import { resolveNpmRegistry } from './desktop-release-environment.mjs'
 import { desktopTargetPlatform } from './desktop-build-paths.mjs'
-import type { DesktopAutoUpdateTarget } from './desktop-auto-update-environment.mjs'
+import type { DesktopBuildTarget } from './desktop-build-paths.mjs'
 
 /** Build-machine downloads and metadata; installed modules and npmrc remain run-owned. */
 export interface DesktopDependencyCache {
@@ -34,7 +34,7 @@ function directory(path: string): void {
  */
 export function prepareDesktopDependencyCache(
   environment: NodeJS.ProcessEnv,
-  target: DesktopAutoUpdateTarget,
+  target: DesktopBuildTarget,
   versions: { readonly pnpmVersion: string; readonly nodeVersion: string },
   homeDirectory = homedir(),
 ): DesktopDependencyCache {

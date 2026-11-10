@@ -20,6 +20,7 @@ export interface DesktopElectronBuilderConfig {
   readonly extraMetadata: {
     readonly dshDesktopAppId: string
     readonly dshDesktopUnsigned?: true
+    readonly dshDesktopPrivateDistribution?: 'kylin-v10sp1-2503-x64'
     readonly dshDesktopUpdateConfigOrigin?: string
   }
   readonly asarUnpack: readonly string[]
@@ -56,7 +57,7 @@ export interface DesktopElectronBuilderConfig {
   readonly linux: {
     readonly icon: string
     readonly category: 'Development'
-    readonly target: readonly ['AppImage']
+    readonly target: readonly ['AppImage'] | readonly ['deb', 'tar.gz']
   }
   readonly nsis: {
     readonly include: string

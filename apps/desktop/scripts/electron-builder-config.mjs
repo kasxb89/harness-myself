@@ -60,14 +60,21 @@ export function createElectronBuilderConfig(
     throw new Error('desktop package: DSH_DESKTOP_UNSIGNED must be 0 or 1')
   }
   const unsigned = env.DSH_DESKTOP_UNSIGNED === '1'
+  const privateLinux = env.DSH_DESKTOP_LINUX_PRIVATE === '1'
+  if (privateLinux && (resolvedPlatform !== 'linux' || resolvedArch !== 'x64')) {
+    throw new Error('desktop package: private Kylin packages require linux-x64')
+  }
+  if (resolvedPlatform === 'linux' && !privateLinux) {
+    throw new Error('desktop package: Linux requires the dedicated private-package entry')
+  }
   const packagesMacOS = targetPlatform === 'darwin' || (targetPlatform === undefined && hostPlatform === 'darwin')
   const packagesWindows = resolvedPlatform === 'win32'
   const unsignedUpdate = unsigned ? resolveUnsignedDesktopUpdateConfig(env, resolvedPlatform, resolvedArch) : undefined
-  const updateConfigOrigin = unsignedUpdate?.authority ?? resolvePackagedDesktopUpdateConfigOrigin(env)
-  if (!unsigned && resolveDesktopUploadProvider(env) === 'oss' && updateConfigOrigin === undefined) {
+  const updateConfigOrigin = privateLinux ? undefined : unsignedUpdate?.authority ?? resolvePackagedDesktopUpdateConfigOrigin(env)
+  if (!privateLinux && !unsigned && resolveDesktopUploadProvider(env) === 'oss' && updateConfigOrigin === undefined) {
     throw new Error('desktop package: OSS releases require DSH_DESKTOP_UPDATE_CONFIG_ORIGIN for backend update discovery')
   }
-  const policy = unsigned ? undefined : resolveDesktopPolicyEnvironment(env)
+  const policy = unsigned || privateLinux ? undefined : resolveDesktopPolicyEnvironment(env)
   if (resolvedPlatform === 'win32') installWindowsDirectoryInstaller()
   const macOSSigning = packagesMacOS && !unsigned ? resolveMacOSSigningEnvironment(env) : undefined
   if (packagesMacOS && !unsigned) resolveMacOSNotarizationEnvironment(env)
@@ -96,7 +103,7 @@ export function createElectronBuilderConfig(
   if (windowsSigner !== undefined) {
     installWindowsNsisBootstrapSigner({ sign: windowsSigner })
   }
-  const update = unsignedUpdate ?? resolveDesktopAutoUpdateConfig(env, resolvedPlatform, resolvedArch)
+  const update = privateLinux ? undefined : unsignedUpdate ?? resolveDesktopAutoUpdateConfig(env, resolvedPlatform, resolvedArch)
   if (preparedRuntime !== undefined) buildPaths.dsh = preparedRuntime
   // electron-builder merges extraMetadata into the packaged manifest, so a build version here reaches
   // the artifact names, the update feed, and the installed app.getVersion() the updater compares against.
@@ -108,6 +115,7 @@ export function createElectronBuilderConfig(
     protocols: [{ name: '云枢', schemes: ['dsh'] }],
     extraMetadata: {
       dshDesktopAppId: appId,
+      ...(privateLinux ? { dshDesktopPrivateDistribution: 'kylin-v10sp1-2503-x64' } : {}),
       ...(unsigned ? { dshDesktopUnsigned: true } : {}),
       ...(updateConfigOrigin === undefined ? {} : { dshDesktopUpdateConfigOrigin: updateConfigOrigin }),
       ...(policy === undefined ? {} : { dshMandatoryUpdatePolicy: policy }),
@@ -116,7 +124,7 @@ export function createElectronBuilderConfig(
     },
     productName: '云枢',
     // Unsigned builds carry their own suffix so a shared file can never pass for a release artifact.
-    artifactName: `yunshu-\${version}-\${os}-\${arch}${unsigned ? '-unsigned' : ''}.\${ext}`,
+    artifactName: `yunshu-\${version}-\${os}-\${arch}${privateLinux ? '-kylin-v10sp1-2503' : unsigned ? '-unsigned' : ''}.\${ext}`,
     directories: { output: unsigned ? buildPaths.unsignedArtifacts : buildPaths.artifacts },
     asar: true,
     electronDist: buildPaths.electron,
@@ -245,8 +253,11 @@ export function createElectronBuilderConfig(
     linux: {
       icon: fileURLToPath(new URL('../resources/icon.png', import.meta.url)),
       category: 'Development',
-      target: ['AppImage'],
+      target: privateLinux ? ['deb', 'tar.gz'] : ['AppImage'],
+      ...(privateLinux ? { executableName: 'yunshu', maintainer: '云枢', vendor: '云枢' } : {}),
     },
+    ...(privateLinux ? { deb: { depends: ['libc6 (>= 2.31)', 'libgtk-3-0', 'libnss3', 'libatk-bridge2.0-0',
+      'libxss1', 'libasound2', 'libgbm1', 'libdrm2', 'libxshmfence1'], compression: 'xz' } } : {}),
     nsis: {
       installerSidebar: join(buildPaths.root, 'installer-ui', 'uninstaller-sidebar.bmp'),
       uninstallerSidebar: join(buildPaths.root, 'installer-ui', 'uninstaller-sidebar.bmp'),
@@ -259,6 +270,6 @@ export function createElectronBuilderConfig(
       differentialPackage: true,
     },
     detectUpdateChannel: false,
-    publish: [{ provider: 'generic', url: update.publicUrl, channel: 'nightly' }],
+    publish: update === undefined ? null : [{ provider: 'generic', url: update.publicUrl, channel: 'nightly' }],
   }
 }

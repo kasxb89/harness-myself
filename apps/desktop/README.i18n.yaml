@@ -42,8 +42,11 @@
   en: 4cd8a8da6977928d
   zh: 9f624855a2edac37
 /yunshu-desktop/package/release-versions:
-  en: e03fab4b2e6b170a
-  zh: b6f1dfad39b9b280
+  en: f05b596c218df279
+  zh: addb9e7cf568228b
+/yunshu-desktop/package/private-kylin-x64-package:
+  en: 21836035128c089e
+  zh: 748459327c5046d2
 /yunshu-desktop/package/local-macos-dmg-without-release-signing:
   en: ce7691b9e4f2a463
   zh: 4f3d8dd22e532c72
