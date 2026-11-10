@@ -30,7 +30,7 @@ const MODEL = 'overseas-phone-hello'
 const livePath = process.env.DSH_OVERSEAS_PHONE_UI_PRIVATE
 const evidence = process.env.DSH_OVERSEAS_PHONE_EVIDENCE_DIRECTORY
 const liveSchema = z.object({ base_url: z.url(), grants: z.array(z.object({
-  country: z.enum(['MY', 'JP', 'US']), phone: z.string().regex(/^\+[1-9]\d{6,14}$/u), code: z.string().regex(/^\d{6}$/u),
+  country: z.enum(['MY', 'JP', 'US']), phone: z.string().regex(/^\+[1-9]\d{6,14}$/u), code: z.string().regex(/^(?:\d{6}|\d{16})$/u),
 })).length(3) })
 type Row = Record<string, unknown>
 function object(value: unknown): Row {
@@ -80,9 +80,9 @@ it('records a real shipped-profile hello Session independently of private phone 
     expect(new Set(live.grants.map(grant => grant.country))).toEqual(new Set(['MY', 'JP', 'US']))
   }
   const grants = live?.grants ?? [
-    { country: 'MY', phone: '+60123450991', code: '123456' },
-    { country: 'JP', phone: '+819012345991', code: '123456' },
-    { country: 'US', phone: '+12025550191', code: '123456' },
+    { country: 'MY', phone: '+60123450991', code: '0123456789012345' },
+    { country: 'JP', phone: '+819012345991', code: '0123456789012345' },
+    { country: 'US', phone: '+12025550191', code: '0123456789012345' },
   ]
   if (evidence !== undefined) await mkdir(evidence, { recursive: true })
   const root = await realpath(await mkdtemp(join(tmpdir(), 'dsh-overseas-phone-')))
@@ -114,7 +114,7 @@ it('records a real shipped-profile hello Session independently of private phone 
         }
         if (path === '/api/user/phone/login') {
           const body = object(JSON.parse(Buffer.concat(chunks).toString('utf8')))
-          expect(body.phone_e164).toBe(grants.at(-1)?.phone); expect(body.code).toBe('123456')
+          expect(body.phone_e164).toBe(grants.at(-1)?.phone); expect(body.code).toBe('0123456789012345')
           expect(body.challenge_id).toBe('synthetic-overseas-challenge'); expect(body.contract_version).toBe(2)
           expect(body.idempotency_key).toEqual(expect.any(String))
           syntheticAuthPosts.push({ path, contractVersion: body.contract_version })
@@ -248,7 +248,7 @@ it('records a real shipped-profile hello Session independently of private phone 
       const finalGrant = grants.at(-1)
       if (finalGrant === undefined) throw new Error('Expected final independent manual grant')
       await form.getByRole('button', { name: '准备登录', exact: true }).click()
-      await form.getByRole('status').filter({ hasText: '登录请求已就绪，请联系运营微信获取独立登录码。' }).waitFor()
+      await form.getByRole('status').filter({ hasText: '登录请求已就绪，请输入已有登录码；首次使用请联系运营微信领取固定码' }).waitFor()
       expect(await form.getByText('验证码已发送', { exact: true }).count()).toBe(0)
       expect(phonePosts.filter(post => post.route.endsWith('/challenge'))).toHaveLength(1)
       await saveForm(page, 'accepted-US')
@@ -296,7 +296,7 @@ it('records a real shipped-profile hello Session independently of private phone 
     if (activeSession === undefined) throw new Error('Expected actual persisted Session')
     const secretValues = grants.map(grant => grant.code)
     const visit = (value: unknown): void => {
-      if (typeof value === 'string') expect(secretValues).not.toContain(value)
+      if (typeof value === 'string') expect(secretValues.includes(value)).toBe(false)
       else if (Array.isArray(value)) for (const item of value) visit(item)
       else if (value !== null && typeof value === 'object') for (const item of Object.values(value)) visit(item)
     }

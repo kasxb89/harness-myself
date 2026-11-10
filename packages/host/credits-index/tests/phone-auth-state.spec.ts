@@ -19,26 +19,29 @@ async function fixture() {
   return { file, api, state: new PhoneAuthState(file, api) }
 }
 
-it('persists keys before returning and restores challenge and exchange without storing the code', async () => {
+it.each([
+  { kind: 'domestic six-digit', phone: '+8613800000000', code: '908172' },
+  { kind: 'overseas fixed sixteen-digit', phone: '+601100000001', code: '0001234567890123' },
+])('persists and restores the $kind exchange identity without storing its code', async ({ phone, code }) => {
   const { file, api, state } = await fixture()
-  expect(await state.reserveChallenge('+8613800000000', 'challenge-a')).toBe('reserved')
+  expect(await state.reserveChallenge(phone, 'challenge-a')).toBe('reserved')
   expect(await state.updateChallenge('challenge-a', { challengeId: 'opaque-a', deliveryStatus: 'unknown',
     expiresAt: '9999-01-01T00:00:00Z', resendAt: 1234 })).toBe(true)
-  expect(await state.reserveExchange('+8613800000000', 'opaque-a', '908172', 'exchange-a')).toBe('reserved')
+  expect(await state.reserveExchange(phone, 'opaque-a', code, 'exchange-a')).toBe('reserved')
   const text = await readFile(file, 'utf8')
   expect(text).toContain('challenge-a')
   expect(text).toContain('exchange-a')
-  expect(text).not.toContain('908172')
+  expect(text).not.toContain(code)
   if (process.platform !== 'win32') expect((await stat(file)).mode & 0o777).toBe(0o600)
   const restarted = new PhoneAuthState(file, api)
-  expect(await restarted.phone('opaque-a')).toBe('+8613800000000')
-  expect(await restarted.recovery()).toMatchObject({ phone: '+8613800000000', challengeKey: 'challenge-a',
+  expect(await restarted.phone('opaque-a')).toBe(phone)
+  expect(await restarted.recovery()).toMatchObject({ phone, challengeKey: 'challenge-a',
     challengeId: 'opaque-a', exchangeKey: 'exchange-a', deliveryStatus: 'unknown', resendAt: 1234 })
-  expect(await restarted.reserveExchange('+8613800000000', 'opaque-a', '908172', 'exchange-a')).toBe('reserved')
-  expect(await restarted.reserveExchange('+8613800000000', 'opaque-a', '123456', 'exchange-a')).toBe('conflict')
+  expect(await restarted.reserveExchange(phone, 'opaque-a', code, 'exchange-a')).toBe('reserved')
+  expect(await restarted.reserveExchange(phone, 'opaque-a', code.slice(1) + '0', 'exchange-a')).toBe('conflict')
   expect(await restarted.reserveChallenge('+8613900000000', 'challenge-a')).toBe('conflict')
-  expect(await restarted.reserveExchange('+8613800000000', 'opaque-a', '908172', 'challenge-a')).toBe('conflict')
-  expect(await restarted.reserveChallenge('+8613800000000', 'exchange-a')).toBe('conflict')
+  expect(await restarted.reserveExchange(phone, 'opaque-a', code, 'challenge-a')).toBe('conflict')
+  expect(await restarted.reserveChallenge(phone, 'exchange-a')).toBe('conflict')
   expect(await restarted.markSecurity('exchange-a', true)).toBe(true)
   expect(await new PhoneAuthState(file, api).securityPending('exchange-a')).toBe(true)
   expect(await new PhoneAuthState(file, api).recovery()).toMatchObject({ securityUnconfirmed: true })

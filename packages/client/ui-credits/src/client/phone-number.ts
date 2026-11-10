@@ -51,6 +51,15 @@ export function validPhoneEntry(entry: PhoneEntry): boolean {
     : /^\+[1-9]\d{6,14}$/u.test(phone))
 }
 
+/**
+ * @param code - Complete entered code; invalid lengths and characters are not rewritten.
+ * @param phone - Exact number deciding whether the mainland SMS-only format applies.
+ * @returns Whether the existing SMS code or overseas fixed/temporary code can be submitted.
+ */
+export function validPhoneLoginCode(code: string, phone: string): boolean {
+  return phone.startsWith('+86') ? /^\d{6}$/u.test(code) : /^(?:\d{6}|\d{16})$/u.test(code)
+}
+
 const manualMessages: Readonly<Record<string, string>> = {
   codeSent: 'loginManualReady', loginSubtitle: 'loginManualSubtitle', loginCodeHint: 'loginManualCodeHint',
   loginSending: 'loginManualPreparing', sendCode: 'loginManualPrepare', loginCheckDelivery: 'loginManualCheck',
@@ -58,6 +67,8 @@ const manualMessages: Readonly<Record<string, string>> = {
   loginDeliveryUnknown: 'loginManualUnconfirmed', loginDeliveryPending: 'loginManualPending', loginNotSent: 'loginManualUnavailable',
   loginCodeInvalid: 'loginManualCodeInvalid', loginCodeInvalidOrExpired: 'loginManualCodeInvalidOrExpired',
   loginExpiredExchangeRecovery: 'loginManualExpiredExchangeRecovery', errNeedCode: 'loginManualNeedRequest',
+  loginCodeExpired: 'loginManualRequestExpired', loginCodeConsumed: 'loginManualRequestExpired',
+  errCodeFormat: 'loginManualCodeFormat', codePlaceholder: 'loginManualCodePlaceholder',
 }
 
 /**

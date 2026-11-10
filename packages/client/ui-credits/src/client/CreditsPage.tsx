@@ -15,7 +15,7 @@ import type { PropsRenderSlots, PropsRuntime } from '@deepseek-ai/dsh-client-ui-
 import { grouped, newPhoneKey, post } from './api.ts'
 import { phoneFailureKey } from './phone-sign-in.ts'
 import { hasLocalTrunkPrefix, phoneCallingCodes, phoneE164, phoneEntry, phoneMessageKey, validPhoneEntry,
-  type PhoneCallingCode } from './phone-number.ts'
+  validPhoneLoginCode, type PhoneCallingCode } from './phone-number.ts'
 import { CreditsPanelIcon } from './CreditsPanelIcon.tsx'
 import { UsageOverview } from './UsageOverview.tsx'
 import { cx } from './class-names.ts'
@@ -212,8 +212,8 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected & 
       setFailure(phoneText('errNeedCode'))
       return
     }
-    if (!/^\d{6}$/.test(code)) {
-      setFailure(t('errCodeFormat'))
+    if (!validPhoneLoginCode(code, phone)) {
+      setFailure(phoneText('errCodeFormat'))
       return
     }
     verifyKey.current ??= newPhoneKey('sms-session')
@@ -264,7 +264,7 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected & 
       setBusy(false)
       setLoginAction(null)
     }
-  }, [challenge, code, completeSignIn, phoneText, recoveryAvailable, t, verifyUntil])
+  }, [challenge, code, completeSignIn, phone, phoneText, recoveryAvailable, t, verifyUntil])
 
   /** Submit the declared security check once; an unknown outcome requires fresh phone authentication. */
   const verifySecurity = useCallback(async () => {
@@ -398,10 +398,10 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected & 
                 <span className={css.signInFieldLabel}>{t('code')}</span>
                 <div className={css.signInCodeRow}>
                   <Input className={cx(css.signInInput)} aria-label={t('code')}
-                    value={code} inputMode="numeric" autoComplete="one-time-code" maxLength={6}
-                    disabled={busy} placeholder={t('codePlaceholder')}
+                    value={code} inputMode="numeric" autoComplete="one-time-code" maxLength={overseas ? 64 : 6}
+                    disabled={busy} placeholder={phoneText('codePlaceholder')}
                     onChange={(event) => {
-                      setCode(event.target.value.replace(/\D/g, '').slice(0, 6))
+                      setCode(overseas ? event.target.value : event.target.value.replace(/\D/g, '').slice(0, 6))
                       if (!restoredVerifyKey.current) verifyKey.current = null
                       if (verificationRequired) { setVerificationRequired(false); setSecurityCode(''); setSecurityUnconfirmed(false) }
                     }} />
@@ -427,7 +427,7 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected & 
                 className={css.signInSubmit} type="submit" variant="primary"
                 icon={loginAction === 'verify' || loginAction === 'security' ? <IconRefreshOutlineRegular className={css.signInSpinner} /> : undefined}
                 disabled={!recoveryAvailable || busy || verifyIn > 0 || (verificationRequired
-                  ? securityUnconfirmed || !securityMethods.includes('2fa') || securityCode.trim() === '' : code.length !== 6)}
+                  ? securityUnconfirmed || !securityMethods.includes('2fa') || securityCode.trim() === '' : !validPhoneLoginCode(code, phone))}
               >
                 {loginAction === 'security' ? t('loginSecurityVerifying') : loginAction === 'verify' ? t('loginVerifying') : verifyIn > 0
                   ? t('loginRetryIn', { seconds: String(verifyIn) }) : verificationRequired ? t('loginSecuritySubmit') : t('signIn')}

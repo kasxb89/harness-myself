@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { hasLocalTrunkPrefix, phoneE164, phoneEntry, phoneMessageKey, validPhoneEntry } from '../src/client/phone-number.ts'
+import { hasLocalTrunkPrefix, phoneE164, phoneEntry, phoneMessageKey, validPhoneEntry,
+  validPhoneLoginCode } from '../src/client/phone-number.ts'
 
 describe('explicit international phone entry', () => {
   it.each([
@@ -43,5 +44,30 @@ describe('explicit international phone entry', () => {
     expect(phoneMessageKey('loginDeliveryUnknown', '+819012345678')).toBe('loginManualUnconfirmed')
     expect(phoneMessageKey('codeSent', '+8613800138000')).toBe('codeSent')
     expect(phoneMessageKey('loginSecurityUnconfirmed', '+14155552671')).toBe('loginSecurityUnconfirmed')
+  })
+})
+
+describe('phone sign-in code formats', () => {
+  it.each(['+60123456789', '+819012345678', '+14155552671', '+447700900123'])(
+    'accepts legacy six-digit and fixed sixteen-digit codes for %s', (phone) => {
+      expect(validPhoneLoginCode('123456', phone)).toBe(true)
+      expect(validPhoneLoginCode('0123456789012345', phone)).toBe(true)
+      for (const code of ['12345', '1234567', '123456789012345', '01234567890123456', '012345678901234a', ' 123456']) {
+        expect(validPhoneLoginCode(code, phone)).toBe(false)
+      }
+    },
+  )
+
+  it('retains the six-digit SMS format for mainland China', () => {
+    expect(validPhoneLoginCode('123456', '+8613800138000')).toBe(true)
+    expect(validPhoneLoginCode('0123456789012345', '+8613800138000')).toBe(false)
+    expect(validPhoneLoginCode('12345a', '+8613800138000')).toBe(false)
+  })
+
+  it('distinguishes expired overseas requests from fixed-code and temporary-code validity', () => {
+    expect(phoneMessageKey('loginCodeExpired', '+60123456789')).toBe('loginManualRequestExpired')
+    expect(phoneMessageKey('loginCodeConsumed', '+819012345678')).toBe('loginManualRequestExpired')
+    expect(phoneMessageKey('errCodeFormat', '+14155552671')).toBe('loginManualCodeFormat')
+    expect(phoneMessageKey('loginCodeExpired', '+8613800138000')).toBe('loginCodeExpired')
   })
 })
