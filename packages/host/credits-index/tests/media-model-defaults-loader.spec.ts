@@ -75,10 +75,13 @@ async function fixture(savedPreferences = true, squareOnly = false,
   const posts: string[] = []
   const submissions: unknown[] = []
   const quotes: unknown[] = []
+  let directoryReply: ((path: string) => Response | undefined) | undefined
   vi.stubGlobal('fetch', vi.fn<typeof fetch>(async (input, init) => {
     const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url)
     if (url.origin !== 'http://127.0.0.1:32127') throw new Error('Only the fixture relay is permitted')
     if (init?.method === 'POST') posts.push(url.pathname)
+    const overridden = directoryReply?.(url.pathname)
+    if (overridden !== undefined) return overridden
     if (url.pathname === '/harness/v1/video/quote') {
       if (typeof init?.body !== 'string') throw new Error('Expected fixture JSON quote')
       const quote: unknown = JSON.parse(init.body)
@@ -152,8 +155,68 @@ async function fixture(savedPreferences = true, squareOnly = false,
     if (result.value === null || typeof result.value !== 'object' || Array.isArray(result.value)) throw new Error('Expected tool object')
     return result.value as Record<string, unknown>
   }
-  return { ctx, agent, human, call, posts, submissions, quotes, hideSavedModel: () => { visible = visible.filter(id => id !== video) } }
+  return { ctx, agent, human, call, posts, submissions, quotes, hideSavedModel: () => { visible = visible.filter(id => id !== video) },
+    setDirectoryReply: (reply: (path: string) => Response | undefined): void => { directoryReply = reply } }
 }
+
+it.each(['image', 'video'] as const)('rereads a changed %s listing pair before exposing its new controls', async (kind) => {
+  const f = await fixture(false)
+  let pricingReads = 0, modelReads = 0
+  const id = kind === 'image' ? 'image-a' : video
+  const endpoint = kind === 'image' ? 'image-generation' : 'openai-video'
+  f.setDirectoryReply((path) => {
+    if (path === '/harness/api/pricing') {
+      pricingReads += 1
+      const fresh = pricingReads > 1
+      const parameters = kind === 'image' ? { size: { enum: [fresh ? '16:9' : '1:1'] }, resolution: { enum: ['1k'] } }
+        : videoPricing([fresh ? 10 : 5]).parameters
+      return Response.json({ success: true, model_config_revision: '1'.repeat(64), data: [{ model_name: id,
+        supported_endpoint_types: [endpoint], model_config_version: (fresh ? 'b' : 'a').repeat(64), parameters }] },
+      { headers: { 'cache-control': 'private, max-age=30' } })
+    }
+    if (path === '/harness/v1/models') {
+      modelReads += 1
+      return Response.json({ model_config_revision: '2'.repeat(64), data: [{ id,
+        supported_endpoint_types: [endpoint], model_config_version: 'b'.repeat(64) }] })
+    }
+    return undefined
+  })
+  await f.human('读取当前可用的创作模型与规格')
+  const listed = await f.call(kind === 'image' ? 'list_image_models' : 'list_video_models', {})
+  expect(listed).toMatchObject({ status: 'listed', models: [{ id,
+    ...kind === 'image' ? { sizes: ['16:9'] } : { durations: [10] } }] })
+  expect(pricingReads).toBe(2)
+  // The platform-default lookup separately checks the current account's authorization.
+  expect(modelReads).toBe(3)
+  expect(f.posts).toEqual([])
+})
+
+it.each(['image', 'video'] as const)('stops a persistently inconsistent %s listing without exposing stale controls or generating', async (kind) => {
+  const f = await fixture(false)
+  let pricingReads = 0, modelReads = 0
+  const id = kind === 'image' ? 'image-a' : video
+  const endpoint = kind === 'image' ? 'image-generation' : 'openai-video'
+  f.setDirectoryReply((path) => {
+    if (path === '/harness/api/pricing') {
+      pricingReads += 1
+      return Response.json({ success: true, data: [{ model_name: id, supported_endpoint_types: [endpoint],
+        model_config_version: 'a'.repeat(64), parameters: kind === 'image'
+          ? { size: { enum: ['1:1'] } } : videoPricing([5]).parameters }] })
+    }
+    if (path === '/harness/v1/models') {
+      modelReads += 1
+      return Response.json({ data: [{ id, supported_endpoint_types: [endpoint], model_config_version: 'b'.repeat(64) }] })
+    }
+    return undefined
+  })
+  await f.human('读取当前可用的创作模型与规格')
+  const listed = await f.call(kind === 'image' ? 'list_image_models' : 'list_video_models', {})
+  expect(listed).toMatchObject({ status: 'failed', code: 'MODEL_CONFIG_CHANGED' })
+  expect(listed).not.toHaveProperty('models')
+  expect(pricingReads).toBe(2)
+  expect(modelReads).toBe(2)
+  expect(f.posts).toEqual([])
+})
 
 it('projects the sole square specification as already selected without asking for an invented ratio', async () => {
   const f = await fixture(true, true)

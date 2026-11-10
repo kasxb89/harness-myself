@@ -1397,12 +1397,9 @@ export function apply(ctx: Context, config: Config): void {
     }
   }
 
-  /** Read pricing first so older endpoint caches have complete model declarations before authorization. */
-  const readAuthorizedMediaCatalog = async (session: StoredSession, signal?: AbortSignal,
-    publicUnitPrices?: Map<string, MediaPreferencePricing>) => {
-    const owner = productOwner(session)
-    const epoch = identityVersion
-    let catalog = await readMediaCatalog(signal, publicUnitPrices !== undefined)
+  /** Read pricing before authorization and retry one publication change without losing endpoint failures. */
+  const readConsistentMediaCatalogPair = async (session?: StoredSession, signal?: AbortSignal, includePublicUnitPrices = false) => {
+    let catalog = await readMediaCatalog(signal, includePublicUnitPrices)
     let visible = await readNewApiModels(session, signal)
     for (let attempt = 0; attempt < 2; attempt += 1) {
       if (!catalog.ok || !visible.ok) break
@@ -1414,10 +1411,19 @@ export function apply(ctx: Context, config: Config): void {
           throw new CreativeError('MODEL_CONFIG_CHANGED', 409, '模型配置已变化，请刷新当前目录后重新发起；尚未提交生成。')
         }
         mediaCatalogCache.clear()
-        catalog = await readMediaCatalog(signal, publicUnitPrices !== undefined)
+        catalog = await readMediaCatalog(signal, includePublicUnitPrices)
         visible = await readNewApiModels(session, signal)
       }
     }
+    return { catalog, visible }
+  }
+
+  /** Read pricing first so older endpoint caches have complete model declarations before authorization. */
+  const readAuthorizedMediaCatalog = async (session: StoredSession, signal?: AbortSignal,
+    publicUnitPrices?: Map<string, MediaPreferencePricing>) => {
+    const owner = productOwner(session)
+    const epoch = identityVersion
+    const { catalog, visible } = await readConsistentMediaCatalogPair(session, signal, publicUnitPrices !== undefined)
     const latest = await store.read()
     if (epoch !== identityVersion || latest?.token === undefined || productOwner(latest) !== owner) {
       throw new CreativeError('ACCOUNT_CHANGED', 409, '登录状态已变化，请重新读取模型目录。')
@@ -5445,8 +5451,7 @@ export function apply(ctx: Context, config: Config): void {
         const binding = await bindCurrentVideoAccount()
         const session = await liveSession()
         const signal = AbortSignal.any([exec.signal, AbortSignal.timeout(resolved.timeoutMs)])
-        const catalog = await readMediaCatalog(signal)
-        const visible = await readNewApiModels(session ?? undefined, signal)
+        const { catalog, visible } = await readConsistentMediaCatalogPair(session ?? undefined, signal)
         await binding.key()
         exec.signal.throwIfAborted()
         if (!catalog.ok || !visible.ok) {
@@ -5491,6 +5496,9 @@ export function apply(ctx: Context, config: Config): void {
         }
         if (error instanceof VideoProjectError && error.code === 'VIDEO_ACCOUNT_CHANGED') {
           return { status: 'failed', code: 'ACCOUNT_CHANGED', message: '登录状态已变化，请在当前账号下重新读取图片模型；尚未提交生成。' }
+        }
+        if (error instanceof CreativeError && error.code === 'MODEL_CONFIG_CHANGED' && !exec.signal.aborted) {
+          return { status: 'failed', code: error.code, message: error.message }
         }
         return { status: 'failed', code: exec.signal.aborted ? 'CANCELLED' : 'IMAGE_MODELS_UNAVAILABLE',
           message: exec.signal.aborted ? '已停止读取图片模型；尚未提交生成。' : '暂时无法确认图片模型目录，请稍后重试；尚未提交生成。' }
@@ -5800,8 +5808,7 @@ export function apply(ctx: Context, config: Config): void {
       try {
         const binding = await bindCurrentVideoAccount()
         const session = await liveSession()
-        const catalog = await readMediaCatalog(exec.signal)
-        const visible = await readNewApiModels(session ?? undefined, exec.signal)
+        const { catalog, visible } = await readConsistentMediaCatalogPair(session ?? undefined, exec.signal)
         await binding.key()
         exec.signal.throwIfAborted()
         if (!catalog.ok || !visible.ok) return { status: 'failed', code: 'VIDEO_MODELS_UNAVAILABLE', message: '暂时无法读取当前账号的视频模型，请稍后重试；尚未提交生成。' }
@@ -5829,7 +5836,12 @@ export function apply(ctx: Context, config: Config): void {
         await binding.key()
         exec.signal.throwIfAborted()
         return { status: 'listed', models, ...defaultMetadata, message: '按当前参数规划生成片段；一个片段可含多个镜头切换。无独立音频开关不代表成片必定无声，未声明的音频能力不能保证对白。' }
-      } catch (_error) { return { status: 'failed', code: 'VIDEO_MODELS_UNAVAILABLE', message: '暂时无法读取视频模型，请确认登录后重试；尚未提交生成。' } }
+      } catch (error) {
+        if (error instanceof CreativeError && error.code === 'MODEL_CONFIG_CHANGED' && !exec.signal.aborted) {
+          return { status: 'failed', code: error.code, message: error.message }
+        }
+        return { status: 'failed', code: 'VIDEO_MODELS_UNAVAILABLE', message: '暂时无法读取视频模型，请确认登录后重试；尚未提交生成。' }
+      }
     },
   }))
 
