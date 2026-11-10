@@ -15,7 +15,8 @@ import type { PropsRenderSlots, PropsRuntime } from '@deepseek-ai/dsh-client-ui-
 import { grouped, newPhoneKey, post } from './api.ts'
 import { phoneFailureKey } from './phone-sign-in.ts'
 import { hasLocalTrunkPrefix, phoneCallingCodes, phoneE164, phoneEntry, phoneMessageKey, validPhoneEntry,
-  validPhoneLoginCode, type PhoneCallingCode } from './phone-number.ts'
+  validPhoneLoginCode } from './phone-number.ts'
+import { phoneCountries } from './phone-countries.ts'
 import { CreditsPanelIcon } from './CreditsPanelIcon.tsx'
 import { UsageOverview } from './UsageOverview.tsx'
 import { cx } from './class-names.ts'
@@ -88,10 +89,7 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected & 
   const recoveryAvailable = session?.phoneRecoveryAvailable !== false
   const validPhone = validPhoneEntry(phoneInput)
   const overseas = !phone.startsWith('+86')
-  const countryLabels: Readonly<Record<PhoneCallingCode, string>> = {
-    '+86': 'loginCountryChina', '+60': 'loginCountryMalaysia', '+81': 'loginCountryJapan',
-    '+1': 'loginCountryNorthAmerica', international: 'loginCountryOther',
-  }
+  const knownTrunkZero = phoneCountries.find(country => country.callingCode === phoneInput.callingCode)?.hasLocalTrunkZero === true
   const clearPhoneRequest = (): void => {
     setChallenge(null); setCode(''); setFailure(null); setNotice(null)
     challengeKey.current = null; verifyKey.current = null; restoredVerifyKey.current = false
@@ -378,7 +376,9 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected & 
                       if (callingCode === undefined) return
                       clearPhoneRequest(); setPhoneInput(phoneEntry('', callingCode))
                     }}>
-                    {phoneCallingCodes.map(value => <option key={value} value={value}>{t(countryLabels[value])}</option>)}
+                    {phoneCountries.map(country => <option key={country.callingCode} value={country.callingCode}>
+                      {t(country.labelKey)}</option>)}
+                    <option value="international">{t('loginCountryOther')}</option>
                   </select>
                   <Input id={phoneId} className={cx(css.phoneInput)} aria-label={t('phone')}
                     value={phoneInput.number} type="tel" inputMode="tel"
@@ -392,7 +392,8 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected & 
                       if (hasLocalTrunkPrefix(next)) setFailure(t('loginLocalPrefix'))
                     }} />
                 </div>
-                {overseas && <p id={phoneHintId} className={css.phoneHint}>{t('loginInternationalPhoneHint')}</p>}
+                {overseas && <p id={phoneHintId} className={css.phoneHint}>
+                  {t(knownTrunkZero ? 'loginTrunkZeroPhoneHint' : 'loginInternationalPhoneHint')}</p>}
               </div>
               <div className={css.signInField}>
                 <span className={css.signInFieldLabel}>{t('code')}</span>

@@ -1,6 +1,11 @@
 /** Explicit dialing codes and digit-preserving phone entry for the existing sign-in flow. */
-export const phoneCallingCodes = ['+86', '+60', '+81', '+1', 'international'] as const
+import { phoneCountries } from './phone-countries.ts'
+
+/** Country calling codes plus a complete-number option for unlisted prefixes. */
+export const phoneCallingCodes = [...phoneCountries.map(country => country.callingCode), 'international'] as const
 export type PhoneCallingCode = typeof phoneCallingCodes[number]
+
+const longestCallingCodes = [...phoneCountries].sort((left, right) => right.callingCode.length - left.callingCode.length)
 
 /** The display split never changes digits from a pasted international number. */
 export interface PhoneEntry {
@@ -18,7 +23,7 @@ export interface PhoneEntry {
 export function phoneEntry(input: string, callingCode: PhoneCallingCode): PhoneEntry {
   const compact = input.trim().replace(/[\s()-]/gu, '')
   if (compact.startsWith('+')) {
-    const selected = phoneCallingCodes.find(code => code !== 'international' && compact.startsWith(code)) ?? 'international'
+    const selected = longestCallingCodes.find(country => compact.startsWith(country.callingCode))?.callingCode ?? 'international'
     return { callingCode: selected, number: selected === 'international' ? compact : compact.slice(selected.length),
       explicitInternational: true }
   }
@@ -36,7 +41,8 @@ export function phoneE164(entry: PhoneEntry): string {
 
 /** @param entry - Current editor state. @returns Whether a local trunk prefix needs the user's correction. */
 export function hasLocalTrunkPrefix(entry: PhoneEntry): boolean {
-  return !entry.explicitInternational && (entry.callingCode === '+60' || entry.callingCode === '+81')
+  return !entry.explicitInternational && phoneCountries.some(country => country.callingCode === entry.callingCode
+    && country.hasLocalTrunkZero)
     && entry.number.startsWith('0')
 }
 
