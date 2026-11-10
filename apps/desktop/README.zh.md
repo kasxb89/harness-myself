@@ -267,6 +267,8 @@ pnpm --dir apps/desktop run package:kylin:x64 --build-version 0.2.1-alpha.2.2026
 
 命令准备并验证完整运行时、包内 Host 与 Office 载荷后，记录带麒麟后缀的 DEB 和 tar.gz，不执行上传。专用包不包含自动更新服务来源和共用 feed 元数据；只有准确匹配的已安装麒麟包才关闭后台共用更新轮询，手动检查更新会提示该目标不受支持。Windows 与 macOS 的更新发现、安装和上传保持原行为。分发使用独立且带版本的麒麟 OSS 目录，通过 DEB 手动安装，不写入普通更新清单。兼容 glibc 的 Linux 冒烟验证与客户实际麒麟桌面验收分别记录。
 
+专用 DEB 安装到 `/opt/云枢`。仅 Host 与 CLI 使用独立且锁定哈希的 glibc 2.36/GCC 运行库；Electron 窗口和系统仍用 glibc 2.31。专用构建容器须提供 `patchelf`、Debian 许可文本，并将 `/opt/云枢/resources/runtime` 链接到目标暂存运行时；tar.gz 也须安装到这个固定目录。兼容运行时清单保留源码包地址、精确版本、哈希和许可声明；上传前须用安装后的辅助程序验证办公和语音原生绑定。
+
 ### 无发布签名的本地 macOS DMG
 
 执行 `pnpm install` 后，在仓库根目录运行一条命令即可，无需 `.env.macos`、Apple 账号、证书或更新服务配置：

@@ -265,6 +265,8 @@ pnpm --dir apps/desktop run package:kylin:x64 --build-version 0.2.1-alpha.2.2026
 
 The command prepares and verifies the complete runtime, packaged Host and Office payload before recording DEB and tar.gz artifacts with a Kylin suffix. It never publishes. Private packages omit automatic-update authority and shared feed metadata; only the exact installed Kylin manifest suppresses background shared-feed polling. Manual update checks report that the target is unsupported. Windows and macOS discovery, installation and uploads retain their existing behavior. Distribution uses a separate versioned Kylin OSS directory and manual DEB installation, without writing ordinary feeds. A glibc-compatible Linux smoke is separate from testing on the customer's actual Kylin desktop.
 
+The private DEB installs at `/opt/云枢`. Only its Host and CLI use a separate, hash-pinned glibc 2.36/GCC runtime; Electron windows and the system keep glibc 2.31. The dedicated build container needs `patchelf`, Debian license texts and a staging link from `/opt/云枢/resources/runtime` to its target runtime. The tar.gz must also be installed at that fixed prefix. The compatibility manifest retains source-package URLs, exact versions, hashes and license notices. Verify native Office and speech bindings with the installed helper before upload.
+
 ### Local macOS DMG without release signing
 
 After `pnpm install`, run one command from the repository root. No `.env.macos`, Apple account, certificate, or update service configuration is required:

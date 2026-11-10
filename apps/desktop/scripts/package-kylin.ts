@@ -9,6 +9,7 @@ import { validateDesktopBuildVersion } from './desktop-build-version.mjs'
 import { readDesktopBuildCommit, resolveDesktopBuildCommit } from './desktop-build-commit.mjs'
 import { verifyDesktopRuntime, readDesktopRuntime } from '../src/runtime-tree.ts'
 import { smokePreparedRuntime } from './smoke-prepared-runtime.ts'
+import { prepareKylinCompatibilityRuntime } from './prepare-kylin-compat.ts'
 
 const appRoot = resolve(import.meta.dirname, '..')
 const repository = resolve(appRoot, '../..')
@@ -38,7 +39,7 @@ async function main(): Promise<void> {
     .filter(([key]) => !/KEY|SECRET|TOKEN|PASSWORD|OSS|COS|APPLE|CSC_/iu.test(key)))
   Object.assign(env, { DSH_DESKTOP_TARGET_PLATFORM: 'linux', DSH_DESKTOP_TARGET_ARCH: 'x64',
     DSH_DESKTOP_LINUX_PRIVATE: '1', DSH_DESKTOP_APP_ID: 'com.deepseek.harness',
-    DSH_DESKTOP_BUILD_VERSION: version, DSH_TELEMETRY_DISABLED: '1' })
+    DSH_DESKTOP_BUILD_VERSION: version, DSH_TELEMETRY_DISABLED: '1', ELECTRON_BUILDER_COMPRESSION_LEVEL: '1' })
   const source = resolveDesktopBuildCommit(process.env) ?? readDesktopBuildCommit(repository)
   Object.assign(env, {
     DSH_DESKTOP_BUILD_COMMIT: source.commit, DSH_DESKTOP_BUILD_DIRTY: source.dirty ? '1' : '0',
@@ -52,12 +53,13 @@ async function main(): Promise<void> {
   await run(['--dir', 'native/system', 'run', 'build:ts'], env)
   await run(['--dir', 'native/system/packages/entry', 'pack', '--pack-destination', paths.packedLandlock], env)
   await run(['run', 'prepare:runtime'], env, appRoot)
+  await prepareKylinCompatibilityRuntime()
   await run(['run', 'prepare:packages'], env, appRoot)
   await run(['run', 'prepare:dsh'], env, appRoot)
   await run(['exec', 'electron-builder', '--config', 'scripts/kylin-builder.config.mjs', '--linux', '--x64',
     '--publish', 'never'], env, appRoot)
   const resources = join(paths.artifacts, 'linux-unpacked', 'resources')
-  const executable = join(paths.artifacts, 'linux-unpacked', 'yunshu')
+  const executable = join(resources, 'runtime', 'kylin-compat', 'bin', 'node')
   const descriptor = await verifyDesktopRuntime(paths.dsh, readDesktopRuntime(paths.dsh).release.version,
     { platform: 'linux', arch: 'x64' })
   await smokePreparedRuntime(join(resources, 'app.asar', 'dsh'), executable, join(resources, 'runtime'), descriptor)

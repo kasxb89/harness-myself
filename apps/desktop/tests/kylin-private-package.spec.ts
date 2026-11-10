@@ -4,6 +4,7 @@ import { createElectronBuilderConfig } from '../scripts/electron-builder-config.
 import { desktopTargetBuildPaths } from '../scripts/desktop-build-paths.mjs'
 import { resolveDesktopPackageTarget } from '../scripts/package-target.ts'
 import { isPrivateKylinPackage } from '../src/update-source.ts'
+import { privateKylinHostExecutable } from '../src/kylin-runtime.ts'
 
 const privateEnv = { DSH_DESKTOP_APP_ID: 'com.example.yunshu', DSH_DESKTOP_LINUX_PRIVATE: '1',
   DSH_DESKTOP_TARGET_PLATFORM: 'linux', DSH_DESKTOP_TARGET_ARCH: 'x64',
@@ -37,4 +38,14 @@ it('disables shared-feed polling only for the exact installed private Kylin mani
   expect(isPrivateKylinPackage(false, manifest, 'linux', 'x64')).toBe(false)
   expect(isPrivateKylinPackage(true, manifest, 'linux', 'arm64')).toBe(false)
   expect(isPrivateKylinPackage(true, {}, 'linux', 'x64')).toBe(false)
+})
+
+it('selects the isolated Host without replacing ordinary platform executables', () => {
+  const manifest = { dshDesktopPrivateDistribution: 'kylin-v10sp1-2503-x64' }
+  expect(privateKylinHostExecutable('/opt/app/yunshu', '/opt/app/resources', manifest, 'linux', 'x64'))
+    .toBe('/opt/app/resources/runtime/kylin-compat/bin/node')
+  for (const platform of ['darwin', 'win32'] as const) {
+    expect(privateKylinHostExecutable('/ordinary/electron', '/ordinary/resources', manifest, platform, 'x64')).toBe('/ordinary/electron')
+  }
+  expect(privateKylinHostExecutable('/ordinary/electron', '/ordinary/resources', {}, 'linux', 'x64')).toBe('/ordinary/electron')
 })

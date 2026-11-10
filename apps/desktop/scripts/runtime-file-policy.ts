@@ -25,6 +25,12 @@ export function desktopRuntimeFileExclusion(
   const nameParts = packageParts[0]?.startsWith('@') ? 2 : 1
   const name = packageParts.slice(0, nameParts).join('/')
   const entry = packageParts.slice(nameParts).join('/')
+  if (target.platform === 'linux' && name === 'onnxruntime-node' && entry.startsWith('bin/napi-v6/linux/')) {
+    if (packageParts[nameParts + 3] !== target.arch) return 'ONNX other architecture'
+  }
+  if (target.platform === 'linux' && name === '@koromix/koffi-linux-x64' && entry.startsWith('musl_x64/')) {
+    return 'Koffi other libc'
+  }
   if (name.startsWith('@deepseek-ai/libreoffice-kit-')) {
     if (name !== `@deepseek-ai/libreoffice-kit-${officeEngine}`) return 'LibreOffice other platform'
   }
