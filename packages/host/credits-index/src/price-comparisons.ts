@@ -1,5 +1,6 @@
 /** Public, same-unit price references for recharge education; no account or supplier pricing is retained. @module */
 import { readPublicStatus } from './public-status.ts'
+import { accountRetryAfter } from './account-read.ts'
 
 /** Official public evidence attached to one exact default retail specification. */
 export interface OfficialPriceReference {
@@ -41,7 +42,11 @@ export type PriceComparisonsResponse = {
 } | {
   readonly ok: false
   readonly code: 'PRICE_COMPARISONS_UNSUPPORTED' | 'PRICE_COMPARISONS_NETWORK'
-    | 'PRICE_COMPARISONS_UNAVAILABLE' | 'PRICE_COMPARISONS_INVALID'
+    | 'PRICE_COMPARISONS_UNAVAILABLE' | 'PRICE_COMPARISONS_INVALID' | 'PRICE_COMPARISONS_RATE_LIMITED'
+  /** Observed gateway rejection status; the local route still returns its ordinary JSON envelope. */
+  readonly httpStatus?: 429 | 503
+  /** Rounded-up gateway delay whose millisecond value is a safe integer. */
+  readonly retryAfterSeconds?: number
 }
 
 const parameterNames = new Set(['duration', 'seconds', 'resolution', 'size', 'quality', 'mode', 'ratio', 'aspect_ratio',
@@ -155,13 +160,29 @@ export function parsePriceComparisons(value: unknown): PriceComparisonsResponse 
  * Read an anonymous pricing document under the Host request lifetime without retaining raw API data.
  * @param fetchPricing - Fixed-origin, credential-free request with redirects disabled.
  * @param signal - Host request, plugin disposal and deadline lifetime.
- * @returns Safe default-price data or a localized UI-owned failure category.
+ * @returns Safe default-price data or a failure category with bounded gateway-directed cooldown metadata.
  */
 export async function readPriceComparisons(
   fetchPricing: (signal: AbortSignal) => Promise<Response>, signal: AbortSignal,
 ): Promise<PriceComparisonsResponse> {
-  const result = await readPublicStatus(fetchPricing, signal)
+  let httpStatus: 429 | 503 | undefined
+  let retryAfterSeconds: number | undefined
+  const result = await readPublicStatus(async (readSignal) => {
+    const response = await fetchPricing(readSignal)
+    if (response.status === 429 || response.status === 503) {
+      httpStatus = response.status
+      const seconds = accountRetryAfter(response.headers)
+      if (seconds !== undefined && seconds >= 0 && Number.isSafeInteger(Math.ceil(seconds) * 1000)) {
+        retryAfterSeconds = Math.ceil(seconds)
+      }
+    }
+    return response
+  }, signal)
   if (result.ok) return parsePriceComparisons(result.value)
+  if (result.reason === 'unavailable' && httpStatus !== undefined) {
+    return { ok: false, code: httpStatus === 429 ? 'PRICE_COMPARISONS_RATE_LIMITED' : 'PRICE_COMPARISONS_UNAVAILABLE',
+      httpStatus, ...retryAfterSeconds === undefined ? {} : { retryAfterSeconds } }
+  }
   const codes = { unsupported: 'PRICE_COMPARISONS_UNSUPPORTED', unavailable: 'PRICE_COMPARISONS_UNAVAILABLE',
     invalid: 'PRICE_COMPARISONS_INVALID', network: 'PRICE_COMPARISONS_NETWORK', timeout: 'PRICE_COMPARISONS_NETWORK' } as const
   return { ok: false, code: codes[result.reason] }
