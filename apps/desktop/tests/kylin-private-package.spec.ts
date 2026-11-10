@@ -18,6 +18,7 @@ it('isolates Kylin output and omits all ordinary update and policy metadata', ()
   expect(config.extraMetadata).not.toHaveProperty('dshDesktopUpdateConfigOrigin')
   expect(config.extraMetadata).not.toHaveProperty('dshMandatoryUpdatePolicy')
   expect(config.linux.target).toEqual(['deb', 'tar.gz'])
+  expect(config.deb?.packageName).toBe('yunshu-kylin')
   expect(config.artifactName).toContain('-kylin-v10sp1-2503.')
   for (const target of ['mac-arm64', 'mac-x64', 'win-x64'] as const) {
     expect(config.directories.output).not.toBe(desktopTargetBuildPaths(target).artifacts)

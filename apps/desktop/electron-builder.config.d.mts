@@ -59,6 +59,12 @@ export interface DesktopElectronBuilderConfig {
     readonly category: 'Development'
     readonly target: readonly ['AppImage'] | readonly ['deb', 'tar.gz']
   }
+  readonly deb?: {
+    readonly packageName: 'yunshu-kylin'
+    readonly depends: readonly string[]
+    readonly compression: 'gz'
+    readonly fpm: readonly ['--deb-compression-level=1']
+  }
   readonly nsis: {
     readonly include: string
     readonly oneClick: false

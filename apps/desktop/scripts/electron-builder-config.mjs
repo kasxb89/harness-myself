@@ -256,7 +256,7 @@ export function createElectronBuilderConfig(
       target: privateLinux ? ['deb', 'tar.gz'] : ['AppImage'],
       ...(privateLinux ? { executableName: 'yunshu', maintainer: '云枢', vendor: '云枢' } : {}),
     },
-    ...(privateLinux ? { deb: { depends: ['libc6 (>= 2.31)', 'libgtk-3-0', 'libnss3', 'libatk-bridge2.0-0',
+    ...(privateLinux ? { deb: { packageName: 'yunshu-kylin', depends: ['libc6 (>= 2.31)', 'libgtk-3-0', 'libnss3', 'libatk-bridge2.0-0',
       'libxss1', 'libasound2', 'libgbm1', 'libdrm2', 'libxshmfence1'], compression: 'gz', fpm: ['--deb-compression-level=1'] } } : {}),
     nsis: {
       installerSidebar: join(buildPaths.root, 'installer-ui', 'uninstaller-sidebar.bmp'),
