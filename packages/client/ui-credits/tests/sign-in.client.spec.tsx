@@ -87,16 +87,114 @@ describe('balance phone sign-in', () => {
     },
   )
 
-  it('rejects another country prefix without sending an SMS', () => {
+  it('rejects a malformed international prefix without rewriting or submitting its digits', () => {
     const fetchMock = vi.fn<typeof fetch>()
     vi.stubGlobal('fetch', fetchMock)
     const view = renderSignIn()
-    fireEvent.change(view.getByRole('textbox', { name: '手机号' }), { target: { value: '+1 380 013 8000' } })
-    const send = view.getByRole('button', { name: '发送验证码' })
+    fireEvent.change(view.getByRole('textbox', { name: '手机号' }), { target: { value: '+01234567' } })
+    const send = view.getByRole('button', { name: t('loginManualPrepare') })
     expect(send.hasAttribute('disabled')).toBe(true)
     fireEvent.click(send)
-    expect(view.getByRole('alert').textContent).toBe(t('errPhone'))
+    expect(view.getByRole('textbox', { name: '手机号' }).getAttribute('value')).toBe('+01234567')
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['+60', '123456789', '+60123456789'], ['+81', '9012345678', '+819012345678'],
+    ['+1', '4155552671', '+14155552671'],
+  ])('prepares an overseas request for %s without claiming SMS delivery', async (callingCode, national, expected) => {
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json(challenge))
+      .mockResolvedValueOnce(Response.json({ ok: true, payload: { status: 'authorized' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    const completeSignIn = vi.fn(), view = renderSignIn(completeSignIn)
+    fireEvent.change(view.getByRole('combobox', { name: t('loginCountryCode') }), { target: { value: callingCode } })
+    fireEvent.change(view.getByRole('textbox', { name: '手机号' }), { target: { value: national } })
+    expect(view.getByRole('textbox', { name: '手机号' }).getAttribute('aria-describedby')).not.toBeNull()
+    fireEvent.click(view.getByRole('button', { name: t('loginManualPrepare') }))
+    expect((await view.findByRole('status')).textContent).toBe(t('loginManualReady'))
+    expect(view.container.textContent).not.toContain('短信')
+    expect(requestBody(fetchMock.mock.calls[0]?.[1])).toMatchObject({ phone: expected })
+    const code = view.getByRole('textbox', { name: '验证码' })
+    expect(code.getAttribute('autocomplete')).toBe('one-time-code')
+    fireEvent.change(code, { target: { value: '123456' } })
+    fireEvent.click(view.getByRole('button', { name: '登录' }))
+    await act(async () => {})
+    expect(requestBody(fetchMock.mock.calls[1]?.[1])).toMatchObject({ challengeId: 'challenge-for-138', code: '123456' })
+    expect(completeSignIn).toHaveBeenCalledOnce()
+  })
+
+  it('keeps a pasted international number and clears the previous challenge when the calling code changes', async () => {
+    const immediate = { ...challenge, payload: { ...challenge.payload, resend_after_seconds: 0 } }
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation(async () => Response.json(immediate))
+    vi.stubGlobal('fetch', fetchMock)
+    const view = renderSignIn(), number = view.getByRole('textbox', { name: '手机号' })
+    fireEvent.change(number, { target: { value: '+81 90-1234-5678' } })
+    expect((view.getByRole('combobox', { name: t('loginCountryCode') }) as HTMLSelectElement).value).toBe('+81')
+    expect(number.getAttribute('value')).toBe('9012345678')
+    fireEvent.click(view.getByRole('button', { name: t('loginManualPrepare') }))
+    await view.findByRole('status')
+    fireEvent.change(view.getByRole('textbox', { name: '验证码' }), { target: { value: '123456' } })
+    fireEvent.change(view.getByRole('combobox', { name: t('loginCountryCode') }), { target: { value: '+60' } })
+    expect(number.getAttribute('value')).toBe('')
+    expect(view.getByRole('textbox', { name: '验证码' }).getAttribute('value')).toBe('')
+    expect(fetchMock).toHaveBeenCalledOnce()
+    fireEvent.change(number, { target: { value: '123456789' } })
+    fireEvent.click(view.getByRole('button', { name: t('loginManualPrepare') }))
+    await view.findByRole('status')
+    expect(requestBody(fetchMock.mock.calls[1]?.[1]).phone).toBe('+60123456789')
+    expect(requestBody(fetchMock.mock.calls[0]?.[1]).idempotencyKey)
+      .not.toBe(requestBody(fetchMock.mock.calls[1]?.[1]).idempotencyKey)
+  })
+
+  it('does not guess an unknown calling code or strip a local trunk prefix', () => {
+    const fetchMock = vi.fn<typeof fetch>()
+    vi.stubGlobal('fetch', fetchMock)
+    const view = renderSignIn(), number = view.getByRole('textbox', { name: '手机号' })
+    fireEvent.change(number, { target: { value: '+44 7700 900123' } })
+    expect(number.getAttribute('value')).toBe('+447700900123')
+    fireEvent.change(view.getByRole('combobox', { name: t('loginCountryCode') }), { target: { value: '+81' } })
+    fireEvent.change(number, { target: { value: '09012345678' } })
+    expect(number.getAttribute('value')).toBe('09012345678')
+    expect(view.getByRole('alert').textContent).toBe(t('loginLocalPrefix'))
+    expect(view.getByRole('button', { name: t('loginManualPrepare') }).hasAttribute('disabled')).toBe(true)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('restores an overseas accepted challenge without claiming a text message or resending it', () => {
+    vi.mocked(useCreditsSnapshot).mockReturnValue({
+      accountEpoch: 0, loaded: true, failure: null, balance: null,
+      session: { signedIn: false, creditsPerYuan: 1000, phoneRecovery: {
+        phone: '+60123456789', challengeKey: 'original-manual-key', challengeId: 'manual-challenge',
+        deliveryStatus: 'accepted', expiresAt: null, resendAt: 0, exchangeKey: null, verifyRetryAt: 0, securityUnconfirmed: false,
+      } },
+    })
+    const fetchMock = vi.fn<typeof fetch>()
+    vi.stubGlobal('fetch', fetchMock)
+    const view = renderSignIn()
+    expect(view.getByRole('textbox', { name: '手机号' }).getAttribute('value')).toBe('123456789')
+    expect(view.getByRole('status').textContent).toBe(t('loginManualReady'))
+    expect(view.container.textContent).not.toContain('短信')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('queries an uncertain overseas request with its original key and delivery-neutral feedback', async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockRejectedValueOnce(new Error('Private transport detail'))
+      .mockImplementation(async () => Response.json({ ...challenge,
+        payload: { ...challenge.payload, delivery_status: 'accepted', resend_after_seconds: 0 } }))
+    vi.stubGlobal('fetch', fetchMock)
+    const view = renderSignIn()
+    fireEvent.change(view.getByRole('textbox', { name: '手机号' }), { target: { value: '+1 (415) 555-2671' } })
+    fireEvent.click(view.getByRole('button', { name: t('loginManualPrepare') }))
+    expect((await view.findByRole('alert')).textContent).toBe(t('loginManualUnconfirmed'))
+    expect(view.container.textContent).not.toContain('短信')
+    expect(view.container.textContent).not.toContain('Private transport detail')
+    fireEvent.click(view.getByRole('button', { name: t('loginManualCheck') }))
+    expect((await view.findByRole('status')).textContent).toBe(t('loginManualReady'))
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(requestBody(fetchMock.mock.calls[0]?.[1])).toEqual(requestBody(fetchMock.mock.calls[1]?.[1]))
+    expect(requestBody(fetchMock.mock.calls[1]?.[1]).phone).toBe('+14155552671')
   })
 
   it('disables the pending request and starts the returned resend countdown after success', async () => {
@@ -419,7 +517,7 @@ describe('balance phone sign-in', () => {
   })
 
 
-  it('submits only the declared 2fa code to the Host before completing sign-in', async () => {
+  it.each(['13800138000', '+60123456789'])('submits only the declared 2fa code before signing in %s', async (phone) => {
     const completeSignIn = vi.fn()
     const fetchMock = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(Response.json(challenge))
@@ -429,8 +527,8 @@ describe('balance phone sign-in', () => {
       .mockResolvedValueOnce(Response.json({ ok: true, payload: { status: 'authorized' } }))
     vi.stubGlobal('fetch', fetchMock)
     const view = renderSignIn(completeSignIn)
-    fireEvent.change(view.getByRole('textbox', { name: '手机号' }), { target: { value: '13800138000' } })
-    fireEvent.click(view.getByRole('button', { name: '发送验证码' }))
+    fireEvent.change(view.getByRole('textbox', { name: '手机号' }), { target: { value: phone } })
+    fireEvent.click(view.getByRole('button', { name: phone.startsWith('+60') ? t('loginManualPrepare') : t('sendCode') }))
     await view.findByRole('status')
     fireEvent.change(view.getByRole('textbox', { name: '验证码' }), { target: { value: '123456' } })
     fireEvent.click(view.getByRole('button', { name: '登录' }))
@@ -467,7 +565,7 @@ describe('balance phone sign-in', () => {
     await act(async () => {})
     expect(view.getByRole('alert').textContent).toBe(t('loginSecurityUnconfirmed'))
     expect(view.getByRole('button', { name: '完成安全验证' }).hasAttribute('disabled')).toBe(true)
-    fireEvent.click(view.getByRole('button', { name: '重新短信登录' }))
+    fireEvent.click(view.getByRole('button', { name: t('loginSecurityRestart') }))
     expect(fetchMock).toHaveBeenCalledTimes(3)
     expect(view.getByRole('button', { name: '登录' }).hasAttribute('disabled')).toBe(true)
   })

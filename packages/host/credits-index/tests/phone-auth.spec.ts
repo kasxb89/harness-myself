@@ -39,6 +39,14 @@ it('contains transport and response-body read failures', async () => {
   expect(phoneFailure(null, {}, 'challenge')).toMatchObject({ code: 'PHONE_DELIVERY_UNKNOWN' })
 })
 
+it.each(['PHONE_CHALLENGE_UNAVAILABLE', 'PHONE_DELIVERY_UNKNOWN', 'PHONE_CHALLENGE_PENDING', 'PHONE_CODE_INVALID_OR_EXPIRED'])
+('keeps verification reports independent of the delivery channel: %s', (code) => {
+  const failure = phoneFailure(new Response('', { status: 503 }), { code }, 'challenge')
+  expect(failure.code).toBe(code)
+  expect(failure.message).toContain('验证码')
+  expect(failure.message).not.toMatch(/短信|SMS/u)
+})
+
 it('requires delivery evidence before reporting an unavailable challenge as not sent', () => {
   const response = new Response('', { status: 503 })
   for (const data of [undefined, { delivery_status: 'unknown' }]) {

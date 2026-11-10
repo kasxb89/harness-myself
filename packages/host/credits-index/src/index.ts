@@ -3689,14 +3689,14 @@ export function apply(ctx: Context, config: Config): void {
           const body = await readJson(request)
           const phone = readString(body, 'phone')
           const key = readString(body, 'idempotencyKey')
-          if (phone === null || !/^\+[1-9]\d{7,14}$/u.test(phone) || key === null) {
+          if (phone === null || !/^\+[1-9]\d{6,14}$/u.test(phone) || key === null) {
             json(response, 200, { ok: false, code: 'PHONE_INVALID_PARAMETERS', message: '手机号与请求标识必填。' })
             return
           }
           const reserved = await phoneAuth.reserveChallenge(phone, key)
           if (reserved !== 'reserved') {
             json(response, 200, { ok: false, code: reserved === 'conflict' ? 'PHONE_IDEMPOTENCY_CONFLICT' : 'PHONE_RECOVERY_UNAVAILABLE',
-              message: '本次短信请求无法安全恢复，请检查原请求后重试。' }); return
+              message: '本次验证码请求无法安全恢复，请检查原请求后重试。' }); return
           }
           const challenge = await apiFetch('/api/user/phone/challenge', {
             method: 'POST',
@@ -3725,7 +3725,7 @@ export function apply(ctx: Context, config: Config): void {
             ...challengeId === undefined ? {} : { challengeId }, ...expiry === undefined ? {} : { expiresAt: expiry },
             resendAt: Date.now() + resend * 1000 })
           if (!saved) {
-            json(response, 200, { ok: false, code: 'PHONE_RECOVERY_UNAVAILABLE', message: '短信结果未能保存，请保留本次请求并稍后重试。' }); return
+            json(response, 200, { ok: false, code: 'PHONE_RECOVERY_UNAVAILABLE', message: '验证码请求结果未能保存，请保留本次请求并稍后重试。' }); return
           }
           const payload = challengeId === undefined ? undefined : {
             challenge_id: challengeId, phone, delivery_status: deliveryStatus, expires_at: expiry ?? null,
@@ -3751,7 +3751,7 @@ export function apply(ctx: Context, config: Config): void {
             json(response, 200, { ok: false, code: 'PHONE_RECOVERY_UNAVAILABLE', message: '无法读取登录重试状态，请稍后重试。' }); return
           }
           const phoneForLogin = binding.phone ?? challengeId
-          if (!/^\+[1-9]\d{7,14}$/u.test(phoneForLogin)) {
+          if (!/^\+[1-9]\d{6,14}$/u.test(phoneForLogin)) {
             json(response, 200, { ok: false, code: 'PHONE_CODE_INVALID_OR_EXPIRED', message: '验证请求已失效，请重新获取验证码。' }); return
           }
           const reserved = await phoneAuth.reserveExchange(phoneForLogin, challengeId, code, key)
@@ -3786,7 +3786,7 @@ export function apply(ctx: Context, config: Config): void {
               json(response, 200, phoneFailure(null, {}, 'login')); return
             }
             if (await phoneAuth.securityPending(key)) {
-              json(response, 200, { ok: false, code: 'PHONE_SECURITY_UNCONFIRMED', message: '安全验证结果未确认，请重新短信登录。' }); return
+              json(response, 200, { ok: false, code: 'PHONE_SECURITY_UNCONFIRMED', message: '安全验证结果未确认，请重新使用手机号登录。' }); return
             }
             phoneVerifications.set(key, { flowToken, phone: phoneForLogin, methods, expiresAt: expiresAt * 1000,
               version, attempt, busy: false, uncertain: false })
@@ -3803,7 +3803,7 @@ export function apply(ctx: Context, config: Config): void {
           const code = readString(body, 'code')
           const flow = key === null ? undefined : phoneVerifications.get(key)
           if (key === null || code === null || code.length > 128 || flow === undefined || flow.expiresAt <= Date.now()) {
-            json(response, 200, { ok: false, code: 'PHONE_SECURITY_EXPIRED', message: '安全验证已过期，请重新短信登录。' }); return
+            json(response, 200, { ok: false, code: 'PHONE_SECURITY_EXPIRED', message: '安全验证已过期，请重新使用手机号登录。' }); return
           }
           if (flow.version !== identityVersion || flow.attempt !== phoneLoginAttempt) {
             json(response, 200, { ok: false, code: 'ACCOUNT_CHANGED', message: '登录状态已变更，请重新操作。' }); return
@@ -3812,7 +3812,7 @@ export function apply(ctx: Context, config: Config): void {
             json(response, 200, { ok: false, code: 'PHONE_SECURITY_UNSUPPORTED', message: '此账户需要当前客户端尚未支持的安全验证方式。' }); return
           }
           if (flow.uncertain) {
-            json(response, 200, { ok: false, code: 'PHONE_SECURITY_UNCONFIRMED', message: '安全验证结果未确认，请重新短信登录。' }); return
+            json(response, 200, { ok: false, code: 'PHONE_SECURITY_UNCONFIRMED', message: '安全验证结果未确认，请重新使用手机号登录。' }); return
           }
           if (flow.busy) {
             json(response, 200, { ok: false, code: 'PHONE_RATE_LIMITED', retryAfterSeconds: 1, message: '安全验证仍在处理中，请稍候。' }); return
@@ -3837,10 +3837,10 @@ export function apply(ctx: Context, config: Config): void {
             const outcome = await acceptPhoneSession(login, result, flow.phone, flow.version, flow.attempt, key)
             if (outcome.ok) { phoneVerifications.delete(key); json(response, 200, outcome); return }
             flow.uncertain = true
-            json(response, 200, { ok: false, code: 'PHONE_SECURITY_UNCONFIRMED', message: '安全验证结果未确认，请重新短信登录。' })
+            json(response, 200, { ok: false, code: 'PHONE_SECURITY_UNCONFIRMED', message: '安全验证结果未确认，请重新使用手机号登录。' })
           } catch (_unconfirmedSecurityResult: unknown) {
             flow.uncertain = true
-            json(response, 200, { ok: false, code: 'PHONE_SECURITY_UNCONFIRMED', message: '安全验证结果未确认，请重新短信登录。' })
+            json(response, 200, { ok: false, code: 'PHONE_SECURITY_UNCONFIRMED', message: '安全验证结果未确认，请重新使用手机号登录。' })
           } finally { flow.busy = false }
           return
         }

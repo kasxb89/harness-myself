@@ -100,6 +100,71 @@ const bundle = { access_token: 'new-access', access_expires_at: 253402300799, re
   user: { id: 8, phone_e164: '+8613900000000' } }
 const loginRequest = { challengeId: '+8613900000000', code: '123456', idempotencyKey: 'fixture-login' }
 
+it.each([7, 15])('forwards both opaque and legacy phone challenges at the API-compatible %s-digit E.164 boundary', async (digits) => {
+  const phone = '+' + '1'.repeat(digits)
+  const calls: { path: string; body: Record<string, unknown> }[] = []
+  const f = await boot((path, body, response) => {
+    calls.push({ path, body })
+    if (path.endsWith('/challenge')) response.end(JSON.stringify({ success: true, data: {
+      challenge_id: 'opaque-boundary', delivery_status: 'accepted', expires_at: 253402300799, resend_after_seconds: 0,
+    } }))
+    else { response.statusCode = 503; response.end(JSON.stringify({ success: false, code: 'PHONE_LOGIN_UNAVAILABLE' })) }
+  })
+  expect(await f.post('challenge', { phone, idempotencyKey: 'boundary-challenge' }))
+    .toMatchObject({ ok: true, payload: { phone, challenge_id: 'opaque-boundary', delivery_status: 'accepted' } })
+  for (const challengeId of ['opaque-boundary', phone]) {
+    expect(await f.post('verify', { challengeId, code: '123456', idempotencyKey: 'boundary-login-' + challengeId }))
+      .toMatchObject({ ok: false, code: 'PHONE_LOGIN_UNAVAILABLE' })
+  }
+  expect(calls.map(call => call.body)).toEqual([
+    { phone_e164: phone, idempotency_key: 'boundary-challenge', contract_version: 2 },
+    { phone_e164: phone, challenge_id: 'opaque-boundary', code: '123456', idempotency_key: 'boundary-login-opaque-boundary', contract_version: 2 },
+    { phone_e164: phone, challenge_id: phone, code: '123456', idempotency_key: 'boundary-login-' + phone, contract_version: 2 },
+  ])
+  expect(await readFile(f.file, 'utf8')).toBe(f.stored)
+})
+
+it.each([6, 16])('rejects %s-digit phone challenges before upstream dispatch and keeps the existing account', async (digits) => {
+  let calls = 0
+  const f = await boot((_path, _body, response) => { calls += 1; response.end('{}') })
+  const phone = '+' + '1'.repeat(digits)
+  expect(await f.post('challenge', { phone, idempotencyKey: 'invalid-challenge' }))
+    .toMatchObject({ ok: false, code: 'PHONE_INVALID_PARAMETERS' })
+  expect(await f.post('verify', { challengeId: phone, code: '123456', idempotencyKey: 'invalid-login' }))
+    .toMatchObject({ ok: false, code: 'PHONE_CODE_INVALID_OR_EXPIRED' })
+  expect(calls).toBe(0)
+  expect(await readFile(f.file, 'utf8')).toBe(f.stored)
+})
+
+it('keeps independent international opaque challenges bound to their own phones and exchange keys', async () => {
+  const phones = ['+601100000001', '+819000000001', '+12025550123']
+  const logins: Record<string, unknown>[] = []
+  const f = await boot((path, body, response) => {
+    if (path.endsWith('/challenge')) {
+      const index = phones.indexOf(String(body.phone_e164))
+      response.end(JSON.stringify({ success: true, data: { challenge_id: `opaque-country-${String(index)}`,
+        delivery_status: 'accepted', expires_at: 253402300799, resend_after_seconds: 0 } }))
+    } else {
+      logins.push(body)
+      response.statusCode = 503
+      response.end(JSON.stringify({ success: false, code: 'PHONE_LOGIN_UNAVAILABLE' }))
+    }
+  })
+  await Promise.all(phones.map((phone, index) => f.post('challenge', { phone, idempotencyKey: `country-request-${String(index)}` })))
+  await f.restart()
+  expect(await f.post('verify', { challengeId: 'opaque-country-0', code: '123456', idempotencyKey: 'original-exchange' }))
+    .toMatchObject({ ok: false, code: 'PHONE_LOGIN_UNAVAILABLE' })
+  expect(await f.post('verify', { challengeId: 'opaque-country-1', code: '123456', idempotencyKey: 'original-exchange' }))
+    .toMatchObject({ ok: false, code: 'PHONE_IDEMPOTENCY_CONFLICT' })
+  expect(await f.post('verify', { challengeId: 'opaque-country-2', code: '654321', idempotencyKey: 'independent-exchange' }))
+    .toMatchObject({ ok: false, code: 'PHONE_LOGIN_UNAVAILABLE' })
+  expect(logins).toEqual([
+    { phone_e164: phones[0], challenge_id: 'opaque-country-0', code: '123456', idempotency_key: 'original-exchange', contract_version: 2 },
+    { phone_e164: phones[2], challenge_id: 'opaque-country-2', code: '654321', idempotency_key: 'independent-exchange', contract_version: 2 },
+  ])
+  expect(await readFile(f.file, 'utf8')).toBe(f.stored)
+})
+
 it('contains phone transport, malformed and incomplete login responses without changing an existing session', async () => {
   let mode = 'rate'
   const { post, file, stored } = await boot((_path, _body, response) => {
@@ -320,18 +385,21 @@ it('keeps an incomplete v2 challenge unconfirmed instead of manufacturing a phon
 })
 
 
-it('replays the same committed login after a lost response, OTP expiry and Host restart without another SMS', async () => {
+it.each([
+  { country: 'Malaysia', phone: '+601100000001' }, { country: 'Japan', phone: '+819000000001' },
+  { country: 'United States', phone: '+12025550123' }, { country: 'China', phone: '+8613900000000' },
+])('replays the original $country login after a lost response, OTP expiry and Host restart without another code request', async ({ phone }) => {
   let now = Date.UTC(2026, 9, 21, 12, 0, 0)
   vi.spyOn(Date, 'now').mockImplementation(() => now)
   const otpExpiry = now + 2000
-  let smsRequests = 0
+  let challengeRequests = 0
   let loginRequests = 0
   let createdSessions = 0
   let committed = false
   const apiReplies: Record<string, unknown>[] = []
   const { post, file, stored, restart, readRecovery } = await boot((path, body, response) => {
     if (path.endsWith('/challenge')) {
-      smsRequests += 1
+      challengeRequests += 1
       response.end(JSON.stringify({ success: true, data: { challenge_id: 'opaque-lost-success',
         delivery_status: 'accepted', expires_at: otpExpiry / 1000, resend_after_seconds: 0 } }))
       return
@@ -340,9 +408,12 @@ it('replays the same committed login after a lost response, OTP expiry and Host 
     apiReplies.push(body)
     if (!committed) { committed = true; createdSessions += 1; response.destroy(); return }
     response.setHeader('set-cookie', 'new_api_refresh=replayed-refresh; HttpOnly')
-    response.end(JSON.stringify({ success: true, data: { ...bundle, access_token: 'same-committed-session-access' } }))
+    response.end(JSON.stringify({ success: true, data: { ...bundle, user: { id: 8, phone_e164: phone },
+      access_token: 'same-committed-session-access' } }))
   })
-  await post('challenge', { phone: '+8613900000000', idempotencyKey: 'sms-once' })
+  expect(await post('challenge', { phone, idempotencyKey: 'sms-once' })).toMatchObject({ ok: true, payload: {
+    phone, challenge_id: 'opaque-lost-success', delivery_status: 'accepted',
+  } })
   now += 1900
   const request = { ...loginRequest, challengeId: 'opaque-lost-success', idempotencyKey: 'same-exchange-key' }
   expect(await post('verify', request)).toMatchObject({ ok: false, code: 'PHONE_LOGIN_UNAVAILABLE' })
@@ -350,17 +421,18 @@ it('replays the same committed login after a lost response, OTP expiry and Host 
   now += 4 * 60_000
   await restart()
   expect(await readRecovery()).toMatchObject({ ok: true, payload: {
-    phone: '+8613900000000', challengeId: 'opaque-lost-success', exchangeKey: 'same-exchange-key',
+    phone, challengeId: 'opaque-lost-success', challengeKey: null, exchangeKey: 'same-exchange-key',
     expiresAt: new Date(otpExpiry).toISOString(),
   } })
   expect(loginRequests).toBe(1)
-  expect(smsRequests).toBe(1)
+  expect(challengeRequests).toBe(1)
   expect(await post('verify', request)).toMatchObject({ ok: true, payload: { account: { id: '8' } } })
   expect(createdSessions).toBe(1)
   expect(loginRequests).toBe(2)
-  expect(smsRequests).toBe(1)
-  expect(apiReplies[1]).toEqual(apiReplies[0])
+  expect(challengeRequests).toBe(1)
+  expect(apiReplies).toEqual([0, 1].map(() => ({ phone_e164: phone, code: '123456',
+    challenge_id: 'opaque-lost-success', idempotency_key: 'same-exchange-key', contract_version: 2 })))
   expect(JSON.parse(await readFile(file, 'utf8'))).toMatchObject({
-    upstream: { token: 'same-committed-session-access', refresh: 'replayed-refresh' }, account: { id: '8' },
+    upstream: { token: 'same-committed-session-access', refresh: 'replayed-refresh' }, account: { id: '8', phone },
   })
 })

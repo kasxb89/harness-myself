@@ -1,0 +1,70 @@
+/** Explicit dialing codes and digit-preserving phone entry for the existing sign-in flow. */
+export const phoneCallingCodes = ['+86', '+60', '+81', '+1', 'international'] as const
+export type PhoneCallingCode = typeof phoneCallingCodes[number]
+
+/** The display split never changes digits from a pasted international number. */
+export interface PhoneEntry {
+  readonly callingCode: PhoneCallingCode
+  readonly number: string
+  readonly explicitInternational: boolean
+}
+
+/**
+ * Split an explicit international number, or attach the user-selected calling code.
+ * @param input - Typed or pasted number; only visual separators are removed.
+ * @param callingCode - Explicit current selection, never inferred from national digits.
+ * @returns Editable digits and an exact international-prefix marker.
+ */
+export function phoneEntry(input: string, callingCode: PhoneCallingCode): PhoneEntry {
+  const compact = input.trim().replace(/[\s()-]/gu, '')
+  if (compact.startsWith('+')) {
+    const selected = phoneCallingCodes.find(code => code !== 'international' && compact.startsWith(code)) ?? 'international'
+    return { callingCode: selected, number: selected === 'international' ? compact : compact.slice(selected.length),
+      explicitInternational: true }
+  }
+  // Preserve the existing unambiguous mainland-China paste without a plus sign.
+  const number = callingCode === '+86' && /^861[3-9]\d{9}$/u.test(compact) ? compact.slice(2) : compact
+  return { callingCode, number, explicitInternational: false }
+}
+
+/** @param entry - Current editor state. @returns Exact digits with the explicit international prefix. */
+export function phoneE164(entry: PhoneEntry): string {
+  return entry.callingCode === 'international'
+    ? entry.number.startsWith('+') ? entry.number : '+' + entry.number
+    : entry.callingCode + entry.number
+}
+
+/** @param entry - Current editor state. @returns Whether a local trunk prefix needs the user's correction. */
+export function hasLocalTrunkPrefix(entry: PhoneEntry): boolean {
+  return !entry.explicitInternational && (entry.callingCode === '+60' || entry.callingCode === '+81')
+    && entry.number.startsWith('0')
+}
+
+/**
+ * Match the gateway E.164 grammar, retaining the existing mainland mobile-number check.
+ * @param entry - Explicit calling code and number, without guessing or dropping trunk digits.
+ * @returns Whether the form can submit this exact number.
+ */
+export function validPhoneEntry(entry: PhoneEntry): boolean {
+  const phone = phoneE164(entry)
+  return !hasLocalTrunkPrefix(entry) && (phone.startsWith('+86') ? /^\+861[3-9]\d{9}$/u.test(phone)
+    : /^\+[1-9]\d{6,14}$/u.test(phone))
+}
+
+const manualMessages: Readonly<Record<string, string>> = {
+  codeSent: 'loginManualReady', loginSubtitle: 'loginManualSubtitle', loginCodeHint: 'loginManualCodeHint',
+  loginSending: 'loginManualPreparing', sendCode: 'loginManualPrepare', loginCheckDelivery: 'loginManualCheck',
+  resendIn: 'loginRetryIn', loginHint: 'loginManualHint', loginSendFailed: 'loginManualUnconfirmed',
+  loginDeliveryUnknown: 'loginManualUnconfirmed', loginDeliveryPending: 'loginManualPending', loginNotSent: 'loginManualUnavailable',
+  loginCodeInvalid: 'loginManualCodeInvalid', loginCodeInvalidOrExpired: 'loginManualCodeInvalidOrExpired',
+  loginExpiredExchangeRecovery: 'loginManualExpiredExchangeRecovery', errNeedCode: 'loginManualNeedRequest',
+}
+
+/**
+ * @param key - Existing phone-flow locale key.
+ * @param phone - Exact edited or recovered number.
+ * @returns Delivery-neutral overseas copy.
+ */
+export function phoneMessageKey(key: string, phone: string): string {
+  return phone.startsWith('+86') ? key : manualMessages[key] ?? key
+}

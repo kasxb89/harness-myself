@@ -6,7 +6,7 @@
  * `@deepseek-ai/dsh-credits-index`; the session and the balance come from the
  * shared store, so the two pages cannot disagree about either.
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   Button, IconChecklistOutlineRegular, IconChevronRightOutlineRegular, IconPlusOutlineRegular,
   IconRefreshOutlineRegular, IconShieldOutlineRegular, IconUserOutlineRegular, Input,
@@ -14,6 +14,8 @@ import {
 import type { PropsRenderSlots, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { grouped, newPhoneKey, post } from './api.ts'
 import { phoneFailureKey } from './phone-sign-in.ts'
+import { hasLocalTrunkPrefix, phoneCallingCodes, phoneE164, phoneEntry, phoneMessageKey, validPhoneEntry,
+  type PhoneCallingCode } from './phone-number.ts'
 import { CreditsPanelIcon } from './CreditsPanelIcon.tsx'
 import { UsageOverview } from './UsageOverview.tsx'
 import { cx } from './class-names.ts'
@@ -56,7 +58,11 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected & 
   const [readRetrySeconds, setReadRetrySeconds] = useState(0)
 
   // Login flow
-  const [phone, setPhone] = useState('+86')
+  const [phoneInput, setPhoneInput] = useState(() => phoneEntry('', '+86'))
+  const phone = phoneE164(phoneInput)
+  const phoneId = useId()
+  const phoneHintId = useId()
+  const phoneText = useCallback((key: string, forPhone = phone): string => t(phoneMessageKey(key, forPhone)), [phone, t])
   const [code, setCode] = useState('')
   const [challenge, setChallenge] = useState<ChallengeResponse | null>(null)
   const [resendIn, setResendIn] = useState(0)
@@ -80,7 +86,17 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected & 
   const canSignOut = signedIn || loaded && session === null && currentReadFailure !== null
   const accountPhone = session?.account?.phone.replace(/^(\+86)(1\d{2})(\d{4})(\d{4})$/, '$1 $2 $3 $4') ?? '—'
   const recoveryAvailable = session?.phoneRecoveryAvailable !== false
-  const validPhone = /^\+861[3-9]\d{9}$/.test(phone)
+  const validPhone = validPhoneEntry(phoneInput)
+  const overseas = !phone.startsWith('+86')
+  const countryLabels: Readonly<Record<PhoneCallingCode, string>> = {
+    '+86': 'loginCountryChina', '+60': 'loginCountryMalaysia', '+81': 'loginCountryJapan',
+    '+1': 'loginCountryNorthAmerica', international: 'loginCountryOther',
+  }
+  const clearPhoneRequest = (): void => {
+    setChallenge(null); setCode(''); setFailure(null); setNotice(null)
+    challengeKey.current = null; verifyKey.current = null; restoredVerifyKey.current = false
+    setDeliveryStatus(undefined); setVerificationRequired(false); setSecurityCode(''); setSecurityUnconfirmed(false)
+  }
 
   useEffect(() => {
     const tick = (): void => { setReadRetrySeconds(creditsRetrySeconds(currentReadFailure)) }
@@ -99,7 +115,7 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected & 
     recovered.current = true
     const recovery = session?.phoneRecovery
     if (recovery == null) return
-    setPhone(recovery.phone)
+    setPhoneInput(phoneEntry(recovery.phone, '+86'))
     challengeKey.current = recovery.challengeKey
     verifyKey.current = recovery.exchangeKey
     restoredVerifyKey.current = recovery.exchangeKey !== null
@@ -108,15 +124,15 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected & 
     setVerifyUntil(recovery.verifyRetryAt)
     if (recovery.challengeId !== null) setChallenge({ challenge_id: recovery.challengeId, expires_at: recovery.expiresAt,
       resend_after_seconds: Math.max(0, Math.ceil((recovery.resendAt - Date.now()) / 1000)), delivery_status: recovery.deliveryStatus })
-    if (recovery.deliveryStatus === 'accepted') setNotice(t('codeSent'))
-    else setFailure(t(recovery.deliveryStatus === 'not_sent' ? 'loginNotSent' : 'loginDeliveryUnknown'))
+    if (recovery.deliveryStatus === 'accepted') setNotice(phoneText('codeSent', recovery.phone))
+    else setFailure(phoneText(recovery.deliveryStatus === 'not_sent' ? 'loginNotSent' : 'loginDeliveryUnknown', recovery.phone))
     if (recovery.exchangeKey !== null && recovery.expiresAt !== null && Date.parse(recovery.expiresAt) <= Date.now()) {
-      setNotice(null); setFailure(t('loginExpiredExchangeRecovery'))
+      setNotice(null); setFailure(phoneText('loginExpiredExchangeRecovery', recovery.phone))
     }
     if (recovery.securityUnconfirmed) {
       setVerificationRequired(true); setSecurityUnconfirmed(true); setFailure(t('loginSecurityUnconfirmed'))
     }
-  }, [loaded, recoveryAvailable, session, signedIn, t])
+  }, [loaded, phoneText, recoveryAvailable, session, signedIn, t])
 
   useEffect(() => {
     const tick = (): void => {
@@ -137,7 +153,7 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected & 
     if (!recoveryAvailable || loginActive.current || Date.now() < resendUntil) return
     setFailure(null)
     setNotice(null)
-    if (!/^\+861[3-9]\d{9}$/.test(phone)) {
+    if (!validPhone) {
       setFailure(t('errPhone'))
       return
     }
@@ -163,7 +179,7 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected & 
         setResendUntil(Date.now() + (Number.isFinite(seconds) && seconds >= 0 ? seconds : 60) * 1000)
         challengeKey.current = null
         verifyKey.current = null
-        setNotice(t('codeSent'))
+        setNotice(phoneText('codeSent'))
       } else {
         if (answer.retryAfterSeconds != null && Number.isFinite(answer.retryAfterSeconds)) {
           setResendUntil(Date.now() + Math.max(0, answer.retryAfterSeconds) * 1000)
@@ -177,23 +193,23 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected & 
           || answer.code === 'PHONE_CHALLENGE_PENDING') {
           setDeliveryStatus(answer.code === 'PHONE_CHALLENGE_PENDING' ? 'sending' : 'unknown')
         }
-        setFailure(t(phoneFailureKey(answer.code, 'send', answer.payload?.delivery_status)))
+        setFailure(phoneText(phoneFailureKey(answer.code, 'send', answer.payload?.delivery_status)))
       }
     } catch {
       setDeliveryStatus('unknown')
-      setFailure(t('loginSendFailed'))
+      setFailure(phoneText('loginSendFailed'))
     } finally {
       loginActive.current = false
       setBusy(false)
       setLoginAction(null)
     }
-  }, [challenge?.challenge_id, phone, recoveryAvailable, resendUntil, t])
+  }, [challenge?.challenge_id, phone, phoneText, recoveryAvailable, resendUntil, t, validPhone])
 
   /** Verify the code; a mismatched code keeps the challenge and the key. */
   const verifyCode = useCallback(async () => {
     if (!recoveryAvailable || loginActive.current || Date.now() < verifyUntil) return
     if (challenge === null) {
-      setFailure(t('errNeedCode'))
+      setFailure(phoneText('errNeedCode'))
       return
     }
     if (!/^\d{6}$/.test(code)) {
@@ -226,7 +242,7 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected & 
         await refreshCredits(undefined, true)
         completeSignIn()
       } else {
-        setFailure(t(phoneFailureKey(answer.code, 'verify')))
+        setFailure(phoneText(phoneFailureKey(answer.code, 'verify')))
         setVerificationRequired(answer.code === 'PHONE_LOGIN_VERIFICATION_REQUIRED')
         setSecurityMethods(answer.payload?.verification?.methods ?? [])
         setSecurityCode(''); setSecurityUnconfirmed(answer.code === 'PHONE_SECURITY_UNCONFIRMED')
@@ -248,7 +264,7 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected & 
       setBusy(false)
       setLoginAction(null)
     }
-  }, [challenge, code, completeSignIn, recoveryAvailable, t, verifyUntil])
+  }, [challenge, code, completeSignIn, phoneText, recoveryAvailable, t, verifyUntil])
 
   /** Submit the declared security check once; an unknown outcome requires fresh phone authentication. */
   const verifySecurity = useCallback(async () => {
@@ -268,7 +284,7 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected & 
         await refreshCredits(undefined, true)
         completeSignIn()
       } else {
-        setFailure(t(phoneFailureKey(answer.code, 'verify')))
+        setFailure(phoneText(phoneFailureKey(answer.code, 'verify')))
         if (answer.code === 'PHONE_SECURITY_UNCONFIRMED' || answer.code === 'PHONE_SECURITY_EXPIRED') setSecurityUnconfirmed(true)
         if (answer.retryAfterSeconds != null && Number.isFinite(answer.retryAfterSeconds)) {
           setVerifyUntil(Date.now() + Math.max(0, answer.retryAfterSeconds) * 1000)
@@ -279,7 +295,7 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected & 
     } finally {
       loginActive.current = false; setBusy(false); setLoginAction(null)
     }
-  }, [completeSignIn, securityCode, securityMethods, securityUnconfirmed, t, verifyUntil])
+  }, [completeSignIn, phoneText, securityCode, securityMethods, securityUnconfirmed, t, verifyUntil])
 
   /** Sign out: revoke on the platform, clear locally, return to the form. */
   const signOut = useCallback(async () => {
@@ -351,29 +367,33 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected & 
             }}>
               <div className={css.signInFormHeading}>
                 <h3>{t('loginTitle')}</h3>
-                <p>{t('loginSubtitle')}</p>
+                <p>{phoneText('loginSubtitle')}</p>
               </div>
-              <label className={css.signInField}>
-                <span className={css.signInFieldLabel}>{t('phone')}</span>
-                <span className={css.phoneControl}>
-                  <span className={css.phonePrefix} aria-hidden="true">+86</span>
-                  <Input className={cx(css.phoneInput)} aria-label={t('phone')}
-                    value={phone.slice(3)} type="tel" inputMode="tel" autoComplete="tel-national"
-                    maxLength={18} disabled={busy} placeholder={t('loginPhonePlaceholder')}
+              <div className={css.signInField}>
+                <label className={css.signInFieldLabel} htmlFor={phoneId}>{t('phone')}</label>
+                <div className={css.phoneControl}>
+                  <select className={css.phoneCountry} aria-label={t('loginCountryCode')}
+                    value={phoneInput.callingCode} disabled={busy} onChange={(event) => {
+                      const callingCode = phoneCallingCodes.find(value => value === event.target.value)
+                      if (callingCode === undefined) return
+                      clearPhoneRequest(); setPhoneInput(phoneEntry('', callingCode))
+                    }}>
+                    {phoneCallingCodes.map(value => <option key={value} value={value}>{t(countryLabels[value])}</option>)}
+                  </select>
+                  <Input id={phoneId} className={cx(css.phoneInput)} aria-label={t('phone')}
+                    value={phoneInput.number} type="tel" inputMode="tel"
+                    autoComplete={phoneInput.callingCode === 'international' ? 'tel' : 'tel-national'}
+                    aria-describedby={overseas ? phoneHintId : undefined}
+                    maxLength={64} disabled={busy} placeholder={t(phoneInput.callingCode === 'international'
+                      ? 'loginFullPhonePlaceholder' : overseas ? 'loginOverseasPhonePlaceholder' : 'loginPhonePlaceholder')}
                     onChange={(event) => {
-                      const input = event.target.value.trim()
-                      setChallenge(null); setCode(''); setFailure(null); setNotice(null)
-                      challengeKey.current = null; verifyKey.current = null; restoredVerifyKey.current = false
-                      setDeliveryStatus(undefined); setVerificationRequired(false)
-                      if (input.startsWith('+') && !input.startsWith('+86')) {
-                        setPhone('+86'); setFailure(t('errPhone')); return
-                      }
-                      const digits = (input.startsWith('+86') ? input.slice(3) : input).replace(/\D/g, '')
-                      const national = digits.length === 13 && digits.startsWith('86') ? digits.slice(2) : digits
-                      setPhone(`+86${national.slice(0, 11)}`)
+                      const next = phoneEntry(event.target.value, phoneInput.callingCode)
+                      clearPhoneRequest(); setPhoneInput(next)
+                      if (hasLocalTrunkPrefix(next)) setFailure(t('loginLocalPrefix'))
                     }} />
-                </span>
-              </label>
+                </div>
+                {overseas && <p id={phoneHintId} className={css.phoneHint}>{t('loginInternationalPhoneHint')}</p>}
+              </div>
               <div className={css.signInField}>
                 <span className={css.signInFieldLabel}>{t('code')}</span>
                 <div className={css.signInCodeRow}>
@@ -387,9 +407,9 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected & 
                     }} />
                   <Button className={css.signInSend} variant="outline"
                     onClick={() => { void sendCode() }} disabled={!recoveryAvailable || busy || resendIn > 0 || !validPhone}>
-                    {loginAction === 'send' ? t('loginSending') : resendIn > 0
-                      ? t('resendIn', { seconds: String(resendIn) })
-                      : deliveryStatus === 'unknown' || deliveryStatus === 'sending' ? t('loginCheckDelivery') : t('sendCode')}
+                    {loginAction === 'send' ? phoneText('loginSending') : resendIn > 0
+                      ? t(phoneMessageKey('resendIn', phone), { seconds: String(resendIn) })
+                      : deliveryStatus === 'unknown' || deliveryStatus === 'sending' ? phoneText('loginCheckDelivery') : phoneText('sendCode')}
                   </Button>
                 </div>
               </div>
@@ -401,7 +421,7 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected & 
               </label>}
               <div className={css.signInFeedback} aria-live="polite">
                 {failure !== null ? <p role="alert" className={css.signInFailure}>{failure}</p>
-                  : <p role={notice === null ? undefined : 'status'}>{notice ?? t('loginCodeHint')}</p>}
+                  : <p role={notice === null ? undefined : 'status'}>{notice ?? phoneText('loginCodeHint')}</p>}
               </div>
               <Button
                 className={css.signInSubmit} type="submit" variant="primary"
@@ -418,7 +438,7 @@ export function CreditsPage(props: PropsRuntime<'main'> & CreditsPageInjected & 
                 setVerificationRequired(false); setSecurityCode(''); setSecurityUnconfirmed(false)
                 setCode(''); setChallenge(null); verifyKey.current = null; challengeKey.current = null
               }}>{t('loginSecurityRestart')}</Button>}
-              <p className={css.signInNote}><IconShieldOutlineRegular /><span>{t('loginHint')}</span></p>
+              <p className={css.signInNote}><IconShieldOutlineRegular /><span>{phoneText('loginHint')}</span></p>
             </form>
           </div>
         </section>
