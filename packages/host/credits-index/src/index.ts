@@ -43,7 +43,7 @@ import { MediaDefaultsCache, mediaDefaultSelection, requireMediaDefault, type Me
 import { MediaPreferencesStore, mediaPreferencesScope } from './media-preferences.ts'
 import { registerMediaRequestSelection, canonicalMediaModelId, canonicalMediaRequestParameters, mediaRequestModelChoiceOf, resolveMediaRequestSelection, needsMediaRequestSelectionCatalog, type MediaRequestSelectionContext } from './media-request-selection.ts'
 import { mediaPreferencePrices } from './media-preference-pricing.ts'
-import type { MediaPreferenceModel, MediaPreferencePricing } from './media-preferences-types.ts'
+import type { MediaPreferenceModel, MediaPreferencePricing } from './media-preference-pricing-types.ts'
 import { readAnnouncementBanner } from './announcement-banner.ts'
 import { parseClientModelConfigStatus, parseClientModelPresentationStatus } from './client-model-config.ts'
 import type { MediaModelConfigBinding } from './media-model-config-result.ts'
@@ -1397,12 +1397,9 @@ export function apply(ctx: Context, config: Config): void {
     }
   }
 
-  /** Read pricing first so older endpoint caches have complete model declarations before authorization. */
-  const readAuthorizedMediaCatalog = async (session: StoredSession, signal?: AbortSignal,
-    publicUnitPrices?: Map<string, MediaPreferencePricing>) => {
-    const owner = productOwner(session)
-    const epoch = identityVersion
-    let catalog = await readMediaCatalog(signal, publicUnitPrices !== undefined)
+  /** Read pricing before authorization and retry one publication change without losing endpoint failures. */
+  const readConsistentMediaCatalogPair = async (session?: StoredSession, signal?: AbortSignal, includePublicUnitPrices = false) => {
+    let catalog = await readMediaCatalog(signal, includePublicUnitPrices)
     let visible = await readNewApiModels(session, signal)
     for (let attempt = 0; attempt < 2; attempt += 1) {
       if (!catalog.ok || !visible.ok) break
@@ -1414,10 +1411,19 @@ export function apply(ctx: Context, config: Config): void {
           throw new CreativeError('MODEL_CONFIG_CHANGED', 409, '模型配置已变化，请刷新当前目录后重新发起；尚未提交生成。')
         }
         mediaCatalogCache.clear()
-        catalog = await readMediaCatalog(signal, publicUnitPrices !== undefined)
+        catalog = await readMediaCatalog(signal, includePublicUnitPrices)
         visible = await readNewApiModels(session, signal)
       }
     }
+    return { catalog, visible }
+  }
+
+  /** Read pricing first so older endpoint caches have complete model declarations before authorization. */
+  const readAuthorizedMediaCatalog = async (session: StoredSession, signal?: AbortSignal,
+    publicUnitPrices?: Map<string, MediaPreferencePricing>) => {
+    const owner = productOwner(session)
+    const epoch = identityVersion
+    const { catalog, visible } = await readConsistentMediaCatalogPair(session, signal, publicUnitPrices !== undefined)
     const latest = await store.read()
     if (epoch !== identityVersion || latest?.token === undefined || productOwner(latest) !== owner) {
       throw new CreativeError('ACCOUNT_CHANGED', 409, '登录状态已变化，请重新读取模型目录。')
@@ -3689,14 +3695,14 @@ export function apply(ctx: Context, config: Config): void {
           const body = await readJson(request)
           const phone = readString(body, 'phone')
           const key = readString(body, 'idempotencyKey')
-          if (phone === null || !/^\+[1-9]\d{7,14}$/u.test(phone) || key === null) {
+          if (phone === null || !/^\+[1-9]\d{6,14}$/u.test(phone) || key === null) {
             json(response, 200, { ok: false, code: 'PHONE_INVALID_PARAMETERS', message: '手机号与请求标识必填。' })
             return
           }
           const reserved = await phoneAuth.reserveChallenge(phone, key)
           if (reserved !== 'reserved') {
             json(response, 200, { ok: false, code: reserved === 'conflict' ? 'PHONE_IDEMPOTENCY_CONFLICT' : 'PHONE_RECOVERY_UNAVAILABLE',
-              message: '本次短信请求无法安全恢复，请检查原请求后重试。' }); return
+              message: '本次验证码请求无法安全恢复，请检查原请求后重试。' }); return
           }
           const challenge = await apiFetch('/api/user/phone/challenge', {
             method: 'POST',
@@ -3725,7 +3731,7 @@ export function apply(ctx: Context, config: Config): void {
             ...challengeId === undefined ? {} : { challengeId }, ...expiry === undefined ? {} : { expiresAt: expiry },
             resendAt: Date.now() + resend * 1000 })
           if (!saved) {
-            json(response, 200, { ok: false, code: 'PHONE_RECOVERY_UNAVAILABLE', message: '短信结果未能保存，请保留本次请求并稍后重试。' }); return
+            json(response, 200, { ok: false, code: 'PHONE_RECOVERY_UNAVAILABLE', message: '验证码请求结果未能保存，请保留本次请求并稍后重试。' }); return
           }
           const payload = challengeId === undefined ? undefined : {
             challenge_id: challengeId, phone, delivery_status: deliveryStatus, expires_at: expiry ?? null,
@@ -3751,7 +3757,7 @@ export function apply(ctx: Context, config: Config): void {
             json(response, 200, { ok: false, code: 'PHONE_RECOVERY_UNAVAILABLE', message: '无法读取登录重试状态，请稍后重试。' }); return
           }
           const phoneForLogin = binding.phone ?? challengeId
-          if (!/^\+[1-9]\d{7,14}$/u.test(phoneForLogin)) {
+          if (!/^\+[1-9]\d{6,14}$/u.test(phoneForLogin)) {
             json(response, 200, { ok: false, code: 'PHONE_CODE_INVALID_OR_EXPIRED', message: '验证请求已失效，请重新获取验证码。' }); return
           }
           const reserved = await phoneAuth.reserveExchange(phoneForLogin, challengeId, code, key)
@@ -3786,7 +3792,7 @@ export function apply(ctx: Context, config: Config): void {
               json(response, 200, phoneFailure(null, {}, 'login')); return
             }
             if (await phoneAuth.securityPending(key)) {
-              json(response, 200, { ok: false, code: 'PHONE_SECURITY_UNCONFIRMED', message: '安全验证结果未确认，请重新短信登录。' }); return
+              json(response, 200, { ok: false, code: 'PHONE_SECURITY_UNCONFIRMED', message: '安全验证结果未确认，请重新使用手机号登录。' }); return
             }
             phoneVerifications.set(key, { flowToken, phone: phoneForLogin, methods, expiresAt: expiresAt * 1000,
               version, attempt, busy: false, uncertain: false })
@@ -3803,7 +3809,7 @@ export function apply(ctx: Context, config: Config): void {
           const code = readString(body, 'code')
           const flow = key === null ? undefined : phoneVerifications.get(key)
           if (key === null || code === null || code.length > 128 || flow === undefined || flow.expiresAt <= Date.now()) {
-            json(response, 200, { ok: false, code: 'PHONE_SECURITY_EXPIRED', message: '安全验证已过期，请重新短信登录。' }); return
+            json(response, 200, { ok: false, code: 'PHONE_SECURITY_EXPIRED', message: '安全验证已过期，请重新使用手机号登录。' }); return
           }
           if (flow.version !== identityVersion || flow.attempt !== phoneLoginAttempt) {
             json(response, 200, { ok: false, code: 'ACCOUNT_CHANGED', message: '登录状态已变更，请重新操作。' }); return
@@ -3812,7 +3818,7 @@ export function apply(ctx: Context, config: Config): void {
             json(response, 200, { ok: false, code: 'PHONE_SECURITY_UNSUPPORTED', message: '此账户需要当前客户端尚未支持的安全验证方式。' }); return
           }
           if (flow.uncertain) {
-            json(response, 200, { ok: false, code: 'PHONE_SECURITY_UNCONFIRMED', message: '安全验证结果未确认，请重新短信登录。' }); return
+            json(response, 200, { ok: false, code: 'PHONE_SECURITY_UNCONFIRMED', message: '安全验证结果未确认，请重新使用手机号登录。' }); return
           }
           if (flow.busy) {
             json(response, 200, { ok: false, code: 'PHONE_RATE_LIMITED', retryAfterSeconds: 1, message: '安全验证仍在处理中，请稍候。' }); return
@@ -3837,10 +3843,10 @@ export function apply(ctx: Context, config: Config): void {
             const outcome = await acceptPhoneSession(login, result, flow.phone, flow.version, flow.attempt, key)
             if (outcome.ok) { phoneVerifications.delete(key); json(response, 200, outcome); return }
             flow.uncertain = true
-            json(response, 200, { ok: false, code: 'PHONE_SECURITY_UNCONFIRMED', message: '安全验证结果未确认，请重新短信登录。' })
+            json(response, 200, { ok: false, code: 'PHONE_SECURITY_UNCONFIRMED', message: '安全验证结果未确认，请重新使用手机号登录。' })
           } catch (_unconfirmedSecurityResult: unknown) {
             flow.uncertain = true
-            json(response, 200, { ok: false, code: 'PHONE_SECURITY_UNCONFIRMED', message: '安全验证结果未确认，请重新短信登录。' })
+            json(response, 200, { ok: false, code: 'PHONE_SECURITY_UNCONFIRMED', message: '安全验证结果未确认，请重新使用手机号登录。' })
           } finally { flow.busy = false }
           return
         }
@@ -5445,8 +5451,7 @@ export function apply(ctx: Context, config: Config): void {
         const binding = await bindCurrentVideoAccount()
         const session = await liveSession()
         const signal = AbortSignal.any([exec.signal, AbortSignal.timeout(resolved.timeoutMs)])
-        const catalog = await readMediaCatalog(signal)
-        const visible = await readNewApiModels(session ?? undefined, signal)
+        const { catalog, visible } = await readConsistentMediaCatalogPair(session ?? undefined, signal)
         await binding.key()
         exec.signal.throwIfAborted()
         if (!catalog.ok || !visible.ok) {
@@ -5491,6 +5496,9 @@ export function apply(ctx: Context, config: Config): void {
         }
         if (error instanceof VideoProjectError && error.code === 'VIDEO_ACCOUNT_CHANGED') {
           return { status: 'failed', code: 'ACCOUNT_CHANGED', message: '登录状态已变化，请在当前账号下重新读取图片模型；尚未提交生成。' }
+        }
+        if (error instanceof CreativeError && error.code === 'MODEL_CONFIG_CHANGED' && !exec.signal.aborted) {
+          return { status: 'failed', code: error.code, message: error.message }
         }
         return { status: 'failed', code: exec.signal.aborted ? 'CANCELLED' : 'IMAGE_MODELS_UNAVAILABLE',
           message: exec.signal.aborted ? '已停止读取图片模型；尚未提交生成。' : '暂时无法确认图片模型目录，请稍后重试；尚未提交生成。' }
@@ -5800,8 +5808,7 @@ export function apply(ctx: Context, config: Config): void {
       try {
         const binding = await bindCurrentVideoAccount()
         const session = await liveSession()
-        const catalog = await readMediaCatalog(exec.signal)
-        const visible = await readNewApiModels(session ?? undefined, exec.signal)
+        const { catalog, visible } = await readConsistentMediaCatalogPair(session ?? undefined, exec.signal)
         await binding.key()
         exec.signal.throwIfAborted()
         if (!catalog.ok || !visible.ok) return { status: 'failed', code: 'VIDEO_MODELS_UNAVAILABLE', message: '暂时无法读取当前账号的视频模型，请稍后重试；尚未提交生成。' }
@@ -5829,7 +5836,12 @@ export function apply(ctx: Context, config: Config): void {
         await binding.key()
         exec.signal.throwIfAborted()
         return { status: 'listed', models, ...defaultMetadata, message: '按当前参数规划生成片段；一个片段可含多个镜头切换。无独立音频开关不代表成片必定无声，未声明的音频能力不能保证对白。' }
-      } catch (_error) { return { status: 'failed', code: 'VIDEO_MODELS_UNAVAILABLE', message: '暂时无法读取视频模型，请确认登录后重试；尚未提交生成。' } }
+      } catch (error) {
+        if (error instanceof CreativeError && error.code === 'MODEL_CONFIG_CHANGED' && !exec.signal.aborted) {
+          return { status: 'failed', code: error.code, message: error.message }
+        }
+        return { status: 'failed', code: 'VIDEO_MODELS_UNAVAILABLE', message: '暂时无法读取视频模型，请确认登录后重试；尚未提交生成。' }
+      }
     },
   }))
 

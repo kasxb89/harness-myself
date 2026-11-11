@@ -71,4 +71,36 @@ describe('public model price comparisons', () => {
     expect(result[0]?.rows.map(item => item.direction)).toEqual(['input', 'output'])
     expect(JSON.stringify(result)).not.toContain('private')
   })
+
+  it('uses updated gateway reference values and removes withdrawn references without retaining earlier comparisons', () => {
+    const original = { success: true, data: [{ model_name: 'configured-text', display_name: 'Configured text', kind: 'text',
+      retail_price_rows: priceFixture().models[0]!.rows }] }
+    original.data[0]!.retail_price_rows[0]!.retail_cny = '1'
+    original.data[0]!.retail_price_rows[0]!.official_reference.official_cny = '2'
+    const initial = parsePriceComparisons(original)
+    if (!initial.ok) throw new Error('Expected initial gateway reference')
+    const initialRow = comparisonModels(initial.payload)[0]?.rows[0]
+    if (initialRow === undefined) throw new Error('Expected initial comparison row')
+    expect(comparisonDiscount(initialRow)).toMatchObject({ kind: 'lower', saving: '50' })
+
+    const updated = structuredClone(original)
+    Object.assign(updated.data[0]!.retail_price_rows[0]!.official_reference, { source_currency: 'CNY', usd_cny: undefined,
+      official_cny: '0.5', model: 'updated-native-model', source_url: 'https://official.example/new-pricing',
+      checked_at: '2026-11-11', conditions: 'Updated standard input reference' })
+    const current = parsePriceComparisons(updated)
+    if (!current.ok) throw new Error('Expected updated gateway reference')
+    const currentRow = comparisonModels(current.payload)[0]?.rows[0]
+    expect(currentRow).toEqual({ params: {}, retail_cny: '1', unit: 'CNY / million tokens', direction: 'input',
+      official_reference: { source_currency: 'CNY', official_cny: '0.5', model: 'updated-native-model',
+        unit: 'CNY / million tokens', source_url: 'https://official.example/new-pricing', checked_at: '2026-11-11',
+        conditions: 'Updated standard input reference' } })
+    if (currentRow === undefined) throw new Error('Expected current comparison row')
+    expect(comparisonDiscount(currentRow)).toEqual({ kind: 'higher' })
+    expect(initialRow.official_reference.official_cny).toBe('2')
+
+    Reflect.deleteProperty(updated.data[0]!.retail_price_rows[0]!, 'official_reference')
+    const withdrawn = parsePriceComparisons(updated)
+    if (!withdrawn.ok) throw new Error('Expected a supported response after reference withdrawal')
+    expect(comparisonModels(withdrawn.payload)).toEqual([])
+  })
 })

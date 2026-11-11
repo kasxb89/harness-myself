@@ -44,6 +44,7 @@
     "tests/artifact-chat-link.e2e.ts",
     "tests/artifact-video-poster.e2e.ts",
     "tests/phone-login-fixture.e2e.ts",
+    "tests/overseas-phone-login.e2e.ts",
     "tests/product-default-model.e2e.ts",
     "tests/desktop-permission-default.e2e.ts",
     "tests/h3-submission-outcomes.e2e.ts",

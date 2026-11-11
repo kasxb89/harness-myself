@@ -26,13 +26,14 @@ function payload() {
     ] },
   ] }
 }
-const response = () => Response.json({ ok: true, account: { id: 'a' }, accountOwner: owner, payload: payload() })
+const response = (data = payload()) => Response.json({ ok: true, account: { id: 'a' }, accountOwner: owner, payload: data })
 let fetcher = vi.fn<typeof fetch>()
 beforeEach(() => {
   fetcher = vi.fn<typeof fetch>(async () => response())
   vi.stubGlobal('fetch', fetcher)
+  vi.spyOn(document, 'hasFocus').mockReturnValue(true)
 })
-afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals() })
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
 async function card() {
   return await screen.findByRole('region', { name: zh['comparison.title'] })
@@ -99,6 +100,190 @@ describe('recharge model reference card', () => {
     fireEvent.change(within(region).getByRole('textbox', { name: zh['comparison.search'] }), { target: { value: 'no-match' } })
     expect(list.textContent).toContain(zh['comparison.empty'])
     expect(fetcher).toHaveBeenCalledOnce()
+  })
+
+  it('refreshes the reference price, source and checked date together on return while keeping existing details visible', async () => {
+    const next = payload(), fresh = deferred<Response>()
+    for (const row of next.models[0]!.rows) Object.assign(row.official_reference, {
+      official_cny: '4', source_url: 'https://openai.com/api/pricing/?revision=2', checked_at: '2026-11-11',
+    })
+    fetcher.mockResolvedValueOnce(response()).mockReturnValueOnce(fresh.promise)
+    render(<PriceComparison {...props} />)
+    const region = await card()
+    fireEvent.click(within(region).getByRole('button', { name: t('comparison.openModel', { model: 'GPT Fixture' }) }))
+    const dialog = screen.getByRole('dialog')
+    await act(async () => { window.dispatchEvent(new Event('blur')); window.dispatchEvent(new Event('focus')) })
+    expect(fetcher).toHaveBeenCalledTimes(2)
+    expect(dialog.textContent).toContain('¥2')
+    expect(dialog.textContent).toContain('2026-10-31')
+    expect(within(dialog).getAllByRole('link')[0]?.getAttribute('href')).toBe('https://openai.com/api/pricing/')
+    await act(async () => { fresh.resolve(response(next)); await fresh.promise })
+    expect(dialog.textContent).toContain('¥4')
+    expect(dialog.textContent).toContain('2026-11-11')
+    expect(dialog.textContent).not.toContain('2026-10-31')
+    expect(within(dialog).getAllByRole('link')[0]?.getAttribute('href')).toBe('https://openai.com/api/pricing/?revision=2')
+    expect(fetcher.mock.calls.every(([, init]) => init?.method === undefined)).toBe(true)
+  })
+
+  it.each(['focus', 'visibilitychange'] as const)('merges a foreground activation starting with %s even after its read settles', async (first) => {
+    let visibility: DocumentVisibilityState = 'visible'
+    vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visibility)
+    render(<PriceComparison {...props} />)
+    await card()
+    await act(async () => {
+      visibility = 'hidden'
+      document.dispatchEvent(new Event('visibilitychange'))
+      window.dispatchEvent(new Event('focus'))
+    })
+    expect(fetcher).toHaveBeenCalledOnce()
+    visibility = 'visible'
+    const dispatch = (event: 'focus' | 'visibilitychange'): void => {
+      (event === 'focus' ? window : document).dispatchEvent(new Event(event))
+    }
+    await act(async () => { dispatch(first) })
+    expect(fetcher).toHaveBeenCalledTimes(2)
+    await act(async () => { dispatch(first === 'focus' ? 'visibilitychange' : 'focus') })
+    expect(fetcher).toHaveBeenCalledTimes(2)
+    await act(async () => { window.dispatchEvent(new Event('blur')); window.dispatchEvent(new Event('focus')) })
+    expect(fetcher).toHaveBeenCalledTimes(3)
+  })
+
+  it('does not abort or queue another read when foreground signals arrive during an in-flight read', async () => {
+    const pending = deferred<Response>()
+    fetcher.mockReturnValueOnce(pending.promise)
+    render(<PriceComparison {...props} />)
+    const signal = fetcher.mock.calls[0]?.[1]?.signal
+    expect(signal).toBeInstanceOf(AbortSignal)
+    await act(async () => {
+      window.dispatchEvent(new Event('blur')); window.dispatchEvent(new Event('focus'))
+      document.dispatchEvent(new Event('visibilitychange'))
+      window.dispatchEvent(new Event('blur')); window.dispatchEvent(new Event('focus'))
+    })
+    expect(fetcher).toHaveBeenCalledOnce()
+    expect(signal?.aborted).toBe(false)
+    await act(async () => { pending.resolve(response()); await pending.promise })
+    expect((await card()).textContent).toContain('GPT Fixture')
+    expect(fetcher).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    ['HTTP 429 seconds', () => new Response(null, { status: 429, headers: { 'Retry-After': '2' } })],
+    ['HTTP 429 date', () => new Response(null, { status: 429,
+      headers: { 'Retry-After': 'Mon, 26 Oct 2026 12:00:02 GMT', Date: 'Mon, 26 Oct 2026 12:00:00 GMT' } })],
+    ['Host HTTP 200 with 429 metadata', () => Response.json({ ok: false,
+      code: 'PRICE_COMPARISONS_RATE_LIMITED', httpStatus: 429, retryAfterSeconds: 2 })],
+    ['Host HTTP 200 with 503 metadata', () => Response.json({ ok: false,
+      code: 'PRICE_COMPARISONS_UNAVAILABLE', httpStatus: 503, retryAfterSeconds: 2 })],
+  ] as const)(
+    'blocks foreground reads during %s and waits for another activation after its cooldown expires', async (_label, limitedResponse) => {
+      vi.useFakeTimers()
+      let now = 1000
+      vi.spyOn(performance, 'now').mockImplementation(() => now)
+      fetcher.mockResolvedValueOnce(limitedResponse())
+      render(<PriceComparison {...props} />)
+      await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+      const retry = screen.getByRole('button', { name: zh['comparison.retry'] })
+      expect(retry.hasAttribute('disabled')).toBe(true)
+      await act(async () => {
+        window.dispatchEvent(new Event('blur')); window.dispatchEvent(new Event('focus'))
+        document.dispatchEvent(new Event('visibilitychange')); fireEvent.click(retry)
+      })
+      expect(fetcher).toHaveBeenCalledOnce()
+      await act(async () => { now += 2000; await vi.advanceTimersByTimeAsync(2000) })
+      expect(retry.hasAttribute('disabled')).toBe(false)
+      expect(fetcher).toHaveBeenCalledOnce()
+      await act(async () => { window.dispatchEvent(new Event('focus')) })
+      expect(fetcher).toHaveBeenCalledOnce()
+      await act(async () => {
+        window.dispatchEvent(new Event('blur')); window.dispatchEvent(new Event('focus'))
+        await vi.advanceTimersByTimeAsync(0)
+      })
+      expect(fetcher).toHaveBeenCalledTimes(2)
+      expect(screen.getByRole('region', { name: zh['comparison.title'] }).textContent).toContain('GPT Fixture')
+    },
+  )
+
+  it('retains the same login’s successful references when a foreground refresh fails', async () => {
+    fetcher.mockResolvedValueOnce(response()).mockRejectedValueOnce(new TypeError('Private transport diagnostic'))
+    render(<PriceComparison {...props} />)
+    const region = await card()
+    await act(async () => { window.dispatchEvent(new Event('blur')); window.dispatchEvent(new Event('focus')) })
+    expect(region.textContent).toContain('GPT Fixture')
+    expect(region.textContent).toContain('¥2')
+    expect(region.textContent).toContain(zh['comparison.network'])
+    expect(region.textContent).not.toContain('Private transport diagnostic')
+    expect(fetcher).toHaveBeenCalledTimes(2)
+  })
+
+  it('aborts on unmount, ignores a late response and removes foreground listeners', async () => {
+    const pending = deferred<Response>()
+    fetcher.mockReturnValueOnce(pending.promise)
+    const view = render(<PriceComparison {...props} />)
+    const signal = fetcher.mock.calls[0]?.[1]?.signal
+    view.unmount()
+    expect(signal?.aborted).toBe(true)
+    await act(async () => {
+      window.dispatchEvent(new Event('blur')); window.dispatchEvent(new Event('focus'))
+      document.dispatchEvent(new Event('visibilitychange'))
+      pending.resolve(response()); await pending.promise
+    })
+    expect(fetcher).toHaveBeenCalledOnce()
+    expect(view.container.textContent).toBe('')
+  })
+
+  it('isolates foreground reads from a previous login of the same account', async () => {
+    const old = deferred<Response>(), next = payload(), nextOwner = 'b'.repeat(64)
+    next.models[0]!.name = 'New Login Reference'
+    const nextResponse = () => Response.json({ ok: true, account: { id: 'a' }, accountOwner: nextOwner, payload: next })
+    fetcher.mockReturnValueOnce(old.promise).mockImplementation(async () => nextResponse())
+    const view = render(<PriceComparison {...props} />)
+    const oldSignal = fetcher.mock.calls[0]?.[1]?.signal
+    view.rerender(<PriceComparison {...props} accountOwner={nextOwner} accountEpoch={2} />)
+    expect((await card()).textContent).toContain('New Login Reference')
+    expect(oldSignal?.aborted).toBe(true)
+    await act(async () => {
+      old.resolve(response()); await old.promise
+      window.dispatchEvent(new Event('blur')); window.dispatchEvent(new Event('focus'))
+    })
+    expect(fetcher).toHaveBeenCalledTimes(3)
+    expect((await card()).textContent).toContain('New Login Reference')
+    expect((await card()).textContent).not.toContain('GPT Fixture')
+  })
+
+  it.each([404, 200])('discovers newly configured references after an initially unsupported or empty HTTP %i response', async (status) => {
+    fetcher.mockResolvedValueOnce(Response.json(status === 404 ? { ok: false } : { ok: true,
+      payload: { basis: 'default', models: [] } }, { status }))
+    render(<PriceComparison {...props} />)
+    await act(async () => {})
+    expect(screen.queryByRole('region')).toBeNull()
+    await act(async () => { window.dispatchEvent(new Event('blur')); window.dispatchEvent(new Event('focus')) })
+    expect((await card()).textContent).toContain('GPT Fixture')
+    expect(fetcher).toHaveBeenCalledTimes(2)
+  })
+
+  it('reads again when returning to a newly mounted recharge comparison', async () => {
+    const view = render(<PriceComparison {...props} />)
+    await card()
+    view.unmount()
+    const next = payload()
+    next.models[0]!.name = 'Changed While Away'
+    fetcher.mockResolvedValueOnce(response(next))
+    render(<PriceComparison {...props} />)
+    expect((await card()).textContent).toContain('Changed While Away')
+    expect(fetcher).toHaveBeenCalledTimes(2)
+  })
+
+  it('removes references and their open details when the refreshed configuration withdraws them', async () => {
+    fetcher.mockResolvedValueOnce(response()).mockResolvedValueOnce(Response.json({ ok: true,
+      account: { id: 'a' }, accountOwner: owner, payload: { basis: 'default', models: [] } }))
+    render(<PriceComparison {...props} />)
+    const region = await card()
+    fireEvent.click(within(region).getByRole('button', { name: t('comparison.openModel', { model: 'GPT Fixture' }) }))
+    expect(screen.getByRole('dialog')).toBeTruthy()
+    await act(async () => { window.dispatchEvent(new Event('blur')); window.dispatchEvent(new Event('focus')) })
+    expect(screen.queryByRole('region')).toBeNull()
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(fetcher).toHaveBeenCalledTimes(2)
   })
 
   it('closes its selected details when the account changes', async () => {

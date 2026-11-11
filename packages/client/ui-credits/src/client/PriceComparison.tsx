@@ -1,5 +1,5 @@
 /** Dated model-price references are independent from the top-up amount and payment lifecycle. */
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Button, Input, Modal, Tag, IconSparkleRegular, IconNewChatOutlineRegular, IconPlayOutlineRegular, IconMicrophoneOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import { get, type Envelope } from './api.ts'
 import { comparisonDiscount, comparisonModels, type ComparisonKind, type ComparisonModel, type ComparisonRow } from './price-comparisons.ts'
@@ -103,12 +103,21 @@ export function PriceComparison({ accountId, accountOwner, accountEpoch, t }: Pr
   const current = useRef(owner)
   current.current = owner
   const [reading, setReading] = useState<Reading | null>(null)
+  const latestReading = useRef<Reading | null>(null)
   const [refresh, setRefresh] = useState(0)
   const [selected, setSelected] = useState<{ readonly owner: string; readonly id: string } | null>(null)
   const [filter, setFilter] = useState<'all' | ComparisonKind>('all')
   const [query, setQuery] = useState('')
   const [retrySeconds, setRetrySeconds] = useState(0)
   const active = reading?.owner === owner ? reading : null
+  const requestRefresh = useCallback((): void => {
+    const previous = latestReading.current
+    if (current.current !== owner || previous?.owner !== owner || previous.busy || creditsRetrySeconds(previous.failure) > 0) return
+    const next = { ...previous, busy: true }
+    latestReading.current = next
+    setReading(next)
+    setRefresh(value => value + 1)
+  }, [owner])
   useEffect(() => {
     const failure = active?.failure
     const tick = (): void => { setRetrySeconds(creditsRetrySeconds(failure)) }
@@ -122,8 +131,14 @@ export function PriceComparison({ accountId, accountOwner, accountEpoch, t }: Pr
     let disposed = false
     const timeout = setTimeout(() => { controller.abort(new DOMException('Price read timed out', 'TimeoutError')) }, 12_000)
     const alive = (): boolean => !disposed && current.current === owner
-    setReading(previous => ({ owner, models: previous?.owner === owner ? previous.models : [],
-      failure: previous?.owner === owner ? previous.failure : null, busy: true }))
+    const publish = (next: Reading): void => { latestReading.current = next; setReading(next) }
+    const fail = (failure: CreditsReadFailure): void => {
+      const previous = latestReading.current
+      publish({ owner, models: previous?.owner === owner ? previous.models : [], failure, busy: false })
+    }
+    const previous = latestReading.current
+    publish({ owner, models: previous?.owner === owner ? previous.models : [],
+      failure: previous?.owner === owner ? previous.failure : null, busy: true })
     const load = async (): Promise<void> => {
       try {
         const result = await get<unknown>('/credits/api/price-comparisons', controller.signal)
@@ -131,27 +146,43 @@ export function PriceComparison({ accountId, accountOwner, accountEpoch, t }: Pr
         if (controller.signal.aborted) throw controller.signal.reason
         if (result.account?.id !== undefined && result.account.id !== accountId
           || result.accountOwner !== undefined && result.accountOwner !== accountOwner) {
-          setReading({ owner, models: [], failure: null, busy: false }); return
+          publish({ owner, models: [], failure: null, busy: false }); return
         }
         if (!result.ok) {
           if (result.httpStatus === 404 || result.code === 'PRICE_COMPARISONS_UNSUPPORTED'
             || result.code === 'ACCOUNT_CHANGED' || result.code === 'SESSION_REFRESH_REQUIRED') {
-            setReading({ owner, models: [], failure: null, busy: false }); return
+            publish({ owner, models: [], failure: null, busy: false }); return
           }
-          setReading(previous => ({ owner, models: previous?.owner === owner ? previous.models : [],
-            failure: comparisonReadFailure(result), busy: false }))
+          fail(comparisonReadFailure(result))
           return
         }
-        setReading({ owner, models: comparisonModels(result.payload), failure: null, busy: false })
+        publish({ owner, models: comparisonModels(result.payload), failure: null, busy: false })
       } catch (error) {
         if (!alive()) return
-        setReading(previous => ({ owner, models: previous?.owner === owner ? previous.models : [],
-          failure: creditsReadFailure(controller.signal.aborted ? controller.signal.reason : error, 'PRICE_COMPARISONS_UNAVAILABLE'), busy: false }))
+        fail(creditsReadFailure(controller.signal.aborted ? controller.signal.reason : error, 'PRICE_COMPARISONS_UNAVAILABLE'))
       } finally { clearTimeout(timeout) }
     }
     void load()
     return () => { disposed = true; clearTimeout(timeout); controller.abort() }
   }, [accountId, accountOwner, owner, refresh])
+  useEffect(() => {
+    let foreground = document.visibilityState !== 'hidden' && document.hasFocus()
+    const leave = (): void => { foreground = false }
+    const revisit = (): void => {
+      if (document.visibilityState === 'hidden') { leave(); return }
+      if (foreground) return
+      foreground = true
+      requestRefresh()
+    }
+    window.addEventListener('blur', leave)
+    window.addEventListener('focus', revisit)
+    document.addEventListener('visibilitychange', revisit)
+    return () => {
+      window.removeEventListener('blur', leave)
+      window.removeEventListener('focus', revisit)
+      document.removeEventListener('visibilitychange', revisit)
+    }
+  }, [requestRefresh])
 
   const models = active?.models ?? []
   if (models.length === 0 && active?.failure == null) return null
@@ -170,7 +201,7 @@ export function PriceComparison({ accountId, accountOwner, accountEpoch, t }: Pr
       <span>{t(active.failure.kind === 'network' ? 'comparison.network' : active.failure.kind === 'timeout'
         ? 'comparison.timeout' : 'comparison.failed')}</span>
       <Button size="sm" variant="ghost" disabled={active.busy || retrySeconds > 0}
-        onClick={() => { setRefresh(value => value + 1) }}>{t('comparison.retry')}</Button>
+        onClick={requestRefresh}>{t('comparison.retry')}</Button>
       {retrySeconds > 0 && <span>{t('read.retryAfter', { seconds: String(retrySeconds) })}</span>}
     </div>}
     {models.length > 0 && <>

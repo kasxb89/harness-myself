@@ -1,0 +1,10 @@
+version: 1
+scenario: overseas-phone-login
+profile: web
+composition: overseas-phone-login
+recording: authored
+header:
+  class: overseas-phone-login
+  pin: true
+workspace:
+  final: true

@@ -14,6 +14,7 @@ import Tools from '@deepseek-ai/dsh-tools'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import type { CredentialProvider, CredentialRecord } from '@deepseek-ai/dsh-credentials'
 import * as Credits from '../src/index.ts'
+import { parsePriceComparisons } from '../src/price-comparisons.ts'
 import fixture from './fixtures/official-price-comparison-api.json' with { type: 'json' }
 
 let context: Context | undefined
@@ -34,7 +35,9 @@ afterEach(async () => {
 
 it('serves exact public price references, binds owners and contains read failures and HMR disposal', async () => {
   const calls: { path: string; authorization?: string; cookie?: string }[] = []
-  let mode: 'fixture' | 'old' | '404' | '503' | 'invalid' | 'redirect' | 'held' = 'fixture'
+  let mode: 'fixture' | 'old' | '404' | '429' | '503' | 'invalid' | 'redirect' | 'held' = 'fixture'
+  let published: unknown = fixture
+  let retryAfter = '17'
   let entered = Promise.withResolvers<ServerResponse>()
   let closed = Promise.withResolvers<undefined>()
   upstream = createServer((request, response) => {
@@ -49,8 +52,14 @@ it('serves exact public price references, binds owners and contains read failure
     }
     if (mode === 'redirect') { response.writeHead(302, { location: '/harness/forbidden-redirect' }); response.end(); return }
     response.setHeader('content-type', 'application/json')
+    if (mode === '429') {
+      response.writeHead(429, { 'Retry-After': retryAfter, Date: 'Mon, 26 Oct 2026 10:00:00 GMT',
+        'Set-Cookie': 'private-upstream-cookie', 'X-Private-Route': 'private-upstream-route' })
+      response.end('private upstream diagnostic')
+      return
+    }
     if (mode === '404' || mode === '503') { response.writeHead(Number(mode)); response.end('private diagnostic'); return }
-    response.end(mode === 'invalid' ? '{broken' : JSON.stringify(mode === 'old' ? { success: true, data: [{ model_name: 'legacy' }] } : fixture))
+    response.end(mode === 'invalid' ? '{broken' : JSON.stringify(mode === 'old' ? { success: true, data: [{ model_name: 'legacy' }] } : published))
   })
   await new Promise<void>(resolve => upstream?.listen(0, '127.0.0.1', resolve))
   const address = upstream.address()
@@ -115,14 +124,48 @@ it('serves exact public price references, binds owners and contains read failure
   expect(JSON.stringify(body)).not.toContain('private-product-session')
   expect(JSON.stringify(body)).not.toContain('private-access-token')
   expect(calls.every(call => call.path === '/harness/api/pricing' && call.authorization === undefined && call.cookie === undefined)).toBe(true)
+  const updated = structuredClone(fixture)
+  const changedModel = updated.data.find(model => model.model_name === 'ycapi-gpt-5.4-mini')!
+  const changedRow = changedModel.retail_price_rows![0]!
+  Object.assign(changedRow.official_reference, { official_cny: '9.87654321', source_url: 'https://official.example/current-pricing',
+    checked_at: '2026-11-11', conditions: 'Administrator-reviewed standard input', usd_cny: '7.12345678' })
+  published = updated
+  const refreshed = await read()
+  expect(refreshed.headers.get('cache-control')).toBe('no-store')
+  const expectedUpdated = parsePriceComparisons(updated)
+  if (!expectedUpdated.ok) throw new Error('Expected valid updated public references')
+  expect(await refreshed.json()).toMatchObject(expectedUpdated)
+  expect(calls).toHaveLength(2)
+  mode = '503'
+  expect(await (await read()).json()).toEqual({ ok: false, code: 'PRICE_COMPARISONS_UNAVAILABLE', httpStatus: 503 })
+  expect(calls).toHaveLength(3)
+  mode = 'fixture'
+  published = { success: true, data: [{ ...changedModel, retail_price_rows: changedModel.retail_price_rows?.map(row => ({
+    ...row, official_reference: undefined,
+  })) }] }
+  expect(await (await read()).json()).toMatchObject({ ok: true, payload: { basis: 'default', models: [] } })
+  expect(calls).toHaveLength(4)
+  published = fixture
   mode = 'old'
   expect(await (await read()).json()).toMatchObject({ ok: true, account: { id: '7' }, payload: { basis: 'default', models: [] } })
   for (const [failure, code] of [['404', 'PRICE_COMPARISONS_UNSUPPORTED'], ['503', 'PRICE_COMPARISONS_UNAVAILABLE'],
     ['invalid', 'PRICE_COMPARISONS_INVALID'], ['redirect', 'PRICE_COMPARISONS_NETWORK']] as const) {
     mode = failure
-    expect(await (await read()).json()).toEqual({ ok: false, code })
+    expect(await (await read()).json()).toEqual({ ok: false, code, ...failure === '503' ? { httpStatus: 503 } : {} })
   }
   expect(calls.some(call => call.path.includes('forbidden-redirect'))).toBe(false)
+  mode = '429'
+  for (const [retry, seconds] of [['17', 17], ['Mon, 26 Oct 2026 10:00:45 GMT', 45]] as const) {
+    retryAfter = retry
+    const limited = await read()
+    expect(limited.status).toBe(200)
+    expect(limited.headers.get('cache-control')).toBe('no-store')
+    expect(limited.headers.get('retry-after')).toBeNull()
+    expect(limited.headers.get('set-cookie')).toBeNull()
+    expect(limited.headers.get('x-private-route')).toBeNull()
+    expect(await limited.json()).toEqual({ ok: false, code: 'PRICE_COMPARISONS_RATE_LIMITED',
+      httpStatus: 429, retryAfterSeconds: seconds })
+  }
   mode = 'held'
   const pending = read()
   const old = await entered.promise

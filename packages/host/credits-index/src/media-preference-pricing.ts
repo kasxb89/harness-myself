@@ -3,7 +3,7 @@ import { isPositiveRetailDecimal } from './price-comparisons.ts'
 import { resolveMediaSpecification } from './media-request-specification.ts'
 import { validateMediaPreference } from './media-preferences.ts'
 import type { ImageParams, MediaSpecification, ModelCapability, VideoParams } from './media.ts'
-import type { MediaPreferencePriceRow, MediaPreferencePricing } from './media-preferences-types.ts'
+import type { MediaPreferencePriceRow, MediaPreferencePricing } from './media-preference-pricing-types.ts'
 
 const fields = ['size', 'resolution', 'seconds', 'ratio', 'quality', 'mode'] as const
 const allowed = new Set([...fields, 'duration', 'aspect_ratio', 'count', 'n', 'audio', 'generate_audio', 'seed', 'watermark',
@@ -120,9 +120,13 @@ function publicRow(
 ): MediaPreferencePriceRow | undefined {
   const row = record(value)
   const raw = record(row?.params)
+  const amount = row?.retail_cny
+  const free = row?.is_free === true
   const unit = model.kind === 'image' ? 'CNY / image' : 'CNY / second'
   if (row === undefined || raw === undefined || Object.keys(raw).length > 24 || row.unit !== unit || row.direction !== undefined
-    || row.currency !== undefined && row.currency !== 'CNY' || !isPositiveRetailDecimal(row.retail_cny)) return undefined
+    || row.currency !== undefined && row.currency !== 'CNY'
+    || row.is_free !== undefined && typeof row.is_free !== 'boolean'
+    || typeof amount !== 'string' || (free ? !/^0(?:\.0{1,24})?$/u.test(amount) : !isPositiveRetailDecimal(amount))) return undefined
   const input = inputMode(raw.mode) ?? (raw.mode === undefined || 'modes' in model.params && menu(raw.mode, model.params.modes) !== undefined
     ? 'unspecified' : undefined)
   if (input === undefined) return undefined
@@ -131,7 +135,8 @@ function publicRow(
       + (model.params as VideoParams).maxReferenceVideos + (model.params as VideoParams).maxReferenceAudios === 0)) return undefined
   const prepared = normalizedRows(raw, model, fixedMinimalThinking)
   if (prepared.length !== 1 || prepared[0] === undefined) return undefined
-  return { parameters: prepared[0], points: decimalProduct(row.retail_cny, rate), input }
+  return { parameters: prepared[0], points: decimalProduct(amount, rate), input,
+    ...free ? { is_free: true as const } : {} }
 }
 
 /** The audited YCAPI adapter injects this fixed offer field; it is not a client-selectable parameter. */
@@ -152,7 +157,7 @@ function covers(specification: MediaSpecification, row: MediaPreferencePriceRow)
  * @param raw - Already-read public pricing records; this function performs no request or quote.
  * @param models - Authorized same-modality models; no other model is returned.
  * @param creditsPerYuan - Configured product points for one yuan, never a model price or supplier cost.
- * @returns Bounded public points references; missing, zero, invalid or ambiguous data stays unavailable.
+ * @returns Bounded public points references; missing, unmarked zero, invalid or ambiguous data stays unavailable.
  */
 export function mediaPreferencePrices(
   raw: readonly unknown[], models: readonly ModelCapability[], creditsPerYuan: number,
