@@ -87,6 +87,8 @@ export interface ReplayModelConfig {
    * omit one, so replay reconstructs the request header a live catalog produced.
    */
   defaultMaxTokens?: number
+  /** Independent hard output ceiling for recorded default-versus-cap scenarios. */
+  maxOutputTokens?: number
   /**
    * Optional flat visual-token price the replay route declares for every
    * retained request image, so keyless scenarios exercise route-priced
@@ -921,6 +923,7 @@ class ReplayAdapter extends LlmAdapter {
       ...configuredModel?.defaultMaxTokens === undefined
         ? {}
         : { defaultMaxTokens: configuredModel.defaultMaxTokens },
+      ...configuredModel?.maxOutputTokens === undefined ? {} : { maxOutputTokens: configuredModel.maxOutputTokens },
       ...configuredModel?.systemPromptUpdate === undefined
         ? {}
         : { systemPromptUpdate: configuredModel.systemPromptUpdate },
@@ -1146,6 +1149,11 @@ export interface Config {
 function validateConfiguredModels(providers: ReplayProviderConfig[] | undefined): void {
   for (const provider of providers ?? []) {
     for (const model of provider.models ?? []) {
+      if (model.maxOutputTokens !== undefined && (!Number.isSafeInteger(model.maxOutputTokens) || model.maxOutputTokens < 1
+        || model.contextWindow !== undefined && model.maxOutputTokens > model.contextWindow
+        || model.defaultMaxTokens !== undefined && model.defaultMaxTokens > model.maxOutputTokens)) {
+        throw new Error(`llm-replay: provider "${provider.id}" model "${model.id}" output cap must be positive, within context, and at least the default`)
+      }
       const modalities: unknown = model.inputModalities
       if (modalities !== undefined && (!Array.isArray(modalities)
         || !modalities.every((modality: unknown) => modality === 'text' || modality === 'image'))) {

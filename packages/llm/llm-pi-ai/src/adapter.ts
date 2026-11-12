@@ -444,8 +444,9 @@ export class PiAiAdapter extends LlmAdapter {
     const declaredModel = this.modelOf(snapshot, options.provider, options.model)
     const textCapabilities = profile.textCapabilities.get(options.model)
     const maxOutputTokens = profile.managedMaxTokens.get(options.model)
-    const maxTokens = options.maxTokens === undefined ? undefined
-      : Math.min(options.maxTokens, maxOutputTokens ?? options.maxTokens)
+    const requestedMaxTokens = options.maxTokens ?? profile.configuredMaxTokens.get(options.model)
+    const maxTokens = requestedMaxTokens === undefined ? undefined
+      : Math.min(requestedMaxTokens, maxOutputTokens ?? requestedMaxTokens)
     const model = textCapabilities === undefined ? declaredModel : { ...declaredModel,
       contextWindow: Math.min(declaredModel.contextWindow, textCapabilities.maxInputTokens + (maxTokens ?? declaredModel.maxTokens)),
     }

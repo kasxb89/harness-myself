@@ -1413,6 +1413,7 @@ describe('installLlmReplay (through the real LlmRuntime)', () => {
               contextWindow: 128_000,
               inputModalities: ['text', 'image'],
               defaultMaxTokens: 64_000,
+              maxOutputTokens: 128_000,
               reasoningEfforts: ['off', 'max'],
               defaultReasoningEffort: 'max',
               systemPromptUpdate: 'in-history',
@@ -1438,6 +1439,7 @@ describe('installLlmReplay (through the real LlmRuntime)', () => {
       context: { contextWindow: 128_000 },
       inputModalities: ['text', 'image'],
       defaultMaxTokens: 64_000,
+      maxOutputTokens: 128_000,
       reasoning: {
         efforts: [{ id: 'off', name: 'off' }, { id: 'max', name: 'max' }],
         defaultEffort: 'max',

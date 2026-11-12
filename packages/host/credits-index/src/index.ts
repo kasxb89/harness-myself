@@ -49,7 +49,7 @@ import { parseClientModelConfigStatus, parseClientModelPresentationStatus } from
 import type { MediaModelConfigBinding } from './media-model-config-result.ts'
 import { readModelConfigRevision, ModelConfigVersionError, modelConfigVersionHeaders, type ModelConfigRevision, type ModelConfigVersion } from './model-config-version.ts'
 import { assertModelCatalogConsistent, modelCatalogVersions, ModelCatalogChangedError } from './model-catalog-consistency.ts'
-import { ProductModelCapabilitiesError, mergeProductModelLimits, productModelLimitsScope, readProductModelLimits, type ProductModelLimits } from './model-limits.ts'
+import { PRODUCT_MODEL_LIMITS_HEADERS, ProductModelCapabilitiesError, mergeProductModelLimits, productModelLimitsScope, readProductModelLimits, type ProductModelLimits } from './model-limits.ts'
 import { registerProductTextModelPolicy } from './text-model-policy.ts'
 import { orderProductModels, preferredProductModel, productModelDisplaySignature,
   type ProductModelDisplayMap, type ProductModelPresentation } from './model-presentation.ts'
@@ -1091,7 +1091,7 @@ export function apply(ctx: Context, config: Config): void {
     const key = owned.key
     try {
       const response = await apiFetch('/v1/models', {
-        headers: { authorization: `Bearer ${key}`, accept: 'application/json' },
+        headers: { authorization: `Bearer ${key}`, accept: 'application/json', ...PRODUCT_MODEL_LIMITS_HEADERS },
         signal: signal ?? AbortSignal.timeout(resolved.timeoutMs),
       })
       if (!response.ok) return { ok: false, code: `HTTP_${String(response.status)}`, message: 'new-api 模型列表不可用', chat: [], image: [], video: [], audio: [], limits: new Map(), names: new Map() }
@@ -1157,7 +1157,7 @@ export function apply(ctx: Context, config: Config): void {
       const epoch = identityVersion
       const session = await liveSession()
       const owner = session === null ? 'signed-out' : productOwner(session)
-      const headers = { accept: 'application/json' }
+      const headers = { accept: 'application/json', ...PRODUCT_MODEL_LIMITS_HEADERS }
       const [self, snapshot] = await Promise.all([
         session === null ? Promise.resolve(null) : readSelf(session),
         mediaCatalogCache.snapshot(JSON.stringify([apiBaseUrl, owner, epoch]), headers,
@@ -2848,7 +2848,7 @@ export function apply(ctx: Context, config: Config): void {
       let pricingRows: readonly unknown[] = []
       for (let attempt = 0; attempt < 2; attempt += 1) {
         if (!discovered.ok) throw new Error('无法读取当前账号模型列表，请稍后重试。')
-        const pricing = await apiFetch('/api/pricing', { headers: { accept: 'application/json' }, signal })
+        const pricing = await apiFetch('/api/pricing', { headers: { accept: 'application/json', ...PRODUCT_MODEL_LIMITS_HEADERS }, signal })
         if (!pricing.ok) throw new Error('无法核对聊天模型类型，请稍后重试。')
         const body: unknown = await pricing.json()
         if (body === null || typeof body !== 'object' || !('data' in body) || !Array.isArray(body.data)) {
@@ -2944,6 +2944,7 @@ export function apply(ctx: Context, config: Config): void {
       const limits = productCatalog.limits.get(request.model)
       return limits?.modelConfigVersion === request.modelConfigVersion
         && limits.contextWindow === request.contextWindow && limits.maxTokens === request.maxTokens
+        && limits.defaultMaxTokens === request.defaultMaxTokens
     },
     async resolveRelayKey(baseURL, expectedModelLimitsScope) {
       if (baseURL.replace(/\/+$/u, '') !== apiUrl(apiBaseUrl, '/v1')) return undefined
@@ -3336,7 +3337,7 @@ export function apply(ctx: Context, config: Config): void {
             const session = await store.read()
             const owner = session?.token === undefined ? undefined : productOwner(session)
             const outcome = await readPriceComparisons(async readSignal => await apiFetch('/api/pricing', {
-              signal: readSignal, headers: { accept: 'application/json' },
+              signal: readSignal, headers: { accept: 'application/json', ...PRODUCT_MODEL_LIMITS_HEADERS },
             }), signal)
             const current = await store.read()
             const currentOwner = current?.token === undefined ? undefined : productOwner(current)

@@ -5662,7 +5662,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'HarnessModelConfigRequest',
-    declaration: 'export interface HarnessModelConfigRequest {\n    readonly baseURL: string;\n    readonly model: string;\n    readonly scope: string;\n    readonly modelConfigVersion: Branded<\'ModelConfigVersion\'>;\n    readonly contextWindow: number;\n    readonly maxTokens: number;\n}',
+    declaration: 'export interface HarnessModelConfigRequest {\n    readonly baseURL: string;\n    readonly model: string;\n    readonly scope: string;\n    readonly modelConfigVersion: Branded<\'ModelConfigVersion\'>;\n    readonly contextWindow: number;\n    readonly maxTokens: number;\n    readonly defaultMaxTokens?: number;\n}',
   },
   {
     name: 'HookBudget',

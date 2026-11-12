@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer, type Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -106,7 +106,7 @@ async function boot(models: readonly Record<string, unknown>[] = [{ id: first },
           user: { id: loginAccount } }); return
       }
       if (path === '/harness/api/user/auth/logout') { answer({}); return }
-      if (path === '/harness/api/pricing') { answer(catalog.map(row => ({ model_name: row.id, kind: 'chat' }))); return }
+      if (path === '/harness/api/pricing') { answer(catalog.map(row => ({ ...row, model_name: row.id, kind: 'chat' }))); return }
       if (path === '/harness/api/client-activity/heartbeat') {
         answer({ server_time: Math.floor(Date.now() / 1000), heartbeat_interval_seconds: 30, online_timeout_seconds: 90 }); return
       }
@@ -133,10 +133,13 @@ async function boot(models: readonly Record<string, unknown>[] = [{ id: first },
   const address = upstream.address()
   if (address === null || typeof address === 'string') throw new Error('Expected listener')
   const api = `http://127.0.0.1:${address.port}/harness`
+  const built = process.env.TEST_MODEL_LIMITS_ARTIFACTS === '1'
+  const creditsModule: unknown = built ? await import(pathToFileURL(join(import.meta.dirname, '../lib/index.js')).href) : Credits
+  const llmModule: unknown = built ? await import(pathToFileURL(join(import.meta.dirname, '../../../llm/llm-pi-ai/lib/index.js')).href) : LlmPiAi
   const modules = new Map<string, unknown>([
     ['@deepseek-ai/dsh-host-webserver', WebServer], ['@deepseek-ai/dsh-tools', Tools],
     ['@deepseek-ai/dsh-system-prompt', SystemPrompt], ['@deepseek-ai/dsh-credentials-local', LocalCredentialProvider],
-    ['@deepseek-ai/dsh-llm', LlmRuntime], ['@deepseek-ai/dsh-llm-pi-ai', LlmPiAi], ['@deepseek-ai/dsh-credits-index', Credits],
+    ['@deepseek-ai/dsh-llm', LlmRuntime], ['@deepseek-ai/dsh-llm-pi-ai', llmModule], ['@deepseek-ai/dsh-credits-index', creditsModule],
     ['@deepseek-ai/dsh-session', SessionStore], ['@deepseek-ai/dsh-session-projection', SessionProjections],
     ['@deepseek-ai/dsh-agent', AgentRegistry], ['@deepseek-ai/dsh-agent-loop', AgentLoop],
   ])
@@ -329,7 +332,7 @@ describe('product model capacities through the real Host Loader and HTTP listing
     const restartedBase = await restart()
     expect(configuredRoute().modelLimitOverrides).toEqual({ [first]: choice })
     expect(await capacity(first)).toEqual({ contextWindow: 131072, maxOutputTokens: 32768, defaultMaxTokens: 32768 })
-    expect(owner()).toBe(initialOwner)
+    await vi.waitFor(() => { expect(owner()).toBe(initialOwner) })
     expect((await post(restartedBase, '/api/session/logout', {})).ok).toBe(true)
     loginAccount = 8
     await signIn(restartedBase)
@@ -390,6 +393,56 @@ describe('product model capacities through the real Host Loader and HTTP listing
     expect(completed.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'stop' } })
     expect(requests.filter(request => request.path === '/harness/v1/chat/completions').map(request => request.body?.max_tokens))
       .toEqual([8192])
+  })
+
+  it('consumes both actual Go catalog variants without turning the hard cap into the default', async () => {
+    // Captured by router/TestSeparateOutputDefaultCatalogAndSingleCharge, using only local synthetic credentials.
+    const fixture = object(JSON.parse(await readFile(new URL('./fixtures/output-budget-go-http.json', import.meta.url), 'utf8')))
+    const rows = (path: string, modern: boolean) => {
+      const data = object(fixture[`${path}:separate=${String(modern)}`]).data
+      if (!Array.isArray(data)) throw new Error('Expected captured Go catalog rows')
+      return data.map(object).filter(row => row.id === 'split-output' || row.model_name === 'split-output')
+    }
+    for (const modern of [false, true]) {
+      const [directory] = rows('/v1/models', modern), [price] = rows('/api/pricing', modern)
+      expect(price?.max_output_tokens).toBe(directory?.max_output_tokens)
+      expect(price?.default_output_tokens).toBe(directory?.default_output_tokens)
+    }
+    catalog = rows('/v1/models', true)
+    const { base, refresh } = await boot([{ id: 'split-output' }])
+    await signIn(base)
+    await refresh()
+    expect(await capacity('split-output')).toMatchObject({ contextWindow: 1048576, defaultMaxTokens: 131072 })
+    expect((await capacity('split-output')).maxOutputTokens).toBeGreaterThan(500000)
+    catalog = rows('/v1/models', false)
+    await refresh()
+    expect(await capacity('split-output')).toEqual({ contextWindow: 1048576, maxOutputTokens: 131072, defaultMaxTokens: 131072 })
+  })
+
+  it('retains independent output defaults after Host restart and logs distinct ordinary and explicit long requests', async () => {
+    catalog = [{ id: first, context_window: 1_048_576, max_output_tokens: 1_048_576, default_output_tokens: 131_072 }]
+    const { base, refresh, restart } = await boot(undefined, true)
+    await signIn(base)
+    await refresh()
+    const info = await context!.llm.resolveModelInfo('yunshu-local', first)
+    expect(info.defaultMaxTokens).toBe(131_072)
+    expect(info.maxOutputTokens).toBeGreaterThan(500_000)
+    expect(info.context!.contextWindow - info.defaultMaxTokens!).toBe(917_504)
+    await restart()
+    expect((await context!.llm.resolveModelInfo('yunshu-local', first)).defaultMaxTokens).toBe(131_072)
+    for (const maxTokens of [undefined, 500_000]) {
+      const agent = await context!.agentLoop.create(SessionId(`split-output-${String(maxTokens)}`), {
+        provider: 'yunshu-local', model: first, ...maxTokens === undefined ? {} : { maxTokens },
+      })
+      agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'Synthetic long-input material. '.repeat(6000) }] }))
+      await agent.whenIdle()
+      const headers = agent.session.snapshotEvents().flatMap(event => event.type === 'request/header' ? [event.data.header] : [])
+      expect(headers).toHaveLength(1)
+      expect(headers[0]?.config.maxTokens).toBe(maxTokens ?? 131_072)
+      expect(agent.session.snapshotEvents().filter(event => event.type === 'assistant/message')).toHaveLength(1)
+    }
+    expect(requests.filter(request => request.path === '/harness/v1/chat/completions').map(request => request.body?.max_tokens))
+      .toEqual([131_072, 500_000])
   })
 
   it('records refreshed default and explicit output caps in real Agent headers and SDK HTTP requests', async () => {

@@ -46,6 +46,25 @@ async function drain(adapter: PiAiAdapter, id: string, maxTokens?: number): Prom
 afterEach(() => { vi.unstubAllGlobals() })
 
 describe('explicit account-bound model capacity choices', () => {
+  it.each([
+    ['ycapi-grok-4.7', 500_000, 128_000, 350_000],
+    ['ycapi-kimi-k3.1-pro', 1_048_576, 131_072, 500_000],
+    ['ys-kimi-k3', 1_048_576, 131_072, 500_000],
+    ['ys-kimi-k3.1-pro', 1_048_576, 131_072, 500_000],
+  ] as const)('separates the default reservation from the full-window cap for %s', async (id, window, reserve, explicit) => {
+    const calls = memoryRequests()
+    const { adapter } = adapterFor({ ...base, models: [{ id, managedLimits: {
+      scope, authoritative: true, contextWindow: window, maxTokens: window, defaultMaxTokens: reserve,
+    } }] })
+    const info = await adapter.resolveModel(provider, id)
+    expect(info).toMatchObject({ context: { contextWindow: window }, defaultMaxTokens: reserve })
+    expect(info.maxOutputTokens).toBeGreaterThan(explicit)
+    expect(info.context!.contextWindow - info.defaultMaxTokens!).toBe(window - reserve)
+    await drain(adapter, id)
+    await drain(adapter, id, explicit)
+    expect(calls.map(call => call.max_tokens)).toEqual([reserve, explicit])
+  })
+
   const platform = (contextWindow = 1_048_576, maxTokens = 393_216): PiAiProviderProfile => ({
     ...base,
     models: [{ ...model('chosen', contextWindow, maxTokens), contextWindow: 32_768, maxTokens: 1024,

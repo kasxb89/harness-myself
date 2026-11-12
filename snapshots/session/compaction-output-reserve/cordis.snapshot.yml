@@ -33,5 +33,6 @@
               - id: deepseek-v4-flash
                 contextWindow: 8582
                 defaultMaxTokens: 1000
+                maxOutputTokens: 8582
     - id: compaction-working-directory
       name: '../../../packages/test-support/session-snapshot/tests/fixtures/compaction-working-directory.ts'

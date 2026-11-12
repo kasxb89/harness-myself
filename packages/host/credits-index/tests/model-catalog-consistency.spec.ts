@@ -24,6 +24,12 @@ describe('account-authorized model and pricing publication consistency', () => {
   it('keeps legacy missing prices and capacities compatible', () => {
     expect(() => { assertModelCatalogConsistent(new Map([[model.id, undefined]]), [], new Map()) }).not.toThrow()
   })
+  it('rejects different default reservations for unversioned managed-capacity rows', () => {
+    const declared = { id: 'unversioned', context_window: 1048576, max_output_tokens: 1048576, default_output_tokens: 131072 }
+    const published = [{ ...declared, model_name: declared.id, default_output_tokens: 65536 }]
+    expect(() => { assertModelCatalogConsistent(new Map([[declared.id, undefined]]), published,
+      new Map([[declared.id, readProductModelLimits(declared)]])) }).toThrow()
+  })
   it('does not accept conflicting duplicate versions or malformed explicit metadata', () => {
     expect(() => modelCatalogVersions([model, { ...model, model_config_version: 'b'.repeat(64) }], 'id')).toThrow()
     expect(() => modelCatalogVersions([{ ...model, model_config_version: null }], 'id')).toThrow()

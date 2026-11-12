@@ -1028,6 +1028,8 @@ interface HarnessModelConfigRequest {
   readonly modelConfigVersion: Branded<'ModelConfigVersion'>
   readonly contextWindow: number
   readonly maxTokens: number
+  /** Captured gateway default output reservation, when separately declared. */
+  readonly defaultMaxTokens?: number
 }
 ```
 

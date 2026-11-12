@@ -66,6 +66,20 @@ function adapter(configured = profile(), authorizeModelConfig?: PiAi.PiAiAdapter
 afterEach(() => { vi.unstubAllGlobals() })
 
 describe('prepared published model versions', () => {
+  it('includes the independent default in prepared authorization and blocks a stale default before provider I/O', async () => {
+    const configured = profile()
+    configured.models![0]!.managedLimits!.defaultMaxTokens = 2048
+    const authorize = vi.fn<NonNullable<PiAi.PiAiAdapterOptions['authorizeModelConfig']>>(async (_provider, request) => request.defaultMaxTokens === 4096)
+    const transport = vi.fn<typeof fetch>(async () => response())
+    vi.stubGlobal('fetch', transport)
+    const f = adapter(configured, authorize)
+    const prepared = await f.adapter.prepareCall(provider, model)
+    const chunks = await drain(prepared.stream({ provider, model, messages: [] }))
+    expect(authorize).toHaveBeenCalledExactlyOnceWith(provider, { ...expected(), defaultMaxTokens: 2048 })
+    expect(chunks.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'error', failure: { code: 'MODEL_CONFIG_CHANGED' } } })
+    expect(transport).not.toHaveBeenCalled()
+  })
+
   it('parses a branded version with a complete capacity pair and rejects incomplete modern pairs', () => {
     const configured = profile()
     const parsed = Config({ providers: { [provider]: configured } }).providers.get()

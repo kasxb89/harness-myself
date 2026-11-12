@@ -2272,6 +2272,8 @@ export interface PiAiManagedModelLimits {
   contextWindow?: number
   /** Account-authorized output ceiling, before SDK context headroom. */
   maxTokens?: number
+  /** Default output reservation for requests without explicit output intent. */
+  defaultMaxTokens?: number
   /** Gateway execution declarations for this exact account/backend scope. */
   textCapabilities?: LlmTextCapabilities
 }
@@ -2301,7 +2303,7 @@ export type PiAiThinkingTokenBudgetField = NonNullable<OpenAICompletionsCompat['
 
 - `inject`: `llm`
 - `refs`: [`ModelModality`](../packages/llm/llm/src/index.ts) · [`RetryPolicyConfig`](../packages/llm/llm/src/index.ts) · [`SystemPromptUpdate`](../packages/llm/llm/src/index.ts) · [`ToolUpdate`](../packages/llm/llm/src/index.ts)
-- `source`: [`packages/test-support/llm-replay/src/index.ts:1129`](../packages/test-support/llm-replay/src/index.ts)
+- `source`: [`packages/test-support/llm-replay/src/index.ts:1132`](../packages/test-support/llm-replay/src/index.ts)
 
 ```ts config-catalog
 /** Plugin config: the {@link ReplayConfig} inputs, each defaulting to its `DSH_SNAPSHOT_*` env var in `apply`. */
@@ -2351,6 +2353,8 @@ export interface ReplayModelConfig {
    * omit one, so replay reconstructs the request header a live catalog produced.
    */
   defaultMaxTokens?: number
+  /** Independent hard output ceiling for recorded default-versus-cap scenarios. */
+  maxOutputTokens?: number
   /**
    * Optional flat visual-token price the replay route declares for every
    * retained request image, so keyless scenarios exercise route-priced

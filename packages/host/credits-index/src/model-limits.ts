@@ -3,6 +3,9 @@ import { createHash } from 'node:crypto'
 import { cloneTextCapabilities, type LlmTextCapabilities, type LlmReasoningControls, type LlmCapabilityVerification } from '@deepseek-ai/dsh-llm'
 import { readModelConfigVersion, type ModelConfigVersion } from './model-config-version.ts'
 
+/** Catalog negotiation supported by clients that keep output caps separate from defaults. */
+export const PRODUCT_MODEL_LIMITS_HEADERS = Object.freeze({ 'X-Yunshu-Model-Limits-Version': '2' })
+
 /** Current capacity and execution declarations for one exact public model id. */
 export interface ProductModelLimits {
   /** Published configuration version owning the complete capacity pair. */
@@ -13,6 +16,8 @@ export interface ProductModelLimits {
   textCapabilities?: LlmTextCapabilities
   /** Maximum generated output, including any reasoning counted in that output. */
   maxTokens?: number
+  /** Default request output reservation, independently bounded by maxTokens. */
+  defaultMaxTokens?: number
 }
 
 /** Automatically managed capacities, separate from a user's model settings. */
@@ -134,13 +139,19 @@ export function readProductModelLimits(record: Readonly<Record<string, unknown>>
   const declared = textCapabilities === undefined ? {} : { textCapabilities }
   const contextWindow = tokenCapacity(record.context_window)
   const maxTokens = tokenCapacity(record.max_output_tokens)
+  const defaultMaxTokens = tokenCapacity(record.default_output_tokens)
+  if (Object.hasOwn(record, 'default_output_tokens')
+    && (defaultMaxTokens === undefined || maxTokens === undefined || defaultMaxTokens > maxTokens)) {
+    throw new ProductModelCapabilitiesError('Gateway default output requires a positive value no greater than its output cap')
+  }
   if (modelConfigVersion !== undefined
     && (contextWindow === undefined || maxTokens === undefined || maxTokens > contextWindow)) {
     throw new ProductModelCapabilitiesError('Versioned gateway text capacities require a complete valid pair')
   }
   if (contextWindow !== undefined && maxTokens !== undefined && maxTokens > contextWindow) return declared
   return { ...declared, ...modelConfigVersion === undefined ? {} : { modelConfigVersion },
-    ...contextWindow === undefined ? {} : { contextWindow }, ...maxTokens === undefined ? {} : { maxTokens } }
+    ...contextWindow === undefined ? {} : { contextWindow }, ...maxTokens === undefined ? {} : { maxTokens },
+    ...defaultMaxTokens === undefined ? {} : { defaultMaxTokens } }
 }
 
 /**
@@ -177,6 +188,11 @@ export function mergeProductModelLimits(
   const maxTokens = modelConfigVersion === undefined
     ? incoming?.maxTokens ?? tokenCapacity(retained?.maxTokens)
     : tokenCapacity(incoming === undefined ? retained?.maxTokens : incoming.maxTokens)
+  const rawDefault = incoming === undefined ? retained?.defaultMaxTokens : incoming.defaultMaxTokens
+  const defaultMaxTokens = tokenCapacity(rawDefault)
+  if (rawDefault !== undefined && (defaultMaxTokens === undefined || maxTokens === undefined || defaultMaxTokens > maxTokens)) {
+    throw new ProductModelCapabilitiesError('Gateway default output exceeds its current output cap')
+  }
   if (modelConfigVersion !== undefined
     && (contextWindow === undefined || maxTokens === undefined || maxTokens > contextWindow)) {
     throw new ProductModelCapabilitiesError('Versioned gateway text capacities require a complete valid pair')
@@ -217,5 +233,6 @@ export function mergeProductModelLimits(
     : { scope, ...contextWindow === undefined && maxTokens === undefined ? {} : { authoritative: true },
       ...modelConfigVersion === undefined ? {} : { modelConfigVersion },
       ...textCapabilities === undefined ? {} : { textCapabilities: cloneTextCapabilities(textCapabilities) },
-      ...contextWindow === undefined ? {} : { contextWindow }, ...maxTokens === undefined ? {} : { maxTokens } }
+      ...contextWindow === undefined ? {} : { contextWindow }, ...maxTokens === undefined ? {} : { maxTokens },
+      ...defaultMaxTokens === undefined ? {} : { defaultMaxTokens } }
 }

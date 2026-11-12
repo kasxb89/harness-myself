@@ -43,12 +43,13 @@ export function assertModelCatalogConsistent(visible: ReadonlyMap<string, ModelC
   for (const [id, version] of visible) {
     const priceVersion = prices.get(id)
     if (version !== priceVersion || version !== undefined && !prices.has(id)) throw new ModelCatalogChangedError()
-    if (version === undefined || !limits.has(id)) continue
+    const modelLimits = limits.get(id)
+    if (!limits.has(id) || version === undefined && modelLimits?.defaultMaxTokens === undefined) continue
     const row = pricing.find(value => value !== null && typeof value === 'object' && 'model_name' in value && value.model_name === id)
     if (row === undefined || row === null || typeof row !== 'object') throw new ModelCatalogChangedError()
     const priceLimits = readProductModelLimits(row as Record<string, unknown>)
-    const modelLimits = limits.get(id)
-    if (priceLimits.contextWindow !== modelLimits?.contextWindow || priceLimits.maxTokens !== modelLimits?.maxTokens) {
+    if (priceLimits.contextWindow !== modelLimits?.contextWindow || priceLimits.maxTokens !== modelLimits?.maxTokens
+      || priceLimits.defaultMaxTokens !== modelLimits?.defaultMaxTokens) {
       throw new ModelCatalogChangedError()
     }
   }

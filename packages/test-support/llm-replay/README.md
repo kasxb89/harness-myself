@@ -60,7 +60,7 @@ With `providers` configured, the plugin registers a replay-only adapter whose ca
 | `file` | `$DSH_SNAPSHOT_FILE` | Path to the selected primary fixture: `session.jsonl` for v0 or `session.vN.jsonl` for a positive generation; required (config or env) |
 | `overrideFile` | `$DSH_SNAPSHOT_OVERRIDE` | Optional `ReplayOverrideDoc` sidecar for the primary session |
 | `childFiles` | `$DSH_SNAPSHOT_CHILD_FILES` | Recorded subagent child-session logs for a nested scenario |
-| `providers` | — | Optional replay-only provider and model catalog; a model may declare `contextWindow`, text/image modalities, positive `imageRequestTokens` when image-capable, and `systemPromptUpdate: in-history` so a keyless scenario exercises in-history system prompt replacement; invalid values fail at load (`llm-replay: provider "…" model "…" systemPromptUpdate must be "in-history" when present`) and routes never perform provider I/O |
+| `providers` | — | Optional replay-only provider and model catalog; a model may declare `contextWindow`, independent `defaultMaxTokens` and `maxOutputTokens` (positive integers with default ≤ output cap ≤ context), text/image modalities, positive `imageRequestTokens` when image-capable, and `systemPromptUpdate: in-history` so a keyless scenario exercises in-history system prompt replacement; invalid values fail at load (`llm-replay: provider "…" model "…" systemPromptUpdate must be "in-history" when present`) and routes never perform provider I/O |
 | `paceMs` | — (burst) | Optional per-chunk delay in ms for genuinely incremental delivery |
 
 The generated [configuration catalog](../../../docs/config-catalog.md#deepseek-aidsh-llm-replay) is the exhaustive source for every accepted field and its JSDoc.

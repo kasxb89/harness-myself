@@ -4,6 +4,19 @@ import { mergeProductModelLimits, productModelLimitsScope, readProductModelLimit
 import { readModelConfigVersion } from '../src/model-config-version.ts'
 
 describe('product model token capacities', () => {
+  it('keeps an independent default reservation across same-owner refreshes and clears it for an old server', () => {
+    const wire = { context_window: 1_048_576, max_output_tokens: 1_048_576, default_output_tokens: 131_072 }
+    const limits = readProductModelLimits(wire)
+    expect(limits).toEqual({ contextWindow: 1_048_576, maxTokens: 1_048_576, defaultMaxTokens: 131_072 })
+    const retained = mergeProductModelLimits(undefined, limits, 'owner-a')
+    expect(mergeProductModelLimits(retained, undefined, 'owner-a')).toMatchObject({ defaultMaxTokens: 131_072 })
+    expect(mergeProductModelLimits(retained, { contextWindow: 32768, maxTokens: 8192 }, 'owner-a'))
+      .not.toHaveProperty('defaultMaxTokens')
+    expect(mergeProductModelLimits(retained, undefined, 'owner-b')).toBeUndefined()
+    expect(() => readProductModelLimits({ ...wire, default_output_tokens: 0 })).toThrow()
+    expect(() => readProductModelLimits({ ...wire, default_output_tokens: 1_048_577 })).toThrow()
+  })
+
   it('reads only explicit numeric limits and rejects inconsistent paired limits', () => {
     expect(readProductModelLimits({ context_window: 1_048_576, max_output_tokens: 384_000 }))
       .toEqual({ contextWindow: 1_048_576, maxTokens: 384_000 })

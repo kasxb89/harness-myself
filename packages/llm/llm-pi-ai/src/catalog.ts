@@ -59,6 +59,8 @@ export interface PiAiManagedModelLimits {
   contextWindow?: number
   /** Account-authorized output ceiling, before SDK context headroom. */
   maxTokens?: number
+  /** Default output reservation for requests without explicit output intent. */
+  defaultMaxTokens?: number
   /** Gateway execution declarations for this exact account/backend scope. */
   textCapabilities?: LlmTextCapabilities
 }
@@ -69,6 +71,8 @@ export interface PiAiModelConfigSnapshot {
   readonly modelConfigVersion: Branded<'ModelConfigVersion'>
   readonly contextWindow: number
   readonly maxTokens: number
+  /** Published independent default, when the gateway declares one. */
+  readonly defaultMaxTokens?: number
 }
 
 /** Explicit user capacities for one model on one managed account/backend. */
@@ -1014,15 +1018,20 @@ export function resolveRouteModels(
         invalid(provider, `model "${entry.id}" has an invalid versioned managed capacity pair`)
       }
       modelConfigurations.set(entry.id, Object.freeze({ scope: managed.scope, modelConfigVersion: managed.modelConfigVersion,
-        contextWindow: managed.contextWindow, maxTokens: managed.maxTokens }))
+        contextWindow: managed.contextWindow, maxTokens: managed.maxTokens,
+        ...managed.defaultMaxTokens === undefined ? {} : { defaultMaxTokens: managed.defaultMaxTokens } }))
     }
     for (const [field, value] of [
       ['contextWindow', entry.contextWindow], ['maxTokens', entry.maxTokens],
       ['managedLimits.contextWindow', managed?.contextWindow], ['managedLimits.maxTokens', managed?.maxTokens],
+      ['managedLimits.defaultMaxTokens', managed?.defaultMaxTokens],
     ] as const) {
       if (value !== undefined && (!Number.isSafeInteger(value) || value < 1 || value > MAX_CAPACITY_TOKENS)) {
         invalid(provider, `model "${entry.id}" ${field} must be a positive integer no greater than ${MAX_CAPACITY_TOKENS}`)
       }
+    }
+    if (managed?.defaultMaxTokens !== undefined && (managed.maxTokens === undefined || managed.defaultMaxTokens > managed.maxTokens)) {
+      invalid(provider, `model "${entry.id}" default output must not exceed its managed output cap`)
     }
     const manualContextWindow = managed?.authoritative === true && managed.contextWindow !== undefined
       ? undefined : entry.contextWindow
@@ -1113,7 +1122,9 @@ export function resolveRouteModels(
       } },
       ...managed?.contextWindow === undefined || managed.maxTokens === undefined ? {} : { managedScope: managed.scope },
     })
-    if (entry.maxTokens !== undefined) configuredMaxTokens.set(entry.id, model.maxTokens)
+    if (entry.maxTokens !== undefined || managed?.defaultMaxTokens !== undefined) {
+      configuredMaxTokens.set(entry.id, Math.min(choice?.maxTokens ?? managed?.defaultMaxTokens ?? model.maxTokens, model.maxTokens))
+    }
     return model
   }
   const models: Model<Api>[] = []

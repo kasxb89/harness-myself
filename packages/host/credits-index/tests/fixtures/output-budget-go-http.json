@@ -1,0 +1,604 @@
+{
+  "/api/pricing:separate=false": {
+    "auto_groups": [
+      "default"
+    ],
+    "data": [
+      {
+        "model_name": "MiniMax-H3",
+        "display_name": "mt-MiniMax-H3",
+        "parameters": {
+          "properties": {
+            "ratio": {
+              "enum": [
+                "adaptive",
+                "21:9",
+                "16:9",
+                "4:3",
+                "1:1",
+                "3:4",
+                "9:16"
+              ],
+              "type": "string"
+            },
+            "resolution": {
+              "default": "768P",
+              "enum": [
+                "768P",
+                "2K"
+              ],
+              "type": "string"
+            },
+            "seconds": {
+              "default": 5,
+              "maximum": 15,
+              "minimum": 4,
+              "type": "integer"
+            }
+          },
+          "type": "object",
+          "x-client-concurrency": {
+            "atomic_admission": true,
+            "max_parallelism": 4,
+            "model": "MiniMax-H3",
+            "reservation": false,
+            "schema": 1,
+            "scope": "shared_account_pool"
+          },
+          "x-default-ratio": {
+            "text": "16:9",
+            "visual_reference": "adaptive"
+          },
+          "x-reference-file-max-bytes": {
+            "input_reference": 20971520,
+            "reference_audio": 15728640,
+            "reference_image": 31457280,
+            "reference_video": 52428800
+          },
+          "x-reference-frame-max-images": 2,
+          "x-reference-limits": {
+            "audios": 3,
+            "counts_include_files_and_urls": true,
+            "images": 9,
+            "videos": 3
+          },
+          "x-reference-modes-exclusive": true
+        },
+        "vendor_id": -1009,
+        "quota_type": 1,
+        "model_ratio": 0,
+        "model_price": 0.01,
+        "owner_by": "",
+        "completion_ratio": 0,
+        "enable_groups": [
+          "default"
+        ],
+        "supported_endpoint_types": [
+          "openai"
+        ],
+        "billing_usage_schema": {
+          "input_images": {
+            "type": "number",
+            "unit": "count",
+            "description": {
+              "en": "Input image unit price",
+              "zh": "输入图片单价"
+            }
+          },
+          "input_video_seconds": {
+            "type": "number",
+            "unit": "second",
+            "description": {
+              "en": "Input video unit price",
+              "zh": "输入视频单价"
+            }
+          },
+          "long_video": {
+            "type": "boolean",
+            "description": {
+              "en": "Whether long video pricing applies",
+              "zh": "是否使用长视频计价"
+            }
+          },
+          "resolution": {
+            "enum": [
+              "480P",
+              "768P",
+              "1080P",
+              "2K"
+            ],
+            "description": {
+              "en": "Output video resolution",
+              "zh": "输出视频分辨率"
+            }
+          },
+          "seconds": {
+            "type": "number",
+            "unit": "second",
+            "description": {
+              "en": "Video generation unit price",
+              "zh": "视频生成单价"
+            }
+          }
+        },
+        "billing_usage_examples": [
+          {
+            "label": "H3 768P 5s",
+            "facts": {
+              "input_images": 0,
+              "input_video_seconds": 0,
+              "long_video": false,
+              "resolution": "768P",
+              "seconds": 5
+            }
+          },
+          {
+            "label": "H3 2K 5s",
+            "facts": {
+              "input_images": 0,
+              "input_video_seconds": 0,
+              "long_video": false,
+              "resolution": "2K",
+              "seconds": 5
+            }
+          },
+          {
+            "label": "H3 2K 5s · 9 images",
+            "facts": {
+              "input_images": 9,
+              "input_video_seconds": 0,
+              "long_video": false,
+              "resolution": "2K",
+              "seconds": 5
+            }
+          },
+          {
+            "label": "H3 2K 5s · input video",
+            "facts": {
+              "input_images": 0,
+              "input_video_seconds": 15,
+              "long_video": false,
+              "resolution": "2K",
+              "seconds": 5
+            }
+          }
+        ],
+        "pricing_version": "5a90f2b86c08bd983a9a2e6d66c255f4eaef9c4bc934386d2b6ae84ef0ff1f1f"
+      },
+      {
+        "completion_ratio": 0,
+        "context_window": 1048576,
+        "display_name": "split-output",
+        "enable_groups": [
+          "default"
+        ],
+        "kind": "text",
+        "max_output_tokens": 131072,
+        "model_config_version": "13498cc100edf58605a61c8ee2e7aa98bcb30da1f5edf526356c1051b4127ca2",
+        "model_name": "split-output",
+        "model_price": 0.01,
+        "model_ratio": 0,
+        "owner_by": "",
+        "quota_type": 1,
+        "supported_endpoint_types": [
+          "openai"
+        ]
+      }
+    ],
+    "group_ratio": {
+      "default": 1,
+      "vip": 1
+    },
+    "model_config_revision": "2f7f0ccb7adbcfe6b0a24c1526413866e1d072bb5394d6eae35147ad237da773",
+    "pricing_version": "a42d372ccf0b5dd13ecf71203521f9d2",
+    "success": true,
+    "supported_endpoint": {
+      "openai": {
+        "path": "/v1/chat/completions",
+        "method": "POST"
+      }
+    },
+    "usable_group": {
+      "default": "Default group",
+      "vip": "VIP group"
+    },
+    "vendors": [
+      {
+        "id": -1009,
+        "name": "MiniMax",
+        "icon": "Minimax.Color"
+      }
+    ]
+  },
+  "/api/pricing:separate=true": {
+    "auto_groups": [
+      "default"
+    ],
+    "data": [
+      {
+        "model_name": "MiniMax-H3",
+        "display_name": "mt-MiniMax-H3",
+        "parameters": {
+          "properties": {
+            "ratio": {
+              "enum": [
+                "adaptive",
+                "21:9",
+                "16:9",
+                "4:3",
+                "1:1",
+                "3:4",
+                "9:16"
+              ],
+              "type": "string"
+            },
+            "resolution": {
+              "default": "768P",
+              "enum": [
+                "768P",
+                "2K"
+              ],
+              "type": "string"
+            },
+            "seconds": {
+              "default": 5,
+              "maximum": 15,
+              "minimum": 4,
+              "type": "integer"
+            }
+          },
+          "type": "object",
+          "x-client-concurrency": {
+            "atomic_admission": true,
+            "max_parallelism": 4,
+            "model": "MiniMax-H3",
+            "reservation": false,
+            "schema": 1,
+            "scope": "shared_account_pool"
+          },
+          "x-default-ratio": {
+            "text": "16:9",
+            "visual_reference": "adaptive"
+          },
+          "x-reference-file-max-bytes": {
+            "input_reference": 20971520,
+            "reference_audio": 15728640,
+            "reference_image": 31457280,
+            "reference_video": 52428800
+          },
+          "x-reference-frame-max-images": 2,
+          "x-reference-limits": {
+            "audios": 3,
+            "counts_include_files_and_urls": true,
+            "images": 9,
+            "videos": 3
+          },
+          "x-reference-modes-exclusive": true
+        },
+        "vendor_id": -1009,
+        "quota_type": 1,
+        "model_ratio": 0,
+        "model_price": 0.01,
+        "owner_by": "",
+        "completion_ratio": 0,
+        "enable_groups": [
+          "default"
+        ],
+        "supported_endpoint_types": [
+          "openai"
+        ],
+        "billing_usage_schema": {
+          "input_images": {
+            "type": "number",
+            "unit": "count",
+            "description": {
+              "en": "Input image unit price",
+              "zh": "输入图片单价"
+            }
+          },
+          "input_video_seconds": {
+            "type": "number",
+            "unit": "second",
+            "description": {
+              "en": "Input video unit price",
+              "zh": "输入视频单价"
+            }
+          },
+          "long_video": {
+            "type": "boolean",
+            "description": {
+              "en": "Whether long video pricing applies",
+              "zh": "是否使用长视频计价"
+            }
+          },
+          "resolution": {
+            "enum": [
+              "480P",
+              "768P",
+              "1080P",
+              "2K"
+            ],
+            "description": {
+              "en": "Output video resolution",
+              "zh": "输出视频分辨率"
+            }
+          },
+          "seconds": {
+            "type": "number",
+            "unit": "second",
+            "description": {
+              "en": "Video generation unit price",
+              "zh": "视频生成单价"
+            }
+          }
+        },
+        "billing_usage_examples": [
+          {
+            "label": "H3 768P 5s",
+            "facts": {
+              "input_images": 0,
+              "input_video_seconds": 0,
+              "long_video": false,
+              "resolution": "768P",
+              "seconds": 5
+            }
+          },
+          {
+            "label": "H3 2K 5s",
+            "facts": {
+              "input_images": 0,
+              "input_video_seconds": 0,
+              "long_video": false,
+              "resolution": "2K",
+              "seconds": 5
+            }
+          },
+          {
+            "label": "H3 2K 5s · 9 images",
+            "facts": {
+              "input_images": 9,
+              "input_video_seconds": 0,
+              "long_video": false,
+              "resolution": "2K",
+              "seconds": 5
+            }
+          },
+          {
+            "label": "H3 2K 5s · input video",
+            "facts": {
+              "input_images": 0,
+              "input_video_seconds": 15,
+              "long_video": false,
+              "resolution": "2K",
+              "seconds": 5
+            }
+          }
+        ],
+        "pricing_version": "5a90f2b86c08bd983a9a2e6d66c255f4eaef9c4bc934386d2b6ae84ef0ff1f1f"
+      },
+      {
+        "completion_ratio": 0,
+        "context_window": 1048576,
+        "default_output_tokens": 131072,
+        "display_name": "split-output",
+        "enable_groups": [
+          "default"
+        ],
+        "kind": "text",
+        "max_output_tokens": 1048576,
+        "model_config_version": "13498cc100edf58605a61c8ee2e7aa98bcb30da1f5edf526356c1051b4127ca2",
+        "model_name": "split-output",
+        "model_price": 0.01,
+        "model_ratio": 0,
+        "owner_by": "",
+        "quota_type": 1,
+        "supported_endpoint_types": [
+          "openai"
+        ]
+      }
+    ],
+    "group_ratio": {
+      "default": 1,
+      "vip": 1
+    },
+    "model_config_revision": "2f7f0ccb7adbcfe6b0a24c1526413866e1d072bb5394d6eae35147ad237da773",
+    "pricing_version": "a42d372ccf0b5dd13ecf71203521f9d2",
+    "success": true,
+    "supported_endpoint": {
+      "openai": {
+        "path": "/v1/chat/completions",
+        "method": "POST"
+      }
+    },
+    "usable_group": {
+      "default": "Default group",
+      "vip": "VIP group"
+    },
+    "vendors": [
+      {
+        "id": -1009,
+        "name": "MiniMax",
+        "icon": "Minimax.Color"
+      }
+    ]
+  },
+  "/v1/models:separate=false": {
+    "data": [
+      {
+        "created": 1626777600,
+        "display_name": "mt-MiniMax-H3",
+        "id": "MiniMax-H3",
+        "kind": "video",
+        "object": "model",
+        "owned_by": "minimax",
+        "parameters": {
+          "properties": {
+            "ratio": {
+              "enum": [
+                "adaptive",
+                "21:9",
+                "16:9",
+                "4:3",
+                "1:1",
+                "3:4",
+                "9:16"
+              ],
+              "type": "string"
+            },
+            "resolution": {
+              "default": "768P",
+              "enum": [
+                "768P",
+                "2K"
+              ],
+              "type": "string"
+            },
+            "seconds": {
+              "default": 5,
+              "maximum": 15,
+              "minimum": 4,
+              "type": "integer"
+            }
+          },
+          "type": "object",
+          "x-client-concurrency": {
+            "atomic_admission": true,
+            "max_parallelism": 4,
+            "model": "MiniMax-H3",
+            "reservation": false,
+            "schema": 1,
+            "scope": "shared_account_pool"
+          },
+          "x-default-ratio": {
+            "text": "16:9",
+            "visual_reference": "adaptive"
+          },
+          "x-reference-file-max-bytes": {
+            "input_reference": 20971520,
+            "reference_audio": 15728640,
+            "reference_image": 31457280,
+            "reference_video": 52428800
+          },
+          "x-reference-frame-max-images": 2,
+          "x-reference-limits": {
+            "audios": 3,
+            "counts_include_files_and_urls": true,
+            "images": 9,
+            "videos": 3
+          },
+          "x-reference-modes-exclusive": true
+        },
+        "supported_endpoint_types": [
+          "openai"
+        ]
+      },
+      {
+        "context_window": 1048576,
+        "created": 1626777600,
+        "display_name": "split-output",
+        "id": "split-output",
+        "kind": "text",
+        "max_output_tokens": 131072,
+        "model_config_version": "13498cc100edf58605a61c8ee2e7aa98bcb30da1f5edf526356c1051b4127ca2",
+        "object": "model",
+        "owned_by": "openai",
+        "supported_endpoint_types": [
+          "openai"
+        ]
+      }
+    ],
+    "model_config_revision": "2f7f0ccb7adbcfe6b0a24c1526413866e1d072bb5394d6eae35147ad237da773",
+    "object": "list",
+    "success": true
+  },
+  "/v1/models:separate=true": {
+    "data": [
+      {
+        "created": 1626777600,
+        "display_name": "mt-MiniMax-H3",
+        "id": "MiniMax-H3",
+        "kind": "video",
+        "object": "model",
+        "owned_by": "minimax",
+        "parameters": {
+          "properties": {
+            "ratio": {
+              "enum": [
+                "adaptive",
+                "21:9",
+                "16:9",
+                "4:3",
+                "1:1",
+                "3:4",
+                "9:16"
+              ],
+              "type": "string"
+            },
+            "resolution": {
+              "default": "768P",
+              "enum": [
+                "768P",
+                "2K"
+              ],
+              "type": "string"
+            },
+            "seconds": {
+              "default": 5,
+              "maximum": 15,
+              "minimum": 4,
+              "type": "integer"
+            }
+          },
+          "type": "object",
+          "x-client-concurrency": {
+            "atomic_admission": true,
+            "max_parallelism": 4,
+            "model": "MiniMax-H3",
+            "reservation": false,
+            "schema": 1,
+            "scope": "shared_account_pool"
+          },
+          "x-default-ratio": {
+            "text": "16:9",
+            "visual_reference": "adaptive"
+          },
+          "x-reference-file-max-bytes": {
+            "input_reference": 20971520,
+            "reference_audio": 15728640,
+            "reference_image": 31457280,
+            "reference_video": 52428800
+          },
+          "x-reference-frame-max-images": 2,
+          "x-reference-limits": {
+            "audios": 3,
+            "counts_include_files_and_urls": true,
+            "images": 9,
+            "videos": 3
+          },
+          "x-reference-modes-exclusive": true
+        },
+        "supported_endpoint_types": [
+          "openai"
+        ]
+      },
+      {
+        "context_window": 1048576,
+        "created": 1626777600,
+        "default_output_tokens": 131072,
+        "display_name": "split-output",
+        "id": "split-output",
+        "kind": "text",
+        "max_output_tokens": 1048576,
+        "model_config_version": "13498cc100edf58605a61c8ee2e7aa98bcb30da1f5edf526356c1051b4127ca2",
+        "object": "model",
+        "owned_by": "openai",
+        "supported_endpoint_types": [
+          "openai"
+        ]
+      }
+    ],
+    "model_config_revision": "2f7f0ccb7adbcfe6b0a24c1526413866e1d072bb5394d6eae35147ad237da773",
+    "object": "list",
+    "success": true
+  }
+}

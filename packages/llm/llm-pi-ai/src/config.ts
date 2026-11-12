@@ -324,6 +324,7 @@ const managedModelLimits: z<PiAiManagedModelLimits> = z.object({
   authoritative: z.union([z.boolean()]),
   contextWindow: z.number().step(1).min(1).max(MAX_CAPACITY_TOKENS),
   maxTokens: z.number().step(1).min(1).max(MAX_CAPACITY_TOKENS),
+  defaultMaxTokens: z.number().step(1).min(1).max(MAX_CAPACITY_TOKENS),
   textCapabilities: z.union([z.object({
     tools: z.boolean().required(), vision: z.boolean().required(), reasoning: z.boolean().required(), stream: z.boolean().required(),
     maxInputTokens: z.number().step(1).min(1).max(MAX_CAPACITY_TOKENS).required(),
