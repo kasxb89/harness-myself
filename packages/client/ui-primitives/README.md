@@ -123,7 +123,7 @@ The atoms cannot read the application locale, so every piece of user-facing copy
 <a id="video-playback"></a>
 ### Video playback
 
-`VideoPlayer` retains native playback controls and adds a visible `MediaProgress` timeline for pointer and keyboard seeking in narrow previews. The timeline follows media events, waits for a finite duration, preserves playback state while seeking, and reports local seek failures through caller-supplied locale labels. Unmounting releases playback and the source; progress listeners belong to the mounted media element.
+`VideoPlayer` uses one set of native controls for playback, volume, fullscreen, and pointer/keyboard seeking. It renders no second timeline or wrapper that constrains the native controls. Unmounting stops playback and releases the source. Seeking requires media metadata; jumping to an unbuffered position depends on the source supporting byte-range reads.
 
 <a id="understand-the-implementation"></a>
 ## Understand the implementation

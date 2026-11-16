@@ -1,19 +1,19 @@
-/** Native video playback with a permanently visible seek timeline. */
+/** Native video playback with one browser-owned seek timeline. */
 import { useEffect, useState, type ReactNode, type VideoHTMLAttributes } from 'react'
-import { MediaProgress, type MediaProgressLabels } from './MediaProgress.tsx'
-import css from './MediaProgress.module.css'
+import type { MediaProgressLabels } from './MediaProgress.tsx'
 
-/** Standard video attributes and locale-owned timeline copy. */
+/** Standard video attributes for the shared native player. */
 export interface VideoPlayerProps extends VideoHTMLAttributes<HTMLVideoElement> {
-  readonly progressLabels: MediaProgressLabels
+  /** Accepted for older callers; playback controls are localized by the browser. */
+  readonly progressLabels?: MediaProgressLabels
 }
 
 /**
- * Keep seeking available in narrow previews and stop playback on replacement.
- * @param props - Native video properties and localized timeline labels.
- * @returns A native player and visible pointer/keyboard timeline.
+ * Keep a single set of native controls and stop playback on replacement.
+ * @param props - Native video properties.
+ * @returns A native player with browser-managed pointer and keyboard seeking.
  */
-export function VideoPlayer({ progressLabels, ...props }: VideoPlayerProps): ReactNode {
+export function VideoPlayer({ progressLabels: _progressLabels, ...props }: VideoPlayerProps): ReactNode {
   const [media, setMedia] = useState<HTMLVideoElement | null>(null)
   useEffect(() => () => {
     if (media === null) return
@@ -21,8 +21,5 @@ export function VideoPlayer({ progressLabels, ...props }: VideoPlayerProps): Rea
     media.removeAttribute('src')
     media.load()
   }, [media])
-  return <div className={css.player}>
-    <video {...props} ref={setMedia} controls />
-    <MediaProgress media={media} labels={progressLabels} />
-  </div>
+  return <video {...props} ref={setMedia} controls />
 }

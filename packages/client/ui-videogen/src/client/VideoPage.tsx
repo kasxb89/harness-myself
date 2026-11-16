@@ -747,7 +747,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
             </div>
             {slot === 'audio' && <audio className={css.audioPreview} controls preload="metadata" src={item.url.startsWith('/') ? appPath(item.url) : item.url}
               aria-label={t('audioPreview', { name: item.name })} />}
-            {slot === 'video' && <VideoPlayer progressLabels={{ seek: t('playback.seek'), unavailable: t('playback.waiting'), failed: t('playback.failed') }} className={css.videoReferencePreview} controls preload="metadata" src={item.url.startsWith('/') ? appPath(item.url) : item.url}
+            {slot === 'video' && <VideoPlayer className={css.videoReferencePreview} controls preload="metadata" src={item.url.startsWith('/') ? appPath(item.url) : item.url}
               aria-label={t('videoPreview', { name: item.name })} />}
           </li>
         })}
@@ -977,7 +977,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
 
     {result !== null && <section className={css.result} aria-label={t('result')}>
       <div className={css.sectionHeading}><h2 className={css.sectionTitle}>{t('result')}</h2><button type="button" className={css.link} onClick={() => { actions.patch({ result: null }) }}>{t('closePreview')}</button></div>
-      <VideoPlayer progressLabels={{ seek: t('playback.seek'), unavailable: t('playback.waiting'), failed: t('playback.failed') }} className={css.video} src={rawUrl(result)} controls preload="metadata" />
+      <VideoPlayer className={css.video} src={rawUrl(result)} controls preload="metadata" />
       <div className={css.figureMeta}><a className={css.link} href={rawUrl(result)} target="_blank" rel="noreferrer">{t('open')}</a><a className={css.link} href={rawUrl(result)} download={result.path.split(/[\\/]/).pop()}>{t('download')}</a><code className={css.path}>{result.path}</code></div>
     </section>}
 
@@ -990,7 +990,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
     </section>
     <Modal open={previewTemplate !== null} title={previewTemplate === null ? t('scriptTemplate') : text(previewTemplate.title)} closeLabel={t('closePreview')} onClose={() => { setPreview(null) }}
       footer={<Button variant="primary" disabled={locked} onClick={() => { if (preview !== null) applyTemplate(preview) }}>{t('useScript')}</Button>}>
-      {previewTemplate?.demoVideoAssetId !== null && previewTemplate?.demoVideoAssetId !== undefined && <VideoPlayer progressLabels={{ seek: t('playback.seek'), unavailable: t('playback.waiting'), failed: t('playback.failed') }} controls preload="metadata" className={css.video}
+      {previewTemplate?.demoVideoAssetId !== null && previewTemplate?.demoVideoAssetId !== undefined && <VideoPlayer controls preload="metadata" className={css.video}
         src={appPath(`/credits/api/creation/assets/${encodeURIComponent(previewTemplate.demoVideoAssetId)}`)} />}
       <p className={css.hint}>{t('scriptPreviewHint')}</p><p className={css.scriptPreview}>{previewTemplate === null ? '' : text(previewTemplate.prompt)}</p>
     </Modal>

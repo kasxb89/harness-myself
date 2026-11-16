@@ -45,7 +45,7 @@ export function SavedMedia({ output, visible, t }: { output: CreativeOutput; vis
           <img src={appPath(output.url)} alt={output.name} loading="lazy" onError={() => { setFailed(true) }} />
         </button>
         : output.kind === 'video'
-          ? <VideoPlayer progressLabels={{ seek: t('playback.seek'), unavailable: t('playback.waiting'), failed: t('playback.failed') }} controls preload="metadata" src={appPath(output.url)} poster={output.posterUrl === undefined ? undefined : appPath(output.posterUrl)} aria-label={output.name}
+          ? <VideoPlayer controls preload="metadata" src={appPath(output.url)} poster={output.posterUrl === undefined ? undefined : appPath(output.posterUrl)} aria-label={output.name}
             onError={() => { setFailed(true) }} />
           : <audio controls preload="metadata" src={appPath(output.url)} aria-label={output.name} onError={() => { setFailed(true) }} />}
     <figcaption className={css.mediaFooter}>

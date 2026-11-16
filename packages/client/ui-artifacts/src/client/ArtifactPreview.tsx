@@ -111,7 +111,7 @@ function MediaPreview({ entry, t, readVideoPoster }: { entry: ArtifactEntry; t: 
   const url = sourceUrl(entry)
   if (failed) return <Notice entry={entry} reason="invalid" t={t} />
   if (entry.kind === 'image') return <img className={css.media} src={url} alt={entry.name} onError={() => { setFailed(true) }} />
-  if (entry.kind === 'video') return <VideoPlayer key={version} progressLabels={{ seek: t('playback.seek'), unavailable: t('playback.waiting'), failed: t('playback.failed') }} className={css.media} src={videoSourceUrl(entry)} controls preload="metadata"
+  if (entry.kind === 'video') return <VideoPlayer key={version} className={css.media} src={videoSourceUrl(entry)} controls preload="metadata"
     poster={poster.url} data-artifact-video-preview data-video-poster={poster.state} onError={() => { setFailed(true) }} />
   return <div className={css.audioPane}><FileTypeIcon path={entry.name} size={40} />
     <audio className={css.audio} src={url} controls onError={() => { setFailed(true) }} /></div>

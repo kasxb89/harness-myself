@@ -9,6 +9,7 @@ import { chromium, type Locator } from 'playwright'
 import { expect, it, onTestFinished } from 'vitest'
 import { launchWebScaffold, watchConsole } from './scaffold.ts'
 import { ZH_BROWSER_LOCALE } from './support.ts'
+import { dragNativeVideoTimeline } from './native-video-timeline.ts'
 
 const runtimeRoot = process.env.DSH_VIDEO_TEST_RUNTIME_ROOT
 const ffmpeg = runtimeRoot === undefined ? undefined : join(runtimeRoot, 'bin', process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg')
@@ -93,6 +94,17 @@ it.skipIf(ffmpeg === undefined || !existsSync(ffmpeg))(
       await expect.poll(() => video.getAttribute('poster')).toBe(await oldImage.getAttribute('src'))
       expect(await video.evaluate((node: HTMLVideoElement) => node.paused && node.currentTime === 0)).toBe(true)
       await page.screenshot({ path: join(evidence, 'first-frame-covers.png'), animations: 'disabled' })
+      await dragNativeVideoTimeline(video, 0.75)
+      await expect.poll(() => video.evaluate((node: HTMLVideoElement) => {
+        const canvas = document.createElement('canvas')
+        canvas.width = 1; canvas.height = 1
+        const context = canvas.getContext('2d')
+        if (context === null) return false
+        context.drawImage(node, 0, 0, 1, 1)
+        const [red, green, blue] = context.getImageData(0, 0, 1, 1).data
+        return red !== undefined && green !== undefined && blue !== undefined && blue > 180 && red < 80 && green < 80
+      })).toBe(true)
+      await page.screenshot({ path: join(evidence, 'native-timeline-seeked.png'), animations: 'disabled' })
 
       const broken = library.getByRole('button', { name: /^损坏视频\.mp4/u })
       await expect.poll(() => broken.locator('[data-video-poster]').getAttribute('data-video-poster'), posterBudget).toBe('failed')
@@ -114,7 +126,7 @@ it.skipIf(ffmpeg === undefined || !existsSync(ffmpeg))(
       expect(tripwire.pageErrors).toEqual([])
       await writeFile(join(evidence, 'result.json'), JSON.stringify({ passed: true, realFirstFrameDecoded: true,
         olderFileWithoutPosterMetadata: true, mountedWorkspace: true, replacedFileInvalidatesCover: true,
-        autoplay: false, paidGenerationRequests: 0, pageErrors: tripwire.pageErrors }, null, 2) + '\n')
+        autoplay: false, nativePointerSeekDecodedBlueFrame: true, paidGenerationRequests: 0, pageErrors: tripwire.pageErrors }, null, 2) + '\n')
       console.info(`Artifact video poster evidence: ${evidence}`)
     } catch (error) {
       await page.screenshot({ path: join(evidence, 'failure.png'), animations: 'disabled' }).catch((captureError: unknown) => {

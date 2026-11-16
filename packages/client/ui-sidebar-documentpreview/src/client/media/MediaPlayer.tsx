@@ -98,7 +98,7 @@ export function MediaPlayer(props: MediaPlayerProps): ReactNode {
   }
   return <div className={css.frame}>
     {current?.url === undefined ? null : video
-      ? <VideoPlayer key={key} progressLabels={{ seek: props.t('playback.seek'), unavailable: props.t('playback.waiting'), failed: props.t('playback.failed') }} className={css.video} src={current.url}
+      ? <VideoPlayer key={key} className={css.video} src={current.url}
         controls playsInline preload="metadata" aria-label={props.t('preview', { name: props.name })}
         onLoadedMetadata={loaded} onError={failed} />
       : <audio key={key} ref={bindMedia} className={css.audio} src={current.url}

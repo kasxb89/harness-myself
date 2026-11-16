@@ -82,13 +82,14 @@ describe('MediaProgress', () => {
   })
 })
 
-it('keeps native controls and releases video playback on unmount', () => {
+it('uses only native controls, accepts legacy labels, and releases playback on unmount', () => {
   const pause = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {})
   const load = vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {})
   const view = render(<VideoPlayer src="blob:local-video" progressLabels={labels} />)
   const video = view.container.querySelector('video')!
   expect(video.controls).toBe(true)
-  expect(view.getByRole('slider', { name: labels.seek })).toBeTruthy()
+  expect(view.queryByRole('slider')).toBeNull()
+  expect(video.hasAttribute('progressLabels')).toBe(false)
   view.unmount()
   expect(pause).toHaveBeenCalledTimes(1)
   expect(load).toHaveBeenCalledTimes(1)

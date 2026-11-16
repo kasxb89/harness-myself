@@ -83,7 +83,7 @@ it('boots the built plugin graph and renders a fixture session end to end', asyn
       + (clientBuildValue('DSH_CLIENT_GIT_DIRTY') === 'true' ? '-dirty' : '')
     screen.getByText('Yunshu', { exact: true })
     expect(screen.queryByText('DSH Local Build')).toBeNull()
-    screen.getByText(buildVersion)
+    expect(screen.queryByText(buildVersion)).toBeNull()
   }
   // The compact layout dropped group session counts; the fixture workspace
   // group row renders immediately with its sessions beneath it.

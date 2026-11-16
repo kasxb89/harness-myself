@@ -145,11 +145,6 @@ exports[`sidebar shell snapshots > renders Windows caption controls in expanded 
                 >
                   Yunshu
                 </span>
-                <span
-                  class="buildVersion"
-                >
-                  1.2.3-rc.4-abc1234-dirty
-                </span>
               </span>
             </div>
           </span>
@@ -397,11 +392,6 @@ exports[`sidebar shell snapshots > renders the expanded column (wordmark, capsul
                 >
                   Yunshu
                 </span>
-                <span
-                  class="buildVersion"
-                >
-                  1.2.3-rc.4-abc1234-dirty
-                </span>
               </span>
             </div>
           </span>
@@ -539,11 +529,6 @@ exports[`sidebar shell snapshots > renders the expanded column in the default lo
                   class="localBuildTitle"
                 >
                   云枢
-                </span>
-                <span
-                  class="buildVersion"
-                >
-                  1.2.3-rc.4-abc1234-dirty
                 </span>
               </span>
             </div>

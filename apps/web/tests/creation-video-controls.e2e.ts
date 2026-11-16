@@ -7,6 +7,7 @@ import { expect, it } from 'vitest'
 import { catalogFromPricing } from '../../../packages/host/credits-index/src/media.ts'
 import { launchWebScaffold, watchConsole } from './scaffold.ts'
 import { connectFreshWorkspaceZh, ZH_BROWSER_LOCALE } from './support.ts'
+import { dragNativeVideoTimeline } from './native-video-timeline.ts'
 
 const ACCOUNT = 'video-controls-qa'
 const disabledBannerPayload = { enabled: false, scope: '0'.repeat(64), revision: '1'.repeat(64), announcements: [] }
@@ -199,7 +200,12 @@ it.each(['no-session', 'unknown', 'pending', 'read-failed'] as const)(
             expect(await input.getAttribute('accept')).toContain('video/mp4')
             const buffer = await readFile(fileURLToPath(new URL('./fixtures/sidebar-media/preview.mp4', import.meta.url)))
             await input.setInputFiles({ name: '参考视频.mp4', mimeType: 'video/mp4', buffer })
-            await videos.getByLabel('预览参考视频 参考视频.mp4', { exact: true }).waitFor()
+            const referenceVideo = videos.getByLabel('预览参考视频 参考视频.mp4', { exact: true })
+            await referenceVideo.waitFor()
+            await dragNativeVideoTimeline(referenceVideo, 0.5)
+            await referenceVideo.evaluate(async (node: HTMLVideoElement) => { node.muted = true; await node.play() })
+            await dragNativeVideoTimeline(referenceVideo, 0.25)
+            await referenceVideo.evaluate((node: HTMLVideoElement) => { node.pause() })
             expect(uploadedMaterials).toEqual(['参考视频.mp4'])
             expect(await videos.getByRole('button', { name: '生成视频', exact: true }).isDisabled()).toBe(true)
             await page.screenshot({ path: join(evidence, 'reference-video-controls.png'), animations: 'disabled' })
@@ -234,6 +240,7 @@ it.each(['no-session', 'unknown', 'pending', 'read-failed'] as const)(
             submitGeometry, recordCheckReleased, disabledReasonConnected: true, promptRetained: true,
             imageNoSessionDraftControlsChecked: admission === 'no-session',
             referenceVideoUploadChecked: admission === 'no-session',
+            referenceVideoNativePointerSeekChecked: admission === 'no-session',
             runtime: 'real built shipped Web composition' }, null, 2) + '\n')
           console.log(`Video controls browser evidence: ${evidence}`)
         } catch (error) {

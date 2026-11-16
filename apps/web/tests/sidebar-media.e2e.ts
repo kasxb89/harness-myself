@@ -11,6 +11,7 @@ import type {} from '@deepseek-ai/dsh-artifacts-index'
 import type {} from '@deepseek-ai/dsh-tool-present/types'
 import { launchWebScaffold, watchConsole } from './scaffold.ts'
 import { connectFreshWorkspace, saveFailureShot } from './support.ts'
+import { dragNativeVideoTimeline } from './native-video-timeline.ts'
 
 const fixture = fileURLToPath(new URL('./fixtures/sidebar-media/preview.mp4', import.meta.url))
 const overlay = fileURLToPath(new URL('./fixtures/artifact-library/cordis.patch.yml', import.meta.url))
@@ -18,7 +19,7 @@ const overlay = fileURLToPath(new URL('./fixtures/artifact-library/cordis.patch.
 const legacyPackage = process.env.DSH_TEST_LEGACY_SIDEBAR_PACKAGE
 
 /** Verify decoded frames, real time advancement, and seeking; a video element alone is insufficient. */
-async function plays(video: Locator, visibleTimeline: boolean): Promise<void> {
+async function plays(video: Locator): Promise<void> {
   await video.waitFor({ state: 'visible' })
   await video.evaluate((node: HTMLVideoElement) => {
     const events: { type: string; time: number; paused: boolean; ready: number; network: number }[] = []
@@ -36,26 +37,13 @@ async function plays(video: Locator, visibleTimeline: boolean): Promise<void> {
   await video.evaluate(async (node: HTMLVideoElement) => { node.muted = true; await node.play() })
   await expect.poll(() => video.evaluate((node: HTMLVideoElement) => node.currentTime)).toBeGreaterThan(0.1)
   await video.evaluate((node: HTMLVideoElement) => { node.pause() })
-  if (visibleTimeline) {
-    const slider = video.locator('..').getByRole('slider', { name: 'Playback position' })
-    await slider.waitFor({ state: 'visible' })
-    const box = await slider.boundingBox()
-    if (box === null) throw new Error('The visible video timeline has no pointer target')
-    const { duration, currentTime } = await video.evaluate((node: HTMLVideoElement) =>
-      ({ duration: node.duration, currentTime: node.currentTime }))
-    const x = (seconds: number): number => box.x + 8 + (box.width - 16) * seconds / duration
-    await video.page().mouse.move(x(currentTime), box.y + box.height / 2)
-    await video.page().mouse.down()
-    await video.page().mouse.move(x(2), box.y + box.height / 2, { steps: 8 })
-    await video.page().mouse.up()
-    expect(await video.evaluate((node: HTMLVideoElement) => node.paused)).toBe(true)
-  } else {
-    await video.evaluate((node: HTMLVideoElement) => { node.currentTime = 2 })
-  }
+  await dragNativeVideoTimeline(video, 0.5)
   await expect.poll(() => video.evaluate((node: HTMLVideoElement) =>
     !node.seeking && node.currentTime >= 1.9 && node.currentTime <= 2.1)).toBe(true)
   await video.evaluate(async (node: HTMLVideoElement) => { await node.play() })
   await expect.poll(() => video.evaluate((node: HTMLVideoElement) => node.currentTime)).toBeGreaterThan(2.1)
+  await dragNativeVideoTimeline(video, 0.25)
+  expect(await video.evaluate((node: HTMLVideoElement) => node.paused)).toBe(false)
   await video.evaluate((node: HTMLVideoElement) => { node.pause() })
 }
 
@@ -143,7 +131,7 @@ for (const legacy of [false, true]) {
         const video = page.locator('[data-rightbar-col] video:visible').first()
         const card = page.locator('[data-presented-file]').filter({ hasText: '剧情 预览 #1.mp4' })
         await card.getByRole('button').first().click()
-        await plays(video, !legacy)
+        await plays(video)
         const firstSource = await video.getAttribute('src')
         expect(firstSource).toContain('/artifacts/api/raw?')
         expect(firstSource).not.toContain('/sidebar/file')
@@ -151,7 +139,7 @@ for (const legacy of [false, true]) {
         const previous = await video.elementHandle()
         if (!legacy) await page.setViewportSize({ width: 1050, height: 800 })
         await openProse(page, workspaceName)
-        await plays(video, !legacy)
+        await plays(video)
         expect(await previous?.evaluate((node: HTMLVideoElement) => node.paused && !node.hasAttribute('src'))).toBe(true)
         const scoped = new URL(await video.getAttribute('src') ?? '', scaffold.baseUrl)
         expect(scoped.searchParams.get('workspaceId')).not.toBeNull()
