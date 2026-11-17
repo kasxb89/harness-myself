@@ -1,5 +1,10 @@
 /** File-owned macOS packaging concurrency and stage-specific proxies. */
 
+/** Minimum macOS release required by the bundled native addons. */
+export const MACOS_MINIMUM_VERSION: '15.0.0'
+/** Matching kernel version used by electron-updater's os.release() comparison. */
+export const MACOS_MINIMUM_DARWIN_VERSION: '24.0.0'
+
 /** Validated settings shared by preflight and stage execution. */
 export interface MacOSPackageSettings {
   readonly packConcurrency: number

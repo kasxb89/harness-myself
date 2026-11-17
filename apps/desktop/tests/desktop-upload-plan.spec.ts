@@ -283,6 +283,21 @@ describe('desktop upload plan', () => {
     })
   })
 
+  it.each(['23.0.0', '25.0.0', 'invalid'])('protects the macOS update floor when metadata declares %s', async (minimumSystemVersion) => {
+    const paths = await fixture('mac-x64')
+    const path = join(paths.artifactsRoot, desktopUpdateMetadataFilename('1.2.3', 'darwin'))
+    const metadata = JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>
+    await writeFile(path, JSON.stringify({ ...metadata, minimumSystemVersion }))
+    if (minimumSystemVersion === 'invalid') {
+      await expect(createDesktopUploadPlan('mac-x64', paths)).rejects.toThrow('valid Darwin kernel version')
+    } else {
+      const plan = await createDesktopUploadPlan('mac-x64', paths)
+      expect(load(plan.artifacts.find(artifact => artifact.channelMetadata)!.contents!)).toMatchObject({
+        minimumSystemVersion: minimumSystemVersion === '25.0.0' ? '25.0.0' : '24.0.0',
+      })
+    }
+  })
+
   it.each(['mac-arm64', 'mac-x64', 'win-x64'] as const)('publishes every %s object and YAML reference inside the test release directory', async (target) => {
     const paths = await fixture(target)
     const plan = await createDesktopUploadPlan(target, paths)

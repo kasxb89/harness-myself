@@ -1,5 +1,10 @@
 /** Resolve file-owned macOS packaging concurrency and stage-specific proxies. */
 
+/** Bundled x64/arm64 speech and require-builtin addons require macOS Sequoia. */
+export const MACOS_MINIMUM_VERSION = '15.0.0'
+/** electron-updater compares os.release(), whose Sequoia kernel major is 24. */
+export const MACOS_MINIMUM_DARWIN_VERSION = '24.0.0'
+
 function proxy(environment, name, protocols) {
   const value = environment[name]?.trim()
   if (!value) return undefined

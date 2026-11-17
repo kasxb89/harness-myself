@@ -5,7 +5,7 @@ import { createReadStream } from 'node:fs'
 import { readFile, stat } from 'node:fs/promises'
 import { basename, join, resolve } from 'node:path'
 import { dump, load } from 'js-yaml'
-import { prerelease } from 'semver'
+import { gt, prerelease, valid } from 'semver'
 import type { DesktopPackageTargetName } from './package-target.ts'
 import {
   desktopBuildRecordFilename,
@@ -18,6 +18,7 @@ import {
 import { desktopTargetBuildPaths } from './desktop-build-paths.mjs'
 import { validateDesktopBuildVersion } from './desktop-build-version.mjs'
 import { resolveUnsignedDesktopUpdateConfig } from './desktop-update-config-origin.mjs'
+import { MACOS_MINIMUM_DARWIN_VERSION } from './macos-package-settings.mjs'
 
 const APP_ROOT = resolve(import.meta.dirname, '..')
 const REPOSITORY_ROOT = resolve(APP_ROOT, '..', '..')
@@ -302,8 +303,15 @@ export async function createDesktopUploadPlan(
   }
 
   const payloadUrl = `${update.origin}/${binaryPrefix}/${updaterInfo.filename}`
+  const minimumSystemVersion = metadata.minimumSystemVersion
+  if (target.platform === 'darwin' && minimumSystemVersion !== undefined
+    && (typeof minimumSystemVersion !== 'string' || valid(minimumSystemVersion) === null)) {
+    throw new Error('desktop upload: macOS minimumSystemVersion must be a valid Darwin kernel version')
+  }
   const published = {
     ...metadata,
+    ...(target.platform === 'darwin' ? { minimumSystemVersion: typeof minimumSystemVersion === 'string'
+      && gt(minimumSystemVersion, MACOS_MINIMUM_DARWIN_VERSION) ? minimumSystemVersion : MACOS_MINIMUM_DARWIN_VERSION } : {}),
     files: [{ ...object(metadata.files[0], `${metadataFilename}.files[0]`), url: payloadUrl }],
     ...(metadata.path === undefined ? {} : { path: payloadUrl }),
   }
