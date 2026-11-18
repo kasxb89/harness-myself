@@ -7,8 +7,9 @@
  * its locale and its theme wiring. Until that face answers — the market's
  * apply lands after ours — the page shows where the market would be.
  */
-import { useSyncExternalStore, type ReactNode } from 'react'
-import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import type { ReactNode } from 'react'
+import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
+import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import css from './PlazaPage.module.css'
 
 /**
@@ -23,34 +24,26 @@ export interface MarketControl {
 
 /** What the plugin injects into the page. */
 export interface PlazaInjected {
-  /** Translate one key of this plugin's namespace. */
-  readonly t: (key: string, values?: Record<string, string>) => string
+  /** The external provider's opaque UI face, owned by this plugin activation. */
+  hooks: { marketControl: SnapshotStore<MarketControl | null> }
 }
 
-/** The market face as it arrives; the market's apply may land after ours. */
-let control: MarketControl | null = null
-const listeners = new Set<() => void>()
+/** Framework-bound market snapshot and locale-owned page copy. */
+export type PlazaPageProps = PropsRuntime<'main'> & PropsLocale<'plaza'> & InjectFace<PlazaInjected>
 
-/** Record the market face and wake the mounted page. */
-export function setMarketControl(next: MarketControl): void {
-  control = next
-  for (const listener of listeners) listener()
-}
-
-function subscribe(listener: () => void): () => void {
-  listeners.add(listener)
-  return () => { listeners.delete(listener) }
-}
-
-function snapshot(): MarketControl | null {
-  return control
-}
-
-export function PlazaPage(props: PropsRuntime<'main'> & PlazaInjected): ReactNode {
-  const { t } = props
-  const market = useSyncExternalStore(subscribe, snapshot)
-  if (market === null) {
-    return <p className={css.missing}>{t('missing')}</p>
-  }
-  return <div className={css.page}>{market.render({})}</div>
+/**
+ * Frame the provider's original panel without taking over its controls or scrolling.
+ * @param props - Framework-bound market control and localized unavailable-state copy.
+ * @returns The current market panel or an unavailable state.
+ */
+export function PlazaPage({ useMarketControl, t }: PlazaPageProps): ReactNode {
+  const market = useMarketControl(value => value)
+  return <section className={css.page} aria-label={t('panel')}>
+    <div className={css.content}>
+      {market === null ? <div className={css.missing} role="status">
+        <h1>{t('missingTitle')}</h1>
+        <p>{t('missing')}</p>
+      </div> : market.render({})}
+    </div>
+  </section>
 }

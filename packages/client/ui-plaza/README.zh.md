@@ -27,6 +27,8 @@ kind: "package-reference"
 
 将 `@deepseek-ai/dsh-client-ui-plaza` 与 slot 和语言服务一起挂载在浏览器插件列表中。另行组合市场提供方，由其供应可选的 `market` 服务。本包没有配置字段。
 
+外框采用产品页面的留白与 1120px 宽度上限，在 macOS 额外避让顶部窗口区域。市场仍保留自己的滚动、搜索、标签和操作。提供方不可用时显示简短本地化提示，不提供安装或重试按钮。
+
 -----
 
 <a id="understand-the-implementation"></a>
@@ -35,7 +37,7 @@ kind: "package-reference"
 <details>
 <summary>实现内部细节——点击展开</summary>
 
-浏览器插件注册 `plaza` 主面板与侧栏入口。Cordis 注入将市场的渲染函数交给 [`PlazaPage.tsx`](src/client/PlazaPage.tsx)；后者通过外部存储订阅，在该函数到达时更新已挂载的页面。提供方负责渲染出的市场树；Host 侧为空。
+浏览器插件注册 `plaza` 主面板与侧栏入口。每次激活单独持有提供方 UI 控制面的快照：Cordis 提供服务时发布，撤回时清空，之后可接受新的提供方。框架绑定的注入 hook 将快照交给 [`PlazaPage.tsx`](src/client/PlazaPage.tsx)，不使用模块全局状态或组件自建订阅。独立的 Client context 不共享控制面。slot 声明撤回时移除页面和侧栏入口，重新声明后恢复。提供方负责渲染出的市场树；Host 侧为空。
 
 </details>
 
@@ -76,7 +78,6 @@ kind: "package-reference"
 这些限制说明本包当前的行为与依赖。
 
 - 目录查询、安装、移除与授权由市场提供方负责。
-- 页面保留最后供应的市场控制对象；移除提供方不会清空该对象。
 - 市场渲染失败不会转换为市场不可用提示。
 
 <a id="dev-note"></a>

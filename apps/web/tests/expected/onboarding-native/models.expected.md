@@ -12,6 +12,12 @@
   - button "关闭"
   - heading "模型" [level=2]
   - paragraph: 填入各提供商的 API 密钥即可使用其模型。
+  - region "可用聊天模型":
+    - heading "可用聊天模型" [level=3]
+    - text: 已读取 0 个模型
+    - button "重试"
+    - alert:
+      - paragraph: 云枢 的模型列表暂时无法读取，请重试
   - list:
     - listitem:
       - text: DeepSeek deepseek-official API 密钥

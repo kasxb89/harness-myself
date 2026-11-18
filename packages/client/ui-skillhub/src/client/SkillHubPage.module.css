@@ -29,9 +29,10 @@
 .search { display: flex; align-items: center; gap: 10px; padding: 12px; border: 0.5px solid var(--dsw-alias-border-l2); border-radius: var(--dsw-radius-xl); background: var(--dsw-alias-bg-layer-1); }
 .searchInput { display: flex; flex: 1; min-width: 0; }
 .searchInput > span { flex: 1; min-width: 0; }
+.searchInput input::placeholder { color: var(--dsw-alias-label-secondary); opacity: 1; }
 .sectionHeading { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .sectionTitle { margin: 0; min-width: 0; overflow-wrap: anywhere; font-size: 14px; line-height: 22px; font-weight: 500; }
-.count { flex: none; color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 18px; }
+.count { flex: none; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 18px; }
 .discoveryHeader, .installedHeader { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .discoveryHeader { margin-top: 24px; }
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 290px), 1fr)); gap: 14px; margin: 16px 0 0; padding: 0; list-style: none; }
@@ -42,14 +43,14 @@
 .skillIcon[data-tone='1'] { --skill-color: var(--dsw-alias-state-success-primary); }
 .skillIcon[data-tone='2'] { --skill-color: var(--dsw-alias-link); }
 .skillIcon[data-tone='3'] { --skill-color: var(--dsw-alias-state-warn-primary); }
-.skillInitials { font-size: 14px; line-height: 20px; font-weight: 500; }
+.skillInitials { color: var(--dsw-alias-label-primary); font-size: 14px; line-height: 20px; font-weight: 500; }
 .skillMark { position: absolute; right: -3px; bottom: -3px; box-sizing: content-box; padding: 3px; border-radius: var(--dsw-radius-sm); background: var(--dsw-alias-bg-layer-1); }
 .skillHeading { flex: 1; min-width: 0; }
 .cardHeading h3 { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; margin: 0; overflow-wrap: anywhere; font-size: 14px; line-height: 20px; font-weight: 500; }
-.slug { display: block; min-width: 0; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-tertiary); }
+.slug { display: block; min-width: 0; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-secondary); }
 .description { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 3; flex: none; margin: 0; overflow-wrap: anywhere; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-secondary); }
 .metadataRow { display: flex; gap: 8px; min-width: 0; }
-.metadata { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; line-height: 18px; color: var(--dsw-alias-label-tertiary); }
+.metadata { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; line-height: 18px; color: var(--dsw-alias-label-secondary); }
 .metadata:first-child:not(:last-child) { flex: 0 1 40%; }
 .metadata:last-child { flex: 1; }
 .cardFooter { display: flex; align-items: center; gap: 12px; justify-content: space-between; margin-top: auto; }
@@ -83,10 +84,12 @@
 .pagination { display: flex; align-items: center; justify-content: center; gap: 16px; margin-top: 24px; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 20px; }
 .detailsDialog { width: min(560px, 100%); max-height: 100%; }
 .detailsContent { min-height: 0; overflow-y: auto; }
+/* Modal's existing header remains reachable inside this page's scroll owner. */
+.detailsContent > :first-child { position: sticky; top: 0; z-index: 2; flex-shrink: 0; background: var(--dsw-alias-bg-layer-2); }
 .detailName { margin: 0 0 20px; overflow-wrap: anywhere; font-size: 18px; line-height: 28px; font-weight: 500; }
 .detailIdentity { display: flex; align-items: flex-start; gap: 12px; }
 .detailIdentity > div { min-width: 0; }
-.detailLabel { display: block; color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 18px; }
+.detailLabel { display: block; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 18px; }
 .detailSlug { display: block; margin-top: 4px; overflow-wrap: anywhere; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 20px; }
 .detailMetadata { margin-top: 20px; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 20px; }
 .detailMetadata p { margin: 4px 0; overflow-wrap: anywhere; }

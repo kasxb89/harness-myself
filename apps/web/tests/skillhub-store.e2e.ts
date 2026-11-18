@@ -7,6 +7,7 @@ import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import { expect, it, onTestFinished } from 'vitest'
 import { launchWebScaffold, watchConsole } from './scaffold.ts'
 import { connectFreshWorkspaceZh, saveFailureShot, ZH_BROWSER_LOCALE } from './support.ts'
+import { assertReadableText } from './readable-text.ts'
 
 const overlay = fileURLToPath(new URL('./fixtures/skillhub-store/cordis.patch.yml', import.meta.url))
 
@@ -42,6 +43,7 @@ async function assertEmbeddedArtwork(image: Locator): Promise<void> {
     && node.currentSrc.startsWith('data:image/png;base64,') && node.complete
     && node.naturalWidth > 0 && node.naturalHeight > 0)).toBe(true)
 }
+
 
 it('keeps adaptive skill cards, independent installation and complete details in light, dark and narrow layouts', async () => {
   const artifactRoot = fileURLToPath(new URL('../../../.artifacts/', import.meta.url))
@@ -89,6 +91,12 @@ it('keeps adaptive skill cards, independent installation and complete details in
     ]) {
       await page.setViewportSize({ width: layout.width, height: 1000 })
       await page.evaluate((dark) => { document.body.toggleAttribute('data-ds-dark-theme', dark) }, layout.dark)
+      await assertReadableText(store.getByRole('textbox', { name: '搜索 SkillHub 技能', exact: true }), '::placeholder')
+      await assertReadableText(discover.getByText('当前列表 60 个技能', { exact: true }))
+      const first = discover.getByRole('listitem').first()
+      await assertReadableText(first.locator('code').first())
+      await assertReadableText(first.getByText('版本 1.0.0', { exact: true }))
+      await assertReadableText(first.getByText('ST', { exact: true }))
       await assertCardsFit(discover.getByRole('listitem'))
       expect(await store.evaluate(node => node.scrollWidth <= node.clientWidth + 1)).toBe(true)
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true)
@@ -124,7 +132,18 @@ it('keeps adaptive skill cards, independent installation and complete details in
       const bounds = node.getBoundingClientRect()
       return bounds.bottom <= window.innerHeight && bounds.bottom > 0
     })).toBe(true)
+    const closeButton = dialog.getByRole('button', { name: '关闭技能详情', exact: true })
+    const scrolledClose = await closeButton.boundingBox()
+    if (scrolledClose === null) throw new Error('Skill details close button disappeared after scrolling')
+    expect(scrolledClose.y).toBeGreaterThanOrEqual(0)
+    expect(scrolledClose.y + scrolledClose.height).toBeLessThanOrEqual(1000)
+    expect(await closeButton.isVisible()).toBe(true)
     await page.screenshot({ path: join(evidence, 'details-scrolled.png'), animations: 'disabled' })
+    await closeButton.click()
+    await expect.poll(() => page.getByRole('dialog').count()).toBe(0)
+    expect(await details.evaluate(node => node === document.activeElement)).toBe(true)
+    await details.click()
+    await dialog.waitFor()
     await page.keyboard.press('Escape')
     await expect.poll(() => page.getByRole('dialog').count()).toBe(0)
     expect(await details.evaluate(node => node === document.activeElement)).toBe(true)
@@ -211,10 +230,13 @@ it('browses the real eighteen digital employees and opens one unsent video-direc
       { width: 1440, dark: true, name: 'wide-dark' },
       { width: 620, dark: false, name: 'compact-light' },
       { width: 620, dark: true, name: 'compact-dark' },
+      { width: 1710, height: 952, dark: true, name: 'baseline-matched-dark' },
     ]) {
-      await page.setViewportSize({ width: layout.width, height: 1000 })
+      await page.setViewportSize({ width: layout.width, height: layout.height ?? 1000 })
       await page.evaluate((dark) => { document.body.toggleAttribute('data-ds-dark-theme', dark) }, layout.dark)
       await assertCardsFit(employees.getByRole('listitem'))
+      await assertReadableText(employees.getByRole('searchbox', { name: '搜索员工名称或职责', exact: true }), '::placeholder')
+      await assertReadableText(employees.getByText('18', { exact: true }))
       expect(await employees.evaluate(node => node.scrollWidth <= node.clientWidth + 1)).toBe(true)
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true)
       await page.screenshot({ path: join(evidence, `${layout.name}.png`), animations: 'disabled' })

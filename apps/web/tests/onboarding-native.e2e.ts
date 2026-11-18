@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { chromium, type Browser, type Page } from 'playwright'
+import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import { afterAll, beforeAll, describe, expect, it, onTestFailed } from 'vitest'
 import {
   acknowledgeReloadConnectionLoss, assertFixtureInventory, captureStableAria, compareOrRefreshGolden,
@@ -19,6 +20,7 @@ describe.skipIf(MODE === 'record').each([false, true])('web e2e: native credenti
   let browser: Browser
   let page: Page
   let tripwire: ReturnType<typeof watchConsole>
+  const events: SessionEvent[] = []
 
   beforeAll(async () => {
     scaffold = await launchWebScaffold({
@@ -30,6 +32,10 @@ describe.skipIf(MODE === 'record').each([false, true])('web e2e: native credenti
         ...desktop ? [] : [fileURLToPath(new URL('./fixtures/onboarding-native/cordis.patch.yml', import.meta.url))],
       ],
     })
+    scaffold.ctx.on('session/event', (_session, event: SessionEvent) => { events.push(event) })
+    // The scaffold's loopback API intentionally cannot authorize the shipped product route.
+    await expect(scaffold.ctx.llm.listModels('yunshu-local'))
+      .rejects.toThrow('产品模型地址或生命周期已变化，请重新读取模型列表。')
     browser = await chromium.launch()
     page = await browser.newPage({ viewport: { width: 1440, height: 960 }, locale: ZH_BROWSER_LOCALE })
     // The shared menu golden uses the Linux shortcut profile on every test host.
@@ -99,12 +105,18 @@ describe.skipIf(MODE === 'record').each([false, true])('web e2e: native credenti
       expect(await page.getByRole('dialog', { name: '添加一个 API Key 开始使用' }).count()).toBe(0)
       expect(await welcome.count()).toBe(0)
       expect(await readFile(credentialPath, 'utf8')).toBe(credentials)
+      const catalog = settings.getByRole('region', { name: '可用聊天模型', exact: true })
+      await catalog.getByText('已读取 0 个模型', { exact: true }).waitFor()
+      await catalog.getByText('云枢 的模型列表暂时无法读取，请重试', { exact: true }).waitFor()
+      expect(await catalog.getByRole('button', { name: '重试', exact: true }).isEnabled()).toBe(true)
       const aria = await captureStableAria(page, '[role="dialog"]', scaffold.workspaceCwd)
       await compareOrRefreshGolden(join(SNAPSHOT_DIR, 'models.expected.md'), aria, MODE)
       await page.keyboard.press('Escape')
     }
     expect(tripwire.warnings).toEqual([])
     expect(tripwire.pageErrors).toEqual([])
+    expect(events.some(event => event.type === 'user/message' || event.type === 'turn/start'
+      || event.type === 'request/header' || event.type === 'tool/call')).toBe(false)
     await assertFixtureInventory(SNAPSHOT_DIR, ['models.expected.md', 'signed-out-menu.expected.md'])
   })
 })

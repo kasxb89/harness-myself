@@ -45,7 +45,7 @@ patchedDependencies:
   dsh-find-plugin@0.4.0: 062d1dee81d7b8393559bee05e107249c5bf1363b1eda9d675f5f30de0e5e03b
   dsh-skin-market@0.1.57: 3877c5ac25edd51ef5c13da56a761bab0326c4408e8277b7ea1ea6ebc2b5f04a
   dsh-univer-office@0.3.7: 9ab9121dd06608a991db35b48ab63aa595b8bb417cfa866eb31f8df2e4efa511
-  dshmarket@1.66.20: 8e05d5e1136fc45a9502854be05bb8bd22f7757c52249e0802949187912ba945
+  dshmarket@1.66.20: 62b9f6b5c8ead85d234b2bcf2a79b64a6a9d35745ac8217def8cd61eb940750f
   exceljs@4.4.0: c1bf8ac8f319dab382f08e3a669b715e691d46c703ac5a4163eb383fbedd1d48
   node-pty@1.2.0-beta.15: 9d30053266d0f39d3debe894c675867f6782da6bcadbc94a693b3cfb9eff8ed0
 
@@ -3029,7 +3029,7 @@ importers:
         version: 0.3.7(patch_hash=9ab9121dd06608a991db35b48ab63aa595b8bb417cfa866eb31f8df2e4efa511)(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-attachment@packages+attachment+attachment)(@deepseek-ai/dsh-host-webserver@packages+host+webserver)(@deepseek-ai/dsh-llm@packages+llm+llm)(@deepseek-ai/dsh-session@packages+core+session)(@deepseek-ai/dsh-settings@packages+settings+settings)(@deepseek-ai/dsh-skill@packages+skill+skill)(@deepseek-ai/dsh-tools@packages+core+tools)(@deepseek-ai/schemastery@vendor+schemastery)(yauzl@3.4.0)
       dshmarket:
         specifier: 1.66.20
-        version: 1.66.20(patch_hash=8e05d5e1136fc45a9502854be05bb8bd22f7757c52249e0802949187912ba945)(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-settings@packages+settings+settings)(@deepseek-ai/schemastery@vendor+schemastery)
+        version: 1.66.20(patch_hash=62b9f6b5c8ead85d234b2bcf2a79b64a6a9d35745ac8217def8cd61eb940750f)(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-settings@packages+settings+settings)(@deepseek-ai/schemastery@vendor+schemastery)
       open:
         specifier: ^11.0.2
         version: 11.0.4
@@ -4934,6 +4934,12 @@ importers:
       '@deepseek-ai/dsh-client-locale':
         specifier: workspace:*
         version: link:../locale
+      '@deepseek-ai/dsh-client-store':
+        specifier: workspace:*
+        version: link:../store
+      '@deepseek-ai/dsh-client-test-runtime':
+        specifier: workspace:*
+        version: link:../../test-support/client-runtime
       '@deepseek-ai/dsh-client-ui-layout':
         specifier: workspace:*
         version: link:../ui-layout
@@ -5511,9 +5517,6 @@ importers:
       '@deepseek-ai/dsh-client-connection':
         specifier: workspace:*
         version: link:../connection
-      '@deepseek-ai/dsh-client-ui-credits':
-        specifier: workspace:*
-        version: link:../ui-credits
       '@deepseek-ai/dsh-client-locale':
         specifier: workspace:*
         version: link:../locale
@@ -5526,6 +5529,9 @@ importers:
       '@deepseek-ai/dsh-client-test-runtime':
         specifier: workspace:*
         version: link:../../test-support/client-runtime
+      '@deepseek-ai/dsh-client-ui-credits':
+        specifier: workspace:*
+        version: link:../ui-credits
       '@deepseek-ai/dsh-client-ui-primitives':
         specifier: workspace:*
         version: link:../ui-primitives
@@ -29977,7 +29983,7 @@ snapshots:
       - utf-8-validate
       - yauzl
 
-  dshmarket@1.66.20(patch_hash=8e05d5e1136fc45a9502854be05bb8bd22f7757c52249e0802949187912ba945)(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-settings@packages+settings+settings)(@deepseek-ai/schemastery@vendor+schemastery):
+  dshmarket@1.66.20(patch_hash=62b9f6b5c8ead85d234b2bcf2a79b64a6a9d35745ac8217def8cd61eb940750f)(@deepseek-ai/cordis@vendor+cordis)(@deepseek-ai/dsh-settings@packages+settings+settings)(@deepseek-ai/schemastery@vendor+schemastery):
     dependencies:
       '@deepseek-ai/cordis': link:vendor/cordis
       js-yaml: 4.3.2

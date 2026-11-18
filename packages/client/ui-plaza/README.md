@@ -27,6 +27,8 @@ Open the Plaza page to use the plugin market inside the main application column.
 
 Mount `@deepseek-ai/dsh-client-ui-plaza` in the browser roster with slots and locale services. Compose the market provider separately; it supplies the optional `market` service. This package has no configuration fields.
 
+The frame uses the product's page insets and a 1120px width cap, with additional top clearance on macOS. The market retains its own scrolling, search, tabs and actions. An unavailable provider shows a short localized state without install or retry controls.
+
 -----
 
 <a id="understand-the-implementation"></a>
@@ -35,7 +37,7 @@ Mount `@deepseek-ai/dsh-client-ui-plaza` in the browser roster with slots and lo
 <details>
 <summary>Implementation internals — click to expand</summary>
 
-The browser plugin registers the `plaza` main panel and sidebar entry. A Cordis injection passes the market’s render function to [`PlazaPage.tsx`](src/client/PlazaPage.tsx), whose external-store subscription updates the mounted page when that function arrives. The provider owns the rendered market tree; the Host half is empty.
+The browser plugin registers the `plaza` main panel and sidebar entry. Each activation owns its own snapshot of the provider's opaque UI face. Cordis provision publishes that face; withdrawal clears it, and a later provider can supply a replacement. Framework-bound injection hooks deliver the snapshot to [`PlazaPage.tsx`](src/client/PlazaPage.tsx), without module-global state or component-owned subscriptions. Independent Client contexts never share controls. Slot withdrawal removes the page and sidebar entry; redeclaration restores them. The provider owns the rendered market tree; the Host half is empty.
 
 </details>
 
@@ -76,7 +78,6 @@ This package neither assembles provider requests nor changes model context.
 These limits describe the package’s current behavior and dependencies.
 
 - Catalog queries, installation, removal and authorization belong to the market provider.
-- The page retains the last supplied market control; provider removal does not clear that control.
 - Market rendering failures are not converted into the unavailable-market hint.
 
 <a id="dev-note"></a>

@@ -1,17 +1,58 @@
 /* The Plaza column: the market's own panel fills the main column; the frame
    only gives it the space and the missing-plugin hint. */
 .page {
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  overflow: auto;
+  min-width: 0;
+  overflow: hidden;
+  padding: 28px 32px 32px;
+  color: var(--dsw-alias-label-primary);
+}
+
+:global([data-platform='darwin']) .page {
+  padding-top: calc(var(--dsh-frame-top-clearance) + 16px);
+}
+
+.content {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  width: 100%;
+  max-width: 1120px;
+  min-width: 0;
+  min-height: 0;
+  margin-inline: auto;
 }
 
 .missing {
-  margin: 28px 32px;
-  max-width: 520px;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 32px 16px;
+  text-align: center;
+}
+
+.missing h1 {
+  margin: 0;
+  font-size: 24px;
+  line-height: 32px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.missing p {
+  margin: 0;
   font-size: 13px;
-  line-height: 22px;
-  color: var(--dsw-alias-label-tertiary);
+  line-height: 20px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+@media (width <= 560px) {
+  .page { padding-inline: 18px; }
 }

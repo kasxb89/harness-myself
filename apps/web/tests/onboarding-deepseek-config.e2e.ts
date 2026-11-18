@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
 import type { Browser, Page } from 'playwright'
 import { chromium } from 'playwright'
+import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { afterAll, beforeAll, describe, expect, it, onTestFailed } from 'vitest'
 import {
@@ -30,12 +31,16 @@ describe.skipIf(MODE === 'record')('web e2e: first-run DeepSeek credential setup
   let page: Page
   let tripwire: ReturnType<typeof watchConsole>
   const browserConsole: string[] = []
+  const events: SessionEvent[] = []
 
   beforeAll(async () => {
     scaffold = await launchWebScaffold({
       deepSeekMissingCredential: true, welcomeNoticePending: true,
       extraOverlayPath: fileURLToPath(new URL('./fixtures/stock-deepseek-onboarding.patch.yml', import.meta.url)),
     })
+    scaffold.ctx.on('session/event', (_session, event: SessionEvent) => { events.push(event) })
+    await expect(scaffold.ctx.llm.listModels('yunshu-local'))
+      .rejects.toThrow('产品模型地址或生命周期已变化，请重新读取模型列表。')
     browser = await chromium.launch()
     // The scenario asserts the shipped Chinese copy, so the browser asks for it.
     page = await browser.newPage({ viewport: { width: 1440, height: 960 }, locale: ZH_BROWSER_LOCALE })
@@ -83,9 +88,9 @@ describe.skipIf(MODE === 'record')('web e2e: first-run DeepSeek credential setup
     const settings = page.getByRole('dialog', { name: '设置' })
     await settings.waitFor({ timeout: 10_000 })
     await settings.getByRole('button', { name: '模型', exact: true }).click()
-    const deepSeekRow = settings.getByText('DeepSeek', { exact: true }).first()
+    const deepSeekRow = settings.getByRole('listitem').filter({ has: page.getByText('DeepSeek', { exact: true }) })
     await deepSeekRow.waitFor({ timeout: 10_000 })
-    await deepSeekRow.locator('xpath=ancestor::li').getByRole('button', { name: '编辑' }).click()
+    await deepSeekRow.getByRole('button', { name: '编辑' }).click()
     const configuredInput = settings.getByLabel('API 密钥', { exact: true })
     await configuredInput.waitFor({ timeout: 10_000 })
     await expect.poll(
@@ -184,9 +189,9 @@ describe.skipIf(MODE === 'record')('web e2e: first-run DeepSeek credential setup
     const settings = page.getByRole('dialog', { name: '设置' })
     await settings.waitFor({ timeout: 10_000 })
     await settings.getByRole('button', { name: '模型', exact: true }).click()
-    const deepSeek = settings.getByText('DeepSeek', { exact: true }).first()
+    const deepSeek = settings.getByRole('listitem').filter({ has: page.getByText('DeepSeek', { exact: true }) })
     await deepSeek.waitFor({ timeout: 10_000 })
-    await deepSeek.locator('xpath=ancestor::li').getByRole('button', { name: '编辑' }).click()
+    await deepSeek.getByRole('button', { name: '编辑' }).click()
     await settings.getByText('自定义设置').click()
     expect(await settings.getByLabel('模型 ID 1').inputValue()).toBe('deepseek-flash')
     expect(await settings.getByLabel('显示名称 1').inputValue()).toBe('DeepSeek-V4.1-Flash')
@@ -195,6 +200,10 @@ describe.skipIf(MODE === 'record')('web e2e: first-run DeepSeek credential setup
     await settings.getByRole('button', { name: '模型选项 1' }).click()
     expect(await settings.getByRole('group', { name: '输入类型 1' }).getByRole('checkbox', { name: '图片' }).isChecked()).toBe(true)
     await assertModelInputLayout(page, settings)
+    const catalog = settings.getByRole('region', { name: '可用聊天模型', exact: true })
+    await catalog.getByText('已读取 2 个模型', { exact: true }).waitFor()
+    await catalog.getByText('云枢 的模型列表暂时无法读取，请重试', { exact: true }).waitFor()
+    expect(await catalog.getByRole('button', { name: '重试', exact: true }).isEnabled()).toBe(true)
     const defaultModels = await captureStableAria(page, '[role="dialog"]', scaffold.workspaceCwd)
     await compareOrRefreshGolden(DEFAULT_MODELS_EXPECTED, defaultModels, MODE)
     await settings.getByLabel('显示名称 1').fill('Configured Flash')
@@ -214,7 +223,7 @@ describe.skipIf(MODE === 'record')('web e2e: first-run DeepSeek credential setup
     await expect(scaffold.ctx.llm.resolveModelInfo('deepseek-official', 'deepseek-v4-pro')).resolves.toMatchObject({
       name: 'DeepSeek-V4-Pro', inputModalities: ['text'],
     })
-    await deepSeek.locator('xpath=ancestor::li').getByRole('button', { name: '编辑' }).click()
+    await deepSeek.getByRole('button', { name: '编辑' }).click()
     await settings.getByText('自定义设置').click()
     for (let index = 0; index < 2; index++) {
       await settings.getByRole('button', { name: /删除模型/ }).first().click()
@@ -233,6 +242,8 @@ describe.skipIf(MODE === 'record')('web e2e: first-run DeepSeek credential setup
       () => settings.getByLabel('API 密钥', { exact: true }).getAttribute('placeholder'),
       { timeout: 10_000 },
     ).toBe('已配置——输入新值可替换')
+    await catalog.getByText('Configured Flash', { exact: true }).waitFor()
+    expect(await catalog.getByText('Private Preview', { exact: true }).count()).toBe(0)
     const modelEditor = await captureStableAria(page, '[role="dialog"]', scaffold.workspaceCwd)
     await compareOrRefreshGolden(MODELS_EXPECTED, modelEditor, MODE)
     await settings.getByRole('button', { name: '保存', exact: true }).click()
@@ -248,7 +259,7 @@ describe.skipIf(MODE === 'record')('web e2e: first-run DeepSeek credential setup
     await expect(scaffold.ctx.llm.resolveModelInfo('deepseek-official', 'private-preview')).resolves.toMatchObject({
       inputModalities: ['text', 'image'],
     })
-    await deepSeek.locator('xpath=ancestor::li').getByRole('button', { name: '编辑' }).click()
+    await deepSeek.getByRole('button', { name: '编辑' }).click()
     await settings.getByText('自定义设置').click()
     await settings.getByRole('button', { name: '模型选项 1' }).click()
     expect(await settings.getByRole('group', { name: '输入类型 1' }).getByRole('checkbox', { name: '图片' }).isChecked()).toBe(true)
@@ -287,6 +298,8 @@ describe.skipIf(MODE === 'record')('web e2e: first-run DeepSeek credential setup
   })
 
   it('keeps the fixture inventory closed', async () => {
+    expect(events.some(event => event.type === 'user/message' || event.type === 'turn/start'
+      || event.type === 'request/header' || event.type === 'tool/call')).toBe(false)
     await assertFixtureInventory(
       SNAPSHOT_DIR,
       ['missing.expected.md', 'models.expected.md', 'default-models.expected.md', 'empty.expected.md'],

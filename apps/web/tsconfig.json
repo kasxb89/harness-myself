@@ -37,6 +37,8 @@
     "tests/collapse-timing.e2e.ts",
     "tests/chat-flow-layout.e2e.ts",
     "tests/skillhub-store.e2e.ts",
+    "tests/plaza-market.e2e.ts",
+    "tests/readable-text.ts",
     "tests/artifact-library.e2e.ts",
     "tests/announcements.e2e.ts",
     "tests/customer-support.e2e.ts",
